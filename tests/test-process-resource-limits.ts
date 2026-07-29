@@ -41,7 +41,10 @@ async function main(): Promise<void> {
   assert(full.includes('processes\t3\n'), `process diagnostics should count PID 1, host, and child: ${full}`);
   assert(full.includes('max_processes\t3\n'), `process diagnostics should expose the configured ceiling: ${full}`);
   assert(full.includes('available_processes\t0\n'), `process diagnostics should expose exhaustion: ${full}`);
-  assert(full.includes('next_pid\t102\n'), `the admitted host and child should consume two PIDs: ${full}`);
+  assert(
+    full.includes('next_pid\t103\n'),
+    `the reserved kernel host service plus the admitted host and child should consume three PIDs: ${full}`
+  );
 
   const rejectedCommand = await workspace.runCommand('echo unreachable');
   assert(rejectedCommand.exitCode === 11, `process-table exhaustion should return errno 11: ${JSON.stringify(rejectedCommand)}`);
@@ -69,7 +72,7 @@ async function main(): Promise<void> {
   assert((rejectedHostError as Error & { syscall?: string }).syscall === 'fork', `host process rejection should identify fork: ${String(rejectedHostError)}`);
 
   const afterRejections = await workspace.readFile('/proc/tracekernel/sched');
-  assert(afterRejections.includes('next_pid\t102\n'), `failed forks must not consume PIDs: ${afterRejections}`);
+  assert(afterRejections.includes('next_pid\t103\n'), `failed forks must not consume PIDs: ${afterRejections}`);
   const events = await workspace.readFile('/proc/tracekernel/events');
   const rejectionEvents = events.split('\n').filter((line) => line.includes('process-reject'));
   assert(rejectionEvents.length === 2, `both command and host rejections should be diagnosed: ${events}`);
@@ -85,7 +88,7 @@ async function main(): Promise<void> {
   });
   const recovered = await workspace.readFile('/proc/tracekernel/sched');
   assert(recovered.includes('processes\t3\n'), `a completed child should release its process-table slot: ${recovered}`);
-  assert(replacement.pid === 102, `the next successful fork should receive the first unconsumed PID: ${replacement.pid}`);
+  assert(replacement.pid === 103, `the next successful fork should receive the first unconsumed PID: ${replacement.pid}`);
 
   replacement.dispose();
   host.dispose();

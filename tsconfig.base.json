@@ -13,7 +13,9 @@
     "baseUrl": ".",
     "paths": {
       "@tracecode/harness-core": ["packages/harness-core/src/index.ts"],
-      "@tracecode/harness-core/*": ["packages/harness-core/src/*"]
+      "@tracecode/harness-core/*": ["packages/harness-core/src/*"],
+      "@tracecode/tracekernel": ["packages/tracekernel/src/index.ts"],
+      "@tracecode/tracekernel/*": ["packages/tracekernel/src/*"]
     },
     "resolveJsonModule": true,
     "isolatedModules": true,

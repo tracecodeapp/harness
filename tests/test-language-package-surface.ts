@@ -3,7 +3,7 @@
 import { test } from 'node:test';
 import { spawnSync } from 'node:child_process';
 import { existsSync } from 'node:fs';
-import { mkdir, mkdtemp, readFile, readdir, rm, stat, writeFile } from 'node:fs/promises';
+import { cp, mkdir, mkdtemp, readFile, readdir, rm, stat, writeFile } from 'node:fs/promises';
 import { homedir, tmpdir } from 'node:os';
 import { isAbsolute, join } from 'node:path';
 
@@ -15,6 +15,18 @@ interface PackageCheck {
 }
 
 const PACKAGE_CHECKS: PackageCheck[] = [
+  {
+    name: '@tracecode/tracekernel',
+    dir: 'packages/tracekernel',
+    exportName: 'makeTraceKernelHost',
+    requiredFiles: [
+      'dist/index.js',
+      'dist/index.cjs',
+      'dist/index.d.ts',
+      'LICENSE',
+      'THIRD_PARTY_NOTICES.md',
+    ],
+  },
   {
     name: '@tracecode/harness-core',
     dir: 'packages/harness-core',
@@ -262,6 +274,11 @@ async function runWithTempRoot(tempRoot: string): Promise<void> {
   const pnpmCommand = resolvePnpmCommand();
   const appDir = join(tempRoot, 'app');
   await mkdir(join(appDir, 'node_modules', '@tracecode'), { recursive: true });
+  await cp(
+    join(process.cwd(), 'node_modules', 'effect'),
+    join(appDir, 'node_modules', 'effect'),
+    { recursive: true, dereference: true }
+  );
   await writeFile(
     join(appDir, 'package.json'),
     JSON.stringify({
@@ -592,13 +609,20 @@ async function runWithTempRoot(tempRoot: string): Promise<void> {
       );
       assertCondition(
         projectWorker.includes('function createHttpApi(kernelHttp, signal)') &&
-        projectWorker.includes('class TraceKernelHeaders') &&
+          projectWorker.includes('class TraceKernelHeaders') &&
           projectWorker.includes('class TraceKernelRequest') &&
           projectWorker.includes('class TraceKernelResponse') &&
-          projectWorker.includes('activeHttpBridges.set(id, { bridge: kernelHttp, protocolToken, executionState })') &&
+          projectWorker.includes('activeHttpBridges.set(id, {') &&
+          projectWorker.includes('new TraceKernelSharedSyscallClient(') &&
+          projectWorker.includes('new TraceKernelRuntimeFileClient(') &&
+          projectWorker.includes('WorkerKernelAsyncSyscallClient = class') &&
+          projectWorker.includes('function createNetApi(') &&
+          projectWorker.includes('["node:net", netApi.module]') &&
+          projectWorker.includes('"kernel-syscall"') &&
+          projectWorker.includes('"kernel-syscall-async"') &&
           projectWorker.includes('protocolToken !== command.protocolToken') &&
           projectWorker.includes('["node:http", httpApi.module]'),
-        '@tracecode/harness-javascript packaged project worker should include TraceKernel HTTP globals and node:http bridge'
+        '@tracecode/harness-javascript packaged project worker should include TraceKernel fs, node:net, and node:http bridges'
       );
     }
     if (packageCheck.name === '@tracecode/harness-java') {
@@ -938,6 +962,48 @@ async function runWithTempRoot(tempRoot: string): Promise<void> {
       if (browserOnlyCoreExtract.status !== 0) {
         throw new Error(browserOnlyCoreExtract.stderr || browserOnlyCoreExtract.stdout || '@tracecode/harness-core isolated extraction failed');
       }
+      const traceKernelCheck = PACKAGE_CHECKS.find((check) => check.name === '@tracecode/tracekernel');
+      if (!traceKernelCheck) {
+        throw new Error('@tracecode/tracekernel package check is required to satisfy harness-browser isolated imports');
+      }
+      const browserOnlyTraceKernelDir = packageNodeModulesDir(browserOnlyAppDir, traceKernelCheck.name);
+      await mkdir(browserOnlyTraceKernelDir, { recursive: true });
+      const traceKernelOnlyPack = spawnSync(pnpmCommand, ['pack', '--pack-destination', tempRoot], {
+        cwd: join(process.cwd(), traceKernelCheck.dir),
+        encoding: 'utf8',
+      });
+      if (traceKernelOnlyPack.status !== 0) {
+        throw new Error(spawnFailure(traceKernelOnlyPack, '@tracecode/tracekernel pack for browser-only app failed'));
+      }
+      const traceKernelOnlyTarballName = String(traceKernelOnlyPack.stdout || '')
+        .trim()
+        .split('\n')
+        .filter(Boolean)
+        .at(-1);
+      assertCondition(
+        Boolean(traceKernelOnlyTarballName),
+        '@tracecode/tracekernel pack should print a tarball for the browser-only app'
+      );
+      const traceKernelOnlyTarballPath = isAbsolute(traceKernelOnlyTarballName!)
+        ? traceKernelOnlyTarballName!
+        : join(tempRoot, traceKernelOnlyTarballName!);
+      const browserOnlyTraceKernelExtract = spawnSync(
+        'tar',
+        ['-xf', traceKernelOnlyTarballPath, '-C', browserOnlyTraceKernelDir, '--strip-components=1'],
+        { encoding: 'utf8' }
+      );
+      if (browserOnlyTraceKernelExtract.status !== 0) {
+        throw new Error(
+          browserOnlyTraceKernelExtract.stderr ||
+            browserOnlyTraceKernelExtract.stdout ||
+            '@tracecode/tracekernel isolated extraction failed'
+        );
+      }
+      await cp(
+        join(process.cwd(), 'node_modules', 'effect'),
+        join(browserOnlyAppDir, 'node_modules', 'effect'),
+        { recursive: true, dereference: true }
+      );
       const browserOnlyImportScript = `
         (async () => {
           const main = await import('@tracecode/harness-browser');

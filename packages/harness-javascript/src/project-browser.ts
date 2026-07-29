@@ -14,11 +14,24 @@ import type {
   RuntimeKernelHttpRequest,
   RuntimeKernelHttpResponse,
   RuntimeKernelInfo,
+  RuntimeKernelSignalBridge,
+  RuntimeKernelSyscallBridge,
   RuntimeProjectCommandRequest,
   RuntimeProjectCommandRunner,
+  RuntimeProjectEngineLeaseController,
   RuntimeProjectFileChangeApplyOptions,
   RuntimeProjectSnapshot,
 } from '@tracecode/harness-core';
+import type {
+  TraceKernelDirectoryEntry,
+  TraceKernelMkdirOptions,
+  TraceKernelOpenFileOptions,
+  TraceKernelStat,
+  TraceKernelSyscallRequest,
+  TraceKernelSyscallResult,
+  TraceKernelSyscallValue,
+} from '@tracecode/tracekernel';
+import { decodeTraceKernelWatchEvent } from '@tracecode/tracekernel';
 import {
   RuntimeProjectLiveIoController,
   createRuntimeProjectIoBridge,
@@ -277,6 +290,40 @@ export interface BrowserJavaScriptProjectExecutionState {
   cleanupHostGlobals?: () => void;
   dispatchSignal?: (signal: string) => boolean;
   handledSignal?: string;
+  kernelFileSystem?: BrowserTraceKernelFileSystem;
+  kernelNetwork?: BrowserTraceKernelNetwork;
+  kernelSyscalls?: {
+    dispatchSync(request: TraceKernelSyscallRequest): TraceKernelSyscallResult;
+  };
+}
+
+export interface BrowserTraceKernelNetwork {
+  dispatch(request: TraceKernelSyscallRequest): Promise<TraceKernelSyscallResult>;
+}
+
+export interface BrowserTraceKernelFileSystem {
+  open(path: string, options?: TraceKernelOpenFileOptions): number;
+  read(fd: number, maxBytes: number, position?: number): Uint8Array;
+  write(fd: number, bytes: Uint8Array, position?: number): number;
+  closeDescriptor(fd: number): void;
+  dup(fd: number): number;
+  getCloseOnExec(fd: number): boolean;
+  setCloseOnExec(fd: number, closeOnExec: boolean): void;
+  fstat(fd: number): TraceKernelStat;
+  ftruncate(fd: number, length: number): void;
+  readFile(path: string): Uint8Array;
+  writeFile(path: string, bytes: Uint8Array): void;
+  stat(path: string): TraceKernelStat;
+  lstat(path: string): TraceKernelStat;
+  realpath(path: string): string;
+  readdir(path: string): readonly TraceKernelDirectoryEntry[];
+  mkdir(path: string, options?: TraceKernelMkdirOptions): void;
+  rmdir(path: string): void;
+  unlink(path: string): void;
+  link(existingPath: string, newPath: string): void;
+  symlink(target: string, linkPath: string): void;
+  readlink(path: string): string;
+  rename(sourcePath: string, destinationPath: string): void;
 }
 
 type ModuleRecord = {
@@ -1135,7 +1182,8 @@ function createReadableStdinDevice(
   remainingBytes: () => number,
   isClosed: () => boolean = () => true,
   schedulePoll: (callback: () => void, delay: number) => unknown = (callback, delay) => setTimeout(callback, delay),
-  terminal?: RuntimeProjectCommandRequest['terminal']
+  terminal?: RuntimeProjectCommandRequest['terminal'],
+  kernelIsTerminal?: boolean
 ) {
   let encoding: string | undefined;
   let flowScheduled = false;
@@ -1157,7 +1205,7 @@ function createReadableStdinDevice(
     }
     const requested = typeof size === 'number' && size >= 0 ? Math.floor(size) : undefined;
     const chunk = BrowserBuffer.from(readBytes(requested));
-    if (remainingBytes() <= 0) ended = true;
+    if (remainingBytes() <= 0) ended = isClosed();
     return formatChunk(chunk);
   };
   const scheduleFlow = (): void => {
@@ -1214,7 +1262,7 @@ function createReadableStdinDevice(
   const stream = {
     fd: 0,
     readable: true,
-    isTTY: terminal?.isTTY === true,
+    isTTY: kernelIsTerminal ?? terminal?.isTTY === true,
     get isRaw() {
       return rawMode;
     },
@@ -1449,6 +1497,7 @@ function createBrowserEventLoopApi(executionState: BrowserJavaScriptProjectExecu
   let nextTimerId = 1;
   let pendingTimerWork: Promise<void> = Promise.resolve();
   let timerError: unknown;
+  let pendingExternalWork = 0;
   const timers = new Map<number, TimerEntry>();
 
   const recordTimerWork = (work: Promise<void>): void => {
@@ -1504,7 +1553,10 @@ function createBrowserEventLoopApi(executionState: BrowserJavaScriptProjectExecu
     // handles. Yield through one host task so the browser drains that promise
     // queue to quiescence before we inspect the tracked event-loop resources.
     await new Promise((resolve) => hostSetTimeout(resolve, 0));
-    while (!executionState.cancelled && timers.size > 0) {
+    while (
+      !executionState.cancelled &&
+      (timers.size > 0 || pendingExternalWork > 0)
+    ) {
       await new Promise((resolve) => hostSetTimeout(resolve, 0));
       await pendingTimerWork;
       if (timerError !== undefined) throw timerError;
@@ -1520,6 +1572,37 @@ function createBrowserEventLoopApi(executionState: BrowserJavaScriptProjectExecu
       hostClearTimeout(timer.handle);
     }
     timers.clear();
+    pendingExternalWork = 0;
+  };
+  const track = <T>(work: Promise<T>): Promise<T> => {
+    pendingExternalWork += 1;
+    return work.finally(() => {
+      pendingExternalWork = Math.max(0, pendingExternalWork - 1);
+    });
+  };
+  const trackRefable = <T>(work: Promise<T>) => {
+    let referenced = true;
+    let settled = false;
+    pendingExternalWork += 1;
+    const completion = work.finally(() => {
+      settled = true;
+      if (referenced) {
+        pendingExternalWork = Math.max(0, pendingExternalWork - 1);
+      }
+    });
+    return {
+      completion,
+      ref(): void {
+        if (settled || referenced) return;
+        referenced = true;
+        pendingExternalWork += 1;
+      },
+      unref(): void {
+        if (settled || !referenced) return;
+        referenced = false;
+        pendingExternalWork = Math.max(0, pendingExternalWork - 1);
+      },
+    };
   };
 
   return {
@@ -1530,6 +1613,8 @@ function createBrowserEventLoopApi(executionState: BrowserJavaScriptProjectExecu
     setImmediate: setTrackedImmediate,
     clearImmediate: clearTrackedTimeout,
     queueMicrotask: hostQueueMicrotask,
+    track,
+    trackRefable,
     drain,
     clearAll,
   };
@@ -1838,6 +1923,683 @@ function createStreamApi() {
     Duplex: PassThrough,
     Transform: PassThrough,
     PassThrough,
+  };
+}
+
+function createTraceKernelApi(
+  executionState: BrowserJavaScriptProjectExecutionState
+) {
+  type WatchdogSignal = 'SIGTERM' | 'SIGKILL';
+  type WatchdogStatus = Readonly<{
+    armed: boolean;
+    timeoutMs?: number;
+    signal?: WatchdogSignal;
+    deadlineAt?: number;
+  }>;
+
+  const dispatchWatchdog = (
+    request: Extract<TraceKernelSyscallRequest, { op: 'watchdog' }>
+  ): WatchdogStatus => {
+    if (!executionState.kernelSyscalls) {
+      throw Object.assign(
+        new Error('ENOSYS: TraceKernel process controls are unavailable'),
+        { code: 'ENOSYS' }
+      );
+    }
+    const result = executionState.kernelSyscalls.dispatchSync(request);
+    if (result.ok === false) {
+      throw Object.assign(new Error(result.error.message), {
+        code: result.error.code,
+      });
+    }
+    if (result.value.op !== 'watchdog') {
+      throw Object.assign(
+        new Error(`EPROTO: expected watchdog response, received ${result.value.op}`),
+        { code: 'EPROTO' }
+      );
+    }
+    return Object.freeze({
+      armed: result.value.armed,
+      ...(result.value.timeoutMs === undefined
+        ? {}
+        : { timeoutMs: result.value.timeoutMs }),
+      ...(result.value.signal === undefined
+        ? {}
+        : { signal: result.value.signal }),
+      ...(result.value.deadlineAt === undefined
+        ? {}
+        : { deadlineAt: result.value.deadlineAt }),
+    });
+  };
+
+  const dispatchTerminal = <
+    Operation extends
+      | 'isatty'
+      | 'tcgetpgrp'
+      | 'tcsetpgrp'
+      | 'tcgetwinsize'
+      | 'tcsetwinsize'
+  >(
+    request: Extract<TraceKernelSyscallRequest, { op: Operation }>
+  ): Extract<TraceKernelSyscallValue, { op: Operation }> => {
+    const operation = (request as { readonly op: Operation }).op;
+    if (!executionState.kernelSyscalls) {
+      throw Object.assign(
+        new Error('ENOSYS: TraceKernel terminal controls are unavailable'),
+        { code: 'ENOSYS' }
+      );
+    }
+    const result = executionState.kernelSyscalls.dispatchSync(request);
+    if (result.ok === false) {
+      throw Object.assign(new Error(result.error.message), {
+        code: result.error.code,
+      });
+    }
+    if (result.value.op !== operation) {
+      throw Object.assign(
+        new Error(
+          `EPROTO: expected ${operation} response, received ${result.value.op}`
+        ),
+        { code: 'EPROTO' }
+      );
+    }
+    return result.value as Extract<
+      TraceKernelSyscallValue,
+      { op: Operation }
+    >;
+  };
+
+  return Object.freeze({
+    watchdog: Object.freeze({
+      arm: (
+        timeoutMs: number,
+        options: { signal?: WatchdogSignal } = {}
+      ): WatchdogStatus => dispatchWatchdog({
+        op: 'watchdog',
+        action: 'arm',
+        timeoutMs,
+        ...(options.signal ? { signal: options.signal } : {}),
+      }),
+      pet: (): WatchdogStatus => dispatchWatchdog({
+        op: 'watchdog',
+        action: 'pet',
+      }),
+      disarm: (): WatchdogStatus => dispatchWatchdog({
+        op: 'watchdog',
+        action: 'disarm',
+      }),
+      status: (): WatchdogStatus => dispatchWatchdog({
+        op: 'watchdog',
+        action: 'status',
+      }),
+    }),
+    terminal: Object.freeze({
+      isatty: (fd: number): boolean =>
+        dispatchTerminal({ op: 'isatty', fd }).isTerminal,
+      foregroundProcessGroup: (fd = 0): number =>
+        dispatchTerminal({ op: 'tcgetpgrp', fd }).pgid,
+      setForegroundProcessGroup: (pgid: number, fd = 0): number =>
+        dispatchTerminal({ op: 'tcsetpgrp', fd, pgid }).pgid,
+      windowSize: (fd = 0): Readonly<{ rows: number; columns: number }> => {
+        const size = dispatchTerminal({ op: 'tcgetwinsize', fd });
+        return Object.freeze({ rows: size.rows, columns: size.columns });
+      },
+      setWindowSize: (
+        rows: number,
+        columns: number,
+        fd = 0
+      ): Readonly<{ rows: number; columns: number }> => {
+        const size = dispatchTerminal({
+          op: 'tcsetwinsize',
+          fd,
+          rows,
+          columns,
+        });
+        return Object.freeze({ rows: size.rows, columns: size.columns });
+      },
+    }),
+  });
+}
+
+function createChildProcessApi(
+  executionState: BrowserJavaScriptProjectExecutionState,
+  eventLoopApi: ReturnType<typeof createBrowserEventLoopApi>,
+  request: JavaScriptProjectCommandRequest
+) {
+  type SpawnRequest = Extract<TraceKernelSyscallRequest, { op: 'spawn' }>;
+  type StdioMode = 'pipe' | 'inherit' | 'ignore';
+  type StdioEntry = StdioMode | number | null | undefined;
+  interface SpawnOptions {
+    cwd?: string;
+    detached?: boolean;
+    env?: Record<string, unknown>;
+    signal?: AbortSignal;
+    stdio?: StdioMode | readonly StdioEntry[];
+  }
+
+  const runtimeForCommand = (command: string): string => {
+    const name = command.split('/').at(-1)?.toLowerCase() ?? command.toLowerCase();
+    if (name === 'node' || name === 'nodejs') return 'javascript';
+    if (name === 'python' || name === 'python3') return 'python';
+    if (name === 'java') return 'java';
+    if (name === 'dotnet') return 'csharp';
+    return 'cpp';
+  };
+  const normalizeInvocation = (
+    command: unknown,
+    argsOrOptions?: unknown,
+    maybeOptions?: unknown
+  ): {
+    command: string;
+    args: string[];
+    options: SpawnOptions;
+  } => {
+    if (typeof command !== 'string' || command.length === 0) {
+      throw Object.assign(
+        new TypeError('The "file" argument must be of type string and non-empty'),
+        { code: 'ERR_INVALID_ARG_TYPE' }
+      );
+    }
+    const args = Array.isArray(argsOrOptions)
+      ? argsOrOptions.map((arg) => String(arg))
+      : [];
+    const options = (
+      Array.isArray(argsOrOptions)
+        ? maybeOptions
+        : argsOrOptions
+    ) as SpawnOptions | undefined;
+    if (
+      options?.stdio !== undefined &&
+      !Array.isArray(options.stdio) &&
+      options.stdio !== 'pipe' &&
+      options.stdio !== 'inherit' &&
+      options.stdio !== 'ignore'
+    ) {
+      throw Object.assign(
+        new TypeError(
+          'The "stdio" option must be "pipe", "inherit", "ignore", or an array'
+        ),
+        { code: 'ERR_INVALID_ARG_VALUE' }
+      );
+    }
+    return {
+      command,
+      args,
+      options: options ?? {},
+    };
+  };
+  const stdioPlan = (
+    stdio: SpawnOptions['stdio'],
+    fallback: StdioMode
+  ): {
+    readonly stdio: NonNullable<SpawnRequest['stdio']>;
+    readonly descriptorMappings: NonNullable<SpawnRequest['descriptorMappings']>;
+    readonly hasPipe: boolean;
+  } => {
+    if (!Array.isArray(stdio)) {
+      const mode = (stdio ?? fallback) as StdioMode;
+      return {
+        stdio: { stdin: mode, stdout: mode, stderr: mode },
+        descriptorMappings: [],
+        hasPipe: mode === 'pipe',
+      };
+    }
+    const modes: {
+      stdin?: StdioMode;
+      stdout?: StdioMode;
+      stderr?: StdioMode;
+    } = {};
+    const descriptorMappings: Array<
+      NonNullable<SpawnRequest['descriptorMappings']>[number]
+    > = [];
+    let hasPipe = false;
+    const length = Math.max(3, stdio.length);
+    for (let childFd = 0; childFd < length; childFd += 1) {
+      const entry = stdio[childFd] ?? (childFd < 3 ? 'pipe' : 'ignore');
+      if (typeof entry === 'number' && Number.isSafeInteger(entry) && entry >= 0) {
+        descriptorMappings.push({ parentFd: entry, childFd });
+        continue;
+      }
+      if (entry !== 'pipe' && entry !== 'inherit' && entry !== 'ignore') {
+        throw Object.assign(
+          new TypeError(`Unsupported stdio entry at index ${childFd}`),
+          { code: entry === 'ipc' ? 'ENOSYS' : 'ERR_INVALID_ARG_VALUE' }
+        );
+      }
+      if (childFd < 3) {
+        modes[
+          childFd === 0 ? 'stdin' : childFd === 1 ? 'stdout' : 'stderr'
+        ] = entry;
+      } else if (entry === 'inherit') {
+        descriptorMappings.push({ parentFd: childFd, childFd });
+      } else if (entry === 'pipe') {
+        throw Object.assign(
+          new Error('ENOSYS: piped stdio descriptors above fd 2 are not implemented'),
+          { code: 'ENOSYS' }
+        );
+      }
+      if (entry === 'pipe') hasPipe = true;
+    }
+    return { stdio: modes, descriptorMappings, hasPipe };
+  };
+  const syncDispatch = <
+    Operation extends TraceKernelSyscallValue['op']
+  >(
+    syscall: Extract<TraceKernelSyscallRequest, { op: Operation }>
+  ): Extract<TraceKernelSyscallValue, { op: Operation }> => {
+    if (!executionState.kernelSyscalls) {
+      throw Object.assign(
+        new Error('ENOSYS: child-process subsystem is unavailable'),
+        { code: 'ENOSYS' }
+      );
+    }
+    const result = executionState.kernelSyscalls.dispatchSync(syscall);
+    if (result.ok === false) {
+      throw Object.assign(new Error(result.error.message), {
+        code: result.error.code,
+      });
+    }
+    return result.value as Extract<TraceKernelSyscallValue, { op: Operation }>;
+  };
+  const asyncDispatch = <
+    Operation extends TraceKernelSyscallValue['op']
+  >(
+    syscall: Extract<TraceKernelSyscallRequest, { op: Operation }>
+  ): Promise<Extract<TraceKernelSyscallValue, { op: Operation }>> =>
+    dispatchBrowserNetworkSyscall(
+      executionState.kernelNetwork,
+      syscall
+    );
+
+  class BrowserChildReadable extends BrowserEventEmitter {
+    readonly readable = true;
+    private encoding: string | undefined;
+    private closed = false;
+    readonly completion: Promise<void>;
+
+    constructor(private readonly fd: number) {
+      super();
+      this.completion = eventLoopApi.track(this.pump());
+      void this.completion.catch((error) => {
+        if (!this.closed) this.emit('error', error);
+      });
+    }
+
+    setEncoding(encoding: string): this {
+      this.encoding = encoding;
+      return this;
+    }
+
+    pipe(destination: { write(chunk: unknown): unknown; end?: () => unknown }): typeof destination {
+      this.on('data', (chunk) => destination.write(chunk));
+      this.on('end', () => destination.end?.());
+      return destination;
+    }
+
+    pause(): this {
+      return this;
+    }
+
+    resume(): this {
+      return this;
+    }
+
+    destroy(): this {
+      if (this.closed) return this;
+      this.closed = true;
+      void eventLoopApi.track(
+        asyncDispatch({ op: 'close', fd: this.fd }).catch(() => undefined)
+      );
+      return this;
+    }
+
+    private async pump(): Promise<void> {
+      try {
+        while (!this.closed) {
+          const result = await asyncDispatch({
+            op: 'read',
+            fd: this.fd,
+            maxBytes: 16 * 1024,
+          });
+          if (result.bytes.byteLength === 0) break;
+          const chunk = BrowserBuffer.from(result.bytes);
+          this.emit(
+            'data',
+            this.encoding ? chunk.toString(this.encoding) : chunk
+          );
+        }
+        if (!this.closed) this.emit('end');
+      } finally {
+        if (!this.closed) {
+          this.closed = true;
+          await asyncDispatch({ op: 'close', fd: this.fd }).catch(() => undefined);
+          this.emit('close');
+        }
+      }
+    }
+  }
+
+  class BrowserChildWritable extends BrowserEventEmitter {
+    readonly writable = true;
+    private ended = false;
+    private closed = false;
+    private queuedBytes = 0;
+    private tail = Promise.resolve();
+
+    constructor(private readonly fd: number) {
+      super();
+    }
+
+    write(
+      chunk: unknown,
+      encodingOrCallback?: string | ((error?: Error | null) => void),
+      callback?: (error?: Error | null) => void
+    ): boolean {
+      const completion = typeof encodingOrCallback === 'function'
+        ? encodingOrCallback
+        : callback;
+      if (this.ended) {
+        const error = Object.assign(new Error('write after end'), {
+          code: 'ERR_STREAM_WRITE_AFTER_END',
+        });
+        globalThis.queueMicrotask(() => {
+          completion?.(error);
+          this.emit('error', error);
+        });
+        return false;
+      }
+      const bytes = BrowserBuffer.isBuffer(chunk)
+        ? Uint8Array.from(chunk)
+        : typeof chunk === 'string'
+          ? BrowserBuffer.from(chunk, typeof encodingOrCallback === 'string' ? encodingOrCallback : undefined)
+          : Uint8Array.from(bytesFromNodeValue(chunk));
+      this.queuedBytes += bytes.byteLength;
+      const belowHighWaterMark = this.queuedBytes < 64 * 1024;
+      this.tail = this.tail.then(async () => {
+        try {
+          await asyncDispatch({ op: 'write', fd: this.fd, bytes });
+          completion?.(null);
+        } catch (error) {
+          completion?.(error instanceof Error ? error : new Error(String(error)));
+          this.emit('error', error);
+        } finally {
+          const wasBackpressured = this.queuedBytes >= 64 * 1024;
+          this.queuedBytes = Math.max(0, this.queuedBytes - bytes.byteLength);
+          if (wasBackpressured && this.queuedBytes < 64 * 1024) {
+            this.emit('drain');
+          }
+        }
+      });
+      void eventLoopApi.track(this.tail.catch(() => undefined));
+      return belowHighWaterMark;
+    }
+
+    end(
+      chunkOrCallback?: unknown,
+      encodingOrCallback?: string | (() => void),
+      callback?: () => void
+    ): this {
+      const chunk = typeof chunkOrCallback === 'function'
+        ? undefined
+        : chunkOrCallback;
+      const completion = typeof chunkOrCallback === 'function'
+        ? chunkOrCallback as () => void
+        : typeof encodingOrCallback === 'function'
+          ? encodingOrCallback
+          : callback;
+      if (chunk !== undefined) {
+        this.write(
+          chunk,
+          typeof encodingOrCallback === 'string' ? encodingOrCallback : undefined
+        );
+      }
+      if (this.ended) return this;
+      this.ended = true;
+      const closing = this.tail.then(async () => {
+        if (!this.closed) {
+          this.closed = true;
+          await asyncDispatch({ op: 'close', fd: this.fd }).catch(() => undefined);
+        }
+        this.emit('finish');
+        this.emit('close');
+        completion?.();
+      });
+      this.tail = closing;
+      void eventLoopApi.track(closing);
+      return this;
+    }
+
+    destroy(): this {
+      if (this.closed) return this;
+      this.ended = true;
+      const closing = this.tail.finally(async () => {
+        if (!this.closed) {
+          this.closed = true;
+          await asyncDispatch({ op: 'close', fd: this.fd }).catch(() => undefined);
+          this.emit('close');
+        }
+      });
+      this.tail = closing;
+      void eventLoopApi.track(closing);
+      return this;
+    }
+  }
+
+  class BrowserChildProcess extends BrowserEventEmitter {
+    readonly pid: number;
+    readonly stdin: BrowserChildWritable | null;
+    readonly stdout: BrowserChildReadable | null;
+    readonly stderr: BrowserChildReadable | null;
+    readonly stdio: readonly [
+      BrowserChildWritable | null,
+      BrowserChildReadable | null,
+      BrowserChildReadable | null,
+    ];
+    connected = false;
+    exitCode: number | null = null;
+    signalCode: string | null = null;
+    killed = false;
+    private refControl?: {
+      readonly ref: () => void;
+      readonly unref: () => void;
+    };
+
+    constructor(
+      pid: number,
+      stdio: {
+        readonly stdinFd?: number;
+        readonly stdoutFd?: number;
+        readonly stderrFd?: number;
+      } | undefined,
+      signal?: AbortSignal
+    ) {
+      super();
+      this.pid = pid;
+      this.stdin = stdio?.stdinFd === undefined
+        ? null
+        : new BrowserChildWritable(stdio.stdinFd);
+      this.stdout = stdio?.stdoutFd === undefined
+        ? null
+        : new BrowserChildReadable(stdio.stdoutFd);
+      this.stderr = stdio?.stderrFd === undefined
+        ? null
+        : new BrowserChildReadable(stdio.stderrFd);
+      this.stdio = [this.stdin, this.stdout, this.stderr] as const;
+      if (signal) {
+        const abort = () => this.kill('SIGTERM');
+        if (signal.aborted) abort();
+        else signal.addEventListener('abort', abort, { once: true });
+      }
+    }
+
+    kill(
+      signal:
+        | 'SIGHUP'
+        | 'SIGINT'
+        | 'SIGQUIT'
+        | 'SIGKILL'
+        | 'SIGTERM'
+        | 'SIGWINCH' = 'SIGTERM'
+    ): boolean {
+      if (this.exitCode !== null || this.signalCode !== null) return false;
+      syncDispatch({
+        op: 'kill',
+        pid: this.pid,
+        signal,
+      });
+      this.killed = true;
+      return true;
+    }
+
+    ref(): this {
+      this.refControl?.ref();
+      return this;
+    }
+
+    unref(): this {
+      this.refControl?.unref();
+      return this;
+    }
+
+    attachRefControl(control: {
+      readonly ref: () => void;
+      readonly unref: () => void;
+    }): void {
+      this.refControl = control;
+    }
+  }
+
+  const spawn = (
+    command: unknown,
+    argsOrOptions?: unknown,
+    maybeOptions?: unknown
+  ): BrowserChildProcess => {
+    const invocation = normalizeInvocation(command, argsOrOptions, maybeOptions);
+    const plan = stdioPlan(invocation.options.stdio, 'pipe');
+    const spawned = syncDispatch({
+      op: 'spawn',
+      runtime: runtimeForCommand(invocation.command),
+      command: invocation.command,
+      args: invocation.args,
+      cwd: invocation.options.cwd ?? request.cwd,
+      env: Object.fromEntries(
+        Object.entries(invocation.options.env ?? request.env)
+          .filter(([, value]) => value !== undefined)
+          .map(([name, value]) => [name, String(value)])
+      ),
+      ...(invocation.options.detached
+        ? { processGroupId: 0, sessionId: 0 }
+        : {}),
+      ...(plan.descriptorMappings.length > 0
+        ? { descriptorMappings: plan.descriptorMappings }
+        : {}),
+      stdio: plan.stdio,
+    });
+    const child = new BrowserChildProcess(
+      spawned.pid,
+      spawned.stdio,
+      invocation.options.signal
+    );
+    globalThis.queueMicrotask(() => child.emit('spawn'));
+    const waitHandle = eventLoopApi.trackRefable(
+      asyncDispatch({ op: 'wait', pid: spawned.pid }).then(
+        async (waited) => {
+          const termination = waited.termination;
+          if (!termination) {
+            throw Object.assign(
+              new Error('EPROTO: blocking child wait returned a running process'),
+              { code: 'EPROTO' }
+            );
+          }
+          if (termination.kind === 'signal') {
+            child.signalCode = termination.signal;
+          } else {
+            child.exitCode = termination.exitCode;
+          }
+          child.emit(
+            'exit',
+            child.exitCode,
+            child.signalCode
+          );
+          await Promise.all([
+            child.stdout?.completion,
+            child.stderr?.completion,
+          ]);
+          child.emit(
+            'close',
+            child.exitCode,
+            child.signalCode
+          );
+        },
+        (error) => {
+          child.emit('error', error);
+          child.emit('close', null, null);
+        }
+      )
+    );
+    child.attachRefControl(waitHandle);
+    void waitHandle.completion;
+    return child;
+  };
+
+  const spawnSync = (
+    command: unknown,
+    argsOrOptions?: unknown,
+    maybeOptions?: unknown
+  ) => {
+    const invocation = normalizeInvocation(command, argsOrOptions, maybeOptions);
+    const plan = stdioPlan(invocation.options.stdio, 'ignore');
+    if (plan.hasPipe) {
+      throw Object.assign(
+        new Error('ENOSYS: synchronous piped child stdio requires a nonblocking host capture path'),
+        { code: 'ENOSYS' }
+      );
+    }
+    const spawned = syncDispatch({
+      op: 'spawn',
+      runtime: runtimeForCommand(invocation.command),
+      command: invocation.command,
+      args: invocation.args,
+      cwd: invocation.options.cwd ?? request.cwd,
+      env: Object.fromEntries(
+        Object.entries(invocation.options.env ?? request.env)
+          .filter(([, value]) => value !== undefined)
+          .map(([name, value]) => [name, String(value)])
+      ),
+      ...(invocation.options.detached
+        ? { processGroupId: 0, sessionId: 0 }
+        : {}),
+      ...(plan.descriptorMappings.length > 0
+        ? { descriptorMappings: plan.descriptorMappings }
+        : {}),
+      stdio: plan.stdio,
+    });
+    const waited = syncDispatch({ op: 'wait', pid: spawned.pid });
+    const termination = waited.termination;
+    if (!termination) {
+      throw Object.assign(
+        new Error('EPROTO: blocking child wait returned a running process'),
+        { code: 'EPROTO' }
+      );
+    }
+    return {
+      pid: spawned.pid,
+      output: [null, BrowserBuffer.alloc(0), BrowserBuffer.alloc(0)],
+      stdout: BrowserBuffer.alloc(0),
+      stderr: BrowserBuffer.alloc(0),
+      status: termination.kind === 'signal'
+        ? null
+        : termination.exitCode,
+      signal: termination.kind === 'signal'
+        ? termination.signal
+        : null,
+    };
+  };
+
+  return {
+    ChildProcess: BrowserChildProcess,
+    spawn,
+    spawnSync,
   };
 }
 
@@ -2222,6 +2984,528 @@ function runtimeKernelNetworkCause(response: RuntimeKernelHttpResponse, url: URL
 function runtimeKernelFetchError(response: RuntimeKernelHttpResponse, url: URL): TypeError {
   const cause = runtimeKernelNetworkCause(response, url);
   return Object.assign(new TypeError('fetch failed'), { cause });
+}
+
+async function dispatchBrowserNetworkSyscall<
+  Operation extends TraceKernelSyscallValue['op']
+>(
+  kernelNetwork: BrowserTraceKernelNetwork | undefined,
+  request: Extract<TraceKernelSyscallRequest, { op: Operation }>
+): Promise<Extract<TraceKernelSyscallValue, { op: Operation }>> {
+  if (!kernelNetwork) {
+    throw Object.assign(
+      new Error('ENOSYS: network subsystem is unavailable'),
+      { code: 'ENOSYS' }
+    );
+  }
+  const result = await kernelNetwork.dispatch(request);
+  if (result.ok === false) {
+    throw Object.assign(new Error(result.error.message), {
+      code: result.error.code,
+    });
+  }
+  return result.value as Extract<TraceKernelSyscallValue, { op: Operation }>;
+}
+
+function normalizeNetConnectArgs(args: unknown[]): {
+  port: number;
+  host: string;
+  callback?: () => void;
+} {
+  const callback = args.find((value): value is () => void => typeof value === 'function');
+  const first = args[0];
+  if (typeof first === 'object' && first !== null) {
+    const options = first as { port?: unknown; host?: unknown };
+    return {
+      port: Number(options.port),
+      host: typeof options.host === 'string' ? options.host : '127.0.0.1',
+      ...(callback ? { callback } : {}),
+    };
+  }
+  return {
+    port: Number(first),
+    host: typeof args[1] === 'string' ? args[1] : '127.0.0.1',
+    ...(callback ? { callback } : {}),
+  };
+}
+
+function createNetApi(
+  kernelNetwork: BrowserTraceKernelNetwork | undefined,
+  signal: AbortSignal | undefined
+) {
+  type NetSocket = ReturnType<typeof createSocket>;
+  const activeSockets = new Set<NetSocket>();
+  const activeServers = new Set<ReturnType<typeof createServer>>();
+  const closeWaiters: Array<{ resolve: () => void; reject: (error: Error) => void }> = [];
+  let activeWorkError: Error | null = null;
+
+  const notifyCloseWaiters = (): void => {
+    if (activeSockets.size > 0 || activeServers.size > 0) return;
+    while (closeWaiters.length > 0) {
+      const waiter = closeWaiters.shift();
+      if (!waiter) continue;
+      if (activeWorkError) waiter.reject(activeWorkError);
+      else waiter.resolve();
+    }
+  };
+
+  function createSocket(existingFd?: number) {
+    const events = createListenerMap();
+    let fd = existingFd;
+    let destroyed = false;
+    let connected = false;
+    let readableEnded = false;
+    let writableEnded = false;
+    let paused = false;
+    let resumeReader: (() => void) | undefined;
+    let encoding: string | undefined;
+    let localAddress: { host: string; port: number } | undefined;
+    let remoteAddress: { host: string; port: number } | undefined;
+    let writeTail = Promise.resolve();
+    let onFinalClose: (() => void) | undefined;
+
+    const removeActive = (): void => {
+      if (!activeSockets.delete(socket)) return;
+      onFinalClose?.();
+      notifyCloseWaiters();
+    };
+    const closeDescriptor = async (): Promise<void> => {
+      const closingFd = fd;
+      fd = undefined;
+      if (closingFd === undefined) return;
+      try {
+        await dispatchBrowserNetworkSyscall(kernelNetwork, {
+          op: 'close',
+          fd: closingFd,
+        });
+      } catch (error) {
+        if ((error as { code?: unknown })?.code !== 'EBADF') throw error;
+      }
+    };
+    const fail = (error: unknown): void => {
+      const cause = error instanceof Error ? error : new Error(String(error));
+      try {
+        if (!events.emit('error', cause)) activeWorkError ??= cause;
+      } catch (listenerError) {
+        activeWorkError ??= listenerError instanceof Error
+          ? listenerError
+          : new Error(String(listenerError));
+      }
+    };
+    const finishClose = async (error?: unknown): Promise<void> => {
+      if (destroyed) return;
+      destroyed = true;
+      resumeReader?.();
+      resumeReader = undefined;
+      try {
+        await closeDescriptor();
+      } catch (closeError) {
+        error ??= closeError;
+      }
+      if (error) fail(error);
+      events.emit('close', Boolean(error));
+      removeActive();
+    };
+    const receive = async (): Promise<void> => {
+      while (!destroyed && fd !== undefined) {
+        try {
+          if (paused) {
+            await new Promise<void>((resolve) => {
+              resumeReader = resolve;
+            });
+            resumeReader = undefined;
+            if (destroyed) return;
+          }
+          const result = await dispatchBrowserNetworkSyscall(kernelNetwork, {
+            op: 'recv',
+            fd,
+            maxBytes: 64 * 1024,
+          });
+          if (result.bytes.byteLength === 0) {
+            readableEnded = true;
+            events.emit('end');
+            await writeTail;
+            if (!writableEnded && fd !== undefined) {
+              writableEnded = true;
+              await dispatchBrowserNetworkSyscall(kernelNetwork, {
+                op: 'shutdown',
+                fd,
+                how: 'write',
+              });
+            }
+            await finishClose();
+            return;
+          }
+          const chunk = BrowserBuffer.from(result.bytes);
+          events.emit(
+            'data',
+            encoding ? chunk.toString(encoding as BufferEncoding) : chunk
+          );
+        } catch (error) {
+          if (!destroyed) await finishClose(error);
+          return;
+        }
+      }
+    };
+    const attach = (
+      nextFd: number,
+      nextLocalAddress: { host: string; port: number },
+      nextRemoteAddress: { host: string; port: number },
+      emitConnect: boolean
+    ): void => {
+      fd = nextFd;
+      localAddress = nextLocalAddress;
+      remoteAddress = nextRemoteAddress;
+      connected = true;
+      activeSockets.add(socket);
+      if (emitConnect) events.emit('connect');
+      void receive();
+    };
+
+    const socket = {
+      connecting: false,
+      get destroyed() {
+        return destroyed;
+      },
+      get readableEnded() {
+        return readableEnded;
+      },
+      get writableEnded() {
+        return writableEnded;
+      },
+      get remoteAddress() {
+        return remoteAddress?.host;
+      },
+      get remotePort() {
+        return remoteAddress?.port;
+      },
+      get remoteFamily() {
+        return remoteAddress ? 'IPv4' : undefined;
+      },
+      address: () => localAddress
+        ? { address: localAddress.host, port: localAddress.port, family: 'IPv4' }
+        : {},
+      connect: (...args: unknown[]) => {
+        const options = normalizeNetConnectArgs(args);
+        if (options.callback) events.once('connect', options.callback);
+        socket.connecting = true;
+        activeSockets.add(socket);
+        void (async () => {
+          try {
+            const created = await dispatchBrowserNetworkSyscall(kernelNetwork, {
+              op: 'socket',
+            });
+            fd = created.fd;
+            const connection = await dispatchBrowserNetworkSyscall(kernelNetwork, {
+              op: 'connect',
+              fd,
+              address: { host: options.host, port: options.port },
+            });
+            socket.connecting = false;
+            attach(
+              fd,
+              connection.localAddress,
+              connection.remoteAddress,
+              true
+            );
+          } catch (error) {
+            socket.connecting = false;
+            await finishClose(error);
+          }
+        })();
+        return socket;
+      },
+      write: (chunk: unknown, encodingOrCallback?: unknown, callback?: unknown) => {
+        const writeCallback = typeof encodingOrCallback === 'function'
+          ? encodingOrCallback as (error?: Error) => void
+          : typeof callback === 'function'
+            ? callback as (error?: Error) => void
+            : undefined;
+        const bytes = typeof chunk === 'string'
+          ? BrowserBuffer.from(
+              chunk,
+              typeof encodingOrCallback === 'string'
+                ? encodingOrCallback as BufferEncoding
+                : 'utf8'
+            )
+          : BrowserBuffer.from(bytesFromNodeValue(chunk));
+        writeTail = writeTail.then(async () => {
+          if (destroyed || fd === undefined || !connected) {
+            throw Object.assign(new Error('ENOTCONN: socket is not connected'), {
+              code: 'ENOTCONN',
+            });
+          }
+          await dispatchBrowserNetworkSyscall(kernelNetwork, {
+            op: 'send',
+            fd,
+            bytes,
+          });
+        });
+        void writeTail.then(
+          () => writeCallback?.(),
+          (error) => {
+            writeCallback?.(error instanceof Error ? error : new Error(String(error)));
+            void finishClose(error);
+          }
+        );
+        return true;
+      },
+      end: (chunk?: unknown, encodingOrCallback?: unknown, callback?: unknown) => {
+        const endCallback = typeof encodingOrCallback === 'function'
+          ? encodingOrCallback as () => void
+          : typeof callback === 'function'
+            ? callback as () => void
+            : undefined;
+        if (chunk !== undefined) socket.write(chunk, typeof encodingOrCallback === 'string' ? encodingOrCallback : undefined);
+        writeTail = writeTail.then(async () => {
+          if (fd !== undefined && !writableEnded) {
+            writableEnded = true;
+            await dispatchBrowserNetworkSyscall(kernelNetwork, {
+              op: 'shutdown',
+              fd,
+              how: 'write',
+            });
+          }
+          events.emit('finish');
+          endCallback?.();
+          if (readableEnded) await finishClose();
+        });
+        void writeTail.catch((error) => finishClose(error));
+        return socket;
+      },
+      destroy: (error?: Error) => {
+        void finishClose(error);
+        return socket;
+      },
+      setEncoding: (nextEncoding: string) => {
+        encoding = nextEncoding;
+        return socket;
+      },
+      setNoDelay: () => socket,
+      setKeepAlive: () => socket,
+      pause: () => {
+        paused = true;
+        return socket;
+      },
+      resume: () => {
+        paused = false;
+        resumeReader?.();
+        resumeReader = undefined;
+        return socket;
+      },
+      on: events.on,
+      addListener: events.addListener,
+      once: events.once,
+      removeListener: events.removeListener,
+      off: events.off,
+      emit: events.emit,
+      _attach: attach,
+      _setOnFinalClose: (listener: () => void) => {
+        onFinalClose = listener;
+      },
+    };
+    return socket;
+  }
+
+  function createServer(connectionListener?: (socket: NetSocket) => void) {
+    const events = createListenerMap();
+    const connections = new Set<NetSocket>();
+    let fd: number | undefined;
+    let listening = false;
+    let closing = false;
+    let boundAddress: { host: string; port: number } | undefined;
+
+    const maybeFinishClose = (): void => {
+      if (!closing || connections.size > 0 || fd !== undefined) return;
+      activeServers.delete(server);
+      events.emit('close');
+      notifyCloseWaiters();
+    };
+    const recordServerError = (error: unknown): void => {
+      const cause = error instanceof Error ? error : new Error(String(error));
+      try {
+        if (!events.emit('error', cause)) activeWorkError ??= cause;
+      } catch (listenerError) {
+        activeWorkError ??= listenerError instanceof Error
+          ? listenerError
+          : new Error(String(listenerError));
+      }
+    };
+    const acceptLoop = async (): Promise<void> => {
+      while (listening && fd !== undefined) {
+        try {
+          const accepted = await dispatchBrowserNetworkSyscall(kernelNetwork, {
+            op: 'accept',
+            fd,
+          });
+          if (!listening) {
+            await dispatchBrowserNetworkSyscall(kernelNetwork, {
+              op: 'close',
+              fd: accepted.fd,
+            });
+            continue;
+          }
+          const socket = createSocket(accepted.fd);
+          connections.add(socket);
+          socket._setOnFinalClose(() => {
+            connections.delete(socket);
+            maybeFinishClose();
+          });
+          socket._attach(
+            accepted.fd,
+            accepted.localAddress,
+            accepted.remoteAddress,
+            false
+          );
+          events.emit('connection', socket);
+        } catch (error) {
+          if (listening) {
+            recordServerError(error);
+            closing = true;
+            listening = false;
+            const closingFd = fd;
+            fd = undefined;
+            if (closingFd !== undefined) {
+              await dispatchBrowserNetworkSyscall(kernelNetwork, {
+                op: 'close',
+                fd: closingFd,
+              }).catch(() => undefined);
+            }
+          }
+          break;
+        }
+      }
+      maybeFinishClose();
+    };
+
+    const server = {
+      get listening() {
+        return listening;
+      },
+      listen: (...args: unknown[]) => {
+        const callback = args.find((value): value is () => void => typeof value === 'function');
+        const first = args[0];
+        const options = typeof first === 'object' && first !== null
+          ? first as { port?: unknown; host?: unknown; backlog?: unknown }
+          : {
+              port: first,
+              host: typeof args[1] === 'string' ? args[1] : undefined,
+              backlog: undefined,
+            };
+        activeServers.add(server);
+        void (async () => {
+          try {
+            const created = await dispatchBrowserNetworkSyscall(kernelNetwork, {
+              op: 'socket',
+            });
+            fd = created.fd;
+            boundAddress = await dispatchBrowserNetworkSyscall(kernelNetwork, {
+              op: 'bind',
+              fd,
+              address: {
+                host: typeof options.host === 'string' ? options.host : '127.0.0.1',
+                port: Number(options.port),
+              },
+            }).then((result) => result.address);
+            await dispatchBrowserNetworkSyscall(kernelNetwork, {
+              op: 'listen',
+              fd,
+              options: {
+                ...(Number.isFinite(Number(options.backlog))
+                  ? { backlog: Number(options.backlog) }
+                  : {}),
+              },
+            });
+            listening = true;
+            events.emit('listening');
+            callback?.();
+            void acceptLoop();
+          } catch (error) {
+            recordServerError(error);
+            closing = true;
+            if (fd !== undefined) {
+              const closingFd = fd;
+              fd = undefined;
+              await dispatchBrowserNetworkSyscall(kernelNetwork, {
+                op: 'close',
+                fd: closingFd,
+              }).catch(() => undefined);
+            }
+            maybeFinishClose();
+          }
+        })();
+        return server;
+      },
+      close: (callback?: (error?: Error) => void) => {
+        if (callback) events.once('close', callback as () => void);
+        closing = true;
+        listening = false;
+        const closingFd = fd;
+        fd = undefined;
+        if (closingFd !== undefined) {
+          void dispatchBrowserNetworkSyscall(kernelNetwork, {
+            op: 'close',
+            fd: closingFd,
+          }).then(maybeFinishClose, (error) => {
+            recordServerError(error);
+            maybeFinishClose();
+          });
+        } else {
+          queueMicrotask(maybeFinishClose);
+        }
+        return server;
+      },
+      address: () => boundAddress
+        ? { address: boundAddress.host, port: boundAddress.port, family: 'IPv4' }
+        : null,
+      getConnections: (callback: (error: Error | null, count: number) => void) => {
+        queueMicrotask(() => callback(null, connections.size));
+      },
+      on: events.on,
+      addListener: events.addListener,
+      once: events.once,
+      removeListener: events.removeListener,
+      off: events.off,
+      emit: events.emit,
+    };
+    if (connectionListener) server.on('connection', connectionListener as (...args: unknown[]) => void);
+    return server;
+  }
+
+  const closeAll = (): void => {
+    for (const server of [...activeServers]) server.close();
+    for (const socket of [...activeSockets]) socket.destroy();
+  };
+  signal?.addEventListener('abort', closeAll, { once: true });
+
+  const connect = (...args: unknown[]) => createSocket().connect(...args);
+  const Socket = function Socket(this: unknown) {
+    return createSocket();
+  };
+  const Server = function Server(
+    this: unknown,
+    connectionListener?: (socket: NetSocket) => void
+  ) {
+    return createServer(connectionListener);
+  };
+
+  return {
+    module: {
+      createServer,
+      connect,
+      createConnection: connect,
+      Socket,
+      Server,
+      isIP: (input: string) => input === '127.0.0.1' || input === '0.0.0.0' ? 4 : 0,
+      isIPv4: (input: string) => input === '127.0.0.1' || input === '0.0.0.0',
+      isIPv6: () => false,
+    },
+    hasActiveWork: () => activeSockets.size > 0 || activeServers.size > 0 || activeWorkError !== null,
+    waitForClose: () => activeSockets.size === 0 && activeServers.size === 0
+      ? activeWorkError ? Promise.reject(activeWorkError) : Promise.resolve()
+      : new Promise<void>((resolve, reject) => closeWaiters.push({ resolve, reject })),
+    closeAll,
+  };
 }
 
 function createHttpApi(kernelHttp: RuntimeKernelHttpBridge | undefined, signal: AbortSignal | undefined) {
@@ -3549,8 +4833,7 @@ function formatBrowserJavaScriptErrorForStderr(error: unknown): string {
 function isBrowserJavaScriptUserStackFrame(line: string, sourcePath: string): boolean {
   return (
     line.includes(sourcePath) ||
-    line.includes('/workspace/') ||
-    line.includes('/home/')
+    line.includes('/workspace/')
   );
 }
 
@@ -3637,7 +4920,8 @@ interface BrowserJavaScriptProjectWorkerMessage {
     BrowserJavaScriptProjectRunnerOptions,
     'allowDynamicEval' | 'projectUserAuthorityMode'
   >;
-  port?: MessagePort;
+  kernelSyscallChannel?: RuntimeKernelSyscallBridge['channel'];
+  kernelSyscallGenerationBuffer?: SharedArrayBuffer;
 }
 
 interface BrowserJavaScriptProjectPendingMessage {
@@ -3646,11 +4930,12 @@ interface BrowserJavaScriptProjectPendingMessage {
   reject: (error: Error) => void;
   onEvent?: (event: RuntimeCommandEvent) => void;
   kernelHttp?: RuntimeKernelHttpBridge;
-  port?: MessagePort;
+  kernelSyscalls?: RuntimeKernelSyscallBridge;
   httpListeners: Map<string, RuntimeKernelHttpListenerHandle>;
   httpRequests: Map<string, { resolve: (response: RuntimeKernelHttpResponse) => void; reject: (error: Error) => void }>;
   httpDispatchAbortControllers: Map<string, AbortController>;
   abortCleanup?: () => void;
+  kernelSignalCleanup?: () => void;
   signalGraceTimeoutId?: ReturnType<typeof setTimeout>;
 }
 
@@ -3669,7 +4954,7 @@ function createBrowserJavaScriptProjectProtocolToken(): string {
 }
 
 function createBrowserJavaScriptProjectPolicyFailureRunner(diagnostic: string): JavaScriptProjectCommandRunner {
-  return (request) => {
+  return withDescriptorStdioCapability((request) => {
     const stderr = 'node: JavaScript runtime is unavailable\n';
     const io = createRuntimeProjectIoBridge(request.onEvent);
     io.output('stderr', stderr);
@@ -3685,7 +4970,18 @@ function createBrowserJavaScriptProjectPolicyFailureRunner(diagnostic: string): 
         detail: { diagnostic },
       },
     });
-  };
+  }, false);
+}
+
+function withDescriptorStdioCapability<
+  Runner extends JavaScriptProjectCommandRunner,
+>(runner: Runner, descriptorStdio: boolean): Runner {
+  return Object.assign(runner, {
+    capabilities: Object.freeze({
+      ...runner.capabilities,
+      descriptorStdio,
+    }),
+  });
 }
 
 class BrowserJavaScriptProjectWorkerClient {
@@ -3698,6 +4994,7 @@ class BrowserJavaScriptProjectWorkerClient {
   private messageId = 0;
   private httpRequestId = 0;
   private readonly pendingMessages = new Map<string, BrowserJavaScriptProjectPendingMessage>();
+  private engineLeaseTail: Promise<void> = Promise.resolve();
 
   constructor(
     private readonly workerUrl: string,
@@ -3719,9 +5016,25 @@ class BrowserJavaScriptProjectWorkerClient {
       this.terminateAndReset(abortError);
       return Promise.reject(abortError);
     }
-    const { signal: _signal, onEvent: _requestOnEvent, kernelHttp, ...workerRequest } = request;
+    const {
+      signal: _signal,
+      onEvent: _requestOnEvent,
+      engineLease: _engineLease,
+      kernelHttp,
+      kernelSyscalls,
+      kernelSignals,
+      ...workerRequest
+    } = request;
     return this.executeWithTimeout(
-      () => this.sendMessage('execute-project-javascript', workerRequest, onEvent, kernelHttp, signal),
+      () => this.sendMessage(
+        'execute-project-javascript',
+        workerRequest,
+        onEvent,
+        kernelHttp,
+        kernelSyscalls,
+        kernelSignals,
+        signal
+      ),
       timeoutMs
     );
   }
@@ -3729,6 +5042,55 @@ class BrowserJavaScriptProjectWorkerClient {
   warmup(): Promise<void> {
     this.getWorker();
     return this.workerReadyPromise ?? Promise.resolve();
+  }
+
+  async acquireReusableEngineLease(controller: RuntimeProjectEngineLeaseController): Promise<void> {
+    const predecessor = this.engineLeaseTail;
+    let releaseTurn!: () => void;
+    const releaseGate = new Promise<void>((resolve) => {
+      releaseTurn = resolve;
+    });
+    this.engineLeaseTail = predecessor
+      .catch(() => undefined)
+      .then(() => releaseGate);
+    await predecessor.catch(() => undefined);
+
+    let validatedWorker: BrowserJavaScriptProjectWorkerLike | null = null;
+    try {
+      controller.attach({
+        revalidate: async () => {
+          const worker = this.worker;
+          if (!worker) throw new Error('JavaScript worker is not running after execution.');
+          if (this.pendingMessages.size !== 0) {
+            throw new Error(
+              `JavaScript worker still owns ${this.pendingMessages.size} pending request(s).`
+            );
+          }
+          if (!this.workerReadyPromise) {
+            throw new Error('JavaScript worker has no readiness promise.');
+          }
+          await this.workerReadyPromise;
+          if (this.worker !== worker) {
+            throw new Error('JavaScript worker generation changed during revalidation.');
+          }
+          validatedWorker = worker;
+        },
+        release: (disposition) => {
+          try {
+            if (disposition.kind === 'reuse') return;
+            if (validatedWorker && this.worker !== validatedWorker) return;
+            this.terminateAndReset(
+              new Error(`JavaScript engine lease destroyed: ${disposition.reason}`)
+            );
+          } finally {
+            releaseTurn();
+          }
+        },
+      });
+    } catch (error) {
+      releaseTurn();
+      throw error;
+    }
   }
 
   terminate(): void {
@@ -3768,6 +5130,50 @@ class BrowserJavaScriptProjectWorkerClient {
       pending.onEvent?.(payload as RuntimeCommandEvent);
       return;
     }
+    if (type === 'kernel-syscall') {
+      if (!pending.kernelSyscalls) return;
+      void pending.kernelSyscalls.service().catch(() => {
+        pending.kernelSyscalls?.close();
+      });
+      return;
+    }
+    if (type === 'kernel-syscall-async') {
+      const request = payload as {
+        requestId?: unknown;
+        request?: unknown;
+      };
+      if (typeof request.requestId !== 'string') return;
+      if (!pending.kernelSyscalls) {
+        this.postWorkerMessage(id, 'kernel-syscall-async-result', {
+          requestId: request.requestId,
+          result: {
+            ok: false,
+            error: {
+              code: 'ENOSYS',
+              message: 'ENOSYS: network subsystem is unavailable',
+            },
+          },
+        });
+        return;
+      }
+      void pending.kernelSyscalls.dispatch(request.request).then(
+        (result) => this.postWorkerMessage(id, 'kernel-syscall-async-result', {
+          requestId: request.requestId,
+          result,
+        }),
+        (error) => this.postWorkerMessage(id, 'kernel-syscall-async-result', {
+          requestId: request.requestId,
+          result: {
+            ok: false,
+            error: {
+              code: 'EIO',
+              message: error instanceof Error ? error.message : String(error),
+            },
+          },
+        })
+      );
+      return;
+    }
     if (
       type === 'kernel-http-listen' ||
       type === 'kernel-http-close' ||
@@ -3796,26 +5202,21 @@ class BrowserJavaScriptProjectWorkerClient {
     payload: unknown,
     onEvent?: (event: RuntimeCommandEvent) => void,
     kernelHttp?: RuntimeKernelHttpBridge,
+    kernelSyscalls?: RuntimeKernelSyscallBridge,
+    kernelSignals?: RuntimeKernelSignalBridge,
     signal?: AbortSignal
   ): Promise<RuntimeCommandResult> {
     const worker = this.getWorker();
     const id = String(++this.messageId);
     const protocolToken = createBrowserJavaScriptProjectProtocolToken();
-    const channel = typeof MessageChannel === 'function' ? new MessageChannel() : null;
     return new Promise<RuntimeCommandResult>((resolve, reject) => {
-      if (channel) {
-        channel.port1.onmessage = (event: MessageEvent<BrowserJavaScriptProjectWorkerMessage>) => {
-          this.handleWorkerMessage(event.data);
-        };
-        channel.port1.start?.();
-      }
       const pending: BrowserJavaScriptProjectPendingMessage = {
         protocolToken,
         resolve,
         reject,
         ...(onEvent ? { onEvent } : {}),
         ...(kernelHttp ? { kernelHttp } : {}),
-        ...(channel ? { port: channel.port1 } : {}),
+        ...(kernelSyscalls ? { kernelSyscalls } : {}),
         httpListeners: new Map(),
         httpRequests: new Map(),
         httpDispatchAbortControllers: new Map(),
@@ -3827,12 +5228,25 @@ class BrowserJavaScriptProjectWorkerClient {
         payload,
         protocolToken,
         runnerOptions: this.runnerOptions,
-        ...(channel ? { port: channel.port2 } : {}),
+        ...(kernelSyscalls
+          ? {
+              kernelSyscallChannel: kernelSyscalls.channel,
+              ...(kernelSyscalls.generationBuffer
+                ? { kernelSyscallGenerationBuffer: kernelSyscalls.generationBuffer }
+                : {}),
+            }
+          : {}),
       };
-      if (channel) {
-        worker.postMessage(message, [channel.port2]);
-      } else {
-        worker.postMessage(message);
+      worker.postMessage(message);
+      if (kernelSignals) {
+        pending.kernelSignalCleanup = kernelSignals.subscribe(
+          ({ signal: runtimeSignal }) => {
+            if (!this.pendingMessages.has(id)) return;
+            this.postWorkerMessage(id, 'runtime-signal', {
+              signal: runtimeSignal,
+            });
+          }
+        );
       }
       if (signal) {
         const onAbort = (): void => {
@@ -3862,11 +5276,33 @@ class BrowserJavaScriptProjectWorkerClient {
       try {
         const handle = pending.kernelHttp.listen(message.options, (request) => this.dispatchWorkerKernelHttpRequest(commandId, message.listenerId, request));
         pending.httpListeners.set(message.listenerId, handle);
-        this.postWorkerMessage(commandId, 'kernel-http-listen-result', {
-          type: 'kernel-http-listen-result',
-          listenerId: message.listenerId,
-          info: handle.info,
-        } satisfies RuntimeKernelHttpProtocolMessage);
+        const publishReady = (info = handle.info): void => {
+          if (
+            !this.pendingMessages.has(commandId) ||
+            pending.httpListeners.get(message.listenerId) !== handle
+          ) {
+            return;
+          }
+          this.postWorkerMessage(commandId, 'kernel-http-listen-result', {
+            type: 'kernel-http-listen-result',
+            listenerId: message.listenerId,
+            info,
+          } satisfies RuntimeKernelHttpProtocolMessage);
+        };
+        if (handle.ready) {
+          void handle.ready.then(publishReady, (error) => {
+            if (pending.httpListeners.get(message.listenerId) === handle) {
+              pending.httpListeners.delete(message.listenerId);
+            }
+            handle.close();
+            this.postKernelHttpError(commandId, {
+              listenerId: message.listenerId,
+              error: error instanceof Error ? error.message : String(error),
+            });
+          });
+        } else {
+          publishReady();
+        }
       } catch (error) {
         this.postKernelHttpError(commandId, {
           listenerId: message.listenerId,
@@ -3977,10 +5413,6 @@ class BrowserJavaScriptProjectWorkerClient {
       payload,
       protocolToken: pending.protocolToken,
     };
-    if (pending.port) {
-      pending.port.postMessage(message);
-      return;
-    }
     this.worker?.postMessage(message);
   }
 
@@ -3996,6 +5428,7 @@ class BrowserJavaScriptProjectWorkerClient {
 
   private cleanupPendingKernelHttp(pending: BrowserJavaScriptProjectPendingMessage): void {
     pending.abortCleanup?.();
+    pending.kernelSignalCleanup?.();
     if (pending.signalGraceTimeoutId !== undefined) this.hostClearTimeout(pending.signalGraceTimeoutId);
     for (const listener of pending.httpListeners.values()) listener.close();
     pending.httpListeners.clear();
@@ -4003,7 +5436,6 @@ class BrowserJavaScriptProjectWorkerClient {
     pending.httpRequests.clear();
     for (const abortController of pending.httpDispatchAbortControllers.values()) abortController.abort();
     pending.httpDispatchAbortControllers.clear();
-    pending.port?.close();
   }
 
   private executeWithTimeout(
@@ -4128,7 +5560,7 @@ function createWorkerBackedBrowserJavaScriptProjectRunner(
         finishPhase: 'process-exit',
         finishMessage: 'Browser Node exited',
         applyFileChange: options.applyFileChange,
-        run: async (workerRequest, onEvent) => {
+        run: async (workerRequest, onEvent, engineLease) => {
           const prepared = options.prewarm ? prepareWorker() : null;
           if (prepared && standby === prepared) standby = null;
           refill();
@@ -4139,22 +5571,37 @@ function createWorkerBackedBrowserJavaScriptProjectRunner(
                 projectUserAuthorityMode: 'permanent',
               }, options.workerFactory);
           clients.add(client);
+          let attachedToKernel = false;
           try {
             if (!prepared) await options.assetPreflight?.();
+            if (engineLease) {
+              engineLease.attach({
+                release: () => {
+                  clients.delete(client);
+                  client.terminate();
+                },
+              });
+              attachedToKernel = true;
+            }
             return await client.executeProject(workerRequest, timeoutMs, onEvent);
           } finally {
-            clients.delete(client);
-            client.terminate();
+            if (!attachedToKernel) {
+              clients.delete(client);
+              client.terminate();
+            }
           }
         },
       });
-    return Object.assign(runner, { dispose });
+    return withDescriptorStdioCapability(
+      Object.assign(runner, { dispose }),
+      true
+    );
   }
   const client = new BrowserJavaScriptProjectWorkerClient(options.workerUrl, {
     allowDynamicEval: options.allowDynamicEval,
     projectUserAuthorityMode: 'temporary',
   }, options.workerFactory);
-  return (request) =>
+  return withDescriptorStdioCapability((request) =>
     runRuntimeProjectWorkerBridge({
       request,
       startPhase: 'process-start',
@@ -4167,11 +5614,12 @@ function createWorkerBackedBrowserJavaScriptProjectRunner(
       finishPhase: 'process-exit',
       finishMessage: 'Browser Node exited',
       applyFileChange: options.applyFileChange,
-      run: async (workerRequest, onEvent) => {
+      run: async (workerRequest, onEvent, engineLease) => {
         await options.assetPreflight?.();
+        if (engineLease) await client.acquireReusableEngineLease(engineLease);
         return client.executeProject(workerRequest, timeoutMs, onEvent);
       },
-    });
+    }), true);
 }
 
 export function createBrowserJavaScriptProjectRunner(
@@ -4193,12 +5641,13 @@ export function createBrowserJavaScriptProjectRunner(
     );
   }
   const timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS;
-  return async (request) => {
+  return withDescriptorStdioCapability(async (request) => {
     const hostSetTimeout = globalThis.setTimeout.bind(globalThis);
     const hostClearTimeout = globalThis.clearTimeout.bind(globalThis);
     let timeoutId: ReturnType<typeof setTimeout> | undefined;
     let signalGraceTimeoutId: ReturnType<typeof setTimeout> | undefined;
     let abortListener: (() => void) | undefined;
+    let kernelSignalCleanup: (() => void) | undefined;
     let forcedResult: RuntimeCommandResult | undefined;
     let resolveForcedResult!: (result: RuntimeCommandResult) => void;
     const forcedResultPromise = new Promise<RuntimeCommandResult>((resolve) => {
@@ -4225,6 +5674,8 @@ export function createBrowserJavaScriptProjectRunner(
         request.signal?.removeEventListener('abort', abortListener);
         abortListener = undefined;
       }
+      kernelSignalCleanup?.();
+      kernelSignalCleanup = undefined;
     };
     const executionState: BrowserJavaScriptProjectExecutionState = {
       cancelled: false,
@@ -4232,6 +5683,11 @@ export function createBrowserJavaScriptProjectRunner(
     };
     const execution = runBrowserJavaScriptProjectRequest(request, options, executionState).finally(cleanup);
     void execution.catch(() => undefined);
+    if (request.kernelSignals) {
+      kernelSignalCleanup = request.kernelSignals.subscribe(({ signal }) => {
+        executionState.dispatchSignal?.(signal);
+      });
+    }
     timeoutId = hostSetTimeout(() => {
       if (forcedResult) return;
       const io = createRuntimeProjectIoBridge(request.onEvent);
@@ -4279,7 +5735,7 @@ export function createBrowserJavaScriptProjectRunner(
     } finally {
       cleanup();
     }
-  };
+  }, false);
 }
 
 export async function runBrowserJavaScriptProjectRequest(
@@ -4634,6 +6090,29 @@ export async function runBrowserJavaScriptProjectRequest(
       }
     };
     let mainModule: ModuleRecord | undefined;
+    const kernelStdioAvailability = new Map<number, boolean>();
+
+    const tryWriteKernelStdio = (fd: 1 | 2, bytes: Uint8Array): boolean => {
+      if (kernelStdioAvailability.get(fd) === false || !executionState.kernelSyscalls) {
+        return false;
+      }
+      const result = executionState.kernelSyscalls.dispatchSync({
+        op: 'write',
+        fd,
+        bytes,
+      });
+      if (result.ok === true) {
+        kernelStdioAvailability.set(fd, true);
+        return true;
+      }
+      if (result.error.code === 'EBADF') {
+        kernelStdioAvailability.set(fd, false);
+        return false;
+      }
+      throw Object.assign(new Error(result.error.message), {
+        code: result.error.code,
+      });
+    };
 
     const emitOutput = (
       stream: 'stdout' | 'stderr',
@@ -4655,12 +6134,40 @@ export async function runBrowserJavaScriptProjectRequest(
         if (runtimeKernelDeviceOutputTarget(kernelDevices, device) === '/dev/null') return;
         throw Object.assign(new Error('EBADF: bad file descriptor, write'), { code: 'EBADF' });
       }
+      if (
+        tryWriteKernelStdio(
+          route.stream === 'stdout' ? 1 : 2,
+          new TextEncoder().encode(data)
+        )
+      ) return;
       emitOutput(route.stream, data, route.outputDevice, route.sourceDevice);
     };
 
+    let kernelStdinClosed = false;
     const readDeviceBytes = (device: RuntimeKernelDevicePath, size?: number): Uint8Array => {
       const inputRoute = runtimeKernelDeviceInputRoute(kernelDevices, device);
       if (!inputRoute) return new Uint8Array();
+      if (executionState.kernelSyscalls) {
+        if (kernelStdinClosed) return new Uint8Array();
+        const result = executionState.kernelSyscalls.dispatchSync({
+          op: 'read',
+          fd: 0,
+          maxBytes: Math.max(0, Math.floor(size ?? 16 * 1024)),
+        });
+        if (result.ok === false) {
+          throw Object.assign(new Error(result.error.message), {
+            code: result.error.code,
+          });
+        }
+        if (result.value.op !== 'read') {
+          throw Object.assign(
+            new Error(`EPROTO: expected read response, received ${result.value.op}`),
+            { code: 'EPROTO' }
+          );
+        }
+        if (result.value.bytes.byteLength === 0) kernelStdinClosed = true;
+        return result.value.bytes;
+      }
       if (request.stdinPipe) {
         return readRuntimeCommandStdinPipeBytes(request.stdinPipe, size);
       }
@@ -4668,24 +6175,72 @@ export async function runBrowserJavaScriptProjectRequest(
     };
     const remainingDeviceBytes = (device: RuntimeKernelDevicePath): number => (
       runtimeKernelDeviceInputRoute(kernelDevices, device)
-        ? request.stdinPipe
+        ? executionState.kernelSyscalls
+          ? kernelStdinClosed ? 0 : 1
+          : request.stdinPipe
           ? runtimeCommandStdinPipeRemainingBytes(request.stdinPipe)
           : 0
         : 0
     );
     const deviceInputClosed = (device: RuntimeKernelDevicePath): boolean => (
       runtimeKernelDeviceInputRoute(kernelDevices, device)
-        ? request.stdinPipe ? runtimeCommandStdinPipeClosed(request.stdinPipe) : true
+        ? executionState.kernelSyscalls
+          ? kernelStdinClosed
+          : request.stdinPipe ? runtimeCommandStdinPipeClosed(request.stdinPipe) : true
         : true
     );
     const readDevice = (device: RuntimeKernelDevicePath): string => textFromBytes(readDeviceBytes(device));
+    const kernelDescriptorIsTerminal = (fd: number): boolean => {
+      if (!executionState.kernelSyscalls) {
+        return request.terminal?.isTTY === true;
+      }
+      const result = executionState.kernelSyscalls.dispatchSync({
+        op: 'isatty',
+        fd,
+      });
+      return result.ok &&
+        result.value.op === 'isatty' &&
+        result.value.isTerminal;
+    };
+    const kernelDescriptorWindowSize = (
+      fd: number
+    ): { readonly rows?: number; readonly columns?: number } => {
+      if (!executionState.kernelSyscalls) {
+        return {
+          rows: request.terminal?.rows,
+          columns: request.terminal?.columns,
+        };
+      }
+      const result = executionState.kernelSyscalls.dispatchSync({
+        op: 'tcgetwinsize',
+        fd,
+      });
+      if (result.ok === false) {
+        if (result.error.code === 'ENOTTY') return {};
+        throw Object.assign(new Error(result.error.message), {
+          code: result.error.code,
+        });
+      }
+      if (result.value.op !== 'tcgetwinsize') {
+        throw Object.assign(
+          new Error(
+            `EPROTO: expected tcgetwinsize response, received ${result.value.op}`
+          ),
+          { code: 'EPROTO' }
+        );
+      }
+      return {
+        rows: result.value.rows,
+        columns: result.value.columns,
+      };
+    };
 
     const consoleApi = {
       log: (...values: unknown[]) => {
-        emitOutput('stdout', `${formatConsoleValues(values)}\n`);
+        writeDevice('/dev/stdout', `${formatConsoleValues(values)}\n`);
       },
       error: (...values: unknown[]) => {
-        emitOutput('stderr', `${formatConsoleValues(values)}\n`);
+        writeDevice('/dev/stderr', `${formatConsoleValues(values)}\n`);
       },
     };
 
@@ -4714,9 +6269,17 @@ export async function runBrowserJavaScriptProjectRequest(
       const stream = {
         fd,
         writable: true,
-        isTTY: request.terminal?.isTTY === true,
-        columns: request.terminal?.columns,
-        rows: request.terminal?.rows,
+        isTTY: kernelDescriptorIsTerminal(fd),
+        get columns() {
+          return kernelDescriptorWindowSize(fd).columns;
+        },
+        get rows() {
+          return kernelDescriptorWindowSize(fd).rows;
+        },
+        getWindowSize: (): [number | undefined, number | undefined] => {
+          const size = kernelDescriptorWindowSize(fd);
+          return [size.columns, size.rows];
+        },
         getColorDepth: () => request.terminal?.colorLevel === 3
           ? 24
           : request.terminal?.colorLevel === 2
@@ -4739,8 +6302,9 @@ export async function runBrowserJavaScriptProjectRequest(
         },
         write: (value: unknown, encoding?: string | ((error?: Error | null) => void), callback?: (error?: Error | null) => void): boolean => {
           const bytes = bytesFromFsWriteValue(value, typeof encoding === 'string' ? encoding : undefined);
-          const data = textFromBytes(bytes);
-          writeDevice(device, data);
+          if (!tryWriteKernelStdio(fd === 1 ? 1 : 2, bytes)) {
+            writeDevice(device, textFromBytes(bytes));
+          }
           bytesWritten += bytes.byteLength;
           const done = typeof encoding === 'function' ? encoding : callback;
           done?.(null);
@@ -4813,7 +6377,8 @@ export async function runBrowserJavaScriptProjectRequest(
       () => remainingDeviceBytes('/dev/stdin'),
       () => deviceInputClosed('/dev/stdin'),
       eventLoopApi.setTimeout,
-      request.terminal
+      request.terminal,
+      kernelDescriptorIsTerminal(0)
     );
     const nodeVersion = BROWSER_PROJECT_NODE_COMPAT_VERSION;
     const processListeners = new Map<string, Array<(...args: unknown[]) => void>>();
@@ -4851,10 +6416,76 @@ export async function runBrowserJavaScriptProjectRequest(
       platform: 'tracekernel',
       arch: 'x64',
       pid: request.process?.pid ?? 1,
-      ppid: request.process?.ppid ?? 0,
+      get ppid(): number {
+        if (!executionState.kernelSyscalls) {
+          return request.process?.ppid ?? 0;
+        }
+        const result = executionState.kernelSyscalls.dispatchSync({
+          op: 'identity',
+        });
+        if (result.ok === false) {
+          throw Object.assign(new Error(result.error.message), {
+            code: result.error.code,
+          });
+        }
+        if (result.value.op !== 'identity') {
+          throw Object.assign(
+            new Error('EPROTO: identity syscall returned the wrong result'),
+            { code: 'EPROTO' }
+          );
+        }
+        return result.value.ppid;
+      },
       title: 'node',
       exitCode: undefined as number | undefined,
       cwd: () => request.cwd,
+      kill: (
+        pid: number,
+        signal:
+          | 'SIGHUP'
+          | 'SIGINT'
+          | 'SIGQUIT'
+          | 'SIGKILL'
+          | 'SIGTERM'
+          | 'SIGWINCH' = 'SIGTERM'
+      ): true => {
+        if (!Number.isSafeInteger(pid)) {
+          throw Object.assign(
+            new TypeError('The "pid" argument must be a safe integer'),
+            { code: 'ERR_INVALID_ARG_TYPE' }
+          );
+        }
+        if (
+          signal !== 'SIGHUP' &&
+          signal !== 'SIGINT' &&
+          signal !== 'SIGQUIT' &&
+          signal !== 'SIGTERM' &&
+          signal !== 'SIGWINCH' &&
+          signal !== 'SIGKILL'
+        ) {
+          throw Object.assign(
+            new TypeError(`Unknown signal: ${String(signal)}`),
+            { code: 'ERR_UNKNOWN_SIGNAL' }
+          );
+        }
+        if (!executionState.kernelSyscalls) {
+          throw Object.assign(
+            new Error('ENOSYS: TraceKernel process controls are unavailable'),
+            { code: 'ENOSYS' }
+          );
+        }
+        const result = executionState.kernelSyscalls.dispatchSync({
+          op: 'kill',
+          pid,
+          signal,
+        });
+        if (result.ok === false) {
+          throw Object.assign(new Error(result.error.message), {
+            code: result.error.code,
+          });
+        }
+        return true;
+      },
       nextTick: (callback: (...args: unknown[]) => void, ...args: unknown[]) => {
         globalThis.queueMicrotask(() => callback(...args));
       },
@@ -4908,6 +6539,12 @@ export async function runBrowserJavaScriptProjectRequest(
     const eventsApi = createEventsApi();
     const utilApi = createUtilApi();
     const streamApi = createStreamApi();
+    const childProcessApi = createChildProcessApi(
+      executionState,
+      eventLoopApi,
+      request
+    );
+    const traceKernelApi = createTraceKernelApi(executionState);
     const cryptoApi = createCryptoApi();
     const timersPromisesApi = createTimersPromisesApi(eventLoopApi);
     const syncTextModule = (path: string, bytes: Uint8Array): void => {
@@ -4922,6 +6559,7 @@ export async function runBrowserJavaScriptProjectRequest(
       path: string;
       recursive: boolean;
       closed: boolean;
+      kernelFd?: number;
       listeners: Map<string, Array<(...args: unknown[]) => void>>;
     };
     type BrowserFileStat = {
@@ -5100,6 +6738,41 @@ export async function runBrowserJavaScriptProjectRequest(
         isSymbolicLink: () => false,
       };
     };
+    const statForTraceKernelPath = (stat: TraceKernelStat): BrowserFileStat => {
+      const directory = stat.kind === 'directory';
+      const symbolicLink = stat.kind === 'symlink';
+      const modeType = directory ? 0o40000 : symbolicLink ? 0o120000 : 0o100000;
+      const mode = (stat.mode & 0o170000) === 0
+        ? modeType | stat.mode
+        : stat.mode;
+      return {
+        atimeMs: stat.modifiedAt,
+        birthtimeMs: stat.createdAt,
+        blksize: 4096,
+        blocks: Math.ceil(stat.size / 512),
+        ctimeMs: stat.changedAt,
+        dev: 1,
+        gid: 0,
+        ino: stat.inode,
+        mode,
+        mtimeMs: stat.modifiedAt,
+        nlink: stat.nlink,
+        rdev: 0,
+        size: stat.size,
+        uid: 0,
+        atime: new Date(stat.modifiedAt),
+        birthtime: new Date(stat.createdAt),
+        ctime: new Date(stat.changedAt),
+        mtime: new Date(stat.modifiedAt),
+        isBlockDevice: () => false,
+        isCharacterDevice: () => false,
+        isFIFO: () => false,
+        isFile: () => !directory && !symbolicLink,
+        isDirectory: () => directory,
+        isSocket: () => false,
+        isSymbolicLink: () => symbolicLink,
+      };
+    };
     const statForKernelTarget = (path: unknown, options?: BrowserStatOptions): BrowserFileStat | null | undefined => {
       const statTarget = runtimeStatTarget(path, kernelInfo, kernelDevices, procSnapshot);
       if (!statTarget || statTarget.kind === 'workspace') return null;
@@ -5201,6 +6874,7 @@ export async function runBrowserJavaScriptProjectRequest(
     };
     const notifyFsWatchers = (eventType: 'change' | 'rename', path: string): void => {
       for (const watcher of fsWatchers) {
+        if (watcher.kernelFd !== undefined) continue;
         const filename = watchedFilename(watcher, path);
         if (filename !== null) queueMicrotask(() => emitFsWatch(watcher, eventType, filename));
       }
@@ -5544,6 +7218,19 @@ export async function runBrowserJavaScriptProjectRequest(
       }
       const device = openTarget?.kind === 'device' ? openTarget.device : null;
       const autoClose = typeof options === 'object' && options?.autoClose === false ? false : true;
+      if (
+        executionState.kernelFileSystem &&
+        optionFd === null &&
+        (openTarget === null || openTarget?.kind === 'workspace')
+      ) {
+        const openedFd = fsApi.openSync(path, flags);
+        return createWritableStream(null, {
+          ...(typeof options === 'object' && options ? options : {}),
+          fd: openedFd,
+          flags,
+          autoClose,
+        });
+      }
       const rawNormalized = device || optionFd !== null
         ? null
         : assertSafeWorkspaceFilePath(path, cwdPath, workspacePathContext);
@@ -5753,6 +7440,10 @@ export async function runBrowserJavaScriptProjectRequest(
         throwRuntimeRemoveTargetError(removeTarget, message);
       }
       const normalized = resolveWorkspaceEntryPath(path, false);
+      if (executionState.kernelFileSystem) {
+        executionState.kernelFileSystem.unlink(normalized);
+        return;
+      }
       assertReadonlyFilePath(normalized, 'delete');
       if (symlinkStore.delete(normalized)) {
         deleteEntryMetadata(normalized);
@@ -5785,6 +7476,7 @@ export async function runBrowserJavaScriptProjectRequest(
       O_EXCL: 0o200,
       O_TRUNC: 0o1000,
       O_APPEND: 0o2000,
+      O_CLOEXEC: 0o2000000,
       S_IFMT: 0o170000,
       S_IFREG: 0o100000,
       S_IFDIR: 0o040000,
@@ -5809,6 +7501,14 @@ export async function runBrowserJavaScriptProjectRequest(
       }
       if (readTarget?.kind === 'error') return false;
       const normalized = resolveWorkspaceEntryPath(path);
+      if (executionState.kernelFileSystem) {
+        try {
+          executionState.kernelFileSystem.stat(normalized);
+          return true;
+        } catch {
+          return false;
+        }
+      }
       const prefix = normalized ? `${normalized}/` : '';
       return fileStore.has(normalized)
         || directoryStore.has(normalized)
@@ -5860,10 +7560,17 @@ export async function runBrowserJavaScriptProjectRequest(
         throw Object.assign(new Error(`${code}: ${reason}, access '${path}'`), { code });
       }
       const normalized = resolveWorkspaceEntryPath(path);
-      if (workspaceFileAncestor(normalized) !== null) {
-        throw Object.assign(new Error(`ENOTDIR: not a directory, access '${path}'`), { code: 'ENOTDIR' });
+      let stats: BrowserFileStat | null;
+      if (executionState.kernelFileSystem) {
+        stats = statForTraceKernelPath(
+          executionState.kernelFileSystem.stat(normalized)
+        );
+      } else {
+        if (workspaceFileAncestor(normalized) !== null) {
+          throw Object.assign(new Error(`ENOTDIR: not a directory, access '${path}'`), { code: 'ENOTDIR' });
+        }
+        stats = statForNormalizedPath(normalized);
       }
-      const stats = statForNormalizedPath(normalized);
       if (!stats) {
         throw Object.assign(new Error(`ENOENT: no such file or directory, access '${path}'`), { code: 'ENOENT' });
       }
@@ -5911,6 +7618,9 @@ export async function runBrowserJavaScriptProjectRequest(
         throwRuntimeMetadataTargetError(metadataTarget, message);
       }
       const normalized = normalizeWorkspaceEntryPath(path, cwdPath, true, workspacePathContext);
+      if (executionState.kernelFileSystem) {
+        return executionState.kernelFileSystem.realpath(normalized);
+      }
       if (workspaceFileAncestor(normalized) !== null) {
         throw Object.assign(new Error(`ENOTDIR: not a directory, metadata '${path}'`), { code: 'ENOTDIR' });
       }
@@ -5926,10 +7636,11 @@ export async function runBrowserJavaScriptProjectRequest(
       return Number.isFinite(parsed) ? Math.max(0, parsed * 1000) : fsTimestampMs;
     };
     type BrowserFileDescriptor = {
-      kind: 'file' | 'directory' | 'device' | 'proc';
+      kind: 'file' | 'directory' | 'device' | 'proc' | 'kernel';
       path?: string;
       bytes?: Uint8Array;
       device?: RuntimeKernelDevicePath;
+      kernelFd?: number;
       offset: number;
       readable: boolean;
       writable: boolean;
@@ -5948,6 +7659,23 @@ export async function runBrowserJavaScriptProjectRequest(
       [1, stdioDescriptor('/dev/stdout', true)],
       [2, stdioDescriptor('/dev/stderr', true)],
     ]);
+    for (const inheritedFd of request.process?.descriptors ?? []) {
+      const fd = Math.floor(Number(inheritedFd));
+      if (!Number.isSafeInteger(fd) || fd < 3 || fileDescriptors.has(fd)) {
+        continue;
+      }
+      fileDescriptors.set(fd, {
+        kind: 'kernel',
+        kernelFd: fd,
+        offset: 0,
+        // The descriptor table remains authoritative for access mode and
+        // operation support. The compatibility map must not guess a narrower
+        // capability and reject an inherited pipe/socket/file before syscall.
+        readable: true,
+        writable: true,
+        append: false,
+      });
+    }
     let nextFd = 3;
     const workspaceFileDescriptorRecords = (): BrowserFileDescriptor[] =>
       [...fileDescriptors.values()].filter((entry) => entry.kind === 'file');
@@ -5995,6 +7723,12 @@ export async function runBrowserJavaScriptProjectRequest(
     };
     const descriptorMetadataPath = (fd: number, operation: string): string | null => {
       const entry = fileDescriptor(fd);
+      if (entry.kind === 'kernel') {
+        throw Object.assign(
+          new Error(`ENOSYS: ${operation} is not yet available for TraceKernel descriptors`),
+          { code: 'ENOSYS' }
+        );
+      }
       if (entry.kind === 'file' && !entry.path) return null;
       const path = entry.kind === 'device' ? entry.device ?? '/dev/stdin' : entry.path ?? '';
       const metadataTarget = runtimeKernelMetadataTarget(path, kernelDevices);
@@ -6008,6 +7742,26 @@ export async function runBrowserJavaScriptProjectRequest(
       return path;
     };
     const descriptorBytes = (entry: BrowserFileDescriptor): Uint8Array => {
+      if (entry.kind === 'kernel') {
+        const kernelFs = executionState.kernelFileSystem!;
+        const kernelFd = entry.kernelFd!;
+        const size = kernelFs.fstat(kernelFd).size;
+        const chunks: Uint8Array[] = [];
+        let offset = 0;
+        while (offset < size) {
+          const chunk = kernelFs.read(kernelFd, Math.min(256 * 1024, size - offset), offset);
+          if (chunk.byteLength === 0) break;
+          chunks.push(chunk);
+          offset += chunk.byteLength;
+        }
+        const bytes = new Uint8Array(offset);
+        let cursor = 0;
+        for (const chunk of chunks) {
+          bytes.set(chunk, cursor);
+          cursor += chunk.byteLength;
+        }
+        return bytes;
+      }
       if (entry.kind === 'device') return utf8Bytes(readDevice(entry.device ?? '/dev/stdin'));
       if (entry.kind === 'proc') return utf8Bytes(browserProcFileContents(procSnapshot, entry.path ?? '', kernelInfo));
       if (entry.kind === 'directory') {
@@ -6019,6 +7773,23 @@ export async function runBrowserJavaScriptProjectRequest(
     const readDescriptorFileBytes = (fd: number): Uint8Array => {
       const entry = fileDescriptor(fd);
       if (!entry.readable) throw Object.assign(new Error('EBADF: bad file descriptor, read'), { code: 'EBADF' });
+      if (entry.kind === 'kernel') {
+        const chunks: Uint8Array[] = [];
+        let length = 0;
+        while (true) {
+          const chunk = executionState.kernelFileSystem!.read(entry.kernelFd!, 256 * 1024);
+          if (chunk.byteLength === 0) break;
+          chunks.push(chunk);
+          length += chunk.byteLength;
+        }
+        const bytes = new Uint8Array(length);
+        let offset = 0;
+        for (const chunk of chunks) {
+          bytes.set(chunk, offset);
+          offset += chunk.byteLength;
+        }
+        return bytes;
+      }
       if (entry.kind === 'device') return readDeviceBytes(entry.device ?? '/dev/stdin');
       const source = descriptorBytes(entry);
       const start = entry.offset;
@@ -6028,6 +7799,14 @@ export async function runBrowserJavaScriptProjectRequest(
     };
     const writeDescriptorBytes = (entry: BrowserFileDescriptor, bytes: Uint8Array, position?: number | null): void => {
       if (!entry.writable) throw Object.assign(new Error('EBADF: bad file descriptor, write'), { code: 'EBADF' });
+      if (entry.kind === 'kernel') {
+        executionState.kernelFileSystem!.write(
+          entry.kernelFd!,
+          bytes,
+          typeof position === 'number' ? Math.max(0, position) : undefined
+        );
+        return;
+      }
       if (entry.kind === 'device') {
         writeDevice(entry.device ?? '/dev/stdout', textFromBytes(bytes));
         return;
@@ -6061,6 +7840,13 @@ export async function runBrowserJavaScriptProjectRequest(
       setFileBytes(path, next);
     };
     const truncateDescriptorBytes = (entry: BrowserFileDescriptor, length = 0): void => {
+      if (entry.kind === 'kernel') {
+        executionState.kernelFileSystem!.ftruncate(
+          entry.kernelFd!,
+          Math.max(0, Number(length) || 0)
+        );
+        return;
+      }
       if (entry.kind !== 'file') {
         if (entry.kind === 'device') throw Object.assign(new Error('EINVAL: invalid argument, ftruncate'), { code: 'EINVAL' });
         throw Object.assign(new Error(`EROFS: read-only file system, ftruncate '${entry.path ?? ''}'`), { code: 'EROFS' });
@@ -6074,12 +7860,29 @@ export async function runBrowserJavaScriptProjectRequest(
       if (entry.offset > size) entry.offset = size;
     };
     const realpathForEntry = (path: unknown): string => {
+      const readTarget = runtimeReadTarget(path, kernelDevices, procSnapshot);
+      if (
+        executionState.kernelFileSystem &&
+        readTarget?.kind === 'workspace'
+      ) {
+        const normalized = normalizeWorkspaceEntryPath(
+          path,
+          cwdPath,
+          true,
+          workspacePathContext
+        );
+        return executionState.kernelFileSystem.realpath(normalized);
+      }
       const accessTarget = runtimeAccessTarget(path, 0, kernelDevices, procSnapshot);
-      if (accessTarget?.kind === 'allowed') return accessTarget.path;
+      if (
+        accessTarget?.kind === 'allowed' &&
+        readTarget?.kind !== 'workspace'
+      ) {
+        return accessTarget.path;
+      }
       if (accessTarget?.kind === 'denied') {
         throw Object.assign(new Error(`ENOENT: no such file or directory, realpath '${path}'`), { code: 'ENOENT' });
       }
-      const readTarget = runtimeReadTarget(path, kernelDevices, procSnapshot);
       if (readTarget?.kind === 'device-file' || readTarget?.kind === 'proc-file' || readTarget?.kind === 'proc-directory') {
         return readTarget.path;
       }
@@ -6334,6 +8137,65 @@ export async function runBrowserJavaScriptProjectRequest(
           closed: false,
           listeners,
         };
+        if (executionState.kernelSyscalls && executionState.kernelNetwork) {
+          const watched = executionState.kernelSyscalls.dispatchSync({
+            op: 'watch',
+            path: normalized,
+            options: {
+              recursive: watcher.recursive,
+            },
+          });
+          if (watched.ok === false || watched.value.op !== 'watch') {
+            const failure = watched.ok === true
+              ? { code: 'EPROTO', message: 'EPROTO: invalid watch syscall response' }
+              : watched.error;
+            throw Object.assign(new Error(failure.message), {
+              code: failure.code,
+            });
+          }
+          watcher.kernelFd = watched.value.fd;
+          void eventLoopApi.track((async () => {
+            try {
+              while (!watcher.closed) {
+                const read = await dispatchBrowserNetworkSyscall(
+                  executionState.kernelNetwork,
+                  {
+                    op: 'read',
+                    fd: watcher.kernelFd!,
+                    maxBytes: 16 * 1024 + 9,
+                  }
+                );
+                if (read.bytes.byteLength === 0) break;
+                const event = decodeTraceKernelWatchEvent(read.bytes);
+                if (event.eventType === 'overflow') {
+                  const error = Object.assign(
+                    new Error('ENOSPC: TraceKernel filesystem watch queue overflow'),
+                    { code: 'ENOSPC' }
+                  );
+                  for (const errorListener of listeners.get('error') ?? []) {
+                    errorListener(error);
+                  }
+                  continue;
+                }
+                const changedPath = workspaceRelativeFromAbsolutePath(
+                  event.path,
+                  workspacePathContext
+                ) ?? event.path;
+                const filename = watchedFilename(watcher, changedPath);
+                if (filename !== null) {
+                  emitFsWatch(watcher, event.eventType, filename);
+                  notifyWatchFileWatchers(changedPath);
+                }
+              }
+            } catch (error) {
+              if (!watcher.closed) {
+                const errorListeners = listeners.get('error') ?? [];
+                if (errorListeners.length === 0) throw error;
+                for (const errorListener of errorListeners) errorListener(error);
+              }
+            }
+          })());
+        }
         const initialListener = typeof optionsOrListener === 'function' ? optionsOrListener : listener;
         if (initialListener) on('change', initialListener as (...args: unknown[]) => void);
         fsWatchers.add(watcher);
@@ -6352,8 +8214,15 @@ export async function runBrowserJavaScriptProjectRequest(
             return api;
           },
           close: () => {
+            if (watcher.closed) return;
             watcher.closed = true;
             fsWatchers.delete(watcher);
+            if (watcher.kernelFd !== undefined && executionState.kernelSyscalls) {
+              executionState.kernelSyscalls.dispatchSync({
+                op: 'close',
+                fd: watcher.kernelFd,
+              });
+            }
             for (const closeListener of listeners.get('close') ?? []) closeListener();
           },
         };
@@ -6437,6 +8306,30 @@ export async function runBrowserJavaScriptProjectRequest(
         }
         const rawNormalized = assertSafeWorkspaceFilePath(path, cwdPath, workspacePathContext);
         const normalized = resolveStoredSymlinkPath(rawNormalized);
+        if (executionState.kernelFileSystem) {
+          const kernelFd = executionState.kernelFileSystem.open(normalized, {
+            access: parsed.readable && parsed.writable
+              ? 'read-write'
+              : parsed.writable
+                ? 'write'
+                : 'read',
+            ...(parsed.create ? { create: true } : {}),
+            ...(parsed.exclusive ? { exclusive: true } : {}),
+            ...(parsed.truncate ? { truncate: true } : {}),
+            ...(parsed.append ? { append: true } : {}),
+          });
+          executionState.kernelFileSystem.setCloseOnExec(kernelFd, true);
+          fileDescriptors.set(fd, {
+            kind: 'kernel',
+            kernelFd,
+            path: normalized,
+            offset: 0,
+            readable: parsed.readable,
+            writable: parsed.writable,
+            append: parsed.append,
+          });
+          return fd;
+        }
         if (parsed.exclusive && (
           fileStore.has(rawNormalized) || symlinkStore.has(rawNormalized) || directoryStore.has(rawNormalized)
         )) {
@@ -6495,9 +8388,14 @@ export async function runBrowserJavaScriptProjectRequest(
       },
       closeSync: (fd: number) => {
         if (Number(fd) < 3) return undefined;
-        if (!fileDescriptors.delete(Number(fd))) {
+        const entry = fileDescriptors.get(Number(fd));
+        if (!entry) {
           throw Object.assign(new Error(`EBADF: bad file descriptor, close`), { code: 'EBADF' });
         }
+        if (entry.kind === 'kernel') {
+          executionState.kernelFileSystem!.closeDescriptor(entry.kernelFd!);
+        }
+        fileDescriptors.delete(Number(fd));
         return undefined;
       },
       close: (fd: number, callback?: (error?: Error | null) => void) => {
@@ -6511,6 +8409,16 @@ export async function runBrowserJavaScriptProjectRequest(
       readSync: (fd: number, buffer: Uint8Array, offset = 0, length = buffer.byteLength - offset, position?: number | null) => {
         const entry = fileDescriptor(fd);
         if (!entry.readable) throw Object.assign(new Error('EBADF: bad file descriptor, read'), { code: 'EBADF' });
+        if (entry.kind === 'kernel') {
+          const count = Math.max(0, Math.min(length, buffer.byteLength - offset));
+          const bytes = executionState.kernelFileSystem!.read(
+            entry.kernelFd!,
+            count,
+            typeof position === 'number' ? Math.max(0, position) : undefined
+          );
+          buffer.set(bytes, offset);
+          return bytes.byteLength;
+        }
         if (entry.kind === 'device') {
           const bytes = readDeviceBytes(entry.device ?? '/dev/stdin', Math.max(0, Math.min(length, buffer.byteLength - offset)));
           buffer.set(bytes, offset);
@@ -6663,7 +8571,11 @@ export async function runBrowserJavaScriptProjectRequest(
       fstatSync: (fd: number, options?: BrowserStatOptions) => {
         const entry = fileDescriptor(fd);
         let stats: BrowserFileStat;
-        if (entry.kind === 'device') {
+        if (entry.kind === 'kernel') {
+          stats = statForTraceKernelPath(
+            executionState.kernelFileSystem!.fstat(entry.kernelFd!)
+          );
+        } else if (entry.kind === 'device') {
           const statTarget = runtimeKernelStatTarget(entry.device ?? '/dev/stdin', kernelInfo, kernelDevices);
           stats = statTarget.kind === 'stat' ? statForKernelPath(statTarget.path, statTarget.stat) : missingFileStat();
         } else if (entry.kind === 'proc') {
@@ -6786,10 +8698,25 @@ export async function runBrowserJavaScriptProjectRequest(
           queueMicrotask(() => callback?.(error as Error));
         }
       },
-      createReadStream: (path: unknown, options?: string | { autoClose?: boolean; encoding?: string; end?: number; fd?: number; start?: number } | null) => {
+      createReadStream: (path: unknown, options?: string | { autoClose?: boolean; encoding?: string; end?: number; fd?: number; flags?: string; start?: number } | null): ReturnType<typeof createReadableStream> => {
         const optionFd = typeof options === 'object' && typeof options?.fd === 'number' ? options.fd : null;
         const readTarget = optionFd === null ? runtimeFileReadTarget(path, kernelDevices, procSnapshot) : null;
         const requestedEncoding = typeof options === 'string' ? options : options?.encoding;
+        if (
+          executionState.kernelFileSystem &&
+          optionFd === null &&
+          (readTarget === null || readTarget?.kind === 'workspace')
+        ) {
+          const flags = typeof options === 'object' && options?.flags ? options.flags : 'r';
+          const autoClose = typeof options === 'object' && options?.autoClose === false ? false : true;
+          const openedFd = fsApi.openSync(path, flags);
+          return fsApi.createReadStream(null, {
+            ...(typeof options === 'object' && options ? options : {}),
+            fd: openedFd,
+            flags,
+            autoClose,
+          });
+        }
         let sourceBytes: Uint8Array | undefined;
         if (readTarget?.kind === 'device-file') sourceBytes = utf8Bytes(readDevice(readTarget.path));
         else if (readTarget?.kind === 'proc-file') sourceBytes = utf8Bytes(browserProcFileContents(procSnapshot, readTarget.path, kernelInfo));
@@ -6852,6 +8779,12 @@ export async function runBrowserJavaScriptProjectRequest(
           throwRuntimeReadTargetError(readTarget, runtimeKernelFileReadFsErrorMessage(String(path), readTarget));
         }
         const normalized = resolveWorkspaceEntryPath(path);
+        if (executionState.kernelFileSystem) {
+          const fileBytes = executionState.kernelFileSystem.readFile(normalized);
+          return typeof requestedEncoding === 'string'
+            ? BrowserBuffer.from(fileBytes).toString(requestedEncoding)
+            : BrowserBuffer.from(fileBytes);
+        }
         if (workspaceFileAncestor(normalized) !== null) {
           throw Object.assign(new Error(`ENOTDIR: not a directory, open '${path}'`), { code: 'ENOTDIR' });
         }
@@ -6876,7 +8809,15 @@ export async function runBrowserJavaScriptProjectRequest(
           queueMicrotask(() => done?.(error as Error));
         }
       },
-      writeFileSync: (path: unknown, value: unknown, options?: string | { encoding?: string | null } | null) => {
+      writeFileSync: (
+        path: unknown,
+        value: unknown,
+        options?: string | {
+          encoding?: string | null;
+          flag?: string | number;
+          mode?: string | number;
+        } | null
+      ) => {
         if (typeof path === 'number') {
           writeDescriptorFileBytes(path, bytesFromFsWriteValue(value, options));
           return;
@@ -6890,6 +8831,20 @@ export async function runBrowserJavaScriptProjectRequest(
           return;
         }
         const normalized = resolveWorkspaceEntryPath(path);
+        const structuredOptions = typeof options === 'object' && options !== null
+          ? options
+          : undefined;
+        const usesDefaultReplaceSemantics = (
+          (structuredOptions?.flag === undefined || structuredOptions.flag === 'w') &&
+          structuredOptions?.mode === undefined
+        );
+        if (executionState.kernelFileSystem && usesDefaultReplaceSemantics) {
+          executionState.kernelFileSystem.writeFile(
+            normalized,
+            bytesFromFsWriteValue(value, options)
+          );
+          return;
+        }
         assertWorkspaceFileWritePath(normalized, path, 'write', 'open');
         setFileBytes(normalized, bytesFromFsWriteValue(value, options));
       },
@@ -6990,6 +8945,10 @@ export async function runBrowserJavaScriptProjectRequest(
         }
         const normalizedSource = assertSafeWorkspaceFilePath(existingPath, cwdPath, workspacePathContext);
         const normalizedDestination = assertSafeWorkspaceFilePath(newPath, cwdPath, workspacePathContext);
+        if (executionState.kernelFileSystem) {
+          executionState.kernelFileSystem.link(normalizedSource, normalizedDestination);
+          return;
+        }
         const bytes = fileStore.get(normalizedSource);
         if (!bytes) {
           const sourceIsDirectory = directoryStore.has(normalizedSource)
@@ -7031,6 +8990,10 @@ export async function runBrowserJavaScriptProjectRequest(
           throw Object.assign(new Error(`ENOENT: no such file or directory, symlink '${targetText}' -> '${linkPath}'`), { code: 'ENOENT' });
         }
         const normalizedLink = resolveWorkspaceEntryPath(linkPath, false);
+        if (executionState.kernelFileSystem) {
+          executionState.kernelFileSystem.symlink(targetText, normalizedLink);
+          return;
+        }
         assertReadonlyFilePath(normalizedLink, 'symlink');
         assertWorkspaceParentDirectoryPath(normalizedLink, linkPath, 'symlink');
         if (
@@ -7061,6 +9024,13 @@ export async function runBrowserJavaScriptProjectRequest(
           throw Object.assign(new Error(`EINVAL: invalid argument, readlink '${path}'`), { code: 'EINVAL' });
         }
         const normalized = resolveWorkspaceEntryPath(path, false);
+        if (executionState.kernelFileSystem) {
+          const target = executionState.kernelFileSystem.readlink(normalized);
+          const encoding = typeof options === 'string' ? options : options?.encoding;
+          return encoding === null || encoding === 'buffer'
+            ? BrowserBuffer.from(target)
+            : BrowserBuffer.from(target).toString(encoding ?? 'utf8');
+        }
         const target = symlinkStore.get(normalized);
         if (target === undefined) {
           const exists = fileStore.has(normalized) || directoryStore.has(normalized);
@@ -7105,6 +9075,13 @@ export async function runBrowserJavaScriptProjectRequest(
         }
         const normalizedOldPath = resolveWorkspaceEntryPath(oldPath, false);
         const normalizedNewPath = resolveWorkspaceEntryPath(newPath, false);
+        if (executionState.kernelFileSystem) {
+          executionState.kernelFileSystem.rename(
+            normalizedOldPath,
+            normalizedNewPath
+          );
+          return;
+        }
         if (normalizedOldPath === normalizedNewPath) {
           const prefix = normalizedOldPath ? `${normalizedOldPath}/` : '';
           if (
@@ -7280,6 +9257,37 @@ export async function runBrowserJavaScriptProjectRequest(
             throwRuntimeRemoveTargetError(removeTarget, runtimeKernelMutationFsErrorMessage(String(path), removeTarget, 'rm'));
           }
           const normalized = resolveWorkspaceEntryPath(path, false);
+          if (executionState.kernelFileSystem) {
+            const removeEntry = (entryPath: string, recursive: boolean): void => {
+              const stat = executionState.kernelFileSystem!.stat(entryPath);
+              if (stat.kind === 'file') {
+                executionState.kernelFileSystem!.unlink(entryPath);
+                return;
+              }
+              if (!recursive) {
+                throw Object.assign(
+                  new Error(`ERR_FS_EISDIR: path is a directory, rm '${path}'`),
+                  { code: 'ERR_FS_EISDIR' }
+                );
+              }
+              for (const entry of executionState.kernelFileSystem!.readdir(entryPath)) {
+                removeEntry(
+                  entryPath
+                    ? `${entryPath.replace(/\/+$/, '')}/${entry.name}`
+                    : entry.name,
+                  true
+                );
+              }
+              executionState.kernelFileSystem!.rmdir(entryPath);
+            };
+            try {
+              removeEntry(normalized, options?.recursive === true);
+            } catch (error) {
+              if (options?.force && (error as { code?: unknown }).code === 'ENOENT') return;
+              throw error;
+            }
+            return;
+          }
           if (fileStore.has(normalized) || symlinkStore.has(normalized)) {
             deleteFile(path);
             return;
@@ -7386,6 +9394,50 @@ export async function runBrowserJavaScriptProjectRequest(
             : `ENOENT: no such file or directory, scandir '${path}'`);
         }
         const normalized = resolveWorkspaceEntryPath(path);
+        if (executionState.kernelFileSystem) {
+          const recursive = typeof options === 'object' && options?.recursive === true;
+          const entries: Array<{
+            relativePath: string;
+            kind: 'file' | 'directory' | 'symlink';
+          }> = [];
+          const collectEntries = (
+            directoryPath: string,
+            relativePrefix: string
+          ): void => {
+            for (const entry of executionState.kernelFileSystem!.readdir(directoryPath)) {
+              const relativePath = relativePrefix
+                ? `${relativePrefix}/${entry.name}`
+                : entry.name;
+              entries.push({ relativePath, kind: entry.kind });
+              if (recursive && entry.kind === 'directory') {
+                collectEntries(
+                  directoryPath
+                    ? `${directoryPath.replace(/\/+$/, '')}/${entry.name}`
+                    : entry.name,
+                  relativePath
+                );
+              }
+            }
+          };
+          collectEntries(normalized, '');
+          entries.sort((left, right) => left.relativePath.localeCompare(right.relativePath));
+          if (!withFileTypes) return entries.map((entry) => entry.relativePath);
+          return entries.map((entry) => {
+            const parts = entry.relativePath.split('/');
+            const name = parts.pop() ?? entry.relativePath;
+            const relativeParent = parts.join('/');
+            const parentPath = relativeParent
+              ? normalized
+                ? `${normalized}/${relativeParent}`
+                : relativeParent
+              : normalized;
+            return makeDirent(
+              name,
+              entry.kind,
+              workspaceFilename(parentPath, workspaceRoot)
+            );
+          });
+        }
         if (workspaceFileAncestor(normalized) !== null || fileStore.has(normalized)) {
           throw Object.assign(new Error(`ENOTDIR: not a directory, scandir '${path}'`), { code: 'ENOTDIR' });
         }
@@ -7540,11 +9592,27 @@ export async function runBrowserJavaScriptProjectRequest(
         let stats = kernelStats;
         if (stats === null) {
           const normalized = normalizeWorkspaceEntryPath(path, cwdPath, true, workspacePathContext);
+          if (executionState.kernelFileSystem) {
+            try {
+              stats = statForTraceKernelPath(
+                executionState.kernelFileSystem.stat(normalized)
+              );
+            } catch (error) {
+              if (
+                options?.throwIfNoEntry === false &&
+                (error as { code?: unknown }).code === 'ENOENT'
+              ) {
+                return undefined;
+              }
+              throw error;
+            }
+          } else {
           if (workspaceFileAncestor(normalized) !== null) {
             if (options?.throwIfNoEntry === false) return undefined;
             throw Object.assign(new Error(`ENOTDIR: not a directory, stat '${path}'`), { code: 'ENOTDIR' });
           }
           stats = statForNormalizedPath(normalized);
+          }
         }
         if (!stats) {
           if (options?.throwIfNoEntry === false) return undefined;
@@ -7558,11 +9626,27 @@ export async function runBrowserJavaScriptProjectRequest(
         let stats = kernelStats;
         if (stats === null) {
           const normalized = resolveWorkspaceEntryPath(path, false);
+          if (executionState.kernelFileSystem) {
+            try {
+              stats = statForTraceKernelPath(
+                executionState.kernelFileSystem.lstat(normalized)
+              );
+            } catch (error) {
+              if (
+                options?.throwIfNoEntry === false &&
+                (error as { code?: unknown }).code === 'ENOENT'
+              ) {
+                return undefined;
+              }
+              throw error;
+            }
+          } else {
           if (workspaceFileAncestor(normalized) !== null) {
             if (options?.throwIfNoEntry === false) return undefined;
             throw Object.assign(new Error(`ENOTDIR: not a directory, lstat '${path}'`), { code: 'ENOTDIR' });
           }
           stats = statForNormalizedPath(normalized, false);
+          }
         }
         if (!stats) {
           if (options?.throwIfNoEntry === false) return undefined;
@@ -7652,7 +9736,10 @@ export async function runBrowserJavaScriptProjectRequest(
           queueMicrotask(() => done?.(error as Error));
         }
       },
-      mkdirSync: (path: unknown, options?: { recursive?: boolean }) => {
+      mkdirSync: (
+        path: unknown,
+        options?: { recursive?: boolean; mode?: string | number } | number
+      ) => {
         const mkdirTarget = runtimeMkdirTarget(path, kernelDevices);
         if (mkdirTarget?.kind === 'error') {
           throwRuntimeMkdirTargetError(mkdirTarget, runtimeKernelMutationFsErrorMessage(String(path), mkdirTarget, 'mkdir'));
@@ -7660,6 +9747,40 @@ export async function runBrowserJavaScriptProjectRequest(
         const rawPath = workspacePathInputToString(path).replace(/\\/g, '/');
         const normalized = normalizeWorkspaceEntryPath(path, cwdPath, true, workspacePathContext);
         if (!normalized) return undefined;
+        const recursive = typeof options === 'object' && options?.recursive === true;
+        const mode = typeof options === 'number'
+          ? options
+          : typeof options?.mode === 'number'
+            ? options.mode
+            : undefined;
+        if (executionState.kernelFileSystem) {
+          let firstCreated: string | undefined;
+          if (recursive) {
+            const parts = normalized.split('/');
+            for (let index = 1; index <= parts.length; index += 1) {
+              const candidate = parts.slice(0, index).join('/');
+              try {
+                executionState.kernelFileSystem.stat(candidate);
+              } catch (error) {
+                if ((error as { code?: unknown }).code !== 'ENOENT') throw error;
+                firstCreated = candidate;
+                break;
+              }
+            }
+          }
+          executionState.kernelFileSystem.mkdir(normalized, {
+            recursive,
+            ...(mode !== undefined ? { mode } : {}),
+          });
+          if (!recursive || firstCreated === undefined) return undefined;
+          if (rawPath.startsWith('/')) {
+            return workspaceFilename(firstCreated, workspaceRoot);
+          }
+          const relativeFirstCreated = relativeWorkspacePath(cwdPath, firstCreated);
+          return rawPath.startsWith('./') && !relativeFirstCreated.startsWith('.')
+            ? `./${relativeFirstCreated}`
+            : relativeFirstCreated;
+        }
         assertReadonlyFilePath(normalized, 'mkdir');
         const parent = dirname(normalized);
         const parentPath = parent === '' ? '' : parent;
@@ -7674,15 +9795,15 @@ export async function runBrowserJavaScriptProjectRequest(
           throw Object.assign(new Error(`EEXIST: file already exists, mkdir '${path}'`), { code: 'EEXIST' });
         }
         if (directoryStore.has(normalized)) {
-          if (!options?.recursive) {
+          if (!recursive) {
             throw Object.assign(new Error(`EEXIST: file already exists, mkdir '${path}'`), { code: 'EEXIST' });
           }
           return undefined;
         }
-        if (!options?.recursive && parentPath && !directoryStore.has(parentPath)) {
+        if (!recursive && parentPath && !directoryStore.has(parentPath)) {
           throw Object.assign(new Error(`ENOENT: no such file or directory, mkdir '${path}'`), { code: 'ENOENT' });
         }
-        const start = options?.recursive ? 1 : parts.length;
+        const start = recursive ? 1 : parts.length;
         let firstCreated: string | undefined;
         for (let index = start; index <= parts.length; index += 1) {
           const directoryPath = parts.slice(0, index).join('/');
@@ -7695,7 +9816,7 @@ export async function runBrowserJavaScriptProjectRequest(
             notifyDirectoryMutation(directoryPath);
           }
         }
-        if (!options?.recursive || firstCreated === undefined) return undefined;
+        if (!recursive || firstCreated === undefined) return undefined;
         if (rawPath.startsWith('/')) return workspaceFilename(firstCreated, workspaceRoot);
         const relativeFirstCreated = relativeWorkspacePath(cwdPath, firstCreated);
         return rawPath.startsWith('./') && !relativeFirstCreated.startsWith('.')
@@ -7749,6 +9870,10 @@ export async function runBrowserJavaScriptProjectRequest(
           throwRuntimeRemoveTargetError(removeTarget, runtimeKernelMutationFsErrorMessage(String(path), removeTarget, 'rmdir'));
         }
         const normalized = normalizeWorkspaceEntryPath(path, cwdPath, true, workspacePathContext);
+        if (executionState.kernelFileSystem) {
+          executionState.kernelFileSystem.rmdir(normalized);
+          return;
+        }
         assertWorkspaceParentDirectoryPath(normalized, path, 'rmdir');
         if (fileStore.has(normalized)) {
           throw Object.assign(new Error(`ENOTDIR: not a directory, rmdir '${path}'`), { code: 'ENOTDIR' });
@@ -7802,12 +9927,7 @@ export async function runBrowserJavaScriptProjectRequest(
         };
         const readFileFromHandle = (encoding?: string | { encoding?: string | null } | null): BrowserBuffer | string => {
           assertFileHandleOpen();
-          const entry = fileDescriptor(fd);
-          if (!entry.readable) throw Object.assign(new Error('EBADF: bad file descriptor, readFile'), { code: 'EBADF' });
-          const source = descriptorBytes(entry);
-          const start = entry.offset;
-          const bytes = BrowserBuffer.from(source.slice(start));
-          entry.offset = source.byteLength;
+          const bytes = BrowserBuffer.from(readDescriptorFileBytes(fd));
           const requestedEncoding = typeof encoding === 'string' ? encoding : encoding?.encoding;
           return typeof requestedEncoding === 'string' ? bytes.toString(requestedEncoding) : bytes;
         };
@@ -8039,6 +10159,10 @@ export async function runBrowserJavaScriptProjectRequest(
     (fsApi.realpathSync as unknown as { native: typeof fsApi.realpathSync }).native = fsApi.realpathSync;
     Object.assign(fsApi, { promises: fsPromisesApi });
     const zlibApi = createZlibApi();
+    const netApi = createNetApi(
+      executionState.kernelNetwork,
+      request.signal
+    );
     const httpApi = createHttpApi(request.kernelHttp, request.signal);
     const restoreHttpGlobals = installBrowserHttpGlobalLockdown(
       httpApi,
@@ -8050,6 +10174,7 @@ export async function runBrowserJavaScriptProjectRequest(
       if (hostGlobalsRestored) return;
       hostGlobalsRestored = true;
       eventLoopApi.clearAll();
+      netApi.closeAll();
       restoreTimerGlobals();
       restoreHttpGlobals();
     };
@@ -8071,6 +10196,8 @@ export async function runBrowserJavaScriptProjectRequest(
       ['node:url', urlApi],
       ['buffer', { Buffer: BrowserBuffer }],
       ['node:buffer', { Buffer: BrowserBuffer }],
+      ['net', netApi.module],
+      ['node:net', netApi.module],
       ['http', httpApi.module],
       ['node:http', httpApi.module],
       ['https', httpApi.httpsModule],
@@ -8087,6 +10214,10 @@ export async function runBrowserJavaScriptProjectRequest(
       ['node:util', utilApi],
       ['stream', streamApi],
       ['node:stream', streamApi],
+      ['child_process', childProcessApi],
+      ['node:child_process', childProcessApi],
+      ['tracekernel', traceKernelApi],
+      ['node:tracekernel', traceKernelApi],
       ['timers/promises', timersPromisesApi],
       ['node:timers/promises', timersPromisesApi],
       ['crypto', cryptoApi],
@@ -8350,8 +10481,15 @@ export async function runBrowserJavaScriptProjectRequest(
       // quiet so a detached async main cannot be truncated at process exit.
       while (!executionState.cancelled) {
         await eventLoopApi.drain();
-        if (!httpApi.hasActiveWork()) break;
-        await httpApi.waitForClose();
+        if (!httpApi.hasActiveWork() && !netApi.hasActiveWork()) break;
+        await Promise.all([
+          httpApi.hasActiveWork()
+            ? httpApi.waitForClose()
+            : Promise.resolve(),
+          netApi.hasActiveWork()
+            ? netApi.waitForClose()
+            : Promise.resolve(),
+        ]);
       }
       liveIo.close();
       try {

@@ -542,7 +542,7 @@ const CPP_RUNTIME_PROFILE: LanguageRuntimeProfile = {
     'The runtime intentionally does not depend on a generic multi-language container/runtime SDK.',
     'Script-style C++ uses an empty function name with executionStyle="function"; the snippet must assign a serializable result variable.',
     'Interview-mode C++ reuses the tracing compiler path with a trace budget and returns a non-trace execution result.',
-    'Project-mode C++ uses shared TraceKernel /dev and /proc policy with bridged live WASI file mutation and stdio events plus final-diff reconciliation.',
+    'TraceKernel project execution maps WASI filesystem descriptors and local BSD sockets to kernel-owned syscalls; standalone clients retain snapshot and structured-HTTP compatibility.',
   ],
 };
 

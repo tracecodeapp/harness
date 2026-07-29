@@ -428,6 +428,11 @@ async function runWithTempRoot(tempRoot: string): Promise<void> {
       }
       packedNativeHarness.dispose();
       const nativeWorkspace = await projectNode.createNativeProjectWorkspace({
+        // A cold .NET SDK can spend well beyond the normal interactive command
+        // budget initializing and compiling. This smoke validates the packed
+        // project API, so give that one runtime an explicit setup budget without
+        // weakening the product default for ordinary workspace commands.
+        csharpProjectTimeoutMs: 90_000,
         files: [
           { path: 'index.js', contents: 'console.log("packed-native-project")\\n' },
           { path: 'main.py', contents: 'print("packed-native-python")\\n' },

@@ -8,7 +8,11 @@ export default defineConfig([
     // rather than leaving a bare @tracecode/harness-core import the packed tarball
     // cannot resolve. Cross-copy token identity is preserved by the globalThis
     // Symbol.for registry in harness-core.
-    noExternal: [...commonConfig.noExternal, '@tracecode/harness-core'],
+    noExternal: [
+      ...commonConfig.noExternal,
+      '@tracecode/harness-core',
+      '@tracecode/tracekernel',
+    ],
     entry: {
       index: 'src/index.ts',
       browser: 'packages/harness-browser/src/index.ts',
@@ -62,6 +66,7 @@ export default defineConfig([
       index: 'packages/harness-java/src/index.ts',
       'project-node': 'packages/harness-java/src/project-node.ts',
       'project-browser': 'packages/harness-java/src/project-browser.ts',
+      'tracejvm-project': 'packages/harness-java/src/tracejvm-project.ts',
     },
     outDir: 'packages/harness-java/dist',
   },

@@ -7,10 +7,14 @@ import type {
   RuntimeFileMutationPhase,
   RuntimeProjectCommandRequest,
   RuntimeProjectCommandRunner,
+  RuntimeProjectEngineLeaseController,
   RuntimeProjectFileChangeApplyOptions,
   RuntimeProjectSnapshot,
 } from '@tracecode/harness-core';
-import { runRuntimeProjectWorkerBridge } from '@tracecode/harness-core';
+import {
+  runRuntimeProjectWorkerBridge,
+  withRuntimeProjectCommandRunnerCapabilities,
+} from '@tracecode/harness-core';
 import type { CppWorkerClient } from '../../harness-browser/src/cpp-worker-client';
 
 export type CppProjectFileEncoding = RuntimeFileEncoding;
@@ -38,13 +42,14 @@ export function createBrowserCppProjectRunner(
       request: CppProjectCommandRequest,
       timeoutMs?: number,
       onEvent?: RuntimeCommandEventHandler,
-      signal?: AbortSignal
+      signal?: AbortSignal,
+      engineLease?: RuntimeProjectEngineLeaseController
     ): Promise<CppProjectCommandResult>;
   },
   options: BrowserCppProjectRunnerOptions = {}
 ): CppProjectCommandRunner {
   const timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS;
-  return (request) => {
+  return withRuntimeProjectCommandRunnerCapabilities((request) => {
     return runRuntimeProjectWorkerBridge({
       request,
       startPhase: request.source === 'compile' ? 'compile-start' : 'process-start',
@@ -54,7 +59,14 @@ export function createBrowserCppProjectRunner(
       finishMessage: request.source === 'compile' ? 'Finished C++ browser compile' : 'Finished C++ browser executable',
       finishDetail: (result) => ({ source: request.source, exitCode: result.exitCode }),
       applyFileChange: options.applyFileChange,
-      run: (workerRequest, onEvent) => workerClient.executeProjectCpp(workerRequest, timeoutMs, onEvent, workerRequest.signal),
+      run: (workerRequest, onEvent, engineLease) =>
+        workerClient.executeProjectCpp(
+          workerRequest,
+          timeoutMs,
+          onEvent,
+          workerRequest.signal,
+          engineLease
+        ),
     });
-  };
+  }, { descriptorStdio: true });
 }

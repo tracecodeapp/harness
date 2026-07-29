@@ -347,7 +347,10 @@ public static partial class CompilerHost
             if (string.Equals(request.Source, "compile", StringComparison.Ordinal))
             {
                 string buildOutput = FormatDotnetBuildOutput(request, outputInfo, emitResult.Diagnostics, stopwatch.Elapsed);
-                List<CSharpProjectFileChange> files = DiffProjectWorkspace(beforeSnapshot);
+                List<CSharpProjectFileChange> files = DiffProjectWorkspace(
+                    beforeSnapshot,
+                    request.TraceKernelFileSystem
+                );
                 EmitProjectFileChanges(files, "final-diff");
                 return SerializeProject(new CSharpProjectCommandResponse
                 {
@@ -376,7 +379,10 @@ public static partial class CompilerHost
             {
                 AssemblyLoadContext.Default.Resolving -= ResolveProjectAssembly;
             }
-            List<CSharpProjectFileChange> runFiles = DiffProjectWorkspace(beforeSnapshot);
+            List<CSharpProjectFileChange> runFiles = DiffProjectWorkspace(
+                beforeSnapshot,
+                request.TraceKernelFileSystem
+            );
             EmitProjectFileChanges(runFiles, "final-diff");
             return SerializeProject(new CSharpProjectCommandResponse
             {
@@ -2598,6 +2604,18 @@ public sealed class ProjectFileStream : System.IO.FileStream
         out ProjectWorkspaceSnapshot beforeSnapshot
     )
     {
+        if (request.TraceKernelFileSystem)
+        {
+            if (!Directory.Exists(ProjectWorkspaceRoot))
+            {
+                throw new DirectoryNotFoundException(
+                    "TraceKernel project filesystem is not mounted."
+                );
+            }
+            beforeSnapshot = new ProjectWorkspaceSnapshot();
+            return;
+        }
+
         if (Directory.Exists(ProjectWorkspaceRoot))
         {
             Directory.Delete(ProjectWorkspaceRoot, recursive: true);
@@ -2711,8 +2729,15 @@ public sealed class ProjectFileStream : System.IO.FileStream
         return new ProjectDirectoryState(mode, atimeMs, mtimeMs);
     }
 
-    private static List<CSharpProjectFileChange> DiffProjectWorkspace(ProjectWorkspaceSnapshot beforeSnapshot)
+    private static List<CSharpProjectFileChange> DiffProjectWorkspace(
+        ProjectWorkspaceSnapshot beforeSnapshot,
+        bool traceKernelFileSystem
+    )
     {
+        if (traceKernelFileSystem)
+        {
+            return new List<CSharpProjectFileChange>();
+        }
         ProjectWorkspaceSnapshot afterSnapshot = SnapshotProjectWorkspace();
         List<CSharpProjectFileChange> changes = new();
 

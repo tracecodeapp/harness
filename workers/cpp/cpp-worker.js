@@ -39,14 +39,20 @@ const WORKER_DEBUG = (() => {
   }
 })();
 const ESUCCESS = 0;
+const E2BIG = 1;
 const EACCES = 2;
+const EAGAIN = 6;
+const EALREADY = 7;
 const EADDRINUSE = 3;
 const EAFNOSUPPORT = 5;
 const EBADF = 8;
 const ECONNABORTED = 13;
 const ECONNREFUSED = 14;
+const ECHILD = 12;
 const EEXIST = 20;
+const EFAULT = 21;
 const EINVAL = 28;
+const EINPROGRESS = 26;
 const EIO = 29;
 const EISDIR = 31;
 const EISCONN = 30;
@@ -56,7 +62,10 @@ const ENOTCONN = 53;
 const ENOTDIR = 54;
 const ENOTEMPTY = 55;
 const ENOTSUP = 58;
+const ENOTTY = 59;
+const EPERM = 63;
 const EROFS = 69;
+const ESRCH = 71;
 const ESPIPE = 70;
 const FILETYPE_UNKNOWN = 0;
 const FILETYPE_CHARACTER_DEVICE = 2;
@@ -307,6 +316,915 @@ function concatBytes(chunks) {
     offset += chunk.length;
   }
   return out;
+}
+
+const TK_SYSCALL_FRAME_MAGIC = 0x544b5301;
+const TK_SYSCALL_FRAME_REQUEST = 1;
+const TK_SYSCALL_FRAME_RESPONSE = 2;
+const TK_SYSCALL_OP_CODES = Object.freeze({
+  open: 1,
+  read: 2,
+  write: 3,
+  close: 4,
+  dup: 5,
+  stat: 6,
+  readdir: 7,
+  mkdir: 8,
+  rmdir: 9,
+  unlink: 10,
+  rename: 11,
+  readFile: 12,
+  writeFile: 13,
+  fstat: 14,
+  ftruncate: 15,
+  link: 16,
+  symlink: 17,
+  readlink: 18,
+  lstat: 19,
+  realpath: 20,
+  socket: 21,
+  bind: 22,
+  listen: 23,
+  accept: 24,
+  connect: 25,
+  send: 26,
+  recv: 27,
+  shutdown: 28,
+  getsockname: 29,
+  getpeername: 30,
+  pipe: 31,
+  spawn: 32,
+  wait: 33,
+  kill: 34,
+  watchdog: 36,
+  dup2: 37,
+  fcntl: 38,
+  setsid: 39,
+  setpgid: 40,
+  dup3: 41,
+  poll: 42,
+  getsockopt: 43,
+  identity: 44,
+  isatty: 45,
+  tcgetpgrp: 46,
+  tcsetpgrp: 47,
+  tcgetwinsize: 52,
+  tcsetwinsize: 53,
+});
+const TK_SYSCALL_OPS_BY_CODE = new Map(
+  Object.entries(TK_SYSCALL_OP_CODES).map(([operation, code]) => [code, operation])
+);
+const TK_SHARED_HEADER_INTS = 8;
+const TK_SHARED_HEADER_BYTES = TK_SHARED_HEADER_INTS * Int32Array.BYTES_PER_ELEMENT;
+const TK_SHARED_STATE_INDEX = 0;
+const TK_SHARED_REQUEST_LENGTH_INDEX = 1;
+const TK_SHARED_RESPONSE_LENGTH_INDEX = 2;
+const TK_SHARED_SEQUENCE_INDEX = 3;
+const TK_SHARED_STATE_IDLE = 0;
+const TK_SHARED_STATE_REQUEST = 1;
+const TK_SHARED_STATE_RESPONSE = 3;
+const TK_SHARED_STATE_CLOSED = 4;
+const TK_SHARED_STATE_WRITING = 5;
+
+class CppTraceKernelSyscallError extends Error {
+  constructor(code, message) {
+    super(message);
+    this.name = 'CppTraceKernelSyscallError';
+    this.code = code;
+  }
+}
+
+class CppTraceKernelFrameWriter {
+  constructor() {
+    this.bytes = new Uint8Array(256);
+    this.view = new DataView(this.bytes.buffer);
+    this.offset = 0;
+  }
+
+  ensure(length) {
+    const required = this.offset + length;
+    if (required <= this.bytes.byteLength) return;
+    let capacity = this.bytes.byteLength;
+    while (capacity < required) capacity *= 2;
+    const next = new Uint8Array(capacity);
+    next.set(this.bytes);
+    this.bytes = next;
+    this.view = new DataView(next.buffer);
+  }
+
+  u8(value) {
+    this.ensure(1);
+    this.view.setUint8(this.offset, value);
+    this.offset += 1;
+  }
+
+  u32(value) {
+    this.ensure(4);
+    this.view.setUint32(this.offset, value >>> 0, true);
+    this.offset += 4;
+  }
+
+  i32(value) {
+    this.ensure(4);
+    this.view.setInt32(this.offset, value | 0, true);
+    this.offset += 4;
+  }
+
+  f64(value) {
+    this.ensure(8);
+    this.view.setFloat64(this.offset, Number(value), true);
+    this.offset += 8;
+  }
+
+  bytesValue(value) {
+    const bytes = value instanceof Uint8Array ? value : new Uint8Array(value);
+    this.u32(bytes.byteLength);
+    this.ensure(bytes.byteLength);
+    this.bytes.set(bytes, this.offset);
+    this.offset += bytes.byteLength;
+  }
+
+  string(value) {
+    this.bytesValue(encodeUtf8(String(value)));
+  }
+
+  finish() {
+    return this.bytes.slice(0, this.offset);
+  }
+}
+
+class CppTraceKernelFrameReader {
+  constructor(bytes) {
+    this.bytes = bytes;
+    this.view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+    this.offset = 0;
+  }
+
+  ensure(length) {
+    if (length < 0 || this.offset + length > this.bytes.byteLength) {
+      throw new CppTraceKernelSyscallError('EPROTO', 'truncated binary syscall frame');
+    }
+  }
+
+  u8() {
+    this.ensure(1);
+    const value = this.view.getUint8(this.offset);
+    this.offset += 1;
+    return value;
+  }
+
+  u32() {
+    this.ensure(4);
+    const value = this.view.getUint32(this.offset, true);
+    this.offset += 4;
+    return value;
+  }
+
+  i32() {
+    this.ensure(4);
+    const value = this.view.getInt32(this.offset, true);
+    this.offset += 4;
+    return value;
+  }
+
+  f64() {
+    this.ensure(8);
+    const value = this.view.getFloat64(this.offset, true);
+    this.offset += 8;
+    return value;
+  }
+
+  bytesValue() {
+    const length = this.u32();
+    this.ensure(length);
+    const value = this.bytes.slice(this.offset, this.offset + length);
+    this.offset += length;
+    return value;
+  }
+
+  string() {
+    return decodeUtf8(this.bytesValue());
+  }
+
+  done() {
+    if (this.offset !== this.bytes.byteLength) {
+      throw new CppTraceKernelSyscallError(
+        'EPROTO',
+        `binary syscall frame contains ${this.bytes.byteLength - this.offset} trailing bytes`
+      );
+    }
+  }
+}
+
+function writeCppTraceKernelAddress(writer, address) {
+  writer.string(address.host);
+  writer.u32(address.port);
+}
+
+function readCppTraceKernelAddress(reader) {
+  return { host: reader.string(), port: reader.u32() };
+}
+
+function readCppTraceKernelStat(reader) {
+  const path = reader.string();
+  const kind = reader.u8();
+  if (kind < 1 || kind > 3) {
+    throw new CppTraceKernelSyscallError('EPROTO', `invalid TKFS stat kind ${kind}`);
+  }
+  return {
+    path,
+    kind: kind === 1 ? 'file' : kind === 2 ? 'directory' : 'symlink',
+    inode: reader.f64(),
+    nlink: reader.f64(),
+    mode: reader.u32(),
+    size: reader.f64(),
+    generation: reader.f64(),
+    createdAt: reader.f64(),
+    modifiedAt: reader.f64(),
+    changedAt: reader.f64(),
+  };
+}
+
+class CppTraceKernelSyncClient {
+  constructor(channel, signalHost, options = {}) {
+    if (
+      typeof SharedArrayBuffer === 'undefined' ||
+      !(channel?.buffer instanceof SharedArrayBuffer) ||
+      !Number.isSafeInteger(channel.byteCapacity) ||
+      channel.byteCapacity < 256 ||
+      channel.buffer.byteLength !== TK_SHARED_HEADER_BYTES + channel.byteCapacity
+    ) {
+      throw new CppTraceKernelSyscallError('EPROTO', 'invalid shared syscall channel');
+    }
+    this.header = new Int32Array(channel.buffer, 0, TK_SHARED_HEADER_INTS);
+    this.payload = new Uint8Array(channel.buffer, TK_SHARED_HEADER_BYTES);
+    this.signalHost = signalHost;
+    this.timeoutMs = Math.max(1, Math.floor(options.timeoutMs ?? 20_000));
+    this.closed = false;
+  }
+
+  encodeRequest(request) {
+    const writer = new CppTraceKernelFrameWriter();
+    writer.u32(TK_SYSCALL_FRAME_MAGIC);
+    writer.u8(TK_SYSCALL_FRAME_REQUEST);
+    const operationCode = TK_SYSCALL_OP_CODES[request.op];
+    if (!operationCode) {
+      throw new CppTraceKernelSyscallError('EPROTO', `unsupported syscall ${request.op}`);
+    }
+    writer.u8(operationCode);
+    switch (request.op) {
+      case 'pipe':
+        writer.u32(request.options?.capacityChunks ?? 0);
+        writer.u8(request.options?.closeOnExec === true ? 1 : 0);
+        writer.u8(request.options?.nonblocking === true ? 1 : 0);
+        break;
+      case 'watchdog':
+        writer.u8(
+          request.action === 'arm'
+            ? 1
+            : request.action === 'pet'
+              ? 2
+              : request.action === 'disarm'
+                ? 3
+                : 4
+        );
+        writer.u8(request.timeoutMs === undefined ? 0 : 1);
+        if (request.timeoutMs !== undefined) writer.u32(request.timeoutMs);
+        writer.u8(
+          request.signal === undefined
+            ? 0
+            : request.signal === 'SIGTERM'
+              ? 1
+              : 2
+        );
+        break;
+      case 'spawn': {
+        writer.string(request.runtime);
+        writer.string(request.command);
+        writer.u32(request.args?.length ?? 0);
+        for (const arg of request.args ?? []) writer.string(arg);
+        writer.u8(request.cwd === undefined ? 0 : 1);
+        if (request.cwd !== undefined) writer.string(request.cwd);
+        const environment = Object.entries(request.env ?? {});
+        writer.u32(environment.length);
+        for (const [name, value] of environment) {
+          writer.string(name);
+          writer.string(value);
+        }
+        writer.u8(
+          request.inheritDescriptors === 'all'
+            ? 1
+            : request.inheritDescriptors === undefined
+              ? 0
+              : 2
+        );
+        if (
+          request.inheritDescriptors !== undefined &&
+          request.inheritDescriptors !== 'all'
+        ) {
+          writer.u32(request.inheritDescriptors.length);
+          for (const fd of request.inheritDescriptors) writer.i32(fd);
+        }
+        writer.u8(request.processGroupId === undefined ? 0 : 1);
+        if (request.processGroupId !== undefined) writer.i32(request.processGroupId);
+        writer.u8(request.sessionId === undefined ? 0 : 1);
+        if (request.sessionId !== undefined) writer.i32(request.sessionId);
+        const writeStdioMode = (mode) => writer.u8(
+          mode === undefined
+            ? 0
+            : mode === 'pipe'
+              ? 1
+              : mode === 'inherit'
+                ? 2
+                : 3
+        );
+        writeStdioMode(request.stdio?.stdin);
+        writeStdioMode(request.stdio?.stdout);
+        writeStdioMode(request.stdio?.stderr);
+        writer.u32(request.descriptorActions?.length ?? 0);
+        for (const action of request.descriptorActions ?? []) {
+          writer.u8(action.op === 'dup2' ? 1 : 2);
+          writer.i32(action.fd);
+          if (action.op === 'dup2') writer.i32(action.targetFd);
+        }
+        writer.u32(request.descriptorMappings?.length ?? 0);
+        for (const mapping of request.descriptorMappings ?? []) {
+          writer.i32(mapping.parentFd);
+          writer.i32(mapping.childFd);
+        }
+        break;
+      }
+      case 'wait':
+        writer.i32(request.pid);
+        writer.u8(request.noHang ? 1 : 0);
+        break;
+      case 'kill':
+        writer.i32(request.pid);
+        writer.u8(
+          request.signal === 'SIGINT'
+            ? 1
+            : request.signal === 'SIGTERM'
+              ? 2
+              : request.signal === 'SIGKILL'
+                ? 3
+                : request.signal === 'SIGHUP'
+                  ? 4
+                  : 5
+        );
+        break;
+      case 'socket':
+        break;
+      case 'bind':
+      case 'connect':
+        writer.i32(request.fd);
+        writeCppTraceKernelAddress(writer, request.address);
+        break;
+      case 'listen':
+        writer.i32(request.fd);
+        writer.u8(
+          (request.options?.backlog === undefined ? 0 : 1) |
+            (request.options?.capacityChunks === undefined ? 0 : 2)
+        );
+        if (request.options?.backlog !== undefined) writer.u32(request.options.backlog);
+        if (request.options?.capacityChunks !== undefined) writer.u32(request.options.capacityChunks);
+        break;
+      case 'accept':
+      case 'getsockname':
+      case 'getpeername':
+        writer.i32(request.fd);
+        break;
+      case 'getsockopt':
+        writer.i32(request.fd);
+        writer.u8(request.option === 'error' ? 1 : 0);
+        break;
+      case 'send':
+        writer.i32(request.fd);
+        writer.bytesValue(request.bytes);
+        break;
+      case 'recv':
+        writer.i32(request.fd);
+        writer.u32(request.maxBytes);
+        break;
+      case 'shutdown':
+        writer.i32(request.fd);
+        writer.u8(request.how === 'read' ? 1 : request.how === 'write' ? 2 : 3);
+        break;
+      case 'open': {
+        writer.string(request.path);
+        const access = request.options?.access === 'write'
+          ? 2
+          : request.options?.access === 'read-write'
+            ? 3
+            : request.options?.access === 'read'
+              ? 1
+              : 0;
+        writer.u8(access);
+        writer.u8(
+          (request.options?.create ? 1 : 0) |
+            (request.options?.exclusive ? 2 : 0) |
+            (request.options?.truncate ? 4 : 0) |
+            (request.options?.append ? 8 : 0)
+        );
+        break;
+      }
+      case 'read':
+        writer.i32(request.fd);
+        writer.u32(request.maxBytes);
+        writer.u8(request.position === undefined ? 0 : 1);
+        if (request.position !== undefined) writer.f64(request.position);
+        break;
+      case 'write':
+        writer.i32(request.fd);
+        writer.bytesValue(request.bytes);
+        writer.u8(request.position === undefined ? 0 : 1);
+        if (request.position !== undefined) writer.f64(request.position);
+        break;
+      case 'close':
+      case 'dup':
+      case 'fstat':
+        writer.i32(request.fd);
+        break;
+      case 'dup2':
+        writer.i32(request.fd);
+        writer.i32(request.targetFd);
+        break;
+      case 'dup3':
+        writer.i32(request.fd);
+        writer.i32(request.targetFd);
+        writer.u8(request.closeOnExec ? 1 : 0);
+        break;
+      case 'fcntl':
+        writer.i32(request.fd);
+        writer.u8(
+          request.action === 'get-close-on-exec'
+            ? 1
+            : request.action === 'set-close-on-exec'
+              ? 2
+              : request.action === 'get-nonblocking'
+                ? 3
+                : 4
+        );
+        if (request.action === 'set-close-on-exec') {
+          writer.u8(request.closeOnExec ? 1 : 0);
+        } else if (request.action === 'set-nonblocking') {
+          writer.u8(request.nonblocking ? 1 : 0);
+        }
+        break;
+      case 'poll':
+        writer.u32(request.entries.length);
+        for (const entry of request.entries) {
+          writer.i32(entry.fd);
+          writer.u8((entry.read ? 1 : 0) | (entry.write ? 2 : 0));
+        }
+        writer.u8(request.timeoutMs === undefined ? 0 : 1);
+        if (request.timeoutMs !== undefined) writer.f64(request.timeoutMs);
+        break;
+      case 'setsid':
+        break;
+      case 'identity':
+        writer.u8(request.pid === undefined ? 0 : 1);
+        if (request.pid !== undefined) writer.i32(request.pid);
+        break;
+      case 'setpgid':
+        writer.i32(request.pid);
+        writer.i32(request.pgid);
+        break;
+      case 'isatty':
+      case 'tcgetpgrp':
+      case 'tcgetwinsize':
+        writer.i32(request.fd);
+        break;
+      case 'tcsetpgrp':
+        writer.i32(request.fd);
+        writer.i32(request.pgid);
+        break;
+      case 'tcsetwinsize':
+        writer.i32(request.fd);
+        writer.u32(request.rows);
+        writer.u32(request.columns);
+        break;
+      case 'ftruncate':
+        writer.i32(request.fd);
+        writer.f64(request.length);
+        break;
+      case 'stat':
+      case 'lstat':
+      case 'realpath':
+      case 'readdir':
+      case 'rmdir':
+      case 'unlink':
+      case 'readFile':
+      case 'readlink':
+        writer.string(request.path);
+        break;
+      case 'mkdir':
+        writer.string(request.path);
+        writer.u8(
+          (request.options?.recursive ? 1 : 0) |
+            (request.options?.mode === undefined ? 0 : 2)
+        );
+        if (request.options?.mode !== undefined) writer.u32(request.options.mode);
+        break;
+      case 'rename':
+        writer.string(request.sourcePath);
+        writer.string(request.destinationPath);
+        break;
+      case 'link':
+        writer.string(request.existingPath);
+        writer.string(request.newPath);
+        break;
+      case 'symlink':
+        writer.string(request.target);
+        writer.string(request.linkPath);
+        break;
+      case 'writeFile':
+        writer.string(request.path);
+        writer.bytesValue(request.bytes);
+        break;
+    }
+    return writer.finish();
+  }
+
+  decodeResult(bytes) {
+    const reader = new CppTraceKernelFrameReader(bytes);
+    if (reader.u32() !== TK_SYSCALL_FRAME_MAGIC || reader.u8() !== TK_SYSCALL_FRAME_RESPONSE) {
+      throw new CppTraceKernelSyscallError('EPROTO', 'invalid binary syscall response header');
+    }
+    const success = reader.u8();
+    if (success === 0) {
+      const code = reader.string();
+      const message = reader.string();
+      reader.done();
+      throw new CppTraceKernelSyscallError(code, message);
+    }
+    if (success !== 1) {
+      throw new CppTraceKernelSyscallError('EPROTO', `invalid syscall response status ${success}`);
+    }
+    const operationCode = reader.u8();
+    const operation = TK_SYSCALL_OPS_BY_CODE.get(operationCode);
+    if (!operation) {
+      throw new CppTraceKernelSyscallError('EPROTO', `unknown syscall response code ${operationCode}`);
+    }
+    let value;
+    switch (operation) {
+      case 'pipe':
+        value = {
+          op: operation,
+          readFd: reader.i32(),
+          writeFd: reader.i32(),
+        };
+        break;
+      case 'watchdog': {
+        const armed = reader.u8();
+        if (armed > 1) {
+          throw new CppTraceKernelSyscallError(
+            'EPROTO',
+            `invalid watchdog armed flag ${armed}`
+          );
+        }
+        if (!armed) {
+          value = { op: operation, armed: false };
+          break;
+        }
+        const timeoutMs = reader.u32();
+        const deadlineAt = reader.f64();
+        const signalCode = reader.u8();
+        if (signalCode !== 1 && signalCode !== 2) {
+          throw new CppTraceKernelSyscallError(
+            'EPROTO',
+            `invalid watchdog response signal ${signalCode}`
+          );
+        }
+        value = {
+          op: operation,
+          armed: true,
+          timeoutMs,
+          deadlineAt,
+          signal: signalCode === 2 ? 'SIGKILL' : 'SIGTERM',
+        };
+        break;
+      }
+      case 'spawn': {
+        const pid = reader.i32();
+        const readOptionalFd = (name) => {
+          const present = reader.u8();
+          if (present > 1) {
+            throw new CppTraceKernelSyscallError(
+              'EPROTO',
+              `invalid spawn ${name} fd flag ${present}`
+            );
+          }
+          return present ? reader.i32() : undefined;
+        };
+        const stdinFd = readOptionalFd('stdin');
+        const stdoutFd = readOptionalFd('stdout');
+        const stderrFd = readOptionalFd('stderr');
+        const stdio = stdinFd === undefined &&
+          stdoutFd === undefined &&
+          stderrFd === undefined
+          ? undefined
+          : {
+              ...(stdinFd === undefined ? {} : { stdinFd }),
+              ...(stdoutFd === undefined ? {} : { stdoutFd }),
+              ...(stderrFd === undefined ? {} : { stderrFd }),
+            };
+        value = {
+          op: operation,
+          pid,
+          ...(stdio ? { stdio } : {}),
+        };
+        break;
+      }
+      case 'wait': {
+        const pid = reader.i32();
+        const completed = reader.u8();
+        if (completed !== 0 && completed !== 1) {
+          throw new CppTraceKernelSyscallError(
+            'EPROTO',
+            `invalid wait completion flag ${completed}`
+          );
+        }
+        if (!completed) {
+          value = { op: operation, pid };
+          break;
+        }
+        const terminationCode = reader.u8();
+        const exitCode = reader.i32();
+        if (terminationCode === 1) {
+          value = {
+            op: operation,
+            pid,
+            termination: { kind: 'exit', exitCode },
+          };
+        } else if (terminationCode === 2) {
+          const signalCode = reader.u8();
+          const signal = [
+            undefined,
+            'SIGINT',
+            'SIGTERM',
+            'SIGKILL',
+            'SIGHUP',
+            'SIGQUIT',
+          ][signalCode];
+          if (!signal) {
+            throw new CppTraceKernelSyscallError(
+              'EPROTO',
+              `invalid termination signal ${signalCode}`
+            );
+          }
+          value = {
+            op: operation,
+            pid,
+            termination: {
+              kind: 'signal',
+              signal,
+              exitCode,
+            },
+          };
+        } else if (terminationCode === 3) {
+          value = {
+            op: operation,
+            pid,
+            termination: {
+              kind: 'failure',
+              exitCode,
+              message: reader.string(),
+            },
+          };
+        } else {
+          throw new CppTraceKernelSyscallError(
+            'EPROTO',
+            `invalid process termination code ${terminationCode}`
+          );
+        }
+        break;
+      }
+      case 'socket':
+      case 'open':
+      case 'dup':
+      case 'dup2':
+        value = { op: operation, fd: reader.i32() };
+        break;
+      case 'dup3':
+        value = {
+          op: operation,
+          fd: reader.i32(),
+          closeOnExec: reader.u8() === 1,
+        };
+        break;
+      case 'fcntl':
+        value = {
+          op: operation,
+          closeOnExec: reader.u8() === 1,
+          nonblocking: reader.u8() === 1,
+        };
+        break;
+      case 'poll': {
+        const length = reader.u32();
+        const entries = [];
+        for (let index = 0; index < length; index += 1) {
+          const fd = reader.i32();
+          const events = reader.u8();
+          entries.push({
+            fd,
+            read: (events & 1) !== 0,
+            write: (events & 2) !== 0,
+            hangup: (events & 4) !== 0,
+            error: (events & 8) !== 0,
+            invalid: (events & 16) !== 0,
+          });
+        }
+        value = { op: operation, entries };
+        break;
+      }
+      case 'setsid':
+        value = { op: operation, sid: reader.i32(), pgid: reader.i32() };
+        break;
+      case 'setpgid':
+        value = { op: operation, pgid: reader.i32() };
+        break;
+      case 'isatty':
+        value = { op: operation, isTerminal: reader.u8() === 1 };
+        break;
+      case 'tcgetpgrp':
+      case 'tcsetpgrp':
+        value = { op: operation, pgid: reader.i32() };
+        break;
+      case 'tcgetwinsize':
+      case 'tcsetwinsize':
+        value = {
+          op: operation,
+          rows: reader.u32(),
+          columns: reader.u32(),
+        };
+        break;
+      case 'identity':
+        value = {
+          op: operation,
+          pid: reader.i32(),
+          ppid: reader.i32(),
+          pgid: reader.i32(),
+          sid: reader.i32(),
+        };
+        break;
+      case 'bind':
+        value = { op: operation, address: readCppTraceKernelAddress(reader) };
+        break;
+      case 'accept':
+        value = {
+          op: operation,
+          fd: reader.i32(),
+          localAddress: readCppTraceKernelAddress(reader),
+          remoteAddress: readCppTraceKernelAddress(reader),
+        };
+        break;
+      case 'connect':
+        value = {
+          op: operation,
+          localAddress: readCppTraceKernelAddress(reader),
+          remoteAddress: readCppTraceKernelAddress(reader),
+        };
+        break;
+      case 'send':
+      case 'write':
+        value = { op: operation, bytesWritten: reader.u32() };
+        break;
+      case 'recv':
+      case 'read':
+        value = { op: operation, bytes: reader.bytesValue() };
+        break;
+      case 'getsockname':
+      case 'getpeername':
+        value = { op: operation, address: readCppTraceKernelAddress(reader) };
+        break;
+      case 'getsockopt': {
+        const hasError = reader.u8();
+        value = {
+          op: operation,
+          ...(hasError === 1 ? { error: reader.string() } : {}),
+        };
+        break;
+      }
+      case 'stat':
+      case 'lstat':
+      case 'fstat':
+        value = { op: operation, stat: readCppTraceKernelStat(reader) };
+        break;
+      case 'realpath':
+        value = { op: operation, path: reader.string() };
+        break;
+      case 'readlink':
+        value = { op: operation, target: reader.string() };
+        break;
+      case 'readdir': {
+        const length = reader.u32();
+        const entries = [];
+        for (let index = 0; index < length; index += 1) {
+          const name = reader.string();
+          const kind = reader.u8();
+          if (kind < 1 || kind > 3) {
+            throw new CppTraceKernelSyscallError('EPROTO', `invalid directory entry kind ${kind}`);
+          }
+          entries.push({
+            name,
+            kind: kind === 1 ? 'file' : kind === 2 ? 'directory' : 'symlink',
+            inode: reader.f64(),
+          });
+        }
+        value = { op: operation, entries };
+        break;
+      }
+      case 'readFile':
+        value = {
+          op: operation,
+          cacheGeneration: reader.i32(),
+          bytes: reader.bytesValue(),
+        };
+        break;
+      default:
+        value = { op: operation };
+        break;
+    }
+    reader.done();
+    return value;
+  }
+
+  call(request) {
+    if (this.closed) {
+      throw new CppTraceKernelSyscallError('ECLOSED', 'shared syscall channel is closed');
+    }
+    const frame = this.encodeRequest(request);
+    if (frame.byteLength > this.payload.byteLength) {
+      throw new CppTraceKernelSyscallError(
+        'E2BIG',
+        `request requires ${frame.byteLength} bytes; capacity is ${this.payload.byteLength}`
+      );
+    }
+    if (
+      Atomics.compareExchange(
+        this.header,
+        TK_SHARED_STATE_INDEX,
+        TK_SHARED_STATE_IDLE,
+        TK_SHARED_STATE_WRITING
+      ) !== TK_SHARED_STATE_IDLE
+    ) {
+      throw new CppTraceKernelSyscallError('EBUSY', 'shared syscall channel already has an active call');
+    }
+    this.payload.set(frame);
+    Atomics.store(this.header, TK_SHARED_REQUEST_LENGTH_INDEX, frame.byteLength);
+    Atomics.store(this.header, TK_SHARED_RESPONSE_LENGTH_INDEX, 0);
+    Atomics.add(this.header, TK_SHARED_SEQUENCE_INDEX, 1);
+    Atomics.store(this.header, TK_SHARED_STATE_INDEX, TK_SHARED_STATE_REQUEST);
+    try {
+      this.signalHost();
+    } catch (error) {
+      Atomics.store(this.header, TK_SHARED_STATE_INDEX, TK_SHARED_STATE_IDLE);
+      throw error;
+    }
+    const startedAt = Date.now();
+    while (true) {
+      const state = Atomics.load(this.header, TK_SHARED_STATE_INDEX);
+      if (state === TK_SHARED_STATE_RESPONSE) break;
+      if (state === TK_SHARED_STATE_CLOSED) {
+        this.closed = true;
+        throw new CppTraceKernelSyscallError('ECLOSED', 'shared syscall channel closed while waiting');
+      }
+      const remaining = this.timeoutMs - (Date.now() - startedAt);
+      if (remaining <= 0) {
+        this.close();
+        throw new CppTraceKernelSyscallError('ETIMEDOUT', 'synchronous syscall timed out');
+      }
+      try {
+        Atomics.wait(this.header, TK_SHARED_STATE_INDEX, state, remaining);
+      } catch {
+        this.close();
+        throw new CppTraceKernelSyscallError(
+          'ENOSYS',
+          'synchronous Atomics.wait requires a dedicated worker'
+        );
+      }
+    }
+    const responseLength = Atomics.load(this.header, TK_SHARED_RESPONSE_LENGTH_INDEX);
+    if (responseLength < 0 || responseLength > this.payload.byteLength) {
+      this.close();
+      throw new CppTraceKernelSyscallError('EPROTO', 'host returned an invalid syscall response length');
+    }
+    try {
+      return this.decodeResult(this.payload.slice(0, responseLength));
+    } finally {
+      Atomics.store(this.header, TK_SHARED_REQUEST_LENGTH_INDEX, 0);
+      Atomics.store(this.header, TK_SHARED_RESPONSE_LENGTH_INDEX, 0);
+      Atomics.store(this.header, TK_SHARED_STATE_INDEX, TK_SHARED_STATE_IDLE);
+      Atomics.notify(this.header, TK_SHARED_STATE_INDEX);
+    }
+  }
+
+  close() {
+    if (this.closed) return;
+    this.closed = true;
+    Atomics.store(this.header, TK_SHARED_STATE_INDEX, TK_SHARED_STATE_CLOSED);
+    Atomics.notify(this.header, TK_SHARED_STATE_INDEX);
+  }
 }
 
 function projectUtf8Bytes(value) {
@@ -1258,6 +2176,327 @@ class InMemoryFileSystem {
   }
 }
 
+const CPP_TRACEKERNEL_ERRNO = Object.freeze({
+  E2BIG,
+  EACCES,
+  EAGAIN,
+  EALREADY,
+  EADDRINUSE,
+  EAFNOSUPPORT,
+  EBADF,
+  ECONNREFUSED,
+  ECHILD,
+  EEXIST,
+  EINVAL,
+  EINPROGRESS,
+  EIO,
+  EISDIR,
+  EISCONN,
+  ELOOP,
+  ENOENT,
+  ENOTCONN,
+  ENOTDIR,
+  ENOTEMPTY,
+  ENOTSUP,
+  ENOTTY,
+  EPERM,
+  EROFS,
+  ESRCH,
+});
+
+function cppTraceKernelErrno(error, fallback = EIO) {
+  if (!error || typeof error !== 'object') return fallback;
+  const code = String(error.code || '');
+  if (code === 'EOPNOTSUPP' || code === 'ENOSYS') return ENOTSUP;
+  return CPP_TRACEKERNEL_ERRNO[code] ?? fallback;
+}
+
+function parseCppProcessCommand(commandLine) {
+  const args = [];
+  let current = '';
+  let quote = null;
+  let escaping = false;
+  let started = false;
+  for (const character of String(commandLine)) {
+    if (escaping) {
+      current += character;
+      escaping = false;
+      started = true;
+      continue;
+    }
+    if (character === '\\' && quote !== "'") {
+      escaping = true;
+      started = true;
+      continue;
+    }
+    if (quote !== null) {
+      if (character === quote) {
+        quote = null;
+      } else {
+        current += character;
+      }
+      started = true;
+      continue;
+    }
+    if (character === "'" || character === '"') {
+      quote = character;
+      started = true;
+      continue;
+    }
+    if (/\s/.test(character)) {
+      if (started) {
+        args.push(current);
+        current = '';
+        started = false;
+      }
+      continue;
+    }
+    if (';&|<>()`$'.includes(character)) {
+      throw new CppTraceKernelSyscallError(
+        'ENOTSUP',
+        'shell operators are not supported by the TraceKernel process bridge'
+      );
+    }
+    current += character;
+    started = true;
+  }
+  if (escaping || quote !== null) {
+    throw new CppTraceKernelSyscallError('EINVAL', 'unterminated process command');
+  }
+  if (started) args.push(current);
+  if (args.length === 0 || args[0].length === 0) {
+    throw new CppTraceKernelSyscallError('EINVAL', 'process command is empty');
+  }
+  return args;
+}
+
+function cppRuntimeForCommand(command) {
+  const name = String(command).replace(/\\/g, '/').split('/').at(-1)?.toLowerCase() ?? '';
+  if (name === 'node' || name === 'nodejs') return 'javascript';
+  if (name === 'python' || name === 'python3') return 'python';
+  if (name === 'java') return 'java';
+  if (name === 'dotnet') return 'csharp';
+  return 'cpp';
+}
+
+/**
+ * Path-level WASI compatibility over the authoritative TraceKernel namespace.
+ *
+ * Open file descriptions are installed separately by WasiProcess so fd
+ * reads/writes retain kernel ownership. This adapter covers path operations,
+ * directory enumeration, symlinks, and the stat data expected by WASI.
+ */
+class CppTraceKernelFileSystem {
+  constructor(client, options = {}) {
+    this.client = client;
+    this.readOnlyFiles = new Set(options.readOnlyFiles || []);
+    this.workspaceRoot = normalizePath(options.workspaceRoot || '/workspace');
+  }
+
+  call(request) {
+    return this.client.call(request);
+  }
+
+  kernelPath(pathname) {
+    const normalized = normalizePath(pathname);
+    if (
+      normalized === this.workspaceRoot ||
+      normalized.startsWith(`${this.workspaceRoot}/`) ||
+      normalized === '/dev' ||
+      normalized.startsWith('/dev/') ||
+      normalized === '/proc' ||
+      normalized.startsWith('/proc/') ||
+      normalized === '/etc' ||
+      normalized.startsWith('/etc/')
+    ) {
+      return normalized;
+    }
+    return normalized === '/'
+      ? this.workspaceRoot
+      : `${this.workspaceRoot}${normalized}`;
+  }
+
+  addDirectory(pathname) {
+    const normalized = normalizePath(pathname);
+    if (normalized === '/') return;
+    try {
+      this.call({ op: 'mkdir', path: this.kernelPath(normalized), options: { recursive: true } });
+    } catch (error) {
+      if (error?.code !== 'EEXIST') throw error;
+    }
+  }
+
+  addSymlink(pathname, target) {
+    this.call({
+      op: 'symlink',
+      target: String(target),
+      linkPath: this.kernelPath(pathname),
+    });
+  }
+
+  isReadOnly() {
+    // TraceKernel is authoritative for capability and read-only enforcement.
+    return false;
+  }
+
+  lexists(pathname) {
+    try {
+      this.call({ op: 'lstat', path: this.kernelPath(pathname) });
+      return true;
+    } catch (error) {
+      if (error?.code === 'ENOENT') return false;
+      throw error;
+    }
+  }
+
+  exists(pathname) {
+    try {
+      this.call({ op: 'stat', path: this.kernelPath(pathname) });
+      return true;
+    } catch (error) {
+      if (error?.code === 'ENOENT') return false;
+      throw error;
+    }
+  }
+
+  isSymlink(pathname) {
+    try {
+      return this.call({ op: 'lstat', path: this.kernelPath(pathname) }).stat.kind === 'symlink';
+    } catch (error) {
+      if (error?.code === 'ENOENT') return false;
+      throw error;
+    }
+  }
+
+  isDirectory(pathname) {
+    try {
+      return this.call({ op: 'stat', path: this.kernelPath(pathname) }).stat.kind === 'directory';
+    } catch (error) {
+      if (error?.code === 'ENOENT') return false;
+      throw error;
+    }
+  }
+
+  isFile(pathname) {
+    try {
+      return this.call({ op: 'stat', path: this.kernelPath(pathname) }).stat.kind === 'file';
+    } catch (error) {
+      if (error?.code === 'ENOENT') return false;
+      throw error;
+    }
+  }
+
+  resolvePath(pathname) {
+    // Individual kernel operations resolve symlinks authoritatively. Keeping
+    // lexical normalization here also permits O_CREAT on a missing leaf.
+    return normalizePath(pathname);
+  }
+
+  lpath(pathname) {
+    return normalizePath(pathname);
+  }
+
+  readlink(pathname) {
+    return this.call({ op: 'readlink', path: this.kernelPath(pathname) }).target;
+  }
+
+  readFile(pathname) {
+    return this.call({ op: 'readFile', path: this.kernelPath(pathname) }).bytes;
+  }
+
+  writeFile(pathname, contents) {
+    this.call({
+      op: 'writeFile',
+      path: this.kernelPath(pathname),
+      bytes: contents instanceof Uint8Array ? contents : encodeUtf8(String(contents)),
+    });
+  }
+
+  resizeFile(pathname, size) {
+    const fd = this.call({
+      op: 'open',
+      path: this.kernelPath(pathname),
+      options: { access: 'write' },
+    }).fd;
+    try {
+      this.call({ op: 'ftruncate', fd, length: Number(size) });
+    } finally {
+      this.call({ op: 'close', fd });
+    }
+  }
+
+  getMetadata(pathname, followFinal = true) {
+    const result = this.call({
+      op: followFinal ? 'stat' : 'lstat',
+      path: this.kernelPath(pathname),
+    }).stat;
+    return {
+      mode: result.mode,
+      atimeMs: result.modifiedAt,
+      mtimeMs: result.modifiedAt,
+    };
+  }
+
+  setMetadata() {
+    // TraceKernel does not yet expose chmod/utimens syscalls. WASI validates
+    // the request, while the authoritative stat timestamps remain kernel-owned.
+  }
+
+  emitPathSnapshot() {
+    // KernelObservedFileSystem emits the live mutation itself.
+  }
+
+  listDirectory(pathname) {
+    return this.call({ op: 'readdir', path: this.kernelPath(pathname) })
+      .entries
+      .map((entry) => entry.name);
+  }
+
+  link(oldPathname, newPathname) {
+    try {
+      this.call({
+        op: 'link',
+        existingPath: this.kernelPath(oldPathname),
+        newPath: this.kernelPath(newPathname),
+      });
+      return ESUCCESS;
+    } catch (error) {
+      return cppTraceKernelErrno(error);
+    }
+  }
+
+  unlink(pathname) {
+    try {
+      this.call({ op: 'unlink', path: this.kernelPath(pathname) });
+      return ESUCCESS;
+    } catch (error) {
+      return cppTraceKernelErrno(error);
+    }
+  }
+
+  removeDirectory(pathname) {
+    try {
+      this.call({ op: 'rmdir', path: this.kernelPath(pathname) });
+      return ESUCCESS;
+    } catch (error) {
+      return cppTraceKernelErrno(error);
+    }
+  }
+
+  rename(oldPathname, newPathname) {
+    try {
+      this.call({
+        op: 'rename',
+        sourcePath: this.kernelPath(oldPathname),
+        destinationPath: this.kernelPath(newPathname),
+      });
+      return ESUCCESS;
+    } catch (error) {
+      return cppTraceKernelErrno(error);
+    }
+  }
+}
+
 class MemoryView {
   constructor(memory) {
     this.memory = memory;
@@ -1326,6 +2565,21 @@ class MemoryView {
     return decodeUtf8(this.readBytes(offset, length));
   }
 
+  readCString(offset, maxBytes = 64 * 1024) {
+    this.refresh();
+    const start = offset >>> 0;
+    const limit = Math.min(this.u8.length, start + Math.max(0, maxBytes));
+    let end = start;
+    while (end < limit && this.u8[end] !== 0) end += 1;
+    if (end === limit) {
+      throw new CppTraceKernelSyscallError(
+        'E2BIG',
+        'unterminated C string crossed the TraceKernel process boundary'
+      );
+    }
+    return decodeUtf8(this.u8.subarray(start, end));
+  }
+
   writeString(offset, value) {
     const bytes = encodeUtf8(value);
     this.writeBytes(offset, bytes);
@@ -1371,6 +2625,7 @@ class WasiProcess {
     this.env = options.env || {};
     this.fs = options.fs;
     this.cwd = normalizePath(options.cwd || '/');
+    this.kernelCwd = normalizePath(options.kernelCwd || this.cwd);
     this.fs.addDirectory(this.cwd);
     this.stdinPipe = stdinPipeState(options.stdinPipe);
     this.stdinBytes = options.stdinBytes instanceof Uint8Array
@@ -1384,6 +2639,18 @@ class WasiProcess {
     this.stderrChunks = [];
     this.onOutput = options.onOutput;
     this.kernelHttp = options.kernelHttp || null;
+    this.kernelClient = options.kernelClient || null;
+    this.kernelSignalState =
+      options.kernelSignalMailbox?.buffer instanceof SharedArrayBuffer
+        ? new Int32Array(options.kernelSignalMailbox.buffer)
+        : null;
+    this.kernelSignalSequence = 0;
+    this.process = options.process || {
+      pid: 1,
+      ppid: 0,
+      pgid: 1,
+      sid: 1,
+    };
     this.socketHostsByToken = new Map();
     this.nextSocketHostToken = 1;
     this.kernelDevices = wasiKernelDevices(options);
@@ -1395,6 +2662,11 @@ class WasiProcess {
       [2, this.stdioEntryForDevice('/dev/stderr')],
       [3, { kind: 'dir', path: this.cwd, offset: 0, readable: true, writable: false, preopen: '/' }],
     ]);
+    if (this.kernelClient) {
+      for (const fd of [0, 1, 2]) {
+        this.fds.get(fd).kernelFd = fd;
+      }
+    }
     this.nextFd = 4;
     this.memory = null;
     this.mem = null;
@@ -1419,14 +2691,439 @@ class WasiProcess {
   }
 
   // Host functions imported through the `tracecode_kernel` wasm import module
-  // by the auto-linked tracecode_socket.c shim. Together with the standard
-  // WASI sock_accept/sock_recv/sock_send imports, these back plain BSD-socket
-  // programs: connect/send speak HTTP bytes which the worker converts to
-  // TraceKernel HTTP messages, so user code never sees a TraceCode API.
+  // by auto-linked compatibility shims. Process creation and socket operations
+  // cross the same synchronous syscall channel, so the session kernel owns
+  // child lifecycle and descriptor/network state rather than the WASM worker.
   tracecodeKernelImports() {
+    const signalName = (signalNumber) => (
+      signalNumber === 1
+        ? 'SIGHUP'
+        : signalNumber === 2
+          ? 'SIGINT'
+          : signalNumber === 3
+            ? 'SIGQUIT'
+            : signalNumber === 9
+              ? 'SIGKILL'
+              : signalNumber === 15
+                ? 'SIGTERM'
+                : null
+    );
+    const readArgv = (argvPtr) => {
+      const args = [];
+      for (let index = 0; index < 256; index += 1) {
+        const pointer = this.mem.readU32((argvPtr >>> 0) + index * 4);
+        if (pointer === 0) return args;
+        args.push(this.mem.readCString(pointer));
+      }
+      throw new CppTraceKernelSyscallError(
+        'E2BIG',
+        'process argv exceeds 256 entries'
+      );
+    };
+    const readEnvp = (envpPtr) => {
+      if ((envpPtr >>> 0) === 0) return null;
+      const env = {};
+      for (let index = 0; index < 4096; index += 1) {
+        const pointer = this.mem.readU32((envpPtr >>> 0) + index * 4);
+        if (pointer === 0) return env;
+        const assignment = this.mem.readCString(pointer);
+        const equals = assignment.indexOf('=');
+        if (equals <= 0) {
+          throw new CppTraceKernelSyscallError(
+            'EINVAL',
+            'process environment entries must use NAME=VALUE form'
+          );
+        }
+        env[assignment.slice(0, equals)] = assignment.slice(equals + 1);
+      }
+      throw new CppTraceKernelSyscallError(
+        'E2BIG',
+        'process environment exceeds 4096 entries'
+      );
+    };
+    const readSpawnDescriptorActions = (actionsPtr) => {
+      if ((actionsPtr >>> 0) === 0) return [];
+      const count = this.mem.readU32(actionsPtr >>> 0);
+      if (count > 64) {
+        throw new CppTraceKernelSyscallError(
+          'E2BIG',
+          'posix_spawn file actions exceed 64 entries'
+        );
+      }
+      const actions = [];
+      for (let index = 0; index < count; index += 1) {
+        const offset = (actionsPtr >>> 0) + 4 + index * 12;
+        const operation = this.mem.readU32(offset);
+        const fd = this.mem.readU32(offset + 4);
+        const targetFd = this.mem.readU32(offset + 8);
+        if (operation === 1) {
+          actions.push({ op: 'dup2', fd, targetFd });
+        } else if (operation === 2) {
+          actions.push({ op: 'close', fd });
+        } else {
+          throw new CppTraceKernelSyscallError(
+            'EINVAL',
+            `invalid posix_spawn file action ${operation}`
+          );
+        }
+      }
+      return actions;
+    };
     return {
+      proc_system: (commandPtr, commandLen) => {
+        if (!this.kernelClient) return -ENOTSUP;
+        try {
+          const invocation = parseCppProcessCommand(
+            this.mem.readString(commandPtr, commandLen >>> 0)
+          );
+          const command = invocation[0];
+          const spawned = this.kernelClient.call({
+            op: 'spawn',
+            runtime: cppRuntimeForCommand(command),
+            command,
+            args: invocation.slice(1),
+            cwd: this.kernelCwd,
+            env: this.env,
+          });
+          const waited = this.kernelClient.call({ op: 'wait', pid: spawned.pid });
+          return waited.termination.exitCode;
+        } catch (error) {
+          return -cppTraceKernelErrno(error);
+        }
+      },
+      proc_spawn: (pathPtr, argvPtr, envpPtr, actionsPtr, flags, processGroupId) => {
+        if (!this.kernelClient) return -ENOTSUP;
+        try {
+          const command = this.mem.readCString(pathPtr);
+          const argv = readArgv(argvPtr);
+          const requestedEnv = readEnvp(envpPtr);
+          const descriptorActions = readSpawnDescriptorActions(actionsPtr);
+          const actionSourceFds = new Set(
+            descriptorActions
+              .filter((action) => action.op === 'dup2')
+              .map((action) => action.fd)
+          );
+          const closeOnExecFds = new Set();
+          const descriptorMappings = [...this.fds.entries()]
+            .filter(([childFd, entry]) => {
+              if (entry.kernelFd === undefined) return false;
+              const closeOnExec = this.kernelClient.call({
+                op: 'fcntl',
+                fd: entry.kernelFd,
+                action: 'get-close-on-exec',
+              }).closeOnExec;
+              if (closeOnExec) closeOnExecFds.add(childFd);
+              return !closeOnExec || actionSourceFds.has(childFd);
+            })
+            .map(([childFd, entry]) => ({
+              parentFd: entry.kernelFd,
+              childFd,
+            }));
+          for (const fd of closeOnExecFds) {
+            if (
+              actionSourceFds.has(fd) &&
+              !descriptorActions.some((action) =>
+                action.op === 'close' && action.fd === fd
+              )
+            ) {
+              descriptorActions.push({ op: 'close', fd });
+            }
+          }
+          const startsNewSession = (flags & 2) !== 0;
+          const setsProcessGroup = (flags & 1) !== 0;
+          const spawned = this.kernelClient.call({
+            op: 'spawn',
+            runtime: cppRuntimeForCommand(command),
+            command,
+            args: argv.length > 0 ? argv.slice(1) : [],
+            cwd: this.kernelCwd,
+            env: requestedEnv ?? this.env,
+            ...(descriptorMappings.length > 0 ? { descriptorMappings } : {}),
+            ...(descriptorActions.length > 0 ? { descriptorActions } : {}),
+            stdio: {
+              stdin: 'inherit',
+              stdout: 'inherit',
+              stderr: 'inherit',
+            },
+            ...(startsNewSession
+              ? { processGroupId: 0, sessionId: 0 }
+              : setsProcessGroup
+                ? { processGroupId: processGroupId | 0 }
+                : {}),
+          });
+          return spawned.pid | 0;
+        } catch (error) {
+          return -cppTraceKernelErrno(error);
+        }
+      },
+      proc_wait: (pid, statusPtr, options) => {
+        if (!this.kernelClient) return -ENOTSUP;
+        if ((options & ~1) !== 0) return -ENOTSUP;
+        try {
+          const waited = this.kernelClient.call({
+            op: 'wait',
+            pid: pid | 0,
+            ...((options & 1) !== 0 ? { noHang: true } : {}),
+          });
+          if (!waited.termination) return 0;
+          const termination = waited.termination;
+          const status = termination.kind === 'signal'
+            ? termination.signal === 'SIGHUP'
+              ? 1
+              : termination.signal === 'SIGINT'
+                ? 2
+                : termination.signal === 'SIGQUIT'
+                  ? 3
+                  : termination.signal === 'SIGKILL'
+                    ? 9
+                    : 15
+            : (termination.exitCode & 0xff) << 8;
+          if (statusPtr) this.mem.writeU32(statusPtr, status);
+          return waited.pid | 0;
+        } catch (error) {
+          return -cppTraceKernelErrno(error);
+        }
+      },
+      proc_kill: (pid, signalNumber) => {
+        if (!this.kernelClient) return -ENOTSUP;
+        const signal = signalName(signalNumber | 0);
+        if (!signal) return -EINVAL;
+        try {
+          this.kernelClient.call({
+            op: 'kill',
+            pid: pid | 0,
+            signal,
+          });
+          return 0;
+        } catch (error) {
+          return -cppTraceKernelErrno(error);
+        }
+      },
+      proc_poll_signal: () => {
+        if (!this.kernelSignalState) return 0;
+        const sequence = Atomics.load(this.kernelSignalState, 0);
+        if (sequence === this.kernelSignalSequence) return 0;
+        this.kernelSignalSequence = sequence;
+        return Atomics.load(this.kernelSignalState, 1) | 0;
+      },
+      proc_identity: (kind, pid) => {
+        if (!this.kernelClient) return -ENOTSUP;
+        try {
+          const identity = this.kernelClient.call({
+            op: 'identity',
+            ...((pid | 0) === 0 ? {} : { pid: pid | 0 }),
+          });
+          if (kind === 1) return identity.pid | 0;
+          if (kind === 2) return identity.ppid | 0;
+          if (kind === 3) return identity.pgid | 0;
+          if (kind === 4) return identity.sid | 0;
+          return -EINVAL;
+        } catch (error) {
+          return -cppTraceKernelErrno(error);
+        }
+      },
+      proc_fcntl: (fd, action, value) => {
+        if (!this.kernelClient) return -ENOTSUP;
+        const entry = this.fds.get(fd | 0);
+        if (!entry || entry.kernelFd === undefined) return -EBADF;
+        try {
+          const result = this.kernelClient.call({
+            op: 'fcntl',
+            fd: entry.kernelFd,
+            action: action === 1
+              ? 'get-close-on-exec'
+              : action === 2
+                ? 'set-close-on-exec'
+                : action === 3
+                  ? 'get-nonblocking'
+                  : 'set-nonblocking',
+            ...(action === 2
+              ? { closeOnExec: value !== 0 }
+              : action === 4
+                ? { nonblocking: value !== 0 }
+                : {}),
+          });
+          return action <= 2
+            ? (result.closeOnExec ? 1 : 0)
+            : (result.nonblocking ? 1 : 0);
+        } catch (error) {
+          return -cppTraceKernelErrno(error);
+        }
+      },
+      proc_pipe: (fdsPtr, flags) =>
+        this.createKernelPipe(fdsPtr, flags),
+      proc_dup: (fd) =>
+        this.duplicateKernelDescriptor(fd, undefined, false, true),
+      proc_dup3: (fd, targetFd, flags, allowSame) =>
+        this.duplicateKernelDescriptor(
+          fd,
+          targetFd,
+          (flags & 1) !== 0,
+          allowSame !== 0
+        ),
+      proc_poll: (fdsPtr, count, timeout) =>
+        this.pollKernelDescriptors(fdsPtr, count, timeout),
+      proc_setsid: () => {
+        if (!this.kernelClient) return -ENOTSUP;
+        try {
+          const result = this.kernelClient.call({ op: 'setsid' });
+          this.process.sid = result.sid;
+          this.process.pgid = result.pgid;
+          return result.sid | 0;
+        } catch (error) {
+          return -cppTraceKernelErrno(error);
+        }
+      },
+      proc_setpgid: (pid, pgid) => {
+        if (!this.kernelClient) return -ENOTSUP;
+        try {
+          const result = this.kernelClient.call({
+            op: 'setpgid',
+            pid: pid | 0,
+            pgid: pgid | 0,
+          });
+          if ((pid | 0) === 0 || (pid | 0) === (this.process.pid | 0)) {
+            this.process.pgid = result.pgid;
+          }
+          return 0;
+        } catch (error) {
+          return -cppTraceKernelErrno(error);
+        }
+      },
+      proc_isatty: (fd) => {
+        if (!this.kernelClient) return -ENOTSUP;
+        try {
+          const result = this.kernelClient.call({
+            op: 'isatty',
+            fd: fd | 0,
+          });
+          return result.isTerminal ? 1 : -ENOTTY;
+        } catch (error) {
+          return -cppTraceKernelErrno(error);
+        }
+      },
+      proc_tcgetpgrp: (fd) => {
+        if (!this.kernelClient) return -ENOTSUP;
+        try {
+          return this.kernelClient.call({
+            op: 'tcgetpgrp',
+            fd: fd | 0,
+          }).pgid | 0;
+        } catch (error) {
+          return -cppTraceKernelErrno(error);
+        }
+      },
+      proc_tcsetpgrp: (fd, pgid) => {
+        if (!this.kernelClient) return -ENOTSUP;
+        try {
+          this.kernelClient.call({
+            op: 'tcsetpgrp',
+            fd: fd | 0,
+            pgid: pgid | 0,
+          });
+          return 0;
+        } catch (error) {
+          return -cppTraceKernelErrno(error);
+        }
+      },
+      proc_tcgetwinsize: (fd, rowsPtr, columnsPtr) => {
+        if (!this.kernelClient) return -ENOTSUP;
+        if (!rowsPtr || !columnsPtr) return -EFAULT;
+        try {
+          const result = this.kernelClient.call({
+            op: 'tcgetwinsize',
+            fd: fd | 0,
+          });
+          this.mem.writeU16(rowsPtr >>> 0, result.rows);
+          this.mem.writeU16(columnsPtr >>> 0, result.columns);
+          return 0;
+        } catch (error) {
+          return -cppTraceKernelErrno(error);
+        }
+      },
+      proc_tcsetwinsize: (fd, rows, columns) => {
+        if (!this.kernelClient) return -ENOTSUP;
+        try {
+          this.kernelClient.call({
+            op: 'tcsetwinsize',
+            fd: fd | 0,
+            rows: rows >>> 0,
+            columns: columns >>> 0,
+          });
+          return 0;
+        } catch (error) {
+          return -cppTraceKernelErrno(error);
+        }
+      },
+      proc_watchdog: (action, timeoutMs, signalNumber, statusPtr) => {
+        if (!this.kernelClient) return -ENOTSUP;
+        const actionName = action === 1
+          ? 'arm'
+          : action === 2
+            ? 'pet'
+            : action === 3
+              ? 'disarm'
+              : action === 4
+                ? 'status'
+                : null;
+        if (!actionName) return -EINVAL;
+        if (
+          actionName === 'arm' &&
+          signalNumber !== 0 &&
+          signalNumber !== 9 &&
+          signalNumber !== 15
+        ) {
+          return -EINVAL;
+        }
+        try {
+          const status = this.kernelClient.call({
+            op: 'watchdog',
+            action: actionName,
+            ...(actionName === 'arm'
+              ? {
+                  timeoutMs: timeoutMs >>> 0,
+                  signal: signalNumber === 9 ? 'SIGKILL' : 'SIGTERM',
+                }
+              : {}),
+          });
+          if (statusPtr) {
+            this.mem.writeU32(statusPtr, status.armed ? 1 : 0);
+            this.mem.writeU32(statusPtr + 4, status.timeoutMs ?? 0);
+            this.mem.writeU64(
+              statusPtr + 8,
+              Math.max(0, Math.floor(status.deadlineAt ?? 0))
+            );
+            this.mem.writeU32(
+              statusPtr + 16,
+              status.signal === 'SIGKILL'
+                ? 9
+                : status.signal === 'SIGTERM'
+                  ? 15
+                  : 0
+            );
+          }
+          return 0;
+        } catch (error) {
+          return -cppTraceKernelErrno(error);
+        }
+      },
       sock_open: (domain, _type) => {
         if (domain !== 1 && domain !== 2) return -EAFNOSUPPORT;
+        if (this.kernelClient) {
+          try {
+            const kernelFd = this.kernelClient.call({ op: 'socket' }).fd;
+            return this.allocateFd({
+              kind: 'socket',
+              readable: true,
+              writable: true,
+              offset: 0,
+              kernelFd,
+              socket: { role: 'kernel' },
+            });
+          } catch (error) {
+            return -cppTraceKernelErrno(error);
+          }
+        }
         const fd = this.nextFd++;
         this.fds.set(fd, {
           kind: 'socket',
@@ -1440,6 +3137,20 @@ class WasiProcess {
       sock_connect: (fd, ipValue, port) => {
         const entry = this.fds.get(fd);
         if (entry?.kind !== 'socket') return -EBADF;
+        if (entry.kernelFd !== undefined && this.kernelClient) {
+          const host = this.socketHostForIp(ipValue >>> 0);
+          if (host === null) return -ECONNREFUSED;
+          try {
+            this.kernelClient.call({
+              op: 'connect',
+              fd: entry.kernelFd,
+              address: { host, port: port & 0xffff },
+            });
+            return 0;
+          } catch (error) {
+            return -cppTraceKernelErrno(error);
+          }
+        }
         if (entry.socket.role !== 'tcp') return -EISCONN;
         if (!this.kernelHttp) return -ECONNREFUSED;
         const host = this.socketHostForIp(ipValue >>> 0);
@@ -1455,9 +3166,41 @@ class WasiProcess {
         };
         return 0;
       },
+      sock_error: (fd) => {
+        const entry = this.fds.get(fd);
+        if (entry?.kind !== 'socket') return -EBADF;
+        if (entry.kernelFd === undefined || !this.kernelClient) return 0;
+        try {
+          const result = this.kernelClient.call({
+            op: 'getsockopt',
+            fd: entry.kernelFd,
+            option: 'error',
+          });
+          return result.error === undefined
+            ? 0
+            : cppTraceKernelErrno({ code: result.error });
+        } catch (error) {
+          return -cppTraceKernelErrno(error);
+        }
+      },
       sock_bind: (fd, ipValue, port) => {
         const entry = this.fds.get(fd);
         if (entry?.kind !== 'socket') return -EBADF;
+        if (entry.kernelFd !== undefined && this.kernelClient) {
+          const ip = ipValue >>> 0;
+          const host = ip === 0 ? '127.0.0.1' : this.socketHostForIp(ip);
+          if (host === null) return -EAFNOSUPPORT;
+          try {
+            this.kernelClient.call({
+              op: 'bind',
+              fd: entry.kernelFd,
+              address: { host, port: port & 0xffff },
+            });
+            return 0;
+          } catch (error) {
+            return -cppTraceKernelErrno(error);
+          }
+        }
         if (entry.socket.role !== 'tcp') return -EINVAL;
         const ip = ipValue >>> 0;
         const host = ip === 0 ? '127.0.0.1' : this.socketHostForIp(ip);
@@ -1468,6 +3211,18 @@ class WasiProcess {
       sock_listen: (fd, _backlog) => {
         const entry = this.fds.get(fd);
         if (entry?.kind !== 'socket') return -EBADF;
+        if (entry.kernelFd !== undefined && this.kernelClient) {
+          try {
+            this.kernelClient.call({
+              op: 'listen',
+              fd: entry.kernelFd,
+              options: { backlog: Math.max(1, Number(_backlog) || 1) },
+            });
+            return 0;
+          } catch (error) {
+            return -cppTraceKernelErrno(error);
+          }
+        }
         if (entry.socket.role === 'listener') return 0;
         if (entry.socket.role !== 'tcp') return -EINVAL;
         if (!this.kernelHttp) return -EAFNOSUPPORT;
@@ -1487,6 +3242,16 @@ class WasiProcess {
       sock_port: (fd) => {
         const entry = this.fds.get(fd);
         if (entry?.kind !== 'socket') return -EBADF;
+        if (entry.kernelFd !== undefined && this.kernelClient) {
+          try {
+            return this.kernelClient.call({
+              op: 'getsockname',
+              fd: entry.kernelFd,
+            }).address.port;
+          } catch (error) {
+            return -cppTraceKernelErrno(error);
+          }
+        }
         if (entry.socket.role === 'listener') return entry.socket.port;
         if (entry.socket.role === 'client') return entry.socket.port;
         if (entry.socket.bind) return entry.socket.bind.port;
@@ -1523,6 +3288,17 @@ class WasiProcess {
   // response for reading; server sockets answer their accepted request once
   // the written response is complete.
   socketWrite(entry, bytes) {
+    if (entry.kernelFd !== undefined && this.kernelClient) {
+      try {
+        return this.kernelClient.call({
+          op: 'send',
+          fd: entry.kernelFd,
+          bytes,
+        }).bytesWritten;
+      } catch (error) {
+        return -cppTraceKernelErrno(error);
+      }
+    }
     const socket = entry.socket;
     if (socket.role === 'client') {
       socket.sendBytes = concatBytes([socket.sendBytes, bytes]);
@@ -1577,6 +3353,18 @@ class WasiProcess {
   }
 
   socketRead(entry, maxLength) {
+    if (entry.kernelFd !== undefined && this.kernelClient) {
+      try {
+        return this.kernelClient.call({
+          op: 'recv',
+          fd: entry.kernelFd,
+          maxBytes: maxLength,
+        }).bytes;
+      } catch (error) {
+        entry.kernelError = cppTraceKernelErrno(error);
+        return null;
+      }
+    }
     const socket = entry.socket;
     if (socket.role === 'client') {
       const available = socket.recvBytes.length - socket.recvOffset;
@@ -1602,6 +3390,14 @@ class WasiProcess {
   }
 
   closeSocket(entry) {
+    if (entry.kernelFd !== undefined && this.kernelClient) {
+      try {
+        this.kernelClient.call({ op: 'close', fd: entry.kernelFd });
+      } catch {
+        // fd_close is idempotent at the WASI boundary after local removal.
+      }
+      return;
+    }
     const socket = entry.socket;
     if (socket.role === 'server') {
       this.trySocketServerRespond(socket, true);
@@ -1615,6 +3411,30 @@ class WasiProcess {
   sock_accept(fd, _flags, fdOut) {
     const entry = this.socketEntry(fd);
     if (!entry) return EBADF;
+    if (entry.kernelFd !== undefined && this.kernelClient) {
+      try {
+        const accepted = this.kernelClient.call({
+          op: 'accept',
+          fd: entry.kernelFd,
+        });
+        const connFd = this.allocateFd({
+          kind: 'socket',
+          readable: true,
+          writable: true,
+          offset: 0,
+          kernelFd: accepted.fd,
+          socket: {
+            role: 'kernel',
+            localAddress: accepted.localAddress,
+            remoteAddress: accepted.remoteAddress,
+          },
+        });
+        this.mem.writeU32(fdOut, connFd);
+        return ESUCCESS;
+      } catch (error) {
+        return cppTraceKernelErrno(error);
+      }
+    }
     if (entry.socket.role !== 'listener') return EINVAL;
     if (!this.kernelHttp) return ENOTSUP;
     const result = this.kernelHttp.nextRequest(entry.socket.serverId, 0);
@@ -1647,7 +3467,7 @@ class WasiProcess {
       const ptr = this.mem.readU32(riDataPtr + index * 8);
       const len = this.mem.readU32(riDataPtr + index * 8 + 4);
       const chunk = this.socketRead(entry, len);
-      if (chunk === null) return ENOTCONN;
+      if (chunk === null) return entry.kernelError || ENOTCONN;
       this.mem.writeBytes(ptr, chunk);
       total += chunk.length;
       if (chunk.length < len) break;
@@ -1675,6 +3495,18 @@ class WasiProcess {
   sock_shutdown(fd, how) {
     const entry = this.socketEntry(fd);
     if (!entry) return EBADF;
+    if (entry.kernelFd !== undefined && this.kernelClient) {
+      try {
+        this.kernelClient.call({
+          op: 'shutdown',
+          fd: entry.kernelFd,
+          how: how === 1 ? 'read' : how === 2 ? 'write' : 'both',
+        });
+        return ESUCCESS;
+      } catch (error) {
+        return cppTraceKernelErrno(error);
+      }
+    }
     // sdflags: 1 = RD, 2 = WR. Shutting down the write side finalizes a
     // pending server response.
     if ((how & 2) !== 0 && entry.socket.role === 'server') {
@@ -1822,6 +3654,41 @@ class WasiProcess {
       return this.allocateFd({ kind: 'dir', path: normalized, offset: 0, readable: true, writable: false });
     }
 
+    if (this.kernelClient && this.fs instanceof CppTraceKernelFileSystem) {
+      try {
+        const access = options.write
+          ? options.read
+            ? 'read-write'
+            : 'write'
+          : 'read';
+        const kernelFd = this.kernelClient.call({
+          op: 'open',
+          path: this.fs.kernelPath(normalized),
+          options: {
+            access,
+            create: Boolean(options.create),
+            exclusive: Boolean(options.exclusive),
+            truncate: Boolean(options.truncate),
+            append: Boolean(options.append),
+          },
+        }).fd;
+        const offset = options.append
+          ? this.kernelClient.call({ op: 'fstat', fd: kernelFd }).stat.size
+          : 0;
+        return this.allocateFd({
+          kind: 'file',
+          path: normalized,
+          offset,
+          readable: access !== 'write',
+          writable: access !== 'read',
+          append: Boolean(options.append),
+          kernelFd,
+        });
+      } catch (error) {
+        return -cppTraceKernelErrno(error);
+      }
+    }
+
     if (!this.fs.exists(normalized)) {
       if (!options.create) return -ENOENT;
       const parentErrno = this.parentDirectoryErrno(normalized);
@@ -1845,9 +3712,227 @@ class WasiProcess {
   }
 
   allocateFd(entry) {
-    const fd = this.nextFd++;
+    let fd = 3;
+    while (this.fds.has(fd)) fd += 1;
+    this.nextFd = Math.max(this.nextFd, fd + 1);
     this.fds.set(fd, entry);
     return fd;
+  }
+
+  createKernelPipe(fdsPtr, flags) {
+    if (!this.kernelClient) return -ENOTSUP;
+    if (!fdsPtr) return -EINVAL;
+    if ((flags & ~3) !== 0) return -ENOTSUP;
+    try {
+      const result = this.kernelClient.call({
+        op: 'pipe',
+        options: {
+          closeOnExec: (flags & 1) !== 0,
+          nonblocking: (flags & 2) !== 0,
+        },
+      });
+      const readFd = this.allocateFd({
+        kind: 'pipe',
+        readable: true,
+        writable: false,
+        offset: 0,
+        kernelFd: result.readFd,
+      });
+      const writeFd = this.allocateFd({
+        kind: 'pipe',
+        readable: false,
+        writable: true,
+        offset: 0,
+        kernelFd: result.writeFd,
+      });
+      this.mem.writeU32(fdsPtr, readFd);
+      this.mem.writeU32(fdsPtr + 4, writeFd);
+      return 0;
+    } catch (error) {
+      return -cppTraceKernelErrno(error);
+    }
+  }
+
+  duplicateKernelDescriptor(fd, targetFd, closeOnExec, allowSame) {
+    if (!this.kernelClient) return -ENOTSUP;
+    const sourceFd = fd | 0;
+    const source = this.fds.get(sourceFd);
+    if (!source || source.kernelFd === undefined) return -EBADF;
+    if (targetFd === undefined) {
+      try {
+        const duplicate = this.kernelClient.call({
+          op: 'dup',
+          fd: source.kernelFd,
+        });
+        const localFd = this.allocateFd({
+          ...source,
+          kernelFd: duplicate.fd,
+        });
+        return localFd;
+      } catch (error) {
+        return -cppTraceKernelErrno(error);
+      }
+    }
+
+    const target = targetFd | 0;
+    if (target < 0) return -EBADF;
+    if (target === sourceFd) {
+      return allowSame ? target : -EINVAL;
+    }
+    const replaced = this.fds.get(target);
+    try {
+      let duplicateKernelFd;
+      if (replaced?.kernelFd !== undefined) {
+        const duplicate = this.kernelClient.call({
+          op: 'dup3',
+          fd: source.kernelFd,
+          targetFd: replaced.kernelFd,
+          closeOnExec,
+        });
+        duplicateKernelFd = duplicate.fd;
+        this.fds.delete(target);
+      } else {
+        const duplicate = this.kernelClient.call({
+          op: 'dup',
+          fd: source.kernelFd,
+        });
+        duplicateKernelFd = duplicate.fd;
+        if (closeOnExec) {
+          try {
+            this.kernelClient.call({
+              op: 'fcntl',
+              fd: duplicateKernelFd,
+              action: 'set-close-on-exec',
+              closeOnExec: true,
+            });
+          } catch (error) {
+            try {
+              this.kernelClient.call({ op: 'close', fd: duplicateKernelFd });
+            } catch {
+              // Preserve the flagging failure; the kernel still tears down the
+              // process descriptor table on exit.
+            }
+            throw error;
+          }
+        }
+        if (replaced) this.fd_close(target);
+      }
+      this.fds.set(target, {
+        ...source,
+        kernelFd: duplicateKernelFd,
+      });
+      if (target >= this.nextFd) this.nextFd = target + 1;
+      return target;
+    } catch (error) {
+      return -cppTraceKernelErrno(error);
+    }
+  }
+
+  pollKernelDescriptors(fdsPtr, count, timeout) {
+    const descriptorCount = count >>> 0;
+    if (descriptorCount > 0 && !fdsPtr) return -EINVAL;
+    if ((timeout | 0) < -1) return -EINVAL;
+
+    const POLLIN = 0x0001;
+    // wasi-libc's public poll ABI uses 0x0002 for POLLOUT.
+    const POLLOUT = 0x0002;
+    const POLLERR = 0x1000;
+    const POLLHUP = 0x2000;
+    const POLLNVAL = 0x4000;
+    const kernelEntriesByFd = new Map();
+    const localEntriesByKernelFd = new Map();
+    let readyCount = 0;
+
+    for (let index = 0; index < descriptorCount; index += 1) {
+      const pointer = (fdsPtr >>> 0) + index * 8;
+      const fd = this.mem.readU32(pointer) | 0;
+      const events = this.mem.readU16(pointer + 4);
+      this.mem.writeU16(pointer + 6, 0);
+      if (fd < 0) continue;
+
+      const entry = this.fds.get(fd);
+      if (!entry) {
+        this.mem.writeU16(pointer + 6, POLLNVAL);
+        readyCount += 1;
+        continue;
+      }
+      if (entry.kernelFd === undefined) {
+        const revents =
+          (entry.readable && (events & POLLIN) !== 0 ? POLLIN : 0) |
+          (entry.writable && (events & POLLOUT) !== 0 ? POLLOUT : 0);
+        this.mem.writeU16(pointer + 6, revents);
+        if (revents !== 0) readyCount += 1;
+        continue;
+      }
+
+      const requested = kernelEntriesByFd.get(entry.kernelFd) || {
+        fd: entry.kernelFd,
+        read: false,
+        write: false,
+      };
+      requested.read ||= (events & POLLIN) !== 0;
+      requested.write ||= (events & POLLOUT) !== 0;
+      kernelEntriesByFd.set(entry.kernelFd, requested);
+      const localEntries = localEntriesByKernelFd.get(entry.kernelFd) || [];
+      localEntries.push({ pointer, events });
+      localEntriesByKernelFd.set(entry.kernelFd, localEntries);
+    }
+
+    if (!this.kernelClient) return readyCount;
+
+    try {
+      const result = this.kernelClient.call({
+        op: 'poll',
+        entries: [...kernelEntriesByFd.values()],
+        ...(readyCount > 0
+          ? { timeoutMs: 0 }
+          : (timeout | 0) < 0
+            ? {}
+            : { timeoutMs: timeout | 0 }),
+      });
+      for (const readiness of result.entries) {
+        const localEntries = localEntriesByKernelFd.get(readiness.fd) || [];
+        for (const { pointer, events } of localEntries) {
+          const revents =
+            (readiness.read && (events & POLLIN) !== 0 ? POLLIN : 0) |
+            (readiness.write && (events & POLLOUT) !== 0 ? POLLOUT : 0) |
+            (readiness.error ? POLLERR : 0) |
+            (readiness.hangup ? POLLHUP : 0) |
+            (readiness.invalid ? POLLNVAL : 0);
+          this.mem.writeU16(pointer + 6, revents);
+          if (revents !== 0) readyCount += 1;
+        }
+      }
+      return readyCount;
+    } catch (error) {
+      return -cppTraceKernelErrno(error);
+    }
+  }
+
+  writeKernelFilestat(stat, outPtr) {
+    const filetype = stat.kind === 'directory'
+      ? FILETYPE_DIRECTORY
+      : stat.kind === 'symlink'
+        ? FILETYPE_SYMBOLIC_LINK
+        : FILETYPE_REGULAR_FILE;
+    const size = stat.kind === 'file' ? Math.max(0, Number(stat.size) || 0) : 0;
+    const createdAtNs = BigInt(Math.max(0, Math.trunc(Number(stat.createdAt || 0) * 1_000_000)));
+    const modifiedAtNs = BigInt(Math.max(0, Math.trunc(Number(stat.modifiedAt || 0) * 1_000_000)));
+    const changedAtNs = BigInt(Math.max(0, Math.trunc(Number(stat.changedAt || 0) * 1_000_000)));
+    this.mem.writeU64(outPtr, 1);
+    this.mem.writeU64(outPtr + 8, BigInt(Math.max(1, Math.trunc(Number(stat.inode) || 1))));
+    this.mem.writeU8(outPtr + 16, filetype);
+    this.mem.writeU64(
+      outPtr + 24,
+      this.filestatSizeOffset === 24
+        ? BigInt(size)
+        : BigInt(Math.max(1, Math.trunc(Number(stat.nlink) || 1)))
+    );
+    this.mem.writeU64(outPtr + 32, BigInt(size));
+    this.mem.writeU64(outPtr + 40, createdAtNs);
+    this.mem.writeU64(outPtr + 48, modifiedAtNs);
+    this.mem.writeU64(outPtr + 56, changedAtNs);
+    return ESUCCESS;
   }
 
   writeFilestat(pathname, outPtr, followFinal = true) {
@@ -1986,6 +4071,32 @@ class WasiProcess {
       this.mem.writeU32(nwrittenOut, written);
       return ESUCCESS;
     }
+    if (entry.kind === 'pipe' && entry.kernelFd !== undefined && this.kernelClient) {
+      try {
+        const written = this.kernelClient.call({
+          op: 'write',
+          fd: entry.kernelFd,
+          bytes: concatBytes(chunks),
+        }).bytesWritten;
+        this.mem.writeU32(nwrittenOut, written);
+        return ESUCCESS;
+      } catch (error) {
+        return cppTraceKernelErrno(error);
+      }
+    }
+    if (entry.kind === 'stdio' && entry.kernelFd !== undefined && this.kernelClient) {
+      try {
+        const written = this.kernelClient.call({
+          op: 'write',
+          fd: entry.kernelFd,
+          bytes: concatBytes(chunks),
+        }).bytesWritten;
+        this.mem.writeU32(nwrittenOut, written);
+        return ESUCCESS;
+      } catch (error) {
+        return cppTraceKernelErrno(error);
+      }
+    }
 
     if (entry.kind === 'stdio' && entry.outputDevice) {
       if (entry.outputDevice === '/dev/null') {
@@ -1999,6 +4110,25 @@ class WasiProcess {
       if (outputChunks.length > 0) {
         this.onOutput?.(stream, decodeUtf8(concatBytes(outputChunks)), entry.device, entry.outputDevice);
       }
+    } else if (entry.kind === 'file' && entry.kernelFd !== undefined && this.kernelClient) {
+      let writtenTotal = 0;
+      try {
+        for (const chunk of chunks) {
+          const written = this.kernelClient.call({
+            op: 'write',
+            fd: entry.kernelFd,
+            bytes: chunk,
+            ...(entry.append ? {} : { position: entry.offset }),
+          }).bytesWritten;
+          entry.offset += written;
+          writtenTotal += written;
+          if (written < chunk.byteLength) break;
+        }
+      } catch (error) {
+        return cppTraceKernelErrno(error);
+      }
+      this.mem.writeU32(nwrittenOut, writtenTotal);
+      return ESUCCESS;
     } else if (entry.kind === 'file') {
       const current = this.fs.exists(entry.path) ? this.fs.readFile(entry.path) : new Uint8Array();
       const offset = entry.append ? current.length : entry.offset;
@@ -2026,7 +4156,7 @@ class WasiProcess {
         const ptr = this.mem.readU32(iovs + index * 8);
         const len = this.mem.readU32(iovs + index * 8 + 4);
         const chunk = this.socketRead(entry, len);
-        if (chunk === null) return ENOTCONN;
+        if (chunk === null) return entry.kernelError || ENOTCONN;
         this.mem.writeBytes(ptr, chunk);
         total += chunk.length;
         if (chunk.length < len) break;
@@ -2034,8 +4164,73 @@ class WasiProcess {
       this.mem.writeU32(nreadOut, total);
       return ESUCCESS;
     }
+    if (entry.kind === 'pipe' && entry.kernelFd !== undefined && this.kernelClient) {
+      let total = 0;
+      try {
+        for (let index = 0; index < iovsLen; index += 1) {
+          const ptr = this.mem.readU32(iovs + index * 8);
+          const len = this.mem.readU32(iovs + index * 8 + 4);
+          const chunk = this.kernelClient.call({
+            op: 'read',
+            fd: entry.kernelFd,
+            maxBytes: len,
+          }).bytes;
+          this.mem.writeBytes(ptr, chunk);
+          total += chunk.length;
+          if (chunk.length < len) break;
+        }
+      } catch (error) {
+        return cppTraceKernelErrno(error);
+      }
+      this.mem.writeU32(nreadOut, total);
+      return ESUCCESS;
+    }
+    if (entry.kind === 'stdio' && entry.kernelFd !== undefined && this.kernelClient) {
+      let total = 0;
+      try {
+        for (let index = 0; index < iovsLen; index += 1) {
+          const ptr = this.mem.readU32(iovs + index * 8);
+          const len = this.mem.readU32(iovs + index * 8 + 4);
+          const chunk = this.kernelClient.call({
+            op: 'read',
+            fd: entry.kernelFd,
+            maxBytes: len,
+          }).bytes;
+          this.mem.writeBytes(ptr, chunk);
+          total += chunk.length;
+          if (chunk.length < len) break;
+        }
+      } catch (error) {
+        return cppTraceKernelErrno(error);
+      }
+      this.mem.writeU32(nreadOut, total);
+      return ESUCCESS;
+    }
     if (entry.kind === 'stdio' && entry.inputDevice && entry.inputDevice !== '/dev/null' && this.stdinPipe) {
       return this.fd_read_stdin_pipe(iovs, iovsLen, nreadOut);
+    }
+    if (entry.kind === 'file' && entry.kernelFd !== undefined && this.kernelClient) {
+      let total = 0;
+      try {
+        for (let index = 0; index < iovsLen; index += 1) {
+          const ptr = this.mem.readU32(iovs + index * 8);
+          const len = this.mem.readU32(iovs + index * 8 + 4);
+          const chunk = this.kernelClient.call({
+            op: 'read',
+            fd: entry.kernelFd,
+            maxBytes: len,
+            position: entry.offset,
+          }).bytes;
+          this.mem.writeBytes(ptr, chunk);
+          entry.offset += chunk.length;
+          total += chunk.length;
+          if (chunk.length < len) break;
+        }
+      } catch (error) {
+        return cppTraceKernelErrno(error);
+      }
+      this.mem.writeU32(nreadOut, total);
+      return ESUCCESS;
     }
     const source = entry.kind === 'stdio' && entry.inputDevice && entry.inputDevice !== '/dev/null'
       ? this.stdinBytes
@@ -2108,6 +4303,30 @@ class WasiProcess {
     if (!entry || entry.kind !== 'file') return EBADF;
     if (!entry.writable) return EBADF;
     if (this.fs.isReadOnly(entry.path)) return EROFS;
+    if (entry.kernelFd !== undefined && this.kernelClient) {
+      let position = Number(offset);
+      let total = 0;
+      try {
+        for (let index = 0; index < iovsLen; index += 1) {
+          const ptr = this.mem.readU32(iovs + index * 8);
+          const len = this.mem.readU32(iovs + index * 8 + 4);
+          const chunk = this.mem.readBytes(ptr, len);
+          const written = this.kernelClient.call({
+            op: 'write',
+            fd: entry.kernelFd,
+            bytes: chunk,
+            position,
+          }).bytesWritten;
+          position += written;
+          total += written;
+          if (written < len) break;
+        }
+      } catch (error) {
+        return cppTraceKernelErrno(error);
+      }
+      this.mem.writeU32(nwrittenOut, total);
+      return ESUCCESS;
+    }
     const oldOffset = entry.offset;
     entry.offset = Number(offset);
     const result = this.fd_write(fd, iovs, iovsLen, nwrittenOut);
@@ -2118,6 +4337,30 @@ class WasiProcess {
   fd_pread(fd, iovs, iovsLen, offset, nreadOut) {
     const entry = this.fds.get(fd);
     if (!entry || entry.kind !== 'file') return EBADF;
+    if (entry.kernelFd !== undefined && this.kernelClient) {
+      let position = Number(offset);
+      let total = 0;
+      try {
+        for (let index = 0; index < iovsLen; index += 1) {
+          const ptr = this.mem.readU32(iovs + index * 8);
+          const len = this.mem.readU32(iovs + index * 8 + 4);
+          const chunk = this.kernelClient.call({
+            op: 'read',
+            fd: entry.kernelFd,
+            maxBytes: len,
+            position,
+          }).bytes;
+          this.mem.writeBytes(ptr, chunk);
+          position += chunk.length;
+          total += chunk.length;
+          if (chunk.length < len) break;
+        }
+      } catch (error) {
+        return cppTraceKernelErrno(error);
+      }
+      this.mem.writeU32(nreadOut, total);
+      return ESUCCESS;
+    }
     const oldOffset = entry.offset;
     entry.offset = Number(offset);
     const result = this.fd_read(fd, iovs, iovsLen, nreadOut);
@@ -2128,8 +4371,19 @@ class WasiProcess {
   fd_seek(fd, offset, whence, newOffsetOut) {
     const entry = this.fds.get(fd);
     if (!entry) return EBADF;
-    if (entry.kind === 'socket') return ESPIPE;
-    const fileSize = entry.kind === 'file' && this.fs.exists(entry.path) ? this.fs.readFile(entry.path).length : 0;
+    if (entry.kind === 'socket' || entry.kind === 'pipe') return ESPIPE;
+    let fileSize = 0;
+    if (entry.kind === 'file') {
+      try {
+        fileSize = entry.kernelFd !== undefined && this.kernelClient
+          ? this.kernelClient.call({ op: 'fstat', fd: entry.kernelFd }).stat.size
+          : this.fs.exists(entry.path)
+            ? this.fs.readFile(entry.path).length
+            : 0;
+      } catch (error) {
+        return cppTraceKernelErrno(error);
+      }
+    }
     const currentOffset = entry.kind === 'stdio' && entry.inputDevice
       ? this.inputDeviceOffsets.get(entry.inputDevice) ?? entry.offset ?? 0
       : entry.offset;
@@ -2157,10 +4411,24 @@ class WasiProcess {
   }
 
   fd_close(fd) {
-    if (fd <= 2) return ESUCCESS;
     const entry = this.fds.get(fd);
     if (!entry) return EBADF;
+    if (fd <= 2 && (entry.kernelFd === undefined || !this.kernelClient)) {
+      return ESUCCESS;
+    }
     if (entry.kind === 'socket') this.closeSocket(entry);
+    if (
+      entry.kind !== 'socket' &&
+      entry.kernelFd !== undefined &&
+      this.kernelClient
+    ) {
+      try {
+        this.kernelClient.call({ op: 'close', fd: entry.kernelFd });
+      } catch (error) {
+        this.fds.delete(fd);
+        return cppTraceKernelErrno(error);
+      }
+    }
     this.fds.delete(fd);
     return ESUCCESS;
   }
@@ -2201,6 +4469,16 @@ class WasiProcess {
     const entry = this.fds.get(fd);
     if (!entry) return EBADF;
     if (entry.kind === 'stdio') return this.writeFilestat(entry.device, outPtr);
+    if (entry.kernelFd !== undefined && this.kernelClient) {
+      try {
+        return this.writeKernelFilestat(
+          this.kernelClient.call({ op: 'fstat', fd: entry.kernelFd }).stat,
+          outPtr
+        );
+      } catch (error) {
+        return cppTraceKernelErrno(error);
+      }
+    }
     return this.writeFilestat(entry.path, outPtr);
   }
 
@@ -2209,7 +4487,19 @@ class WasiProcess {
     if (!entry || entry.kind !== 'file') return EBADF;
     if (!entry.writable) return EBADF;
     if (this.fs.isReadOnly(entry.path)) return EROFS;
-    this.fs.resizeFile(entry.path, Number(size));
+    if (entry.kernelFd !== undefined && this.kernelClient) {
+      try {
+        this.kernelClient.call({
+          op: 'ftruncate',
+          fd: entry.kernelFd,
+          length: Number(size),
+        });
+      } catch (error) {
+        return cppTraceKernelErrno(error);
+      }
+    } else {
+      this.fs.resizeFile(entry.path, Number(size));
+    }
     return ESUCCESS;
   }
 
@@ -2229,8 +4519,27 @@ class WasiProcess {
     if (this.fs.isReadOnly(entry.path)) return EROFS;
     const end = Number(offset) + Number(length);
     if (!Number.isFinite(end) || end < 0) return EINVAL;
-    const currentSize = this.fs.exists(entry.path) ? this.fs.readFile(entry.path).length : 0;
-    if (end > currentSize) this.fs.resizeFile(entry.path, end);
+    let currentSize;
+    try {
+      currentSize = entry.kernelFd !== undefined && this.kernelClient
+        ? this.kernelClient.call({ op: 'fstat', fd: entry.kernelFd }).stat.size
+        : this.fs.exists(entry.path)
+          ? this.fs.readFile(entry.path).length
+          : 0;
+    } catch (error) {
+      return cppTraceKernelErrno(error);
+    }
+    if (end > currentSize) {
+      if (entry.kernelFd !== undefined && this.kernelClient) {
+        try {
+          this.kernelClient.call({ op: 'ftruncate', fd: entry.kernelFd, length: end });
+        } catch (error) {
+          return cppTraceKernelErrno(error);
+        }
+      } else {
+        this.fs.resizeFile(entry.path, end);
+      }
+    }
     return ESUCCESS;
   }
 
@@ -3002,12 +5311,16 @@ async function runWasi(module, args, fs, options = {}) {
     args,
     fs,
     cwd: options.cwd || '/',
+    kernelCwd: options.kernelCwd,
     stdinPipe: options.stdinPipe,
     stdinBytes: options.stdinBytes,
     stdinText: options.stdinText,
     env: options.env || { USER: 'tracecode' },
     kernelDevices: options.kernelDevices,
     kernelHttp: options.kernelHttp,
+    kernelClient: options.kernelClient,
+    kernelSignalMailbox: options.kernelSignalMailbox,
+    process: options.process,
     filestatSizeOffset: options.filestatSizeOffset,
     outputBudget: options.outputBudget,
     onOutput: options.onOutput,
@@ -9416,6 +11729,15 @@ function compileDriverOutsideMainWorker(driverSource) {
 const CPP_KERNEL_SOCKET_HEADER_FILENAME = 'tracecode_socket.h';
 const CPP_KERNEL_SOCKET_SHIM_FILENAME = 'tracecode_socket.c';
 const CPP_KERNEL_NETDB_HEADER_FILENAME = 'netdb.h';
+const CPP_KERNEL_PROCESS_SHIM_FILENAME = 'tracecode_process.c';
+const CPP_KERNEL_PROCESS_HEADER_FILENAME = 'tracecode_process.h';
+const CPP_KERNEL_POLL_HEADER_FILENAME = 'poll.h';
+const CPP_KERNEL_SELECT_HEADER_FILENAME = 'sys/select.h';
+const CPP_KERNEL_IOCTL_HEADER_FILENAME = 'tracecode_ioctl.h';
+const CPP_KERNEL_SPAWN_HEADER_FILENAME = 'spawn.h';
+const CPP_KERNEL_WAIT_HEADER_FILENAME = 'sys/wait.h';
+const CPP_KERNEL_CONTROL_HEADER_FILENAME = 'tracekernel.h';
+const CPP_KERNEL_CONTROL_SHIM_FILENAME = 'tracekernel.c';
 
 // Declarations wasi-libc's <sys/socket.h> is missing; force-included into
 // every project TU so standard POSIX code compiles unchanged.
@@ -9427,6 +11749,10 @@ extern "C" {
 #endif
 
 struct sockaddr;
+
+#ifndef SO_ERROR
+#define SO_ERROR 4
+#endif
 
 int socket(int __domain, int __type, int __protocol);
 int connect(int __fd, const struct sockaddr* __addr, unsigned int __len);
@@ -9509,6 +11835,8 @@ __attribute__((import_module("tracecode_kernel"), import_name("sock_open")))
 int __tracecode_sock_open(int domain, int type);
 __attribute__((import_module("tracecode_kernel"), import_name("sock_connect")))
 int __tracecode_sock_connect(int fd, unsigned int ip, int port);
+__attribute__((import_module("tracecode_kernel"), import_name("sock_error")))
+int __tracecode_sock_error(int fd);
 __attribute__((import_module("tracecode_kernel"), import_name("sock_bind")))
 int __tracecode_sock_bind(int fd, unsigned int ip, int port);
 __attribute__((import_module("tracecode_kernel"), import_name("sock_listen")))
@@ -9598,13 +11926,23 @@ int setsockopt(int fd, int level, int option, const void* value, unsigned int le
 }
 
 int getsockopt(int fd, int level, int option, void* value, unsigned int* len) {
-  (void)fd;
-  (void)level;
-  (void)option;
-  if (value != 0 && len != 0 && *len >= (unsigned int)sizeof(int)) {
-    memset(value, 0, sizeof(int));
-    *len = (unsigned int)sizeof(int);
+  int socket_error;
+  if (value == 0 || len == 0 || *len < (unsigned int)sizeof(int)) {
+    errno = EINVAL;
+    return -1;
   }
+  if (level == SOL_SOCKET && option == SO_ERROR) {
+    socket_error = __tracecode_sock_error(fd);
+    if (socket_error < 0) {
+      errno = -socket_error;
+      return -1;
+    }
+    memcpy(value, &socket_error, sizeof(int));
+    *len = (unsigned int)sizeof(int);
+    return 0;
+  }
+  memset(value, 0, sizeof(int));
+  *len = (unsigned int)sizeof(int);
   return 0;
 }
 
@@ -9665,6 +12003,865 @@ const char* gai_strerror(int code) {
 #endif
 `;
 
+const CPP_KERNEL_SPAWN_HEADER_SOURCE = String.raw`#ifndef _SPAWN_H
+#define _SPAWN_H
+
+#include <fcntl.h>
+#include <sys/types.h>
+
+#if !defined(O_CLOEXEC) || O_CLOEXEC == 0
+#undef O_CLOEXEC
+#define O_CLOEXEC 0x80000
+#endif
+#if !defined(O_NONBLOCK) || O_NONBLOCK == 0
+#undef O_NONBLOCK
+#define O_NONBLOCK 0x800
+#endif
+
+#ifdef __cplusplus
+extern "C" {
+#endif
+
+#define POSIX_SPAWN_SETPGROUP 0x01
+#define POSIX_SPAWN_SETSID 0x02
+
+typedef struct {
+  short __flags;
+  pid_t __pgroup;
+} posix_spawnattr_t;
+
+typedef struct {
+  unsigned int __count;
+  struct {
+    int __operation;
+    int __fd;
+    int __target_fd;
+  } __actions[64];
+} posix_spawn_file_actions_t;
+
+int posix_spawn(pid_t* pid, const char* path, const posix_spawn_file_actions_t* actions, const posix_spawnattr_t* attributes, char* const argv[], char* const envp[]);
+int posix_spawnp(pid_t* pid, const char* file, const posix_spawn_file_actions_t* actions, const posix_spawnattr_t* attributes, char* const argv[], char* const envp[]);
+int posix_spawnattr_init(posix_spawnattr_t* attributes);
+int posix_spawnattr_destroy(posix_spawnattr_t* attributes);
+int posix_spawnattr_getflags(const posix_spawnattr_t* attributes, short* flags);
+int posix_spawnattr_setflags(posix_spawnattr_t* attributes, short flags);
+int posix_spawnattr_getpgroup(const posix_spawnattr_t* attributes, pid_t* pgroup);
+int posix_spawnattr_setpgroup(posix_spawnattr_t* attributes, pid_t pgroup);
+int posix_spawn_file_actions_init(posix_spawn_file_actions_t* actions);
+int posix_spawn_file_actions_destroy(posix_spawn_file_actions_t* actions);
+int posix_spawn_file_actions_addclose(posix_spawn_file_actions_t* actions, int fd);
+int posix_spawn_file_actions_adddup2(posix_spawn_file_actions_t* actions, int fd, int newfd);
+
+#ifdef __cplusplus
+}
+#endif
+
+#endif
+`;
+
+const CPP_KERNEL_WAIT_HEADER_SOURCE = String.raw`#ifndef _SYS_WAIT_H
+#define _SYS_WAIT_H
+
+#include <sys/types.h>
+
+#define WNOHANG 1
+#define WIFEXITED(status) (((status) & 0x7f) == 0)
+#define WEXITSTATUS(status) (((status) >> 8) & 0xff)
+#define WIFSIGNALED(status) (((status) & 0x7f) != 0)
+#define WTERMSIG(status) ((status) & 0x7f)
+
+#ifdef __cplusplus
+extern "C" {
+#endif
+pid_t waitpid(pid_t pid, int* status, int options);
+#ifdef __cplusplus
+}
+#endif
+
+#endif
+`;
+
+const CPP_KERNEL_PROCESS_HEADER_SOURCE = String.raw`#ifndef TRACECODE_PROCESS_H
+#define TRACECODE_PROCESS_H
+
+#include <sys/types.h>
+
+#ifdef __cplusplus
+extern "C" {
+#endif
+
+int kill(pid_t pid, int signal);
+int killpg(pid_t pgroup, int signal);
+int pipe(int descriptors[2]);
+int pipe2(int descriptors[2], int flags);
+int dup(int fd);
+int dup2(int fd, int target_fd);
+int dup3(int fd, int target_fd, int flags);
+pid_t getpid(void);
+pid_t getppid(void);
+pid_t getpgrp(void);
+pid_t getpgid(pid_t pid);
+pid_t getsid(pid_t pid);
+pid_t setsid(void);
+int setpgid(pid_t pid, pid_t pgroup);
+int __tracecode_isatty(int fd);
+pid_t __tracecode_tcgetpgrp(int fd);
+int __tracecode_tcsetpgrp(int fd, pid_t pgroup);
+
+/*
+ * WASI libc ships local tty stubs. Route source calls to the TraceKernel shim
+ * explicitly so the archive's weak compatibility implementation cannot win
+ * link resolution ahead of the kernel-backed definitions.
+ */
+#define isatty __tracecode_isatty
+#define tcgetpgrp __tracecode_tcgetpgrp
+#define tcsetpgrp __tracecode_tcsetpgrp
+
+#ifdef __cplusplus
+}
+#endif
+
+#endif
+`;
+
+const CPP_KERNEL_IOCTL_HEADER_SOURCE = String.raw`#ifndef TRACECODE_IOCTL_H
+#define TRACECODE_IOCTL_H
+
+/*
+ * WASI has no terminal ioctl syscall. Provide the POSIX window-size surface
+ * and route it to the TraceKernel descriptor that owns the controlling tty.
+ */
+#ifndef _SYS_IOCTL_H
+#define _SYS_IOCTL_H
+struct winsize {
+  unsigned short ws_row;
+  unsigned short ws_col;
+  unsigned short ws_xpixel;
+  unsigned short ws_ypixel;
+};
+#endif
+
+#ifndef TIOCGWINSZ
+#define TIOCGWINSZ 0x5413UL
+#endif
+#ifndef TIOCSWINSZ
+#define TIOCSWINSZ 0x5414UL
+#endif
+
+#ifdef __cplusplus
+extern "C" {
+#endif
+int __tracecode_ioctl(int fd, unsigned long request, ...);
+#ifdef __cplusplus
+}
+#endif
+
+#define ioctl __tracecode_ioctl
+
+#endif
+`;
+
+const CPP_KERNEL_POLL_HEADER_SOURCE = String.raw`#ifndef _POLL_H
+#define _POLL_H
+
+#include <sys/types.h>
+
+typedef unsigned long nfds_t;
+
+struct pollfd {
+  int fd;
+  short events;
+  short revents;
+};
+
+#define POLLIN 0x0001
+#define POLLOUT 0x0002
+#define POLLERR 0x1000
+#define POLLHUP 0x2000
+#define POLLNVAL 0x4000
+
+#ifdef __cplusplus
+extern "C" {
+#endif
+int poll(struct pollfd* descriptors, nfds_t count, int timeout);
+#ifdef __cplusplus
+}
+#endif
+
+#endif
+`;
+
+const CPP_KERNEL_SELECT_HEADER_SOURCE = String.raw`#ifndef _SYS_SELECT_H
+#define _SYS_SELECT_H
+
+#include <sys/time.h>
+
+#ifndef FD_SETSIZE
+#define FD_SETSIZE 1024
+#endif
+
+typedef struct {
+  unsigned long __tracecode_bits[FD_SETSIZE / (8 * sizeof(unsigned long))];
+} fd_set;
+
+#define __TRACECODE_FD_WORD(fd) ((unsigned int)(fd) / (8 * sizeof(unsigned long)))
+#define __TRACECODE_FD_MASK(fd) (1UL << ((unsigned int)(fd) % (8 * sizeof(unsigned long))))
+#define FD_ZERO(set) do { \
+  unsigned int __tracecode_fd_index; \
+  for (__tracecode_fd_index = 0; \
+       __tracecode_fd_index < FD_SETSIZE / (8 * sizeof(unsigned long)); \
+       ++__tracecode_fd_index) { \
+    (set)->__tracecode_bits[__tracecode_fd_index] = 0; \
+  } \
+} while (0)
+#define FD_SET(fd, set) ((set)->__tracecode_bits[__TRACECODE_FD_WORD(fd)] |= __TRACECODE_FD_MASK(fd))
+#define FD_CLR(fd, set) ((set)->__tracecode_bits[__TRACECODE_FD_WORD(fd)] &= ~__TRACECODE_FD_MASK(fd))
+#define FD_ISSET(fd, set) (((set)->__tracecode_bits[__TRACECODE_FD_WORD(fd)] & __TRACECODE_FD_MASK(fd)) != 0)
+
+#ifdef __cplusplus
+extern "C" {
+#endif
+int select(
+  int descriptor_count,
+  fd_set* read_descriptors,
+  fd_set* write_descriptors,
+  fd_set* error_descriptors,
+  struct timeval* timeout
+);
+#ifdef __cplusplus
+}
+#endif
+
+#endif
+`;
+
+const CPP_KERNEL_PROCESS_SHIM_SOURCE = String.raw`#include <errno.h>
+#include <fcntl.h>
+#include <limits.h>
+#include <poll.h>
+#include <signal.h>
+#include <spawn.h>
+#include <stdlib.h>
+#include <string.h>
+#include <sys/types.h>
+#include <sys/select.h>
+#include <sys/wait.h>
+#include <unistd.h>
+#include <stdarg.h>
+
+__attribute__((import_module("tracecode_kernel"), import_name("proc_system")))
+int __tracecode_proc_system(const char* command, unsigned int length);
+__attribute__((import_module("tracecode_kernel"), import_name("proc_spawn")))
+int __tracecode_proc_spawn(const char* path, char* const argv[], char* const envp[], const posix_spawn_file_actions_t* actions, int flags, int pgroup);
+__attribute__((import_module("tracecode_kernel"), import_name("proc_wait")))
+int __tracecode_proc_wait(int pid, int* status, int options);
+__attribute__((import_module("tracecode_kernel"), import_name("proc_kill")))
+int __tracecode_proc_kill(int pid, int signal);
+__attribute__((import_module("tracecode_kernel"), import_name("proc_poll_signal")))
+int __tracecode_proc_poll_signal(void);
+__attribute__((import_module("tracecode_kernel"), import_name("proc_identity")))
+int __tracecode_proc_identity(int kind, int pid);
+__attribute__((import_module("tracecode_kernel"), import_name("proc_fcntl")))
+int __tracecode_proc_fcntl(int fd, int action, int value);
+__attribute__((import_module("tracecode_kernel"), import_name("proc_pipe")))
+int __tracecode_proc_pipe(int descriptors[2], int flags);
+__attribute__((import_module("tracecode_kernel"), import_name("proc_dup")))
+int __tracecode_proc_dup(int fd);
+__attribute__((import_module("tracecode_kernel"), import_name("proc_dup3")))
+int __tracecode_proc_dup3(int fd, int target_fd, int flags, int allow_same);
+__attribute__((import_module("tracecode_kernel"), import_name("proc_poll")))
+int __tracecode_proc_poll(struct pollfd* descriptors, unsigned int count, int timeout);
+__attribute__((import_module("tracecode_kernel"), import_name("proc_setsid")))
+int __tracecode_proc_setsid(void);
+__attribute__((import_module("tracecode_kernel"), import_name("proc_setpgid")))
+int __tracecode_proc_setpgid(int pid, int pgroup);
+__attribute__((import_module("tracecode_kernel"), import_name("proc_isatty")))
+int __tracecode_proc_isatty(int fd);
+__attribute__((import_module("tracecode_kernel"), import_name("proc_tcgetpgrp")))
+int __tracecode_proc_tcgetpgrp(int fd);
+__attribute__((import_module("tracecode_kernel"), import_name("proc_tcsetpgrp")))
+int __tracecode_proc_tcsetpgrp(int fd, int pgroup);
+__attribute__((import_module("tracecode_kernel"), import_name("proc_tcgetwinsize")))
+int __tracecode_proc_tcgetwinsize(int fd, unsigned short* rows, unsigned short* columns);
+__attribute__((import_module("tracecode_kernel"), import_name("proc_tcsetwinsize")))
+int __tracecode_proc_tcsetwinsize(int fd, unsigned short rows, unsigned short columns);
+
+typedef void (*__tracecode_signal_handler_t)(int);
+void __SIG_IGN(int signal_number) { (void)signal_number; }
+void __SIG_ERR(int signal_number) { (void)signal_number; }
+static __tracecode_signal_handler_t __tracecode_signal_handlers[64];
+
+__tracecode_signal_handler_t signal(
+  int signal_number,
+  __tracecode_signal_handler_t handler
+) {
+  __tracecode_signal_handler_t previous;
+  if (
+    signal_number <= 0 ||
+    signal_number >= 64 ||
+    signal_number == SIGKILL ||
+    signal_number == SIGSTOP
+  ) {
+    errno = EINVAL;
+    return __SIG_ERR;
+  }
+  previous = __tracecode_signal_handlers[signal_number];
+  __tracecode_signal_handlers[signal_number] = handler;
+  return previous;
+}
+
+int raise(int signal_number) {
+  __tracecode_signal_handler_t handler;
+  if (signal_number <= 0 || signal_number >= 64) {
+    errno = EINVAL;
+    return -1;
+  }
+  handler = __tracecode_signal_handlers[signal_number];
+  if (handler == SIG_IGN) return 0;
+  if (handler != SIG_DFL && handler != SIG_ERR) {
+    handler(signal_number);
+    return 0;
+  }
+  if (signal_number == SIGWINCH) return 0;
+  errno = ENOTSUP;
+  return -1;
+}
+
+int fcntl(int fd, int command, ...) {
+  int result;
+  int value = 0;
+  if (command == F_SETFD || command == F_SETFL) {
+    va_list arguments;
+    va_start(arguments, command);
+    value = va_arg(arguments, int);
+    va_end(arguments);
+  } else if (command != F_GETFD && command != F_GETFL) {
+    errno = ENOSYS;
+    return -1;
+  }
+  result = __tracecode_proc_fcntl(
+    fd,
+    command == F_GETFD ? 1 : command == F_SETFD ? 2 : command == F_GETFL ? 3 : 4,
+    command == F_SETFD ? (value & FD_CLOEXEC) : (value & O_NONBLOCK)
+  );
+  if (result < 0) {
+    errno = -result;
+    return -1;
+  }
+  if (command == F_GETFD) return result ? FD_CLOEXEC : 0;
+  if (command == F_GETFL) return result ? O_NONBLOCK : 0;
+  return 0;
+}
+
+int pipe2(int descriptors[2], int flags) {
+  int supported = 0;
+  int result;
+  if (descriptors == 0) {
+    errno = EFAULT;
+    return -1;
+  }
+  if ((flags & O_CLOEXEC) != 0) supported |= 1;
+  if ((flags & O_NONBLOCK) != 0) supported |= 2;
+  if ((flags & ~(O_CLOEXEC | O_NONBLOCK)) != 0) {
+    errno = ENOTSUP;
+    return -1;
+  }
+  result = __tracecode_proc_pipe(descriptors, supported);
+  if (result < 0) {
+    errno = -result;
+    return -1;
+  }
+  return 0;
+}
+
+int pipe(int descriptors[2]) {
+  return pipe2(descriptors, 0);
+}
+
+int dup(int fd) {
+  int result = __tracecode_proc_dup(fd);
+  if (result < 0) {
+    errno = -result;
+    return -1;
+  }
+  return result;
+}
+
+int dup2(int fd, int target_fd) {
+  int result = __tracecode_proc_dup3(fd, target_fd, 0, 1);
+  if (result < 0) {
+    errno = -result;
+    return -1;
+  }
+  return result;
+}
+
+int dup3(int fd, int target_fd, int flags) {
+  int supported = 0;
+  int result;
+  if ((flags & O_CLOEXEC) != 0) supported |= 1;
+  if ((flags & ~O_CLOEXEC) != 0) {
+    errno = EINVAL;
+    return -1;
+  }
+  result = __tracecode_proc_dup3(fd, target_fd, supported, 0);
+  if (result < 0) {
+    errno = -result;
+    return -1;
+  }
+  return result;
+}
+
+int poll(struct pollfd* descriptors, nfds_t count, int timeout) {
+  int result;
+  if (count > 0 && descriptors == 0) {
+    errno = EFAULT;
+    return -1;
+  }
+  if (timeout < -1) {
+    errno = EINVAL;
+    return -1;
+  }
+  result = __tracecode_proc_poll(descriptors, (unsigned int)count, timeout);
+  if (result < 0) {
+    errno = -result;
+    return -1;
+  }
+  return result;
+}
+
+int select(
+  int descriptor_count,
+  fd_set* read_descriptors,
+  fd_set* write_descriptors,
+  fd_set* error_descriptors,
+  struct timeval* timeout
+) {
+  struct pollfd* descriptors;
+  unsigned char* interests;
+  unsigned int count = 0;
+  int timeout_ms = -1;
+  int result;
+  int ready = 0;
+  int fd;
+
+  if (descriptor_count < 0 || descriptor_count > FD_SETSIZE) {
+    errno = EINVAL;
+    return -1;
+  }
+  if (timeout != 0) {
+    long long milliseconds;
+    if (
+      timeout->tv_sec < 0 ||
+      timeout->tv_usec < 0 ||
+      timeout->tv_usec >= 1000000
+    ) {
+      errno = EINVAL;
+      return -1;
+    }
+    milliseconds =
+      (long long)timeout->tv_sec * 1000LL +
+      ((long long)timeout->tv_usec + 999LL) / 1000LL;
+    timeout_ms = milliseconds > INT_MAX ? INT_MAX : (int)milliseconds;
+  }
+
+  descriptors = (struct pollfd*)calloc(
+    descriptor_count > 0 ? (unsigned int)descriptor_count : 1,
+    sizeof(struct pollfd)
+  );
+  interests = (unsigned char*)calloc(
+    descriptor_count > 0 ? (unsigned int)descriptor_count : 1,
+    sizeof(unsigned char)
+  );
+  if (descriptors == 0 || interests == 0) {
+    free(descriptors);
+    free(interests);
+    errno = ENOMEM;
+    return -1;
+  }
+
+  for (fd = 0; fd < descriptor_count; ++fd) {
+    unsigned char interest = 0;
+    if (read_descriptors != 0 && FD_ISSET(fd, read_descriptors)) interest |= 1;
+    if (write_descriptors != 0 && FD_ISSET(fd, write_descriptors)) interest |= 2;
+    if (error_descriptors != 0 && FD_ISSET(fd, error_descriptors)) interest |= 4;
+    if (interest == 0) continue;
+    descriptors[count].fd = fd;
+    descriptors[count].events =
+      ((interest & 1) != 0 ? POLLIN : 0) |
+      ((interest & 2) != 0 ? POLLOUT : 0);
+    interests[count] = interest;
+    ++count;
+  }
+
+  result = poll(descriptors, (nfds_t)count, timeout_ms);
+  if (result < 0) {
+    free(descriptors);
+    free(interests);
+    return -1;
+  }
+  if (read_descriptors != 0) FD_ZERO(read_descriptors);
+  if (write_descriptors != 0) FD_ZERO(write_descriptors);
+  if (error_descriptors != 0) FD_ZERO(error_descriptors);
+
+  for (fd = 0; fd < (int)count; ++fd) {
+    short revents = descriptors[fd].revents;
+    int descriptor_ready = 0;
+    if ((revents & POLLNVAL) != 0) {
+      free(descriptors);
+      free(interests);
+      errno = EBADF;
+      return -1;
+    }
+    if (
+      read_descriptors != 0 &&
+      (interests[fd] & 1) != 0 &&
+      (revents & (POLLIN | POLLHUP)) != 0
+    ) {
+      FD_SET(descriptors[fd].fd, read_descriptors);
+      descriptor_ready = 1;
+    }
+    if (
+      write_descriptors != 0 &&
+      (interests[fd] & 2) != 0 &&
+      (revents & POLLOUT) != 0
+    ) {
+      FD_SET(descriptors[fd].fd, write_descriptors);
+      descriptor_ready = 1;
+    }
+    if (
+      error_descriptors != 0 &&
+      (interests[fd] & 4) != 0 &&
+      (revents & POLLERR) != 0
+    ) {
+      FD_SET(descriptors[fd].fd, error_descriptors);
+      descriptor_ready = 1;
+    }
+    if (descriptor_ready) ++ready;
+  }
+  free(descriptors);
+  free(interests);
+  return ready;
+}
+
+int system(const char* command) {
+  int result;
+  if (command == 0) return 1;
+  result = __tracecode_proc_system(command, (unsigned int)strlen(command));
+  if (result < 0) {
+    errno = -result;
+    return -1;
+  }
+  return (result & 0xff) << 8;
+}
+
+int posix_spawn(
+  pid_t* pid,
+  const char* path,
+  const posix_spawn_file_actions_t* actions,
+  const posix_spawnattr_t* attributes,
+  char* const argv[],
+  char* const envp[]
+) {
+  int result;
+  if (pid == 0 || path == 0 || argv == 0) return EINVAL;
+  result = __tracecode_proc_spawn(
+    path,
+    argv,
+    envp,
+    actions,
+    attributes == 0 ? 0 : attributes->__flags,
+    attributes == 0 ? 0 : attributes->__pgroup
+  );
+  if (result < 0) return -result;
+  *pid = (pid_t)result;
+  return 0;
+}
+
+int posix_spawnp(
+  pid_t* pid,
+  const char* file,
+  const posix_spawn_file_actions_t* actions,
+  const posix_spawnattr_t* attributes,
+  char* const argv[],
+  char* const envp[]
+) {
+  return posix_spawn(pid, file, actions, attributes, argv, envp);
+}
+
+int posix_spawnattr_init(posix_spawnattr_t* attributes) {
+  if (attributes == 0) return EINVAL;
+  memset(attributes, 0, sizeof(*attributes));
+  return 0;
+}
+
+int posix_spawnattr_destroy(posix_spawnattr_t* attributes) {
+  return attributes == 0 ? EINVAL : 0;
+}
+
+int posix_spawnattr_getflags(const posix_spawnattr_t* attributes, short* flags) {
+  if (attributes == 0 || flags == 0) return EINVAL;
+  *flags = attributes->__flags;
+  return 0;
+}
+
+int posix_spawnattr_setflags(posix_spawnattr_t* attributes, short flags) {
+  if (attributes == 0 || (flags & ~(POSIX_SPAWN_SETPGROUP | POSIX_SPAWN_SETSID)) != 0) return EINVAL;
+  attributes->__flags = flags;
+  return 0;
+}
+
+int posix_spawnattr_getpgroup(const posix_spawnattr_t* attributes, pid_t* pgroup) {
+  if (attributes == 0 || pgroup == 0) return EINVAL;
+  *pgroup = attributes->__pgroup;
+  return 0;
+}
+
+int posix_spawnattr_setpgroup(posix_spawnattr_t* attributes, pid_t pgroup) {
+  if (attributes == 0 || pgroup < 0) return EINVAL;
+  attributes->__pgroup = pgroup;
+  return 0;
+}
+
+int posix_spawn_file_actions_init(posix_spawn_file_actions_t* actions) {
+  if (actions == 0) return EINVAL;
+  memset(actions, 0, sizeof(*actions));
+  return 0;
+}
+
+int posix_spawn_file_actions_destroy(posix_spawn_file_actions_t* actions) {
+  return actions == 0 ? EINVAL : 0;
+}
+
+int posix_spawn_file_actions_addclose(posix_spawn_file_actions_t* actions, int fd) {
+  unsigned int index;
+  if (actions == 0 || fd < 0) return EINVAL;
+  if (actions->__count >= 64) return E2BIG;
+  index = actions->__count++;
+  actions->__actions[index].__operation = 2;
+  actions->__actions[index].__fd = fd;
+  actions->__actions[index].__target_fd = 0;
+  return 0;
+}
+
+int posix_spawn_file_actions_adddup2(posix_spawn_file_actions_t* actions, int fd, int newfd) {
+  unsigned int index;
+  if (actions == 0 || fd < 0 || newfd < 0) return EINVAL;
+  if (actions->__count >= 64) return E2BIG;
+  index = actions->__count++;
+  actions->__actions[index].__operation = 1;
+  actions->__actions[index].__fd = fd;
+  actions->__actions[index].__target_fd = newfd;
+  return 0;
+}
+
+pid_t waitpid(pid_t pid, int* status, int options) {
+  int result = __tracecode_proc_wait((int)pid, status, options);
+  if (result < 0) {
+    errno = -result;
+    return (pid_t)-1;
+  }
+  return (pid_t)result;
+}
+
+int kill(pid_t pid, int signal) {
+  int result = __tracecode_proc_kill((int)pid, signal);
+  if (result < 0) {
+    errno = -result;
+    return -1;
+  }
+  return 0;
+}
+
+int killpg(pid_t pgroup, int signal) {
+  return kill(-pgroup, signal);
+}
+
+pid_t getpid(void) { return (pid_t)__tracecode_proc_identity(1, 0); }
+pid_t getppid(void) { return (pid_t)__tracecode_proc_identity(2, 0); }
+pid_t getpgrp(void) { return (pid_t)__tracecode_proc_identity(3, 0); }
+pid_t getpgid(pid_t pid) {
+  int result = __tracecode_proc_identity(3, (int)pid);
+  if (result < 0) {
+    errno = -result;
+    return (pid_t)-1;
+  }
+  return (pid_t)result;
+}
+pid_t getsid(pid_t pid) {
+  int result = __tracecode_proc_identity(4, (int)pid);
+  if (result < 0) {
+    errno = -result;
+    return (pid_t)-1;
+  }
+  return (pid_t)result;
+}
+pid_t setsid(void) {
+  int result = __tracecode_proc_setsid();
+  if (result < 0) {
+    errno = -result;
+    return (pid_t)-1;
+  }
+  return (pid_t)result;
+}
+int setpgid(pid_t pid, pid_t pgroup) {
+  int result = __tracecode_proc_setpgid((int)pid, (int)pgroup);
+  if (result < 0) {
+    errno = -result;
+    return -1;
+  }
+  return 0;
+}
+int isatty(int fd) {
+  int result = __tracecode_proc_isatty(fd);
+  if (result < 0) {
+    errno = -result;
+    return 0;
+  }
+  return result != 0;
+}
+pid_t tcgetpgrp(int fd) {
+  int result = __tracecode_proc_tcgetpgrp(fd);
+  if (result < 0) {
+    errno = -result;
+    return (pid_t)-1;
+  }
+  return (pid_t)result;
+}
+int tcsetpgrp(int fd, pid_t pgroup) {
+  int result = __tracecode_proc_tcsetpgrp(fd, (int)pgroup);
+  if (result < 0) {
+    errno = -result;
+    return -1;
+  }
+  return 0;
+}
+int __tracecode_ioctl(int fd, unsigned long request, ...) {
+  struct winsize* size;
+  int result;
+  va_list arguments;
+  va_start(arguments, request);
+  size = va_arg(arguments, struct winsize*);
+  va_end(arguments);
+  if (size == 0) {
+    errno = EFAULT;
+    return -1;
+  }
+  if (request == TIOCGWINSZ) {
+    result = __tracecode_proc_tcgetwinsize(
+      fd,
+      &size->ws_row,
+      &size->ws_col
+    );
+    if (result == 0) {
+      size->ws_xpixel = 0;
+      size->ws_ypixel = 0;
+    }
+  } else if (request == TIOCSWINSZ) {
+    result = __tracecode_proc_tcsetwinsize(
+      fd,
+      size->ws_row,
+      size->ws_col
+    );
+    if (result == 0) {
+      int pending_signal = __tracecode_proc_poll_signal();
+      if (pending_signal > 0) raise(pending_signal);
+    }
+  } else {
+    errno = ENOTTY;
+    return -1;
+  }
+  if (result < 0) {
+    errno = -result;
+    return -1;
+  }
+  return 0;
+}
+`;
+
+const CPP_KERNEL_CONTROL_HEADER_SOURCE = String.raw`#ifndef TRACEKERNEL_H
+#define TRACEKERNEL_H
+
+#include <stdint.h>
+
+#ifdef __cplusplus
+extern "C" {
+#endif
+
+#define TRACEKERNEL_WATCHDOG_SIGTERM 15
+#define TRACEKERNEL_WATCHDOG_SIGKILL 9
+
+struct tracekernel_watchdog_status {
+  uint32_t armed;
+  uint32_t timeout_ms;
+  uint64_t deadline_at_ms;
+  int32_t signal;
+};
+
+int tracekernel_watchdog_arm(uint32_t timeout_ms, int signal);
+int tracekernel_watchdog_pet(void);
+int tracekernel_watchdog_disarm(void);
+int tracekernel_watchdog_get_status(struct tracekernel_watchdog_status* status);
+
+#ifdef __cplusplus
+}
+#endif
+
+#endif
+`;
+
+const CPP_KERNEL_CONTROL_SHIM_SOURCE = String.raw`#include <errno.h>
+#include <stdint.h>
+#include "tracekernel.h"
+
+__attribute__((import_module("tracecode_kernel"), import_name("proc_watchdog")))
+int __tracecode_proc_watchdog(
+  int action,
+  uint32_t timeout_ms,
+  int signal,
+  struct tracekernel_watchdog_status* status
+);
+
+static int tracekernel_watchdog_call(
+  int action,
+  uint32_t timeout_ms,
+  int signal,
+  struct tracekernel_watchdog_status* status
+) {
+  int result = __tracecode_proc_watchdog(
+    action,
+    timeout_ms,
+    signal,
+    status
+  );
+  if (result < 0) {
+    errno = -result;
+    return -1;
+  }
+  return 0;
+}
+
+int tracekernel_watchdog_arm(uint32_t timeout_ms, int signal) {
+  return tracekernel_watchdog_call(1, timeout_ms, signal, 0);
+}
+
+int tracekernel_watchdog_pet(void) {
+  return tracekernel_watchdog_call(2, 0, 0, 0);
+}
+
+int tracekernel_watchdog_disarm(void) {
+  return tracekernel_watchdog_call(3, 0, 0, 0);
+}
+
+int tracekernel_watchdog_get_status(struct tracekernel_watchdog_status* status) {
+  if (status == 0) {
+    errno = EINVAL;
+    return -1;
+  }
+  return tracekernel_watchdog_call(4, 0, 0, status);
+}
+`;
+
 function cppProjectHasFileNamed(files, filename) {
   return files.some((file) => {
     const path = String(file?.path || '').replace(/\\/g, '/');
@@ -9672,7 +12869,7 @@ function cppProjectHasFileNamed(files, filename) {
   });
 }
 
-function projectWithCppKernelNetworkShims(project) {
+function projectWithCppKernelShims(project) {
   const files = Array.isArray(project?.files) ? project.files : [];
   const additions = [];
   if (!cppProjectHasFileNamed(files, CPP_KERNEL_SOCKET_HEADER_FILENAME)) {
@@ -9684,6 +12881,33 @@ function projectWithCppKernelNetworkShims(project) {
   if (!cppProjectHasFileNamed(files, CPP_KERNEL_NETDB_HEADER_FILENAME)) {
     additions.push({ path: CPP_KERNEL_NETDB_HEADER_FILENAME, contents: CPP_KERNEL_NETDB_HEADER_SOURCE });
   }
+  if (!cppProjectHasFileNamed(files, CPP_KERNEL_PROCESS_SHIM_FILENAME)) {
+    additions.push({ path: CPP_KERNEL_PROCESS_SHIM_FILENAME, contents: CPP_KERNEL_PROCESS_SHIM_SOURCE });
+  }
+  if (!cppProjectHasFileNamed(files, CPP_KERNEL_PROCESS_HEADER_FILENAME)) {
+    additions.push({ path: CPP_KERNEL_PROCESS_HEADER_FILENAME, contents: CPP_KERNEL_PROCESS_HEADER_SOURCE });
+  }
+  if (!cppProjectHasFileNamed(files, CPP_KERNEL_POLL_HEADER_FILENAME)) {
+    additions.push({ path: CPP_KERNEL_POLL_HEADER_FILENAME, contents: CPP_KERNEL_POLL_HEADER_SOURCE });
+  }
+  if (!cppProjectHasFileNamed(files, CPP_KERNEL_SELECT_HEADER_FILENAME)) {
+    additions.push({ path: CPP_KERNEL_SELECT_HEADER_FILENAME, contents: CPP_KERNEL_SELECT_HEADER_SOURCE });
+  }
+  if (!cppProjectHasFileNamed(files, CPP_KERNEL_IOCTL_HEADER_FILENAME)) {
+    additions.push({ path: CPP_KERNEL_IOCTL_HEADER_FILENAME, contents: CPP_KERNEL_IOCTL_HEADER_SOURCE });
+  }
+  if (!cppProjectHasFileNamed(files, CPP_KERNEL_SPAWN_HEADER_FILENAME)) {
+    additions.push({ path: CPP_KERNEL_SPAWN_HEADER_FILENAME, contents: CPP_KERNEL_SPAWN_HEADER_SOURCE });
+  }
+  if (!cppProjectHasFileNamed(files, CPP_KERNEL_WAIT_HEADER_FILENAME)) {
+    additions.push({ path: CPP_KERNEL_WAIT_HEADER_FILENAME, contents: CPP_KERNEL_WAIT_HEADER_SOURCE });
+  }
+  if (!cppProjectHasFileNamed(files, CPP_KERNEL_CONTROL_HEADER_FILENAME)) {
+    additions.push({ path: CPP_KERNEL_CONTROL_HEADER_FILENAME, contents: CPP_KERNEL_CONTROL_HEADER_SOURCE });
+  }
+  if (!cppProjectHasFileNamed(files, CPP_KERNEL_CONTROL_SHIM_FILENAME)) {
+    additions.push({ path: CPP_KERNEL_CONTROL_SHIM_FILENAME, contents: CPP_KERNEL_CONTROL_SHIM_SOURCE });
+  }
   if (additions.length === 0) return project;
   return {
     ...(project && typeof project === 'object' ? project : {}),
@@ -9691,16 +12915,28 @@ function projectWithCppKernelNetworkShims(project) {
   };
 }
 
-function cppProjectArgsWithKernelNetwork(args, project) {
+function cppProjectArgsWithKernelShims(args, project) {
   const files = Array.isArray(project?.files) ? project.files : [];
   const injected = [];
   if (!cppProjectHasFileNamed(files, CPP_KERNEL_SOCKET_HEADER_FILENAME)) {
     injected.push('-include', CPP_KERNEL_SOCKET_HEADER_FILENAME);
   }
+  if (!cppProjectHasFileNamed(files, CPP_KERNEL_PROCESS_HEADER_FILENAME)) {
+    injected.push('-include', CPP_KERNEL_PROCESS_HEADER_FILENAME);
+  }
+  if (!cppProjectHasFileNamed(files, CPP_KERNEL_IOCTL_HEADER_FILENAME)) {
+    injected.push('-include', CPP_KERNEL_IOCTL_HEADER_FILENAME);
+  }
   injected.push('-idirafter', '.');
   const linking = !args.some((arg) => arg === '-c' || arg === '-S' || arg === '-E');
   if (linking && !cppProjectHasFileNamed(files, CPP_KERNEL_SOCKET_SHIM_FILENAME)) {
     injected.push(CPP_KERNEL_SOCKET_SHIM_FILENAME);
+  }
+  if (linking && !cppProjectHasFileNamed(files, CPP_KERNEL_PROCESS_SHIM_FILENAME)) {
+    injected.push(CPP_KERNEL_PROCESS_SHIM_FILENAME);
+  }
+  if (linking && !cppProjectHasFileNamed(files, CPP_KERNEL_CONTROL_SHIM_FILENAME)) {
+    injected.push(CPP_KERNEL_CONTROL_SHIM_FILENAME);
   }
   return [...injected, ...args];
 }
@@ -9708,9 +12944,9 @@ function cppProjectArgsWithKernelNetwork(args, project) {
 function compileProjectOutsideMainWorker(request) {
   const payload = {
     assets: configuredAssets,
-    project: projectWithCppKernelNetworkShims(request.project),
+    project: projectWithCppKernelShims(request.project),
     cwd: requestCwdRelative(request),
-    args: cppProjectArgsWithKernelNetwork(projectCompileArgs(request), request.project),
+    args: cppProjectArgsWithKernelShims(projectCompileArgs(request), request.project),
     compilerCommand: projectCompilerCommand(request),
     sourceInput: request?.code || '',
     includePaths: projectCompileIncludePaths(request),
@@ -9719,7 +12955,11 @@ function compileProjectOutsideMainWorker(request) {
     stackSize: CPP_PROGRAM_STACK_SIZE,
   };
   if (canUseExternalCompilerHost()) {
-    return requestExternalCompilePayload(payload);
+    return requestExternalCompilePayload(payload).then((result) => (
+      result?.success === true && !result.outputPath
+        ? { ...result, outputPath: payload.workspaceOutputPath }
+        : result
+    ));
   }
   return runCompilerWorkerPayload(payload);
 }
@@ -10303,7 +13543,12 @@ function emitProjectResultOutputEvents(events, result) {
   events.applyResultOutputBudget?.(result);
 }
 
-async function handleProjectCpp(request, messageId) {
+async function handleProjectCpp(
+  request,
+  messageId,
+  kernelSyscallChannel,
+  kernelSignalMailbox
+) {
   const events = createProjectEventBridge(messageId, (stream, data) =>
     stream === 'stderr' ? sanitizeCppProjectDiagnostics(data, request) : data
   );
@@ -10339,9 +13584,9 @@ async function handleProjectCpp(request, messageId) {
     return result;
   }
 
-  const fs = createProjectRuntimeFs(request?.project);
-  const before = snapshotProjectFs(fs);
-  fs.setFileChangeObserver((change) => {
+  const snapshotFs = createProjectRuntimeFs(request?.project);
+  const before = snapshotProjectFs(snapshotFs);
+  snapshotFs.setFileChangeObserver((change) => {
     const relativePath = relativeProjectPath(change.path, request?.project);
     if (!relativePath) return;
     if (change.symlink) {
@@ -10364,7 +13609,7 @@ async function handleProjectCpp(request, messageId) {
     events.fileBytesChange(relativePath, change.bytes, change.metadata);
   });
   const executablePath = `/${resolveProjectRequestPath(request, request?.scriptPath || './a.out', 'a.out')}`;
-  if (!fs.isFile(executablePath)) {
+  if (!snapshotFs.isFile(executablePath)) {
     return {
       stdout: '',
       stderr: `${request?.scriptPath || './a.out'}: executable not found\n`,
@@ -10372,27 +13617,51 @@ async function handleProjectCpp(request, messageId) {
     };
   }
   const startedAt = now();
-  const module = await WebAssembly.compile(fs.readFile(executablePath));
+  const module = await WebAssembly.compile(snapshotFs.readFile(executablePath));
   const kernelHttp = new CppKernelHttpSyncBridge(messageId);
+  const kernelClient = kernelSyscallChannel
+    ? new CppTraceKernelSyncClient(
+        kernelSyscallChannel,
+        () => trustedCppWorkerPostMessage({
+          id: messageId,
+          type: 'kernel-syscall',
+          payload: {},
+          ...(activeRequestProtocolToken
+            ? { protocolToken: activeRequestProtocolToken }
+            : {}),
+        })
+      )
+    : null;
+  const runtimeFs = kernelClient
+    ? new CppTraceKernelFileSystem(kernelClient, {
+        workspaceRoot: projectWorkspaceRoots(request)[0] || '/workspace',
+        readOnlyFiles: snapshotFs.readOnlyFiles,
+      })
+    : snapshotFs;
   let program;
   try {
-    program = await runWasi(module, [basename(executablePath), ...(request?.args || []).map(String)], fs, {
+    program = await runWasi(module, [basename(executablePath), ...(request?.args || []).map(String)], runtimeFs, {
       cwd: `/${requestCwdRelative(request)}`,
-      stdinPipe: request?.stdinPipe,
+      kernelCwd: request?.cwd || projectWorkspaceRoots(request)[0] || '/workspace',
+      stdinPipe: kernelClient ? undefined : request?.stdinPipe,
       env: request?.env || { USER: 'tracecode' },
       kernelDevices: projectKernelDevices(request?.project),
       kernelHttp,
+      kernelClient,
+      kernelSignalMailbox,
+      process: request?.process,
       outputBudget: createProjectOutputByteBudget(),
       onOutput: (stream, data, device, outputDevice) => events.output(stream, data, device, outputDevice),
     });
   } finally {
     kernelHttp.closeAll();
+    kernelClient?.close();
   }
   const result = {
     stdout: program.stdout,
     stderr: sanitizeCppProjectDiagnostics(program.stderr, request),
     exitCode: program.exitCode,
-    files: diffProjectFs(before, fs),
+    files: kernelClient ? [] : diffProjectFs(before, snapshotFs),
     timings: {
       runMs: elapsedMs(startedAt),
       totalMs: elapsedMs(startedAt),
@@ -11565,7 +14834,15 @@ async function handleExecuteWithTracing(payload) {
 
 
 self.onmessage = (event) => {
-  const { id, type, payload, requestId, protocolToken } = event.data || {};
+  const {
+    id,
+    type,
+    payload,
+    requestId,
+    protocolToken,
+    kernelSyscallChannel,
+    kernelSignalMailbox,
+  } = event.data || {};
   if (type === 'compile-response') {
     const pending = pendingExternalCompiles.get(String(requestId || ''));
     if (!pending) return;
@@ -11613,7 +14890,12 @@ self.onmessage = (event) => {
               ? await handleCompileRunBatch(payload)
               : type === 'execute-project-cpp'
                 ? await withRuntimeUserAuthorityLockdown(
-                    () => handleProjectCpp(payload, id),
+                    () => handleProjectCpp(
+                      payload,
+                      id,
+                      kernelSyscallChannel,
+                      kernelSignalMailbox
+                    ),
                     {
                       scope: self,
                       mode: payload?.projectUserAuthorityMode ?? 'temporary',

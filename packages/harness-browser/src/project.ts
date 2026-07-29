@@ -1,5 +1,6 @@
 import type {
   Language,
+  RuntimeProjectEngineLeaseController,
   RuntimeWorkspace,
 } from '@tracecode/harness-core';
 import type { CreateRuntimeWorkspaceOptions } from '../../harness-project/src/index';
@@ -10,6 +11,7 @@ import type {
 import type { CSharpWorkerClient, CSharpWorkerClientOptions } from './csharp-worker-client';
 import type { CppWorkerClient, CppWorkerClientOptions } from './cpp-worker-client';
 import type { JavaWorkerClient, JavaWorkerClientOptions } from './java-worker-client';
+import type { TraceJVMProjectRunnerOptions } from '../../harness-java/src/tracejvm-project';
 import { runJavaSafeStorageExclusive } from './java-storage-isolation';
 import type { PythonWorkerClient, PythonWorkerClientOptions } from './pyodide-worker-client';
 import {
@@ -120,7 +122,11 @@ interface PrewarmableProjectWorker {
 }
 
 interface OneShotPrewarmedWorkerPool<Client extends PrewarmableProjectWorker> {
-  run<Result>(signal: AbortSignal | undefined, execute: (client: Client) => Promise<Result>): Promise<Result>;
+  run<Result>(
+    signal: AbortSignal | undefined,
+    engineLease: RuntimeProjectEngineLeaseController | undefined,
+    execute: (client: Client) => Promise<Result>
+  ): Promise<Result>;
   terminate(): void;
 }
 
@@ -129,6 +135,12 @@ interface OneShotPoolEntry<Client extends PrewarmableProjectWorker> {
   generation: number;
   token: number;
   state: 'warming' | 'idle' | 'leased' | 'retired';
+}
+
+interface KernelRetainedPoolBinding<Client extends PrewarmableProjectWorker> {
+  readonly ready: Promise<OneShotPoolEntry<Client>>;
+  tail: Promise<void>;
+  released: boolean;
 }
 
 interface OneShotWarmOutcome {
@@ -201,7 +213,16 @@ function projectPoolAbortError(): Error {
 function createOneShotPrewarmedWorkerPool<Client extends PrewarmableProjectWorker>(
   label: string,
   depth: number,
-  createClient: () => Client
+  createClient: () => Client,
+  options: {
+    /**
+     * Keeps the trusted outer client attached to one kernel PID across repeated
+     * provider invocations. The client remains process-owned and is retired by
+     * the kernel lease; only clients that provide their own disposable user-code
+     * execution boundary may opt in.
+     */
+    retainClientForKernelLease?: boolean;
+  } = {}
 ): OneShotPrewarmedWorkerPool<Client> {
   let generation = 1;
   let nextToken = 0;
@@ -210,6 +231,10 @@ function createOneShotPrewarmedWorkerPool<Client extends PrewarmableProjectWorke
   const idle: Array<OneShotPoolEntry<Client>> = [];
   const warming = new Map<number, Promise<OneShotWarmOutcome>>();
   const active = new Map<number, OneShotPoolEntry<Client>>();
+  const kernelBindings = new WeakMap<
+    RuntimeProjectEngineLeaseController,
+    KernelRetainedPoolBinding<Client>
+  >();
 
   const retire = (entry: OneShotPoolEntry<Client>) => {
     if (entry.state === 'retired') return;
@@ -232,14 +257,37 @@ function createOneShotPrewarmedWorkerPool<Client extends PrewarmableProjectWorke
     };
     entries.set(entry.token, entry);
     const promise = (async (): Promise<OneShotWarmOutcome> => {
-      const onAbort = () => retire(entry);
+      let rejectAbort: ((error: Error) => void) | undefined;
+      const onAbort = () => {
+        retire(entry);
+        rejectAbort?.(projectPoolAbortError());
+      };
       try {
         if (signal?.aborted) {
           retire(entry);
           return { success: false, error: projectPoolAbortError() };
         }
         signal?.addEventListener('abort', onAbort, { once: true });
-        await entry.client.warmup();
+        const warmupAttempt = Promise.resolve().then(() => entry.client.warmup());
+        // Termination can happen before a runtime preflight has created its
+        // worker session. Keep observing that abandoned warmup and retire the
+        // client again after it settles so a late session cannot escape.
+        void warmupAttempt.finally(() => {
+          if (entry.state !== 'retired') return;
+          try {
+            entry.client.terminate();
+          } catch {
+            // The entry is already fenced out of the pool; cleanup is best-effort.
+          }
+        }).catch(() => undefined);
+        if (signal) {
+          const abort = new Promise<never>((_resolve, reject) => {
+            rejectAbort = reject;
+          });
+          await Promise.race([warmupAttempt, abort]);
+        } else {
+          await warmupAttempt;
+        }
         if (!refillEnabled || entry.generation !== generation || entry.state !== 'warming') {
           retire(entry);
           return { success: false, error: new Error(`${label} prewarmed worker was retired before lease.`) };
@@ -337,32 +385,130 @@ function createOneShotPrewarmedWorkerPool<Client extends PrewarmableProjectWorke
 
   refill();
 
+  const executeWithEntry = async <Result>(
+    entry: OneShotPoolEntry<Client>,
+    leaseGeneration: number,
+    signal: AbortSignal | undefined,
+    execute: (client: Client) => Promise<Result>
+  ): Promise<Result> => {
+    const onAbort = () => retire(entry);
+    signal?.addEventListener('abort', onAbort, { once: true });
+    try {
+      if (signal?.aborted) {
+        retire(entry);
+        throw projectPoolAbortError();
+      }
+      const result = await execute(entry.client);
+      if (
+        leaseGeneration !== generation ||
+        entry.state !== 'leased' ||
+        active.get(entry.token) !== entry
+      ) {
+        throw new Error(`${label} project worker lease was retired before its result settled.`);
+      }
+      return result;
+    } finally {
+      signal?.removeEventListener('abort', onAbort);
+    }
+  };
+
+  const runWithKernelRetainedClient = async <Result>(
+    signal: AbortSignal | undefined,
+    engineLease: RuntimeProjectEngineLeaseController,
+    execute: (client: Client) => Promise<Result>
+  ): Promise<Result> => {
+    let binding = kernelBindings.get(engineLease);
+    if (!binding) {
+      const leaseGeneration = generation;
+      let resolveReady!: (entry: OneShotPoolEntry<Client>) => void;
+      let rejectReady!: (error: unknown) => void;
+      const ready = new Promise<OneShotPoolEntry<Client>>((resolve, reject) => {
+        resolveReady = resolve;
+        rejectReady = reject;
+      });
+      binding = {
+        ready,
+        tail: Promise.resolve(),
+        released: false,
+      };
+      kernelBindings.set(engineLease, binding);
+      const createdBinding = binding;
+      void (async () => {
+        let entry: OneShotPoolEntry<Client> | undefined;
+        try {
+          entry = await acquire(leaseGeneration, signal);
+          if (createdBinding.released) {
+            retire(entry);
+            throw new Error(`${label} project worker lease was released before attachment.`);
+          }
+          engineLease.attach({
+            release: () => {
+              createdBinding.released = true;
+              if (kernelBindings.get(engineLease) === createdBinding) {
+                kernelBindings.delete(engineLease);
+              }
+              retire(entry!);
+              refill();
+            },
+          });
+          resolveReady(entry);
+        } catch (error) {
+          createdBinding.released = true;
+          if (kernelBindings.get(engineLease) === createdBinding) {
+            kernelBindings.delete(engineLease);
+          }
+          if (entry) retire(entry);
+          rejectReady(error);
+        }
+      })();
+    }
+
+    const retainedBinding = binding;
+    const leaseGeneration = generation;
+    const run = retainedBinding.tail.then(async () => {
+      const entry = await retainedBinding.ready;
+      if (retainedBinding.released) {
+        throw new Error(`${label} project worker lease was released before execution.`);
+      }
+      return executeWithEntry(entry, leaseGeneration, signal, execute);
+    });
+    retainedBinding.tail = run.then(
+      () => undefined,
+      () => undefined
+    );
+    return run;
+  };
+
   return {
-    async run<Result>(signal: AbortSignal | undefined, execute: (client: Client) => Promise<Result>): Promise<Result> {
+    async run<Result>(
+      signal: AbortSignal | undefined,
+      engineLease: RuntimeProjectEngineLeaseController | undefined,
+      execute: (client: Client) => Promise<Result>
+    ): Promise<Result> {
       refillEnabled = true;
       refill();
+      if (engineLease && options.retainClientForKernelLease) {
+        return runWithKernelRetainedClient(signal, engineLease, execute);
+      }
       const leaseGeneration = generation;
       const entry = await acquire(leaseGeneration, signal);
-      const onAbort = () => retire(entry);
-      signal?.addEventListener('abort', onAbort, { once: true });
+      let attachedToKernel = false;
       try {
-        if (signal?.aborted) {
-          retire(entry);
-          throw projectPoolAbortError();
+        if (engineLease) {
+          engineLease.attach({
+            release: () => {
+              retire(entry);
+              refill();
+            },
+          });
+          attachedToKernel = true;
         }
-        const result = await execute(entry.client);
-        if (
-          leaseGeneration !== generation ||
-          entry.state !== 'leased' ||
-          active.get(entry.token) !== entry
-        ) {
-          throw new Error(`${label} project worker lease was retired before its result settled.`);
-        }
-        return result;
+        return await executeWithEntry(entry, leaseGeneration, signal, execute);
       } finally {
-        signal?.removeEventListener('abort', onAbort);
-        retire(entry);
-        refill();
+        if (!attachedToKernel) {
+          retire(entry);
+          refill();
+        }
       }
     },
     terminate() {
@@ -382,8 +528,10 @@ function createPerCommandPythonWorkerClient(
 ): Pick<PythonWorkerClient, 'executeProjectPython' | 'terminate'> {
   const pool = createOneShotPrewarmedWorkerPool('Python', prewarmDepth, createClient);
   return {
-    async executeProjectPython(request, timeoutMs, onEvent, signal) {
-      return pool.run(signal, (client) => client.executeProjectPython(request, timeoutMs, onEvent, signal));
+    async executeProjectPython(request, timeoutMs, onEvent, signal, engineLease) {
+      return pool.run(signal, engineLease, (client) =>
+        client.executeProjectPython(request, timeoutMs, onEvent, signal)
+      );
     },
     terminate() {
       pool.terminate();
@@ -401,7 +549,7 @@ function createPerCommandJavaWorkerClient(
     async executeProjectJava(request, timeoutMs, onEvent, signal) {
       validateRuntimeAssets?.();
       return runJavaSafeStorageExclusive(() =>
-        pool.run(signal, async (client) => {
+        pool.run(signal, undefined, async (client) => {
           await client.resetPersistentStorage();
           return client.executeProjectJava(request, timeoutMs, onEvent, signal);
         })
@@ -486,8 +634,10 @@ function createPerCommandCSharpWorkerClient(
 ): Pick<CSharpWorkerClient, 'executeProjectCSharp' | 'terminate'> {
   const pool = createOneShotPrewarmedWorkerPool('C#', prewarmDepth, createClient);
   return {
-    async executeProjectCSharp(request, timeoutMs, onEvent, signal) {
-      return pool.run(signal, (client) => client.executeProjectCSharp(request, timeoutMs, onEvent, signal));
+    async executeProjectCSharp(request, timeoutMs, onEvent, signal, engineLease) {
+      return pool.run(signal, engineLease, (client) =>
+        client.executeProjectCSharp(request, timeoutMs, onEvent, signal)
+      );
     },
     terminate() {
       pool.terminate();
@@ -499,10 +649,14 @@ function createPerCommandCppWorkerClient(
   prewarmDepth: number,
   createClient: () => CppWorkerClient
 ): Pick<CppWorkerClient, 'executeProjectCpp' | 'terminate'> {
-  const pool = createOneShotPrewarmedWorkerPool('C++', prewarmDepth, createClient);
+  const pool = createOneShotPrewarmedWorkerPool('C++', prewarmDepth, createClient, {
+    retainClientForKernelLease: true,
+  });
   return {
-    async executeProjectCpp(request, timeoutMs, onEvent, signal) {
-      return pool.run(signal, (client) => client.executeProjectCpp(request, timeoutMs, onEvent, signal));
+    async executeProjectCpp(request, timeoutMs, onEvent, signal, engineLease) {
+      return pool.run(signal, engineLease, (client) =>
+        client.executeProjectCpp(request, timeoutMs, onEvent, signal)
+      );
     },
     terminate() {
       pool.terminate();
@@ -519,6 +673,11 @@ export interface CreateBrowserProjectWorkspaceOptions
   debug?: boolean;
   pythonWorkerClient?: Pick<PythonWorkerClient, 'executeProjectPython' | 'terminate'>;
   javaWorkerClient?: Pick<JavaWorkerClient, 'executeProjectJava' | 'terminate'>;
+  /**
+   * Default-off Java 23 provider. Each factory result is admitted to exactly
+   * one javac/java invocation and hard-retired by the TraceKernel adapter.
+   */
+  traceJVM?: Omit<TraceJVMProjectRunnerOptions, 'applyFileChange'>;
   csharpWorkerClient?: Pick<CSharpWorkerClient, 'executeProjectCSharp' | 'terminate'>;
   cppWorkerClient?: Pick<CppWorkerClient, 'executeProjectCpp' | 'terminate'>;
   /** Runs selected project workers on a dedicated, credential-free origin. */
@@ -563,6 +722,7 @@ export async function createBrowserProjectWorkspace(
       ? Promise.all([
           import('../../harness-java/src/project-browser'),
           import('./java-worker-client'),
+          import('../../harness-java/src/tracejvm-project'),
         ])
       : undefined,
     hasProvider('csharp')
@@ -639,6 +799,7 @@ export async function createBrowserProjectWorkspace(
     debug,
     pythonWorkerClient: providedPythonWorkerClient,
     javaWorkerClient: providedJavaWorkerClient,
+    traceJVM,
     csharpWorkerClient: providedCSharpWorkerClient,
     cppWorkerClient: providedCppWorkerClient,
     executionHost: executionHostOptions,
@@ -707,6 +868,17 @@ export async function createBrowserProjectWorkspace(
       );
     }
   }
+  if (traceJVM && !hasProvider('java')) {
+    throw new Error('traceJVM requires providers to include "java".');
+  }
+  if (traceJVM && providedJavaWorkerClient) {
+    throw new Error('traceJVM cannot be combined with javaWorkerClient.');
+  }
+  if (traceJVM && isExecutionHosted('java')) {
+    throw new Error(
+      'traceJVM cannot use the legacy Java executionHost route; createClient must own its Worker boundary.'
+    );
+  }
   const javaExecutionLifecycle = executionHostOptions?.javaLifecycle ?? 'workspace-session';
   if (javaExecutionLifecycle !== 'workspace-session' && javaExecutionLifecycle !== 'per-command') {
     throw new TypeError('executionHost.javaLifecycle must be "workspace-session" or "per-command".');
@@ -739,7 +911,12 @@ export async function createBrowserProjectWorkspace(
   if (providedJavaWorkerClient && projectPrewarm.java > 0) {
     throw new Error('projectWorkerPrewarm.java cannot be used with a provided javaWorkerClient.');
   }
-  if (!providedJavaWorkerClient && projectPrewarm.java > 0) {
+  if (traceJVM && projectPrewarm.java > 0) {
+    throw new Error(
+      'projectWorkerPrewarm.java cannot be used with traceJVM; supply fresh prepared clients through traceJVM.createClient.'
+    );
+  }
+  if (!providedJavaWorkerClient && !traceJVM && projectPrewarm.java > 0) {
     assertProjectJavaRuntimeAssets();
   }
   if (providedCSharpWorkerClient && projectPrewarm.csharp > 0) {
@@ -956,7 +1133,7 @@ export async function createBrowserProjectWorkspace(
       : undefined;
     if (pythonWorkerClient && !providedPythonWorkerClient) ownedWorkers.push(pythonWorkerClient);
     const JavaWorkerClientConstructor = javaProvider?.[1].JavaWorkerClient;
-    const createdJavaWorkerClient = hasProvider('java')
+    const createdJavaWorkerClient = hasProvider('java') && !traceJVM
       ? providedJavaWorkerClient ?? (
           projectWorkerIsolation === 'per-command' && (!isExecutionHosted('java') || javaExecutionLifecycle === 'per-command')
             ? createPerCommandJavaWorkerClient(
@@ -1083,7 +1260,14 @@ export async function createBrowserProjectWorkspace(
             }),
           }
         : {}),
-      ...(javaWorkerClient && javaProvider
+      ...(traceJVM && javaProvider
+        ? {
+            javaRunner: javaProvider[2].createTraceJVMProjectRunner({
+              ...traceJVM,
+              timeoutMs: javaProjectTimeoutMs ?? traceJVM.timeoutMs,
+            }),
+          }
+        : javaWorkerClient && javaProvider
         ? {
             javaRunner: javaProvider[0].createBrowserJavaProjectRunner(javaWorkerClient, {
               timeoutMs: javaProjectTimeoutMs,

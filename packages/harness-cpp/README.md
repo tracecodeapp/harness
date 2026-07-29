@@ -17,3 +17,11 @@ The umbrella package also exposes the same public surface at
 Runtime assets are published under `workers/`. Review `THIRD_PARTY_NOTICES.md`
 before redistributing this package, especially the YoWASP, LLVM, and WASI libc
 sections.
+
+In a TraceKernel project workspace, compiled programs use synchronous
+WASI-to-kernel syscalls for filesystem descriptors and local TCP sockets.
+Compilation still consumes an immutable project snapshot; execution opens the
+authoritative workspace namespace, so concurrent processes observe committed
+file mutations without replaying worker-local diffs. Standalone clients without
+a kernel syscall channel retain the snapshot filesystem and structured HTTP
+compatibility path.

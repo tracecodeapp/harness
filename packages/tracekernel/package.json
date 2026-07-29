@@ -1,0 +1,35 @@
+{
+  "name": "@tracecode/tracekernel",
+  "version": "0.13.0-beta1",
+  "description": "Browser-native process, resource, and syscall kernel for TraceCode.",
+  "license": "AGPL-3.0-only",
+  "homepage": "https://tracecode.app",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/tracecodeapp/harness.git",
+    "directory": "packages/tracekernel"
+  },
+  "type": "module",
+  "main": "./dist/index.cjs",
+  "module": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE",
+    "THIRD_PARTY_NOTICES.md"
+  ],
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js",
+      "require": "./dist/index.cjs",
+      "default": "./dist/index.js"
+    },
+    "./package.json": "./package.json"
+  },
+  "sideEffects": false,
+  "dependencies": {
+    "effect": "3.22.0"
+  }
+}

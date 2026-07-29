@@ -72,6 +72,9 @@ public sealed class CSharpProjectCommandRequest
 
     [JsonPropertyName("options")]
     public Dictionary<string, JsonElement> Options { get; set; } = new();
+
+    [JsonPropertyName("traceKernelFileSystem")]
+    public bool TraceKernelFileSystem { get; set; }
 }
 
 public sealed class CSharpProjectSnapshot

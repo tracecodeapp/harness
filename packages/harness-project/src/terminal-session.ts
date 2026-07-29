@@ -199,6 +199,7 @@ export class RuntimeProjectWorkspaceTerminalSession implements RuntimeProjectTer
   private currentUmask: number;
   private readonly commandHistory: string[] = [];
   private activeCommandAbortController: AbortController | null = null;
+  private activeTerminalSignalDelivered = false;
   private readonly onTerminalEvent?: RuntimeProjectTerminalEventHandler;
 
   constructor(
@@ -207,6 +208,12 @@ export class RuntimeProjectWorkspaceTerminalSession implements RuntimeProjectTer
       kernelInfo: RuntimeKernelInfo;
       resolveCwd: (currentCwd: string, target: string) => Promise<string>;
       runCommand: (command: string, options?: RuntimeCommandOptions) => Promise<RuntimeCommandResult>;
+      signalForeground?: (signal: 'SIGINT' | 'SIGQUIT') => boolean;
+      terminalInputRouter?: {
+        write(data: string): 'kernel' | 'legacy' | 'rejected';
+        end(): 'kernel' | 'legacy' | 'rejected';
+      };
+      resizeTerminal?: (columns: number, rows: number) => void;
       jobRecords: () => readonly RuntimeProjectTerminalJobRecord[];
       isVerbose: () => boolean;
     },
@@ -264,6 +271,7 @@ export class RuntimeProjectWorkspaceTerminalSession implements RuntimeProjectTer
   resize(columns: number, rows: number): void {
     this.terminalColumns = this.normalizeTerminalDimension(columns, this.terminalColumns, 'columns');
     this.terminalRows = this.normalizeTerminalDimension(rows, this.terminalRows, 'rows');
+    this.options.resizeTerminal?.(this.terminalColumns, this.terminalRows);
   }
 
   private normalizeTerminalDimension(value: number | undefined, fallback: number, name: string): number {
@@ -275,26 +283,62 @@ export class RuntimeProjectWorkspaceTerminalSession implements RuntimeProjectTer
   }
 
   interrupt(): boolean {
+    return this.signalForeground('SIGINT');
+  }
+
+  private signalForeground(signal: 'SIGINT' | 'SIGQUIT'): boolean {
+    if (!this.activeRun || this.activeTerminalSignalDelivered) return false;
+    if (this.options.signalForeground?.(signal)) {
+      this.activeTerminalSignalDelivered = true;
+      return true;
+    }
     const controller = this.activeCommandAbortController;
     if (!controller || controller.signal.aborted) return false;
-    controller.abort({ signal: 'SIGINT', signalCode: 2 });
+    controller.abort({
+      signal,
+      signalCode: signal === 'SIGINT' ? 2 : 3,
+    });
+    this.activeTerminalSignalDelivered = true;
     return true;
   }
 
   writeStdin(data: string): boolean {
-    if (!this.activeStdinPipe || !this.activeRun || this.activeStdinEnded) return false;
-    this.activeStdinPipe.write(data);
-    if (this.currentInputState.mode === 'stdin') {
+    if (!this.activeRun || this.activeStdinEnded) return false;
+    const signalCharacter = [...data].find(
+      (character) => character === '\x03' || character === '\x1c'
+    );
+    if (signalCharacter) {
+      if (this.activeTerminalSignalDelivered) return false;
+      if (this.options.terminalInputRouter?.write(signalCharacter) === 'kernel') {
+        this.activeTerminalSignalDelivered = true;
+        return true;
+      }
+      return this.signalForeground(
+        signalCharacter === '\x03' ? 'SIGINT' : 'SIGQUIT'
+      );
+    }
+    const route = this.options.terminalInputRouter?.write(data) ??
+      (this.activeStdinPipe !== null ? 'legacy' : 'rejected');
+    if (route === 'legacy') {
+      this.activeStdinPipe?.write(data);
+    }
+    const accepted = route !== 'rejected';
+    if (accepted && this.currentInputState.mode === 'stdin') {
       this.activeStdinPrompt = '';
       this.setInputState('busy', 'stdin-submit');
     }
-    return true;
+    return accepted;
   }
 
   endStdin(): boolean {
-    if (!this.activeStdinPipe || !this.activeRun || this.activeStdinEnded) return false;
+    if (!this.activeRun || this.activeStdinEnded) return false;
+    const route = this.options.terminalInputRouter?.end() ??
+      (this.activeStdinPipe !== null ? 'legacy' : 'rejected');
+    if (route === 'rejected') return false;
     this.activeStdinEnded = true;
-    this.activeStdinPipe.close();
+    if (route === 'legacy') {
+      this.activeStdinPipe?.close();
+    }
     this.activeStdinPrompt = '';
     this.setInputState('busy', 'stdin-eof');
     return true;
@@ -390,6 +434,7 @@ export class RuntimeProjectWorkspaceTerminalSession implements RuntimeProjectTer
     options: RuntimeProjectTerminalRunOptions
   ): Promise<RuntimeCommandResult> {
     this.activeRun = true;
+    this.activeTerminalSignalDelivered = false;
 
     const previousStdinPipe = this.activeStdinPipe;
     const previousStdinEnded = this.activeStdinEnded;
@@ -416,7 +461,11 @@ export class RuntimeProjectWorkspaceTerminalSession implements RuntimeProjectTer
       let error: RuntimeCommandError | undefined;
       for (const segment of segments) {
         if (segment.background) {
-          stdout += this.startTerminalBackgroundCommand(segment.command, options, this.currentCwd);
+          stdout += await this.startTerminalBackgroundCommand(
+            segment.command,
+            options,
+            this.currentCwd
+          );
           continue;
         }
         const result = await this.runForegroundTerminalCommand(segment.command, options, commandStdinPipe);
@@ -440,6 +489,7 @@ export class RuntimeProjectWorkspaceTerminalSession implements RuntimeProjectTer
       this.activeStdinPrompt = previousStdinPrompt;
       this.activeCommand = previousCommand;
       this.activeRun = false;
+      this.activeTerminalSignalDelivered = false;
       this.setInputState('command', 'command-finish');
     }
   }
@@ -449,6 +499,7 @@ export class RuntimeProjectWorkspaceTerminalSession implements RuntimeProjectTer
     options: RuntimeProjectTerminalRunOptions
   ): Promise<RuntimeCommandResult> {
     this.activeRun = true;
+    this.activeTerminalSignalDelivered = false;
 
     const previousStdinPipe = this.activeStdinPipe;
     const previousStdinEnded = this.activeStdinEnded;
@@ -500,6 +551,7 @@ export class RuntimeProjectWorkspaceTerminalSession implements RuntimeProjectTer
         this.activeCommandAbortController = null;
       }
       this.activeRun = false;
+      this.activeTerminalSignalDelivered = false;
       this.setInputState('command', 'command-finish');
     }
   }
@@ -682,12 +734,16 @@ export class RuntimeProjectWorkspaceTerminalSession implements RuntimeProjectTer
     }
   }
 
-  private startTerminalBackgroundCommand(
+  private async startTerminalBackgroundCommand(
     command: string,
     options: RuntimeProjectTerminalRunOptions,
     cwd: string
-  ): string {
+  ): Promise<string> {
     const previousJobPids = new Set(this.options.jobRecords().map((job) => job.pid));
+    let resolveProcessStarted!: () => void;
+    const processStarted = new Promise<void>((resolve) => {
+      resolveProcessStarted = resolve;
+    });
     const handleBackgroundEvent = (event: RuntimeCommandEvent): void => {
       if (event.type === 'status' && !this.options.isVerbose()) return;
       options.onEvent?.(event);
@@ -711,11 +767,18 @@ export class RuntimeProjectWorkspaceTerminalSession implements RuntimeProjectTer
       terminal: this.terminal,
       umask: this.currentUmask,
       onEvent: handleBackgroundEvent,
+      onProcessStart: () => {
+        resolveProcessStarted();
+      },
     });
     void backgroundRun.catch((error) => {
       const message = error instanceof Error ? error.message : String(error);
       options.onEvent?.({ type: 'output', stream: 'stderr', data: `${message}\n` });
     });
+    await Promise.race([
+      processStarted,
+      backgroundRun.then(() => undefined, () => undefined),
+    ]);
     const job = this.options.jobRecords().find((candidate) =>
       !previousJobPids.has(candidate.pid) && candidate.command === command
     );

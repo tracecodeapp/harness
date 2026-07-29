@@ -9,6 +9,7 @@ import type {
   RuntimeKernelHttpListenerHandle,
   RuntimeKernelHttpRequest,
   RuntimeKernelHttpResponse,
+  RuntimeKernelSyscallBridge,
 } from '../packages/harness-core/src/runtime-project';
 
 function assertCondition(condition: boolean, message: string): asserts condition {
@@ -28,6 +29,7 @@ interface ProtocolEnvelope {
   type?: string;
   protocolToken?: string;
   payload?: Record<string, unknown>;
+  kernelSyscallChannel?: RuntimeKernelSyscallBridge['channel'];
 }
 
 class CSharpProtocolWorker {
@@ -72,6 +74,12 @@ class CSharpProtocolWorker {
         protocolToken,
         scriptPath: String(payload?.scriptPath ?? ''),
       };
+      queueMicrotask(() => this.emit({
+        id,
+        type: 'kernel-syscall',
+        protocolToken,
+        payload: {},
+      }));
       queueMicrotask(() => this.emit({
         id,
         type: 'kernel-http-listen',
@@ -269,6 +277,21 @@ async function testCSharpKernelHttpProtocol(): Promise<void> {
     assetBaseUrl: '/workers/vendor/csharp',
     debug: false,
   });
+  const syscallBuffer = new SharedArrayBuffer(32 + 256);
+  let syscallServiceCount = 0;
+  const kernelSyscalls: RuntimeKernelSyscallBridge = {
+    channel: {
+      buffer: syscallBuffer,
+      byteCapacity: 256,
+    },
+    async dispatch() {
+      throw new Error('Unexpected asynchronous syscall dispatch');
+    },
+    async service() {
+      syscallServiceCount += 1;
+    },
+    close() {},
+  };
   const execute = client.executeProjectCSharp(({
     source: 'run',
     scriptPath: 'server.cs',
@@ -277,6 +300,7 @@ async function testCSharpKernelHttpProtocol(): Promise<void> {
     env: {},
     project: { cwd: '/workspace', files: [{ path: 'server.cs', contents: '' }] },
     kernelHttp: createKernelHttpBridge(state),
+    kernelSyscalls,
   } as unknown as CSharpProjectCommandRequest), 1_000);
 
   await waitFor(() => Boolean(state.listenerHandler), 'CSharpWorkerClient should register the worker HTTP listener');
@@ -302,6 +326,18 @@ async function testCSharpKernelHttpProtocol(): Promise<void> {
   assertCondition(result.exitCode === 0 && result.stdout === 'done\n', 'C# project command should complete after bridge traffic');
   assertCondition(worker?.projectPayload !== undefined, 'C# worker should receive a project payload');
   assertCondition(!('kernelHttp' in worker.projectPayload), 'C# project payload must omit the function-bearing kernelHttp bridge');
+  const executeEnvelope = worker?.postedMessages.find(
+    (message) => message.type === 'execute-project-csharp'
+  );
+  assertCondition(
+    executeEnvelope?.kernelSyscallChannel?.buffer === syscallBuffer &&
+      executeEnvelope.kernelSyscallChannel.byteCapacity === 256,
+    'C# project worker should receive the process-bound shared syscall channel'
+  );
+  assertCondition(
+    syscallServiceCount === 1,
+    'C# project worker syscall wakeups should service the bridge without resolving the command'
+  );
   assertCondition(
     worker.listenerRequest !== undefined && !('signal' in (worker.listenerRequest as unknown as Record<string, unknown>)),
     'C# worker-bound HTTP listener requests must omit AbortSignal'

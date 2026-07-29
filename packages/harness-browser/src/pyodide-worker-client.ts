@@ -32,6 +32,7 @@ import type {
   RuntimeFile,
   RuntimeExecutionLimits,
   RuntimeProjectCommandRequest,
+  RuntimeProjectEngineLeaseController,
   RuntimeProjectSnapshot,
   RuntimeTraceCall,
 } from '@tracecode/harness-core';
@@ -200,7 +201,14 @@ export class PythonWorkerClient {
           await this.options.runtimeAssetPreflight?.();
         }
       },
-      onCommandMessage: (commandId, type, payload) => {
+      onCommandMessage: (commandId, type, payload, pending) => {
+        if (type === 'kernel-syscall') {
+          if (!pending.kernelSyscalls) return true;
+          void pending.kernelSyscalls.service().catch(() => {
+            pending.kernelSyscalls?.close();
+          });
+          return true;
+        }
         if (!KERNEL_HTTP_MESSAGE_TYPES.has(type)) return false;
         handleAsyncKernelHttpProtocolMessage(this.kernelHttpHost, commandId, type, payload);
         return true;
@@ -429,9 +437,19 @@ export class PythonWorkerClient {
     request: PythonProjectCommandRequest,
     timeoutMs: number = PROJECT_EXECUTION_TIMEOUT_MS,
     onEvent?: RuntimeCommandEventHandler,
-    signal: AbortSignal | undefined = request.signal
+    signal: AbortSignal | undefined = request.signal,
+    engineLease?: RuntimeProjectEngineLeaseController
   ): Promise<PythonProjectCommandResult> {
-    const { signal: _signal, onEvent: _requestOnEvent, kernelHttp, ...workerRequest } = request;
+    if (engineLease) await this.core.acquireReusableEngineLease(engineLease);
+    const {
+      signal: _signal,
+      onEvent: _requestOnEvent,
+      engineLease: _engineLease,
+      kernelHttp,
+      kernelSyscalls,
+      kernelSignals,
+      ...workerRequest
+    } = request;
 
     const program = this.warmupEffect().pipe(
       Effect.andThen(
@@ -446,7 +464,10 @@ export class PythonWorkerClient {
             },
             null,
             onEvent,
-            kernelHttp
+            kernelHttp,
+            undefined,
+            kernelSyscalls,
+            kernelSignals
           ),
           timeoutMs
         )

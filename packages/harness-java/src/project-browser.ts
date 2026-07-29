@@ -10,7 +10,11 @@ import type {
   RuntimeProjectFileChangeApplyOptions,
   RuntimeProjectSnapshot,
 } from '@tracecode/harness-core';
-import { createRuntimeProjectIoBridge, runRuntimeProjectWorkerBridge } from '@tracecode/harness-core';
+import {
+  createRuntimeProjectIoBridge,
+  runRuntimeProjectWorkerBridge,
+  withRuntimeProjectCommandRunnerCapabilities,
+} from '@tracecode/harness-core';
 import type { JavaWorkerClient } from '../../harness-browser/src/java-worker-client';
 
 export type JavaProjectFileEncoding = RuntimeFileEncoding;
@@ -77,7 +81,7 @@ export function createBrowserJavaProjectRunner(
   options: BrowserJavaProjectRunnerOptions = {}
 ): JavaProjectCommandRunner {
   const timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS;
-  return (request) => {
+  return withRuntimeProjectCommandRunnerCapabilities((request) => {
     if ((request.project.symlinks?.length ?? 0) > 0) {
       return Promise.resolve(
         unsupportedBrowserJavaResult(
@@ -111,5 +115,5 @@ export function createBrowserJavaProjectRunner(
       applyFileChange: options.applyFileChange,
       run: (workerRequest, onEvent) => workerClient.executeProjectJava(workerRequest, timeoutMs, onEvent, workerRequest.signal),
     });
-  };
+  }, { descriptorStdio: true });
 }

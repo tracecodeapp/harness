@@ -27,7 +27,10 @@ import type {
   RuntimeCommandEventHandler,
   RuntimeCommandResult,
   RuntimeKernelHttpBridge,
+  RuntimeKernelSignalBridge,
+  RuntimeKernelSyscallBridge,
   RuntimeProjectCommandRequest,
+  RuntimeProjectEngineLeaseController,
 } from '@tracecode/harness-core';
 import { isDevEnvironment } from './browser-client-env';
 import {
@@ -181,7 +184,14 @@ export class CSharpWorkerClient {
           await this.options.runtimeAssetPreflight?.();
         }
       },
-      onCommandMessage: (commandId, type, payload) => {
+      onCommandMessage: (commandId, type, payload, pending) => {
+        if (type === 'kernel-syscall') {
+          if (!pending.kernelSyscalls) return true;
+          void pending.kernelSyscalls.service().catch(() => {
+            pending.kernelSyscalls?.close();
+          });
+          return true;
+        }
         if (!KERNEL_HTTP_MESSAGE_TYPES.has(type)) return false;
         handleAsyncKernelHttpProtocolMessage(this.kernelHttpHost, commandId, type, payload);
         return true;
@@ -252,9 +262,20 @@ export class CSharpWorkerClient {
     payload?: unknown,
     timeoutMs: number | null = MESSAGE_TIMEOUT_MS,
     onEvent?: RuntimeCommandEventHandler,
-    kernelHttp?: RuntimeKernelHttpBridge
+    kernelHttp?: RuntimeKernelHttpBridge,
+    kernelSyscalls?: RuntimeKernelSyscallBridge,
+    kernelSignals?: RuntimeKernelSignalBridge
   ): Effect.Effect<T, Error> {
-    return this.core.sendMessageEffect<T>(type, payload, timeoutMs, onEvent, kernelHttp).pipe(
+    return this.core.sendMessageEffect<T>(
+      type,
+      payload,
+      timeoutMs,
+      onEvent,
+      kernelHttp,
+      undefined,
+      kernelSyscalls,
+      kernelSignals
+    ).pipe(
       Effect.tapError((error) =>
         Effect.sync(() => {
           if (error instanceof WorkerRequestTimeoutError) this.core.closeSession(error);
@@ -524,9 +545,19 @@ export class CSharpWorkerClient {
     request: CSharpProjectCommandRequest,
     timeoutMs = this.executionTimeoutMs,
     onEvent?: RuntimeCommandEventHandler,
-    signal: AbortSignal | undefined = request.signal
+    signal: AbortSignal | undefined = request.signal,
+    engineLease?: RuntimeProjectEngineLeaseController
   ): Promise<CSharpProjectCommandResult> {
-    const { signal: _signal, onEvent: _requestOnEvent, kernelHttp, ...workerRequest } = request;
+    if (engineLease) await this.core.acquireReusableEngineLease(engineLease);
+    const {
+      signal: _signal,
+      onEvent: _requestOnEvent,
+      engineLease: _engineLease,
+      kernelHttp,
+      kernelSyscalls,
+      kernelSignals,
+      ...workerRequest
+    } = request;
     const program = this.warmupEffect().pipe(
       Effect.andThen(
         this.core.withExecutionDeadline(
@@ -543,7 +574,9 @@ export class CSharpWorkerClient {
             },
             null,
             onEvent,
-            kernelHttp
+            kernelHttp,
+            kernelSyscalls,
+            kernelSignals
           ),
           timeoutMs
         )

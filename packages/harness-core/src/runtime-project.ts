@@ -437,6 +437,56 @@ export interface RuntimeKernelHttpBridge {
   dispatch(request: RuntimeKernelHttpRequest, options?: RuntimeKernelHttpDispatchOptions): Promise<RuntimeKernelHttpResponse>;
 }
 
+/**
+ * Product-integration wrapper around one process-bound TraceKernel syscall
+ * channel. Runtime workers receive only the shared channel and generation
+ * buffer; servicing and lifecycle remain host-owned.
+ */
+export interface RuntimeKernelSyscallBridge {
+  readonly channel: {
+    readonly buffer: SharedArrayBuffer;
+    readonly byteCapacity: number;
+  };
+  readonly generationBuffer?: SharedArrayBuffer;
+  /**
+   * Asynchronous runtime operations use the command MessagePort so blocking
+   * kernel work never stalls the language worker's event loop. Requests and
+   * results are the plain TraceKernel syscall wire contract.
+   */
+  dispatch(request: unknown): Promise<unknown>;
+  service(): Promise<void>;
+  close(): void;
+}
+
+export interface RuntimeKernelSignalNotification {
+  readonly signal: string;
+  readonly code: number;
+}
+
+export interface RuntimeKernelSignalMailbox {
+  /**
+   * Int32 layout: [monotonic sequence, latest signal number].
+   * Standard POSIX notifications may coalesce before the runtime's next safe
+   * point; they are not an ordered application event log.
+   */
+  readonly buffer: SharedArrayBuffer;
+}
+
+/**
+ * Host-owned, non-terminating process notification stream.
+ *
+ * This is deliberately separate from `AbortSignal`: abort represents
+ * cancellation and may retire a runtime worker, while POSIX notifications
+ * such as SIGWINCH have a default disposition of ignore and must leave the
+ * process and its engine lease alive.
+ */
+export interface RuntimeKernelSignalBridge {
+  readonly mailbox: RuntimeKernelSignalMailbox;
+  subscribe(
+    listener: (notification: RuntimeKernelSignalNotification) => void
+  ): () => void;
+}
+
 type RuntimeHttpBufferConstructor = {
   from(value: string, encoding: 'base64'): Uint8Array;
   from(value: Uint8Array): { toString(encoding: 'base64'): string };
@@ -674,6 +724,12 @@ export interface RuntimeCommandOptions {
   executionLimits?: RuntimeCommandExecutionLimits;
   onEvent?: RuntimeCommandEventHandler;
   /**
+   * Called once after the kernel has allocated and published the process but
+   * before its command executor is admitted. Terminal background submission
+   * uses this instead of inferring PID creation from synchronous timing.
+   */
+  onProcessStart?: (pid: number) => void;
+  /**
    * Receives the shell variable changes the command produced relative to the
    * environment it started with: assignments/exports map to their final
    * value, `unset` variables map to `undefined`. Terminal sessions use this
@@ -841,7 +897,64 @@ export function readRuntimeCommandStdinPipeBytes(
     out.set(state.bytes.subarray(0, length - firstLength), firstLength);
   }
   Atomics.store(state.header, RUNTIME_STDIN_PIPE_READ_INDEX, (readIndex + length) % capacity);
+  Atomics.notify(state.header, RUNTIME_STDIN_PIPE_READ_INDEX);
   return out;
+}
+
+/**
+ * Backpressure-aware binary writer used by kernel pipe adapters.
+ *
+ * Interactive terminal writes intentionally retain their immediate
+ * fail-when-full API. A process pipe instead suspends until the runtime has
+ * consumed space so a slow child cannot cause snapshotting or dropped bytes.
+ */
+export async function writeRuntimeCommandStdinPipeBytes(
+  pipe: RuntimeCommandStdinPipe,
+  data: Uint8Array
+): Promise<void> {
+  const state = runtimeCommandStdinPipeState(pipe);
+  let offset = 0;
+  while (offset < data.byteLength) {
+    if (Atomics.load(state.header, RUNTIME_STDIN_PIPE_CLOSED_INDEX) !== 0) {
+      throw Object.assign(
+        new Error('EPIPE: cannot write to closed live stdin pipe'),
+        { code: 'EPIPE' }
+      );
+    }
+    const readIndex = Atomics.load(state.header, RUNTIME_STDIN_PIPE_READ_INDEX);
+    const writeIndex = Atomics.load(state.header, RUNTIME_STDIN_PIPE_WRITE_INDEX);
+    const capacity = state.bytes.byteLength;
+    const available = readIndex <= writeIndex
+      ? capacity - (writeIndex - readIndex) - 1
+      : readIndex - writeIndex - 1;
+    if (available === 0) {
+      const waitAsync = (
+        Atomics as typeof Atomics & {
+          waitAsync?: (
+            array: Int32Array,
+            index: number,
+            value: number
+          ) => { readonly value: Promise<unknown> | string };
+        }
+      ).waitAsync;
+      if (waitAsync) {
+        const waiting = waitAsync(state.header, RUNTIME_STDIN_PIPE_READ_INDEX, readIndex).value;
+        if (typeof waiting !== 'string') await waiting;
+      } else {
+        await new Promise<void>((resolve) => setTimeout(resolve, 1));
+      }
+      continue;
+    }
+    const length = Math.min(available, data.byteLength - offset);
+    let nextWriteIndex = writeIndex;
+    for (let index = 0; index < length; index += 1) {
+      state.bytes[nextWriteIndex] = data[offset + index]!;
+      nextWriteIndex = (nextWriteIndex + 1) % capacity;
+    }
+    offset += length;
+    Atomics.store(state.header, RUNTIME_STDIN_PIPE_WRITE_INDEX, nextWriteIndex);
+    Atomics.notify(state.header, RUNTIME_STDIN_PIPE_WRITE_INDEX);
+  }
 }
 
 export interface RuntimeCommandResult {
@@ -1640,8 +1753,9 @@ export interface RuntimeProjectWorkerBridgeOptions<
   finishDetail?: (result: Result) => Record<string, unknown>;
   applyFileChange?: (change: RuntimeFileChange, phase: RuntimeFileMutationPhase) => Promise<boolean | void>;
   run(
-    request: Omit<Request, 'onEvent'>,
-    onEvent: RuntimeCommandEventHandler
+    request: Omit<Request, 'onEvent' | 'engineLease'>,
+    onEvent: RuntimeCommandEventHandler,
+    engineLease: RuntimeProjectEngineLeaseController | undefined
   ): Promise<Result>;
 }
 
@@ -1659,10 +1773,14 @@ export async function runRuntimeProjectWorkerBridge<
     liveIo.handleRuntimeEvent(event);
   };
   io.status(options.startPhase, options.startMessage, options.startDetail);
-  const { onEvent: _onEvent, ...workerRequest } = options.request;
+  const {
+    onEvent: _onEvent,
+    engineLease: _engineLease,
+    ...workerRequest
+  } = options.request;
   let result: Result;
   try {
-    result = await options.run(workerRequest, forwardWorkerEvent);
+    result = await options.run(workerRequest, forwardWorkerEvent, options.request.engineLease);
     liveIo.close();
     await liveIo.flush();
   } catch (error) {
@@ -1877,6 +1995,42 @@ export interface RuntimeProjectProcessInfo {
   ppid: number;
   pgid: number;
   sid: number;
+  /** Kernel descriptor identities inherited or installed before the runtime lease starts. */
+  descriptors?: readonly number[];
+}
+
+export type RuntimeProjectEngineLeaseReleaseDisposition =
+  | {
+      readonly kind: 'reuse';
+      readonly reason: 'revalidated';
+    }
+  | {
+      readonly kind: 'destroy';
+      readonly reason:
+        | 'unvalidated'
+        | 'execution-failure'
+        | 'signaled'
+        | 'interrupted'
+        | 'revalidation-failure';
+      readonly message?: string;
+    };
+
+/**
+ * Host-only mutable engine resource attached to one kernel process.
+ *
+ * This object is stripped before a worker request is posted. TraceKernel calls
+ * `revalidate` before a possible reuse disposition and calls `release`
+ * exactly once after process execution.
+ */
+export interface RuntimeProjectEngineLeaseAttachment {
+  revalidate?(): Promise<void> | void;
+  release(
+    disposition: RuntimeProjectEngineLeaseReleaseDisposition
+  ): Promise<void> | void;
+}
+
+export interface RuntimeProjectEngineLeaseController {
+  attach(attachment: RuntimeProjectEngineLeaseAttachment): void;
 }
 
 export interface RuntimeProjectCommandRequest<
@@ -1889,18 +2043,50 @@ export interface RuntimeProjectCommandRequest<
   cwd: string;
   env: Record<string, string>;
   process?: RuntimeProjectProcessInfo;
+  /** Host-only actual worker/interpreter lease; never crosses the worker boundary. */
+  engineLease?: RuntimeProjectEngineLeaseController;
   terminal?: RuntimeProjectTerminalCapabilities;
   stdinPipe?: RuntimeCommandStdinSharedBuffer;
   project: RuntimeProjectSnapshot;
   kernelHttp?: RuntimeKernelHttpBridge;
+  kernelSyscalls?: RuntimeKernelSyscallBridge;
+  /** Host-only live process notifications; never cloned into a worker request. */
+  kernelSignals?: RuntimeKernelSignalBridge;
   options?: Record<string, unknown>;
   signal?: AbortSignal;
   onEvent?: RuntimeCommandEventHandler;
 }
 
+export interface RuntimeProjectCommandRunnerCapabilities {
+  /**
+   * The concrete runner can consume fd 0/1/2 through the supplied kernel
+   * syscall bridge. Runners without this capability retain the compatibility
+   * stdin transport and returned-output path.
+   */
+  readonly descriptorStdio?: boolean;
+}
+
 export type RuntimeProjectCommandRunner<
   Request extends RuntimeProjectCommandRequest<string> = RuntimeProjectCommandRequest
-> = (request: Request) => Promise<RuntimeCommandResult>;
+> = ((request: Request) => Promise<RuntimeCommandResult>) & {
+  readonly capabilities?: RuntimeProjectCommandRunnerCapabilities;
+};
+
+export function withRuntimeProjectCommandRunnerCapabilities<
+  Runner extends ((request: never) => Promise<RuntimeCommandResult>) & {
+    readonly capabilities?: RuntimeProjectCommandRunnerCapabilities;
+  },
+>(
+  runner: Runner,
+  capabilities: RuntimeProjectCommandRunnerCapabilities
+): Runner {
+  return Object.assign(runner, {
+    capabilities: Object.freeze({
+      ...runner.capabilities,
+      ...capabilities,
+    }),
+  });
+}
 
 export interface RuntimeWorkspace {
   readonly kernel: RuntimeWorkspaceKernel;

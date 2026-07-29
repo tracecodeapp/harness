@@ -97,6 +97,7 @@ import type {
   RuntimeCommandOptions,
   RuntimeProjectLiveIoController,
 } from '@tracecode/harness-core';
+import type { TraceKernelFileSystemMutation } from '@tracecode/tracekernel';
 import type {
   CppProjectCommandRunner,
   CSharpProjectCommandRunner,
@@ -163,9 +164,10 @@ export interface RuntimeCommandExecutionContext {
   readonly actor: RuntimeWorkspaceActor;
   readonly process: {
     readonly pid: number;
-    readonly abortController?: AbortController;
     [key: string]: any;
   };
+  readonly engineLease?: import('@tracecode/harness-core').RuntimeProjectEngineLeaseController;
+  readonly signal: AbortSignal;
   readonly stdinPipe?: RuntimeCommandOptions['stdinPipe'];
   readonly terminal?: RuntimeCommandOptions['terminal'];
   umask: number;
@@ -174,6 +176,13 @@ export interface RuntimeCommandExecutionContext {
   readonly runtimeIo: RuntimeProjectLiveIoController;
   readonly generationBaseline: RuntimeFileSystemGenerationSnapshot;
   readonly mutatedGenerationPaths: Set<string>;
+  /**
+   * Positive while a runtime syscall is operating directly on the live
+   * kernel namespace. These operations are serialized by filesystem locks and
+   * must not inherit the optimistic snapshot-conflict policy used for final
+   * provider diffs.
+   */
+  liveKernelSyscallDepth?: number;
   kernelError?: RuntimeCommandError;
   executableTransformCwd?: string;
   deviceStdout: string;
@@ -598,6 +607,24 @@ export type RuntimeFileChangeObserver = (
   context?: RuntimeCommandExecutionContext
 ) => void;
 
+export interface RuntimeFileSystemBeforeMutation {
+  readonly paths: readonly string[];
+  readonly kind: RuntimeFileSystemMutationKind;
+  readFile(path: string): Promise<Uint8Array>;
+}
+
+export interface RuntimeFileSystemMutation {
+  readonly revision: number;
+  readonly generation: number;
+  readonly kind: RuntimeFileSystemMutationKind;
+  readonly paths: readonly string[];
+  readonly pid?: number;
+}
+
+export type RuntimeFileSystemBeforeMutationObserver = (
+  mutation: RuntimeFileSystemBeforeMutation
+) => Promise<void> | void;
+
 
 export interface RuntimeFinalDiffPreparedChange {
   change: RuntimeFileChange;
@@ -978,6 +1005,10 @@ export class CommandBoundFileSystem implements IFileSystem {
     this.inner.moveInode(source, destination);
   }
 
+  bindInode(existingPath: string, newPath: string): void {
+    this.inner.bindInode(existingPath, newPath);
+  }
+
   forgetInodePath(path: string): void {
     this.inner.forgetInodePath(path);
   }
@@ -1131,6 +1162,7 @@ class RuntimeWorkspaceQuotaFileSystem implements IFileSystem {
   private totalWorkspaceBytes = 0;
   private totalWorkspaceEntries = 0;
   private initialized = false;
+  private invalidationEpoch = 0;
   private mutationTail: Promise<void> = Promise.resolve();
 
   constructor(
@@ -1146,30 +1178,41 @@ class RuntimeWorkspaceQuotaFileSystem implements IFileSystem {
       release = resolve;
     });
     await previous;
+    let initializedEpoch = this.invalidationEpoch;
     try {
       await this.ensureInitialized();
+      initializedEpoch = this.invalidationEpoch;
       return await fn();
     } finally {
+      if (initializedEpoch !== this.invalidationEpoch) {
+        this.initialized = false;
+      }
       release();
     }
   }
 
   private async ensureInitialized(): Promise<void> {
-    if (this.initialized) return;
-    await this.rebuildLedger();
-    this.initialized = true;
+    while (!this.initialized) {
+      const epoch = this.invalidationEpoch;
+      await this.rebuildLedger();
+      if (epoch === this.invalidationEpoch) this.initialized = true;
+    }
+  }
+
+  invalidateLedger(): void {
+    this.invalidationEpoch += 1;
+    this.initialized = false;
   }
 
   async storageUsage(): Promise<RuntimeWorkspaceStorageUsage> {
-    await this.ensureInitialized();
-    return {
+    return this.withMutationLock(async () => ({
       usedBytes: this.totalWorkspaceBytes,
       capacityBytes: this.limits.maxWorkspaceBytes,
       availableBytes: Math.max(0, this.limits.maxWorkspaceBytes - this.totalWorkspaceBytes),
       usedEntries: this.totalWorkspaceEntries,
       capacityEntries: this.limits.maxEntryCount,
       availableEntries: Math.max(0, this.limits.maxEntryCount - this.totalWorkspaceEntries),
-    };
+    }));
   }
 
   private async rebuildLedger(): Promise<void> {
@@ -1665,7 +1708,10 @@ export class KernelObservedFileSystem implements IFileSystem {
   private nextInode = 10_000;
   private readonly generations = new Map<string, number>();
   private readonly inodes = new Map<string, number>();
-  private readonly mutationWatchers = new Set<(revision: number) => void>();
+  private readonly mutationWatchers =
+    new Set<(revision: number, mutation: RuntimeFileSystemMutation) => void>();
+  private readonly beforeMutationObservers =
+    new Set<RuntimeFileSystemBeforeMutationObserver>();
   private liveFileChangeBudgetPid: number | undefined;
   private liveFileChangeCount = 0;
   private liveFileChangeBytes = 0;
@@ -1709,11 +1755,86 @@ export class KernelObservedFileSystem implements IFileSystem {
     return this.mutationCounter;
   }
 
-  watchMutations(listener: (revision: number) => void): () => void {
+  watchMutations(
+    listener: (revision: number, mutation: RuntimeFileSystemMutation) => void
+  ): () => void {
     this.mutationWatchers.add(listener);
     return () => {
       this.mutationWatchers.delete(listener);
     };
+  }
+
+  watchBeforeMutations(listener: RuntimeFileSystemBeforeMutationObserver): () => void {
+    this.beforeMutationObservers.add(listener);
+    return () => {
+      this.beforeMutationObservers.delete(listener);
+    };
+  }
+
+  /**
+   * Reconcile a mutation committed directly through the extracted TKFS
+   * session. The commit is already authoritative, so this path updates
+   * derived generations and accounting without running pre-mutation hooks or
+   * fabricating a host command actor.
+   */
+  observeExternalTraceKernelMutation(
+    mutation: TraceKernelFileSystemMutation
+  ): void {
+    this.quotaFileSystem.invalidateLedger();
+    const paths = mutation.paths.map((path) =>
+      normalizeFsLockPath(this.mapPath(path))
+    );
+    const kind = this.externalMutationKind(mutation);
+
+    if (mutation.operation === 'clear') {
+      this.inodes.clear();
+    } else if (mutation.operation === 'rename') {
+      const [source, destination] = paths;
+      if (source && destination) {
+        const movedPaths = [...this.inodes.keys()].filter(
+          (path) => path === source || path.startsWith(`${source}/`)
+        );
+        for (const path of [...this.inodes.keys()]) {
+          if (path === destination || path.startsWith(`${destination}/`)) {
+            this.inodes.delete(path);
+          }
+        }
+        this.moveInodeSubtree(source, destination, movedPaths);
+      }
+    } else if (
+      mutation.operation === 'unlink' ||
+      mutation.operation === 'rmdir'
+    ) {
+      for (const path of [...this.inodes.keys()]) {
+        if (paths.some((root) => path === root || path.startsWith(`${root}/`))) {
+          this.inodes.delete(path);
+        }
+      }
+    }
+
+    this.recordMutation(undefined, paths, kind);
+  }
+
+  private externalMutationKind(
+    mutation: TraceKernelFileSystemMutation
+  ): RuntimeFileSystemMutationKind {
+    switch (mutation.operation) {
+      case 'mkdir':
+        return 'directory-create';
+      case 'rmdir':
+      case 'unlink':
+        return 'delete';
+      case 'rename':
+        return 'rename';
+      case 'clear':
+        return 'recursive-delete';
+      case 'link':
+      case 'symlink':
+      case 'open-create':
+        return 'file-create';
+      default:
+        return 'file-write';
+    }
   }
 
   inodeForPath(path: string): number {
@@ -1731,6 +1852,42 @@ export class KernelObservedFileSystem implements IFileSystem {
     const inode = this.inodes.get(normalizedSource) ?? this.inodeForPath(normalizedSource);
     this.inodes.delete(normalizedSource);
     this.inodes.set(normalizedDestination, inode);
+  }
+
+  bindInode(existingPath: string, newPath: string): void {
+    const normalizedExisting = normalizeFsLockPath(this.mapPath(existingPath));
+    const normalizedNew = normalizeFsLockPath(this.mapPath(newPath));
+    const inode = this.inodes.get(normalizedExisting) ?? this.inodeForPath(normalizedExisting);
+    this.inodes.set(normalizedNew, inode);
+  }
+
+  pathForInode(inode: number): string | undefined {
+    for (const [path, candidate] of this.inodes) {
+      if (candidate === inode) return path;
+    }
+    return undefined;
+  }
+
+  inodeLinkCount(path: string): number {
+    const inode = this.inodeForPath(path);
+    let count = 0;
+    for (const candidate of this.inodes.values()) {
+      if (candidate === inode) count += 1;
+    }
+    return count;
+  }
+
+  async inodeIdentityPathWithContext(
+    context: RuntimeCommandExecutionContext | undefined,
+    path: string
+  ): Promise<string> {
+    const mappedPath = normalizeFsLockPath(this.mapPath(path));
+    if (!(await this.base.exists(mappedPath).catch(() => false))) return mappedPath;
+    const realPath = normalizeFsLockPath(
+      await this.realpathWithContext(context, mappedPath)
+    );
+    this.assertCommandPathVisible(context, realPath, 'stat');
+    return realPath;
   }
 
   forgetInodePath(path: string): void {
@@ -1753,7 +1910,7 @@ export class KernelObservedFileSystem implements IFileSystem {
           baseline: context.generationBaseline,
           mutatedPaths: context.mutatedGenerationPaths,
           pid: context.process.pid,
-          signal: context.process.abortController!.signal,
+          signal: context.signal,
           setError: (error) => {
             context.kernelError = error;
           },
@@ -2158,6 +2315,16 @@ export class KernelObservedFileSystem implements IFileSystem {
     this.onSyscallEvent({ type: 'fs-syscall-start', pid: generationContext?.pid, detail });
     return this.locks.withLocks(this.mutationLockRequests(paths, kind), async () => {
       this.assertCommandMutationFresh(context, paths, freshnessKind);
+      if (this.beforeMutationObservers.size > 0) {
+        const mutation = Object.freeze({
+          paths: Object.freeze([...normalizedPaths]),
+          kind,
+          readFile: (path: string) => this.base.readFileBuffer(path),
+        });
+        for (const observer of this.beforeMutationObservers) {
+          await observer(mutation);
+        }
+      }
       return fn();
     }, generationContext?.signal).then((result) => {
       this.onSyscallEvent({ type: 'fs-syscall-commit', pid: generationContext?.pid, detail });
@@ -2196,6 +2363,20 @@ export class KernelObservedFileSystem implements IFileSystem {
   ): Promise<T> {
     return this.withMutationLocks(context, paths, kind, async () => {
       const result = await fn(this.base);
+      if (kind === 'delete' || kind === 'recursive-delete') {
+        const deletedRoots = paths.map((path) => normalizeFsLockPath(this.mapPath(path)));
+        const deletedInodePaths = [...this.inodes.keys()].filter((candidate) =>
+          deletedRoots.some((root) =>
+            candidate === root ||
+            (kind === 'recursive-delete' && candidate.startsWith(`${root}/`))
+          )
+        );
+        for (const inodePath of deletedInodePaths) {
+          if (!(await this.base.exists(inodePath).catch(() => false))) {
+            this.inodes.delete(inodePath);
+          }
+        }
+      }
       this.recordMutation(context, paths, kind);
       return result;
     }, freshnessKind);
@@ -2218,9 +2399,18 @@ export class KernelObservedFileSystem implements IFileSystem {
       this.generations.set(path, generation);
     }
     this.recordCommandMutation(context, generationPaths);
+    const mutation = Object.freeze({
+      revision: this.mutationCounter,
+      generation,
+      kind,
+      paths: Object.freeze(
+        [...new Set(paths.map((path) => normalizeFsLockPath(this.mapPath(path))))]
+      ),
+      ...(context?.process.pid === undefined ? {} : { pid: context.process.pid }),
+    });
     for (const watcher of this.mutationWatchers) {
       try {
-        watcher(this.mutationCounter);
+        watcher(this.mutationCounter, mutation);
       } catch {
         // Mutation observers are diagnostic/durability hooks and must not roll
         // back an already committed filesystem operation.
@@ -2253,6 +2443,7 @@ export class KernelObservedFileSystem implements IFileSystem {
     paths: readonly string[],
     kind: RuntimeFileSystemMutationKind
   ): void {
+    if ((context?.liveKernelSyscallDepth ?? 0) > 0) return;
     const generationContext = this.commandGenerationContextFor(context);
     if (!generationContext) return;
     const generationPaths = [...new Set(this.mutationGenerationPaths(paths, kind))];
@@ -2467,6 +2658,63 @@ export class KernelObservedFileSystem implements IFileSystem {
       this.inodeForPath(mappedPath);
       this.recordMutation(context, [mappedPath], mutationKind);
       await this.emitFileWrite(context, mappedPath);
+    });
+  }
+
+  /**
+   * Transitional TKFS write path.
+   *
+   * The 0.12 in-memory filesystem intentionally gives hard-link paths
+   * copy-on-write behavior. TraceKernel requires POSIX inode behavior, so its
+   * adapter updates every live pathname bound to the inode as one locked,
+   * rollback-capable operation. This disappears when workspace storage moves
+   * fully behind TKFS.
+   */
+  async writeFileByInodeWithContext(
+    context: RuntimeCommandExecutionContext | undefined,
+    path: string,
+    content: FileContent,
+    options?: FsWriteFileOptions
+  ): Promise<void> {
+    const mappedPath = normalizeFsLockPath(this.mapPath(path));
+    const identityPath = await this.inodeIdentityPathWithContext(context, mappedPath);
+    if (!(await this.base.exists(identityPath).catch(() => false))) {
+      return this.writeFileWithContext(context, mappedPath, content, options);
+    }
+
+    const inode = this.inodes.get(mappedPath)
+      ?? this.inodes.get(identityPath)
+      ?? this.inodeForPath(identityPath);
+    if (mappedPath === identityPath) this.inodes.set(mappedPath, inode);
+    const linkedPaths = [...this.inodes.entries()]
+      .filter(([, candidate]) => candidate === inode)
+      .map(([candidate]) => candidate)
+      .filter((candidate, index, candidates) => candidates.indexOf(candidate) === index);
+    if (!linkedPaths.includes(identityPath)) linkedPaths.push(identityPath);
+
+    await this.withMutationLocks(context, [mappedPath, ...linkedPaths], 'file-write', async () => {
+      this.assertWritable(mappedPath, 'write');
+      const previous = new Map<string, Uint8Array>();
+      const written: string[] = [];
+      for (const linkedPath of linkedPaths) {
+        previous.set(linkedPath, Uint8Array.from(await this.base.readFileBuffer(linkedPath)));
+      }
+      try {
+        for (const linkedPath of linkedPaths) {
+          await this.base.writeFile(linkedPath, content, options);
+          written.push(linkedPath);
+        }
+      } catch (error) {
+        for (const linkedPath of written.reverse()) {
+          const oldBytes = previous.get(linkedPath);
+          if (oldBytes) await this.base.writeFile(linkedPath, oldBytes).catch(() => undefined);
+        }
+        throw error;
+      }
+      this.recordMutation(context, linkedPaths, 'file-write');
+      for (const linkedPath of linkedPaths) {
+        await this.emitFileWrite(context, linkedPath);
+      }
     });
   }
 
@@ -2894,6 +3142,7 @@ export class KernelObservedFileSystem implements IFileSystem {
       await this.assertCommandReadTargetVisible(context, mappedExistingPath, 'link');
       this.assertWritable(mappedNewPath, 'link');
       await this.base.link(mappedExistingPath, mappedNewPath);
+      this.bindInode(mappedExistingPath, mappedNewPath);
       this.recordMutation(context, [mappedExistingPath, mappedNewPath], 'copy');
     });
   }
@@ -2947,11 +3196,43 @@ export class KernelObservedFileSystem implements IFileSystem {
     assertNoNul(path, 'Kernel path');
     if (this.dynamicProc.entryKind(this.mapPath(path), _context) !== null) return Promise.resolve(this.mapPath(path));
     if (isRuntimeKernelVirtualNamespacePath(path)) return Promise.resolve(path);
-    const mappedPath = this.mapPath(path);
-    this.assertCommandPathVisible(_context, mappedPath, 'realpath');
-    const realPath = await this.base.realpath(mappedPath);
-    this.assertCommandPathVisible(_context, realPath, 'realpath');
-    return realPath;
+    let current = normalizeFsLockPath(this.mapPath(path));
+    let followedLinks = 0;
+
+    resolveAgain: while (true) {
+      this.assertCommandPathVisible(_context, current, 'realpath');
+      const parts = current.split('/').filter(Boolean);
+      for (let index = 0; index < parts.length; index += 1) {
+        const candidate = `/${parts.slice(0, index + 1).join('/')}`;
+        this.assertCommandPathVisible(_context, candidate, 'realpath');
+        const stat = await this.lstatWithContext(_context, candidate);
+        if (runtimeFileSystemEntryIsSymlink(stat)) {
+          followedLinks += 1;
+          if (followedLinks > 40) {
+            throw Object.assign(
+              new Error(`ELOOP: too many symbolic links, realpath '${path}'`),
+              { code: 'ELOOP' }
+            );
+          }
+          const target = await this.readlinkWithContext(_context, candidate);
+          const targetPath = target.startsWith('/')
+            ? normalizeFsLockPath(this.mapPath(target))
+            : normalizeFsLockPath(`${dirname(candidate)}/${target}`);
+          const remaining = parts.slice(index + 1).join('/');
+          current = remaining
+            ? normalizeFsLockPath(`${targetPath}/${remaining}`)
+            : targetPath;
+          continue resolveAgain;
+        }
+        if (index < parts.length - 1 && !stat.isDirectory) {
+          throw Object.assign(
+            new Error(`ENOTDIR: path component is not a directory, realpath '${candidate}'`),
+            { code: 'ENOTDIR' }
+          );
+        }
+      }
+      return current;
+    }
   }
 
   private dynamicVirtualPaths(

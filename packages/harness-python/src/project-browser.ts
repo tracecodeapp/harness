@@ -7,10 +7,14 @@ import type {
   RuntimeCommandEventHandler,
   RuntimeProjectCommandRequest,
   RuntimeProjectCommandRunner,
+  RuntimeProjectEngineLeaseController,
   RuntimeProjectFileChangeApplyOptions,
   RuntimeProjectSnapshot,
 } from '@tracecode/harness-core';
-import { runRuntimeProjectWorkerBridge } from '@tracecode/harness-core';
+import {
+  runRuntimeProjectWorkerBridge,
+  withRuntimeProjectCommandRunnerCapabilities,
+} from '@tracecode/harness-core';
 import type { PythonWorkerClient } from '../../harness-browser/src/pyodide-worker-client';
 
 export type PythonProjectFileEncoding = RuntimeFileEncoding;
@@ -40,7 +44,8 @@ export interface PyodidePythonProjectWorkerClient {
     request: PythonProjectCommandRequest,
     timeoutMs?: number,
     onEvent?: RuntimeCommandEventHandler,
-    signal?: AbortSignal
+    signal?: AbortSignal,
+    engineLease?: RuntimeProjectEngineLeaseController
   ): Promise<PythonProjectCommandResult>;
 }
 
@@ -50,8 +55,8 @@ export function createBrowserPythonProjectRunner(
   workerClient: PyodidePythonProjectWorkerClient | PythonWorkerClient,
   options: BrowserPythonProjectRunnerOptions = {}
 ): BrowserPythonProjectCommandRunner {
-  return (request) =>
-    runRuntimeProjectWorkerBridge({
+  return withRuntimeProjectCommandRunnerCapabilities(
+    (request) => runRuntimeProjectWorkerBridge({
       request,
       startPhase: 'process-start',
       startMessage: 'Starting Python browser project command',
@@ -64,8 +69,17 @@ export function createBrowserPythonProjectRunner(
       finishPhase: 'process-exit',
       finishMessage: 'Finished Python browser project command',
       applyFileChange: options.applyFileChange,
-      run: (workerRequest, onEvent) => workerClient.executeProjectPython(workerRequest, options.timeoutMs, onEvent, workerRequest.signal),
-    });
+      run: (workerRequest, onEvent, engineLease) =>
+        workerClient.executeProjectPython(
+          workerRequest,
+          options.timeoutMs,
+          onEvent,
+          workerRequest.signal,
+          engineLease
+        ),
+    }),
+    { descriptorStdio: true }
+  );
 }
 
 export const createPyodidePythonProjectRunner = createBrowserPythonProjectRunner;

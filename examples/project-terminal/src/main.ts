@@ -136,6 +136,7 @@ async function bootProjectTerminal(): Promise<void> {
 #include <iostream>
 #include <sstream>
 #include <string>
+#include <unistd.h>
 
 std::string ask(const std::string& label, bool collected) {
   if (!collected) {
@@ -147,6 +148,15 @@ std::string ask(const std::string& label, bool collected) {
 }
 
 int main() {
+  if (!isatty(0) || !isatty(1) || !isatty(2)) {
+    std::cerr << "TraceKernel terminal descriptors are unavailable\\n";
+    return 2;
+  }
+  const pid_t foreground = tcgetpgrp(0);
+  if (foreground <= 0 || tcsetpgrp(0, foreground) != 0) {
+    std::cerr << "TraceKernel foreground process group is unavailable\\n";
+    return 2;
+  }
   const bool collected = std::getenv("TRACE_DEMO_STDIN_COLLECTED") != nullptr;
   const std::string title = ask("Report title", collected);
   const std::string team = ask("Team name", collected);

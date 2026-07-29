@@ -1372,6 +1372,7 @@ async function testBrowserJavaScriptSyntaxErrorsHideRunnerInternals(): Promise<v
   assertCondition(
     !result.stderr.includes('runBrowserJavaScriptProjectRequest') &&
       !result.stderr.includes('project-browser.ts') &&
+      !result.stderr.includes('test-tracekernel-hardening.ts') &&
       !result.stderr.includes('executeEntrypoint') &&
       !result.stderr.includes('executeModule'),
     `browser JS syntax errors should not expose runner internals: ${JSON.stringify(result.stderr)}`
@@ -3373,16 +3374,30 @@ async function testRuntimeWorkspaceStorageQuotasAreAtomic(): Promise<void> {
   try {
     const linked = await hardlinkWorkspace.runCommand('ln source.txt hard.txt');
     assertCondition(linked.exitCode === 0, `a within-quota hard link should succeed: ${JSON.stringify(linked)}`);
-    await hardlinkWorkspace.writeFile('hard.txt', '12345');
+    const rejectedWrite = await rejectedMessage(() =>
+      hardlinkWorkspace.writeFile('hard.txt', '12345')
+    );
     assertCondition(
-      await hardlinkWorkspace.readFile('source.txt') === 'abc' && await hardlinkWorkspace.readFile('hard.txt') === '12345',
-      'hard-link paths should follow InMemoryFs copy-on-write accounting'
+      rejectedWrite.includes('ENOSPC'),
+      `hard-link inode growth should count every logical link: ${rejectedWrite}`
+    );
+    assertCondition(
+      await hardlinkWorkspace.readFile('source.txt') === 'abc' &&
+        await hardlinkWorkspace.readFile('hard.txt') === 'abc',
+      'a rejected hard-link write must preserve the shared inode'
+    );
+    await hardlinkWorkspace.appendFile('hard.txt', 'x');
+    assertCondition(
+      await hardlinkWorkspace.readFile('source.txt') === 'abcx' &&
+        await hardlinkWorkspace.readFile('hard.txt') === 'abcx',
+      'host writes should retain POSIX hard-link inode identity under TKFS'
     );
     const rejectedAppend = await rejectedMessage(() => hardlinkWorkspace.appendFile('hard.txt', 'x'));
     assertCondition(rejectedAppend.includes('ENOSPC'), `hard-link replacement growth should enforce aggregate bytes: ${rejectedAppend}`);
     assertCondition(
-      await hardlinkWorkspace.readFile('source.txt') === 'abc' && await hardlinkWorkspace.readFile('hard.txt') === '12345',
-      'a rejected hard-link-path append must leave both logical entries unchanged'
+      await hardlinkWorkspace.readFile('source.txt') === 'abcx' &&
+        await hardlinkWorkspace.readFile('hard.txt') === 'abcx',
+      'a rejected hard-link append must leave the shared inode unchanged'
     );
   } finally {
     hardlinkWorkspace.dispose();

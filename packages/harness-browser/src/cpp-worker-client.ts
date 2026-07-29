@@ -27,6 +27,7 @@ import type {
   RuntimeCommandResult,
   RuntimeKernelHttpBridge,
   RuntimeProjectCommandRequest,
+  RuntimeProjectEngineLeaseController,
 } from '@tracecode/harness-core';
 import {
   createEmptyRuntimeTrace,
@@ -268,6 +269,13 @@ export class CppWorkerClient {
       onCommandMessage: (commandId, type, payload, pending) => {
         if (type === 'runtime-progress') {
           this.lastRuntimeProgress = payload && typeof payload === 'object' ? (payload as CppRuntimeProgress) : {};
+          return true;
+        }
+        if (type === 'kernel-syscall') {
+          if (!pending.kernelSyscalls) return true;
+          void pending.kernelSyscalls.service().catch(() => {
+            pending.kernelSyscalls?.close();
+          });
           return true;
         }
         if (!KERNEL_HTTP_SYNC_MESSAGE_TYPES.has(type)) return false;
@@ -1194,10 +1202,23 @@ export class CppWorkerClient {
     request: CppProjectCommandRequest,
     timeoutMs = this.executionTimeoutMs,
     onEvent?: RuntimeCommandEventHandler,
-    signal: AbortSignal | undefined = request.signal
+    signal: AbortSignal | undefined = request.signal,
+    engineLease?: RuntimeProjectEngineLeaseController
   ): Promise<CppProjectCommandResult> {
+    // C++ execution workers are already one-command resources. The retained
+    // compiler coordinator is trusted host infrastructure, not process state,
+    // so TraceKernel observes a destroy-only engine lease here.
+    engineLease?.attach({ release: () => undefined });
     return this.runInDisposableExecutionWorker(async (lifecycleGeneration) => {
-      const { signal: _signal, onEvent: _requestOnEvent, kernelHttp, ...workerRequest } = request;
+      const {
+        signal: _signal,
+        onEvent: _requestOnEvent,
+        engineLease: _engineLease,
+        kernelHttp,
+        kernelSyscalls,
+        kernelSignals,
+        ...workerRequest
+      } = request;
       if (!this.externalCompilerUrl && workerRequest.source === 'compile') {
         await this.options.runtimeAssetPreflight?.();
         this.assertLifecycleGeneration(lifecycleGeneration);
@@ -1213,7 +1234,9 @@ export class CppWorkerClient {
           null,
           onEvent,
           kernelHttp,
-          () => this.assertLifecycleGeneration(lifecycleGeneration)
+          () => this.assertLifecycleGeneration(lifecycleGeneration),
+          kernelSyscalls,
+          kernelSignals
         ),
         timeoutMs,
         'compile-run',

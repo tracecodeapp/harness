@@ -6,6 +6,62 @@ This repo uses Git tags as release boundaries. Version notes below summarize wha
 
 ## [Unreleased]
 
+## [0.13.0-beta1] - 2026-07-28
+
+This beta is the first release of the kernelized 0.13 architecture. It is
+intended for product integration and compatibility testing before the final
+0.13.0 ABI is declared stable.
+
+### Added
+
+- Extracted the public `@tracecode/tracekernel` package with matching ESM,
+  CommonJS, and declaration surfaces plus the versioned
+  `tracekernel.syscall.v1` binary and structured-clone wire contract.
+- Added the host → session → process → runtime-lease lifecycle, including
+  kernel-owned process identities, parent/group/session topology, signals,
+  waits, resource ceilings, watchdogs, crash recovery, and exactly-once lease
+  release.
+- Added process-owned descriptors for TKFS files, pipes, watches, controlling
+  terminals, and local TCP streams, with explicit inheritance, duplication,
+  polling, fragmented I/O, bounded backpressure, half-close, and teardown
+  behavior.
+- Added the authoritative shared TKFS namespace so independently running
+  JavaScript/TypeScript, Python, C++, C#, and Java processes observe the same
+  live files and cross-process watch events.
+- Added first-class language-initiated child spawning, descriptor wiring,
+  process control, terminal control, local sockets, and shared-filesystem
+  syscalls across every browser runtime. Java uses the independent TraceJVM
+  host boundary rather than CheerpJ's private filesystem model.
+- Routed local HTTP services through the TraceKernel TCP namespace while
+  retaining structured service grading, journaling, cancellation, and logical
+  host support.
+
+### Changed
+
+- Made TraceKernel the sole authority for filesystem state, descriptors,
+  process scheduling and termination, signal selection, watchdog deadlines,
+  terminal foreground ownership, runtime leases, and local port ownership.
+  Product-layer records now project kernel state instead of maintaining
+  fallback resource models.
+- Unified direct execution, terminal execution, and spawned children around
+  one process model. Descriptor-backed standard I/O is explicitly negotiated
+  by each runtime adapter so legacy native runners retain their intended host
+  streams.
+- Defined Effect services, scopes, retries, and concurrency as host-side
+  implementation tools only; Effect values never cross a language-worker wire
+  boundary.
+
+### Fixed
+
+- Hardened concurrent worker wakeups, process teardown, pipe EOF retention,
+  foreground process-group ownership, signal acknowledgement, path
+  canonicalization, filesystem bootstrap permissions, and atomic language
+  asset publication.
+- Added adversarial lifecycle, isolation, resource, transport, HTTP/TCP, and
+  browser-runtime gates covering real workers, independent heaps, explicit
+  descriptor inheritance, blocked-operation cancellation, repeated teardown,
+  and cross-worker cache invalidation.
+
 ## [0.12.6] - 2026-07-22
 
 ### Added

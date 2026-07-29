@@ -44,6 +44,12 @@ function testJavaHttpResponseManifest(status: number, headers: Record<string, st
 const workerInstances: MockWorker[] = [];
 let heldPythonProjectStarted: (() => void) | undefined;
 let releaseHeldPythonProject: (() => void) | undefined;
+
+function releaseHeldPythonProjectCommand(): void {
+  const release = releaseHeldPythonProject;
+  releaseHeldPythonProject = undefined;
+  release?.();
+}
 let holdPythonWarmupForUrlPrefix: string | undefined;
 let javaHttpTimeoutServerStarted: (() => void) | undefined;
 let javaHttpTimeoutRequestBuffer: SharedArrayBuffer | undefined;
@@ -413,6 +419,7 @@ class MockWorker {
 
 async function main(): Promise<void> {
   const originalWorker = globalThis.Worker;
+  const originalFetch = globalThis.fetch;
   // @ts-expect-error test stub
   globalThis.Worker = MockWorker;
 
@@ -643,8 +650,7 @@ async function main(): Promise<void> {
       assertCondition(client.exitCode === 0, `Browser project workspace should run a second Python command while the first is active: ${JSON.stringify(client)}`);
       assertCondition(client.stdout === 'execute-project-python:client.py\n', `Second Python project command should complete normally: ${client.stdout}`);
       assertCondition(projectPythonWorkers.length >= 2, `Browser project workspace should create separate Python workers for concurrent commands: ${projectPythonWorkers.length}`);
-      releaseHeldPythonProject?.();
-      releaseHeldPythonProject = undefined;
+      releaseHeldPythonProjectCommand();
       const heldResult = await held;
       assertCondition(heldResult.exitCode === 0 && heldResult.stdout === 'held-python-finished\n', `Held Python command should finish after release: ${JSON.stringify(heldResult)}`);
     } finally {
@@ -653,6 +659,60 @@ async function main(): Promise<void> {
       concurrentProjectWorkspace.dispose();
     }
     console.log('PASS: browser project workspace isolates concurrent project runtime commands');
+
+    const sharedSerialWorkspace = await createBrowserProjectWorkspace({
+      assetBaseUrl: '/project-shared-serialization',
+      projectWorkerIsolation: 'shared',
+      trustedSharedWorkerReuse: true,
+      pythonProjectTimeoutMs: 5000,
+      files: [
+        { path: 'hold.py', contents: 'print("hold")\n' },
+        { path: 'client.py', contents: 'print("client")\n' },
+      ],
+    });
+    try {
+      const beforeWorkerCount = workerInstances.length;
+      const heldStarted = new Promise<void>((resolve) => {
+        heldPythonProjectStarted = resolve;
+      });
+      const held = sharedSerialWorkspace.runCommand('python3 hold.py');
+      await heldStarted;
+      let clientSettled = false;
+      const client = sharedSerialWorkspace.runCommand('python3 client.py').then((result) => {
+        clientSettled = true;
+        return result;
+      });
+      await Promise.resolve();
+      await Promise.resolve();
+      const sharedWorkers = workerInstances
+        .slice(beforeWorkerCount)
+        .filter((worker) => String(worker.url).startsWith('/project-shared-serialization/pyodide-worker.js'));
+      const projectMessagesBeforeRelease = sharedWorkers.flatMap((worker) =>
+        worker.messages.filter((message) => message.type === 'execute-project-python')
+      );
+      assertCondition(sharedWorkers.length === 1, 'Trusted shared execution should own one interpreter worker');
+      assertCondition(
+        !clientSettled && projectMessagesBeforeRelease.length === 1,
+        'A second PID must not enter a shared interpreter before the prior kernel lease is released'
+      );
+      releaseHeldPythonProjectCommand();
+      const [heldResult, clientResult] = await Promise.all([held, client]);
+      const projectMessagesAfterRelease = sharedWorkers.flatMap((worker) =>
+        worker.messages.filter((message) => message.type === 'execute-project-python')
+      );
+      assertCondition(
+        heldResult.exitCode === 0 &&
+          clientResult.exitCode === 0 &&
+          projectMessagesAfterRelease.length === 2 &&
+          sharedWorkers[0]?.terminated === false,
+        'A healthy released engine lease should admit the next PID on the same trusted worker'
+      );
+    } finally {
+      heldPythonProjectStarted = undefined;
+      releaseHeldPythonProject = undefined;
+      sharedSerialWorkspace.dispose();
+    }
+    console.log('PASS: trusted shared project workers serialize PIDs through kernel engine leases');
 
     const beforeAuthorityWorkerCount = workerInstances.length;
     const authorityProjectWorkspace = await createBrowserProjectWorkspace({
@@ -713,7 +773,13 @@ async function main(): Promise<void> {
       await authorityProjectWorkspace.runCommand('node main.js');
       await authorityProjectWorkspace.runCommand('java Main');
       await authorityProjectWorkspace.runCommand('dotnet run --project App.csproj');
-      await authorityProjectWorkspace.runCommand('clang++ main.cpp -o app');
+      const cppChainedResult = await authorityProjectWorkspace.runCommand(
+        'clang++ main.cpp -o app && ./app'
+      );
+      assertCondition(
+        cppChainedResult.exitCode === 0,
+        `One C++ kernel PID must retain its trusted compiler coordinator across compile and run: ${JSON.stringify(cppChainedResult)}`
+      );
       const authorityWorkers = workerInstances.slice(beforeAuthorityWorkerCount);
       for (const [runtime, workerName, messageType] of [
         ['Python', 'pyodide-worker.js', 'execute-project-python'],
@@ -744,9 +810,21 @@ async function main(): Promise<void> {
             candidate.messages.some((message) => message.type === 'warmup')
           );
           const cppCommandWorkerIndex = authorityWorkers.indexOf(worker!);
+          const cppExecutionWorkers = authorityWorkers.filter((candidate) =>
+            String(candidate.url).includes('cpp-worker.js') &&
+            candidate.messages.some((message) => message.type === 'execute-project-cpp')
+          );
           assertCondition(
             cppWarmupWorkerIndex >= 0 && cppCommandWorkerIndex > cppWarmupWorkerIndex,
             'C++ toolchain warmup must start before the disposable user execution worker'
+          );
+          assertCondition(
+            cppExecutionWorkers.length === 2 &&
+              cppExecutionWorkers.every((candidate) =>
+                candidate.messages.filter((message) => message.type === 'execute-project-cpp').length === 1 &&
+                candidate.terminated
+              ),
+            'One C++ kernel PID must reuse only its trusted coordinator while compile and run use distinct retired execution workers'
           );
         }
         if (runtime === 'Java') {
@@ -871,6 +949,112 @@ async function main(): Promise<void> {
       abortedWarmupWorker?.terminated === true &&
         !abortedWarmupWorker.messages.some((message) => message.type === 'execute-project-python'),
       'Aborting a cold provider warmup must retire the worker before user code executes'
+    );
+
+    const delayedCSharpWorkerUrl = 'https://runtime.tracecode.test/csharp-worker.js';
+    let releaseDelayedCSharpPreflight!: () => void;
+    const delayedCSharpPreflight = new Promise<void>((resolve) => {
+      releaseDelayedCSharpPreflight = resolve;
+    });
+    let markDelayedCSharpPreflightStarted!: () => void;
+    const delayedCSharpPreflightStarted = new Promise<void>((resolve) => {
+      markDelayedCSharpPreflightStarted = resolve;
+    });
+    globalThis.fetch = (async (input: string | URL | Request) => {
+      const url = typeof input === 'string'
+        ? input
+        : input instanceof URL
+          ? input.href
+          : input.url;
+      if (url !== delayedCSharpWorkerUrl) {
+        throw new Error(`Unexpected test asset preflight: ${url}`);
+      }
+      markDelayedCSharpPreflightStarted();
+      await delayedCSharpPreflight;
+      return new Response('', {
+        status: 200,
+        headers: { 'content-type': 'text/javascript' },
+      });
+    }) as typeof globalThis.fetch;
+    const preflightAbortWorkspace = await createBrowserProjectWorkspace({
+      providers: ['csharp'],
+      assets: {
+        runtimeManifests: {
+          csharp: {
+            runtime: 'csharp',
+            runtimeVersion: 'test-delayed-csharp-preflight',
+            protocolVersion: BROWSER_RUNTIME_ASSET_PROTOCOL_VERSION,
+            workerFormat: 'module',
+            originPolicy: { mode: 'any' },
+            assets: {
+              worker: {
+                url: delayedCSharpWorkerUrl,
+                mediaType: 'text/javascript',
+                delivery: { mutability: 'immutable', address: 'versioned' },
+              },
+              assetBaseUrl: { url: 'https://runtime.tracecode.test/csharp/' },
+            },
+          },
+        },
+      },
+      files: [
+        {
+          path: 'App.csproj',
+          contents: '<Project Sdk="Microsoft.NET.Sdk"><PropertyGroup><OutputType>Exe</OutputType><TargetFramework>net10.0</TargetFramework></PropertyGroup></Project>\n',
+        },
+        { path: 'Program.cs', contents: 'while (true) {}\n' },
+      ],
+    });
+    const preflightAbortController = new AbortController();
+    const preflightAbortStartedAt = Date.now();
+    const preflightAbortCommand = preflightAbortWorkspace.runCommand(
+      'dotnet run --project App.csproj',
+      { signal: preflightAbortController.signal }
+    );
+    await delayedCSharpPreflightStarted;
+    preflightAbortController.abort();
+    let preflightAbortResult;
+    let preflightAbortDeadline: ReturnType<typeof setTimeout> | undefined;
+    try {
+      preflightAbortResult = await Promise.race([
+        preflightAbortCommand,
+        new Promise<never>((_resolve, reject) => {
+          preflightAbortDeadline = setTimeout(
+            () => reject(new Error('Cold preflight abort did not settle within 1 second.')),
+            1_000
+          );
+        }),
+      ]);
+    } finally {
+      if (preflightAbortDeadline !== undefined) clearTimeout(preflightAbortDeadline);
+      releaseDelayedCSharpPreflight();
+      globalThis.fetch = originalFetch;
+    }
+    const preflightAbortWallMs = Date.now() - preflightAbortStartedAt;
+    await new Promise((resolve) => setTimeout(resolve, 25));
+    const lateCSharpWorkers = workerInstances.filter((worker) =>
+      String(worker.url).startsWith(delayedCSharpWorkerUrl)
+    );
+    preflightAbortWorkspace.dispose();
+    assertCondition(
+      preflightAbortResult.exitCode === 143 &&
+        preflightAbortResult.error?.detail?.signal === 'SIGTERM' &&
+        preflightAbortWallMs < 1_000,
+      `Aborting before a provider worker exists should settle immediately: ${JSON.stringify({
+        preflightAbortResult,
+        preflightAbortWallMs,
+      })}`
+    );
+    assertCondition(
+      lateCSharpWorkers.every((worker) =>
+        worker.terminated &&
+        !worker.messages.some((message) => message.type === 'execute-project-csharp')
+      ),
+      'A provider aborted during asset preflight must not leak a late worker or execute user code: ' +
+        JSON.stringify(lateCSharpWorkers.map((worker) => ({
+          terminated: worker.terminated,
+          messages: worker.messages.map((message) => message.type),
+        })))
     );
 
     failedWarmupUrlPrefix = '/project-prewarm-failure/pyodide-worker.js';
@@ -1843,6 +2027,7 @@ async function main(): Promise<void> {
     assertCondition(Boolean(survivingWorker?.terminated), 'disposeLanguage should terminate the targeted runtime');
     console.log('PASS: browser harness disposeLanguage terminates the targeted runtime');
   } finally {
+    globalThis.fetch = originalFetch;
     globalThis.Worker = originalWorker;
   }
 }

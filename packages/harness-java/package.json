@@ -1,6 +1,6 @@
 {
   "name": "@tracecode/harness-java",
-  "version": "0.12.6",
+  "version": "0.13.0-beta1",
   "description": "Java runtime client and browser worker assets for TraceCode harness.",
   "license": "AGPL-3.0-only",
   "homepage": "https://tracecode.app",
@@ -38,6 +38,12 @@
       "import": "./dist/project-browser.js",
       "require": "./dist/project-browser.cjs",
       "default": "./dist/project-browser.js"
+    },
+    "./tracejvm-project": {
+      "types": "./dist/tracejvm-project.d.ts",
+      "import": "./dist/tracejvm-project.js",
+      "require": "./dist/tracejvm-project.cjs",
+      "default": "./dist/tracejvm-project.js"
     },
     "./workers/*": "./workers/*",
     "./package.json": "./package.json"

@@ -4,10 +4,1541 @@ var __export = (target, all) => {
     __defProp(target, name, { get: all[name], enumerable: true });
 };
 
+// packages/tracekernel/src/watch.ts
+var WATCH_FRAME_MAGIC = Uint8Array.from([84, 75, 87, 49]);
+var WATCH_FRAME_HEADER_BYTES = 9;
+var WATCH_MAX_PATH_BYTES = 16 * 1024;
+function decodeTraceKernelWatchEvent(frame) {
+  if (frame.byteLength < WATCH_FRAME_HEADER_BYTES || WATCH_FRAME_MAGIC.some((byte, index) => frame[index] !== byte)) {
+    throw Object.assign(new Error("EPROTO: invalid TraceKernel watch frame"), {
+      code: "EPROTO"
+    });
+  }
+  const type = frame[4];
+  if (type !== 1 && type !== 2 && type !== 3 && type !== 4 && type !== 5) {
+    throw Object.assign(
+      new Error(`EPROTO: invalid TraceKernel watch event type ${type}`),
+      { code: "EPROTO" }
+    );
+  }
+  const pathLength = new DataView(
+    frame.buffer,
+    frame.byteOffset,
+    frame.byteLength
+  ).getUint32(5, true);
+  if (pathLength > WATCH_MAX_PATH_BYTES || frame.byteLength !== WATCH_FRAME_HEADER_BYTES + pathLength) {
+    throw Object.assign(new Error("EPROTO: invalid TraceKernel watch frame length"), {
+      code: "EPROTO"
+    });
+  }
+  return Object.freeze({
+    eventType: type === 1 ? "change" : type === 2 || type === 4 || type === 5 ? "rename" : "overflow",
+    ...type === 4 ? { entryOperation: "create" } : type === 5 ? { entryOperation: "delete" } : {},
+    path: new TextDecoder().decode(frame.subarray(WATCH_FRAME_HEADER_BYTES))
+  });
+}
+
+// packages/tracekernel/src/transport.ts
+var TRACEKERNEL_SYSCALL_WIRE_VERSION = 1;
+var FRAME_MAGIC = 1414222592 | TRACEKERNEL_SYSCALL_WIRE_VERSION;
+var FRAME_REQUEST = 1;
+var FRAME_RESPONSE = 2;
+var TRACEKERNEL_SYSCALL_OPERATION_CODES = Object.freeze({
+  open: 1,
+  read: 2,
+  write: 3,
+  close: 4,
+  dup: 5,
+  stat: 6,
+  readdir: 7,
+  mkdir: 8,
+  rmdir: 9,
+  unlink: 10,
+  rename: 11,
+  readFile: 12,
+  writeFile: 13,
+  fstat: 14,
+  ftruncate: 15,
+  link: 16,
+  symlink: 17,
+  readlink: 18,
+  lstat: 19,
+  realpath: 20,
+  socket: 21,
+  bind: 22,
+  listen: 23,
+  accept: 24,
+  connect: 25,
+  send: 26,
+  recv: 27,
+  shutdown: 28,
+  getsockname: 29,
+  getpeername: 30,
+  pipe: 31,
+  spawn: 32,
+  wait: 33,
+  kill: 34,
+  watch: 35,
+  watchdog: 36,
+  dup2: 37,
+  fcntl: 38,
+  setsid: 39,
+  setpgid: 40,
+  dup3: 41,
+  poll: 42,
+  getsockopt: 43,
+  identity: 44,
+  isatty: 45,
+  tcgetpgrp: 46,
+  tcsetpgrp: 47,
+  seek: 48,
+  processInfo: 49,
+  processList: 50,
+  environment: 51,
+  tcgetwinsize: 52,
+  tcsetwinsize: 53
+});
+var OP_CODES = TRACEKERNEL_SYSCALL_OPERATION_CODES;
+var OPERATIONS_BY_CODE = new Map(
+  Object.entries(OP_CODES).map(([operation, code]) => [
+    code,
+    operation
+  ])
+);
+var textEncoder = new TextEncoder();
+var textDecoder = new TextDecoder("utf-8", { fatal: true });
+var SYSCALL_ERROR_CODES = /* @__PURE__ */ new Set([
+  "E2BIG",
+  "EAGAIN",
+  "EADDRINUSE",
+  "EACCES",
+  "EAFNOSUPPORT",
+  "EALREADY",
+  "EBADF",
+  "EBUSY",
+  "ECHILD",
+  "ELOOP",
+  "ENAMETOOLONG",
+  "EMFILE",
+  "EEXIST",
+  "ECONNREFUSED",
+  "EDESTADDRREQ",
+  "EINPROGRESS",
+  "EISCONN",
+  "EISDIR",
+  "EINVAL",
+  "EIO",
+  "ENOENT",
+  "ENOSYS",
+  "ENOTDIR",
+  "ENOTCONN",
+  "ENOTEMPTY",
+  "ENOTTY",
+  "EPERM",
+  "EPIPE",
+  "EPROTO",
+  "EOPNOTSUPP",
+  "EROFS",
+  "ESRCH"
+]);
+var SOCKET_ERROR_CODES = /* @__PURE__ */ new Set([
+  "EADDRINUSE",
+  "EAFNOSUPPORT",
+  "EALREADY",
+  "EBADF",
+  "ECONNREFUSED",
+  "EDESTADDRREQ",
+  "EINPROGRESS",
+  "EISCONN",
+  "EINVAL",
+  "ENOTCONN",
+  "EOPNOTSUPP"
+]);
+var TraceKernelTransportError = class extends Error {
+  constructor(code, message) {
+    super(`${code}: ${message}`);
+    this.code = code;
+  }
+  name = "TraceKernelTransportError";
+};
+var BinaryFrameWriter = class {
+  bytes = new Uint8Array(256);
+  view = new DataView(this.bytes.buffer);
+  offset = 0;
+  u8(value) {
+    this.ensure(1);
+    this.view.setUint8(this.offset, value);
+    this.offset += 1;
+  }
+  u32(value) {
+    this.ensure(4);
+    this.view.setUint32(this.offset, value, true);
+    this.offset += 4;
+  }
+  i32(value) {
+    this.ensure(4);
+    this.view.setInt32(this.offset, value, true);
+    this.offset += 4;
+  }
+  f64(value) {
+    this.ensure(8);
+    this.view.setFloat64(this.offset, value, true);
+    this.offset += 8;
+  }
+  string(value) {
+    this.byteArray(textEncoder.encode(value));
+  }
+  byteArray(value) {
+    this.u32(value.byteLength);
+    this.ensure(value.byteLength);
+    this.bytes.set(value, this.offset);
+    this.offset += value.byteLength;
+  }
+  finish() {
+    return this.bytes.slice(0, this.offset);
+  }
+  ensure(additionalBytes) {
+    const required = this.offset + additionalBytes;
+    if (required <= this.bytes.byteLength) return;
+    let capacity = this.bytes.byteLength;
+    while (capacity < required) capacity *= 2;
+    const next = new Uint8Array(capacity);
+    next.set(this.bytes);
+    this.bytes = next;
+    this.view = new DataView(next.buffer);
+  }
+};
+var BinaryFrameReader = class {
+  constructor(bytes) {
+    this.bytes = bytes;
+    this.view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+  }
+  view;
+  offset = 0;
+  u8() {
+    this.ensure(1);
+    const value = this.view.getUint8(this.offset);
+    this.offset += 1;
+    return value;
+  }
+  u32() {
+    this.ensure(4);
+    const value = this.view.getUint32(this.offset, true);
+    this.offset += 4;
+    return value;
+  }
+  i32() {
+    this.ensure(4);
+    const value = this.view.getInt32(this.offset, true);
+    this.offset += 4;
+    return value;
+  }
+  f64() {
+    this.ensure(8);
+    const value = this.view.getFloat64(this.offset, true);
+    this.offset += 8;
+    return value;
+  }
+  string() {
+    return textDecoder.decode(this.byteArray());
+  }
+  byteArray() {
+    const length = this.u32();
+    this.ensure(length);
+    const value = this.bytes.slice(this.offset, this.offset + length);
+    this.offset += length;
+    return value;
+  }
+  done() {
+    if (this.offset !== this.bytes.byteLength) {
+      throw new TraceKernelTransportError(
+        "EPROTO",
+        `binary frame contains ${this.bytes.byteLength - this.offset} trailing bytes`
+      );
+    }
+  }
+  ensure(length) {
+    if (length < 0 || this.offset + length > this.bytes.byteLength) {
+      throw new TraceKernelTransportError("EPROTO", "truncated binary syscall frame");
+    }
+  }
+};
+function writeFramePrefix(writer, kind) {
+  writer.u32(FRAME_MAGIC);
+  writer.u8(kind);
+}
+function readFramePrefix(reader, expectedKind) {
+  if (reader.u32() !== FRAME_MAGIC || reader.u8() !== expectedKind) {
+    throw new TraceKernelTransportError("EPROTO", "invalid binary syscall frame header");
+  }
+}
+function writeOperation(writer, operation) {
+  writer.u8(OP_CODES[operation]);
+}
+function readOperation(reader) {
+  const code = reader.u8();
+  const operation = OPERATIONS_BY_CODE.get(code);
+  if (!operation) {
+    throw new TraceKernelTransportError("EPROTO", `unknown syscall operation code ${code}`);
+  }
+  return operation;
+}
+function traceKernelSignalCode(signal) {
+  switch (signal) {
+    case "SIGINT":
+      return 1;
+    case "SIGTERM":
+      return 2;
+    case "SIGKILL":
+      return 3;
+    case "SIGHUP":
+      return 4;
+    case "SIGQUIT":
+      return 5;
+    case "SIGWINCH":
+      return 6;
+  }
+}
+function readTraceKernelSignal(reader, context) {
+  const code = reader.u8();
+  switch (code) {
+    case 1:
+      return "SIGINT";
+    case 2:
+      return "SIGTERM";
+    case 3:
+      return "SIGKILL";
+    case 4:
+      return "SIGHUP";
+    case 5:
+      return "SIGQUIT";
+    case 6:
+      return "SIGWINCH";
+    default:
+      throw new TraceKernelTransportError(
+        "EPROTO",
+        `invalid ${context} signal code ${code}`
+      );
+  }
+}
+function readTraceKernelTerminatingSignal(reader, context) {
+  const signal = readTraceKernelSignal(reader, context);
+  if (signal === "SIGWINCH") {
+    throw new TraceKernelTransportError(
+      "EPROTO",
+      `${context} cannot use non-terminating signal SIGWINCH.`
+    );
+  }
+  return signal;
+}
+function writeAddress(writer, address) {
+  writer.string(address.host);
+  writer.u32(address.port);
+}
+function readAddress(reader) {
+  return Object.freeze({
+    host: reader.string(),
+    port: reader.u32()
+  });
+}
+function readProcessPhase(reader) {
+  const code = reader.u8();
+  if (code < 1 || code > 5) {
+    throw new TraceKernelTransportError(
+      "EPROTO",
+      `invalid process phase code ${code}`
+    );
+  }
+  return code === 1 ? "created" : code === 2 ? "starting" : code === 3 ? "running" : code === 4 ? "exiting" : "exited";
+}
+function readProcessInfo(reader) {
+  const pid = reader.i32();
+  const ppid = reader.i32();
+  const pgid = reader.i32();
+  const sid = reader.i32();
+  const phase = readProcessPhase(reader);
+  const runtime = reader.string();
+  const command = reader.string();
+  const argumentCount = reader.u32();
+  const args = [];
+  for (let index = 0; index < argumentCount; index += 1) {
+    args.push(reader.string());
+  }
+  const hasStartedAt = reader.u8();
+  if (hasStartedAt > 1) {
+    throw new TraceKernelTransportError(
+      "EPROTO",
+      `invalid process start-time flag ${hasStartedAt}`
+    );
+  }
+  return Object.freeze({
+    pid,
+    ppid,
+    pgid,
+    sid,
+    phase,
+    runtime,
+    command,
+    args: Object.freeze(args),
+    ...hasStartedAt ? { startedAt: reader.f64() } : {}
+  });
+}
+function writeSpawnStdioMode(writer, mode) {
+  writer.u8(
+    mode === void 0 ? 0 : mode === "pipe" ? 1 : mode === "inherit" ? 2 : 3
+  );
+}
+function encodeTraceKernelSyscallRequest(request) {
+  const writer = new BinaryFrameWriter();
+  writeFramePrefix(writer, FRAME_REQUEST);
+  writeOperation(writer, request.op);
+  switch (request.op) {
+    case "pipe":
+      writer.u32(request.options?.capacityChunks ?? 0);
+      writer.u8(request.options?.closeOnExec === true ? 1 : 0);
+      writer.u8(request.options?.nonblocking === true ? 1 : 0);
+      break;
+    case "watch":
+      writer.string(request.path);
+      writer.u8(request.options?.recursive === true ? 1 : 0);
+      writer.u32(request.options?.capacityEvents ?? 0);
+      break;
+    case "watchdog":
+      writer.u8(
+        request.action === "arm" ? 1 : request.action === "pet" ? 2 : request.action === "disarm" ? 3 : 4
+      );
+      writer.u8(request.timeoutMs === void 0 ? 0 : 1);
+      if (request.timeoutMs !== void 0) writer.u32(request.timeoutMs);
+      writer.u8(
+        request.signal === void 0 ? 0 : request.signal === "SIGTERM" ? 1 : 2
+      );
+      break;
+    case "spawn": {
+      writer.string(request.runtime);
+      writer.string(request.command);
+      writer.u32(request.args?.length ?? 0);
+      for (const arg of request.args ?? []) writer.string(arg);
+      writer.u8(request.cwd === void 0 ? 0 : 1);
+      if (request.cwd !== void 0) writer.string(request.cwd);
+      const environment = Object.entries(request.env ?? {});
+      writer.u32(environment.length);
+      for (const [name, value] of environment) {
+        writer.string(name);
+        writer.string(value);
+      }
+      writer.u8(
+        request.inheritDescriptors === "all" ? 1 : request.inheritDescriptors === void 0 ? 0 : 2
+      );
+      if (request.inheritDescriptors !== void 0 && request.inheritDescriptors !== "all") {
+        writer.u32(request.inheritDescriptors.length);
+        for (const fd2 of request.inheritDescriptors) writer.i32(fd2);
+      }
+      writer.u8(request.processGroupId === void 0 ? 0 : 1);
+      if (request.processGroupId !== void 0) writer.i32(request.processGroupId);
+      writer.u8(request.sessionId === void 0 ? 0 : 1);
+      if (request.sessionId !== void 0) writer.i32(request.sessionId);
+      writeSpawnStdioMode(writer, request.stdio?.stdin);
+      writeSpawnStdioMode(writer, request.stdio?.stdout);
+      writeSpawnStdioMode(writer, request.stdio?.stderr);
+      writer.u32(request.descriptorActions?.length ?? 0);
+      for (const action of request.descriptorActions ?? []) {
+        writer.u8(action.op === "dup2" ? 1 : 2);
+        writer.i32(action.fd);
+        if (action.op === "dup2") writer.i32(action.targetFd);
+      }
+      writer.u32(request.descriptorMappings?.length ?? 0);
+      for (const mapping of request.descriptorMappings ?? []) {
+        writer.i32(mapping.parentFd);
+        writer.i32(mapping.childFd);
+      }
+      break;
+    }
+    case "wait":
+      writer.i32(request.pid);
+      writer.u8(request.noHang ? 1 : 0);
+      break;
+    case "identity":
+    case "processInfo":
+      writer.u8(request.pid === void 0 ? 0 : 1);
+      if (request.pid !== void 0) writer.i32(request.pid);
+      break;
+    case "processList":
+    case "environment":
+      break;
+    case "kill":
+      writer.i32(request.pid);
+      writer.u8(traceKernelSignalCode(request.signal));
+      break;
+    case "setsid":
+      break;
+    case "setpgid":
+      writer.i32(request.pid);
+      writer.i32(request.pgid);
+      break;
+    case "isatty":
+    case "tcgetpgrp":
+    case "tcgetwinsize":
+      writer.i32(request.fd);
+      break;
+    case "tcsetpgrp":
+      writer.i32(request.fd);
+      writer.i32(request.pgid);
+      break;
+    case "tcsetwinsize":
+      writer.i32(request.fd);
+      writer.u32(request.rows);
+      writer.u32(request.columns);
+      break;
+    case "socket":
+      break;
+    case "bind":
+    case "connect":
+      writer.i32(request.fd);
+      writeAddress(writer, request.address);
+      break;
+    case "listen":
+      writer.i32(request.fd);
+      writer.u8(
+        (request.options?.backlog === void 0 ? 0 : 1) | (request.options?.capacityChunks === void 0 ? 0 : 2)
+      );
+      if (request.options?.backlog !== void 0) writer.u32(request.options.backlog);
+      if (request.options?.capacityChunks !== void 0) {
+        writer.u32(request.options.capacityChunks);
+      }
+      break;
+    case "accept":
+    case "getsockname":
+    case "getpeername":
+      writer.i32(request.fd);
+      break;
+    case "getsockopt":
+      writer.i32(request.fd);
+      writer.u8(request.option === "error" ? 1 : 0);
+      break;
+    case "send":
+      writer.i32(request.fd);
+      writer.byteArray(request.bytes);
+      break;
+    case "recv":
+      writer.i32(request.fd);
+      writer.u32(request.maxBytes);
+      break;
+    case "shutdown":
+      writer.i32(request.fd);
+      writer.u8(request.how === "read" ? 1 : request.how === "write" ? 2 : 3);
+      break;
+    case "open": {
+      writer.string(request.path);
+      const access = request.options?.access === "write" ? 2 : request.options?.access === "read-write" ? 3 : request.options?.access === "read" ? 1 : 0;
+      writer.u8(access);
+      writer.u8(
+        (request.options?.create ? 1 : 0) | (request.options?.exclusive ? 2 : 0) | (request.options?.truncate ? 4 : 0) | (request.options?.append ? 8 : 0)
+      );
+      break;
+    }
+    case "read":
+      writer.i32(request.fd);
+      writer.u32(request.maxBytes);
+      writer.u8(request.position === void 0 ? 0 : 1);
+      if (request.position !== void 0) writer.f64(request.position);
+      break;
+    case "write":
+      writer.i32(request.fd);
+      writer.byteArray(request.bytes);
+      writer.u8(request.position === void 0 ? 0 : 1);
+      if (request.position !== void 0) writer.f64(request.position);
+      break;
+    case "seek":
+      writer.i32(request.fd);
+      writer.f64(request.offset);
+      writer.u8(
+        request.whence === "set" ? 1 : request.whence === "current" ? 2 : 3
+      );
+      break;
+    case "close":
+    case "dup":
+    case "fstat":
+      writer.i32(request.fd);
+      break;
+    case "dup2":
+      writer.i32(request.fd);
+      writer.i32(request.targetFd);
+      break;
+    case "dup3":
+      writer.i32(request.fd);
+      writer.i32(request.targetFd);
+      writer.u8(request.closeOnExec ? 1 : 0);
+      break;
+    case "fcntl":
+      writer.i32(request.fd);
+      writer.u8(
+        request.action === "get-close-on-exec" ? 1 : request.action === "set-close-on-exec" ? 2 : request.action === "get-nonblocking" ? 3 : 4
+      );
+      if (request.action === "set-close-on-exec") {
+        writer.u8(request.closeOnExec ? 1 : 0);
+      } else if (request.action === "set-nonblocking") {
+        writer.u8(request.nonblocking ? 1 : 0);
+      }
+      break;
+    case "poll":
+      writer.u32(request.entries.length);
+      for (const entry of request.entries) {
+        writer.i32(entry.fd);
+        writer.u8((entry.read ? 1 : 0) | (entry.write ? 2 : 0));
+      }
+      writer.u8(request.timeoutMs === void 0 ? 0 : 1);
+      if (request.timeoutMs !== void 0) writer.f64(request.timeoutMs);
+      break;
+    case "ftruncate":
+      writer.i32(request.fd);
+      writer.f64(request.length);
+      break;
+    case "stat":
+    case "lstat":
+    case "realpath":
+    case "readdir":
+    case "rmdir":
+    case "unlink":
+    case "readFile":
+      writer.string(request.path);
+      break;
+    case "mkdir":
+      writer.string(request.path);
+      writer.u8(
+        (request.options?.recursive ? 1 : 0) | (request.options?.mode === void 0 ? 0 : 2)
+      );
+      if (request.options?.mode !== void 0) writer.u32(request.options.mode);
+      break;
+    case "rename":
+      writer.string(request.sourcePath);
+      writer.string(request.destinationPath);
+      break;
+    case "link":
+      writer.string(request.existingPath);
+      writer.string(request.newPath);
+      break;
+    case "symlink":
+      writer.string(request.target);
+      writer.string(request.linkPath);
+      break;
+    case "readlink":
+      writer.string(request.path);
+      break;
+    case "writeFile":
+      writer.string(request.path);
+      writer.byteArray(request.bytes);
+      break;
+  }
+  return writer.finish();
+}
+function readStat(reader) {
+  const path = reader.string();
+  const kindCode = reader.u8();
+  if (kindCode !== 1 && kindCode !== 2 && kindCode !== 3) {
+    throw new TraceKernelTransportError("EPROTO", `invalid stat kind ${kindCode}`);
+  }
+  return Object.freeze({
+    path,
+    kind: kindCode === 1 ? "file" : kindCode === 2 ? "directory" : "symlink",
+    inode: reader.f64(),
+    nlink: reader.f64(),
+    mode: reader.u32(),
+    size: reader.f64(),
+    generation: reader.f64(),
+    createdAt: reader.f64(),
+    modifiedAt: reader.f64(),
+    changedAt: reader.f64()
+  });
+}
+function decodeTraceKernelSyscallResult(bytes) {
+  const reader = new BinaryFrameReader(bytes);
+  readFramePrefix(reader, FRAME_RESPONSE);
+  const success = reader.u8();
+  if (success > 1) {
+    throw new TraceKernelTransportError("EPROTO", `invalid syscall result status ${success}`);
+  }
+  if (success === 0) {
+    const code = reader.string();
+    if (!SYSCALL_ERROR_CODES.has(code)) {
+      throw new TraceKernelTransportError("EPROTO", `unknown syscall error code ${code}`);
+    }
+    const result = {
+      ok: false,
+      error: {
+        code,
+        message: reader.string()
+      }
+    };
+    reader.done();
+    return result;
+  }
+  const operation = readOperation(reader);
+  let value;
+  switch (operation) {
+    case "pipe":
+      value = {
+        op: "pipe",
+        readFd: reader.i32(),
+        writeFd: reader.i32()
+      };
+      break;
+    case "watch":
+      value = { op: "watch", fd: reader.i32() };
+      break;
+    case "watchdog": {
+      const armed = reader.u8();
+      if (armed > 1) {
+        throw new TraceKernelTransportError(
+          "EPROTO",
+          `invalid watchdog armed flag ${armed}`
+        );
+      }
+      if (!armed) {
+        value = { op: "watchdog", armed: false };
+        break;
+      }
+      const timeoutMs = reader.u32();
+      const deadlineAt = reader.f64();
+      const signalCode = reader.u8();
+      if (signalCode !== 1 && signalCode !== 2) {
+        throw new TraceKernelTransportError(
+          "EPROTO",
+          `invalid watchdog response signal ${signalCode}`
+        );
+      }
+      value = {
+        op: "watchdog",
+        armed: true,
+        timeoutMs,
+        deadlineAt,
+        signal: signalCode === 2 ? "SIGKILL" : "SIGTERM"
+      };
+      break;
+    }
+    case "spawn": {
+      const pid = reader.i32();
+      const hasStdin = reader.u8();
+      if (hasStdin > 1) {
+        throw new TraceKernelTransportError("EPROTO", `invalid spawn stdin fd flag ${hasStdin}`);
+      }
+      const stdinFd = hasStdin ? reader.i32() : void 0;
+      const hasStdout = reader.u8();
+      if (hasStdout > 1) {
+        throw new TraceKernelTransportError("EPROTO", `invalid spawn stdout fd flag ${hasStdout}`);
+      }
+      const stdoutFd = hasStdout ? reader.i32() : void 0;
+      const hasStderr = reader.u8();
+      if (hasStderr > 1) {
+        throw new TraceKernelTransportError("EPROTO", `invalid spawn stderr fd flag ${hasStderr}`);
+      }
+      const stderrFd = hasStderr ? reader.i32() : void 0;
+      const stdio = stdinFd === void 0 && stdoutFd === void 0 && stderrFd === void 0 ? void 0 : Object.freeze({
+        ...stdinFd === void 0 ? {} : { stdinFd },
+        ...stdoutFd === void 0 ? {} : { stdoutFd },
+        ...stderrFd === void 0 ? {} : { stderrFd }
+      });
+      value = {
+        op: "spawn",
+        pid,
+        ...stdio === void 0 ? {} : { stdio }
+      };
+      break;
+    }
+    case "wait": {
+      const pid = reader.i32();
+      const completed = reader.u8();
+      if (completed > 1) {
+        throw new TraceKernelTransportError(
+          "EPROTO",
+          `invalid wait completion flag ${completed}`
+        );
+      }
+      if (!completed) {
+        value = { op: "wait", pid };
+        break;
+      }
+      const terminationCode = reader.u8();
+      if (terminationCode < 1 || terminationCode > 3) {
+        throw new TraceKernelTransportError(
+          "EPROTO",
+          `invalid process termination code ${terminationCode}`
+        );
+      }
+      const exitCode = reader.i32();
+      if (terminationCode === 1) {
+        value = {
+          op: "wait",
+          pid,
+          termination: { kind: "exit", exitCode }
+        };
+      } else if (terminationCode === 2) {
+        value = {
+          op: "wait",
+          pid,
+          termination: {
+            kind: "signal",
+            signal: readTraceKernelTerminatingSignal(reader, "termination"),
+            exitCode
+          }
+        };
+      } else {
+        value = {
+          op: "wait",
+          pid,
+          termination: {
+            kind: "failure",
+            exitCode,
+            message: reader.string()
+          }
+        };
+      }
+      break;
+    }
+    case "socket":
+    case "open":
+    case "dup":
+    case "dup2":
+      value = { op: operation, fd: reader.i32() };
+      break;
+    case "dup3": {
+      const fd2 = reader.i32();
+      const closeOnExec = reader.u8();
+      if (closeOnExec > 1) {
+        throw new TraceKernelTransportError(
+          "EPROTO",
+          "Invalid dup3 close-on-exec result"
+        );
+      }
+      value = { op: "dup3", fd: fd2, closeOnExec: closeOnExec === 1 };
+      break;
+    }
+    case "fcntl": {
+      const closeOnExec = reader.u8();
+      const nonblocking = reader.u8();
+      if (closeOnExec > 1 || nonblocking > 1) {
+        throw new TraceKernelTransportError(
+          "EPROTO",
+          `invalid descriptor flag result ${closeOnExec}:${nonblocking}`
+        );
+      }
+      value = {
+        op: "fcntl",
+        closeOnExec: closeOnExec === 1,
+        nonblocking: nonblocking === 1
+      };
+      break;
+    }
+    case "poll": {
+      const length = reader.u32();
+      const entries = [];
+      for (let index = 0; index < length; index += 1) {
+        const fd2 = reader.i32();
+        const events = reader.u8();
+        if ((events & ~31) !== 0) {
+          throw new TraceKernelTransportError(
+            "EPROTO",
+            `invalid poll result mask ${events}`
+          );
+        }
+        entries.push({
+          fd: fd2,
+          read: (events & 1) !== 0,
+          write: (events & 2) !== 0,
+          hangup: (events & 4) !== 0,
+          error: (events & 8) !== 0,
+          invalid: (events & 16) !== 0
+        });
+      }
+      value = { op: "poll", entries };
+      break;
+    }
+    case "setsid":
+      value = { op: "setsid", sid: reader.i32(), pgid: reader.i32() };
+      break;
+    case "setpgid":
+      value = { op: "setpgid", pgid: reader.i32() };
+      break;
+    case "isatty": {
+      const isTerminal = reader.u8();
+      if (isTerminal > 1) {
+        throw new TraceKernelTransportError(
+          "EPROTO",
+          `invalid isatty result ${isTerminal}`
+        );
+      }
+      value = { op: "isatty", isTerminal: isTerminal === 1 };
+      break;
+    }
+    case "tcgetpgrp":
+    case "tcsetpgrp":
+      value = { op: operation, pgid: reader.i32() };
+      break;
+    case "tcgetwinsize":
+    case "tcsetwinsize":
+      value = {
+        op: operation,
+        rows: reader.u32(),
+        columns: reader.u32()
+      };
+      break;
+    case "identity":
+      value = {
+        op: "identity",
+        pid: reader.i32(),
+        ppid: reader.i32(),
+        pgid: reader.i32(),
+        sid: reader.i32()
+      };
+      break;
+    case "processInfo":
+      value = {
+        op: "processInfo",
+        process: readProcessInfo(reader)
+      };
+      break;
+    case "processList": {
+      const processCount = reader.u32();
+      const processes = [];
+      for (let index = 0; index < processCount; index += 1) {
+        processes.push(readProcessInfo(reader));
+      }
+      value = {
+        op: "processList",
+        processes: Object.freeze(processes)
+      };
+      break;
+    }
+    case "environment": {
+      const entryCount = reader.u32();
+      const env = {};
+      for (let index = 0; index < entryCount; index += 1) {
+        env[reader.string()] = reader.string();
+      }
+      value = {
+        op: "environment",
+        env: Object.freeze(env)
+      };
+      break;
+    }
+    case "bind":
+      value = { op: "bind", address: readAddress(reader) };
+      break;
+    case "accept":
+      value = {
+        op: "accept",
+        fd: reader.i32(),
+        localAddress: readAddress(reader),
+        remoteAddress: readAddress(reader)
+      };
+      break;
+    case "connect":
+      value = {
+        op: "connect",
+        localAddress: readAddress(reader),
+        remoteAddress: readAddress(reader)
+      };
+      break;
+    case "send":
+      value = { op: "send", bytesWritten: reader.u32() };
+      break;
+    case "recv":
+      value = { op: "recv", bytes: reader.byteArray() };
+      break;
+    case "getsockname":
+    case "getpeername":
+      value = { op: operation, address: readAddress(reader) };
+      break;
+    case "getsockopt": {
+      const hasError = reader.u8();
+      if (hasError > 1) {
+        throw new TraceKernelTransportError(
+          "EPROTO",
+          `invalid socket error presence flag ${hasError}`
+        );
+      }
+      const error = hasError === 1 ? reader.string() : void 0;
+      if (error !== void 0 && !SOCKET_ERROR_CODES.has(error)) {
+        throw new TraceKernelTransportError(
+          "EPROTO",
+          `invalid socket error code ${JSON.stringify(error)}`
+        );
+      }
+      value = {
+        op: "getsockopt",
+        ...error === void 0 ? {} : { error }
+      };
+      break;
+    }
+    case "read":
+      value = { op: "read", bytes: reader.byteArray() };
+      break;
+    case "write":
+      value = { op: "write", bytesWritten: reader.u32() };
+      break;
+    case "seek":
+      value = { op: "seek", offset: reader.f64() };
+      break;
+    case "stat":
+      value = { op: "stat", stat: readStat(reader) };
+      break;
+    case "lstat":
+      value = { op: "lstat", stat: readStat(reader) };
+      break;
+    case "fstat":
+      value = { op: "fstat", stat: readStat(reader) };
+      break;
+    case "realpath":
+      value = { op: "realpath", path: reader.string() };
+      break;
+    case "readlink":
+      value = { op: "readlink", target: reader.string() };
+      break;
+    case "readdir": {
+      const length = reader.u32();
+      const entries = [];
+      for (let index = 0; index < length; index += 1) {
+        const name = reader.string();
+        const kindCode = reader.u8();
+        if (kindCode !== 1 && kindCode !== 2 && kindCode !== 3) {
+          throw new TraceKernelTransportError("EPROTO", `invalid directory entry kind ${kindCode}`);
+        }
+        entries.push(Object.freeze({
+          name,
+          kind: kindCode === 1 ? "file" : kindCode === 2 ? "directory" : "symlink",
+          inode: reader.f64()
+        }));
+      }
+      value = { op: "readdir", entries: Object.freeze(entries) };
+      break;
+    }
+    case "readFile":
+      value = {
+        op: "readFile",
+        cacheGeneration: reader.i32(),
+        bytes: reader.byteArray()
+      };
+      break;
+    case "close":
+    case "kill":
+    case "listen":
+    case "shutdown":
+    case "mkdir":
+    case "rmdir":
+    case "unlink":
+    case "link":
+    case "symlink":
+    case "rename":
+    case "writeFile":
+    case "ftruncate":
+      value = { op: operation };
+      break;
+  }
+  reader.done();
+  return { ok: true, value };
+}
+var SHARED_HEADER_INTS = 8;
+var SHARED_HEADER_BYTES = SHARED_HEADER_INTS * Int32Array.BYTES_PER_ELEMENT;
+var STATE_INDEX = 0;
+var REQUEST_LENGTH_INDEX = 1;
+var RESPONSE_LENGTH_INDEX = 2;
+var SEQUENCE_INDEX = 3;
+var STATE_IDLE = 0;
+var STATE_REQUEST = 1;
+var STATE_RESPONSE = 3;
+var STATE_CLOSED = 4;
+var STATE_WRITING = 5;
+function validateSharedChannel(channel) {
+  if (!(channel.buffer instanceof SharedArrayBuffer) || channel.byteCapacity < 256 || channel.buffer.byteLength !== SHARED_HEADER_BYTES + channel.byteCapacity) {
+    throw new TraceKernelTransportError("EPROTO", "invalid shared syscall channel");
+  }
+  return {
+    header: new Int32Array(channel.buffer, 0, SHARED_HEADER_INTS),
+    payload: new Uint8Array(channel.buffer, SHARED_HEADER_BYTES)
+  };
+}
+var TraceKernelSharedSyscallClient = class {
+  constructor(channel, signalHost, options = {}) {
+    this.channel = channel;
+    this.signalHost = signalHost;
+    const views = validateSharedChannel(channel);
+    this.header = views.header;
+    this.payload = views.payload;
+    this.timeoutMs = Math.max(1, Math.floor(options.timeoutMs ?? 2e4));
+  }
+  header;
+  payload;
+  timeoutMs;
+  closed = false;
+  callCount = 0;
+  get calls() {
+    return this.callCount;
+  }
+  dispatchSync(request) {
+    if (this.closed) {
+      throw new TraceKernelTransportError("ECLOSED", "shared syscall channel is closed");
+    }
+    const frame = encodeTraceKernelSyscallRequest(request);
+    if (frame.byteLength > this.payload.byteLength) {
+      throw new TraceKernelTransportError(
+        "E2BIG",
+        `request frame requires ${frame.byteLength} bytes; capacity is ${this.payload.byteLength}`
+      );
+    }
+    if (Atomics.compareExchange(
+      this.header,
+      STATE_INDEX,
+      STATE_IDLE,
+      STATE_WRITING
+    ) !== STATE_IDLE) {
+      if (Atomics.load(this.header, STATE_INDEX) === STATE_CLOSED) {
+        this.closed = true;
+        throw new TraceKernelTransportError("ECLOSED", "shared syscall channel is closed");
+      }
+      throw new TraceKernelTransportError("EBUSY", "shared syscall channel already has an active call");
+    }
+    this.payload.set(frame);
+    Atomics.store(this.header, REQUEST_LENGTH_INDEX, frame.byteLength);
+    Atomics.store(this.header, RESPONSE_LENGTH_INDEX, 0);
+    Atomics.add(this.header, SEQUENCE_INDEX, 1);
+    Atomics.store(this.header, STATE_INDEX, STATE_REQUEST);
+    this.callCount += 1;
+    try {
+      this.signalHost();
+    } catch (error) {
+      Atomics.store(this.header, STATE_INDEX, STATE_IDLE);
+      throw error;
+    }
+    const startedAt = Date.now();
+    while (true) {
+      const state = Atomics.load(this.header, STATE_INDEX);
+      if (state === STATE_RESPONSE) break;
+      if (state === STATE_CLOSED) {
+        this.closed = true;
+        throw new TraceKernelTransportError("ECLOSED", "shared syscall channel closed while waiting");
+      }
+      const remaining = this.timeoutMs - (Date.now() - startedAt);
+      if (remaining <= 0) {
+        this.close();
+        throw new TraceKernelTransportError("ETIMEDOUT", "synchronous syscall timed out");
+      }
+      try {
+        Atomics.wait(this.header, STATE_INDEX, state, remaining);
+      } catch {
+        this.close();
+        throw new TraceKernelTransportError(
+          "ENOSYS",
+          "synchronous Atomics.wait is only available in a dedicated worker"
+        );
+      }
+    }
+    const responseLength = Atomics.load(this.header, RESPONSE_LENGTH_INDEX);
+    if (responseLength < 0 || responseLength > this.payload.byteLength) {
+      this.close();
+      throw new TraceKernelTransportError("EPROTO", "host returned an invalid response length");
+    }
+    const responseFrame = this.payload.slice(0, responseLength);
+    Atomics.store(this.header, REQUEST_LENGTH_INDEX, 0);
+    Atomics.store(this.header, RESPONSE_LENGTH_INDEX, 0);
+    Atomics.store(this.header, STATE_INDEX, STATE_IDLE);
+    Atomics.notify(this.header, STATE_INDEX);
+    return decodeTraceKernelSyscallResult(responseFrame);
+  }
+  close() {
+    if (this.closed) return;
+    this.closed = true;
+    Atomics.store(this.header, STATE_INDEX, STATE_CLOSED);
+    Atomics.notify(this.header, STATE_INDEX);
+  }
+};
+var TraceKernelSharedGenerationSource = class {
+  generation;
+  constructor(buffer) {
+    if (!(buffer instanceof SharedArrayBuffer) || buffer.byteLength !== Int32Array.BYTES_PER_ELEMENT) {
+      throw new TraceKernelTransportError("EPROTO", "invalid TKFS generation buffer");
+    }
+    this.generation = new Int32Array(buffer);
+  }
+  current() {
+    return Atomics.load(this.generation, 0);
+  }
+};
+var TraceKernelRuntimeSyscallError = class extends Error {
+  constructor(code, message) {
+    super(message);
+    this.code = code;
+  }
+  name = "TraceKernelRuntimeSyscallError";
+};
+var TraceKernelRuntimeFileClient = class {
+  constructor(transport, options = {}) {
+    this.transport = transport;
+    this.options = options;
+    this.maxCacheEntries = Math.max(0, Math.floor(options.maxCacheEntries ?? 256));
+    this.maxCacheBytes = Math.max(0, Math.floor(options.maxCacheBytes ?? 16 * 1024 * 1024));
+  }
+  cache = /* @__PURE__ */ new Map();
+  maxCacheEntries;
+  maxCacheBytes;
+  cacheBytes = 0;
+  cacheHitCount = 0;
+  cacheMissCount = 0;
+  get cacheHits() {
+    return this.cacheHitCount;
+  }
+  get cacheMisses() {
+    return this.cacheMissCount;
+  }
+  identity() {
+    return this.expectSuccess(
+      this.transport.dispatchSync({ op: "identity" }),
+      "identity"
+    );
+  }
+  isatty(fd2) {
+    return this.expectSuccess(
+      this.transport.dispatchSync({ op: "isatty", fd: fd2 }),
+      "isatty"
+    ).isTerminal;
+  }
+  tcgetpgrp(fd2) {
+    return this.expectSuccess(
+      this.transport.dispatchSync({ op: "tcgetpgrp", fd: fd2 }),
+      "tcgetpgrp"
+    ).pgid;
+  }
+  tcsetpgrp(fd2, pgid) {
+    return this.expectSuccess(
+      this.transport.dispatchSync({ op: "tcsetpgrp", fd: fd2, pgid }),
+      "tcsetpgrp"
+    ).pgid;
+  }
+  tcgetwinsize(fd2) {
+    const value = this.expectSuccess(
+      this.transport.dispatchSync({ op: "tcgetwinsize", fd: fd2 }),
+      "tcgetwinsize"
+    );
+    return { rows: value.rows, columns: value.columns };
+  }
+  tcsetwinsize(fd2, rows, columns) {
+    const value = this.expectSuccess(
+      this.transport.dispatchSync({
+        op: "tcsetwinsize",
+        fd: fd2,
+        rows,
+        columns
+      }),
+      "tcsetwinsize"
+    );
+    return { rows: value.rows, columns: value.columns };
+  }
+  socket() {
+    return this.expectSuccess(
+      this.transport.dispatchSync({ op: "socket" }),
+      "socket"
+    ).fd;
+  }
+  bind(fd2, address) {
+    return this.expectSuccess(
+      this.transport.dispatchSync({ op: "bind", fd: fd2, address }),
+      "bind"
+    ).address;
+  }
+  listen(fd2, options) {
+    this.expectSuccess(
+      this.transport.dispatchSync({ op: "listen", fd: fd2, options }),
+      "listen"
+    );
+  }
+  accept(fd2) {
+    return this.expectSuccess(
+      this.transport.dispatchSync({ op: "accept", fd: fd2 }),
+      "accept"
+    );
+  }
+  connect(fd2, address) {
+    return this.expectSuccess(
+      this.transport.dispatchSync({ op: "connect", fd: fd2, address }),
+      "connect"
+    );
+  }
+  send(fd2, bytes) {
+    return this.expectSuccess(
+      this.transport.dispatchSync({
+        op: "send",
+        fd: fd2,
+        bytes: Uint8Array.from(bytes)
+      }),
+      "send"
+    ).bytesWritten;
+  }
+  recv(fd2, maxBytes) {
+    return Uint8Array.from(this.expectSuccess(
+      this.transport.dispatchSync({ op: "recv", fd: fd2, maxBytes }),
+      "recv"
+    ).bytes);
+  }
+  shutdown(fd2, how) {
+    this.expectSuccess(
+      this.transport.dispatchSync({ op: "shutdown", fd: fd2, how }),
+      "shutdown"
+    );
+  }
+  getsockname(fd2) {
+    return this.expectSuccess(
+      this.transport.dispatchSync({ op: "getsockname", fd: fd2 }),
+      "getsockname"
+    ).address;
+  }
+  getpeername(fd2) {
+    return this.expectSuccess(
+      this.transport.dispatchSync({ op: "getpeername", fd: fd2 }),
+      "getpeername"
+    ).address;
+  }
+  socketError(fd2) {
+    return this.expectSuccess(
+      this.transport.dispatchSync({
+        op: "getsockopt",
+        fd: fd2,
+        option: "error"
+      }),
+      "getsockopt"
+    ).error;
+  }
+  open(path, options) {
+    return this.expectSuccess(
+      this.transport.dispatchSync({ op: "open", path, options }),
+      "open"
+    ).fd;
+  }
+  read(fd2, maxBytes, position) {
+    return Uint8Array.from(this.expectSuccess(
+      this.transport.dispatchSync({
+        op: "read",
+        fd: fd2,
+        maxBytes,
+        ...position === void 0 ? {} : { position }
+      }),
+      "read"
+    ).bytes);
+  }
+  write(fd2, bytes, position) {
+    return this.expectSuccess(
+      this.transport.dispatchSync({
+        op: "write",
+        fd: fd2,
+        bytes: Uint8Array.from(bytes),
+        ...position === void 0 ? {} : { position }
+      }),
+      "write"
+    ).bytesWritten;
+  }
+  seek(fd2, offset, whence) {
+    return this.expectSuccess(
+      this.transport.dispatchSync({
+        op: "seek",
+        fd: fd2,
+        offset,
+        whence
+      }),
+      "seek"
+    ).offset;
+  }
+  closeDescriptor(fd2) {
+    this.expectSuccess(
+      this.transport.dispatchSync({ op: "close", fd: fd2 }),
+      "close"
+    );
+  }
+  dup(fd2) {
+    return this.expectSuccess(
+      this.transport.dispatchSync({ op: "dup", fd: fd2 }),
+      "dup"
+    ).fd;
+  }
+  dup2(fd2, targetFd) {
+    return this.expectSuccess(
+      this.transport.dispatchSync({ op: "dup2", fd: fd2, targetFd }),
+      "dup2"
+    ).fd;
+  }
+  getCloseOnExec(fd2) {
+    return this.expectSuccess(
+      this.transport.dispatchSync({
+        op: "fcntl",
+        fd: fd2,
+        action: "get-close-on-exec"
+      }),
+      "fcntl"
+    ).closeOnExec;
+  }
+  setCloseOnExec(fd2, closeOnExec) {
+    this.expectSuccess(
+      this.transport.dispatchSync({
+        op: "fcntl",
+        fd: fd2,
+        action: "set-close-on-exec",
+        closeOnExec
+      }),
+      "fcntl"
+    );
+  }
+  fstat(fd2) {
+    return this.expectSuccess(
+      this.transport.dispatchSync({ op: "fstat", fd: fd2 }),
+      "fstat"
+    ).stat;
+  }
+  ftruncate(fd2, length) {
+    this.expectSuccess(
+      this.transport.dispatchSync({ op: "ftruncate", fd: fd2, length }),
+      "ftruncate"
+    );
+  }
+  readFile(path) {
+    const generation = this.options.generation?.current();
+    const cached = this.cache.get(path);
+    if (generation !== void 0 && cached?.generation === generation) {
+      this.cache.delete(path);
+      this.cache.set(path, cached);
+      this.cacheHitCount += 1;
+      return Uint8Array.from(cached.bytes);
+    }
+    this.cacheMissCount += 1;
+    const result = this.transport.dispatchSync({ op: "readFile", path });
+    const value = this.expectSuccess(result, "readFile");
+    const bytes = Uint8Array.from(value.bytes);
+    if (this.options.generation && this.options.generation.current() === value.cacheGeneration) {
+      this.cacheRead(path, value.cacheGeneration, bytes);
+    }
+    return Uint8Array.from(bytes);
+  }
+  writeFile(path, bytes) {
+    const result = this.transport.dispatchSync({
+      op: "writeFile",
+      path,
+      bytes: Uint8Array.from(bytes)
+    });
+    this.expectSuccess(result, "writeFile");
+    this.removeCached(path);
+  }
+  stat(path) {
+    return this.expectSuccess(
+      this.transport.dispatchSync({ op: "stat", path }),
+      "stat"
+    ).stat;
+  }
+  lstat(path) {
+    return this.expectSuccess(
+      this.transport.dispatchSync({ op: "lstat", path }),
+      "lstat"
+    ).stat;
+  }
+  realpath(path) {
+    return this.expectSuccess(
+      this.transport.dispatchSync({ op: "realpath", path }),
+      "realpath"
+    ).path;
+  }
+  readdir(path) {
+    return this.expectSuccess(
+      this.transport.dispatchSync({ op: "readdir", path }),
+      "readdir"
+    ).entries;
+  }
+  mkdir(path, options) {
+    this.expectSuccess(
+      this.transport.dispatchSync({ op: "mkdir", path, options }),
+      "mkdir"
+    );
+  }
+  rmdir(path) {
+    this.expectSuccess(
+      this.transport.dispatchSync({ op: "rmdir", path }),
+      "rmdir"
+    );
+  }
+  unlink(path) {
+    this.expectSuccess(
+      this.transport.dispatchSync({ op: "unlink", path }),
+      "unlink"
+    );
+    this.removeCached(path);
+  }
+  link(existingPath, newPath) {
+    this.expectSuccess(
+      this.transport.dispatchSync({ op: "link", existingPath, newPath }),
+      "link"
+    );
+    this.removeCached(newPath);
+  }
+  symlink(target, linkPath) {
+    this.expectSuccess(
+      this.transport.dispatchSync({ op: "symlink", target, linkPath }),
+      "symlink"
+    );
+    this.removeCached(linkPath);
+  }
+  readlink(path) {
+    return this.expectSuccess(
+      this.transport.dispatchSync({ op: "readlink", path }),
+      "readlink"
+    ).target;
+  }
+  rename(sourcePath, destinationPath) {
+    this.expectSuccess(
+      this.transport.dispatchSync({
+        op: "rename",
+        sourcePath,
+        destinationPath
+      }),
+      "rename"
+    );
+    this.removeCached(sourcePath);
+    this.removeCached(destinationPath);
+  }
+  clearCache() {
+    this.cache.clear();
+    this.cacheBytes = 0;
+  }
+  expectSuccess(result, operation) {
+    if (!result.ok) {
+      throw new TraceKernelRuntimeSyscallError(result.error.code, result.error.message);
+    }
+    if (result.value.op !== operation) {
+      throw new TraceKernelTransportError(
+        "EPROTO",
+        `expected ${operation} response, received ${result.value.op}`
+      );
+    }
+    return result.value;
+  }
+  cacheRead(path, generation, bytes) {
+    if (this.maxCacheEntries === 0 || this.maxCacheBytes === 0 || bytes.byteLength > this.maxCacheBytes) {
+      return;
+    }
+    this.removeCached(path);
+    while (this.cache.size >= this.maxCacheEntries || this.cacheBytes + bytes.byteLength > this.maxCacheBytes) {
+      const oldest = this.cache.keys().next().value;
+      if (oldest === void 0) break;
+      this.removeCached(oldest);
+    }
+    const stored = Uint8Array.from(bytes);
+    this.cache.set(path, { generation, bytes: stored });
+    this.cacheBytes += stored.byteLength;
+  }
+  removeCached(path) {
+    const cached = this.cache.get(path);
+    if (!cached) return;
+    this.cache.delete(path);
+    this.cacheBytes -= cached.bytes.byteLength;
+  }
+};
+
 // package.json
 var package_default = {
   name: "@tracecode/harness",
-  version: "0.12.6",
+  version: "0.13.0-beta1",
   license: "AGPL-3.0-only",
   homepage: "https://tracecode.app",
   repository: {
@@ -123,7 +1654,8 @@ var package_default = {
   },
   scripts: {
     prepublishOnly: "pnpm build",
-    build: "pnpm generate:runtime-info && pnpm generate:python-harness && pnpm generate:kernel-policy && pnpm generate:typescript-project-libs && pnpm generate:javascript-project-worker && pnpm generate:java-helper && pnpm sync:package-assets && pnpm exec tsup --config tsup.core.config.ts && pnpm exec tsup",
+    build: "pnpm generate:runtime-info && pnpm generate:python-harness && pnpm generate:kernel-policy && pnpm generate:typescript-project-libs && pnpm generate:javascript-project-worker && pnpm generate:java-helper && pnpm sync:package-assets && pnpm build:tracekernel && pnpm exec tsup --config tsup.core.config.ts && pnpm exec tsup",
+    "build:tracekernel": "pnpm exec tsup --config tsup.tracekernel.config.ts",
     "generate:runtime-info": "pnpm exec tsx --tsconfig tsconfig.base.json scripts/generate-runtime-language-info.ts",
     "generate:python-harness": "pnpm exec tsx --tsconfig tsconfig.base.json scripts/generate-python-harness-artifacts.ts",
     "generate:typescript-project-libs": "pnpm exec tsx --tsconfig tsconfig.base.json scripts/generate-typescript-project-libs.ts",
@@ -141,7 +1673,21 @@ var package_default = {
     typecheck: "pnpm typecheck:root && pnpm typecheck:packages && pnpm typecheck:tests",
     "typecheck:root": "pnpm exec tsc -p tsconfig.root.json --noEmit",
     "typecheck:tests": "pnpm exec tsc -p tsconfig.tests.json --noEmit",
-    "typecheck:packages": "pnpm exec tsc -p packages/harness-core/tsconfig.json --noEmit && pnpm exec tsc -p packages/harness-browser/tsconfig.json --noEmit && pnpm exec tsc -p packages/harness-python/tsconfig.json --noEmit && pnpm exec tsc -p packages/harness-javascript/tsconfig.json --noEmit && pnpm exec tsc -p packages/harness-java/tsconfig.json --noEmit && pnpm exec tsc -p packages/harness-csharp/tsconfig.json --noEmit && pnpm exec tsc -p packages/harness-cpp/tsconfig.json --noEmit && pnpm exec tsc -p packages/harness-project/tsconfig.json --noEmit && pnpm exec tsc -p packages/harness-native/tsconfig.json --noEmit && pnpm exec tsc -p packages/harness-sql/tsconfig.json --noEmit",
+    "typecheck:packages": "pnpm exec tsc -p packages/tracekernel/tsconfig.json --noEmit && pnpm exec tsc -p packages/harness-core/tsconfig.json --noEmit && pnpm exec tsc -p packages/harness-browser/tsconfig.json --noEmit && pnpm exec tsc -p packages/harness-python/tsconfig.json --noEmit && pnpm exec tsc -p packages/harness-javascript/tsconfig.json --noEmit && pnpm exec tsc -p packages/harness-java/tsconfig.json --noEmit && pnpm exec tsc -p packages/harness-csharp/tsconfig.json --noEmit && pnpm exec tsc -p packages/harness-cpp/tsconfig.json --noEmit && pnpm exec tsc -p packages/harness-project/tsconfig.json --noEmit && pnpm exec tsc -p packages/harness-native/tsconfig.json --noEmit && pnpm exec tsc -p packages/harness-sql/tsconfig.json --noEmit",
+    "test:tracekernel": "pnpm build:tracekernel && pnpm exec tsx --tsconfig tsconfig.base.json tests/test-tracekernel-public-package.ts && pnpm exec tsx --tsconfig tsconfig.base.json tests/test-tracekernel-lifecycle.ts && pnpm exec tsx --tsconfig tsconfig.base.json tests/test-tracekernel-runtime-recovery.ts && pnpm exec tsx --tsconfig tsconfig.base.json tests/test-tracekernel-controlled-runtime.ts && pnpm exec tsx --tsconfig tsconfig.base.json tests/test-tracekernel-watchdog.ts && pnpm exec tsx --tsconfig tsconfig.base.json tests/test-tracekernel-descriptors.ts && pnpm exec tsx --tsconfig tsconfig.base.json tests/test-tracekernel-terminal.ts && pnpm exec tsx --tsconfig tsconfig.base.json tests/test-tracekernel-watch.ts && pnpm exec tsx --tsconfig tsconfig.base.json tests/test-tracekernel-vfs.ts && pnpm exec tsx --tsconfig tsconfig.base.json tests/test-tracekernel-tkfs-backing.ts && pnpm exec tsx --tsconfig tsconfig.base.json tests/test-tracekernel-namespace.ts && pnpm exec tsx --tsconfig tsconfig.base.json tests/test-tracekernel-network.ts && pnpm exec tsx --tsconfig tsconfig.base.json tests/test-tracekernel-adversarial-teardown.ts && pnpm exec tsx --tsconfig tsconfig.base.json tests/test-tracekernel-workspace-processes.ts && pnpm exec tsx --tsconfig tsconfig.base.json tests/test-tracekernel-workspace-job-control.ts && pnpm exec tsx --tsconfig tsconfig.base.json tests/test-tracekernel-http1.ts && pnpm exec tsx --tsconfig tsconfig.base.json tests/test-tracekernel-http-tcp.ts && pnpm exec tsx --tsconfig tsconfig.base.json tests/test-tracekernel-syscalls.ts && pnpm exec tsx --tsconfig tsconfig.base.json tests/test-tracekernel-transport.ts",
+    "test:tracekernel:browser": "pnpm generate:javascript-project-worker && pnpm exec tsx --tsconfig tsconfig.base.json tests/test-tracekernel-javascript-stdio.ts && pnpm exec tsx --tsconfig tsconfig.base.json tests/test-tracekernel-javascript-browser.ts",
+    "test:tracekernel:python-browser": "pnpm sync:package-assets && pnpm exec tsx --tsconfig tsconfig.base.json tests/test-tracekernel-python-browser.ts",
+    "test:tracekernel:cpp-browser": "pnpm exec tsx --tsconfig tsconfig.base.json tests/test-cpp-project-http.ts",
+    "test:tracekernel:csharp-browser": "pnpm sync:package-assets && pnpm exec tsx --tsconfig tsconfig.base.json tests/test-tracekernel-csharp-browser.ts",
+    "test:tracekernel:tracejvm-browser": "pnpm exec tsx --tsconfig tsconfig.base.json tests/test-tracekernel-tracejvm-browser.ts",
+    "test:tracekernel:soak:bounded": "TRACECODE_TRACEKERNEL_SOAK_PROFILE=bounded pnpm exec tsx --tsconfig tsconfig.base.json tests/test-tracekernel-soak.ts",
+    "test:tracekernel:soak:extended": "TRACECODE_TRACEKERNEL_SOAK_PROFILE=extended pnpm exec tsx --tsconfig tsconfig.base.json tests/test-tracekernel-soak.ts",
+    "test:tracekernel:kernelization:bounded": "node scripts/test-tracekernel-kernelization.mjs --profile=bounded",
+    "test:tracekernel:kernelization:full": "node scripts/test-tracekernel-kernelization.mjs --profile=full",
+    "test:tracekernel:kernelization:tracejvm": "node scripts/test-tracekernel-kernelization.mjs --profile=tracejvm",
+    "test:tracekernel:kernelization:artifacts": "node scripts/test-tracekernel-kernelization.mjs --profile=artifacts",
+    "test:tracekernel:physical": "node scripts/run-tracekernel-physical.mjs",
+    "test:tracekernel:physical:check": "node scripts/run-tracekernel-physical.mjs --check=webkit",
     "test:smoke": "pnpm exec tsx --tsconfig tsconfig.base.json tests/test-harness-workspace-smoke.ts",
     "test:packaged-surface": "pnpm exec tsx --tsconfig tsconfig.base.json tests/test-packaged-surface.ts",
     "test:bundle-gates": "node scripts/check-browser-project-bundle.mjs",
@@ -161,7 +1707,7 @@ var package_default = {
     "test:typescript-project-libs-sync": "pnpm exec tsx --tsconfig tsconfig.base.json scripts/generate-typescript-project-libs.ts --check",
     "test:java-sync": "pnpm generate:java-helper --check && pnpm exec tsx --tsconfig tsconfig.base.json tests/test-java-harness-sync.ts",
     "test:python-runtime": "pnpm exec tsx --tsconfig tsconfig.base.json tests/test-python-runtime.ts",
-    "test:java-runtime": "pnpm exec tsx --tsconfig tsconfig.base.json tests/test-java-runtime.ts && pnpm exec tsx --tsconfig tsconfig.base.json tests/test-java-project-filesystem.ts",
+    "test:java-runtime": "pnpm exec tsx --tsconfig tsconfig.base.json tests/test-java-runtime.ts && pnpm exec tsx --tsconfig tsconfig.base.json tests/test-java-project-filesystem.ts && pnpm exec tsx --tsconfig tsconfig.base.json tests/test-tracekernel-tracejvm-adapter.ts",
     "test:csharp-runtime": "pnpm exec tsx --tsconfig tsconfig.base.json tests/test-csharp-runtime.ts && pnpm exec tsx --tsconfig tsconfig.base.json tests/test-csharp-project-fs-parity.ts",
     "test:csharp-worker-browser": "pnpm exec tsx --tsconfig tsconfig.base.json tests/test-csharp-worker-client-http.ts && pnpm exec tsx --tsconfig tsconfig.base.json tests/test-csharp-worker-browser.ts && pnpm exec tsx --tsconfig tsconfig.base.json tests/test-csharp-worker-lifecycle-browser.ts",
     "test:cpp-runtime": "pnpm exec tsx --tsconfig tsconfig.base.json tests/test-cpp-runtime.ts",
@@ -671,6 +2217,7 @@ function readRuntimeCommandStdinPipeBytes(pipe, maxLength = RUNTIME_STDIN_PIPE_D
     out.set(state.bytes.subarray(0, length - firstLength), firstLength);
   }
   Atomics.store(state.header, RUNTIME_STDIN_PIPE_READ_INDEX, (readIndex + length) % capacity);
+  Atomics.notify(state.header, RUNTIME_STDIN_PIPE_READ_INDEX);
   return out;
 }
 var RUNTIME_SIGNAL_EXIT_CODES = /* @__PURE__ */ new Map([
@@ -4362,8 +5909,8 @@ function unzipSync(data, opts) {
 var AsyncFunction = Object.getPrototypeOf(async function noop() {
 }).constructor;
 var BrowserFunction = Function;
-var textEncoder = new TextEncoder();
-var textDecoder = new TextDecoder();
+var textEncoder2 = new TextEncoder();
+var textDecoder2 = new TextDecoder();
 var streamInternalCloseListeners = /* @__PURE__ */ new WeakMap();
 function setStreamInternalCloseListeners(stream, listeners) {
   streamInternalCloseListeners.set(stream, listeners);
@@ -4575,7 +6122,7 @@ function runtimeStatTarget(path, info, devices, procSnapshot) {
         isDirectory: procKind === "directory",
         isCharacterDevice: false,
         mode: procKind === "directory" ? 365 : 292,
-        size: textEncoder.encode(contents).byteLength
+        size: textEncoder2.encode(contents).byteLength
       }
     };
   }
@@ -4768,7 +6315,7 @@ function assertSafeWorkspaceFilePath(path, basePath = "", workspace = { root: "/
   return normalizeWorkspaceEntryPath(path, basePath, false, workspace);
 }
 function utf8Bytes(value) {
-  return textEncoder.encode(value);
+  return textEncoder2.encode(value);
 }
 function base64ToBytes(value) {
   if (typeof Buffer !== "undefined") {
@@ -4802,7 +6349,7 @@ function byteEqual(left, right) {
   return true;
 }
 function bytesToRuntimeFile(path, contents) {
-  const text = textDecoder.decode(contents);
+  const text = textDecoder2.decode(contents);
   if (byteEqual(utf8Bytes(text), contents)) {
     return { path, contents: text };
   }
@@ -4833,10 +6380,10 @@ function browserBufferFromBytes(value) {
   return BrowserBuffer.from(value);
 }
 function textFromBytes(bytes) {
-  return textDecoder.decode(bytes);
+  return textDecoder2.decode(bytes);
 }
 function bytesToRuntimeHttpBody(bytes) {
-  const text = textDecoder.decode(bytes);
+  const text = textDecoder2.decode(bytes);
   return byteEqual(utf8Bytes(text), bytes) ? { body: text } : { body: bytesToBase64(bytes), bodyEncoding: "base64" };
 }
 function bytesFromRuntimeHttpBody(message) {
@@ -4919,7 +6466,7 @@ function createZlibApi() {
     inflateSync: (input) => browserBufferFromBytes(fflate.inflateSync(bytesFromNodeValue(input)))
   };
 }
-function createReadableStdinDevice(readBytes, remainingBytes, isClosed = () => true, schedulePoll = (callback, delay) => setTimeout(callback, delay), terminal) {
+function createReadableStdinDevice(readBytes, remainingBytes, isClosed = () => true, schedulePoll = (callback, delay) => setTimeout(callback, delay), terminal, kernelIsTerminal) {
   let encoding;
   let flowScheduled = false;
   let pollScheduled = false;
@@ -4937,7 +6484,7 @@ function createReadableStdinDevice(readBytes, remainingBytes, isClosed = () => t
     }
     const requested = typeof size === "number" && size >= 0 ? Math.floor(size) : void 0;
     const chunk = BrowserBuffer.from(readBytes(requested));
-    if (remainingBytes() <= 0) ended = true;
+    if (remainingBytes() <= 0) ended = isClosed();
     return formatChunk(chunk);
   };
   const scheduleFlow = () => {
@@ -4994,7 +6541,7 @@ function createReadableStdinDevice(readBytes, remainingBytes, isClosed = () => t
   const stream = {
     fd: 0,
     readable: true,
-    isTTY: terminal?.isTTY === true,
+    isTTY: kernelIsTerminal ?? terminal?.isTTY === true,
     get isRaw() {
       return rawMode;
     },
@@ -5217,6 +6764,7 @@ function createBrowserEventLoopApi(executionState) {
   let nextTimerId = 1;
   let pendingTimerWork = Promise.resolve();
   let timerError;
+  let pendingExternalWork = 0;
   const timers = /* @__PURE__ */ new Map();
   const recordTimerWork = (work) => {
     pendingTimerWork = Promise.allSettled([pendingTimerWork, work]).then(() => void 0);
@@ -5263,7 +6811,7 @@ function createBrowserEventLoopApi(executionState) {
   const setTrackedImmediate = (callback, ...args) => setTrackedTimeout(callback, 0, ...args);
   const drain = async () => {
     await new Promise((resolve) => hostSetTimeout(resolve, 0));
-    while (!executionState.cancelled && timers.size > 0) {
+    while (!executionState.cancelled && (timers.size > 0 || pendingExternalWork > 0)) {
       await new Promise((resolve) => hostSetTimeout(resolve, 0));
       await pendingTimerWork;
       if (timerError !== void 0) throw timerError;
@@ -5279,6 +6827,37 @@ function createBrowserEventLoopApi(executionState) {
       hostClearTimeout(timer.handle);
     }
     timers.clear();
+    pendingExternalWork = 0;
+  };
+  const track = (work) => {
+    pendingExternalWork += 1;
+    return work.finally(() => {
+      pendingExternalWork = Math.max(0, pendingExternalWork - 1);
+    });
+  };
+  const trackRefable = (work) => {
+    let referenced = true;
+    let settled = false;
+    pendingExternalWork += 1;
+    const completion = work.finally(() => {
+      settled = true;
+      if (referenced) {
+        pendingExternalWork = Math.max(0, pendingExternalWork - 1);
+      }
+    });
+    return {
+      completion,
+      ref() {
+        if (settled || referenced) return;
+        referenced = true;
+        pendingExternalWork += 1;
+      },
+      unref() {
+        if (settled || !referenced) return;
+        referenced = false;
+        pendingExternalWork = Math.max(0, pendingExternalWork - 1);
+      }
+    };
   };
   return {
     setTimeout: setTrackedTimeout,
@@ -5288,6 +6867,8 @@ function createBrowserEventLoopApi(executionState) {
     setImmediate: setTrackedImmediate,
     clearImmediate: clearTrackedTimeout,
     queueMicrotask: hostQueueMicrotask,
+    track,
+    trackRefable,
     drain,
     clearAll
   };
@@ -5568,6 +7149,484 @@ function createStreamApi() {
     Duplex: PassThrough,
     Transform: PassThrough,
     PassThrough
+  };
+}
+function createTraceKernelApi(executionState) {
+  const dispatchWatchdog = (request) => {
+    if (!executionState.kernelSyscalls) {
+      throw Object.assign(
+        new Error("ENOSYS: TraceKernel process controls are unavailable"),
+        { code: "ENOSYS" }
+      );
+    }
+    const result = executionState.kernelSyscalls.dispatchSync(request);
+    if (result.ok === false) {
+      throw Object.assign(new Error(result.error.message), {
+        code: result.error.code
+      });
+    }
+    if (result.value.op !== "watchdog") {
+      throw Object.assign(
+        new Error(`EPROTO: expected watchdog response, received ${result.value.op}`),
+        { code: "EPROTO" }
+      );
+    }
+    return Object.freeze({
+      armed: result.value.armed,
+      ...result.value.timeoutMs === void 0 ? {} : { timeoutMs: result.value.timeoutMs },
+      ...result.value.signal === void 0 ? {} : { signal: result.value.signal },
+      ...result.value.deadlineAt === void 0 ? {} : { deadlineAt: result.value.deadlineAt }
+    });
+  };
+  const dispatchTerminal = (request) => {
+    const operation = request.op;
+    if (!executionState.kernelSyscalls) {
+      throw Object.assign(
+        new Error("ENOSYS: TraceKernel terminal controls are unavailable"),
+        { code: "ENOSYS" }
+      );
+    }
+    const result = executionState.kernelSyscalls.dispatchSync(request);
+    if (result.ok === false) {
+      throw Object.assign(new Error(result.error.message), {
+        code: result.error.code
+      });
+    }
+    if (result.value.op !== operation) {
+      throw Object.assign(
+        new Error(
+          `EPROTO: expected ${operation} response, received ${result.value.op}`
+        ),
+        { code: "EPROTO" }
+      );
+    }
+    return result.value;
+  };
+  return Object.freeze({
+    watchdog: Object.freeze({
+      arm: (timeoutMs, options = {}) => dispatchWatchdog({
+        op: "watchdog",
+        action: "arm",
+        timeoutMs,
+        ...options.signal ? { signal: options.signal } : {}
+      }),
+      pet: () => dispatchWatchdog({
+        op: "watchdog",
+        action: "pet"
+      }),
+      disarm: () => dispatchWatchdog({
+        op: "watchdog",
+        action: "disarm"
+      }),
+      status: () => dispatchWatchdog({
+        op: "watchdog",
+        action: "status"
+      })
+    }),
+    terminal: Object.freeze({
+      isatty: (fd2) => dispatchTerminal({ op: "isatty", fd: fd2 }).isTerminal,
+      foregroundProcessGroup: (fd2 = 0) => dispatchTerminal({ op: "tcgetpgrp", fd: fd2 }).pgid,
+      setForegroundProcessGroup: (pgid, fd2 = 0) => dispatchTerminal({ op: "tcsetpgrp", fd: fd2, pgid }).pgid,
+      windowSize: (fd2 = 0) => {
+        const size = dispatchTerminal({ op: "tcgetwinsize", fd: fd2 });
+        return Object.freeze({ rows: size.rows, columns: size.columns });
+      },
+      setWindowSize: (rows, columns, fd2 = 0) => {
+        const size = dispatchTerminal({
+          op: "tcsetwinsize",
+          fd: fd2,
+          rows,
+          columns
+        });
+        return Object.freeze({ rows: size.rows, columns: size.columns });
+      }
+    })
+  });
+}
+function createChildProcessApi(executionState, eventLoopApi, request) {
+  const runtimeForCommand = (command) => {
+    const name = command.split("/").at(-1)?.toLowerCase() ?? command.toLowerCase();
+    if (name === "node" || name === "nodejs") return "javascript";
+    if (name === "python" || name === "python3") return "python";
+    if (name === "java") return "java";
+    if (name === "dotnet") return "csharp";
+    return "cpp";
+  };
+  const normalizeInvocation = (command, argsOrOptions, maybeOptions) => {
+    if (typeof command !== "string" || command.length === 0) {
+      throw Object.assign(
+        new TypeError('The "file" argument must be of type string and non-empty'),
+        { code: "ERR_INVALID_ARG_TYPE" }
+      );
+    }
+    const args = Array.isArray(argsOrOptions) ? argsOrOptions.map((arg) => String(arg)) : [];
+    const options = Array.isArray(argsOrOptions) ? maybeOptions : argsOrOptions;
+    if (options?.stdio !== void 0 && !Array.isArray(options.stdio) && options.stdio !== "pipe" && options.stdio !== "inherit" && options.stdio !== "ignore") {
+      throw Object.assign(
+        new TypeError(
+          'The "stdio" option must be "pipe", "inherit", "ignore", or an array'
+        ),
+        { code: "ERR_INVALID_ARG_VALUE" }
+      );
+    }
+    return {
+      command,
+      args,
+      options: options ?? {}
+    };
+  };
+  const stdioPlan = (stdio, fallback) => {
+    if (!Array.isArray(stdio)) {
+      const mode = stdio ?? fallback;
+      return {
+        stdio: { stdin: mode, stdout: mode, stderr: mode },
+        descriptorMappings: [],
+        hasPipe: mode === "pipe"
+      };
+    }
+    const modes = {};
+    const descriptorMappings = [];
+    let hasPipe = false;
+    const length = Math.max(3, stdio.length);
+    for (let childFd = 0; childFd < length; childFd += 1) {
+      const entry = stdio[childFd] ?? (childFd < 3 ? "pipe" : "ignore");
+      if (typeof entry === "number" && Number.isSafeInteger(entry) && entry >= 0) {
+        descriptorMappings.push({ parentFd: entry, childFd });
+        continue;
+      }
+      if (entry !== "pipe" && entry !== "inherit" && entry !== "ignore") {
+        throw Object.assign(
+          new TypeError(`Unsupported stdio entry at index ${childFd}`),
+          { code: entry === "ipc" ? "ENOSYS" : "ERR_INVALID_ARG_VALUE" }
+        );
+      }
+      if (childFd < 3) {
+        modes[childFd === 0 ? "stdin" : childFd === 1 ? "stdout" : "stderr"] = entry;
+      } else if (entry === "inherit") {
+        descriptorMappings.push({ parentFd: childFd, childFd });
+      } else if (entry === "pipe") {
+        throw Object.assign(
+          new Error("ENOSYS: piped stdio descriptors above fd 2 are not implemented"),
+          { code: "ENOSYS" }
+        );
+      }
+      if (entry === "pipe") hasPipe = true;
+    }
+    return { stdio: modes, descriptorMappings, hasPipe };
+  };
+  const syncDispatch = (syscall) => {
+    if (!executionState.kernelSyscalls) {
+      throw Object.assign(
+        new Error("ENOSYS: child-process subsystem is unavailable"),
+        { code: "ENOSYS" }
+      );
+    }
+    const result = executionState.kernelSyscalls.dispatchSync(syscall);
+    if (result.ok === false) {
+      throw Object.assign(new Error(result.error.message), {
+        code: result.error.code
+      });
+    }
+    return result.value;
+  };
+  const asyncDispatch = (syscall) => dispatchBrowserNetworkSyscall(
+    executionState.kernelNetwork,
+    syscall
+  );
+  class BrowserChildReadable extends BrowserEventEmitter {
+    constructor(fd2) {
+      super();
+      this.fd = fd2;
+      this.completion = eventLoopApi.track(this.pump());
+      void this.completion.catch((error) => {
+        if (!this.closed) this.emit("error", error);
+      });
+    }
+    readable = true;
+    encoding;
+    closed = false;
+    completion;
+    setEncoding(encoding) {
+      this.encoding = encoding;
+      return this;
+    }
+    pipe(destination) {
+      this.on("data", (chunk) => destination.write(chunk));
+      this.on("end", () => destination.end?.());
+      return destination;
+    }
+    pause() {
+      return this;
+    }
+    resume() {
+      return this;
+    }
+    destroy() {
+      if (this.closed) return this;
+      this.closed = true;
+      void eventLoopApi.track(
+        asyncDispatch({ op: "close", fd: this.fd }).catch(() => void 0)
+      );
+      return this;
+    }
+    async pump() {
+      try {
+        while (!this.closed) {
+          const result = await asyncDispatch({
+            op: "read",
+            fd: this.fd,
+            maxBytes: 16 * 1024
+          });
+          if (result.bytes.byteLength === 0) break;
+          const chunk = BrowserBuffer.from(result.bytes);
+          this.emit(
+            "data",
+            this.encoding ? chunk.toString(this.encoding) : chunk
+          );
+        }
+        if (!this.closed) this.emit("end");
+      } finally {
+        if (!this.closed) {
+          this.closed = true;
+          await asyncDispatch({ op: "close", fd: this.fd }).catch(() => void 0);
+          this.emit("close");
+        }
+      }
+    }
+  }
+  class BrowserChildWritable extends BrowserEventEmitter {
+    constructor(fd2) {
+      super();
+      this.fd = fd2;
+    }
+    writable = true;
+    ended = false;
+    closed = false;
+    queuedBytes = 0;
+    tail = Promise.resolve();
+    write(chunk, encodingOrCallback, callback) {
+      const completion = typeof encodingOrCallback === "function" ? encodingOrCallback : callback;
+      if (this.ended) {
+        const error = Object.assign(new Error("write after end"), {
+          code: "ERR_STREAM_WRITE_AFTER_END"
+        });
+        globalThis.queueMicrotask(() => {
+          completion?.(error);
+          this.emit("error", error);
+        });
+        return false;
+      }
+      const bytes = BrowserBuffer.isBuffer(chunk) ? Uint8Array.from(chunk) : typeof chunk === "string" ? BrowserBuffer.from(chunk, typeof encodingOrCallback === "string" ? encodingOrCallback : void 0) : Uint8Array.from(bytesFromNodeValue(chunk));
+      this.queuedBytes += bytes.byteLength;
+      const belowHighWaterMark = this.queuedBytes < 64 * 1024;
+      this.tail = this.tail.then(async () => {
+        try {
+          await asyncDispatch({ op: "write", fd: this.fd, bytes });
+          completion?.(null);
+        } catch (error) {
+          completion?.(error instanceof Error ? error : new Error(String(error)));
+          this.emit("error", error);
+        } finally {
+          const wasBackpressured = this.queuedBytes >= 64 * 1024;
+          this.queuedBytes = Math.max(0, this.queuedBytes - bytes.byteLength);
+          if (wasBackpressured && this.queuedBytes < 64 * 1024) {
+            this.emit("drain");
+          }
+        }
+      });
+      void eventLoopApi.track(this.tail.catch(() => void 0));
+      return belowHighWaterMark;
+    }
+    end(chunkOrCallback, encodingOrCallback, callback) {
+      const chunk = typeof chunkOrCallback === "function" ? void 0 : chunkOrCallback;
+      const completion = typeof chunkOrCallback === "function" ? chunkOrCallback : typeof encodingOrCallback === "function" ? encodingOrCallback : callback;
+      if (chunk !== void 0) {
+        this.write(
+          chunk,
+          typeof encodingOrCallback === "string" ? encodingOrCallback : void 0
+        );
+      }
+      if (this.ended) return this;
+      this.ended = true;
+      const closing = this.tail.then(async () => {
+        if (!this.closed) {
+          this.closed = true;
+          await asyncDispatch({ op: "close", fd: this.fd }).catch(() => void 0);
+        }
+        this.emit("finish");
+        this.emit("close");
+        completion?.();
+      });
+      this.tail = closing;
+      void eventLoopApi.track(closing);
+      return this;
+    }
+    destroy() {
+      if (this.closed) return this;
+      this.ended = true;
+      const closing = this.tail.finally(async () => {
+        if (!this.closed) {
+          this.closed = true;
+          await asyncDispatch({ op: "close", fd: this.fd }).catch(() => void 0);
+          this.emit("close");
+        }
+      });
+      this.tail = closing;
+      void eventLoopApi.track(closing);
+      return this;
+    }
+  }
+  class BrowserChildProcess extends BrowserEventEmitter {
+    pid;
+    stdin;
+    stdout;
+    stderr;
+    stdio;
+    connected = false;
+    exitCode = null;
+    signalCode = null;
+    killed = false;
+    refControl;
+    constructor(pid, stdio, signal) {
+      super();
+      this.pid = pid;
+      this.stdin = stdio?.stdinFd === void 0 ? null : new BrowserChildWritable(stdio.stdinFd);
+      this.stdout = stdio?.stdoutFd === void 0 ? null : new BrowserChildReadable(stdio.stdoutFd);
+      this.stderr = stdio?.stderrFd === void 0 ? null : new BrowserChildReadable(stdio.stderrFd);
+      this.stdio = [this.stdin, this.stdout, this.stderr];
+      if (signal) {
+        const abort = () => this.kill("SIGTERM");
+        if (signal.aborted) abort();
+        else signal.addEventListener("abort", abort, { once: true });
+      }
+    }
+    kill(signal = "SIGTERM") {
+      if (this.exitCode !== null || this.signalCode !== null) return false;
+      syncDispatch({
+        op: "kill",
+        pid: this.pid,
+        signal
+      });
+      this.killed = true;
+      return true;
+    }
+    ref() {
+      this.refControl?.ref();
+      return this;
+    }
+    unref() {
+      this.refControl?.unref();
+      return this;
+    }
+    attachRefControl(control) {
+      this.refControl = control;
+    }
+  }
+  const spawn = (command, argsOrOptions, maybeOptions) => {
+    const invocation = normalizeInvocation(command, argsOrOptions, maybeOptions);
+    const plan = stdioPlan(invocation.options.stdio, "pipe");
+    const spawned = syncDispatch({
+      op: "spawn",
+      runtime: runtimeForCommand(invocation.command),
+      command: invocation.command,
+      args: invocation.args,
+      cwd: invocation.options.cwd ?? request.cwd,
+      env: Object.fromEntries(
+        Object.entries(invocation.options.env ?? request.env).filter(([, value]) => value !== void 0).map(([name, value]) => [name, String(value)])
+      ),
+      ...invocation.options.detached ? { processGroupId: 0, sessionId: 0 } : {},
+      ...plan.descriptorMappings.length > 0 ? { descriptorMappings: plan.descriptorMappings } : {},
+      stdio: plan.stdio
+    });
+    const child = new BrowserChildProcess(
+      spawned.pid,
+      spawned.stdio,
+      invocation.options.signal
+    );
+    globalThis.queueMicrotask(() => child.emit("spawn"));
+    const waitHandle = eventLoopApi.trackRefable(
+      asyncDispatch({ op: "wait", pid: spawned.pid }).then(
+        async (waited) => {
+          const termination = waited.termination;
+          if (!termination) {
+            throw Object.assign(
+              new Error("EPROTO: blocking child wait returned a running process"),
+              { code: "EPROTO" }
+            );
+          }
+          if (termination.kind === "signal") {
+            child.signalCode = termination.signal;
+          } else {
+            child.exitCode = termination.exitCode;
+          }
+          child.emit(
+            "exit",
+            child.exitCode,
+            child.signalCode
+          );
+          await Promise.all([
+            child.stdout?.completion,
+            child.stderr?.completion
+          ]);
+          child.emit(
+            "close",
+            child.exitCode,
+            child.signalCode
+          );
+        },
+        (error) => {
+          child.emit("error", error);
+          child.emit("close", null, null);
+        }
+      )
+    );
+    child.attachRefControl(waitHandle);
+    void waitHandle.completion;
+    return child;
+  };
+  const spawnSync = (command, argsOrOptions, maybeOptions) => {
+    const invocation = normalizeInvocation(command, argsOrOptions, maybeOptions);
+    const plan = stdioPlan(invocation.options.stdio, "ignore");
+    if (plan.hasPipe) {
+      throw Object.assign(
+        new Error("ENOSYS: synchronous piped child stdio requires a nonblocking host capture path"),
+        { code: "ENOSYS" }
+      );
+    }
+    const spawned = syncDispatch({
+      op: "spawn",
+      runtime: runtimeForCommand(invocation.command),
+      command: invocation.command,
+      args: invocation.args,
+      cwd: invocation.options.cwd ?? request.cwd,
+      env: Object.fromEntries(
+        Object.entries(invocation.options.env ?? request.env).filter(([, value]) => value !== void 0).map(([name, value]) => [name, String(value)])
+      ),
+      ...invocation.options.detached ? { processGroupId: 0, sessionId: 0 } : {},
+      ...plan.descriptorMappings.length > 0 ? { descriptorMappings: plan.descriptorMappings } : {},
+      stdio: plan.stdio
+    });
+    const waited = syncDispatch({ op: "wait", pid: spawned.pid });
+    const termination = waited.termination;
+    if (!termination) {
+      throw Object.assign(
+        new Error("EPROTO: blocking child wait returned a running process"),
+        { code: "EPROTO" }
+      );
+    }
+    return {
+      pid: spawned.pid,
+      output: [null, BrowserBuffer.alloc(0), BrowserBuffer.alloc(0)],
+      stdout: BrowserBuffer.alloc(0),
+      stderr: BrowserBuffer.alloc(0),
+      status: termination.kind === "signal" ? null : termination.exitCode,
+      signal: termination.kind === "signal" ? termination.signal : null
+    };
+  };
+  return {
+    ChildProcess: BrowserChildProcess,
+    spawn,
+    spawnSync
   };
 }
 function createUrlApi() {
@@ -5916,6 +7975,468 @@ function runtimeKernelNetworkCause(response, url) {
 function runtimeKernelFetchError(response, url) {
   const cause = runtimeKernelNetworkCause(response, url);
   return Object.assign(new TypeError("fetch failed"), { cause });
+}
+async function dispatchBrowserNetworkSyscall(kernelNetwork, request) {
+  if (!kernelNetwork) {
+    throw Object.assign(
+      new Error("ENOSYS: network subsystem is unavailable"),
+      { code: "ENOSYS" }
+    );
+  }
+  const result = await kernelNetwork.dispatch(request);
+  if (result.ok === false) {
+    throw Object.assign(new Error(result.error.message), {
+      code: result.error.code
+    });
+  }
+  return result.value;
+}
+function normalizeNetConnectArgs(args) {
+  const callback = args.find((value) => typeof value === "function");
+  const first = args[0];
+  if (typeof first === "object" && first !== null) {
+    const options = first;
+    return {
+      port: Number(options.port),
+      host: typeof options.host === "string" ? options.host : "127.0.0.1",
+      ...callback ? { callback } : {}
+    };
+  }
+  return {
+    port: Number(first),
+    host: typeof args[1] === "string" ? args[1] : "127.0.0.1",
+    ...callback ? { callback } : {}
+  };
+}
+function createNetApi(kernelNetwork, signal) {
+  const activeSockets = /* @__PURE__ */ new Set();
+  const activeServers = /* @__PURE__ */ new Set();
+  const closeWaiters = [];
+  let activeWorkError = null;
+  const notifyCloseWaiters = () => {
+    if (activeSockets.size > 0 || activeServers.size > 0) return;
+    while (closeWaiters.length > 0) {
+      const waiter = closeWaiters.shift();
+      if (!waiter) continue;
+      if (activeWorkError) waiter.reject(activeWorkError);
+      else waiter.resolve();
+    }
+  };
+  function createSocket(existingFd) {
+    const events = createListenerMap();
+    let fd2 = existingFd;
+    let destroyed = false;
+    let connected = false;
+    let readableEnded = false;
+    let writableEnded = false;
+    let paused = false;
+    let resumeReader;
+    let encoding;
+    let localAddress;
+    let remoteAddress;
+    let writeTail = Promise.resolve();
+    let onFinalClose;
+    const removeActive = () => {
+      if (!activeSockets.delete(socket)) return;
+      onFinalClose?.();
+      notifyCloseWaiters();
+    };
+    const closeDescriptor = async () => {
+      const closingFd = fd2;
+      fd2 = void 0;
+      if (closingFd === void 0) return;
+      try {
+        await dispatchBrowserNetworkSyscall(kernelNetwork, {
+          op: "close",
+          fd: closingFd
+        });
+      } catch (error) {
+        if (error?.code !== "EBADF") throw error;
+      }
+    };
+    const fail = (error) => {
+      const cause = error instanceof Error ? error : new Error(String(error));
+      try {
+        if (!events.emit("error", cause)) activeWorkError ??= cause;
+      } catch (listenerError) {
+        activeWorkError ??= listenerError instanceof Error ? listenerError : new Error(String(listenerError));
+      }
+    };
+    const finishClose = async (error) => {
+      if (destroyed) return;
+      destroyed = true;
+      resumeReader?.();
+      resumeReader = void 0;
+      try {
+        await closeDescriptor();
+      } catch (closeError) {
+        error ??= closeError;
+      }
+      if (error) fail(error);
+      events.emit("close", Boolean(error));
+      removeActive();
+    };
+    const receive = async () => {
+      while (!destroyed && fd2 !== void 0) {
+        try {
+          if (paused) {
+            await new Promise((resolve) => {
+              resumeReader = resolve;
+            });
+            resumeReader = void 0;
+            if (destroyed) return;
+          }
+          const result = await dispatchBrowserNetworkSyscall(kernelNetwork, {
+            op: "recv",
+            fd: fd2,
+            maxBytes: 64 * 1024
+          });
+          if (result.bytes.byteLength === 0) {
+            readableEnded = true;
+            events.emit("end");
+            await writeTail;
+            if (!writableEnded && fd2 !== void 0) {
+              writableEnded = true;
+              await dispatchBrowserNetworkSyscall(kernelNetwork, {
+                op: "shutdown",
+                fd: fd2,
+                how: "write"
+              });
+            }
+            await finishClose();
+            return;
+          }
+          const chunk = BrowserBuffer.from(result.bytes);
+          events.emit(
+            "data",
+            encoding ? chunk.toString(encoding) : chunk
+          );
+        } catch (error) {
+          if (!destroyed) await finishClose(error);
+          return;
+        }
+      }
+    };
+    const attach = (nextFd, nextLocalAddress, nextRemoteAddress, emitConnect) => {
+      fd2 = nextFd;
+      localAddress = nextLocalAddress;
+      remoteAddress = nextRemoteAddress;
+      connected = true;
+      activeSockets.add(socket);
+      if (emitConnect) events.emit("connect");
+      void receive();
+    };
+    const socket = {
+      connecting: false,
+      get destroyed() {
+        return destroyed;
+      },
+      get readableEnded() {
+        return readableEnded;
+      },
+      get writableEnded() {
+        return writableEnded;
+      },
+      get remoteAddress() {
+        return remoteAddress?.host;
+      },
+      get remotePort() {
+        return remoteAddress?.port;
+      },
+      get remoteFamily() {
+        return remoteAddress ? "IPv4" : void 0;
+      },
+      address: () => localAddress ? { address: localAddress.host, port: localAddress.port, family: "IPv4" } : {},
+      connect: (...args) => {
+        const options = normalizeNetConnectArgs(args);
+        if (options.callback) events.once("connect", options.callback);
+        socket.connecting = true;
+        activeSockets.add(socket);
+        void (async () => {
+          try {
+            const created = await dispatchBrowserNetworkSyscall(kernelNetwork, {
+              op: "socket"
+            });
+            fd2 = created.fd;
+            const connection = await dispatchBrowserNetworkSyscall(kernelNetwork, {
+              op: "connect",
+              fd: fd2,
+              address: { host: options.host, port: options.port }
+            });
+            socket.connecting = false;
+            attach(
+              fd2,
+              connection.localAddress,
+              connection.remoteAddress,
+              true
+            );
+          } catch (error) {
+            socket.connecting = false;
+            await finishClose(error);
+          }
+        })();
+        return socket;
+      },
+      write: (chunk, encodingOrCallback, callback) => {
+        const writeCallback = typeof encodingOrCallback === "function" ? encodingOrCallback : typeof callback === "function" ? callback : void 0;
+        const bytes = typeof chunk === "string" ? BrowserBuffer.from(
+          chunk,
+          typeof encodingOrCallback === "string" ? encodingOrCallback : "utf8"
+        ) : BrowserBuffer.from(bytesFromNodeValue(chunk));
+        writeTail = writeTail.then(async () => {
+          if (destroyed || fd2 === void 0 || !connected) {
+            throw Object.assign(new Error("ENOTCONN: socket is not connected"), {
+              code: "ENOTCONN"
+            });
+          }
+          await dispatchBrowserNetworkSyscall(kernelNetwork, {
+            op: "send",
+            fd: fd2,
+            bytes
+          });
+        });
+        void writeTail.then(
+          () => writeCallback?.(),
+          (error) => {
+            writeCallback?.(error instanceof Error ? error : new Error(String(error)));
+            void finishClose(error);
+          }
+        );
+        return true;
+      },
+      end: (chunk, encodingOrCallback, callback) => {
+        const endCallback = typeof encodingOrCallback === "function" ? encodingOrCallback : typeof callback === "function" ? callback : void 0;
+        if (chunk !== void 0) socket.write(chunk, typeof encodingOrCallback === "string" ? encodingOrCallback : void 0);
+        writeTail = writeTail.then(async () => {
+          if (fd2 !== void 0 && !writableEnded) {
+            writableEnded = true;
+            await dispatchBrowserNetworkSyscall(kernelNetwork, {
+              op: "shutdown",
+              fd: fd2,
+              how: "write"
+            });
+          }
+          events.emit("finish");
+          endCallback?.();
+          if (readableEnded) await finishClose();
+        });
+        void writeTail.catch((error) => finishClose(error));
+        return socket;
+      },
+      destroy: (error) => {
+        void finishClose(error);
+        return socket;
+      },
+      setEncoding: (nextEncoding) => {
+        encoding = nextEncoding;
+        return socket;
+      },
+      setNoDelay: () => socket,
+      setKeepAlive: () => socket,
+      pause: () => {
+        paused = true;
+        return socket;
+      },
+      resume: () => {
+        paused = false;
+        resumeReader?.();
+        resumeReader = void 0;
+        return socket;
+      },
+      on: events.on,
+      addListener: events.addListener,
+      once: events.once,
+      removeListener: events.removeListener,
+      off: events.off,
+      emit: events.emit,
+      _attach: attach,
+      _setOnFinalClose: (listener) => {
+        onFinalClose = listener;
+      }
+    };
+    return socket;
+  }
+  function createServer(connectionListener) {
+    const events = createListenerMap();
+    const connections = /* @__PURE__ */ new Set();
+    let fd2;
+    let listening = false;
+    let closing = false;
+    let boundAddress;
+    const maybeFinishClose = () => {
+      if (!closing || connections.size > 0 || fd2 !== void 0) return;
+      activeServers.delete(server);
+      events.emit("close");
+      notifyCloseWaiters();
+    };
+    const recordServerError = (error) => {
+      const cause = error instanceof Error ? error : new Error(String(error));
+      try {
+        if (!events.emit("error", cause)) activeWorkError ??= cause;
+      } catch (listenerError) {
+        activeWorkError ??= listenerError instanceof Error ? listenerError : new Error(String(listenerError));
+      }
+    };
+    const acceptLoop = async () => {
+      while (listening && fd2 !== void 0) {
+        try {
+          const accepted = await dispatchBrowserNetworkSyscall(kernelNetwork, {
+            op: "accept",
+            fd: fd2
+          });
+          if (!listening) {
+            await dispatchBrowserNetworkSyscall(kernelNetwork, {
+              op: "close",
+              fd: accepted.fd
+            });
+            continue;
+          }
+          const socket = createSocket(accepted.fd);
+          connections.add(socket);
+          socket._setOnFinalClose(() => {
+            connections.delete(socket);
+            maybeFinishClose();
+          });
+          socket._attach(
+            accepted.fd,
+            accepted.localAddress,
+            accepted.remoteAddress,
+            false
+          );
+          events.emit("connection", socket);
+        } catch (error) {
+          if (listening) {
+            recordServerError(error);
+            closing = true;
+            listening = false;
+            const closingFd = fd2;
+            fd2 = void 0;
+            if (closingFd !== void 0) {
+              await dispatchBrowserNetworkSyscall(kernelNetwork, {
+                op: "close",
+                fd: closingFd
+              }).catch(() => void 0);
+            }
+          }
+          break;
+        }
+      }
+      maybeFinishClose();
+    };
+    const server = {
+      get listening() {
+        return listening;
+      },
+      listen: (...args) => {
+        const callback = args.find((value) => typeof value === "function");
+        const first = args[0];
+        const options = typeof first === "object" && first !== null ? first : {
+          port: first,
+          host: typeof args[1] === "string" ? args[1] : void 0,
+          backlog: void 0
+        };
+        activeServers.add(server);
+        void (async () => {
+          try {
+            const created = await dispatchBrowserNetworkSyscall(kernelNetwork, {
+              op: "socket"
+            });
+            fd2 = created.fd;
+            boundAddress = await dispatchBrowserNetworkSyscall(kernelNetwork, {
+              op: "bind",
+              fd: fd2,
+              address: {
+                host: typeof options.host === "string" ? options.host : "127.0.0.1",
+                port: Number(options.port)
+              }
+            }).then((result) => result.address);
+            await dispatchBrowserNetworkSyscall(kernelNetwork, {
+              op: "listen",
+              fd: fd2,
+              options: {
+                ...Number.isFinite(Number(options.backlog)) ? { backlog: Number(options.backlog) } : {}
+              }
+            });
+            listening = true;
+            events.emit("listening");
+            callback?.();
+            void acceptLoop();
+          } catch (error) {
+            recordServerError(error);
+            closing = true;
+            if (fd2 !== void 0) {
+              const closingFd = fd2;
+              fd2 = void 0;
+              await dispatchBrowserNetworkSyscall(kernelNetwork, {
+                op: "close",
+                fd: closingFd
+              }).catch(() => void 0);
+            }
+            maybeFinishClose();
+          }
+        })();
+        return server;
+      },
+      close: (callback) => {
+        if (callback) events.once("close", callback);
+        closing = true;
+        listening = false;
+        const closingFd = fd2;
+        fd2 = void 0;
+        if (closingFd !== void 0) {
+          void dispatchBrowserNetworkSyscall(kernelNetwork, {
+            op: "close",
+            fd: closingFd
+          }).then(maybeFinishClose, (error) => {
+            recordServerError(error);
+            maybeFinishClose();
+          });
+        } else {
+          queueMicrotask(maybeFinishClose);
+        }
+        return server;
+      },
+      address: () => boundAddress ? { address: boundAddress.host, port: boundAddress.port, family: "IPv4" } : null,
+      getConnections: (callback) => {
+        queueMicrotask(() => callback(null, connections.size));
+      },
+      on: events.on,
+      addListener: events.addListener,
+      once: events.once,
+      removeListener: events.removeListener,
+      off: events.off,
+      emit: events.emit
+    };
+    if (connectionListener) server.on("connection", connectionListener);
+    return server;
+  }
+  const closeAll = () => {
+    for (const server of [...activeServers]) server.close();
+    for (const socket of [...activeSockets]) socket.destroy();
+  };
+  signal?.addEventListener("abort", closeAll, { once: true });
+  const connect = (...args) => createSocket().connect(...args);
+  const Socket = function Socket2() {
+    return createSocket();
+  };
+  const Server = function Server2(connectionListener) {
+    return createServer(connectionListener);
+  };
+  return {
+    module: {
+      createServer,
+      connect,
+      createConnection: connect,
+      Socket,
+      Server,
+      isIP: (input) => input === "127.0.0.1" || input === "0.0.0.0" ? 4 : 0,
+      isIPv4: (input) => input === "127.0.0.1" || input === "0.0.0.0",
+      isIPv6: () => false
+    },
+    hasActiveWork: () => activeSockets.size > 0 || activeServers.size > 0 || activeWorkError !== null,
+    waitForClose: () => activeSockets.size === 0 && activeServers.size === 0 ? activeWorkError ? Promise.reject(activeWorkError) : Promise.resolve() : new Promise((resolve, reject) => closeWaiters.push({ resolve, reject })),
+    closeAll
+  };
 }
 function createHttpApi(kernelHttp, signal) {
   const activeHandles = /* @__PURE__ */ new Set();
@@ -7021,7 +9542,7 @@ function formatBrowserJavaScriptErrorForStderr(error) {
 `;
 }
 function isBrowserJavaScriptUserStackFrame(line, sourcePath) {
-  return line.includes(sourcePath) || line.includes("/workspace/") || line.includes("/home/");
+  return line.includes(sourcePath) || line.includes("/workspace/");
 }
 function isBrowserJavaScriptInternalStackFrame(line) {
   return line.includes("/@fs/") || line.includes("/packages/harness-") || line.includes("/dist/browser/project.js") || line.includes("/workers/javascript-project-worker.js") || line.includes("javascript-project-worker.js:") || line.includes("blob:") || line.includes("runBrowserJavaScriptProjectRequest") || line.includes("executeEntrypoint") || line.includes("executeModule") || line.includes("resolveModulePath") || line.includes("requireModule") || line.includes("createHttpApi") || line.includes("registerHttpListener") || line.includes("at new Function") || line.includes("at new AsyncFunction");
@@ -7178,7 +9699,7 @@ async function runBrowserJavaScriptProjectRequest(request, options, executionSta
     ])
   );
   for (const [path, contents] of virtualTextFiles) {
-    fileStore.set(path, textEncoder.encode(contents));
+    fileStore.set(path, textEncoder2.encode(contents));
   }
   const initialVisibleBytes = visibleProjectFiles.reduce((total, file) => total + fileBytes(file).byteLength, 0) + visibleProjectSymlinks.reduce((total, symlink) => total + utf8Bytes(symlink.target).byteLength, 0);
   const initialVisibleEntries = /* @__PURE__ */ new Set([
@@ -7393,6 +9914,28 @@ async function runBrowserJavaScriptProjectRequest(request, options, executionSta
     }
   };
   let mainModule;
+  const kernelStdioAvailability = /* @__PURE__ */ new Map();
+  const tryWriteKernelStdio = (fd2, bytes) => {
+    if (kernelStdioAvailability.get(fd2) === false || !executionState.kernelSyscalls) {
+      return false;
+    }
+    const result = executionState.kernelSyscalls.dispatchSync({
+      op: "write",
+      fd: fd2,
+      bytes
+    });
+    if (result.ok === true) {
+      kernelStdioAvailability.set(fd2, true);
+      return true;
+    }
+    if (result.error.code === "EBADF") {
+      kernelStdioAvailability.set(fd2, false);
+      return false;
+    }
+    throw Object.assign(new Error(result.error.message), {
+      code: result.error.code
+    });
+  };
   const emitOutput = (stream, data, device, sourceDevice) => {
     if (stream === "stdout") {
       stdout.push(data);
@@ -7407,26 +9950,92 @@ async function runBrowserJavaScriptProjectRequest(request, options, executionSta
       if (runtimeKernelDeviceOutputTarget(kernelDevices, device) === "/dev/null") return;
       throw Object.assign(new Error("EBADF: bad file descriptor, write"), { code: "EBADF" });
     }
+    if (tryWriteKernelStdio(
+      route.stream === "stdout" ? 1 : 2,
+      new TextEncoder().encode(data)
+    )) return;
     emitOutput(route.stream, data, route.outputDevice, route.sourceDevice);
   };
+  let kernelStdinClosed = false;
   const readDeviceBytes = (device, size) => {
     const inputRoute = runtimeKernelDeviceInputRoute(kernelDevices, device);
     if (!inputRoute) return new Uint8Array();
+    if (executionState.kernelSyscalls) {
+      if (kernelStdinClosed) return new Uint8Array();
+      const result = executionState.kernelSyscalls.dispatchSync({
+        op: "read",
+        fd: 0,
+        maxBytes: Math.max(0, Math.floor(size ?? 16 * 1024))
+      });
+      if (result.ok === false) {
+        throw Object.assign(new Error(result.error.message), {
+          code: result.error.code
+        });
+      }
+      if (result.value.op !== "read") {
+        throw Object.assign(
+          new Error(`EPROTO: expected read response, received ${result.value.op}`),
+          { code: "EPROTO" }
+        );
+      }
+      if (result.value.bytes.byteLength === 0) kernelStdinClosed = true;
+      return result.value.bytes;
+    }
     if (request.stdinPipe) {
       return readRuntimeCommandStdinPipeBytes(request.stdinPipe, size);
     }
     return new Uint8Array();
   };
-  const remainingDeviceBytes = (device) => runtimeKernelDeviceInputRoute(kernelDevices, device) ? request.stdinPipe ? runtimeCommandStdinPipeRemainingBytes(request.stdinPipe) : 0 : 0;
-  const deviceInputClosed = (device) => runtimeKernelDeviceInputRoute(kernelDevices, device) ? request.stdinPipe ? runtimeCommandStdinPipeClosed(request.stdinPipe) : true : true;
+  const remainingDeviceBytes = (device) => runtimeKernelDeviceInputRoute(kernelDevices, device) ? executionState.kernelSyscalls ? kernelStdinClosed ? 0 : 1 : request.stdinPipe ? runtimeCommandStdinPipeRemainingBytes(request.stdinPipe) : 0 : 0;
+  const deviceInputClosed = (device) => runtimeKernelDeviceInputRoute(kernelDevices, device) ? executionState.kernelSyscalls ? kernelStdinClosed : request.stdinPipe ? runtimeCommandStdinPipeClosed(request.stdinPipe) : true : true;
   const readDevice = (device) => textFromBytes(readDeviceBytes(device));
+  const kernelDescriptorIsTerminal = (fd2) => {
+    if (!executionState.kernelSyscalls) {
+      return request.terminal?.isTTY === true;
+    }
+    const result = executionState.kernelSyscalls.dispatchSync({
+      op: "isatty",
+      fd: fd2
+    });
+    return result.ok && result.value.op === "isatty" && result.value.isTerminal;
+  };
+  const kernelDescriptorWindowSize = (fd2) => {
+    if (!executionState.kernelSyscalls) {
+      return {
+        rows: request.terminal?.rows,
+        columns: request.terminal?.columns
+      };
+    }
+    const result = executionState.kernelSyscalls.dispatchSync({
+      op: "tcgetwinsize",
+      fd: fd2
+    });
+    if (result.ok === false) {
+      if (result.error.code === "ENOTTY") return {};
+      throw Object.assign(new Error(result.error.message), {
+        code: result.error.code
+      });
+    }
+    if (result.value.op !== "tcgetwinsize") {
+      throw Object.assign(
+        new Error(
+          `EPROTO: expected tcgetwinsize response, received ${result.value.op}`
+        ),
+        { code: "EPROTO" }
+      );
+    }
+    return {
+      rows: result.value.rows,
+      columns: result.value.columns
+    };
+  };
   const consoleApi = {
     log: (...values) => {
-      emitOutput("stdout", `${formatConsoleValues(values)}
+      writeDevice("/dev/stdout", `${formatConsoleValues(values)}
 `);
     },
     error: (...values) => {
-      emitOutput("stderr", `${formatConsoleValues(values)}
+      writeDevice("/dev/stderr", `${formatConsoleValues(values)}
 `);
     }
   };
@@ -7455,9 +10064,17 @@ async function runBrowserJavaScriptProjectRequest(request, options, executionSta
     const stream = {
       fd: fd2,
       writable: true,
-      isTTY: request.terminal?.isTTY === true,
-      columns: request.terminal?.columns,
-      rows: request.terminal?.rows,
+      isTTY: kernelDescriptorIsTerminal(fd2),
+      get columns() {
+        return kernelDescriptorWindowSize(fd2).columns;
+      },
+      get rows() {
+        return kernelDescriptorWindowSize(fd2).rows;
+      },
+      getWindowSize: () => {
+        const size = kernelDescriptorWindowSize(fd2);
+        return [size.columns, size.rows];
+      },
       getColorDepth: () => request.terminal?.colorLevel === 3 ? 24 : request.terminal?.colorLevel === 2 ? 8 : request.terminal?.colorLevel === 1 ? 4 : 1,
       hasColors: () => (request.terminal?.colorLevel ?? 0) > 0,
       get closed() {
@@ -7474,8 +10091,9 @@ async function runBrowserJavaScriptProjectRequest(request, options, executionSta
       },
       write: (value, encoding, callback) => {
         const bytes = bytesFromFsWriteValue(value, typeof encoding === "string" ? encoding : void 0);
-        const data = textFromBytes(bytes);
-        writeDevice(device, data);
+        if (!tryWriteKernelStdio(fd2 === 1 ? 1 : 2, bytes)) {
+          writeDevice(device, textFromBytes(bytes));
+        }
         bytesWritten += bytes.byteLength;
         const done = typeof encoding === "function" ? encoding : callback;
         done?.(null);
@@ -7547,7 +10165,8 @@ async function runBrowserJavaScriptProjectRequest(request, options, executionSta
     () => remainingDeviceBytes("/dev/stdin"),
     () => deviceInputClosed("/dev/stdin"),
     eventLoopApi.setTimeout,
-    request.terminal
+    request.terminal,
+    kernelDescriptorIsTerminal(0)
   );
   const nodeVersion = BROWSER_PROJECT_NODE_COMPAT_VERSION;
   const processListeners = /* @__PURE__ */ new Map();
@@ -7585,10 +10204,60 @@ async function runBrowserJavaScriptProjectRequest(request, options, executionSta
     platform: "tracekernel",
     arch: "x64",
     pid: request.process?.pid ?? 1,
-    ppid: request.process?.ppid ?? 0,
+    get ppid() {
+      if (!executionState.kernelSyscalls) {
+        return request.process?.ppid ?? 0;
+      }
+      const result = executionState.kernelSyscalls.dispatchSync({
+        op: "identity"
+      });
+      if (result.ok === false) {
+        throw Object.assign(new Error(result.error.message), {
+          code: result.error.code
+        });
+      }
+      if (result.value.op !== "identity") {
+        throw Object.assign(
+          new Error("EPROTO: identity syscall returned the wrong result"),
+          { code: "EPROTO" }
+        );
+      }
+      return result.value.ppid;
+    },
     title: "node",
     exitCode: void 0,
     cwd: () => request.cwd,
+    kill: (pid, signal = "SIGTERM") => {
+      if (!Number.isSafeInteger(pid)) {
+        throw Object.assign(
+          new TypeError('The "pid" argument must be a safe integer'),
+          { code: "ERR_INVALID_ARG_TYPE" }
+        );
+      }
+      if (signal !== "SIGHUP" && signal !== "SIGINT" && signal !== "SIGQUIT" && signal !== "SIGTERM" && signal !== "SIGWINCH" && signal !== "SIGKILL") {
+        throw Object.assign(
+          new TypeError(`Unknown signal: ${String(signal)}`),
+          { code: "ERR_UNKNOWN_SIGNAL" }
+        );
+      }
+      if (!executionState.kernelSyscalls) {
+        throw Object.assign(
+          new Error("ENOSYS: TraceKernel process controls are unavailable"),
+          { code: "ENOSYS" }
+        );
+      }
+      const result = executionState.kernelSyscalls.dispatchSync({
+        op: "kill",
+        pid,
+        signal
+      });
+      if (result.ok === false) {
+        throw Object.assign(new Error(result.error.message), {
+          code: result.error.code
+        });
+      }
+      return true;
+    },
     nextTick: (callback, ...args) => {
       globalThis.queueMicrotask(() => callback(...args));
     },
@@ -7642,6 +10311,12 @@ async function runBrowserJavaScriptProjectRequest(request, options, executionSta
   const eventsApi = createEventsApi();
   const utilApi = createUtilApi();
   const streamApi = createStreamApi();
+  const childProcessApi = createChildProcessApi(
+    executionState,
+    eventLoopApi,
+    request
+  );
+  const traceKernelApi = createTraceKernelApi(executionState);
   const cryptoApi = createCryptoApi();
   const timersPromisesApi = createTimersPromisesApi(eventLoopApi);
   const syncTextModule = (path, bytes) => {
@@ -7761,6 +10436,39 @@ async function runBrowserJavaScriptProjectRequest(request, options, executionSta
       isSymbolicLink: () => false
     };
   };
+  const statForTraceKernelPath = (stat) => {
+    const directory = stat.kind === "directory";
+    const symbolicLink = stat.kind === "symlink";
+    const modeType = directory ? 16384 : symbolicLink ? 40960 : 32768;
+    const mode = (stat.mode & 61440) === 0 ? modeType | stat.mode : stat.mode;
+    return {
+      atimeMs: stat.modifiedAt,
+      birthtimeMs: stat.createdAt,
+      blksize: 4096,
+      blocks: Math.ceil(stat.size / 512),
+      ctimeMs: stat.changedAt,
+      dev: 1,
+      gid: 0,
+      ino: stat.inode,
+      mode,
+      mtimeMs: stat.modifiedAt,
+      nlink: stat.nlink,
+      rdev: 0,
+      size: stat.size,
+      uid: 0,
+      atime: new Date(stat.modifiedAt),
+      birthtime: new Date(stat.createdAt),
+      ctime: new Date(stat.changedAt),
+      mtime: new Date(stat.modifiedAt),
+      isBlockDevice: () => false,
+      isCharacterDevice: () => false,
+      isFIFO: () => false,
+      isFile: () => !directory && !symbolicLink,
+      isDirectory: () => directory,
+      isSocket: () => false,
+      isSymbolicLink: () => symbolicLink
+    };
+  };
   const statForKernelTarget = (path, options2) => {
     const statTarget = runtimeStatTarget(path, kernelInfo, kernelDevices, procSnapshot);
     if (!statTarget || statTarget.kind === "workspace") return null;
@@ -7862,6 +10570,7 @@ async function runBrowserJavaScriptProjectRequest(request, options, executionSta
   };
   const notifyFsWatchers = (eventType, path) => {
     for (const watcher of fsWatchers) {
+      if (watcher.kernelFd !== void 0) continue;
       const filename = watchedFilename(watcher, path);
       if (filename !== null) queueMicrotask(() => emitFsWatch(watcher, eventType, filename));
     }
@@ -8185,6 +10894,15 @@ async function runBrowserJavaScriptProjectRequest(request, options, executionSta
     }
     const device = openTarget?.kind === "device" ? openTarget.device : null;
     const autoClose = typeof options2 === "object" && options2?.autoClose === false ? false : true;
+    if (executionState.kernelFileSystem && optionFd === null && (openTarget === null || openTarget?.kind === "workspace")) {
+      const openedFd = fsApi.openSync(path, flags);
+      return createWritableStream(null, {
+        ...typeof options2 === "object" && options2 ? options2 : {},
+        fd: openedFd,
+        flags,
+        autoClose
+      });
+    }
     const rawNormalized = device || optionFd !== null ? null : assertSafeWorkspaceFilePath(path, cwdPath, workspacePathContext);
     const normalized = rawNormalized === null ? null : resolveStoredSymlinkPath(rawNormalized);
     if (normalized !== null) {
@@ -8386,6 +11104,10 @@ async function runBrowserJavaScriptProjectRequest(request, options, executionSta
       throwRuntimeRemoveTargetError(removeTarget, message);
     }
     const normalized = resolveWorkspaceEntryPath(path, false);
+    if (executionState.kernelFileSystem) {
+      executionState.kernelFileSystem.unlink(normalized);
+      return;
+    }
     assertReadonlyFilePath(normalized, "delete");
     if (symlinkStore.delete(normalized)) {
       deleteEntryMetadata(normalized);
@@ -8418,6 +11140,7 @@ async function runBrowserJavaScriptProjectRequest(request, options, executionSta
     O_EXCL: 128,
     O_TRUNC: 512,
     O_APPEND: 1024,
+    O_CLOEXEC: 524288,
     S_IFMT: 61440,
     S_IFREG: 32768,
     S_IFDIR: 16384,
@@ -8437,6 +11160,14 @@ async function runBrowserJavaScriptProjectRequest(request, options, executionSta
     }
     if (readTarget?.kind === "error") return false;
     const normalized = resolveWorkspaceEntryPath(path);
+    if (executionState.kernelFileSystem) {
+      try {
+        executionState.kernelFileSystem.stat(normalized);
+        return true;
+      } catch {
+        return false;
+      }
+    }
     const prefix = normalized ? `${normalized}/` : "";
     return fileStore.has(normalized) || directoryStore.has(normalized) || Array.from(fileStore.keys()).some((filePath) => filePath.startsWith(prefix));
   };
@@ -8486,10 +11217,17 @@ async function runBrowserJavaScriptProjectRequest(request, options, executionSta
       throw Object.assign(new Error(`${code}: ${reason}, access '${path}'`), { code });
     }
     const normalized = resolveWorkspaceEntryPath(path);
-    if (workspaceFileAncestor(normalized) !== null) {
-      throw Object.assign(new Error(`ENOTDIR: not a directory, access '${path}'`), { code: "ENOTDIR" });
+    let stats;
+    if (executionState.kernelFileSystem) {
+      stats = statForTraceKernelPath(
+        executionState.kernelFileSystem.stat(normalized)
+      );
+    } else {
+      if (workspaceFileAncestor(normalized) !== null) {
+        throw Object.assign(new Error(`ENOTDIR: not a directory, access '${path}'`), { code: "ENOTDIR" });
+      }
+      stats = statForNormalizedPath(normalized);
     }
-    const stats = statForNormalizedPath(normalized);
     if (!stats) {
       throw Object.assign(new Error(`ENOENT: no such file or directory, access '${path}'`), { code: "ENOENT" });
     }
@@ -8531,6 +11269,9 @@ async function runBrowserJavaScriptProjectRequest(request, options, executionSta
       throwRuntimeMetadataTargetError(metadataTarget, message);
     }
     const normalized = normalizeWorkspaceEntryPath(path, cwdPath, true, workspacePathContext);
+    if (executionState.kernelFileSystem) {
+      return executionState.kernelFileSystem.realpath(normalized);
+    }
     if (workspaceFileAncestor(normalized) !== null) {
       throw Object.assign(new Error(`ENOTDIR: not a directory, metadata '${path}'`), { code: "ENOTDIR" });
     }
@@ -8558,6 +11299,23 @@ async function runBrowserJavaScriptProjectRequest(request, options, executionSta
     [1, stdioDescriptor("/dev/stdout", true)],
     [2, stdioDescriptor("/dev/stderr", true)]
   ]);
+  for (const inheritedFd of request.process?.descriptors ?? []) {
+    const fd2 = Math.floor(Number(inheritedFd));
+    if (!Number.isSafeInteger(fd2) || fd2 < 3 || fileDescriptors.has(fd2)) {
+      continue;
+    }
+    fileDescriptors.set(fd2, {
+      kind: "kernel",
+      kernelFd: fd2,
+      offset: 0,
+      // The descriptor table remains authoritative for access mode and
+      // operation support. The compatibility map must not guess a narrower
+      // capability and reject an inherited pipe/socket/file before syscall.
+      readable: true,
+      writable: true,
+      append: false
+    });
+  }
   let nextFd = 3;
   const workspaceFileDescriptorRecords = () => [...fileDescriptors.values()].filter((entry) => entry.kind === "file");
   const detachOpenFileDescriptorsForPath = (path) => {
@@ -8604,6 +11362,12 @@ async function runBrowserJavaScriptProjectRequest(request, options, executionSta
   };
   const descriptorMetadataPath = (fd2, operation) => {
     const entry = fileDescriptor(fd2);
+    if (entry.kind === "kernel") {
+      throw Object.assign(
+        new Error(`ENOSYS: ${operation} is not yet available for TraceKernel descriptors`),
+        { code: "ENOSYS" }
+      );
+    }
     if (entry.kind === "file" && !entry.path) return null;
     const path = entry.kind === "device" ? entry.device ?? "/dev/stdin" : entry.path ?? "";
     const metadataTarget = runtimeKernelMetadataTarget(path, kernelDevices);
@@ -8615,6 +11379,26 @@ async function runBrowserJavaScriptProjectRequest(request, options, executionSta
     return path;
   };
   const descriptorBytes = (entry) => {
+    if (entry.kind === "kernel") {
+      const kernelFs = executionState.kernelFileSystem;
+      const kernelFd = entry.kernelFd;
+      const size = kernelFs.fstat(kernelFd).size;
+      const chunks = [];
+      let offset = 0;
+      while (offset < size) {
+        const chunk = kernelFs.read(kernelFd, Math.min(256 * 1024, size - offset), offset);
+        if (chunk.byteLength === 0) break;
+        chunks.push(chunk);
+        offset += chunk.byteLength;
+      }
+      const bytes = new Uint8Array(offset);
+      let cursor = 0;
+      for (const chunk of chunks) {
+        bytes.set(chunk, cursor);
+        cursor += chunk.byteLength;
+      }
+      return bytes;
+    }
     if (entry.kind === "device") return utf8Bytes(readDevice(entry.device ?? "/dev/stdin"));
     if (entry.kind === "proc") return utf8Bytes(browserProcFileContents(procSnapshot, entry.path ?? "", kernelInfo));
     if (entry.kind === "directory") {
@@ -8626,6 +11410,23 @@ async function runBrowserJavaScriptProjectRequest(request, options, executionSta
   const readDescriptorFileBytes = (fd2) => {
     const entry = fileDescriptor(fd2);
     if (!entry.readable) throw Object.assign(new Error("EBADF: bad file descriptor, read"), { code: "EBADF" });
+    if (entry.kind === "kernel") {
+      const chunks = [];
+      let length = 0;
+      while (true) {
+        const chunk = executionState.kernelFileSystem.read(entry.kernelFd, 256 * 1024);
+        if (chunk.byteLength === 0) break;
+        chunks.push(chunk);
+        length += chunk.byteLength;
+      }
+      const bytes2 = new Uint8Array(length);
+      let offset = 0;
+      for (const chunk of chunks) {
+        bytes2.set(chunk, offset);
+        offset += chunk.byteLength;
+      }
+      return bytes2;
+    }
     if (entry.kind === "device") return readDeviceBytes(entry.device ?? "/dev/stdin");
     const source = descriptorBytes(entry);
     const start = entry.offset;
@@ -8635,6 +11436,14 @@ async function runBrowserJavaScriptProjectRequest(request, options, executionSta
   };
   const writeDescriptorBytes = (entry, bytes, position) => {
     if (!entry.writable) throw Object.assign(new Error("EBADF: bad file descriptor, write"), { code: "EBADF" });
+    if (entry.kind === "kernel") {
+      executionState.kernelFileSystem.write(
+        entry.kernelFd,
+        bytes,
+        typeof position === "number" ? Math.max(0, position) : void 0
+      );
+      return;
+    }
     if (entry.kind === "device") {
       writeDevice(entry.device ?? "/dev/stdout", textFromBytes(bytes));
       return;
@@ -8668,6 +11477,13 @@ async function runBrowserJavaScriptProjectRequest(request, options, executionSta
     setFileBytes(path, next);
   };
   const truncateDescriptorBytes = (entry, length = 0) => {
+    if (entry.kind === "kernel") {
+      executionState.kernelFileSystem.ftruncate(
+        entry.kernelFd,
+        Math.max(0, Number(length) || 0)
+      );
+      return;
+    }
     if (entry.kind !== "file") {
       if (entry.kind === "device") throw Object.assign(new Error("EINVAL: invalid argument, ftruncate"), { code: "EINVAL" });
       throw Object.assign(new Error(`EROFS: read-only file system, ftruncate '${entry.path ?? ""}'`), { code: "EROFS" });
@@ -8681,12 +11497,23 @@ async function runBrowserJavaScriptProjectRequest(request, options, executionSta
     if (entry.offset > size) entry.offset = size;
   };
   const realpathForEntry = (path) => {
+    const readTarget = runtimeReadTarget(path, kernelDevices, procSnapshot);
+    if (executionState.kernelFileSystem && readTarget?.kind === "workspace") {
+      const normalized2 = normalizeWorkspaceEntryPath(
+        path,
+        cwdPath,
+        true,
+        workspacePathContext
+      );
+      return executionState.kernelFileSystem.realpath(normalized2);
+    }
     const accessTarget = runtimeAccessTarget(path, 0, kernelDevices, procSnapshot);
-    if (accessTarget?.kind === "allowed") return accessTarget.path;
+    if (accessTarget?.kind === "allowed" && readTarget?.kind !== "workspace") {
+      return accessTarget.path;
+    }
     if (accessTarget?.kind === "denied") {
       throw Object.assign(new Error(`ENOENT: no such file or directory, realpath '${path}'`), { code: "ENOENT" });
     }
-    const readTarget = runtimeReadTarget(path, kernelDevices, procSnapshot);
     if (readTarget?.kind === "device-file" || readTarget?.kind === "proc-file" || readTarget?.kind === "proc-directory") {
       return readTarget.path;
     }
@@ -8924,6 +11751,63 @@ async function runBrowserJavaScriptProjectRequest(request, options, executionSta
         closed: false,
         listeners
       };
+      if (executionState.kernelSyscalls && executionState.kernelNetwork) {
+        const watched = executionState.kernelSyscalls.dispatchSync({
+          op: "watch",
+          path: normalized,
+          options: {
+            recursive: watcher.recursive
+          }
+        });
+        if (watched.ok === false || watched.value.op !== "watch") {
+          const failure = watched.ok === true ? { code: "EPROTO", message: "EPROTO: invalid watch syscall response" } : watched.error;
+          throw Object.assign(new Error(failure.message), {
+            code: failure.code
+          });
+        }
+        watcher.kernelFd = watched.value.fd;
+        void eventLoopApi.track((async () => {
+          try {
+            while (!watcher.closed) {
+              const read = await dispatchBrowserNetworkSyscall(
+                executionState.kernelNetwork,
+                {
+                  op: "read",
+                  fd: watcher.kernelFd,
+                  maxBytes: 16 * 1024 + 9
+                }
+              );
+              if (read.bytes.byteLength === 0) break;
+              const event = decodeTraceKernelWatchEvent(read.bytes);
+              if (event.eventType === "overflow") {
+                const error = Object.assign(
+                  new Error("ENOSPC: TraceKernel filesystem watch queue overflow"),
+                  { code: "ENOSPC" }
+                );
+                for (const errorListener of listeners.get("error") ?? []) {
+                  errorListener(error);
+                }
+                continue;
+              }
+              const changedPath = workspaceRelativeFromAbsolutePath(
+                event.path,
+                workspacePathContext
+              ) ?? event.path;
+              const filename = watchedFilename(watcher, changedPath);
+              if (filename !== null) {
+                emitFsWatch(watcher, event.eventType, filename);
+                notifyWatchFileWatchers(changedPath);
+              }
+            }
+          } catch (error) {
+            if (!watcher.closed) {
+              const errorListeners = listeners.get("error") ?? [];
+              if (errorListeners.length === 0) throw error;
+              for (const errorListener of errorListeners) errorListener(error);
+            }
+          }
+        })());
+      }
       const initialListener = typeof optionsOrListener === "function" ? optionsOrListener : listener;
       if (initialListener) on("change", initialListener);
       fsWatchers.add(watcher);
@@ -8942,8 +11826,15 @@ async function runBrowserJavaScriptProjectRequest(request, options, executionSta
           return api;
         },
         close: () => {
+          if (watcher.closed) return;
           watcher.closed = true;
           fsWatchers.delete(watcher);
+          if (watcher.kernelFd !== void 0 && executionState.kernelSyscalls) {
+            executionState.kernelSyscalls.dispatchSync({
+              op: "close",
+              fd: watcher.kernelFd
+            });
+          }
           for (const closeListener of listeners.get("close") ?? []) closeListener();
         }
       };
@@ -9020,6 +11911,26 @@ async function runBrowserJavaScriptProjectRequest(request, options, executionSta
       }
       const rawNormalized = assertSafeWorkspaceFilePath(path, cwdPath, workspacePathContext);
       const normalized = resolveStoredSymlinkPath(rawNormalized);
+      if (executionState.kernelFileSystem) {
+        const kernelFd = executionState.kernelFileSystem.open(normalized, {
+          access: parsed.readable && parsed.writable ? "read-write" : parsed.writable ? "write" : "read",
+          ...parsed.create ? { create: true } : {},
+          ...parsed.exclusive ? { exclusive: true } : {},
+          ...parsed.truncate ? { truncate: true } : {},
+          ...parsed.append ? { append: true } : {}
+        });
+        executionState.kernelFileSystem.setCloseOnExec(kernelFd, true);
+        fileDescriptors.set(fd2, {
+          kind: "kernel",
+          kernelFd,
+          path: normalized,
+          offset: 0,
+          readable: parsed.readable,
+          writable: parsed.writable,
+          append: parsed.append
+        });
+        return fd2;
+      }
       if (parsed.exclusive && (fileStore.has(rawNormalized) || symlinkStore.has(rawNormalized) || directoryStore.has(rawNormalized))) {
         throw Object.assign(new Error(`EEXIST: file already exists, open '${path}'`), { code: "EEXIST" });
       }
@@ -9072,9 +11983,14 @@ async function runBrowserJavaScriptProjectRequest(request, options, executionSta
     },
     closeSync: (fd2) => {
       if (Number(fd2) < 3) return void 0;
-      if (!fileDescriptors.delete(Number(fd2))) {
+      const entry = fileDescriptors.get(Number(fd2));
+      if (!entry) {
         throw Object.assign(new Error(`EBADF: bad file descriptor, close`), { code: "EBADF" });
       }
+      if (entry.kind === "kernel") {
+        executionState.kernelFileSystem.closeDescriptor(entry.kernelFd);
+      }
+      fileDescriptors.delete(Number(fd2));
       return void 0;
     },
     close: (fd2, callback) => {
@@ -9088,6 +12004,16 @@ async function runBrowserJavaScriptProjectRequest(request, options, executionSta
     readSync: (fd2, buffer, offset = 0, length = buffer.byteLength - offset, position) => {
       const entry = fileDescriptor(fd2);
       if (!entry.readable) throw Object.assign(new Error("EBADF: bad file descriptor, read"), { code: "EBADF" });
+      if (entry.kind === "kernel") {
+        const count2 = Math.max(0, Math.min(length, buffer.byteLength - offset));
+        const bytes = executionState.kernelFileSystem.read(
+          entry.kernelFd,
+          count2,
+          typeof position === "number" ? Math.max(0, position) : void 0
+        );
+        buffer.set(bytes, offset);
+        return bytes.byteLength;
+      }
       if (entry.kind === "device") {
         const bytes = readDeviceBytes(entry.device ?? "/dev/stdin", Math.max(0, Math.min(length, buffer.byteLength - offset)));
         buffer.set(bytes, offset);
@@ -9204,7 +12130,11 @@ async function runBrowserJavaScriptProjectRequest(request, options, executionSta
     fstatSync: (fd2, options2) => {
       const entry = fileDescriptor(fd2);
       let stats;
-      if (entry.kind === "device") {
+      if (entry.kind === "kernel") {
+        stats = statForTraceKernelPath(
+          executionState.kernelFileSystem.fstat(entry.kernelFd)
+        );
+      } else if (entry.kind === "device") {
         const statTarget = runtimeKernelStatTarget(entry.device ?? "/dev/stdin", kernelInfo, kernelDevices);
         stats = statTarget.kind === "stat" ? statForKernelPath(statTarget.path, statTarget.stat) : missingFileStat();
       } else if (entry.kind === "proc") {
@@ -9325,6 +12255,17 @@ async function runBrowserJavaScriptProjectRequest(request, options, executionSta
       const optionFd = typeof options2 === "object" && typeof options2?.fd === "number" ? options2.fd : null;
       const readTarget = optionFd === null ? runtimeFileReadTarget(path, kernelDevices, procSnapshot) : null;
       const requestedEncoding = typeof options2 === "string" ? options2 : options2?.encoding;
+      if (executionState.kernelFileSystem && optionFd === null && (readTarget === null || readTarget?.kind === "workspace")) {
+        const flags = typeof options2 === "object" && options2?.flags ? options2.flags : "r";
+        const autoClose2 = typeof options2 === "object" && options2?.autoClose === false ? false : true;
+        const openedFd = fsApi.openSync(path, flags);
+        return fsApi.createReadStream(null, {
+          ...typeof options2 === "object" && options2 ? options2 : {},
+          fd: openedFd,
+          flags,
+          autoClose: autoClose2
+        });
+      }
       let sourceBytes;
       if (readTarget?.kind === "device-file") sourceBytes = utf8Bytes(readDevice(readTarget.path));
       else if (readTarget?.kind === "proc-file") sourceBytes = utf8Bytes(browserProcFileContents(procSnapshot, readTarget.path, kernelInfo));
@@ -9387,6 +12328,10 @@ async function runBrowserJavaScriptProjectRequest(request, options, executionSta
         throwRuntimeReadTargetError(readTarget, runtimeKernelFileReadFsErrorMessage(String(path), readTarget));
       }
       const normalized = resolveWorkspaceEntryPath(path);
+      if (executionState.kernelFileSystem) {
+        const fileBytes2 = executionState.kernelFileSystem.readFile(normalized);
+        return typeof requestedEncoding === "string" ? BrowserBuffer.from(fileBytes2).toString(requestedEncoding) : BrowserBuffer.from(fileBytes2);
+      }
       if (workspaceFileAncestor(normalized) !== null) {
         throw Object.assign(new Error(`ENOTDIR: not a directory, open '${path}'`), { code: "ENOTDIR" });
       }
@@ -9425,6 +12370,15 @@ async function runBrowserJavaScriptProjectRequest(request, options, executionSta
         return;
       }
       const normalized = resolveWorkspaceEntryPath(path);
+      const structuredOptions = typeof options2 === "object" && options2 !== null ? options2 : void 0;
+      const usesDefaultReplaceSemantics = (structuredOptions?.flag === void 0 || structuredOptions.flag === "w") && structuredOptions?.mode === void 0;
+      if (executionState.kernelFileSystem && usesDefaultReplaceSemantics) {
+        executionState.kernelFileSystem.writeFile(
+          normalized,
+          bytesFromFsWriteValue(value, options2)
+        );
+        return;
+      }
       assertWorkspaceFileWritePath(normalized, path, "write", "open");
       setFileBytes(normalized, bytesFromFsWriteValue(value, options2));
     },
@@ -9519,6 +12473,10 @@ async function runBrowserJavaScriptProjectRequest(request, options, executionSta
       }
       const normalizedSource = assertSafeWorkspaceFilePath(existingPath, cwdPath, workspacePathContext);
       const normalizedDestination = assertSafeWorkspaceFilePath(newPath, cwdPath, workspacePathContext);
+      if (executionState.kernelFileSystem) {
+        executionState.kernelFileSystem.link(normalizedSource, normalizedDestination);
+        return;
+      }
       const bytes = fileStore.get(normalizedSource);
       if (!bytes) {
         const sourceIsDirectory = directoryStore.has(normalizedSource) || Array.from(fileStore.keys()).some((filePath) => filePath.startsWith(`${normalizedSource}/`));
@@ -9559,6 +12517,10 @@ async function runBrowserJavaScriptProjectRequest(request, options, executionSta
         throw Object.assign(new Error(`ENOENT: no such file or directory, symlink '${targetText}' -> '${linkPath}'`), { code: "ENOENT" });
       }
       const normalizedLink = resolveWorkspaceEntryPath(linkPath, false);
+      if (executionState.kernelFileSystem) {
+        executionState.kernelFileSystem.symlink(targetText, normalizedLink);
+        return;
+      }
       assertReadonlyFilePath(normalizedLink, "symlink");
       assertWorkspaceParentDirectoryPath(normalizedLink, linkPath, "symlink");
       if (fileStore.has(normalizedLink) || symlinkStore.has(normalizedLink) || directoryStore.has(normalizedLink)) {
@@ -9585,6 +12547,11 @@ async function runBrowserJavaScriptProjectRequest(request, options, executionSta
         throw Object.assign(new Error(`EINVAL: invalid argument, readlink '${path}'`), { code: "EINVAL" });
       }
       const normalized = resolveWorkspaceEntryPath(path, false);
+      if (executionState.kernelFileSystem) {
+        const target2 = executionState.kernelFileSystem.readlink(normalized);
+        const encoding2 = typeof options2 === "string" ? options2 : options2?.encoding;
+        return encoding2 === null || encoding2 === "buffer" ? BrowserBuffer.from(target2) : BrowserBuffer.from(target2).toString(encoding2 ?? "utf8");
+      }
       const target = symlinkStore.get(normalized);
       if (target === void 0) {
         const exists = fileStore.has(normalized) || directoryStore.has(normalized);
@@ -9627,6 +12594,13 @@ async function runBrowserJavaScriptProjectRequest(request, options, executionSta
       }
       const normalizedOldPath = resolveWorkspaceEntryPath(oldPath, false);
       const normalizedNewPath = resolveWorkspaceEntryPath(newPath, false);
+      if (executionState.kernelFileSystem) {
+        executionState.kernelFileSystem.rename(
+          normalizedOldPath,
+          normalizedNewPath
+        );
+        return;
+      }
       if (normalizedOldPath === normalizedNewPath) {
         const prefix = normalizedOldPath ? `${normalizedOldPath}/` : "";
         if (fileStore.has(normalizedOldPath) || symlinkStore.has(normalizedOldPath) || directoryStore.has(normalizedOldPath) || Array.from(fileStore.keys()).some((filePath) => filePath.startsWith(prefix)) || Array.from(directoryStore).some((directoryPath) => directoryPath.startsWith(prefix))) {
@@ -9784,6 +12758,35 @@ async function runBrowserJavaScriptProjectRequest(request, options, executionSta
           throwRuntimeRemoveTargetError(removeTarget, runtimeKernelMutationFsErrorMessage(String(path), removeTarget, "rm"));
         }
         const normalized = resolveWorkspaceEntryPath(path, false);
+        if (executionState.kernelFileSystem) {
+          const removeEntry = (entryPath, recursive) => {
+            const stat = executionState.kernelFileSystem.stat(entryPath);
+            if (stat.kind === "file") {
+              executionState.kernelFileSystem.unlink(entryPath);
+              return;
+            }
+            if (!recursive) {
+              throw Object.assign(
+                new Error(`ERR_FS_EISDIR: path is a directory, rm '${path}'`),
+                { code: "ERR_FS_EISDIR" }
+              );
+            }
+            for (const entry of executionState.kernelFileSystem.readdir(entryPath)) {
+              removeEntry(
+                entryPath ? `${entryPath.replace(/\/+$/, "")}/${entry.name}` : entry.name,
+                true
+              );
+            }
+            executionState.kernelFileSystem.rmdir(entryPath);
+          };
+          try {
+            removeEntry(normalized, options2?.recursive === true);
+          } catch (error) {
+            if (options2?.force && error.code === "ENOENT") return;
+            throw error;
+          }
+          return;
+        }
         if (fileStore.has(normalized) || symlinkStore.has(normalized)) {
           deleteFile(path);
           return;
@@ -9883,6 +12886,36 @@ async function runBrowserJavaScriptProjectRequest(request, options, executionSta
         throwRuntimeDirectoryTargetError(directoryTarget, directoryTarget.reason === "not-directory" ? `ENOTDIR: not a directory, scandir '${path}'` : `ENOENT: no such file or directory, scandir '${path}'`);
       }
       const normalized = resolveWorkspaceEntryPath(path);
+      if (executionState.kernelFileSystem) {
+        const recursive2 = typeof options2 === "object" && options2?.recursive === true;
+        const entries2 = [];
+        const collectEntries = (directoryPath, relativePrefix) => {
+          for (const entry of executionState.kernelFileSystem.readdir(directoryPath)) {
+            const relativePath = relativePrefix ? `${relativePrefix}/${entry.name}` : entry.name;
+            entries2.push({ relativePath, kind: entry.kind });
+            if (recursive2 && entry.kind === "directory") {
+              collectEntries(
+                directoryPath ? `${directoryPath.replace(/\/+$/, "")}/${entry.name}` : entry.name,
+                relativePath
+              );
+            }
+          }
+        };
+        collectEntries(normalized, "");
+        entries2.sort((left, right) => left.relativePath.localeCompare(right.relativePath));
+        if (!withFileTypes) return entries2.map((entry) => entry.relativePath);
+        return entries2.map((entry) => {
+          const parts = entry.relativePath.split("/");
+          const name = parts.pop() ?? entry.relativePath;
+          const relativeParent = parts.join("/");
+          const parentPath = relativeParent ? normalized ? `${normalized}/${relativeParent}` : relativeParent : normalized;
+          return makeDirent(
+            name,
+            entry.kind,
+            workspaceFilename(parentPath, workspaceRoot)
+          );
+        });
+      }
       if (workspaceFileAncestor(normalized) !== null || fileStore.has(normalized)) {
         throw Object.assign(new Error(`ENOTDIR: not a directory, scandir '${path}'`), { code: "ENOTDIR" });
       }
@@ -10027,11 +13060,24 @@ async function runBrowserJavaScriptProjectRequest(request, options, executionSta
       let stats = kernelStats;
       if (stats === null) {
         const normalized = normalizeWorkspaceEntryPath(path, cwdPath, true, workspacePathContext);
-        if (workspaceFileAncestor(normalized) !== null) {
-          if (options2?.throwIfNoEntry === false) return void 0;
-          throw Object.assign(new Error(`ENOTDIR: not a directory, stat '${path}'`), { code: "ENOTDIR" });
+        if (executionState.kernelFileSystem) {
+          try {
+            stats = statForTraceKernelPath(
+              executionState.kernelFileSystem.stat(normalized)
+            );
+          } catch (error) {
+            if (options2?.throwIfNoEntry === false && error.code === "ENOENT") {
+              return void 0;
+            }
+            throw error;
+          }
+        } else {
+          if (workspaceFileAncestor(normalized) !== null) {
+            if (options2?.throwIfNoEntry === false) return void 0;
+            throw Object.assign(new Error(`ENOTDIR: not a directory, stat '${path}'`), { code: "ENOTDIR" });
+          }
+          stats = statForNormalizedPath(normalized);
         }
-        stats = statForNormalizedPath(normalized);
       }
       if (!stats) {
         if (options2?.throwIfNoEntry === false) return void 0;
@@ -10045,11 +13091,24 @@ async function runBrowserJavaScriptProjectRequest(request, options, executionSta
       let stats = kernelStats;
       if (stats === null) {
         const normalized = resolveWorkspaceEntryPath(path, false);
-        if (workspaceFileAncestor(normalized) !== null) {
-          if (options2?.throwIfNoEntry === false) return void 0;
-          throw Object.assign(new Error(`ENOTDIR: not a directory, lstat '${path}'`), { code: "ENOTDIR" });
+        if (executionState.kernelFileSystem) {
+          try {
+            stats = statForTraceKernelPath(
+              executionState.kernelFileSystem.lstat(normalized)
+            );
+          } catch (error) {
+            if (options2?.throwIfNoEntry === false && error.code === "ENOENT") {
+              return void 0;
+            }
+            throw error;
+          }
+        } else {
+          if (workspaceFileAncestor(normalized) !== null) {
+            if (options2?.throwIfNoEntry === false) return void 0;
+            throw Object.assign(new Error(`ENOTDIR: not a directory, lstat '${path}'`), { code: "ENOTDIR" });
+          }
+          stats = statForNormalizedPath(normalized, false);
         }
-        stats = statForNormalizedPath(normalized, false);
       }
       if (!stats) {
         if (options2?.throwIfNoEntry === false) return void 0;
@@ -10135,6 +13194,34 @@ async function runBrowserJavaScriptProjectRequest(request, options, executionSta
       const rawPath = workspacePathInputToString(path).replace(/\\/g, "/");
       const normalized = normalizeWorkspaceEntryPath(path, cwdPath, true, workspacePathContext);
       if (!normalized) return void 0;
+      const recursive = typeof options2 === "object" && options2?.recursive === true;
+      const mode = typeof options2 === "number" ? options2 : typeof options2?.mode === "number" ? options2.mode : void 0;
+      if (executionState.kernelFileSystem) {
+        let firstCreated2;
+        if (recursive) {
+          const parts2 = normalized.split("/");
+          for (let index = 1; index <= parts2.length; index += 1) {
+            const candidate = parts2.slice(0, index).join("/");
+            try {
+              executionState.kernelFileSystem.stat(candidate);
+            } catch (error) {
+              if (error.code !== "ENOENT") throw error;
+              firstCreated2 = candidate;
+              break;
+            }
+          }
+        }
+        executionState.kernelFileSystem.mkdir(normalized, {
+          recursive,
+          ...mode !== void 0 ? { mode } : {}
+        });
+        if (!recursive || firstCreated2 === void 0) return void 0;
+        if (rawPath.startsWith("/")) {
+          return workspaceFilename(firstCreated2, workspaceRoot);
+        }
+        const relativeFirstCreated2 = relativeWorkspacePath(cwdPath, firstCreated2);
+        return rawPath.startsWith("./") && !relativeFirstCreated2.startsWith(".") ? `./${relativeFirstCreated2}` : relativeFirstCreated2;
+      }
       assertReadonlyFilePath(normalized, "mkdir");
       const parent = dirname(normalized);
       const parentPath = parent === "" ? "" : parent;
@@ -10149,15 +13236,15 @@ async function runBrowserJavaScriptProjectRequest(request, options, executionSta
         throw Object.assign(new Error(`EEXIST: file already exists, mkdir '${path}'`), { code: "EEXIST" });
       }
       if (directoryStore.has(normalized)) {
-        if (!options2?.recursive) {
+        if (!recursive) {
           throw Object.assign(new Error(`EEXIST: file already exists, mkdir '${path}'`), { code: "EEXIST" });
         }
         return void 0;
       }
-      if (!options2?.recursive && parentPath && !directoryStore.has(parentPath)) {
+      if (!recursive && parentPath && !directoryStore.has(parentPath)) {
         throw Object.assign(new Error(`ENOENT: no such file or directory, mkdir '${path}'`), { code: "ENOENT" });
       }
-      const start = options2?.recursive ? 1 : parts.length;
+      const start = recursive ? 1 : parts.length;
       let firstCreated;
       for (let index = start; index <= parts.length; index += 1) {
         const directoryPath = parts.slice(0, index).join("/");
@@ -10170,7 +13257,7 @@ async function runBrowserJavaScriptProjectRequest(request, options, executionSta
           notifyDirectoryMutation(directoryPath);
         }
       }
-      if (!options2?.recursive || firstCreated === void 0) return void 0;
+      if (!recursive || firstCreated === void 0) return void 0;
       if (rawPath.startsWith("/")) return workspaceFilename(firstCreated, workspaceRoot);
       const relativeFirstCreated = relativeWorkspacePath(cwdPath, firstCreated);
       return rawPath.startsWith("./") && !relativeFirstCreated.startsWith(".") ? `./${relativeFirstCreated}` : relativeFirstCreated;
@@ -10214,6 +13301,10 @@ async function runBrowserJavaScriptProjectRequest(request, options, executionSta
         throwRuntimeRemoveTargetError(removeTarget, runtimeKernelMutationFsErrorMessage(String(path), removeTarget, "rmdir"));
       }
       const normalized = normalizeWorkspaceEntryPath(path, cwdPath, true, workspacePathContext);
+      if (executionState.kernelFileSystem) {
+        executionState.kernelFileSystem.rmdir(normalized);
+        return;
+      }
       assertWorkspaceParentDirectoryPath(normalized, path, "rmdir");
       if (fileStore.has(normalized)) {
         throw Object.assign(new Error(`ENOTDIR: not a directory, rmdir '${path}'`), { code: "ENOTDIR" });
@@ -10259,12 +13350,7 @@ async function runBrowserJavaScriptProjectRequest(request, options, executionSta
       };
       const readFileFromHandle = (encoding) => {
         assertFileHandleOpen();
-        const entry = fileDescriptor(fd2);
-        if (!entry.readable) throw Object.assign(new Error("EBADF: bad file descriptor, readFile"), { code: "EBADF" });
-        const source = descriptorBytes(entry);
-        const start = entry.offset;
-        const bytes = BrowserBuffer.from(source.slice(start));
-        entry.offset = source.byteLength;
+        const bytes = BrowserBuffer.from(readDescriptorFileBytes(fd2));
         const requestedEncoding = typeof encoding === "string" ? encoding : encoding?.encoding;
         return typeof requestedEncoding === "string" ? bytes.toString(requestedEncoding) : bytes;
       };
@@ -10483,6 +13569,10 @@ async function runBrowserJavaScriptProjectRequest(request, options, executionSta
   fsApi.realpathSync.native = fsApi.realpathSync;
   Object.assign(fsApi, { promises: fsPromisesApi });
   const zlibApi = createZlibApi();
+  const netApi = createNetApi(
+    executionState.kernelNetwork,
+    request.signal
+  );
   const httpApi = createHttpApi(request.kernelHttp, request.signal);
   const restoreHttpGlobals = installBrowserHttpGlobalLockdown(
     httpApi,
@@ -10494,6 +13584,7 @@ async function runBrowserJavaScriptProjectRequest(request, options, executionSta
     if (hostGlobalsRestored) return;
     hostGlobalsRestored = true;
     eventLoopApi.clearAll();
+    netApi.closeAll();
     restoreTimerGlobals();
     restoreHttpGlobals();
   };
@@ -10515,6 +13606,8 @@ async function runBrowserJavaScriptProjectRequest(request, options, executionSta
     ["node:url", urlApi],
     ["buffer", { Buffer: BrowserBuffer }],
     ["node:buffer", { Buffer: BrowserBuffer }],
+    ["net", netApi.module],
+    ["node:net", netApi.module],
     ["http", httpApi.module],
     ["node:http", httpApi.module],
     ["https", httpApi.httpsModule],
@@ -10531,6 +13624,10 @@ async function runBrowserJavaScriptProjectRequest(request, options, executionSta
     ["node:util", utilApi],
     ["stream", streamApi],
     ["node:stream", streamApi],
+    ["child_process", childProcessApi],
+    ["node:child_process", childProcessApi],
+    ["tracekernel", traceKernelApi],
+    ["node:tracekernel", traceKernelApi],
     ["timers/promises", timersPromisesApi],
     ["node:timers/promises", timersPromisesApi],
     ["crypto", cryptoApi],
@@ -10753,8 +13850,11 @@ async function runBrowserJavaScriptProjectRequest(request, options, executionSta
     }
     while (!executionState.cancelled) {
       await eventLoopApi.drain();
-      if (!httpApi.hasActiveWork()) break;
-      await httpApi.waitForClose();
+      if (!httpApi.hasActiveWork() && !netApi.hasActiveWork()) break;
+      await Promise.all([
+        httpApi.hasActiveWork() ? httpApi.waitForClose() : Promise.resolve(),
+        netApi.hasActiveWork() ? netApi.waitForClose() : Promise.resolve()
+      ]);
     }
     liveIo.close();
     try {
@@ -11008,6 +14108,45 @@ var WorkerKernelHttpBridge = class {
   }
 };
 var activeHttpBridges = /* @__PURE__ */ new Map();
+var WorkerKernelAsyncSyscallClient = class {
+  constructor(postProtocolMessage) {
+    this.postProtocolMessage = postProtocolMessage;
+  }
+  nextRequestId = 1;
+  closed = false;
+  pending = /* @__PURE__ */ new Map();
+  closedResult() {
+    return {
+      ok: false,
+      error: {
+        code: "EIO",
+        message: "ECLOSED: async syscall client is closed"
+      }
+    };
+  }
+  dispatch(request) {
+    if (this.closed) {
+      return Promise.resolve(this.closedResult());
+    }
+    const requestId = `async-syscall-${this.nextRequestId++}`;
+    return new Promise((resolve) => {
+      this.pending.set(requestId, { resolve });
+      this.postProtocolMessage(requestId, request);
+    });
+  }
+  resolve(requestId, result) {
+    const pending = this.pending.get(requestId);
+    this.pending.delete(requestId);
+    pending?.resolve(result);
+  }
+  close() {
+    if (this.closed) return;
+    this.closed = true;
+    const result = this.closedResult();
+    for (const pending of this.pending.values()) pending.resolve(result);
+    this.pending.clear();
+  }
+};
 function postCommandMessage(postMessage2, id, protocolToken, type, payload) {
   postMessage2({ id, type, payload, protocolToken });
 }
@@ -11020,10 +14159,21 @@ function handleKernelHttpHostMessage(message) {
   if (type === "runtime-signal") {
     const signal = typeof payload?.signal === "string" ? payload.signal : "SIGTERM";
     const handled = command.executionState.dispatchSignal?.(signal) === true;
+    if (!handled && signal === "SIGWINCH") return true;
     if (!handled) {
       command.executionState.cancelled = true;
       command.executionState.abortController.abort({ signal });
       command.executionState.cleanupHostGlobals?.();
+    }
+    return true;
+  }
+  if (type === "kernel-syscall-async-result") {
+    const result = payload;
+    if (typeof result.requestId === "string") {
+      command.asyncSyscallClient?.resolve(
+        result.requestId,
+        result.result
+      );
     }
     return true;
   }
@@ -11067,7 +14217,15 @@ function handleKernelHttpHostMessage(message) {
   return false;
 }
 workerScope.onmessage = (event) => {
-  const { id, type, payload, protocolToken, runnerOptions, port } = event.data;
+  const {
+    id,
+    type,
+    payload,
+    protocolToken,
+    runnerOptions,
+    kernelSyscallChannel,
+    kernelSyscallGenerationBuffer
+  } = event.data;
   if (!id) return;
   if (handleKernelHttpHostMessage(event.data)) return;
   if (type !== "execute-project-javascript") {
@@ -11078,14 +14236,6 @@ workerScope.onmessage = (event) => {
     postWorkerMessage({ id, type: "error", payload: { error: "Missing JavaScript project worker protocol token." } });
     return;
   }
-  const commandPort = port ?? null;
-  const postToHost = commandPort ? commandPort.postMessage.bind(commandPort) : postWorkerMessage;
-  commandPort?.start?.();
-  if (commandPort) {
-    commandPort.onmessage = (messageEvent) => {
-      handleKernelHttpHostMessage(messageEvent.data);
-    };
-  }
   const request = payload;
   const options = {
     allowDynamicEval: runnerOptions?.allowDynamicEval,
@@ -11095,11 +14245,54 @@ workerScope.onmessage = (event) => {
     cancelled: false,
     abortController: new AbortController()
   };
+  let syscallClient;
+  let asyncSyscallClient;
+  if (kernelSyscallChannel) {
+    syscallClient = new TraceKernelSharedSyscallClient(
+      kernelSyscallChannel,
+      () => postCommandMessage(
+        postWorkerMessage,
+        id,
+        protocolToken,
+        "kernel-syscall",
+        {}
+      )
+    );
+    executionState.kernelFileSystem = new TraceKernelRuntimeFileClient(
+      syscallClient,
+      {
+        ...kernelSyscallGenerationBuffer ? {
+          generation: new TraceKernelSharedGenerationSource(
+            kernelSyscallGenerationBuffer
+          )
+        } : {}
+      }
+    );
+    executionState.kernelSyscalls = syscallClient;
+    asyncSyscallClient = new WorkerKernelAsyncSyscallClient(
+      (requestId, request2) => postCommandMessage(
+        postWorkerMessage,
+        id,
+        protocolToken,
+        "kernel-syscall-async",
+        { requestId, request: request2 }
+      )
+    );
+    executionState.kernelNetwork = asyncSyscallClient;
+  }
   const kernelHttp = new WorkerKernelHttpBridge((message) => {
-    postCommandMessage(postToHost, id, protocolToken, message.type, message);
+    postCommandMessage(postWorkerMessage, id, protocolToken, message.type, message);
   });
-  activeHttpBridges.set(id, { bridge: kernelHttp, protocolToken, executionState });
+  activeHttpBridges.set(id, {
+    bridge: kernelHttp,
+    protocolToken,
+    executionState,
+    ...syscallClient ? { syscallClient } : {},
+    ...asyncSyscallClient ? { asyncSyscallClient } : {}
+  });
   const clearActiveCommand = () => {
+    activeHttpBridges.get(id)?.syscallClient?.close();
+    activeHttpBridges.get(id)?.asyncSyscallClient?.close();
     activeHttpBridges.delete(id);
   };
   runBrowserJavaScriptProjectRequest(
@@ -11110,7 +14303,7 @@ workerScope.onmessage = (event) => {
         if (runtimeEvent.type === "status" && (runtimeEvent.phase === "process-start" || runtimeEvent.phase === "process-exit")) {
           return;
         }
-        postCommandMessage(postToHost, id, protocolToken, "project-event", runtimeEvent);
+        postCommandMessage(postWorkerMessage, id, protocolToken, "project-event", runtimeEvent);
       }
     },
     options,
@@ -11118,13 +14311,11 @@ workerScope.onmessage = (event) => {
   ).then(
     (result) => {
       clearActiveCommand();
-      postCommandMessage(postToHost, id, protocolToken, "execute-result", result);
-      commandPort?.close();
+      postCommandMessage(postWorkerMessage, id, protocolToken, "execute-result", result);
     },
     (error) => {
       clearActiveCommand();
-      postCommandMessage(postToHost, id, protocolToken, "error", { error: errorMessage(error) });
-      commandPort?.close();
+      postCommandMessage(postWorkerMessage, id, protocolToken, "error", { error: errorMessage(error) });
     }
   );
 };

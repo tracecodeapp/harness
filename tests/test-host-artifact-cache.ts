@@ -32,7 +32,12 @@ test('host artifact cache rejects oversized values without evicting valid entrie
 test('host artifact cache protocol requires the active worker token', () => {
   const cache = new HostArtifactCache(2, 32);
   const replies: unknown[] = [];
-  const worker = { postMessage: (message: unknown) => replies.push(message), terminate() {} };
+  const worker = {
+    onmessage: null,
+    onerror: null,
+    postMessage: (message: unknown) => replies.push(message),
+    terminate() {},
+  };
   handleHostArtifactCacheRequest({
     cache,
     worker,

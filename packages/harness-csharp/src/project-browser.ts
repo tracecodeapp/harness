@@ -7,10 +7,15 @@ import type {
   RuntimeFileMutationPhase,
   RuntimeProjectCommandRequest,
   RuntimeProjectCommandRunner,
+  RuntimeProjectEngineLeaseController,
   RuntimeProjectFileChangeApplyOptions,
   RuntimeProjectSnapshot,
 } from '@tracecode/harness-core';
-import { createRuntimeProjectIoBridge, runRuntimeProjectWorkerBridge } from '@tracecode/harness-core';
+import {
+  createRuntimeProjectIoBridge,
+  runRuntimeProjectWorkerBridge,
+  withRuntimeProjectCommandRunnerCapabilities,
+} from '@tracecode/harness-core';
 import type { CSharpWorkerClient } from '../../harness-browser/src/csharp-worker-client';
 
 export type CSharpProjectFileEncoding = RuntimeFileEncoding;
@@ -81,14 +86,18 @@ export function createBrowserCSharpProjectRunner(
       request: CSharpProjectCommandRequest,
       timeoutMs?: number,
       onEvent?: RuntimeCommandEventHandler,
-      signal?: AbortSignal
+      signal?: AbortSignal,
+      engineLease?: RuntimeProjectEngineLeaseController
     ): Promise<CSharpProjectCommandResult>;
   },
   options: BrowserCSharpProjectRunnerOptions = {}
 ): CSharpProjectCommandRunner {
   const timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS;
-  return (request) => {
-    if ((request.project.symlinks?.length ?? 0) > 0) {
+  return withRuntimeProjectCommandRunnerCapabilities((request) => {
+    if (
+      (request.project.symlinks?.length ?? 0) > 0 &&
+      !request.kernelSyscalls
+    ) {
       return Promise.resolve(unsupportedBrowserCSharpSymlinkResult(request));
     }
     if (request.source === 'run' && request.options?.noBuild === true) {
@@ -102,7 +111,14 @@ export function createBrowserCSharpProjectRunner(
       finishPhase: request.source === 'compile' ? 'compile-end' : 'process-exit',
       finishMessage: request.source === 'compile' ? 'Finished C# browser compile' : 'Finished C# browser run',
       applyFileChange: options.applyFileChange,
-      run: (workerRequest, onEvent) => workerClient.executeProjectCSharp(workerRequest, timeoutMs, onEvent, workerRequest.signal),
+      run: (workerRequest, onEvent, engineLease) =>
+        workerClient.executeProjectCSharp(
+          workerRequest,
+          timeoutMs,
+          onEvent,
+          workerRequest.signal,
+          engineLease
+        ),
     });
-  };
+  }, { descriptorStdio: true });
 }

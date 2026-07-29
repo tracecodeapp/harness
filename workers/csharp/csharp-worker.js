@@ -10,6 +10,9 @@ let trustedRuntimeUserAuthorityLockdown = null;
 let runtimeModule = null;
 let runtimeFsHooksInstalled = false;
 let activeProjectIo = null;
+let activeTraceKernelClient = null;
+let activeKernelSignalState = null;
+let activeKernelSignalSequence = 0;
 const activeProtocolTokens = new Map();
 const pendingCompilerArtifactCacheRequests = new Map();
 let materializedKernelVirtualFilePaths = new Set();
@@ -152,6 +155,1338 @@ function readStdinPipeByte(state) {
   }
 }
 
+const CSHARP_TK_FRAME_MAGIC = 0x544b5301;
+const CSHARP_TK_SHARED_HEADER_INTS = 8;
+const CSHARP_TK_SHARED_HEADER_BYTES =
+  CSHARP_TK_SHARED_HEADER_INTS * Int32Array.BYTES_PER_ELEMENT;
+const CSHARP_TK_OP_CODES = Object.freeze({
+  open: 1,
+  read: 2,
+  write: 3,
+  close: 4,
+  dup: 5,
+  stat: 6,
+  readdir: 7,
+  mkdir: 8,
+  rmdir: 9,
+  unlink: 10,
+  rename: 11,
+  fstat: 14,
+  ftruncate: 15,
+  link: 16,
+  symlink: 17,
+  readlink: 18,
+  lstat: 19,
+  realpath: 20,
+  socket: 21,
+  bind: 22,
+  listen: 23,
+  accept: 24,
+  connect: 25,
+  send: 26,
+  recv: 27,
+  shutdown: 28,
+  getsockname: 29,
+  getpeername: 30,
+  pipe: 31,
+  spawn: 32,
+  wait: 33,
+  kill: 34,
+  watch: 35,
+  watchdog: 36,
+  dup2: 37,
+  fcntl: 38,
+  setsid: 39,
+  setpgid: 40,
+  dup3: 41,
+  poll: 42,
+  getsockopt: 43,
+  identity: 44,
+  isatty: 45,
+  tcgetpgrp: 46,
+  tcsetpgrp: 47,
+  tcgetwinsize: 52,
+  tcsetwinsize: 53,
+});
+const CSHARP_TK_OPS_BY_CODE = new Map(
+  Object.entries(CSHARP_TK_OP_CODES).map(([operation, code]) => [
+    code,
+    operation,
+  ])
+);
+
+class CSharpTraceKernelSyscallError extends Error {
+  constructor(code, message) {
+    super(message);
+    this.name = 'CSharpTraceKernelSyscallError';
+    this.code = code;
+  }
+}
+
+class CSharpTraceKernelFrameWriter {
+  constructor() {
+    this.bytes = new Uint8Array(256);
+    this.view = new DataView(this.bytes.buffer);
+    this.offset = 0;
+  }
+
+  ensure(length) {
+    const required = this.offset + length;
+    if (required <= this.bytes.byteLength) return;
+    let capacity = this.bytes.byteLength;
+    while (capacity < required) capacity *= 2;
+    const next = new Uint8Array(capacity);
+    next.set(this.bytes);
+    this.bytes = next;
+    this.view = new DataView(next.buffer);
+  }
+
+  u8(value) {
+    this.ensure(1);
+    this.view.setUint8(this.offset++, value);
+  }
+
+  u32(value) {
+    this.ensure(4);
+    this.view.setUint32(this.offset, value >>> 0, true);
+    this.offset += 4;
+  }
+
+  i32(value) {
+    this.ensure(4);
+    this.view.setInt32(this.offset, value | 0, true);
+    this.offset += 4;
+  }
+
+  f64(value) {
+    this.ensure(8);
+    this.view.setFloat64(this.offset, Number(value), true);
+    this.offset += 8;
+  }
+
+  bytesValue(value) {
+    const bytes = value instanceof Uint8Array
+      ? value
+      : new Uint8Array(value);
+    this.u32(bytes.byteLength);
+    this.ensure(bytes.byteLength);
+    this.bytes.set(bytes, this.offset);
+    this.offset += bytes.byteLength;
+  }
+
+  string(value) {
+    this.bytesValue(new TextEncoder().encode(String(value)));
+  }
+
+  finish() {
+    return this.bytes.slice(0, this.offset);
+  }
+}
+
+class CSharpTraceKernelFrameReader {
+  constructor(bytes) {
+    this.bytes = bytes;
+    this.view = new DataView(
+      bytes.buffer,
+      bytes.byteOffset,
+      bytes.byteLength
+    );
+    this.offset = 0;
+  }
+
+  ensure(length) {
+    if (this.offset + length > this.bytes.byteLength) {
+      throw new CSharpTraceKernelSyscallError(
+        'EPROTO',
+        'truncated syscall response'
+      );
+    }
+  }
+
+  u8() {
+    this.ensure(1);
+    return this.view.getUint8(this.offset++);
+  }
+
+  u32() {
+    this.ensure(4);
+    const value = this.view.getUint32(this.offset, true);
+    this.offset += 4;
+    return value;
+  }
+
+  i32() {
+    this.ensure(4);
+    const value = this.view.getInt32(this.offset, true);
+    this.offset += 4;
+    return value;
+  }
+
+  f64() {
+    this.ensure(8);
+    const value = this.view.getFloat64(this.offset, true);
+    this.offset += 8;
+    return value;
+  }
+
+  bytesValue() {
+    const length = this.u32();
+    this.ensure(length);
+    const value = this.bytes.slice(this.offset, this.offset + length);
+    this.offset += length;
+    return value;
+  }
+
+  string() {
+    return new TextDecoder().decode(this.bytesValue());
+  }
+
+  done() {
+    if (this.offset !== this.bytes.byteLength) {
+      throw new CSharpTraceKernelSyscallError(
+        'EPROTO',
+        'syscall response has trailing bytes'
+      );
+    }
+  }
+}
+
+function readCSharpTraceKernelStat(reader) {
+  const path = reader.string();
+  const kindCode = reader.u8();
+  if (kindCode < 1 || kindCode > 3) {
+    throw new CSharpTraceKernelSyscallError(
+      'EPROTO',
+      `invalid TKFS stat kind ${kindCode}`
+    );
+  }
+  return {
+    path,
+    kind: kindCode === 1
+      ? 'file'
+      : kindCode === 2
+        ? 'directory'
+        : 'symlink',
+    inode: reader.f64(),
+    nlink: reader.f64(),
+    mode: reader.u32(),
+    size: reader.f64(),
+    generation: reader.f64(),
+    createdAt: reader.f64(),
+    modifiedAt: reader.f64(),
+    changedAt: reader.f64(),
+  };
+}
+
+class CSharpTraceKernelSyncClient {
+  constructor(channel, signalHost, timeoutMs = 20_000) {
+    if (
+      typeof SharedArrayBuffer === 'undefined' ||
+      !(channel?.buffer instanceof SharedArrayBuffer) ||
+      !Number.isSafeInteger(channel.byteCapacity) ||
+      channel.byteCapacity < 256 ||
+      channel.buffer.byteLength !==
+        CSHARP_TK_SHARED_HEADER_BYTES + channel.byteCapacity
+    ) {
+      throw new CSharpTraceKernelSyscallError(
+        'EPROTO',
+        'invalid shared syscall channel'
+      );
+    }
+    this.header = new Int32Array(
+      channel.buffer,
+      0,
+      CSHARP_TK_SHARED_HEADER_INTS
+    );
+    this.payload = new Uint8Array(
+      channel.buffer,
+      CSHARP_TK_SHARED_HEADER_BYTES
+    );
+    this.signalHost = signalHost;
+    this.timeoutMs = timeoutMs;
+    this.closed = false;
+  }
+
+  encode(request) {
+    const writer = new CSharpTraceKernelFrameWriter();
+    writer.u32(CSHARP_TK_FRAME_MAGIC);
+    writer.u8(1);
+    const operationCode = CSHARP_TK_OP_CODES[request.op];
+    if (!operationCode) {
+      throw new CSharpTraceKernelSyscallError(
+        'ENOSYS',
+        `unsupported C# TraceKernel syscall ${request.op}`
+      );
+    }
+    writer.u8(operationCode);
+    switch (request.op) {
+      case 'watch':
+        writer.string(request.path);
+        writer.u8(request.options?.recursive === true ? 1 : 0);
+        writer.u32(request.options?.capacityEvents ?? 0);
+        break;
+      case 'socket':
+        break;
+      case 'bind':
+      case 'connect':
+        writer.i32(request.fd);
+        writer.string(request.address.host);
+        writer.u32(request.address.port);
+        break;
+      case 'listen':
+        writer.i32(request.fd);
+        writer.u8(
+          (request.options?.backlog === undefined ? 0 : 1) |
+            (request.options?.capacityChunks === undefined ? 0 : 2)
+        );
+        if (request.options?.backlog !== undefined) {
+          writer.u32(request.options.backlog);
+        }
+        if (request.options?.capacityChunks !== undefined) {
+          writer.u32(request.options.capacityChunks);
+        }
+        break;
+      case 'accept':
+      case 'getsockname':
+      case 'getpeername':
+        writer.i32(request.fd);
+        break;
+      case 'getsockopt':
+        writer.i32(request.fd);
+        writer.u8(request.option === 'error' ? 1 : 0);
+        break;
+      case 'send':
+        writer.i32(request.fd);
+        writer.bytesValue(request.bytes);
+        break;
+      case 'recv':
+        writer.i32(request.fd);
+        writer.u32(request.maxBytes);
+        break;
+      case 'shutdown':
+        writer.i32(request.fd);
+        writer.u8(
+          request.how === 'read'
+            ? 1
+            : request.how === 'write'
+              ? 2
+              : 3
+        );
+        break;
+      case 'pipe':
+        writer.u32(request.options?.capacityChunks ?? 0);
+        writer.u8(request.options?.closeOnExec === true ? 1 : 0);
+        writer.u8(request.options?.nonblocking === true ? 1 : 0);
+        break;
+      case 'open': {
+        writer.string(request.path);
+        writer.u8(
+          request.options?.access === 'write'
+            ? 2
+            : request.options?.access === 'read-write'
+              ? 3
+              : 1
+        );
+        writer.u8(
+          (request.options?.create ? 1 : 0) |
+            (request.options?.exclusive ? 2 : 0) |
+            (request.options?.truncate ? 4 : 0) |
+            (request.options?.append ? 8 : 0)
+        );
+        break;
+      }
+      case 'read':
+        writer.i32(request.fd);
+        writer.u32(request.maxBytes);
+        writer.u8(request.position === undefined ? 0 : 1);
+        if (request.position !== undefined) writer.f64(request.position);
+        break;
+      case 'write':
+        writer.i32(request.fd);
+        writer.bytesValue(request.bytes);
+        writer.u8(request.position === undefined ? 0 : 1);
+        if (request.position !== undefined) writer.f64(request.position);
+        break;
+      case 'close':
+      case 'dup':
+      case 'fstat':
+        writer.i32(request.fd);
+        break;
+      case 'dup2':
+        writer.i32(request.fd);
+        writer.i32(request.targetFd);
+        break;
+      case 'dup3':
+        writer.i32(request.fd);
+        writer.i32(request.targetFd);
+        writer.u8(request.closeOnExec ? 1 : 0);
+        break;
+      case 'fcntl':
+        writer.i32(request.fd);
+        writer.u8(
+          request.action === 'get-close-on-exec'
+            ? 1
+            : request.action === 'set-close-on-exec'
+              ? 2
+              : request.action === 'get-nonblocking'
+                ? 3
+                : 4
+        );
+        if (request.action === 'set-close-on-exec') {
+          writer.u8(request.closeOnExec ? 1 : 0);
+        } else if (request.action === 'set-nonblocking') {
+          writer.u8(request.nonblocking ? 1 : 0);
+        }
+        break;
+      case 'poll':
+        writer.u32(request.entries.length);
+        for (const entry of request.entries) {
+          writer.i32(entry.fd);
+          writer.u8((entry.read ? 1 : 0) | (entry.write ? 2 : 0));
+        }
+        writer.u8(request.timeoutMs === undefined ? 0 : 1);
+        if (request.timeoutMs !== undefined) writer.f64(request.timeoutMs);
+        break;
+      case 'setsid':
+        break;
+      case 'isatty':
+      case 'tcgetpgrp':
+      case 'tcgetwinsize':
+        writer.i32(request.fd);
+        break;
+      case 'tcsetpgrp':
+        writer.i32(request.fd);
+        writer.i32(request.pgid);
+        break;
+      case 'tcsetwinsize':
+        writer.i32(request.fd);
+        writer.u32(request.rows);
+        writer.u32(request.columns);
+        break;
+      case 'identity':
+        writer.u8(request.pid === undefined ? 0 : 1);
+        if (request.pid !== undefined) writer.i32(request.pid);
+        break;
+      case 'setpgid':
+        writer.i32(request.pid);
+        writer.i32(request.pgid);
+        break;
+      case 'ftruncate':
+        writer.i32(request.fd);
+        writer.f64(request.length);
+        break;
+      case 'stat':
+      case 'lstat':
+      case 'realpath':
+      case 'readdir':
+      case 'rmdir':
+      case 'unlink':
+      case 'readlink':
+        writer.string(request.path);
+        break;
+      case 'mkdir':
+        writer.string(request.path);
+        writer.u8(
+          (request.options?.recursive ? 1 : 0) |
+            (request.options?.mode === undefined ? 0 : 2)
+        );
+        if (request.options?.mode !== undefined) {
+          writer.u32(request.options.mode);
+        }
+        break;
+      case 'rename':
+        writer.string(request.sourcePath);
+        writer.string(request.destinationPath);
+        break;
+      case 'link':
+        writer.string(request.existingPath);
+        writer.string(request.newPath);
+        break;
+      case 'symlink':
+        writer.string(request.target);
+        writer.string(request.linkPath);
+        break;
+      case 'watchdog':
+        writer.u8(
+          request.action === 'arm'
+            ? 1
+            : request.action === 'pet'
+              ? 2
+              : request.action === 'disarm'
+                ? 3
+                : 4
+        );
+        writer.u8(request.timeoutMs === undefined ? 0 : 1);
+        if (request.timeoutMs !== undefined) writer.u32(request.timeoutMs);
+        writer.u8(
+          request.signal === undefined
+            ? 0
+            : request.signal === 'SIGTERM'
+              ? 1
+              : 2
+        );
+        break;
+      case 'spawn': {
+        writer.string(request.runtime);
+        writer.string(request.command);
+        writer.u32(request.args?.length ?? 0);
+        for (const argument of request.args ?? []) {
+          writer.string(argument);
+        }
+        writer.u8(request.cwd === undefined ? 0 : 1);
+        if (request.cwd !== undefined) writer.string(request.cwd);
+        const environment = Object.entries(request.env ?? {});
+        writer.u32(environment.length);
+        for (const [name, value] of environment) {
+          writer.string(name);
+          writer.string(value);
+        }
+        writer.u8(
+          request.inheritDescriptors === 'all'
+            ? 1
+            : request.inheritDescriptors == null
+              ? 0
+              : 2
+        );
+        if (
+          request.inheritDescriptors != null &&
+          request.inheritDescriptors !== 'all'
+        ) {
+          writer.u32(request.inheritDescriptors.length);
+          for (const fd of request.inheritDescriptors) writer.i32(fd);
+        }
+        writer.u8(request.processGroupId === undefined ? 0 : 1);
+        if (request.processGroupId !== undefined) {
+          writer.i32(request.processGroupId);
+        }
+        writer.u8(request.sessionId === undefined ? 0 : 1);
+        if (request.sessionId !== undefined) writer.i32(request.sessionId);
+        const writeStdioMode = (mode) => writer.u8(
+          mode === undefined
+            ? 0
+            : mode === 'pipe'
+              ? 1
+              : mode === 'inherit'
+                ? 2
+                : 3
+        );
+        writeStdioMode(request.stdio?.stdin);
+        writeStdioMode(request.stdio?.stdout);
+        writeStdioMode(request.stdio?.stderr);
+        writer.u32(request.descriptorActions?.length ?? 0);
+        for (const action of request.descriptorActions ?? []) {
+          writer.u8(action.op === 'dup2' ? 1 : 2);
+          writer.i32(action.fd);
+          if (action.op === 'dup2') writer.i32(action.targetFd);
+        }
+        writer.u32(request.descriptorMappings?.length ?? 0);
+        for (const mapping of request.descriptorMappings ?? []) {
+          writer.i32(mapping.parentFd);
+          writer.i32(mapping.childFd);
+        }
+        break;
+      }
+      case 'wait':
+        writer.i32(request.pid);
+        writer.u8(request.noHang ? 1 : 0);
+        break;
+      case 'kill':
+        writer.i32(request.pid);
+        writer.u8(
+          request.signal === 'SIGINT'
+            ? 1
+            : request.signal === 'SIGTERM'
+              ? 2
+              : request.signal === 'SIGKILL'
+                ? 3
+                : request.signal === 'SIGHUP'
+                  ? 4
+                  : 5
+        );
+        break;
+    }
+    return writer.finish();
+  }
+
+  decode(frame) {
+    const reader = new CSharpTraceKernelFrameReader(frame);
+    if (reader.u32() !== CSHARP_TK_FRAME_MAGIC || reader.u8() !== 2) {
+      throw new CSharpTraceKernelSyscallError(
+        'EPROTO',
+        'invalid syscall response header'
+      );
+    }
+    const success = reader.u8();
+    if (success === 0) {
+      throw new CSharpTraceKernelSyscallError(
+        reader.string(),
+        reader.string()
+      );
+    }
+    if (success !== 1) {
+      throw new CSharpTraceKernelSyscallError(
+        'EPROTO',
+        'invalid syscall response status'
+      );
+    }
+    const operation = CSHARP_TK_OPS_BY_CODE.get(reader.u8());
+    if (!operation) {
+      throw new CSharpTraceKernelSyscallError(
+        'EPROTO',
+        'unknown syscall response operation'
+      );
+    }
+    let value;
+    if (operation === 'watch') {
+      value = { op: operation, fd: reader.i32() };
+    } else if (operation === 'socket') {
+      value = { op: operation, fd: reader.i32() };
+    } else if (operation === 'bind') {
+      value = {
+        op: operation,
+        address: { host: reader.string(), port: reader.u32() },
+      };
+    } else if (operation === 'accept') {
+      value = {
+        op: operation,
+        fd: reader.i32(),
+        localAddress: { host: reader.string(), port: reader.u32() },
+        remoteAddress: { host: reader.string(), port: reader.u32() },
+      };
+    } else if (operation === 'connect') {
+      value = {
+        op: operation,
+        localAddress: { host: reader.string(), port: reader.u32() },
+        remoteAddress: { host: reader.string(), port: reader.u32() },
+      };
+    } else if (operation === 'send') {
+      value = { op: operation, bytesWritten: reader.u32() };
+    } else if (operation === 'recv') {
+      value = { op: operation, bytes: reader.bytesValue() };
+    } else if (
+      operation === 'getsockname' ||
+      operation === 'getpeername'
+    ) {
+      value = {
+        op: operation,
+        address: { host: reader.string(), port: reader.u32() },
+      };
+    } else if (operation === 'getsockopt') {
+      const hasError = reader.u8();
+      value = {
+        op: operation,
+        ...(hasError === 1 ? { error: reader.string() } : {}),
+      };
+    } else if (operation === 'readlink') {
+      value = { op: operation, target: reader.string() };
+    } else if (operation === 'realpath') {
+      value = { op: operation, path: reader.string() };
+    } else if (operation === 'pipe') {
+      value = {
+        op: operation,
+        readFd: reader.i32(),
+        writeFd: reader.i32(),
+      };
+    } else if (operation === 'watchdog') {
+      const armed = reader.u8();
+      if (armed > 1) {
+        throw new CSharpTraceKernelSyscallError(
+          'EPROTO',
+          `invalid watchdog armed flag ${armed}`
+        );
+      }
+      if (!armed) {
+        value = { op: operation, armed: false };
+      } else {
+        const timeoutMs = reader.u32();
+        const deadlineAt = reader.f64();
+        const signalCode = reader.u8();
+        if (signalCode !== 1 && signalCode !== 2) {
+          throw new CSharpTraceKernelSyscallError(
+            'EPROTO',
+            `invalid watchdog signal ${signalCode}`
+          );
+        }
+        value = {
+          op: operation,
+          armed: true,
+          timeoutMs,
+          deadlineAt,
+          signal: signalCode === 2 ? 'SIGKILL' : 'SIGTERM',
+        };
+      }
+    } else if (operation === 'spawn') {
+      const pid = reader.i32();
+      const readOptionalFd = (name) => {
+        const present = reader.u8();
+        if (present > 1) {
+          throw new CSharpTraceKernelSyscallError(
+            'EPROTO',
+            `invalid spawn ${name} fd flag ${present}`
+          );
+        }
+        return present ? reader.i32() : undefined;
+      };
+      const stdinFd = readOptionalFd('stdin');
+      const stdoutFd = readOptionalFd('stdout');
+      const stderrFd = readOptionalFd('stderr');
+      value = {
+        op: operation,
+        pid,
+        ...(stdinFd === undefined &&
+          stdoutFd === undefined &&
+          stderrFd === undefined
+          ? {}
+          : {
+              stdio: {
+                ...(stdinFd === undefined ? {} : { stdinFd }),
+                ...(stdoutFd === undefined ? {} : { stdoutFd }),
+                ...(stderrFd === undefined ? {} : { stderrFd }),
+              },
+            }),
+      };
+    } else if (operation === 'wait') {
+      const pid = reader.i32();
+      const completed = reader.u8();
+      if (completed > 1) {
+        throw new CSharpTraceKernelSyscallError(
+          'EPROTO',
+          `invalid wait completion flag ${completed}`
+        );
+      }
+      if (!completed) {
+        value = { op: operation, pid };
+        reader.done();
+        return value;
+      }
+      const terminationCode = reader.u8();
+      const exitCode = reader.i32();
+      if (terminationCode === 1) {
+        value = {
+          op: operation,
+          pid,
+          termination: { kind: 'exit', exitCode },
+        };
+      } else if (terminationCode === 2) {
+        const signalCode = reader.u8();
+        if (signalCode < 1 || signalCode > 5) {
+          throw new CSharpTraceKernelSyscallError(
+            'EPROTO',
+            `invalid termination signal ${signalCode}`
+          );
+        }
+        value = {
+          op: operation,
+          pid,
+          termination: {
+            kind: 'signal',
+            signal: signalCode === 1
+              ? 'SIGINT'
+              : signalCode === 2
+                ? 'SIGTERM'
+                : signalCode === 3
+                  ? 'SIGKILL'
+                  : signalCode === 4
+                    ? 'SIGHUP'
+                    : 'SIGQUIT',
+            exitCode,
+          },
+        };
+      } else if (terminationCode === 3) {
+        value = {
+          op: operation,
+          pid,
+          termination: {
+            kind: 'failure',
+            exitCode,
+            message: reader.string(),
+          },
+        };
+      } else {
+        throw new CSharpTraceKernelSyscallError(
+          'EPROTO',
+          `invalid process termination code ${terminationCode}`
+        );
+      }
+    } else if (
+      operation === 'open' ||
+      operation === 'dup' ||
+      operation === 'dup2'
+    ) {
+      value = { op: operation, fd: reader.i32() };
+    } else if (operation === 'dup3') {
+      value = {
+        op: operation,
+        fd: reader.i32(),
+        closeOnExec: reader.u8() === 1,
+      };
+    } else if (operation === 'fcntl') {
+      value = {
+        op: operation,
+        closeOnExec: reader.u8() === 1,
+        nonblocking: reader.u8() === 1,
+      };
+    } else if (operation === 'poll') {
+      const length = reader.u32();
+      const entries = [];
+      for (let index = 0; index < length; index += 1) {
+        const fd = reader.i32();
+        const events = reader.u8();
+        entries.push({
+          fd,
+          read: (events & 1) !== 0,
+          write: (events & 2) !== 0,
+          hangup: (events & 4) !== 0,
+          error: (events & 8) !== 0,
+          invalid: (events & 16) !== 0,
+        });
+      }
+      value = { op: operation, entries };
+    } else if (operation === 'setsid') {
+      value = { op: operation, sid: reader.i32(), pgid: reader.i32() };
+    } else if (operation === 'setpgid') {
+      value = { op: operation, pgid: reader.i32() };
+    } else if (operation === 'isatty') {
+      value = { op: operation, isTerminal: reader.u8() === 1 };
+    } else if (
+      operation === 'tcgetpgrp' ||
+      operation === 'tcsetpgrp'
+    ) {
+      value = { op: operation, pgid: reader.i32() };
+    } else if (
+      operation === 'tcgetwinsize' ||
+      operation === 'tcsetwinsize'
+    ) {
+      value = {
+        op: operation,
+        rows: reader.u32(),
+        columns: reader.u32(),
+      };
+    } else if (operation === 'identity') {
+      value = {
+        op: operation,
+        pid: reader.i32(),
+        ppid: reader.i32(),
+        pgid: reader.i32(),
+        sid: reader.i32(),
+      };
+    } else if (operation === 'read') {
+      value = { op: operation, bytes: reader.bytesValue() };
+    } else if (operation === 'write') {
+      value = { op: operation, bytesWritten: reader.u32() };
+    } else if (
+      operation === 'stat' ||
+      operation === 'lstat' ||
+      operation === 'fstat'
+    ) {
+      value = { op: operation, stat: readCSharpTraceKernelStat(reader) };
+    } else if (operation === 'readdir') {
+      const length = reader.u32();
+      const entries = [];
+      for (let index = 0; index < length; index += 1) {
+        const name = reader.string();
+        const kindCode = reader.u8();
+        entries.push({
+          name,
+          kind: kindCode === 1
+            ? 'file'
+            : kindCode === 2
+              ? 'directory'
+              : 'symlink',
+          inode: reader.f64(),
+        });
+      }
+      value = { op: operation, entries };
+    } else {
+      value = { op: operation };
+    }
+    reader.done();
+    return value;
+  }
+
+  request(request) {
+    if (this.closed) {
+      throw new CSharpTraceKernelSyscallError(
+        'ECLOSED',
+        'shared syscall channel is closed'
+      );
+    }
+    const frame = this.encode(request);
+    if (frame.byteLength > this.payload.byteLength) {
+      throw new CSharpTraceKernelSyscallError(
+        'E2BIG',
+        'syscall frame exceeds the shared channel'
+      );
+    }
+    if (
+      Atomics.compareExchange(this.header, 0, 0, 5) !== 0
+    ) {
+      throw new CSharpTraceKernelSyscallError(
+        'EBUSY',
+        'shared syscall channel already has an active call'
+      );
+    }
+    this.payload.set(frame);
+    Atomics.store(this.header, 1, frame.byteLength);
+    Atomics.store(this.header, 2, 0);
+    Atomics.add(this.header, 3, 1);
+    Atomics.store(this.header, 0, 1);
+    try {
+      this.signalHost();
+    } catch (error) {
+      Atomics.store(this.header, 0, 0);
+      throw error;
+    }
+    const startedAt = Date.now();
+    while (true) {
+      const state = Atomics.load(this.header, 0);
+      if (state === 3) break;
+      if (state === 4) {
+        throw new CSharpTraceKernelSyscallError(
+          'ECLOSED',
+          'shared syscall channel closed while waiting'
+        );
+      }
+      const remaining = this.timeoutMs - (Date.now() - startedAt);
+      if (remaining <= 0) {
+        throw new CSharpTraceKernelSyscallError(
+          'ETIMEDOUT',
+          `shared syscall timed out during ${request?.op ?? 'unknown'}${request?.fd === undefined ? '' : ` fd ${request.fd}`}`
+        );
+      }
+      Atomics.wait(this.header, 0, state, remaining);
+    }
+    const responseLength = Atomics.load(this.header, 2);
+    if (responseLength <= 0 || responseLength > this.payload.byteLength) {
+      Atomics.store(this.header, 0, 0);
+      throw new CSharpTraceKernelSyscallError(
+        'EPROTO',
+        'invalid shared syscall response length'
+      );
+    }
+    const response = this.payload.slice(0, responseLength);
+    Atomics.store(this.header, 0, 0);
+    Atomics.notify(this.header, 0);
+    return this.decode(response);
+  }
+
+  close() {
+    this.closed = true;
+  }
+}
+
+const CSHARP_TK_ERRNO = Object.freeze({
+  EACCES: 2,
+  EBADF: 8,
+  EEXIST: 20,
+  EINVAL: 28,
+  EIO: 29,
+  EISDIR: 31,
+  ELOOP: 32,
+  ENOENT: 44,
+  ENOSYS: 52,
+  ENOTDIR: 54,
+  ENOTEMPTY: 55,
+  ENOTSUP: 58,
+  EPERM: 63,
+  EROFS: 69,
+  ESPIPE: 70,
+});
+
+function installCSharpTraceKernelMount(
+  module,
+  kernelClient,
+  workspaceRoot = '/workspace',
+  mountPath = CSHARP_PROJECT_WORKSPACE_ROOT
+) {
+  const fs = module?.FS;
+  if (!fs) {
+    throw new CSharpTraceKernelSyscallError(
+      'ENOSYS',
+      'C# runtime filesystem is unavailable'
+    );
+  }
+  const fileType = Object.freeze({
+    directory: 0x4000,
+    file: 0x8000,
+    symlink: 0xa000,
+  });
+  const throwErrno = (error) => {
+    if (error instanceof fs.ErrnoError) throw error;
+    const code = typeof error?.code === 'string' ? error.code : 'EIO';
+    throw new fs.ErrnoError(CSHARP_TK_ERRNO[code] ?? CSHARP_TK_ERRNO.EIO);
+  };
+  const attempt = (operation) => {
+    try {
+      return operation();
+    } catch (error) {
+      return throwErrno(error);
+    }
+  };
+  const modeForStat = (stat) =>
+    fileType[stat.kind] | (Number(stat.mode) & 0o7777);
+  const nodeParts = (node) => {
+    const parts = [];
+    while (node.parent !== node) {
+      parts.push(node.name);
+      node = node.parent;
+    }
+    return parts.reverse();
+  };
+  const kernelPath = (node) => {
+    const suffix = nodeParts(node).join('/');
+    return suffix
+      ? `${node.mount.opts.root.replace(/\/+$/, '')}/${suffix}`
+      : node.mount.opts.root;
+  };
+  const childPath = (parent, name) =>
+    `${kernelPath(parent).replace(/\/+$/, '')}/${String(name)}`;
+  const attributes = (node, stat) => ({
+    dev: 1,
+    ino: Number(stat.inode),
+    mode: modeForStat(stat),
+    nlink: Number(stat.nlink),
+    uid: 0,
+    gid: 0,
+    rdev: 0,
+    size: stat.kind === 'directory' ? 4096 : Number(stat.size),
+    atime: new Date(Number(stat.modifiedAt)),
+    mtime: new Date(Number(stat.modifiedAt)),
+    ctime: new Date(Number(stat.changedAt)),
+    blksize: 4096,
+    blocks: Math.ceil(Number(stat.size) / 4096),
+  });
+  const backend = {
+    mount(mount) {
+      const stat = attempt(() =>
+        kernelClient.request({ op: 'stat', path: mount.opts.root }).stat
+      );
+      if (stat.kind !== 'directory') {
+        throw new fs.ErrnoError(CSHARP_TK_ERRNO.ENOTDIR);
+      }
+      return backend.createNode(null, '/', modeForStat(stat), 0);
+    },
+
+    createNode(parent, name, mode, dev) {
+      if (!fs.isDir(mode) && !fs.isFile(mode) && !fs.isLink(mode)) {
+        throw new fs.ErrnoError(CSHARP_TK_ERRNO.EINVAL);
+      }
+      const node = fs.createNode(parent, name, mode, dev);
+      node.node_ops = backend.node_ops;
+      node.stream_ops = backend.stream_ops;
+      return node;
+    },
+
+    node_ops: {
+      getattr(node) {
+        return attempt(() => {
+          const stat = kernelClient.request({
+            op: 'lstat',
+            path: kernelPath(node),
+          }).stat;
+          node.mode = modeForStat(stat);
+          return attributes(node, stat);
+        });
+      },
+
+      setattr(node, value) {
+        attempt(() => {
+          if (value.size !== undefined) {
+            const opened = kernelClient.request({
+              op: 'open',
+              path: kernelPath(node),
+              options: { access: 'write' },
+            });
+            try {
+              kernelClient.request({
+                op: 'ftruncate',
+                fd: opened.fd,
+                length: Number(value.size),
+              });
+            } finally {
+              kernelClient.request({ op: 'close', fd: opened.fd });
+            }
+          }
+          if (value.mode !== undefined) {
+            node.mode =
+              (node.mode & ~0o7777) |
+              (Number(value.mode) & 0o7777);
+          }
+        });
+      },
+
+      lookup(parent, name) {
+        return attempt(() => {
+          const stat = kernelClient.request({
+            op: 'lstat',
+            path: childPath(parent, name),
+          }).stat;
+          return backend.createNode(parent, name, modeForStat(stat), 0);
+        });
+      },
+
+      mknod(parent, name, mode, dev) {
+        return attempt(() => {
+          const path = childPath(parent, name);
+          if (fs.isDir(mode)) {
+            kernelClient.request({
+              op: 'mkdir',
+              path,
+              options: { mode: mode & 0o7777 },
+            });
+          } else if (fs.isFile(mode)) {
+            const opened = kernelClient.request({
+              op: 'open',
+              path,
+              options: {
+                access: 'write',
+                create: true,
+                exclusive: true,
+              },
+            });
+            kernelClient.request({ op: 'close', fd: opened.fd });
+          } else {
+            throw new CSharpTraceKernelSyscallError(
+              'ENOTSUP',
+              'TKFS supports only regular files and directories for C#'
+            );
+          }
+          return backend.createNode(parent, name, mode, dev);
+        });
+      },
+
+      rename(oldNode, newDirectory, newName) {
+        attempt(() => {
+          kernelClient.request({
+            op: 'rename',
+            sourcePath: kernelPath(oldNode),
+            destinationPath: childPath(newDirectory, newName),
+          });
+          oldNode.name = newName;
+        });
+      },
+
+      link(oldNode, newDirectory, newName) {
+        return attempt(() => {
+          const path = childPath(newDirectory, newName);
+          kernelClient.request({
+            op: 'link',
+            existingPath: kernelPath(oldNode),
+            newPath: path,
+          });
+          const stat = kernelClient.request({
+            op: 'lstat',
+            path,
+          }).stat;
+          return backend.createNode(
+            newDirectory,
+            newName,
+            modeForStat(stat),
+            0
+          );
+        });
+      },
+
+      symlink(parent, newName, target) {
+        return attempt(() => {
+          const path = childPath(parent, newName);
+          kernelClient.request({
+            op: 'symlink',
+            target: String(target),
+            linkPath: path,
+          });
+          const stat = kernelClient.request({
+            op: 'lstat',
+            path,
+          }).stat;
+          return backend.createNode(parent, newName, modeForStat(stat), 0);
+        });
+      },
+
+      readlink(node) {
+        return attempt(() =>
+          kernelClient.request({
+            op: 'readlink',
+            path: kernelPath(node),
+          }).target
+        );
+      },
+
+      unlink(parent, name) {
+        attempt(() =>
+          kernelClient.request({
+            op: 'unlink',
+            path: childPath(parent, name),
+          })
+        );
+      },
+
+      rmdir(parent, name) {
+        attempt(() =>
+          kernelClient.request({
+            op: 'rmdir',
+            path: childPath(parent, name),
+          })
+        );
+      },
+
+      readdir(node) {
+        return attempt(() => [
+          '.',
+          '..',
+          ...kernelClient.request({
+            op: 'readdir',
+            path: kernelPath(node),
+          }).entries.map((entry) => entry.name),
+        ]);
+      },
+    },
+
+    stream_ops: {
+      getattr(stream) {
+        return attempt(() => {
+          const stat = stream.shared.tracekernelFd === undefined
+            ? kernelClient.request({
+                op: 'lstat',
+                path: kernelPath(stream.node),
+              }).stat
+            : kernelClient.request({
+                op: 'fstat',
+                fd: stream.shared.tracekernelFd,
+              }).stat;
+          stream.node.mode = modeForStat(stat);
+          return attributes(stream.node, stat);
+        });
+      },
+
+      setattr(stream, value) {
+        attempt(() => {
+          if (value.size !== undefined) {
+            kernelClient.request({
+              op: 'ftruncate',
+              fd: stream.shared.tracekernelFd,
+              length: Number(value.size),
+            });
+          }
+          if (value.mode !== undefined) {
+            stream.node.mode =
+              (stream.node.mode & ~0o7777) |
+              (Number(value.mode) & 0o7777);
+          }
+        });
+      },
+
+      open(stream) {
+        attempt(() => {
+          if (fs.isDir(stream.node.mode)) {
+            stream.shared.tracekernelFd = undefined;
+            stream.shared.tracekernelRefcount = 1;
+            return;
+          }
+          const accessMode = stream.flags & 3;
+          const opened = kernelClient.request({
+            op: 'open',
+            path: kernelPath(stream.node),
+            options: {
+              access: accessMode === 1
+                ? 'write'
+                : accessMode === 2
+                  ? 'read-write'
+                  : 'read',
+              create: Boolean(stream.flags & 64),
+              exclusive: Boolean(stream.flags & 128),
+              truncate: Boolean(stream.flags & 512),
+              append: Boolean(stream.flags & 1024),
+            },
+          });
+          stream.shared.tracekernelFd = opened.fd;
+          stream.shared.tracekernelRefcount = 1;
+        });
+      },
+
+      close(stream) {
+        attempt(() => {
+          const remaining = --stream.shared.tracekernelRefcount;
+          if (
+            remaining === 0 &&
+            stream.shared.tracekernelFd !== undefined
+          ) {
+            kernelClient.request({
+              op: 'close',
+              fd: stream.shared.tracekernelFd,
+            });
+          }
+        });
+      },
+
+      dup(stream) {
+        stream.shared.tracekernelRefcount += 1;
+      },
+
+      read(stream, buffer, offset, length, position) {
+        return attempt(() => {
+          const bytes = kernelClient.request({
+            op: 'read',
+            fd: stream.shared.tracekernelFd,
+            maxBytes: length,
+            position,
+          }).bytes;
+          buffer.set(bytes, offset);
+          return bytes.byteLength;
+        });
+      },
+
+      write(stream, buffer, offset, length, position) {
+        return attempt(() =>
+          kernelClient.request({
+            op: 'write',
+            fd: stream.shared.tracekernelFd,
+            bytes: buffer.slice(offset, offset + length),
+            position,
+          }).bytesWritten
+        );
+      },
+
+      llseek(stream, offset, whence) {
+        let position = Number(offset);
+        if (whence === 1) {
+          position += Number(stream.position);
+        } else if (whence === 2) {
+          position += Number(
+            kernelClient.request({
+              op: 'fstat',
+              fd: stream.shared.tracekernelFd,
+            }).stat.size
+          );
+        }
+        if (position < 0) {
+          throw new fs.ErrnoError(CSHARP_TK_ERRNO.EINVAL);
+        }
+        return position;
+      },
+    },
+  };
+
+  try {
+    fs.mkdir(mountPath);
+  } catch (error) {
+    if (
+      !(error instanceof fs.ErrnoError) ||
+      error.errno !== CSHARP_TK_ERRNO.EEXIST
+    ) {
+      throw error;
+    }
+  }
+  fs.mount(backend, { root: workspaceRoot }, mountPath);
+  return () => {
+    try {
+      fs.unmount(mountPath);
+    } catch {
+      // A terminated .NET worker is discarded by the process supervisor.
+    }
+  };
+}
+
 let queue = Promise.resolve();
 let idleTimer = null;
 let idleTimeoutMs = DEFAULT_IDLE_TIMEOUT_MS;
@@ -163,6 +1498,56 @@ function encodeUtf8(value) {
 
 function decodeUtf8(value, options) {
   return new TextDecoder('utf-8', options).decode(value);
+}
+
+function invokeCSharpTraceKernelSyscall(requestJson) {
+  if (!activeTraceKernelClient) {
+    return JSON.stringify({
+      ok: false,
+      error: {
+        code: 'ENOSYS',
+        message: 'TraceKernel syscalls are unavailable outside a kernel-backed project process.',
+      },
+    });
+  }
+  try {
+    const parsed = JSON.parse(String(requestJson));
+    const request = (
+      parsed?.op === 'write' ||
+      parsed?.op === 'send'
+    ) && typeof parsed.bytes === 'string'
+      ? {
+          ...parsed,
+          bytes: Uint8Array.from(
+            atob(parsed.bytes),
+            (character) => character.charCodeAt(0)
+          ),
+        }
+      : parsed;
+    const result = activeTraceKernelClient.request(request);
+    return JSON.stringify({
+      ok: true,
+      value: result?.op === 'read' || result?.op === 'recv'
+        ? { ...result, bytes: encodeBase64(result.bytes) }
+        : result,
+    });
+  } catch (error) {
+    return JSON.stringify({
+      ok: false,
+      error: {
+        code: typeof error?.code === 'string' ? error.code : 'EIO',
+        message: formatCSharpWorkerError(error),
+      },
+    });
+  }
+}
+
+function pollCSharpKernelSignal() {
+  if (!activeKernelSignalState) return 0;
+  const sequence = Atomics.load(activeKernelSignalState, 0);
+  if (sequence === activeKernelSignalSequence) return 0;
+  activeKernelSignalSequence = sequence;
+  return Atomics.load(activeKernelSignalState, 1) | 0;
 }
 
 function projectUtf8Bytes(value) {
@@ -1080,6 +2465,12 @@ function throwKernelVirtualMutationError(path, operation) {
 
 function emitProjectEvent(payload) {
   if (!activeProjectIo?.messageId) return;
+  if (
+    activeProjectIo.traceKernelFileSystem &&
+    payload?.type === 'file-change'
+  ) {
+    return;
+  }
   const budgetedPayload = applyProjectEventBudget(activeProjectIo, payload);
   if (!budgetedPayload) return;
   if (budgetedPayload?.type === 'output' && typeof budgetedPayload.data === 'string') {
@@ -1182,6 +2573,24 @@ function flushProjectOutput(stream) {
   if (!buffer.length) return;
   const bytes = new Uint8Array(buffer);
   buffer.length = 0;
+  if (activeTraceKernelClient && context.request?.source !== 'compile') {
+    let offset = 0;
+    while (offset < bytes.byteLength) {
+      const written = activeTraceKernelClient.request({
+        op: 'write',
+        fd: stream === 'stderr' ? 2 : 1,
+        bytes: bytes.subarray(offset),
+      }).bytesWritten;
+      if (written <= 0 || written > bytes.byteLength - offset) {
+        throw new CSharpTraceKernelSyscallError(
+          'EIO',
+          `invalid TraceKernel stdio write length ${written}`
+        );
+      }
+      offset += written;
+    }
+    return;
+  }
   emitProjectOutput(
     stream,
     decodeUtf8(bytes),
@@ -1222,6 +2631,20 @@ function readProjectInputByte(devicePath = '/dev/stdin') {
   if (!context) return null;
   const inputDevice = kernelDeviceInputSource(devicePath, context.request);
   if (!inputDevice || inputDevice === '/dev/null') return null;
+  if (activeTraceKernelClient && context.request?.source !== 'compile') {
+    if (context.kernelStdinOffset >= context.kernelStdinBytes.byteLength) {
+      context.kernelStdinBytes = activeTraceKernelClient.request({
+        op: 'read',
+        fd: 0,
+        maxBytes: 64 * 1024,
+      }).bytes;
+      context.kernelStdinOffset = 0;
+    }
+    if (context.kernelStdinBytes.byteLength === 0) return null;
+    const byte = context.kernelStdinBytes[context.kernelStdinOffset];
+    context.kernelStdinOffset += 1;
+    return byte;
+  }
   if (context.stdinPipe) return readStdinPipeByte(context.stdinPipe);
   return null;
 }
@@ -1603,7 +3026,7 @@ function installRuntimeFsHooks(runtime) {
   const originalSymlink = fs.symlink;
   if (typeof originalSymlink === 'function') {
     fs.symlink = function symlinkWithProjectEvents(oldPath, newPath) {
-      if (activeProjectIo) {
+      if (activeProjectIo && !activeProjectIo.traceKernelFileSystem) {
         throwKernelVirtualMutationError(newPath, 'symlink');
         throwKernelFsError(newPath, 'symlink', 'ENOTSUP', 'symbolic links are not supported by this runtime');
       }
@@ -1614,7 +3037,7 @@ function installRuntimeFsHooks(runtime) {
   const originalLink = fs.link;
   if (typeof originalLink === 'function') {
     fs.link = function linkWithProjectEvents(oldPath, newPath) {
-      if (activeProjectIo) {
+      if (activeProjectIo && !activeProjectIo.traceKernelFileSystem) {
         throwKernelVirtualMutationError(oldPath, 'link');
         throwKernelVirtualMutationError(newPath, 'link');
         throwKernelFsError(newPath, 'link', 'ENOTSUP', 'hard links are not supported by the project file manifest');
@@ -1626,7 +3049,7 @@ function installRuntimeFsHooks(runtime) {
   const originalReadlink = fs.readlink;
   if (typeof originalReadlink === 'function') {
     fs.readlink = function readlinkWithProjectEvents(path) {
-      if (activeProjectIo) {
+      if (activeProjectIo && !activeProjectIo.traceKernelFileSystem) {
         throwKernelFsError(path, 'readlink', 'EINVAL', 'invalid argument');
       }
       return originalReadlink.apply(this, arguments);
@@ -1743,6 +3166,8 @@ async function loadRuntime(assetBaseUrl) {
       runtime.setModuleImports('tracecode', {
         emitProjectEvent: emitProjectEventJson,
         readProjectInputByte: () => readProjectInputByte('/dev/stdin') ?? -1,
+        kernelSyscall: invokeCSharpTraceKernelSyscall,
+        pollKernelSignal: pollCSharpKernelSignal,
       });
       const exports = await runtime.getAssemblyExports(runtime.getConfig().mainAssemblyName);
       executeExport = exports?.TraceCode?.CSharpHost?.CompilerHost?.Execute;
@@ -2824,6 +4249,8 @@ async function handleMessage(message) {
       request,
       protocolToken: message.protocolToken,
       stdinPipe: stdinPipeState(request?.stdinPipe),
+      kernelStdinBytes: new Uint8Array(),
+      kernelStdinOffset: 0,
       stdoutBytes: [],
       stderrBytes: [],
       eventStdout: [],
@@ -2838,18 +4265,54 @@ async function handleMessage(message) {
       stderrDevice: '/dev/stderr',
       stdoutSourceDevice: undefined,
       stderrSourceDevice: undefined,
+      traceKernelFileSystem: Boolean(message.kernelSyscallChannel),
     };
+    const kernelClient = message.kernelSyscallChannel
+      ? new CSharpTraceKernelSyncClient(
+          message.kernelSyscallChannel,
+          () => trustedCSharpWorkerPostMessage({
+            id: message.id,
+            type: 'kernel-syscall',
+            payload: {},
+            protocolToken: message.protocolToken,
+          })
+        )
+      : null;
+    let restoreTraceKernelMount = () => {};
     let result;
     try {
+      if (kernelClient) {
+        const kernelWorkspaceRoot =
+          typeof request?.project?.workspaceRoot === 'string' &&
+          request.project.workspaceRoot.startsWith('/')
+            ? request.project.workspaceRoot
+            : typeof request?.cwd === 'string' && request.cwd.startsWith('/')
+              ? request.cwd
+              : '/workspace';
+        restoreTraceKernelMount = installCSharpTraceKernelMount(
+          runtimeModule,
+          kernelClient,
+          kernelWorkspaceRoot
+        );
+      }
       try {
         materializeKernelDevices(request);
       } catch (error) {
         throw new Error(`C# project device setup failed: ${formatCSharpWorkerError(error)}`);
       }
       activeProjectIo = projectIo;
+      activeTraceKernelClient = kernelClient;
+      activeKernelSignalState =
+        message.kernelSignalMailbox?.buffer instanceof SharedArrayBuffer
+          ? new Int32Array(message.kernelSignalMailbox.buffer)
+          : null;
+      activeKernelSignalSequence = 0;
       try {
         result = await withCSharpUserAuthorityLockdown(
-          () => JSON.parse(executeProjectExport(JSON.stringify(projectRuntimeRequest(request)))),
+          () => JSON.parse(executeProjectExport(JSON.stringify({
+            ...projectRuntimeRequest(request),
+            traceKernelFileSystem: Boolean(kernelClient),
+          }))),
           projectUserAuthorityMode
         );
       } catch (error) {
@@ -2857,6 +4320,14 @@ async function handleMessage(message) {
       }
       flushProjectOutput('stdout');
       flushProjectOutput('stderr');
+      if (
+        kernelClient &&
+        request?.source !== 'compile' &&
+        activeProjectIo.directDeviceOutput
+      ) {
+        result.stdout = '';
+        result.stderr = '';
+      }
       if (activeProjectIo.directDeviceOutput) {
         emitMissingDirectDeviceResultOutput(result, activeProjectIo);
         result.stdout = activeProjectIo.eventStdout.join('');
@@ -2869,6 +4340,11 @@ async function handleMessage(message) {
       flushProjectOutput('stdout');
       flushProjectOutput('stderr');
       activeProjectIo = null;
+      activeTraceKernelClient = null;
+      activeKernelSignalState = null;
+      activeKernelSignalSequence = 0;
+      restoreTraceKernelMount();
+      kernelClient?.close();
     }
     const hostCallMs = elapsedMs(hostCallStartedAt);
     return {
@@ -2888,7 +4364,14 @@ async function handleMessage(message) {
 // Keep globalThis.onmessage unset before dotnet.js loads; newer .NET worker bootstraps
 // use that signal to enable sidecar mode.
 self.addEventListener('message', (event) => {
-  const { id, type, payload, protocolToken } = event.data || {};
+  const {
+    id,
+    type,
+    payload,
+    protocolToken,
+    kernelSyscallChannel,
+    kernelSignalMailbox,
+  } = event.data || {};
   if (type === 'compiler-artifact-cache-response') {
     const pending = pendingCompilerArtifactCacheRequests.get(event.data?.requestId);
     if (!pending || protocolToken !== pending.protocolToken) return;
@@ -2915,7 +4398,14 @@ self.addEventListener('message', (event) => {
     .catch(() => {})
     .then(async () => {
       await sharedKernelPolicyReady;
-      const result = await handleMessage({ id, type, payload, protocolToken });
+      const result = await handleMessage({
+        id,
+        type,
+        payload,
+        protocolToken,
+        kernelSyscallChannel,
+        kernelSignalMailbox,
+      });
       const transported = type === 'execute-with-tracing'
         ? prepareCSharpTraceEventTransfer(result, payload?.traceEventTransport)
         : null;

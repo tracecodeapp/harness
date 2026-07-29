@@ -19,11 +19,17 @@ interface WorkerMessage {
   type: string;
   payload?: Record<string, unknown>;
   protocolToken?: string;
+  kernelSyscallChannel?: {
+    buffer: SharedArrayBuffer;
+    byteCapacity: number;
+  };
+  kernelSyscallGenerationBuffer?: SharedArrayBuffer;
 }
 
 class AssetWorker {
   static instances: AssetWorker[] = [];
   static fetches: string[] = [];
+  static emitKernelSyscall = false;
 
   onmessage: ((event: MessageEvent<WorkerMessage>) => void) | null = null;
   onerror: ((event: ErrorEvent) => void) | null = null;
@@ -41,6 +47,16 @@ class AssetWorker {
     this.messages.push(message);
     if (message.type === 'execute-project-cpp') {
       this.fetchesAtProjectExecution = [...AssetWorker.fetches];
+      if (AssetWorker.emitKernelSyscall) {
+        queueMicrotask(() => this.onmessage?.({
+          data: {
+            id: message.id,
+            type: 'kernel-syscall',
+            protocolToken: message.protocolToken,
+            payload: {},
+          },
+        } as unknown as MessageEvent<WorkerMessage>));
+      }
     }
     const payload = message.type === 'init'
       ? { success: true, loadTimeMs: 0 }
@@ -61,6 +77,65 @@ class AssetWorker {
 
   terminate(): void {
     this.terminated = true;
+  }
+}
+
+async function testCppKernelSyscallChannelPlumbing(): Promise<void> {
+  const originalWorker = globalThis.Worker;
+  AssetWorker.instances = [];
+  AssetWorker.emitKernelSyscall = true;
+  // @ts-expect-error focused Worker test double
+  globalThis.Worker = AssetWorker;
+  let serviceCalls = 0;
+  const syscallBuffer = new SharedArrayBuffer(288);
+  const generationBuffer = new SharedArrayBuffer(Int32Array.BYTES_PER_ELEMENT);
+  const client = new CppWorkerClient({
+    workerUrl: '/cpp/cpp-worker.js',
+    clangWasmUrl: '',
+    lldWasmUrl: '',
+    sysrootUrl: '',
+    runtimeHeaderUrl: '/cpp/tracecode_runtime.hpp',
+    compilerBundleUrl: '/cpp/compiler-bundle.js',
+  });
+  try {
+    await client.executeProjectCpp({
+      code: '',
+      source: 'run',
+      scriptPath: './program.wasm',
+      args: [],
+      cwd: '/workspace',
+      env: {},
+      project: { files: [{ path: 'program.wasm', contents: '', encoding: 'base64' }] },
+      kernelSyscalls: {
+        channel: { buffer: syscallBuffer, byteCapacity: 256 },
+        generationBuffer,
+        dispatch: async () => ({
+          ok: false,
+          error: { code: 'ENOSYS', message: 'not used by the sync test' },
+        }),
+        service: async () => {
+          serviceCalls += 1;
+        },
+        close: () => undefined,
+      },
+    });
+    await Promise.resolve();
+    const execution = AssetWorker.instances
+      .flatMap((worker) => worker.messages)
+      .find((message) => message.type === 'execute-project-cpp');
+    assertCondition(
+      execution?.kernelSyscallChannel?.buffer === syscallBuffer &&
+        execution.kernelSyscallGenerationBuffer === generationBuffer,
+      'C++ execution should receive the shared syscall channel and TKFS generation buffer'
+    );
+    assertCondition(
+      serviceCalls === 1,
+      `C++ kernel-syscall notifications should service the correlated bridge exactly once: ${serviceCalls}`
+    );
+  } finally {
+    client.terminate();
+    AssetWorker.emitKernelSyscall = false;
+    globalThis.Worker = originalWorker;
   }
 }
 
@@ -247,6 +322,7 @@ Object.defineProperty(globalThis, 'location', {
   value: { href: 'https://app.example/', origin: 'https://app.example' },
 });
 try {
+  await testCppKernelSyscallChannelPlumbing();
   await testCppClientPreflightsLazily();
   await testClassicAndProjectManifestPlumbing();
   console.log('PASS: C++ Classic/project runtime asset manifest plumbing');

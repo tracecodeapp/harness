@@ -10,9 +10,18 @@ import type {
   RuntimeKernelHttpProtocolMessage,
   RuntimeKernelHttpRequest,
   RuntimeKernelHttpResponse,
+  RuntimeKernelSyscallBridge,
 } from '@tracecode/harness-core';
 import {
+  TraceKernelRuntimeFileClient,
+  TraceKernelSharedGenerationSource,
+  TraceKernelSharedSyscallClient,
+  type TraceKernelSyscallRequest,
+  type TraceKernelSyscallResult,
+} from '@tracecode/tracekernel';
+import {
   runBrowserJavaScriptProjectRequest,
+  type BrowserTraceKernelFileSystem,
   type BrowserJavaScriptProjectRunnerOptions,
   type BrowserJavaScriptProjectExecutionState,
   type JavaScriptProjectCommandRequest,
@@ -27,7 +36,8 @@ interface WorkerMessage {
     BrowserJavaScriptProjectRunnerOptions,
     'allowDynamicEval' | 'projectUserAuthorityMode'
   >;
-  port?: MessagePort;
+  kernelSyscallChannel?: RuntimeKernelSyscallBridge['channel'];
+  kernelSyscallGenerationBuffer?: SharedArrayBuffer;
 }
 
 const workerScope = self as typeof self & {
@@ -207,9 +217,61 @@ interface ActiveWorkerCommand {
   bridge: WorkerKernelHttpBridge;
   protocolToken: string;
   executionState: BrowserJavaScriptProjectExecutionState;
+  syscallClient?: TraceKernelSharedSyscallClient;
+  asyncSyscallClient?: WorkerKernelAsyncSyscallClient;
 }
 
 const activeHttpBridges = new Map<string, ActiveWorkerCommand>();
+
+class WorkerKernelAsyncSyscallClient {
+  private nextRequestId = 1;
+  private closed = false;
+  private readonly pending = new Map<string, {
+    resolve: (result: TraceKernelSyscallResult) => void;
+  }>();
+
+  constructor(
+    private readonly postProtocolMessage: (
+      requestId: string,
+      request: TraceKernelSyscallRequest
+    ) => void
+  ) {}
+
+  private closedResult(): TraceKernelSyscallResult {
+    return {
+      ok: false,
+      error: {
+        code: 'EIO',
+        message: 'ECLOSED: async syscall client is closed',
+      },
+    };
+  }
+
+  dispatch(request: TraceKernelSyscallRequest): Promise<TraceKernelSyscallResult> {
+    if (this.closed) {
+      return Promise.resolve(this.closedResult());
+    }
+    const requestId = `async-syscall-${this.nextRequestId++}`;
+    return new Promise<TraceKernelSyscallResult>((resolve) => {
+      this.pending.set(requestId, { resolve });
+      this.postProtocolMessage(requestId, request);
+    });
+  }
+
+  resolve(requestId: string, result: TraceKernelSyscallResult): void {
+    const pending = this.pending.get(requestId);
+    this.pending.delete(requestId);
+    pending?.resolve(result);
+  }
+
+  close(): void {
+    if (this.closed) return;
+    this.closed = true;
+    const result = this.closedResult();
+    for (const pending of this.pending.values()) pending.resolve(result);
+    this.pending.clear();
+  }
+}
 
 function postCommandMessage(
   postMessage: (message: WorkerMessage) => void,
@@ -233,10 +295,25 @@ function handleKernelHttpHostMessage(message: WorkerMessage): boolean {
       ? (payload as { signal: string }).signal
       : 'SIGTERM';
     const handled = command.executionState.dispatchSignal?.(signal) === true;
+    if (!handled && signal === 'SIGWINCH') return true;
     if (!handled) {
       command.executionState.cancelled = true;
       command.executionState.abortController.abort({ signal });
       command.executionState.cleanupHostGlobals?.();
+    }
+    return true;
+  }
+
+  if (type === 'kernel-syscall-async-result') {
+    const result = payload as {
+      requestId?: unknown;
+      result?: unknown;
+    };
+    if (typeof result.requestId === 'string') {
+      command.asyncSyscallClient?.resolve(
+        result.requestId,
+        result.result as TraceKernelSyscallResult
+      );
     }
     return true;
   }
@@ -287,7 +364,15 @@ function handleKernelHttpHostMessage(message: WorkerMessage): boolean {
 }
 
 workerScope.onmessage = (event: MessageEvent<WorkerMessage>) => {
-  const { id, type, payload, protocolToken, runnerOptions, port } = event.data;
+  const {
+    id,
+    type,
+    payload,
+    protocolToken,
+    runnerOptions,
+    kernelSyscallChannel,
+    kernelSyscallGenerationBuffer,
+  } = event.data;
   if (!id) return;
 
   if (handleKernelHttpHostMessage(event.data)) return;
@@ -302,15 +387,6 @@ workerScope.onmessage = (event: MessageEvent<WorkerMessage>) => {
     return;
   }
 
-  const commandPort = port ?? null;
-  const postToHost = commandPort ? commandPort.postMessage.bind(commandPort) : postWorkerMessage;
-  commandPort?.start?.();
-  if (commandPort) {
-    commandPort.onmessage = (messageEvent: MessageEvent<WorkerMessage>) => {
-      handleKernelHttpHostMessage(messageEvent.data);
-    };
-  }
-
   const request = payload as JavaScriptProjectCommandRequest;
   const options: BrowserJavaScriptProjectRunnerOptions = {
     allowDynamicEval: runnerOptions?.allowDynamicEval,
@@ -320,11 +396,56 @@ workerScope.onmessage = (event: MessageEvent<WorkerMessage>) => {
     cancelled: false,
     abortController: new AbortController(),
   };
+  let syscallClient: TraceKernelSharedSyscallClient | undefined;
+  let asyncSyscallClient: WorkerKernelAsyncSyscallClient | undefined;
+  if (kernelSyscallChannel) {
+    syscallClient = new TraceKernelSharedSyscallClient(
+      kernelSyscallChannel,
+      () => postCommandMessage(
+        postWorkerMessage,
+        id,
+        protocolToken,
+        'kernel-syscall',
+        {}
+      )
+    );
+    executionState.kernelFileSystem = new TraceKernelRuntimeFileClient(
+      syscallClient,
+      {
+        ...(kernelSyscallGenerationBuffer
+          ? {
+              generation: new TraceKernelSharedGenerationSource(
+                kernelSyscallGenerationBuffer
+              ),
+            }
+          : {}),
+      }
+    ) satisfies BrowserTraceKernelFileSystem;
+    executionState.kernelSyscalls = syscallClient;
+    asyncSyscallClient = new WorkerKernelAsyncSyscallClient(
+      (requestId, request) => postCommandMessage(
+        postWorkerMessage,
+        id,
+        protocolToken,
+        'kernel-syscall-async',
+        { requestId, request }
+      )
+    );
+    executionState.kernelNetwork = asyncSyscallClient;
+  }
   const kernelHttp = new WorkerKernelHttpBridge((message) => {
-    postCommandMessage(postToHost, id, protocolToken, message.type, message);
+    postCommandMessage(postWorkerMessage, id, protocolToken, message.type, message);
   });
-  activeHttpBridges.set(id, { bridge: kernelHttp, protocolToken, executionState });
+  activeHttpBridges.set(id, {
+    bridge: kernelHttp,
+    protocolToken,
+    executionState,
+    ...(syscallClient ? { syscallClient } : {}),
+    ...(asyncSyscallClient ? { asyncSyscallClient } : {}),
+  });
   const clearActiveCommand = (): void => {
+    activeHttpBridges.get(id)?.syscallClient?.close();
+    activeHttpBridges.get(id)?.asyncSyscallClient?.close();
     activeHttpBridges.delete(id);
   };
 
@@ -339,7 +460,7 @@ workerScope.onmessage = (event: MessageEvent<WorkerMessage>) => {
         ) {
           return;
         }
-        postCommandMessage(postToHost, id, protocolToken, 'project-event', runtimeEvent);
+        postCommandMessage(postWorkerMessage, id, protocolToken, 'project-event', runtimeEvent);
       },
     },
     options,
@@ -347,13 +468,11 @@ workerScope.onmessage = (event: MessageEvent<WorkerMessage>) => {
   ).then(
     (result: RuntimeCommandResult) => {
       clearActiveCommand();
-      postCommandMessage(postToHost, id, protocolToken, 'execute-result', result);
-      commandPort?.close();
+      postCommandMessage(postWorkerMessage, id, protocolToken, 'execute-result', result);
     },
     (error) => {
       clearActiveCommand();
-      postCommandMessage(postToHost, id, protocolToken, 'error', { error: errorMessage(error) });
-      commandPort?.close();
+      postCommandMessage(postWorkerMessage, id, protocolToken, 'error', { error: errorMessage(error) });
     }
   );
 };

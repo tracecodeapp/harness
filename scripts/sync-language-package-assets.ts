@@ -1,6 +1,14 @@
 #!/usr/bin/env npx tsx
 
-import { copyFile, cp, mkdir, rm, stat } from 'node:fs/promises';
+import {
+  copyFile,
+  cp,
+  mkdir,
+  mkdtemp,
+  rename,
+  rm,
+  stat,
+} from 'node:fs/promises';
 import { createRequire } from 'node:module';
 import { dirname, join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
@@ -22,6 +30,10 @@ interface PackageAssetPlan {
 const SHARED_PACKAGE_FILES = ['LICENSE', 'THIRD_PARTY_NOTICES.md'] as const;
 
 const PACKAGE_ASSET_PLANS: PackageAssetPlan[] = [
+  {
+    packageDir: 'packages/tracekernel',
+    assets: [],
+  },
   {
     packageDir: 'packages/harness-core',
     assets: [],
@@ -256,14 +268,41 @@ async function copyPath(sourcePath: string, targetPath: string): Promise<void> {
 
 async function syncPackage(plan: PackageAssetPlan): Promise<void> {
   const packageRoot = join(ROOT, plan.packageDir);
-  await rm(join(packageRoot, 'workers'), { recursive: true, force: true });
 
   for (const sharedFile of SHARED_PACKAGE_FILES) {
     await copyPath(join(ROOT, sharedFile), join(packageRoot, sharedFile));
   }
 
-  for (const asset of plan.assets) {
-    await copyPath(resolveSourcePath(asset), join(packageRoot, ...asset.target));
+  const workersTarget = join(packageRoot, 'workers');
+  if (plan.assets.length === 0) {
+    await rm(workersTarget, { recursive: true, force: true });
+    return;
+  }
+
+  const stagingRoot = await mkdtemp(join(packageRoot, '.workers-sync-'));
+  const previousWorkers = join(stagingRoot, 'previous-workers');
+  try {
+    for (const asset of plan.assets) {
+      await copyPath(
+        resolveSourcePath(asset),
+        join(stagingRoot, ...asset.target)
+      );
+    }
+    try {
+      await rename(workersTarget, previousWorkers);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+    }
+    try {
+      await rename(join(stagingRoot, 'workers'), workersTarget);
+    } catch (error) {
+      const code = (error as NodeJS.ErrnoException).code;
+      if (code !== 'EEXIST' && code !== 'ENOTEMPTY') throw error;
+      // Another identical sync won the atomic publication race.
+    }
+    await rm(previousWorkers, { recursive: true, force: true });
+  } finally {
+    await rm(stagingRoot, { recursive: true, force: true });
   }
 }
 

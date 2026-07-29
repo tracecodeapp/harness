@@ -1970,12 +1970,15 @@ function readStdinPipeByte(state) {
   }
 }
 
-function installPyodideProjectStdioBridge(kernelDevices, stdinPipe) {
+function installPyodideProjectStdioBridge(kernelDevices, stdinPipe, kernelClient) {
   if (!pyodide) return () => {};
 
   const devices = normalizeProjectKernelDevices(kernelDevices);
   const kernelPolicy = self.TraceRuntimeKernelPolicy;
   const stdinPipeReader = stdinPipeState(stdinPipe);
+  let kernelStdinBytes = new Uint8Array();
+  let kernelStdinOffset = 0;
+  let kernelStdinClosed = false;
   const previousReadProjectStdinByte = self.__tracecodeReadProjectStdinByte;
   delete self.__tracecodeProjectProviderOutput;
   const deviceInputSource = (device) => (
@@ -1986,6 +1989,24 @@ function installPyodideProjectStdioBridge(kernelDevices, stdinPipe) {
   const readProjectStdinByte = (device = '/dev/stdin') => {
     const inputDevice = deviceInputSource(device);
     if (!inputDevice || inputDevice === '/dev/null') return -1;
+    if (kernelClient) {
+      if (
+        kernelStdinOffset >= kernelStdinBytes.byteLength &&
+        !kernelStdinClosed
+      ) {
+        kernelStdinBytes = kernelClient.request({
+          op: 'read',
+          fd: 0,
+          maxBytes: 64 * 1024,
+        }).bytes;
+        kernelStdinOffset = 0;
+        kernelStdinClosed = kernelStdinBytes.byteLength === 0;
+      }
+      if (kernelStdinClosed) return -1;
+      const byte = kernelStdinBytes[kernelStdinOffset];
+      kernelStdinOffset += 1;
+      return byte;
+    }
     if (stdinPipeReader) return readStdinPipeByte(stdinPipeReader);
     return -1;
   };
@@ -2027,6 +2048,1567 @@ function installPyodideProjectStdioBridge(kernelDevices, stdinPipe) {
       } catch {
         // Restoring Pyodide stream defaults is best-effort.
       }
+    }
+  };
+}
+
+const PYTHON_TK_SYSCALL_FRAME_MAGIC = 0x544b5301;
+const PYTHON_TK_SHARED_HEADER_INTS = 8;
+const PYTHON_TK_SHARED_HEADER_BYTES =
+  PYTHON_TK_SHARED_HEADER_INTS * Int32Array.BYTES_PER_ELEMENT;
+const PYTHON_TK_SHARED_STATE_INDEX = 0;
+const PYTHON_TK_SHARED_REQUEST_LENGTH_INDEX = 1;
+const PYTHON_TK_SHARED_RESPONSE_LENGTH_INDEX = 2;
+const PYTHON_TK_SHARED_SEQUENCE_INDEX = 3;
+const PYTHON_TK_SHARED_STATE_IDLE = 0;
+const PYTHON_TK_SHARED_STATE_REQUEST = 1;
+const PYTHON_TK_SHARED_STATE_RESPONSE = 3;
+const PYTHON_TK_SHARED_STATE_CLOSED = 4;
+const PYTHON_TK_SHARED_STATE_WRITING = 5;
+const PYTHON_TK_OP_CODES = Object.freeze({
+  open: 1,
+  read: 2,
+  write: 3,
+  close: 4,
+  dup: 5,
+  stat: 6,
+  readdir: 7,
+  mkdir: 8,
+  rmdir: 9,
+  unlink: 10,
+  rename: 11,
+  readFile: 12,
+  writeFile: 13,
+  fstat: 14,
+  ftruncate: 15,
+  link: 16,
+  symlink: 17,
+  readlink: 18,
+  lstat: 19,
+  realpath: 20,
+  socket: 21,
+  bind: 22,
+  listen: 23,
+  accept: 24,
+  connect: 25,
+  send: 26,
+  recv: 27,
+  shutdown: 28,
+  getsockname: 29,
+  getpeername: 30,
+  pipe: 31,
+  spawn: 32,
+  wait: 33,
+  kill: 34,
+  watchdog: 36,
+  dup2: 37,
+  fcntl: 38,
+  setsid: 39,
+  setpgid: 40,
+  dup3: 41,
+  poll: 42,
+  getsockopt: 43,
+  identity: 44,
+  isatty: 45,
+  tcgetpgrp: 46,
+  tcsetpgrp: 47,
+  tcgetwinsize: 52,
+  tcsetwinsize: 53,
+});
+const PYTHON_TK_OPS_BY_CODE = new Map(
+  Object.entries(PYTHON_TK_OP_CODES).map(([operation, code]) => [
+    code,
+    operation,
+  ])
+);
+
+class PythonTraceKernelSyscallError extends Error {
+  constructor(code, message) {
+    super(message);
+    this.name = 'PythonTraceKernelSyscallError';
+    this.code = code;
+  }
+}
+
+class PythonTraceKernelFrameWriter {
+  constructor() {
+    this.bytes = new Uint8Array(256);
+    this.view = new DataView(this.bytes.buffer);
+    this.offset = 0;
+  }
+
+  ensure(length) {
+    const required = this.offset + length;
+    if (required <= this.bytes.byteLength) return;
+    let capacity = this.bytes.byteLength;
+    while (capacity < required) capacity *= 2;
+    const next = new Uint8Array(capacity);
+    next.set(this.bytes);
+    this.bytes = next;
+    this.view = new DataView(next.buffer);
+  }
+
+  u8(value) {
+    this.ensure(1);
+    this.view.setUint8(this.offset, value);
+    this.offset += 1;
+  }
+
+  u32(value) {
+    this.ensure(4);
+    this.view.setUint32(this.offset, value >>> 0, true);
+    this.offset += 4;
+  }
+
+  i32(value) {
+    this.ensure(4);
+    this.view.setInt32(this.offset, value | 0, true);
+    this.offset += 4;
+  }
+
+  f64(value) {
+    this.ensure(8);
+    this.view.setFloat64(this.offset, Number(value), true);
+    this.offset += 8;
+  }
+
+  bytesValue(value) {
+    const bytes = value instanceof Uint8Array
+      ? value
+      : new Uint8Array(value);
+    this.u32(bytes.byteLength);
+    this.ensure(bytes.byteLength);
+    this.bytes.set(bytes, this.offset);
+    this.offset += bytes.byteLength;
+  }
+
+  string(value) {
+    this.bytesValue(new TextEncoder().encode(String(value)));
+  }
+
+  finish() {
+    return this.bytes.slice(0, this.offset);
+  }
+}
+
+class PythonTraceKernelFrameReader {
+  constructor(bytes) {
+    this.bytes = bytes;
+    this.view = new DataView(
+      bytes.buffer,
+      bytes.byteOffset,
+      bytes.byteLength
+    );
+    this.offset = 0;
+  }
+
+  ensure(length) {
+    if (this.offset + length > this.bytes.byteLength) {
+      throw new PythonTraceKernelSyscallError(
+        'EPROTO',
+        'truncated syscall response'
+      );
+    }
+  }
+
+  u8() {
+    this.ensure(1);
+    return this.view.getUint8(this.offset++);
+  }
+
+  u32() {
+    this.ensure(4);
+    const value = this.view.getUint32(this.offset, true);
+    this.offset += 4;
+    return value;
+  }
+
+  i32() {
+    this.ensure(4);
+    const value = this.view.getInt32(this.offset, true);
+    this.offset += 4;
+    return value;
+  }
+
+  f64() {
+    this.ensure(8);
+    const value = this.view.getFloat64(this.offset, true);
+    this.offset += 8;
+    return value;
+  }
+
+  bytesValue() {
+    const length = this.u32();
+    this.ensure(length);
+    const value = this.bytes.slice(this.offset, this.offset + length);
+    this.offset += length;
+    return value;
+  }
+
+  string() {
+    return new TextDecoder().decode(this.bytesValue());
+  }
+
+  done() {
+    if (this.offset !== this.bytes.byteLength) {
+      throw new PythonTraceKernelSyscallError(
+        'EPROTO',
+        'syscall response has trailing bytes'
+      );
+    }
+  }
+}
+
+class PythonTraceKernelSyncClient {
+  constructor(channel, signalHost, timeoutMs = 20_000) {
+    if (
+      typeof SharedArrayBuffer === 'undefined' ||
+      !(channel?.buffer instanceof SharedArrayBuffer) ||
+      !Number.isSafeInteger(channel.byteCapacity) ||
+      channel.byteCapacity < 256 ||
+      channel.buffer.byteLength !==
+        PYTHON_TK_SHARED_HEADER_BYTES + channel.byteCapacity
+    ) {
+      throw new PythonTraceKernelSyscallError(
+        'EPROTO',
+        'invalid shared syscall channel'
+      );
+    }
+    this.header = new Int32Array(
+      channel.buffer,
+      0,
+      PYTHON_TK_SHARED_HEADER_INTS
+    );
+    this.payload = new Uint8Array(
+      channel.buffer,
+      PYTHON_TK_SHARED_HEADER_BYTES
+    );
+    this.signalHost = signalHost;
+    this.timeoutMs = timeoutMs;
+    this.closed = false;
+  }
+
+  watchdog(action, timeoutMs, signal) {
+    return this.request({
+      op: 'watchdog',
+      action,
+      ...(timeoutMs === undefined ? {} : { timeoutMs }),
+      ...(signal === undefined ? {} : { signal }),
+    });
+  }
+
+  request(request) {
+    if (this.closed) {
+      throw new PythonTraceKernelSyscallError(
+        'ECLOSED',
+        'shared syscall channel is closed'
+      );
+    }
+    const writer = new PythonTraceKernelFrameWriter();
+    writer.u32(PYTHON_TK_SYSCALL_FRAME_MAGIC);
+    writer.u8(1);
+    const operationCode = PYTHON_TK_OP_CODES[request.op];
+    if (!operationCode) {
+      throw new PythonTraceKernelSyscallError(
+        'ENOSYS',
+        `unsupported Python TraceKernel syscall ${request.op}`
+      );
+    }
+    writer.u8(operationCode);
+    switch (request.op) {
+      case 'pipe':
+        writer.u32(request.options?.capacityChunks ?? 0);
+        writer.u8(request.options?.closeOnExec === true ? 1 : 0);
+        writer.u8(request.options?.nonblocking === true ? 1 : 0);
+        break;
+      case 'watchdog':
+        writer.u8(
+          request.action === 'arm'
+            ? 1
+            : request.action === 'pet'
+              ? 2
+              : request.action === 'disarm'
+                ? 3
+                : 4
+        );
+        writer.u8(request.timeoutMs === undefined ? 0 : 1);
+        if (request.timeoutMs !== undefined) writer.u32(request.timeoutMs);
+        writer.u8(
+          request.signal === undefined
+            ? 0
+            : request.signal === 'SIGTERM'
+              ? 1
+              : 2
+        );
+        break;
+      case 'spawn': {
+        writer.string(request.runtime);
+        writer.string(request.command);
+        writer.u32(request.args?.length ?? 0);
+        for (const argument of request.args ?? []) writer.string(argument);
+        writer.u8(request.cwd === undefined ? 0 : 1);
+        if (request.cwd !== undefined) writer.string(request.cwd);
+        const environment = Object.entries(request.env ?? {});
+        writer.u32(environment.length);
+        for (const [name, value] of environment) {
+          writer.string(name);
+          writer.string(value);
+        }
+        writer.u8(
+          request.inheritDescriptors === 'all'
+            ? 1
+            : request.inheritDescriptors === undefined
+              ? 0
+              : 2
+        );
+        if (
+          request.inheritDescriptors !== undefined &&
+          request.inheritDescriptors !== 'all'
+        ) {
+          writer.u32(request.inheritDescriptors.length);
+          for (const fd of request.inheritDescriptors) writer.i32(fd);
+        }
+        writer.u8(request.processGroupId === undefined ? 0 : 1);
+        if (request.processGroupId !== undefined) {
+          writer.i32(request.processGroupId);
+        }
+        writer.u8(request.sessionId === undefined ? 0 : 1);
+        if (request.sessionId !== undefined) writer.i32(request.sessionId);
+        const writeStdioMode = (mode) => writer.u8(
+          mode === undefined
+            ? 0
+            : mode === 'pipe'
+              ? 1
+              : mode === 'inherit'
+                ? 2
+                : 3
+        );
+        writeStdioMode(request.stdio?.stdin);
+        writeStdioMode(request.stdio?.stdout);
+        writeStdioMode(request.stdio?.stderr);
+        writer.u32(request.descriptorActions?.length ?? 0);
+        for (const action of request.descriptorActions ?? []) {
+          writer.u8(action.op === 'dup2' ? 1 : 2);
+          writer.i32(action.fd);
+          if (action.op === 'dup2') writer.i32(action.targetFd);
+        }
+        writer.u32(request.descriptorMappings?.length ?? 0);
+        for (const mapping of request.descriptorMappings ?? []) {
+          writer.i32(mapping.parentFd);
+          writer.i32(mapping.childFd);
+        }
+        break;
+      }
+      case 'wait':
+        writer.i32(request.pid);
+        writer.u8(request.noHang ? 1 : 0);
+        break;
+      case 'kill':
+        writer.i32(request.pid);
+        writer.u8(
+          request.signal === 'SIGINT'
+            ? 1
+            : request.signal === 'SIGTERM'
+              ? 2
+              : request.signal === 'SIGKILL'
+                ? 3
+                : request.signal === 'SIGHUP'
+                  ? 4
+                  : 5
+        );
+        break;
+      case 'socket':
+        break;
+      case 'bind':
+      case 'connect':
+        writer.i32(request.fd);
+        writer.string(request.address.host);
+        writer.u32(request.address.port);
+        break;
+      case 'listen':
+        writer.i32(request.fd);
+        writer.u8(
+          (request.options?.backlog === undefined ? 0 : 1) |
+            (request.options?.capacityChunks === undefined ? 0 : 2)
+        );
+        if (request.options?.backlog !== undefined) {
+          writer.u32(request.options.backlog);
+        }
+        if (request.options?.capacityChunks !== undefined) {
+          writer.u32(request.options.capacityChunks);
+        }
+        break;
+      case 'accept':
+      case 'getsockname':
+      case 'getpeername':
+        writer.i32(request.fd);
+        break;
+      case 'getsockopt':
+        writer.i32(request.fd);
+        writer.u8(request.option === 'error' ? 1 : 0);
+        break;
+      case 'send':
+        writer.i32(request.fd);
+        writer.bytesValue(request.bytes);
+        break;
+      case 'recv':
+        writer.i32(request.fd);
+        writer.u32(request.maxBytes);
+        break;
+      case 'shutdown':
+        writer.i32(request.fd);
+        writer.u8(
+          request.how === 'read'
+            ? 1
+            : request.how === 'write'
+              ? 2
+              : 3
+        );
+        break;
+      case 'open': {
+        writer.string(request.path);
+        const access = request.options?.access === 'write'
+          ? 2
+          : request.options?.access === 'read-write'
+            ? 3
+            : request.options?.access === 'read'
+              ? 1
+              : 0;
+        writer.u8(access);
+        writer.u8(
+          (request.options?.create ? 1 : 0) |
+            (request.options?.exclusive ? 2 : 0) |
+            (request.options?.truncate ? 4 : 0) |
+            (request.options?.append ? 8 : 0)
+        );
+        break;
+      }
+      case 'read':
+        writer.i32(request.fd);
+        writer.u32(request.maxBytes);
+        writer.u8(request.position === undefined ? 0 : 1);
+        if (request.position !== undefined) writer.f64(request.position);
+        break;
+      case 'write':
+        writer.i32(request.fd);
+        writer.bytesValue(request.bytes);
+        writer.u8(request.position === undefined ? 0 : 1);
+        if (request.position !== undefined) writer.f64(request.position);
+        break;
+      case 'close':
+      case 'dup':
+      case 'fstat':
+        writer.i32(request.fd);
+        break;
+      case 'dup2':
+        writer.i32(request.fd);
+        writer.i32(request.targetFd);
+        break;
+      case 'dup3':
+        writer.i32(request.fd);
+        writer.i32(request.targetFd);
+        writer.u8(request.closeOnExec ? 1 : 0);
+        break;
+      case 'fcntl':
+        writer.i32(request.fd);
+        writer.u8(
+          request.action === 'get-close-on-exec'
+            ? 1
+            : request.action === 'set-close-on-exec'
+              ? 2
+              : request.action === 'get-nonblocking'
+                ? 3
+                : 4
+        );
+        if (request.action === 'set-close-on-exec') {
+          writer.u8(request.closeOnExec ? 1 : 0);
+        } else if (request.action === 'set-nonblocking') {
+          writer.u8(request.nonblocking ? 1 : 0);
+        }
+        break;
+      case 'poll':
+        writer.u32(request.entries.length);
+        for (const entry of request.entries) {
+          writer.i32(entry.fd);
+          writer.u8((entry.read ? 1 : 0) | (entry.write ? 2 : 0));
+        }
+        writer.u8(request.timeoutMs === undefined ? 0 : 1);
+        if (request.timeoutMs !== undefined) writer.f64(request.timeoutMs);
+        break;
+      case 'setsid':
+        break;
+      case 'isatty':
+      case 'tcgetpgrp':
+      case 'tcgetwinsize':
+        writer.i32(request.fd);
+        break;
+      case 'tcsetpgrp':
+        writer.i32(request.fd);
+        writer.i32(request.pgid);
+        break;
+      case 'tcsetwinsize':
+        writer.i32(request.fd);
+        writer.u32(request.rows);
+        writer.u32(request.columns);
+        break;
+      case 'identity':
+        writer.u8(request.pid === undefined ? 0 : 1);
+        if (request.pid !== undefined) writer.i32(request.pid);
+        break;
+      case 'setpgid':
+        writer.i32(request.pid);
+        writer.i32(request.pgid);
+        break;
+      case 'ftruncate':
+        writer.i32(request.fd);
+        writer.f64(request.length);
+        break;
+      case 'stat':
+      case 'lstat':
+      case 'realpath':
+      case 'readdir':
+      case 'rmdir':
+      case 'unlink':
+      case 'readFile':
+      case 'readlink':
+        writer.string(request.path);
+        break;
+      case 'mkdir':
+        writer.string(request.path);
+        writer.u8(
+          (request.options?.recursive ? 1 : 0) |
+            (request.options?.mode === undefined ? 0 : 2)
+        );
+        if (request.options?.mode !== undefined) {
+          writer.u32(request.options.mode);
+        }
+        break;
+      case 'rename':
+        writer.string(request.sourcePath);
+        writer.string(request.destinationPath);
+        break;
+      case 'link':
+        writer.string(request.existingPath);
+        writer.string(request.newPath);
+        break;
+      case 'symlink':
+        writer.string(request.target);
+        writer.string(request.linkPath);
+        break;
+      case 'writeFile':
+        writer.string(request.path);
+        writer.bytesValue(request.bytes);
+        break;
+    }
+    return this.call(writer.finish());
+  }
+
+  call(frame) {
+    if (frame.byteLength > this.payload.byteLength) {
+      throw new PythonTraceKernelSyscallError(
+        'E2BIG',
+        'syscall frame exceeds the shared channel'
+      );
+    }
+    if (
+      Atomics.compareExchange(
+        this.header,
+        PYTHON_TK_SHARED_STATE_INDEX,
+        PYTHON_TK_SHARED_STATE_IDLE,
+        PYTHON_TK_SHARED_STATE_WRITING
+      ) !== PYTHON_TK_SHARED_STATE_IDLE
+    ) {
+      throw new PythonTraceKernelSyscallError(
+        'EBUSY',
+        'shared syscall channel already has an active call'
+      );
+    }
+    this.payload.set(frame);
+    Atomics.store(
+      this.header,
+      PYTHON_TK_SHARED_REQUEST_LENGTH_INDEX,
+      frame.byteLength
+    );
+    Atomics.store(this.header, PYTHON_TK_SHARED_RESPONSE_LENGTH_INDEX, 0);
+    Atomics.add(this.header, PYTHON_TK_SHARED_SEQUENCE_INDEX, 1);
+    Atomics.store(
+      this.header,
+      PYTHON_TK_SHARED_STATE_INDEX,
+      PYTHON_TK_SHARED_STATE_REQUEST
+    );
+    try {
+      this.signalHost();
+    } catch (error) {
+      Atomics.store(
+        this.header,
+        PYTHON_TK_SHARED_STATE_INDEX,
+        PYTHON_TK_SHARED_STATE_IDLE
+      );
+      throw error;
+    }
+
+    const startedAt = Date.now();
+    while (true) {
+      const state = Atomics.load(
+        this.header,
+        PYTHON_TK_SHARED_STATE_INDEX
+      );
+      if (state === PYTHON_TK_SHARED_STATE_RESPONSE) break;
+      if (state === PYTHON_TK_SHARED_STATE_CLOSED) {
+        throw new PythonTraceKernelSyscallError(
+          'ECLOSED',
+          'shared syscall channel closed while waiting'
+        );
+      }
+      const remaining = this.timeoutMs - (Date.now() - startedAt);
+      if (remaining <= 0) {
+        throw new PythonTraceKernelSyscallError(
+          'ETIMEDOUT',
+          'shared syscall timed out'
+        );
+      }
+      Atomics.wait(
+        this.header,
+        PYTHON_TK_SHARED_STATE_INDEX,
+        state,
+        remaining
+      );
+    }
+
+    const responseLength = Atomics.load(
+      this.header,
+      PYTHON_TK_SHARED_RESPONSE_LENGTH_INDEX
+    );
+    if (responseLength <= 0 || responseLength > this.payload.byteLength) {
+      Atomics.store(
+        this.header,
+        PYTHON_TK_SHARED_STATE_INDEX,
+        PYTHON_TK_SHARED_STATE_IDLE
+      );
+      throw new PythonTraceKernelSyscallError(
+        'EPROTO',
+        'invalid shared syscall response length'
+      );
+    }
+    const response = this.payload.slice(0, responseLength);
+    Atomics.store(
+      this.header,
+      PYTHON_TK_SHARED_STATE_INDEX,
+      PYTHON_TK_SHARED_STATE_IDLE
+    );
+    Atomics.notify(this.header, PYTHON_TK_SHARED_STATE_INDEX);
+    return this.decodeResult(response);
+  }
+
+  decodeResult(frame) {
+    const reader = new PythonTraceKernelFrameReader(frame);
+    if (
+      reader.u32() !== PYTHON_TK_SYSCALL_FRAME_MAGIC ||
+      reader.u8() !== 2
+    ) {
+      throw new PythonTraceKernelSyscallError(
+        'EPROTO',
+        'invalid syscall response header'
+      );
+    }
+    const success = reader.u8();
+    if (success === 0) {
+      const code = reader.string();
+      const message = reader.string();
+      throw new PythonTraceKernelSyscallError(code, message);
+    }
+    if (success !== 1) {
+      throw new PythonTraceKernelSyscallError(
+        'EPROTO',
+        'invalid syscall response status'
+      );
+    }
+    const operationCode = reader.u8();
+    const operation = PYTHON_TK_OPS_BY_CODE.get(operationCode);
+    if (!operation) {
+      throw new PythonTraceKernelSyscallError(
+        'EPROTO',
+        `unknown syscall response operation ${operationCode}`
+      );
+    }
+    let value;
+    if (operation === 'watchdog') {
+      const armed = reader.u8();
+      if (armed > 1) {
+        throw new PythonTraceKernelSyscallError(
+          'EPROTO',
+          `invalid watchdog armed flag ${armed}`
+        );
+      }
+      if (!armed) {
+        value = { op: operation, armed: false };
+      } else {
+        const timeoutMs = reader.u32();
+        const deadlineAt = reader.f64();
+        const signalCode = reader.u8();
+        if (signalCode !== 1 && signalCode !== 2) {
+          throw new PythonTraceKernelSyscallError(
+            'EPROTO',
+            `invalid watchdog signal ${signalCode}`
+          );
+        }
+        value = {
+          op: operation,
+          armed: true,
+          timeoutMs,
+          deadlineAt,
+          signal: signalCode === 2 ? 'SIGKILL' : 'SIGTERM',
+        };
+      }
+    } else if (operation === 'pipe') {
+      value = {
+        op: operation,
+        readFd: reader.i32(),
+        writeFd: reader.i32(),
+      };
+    } else if (operation === 'socket') {
+      value = { op: operation, fd: reader.i32() };
+    } else if (operation === 'bind') {
+      value = {
+        op: operation,
+        address: { host: reader.string(), port: reader.u32() },
+      };
+    } else if (operation === 'accept') {
+      value = {
+        op: operation,
+        fd: reader.i32(),
+        localAddress: { host: reader.string(), port: reader.u32() },
+        remoteAddress: { host: reader.string(), port: reader.u32() },
+      };
+    } else if (operation === 'connect') {
+      value = {
+        op: operation,
+        localAddress: { host: reader.string(), port: reader.u32() },
+        remoteAddress: { host: reader.string(), port: reader.u32() },
+      };
+    } else if (operation === 'send') {
+      value = { op: operation, bytesWritten: reader.u32() };
+    } else if (operation === 'recv') {
+      value = { op: operation, bytes: reader.bytesValue() };
+    } else if (
+      operation === 'getsockname' ||
+      operation === 'getpeername'
+    ) {
+      value = {
+        op: operation,
+        address: { host: reader.string(), port: reader.u32() },
+      };
+    } else if (operation === 'getsockopt') {
+      const hasError = reader.u8();
+      value = {
+        op: operation,
+        ...(hasError === 1 ? { error: reader.string() } : {}),
+      };
+    } else if (operation === 'spawn') {
+      const pid = reader.i32();
+      const readOptionalFd = (name) => {
+        const present = reader.u8();
+        if (present > 1) {
+          throw new PythonTraceKernelSyscallError(
+            'EPROTO',
+            `invalid spawn ${name} fd flag ${present}`
+          );
+        }
+        return present ? reader.i32() : undefined;
+      };
+      const stdinFd = readOptionalFd('stdin');
+      const stdoutFd = readOptionalFd('stdout');
+      const stderrFd = readOptionalFd('stderr');
+      value = {
+        op: operation,
+        pid,
+        ...(stdinFd === undefined &&
+          stdoutFd === undefined &&
+          stderrFd === undefined
+          ? {}
+          : {
+              stdio: {
+                ...(stdinFd === undefined ? {} : { stdinFd }),
+                ...(stdoutFd === undefined ? {} : { stdoutFd }),
+                ...(stderrFd === undefined ? {} : { stderrFd }),
+              },
+            }),
+      };
+    } else if (operation === 'wait') {
+      const pid = reader.i32();
+      const completed = reader.u8();
+      if (completed > 1) {
+        throw new PythonTraceKernelSyscallError(
+          'EPROTO',
+          `invalid wait completion flag ${completed}`
+        );
+      }
+      if (!completed) {
+        value = { op: operation, pid };
+        reader.done();
+        return value;
+      }
+      const terminationCode = reader.u8();
+      const exitCode = reader.i32();
+      if (terminationCode === 1) {
+        value = {
+          op: operation,
+          pid,
+          termination: { kind: 'exit', exitCode },
+        };
+      } else if (terminationCode === 2) {
+        const signalCode = reader.u8();
+        const signal = [
+          undefined,
+          'SIGINT',
+          'SIGTERM',
+          'SIGKILL',
+          'SIGHUP',
+          'SIGQUIT',
+        ][signalCode];
+        if (!signal) {
+          throw new PythonTraceKernelSyscallError(
+            'EPROTO',
+            `invalid termination signal ${signalCode}`
+          );
+        }
+        value = {
+          op: operation,
+          pid,
+          termination: {
+            kind: 'signal',
+            signal,
+            exitCode,
+          },
+        };
+      } else if (terminationCode === 3) {
+        value = {
+          op: operation,
+          pid,
+          termination: {
+            kind: 'failure',
+            exitCode,
+            message: reader.string(),
+          },
+        };
+      } else {
+        throw new PythonTraceKernelSyscallError(
+          'EPROTO',
+          `invalid process termination code ${terminationCode}`
+        );
+      }
+    } else if (
+      operation === 'stat' ||
+      operation === 'lstat' ||
+      operation === 'fstat'
+    ) {
+      const path = reader.string();
+      const kindCode = reader.u8();
+      if (kindCode < 1 || kindCode > 3) {
+        throw new PythonTraceKernelSyscallError(
+          'EPROTO',
+          `invalid TKFS stat kind ${kindCode}`
+        );
+      }
+      value = {
+        op: operation,
+        stat: {
+          path,
+          kind: kindCode === 1
+            ? 'file'
+            : kindCode === 2
+              ? 'directory'
+              : 'symlink',
+          inode: reader.f64(),
+          nlink: reader.f64(),
+          mode: reader.u32(),
+          size: reader.f64(),
+          generation: reader.f64(),
+          createdAt: reader.f64(),
+          modifiedAt: reader.f64(),
+          changedAt: reader.f64(),
+        },
+      };
+    } else if (operation === 'readdir') {
+      const length = reader.u32();
+      const entries = [];
+      for (let index = 0; index < length; index += 1) {
+        const name = reader.string();
+        const kindCode = reader.u8();
+        entries.push({
+          name,
+          kind: kindCode === 1
+            ? 'file'
+            : kindCode === 2
+              ? 'directory'
+              : 'symlink',
+          inode: reader.f64(),
+        });
+      }
+      value = { op: operation, entries };
+    } else if (operation === 'readFile') {
+      value = {
+        op: operation,
+        cacheGeneration: reader.i32(),
+        bytes: reader.bytesValue(),
+      };
+    } else if (operation === 'realpath') {
+      value = { op: operation, path: reader.string() };
+    } else if (operation === 'readlink') {
+      value = { op: operation, target: reader.string() };
+    } else if (
+      operation === 'open' ||
+      operation === 'dup' ||
+      operation === 'dup2'
+    ) {
+      value = { op: operation, fd: reader.i32() };
+    } else if (operation === 'dup3') {
+      value = {
+        op: operation,
+        fd: reader.i32(),
+        closeOnExec: reader.u8() === 1,
+      };
+    } else if (operation === 'fcntl') {
+      value = {
+        op: operation,
+        closeOnExec: reader.u8() === 1,
+        nonblocking: reader.u8() === 1,
+      };
+    } else if (operation === 'poll') {
+      const length = reader.u32();
+      const entries = [];
+      for (let index = 0; index < length; index += 1) {
+        const fd = reader.i32();
+        const events = reader.u8();
+        entries.push({
+          fd,
+          read: (events & 1) !== 0,
+          write: (events & 2) !== 0,
+          hangup: (events & 4) !== 0,
+          error: (events & 8) !== 0,
+          invalid: (events & 16) !== 0,
+        });
+      }
+      value = { op: operation, entries };
+    } else if (operation === 'setsid') {
+      value = { op: operation, sid: reader.i32(), pgid: reader.i32() };
+    } else if (operation === 'setpgid') {
+      value = { op: operation, pgid: reader.i32() };
+    } else if (operation === 'isatty') {
+      value = { op: operation, isTerminal: reader.u8() === 1 };
+    } else if (
+      operation === 'tcgetpgrp' ||
+      operation === 'tcsetpgrp'
+    ) {
+      value = { op: operation, pgid: reader.i32() };
+    } else if (
+      operation === 'tcgetwinsize' ||
+      operation === 'tcsetwinsize'
+    ) {
+      value = {
+        op: operation,
+        rows: reader.u32(),
+        columns: reader.u32(),
+      };
+    } else if (operation === 'identity') {
+      value = {
+        op: operation,
+        pid: reader.i32(),
+        ppid: reader.i32(),
+        pgid: reader.i32(),
+        sid: reader.i32(),
+      };
+    } else if (
+      operation === 'read'
+    ) {
+      value = { op: operation, bytes: reader.bytesValue() };
+    } else if (operation === 'write') {
+      value = { op: operation, bytesWritten: reader.u32() };
+    } else {
+      value = { op: operation };
+    }
+    reader.done();
+    return value;
+  }
+
+  close() {
+    this.closed = true;
+  }
+}
+
+const PYTHON_TK_ERRNO = Object.freeze({
+  EACCES: 2,
+  EAGAIN: 6,
+  EBADF: 8,
+  EEXIST: 20,
+  EFBIG: 22,
+  EINVAL: 28,
+  EIO: 29,
+  EISDIR: 31,
+  ELOOP: 32,
+  ENODEV: 43,
+  ENOENT: 44,
+  ENOSPC: 51,
+  ENOSYS: 52,
+  ENOTDIR: 54,
+  ENOTEMPTY: 55,
+  ENOTSUP: 58,
+  ENOTTY: 59,
+  EPERM: 63,
+  EPIPE: 64,
+  EROFS: 69,
+  ESPIPE: 70,
+});
+
+function installPyodideTraceKernelMount(
+  pyodideInstance,
+  kernelClient,
+  workspaceRoot,
+  mountPath = '/tracecode_project'
+) {
+  const fs = pyodideInstance.FS;
+  const fileType = Object.freeze({
+    directory: 0x4000,
+    file: 0x8000,
+    symlink: 0xa000,
+  });
+
+  const throwErrno = (error) => {
+    if (error instanceof fs.ErrnoError) throw error;
+    const code = typeof error?.code === 'string' ? error.code : 'EIO';
+    throw new fs.ErrnoError(PYTHON_TK_ERRNO[code] ?? PYTHON_TK_ERRNO.EIO);
+  };
+  const attempt = (operation) => {
+    try {
+      return operation();
+    } catch (error) {
+      return throwErrno(error);
+    }
+  };
+  const modeForStat = (stat) =>
+    fileType[stat.kind] | (Number(stat.mode) & 0o7777);
+  const pathParts = (node) => {
+    const parts = [];
+    while (node.parent !== node) {
+      parts.push(node.name);
+      node = node.parent;
+    }
+    parts.reverse();
+    return parts;
+  };
+  const kernelPath = (node) => {
+    const suffix = pathParts(node).join('/');
+    return suffix
+      ? `${node.mount.opts.root.replace(/\/+$/, '')}/${suffix}`
+      : node.mount.opts.root;
+  };
+  const kernelPathForChild = (parent, name) => {
+    const root = kernelPath(parent).replace(/\/+$/, '');
+    return `${root}/${String(name)}`;
+  };
+  const mountedPathForTarget = (target) => {
+    const root = String(workspaceRoot).replace(/\/+$/, '');
+    if (target === root) return mountPath;
+    return target.startsWith(`${root}/`)
+      ? `${mountPath}${target.slice(root.length)}`
+      : target;
+  };
+  const kernelTargetForSymlink = (target) => {
+    const value = String(target);
+    if (value === mountPath) return workspaceRoot;
+    return value.startsWith(`${mountPath}/`)
+      ? `${String(workspaceRoot).replace(/\/+$/, '')}${value.slice(mountPath.length)}`
+      : value;
+  };
+  const statAttributes = (node, stat) => ({
+    dev: 1,
+    ino: Number(stat.inode),
+    mode: modeForStat(stat),
+    nlink: Number(stat.nlink),
+    uid: 0,
+    gid: 0,
+    rdev: 0,
+    size: stat.kind === 'directory' ? 4096 : Number(stat.size),
+    atime: new Date(Number(stat.modifiedAt)),
+    mtime: new Date(Number(stat.modifiedAt)),
+    ctime: new Date(Number(stat.changedAt)),
+    blksize: 4096,
+    blocks: Math.ceil(Number(stat.size) / 4096),
+  });
+
+  const backend = {
+    mount(mount) {
+      const stat = attempt(() =>
+        kernelClient.request({ op: 'stat', path: mount.opts.root }).stat
+      );
+      if (stat.kind !== 'directory') {
+        throw new fs.ErrnoError(PYTHON_TK_ERRNO.ENOTDIR);
+      }
+      return backend.createNode(null, '/', modeForStat(stat), 0);
+    },
+
+    createNode(parent, name, mode, dev) {
+      if (!fs.isDir(mode) && !fs.isFile(mode) && !fs.isLink(mode)) {
+        throw new fs.ErrnoError(PYTHON_TK_ERRNO.EINVAL);
+      }
+      const node = fs.createNode(parent, name, mode, dev);
+      node.node_ops = backend.node_ops;
+      node.stream_ops = backend.stream_ops;
+      return node;
+    },
+
+    node_ops: {
+      getattr(node) {
+        return attempt(() => {
+          const stat = kernelClient.request({
+            op: 'lstat',
+            path: kernelPath(node),
+          }).stat;
+          node.mode = modeForStat(stat);
+          return statAttributes(node, stat);
+        });
+      },
+
+      setattr(node, attributes) {
+        attempt(() => {
+          if (attributes.size !== undefined) {
+            const opened = kernelClient.request({
+              op: 'open',
+              path: kernelPath(node),
+              options: { access: 'write' },
+            });
+            try {
+              kernelClient.request({
+                op: 'ftruncate',
+                fd: opened.fd,
+                length: Number(attributes.size),
+              });
+            } finally {
+              kernelClient.request({ op: 'close', fd: opened.fd });
+            }
+          }
+          if (
+            attributes.mode !== undefined
+          ) {
+            node.mode =
+              (node.mode & ~0o7777) |
+              (Number(attributes.mode) & 0o7777);
+          }
+        });
+      },
+
+      lookup(parent, name) {
+        return attempt(() => {
+          const stat = kernelClient.request({
+            op: 'lstat',
+            path: kernelPathForChild(parent, name),
+          }).stat;
+          return backend.createNode(parent, name, modeForStat(stat), 0);
+        });
+      },
+
+      mknod(parent, name, mode, dev) {
+        return attempt(() => {
+          const path = kernelPathForChild(parent, name);
+          if (fs.isDir(mode)) {
+            kernelClient.request({
+              op: 'mkdir',
+              path,
+              options: { mode: mode & 0o7777 },
+            });
+          } else if (fs.isFile(mode)) {
+            const opened = kernelClient.request({
+              op: 'open',
+              path,
+              options: {
+                access: 'write',
+                create: true,
+                exclusive: true,
+              },
+            });
+            kernelClient.request({ op: 'close', fd: opened.fd });
+          } else {
+            throw new PythonTraceKernelSyscallError(
+              'ENOTSUP',
+              'TKFS supports only regular files, directories, and symlinks'
+            );
+          }
+          return backend.createNode(parent, name, mode, dev);
+        });
+      },
+
+      rename(oldNode, newDirectory, newName) {
+        attempt(() => {
+          kernelClient.request({
+            op: 'rename',
+            sourcePath: kernelPath(oldNode),
+            destinationPath: kernelPathForChild(newDirectory, newName),
+          });
+          oldNode.name = newName;
+        });
+      },
+
+      unlink(parent, name) {
+        attempt(() =>
+          kernelClient.request({
+            op: 'unlink',
+            path: kernelPathForChild(parent, name),
+          })
+        );
+      },
+
+      rmdir(parent, name) {
+        attempt(() =>
+          kernelClient.request({
+            op: 'rmdir',
+            path: kernelPathForChild(parent, name),
+          })
+        );
+      },
+
+      readdir(node) {
+        return attempt(() => [
+          '.',
+          '..',
+          ...kernelClient.request({
+            op: 'readdir',
+            path: kernelPath(node),
+          }).entries.map((entry) => entry.name),
+        ]);
+      },
+
+      symlink(parent, name, target) {
+        return attempt(() => {
+          kernelClient.request({
+            op: 'symlink',
+            target: kernelTargetForSymlink(target),
+            linkPath: kernelPathForChild(parent, name),
+          });
+          return backend.createNode(
+            parent,
+            name,
+            fileType.symlink | 0o777,
+            0
+          );
+        });
+      },
+
+      readlink(node) {
+        return attempt(() =>
+          mountedPathForTarget(
+            kernelClient.request({
+              op: 'readlink',
+              path: kernelPath(node),
+            }).target
+          )
+        );
+      },
+    },
+
+    stream_ops: {
+      getattr(stream) {
+        return attempt(() => {
+          const stat = stream.shared.tracekernelFd === undefined
+            ? kernelClient.request({
+                op: 'lstat',
+                path: kernelPath(stream.node),
+              }).stat
+            : kernelClient.request({
+                op: 'fstat',
+                fd: stream.shared.tracekernelFd,
+              }).stat;
+          stream.node.mode = modeForStat(stat);
+          return statAttributes(stream.node, stat);
+        });
+      },
+
+      setattr(stream, attributes) {
+        attempt(() => {
+          if (attributes.size !== undefined) {
+            kernelClient.request({
+              op: 'ftruncate',
+              fd: stream.shared.tracekernelFd,
+              length: Number(attributes.size),
+            });
+          }
+          if (
+            attributes.mode !== undefined
+          ) {
+            stream.node.mode =
+              (stream.node.mode & ~0o7777) |
+              (Number(attributes.mode) & 0o7777);
+          }
+        });
+      },
+
+      open(stream) {
+        attempt(() => {
+          if (fs.isDir(stream.node.mode)) {
+            stream.shared.tracekernelFd = undefined;
+            stream.shared.tracekernelRefcount = 1;
+            return;
+          }
+          const accessMode = stream.flags & 3;
+          const opened = kernelClient.request({
+            op: 'open',
+            path: kernelPath(stream.node),
+            options: {
+              access: accessMode === 1
+                ? 'write'
+                : accessMode === 2
+                  ? 'read-write'
+                  : 'read',
+              create: Boolean(stream.flags & 64),
+              exclusive: Boolean(stream.flags & 128),
+              truncate: Boolean(stream.flags & 512),
+              append: Boolean(stream.flags & 1024),
+            },
+          });
+          stream.shared.tracekernelFd = opened.fd;
+          stream.shared.tracekernelRefcount = 1;
+          kernelClient.request({
+            op: 'fcntl',
+            fd: opened.fd,
+            action: 'set-close-on-exec',
+            closeOnExec: true,
+          });
+        });
+      },
+
+      close(stream) {
+        attempt(() => {
+          const remaining = --stream.shared.tracekernelRefcount;
+          if (
+            remaining === 0 &&
+            stream.shared.tracekernelFd !== undefined
+          ) {
+            kernelClient.request({
+              op: 'close',
+              fd: stream.shared.tracekernelFd,
+            });
+          }
+        });
+      },
+
+      dup(stream) {
+        stream.shared.tracekernelRefcount += 1;
+      },
+
+      read(stream, buffer, offset, length, position) {
+        return attempt(() => {
+          const bytes = kernelClient.request({
+            op: 'read',
+            fd: stream.shared.tracekernelFd,
+            maxBytes: length,
+            position,
+          }).bytes;
+          buffer.set(bytes, offset);
+          return bytes.byteLength;
+        });
+      },
+
+      write(stream, buffer, offset, length, position) {
+        return attempt(() =>
+          kernelClient.request({
+            op: 'write',
+            fd: stream.shared.tracekernelFd,
+            bytes: buffer.slice(offset, offset + length),
+            position,
+          }).bytesWritten
+        );
+      },
+
+      llseek(stream, offset, whence) {
+        let position = Number(offset);
+        if (whence === 1) {
+          position += Number(stream.position);
+        } else if (whence === 2) {
+          position += Number(
+            kernelClient.request({
+              op: 'fstat',
+              fd: stream.shared.tracekernelFd,
+            }).stat.size
+          );
+        }
+        if (position < 0) {
+          throw new fs.ErrnoError(PYTHON_TK_ERRNO.EINVAL);
+        }
+        return position;
+      },
+    },
+  };
+
+  try {
+    fs.mkdir(mountPath);
+  } catch (error) {
+    if (!(error instanceof fs.ErrnoError) || error.errno !== PYTHON_TK_ERRNO.EEXIST) {
+      throw error;
+    }
+  }
+  fs.mount(backend, { root: workspaceRoot }, mountPath);
+  return () => {
+    try {
+      fs.unmount(mountPath);
+    } catch {
+      // The worker is discarded after fatal mount failures.
+    }
+  };
+}
+
+function installPyodideTraceKernelPipeFactory(pyodideInstance, kernelClient) {
+  const fs = pyodideInstance.FS;
+  const fifoMode = 0x1000 | 0o666;
+  const throwErrno = (error) => {
+    if (error instanceof fs.ErrnoError) throw error;
+    const code = typeof error?.code === 'string' ? error.code : 'EIO';
+    throw new fs.ErrnoError(PYTHON_TK_ERRNO[code] ?? PYTHON_TK_ERRNO.EIO);
+  };
+  const streamOperations = {
+    read(stream, buffer, offset, length) {
+      try {
+        const bytes = kernelClient.request({
+          op: 'read',
+          fd: stream.shared.tracekernelFd,
+          maxBytes: length,
+        }).bytes;
+        buffer.set(bytes, offset);
+        return bytes.byteLength;
+      } catch (error) {
+        return throwErrno(error);
+      }
+    },
+    write(stream, buffer, offset, length) {
+      try {
+        return kernelClient.request({
+          op: 'write',
+          fd: stream.shared.tracekernelFd,
+          bytes: buffer.slice(offset, offset + length),
+        }).bytesWritten;
+      } catch (error) {
+        return throwErrno(error);
+      }
+    },
+    close(stream) {
+      stream.shared.tracekernelRefcount -= 1;
+      if (stream.shared.tracekernelRefcount !== 0) return;
+      try {
+        kernelClient.request({
+          op: 'close',
+          fd: stream.shared.tracekernelFd,
+        });
+      } catch (error) {
+        return throwErrno(error);
+      }
+    },
+    dup(stream) {
+      stream.shared.tracekernelRefcount += 1;
+    },
+    llseek() {
+      throw new fs.ErrnoError(PYTHON_TK_ERRNO.ESPIPE);
+    },
+  };
+  const nodeOperations = {
+    getattr(node) {
+      const now = new Date();
+      return {
+        dev: 0,
+        ino: node.id,
+        mode: node.mode,
+        nlink: 1,
+        uid: 0,
+        gid: 0,
+        rdev: 0,
+        size: 0,
+        atime: now,
+        mtime: now,
+        ctime: now,
+        blksize: 4096,
+        blocks: 0,
+      };
+    },
+  };
+  let nextDescriptorNodeId = 1;
+
+  const createStream = (kernelFd, flags, kind = 'pipe') => {
+    const node = fs.createNode(
+      null,
+      `tracekernel-${kind}-${nextDescriptorNodeId++}`,
+      fifoMode,
+      0
+    );
+    node.node_ops = nodeOperations;
+    node.stream_ops = streamOperations;
+    const shared = {
+      tracekernelFd: kernelFd,
+      tracekernelRefcount: 1,
+      position: 0,
+    };
+    return fs.createStream({
+      shared,
+      node,
+      path: `${kind}:[${kernelFd}]`,
+      flags,
+      seekable: false,
+      position: 0,
+      stream_ops: streamOperations,
+      ungotten: [],
+      error: false,
+    });
+  };
+
+  self.__tracecodeCreateKernelPipe = (
+    closeOnExec = true,
+    nonblocking = false
+  ) => {
+    let readStream;
+    let writeStream;
+    let pair;
+    try {
+      pair = kernelClient.request({
+        op: 'pipe',
+        options: {
+          closeOnExec: closeOnExec !== false,
+          nonblocking: nonblocking === true,
+        },
+      });
+      readStream = createStream(pair.readFd, 0);
+      writeStream = createStream(pair.writeFd, 1);
+      return JSON.stringify([readStream.fd, writeStream.fd]);
+    } catch (error) {
+      if (writeStream) {
+        try {
+          fs.close(writeStream);
+        } catch {
+          // Preserve the original creation failure.
+        }
+      } else if (pair?.writeFd !== undefined) {
+        try {
+          kernelClient.request({ op: 'close', fd: pair.writeFd });
+        } catch {
+          // The process descriptor table remains the final cleanup boundary.
+        }
+      }
+      if (readStream) {
+        try {
+          fs.close(readStream);
+        } catch {
+          // Preserve the original creation failure.
+        }
+      } else if (pair?.readFd !== undefined) {
+        try {
+          kernelClient.request({ op: 'close', fd: pair.readFd });
+        } catch {
+          // The process descriptor table remains the final cleanup boundary.
+        }
+      }
+      return throwErrno(error);
+    }
+  };
+  self.__tracecodeInstallKernelSocket = (kernelFd) => {
+    try {
+      return createStream(Number(kernelFd), 2, 'socket').fd;
+    } catch (error) {
+      return throwErrno(error);
     }
   };
 }
@@ -2192,9 +3774,32 @@ class TraceKernelHttpBridge {
 
 const activeProjectHttpBridges = new Map();
 
-async function executeProjectPythonUserCall(request, messageId, protocolToken) {
+async function executeProjectPythonUserCall(
+  request,
+  messageId,
+  protocolToken,
+  kernelSyscallChannel,
+  kernelSignalMailbox
+) {
   const requestJson = JSON.stringify(request ?? {});
   const httpBridge = new TraceKernelHttpBridge(messageId, protocolToken);
+  const kernelClient = kernelSyscallChannel
+    ? new PythonTraceKernelSyncClient(
+        kernelSyscallChannel,
+        () => trustedPythonWorkerPostMessage({
+          id: messageId,
+          type: 'kernel-syscall',
+          payload: {},
+          protocolToken,
+        })
+      )
+    : null;
+  const traceKernelFileSystemMounted = kernelClient !== null;
+  const kernelSignalState =
+    kernelSignalMailbox?.buffer instanceof SharedArrayBuffer
+      ? new Int32Array(kernelSignalMailbox.buffer)
+      : null;
+  let kernelSignalSequence = 0;
   activeProjectHttpBridges.set(messageId, httpBridge);
   const projectEventBudget = createProjectEventBudget();
   const projectOutputEvents = [];
@@ -2206,6 +3811,37 @@ async function executeProjectPythonUserCall(request, messageId, protocolToken) {
       projectOutputEvents.push(budgetedPayload);
     }
     trustedPythonWorkerPostMessage({ id: messageId, type: 'project-event', payload: budgetedPayload, protocolToken });
+  };
+  self.__tracecodeWriteProjectOutput = (stream, value) => {
+    if (!kernelClient) {
+      throw new PythonTraceKernelSyscallError(
+        'ENOSYS',
+        'TraceKernel standard output is unavailable'
+      );
+    }
+    const bytes = new TextEncoder().encode(String(value ?? ''));
+    let offset = 0;
+    while (offset < bytes.byteLength) {
+      const written = kernelClient.request({
+        op: 'write',
+        fd: stream === 'stderr' ? 2 : 1,
+        bytes: bytes.subarray(offset),
+      }).bytesWritten;
+      if (written <= 0 || written > bytes.byteLength - offset) {
+        throw new PythonTraceKernelSyscallError(
+          'EIO',
+          `invalid TraceKernel stdio write length ${written}`
+        );
+      }
+      offset += written;
+    }
+  };
+  self.__tracecodePollKernelSignal = () => {
+    if (!kernelSignalState) return 0;
+    const sequence = Atomics.load(kernelSignalState, 0);
+    if (sequence === kernelSignalSequence) return 0;
+    kernelSignalSequence = sequence;
+    return Atomics.load(kernelSignalState, 1);
   };
   self.__tracecodeRuntimeKernelOpenTarget = (payload) => {
     const parsed = typeof payload === 'string' ? JSON.parse(payload) : payload;
@@ -2245,14 +3881,514 @@ async function executeProjectPythonUserCall(request, messageId, protocolToken) {
   self.__tracecodeInstallProjectFsMutationEvents = installPyodideProjectFsMutationEvents;
   self.__tracecodeKernelHttpListen = (optionsJson, handler) => httpBridge.listen(optionsJson, handler);
   self.__tracecodeKernelHttpDispatch = (requestJson, optionsJson) => httpBridge.dispatch(requestJson, optionsJson);
+  self.__tracecodeKernelWatchdog = (action, timeoutMs, signal) => {
+    if (!kernelClient) {
+      throw new PythonTraceKernelSyscallError(
+        'ENOSYS',
+        'TraceKernel process controls are unavailable'
+      );
+    }
+    return JSON.stringify(kernelClient.watchdog(
+      String(action),
+      timeoutMs === undefined || timeoutMs === null
+        ? undefined
+        : Number(timeoutMs),
+      signal === undefined || signal === null ? undefined : String(signal)
+    ));
+  };
+  self.__tracecodeKernelFileSystem = (requestJson) => {
+    if (!kernelClient) {
+      throw new PythonTraceKernelSyscallError(
+        'ENOSYS',
+        'TraceKernel filesystem controls are unavailable'
+      );
+    }
+    const input = typeof requestJson === 'string'
+      ? JSON.parse(requestJson)
+      : requestJson ?? {};
+    const bytesToBase64 = (bytes) => {
+      let binary = '';
+      for (let index = 0; index < bytes.length; index += 0x8000) {
+        binary += String.fromCharCode(
+          ...bytes.subarray(index, index + 0x8000)
+        );
+      }
+      return btoa(binary);
+    };
+    const base64ToBytes = (value) => {
+      const binary = atob(String(value ?? ''));
+      const bytes = new Uint8Array(binary.length);
+      for (let index = 0; index < binary.length; index += 1) {
+        bytes[index] = binary.charCodeAt(index);
+      }
+      return bytes;
+    };
+    const syscallRequest = (() => {
+      switch (String(input.op ?? '')) {
+        case 'readFile':
+        case 'stat':
+        case 'lstat':
+        case 'readdir':
+        case 'rmdir':
+        case 'unlink':
+        case 'realpath':
+          return { op: input.op, path: String(input.path) };
+        case 'writeFile':
+          return {
+            op: 'writeFile',
+            path: String(input.path),
+            bytes: base64ToBytes(input.bytes),
+          };
+        case 'mkdir':
+          return {
+            op: 'mkdir',
+            path: String(input.path),
+            options: {
+              recursive: Boolean(input.recursive),
+              ...(input.mode === undefined || input.mode === null
+                ? {}
+                : { mode: Number(input.mode) }),
+            },
+          };
+        case 'rename':
+          return {
+            op: 'rename',
+            sourcePath: String(input.sourcePath),
+            destinationPath: String(input.destinationPath),
+          };
+        default:
+          throw new PythonTraceKernelSyscallError(
+            'ENOSYS',
+            `unsupported Python TraceKernel filesystem operation ${input.op}`
+          );
+      }
+    })();
+    const result = kernelClient.request(syscallRequest);
+    return JSON.stringify(
+      result.op === 'readFile'
+        ? { ...result, bytes: bytesToBase64(result.bytes) }
+        : result
+    );
+  };
+  self.__tracecodeKernelProcess = (requestJson) => {
+    if (!kernelClient) {
+      throw new PythonTraceKernelSyscallError(
+        'ENOSYS',
+        'TraceKernel process controls are unavailable'
+      );
+    }
+    const input = typeof requestJson === 'string'
+      ? JSON.parse(requestJson)
+      : requestJson ?? {};
+    const base64ToBytes = (value) => {
+      const binary = atob(String(value ?? ''));
+      const bytes = new Uint8Array(binary.length);
+      for (let index = 0; index < binary.length; index += 1) {
+        bytes[index] = binary.charCodeAt(index);
+      }
+      return bytes;
+    };
+    const bytesToBase64 = (bytes) => {
+      let binary = '';
+      for (let index = 0; index < bytes.length; index += 0x8000) {
+        binary += String.fromCharCode(
+          ...bytes.subarray(index, index + 0x8000)
+        );
+      }
+      return btoa(binary);
+    };
+    const kernelFdForLocalFd = (fd) => {
+      const localFd = Number(fd);
+      const stream = pyodide.FS.getStream(localFd);
+      const kernelFd = stream?.shared?.tracekernelFd;
+      if (!Number.isSafeInteger(kernelFd) || kernelFd < 0) {
+        throw new PythonTraceKernelSyscallError(
+          'EBADF',
+          `Python descriptor ${fd} is not backed by TraceKernel`
+        );
+      }
+      return kernelFd;
+    };
+    const kernelTerminalFdForLocalFd = (fd) => {
+      const localFd = Number(fd);
+      const stream = pyodide.FS.getStream(localFd);
+      const kernelFd = stream?.shared?.tracekernelFd;
+      if (Number.isSafeInteger(kernelFd) && kernelFd >= 0) {
+        return kernelFd;
+      }
+      // Pyodide owns its console streams locally, while the corresponding
+      // runtime-process descriptors remain authoritative in TraceKernel.
+      if (
+        Number.isSafeInteger(localFd) &&
+        localFd >= 0 &&
+        localFd <= 2
+      ) {
+        return localFd;
+      }
+      throw new PythonTraceKernelSyscallError(
+        'EBADF',
+        `Python descriptor ${fd} is not backed by TraceKernel`
+      );
+    };
+    let pollMappings = null;
+    const syscallRequest = (() => {
+      switch (String(input.op ?? '')) {
+        case 'spawn': {
+          const mappingsByChildFd = new Map();
+          if (input.inheritAllLocalDescriptors === true) {
+            for (let localFd = 0; localFd < pyodide.FS.streams.length; localFd += 1) {
+              const kernelFd = pyodide.FS.streams[localFd]?.shared?.tracekernelFd;
+              if (Number.isSafeInteger(kernelFd) && kernelFd >= 0) {
+                const flags = kernelClient.request({
+                  op: 'fcntl',
+                  fd: kernelFd,
+                  action: 'get-close-on-exec',
+                });
+                if (!flags.closeOnExec) {
+                  mappingsByChildFd.set(localFd, {
+                    parentFd: kernelFd,
+                    childFd: localFd,
+                  });
+                }
+              }
+            }
+          }
+          for (const mapping of input.descriptorMappings ?? []) {
+            const childFd = Number(mapping.childFd);
+            mappingsByChildFd.set(childFd, {
+              parentFd: kernelFdForLocalFd(mapping.parentFd),
+              childFd,
+            });
+          }
+          return {
+            op: 'spawn',
+            runtime: String(input.runtime),
+            command: String(input.command),
+            args: Array.isArray(input.args)
+              ? input.args.map((argument) => String(argument))
+              : [],
+            ...(input.cwd === undefined || input.cwd === null
+              ? {}
+              : { cwd: String(input.cwd) }),
+            env: Object.fromEntries(
+              Object.entries(input.env ?? {}).map(([name, value]) => [
+                name,
+                String(value),
+              ])
+            ),
+            ...(input.processGroupId === undefined ||
+                input.processGroupId === null
+              ? {}
+              : { processGroupId: Number(input.processGroupId) }),
+            ...(input.sessionId === undefined || input.sessionId === null
+              ? {}
+              : { sessionId: Number(input.sessionId) }),
+            ...(mappingsByChildFd.size === 0
+              ? {}
+              : { descriptorMappings: [...mappingsByChildFd.values()] }),
+            ...(Array.isArray(input.descriptorActions) &&
+                input.descriptorActions.length > 0
+              ? {
+                  descriptorActions: input.descriptorActions.map((action) =>
+                    action.op === 'dup2'
+                      ? {
+                          op: 'dup2',
+                          fd: Number(action.fd),
+                          targetFd: Number(action.targetFd),
+                        }
+                      : { op: 'close', fd: Number(action.fd) }
+                  ),
+                }
+              : {}),
+            stdio: {
+              stdin: input.stdio?.stdin ?? 'inherit',
+              stdout: input.stdio?.stdout ?? 'inherit',
+              stderr: input.stdio?.stderr ?? 'inherit',
+            },
+          };
+        }
+        case 'wait':
+          return {
+            op: 'wait',
+            pid: Number(input.pid),
+            ...(input.noHang === true ? { noHang: true } : {}),
+          };
+        case 'identity':
+          return {
+            op: 'identity',
+            ...(input.pid === undefined || input.pid === null
+              ? {}
+              : { pid: Number(input.pid) }),
+          };
+        case 'kill':
+          return {
+            op: 'kill',
+            pid: Number(input.pid),
+            signal: String(input.signal ?? 'SIGTERM'),
+          };
+        case 'read':
+          return {
+            op: 'read',
+            fd: Number(input.fd),
+            maxBytes: Number(input.maxBytes ?? 16 * 1024),
+          };
+        case 'write':
+          return {
+            op: 'write',
+            fd: Number(input.fd),
+            bytes: base64ToBytes(input.bytes),
+          };
+        case 'close':
+          return { op: 'close', fd: Number(input.fd) };
+        case 'fcntl':
+          return {
+            op: 'fcntl',
+            fd: kernelFdForLocalFd(input.fd),
+            action: String(input.action),
+            ...(input.action === 'set-close-on-exec'
+              ? { closeOnExec: input.closeOnExec === true }
+              : input.action === 'set-nonblocking'
+                ? { nonblocking: input.nonblocking === true }
+                : {}),
+          };
+        case 'poll': {
+          pollMappings = (Array.isArray(input.entries) ? input.entries : []).map(
+            (entry) => {
+              let kernelFd = null;
+              if (entry.kernel === true) {
+                kernelFd = Number(entry.fd);
+              } else {
+                try {
+                  kernelFd = kernelFdForLocalFd(entry.fd);
+                } catch (error) {
+                  if (error?.code !== 'EBADF') throw error;
+                }
+              }
+              return {
+                localFd: Number(entry.fd),
+                kernelFd,
+                read: entry.read === true,
+                write: entry.write === true,
+              };
+            }
+          );
+          const entriesByKernelFd = new Map();
+          for (const mapping of pollMappings) {
+            if (mapping.kernelFd === null) continue;
+            const requested = entriesByKernelFd.get(mapping.kernelFd) || {
+              fd: mapping.kernelFd,
+              read: false,
+              write: false,
+            };
+            requested.read ||= mapping.read;
+            requested.write ||= mapping.write;
+            entriesByKernelFd.set(mapping.kernelFd, requested);
+          }
+          return {
+            op: 'poll',
+            entries: [...entriesByKernelFd.values()],
+            ...(pollMappings.some((mapping) => mapping.kernelFd === null)
+              ? { timeoutMs: 0 }
+              : input.timeoutMs === undefined || input.timeoutMs === null
+              ? {}
+              : { timeoutMs: Number(input.timeoutMs) }),
+          };
+        }
+        case 'setsid':
+          return { op: 'setsid' };
+        case 'isatty':
+        case 'tcgetpgrp':
+        case 'tcgetwinsize':
+          return {
+            op: String(input.op),
+            fd: kernelTerminalFdForLocalFd(input.fd),
+          };
+        case 'tcsetpgrp':
+          return {
+            op: 'tcsetpgrp',
+            fd: kernelTerminalFdForLocalFd(input.fd),
+            pgid: Number(input.pgid),
+          };
+        case 'tcsetwinsize':
+          return {
+            op: 'tcsetwinsize',
+            fd: kernelTerminalFdForLocalFd(input.fd),
+            rows: Number(input.rows),
+            columns: Number(input.columns),
+          };
+        case 'setpgid':
+          return {
+            op: 'setpgid',
+            pid: Number(input.pid ?? 0),
+            pgid: Number(input.pgid ?? 0),
+          };
+        default:
+          throw new PythonTraceKernelSyscallError(
+            'ENOSYS',
+            `unsupported Python TraceKernel process operation ${input.op}`
+          );
+      }
+    })();
+    try {
+      const result = kernelClient.request(syscallRequest);
+      const serializableResult = result.op === 'read'
+        ? { ...result, bytes: bytesToBase64(result.bytes) }
+        : result.op === 'poll' && pollMappings
+          ? {
+              ...result,
+              entries: pollMappings.flatMap((mapping) => {
+                if (mapping.kernelFd === null) {
+                  return [{
+                    fd: mapping.localFd,
+                    read: false,
+                    write: false,
+                    hangup: false,
+                    error: false,
+                    invalid: true,
+                  }];
+                }
+                const readiness = result.entries.find(
+                  (entry) => entry.fd === mapping.kernelFd
+                );
+                if (!readiness) return [];
+                return [{
+                  fd: mapping.localFd,
+                  read: mapping.read && readiness.read,
+                  write: mapping.write && readiness.write,
+                  hangup: readiness.hangup,
+                  error: readiness.error,
+                  invalid: readiness.invalid,
+                }];
+              }),
+            }
+          : result;
+      return JSON.stringify({ ok: true, value: serializableResult });
+    } catch (error) {
+      return JSON.stringify({
+        ok: false,
+        error: {
+          code: String(error?.code ?? 'EIO'),
+          message: error instanceof Error ? error.message : String(error),
+        },
+      });
+    }
+  };
+  self.__tracecodeKernelSocket = (requestJson) => {
+    if (!kernelClient) {
+      throw new PythonTraceKernelSyscallError(
+        'ENOSYS',
+        'TraceKernel socket controls are unavailable'
+      );
+    }
+    const input = typeof requestJson === 'string'
+      ? JSON.parse(requestJson)
+      : requestJson ?? {};
+    const base64ToBytes = (value) => {
+      const binary = atob(String(value ?? ''));
+      const bytes = new Uint8Array(binary.length);
+      for (let index = 0; index < binary.length; index += 1) {
+        bytes[index] = binary.charCodeAt(index);
+      }
+      return bytes;
+    };
+    const bytesToBase64 = (bytes) => {
+      let binary = '';
+      for (let index = 0; index < bytes.length; index += 0x8000) {
+        binary += String.fromCharCode(
+          ...bytes.subarray(index, index + 0x8000)
+        );
+      }
+      return btoa(binary);
+    };
+    const address = (value) => ({
+      host: String(value?.host ?? '127.0.0.1'),
+      port: Number(value?.port ?? 0),
+    });
+    const syscallRequest = (() => {
+      switch (String(input.op ?? '')) {
+        case 'socket':
+          return { op: 'socket' };
+        case 'bind':
+        case 'connect':
+          return {
+            op: input.op,
+            fd: Number(input.fd),
+            address: address(input.address),
+          };
+        case 'listen':
+          return {
+            op: 'listen',
+            fd: Number(input.fd),
+            options: {
+              backlog: Number(input.backlog ?? 128),
+              capacityChunks: Number(input.capacityChunks ?? 16),
+            },
+          };
+        case 'accept':
+        case 'getsockname':
+        case 'getpeername':
+          return { op: input.op, fd: Number(input.fd) };
+        case 'getsockopt':
+          return {
+            op: 'getsockopt',
+            fd: Number(input.fd),
+            option: 'error',
+          };
+        case 'send':
+          return {
+            op: 'send',
+            fd: Number(input.fd),
+            bytes: base64ToBytes(input.bytes),
+          };
+        case 'recv':
+          return {
+            op: 'recv',
+            fd: Number(input.fd),
+            maxBytes: Number(input.maxBytes ?? 16 * 1024),
+          };
+        case 'shutdown':
+          return {
+            op: 'shutdown',
+            fd: Number(input.fd),
+            how: String(input.how ?? 'both'),
+          };
+        case 'close':
+          return { op: 'close', fd: Number(input.fd) };
+        default:
+          throw new PythonTraceKernelSyscallError(
+            'ENOSYS',
+            `unsupported Python TraceKernel socket operation ${input.op}`
+          );
+      }
+    })();
+    try {
+      const result = kernelClient.request(syscallRequest);
+      return JSON.stringify({
+        ok: true,
+        value: result.op === 'recv'
+          ? { ...result, bytes: bytesToBase64(result.bytes) }
+          : result,
+      });
+    } catch (error) {
+      return JSON.stringify({
+        ok: false,
+        error: {
+          code: String(error?.code ?? 'EIO'),
+          message: error instanceof Error ? error.message : String(error),
+        },
+      });
+    }
+  };
   const restoreProviderStdioBridge = installPyodideProjectStdioBridge(
     request?.project?.kernelDevices,
-    request?.stdinPipe
+    request?.stdinPipe,
+    kernelClient
   );
   const projectCode = `
 import base64
 import builtins
 import contextlib
+import errno
 import io
 import importlib
 import json
@@ -2260,9 +4396,11 @@ import math
 import os
 import runpy
 import shutil
+import signal
 import stat
 import sys
 import traceback
+import types
 from js import self as _js_self
 
 _request = json.loads(${JSON.stringify(requestJson)})
@@ -2279,8 +4417,23 @@ def _normalize_virtual_root(_value, _fallback="/workspace"):
 _workspace_root = _normalize_virtual_root(_project_info.get("workspaceRoot") or _project_info.get("cwd") or "/workspace")
 _workspace_alias_value = _project_info.get("workspaceAlias")
 _workspace_alias = _normalize_virtual_root(_workspace_alias_value) if _workspace_alias_value else None
-shutil.rmtree(_root, ignore_errors=True)
-os.makedirs(_root, exist_ok=True)
+_tracekernel_fs_mounted = ${traceKernelFileSystemMounted ? 'True' : 'False'}
+_tracekernel_sigwinch = int(getattr(signal, "SIGWINCH", 28))
+def _tracekernel_poll_signals():
+    _signal_number = int(
+        getattr(_js_self, "__tracecodePollKernelSignal")()
+    )
+    if _signal_number == 0:
+        return
+    if _signal_number != _tracekernel_sigwinch:
+        return
+    _handler = signal.getsignal(_signal_number)
+    if callable(_handler):
+        _handler(_signal_number, None)
+
+if not _tracekernel_fs_mounted:
+    shutil.rmtree(_root, ignore_errors=True)
+    os.makedirs(_root, exist_ok=True)
 _original_file_bytes = {}
 _original_file_state = {}
 _original_symlink_targets = {}
@@ -2291,6 +4444,1577 @@ _PROJECT_MAX_LIVE_FILE_CHANGES = ${PROJECT_MAX_LIVE_FILE_CHANGES}
 _PROJECT_MAX_LIVE_FILE_CHANGE_BYTES = ${PROJECT_MAX_LIVE_FILE_CHANGE_BYTES}
 _project_live_file_change_count = 0
 _project_live_file_change_bytes = 0
+
+class _TraceKernelWatchdogStatus:
+    def __init__(self, _value):
+        self.armed = bool(_value.get("armed", False))
+        self.timeout_ms = _value.get("timeoutMs")
+        self.deadline_at = _value.get("deadlineAt")
+        self.signal = _value.get("signal")
+
+    def __repr__(self):
+        return (
+            "TraceKernelWatchdogStatus("
+            f"armed={self.armed!r}, timeout_ms={self.timeout_ms!r}, "
+            f"deadline_at={self.deadline_at!r}, signal={self.signal!r})"
+        )
+
+class _TraceKernelWatchdog:
+    @staticmethod
+    def _call(_action, _timeout_ms=None, _signal=None):
+        try:
+            _raw = getattr(_js_self, "__tracecodeKernelWatchdog")(
+                _action,
+                _timeout_ms,
+                _signal,
+            )
+        except BaseException as _error:
+            _code = getattr(_error, "code", None) or "EIO"
+            raise OSError(_code, str(_error)) from None
+        return _TraceKernelWatchdogStatus(json.loads(str(_raw)))
+
+    def arm(self, timeout_ms, *, signal="SIGTERM"):
+        return self._call("arm", int(timeout_ms), str(signal))
+
+    def pet(self):
+        return self._call("pet")
+
+    def disarm(self):
+        return self._call("disarm")
+
+    def status(self):
+        return self._call("status")
+
+class _TraceKernelFileSystem:
+    @staticmethod
+    def _path(_value):
+        _path = os.fspath(_value).replace("\\\\", "/")
+        if not _path:
+            raise ValueError("TraceKernel filesystem path must not be empty")
+        if _path.startswith("/"):
+            return os.path.normpath(_path).replace(os.sep, "/")
+        return os.path.normpath(os.path.join(_workspace_root, _path)).replace(os.sep, "/")
+
+    @staticmethod
+    def _call(_request):
+        try:
+            _raw = getattr(_js_self, "__tracecodeKernelFileSystem")(
+                json.dumps(_request)
+            )
+        except BaseException as _error:
+            _code = getattr(_error, "code", None) or "EIO"
+            raise OSError(_code, str(_error)) from None
+        return json.loads(str(_raw))
+
+    def read_bytes(self, path):
+        _value = self._call({
+            "op": "readFile",
+            "path": self._path(path),
+        })
+        return base64.b64decode(_value["bytes"])
+
+    def read_text(self, path, encoding="utf-8", errors="strict"):
+        return self.read_bytes(path).decode(encoding, errors)
+
+    def write_bytes(self, path, contents):
+        _bytes = bytes(contents)
+        self._call({
+            "op": "writeFile",
+            "path": self._path(path),
+            "bytes": base64.b64encode(_bytes).decode("ascii"),
+        })
+        return len(_bytes)
+
+    def write_text(self, path, contents, encoding="utf-8", errors="strict"):
+        return self.write_bytes(
+            path,
+            str(contents).encode(encoding, errors),
+        )
+
+    @staticmethod
+    def _stat_value(_value):
+        return types.SimpleNamespace(**_value["stat"])
+
+    def stat(self, path):
+        return self._stat_value(self._call({
+            "op": "stat",
+            "path": self._path(path),
+        }))
+
+    def lstat(self, path):
+        return self._stat_value(self._call({
+            "op": "lstat",
+            "path": self._path(path),
+        }))
+
+    def readdir(self, path="."):
+        _value = self._call({
+            "op": "readdir",
+            "path": self._path(path),
+        })
+        return [types.SimpleNamespace(**_entry) for _entry in _value["entries"]]
+
+    def listdir(self, path="."):
+        return [_entry.name for _entry in self.readdir(path)]
+
+    def mkdir(self, path, mode=0o777, *, parents=False, exist_ok=False):
+        _path = self._path(path)
+        if exist_ok:
+            try:
+                _info = self.stat(_path)
+                if _info.kind == "directory":
+                    return None
+            except OSError:
+                pass
+        self._call({
+            "op": "mkdir",
+            "path": _path,
+            "mode": int(mode),
+            "recursive": bool(parents),
+        })
+        return None
+
+    def rmdir(self, path):
+        self._call({"op": "rmdir", "path": self._path(path)})
+
+    def unlink(self, path):
+        self._call({"op": "unlink", "path": self._path(path)})
+
+    def rename(self, source, destination):
+        self._call({
+            "op": "rename",
+            "sourcePath": self._path(source),
+            "destinationPath": self._path(destination),
+        })
+
+    def realpath(self, path):
+        return self._call({
+            "op": "realpath",
+            "path": self._path(path),
+        })["path"]
+
+class _TraceKernelProcessPipe:
+    def __init__(self, fd, mode, *, text=False, encoding=None, errors=None):
+        self.fd = int(fd)
+        self.mode = str(mode)
+        self.text = bool(text)
+        self.encoding = encoding or "utf-8"
+        self.errors = errors or "strict"
+        self.closed = False
+
+    def readable(self):
+        return "r" in self.mode
+
+    def writable(self):
+        return "w" in self.mode
+
+    def fileno(self):
+        return self.fd
+
+    def read(self, size=-1):
+        if self.closed:
+            raise ValueError("I/O operation on closed TraceKernel pipe")
+        if not self.readable():
+            raise OSError("TraceKernel pipe is not readable")
+        _remaining = int(size)
+        _chunks = []
+        while _remaining != 0:
+            _limit = 16 * 1024 if _remaining < 0 else min(_remaining, 16 * 1024)
+            _value = _TraceKernelProcessApi._call({
+                "op": "read",
+                "fd": self.fd,
+                "maxBytes": _limit,
+            })
+            _chunk = base64.b64decode(_value["bytes"])
+            if not _chunk:
+                break
+            _chunks.append(_chunk)
+            if _remaining > 0:
+                _remaining -= len(_chunk)
+        _bytes = b"".join(_chunks)
+        return _bytes.decode(self.encoding, self.errors) if self.text else _bytes
+
+    def readline(self, size=-1):
+        _limit = int(size)
+        _chunks = []
+        while _limit != 0:
+            _chunk = self.read(1)
+            if not _chunk:
+                break
+            _chunks.append(_chunk)
+            if _chunk == ("\\n" if self.text else b"\\n"):
+                break
+            if _limit > 0:
+                _limit -= 1
+        return ("" if self.text else b"").join(_chunks)
+
+    def write(self, value):
+        if self.closed:
+            raise ValueError("I/O operation on closed TraceKernel pipe")
+        if not self.writable():
+            raise OSError("TraceKernel pipe is not writable")
+        _bytes = (
+            str(value).encode(self.encoding, self.errors)
+            if self.text
+            else bytes(value)
+        )
+        _value = _TraceKernelProcessApi._call({
+            "op": "write",
+            "fd": self.fd,
+            "bytes": base64.b64encode(_bytes).decode("ascii"),
+        })
+        return int(_value["bytesWritten"])
+
+    def flush(self):
+        return None
+
+    def close(self):
+        if not self.closed:
+            try:
+                _TraceKernelProcessApi._call({
+                    "op": "close",
+                    "fd": self.fd,
+                })
+            finally:
+                self.closed = True
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *_args):
+        self.close()
+
+class TimeoutExpired(Exception):
+    def __init__(self, cmd, timeout, output=None, stderr=None):
+        super().__init__(f"Command {cmd!r} timed out after {timeout} seconds")
+        self.cmd = cmd
+        self.timeout = timeout
+        self.output = output
+        self.stdout = output
+        self.stderr = stderr
+
+class _TraceKernelChildProcess:
+    def __init__(
+        self,
+        _value,
+        *,
+        text=False,
+        encoding=None,
+        errors=None,
+    ):
+        self.pid = int(_value["pid"])
+        self.returncode = None
+        self.signal = None
+        _stdio = _value.get("stdio") or {}
+        self.stdin = (
+            _TraceKernelProcessPipe(
+                _stdio["stdinFd"],
+                "w",
+                text=text,
+                encoding=encoding,
+                errors=errors,
+            )
+            if "stdinFd" in _stdio
+            else None
+        )
+        self.stdout = (
+            _TraceKernelProcessPipe(
+                _stdio["stdoutFd"],
+                "r",
+                text=text,
+                encoding=encoding,
+                errors=errors,
+            )
+            if "stdoutFd" in _stdio
+            else None
+        )
+        self.stderr = (
+            _TraceKernelProcessPipe(
+                _stdio["stderrFd"],
+                "r",
+                text=text,
+                encoding=encoding,
+                errors=errors,
+            )
+            if "stderrFd" in _stdio
+            else None
+        )
+
+    def poll(self):
+        if self.returncode is not None:
+            return self.returncode
+        _value = _TraceKernelProcessApi._call({
+            "op": "wait",
+            "pid": self.pid,
+            "noHang": True,
+        })
+        if _value.get("termination") is not None:
+            self._apply_termination(_value["termination"])
+        return self.returncode
+
+    def wait(self, timeout=None):
+        if self.returncode is not None:
+            return self.returncode
+        if timeout is not None:
+            import time as _time
+            _deadline = _time.monotonic() + max(0.0, float(timeout))
+            while True:
+                _result = self.poll()
+                if _result is not None:
+                    return _result
+                if _time.monotonic() >= _deadline:
+                    raise TimeoutExpired(self.pid, timeout)
+                _time.sleep(min(0.01, max(0.0, _deadline - _time.monotonic())))
+        _value = _TraceKernelProcessApi._call({
+            "op": "wait",
+            "pid": self.pid,
+        })
+        self._apply_termination(_value["termination"])
+        return self.returncode
+
+    def _apply_termination(self, _termination):
+        self.signal = _termination.get("signal")
+        if _termination["kind"] == "signal":
+            self.returncode = -{
+                "SIGHUP": 1,
+                "SIGINT": 2,
+                "SIGQUIT": 3,
+                "SIGTERM": 15,
+                "SIGKILL": 9,
+            }.get(self.signal, 1)
+        else:
+            self.returncode = int(_termination.get("exitCode", 1))
+
+    def communicate(self, input=None, timeout=None):
+        if timeout is not None:
+            raise NotImplementedError(
+                "TraceKernel child communicate timeouts require a nonblocking wait syscall"
+            )
+        if input is not None:
+            if self.stdin is None:
+                raise ValueError("stdin is not a pipe")
+            self.stdin.write(input)
+        if self.stdin is not None:
+            self.stdin.close()
+        _stdout = self.stdout.read() if self.stdout is not None else None
+        _stderr = self.stderr.read() if self.stderr is not None else None
+        self.wait()
+        return _stdout, _stderr
+
+    def send_signal(self, signal):
+        _name = signal
+        if isinstance(signal, int):
+            _name = {
+                1: "SIGHUP",
+                2: "SIGINT",
+                3: "SIGQUIT",
+                9: "SIGKILL",
+                15: "SIGTERM",
+            }.get(signal)
+        if _name not in ("SIGHUP", "SIGINT", "SIGQUIT", "SIGKILL", "SIGTERM"):
+            raise ValueError(f"Unsupported TraceKernel signal: {signal}")
+        _TraceKernelProcessApi._call({
+            "op": "kill",
+            "pid": self.pid,
+            "signal": _name,
+        })
+
+    def terminate(self):
+        self.send_signal("SIGTERM")
+
+    def kill(self):
+        self.send_signal("SIGKILL")
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *_args):
+        for _stream in (self.stdin, self.stdout, self.stderr):
+            if _stream is not None:
+                _stream.close()
+        if self.returncode is None:
+            self.wait()
+
+class _TraceKernelProcessApi:
+    @staticmethod
+    def _call(_request):
+        try:
+            _raw = getattr(_js_self, "__tracecodeKernelProcess")(
+                json.dumps(_request)
+            )
+        except BaseException as _error:
+            _code = getattr(_error, "code", None) or "EIO"
+            raise OSError(_code, str(_error)) from None
+        _response = json.loads(str(_raw))
+        if not _response.get("ok", False):
+            _error = _response.get("error") or {}
+            _code = str(_error.get("code") or "EIO")
+            _message = str(
+                _error.get("message") or "TraceKernel process syscall failed"
+            )
+            if _code == "EIO" or not hasattr(errno, _code):
+                _code = next((
+                    _candidate
+                    for _candidate in errno.errorcode.values()
+                    if f"{_candidate}:" in _message
+                ), _code)
+            raise OSError(
+                int(getattr(errno, _code, errno.EIO)),
+                _message,
+            )
+        _tracekernel_poll_signals()
+        return _response.get("value") or {}
+
+    @staticmethod
+    def runtime_for_command(command):
+        _name = os.path.basename(str(command)).lower()
+        if _name in ("node", "nodejs", "js", "javascript"):
+            return "javascript"
+        if _name in ("python", "python3", "py"):
+            return "python"
+        if _name == "java":
+            return "java"
+        if _name in ("dotnet", "csharp"):
+            return "csharp"
+        return "cpp"
+
+    def spawn(
+        self,
+        command,
+        args=(),
+        *,
+        runtime=None,
+        cwd=None,
+        env=None,
+        stdin="inherit",
+        stdout="inherit",
+        stderr="inherit",
+        text=False,
+        encoding=None,
+        errors=None,
+        process_group=None,
+        start_new_session=False,
+        pass_fds=(),
+        descriptor_mappings=(),
+        descriptor_actions=(),
+        inherit_all_descriptors=False,
+    ):
+        _command = os.fspath(command)
+        if start_new_session and process_group not in (None, 0):
+            raise ValueError(
+                "process_group must be unset or zero when start_new_session is true"
+            )
+        _value = self._call({
+            "op": "spawn",
+            "runtime": runtime or self.runtime_for_command(_command),
+            "command": _command,
+            "args": [str(_argument) for _argument in args],
+            "cwd": str(cwd if cwd is not None else os.getcwd()),
+            "env": {
+                str(_name): str(_value)
+                for _name, _value in (env if env is not None else os.environ).items()
+            },
+            **(
+                {"processGroupId": 0, "sessionId": 0}
+                if start_new_session
+                else (
+                    {"processGroupId": int(process_group)}
+                    if process_group is not None
+                    else {}
+                )
+            ),
+            "descriptorMappings": [
+                {
+                    "parentFd": int(_mapping[0]),
+                    "childFd": int(_mapping[1]),
+                }
+                for _mapping in (
+                    list(descriptor_mappings)
+                    + [(int(_fd), int(_fd)) for _fd in pass_fds]
+                )
+            ],
+            "descriptorActions": [
+                (
+                    {
+                        "op": "dup2",
+                        "fd": int(_action[1]),
+                        "targetFd": int(_action[2]),
+                    }
+                    if _action[0] == "dup2"
+                    else {"op": "close", "fd": int(_action[1])}
+                )
+                for _action in descriptor_actions
+            ],
+            "inheritAllLocalDescriptors": bool(inherit_all_descriptors),
+            "stdio": {
+                "stdin": str(stdin),
+                "stdout": str(stdout),
+                "stderr": str(stderr),
+            },
+        })
+        return _TraceKernelChildProcess(
+            _value,
+            text=text,
+            encoding=encoding,
+            errors=errors,
+        )
+
+    def kill(self, pid, signal="SIGTERM"):
+        _name = signal
+        if isinstance(signal, int):
+            _name = {
+                1: "SIGHUP",
+                2: "SIGINT",
+                3: "SIGQUIT",
+                9: "SIGKILL",
+                15: "SIGTERM",
+            }.get(signal)
+        if _name not in ("SIGHUP", "SIGINT", "SIGQUIT", "SIGKILL", "SIGTERM"):
+            raise ValueError(f"Unsupported TraceKernel signal: {signal}")
+        self._call({
+            "op": "kill",
+            "pid": int(pid),
+            "signal": _name,
+        })
+
+    def setsid(self):
+        return int(self._call({"op": "setsid"})["sid"])
+
+    def setpgid(self, pid, pgid):
+        self._call({
+            "op": "setpgid",
+            "pid": int(pid),
+            "pgid": int(pgid),
+        })
+
+    def waitpid(self, pid=-1, *, no_hang=False):
+        return self._call({
+            "op": "wait",
+            "pid": int(pid),
+            "noHang": bool(no_hang),
+        })
+
+class _TraceKernelTerminalApi:
+    def isatty(self, fd):
+        return bool(_TraceKernelProcessApi._call({
+            "op": "isatty",
+            "fd": int(fd),
+        })["isTerminal"])
+
+    def foreground_process_group(self, fd=0):
+        return int(_TraceKernelProcessApi._call({
+            "op": "tcgetpgrp",
+            "fd": int(fd),
+        })["pgid"])
+
+    def set_foreground_process_group(self, pgid, fd=0):
+        return int(_TraceKernelProcessApi._call({
+            "op": "tcsetpgrp",
+            "fd": int(fd),
+            "pgid": int(pgid),
+        })["pgid"])
+
+    def window_size(self, fd=0):
+        _value = _TraceKernelProcessApi._call({
+            "op": "tcgetwinsize",
+            "fd": int(fd),
+        })
+        return int(_value["rows"]), int(_value["columns"])
+
+    def set_window_size(self, rows, columns, fd=0):
+        _value = _TraceKernelProcessApi._call({
+            "op": "tcsetwinsize",
+            "fd": int(fd),
+            "rows": int(rows),
+            "columns": int(columns),
+        })
+        return int(_value["rows"]), int(_value["columns"])
+
+class _TraceKernelSocketFile:
+    def __init__(self, socket, mode="r", encoding=None, errors=None, newline=None):
+        self._socket = socket
+        self.mode = mode
+        self.encoding = encoding or "utf-8"
+        self.errors = errors or "strict"
+        self.newline = newline
+        self.closed = False
+        self._binary = "b" in mode
+
+    def read(self, size=-1):
+        if self.closed:
+            raise ValueError("I/O operation on closed socket file")
+        _remaining = int(size)
+        _chunks = []
+        while _remaining != 0:
+            _limit = 16 * 1024 if _remaining < 0 else min(_remaining, 16 * 1024)
+            _chunk = self._socket.recv(_limit)
+            if not _chunk:
+                break
+            _chunks.append(_chunk)
+            if _remaining > 0:
+                _remaining -= len(_chunk)
+        _bytes = b"".join(_chunks)
+        return _bytes if self._binary else _bytes.decode(self.encoding, self.errors)
+
+    def readline(self, size=-1):
+        _remaining = int(size)
+        _chunks = []
+        while _remaining != 0:
+            _chunk = self._socket.recv(1)
+            if not _chunk:
+                break
+            _chunks.append(_chunk)
+            if _chunk == b"\\n":
+                break
+            if _remaining > 0:
+                _remaining -= 1
+        _bytes = b"".join(_chunks)
+        return _bytes if self._binary else _bytes.decode(self.encoding, self.errors)
+
+    def write(self, value):
+        if self.closed:
+            raise ValueError("I/O operation on closed socket file")
+        _bytes = bytes(value) if self._binary else str(value).encode(self.encoding, self.errors)
+        self._socket.sendall(_bytes)
+        return len(_bytes)
+
+    def flush(self):
+        return None
+
+    def close(self):
+        self.closed = True
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *_args):
+        self.close()
+
+class _TraceKernelSocket:
+    family = 2
+    type = 1
+    proto = 0
+
+    @staticmethod
+    def _call(_request):
+        try:
+            _raw = getattr(_js_self, "__tracecodeKernelSocket")(
+                json.dumps(_request)
+            )
+        except BaseException as _error:
+            _message = str(_error)
+            _code = str(getattr(_error, "code", "") or "")
+            if not hasattr(errno, _code):
+                _code = next((
+                    _candidate
+                    for _candidate in errno.errorcode.values()
+                    if f"{_candidate}:" in _message
+                ), "EIO")
+            raise OSError(
+                int(getattr(errno, str(_code), errno.EIO)),
+                _message,
+            ) from None
+        _response = json.loads(str(_raw))
+        if not _response.get("ok", False):
+            _error = _response.get("error") or {}
+            _code = str(_error.get("code") or "EIO")
+            _message = str(
+                _error.get("message") or "TraceKernel socket syscall failed"
+            )
+            if _code == "EIO" or not hasattr(errno, _code):
+                _code = next((
+                    _candidate
+                    for _candidate in errno.errorcode.values()
+                    if f"{_candidate}:" in _message
+                ), _code)
+            raise OSError(
+                int(getattr(errno, _code, errno.EIO)),
+                _message,
+            )
+        return _response.get("value") or {}
+
+    @staticmethod
+    def _address(_value):
+        if not isinstance(_value, (tuple, list)) or len(_value) < 2:
+            raise TypeError("AF_INET address must be a (host, port) pair")
+        _host = str(_value[0] or "0.0.0.0")
+        _port = int(_value[1])
+        if _port < 0 or _port > 65535:
+            raise OverflowError("socket port must be 0-65535")
+        return {"host": _host, "port": _port}
+
+    def __init__(self, family=2, type=1, proto=0, fileno=None, _fd=None):
+        if family not in (2,):
+            raise OSError("TraceKernel currently supports AF_INET only")
+        if type not in (1,):
+            raise OSError("TraceKernel currently supports SOCK_STREAM only")
+        if proto not in (0, 6):
+            raise OSError("TraceKernel currently supports TCP only")
+        if fileno is not None:
+            raise NotImplementedError(
+                "Constructing a TraceKernel socket from an arbitrary fd is unsupported"
+            )
+        self.family = family
+        self.type = type
+        self.proto = proto
+        self._kernel_fd = int(_fd) if _fd is not None else int(
+            self._call({"op": "socket"})["fd"]
+        )
+        try:
+            self._fd = int(
+                getattr(_js_self, "__tracecodeInstallKernelSocket")(
+                    self._kernel_fd
+                )
+            )
+        except BaseException:
+            try:
+                self._call({"op": "close", "fd": self._kernel_fd})
+            except BaseException:
+                pass
+            raise
+        self._closed = False
+        self._timeout = None
+
+    def fileno(self):
+        return -1 if self._closed else self._fd
+
+    def bind(self, address):
+        self._call({
+            "op": "bind",
+            "fd": self._kernel_fd,
+            "address": self._address(address),
+        })
+
+    def listen(self, backlog=128):
+        self._call({
+            "op": "listen",
+            "fd": self._kernel_fd,
+            "backlog": max(0, int(backlog)),
+        })
+
+    def accept(self):
+        _value = self._call({"op": "accept", "fd": self._kernel_fd})
+        return (
+            _TraceKernelSocket(
+                self.family,
+                self.type,
+                self.proto,
+                _fd=_value["fd"],
+            ),
+            (
+                _value["remoteAddress"]["host"],
+                int(_value["remoteAddress"]["port"]),
+            ),
+        )
+
+    def connect(self, address):
+        self._call({
+            "op": "connect",
+            "fd": self._kernel_fd,
+            "address": self._address(address),
+        })
+
+    def connect_ex(self, address):
+        try:
+            self.connect(address)
+            return 0
+        except OSError as _error:
+            return int(getattr(_error, "errno", 1) or 1)
+
+    def send(self, data, flags=0):
+        if flags:
+            raise NotImplementedError("TraceKernel socket send flags are unsupported")
+        _bytes = bytes(data)
+        return int(self._call({
+            "op": "send",
+            "fd": self._kernel_fd,
+            "bytes": base64.b64encode(_bytes).decode("ascii"),
+        })["bytesWritten"])
+
+    def sendall(self, data, flags=0):
+        _bytes = memoryview(bytes(data))
+        _offset = 0
+        while _offset < len(_bytes):
+            _written = self.send(_bytes[_offset:], flags)
+            if _written <= 0:
+                raise BrokenPipeError("TraceKernel socket send made no progress")
+            _offset += _written
+        return None
+
+    def recv(self, bufsize, flags=0):
+        if flags:
+            raise NotImplementedError("TraceKernel socket recv flags are unsupported")
+        if int(bufsize) < 0:
+            raise ValueError("negative buffersize in recv")
+        _value = self._call({
+            "op": "recv",
+            "fd": self._kernel_fd,
+            "maxBytes": int(bufsize),
+        })
+        return base64.b64decode(_value["bytes"])
+
+    def recv_into(self, buffer, nbytes=0, flags=0):
+        _view = memoryview(buffer)
+        _limit = len(_view) if not nbytes else min(int(nbytes), len(_view))
+        _bytes = self.recv(_limit, flags)
+        _view[:len(_bytes)] = _bytes
+        return len(_bytes)
+
+    def shutdown(self, how):
+        _mode = {0: "read", 1: "write", 2: "both"}.get(int(how))
+        if _mode is None:
+            raise ValueError(f"invalid shutdown mode: {how}")
+        self._call({
+            "op": "shutdown",
+            "fd": self._kernel_fd,
+            "how": _mode,
+        })
+
+    def getsockname(self):
+        _address = self._call({
+            "op": "getsockname",
+            "fd": self._kernel_fd,
+        })["address"]
+        return (_address["host"], int(_address["port"]))
+
+    def getpeername(self):
+        _address = self._call({
+            "op": "getpeername",
+            "fd": self._kernel_fd,
+        })["address"]
+        return (_address["host"], int(_address["port"]))
+
+    def getsockopt(self, level, optname, buflen=0):
+        if int(level) == 1 and int(optname) == 4:
+            _error = self._call({
+                "op": "getsockopt",
+                "fd": self._kernel_fd,
+            }).get("error")
+            return 0 if _error is None else int(
+                getattr(errno, str(_error), errno.EIO)
+            )
+        raise OSError(errno.ENOPROTOOPT, "Protocol not available")
+
+    def settimeout(self, value):
+        if value is not None and float(value) < 0:
+            raise ValueError("Timeout value out of range")
+        if value is not None and float(value) > 0:
+            raise NotImplementedError(
+                "TraceKernel socket deadlines require a timed blocking-I/O syscall"
+            )
+        self.setblocking(value is None)
+
+    def gettimeout(self):
+        return self._timeout
+
+    def setblocking(self, flag):
+        if self._closed:
+            raise OSError(errno.EBADF, "Bad file descriptor")
+        os.set_blocking(self._fd, bool(flag))
+        self._timeout = None if flag else 0.0
+
+    def getblocking(self):
+        return self._timeout != 0.0
+
+    def makefile(
+        self,
+        mode="r",
+        buffering=None,
+        encoding=None,
+        errors=None,
+        newline=None,
+    ):
+        return _TraceKernelSocketFile(
+            self,
+            mode,
+            encoding,
+            errors,
+            newline,
+        )
+
+    def close(self):
+        if not self._closed:
+            try:
+                os.close(self._fd)
+            finally:
+                self._closed = True
+                self._fd = -1
+                self._kernel_fd = -1
+
+    def detach(self):
+        if self._closed:
+            return -1
+        _fd = self._fd
+        self._closed = True
+        self._fd = -1
+        self._kernel_fd = -1
+        return _fd
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *_args):
+        self.close()
+
+_tracekernel_module = types.ModuleType("tracekernel")
+_tracekernel_module.WatchdogStatus = _TraceKernelWatchdogStatus
+_tracekernel_module.watchdog = _TraceKernelWatchdog()
+_tracekernel_module.fs = _TraceKernelFileSystem()
+_tracekernel_module.process = _TraceKernelProcessApi()
+_tracekernel_module.terminal = _TraceKernelTerminalApi()
+_tracekernel_module.socket = _TraceKernelSocket
+sys.modules["tracekernel"] = _tracekernel_module
+
+_original_tracekernel_os_pipe = getattr(os, "pipe", None)
+_original_tracekernel_os_pipe2 = getattr(os, "pipe2", None)
+_original_tracekernel_os_get_blocking = getattr(os, "get_blocking", None)
+_original_tracekernel_os_set_blocking = getattr(os, "set_blocking", None)
+_original_tracekernel_os_isatty = getattr(os, "isatty", None)
+_original_tracekernel_os_tcgetpgrp = getattr(os, "tcgetpgrp", None)
+_original_tracekernel_os_tcsetpgrp = getattr(os, "tcsetpgrp", None)
+_original_tracekernel_os_get_terminal_size = getattr(
+    os,
+    "get_terminal_size",
+    None,
+)
+_previous_tracekernel_termios_module = sys.modules.get("termios")
+try:
+    _tracekernel_termios_module = importlib.import_module("termios")
+except ImportError:
+    _tracekernel_termios_module = types.ModuleType("termios")
+_original_tracekernel_termios_tcgetwinsize = getattr(
+    _tracekernel_termios_module,
+    "tcgetwinsize",
+    None,
+)
+_original_tracekernel_termios_tcsetwinsize = getattr(
+    _tracekernel_termios_module,
+    "tcsetwinsize",
+    None,
+)
+_original_tracekernel_o_cloexec = getattr(os, "O_CLOEXEC", None)
+_original_tracekernel_o_nonblock = getattr(os, "O_NONBLOCK", None)
+_tracekernel_o_cloexec = int(_original_tracekernel_o_cloexec or 0x80000)
+_tracekernel_o_nonblock = int(_original_tracekernel_o_nonblock or 0x800)
+os.O_CLOEXEC = _tracekernel_o_cloexec
+os.O_NONBLOCK = _tracekernel_o_nonblock
+def _tracekernel_os_pipe():
+    return tuple(json.loads(str(
+        getattr(_js_self, "__tracecodeCreateKernelPipe")(True, False)
+    )))
+def _tracekernel_os_pipe2(flags):
+    _flags = int(flags)
+    if _flags & ~(_tracekernel_o_cloexec | _tracekernel_o_nonblock):
+        raise OSError(errno.EINVAL, "Unsupported TraceKernel pipe2 flags")
+    return tuple(json.loads(str(
+        getattr(_js_self, "__tracecodeCreateKernelPipe")(
+            bool(_flags & _tracekernel_o_cloexec),
+            bool(_flags & _tracekernel_o_nonblock),
+        )
+    )))
+os.pipe = _tracekernel_os_pipe
+os.pipe2 = _tracekernel_os_pipe2
+def _restore_tracekernel_pipe_module():
+    if _original_tracekernel_os_pipe is None:
+        try:
+            delattr(os, "pipe")
+        except AttributeError:
+            pass
+    else:
+        os.pipe = _original_tracekernel_os_pipe
+    if _original_tracekernel_os_pipe2 is None:
+        try:
+            delattr(os, "pipe2")
+        except AttributeError:
+            pass
+    else:
+        os.pipe2 = _original_tracekernel_os_pipe2
+    if _original_tracekernel_os_get_blocking is None:
+        try:
+            delattr(os, "get_blocking")
+        except AttributeError:
+            pass
+    else:
+        os.get_blocking = _original_tracekernel_os_get_blocking
+    if _original_tracekernel_os_set_blocking is None:
+        try:
+            delattr(os, "set_blocking")
+        except AttributeError:
+            pass
+    else:
+        os.set_blocking = _original_tracekernel_os_set_blocking
+    if _original_tracekernel_os_isatty is None:
+        try:
+            delattr(os, "isatty")
+        except AttributeError:
+            pass
+    else:
+        os.isatty = _original_tracekernel_os_isatty
+    if _original_tracekernel_os_tcgetpgrp is None:
+        try:
+            delattr(os, "tcgetpgrp")
+        except AttributeError:
+            pass
+    else:
+        os.tcgetpgrp = _original_tracekernel_os_tcgetpgrp
+    if _original_tracekernel_os_tcsetpgrp is None:
+        try:
+            delattr(os, "tcsetpgrp")
+        except AttributeError:
+            pass
+    else:
+        os.tcsetpgrp = _original_tracekernel_os_tcsetpgrp
+    if _original_tracekernel_os_get_terminal_size is None:
+        try:
+            delattr(os, "get_terminal_size")
+        except AttributeError:
+            pass
+    else:
+        os.get_terminal_size = _original_tracekernel_os_get_terminal_size
+    if _original_tracekernel_termios_tcgetwinsize is None:
+        try:
+            delattr(_tracekernel_termios_module, "tcgetwinsize")
+        except AttributeError:
+            pass
+    else:
+        _tracekernel_termios_module.tcgetwinsize = (
+            _original_tracekernel_termios_tcgetwinsize
+        )
+    if _original_tracekernel_termios_tcsetwinsize is None:
+        try:
+            delattr(_tracekernel_termios_module, "tcsetwinsize")
+        except AttributeError:
+            pass
+    else:
+        _tracekernel_termios_module.tcsetwinsize = (
+            _original_tracekernel_termios_tcsetwinsize
+        )
+    if _previous_tracekernel_termios_module is None:
+        sys.modules.pop("termios", None)
+    else:
+        sys.modules["termios"] = _previous_tracekernel_termios_module
+    if _original_tracekernel_o_cloexec is None:
+        try:
+            delattr(os, "O_CLOEXEC")
+        except AttributeError:
+            pass
+    else:
+        os.O_CLOEXEC = _original_tracekernel_o_cloexec
+    if _original_tracekernel_o_nonblock is None:
+        try:
+            delattr(os, "O_NONBLOCK")
+        except AttributeError:
+            pass
+    else:
+        os.O_NONBLOCK = _original_tracekernel_o_nonblock
+
+os.kill = lambda pid, signal: _tracekernel_module.process.kill(pid, signal)
+os.killpg = lambda pgid, signal: _tracekernel_module.process.kill(
+    -abs(int(pgid)),
+    signal,
+)
+def _tracekernel_process_identity(pid=0):
+    return _TraceKernelProcessApi._call({
+        "op": "identity",
+        "pid": int(pid),
+    })
+os.getpid = lambda: int(_tracekernel_process_identity()["pid"])
+os.getppid = lambda: int(_tracekernel_process_identity()["ppid"])
+os.getpgrp = lambda: int(_tracekernel_process_identity()["pgid"])
+def _tracekernel_getpgid(pid=0):
+    return int(_tracekernel_process_identity(pid)["pgid"])
+def _tracekernel_getsid(pid=0):
+    return int(_tracekernel_process_identity(pid)["sid"])
+os.getpgid = _tracekernel_getpgid
+os.getsid = _tracekernel_getsid
+os.setsid = lambda: _tracekernel_module.process.setsid()
+os.setpgid = lambda pid, pgid: _tracekernel_module.process.setpgid(pid, pgid)
+os.isatty = lambda fd: _tracekernel_module.terminal.isatty(fd)
+os.tcgetpgrp = lambda fd: (
+    _tracekernel_module.terminal.foreground_process_group(fd)
+)
+os.tcsetpgrp = lambda fd, pgid: (
+    _tracekernel_module.terminal.set_foreground_process_group(pgid, fd)
+)
+def _tracekernel_get_terminal_size(fd=1):
+    _rows, _columns = _tracekernel_module.terminal.window_size(fd)
+    return os.terminal_size((_columns, _rows))
+os.get_terminal_size = _tracekernel_get_terminal_size
+_tracekernel_termios_module.tcgetwinsize = (
+    lambda fd: _tracekernel_module.terminal.window_size(fd)
+)
+def _tracekernel_termios_tcsetwinsize(fd, size):
+    _tracekernel_module.terminal.set_window_size(
+        int(size[0]),
+        int(size[1]),
+        fd,
+    )
+_tracekernel_termios_module.tcsetwinsize = _tracekernel_termios_tcsetwinsize
+sys.modules["termios"] = _tracekernel_termios_module
+os.WNOHANG = int(getattr(os, "WNOHANG", 1))
+def _tracekernel_wait_status(_termination):
+    if _termination["kind"] == "signal":
+        return {
+            "SIGHUP": 1,
+            "SIGINT": 2,
+            "SIGQUIT": 3,
+            "SIGTERM": 15,
+            "SIGKILL": 9,
+        }.get(_termination.get("signal"), 1)
+    return (int(_termination.get("exitCode", 1)) & 0xff) << 8
+def _tracekernel_waitpid(pid, options):
+    _options = int(options)
+    if _options & ~os.WNOHANG:
+        raise OSError(
+            errno.ENOTSUP,
+            "TraceKernel waitpid currently supports only WNOHANG",
+        )
+    try:
+        _value = _tracekernel_module.process.waitpid(
+            int(pid),
+            no_hang=bool(_options & os.WNOHANG),
+        )
+    except OSError as _error:
+        if _error.errno == errno.ECHILD:
+            raise ChildProcessError(_error.errno, _error.strerror) from None
+        raise
+    _termination = _value.get("termination")
+    if _termination is None:
+        return 0, 0
+    return int(_value["pid"]), _tracekernel_wait_status(_termination)
+os.waitpid = _tracekernel_waitpid
+os.wait = lambda: _tracekernel_waitpid(-1, 0)
+
+def _tracekernel_get_inheritable(fd):
+    _value = _TraceKernelProcessApi._call({
+        "op": "fcntl",
+        "fd": int(fd),
+        "action": "get-close-on-exec",
+    })
+    return not bool(_value.get("closeOnExec"))
+
+def _tracekernel_set_inheritable(fd, inheritable):
+    _TraceKernelProcessApi._call({
+        "op": "fcntl",
+        "fd": int(fd),
+        "action": "set-close-on-exec",
+        "closeOnExec": not bool(inheritable),
+    })
+
+os.get_inheritable = _tracekernel_get_inheritable
+os.set_inheritable = _tracekernel_set_inheritable
+def _tracekernel_get_blocking(fd):
+    _value = _TraceKernelProcessApi._call({
+        "op": "fcntl",
+        "fd": int(fd),
+        "action": "get-nonblocking",
+    })
+    return not bool(_value.get("nonblocking"))
+def _tracekernel_set_blocking(fd, blocking):
+    _TraceKernelProcessApi._call({
+        "op": "fcntl",
+        "fd": int(fd),
+        "action": "set-nonblocking",
+        "nonblocking": not bool(blocking),
+    })
+os.get_blocking = _tracekernel_get_blocking
+os.set_blocking = _tracekernel_set_blocking
+
+_fcntl_module = types.ModuleType("fcntl")
+_fcntl_module.F_GETFD = 1
+_fcntl_module.F_SETFD = 2
+_fcntl_module.F_GETFL = 3
+_fcntl_module.F_SETFL = 4
+_fcntl_module.FD_CLOEXEC = 1
+_fcntl_module.O_NONBLOCK = _tracekernel_o_nonblock
+def _tracekernel_fcntl(fd, command, argument=0):
+    if int(command) == _fcntl_module.F_GETFD:
+        return 0 if os.get_inheritable(fd) else _fcntl_module.FD_CLOEXEC
+    if int(command) == _fcntl_module.F_SETFD:
+        os.set_inheritable(fd, not bool(int(argument) & _fcntl_module.FD_CLOEXEC))
+        return 0
+    if int(command) == _fcntl_module.F_GETFL:
+        return 0 if os.get_blocking(fd) else _fcntl_module.O_NONBLOCK
+    if int(command) == _fcntl_module.F_SETFL:
+        os.set_blocking(fd, not bool(int(argument) & _fcntl_module.O_NONBLOCK))
+        return 0
+    raise NotImplementedError(
+        "TraceKernel fcntl supports descriptor and nonblocking status flags"
+    )
+_fcntl_module.fcntl = _tracekernel_fcntl
+sys.modules["fcntl"] = _fcntl_module
+
+def _install_tracekernel_select_module():
+    _previous_select = sys.modules.get("select")
+    _previous_selectors = sys.modules.get("selectors")
+    _module = types.ModuleType("select")
+    _module.POLLIN = 0x001
+    _module.POLLPRI = 0x002
+    _module.POLLOUT = 0x004
+    _module.POLLERR = 0x008
+    _module.POLLHUP = 0x010
+    _module.POLLNVAL = 0x020
+    _module.error = OSError
+
+    def _descriptor(value):
+        if isinstance(value, _TraceKernelSocket):
+            return int(value.fileno()), False
+        if isinstance(value, int):
+            return int(value), False
+        _fileno = getattr(value, "fileno", None)
+        if not callable(_fileno):
+            raise TypeError("argument must be an int, or have a fileno() method")
+        return int(_fileno()), False
+
+    class poll:
+        def __init__(self):
+            self._registrations = {}
+
+        def register(self, fd, eventmask=_module.POLLIN | _module.POLLPRI | _module.POLLOUT):
+            _fd, _kernel = _descriptor(fd)
+            if _fd < 0:
+                raise ValueError("file descriptor cannot be a negative integer")
+            self._registrations[_fd] = (fd, int(eventmask), _kernel)
+
+        def modify(self, fd, eventmask):
+            _number, _kernel = _descriptor(fd)
+            if _number not in self._registrations:
+                raise FileNotFoundError(_number)
+            _original = self._registrations[_number][0]
+            self._registrations[_number] = (_original, int(eventmask), _kernel)
+
+        def unregister(self, fd):
+            _number, _kernel = _descriptor(fd)
+            if _number not in self._registrations:
+                raise KeyError(_number)
+            del self._registrations[_number]
+
+        def poll(self, timeout=None):
+            _timeout_ms = None if timeout is None else float(timeout)
+            if _timeout_ms is not None and _timeout_ms < 0:
+                _timeout_ms = None
+            _result = _TraceKernelProcessApi._call({
+                "op": "poll",
+                "entries": [
+                    {
+                        "fd": _fd,
+                        "kernel": _kernel,
+                        "read": bool(_events & (_module.POLLIN | _module.POLLPRI)),
+                        "write": bool(_events & _module.POLLOUT),
+                    }
+                    for _fd, (_original, _events, _kernel)
+                    in self._registrations.items()
+                ],
+                "timeoutMs": _timeout_ms,
+            })
+            _ready = []
+            for _entry in _result.get("entries", []):
+                _fd = int(_entry["fd"])
+                _registration = self._registrations.get(_fd)
+                if _registration is None:
+                    continue
+                _events = int(_registration[1])
+                _revents = 0
+                if _entry.get("read") and _events & (_module.POLLIN | _module.POLLPRI):
+                    _revents |= _module.POLLIN
+                if _entry.get("write") and _events & _module.POLLOUT:
+                    _revents |= _module.POLLOUT
+                if _entry.get("error"):
+                    _revents |= _module.POLLERR
+                if _entry.get("hangup"):
+                    _revents |= _module.POLLHUP
+                if _entry.get("invalid"):
+                    _revents |= _module.POLLNVAL
+                if _revents:
+                    _ready.append((_fd, _revents))
+            return _ready
+
+    def select(rlist, wlist, xlist, timeout=None):
+        _poll = poll()
+        _objects = {}
+        _read_fds = set()
+        _write_fds = set()
+        _exception_fds = set()
+        for _objects_list, _event, _target in (
+            (rlist, _module.POLLIN, _read_fds),
+            (wlist, _module.POLLOUT, _write_fds),
+            (xlist, _module.POLLERR, _exception_fds),
+        ):
+            for _object in _objects_list:
+                _fd, _kernel = _descriptor(_object)
+                _objects[_fd] = _object
+                _target.add(_fd)
+                _existing = _poll._registrations.get(_fd)
+                _mask = (_existing[1] if _existing else 0) | _event
+                _poll._registrations[_fd] = (_object, _mask, _kernel)
+        _timeout_ms = None if timeout is None else max(0.0, float(timeout) * 1000.0)
+        _readable = []
+        _writable = []
+        _exceptional = []
+        for _fd, _events in _poll.poll(_timeout_ms):
+            _object = _objects[_fd]
+            if _fd in _read_fds and _events & (_module.POLLIN | _module.POLLHUP):
+                _readable.append(_object)
+            if _fd in _write_fds and _events & _module.POLLOUT:
+                _writable.append(_object)
+            if _fd in _exception_fds and _events & (_module.POLLERR | _module.POLLNVAL):
+                _exceptional.append(_object)
+        return _readable, _writable, _exceptional
+
+    _module.poll = poll
+    _module.select = select
+    sys.modules["select"] = _module
+    sys.modules.pop("selectors", None)
+
+    def _restore():
+        if _previous_select is None:
+            sys.modules.pop("select", None)
+        else:
+            sys.modules["select"] = _previous_select
+        if _previous_selectors is None:
+            sys.modules.pop("selectors", None)
+        else:
+            sys.modules["selectors"] = _previous_selectors
+
+    return _restore
+
+def _install_tracekernel_subprocess_module():
+    _module = types.ModuleType("subprocess")
+    _module.PIPE = -1
+    _module.STDOUT = -2
+    _module.DEVNULL = -3
+    _module.TimeoutExpired = TimeoutExpired
+
+    class CalledProcessError(Exception):
+        def __init__(self, returncode, cmd, output=None, stderr=None):
+            super().__init__(
+                f"Command {cmd!r} returned non-zero exit status {returncode}."
+            )
+            self.returncode = returncode
+            self.cmd = cmd
+            self.output = output
+            self.stdout = output
+            self.stderr = stderr
+
+    class CompletedProcess:
+        def __init__(self, args, returncode, stdout=None, stderr=None):
+            self.args = args
+            self.returncode = returncode
+            self.stdout = stdout
+            self.stderr = stderr
+
+        def check_returncode(self):
+            if self.returncode:
+                raise CalledProcessError(
+                    self.returncode,
+                    self.args,
+                    self.stdout,
+                    self.stderr,
+                )
+
+    def _stdio_mode(_value, _name, _child_fd, _mappings, _actions):
+        if _value is None:
+            return "inherit"
+        if _value == _module.PIPE:
+            return "pipe"
+        if _value == _module.DEVNULL:
+            return "ignore"
+        if _value == _module.STDOUT and _name == "stderr":
+            _actions.append(("dup2", 1, 2))
+            return "inherit"
+        if isinstance(_value, int) and _value >= 0:
+            _mappings.append((int(_value), int(_child_fd)))
+            return "inherit"
+        raise NotImplementedError(
+            "TraceKernel subprocess supports inherit, PIPE, DEVNULL, STDOUT, and numeric stdio"
+        )
+
+    class Popen(_TraceKernelChildProcess):
+        def __init__(
+            self,
+            args,
+            bufsize=-1,
+            executable=None,
+            stdin=None,
+            stdout=None,
+            stderr=None,
+            preexec_fn=None,
+            close_fds=True,
+            pass_fds=(),
+            shell=False,
+            cwd=None,
+            env=None,
+            universal_newlines=None,
+            text=None,
+            encoding=None,
+            errors=None,
+            start_new_session=False,
+            process_group=None,
+            **_kwargs,
+        ):
+            if shell or executable is not None or preexec_fn is not None:
+                raise NotImplementedError(
+                    "TraceKernel subprocess does not emulate a host shell or preexec_fn"
+                )
+            _argv = [args] if isinstance(args, (str, bytes, os.PathLike)) else list(args)
+            if not _argv:
+                raise ValueError("subprocess args must not be empty")
+            _text = bool(text or universal_newlines or encoding)
+            _descriptor_mappings = []
+            _descriptor_actions = []
+            _child = _tracekernel_module.process.spawn(
+                os.fspath(_argv[0]),
+                [str(_value) for _value in _argv[1:]],
+                cwd=cwd,
+                env=env,
+                stdin=_stdio_mode(
+                    stdin,
+                    "stdin",
+                    0,
+                    _descriptor_mappings,
+                    _descriptor_actions,
+                ),
+                stdout=_stdio_mode(
+                    stdout,
+                    "stdout",
+                    1,
+                    _descriptor_mappings,
+                    _descriptor_actions,
+                ),
+                stderr=_stdio_mode(
+                    stderr,
+                    "stderr",
+                    2,
+                    _descriptor_mappings,
+                    _descriptor_actions,
+                ),
+                text=_text,
+                encoding=encoding,
+                errors=errors,
+                start_new_session=start_new_session,
+                process_group=process_group,
+                pass_fds=pass_fds,
+                descriptor_mappings=_descriptor_mappings,
+                descriptor_actions=_descriptor_actions,
+                inherit_all_descriptors=not close_fds,
+            )
+            self.__dict__.update(_child.__dict__)
+            self.args = args
+
+    def run(
+        args,
+        *,
+        input=None,
+        capture_output=False,
+        timeout=None,
+        check=False,
+        **kwargs,
+    ):
+        if capture_output:
+            if kwargs.get("stdout") is not None or kwargs.get("stderr") is not None:
+                raise ValueError(
+                    "stdout and stderr arguments may not be used with capture_output"
+                )
+            kwargs["stdout"] = _module.PIPE
+            kwargs["stderr"] = _module.PIPE
+        if input is not None:
+            if kwargs.get("stdin") is not None:
+                raise ValueError("stdin and input arguments may not both be used")
+            kwargs["stdin"] = _module.PIPE
+        _process = Popen(args, **kwargs)
+        _stdout, _stderr = _process.communicate(input, timeout=timeout)
+        _completed = CompletedProcess(
+            args,
+            _process.returncode,
+            _stdout,
+            _stderr,
+        )
+        if check:
+            _completed.check_returncode()
+        return _completed
+
+    _module.CalledProcessError = CalledProcessError
+    _module.CompletedProcess = CompletedProcess
+    _module.Popen = Popen
+    _module.run = run
+    _module.call = lambda args, **kwargs: run(args, **kwargs).returncode
+    _module.check_call = lambda args, **kwargs: (
+        run(args, check=True, **kwargs).returncode
+    )
+    _module.check_output = lambda args, **kwargs: (
+        run(args, stdout=_module.PIPE, check=True, **kwargs).stdout
+    )
+    sys.modules["subprocess"] = _module
+
+if _tracekernel_fs_mounted:
+    _install_tracekernel_subprocess_module()
+
+def _install_tracekernel_socket_module():
+    _previous = sys.modules.get("socket")
+    _module = types.ModuleType("socket")
+    _module.AF_INET = 2
+    _module.AF_UNSPEC = 0
+    _module.SOCK_STREAM = 1
+    _module.IPPROTO_TCP = 6
+    _module.SOL_SOCKET = 1
+    _module.SO_REUSEADDR = 2
+    _module.SO_ERROR = 4
+    _module.SHUT_RD = 0
+    _module.SHUT_WR = 1
+    _module.SHUT_RDWR = 2
+    _module.has_ipv6 = False
+    _module.socket = _TraceKernelSocket
+    _module.SocketType = _TraceKernelSocket
+    _module.error = OSError
+    _module.timeout = TimeoutError
+    _module.gethostname = lambda: "tracekernel"
+    _module.getfqdn = lambda name="": str(name or "tracekernel")
+
+    def _host(value):
+        _value = str(value or "")
+        if _value in ("", "localhost", "tracekernel"):
+            return "127.0.0.1"
+        return _value
+
+    _module.gethostbyname = _host
+    _module.gethostbyname_ex = lambda name: (
+        str(name),
+        [],
+        [_host(name)],
+    )
+    _module.getaddrinfo = lambda host, port, family=0, type=0, proto=0, flags=0: [
+        (
+            _module.AF_INET,
+            _module.SOCK_STREAM,
+            _module.IPPROTO_TCP,
+            "",
+            (_host(host), int(port)),
+        )
+    ]
+
+    def create_connection(address, timeout=None, source_address=None):
+        _socket = _TraceKernelSocket()
+        try:
+            if timeout is not None:
+                _socket.settimeout(timeout)
+            if source_address is not None:
+                _socket.bind(source_address)
+            _socket.connect(address)
+            return _socket
+        except BaseException:
+            _socket.close()
+            raise
+
+    _module.create_connection = create_connection
+    sys.modules["socket"] = _module
+
+    def _restore():
+        if _previous is None:
+            sys.modules.pop("socket", None)
+        else:
+            sys.modules["socket"] = _previous
+
+    return _restore
 
 def _project_utf8_len(_value):
     return len(str(_value).encode("utf-8", "replace"))
@@ -2403,11 +6127,11 @@ def _file_state(_absolute_path):
         "mtimeMs": int(round(float(_info.st_mtime) * 1000)),
     }
 
-for _directory in _request.get("project", {}).get("directories", []):
+for _directory in ([] if _tracekernel_fs_mounted else _request.get("project", {}).get("directories", [])):
     _relative_directory = _safe_project_entry_path(_directory, "directory")
     os.makedirs(os.path.join(_root, _relative_directory), exist_ok=True)
 
-for _file in _request.get("project", {}).get("files", []):
+for _file in ([] if _tracekernel_fs_mounted else _request.get("project", {}).get("files", [])):
     _relative_path = _safe_project_entry_path(_file.get("path", ""), "file")
     _target = os.path.join(_root, _relative_path)
     os.makedirs(os.path.dirname(_target), exist_ok=True)
@@ -2427,7 +6151,7 @@ for _file in _request.get("project", {}).get("files", []):
         os.utime(_target, (_atime, _mtime))
     _original_file_state[_relative_path] = _file_state(_target)
 
-for _symlink in _request.get("project", {}).get("symlinks", []):
+for _symlink in ([] if _tracekernel_fs_mounted else _request.get("project", {}).get("symlinks", [])):
     if not isinstance(_symlink, dict):
         raise ValueError("Project symbolic link entry must be an object")
     _relative_link_path = _safe_project_entry_path(_symlink.get("path", ""), "symbolic link")
@@ -2438,7 +6162,7 @@ for _symlink in _request.get("project", {}).get("symlinks", []):
     _original_symlink_targets[_relative_link_path] = _link_target
     _remembered_symlink_targets[_relative_link_path] = _link_target
 
-for _directory_metadata in _request.get("project", {}).get("directoryMetadata", []):
+for _directory_metadata in ([] if _tracekernel_fs_mounted else _request.get("project", {}).get("directoryMetadata", [])):
     if not isinstance(_directory_metadata, dict):
         raise ValueError("Project directory metadata entry must be an object")
     _relative_directory = _safe_project_entry_path(_directory_metadata.get("path", ""), "directory metadata")
@@ -2453,7 +6177,7 @@ for _directory_metadata in _request.get("project", {}).get("directoryMetadata", 
         _mtime = float(_directory_metadata.get("mtimeMs", _current_state["mtimeMs"])) / 1000
         os.utime(_absolute_directory, (_atime, _mtime))
 
-for _dirpath, _dirnames, _filenames in os.walk(_root, followlinks=False):
+for _dirpath, _dirnames, _filenames in ([] if _tracekernel_fs_mounted else os.walk(_root, followlinks=False)):
     if os.path.islink(_dirpath):
         _dirnames[:] = []
         continue
@@ -2462,14 +6186,15 @@ for _dirpath, _dirnames, _filenames in os.walk(_root, followlinks=False):
         _original_directory_state[_relative_directory] = _directory_state(_dirpath)
 
 _restore_provider_fs_mutation_events = lambda: None
-try:
-    _restore_provider_fs_mutation_events = _js_self.__tracecodeInstallProjectFsMutationEvents(
-        _root,
-        json.dumps(_project_info.get("kernelDevices", [])),
-        _workspace_root,
-    )
-except Exception:
-    _restore_provider_fs_mutation_events = lambda: None
+if not _tracekernel_fs_mounted:
+    try:
+        _restore_provider_fs_mutation_events = _js_self.__tracecodeInstallProjectFsMutationEvents(
+            _root,
+            json.dumps(_project_info.get("kernelDevices", [])),
+            _workspace_root,
+        )
+    except Exception:
+        _restore_provider_fs_mutation_events = lambda: None
 
 _source = _request.get("source")
 _script_path = str(_request.get("scriptPath") or "")
@@ -2487,6 +6212,8 @@ _previous_modules = set(sys.modules.keys())
 _env = {str(key): str(value) for key, value in _request.get("env", {}).items()}
 _exit_code = 0
 _restore_workspace_paths = lambda: None
+_restore_tracekernel_socket_module = lambda: None
+_restore_tracekernel_select_module = lambda: None
 _active_project_cwd = _root
 _project_original_open = builtins.open
 _project_original_readlink = os.readlink
@@ -2513,6 +6240,12 @@ def _read_project_input(_device="/dev/stdin", _size=-1):
 
 def _emit_project_event(_event):
     try:
+        if (
+            _tracekernel_fs_mounted
+            and isinstance(_event, dict)
+            and _event.get("type") == "file-change"
+        ):
+            return
         if (
             isinstance(_event, dict)
             and _event.get("type") == "file-change"
@@ -3532,15 +7265,21 @@ class _TraceProjectStream(io.StringIO):
         _budgeted_text = self._budget_text(_text)
         _device = str(_output_device or ("/dev/stderr" if self._stream == "stderr" else "/dev/stdout"))
         if _budgeted_text:
-            _event = {
-                "type": "output",
-                "stream": self._stream,
-                "device": _device,
-                "data": _budgeted_text,
-            }
-            if _source_device and _source_device != _device:
-                _event["sourceDevice"] = _source_device
-            _emit_project_event(_event)
+            if _tracekernel_fs_mounted:
+                getattr(_js_self, "__tracecodeWriteProjectOutput")(
+                    self._stream,
+                    _budgeted_text,
+                )
+            else:
+                _event = {
+                    "type": "output",
+                    "stream": self._stream,
+                    "device": _device,
+                    "data": _budgeted_text,
+                }
+                if _source_device and _source_device != _device:
+                    _event["sourceDevice"] = _source_device
+                _emit_project_event(_event)
             super().write(_budgeted_text)
         return len(_text)
 
@@ -3849,6 +7588,8 @@ def _project_pythonpath_entries():
     return _entries
 
 def _project_files_after_execution():
+    if _tracekernel_fs_mounted:
+        return []
     _files = []
     _seen_paths = set()
     _seen_dirs = set()
@@ -4740,6 +8481,7 @@ def _install_virtual_workspace_paths():
             _workspace_file_descriptors[_new_fd] = _workspace_file_descriptors[_fd]
         if _fd in _open_file_descriptors:
             _open_file_descriptors[_new_fd] = _open_file_descriptors[_fd]
+        os.set_inheritable(_new_fd, False)
         return _new_fd
 
     def _patched_os_dup2(_fd, _fd2, _inheritable=True):
@@ -4761,6 +8503,7 @@ def _install_virtual_workspace_paths():
             _workspace_file_descriptors[_new_fd] = _workspace_file_descriptors[_fd]
         if _fd in _open_file_descriptors:
             _open_file_descriptors[_new_fd] = _open_file_descriptors[_fd]
+        os.set_inheritable(_new_fd, bool(_inheritable))
         return _new_fd
 
     def _patched_os_truncate(_path, _length):
@@ -5106,6 +8849,9 @@ try:
         if _script_dir and _script_dir not in sys.path:
             sys.path.insert(0, _script_dir)
     _install_tracekernel_asgi_modules()
+    if _tracekernel_fs_mounted:
+        _restore_tracekernel_socket_module = _install_tracekernel_socket_module()
+        _restore_tracekernel_select_module = _install_tracekernel_select_module()
     sys.argv = _project_argv()
     sys.stdin = _TraceProjectInputStream()
     sys.__stdout__ = _stdout
@@ -5132,6 +8878,9 @@ try:
             traceback.print_exc(file=_stderr)
             _exit_code = 1
 finally:
+    _restore_tracekernel_select_module()
+    _restore_tracekernel_socket_module()
+    _restore_tracekernel_pipe_module()
     _restore_provider_fs_mutation_events()
     _restore_workspace_paths()
     sys.argv = _previous_argv
@@ -5152,10 +8901,27 @@ json.dumps({
 })
 `;
 
+  let restoreTraceKernelFileSystemMount = () => {};
   try {
+    if (kernelClient) {
+      const workspaceRoot = String(
+        request?.project?.workspaceRoot ??
+          request?.project?.cwd ??
+          '/workspace'
+      ).replace(/\\/g, '/').replace(/\/+$/, '') || '/workspace';
+      restoreTraceKernelFileSystemMount = installPyodideTraceKernelMount(
+        pyodide,
+        kernelClient,
+        workspaceRoot
+      );
+      installPyodideTraceKernelPipeFactory(pyodide, kernelClient);
+    }
     const resultJson = await pyodide.runPythonAsync(projectCode);
     const result = JSON.parse(resultJson);
-    if (projectOutputEvents.length > 0) {
+    if (kernelClient) {
+      result.stdout = '';
+      result.stderr = '';
+    } else if (projectOutputEvents.length > 0) {
       result.stdout = projectOutputEvents
         .filter((event) => event.stream === 'stdout')
         .map((event) => String(event.data ?? ''))
@@ -5167,21 +8933,43 @@ json.dumps({
     }
     return result;
   } finally {
+    restoreTraceKernelFileSystemMount();
     restoreProviderStdioBridge();
     delete self.__tracecodeProjectEvent;
+    delete self.__tracecodeWriteProjectOutput;
     delete self.__tracecodeRuntimeKernelOpenTarget;
     delete self.__tracecodeRuntimeKernelMutationTarget;
     delete self.__tracecodeInstallProjectFsMutationEvents;
     delete self.__tracecodeKernelHttpListen;
     delete self.__tracecodeKernelHttpDispatch;
+    delete self.__tracecodeKernelWatchdog;
+    delete self.__tracecodeKernelFileSystem;
+    delete self.__tracecodeKernelProcess;
+    delete self.__tracecodeKernelSocket;
+    delete self.__tracecodePollKernelSignal;
+    delete self.__tracecodeCreateKernelPipe;
+    delete self.__tracecodeInstallKernelSocket;
+    kernelClient?.close();
     activeProjectHttpBridges.delete(messageId);
   }
 }
 
-async function executeProjectPython(request, messageId, protocolToken) {
+async function executeProjectPython(
+  request,
+  messageId,
+  protocolToken,
+  kernelSyscallChannel,
+  kernelSignalMailbox
+) {
   await loadPyodideInstance();
   return withPythonUserAuthorityLockdown(
-    () => executeProjectPythonUserCall(request, messageId, protocolToken),
+    () => executeProjectPythonUserCall(
+      request,
+      messageId,
+      protocolToken,
+      kernelSyscallChannel,
+      kernelSignalMailbox
+    ),
     request?.projectUserAuthorityMode ?? 'temporary'
   );
 }
@@ -5201,7 +8989,14 @@ async function executeCodeBatch(code, functionName, inputBatch, executionStyle =
 }
 
 async function processMessage(data) {
-  const { id, type, payload, protocolToken } = data;
+  const {
+    id,
+    type,
+    payload,
+    protocolToken,
+    kernelSyscallChannel,
+    kernelSignalMailbox,
+  } = data;
   try {
     if (id && typeof protocolToken !== 'string') {
       trustedPythonWorkerPostMessage({ id, type: 'error', payload: { error: 'Missing Python worker protocol token.' } });
@@ -5264,7 +9059,13 @@ async function processMessage(data) {
       }
 
       case 'execute-project-python': {
-        const result = await executeProjectPython(payload, id, protocolToken);
+        const result = await executeProjectPython(
+          payload,
+          id,
+          protocolToken,
+          kernelSyscallChannel,
+          kernelSignalMailbox
+        );
         analyzerInitialized = false;
         trustedPythonWorkerPostMessage({ id, type: 'execute-result', payload: result, protocolToken });
         break;

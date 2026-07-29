@@ -1380,6 +1380,7 @@ async function runBrowserPlanItem(
                 body: `http-ok:${request.method}:${request.path}\n`,
               }));
               try {
+                await listener.ready;
                 const command = `curl -s http://127.0.0.1:${listener.info.port}/probe`;
                 const result = await runProjectCommand('TraceKernel HTTP bridge', command);
                 return { command, result, port: listener.info.port };

@@ -29,3 +29,59 @@ self-hosted or served from a consumer-approved HTTP(S) CDN under the declared
 origin policy. Because worker `importScripts()` does not provide
 execution-bound SRI, use immutable URLs, confirm the required CheerpJ license,
 and maintain explicit deployment hashes and allowlists.
+
+## TraceJVM provider for TraceKernel
+
+TraceJVM is a separate, default-off Java 23 provider. Configure it with a
+factory that returns a fresh `TraceJVMWorkerClient`:
+
+```ts
+import { TraceJVMWorkerClient } from '@tracecode/tracejvm';
+import { createBrowserProjectWorkspace } from '@tracecode/harness-browser/project';
+
+const workspace = await createBrowserProjectWorkspace({
+  providers: ['java'],
+  traceJVM: {
+    createClient: () => new TraceJVMWorkerClient({
+      engine: {
+        assets: {
+          wasmUrl: '/tracejvm/bjvm_main.wasm',
+          runtimeProfileBaseUrls: {
+            core: '/tracejvm/profiles/core',
+          },
+        },
+        runtimeProfile: 'core',
+      },
+      createWorker: () => new Worker('/tracejvm/browser-worker.js', {
+        type: 'module',
+      }),
+    }),
+  },
+});
+```
+
+Harness does not declare TraceJVM as a package or peer dependency. The adapter
+consumes a small exported structural client contract so Harness can build and
+ship independently; applications that select this provider install and inject
+their chosen compatible TraceJVM release explicitly.
+
+The adapter binds one coordinator to the TraceKernel PID but admits each
+`javac` or `java` invocation to a fresh Worker. Compilation artifacts are
+committed to TKFS and subsequent commands read them from TKFS, including
+commands chained inside one kernel process.
+
+Compilation remains value-oriented: `javac` receives an immutable TKFS snapshot
+and commits its output as a final diff. Running Java programs use TraceJVM's
+process-scoped host port for live kernel operations. Ordinary Java file and
+random-access APIs use authoritative TKFS; stdin, stdout, stderr, pipes, and
+socket channels use process-owned descriptors; `ProcessBuilder` creates
+kernel-supervised children; selectors multiplex kernel readiness; and ordinary
+`WatchService` registrations observe live cross-runtime TKFS changes.
+The standalone `io.tracecode.tracekernel.TraceKernel` API adds process identity,
+watchdog arm/pet/disarm/status, `setsid`, `setpgid`, `tcgetpgrp`, and
+`tcsetpgrp` without patching `java.base`; the adapter routes those calls through
+the same generic host port to authoritative TraceKernel state.
+
+TraceJVM is independent of CheerpJ and its private filesystem/layout. The
+adapter remains default-off, requires a fresh disposable Worker for every
+invocation, and never reuses mutable VM state across kernel process leases.

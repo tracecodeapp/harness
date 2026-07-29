@@ -32,6 +32,9 @@ import type {
   RuntimeKernelHttpBridge,
   RuntimeKernelHttpListenerHandle,
   RuntimeKernelHttpResponse,
+  RuntimeKernelSignalBridge,
+  RuntimeKernelSyscallBridge,
+  RuntimeProjectEngineLeaseController,
 } from '@tracecode/harness-core';
 import type { KernelHttpSyncServerBridge } from './kernel-http-sync';
 import type { BrowserWorkerLike } from './execution-host';
@@ -55,6 +58,7 @@ export interface WorkerSessionPendingMessage {
   reject: (error: Error) => void;
   onEvent?: RuntimeCommandEventHandler;
   kernelHttp?: RuntimeKernelHttpBridge;
+  kernelSyscalls?: RuntimeKernelSyscallBridge;
   httpListeners?: Map<string, RuntimeKernelHttpListenerHandle>;
   httpRequests?: Map<
     string,
@@ -124,6 +128,7 @@ export interface WorkerSessionCoreConfig {
 
 export class WorkerSessionCore {
   private session: WorkerSession | null = null;
+  private engineLeaseTail: Promise<void> = Promise.resolve();
   readonly pendingMessages = new Map<MessageId, WorkerSessionPendingMessage>();
   private messageId = 0;
   /** Runs when a session closes (with the close reason), before pending rejection; clients clear memos here. */
@@ -137,6 +142,64 @@ export class WorkerSessionCore {
 
   get isWorkerRunning(): boolean {
     return this.session !== null;
+  }
+
+  /**
+   * Bind this reusable worker generation to one TraceKernel process.
+   *
+   * The attachment is host-only. TraceKernel asks the client to prove that
+   * the request registry is empty and that the same ready worker generation
+   * is still alive before it may issue a reuse disposition. Every other
+   * disposition closes the session through its scoped finalizer.
+   */
+  async acquireReusableEngineLease(controller: RuntimeProjectEngineLeaseController): Promise<void> {
+    const predecessor = this.engineLeaseTail;
+    let releaseTurn!: () => void;
+    const releaseGate = new Promise<void>((resolve) => {
+      releaseTurn = resolve;
+    });
+    this.engineLeaseTail = predecessor
+      .catch(() => undefined)
+      .then(() => releaseGate);
+    await predecessor.catch(() => undefined);
+
+    let validatedSession: WorkerSession | null = null;
+    try {
+      controller.attach({
+        revalidate: async () => {
+          const session = this.session;
+          if (!session) {
+            throw new Error(`${this.config.runtimeLabel} worker is not running after execution.`);
+          }
+          if (this.pendingMessages.size !== 0) {
+            throw new Error(
+              `${this.config.runtimeLabel} worker still owns ${this.pendingMessages.size} pending request(s).`
+            );
+          }
+          await session.ready.promise;
+          if (this.session !== session) {
+            throw new Error(`${this.config.runtimeLabel} worker generation changed during revalidation.`);
+          }
+          validatedSession = session;
+        },
+        release: (disposition) => {
+          try {
+            if (disposition.kind === 'reuse') return;
+            if (validatedSession && this.session !== validatedSession) return;
+            this.closeSession(
+              new WorkerTerminatedError(
+                `${this.config.runtimeLabel} engine lease destroyed: ${disposition.reason}`
+              )
+            );
+          } finally {
+            releaseTurn();
+          }
+        },
+      });
+    } catch (error) {
+      releaseTurn();
+      throw error;
+    }
   }
 
   /**
@@ -372,7 +435,9 @@ export class WorkerSessionCore {
     timeoutMs: number | null = this.config.defaultMessageTimeoutMs,
     onEvent?: RuntimeCommandEventHandler,
     kernelHttp?: RuntimeKernelHttpBridge,
-    validateLifecycle?: () => void
+    validateLifecycle?: () => void,
+    kernelSyscalls?: RuntimeKernelSyscallBridge,
+    kernelSignals?: RuntimeKernelSignalBridge
   ): Effect.Effect<T, Error> {
     return Effect.gen(this, function* () {
       yield* Effect.try({
@@ -399,7 +464,15 @@ export class WorkerSessionCore {
         catch: (error) => (error instanceof Error ? error : new Error(String(error))),
       });
 
-      const reply = this.postAndAwaitReply<T>(session.worker, type, payload, onEvent, kernelHttp);
+      const reply = this.postAndAwaitReply<T>(
+        session.worker,
+        type,
+        payload,
+        onEvent,
+        kernelHttp,
+        kernelSyscalls,
+        kernelSignals
+      );
       if (timeoutMs === null) {
         return yield* reply;
       }
@@ -429,7 +502,9 @@ export class WorkerSessionCore {
     type: string,
     payload?: unknown,
     onEvent?: RuntimeCommandEventHandler,
-    kernelHttp?: RuntimeKernelHttpBridge
+    kernelHttp?: RuntimeKernelHttpBridge,
+    kernelSyscalls?: RuntimeKernelSyscallBridge,
+    kernelSignals?: RuntimeKernelSignalBridge
   ): Effect.Effect<T, Error> {
     return Effect.async<T, Error>((resume) => {
       const id = String(++this.messageId);
@@ -441,6 +516,7 @@ export class WorkerSessionCore {
         reject: (error) => resume(Effect.fail(error)),
         ...(onEvent ? { onEvent } : {}),
         ...(kernelHttp ? { kernelHttp } : {}),
+        ...(kernelSyscalls ? { kernelSyscalls } : {}),
         httpListeners: new Map(),
         httpRequests: new Map(),
         httpDispatchAbortControllers: new Map(),
@@ -456,7 +532,26 @@ export class WorkerSessionCore {
       }, { enabled: this.config.debug });
 
       try {
-        worker.postMessage({ id, type, payload, protocolToken });
+        worker.postMessage({
+          id,
+          type,
+          payload,
+          protocolToken,
+          ...(kernelSyscalls
+            ? {
+                kernelSyscallChannel: kernelSyscalls.channel,
+                ...(kernelSyscalls.generationBuffer
+                  ? {
+                      kernelSyscallGenerationBuffer:
+                        kernelSyscalls.generationBuffer,
+                    }
+                  : {}),
+              }
+            : {}),
+          ...(kernelSignals
+            ? { kernelSignalMailbox: kernelSignals.mailbox }
+            : {}),
+        });
       } catch (error) {
         const entry = this.pendingMessages.get(id);
         if (entry) {
@@ -484,10 +579,21 @@ export class WorkerSessionCore {
     timeoutMs: number | null = this.config.defaultMessageTimeoutMs,
     onEvent?: RuntimeCommandEventHandler,
     kernelHttp?: RuntimeKernelHttpBridge,
-    validateLifecycle?: () => void
+    validateLifecycle?: () => void,
+    kernelSyscalls?: RuntimeKernelSyscallBridge,
+    kernelSignals?: RuntimeKernelSignalBridge
   ): Promise<T> {
     return this.runClientEffect(
-      this.sendMessageEffect<T>(type, payload, timeoutMs, onEvent, kernelHttp, validateLifecycle)
+      this.sendMessageEffect<T>(
+        type,
+        payload,
+        timeoutMs,
+        onEvent,
+        kernelHttp,
+        validateLifecycle,
+        kernelSyscalls,
+        kernelSignals
+      )
     );
   }
 

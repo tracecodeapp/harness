@@ -185,6 +185,9 @@ importers:
       '@tracecode/harness-core':
         specifier: workspace:*
         version: link:../harness-core
+      '@tracecode/tracekernel':
+        specifier: workspace:*
+        version: link:../tracekernel
       effect:
         specifier: ^3.22.0
         version: 3.22.0
@@ -244,6 +247,9 @@ importers:
       '@tracecode/harness-core':
         specifier: workspace:*
         version: link:../harness-core
+      '@tracecode/tracekernel':
+        specifier: workspace:*
+        version: link:../tracekernel
       lodash:
         specifier: 4.17.21
         version: 4.17.21
@@ -298,6 +304,9 @@ importers:
       '@tracecode/harness-core':
         specifier: workspace:*
         version: link:../harness-core
+      '@tracecode/tracekernel':
+        specifier: workspace:*
+        version: link:../tracekernel
       just-bash:
         specifier: 3.1.0
         version: 3.1.0(patch_hash=85fdd503145cc4fc6f226395623ee247ff72fd3b070ed14e629867c9ae9e1e85)
@@ -309,6 +318,12 @@ importers:
         version: link:../harness-core
 
   packages/harness-sql: {}
+
+  packages/tracekernel:
+    dependencies:
+      effect:
+        specifier: 3.22.0
+        version: 3.22.0
 
 packages:
 
