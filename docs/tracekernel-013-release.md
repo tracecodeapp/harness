@@ -140,10 +140,47 @@ The release gates fail if any of these conditions are observed:
   diverges from the kernel descriptor model; or
 - generated, packed, and copied release artifacts differ.
 
-Physical iPad validation remains a manual release sign-off because it cannot be
+## Physical iPad sign-off
+
+Physical iPad validation remains a release sign-off because it cannot be
 represented truthfully by desktop CI. WebKit iPad emulation belongs to
 TraceJVM's independent standalone release suite, but it is not recorded as a
 physical-device pass.
+
+The device page runs the real TraceKernel + TraceJVM adapter fixture and
+records filesystem sharing, descriptors, stdin, TCP, selectors, file watches,
+child processes, process groups, sessions, terminal controls, watchdogs,
+signals, worker retirement, and restart isolation as a JSON report.
+
+First verify the page and report callback locally:
+
+```bash
+TRACECODE_TRACEJVM_ROOT=/absolute/path/to/tracejvm \
+  pnpm test:tracekernel-013-physical:check
+```
+
+Then create a temporary HTTPS URL for the physical device:
+
+```bash
+TRACECODE_TRACEJVM_ROOT=/absolute/path/to/tracejvm \
+  pnpm test:tracekernel-013-physical -- --tunnel
+```
+
+The command prints `PHYSICAL_IPAD_URL`. Keep it running while Safari completes
+both required passes:
+
+1. Open the URL and leave Safari in the foreground until the first report
+   passes.
+2. Background Safari for 30 seconds, return to the same tab, and choose
+   **Run again**.
+3. Confirm the second report passes, then stop the host with `Ctrl+C`.
+
+The random tunnel is HTTPS because browser SharedArrayBuffer transports require
+a secure, cross-origin-isolated context. It exists only while the command is
+running. Device reports are written beneath the ignored
+`reports/tracekernel-013-physical/` directory. A beta physical sign-off requires
+two passing reports from the same device, with the second produced after the
+background/foreground transition.
 
 The scheduled generic provider matrix continues to monitor CheerpJ for legacy
 compatibility. It is intentionally not a TraceKernel 0.13 release dependency:

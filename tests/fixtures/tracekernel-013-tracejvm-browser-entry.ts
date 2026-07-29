@@ -6,48 +6,16 @@ import {
   createRuntimeCommandStdinPipeFromText,
 } from '../../packages/harness-core/src/index';
 import { createBrowserProjectWorkspace } from '../../packages/harness-browser/src/project';
+import type {
+  TraceKernelTraceJVMResult,
+} from './tracekernel-013-tracejvm-result';
 
 declare global {
-  var runTraceKernelTraceJVMTest: (() => Promise<{
-    compile: { stdout: string; stderr: string; exitCode: number };
-    firstRun: { stdout: string; stderr: string; exitCode: number };
-    secondRun: { stdout: string; stderr: string; exitCode: number };
-    filesystemRun: { stdout: string; stderr: string; exitCode: number };
-    stdinRun: { stdout: string; stderr: string; exitCode: number };
-    socketRun: { stdout: string; stderr: string; exitCode: number };
-    selectorRun: { stdout: string; stderr: string; exitCode: number };
-    watchRun: { stdout: string; stderr: string; exitCode: number };
-    processRun: { stdout: string; stderr: string; exitCode: number };
-    controlsRun: { stdout: string; stderr: string; exitCode: number };
-    terminalControlsRun: { stdout: string; stderr: string; exitCode: number };
-    watchdogExpiry: {
-      stdout: string;
-      stderr: string;
-      exitCode: number;
-      handledSignal?: string;
-    };
-    sharedFile: string;
-    randomFile: string;
-    childFile: string;
-    interrupted: {
-      stdout: string;
-      stderr: string;
-      exitCode: number;
-      handledSignal?: string;
-    };
-    restarted: { stdout: string; stderr: string; exitCode: number };
-    classFileBase64: string;
-    workerCount: number;
-    reports: Array<{
-      source: string;
-      status: string;
-      isolation: string;
-      retirementRecommended: boolean;
-    }>;
-  }>) | undefined;
+  var runTraceKernelTraceJVMTest:
+    (() => Promise<TraceKernelTraceJVMResult>) | undefined;
 }
 
-globalThis.runTraceKernelTraceJVMTest = async () => {
+globalThis.runTraceKernelTraceJVMTest = async (): Promise<TraceKernelTraceJVMResult> => {
   let workerCount = 0;
   const reports: Array<{
     source: string;

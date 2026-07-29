@@ -11,6 +11,9 @@ import { join, normalize, resolve } from 'node:path';
 import { tmpdir } from 'node:os';
 import { build } from 'esbuild';
 import { chromium, firefox, webkit, type BrowserType } from 'playwright';
+import {
+  assertTraceKernelTraceJVMResult,
+} from './fixtures/tracekernel-013-tracejvm-result';
 
 type BrowserEngine = 'chromium' | 'firefox' | 'webkit';
 
@@ -116,55 +119,7 @@ try {
           }
           return globalThis.runTraceKernelTraceJVMTest();
         });
-        const reportStatuses = result.reports.map(
-          (report) => `${report.source}:${report.status}:${report.isolation}`
-        );
-        if (
-          result.compile.exitCode !== 0 ||
-          result.classFileBase64.length === 0 ||
-          result.firstRun.exitCode !== 0 ||
-          result.firstRun.stdout !== '1:first:missing:first\n' ||
-          result.secondRun.exitCode !== 0 ||
-          result.secondRun.stdout !== '1:missing:missing:second\n' ||
-          result.filesystemRun.exitCode !== 0 ||
-          result.filesystemRun.stdout !==
-            'fs:js-before-java:nested:true:abZd:3:random.bin:true:true\n' ||
-          result.sharedFile !== 'js-before-java|java' ||
-          result.randomFile !== 'abZd' ||
-          result.stdinRun.exitCode !== 0 ||
-          result.stdinRun.stdout !== 'stdin:hello\n' ||
-          result.socketRun.exitCode !== 0 ||
-          result.socketRun.stdout !== 'socket:pong\n' ||
-          result.selectorRun.exitCode !== 0 ||
-          result.selectorRun.stdout !== 'selector:true:true\n' ||
-          result.watchRun.exitCode !== 0 ||
-          result.watchRun.stdout !== 'watch:true:true:true:0\n' ||
-          result.processRun.exitCode !== 0 ||
-          !/^process:\d+:true:true:true:true:true:true:1:true:false:java-child\n$/u.test(
-            result.processRun.stdout
-          ) ||
-          result.controlsRun.exitCode !== 0 ||
-          result.controlsRun.stdout !== 'controls:true:true:true:true\n' ||
-          result.terminalControlsRun.exitCode !== 0 ||
-          result.terminalControlsRun.stdout !== 'terminal:true:true\n' ||
-          result.watchdogExpiry.exitCode !== 137 ||
-          result.childFile !== 'java-child' ||
-          result.interrupted.exitCode !== 130 ||
-          result.interrupted.stderr !== '' ||
-          result.restarted.exitCode !== 0 ||
-          result.restarted.stdout !== '1:missing:missing:restarted\n' ||
-          result.workerCount !== 18 ||
-          !reportStatuses.includes('compile:completed:not-applicable') ||
-          !reportStatuses.includes('run:runtime-error:clean') ||
-          !reportStatuses.includes('run:completed:tainted') ||
-          reportStatuses.filter(
-            (status) => status === 'run:completed:clean'
-          ).length !== 8
-        ) {
-          throw new Error(
-            `${engine} failed the TraceKernel/TraceJVM adapter boundary: ${JSON.stringify(result)}`
-          );
-        }
+        assertTraceKernelTraceJVMResult(result);
         console.log(
           `PASS: TraceJVM is process-isolated and restartable through TraceKernel in ${engine}`
         );

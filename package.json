@@ -148,6 +148,8 @@
     "test:tracekernel-013-release:full": "node scripts/test-tracekernel-013-release.mjs --profile=full",
     "test:tracekernel-013-release:tracejvm": "node scripts/test-tracekernel-013-release.mjs --profile=tracejvm",
     "test:tracekernel-013-release:artifacts": "node scripts/test-tracekernel-013-release.mjs --profile=artifacts",
+    "test:tracekernel-013-physical": "node scripts/run-tracekernel-013-physical.mjs",
+    "test:tracekernel-013-physical:check": "node scripts/run-tracekernel-013-physical.mjs --check=webkit",
     "test:smoke": "pnpm exec tsx --tsconfig tsconfig.base.json tests/test-harness-workspace-smoke.ts",
     "test:packaged-surface": "pnpm exec tsx --tsconfig tsconfig.base.json tests/test-packaged-surface.ts",
     "test:bundle-gates": "node scripts/check-browser-project-bundle.mjs",
