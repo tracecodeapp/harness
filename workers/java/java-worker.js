@@ -585,6 +585,12 @@ function isJavaHarnessStackFrame(line) {
   const trimmed = String(line ?? '').trim();
   return (
     /^at tracecode(?:\.|\$)/.test(trimmed) ||
+    /^at tracecode\//.test(trimmed) ||
+    /^at harness(?:\.|\/)user(?:\.|\/)[^(]*(?:Exports[^.(\/]*)(?:\.|\/)/.test(trimmed) ||
+    /^at java(?:\.|\/)lang(?:\.|\/)invoke(?:\.|\/)/.test(trimmed) ||
+    /^at java(?:\.|\/)lang(?:\.|\/)reflect(?:\.|\/)Method\.invoke/.test(trimmed) ||
+    /^at jdk(?:\.|\/)internal(?:\.|\/)reflect(?:\.|\/)/.test(trimmed) ||
+    /^at jdk(?:\.|\/)internal(?:\.|\/)tracecode(?:\.|\/)/.test(trimmed) ||
     trimmed.startsWith('at com.leaningtech.cheerpj.CheerpJLibrary.')
   );
 }
@@ -596,6 +602,13 @@ function sanitizeJavaRuntimeStderr(stderr) {
     .split('\n')
     .filter((line) => !isJavaHarnessStackFrame(line))
     .join('\n');
+}
+
+function sanitizeJavaCompilerDiagnostic(output) {
+  if (typeof output !== 'string' || output.length === 0) return output;
+  return output
+    .replace(/\r\n/g, '\n')
+    .replace(/(?:\/str\/|\/tracejvm\/compile-\d+\/)([^/\n]+\.java)/g, '$1');
 }
 
 function createJavaProjectBridgeRunId(requestId) {
@@ -4656,8 +4669,12 @@ function boundedJavaDiagnosticPath(value, fallback = '.') {
 
 function javaReportFailureMessage(report, fallback = 'Java execution failed') {
   const parts = [];
-  const compilerStdout = typeof report?.compilerStdout === 'string' ? report.compilerStdout.trim() : '';
-  const compilerStderr = typeof report?.compilerStderr === 'string' ? report.compilerStderr.trim() : '';
+  const compilerStdout = typeof report?.compilerStdout === 'string'
+    ? sanitizeJavaCompilerDiagnostic(report.compilerStdout).trim()
+    : '';
+  const compilerStderr = typeof report?.compilerStderr === 'string'
+    ? sanitizeJavaCompilerDiagnostic(report.compilerStderr).trim()
+    : '';
   const runtimeError = typeof report?.runtimeError === 'string'
     ? truncateJavaProjectDiagnostic(sanitizeJavaRuntimeStderr(report.runtimeError)).trim()
     : '';
@@ -4666,7 +4683,6 @@ function javaReportFailureMessage(report, fallback = 'Java execution failed') {
   if (runtimeError && !compilerStdout.includes(runtimeError) && !compilerStderr.includes(runtimeError)) {
     parts.push(`runtimeError:\n${truncateJavaWorkerDiagnostic(runtimeError)}`);
   }
-  if (Array.isArray(report?.events)) parts.push(`eventCount: ${report.events.length}`);
   if (Array.isArray(report?.results)) {
     const failedResults = report.results
       .map((entry, index) => ({ entry, index }))
@@ -4675,8 +4691,6 @@ function javaReportFailureMessage(report, fallback = 'Java execution failed') {
       parts.push(`failedResultIndices: ${failedResults.map(({ index }) => index).join(', ')}`);
     }
   }
-  if (report?.traceLimitExceeded !== undefined) parts.push(`traceLimitExceeded: ${Boolean(report.traceLimitExceeded)}`);
-  if (report?.droppedEventCount !== undefined) parts.push(`droppedEventCount: ${report.droppedEventCount}`);
   return parts.length > 0 ? parts.join('\n') : fallback;
 }
 

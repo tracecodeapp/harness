@@ -268,10 +268,7 @@ function compileFailureReport(compile, compilerDebugProfile) {
     events: [],
     compilerStdout: compile.stdout,
     compilerStderr: compile.stderr,
-    runtimeError:
-      compile.stderr ||
-      compile.stdout ||
-      `TraceJVM compilation ended with ${compile.status}.`,
+    runtimeError: 'Java compilation failed',
     compileTimeMs: compile.timings?.totalMs ?? 0,
     classLoadTimeMs: 0,
     runTimeMs: 0,
