@@ -2,7 +2,9 @@ import {
   Bash,
   defineCommand,
 } from 'just-bash/browser';
-import { inflateSync } from 'fflate';
+// Use the explicit browser entry so shared Project parsing never pulls
+// fflate's Node worker_threads/createRequire adapter into browser bundles.
+import * as fflateBrowser from 'fflate/browser';
 import {
   applyRuntimeCommandResultFiles,
   canCreateRuntimeCommandStdinPipe,
@@ -466,7 +468,7 @@ export function extractJarMainClass(bytes: Uint8Array): string | null {
       let manifestBytes: Uint8Array;
       try {
         if (method === 0) manifestBytes = compressed;
-        else if (method === 8) manifestBytes = inflateSync(compressed);
+        else if (method === 8) manifestBytes = fflateBrowser.inflateSync(compressed);
         else return null;
       } catch {
         return null;
