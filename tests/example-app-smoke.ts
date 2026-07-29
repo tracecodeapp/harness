@@ -1438,6 +1438,10 @@ export async function runExampleBrowserSmoke(previewUrl: string): Promise<void> 
     const page = await browser.newPage();
     page.setDefaultTimeout(180_000);
     await page.goto(previewUrl, { waitUntil: 'networkidle' });
+    assertCondition(
+      await page.evaluate(() => globalThis.crossOriginIsolated),
+      'Example deployment must provide COOP/COEP headers for SharedArrayBuffer-backed runtimes'
+    );
 
     for (const language of ['python', 'javascript', 'typescript', 'java', 'cpp'] as const) {
       await runLanguageExampleSmoke(page, language, {

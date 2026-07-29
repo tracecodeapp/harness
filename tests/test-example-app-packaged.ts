@@ -23,6 +23,7 @@ async function createPackagedExampleApp(tempRoot: string): Promise<string> {
 
   await cp(join(sourceDir, 'index.html'), join(appDir, 'index.html'));
   await cp(join(sourceDir, 'tsconfig.json'), join(appDir, 'tsconfig.json'));
+  await cp(join(sourceDir, 'vite.config.ts'), join(appDir, 'vite.config.ts'));
   await cp(join(sourceDir, 'src'), join(appDir, 'src'), { recursive: true });
 
   const packageJson = {
