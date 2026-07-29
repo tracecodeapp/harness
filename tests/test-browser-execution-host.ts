@@ -418,6 +418,7 @@ async function main(): Promise<void> {
   try {
     const workspacePromise = createBrowserProjectWorkspace({
       providers: ['java'],
+      javaRuntime: 'legacy',
       executionHost: {
         url: delayedExecutionWindow.location.href,
         window: parentWindow as unknown as Window,

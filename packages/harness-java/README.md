@@ -17,23 +17,12 @@ import { JavaWorkerClient, createJavaRuntimeClient } from '@tracecode/harness-ja
 The umbrella package also exposes the same public surface at
 `@tracecode/harness/java` for backwards-compatible all-in-one installs.
 
-Runtime assets are published under `workers/`. Review `THIRD_PARTY_NOTICES.md`
-before redistributing this package, especially the CheerpJ and OpenJDK/JBR
-sections.
+## TraceJVM project provider
 
-The Java lane trusts the host application's CheerpJ asset pipeline. Owned
-browser project runners require a complete `assets.runtimeManifests.java`
-declaration (`worker`, `loader`, `helperJar`, `compilerJar`, `rewriterJar`, and
-`parserJar`) or a consumer-provided `javaWorkerClient`. Manifest URLs may be
-self-hosted or served from a consumer-approved HTTP(S) CDN under the declared
-origin policy. Because worker `importScripts()` does not provide
-execution-bound SRI, use immutable URLs, confirm the required CheerpJ license,
-and maintain explicit deployment hashes and allowlists.
-
-## TraceJVM provider for TraceKernel
-
-TraceJVM is a separate, default-off Java 23 provider. Configure it with a
-factory that returns a fresh `TraceJVMWorkerClient`:
+TraceJVM is the default Java project runtime in Harness 0.13. The
+`@tracecode/harness-java/tracejvm-project` entry point adapts TraceJVM's generic
+Java 23 API to TraceKernel's process and filesystem contracts. Applications
+install TraceJVM independently and provide a factory for fresh Worker clients:
 
 ```ts
 import { TraceJVMWorkerClient } from '@tracecode/tracejvm';
@@ -65,6 +54,23 @@ consumes a small exported structural client contract so Harness can build and
 ship independently; applications that select this provider install and inject
 their chosen compatible TraceJVM release explicitly.
 
+CheerpJ is retained only as an explicit rollback in 0.13:
+
+```ts
+const workspace = await createBrowserProjectWorkspace({
+  providers: ['java'],
+  javaRuntime: 'legacy',
+  assets: {
+    runtimeManifests: {
+      java: legacyJavaManifest,
+    },
+  },
+});
+```
+
+There is no implicit fallback. A Java project without `traceJVM.createClient`
+fails during workspace creation unless `javaRuntime: 'legacy'` is selected.
+
 The adapter binds one coordinator to the TraceKernel PID but admits each
 `javac` or `java` invocation to a fresh Worker. Compilation artifacts are
 committed to TKFS and subsequent commands read them from TKFS, including
@@ -83,5 +89,12 @@ watchdog arm/pet/disarm/status, `setsid`, `setpgid`, `tcgetpgrp`, and
 the same generic host port to authoritative TraceKernel state.
 
 TraceJVM is independent of CheerpJ and its private filesystem/layout. The
-adapter remains default-off, requires a fresh disposable Worker for every
-invocation, and never reuses mutable VM state across kernel process leases.
+adapter requires a fresh disposable Worker for every invocation and never
+reuses mutable VM state across kernel process leases.
+
+TraceJVM intentionally has no Trace Mode protocol. Harness remains responsible
+for Java rewriting, instrumentation, trace limits, event transport, and trace
+reconstruction. The semantic provider differential compares those observable
+results against the previous Java provider during the 0.13 transition.
+
+Review `THIRD_PARTY_NOTICES.md` before redistributing Java runtime assets.

@@ -457,6 +457,50 @@ async function testBrowserWorkspaceCommitsArtifactsToTKFS(): Promise<void> {
   }
 }
 
+async function testBrowserWorkspaceDefaultsToTraceJVM(): Promise<void> {
+  let missingProviderError: unknown;
+  try {
+    await createBrowserProjectWorkspace({
+      providers: ['java'],
+      files: [{ path: 'Main.java', contents: 'class Main {}\n' }],
+    });
+  } catch (error) {
+    missingProviderError = error;
+  }
+  assertCondition(
+    missingProviderError instanceof Error &&
+      missingProviderError.message.includes('defaults to TraceJVM') &&
+      missingProviderError.message.includes('javaRuntime: "legacy"'),
+    `Java did not require the default TraceJVM provider: ${String(missingProviderError)}`
+  );
+
+  let legacyInvocations = 0;
+  const legacyWorkspace = await createBrowserProjectWorkspace({
+    providers: ['java'],
+    javaRuntime: 'legacy',
+    files: [{ path: 'Main.java', contents: 'class Main {}\n' }],
+    javaWorkerClient: {
+      async executeProjectJava() {
+        legacyInvocations += 1;
+        return { stdout: '', stderr: '', exitCode: 0 };
+      },
+      terminate() {},
+    },
+  });
+  try {
+    const result = await legacyWorkspace.runCommand('javac Main.java');
+    assertCondition(
+      result.exitCode === 0 && legacyInvocations === 1,
+      `explicit legacy rollback did not invoke the legacy provider: ${JSON.stringify({
+        result,
+        legacyInvocations,
+      })}`
+    );
+  } finally {
+    await legacyWorkspace.destroy();
+  }
+}
+
 await testKernelLeaseUsesFreshWorkers();
 console.log('PASS: TraceJVM adapter binds one kernel coordinator and fresh Workers per invocation');
 await testCancellationHardRetiresWorker();
@@ -469,3 +513,5 @@ await testProcessHostMapsGenericPosixCalls();
 console.log('PASS: TraceJVM generic POSIX host maps to process-scoped TraceKernel syscalls');
 await testBrowserWorkspaceCommitsArtifactsToTKFS();
 console.log('PASS: browser TraceJVM javac/java chains exchange artifacts through TKFS');
+await testBrowserWorkspaceDefaultsToTraceJVM();
+console.log('PASS: browser Java defaults to TraceJVM with an explicit legacy rollback');

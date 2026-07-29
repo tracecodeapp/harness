@@ -89,7 +89,7 @@ function cloneProjectSnapshot(snapshot: TestRuntimeProjectSnapshot): TestRuntime
 
 function throwingBrowserWorkerClients(): Pick<
   CreateBrowserProjectWorkspaceOptions,
-  'pythonWorkerClient' | 'javaWorkerClient' | 'csharpWorkerClient' | 'cppWorkerClient'
+  'pythonWorkerClient' | 'javaRuntime' | 'javaWorkerClient' | 'csharpWorkerClient' | 'cppWorkerClient'
 > {
   return {
     pythonWorkerClient: {
@@ -98,6 +98,7 @@ function throwingBrowserWorkerClients(): Pick<
       },
       terminate() {},
     },
+    javaRuntime: 'legacy',
     javaWorkerClient: {
       async executeProjectJava() {
         throw new Error('unexpected Java runner call');
@@ -9912,6 +9913,7 @@ async function testBrowserProjectWorkspaceFactory(): Promise<void> {
       },
       terminate() {},
     },
+    javaRuntime: 'legacy',
     javaWorkerClient: {
       async executeProjectJava() {
         throw new Error('unexpected Java runner call');
@@ -9952,6 +9954,7 @@ async function testBrowserProjectWorkspaceFactory(): Promise<void> {
       },
       terminate() {},
     },
+    javaRuntime: 'legacy',
     javaWorkerClient: {
       async executeProjectJava() {
         throw new Error('unexpected Java runner call');
@@ -10017,6 +10020,7 @@ async function testBrowserProjectWorkspaceFactory(): Promise<void> {
       },
       terminate() {},
     },
+    javaRuntime: 'legacy',
     javaWorkerClient: {
       async executeProjectJava() {
         throw new Error('unexpected Java runner call');
@@ -10068,6 +10072,7 @@ async function testBrowserProjectWorkspaceFactory(): Promise<void> {
       },
       terminate() {},
     },
+    javaRuntime: 'legacy',
     javaWorkerClient: {
       async executeProjectJava() {
         throw new Error('unexpected Java runner call');
@@ -10204,6 +10209,7 @@ async function testBrowserProjectWorkspaceFactory(): Promise<void> {
       },
       terminate() {},
     },
+    javaRuntime: 'legacy',
     javaWorkerClient: {
       async executeProjectJava(request, timeoutMs, onEvent) {
         javaTimeoutMs = timeoutMs;
@@ -10456,6 +10462,7 @@ async function testBrowserProjectWorkspaceCrossRunnerFilesystemVisibility(): Pro
       },
       terminate() {},
     },
+    javaRuntime: 'legacy',
     javaWorkerClient: {
       async executeProjectJava(_request, _timeoutMs, onEvent) {
         onEvent?.({
@@ -10545,6 +10552,7 @@ async function testBrowserProjectWorkspaceCrossRunnerFilesystemVisibility(): Pro
       },
       terminate() {},
     },
+    javaRuntime: 'legacy',
     javaWorkerClient: {
       async executeProjectJava(_request, _timeoutMs, onEvent) {
         markConcurrentWriterStarted('java');
@@ -10615,6 +10623,7 @@ async function testBrowserProjectWorkspaceCrossRunnerFilesystemVisibility(): Pro
       },
       terminate() {},
     },
+    javaRuntime: 'legacy',
     javaWorkerClient: {
       async executeProjectJava(_request, _timeoutMs, onEvent) {
         markConflictingWriterStarted('java');
@@ -10684,6 +10693,7 @@ async function testBrowserKernelStorageRehydrationPreservesReadonlyPolicy(): Pro
       },
       terminate() {},
     },
+    javaRuntime: 'legacy',
     javaWorkerClient: {
       async executeProjectJava() {
         throw new Error('unexpected Java runner call');
@@ -11030,6 +11040,7 @@ async function testBrowserProjectWorkspaceTraceKernelConfig(): Promise<void> {
       },
       terminate() {},
     },
+    javaRuntime: 'legacy',
     javaWorkerClient: {
       async executeProjectJava(request) {
         javaRequests.push(request);
@@ -11262,6 +11273,7 @@ async function testBrowserProjectWorkspaceAdvancedCommandTranslation(): Promise<
       },
       terminate() {},
     },
+    javaRuntime: 'legacy',
     javaWorkerClient: {
       async executeProjectJava(request) {
         javaRequests.push(request);

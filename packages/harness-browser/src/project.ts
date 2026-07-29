@@ -674,8 +674,14 @@ export interface CreateBrowserProjectWorkspaceOptions
   pythonWorkerClient?: Pick<PythonWorkerClient, 'executeProjectPython' | 'terminate'>;
   javaWorkerClient?: Pick<JavaWorkerClient, 'executeProjectJava' | 'terminate'>;
   /**
-   * Default-off Java 23 provider. Each factory result is admitted to exactly
-   * one javac/java invocation and hard-retired by the TraceKernel adapter.
+   * Java project runtime. TraceJVM is the 0.13 default. Select `legacy`
+   * explicitly only for a controlled CheerpJ rollback.
+   */
+  javaRuntime?: 'tracejvm' | 'legacy';
+  /**
+   * Required by the default TraceJVM Java 23 provider. Each factory result is
+   * admitted to exactly one javac/java invocation and hard-retired by the
+   * TraceKernel adapter.
    */
   traceJVM?: Omit<TraceJVMProjectRunnerOptions, 'applyFileChange'>;
   csharpWorkerClient?: Pick<CSharpWorkerClient, 'executeProjectCSharp' | 'terminate'>;
@@ -799,6 +805,7 @@ export async function createBrowserProjectWorkspace(
     debug,
     pythonWorkerClient: providedPythonWorkerClient,
     javaWorkerClient: providedJavaWorkerClient,
+    javaRuntime = 'tracejvm',
     traceJVM,
     csharpWorkerClient: providedCSharpWorkerClient,
     cppWorkerClient: providedCppWorkerClient,
@@ -821,6 +828,9 @@ export async function createBrowserProjectWorkspace(
     onKernelStorageError,
     ...workspaceOptions
   } = options;
+  if (javaRuntime !== 'tracejvm' && javaRuntime !== 'legacy') {
+    throw new TypeError('javaRuntime must be "tracejvm" or "legacy".');
+  }
   const requestedExecutionHostProviders = executionHostOptions
     ? normalizeBrowserProjectProviders(
         executionHostOptions.providers ?? (hasProvider('java') ? ['java'] : [])
@@ -871,12 +881,23 @@ export async function createBrowserProjectWorkspace(
   if (traceJVM && !hasProvider('java')) {
     throw new Error('traceJVM requires providers to include "java".');
   }
-  if (traceJVM && providedJavaWorkerClient) {
-    throw new Error('traceJVM cannot be combined with javaWorkerClient.');
-  }
-  if (traceJVM && isExecutionHosted('java')) {
+  if (hasProvider('java') && javaRuntime === 'tracejvm' && !traceJVM) {
     throw new Error(
-      'traceJVM cannot use the legacy Java executionHost route; createClient must own its Worker boundary.'
+      'Browser project Java defaults to TraceJVM in Harness 0.13. ' +
+        'Provide traceJVM.createClient, or select javaRuntime: "legacy" for an explicit rollback.'
+    );
+  }
+  if (javaRuntime === 'legacy' && traceJVM) {
+    throw new Error('traceJVM cannot be combined with javaRuntime: "legacy".');
+  }
+  if (javaRuntime === 'tracejvm' && providedJavaWorkerClient) {
+    throw new Error(
+      'javaWorkerClient is a legacy Java provider and requires javaRuntime: "legacy".'
+    );
+  }
+  if (javaRuntime === 'tracejvm' && isExecutionHosted('java')) {
+    throw new Error(
+      'executionHost Java is a legacy Java provider and requires javaRuntime: "legacy".'
     );
   }
   const javaExecutionLifecycle = executionHostOptions?.javaLifecycle ?? 'workspace-session';
@@ -916,7 +937,7 @@ export async function createBrowserProjectWorkspace(
       'projectWorkerPrewarm.java cannot be used with traceJVM; supply fresh prepared clients through traceJVM.createClient.'
     );
   }
-  if (!providedJavaWorkerClient && !traceJVM && projectPrewarm.java > 0) {
+  if (javaRuntime === 'legacy' && !providedJavaWorkerClient && projectPrewarm.java > 0) {
     assertProjectJavaRuntimeAssets();
   }
   if (providedCSharpWorkerClient && projectPrewarm.csharp > 0) {
@@ -1133,7 +1154,7 @@ export async function createBrowserProjectWorkspace(
       : undefined;
     if (pythonWorkerClient && !providedPythonWorkerClient) ownedWorkers.push(pythonWorkerClient);
     const JavaWorkerClientConstructor = javaProvider?.[1].JavaWorkerClient;
-    const createdJavaWorkerClient = hasProvider('java') && !traceJVM
+    const createdJavaWorkerClient = hasProvider('java') && javaRuntime === 'legacy'
       ? providedJavaWorkerClient ?? (
           projectWorkerIsolation === 'per-command' && (!isExecutionHosted('java') || javaExecutionLifecycle === 'per-command')
             ? createPerCommandJavaWorkerClient(

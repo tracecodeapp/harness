@@ -1031,10 +1031,11 @@ async function runWithTempRoot(tempRoot: string): Promise<void> {
             pythonWorkerClient: {
               async executeProjectPython(request) {
                 return { stdout: request.scriptPath + ':browser-only-python\\n', stderr: '', exitCode: 0 };
-              },
-              terminate() {},
             },
-            javaWorkerClient: {
+            terminate() {},
+          },
+          javaRuntime: 'legacy',
+          javaWorkerClient: {
               async executeProjectJava(request) {
                 return { stdout: request.source + ':' + request.scriptPath + ':browser-only-java\\n', stderr: '', exitCode: 0 };
               },
@@ -1489,6 +1490,7 @@ async function runWithTempRoot(tempRoot: string): Promise<void> {
           },
           terminate() {},
         },
+        javaRuntime: 'legacy',
         javaWorkerClient: {
           async executeProjectJava(request) {
             return { stdout: request.source + ':' + request.scriptPath + ':standalone-browser-java\\n', stderr: '', exitCode: 0 };

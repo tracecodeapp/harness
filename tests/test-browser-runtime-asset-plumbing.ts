@@ -380,6 +380,7 @@ async function testProjectManifestAssetBinding(): Promise<void> {
   for (const [options, expected] of [
     [
       {
+        providers: ['javascript'],
         assets: { runtimeManifests: { javascript: manifests.javascript } },
         nodeProject: { workerUrl: 'https://unverified.example/project-worker.js' },
       },
@@ -387,6 +388,7 @@ async function testProjectManifestAssetBinding(): Promise<void> {
     ],
     [
       {
+        providers: ['javascript', 'typescript'],
         assets: { runtimeManifests: { typescript: manifests.typescript } },
         typescriptProject: { compilerUrl: 'https://unverified.example/typescript.js' },
       },
@@ -406,6 +408,7 @@ async function testProjectManifestAssetBinding(): Promise<void> {
   }
 
   const legacy = await createBrowserProjectWorkspace({
+    providers: ['javascript', 'typescript'],
     nodeProject: { workerUrl: 'https://legacy.example/project-worker.js' },
     typescriptProject: { compilerUrl: 'https://legacy.example/typescript.js' },
   });
@@ -437,6 +440,8 @@ async function testProjectJavaRequiresCompleteManifestBeforeWorkerConstruction()
   for (const testCase of cases) {
     CapturingWorker.instances = [];
     const workspace = await createBrowserProjectWorkspace({
+      providers: ['java'],
+      javaRuntime: 'legacy',
       ...(testCase.assets ? { assets: testCase.assets } : {}),
       files: [{ path: 'Main.java', contents: 'class Main {}\n' }],
     });
@@ -464,7 +469,11 @@ async function testProjectJavaRequiresCompleteManifestBeforeWorkerConstruction()
 
   let prewarmError = '';
   try {
-    await createBrowserProjectWorkspace({ projectWorkerPrewarm: { java: 1 } });
+    await createBrowserProjectWorkspace({
+      providers: ['java'],
+      javaRuntime: 'legacy',
+      projectWorkerPrewarm: { java: 1 },
+    });
   } catch (error) {
     prewarmError = error instanceof Error ? error.message : String(error);
   }
@@ -519,6 +528,7 @@ async function testProjectManifestAssetsArePreflightedAndForwarded(): Promise<vo
     return new Response('asset', { status: 200 });
   };
   const workspace = await createBrowserProjectWorkspace({
+    javaRuntime: 'legacy',
     assets: { runtimeManifests: manifests },
     files: [
       { path: 'index.js', contents: 'console.log("project-js");\n' },
