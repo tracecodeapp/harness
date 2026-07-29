@@ -1,6 +1,6 @@
 {
   "name": "@tracecode/harness-core",
-  "version": "0.13.0-beta2",
+  "version": "0.13.0",
   "description": "Shared TraceCode harness runtime contracts and trace helpers.",
   "license": "AGPL-3.0-only",
   "homepage": "https://tracecode.app",

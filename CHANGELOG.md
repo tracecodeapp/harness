@@ -6,6 +6,39 @@ This repo uses Git tags as release boundaries. Version notes below summarize wha
 
 ## [Unreleased]
 
+## [0.13.0] - 2026-07-29
+
+This release declares the kernelized execution architecture stable after two
+browser betas. TraceKernel is the shared host, session, process, descriptor,
+filesystem, network, and runtime-lease authority across Project runtimes.
+TraceJVM is the default Java Project provider, while the previous provider
+remains available only as an explicit rollback during the production canary.
+
+### Added
+
+- Added a classic-worker TraceJVM provider for Practice, Interview, and mux
+  consumers without changing the canonical Java Harness protocol.
+- Added process-scoped Java file injection and restoration so TraceKernel
+  processes can expose their authoritative filesystem without leaking files
+  across executions.
+- Added the missing reflective array-store semantics, including primitive
+  unboxing, widening, reference checks, and native Java exceptions.
+
+### Changed
+
+- Reused immutable TraceJVM compilation artifacts behind a bounded cache while
+  retaining fresh execution and process isolation.
+- Made Java rewrite failures identify their exact stage and prevented a failed
+  TraceJVM rewrite from being obscured by a secondary compiler probe.
+
+### Fixed
+
+- Preserved pre-existing process files when a Java execution temporarily
+  overrides them and removed request-only files on every exit path.
+- Verified TraceJVM run, trace, interview, cancellation, retirement, JAR,
+  classpath, repeated-run, and browser-isolation behavior across Chromium,
+  Firefox, and WebKit.
+
 ## [0.13.0-beta2] - 2026-07-29
 
 This beta completes the first production-shaped Java path for the kernelized
