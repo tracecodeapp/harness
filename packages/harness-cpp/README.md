@@ -18,7 +18,7 @@ Runtime assets are published under `workers/`. Review `THIRD_PARTY_NOTICES.md`
 before redistributing this package, especially the YoWASP, LLVM, and WASI libc
 sections.
 
-In a TraceKernel 0.13 project workspace, compiled programs use synchronous
+In a TraceKernel project workspace, compiled programs use synchronous
 WASI-to-kernel syscalls for filesystem descriptors and local TCP sockets.
 Compilation still consumes an immutable project snapshot; execution opens the
 authoritative workspace namespace, so concurrent processes observe committed

@@ -21,7 +21,7 @@ import type { TraceKernelStat } from './vfs';
  */
 export const TRACEKERNEL_SYSCALL_WIRE_VERSION = 1 as const;
 
-/** Stable name for the public 0.13 syscall frame contract. */
+/** Stable name for the public syscall frame contract. */
 export const TRACEKERNEL_SYSCALL_WIRE_SCHEMA =
   'tracekernel.syscall.v1' as const;
 

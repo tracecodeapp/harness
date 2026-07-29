@@ -4,7 +4,7 @@ TraceKernel is the browser-native machine boundary for TraceCode. It owns
 sessions, processes, descriptors, shared resources, runtime leases, and their
 lifecycles.
 
-The 0.13 package is under active architectural development. Its Effect-native
+The package is under active architectural development. Its Effect-native
 API keeps acquisition, interruption, and release structurally connected while
 leaving process and syscall semantics explicit in TraceKernel domain state.
 
@@ -75,9 +75,10 @@ an existing payload shape requires a new wire version; a decoder rejects a
 different version with `EPROTO`. Effect values and errors remain host-local:
 the wire carries plain request/result data and POSIX-style error codes.
 
-## 0.13 boundary
+## Supported kernel boundary
 
-0.13.0 covers authoritative sessions, process lifecycle and topology,
+The supported boundary covers authoritative sessions, process lifecycle and
+topology,
 process-owned descriptors, TKFS, pipes, watches, terminals, watchdogs, local
 TCP, structured HTTP over the same TCP namespace, runtime leases, and the
 JavaScript/TypeScript, Python, C++, C#, and TraceJVM adapter contracts.
@@ -85,4 +86,4 @@ JavaScript/TypeScript, Python, C++, C#, and TraceJVM adapter contracts.
 Suspended jobs, CPU-bound asynchronous signal injection for compiled runtimes,
 positive socket deadlines, UDP, Unix-domain sockets, broader DNS/address-family
 behavior, additional termios modes, arbitrary external TCP, in-kernel TLS, and
-HTTP/2 are not 0.13.0 compatibility claims.
+HTTP/2 are not compatibility claims.

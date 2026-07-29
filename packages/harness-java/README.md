@@ -30,7 +30,7 @@ origin policy. Because worker `importScripts()` does not provide
 execution-bound SRI, use immutable URLs, confirm the required CheerpJ license,
 and maintain explicit deployment hashes and allowlists.
 
-## TraceJVM provider for TraceKernel 0.13
+## TraceJVM provider for TraceKernel
 
 TraceJVM is a separate, default-off Java 23 provider. Configure it with a
 factory that returns a fresh `TraceJVMWorkerClient`:
@@ -65,7 +65,7 @@ consumes a small exported structural client contract so Harness can build and
 ship independently; applications that select this provider install and inject
 their chosen compatible TraceJVM release explicitly.
 
-The 0.13 adapter binds one coordinator to the TraceKernel PID but admits each
+The adapter binds one coordinator to the TraceKernel PID but admits each
 `javac` or `java` invocation to a fresh Worker. Compilation artifacts are
 committed to TKFS and subsequent commands read them from TKFS, including
 commands chained inside one kernel process.

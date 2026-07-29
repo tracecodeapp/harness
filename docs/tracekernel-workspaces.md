@@ -298,7 +298,7 @@ safe relative links, but reject absolute link targets because their temporary
 host roots cannot preserve virtual absolute `readlink` and rename behavior.
 Browser Java rejects snapshots containing links with `ENOTSUP` until its
 upstream virtual filesystem can expose genuine link semantics. Browser C#
-retains that rejection on its legacy private-filesystem path, but the 0.13
+retains that rejection on its legacy private-filesystem path, but the kernel
 kernel path accepts symlink snapshots and mounts authoritative TKFS beneath
 ordinary `System.IO` file, directory, and symbolic-link operations. Hard links
 and raw `readlink`/`realpath` are also available through the managed
