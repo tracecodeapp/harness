@@ -10635,6 +10635,17 @@ export async function runBrowserJavaScriptProjectRequest(
         exitCode,
       };
     } finally {
+      // Closing sockets can cross the asynchronous TraceKernel transport.
+      // Do not let the worker command finish and close that transport while
+      // teardown syscalls are still in flight; doing so leaks an ECLOSED
+      // rejection into the browser after an otherwise clean process exit.
+      netApi.closeAll();
+      try {
+        await netApi.waitForClose();
+      } catch {
+        // The process result already owns any runtime failure. Teardown still
+        // has to reach quiescence before the syscall client is released.
+      }
       restoreHostGlobals();
       if (executionState.cleanupHostGlobals === restoreHostGlobals) {
         executionState.cleanupHostGlobals = undefined;

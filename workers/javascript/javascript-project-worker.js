@@ -13953,6 +13953,11 @@ async function runBrowserJavaScriptProjectRequest(request, options, executionSta
       exitCode
     };
   } finally {
+    netApi.closeAll();
+    try {
+      await netApi.waitForClose();
+    } catch {
+    }
     restoreHostGlobals();
     if (executionState.cleanupHostGlobals === restoreHostGlobals) {
       executionState.cleanupHostGlobals = void 0;
