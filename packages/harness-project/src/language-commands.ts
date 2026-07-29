@@ -107,7 +107,7 @@ import type {
 } from './index';
 import { DEFAULT_CWD, TRACEKERNEL_BIN_PATH, TRACEKERNEL_EXEC_COMMAND } from './constants';
 import { applyCommandResultFiles, filterReadonlySnapshotDeletions, filterReadonlySnapshotFiles, snapshotCommandContext, type RuntimeFileChangeObserver } from './fs-observed';
-import { decodeCommandStdin, parsePythonInvocation, isCommandResult, parseNodeInvocation, isNodeCommandResult, parseTscInvocation, isTscCommandResult, expandJavaCommandArgfiles, parseJavacInvocation, isJavacCommandResult, primaryJavacSourceArg, parseJavaInvocation, isJavaCommandResult, extractStoredJarMainClass, parseCppCompileInvocation, isCppCompileCommandResult, cppOutputPathFromArgs, parseDotnetInvocation, isDotnetCommandResult } from './arg-parsers';
+import { decodeCommandStdin, parsePythonInvocation, isCommandResult, parseNodeInvocation, isNodeCommandResult, parseTscInvocation, isTscCommandResult, expandJavaCommandArgfiles, parseJavacInvocation, isJavacCommandResult, primaryJavacSourceArg, parseJavaInvocation, isJavaCommandResult, extractJarMainClass, parseCppCompileInvocation, isCppCompileCommandResult, cppOutputPathFromArgs, parseDotnetInvocation, isDotnetCommandResult } from './arg-parsers';
 import { expandParsedScriptInvocation, expandWorkspaceGlobArgs, resolveWorkspaceCommandPath, resolveWorkspaceContextPath, toProjectPath } from './paths';
 import type { NormalizedRuntimePackageManagerConfig } from './package-manager';
 
@@ -992,7 +992,7 @@ export function createJavaProjectCommands(
       if (!(await ctx.fs.exists(absoluteJarPath))) {
         return { stdout: '', stderr: `Error: Unable to access jarfile ${jarPath}\n`, exitCode: 1 };
       }
-      jarMainClass = extractStoredJarMainClass(await ctx.fs.readFileBuffer(absoluteJarPath));
+      jarMainClass = extractJarMainClass(await ctx.fs.readFileBuffer(absoluteJarPath));
     }
 
     const stdinPipe = commandStdinPipe(ctx);

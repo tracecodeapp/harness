@@ -2,6 +2,7 @@ import {
   Bash,
   defineCommand,
 } from 'just-bash/browser';
+import { inflateSync } from 'fflate';
 import {
   applyRuntimeCommandResultFiles,
   canCreateRuntimeCommandStdinPipe,
@@ -401,37 +402,95 @@ export function findBytes(haystack: Uint8Array, needle: Uint8Array, start = 0): 
 }
 
 
-export function extractStoredJarMainClass(bytes: Uint8Array): string | null {
-  const manifestName = new TextEncoder().encode('META-INF/MANIFEST.MF');
-  const manifestOffset = findBytes(bytes, manifestName);
-  if (manifestOffset < 0) return null;
-  const headerOffset = Math.max(0, manifestOffset - 30);
-  for (let index = headerOffset; index >= 0; index -= 1) {
-    if (
-      bytes[index] === 0x50 &&
-      bytes[index + 1] === 0x4b &&
-      bytes[index + 2] === 0x03 &&
-      bytes[index + 3] === 0x04
-    ) {
-      const method = bytes[index + 8] | (bytes[index + 9] << 8);
-      const compressedSize = bytes[index + 18] | (bytes[index + 19] << 8) | (bytes[index + 20] << 16) | (bytes[index + 21] << 24);
-      const fileNameLength = bytes[index + 26] | (bytes[index + 27] << 8);
-      const extraLength = bytes[index + 28] | (bytes[index + 29] << 8);
-      const nameStart = index + 30;
-      const nameEnd = nameStart + fileNameLength;
-      if (manifestOffset < nameStart || manifestOffset >= nameEnd || method !== 0) {
+function zipUint16(bytes: Uint8Array, offset: number): number {
+  return bytes[offset]! | (bytes[offset + 1]! << 8);
+}
+
+function zipUint32(bytes: Uint8Array, offset: number): number {
+  return (
+    bytes[offset]! |
+    (bytes[offset + 1]! << 8) |
+    (bytes[offset + 2]! << 16) |
+    (bytes[offset + 3]! << 24)
+  ) >>> 0;
+}
+
+function findZipEndOfCentralDirectory(bytes: Uint8Array): number {
+  const minimumOffset = Math.max(0, bytes.length - 65_557);
+  for (let offset = bytes.length - 22; offset >= minimumOffset; offset -= 1) {
+    if (zipUint32(bytes, offset) === 0x06054b50) return offset;
+  }
+  return -1;
+}
+
+const MAX_JAR_MANIFEST_BYTES = 1024 * 1024;
+
+export function extractJarMainClass(bytes: Uint8Array): string | null {
+  const endOffset = findZipEndOfCentralDirectory(bytes);
+  if (endOffset < 0 || endOffset + 22 > bytes.length) return null;
+  const entryCount = zipUint16(bytes, endOffset + 10);
+  let offset = zipUint32(bytes, endOffset + 16);
+
+  for (let entryIndex = 0; entryIndex < entryCount; entryIndex += 1) {
+    if (offset + 46 > bytes.length || zipUint32(bytes, offset) !== 0x02014b50) {
+      return null;
+    }
+    const flags = zipUint16(bytes, offset + 8);
+    const method = zipUint16(bytes, offset + 10);
+    const compressedSize = zipUint32(bytes, offset + 20);
+    const uncompressedSize = zipUint32(bytes, offset + 24);
+    const fileNameLength = zipUint16(bytes, offset + 28);
+    const extraLength = zipUint16(bytes, offset + 30);
+    const commentLength = zipUint16(bytes, offset + 32);
+    const localHeaderOffset = zipUint32(bytes, offset + 42);
+    const nameStart = offset + 46;
+    const nameEnd = nameStart + fileNameLength;
+    if (nameEnd > bytes.length) return null;
+    const name = decodeUtf8(bytes.slice(nameStart, nameEnd));
+
+    if (name === 'META-INF/MANIFEST.MF') {
+      if (
+        (flags & 0x1) !== 0 ||
+        uncompressedSize > MAX_JAR_MANIFEST_BYTES ||
+        localHeaderOffset + 30 > bytes.length ||
+        zipUint32(bytes, localHeaderOffset) !== 0x04034b50
+      ) {
         return null;
       }
-      const dataStart = nameEnd + extraLength;
-      const manifest = decodeUtf8(bytes.slice(dataStart, dataStart + compressedSize));
+      const localNameLength = zipUint16(bytes, localHeaderOffset + 26);
+      const localExtraLength = zipUint16(bytes, localHeaderOffset + 28);
+      const dataStart = localHeaderOffset + 30 + localNameLength + localExtraLength;
+      const dataEnd = dataStart + compressedSize;
+      if (dataEnd > bytes.length) return null;
+      const compressed = bytes.slice(dataStart, dataEnd);
+      let manifestBytes: Uint8Array;
+      try {
+        if (method === 0) manifestBytes = compressed;
+        else if (method === 8) manifestBytes = inflateSync(compressed);
+        else return null;
+      } catch {
+        return null;
+      }
+      if (
+        manifestBytes.byteLength !== uncompressedSize ||
+        manifestBytes.byteLength > MAX_JAR_MANIFEST_BYTES
+      ) {
+        return null;
+      }
+      const manifest = decodeUtf8(manifestBytes);
       if (manifest === null) return null;
       const unfolded = manifest.replace(/\r\n /g, '').replace(/\n /g, '');
       const match = /^Main-Class:\s*(.+?)\s*$/im.exec(unfolded);
       return match?.[1]?.trim() || null;
     }
+
+    offset = nameEnd + extraLength + commentLength;
   }
   return null;
 }
+
+/** @deprecated Use extractJarMainClass; retained for downstream compatibility. */
+export const extractStoredJarMainClass = extractJarMainClass;
 
 
 export interface ParsedJavacInvocation {
