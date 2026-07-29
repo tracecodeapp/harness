@@ -432,6 +432,77 @@ async function main(): Promise<void> {
     schedulerWorkspace.dispose();
   }
 
+  let markKillStarted!: () => void;
+  const killStarted = new Promise<void>((resolve) => {
+    markKillStarted = resolve;
+  });
+  let observedAbortReason: unknown;
+  const killWorkspace = await createRuntimeWorkspace({
+    files: [{
+      path: 'kill-job.js',
+      contents: '// uncatchable signal fixture\n',
+    }],
+    nodeRunner: async (request) => {
+      markKillStarted();
+      await new Promise<void>((resolve) => {
+        const finish = (): void => {
+          observedAbortReason = request.signal?.reason;
+          resolve();
+        };
+        if (request.signal?.aborted) {
+          finish();
+          return;
+        }
+        request.signal?.addEventListener('abort', finish, { once: true });
+      });
+      return { stdout: '', stderr: '', exitCode: 0 };
+    },
+  });
+  try {
+    const killedRun = killWorkspace.runCommand('node kill-job.js');
+    await killStarted;
+    const killProcesses = await killWorkspace.readFile(
+      '/proc/tracekernel/processes'
+    );
+    const killProcessLine = killProcesses
+      .split('\n')
+      .find((line) => line.endsWith('\tnode kill-job.js'));
+    const killPid = Number(killProcessLine?.split('\t')[0]);
+    assertCondition(
+      Number.isSafeInteger(killPid) && killPid > 1,
+      `Could not find the SIGKILL fixture PID: ${JSON.stringify(killProcesses)}`
+    );
+    const kill = await killWorkspace.runCommand(
+      `tracekernelctl kill ${killPid} KILL`
+    );
+    assertCondition(
+      kill.exitCode === 0,
+      `TraceKernel rejected SIGKILL: ${JSON.stringify(kill)}`
+    );
+    const killedResult = await Promise.race([
+      killedRun,
+      new Promise<never>((_, reject) => {
+        setTimeout(
+          () => reject(new Error('SIGKILL did not destroy the active host executor.')),
+          2_000
+        );
+      }),
+    ]);
+    assertCondition(
+      killedResult.exitCode === 137 &&
+        typeof observedAbortReason === 'object' &&
+        observedAbortReason !== null &&
+        'signal' in observedAbortReason &&
+        observedAbortReason.signal === 'SIGKILL',
+      `SIGKILL did not force the host executor through lease destruction: ${JSON.stringify({
+        killedResult,
+        observedAbortReason,
+      })}`
+    );
+  } finally {
+    killWorkspace.dispose();
+  }
+
   console.log(JSON.stringify({
     schema: 'tracekernel-workspace-job-control-v1',
     kernelOwnedForegroundProcessGroup: true,
@@ -448,6 +519,7 @@ async function main(): Promise<void> {
     immutableKernelBackedLifecycleProjection: true,
     processGroupControlIgnoresProductLifecycleProjection: true,
     hostExecutionHandlesSeparatedFromProcessProjection: true,
+    uncatchableSignalDestroysHostExecutor: true,
   }, null, 2));
 }
 

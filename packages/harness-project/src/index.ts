@@ -9460,11 +9460,16 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
           engineLeaseReleased = true;
           const attachment = engineAttachment;
           engineAttachment = undefined;
-          if (
-            disposition.kind === 'destroy' &&
-            executionHandle.pendingSignal &&
-            !abortController.signal.aborted
-          ) {
+          if (disposition.kind === 'destroy' && !abortController.signal.aborted) {
+            // TraceKernel never delivers SIGKILL to a catchable runtime signal
+            // handler. A forced kernel exit reaches the host through lease
+            // destruction instead, so destruction itself must tear down the
+            // active executor. Preserve an already delivered signal when one
+            // exists; otherwise this is the uncatchable SIGKILL path.
+            executionHandle.pendingSignal ??= {
+              name: 'SIGKILL',
+              code: 9,
+            };
             abortController.abort({
               signal: executionHandle.pendingSignal.name,
               signalCode: executionHandle.pendingSignal.code,
