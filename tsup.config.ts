@@ -67,6 +67,7 @@ export default defineConfig([
       'project-node': 'packages/harness-java/src/project-node.ts',
       'project-browser': 'packages/harness-java/src/project-browser.ts',
       'tracejvm-project': 'packages/harness-java/src/tracejvm-project.ts',
+      'tracejvm-runtime': 'packages/harness-java/src/tracejvm-runtime.ts',
     },
     outDir: 'packages/harness-java/dist',
   },

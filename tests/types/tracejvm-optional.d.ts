@@ -1,4 +1,19 @@
 declare module '@tracecode/tracejvm' {
+  export type TraceJVMBinaryFile =
+    import('../../packages/harness-java/src/tracejvm-project').TraceJVMProjectBinaryFile;
+  export type TraceJVMCompileResult =
+    import('../../packages/harness-java/src/tracejvm-project').TraceJVMProjectCompileResult;
+
+  export interface TraceJVMExecutionDiagnostics {
+    bytecodeProfile?: unknown;
+    diagnosticError?: string;
+  }
+
+  export type TraceJVMExecuteResult =
+    import('../../packages/harness-java/src/tracejvm-project').TraceJVMProjectExecuteResult & {
+      diagnostics?: TraceJVMExecutionDiagnostics;
+    };
+
   export interface TraceJVMWorkerLike {
     postMessage(message: unknown): void;
     addEventListener(
@@ -19,10 +34,13 @@ declare module '@tracecode/tracejvm' {
           runtimeProfileBaseUrls: Readonly<Record<string, string>>;
           wasmUrl: string;
         };
-        workingDirectory: string;
-        hostStandardDescriptors: boolean;
-        runtimeProfile: string;
-        retirementAfterExecutions: number;
+        workingDirectory?: string;
+        hostStandardDescriptors?: boolean;
+        runtimeProfile?: string;
+        retirementAfterExecutions?: number;
+        experiments?: {
+          hotAot?: boolean;
+        };
       };
       createWorker: () => TraceJVMWorkerLike;
       host?: import('../../packages/harness-java/src/tracejvm-project').TraceJVMProjectHost;
@@ -35,10 +53,12 @@ declare module '@tracecode/tracejvm' {
       import('../../packages/harness-java/src/tracejvm-project').TraceJVMProjectCompileResult
     >;
     run(
-      request: import('../../packages/harness-java/src/tracejvm-project').TraceJVMProjectRunRequest
-    ): Promise<
-      import('../../packages/harness-java/src/tracejvm-project').TraceJVMProjectExecuteResult
-    >;
+      request: import('../../packages/harness-java/src/tracejvm-project').TraceJVMProjectRunRequest & {
+        diagnostics?: {
+          bytecodeProfile?: boolean;
+        };
+      }
+    ): Promise<TraceJVMExecuteResult>;
     terminate(): void;
   }
 }

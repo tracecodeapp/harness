@@ -9,7 +9,11 @@ import { spawn } from 'node:child_process';
 import { pathToFileURL } from 'node:url';
 import vm from 'node:vm';
 import ts from 'typescript';
-import type { Language, RuntimeExecutionStyle } from '../packages/harness-core/src/runtime-types';
+import type {
+  Language,
+  RuntimeExecutionStyle,
+  RuntimeTraceCall,
+} from '../packages/harness-core/src/runtime-types';
 import {
   createEmptyRuntimeTrace,
   type RuntimeTraceEventKind,
@@ -37,6 +41,14 @@ import {
   PYTHON_TRACE_SERIALIZE_FUNCTION,
   toPythonLiteral,
 } from '../packages/harness-python/src/python-harness';
+import {
+  createTraceJVMSemanticTraceRuntime,
+  type TraceJVMSemanticTraceRuntime,
+} from './helpers/tracejvm-semantic-trace-runtime';
+import {
+  createCheerpJSemanticTraceRuntime,
+  type CheerpJSemanticTraceRuntime,
+} from './helpers/cheerpj-semantic-trace-runtime';
 
 const FIXTURES_DIR = join(process.cwd(), 'fixtures', 'runtime-parity');
 const PYTHON_RUNTIME_CORE_PATH = join(process.cwd(), 'workers', 'python', 'runtime-core.js');
@@ -193,6 +205,33 @@ const ALL_FIXTURE_LANGUAGES: Language[] = ['python', 'javascript', 'typescript',
 const RAW_PARITY_REFERENCE_LANGUAGES: Language[] = ['python', 'javascript', 'typescript', 'java'];
 const RAW_PARITY_COMPARE_LANGUAGES: Language[] = [...RAW_PARITY_REFERENCE_LANGUAGES, 'csharp'];
 const TRACE_FIXTURE_PROGRESS = process.env.TRACECODE_RUNTIME_TRACE_PROGRESS === '1';
+const JAVA_TRACE_PROVIDER = process.env.TRACECODE_JAVA_TRACE_PROVIDER ?? 'native';
+const JAVA_TRACE_REPORT_PATH = process.env.TRACECODE_JAVA_TRACE_REPORT;
+let traceJVMSemanticTraceRuntime: TraceJVMSemanticTraceRuntime | null = null;
+let cheerpJSemanticTraceRuntime: CheerpJSemanticTraceRuntime | null = null;
+const javaTraceReport = new Map<string, {
+  rawEvents: string[];
+  trace: RuntimeTrace;
+  output?: unknown;
+  executionTimeMs: number;
+  timings?: JavaWorkerRawTraceResult['timings'];
+  traceLimitExceeded?: boolean;
+  droppedEventCount?: number;
+  bytecodeProfile?: unknown;
+  diagnosticError?: unknown;
+}>();
+
+function usesTraceJVMJavaProvider(): boolean {
+  if (JAVA_TRACE_PROVIDER === 'native' || JAVA_TRACE_PROVIDER === 'cheerpj') return false;
+  if (JAVA_TRACE_PROVIDER === 'tracejvm') return true;
+  throw new Error(`Unsupported TRACECODE_JAVA_TRACE_PROVIDER: ${JAVA_TRACE_PROVIDER}`);
+}
+
+function usesCheerpJJavaProvider(): boolean {
+  if (JAVA_TRACE_PROVIDER === 'native' || JAVA_TRACE_PROVIDER === 'tracejvm') return false;
+  if (JAVA_TRACE_PROVIDER === 'cheerpj') return true;
+  throw new Error(`Unsupported TRACECODE_JAVA_TRACE_PROVIDER: ${JAVA_TRACE_PROVIDER}`);
+}
 
 function logFixtureProgress(message: string): void {
   if (TRACE_FIXTURE_PROGRESS) {
@@ -688,6 +727,25 @@ async function executeCSharpTrace(code: string, fixture: FixtureCase): Promise<F
 }
 
 function createLocalJavaWorkerClient(): JavaWorkerClient {
+  if (usesCheerpJJavaProvider()) {
+    if (!cheerpJSemanticTraceRuntime) {
+      throw new Error('CheerpJ semantic trace runtime was not initialized.');
+    }
+    return {
+      executeWithTracing: async (call: RuntimeTraceCall) =>
+        cheerpJSemanticTraceRuntime!.executeWithTracing({
+          code: call.code,
+          functionName: call.functionName ?? '',
+          inputs: call.inputs,
+          traceOptions: call.traceOptions,
+          executionStyle: call.executionStyle ?? 'function',
+        }),
+      executeCode: async () => {
+        throw new Error('executeCode is not used by runtime trace fixtures');
+      },
+      terminate: () => {},
+    } as unknown as JavaWorkerClient;
+  }
   const stringFiles = new Map<string, string>();
   const rootPromise = mkdtemp(join(tmpdir(), 'tracecode-runtime-trace-java-'));
 
@@ -729,11 +787,22 @@ function createLocalJavaWorkerClient(): JavaWorkerClient {
     _compilerProfile: string,
     maxStoredEvents?: string
   ): Promise<string> {
-    const root = await rootPromise;
     const source = stringFiles.get(sourcePath);
     if (source === undefined) {
       throw new Error(`Missing Java source for virtual path: ${sourcePath}`);
     }
+    if (usesTraceJVMJavaProvider()) {
+      if (!traceJVMSemanticTraceRuntime) {
+        throw new Error('TraceJVM semantic trace runtime was not initialized.');
+      }
+      const report = await traceJVMSemanticTraceRuntime.compileAndTrace({
+        source,
+        entryClass,
+        maxStoredEvents: Number.parseInt(maxStoredEvents ?? '50000', 10),
+      });
+      return JSON.stringify(report);
+    }
+    const root = await rootPromise;
     const sourceFile = join(root, sourcePath.replace(/^\/+/, ''));
     const outputClassesDir = join(root, classesDir.replace(/^\/+/, '').replace(/\//g, '__'));
     const reportPath = join(root, `${entryClass.replace(/\W/g, '_')}.json`);
@@ -897,18 +966,38 @@ function createLocalJavaWorkerClient(): JavaWorkerClient {
           data: {
             id: 'trace',
             type: 'execute-with-tracing',
-            payload: { code, functionName, inputs, options, executionStyle },
+            payload: {
+              code,
+              functionName,
+              inputs,
+              options,
+              executionStyle,
+              ...(usesTraceJVMJavaProvider()
+                ? { inputTransport: 'inline-source' }
+                : {}),
+            },
             protocolToken: traceProtocolToken,
           },
         });
 
         const startedAt = Date.now();
-        while (!response && !errorResponse && Date.now() - startedAt < 60_000) {
+        const javaFixtureTimeoutMs =
+          parsePositiveIntegerEnv('TRACECODE_RUNTIME_TRACE_JAVA_TIMEOUT_MS') ??
+          60_000;
+        while (
+          !response &&
+          !errorResponse &&
+          Date.now() - startedAt < javaFixtureTimeoutMs
+        ) {
           await new Promise((resolve) => setTimeout(resolve, 10));
         }
         if (errorResponse) throw errorResponse;
         const settledResponse = response as unknown as JavaWorkerRawTraceResult | null;
-        if (!settledResponse) throw new Error('Timed out waiting for local Java worker response');
+        if (!settledResponse) {
+          throw new Error(
+            `Timed out waiting ${javaFixtureTimeoutMs}ms for local Java worker response`,
+          );
+        }
         return {
           ...settledResponse,
           trace: settledResponse.success
@@ -959,6 +1048,25 @@ async function executeJavaTrace(code: string, fixture: FixtureCase): Promise<Fix
       Array.isArray((result.trace as unknown as { events?: unknown[] }).events),
       `${fixture.id}:java public trace must be native runtime trace`
     );
+    javaTraceReport.set(fixture.id, {
+      rawEvents: rawResult.events,
+      trace: result.trace,
+      ...('output' in rawResult ? { output: rawResult.output } : {}),
+      executionTimeMs: rawResult.executionTimeMs,
+      ...(rawResult.timings ? { timings: rawResult.timings } : {}),
+      ...(rawResult.traceLimitExceeded !== undefined
+        ? { traceLimitExceeded: rawResult.traceLimitExceeded }
+        : {}),
+      ...(rawResult.droppedEventCount !== undefined
+        ? { droppedEventCount: rawResult.droppedEventCount }
+        : {}),
+      ...('bytecodeProfile' in rawResult
+        ? { bytecodeProfile: rawResult.bytecodeProfile }
+        : {}),
+      ...('diagnosticError' in rawResult
+        ? { diagnosticError: rawResult.diagnosticError }
+        : {}),
+    });
     return {
       trace: result.trace,
       rawSummary,
@@ -1803,6 +1911,20 @@ async function main(): Promise<void> {
   const languages = selectedFixtureLanguages();
   logFixtureProgress(`selected languages=${languages.join(',')}`);
   logFixtureProgress('javascript worker source loaded');
+  if (languages.includes('java') && usesTraceJVMJavaProvider()) {
+    logFixtureProgress(
+      `TraceJVM semantic trace runtime init:start browser=${process.env.TRACECODE_TRACEJVM_BROWSER ?? 'chromium'}`
+    );
+    traceJVMSemanticTraceRuntime = await createTraceJVMSemanticTraceRuntime();
+    logFixtureProgress('TraceJVM semantic trace runtime init:done');
+  }
+  if (languages.includes('java') && usesCheerpJJavaProvider()) {
+    logFixtureProgress(
+      `CheerpJ semantic trace runtime init:start browser=${process.env.TRACECODE_CHEERPJ_BROWSER ?? 'chromium'}`
+    );
+    cheerpJSemanticTraceRuntime = await createCheerpJSemanticTraceRuntime();
+    logFixtureProgress('CheerpJ semantic trace runtime init:done');
+  }
   let cppHarness: CppWorkerHarness | undefined;
   if (languages.includes('cpp')) {
     logFixtureProgress('cpp harness init:start');
@@ -1815,17 +1937,40 @@ async function main(): Promise<void> {
     .sort());
   logFixtureProgress(`selected fixtures=${fixtureNames.length}`);
 
-  let executedFixtureCount = 0;
-  for (const fixtureName of fixtureNames) {
-    if (await runFixture(fixtureName, workerSource, cppHarness)) {
-      executedFixtureCount += 1;
+  try {
+    let executedFixtureCount = 0;
+    for (const fixtureName of fixtureNames) {
+      if (await runFixture(fixtureName, workerSource, cppHarness)) {
+        executedFixtureCount += 1;
+      }
     }
+    assertCondition(
+      executedFixtureCount > 0,
+      `Runtime trace fixture selection executed 0 fixtures (fixtures=${fixtureNames.join(',') || '<none>'}; languages=${languages.join(',') || '<none>'})`
+    );
+    if (JAVA_TRACE_REPORT_PATH && languages.includes('java')) {
+      await mkdir(dirname(JAVA_TRACE_REPORT_PATH), { recursive: true });
+      await writeFile(
+        JAVA_TRACE_REPORT_PATH,
+        `${JSON.stringify({
+          schema: 'tracecode.java-trace-provider-report.v1',
+          provider: JAVA_TRACE_PROVIDER,
+          fixtures: Object.fromEntries(
+            [...javaTraceReport.entries()].sort(([left], [right]) =>
+              left.localeCompare(right)
+            ),
+          ),
+        }, null, 2)}\n`,
+        'utf8',
+      );
+    }
+    console.log(`PASS: runtime trace fixture parity (${executedFixtureCount} fixtures)`);
+  } finally {
+    await traceJVMSemanticTraceRuntime?.close();
+    traceJVMSemanticTraceRuntime = null;
+    await cheerpJSemanticTraceRuntime?.close();
+    cheerpJSemanticTraceRuntime = null;
   }
-  assertCondition(
-    executedFixtureCount > 0,
-    `Runtime trace fixture selection executed 0 fixtures (fixtures=${fixtureNames.join(',') || '<none>'}; languages=${languages.join(',') || '<none>'})`
-  );
-  console.log(`PASS: runtime trace fixture parity (${executedFixtureCount} fixtures)`);
 }
 
 test('runtime trace fixtures', main);

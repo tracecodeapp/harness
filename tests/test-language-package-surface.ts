@@ -142,6 +142,12 @@ const PACKAGE_CHECKS: PackageCheck[] = [
       'dist/project-browser.js',
       'dist/project-browser.cjs',
       'dist/project-browser.d.ts',
+      'dist/tracejvm-project.js',
+      'dist/tracejvm-project.cjs',
+      'dist/tracejvm-project.d.ts',
+      'dist/tracejvm-runtime.js',
+      'dist/tracejvm-runtime.cjs',
+      'dist/tracejvm-runtime.d.ts',
       'workers/java-worker.js',
       'workers/java-source-augmentations.js',
       'workers/shared/runtime-kernel-policy-classic.js',
@@ -1369,6 +1375,14 @@ async function runWithTempRoot(tempRoot: string): Promise<void> {
       const javaProjectBrowser = await import('@tracecode/harness-java/project-browser');
       if (typeof javaProjectBrowser.createBrowserJavaProjectRunner !== 'function') {
         throw new Error('@tracecode/harness-java/project-browser missing createBrowserJavaProjectRunner');
+      }
+      const traceJVMProject = await import('@tracecode/harness-java/tracejvm-project');
+      if (typeof traceJVMProject.createTraceJVMProjectRunner !== 'function') {
+        throw new Error('@tracecode/harness-java/tracejvm-project missing createTraceJVMProjectRunner');
+      }
+      const traceJVMRuntime = await import('@tracecode/harness-java/tracejvm-runtime');
+      if (typeof traceJVMRuntime.warmTraceJVMHarnessClient !== 'function') {
+        throw new Error('@tracecode/harness-java/tracejvm-runtime missing warmTraceJVMHarnessClient');
       }
       const cppProjectNode = await import('@tracecode/harness-cpp/project-node');
       if (typeof cppProjectNode.createNativeCppProjectRunner !== 'function') {

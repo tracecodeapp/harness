@@ -45,6 +45,12 @@
       "require": "./dist/tracejvm-project.cjs",
       "default": "./dist/tracejvm-project.js"
     },
+    "./tracejvm-runtime": {
+      "types": "./dist/tracejvm-runtime.d.ts",
+      "import": "./dist/tracejvm-runtime.js",
+      "require": "./dist/tracejvm-runtime.cjs",
+      "default": "./dist/tracejvm-runtime.js"
+    },
     "./workers/*": "./workers/*",
     "./package.json": "./package.json"
   },

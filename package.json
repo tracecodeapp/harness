@@ -170,6 +170,8 @@
     "test:java-sync": "pnpm generate:java-helper --check && pnpm exec tsx --tsconfig tsconfig.base.json tests/test-java-harness-sync.ts",
     "test:python-runtime": "pnpm exec tsx --tsconfig tsconfig.base.json tests/test-python-runtime.ts",
     "test:java-runtime": "pnpm exec tsx --tsconfig tsconfig.base.json tests/test-java-runtime.ts && pnpm exec tsx --tsconfig tsconfig.base.json tests/test-java-project-filesystem.ts && node --import tsx --test tests/test-java-jar-manifest.ts && pnpm exec tsx --tsconfig tsconfig.base.json tests/test-tracekernel-tracejvm-adapter.ts",
+    "test:tracejvm-semantic-trace": "node --import tsx tests/test-tracejvm-semantic-trace-matrix.ts",
+    "test:java-trace-provider-differential": "node --import tsx tests/test-java-trace-provider-differential.ts",
     "test:csharp-runtime": "pnpm exec tsx --tsconfig tsconfig.base.json tests/test-csharp-runtime.ts && pnpm exec tsx --tsconfig tsconfig.base.json tests/test-csharp-project-fs-parity.ts",
     "test:csharp-worker-browser": "pnpm exec tsx --tsconfig tsconfig.base.json tests/test-csharp-worker-client-http.ts && pnpm exec tsx --tsconfig tsconfig.base.json tests/test-csharp-worker-browser.ts && pnpm exec tsx --tsconfig tsconfig.base.json tests/test-csharp-worker-lifecycle-browser.ts",
     "test:cpp-runtime": "pnpm exec tsx --tsconfig tsconfig.base.json tests/test-cpp-runtime.ts",

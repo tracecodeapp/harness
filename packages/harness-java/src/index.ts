@@ -13,6 +13,12 @@ export {
   type BrowserJavaProjectRunnerOptions,
 } from './project-browser';
 export {
+  invalidateTraceJVMHarnessWarmup,
+  warmTraceJVMHarnessClient,
+  type TraceJVMHarnessClient,
+  type TraceJVMHarnessWarmupResult,
+} from './tracejvm-runtime';
+export {
   createNativeJavaProjectRunner,
   type JavaProjectCommandRequest,
   type JavaProjectCommandResult,
