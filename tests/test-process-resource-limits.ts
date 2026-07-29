@@ -127,7 +127,7 @@ async function main(): Promise<void> {
   const nextPidBeforeWait = beforeWait.match(/next_pid\t(\d+)/)?.[1];
   const wait = await workspace.runCommand(`wait ${zombiePid}`);
   assert(
-    wait.exitCode === 0 && wait.stdout.includes(`pid\t${zombiePid}\n`),
+    wait.exitCode === 0 && wait.stdout === '' && wait.stderr === '',
     `the shell builtin should reap without forking: ${JSON.stringify(wait)}`
   );
   const afterWait = await workspace.readFile('/proc/tracekernel/sched');

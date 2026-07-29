@@ -190,7 +190,10 @@ async function testBackgroundJobDoesNotBlockForegroundCommands(): Promise<void> 
     assertCondition(!backgroundComplete, 'background job should still be running before latch release');
     releaseBackground();
     const wait = await session.run(`wait ${backgroundPid}`);
-    assertCondition(wait.exitCode === 0 && wait.stdout.includes(`pid\t${backgroundPid}\n`), `background job should be waitable after release: ${JSON.stringify(wait)}`);
+    assertCondition(
+      wait.exitCode === 0 && wait.stdout === '' && wait.stderr === '',
+      `background job should be waitable after release: ${JSON.stringify(wait)}`
+    );
     assertCondition(backgroundComplete, 'background runner should complete after latch release');
   } finally {
     workspace.dispose();

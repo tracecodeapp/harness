@@ -264,9 +264,7 @@ async function main(): Promise<void> {
     );
     const waited = await workspace.runCommand(`wait ${pid}`);
     assertCondition(
-      waited.exitCode === 143 &&
-        waited.stdout.includes(`pid\t${pid}\n`) &&
-        waited.stdout.includes('signal\tSIGTERM\n'),
+      waited.exitCode === 143 && waited.stdout === '' && waited.stderr === '',
       `wait did not reap the job: ${JSON.stringify(waited)}`
     );
     const duplicateKernelWait = await Effect.runPromise(
@@ -310,7 +308,8 @@ async function main(): Promise<void> {
       normalResult.exitCode === 23 &&
         normalResult.stdout === 'normal-exit\n' &&
         normalWaited.exitCode === 23 &&
-        normalWaited.stdout.includes(`pid\t${normalPid}\n`),
+        normalWaited.stdout === '' &&
+        normalWaited.stderr === '',
       `A pre-exit shell wait raced normal auto-reaping: ${JSON.stringify({
         normalResult,
         normalWaited,

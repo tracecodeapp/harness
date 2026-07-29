@@ -1815,9 +1815,7 @@ async function testWorkspaceTraceKernelWaitBlocksUntilZombie(): Promise<void> {
   const waitResult = await wait;
   assertCondition(result.exitCode === 130, `signaled command should finish before wait reaps it: ${JSON.stringify(result)}`);
   assertCondition(
-    waitResult.exitCode === 130 &&
-      waitResult.stdout.includes(`pid\t${pid}\n`) &&
-      waitResult.stdout.includes('signal\tSIGINT\n'),
+    waitResult.exitCode === 130 && waitResult.stdout === '' && waitResult.stderr === '',
     `blocking wait should reap the requested zombie through the kernel command surface: ${JSON.stringify(waitResult)}`
   );
 
@@ -1886,7 +1884,10 @@ async function testWorkspaceQueuedCommandCancellation(): Promise<void> {
   const activeResult = await active;
   assertCondition(activeResult.exitCode === 0, `active command should finish after queued cancellation: ${JSON.stringify(activeResult)}`);
   const wait = await workspace.runCommand(`wait ${queuedPid}`);
-  assertCondition(wait.exitCode === 143 && wait.stdout.includes('signal\tSIGTERM\n'), `queued canceled command should be reapable: ${JSON.stringify(wait)}`);
+  assertCondition(
+    wait.exitCode === 143 && wait.stdout === '' && wait.stderr === '',
+    `queued canceled command should be reapable: ${JSON.stringify(wait)}`
+  );
 }
 
 async function testWorkspaceVfsLockWaitCancellation(): Promise<void> {
@@ -2282,7 +2283,7 @@ async function testWorkspaceShellProcessUtilities(): Promise<void> {
   assertCondition(result.exitCode === 143, `killed shell utility process should exit with signal code: ${JSON.stringify(result)}`);
   const wait = await workspace.runCommand(`wait ${pid}`);
   assertCondition(
-    wait.exitCode === 143 && wait.stdout.includes(`pid\t${pid}\n`) && wait.stdout.includes('signal\tSIGTERM\n'),
+    wait.exitCode === 143 && wait.stdout === '' && wait.stderr === '',
     `wait should reap kernel zombie state after shell kill: ${JSON.stringify(wait)}`
   );
 }
