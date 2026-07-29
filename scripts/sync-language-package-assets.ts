@@ -145,6 +145,10 @@ const PACKAGE_ASSET_PLANS: PackageAssetPlan[] = [
         target: ['workers', 'java-worker.js'],
       },
       {
+        source: ['workers', 'java', 'tracejvm-java-worker.js'],
+        target: ['workers', 'tracejvm-java-worker.js'],
+      },
+      {
         source: ['workers', 'java', 'java-source-augmentations.js'],
         target: ['workers', 'java-source-augmentations.js'],
       },

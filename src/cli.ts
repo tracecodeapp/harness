@@ -60,6 +60,11 @@ const ASSET_COPY_PLAN = [
     languages: ['java'],
   },
   {
+    source: ['workers', 'java', 'tracejvm-java-worker.js'],
+    target: ['tracejvm-java-worker.js'],
+    languages: ['java'],
+  },
+  {
     source: ['workers', 'java', 'java-source-augmentations.js'],
     target: ['java-source-augmentations.js'],
     languages: ['java'],

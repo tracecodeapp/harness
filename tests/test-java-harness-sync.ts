@@ -22,6 +22,12 @@ async function assertFileExists(pathname: string, label: string): Promise<void> 
 async function main(): Promise<void> {
   const root = process.cwd();
   const workerPath = join(root, 'workers', 'java', 'java-worker.js');
+  const traceJVMWorkerPath = join(
+    root,
+    'workers',
+    'java',
+    'tracejvm-java-worker.js'
+  );
   const augmentationPath = join(root, 'workers', 'java', 'java-source-augmentations.js');
   const helperJarPath = join(root, 'workers', 'vendor', 'java-browser-helper.jar');
   const compilerJarPath = join(root, 'workers', 'vendor', 'jdk.compiler-17.jar');
@@ -29,6 +35,7 @@ async function main(): Promise<void> {
   const javaparserJarPath = join(root, 'workers', 'vendor', 'javaparser-core-3.25.10.jar');
 
   await assertFileExists(workerPath, 'java worker asset exists');
+  await assertFileExists(traceJVMWorkerPath, 'TraceJVM Java worker asset exists');
   await assertFileExists(augmentationPath, 'java source augmentation asset exists');
   await assertFileExists(helperJarPath, 'java helper jar exists');
   await assertFileExists(compilerJarPath, 'java compiler jar exists');
@@ -36,6 +43,7 @@ async function main(): Promise<void> {
   await assertFileExists(javaparserJarPath, 'javaparser jar exists');
 
   const workerSource = await readFile(workerPath, 'utf8');
+  const traceJVMWorkerSource = await readFile(traceJVMWorkerPath, 'utf8');
   const augmentationSource = await readFile(augmentationPath, 'utf8');
   const helperSource = await readFile(
     join(root, 'workers', 'java', 'src', 'tracecode', 'browser', 'BrowserCompileAndTraceLibrary.java'),
@@ -109,6 +117,22 @@ async function main(): Promise<void> {
     );
   }
   console.log('PASS: java worker contract markers present');
+
+  for (const marker of [
+    'TraceJVMWorkerClient',
+    'traceJVMRewriteSource',
+    'traceJVMCompileAndRun',
+    'traceJVMCompileAndTrace',
+    'traceJVMCompileAndRunBatch',
+    'processFiles: processFiles()',
+    'self.importScripts(CLASSIC_JAVA_WORKER_URL.href)',
+  ]) {
+    assertCondition(
+      traceJVMWorkerSource.includes(marker),
+      `TraceJVM Java worker drift detected. Missing marker: ${marker}`
+    );
+  }
+  console.log('PASS: TraceJVM Java provider markers present');
 
   const fullClasspathSource = workerSource.slice(workerSource.indexOf('const FULL_CLASSPATH'));
   assertCondition(
