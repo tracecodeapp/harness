@@ -9,6 +9,7 @@ import { dirname, join, relative, resolve } from 'node:path';
 const root = process.cwd();
 const sourceRoot = resolve(root, 'workers/java/src');
 const outputPath = resolve(root, 'workers/vendor/java-browser-helper.jar');
+const rewriterOutputPath = resolve(root, 'workers/vendor/java-rewriter.jar');
 const checkOnly = process.argv.slice(2).includes('--check');
 
 async function run(command, args, cwd = root) {
@@ -41,6 +42,7 @@ try {
   const classesPath = join(tempRoot, 'classes');
   const metadataPath = join(tempRoot, 'metadata');
   const candidatePath = join(tempRoot, 'java-browser-helper.jar');
+  const rewriterCandidatePath = join(tempRoot, 'java-rewriter.jar');
   await mkdir(classesPath, { recursive: true });
   const sources = await javaSources(sourceRoot);
   if (sources.length === 0) throw new Error(`No Java helper sources found under ${sourceRoot}.`);
@@ -69,28 +71,55 @@ try {
     metadataPath,
     'META-INF/tracecode-source.sha256',
   ]);
+  const rewriterClasses = (await readdir(join(classesPath, 'harness', 'browser')))
+    .filter((name) => /^JavaRewriteLibrary(?:\$.*)?\.class$/u.test(name))
+    .sort();
+  if (rewriterClasses.length === 0) {
+    throw new Error('Compiled Java rewrite library classes were not found.');
+  }
+  await run('jar', [
+    '--create',
+    '--no-manifest',
+    '--date=2000-01-01T00:00:00Z',
+    '--file',
+    rewriterCandidatePath,
+    ...rewriterClasses.flatMap((name) => [
+      '-C',
+      classesPath,
+      join('harness', 'browser', name),
+    ]),
+    '-C',
+    metadataPath,
+    'META-INF/tracecode-source.sha256',
+  ]);
 
   if (checkOnly) {
-    const extractedPath = join(tempRoot, 'existing');
-    await mkdir(extractedPath, { recursive: true });
-    await run('jar', [
-      '--extract',
-      '--file',
-      outputPath,
-      'META-INF/tracecode-source.sha256',
-    ], extractedPath);
-    const recordedDigest = (await readFile(
-      join(extractedPath, 'META-INF', 'tracecode-source.sha256'),
-      'utf8'
-    )).trim();
-    if (recordedDigest !== sourceDigest) {
-      throw new Error('workers/vendor/java-browser-helper.jar is stale; run pnpm generate:java-helper.');
+    for (const [label, path] of [
+      ['workers/vendor/java-browser-helper.jar', outputPath],
+      ['workers/vendor/java-rewriter.jar', rewriterOutputPath],
+    ]) {
+      const extractedPath = join(tempRoot, `existing-${label.split('/').at(-1)}`);
+      await mkdir(extractedPath, { recursive: true });
+      await run('jar', [
+        '--extract',
+        '--file',
+        path,
+        'META-INF/tracecode-source.sha256',
+      ], extractedPath);
+      const recordedDigest = (await readFile(
+        join(extractedPath, 'META-INF', 'tracecode-source.sha256'),
+        'utf8'
+      )).trim();
+      if (recordedDigest !== sourceDigest) {
+        throw new Error(`${label} is stale; run pnpm generate:java-helper.`);
+      }
     }
-    console.log('Java browser helper jar is current.');
+    console.log('Java browser helper and rewriter jars are current.');
   } else {
     await mkdir(dirname(outputPath), { recursive: true });
     await copyFile(candidatePath, outputPath);
-    console.log(`Built ${outputPath}`);
+    await copyFile(rewriterCandidatePath, rewriterOutputPath);
+    console.log(`Built ${outputPath} and ${rewriterOutputPath}`);
   }
 } finally {
   await rm(tempRoot, { recursive: true, force: true });

@@ -160,16 +160,19 @@ public final class JavaRewriteLibrary {
         if (line.contains("{")) {
           MethodSignature signature = parseMethodSignature(pendingMethodHeader.source(), declaredClassNames);
           if (signature != null) {
-            methods.push(new MethodFrame(
+            MethodFrame frame = new MethodFrame(
                 signature.name,
                 signature.returnType,
                 braceDelta(line),
                 fields,
                 signature.parametersSource,
-                declaredClassNames));
-            out.append(signature.indent).append("  TraceHooks.emitCallAtLine(")
-                .append(pendingMethodHeader.startLine).append(", ").append(quote(signature.name)).append(", \"\");\n");
-            out.append(signature.indent).append("  TraceHooks.emitLineAtLine(").append(pendingMethodHeader.startLine).append(");\n");
+                declaredClassNames);
+            methods.push(frame);
+            if (signature.constructor) {
+              frame.pendingEntrySourceLine = pendingMethodHeader.startLine;
+            } else {
+              appendMethodEntry(out, signature.indent + "  ", pendingMethodHeader.startLine, signature.name);
+            }
           }
           pendingMethodHeader = null;
         }
@@ -190,10 +193,9 @@ public final class JavaRewriteLibrary {
       if (constructor.matches() && declaredClassNames.contains(constructor.group(2))) {
         out.append(line).append('\n');
         String name = constructor.group(2);
-        methods.push(new MethodFrame(name, "void", braceDelta(line), fields, constructor.group(3), declaredClassNames));
-        out.append(constructor.group(1)).append("  TraceHooks.emitCallAtLine(")
-            .append(sourceLine).append(", ").append(quote(name)).append(", \"\");\n");
-        out.append(constructor.group(1)).append("  TraceHooks.emitLineAtLine(").append(sourceLine).append(");\n");
+        MethodFrame frame = new MethodFrame(name, "void", braceDelta(line), fields, constructor.group(3), declaredClassNames);
+        frame.pendingEntrySourceLine = sourceLine;
+        methods.push(frame);
         continue;
       }
 
@@ -210,6 +212,37 @@ public final class JavaRewriteLibrary {
       }
 
       String trimmed = line.trim();
+      if (current.constructorDelegationParenDepth > 0) {
+        out.append(line).append('\n');
+        current.constructorDelegationParenDepth = Math.max(
+            0,
+            current.constructorDelegationParenDepth + parenDelta(line));
+        if (current.constructorDelegationParenDepth == 0 && trimmed.endsWith(";")) {
+          appendMethodEntry(out, indentOf(line), current.pendingEntrySourceLine, current.name);
+          current.pendingEntrySourceLine = 0;
+        }
+        current.depth += braceDelta(line);
+        continue;
+      }
+      if (current.pendingEntrySourceLine > 0) {
+        if (trimmed.isEmpty() || trimmed.startsWith("//") || trimmed.startsWith("/*") || trimmed.startsWith("*")) {
+          out.append(line).append('\n');
+          current.depth += braceDelta(line);
+          continue;
+        }
+        if (trimmed.matches("^(?:this|super)\\s*\\(.*$")) {
+          out.append(line).append('\n');
+          current.constructorDelegationParenDepth = Math.max(0, parenDelta(line));
+          if (current.constructorDelegationParenDepth == 0 && trimmed.endsWith(";")) {
+            appendMethodEntry(out, indentOf(line), current.pendingEntrySourceLine, current.name);
+            current.pendingEntrySourceLine = 0;
+          }
+          current.depth += braceDelta(line);
+          continue;
+        }
+        appendMethodEntry(out, indentOf(line), current.pendingEntrySourceLine, current.name);
+        current.pendingEntrySourceLine = 0;
+      }
       if (trimmed.startsWith("@")) {
         out.append(line).append('\n');
         current.depth += braceDelta(line);
@@ -768,6 +801,15 @@ public final class JavaRewriteLibrary {
           return indent + "TraceHooks.sortFieldListAtLine(" + sourceLine + ", \"this\", " + quote(field) + ", " +
               target + ", " + comparator + ", " + quote(field) + ", " + target + ");";
         }
+        Matcher castTarget = Pattern.compile(
+            "^\\(\\s*(?:java\\.util\\.)?(?:List|Collection)(?:\\s*<[^>]+>)?\\s*\\)\\s*([A-Za-z_][A-Za-z0-9_]*)$")
+            .matcher(target);
+        if (castTarget.matches() && frame.variables.containsKey(castTarget.group(1))) {
+          String name = castTarget.group(1);
+          String comparator = args.size() > 1 ? rewriteReads(args.get(1).trim(), sourceLine, frame) : "null";
+          return indent + "TraceHooks.sortListAtLine(" + sourceLine + ", " + quote(name) + ", " + target + ", " +
+              comparator + ");";
+        }
         if (isSimpleIdentifierExpression(target) && isListType(frame, frame.typeOf(target))) {
           String comparator = args.size() > 1 ? rewriteReads(args.get(1).trim(), sourceLine, frame) : "null";
           return indent + "TraceHooks.sortListAtLine(" + sourceLine + ", " + quote(target) + ", " + target + ", " +
@@ -891,7 +933,11 @@ public final class JavaRewriteLibrary {
     }
 
     Matcher mutatingCall = MUTATING_CALL_STATEMENT.matcher(line);
-    if (mutatingCall.matches() && isTrackedMutationMethod(mutatingCall.group(3))) {
+    if (
+        mutatingCall.matches() &&
+        isTrackedMutationMethod(mutatingCall.group(3)) &&
+        (frame.variables.containsKey(mutatingCall.group(2)) || frame.isField(mutatingCall.group(2)))
+    ) {
       String indent = mutatingCall.group(1);
       String name = mutatingCall.group(2);
       String method = mutatingCall.group(3);
@@ -2244,11 +2290,11 @@ public final class JavaRewriteLibrary {
     Matcher method = METHOD_START.matcher(source);
     if (method.matches()) {
       String name = method.group(2);
-      return new MethodSignature(method.group(1), name, extractReturnType(source, name), method.group(3));
+      return new MethodSignature(method.group(1), name, extractReturnType(source, name), method.group(3), false);
     }
     Matcher constructor = CONSTRUCTOR_START.matcher(source);
     if (constructor.matches() && declaredClassNames.contains(constructor.group(2))) {
-      return new MethodSignature(constructor.group(1), constructor.group(2), "void", constructor.group(3));
+      return new MethodSignature(constructor.group(1), constructor.group(2), "void", constructor.group(3), true);
     }
     return null;
   }
@@ -2262,6 +2308,12 @@ public final class JavaRewriteLibrary {
 
   private static String quote(String value) {
     return "\"" + value.replace("\\", "\\\\").replace("\"", "\\\"") + "\"";
+  }
+
+  private static void appendMethodEntry(StringBuilder out, String indent, int sourceLine, String name) {
+    out.append(indent).append("TraceHooks.emitCallAtLine(")
+        .append(sourceLine).append(", ").append(quote(name)).append(", \"\");\n");
+    out.append(indent).append("TraceHooks.emitLineAtLine(").append(sourceLine).append(");\n");
   }
 
   private static String stringArrayLiteral(java.util.List<String> values) {
@@ -2611,12 +2663,14 @@ public final class JavaRewriteLibrary {
     final String name;
     final String returnType;
     final String parametersSource;
+    final boolean constructor;
 
-    MethodSignature(String indent, String name, String returnType, String parametersSource) {
+    MethodSignature(String indent, String name, String returnType, String parametersSource, boolean constructor) {
       this.indent = indent;
       this.name = name;
       this.returnType = returnType;
       this.parametersSource = parametersSource;
+      this.constructor = constructor;
     }
   }
 
@@ -2631,6 +2685,8 @@ public final class JavaRewriteLibrary {
     boolean suppressNextLineHook;
     boolean statementContinuation;
     PendingMultilineMutation pendingMultilineMutation;
+    int pendingEntrySourceLine;
+    int constructorDelegationParenDepth;
     final java.util.Set<String> fields;
     final java.util.Set<String> declaredClassNames;
     final Map<String, String> variables;
@@ -2646,6 +2702,8 @@ public final class JavaRewriteLibrary {
       this.suppressNextLineHook = false;
       this.statementContinuation = false;
       this.pendingMultilineMutation = null;
+      this.pendingEntrySourceLine = 0;
+      this.constructorDelegationParenDepth = 0;
       this.fields = new java.util.HashSet<>(fields.keySet());
       this.declaredClassNames = new java.util.HashSet<>(declaredClassNames);
       this.variables = new HashMap<>(fields);

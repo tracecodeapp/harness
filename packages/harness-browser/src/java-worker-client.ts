@@ -45,6 +45,8 @@ export interface JavaWorkerClientOptions {
   workerUrl: string;
   debug?: boolean;
   workerIdleTimeoutMs?: number;
+  /** Overrides the default trace execution deadline for controlled test or host environments. */
+  tracingTimeoutMs?: number;
   /** Bounded content-addressed compiled-class entries retained by this worker (0-64). */
   compileCacheLimit?: number;
   externalCompilerUrl?: string;
@@ -90,6 +92,9 @@ export interface JavaWorkerRawTraceResult {
   timeoutReason?: 'trace-limit';
   droppedEventCount?: number;
   timings?: RuntimeExecutionTimings;
+  /** Default-off VM diagnostics used by compatibility/performance campaigns. */
+  bytecodeProfile?: unknown;
+  diagnosticError?: string;
 }
 
 export interface JavaWorkerTraceResult extends JavaWorkerRawTraceResult {
@@ -462,7 +467,9 @@ export class JavaWorkerClient {
             traceEventTransport: traceEventTransferRequest(),
             ...this.workerOptionsPayload(),
           }, null), // the enclosing execution deadline is the only clock
-          TRACING_TIMEOUT_MS
+          Number.isFinite(this.options.tracingTimeoutMs) && Number(this.options.tracingTimeoutMs) > 0
+            ? Math.floor(Number(this.options.tracingTimeoutMs))
+            : TRACING_TIMEOUT_MS
         )
       )
     );

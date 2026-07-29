@@ -232,7 +232,11 @@ function testJavaHelperJarDoesNotExposeDeprecatedSpikePackages(): void {
     !entries.some((entry) => entry.startsWith('spike/')),
     'Java helper jar should not expose deprecated spike.* runtime packages'
   );
-  console.log('PASS: java helper jar does not expose deprecated spike packages');
+  assertCondition(
+    entries.includes('tracecode/browser/TraceExecutionRunner.class'),
+    'Java helper jar should contain the precompiled harness trace runner'
+  );
+  console.log('PASS: java helper jar exposes the precompiled trace runner without deprecated spike packages');
 }
 
 function loadSourceAugmentationsForTest(): {
@@ -342,6 +346,64 @@ public class Main {
       'Java final output serializer should not use the trace snapshot item cap'
     );
     console.log('PASS: Java runtime value serialization cap');
+  } finally {
+    rmSync(tmpRoot, { recursive: true, force: true });
+  }
+}
+
+function testJavaRuntimeSkipsSerializationAfterTraceLimit(): void {
+  const tmpRoot = mkdtempSync(join(tmpdir(), 'tracecode-java-trace-limit-fast-path-'));
+  try {
+    const sourcePath = join(tmpRoot, 'Main.java');
+    const classesPath = join(tmpRoot, 'classes');
+    writeFileSync(
+      sourcePath,
+      `import tracecode.user.TraceHooks;
+
+public class Main {
+  private static final class ExplosiveValue {
+    @Override
+    public String toString() {
+      throw new IllegalStateException("post-limit value was serialized");
+    }
+  }
+
+  public static void main(String[] args) {
+    int token = TraceHooks.beginRun(1);
+    TraceHooks.emit("trace:{\\"kind\\":\\"line\\",\\"line\\":1}");
+    TraceHooks.emit("trace:{\\"kind\\":\\"line\\",\\"line\\":2}");
+    String serialized = TraceHooks.serializeResult(new ExplosiveValue());
+    TraceHooks.emit("trace:{\\"kind\\":\\"snapshot\\",\\"line\\":3,\\"value\\":" + serialized + "}");
+    System.out.println(serialized);
+    System.out.println(TraceHooks.drainEvents().size());
+    System.out.println(TraceHooks.droppedEventCount());
+    TraceHooks.endRun(token);
+  }
+}
+`,
+      'utf8'
+    );
+    execFileSync('mkdir', ['-p', classesPath]);
+    execFileSync(
+      'javac',
+      ['-cp', join(process.cwd(), 'workers', 'vendor', 'java-browser-helper.jar'), '-d', classesPath, sourcePath],
+      { cwd: process.cwd(), stdio: 'pipe' }
+    );
+    const output = execFileSync(
+      'java',
+      ['-cp', [classesPath, join(process.cwd(), 'workers', 'vendor', 'java-browser-helper.jar')].join(':'), 'Main'],
+      { cwd: process.cwd(), encoding: 'utf8', stdio: 'pipe' }
+    );
+    const [serialized, eventCount, droppedEventCount] = output.trim().split('\n');
+    assertCondition(
+      serialized === 'null',
+      `Java post-limit serialization should take the constant-time placeholder path, received ${serialized}`
+    );
+    assertCondition(eventCount === '1', `Java trace event cap should retain one event, received ${eventCount}`);
+    assertCondition(
+      Number(droppedEventCount) >= 2,
+      `Java trace event cap should count discarded emissions, received ${droppedEventCount}`
+    );
   } finally {
     rmSync(tmpRoot, { recursive: true, force: true });
   }
@@ -2726,6 +2788,43 @@ class Solution {
   );
   assertJavaSourceCompiles(listSortSource, 'augmented Java List.sort source');
 
+  const rawListCastSortSource = augmentRewrittenJavaForTest(`import java.util.*;
+
+class Solution {
+  @SuppressWarnings({ "rawtypes", "unchecked" })
+  void solve(List<Object> values) {
+    Collections.sort((List) values);
+  }
+}`, 'solve');
+  assertCondition(
+    rawListCastSortSource.includes('TraceHooks.sortListAtLine(6, "values", (List) values, null)') &&
+      !rawListCastSortSource.includes('emitRuntimeSnapshotAtLine(6, "Collections", Collections)'),
+    `Java source augmentation should trace a cast Collections.sort target without treating the utility type as a runtime variable, received ${rawListCastSortSource}`
+  );
+  assertJavaSourceCompiles(rawListCastSortSource, 'augmented Java raw List cast sort source');
+
+  const delegatingConstructorSource = augmentRewrittenJavaForTest(`class Box {
+  int value;
+  Box() {
+    this(0);
+  }
+  Box(int value) {
+    this.value = value;
+  }
+}
+
+class Solution {
+  int solve() {
+    return new Box().value;
+  }
+}`, 'solve');
+  assertCondition(
+    delegatingConstructorSource.indexOf('this(0);') <
+      delegatingConstructorSource.indexOf('TraceHooks.emitCallAtLine(3, "Box", "")'),
+    `Java constructor entry hooks must follow an explicit this(...) delegation, received ${delegatingConstructorSource}`
+  );
+  assertJavaSourceCompiles(delegatingConstructorSource, 'augmented Java delegating constructor source');
+
   const charLiteralBraceSource = augmentRewrittenJavaForTest(`import java.util.*;
 
 class Solution {
@@ -4297,6 +4396,7 @@ async function main(): Promise<void> {
   testJavaHelperJarDoesNotExposeDeprecatedSpikePackages();
   testNativeJavaRewriterRegressionGaps();
   testJavaRuntimeValueSerializationLimit();
+  testJavaRuntimeSkipsSerializationAfterTraceLimit();
   testJavaRuntimeUserObjectSerializationIds();
   testJavaBrowserHelperWorkspaceDirectories();
   testJavaProjectEventsRandomAccessKernelReads();

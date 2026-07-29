@@ -12,11 +12,12 @@ public final class TraceHooks {
   private static final Object STATE_LOCK = new Object();
   private static final List<String> EVENTS = new ArrayList<>();
   private static final ThreadLocal<java.util.List<TraceFrame>> CALL_STACK = ThreadLocal.withInitial(java.util.ArrayList::new);
+  private static final ThreadLocal<String> CALL_STACK_JSON = new ThreadLocal<>();
   private static final ThreadLocal<String> LAST_INDEX_SOURCE = new ThreadLocal<>();
   private static final InheritableThreadLocal<Integer> RUN_TOKEN = new InheritableThreadLocal<>();
   private static final java.util.IdentityHashMap<Object, String> TRACE_REFERENCE_IDS = new java.util.IdentityHashMap<>();
   private static int maxEvents = DEFAULT_MAX_EVENTS;
-  private static boolean traceLimitExceeded = false;
+  private static volatile boolean traceLimitExceeded = false;
   private static int droppedEventCount = 0;
   private static int nextTraceReferenceId = 0;
   private static int nextRunToken = 0;
@@ -29,6 +30,7 @@ public final class TraceHooks {
     if (event == null || !event.startsWith("trace:")) {
       throw new IllegalArgumentException("TraceHooks.emit only accepts native trace: runtime events");
     }
+    if (dropIfStorageExhausted()) return;
     String sanitizedEvent = sanitizeJsonNonFiniteNumbers(withCallStack(event));
     synchronized (STATE_LOCK) {
       if (!runActiveForCurrentThread()) return;
@@ -42,6 +44,15 @@ public final class TraceHooks {
         return;
       }
       EVENTS.add(sanitizedEvent);
+    }
+  }
+
+  private static boolean dropIfStorageExhausted() {
+    if (!traceLimitExceeded) return false;
+    synchronized (STATE_LOCK) {
+      if (!runActiveForCurrentThread() || !traceLimitExceeded) return false;
+      droppedEventCount += 1;
+      return true;
     }
   }
 
@@ -89,6 +100,7 @@ public final class TraceHooks {
       }
     }
     CALL_STACK.remove();
+    CALL_STACK_JSON.remove();
     LAST_INDEX_SOURCE.remove();
     RUN_TOKEN.remove();
   }
@@ -96,6 +108,7 @@ public final class TraceHooks {
   private static void resetStateLocked(int nextMaxEvents) {
     EVENTS.clear();
     CALL_STACK.get().clear();
+    CALL_STACK_JSON.remove();
     LAST_INDEX_SOURCE.remove();
     TRACE_REFERENCE_IDS.clear();
     maxEvents = Math.max(1, nextMaxEvents);
@@ -130,6 +143,10 @@ public final class TraceHooks {
   }
 
   public static String serializeResult(Object value) {
+    // Once the storage budget has been exhausted, no later event can retain
+    // this value. Avoid repeatedly walking growing learner collections just
+    // to construct an event that emit() will discard.
+    if (traceLimitExceeded && runActiveForCurrentThread()) return "null";
     return serializeResult(value, new java.util.IdentityHashMap<Object, String>(), 0, true);
   }
 
@@ -138,6 +155,7 @@ public final class TraceHooks {
   }
 
   public static void emitLineAtLine(int line) {
+    if (dropIfStorageExhausted()) return;
     StringBuilder out = new StringBuilder("trace:{\"kind\":\"line\",\"line\":");
     out.append(line);
     java.util.List<TraceFrame> stack = CALL_STACK.get();
@@ -150,6 +168,7 @@ public final class TraceHooks {
 
   public static void emitLineAtLine(int line, String snapshotFragment) {
     emitLineAtLine(line);
+    if (traceLimitExceeded) return;
     emitSnapshotsFromFragment(line, snapshotFragment);
   }
 
@@ -159,11 +178,17 @@ public final class TraceHooks {
   }
 
   public static void emitCallAtLine(int line, String functionName, String argsJson) {
+    if (dropIfStorageExhausted()) {
+      CALL_STACK.get().add(new TraceFrame(functionName == null ? "" : functionName, line, null));
+      CALL_STACK_JSON.remove();
+      return;
+    }
     StringBuilder out = new StringBuilder("trace:{\"kind\":\"call\",\"line\":");
     out.append(line).append(",\"function\":").append(jsonString(functionName == null ? "" : functionName));
     String argsPayload = argsJsonPayload(argsJson);
     if (argsPayload != null) out.append(",\"args\":").append(argsPayload);
     CALL_STACK.get().add(new TraceFrame(functionName == null ? "" : functionName, line, argsPayload));
+    CALL_STACK_JSON.remove();
     out.append("}");
     emit(out.toString());
     emitSnapshotsFromFragment(line, argsJson);
@@ -174,6 +199,10 @@ public final class TraceHooks {
   }
 
   public static void emitReturnAtLine(int line, String functionName, Object value) {
+    if (dropIfStorageExhausted()) {
+      popCallFrame(functionName);
+      return;
+    }
     StringBuilder out = new StringBuilder("trace:{\"kind\":\"return\",\"line\":");
     out.append(line).append(",\"function\":").append(jsonString(functionName == null ? "" : functionName));
     if (value != null) out.append(",\"value\":").append(serializeResult(value));
@@ -183,6 +212,10 @@ public final class TraceHooks {
   }
 
   public static void emitSerializedReturnAtLine(int line, String functionName, String serializedValue) {
+    if (dropIfStorageExhausted()) {
+      popCallFrame(functionName);
+      return;
+    }
     StringBuilder out = new StringBuilder("trace:{\"kind\":\"return\",\"line\":");
     out.append(line).append(",\"function\":").append(jsonString(functionName == null ? "" : functionName));
     if (serializedValue != null) out.append(",\"value\":").append(serializedValue);
@@ -444,10 +477,12 @@ public final class TraceHooks {
   }
 
   public static void emitExceptionAtLine(int line, Object value) {
+    if (dropIfStorageExhausted()) return;
     emit("trace:{\"kind\":\"exception\",\"line\":" + line + ",\"value\":" + serializeResult(value) + "}");
   }
 
   public static void emitStdoutAtLine(int line, Object value) {
+    if (dropIfStorageExhausted()) return;
     emit("trace:{\"kind\":\"stdout\",\"line\":" + line + ",\"value\":" + serializeResult(value) + "}");
   }
 
@@ -615,6 +650,7 @@ public final class TraceHooks {
   }
 
   private static String sanitizeJsonNonFiniteNumbers(String event) {
+    if (event.indexOf("NaN") < 0 && event.indexOf("Infinity") < 0) return event;
     return event
         .replaceAll("(?<![A-Za-z0-9_\\\"])-Infinity(?![A-Za-z0-9_\\\"])", "\"-Infinity\"")
         .replaceAll("(?<![A-Za-z0-9_\\\"])Infinity(?![A-Za-z0-9_\\\"])", "\"Infinity\"")
@@ -624,7 +660,12 @@ public final class TraceHooks {
   private static String withCallStack(String event) {
     java.util.List<TraceFrame> stack = CALL_STACK.get();
     if (stack.isEmpty() || !event.endsWith("}")) return event;
-    return event.substring(0, event.length() - 1) + ",\"callStack\":" + serializeCallStack(stack) + "}";
+    String serializedStack = CALL_STACK_JSON.get();
+    if (serializedStack == null) {
+      serializedStack = serializeCallStack(stack);
+      CALL_STACK_JSON.set(serializedStack);
+    }
+    return event.substring(0, event.length() - 1) + ",\"callStack\":" + serializedStack + "}";
   }
 
   private static String serializeCallStack(java.util.List<TraceFrame> stack) {
@@ -647,11 +688,13 @@ public final class TraceHooks {
     int last = stack.size() - 1;
     if (stack.get(last).functionName.equals(normalized)) {
       stack.remove(last);
+      CALL_STACK_JSON.remove();
       return;
     }
     for (int index = last; index >= 0; index--) {
       if (stack.get(index).functionName.equals(normalized)) {
         stack.subList(index, stack.size()).clear();
+        CALL_STACK_JSON.remove();
         return;
       }
     }
@@ -794,6 +837,7 @@ public final class TraceHooks {
   }
 
   private static void emitSnapshot(int line, String name, String serializedValue) {
+    if (dropIfStorageExhausted()) return;
     emit("trace:{\"kind\":\"snapshot\",\"line\":" + line + ",\"target\":{\"variable\":" + jsonString(name) + "},\"value\":" + serializedValue + "}");
   }
 
@@ -1714,6 +1758,7 @@ public final class TraceHooks {
   }
 
   private static void emitMatrixRead(int line, String name, int row, int col, Object value) {
+    if (dropIfStorageExhausted()) return;
     emit("trace:{\"kind\":\"read\",\"line\":" + line + ",\"target\":{\"variable\":\"" + name + "\",\"path\":[" + serializeResult(row) + "," + serializeResult(col) + "]},\"value\":" + serializeResult(value) + "}");
   }
 
@@ -1722,6 +1767,7 @@ public final class TraceHooks {
   }
 
   private static void emitNestedListArrayRead(int line, String name, int index, int elementIndex, Object value) {
+    if (dropIfStorageExhausted()) return;
     emit("trace:{\"kind\":\"read\",\"line\":" + line + ",\"target\":{\"variable\":\"" + name + "\",\"path\":[" + serializeResult(index) + "," + serializeResult(elementIndex) + "]},\"value\":" + serializeResult(value) + "}");
   }
 
@@ -1734,6 +1780,7 @@ public final class TraceHooks {
   }
 
   private static void emitTraceRead(int line, String name, String pathJson, Object value, String indexSourcesJson) {
+    if (dropIfStorageExhausted()) return;
     StringBuilder out = new StringBuilder("trace:{\"kind\":\"read\",\"line\":");
     out.append(line).append(",\"target\":{\"variable\":").append(jsonString(name)).append(",\"path\":").append(pathJson);
     if (indexSourcesJson != null) out.append(",\"indexSources\":").append(indexSourcesJson);
@@ -1750,6 +1797,7 @@ public final class TraceHooks {
   }
 
   private static void emitTraceReadWithIterationBinding(int line, String name, String pathJson, Object value, String bindingVariable, String indexSourcesJson) {
+    if (dropIfStorageExhausted()) return;
     StringBuilder out = new StringBuilder("trace:{\"kind\":\"read\",\"line\":");
     out.append(line).append(",\"target\":{\"variable\":").append(jsonString(name)).append(",\"path\":").append(pathJson);
     if (indexSourcesJson != null) out.append(",\"indexSources\":").append(indexSourcesJson);
@@ -1764,10 +1812,12 @@ public final class TraceHooks {
   }
 
   public static void emitScalarWriteAtLine(int line, String name, Object value) {
+    if (dropIfStorageExhausted()) return;
     emit("trace:{\"kind\":\"write\",\"line\":" + line + ",\"target\":{\"variable\":" + jsonString(name) + "},\"value\":" + serializeResult(value) + "}");
   }
 
   private static void emitTraceWrite(int line, String name, String pathJson, Object value, String indexSourcesJson) {
+    if (dropIfStorageExhausted()) return;
     StringBuilder out = new StringBuilder("trace:{\"kind\":\"write\",\"line\":");
     out.append(line).append(",\"target\":{\"variable\":").append(jsonString(name)).append(",\"path\":").append(pathJson);
     if (indexSourcesJson != null) out.append(",\"indexSources\":").append(indexSourcesJson);
@@ -1842,6 +1892,7 @@ public final class TraceHooks {
   }
 
   private static void emitTraceMutate(int line, String name, String pathJson, String method, String indexSourcesJson, String argsJson) {
+    if (dropIfStorageExhausted()) return;
     StringBuilder out = new StringBuilder("trace:{\"kind\":\"mutate\",\"line\":");
     out.append(line).append(",\"target\":{\"variable\":").append(jsonString(name));
     if (pathJson != null) out.append(",\"path\":").append(pathJson);

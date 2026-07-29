@@ -5888,7 +5888,9 @@ async function runJavaTraceRequest(payload, requestId) {
   const stableCompileId = buildJavaCompileId(normalizedPayload, 'trace');
   const compileId = isolateJavaCompileId(buildJavaCompileId(normalizedPayload, 'trace'), requestId);
   const compileCacheKey = classicJavaCompileCacheKey('trace', stableCompileId);
-  const dynamicInputs = dynamicInputEntriesForPayload(normalizedPayload, stableCompileId);
+  const dynamicInputs = normalizedPayload.inputTransport === 'inline-source'
+    ? []
+    : dynamicInputEntriesForPayload(normalizedPayload, stableCompileId);
 
   let rewrittenSource;
   try {
@@ -6071,6 +6073,8 @@ async function runJavaTraceRequest(payload, requestId) {
             droppedEventCount: report.droppedEventCount ?? 0,
           }
         : {}),
+      ...(report.bytecodeProfile ? { bytecodeProfile: report.bytecodeProfile } : {}),
+      ...(report.diagnosticError ? { diagnosticError: report.diagnosticError } : {}),
       timings: {
         rewriteMs: rewriteEnd - rewriteStart,
         hostCallMs: libraryCallEnd - libraryCallStart,
@@ -6093,6 +6097,8 @@ async function runJavaTraceRequest(payload, requestId) {
           droppedEventCount: report.droppedEventCount ?? 0,
         }
       : {}),
+    ...(report.bytecodeProfile ? { bytecodeProfile: report.bytecodeProfile } : {}),
+    ...(report.diagnosticError ? { diagnosticError: report.diagnosticError } : {}),
     timings: {
       rewriteMs: rewriteEnd - rewriteStart,
       hostCallMs: libraryCallEnd - libraryCallStart,
