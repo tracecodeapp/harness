@@ -7,7 +7,13 @@
  * historically received from CheerpJ, backed by TraceJVM instead.
  */
 
-const TRACEJVM_BASE_URL = new URL('/tracejvm/', self.location.href);
+const traceJVMWorkerParameters = new URL(self.location.href).searchParams;
+const configuredTraceJVMBaseUrl =
+  traceJVMWorkerParameters.get('tracejvmBaseUrl');
+const TRACEJVM_BASE_URL = new URL(
+  configuredTraceJVMBaseUrl || '/tracejvm/',
+  self.location.href
+);
 const TRACEJVM_MODULE_URL = new URL('browser-client.js', TRACEJVM_BASE_URL);
 const TRACEJVM_WORKER_URL = new URL('browser-worker.js', TRACEJVM_BASE_URL);
 const TRACEJVM_WASM_URL = new URL('bjvm_main.wasm', TRACEJVM_BASE_URL);
