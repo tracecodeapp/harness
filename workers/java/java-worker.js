@@ -5895,20 +5895,32 @@ async function runJavaTraceRequest(payload, requestId) {
   let rewrittenSource;
   try {
     rewrittenSource = await rewriteSource(normalizedPayload, stableCompileId, dynamicInputs);
-    rewrittenSource = augmentTraceCallArgumentSnapshots(rewrittenSource);
-    rewrittenSource = augmentArrayLengthReads(rewrittenSource);
-    rewrittenSource = self.TraceCodeJavaSourceAugmentations.augmentJavaCollectionOperations(
-      rewrittenSource,
-      normalizedPayload.sourceText
+    const applyRewriteStage = (stage, transform) => {
+      try {
+        rewrittenSource = transform(rewrittenSource);
+      } catch (error) {
+        throw makeWorkerStageError(`trace source ${stage}`, error);
+      }
+    };
+    applyRewriteStage('call argument snapshots', augmentTraceCallArgumentSnapshots);
+    applyRewriteStage('array length reads', augmentArrayLengthReads);
+    applyRewriteStage('collection operations', (source) =>
+      self.TraceCodeJavaSourceAugmentations.augmentJavaCollectionOperations(
+        source,
+        normalizedPayload.sourceText
+      )
     );
-    rewrittenSource = augmentJavaObjectFieldOperations(rewrittenSource);
-    rewrittenSource = augmentJavaStdoutEvents(rewrittenSource);
-    rewrittenSource = augmentJavaThrowEvents(rewrittenSource);
-    rewrittenSource = augmentJavaLocalSnapshots(rewrittenSource);
-    rewrittenSource = augmentTraceReturnValueSnapshots(rewrittenSource);
+    applyRewriteStage('object field operations', augmentJavaObjectFieldOperations);
+    applyRewriteStage('stdout events', augmentJavaStdoutEvents);
+    applyRewriteStage('throw events', augmentJavaThrowEvents);
+    applyRewriteStage('local snapshots', augmentJavaLocalSnapshots);
+    applyRewriteStage('return value snapshots', augmentTraceReturnValueSnapshots);
   } catch (error) {
     const rewriteError = formatWorkerErrorMessage(error);
-    const skipDiagnosticProbe = rewriteError.includes('unsupported legacy line= TraceHooks hooks');
+    const skipDiagnosticProbe =
+      rewriteError.includes('unsupported legacy line= TraceHooks hooks') ||
+      rewriteError.startsWith('TraceJVM rewrite ') ||
+      rewriteError.startsWith('Java worker trace source ');
     const diagnosticProbe = skipDiagnosticProbe
       ? { consoleOutput: [], error: null, hostCallMs: 0, diagnosticError: null }
       : await collectCompileProbeDiagnostics(
