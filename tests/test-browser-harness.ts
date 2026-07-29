@@ -419,6 +419,7 @@ class MockWorker {
 
 async function main(): Promise<void> {
   const originalWorker = globalThis.Worker;
+  const originalFetch = globalThis.fetch;
   // @ts-expect-error test stub
   globalThis.Worker = MockWorker;
 
@@ -948,6 +949,112 @@ async function main(): Promise<void> {
       abortedWarmupWorker?.terminated === true &&
         !abortedWarmupWorker.messages.some((message) => message.type === 'execute-project-python'),
       'Aborting a cold provider warmup must retire the worker before user code executes'
+    );
+
+    const delayedCSharpWorkerUrl = 'https://runtime.tracecode.test/csharp-worker.js';
+    let releaseDelayedCSharpPreflight!: () => void;
+    const delayedCSharpPreflight = new Promise<void>((resolve) => {
+      releaseDelayedCSharpPreflight = resolve;
+    });
+    let markDelayedCSharpPreflightStarted!: () => void;
+    const delayedCSharpPreflightStarted = new Promise<void>((resolve) => {
+      markDelayedCSharpPreflightStarted = resolve;
+    });
+    globalThis.fetch = (async (input: string | URL | Request) => {
+      const url = typeof input === 'string'
+        ? input
+        : input instanceof URL
+          ? input.href
+          : input.url;
+      if (url !== delayedCSharpWorkerUrl) {
+        throw new Error(`Unexpected test asset preflight: ${url}`);
+      }
+      markDelayedCSharpPreflightStarted();
+      await delayedCSharpPreflight;
+      return new Response('', {
+        status: 200,
+        headers: { 'content-type': 'text/javascript' },
+      });
+    }) as typeof globalThis.fetch;
+    const preflightAbortWorkspace = await createBrowserProjectWorkspace({
+      providers: ['csharp'],
+      assets: {
+        runtimeManifests: {
+          csharp: {
+            runtime: 'csharp',
+            runtimeVersion: 'test-delayed-csharp-preflight',
+            protocolVersion: BROWSER_RUNTIME_ASSET_PROTOCOL_VERSION,
+            workerFormat: 'module',
+            originPolicy: { mode: 'any' },
+            assets: {
+              worker: {
+                url: delayedCSharpWorkerUrl,
+                mediaType: 'text/javascript',
+                delivery: { mutability: 'immutable', address: 'versioned' },
+              },
+              assetBaseUrl: { url: 'https://runtime.tracecode.test/csharp/' },
+            },
+          },
+        },
+      },
+      files: [
+        {
+          path: 'App.csproj',
+          contents: '<Project Sdk="Microsoft.NET.Sdk"><PropertyGroup><OutputType>Exe</OutputType><TargetFramework>net10.0</TargetFramework></PropertyGroup></Project>\n',
+        },
+        { path: 'Program.cs', contents: 'while (true) {}\n' },
+      ],
+    });
+    const preflightAbortController = new AbortController();
+    const preflightAbortStartedAt = Date.now();
+    const preflightAbortCommand = preflightAbortWorkspace.runCommand(
+      'dotnet run --project App.csproj',
+      { signal: preflightAbortController.signal }
+    );
+    await delayedCSharpPreflightStarted;
+    preflightAbortController.abort();
+    let preflightAbortResult;
+    let preflightAbortDeadline: ReturnType<typeof setTimeout> | undefined;
+    try {
+      preflightAbortResult = await Promise.race([
+        preflightAbortCommand,
+        new Promise<never>((_resolve, reject) => {
+          preflightAbortDeadline = setTimeout(
+            () => reject(new Error('Cold preflight abort did not settle within 1 second.')),
+            1_000
+          );
+        }),
+      ]);
+    } finally {
+      if (preflightAbortDeadline !== undefined) clearTimeout(preflightAbortDeadline);
+      releaseDelayedCSharpPreflight();
+      globalThis.fetch = originalFetch;
+    }
+    const preflightAbortWallMs = Date.now() - preflightAbortStartedAt;
+    await new Promise((resolve) => setTimeout(resolve, 25));
+    const lateCSharpWorkers = workerInstances.filter((worker) =>
+      String(worker.url).startsWith(delayedCSharpWorkerUrl)
+    );
+    preflightAbortWorkspace.dispose();
+    assertCondition(
+      preflightAbortResult.exitCode === 143 &&
+        preflightAbortResult.error?.detail?.signal === 'SIGTERM' &&
+        preflightAbortWallMs < 1_000,
+      `Aborting before a provider worker exists should settle immediately: ${JSON.stringify({
+        preflightAbortResult,
+        preflightAbortWallMs,
+      })}`
+    );
+    assertCondition(
+      lateCSharpWorkers.every((worker) =>
+        worker.terminated &&
+        !worker.messages.some((message) => message.type === 'execute-project-csharp')
+      ),
+      'A provider aborted during asset preflight must not leak a late worker or execute user code: ' +
+        JSON.stringify(lateCSharpWorkers.map((worker) => ({
+          terminated: worker.terminated,
+          messages: worker.messages.map((message) => message.type),
+        })))
     );
 
     failedWarmupUrlPrefix = '/project-prewarm-failure/pyodide-worker.js';
@@ -1920,6 +2027,7 @@ async function main(): Promise<void> {
     assertCondition(Boolean(survivingWorker?.terminated), 'disposeLanguage should terminate the targeted runtime');
     console.log('PASS: browser harness disposeLanguage terminates the targeted runtime');
   } finally {
+    globalThis.fetch = originalFetch;
     globalThis.Worker = originalWorker;
   }
 }

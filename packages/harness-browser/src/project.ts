@@ -257,14 +257,37 @@ function createOneShotPrewarmedWorkerPool<Client extends PrewarmableProjectWorke
     };
     entries.set(entry.token, entry);
     const promise = (async (): Promise<OneShotWarmOutcome> => {
-      const onAbort = () => retire(entry);
+      let rejectAbort: ((error: Error) => void) | undefined;
+      const onAbort = () => {
+        retire(entry);
+        rejectAbort?.(projectPoolAbortError());
+      };
       try {
         if (signal?.aborted) {
           retire(entry);
           return { success: false, error: projectPoolAbortError() };
         }
         signal?.addEventListener('abort', onAbort, { once: true });
-        await entry.client.warmup();
+        const warmupAttempt = Promise.resolve().then(() => entry.client.warmup());
+        // Termination can happen before a runtime preflight has created its
+        // worker session. Keep observing that abandoned warmup and retire the
+        // client again after it settles so a late session cannot escape.
+        void warmupAttempt.finally(() => {
+          if (entry.state !== 'retired') return;
+          try {
+            entry.client.terminate();
+          } catch {
+            // The entry is already fenced out of the pool; cleanup is best-effort.
+          }
+        }).catch(() => undefined);
+        if (signal) {
+          const abort = new Promise<never>((_resolve, reject) => {
+            rejectAbort = reject;
+          });
+          await Promise.race([warmupAttempt, abort]);
+        } else {
+          await warmupAttempt;
+        }
         if (!refillEnabled || entry.generation !== generation || entry.state !== 'warming') {
           retire(entry);
           return { success: false, error: new Error(`${label} prewarmed worker was retired before lease.`) };
