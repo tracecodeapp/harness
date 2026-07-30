@@ -472,6 +472,7 @@ import {
 } from './workspace-event-state';
 import { WorkspaceLifecycleState } from './workspace-lifecycle-state';
 import { createWorkspaceShellCommandRegistry } from './shell-command-registry';
+import { WorkspaceIdentityCommands } from './userland-identity-commands';
 
 const PRINCIPAL_ACTOR: RuntimeWorkspaceActor = runtimeWorkspaceActorPreset('principal');
 const RUNTIME_ACTOR: RuntimeWorkspaceActor = runtimeWorkspaceActorPreset('runtime');
@@ -614,6 +615,7 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
   private readonly hiddenCommandAccess?: RuntimeProjectHiddenCommandAccess;
   private readonly traceKernelCommandRegistry: TraceKernelCommandInfo[];
   private readonly traceKernelCommandDispatchNames: ReadonlyMap<string, string>;
+  private readonly identityCommands: WorkspaceIdentityCommands;
   private readonly skillFiles = new Map<string, RuntimeFile>();
   private readonly virtualExecutableRecords = new Map<string, VirtualExecutableRecord>();
   private readonly processState = new WorkspaceProcessState();
@@ -799,6 +801,12 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
       Boolean(options.nodeRunner || options.typescriptRunner)
     );
     this.traceKernelCommandRegistry = createTraceKernelCommandRegistry(options, packageManagerConfig);
+    this.identityCommands = new WorkspaceIdentityCommands({
+      kernelInfo: this.kernelInfo,
+      environment: this.baseEnv,
+      commands: this.traceKernelCommandRegistry,
+      resolveHost: (hostname) => this.resolveHost(hostname),
+    });
     const emitPackageManagerOutput: PackageManagerOutputEmitter = (stream, data, context) => {
       this.emitLocalRuntimeEvent({
         type: 'output',
@@ -838,22 +846,30 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
         curl: (args, context) => this.runKernelCurl(args, context),
         df: (args, context) => this.runKernelDf(args, context),
         du: (args, context) => this.runKernelDu(args, context),
-        fastfetch: (args, context) => this.runKernelFastfetch(args, context),
+        fastfetch: (args, context) =>
+          this.identityCommands.fastfetch(
+            args,
+            this.terminalForCommand(context)
+          ),
         fg: (args, context) => this.runKernelJobPlacement(args, 'fg', context),
-        getconf: (args) => this.runKernelGetconf(args),
-        getent: (args) => this.runKernelGetent(args),
-        groups: (args) => this.runKernelGroups(args),
+        getconf: (args) => this.identityCommands.getconf(args),
+        getent: (args) => this.identityCommands.getent(args),
+        groups: (args) => this.identityCommands.groups(args),
         kill: (args, context) => this.runKernelKill(args, 'kill', context),
         jobs: (args, context) => this.runKernelJobs(args, context),
-        hostname: (args) => this.runKernelHostname(args),
-        id: (args) => this.runKernelId(args),
+        hostname: (args) => this.identityCommands.hostname(args),
+        id: (args) => this.identityCommands.id(args),
         lsof: (args, context) => this.runKernelLsof(args, context),
-        locale: (args) => this.runKernelLocale(args),
+        locale: (args) => this.identityCommands.locale(args),
         ls: (args, context) => this.runKernelAwareLs(args, context),
         man: (args) => this.runKernelMan(args),
         mktemp: (args, context) => this.runKernelMktemp(args, context),
         mount: (args) => this.runKernelMount(args),
-        neofetch: (args, context) => this.runKernelFastfetch(args, context),
+        neofetch: (args, context) =>
+          this.identityCommands.fastfetch(
+            args,
+            this.terminalForCommand(context)
+          ),
         pgrep: (args, context) => this.runKernelProcessMatch(args, 'pgrep', context),
         ping: (args, context) => this.runKernelPing(args, context),
         pkill: (args, context) => this.runKernelProcessMatch(args, 'pkill', context),
@@ -865,11 +881,11 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
         tracekernelctl: (args, context) => this.runTraceKernelCtl(args, context),
         tty: (args, context) => this.runKernelTty(args, context),
         umask: (args, context) => this.runKernelUmask(args, context),
-        uname: (args) => this.runKernelUname(args),
+        uname: (args) => this.identityCommands.uname(args),
         wait: (args, context) => this.runKernelWait(args, 'wait', context),
         wget: (args, context) => this.runKernelWget(args, context),
         which: (args, context) => this.runTraceKernelWhich(args, 'which', context),
-        whoami: (args) => this.runKernelWhoami(args),
+        whoami: (args) => this.identityCommands.whoami(args),
         command: (args, context) => this.runTraceKernelCommandBuiltin(args, context),
         test: (args, context) => this.runKernelTestBuiltin(args, 'test', context),
         'test-bracket': (args, context) => this.runKernelTestBuiltin(args, '[', context),
@@ -6733,148 +6749,6 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
     );
   }
 
-  private runKernelWhoami(args: readonly string[]): RuntimeCommandResult {
-    if (args.length > 0) {
-      return { stdout: '', stderr: `whoami: extra operand '${args[0]}'\n`, exitCode: 1 };
-    }
-    return { stdout: `${this.kernelInfo.user.username}\n`, stderr: '', exitCode: 0 };
-  }
-
-  private runKernelHostname(args: readonly string[]): RuntimeCommandResult {
-    if (args.length > 1 || (args.length === 1 && args[0] !== '-s' && args[0] !== '-f')) {
-      return { stdout: '', stderr: 'usage: hostname [-s|-f]\n', exitCode: 1 };
-    }
-    return { stdout: `${this.kernelInfo.host.hostname}\n`, stderr: '', exitCode: 0 };
-  }
-
-  private runKernelId(args: readonly string[]): RuntimeCommandResult {
-    const username = this.kernelInfo.user.username;
-    const userId = 1000;
-    const groupId = 1000;
-    if (args.length === 0) {
-      return {
-        stdout: `uid=${userId}(${username}) gid=${groupId}(${username}) groups=${groupId}(${username})\n`,
-        stderr: '',
-        exitCode: 0,
-      };
-    }
-    const flags = new Set(args.filter((arg) => arg.startsWith('-')).flatMap((arg) => arg.slice(1).split('')));
-    const operands = args.filter((arg) => !arg.startsWith('-'));
-    if (operands.length > 1 || (operands[0] !== undefined && operands[0] !== username)) {
-      const operand = operands[0] ?? '';
-      return { stdout: '', stderr: `id: '${operand}': no such user\n`, exitCode: 1 };
-    }
-    if ([...flags].some((flag) => !'ugn'.includes(flag)) || flags.has('n') && !flags.has('u') && !flags.has('g')) {
-      return { stdout: '', stderr: 'usage: id [-u|-g] [-n] [USER]\n', exitCode: 1 };
-    }
-    if (flags.has('u')) return { stdout: `${flags.has('n') ? username : userId}\n`, stderr: '', exitCode: 0 };
-    if (flags.has('g')) return { stdout: `${flags.has('n') ? username : groupId}\n`, stderr: '', exitCode: 0 };
-    return {
-      stdout: `uid=${userId}(${username}) gid=${groupId}(${username}) groups=${groupId}(${username})\n`,
-      stderr: '',
-      exitCode: 0,
-    };
-  }
-
-  private runKernelGroups(args: readonly string[]): RuntimeCommandResult {
-    const username = this.kernelInfo.user.username;
-    if (args.length > 1 || (args[0] !== undefined && args[0] !== username)) {
-      const operand = args[0] ?? '';
-      return { stdout: '', stderr: `groups: '${operand}': no such user\n`, exitCode: 1 };
-    }
-    return {
-      stdout: args.length === 0 ? `${username}\n` : `${username} : ${username}\n`,
-      stderr: '',
-      exitCode: 0,
-    };
-  }
-
-  private runKernelGetconf(args: readonly string[]): RuntimeCommandResult {
-    const values: Record<string, string> = {
-      PATH: `${TRACEKERNEL_BIN_PATH}:/usr/local/bin:/usr/bin:/bin`,
-      ARG_MAX: '2097152',
-      OPEN_MAX: '1024',
-      PAGESIZE: '65536',
-      PAGE_SIZE: '65536',
-      _NPROCESSORS_ONLN: '1',
-    };
-    if (args.length !== 1) {
-      return { stdout: '', stderr: 'usage: getconf NAME\n', exitCode: 2 };
-    }
-    const value = values[args[0]!];
-    if (value === undefined) {
-      return { stdout: '', stderr: `getconf: Unrecognized variable '${args[0]}'\n`, exitCode: 2 };
-    }
-    return { stdout: `${value}\n`, stderr: '', exitCode: 0 };
-  }
-
-  private runKernelGetent(args: readonly string[]): RuntimeCommandResult {
-    const database = args[0];
-    const keys = args.slice(1);
-    const username = this.kernelInfo.user.username;
-    if (!database) return { stdout: '', stderr: 'usage: getent database [key ...]\n', exitCode: 2 };
-    if (database === 'passwd') {
-      if (keys.length > 1) return { stdout: '', stderr: '', exitCode: 2 };
-      if (keys[0] !== undefined && keys[0] !== username && keys[0] !== '1000') {
-        return { stdout: '', stderr: '', exitCode: 2 };
-      }
-      return {
-        stdout: `${username}:x:1000:1000:TraceKernel user:${this.baseEnv.HOME}:/bin/bash\n`,
-        stderr: '',
-        exitCode: 0,
-      };
-    }
-    if (database === 'group') {
-      if (keys.length > 1) return { stdout: '', stderr: '', exitCode: 2 };
-      if (keys[0] !== undefined && keys[0] !== username && keys[0] !== '1000') {
-        return { stdout: '', stderr: '', exitCode: 2 };
-      }
-      return { stdout: `${username}:x:1000:${username}\n`, stderr: '', exitCode: 0 };
-    }
-    if (database === 'hosts' || database === 'ahosts') {
-      if (keys.length !== 1) return { stdout: '', stderr: '', exitCode: 2 };
-      const host = keys[0]!;
-      const resolution = this.resolveHost(host);
-      if (!resolution.reachable) return { stdout: '', stderr: '', exitCode: 2 };
-      return { stdout: `${resolution.ip} ${host}\n`, stderr: '', exitCode: 0 };
-    }
-    return { stdout: '', stderr: `Unknown database: ${database}\n`, exitCode: 1 };
-  }
-
-  private runKernelLocale(args: readonly string[]): RuntimeCommandResult {
-    if (args.length === 1 && args[0] === '-a') {
-      return { stdout: 'C\nC.utf8\nPOSIX\n', stderr: '', exitCode: 0 };
-    }
-    if (args.length === 1 && args[0] === 'charmap') {
-      return { stdout: 'UTF-8\n', stderr: '', exitCode: 0 };
-    }
-    if (args.length > 0) {
-      return { stdout: '', stderr: `locale: unknown name '${args[0]}'\n`, exitCode: 1 };
-    }
-    const lang = this.baseEnv.LANG ?? 'C.UTF-8';
-    return {
-      stdout: [
-        `LANG=${lang}`,
-        'LANGUAGE=',
-        `LC_CTYPE="${lang}"`,
-        `LC_NUMERIC="${lang}"`,
-        `LC_TIME="${lang}"`,
-        `LC_COLLATE="${lang}"`,
-        `LC_MONETARY="${lang}"`,
-        `LC_MESSAGES="${lang}"`,
-        `LC_PAPER="${lang}"`,
-        `LC_NAME="${lang}"`,
-        `LC_ADDRESS="${lang}"`,
-        `LC_TELEPHONE="${lang}"`,
-        `LC_MEASUREMENT="${lang}"`,
-        `LC_IDENTIFICATION="${lang}"`,
-        'LC_ALL=',
-      ].join('\n') + '\n',
-      stderr: '',
-      exitCode: 0,
-    };
-  }
-
   private runKernelTty(args: readonly string[], ctx: CommandContext): RuntimeCommandResult {
     if (args.length > 0 && (args.length !== 1 || args[0] !== '-s')) {
       return { stdout: '', stderr: 'usage: tty [-s]\n', exitCode: 2 };
@@ -6901,107 +6775,6 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
       return { stdout: '', stderr: '', exitCode: (negated ? !attached : attached) ? 0 : 1 };
     }
     return { stdout: '', stderr: `${commandName}: invalid terminal test\n`, exitCode: 2 };
-  }
-
-  private runKernelUname(args: readonly string[]): RuntimeCommandResult {
-    const fields = {
-      s: 'TraceKernel',
-      n: this.kernelInfo.host.hostname,
-      r: this.kernelInfo.version,
-      v: `TraceKernel ${this.kernelInfo.version}`,
-      m: TRACE_KERNEL_ARCHITECTURE,
-      p: TRACE_KERNEL_ARCHITECTURE,
-      i: TRACE_KERNEL_ARCHITECTURE,
-      o: 'TraceKernel',
-    } as const;
-    const requested = args.length === 0 ? ['s'] : args.flatMap((arg) => {
-      if (arg === '--all') return ['a'];
-      if (arg.startsWith('--')) {
-        const names: Record<string, keyof typeof fields> = {
-          '--kernel-name': 's',
-          '--nodename': 'n',
-          '--kernel-release': 'r',
-          '--kernel-version': 'v',
-          '--machine': 'm',
-          '--processor': 'p',
-          '--hardware-platform': 'i',
-          '--operating-system': 'o',
-        };
-        return names[arg] ? [names[arg]!] : ['?'];
-      }
-      return arg.startsWith('-') ? arg.slice(1).split('') : ['?'];
-    });
-    if (requested.includes('?') || requested.some((flag) => flag !== 'a' && !(flag in fields))) {
-      return { stdout: '', stderr: 'uname: invalid option\n', exitCode: 1 };
-    }
-    const order: Array<keyof typeof fields> = ['s', 'n', 'r', 'v', 'm', 'p', 'i', 'o'];
-    const selected = requested.includes('a') ? order : order.filter((flag) => requested.includes(flag));
-    return { stdout: `${selected.map((flag) => fields[flag]).join(' ')}\n`, stderr: '', exitCode: 0 };
-  }
-
-  private runKernelFastfetch(args: readonly string[], ctx: CommandContext): RuntimeCommandResult {
-    if (args.length === 1 && args[0] === '--version') {
-      return {
-        stdout: `fastfetch ${this.kernelInfo.version} (TraceKernel)\n`,
-        stderr: '',
-        exitCode: 0,
-      };
-    }
-    if (args.length > 0) {
-      return {
-        stdout: '',
-        stderr: `fastfetch: unknown option: ${args[0]}\n`,
-        exitCode: 1,
-      };
-    }
-
-    const elapsedSeconds = Math.max(
-      0,
-      Math.floor((Date.now() - Date.parse(this.kernelInfo.workspace.startedAt)) / 1_000)
-    );
-    const uptimeParts: string[] = [];
-    const hours = Math.floor(elapsedSeconds / 3_600);
-    const minutes = Math.floor((elapsedSeconds % 3_600) / 60);
-    const seconds = elapsedSeconds % 60;
-    if (hours > 0) uptimeParts.push(`${hours} hour${hours === 1 ? '' : 's'}`);
-    if (minutes > 0) uptimeParts.push(`${minutes} min`);
-    if (hours === 0 && minutes === 0) uptimeParts.push(`${seconds} sec`);
-
-    const terminal = this.terminalForCommand(ctx);
-    const availableRuntimes = traceKernelRuntimeRegistry(this.traceKernelCommandRegistry)
-      .filter((runtime) => runtime.available).length;
-    // Generated from the TraceCode app icon at 36x36 pixels, then packed into
-    // Unicode Braille cells. Ordinary spaces keep the mark aligned even when
-    // the terminal falls back from its primary monospace font.
-    const logo = [
-      '    ⣀            ⣀',
-      '   ⣾⠋⠱⢦⣄⣀      ⠈⠙⣷',
-      '  ⣸⡏      ⠈⠙⠛⢶⣤⡀  ⢹⣇',
-      '  ⣿     ⢀⣠⡴⠾⠛⠉     ⣿',
-      '  ⢹⣇    ⠛⠷⣤⣀⡀      ⣸⡏',
-      '   ⢿⣄⡀      ⠉⠙⠿⢆⣠⡿',
-      '    ⠉            ⠉',
-    ];
-    const heading = `${this.kernelInfo.user.username}@${this.kernelInfo.host.hostname}`;
-    const details = [
-      heading,
-      '-'.repeat(heading.length),
-      `OS: ${this.kernelInfo.host.osName === 'tracekernel' ? 'TraceKernel' : this.kernelInfo.host.osName}`,
-      `Host: ${this.kernelInfo.host.hostname}`,
-      `Kernel: ${this.kernelInfo.version}`,
-      `Uptime: ${uptimeParts.join(', ')}`,
-      `Shell: /bin/bash`,
-      `Terminal: ${terminal?.term ?? 'dumb'} (${terminal?.columns ?? 80}x${terminal?.rows ?? 24})`,
-      `Architecture: ${TRACE_KERNEL_ARCHITECTURE}`,
-      `Workspace: ${this.kernelInfo.workspace.name}`,
-      `Runtimes: ${availableRuntimes} available`,
-      `Commands: ${this.traceKernelCommandRegistry.length}`,
-    ];
-    const rows = Array.from(
-      { length: Math.max(logo.length, details.length) },
-      (_, index) => `${(logo[index] ?? '').padEnd(24)}${details[index] ?? ''}`.trimEnd()
-    );
-    return { stdout: `${rows.join('\n')}\n`, stderr: '', exitCode: 0 };
   }
 
   private runKernelUmask(args: readonly string[], ctx: CommandContext): RuntimeCommandResult {
