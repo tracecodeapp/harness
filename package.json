@@ -116,7 +116,8 @@
   },
   "scripts": {
     "prepublishOnly": "pnpm build",
-    "build": "pnpm generate:runtime-info && pnpm generate:python-harness && pnpm generate:kernel-policy && pnpm generate:typescript-project-libs && pnpm generate:javascript-project-worker && pnpm generate:java-helper && pnpm sync:package-assets && pnpm build:tracekernel && pnpm exec tsup --config tsup.core.config.ts && pnpm exec tsup && pnpm --dir packages/judge build",
+    "build": "pnpm generate:runtime-info && pnpm generate:python-harness && pnpm generate:kernel-policy && pnpm generate:typescript-project-libs && pnpm generate:javascript-project-worker && pnpm generate:java-helper && pnpm sync:package-assets && pnpm build:tracekernel && pnpm exec tsup --config tsup.core.config.ts && pnpm build:browser-host && pnpm exec tsup && pnpm --dir packages/judge build",
+    "build:browser-host": "pnpm exec tsup --config tsup.browser-host.config.ts",
     "build:tracekernel": "pnpm exec tsup --config tsup.tracekernel.config.ts",
     "generate:runtime-info": "pnpm exec tsx --tsconfig tsconfig.base.json scripts/generate-runtime-language-info.ts",
     "generate:python-harness": "pnpm exec tsx --tsconfig tsconfig.base.json scripts/generate-python-harness-artifacts.ts",
