@@ -3567,6 +3567,33 @@ function runtimeProcStat(path, info) {
   };
 }
 
+// packages/harness-javascript/src/kernel/path-normalization.ts
+function normalizeProjectPath(path) {
+  const cleaned = path.replace(/\\/g, "/").replace(/^\.\//, "").replace(/^\/workspace\//, "");
+  const parts = [];
+  for (const part of cleaned.split("/")) {
+    if (!part || part === ".") continue;
+    if (part === "..") {
+      parts.pop();
+    } else {
+      parts.push(part);
+    }
+  }
+  return parts.join("/");
+}
+function dirname(path) {
+  const index = path.lastIndexOf("/");
+  return index === -1 ? "" : path.slice(0, index);
+}
+function workspaceCwdPath(request) {
+  const projectCwd = request.project.cwd ?? "/workspace";
+  if (request.cwd === projectCwd) return "";
+  if (request.cwd.startsWith(`${projectCwd}/`)) {
+    return normalizeProjectPath(request.cwd.slice(projectCwd.length + 1));
+  }
+  throw new Error(`Project cwd must stay inside the workspace: ${request.cwd}`);
+}
+
 // node_modules/.pnpm/fflate@0.8.3/node_modules/fflate/esm/browser.js
 var browser_exports = {};
 __export(browser_exports, {
@@ -5910,38 +5937,274 @@ function unzipSync(data, opts) {
   return files;
 }
 
-// packages/harness-javascript/src/project-browser.ts
-var AsyncFunction = Object.getPrototypeOf(async function noop() {
-}).constructor;
-var BrowserFunction = Function;
+// packages/harness-javascript/src/internal/encoding.ts
 var textEncoder2 = new TextEncoder();
 var textDecoder2 = new TextDecoder();
-var streamInternalCloseListeners = /* @__PURE__ */ new WeakMap();
-function setStreamInternalCloseListeners(stream, listeners) {
-  streamInternalCloseListeners.set(stream, listeners);
-}
-function addStreamInternalCloseListener(stream, listener) {
-  if (typeof stream !== "object" && typeof stream !== "function" || stream === null) return;
-  streamInternalCloseListeners.get(stream)?.add(listener);
-}
-function moduleDefault(value) {
-  return value.default;
-}
 var fflateRecord = browser_exports;
-var fflate = typeof fflateRecord.gzipSync === "function" ? browser_exports : moduleDefault(browser_exports);
-function normalizeProjectPath(path) {
-  const cleaned = path.replace(/\\/g, "/").replace(/^\.\//, "").replace(/^\/workspace\//, "");
-  const parts = [];
-  for (const part of cleaned.split("/")) {
-    if (!part || part === ".") continue;
-    if (part === "..") {
-      parts.pop();
-    } else {
-      parts.push(part);
-    }
-  }
-  return parts.join("/");
+var fflate = typeof fflateRecord.gzipSync === "function" ? browser_exports : fflateRecord.default;
+function utf8Bytes(value) {
+  return textEncoder2.encode(value);
 }
+function base64ToBytes(value) {
+  if (typeof Buffer !== "undefined") {
+    return new Uint8Array(Buffer.from(value, "base64"));
+  }
+  const decoded = globalThis.atob(value);
+  const bytes = new Uint8Array(decoded.length);
+  for (let index = 0; index < decoded.length; index += 1) {
+    bytes[index] = decoded.charCodeAt(index);
+  }
+  return bytes;
+}
+function bytesToBase64(value) {
+  if (typeof Buffer !== "undefined") {
+    return Buffer.from(value).toString("base64");
+  }
+  let binary = "";
+  for (const byte of value) {
+    binary += String.fromCharCode(byte);
+  }
+  return globalThis.btoa(binary);
+}
+function fileBytes(file) {
+  return file.encoding === "base64" ? base64ToBytes(file.contents) : utf8Bytes(file.contents);
+}
+function byteEqual(left, right) {
+  if (!left || left.byteLength !== right.byteLength) return false;
+  for (let index = 0; index < left.byteLength; index += 1) {
+    if (left[index] !== right[index]) return false;
+  }
+  return true;
+}
+function bytesToRuntimeFile(path, contents) {
+  const text = textDecoder2.decode(contents);
+  if (byteEqual(utf8Bytes(text), contents)) {
+    return { path, contents: text };
+  }
+  return { path, contents: bytesToBase64(contents), encoding: "base64" };
+}
+function bytesFromNodeValue(value) {
+  if (typeof value === "string") return utf8Bytes(value);
+  if (value instanceof Uint8Array) return new Uint8Array(value);
+  if (value instanceof ArrayBuffer) return new Uint8Array(value);
+  if (ArrayBuffer.isView(value)) {
+    return new Uint8Array(value.buffer.slice(value.byteOffset, value.byteOffset + value.byteLength));
+  }
+  if (Array.isArray(value)) return new Uint8Array(value.map((item) => Number(item) & 255));
+  return utf8Bytes(String(value));
+}
+function requestedEncodingFromOptions(options) {
+  if (typeof options === "string") return options;
+  return typeof options?.encoding === "string" ? options.encoding : void 0;
+}
+function bytesFromFsWriteValue(value, options) {
+  const encoding = requestedEncodingFromOptions(options);
+  if (typeof value === "string" && typeof encoding === "string") {
+    return BrowserBuffer.from(value, encoding);
+  }
+  return bytesFromNodeValue(value);
+}
+function browserBufferFromBytes(value) {
+  return BrowserBuffer.from(value);
+}
+function textFromBytes(bytes) {
+  return textDecoder2.decode(bytes);
+}
+function bytesToRuntimeHttpBody(bytes) {
+  const text = textDecoder2.decode(bytes);
+  return byteEqual(utf8Bytes(text), bytes) ? { body: text } : { body: bytesToBase64(bytes), bodyEncoding: "base64" };
+}
+function bytesFromRuntimeHttpBody(message) {
+  if (message.body === void 0) return new Uint8Array();
+  return message.bodyEncoding === "base64" ? base64ToBytes(message.body) : utf8Bytes(message.body);
+}
+function concatBytes(chunks) {
+  const length = chunks.reduce((total, chunk) => total + chunk.byteLength, 0);
+  const bytes = new Uint8Array(length);
+  let offset = 0;
+  for (const chunk of chunks) {
+    bytes.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+  return bytes;
+}
+function bytesToHex(value) {
+  return Array.from(value).map((byte) => byte.toString(16).padStart(2, "0")).join("");
+}
+function hexToBytes(value) {
+  const normalized = value.trim();
+  const bytes = new Uint8Array(Math.ceil(normalized.length / 2));
+  for (let index = 0; index < bytes.length; index += 1) {
+    bytes[index] = Number.parseInt(normalized.slice(index * 2, index * 2 + 2).padEnd(2, "0"), 16) & 255;
+  }
+  return bytes;
+}
+var BrowserBuffer = class _BrowserBuffer extends Uint8Array {
+  static from(value, encodingOrMapfn, thisArg) {
+    if (typeof value === "string") {
+      const encoding = typeof encodingOrMapfn === "string" ? encodingOrMapfn : void 0;
+      if (encoding === "base64") return new _BrowserBuffer(base64ToBytes(value));
+      if (encoding === "hex") return new _BrowserBuffer(hexToBytes(value));
+      if (encoding === "latin1" || encoding === "binary") {
+        return new _BrowserBuffer(Array.from(value, (char) => char.charCodeAt(0) & 255));
+      }
+      return new _BrowserBuffer(utf8Bytes(value));
+    }
+    if (typeof encodingOrMapfn === "function" && value != null) {
+      return new _BrowserBuffer(Array.from(value, encodingOrMapfn, thisArg));
+    }
+    return new _BrowserBuffer(bytesFromNodeValue(value));
+  }
+  static alloc(size, fill = 0) {
+    const bytes = new _BrowserBuffer(Math.max(0, Number(size) || 0));
+    bytes.fill(Number(fill) & 255);
+    return bytes;
+  }
+  static isBuffer(value) {
+    return value instanceof _BrowserBuffer;
+  }
+  static concat(values) {
+    const totalLength = values.reduce((sum, value) => sum + value.byteLength, 0);
+    const bytes = new _BrowserBuffer(totalLength);
+    let offset = 0;
+    for (const value of values) {
+      bytes.set(value, offset);
+      offset += value.byteLength;
+    }
+    return bytes;
+  }
+  static byteLength(value, encoding) {
+    if (typeof value === "string") return _BrowserBuffer.from(value, encoding).byteLength;
+    return bytesFromNodeValue(value).byteLength;
+  }
+  toString(encoding = "utf8") {
+    if (encoding === "base64") return bytesToBase64(this);
+    if (encoding === "hex") return bytesToHex(this);
+    if (encoding === "latin1" || encoding === "binary") {
+      return Array.from(this, (byte) => String.fromCharCode(byte)).join("");
+    }
+    return textFromBytes(this);
+  }
+};
+function createZlibApi() {
+  return {
+    gzipSync: (input) => browserBufferFromBytes(fflate.gzipSync(bytesFromNodeValue(input))),
+    gunzipSync: (input) => browserBufferFromBytes(fflate.gunzipSync(bytesFromNodeValue(input))),
+    deflateSync: (input) => browserBufferFromBytes(fflate.deflateSync(bytesFromNodeValue(input))),
+    inflateSync: (input) => browserBufferFromBytes(fflate.inflateSync(bytesFromNodeValue(input)))
+  };
+}
+
+// packages/harness-javascript/src/kernel/process-control.ts
+function processArgvForRequest(request) {
+  const executable = "/usr/local/bin/node";
+  if (request.source === "argument") {
+    return [executable, ...request.args];
+  }
+  if (request.source === "stdin") {
+    return [executable, "-", ...request.args];
+  }
+  const requestedScriptPath = request.scriptPath || "<anonymous>";
+  const scriptPath = requestedScriptPath.startsWith("/") ? requestedScriptPath : `${request.project.workspaceRoot ?? request.project.cwd ?? "/workspace"}/${normalizeProjectPath([
+    workspaceCwdPath(request),
+    requestedScriptPath
+  ].filter(Boolean).join("/"))}`;
+  return [executable, scriptPath, ...request.args];
+}
+function createTraceKernelApi(executionState) {
+  const dispatchWatchdog = (request) => {
+    if (!executionState.kernelSyscalls) {
+      throw Object.assign(
+        new Error("ENOSYS: TraceKernel process controls are unavailable"),
+        { code: "ENOSYS" }
+      );
+    }
+    const result = executionState.kernelSyscalls.dispatchSync(request);
+    if (result.ok === false) {
+      throw Object.assign(new Error(result.error.message), {
+        code: result.error.code
+      });
+    }
+    if (result.value.op !== "watchdog") {
+      throw Object.assign(
+        new Error(`EPROTO: expected watchdog response, received ${result.value.op}`),
+        { code: "EPROTO" }
+      );
+    }
+    return Object.freeze({
+      armed: result.value.armed,
+      ...result.value.timeoutMs === void 0 ? {} : { timeoutMs: result.value.timeoutMs },
+      ...result.value.signal === void 0 ? {} : { signal: result.value.signal },
+      ...result.value.deadlineAt === void 0 ? {} : { deadlineAt: result.value.deadlineAt }
+    });
+  };
+  const dispatchTerminal = (request) => {
+    const operation = request.op;
+    if (!executionState.kernelSyscalls) {
+      throw Object.assign(
+        new Error("ENOSYS: TraceKernel terminal controls are unavailable"),
+        { code: "ENOSYS" }
+      );
+    }
+    const result = executionState.kernelSyscalls.dispatchSync(request);
+    if (result.ok === false) {
+      throw Object.assign(new Error(result.error.message), {
+        code: result.error.code
+      });
+    }
+    if (result.value.op !== operation) {
+      throw Object.assign(
+        new Error(
+          `EPROTO: expected ${operation} response, received ${result.value.op}`
+        ),
+        { code: "EPROTO" }
+      );
+    }
+    return result.value;
+  };
+  return Object.freeze({
+    watchdog: Object.freeze({
+      arm: (timeoutMs, options = {}) => dispatchWatchdog({
+        op: "watchdog",
+        action: "arm",
+        timeoutMs,
+        ...options.signal ? { signal: options.signal } : {}
+      }),
+      pet: () => dispatchWatchdog({
+        op: "watchdog",
+        action: "pet"
+      }),
+      disarm: () => dispatchWatchdog({
+        op: "watchdog",
+        action: "disarm"
+      }),
+      status: () => dispatchWatchdog({
+        op: "watchdog",
+        action: "status"
+      })
+    }),
+    terminal: Object.freeze({
+      isatty: (fd2) => dispatchTerminal({ op: "isatty", fd: fd2 }).isTerminal,
+      foregroundProcessGroup: (fd2 = 0) => dispatchTerminal({ op: "tcgetpgrp", fd: fd2 }).pgid,
+      setForegroundProcessGroup: (pgid, fd2 = 0) => dispatchTerminal({ op: "tcsetpgrp", fd: fd2, pgid }).pgid,
+      windowSize: (fd2 = 0) => {
+        const size = dispatchTerminal({ op: "tcgetwinsize", fd: fd2 });
+        return Object.freeze({ rows: size.rows, columns: size.columns });
+      },
+      setWindowSize: (rows, columns, fd2 = 0) => {
+        const size = dispatchTerminal({
+          op: "tcsetwinsize",
+          fd: fd2,
+          rows,
+          columns
+        });
+        return Object.freeze({ rows: size.rows, columns: size.columns });
+      }
+    })
+  });
+}
+
+// packages/harness-javascript/src/kernel/workspace-paths.ts
 function workspacePathInputToString(path) {
   if (path instanceof URL) {
     if (path.protocol !== "file:") {
@@ -6319,158 +6582,387 @@ function normalizeWorkspaceEntryPath(path, basePath = "", allowRoot = false, wor
 function assertSafeWorkspaceFilePath(path, basePath = "", workspace = { root: "/workspace" }) {
   return normalizeWorkspaceEntryPath(path, basePath, false, workspace);
 }
-function utf8Bytes(value) {
-  return textEncoder2.encode(value);
+
+// packages/harness-javascript/src/modules/resolution.ts
+function workspaceFilename(path, workspaceRoot = "/workspace") {
+  const normalized = normalizeProjectPath(path);
+  return normalized ? `${workspaceRoot}/${normalized}` : workspaceRoot;
 }
-function base64ToBytes(value) {
-  if (typeof Buffer !== "undefined") {
-    return new Uint8Array(Buffer.from(value, "base64"));
+function workspaceFileUrl(path, workspaceRoot = "/workspace") {
+  return `file://${workspaceFilename(path, workspaceRoot).split("/").map((part) => encodeURIComponent(part)).join("/")}`;
+}
+function relativeWorkspacePath(from, to) {
+  const fromParts = normalizeProjectPath(from).split("/").filter(Boolean);
+  const toParts = normalizeProjectPath(to).split("/").filter(Boolean);
+  let common = 0;
+  while (common < fromParts.length && common < toParts.length && fromParts[common] === toParts[common]) {
+    common += 1;
   }
-  const decoded = globalThis.atob(value);
-  const bytes = new Uint8Array(decoded.length);
-  for (let index = 0; index < decoded.length; index += 1) {
-    bytes[index] = decoded.charCodeAt(index);
-  }
-  return bytes;
+  return [
+    ...fromParts.slice(common).map(() => ".."),
+    ...toParts.slice(common)
+  ].join("/") || ".";
 }
-function bytesToBase64(value) {
-  if (typeof Buffer !== "undefined") {
-    return Buffer.from(value).toString("base64");
-  }
-  let binary = "";
-  for (const byte of value) {
-    binary += String.fromCharCode(byte);
-  }
-  return globalThis.btoa(binary);
+function workspaceDirname(path, workspaceRoot = "/workspace") {
+  const normalizedDir = dirname(normalizeProjectPath(path));
+  return normalizedDir ? `${workspaceRoot}/${normalizedDir}` : workspaceRoot;
 }
-function fileBytes(file) {
-  return file.encoding === "base64" ? base64ToBytes(file.contents) : utf8Bytes(file.contents);
-}
-function byteEqual(left, right) {
-  if (!left || left.byteLength !== right.byteLength) return false;
-  for (let index = 0; index < left.byteLength; index += 1) {
-    if (left[index] !== right[index]) return false;
-  }
-  return true;
-}
-function bytesToRuntimeFile(path, contents) {
-  const text = textDecoder2.decode(contents);
-  if (byteEqual(utf8Bytes(text), contents)) {
-    return { path, contents: text };
-  }
-  return { path, contents: bytesToBase64(contents), encoding: "base64" };
-}
-function bytesFromNodeValue(value) {
-  if (typeof value === "string") return utf8Bytes(value);
-  if (value instanceof Uint8Array) return new Uint8Array(value);
-  if (value instanceof ArrayBuffer) return new Uint8Array(value);
-  if (ArrayBuffer.isView(value)) {
-    return new Uint8Array(value.buffer.slice(value.byteOffset, value.byteOffset + value.byteLength));
-  }
-  if (Array.isArray(value)) return new Uint8Array(value.map((item) => Number(item) & 255));
-  return utf8Bytes(String(value));
-}
-function requestedEncodingFromOptions(options) {
-  if (typeof options === "string") return options;
-  return typeof options?.encoding === "string" ? options.encoding : void 0;
-}
-function bytesFromFsWriteValue(value, options) {
-  const encoding = requestedEncodingFromOptions(options);
-  if (typeof value === "string" && typeof encoding === "string") {
-    return BrowserBuffer.from(value, encoding);
-  }
-  return bytesFromNodeValue(value);
-}
-function browserBufferFromBytes(value) {
-  return BrowserBuffer.from(value);
-}
-function textFromBytes(bytes) {
-  return textDecoder2.decode(bytes);
-}
-function bytesToRuntimeHttpBody(bytes) {
-  const text = textDecoder2.decode(bytes);
-  return byteEqual(utf8Bytes(text), bytes) ? { body: text } : { body: bytesToBase64(bytes), bodyEncoding: "base64" };
-}
-function bytesFromRuntimeHttpBody(message) {
-  if (message.body === void 0) return new Uint8Array();
-  return message.bodyEncoding === "base64" ? base64ToBytes(message.body) : utf8Bytes(message.body);
-}
-function concatBytes(chunks) {
-  const length = chunks.reduce((total, chunk) => total + chunk.byteLength, 0);
-  const bytes = new Uint8Array(length);
-  let offset = 0;
-  for (const chunk of chunks) {
-    bytes.set(chunk, offset);
-    offset += chunk.byteLength;
-  }
-  return bytes;
-}
-function bytesToHex(value) {
-  return Array.from(value).map((byte) => byte.toString(16).padStart(2, "0")).join("");
-}
-function hexToBytes(value) {
-  const normalized = value.trim();
-  const bytes = new Uint8Array(Math.ceil(normalized.length / 2));
-  for (let index = 0; index < bytes.length; index += 1) {
-    bytes[index] = Number.parseInt(normalized.slice(index * 2, index * 2 + 2).padEnd(2, "0"), 16) & 255;
-  }
-  return bytes;
-}
-var BrowserBuffer = class _BrowserBuffer extends Uint8Array {
-  static from(value, encodingOrMapfn, thisArg) {
-    if (typeof value === "string") {
-      const encoding = typeof encodingOrMapfn === "string" ? encodingOrMapfn : void 0;
-      if (encoding === "base64") return new _BrowserBuffer(base64ToBytes(value));
-      if (encoding === "hex") return new _BrowserBuffer(hexToBytes(value));
-      if (encoding === "latin1" || encoding === "binary") {
-        return new _BrowserBuffer(Array.from(value, (char) => char.charCodeAt(0) & 255));
-      }
-      return new _BrowserBuffer(utf8Bytes(value));
+function joinModulePath(parentPath, specifier) {
+  const parentDir = dirname(parentPath);
+  const joined = `${parentDir}/${specifier}`.replace(/^\//, "");
+  const parts = [];
+  for (const part of joined.split("/")) {
+    if (!part || part === ".") continue;
+    if (part === "..") {
+      parts.pop();
+    } else {
+      parts.push(part);
     }
-    if (typeof encodingOrMapfn === "function" && value != null) {
-      return new _BrowserBuffer(Array.from(value, encodingOrMapfn, thisArg));
+  }
+  return parts.join("/");
+}
+function moduleFileCandidates(path) {
+  const normalized = normalizeProjectPath(path);
+  const candidates = [normalized];
+  if (!/\.(?:cjs|js|json|mjs)$/.test(normalized)) {
+    candidates.push(`${normalized}.js`, `${normalized}.json`, `${normalized}.mjs`, `${normalized}.cjs`);
+  }
+  return candidates;
+}
+function parsePackageJson(modules, path) {
+  const normalized = normalizeProjectPath(path);
+  const packageJson = modules.get(normalized ? `${normalized}/package.json` : "package.json");
+  if (!packageJson) return null;
+  try {
+    return JSON.parse(packageJson);
+  } catch {
+    return null;
+  }
+}
+function manifestDeclaresDependency(manifest, dependency) {
+  for (const field of ["dependencies", "devDependencies", "optionalDependencies", "peerDependencies"]) {
+    const dependencies = manifest[field];
+    if (dependencies && typeof dependencies === "object" && !Array.isArray(dependencies) && dependency in dependencies) {
+      return true;
     }
-    return new _BrowserBuffer(bytesFromNodeValue(value));
   }
-  static alloc(size, fill = 0) {
-    const bytes = new _BrowserBuffer(Math.max(0, Number(size) || 0));
-    bytes.fill(Number(fill) & 255);
-    return bytes;
+  return false;
+}
+function projectDeclaresDependency(modules, dependency) {
+  for (const path of modules.keys()) {
+    if (!path.endsWith("package.json")) continue;
+    const directory = dirname(path);
+    const manifest = parsePackageJson(modules, directory);
+    if (manifest && manifestDeclaresDependency(manifest, dependency)) return true;
   }
-  static isBuffer(value) {
-    return value instanceof _BrowserBuffer;
+  return false;
+}
+function packageExportTarget(value, condition) {
+  if (typeof value === "string" && value.trim().length > 0) return value;
+  if (!value || typeof value !== "object") return null;
+  const record = value;
+  return packageExportTarget(record[condition], condition) ?? packageExportTarget(record.node, condition) ?? packageExportTarget(record.default, condition) ?? packageExportTarget(condition === "require" ? record.import : record.require, condition);
+}
+function packageMainCandidates(modules, path, condition) {
+  const normalized = normalizeProjectPath(path);
+  const parsed = parsePackageJson(modules, normalized);
+  if (!parsed) return [];
+  const candidates = [];
+  const exportsTarget = packageExportTarget(parsed.exports, condition);
+  if (exportsTarget) {
+    candidates.push(...moduleFileCandidates(`${normalized}/${exportsTarget}`));
   }
-  static concat(values) {
-    const totalLength = values.reduce((sum, value) => sum + value.byteLength, 0);
-    const bytes = new _BrowserBuffer(totalLength);
-    let offset = 0;
-    for (const value of values) {
-      bytes.set(value, offset);
-      offset += value.byteLength;
+  if (parsed.exports && typeof parsed.exports === "object" && !Array.isArray(parsed.exports)) {
+    const dotTarget = packageExportTarget(parsed.exports["."], condition);
+    if (dotTarget) {
+      candidates.push(...moduleFileCandidates(`${normalized}/${dotTarget}`));
     }
-    return bytes;
   }
-  static byteLength(value, encoding) {
-    if (typeof value === "string") return _BrowserBuffer.from(value, encoding).byteLength;
-    return bytesFromNodeValue(value).byteLength;
+  if (typeof parsed.module === "string" && parsed.module.trim().length > 0) {
+    candidates.push(...moduleFileCandidates(`${normalized}/${parsed.module}`));
   }
-  toString(encoding = "utf8") {
-    if (encoding === "base64") return bytesToBase64(this);
-    if (encoding === "hex") return bytesToHex(this);
-    if (encoding === "latin1" || encoding === "binary") {
-      return Array.from(this, (byte) => String.fromCharCode(byte)).join("");
-    }
-    return textFromBytes(this);
+  if (typeof parsed.main === "string" && parsed.main.trim().length > 0) {
+    candidates.push(...moduleFileCandidates(`${normalized}/${parsed.main}`));
   }
-};
-function createZlibApi() {
+  return candidates;
+}
+function packageSpecifierParts(specifier) {
+  const parts = normalizeProjectPath(specifier).split("/").filter(Boolean);
+  if (parts.length === 0) return null;
+  if (parts[0]?.startsWith("@")) {
+    if (parts.length < 2) return null;
+    return {
+      packageName: `${parts[0]}/${parts[1]}`,
+      subpath: parts.length > 2 ? `./${parts.slice(2).join("/")}` : "."
+    };
+  }
   return {
-    gzipSync: (input) => browserBufferFromBytes(fflate.gzipSync(bytesFromNodeValue(input))),
-    gunzipSync: (input) => browserBufferFromBytes(fflate.gunzipSync(bytesFromNodeValue(input))),
-    deflateSync: (input) => browserBufferFromBytes(fflate.deflateSync(bytesFromNodeValue(input))),
-    inflateSync: (input) => browserBufferFromBytes(fflate.inflateSync(bytesFromNodeValue(input)))
+    packageName: parts[0] ?? "",
+    subpath: parts.length > 1 ? `./${parts.slice(1).join("/")}` : "."
   };
 }
+function packageExportCandidates(modules, specifier, condition) {
+  const parsedSpecifier = packageLocationForSpecifier(specifier);
+  if (!parsedSpecifier) return [];
+  const packageRoot = parsedSpecifier.packageRoot;
+  const parsed = parsePackageJson(modules, packageRoot);
+  if (!parsed?.exports) return [];
+  const exportTarget = parsedSpecifier.subpath === "." ? packageExportTarget(parsed.exports, condition) : typeof parsed.exports === "object" && !Array.isArray(parsed.exports) ? packageExportTarget(parsed.exports[parsedSpecifier.subpath], condition) : null;
+  if (!exportTarget) {
+    return [];
+  }
+  return moduleFileCandidates(`${packageRoot}/${exportTarget}`);
+}
+function packageLocationForSpecifier(specifier) {
+  const normalized = normalizeProjectPath(specifier);
+  const parts = normalized.split("/").filter(Boolean);
+  const nodeModulesIndex = parts.lastIndexOf("node_modules");
+  if (nodeModulesIndex !== -1) {
+    const packageStart = nodeModulesIndex + 1;
+    const first = parts[packageStart];
+    if (!first) return null;
+    const packageLength = first.startsWith("@") ? 2 : 1;
+    const packageParts = parts.slice(packageStart, packageStart + packageLength);
+    if (packageParts.length !== packageLength || packageParts.some((part) => !part)) return null;
+    const packageRoot = parts.slice(0, packageStart + packageLength).join("/");
+    const subpathParts = parts.slice(packageStart + packageLength);
+    return {
+      packageRoot,
+      subpath: subpathParts.length > 0 ? `./${subpathParts.join("/")}` : "."
+    };
+  }
+  const parsedSpecifier = packageSpecifierParts(normalized);
+  if (!parsedSpecifier) return null;
+  return {
+    packageRoot: `node_modules/${parsedSpecifier.packageName}`,
+    subpath: parsedSpecifier.subpath
+  };
+}
+function moduleCandidates(modules, path, condition) {
+  const normalized = normalizeProjectPath(path);
+  return [
+    ...packageExportCandidates(modules, normalized, condition),
+    ...moduleFileCandidates(normalized),
+    ...packageMainCandidates(modules, normalized, condition),
+    `${normalized}/index.js`,
+    `${normalized}/index.json`
+  ];
+}
+function nodePathEntries(request, cwdPath, workspace) {
+  const rawNodePath = request.env.NODE_PATH;
+  if (typeof rawNodePath !== "string" || rawNodePath.trim().length === 0) {
+    return [];
+  }
+  return rawNodePath.split(":").map((entry) => entry.trim()).filter(Boolean).map((entry) => normalizeWorkspaceEntryPath(entry, cwdPath, true, workspace)).filter((entry, index, entries) => entries.indexOf(entry) === index);
+}
+function packageTypeForPath(modules, path) {
+  const normalized = normalizeProjectPath(path);
+  const parts = normalized.split("/");
+  for (let index = parts.length - 1; index >= 0; index -= 1) {
+    const directory = parts.slice(0, index).join("/");
+    const parsed = parsePackageJson(modules, directory);
+    if (typeof parsed?.type === "string") return parsed.type;
+  }
+  return null;
+}
+function isEsmModule(modules, path) {
+  const normalized = normalizeProjectPath(path);
+  if (normalized.endsWith(".mjs")) return true;
+  if (normalized.endsWith(".cjs") || normalized.endsWith(".json")) return false;
+  return normalized.endsWith(".js") && packageTypeForPath(modules, normalized) === "module";
+}
+function toRequireBinding(specifier) {
+  return `require(${JSON.stringify(specifier)})`;
+}
+function toDynamicImportBinding(specifier) {
+  return `__import(${JSON.stringify(specifier)})`;
+}
+function transformDynamicImports(code) {
+  return code.replace(
+    /\bimport\s*\(\s*(['"])([^'"]+)\1\s*\)/g,
+    (_match, _quote, specifier) => toDynamicImportBinding(specifier)
+  );
+}
+function defaultImportBinding(name, specifier, index) {
+  const moduleName = `__tracecode_esm_default_${index}`;
+  return [
+    `const ${moduleName} = ${toRequireBinding(specifier)};`,
+    `const ${name} = ${moduleName} && typeof ${moduleName} === "object" && "default" in ${moduleName} ? ${moduleName}.default : ${moduleName};`
+  ].join(" ");
+}
+function transformNamedBindings(bindings) {
+  return bindings.split(",").map((part) => part.trim()).filter(Boolean).map((part) => {
+    const [importedName, localName] = part.split(/\s+as\s+/).map((value) => value.trim());
+    return localName ? `${importedName}: ${localName}` : importedName;
+  }).join(", ");
+}
+function namedExportAssignments(bindings, moduleName) {
+  return bindings.split(",").map((part) => part.trim()).filter(Boolean).map((part) => {
+    const [localName, exportedName] = part.split(/\s+as\s+/).map((value) => value.trim());
+    const targetName = exportedName ?? localName;
+    const source = moduleName ? `${moduleName}.${localName}` : localName;
+    return `exports.${targetName} = ${source};`;
+  }).join(" ");
+}
+function transformStaticEsmToCommonJs(code, importMetaUrl) {
+  let defaultImportIndex = 0;
+  let reExportIndex = 0;
+  return transformDynamicImports(code).replace(
+    /\bimport\.meta\.url\b/g,
+    JSON.stringify(importMetaUrl ?? "file:///workspace/[eval]")
+  ).replace(
+    /^\s*export\s+\*\s+from\s+(['"])([^'"]+)\1\s*;?\s*$/gm,
+    (_match, _quote, specifier) => {
+      const moduleName = `__tracecode_esm_reexport_${reExportIndex++}`;
+      return `const ${moduleName} = ${toRequireBinding(specifier)}; for (const __tracecode_key of Object.keys(${moduleName})) { if (__tracecode_key !== "default") exports[__tracecode_key] = ${moduleName}[__tracecode_key]; }`;
+    }
+  ).replace(
+    /^\s*export\s+\{([^}]+)\}\s+from\s+(['"])([^'"]+)\2\s*;?\s*$/gm,
+    (_match, namedExports, _quote, specifier) => {
+      const moduleName = `__tracecode_esm_reexport_${reExportIndex++}`;
+      return `const ${moduleName} = ${toRequireBinding(specifier)}; ${namedExportAssignments(namedExports, moduleName)}`;
+    }
+  ).replace(
+    /^\s*import\s+([\w$]+)\s*,\s*\*\s+as\s+([\w$]+)\s+from\s+(['"])([^'"]+)\3\s*;?\s*$/gm,
+    (_match, defaultName, namespaceName, _quote, specifier) => {
+      const required = toRequireBinding(specifier);
+      const moduleName = `__tracecode_esm_default_${defaultImportIndex++}`;
+      return `const ${namespaceName} = ${required}; const ${moduleName} = ${namespaceName}; const ${defaultName} = ${moduleName} && typeof ${moduleName} === "object" && "default" in ${moduleName} ? ${moduleName}.default : ${moduleName};`;
+    }
+  ).replace(
+    /^\s*import\s+([\w$]+)\s*,\s*\{([^}]+)\}\s+from\s+(['"])([^'"]+)\3\s*;?\s*$/gm,
+    (_match, defaultName, namedImports, _quote, specifier) => {
+      const required = toRequireBinding(specifier);
+      const moduleName = `__tracecode_esm_default_${defaultImportIndex++}`;
+      return `const ${moduleName} = ${required}; const { ${transformNamedBindings(namedImports)} } = ${moduleName}; const ${defaultName} = ${moduleName} && typeof ${moduleName} === "object" && "default" in ${moduleName} ? ${moduleName}.default : ${moduleName};`;
+    }
+  ).replace(
+    /^\s*import\s+\*\s+as\s+([\w$]+)\s+from\s+(['"])([^'"]+)\2\s*;?\s*$/gm,
+    (_match, namespaceName, _quote, specifier) => `const ${namespaceName} = ${toRequireBinding(specifier)};`
+  ).replace(
+    /\bimport\s+\{([^}]+)\}\s+from\s+(['"])([^'"]+)\2\s*;?/g,
+    (_match, namedImports, _quote, specifier) => `const { ${transformNamedBindings(namedImports)} } = ${toRequireBinding(specifier)};`
+  ).replace(
+    /^\s*import\s+([\w$]+)\s+from\s+(['"])([^'"]+)\2\s*;?\s*$/gm,
+    (_match, defaultName, _quote, specifier) => defaultImportBinding(defaultName, specifier, defaultImportIndex++)
+  ).replace(
+    /^\s*import\s+(['"])([^'"]+)\1\s*;?\s*$/gm,
+    (_match, _quote, specifier) => `${toRequireBinding(specifier)};`
+  ).replace(
+    /^\s*export\s+function\s+([\w$]+)\s*\(/gm,
+    (_match, name) => `exports.${name} = function ${name}(`
+  ).replace(
+    /^\s*export\s+class\s+([\w$]+)\s*/gm,
+    (_match, name) => `exports.${name} = class ${name} `
+  ).replace(
+    /^\s*export\s+(const|let|var)\s+([\w$]+)\s*=/gm,
+    (_match, declaration, name) => `${declaration} ${name} = exports.${name} =`
+  ).replace(
+    /^\s*export\s+default\s+/gm,
+    "exports.default = "
+  ).replace(
+    /^\s*export\s+\{([^}]+)\}\s*;?\s*$/gm,
+    (_match, namedExports) => namedExportAssignments(namedExports)
+  );
+}
+function resolveModulePath(modules, specifier, parentPath, nodePathSearchEntries = [], condition = "require") {
+  const basePaths = specifier.startsWith(".") ? [joinModulePath(parentPath, specifier)] : [
+    ...nodeModulesSearchPaths(parentPath, specifier),
+    specifier,
+    ...nodePathSearchEntries.map((entry) => entry ? `${entry}/${specifier}` : specifier)
+  ];
+  for (const basePath of basePaths) {
+    for (const candidate of moduleCandidates(modules, basePath, condition)) {
+      if (modules.has(candidate)) return candidate;
+    }
+  }
+  throw new Error(`Cannot find module '${specifier}'`);
+}
+function nodeModulesSearchPaths(parentPath, specifier) {
+  const parentDirectory = dirname(normalizeProjectPath(parentPath));
+  const parts = parentDirectory ? parentDirectory.split("/").filter(Boolean) : [];
+  const paths = [];
+  for (let index = parts.length; index >= 0; index -= 1) {
+    const directory = parts.slice(0, index).join("/");
+    paths.push(directory ? `${directory}/node_modules/${specifier}` : `node_modules/${specifier}`);
+  }
+  return paths;
+}
+function moduleSearchPaths(parentPath, workspaceRoot = "/workspace") {
+  return nodeModulesSearchPaths(parentPath, "").map((path) => workspaceFilename(path.replace(/\/$/, ""), workspaceRoot));
+}
+function formatConsoleValues(values) {
+  return values.map((value) => {
+    if (typeof value === "string") return value;
+    if (value instanceof Error) return value.stack ?? value.message;
+    try {
+      return JSON.stringify(value);
+    } catch {
+      return String(value);
+    }
+  }).join(" ");
+}
+function formatBrowserJavaScriptErrorForStderr(error) {
+  if (error instanceof Error) {
+    const text = typeof error.stack === "string" && error.stack.trim() ? error.stack : error.message;
+    return `${text.trimEnd()}
+`;
+  }
+  return `${String(error)}
+`;
+}
+function isBrowserJavaScriptUserStackFrame(line, sourcePath) {
+  return line.includes(sourcePath) || line.includes("/workspace/");
+}
+function isBrowserJavaScriptInternalStackFrame(line) {
+  return line.includes("/@fs/") || line.includes("/packages/harness-") || line.includes("/dist/browser/project.js") || line.includes("/workers/javascript-project-worker.js") || line.includes("javascript-project-worker.js:") || line.includes("blob:") || line.includes("runBrowserJavaScriptProjectRequest") || line.includes("executeEntrypoint") || line.includes("executeModule") || line.includes("resolveModulePath") || line.includes("requireModule") || line.includes("createHttpApi") || line.includes("registerHttpListener") || line.includes("at new Function") || line.includes("at new AsyncFunction");
+}
+function sanitizeBrowserJavaScriptStack(error, sourcePath) {
+  if (!(error instanceof Error) || typeof error.stack !== "string" || !error.stack.trim()) {
+    return error;
+  }
+  const mappedStack = error.stack.replace(
+    /\(eval at [^,]+ \([^)]*\), <anonymous>:(\d+):(\d+)\)/g,
+    (_match, line, column) => `(${sourcePath}:${Math.max(1, Number(line) - 2)}:${column})`
+  );
+  const stackLines = mappedStack.split("\n");
+  const lines = [stackLines[0] ?? error.message];
+  for (const line of stackLines.slice(1)) {
+    if (isBrowserJavaScriptUserStackFrame(line, sourcePath)) {
+      lines.push(line);
+      continue;
+    }
+    if (isBrowserJavaScriptInternalStackFrame(line)) continue;
+  }
+  if (lines.length === 1) lines.push(`    at ${sourcePath}:1:1`);
+  Object.defineProperty(error, "stack", {
+    configurable: true,
+    value: lines.join("\n")
+  });
+  return error;
+}
+
+// packages/harness-javascript/src/browser/worker-client.ts
+function requireModulesForRequest(request) {
+  return Array.isArray(request.options?.require) ? request.options.require.filter((item) => typeof item === "string") : [];
+}
+
+// packages/harness-javascript/src/modules/constructors.ts
+var AsyncFunction = Object.getPrototypeOf(async function noop() {
+}).constructor;
+var BrowserFunction = Function;
+
+// packages/harness-javascript/src/kernel/filesystem-identity.ts
+function inodeForPath(path) {
+  let hash = 2166136261;
+  for (let index = 0; index < path.length; index += 1) {
+    hash ^= path.charCodeAt(index);
+    hash = Math.imul(hash, 16777619);
+  }
+  return hash >>> 0 || 1;
+}
+
+// packages/harness-javascript/src/kernel/stdio.ts
 function createReadableStdinDevice(readBytes, remainingBytes, isClosed = () => true, schedulePoll = (callback, delay) => setTimeout(callback, delay), terminal, kernelIsTerminal) {
   let encoding;
   let flowScheduled = false;
@@ -6605,279 +7097,8 @@ function createReadableStdinDevice(readBytes, remainingBytes, isClosed = () => t
   };
   return stream;
 }
-function createPathApi(getCwd, workspaceRoot) {
-  const normalizePath = (value) => {
-    const raw = String(value).replace(/\\/g, "/");
-    const isAbsolute2 = raw.startsWith("/");
-    const parts = [];
-    for (const part of raw.split("/")) {
-      if (!part || part === ".") continue;
-      if (part === "..") {
-        const previous = parts[parts.length - 1];
-        if (previous && previous !== "..") {
-          parts.pop();
-        } else if (!isAbsolute2) {
-          parts.push("..");
-        }
-      } else {
-        parts.push(part);
-      }
-    }
-    const normalized = parts.join("/");
-    if (isAbsolute2) return normalized ? `/${normalized}` : "/";
-    return normalized || ".";
-  };
-  const cwdAbsolutePath = () => {
-    const cwd = getCwd();
-    return cwd ? `${workspaceRoot}/${cwd}` : workspaceRoot;
-  };
-  const isAbsolute = (path) => String(path).startsWith("/");
-  const normalize = (path) => normalizePath(path);
-  const join = (...parts) => normalizePath(parts.filter((part) => String(part).length > 0).join("/"));
-  const resolve = (...parts) => {
-    const rawParts = parts.map((part) => String(part)).filter((part) => part.length > 0);
-    let resolved = "";
-    for (let index = rawParts.length - 1; index >= 0; index -= 1) {
-      resolved = resolved ? `${rawParts[index]}/${resolved}` : rawParts[index] ?? "";
-      if (resolved.startsWith("/")) return normalizePath(resolved);
-    }
-    return normalizePath(`${cwdAbsolutePath()}/${resolved}`);
-  };
-  const dirnameApi = (path) => {
-    const normalized = normalizePath(path);
-    if (normalized === "/") return "/";
-    const withoutTrailingSlash = normalized.replace(/\/+$/, "");
-    const index = withoutTrailingSlash.lastIndexOf("/");
-    if (index === -1) return ".";
-    if (index === 0) return "/";
-    return withoutTrailingSlash.slice(0, index);
-  };
-  const basename = (path, suffix) => {
-    const normalized = normalizePath(path).replace(/\/+$/, "");
-    const base = normalized.slice(normalized.lastIndexOf("/") + 1);
-    return suffix && base.endsWith(suffix) ? base.slice(0, -suffix.length) : base;
-  };
-  const extname = (path) => {
-    const base = basename(path);
-    const index = base.lastIndexOf(".");
-    if (index <= 0) return "";
-    return base.slice(index);
-  };
-  const relative = (from, to) => {
-    const fromParts = resolve(from).split("/").filter(Boolean);
-    const toParts = resolve(to).split("/").filter(Boolean);
-    let common = 0;
-    while (common < fromParts.length && common < toParts.length && fromParts[common] === toParts[common]) {
-      common += 1;
-    }
-    return [
-      ...fromParts.slice(common).map(() => ".."),
-      ...toParts.slice(common)
-    ].join("/") || "";
-  };
-  const parse = (path) => {
-    const normalized = normalizePath(path);
-    const root = normalized.startsWith("/") ? "/" : "";
-    const dir = dirnameApi(normalized);
-    const base = basename(normalized);
-    const ext = extname(base);
-    const name = ext ? base.slice(0, -ext.length) : base;
-    return {
-      root,
-      dir: dir === "." ? "" : dir,
-      base,
-      ext,
-      name
-    };
-  };
-  const format = (pathObject) => {
-    const dir = pathObject.dir || pathObject.root || "";
-    const base = pathObject.base ?? `${pathObject.name ?? ""}${pathObject.ext ?? ""}`;
-    if (!dir) return base;
-    if (dir === "/") return `/${base}`;
-    return `${dir}/${base}`;
-  };
-  const api = {
-    sep: "/",
-    delimiter: ":",
-    normalize,
-    join,
-    resolve,
-    dirname: dirnameApi,
-    basename,
-    extname,
-    isAbsolute,
-    relative,
-    parse,
-    format
-  };
-  return { ...api, posix: api };
-}
-function inferWorkspaceHome(workspaceRoot) {
-  const parts = workspaceRoot.split("/").filter(Boolean);
-  if (parts.length >= 3 && parts[0] === "home") {
-    return `/${parts.slice(0, 2).join("/")}`;
-  }
-  const parent = dirname(workspaceRoot);
-  return parent || workspaceRoot;
-}
-function workspaceUsername(workspaceHome) {
-  const parts = workspaceHome.split("/").filter(Boolean);
-  return parts[parts.length - 1] ?? "browser";
-}
-function createOsApi(workspaceRoot, kernelInfo) {
-  const home = inferWorkspaceHome(workspaceRoot);
-  const cpuCount = Math.max(1, Math.min(8, Math.floor(globalThis.navigator?.hardwareConcurrency ?? 2)));
-  const cpu = () => ({
-    model: "Virtual CPU",
-    speed: 2400,
-    times: { user: 0, nice: 0, sys: 0, idle: 0, irq: 0 }
-  });
-  return {
-    EOL: "\n",
-    devNull: "/dev/null",
-    arch: () => "x64",
-    availableParallelism: () => cpuCount,
-    cpus: () => Array.from({ length: cpuCount }, cpu),
-    endianness: () => "LE",
-    freemem: () => 6 * 1024 * 1024 * 1024,
-    homedir: () => home,
-    hostname: () => kernelInfo.host.hostname,
-    loadavg: () => [0, 0, 0],
-    machine: () => "x86_64",
-    networkInterfaces: () => ({}),
-    platform: () => "tracekernel",
-    release: () => kernelInfo.version,
-    tmpdir: () => "/tmp",
-    totalmem: () => 8 * 1024 * 1024 * 1024,
-    type: () => "tracekernel",
-    uptime: () => 0,
-    version: () => kernelInfo.version,
-    userInfo: () => ({
-      username: workspaceUsername(home),
-      uid: 1e3,
-      gid: 1e3,
-      shell: "/bin/bash",
-      homedir: home
-    })
-  };
-}
-function createBrowserEventLoopApi(executionState) {
-  const hostSetTimeout = globalThis.setTimeout.bind(globalThis);
-  const hostClearTimeout = globalThis.clearTimeout.bind(globalThis);
-  const hostQueueMicrotask = globalThis.queueMicrotask.bind(globalThis);
-  let nextTimerId = 1;
-  let pendingTimerWork = Promise.resolve();
-  let timerError;
-  let pendingExternalWork = 0;
-  const timers = /* @__PURE__ */ new Map();
-  const recordTimerWork = (work) => {
-    pendingTimerWork = Promise.allSettled([pendingTimerWork, work]).then(() => void 0);
-  };
-  const runTimerCallback = (callback, args) => {
-    const work = Promise.resolve().then(() => callback(...args)).then(
-      () => void 0,
-      (error) => {
-        timerError ??= error;
-      }
-    );
-    recordTimerWork(work);
-  };
-  const setTrackedTimeout = (callback, delay, ...args) => {
-    const id = nextTimerId++;
-    const handle = hostSetTimeout(() => {
-      timers.delete(id);
-      if (executionState.cancelled) return;
-      runTimerCallback(callback, args);
-    }, Math.max(0, Number(delay) || 0));
-    timers.set(id, { handle, interval: false });
-    return id;
-  };
-  const clearTrackedTimeout = (id) => {
-    if (typeof id !== "number") return;
-    const timer = timers.get(id);
-    if (!timer) return;
-    hostClearTimeout(timer.handle);
-    timers.delete(id);
-  };
-  const setTrackedInterval = (callback, delay, ...args) => {
-    const id = nextTimerId++;
-    const run = () => {
-      if (!timers.has(id) || executionState.cancelled) return;
-      runTimerCallback(callback, args);
-      const timer = timers.get(id);
-      if (!timer) return;
-      timer.handle = hostSetTimeout(run, Math.max(0, Number(delay) || 0));
-    };
-    const handle = hostSetTimeout(run, Math.max(0, Number(delay) || 0));
-    timers.set(id, { handle, interval: true });
-    return id;
-  };
-  const setTrackedImmediate = (callback, ...args) => setTrackedTimeout(callback, 0, ...args);
-  const drain = async () => {
-    await new Promise((resolve) => hostSetTimeout(resolve, 0));
-    while (!executionState.cancelled && (timers.size > 0 || pendingExternalWork > 0)) {
-      await new Promise((resolve) => hostSetTimeout(resolve, 0));
-      await pendingTimerWork;
-      if (timerError !== void 0) throw timerError;
-      if ([...timers.values()].some((timer) => timer.interval)) {
-        await new Promise((resolve) => hostSetTimeout(resolve, 0));
-      }
-    }
-    if (!executionState.cancelled) await pendingTimerWork;
-    if (timerError !== void 0) throw timerError;
-  };
-  const clearAll = () => {
-    for (const timer of timers.values()) {
-      hostClearTimeout(timer.handle);
-    }
-    timers.clear();
-    pendingExternalWork = 0;
-  };
-  const track = (work) => {
-    pendingExternalWork += 1;
-    return work.finally(() => {
-      pendingExternalWork = Math.max(0, pendingExternalWork - 1);
-    });
-  };
-  const trackRefable = (work) => {
-    let referenced = true;
-    let settled = false;
-    pendingExternalWork += 1;
-    const completion = work.finally(() => {
-      settled = true;
-      if (referenced) {
-        pendingExternalWork = Math.max(0, pendingExternalWork - 1);
-      }
-    });
-    return {
-      completion,
-      ref() {
-        if (settled || referenced) return;
-        referenced = true;
-        pendingExternalWork += 1;
-      },
-      unref() {
-        if (settled || !referenced) return;
-        referenced = false;
-        pendingExternalWork = Math.max(0, pendingExternalWork - 1);
-      }
-    };
-  };
-  return {
-    setTimeout: setTrackedTimeout,
-    clearTimeout: clearTrackedTimeout,
-    setInterval: setTrackedInterval,
-    clearInterval: clearTrackedTimeout,
-    setImmediate: setTrackedImmediate,
-    clearImmediate: clearTrackedTimeout,
-    queueMicrotask: hostQueueMicrotask,
-    track,
-    trackRefable,
-    drain,
-    clearAll
-  };
-}
+
+// packages/harness-javascript/src/node-compat/assert.ts
 var BrowserAssertionError = class extends Error {
   code = "ERR_ASSERTION";
   actual;
@@ -7005,6 +7226,8 @@ function createAssertApi() {
   });
   return assert;
 }
+
+// packages/harness-javascript/src/node-compat/events-util.ts
 var BrowserEventEmitter = class {
   listeners = /* @__PURE__ */ new Map();
   on(eventName, listener) {
@@ -7098,571 +7321,8 @@ function createUtilApi() {
     }
   };
 }
-function createTimersPromisesApi(eventLoopApi) {
-  return {
-    setTimeout: (delay, value) => new Promise((resolve) => {
-      eventLoopApi.setTimeout(() => resolve(value), delay);
-    }),
-    setImmediate: (value) => new Promise((resolve) => {
-      eventLoopApi.setImmediate(() => resolve(value));
-    })
-  };
-}
-function createCryptoApi() {
-  const randomFill = (target) => {
-    const cryptoApi = globalThis.crypto;
-    if (cryptoApi?.getRandomValues) {
-      cryptoApi.getRandomValues(target);
-      return target;
-    }
-    for (let index = 0; index < target.length; index += 1) {
-      target[index] = Math.floor(Math.random() * 256);
-    }
-    return target;
-  };
-  return {
-    randomUUID: () => globalThis.crypto?.randomUUID?.() ?? `${bytesToHex(randomFill(new Uint8Array(4)))}-${bytesToHex(randomFill(new Uint8Array(2)))}-4${bytesToHex(randomFill(new Uint8Array(2))).slice(1)}-8${bytesToHex(randomFill(new Uint8Array(2))).slice(1)}-${bytesToHex(randomFill(new Uint8Array(6)))}`,
-    randomBytes: (size) => browserBufferFromBytes(randomFill(new Uint8Array(Math.max(0, Math.floor(Number(size) || 0))))),
-    getRandomValues: (array) => randomFill(array)
-  };
-}
-function createStreamApi() {
-  class PassThrough extends BrowserEventEmitter {
-    ended = false;
-    write(chunk) {
-      if (this.ended) throw new Error("write after end");
-      this.emit("data", BrowserBuffer.isBuffer(chunk) ? chunk : BrowserBuffer.from(chunk));
-      return true;
-    }
-    end(chunk) {
-      if (chunk !== void 0) this.write(chunk);
-      this.ended = true;
-      this.emit("end");
-      this.emit("finish");
-      return this;
-    }
-    pipe(destination) {
-      this.on("data", (chunk) => destination.write(chunk));
-      this.on("end", () => destination.end?.());
-      return destination;
-    }
-  }
-  return {
-    Stream: BrowserEventEmitter,
-    Readable: PassThrough,
-    Writable: PassThrough,
-    Duplex: PassThrough,
-    Transform: PassThrough,
-    PassThrough
-  };
-}
-function createTraceKernelApi(executionState) {
-  const dispatchWatchdog = (request) => {
-    if (!executionState.kernelSyscalls) {
-      throw Object.assign(
-        new Error("ENOSYS: TraceKernel process controls are unavailable"),
-        { code: "ENOSYS" }
-      );
-    }
-    const result = executionState.kernelSyscalls.dispatchSync(request);
-    if (result.ok === false) {
-      throw Object.assign(new Error(result.error.message), {
-        code: result.error.code
-      });
-    }
-    if (result.value.op !== "watchdog") {
-      throw Object.assign(
-        new Error(`EPROTO: expected watchdog response, received ${result.value.op}`),
-        { code: "EPROTO" }
-      );
-    }
-    return Object.freeze({
-      armed: result.value.armed,
-      ...result.value.timeoutMs === void 0 ? {} : { timeoutMs: result.value.timeoutMs },
-      ...result.value.signal === void 0 ? {} : { signal: result.value.signal },
-      ...result.value.deadlineAt === void 0 ? {} : { deadlineAt: result.value.deadlineAt }
-    });
-  };
-  const dispatchTerminal = (request) => {
-    const operation = request.op;
-    if (!executionState.kernelSyscalls) {
-      throw Object.assign(
-        new Error("ENOSYS: TraceKernel terminal controls are unavailable"),
-        { code: "ENOSYS" }
-      );
-    }
-    const result = executionState.kernelSyscalls.dispatchSync(request);
-    if (result.ok === false) {
-      throw Object.assign(new Error(result.error.message), {
-        code: result.error.code
-      });
-    }
-    if (result.value.op !== operation) {
-      throw Object.assign(
-        new Error(
-          `EPROTO: expected ${operation} response, received ${result.value.op}`
-        ),
-        { code: "EPROTO" }
-      );
-    }
-    return result.value;
-  };
-  return Object.freeze({
-    watchdog: Object.freeze({
-      arm: (timeoutMs, options = {}) => dispatchWatchdog({
-        op: "watchdog",
-        action: "arm",
-        timeoutMs,
-        ...options.signal ? { signal: options.signal } : {}
-      }),
-      pet: () => dispatchWatchdog({
-        op: "watchdog",
-        action: "pet"
-      }),
-      disarm: () => dispatchWatchdog({
-        op: "watchdog",
-        action: "disarm"
-      }),
-      status: () => dispatchWatchdog({
-        op: "watchdog",
-        action: "status"
-      })
-    }),
-    terminal: Object.freeze({
-      isatty: (fd2) => dispatchTerminal({ op: "isatty", fd: fd2 }).isTerminal,
-      foregroundProcessGroup: (fd2 = 0) => dispatchTerminal({ op: "tcgetpgrp", fd: fd2 }).pgid,
-      setForegroundProcessGroup: (pgid, fd2 = 0) => dispatchTerminal({ op: "tcsetpgrp", fd: fd2, pgid }).pgid,
-      windowSize: (fd2 = 0) => {
-        const size = dispatchTerminal({ op: "tcgetwinsize", fd: fd2 });
-        return Object.freeze({ rows: size.rows, columns: size.columns });
-      },
-      setWindowSize: (rows, columns, fd2 = 0) => {
-        const size = dispatchTerminal({
-          op: "tcsetwinsize",
-          fd: fd2,
-          rows,
-          columns
-        });
-        return Object.freeze({ rows: size.rows, columns: size.columns });
-      }
-    })
-  });
-}
-function createChildProcessApi(executionState, eventLoopApi, request) {
-  const runtimeForCommand = (command) => {
-    const name = command.split("/").at(-1)?.toLowerCase() ?? command.toLowerCase();
-    if (name === "node" || name === "nodejs") return "javascript";
-    if (name === "python" || name === "python3") return "python";
-    if (name === "java") return "java";
-    if (name === "dotnet") return "csharp";
-    return "cpp";
-  };
-  const normalizeInvocation = (command, argsOrOptions, maybeOptions) => {
-    if (typeof command !== "string" || command.length === 0) {
-      throw Object.assign(
-        new TypeError('The "file" argument must be of type string and non-empty'),
-        { code: "ERR_INVALID_ARG_TYPE" }
-      );
-    }
-    const args = Array.isArray(argsOrOptions) ? argsOrOptions.map((arg) => String(arg)) : [];
-    const options = Array.isArray(argsOrOptions) ? maybeOptions : argsOrOptions;
-    if (options?.stdio !== void 0 && !Array.isArray(options.stdio) && options.stdio !== "pipe" && options.stdio !== "inherit" && options.stdio !== "ignore") {
-      throw Object.assign(
-        new TypeError(
-          'The "stdio" option must be "pipe", "inherit", "ignore", or an array'
-        ),
-        { code: "ERR_INVALID_ARG_VALUE" }
-      );
-    }
-    return {
-      command,
-      args,
-      options: options ?? {}
-    };
-  };
-  const stdioPlan = (stdio, fallback) => {
-    if (!Array.isArray(stdio)) {
-      const mode = stdio ?? fallback;
-      return {
-        stdio: { stdin: mode, stdout: mode, stderr: mode },
-        descriptorMappings: [],
-        hasPipe: mode === "pipe"
-      };
-    }
-    const modes = {};
-    const descriptorMappings = [];
-    let hasPipe = false;
-    const length = Math.max(3, stdio.length);
-    for (let childFd = 0; childFd < length; childFd += 1) {
-      const entry = stdio[childFd] ?? (childFd < 3 ? "pipe" : "ignore");
-      if (typeof entry === "number" && Number.isSafeInteger(entry) && entry >= 0) {
-        descriptorMappings.push({ parentFd: entry, childFd });
-        continue;
-      }
-      if (entry !== "pipe" && entry !== "inherit" && entry !== "ignore") {
-        throw Object.assign(
-          new TypeError(`Unsupported stdio entry at index ${childFd}`),
-          { code: entry === "ipc" ? "ENOSYS" : "ERR_INVALID_ARG_VALUE" }
-        );
-      }
-      if (childFd < 3) {
-        modes[childFd === 0 ? "stdin" : childFd === 1 ? "stdout" : "stderr"] = entry;
-      } else if (entry === "inherit") {
-        descriptorMappings.push({ parentFd: childFd, childFd });
-      } else if (entry === "pipe") {
-        throw Object.assign(
-          new Error("ENOSYS: piped stdio descriptors above fd 2 are not implemented"),
-          { code: "ENOSYS" }
-        );
-      }
-      if (entry === "pipe") hasPipe = true;
-    }
-    return { stdio: modes, descriptorMappings, hasPipe };
-  };
-  const syncDispatch = (syscall) => {
-    if (!executionState.kernelSyscalls) {
-      throw Object.assign(
-        new Error("ENOSYS: child-process subsystem is unavailable"),
-        { code: "ENOSYS" }
-      );
-    }
-    const result = executionState.kernelSyscalls.dispatchSync(syscall);
-    if (result.ok === false) {
-      throw Object.assign(new Error(result.error.message), {
-        code: result.error.code
-      });
-    }
-    return result.value;
-  };
-  const asyncDispatch = (syscall) => dispatchBrowserNetworkSyscall(
-    executionState.kernelNetwork,
-    syscall
-  );
-  class BrowserChildReadable extends BrowserEventEmitter {
-    constructor(fd2) {
-      super();
-      this.fd = fd2;
-      this.completion = eventLoopApi.track(this.pump());
-      void this.completion.catch((error) => {
-        if (!this.closed) this.emit("error", error);
-      });
-    }
-    readable = true;
-    encoding;
-    closed = false;
-    completion;
-    setEncoding(encoding) {
-      this.encoding = encoding;
-      return this;
-    }
-    pipe(destination) {
-      this.on("data", (chunk) => destination.write(chunk));
-      this.on("end", () => destination.end?.());
-      return destination;
-    }
-    pause() {
-      return this;
-    }
-    resume() {
-      return this;
-    }
-    destroy() {
-      if (this.closed) return this;
-      this.closed = true;
-      void eventLoopApi.track(
-        asyncDispatch({ op: "close", fd: this.fd }).catch(() => void 0)
-      );
-      return this;
-    }
-    async pump() {
-      try {
-        while (!this.closed) {
-          const result = await asyncDispatch({
-            op: "read",
-            fd: this.fd,
-            maxBytes: 16 * 1024
-          });
-          if (result.bytes.byteLength === 0) break;
-          const chunk = BrowserBuffer.from(result.bytes);
-          this.emit(
-            "data",
-            this.encoding ? chunk.toString(this.encoding) : chunk
-          );
-        }
-        if (!this.closed) this.emit("end");
-      } finally {
-        if (!this.closed) {
-          this.closed = true;
-          await asyncDispatch({ op: "close", fd: this.fd }).catch(() => void 0);
-          this.emit("close");
-        }
-      }
-    }
-  }
-  class BrowserChildWritable extends BrowserEventEmitter {
-    constructor(fd2) {
-      super();
-      this.fd = fd2;
-    }
-    writable = true;
-    ended = false;
-    closed = false;
-    queuedBytes = 0;
-    tail = Promise.resolve();
-    write(chunk, encodingOrCallback, callback) {
-      const completion = typeof encodingOrCallback === "function" ? encodingOrCallback : callback;
-      if (this.ended) {
-        const error = Object.assign(new Error("write after end"), {
-          code: "ERR_STREAM_WRITE_AFTER_END"
-        });
-        globalThis.queueMicrotask(() => {
-          completion?.(error);
-          this.emit("error", error);
-        });
-        return false;
-      }
-      const bytes = BrowserBuffer.isBuffer(chunk) ? Uint8Array.from(chunk) : typeof chunk === "string" ? BrowserBuffer.from(chunk, typeof encodingOrCallback === "string" ? encodingOrCallback : void 0) : Uint8Array.from(bytesFromNodeValue(chunk));
-      this.queuedBytes += bytes.byteLength;
-      const belowHighWaterMark = this.queuedBytes < 64 * 1024;
-      this.tail = this.tail.then(async () => {
-        try {
-          await asyncDispatch({ op: "write", fd: this.fd, bytes });
-          completion?.(null);
-        } catch (error) {
-          completion?.(error instanceof Error ? error : new Error(String(error)));
-          this.emit("error", error);
-        } finally {
-          const wasBackpressured = this.queuedBytes >= 64 * 1024;
-          this.queuedBytes = Math.max(0, this.queuedBytes - bytes.byteLength);
-          if (wasBackpressured && this.queuedBytes < 64 * 1024) {
-            this.emit("drain");
-          }
-        }
-      });
-      void eventLoopApi.track(this.tail.catch(() => void 0));
-      return belowHighWaterMark;
-    }
-    end(chunkOrCallback, encodingOrCallback, callback) {
-      const chunk = typeof chunkOrCallback === "function" ? void 0 : chunkOrCallback;
-      const completion = typeof chunkOrCallback === "function" ? chunkOrCallback : typeof encodingOrCallback === "function" ? encodingOrCallback : callback;
-      if (chunk !== void 0) {
-        this.write(
-          chunk,
-          typeof encodingOrCallback === "string" ? encodingOrCallback : void 0
-        );
-      }
-      if (this.ended) return this;
-      this.ended = true;
-      const closing = this.tail.then(async () => {
-        if (!this.closed) {
-          this.closed = true;
-          await asyncDispatch({ op: "close", fd: this.fd }).catch(() => void 0);
-        }
-        this.emit("finish");
-        this.emit("close");
-        completion?.();
-      });
-      this.tail = closing;
-      void eventLoopApi.track(closing);
-      return this;
-    }
-    destroy() {
-      if (this.closed) return this;
-      this.ended = true;
-      const closing = this.tail.finally(async () => {
-        if (!this.closed) {
-          this.closed = true;
-          await asyncDispatch({ op: "close", fd: this.fd }).catch(() => void 0);
-          this.emit("close");
-        }
-      });
-      this.tail = closing;
-      void eventLoopApi.track(closing);
-      return this;
-    }
-  }
-  class BrowserChildProcess extends BrowserEventEmitter {
-    pid;
-    stdin;
-    stdout;
-    stderr;
-    stdio;
-    connected = false;
-    exitCode = null;
-    signalCode = null;
-    killed = false;
-    refControl;
-    constructor(pid, stdio, signal) {
-      super();
-      this.pid = pid;
-      this.stdin = stdio?.stdinFd === void 0 ? null : new BrowserChildWritable(stdio.stdinFd);
-      this.stdout = stdio?.stdoutFd === void 0 ? null : new BrowserChildReadable(stdio.stdoutFd);
-      this.stderr = stdio?.stderrFd === void 0 ? null : new BrowserChildReadable(stdio.stderrFd);
-      this.stdio = [this.stdin, this.stdout, this.stderr];
-      if (signal) {
-        const abort = () => this.kill("SIGTERM");
-        if (signal.aborted) abort();
-        else signal.addEventListener("abort", abort, { once: true });
-      }
-    }
-    kill(signal = "SIGTERM") {
-      if (this.exitCode !== null || this.signalCode !== null) return false;
-      syncDispatch({
-        op: "kill",
-        pid: this.pid,
-        signal
-      });
-      this.killed = true;
-      return true;
-    }
-    ref() {
-      this.refControl?.ref();
-      return this;
-    }
-    unref() {
-      this.refControl?.unref();
-      return this;
-    }
-    attachRefControl(control) {
-      this.refControl = control;
-    }
-  }
-  const spawn = (command, argsOrOptions, maybeOptions) => {
-    const invocation = normalizeInvocation(command, argsOrOptions, maybeOptions);
-    const plan = stdioPlan(invocation.options.stdio, "pipe");
-    const spawned = syncDispatch({
-      op: "spawn",
-      runtime: runtimeForCommand(invocation.command),
-      command: invocation.command,
-      args: invocation.args,
-      cwd: invocation.options.cwd ?? request.cwd,
-      env: Object.fromEntries(
-        Object.entries(invocation.options.env ?? request.env).filter(([, value]) => value !== void 0).map(([name, value]) => [name, String(value)])
-      ),
-      ...invocation.options.detached ? { processGroupId: 0, sessionId: 0 } : {},
-      ...plan.descriptorMappings.length > 0 ? { descriptorMappings: plan.descriptorMappings } : {},
-      stdio: plan.stdio
-    });
-    const child = new BrowserChildProcess(
-      spawned.pid,
-      spawned.stdio,
-      invocation.options.signal
-    );
-    globalThis.queueMicrotask(() => child.emit("spawn"));
-    const waitHandle = eventLoopApi.trackRefable(
-      asyncDispatch({ op: "wait", pid: spawned.pid }).then(
-        async (waited) => {
-          const termination = waited.termination;
-          if (!termination) {
-            throw Object.assign(
-              new Error("EPROTO: blocking child wait returned a running process"),
-              { code: "EPROTO" }
-            );
-          }
-          if (termination.kind === "signal") {
-            child.signalCode = termination.signal;
-          } else {
-            child.exitCode = termination.exitCode;
-          }
-          child.emit(
-            "exit",
-            child.exitCode,
-            child.signalCode
-          );
-          await Promise.all([
-            child.stdout?.completion,
-            child.stderr?.completion
-          ]);
-          child.emit(
-            "close",
-            child.exitCode,
-            child.signalCode
-          );
-        },
-        (error) => {
-          if (executionState.cancelled) return;
-          child.emit("error", error);
-          child.emit("close", null, null);
-        }
-      )
-    );
-    child.attachRefControl(waitHandle);
-    void waitHandle.completion;
-    return child;
-  };
-  const spawnSync = (command, argsOrOptions, maybeOptions) => {
-    const invocation = normalizeInvocation(command, argsOrOptions, maybeOptions);
-    const plan = stdioPlan(invocation.options.stdio, "ignore");
-    if (plan.hasPipe) {
-      throw Object.assign(
-        new Error("ENOSYS: synchronous piped child stdio requires a nonblocking host capture path"),
-        { code: "ENOSYS" }
-      );
-    }
-    const spawned = syncDispatch({
-      op: "spawn",
-      runtime: runtimeForCommand(invocation.command),
-      command: invocation.command,
-      args: invocation.args,
-      cwd: invocation.options.cwd ?? request.cwd,
-      env: Object.fromEntries(
-        Object.entries(invocation.options.env ?? request.env).filter(([, value]) => value !== void 0).map(([name, value]) => [name, String(value)])
-      ),
-      ...invocation.options.detached ? { processGroupId: 0, sessionId: 0 } : {},
-      ...plan.descriptorMappings.length > 0 ? { descriptorMappings: plan.descriptorMappings } : {},
-      stdio: plan.stdio
-    });
-    const waited = syncDispatch({ op: "wait", pid: spawned.pid });
-    const termination = waited.termination;
-    if (!termination) {
-      throw Object.assign(
-        new Error("EPROTO: blocking child wait returned a running process"),
-        { code: "EPROTO" }
-      );
-    }
-    return {
-      pid: spawned.pid,
-      output: [null, BrowserBuffer.alloc(0), BrowserBuffer.alloc(0)],
-      stdout: BrowserBuffer.alloc(0),
-      stderr: BrowserBuffer.alloc(0),
-      status: termination.kind === "signal" ? null : termination.exitCode,
-      signal: termination.kind === "signal" ? termination.signal : null
-    };
-  };
-  return {
-    ChildProcess: BrowserChildProcess,
-    spawn,
-    spawnSync
-  };
-}
-function createUrlApi() {
-  return {
-    URL,
-    URLSearchParams,
-    domainToASCII: (domain) => {
-      try {
-        return new URL(`http://${domain}`).hostname;
-      } catch {
-        return "";
-      }
-    },
-    domainToUnicode: (domain) => {
-      try {
-        return new URL(`http://${domain}`).hostname;
-      } catch {
-        return "";
-      }
-    },
-    fileURLToPath: (value) => {
-      const url = value instanceof URL ? value : new URL(value);
-      if (url.protocol !== "file:") {
-        throw new TypeError("The URL must be of scheme file");
-      }
-      return decodeURIComponent(url.pathname);
-    },
-    pathToFileURL: (path) => new URL(`file://${path.startsWith("/") ? path : `/${path}`}`)
-  };
-}
+
+// packages/harness-javascript/src/node-compat/network/shared.ts
 function createListenerMap() {
   const listeners = /* @__PURE__ */ new Map();
   const on = (event, listener) => {
@@ -7997,6 +7657,8 @@ async function dispatchBrowserNetworkSyscall(kernelNetwork, request) {
   }
   return result.value;
 }
+
+// packages/harness-javascript/src/node-compat/network/net.ts
 function normalizeNetConnectArgs(args) {
   const callback = args.find((value) => typeof value === "function");
   const first = args[0];
@@ -8444,6 +8106,8 @@ function createNetApi(kernelNetwork, signal) {
     closeAll
   };
 }
+
+// packages/harness-javascript/src/node-compat/network/http.ts
 function createHttpApi(kernelHttp, signal) {
   const activeHandles = /* @__PURE__ */ new Set();
   const activeClientAborters = /* @__PURE__ */ new Set();
@@ -8929,690 +8593,777 @@ function createHttpApi(kernelHttp, signal) {
     closeAll
   };
 }
-var permanentBrowserAuthorityDefineProperty = Object.defineProperty;
-var permanentBrowserAuthorityGetOwnPropertyDescriptor = Object.getOwnPropertyDescriptor;
-var permanentBrowserAuthorityGetPrototypeOf = Object.getPrototypeOf;
-var PERMANENT_BROWSER_WORKER_DENIED_GLOBALS = Object.freeze([
-  "XMLHttpRequest",
-  "WebSocket",
-  "WebSocketStream",
-  "WebTransport",
-  "EventSource",
-  "RTCPeerConnection",
-  "webkitRTCPeerConnection",
-  "RTCDataChannel",
-  "indexedDB",
-  "caches",
-  "Cache",
-  "CacheStorage",
-  "cookieStore",
-  "localStorage",
-  "sessionStorage",
-  "webkitRequestFileSystem",
-  "webkitRequestFileSystemSync",
-  "webkitResolveLocalFileSystemURL",
-  "webkitResolveLocalFileSystemSyncURL",
-  "Worker",
-  "SharedWorker",
-  "MessageChannel",
-  "MessagePort",
-  "BroadcastChannel",
-  "importScripts",
-  "postMessage",
-  "eval",
-  "Function"
-]);
-var PERMANENT_BROWSER_WORKER_DENIED_NAVIGATOR_MEMBERS = Object.freeze([
-  "sendBeacon",
-  "storage",
-  "locks",
-  "serviceWorker"
-]);
-var permanentBrowserDynamicConstructorPrototypes = Object.freeze([
-  BrowserFunction.prototype,
-  permanentBrowserAuthorityGetPrototypeOf(async function browserAsyncFunction() {
-  }),
-  permanentBrowserAuthorityGetPrototypeOf(function* browserGeneratorFunction() {
-  }),
-  permanentBrowserAuthorityGetPrototypeOf(async function* browserAsyncGeneratorFunction() {
-  })
-]);
-function permanentBrowserAuthorityError(name) {
-  return new ReferenceError(`${name} is not defined`);
-}
-function permanentBrowserDeniedAuthority(name) {
-  const deny = function deniedBrowserWorkerAuthority() {
-    throw permanentBrowserAuthorityError(name);
+
+// packages/harness-javascript/src/node-compat/child-process.ts
+function createChildProcessApi(executionState, eventLoopApi, request) {
+  const runtimeForCommand = (command) => {
+    const name = command.split("/").at(-1)?.toLowerCase() ?? command.toLowerCase();
+    if (name === "node" || name === "nodejs") return "javascript";
+    if (name === "python" || name === "python3") return "python";
+    if (name === "java") return "java";
+    if (name === "dotnet") return "csharp";
+    return "cpp";
   };
-  return typeof Proxy === "function" ? new Proxy(deny, {
-    apply: () => deny(),
-    construct: () => deny(),
-    get: (_target, property) => property === Symbol.toStringTag ? "Function" : permanentBrowserDeniedAuthority(`${name}.${String(property)}`),
-    set: () => {
-      throw permanentBrowserAuthorityError(name);
-    }
-  }) : deny;
-}
-function permanentBrowserPrototypeChain(value) {
-  const targets = [];
-  const seen = /* @__PURE__ */ new Set();
-  let current = value;
-  while (current && (typeof current === "object" || typeof current === "function") && !seen.has(current)) {
-    targets.push(current);
-    seen.add(current);
-    current = permanentBrowserAuthorityGetPrototypeOf(current);
-  }
-  return targets;
-}
-function sealPermanentBrowserProperty(target, name, value) {
-  const descriptor = permanentBrowserAuthorityGetOwnPropertyDescriptor(target, name);
-  if (descriptor?.configurable === false && !("value" in descriptor && descriptor.writable === true)) {
-    if ("value" in descriptor && descriptor.value === value) return;
-    throw permanentBrowserAuthorityError(String(name));
-  }
-  permanentBrowserAuthorityDefineProperty(target, name, {
-    configurable: false,
-    enumerable: descriptor?.enumerable ?? false,
-    writable: false,
-    value
-  });
-  if (target[name] !== value) {
-    throw permanentBrowserAuthorityError(String(name));
-  }
-}
-function sealPermanentBrowserPropertyAcrossChain(value, name, replacement, options = {}) {
-  const targets = permanentBrowserPrototypeChain(value);
-  const includeOwn = options.includeOwn !== false;
-  let replacedOwn = false;
-  for (let index = includeOwn ? 0 : 1; index < targets.length; index += 1) {
-    const target = targets[index];
-    if (!permanentBrowserAuthorityGetOwnPropertyDescriptor(target, name)) continue;
-    sealPermanentBrowserProperty(target, name, replacement);
-    if (target === value) replacedOwn = true;
-  }
-  if (includeOwn && options.ensureOwn !== false && !replacedOwn) {
-    sealPermanentBrowserProperty(value, name, replacement);
-  }
-}
-function installPermanentBrowserWorkerAuthorityBoundary(httpApi) {
-  if (typeof document !== "undefined") {
-    throw new Error("Permanent browser authority denial is only valid inside a disposable worker.");
-  }
-  const scope = globalThis;
-  for (const name of PERMANENT_BROWSER_WORKER_DENIED_GLOBALS) {
-    sealPermanentBrowserPropertyAcrossChain(scope, name, permanentBrowserDeniedAuthority(name));
-  }
-  const deniedNativeFetch = permanentBrowserDeniedAuthority("native fetch");
-  sealPermanentBrowserPropertyAcrossChain(scope, "fetch", deniedNativeFetch, {
-    includeOwn: false,
-    ensureOwn: false
-  });
-  sealPermanentBrowserProperty(scope, "fetch", httpApi.fetch);
-  sealPermanentBrowserProperty(scope, "Headers", httpApi.Headers);
-  sealPermanentBrowserProperty(scope, "Request", httpApi.Request);
-  sealPermanentBrowserProperty(scope, "Response", httpApi.Response);
-  const navigatorValue = scope.navigator;
-  if (navigatorValue && (typeof navigatorValue === "object" || typeof navigatorValue === "function")) {
-    for (const name of PERMANENT_BROWSER_WORKER_DENIED_NAVIGATOR_MEMBERS) {
-      sealPermanentBrowserPropertyAcrossChain(
-        navigatorValue,
-        name,
-        permanentBrowserDeniedAuthority(`navigator.${name}`)
+  const normalizeInvocation = (command, argsOrOptions, maybeOptions) => {
+    if (typeof command !== "string" || command.length === 0) {
+      throw Object.assign(
+        new TypeError('The "file" argument must be of type string and non-empty'),
+        { code: "ERR_INVALID_ARG_TYPE" }
       );
     }
-    sealPermanentBrowserProperty(scope, "navigator", navigatorValue);
-  }
-  const deniedConstructor = permanentBrowserDeniedAuthority("Function constructor");
-  for (const prototype of permanentBrowserDynamicConstructorPrototypes) {
-    sealPermanentBrowserProperty(prototype, "constructor", deniedConstructor);
-  }
-  return () => {
-  };
-}
-function installBrowserHttpGlobalLockdown(httpApi, authorityMode = "temporary") {
-  if (authorityMode === "permanent") {
-    return installPermanentBrowserWorkerAuthorityBoundary(httpApi);
-  }
-  const global = globalThis;
-  const blockedNetworkApi = (name) => function blockedBrowserNetworkApi() {
-    throw new ReferenceError(`${name} is not defined`);
-  };
-  const blockedAuthorityObject = (name) => {
-    const deny = blockedNetworkApi(name);
-    return typeof Proxy === "function" ? new Proxy(deny, {
-      apply: () => deny(),
-      construct: () => deny(),
-      get: (_target, property) => property === Symbol.toStringTag ? "Function" : deny
-    }) : deny;
-  };
-  const replacements = {
-    fetch: httpApi.fetch,
-    Headers: httpApi.Headers,
-    Request: httpApi.Request,
-    Response: httpApi.Response,
-    XMLHttpRequest: blockedAuthorityObject("XMLHttpRequest"),
-    WebSocket: blockedAuthorityObject("WebSocket"),
-    WebSocketStream: blockedAuthorityObject("WebSocketStream"),
-    WebTransport: blockedAuthorityObject("WebTransport"),
-    EventSource: blockedAuthorityObject("EventSource"),
-    // A dedicated Worker is an execution boundary, not an origin boundary.
-    // User code must not bypass TraceKernel through same-origin persistence,
-    // cache, nested workers, or cross-context messaging. The worker bridge
-    // captures the host channel before this lockdown is installed.
-    ...typeof document === "undefined" ? {
-      indexedDB: blockedAuthorityObject("indexedDB"),
-      caches: blockedAuthorityObject("caches"),
-      cookieStore: blockedAuthorityObject("cookieStore"),
-      Worker: blockedAuthorityObject("Worker"),
-      SharedWorker: blockedAuthorityObject("SharedWorker"),
-      BroadcastChannel: blockedAuthorityObject("BroadcastChannel"),
-      importScripts: blockedAuthorityObject("importScripts")
-    } : {}
-  };
-  const previousDescriptors = /* @__PURE__ */ new Map();
-  for (const [name, value] of Object.entries(replacements)) {
-    previousDescriptors.set(name, Object.getOwnPropertyDescriptor(global, name));
-    try {
-      Object.defineProperty(global, name, {
-        configurable: true,
-        enumerable: false,
-        writable: false,
-        value
-      });
-    } catch {
+    const args = Array.isArray(argsOrOptions) ? argsOrOptions.map((arg) => String(arg)) : [];
+    const options = Array.isArray(argsOrOptions) ? maybeOptions : argsOrOptions;
+    if (options?.stdio !== void 0 && !Array.isArray(options.stdio) && options.stdio !== "pipe" && options.stdio !== "inherit" && options.stdio !== "ignore") {
+      throw Object.assign(
+        new TypeError(
+          'The "stdio" option must be "pipe", "inherit", "ignore", or an array'
+        ),
+        { code: "ERR_INVALID_ARG_VALUE" }
+      );
     }
-  }
-  const navigatorValue = global.navigator;
-  const navigatorDescriptors = /* @__PURE__ */ new Map();
-  if (navigatorValue && typeof navigatorValue === "object") {
-    const navigatorReplacements = {
-      sendBeacon: blockedAuthorityObject("navigator.sendBeacon"),
-      ...typeof document === "undefined" ? {
-        storage: blockedAuthorityObject("navigator.storage"),
-        locks: blockedAuthorityObject("navigator.locks"),
-        serviceWorker: blockedAuthorityObject("navigator.serviceWorker")
-      } : {}
+    return {
+      command,
+      args,
+      options: options ?? {}
     };
-    for (const [name, value] of Object.entries(navigatorReplacements)) {
-      navigatorDescriptors.set(name, Object.getOwnPropertyDescriptor(navigatorValue, name));
-      try {
-        Object.defineProperty(navigatorValue, name, {
-          configurable: true,
-          enumerable: false,
-          writable: false,
-          value
-        });
-      } catch {
-      }
-    }
-  }
-  return () => {
-    for (const [name, descriptor] of previousDescriptors) {
-      try {
-        if (descriptor) {
-          Object.defineProperty(global, name, descriptor);
-        } else {
-          delete global[name];
-        }
-      } catch {
-      }
-    }
-    if (navigatorValue && typeof navigatorValue === "object") {
-      for (const [name, descriptor] of navigatorDescriptors) {
-        try {
-          if (descriptor) {
-            Object.defineProperty(navigatorValue, name, descriptor);
-          } else {
-            delete navigatorValue[name];
-          }
-        } catch {
-        }
-      }
-    }
   };
-}
-function installBrowserTimerGlobals(eventLoopApi) {
-  const global = globalThis;
-  const replacements = {
-    setTimeout: eventLoopApi.setTimeout,
-    clearTimeout: eventLoopApi.clearTimeout,
-    setInterval: eventLoopApi.setInterval,
-    clearInterval: eventLoopApi.clearInterval,
-    setImmediate: eventLoopApi.setImmediate,
-    clearImmediate: eventLoopApi.clearImmediate,
-    queueMicrotask: eventLoopApi.queueMicrotask
+  const stdioPlan = (stdio, fallback) => {
+    if (!Array.isArray(stdio)) {
+      const mode = stdio ?? fallback;
+      return {
+        stdio: { stdin: mode, stdout: mode, stderr: mode },
+        descriptorMappings: [],
+        hasPipe: mode === "pipe"
+      };
+    }
+    const modes = {};
+    const descriptorMappings = [];
+    let hasPipe = false;
+    const length = Math.max(3, stdio.length);
+    for (let childFd = 0; childFd < length; childFd += 1) {
+      const entry = stdio[childFd] ?? (childFd < 3 ? "pipe" : "ignore");
+      if (typeof entry === "number" && Number.isSafeInteger(entry) && entry >= 0) {
+        descriptorMappings.push({ parentFd: entry, childFd });
+        continue;
+      }
+      if (entry !== "pipe" && entry !== "inherit" && entry !== "ignore") {
+        throw Object.assign(
+          new TypeError(`Unsupported stdio entry at index ${childFd}`),
+          { code: entry === "ipc" ? "ENOSYS" : "ERR_INVALID_ARG_VALUE" }
+        );
+      }
+      if (childFd < 3) {
+        modes[childFd === 0 ? "stdin" : childFd === 1 ? "stdout" : "stderr"] = entry;
+      } else if (entry === "inherit") {
+        descriptorMappings.push({ parentFd: childFd, childFd });
+      } else if (entry === "pipe") {
+        throw Object.assign(
+          new Error("ENOSYS: piped stdio descriptors above fd 2 are not implemented"),
+          { code: "ENOSYS" }
+        );
+      }
+      if (entry === "pipe") hasPipe = true;
+    }
+    return { stdio: modes, descriptorMappings, hasPipe };
   };
-  const previousDescriptors = /* @__PURE__ */ new Map();
-  for (const [name, value] of Object.entries(replacements)) {
-    previousDescriptors.set(name, Object.getOwnPropertyDescriptor(global, name));
-    try {
-      Object.defineProperty(global, name, {
-        configurable: true,
-        enumerable: false,
-        writable: true,
-        value
+  const syncDispatch = (syscall) => {
+    if (!executionState.kernelSyscalls) {
+      throw Object.assign(
+        new Error("ENOSYS: child-process subsystem is unavailable"),
+        { code: "ENOSYS" }
+      );
+    }
+    const result = executionState.kernelSyscalls.dispatchSync(syscall);
+    if (result.ok === false) {
+      throw Object.assign(new Error(result.error.message), {
+        code: result.error.code
       });
-    } catch {
     }
-  }
-  return () => {
-    for (const [name, descriptor] of previousDescriptors) {
+    return result.value;
+  };
+  const asyncDispatch = (syscall) => dispatchBrowserNetworkSyscall(
+    executionState.kernelNetwork,
+    syscall
+  );
+  class BrowserChildReadable extends BrowserEventEmitter {
+    constructor(fd2) {
+      super();
+      this.fd = fd2;
+      this.completion = eventLoopApi.track(this.pump());
+      void this.completion.catch((error) => {
+        if (!this.closed) this.emit("error", error);
+      });
+    }
+    readable = true;
+    encoding;
+    closed = false;
+    completion;
+    setEncoding(encoding) {
+      this.encoding = encoding;
+      return this;
+    }
+    pipe(destination) {
+      this.on("data", (chunk) => destination.write(chunk));
+      this.on("end", () => destination.end?.());
+      return destination;
+    }
+    pause() {
+      return this;
+    }
+    resume() {
+      return this;
+    }
+    destroy() {
+      if (this.closed) return this;
+      this.closed = true;
+      void eventLoopApi.track(
+        asyncDispatch({ op: "close", fd: this.fd }).catch(() => void 0)
+      );
+      return this;
+    }
+    async pump() {
       try {
-        if (descriptor) {
-          Object.defineProperty(global, name, descriptor);
-        } else {
-          delete global[name];
+        while (!this.closed) {
+          const result = await asyncDispatch({
+            op: "read",
+            fd: this.fd,
+            maxBytes: 16 * 1024
+          });
+          if (result.bytes.byteLength === 0) break;
+          const chunk = BrowserBuffer.from(result.bytes);
+          this.emit(
+            "data",
+            this.encoding ? chunk.toString(this.encoding) : chunk
+          );
         }
-      } catch {
+        if (!this.closed) this.emit("end");
+      } finally {
+        if (!this.closed) {
+          this.closed = true;
+          await asyncDispatch({ op: "close", fd: this.fd }).catch(() => void 0);
+          this.emit("close");
+        }
       }
     }
-  };
-}
-function dirname(path) {
-  const index = path.lastIndexOf("/");
-  return index === -1 ? "" : path.slice(0, index);
-}
-function workspaceFilename(path, workspaceRoot = "/workspace") {
-  const normalized = normalizeProjectPath(path);
-  return normalized ? `${workspaceRoot}/${normalized}` : workspaceRoot;
-}
-function workspaceFileUrl(path, workspaceRoot = "/workspace") {
-  return `file://${workspaceFilename(path, workspaceRoot).split("/").map((part) => encodeURIComponent(part)).join("/")}`;
-}
-function relativeWorkspacePath(from, to) {
-  const fromParts = normalizeProjectPath(from).split("/").filter(Boolean);
-  const toParts = normalizeProjectPath(to).split("/").filter(Boolean);
-  let common = 0;
-  while (common < fromParts.length && common < toParts.length && fromParts[common] === toParts[common]) {
-    common += 1;
   }
-  return [
-    ...fromParts.slice(common).map(() => ".."),
-    ...toParts.slice(common)
-  ].join("/") || ".";
-}
-function workspaceDirname(path, workspaceRoot = "/workspace") {
-  const normalizedDir = dirname(normalizeProjectPath(path));
-  return normalizedDir ? `${workspaceRoot}/${normalizedDir}` : workspaceRoot;
-}
-function joinModulePath(parentPath, specifier) {
-  const parentDir = dirname(parentPath);
-  const joined = `${parentDir}/${specifier}`.replace(/^\//, "");
-  const parts = [];
-  for (const part of joined.split("/")) {
-    if (!part || part === ".") continue;
-    if (part === "..") {
-      parts.pop();
-    } else {
-      parts.push(part);
+  class BrowserChildWritable extends BrowserEventEmitter {
+    constructor(fd2) {
+      super();
+      this.fd = fd2;
+    }
+    writable = true;
+    ended = false;
+    closed = false;
+    queuedBytes = 0;
+    tail = Promise.resolve();
+    write(chunk, encodingOrCallback, callback) {
+      const completion = typeof encodingOrCallback === "function" ? encodingOrCallback : callback;
+      if (this.ended) {
+        const error = Object.assign(new Error("write after end"), {
+          code: "ERR_STREAM_WRITE_AFTER_END"
+        });
+        globalThis.queueMicrotask(() => {
+          completion?.(error);
+          this.emit("error", error);
+        });
+        return false;
+      }
+      const bytes = BrowserBuffer.isBuffer(chunk) ? Uint8Array.from(chunk) : typeof chunk === "string" ? BrowserBuffer.from(chunk, typeof encodingOrCallback === "string" ? encodingOrCallback : void 0) : Uint8Array.from(bytesFromNodeValue(chunk));
+      this.queuedBytes += bytes.byteLength;
+      const belowHighWaterMark = this.queuedBytes < 64 * 1024;
+      this.tail = this.tail.then(async () => {
+        try {
+          await asyncDispatch({ op: "write", fd: this.fd, bytes });
+          completion?.(null);
+        } catch (error) {
+          completion?.(error instanceof Error ? error : new Error(String(error)));
+          this.emit("error", error);
+        } finally {
+          const wasBackpressured = this.queuedBytes >= 64 * 1024;
+          this.queuedBytes = Math.max(0, this.queuedBytes - bytes.byteLength);
+          if (wasBackpressured && this.queuedBytes < 64 * 1024) {
+            this.emit("drain");
+          }
+        }
+      });
+      void eventLoopApi.track(this.tail.catch(() => void 0));
+      return belowHighWaterMark;
+    }
+    end(chunkOrCallback, encodingOrCallback, callback) {
+      const chunk = typeof chunkOrCallback === "function" ? void 0 : chunkOrCallback;
+      const completion = typeof chunkOrCallback === "function" ? chunkOrCallback : typeof encodingOrCallback === "function" ? encodingOrCallback : callback;
+      if (chunk !== void 0) {
+        this.write(
+          chunk,
+          typeof encodingOrCallback === "string" ? encodingOrCallback : void 0
+        );
+      }
+      if (this.ended) return this;
+      this.ended = true;
+      const closing = this.tail.then(async () => {
+        if (!this.closed) {
+          this.closed = true;
+          await asyncDispatch({ op: "close", fd: this.fd }).catch(() => void 0);
+        }
+        this.emit("finish");
+        this.emit("close");
+        completion?.();
+      });
+      this.tail = closing;
+      void eventLoopApi.track(closing);
+      return this;
+    }
+    destroy() {
+      if (this.closed) return this;
+      this.ended = true;
+      const closing = this.tail.finally(async () => {
+        if (!this.closed) {
+          this.closed = true;
+          await asyncDispatch({ op: "close", fd: this.fd }).catch(() => void 0);
+          this.emit("close");
+        }
+      });
+      this.tail = closing;
+      void eventLoopApi.track(closing);
+      return this;
     }
   }
-  return parts.join("/");
-}
-function workspaceCwdPath(request) {
-  const projectCwd = request.project.cwd ?? "/workspace";
-  if (request.cwd === projectCwd) return "";
-  if (request.cwd.startsWith(`${projectCwd}/`)) {
-    return normalizeProjectPath(request.cwd.slice(projectCwd.length + 1));
-  }
-  throw new Error(`Project cwd must stay inside the workspace: ${request.cwd}`);
-}
-function moduleFileCandidates(path) {
-  const normalized = normalizeProjectPath(path);
-  const candidates = [normalized];
-  if (!/\.(?:cjs|js|json|mjs)$/.test(normalized)) {
-    candidates.push(`${normalized}.js`, `${normalized}.json`, `${normalized}.mjs`, `${normalized}.cjs`);
-  }
-  return candidates;
-}
-function parsePackageJson(modules, path) {
-  const normalized = normalizeProjectPath(path);
-  const packageJson = modules.get(normalized ? `${normalized}/package.json` : "package.json");
-  if (!packageJson) return null;
-  try {
-    return JSON.parse(packageJson);
-  } catch {
-    return null;
-  }
-}
-function manifestDeclaresDependency(manifest, dependency) {
-  for (const field of ["dependencies", "devDependencies", "optionalDependencies", "peerDependencies"]) {
-    const dependencies = manifest[field];
-    if (dependencies && typeof dependencies === "object" && !Array.isArray(dependencies) && dependency in dependencies) {
+  class BrowserChildProcess extends BrowserEventEmitter {
+    pid;
+    stdin;
+    stdout;
+    stderr;
+    stdio;
+    connected = false;
+    exitCode = null;
+    signalCode = null;
+    killed = false;
+    refControl;
+    constructor(pid, stdio, signal) {
+      super();
+      this.pid = pid;
+      this.stdin = stdio?.stdinFd === void 0 ? null : new BrowserChildWritable(stdio.stdinFd);
+      this.stdout = stdio?.stdoutFd === void 0 ? null : new BrowserChildReadable(stdio.stdoutFd);
+      this.stderr = stdio?.stderrFd === void 0 ? null : new BrowserChildReadable(stdio.stderrFd);
+      this.stdio = [this.stdin, this.stdout, this.stderr];
+      if (signal) {
+        const abort = () => this.kill("SIGTERM");
+        if (signal.aborted) abort();
+        else signal.addEventListener("abort", abort, { once: true });
+      }
+    }
+    kill(signal = "SIGTERM") {
+      if (this.exitCode !== null || this.signalCode !== null) return false;
+      syncDispatch({
+        op: "kill",
+        pid: this.pid,
+        signal
+      });
+      this.killed = true;
       return true;
     }
-  }
-  return false;
-}
-function projectDeclaresDependency(modules, dependency) {
-  for (const path of modules.keys()) {
-    if (!path.endsWith("package.json")) continue;
-    const directory = dirname(path);
-    const manifest = parsePackageJson(modules, directory);
-    if (manifest && manifestDeclaresDependency(manifest, dependency)) return true;
-  }
-  return false;
-}
-function packageExportTarget(value, condition) {
-  if (typeof value === "string" && value.trim().length > 0) return value;
-  if (!value || typeof value !== "object") return null;
-  const record = value;
-  return packageExportTarget(record[condition], condition) ?? packageExportTarget(record.node, condition) ?? packageExportTarget(record.default, condition) ?? packageExportTarget(condition === "require" ? record.import : record.require, condition);
-}
-function packageMainCandidates(modules, path, condition) {
-  const normalized = normalizeProjectPath(path);
-  const parsed = parsePackageJson(modules, normalized);
-  if (!parsed) return [];
-  const candidates = [];
-  const exportsTarget = packageExportTarget(parsed.exports, condition);
-  if (exportsTarget) {
-    candidates.push(...moduleFileCandidates(`${normalized}/${exportsTarget}`));
-  }
-  if (parsed.exports && typeof parsed.exports === "object" && !Array.isArray(parsed.exports)) {
-    const dotTarget = packageExportTarget(parsed.exports["."], condition);
-    if (dotTarget) {
-      candidates.push(...moduleFileCandidates(`${normalized}/${dotTarget}`));
+    ref() {
+      this.refControl?.ref();
+      return this;
+    }
+    unref() {
+      this.refControl?.unref();
+      return this;
+    }
+    attachRefControl(control) {
+      this.refControl = control;
     }
   }
-  if (typeof parsed.module === "string" && parsed.module.trim().length > 0) {
-    candidates.push(...moduleFileCandidates(`${normalized}/${parsed.module}`));
-  }
-  if (typeof parsed.main === "string" && parsed.main.trim().length > 0) {
-    candidates.push(...moduleFileCandidates(`${normalized}/${parsed.main}`));
-  }
-  return candidates;
-}
-function packageSpecifierParts(specifier) {
-  const parts = normalizeProjectPath(specifier).split("/").filter(Boolean);
-  if (parts.length === 0) return null;
-  if (parts[0]?.startsWith("@")) {
-    if (parts.length < 2) return null;
+  const spawn = (command, argsOrOptions, maybeOptions) => {
+    const invocation = normalizeInvocation(command, argsOrOptions, maybeOptions);
+    const plan = stdioPlan(invocation.options.stdio, "pipe");
+    const spawned = syncDispatch({
+      op: "spawn",
+      runtime: runtimeForCommand(invocation.command),
+      command: invocation.command,
+      args: invocation.args,
+      cwd: invocation.options.cwd ?? request.cwd,
+      env: Object.fromEntries(
+        Object.entries(invocation.options.env ?? request.env).filter(([, value]) => value !== void 0).map(([name, value]) => [name, String(value)])
+      ),
+      ...invocation.options.detached ? { processGroupId: 0, sessionId: 0 } : {},
+      ...plan.descriptorMappings.length > 0 ? { descriptorMappings: plan.descriptorMappings } : {},
+      stdio: plan.stdio
+    });
+    const child = new BrowserChildProcess(
+      spawned.pid,
+      spawned.stdio,
+      invocation.options.signal
+    );
+    globalThis.queueMicrotask(() => child.emit("spawn"));
+    const waitHandle = eventLoopApi.trackRefable(
+      asyncDispatch({ op: "wait", pid: spawned.pid }).then(
+        async (waited) => {
+          const termination = waited.termination;
+          if (!termination) {
+            throw Object.assign(
+              new Error("EPROTO: blocking child wait returned a running process"),
+              { code: "EPROTO" }
+            );
+          }
+          if (termination.kind === "signal") {
+            child.signalCode = termination.signal;
+          } else {
+            child.exitCode = termination.exitCode;
+          }
+          child.emit(
+            "exit",
+            child.exitCode,
+            child.signalCode
+          );
+          await Promise.all([
+            child.stdout?.completion,
+            child.stderr?.completion
+          ]);
+          child.emit(
+            "close",
+            child.exitCode,
+            child.signalCode
+          );
+        },
+        (error) => {
+          if (executionState.cancelled) return;
+          child.emit("error", error);
+          child.emit("close", null, null);
+        }
+      )
+    );
+    child.attachRefControl(waitHandle);
+    void waitHandle.completion;
+    return child;
+  };
+  const spawnSync = (command, argsOrOptions, maybeOptions) => {
+    const invocation = normalizeInvocation(command, argsOrOptions, maybeOptions);
+    const plan = stdioPlan(invocation.options.stdio, "ignore");
+    if (plan.hasPipe) {
+      throw Object.assign(
+        new Error("ENOSYS: synchronous piped child stdio requires a nonblocking host capture path"),
+        { code: "ENOSYS" }
+      );
+    }
+    const spawned = syncDispatch({
+      op: "spawn",
+      runtime: runtimeForCommand(invocation.command),
+      command: invocation.command,
+      args: invocation.args,
+      cwd: invocation.options.cwd ?? request.cwd,
+      env: Object.fromEntries(
+        Object.entries(invocation.options.env ?? request.env).filter(([, value]) => value !== void 0).map(([name, value]) => [name, String(value)])
+      ),
+      ...invocation.options.detached ? { processGroupId: 0, sessionId: 0 } : {},
+      ...plan.descriptorMappings.length > 0 ? { descriptorMappings: plan.descriptorMappings } : {},
+      stdio: plan.stdio
+    });
+    const waited = syncDispatch({ op: "wait", pid: spawned.pid });
+    const termination = waited.termination;
+    if (!termination) {
+      throw Object.assign(
+        new Error("EPROTO: blocking child wait returned a running process"),
+        { code: "EPROTO" }
+      );
+    }
     return {
-      packageName: `${parts[0]}/${parts[1]}`,
-      subpath: parts.length > 2 ? `./${parts.slice(2).join("/")}` : "."
+      pid: spawned.pid,
+      output: [null, BrowserBuffer.alloc(0), BrowserBuffer.alloc(0)],
+      stdout: BrowserBuffer.alloc(0),
+      stderr: BrowserBuffer.alloc(0),
+      status: termination.kind === "signal" ? null : termination.exitCode,
+      signal: termination.kind === "signal" ? termination.signal : null
     };
-  }
+  };
   return {
-    packageName: parts[0] ?? "",
-    subpath: parts.length > 1 ? `./${parts.slice(1).join("/")}` : "."
+    ChildProcess: BrowserChildProcess,
+    spawn,
+    spawnSync
   };
 }
-function packageExportCandidates(modules, specifier, condition) {
-  const parsedSpecifier = packageLocationForSpecifier(specifier);
-  if (!parsedSpecifier) return [];
-  const packageRoot = parsedSpecifier.packageRoot;
-  const parsed = parsePackageJson(modules, packageRoot);
-  if (!parsed?.exports) return [];
-  const exportTarget = parsedSpecifier.subpath === "." ? packageExportTarget(parsed.exports, condition) : typeof parsed.exports === "object" && !Array.isArray(parsed.exports) ? packageExportTarget(parsed.exports[parsedSpecifier.subpath], condition) : null;
-  if (!exportTarget) {
-    return [];
-  }
-  return moduleFileCandidates(`${packageRoot}/${exportTarget}`);
-}
-function packageLocationForSpecifier(specifier) {
-  const normalized = normalizeProjectPath(specifier);
-  const parts = normalized.split("/").filter(Boolean);
-  const nodeModulesIndex = parts.lastIndexOf("node_modules");
-  if (nodeModulesIndex !== -1) {
-    const packageStart = nodeModulesIndex + 1;
-    const first = parts[packageStart];
-    if (!first) return null;
-    const packageLength = first.startsWith("@") ? 2 : 1;
-    const packageParts = parts.slice(packageStart, packageStart + packageLength);
-    if (packageParts.length !== packageLength || packageParts.some((part) => !part)) return null;
-    const packageRoot = parts.slice(0, packageStart + packageLength).join("/");
-    const subpathParts = parts.slice(packageStart + packageLength);
-    return {
-      packageRoot,
-      subpath: subpathParts.length > 0 ? `./${subpathParts.join("/")}` : "."
-    };
-  }
-  const parsedSpecifier = packageSpecifierParts(normalized);
-  if (!parsedSpecifier) return null;
+
+// packages/harness-javascript/src/node-compat/crypto.ts
+function createCryptoApi() {
+  const randomFill = (target) => {
+    const cryptoApi = globalThis.crypto;
+    if (cryptoApi?.getRandomValues) {
+      cryptoApi.getRandomValues(target);
+      return target;
+    }
+    for (let index = 0; index < target.length; index += 1) {
+      target[index] = Math.floor(Math.random() * 256);
+    }
+    return target;
+  };
   return {
-    packageRoot: `node_modules/${parsedSpecifier.packageName}`,
-    subpath: parsedSpecifier.subpath
+    randomUUID: () => globalThis.crypto?.randomUUID?.() ?? `${bytesToHex(randomFill(new Uint8Array(4)))}-${bytesToHex(randomFill(new Uint8Array(2)))}-4${bytesToHex(randomFill(new Uint8Array(2))).slice(1)}-8${bytesToHex(randomFill(new Uint8Array(2))).slice(1)}-${bytesToHex(randomFill(new Uint8Array(6)))}`,
+    randomBytes: (size) => browserBufferFromBytes(randomFill(new Uint8Array(Math.max(0, Math.floor(Number(size) || 0))))),
+    getRandomValues: (array) => randomFill(array)
   };
 }
-function moduleCandidates(modules, path, condition) {
-  const normalized = normalizeProjectPath(path);
-  return [
-    ...packageExportCandidates(modules, normalized, condition),
-    ...moduleFileCandidates(normalized),
-    ...packageMainCandidates(modules, normalized, condition),
-    `${normalized}/index.js`,
-    `${normalized}/index.json`
-  ];
-}
-function nodePathEntries(request, cwdPath, workspace) {
-  const rawNodePath = request.env.NODE_PATH;
-  if (typeof rawNodePath !== "string" || rawNodePath.trim().length === 0) {
-    return [];
-  }
-  return rawNodePath.split(":").map((entry) => entry.trim()).filter(Boolean).map((entry) => normalizeWorkspaceEntryPath(entry, cwdPath, true, workspace)).filter((entry, index, entries) => entries.indexOf(entry) === index);
-}
-function packageTypeForPath(modules, path) {
-  const normalized = normalizeProjectPath(path);
-  const parts = normalized.split("/");
-  for (let index = parts.length - 1; index >= 0; index -= 1) {
-    const directory = parts.slice(0, index).join("/");
-    const parsed = parsePackageJson(modules, directory);
-    if (typeof parsed?.type === "string") return parsed.type;
-  }
-  return null;
-}
-function isEsmModule(modules, path) {
-  const normalized = normalizeProjectPath(path);
-  if (normalized.endsWith(".mjs")) return true;
-  if (normalized.endsWith(".cjs") || normalized.endsWith(".json")) return false;
-  return normalized.endsWith(".js") && packageTypeForPath(modules, normalized) === "module";
-}
-function toRequireBinding(specifier) {
-  return `require(${JSON.stringify(specifier)})`;
-}
-function toDynamicImportBinding(specifier) {
-  return `__import(${JSON.stringify(specifier)})`;
-}
-function transformDynamicImports(code) {
-  return code.replace(
-    /\bimport\s*\(\s*(['"])([^'"]+)\1\s*\)/g,
-    (_match, _quote, specifier) => toDynamicImportBinding(specifier)
-  );
-}
-function defaultImportBinding(name, specifier, index) {
-  const moduleName = `__tracecode_esm_default_${index}`;
-  return [
-    `const ${moduleName} = ${toRequireBinding(specifier)};`,
-    `const ${name} = ${moduleName} && typeof ${moduleName} === "object" && "default" in ${moduleName} ? ${moduleName}.default : ${moduleName};`
-  ].join(" ");
-}
-function transformNamedBindings(bindings) {
-  return bindings.split(",").map((part) => part.trim()).filter(Boolean).map((part) => {
-    const [importedName, localName] = part.split(/\s+as\s+/).map((value) => value.trim());
-    return localName ? `${importedName}: ${localName}` : importedName;
-  }).join(", ");
-}
-function namedExportAssignments(bindings, moduleName) {
-  return bindings.split(",").map((part) => part.trim()).filter(Boolean).map((part) => {
-    const [localName, exportedName] = part.split(/\s+as\s+/).map((value) => value.trim());
-    const targetName = exportedName ?? localName;
-    const source = moduleName ? `${moduleName}.${localName}` : localName;
-    return `exports.${targetName} = ${source};`;
-  }).join(" ");
-}
-function transformStaticEsmToCommonJs(code, importMetaUrl) {
-  let defaultImportIndex = 0;
-  let reExportIndex = 0;
-  return transformDynamicImports(code).replace(
-    /\bimport\.meta\.url\b/g,
-    JSON.stringify(importMetaUrl ?? "file:///workspace/[eval]")
-  ).replace(
-    /^\s*export\s+\*\s+from\s+(['"])([^'"]+)\1\s*;?\s*$/gm,
-    (_match, _quote, specifier) => {
-      const moduleName = `__tracecode_esm_reexport_${reExportIndex++}`;
-      return `const ${moduleName} = ${toRequireBinding(specifier)}; for (const __tracecode_key of Object.keys(${moduleName})) { if (__tracecode_key !== "default") exports[__tracecode_key] = ${moduleName}[__tracecode_key]; }`;
+
+// packages/harness-javascript/src/node-compat/event-loop.ts
+function createBrowserEventLoopApi(executionState) {
+  const hostSetTimeout = globalThis.setTimeout.bind(globalThis);
+  const hostClearTimeout = globalThis.clearTimeout.bind(globalThis);
+  const hostQueueMicrotask = globalThis.queueMicrotask.bind(globalThis);
+  let nextTimerId = 1;
+  let pendingTimerWork = Promise.resolve();
+  let timerError;
+  let pendingExternalWork = 0;
+  const timers = /* @__PURE__ */ new Map();
+  const recordTimerWork = (work) => {
+    pendingTimerWork = Promise.allSettled([pendingTimerWork, work]).then(() => void 0);
+  };
+  const runTimerCallback = (callback, args) => {
+    const work = Promise.resolve().then(() => callback(...args)).then(
+      () => void 0,
+      (error) => {
+        timerError ??= error;
+      }
+    );
+    recordTimerWork(work);
+  };
+  const setTrackedTimeout = (callback, delay, ...args) => {
+    const id = nextTimerId++;
+    const handle = hostSetTimeout(() => {
+      timers.delete(id);
+      if (executionState.cancelled) return;
+      runTimerCallback(callback, args);
+    }, Math.max(0, Number(delay) || 0));
+    timers.set(id, { handle, interval: false });
+    return id;
+  };
+  const clearTrackedTimeout = (id) => {
+    if (typeof id !== "number") return;
+    const timer = timers.get(id);
+    if (!timer) return;
+    hostClearTimeout(timer.handle);
+    timers.delete(id);
+  };
+  const setTrackedInterval = (callback, delay, ...args) => {
+    const id = nextTimerId++;
+    const run = () => {
+      if (!timers.has(id) || executionState.cancelled) return;
+      runTimerCallback(callback, args);
+      const timer = timers.get(id);
+      if (!timer) return;
+      timer.handle = hostSetTimeout(run, Math.max(0, Number(delay) || 0));
+    };
+    const handle = hostSetTimeout(run, Math.max(0, Number(delay) || 0));
+    timers.set(id, { handle, interval: true });
+    return id;
+  };
+  const setTrackedImmediate = (callback, ...args) => setTrackedTimeout(callback, 0, ...args);
+  const drain = async () => {
+    await new Promise((resolve) => hostSetTimeout(resolve, 0));
+    while (!executionState.cancelled && (timers.size > 0 || pendingExternalWork > 0)) {
+      await new Promise((resolve) => hostSetTimeout(resolve, 0));
+      await pendingTimerWork;
+      if (timerError !== void 0) throw timerError;
+      if ([...timers.values()].some((timer) => timer.interval)) {
+        await new Promise((resolve) => hostSetTimeout(resolve, 0));
+      }
     }
-  ).replace(
-    /^\s*export\s+\{([^}]+)\}\s+from\s+(['"])([^'"]+)\2\s*;?\s*$/gm,
-    (_match, namedExports, _quote, specifier) => {
-      const moduleName = `__tracecode_esm_reexport_${reExportIndex++}`;
-      return `const ${moduleName} = ${toRequireBinding(specifier)}; ${namedExportAssignments(namedExports, moduleName)}`;
+    if (!executionState.cancelled) await pendingTimerWork;
+    if (timerError !== void 0) throw timerError;
+  };
+  const clearAll = () => {
+    for (const timer of timers.values()) {
+      hostClearTimeout(timer.handle);
     }
-  ).replace(
-    /^\s*import\s+([\w$]+)\s*,\s*\*\s+as\s+([\w$]+)\s+from\s+(['"])([^'"]+)\3\s*;?\s*$/gm,
-    (_match, defaultName, namespaceName, _quote, specifier) => {
-      const required = toRequireBinding(specifier);
-      const moduleName = `__tracecode_esm_default_${defaultImportIndex++}`;
-      return `const ${namespaceName} = ${required}; const ${moduleName} = ${namespaceName}; const ${defaultName} = ${moduleName} && typeof ${moduleName} === "object" && "default" in ${moduleName} ? ${moduleName}.default : ${moduleName};`;
-    }
-  ).replace(
-    /^\s*import\s+([\w$]+)\s*,\s*\{([^}]+)\}\s+from\s+(['"])([^'"]+)\3\s*;?\s*$/gm,
-    (_match, defaultName, namedImports, _quote, specifier) => {
-      const required = toRequireBinding(specifier);
-      const moduleName = `__tracecode_esm_default_${defaultImportIndex++}`;
-      return `const ${moduleName} = ${required}; const { ${transformNamedBindings(namedImports)} } = ${moduleName}; const ${defaultName} = ${moduleName} && typeof ${moduleName} === "object" && "default" in ${moduleName} ? ${moduleName}.default : ${moduleName};`;
-    }
-  ).replace(
-    /^\s*import\s+\*\s+as\s+([\w$]+)\s+from\s+(['"])([^'"]+)\2\s*;?\s*$/gm,
-    (_match, namespaceName, _quote, specifier) => `const ${namespaceName} = ${toRequireBinding(specifier)};`
-  ).replace(
-    /\bimport\s+\{([^}]+)\}\s+from\s+(['"])([^'"]+)\2\s*;?/g,
-    (_match, namedImports, _quote, specifier) => `const { ${transformNamedBindings(namedImports)} } = ${toRequireBinding(specifier)};`
-  ).replace(
-    /^\s*import\s+([\w$]+)\s+from\s+(['"])([^'"]+)\2\s*;?\s*$/gm,
-    (_match, defaultName, _quote, specifier) => defaultImportBinding(defaultName, specifier, defaultImportIndex++)
-  ).replace(
-    /^\s*import\s+(['"])([^'"]+)\1\s*;?\s*$/gm,
-    (_match, _quote, specifier) => `${toRequireBinding(specifier)};`
-  ).replace(
-    /^\s*export\s+function\s+([\w$]+)\s*\(/gm,
-    (_match, name) => `exports.${name} = function ${name}(`
-  ).replace(
-    /^\s*export\s+class\s+([\w$]+)\s*/gm,
-    (_match, name) => `exports.${name} = class ${name} `
-  ).replace(
-    /^\s*export\s+(const|let|var)\s+([\w$]+)\s*=/gm,
-    (_match, declaration, name) => `${declaration} ${name} = exports.${name} =`
-  ).replace(
-    /^\s*export\s+default\s+/gm,
-    "exports.default = "
-  ).replace(
-    /^\s*export\s+\{([^}]+)\}\s*;?\s*$/gm,
-    (_match, namedExports) => namedExportAssignments(namedExports)
-  );
-}
-function resolveModulePath(modules, specifier, parentPath, nodePathSearchEntries = [], condition = "require") {
-  const basePaths = specifier.startsWith(".") ? [joinModulePath(parentPath, specifier)] : [
-    ...nodeModulesSearchPaths(parentPath, specifier),
-    specifier,
-    ...nodePathSearchEntries.map((entry) => entry ? `${entry}/${specifier}` : specifier)
-  ];
-  for (const basePath of basePaths) {
-    for (const candidate of moduleCandidates(modules, basePath, condition)) {
-      if (modules.has(candidate)) return candidate;
-    }
-  }
-  throw new Error(`Cannot find module '${specifier}'`);
-}
-function nodeModulesSearchPaths(parentPath, specifier) {
-  const parentDirectory = dirname(normalizeProjectPath(parentPath));
-  const parts = parentDirectory ? parentDirectory.split("/").filter(Boolean) : [];
-  const paths = [];
-  for (let index = parts.length; index >= 0; index -= 1) {
-    const directory = parts.slice(0, index).join("/");
-    paths.push(directory ? `${directory}/node_modules/${specifier}` : `node_modules/${specifier}`);
-  }
-  return paths;
-}
-function moduleSearchPaths(parentPath, workspaceRoot = "/workspace") {
-  return nodeModulesSearchPaths(parentPath, "").map((path) => workspaceFilename(path.replace(/\/$/, ""), workspaceRoot));
-}
-function formatConsoleValues(values) {
-  return values.map((value) => {
-    if (typeof value === "string") return value;
-    if (value instanceof Error) return value.stack ?? value.message;
-    try {
-      return JSON.stringify(value);
-    } catch {
-      return String(value);
-    }
-  }).join(" ");
-}
-function formatBrowserJavaScriptErrorForStderr(error) {
-  if (error instanceof Error) {
-    const text = typeof error.stack === "string" && error.stack.trim() ? error.stack : error.message;
-    return `${text.trimEnd()}
-`;
-  }
-  return `${String(error)}
-`;
-}
-function isBrowserJavaScriptUserStackFrame(line, sourcePath) {
-  return line.includes(sourcePath) || line.includes("/workspace/");
-}
-function isBrowserJavaScriptInternalStackFrame(line) {
-  return line.includes("/@fs/") || line.includes("/packages/harness-") || line.includes("/dist/browser/project.js") || line.includes("/workers/javascript-project-worker.js") || line.includes("javascript-project-worker.js:") || line.includes("blob:") || line.includes("runBrowserJavaScriptProjectRequest") || line.includes("executeEntrypoint") || line.includes("executeModule") || line.includes("resolveModulePath") || line.includes("requireModule") || line.includes("createHttpApi") || line.includes("registerHttpListener") || line.includes("at new Function") || line.includes("at new AsyncFunction");
-}
-function sanitizeBrowserJavaScriptStack(error, sourcePath) {
-  if (!(error instanceof Error) || typeof error.stack !== "string" || !error.stack.trim()) {
-    return error;
-  }
-  const mappedStack = error.stack.replace(
-    /\(eval at [^,]+ \([^)]*\), <anonymous>:(\d+):(\d+)\)/g,
-    (_match, line, column) => `(${sourcePath}:${Math.max(1, Number(line) - 2)}:${column})`
-  );
-  const stackLines = mappedStack.split("\n");
-  const lines = [stackLines[0] ?? error.message];
-  for (const line of stackLines.slice(1)) {
-    if (isBrowserJavaScriptUserStackFrame(line, sourcePath)) {
-      lines.push(line);
-      continue;
-    }
-    if (isBrowserJavaScriptInternalStackFrame(line)) continue;
-  }
-  if (lines.length === 1) lines.push(`    at ${sourcePath}:1:1`);
-  Object.defineProperty(error, "stack", {
-    configurable: true,
-    value: lines.join("\n")
-  });
-  return error;
-}
-function processArgvForRequest(request) {
-  const executable = "/usr/local/bin/node";
-  if (request.source === "argument") {
-    return [executable, ...request.args];
-  }
-  if (request.source === "stdin") {
-    return [executable, "-", ...request.args];
-  }
-  const requestedScriptPath = request.scriptPath || "<anonymous>";
-  const scriptPath = requestedScriptPath.startsWith("/") ? requestedScriptPath : `${request.project.workspaceRoot ?? request.project.cwd ?? "/workspace"}/${normalizeProjectPath([
-    workspaceCwdPath(request),
-    requestedScriptPath
-  ].filter(Boolean).join("/"))}`;
-  return [executable, scriptPath, ...request.args];
-}
-function requireModulesForRequest(request) {
-  return Array.isArray(request.options?.require) ? request.options.require.filter((item) => typeof item === "string") : [];
-}
-async function runBrowserJavaScriptProjectRequest(request, options, executionState) {
-  if (options.allowDynamicEval === false) {
-    const stderr2 = "node: JavaScript runtime is unavailable\n";
-    const io2 = createRuntimeProjectIoBridge(request.onEvent);
-    io2.output("stderr", stderr2);
-    io2.status("process-exit", "Browser Node exited", { command: "node", exitCode: 126 });
+    timers.clear();
+    pendingExternalWork = 0;
+  };
+  const track = (work) => {
+    pendingExternalWork += 1;
+    return work.finally(() => {
+      pendingExternalWork = Math.max(0, pendingExternalWork - 1);
+    });
+  };
+  const trackRefable = (work) => {
+    let referenced = true;
+    let settled = false;
+    pendingExternalWork += 1;
+    const completion = work.finally(() => {
+      settled = true;
+      if (referenced) {
+        pendingExternalWork = Math.max(0, pendingExternalWork - 1);
+      }
+    });
     return {
-      stdout: "",
-      stderr: stderr2,
-      exitCode: 126,
-      error: {
-        code: "ENOEXEC",
-        errno: 8,
-        message: "JavaScript runtime is unavailable",
-        detail: { diagnostic: "Dynamic evaluation is disabled" }
+      completion,
+      ref() {
+        if (settled || referenced) return;
+        referenced = true;
+        pendingExternalWork += 1;
+      },
+      unref() {
+        if (settled || !referenced) return;
+        referenced = false;
+        pendingExternalWork = Math.max(0, pendingExternalWork - 1);
       }
     };
+  };
+  return {
+    setTimeout: setTrackedTimeout,
+    clearTimeout: clearTrackedTimeout,
+    setInterval: setTrackedInterval,
+    clearInterval: clearTrackedTimeout,
+    setImmediate: setTrackedImmediate,
+    clearImmediate: clearTrackedTimeout,
+    queueMicrotask: hostQueueMicrotask,
+    track,
+    trackRefable,
+    drain,
+    clearAll
+  };
+}
+
+// packages/harness-javascript/src/node-compat/path-os.ts
+function createPathApi(getCwd, workspaceRoot) {
+  const normalizePath = (value) => {
+    const raw = String(value).replace(/\\/g, "/");
+    const isAbsolute2 = raw.startsWith("/");
+    const parts = [];
+    for (const part of raw.split("/")) {
+      if (!part || part === ".") continue;
+      if (part === "..") {
+        const previous = parts[parts.length - 1];
+        if (previous && previous !== "..") {
+          parts.pop();
+        } else if (!isAbsolute2) {
+          parts.push("..");
+        }
+      } else {
+        parts.push(part);
+      }
+    }
+    const normalized = parts.join("/");
+    if (isAbsolute2) return normalized ? `/${normalized}` : "/";
+    return normalized || ".";
+  };
+  const cwdAbsolutePath = () => {
+    const cwd = getCwd();
+    return cwd ? `${workspaceRoot}/${cwd}` : workspaceRoot;
+  };
+  const isAbsolute = (path) => String(path).startsWith("/");
+  const normalize = (path) => normalizePath(path);
+  const join = (...parts) => normalizePath(parts.filter((part) => String(part).length > 0).join("/"));
+  const resolve = (...parts) => {
+    const rawParts = parts.map((part) => String(part)).filter((part) => part.length > 0);
+    let resolved = "";
+    for (let index = rawParts.length - 1; index >= 0; index -= 1) {
+      resolved = resolved ? `${rawParts[index]}/${resolved}` : rawParts[index] ?? "";
+      if (resolved.startsWith("/")) return normalizePath(resolved);
+    }
+    return normalizePath(`${cwdAbsolutePath()}/${resolved}`);
+  };
+  const dirnameApi = (path) => {
+    const normalized = normalizePath(path);
+    if (normalized === "/") return "/";
+    const withoutTrailingSlash = normalized.replace(/\/+$/, "");
+    const index = withoutTrailingSlash.lastIndexOf("/");
+    if (index === -1) return ".";
+    if (index === 0) return "/";
+    return withoutTrailingSlash.slice(0, index);
+  };
+  const basename = (path, suffix) => {
+    const normalized = normalizePath(path).replace(/\/+$/, "");
+    const base = normalized.slice(normalized.lastIndexOf("/") + 1);
+    return suffix && base.endsWith(suffix) ? base.slice(0, -suffix.length) : base;
+  };
+  const extname = (path) => {
+    const base = basename(path);
+    const index = base.lastIndexOf(".");
+    if (index <= 0) return "";
+    return base.slice(index);
+  };
+  const relative = (from, to) => {
+    const fromParts = resolve(from).split("/").filter(Boolean);
+    const toParts = resolve(to).split("/").filter(Boolean);
+    let common = 0;
+    while (common < fromParts.length && common < toParts.length && fromParts[common] === toParts[common]) {
+      common += 1;
+    }
+    return [
+      ...fromParts.slice(common).map(() => ".."),
+      ...toParts.slice(common)
+    ].join("/") || "";
+  };
+  const parse = (path) => {
+    const normalized = normalizePath(path);
+    const root = normalized.startsWith("/") ? "/" : "";
+    const dir = dirnameApi(normalized);
+    const base = basename(normalized);
+    const ext = extname(base);
+    const name = ext ? base.slice(0, -ext.length) : base;
+    return {
+      root,
+      dir: dir === "." ? "" : dir,
+      base,
+      ext,
+      name
+    };
+  };
+  const format = (pathObject) => {
+    const dir = pathObject.dir || pathObject.root || "";
+    const base = pathObject.base ?? `${pathObject.name ?? ""}${pathObject.ext ?? ""}`;
+    if (!dir) return base;
+    if (dir === "/") return `/${base}`;
+    return `${dir}/${base}`;
+  };
+  const api = {
+    sep: "/",
+    delimiter: ":",
+    normalize,
+    join,
+    resolve,
+    dirname: dirnameApi,
+    basename,
+    extname,
+    isAbsolute,
+    relative,
+    parse,
+    format
+  };
+  return { ...api, posix: api };
+}
+function inferWorkspaceHome(workspaceRoot) {
+  const parts = workspaceRoot.split("/").filter(Boolean);
+  if (parts.length >= 3 && parts[0] === "home") {
+    return `/${parts.slice(0, 2).join("/")}`;
   }
+  const parent = dirname(workspaceRoot);
+  return parent || workspaceRoot;
+}
+function workspaceUsername(workspaceHome) {
+  const parts = workspaceHome.split("/").filter(Boolean);
+  return parts[parts.length - 1] ?? "browser";
+}
+function createOsApi(workspaceRoot, kernelInfo) {
+  const home = inferWorkspaceHome(workspaceRoot);
+  const cpuCount = Math.max(1, Math.min(8, Math.floor(globalThis.navigator?.hardwareConcurrency ?? 2)));
+  const cpu = () => ({
+    model: "Virtual CPU",
+    speed: 2400,
+    times: { user: 0, nice: 0, sys: 0, idle: 0, irq: 0 }
+  });
+  return {
+    EOL: "\n",
+    devNull: "/dev/null",
+    arch: () => "x64",
+    availableParallelism: () => cpuCount,
+    cpus: () => Array.from({ length: cpuCount }, cpu),
+    endianness: () => "LE",
+    freemem: () => 6 * 1024 * 1024 * 1024,
+    homedir: () => home,
+    hostname: () => kernelInfo.host.hostname,
+    loadavg: () => [0, 0, 0],
+    machine: () => "x86_64",
+    networkInterfaces: () => ({}),
+    platform: () => "tracekernel",
+    release: () => kernelInfo.version,
+    tmpdir: () => "/tmp",
+    totalmem: () => 8 * 1024 * 1024 * 1024,
+    type: () => "tracekernel",
+    uptime: () => 0,
+    version: () => kernelInfo.version,
+    userInfo: () => ({
+      username: workspaceUsername(home),
+      uid: 1e3,
+      gid: 1e3,
+      shell: "/bin/bash",
+      homedir: home
+    })
+  };
+}
+
+// packages/harness-javascript/src/node-compat/streams.ts
+var streamInternalCloseListeners = /* @__PURE__ */ new WeakMap();
+function setStreamInternalCloseListeners(stream, listeners) {
+  streamInternalCloseListeners.set(stream, listeners);
+}
+function addStreamInternalCloseListener(stream, listener) {
+  if (typeof stream !== "object" && typeof stream !== "function" || stream === null) return;
+  streamInternalCloseListeners.get(stream)?.add(listener);
+}
+function createStreamApi() {
+  class PassThrough extends BrowserEventEmitter {
+    ended = false;
+    write(chunk) {
+      if (this.ended) throw new Error("write after end");
+      this.emit("data", BrowserBuffer.isBuffer(chunk) ? chunk : BrowserBuffer.from(chunk));
+      return true;
+    }
+    end(chunk) {
+      if (chunk !== void 0) this.write(chunk);
+      this.ended = true;
+      this.emit("end");
+      this.emit("finish");
+      return this;
+    }
+    pipe(destination) {
+      this.on("data", (chunk) => destination.write(chunk));
+      this.on("end", () => destination.end?.());
+      return destination;
+    }
+  }
+  return {
+    Stream: BrowserEventEmitter,
+    Readable: PassThrough,
+    Writable: PassThrough,
+    Duplex: PassThrough,
+    Transform: PassThrough,
+    PassThrough
+  };
+}
+
+// packages/harness-javascript/src/node-compat/timers.ts
+function createTimersPromisesApi(eventLoopApi) {
+  return {
+    setTimeout: (delay, value) => new Promise((resolve) => {
+      eventLoopApi.setTimeout(() => resolve(value), delay);
+    }),
+    setImmediate: (value) => new Promise((resolve) => {
+      eventLoopApi.setImmediate(() => resolve(value));
+    })
+  };
+}
+
+// packages/harness-javascript/src/node-compat/url.ts
+function createUrlApi() {
+  return {
+    URL,
+    URLSearchParams,
+    domainToASCII: (domain) => {
+      try {
+        return new URL(`http://${domain}`).hostname;
+      } catch {
+        return "";
+      }
+    },
+    domainToUnicode: (domain) => {
+      try {
+        return new URL(`http://${domain}`).hostname;
+      } catch {
+        return "";
+      }
+    },
+    fileURLToPath: (value) => {
+      const url = value instanceof URL ? value : new URL(value);
+      if (url.protocol !== "file:") {
+        throw new TypeError("The URL must be of scheme file");
+      }
+      return decodeURIComponent(url.pathname);
+    },
+    pathToFileURL: (path) => new URL(`file://${path.startsWith("/") ? path : `/${path}`}`)
+  };
+}
+
+// packages/harness-javascript/src/browser/request-state.ts
+function createBrowserJavaScriptRequestState(request, options, executionState) {
   const stdout = [];
   const stderr = [];
   const liveIo = new RuntimeProjectLiveIoController({
@@ -10333,16 +10084,143 @@ async function runBrowserJavaScriptProjectRequest(request, options, executionSta
       modules.delete(path);
     }
   };
+  return {
+    assertApi,
+    cache,
+    childProcessApi,
+    consoleApi,
+    createEntryMetadata,
+    cryptoApi,
+    cwdPath,
+    deleteEntryMetadata,
+    directoryStore,
+    entryMetadata,
+    eventLoopApi,
+    eventsApi,
+    fileStore,
+    hardLinkGroupForPath,
+    io,
+    isHiddenNamespacePath,
+    kernelDevices,
+    kernelInfo,
+    linkPaths,
+    linkedInodeForPath,
+    liveIo,
+    modules,
+    moveHardLinkPath,
+    nodePathSearchEntries,
+    originalDirectoryMetadata,
+    originalFiles,
+    originalSymlinks,
+    osApi,
+    pathApi,
+    procSnapshot,
+    processApi,
+    readDevice,
+    readDeviceBytes,
+    readonlyFiles,
+    refreshSymlinkModuleAliases,
+    requireCache,
+    resolveStoredSymlinkPath,
+    resolveWorkspaceEntryPath,
+    runtimeFileForPath,
+    stderr,
+    stdout,
+    streamApi,
+    symlinkStore,
+    syncTextModule,
+    timersPromisesApi,
+    touchEntryMetadata,
+    traceKernelApi,
+    unlinkPathFromHardLinks,
+    unmodeledStorageBytes,
+    unmodeledStorageEntries,
+    updateEntryMetadata,
+    urlApi,
+    utilApi,
+    virtualStorageEntries,
+    workspacePathContext,
+    workspaceRoot,
+    writeDevice,
+    get fsTimestampMs() {
+      return fsTimestampMs;
+    },
+    set fsTimestampMs(value) {
+      fsTimestampMs = value;
+    },
+    get mainModule() {
+      return mainModule;
+    },
+    set mainModule(value) {
+      mainModule = value;
+    }
+  };
+}
+
+// packages/harness-javascript/src/kernel/filesystem-state.ts
+function createBrowserFileSystemState(requestState, request, executionState) {
+  const {
+    assertApi,
+    cache,
+    childProcessApi,
+    consoleApi,
+    createEntryMetadata,
+    cryptoApi,
+    cwdPath,
+    deleteEntryMetadata,
+    directoryStore,
+    entryMetadata,
+    eventLoopApi,
+    eventsApi,
+    fileStore,
+    hardLinkGroupForPath,
+    io,
+    isHiddenNamespacePath,
+    kernelDevices,
+    kernelInfo,
+    linkPaths,
+    linkedInodeForPath,
+    liveIo,
+    modules,
+    moveHardLinkPath,
+    nodePathSearchEntries,
+    originalDirectoryMetadata,
+    originalFiles,
+    originalSymlinks,
+    osApi,
+    pathApi,
+    procSnapshot,
+    processApi,
+    readDevice,
+    readDeviceBytes,
+    readonlyFiles,
+    refreshSymlinkModuleAliases,
+    requireCache,
+    resolveStoredSymlinkPath,
+    resolveWorkspaceEntryPath,
+    runtimeFileForPath,
+    stderr,
+    stdout,
+    streamApi,
+    symlinkStore,
+    syncTextModule,
+    timersPromisesApi,
+    touchEntryMetadata,
+    traceKernelApi,
+    unlinkPathFromHardLinks,
+    unmodeledStorageBytes,
+    unmodeledStorageEntries,
+    updateEntryMetadata,
+    urlApi,
+    utilApi,
+    virtualStorageEntries,
+    workspacePathContext,
+    workspaceRoot,
+    writeDevice
+  } = requestState;
+  let fsApiBridge;
   const fsWatchers = /* @__PURE__ */ new Set();
   const fsFileWatchers = /* @__PURE__ */ new Set();
-  const inodeForPath = (path) => {
-    let hash = 2166136261;
-    for (let index = 0; index < path.length; index += 1) {
-      hash ^= path.charCodeAt(index);
-      hash = Math.imul(hash, 16777619);
-    }
-    return hash >>> 0 || 1;
-  };
   const statForNormalizedPath = (normalized, followFinal = true) => {
     if (!followFinal && symlinkStore.has(normalized)) {
       const target = symlinkStore.get(normalized);
@@ -10415,24 +10293,24 @@ async function runBrowserJavaScriptProjectRequest(request, options, executionSta
     const modeType = kernelStat.isDirectory ? 16384 : kernelStat.isCharacterDevice ? 8192 : 32768;
     const mode = modeType | kernelStat.mode;
     return {
-      atimeMs: fsTimestampMs,
-      birthtimeMs: fsTimestampMs,
+      atimeMs: requestState.fsTimestampMs,
+      birthtimeMs: requestState.fsTimestampMs,
       blksize: 4096,
       blocks: Math.ceil(kernelStat.size / 512),
-      ctimeMs: fsTimestampMs,
+      ctimeMs: requestState.fsTimestampMs,
       dev: 1,
       gid: 0,
       ino: inodeForPath(path),
       mode,
-      mtimeMs: fsTimestampMs,
+      mtimeMs: requestState.fsTimestampMs,
       nlink: kernelStat.isDirectory ? 2 : 1,
       rdev: 0,
       size: kernelStat.size,
       uid: 0,
-      atime: new Date(fsTimestampMs),
-      birthtime: new Date(fsTimestampMs),
-      ctime: new Date(fsTimestampMs),
-      mtime: new Date(fsTimestampMs),
+      atime: new Date(requestState.fsTimestampMs),
+      birthtime: new Date(requestState.fsTimestampMs),
+      ctime: new Date(requestState.fsTimestampMs),
+      mtime: new Date(requestState.fsTimestampMs),
       isBlockDevice: () => false,
       isCharacterDevice: () => kernelStat.isCharacterDevice,
       isFIFO: () => false,
@@ -10475,11 +10353,11 @@ async function runBrowserJavaScriptProjectRequest(request, options, executionSta
       isSymbolicLink: () => symbolicLink
     };
   };
-  const statForKernelTarget = (path, options2) => {
+  const statForKernelTarget = (path, options) => {
     const statTarget = runtimeStatTarget(path, kernelInfo, kernelDevices, procSnapshot);
     if (!statTarget || statTarget.kind === "workspace") return null;
     if (statTarget.kind === "error") {
-      if (options2?.throwIfNoEntry === false) return void 0;
+      if (options?.throwIfNoEntry === false) return void 0;
       throw Object.assign(new Error(`ENOENT: no such file or directory, stat '${path}'`), { code: "ENOENT" });
     }
     return statForKernelPath(statTarget.path, statTarget.stat);
@@ -10515,8 +10393,8 @@ async function runBrowserJavaScriptProjectRequest(request, options, executionSta
       Object.entries(stats).map(([key, value]) => [key, BigInt(value)])
     );
   };
-  const browserStatsResult = (stats, options2) => {
-    if (!options2?.bigint) return stats;
+  const browserStatsResult = (stats, options) => {
+    if (!options?.bigint) return stats;
     return {
       ...stats,
       atimeMs: BigInt(Math.trunc(stats.atimeMs)),
@@ -10628,8 +10506,8 @@ async function runBrowserJavaScriptProjectRequest(request, options, executionSta
     }
     let movedMetadata;
     if (preservedMetadata) {
-      fsTimestampMs += 1;
-      movedMetadata = { ...preservedMetadata, ctimeMs: fsTimestampMs };
+      requestState.fsTimestampMs += 1;
+      movedMetadata = { ...preservedMetadata, ctimeMs: requestState.fsTimestampMs };
     }
     for (const linkedPath of linkedPaths) {
       fileStore.set(linkedPath, bytes);
@@ -10852,10 +10730,10 @@ async function runBrowserJavaScriptProjectRequest(request, options, executionSta
         closeStream();
         return stream;
       },
-      pipe: (destination, options2) => {
+      pipe: (destination, options) => {
         const onData = (chunk) => destination.write?.(chunk);
         const onEnd = () => {
-          if (options2?.end !== false) destination.end?.();
+          if (options?.end !== false) destination.end?.();
         };
         pipeBindings.push({ destination, onData, onEnd });
         events.on("data", onData);
@@ -10881,11 +10759,11 @@ async function runBrowserJavaScriptProjectRequest(request, options, executionSta
     setStreamInternalCloseListeners(stream, internalCloseListeners);
     return stream;
   };
-  const createWritableStream = (path, options2) => {
+  const createWritableStream = (path, options) => {
     const events = createEventTarget();
-    const optionFd = typeof options2 === "object" && typeof options2?.fd === "number" ? options2.fd : null;
-    const encoding = requestedEncodingFromOptions(options2);
-    const flags = typeof options2 === "object" && typeof options2?.flags === "string" ? options2.flags : "w";
+    const optionFd = typeof options === "object" && typeof options?.fd === "number" ? options.fd : null;
+    const encoding = requestedEncodingFromOptions(options);
+    const flags = typeof options === "object" && typeof options?.flags === "string" ? options.flags : "w";
     const parsed = parseOpenFlags(flags);
     const openTarget = optionFd === null ? runtimeOpenTarget(path, {
       ...parsed,
@@ -10899,11 +10777,11 @@ async function runBrowserJavaScriptProjectRequest(request, options, executionSta
       });
     }
     const device = openTarget?.kind === "device" ? openTarget.device : null;
-    const autoClose = typeof options2 === "object" && options2?.autoClose === false ? false : true;
+    const autoClose = typeof options === "object" && options?.autoClose === false ? false : true;
     if (executionState.kernelFileSystem && optionFd === null && (openTarget === null || openTarget?.kind === "workspace")) {
-      const openedFd = fsApi.openSync(path, flags);
+      const openedFd = fsApiBridge.openSync(path, flags);
       return createWritableStream(null, {
-        ...typeof options2 === "object" && options2 ? options2 : {},
+        ...typeof options === "object" && options ? options : {},
         fd: openedFd,
         flags,
         autoClose
@@ -10929,8 +10807,8 @@ async function runBrowserJavaScriptProjectRequest(request, options, executionSta
     let writableEnded = false;
     let writableFinished = false;
     let writableCorked = 0;
-    let writeOffset = typeof options2 === "object" && typeof options2?.start === "number" ? Math.max(0, options2.start) : 0;
-    const hasExplicitWriteStart = typeof options2 === "object" && typeof options2?.start === "number";
+    let writeOffset = typeof options === "object" && typeof options?.start === "number" ? Math.max(0, options.start) : 0;
+    const hasExplicitWriteStart = typeof options === "object" && typeof options?.start === "number";
     const internalCloseListeners = /* @__PURE__ */ new Set();
     const writeBytes = (value, writeEncoding) => {
       if (writableEnded) {
@@ -10974,7 +10852,7 @@ async function runBrowserJavaScriptProjectRequest(request, options, executionSta
       queueMicrotask(() => {
         if (error) events.emit("error", error);
         done?.();
-        if (autoClose && optionFd !== null) fsApi.closeSync(optionFd);
+        if (autoClose && optionFd !== null) fsApiBridge.closeSync(optionFd);
         for (const listener of internalCloseListeners) listener();
         internalCloseListeners.clear();
         if (emitFinish) {
@@ -11290,7 +11168,7 @@ async function runBrowserJavaScriptProjectRequest(request, options, executionSta
     if (value instanceof Date) return value.getTime();
     if (typeof value === "number") return Math.max(0, value * 1e3);
     const parsed = Number(value);
-    return Number.isFinite(parsed) ? Math.max(0, parsed * 1e3) : fsTimestampMs;
+    return Number.isFinite(parsed) ? Math.max(0, parsed * 1e3) : requestState.fsTimestampMs;
   };
   const stdioDescriptor = (device, append = false) => ({
     kind: "device",
@@ -11536,10 +11414,10 @@ async function runBrowserJavaScriptProjectRequest(request, options, executionSta
     }
     return workspaceFilename(normalized, workspaceRoot);
   };
-  const copyEntrySync = (source, destination, options2 = {}) => {
+  const copyEntrySync = (source, destination, options = {}) => {
     const copyTarget = runtimeCopyTarget(source, destination, kernelDevices, procSnapshot);
     if (copyTarget?.kind === "file-copy") {
-      fsApi.copyFileSync(source, destination);
+      fsApiBridge.copyFileSync(source, destination);
       return;
     }
     if (copyTarget?.kind === "error") {
@@ -11551,7 +11429,7 @@ async function runBrowserJavaScriptProjectRequest(request, options, executionSta
     const normalizedDestination = resolveWorkspaceEntryPath(destination, false);
     const sourcePath = workspaceFilename(normalizedSource, workspaceRoot);
     const destinationPath = workspaceFilename(normalizedDestination, workspaceRoot);
-    if (options2.filter && !options2.filter(sourcePath, destinationPath)) return;
+    if (options.filter && !options.filter(sourcePath, destinationPath)) return;
     if (normalizedSource === normalizedDestination) {
       throw Object.assign(new Error(`${source} and dest cannot be the same ${destination}`), {
         code: "ERR_FS_CP_EINVAL"
@@ -11559,8 +11437,8 @@ async function runBrowserJavaScriptProjectRequest(request, options, executionSta
     }
     const sourceLinkTarget = symlinkStore.get(normalizedSource);
     if (sourceLinkTarget !== void 0) {
-      if ((fileStore.has(normalizedDestination) || symlinkStore.has(normalizedDestination) || directoryStore.has(normalizedDestination)) && options2.force === false) {
-        if (options2.errorOnExist) {
+      if ((fileStore.has(normalizedDestination) || symlinkStore.has(normalizedDestination) || directoryStore.has(normalizedDestination)) && options.force === false) {
+        if (options.errorOnExist) {
           throw Object.assign(new Error(`EEXIST: file already exists, cp '${destination}'`), { code: "EEXIST" });
         }
         return;
@@ -11587,8 +11465,8 @@ async function runBrowserJavaScriptProjectRequest(request, options, executionSta
           code: "ERR_FS_CP_NON_DIR_TO_DIR"
         });
       }
-      if (fileStore.has(normalizedDestination) && options2.force === false) {
-        if (options2.errorOnExist) {
+      if (fileStore.has(normalizedDestination) && options.force === false) {
+        if (options.errorOnExist) {
           throw Object.assign(new Error(`EEXIST: file already exists, cp '${destination}'`), { code: "EEXIST" });
         }
         return;
@@ -11597,8 +11475,8 @@ async function runBrowserJavaScriptProjectRequest(request, options, executionSta
       return;
     }
     const destinationExists = fileStore.has(normalizedDestination) || directoryStore.has(normalizedDestination);
-    if (destinationExists && options2.force === false) {
-      if (options2.errorOnExist) {
+    if (destinationExists && options.force === false) {
+      if (options.errorOnExist) {
         throw Object.assign(new Error(`EEXIST: file already exists, cp '${destination}'`), { code: "EEXIST" });
       }
       return;
@@ -11612,7 +11490,7 @@ async function runBrowserJavaScriptProjectRequest(request, options, executionSta
     if (!directoryStore.has(normalizedSource) && descendantFiles.length === 0 && descendantSymlinks.length === 0 && descendantDirectories.length === 0) {
       throw Object.assign(new Error(`ENOENT: no such file or directory, cp '${source}' -> '${destination}'`), { code: "ENOENT" });
     }
-    if (!options2.recursive) {
+    if (!options.recursive) {
       throw Object.assign(new Error(`EISDIR: illegal operation on a directory, cp '${source}'`), { code: "EISDIR" });
     }
     if (normalizedDestination.startsWith(`${normalizedSource}/`)) {
@@ -11632,7 +11510,7 @@ async function runBrowserJavaScriptProjectRequest(request, options, executionSta
     for (const directoryPath of descendantDirectories) {
       const relative = directoryPath === normalizedSource ? "" : directoryPath.slice(sourcePrefix.length);
       const nextDirectory = relative ? `${normalizedDestination}/${relative}` : normalizedDestination;
-      if (options2.filter && !options2.filter(workspaceFilename(directoryPath, workspaceRoot), workspaceFilename(nextDirectory, workspaceRoot))) {
+      if (options.filter && !options.filter(workspaceFilename(directoryPath, workspaceRoot), workspaceFilename(nextDirectory, workspaceRoot))) {
         continue;
       }
       const existed = directoryStore.has(nextDirectory);
@@ -11643,7 +11521,7 @@ async function runBrowserJavaScriptProjectRequest(request, options, executionSta
     for (const [filePath, bytes] of descendantFiles) {
       const relative = filePath.slice(sourcePrefix.length);
       const nextPath = normalizedDestination ? `${normalizedDestination}/${relative}` : relative;
-      if (options2.filter && !options2.filter(workspaceFilename(filePath, workspaceRoot), workspaceFilename(nextPath, workspaceRoot))) {
+      if (options.filter && !options.filter(workspaceFilename(filePath, workspaceRoot), workspaceFilename(nextPath, workspaceRoot))) {
         continue;
       }
       setFileBytes(nextPath, new Uint8Array(bytes));
@@ -11651,7 +11529,7 @@ async function runBrowserJavaScriptProjectRequest(request, options, executionSta
     for (const [linkPath, target] of descendantSymlinks) {
       const relative = linkPath.slice(sourcePrefix.length);
       const nextPath = normalizedDestination ? `${normalizedDestination}/${relative}` : relative;
-      if (options2.filter && !options2.filter(workspaceFilename(linkPath, workspaceRoot), workspaceFilename(nextPath, workspaceRoot))) {
+      if (options.filter && !options.filter(workspaceFilename(linkPath, workspaceRoot), workspaceFilename(nextPath, workspaceRoot))) {
         continue;
       }
       symlinkStore.set(nextPath, target);
@@ -11659,6 +11537,178 @@ async function runBrowserJavaScriptProjectRequest(request, options, executionSta
       io.fileChange({ path: nextPath, symlink: true, target }, "live");
     }
   };
+  return {
+    assertFileSystemAccess,
+    assertReadonlyFilePath,
+    assertStreamRangeInteger,
+    assertWorkspaceFileWritePath,
+    assertWorkspaceParentDirectoryPath,
+    browserFileSystemStat,
+    browserStatsResult,
+    copyEntrySync,
+    createReadableStream,
+    createWritableStream,
+    deleteFile,
+    descriptorBytes,
+    descriptorMetadataPath,
+    emitDirectoryCreate,
+    emitDirectoryDelete,
+    emitFsWatch,
+    fileDescriptor,
+    fileDescriptors,
+    fileSystemEntryExists,
+    fsConstants,
+    fsFileWatchers,
+    fsWatchers,
+    isWorkspaceDirectoryPath,
+    metadataPathForEntry,
+    missingFileStat,
+    moveOpenFileDescriptorPath,
+    notifyDirectoryMutation,
+    notifyFsWatchers,
+    notifyMetadataMutation,
+    notifyWatchFileWatchers,
+    parseOpenFlags,
+    readDescriptorFileBytes,
+    realpathForEntry,
+    setFileBytes,
+    statForKernelPath,
+    statForKernelTarget,
+    statForNormalizedPath,
+    statForTraceKernelPath,
+    timeToMs,
+    truncateDescriptorBytes,
+    truncateFileBytes,
+    watchedFilename,
+    workspaceFileAncestor,
+    writeDescriptorBytes,
+    writeDescriptorFileBytes,
+    attachFsApi(api) {
+      fsApiBridge = api;
+    },
+    get mkdtempCounter() {
+      return mkdtempCounter;
+    },
+    set mkdtempCounter(value) {
+      mkdtempCounter = value;
+    },
+    get nextFd() {
+      return nextFd;
+    },
+    set nextFd(value) {
+      nextFd = value;
+    }
+  };
+}
+
+// packages/harness-javascript/src/kernel/fs-api.ts
+function createBrowserFsApi(requestState, filesystemState, request, executionState) {
+  const {
+    assertApi,
+    cache,
+    childProcessApi,
+    consoleApi,
+    createEntryMetadata,
+    cryptoApi,
+    cwdPath,
+    deleteEntryMetadata,
+    directoryStore,
+    entryMetadata,
+    eventLoopApi,
+    eventsApi,
+    fileStore,
+    hardLinkGroupForPath,
+    io,
+    isHiddenNamespacePath,
+    kernelDevices,
+    kernelInfo,
+    linkPaths,
+    linkedInodeForPath,
+    liveIo,
+    modules,
+    moveHardLinkPath,
+    nodePathSearchEntries,
+    originalDirectoryMetadata,
+    originalFiles,
+    originalSymlinks,
+    osApi,
+    pathApi,
+    procSnapshot,
+    processApi,
+    readDevice,
+    readDeviceBytes,
+    readonlyFiles,
+    refreshSymlinkModuleAliases,
+    requireCache,
+    resolveStoredSymlinkPath,
+    resolveWorkspaceEntryPath,
+    runtimeFileForPath,
+    stderr,
+    stdout,
+    streamApi,
+    symlinkStore,
+    syncTextModule,
+    timersPromisesApi,
+    touchEntryMetadata,
+    traceKernelApi,
+    unlinkPathFromHardLinks,
+    unmodeledStorageBytes,
+    unmodeledStorageEntries,
+    updateEntryMetadata,
+    urlApi,
+    utilApi,
+    virtualStorageEntries,
+    workspacePathContext,
+    workspaceRoot,
+    writeDevice
+  } = requestState;
+  const {
+    assertFileSystemAccess,
+    assertReadonlyFilePath,
+    assertStreamRangeInteger,
+    assertWorkspaceFileWritePath,
+    assertWorkspaceParentDirectoryPath,
+    browserFileSystemStat,
+    browserStatsResult,
+    copyEntrySync,
+    createReadableStream,
+    createWritableStream,
+    deleteFile,
+    descriptorBytes,
+    descriptorMetadataPath,
+    emitDirectoryCreate,
+    emitDirectoryDelete,
+    emitFsWatch,
+    fileDescriptor,
+    fileDescriptors,
+    fileSystemEntryExists,
+    fsConstants,
+    fsFileWatchers,
+    fsWatchers,
+    isWorkspaceDirectoryPath,
+    metadataPathForEntry,
+    missingFileStat,
+    moveOpenFileDescriptorPath,
+    notifyDirectoryMutation,
+    notifyFsWatchers,
+    notifyMetadataMutation,
+    notifyWatchFileWatchers,
+    parseOpenFlags,
+    readDescriptorFileBytes,
+    realpathForEntry,
+    setFileBytes,
+    statForKernelPath,
+    statForKernelTarget,
+    statForNormalizedPath,
+    statForTraceKernelPath,
+    timeToMs,
+    truncateDescriptorBytes,
+    truncateFileBytes,
+    watchedFilename,
+    workspaceFileAncestor,
+    writeDescriptorBytes,
+    writeDescriptorFileBytes
+  } = filesystemState;
   const fsApi = {
     constants: fsConstants,
     F_OK: fsConstants.F_OK,
@@ -11887,7 +11937,7 @@ async function runBrowserJavaScriptProjectRequest(request, options, executionSta
     openSync: (path, flags = "r") => {
       const parsed = parseOpenFlags(flags);
       const openTarget = runtimeOpenTarget(path, parsed, kernelDevices, procSnapshot);
-      const fd2 = nextFd++;
+      const fd2 = filesystemState.nextFd++;
       if (openTarget?.kind === "error") {
         throw Object.assign(new Error(runtimeKernelOpenErrorMessage(String(path), openTarget)), {
           code: runtimeKernelOpenErrorCode(openTarget.reason)
@@ -12033,13 +12083,13 @@ async function runBrowserJavaScriptProjectRequest(request, options, executionSta
       return count;
     },
     read: (fd2, buffer, offsetOrOptions, lengthOrCallback, positionOrCallback, callback) => {
-      const options2 = typeof offsetOrOptions === "object" && offsetOrOptions !== null ? offsetOrOptions : void 0;
+      const options = typeof offsetOrOptions === "object" && offsetOrOptions !== null ? offsetOrOptions : void 0;
       const done = typeof offsetOrOptions === "function" ? offsetOrOptions : typeof lengthOrCallback === "function" ? lengthOrCallback : typeof positionOrCallback === "function" ? positionOrCallback : callback;
-      const offset = options2?.offset ?? (typeof offsetOrOptions === "number" ? offsetOrOptions : 0);
-      const length = options2?.length ?? (typeof lengthOrCallback === "number" ? lengthOrCallback : buffer.byteLength - offset);
+      const offset = options?.offset ?? (typeof offsetOrOptions === "number" ? offsetOrOptions : 0);
+      const length = options?.length ?? (typeof lengthOrCallback === "number" ? lengthOrCallback : buffer.byteLength - offset);
       let position;
-      if (options2 !== void 0) {
-        position = options2.position;
+      if (options !== void 0) {
+        position = options.position;
       } else if (typeof positionOrCallback === "number") {
         position = positionOrCallback;
       } else {
@@ -12090,11 +12140,11 @@ async function runBrowserJavaScriptProjectRequest(request, options, executionSta
       return bytes.byteLength;
     },
     write: (fd2, value, offsetOrPosition, lengthOrEncoding, positionOrCallback, callback) => {
-      const options2 = typeof offsetOrPosition === "object" && offsetOrPosition !== null ? offsetOrPosition : void 0;
+      const options = typeof offsetOrPosition === "object" && offsetOrPosition !== null ? offsetOrPosition : void 0;
       const done = typeof offsetOrPosition === "function" ? offsetOrPosition : typeof lengthOrEncoding === "function" ? lengthOrEncoding : typeof positionOrCallback === "function" ? positionOrCallback : callback;
       let writePosition;
-      if (options2 !== void 0) {
-        writePosition = options2.position;
+      if (options !== void 0) {
+        writePosition = options.position;
       } else if (typeof positionOrCallback === "number") {
         writePosition = positionOrCallback;
       } else if (positionOrCallback === null) {
@@ -12104,8 +12154,8 @@ async function runBrowserJavaScriptProjectRequest(request, options, executionSta
         const written = fsApi.writeSync(
           fd2,
           value,
-          options2?.offset ?? (typeof offsetOrPosition === "number" ? offsetOrPosition : void 0),
-          options2?.length ?? options2?.encoding ?? (typeof lengthOrEncoding === "number" || typeof lengthOrEncoding === "string" ? lengthOrEncoding : void 0),
+          options?.offset ?? (typeof offsetOrPosition === "number" ? offsetOrPosition : void 0),
+          options?.length ?? options?.encoding ?? (typeof lengthOrEncoding === "number" || typeof lengthOrEncoding === "string" ? lengthOrEncoding : void 0),
           writePosition
         );
         queueMicrotask(() => done?.(null, written, value));
@@ -12133,7 +12183,7 @@ async function runBrowserJavaScriptProjectRequest(request, options, executionSta
         queueMicrotask(() => done?.(error, void 0, buffers));
       }
     },
-    fstatSync: (fd2, options2) => {
+    fstatSync: (fd2, options) => {
       const entry = fileDescriptor(fd2);
       let stats;
       if (entry.kind === "kernel") {
@@ -12155,13 +12205,13 @@ async function runBrowserJavaScriptProjectRequest(request, options, executionSta
           isDirectory: () => false
         };
       }
-      return browserStatsResult(stats, options2);
+      return browserStatsResult(stats, options);
     },
     fstat: (fd2, optionsOrCallback, callback) => {
-      const options2 = typeof optionsOrCallback === "function" ? void 0 : optionsOrCallback;
+      const options = typeof optionsOrCallback === "function" ? void 0 : optionsOrCallback;
       const done = typeof optionsOrCallback === "function" ? optionsOrCallback : callback;
       try {
-        const stats = fsApi.fstatSync(fd2, options2);
+        const stats = fsApi.fstatSync(fd2, options);
         queueMicrotask(() => done?.(null, stats));
       } catch (error) {
         queueMicrotask(() => done?.(error));
@@ -12257,16 +12307,16 @@ async function runBrowserJavaScriptProjectRequest(request, options, executionSta
         queueMicrotask(() => callback?.(error));
       }
     },
-    createReadStream: (path, options2) => {
-      const optionFd = typeof options2 === "object" && typeof options2?.fd === "number" ? options2.fd : null;
+    createReadStream: (path, options) => {
+      const optionFd = typeof options === "object" && typeof options?.fd === "number" ? options.fd : null;
       const readTarget = optionFd === null ? runtimeFileReadTarget(path, kernelDevices, procSnapshot) : null;
-      const requestedEncoding = typeof options2 === "string" ? options2 : options2?.encoding;
+      const requestedEncoding = typeof options === "string" ? options : options?.encoding;
       if (executionState.kernelFileSystem && optionFd === null && (readTarget === null || readTarget?.kind === "workspace")) {
-        const flags = typeof options2 === "object" && options2?.flags ? options2.flags : "r";
-        const autoClose2 = typeof options2 === "object" && options2?.autoClose === false ? false : true;
+        const flags = typeof options === "object" && options?.flags ? options.flags : "r";
+        const autoClose2 = typeof options === "object" && options?.autoClose === false ? false : true;
         const openedFd = fsApi.openSync(path, flags);
         return fsApi.createReadStream(null, {
-          ...typeof options2 === "object" && options2 ? options2 : {},
+          ...typeof options === "object" && options ? options : {},
           fd: openedFd,
           flags,
           autoClose: autoClose2
@@ -12280,7 +12330,7 @@ async function runBrowserJavaScriptProjectRequest(request, options, executionSta
       } else if (optionFd !== null) {
         const entry = fileDescriptor(optionFd);
         if (!entry.readable) throw Object.assign(new Error("EBADF: bad file descriptor, read"), { code: "EBADF" });
-        if (typeof options2 === "object" && typeof options2?.start === "number") {
+        if (typeof options === "object" && typeof options?.start === "number") {
           sourceBytes = descriptorBytes(entry);
         } else {
           sourceBytes = readDescriptorFileBytes(optionFd);
@@ -12298,14 +12348,14 @@ async function runBrowserJavaScriptProjectRequest(request, options, executionSta
       if (!sourceBytes) {
         throw Object.assign(new Error(`ENOENT: no such file or directory, open '${path}'`), { code: "ENOENT" });
       }
-      const requestedStart = typeof options2 === "object" ? assertStreamRangeInteger("start", options2?.start) : void 0;
-      const requestedEnd = typeof options2 === "object" ? assertStreamRangeInteger("end", options2?.end) : void 0;
+      const requestedStart = typeof options === "object" ? assertStreamRangeInteger("start", options?.start) : void 0;
+      const requestedEnd = typeof options === "object" ? assertStreamRangeInteger("end", options?.end) : void 0;
       if (requestedStart !== void 0 && requestedEnd !== void 0 && requestedEnd < requestedStart) {
         throw Object.assign(new RangeError('The value of "start" is out of range.'), { code: "ERR_OUT_OF_RANGE" });
       }
       const start = requestedStart ?? 0;
       const endInclusive = requestedEnd ?? sourceBytes.byteLength - 1;
-      const autoClose = typeof options2 === "object" && options2?.autoClose === false ? false : true;
+      const autoClose = typeof options === "object" && options?.autoClose === false ? false : true;
       return createReadableStream(
         sourceBytes.slice(start, Math.max(start, endInclusive + 1)),
         requestedEncoding,
@@ -12335,8 +12385,8 @@ async function runBrowserJavaScriptProjectRequest(request, options, executionSta
       }
       const normalized = resolveWorkspaceEntryPath(path);
       if (executionState.kernelFileSystem) {
-        const fileBytes2 = executionState.kernelFileSystem.readFile(normalized);
-        return typeof requestedEncoding === "string" ? BrowserBuffer.from(fileBytes2).toString(requestedEncoding) : BrowserBuffer.from(fileBytes2);
+        const fileBytes4 = executionState.kernelFileSystem.readFile(normalized);
+        return typeof requestedEncoding === "string" ? BrowserBuffer.from(fileBytes4).toString(requestedEncoding) : BrowserBuffer.from(fileBytes4);
       }
       if (workspaceFileAncestor(normalized) !== null) {
         throw Object.assign(new Error(`ENOTDIR: not a directory, open '${path}'`), { code: "ENOTDIR" });
@@ -12362,9 +12412,9 @@ async function runBrowserJavaScriptProjectRequest(request, options, executionSta
         queueMicrotask(() => done?.(error));
       }
     },
-    writeFileSync: (path, value, options2) => {
+    writeFileSync: (path, value, options) => {
       if (typeof path === "number") {
-        writeDescriptorFileBytes(path, bytesFromFsWriteValue(value, options2));
+        writeDescriptorFileBytes(path, bytesFromFsWriteValue(value, options));
         return;
       }
       const writeTarget = runtimeWriteTarget(path, kernelDevices);
@@ -12372,21 +12422,21 @@ async function runBrowserJavaScriptProjectRequest(request, options, executionSta
         throwRuntimeWriteTargetError(writeTarget, runtimeKernelWriteFsErrorMessage(String(path), writeTarget));
       }
       if (writeTarget?.kind === "device") {
-        writeDevice(writeTarget.device, textFromBytes(bytesFromFsWriteValue(value, options2)));
+        writeDevice(writeTarget.device, textFromBytes(bytesFromFsWriteValue(value, options)));
         return;
       }
       const normalized = resolveWorkspaceEntryPath(path);
-      const structuredOptions = typeof options2 === "object" && options2 !== null ? options2 : void 0;
+      const structuredOptions = typeof options === "object" && options !== null ? options : void 0;
       const usesDefaultReplaceSemantics = (structuredOptions?.flag === void 0 || structuredOptions.flag === "w") && structuredOptions?.mode === void 0;
       if (executionState.kernelFileSystem && usesDefaultReplaceSemantics) {
         executionState.kernelFileSystem.writeFile(
           normalized,
-          bytesFromFsWriteValue(value, options2)
+          bytesFromFsWriteValue(value, options)
         );
         return;
       }
       assertWorkspaceFileWritePath(normalized, path, "write", "open");
-      setFileBytes(normalized, bytesFromFsWriteValue(value, options2));
+      setFileBytes(normalized, bytesFromFsWriteValue(value, options));
     },
     writeFile: (path, value, optionsOrCallback, callback) => {
       const done = typeof optionsOrCallback === "function" ? optionsOrCallback : callback;
@@ -12397,9 +12447,9 @@ async function runBrowserJavaScriptProjectRequest(request, options, executionSta
         queueMicrotask(() => done?.(error));
       }
     },
-    appendFileSync: (path, value, options2) => {
+    appendFileSync: (path, value, options) => {
       if (typeof path === "number") {
-        writeDescriptorFileBytes(path, bytesFromFsWriteValue(value, options2), fileDescriptor(path).append);
+        writeDescriptorFileBytes(path, bytesFromFsWriteValue(value, options), fileDescriptor(path).append);
         return;
       }
       const writeTarget = runtimeWriteTarget(path, kernelDevices);
@@ -12407,13 +12457,13 @@ async function runBrowserJavaScriptProjectRequest(request, options, executionSta
         throwRuntimeWriteTargetError(writeTarget, runtimeKernelWriteFsErrorMessage(String(path), writeTarget));
       }
       if (writeTarget?.kind === "device") {
-        writeDevice(writeTarget.device, textFromBytes(bytesFromFsWriteValue(value, options2)));
+        writeDevice(writeTarget.device, textFromBytes(bytesFromFsWriteValue(value, options)));
         return;
       }
       const normalized = resolveWorkspaceEntryPath(path);
       assertWorkspaceFileWritePath(normalized, path, "append", "open");
       const previous = fileStore.get(normalized) ?? new Uint8Array();
-      const next = bytesFromFsWriteValue(value, options2);
+      const next = bytesFromFsWriteValue(value, options);
       const combined = new Uint8Array(previous.byteLength + next.byteLength);
       combined.set(previous, 0);
       combined.set(next, previous.byteLength);
@@ -12547,7 +12597,7 @@ async function runBrowserJavaScriptProjectRequest(request, options, executionSta
         queueMicrotask(() => done?.(error));
       }
     },
-    readlinkSync: (path, options2) => {
+    readlinkSync: (path, options) => {
       const readTarget = runtimeReadTarget(path, kernelDevices, procSnapshot);
       if (readTarget?.kind && readTarget.kind !== "workspace") {
         throw Object.assign(new Error(`EINVAL: invalid argument, readlink '${path}'`), { code: "EINVAL" });
@@ -12555,7 +12605,7 @@ async function runBrowserJavaScriptProjectRequest(request, options, executionSta
       const normalized = resolveWorkspaceEntryPath(path, false);
       if (executionState.kernelFileSystem) {
         const target2 = executionState.kernelFileSystem.readlink(normalized);
-        const encoding2 = typeof options2 === "string" ? options2 : options2?.encoding;
+        const encoding2 = typeof options === "string" ? options : options?.encoding;
         return encoding2 === null || encoding2 === "buffer" ? BrowserBuffer.from(target2) : BrowserBuffer.from(target2).toString(encoding2 ?? "utf8");
       }
       const target = symlinkStore.get(normalized);
@@ -12565,7 +12615,7 @@ async function runBrowserJavaScriptProjectRequest(request, options, executionSta
         const reason = exists ? "invalid argument" : "no such file or directory";
         throw Object.assign(new Error(`${code}: ${reason}, readlink '${path}'`), { code });
       }
-      const encoding = typeof options2 === "string" ? options2 : options2?.encoding;
+      const encoding = typeof options === "string" ? options : options?.encoding;
       return encoding === null || encoding === "buffer" ? BrowserBuffer.from(target) : BrowserBuffer.from(target).toString(encoding ?? "utf8");
     },
     readlink: (path, optionsOrCallback, callback) => {
@@ -12577,8 +12627,8 @@ async function runBrowserJavaScriptProjectRequest(request, options, executionSta
         queueMicrotask(() => done?.(error));
       }
     },
-    cpSync: (source, destination, options2) => {
-      copyEntrySync(source, destination, options2);
+    cpSync: (source, destination, options) => {
+      copyEntrySync(source, destination, options);
       return void 0;
     },
     cp: (source, destination, optionsOrCallback, callback) => {
@@ -12714,8 +12764,8 @@ async function runBrowserJavaScriptProjectRequest(request, options, executionSta
         directoryStore.add(nextDirectory);
         const metadata = sourceDirectoryMetadata.get(directoryPath);
         if (metadata) {
-          fsTimestampMs += 1;
-          entryMetadata.set(nextDirectory, { ...metadata, ctimeMs: fsTimestampMs });
+          requestState.fsTimestampMs += 1;
+          entryMetadata.set(nextDirectory, { ...metadata, ctimeMs: requestState.fsTimestampMs });
         } else if (!entryMetadata.has(nextDirectory)) {
           touchEntryMetadata(nextDirectory);
         }
@@ -12724,10 +12774,10 @@ async function runBrowserJavaScriptProjectRequest(request, options, executionSta
           notifyDirectoryMutation(nextDirectory);
         }
       }
-      for (const [filePath, fileBytes2] of sourceFiles) {
+      for (const [filePath, fileBytes4] of sourceFiles) {
         const relative = filePath.slice(oldPrefix.length);
         const nextPath = normalizedNewPath ? `${normalizedNewPath}/${relative}` : relative;
-        setFileBytes(nextPath, fileBytes2, sourceFileMetadata.get(filePath));
+        setFileBytes(nextPath, fileBytes4, sourceFileMetadata.get(filePath));
         notifyFsWatchers("rename", nextPath);
       }
       for (const [linkPath, target] of sourceSymlinks) {
@@ -12757,7 +12807,7 @@ async function runBrowserJavaScriptProjectRequest(request, options, executionSta
         queueMicrotask(() => callback?.(error));
       }
     },
-    rmSync: (path, options2) => {
+    rmSync: (path, options) => {
       try {
         const removeTarget = runtimeRemoveTarget(path, kernelDevices);
         if (removeTarget?.kind === "error") {
@@ -12786,9 +12836,9 @@ async function runBrowserJavaScriptProjectRequest(request, options, executionSta
             executionState.kernelFileSystem.rmdir(entryPath);
           };
           try {
-            removeEntry(normalized, options2?.recursive === true);
+            removeEntry(normalized, options?.recursive === true);
           } catch (error) {
-            if (options2?.force && error.code === "ENOENT") return;
+            if (options?.force && error.code === "ENOENT") return;
             throw error;
           }
           return;
@@ -12803,7 +12853,7 @@ async function runBrowserJavaScriptProjectRequest(request, options, executionSta
         const descendantSymlinks = Array.from(symlinkStore.keys()).filter((linkPath) => linkPath.startsWith(prefix));
         const descendantDirectories = Array.from(directoryStore).filter((directoryPath) => directoryPath !== normalized && directoryPath.startsWith(prefix));
         if (directoryStore.has(normalized) || descendantFiles.length > 0 || descendantSymlinks.length > 0 || descendantDirectories.length > 0) {
-          if (!options2?.recursive) {
+          if (!options?.recursive) {
             throw Object.assign(new Error(`ERR_FS_EISDIR: path is a directory, rm '${path}'`), { code: "ERR_FS_EISDIR" });
           }
           for (const filePath of descendantFiles) {
@@ -12836,11 +12886,11 @@ async function runBrowserJavaScriptProjectRequest(request, options, executionSta
           }
           return;
         }
-        if (!options2?.force) {
+        if (!options?.force) {
           throw Object.assign(new Error(`ENOENT: no such file or directory, rm '${path}'`), { code: "ENOENT" });
         }
       } catch (error) {
-        if (options2?.force && error.code === "ENOENT") return;
+        if (options?.force && error.code === "ENOENT") return;
         throw error;
       }
     },
@@ -12863,9 +12913,9 @@ async function runBrowserJavaScriptProjectRequest(request, options, executionSta
     exists: (path, callback) => {
       queueMicrotask(() => callback?.(fsApi.existsSync(path)));
     },
-    readdirSync: (path, options2) => {
+    readdirSync: (path, options) => {
       const directoryTarget = runtimeDirectoryTarget(path, kernelDevices, procSnapshot);
-      const withFileTypes = typeof options2 === "object" && options2?.withFileTypes === true;
+      const withFileTypes = typeof options === "object" && options?.withFileTypes === true;
       const makeDirent = (name, type, parentPath, characterDevice = false) => ({
         name,
         path: parentPath,
@@ -12893,7 +12943,7 @@ async function runBrowserJavaScriptProjectRequest(request, options, executionSta
       }
       const normalized = resolveWorkspaceEntryPath(path);
       if (executionState.kernelFileSystem) {
-        const recursive2 = typeof options2 === "object" && options2?.recursive === true;
+        const recursive2 = typeof options === "object" && options?.recursive === true;
         const entries2 = [];
         const collectEntries = (directoryPath, relativePrefix) => {
           for (const entry of executionState.kernelFileSystem.readdir(directoryPath)) {
@@ -12926,7 +12976,7 @@ async function runBrowserJavaScriptProjectRequest(request, options, executionSta
         throw Object.assign(new Error(`ENOTDIR: not a directory, scandir '${path}'`), { code: "ENOTDIR" });
       }
       const prefix = normalized ? `${normalized}/` : "";
-      const recursive = typeof options2 === "object" && options2?.recursive === true;
+      const recursive = typeof options === "object" && options?.recursive === true;
       const makeWorkspaceDirent = (name, type, parentPath = normalized) => makeDirent(name, type, workspaceFilename(parentPath, workspaceRoot));
       if (recursive) {
         const entries2 = /* @__PURE__ */ new Map();
@@ -13060,8 +13110,8 @@ async function runBrowserJavaScriptProjectRequest(request, options, executionSta
         queueMicrotask(() => done?.(error));
       }
     },
-    statSync: (path, options2) => {
-      const kernelStats = statForKernelTarget(path, options2);
+    statSync: (path, options) => {
+      const kernelStats = statForKernelTarget(path, options);
       if (kernelStats === void 0) return void 0;
       let stats = kernelStats;
       if (stats === null) {
@@ -13072,27 +13122,27 @@ async function runBrowserJavaScriptProjectRequest(request, options, executionSta
               executionState.kernelFileSystem.stat(normalized)
             );
           } catch (error) {
-            if (options2?.throwIfNoEntry === false && error.code === "ENOENT") {
+            if (options?.throwIfNoEntry === false && error.code === "ENOENT") {
               return void 0;
             }
             throw error;
           }
         } else {
           if (workspaceFileAncestor(normalized) !== null) {
-            if (options2?.throwIfNoEntry === false) return void 0;
+            if (options?.throwIfNoEntry === false) return void 0;
             throw Object.assign(new Error(`ENOTDIR: not a directory, stat '${path}'`), { code: "ENOTDIR" });
           }
           stats = statForNormalizedPath(normalized);
         }
       }
       if (!stats) {
-        if (options2?.throwIfNoEntry === false) return void 0;
+        if (options?.throwIfNoEntry === false) return void 0;
         throw Object.assign(new Error(`ENOENT: no such file or directory, stat '${path}'`), { code: "ENOENT" });
       }
-      return browserStatsResult(stats, options2);
+      return browserStatsResult(stats, options);
     },
-    lstatSync: (path, options2) => {
-      const kernelStats = statForKernelTarget(path, options2);
+    lstatSync: (path, options) => {
+      const kernelStats = statForKernelTarget(path, options);
       if (kernelStats === void 0) return void 0;
       let stats = kernelStats;
       if (stats === null) {
@@ -13103,45 +13153,45 @@ async function runBrowserJavaScriptProjectRequest(request, options, executionSta
               executionState.kernelFileSystem.lstat(normalized)
             );
           } catch (error) {
-            if (options2?.throwIfNoEntry === false && error.code === "ENOENT") {
+            if (options?.throwIfNoEntry === false && error.code === "ENOENT") {
               return void 0;
             }
             throw error;
           }
         } else {
           if (workspaceFileAncestor(normalized) !== null) {
-            if (options2?.throwIfNoEntry === false) return void 0;
+            if (options?.throwIfNoEntry === false) return void 0;
             throw Object.assign(new Error(`ENOTDIR: not a directory, lstat '${path}'`), { code: "ENOTDIR" });
           }
           stats = statForNormalizedPath(normalized, false);
         }
       }
       if (!stats) {
-        if (options2?.throwIfNoEntry === false) return void 0;
+        if (options?.throwIfNoEntry === false) return void 0;
         throw Object.assign(new Error(`ENOENT: no such file or directory, lstat '${path}'`), { code: "ENOENT" });
       }
-      return browserStatsResult(stats, options2);
+      return browserStatsResult(stats, options);
     },
-    statfsSync: (path, options2) => {
+    statfsSync: (path, options) => {
       fsApi.statSync(path);
-      return browserFileSystemStat(Boolean(options2?.bigint));
+      return browserFileSystemStat(Boolean(options?.bigint));
     },
     stat: (path, optionsOrCallback, callback) => {
-      const options2 = typeof optionsOrCallback === "function" ? void 0 : optionsOrCallback;
+      const options = typeof optionsOrCallback === "function" ? void 0 : optionsOrCallback;
       const done = typeof optionsOrCallback === "function" ? optionsOrCallback : callback;
       try {
-        const stats = fsApi.statSync(path, options2);
+        const stats = fsApi.statSync(path, options);
         queueMicrotask(() => done?.(null, stats));
       } catch (error) {
         queueMicrotask(() => done?.(error));
       }
     },
     lstat: (path, optionsOrCallback, callback) => {
-      const options2 = typeof optionsOrCallback === "function" ? void 0 : optionsOrCallback;
+      const options = typeof optionsOrCallback === "function" ? void 0 : optionsOrCallback;
       const done = typeof optionsOrCallback === "function" ? optionsOrCallback : callback;
       try {
-        const stats = fsApi.lstatSync(path, options2);
-        if (stats === void 0 && options2?.throwIfNoEntry === false) {
+        const stats = fsApi.lstatSync(path, options);
+        if (stats === void 0 && options?.throwIfNoEntry === false) {
           throw Object.assign(new Error(`ENOENT: no such file or directory, lstat '${path}'`), { code: "ENOENT" });
         }
         queueMicrotask(() => done?.(null, stats));
@@ -13150,18 +13200,18 @@ async function runBrowserJavaScriptProjectRequest(request, options, executionSta
       }
     },
     statfs: (path, optionsOrCallback, callback) => {
-      const options2 = typeof optionsOrCallback === "function" ? void 0 : optionsOrCallback;
+      const options = typeof optionsOrCallback === "function" ? void 0 : optionsOrCallback;
       const done = typeof optionsOrCallback === "function" ? optionsOrCallback : callback;
       try {
-        const stats = fsApi.statfsSync(path, options2);
+        const stats = fsApi.statfsSync(path, options);
         queueMicrotask(() => done?.(null, stats));
       } catch (error) {
         queueMicrotask(() => done?.(error));
       }
     },
-    realpathSync: (path, options2) => {
+    realpathSync: (path, options) => {
       const resolved = realpathForEntry(path);
-      const encoding = typeof options2 === "string" ? options2 : options2?.encoding;
+      const encoding = typeof options === "string" ? options : options?.encoding;
       return encoding === "buffer" ? BrowserBuffer.from(resolved) : resolved;
     },
     realpath: (path, optionsOrCallback, callback) => {
@@ -13192,7 +13242,7 @@ async function runBrowserJavaScriptProjectRequest(request, options, executionSta
         queueMicrotask(() => done?.(error));
       }
     },
-    mkdirSync: (path, options2) => {
+    mkdirSync: (path, options) => {
       const mkdirTarget = runtimeMkdirTarget(path, kernelDevices);
       if (mkdirTarget?.kind === "error") {
         throwRuntimeMkdirTargetError(mkdirTarget, runtimeKernelMutationFsErrorMessage(String(path), mkdirTarget, "mkdir"));
@@ -13200,8 +13250,8 @@ async function runBrowserJavaScriptProjectRequest(request, options, executionSta
       const rawPath = workspacePathInputToString(path).replace(/\\/g, "/");
       const normalized = normalizeWorkspaceEntryPath(path, cwdPath, true, workspacePathContext);
       if (!normalized) return void 0;
-      const recursive = typeof options2 === "object" && options2?.recursive === true;
-      const mode = typeof options2 === "number" ? options2 : typeof options2?.mode === "number" ? options2.mode : void 0;
+      const recursive = typeof options === "object" && options?.recursive === true;
+      const mode = typeof options === "number" ? options : typeof options?.mode === "number" ? options.mode : void 0;
       if (executionState.kernelFileSystem) {
         let firstCreated2;
         if (recursive) {
@@ -13277,16 +13327,16 @@ async function runBrowserJavaScriptProjectRequest(request, options, executionSta
         queueMicrotask(() => done?.(error));
       }
     },
-    mkdtempSync: (prefix, options2) => {
+    mkdtempSync: (prefix, options) => {
       const rawPrefix = workspacePathInputToString(prefix);
       for (let attempt = 0; attempt < 1e3; attempt += 1) {
-        mkdtempCounter += 1;
-        const suffix = mkdtempCounter.toString(36).padStart(6, "0").slice(-6);
+        filesystemState.mkdtempCounter += 1;
+        const suffix = filesystemState.mkdtempCounter.toString(36).padStart(6, "0").slice(-6);
         const candidate = `${rawPrefix}${suffix}`;
         const normalized = normalizeWorkspaceEntryPath(candidate, cwdPath, false, workspacePathContext);
         if (fileStore.has(normalized) || directoryStore.has(normalized)) continue;
         fsApi.mkdirSync(candidate);
-        const encoding = typeof options2 === "string" ? options2 : options2?.encoding;
+        const encoding = typeof options === "string" ? options : options?.encoding;
         const result = rawPrefix.startsWith("/") ? workspaceFilename(normalized, workspaceRoot) : candidate;
         return encoding === "buffer" ? BrowserBuffer.from(result) : result;
       }
@@ -13336,6 +13386,118 @@ async function runBrowserJavaScriptProjectRequest(request, options, executionSta
       }
     }
   };
+  filesystemState.attachFsApi(fsApi);
+  return fsApi;
+}
+
+// packages/harness-javascript/src/kernel/fs-promises-api.ts
+function createBrowserFsPromisesApi(requestState, filesystemState, fsApi) {
+  const {
+    assertApi,
+    cache,
+    childProcessApi,
+    consoleApi,
+    createEntryMetadata,
+    cryptoApi,
+    cwdPath,
+    deleteEntryMetadata,
+    directoryStore,
+    entryMetadata,
+    eventLoopApi,
+    eventsApi,
+    fileStore,
+    hardLinkGroupForPath,
+    io,
+    isHiddenNamespacePath,
+    kernelDevices,
+    kernelInfo,
+    linkPaths,
+    linkedInodeForPath,
+    liveIo,
+    modules,
+    moveHardLinkPath,
+    nodePathSearchEntries,
+    originalDirectoryMetadata,
+    originalFiles,
+    originalSymlinks,
+    osApi,
+    pathApi,
+    procSnapshot,
+    processApi,
+    readDevice,
+    readDeviceBytes,
+    readonlyFiles,
+    refreshSymlinkModuleAliases,
+    requireCache,
+    resolveStoredSymlinkPath,
+    resolveWorkspaceEntryPath,
+    runtimeFileForPath,
+    stderr,
+    stdout,
+    streamApi,
+    symlinkStore,
+    syncTextModule,
+    timersPromisesApi,
+    touchEntryMetadata,
+    traceKernelApi,
+    unlinkPathFromHardLinks,
+    unmodeledStorageBytes,
+    unmodeledStorageEntries,
+    updateEntryMetadata,
+    urlApi,
+    utilApi,
+    virtualStorageEntries,
+    workspacePathContext,
+    workspaceRoot,
+    writeDevice
+  } = requestState;
+  const {
+    assertFileSystemAccess,
+    assertReadonlyFilePath,
+    assertStreamRangeInteger,
+    assertWorkspaceFileWritePath,
+    assertWorkspaceParentDirectoryPath,
+    browserFileSystemStat,
+    browserStatsResult,
+    copyEntrySync,
+    createReadableStream,
+    createWritableStream,
+    deleteFile,
+    descriptorBytes,
+    descriptorMetadataPath,
+    emitDirectoryCreate,
+    emitDirectoryDelete,
+    emitFsWatch,
+    fileDescriptor,
+    fileDescriptors,
+    fileSystemEntryExists,
+    fsConstants,
+    fsFileWatchers,
+    fsWatchers,
+    isWorkspaceDirectoryPath,
+    metadataPathForEntry,
+    missingFileStat,
+    moveOpenFileDescriptorPath,
+    notifyDirectoryMutation,
+    notifyFsWatchers,
+    notifyMetadataMutation,
+    notifyWatchFileWatchers,
+    parseOpenFlags,
+    readDescriptorFileBytes,
+    realpathForEntry,
+    setFileBytes,
+    statForKernelPath,
+    statForKernelTarget,
+    statForNormalizedPath,
+    statForTraceKernelPath,
+    timeToMs,
+    truncateDescriptorBytes,
+    truncateFileBytes,
+    watchedFilename,
+    workspaceFileAncestor,
+    writeDescriptorBytes,
+    writeDescriptorFileBytes
+  } = filesystemState;
   const fileHandleTarget = (path) => typeof path === "object" && path !== null && !(path instanceof URL) && typeof path.fd === "number" ? path.fd : path;
   const fsPromisesApi = {
     constants: fsConstants,
@@ -13360,15 +13522,15 @@ async function runBrowserJavaScriptProjectRequest(request, options, executionSta
         const requestedEncoding = typeof encoding === "string" ? encoding : encoding?.encoding;
         return typeof requestedEncoding === "string" ? bytes.toString(requestedEncoding) : bytes;
       };
-      const writeFileToHandle = (value, options2) => {
+      const writeFileToHandle = (value, options) => {
         assertFileHandleOpen();
-        const bytes = bytesFromFsWriteValue(value, options2);
+        const bytes = bytesFromFsWriteValue(value, options);
         return fsApi.writeSync(fd2, bytes, 0, bytes.byteLength, null);
       };
-      const appendFileToHandle = (value, options2) => {
+      const appendFileToHandle = (value, options) => {
         assertFileHandleOpen();
         const entry = fileDescriptor(fd2);
-        const bytes = bytesFromFsWriteValue(value, options2);
+        const bytes = bytesFromFsWriteValue(value, options);
         const position = entry.kind === "device" ? null : descriptorBytes(entry).byteLength;
         return fsApi.writeSync(fd2, bytes, 0, bytes.byteLength, position);
       };
@@ -13376,11 +13538,11 @@ async function runBrowserJavaScriptProjectRequest(request, options, executionSta
         fd: fd2,
         read: async (bufferOrOptions, offset = 0, length, position) => {
           assertFileHandleOpen();
-          const options2 = typeof bufferOrOptions === "object" && bufferOrOptions !== null && !ArrayBuffer.isView(bufferOrOptions) ? bufferOrOptions : void 0;
-          const buffer = options2?.buffer ?? (ArrayBuffer.isView(bufferOrOptions) ? bufferOrOptions : BrowserBuffer.alloc(16 * 1024));
-          const readOffset = options2?.offset ?? offset;
-          const readLength = options2?.length ?? length ?? buffer.byteLength - readOffset;
-          const readPosition = options2 !== void 0 ? options2.position : position;
+          const options = typeof bufferOrOptions === "object" && bufferOrOptions !== null && !ArrayBuffer.isView(bufferOrOptions) ? bufferOrOptions : void 0;
+          const buffer = options?.buffer ?? (ArrayBuffer.isView(bufferOrOptions) ? bufferOrOptions : BrowserBuffer.alloc(16 * 1024));
+          const readOffset = options?.offset ?? offset;
+          const readLength = options?.length ?? length ?? buffer.byteLength - readOffset;
+          const readPosition = options !== void 0 ? options.position : position;
           const bytesRead = fsApi.readSync(fd2, buffer, readOffset, readLength, readPosition);
           return { bytesRead, buffer };
         },
@@ -13392,47 +13554,47 @@ async function runBrowserJavaScriptProjectRequest(request, options, executionSta
         },
         write: async (value, offsetOrPosition, lengthOrEncoding, position) => {
           assertFileHandleOpen();
-          const options2 = typeof offsetOrPosition === "object" && offsetOrPosition !== null ? offsetOrPosition : void 0;
+          const options = typeof offsetOrPosition === "object" && offsetOrPosition !== null ? offsetOrPosition : void 0;
           const bytesWritten = fsApi.writeSync(
             fd2,
             value,
-            options2?.offset ?? (typeof offsetOrPosition === "number" ? offsetOrPosition : void 0),
-            options2?.length ?? lengthOrEncoding,
-            options2 !== void 0 ? options2.position : position
+            options?.offset ?? (typeof offsetOrPosition === "number" ? offsetOrPosition : void 0),
+            options?.length ?? lengthOrEncoding,
+            options !== void 0 ? options.position : position
           );
           return {
             bytesWritten,
             buffer: value
           };
         },
-        writeFile: async (value, options2) => {
-          writeFileToHandle(value, options2);
+        writeFile: async (value, options) => {
+          writeFileToHandle(value, options);
         },
-        createReadStream: (options2) => {
+        createReadStream: (options) => {
           assertFileHandleOpen();
-          const streamOptions = typeof options2 === "string" ? { encoding: options2, fd: fd2 } : { ...options2 ?? {}, fd: fd2 };
+          const streamOptions = typeof options === "string" ? { encoding: options, fd: fd2 } : { ...options ?? {}, fd: fd2 };
           const stream = fsApi.createReadStream(null, streamOptions);
-          trackAutoCloseStream(stream, typeof options2 !== "object" || options2?.autoClose !== false);
+          trackAutoCloseStream(stream, typeof options !== "object" || options?.autoClose !== false);
           return stream;
         },
-        createWriteStream: (options2) => {
+        createWriteStream: (options) => {
           assertFileHandleOpen();
-          const streamOptions = typeof options2 === "string" ? { encoding: options2, fd: fd2 } : { ...options2 ?? {}, fd: fd2 };
+          const streamOptions = typeof options === "string" ? { encoding: options, fd: fd2 } : { ...options ?? {}, fd: fd2 };
           const stream = fsApi.createWriteStream(null, streamOptions);
-          trackAutoCloseStream(stream, typeof options2 !== "object" || options2?.autoClose !== false);
+          trackAutoCloseStream(stream, typeof options !== "object" || options?.autoClose !== false);
           return stream;
         },
-        appendFile: async (value, options2) => {
-          appendFileToHandle(value, options2);
+        appendFile: async (value, options) => {
+          appendFileToHandle(value, options);
         },
         writev: async (buffers, position) => {
           assertFileHandleOpen();
           const bytesWritten = fsApi.writevSync(fd2, buffers, position);
           return { bytesWritten, buffers };
         },
-        stat: async (options2) => {
+        stat: async (options) => {
           assertFileHandleOpen();
-          return fsApi.fstatSync(fd2, options2);
+          return fsApi.fstatSync(fd2, options);
         },
         chmod: async (mode) => {
           assertFileHandleOpen();
@@ -13466,11 +13628,11 @@ async function runBrowserJavaScriptProjectRequest(request, options, executionSta
       };
     },
     readFile: async (path, encoding) => fsApi.readFileSync(fileHandleTarget(path), encoding),
-    writeFile: async (path, value, options2) => {
-      fsApi.writeFileSync(fileHandleTarget(path), value, options2);
+    writeFile: async (path, value, options) => {
+      fsApi.writeFileSync(fileHandleTarget(path), value, options);
     },
-    appendFile: async (path, value, options2) => {
-      fsApi.appendFileSync(fileHandleTarget(path), value, options2);
+    appendFile: async (path, value, options) => {
+      fsApi.appendFileSync(fileHandleTarget(path), value, options);
     },
     copyFile: async (source, destination, mode = 0) => {
       fsApi.copyFileSync(source, destination, mode);
@@ -13481,9 +13643,9 @@ async function runBrowserJavaScriptProjectRequest(request, options, executionSta
     symlink: async (target, linkPath) => {
       fsApi.symlinkSync(target, linkPath);
     },
-    readlink: async (path, options2) => fsApi.readlinkSync(path, options2),
-    cp: async (source, destination, options2) => {
-      fsApi.cpSync(source, destination, options2);
+    readlink: async (path, options) => fsApi.readlinkSync(path, options),
+    cp: async (source, destination, options) => {
+      fsApi.cpSync(source, destination, options);
     },
     chmod: async (path, mode) => {
       fsApi.chmodSync(path, mode);
@@ -13503,12 +13665,12 @@ async function runBrowserJavaScriptProjectRequest(request, options, executionSta
     truncate: async (path, length = 0) => {
       fsApi.truncateSync(path, length);
     },
-    rm: async (path, options2) => {
-      fsApi.rmSync(path, options2);
+    rm: async (path, options) => {
+      fsApi.rmSync(path, options);
     },
-    readdir: async (path, options2) => fsApi.readdirSync(path, options2),
+    readdir: async (path, options) => fsApi.readdirSync(path, options),
     opendir: async (path) => fsApi.opendirSync(path),
-    watch: (path, options2) => {
+    watch: (path, options) => {
       const entries = [];
       const waiters = [];
       let closed = false;
@@ -13521,7 +13683,7 @@ async function runBrowserJavaScriptProjectRequest(request, options, executionSta
           waiters.shift()?.({ done: true, value: void 0 });
         }
       };
-      const watcher = fsApi.watch(path, typeof options2 === "string" ? void 0 : options2 ?? void 0, (eventType, filename) => {
+      const watcher = fsApi.watch(path, typeof options === "string" ? void 0 : options ?? void 0, (eventType, filename) => {
         const entry = { eventType, filename };
         const waiter = waiters.shift();
         if (waiter) {
@@ -13530,11 +13692,11 @@ async function runBrowserJavaScriptProjectRequest(request, options, executionSta
         }
         entries.push(entry);
       });
-      if (typeof options2 === "object" && options2?.signal) {
-        if (options2.signal.aborted) {
+      if (typeof options === "object" && options?.signal) {
+        if (options.signal.aborted) {
           close();
         } else {
-          options2.signal.addEventListener("abort", close, { once: true });
+          options.signal.addEventListener("abort", close, { once: true });
         }
       }
       const iterator = {
@@ -13555,18 +13717,18 @@ async function runBrowserJavaScriptProjectRequest(request, options, executionSta
       };
       return iterator;
     },
-    stat: async (path, options2) => fsApi.statSync(path, options2),
-    lstat: async (path, options2) => {
-      const stats = fsApi.lstatSync(path, options2);
-      if (stats === void 0 && options2?.throwIfNoEntry === false) {
+    stat: async (path, options) => fsApi.statSync(path, options),
+    lstat: async (path, options) => {
+      const stats = fsApi.lstatSync(path, options);
+      if (stats === void 0 && options?.throwIfNoEntry === false) {
         throw Object.assign(new Error(`ENOENT: no such file or directory, lstat '${path}'`), { code: "ENOENT" });
       }
       return stats;
     },
-    statfs: async (path, options2) => fsApi.statfsSync(path, options2),
-    realpath: async (path, options2) => fsApi.realpathSync(path, options2),
-    mkdir: async (path, options2) => fsApi.mkdirSync(path, options2),
-    mkdtemp: async (prefix, options2) => fsApi.mkdtempSync(prefix, options2),
+    statfs: async (path, options) => fsApi.statfsSync(path, options),
+    realpath: async (path, options) => fsApi.realpathSync(path, options),
+    mkdir: async (path, options) => fsApi.mkdirSync(path, options),
+    mkdtemp: async (prefix, options) => fsApi.mkdtempSync(prefix, options),
     rmdir: async (path) => {
       fsApi.rmdirSync(path);
     }
@@ -13574,6 +13736,398 @@ async function runBrowserJavaScriptProjectRequest(request, options, executionSta
   fsApi.realpath.native = fsApi.realpath;
   fsApi.realpathSync.native = fsApi.realpathSync;
   Object.assign(fsApi, { promises: fsPromisesApi });
+  return fsPromisesApi;
+}
+
+// packages/harness-javascript/src/security/authority-boundary.ts
+var permanentBrowserAuthorityDefineProperty = Object.defineProperty;
+var permanentBrowserAuthorityGetOwnPropertyDescriptor = Object.getOwnPropertyDescriptor;
+var permanentBrowserAuthorityGetPrototypeOf = Object.getPrototypeOf;
+var PERMANENT_BROWSER_WORKER_DENIED_GLOBALS = Object.freeze([
+  "XMLHttpRequest",
+  "WebSocket",
+  "WebSocketStream",
+  "WebTransport",
+  "EventSource",
+  "RTCPeerConnection",
+  "webkitRTCPeerConnection",
+  "RTCDataChannel",
+  "indexedDB",
+  "caches",
+  "Cache",
+  "CacheStorage",
+  "cookieStore",
+  "localStorage",
+  "sessionStorage",
+  "webkitRequestFileSystem",
+  "webkitRequestFileSystemSync",
+  "webkitResolveLocalFileSystemURL",
+  "webkitResolveLocalFileSystemSyncURL",
+  "Worker",
+  "SharedWorker",
+  "MessageChannel",
+  "MessagePort",
+  "BroadcastChannel",
+  "importScripts",
+  "postMessage",
+  "eval",
+  "Function"
+]);
+var PERMANENT_BROWSER_WORKER_DENIED_NAVIGATOR_MEMBERS = Object.freeze([
+  "sendBeacon",
+  "storage",
+  "locks",
+  "serviceWorker"
+]);
+var permanentBrowserDynamicConstructorPrototypes = Object.freeze([
+  BrowserFunction.prototype,
+  permanentBrowserAuthorityGetPrototypeOf(async function browserAsyncFunction() {
+  }),
+  permanentBrowserAuthorityGetPrototypeOf(function* browserGeneratorFunction() {
+  }),
+  permanentBrowserAuthorityGetPrototypeOf(async function* browserAsyncGeneratorFunction() {
+  })
+]);
+function permanentBrowserAuthorityError(name) {
+  return new ReferenceError(`${name} is not defined`);
+}
+function permanentBrowserDeniedAuthority(name) {
+  const deny = function deniedBrowserWorkerAuthority() {
+    throw permanentBrowserAuthorityError(name);
+  };
+  return typeof Proxy === "function" ? new Proxy(deny, {
+    apply: () => deny(),
+    construct: () => deny(),
+    get: (_target, property) => property === Symbol.toStringTag ? "Function" : permanentBrowserDeniedAuthority(`${name}.${String(property)}`),
+    set: () => {
+      throw permanentBrowserAuthorityError(name);
+    }
+  }) : deny;
+}
+function permanentBrowserPrototypeChain(value) {
+  const targets = [];
+  const seen = /* @__PURE__ */ new Set();
+  let current = value;
+  while (current && (typeof current === "object" || typeof current === "function") && !seen.has(current)) {
+    targets.push(current);
+    seen.add(current);
+    current = permanentBrowserAuthorityGetPrototypeOf(current);
+  }
+  return targets;
+}
+function sealPermanentBrowserProperty(target, name, value) {
+  const descriptor = permanentBrowserAuthorityGetOwnPropertyDescriptor(target, name);
+  if (descriptor?.configurable === false && !("value" in descriptor && descriptor.writable === true)) {
+    if ("value" in descriptor && descriptor.value === value) return;
+    throw permanentBrowserAuthorityError(String(name));
+  }
+  permanentBrowserAuthorityDefineProperty(target, name, {
+    configurable: false,
+    enumerable: descriptor?.enumerable ?? false,
+    writable: false,
+    value
+  });
+  if (target[name] !== value) {
+    throw permanentBrowserAuthorityError(String(name));
+  }
+}
+function sealPermanentBrowserPropertyAcrossChain(value, name, replacement, options = {}) {
+  const targets = permanentBrowserPrototypeChain(value);
+  const includeOwn = options.includeOwn !== false;
+  let replacedOwn = false;
+  for (let index = includeOwn ? 0 : 1; index < targets.length; index += 1) {
+    const target = targets[index];
+    if (!permanentBrowserAuthorityGetOwnPropertyDescriptor(target, name)) continue;
+    sealPermanentBrowserProperty(target, name, replacement);
+    if (target === value) replacedOwn = true;
+  }
+  if (includeOwn && options.ensureOwn !== false && !replacedOwn) {
+    sealPermanentBrowserProperty(value, name, replacement);
+  }
+}
+function installPermanentBrowserWorkerAuthorityBoundary(httpApi) {
+  if (typeof document !== "undefined") {
+    throw new Error("Permanent browser authority denial is only valid inside a disposable worker.");
+  }
+  const scope = globalThis;
+  for (const name of PERMANENT_BROWSER_WORKER_DENIED_GLOBALS) {
+    sealPermanentBrowserPropertyAcrossChain(scope, name, permanentBrowserDeniedAuthority(name));
+  }
+  const deniedNativeFetch = permanentBrowserDeniedAuthority("native fetch");
+  sealPermanentBrowserPropertyAcrossChain(scope, "fetch", deniedNativeFetch, {
+    includeOwn: false,
+    ensureOwn: false
+  });
+  sealPermanentBrowserProperty(scope, "fetch", httpApi.fetch);
+  sealPermanentBrowserProperty(scope, "Headers", httpApi.Headers);
+  sealPermanentBrowserProperty(scope, "Request", httpApi.Request);
+  sealPermanentBrowserProperty(scope, "Response", httpApi.Response);
+  const navigatorValue = scope.navigator;
+  if (navigatorValue && (typeof navigatorValue === "object" || typeof navigatorValue === "function")) {
+    for (const name of PERMANENT_BROWSER_WORKER_DENIED_NAVIGATOR_MEMBERS) {
+      sealPermanentBrowserPropertyAcrossChain(
+        navigatorValue,
+        name,
+        permanentBrowserDeniedAuthority(`navigator.${name}`)
+      );
+    }
+    sealPermanentBrowserProperty(scope, "navigator", navigatorValue);
+  }
+  const deniedConstructor = permanentBrowserDeniedAuthority("Function constructor");
+  for (const prototype of permanentBrowserDynamicConstructorPrototypes) {
+    sealPermanentBrowserProperty(prototype, "constructor", deniedConstructor);
+  }
+  return () => {
+  };
+}
+function installBrowserHttpGlobalLockdown(httpApi, authorityMode = "temporary") {
+  if (authorityMode === "permanent") {
+    return installPermanentBrowserWorkerAuthorityBoundary(httpApi);
+  }
+  const global = globalThis;
+  const blockedNetworkApi = (name) => function blockedBrowserNetworkApi() {
+    throw new ReferenceError(`${name} is not defined`);
+  };
+  const blockedAuthorityObject = (name) => {
+    const deny = blockedNetworkApi(name);
+    return typeof Proxy === "function" ? new Proxy(deny, {
+      apply: () => deny(),
+      construct: () => deny(),
+      get: (_target, property) => property === Symbol.toStringTag ? "Function" : deny
+    }) : deny;
+  };
+  const replacements = {
+    fetch: httpApi.fetch,
+    Headers: httpApi.Headers,
+    Request: httpApi.Request,
+    Response: httpApi.Response,
+    XMLHttpRequest: blockedAuthorityObject("XMLHttpRequest"),
+    WebSocket: blockedAuthorityObject("WebSocket"),
+    WebSocketStream: blockedAuthorityObject("WebSocketStream"),
+    WebTransport: blockedAuthorityObject("WebTransport"),
+    EventSource: blockedAuthorityObject("EventSource"),
+    // A dedicated Worker is an execution boundary, not an origin boundary.
+    // User code must not bypass TraceKernel through same-origin persistence,
+    // cache, nested workers, or cross-context messaging. The worker bridge
+    // captures the host channel before this lockdown is installed.
+    ...typeof document === "undefined" ? {
+      indexedDB: blockedAuthorityObject("indexedDB"),
+      caches: blockedAuthorityObject("caches"),
+      cookieStore: blockedAuthorityObject("cookieStore"),
+      Worker: blockedAuthorityObject("Worker"),
+      SharedWorker: blockedAuthorityObject("SharedWorker"),
+      BroadcastChannel: blockedAuthorityObject("BroadcastChannel"),
+      importScripts: blockedAuthorityObject("importScripts")
+    } : {}
+  };
+  const previousDescriptors = /* @__PURE__ */ new Map();
+  for (const [name, value] of Object.entries(replacements)) {
+    previousDescriptors.set(name, Object.getOwnPropertyDescriptor(global, name));
+    try {
+      Object.defineProperty(global, name, {
+        configurable: true,
+        enumerable: false,
+        writable: false,
+        value
+      });
+    } catch {
+    }
+  }
+  const navigatorValue = global.navigator;
+  const navigatorDescriptors = /* @__PURE__ */ new Map();
+  if (navigatorValue && typeof navigatorValue === "object") {
+    const navigatorReplacements = {
+      sendBeacon: blockedAuthorityObject("navigator.sendBeacon"),
+      ...typeof document === "undefined" ? {
+        storage: blockedAuthorityObject("navigator.storage"),
+        locks: blockedAuthorityObject("navigator.locks"),
+        serviceWorker: blockedAuthorityObject("navigator.serviceWorker")
+      } : {}
+    };
+    for (const [name, value] of Object.entries(navigatorReplacements)) {
+      navigatorDescriptors.set(name, Object.getOwnPropertyDescriptor(navigatorValue, name));
+      try {
+        Object.defineProperty(navigatorValue, name, {
+          configurable: true,
+          enumerable: false,
+          writable: false,
+          value
+        });
+      } catch {
+      }
+    }
+  }
+  return () => {
+    for (const [name, descriptor] of previousDescriptors) {
+      try {
+        if (descriptor) {
+          Object.defineProperty(global, name, descriptor);
+        } else {
+          delete global[name];
+        }
+      } catch {
+      }
+    }
+    if (navigatorValue && typeof navigatorValue === "object") {
+      for (const [name, descriptor] of navigatorDescriptors) {
+        try {
+          if (descriptor) {
+            Object.defineProperty(navigatorValue, name, descriptor);
+          } else {
+            delete navigatorValue[name];
+          }
+        } catch {
+        }
+      }
+    }
+  };
+}
+function installBrowserTimerGlobals(eventLoopApi) {
+  const global = globalThis;
+  const replacements = {
+    setTimeout: eventLoopApi.setTimeout,
+    clearTimeout: eventLoopApi.clearTimeout,
+    setInterval: eventLoopApi.setInterval,
+    clearInterval: eventLoopApi.clearInterval,
+    setImmediate: eventLoopApi.setImmediate,
+    clearImmediate: eventLoopApi.clearImmediate,
+    queueMicrotask: eventLoopApi.queueMicrotask
+  };
+  const previousDescriptors = /* @__PURE__ */ new Map();
+  for (const [name, value] of Object.entries(replacements)) {
+    previousDescriptors.set(name, Object.getOwnPropertyDescriptor(global, name));
+    try {
+      Object.defineProperty(global, name, {
+        configurable: true,
+        enumerable: false,
+        writable: true,
+        value
+      });
+    } catch {
+    }
+  }
+  return () => {
+    for (const [name, descriptor] of previousDescriptors) {
+      try {
+        if (descriptor) {
+          Object.defineProperty(global, name, descriptor);
+        } else {
+          delete global[name];
+        }
+      } catch {
+      }
+    }
+  };
+}
+
+// packages/harness-javascript/src/modules/runtime-loader.ts
+function createBrowserModuleRuntime(requestState, filesystemState, fsApi, fsPromisesApi, request, executionState, options) {
+  const {
+    assertApi,
+    cache,
+    childProcessApi,
+    consoleApi,
+    createEntryMetadata,
+    cryptoApi,
+    cwdPath,
+    deleteEntryMetadata,
+    directoryStore,
+    entryMetadata,
+    eventLoopApi,
+    eventsApi,
+    fileStore,
+    hardLinkGroupForPath,
+    io,
+    isHiddenNamespacePath,
+    kernelDevices,
+    kernelInfo,
+    linkPaths,
+    linkedInodeForPath,
+    liveIo,
+    modules,
+    moveHardLinkPath,
+    nodePathSearchEntries,
+    originalDirectoryMetadata,
+    originalFiles,
+    originalSymlinks,
+    osApi,
+    pathApi,
+    procSnapshot,
+    processApi,
+    readDevice,
+    readDeviceBytes,
+    readonlyFiles,
+    refreshSymlinkModuleAliases,
+    requireCache,
+    resolveStoredSymlinkPath,
+    resolveWorkspaceEntryPath,
+    runtimeFileForPath,
+    stderr,
+    stdout,
+    streamApi,
+    symlinkStore,
+    syncTextModule,
+    timersPromisesApi,
+    touchEntryMetadata,
+    traceKernelApi,
+    unlinkPathFromHardLinks,
+    unmodeledStorageBytes,
+    unmodeledStorageEntries,
+    updateEntryMetadata,
+    urlApi,
+    utilApi,
+    virtualStorageEntries,
+    workspacePathContext,
+    workspaceRoot,
+    writeDevice
+  } = requestState;
+  const {
+    assertFileSystemAccess,
+    assertReadonlyFilePath,
+    assertStreamRangeInteger,
+    assertWorkspaceFileWritePath,
+    assertWorkspaceParentDirectoryPath,
+    browserFileSystemStat,
+    browserStatsResult,
+    copyEntrySync,
+    createReadableStream,
+    createWritableStream,
+    deleteFile,
+    descriptorBytes,
+    descriptorMetadataPath,
+    emitDirectoryCreate,
+    emitDirectoryDelete,
+    emitFsWatch,
+    fileDescriptor,
+    fileDescriptors,
+    fileSystemEntryExists,
+    fsConstants,
+    fsFileWatchers,
+    fsWatchers,
+    isWorkspaceDirectoryPath,
+    metadataPathForEntry,
+    missingFileStat,
+    moveOpenFileDescriptorPath,
+    notifyDirectoryMutation,
+    notifyFsWatchers,
+    notifyMetadataMutation,
+    notifyWatchFileWatchers,
+    parseOpenFlags,
+    readDescriptorFileBytes,
+    realpathForEntry,
+    setFileBytes,
+    statForKernelPath,
+    statForKernelTarget,
+    statForNormalizedPath,
+    statForTraceKernelPath,
+    timeToMs,
+    truncateDescriptorBytes,
+    truncateFileBytes,
+    watchedFilename,
+    workspaceFileAncestor,
+    writeDescriptorBytes,
+    writeDescriptorFileBytes
+  } = filesystemState;
   const zlibApi = createZlibApi();
   const netApi = createNetApi(
     executionState.kernelNetwork,
@@ -13597,7 +14151,10 @@ async function runBrowserJavaScriptProjectRequest(request, options, executionSta
   executionState.cleanupHostGlobals = restoreHostGlobals;
   if (executionState.cancelled) {
     restoreHostGlobals();
-    return { stdout: "", stderr: "", exitCode: 1 };
+    return {
+      cancelled: true,
+      result: { stdout: "", stderr: "", exitCode: 1 }
+    };
   }
   const builtins = /* @__PURE__ */ new Map([
     ["fs", fsApi],
@@ -13661,7 +14218,7 @@ async function runBrowserJavaScriptProjectRequest(request, options, executionSta
     Object.defineProperty(localRequire, "main", {
       configurable: true,
       enumerable: true,
-      get: () => mainModule
+      get: () => requestState.mainModule
     });
     return localRequire;
   };
@@ -13707,7 +14264,7 @@ async function runBrowserJavaScriptProjectRequest(request, options, executionSta
     const module = createModuleRecord(normalizedPath, parent);
     if (isMain) {
       module.id = ".";
-      mainModule = module;
+      requestState.mainModule = module;
     }
     cache.set(normalizedPath, module);
     requireCache[cacheKey] = module;
@@ -13766,7 +14323,7 @@ async function runBrowserJavaScriptProjectRequest(request, options, executionSta
     }
     const module = createModuleRecord(normalizedPath, null);
     module.id = ".";
-    mainModule = module;
+    requestState.mainModule = module;
     cache.set(normalizedPath, module);
     requireCache[workspaceFilename(normalizedPath, workspaceRoot)] = module;
     const localRequire = createWorkspaceRequire(normalizedPath, module);
@@ -13804,6 +14361,168 @@ async function runBrowserJavaScriptProjectRequest(request, options, executionSta
     module.loaded = true;
     await Promise.resolve();
   };
+  return {
+    cancelled: false,
+    createWorkspaceRequire,
+    executeEntrypoint,
+    httpApi,
+    importModule,
+    netApi,
+    preloadParentPath,
+    requireModule,
+    restoreHostGlobals
+  };
+}
+
+// packages/harness-javascript/src/browser/request-execution.ts
+async function runBrowserJavaScriptProjectRequest(request, options, executionState) {
+  if (options.allowDynamicEval === false) {
+    const stderr2 = "node: JavaScript runtime is unavailable\n";
+    const io2 = createRuntimeProjectIoBridge(request.onEvent);
+    io2.output("stderr", stderr2);
+    io2.status("process-exit", "Browser Node exited", { command: "node", exitCode: 126 });
+    return {
+      stdout: "",
+      stderr: stderr2,
+      exitCode: 126,
+      error: {
+        code: "ENOEXEC",
+        errno: 8,
+        message: "JavaScript runtime is unavailable",
+        detail: { diagnostic: "Dynamic evaluation is disabled" }
+      }
+    };
+  }
+  const requestState = createBrowserJavaScriptRequestState(request, options, executionState);
+  const {
+    assertApi,
+    cache,
+    childProcessApi,
+    consoleApi,
+    createEntryMetadata,
+    cryptoApi,
+    cwdPath,
+    deleteEntryMetadata,
+    directoryStore,
+    entryMetadata,
+    eventLoopApi,
+    eventsApi,
+    fileStore,
+    hardLinkGroupForPath,
+    io,
+    isHiddenNamespacePath,
+    kernelDevices,
+    kernelInfo,
+    linkPaths,
+    linkedInodeForPath,
+    liveIo,
+    modules,
+    moveHardLinkPath,
+    nodePathSearchEntries,
+    originalDirectoryMetadata,
+    originalFiles,
+    originalSymlinks,
+    osApi,
+    pathApi,
+    procSnapshot,
+    processApi,
+    readDevice,
+    readDeviceBytes,
+    readonlyFiles,
+    refreshSymlinkModuleAliases,
+    requireCache,
+    resolveStoredSymlinkPath,
+    resolveWorkspaceEntryPath,
+    runtimeFileForPath,
+    stderr,
+    stdout,
+    streamApi,
+    symlinkStore,
+    syncTextModule,
+    timersPromisesApi,
+    touchEntryMetadata,
+    traceKernelApi,
+    unlinkPathFromHardLinks,
+    unmodeledStorageBytes,
+    unmodeledStorageEntries,
+    updateEntryMetadata,
+    urlApi,
+    utilApi,
+    virtualStorageEntries,
+    workspacePathContext,
+    workspaceRoot,
+    writeDevice
+  } = requestState;
+  const filesystemState = createBrowserFileSystemState(requestState, request, executionState);
+  const {
+    assertFileSystemAccess,
+    assertReadonlyFilePath,
+    assertStreamRangeInteger,
+    assertWorkspaceFileWritePath,
+    assertWorkspaceParentDirectoryPath,
+    browserFileSystemStat,
+    browserStatsResult,
+    copyEntrySync,
+    createReadableStream,
+    createWritableStream,
+    deleteFile,
+    descriptorBytes,
+    descriptorMetadataPath,
+    emitDirectoryCreate,
+    emitDirectoryDelete,
+    emitFsWatch,
+    fileDescriptor,
+    fileDescriptors,
+    fileSystemEntryExists,
+    fsConstants,
+    fsFileWatchers,
+    fsWatchers,
+    isWorkspaceDirectoryPath,
+    metadataPathForEntry,
+    missingFileStat,
+    moveOpenFileDescriptorPath,
+    notifyDirectoryMutation,
+    notifyFsWatchers,
+    notifyMetadataMutation,
+    notifyWatchFileWatchers,
+    parseOpenFlags,
+    readDescriptorFileBytes,
+    realpathForEntry,
+    setFileBytes,
+    statForKernelPath,
+    statForKernelTarget,
+    statForNormalizedPath,
+    statForTraceKernelPath,
+    timeToMs,
+    truncateDescriptorBytes,
+    truncateFileBytes,
+    watchedFilename,
+    workspaceFileAncestor,
+    writeDescriptorBytes,
+    writeDescriptorFileBytes
+  } = filesystemState;
+  const fsApi = createBrowserFsApi(requestState, filesystemState, request, executionState);
+  const fsPromisesApi = createBrowserFsPromisesApi(requestState, filesystemState, fsApi);
+  const moduleRuntime = createBrowserModuleRuntime(
+    requestState,
+    filesystemState,
+    fsApi,
+    fsPromisesApi,
+    request,
+    executionState,
+    options
+  );
+  if (moduleRuntime.cancelled) return moduleRuntime.result;
+  const {
+    createWorkspaceRequire,
+    executeEntrypoint,
+    httpApi,
+    importModule,
+    netApi,
+    preloadParentPath,
+    requireModule,
+    restoreHostGlobals
+  } = moduleRuntime;
   try {
     for (const moduleName of requireModulesForRequest(request)) {
       requireModule(moduleName, preloadParentPath);
