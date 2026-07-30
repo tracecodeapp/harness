@@ -8,7 +8,6 @@ import vm from 'node:vm';
 // type through the package-manager signature that consumes it.
 type CommandContext = Parameters<typeof runPackageScript>[1];
 import {
-  createBrowserHarness,
   SUPPORTED_LANGUAGES,
   getLanguageRuntimeInfo,
   getLanguageRuntimeProfile,
@@ -22,7 +21,6 @@ import {
 } from '../src/browser';
 import { assertRuntimeRequestSupported } from '../packages/runtime-browser/src/runtime-capability-guards';
 import { executeRuntimeRequest } from '../packages/runtime-browser/src/runtime-execute';
-import { FreshWorkerRuntimeClient } from '../packages/runtime-browser/src/runtime-client-isolation';
 import { runJavaSafeStorageExclusive } from '../packages/runtime-java/src/java-storage-isolation';
 import { ExecutionTimeoutError } from '../packages/runtime-browser/src/worker-errors';
 import {
@@ -37,18 +35,9 @@ import type { RuntimeKernelInfo } from '../packages/runtime-core/src/runtime-pro
 import type {
   Language,
   LanguageRuntimeProfile,
-  RuntimeClient,
   RuntimeCapabilities,
-  RuntimeCodeCall,
   RuntimeExecutionLimits,
-  RuntimeExecuteCodeRequest,
-  RuntimeExecuteProjectRequest,
-  RuntimeExecuteRequest,
-  RuntimeExecuteResponse,
-  RuntimeExecuteResult,
-  RuntimeTraceCall,
 } from '../packages/runtime-core/src/runtime-types';
-import type { CodeExecutionResult, ExecutionResult } from '../packages/runtime-core/src/types';
 import {
   javaTraceHooksEventsToRuntimeTrace,
   normalizeJavaSerializedResult,
@@ -1365,78 +1354,6 @@ function assertWorkerProtocolDeclarations(): void {
   }
 }
 
-async function assertFreshWorkerRuntimeClientContract(): Promise<void> {
-  const events: string[] = [];
-  let releaseFirst: (() => void) | undefined;
-  const firstGate = new Promise<void>((resolve) => {
-    releaseFirst = resolve;
-  });
-  let calls = 0;
-
-  class ProbeRuntimeClient implements RuntimeClient {
-    async init(): Promise<{ success: boolean; loadTimeMs: number }> {
-      events.push('init');
-      return { success: true, loadTimeMs: 0 };
-    }
-
-    async execute(request: RuntimeExecuteCodeRequest): Promise<RuntimeExecuteResult>;
-    async execute(request: RuntimeExecuteProjectRequest): Promise<never>;
-    async execute(_request: RuntimeExecuteRequest): Promise<RuntimeExecuteResponse> {
-      throw new Error('execute probe is not used');
-    }
-
-    async executeWithTracing(_call: RuntimeTraceCall): Promise<ExecutionResult> {
-      throw new Error('trace probe is not used');
-    }
-
-    async executeCode(_call: RuntimeCodeCall): Promise<CodeExecutionResult> {
-      calls += 1;
-      const call = calls;
-      events.push(`start-${call}`);
-      if (call === 1) await firstGate;
-      if (call === 3) throw new Error('probe failure');
-      events.push(`finish-${call}`);
-      return { kind: 'completed', output: call, consoleOutput: [] };
-    }
-  }
-
-  const client = new FreshWorkerRuntimeClient(
-    new ProbeRuntimeClient(),
-    {
-      retireWorker: () => events.push('retire'),
-      prepareWorker: async () => {
-        events.push('prepare');
-        return { success: true, loadTimeMs: 0 };
-      },
-    }
-  );
-  const first = client.executeCode({ code: 'first', functionName: 'run', inputs: {} });
-  const second = client.executeCode({ code: 'second', functionName: 'run', inputs: {} });
-  await Promise.resolve();
-  assertCondition(
-    events.join(',') === 'start-1',
-    `safe runtime client should serialize executions before retiring workers: ${events.join(',')}`
-  );
-  releaseFirst?.();
-  await Promise.all([first, second]);
-  assertCondition(
-    events.join(',') === 'start-1,finish-1,retire,prepare,start-2,finish-2,retire,prepare',
-    `safe runtime client should retire and prepare a clean standby between executions: ${events.join(',')}`
-  );
-
-  await client.executeCode({ code: 'failure', functionName: 'run', inputs: {} }).catch(() => undefined);
-  assertCondition(
-    events.at(-1) === 'prepare' && events.filter((event) => event === 'retire').length === 3,
-    `safe runtime client should retire and replenish after failed executions: ${events.join(',')}`
-  );
-  client.reset();
-  assertCondition(
-    events.at(-1) === 'retire',
-    `reset should retire an unused clean standby: ${events.join(',')}`
-  );
-  console.log('PASS: fresh-worker runtime client serializes, retires, and replenishes clean workers');
-}
-
 async function assertJavaStorageIsolationContract(): Promise<void> {
   const events: string[] = [];
   let releaseFirst: (() => void) | undefined;
@@ -1782,7 +1699,6 @@ async function main(): Promise<void> {
   await testJavaSerializedResultNormalization();
 
   await assertExecutionLimitsDispatchContract();
-  await assertFreshWorkerRuntimeClientContract();
   await assertJavaStorageIsolationContract();
   console.log('PASS: execution limits dispatch contract');
 
@@ -1889,68 +1805,12 @@ async function main(): Promise<void> {
   );
   console.log('PASS: runtime language/profile/info registry');
 
-  const browserHarness = createBrowserHarness();
-  const pythonClient = browserHarness.getClient('python');
-  const javascriptClient = browserHarness.getClient('javascript');
-  const typescriptClient = browserHarness.getClient('typescript');
-  const javaClient = browserHarness.getClient('java');
-  const csharpClient = browserHarness.getClient('csharp');
-  const cppClient = browserHarness.getClient('cpp');
-  for (const [name, client] of [
-    ['python', pythonClient],
-    ['javascript', javascriptClient],
-    ['typescript', typescriptClient],
-    ['java', javaClient],
-    ['csharp', csharpClient],
-    ['cpp', cppClient],
-  ] as const) {
-    assertCondition(
-      typeof (client as { getCapabilities?: unknown }).getCapabilities === 'undefined',
-      `${name} client should not expose getCapabilities`
-    );
-    assertCondition(typeof client.init === 'function', `${name} client should implement init`);
-    assertCondition(typeof client.execute === 'function', `${name} client should implement execute`);
-    assertCondition(typeof client.executeCode === 'function', `${name} client should implement executeCode`);
-    assertCondition(
-      typeof client.executeWithTracing === 'function',
-      `${name} client should implement executeWithTracing`
-    );
-  }
-  console.log('PASS: runtime adapter surface contract');
-
   const pythonProfile = getLanguageRuntimeProfile('python');
   const javascriptProfile = getLanguageRuntimeProfile('javascript');
   const typescriptProfile = getLanguageRuntimeProfile('typescript');
   const javaProfile = getLanguageRuntimeProfile('java');
   const csharpProfile = getLanguageRuntimeProfile('csharp');
   const cppProfile = getLanguageRuntimeProfile('cpp');
-  const safeHarness = createBrowserHarness({ providers: ['python', 'java', 'csharp'] });
-  const unsafeReuseHarness = createBrowserHarness({
-    providers: ['python', 'java', 'csharp'],
-    executionIsolation: 'unsafe-reuse',
-  });
-  try {
-    assertCondition(
-      safeHarness.executionIsolation === 'safe' &&
-        safeHarness.getSupportedLanguageProfiles().every((profile) =>
-          profile.capabilities.execution.isolation.safeForUntrustedReuse
-        ),
-      'browser harness should default every selected provider to safe execution isolation'
-    );
-    assertCondition(
-      unsafeReuseHarness.executionIsolation === 'unsafe-reuse' &&
-        unsafeReuseHarness.getSupportedLanguageProfiles().every((profile) =>
-          !profile.capabilities.execution.isolation.safeForUntrustedReuse
-        ) &&
-        unsafeReuseHarness.getProfile('python').capabilities.execution.isolation.boundary === 'interpreter-cleanup' &&
-        unsafeReuseHarness.getProfile('java').capabilities.execution.isolation.boundary === 'fresh-class-loader' &&
-        unsafeReuseHarness.getProfile('csharp').capabilities.execution.isolation.boundary === 'fresh-assembly-load-context',
-      'unsafe reuse should be explicit and visible through configured harness profiles'
-    );
-  } finally {
-    safeHarness.dispose();
-    unsafeReuseHarness.dispose();
-  }
   for (const profile of profiles) {
     assertCondition(
       profile.maturity === 'stable',

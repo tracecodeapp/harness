@@ -1,11 +1,12 @@
 import {
   BROWSER_RUNTIME_ASSET_PROTOCOL_VERSION,
-  resolveBrowserHarnessAssets,
   resolveBrowserRuntimeAssetManifests,
   type AnyBrowserRuntimeAssetManifest,
   type BrowserRuntimeAssetManifests,
-  type CreateBrowserHarnessOptions,
 } from '../src/browser';
+import {
+  resolveBrowserHarnessAssets,
+} from '../packages/runtime-browser/src/runtime-assets';
 
 function assertCondition(condition: unknown, message: string): asserts condition {
   if (!condition) throw new Error(message);
@@ -176,11 +177,11 @@ function testLegacyCompatibility(): void {
 }
 
 function testConsumerCdnManifests(): void {
-  const harnessOptions = {
+  const assetOptions = {
     assetBaseUrl: '/legacy-assets',
     assets: { runtimeManifests: consumerManifests },
-  } satisfies CreateBrowserHarnessOptions;
-  const assets = resolveBrowserHarnessAssets(harnessOptions);
+  };
+  const assets = resolveBrowserHarnessAssets(assetOptions);
 
   const expected = {
     pythonWorker: 'https://assets.consumer.example/python/314.0.2/worker.js',
