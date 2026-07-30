@@ -18,6 +18,13 @@
   "files": [
     "dist",
     "workers",
+    "!workers/java/.build",
+    "!workers/java/.build/**",
+    "!workers/java/src",
+    "!workers/java/src/**",
+    "!workers/vendor/java-rewriter.jar",
+    "!workers/vendor/javaparser-core-3.25.10.jar",
+    "!workers/vendor/jdk.compiler-17.jar",
     "README.md",
     "CHANGELOG.md",
     "LICENSE",

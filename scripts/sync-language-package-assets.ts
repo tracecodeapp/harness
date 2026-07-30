@@ -164,18 +164,6 @@ const PACKAGE_ASSET_PLANS: PackageAssetPlan[] = [
         source: ['workers', 'vendor', 'java-browser-helper.jar'],
         target: ['workers', 'vendor', 'java-browser-helper.jar'],
       },
-      {
-        source: ['workers', 'vendor', 'java-rewriter.jar'],
-        target: ['workers', 'vendor', 'java-rewriter.jar'],
-      },
-      {
-        source: ['workers', 'vendor', 'javaparser-core-3.25.10.jar'],
-        target: ['workers', 'vendor', 'javaparser-core-3.25.10.jar'],
-      },
-      {
-        source: ['workers', 'vendor', 'jdk.compiler-17.jar'],
-        target: ['workers', 'vendor', 'jdk.compiler-17.jar'],
-      },
     ],
   },
   {

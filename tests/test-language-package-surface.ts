@@ -12,6 +12,7 @@ interface PackageCheck {
   dir: string;
   exportName: string;
   requiredFiles: string[];
+  forbiddenFiles?: string[];
 }
 
 const PACKAGE_CHECKS: PackageCheck[] = [
@@ -175,11 +176,13 @@ const PACKAGE_CHECKS: PackageCheck[] = [
       'workers/java-source-augmentations.js',
       'workers/shared/runtime-kernel-policy-classic.js',
       'workers/vendor/java-browser-helper.jar',
+      'LICENSE',
+      'THIRD_PARTY_NOTICES.md',
+    ],
+    forbiddenFiles: [
       'workers/vendor/java-rewriter.jar',
       'workers/vendor/javaparser-core-3.25.10.jar',
       'workers/vendor/jdk.compiler-17.jar',
-      'LICENSE',
-      'THIRD_PARTY_NOTICES.md',
     ],
   },
   {
@@ -362,6 +365,12 @@ async function runWithTempRoot(tempRoot: string): Promise<void> {
       assertCondition(
         packedFiles.has(`package/${relativePath}`),
         `${packageCheck.name} tarball should include ${relativePath}`
+      );
+    }
+    for (const relativePath of packageCheck.forbiddenFiles ?? []) {
+      assertCondition(
+        !packedFiles.has(`package/${relativePath}`),
+        `${packageCheck.name} tarball must not include retired artifact ${relativePath}`
       );
     }
     if (packageCheck.name === '@tracecode/runtime-cpp') {

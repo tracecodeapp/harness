@@ -1,7 +1,7 @@
 #!/usr/bin/env npx tsx
 
-import { test } from 'node:test';
-import { mkdtemp, readFile, readdir, stat } from 'node:fs/promises';
+import { test, type TestContext } from 'node:test';
+import { mkdtemp, readFile, readdir, rm, stat } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { spawnSync } from 'node:child_process';
@@ -12,8 +12,9 @@ function assertCondition(condition: unknown, message: string): asserts condition
   }
 }
 
-async function main(): Promise<void> {
+async function main(t: TestContext): Promise<void> {
   const tempRoot = await mkdtemp(join(tmpdir(), 'tracecode-harness-assets-'));
+  t.after(() => rm(tempRoot, { recursive: true, force: true }));
   const targetDir = join(tempRoot, 'public', 'workers');
 
   const run = spawnSync('node', ['dist/cli.js', 'sync-assets', targetDir], {
@@ -45,9 +46,6 @@ async function main(): Promise<void> {
     'vendor/typescript.js',
     'vendor/javascript-libraries.js',
     'vendor/java-browser-helper.jar',
-    'vendor/java-rewriter.jar',
-    'vendor/javaparser-core-3.25.10.jar',
-    'vendor/jdk.compiler-17.jar',
     'vendor/csharp/_framework/dotnet.js',
     'vendor/csharp/_framework/dotnet.native.wasm',
     'vendor/csharp/_framework/dotnet.runtime.js',
@@ -65,6 +63,22 @@ async function main(): Promise<void> {
     const fileStat = await stat(filePath);
     assertCondition(fileStat.isFile(), `Expected synced asset at ${relativePath}`);
   }
+
+  for (const relativePath of [
+    'vendor/java-rewriter.jar',
+    'vendor/javaparser-core-3.25.10.jar',
+    'vendor/jdk.compiler-17.jar',
+  ]) {
+    const exists = await stat(join(targetDir, relativePath)).then(
+      () => true,
+      (error: NodeJS.ErrnoException) => {
+        if (error.code === 'ENOENT') return false;
+        throw error;
+      }
+    );
+    assertCondition(!exists, `Retired Java build artifact must not be synced at ${relativePath}`);
+  }
+
   const removedBrandedCppPathExists = await stat(
     join(targetDir, 'vendor/cpp/yowasp/bundle.js')
   ).then(

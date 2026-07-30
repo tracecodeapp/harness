@@ -166,21 +166,6 @@ const ASSET_COPY_PLAN = [
     languages: ['java'],
   },
   {
-    source: ['workers', 'vendor', 'java-rewriter.jar'],
-    target: ['vendor', 'java-rewriter.jar'],
-    languages: ['java'],
-  },
-  {
-    source: ['workers', 'vendor', 'javaparser-core-3.25.10.jar'],
-    target: ['vendor', 'javaparser-core-3.25.10.jar'],
-    languages: ['java'],
-  },
-  {
-    source: ['workers', 'vendor', 'jdk.compiler-17.jar'],
-    target: ['vendor', 'jdk.compiler-17.jar'],
-    languages: ['java'],
-  },
-  {
     source: ['workers', 'vendor', 'csharp'],
     target: ['vendor', 'csharp'],
     languages: ['csharp'],
