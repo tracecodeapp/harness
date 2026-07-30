@@ -365,6 +365,52 @@ test('Python prepared provider retires an actively cancelled worker before recov
   provider.terminate();
 });
 
+test('Python prepared provider cannot publish a program after termination races compilation', async () => {
+  const compilation = deferred();
+  let compilationStarted = false;
+  let createdWorkers = 0;
+  let terminatedWorkers = 0;
+  const provider = createPythonPreparedExecutionProvider({
+    createWorkerClient: () => {
+      createdWorkers += 1;
+      return {
+        async warmup() {
+          return { success: true, loadTimeMs: 1 };
+        },
+        async prepareProgram(call: RuntimeProgramPreparationCall) {
+          compilationStarted = true;
+          await compilation.promise;
+          return {
+            success: true as const,
+            artifact: artifact(call.mode),
+            mode: call.mode,
+            consoleOutput: [],
+          };
+        },
+        terminate() {
+          terminatedWorkers += 1;
+        },
+      } as unknown as PythonWorkerClient;
+    },
+  });
+
+  const preparing = provider.prepareProgram(preparationCall());
+  await waitUntil(
+    () => compilationStarted,
+    'The Python compiler request never started'
+  );
+  provider.terminate();
+  compilation.resolve();
+
+  await assert.rejects(preparing, /provider has been terminated/);
+  assert.equal(
+    createdWorkers,
+    1,
+    'Termination race created a post-shutdown execution worker'
+  );
+  assert.equal(terminatedWorkers, 1);
+});
+
 test('Python prepared provider maps compilation failures and normalizes trace timings', async () => {
   let preparationCount = 0;
   const createWorkerClient = (): PythonWorkerClient => ({

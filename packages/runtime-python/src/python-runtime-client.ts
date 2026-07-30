@@ -662,6 +662,11 @@ class PythonPreparedExecutionProvider
     } finally {
       this.retireCompiler(client);
     }
+    // A provider shutdown can race an in-flight compiler request. The worker
+    // may still settle its request after terminate() has retired it, but that
+    // result must never publish a new program lifetime beyond the shutdown
+    // boundary.
+    this.assertActive();
     if (!result.success) {
       return {
         kind: 'failed',
