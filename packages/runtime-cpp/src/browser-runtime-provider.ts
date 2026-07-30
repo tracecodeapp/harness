@@ -1,4 +1,8 @@
-import type { Language, RuntimeClient } from '@tracecode/runtime-core';
+import type {
+  Language,
+  RuntimeClient,
+  RuntimePreparedExecutionProvider,
+} from '@tracecode/runtime-core';
 import type {
   BrowserRuntimeProvider,
   BrowserRuntimeProviderContext,
@@ -64,7 +68,10 @@ export function createCppBrowserRuntimeProvider(
         createWorkerClient,
       });
       const clients = new Map<Language, RuntimeClient>([['cpp', client]]);
-      const preparedProviders = new Map([['cpp', preparedProvider]]);
+      const preparedProviders = new Map<
+        Language,
+        RuntimePreparedExecutionProvider
+      >([['cpp', preparedProvider]]);
       return {
         clients,
         preparedProviders,
