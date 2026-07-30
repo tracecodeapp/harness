@@ -26,6 +26,10 @@ Effect, fibers, and services never cross that boundary.
 Host-owned execution engines can attach with `TraceKernelControlledRuntime`.
 The controlled provider leaves PID, signal, descriptor, and lease authority in
 TraceKernel while the host reports completion from an existing runner.
+Every acquired runtime context includes the authoritative session identity and
+a process-bound syscall port. Providers may bridge that port to an in-realm
+adapter, Worker, or Wasm guest, but they do not receive session internals and
+cannot issue a syscall as a different process.
 TraceKernel brackets every mutable lease itself and passes its exactly-once
 release a kernel-classified disposition. A normally completed lease is still
 destroyed unless it implements `revalidate()` and that reset check succeeds;

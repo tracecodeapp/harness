@@ -780,6 +780,8 @@ The implemented foundation establishes:
 
 - scoped host and session resources;
 - lazy, concurrency-deduplicated runtime provider initialization;
+- one immutable runtime context shared by lease acquisition and execution,
+  carrying session identity plus a process-bound syscall port;
 - session-owned process supervision;
 - process-owned runtime leases released exactly once on exit, failure, signal,
   or teardown;
