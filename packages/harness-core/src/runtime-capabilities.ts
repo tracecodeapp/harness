@@ -94,28 +94,28 @@ export interface RuntimeCapabilities {
       outputEvents: boolean;
       deviceFiles: boolean;
     };
-    tracing: {
-      supported: boolean;
-      events: {
-        line: boolean;
-        call: boolean;
-        return: boolean;
-        exception: boolean;
-        stdout: boolean;
-        timeout: boolean;
-      };
-      controls: {
-        maxTraceSteps: boolean;
-        maxLineEvents: boolean;
-        maxSingleLineHits: boolean;
-        maxStoredEvents: boolean;
-        minimalTrace: boolean;
-      };
-      fidelity: {
-        preciseLineMapping: boolean;
-        stableFunctionNames: boolean;
-        callStack: boolean;
-      };
+  };
+  tracing: {
+    supported: boolean;
+    events: {
+      line: boolean;
+      call: boolean;
+      return: boolean;
+      exception: boolean;
+      stdout: boolean;
+      timeout: boolean;
+    };
+    controls: {
+      maxTraceSteps: boolean;
+      maxLineEvents: boolean;
+      maxSingleLineHits: boolean;
+      maxStoredEvents: boolean;
+      minimalTrace: boolean;
+    };
+    fidelity: {
+      preciseLineMapping: boolean;
+      stableFunctionNames: boolean;
+      callStack: boolean;
     };
   };
   diagnostics: {
