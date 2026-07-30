@@ -80,8 +80,8 @@ on a remote/OS-backed runner.
 
 Temporal API guards also cannot prove that every runtime has cancelled all
 deferred user work before host globals are restored. The default project path
-therefore retires each user-command worker; persistent Classic workers remain a
-trusted-throughput mode, not a hostile-code security boundary.
+therefore retires each user-command worker. Shared worker reuse remains an
+explicit trusted-throughput capability, not a hostile-code security boundary.
 
 The JavaScript project runner should use its worker-backed path in browser
 project mode. The same-realm JavaScript fallback exists for constrained
@@ -147,11 +147,18 @@ resolves and pins public addresses on every hop.
 
 ## Runtime Assets And CDNs
 
-Runtime delivery is consumer-owned configuration. The harness accepts
-provider-neutral, versioned runtime manifests for every browser language; it
-does not require a TraceCode-operated CDN. A first-party TraceCode application
-may publish its own manifest, but that is application configuration rather than
-an open-source harness dependency.
+Runtime delivery is consumer-owned configuration. `BrowserRuntimeHost` resolves
+provider-neutral, versioned asset manifests for its browser providers; it does
+not require a TraceCode-operated CDN. A first-party TraceCode application may
+publish its own manifest, but that is application configuration rather than an
+open-source harness dependency.
+
+Create the host from `@tracecode/harness/browser`. Algorithm execution enters
+that lifecycle through a scoped
+`createBrowserRuntimeJudge({ host, language, binding })` from
+`@tracecode/harness/judge`. The public API does not expose a runtime client or
+prepared provider that can bypass host disposal, language retirement, or
+Judge's fresh TraceKernel session per case.
 
 Dependent runtime artifacts may be hosted on a consumer CDN when their origin,
 media type, decoded size, and integrity metadata satisfy the manifest policy.
@@ -173,24 +180,20 @@ keyed by normalized paths beneath `runtimeIndex`, to preflight the lockfile,
 stdlib, WASM/module files, package metadata, and other transitive distribution
 artifacts. This is a complete preflight inventory, not execution-bound SRI.
 
-Browser Project Java has no implicit runtime or manifest fallback. A workspace
-that selects Java must provide an implementation-neutral Java 23 provider
-through `java.createClient`, or deliberately supply a low-level
-`javaWorkerClient`. The high-level adapter admits each `javac` or `java`
-invocation to a fresh disposable client, and the provider owns the Worker
-origin plus any implementation-specific asset validation. Project
-`executionHost.providers` excludes Java so the harness cannot accidentally
-claim authority over that provider-owned boundary.
+Java has no implicit engine-tree fallback. Its bridge Worker is resolved like
+the other browser Worker assets, while the immutable Java runtime tree is
+configured with the provider-neutral `java.runtimeAssetBaseUrl` option passed
+to `createBrowserRuntimeHost(...)`. The base is treated as a directory and
+normalized before the Worker receives it. The runtime tree contains the engine
+module, WebAssembly binary, and Java 23 profile; it is not bundled into the
+root npm package.
 
-The bundled low-level Java client currently integrates with CheerpJ, which is
-not vendored. Consumers choosing that client must provide and preflight its
-`worker`, `loader`, `helperJar`, `compilerJar`, `rewriterJar`, and `parserJar`
-assets. JAR descriptors may use `runtimePath` for CheerpJ's virtual filesystem
-while `url` remains the delivery and integrity boundary. Its `/files` mount is
-IndexedDB-backed, so it must not receive application-origin storage authority;
-use a credential-free execution origin and retire the client at the untrusted
-command boundary. These constraints describe that concrete low-level client,
-not the generic Java 23 provider contract.
+Host disposal and Judge interruption retire or release the Java provider
+through the same lifecycle contract as every other language. The embedding
+application still owns the runtime origin, CSP, cache policy, and immutable
+publication of that tree. Browser project workspaces use their project Java
+adapter rather than the algorithm Judge, but must preserve the same
+one-invocation isolation and consumer-owned asset boundary.
 
 C++ manifests retain an additional exact-binding boundary. The compiler frame
 and compiler worker must share an origin. Compiler resources hosted on another

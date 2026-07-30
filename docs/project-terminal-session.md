@@ -16,7 +16,7 @@ import { createBrowserProjectWorkspace } from '@tracecode/harness/browser/projec
 import type {
   RuntimeCommandEvent,
   RuntimeProjectTerminalInputState,
-} from '@tracecode/harness/core';
+} from '@tracecode/harness/project';
 
 const workspace = await createBrowserProjectWorkspace({
   assetBaseUrl: '/workers',

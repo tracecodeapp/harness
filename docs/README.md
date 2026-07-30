@@ -17,6 +17,9 @@ triage logs should not live in this public docs tree.
   knobs.
 - [TraceKernel HTTP Simulation](./tracekernel-http.md)
   Documents the in-workspace HTTP model for browser project mode.
+- [Browser Project Runtime Benchmark](./browser-project-runtime-benchmark.md)
+  Defines the real-browser performance and correctness methodology for public
+  project workspaces.
 - [Root Package Publishing](./publishing.md)
   Documents the root-only release boundary and its local audit.
 

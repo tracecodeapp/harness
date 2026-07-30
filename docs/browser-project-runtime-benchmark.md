@@ -1,4 +1,4 @@
-# Public project-browser runtime benchmark
+# Browser Project Runtime Benchmark
 
 `scripts/benchmark-browser-project-runtimes.ts` measures the browser behavior a
 consumer gets from the public project entrypoint:
@@ -7,16 +7,18 @@ consumer gets from the public project entrypoint:
 createBrowserProjectWorkspace() -> RuntimeWorkspace public methods -> dispose()
 ```
 
-The measured product surface is **project-browser only**. Node.js/tsx launches
+The measured product surface is the public browser project workspace only.
+Node.js/tsx launches
 Playwright, serves the temporary static files, and writes the report; none of
 that host-driver time is included. The JavaScript command is spelled
 `node main.js` because that is the public project shell syntax, but it is
 implemented by `javascript-project-worker.js` in the selected browser. It does not invoke
 or benchmark a host Node.js runtime.
 
-This benchmark is independent from the Classic browser benchmark documented in
-`docs/browser-runtime-benchmark.md`. The two surfaces have different lifecycle,
-filesystem, policy, and HTTP behavior, so their results should not be merged.
+This benchmark measures an interactive TraceKernel workspace, not an algorithm
+Judge plan. Project commands include filesystem, shell, process, policy, and
+HTTP behavior, so these results must not be treated as isolated Judge
+compile/run latency.
 
 ## Run it
 
@@ -64,14 +66,15 @@ previous provider's WASM/JIT memory from contaminating compatibility or timing.
 `--runtime-manifests` accepts either a runtime map directly or an object with a
 `runtimeManifests` property. `TRACECODE_BENCH_RUNTIME_MANIFESTS` is the CI
 equivalent. This is the same generic, consumer-owned manifest mechanism used by
-the public browser harness; it is not tied to TraceCode hosting.
+`BrowserRuntimeHost` and the browser project workspace; it is not tied to
+TraceCode hosting.
 
-Java 23 is supplied by an independently installed project provider through
-`java.createClient`. The generic Harness benchmark does not select, bundle, or
-pretend to measure one implementation; Java is covered by the selected
-provider's browser integration and performance suites. The focused Harness
-gate verifies the implementation-neutral adapter and browser workspace
-contract.
+Java 23 is supplied by an independently installed project adapter. The generic
+Harness benchmark does not select, bundle, or pretend to measure one engine;
+Java is covered by that adapter's browser integration and performance suites.
+For the algorithm host, the engine tree is configured separately through
+`java.runtimeAssetBaseUrl`. The focused Harness gates verify the
+implementation-neutral runtime and browser workspace contracts.
 
 `--execution-host` starts a second local origin and routes the selected built-in
 worker through the public dedicated-origin contract. Java Project providers own
@@ -140,7 +143,7 @@ as aggregates, including:
 - Raw Chrome DevTools Protocol `Performance.getMetrics` snapshots and deltas for
   Chromium samples. Firefox and WebKit report that metric surface as unsupported
   instead of fabricating equivalent values.
-- Bundle raw/gzip size, deterministic run plan, runtime-manifest runtimes,
+- Bundle raw/gzip size, deterministic run plan, runtime-asset manifest runtimes,
   skipped phases, infrastructure errors, and metric-support coverage.
 
 The p50 and p95 fields are emitted only when a language/phase has at least five

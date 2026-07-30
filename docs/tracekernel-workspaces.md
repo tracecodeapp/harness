@@ -31,6 +31,17 @@ const workspace = await createBrowserProjectWorkspace({
 `@tracecode/harness/project`. TraceKernel owns the workspace model; browser and
 native factories add language runners.
 
+Node applications that need host-tool execution create the native workspace
+from the dedicated native entrypoint:
+
+```ts
+import { createNativeProjectWorkspace } from '@tracecode/harness/project-node';
+```
+
+Keep workspace and terminal contracts imported from `@tracecode/harness/project`;
+`@tracecode/harness/project-node` is the Node-only factory and native runner
+surface.
+
 ## Kernel Identity
 
 `kernel` controls the identity surfaced through prompts, snapshots, `/proc`, and
@@ -156,9 +167,12 @@ workspace process behavior.
 ### Browser worker isolation and optional prewarming
 
 Browser project workspaces default to `projectWorkerIsolation: 'per-command'`.
-Python, JavaScript, Java, C#, and C++ commands therefore execute in workers that are retired
-after one command; a worker that has run user code is never returned to an idle
-pool. Shared workers are trusted-only and require both
+Built-in Python, JavaScript, C#, and C++ commands therefore execute in workers
+that are retired after one command; a worker that has run user code is never
+returned to an idle pool. TypeScript output runs through the JavaScript worker.
+The Java project adapter independently requires a fresh runtime instance for each
+`javac` or `java` invocation. Shared built-in workers are trusted-only and
+require both
 `projectWorkerIsolation: 'shared'` and `trustedSharedWorkerReuse: true`.
 
 For TraceKernel-backed commands, worker retirement is part of the process
@@ -178,27 +192,27 @@ const workspace = await createBrowserProjectWorkspace({
     python: 1,
     javascript: 1,
     typescript: 1,
-    java: 1,
     csharp: 1,
     cpp: 1,
   },
 });
 ```
 
-No language is prewarmed by default. Each configured Python, JavaScript, Java, C#, or C++
-worker finishes trusted runtime warmup before it becomes leasable, receives at
-most one user command, and is then terminated. Failed warmups are evicted and a
-fresh worker is tried; aborting or disposing the workspace retires affected
-leases. TypeScript prewarming loads its trusted compiler and shares that in-flight
-load with the first compile. JavaScript and TypeScript are capped at 1; worker-backed
-providers are capped at 2 per language and total depth is capped at 6 to bound
-idle memory and concurrent warmups. The configured depth is the ready/idle
-target: while a command holds its one-shot lease, a replacement warmup can
-temporarily add one worker beyond that language's idle depth. Prewarming is
-incompatible with trusted shared-worker mode and with consumer-provided
-language clients. Workspace creation never awaits these warmups: the filesystem
-and terminal are available immediately, while a command for a still-loading
-provider waits on that provider's existing background initialization.
+No language is prewarmed by default. Each configured Python, JavaScript, C#, or
+C++ worker finishes trusted runtime warmup before it becomes leasable, receives
+at most one user command, and is then terminated. Failed warmups are evicted and
+a fresh worker is tried; aborting or disposing the workspace retires affected
+leases. TypeScript prewarming loads its trusted compiler and shares that
+in-flight load with the first compile. JavaScript and TypeScript are capped at
+1; worker-backed providers are capped at 2 per language and total depth is
+capped at 6 to bound idle memory and concurrent warmups. The configured depth
+is the ready/idle target: while a command holds its one-shot lease, a
+replacement warmup can temporarily add one worker beyond that language's idle
+depth. Prewarming is incompatible with trusted shared-worker mode and
+caller-owned runtime providers. Workspace creation never awaits these warmups:
+the filesystem and terminal are available immediately, while a command for a
+still-loading provider waits on that provider's existing background
+initialization.
 
 ## Virtual Namespaces
 
@@ -296,16 +310,16 @@ only by the provider's own snapshot scan. Browser Node and browser Python use
 their runtime filesystems directly. Native Java and native C# can materialize
 safe relative links, but reject absolute link targets because their temporary
 host roots cannot preserve virtual absolute `readlink` and rename behavior.
-Browser Java rejects snapshots containing links with `ENOTSUP` until its
-upstream virtual filesystem can expose genuine link semantics. Browser C#
+The current browser Java project adapter rejects snapshots containing links
+with `ENOTSUP` because its runtime bridge cannot yet preserve genuine symlink
+identity. Browser C#
 retains that rejection on its legacy private-filesystem path, but the kernel
-kernel path accepts symlink snapshots and mounts authoritative TKFS beneath
+path accepts symlink snapshots and mounts authoritative TKFS beneath
 ordinary `System.IO` file, directory, and symbolic-link operations. Hard links
 and raw `readlink`/`realpath` are also available through the managed
 `TraceKernel.KernelFileSystem` surface. Browser Java preserves metadata in the
-TraceKernel workspace, but
-CheerpJ does not currently expose the POSIX metadata surface to Java code, so
-Java code cannot inspect or mutate those bits in a browser command.
+TraceKernel workspace, but its current project bridge does not expose the
+permission and timestamp mutation surface to Java code.
 
 Browser C++ preserves symbolic-link identity and file/directory timestamps at
 runtime. It reserves `/dev`, `/proc`, `/etc`, and the top-level roots of
