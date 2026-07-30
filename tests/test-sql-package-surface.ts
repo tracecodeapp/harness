@@ -46,15 +46,13 @@ async function main(): Promise<void> {
     'Removed packages/harness-sql directory should not remain in the workspace'
   );
 
-  const [manifestText, packageReadme, rootManifestText, rootFacade, lockfile, declarations, rootDeclarations] =
+  const [manifestText, packageReadme, rootManifestText, lockfile, declarations] =
     await Promise.all([
       readFile(join(PACKAGE_DIR, 'package.json'), 'utf8'),
       readFile(join(PACKAGE_DIR, 'README.md'), 'utf8'),
       readFile(join(ROOT, 'package.json'), 'utf8'),
-      readFile(join(ROOT, 'src', 'sql.ts'), 'utf8'),
       readFile(join(ROOT, 'pnpm-lock.yaml'), 'utf8'),
       readFile(join(PACKAGE_DIR, 'dist', 'index.d.ts'), 'utf8'),
-      readFile(join(ROOT, 'dist', 'sql.d.ts'), 'utf8'),
     ]);
   const manifest = JSON.parse(manifestText) as {
     name?: unknown;
@@ -67,16 +65,16 @@ async function main(): Promise<void> {
   };
 
   assertCondition(manifest.name === '@tracecode/runtime-sql', 'SQL runtime package name should be @tracecode/runtime-sql');
-  assertCondition(manifest.private === true, 'SQL runtime workspace should remain private behind the root ./sql facade');
+  assertCondition(manifest.private === true, 'SQL runtime workspace should remain private until its standalone contract is released');
   assertCondition(manifest.version === '0.14.0', 'SQL runtime workspace should expose the 0.14.0 API');
   assertCondition(
     manifest.repository?.directory === 'packages/runtime-sql',
     'SQL runtime package repository directory should match its workspace path'
   );
-  assertCondition(rootManifest.exports?.['./sql'] !== undefined, 'Root package should preserve the ./sql facade');
   assertCondition(
-    rootFacade.trim() === "export * from '../packages/runtime-sql/src/index';",
-    'Root ./sql source facade should re-export the SQL runtime package'
+    rootManifest.exports?.['./sql'] === undefined &&
+      !existsSync(join(ROOT, 'src', 'sql.ts')),
+    'The retired @tracecode/harness/sql facade must not return'
   );
   assertCondition(
     lockfile.includes('packages/runtime-sql: {}') &&
@@ -89,7 +87,7 @@ async function main(): Promise<void> {
       !manifestText.includes('packages/harness-sql') &&
       !packageReadme.includes('@tracecode/harness-sql') &&
       !packageReadme.includes('createPgliteSqlTraceClient'),
-    'Published SQL runtime metadata and README should not retain the removed package or provider-branded API'
+    'Private SQL runtime metadata and README should not retain the removed package or provider-branded API'
   );
 
   for (const publicName of [
@@ -102,22 +100,16 @@ async function main(): Promise<void> {
     'assertValidSqlTrace',
   ]) {
     assertCondition(declarations.includes(publicName), `Standalone SQL declarations should include ${publicName}`);
-    assertCondition(rootDeclarations.includes(publicName), `Root ./sql declarations should include ${publicName}`);
   }
   for (const removedName of REMOVED_PROVIDER_API) {
     assertCondition(!declarations.includes(removedName), `Standalone SQL declarations should omit ${removedName}`);
-    assertCondition(!rootDeclarations.includes(removedName), `Root ./sql declarations should omit ${removedName}`);
   }
 
   const esm = await import(pathToFileURL(join(PACKAGE_DIR, 'dist', 'index.js')).href);
   const require = createRequire(import.meta.url);
   const cjs = require(join(PACKAGE_DIR, 'dist', 'index.cjs')) as Record<string, unknown>;
-  const rootEsm = await import(pathToFileURL(join(ROOT, 'dist', 'sql.js')).href);
-  const rootCjs = require(join(ROOT, 'dist', 'sql.cjs')) as Record<string, unknown>;
   await assertRuntimeSurface(esm, 'SQL runtime ESM build');
   await assertRuntimeSurface(cjs, 'SQL runtime CommonJS build');
-  await assertRuntimeSurface(rootEsm, 'Root ./sql ESM facade');
-  await assertRuntimeSurface(rootCjs, 'Root ./sql CommonJS facade');
 
   const tempRoot = await mkdtemp(join(tmpdir(), 'tracecode-runtime-sql-package-'));
   try {
@@ -165,7 +157,7 @@ async function main(): Promise<void> {
     await rm(tempRoot, { recursive: true, force: true });
   }
 
-  console.log('PASS: SQL runtime package and root facade expose the generic 0.14 surface');
+  console.log('PASS: private SQL runtime exposes the generic 0.14 surface without a root facade');
 }
 
 test('SQL runtime package surface', main);
