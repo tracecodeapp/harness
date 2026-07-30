@@ -34,7 +34,7 @@ const SCANNED_FILES = [
   'packages/harness-project/src/index.ts',
   'packages/harness-project/src/zlib-browser-shim.ts',
   'packages/harness-native/src/index.ts',
-  'packages/harness-sql/src/index.ts',
+  'packages/runtime-sql/src/index.ts',
   'packages/harness-javascript/src/index.ts',
   'packages/harness-javascript/src/javascript-executor.ts',
   'packages/harness-javascript/src/project-browser.ts',

@@ -1,6 +1,6 @@
 # SQL Trace Product Integration
 
-This guide shows how a browser product can use `@tracecode/harness-sql` with
+This guide shows how a browser product can use `@tracecode/runtime-sql` with
 PGlite while keeping the SQL trace contract separate from product UI state.
 
 ## Basic Browser Flow
@@ -9,14 +9,18 @@ PGlite while keeping the SQL trace contract separate from product UI state.
 import { PGlite } from '@electric-sql/pglite';
 import {
   assertValidSqlTrace,
-  createPgliteSqlTraceClient,
-} from '@tracecode/harness-sql';
+  createSqlRuntimeTraceClient,
+} from '@tracecode/runtime-sql';
 
 const db = await PGlite.create('memory://lesson-sql');
 
-const sql = createPgliteSqlTraceClient(db, {
+const sql = createSqlRuntimeTraceClient(db, {
   runId: 'sql:lesson:run:1',
-  dataDir: 'memory://lesson-sql',
+  engine: {
+    kind: 'pglite',
+    dialect: 'postgres',
+  },
+  persistenceLocation: 'memory://lesson-sql',
   capture: {
     sqlText: 'redacted',
     params: 'redacted',
@@ -78,14 +82,16 @@ component IDs inside SQL trace events.
 Create one traced client per browser database instance.
 
 ```ts
-const usersSql = createPgliteSqlTraceClient(usersDb, {
+const usersSql = createSqlRuntimeTraceClient(usersDb, {
   runId: 'sql:users:run:1',
-  dataDir: 'memory://users',
+  engine: { kind: 'pglite', dialect: 'postgres' },
+  persistenceLocation: 'memory://users',
 });
 
-const analyticsSql = createPgliteSqlTraceClient(analyticsDb, {
+const analyticsSql = createSqlRuntimeTraceClient(analyticsDb, {
   runId: 'sql:analytics:run:1',
-  dataDir: 'memory://analytics',
+  engine: { kind: 'pglite', dialect: 'postgres' },
+  persistenceLocation: 'memory://analytics',
 });
 
 await usersSql.query('SELECT id, email FROM users');
@@ -136,9 +142,9 @@ The default product contract is therefore fresh database state per test case.
 ```ts
 import { PGlite } from '@electric-sql/pglite';
 import {
-  createPgliteSqlTraceClient,
+  createSqlRuntimeTraceClient,
   runIsolatedSqlCases,
-} from '@tracecode/harness-sql';
+} from '@tracecode/runtime-sql';
 
 const result = await runIsolatedSqlCases({
   problemId: 'active-customers',
@@ -174,7 +180,16 @@ const result = await runIsolatedSqlCases({
   snapshotDatabase(db) {
     return db.dumpDataDir();
   },
-  createTraceClient: createPgliteSqlTraceClient,
+  createTraceClient(client, options) {
+    return createSqlRuntimeTraceClient(client, {
+      ...options,
+      engine: {
+        ...options.engine,
+        kind: 'pglite',
+        dialect: 'postgres',
+      },
+    });
+  },
   submission: `
     CREATE VIEW answer AS
     SELECT email FROM customers WHERE active = true;
@@ -230,11 +245,11 @@ For a first product UI, render:
 Standalone package:
 
 ```ts
-import { createPgliteSqlTraceClient } from '@tracecode/harness-sql';
+import { createSqlRuntimeTraceClient } from '@tracecode/runtime-sql';
 ```
 
 Umbrella package subpath:
 
 ```ts
-import { createPgliteSqlTraceClient } from '@tracecode/harness/sql';
+import { createSqlRuntimeTraceClient } from '@tracecode/harness/sql';
 ```

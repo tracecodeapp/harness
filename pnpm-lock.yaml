@@ -144,9 +144,9 @@ importers:
       '@electric-sql/pglite':
         specifier: ^0.5.2
         version: 0.5.2
-      '@tracecode/harness-sql':
+      '@tracecode/runtime-sql':
         specifier: workspace:*
-        version: link:../../packages/harness-sql
+        version: link:../../packages/runtime-sql
     devDependencies:
       typescript:
         specifier: ^5.0.0
@@ -323,7 +323,7 @@ importers:
         specifier: workspace:*
         version: link:../harness-core
 
-  packages/harness-sql: {}
+  packages/runtime-sql: {}
 
   packages/judge:
     dependencies:

@@ -5,7 +5,7 @@ import { readdir, readFile } from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 
-import { assertValidSqlTrace, type SqlTrace } from '../packages/harness-sql/src/index';
+import { assertValidSqlTrace, type SqlTrace } from '../packages/runtime-sql/src/index';
 
 const FIXTURE_DIR = join(dirname(fileURLToPath(import.meta.url)), 'fixtures', 'sql-traces');
 

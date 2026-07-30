@@ -1,6 +1,6 @@
 # SQL Trace Contract
 
-Status: implemented V1 contract for `@tracecode/harness-sql`, with PGlite as
+Status: implemented V1 contract for `@tracecode/runtime-sql`, with PGlite as
 the primary browser Postgres-compatible engine target.
 
 ## Purpose
@@ -52,13 +52,13 @@ PGlite is the primary engine candidate because it is a WASM Postgres build that
 runs in the browser and supports in-memory or IndexedDB persistence. It gives
 the harness a Postgres-compatible dialect without requiring a server process.
 
-`@tracecode/harness-sql` intentionally does not vendor PGlite. The package owns
+`@tracecode/runtime-sql` intentionally does not vendor PGlite. The package owns
 the trace contract, validation, redaction, result capture, statement splitting,
-and dependency-injection wrappers. Browser apps inject a PGlite client and can
-use `createPgliteSqlTraceClient(...)` to label engine kind, dialect,
-persistence, and capabilities without forcing every consumer to install a SQL
-engine. The generic `createSqlTraceClient(...)` defaults to `custom` /
-`unknown`; only the PGlite helper labels traces as PGlite/Postgres.
+and dependency-injection wrappers. Browser apps inject their chosen SQL client
+and use `createSqlRuntimeTraceClient(...)`, setting known provider metadata such
+as `kind: 'pglite'` and `dialect: 'postgres'` explicitly. Both runtime and
+low-level wrappers default to `custom` / `unknown`, so the package never
+attributes a provider or dialect it was not given.
 
 The primary product claim should be:
 
@@ -114,14 +114,16 @@ multiple browser database instances should create one traced client per database
 and keep the resulting traces separate:
 
 ```ts
-const usersDb = createPgliteSqlTraceClient(usersPglite, {
+const usersDb = createSqlRuntimeTraceClient(usersPglite, {
   runId: 'sql:users-db',
-  dataDir: 'memory://users',
+  engine: { kind: 'pglite', dialect: 'postgres' },
+  persistenceLocation: 'memory://users',
 });
 
-const analyticsDb = createPgliteSqlTraceClient(analyticsPglite, {
+const analyticsDb = createSqlRuntimeTraceClient(analyticsPglite, {
   runId: 'sql:analytics-db',
-  dataDir: 'memory://analytics',
+  engine: { kind: 'pglite', dialect: 'postgres' },
+  persistenceLocation: 'memory://analytics',
 });
 ```
 
@@ -141,7 +143,7 @@ clients/runs or serialize those operations.
 
 ## Isolated Case Runner
 
-`harness-sql` can run SQL problem cases through a runner layered above the trace
+`runtime-sql` can run SQL problem cases through a runner layered above the trace
 client. This runner keeps problem/test semantics out of `SqlTrace`; traces remain
 raw execution facts.
 
@@ -319,7 +321,7 @@ replacement for language-runtime `stdout`.
 
 ## Type Shape
 
-The exported API follows this shape; see `packages/harness-sql/src/index.ts`
+The exported API follows this shape; see `packages/runtime-sql/src/index.ts`
 for the exact source of truth.
 
 ```ts
@@ -727,9 +729,10 @@ events, and coarse error category. Do not require plan parity across engines,
 and do not require relation-access parity unless the same derivation mode is
 used.
 
-Browser gates should run the PGlite adapter in real browsers. In-memory mode can
-be the deterministic baseline; IndexedDB and OPFS should be separate capability
-tests because browser storage behavior varies by platform and origin state.
+Browser gates should run the PGlite integration in real browsers. In-memory
+mode can be the deterministic baseline; IndexedDB and OPFS should be separate
+capability tests because browser storage behavior varies by platform and origin
+state.
 
 ## V1 Non-Claims
 

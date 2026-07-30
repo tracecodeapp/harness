@@ -382,8 +382,8 @@ export interface SqlTraceClientOptions extends CreateSqlTraceOptions {
   onEvent?: (event: SqlTraceEvent) => void;
 }
 
-export interface PgliteSqlTraceClientOptions extends SqlTraceClientOptions {
-  dataDir?: string;
+export interface SqlRuntimeTraceClientOptions extends SqlTraceClientOptions {
+  persistenceLocation?: string;
   persistence?: SqlPersistence;
   capabilities?: SqlTraceCapability[];
 }
@@ -659,11 +659,9 @@ const SQL_OPERATIONS = new Set<SqlOperation>([
   'unknown',
 ]);
 
-export const PGLITE_SQL_TRACE_CAPABILITIES: SqlTraceCapability[] = [
+export const SQL_RUNTIME_TRACE_CAPABILITIES: readonly SqlTraceCapability[] = [
   'single-statement-query',
-  'multi-statement-exec',
   'parameterized-query',
-  'transactions',
 ];
 
 const SQL_TRACE_CAPABILITIES = new Set<SqlTraceCapability>([
@@ -2208,32 +2206,50 @@ export function assertValidSqlTrace(value: unknown, label = 'sql trace'): assert
   }
 }
 
-export function inferPgliteSqlPersistence(dataDir: string | undefined): SqlPersistence {
-  if (!dataDir || dataDir === ':memory:' || dataDir.startsWith('memory://')) return 'memory';
-  if (dataDir.startsWith('idb://')) return 'indexeddb';
-  if (dataDir.startsWith('opfs://')) return 'opfs';
-  if (dataDir.startsWith('file://') || !/^[a-z][a-z0-9+.-]*:\/\//i.test(dataDir)) return 'file';
+export function inferSqlPersistence(persistenceLocation: string | undefined): SqlPersistence {
+  if (!persistenceLocation) return 'unknown';
+  if (persistenceLocation === ':memory:' || persistenceLocation.startsWith('memory://')) return 'memory';
+  if (persistenceLocation.startsWith('idb://')) return 'indexeddb';
+  if (persistenceLocation.startsWith('opfs://')) return 'opfs';
+  if (
+    persistenceLocation.startsWith('file://') ||
+    !/^[a-z][a-z0-9+.-]*:\/\//i.test(persistenceLocation)
+  ) {
+    return 'file';
+  }
   return 'unknown';
 }
 
-export function createPgliteSqlTraceClient<TClient extends SqlClientLike>(
+export function createSqlRuntimeTraceClient<TClient extends SqlClientLike>(
   client: TClient,
-  options: PgliteSqlTraceClientOptions = {}
+  options: SqlRuntimeTraceClientOptions = {}
 ): TracedSqlClient<TClient> {
+  const {
+    persistenceLocation,
+    persistence,
+    capabilities: requestedCapabilities,
+    ...traceOptions
+  } = options;
   const capabilities = Array.from(new Set([
-    ...PGLITE_SQL_TRACE_CAPABILITIES,
-    ...(options.capture?.plans === 'estimate' || options.capture?.plans === 'analyze' ? ['explain-json' as const] : []),
-    ...(options.capabilities ?? []),
+    ...SQL_RUNTIME_TRACE_CAPABILITIES,
+    ...(typeof client.exec === 'function' ? ['multi-statement-exec' as const] : []),
+    ...(typeof client.transaction === 'function' ? ['transactions' as const] : []),
+    ...(
+      options.capture?.plans === 'estimate' && options.engine?.dialect === 'postgres'
+        ? ['explain-json' as const]
+        : []
+    ),
+    ...(requestedCapabilities ?? []),
     ...(options.engine?.capabilities ?? []),
   ]));
 
   return createSqlTraceClient(client, {
-    ...options,
+    ...traceOptions,
     engine: {
       ...options.engine,
-      kind: 'pglite',
-      dialect: 'postgres',
-      persistence: options.persistence ?? options.engine?.persistence ?? inferPgliteSqlPersistence(options.dataDir),
+      kind: options.engine?.kind ?? 'custom',
+      dialect: options.engine?.dialect ?? 'unknown',
+      persistence: persistence ?? options.engine?.persistence ?? inferSqlPersistence(persistenceLocation),
       capabilities,
     },
   });

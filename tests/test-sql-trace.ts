@@ -5,9 +5,9 @@ import {
   SQL_TRACE_SCHEMA_VERSION,
   assertValidSqlTrace,
   createEmptySqlTrace,
-  createPgliteSqlTraceClient,
+  createSqlRuntimeTraceClient,
   createSqlTraceClient,
-  inferPgliteSqlPersistence,
+  inferSqlPersistence,
   redactSqlText,
   runIsolatedSqlCases,
   splitSqlStatements,
@@ -15,7 +15,7 @@ import {
   type SqlClientResult,
   type SqlClientLike,
   type SqlTrace,
-} from '../packages/harness-sql/src/index';
+} from '../packages/runtime-sql/src/index';
 
 function assertCondition(condition: unknown, message: string): asserts condition {
   if (!condition) throw new Error(message);
@@ -45,30 +45,72 @@ function testEmptyTrace(): void {
   console.log('PASS: SQL trace factory creates a valid empty trace');
 }
 
-function testPgliteTraceDefaults(): void {
-  assertCondition(inferPgliteSqlPersistence(undefined) === 'memory', 'missing PGlite dataDir should infer memory persistence');
-  assertCondition(inferPgliteSqlPersistence('memory://') === 'memory', 'memory:// should infer memory persistence');
-  assertCondition(inferPgliteSqlPersistence('idb://tracecode-sql') === 'indexeddb', 'idb:// should infer IndexedDB persistence');
+function testSqlRuntimeTraceDefaults(): void {
+  assertCondition(inferSqlPersistence(undefined) === 'unknown', 'missing SQL persistence location should remain unknown');
+  assertCondition(inferSqlPersistence('memory://') === 'memory', 'memory:// should infer memory persistence');
+  assertCondition(inferSqlPersistence('idb://tracecode-sql') === 'indexeddb', 'idb:// should infer IndexedDB persistence');
 
-  const traced = createPgliteSqlTraceClient(
+  const traced = createSqlRuntimeTraceClient(
     {
       async query() {
         return { rows: [{ ok: true }], affectedRows: 0, fields: [{ name: 'ok', dataTypeID: 16 }] };
       },
     } as unknown as SqlClientLike,
     {
-      runId: 'sql:test:pglite-defaults',
-      dataDir: 'idb://tracecode-sql',
+      runId: 'sql:test:runtime-defaults',
+      persistenceLocation: 'idb://tracecode-sql',
     }
   );
   const trace = traced.getTrace();
-  assertCondition(trace.engine.kind === 'pglite', 'PGlite helper should set engine kind');
-  assertCondition(trace.engine.dialect === 'postgres', 'PGlite helper should set Postgres dialect');
-  assertCondition(trace.engine.persistence === 'indexeddb', 'PGlite helper should preserve persistence metadata');
-  assertCondition(trace.engine.capabilities?.includes('transactions') === true, 'PGlite helper should label transaction capability');
-  assertCondition(trace.engine.capabilities?.includes('explain-json') !== true, 'PGlite helper should not claim uncaptured plan capability by default');
-  assertValidSqlTrace(trace, 'pglite defaults trace');
-  console.log('PASS: PGlite trace helper labels browser Postgres capabilities');
+  assertCondition(trace.engine.kind === 'custom', 'SQL runtime helper should default to a custom engine kind');
+  assertCondition(trace.engine.dialect === 'unknown', 'SQL runtime helper should default to an unknown dialect');
+  assertCondition(trace.engine.persistence === 'indexeddb', 'SQL runtime helper should preserve persistence metadata');
+  assertCondition(
+    trace.engine.capabilities?.includes('single-statement-query') === true,
+    'SQL runtime helper should label the required query capability'
+  );
+  assertCondition(
+    trace.engine.capabilities?.includes('transactions') !== true,
+    'SQL runtime helper should not claim an optional transaction API that the client does not expose'
+  );
+  assertCondition(
+    trace.engine.capabilities?.includes('explain-json') !== true,
+    'SQL runtime helper should not claim uncaptured plan capability by default'
+  );
+  assertValidSqlTrace(trace, 'SQL runtime defaults trace');
+
+  const providerTrace = createSqlRuntimeTraceClient(
+    {
+      async query() {
+        return { rows: [] };
+      },
+      async exec() {
+        return [];
+      },
+      async transaction<T>(callback: (tx: SqlClientLike) => Promise<T>): Promise<T> {
+        return callback(this);
+      },
+    },
+    {
+      runId: 'sql:test:provider-metadata',
+      engine: {
+        kind: 'pglite',
+        dialect: 'postgres',
+      },
+    }
+  ).getTrace();
+  assertCondition(providerTrace.engine.kind === 'pglite', 'SQL runtime helper should preserve explicit engine kind');
+  assertCondition(providerTrace.engine.dialect === 'postgres', 'SQL runtime helper should preserve explicit SQL dialect');
+  assertCondition(
+    providerTrace.engine.capabilities?.includes('multi-statement-exec') === true,
+    'SQL runtime helper should derive exec capability from the injected client'
+  );
+  assertCondition(
+    providerTrace.engine.capabilities?.includes('transactions') === true,
+    'SQL runtime helper should derive transaction capability from the injected client'
+  );
+  assertValidSqlTrace(providerTrace, 'SQL runtime provider metadata trace');
+  console.log('PASS: SQL runtime trace helper uses generic defaults and explicit provider metadata');
 }
 
 function testSqlScriptSplitting(): void {
@@ -1010,7 +1052,7 @@ function testValidationFailures(): void {
 
 async function main(): Promise<void> {
   testEmptyTrace();
-  testPgliteTraceDefaults();
+  testSqlRuntimeTraceDefaults();
   testSqlScriptSplitting();
   testSqlRedactionCoversPostgresLiteralForms();
   await testTracedQueryCapture();

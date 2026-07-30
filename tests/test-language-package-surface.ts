@@ -74,13 +74,15 @@ const PACKAGE_CHECKS: PackageCheck[] = [
     ],
   },
   {
-    name: '@tracecode/harness-sql',
-    dir: 'packages/harness-sql',
-    exportName: 'createSqlTraceClient',
+    name: '@tracecode/runtime-sql',
+    dir: 'packages/runtime-sql',
+    exportName: 'createSqlRuntimeTraceClient',
     requiredFiles: [
       'dist/index.js',
       'dist/index.cjs',
       'dist/index.d.ts',
+      'package.json',
+      'README.md',
       'LICENSE',
       'THIRD_PARTY_NOTICES.md',
     ],
@@ -293,6 +295,10 @@ function packageNodeModulesDir(appDir: string, packageName: string): string {
 
 async function runWithTempRoot(tempRoot: string): Promise<void> {
   const pnpmCommand = resolvePnpmCommand();
+  assertCondition(
+    !existsSync(join(process.cwd(), 'packages', 'harness-sql')),
+    'Removed packages/harness-sql directory should not remain in the workspace'
+  );
   const appDir = join(tempRoot, 'app');
   await mkdir(join(appDir, 'node_modules', '@tracecode'), { recursive: true });
   await cp(
@@ -395,19 +401,44 @@ async function runWithTempRoot(tempRoot: string): Promise<void> {
         '@tracecode/harness-core declarations should export project I/O support tier types'
       );
     }
-    if (packageCheck.name === '@tracecode/harness-sql') {
+    if (packageCheck.name === '@tracecode/runtime-sql') {
       const declarations = await readFile(join(packageDir, 'dist/index.d.ts'), 'utf8');
+      const manifest = JSON.parse(await readFile(join(packageDir, 'package.json'), 'utf8')) as {
+        name?: unknown;
+        version?: unknown;
+        repository?: { directory?: unknown };
+      };
       assertCondition(
         declarations.includes('interface SqlTrace') &&
           declarations.includes('interface SqlBatchEvent') &&
           declarations.includes('interface SqlTraceHashPolicy') &&
           declarations.includes('type SqlTraceCapturePolicyOptions') &&
           declarations.includes('type SqlTraceEventKind') &&
+          declarations.includes('interface SqlRuntimeTraceClientOptions') &&
+          declarations.includes('persistenceLocation?: string') &&
+          declarations.includes('SQL_RUNTIME_TRACE_CAPABILITIES') &&
+          declarations.includes('createSqlRuntimeTraceClient') &&
           declarations.includes('createSqlTraceClient') &&
-          declarations.includes('createPgliteSqlTraceClient') &&
-          declarations.includes('inferPgliteSqlPersistence') &&
+          declarations.includes('inferSqlPersistence') &&
           declarations.includes('assertValidSqlTrace'),
-        '@tracecode/harness-sql declarations should ship the SQL trace contract and client helpers'
+        '@tracecode/runtime-sql declarations should ship the generic SQL runtime trace contract and client helpers'
+      );
+      for (const removedPublicName of [
+        'PgliteSqlTraceClientOptions',
+        'PGLITE_SQL_TRACE_CAPABILITIES',
+        'createPgliteSqlTraceClient',
+        'inferPgliteSqlPersistence',
+      ]) {
+        assertCondition(
+          !declarations.includes(removedPublicName),
+          `@tracecode/runtime-sql declarations should not expose removed provider-branded API ${removedPublicName}`
+        );
+      }
+      assertCondition(
+        manifest.name === '@tracecode/runtime-sql' &&
+          manifest.version === '0.14.0' &&
+          manifest.repository?.directory === 'packages/runtime-sql',
+        '@tracecode/runtime-sql tarball should publish the 0.14 runtime package identity'
       );
     }
     if (packageCheck.name === '@tracecode/harness-project') {

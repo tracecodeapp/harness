@@ -25,7 +25,7 @@ Current SQL architecture:
 - SQL remains a sibling trace contract, not an extension of V4 RuntimeTrace.
 - The root `@tracecode/harness` export does not expose SQL helpers.
 - SQL is available from `@tracecode/harness/sql` and from the standalone
-  `@tracecode/harness-sql` workspace package.
+  `@tracecode/runtime-sql` workspace package.
 - We are reusing V4 principles, not V4 event shapes:
   schemaVersion, runId on every event, closed event kinds, source spans,
   capture/redaction gates, trace budgets, validation, and no visualizer or
@@ -41,7 +41,9 @@ Current SQL architecture:
 
 Current capture/privacy defaults:
 - Generic engine defaults are `kind: "custom"` and `dialect: "unknown"`.
-- PGlite helper defaults are `kind: "pglite"` and `dialect: "postgres"`.
+- The high-level SQL runtime helper has the same provider-neutral defaults;
+  callers set PGlite/Postgres metadata explicitly when that is the injected
+  provider.
 - SQL text defaults to redacted.
 - Params default to redacted.
 - Diagnostics default to redacted, separate from params.
@@ -61,12 +63,13 @@ PGlite/browser direction:
 - PGlite is the primary browser SQL runtime because it is a WASM Postgres build
   that runs in the browser and supports memory and IndexedDB persistence.
 - The package does not import PGlite. Apps inject the PGlite client.
-- `createPgliteSqlTraceClient(client, options)` only labels metadata and wraps
-  the client.
-- Default PGlite capabilities are limited to observed wrapper behavior:
-  single-statement query, multi-statement exec, parameterized query, and
-  transactions.
-- The helper adds `explain-json` capability only when plan capture is enabled.
+- `createSqlRuntimeTraceClient(client, options)` wraps any compatible SQL
+  client; provider metadata is explicit in `options.engine`.
+- Default SQL runtime capabilities include the required query and parameter
+  APIs. Optional multi-statement exec and transaction capabilities are derived
+  from methods present on the injected client.
+- The helper adds `explain-json` only when estimate-plan capture is enabled for
+  an explicitly Postgres-dialect client.
 - PGlite is browser-local and single-connection-ish in this context, so the docs
   call it browser-only Postgres-compatible execution, not production-equivalent
   Postgres.
@@ -97,8 +100,8 @@ Current validation/test coverage:
   are disabled, raw plan values/hashes outside plan-detail policy, unsafe
   analyze plans, oversized raw plan payloads, weak relation-access provenance,
   unknown nested public object fields, and visualizer/semantic leakage.
-- Unit tests cover generic defaults, PGlite metadata, traced query capture,
-  EXPLAIN estimate capture, exec batches, wrapper transaction commit/rollback,
+- Unit tests cover generic defaults, explicit provider metadata, traced query
+  capture, EXPLAIN estimate capture, exec batches, wrapper transaction commit/rollback,
   explicit SQL transaction boundaries, API rollback reason/status semantics,
   diagnostics redaction, privacy policy violations, timeout linkage, and
   validator rejection paths.
@@ -128,20 +131,20 @@ Research findings that led here:
 Where I am leaning:
 - Keep SQL as a sibling contract.
 - Keep SQL out of the root export; use `@tracecode/harness/sql` or
-  `@tracecode/harness-sql`.
+  `@tracecode/runtime-sql`.
 - Do not add SQL event kinds to V4.
 - Do not add `sql` to the V4 `Language` union unless a future display envelope
   needs it.
 - Add a future `TraceEnvelope` only if we need to correlate host-language traces
   with SQL traces in one run.
-- Keep the PGlite helper in the SQL package, with no PGlite dependency, rather
-  than making another adapter package now.
+- Keep the provider-neutral runtime helper in the SQL package, with no PGlite
+  dependency, rather than making another adapter package now.
 
 Questions:
 1. Is the sibling contract still the right boundary now that fixtures, plan
    events, and transaction nuance exist?
 2. Is the root export decision right: no SQL helpers from `@tracecode/harness`,
-   but `@tracecode/harness/sql` and `@tracecode/harness-sql` are public?
+   but `@tracecode/harness/sql` and `@tracecode/runtime-sql` are public?
 3. Is the EXPLAIN estimate behavior too eager, too limited, or about right for
    a browser-first Postgres-compatible SQL trace?
 4. Should plan events also emit relation-access events derived from EXPLAIN, or

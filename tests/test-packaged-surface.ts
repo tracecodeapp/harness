@@ -128,6 +128,7 @@ async function runWithTempRoot(tempRoot: string): Promise<void> {
     'dist/cpp.cjs',
     'dist/sql.js',
     'dist/sql.cjs',
+    'dist/sql.d.ts',
     'THIRD_PARTY_NOTICES.md',
     'workers/python/pyodide-worker.js',
     'workers/javascript/javascript-worker.js',
@@ -166,6 +167,28 @@ async function runWithTempRoot(tempRoot: string): Promise<void> {
       browserTypes.includes('getRuntimeProjectIoCapability'),
     'Browser declarations should expose the stable project I/O support helpers'
   );
+  const sqlTypes = await readFile(join(packageDir, 'dist/sql.d.ts'), 'utf8');
+  assertCondition(
+    sqlTypes.includes('interface SqlRuntimeTraceClientOptions') &&
+      sqlTypes.includes('persistenceLocation?: string') &&
+      sqlTypes.includes('SQL_RUNTIME_TRACE_CAPABILITIES') &&
+      sqlTypes.includes('createSqlRuntimeTraceClient') &&
+      sqlTypes.includes('createSqlTraceClient') &&
+      sqlTypes.includes('inferSqlPersistence') &&
+      sqlTypes.includes('assertValidSqlTrace'),
+    'Root SQL facade declarations should expose the generic SQL runtime and trace APIs'
+  );
+  for (const removedPublicName of [
+    'PgliteSqlTraceClientOptions',
+    'PGLITE_SQL_TRACE_CAPABILITIES',
+    'createPgliteSqlTraceClient',
+    'inferPgliteSqlPersistence',
+  ]) {
+    assertCondition(
+      !sqlTypes.includes(removedPublicName),
+      `Root SQL facade declarations should not expose removed provider-branded API ${removedPublicName}`
+    );
+  }
   const projectTypes = await readFile(join(packageDir, 'dist/project.d.ts'), 'utf8');
   const projectNodeTypes = await readFile(join(packageDir, 'dist/project-node.d.ts'), 'utf8');
   assertCondition(
@@ -353,8 +376,9 @@ async function runWithTempRoot(tempRoot: string): Promise<void> {
       }
 
       if (typeof browser.createBrowserHarness !== 'function') throw new Error('Missing createBrowserHarness export');
+      if (typeof sql.createSqlRuntimeTraceClient !== 'function') throw new Error('Missing SQL runtime trace client export');
       if (typeof sql.createSqlTraceClient !== 'function') throw new Error('Missing SQL trace client export');
-      if (typeof sql.createPgliteSqlTraceClient !== 'function') throw new Error('Missing PGlite SQL trace client export');
+      if ('createPgliteSqlTraceClient' in sql) throw new Error('Removed PGlite-branded SQL helper should not be exported');
       if (typeof sql.assertValidSqlTrace !== 'function') throw new Error('Missing SQL trace validation export');
       if (typeof browser.getLanguageRuntimeInfo !== 'function') throw new Error('Missing browser runtime info export');
       if (typeof browser.getRuntimeProjectIoSupport !== 'function') {
@@ -805,9 +829,12 @@ async function runWithTempRoot(tempRoot: string): Promise<void> {
       if (typeof java.createJavaRuntimeClient !== 'function') throw new Error('Missing java export');
       if (typeof csharp.createCSharpRuntimeClient !== 'function') throw new Error('Missing csharp export');
       if (typeof cpp.createCppRuntimeClient !== 'function') throw new Error('Missing cpp export');
-      if (typeof sql.createSqlTraceClient !== 'function') throw new Error('Missing sql export');
+      if (typeof sql.createSqlRuntimeTraceClient !== 'function') throw new Error('Missing SQL runtime export');
+      if (typeof sql.createSqlTraceClient !== 'function') throw new Error('Missing sql trace export');
       if (typeof root.createBrowserHarness !== 'function') throw new Error('Root export should expose createBrowserHarness');
-      if ('createSqlTraceClient' in root) throw new Error('Root export should not expose SQL trace helpers; use @tracecode/harness/sql');
+      if ('createSqlTraceClient' in root || 'createSqlRuntimeTraceClient' in root) {
+        throw new Error('Root export should not expose SQL helpers; use @tracecode/harness/sql');
+      }
       if (typeof root.getRuntimeProjectIoSupport !== 'function') {
         throw new Error('Root export should expose project I/O support helper');
       }

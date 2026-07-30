@@ -40,6 +40,7 @@ const ORIGINAL_ALL_SCRIPTS = [
   'build',
   'test:packaged-surface',
   'test:language-packages',
+  'test:sql-package-surface',
   'test:smoke',
   'test:browser-harness',
   'test:asset-sync',

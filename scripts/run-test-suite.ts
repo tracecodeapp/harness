@@ -110,6 +110,7 @@ export const TEST_PHASES: TestPhase[] = [
       { ...task('test:example-app', 2, ['all']), resources: ['example:web-ide'] },
       task('test:packaged-surface'),
       task('test:language-packages'),
+      task('test:sql-package-surface'),
       task('test:smoke'),
       task('test:asset-sync'),
     ],

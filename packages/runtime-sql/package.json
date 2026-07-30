@@ -1,13 +1,13 @@
 {
-  "name": "@tracecode/harness-sql",
-  "version": "0.13.1",
-  "description": "Browser-first SQL trace contract and client wrappers for TraceCode harness.",
+  "name": "@tracecode/runtime-sql",
+  "version": "0.14.0",
+  "description": "Browser-first SQL runtime trace contract and client wrappers for TraceCode.",
   "license": "AGPL-3.0-only",
   "homepage": "https://tracecode.app",
   "repository": {
     "type": "git",
     "url": "https://github.com/tracecodeapp/harness.git",
-    "directory": "packages/harness-sql"
+    "directory": "packages/runtime-sql"
   },
   "type": "module",
   "main": "./dist/index.cjs",

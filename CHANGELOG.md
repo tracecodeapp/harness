@@ -6,6 +6,14 @@ This repo uses Git tags as release boundaries. Version notes below summarize wha
 
 ## [Unreleased]
 
+### Changed
+
+- Renamed the standalone SQL package from `@tracecode/harness-sql` to
+  `@tracecode/runtime-sql` for 0.14 while preserving the
+  `@tracecode/harness/sql` facade. The high-level SQL runtime trace API now
+  uses provider-neutral names and defaults; integrations supply provider
+  metadata such as PGlite/Postgres explicitly.
+
 ## [0.13.1] - 2026-07-30
 
 This stabilization release closes a cross-runtime process teardown race. The

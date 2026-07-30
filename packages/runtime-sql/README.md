@@ -1,17 +1,17 @@
-# `@tracecode/harness-sql`
+# `@tracecode/runtime-sql`
 
-Browser-first SQL trace contracts and client wrappers for TraceCode Harness.
+Browser-first SQL runtime trace contracts and client wrappers for TraceCode.
 
 Import path:
 
 ```ts
 import {
-  createPgliteSqlTraceClient,
+  createSqlRuntimeTraceClient,
   createSqlTraceClient,
   runIsolatedSqlCases,
   assertValidSqlTrace,
   type SqlTrace,
-} from '@tracecode/harness-sql';
+} from '@tracecode/runtime-sql';
 ```
 
 Public surface:
@@ -21,28 +21,32 @@ Public surface:
 - capture/redaction/truncation helpers
 - a dependency-free wrapper for SQL clients with `query`, optional `exec`, and
   optional `transaction`
-- PGlite metadata helpers that keep PGlite as an injected browser dependency
+- provider-neutral runtime metadata and persistence helpers
 - an isolated SQL case runner that creates fresh database state per case
 
 The umbrella package also exposes the same public surface at
 `@tracecode/harness/sql` for backwards-compatible all-in-one installs.
 
-This package does not vendor a SQL engine. Browser apps can pass a PGlite-like
-client with `query`, `exec`, and optional `transaction` methods to
-`createSqlTraceClient(...)`.
+This package does not vendor a SQL engine. Browser apps inject a client with
+`query`, optional `exec`, and optional `transaction` methods.
 
-For PGlite, use `createPgliteSqlTraceClient(...)` to label the trace as
-browser Postgres-compatible execution while still injecting the actual PGlite
-client from the application. The generic wrapper defaults to `custom` /
-`unknown`; only the PGlite helper labels a trace as PGlite/Postgres.
+Use `createSqlRuntimeTraceClient(...)` for the high-level runtime wrapper. It
+defaults to the provider-neutral `custom` engine kind and `unknown` dialect,
+infers persistence from `persistenceLocation`, and derives optional `exec` and
+transaction capabilities from the injected client. Set provider metadata
+explicitly when it is known.
 
 ```ts
 import { PGlite } from '@electric-sql/pglite';
-import { createPgliteSqlTraceClient } from '@tracecode/harness-sql';
+import { createSqlRuntimeTraceClient } from '@tracecode/runtime-sql';
 
 const db = await PGlite.create('memory://tracecode-sql');
-const traced = createPgliteSqlTraceClient(db, {
-  dataDir: 'memory://tracecode-sql',
+const traced = createSqlRuntimeTraceClient(db, {
+  engine: {
+    kind: 'pglite',
+    dialect: 'postgres',
+  },
+  persistenceLocation: 'memory://tracecode-sql',
 });
 
 await traced.exec('CREATE TABLE todos (id SERIAL PRIMARY KEY, title TEXT)');

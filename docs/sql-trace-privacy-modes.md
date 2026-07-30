@@ -43,7 +43,12 @@ Use this for local teaching examples where sampled row values are useful and the
 data is synthetic.
 
 ```ts
-const traced = createPgliteSqlTraceClient(db, {
+const traced = createSqlRuntimeTraceClient(db, {
+  engine: {
+    kind: 'pglite',
+    dialect: 'postgres',
+  },
+  persistenceLocation: 'memory://teaching-sql',
   capture: {
     sqlText: 'redacted',
     params: 'redacted',

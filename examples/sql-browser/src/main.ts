@@ -3,11 +3,11 @@ import './styles.css';
 import { PGlite } from '@electric-sql/pglite';
 import {
   assertValidSqlTrace,
-  createPgliteSqlTraceClient,
+  createSqlRuntimeTraceClient,
   runIsolatedSqlCases,
   type SqlRunResult,
   type SqlTrace,
-} from '@tracecode/harness-sql';
+} from '@tracecode/runtime-sql';
 
 declare global {
   interface Window {
@@ -82,9 +82,13 @@ async function boot(): Promise<void> {
     'SELECT id, title, done FROM todos ORDER BY id;',
   ].join('\n');
 
-  const traced = createPgliteSqlTraceClient(db, {
+  const traced = createSqlRuntimeTraceClient(db, {
     runId: 'sql:browser:smoke',
-    dataDir: 'memory://tracecode-sql-browser',
+    engine: {
+      kind: 'pglite',
+      dialect: 'postgres',
+    },
+    persistenceLocation: 'memory://tracecode-sql-browser',
     capture: {
       sqlText: 'redacted',
       params: 'redacted',
@@ -183,9 +187,14 @@ async function runPgliteIsolationSmoke(): Promise<NonNullable<Window['__tracecod
       return db.dumpDataDir();
     },
     createTraceClient(client, options) {
-      return createPgliteSqlTraceClient(client, {
+      return createSqlRuntimeTraceClient(client, {
         ...options,
-        dataDir: 'memory://tracecode-sql-browser-isolated-case',
+        engine: {
+          ...options.engine,
+          kind: 'pglite',
+          dialect: 'postgres',
+        },
+        persistenceLocation: 'memory://tracecode-sql-browser-isolated-case',
         capture: {
           sqlText: 'redacted',
           params: 'redacted',
