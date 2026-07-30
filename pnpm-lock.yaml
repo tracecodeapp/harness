@@ -64,6 +64,12 @@ importers:
         specifier: ^5.0.0
         version: 5.9.3
     devDependencies:
+      '@tracecode/harness-core':
+        specifier: workspace:^
+        version: link:packages/harness-core
+      '@tracecode/tracekernel':
+        specifier: workspace:^
+        version: link:packages/tracekernel
       '@types/node':
         specifier: ^20.0.0
         version: 20.19.37
@@ -350,8 +356,6 @@ importers:
         specifier: ^3.22.0
         version: 3.22.0
 
-  packages/runtime-sql: {}
-
   packages/judge:
     dependencies:
       '@tracecode/tracekernel':
@@ -373,6 +377,8 @@ importers:
       typescript:
         specifier: ^5.0.0
         version: 5.9.3
+
+  packages/runtime-sql: {}
 
   packages/tracekernel:
     dependencies:
