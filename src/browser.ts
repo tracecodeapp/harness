@@ -10,22 +10,22 @@ import {
 import {
   createPythonBrowserRuntimeProvider,
   type PythonBrowserRuntimeProviderOptions,
-} from '../packages/runtime-python/src/index';
+} from '../packages/runtime-python/src/browser-runtime-provider';
 import {
   createJavaScriptBrowserRuntimeProvider,
-} from '../packages/runtime-javascript/src/index';
+} from '../packages/runtime-javascript/src/browser-runtime-provider';
 import {
   createJavaBrowserRuntimeProvider,
   type JavaBrowserRuntimeProviderOptions,
-} from '../packages/runtime-java/src/index';
+} from '../packages/runtime-java/src/browser-runtime-provider';
 import {
   createCSharpBrowserRuntimeProvider,
   type CSharpBrowserRuntimeProviderOptions,
-} from '../packages/runtime-csharp/src/index';
+} from '../packages/runtime-csharp/src/browser-runtime-provider';
 import {
   createCppBrowserRuntimeProvider,
   type CppBrowserRuntimeProviderOptions,
-} from '../packages/runtime-cpp/src/index';
+} from '../packages/runtime-cpp/src/browser-runtime-provider';
 
 export type CreateBrowserHarnessOptions = Omit<
   ProviderBrowserHarnessOptions,
