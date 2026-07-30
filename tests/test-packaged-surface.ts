@@ -381,6 +381,50 @@ async function runWithTempRoot(tempRoot: string): Promise<void> {
     const fileStat = await stat(filePath);
     assertCondition(fileStat.isFile(), `Packed tarball should include ${relativePath}`);
   }
+
+  const thirdPartyNotices = await readFile(
+    join(packageDir, 'THIRD_PARTY_NOTICES.md'),
+    'utf8'
+  );
+  for (const requiredNotice of [
+    '### Effect',
+    '### fflate',
+    '### just-bash',
+    '@datastructures-js/queue` `3.1.4` and `4.3.0`',
+    '### Harness Java bridge',
+    '### Separately deployed TraceJVM assets',
+    'workers/java/java-runtime-worker.js',
+    'workers/vendor/java-browser-helper.jar',
+    '3fd56c74656602eb32efefca46f51f074bef6bca',
+    'Eclipse Temurin/OpenJDK',
+    '23.0.2+7',
+    'Emscripten `4.0.2`',
+  ]) {
+    assertCondition(
+      thirdPartyNotices.includes(requiredNotice),
+      `Packed third-party notices should include ${requiredNotice}`
+    );
+  }
+  assertCondition(
+    /The `@tracecode\/harness` npm tarball does \*\*not\*\*\s+redistribute the TraceJVM engine module/u.test(
+      thirdPartyNotices
+    ),
+    'Packed third-party notices must distinguish the root tarball from the separately deployed TraceJVM runtime tree'
+  );
+  for (const retiredJavaNotice of [
+    'CheerpJ',
+    'JavaParser',
+    'workers/java/tracejvm-java-worker.js',
+    'workers/vendor/java-rewriter.jar',
+    'workers/vendor/javaparser-core-3.25.10.jar',
+    'workers/vendor/jdk.compiler-17.jar',
+  ]) {
+    assertCondition(
+      !thirdPartyNotices.includes(retiredJavaNotice),
+      `Packed third-party notices must not claim current use of ${retiredJavaNotice}`
+    );
+  }
+
   for (const retiredJavaArtifact of [
     'workers/java/tracejvm-java-worker.js',
     'workers/vendor/java-rewriter.jar',

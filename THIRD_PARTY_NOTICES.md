@@ -1,12 +1,15 @@
 # Third Party Notices
 
-This project is licensed under AGPL-3.0-only. The browser runtimes also use
-third-party runtime, compiler, parser, and standard-library components. This
-file is an attribution and redistribution inventory for those components.
+This project is licensed under AGPL-3.0-only. Its published npm package and
+the browser assets copied by `tracecode-harness sync-assets` also use
+third-party runtime, compiler, standard-library, and support components. This
+file records which components are included directly, which are copied from
+package dependencies, and which are loaded from separately deployed runtime
+asset trees.
 
-It is not legal advice. Before a commercial release, verify the current upstream
-license text and any use-case-specific terms against the linked upstream
-sources.
+This inventory does not replace an upstream license file. When mirroring a
+separate runtime distribution, preserve that distribution's license texts,
+notices, source references, and package metadata alongside the assets.
 
 ## Python Runtime
 
@@ -16,7 +19,7 @@ sources.
 - Version: the compatibility fallback currently loads Pyodide `0.29.0`, and
   the workspace package resolves `pyodide` `0.29.3`. Consumer-owned runtime
   manifests can instead select a module-worker distribution; the adapter is
-  verified against the current stable Pyodide `314.0.2` release.
+  verified against Pyodide `314.0.2`.
 - License: MPL-2.0.
 - Source: https://github.com/pyodide/pyodide
 - Deployment docs: https://pyodide.org/en/stable/usage/downloading-and-deploying.html
@@ -64,67 +67,94 @@ sources.
   `@datastructures-js/deque` `1.0.8`, `@datastructures-js/graph` `5.3.1`,
   `@datastructures-js/heap` `4.3.7`, `@datastructures-js/linked-list`
   `6.1.4`, `@datastructures-js/priority-queue` `6.3.5`,
-  `@datastructures-js/queue` `4.3.0`, `@datastructures-js/set` `4.2.2`,
-  `@datastructures-js/stack` `3.1.6`, and `@datastructures-js/trie` `4.2.3`.
+  `@datastructures-js/queue` `3.1.4` and `4.3.0`,
+  `@datastructures-js/set` `4.2.2`, `@datastructures-js/stack` `3.1.6`, and
+  `@datastructures-js/trie` `4.2.3`.
 - License: MIT.
 - Source: https://github.com/datastructures-js
 
+## Runtime Infrastructure
+
+### Effect
+
+- Use: scoped runtime lifecycle, resources, queues, and process coordination in
+  the browser host, Judge, TraceKernel, and generated JavaScript project worker.
+- Version: `3.22.0`.
+- License: MIT.
+- Copyright: 2023 Effectful Technologies Inc.
+- Source: https://github.com/Effect-TS/effect
+
+### fflate
+
+- Use: gzip, deflate, and related byte compression in the browser project
+  runtime and TraceKernel browser compatibility layer.
+- Version: `0.8.3`.
+- License: MIT.
+- Copyright: 2026 Arjun Barrett.
+- Source: https://github.com/101arrowz/fflate
+
+### just-bash
+
+- Use: shell parsing and execution for RuntimeWorkspace and TraceKernel project
+  sessions. It is bundled into the root package's project and TraceKernel
+  distributions through the private TraceKernel workspace package; it is not
+  copied into the generated JavaScript project worker.
+- Version: `3.1.0`, with the repository's documented compatibility patch
+  applied at build time.
+- License: Apache-2.0.
+- Copyright: 2025 Vercel Inc.
+- Source: https://github.com/vercel-labs/just-bash
+
+The just-bash browser bundle also carries code from `re2js` (MIT, copyright
+2023 Alexey Vasiliev) and `ieee754` (BSD-3-Clause, copyright 2008 Fair Oaks
+Labs, Inc.). Their upstream sources are
+https://github.com/le0pard/re2js and
+https://github.com/feross/ieee754.
+
 ## Java Runtime
 
-### CheerpJ Core
+### Harness Java bridge
 
-- Use: browser-hosted JVM runtime loaded by the Java worker.
-- Runtime loader: consumer-supplied. The Classic Java client retains
-  `/app/workers/vendor/cheerpj-loader.js` as its same-origin fallback and also
-  accepts the implementation-neutral `loaderUrl` option or a runtime manifest.
-  Java 23 project providers own their runtime assets behind `java.createClient`.
-- Provider: Leaning Technologies.
-- Terms: CheerpJ Community License or CheerpJ Commercial License depending on
-  the user's use case.
-- Licensing docs: https://cheerpj.com/docs/licensing
-- Version/changelog docs: https://cheerpj.com/docs/changelog
+The npm package includes these TraceCode-authored Java integration assets:
 
-CheerpJ is not vendored in this package. This package redistributes the
-TraceCode-authored Java worker and Java helper assets, but does not redistribute
-CheerpJ itself. Host applications that use the bundled Classic Java client must
-provide the CheerpJ loader through their own licensed asset pipeline or
-approved CDN.
+- `workers/java/java-runtime-worker.js`
+- `workers/java/java-worker.js`
+- `workers/java/java-source-augmentations.js`
+- `workers/vendor/java-browser-helper.jar`
 
-The CheerpJ Community License currently covers individuals, one-person
-companies, FOSS projects, and technical evaluations. That is expected to cover
-TraceCode's current educational, single-person-business use case. Uses outside
-that scope, and especially self-hosting, OEM distribution, or bundling CheerpJ
-with redistributed assets, can require a CheerpJ Commercial License.
+They are covered by the project AGPL-3.0-only license. The bridge loads a
+separately deployed, immutable TraceJVM runtime asset tree from the configured
+Java runtime base URL. The `@tracecode/harness` npm tarball does **not**
+redistribute the TraceJVM engine module, its WebAssembly engine, or OpenJDK
+runtime/compiler images.
 
-Supply-chain note: browser worker `importScripts()` does not provide
-browser-enforced subresource integrity. Consumer runtime manifests may
-authorize HTTP(S) loader and JAR URLs under an explicit origin policy, while
-the direct `loaderUrl` override remains restricted to same-origin
-`/app/` paths. Manifest integrity is a credential-free preflight, not
-execution-bound SRI, so use immutable URLs and maintain deployment hashes and
-allowlists for this trusted third-party runtime code.
+### Separately deployed TraceJVM assets
 
-### JavaParser
+When a host deploys the separate TraceJVM asset tree used by the bridge, the
+following provenance and licenses apply:
 
-- Use: Java source parsing and rewriting support.
-- Vendored asset: `workers/vendor/javaparser-core-3.25.10.jar`.
-- Version: `3.25.10`.
-- License: dual licensed LGPL-3.0 or Apache-2.0. This project uses it under
-  Apache-2.0.
-- Source: https://github.com/javaparser/javaparser
+- TraceJVM is licensed under AGPL-3.0-only. Source:
+  https://github.com/tracecodeapp/tracejvm
+- TraceJVM contains a pinned b-jvm engine snapshot from commit
+  `3fd56c74656602eb32efefca46f51f074bef6bca`, licensed under MIT,
+  copyright 2025 bjvm Authors. Source:
+  https://github.com/anematode/b-jvm
+- TraceJVM runtime profiles are assembled from Eclipse Temurin/OpenJDK
+  `23.0.2+7`, distributed under GPL-2.0 WITH
+  Classpath-exception-2.0. Distribution source:
+  https://github.com/adoptium/temurin23-binaries
+- OpenJDK GPLv2 + Classpath Exception text:
+  https://openjdk.org/legal/gplv2+ce.html
+- The TraceJVM WebAssembly engine and its JavaScript glue are built with
+  Emscripten `4.0.2`, licensed under MIT, copyright 2018 Emscripten
+  authors. Source: https://github.com/emscripten-core/emscripten
 
-### OpenJDK / JetBrains Runtime Compiler Module
-
-- Use: Java compiler module consumed by the browser Java lane.
-- Vendored asset: `workers/vendor/jdk.compiler-17.jar`.
-- Local manifest: `Created-By: 17.0.14 (JetBrains s.r.o.)`.
-- License: GPL-2.0-only WITH Classpath-exception-2.0.
-- OpenJDK GPLv2 + Classpath Exception text: https://openjdk.org/legal/gplv2+ce.html
-- JetBrains Runtime source: https://github.com/JetBrains/JetBrainsRuntime
-
-Redistributing this asset should preserve the GPLv2 + Classpath Exception text
-and provide the corresponding source location or source offer required by the
-license.
+The TraceJVM runtime manifest pins the upstream archive and checksum. A
+deployed runtime asset release must retain TraceJVM's
+`THIRD_PARTY_NOTICES.md`, the b-jvm MIT notice, and the Eclipse
+Temurin/OpenJDK and Emscripten legal notices and corresponding source
+references. Those requirements belong to the separately deployed runtime
+asset surface, not to the Harness npm tarball described above.
 
 ## C# Runtime
 
@@ -181,13 +211,19 @@ The following runtime helpers are authored for this project and are covered by
 the project AGPL-3.0-only license unless otherwise noted by their embedded
 third-party dependencies:
 
+- `workers/python/python-worker.js`
 - `workers/python/runtime-core.js`
 - `workers/python/generated-python-harness-snippets.js`
 - `workers/javascript/javascript-worker.js`
+- `workers/javascript/javascript-project-worker.js`
 - `workers/java/java-worker.js`
+- `workers/java/java-runtime-worker.js`
 - `workers/java/java-source-augmentations.js`
 - `workers/vendor/java-browser-helper.jar`
-- `workers/vendor/java-rewriter.jar`
 - `workers/csharp/csharp-worker.js`
 - `workers/cpp/cpp-worker.js`
+- `workers/cpp/cpp-compiler-frame.html`
+- `workers/cpp/cpp-compiler-worker.js`
 - `workers/cpp/tracecode_runtime.hpp`
+- `workers/shared/runtime-kernel-policy-classic.js`
+- `workers/shared/runtime-kernel-policy.js`
