@@ -390,7 +390,6 @@ import {
   type KernelJournalEntry,
 } from './workspace-event-state';
 import { WorkspaceLifecycleState } from './workspace-lifecycle-state';
-import { createWorkspaceShellCommandRegistry } from './shell-command-registry';
 import { WorkspaceIdentityCommands } from './userland-identity-commands';
 import { WorkspaceFilesystemCommands } from './userland-filesystem-commands';
 import { WorkspaceNetworkCommands } from './userland-network-commands';
@@ -412,6 +411,7 @@ import {
   createWorkspacePatch,
   prepareWorkspacePatchImport,
 } from './workspace-patches';
+import { createRuntimeWorkspaceShellCommands } from './workspace-shell-commands';
 
 const PRINCIPAL_ACTOR: RuntimeWorkspaceActor = runtimeWorkspaceActorPreset('principal');
 const RUNTIME_ACTOR: RuntimeWorkspaceActor = runtimeWorkspaceActorPreset('runtime');
@@ -900,156 +900,41 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
       recordCppExecutable: (path) =>
         this.registerVirtualExecutable({ path, kind: 'cpp' }),
     });
-    const shellCommands = createWorkspaceShellCommandRegistry({
+    const shellCommands = createRuntimeWorkspaceShellCommands({
       runtimeCommands,
       customCommands: options.customCommands,
-      handlers: {
-        exec: (args, context) => this.runTraceKernelExec(args, context),
-        bg: (args, context) => this.runKernelJobPlacement(args, 'bg', context),
-        curl: (args, context) =>
-          this.networkCommands.curl(args, context),
-        df: (args, context) =>
-          this.filesystemCommands.df(args, context),
-        du: (args, context) =>
-          this.filesystemCommands.du(args, context),
-        fastfetch: (args, context) =>
-          this.identityCommands.fastfetch(
-            args,
-            this.terminalForCommand(context)
-          ),
-        fg: (args, context) => this.runKernelJobPlacement(args, 'fg', context),
-        getconf: (args) => this.identityCommands.getconf(args),
-        getent: (args) => this.identityCommands.getent(args),
-        groups: (args) => this.identityCommands.groups(args),
-        kill: (args, context) => this.runKernelKill(args, 'kill', context),
-        jobs: (args, context) => {
-          const commandContext =
-            this.resolveCommandContext(context);
-          return this.processInspection.jobs(
-            args,
-            this.kernelPresentationProcessRecords(
-              commandContext?.actor
-            ),
-            commandContext?.process.pid
-          );
-        },
-        hostname: (args) => this.identityCommands.hostname(args),
-        id: (args) => this.identityCommands.id(args),
-        lsof: (args) =>
-          this.processInspection.lsof(
-            args,
-            [...this.httpState.listeners.values()].map(
-              (listener) => listener.info
-            )
-          ),
-        locale: (args) => this.identityCommands.locale(args),
-        ls: (args, context) =>
-          this.filesystemCommands.ls(args, context),
-        man: (args) => this.runKernelMan(args),
-        mktemp: (args, context) =>
-          this.filesystemCommands.mktemp(args, context),
-        mount: (args) => this.filesystemCommands.mount(args),
-        neofetch: (args, context) =>
-          this.identityCommands.fastfetch(
-            args,
-            this.terminalForCommand(context)
-          ),
-        pgrep: (args, context) => {
-          const commandContext =
-            this.resolveCommandContext(context);
-          return this.processInspection.processMatch(
-            args,
-            'pgrep',
-            [
-              this.principalProcessRecord(),
-              ...this.kernelPresentationProcessRecords(
-                commandContext?.actor
-              ),
-            ].filter(
-              (process) =>
-                process.pid !== commandContext?.process.pid
-            )
-          );
-        },
-        ping: (args) => this.networkCommands.ping(args),
-        pkill: (args, context) => {
-          const commandContext =
-            this.resolveCommandContext(context);
-          return this.processInspection.processMatch(
-            args,
-            'pkill',
-            [
-              this.principalProcessRecord(),
-              ...this.kernelPresentationProcessRecords(
-                commandContext?.actor
-              ),
-            ].filter(
-              (process) =>
-                process.pid !== commandContext?.process.pid
-            )
-          );
-        },
-        ps: (args, context) => {
-          const commandContext =
-            this.resolveCommandContext(context);
-          return this.processInspection.ps(args, [
-            this.principalProcessRecord(),
-            ...this.kernelPresentationProcessRecords(
-              commandContext?.actor
-            ),
-          ]);
-        },
-        ss: (args) =>
-          this.processInspection.ss(
-            args,
-            [...this.httpState.listeners.values()].map(
-              (listener) => listener.info
-            )
-          ),
-        stat: (args, context) =>
-          this.filesystemCommands.stat(args, context),
-        stty: (args, context) =>
-          this.terminalCommands.stty(
-            args,
-            this.terminalForCommand(context)
-          ),
-        tput: (args, context) =>
-          this.terminalCommands.tput(
-            args,
-            this.terminalForCommand(context)
-          ),
-        tracekernelctl: (args, context) => this.runTraceKernelCtl(args, context),
-        tty: (args, context) =>
-          this.terminalCommands.tty(
-            args,
-            this.terminalForCommand(context)
-          ),
-        umask: (args, context) =>
-          this.terminalCommands.umask(
-            args,
-            this.resolveCommandContext(context)
-          ),
-        uname: (args) => this.identityCommands.uname(args),
-        wait: (args, context) => this.runKernelWait(args, 'wait', context),
-        wget: (args, context) =>
-          this.networkCommands.wget(args, context),
-        which: (args, context) => this.runTraceKernelWhich(args, 'which', context),
-        whoami: (args) => this.identityCommands.whoami(args),
-        command: (args, context) => this.runTraceKernelCommandBuiltin(args, context),
-        test: (args, context) =>
-          this.terminalCommands.testTerminal(
-            args,
-            'test',
-            this.terminalForCommand(context)
-          ),
-        'test-bracket': (args, context) =>
-          this.terminalCommands.testTerminal(
-            args,
-            '[',
-            this.terminalForCommand(context)
-          ),
-      },
-      help: (name, args) => this.commandCatalog.help(name, args),
+      filesystem: this.filesystemCommands,
+      identity: this.identityCommands,
+      network: this.networkCommands,
+      processInspection: this.processInspection,
+      terminal: this.terminalCommands,
+      commandCatalog: this.commandCatalog,
+      resolveCommandContext: (context) =>
+        this.resolveCommandContext(context),
+      principalProcess: () => this.principalProcessRecord(),
+      presentationProcesses: (actor) =>
+        this.kernelPresentationProcessRecords(actor),
+      httpListeners: () =>
+        [...this.httpState.listeners.values()].map(
+          (listener) => listener.info
+        ),
+      terminalForCommand: (context) =>
+        this.terminalForCommand(context),
+      exec: (args, context) =>
+        this.runTraceKernelExec(args, context),
+      placeJob: (args, placement, context) =>
+        this.runKernelJobPlacement(args, placement, context),
+      kill: (args, context) =>
+        this.runKernelKill(args, 'kill', context),
+      man: (args) => this.runKernelMan(args),
+      control: (args, context) =>
+        this.runTraceKernelCtl(args, context),
+      wait: (args, context) =>
+        this.runKernelWait(args, 'wait', context),
+      which: (args, context) =>
+        this.runTraceKernelWhich(args, 'which', context),
+      command: (args, context) =>
+        this.runTraceKernelCommandBuiltin(args, context),
       withSignalContext: (context) => this.withCurrentKernelSignal(context),
     });
     this.traceKernelCommandDispatchNames = shellCommands.dispatchNames;
