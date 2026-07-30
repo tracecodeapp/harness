@@ -4,28 +4,6 @@ import { commonConfig, libraryConfig } from './tsup.shared';
 export default defineConfig([
   {
     ...commonConfig,
-    // Root composition resolves workspace-only implementation packages from
-    // source and bundles them into @tracecode/harness. They are not publish
-    // dependencies in 0.14.
-    dts: {
-      ...commonConfig.dts,
-      compilerOptions: {
-        ...commonConfig.dts.compilerOptions,
-        baseUrl: '.',
-        paths: {
-          '@tracecode/tracekernel': [
-            'packages/tracekernel/dist/index.d.ts',
-          ],
-        },
-      },
-    },
-    esbuildOptions(options) {
-      options.alias = {
-        ...options.alias,
-        '@tracecode/tracekernel':
-          './packages/tracekernel/src/index.ts',
-      };
-    },
     // The root @tracecode/harness bundle stays self-contained: inline harness-core
     // rather than leaving a bare @tracecode/harness-core import the packed tarball
     // cannot resolve. Cross-copy token identity is preserved by the globalThis
