@@ -143,8 +143,8 @@ export type ExecutionResult =
       timings?: RuntimeExecutionTimings;
     };
 
-// Pyodide loading state
-export interface PyodideState {
+/** Language-level Python runtime loading state. */
+export interface PythonRuntimeState {
   status: 'loading' | 'ready' | 'error';
   error?: Error;
   loadTimeMs?: number;
