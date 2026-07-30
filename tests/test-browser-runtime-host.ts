@@ -14,6 +14,9 @@ import {
   type BrowserRuntimeProviderLease,
   type CreateBrowserRuntimeHostOptions,
 } from '../packages/runtime-browser/src';
+import {
+  createBrowserRuntimeHost as createDefaultBrowserRuntimeHost,
+} from '../src/browser';
 
 function assertCondition(
   condition: unknown,
@@ -126,6 +129,23 @@ function errorMessage(run: () => unknown): string {
 }
 
 async function main(): Promise<void> {
+  const defaultHost = createDefaultBrowserRuntimeHost({
+    providers: ['javascript'],
+    featureOverrides: browserFeatures,
+  });
+  assertCondition(
+    defaultHost.supportedLanguages.join(',') === 'javascript',
+    'Root browser facade must install the default language-provider registry'
+  );
+  assertCondition(
+    !('getClient' in defaultHost) &&
+      !('execute' in defaultHost) &&
+      !('executeCode' in defaultHost) &&
+      !('executeWithTracing' in defaultHost),
+    'Root browser facade must expose only the prepared runtime host'
+  );
+  defaultHost.dispose();
+
   const missingRegistry = errorMessage(() =>
     createBrowserRuntimeHost({} as CreateBrowserRuntimeHostOptions)
   );

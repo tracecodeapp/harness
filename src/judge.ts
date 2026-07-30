@@ -5,6 +5,7 @@ import type * as Scope from 'effect/Scope';
 import type {
   CodeExecutionResult,
   ExecutionResult,
+  Language,
   RuntimeExecutionLimits,
   RuntimeExecutionStyle,
   RuntimePreparedExecutionProvider,
@@ -13,6 +14,7 @@ import type {
   RuntimeExecutionTimings,
   TraceExecutionOptions,
 } from '../packages/runtime-core/src/index';
+import type { BrowserRuntimeHost } from '../packages/runtime-browser/src/browser-runtime-host';
 import {
   makeTraceKernelHost,
   type TraceKernelFileSystemImage,
@@ -121,6 +123,19 @@ export interface CreateRuntimeJudgeOptions {
   /**
    * Override the same-realm control port. A future worker transport can supply
    * this contract without changing Judge or the runtime-provider adapter.
+   */
+  readonly runtimeControl?: JudgeRuntimeControlPort;
+}
+
+export interface CreateBrowserRuntimeJudgeOptions {
+  /** Browser-owned prepared runtime lifecycle. */
+  readonly host: BrowserRuntimeHost;
+  /** Language provider selected from the host. */
+  readonly language: Language;
+  readonly binding: RuntimeJudgeBinding;
+  /**
+   * Override the same-realm control port. A future worker transport can supply
+   * this contract without changing Judge or the browser runtime host.
    */
   readonly runtimeControl?: JudgeRuntimeControlPort;
 }
@@ -816,4 +831,26 @@ export function createRuntimeJudge(
       )
     )
   );
+}
+
+/**
+ * Composes a browser-owned prepared provider with the TraceKernel-backed Judge.
+ *
+ * BrowserRuntimeHost remains the authority for assets, worker readiness, and
+ * provider teardown. Judge remains the authority for evaluation sessions,
+ * per-case processes, comparison policy, and results.
+ */
+export function createBrowserRuntimeJudge(
+  options: CreateBrowserRuntimeJudgeOptions
+): Effect.Effect<
+  RuntimeJudge,
+  never,
+  Scope.Scope
+> {
+  return createRuntimeJudge({
+    runtime: options.language,
+    provider: options.host.getPreparedProvider(options.language),
+    binding: options.binding,
+    runtimeControl: options.runtimeControl,
+  });
 }

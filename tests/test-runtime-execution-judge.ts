@@ -5,10 +5,12 @@ import * as Effect from 'effect/Effect';
 import * as Fiber from 'effect/Fiber';
 import * as Option from 'effect/Option';
 import {
+  createBrowserRuntimeJudge,
   createRuntimeJudge,
   type JudgeEvaluationPlan,
   type RuntimeJudgeBinding,
 } from '../src/judge';
+import type { BrowserRuntimeHost } from '../packages/runtime-browser/src/browser-runtime-host';
 import {
   RUNTIME_TRACE_SCHEMA_VERSION,
   type CodeExecutionResult,
@@ -548,6 +550,48 @@ async function evaluatePrepared(
     })
   ));
 }
+
+test('composes a browser runtime host provider into Judge without direct execution', async () => {
+  const state = makePreparedState();
+  const provider = preparedProvider(state);
+  const requestedLanguages: string[] = [];
+  const host = {
+    getPreparedProvider(language: string) {
+      requestedLanguages.push(language);
+      return provider;
+    },
+  } as BrowserRuntimeHost;
+
+  const result = await Effect.runPromise(Effect.scoped(
+    Effect.gen(function* () {
+      const judge = yield* createBrowserRuntimeJudge({
+        host,
+        language: 'python',
+        binding: codeBinding(),
+      });
+      assert.equal(judge.runtime, 'python');
+      return yield* judge.evaluate<FakeInput>(
+        makePlan(
+          [{
+            id: 'browser-host-case',
+            input: {
+              label: 'browser-host-case',
+              output: 19,
+            },
+            expected: 19,
+          }],
+          { runtime: 'python' }
+        )
+      );
+    })
+  ));
+
+  assert.deepEqual(requestedLanguages, ['python']);
+  assert.equal(result.cases[0]?.verdict.kind, 'passed');
+  assert.equal(state.prepareCalls.length, 1);
+  assert.equal(state.codeCalls.length, 1);
+  assert.equal(state.disposals, 1);
+});
 
 test('preserves 0.13 JSON comparison and distinguishes omitted from explicit undefined expected values', async () => {
   const state = makeState();
