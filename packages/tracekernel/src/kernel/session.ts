@@ -1,7 +1,6 @@
 import * as Deferred from 'effect/Deferred';
 import * as Effect from 'effect/Effect';
 import * as Exit from 'effect/Exit';
-import * as Fiber from 'effect/Fiber';
 import * as Scope from 'effect/Scope';
 import {
   TraceKernelPipe,
@@ -78,22 +77,14 @@ import {
   type TraceKernelHostStandardIo,
 } from './process';
 import { TraceKernelProcessTable } from './process-table';
+import { TraceKernelProcessWatchdogs } from './process-watchdogs';
 import { executeProcessWithRuntimeLease } from './runtime-execution';
 
 export class TraceKernelSession {
   private readonly processTable: TraceKernelProcessTable;
+  private readonly processWatchdogs: TraceKernelProcessWatchdogs;
   private readonly watchRegistry = new TraceKernelWatchRegistry();
   private readonly stopWatchingFileSystemMutations: () => void;
-  private readonly processWatchdogs = new Map<
-    number,
-    {
-      readonly token: symbol;
-      readonly timeoutMs: number;
-      readonly signal: TraceKernelWatchdogSignal;
-      readonly deadlineAt: number;
-      readonly fiber: Fiber.RuntimeFiber<void, never>;
-    }
-  >();
   private readonly resources = new Map<
     string,
     TraceKernelPipe | TraceKernelOpenFileDescription | TraceKernelTerminal
@@ -126,6 +117,7 @@ export class TraceKernelSession {
       controllingTerminalForSession: (sessionId) =>
         this.controllingTerminalsBySession.get(sessionId),
     });
+    this.processWatchdogs = new TraceKernelProcessWatchdogs(scope);
     this.stopWatchingFileSystemMutations = fileSystem.watchMutations((mutation) => {
       Effect.runSync(this.watchRegistry.publish(mutation));
     });
@@ -1113,82 +1105,14 @@ export class TraceKernelSession {
   ): Effect.Effect<TraceKernelWatchdogSnapshot | undefined, Error> {
     return Effect.gen(this, function* () {
       yield* this.processTable.assertOwned(process);
-      const current = this.processWatchdogs.get(process.pid);
-      if (action === 'status') return current
-        ? Object.freeze({
-            timeoutMs: current.timeoutMs,
-            signal: current.signal,
-            deadlineAt: current.deadlineAt,
-          })
-        : undefined;
-      if (action === 'disarm') {
-        yield* this.clearProcessWatchdog(process);
-        return undefined;
-      }
-      const timeoutMs = action === 'pet'
-        ? current?.timeoutMs
-        : options.timeoutMs;
-      if (!Number.isSafeInteger(timeoutMs) || timeoutMs === undefined || timeoutMs <= 0) {
-        return yield* Effect.fail(new TraceKernelInvalidArgumentError({
-          code: 'EINVAL',
-          argument: action === 'pet' ? 'watchdog' : 'timeoutMs',
-          message: action === 'pet'
-            ? 'EINVAL: cannot pet a disarmed watchdog'
-            : 'EINVAL: watchdog timeout must be a positive integer',
-        }));
-      }
-      const signal = action === 'pet'
-        ? current?.signal
-        : options.signal ?? 'SIGTERM';
-      if (!signal) {
-        return yield* Effect.fail(new TraceKernelInvalidArgumentError({
-          code: 'EINVAL',
-          argument: 'watchdog',
-          message: 'EINVAL: cannot pet a disarmed watchdog',
-        }));
-      }
-      yield* this.clearProcessWatchdog(process);
-      const token = Symbol(`watchdog-${process.pid}`);
-      const deadlineAt = Date.now() + timeoutMs;
-      const fiber = yield* Effect.forkIn(
-        Effect.sleep(timeoutMs).pipe(
-          Effect.andThen(Effect.suspend(() => {
-            if (this.processWatchdogs.get(process.pid)?.token !== token) {
-              return Effect.void;
-            }
-            this.processWatchdogs.delete(process.pid);
-            process.setWatchdog(undefined);
-            return process.signal(signal);
-          })),
-          Effect.ensuring(Effect.sync(() => {
-            if (this.processWatchdogs.get(process.pid)?.token === token) {
-              this.processWatchdogs.delete(process.pid);
-              process.setWatchdog(undefined);
-            }
-          }))
-        ),
-        this.scope
-      );
-      const snapshot = Object.freeze({ timeoutMs, signal, deadlineAt });
-      this.processWatchdogs.set(process.pid, {
-        token,
-        timeoutMs,
-        signal,
-        deadlineAt,
-        fiber,
-      });
-      process.setWatchdog(snapshot);
-      return snapshot;
+      return yield* this.processWatchdogs.configure(process, action, options);
     });
   }
 
   private clearProcessWatchdog(
     process: TraceKernelProcess
   ): Effect.Effect<void> {
-    const watchdog = this.processWatchdogs.get(process.pid);
-    this.processWatchdogs.delete(process.pid);
-    process.setWatchdog(undefined);
-    return watchdog ? Fiber.interrupt(watchdog.fiber).pipe(Effect.asVoid) : Effect.void;
+    return this.processWatchdogs.clear(process);
   }
 
   createPipe(
@@ -1629,7 +1553,7 @@ export class TraceKernelSession {
         Effect.ensuring(Effect.sync(() => {
           this.stopWatchingFileSystemMutations();
           this.processTable.clear();
-          this.processWatchdogs.clear();
+          this.processWatchdogs.clearAll();
           this.controllingTerminalsBySession.clear();
           this.resources.clear();
           if (this.ownsFileSystem) this.fileSystem.clear();
