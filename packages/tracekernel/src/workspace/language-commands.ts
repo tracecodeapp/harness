@@ -1061,7 +1061,7 @@ export function createCppProjectCommands(
     if (isCppCompileCommandResult(parsed)) return parsed;
 
     if (parsed.showVersion) {
-      const version = getLanguageRuntimeInfo('cpp').compiler?.version ?? 'unknown';
+      const version = getRuntimeCommandVersion('clang++');
       return {
         stdout: `clang version ${version}\nTarget: wasm32-unknown-wasi\nThread model: posix\n`,
         stderr: '',

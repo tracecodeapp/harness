@@ -7,7 +7,7 @@ import { RUNTIME_COMMAND_VERSIONS } from './generated/runtime-language-info-data
  * a provider-neutral product contract, while commands such as `dotnet
  * --version` must identify the concrete toolchain shipped by the harness.
  */
-export type RuntimeCommandName = 'dotnet';
+export type RuntimeCommandName = 'dotnet' | 'clang++';
 
 export function getRuntimeCommandVersion(command: RuntimeCommandName): string {
   const version = Object.prototype.hasOwnProperty.call(RUNTIME_COMMAND_VERSIONS, command)

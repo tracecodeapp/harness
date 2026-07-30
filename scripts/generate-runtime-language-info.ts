@@ -14,7 +14,7 @@ const GENERATED_PATH = join(
   'runtime-language-info-data.ts'
 );
 
-type RuntimeCommandName = 'dotnet';
+type RuntimeCommandName = 'dotnet' | 'clang++';
 
 type PackageJson = {
   dependencies?: Record<string, string>;
@@ -453,6 +453,7 @@ async function buildRuntimeInfo(): Promise<Record<string, RuntimeInfo>> {
 }
 
 async function buildRuntimeCommandVersions(): Promise<Record<RuntimeCommandName, string>> {
+  const rootPackage = await readJson<PackageJson>('package.json');
   const csharpRuntimeConfig = await readJson<{
     runtimeOptions?: {
       includedFrameworks?: Array<{ name?: string; version?: string }>;
@@ -464,7 +465,10 @@ async function buildRuntimeCommandVersions(): Promise<Record<RuntimeCommandName,
   if (!dotnetVersion) {
     throw new Error('Unable to derive runtime command info: missing .NET runtime version');
   }
-  return { dotnet: dotnetVersion };
+  return {
+    dotnet: dotnetVersion,
+    'clang++': await packageVersion('@yowasp/clang', rootPackage),
+  };
 }
 
 function buildGeneratedTypeScript(

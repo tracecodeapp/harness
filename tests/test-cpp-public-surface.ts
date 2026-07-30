@@ -2,6 +2,7 @@ import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import ts from 'typescript';
 import { getLanguageRuntimeInfo } from '../packages/runtime-core/src/runtime-language-info';
+import { getRuntimeCommandVersion } from '../packages/runtime-core/src/runtime-command-info';
 import {
   DEFAULT_BROWSER_RUNTIME_ASSET_RELATIVE_PATHS,
   resolveBrowserRuntimeAssets,
@@ -208,6 +209,16 @@ function main(): void {
     !FORBIDDEN_PUBLIC_COMPILER_NAME.test(JSON.stringify(cppInfo)) &&
       !FORBIDDEN_PUBLIC_COMPILER_NAME.test(generatedMetadataSlice()),
     `Generated C++ runtime metadata must be implementation-neutral: ${JSON.stringify(cppInfo)}`
+  );
+  const shippedCompilerPackage = JSON.parse(
+    readFileSync(
+      resolve(ROOT, 'node_modules/@yowasp/clang/package.json'),
+      'utf8'
+    )
+  ) as { version?: string };
+  assertCondition(
+    getRuntimeCommandVersion('clang++') === shippedCompilerPackage.version,
+    'clang++ CLI identity must be generated from the shipped compiler package'
   );
 
   const defaultAssets = resolveBrowserRuntimeAssets();
