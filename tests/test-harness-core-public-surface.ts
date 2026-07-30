@@ -1,5 +1,4 @@
-import { readFile } from 'node:fs/promises';
-import { dirname, extname, resolve } from 'node:path';
+import { resolve } from 'node:path';
 import ts from 'typescript';
 
 function assertCondition(condition: unknown, message: string): asserts condition {
@@ -8,80 +7,99 @@ function assertCondition(condition: unknown, message: string): asserts condition
   }
 }
 
-function exportedDeclarationNames(sourceText: string, fileName: string): string[] {
-  const source = ts.createSourceFile(fileName, sourceText, ts.ScriptTarget.Latest, true);
-  const names: string[] = [];
+function loadProgram(): {
+  checker: ts.TypeChecker;
+  entrypoint: ts.SourceFile;
+} {
+  const configPath = resolve(
+    process.cwd(),
+    'packages/harness-core/tsconfig.json'
+  );
+  const config = ts.readConfigFile(configPath, ts.sys.readFile);
+  assertCondition(
+    !config.error,
+    `Could not read harness-core TypeScript config: ${
+      config.error ? ts.flattenDiagnosticMessageText(config.error.messageText, '\n') : ''
+    }`
+  );
+  const parsed = ts.parseJsonConfigFileContent(
+    config.config,
+    ts.sys,
+    resolve(process.cwd(), 'packages/harness-core')
+  );
+  assertCondition(
+    parsed.errors.length === 0,
+    `Could not parse harness-core TypeScript config: ${parsed.errors
+      .map((error) => ts.flattenDiagnosticMessageText(error.messageText, '\n'))
+      .join('\n')}`
+  );
+  const program = ts.createProgram({
+    rootNames: parsed.fileNames,
+    options: parsed.options,
+  });
+  const entrypointPath = resolve(
+    process.cwd(),
+    'packages/harness-core/src/index.ts'
+  );
+  const entrypoint = program.getSourceFile(entrypointPath);
+  assertCondition(entrypoint, `Missing harness-core entrypoint ${entrypointPath}`);
+  return {
+    checker: program.getTypeChecker(),
+    entrypoint,
+  };
+}
 
-  for (const statement of source.statements) {
-    const exported = statement.modifiers?.some(
-      (modifier) => modifier.kind === ts.SyntaxKind.ExportKeyword
-    );
-    if (!exported) continue;
+function unalias(
+  checker: ts.TypeChecker,
+  symbol: ts.Symbol
+): ts.Symbol {
+  return symbol.flags & ts.SymbolFlags.Alias
+    ? checker.getAliasedSymbol(symbol)
+    : symbol;
+}
 
-    if (
-      ts.isClassDeclaration(statement) ||
-      ts.isFunctionDeclaration(statement) ||
-      ts.isInterfaceDeclaration(statement) ||
-      ts.isTypeAliasDeclaration(statement) ||
-      ts.isEnumDeclaration(statement)
-    ) {
-      if (statement.name) names.push(statement.name.text);
-      continue;
-    }
+function declarationSurfaceText(symbol: ts.Symbol): string {
+  return (symbol.declarations ?? [])
+    .map((declaration) => declaration.getFullText(declaration.getSourceFile()))
+    .join('\n');
+}
 
-    if (ts.isVariableStatement(statement)) {
-      for (const declaration of statement.declarationList.declarations) {
-        if (ts.isIdentifier(declaration.name)) names.push(declaration.name.text);
-      }
+function main(): void {
+  const { checker, entrypoint } = loadProgram();
+  const moduleSymbol = checker.getSymbolAtLocation(entrypoint);
+  assertCondition(moduleSymbol, 'Could not resolve the harness-core public module');
+
+  const exports = checker.getExportsOfModule(moduleSymbol);
+  const publicNames = new Set<string>();
+  const vendorLeaks: string[] = [];
+
+  for (const exported of exports) {
+    const target = unalias(checker, exported);
+    const exportedName = exported.getName();
+    publicNames.add(exportedName);
+
+    const evidence = [
+      exportedName,
+      target.getName(),
+      declarationSurfaceText(target),
+    ].join('\n');
+    if (/pyodide/i.test(evidence)) {
+      vendorLeaks.push(exportedName);
     }
   }
 
-  return names;
-}
-
-async function collectPublicDeclarationNames(
-  filePath: string,
-  visited = new Set<string>()
-): Promise<string[]> {
-  if (visited.has(filePath)) return [];
-  visited.add(filePath);
-
-  const sourceText = await readFile(filePath, 'utf8');
-  const source = ts.createSourceFile(filePath, sourceText, ts.ScriptTarget.Latest, true);
-  const reexportedNames = await Promise.all(
-    source.statements
-      .filter(ts.isExportDeclaration)
-      .filter((statement) => !statement.exportClause && statement.moduleSpecifier)
-      .map(async (statement) => {
-        const specifier = (statement.moduleSpecifier as ts.StringLiteral).text;
-        if (!specifier.startsWith('.')) return [];
-        const unresolved = resolve(dirname(filePath), specifier);
-        const target = extname(unresolved) ? unresolved : `${unresolved}.ts`;
-        return collectPublicDeclarationNames(target, visited);
-      })
-  );
-
-  return [...exportedDeclarationNames(sourceText, filePath), ...reexportedNames.flat()];
-}
-
-async function main(): Promise<void> {
-  const coreSourceDir = resolve(process.cwd(), 'packages/harness-core/src');
-  const exportedNames = await collectPublicDeclarationNames(
-    resolve(coreSourceDir, 'index.ts')
-  );
-
-  const vendorBrandedPythonNames = exportedNames.filter((name) => /pyodide/i.test(name));
   assertCondition(
-    vendorBrandedPythonNames.length === 0,
-    `Harness core must expose Python capabilities, not its engine implementation: ${vendorBrandedPythonNames.join(', ')}`
+    vendorLeaks.length === 0,
+    `Harness core must expose Python capabilities, not its engine implementation: ${vendorLeaks.join(', ')}`
   );
-
   assertCondition(
-    exportedNames.includes('PythonRuntimeState'),
+    publicNames.has('PythonRuntimeState'),
     'Harness core should expose the language-level PythonRuntimeState contract'
   );
 
-  console.log('PASS: harness-core public identifiers are implementation-neutral');
+  console.log(
+    `PASS: ${publicNames.size} harness-core exports are implementation-neutral`
+  );
 }
 
-void main();
+main();

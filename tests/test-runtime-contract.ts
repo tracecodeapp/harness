@@ -1814,8 +1814,8 @@ async function main(): Promise<void> {
   const cppInfo = getLanguageRuntimeInfo('cpp');
   assertCondition(
     pythonInfo.displayName === 'Python' &&
-      /^Python \d+\.\d+\.\d+ \(Pyodide \d+\.\d+\.\d+\)$/.test(pythonInfo.versionLabel),
-    'Python runtime info should expose generated Python and Pyodide versions'
+      /^Python \d+\.\d+\.\d+$/.test(pythonInfo.versionLabel),
+    'Python runtime info should expose the generated language version'
   );
   assertCondition(
     !pythonInfo.libraries?.some((library) => library.name === 'sortedcontainers'),

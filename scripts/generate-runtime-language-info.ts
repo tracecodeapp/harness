@@ -206,11 +206,10 @@ function buildJavaScriptLibraryDescription(libraries: readonly LibraryInfo[]): s
 
 function buildPythonDescription(input: {
   pythonVersion: string;
-  pyodideVersion: string;
   defaultImports: readonly string[];
 }): string {
   return [
-    `Python ${input.pythonVersion} (Pyodide ${input.pyodideVersion}).`,
+    `Python ${input.pythonVersion}.`,
     '',
     `Common algorithm helpers are imported automatically, including ${input.defaultImports.slice(0, 6).join(', ')}. Other standard-library modules can be imported normally.`,
     '',
@@ -292,13 +291,11 @@ function buildCppDescription(input: {
 
 async function buildRuntimeInfo(): Promise<Record<string, RuntimeInfo>> {
   const rootPackage = await readJson<PackageJson>('package.json');
-  const pythonWorkerSource = await readText('workers', 'python', 'pyodide-worker.js');
   const pythonRuntimeCoreSource = await readText('workers', 'python', 'runtime-core.js');
   const pyodideLock = await readJson<{
     info?: { python?: string };
     packages?: Record<string, { version?: string }>;
   }>('node_modules', 'pyodide', 'pyodide-lock.json');
-  const pyodideVersion = requireMatch(pythonWorkerSource, /pyodide[\/@]v?([0-9]+(?:\.[0-9]+){1,2})/i, 'Pyodide worker URL version')[1]!;
   const pythonVersion = pyodideLock.info?.python;
   if (!pythonVersion) throw new Error('Unable to derive runtime info: missing Pyodide Python version');
 
@@ -373,16 +370,15 @@ async function buildRuntimeInfo(): Promise<Record<string, RuntimeInfo>> {
     python: {
       language: 'python',
       displayName: 'Python',
-      versionLabel: `Python ${pythonVersion} (Pyodide ${pyodideVersion})`,
+      versionLabel: `Python ${pythonVersion}`,
       description: buildPythonDescription({
         pythonVersion,
-        pyodideVersion,
         defaultImports: pythonDefaultImports,
       }),
       runtime: {
-        name: 'Pyodide',
-        version: pyodideVersion,
-        detail: `CPython ${pythonVersion} compiled to WebAssembly.`,
+        name: 'Python',
+        version: pythonVersion,
+        detail: 'Runs in an isolated browser runtime.',
       },
       defaultImports: pythonDefaultImports,
     },
