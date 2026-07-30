@@ -12,7 +12,6 @@ const SCANNED_FILES = [
   'src/index.ts',
   'src/cli.ts',
   'src/native.ts',
-  'src/sql.ts',
   'packages/runtime-browser/src/index.ts',
   'packages/runtime-browser/src/internal.ts',
   'packages/runtime-javascript/src/javascript-runtime-client.ts',
@@ -78,6 +77,27 @@ function assertCondition(condition: unknown, message: string): asserts condition
 }
 
 async function main(): Promise<void> {
+  const [rootManifest, sqlManifest] = await Promise.all([
+    readFile(join(ROOT, 'package.json'), 'utf8').then((contents) => JSON.parse(contents) as {
+      exports?: Record<string, unknown>;
+    }),
+    readFile(join(ROOT, 'packages/runtime-sql/package.json'), 'utf8').then(
+      (contents) => JSON.parse(contents) as {
+        name?: unknown;
+        private?: unknown;
+      }
+    ),
+  ]);
+  assertCondition(
+    !existsSync(join(ROOT, 'src/sql.ts')) &&
+      rootManifest.exports?.['./sql'] === undefined,
+    'SQL must not return to the published @tracecode/harness root surface'
+  );
+  assertCondition(
+    sqlManifest.name === '@tracecode/runtime-sql' && sqlManifest.private === true,
+    'SQL must remain owned by the private @tracecode/runtime-sql workspace'
+  );
+
   const clientOwnership = [
     ['cpp-runtime-client.ts', 'cpp-runtime-client.ts', 'runtime-cpp'],
     ['cpp-worker-client.ts', 'cpp-worker-client.ts', 'runtime-cpp'],
