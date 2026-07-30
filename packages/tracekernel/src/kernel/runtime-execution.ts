@@ -5,6 +5,7 @@ import type {
   TraceKernelRuntimeLease,
   TraceKernelRuntimeLeaseReleaseDisposition,
   TraceKernelRuntimeProcessContext,
+  TraceKernelRuntimeSyscallPort,
 } from '../model';
 
 import type { TraceKernelProcess } from './process';
@@ -14,10 +15,13 @@ type AcquireRuntimeLease = (
 ) => Effect.Effect<TraceKernelRuntimeLease, Error>;
 
 function runtimeContext(
-  process: TraceKernelProcess
+  process: TraceKernelProcess,
+  sessionId: string,
+  syscalls: TraceKernelRuntimeSyscallPort
 ): TraceKernelRuntimeProcessContext {
   const snapshot = process.snapshot();
   return Object.freeze({
+    sessionId,
     pid: snapshot.pid,
     ppid: snapshot.ppid,
     pgid: snapshot.pgid,
@@ -29,6 +33,7 @@ function runtimeContext(
     args: snapshot.args,
     cwd: snapshot.cwd,
     env: snapshot.env,
+    syscalls,
   });
 }
 
@@ -84,12 +89,15 @@ function revalidateRuntimeLease(
  */
 export function executeProcessWithRuntimeLease(
   process: TraceKernelProcess,
+  sessionId: string,
+  syscalls: TraceKernelRuntimeSyscallPort,
   acquireLease: AcquireRuntimeLease
 ): Effect.Effect<TraceKernelProcessSnapshot, Error> {
+  const context = runtimeContext(process, sessionId, syscalls);
   return Effect.acquireUseRelease(
-    acquireLease(runtimeContext(process)),
+    acquireLease(context),
     (lease) =>
-      process.execute(lease).pipe(
+      process.execute(lease, context).pipe(
         Effect.flatMap((snapshot) =>
           revalidateRuntimeLease(lease, snapshot).pipe(
             Effect.map((disposition) => ({ snapshot, disposition }))

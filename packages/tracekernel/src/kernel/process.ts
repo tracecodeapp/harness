@@ -383,8 +383,10 @@ export class TraceKernelProcess {
     );
   }
 
-  execute(lease: TraceKernelRuntimeLease): Effect.Effect<TraceKernelProcessSnapshot, never> {
-    const context = this.runtimeContext();
+  execute(
+    lease: TraceKernelRuntimeLease,
+    context: TraceKernelRuntimeProcessContext
+  ): Effect.Effect<TraceKernelProcessSnapshot, never> {
     return Effect.sync(() => {
       this.runtimeLease = lease;
       this.record.phase = 'running';
@@ -456,22 +458,6 @@ export class TraceKernelProcess {
           Effect.ensuring(recordSignalExit)
         )
       : recordSignalExit;
-  }
-
-  private runtimeContext(): TraceKernelRuntimeProcessContext {
-    return Object.freeze({
-      pid: this.record.pid,
-      ppid: this.record.ppid,
-      pgid: this.record.pgid,
-      sid: this.record.sid,
-      ...(this.record.controllingTerminalId === undefined
-        ? {}
-        : { controllingTerminalId: this.record.controllingTerminalId }),
-      command: this.record.command,
-      args: this.record.args,
-      cwd: this.record.cwd,
-      env: this.record.env,
-    });
   }
 
   private finish(

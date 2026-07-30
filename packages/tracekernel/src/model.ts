@@ -4,6 +4,10 @@ import type {
   TraceKernelFileSystem,
   TraceKernelFileSystemImage,
 } from './vfs';
+import type {
+  TraceKernelSyscallRequest,
+  TraceKernelSyscallResult,
+} from './syscalls';
 
 export type TraceKernelRuntimeName = string;
 
@@ -148,6 +152,7 @@ export interface TraceKernelProcessSpec {
 }
 
 export interface TraceKernelRuntimeProcessContext {
+  readonly sessionId: string;
   readonly pid: number;
   readonly ppid: number;
   readonly pgid: number;
@@ -157,6 +162,18 @@ export interface TraceKernelRuntimeProcessContext {
   readonly args: readonly string[];
   readonly cwd: string;
   readonly env: Readonly<Record<string, string>>;
+  /**
+   * Process-bound kernel authority. Runtime providers may bridge this port to
+   * an in-realm adapter, Worker, or Wasm guest, but they cannot dispatch a
+   * syscall as another process or reach session internals directly.
+   */
+  readonly syscalls: TraceKernelRuntimeSyscallPort;
+}
+
+export interface TraceKernelRuntimeSyscallPort {
+  dispatch(
+    request: TraceKernelSyscallRequest
+  ): Effect.Effect<TraceKernelSyscallResult>;
 }
 
 export interface TraceKernelRuntimeResult {

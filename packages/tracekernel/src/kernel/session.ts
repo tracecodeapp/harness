@@ -53,10 +53,11 @@ import {
   type TraceKernelOpenFileOptions,
   type TraceKernelStat,
 } from '../vfs';
-import type {
-  TraceKernelProcessInfo,
-  TraceKernelSpawnParentStdio,
-  TraceKernelSpawnStdio,
+import {
+  TraceKernelSyscallDispatcher,
+  type TraceKernelProcessInfo,
+  type TraceKernelSpawnParentStdio,
+  type TraceKernelSpawnStdio,
 } from '../syscalls';
 import {
   TraceKernelTerminal,
@@ -197,6 +198,8 @@ export class TraceKernelSession {
 
       const program = executeProcessWithRuntimeLease(
         process,
+        this.id,
+        new TraceKernelSyscallDispatcher(this, process),
         (context) => this.host.acquireRuntimeLease(spec.runtime, context)
       ).pipe(
         Effect.catchAll((error) =>

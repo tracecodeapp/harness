@@ -32,9 +32,21 @@ async function main(): Promise<void> {
       yield* session.attachNullStandardIo(process);
       const context = yield* controlled.awaitAttached(process.pid);
       assertCondition(
-        context.pid === process.pid &&
+        context.sessionId === session.id &&
+          context.pid === process.pid &&
           context.command === 'existing-product-runner',
         'The host executor did not attach to the authoritative process identity.'
+      );
+      const identity = yield* context.syscalls.dispatch({
+        op: 'identity',
+      });
+      assertCondition(
+        identity.ok &&
+          identity.value.op === 'identity' &&
+          identity.value.pid === process.pid,
+        `The controlled runtime did not receive process-bound syscall authority: ${JSON.stringify(
+          identity
+        )}`
       );
       assertCondition(
         controlled.attachedPids().includes(process.pid),
