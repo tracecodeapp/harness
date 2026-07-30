@@ -369,9 +369,6 @@ async function runWithTempRoot(tempRoot: string): Promise<void> {
     'workers/java/java-source-augmentations.js',
     'workers/csharp/csharp-worker.js',
     'workers/vendor/java-browser-helper.jar',
-    'workers/vendor/java-rewriter.jar',
-    'workers/vendor/javaparser-core-3.25.10.jar',
-    'workers/vendor/jdk.compiler-17.jar',
     'workers/vendor/typescript.js',
     'workers/vendor/csharp/_framework/dotnet.js',
     'workers/vendor/csharp/_framework/dotnet.native.wasm',
@@ -383,6 +380,34 @@ async function runWithTempRoot(tempRoot: string): Promise<void> {
     const filePath = join(packageDir, relativePath);
     const fileStat = await stat(filePath);
     assertCondition(fileStat.isFile(), `Packed tarball should include ${relativePath}`);
+  }
+  for (const retiredJavaArtifact of [
+    'workers/vendor/java-rewriter.jar',
+    'workers/vendor/javaparser-core-3.25.10.jar',
+    'workers/vendor/jdk.compiler-17.jar',
+  ]) {
+    assertCondition(
+      !tarballEntries.includes(`package/${retiredJavaArtifact}`),
+      `Packed tarball must not include retired Java artifact ${retiredJavaArtifact}`
+    );
+  }
+  for (const privateJavaBuildPrefix of [
+    'package/workers/java/.build/',
+    'package/workers/java/src/',
+  ]) {
+    assertCondition(
+      !tarballEntries.some((entry) => entry.startsWith(privateJavaBuildPrefix)),
+      `Packed tarball must not include private Java build tree ${privateJavaBuildPrefix}`
+    );
+  }
+  for (const buildOnlyWorkerArtifact of [
+    'package/workers/javascript/javascript-libraries-entry.js',
+    'package/workers/vendor/csharp/.stamp',
+  ]) {
+    assertCondition(
+      !tarballEntries.includes(buildOnlyWorkerArtifact),
+      `Packed tarball must not include build-only worker artifact ${buildOnlyWorkerArtifact}`
+    );
   }
   for (const removedRootEntrypoint of [
     'native',
