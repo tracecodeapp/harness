@@ -161,11 +161,9 @@ import type {
   RuntimeKernelWorkspaceInfo,
   RuntimeTraceKernelConfig,
   RuntimeTraceKernelSchedulerConfig,
-  RuntimeProjectCommandRequest,
   RuntimeProjectEngineLeaseAttachment,
   RuntimeProjectEngineLeaseController,
   RuntimeProjectCommandOptions,
-  RuntimeProjectCommandRunner,
   RuntimeProjectHiddenCommandAccess,
   RuntimeProjectTerminalPrompt,
   RuntimeProjectTerminalEvent,
@@ -334,21 +332,13 @@ import {
   type VirtualExecutableRecord,
 } from './arg-parsers';
 import {
-  createPackageManagerProjectCommands,
   normalizePackageManagerConfig,
   shellQuote,
-  type PackageManagerOutputEmitter,
   type NormalizedRuntimePackageManagerConfig,
 } from './package-manager';
 import {
   commandEnv,
-  createCppProjectCommands,
-  createCSharpProjectCommands,
-  createJavaProjectCommands,
-  createNodeProjectCommands,
-  createPythonProjectCommands,
   createTraceKernelCommandRegistry,
-  createTypeScriptProjectCommands,
   traceKernelCommandPath,
   type TraceKernelCommandInfo,
 } from './language-commands';
@@ -428,6 +418,10 @@ import { WorkspaceAccessPolicy } from './workspace-access-policy';
 import { WorkspaceFileApi } from './workspace-file-api';
 import { WorkspaceDeviceIo } from './workspace-device-io';
 import { WorkspaceJournal } from './workspace-journal';
+import {
+  createWorkspaceRuntimeCommands,
+  createWorkspaceRuntimeRunnerBridge,
+} from './workspace-runtime-commands';
 
 const PRINCIPAL_ACTOR: RuntimeWorkspaceActor = runtimeWorkspaceActorPreset('principal');
 const RUNTIME_ACTOR: RuntimeWorkspaceActor = runtimeWorkspaceActorPreset('runtime');
@@ -768,107 +762,51 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
         this.fs.observeExternalTraceKernelMutation(mutation);
         this.recordTraceKernelFileSystemMutation(mutation);
       });
-    const withEvents = <Request extends RuntimeProjectCommandRequest<string>>(
-      runner: RuntimeProjectCommandRunner<Request>,
-      options: {
-        kernelSyscalls?: boolean;
-        descriptorStdio?: boolean;
-      } = {}
-    ): RuntimeProjectCommandRunner<Request> => {
-      const descriptorStdio =
-        options.descriptorStdio === true &&
-        runner.capabilities?.descriptorStdio === true;
-      return (async (request, ctx?: CommandContext) => {
-        const commandContext = this.resolveCommandContext(ctx);
-        const {
-          stdinPipe: _legacyRequestStdinPipe,
-          ...requestWithoutLegacyStdin
-        } = request;
-        const activeStdinPipe = request.source !== 'compile' && request.source !== 'stdin'
-          ? commandContext?.stdinPipe
-          : undefined;
-        const stdinPipe = request.stdinPipe ?? activeStdinPipe;
-        const signal = commandContext?.process
-          ? this.processExecutionHandle(commandContext.process)?.abortController?.signal ??
-            request.signal
-          : request.signal;
-        const runtimeIo = commandContext?.runtimeIo;
-        let acceptingRunnerEvents = true;
-        let result: RuntimeCommandResult;
-        const kernelSyscalls = options.kernelSyscalls
-          ? this.createKernelSyscallBridge(commandContext)
-          : undefined;
-        const executionHandle = commandContext
-          ? this.processExecutionHandle(commandContext.process)
-          : undefined;
+    const withEvents = createWorkspaceRuntimeRunnerBridge({
+      resolveCommandContext: (context) =>
+        this.resolveCommandContext(context),
+      bindProcess: (context, descriptorStdio) => {
+        const executionHandle = this.processExecutionHandle(
+          context.process
+        );
         if (executionHandle) {
           executionHandle.descriptorStdio = descriptorStdio;
         }
-        if (descriptorStdio && commandContext) {
-          this.startHostStandardInputPump(commandContext);
-        }
-        const processSnapshot = commandContext?.process
-          ? this.authoritativeProcessSnapshot(commandContext.process)
-          : undefined;
-        try {
-          result = await runner({
-            ...(descriptorStdio ? requestWithoutLegacyStdin : request),
-            ...(commandContext?.process && processSnapshot
-              ? {
-                  process: {
-                    pid: processSnapshot.pid,
-                    ppid: processSnapshot.ppid,
-                    pgid: processSnapshot.pgid,
-                    sid: processSnapshot.sid,
-                    descriptors: this.procFiles.descriptorNumbers(
-                      commandContext.process as RuntimeKernelProcessRecord
-                    ),
-                  },
-                }
-              : {}),
-            ...(
-              stdinPipe && !descriptorStdio
-                ? { stdinPipe: { buffer: stdinPipe.buffer } }
-                : {}
-            ),
-            ...(commandContext?.terminal ? { terminal: commandContext.terminal } : {}),
-            ...(commandContext?.engineLease
-              ? { engineLease: commandContext.engineLease }
-              : {}),
-            ...(signal ? { signal } : {}),
-            kernelHttp: this.createKernelHttpBridge(commandContext),
-            ...(kernelSyscalls ? { kernelSyscalls } : {}),
-            ...(executionHandle?.signalChannel
-              ? { kernelSignals: executionHandle.signalChannel }
-              : {}),
-            onEvent: (event) => {
-              if (!acceptingRunnerEvents) return;
-              this.handleRuntimeCommandEvent(event, commandContext);
-            },
-          } as Request);
-        } finally {
-          acceptingRunnerEvents = false;
-          kernelSyscalls?.close();
-        }
-        if (result.handledSignal && commandContext) {
-          commandContext.handledSignal = result.handledSignal;
-        }
-        // just-bash preserves the standard stdout/stderr/exitCode fields from a
-        // custom command but does not retain harness-specific result metadata.
-        // Carry structured runner failures on the command context so the outer
-        // workspace result can expose them to the host without printing them in
-        // the learner's terminal.
-        if (result.error && commandContext && !commandContext.kernelError) {
-          commandContext.kernelError = result.error;
-        }
-        if (runtimeIo) {
-          await runtimeIo.flush();
-          return runtimeIo.filterAppliedResultFiles(result) as RuntimeCommandResult;
-        }
-        await this.flushRuntimeEventQueue();
-        return result;
-      }) as RuntimeProjectCommandRunner<Request>;
-    };
+        const processSnapshot = this.authoritativeProcessSnapshot(
+          context.process
+        );
+        return {
+          ...(executionHandle?.abortController?.signal
+            ? { signal: executionHandle.abortController.signal }
+            : {}),
+          ...(executionHandle?.signalChannel
+            ? { kernelSignals: executionHandle.signalChannel }
+            : {}),
+          ...(processSnapshot
+            ? {
+                process: {
+                  pid: processSnapshot.pid,
+                  ppid: processSnapshot.ppid,
+                  pgid: processSnapshot.pgid,
+                  sid: processSnapshot.sid,
+                  descriptors: this.procFiles.descriptorNumbers(
+                    context.process as RuntimeKernelProcessRecord
+                  ),
+                },
+              }
+            : {}),
+        };
+      },
+      startHostStandardInputPump: (context) =>
+        this.startHostStandardInputPump(context),
+      createKernelHttpBridge: (context) =>
+        this.createKernelHttpBridge(context),
+      createKernelSyscallBridge: (context) =>
+        this.createKernelSyscallBridge(context),
+      handleRuntimeCommandEvent: (event, context) =>
+        this.handleRuntimeCommandEvent(event, context),
+      flushRuntimeEventQueue: () => this.flushRuntimeEventQueue(),
+    });
     const observeFileChange: RuntimeFileChangeObserver = (change, phase, context) => {
       this.emitLocalRuntimeEvent({ type: 'file-change', change, phase }, context);
     };
@@ -939,36 +877,39 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
       commands: this.traceKernelCommandRegistry,
       resolveHost: (hostname) => this.resolveHost(hostname),
     });
-    const emitPackageManagerOutput: PackageManagerOutputEmitter = (stream, data, context) => {
-      this.emitLocalRuntimeEvent({
-        type: 'output',
-        stream,
-        device: stream === 'stdout' ? '/dev/stdout' : '/dev/stderr',
-        data,
-      }, this.resolveCommandContext(context));
-    };
     const includeHiddenFilesForCurrentCommand = (ctx?: CommandContext) => this.resolveCommandContext(ctx)?.includeHiddenFiles === true;
     const snapshotProjectForCurrentCommand = (_ctx: CommandContext, includeHiddenFiles: boolean) =>
       this.snapshotForCommand(includeHiddenFiles);
-    const runtimeCommands = [
-      ...(options.pythonRunner ? createPythonProjectCommands(withEvents(options.pythonRunner, { kernelSyscalls: true, descriptorStdio: true }), this.cwd, this.entrypoint, observeFileChange, this.kernelInfo.workspaceAlias, this.kernelInfo, this.projectSession?.readonlyFiles, this.projectSession?.hiddenFiles, includeHiddenFilesForCurrentCommand, snapshotProjectForCurrentCommand) : []),
-      ...(options.nodeRunner ? createNodeProjectCommands(withEvents(options.nodeRunner, { kernelSyscalls: true, descriptorStdio: true }), this.cwd, this.entrypoint, observeFileChange, this.kernelInfo.workspaceAlias, this.kernelInfo, this.projectSession?.readonlyFiles, this.projectSession?.hiddenFiles, includeHiddenFilesForCurrentCommand, snapshotProjectForCurrentCommand) : []),
-      ...(options.typescriptRunner ? createTypeScriptProjectCommands(withEvents(options.typescriptRunner), this.cwd, this.entrypoint, observeFileChange, this.kernelInfo.workspaceAlias, this.kernelInfo, this.projectSession?.readonlyFiles, this.projectSession?.hiddenFiles, includeHiddenFilesForCurrentCommand, snapshotProjectForCurrentCommand) : []),
-      ...(packageManagerConfig ? createPackageManagerProjectCommands(packageManagerConfig, this.cwd, this.entrypoint, observeFileChange, this.kernelInfo.workspaceAlias, this.kernelInfo, this.projectSession?.readonlyFiles, emitPackageManagerOutput, this.projectSession?.hiddenFiles, includeHiddenFilesForCurrentCommand) : []),
-      ...(options.javaRunner ? createJavaProjectCommands(withEvents(options.javaRunner, { kernelSyscalls: true, descriptorStdio: true }), this.cwd, this.entrypoint, observeFileChange, this.kernelInfo.workspaceAlias, this.kernelInfo, this.projectSession?.readonlyFiles, this.projectSession?.hiddenFiles, includeHiddenFilesForCurrentCommand, snapshotProjectForCurrentCommand) : []),
-      ...(options.cppRunner ? createCppProjectCommands(withEvents(options.cppRunner, { kernelSyscalls: true, descriptorStdio: true }), this.cwd, {
-        recordExecutablePath: (path) => this.registerVirtualExecutable({ path, kind: 'cpp' }),
-        entrypoint: this.entrypoint,
-        onFileChange: observeFileChange,
-        workspaceAlias: this.kernelInfo.workspaceAlias,
-        kernel: this.kernelInfo,
-        readonlyFiles: this.projectSession?.readonlyFiles,
-        hiddenFiles: this.projectSession?.hiddenFiles,
-        includeHiddenFiles: includeHiddenFilesForCurrentCommand,
-        snapshotProject: snapshotProjectForCurrentCommand,
-      }) : []),
-      ...(options.csharpRunner ? createCSharpProjectCommands(withEvents(options.csharpRunner, { kernelSyscalls: true, descriptorStdio: true }), this.cwd, this.entrypoint, observeFileChange, this.kernelInfo.workspaceAlias, this.kernelInfo, this.projectSession?.readonlyFiles, this.projectSession?.hiddenFiles, includeHiddenFilesForCurrentCommand, snapshotProjectForCurrentCommand) : []),
-    ];
+    const runtimeCommands = createWorkspaceRuntimeCommands({
+      workspace: options,
+      packageManager: packageManagerConfig,
+      cwd: this.cwd,
+      entrypoint: this.entrypoint,
+      workspaceAlias: this.kernelInfo.workspaceAlias,
+      kernelInfo: this.kernelInfo,
+      readonlyFiles: this.projectSession?.readonlyFiles,
+      hiddenFiles: this.projectSession?.hiddenFiles,
+      withEvents,
+      observeFileChange,
+      emitPackageManagerOutput: (stream, data, context) => {
+        this.emitLocalRuntimeEvent(
+          {
+            type: 'output',
+            stream,
+            device:
+              stream === 'stdout'
+                ? '/dev/stdout'
+                : '/dev/stderr',
+            data,
+          },
+          this.resolveCommandContext(context)
+        );
+      },
+      includeHiddenFiles: includeHiddenFilesForCurrentCommand,
+      snapshotProject: snapshotProjectForCurrentCommand,
+      recordCppExecutable: (path) =>
+        this.registerVirtualExecutable({ path, kind: 'cpp' }),
+    });
     const shellCommands = createWorkspaceShellCommandRegistry({
       runtimeCommands,
       customCommands: options.customCommands,
