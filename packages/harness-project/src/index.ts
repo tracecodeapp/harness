@@ -47,10 +47,7 @@ import {
   runtimeDeviceDirEntries,
   runtimeDeviceEntryKind,
   runtimeDeviceInputSource,
-  runtimeDeviceOutputTarget,
   runtimeKernelAccessTarget,
-  runtimeKernelDeviceInputRoute,
-  runtimeKernelDeviceOutputRoute,
   runtimeKernelDirectoryTarget,
   runtimeKernelFileReadErrorMessage,
   runtimeKernelLinkTarget,
@@ -296,7 +293,6 @@ import {
   collectSnapshotFiles,
   contentToBytes,
   contentToBytesForRuntimeFile,
-  decodeUtf8,
   filterHiddenSnapshotFiles,
   filterReadonlySnapshotDeletions,
   filterReadonlySnapshotFiles,
@@ -431,6 +427,7 @@ import { WorkspaceVirtualFileSystem } from './workspace-virtual-filesystem';
 import { WorkspaceTerminalNavigation } from './workspace-terminal-navigation';
 import { WorkspaceAccessPolicy } from './workspace-access-policy';
 import { WorkspaceFileApi } from './workspace-file-api';
+import { WorkspaceDeviceIo } from './workspace-device-io';
 
 const PRINCIPAL_ACTOR: RuntimeWorkspaceActor = runtimeWorkspaceActorPreset('principal');
 const RUNTIME_ACTOR: RuntimeWorkspaceActor = runtimeWorkspaceActorPreset('runtime');
@@ -573,6 +570,7 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
   private readonly procFiles: WorkspaceProcFileSystem;
   private readonly virtualFiles: WorkspaceVirtualFileSystem;
   private readonly fileApi: WorkspaceFileApi;
+  private readonly deviceIo: WorkspaceDeviceIo;
   private readonly terminalNavigation: WorkspaceTerminalNavigation;
   private readonly identityCommands: WorkspaceIdentityCommands;
   private readonly virtualExecutableRecords = new Map<string, VirtualExecutableRecord>();
@@ -626,6 +624,10 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
     this.kernelControl = options.kernelControl;
     this.cppRunner = options.cppRunner;
     this.kernel = this.createKernel();
+    this.deviceIo = new WorkspaceDeviceIo({
+      emitOutput: (event, context) =>
+        this.emitLocalRuntimeEvent(event, context),
+    });
     const storageLimits = normalizeRuntimeWorkspaceStorageLimits(options.storageLimits);
     this.traceKernelFileSystem = Effect.runSync(TraceKernelFileSystem.make({
       quota: {
@@ -5588,22 +5590,7 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
   }
 
   private readDevice(device: RuntimeKernelDevicePath, context?: RuntimeCommandExecutionContext): string {
-    if (!runtimeKernelDeviceInputRoute(undefined, device)) return '';
-    const stdinPipe = context?.stdinPipe;
-    if (stdinPipe) {
-      let text = '';
-      while (true) {
-        const chunk = readRuntimeCommandStdinPipeBytes(stdinPipe);
-        if (chunk.byteLength > 0) {
-          text += decodeUtf8(chunk) ?? Array.from(chunk, (byte) => String.fromCharCode(byte)).join('');
-          continue;
-        }
-        if (runtimeCommandStdinPipeClosed(stdinPipe)) break;
-        break;
-      }
-      return text;
-    }
-    return '';
+    return this.deviceIo.read(device, context);
   }
 
   private writeDevice(
@@ -5611,29 +5598,7 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
     data: string,
     contextOrActor?: RuntimeCommandExecutionContext | RuntimeWorkspaceActor
   ): void {
-    const route = runtimeKernelDeviceOutputRoute(undefined, device);
-    if (!route) {
-      if (runtimeDeviceOutputTarget(device) === '/dev/null') return;
-      throw new Error(`Kernel device is read-only: ${device}`);
-    }
-    const commandContext = contextOrActor && 'process' in contextOrActor
-      ? contextOrActor
-      : undefined;
-    const actor = contextOrActor && 'kind' in contextOrActor
-      ? contextOrActor
-      : undefined;
-    if (commandContext) {
-      data = this.captureDeviceOutput(commandContext, route.stream, data);
-      if (!data) return;
-    }
-    this.emitLocalRuntimeEvent({
-      type: 'output',
-      stream: route.stream,
-      device: route.outputDevice,
-      ...(route.sourceDevice ? { sourceDevice: route.sourceDevice } : {}),
-      data,
-      ...(actor ? { actor } : {}),
-    }, commandContext);
+    this.deviceIo.write(device, data, contextOrActor);
   }
 
   private captureDeviceOutput(
@@ -5641,10 +5606,7 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
     stream: RuntimeCommandEventStream,
     data: string
   ): string {
-    const chunk = this.captureCommandOutput(context, stream, data);
-    if (stream === 'stdout') context.deviceStdout += chunk;
-    if (stream === 'stderr') context.deviceStderr += chunk;
-    return chunk;
+    return this.deviceIo.captureDeviceOutput(context, stream, data);
   }
 
   private captureCommandOutput(
@@ -5652,33 +5614,14 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
     stream: RuntimeCommandEventStream,
     data: string
   ): string {
-    if (!data || context.truncatedOutputStreams.has(stream)) return '';
-    const used = context.outputBytes[stream];
-    const remaining = RUNTIME_PROJECT_MAX_OUTPUT_STREAM_BYTES - used;
-    const bytes = runtimeProjectUtf8Bytes(data);
-    if (bytes <= remaining) {
-      context.outputBytes[stream] = used + bytes;
-      return data;
-    }
-    context.truncatedOutputStreams.add(stream);
-    const marker = `\n[${stream} output truncated after ${RUNTIME_PROJECT_MAX_OUTPUT_STREAM_BYTES} bytes]\n`;
-    const chunk = `${runtimeProjectTruncateUtf8(data, Math.max(0, remaining))}${marker}`;
-    context.outputBytes[stream] = RUNTIME_PROJECT_MAX_OUTPUT_STREAM_BYTES + runtimeProjectUtf8Bytes(marker);
-    return chunk;
+    return this.deviceIo.captureCommandOutput(context, stream, data);
   }
 
   private captureReturnedOutput(
     context: RuntimeCommandExecutionContext,
     result: Pick<RuntimeCommandResult, 'stdout' | 'stderr'>
   ): Pick<RuntimeCommandResult, 'stdout' | 'stderr'> {
-    return {
-      stdout:
-        this.captureCommandOutput(context, 'stdout', result.stdout) +
-        context.deviceStdout,
-      stderr:
-        this.captureCommandOutput(context, 'stderr', result.stderr) +
-        context.deviceStderr,
-    };
+    return this.deviceIo.captureReturnedOutput(context, result);
   }
 
   private async writeFileAs(
