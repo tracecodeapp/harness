@@ -404,11 +404,13 @@ export class JavaWorkerClient {
    * The init program: one attempt, and on a runtime-load failure, reset the
    * session and run the same description once more.
    */
-  private initEffect(): Effect.Effect<InitResult, Error> {
+  private initEffect(signal?: AbortSignal): Effect.Effect<InitResult, Error> {
     const attempt = this.core.sendMessageEffect<InitResult>('init', this.workerOptionsPayload(), INIT_TIMEOUT_MS);
     return attempt.pipe(
       Effect.catchIf(
-        (error): error is Error => this.shouldResetRuntimeLoadError(error),
+        (error): error is Error =>
+          signal?.aborted !== true &&
+          this.shouldResetRuntimeLoadError(error),
         (error) =>
           Effect.suspend(() => {
             logRuntimeDiagnostic('warn', {
@@ -425,10 +427,10 @@ export class JavaWorkerClient {
     );
   }
 
-  async init(): Promise<InitResult> {
+  async init(signal?: AbortSignal): Promise<InitResult> {
     if (this.initPromise) return this.initPromise;
 
-    const promise = this.core.runClientEffect(this.initEffect());
+    const promise = this.core.runClientEffect(this.initEffect(signal), signal);
     this.initPromise = promise;
 
     try {

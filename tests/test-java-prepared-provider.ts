@@ -13,11 +13,15 @@ import {
   createJavaBrowserPreparedExecutionProvider,
   createJavaPreparedExecutionProvider,
 } from '../packages/runtime-java/src/java-prepared-provider';
-import type {
+import {
   JavaWorkerClient,
+  type JavaWorkerClientOptions,
   JavaWorkerPreparedProgramSnapshot,
   JavaWorkerPreparedProgramResult,
 } from '../packages/runtime-java/src/java-worker-client';
+import type {
+  BrowserWorkerLike,
+} from '../packages/runtime-browser/src/internal';
 
 interface FakeClientState {
   initCalls: number;
@@ -449,6 +453,63 @@ test('caller cancellation hard-terminates Java case boot and snapshot restoratio
     provider.dispose();
     assert.equal(caseWorker.state.terminateCalls, 1);
   }
+});
+
+test('caller cancellation during Java client initialization does not spawn a retry worker', async () => {
+  const initPosted = deferred();
+  let createdWorkers = 0;
+  let terminatedWorkers = 0;
+  const workerFactory: NonNullable<JavaWorkerClientOptions['workerFactory']> =
+    (): BrowserWorkerLike => {
+      createdWorkers += 1;
+      let terminated = false;
+      const worker: BrowserWorkerLike = {
+        onmessage: null,
+        onerror: null,
+        postMessage(message) {
+          if (
+            message &&
+            typeof message === 'object' &&
+            'type' in message &&
+            message.type === 'init'
+          ) {
+            initPosted.resolve(undefined);
+          }
+        },
+        terminate() {
+          if (terminated) return;
+          terminated = true;
+          terminatedWorkers += 1;
+        },
+      };
+      queueMicrotask(() => {
+        worker.onmessage?.({
+          data: { type: 'worker-ready' },
+        } as MessageEvent);
+      });
+      return worker;
+    };
+  const client = new JavaWorkerClient({
+    workerUrl: '/workers/java-worker.js',
+    workerFactory,
+    debug: false,
+  });
+  const abortController = new AbortController();
+  const initialization = client.init(abortController.signal);
+  await initPosted.promise;
+
+  abortController.abort();
+  await assert.rejects(
+    initialization,
+    (error: unknown) =>
+      error instanceof Error && error.name === 'AbortError'
+  );
+  await Promise.resolve();
+
+  assert.equal(createdWorkers, 1);
+  assert.equal(terminatedWorkers, 1);
+  client.terminate();
+  assert.equal(terminatedWorkers, 1);
 });
 
 test('disposing an active Java prepared program aborts once, drains the boundary, and rejects queued work', async () => {

@@ -162,7 +162,7 @@ abstract class JavaPreparedProgramBase {
         abortClient();
         throw abortReason(signal);
       }
-      const initialized = await client.init();
+      const initialized = await client.init(signal);
       if (!initialized.success) {
         throw new Error(
           'Java runtime initialization was unsuccessful during prepared-program restoration.'
