@@ -9,7 +9,7 @@ import {
   CURL_PROTOCOLS,
   DEFAULT_CURL_SCHEME,
   resolveCurlUrl,
-} from '../packages/harness-project/src/curl-url';
+} from '../packages/tracekernel/src/workspace/curl-url';
 
 function assertCondition(condition: unknown, message: string): asserts condition {
   if (!condition) throw new Error(message);

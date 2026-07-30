@@ -1,7 +1,7 @@
 #!/usr/bin/env npx tsx
 
 import type { RuntimeProjectSessionInfo } from '../packages/harness-core/src/index';
-import { WorkspaceLifecycleState } from '../packages/harness-project/src/workspace-lifecycle-state';
+import { WorkspaceLifecycleState } from '../packages/tracekernel/src/workspace/workspace-lifecycle-state';
 
 function assertCondition(
   condition: unknown,

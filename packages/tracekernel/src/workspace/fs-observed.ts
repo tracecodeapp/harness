@@ -97,7 +97,7 @@ import type {
   RuntimeCommandOptions,
   RuntimeProjectLiveIoController,
 } from '@tracecode/harness-core';
-import type { TraceKernelFileSystemMutation } from '@tracecode/tracekernel';
+import type { TraceKernelFileSystemMutation } from '..';
 import type {
   CppProjectCommandRunner,
   CSharpProjectCommandRunner,

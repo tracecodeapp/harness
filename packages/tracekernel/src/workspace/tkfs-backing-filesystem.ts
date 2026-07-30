@@ -4,7 +4,7 @@ import {
   TraceKernelFileSystem,
   type TraceKernelFileSystemMutation,
   type TraceKernelStat,
-} from '@tracecode/tracekernel';
+} from '..';
 import type {
   BufferEncoding,
   CpOptions,

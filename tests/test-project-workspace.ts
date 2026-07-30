@@ -38,7 +38,7 @@ import {
   leadingPersistentCdTarget,
   parseSimpleCommandWords,
   parseTerminalCommandList,
-} from '../packages/harness-project/src/arg-parsers';
+} from '../packages/tracekernel/src/workspace/arg-parsers';
 import { createNativePythonProjectRunner } from '../packages/harness-python/src/project-node';
 import { createBrowserPythonProjectRunner } from '../packages/harness-python/src/project-browser';
 import {

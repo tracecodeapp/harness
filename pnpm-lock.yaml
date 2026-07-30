@@ -337,9 +337,6 @@ importers:
       fflate:
         specifier: ^0.8.3
         version: 0.8.3
-      just-bash:
-        specifier: 3.1.0
-        version: 3.1.0(patch_hash=85fdd503145cc4fc6f226395623ee247ff72fd3b070ed14e629867c9ae9e1e85)
 
   packages/harness-python:
     dependencies:
@@ -379,9 +376,18 @@ importers:
 
   packages/tracekernel:
     dependencies:
+      '@tracecode/harness-core':
+        specifier: workspace:*
+        version: link:../harness-core
       effect:
         specifier: 3.22.0
         version: 3.22.0
+      fflate:
+        specifier: ^0.8.3
+        version: 0.8.3
+      just-bash:
+        specifier: 3.1.0
+        version: 3.1.0(patch_hash=85fdd503145cc4fc6f226395623ee247ff72fd3b070ed14e629867c9ae9e1e85)
 
 packages:
 

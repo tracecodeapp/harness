@@ -10,7 +10,7 @@ import {
 import type {
   TraceKernelFileSystemMutation,
   TraceKernelProcessSnapshot,
-} from '@tracecode/tracekernel';
+} from '..';
 import {
   isRuntimeDirectoryChange,
   type RuntimeCommandExecutionContext,

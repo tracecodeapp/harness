@@ -23,6 +23,11 @@ const PACKAGE_CHECKS: PackageCheck[] = [
       'dist/index.js',
       'dist/index.cjs',
       'dist/index.d.ts',
+      'dist/workspace.js',
+      'dist/workspace.cjs',
+      'dist/workspace.d.ts',
+      'dist/zlib-browser-shim.js',
+      'dist/zlib-browser-shim.cjs',
       'LICENSE',
       'THIRD_PARTY_NOTICES.md',
     ],
@@ -422,6 +427,67 @@ async function runWithTempRoot(tempRoot: string): Promise<void> {
         '@tracecode/harness-core declarations should export project I/O support tier types'
       );
     }
+    if (packageCheck.name === '@tracecode/tracekernel') {
+      const workspaceDeclarations = await readFile(
+        join(packageDir, 'dist/workspace.d.ts'),
+        'utf8'
+      );
+      const workspaceDist = await readFile(
+        join(packageDir, 'dist/workspace.js'),
+        'utf8'
+      );
+      const workspaceExportLine =
+        workspaceDeclarations
+          .split('\n')
+          .find((line) => line.startsWith('export {')) ?? '';
+      assertCondition(
+        workspaceDeclarations.includes('createRuntimeWorkspace') &&
+          workspaceDeclarations.includes(
+            'CreateRuntimeWorkspaceOptions'
+          ) &&
+          !workspaceExportLine.includes(
+            'RuntimeProjectLiveIoController'
+          ),
+        '@tracecode/tracekernel/workspace should expose workspace ownership without re-exporting core contracts'
+      );
+      assertCondition(
+        workspaceDist.includes(
+          'function isRuntimeDirectoryChange('
+        ) &&
+          workspaceDist.includes('directory: true'),
+        '@tracecode/tracekernel/workspace should ship directory file-change application support'
+      );
+      assertCondition(
+        workspaceDist.includes('symlink(target, linkPath)') &&
+          workspaceDist.includes(
+            'const symlinkTarget = kernelSymlinkTarget(linkPath)'
+          ) &&
+          workspaceDist.includes('link(existingPath, newPath)') &&
+          workspaceDist.includes(
+            'const linkTarget = kernelLinkTarget(existingPath, newPath)'
+          ) &&
+          workspaceDist.includes(
+            'const renameTarget = kernelRenameTarget(sourcePath, destinationPath)'
+          ) &&
+          workspaceDist.includes(
+            'const removeTarget = kernelRemoveTarget(path2)'
+          ) &&
+          workspaceDist.includes(
+            'const mkdirTarget = kernelMkdirTarget(path2)'
+          ) &&
+          workspaceDist.includes(
+            'Kernel virtual path is not a symbolic link'
+          ) &&
+          workspaceDist.includes(
+            'const statTarget = kernelStatTarget(path'
+          ) &&
+          workspaceDist.includes('virtualStat(stat') &&
+          workspaceDist.includes(
+            'if (isRuntimeKernelVirtualNamespacePath(path'
+          ),
+        '@tracecode/tracekernel/workspace should ship shared-kernel virtual stat/link guards'
+      );
+    }
     if (packageCheck.name === '@tracecode/runtime-sql') {
       const declarations = await readFile(join(packageDir, 'dist/index.d.ts'), 'utf8');
       const manifest = JSON.parse(await readFile(join(packageDir, 'package.json'), 'utf8')) as {
@@ -464,7 +530,6 @@ async function runWithTempRoot(tempRoot: string): Promise<void> {
     }
     if (packageCheck.name === '@tracecode/harness-project') {
       const projectDeclarations = await readFile(join(packageDir, 'dist/index.d.ts'), 'utf8');
-      const projectDist = await readFile(join(packageDir, 'dist/index.js'), 'utf8');
       assertCondition(
         projectDeclarations.includes('RuntimeProjectLiveIoController') &&
           projectDeclarations.includes('RuntimeProjectLiveIoControllerOptions'),
@@ -491,25 +556,6 @@ async function runWithTempRoot(tempRoot: string): Promise<void> {
           coreDeclarations.includes('timeoutMs?: number') &&
           coreDeclarations.includes('signal?: AbortSignal'),
         '@tracecode/harness-core declarations should expose the abortable workspace HTTP API'
-      );
-      assertCondition(
-        projectDist.includes('function isRuntimeDirectoryChange(') &&
-          projectDist.includes('directory: true'),
-        '@tracecode/harness-project should ship directory file-change application support'
-      );
-      assertCondition(
-        projectDist.includes('symlink(target, linkPath)') &&
-          projectDist.includes('const symlinkTarget = kernelSymlinkTarget(linkPath)') &&
-          projectDist.includes('link(existingPath, newPath)') &&
-          projectDist.includes('const linkTarget = kernelLinkTarget(existingPath, newPath)') &&
-          projectDist.includes('const renameTarget = kernelRenameTarget(sourcePath, destinationPath)') &&
-          projectDist.includes('const removeTarget = kernelRemoveTarget(path2)') &&
-          projectDist.includes('const mkdirTarget = kernelMkdirTarget(path2)') &&
-          projectDist.includes('Kernel virtual path is not a symbolic link') &&
-          projectDist.includes('const statTarget = kernelStatTarget(path') &&
-          projectDist.includes('virtualStat(stat') &&
-          projectDist.includes('if (isRuntimeKernelVirtualNamespacePath(path'),
-        '@tracecode/harness-project should ship shared-kernel virtual stat/link guards'
       );
     }
     if (packageCheck.name === '@tracecode/harness-python') {
@@ -1269,10 +1315,10 @@ async function runWithTempRoot(tempRoot: string): Promise<void> {
         );
       }
     }
-    if (packageCheck.name === '@tracecode/harness-project') {
+    if (packageCheck.name === '@tracecode/tracekernel') {
       assertCondition(
         packedPackageJson.dependencies?.['just-bash'] === '3.1.0',
-        '@tracecode/harness-project should declare the just-bash-backed project workspace dependency'
+        '@tracecode/tracekernel should declare the just-bash-backed workspace dependency'
       );
     }
     const browserProviderExports: Record<string, string> = {

@@ -8,7 +8,7 @@ import {
 } from '@tracecode/harness-core';
 import type {
   TraceKernelProcessSnapshot,
-} from '@tracecode/tracekernel';
+} from '..';
 import type {
   RuntimeCommandExecutionContext,
   RuntimeDynamicProcEntry,

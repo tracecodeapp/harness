@@ -8,9 +8,9 @@ import type {
   TraceKernelFileSystemMutation,
   TraceKernelProcessSnapshot,
 } from '../packages/tracekernel/src/index';
-import type { RuntimeKernelProcessRecord } from '../packages/harness-project/src/process-state';
-import { WorkspaceEventState } from '../packages/harness-project/src/workspace-event-state';
-import { WorkspaceJournal } from '../packages/harness-project/src/workspace-journal';
+import type { RuntimeKernelProcessRecord } from '../packages/tracekernel/src/workspace/process-state';
+import { WorkspaceEventState } from '../packages/tracekernel/src/workspace/workspace-event-state';
+import { WorkspaceJournal } from '../packages/tracekernel/src/workspace/workspace-journal';
 
 function assertCondition(
   condition: unknown,

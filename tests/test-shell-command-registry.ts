@@ -8,7 +8,7 @@ import {
 } from 'just-bash/browser';
 import {
   createWorkspaceShellCommandRegistry,
-} from '../packages/harness-project/src/shell-command-registry';
+} from '../packages/tracekernel/src/workspace/shell-command-registry';
 
 function assertCondition(
   condition: unknown,

@@ -13,6 +13,10 @@
   "main": "./dist/index.cjs",
   "module": "./dist/index.js",
   "types": "./dist/index.d.ts",
+  "browser": {
+    "zlib": "./dist/zlib-browser-shim.js",
+    "node:zlib": "./dist/zlib-browser-shim.js"
+  },
   "files": [
     "dist",
     "README.md",
@@ -26,10 +30,19 @@
       "require": "./dist/index.cjs",
       "default": "./dist/index.js"
     },
+    "./workspace": {
+      "types": "./dist/workspace.d.ts",
+      "import": "./dist/workspace.js",
+      "require": "./dist/workspace.cjs",
+      "default": "./dist/workspace.js"
+    },
     "./package.json": "./package.json"
   },
   "sideEffects": false,
   "dependencies": {
-    "effect": "3.22.0"
+    "@tracecode/harness-core": "workspace:*",
+    "effect": "3.22.0",
+    "fflate": "^0.8.3",
+    "just-bash": "3.1.0"
   }
 }

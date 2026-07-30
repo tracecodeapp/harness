@@ -1,6 +1,6 @@
 #!/usr/bin/env npx tsx
 
-import { WorkspaceAccessPolicy } from '../packages/harness-project/src/workspace-access-policy';
+import { WorkspaceAccessPolicy } from '../packages/tracekernel/src/workspace/workspace-access-policy';
 
 function assertCondition(
   condition: unknown,

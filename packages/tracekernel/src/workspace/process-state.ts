@@ -12,7 +12,7 @@ import type {
   TraceKernelProcess,
   TraceKernelSession,
   TraceKernelSignal,
-} from '@tracecode/tracekernel';
+} from '..';
 import type { RuntimeCommandExecutionContext } from './fs-observed';
 
 export const TRACEKERNEL_SIGNAL_NUMBERS = new Map<string, number>([

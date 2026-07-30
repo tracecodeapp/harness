@@ -3,7 +3,7 @@
 import {
   WorkspaceEventState,
   type KernelJournalEntry,
-} from '../packages/harness-project/src/workspace-event-state';
+} from '../packages/tracekernel/src/workspace/workspace-event-state';
 
 function assertCondition(
   condition: unknown,

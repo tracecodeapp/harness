@@ -3,7 +3,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { zipSync, strToU8 } from 'fflate';
-import { extractJarMainClass } from '../packages/harness-project/src/arg-parsers';
+import { extractJarMainClass } from '../packages/tracekernel/src/workspace/arg-parsers';
 
 const manifest = strToU8([
   'Manifest-Version: 1.0',

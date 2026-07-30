@@ -1,7 +1,7 @@
 #!/usr/bin/env npx tsx
 
 import type { RuntimeKernelInfo } from '../packages/harness-core/src/index';
-import { WorkspaceIdentityCommands } from '../packages/harness-project/src/userland-identity-commands';
+import { WorkspaceIdentityCommands } from '../packages/tracekernel/src/workspace/userland-identity-commands';
 
 function assertCondition(
   condition: unknown,

@@ -11,7 +11,7 @@ import {
   type RuntimeKernelHttpRequest,
   type RuntimeKernelHttpResponse,
 } from '../packages/harness-project/src/index';
-import { commandContextForFs } from '../packages/harness-project/src/fs-observed';
+import { commandContextForFs } from '../packages/tracekernel/src/workspace/fs-observed';
 import {
   createBrowserJavaScriptProjectRunner,
   createBrowserTypeScriptProjectRunner,

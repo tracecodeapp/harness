@@ -9,6 +9,9 @@ export default defineConfig({
   external: [...libraryConfig.external, 'effect'],
   entry: {
     index: 'packages/tracekernel/src/index.ts',
+    workspace: 'packages/tracekernel/src/workspace/index.ts',
+    'zlib-browser-shim':
+      'packages/tracekernel/src/zlib-browser-shim.ts',
   },
   outDir: 'packages/tracekernel/dist',
 });

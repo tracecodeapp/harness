@@ -97,7 +97,7 @@ import {
   type RuntimeCommandEvent,
   type RuntimeProjectCommandRequest,
 } from '../packages/harness-core/src/runtime-project';
-import { runPackageScript } from '../packages/harness-project/src/package-manager';
+import { runPackageScript } from '../packages/tracekernel/src/workspace/package-manager';
 import {
   normalizeRuntimeKernelManifestDevicePath as normalizeWorkerKernelManifestDevicePath,
   normalizeRuntimeKernelDeviceReference as normalizeWorkerKernelDeviceReference,

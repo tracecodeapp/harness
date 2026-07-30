@@ -4,7 +4,7 @@ import type { RuntimeProjectTerminalCapabilities } from '../packages/harness-cor
 import {
   WorkspaceTerminalCommands,
   type RuntimeCommandUmaskState,
-} from '../packages/harness-project/src/userland-terminal-commands';
+} from '../packages/tracekernel/src/workspace/userland-terminal-commands';
 
 function assertEqual<T>(actual: T, expected: T, message: string): void {
   if (actual !== expected) {

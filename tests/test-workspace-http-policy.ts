@@ -9,8 +9,8 @@ import {
   redactRuntimeDiagnosticUrl,
   syntheticIp,
   syntheticLatency,
-} from '../packages/harness-project/src/http-state';
-import { workspaceHttpPolicy } from '../packages/harness-project/src/http-policy';
+} from '../packages/tracekernel/src/workspace/http-state';
+import { workspaceHttpPolicy } from '../packages/tracekernel/src/workspace/http-policy';
 
 function assertCondition(
   condition: unknown,
