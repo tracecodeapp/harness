@@ -16,6 +16,9 @@ import type {
 } from '../packages/runtime-core/src/index';
 import type { BrowserRuntimeHost } from '../packages/runtime-browser/src/browser-runtime-host';
 import {
+  getBrowserRuntimeHostPreparedProvider,
+} from '../packages/runtime-browser/src/browser-runtime-host-internal';
+import {
   makeTraceKernelHost,
   type TraceKernelFileSystemImage,
   type TraceKernelHost,
@@ -115,7 +118,7 @@ interface RuntimeJudgeProviderOptions {
   readonly binding: RuntimeJudgeBinding;
 }
 
-export interface CreateRuntimeJudgeOptions {
+interface CreateRuntimeJudgeOptions {
   readonly runtime: string;
   /** Prepare-once provider for the selected language runtime. */
   readonly provider: RuntimePreparedExecutionProvider;
@@ -804,7 +807,7 @@ class RuntimeJudgeComposition
   }
 }
 
-export function createRuntimeJudge(
+function createRuntimeJudge(
   options: CreateRuntimeJudgeOptions
 ): Effect.Effect<
   RuntimeJudge,
@@ -849,7 +852,10 @@ export function createBrowserRuntimeJudge(
 > {
   return createRuntimeJudge({
     runtime: options.language,
-    provider: options.host.getPreparedProvider(options.language),
+    provider: getBrowserRuntimeHostPreparedProvider(
+      options.host,
+      options.language
+    ),
     binding: options.binding,
     runtimeControl: options.runtimeControl,
   });

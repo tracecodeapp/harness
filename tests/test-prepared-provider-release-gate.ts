@@ -3,13 +3,20 @@ import test from 'node:test';
 import * as Effect from 'effect/Effect';
 import * as Fiber from 'effect/Fiber';
 import {
-  createBrowserRuntimeHost,
-  createDefaultBrowserRuntimeProviderRegistry,
+  createBrowserRuntimeHost as createDefaultBrowserRuntimeHost,
 } from '../src/browser';
+import * as judgeExports from '../src/judge';
 import {
-  createRuntimeJudge,
+  createBrowserRuntimeJudge,
+  type CreateBrowserRuntimeJudgeOptions,
   type JudgeEvaluationPlan,
 } from '../src/judge';
+import type {
+  BrowserRuntimeHost,
+} from '../packages/runtime-browser/src/browser-runtime-host';
+import {
+  getBrowserRuntimeHostPreparedProvider,
+} from '../packages/runtime-browser/src/browser-runtime-host-internal';
 import type {
   CodeExecutionResult,
   Language,
@@ -17,26 +24,19 @@ import type {
   RuntimePreparedProgramCapabilities,
 } from '@tracecode/runtime-core';
 import {
+  createBrowserRuntimeHost,
   createBrowserRuntimeProviderRegistry,
   type BrowserRuntimeProvider,
 } from '@tracecode/runtime-browser';
 
-type TypesEqual<Left, Right> =
-  (<Value>() => Value extends Left ? 1 : 2) extends
-    (<Value>() => Value extends Right ? 1 : 2)
-    ? (
-        (<Value>() => Value extends Right ? 1 : 2) extends
-          (<Value>() => Value extends Left ? 1 : 2)
-          ? true
-          : false
-      )
-    : false;
+type HostExposesPreparedProvider =
+  'getPreparedProvider' extends keyof BrowserRuntimeHost ? true : false;
+type BrowserJudgeAcceptsInjectedProvider =
+  'provider' extends keyof CreateBrowserRuntimeJudgeOptions ? true : false;
 
-type JudgeProviderParameter =
-  Parameters<typeof createRuntimeJudge>[0]['provider'];
-
-const JUDGE_PROVIDER_IS_PREPARED_ONLY:
-  TypesEqual<JudgeProviderParameter, RuntimePreparedExecutionProvider> = true;
+const HOST_EXPOSES_PREPARED_PROVIDER: HostExposesPreparedProvider = false;
+const BROWSER_JUDGE_ACCEPTS_INJECTED_PROVIDER:
+  BrowserJudgeAcceptsInjectedProvider = false;
 
 const BROWSER_FEATURES = {
   worker: true,
@@ -46,7 +46,7 @@ const BROWSER_FEATURES = {
   crossOriginIsolated: true,
 } as const;
 
-const RUNTIME = 'prepared-release-gate';
+const RUNTIME = 'javascript';
 const SOURCE = [
   'function solve(input) {',
   '  return input.label;',
@@ -246,26 +246,53 @@ function capabilityProvider(
   };
 }
 
-test('default browser registry exposes all prepared runtime families', () => {
-  assert.equal(JUDGE_PROVIDER_IS_PREPARED_ONLY, true);
-
-  const registry = createDefaultBrowserRuntimeProviderRegistry();
-  assert.deepEqual(
-    registry.providers.map((provider) => ({
-      id: provider.id,
-      languages: provider.languages,
-    })),
-    [
-      { id: '@tracecode/runtime-python', languages: ['python'] },
-      {
-        id: '@tracecode/runtime-javascript',
-        languages: ['javascript', 'typescript'],
+function browserHostFor(
+  provider: RuntimePreparedExecutionProvider
+): BrowserRuntimeHost {
+  return createBrowserRuntimeHost({
+    providerRegistry: createBrowserRuntimeProviderRegistry([{
+      id: 'prepared-release-gate-provider',
+      languages: [RUNTIME],
+      create() {
+        return {
+          clients: new Map(),
+          preparedProviders: new Map([[RUNTIME, provider]]),
+          warm: () => provider.init(),
+          disposeLanguage() {},
+          dispose() {},
+        };
       },
-      { id: '@tracecode/runtime-java', languages: ['java'] },
-      { id: '@tracecode/runtime-csharp', languages: ['csharp'] },
-      { id: '@tracecode/runtime-cpp', languages: ['cpp'] },
-    ]
+    }]),
+    providers: [RUNTIME],
+    featureOverrides: BROWSER_FEATURES,
+  });
+}
+
+function createGateJudge(
+  provider: RuntimePreparedExecutionProvider
+) {
+  return Effect.acquireRelease(
+    Effect.sync(() => browserHostFor(provider)),
+    (host) => Effect.sync(() => host.dispose())
+  ).pipe(
+    Effect.flatMap((host) =>
+      createBrowserRuntimeJudge({
+        host,
+        language: RUNTIME,
+        binding: {
+          sourcePath: '/workspace/solution.js',
+          functionName: 'solve',
+          executionStyle: 'function',
+        },
+      })
+    )
   );
+}
+
+test('default browser host exposes every runtime family without provider capabilities', () => {
+  assert.equal(HOST_EXPOSES_PREPARED_PROVIDER, false);
+  assert.equal(BROWSER_JUDGE_ACCEPTS_INJECTED_PROVIDER, false);
+  assert.equal('createRuntimeJudge' in judgeExports, false);
 
   const expectedLanguages: readonly Language[] = [
     'python',
@@ -275,19 +302,12 @@ test('default browser registry exposes all prepared runtime families', () => {
     'csharp',
     'cpp',
   ];
-  assert.deepEqual(registry.languages, expectedLanguages);
-
-  const host = createBrowserRuntimeHost({
-    providerRegistry: registry,
+  const host = createDefaultBrowserRuntimeHost({
     featureOverrides: BROWSER_FEATURES,
   });
   try {
     assert.deepEqual(host.supportedLanguages, expectedLanguages);
-    for (const language of expectedLanguages) {
-      const provider = host.getPreparedProvider(language);
-      assert.equal(typeof provider.init, 'function');
-      assert.equal(typeof provider.prepareProgram, 'function');
-    }
+    assert.equal('getPreparedProvider' in host, false);
     assert.equal('execute' in host, false);
     assert.equal('executeCode' in host, false);
     assert.equal('executeWithTracing' in host, false);
@@ -315,7 +335,10 @@ test('browser host enforces prepared-program isolation capabilities', async () =
     featureOverrides: BROWSER_FEATURES,
   });
   try {
-    const result = await validHost.getPreparedProvider('python').prepareProgram({
+    const result = await getBrowserRuntimeHostPreparedProvider(
+      validHost,
+      'python'
+    ).prepareProgram({
       mode: 'code',
       code: SOURCE,
       functionName: 'solve',
@@ -359,7 +382,10 @@ test('browser host enforces prepared-program isolation capabilities', async () =
     });
     try {
       await assert.rejects(
-        host.getPreparedProvider('python').prepareProgram({
+        getBrowserRuntimeHostPreparedProvider(
+          host,
+          'python'
+        ).prepareProgram({
           mode: 'code',
           code: SOURCE,
           functionName: 'solve',
@@ -381,15 +407,9 @@ test('Judge gives every case a fresh TraceKernel session', async () => {
   const state = providerState();
   const result = await Effect.runPromise(Effect.scoped(
     Effect.gen(function* () {
-      const judge = yield* createRuntimeJudge({
-        runtime: RUNTIME,
-        provider: controlledPreparedProvider(state),
-        binding: {
-          sourcePath: '/workspace/solution.js',
-          functionName: 'solve',
-          executionStyle: 'function',
-        },
-      });
+      const judge = yield* createGateJudge(
+        controlledPreparedProvider(state)
+      );
       return yield* judge.evaluate<GateInput, string, string>(
         plan([
           { label: 'first' },
@@ -429,15 +449,9 @@ test('interrupting Judge aborts active work, drains queued work, and disposes on
 
   await Effect.runPromise(Effect.scoped(
     Effect.gen(function* () {
-      const judge = yield* createRuntimeJudge({
-        runtime: RUNTIME,
-        provider: controlledPreparedProvider(state, 1),
-        binding: {
-          sourcePath: '/workspace/solution.js',
-          functionName: 'solve',
-          executionStyle: 'function',
-        },
-      });
+      const judge = yield* createGateJudge(
+        controlledPreparedProvider(state, 1)
+      );
       const fiber = yield* Effect.fork(
         judge.evaluate(
           plan(

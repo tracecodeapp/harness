@@ -6,11 +6,15 @@ import * as Fiber from 'effect/Fiber';
 import * as Option from 'effect/Option';
 import {
   createBrowserRuntimeJudge,
-  createRuntimeJudge,
   type JudgeEvaluationPlan,
   type RuntimeJudgeBinding,
 } from '../src/judge';
-import type { BrowserRuntimeHost } from '../packages/runtime-browser/src/browser-runtime-host';
+import {
+  createBrowserRuntimeHost,
+  createBrowserRuntimeProviderRegistry,
+  type BrowserRuntimeHost,
+  type BrowserRuntimeProvider,
+} from '../packages/runtime-browser/src';
 import {
   RUNTIME_TRACE_SCHEMA_VERSION,
   type CodeExecutionResult,
@@ -24,7 +28,14 @@ import {
   type RuntimeTraceCall,
 } from '@tracecode/runtime-core';
 
-const RUNTIME = 'fake-runtime-execution-provider';
+const RUNTIME = 'javascript';
+const BROWSER_FEATURES = {
+  worker: true,
+  webAssembly: true,
+  webCrypto: true,
+  sharedArrayBuffer: true,
+  crossOriginIsolated: true,
+} as const;
 const SOURCE = [
   'function solve(value) {',
   '  return value;',
@@ -517,6 +528,47 @@ function codeBinding(
   } as RuntimeJudgeBinding;
 }
 
+function browserHostFor(
+  provider: RuntimePreparedExecutionProvider
+): BrowserRuntimeHost {
+  const browserProvider: BrowserRuntimeProvider = {
+    id: 'test-runtime-execution-provider',
+    languages: [RUNTIME],
+    create() {
+      return {
+        clients: new Map(),
+        preparedProviders: new Map([[RUNTIME, provider]]),
+        warm: () => provider.init(),
+        disposeLanguage() {},
+        dispose() {},
+      };
+    },
+  };
+  return createBrowserRuntimeHost({
+    providerRegistry: createBrowserRuntimeProviderRegistry([browserProvider]),
+    providers: [RUNTIME],
+    featureOverrides: BROWSER_FEATURES,
+  });
+}
+
+function createTestRuntimeJudge(
+  provider: RuntimePreparedExecutionProvider,
+  binding: RuntimeJudgeBinding
+) {
+  return Effect.acquireRelease(
+    Effect.sync(() => browserHostFor(provider)),
+    (host) => Effect.sync(() => host.dispose())
+  ).pipe(
+    Effect.flatMap((host) =>
+      createBrowserRuntimeJudge({
+        host,
+        language: RUNTIME,
+        binding,
+      })
+    )
+  );
+}
+
 async function evaluate(
   state: FakeProviderState,
   plan: JudgeEvaluationPlan<FakeInput>,
@@ -524,11 +576,10 @@ async function evaluate(
 ) {
   return Effect.runPromise(Effect.scoped(
     Effect.gen(function* () {
-      const judge = yield* createRuntimeJudge({
-        runtime: RUNTIME,
-        provider: fakeProvider(state),
-        binding,
-      });
+      const judge = yield* createTestRuntimeJudge(
+        fakeProvider(state),
+        binding
+      );
       return yield* judge.evaluate<FakeInput>(plan);
     })
   ));
@@ -541,35 +592,23 @@ async function evaluatePrepared(
 ) {
   return Effect.runPromise(Effect.scoped(
     Effect.gen(function* () {
-      const judge = yield* createRuntimeJudge({
-        runtime: RUNTIME,
-        provider: preparedProvider(state),
-        binding,
-      });
+      const judge = yield* createTestRuntimeJudge(
+        preparedProvider(state),
+        binding
+      );
       return yield* judge.evaluate<FakeInput>(plan);
     })
   ));
 }
 
-test('composes a browser runtime host provider into Judge without direct execution', async () => {
+test('composes a genuine browser runtime host into Judge without direct execution', async () => {
   const state = makePreparedState();
   const provider = preparedProvider(state);
-  const requestedLanguages: string[] = [];
-  const host = {
-    getPreparedProvider(language: string) {
-      requestedLanguages.push(language);
-      return provider;
-    },
-  } as BrowserRuntimeHost;
 
   const result = await Effect.runPromise(Effect.scoped(
     Effect.gen(function* () {
-      const judge = yield* createBrowserRuntimeJudge({
-        host,
-        language: 'python',
-        binding: codeBinding(),
-      });
-      assert.equal(judge.runtime, 'python');
+      const judge = yield* createTestRuntimeJudge(provider, codeBinding());
+      assert.equal(judge.runtime, RUNTIME);
       return yield* judge.evaluate<FakeInput>(
         makePlan(
           [{
@@ -580,17 +619,38 @@ test('composes a browser runtime host provider into Judge without direct executi
             },
             expected: 19,
           }],
-          { runtime: 'python' }
+          { runtime: RUNTIME }
         )
       );
     })
   ));
 
-  assert.deepEqual(requestedLanguages, ['python']);
   assert.equal(result.cases[0]?.verdict.kind, 'passed');
   assert.equal(state.prepareCalls.length, 1);
   assert.equal(state.codeCalls.length, 1);
   assert.equal(state.disposals, 1);
+});
+
+test('rejects provider injection through a structurally compatible fake host', () => {
+  const state = makePreparedState();
+  const injectedProvider = preparedProvider(state);
+  const fakeHost = {
+    getPreparedProvider() {
+      return injectedProvider;
+    },
+  } as unknown as BrowserRuntimeHost;
+
+  assert.throws(
+    () =>
+      createBrowserRuntimeJudge({
+        host: fakeHost,
+        language: RUNTIME,
+        binding: codeBinding(),
+      }),
+    /requires a genuine BrowserRuntimeHost/
+  );
+  assert.equal(state.initCalls, 0);
+  assert.equal(state.prepareCalls.length, 0);
 });
 
 test('preserves 0.13 JSON comparison and distinguishes omitted from explicit undefined expected values', async () => {
@@ -852,11 +912,10 @@ test('interrupting evaluation cancels the provider call and releases all session
 
   await Effect.runPromise(Effect.scoped(
     Effect.gen(function* () {
-      const judge = yield* createRuntimeJudge({
-        runtime: RUNTIME,
-        provider: fakeProvider(state),
-        binding: codeBinding(),
-      });
+      const judge = yield* createTestRuntimeJudge(
+        fakeProvider(state),
+        codeBinding()
+      );
       const fiber = yield* Effect.fork(
         judge.evaluate(
           makePlan([{
@@ -1143,11 +1202,10 @@ test('interrupting prepared execution aborts active work, clears queued work, an
 
   await Effect.runPromise(Effect.scoped(
     Effect.gen(function* () {
-      const judge = yield* createRuntimeJudge({
-        runtime: RUNTIME,
-        provider: preparedProvider(state),
-        binding: codeBinding(),
-      });
+      const judge = yield* createTestRuntimeJudge(
+        preparedProvider(state),
+        codeBinding()
+      );
       const fiber = yield* Effect.fork(
         judge.evaluate(
           makePlan([
@@ -1196,11 +1254,10 @@ test('disposes a prepared artifact that arrives after its evaluation was interru
 
   await Effect.runPromise(Effect.scoped(
     Effect.gen(function* () {
-      const judge = yield* createRuntimeJudge({
-        runtime: RUNTIME,
-        provider: preparedProvider(state),
-        binding: codeBinding(),
-      });
+      const judge = yield* createTestRuntimeJudge(
+        preparedProvider(state),
+        codeBinding()
+      );
       const fiber = yield* Effect.fork(
         judge.evaluate(
           makePlan([{
@@ -1232,11 +1289,10 @@ test('uses unique preparation scopes when one judge evaluates the same semantic 
 
   await Effect.runPromise(Effect.scoped(
     Effect.gen(function* () {
-      const judge = yield* createRuntimeJudge({
-        runtime: RUNTIME,
-        provider: preparedProvider(state),
-        binding: codeBinding(),
-      });
+      const judge = yield* createTestRuntimeJudge(
+        preparedProvider(state),
+        codeBinding()
+      );
       const plan = makePlan([{
         id: 'same',
         input: {
@@ -1271,11 +1327,10 @@ test('surfaces prepared program teardown failure as Judge infrastructure failure
 
   const exit = await Effect.runPromiseExit(Effect.scoped(
     Effect.gen(function* () {
-      const judge = yield* createRuntimeJudge({
-        runtime: RUNTIME,
-        provider: preparedProvider(state),
-        binding: codeBinding(),
-      });
+      const judge = yield* createTestRuntimeJudge(
+        preparedProvider(state),
+        codeBinding()
+      );
       judgeSessions = () => judge.activeSessionIds();
       return yield* judge.evaluate(
         makePlan([{

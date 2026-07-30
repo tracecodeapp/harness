@@ -15,6 +15,9 @@ import {
   type CreateBrowserRuntimeHostOptions,
 } from '../packages/runtime-browser/src';
 import {
+  getBrowserRuntimeHostPreparedProvider,
+} from '../packages/runtime-browser/src/browser-runtime-host-internal';
+import {
   createBrowserRuntimeHost as createDefaultBrowserRuntimeHost,
 } from '../src/browser';
 
@@ -138,7 +141,8 @@ async function main(): Promise<void> {
     'Root browser facade must install the default language-provider registry'
   );
   assertCondition(
-    !('getClient' in defaultHost) &&
+    !('getPreparedProvider' in defaultHost) &&
+      !('getClient' in defaultHost) &&
       !('execute' in defaultHost) &&
       !('executeCode' in defaultHost) &&
       !('executeWithTracing' in defaultHost),
@@ -190,14 +194,15 @@ async function main(): Promise<void> {
     'Selected host languages must come from the provider registry'
   );
   assertCondition(
-    !('getClient' in host) &&
+    !('getPreparedProvider' in host) &&
+      !('getClient' in host) &&
       !('execute' in host) &&
       !('executeCode' in host) &&
       !('executeWithTracing' in host),
     'BrowserRuntimeHost must not expose a direct execution surface'
   );
 
-  const provider = host.getPreparedProvider('python');
+  const provider = getBrowserRuntimeHostPreparedProvider(host, 'python');
   await provider.init();
   const preparation = await provider.prepareProgram({
     mode: 'code',
@@ -227,7 +232,9 @@ async function main(): Promise<void> {
         'init,dispose-language:python,dispose:python-provider',
     `Host lifecycle must be provider-owned and exactly disposed: ${selectionEvents.join(',')}`
   );
-  const disposedError = errorMessage(() => host.getPreparedProvider('python'));
+  const disposedError = errorMessage(() =>
+    getBrowserRuntimeHostPreparedProvider(host, 'python')
+  );
   assertCondition(
     disposedError.includes('has been disposed'),
     `Disposed hosts must reject provider acquisition: ${disposedError}`
@@ -310,7 +317,10 @@ async function main(): Promise<void> {
   });
   let unsafeError = '';
   try {
-    await unsafeHost.getPreparedProvider('python').prepareProgram({
+    await getBrowserRuntimeHostPreparedProvider(
+      unsafeHost,
+      'python'
+    ).prepareProgram({
       mode: 'code',
       code: 'pass',
       functionName: 'solve',
