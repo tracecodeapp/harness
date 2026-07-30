@@ -1,4 +1,5 @@
 import { existsSync, readFileSync } from 'node:fs';
+import { createRequire } from 'node:module';
 import { resolve } from 'node:path';
 import ts from 'typescript';
 import { getLanguageRuntimeInfo } from '../packages/runtime-core/src/runtime-language-info';
@@ -6,6 +7,9 @@ import { getRuntimeCommandVersion } from '../packages/runtime-core/src/runtime-c
 import { DEFAULT_BROWSER_RUNTIME_ASSET_RELATIVE_PATHS } from '../packages/runtime-browser/src/runtime-assets';
 import { createNativeHarness } from '../packages/runtime-native/src/index';
 
+const ROOT_PACKAGE_NAME = '@tracecode/harness';
+const RETIRED_ROOT_CSHARP_EXPORT = './csharp';
+const RETIRED_ROOT_CSHARP_SPECIFIER = `${ROOT_PACKAGE_NAME}/csharp`;
 const PROVIDER_BRAND = /roslyn|dotnet|\.net/i;
 
 function assertCondition(condition: unknown, message: string): asserts condition {
@@ -103,6 +107,61 @@ function assertNeutralExportNames(
   return exportCount;
 }
 
+function assertRootBoundary(): number {
+  const rootManifest = JSON.parse(
+    readFileSync(resolve(process.cwd(), 'package.json'), 'utf8')
+  ) as {
+    name?: string;
+    exports?: Record<string, unknown>;
+  };
+  assertCondition(
+    rootManifest.name === ROOT_PACKAGE_NAME,
+    `C# surface gate must run against ${ROOT_PACKAGE_NAME}`
+  );
+  const rootSubpaths = Object.keys(rootManifest.exports ?? {});
+  assertCondition(
+    !rootSubpaths.includes(RETIRED_ROOT_CSHARP_EXPORT),
+    `${RETIRED_ROOT_CSHARP_SPECIFIER} is a retired root language subpath; C# must be reached through provider-neutral root contracts`
+  );
+
+  const rootRequire = createRequire(resolve(process.cwd(), 'tests/csharp-surface-resolution.cjs'));
+  let resolutionError: unknown;
+  try {
+    rootRequire.resolve(RETIRED_ROOT_CSHARP_SPECIFIER);
+  } catch (error) {
+    resolutionError = error;
+  }
+  const resolutionErrorCode =
+    resolutionError &&
+    typeof resolutionError === 'object' &&
+    'code' in resolutionError
+      ? resolutionError.code
+      : undefined;
+  assertCondition(
+    resolutionErrorCode === 'ERR_PACKAGE_PATH_NOT_EXPORTED',
+    `${RETIRED_ROOT_CSHARP_SPECIFIER} must be rejected by Node package resolution, received ${
+      resolutionError instanceof Error ? resolutionError.message : String(resolutionError)
+    }`
+  );
+
+  const runtimeManifest = JSON.parse(
+    readFileSync(
+      resolve(process.cwd(), 'packages/runtime-csharp/package.json'),
+      'utf8'
+    )
+  ) as {
+    name?: string;
+    private?: boolean;
+  };
+  assertCondition(
+    runtimeManifest.name === '@tracecode/runtime-csharp' &&
+      runtimeManifest.private === true,
+    'The C# runtime workspace must remain a private implementation detail of the root release'
+  );
+
+  return rootSubpaths.length;
+}
+
 function embeddedCSharpMetadata(): string {
   const generatedProjectWorker = readFileSync(
     resolve(process.cwd(), 'workers/javascript/javascript-project-worker.js'),
@@ -127,6 +186,7 @@ function embeddedCSharpMetadata(): string {
 }
 
 function main(): void {
+  const rootSubpathCount = assertRootBoundary();
   const entrypointPaths = [
     resolve(process.cwd(), 'packages/runtime-csharp/src/index.ts'),
     resolve(process.cwd(), 'packages/runtime-csharp/src/project-node.ts'),
@@ -246,7 +306,7 @@ function main(): void {
   );
   assertCondition(
     !PROVIDER_BRAND.test(packageReadme),
-    '@tracecode/runtime-csharp README must describe its public language surface without provider branding'
+    '@tracecode/runtime-csharp README must describe its private language-runtime surface without provider branding'
   );
   assertCondition(
     DEFAULT_BROWSER_RUNTIME_ASSET_RELATIVE_PATHS.csharpWorker === 'csharp-worker.js' &&
@@ -258,7 +318,10 @@ function main(): void {
     'Canonical C# worker source must exist'
   );
 
-  console.log(`PASS: ${exportCount} C#-reachable exports and public metadata are provider-neutral`);
+  console.log(
+    `PASS: ${exportCount} C#-reachable exports and public metadata are provider-neutral; ` +
+      `${rootSubpathCount} root subpaths exclude the retired C# entrypoint`
+  );
 }
 
 main();
