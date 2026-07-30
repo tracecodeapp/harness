@@ -416,161 +416,21 @@ import {
   longestCommonPrefix,
   type RuntimeProjectTerminalJobRecord,
 } from './terminal-session';
-
-
-export type ProjectWorkspaceCommand = CustomCommand;
-
-export interface ProjectWorkspaceJavaScriptConfig {
-  bootstrap?: string;
-  invokeTool?: (path: string, argsJson: string) => Promise<string>;
-}
-
-export interface ProjectWorkspaceExecutionLimits extends RuntimeCommandExecutionLimits {}
-
-export type RuntimePackageManagerName = 'npm';
-
-export interface RuntimePackageManifest {
-  path: string;
-  directory: string;
-  json: Record<string, unknown>;
-}
-
-export interface RuntimePackageInstallRequest {
-  manager: RuntimePackageManagerName;
-  command: 'install' | 'ci' | 'add';
-  args: readonly string[];
-  cwd: string;
-  env: Record<string, string>;
-  manifest: RuntimePackageManifest;
-  project: RuntimeProjectSnapshot;
-  signal?: AbortSignal;
-}
-
-export interface RuntimePackageDependencyProvider {
-  install(request: RuntimePackageInstallRequest): Promise<RuntimeCommandResult>;
-}
-
-export interface RuntimePackageManagerConfig {
-  managers?: readonly RuntimePackageManagerName[];
-  dependencyProvider?: RuntimePackageDependencyProvider;
-  autoLinkBins?: boolean;
-  npmVersion?: string;
-}
-
-export type PythonProjectCommandRequest = RuntimeProjectCommandRequest<
-  'argument' | 'file' | 'stdin' | 'module'
->;
-
-export type PythonProjectCommandRunner = RuntimeProjectCommandRunner<PythonProjectCommandRequest>;
-
-export type JavaScriptProjectCommandRequest = RuntimeProjectCommandRequest<
-  'argument' | 'file' | 'stdin'
->;
-
-export type JavaScriptProjectCommandRunner = RuntimeProjectCommandRunner<JavaScriptProjectCommandRequest>;
-
-export type TypeScriptProjectCommandRequest = RuntimeProjectCommandRequest<'compile'>;
-
-export type TypeScriptProjectCommandRunner = RuntimeProjectCommandRunner<TypeScriptProjectCommandRequest>;
-
-export type JavaProjectCommandRequest = RuntimeProjectCommandRequest<'compile' | 'run'>;
-
-export type JavaProjectCommandRunner = RuntimeProjectCommandRunner<JavaProjectCommandRequest>;
-
-export type CppProjectCommandRequest = RuntimeProjectCommandRequest<'compile' | 'run'>;
-
-export type CppProjectCommandRunner = RuntimeProjectCommandRunner<CppProjectCommandRequest>;
-
-export type CSharpProjectCommandRequest = RuntimeProjectCommandRequest<'compile' | 'run'>;
-
-export type CSharpProjectCommandRunner = RuntimeProjectCommandRunner<CSharpProjectCommandRequest>;
-
-export interface RuntimeTraceKernelControlOptions {
-  reset?: () => Promise<void> | void;
-}
-
-export interface CreateRuntimeWorkspaceOptions {
-  projectSession?: RuntimeProjectSession;
-  hiddenCommandAccess?: RuntimeProjectHiddenCommandAccess;
-  files?: readonly RuntimeFile[];
-  symlinks?: readonly RuntimeSymlink[];
-  directories?: readonly string[];
-  directoryMetadata?: readonly RuntimeDirectory[];
-  skills?: readonly RuntimeFile[];
-  entrypoint?: string;
-  cwd?: string;
-  env?: Record<string, string>;
-  commands?: readonly string[];
-  customCommands?: readonly ProjectWorkspaceCommand[];
-  pythonRunner?: PythonProjectCommandRunner;
-  nodeRunner?: JavaScriptProjectCommandRunner;
-  javaRunner?: JavaProjectCommandRunner;
-  typescriptRunner?: TypeScriptProjectCommandRunner;
-  cppRunner?: CppProjectCommandRunner;
-  csharpRunner?: CSharpProjectCommandRunner;
-  packageManager?: boolean | RuntimePackageManagerConfig;
-  python?: boolean;
-  javascript?: boolean | ProjectWorkspaceJavaScriptConfig;
-  executionLimits?: ProjectWorkspaceExecutionLimits;
-  /**
-   * Logical storage limits for the in-browser project filesystem. Limits are
-   * enforced for every filesystem entry under the workspace root (including
-   * hidden/session files) before a mutation is committed.
-   */
-  storageLimits?: RuntimeWorkspaceStorageLimits;
-  externalHttp?: RuntimeExternalHttpConfig;
-  kernel?: RuntimeTraceKernelConfig;
-  kernelControl?: RuntimeTraceKernelControlOptions;
-}
-
-export interface RuntimeWorkspaceStorageLimits {
-  /** Maximum logical bytes across files and symbolic-link targets. */
-  maxWorkspaceBytes?: number;
-  /** Maximum logical bytes stored by any single regular file. */
-  maxFileBytes?: number;
-  /** Maximum files, directories, and symbolic links below the workspace root. */
-  maxEntryCount?: number;
-}
-
-export interface NormalizedRuntimeWorkspaceStorageLimits {
-  maxWorkspaceBytes: number;
-  maxFileBytes: number;
-  maxEntryCount: number;
-}
-
-export const RUNTIME_WORKSPACE_DEFAULT_MAX_BYTES = 64 * 1024 * 1024;
-export const RUNTIME_WORKSPACE_DEFAULT_MAX_FILE_BYTES = 16 * 1024 * 1024;
-export const RUNTIME_WORKSPACE_DEFAULT_MAX_ENTRY_COUNT = 10_000;
-
-function normalizeRuntimeWorkspaceStorageLimit(value: number | undefined, fallback: number, label: string): number {
-  const normalized = value ?? fallback;
-  if (!Number.isSafeInteger(normalized) || normalized < 0) {
-    throw new Error(`${label} must be a non-negative safe integer.`);
-  }
-  return normalized;
-}
-
-export function normalizeRuntimeWorkspaceStorageLimits(
-  limits: RuntimeWorkspaceStorageLimits | undefined
-): NormalizedRuntimeWorkspaceStorageLimits {
-  return Object.freeze({
-    maxWorkspaceBytes: normalizeRuntimeWorkspaceStorageLimit(
-      limits?.maxWorkspaceBytes,
-      RUNTIME_WORKSPACE_DEFAULT_MAX_BYTES,
-      'storageLimits.maxWorkspaceBytes'
-    ),
-    maxFileBytes: normalizeRuntimeWorkspaceStorageLimit(
-      limits?.maxFileBytes,
-      RUNTIME_WORKSPACE_DEFAULT_MAX_FILE_BYTES,
-      'storageLimits.maxFileBytes'
-    ),
-    maxEntryCount: normalizeRuntimeWorkspaceStorageLimit(
-      limits?.maxEntryCount,
-      RUNTIME_WORKSPACE_DEFAULT_MAX_ENTRY_COUNT,
-      'storageLimits.maxEntryCount'
-    ),
-  });
-}
+import {
+  type CppProjectCommandRunner,
+  type CreateRuntimeWorkspaceOptions,
+  type CSharpProjectCommandRunner,
+  type JavaProjectCommandRunner,
+  type JavaScriptProjectCommandRunner,
+  type ProjectWorkspaceCommand,
+  type PythonProjectCommandRunner,
+  type RuntimePackageManagerConfig,
+  type RuntimeTraceKernelControlOptions,
+  type TypeScriptProjectCommandRunner,
+} from './workspace-options';
+import {
+  normalizeRuntimeWorkspaceStorageLimits,
+} from './workspace-storage-policy';
 
 const PRINCIPAL_ACTOR: RuntimeWorkspaceActor = runtimeWorkspaceActorPreset('principal');
 const RUNTIME_ACTOR: RuntimeWorkspaceActor = runtimeWorkspaceActorPreset('runtime');
@@ -11352,6 +11212,38 @@ export type {
 export { normalizeRuntimeProjectPath } from './paths';
 export { RuntimeProjectWorkspaceTerminalSession } from './terminal-session';
 export { createPackageManagerProjectCommands } from './package-manager';
+export {
+  RUNTIME_WORKSPACE_DEFAULT_MAX_BYTES,
+  RUNTIME_WORKSPACE_DEFAULT_MAX_ENTRY_COUNT,
+  RUNTIME_WORKSPACE_DEFAULT_MAX_FILE_BYTES,
+  normalizeRuntimeWorkspaceStorageLimits,
+  type NormalizedRuntimeWorkspaceStorageLimits,
+  type RuntimeWorkspaceStorageLimits,
+} from './workspace-storage-policy';
+export type {
+  CppProjectCommandRequest,
+  CppProjectCommandRunner,
+  CreateRuntimeWorkspaceOptions,
+  CSharpProjectCommandRequest,
+  CSharpProjectCommandRunner,
+  JavaProjectCommandRequest,
+  JavaProjectCommandRunner,
+  JavaScriptProjectCommandRequest,
+  JavaScriptProjectCommandRunner,
+  ProjectWorkspaceCommand,
+  ProjectWorkspaceExecutionLimits,
+  ProjectWorkspaceJavaScriptConfig,
+  PythonProjectCommandRequest,
+  PythonProjectCommandRunner,
+  RuntimePackageDependencyProvider,
+  RuntimePackageInstallRequest,
+  RuntimePackageManagerConfig,
+  RuntimePackageManagerName,
+  RuntimePackageManifest,
+  RuntimeTraceKernelControlOptions,
+  TypeScriptProjectCommandRequest,
+  TypeScriptProjectCommandRunner,
+} from './workspace-options';
 export {
   createPythonProjectCommands,
   createNodeProjectCommands,
