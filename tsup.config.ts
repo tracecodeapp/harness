@@ -20,19 +20,14 @@ export default defineConfig([
       'browser/project': 'packages/runtime-browser/src/project.ts',
       project: 'packages/workspace-facade/src/index.ts',
       'project-node': 'src/project-node.ts',
-      native: 'src/native.ts',
+      // Build-only declaration closure for the public project entrypoints.
+      // These files are deliberately absent from the package export map.
+      core: 'packages/runtime-core/src/index.ts',
       'internal/browser': 'packages/runtime-browser/src/internal.ts',
       'internal/tracekernel/workspace':
         'src/internal/tracekernel/workspace.ts',
       judge: 'src/judge.ts',
       'zlib-browser-shim': 'packages/workspace-facade/src/zlib-browser-shim.ts',
-      core: 'packages/runtime-core/src/index.ts',
-      python: 'packages/runtime-python/src/index.ts',
-      javascript: 'packages/runtime-javascript/src/index.ts',
-      java: 'packages/runtime-java/src/index.ts',
-      csharp: 'packages/runtime-csharp/src/index.ts',
-      cpp: 'packages/runtime-cpp/src/index.ts',
-      sql: 'packages/runtime-sql/src/index.ts',
       cli: 'src/cli.ts',
     },
   },

@@ -26,6 +26,12 @@ async function readDeclarationTree(directory: string): Promise<string> {
   return sources.join('\n');
 }
 
+function declarationCode(source: string): string {
+  return source
+    .replace(/\/\*[\s\S]*?\*\//gu, '')
+    .replace(/^\s*\/\/.*$/gmu, '');
+}
+
 async function testPublishableWorkspacePackageVersionsMatchRelease(): Promise<void> {
   const rootPackage = JSON.parse(await readFile(join(process.cwd(), 'package.json'), 'utf8')) as {
     version?: string;
@@ -140,6 +146,35 @@ async function runWithTempRoot(tempRoot: string): Promise<void> {
     throw new Error(extract.stderr || extract.stdout || 'Failed to extract packed harness tarball');
   }
 
+  const packedManifest = JSON.parse(
+    await readFile(join(packageDir, 'package.json'), 'utf8')
+  ) as {
+    exports?: Record<string, unknown>;
+    bin?: Record<string, string>;
+  };
+  const expectedPublicSubpaths = [
+    '.',
+    './browser',
+    './browser/project',
+    './judge',
+    './package.json',
+    './project',
+    './project-node',
+  ];
+  assertCondition(
+    Object.keys(packedManifest.exports ?? {}).sort().join(',') ===
+      expectedPublicSubpaths.join(','),
+    `Packed package exports must be exactly ${expectedPublicSubpaths.join(', ')}`
+  );
+  assertCondition(
+    packedManifest.bin?.['tracecode-harness'] === './dist/cli.cjs' &&
+      !Object.prototype.hasOwnProperty.call(
+        packedManifest.exports ?? {},
+        './cli'
+      ),
+    'The CLI may remain a package bin but must not be importable as a public subpath'
+  );
+
   const requiredPackagedFiles = [
     'dist/index.js',
     'dist/index.cjs',
@@ -155,9 +190,14 @@ async function runWithTempRoot(tempRoot: string): Promise<void> {
     'dist/project-node.js',
     'dist/project-node.cjs',
     'dist/project-node.d.ts',
-    'dist/native.js',
-    'dist/native.cjs',
-    'dist/native.d.ts',
+    // Build-only declaration closure. These artifacts are intentionally absent
+    // from the package export map.
+    'dist/core.js',
+    'dist/core.cjs',
+    'dist/core.d.ts',
+    'dist/internal/browser.js',
+    'dist/internal/browser.cjs',
+    'dist/internal/browser.d.ts',
     'dist/internal/tracekernel/workspace.js',
     'dist/internal/tracekernel/workspace.cjs',
     'dist/internal/tracekernel/workspace.d.ts',
@@ -166,21 +206,7 @@ async function runWithTempRoot(tempRoot: string): Promise<void> {
     'dist/judge.d.ts',
     'dist/zlib-browser-shim.js',
     'dist/zlib-browser-shim.cjs',
-    'dist/core.js',
-    'dist/core.cjs',
-    'dist/python.js',
-    'dist/python.cjs',
-    'dist/javascript.js',
-    'dist/javascript.cjs',
-    'dist/java.js',
-    'dist/java.cjs',
-    'dist/csharp.js',
-    'dist/csharp.cjs',
-    'dist/cpp.js',
-    'dist/cpp.cjs',
-    'dist/sql.js',
-    'dist/sql.cjs',
-    'dist/sql.d.ts',
+    'dist/cli.cjs',
     'THIRD_PARTY_NOTICES.md',
     'workers/python/python-worker.js',
     'workers/javascript/javascript-worker.js',
@@ -205,46 +231,113 @@ async function runWithTempRoot(tempRoot: string): Promise<void> {
     const fileStat = await stat(filePath);
     assertCondition(fileStat.isFile(), `Packed tarball should include ${relativePath}`);
   }
-
-  const rootTypes = await readFile(join(packageDir, 'dist/index.d.ts'), 'utf8');
-  assertCondition(
-    rootTypes.includes('getRuntimeProjectIoSupport') &&
-      rootTypes.includes('getRuntimeProjectIoCapabilityMatrix') &&
-      rootTypes.includes('RuntimeProjectIoCapabilityRow'),
-    'Root declarations should expose the stable project I/O support helpers and matrix type'
-  );
-  const browserTypes = await readFile(join(packageDir, 'dist/browser.d.ts'), 'utf8');
-  assertCondition(
-    browserTypes.includes('getRuntimeProjectIoSupport') &&
-      browserTypes.includes('getRuntimeProjectIoCapabilityMatrix') &&
-      browserTypes.includes('getRuntimeProjectIoCapability'),
-    'Browser declarations should expose the stable project I/O support helpers'
-  );
-  const sqlTypes = await readFile(join(packageDir, 'dist/sql.d.ts'), 'utf8');
-  assertCondition(
-    sqlTypes.includes('interface SqlRuntimeTraceClientOptions') &&
-      sqlTypes.includes('persistenceLocation?: string') &&
-      sqlTypes.includes('SQL_RUNTIME_TRACE_CAPABILITIES') &&
-      sqlTypes.includes('createSqlRuntimeTraceClient') &&
-      sqlTypes.includes('createSqlTraceClient') &&
-      sqlTypes.includes('inferSqlPersistence') &&
-      sqlTypes.includes('assertValidSqlTrace'),
-    'Root SQL facade declarations should expose the generic SQL runtime and trace APIs'
-  );
-  for (const removedPublicName of [
-    'PgliteSqlTraceClientOptions',
-    'PGLITE_SQL_TRACE_CAPABILITIES',
-    'createPgliteSqlTraceClient',
-    'inferPgliteSqlPersistence',
+  for (const removedRootEntrypoint of [
+    'native',
+    'python',
+    'javascript',
+    'java',
+    'csharp',
+    'cpp',
+    'sql',
   ]) {
     assertCondition(
-      !sqlTypes.includes(removedPublicName),
-      `Root SQL facade declarations should not expose removed provider-branded API ${removedPublicName}`
+      !tarballEntries.includes(`package/dist/${removedRootEntrypoint}.js`) &&
+        !tarballEntries.includes(`package/dist/${removedRootEntrypoint}.cjs`) &&
+        !tarballEntries.includes(`package/dist/${removedRootEntrypoint}.d.ts`),
+      `Packed root must not build the removed ${removedRootEntrypoint} entrypoint`
+    );
+  }
+
+  const rootTypes = await readFile(join(packageDir, 'dist/index.d.ts'), 'utf8');
+  const browserTypes = await readFile(join(packageDir, 'dist/browser.d.ts'), 'utf8');
+  const judgeTypes = await readFile(join(packageDir, 'dist/judge.d.ts'), 'utf8');
+  assertCondition(
+    rootTypes.includes('createBrowserRuntimeHost') &&
+      rootTypes.includes('CreateBrowserRuntimeHostOptions') &&
+      rootTypes.includes('DefaultBrowserRuntimeProviderOptions') &&
+      rootTypes.includes('BrowserRuntimeReadiness') &&
+      rootTypes.includes('BrowserHarnessAssets') &&
+      rootTypes.includes('createBrowserRuntimeJudge') &&
+      rootTypes.includes('RuntimeJudge'),
+    'Root declarations should expose only the supported browser host, metadata, assets, and Browser Judge facade'
+  );
+  assertCondition(
+    browserTypes.includes('createBrowserRuntimeHost') &&
+      browserTypes.includes('CreateBrowserRuntimeHostOptions') &&
+      browserTypes.includes('DefaultBrowserRuntimeProviderOptions') &&
+      browserTypes.includes('BrowserRuntimeReadiness') &&
+      browserTypes.includes('BrowserHarnessAssets') &&
+      browserTypes.includes('installBrowserExecutionWorkerHost') &&
+      browserTypes.includes('createBrowserRuntimeEnvironment') &&
+      browserTypes.includes('createBrowserRuntimeAssetPreflight') &&
+      browserTypes.includes('resolveBrowserRuntimeAssetManifests') &&
+      browserTypes.includes('getRuntimeProjectIoSupport') &&
+      browserTypes.includes('getRuntimeProjectIoCapabilityMatrix') &&
+      browserTypes.includes('getRuntimeProjectIoCapability'),
+    'Browser declarations should expose the supported host lifecycle, readiness, asset, and metadata surface'
+  );
+  assertCondition(
+    judgeTypes.includes('createBrowserRuntimeJudge') &&
+      judgeTypes.includes('CreateBrowserRuntimeJudgeOptions') &&
+      judgeTypes.includes('RuntimeJudge') &&
+      judgeTypes.includes('RuntimeJudgeBinding') &&
+      judgeTypes.includes('JudgeEvaluationPlan'),
+    'Judge declarations should expose the Browser-bound Judge facade and evaluation types'
+  );
+  for (const declarationSource of [
+    ['root', rootTypes],
+    ['browser', browserTypes],
+    ['judge', judgeTypes],
+  ] as const) {
+    const code = declarationCode(declarationSource[1]);
+    assertCondition(
+      !code.includes('export *'),
+      `Packed ${declarationSource[0]} declarations must remain an explicit allowlist`
+    );
+    for (const forbiddenPublicName of [
+      'BrowserHarness',
+      'CreateBrowserHarnessOptions',
+      'createBrowserHarness',
+      'BrowserRuntimeProvider',
+      'BrowserRuntimeProviderContext',
+      'BrowserRuntimeProviderLease',
+      'BrowserRuntimeProviderRegistry',
+      'createBrowserRuntimeProviderRegistry',
+      'createDefaultBrowserRuntimeProviderRegistry',
+      'RuntimeClient',
+      'RuntimeExecutionProvider',
+      'RuntimePreparedExecutionProvider',
+      'RuntimePreparedProgram',
+      'getClient',
+      'getPreparedProvider',
+      'executeCode',
+      'executeWithTracing',
+      'CreateRuntimeJudgeOptions',
+      'createRuntimeJudge',
+    ]) {
+      assertCondition(
+        !new RegExp(`\\b${forbiddenPublicName}\\b`, 'u').test(
+          code
+        ),
+        `Packed ${declarationSource[0]} declarations must not expose ${forbiddenPublicName}`
+      );
+    }
+  }
+  for (const allowedMetadataName of [
+    'getLanguageRuntimeInfo',
+    'getLanguageRuntimeProfile',
+    'getRuntimeProjectIoSupport',
+    'getRuntimeProjectIoCapabilityMatrix',
+    'RuntimeProjectIoCapabilityRow',
+  ]) {
+    assertCondition(
+      rootTypes.includes(allowedMetadataName) &&
+        browserTypes.includes(allowedMetadataName),
+      `Root and browser declarations should expose safe metadata API ${allowedMetadataName}`
     );
   }
   const projectTypes = await readFile(join(packageDir, 'dist/project.d.ts'), 'utf8');
   const projectNodeTypes = await readFile(join(packageDir, 'dist/project-node.d.ts'), 'utf8');
-  const nativeTypes = await readFile(join(packageDir, 'dist/native.d.ts'), 'utf8');
   const traceKernelWorkspaceTypes = await readFile(
     join(packageDir, 'dist/internal/tracekernel/workspace.d.ts'),
     'utf8'
@@ -387,9 +480,8 @@ async function runWithTempRoot(tempRoot: string): Promise<void> {
   const csharpPublicDeclarations = await readDeclarationTree(join(packageDir, 'dist'));
   assertCondition(
     projectNodeTypes.includes('runtimeCommand?: string') &&
-      nativeTypes.includes('csharpCommand?: string') &&
       !/roslyn|dotnet|\.net/i.test(csharpPublicDeclarations),
-    'Packed C# declarations must expose language-owned command options without provider branding'
+    'Packed project-node C# declarations must expose language-owned command options without provider branding'
   );
   for (const forbidden of [
     'createRuntimeProjectIoBridge',
@@ -410,17 +502,74 @@ async function runWithTempRoot(tempRoot: string): Promise<void> {
   const appDir = join(tempRoot, 'app');
   const evalScript = `
     (async () => {
+      const expectedBrowserRuntimeExports = [
+        'BROWSER_EXECUTION_HOST_PROTOCOL',
+        'BROWSER_PROJECT_NODE_COMPAT_VERSION',
+        'BROWSER_RUNTIME_ASSET_PROTOCOL_VERSION',
+        'BROWSER_RUNTIME_IDS',
+        'LANGUAGE_RUNTIME_INFOS',
+        'LANGUAGE_RUNTIME_PROFILES',
+        'SUPPORTED_LANGUAGES',
+        'SUPPORTED_LANGUAGE_RUNTIME_INFOS',
+        'assertRuntimeRequestSupported',
+        'createBrowserRuntimeAssetPreflight',
+        'createBrowserRuntimeEnvironment',
+        'createBrowserRuntimeHost',
+        'getLanguageRuntimeInfo',
+        'getLanguageRuntimeProfile',
+        'getRuntimeProjectIoCapability',
+        'getRuntimeProjectIoCapabilityMatrix',
+        'getRuntimeProjectIoSupport',
+        'getSupportedLanguageProfiles',
+        'getSupportedLanguageRuntimeInfos',
+        'installBrowserExecutionWorkerHost',
+        'isLanguageSupported',
+        'isRuntimeSafeForUntrustedReuse',
+        'resolveBrowserRuntimeAssetManifests',
+      ].sort();
+      const expectedJudgeRuntimeExports = [
+        'createBrowserRuntimeJudge',
+        'evaluateJudgePlan',
+        'structuralJsonComparator',
+      ].sort();
+      const expectedRootRuntimeExports = [
+        ...expectedBrowserRuntimeExports,
+        ...expectedJudgeRuntimeExports,
+      ].sort();
+      const forbiddenDirectRuntimeNames = [
+        'createBrowserHarness',
+        'createBrowserExecutionWorkerHost',
+        'createBrowserRuntimeProviderRegistry',
+        'createDefaultBrowserRuntimeProviderRegistry',
+        'createRuntimeJudge',
+        'executeCode',
+        'executeWithTracing',
+        'getClient',
+        'getPreparedProvider',
+      ];
+      function assertExactRuntimeSurface(label, namespace, expected) {
+        const actual = Object.keys(namespace).sort();
+        if (actual.join(',') !== expected.join(',')) {
+          throw new Error(label + ' exports changed: ' + actual.join(','));
+        }
+        for (const forbiddenName of forbiddenDirectRuntimeNames) {
+          if (forbiddenName in namespace) {
+            throw new Error(label + ' must not expose direct execution API ' + forbiddenName);
+          }
+        }
+        for (const name of actual) {
+          if (/(?:Client|PreparedProvider|PreparedExecutionProvider|ProviderRegistry)$/u.test(name)) {
+            throw new Error(label + ' must not expose runtime/provider implementation ' + name);
+          }
+        }
+      }
+
+      const rootRequire = require('@tracecode/harness');
       const browserRequire = require('@tracecode/harness/browser');
-      if (typeof browserRequire.createBrowserHarness !== 'function') {
-        throw new Error('Missing CommonJS browser export');
-      }
-      if (typeof browserRequire.createBrowserRuntimeHost !== 'function') {
-        throw new Error('Missing CommonJS prepared browser host export');
-      }
       const judgeRequire = require('@tracecode/harness/judge');
-      if (typeof judgeRequire.createBrowserRuntimeJudge !== 'function') {
-        throw new Error('Missing CommonJS browser Judge export');
-      }
+      assertExactRuntimeSurface('CommonJS root', rootRequire, expectedRootRuntimeExports);
+      assertExactRuntimeSurface('CommonJS browser', browserRequire, expectedBrowserRuntimeExports);
+      assertExactRuntimeSurface('CommonJS judge', judgeRequire, expectedJudgeRuntimeExports);
       const projectRequire = require('@tracecode/harness/project');
       if (typeof projectRequire.createRuntimeWorkspace !== 'function') {
         throw new Error('Missing CommonJS root project subpath export');
@@ -429,25 +578,63 @@ async function runWithTempRoot(tempRoot: string): Promise<void> {
       if (typeof projectNodeRequire.createNativeProjectWorkspace !== 'function') {
         throw new Error('Missing CommonJS root native project subpath export');
       }
-      const nativeRequire = require('@tracecode/harness/native');
-      if (typeof nativeRequire.createNativeHarness !== 'function') {
-        throw new Error('Missing CommonJS root native harness subpath export');
+
+      const forbiddenSubpaths = [
+        'cli',
+        'core',
+        'native',
+        'internal/browser',
+        'internal/tracekernel/workspace',
+        'python',
+        'javascript',
+        'java',
+        'csharp',
+        'cpp',
+        'sql',
+      ];
+      for (const subpath of forbiddenSubpaths) {
+        const specifier = '@tracecode/harness/' + subpath;
+        try {
+          require(specifier);
+          throw new Error('CommonJS unexpectedly resolved forbidden subpath ' + specifier);
+        } catch (error) {
+          if (error && error.message && error.message.startsWith('CommonJS unexpectedly resolved')) {
+            throw error;
+          }
+          if (!error || error.code !== 'ERR_PACKAGE_PATH_NOT_EXPORTED') {
+            throw new Error(
+              'CommonJS forbidden subpath ' + specifier +
+              ' should fail with ERR_PACKAGE_PATH_NOT_EXPORTED: ' +
+              String(error && (error.stack || error.message || error))
+            );
+          }
+        }
+        try {
+          await import(specifier);
+          throw new Error('ESM unexpectedly resolved forbidden subpath ' + specifier);
+        } catch (error) {
+          if (error && error.message && error.message.startsWith('ESM unexpectedly resolved')) {
+            throw error;
+          }
+          if (!error || error.code !== 'ERR_PACKAGE_PATH_NOT_EXPORTED') {
+            throw new Error(
+              'ESM forbidden subpath ' + specifier +
+              ' should fail with ERR_PACKAGE_PATH_NOT_EXPORTED: ' +
+              String(error && (error.stack || error.message || error))
+            );
+          }
+        }
       }
 
       const root = await import('@tracecode/harness');
       const project = await import('@tracecode/harness/project');
       const projectNode = await import('@tracecode/harness/project-node');
-      const native = await import('@tracecode/harness/native');
       const browser = await import('@tracecode/harness/browser');
       const judge = await import('@tracecode/harness/judge');
       const browserProject = await import('@tracecode/harness/browser/project');
-      const core = await import('@tracecode/harness/core');
-      const python = await import('@tracecode/harness/python');
-      const javascript = await import('@tracecode/harness/javascript');
-      const java = await import('@tracecode/harness/java');
-      const csharp = await import('@tracecode/harness/csharp');
-      const cpp = await import('@tracecode/harness/cpp');
-      const sql = await import('@tracecode/harness/sql');
+      assertExactRuntimeSurface('ESM root', root, expectedRootRuntimeExports);
+      assertExactRuntimeSurface('ESM browser', browser, expectedBrowserRuntimeExports);
+      assertExactRuntimeSurface('ESM judge', judge, expectedJudgeRuntimeExports);
 
       async function waitForPackedHttpListener(workspace, port) {
         let listeners = '';
@@ -469,22 +656,13 @@ async function runWithTempRoot(tempRoot: string): Promise<void> {
         await workspace.runCommand('wait ' + pid);
       }
 
-      if (typeof browser.createBrowserHarness !== 'function') throw new Error('Missing createBrowserHarness export');
       if (typeof browser.createBrowserRuntimeHost !== 'function') {
-        throw new Error('Missing prepared browser runtime host export');
+        throw new Error('Missing browser runtime host export');
       }
-      if (typeof judge.createRuntimeJudge !== 'function') throw new Error('Missing judge export');
-      if (typeof judge.createBrowserRuntimeJudge !== 'function') {
-        throw new Error('Missing browser Judge composition export');
-      }
-      if (typeof sql.createSqlRuntimeTraceClient !== 'function') throw new Error('Missing SQL runtime trace client export');
-      const csharpRuntimeInfo = core.getLanguageRuntimeInfo('csharp');
+      const csharpRuntimeInfo = browser.getLanguageRuntimeInfo('csharp');
       if (/roslyn|dotnet|\\.net/i.test(JSON.stringify(csharpRuntimeInfo))) {
         throw new Error('Packed C# runtime metadata must remain provider-neutral');
       }
-      if (typeof sql.createSqlTraceClient !== 'function') throw new Error('Missing SQL trace client export');
-      if ('createPgliteSqlTraceClient' in sql) throw new Error('Removed PGlite-branded SQL helper should not be exported');
-      if (typeof sql.assertValidSqlTrace !== 'function') throw new Error('Missing SQL trace validation export');
       if (typeof browser.getLanguageRuntimeInfo !== 'function') throw new Error('Missing browser runtime info export');
       if (typeof browser.getRuntimeProjectIoSupport !== 'function') {
         throw new Error('Missing browser project I/O support helper export');
@@ -546,16 +724,6 @@ async function runWithTempRoot(tempRoot: string): Promise<void> {
           throw new Error('Project-node should not expose ' + exportName);
         }
       }
-      if (typeof native.createNativeHarness !== 'function') {
-        throw new Error('Missing root native harness subpath export');
-      }
-      const packedNativeHarness = native.createNativeHarness();
-      const packedNativeJs = packedNativeHarness.getClient('javascript');
-      const packedNativeJsResult = await packedNativeJs.executeCode({ code: 'function solve(value) { return value + 1; }', functionName: 'solve', inputs: { value: 41 } });
-      if (packedNativeJsResult.kind !== 'completed' || packedNativeJsResult.output !== 42) {
-        throw new Error('Packed native harness JavaScript smoke failed: ' + JSON.stringify(packedNativeJsResult));
-      }
-      packedNativeHarness.dispose();
       const nativeWorkspace = await projectNode.createNativeProjectWorkspace({
         // A cold .NET SDK can spend well beyond the normal interactive command
         // budget initializing and compiling. This smoke validates the packed
@@ -921,31 +1089,11 @@ async function runWithTempRoot(tempRoot: string): Promise<void> {
       } finally {
         browserWorkspace.dispose();
       }
-      if ('getPyodideWorkerClient' in browser) throw new Error('Low-level worker clients should not be publicly exported');
-      if ('enforceRuntimeWorkerIsolation' in browser) throw new Error('Worker isolation helpers should not be publicly exported');
-      if (typeof core.getLanguageRuntimeInfo !== 'function') throw new Error('Missing core runtime info export');
-      if (typeof python.generateSolutionScript !== 'function') throw new Error('Missing python export');
-      if (typeof python.createBrowserPythonProjectRunner !== 'function') {
-        throw new Error('Missing python browser project runner export');
-      }
-      if (typeof javascript.executeJavaScriptCode !== 'function') throw new Error('Missing javascript export');
-      if (typeof java.createJavaRuntimeClient !== 'function') throw new Error('Missing java export');
-      if (typeof csharp.createCSharpRuntimeClient !== 'function') throw new Error('Missing csharp export');
-      if (typeof cpp.createCppRuntimeClient !== 'function') throw new Error('Missing cpp export');
-      if (typeof sql.createSqlRuntimeTraceClient !== 'function') throw new Error('Missing SQL runtime export');
-      if (typeof sql.createSqlTraceClient !== 'function') throw new Error('Missing sql trace export');
-      if (typeof root.createBrowserHarness !== 'function') throw new Error('Root export should expose createBrowserHarness');
       if (typeof root.createBrowserRuntimeHost !== 'function') {
         throw new Error('Root export should expose createBrowserRuntimeHost');
       }
-      if (typeof root.createRuntimeJudge !== 'function') {
-        throw new Error('Root export should expose createRuntimeJudge');
-      }
       if (typeof root.createBrowserRuntimeJudge !== 'function') {
         throw new Error('Root export should expose createBrowserRuntimeJudge');
-      }
-      if ('createSqlTraceClient' in root || 'createSqlRuntimeTraceClient' in root) {
-        throw new Error('Root export should not expose SQL helpers; use @tracecode/harness/sql');
       }
       if (typeof root.getRuntimeProjectIoSupport !== 'function') {
         throw new Error('Root export should expose project I/O support helper');
