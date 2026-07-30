@@ -1,4 +1,8 @@
-import type { Language, RuntimeClient } from '@tracecode/runtime-core';
+import type {
+  Language,
+  RuntimeClient,
+  RuntimePreparedExecutionProvider,
+} from '@tracecode/runtime-core';
 import type {
   BrowserRuntimeProvider,
   BrowserRuntimeProviderContext,
@@ -55,9 +59,14 @@ export function createCSharpBrowserRuntimeProvider(
       const client: RuntimeClient =
         context.executionIsolation === 'safe' ? safeClient : directClient;
       const clients = new Map<Language, RuntimeClient>([['csharp', client]]);
+      const preparedProviders = new Map<
+        Language,
+        RuntimePreparedExecutionProvider
+      >([['csharp', directClient]]);
 
       return {
         clients,
+        preparedProviders,
         warm: () =>
           context.executionIsolation === 'safe'
             ? safeClient.prepare()
