@@ -7,7 +7,7 @@ import {
   runIsolatedSqlCases,
   type SqlRunResult,
   type SqlTrace,
-} from '@tracecode/harness/sql';
+} from '@tracecode/runtime-sql';
 
 declare global {
   interface Window {

@@ -7,7 +7,9 @@ export default defineConfig({
   },
   resolve: {
     alias: {
-      '@tracecode/harness/sql': fileURLToPath(new URL('../../packages/runtime-sql/src/index.ts', import.meta.url)),
+      '@tracecode/runtime-sql': fileURLToPath(
+        new URL('../../packages/runtime-sql/src/index.ts', import.meta.url)
+      ),
     },
   },
 });

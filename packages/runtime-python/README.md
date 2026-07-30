@@ -2,8 +2,9 @@
 
 Python runtime helpers and browser worker assets for TraceCode Harness.
 
-This is a private workspace bundled into the published root package. Consumers
-use the supported root subpath:
+This is a private implementation workspace used to build the root release. It
+is not published independently, and the root package has no `/python`
+subpath. Code inside this monorepo imports it directly:
 
 ```ts
 import {
@@ -11,10 +12,10 @@ import {
   createPythonPreparedExecutionProvider,
   createPythonRuntimeClient,
   generateSolutionScript,
-} from '@tracecode/harness/python';
+} from '@tracecode/runtime-python';
 ```
 
-Public surface:
+Internal workspace surface:
 
 - Python harness template helpers
 - generated snippet exports
@@ -26,6 +27,11 @@ Public surface:
   generation that is retired after the case
 - separate reset and final-termination lifecycles, so language release aborts
   current work and resources without preventing a later Python initialization
+
+Published browser consumers select Python through the provider-neutral runtime
+host and Judge contracts. Browser project consumers use
+`@tracecode/harness/browser/project`; neither path exposes Python runtime
+clients directly.
 
 Runtime assets are shipped at `workers/python-worker.js` and
 `workers/python/runtime-core.js`. Review `THIRD_PARTY_NOTICES.md` before

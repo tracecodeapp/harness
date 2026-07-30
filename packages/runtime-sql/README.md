@@ -2,8 +2,9 @@
 
 Browser-first SQL runtime trace contracts and client wrappers for TraceCode.
 
-This is a private workspace bundled into the published root package. Consumers
-use the supported root subpath:
+This is a private implementation workspace. It is not published independently,
+and the root package has no `/sql` subpath. Code and examples inside this
+monorepo import it directly:
 
 ```ts
 import {
@@ -12,10 +13,10 @@ import {
   runIsolatedSqlCases,
   assertValidSqlTrace,
   type SqlTrace,
-} from '@tracecode/harness/sql';
+} from '@tracecode/runtime-sql';
 ```
 
-Public surface:
+Internal workspace surface:
 
 - `SqlTrace` and SQL trace event types
 - SQL trace validation helpers
@@ -25,8 +26,9 @@ Public surface:
 - provider-neutral runtime metadata and persistence helpers
 - an isolated SQL case runner that creates fresh database state per case
 
-The root package does not vendor a SQL engine. Browser apps inject a client with
-`query`, optional `exec`, and optional `transaction` methods.
+The workspace does not vendor a SQL engine. Monorepo browser apps inject a
+client with `query`, optional `exec`, and optional `transaction` methods. A
+standalone SQL consumer contract has not been released yet.
 
 Use `createSqlRuntimeTraceClient(...)` for the high-level runtime wrapper. It
 defaults to the provider-neutral `custom` engine kind and `unknown` dialect,
@@ -36,7 +38,7 @@ explicitly when it is known.
 
 ```ts
 import { PGlite } from '@electric-sql/pglite';
-import { createSqlRuntimeTraceClient } from '@tracecode/harness/sql';
+import { createSqlRuntimeTraceClient } from '@tracecode/runtime-sql';
 
 const db = await PGlite.create('memory://tracecode-sql');
 const traced = createSqlRuntimeTraceClient(db, {

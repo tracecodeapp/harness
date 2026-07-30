@@ -1,7 +1,9 @@
 # SQL Trace Product Integration
 
-This guide shows how a browser product can use `@tracecode/harness/sql` with
-PGlite while keeping the SQL trace contract separate from product UI state.
+This guide shows how a browser product inside the Harness monorepo can use the
+private `@tracecode/runtime-sql` workspace with PGlite while keeping the SQL
+trace contract separate from product UI state. The workspace is not published
+independently, and `@tracecode/harness` does not expose a `/sql` subpath.
 
 ## Basic Browser Flow
 
@@ -10,7 +12,7 @@ import { PGlite } from '@electric-sql/pglite';
 import {
   assertValidSqlTrace,
   createSqlRuntimeTraceClient,
-} from '@tracecode/harness/sql';
+} from '@tracecode/runtime-sql';
 
 const db = await PGlite.create('memory://lesson-sql');
 
@@ -144,7 +146,7 @@ import { PGlite } from '@electric-sql/pglite';
 import {
   createSqlRuntimeTraceClient,
   runIsolatedSqlCases,
-} from '@tracecode/harness/sql';
+} from '@tracecode/runtime-sql';
 
 const result = await runIsolatedSqlCases({
   problemId: 'active-customers',
@@ -240,16 +242,15 @@ For a first product UI, render:
 - plan detail when `plans: 'estimate'` is enabled
 - transaction markers for API and explicit SQL boundaries
 
-## Import Paths
+## Import Boundary
 
-Standalone package:
-
-```ts
-import { createSqlRuntimeTraceClient } from '@tracecode/harness/sql';
-```
-
-Umbrella package subpath:
+Code inside this monorepo imports the private workspace directly:
 
 ```ts
-import { createSqlRuntimeTraceClient } from '@tracecode/harness/sql';
+import { createSqlRuntimeTraceClient } from '@tracecode/runtime-sql';
 ```
+
+There is currently no standalone registry package and no
+`@tracecode/harness/sql` compatibility subpath. Product code outside this
+monorepo should wait for a deliberately versioned standalone SQL contract
+rather than depending on private workspace internals.

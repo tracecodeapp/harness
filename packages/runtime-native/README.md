@@ -2,19 +2,22 @@
 
 Native Node runtime clients and project runners for TraceCode Harness.
 
-This is a private workspace bundled into the published root package. The
-supported `@tracecode/harness/native` subpath is an opt-in throughput surface
-for trusted local automation, CI, regression mining, and high-volume batch
-inference. It runs host-native tools such as `python3`, Java, C#, C++, and a
-Node-backed JavaScript/TypeScript worker.
+This is a private implementation workspace used by trusted local automation,
+CI, regression mining, and high-volume batch inference. It is not published
+independently, and the root package has no `/native` subpath. It runs
+host-native tools such as `python3`, Java, C#, C++, and a Node-backed
+JavaScript/TypeScript worker.
 
 Native harness is not a sandbox. Do not use it as the isolation boundary for
 arbitrary untrusted code.
 
-Import path:
+Code inside this monorepo imports the private batch surface directly:
 
 ```ts
-import { createNativeHarness, createNativeProjectWorkspace } from '@tracecode/harness/native';
+import {
+  createNativeHarness,
+  createNativeProjectWorkspace,
+} from '@tracecode/runtime-native';
 ```
 
 Code-client example:
@@ -35,5 +38,12 @@ Use `runJobs(...)` or `runJobsEach(...)` for trusted batch workloads. For best
 throughput, make each job one solution with many cases instead of one job per
 test case.
 
-For shell-style multi-file execution, use `createNativeProjectWorkspace(...)`
-from `@tracecode/harness/native` or `@tracecode/harness/project-node`.
+Published consumers that need shell-style trusted local project execution use
+the provider-neutral root entrypoint:
+
+```ts
+import { createNativeProjectWorkspace } from '@tracecode/harness/project-node';
+```
+
+The private `createNativeHarness(...)` batch API may become standalone only
+after its independent contract is defined.

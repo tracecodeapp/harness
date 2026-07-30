@@ -1,7 +1,9 @@
 # SQL Trace Contract
 
-Status: implemented V1 contract for `@tracecode/harness/sql`, with PGlite as
-the primary browser Postgres-compatible engine target.
+Status: implemented V1 contract in the private `@tracecode/runtime-sql`
+workspace, with PGlite as the primary browser Postgres-compatible engine
+target. The runtime workspace is not published independently, and
+`@tracecode/harness` does not expose a `/sql` subpath.
 
 ## Purpose
 
@@ -52,12 +54,13 @@ PGlite is the primary engine candidate because it is a WASM Postgres build that
 runs in the browser and supports in-memory or IndexedDB persistence. It gives
 the harness a Postgres-compatible dialect without requiring a server process.
 
-`@tracecode/harness/sql` intentionally does not vendor PGlite. The package owns
-the trace contract, validation, redaction, result capture, statement splitting,
-and dependency-injection wrappers. Browser apps inject their chosen SQL client
-and use `createSqlRuntimeTraceClient(...)`, setting known provider metadata such
-as `kind: 'pglite'` and `dialect: 'postgres'` explicitly. Both runtime and
-low-level wrappers default to `custom` / `unknown`, so the package never
+`@tracecode/runtime-sql` intentionally does not vendor PGlite. The private
+workspace owns the trace contract, validation, redaction, result capture,
+statement splitting, and dependency-injection wrappers. Monorepo browser apps
+inject their chosen SQL client and use `createSqlRuntimeTraceClient(...)`,
+setting known provider metadata such as `kind: 'pglite'` and
+`dialect: 'postgres'` explicitly. Both runtime and low-level wrappers default
+to `custom` / `unknown`, so the workspace never
 attributes a provider or dialect it was not given.
 
 The primary product claim should be:
