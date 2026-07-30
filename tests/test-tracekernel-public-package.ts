@@ -4,6 +4,7 @@ import { createRequire } from 'node:module';
 import { readFile } from 'node:fs/promises';
 import { resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
+import { build } from 'esbuild';
 
 function assertCondition(condition: unknown, message: string): asserts condition {
   if (!condition) throw new Error(message);
@@ -145,6 +146,66 @@ assertCondition(
   'ESM and CommonJS expose different or mutable syscall wire identities.'
 );
 
+const consumerBundle = await build({
+  stdin: {
+    contents: `
+      import * as Effect from 'effect/Effect';
+      import {
+        makeTraceKernelHost,
+        TRACEKERNEL_SYSCALL_WIRE_SCHEMA,
+      } from '@tracecode/tracekernel';
+
+      export async function smokeTraceKernelBundle() {
+        return Effect.runPromise(Effect.scoped(
+          Effect.gen(function* () {
+            const host = yield* makeTraceKernelHost({ providers: [] });
+            const session = yield* host.openSession();
+            return {
+              processCount: session.processSnapshots().length,
+              wireSchema: TRACEKERNEL_SYSCALL_WIRE_SCHEMA,
+            };
+          })
+        ));
+      }
+    `,
+    loader: 'ts',
+    resolveDir: resolve('.'),
+    sourcefile: 'tracekernel-consumer.ts',
+  },
+  bundle: true,
+  format: 'esm',
+  logLevel: 'silent',
+  platform: 'browser',
+  target: 'es2022',
+  write: false,
+});
+assertCondition(
+  consumerBundle.warnings.length === 0,
+  `Bundling a TraceKernel consumer emitted warnings: ${consumerBundle.warnings
+    .map((warning) => `[${warning.id}] ${warning.text}`)
+    .join('; ')}`
+);
+assertCondition(
+  consumerBundle.outputFiles.length === 1,
+  `TraceKernel consumer emitted ${consumerBundle.outputFiles.length} bundle outputs.`
+);
+const bundledConsumer = await import(
+  `data:text/javascript;base64,${Buffer.from(
+    consumerBundle.outputFiles[0].contents
+  ).toString('base64')}`
+) as {
+  readonly smokeTraceKernelBundle: () => Promise<{
+    readonly processCount: number;
+    readonly wireSchema: string;
+  }>;
+};
+const bundleSmokeResult = await bundledConsumer.smokeTraceKernelBundle();
+assertCondition(
+  bundleSmokeResult.processCount === 0 &&
+    bundleSmokeResult.wireSchema === 'tracekernel.syscall.v1',
+  `Rebundled TraceKernel host smoke failed: ${JSON.stringify(bundleSmokeResult)}`
+);
+
 const readme = await readFile(resolve(packageRoot, 'README.md'), 'utf8');
 assertCondition(
   readme.includes('## Public compatibility boundary') &&
@@ -165,4 +226,5 @@ console.log(JSON.stringify({
   operationCount: Object.keys(
     esm.TRACEKERNEL_SYSCALL_OPERATION_CODES as object
   ).length,
+  warningFreeRebundle: true,
 }));
