@@ -171,6 +171,8 @@ let activeRequestStartedAt = 0;
 let activeRequestProtocolToken = null;
 let programCache = new Map();
 let programCacheLimit = DEFAULT_CPP_PROGRAM_CACHE_LIMIT;
+let preparedProgramSequence = 0;
+let preparedPrograms = new Map();
 let usePrecompiledHeader = false;
 let externalCompileRequestId = 0;
 const pendingExternalCompiles = new Map();
@@ -275,6 +277,24 @@ function storeProgramModule(cacheKey, module) {
   }
   programCache.set(cacheKey, module);
   trimProgramCache();
+}
+
+function preparedProgramProtocolError(message) {
+  const error = new Error(message);
+  error.name = 'CppPreparedProgramProtocolError';
+  return error;
+}
+
+function preparedProgramById(programId) {
+  const normalizedProgramId = String(programId || '');
+  if (!normalizedProgramId) {
+    throw preparedProgramProtocolError('C++ prepared program id is required.');
+  }
+  const preparedProgram = preparedPrograms.get(normalizedProgramId);
+  if (!preparedProgram) {
+    throw preparedProgramProtocolError(`C++ prepared program "${normalizedProgramId}" does not exist or was disposed.`);
+  }
+  return preparedProgram;
 }
 
 function trimProgramCache() {
@@ -1493,7 +1513,9 @@ function postSuccess(id, type, payload, traceEventTransport) {
     ? 'single'
     : type === 'execute-trace-batch'
       ? 'batch'
-      : null;
+      : type === 'execute-prepared-runtime-program' && payload?.trace
+        ? 'single'
+        : null;
   const transported = mode
     ? prepareCppTraceEventTransfer(payload, traceEventTransport, mode)
     : null;
@@ -13671,6 +13693,27 @@ async function handleProjectCpp(
   return result;
 }
 
+function preparedArtifactResult(programModule, source, functionName, signature, scriptRequest, options, timings, startedAt) {
+  const totalMs = elapsedMs(startedAt);
+  return {
+    success: true,
+    output: null,
+    consoleOutput: [],
+    executionTimeMs: totalMs,
+    timings: { ...timings, totalMs },
+    preparedArtifact: {
+      programModule,
+      source,
+      functionName,
+      signatureLine: Number.isFinite(Number(signature?.line)) ? Number(signature.line) : 1,
+      scriptRequest,
+      tracing: options.tracing === true,
+      traceOptions: options.traceOptions || {},
+      inputMode: options.preparedInputMode === 'named-batch' ? 'named-batch' : 'script',
+    },
+  };
+}
+
 async function compileAndRun(source, functionName, inputs, options = {}) {
   const start = now();
   emitRequestProgress('compile-and-run:start', { tracing: Boolean(options.tracing) });
@@ -13707,7 +13750,8 @@ async function compileAndRun(source, functionName, inputs, options = {}) {
   const resourceDir = findClangResourceDir(fs);
   const preparedDriverSource = typeof options.preparedDriverSource === 'string' ? options.preparedDriverSource : null;
   const stdinText = typeof options.stdinText === 'string' ? options.stdinText : JSON.stringify(inputs || {});
-  const scriptRequest = !preparedDriverSource && isScriptExecutionRequest(functionName, options);
+  const scriptRequest = options.preparedScriptRequest === true ||
+    (!preparedDriverSource && isScriptExecutionRequest(functionName, options));
   const signature = scriptRequest
     ? { line: 1 }
     : options.executionStyle === 'ops-class'
@@ -13826,6 +13870,10 @@ async function compileAndRun(source, functionName, inputs, options = {}) {
     storeProgramModule(cacheKey, programModule);
   }
 
+  if (options.prepareOnly === true) {
+    return preparedArtifactResult(programModule, source, functionName, signature, scriptRequest, options, timings, start);
+  }
+
   try {
     const runStartedAt = now();
     emitRequestProgress('program-run:start', { tracing: Boolean(options.tracing) });
@@ -13921,7 +13969,8 @@ async function compileAndRunWithExternalCompiler(source, functionName, inputs, s
   };
   const preparedDriverSource = typeof options.preparedDriverSource === 'string' ? options.preparedDriverSource : null;
   const stdinText = typeof options.stdinText === 'string' ? options.stdinText : JSON.stringify(inputs || {});
-  const scriptRequest = !preparedDriverSource && isScriptExecutionRequest(functionName, options);
+  const scriptRequest = options.preparedScriptRequest === true ||
+    (!preparedDriverSource && isScriptExecutionRequest(functionName, options));
   const signature = scriptRequest
     ? { line: 1 }
     : options.executionStyle === 'ops-class'
@@ -14010,6 +14059,10 @@ async function compileAndRunWithExternalCompiler(source, functionName, inputs, s
       wasmCompileMs: timings.wasmCompileMs,
     });
     storeProgramModule(cacheKey, programModule);
+  }
+
+  if (options.prepareOnly === true) {
+    return preparedArtifactResult(programModule, source, functionName, signature, scriptRequest, options, timings, start);
   }
 
   try {
@@ -14112,7 +14165,8 @@ async function compileAndRunWithYowasp(toolchain, source, functionName, inputs, 
   };
   const preparedDriverSource = typeof options.preparedDriverSource === 'string' ? options.preparedDriverSource : null;
   const stdinText = typeof options.stdinText === 'string' ? options.stdinText : JSON.stringify(inputs || {});
-  const scriptRequest = !preparedDriverSource && isScriptExecutionRequest(functionName, options);
+  const scriptRequest = options.preparedScriptRequest === true ||
+    (!preparedDriverSource && isScriptExecutionRequest(functionName, options));
   const signature = scriptRequest
     ? { line: 1 }
     : options.executionStyle === 'ops-class'
@@ -14209,6 +14263,10 @@ async function compileAndRunWithYowasp(toolchain, source, functionName, inputs, 
       wasmCompileMs: timings.wasmCompileMs,
     });
     storeProgramModule(cacheKey, programModule);
+  }
+
+  if (options.prepareOnly === true) {
+    return preparedArtifactResult(programModule, source, functionName, signature, scriptRequest, options, timings, start);
   }
 
   try {
@@ -14318,6 +14376,8 @@ async function handleInit(payload) {
   toolchainPromise = null;
   warmupPromise = null;
   programCache = new Map();
+  preparedProgramSequence = 0;
+  preparedPrograms = new Map();
   resetCompilerWorker();
   const totalMs = elapsedMs(start);
   return {
@@ -14329,6 +14389,322 @@ async function handleInit(payload) {
       warmupMs: 0,
     },
   };
+}
+
+async function handlePrepareRuntimeProgram(payload) {
+  const startedAt = now();
+  const mode = payload?.mode;
+  const source = typeof payload?.code === 'string' ? payload.code : '';
+  const functionName = typeof payload?.functionName === 'string' ? payload.functionName : '';
+  const executionStyle = payload?.executionStyle || 'solution-method';
+  const tracing = mode === 'trace';
+  const scriptRequest = executionStyle === 'function' && !functionName.trim();
+
+  if (mode !== 'code' && mode !== 'trace') {
+    throw preparedProgramProtocolError('C++ prepared program mode must be "code" or "trace".');
+  }
+  if (!source.trim()) {
+    return {
+      success: false,
+      error: 'C++ source is empty.',
+      consoleOutput: [],
+      timings: { totalMs: elapsedMs(startedAt) },
+    };
+  }
+  if (executionStyle === 'ops-class') {
+    return {
+      success: false,
+      error: 'C++ prepared execution does not support ops-class programs because their operation shape is case data.',
+      consoleOutput: [],
+      timings: { totalMs: elapsedMs(startedAt) },
+    };
+  }
+  if (!functionName.trim() && !scriptRequest) {
+    return {
+      success: false,
+      error: tracing
+        ? 'C++ named tracing requires a function name.'
+        : 'C++ named execution requires a function name.',
+      consoleOutput: [],
+      timings: { totalMs: elapsedMs(startedAt) },
+    };
+  }
+
+  const driverStartedAt = now();
+  let preparedDriverSource;
+  try {
+    preparedDriverSource = scriptRequest
+      ? buildScriptDriverSource(source, {
+          executionStyle,
+          tracing,
+          traceOptions: payload?.traceOptions || {},
+        })
+      : buildBatchDriverSource(source, functionName, [{}], {
+          executionStyle,
+          tracing,
+          traceOptions: payload?.traceOptions || {},
+        });
+  } catch (error) {
+    return {
+      success: false,
+      error: error instanceof Error ? error.message : String(error),
+      consoleOutput: [],
+      timings: {
+        driverBuildMs: elapsedMs(driverStartedAt),
+        totalMs: elapsedMs(startedAt),
+      },
+    };
+  }
+
+  const result = await compileAndRun(source, functionName, {}, {
+    executionStyle,
+    tracing,
+    traceOptions: payload?.traceOptions || {},
+    preparedDriverSource,
+    preparedScriptRequest: scriptRequest,
+    preparedInputMode: scriptRequest ? 'script' : 'named-batch',
+    prepareOnly: true,
+    timings: {
+      driverBuildMs: elapsedMs(driverStartedAt),
+    },
+  });
+  if (!result?.success) {
+    return result;
+  }
+  if (!result.preparedArtifact?.programModule) {
+    throw preparedProgramProtocolError('C++ preparation completed without an executable WebAssembly module.');
+  }
+
+  const programId = `cpp-prepared-${++preparedProgramSequence}`;
+  preparedPrograms.set(programId, {
+    ...result.preparedArtifact,
+    mode,
+  });
+  return {
+    success: true,
+    programId,
+    mode,
+    consoleOutput: result.consoleOutput || [],
+    timings: result.timings || { totalMs: elapsedMs(startedAt) },
+  };
+}
+
+function preparedExecutionTimings(runMs, totalMs) {
+  return {
+    compilerLoadMs: 0,
+    driverBuildMs: 0,
+    compileMs: 0,
+    linkMs: 0,
+    wasmCompileMs: 0,
+    runMs,
+    totalMs,
+    compileCacheHit: true,
+    artifactCacheHit: true,
+  };
+}
+
+async function runPreparedRuntimeProgram(preparedProgram, inputs) {
+  const startedAt = now();
+  const normalizedInputs = inputs && typeof inputs === 'object' ? inputs : {};
+  const stdinText = preparedProgram.inputMode === 'named-batch'
+    ? JSON.stringify([normalizedInputs])
+    : JSON.stringify(normalizedInputs);
+
+  try {
+    const runStartedAt = now();
+    const program = await runWasi(
+      preparedProgram.programModule,
+      ['program.wasm'],
+      new InMemoryFileSystem(),
+      { stdinBytes: staticStdinBytesFromText(stdinText) }
+    );
+    const runMs = elapsedMs(runStartedAt);
+    const totalMs = elapsedMs(startedAt);
+    const timings = preparedExecutionTimings(runMs, totalMs);
+    let parsed;
+    try {
+      parsed = parseProgramStdout(program.stdout, {
+        tracing: preparedProgram.tracing,
+        defaultLine: preparedProgram.signatureLine,
+        allowMissingResult: preparedProgram.tracing,
+      });
+    } catch (error) {
+      return programOutputParseFailureResult(
+        error,
+        program,
+        { line: preparedProgram.signatureLine },
+        startedAt,
+        timings,
+        {
+          tracing: preparedProgram.tracing,
+          traceOptions: preparedProgram.traceOptions,
+        }
+      );
+    }
+
+    if (preparedProgram.scriptRequest && preparedProgram.tracing) {
+      parsed.events = normalizeScriptTraceEvents(
+        parsed.events,
+        scriptLineCount(preparedProgram.source)
+      );
+    }
+
+    const programTimedOut = preparedProgram.tracing && program.exitCode === 124;
+    const runtimeTimedOut = !preparedProgram.tracing && program.exitCode === 124;
+    const consoleOutput = [
+      ...parsed.consoleOutput,
+      ...program.stderr.split(/\r?\n/).filter(Boolean),
+    ];
+
+    if (preparedProgram.inputMode === 'named-batch') {
+      if (preparedProgram.tracing) {
+        const batchResult = cppBatchTraceResultsFromParsedOutput(
+          parsed,
+          preparedProgram.source,
+          [normalizedInputs],
+          timings,
+          startedAt,
+          { traceOptions: preparedProgram.traceOptions }
+        );
+        const firstResult = batchResult.results?.[0];
+        if (!firstResult) {
+          throw preparedProgramProtocolError('C++ prepared trace execution did not produce a case result.');
+        }
+        if (program.exitCode !== 0 || programTimedOut) {
+          return {
+            ...firstResult,
+            success: false,
+            error: programTimedOut
+              ? 'C++ trace budget exceeded.'
+              : (program.stderr || `C++ program exited with code ${program.exitCode}`),
+            consoleOutput,
+            timings,
+          };
+        }
+        return {
+          ...firstResult,
+          consoleOutput,
+          timings,
+        };
+      }
+
+      if (!Array.isArray(parsed.output) || parsed.output.length !== 1) {
+        return {
+          success: false,
+          output: null,
+          error: `C++ prepared driver returned ${Array.isArray(parsed.output) ? parsed.output.length : 'non-array'} results for one case.`,
+          consoleOutput,
+          executionTimeMs: totalMs,
+          timings,
+        };
+      }
+      return {
+        success: program.exitCode === 0,
+        output: parsed.output[0],
+        error: program.exitCode === 0
+          ? undefined
+          : (program.stderr || `C++ program exited with code ${program.exitCode}`),
+        consoleOutput,
+        executionTimeMs: totalMs,
+        timings,
+        ...(runtimeTimedOut ? { timeoutReason: 'client-timeout', diagnosticStage: 'runtime' } : {}),
+      };
+    }
+
+    const baseResult = {
+      success: program.exitCode === 0 && !programTimedOut,
+      output: parsed.output,
+      error: program.exitCode === 0
+        ? undefined
+        : (program.stderr || `C++ program exited with code ${program.exitCode}`),
+      consoleOutput,
+      executionTimeMs: totalMs,
+      timings,
+      ...(runtimeTimedOut ? { timeoutReason: 'client-timeout', diagnosticStage: 'runtime' } : {}),
+    };
+    if (!preparedProgram.tracing) return baseResult;
+
+    const finalizedTrace = finalizeRuntimeTrace(parsed.events, {
+      ...(preparedProgram.traceOptions || {}),
+      sourceCode: preparedProgram.source,
+    });
+    const runtimeTraceLimitExceeded =
+      finalizedTrace.traceLimitExceeded ||
+      Boolean(parsed.traceStatus?.traceLimitExceeded) ||
+      programTimedOut;
+    return {
+      ...baseResult,
+      ...(programTimedOut ? { error: 'C++ trace budget exceeded.' } : {}),
+      trace: finalizedTrace.trace,
+      lineEventCount: finalizedTrace.trace.lineEventCount,
+      traceStepCount: finalizedTrace.trace.traceStepCount,
+      traceLimitExceeded: runtimeTraceLimitExceeded,
+      ...(runtimeTraceLimitExceeded
+        ? { timeoutReason: timeoutReasonForParsedTrace(parsed) }
+        : {}),
+      ...(runtimeTraceLimitExceeded
+        ? {
+            droppedEventCount:
+              finalizedTrace.droppedEventCount +
+              (Number(parsed.traceStatus?.droppedEventCount) || 0),
+          }
+        : {}),
+    };
+  } catch (error) {
+    if (preparedProgram.tracing) {
+      const trace = finalizeRuntimeTrace(
+        [{
+          kind: 'exception',
+          line: preparedProgram.signatureLine,
+          message: error instanceof Error ? error.message : String(error),
+        }],
+        {
+          ...(preparedProgram.traceOptions || {}),
+          sourceCode: preparedProgram.source,
+        }
+      ).trace;
+      return {
+        success: false,
+        output: null,
+        error: error instanceof Error ? error.message : String(error),
+        trace,
+        consoleOutput: [],
+        executionTimeMs: elapsedMs(startedAt),
+        lineEventCount: trace.lineEventCount,
+        traceStepCount: trace.traceStepCount,
+        timings: preparedExecutionTimings(0, elapsedMs(startedAt)),
+      };
+    }
+    return {
+      success: false,
+      output: null,
+      error: error instanceof Error ? error.message : String(error),
+      consoleOutput: [],
+      executionTimeMs: elapsedMs(startedAt),
+      timings: preparedExecutionTimings(0, elapsedMs(startedAt)),
+    };
+  }
+}
+
+async function handleExecutePreparedRuntimeProgram(payload) {
+  const preparedProgram = preparedProgramById(payload?.programId);
+  if (payload?.mode !== preparedProgram.mode) {
+    throw preparedProgramProtocolError(
+      `C++ prepared program "${String(payload?.programId || '')}" was prepared for ${preparedProgram.mode}, not ${String(payload?.mode || 'unknown')}.`
+    );
+  }
+  return runPreparedRuntimeProgram(preparedProgram, payload?.inputs || {});
+}
+
+async function handleDisposePreparedRuntimeProgram(payload) {
+  const preparedProgram = preparedProgramById(payload?.programId);
+  if (payload?.mode !== undefined && payload.mode !== preparedProgram.mode) {
+    throw preparedProgramProtocolError(
+      `C++ prepared program "${String(payload?.programId || '')}" was prepared for ${preparedProgram.mode}, not ${String(payload.mode)}.`
+    );
+  }
+  preparedPrograms.delete(String(payload.programId));
+  return { success: true };
 }
 
 async function handleWarmup(payload) {
@@ -14879,33 +15255,51 @@ self.onmessage = (event) => {
       emitRequestProgress('request-start', { type });
       let result;
       try {
-        result =
-          type === 'init'
-            ? await handleInit(payload)
-            : type === 'warmup'
-              ? await handleWarmup(payload)
-            : type === 'compile-run'
-              ? await handleCompileRun(payload)
-              : type === 'compile-run-batch'
-              ? await handleCompileRunBatch(payload)
-              : type === 'execute-project-cpp'
-                ? await withRuntimeUserAuthorityLockdown(
-                    () => handleProjectCpp(
-                      payload,
-                      id,
-                      kernelSyscallChannel,
-                      kernelSignalMailbox
-                    ),
-                    {
-                      scope: self,
-                      mode: payload?.projectUserAuthorityMode ?? 'temporary',
-                    }
-                  )
-              : type === 'execute-with-tracing'
-                ? await handleExecuteWithTracing(payload)
-                : type === 'execute-trace-batch'
-                  ? await handleExecuteTraceBatch(payload)
-                  : await Promise.reject(new Error(`Unknown C++ worker message: ${type}`));
+        switch (type) {
+          case 'init':
+            result = await handleInit(payload);
+            break;
+          case 'warmup':
+            result = await handleWarmup(payload);
+            break;
+          case 'prepare-runtime-program':
+            result = await handlePrepareRuntimeProgram(payload);
+            break;
+          case 'execute-prepared-runtime-program':
+            result = await handleExecutePreparedRuntimeProgram(payload);
+            break;
+          case 'dispose-prepared-runtime-program':
+            result = await handleDisposePreparedRuntimeProgram(payload);
+            break;
+          case 'compile-run':
+            result = await handleCompileRun(payload);
+            break;
+          case 'compile-run-batch':
+            result = await handleCompileRunBatch(payload);
+            break;
+          case 'execute-project-cpp':
+            result = await withRuntimeUserAuthorityLockdown(
+              () => handleProjectCpp(
+                payload,
+                id,
+                kernelSyscallChannel,
+                kernelSignalMailbox
+              ),
+              {
+                scope: self,
+                mode: payload?.projectUserAuthorityMode ?? 'temporary',
+              }
+            );
+            break;
+          case 'execute-with-tracing':
+            result = await handleExecuteWithTracing(payload);
+            break;
+          case 'execute-trace-batch':
+            result = await handleExecuteTraceBatch(payload);
+            break;
+          default:
+            throw new Error(`Unknown C++ worker message: ${type}`);
+        }
       } finally {
         emitRequestProgress('request-complete', { type });
       }

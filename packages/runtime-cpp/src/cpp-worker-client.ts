@@ -20,7 +20,10 @@ import type {
   CodeExecutionResult,
   CodeExecutionBatchResult,
   ExecutionResult,
+  RuntimePreparedCodeCall,
+  RuntimePreparedTraceCall,
   RuntimeExecutionTimings,
+  RuntimeProgramPreparationCall,
 } from '@tracecode/runtime-core';
 import type {
   RuntimeCommandEventHandler,
@@ -141,6 +144,41 @@ interface WarmupResult {
   timings?: RuntimeExecutionTimings;
 }
 
+export interface CppPreparedProgramHandle {
+  readonly programId: string;
+  readonly mode: 'code' | 'trace';
+  readonly lifecycleGeneration: number;
+}
+
+export type CppPreparedProgramPreparationResult =
+  | {
+      readonly success: true;
+      readonly handle: CppPreparedProgramHandle;
+      readonly consoleOutput: string[];
+      readonly timings?: RuntimeExecutionTimings;
+    }
+  | {
+      readonly success: false;
+      readonly error: string;
+      readonly errorLine?: number;
+      readonly diagnosticStage?: 'compile' | 'runtime' | 'trace' | 'driver-compile' | 'trace-driver-compile' | 'driver-link';
+      readonly consoleOutput: string[];
+      readonly timings?: RuntimeExecutionTimings;
+      readonly limitReason?: 'client-timeout';
+    };
+
+interface CppPreparedProgramWorkerResult {
+  success: boolean;
+  programId?: string;
+  mode?: 'code' | 'trace';
+  error?: string;
+  errorLine?: number;
+  diagnosticStage?: 'compile' | 'runtime' | 'trace' | 'driver-compile' | 'trace-driver-compile' | 'driver-link';
+  consoleOutput?: string[];
+  timings?: RuntimeExecutionTimings;
+  timeoutReason?: 'client-timeout';
+}
+
 const INIT_TIMEOUT_MS = 120_000;
 // The outer client timeout is the hard product budget. Compiler and runtime
 // phases report progress separately so timeout diagnostics show where we died.
@@ -229,6 +267,7 @@ export class CppWorkerClient {
   private compilerFrameMessageHandler: ((event: MessageEvent) => void) | null = null;
   private pendingCompilerFrameRequests = new Map<string, PendingCompilerFrameRequest>();
   private executionQueue: Promise<void> = Promise.resolve();
+  private readonly disposedPreparedPrograms = new Set<string>();
   private compilerArtifactCache = new Map<string, CppCompilerArtifactCacheEntry>();
   private compilerArtifactCacheBytes = 0;
   private compilerCoordinatorGeneration = 0;
@@ -341,6 +380,9 @@ export class CppWorkerClient {
 
   private messageRequiresCompilerAssets(type: string): boolean {
     if (type === 'init' || type === 'status') return false;
+    if (type === 'execute-prepared-runtime-program' || type === 'dispose-prepared-runtime-program') {
+      return false;
+    }
     if (this.externalCompilerUrl) return false;
     // Project runs decide per-payload; the run wrappers preflight explicitly.
     return type !== 'execute-project-cpp';
@@ -539,6 +581,49 @@ export class CppWorkerClient {
       () => undefined
     );
     return run;
+  }
+
+  /**
+   * Prepared programs deliberately retain one execution worker for the
+   * evaluation lifetime. The worker owns only immutable compiled modules;
+   * every case instantiates a fresh WASI process, memory, and filesystem.
+   */
+  private runInPreparedExecutionWorker<T>(
+    operation: (lifecycleGeneration: number) => Promise<T>
+  ): Promise<T> {
+    const lifecycleGeneration = this.executionLifecycleGeneration;
+    const run = this.executionQueue.then(async () => {
+      this.assertLifecycleGeneration(lifecycleGeneration);
+      return operation(lifecycleGeneration);
+    });
+    this.executionQueue = run.then(
+      () => undefined,
+      () => undefined
+    );
+    return run;
+  }
+
+  private assertPreparedProgramHandle(
+    handle: CppPreparedProgramHandle,
+    expectedMode?: 'code' | 'trace'
+  ): void {
+    if (handle.lifecycleGeneration !== this.executionLifecycleGeneration) {
+      throw new Error(
+        `C++ prepared program "${handle.programId}" is unavailable because its worker session was reset.`
+      );
+    }
+    if (this.disposedPreparedPrograms.has(this.preparedProgramHandleKey(handle))) {
+      throw new Error(`C++ prepared program "${handle.programId}" was already disposed.`);
+    }
+    if (expectedMode && handle.mode !== expectedMode) {
+      throw new Error(
+        `C++ prepared program "${handle.programId}" was prepared for ${handle.mode}, not ${expectedMode}.`
+      );
+    }
+  }
+
+  private preparedProgramHandleKey(handle: CppPreparedProgramHandle): string {
+    return `${handle.lifecycleGeneration}:${handle.programId}`;
   }
 
   /** Runtime-load failures that warrant a worker reset + one retry. */
@@ -1044,6 +1129,205 @@ export class CppWorkerClient {
       Effect.andThen(this.withCppExecutionDeadline(sendEffect, timeoutMs, stage))
     );
     return this.core.runClientEffect(program, signal);
+  }
+
+  async prepareRuntimeProgram(
+    call: RuntimeProgramPreparationCall
+  ): Promise<CppPreparedProgramPreparationResult> {
+    const timeoutMs = call.mode === 'trace'
+      ? this.tracingTimeoutMs
+      : this.executionTimeoutMs;
+    const stage: CppClientTimeoutStage = call.mode === 'trace'
+      ? 'trace'
+      : 'compile-run';
+
+    return this.runInPreparedExecutionWorker(async (lifecycleGeneration) => {
+      try {
+        const result = await this.runExecution(
+          this.core.sendMessageEffect<CppPreparedProgramWorkerResult>(
+            'prepare-runtime-program',
+            {
+              mode: call.mode,
+              code: call.code,
+              functionName: call.functionName,
+              executionStyle: call.executionStyle,
+              traceOptions: call.traceOptions,
+            },
+            null,
+            undefined,
+            undefined,
+            () => this.assertLifecycleGeneration(lifecycleGeneration)
+          ),
+          timeoutMs,
+          stage,
+          call.signal,
+          lifecycleGeneration
+        );
+        if (
+          result.success === true &&
+          typeof result.programId === 'string' &&
+          (result.mode === 'code' || result.mode === 'trace')
+        ) {
+          const handle: CppPreparedProgramHandle = {
+            programId: result.programId,
+            mode: result.mode,
+            lifecycleGeneration,
+          };
+          return {
+            success: true,
+            handle,
+            consoleOutput: result.consoleOutput ?? [],
+            ...(result.timings ? { timings: result.timings } : {}),
+          };
+        }
+        return {
+          success: false,
+          error: result.error ?? 'C++ program preparation failed.',
+          consoleOutput: result.consoleOutput ?? [],
+          ...(result.errorLine !== undefined ? { errorLine: result.errorLine } : {}),
+          ...(result.diagnosticStage !== undefined
+            ? { diagnosticStage: result.diagnosticStage }
+            : {}),
+          ...(result.timings ? { timings: result.timings } : {}),
+          ...(result.timeoutReason === 'client-timeout'
+            ? { limitReason: 'client-timeout' as const }
+            : {}),
+        };
+      } catch (error) {
+        if (!this.isClientTimeout(error)) throw error;
+        const timeout = this.timeoutCodeResult(error);
+        return {
+          success: false,
+          error: timeout.error,
+          consoleOutput: timeout.consoleOutput,
+          timings: timeout.timings,
+          limitReason: 'client-timeout',
+        };
+      }
+    });
+  }
+
+  async executePreparedCode(
+    handle: CppPreparedProgramHandle,
+    call: RuntimePreparedCodeCall
+  ): Promise<CodeExecutionResult> {
+    const wallClockMs = call.limits?.wallClockMs ?? this.executionTimeoutMs;
+    return this.runInPreparedExecutionWorker(async (lifecycleGeneration) => {
+      this.assertPreparedProgramHandle(handle, 'code');
+      try {
+        const result = await this.runExecution(
+          this.core.sendMessageEffect<RawExecutionPayload>(
+            'execute-prepared-runtime-program',
+            {
+              programId: handle.programId,
+              mode: 'code',
+              inputs: call.inputs,
+            },
+            null,
+            undefined,
+            undefined,
+            () => {
+              this.assertLifecycleGeneration(lifecycleGeneration);
+              this.assertPreparedProgramHandle(handle, 'code');
+            }
+          ),
+          wallClockMs,
+          'compile-run',
+          call.signal,
+          lifecycleGeneration
+        );
+        return liftCodeOutcome(result, 'C++ prepared execution failed');
+      } catch (error) {
+        if (this.isClientTimeout(error)) return this.timeoutCodeResult(error);
+        throw error;
+      }
+    });
+  }
+
+  async executePreparedTrace(
+    handle: CppPreparedProgramHandle,
+    call: RuntimePreparedTraceCall
+  ): Promise<ExecutionResult> {
+    const wallClockMs = call.limits?.wallClockMs ?? this.tracingTimeoutMs;
+    return this.runInPreparedExecutionWorker(async (lifecycleGeneration) => {
+      this.assertPreparedProgramHandle(handle, 'trace');
+      try {
+        const result = await this.runExecution(
+          this.core.sendMessageEffect<CppRawTraceResult>(
+            'execute-prepared-runtime-program',
+            {
+              programId: handle.programId,
+              mode: 'trace',
+              inputs: call.inputs,
+              traceEventTransport: traceEventTransferRequest(),
+            },
+            null,
+            undefined,
+            undefined,
+            () => {
+              this.assertLifecycleGeneration(lifecycleGeneration);
+              this.assertPreparedProgramHandle(handle, 'trace');
+            }
+          ),
+          wallClockMs,
+          'trace',
+          call.signal,
+          lifecycleGeneration
+        );
+        return liftTraceOutcome(
+          result,
+          result.trace ??
+            createEmptyRuntimeTrace('cpp', {
+              runId: 'cpp:run',
+              file: CPP_DEFAULT_FILE,
+            }),
+          'C++ prepared tracing failed'
+        );
+      } catch (error) {
+        if (this.isClientTimeout(error)) return this.timeoutTraceResult(error);
+        throw error;
+      }
+    });
+  }
+
+  async disposePreparedProgram(handle: CppPreparedProgramHandle): Promise<void> {
+    const handleKey = this.preparedProgramHandleKey(handle);
+    if (this.disposedPreparedPrograms.has(handleKey)) {
+      throw new Error(`C++ prepared program "${handle.programId}" was already disposed.`);
+    }
+    if (handle.lifecycleGeneration !== this.executionLifecycleGeneration) {
+      // A timeout, caller abort, crash, or explicit termination already
+      // destroyed the worker and therefore the worker-owned program table.
+      this.disposedPreparedPrograms.add(handleKey);
+      return;
+    }
+    return this.runInPreparedExecutionWorker(async (lifecycleGeneration) => {
+      this.assertPreparedProgramHandle(handle);
+      const result = await this.runExecution(
+        this.core.sendMessageEffect<{ success: boolean }>(
+          'dispose-prepared-runtime-program',
+          {
+            programId: handle.programId,
+            mode: handle.mode,
+          },
+          null,
+          undefined,
+          undefined,
+          () => {
+            this.assertLifecycleGeneration(lifecycleGeneration);
+            this.assertPreparedProgramHandle(handle);
+          }
+        ),
+        this.executionTimeoutMs,
+        'compile-run',
+        undefined,
+        lifecycleGeneration
+      );
+      if (result.success !== true) {
+        throw new Error(`C++ prepared program "${handle.programId}" could not be disposed.`);
+      }
+      this.disposedPreparedPrograms.add(handleKey);
+    });
   }
 
   async executeCode(call: RuntimeCodeCall): Promise<CodeExecutionResult> {
