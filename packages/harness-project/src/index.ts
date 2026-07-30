@@ -399,7 +399,6 @@ import {
   defaultRuntimeExternalHttpPort,
   isBareHostnameForExternalResolution,
   redactRuntimeDiagnosticUrl,
-  stableKernelJournalFingerprint,
   syntheticIp,
   syntheticLatency,
   type HostResolution,
@@ -428,6 +427,7 @@ import { WorkspaceTerminalNavigation } from './workspace-terminal-navigation';
 import { WorkspaceAccessPolicy } from './workspace-access-policy';
 import { WorkspaceFileApi } from './workspace-file-api';
 import { WorkspaceDeviceIo } from './workspace-device-io';
+import { WorkspaceJournal } from './workspace-journal';
 
 const PRINCIPAL_ACTOR: RuntimeWorkspaceActor = runtimeWorkspaceActorPreset('principal');
 const RUNTIME_ACTOR: RuntimeWorkspaceActor = runtimeWorkspaceActorPreset('runtime');
@@ -581,6 +581,7 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
   private readonly processTable = this.processState.table;
   private readonly processExecutionHandles = this.processState.executionHandles;
   private readonly eventState = new WorkspaceEventState();
+  private readonly journalState: WorkspaceJournal;
   private readonly lifecycleState = new WorkspaceLifecycleState();
   private readonly terminalCommands = new WorkspaceTerminalCommands();
   private readonly filesystemCommands: WorkspaceFilesystemCommands;
@@ -699,6 +700,44 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
       findProcess: (pid) => this.findProcessRecord(pid),
       signalProcess: (process, signal) =>
         this.queueKernelProcessSignal(process, signal),
+    });
+    this.journalState = new WorkspaceJournal({
+      cwd: this.cwd,
+      eventState: this.eventState,
+      systemActor: SYSTEM_ACTOR,
+      authoritativeProcessSnapshot: (process) =>
+        this.authoritativeProcessSnapshot(process),
+      resolveFileSystemMutationProcess: (mutation) => {
+        const origin = mutation.origin as
+          | { readonly pid?: unknown }
+          | undefined;
+        if (!origin || !Number.isSafeInteger(origin.pid)) {
+          return undefined;
+        }
+        const process = this.processState.table.get(origin.pid as number);
+        const kernelProcess = process
+          ? this.kernelProcessFor(process)
+          : undefined;
+        if (
+          !process ||
+          kernelProcess?.fileSystemMutationOrigin !== origin
+        ) {
+          return undefined;
+        }
+        return {
+          process,
+          snapshot: kernelProcess.snapshot(),
+        };
+      },
+      emitJournalEvent: (record, actor, commandContext) =>
+        this.handleRuntimeCommandEvent(
+          {
+            type: 'kernel-journal',
+            record,
+            ...(actor ? { actor } : {}),
+          },
+          commandContext
+        ),
     });
     this.stopObservingExternalTraceKernelMutations =
       this.traceKernelBackingFileSystem.watchExternalMutations((mutation) => {
@@ -4072,66 +4111,14 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
   }
 
   private journalActorId(actor: RuntimeWorkspaceActor | undefined): string | undefined {
-    return actor ? `${actor.kind}:${actor.id}` : undefined;
+    return this.journalState.actorId(actor);
   }
 
   private journalActorFromProcess(
     process: TraceKernelProcessSnapshot,
     hintedActor?: RuntimeWorkspaceActor
   ): RuntimeWorkspaceActor {
-    if (
-      hintedActor &&
-      hintedActor.id === process.owner.id &&
-      this.traceKernelPrincipal(hintedActor).kind === process.owner.kind
-    ) {
-      return hintedActor;
-    }
-    const kind: RuntimeWorkspaceActor['kind'] =
-      process.owner.kind === 'system'
-        ? 'system'
-        : process.owner.kind === 'user'
-          ? 'principal'
-          : process.owner.kind === 'agent'
-            ? 'runtime'
-            : 'test';
-    return {
-      id: process.owner.id,
-      kind,
-    };
-  }
-
-  private authoritativeJournalEntry(
-    entry: KernelJournalEntry,
-    process: TraceKernelProcessSnapshot,
-    actor: RuntimeWorkspaceActor
-  ): KernelJournalEntry {
-    const actorId = this.journalActorId(actor);
-    switch (entry.kind) {
-      case 'fs':
-        return {
-          ...entry,
-          pid: process.pid,
-          actor: actorId ?? 'system:system',
-        };
-      case 'process':
-        return {
-          ...entry,
-          pid: process.pid,
-          ...(entry.op === 'exec'
-            ? {
-                ppid: process.ppid,
-                cwd: process.cwd,
-              }
-            : {}),
-          ...(actorId ? { actor: actorId } : {}),
-        };
-      case 'http':
-        return {
-          ...entry,
-          pid: process.pid,
-          ...(actorId ? { actor: actorId } : {}),
-        };
-    }
+    return this.journalState.actorFromProcess(process, hintedActor);
   }
 
   private recordJournal(
@@ -4140,29 +4127,12 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
     actor?: RuntimeWorkspaceActor,
     attributedProcess?: TraceKernelProcessSnapshot
   ): KernelJournalRecord {
-    const process = attributedProcess ??
-      (commandContext?.process
-        ? this.authoritativeProcessSnapshot(commandContext.process)
-        : 'pid' in entry && entry.pid !== undefined
-          ? this.authoritativeProcessSnapshot({ pid: entry.pid })
-          : undefined);
-    const authoritativeActor = process
-      ? this.journalActorFromProcess(process, actor)
-      : actor;
-    const attributedEntry = process
-      ? this.authoritativeJournalEntry(
-          entry,
-          process,
-          authoritativeActor!
-        )
-      : entry;
-    const record = this.eventState.recordJournal(attributedEntry);
-    this.handleRuntimeCommandEvent({
-      type: 'kernel-journal',
-      record,
-      ...(authoritativeActor ? { actor: authoritativeActor } : {}),
-    }, commandContext);
-    return record;
+    return this.journalState.record(
+      entry,
+      commandContext,
+      actor,
+      attributedProcess
+    );
   }
 
   private recordFileChangeJournal(
@@ -4170,114 +4140,17 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
     commandContext?: RuntimeCommandExecutionContext,
     process: RuntimeKernelProcessRecord | undefined = commandContext?.process as RuntimeKernelProcessRecord | undefined
   ): void {
-    const actor = event.actor ?? commandContext?.actor ?? SYSTEM_ACTOR;
-    const change = event.change;
-    const op = isRuntimeDirectoryChange(change)
-      ? change.deleted === true ? 'rmdir' : 'mkdir'
-      : (change as RuntimeFileDeletion).deleted === true ? 'delete' : 'write';
-    this.recordJournal({
-      kind: 'fs',
-      op,
-      path: change.path,
-      actor: this.journalActorId(actor) ?? 'system:system',
-      ...(process?.pid !== undefined ? { pid: process.pid } : {}),
-      ...(event.phase ? { phase: event.phase } : {}),
-    }, commandContext, actor);
+    this.journalState.recordFileChange(
+      event,
+      commandContext,
+      process
+    );
   }
 
   private recordTraceKernelFileSystemMutation(
     mutation: TraceKernelFileSystemMutation
   ): void {
-    const origin = mutation.origin as
-      | { readonly pid?: unknown }
-      | undefined;
-    if (!origin || !Number.isSafeInteger(origin.pid)) return;
-    const process = this.processState.table.get(origin.pid as number);
-    const kernelProcess = process
-      ? this.kernelProcessFor(process)
-      : undefined;
-    if (!process || kernelProcess?.fileSystemMutationOrigin !== origin) return;
-    const snapshot = kernelProcess.snapshot();
-    const actor = this.journalActorFromProcess(snapshot, process.actor);
-    const op: Extract<KernelJournalRecord, { kind: 'fs' }>['op'] =
-      mutation.operation === 'mkdir'
-        ? 'mkdir'
-        : mutation.operation === 'rmdir'
-          ? 'rmdir'
-          : mutation.operation === 'unlink'
-            ? 'delete'
-            : mutation.operation === 'rename'
-              ? 'rename'
-              : 'write';
-    const paths = mutation.operation === 'rename'
-      ? mutation.paths.slice(0, 1)
-      : mutation.paths;
-    for (const path of paths) {
-      if (!isWithinWorkspace(this.cwd, path)) continue;
-      this.recordJournal({
-        kind: 'fs',
-        op,
-        path: toProjectPath(this.cwd, path),
-        actor: this.journalActorId(actor) ?? 'system:system',
-        pid: snapshot.pid,
-        phase: 'live',
-      }, undefined, actor, snapshot);
-    }
-  }
-
-  private journalHttpAuth(headers: Record<string, string> | undefined): Pick<Extract<KernelJournalRecord, { kind: 'http' }>, 'authPresent' | 'authFingerprint'> {
-    const authorization = headers?.authorization;
-    if (!authorization) return { authPresent: false };
-    return {
-      authPresent: true,
-      authFingerprint: stableKernelJournalFingerprint(authorization),
-    };
-  }
-
-  private journalHttpError(error: string, headers: Record<string, string> | undefined): string {
-    let message = workspaceHttpPolicy.sanitizeDiagnosticField(error);
-    const authorization = headers?.authorization;
-    if (authorization) {
-      message = message.split(authorization).join('redacted');
-    }
-    return message;
-  }
-
-  private httpHeaderValue(headers: Record<string, string> | undefined, name: string): string | undefined {
-    if (!headers) return undefined;
-    const needle = name.toLowerCase();
-    for (const [headerName, value] of Object.entries(headers)) {
-      if (headerName.toLowerCase() === needle) return value;
-    }
-    return undefined;
-  }
-
-  private journalHttpMeta(
-    normalizedRequest: RuntimeKernelHttpRequest,
-    normalizedResponse?: RuntimeKernelHttpResponse
-  ): Extract<KernelJournalRecord, { kind: 'http' }>['meta'] | undefined {
-    const meta: NonNullable<Extract<KernelJournalRecord, { kind: 'http' }>['meta']> = {};
-    const idempotencyKey = this.httpHeaderValue(normalizedRequest.headers, 'idempotency-key');
-    const contentType = this.httpHeaderValue(normalizedRequest.headers, 'content-type');
-    const retryAfter = this.httpHeaderValue(normalizedResponse?.headers, 'retry-after');
-    const rateLimitLimit = this.httpHeaderValue(normalizedResponse?.headers, 'x-ratelimit-limit');
-    const rateLimitRemaining = this.httpHeaderValue(normalizedResponse?.headers, 'x-ratelimit-remaining');
-    const rateLimitReset = this.httpHeaderValue(normalizedResponse?.headers, 'x-ratelimit-reset');
-    if (idempotencyKey !== undefined) meta.idempotencyKeyFingerprint = stableKernelJournalFingerprint(idempotencyKey);
-    if (normalizedRequest.body !== undefined) {
-      meta.requestBodyFingerprint = stableKernelJournalFingerprint(runtimeHttpRequestText(normalizedRequest));
-    }
-    if (normalizedResponse?.body !== undefined && (idempotencyKey !== undefined || normalizedRequest.body !== undefined)) {
-      meta.responseBodyFingerprint = stableKernelJournalFingerprint(runtimeHttpResponseText(normalizedResponse));
-    }
-    if (contentType !== undefined) meta.contentType = contentType;
-    if (retryAfter !== undefined) meta.retryAfter = retryAfter;
-    const rateLimit: NonNullable<NonNullable<Extract<KernelJournalRecord, { kind: 'http' }>['meta']>['rateLimit']> = {};
-    if (rateLimitLimit !== undefined) rateLimit.limit = rateLimitLimit;
-    if (rateLimitRemaining !== undefined) rateLimit.remaining = rateLimitRemaining;
-    if (rateLimitReset !== undefined) rateLimit.reset = rateLimitReset;
-    if (Object.keys(rateLimit).length > 0) meta.rateLimit = rateLimit;
-    return Object.keys(meta).length > 0 ? meta : undefined;
+    this.journalState.recordFileSystemMutation(mutation);
   }
 
   private recordHttpJournal(
@@ -4288,26 +4161,18 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
     commandContext: RuntimeCommandExecutionContext | undefined,
     result: { status?: number; annotation?: unknown; error?: string; response?: RuntimeKernelHttpResponse }
   ): void {
-    const meta = this.journalHttpMeta(normalizedRequest, result.response);
-    this.recordJournal({
-      kind: 'http',
-      op: 'request',
-      method: normalizedRequest.method,
-      host: url.hostname.replace(/^\[|\]$/g, '').toLowerCase(),
-      path: url.pathname || '/',
-      ...(result.status !== undefined ? { status: result.status } : {}),
+    this.journalState.recordHttp(
+      normalizedRequest,
+      url,
       via,
-      ...(this.journalActorId(actor) ? { actor: this.journalActorId(actor) } : {}),
-      ...(commandContext?.process.pid !== undefined ? { pid: commandContext.process.pid } : {}),
-      ...this.journalHttpAuth(normalizedRequest.headers),
-      ...(result.annotation !== undefined ? { annotation: result.annotation } : {}),
-      ...(result.error !== undefined ? { error: this.journalHttpError(result.error, normalizedRequest.headers) } : {}),
-      ...(meta ? { meta } : {}),
-    }, commandContext, actor);
+      actor,
+      commandContext,
+      result
+    );
   }
 
   journal(sinceSeq?: number): readonly KernelJournalRecord[] {
-    return this.eventState.journal(sinceSeq);
+    return this.journalState.journal(sinceSeq);
   }
 
   private firstZombieProcessRecord(): RuntimeKernelProcessRecord | undefined {
