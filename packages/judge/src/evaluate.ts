@@ -1,11 +1,19 @@
 import * as Effect from 'effect/Effect';
 import {
+  constructJudgeVerdict,
+  structuralJsonComparator,
+  type JudgeCaseVerdict,
+  type JudgeComparator,
+} from './comparison';
+import {
   JudgeInfrastructureError,
   type JudgePlanError,
 } from './errors';
 import type {
   JudgeCaseResult,
+  JudgeCasePlan,
   JudgeCompileResult,
+  JudgeEvaluationOptions,
   JudgeEvaluationPlan,
   JudgeEvaluationResult,
   JudgeProcessResult,
@@ -88,17 +96,41 @@ function compileResult(
   });
 }
 
-function caseResult<Result>(
-  caseId: string,
+function notEvaluated(
+  reason: 'expected-not-provided' | 'case-did-not-complete'
+): JudgeCaseVerdict {
+  return Object.freeze({
+    kind: 'not-evaluated',
+    reason,
+  });
+}
+
+function expectedFields<Input, Expected>(
+  testCase: JudgeCasePlan<Input, Expected>
+): { readonly expected?: Expected } {
+  return Object.prototype.hasOwnProperty.call(testCase, 'expected')
+    ? { expected: testCase.expected }
+    : {};
+}
+
+function caseResult<Input, Expected, Result>(
+  planId: string,
+  testCase: JudgeCasePlan<Input, Expected>,
   outcome: JudgeKernelProcessOutcome,
-  resultPolicy: 'required' | 'optional'
-): JudgeCaseResult<Result> {
+  resultPolicy: 'required' | 'optional',
+  comparator: JudgeComparator<Input, Expected, Result>
+): JudgeCaseResult<Result, Expected> {
   const base = processResult(outcome);
+  const expected = expectedFields(testCase);
+  const trace = 'trace' in outcome ? { trace: outcome.trace } : {};
   if (outcome.timedOut) {
     return Object.freeze({
       ...base,
-      caseId,
+      ...expected,
+      ...trace,
+      caseId: testCase.id,
       status: 'timed-out',
+      verdict: notEvaluated('case-did-not-complete'),
     });
   }
   if (
@@ -107,8 +139,11 @@ function caseResult<Result>(
   ) {
     return Object.freeze({
       ...base,
-      caseId,
+      ...expected,
+      ...trace,
+      caseId: testCase.id,
       status: 'runtime-error',
+      verdict: notEvaluated('case-did-not-complete'),
     });
   }
   if (
@@ -117,19 +152,41 @@ function caseResult<Result>(
   ) {
     return Object.freeze({
       ...base,
-      caseId,
+      ...expected,
+      ...trace,
+      caseId: testCase.id,
       status: 'protocol-error',
+      verdict: notEvaluated('case-did-not-complete'),
       protocolError:
         'The runtime completed successfully without publishing a structured Judge result.',
     });
   }
+  const expectedProvided = Object.prototype.hasOwnProperty.call(
+    testCase,
+    'expected'
+  );
+  const actual = outcome.structuredResult as Result;
   return Object.freeze({
     ...base,
-    caseId,
+    ...expected,
+    ...trace,
+    caseId: testCase.id,
     status: 'completed',
+    verdict: expectedProvided
+      ? constructJudgeVerdict(
+          {
+            planId,
+            caseId: testCase.id,
+            input: testCase.input,
+            expected: testCase.expected as Expected,
+            actual,
+          },
+          comparator
+        )
+      : notEvaluated('expected-not-provided'),
     ...(outcome.structuredResult === undefined
       ? {}
-      : { value: outcome.structuredResult as Result }),
+      : { value: actual }),
   });
 }
 
@@ -184,12 +241,13 @@ function buildWorkspace<Snapshot>(
   );
 }
 
-function runCase<Snapshot, Input, Result>(
+function runCase<Snapshot, Input, Expected, Result>(
   port: JudgeKernelPort<Snapshot>,
-  plan: JudgeEvaluationPlan<Input>,
+  plan: JudgeEvaluationPlan<Input, Expected>,
   snapshot: Snapshot,
-  testCase: JudgeEvaluationPlan<Input>['cases'][number]
-): Effect.Effect<JudgeCaseResult<Result>, JudgeInfrastructureError> {
+  testCase: JudgeEvaluationPlan<Input, Expected>['cases'][number],
+  comparator: JudgeComparator<Input, Expected, Result>
+): Effect.Effect<JudgeCaseResult<Result, Expected>, JudgeInfrastructureError> {
   return Effect.scoped(
     Effect.gen(function* () {
       const session = yield* port.openSession({
@@ -217,20 +275,28 @@ function runCase<Snapshot, Input, Result>(
           value: testCase.input,
         }
       );
-      return caseResult<Result>(
-        testCase.id,
+      return caseResult<Input, Expected, Result>(
+        plan.id,
+        testCase,
         outcome,
-        plan.structuredResult ?? 'required'
+        plan.structuredResult ?? 'required',
+        comparator
       );
     })
   );
 }
 
-export function evaluateJudgePlan<Snapshot, Input = unknown, Result = unknown>(
+export function evaluateJudgePlan<
+  Snapshot,
+  Input = unknown,
+  Result = unknown,
+  Expected = unknown,
+>(
   port: JudgeKernelPort<Snapshot>,
-  plan: JudgeEvaluationPlan<Input>
+  plan: JudgeEvaluationPlan<Input, Expected>,
+  options: JudgeEvaluationOptions<Input, Expected, Result> = {}
 ): Effect.Effect<
-  JudgeEvaluationResult<Result>,
+  JudgeEvaluationResult<Result, Expected>,
   JudgePlanError | JudgeInfrastructureError
 > {
   return Effect.gen(function* () {
@@ -254,11 +320,13 @@ export function evaluateJudgePlan<Snapshot, Input = unknown, Result = unknown>(
     const cases = yield* Effect.forEach(
       plan.cases,
       (testCase) =>
-        runCase<Snapshot, Input, Result>(
+        runCase<Snapshot, Input, Expected, Result>(
           port,
           plan,
           build.snapshot!,
-          testCase
+          testCase,
+          options.comparator ??
+            structuralJsonComparator as JudgeComparator<Input, Expected, Result>
         ),
       {
         concurrency: plan.isolation?.maxConcurrency ?? 1,

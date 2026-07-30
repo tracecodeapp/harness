@@ -18,6 +18,11 @@ export interface JudgeRuntimeInvocationInput<Input = unknown> {
 
 export interface JudgeRuntimeInvocationOutput<Result = unknown> {
   readonly value?: Result;
+  /**
+   * Optional raw trace metadata. Judge preserves it but never includes it in
+   * expected-value comparison.
+   */
+  readonly trace?: unknown;
   readonly diagnostics?: readonly JudgeDiagnostic[];
 }
 
@@ -46,6 +51,7 @@ export interface JudgeKernelProcessOutcome {
   readonly stderr: string;
   readonly diagnostics?: readonly JudgeDiagnostic[];
   readonly structuredResult?: unknown;
+  readonly trace?: unknown;
   readonly timedOut: boolean;
   readonly startedAt?: number;
   readonly endedAt?: number;

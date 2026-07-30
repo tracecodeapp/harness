@@ -33,12 +33,34 @@ A plan is already lowered to process-level intent:
 - private generated-driver files;
 - an optional compile process;
 - a run process template;
-- ordered case inputs;
+- ordered case inputs and optional expected outputs;
 - isolation and concurrency policy.
 
 Judge does not generate language-specific source in this package. A problem
 adapter or runtime package may generate a driver and then supply it as a
 `judge-private` file.
+
+## Comparison and verdicts
+
+Runtime providers publish raw values. They do not receive expected values,
+comparators, or verdict policy. After a case process completes, Judge applies a
+`JudgeComparator` and constructs one of these verdicts:
+
+- `passed`;
+- `failed`;
+- `comparison-error`;
+- `not-evaluated`, when no expected output exists or the case did not complete.
+
+`structuralJsonComparator` is the default. It intentionally uses the
+`JSON.stringify(actual) === JSON.stringify(expected)` semantics from the 0.13
+browser and native paths so moving execution behind TraceKernel does not also
+change correctness policy. Products can inject another pure comparator through
+`JudgeEvaluationOptions` without changing a runtime provider or evaluation
+plan.
+
+Trace metadata is part of the raw case observation. Judge preserves it in the
+case result but compares only the published value, so tracing cannot change a
+case verdict.
 
 ## Private driver boundary
 
@@ -108,7 +130,7 @@ The 0.14 integration must reconcile:
 2. a worker-capable `JudgeRuntimeControlPort` transport;
 3. language-specific driver generation outside Judge;
 4. artifact/cache policy for compiled outputs;
-5. product comparators and scoring above Judge;
+5. product scoring and explanation policy above Judge;
 6. root build, typecheck, packaged-surface, and release scripts;
 7. browser differential coverage against the final 0.13 direct-runner oracle.
 

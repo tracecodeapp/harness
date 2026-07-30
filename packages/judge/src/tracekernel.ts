@@ -89,6 +89,9 @@ class TraceKernelJudgeProcess implements JudgeKernelProcess {
             ...(controlOutput && 'value' in controlOutput
               ? { structuredResult: controlOutput.value }
               : {}),
+            ...(controlOutput && 'trace' in controlOutput
+              ? { trace: controlOutput.trace }
+              : {}),
             timedOut:
               this.timeoutDeadlineAt !== undefined &&
               snapshot.termination?.kind === 'signal' &&

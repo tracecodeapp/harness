@@ -1,3 +1,8 @@
+import type {
+  JudgeCaseVerdict,
+  JudgeComparator,
+} from './comparison';
+
 export type JudgeFileVisibility = 'submission' | 'judge-private';
 
 export interface JudgeWorkspaceFile {
@@ -19,13 +24,18 @@ export interface JudgeProcessPlan {
   readonly timeoutMs?: number;
 }
 
-export interface JudgeCasePlan<Input = unknown> {
+export interface JudgeCasePlan<Input = unknown, Expected = unknown> {
   readonly id: string;
   /**
    * Delivered over the runtime control port. Case input is not serialized into
    * learner stdin/stdout and does not need to be mounted in the workspace.
    */
   readonly input: Input;
+  /**
+   * Omit this property for an execution-only case. An explicitly provided
+   * `undefined` remains an expected value and is compared normally.
+   */
+  readonly expected?: Expected;
   readonly env?: Readonly<Record<string, string>>;
 }
 
@@ -39,7 +49,7 @@ export interface JudgeIsolationPolicy {
   readonly maxConcurrency?: number;
 }
 
-export interface JudgeEvaluationPlan<Input = unknown> {
+export interface JudgeEvaluationPlan<Input = unknown, Expected = unknown> {
   readonly id: string;
   readonly runtime: string;
   readonly workspace: {
@@ -56,7 +66,7 @@ export interface JudgeEvaluationPlan<Input = unknown> {
   };
   readonly compile?: JudgeProcessPlan;
   readonly run: JudgeProcessPlan;
-  readonly cases: readonly JudgeCasePlan<Input>[];
+  readonly cases: readonly JudgeCasePlan<Input, Expected>[];
   readonly isolation?: JudgeIsolationPolicy;
   /**
    * Successful case processes normally must publish one structured result on
@@ -64,6 +74,18 @@ export interface JudgeEvaluationPlan<Input = unknown> {
    * exercises whose observable contract is intentionally stdout-only.
    */
   readonly structuredResult?: 'required' | 'optional';
+}
+
+export interface JudgeEvaluationOptions<
+  Input = unknown,
+  Expected = unknown,
+  Result = unknown,
+> {
+  /**
+   * Expected-value policy. Runtime providers publish only raw results and do
+   * not receive this comparator.
+   */
+  readonly comparator?: JudgeComparator<Input, Expected, Result>;
 }
 
 export type JudgeTermination =
@@ -108,7 +130,8 @@ export interface JudgeCompileResult extends JudgeProcessResult {
   readonly status: 'compiled' | 'compile-failed' | 'timed-out';
 }
 
-export interface JudgeCaseResult<Result = unknown> extends JudgeProcessResult {
+export interface JudgeCaseResult<Result = unknown, Expected = unknown>
+  extends JudgeProcessResult {
   readonly caseId: string;
   readonly status:
     | 'completed'
@@ -116,10 +139,13 @@ export interface JudgeCaseResult<Result = unknown> extends JudgeProcessResult {
     | 'timed-out'
     | 'protocol-error';
   readonly value?: Result;
+  readonly trace?: unknown;
+  readonly expected?: Expected;
+  readonly verdict: JudgeCaseVerdict;
   readonly protocolError?: string;
 }
 
-export type JudgeEvaluationResult<Result = unknown> =
+export type JudgeEvaluationResult<Result = unknown, Expected = unknown> =
   | {
       readonly planId: string;
       readonly status: 'compile-failed';
@@ -130,5 +156,5 @@ export type JudgeEvaluationResult<Result = unknown> =
       readonly planId: string;
       readonly status: 'completed';
       readonly compile?: JudgeCompileResult;
-      readonly cases: readonly JudgeCaseResult<Result>[];
+      readonly cases: readonly JudgeCaseResult<Result, Expected>[];
     };

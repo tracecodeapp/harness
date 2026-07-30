@@ -1,3 +1,4 @@
+export * from './comparison';
 export * from './errors';
 export * from './evaluate';
 export * from './model';
