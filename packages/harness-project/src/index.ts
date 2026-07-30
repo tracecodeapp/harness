@@ -458,6 +458,7 @@ import { createWorkspaceShellCommandRegistry } from './shell-command-registry';
 import { WorkspaceIdentityCommands } from './userland-identity-commands';
 import { WorkspaceFilesystemCommands } from './userland-filesystem-commands';
 import { WorkspaceNetworkCommands } from './userland-network-commands';
+import { WorkspaceProcessInspection } from './userland-process-inspection';
 import { WorkspaceTerminalCommands } from './userland-terminal-commands';
 
 const PRINCIPAL_ACTOR: RuntimeWorkspaceActor = runtimeWorkspaceActorPreset('principal');
@@ -615,6 +616,7 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
   private readonly terminalCommands = new WorkspaceTerminalCommands();
   private readonly filesystemCommands: WorkspaceFilesystemCommands;
   private readonly networkCommands: WorkspaceNetworkCommands;
+  private readonly processInspection: WorkspaceProcessInspection;
   private readonly readonlyFiles = new Set<string>();
   private kernelSyscallGenerationBuffer?: SharedArrayBuffer;
   private kernelSyscallGenerationUnsubscribe?: RuntimeWorkspaceUnsubscribe;
@@ -700,6 +702,13 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
           ...(commandContext ? { commandContext } : {}),
         });
       },
+    });
+    this.processInspection = new WorkspaceProcessInspection({
+      kernelInfo: this.kernelInfo,
+      principalProcess: () => this.principalProcessRecord(),
+      findProcess: (pid) => this.findProcessRecord(pid),
+      signalProcess: (process, signal) =>
+        this.queueKernelProcessSignal(process, signal),
     });
     this.stopObservingExternalTraceKernelMutations =
       this.traceKernelBackingFileSystem.watchExternalMutations((mutation) => {
@@ -873,10 +882,26 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
         getent: (args) => this.identityCommands.getent(args),
         groups: (args) => this.identityCommands.groups(args),
         kill: (args, context) => this.runKernelKill(args, 'kill', context),
-        jobs: (args, context) => this.runKernelJobs(args, context),
+        jobs: (args, context) => {
+          const commandContext =
+            this.resolveCommandContext(context);
+          return this.processInspection.jobs(
+            args,
+            this.kernelPresentationProcessRecords(
+              commandContext?.actor
+            ),
+            commandContext?.process.pid
+          );
+        },
         hostname: (args) => this.identityCommands.hostname(args),
         id: (args) => this.identityCommands.id(args),
-        lsof: (args, context) => this.runKernelLsof(args, context),
+        lsof: (args) =>
+          this.processInspection.lsof(
+            args,
+            [...this.httpState.listeners.values()].map(
+              (listener) => listener.info
+            )
+          ),
         locale: (args) => this.identityCommands.locale(args),
         ls: (args, context) =>
           this.filesystemCommands.ls(args, context),
@@ -889,11 +914,58 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
             args,
             this.terminalForCommand(context)
           ),
-        pgrep: (args, context) => this.runKernelProcessMatch(args, 'pgrep', context),
+        pgrep: (args, context) => {
+          const commandContext =
+            this.resolveCommandContext(context);
+          return this.processInspection.processMatch(
+            args,
+            'pgrep',
+            [
+              this.principalProcessRecord(),
+              ...this.kernelPresentationProcessRecords(
+                commandContext?.actor
+              ),
+            ].filter(
+              (process) =>
+                process.pid !== commandContext?.process.pid
+            )
+          );
+        },
         ping: (args) => this.networkCommands.ping(args),
-        pkill: (args, context) => this.runKernelProcessMatch(args, 'pkill', context),
-        ps: (args, context) => this.runKernelPs(args, context),
-        ss: (args, context) => this.runKernelSs(args, context),
+        pkill: (args, context) => {
+          const commandContext =
+            this.resolveCommandContext(context);
+          return this.processInspection.processMatch(
+            args,
+            'pkill',
+            [
+              this.principalProcessRecord(),
+              ...this.kernelPresentationProcessRecords(
+                commandContext?.actor
+              ),
+            ].filter(
+              (process) =>
+                process.pid !== commandContext?.process.pid
+            )
+          );
+        },
+        ps: (args, context) => {
+          const commandContext =
+            this.resolveCommandContext(context);
+          return this.processInspection.ps(args, [
+            this.principalProcessRecord(),
+            ...this.kernelPresentationProcessRecords(
+              commandContext?.actor
+            ),
+          ]);
+        },
+        ss: (args) =>
+          this.processInspection.ss(
+            args,
+            [...this.httpState.listeners.values()].map(
+              (listener) => listener.info
+            )
+          ),
         stat: (args, context) =>
           this.filesystemCommands.stat(args, context),
         stty: (args, context) =>
@@ -5482,300 +5554,6 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
       stderr: `tracekernelctl: unknown command: ${command}\nusage: tracekernelctl {status|reset|verbose [on|off|status]|kill <pid> [signal]|wait <pid>}\n`,
       exitCode: 2,
     };
-  }
-
-  private processDisplayName(process: RuntimeKernelProcessRecord): string {
-    const executable = process.command.trim().split(/\s+/, 1)[0] ?? process.command;
-    return executable.split('/').pop() || executable || 'process';
-  }
-
-  private processStat(process: RuntimeKernelProcessRecord): string {
-    const state = process.state === 'running'
-      ? 'R'
-      : process.state === 'blocked'
-        ? 'S'
-      : process.state === 'queued'
-        ? 'S'
-        : process.state === 'zombie'
-          ? 'Z'
-          : process.state === 'signaled'
-            ? 'X'
-            : 'S';
-    return `${state}${process.foreground ? '+' : ''}`;
-  }
-
-  private processStartLabel(process: RuntimeKernelProcessRecord): string {
-    const startedAt = new Date(process.startedAt);
-    if (Number.isNaN(startedAt.getTime())) return '--:--';
-    return startedAt.toISOString().slice(11, 16);
-  }
-
-  private processRecordsForInspection(ctx?: CommandContext): RuntimeKernelProcessRecord[] {
-    const currentPid = this.resolveCommandContext(ctx)?.process.pid;
-    return [
-      this.principalProcessRecord(),
-      ...this.kernelPresentationProcessRecords(
-        this.resolveCommandContext(ctx)?.actor
-      ),
-    ]
-      .filter((process) => process.pid !== currentPid);
-  }
-
-  private runKernelSs(args: string[], _ctx: CommandContext): RuntimeCommandResult {
-    const longFlags = new Map([
-      ['--listening', 'l'],
-      ['--tcp', 't'],
-      ['--numeric', 'n'],
-      ['--processes', 'p'],
-    ]);
-    let flags = '';
-    let invalid = false;
-    for (const arg of args) {
-      const longFlag = longFlags.get(arg);
-      if (longFlag) {
-        flags += longFlag;
-        continue;
-      }
-      if (/^-[ltnp]+$/.test(arg)) {
-        flags += arg.slice(1);
-        continue;
-      }
-      invalid = true;
-      break;
-    }
-    if (invalid) {
-      return { stdout: '', stderr: 'Usage: ss [-ltnp]\n', exitCode: 2 };
-    }
-    const showListeners = flags.includes('l');
-    const showProcesses = flags.includes('p');
-    const listeners = [...this.httpState.listeners.values()]
-      .map((listener) => listener.info)
-      .sort((left, right) => left.port - right.port || left.host.localeCompare(right.host));
-    const rows = listeners
-      .filter(() => showListeners || flags.length === 0)
-      .map((listener) => {
-        const process = this.findProcessRecord(listener.pid);
-        const processColumn = showProcesses
-          ? ` users:((\"${this.processDisplayName(process ?? this.principalProcessRecord())}\",pid=${listener.pid},fd=3))`
-          : '';
-        return `LISTEN 0      511    ${listener.host}:${listener.port}      0.0.0.0:*${processColumn}`;
-      });
-    return {
-      stdout: [
-        `State  Recv-Q Send-Q Local Address:Port Peer Address:Port${showProcesses ? ' Process' : ''}`,
-        ...rows,
-      ].join('\n') + '\n',
-      stderr: '',
-      exitCode: 0,
-    };
-  }
-
-  private runKernelLsof(args: string[], _ctx: CommandContext): RuntimeCommandResult {
-    let port: number | undefined;
-    for (let index = 0; index < args.length; index += 1) {
-      const arg = args[index] ?? '';
-      if (arg === '-i') {
-        const selector = args[++index];
-        if (!selector) return { stdout: '', stderr: 'lsof: option requires an argument -- i\n', exitCode: 1 };
-        const match = /^:(\d+)$/.exec(selector);
-        if (!match) return { stdout: '', stderr: `lsof: unsupported network selector: ${selector}\n`, exitCode: 1 };
-        port = Number(match[1]);
-        continue;
-      }
-      const match = /^-i:(\d+)$/.exec(arg);
-      if (match) {
-        port = Number(match[1]);
-        continue;
-      }
-      return { stdout: '', stderr: `lsof: unsupported option: ${arg}\n`, exitCode: 1 };
-    }
-    if (port === undefined) {
-      return { stdout: '', stderr: 'lsof: usage: lsof -i :PORT\n', exitCode: 1 };
-    }
-    const listeners = [...this.httpState.listeners.values()]
-      .map((listener) => listener.info)
-      .filter((listener) => listener.port === port)
-      .sort((left, right) => left.pid - right.pid);
-    if (listeners.length === 0) return { stdout: '', stderr: '', exitCode: 1 };
-    const rows = listeners.map((listener) => {
-      const process = this.findProcessRecord(listener.pid);
-      return [
-        this.processDisplayName(process ?? this.principalProcessRecord()).padEnd(9, ' '),
-        String(listener.pid).padStart(5, ' '),
-        this.kernelInfo.user.username.padEnd(8, ' '),
-        '3u',
-        'IPv4',
-        '-'.padStart(8, ' '),
-        '0t0'.padStart(8, ' '),
-        'TCP',
-        `${listener.host}:${listener.port} (LISTEN)`,
-      ].join(' ');
-    });
-    return {
-      stdout: ['COMMAND     PID USER     FD TYPE   DEVICE SIZE/OFF NODE NAME', ...rows].join('\n') + '\n',
-      stderr: '',
-      exitCode: 0,
-    };
-  }
-
-  private runKernelProcessMatch(
-    args: string[],
-    commandName: 'pgrep' | 'pkill',
-    ctx: CommandContext
-  ): RuntimeCommandResult {
-    let fullCommand = false;
-    let exact = false;
-    let listName = false;
-    let listFull = false;
-    let signalName = 'SIGTERM';
-    const positional: string[] = [];
-    for (const arg of args) {
-      if (arg === '--') {
-        positional.push(...args.slice(args.indexOf(arg) + 1));
-        break;
-      }
-      if (arg === '-f') {
-        fullCommand = true;
-        continue;
-      }
-      if (arg === '-x') {
-        exact = true;
-        continue;
-      }
-      if (commandName === 'pgrep' && arg === '-l') {
-        listName = true;
-        continue;
-      }
-      if (commandName === 'pgrep' && arg === '-a') {
-        listFull = true;
-        continue;
-      }
-      if (commandName === 'pgrep' && /^-[aflx]+$/.test(arg)) {
-        fullCommand ||= arg.includes('f');
-        exact ||= arg.includes('x');
-        listName ||= arg.includes('l');
-        listFull ||= arg.includes('a');
-        continue;
-      }
-      if (commandName === 'pkill' && /^-[fx]+$/.test(arg)) {
-        fullCommand ||= arg.includes('f');
-        exact ||= arg.includes('x');
-        continue;
-      }
-      if (commandName === 'pkill' && arg.startsWith('-') && arg.length > 1) {
-        const signal = normalizeTraceKernelSignal(arg.slice(1));
-        if (!signal) return { stdout: '', stderr: `${commandName}: invalid signal: ${arg.slice(1)}\n`, exitCode: 2 };
-        signalName = signal.name;
-        continue;
-      }
-      if (arg.startsWith('-')) {
-        return { stdout: '', stderr: `usage: ${commandName} [-f] [-x]${commandName === 'pgrep' ? ' [-a|-l]' : ' [-SIGNAL]'} pattern\n`, exitCode: 2 };
-      }
-      positional.push(arg);
-    }
-    if (positional.length !== 1) {
-      return { stdout: '', stderr: `usage: ${commandName} [-f] [-x]${commandName === 'pgrep' ? ' [-a|-l]' : ' [-SIGNAL]'} pattern\n`, exitCode: 2 };
-    }
-    let pattern: RegExp;
-    try {
-      pattern = new RegExp(exact ? `^(?:${positional[0]})$` : positional[0]);
-    } catch {
-      return { stdout: '', stderr: `${commandName}: invalid regular expression\n`, exitCode: 2 };
-    }
-    const matches = this.processRecordsForInspection(ctx).filter((process) => {
-      const candidate = fullCommand ? process.command : this.processDisplayName(process);
-      return pattern.test(candidate);
-    });
-    if (matches.length === 0) return { stdout: '', stderr: '', exitCode: 1 };
-    if (commandName === 'pgrep') {
-      const rows = matches.map((process) => listFull
-        ? `${process.pid} ${process.command}`
-        : listName
-          ? `${process.pid} ${this.processDisplayName(process)}`
-          : String(process.pid));
-      return { stdout: `${rows.join('\n')}\n`, stderr: '', exitCode: 0 };
-    }
-    let denied = 0;
-    let signaled = 0;
-    for (const process of matches) {
-      if (this.queueKernelProcessSignal(process, signalName)) signaled += 1;
-      else denied += 1;
-    }
-    if (signaled === 0 && denied > 0) {
-      return { stdout: '', stderr: `${commandName}: Operation not permitted\n`, exitCode: 1 };
-    }
-    return { stdout: '', stderr: '', exitCode: 0 };
-  }
-
-  private runKernelPs(args: string[], ctx: CommandContext): RuntimeCommandResult {
-    const supported = new Set(['', '-e', '-f', '-ef', 'aux']);
-    const mode = args.join('');
-    if (!supported.has(mode)) {
-      return { stdout: '', stderr: 'usage: ps [-e|-f|-ef|aux]\n', exitCode: 2 };
-    }
-    const processes = [
-      this.principalProcessRecord(),
-      ...this.kernelPresentationProcessRecords(
-        this.resolveCommandContext(ctx)?.actor
-      ),
-    ];
-    if (mode === 'aux') {
-      const rows = processes.map((process) => [
-        this.kernelInfo.user.username.padEnd(8, ' '),
-        String(process.pid).padStart(5, ' '),
-        '0.0'.padStart(4, ' '),
-        '0.0'.padStart(4, ' '),
-        '0'.padStart(7, ' '),
-        '0'.padStart(5, ' '),
-        (process.tty === '?' ? '?' : process.tty.replace('/dev/', '')).padEnd(7, ' '),
-        this.processStat(process).padEnd(4, ' '),
-        this.processStartLabel(process).padEnd(5, ' '),
-        '0:00'.padStart(5, ' '),
-        process.command,
-      ].join(' '));
-      return {
-        stdout: ['USER       PID %CPU %MEM    VSZ   RSS TTY     STAT START  TIME COMMAND', ...rows].join('\n') + '\n',
-        stderr: '',
-        exitCode: 0,
-      };
-    }
-    const rows = processes.map((process) =>
-      [
-        String(process.pid).padStart(5, ' '),
-        String(process.ppid).padStart(5, ' '),
-        String(process.pgid).padStart(5, ' '),
-        String(process.sid).padStart(5, ' '),
-        process.state.padEnd(8, ' '),
-        process.foreground ? '+' : '-',
-        process.tty.padEnd(8, ' '),
-        process.command,
-      ].join(' ')
-    );
-    return {
-      stdout: ['  PID  PPID  PGID   SID STAT     FG TTY      CMD', ...rows].join('\n') + '\n',
-      stderr: '',
-      exitCode: 0,
-    };
-  }
-
-  private runKernelJobs(args: string[], ctx: CommandContext): RuntimeCommandResult {
-    if (args.length > 1 || (args[0] !== undefined && args[0] !== '-l')) {
-      return { stdout: '', stderr: 'usage: jobs [-l]\n', exitCode: 2 };
-    }
-    const currentPid = this.resolveCommandContext(ctx)?.process.pid;
-    const rows = this.kernelPresentationProcessRecords(
-      this.resolveCommandContext(ctx)?.actor
-    )
-      .filter((process) => process.pid !== currentPid && process.pid !== 1)
-      .map((process, index) => {
-        const marker = process.foreground ? '+' : '-';
-        const status = process.state === 'running' ? 'Running' : process.state === 'zombie' ? 'Done' : process.state;
-        const placement = process.foreground ? 'foreground' : 'background';
-        return args[0] === '-l'
-          ? `[${index + 1}]${marker} ${process.pid}\t${status}\t${placement}\t${process.tty}\t${process.command}`
-          : `[${index + 1}]${marker} ${status}\t${process.command}`;
-      });
-    return { stdout: rows.length > 0 ? `${rows.join('\n')}\n` : '', stderr: '', exitCode: 0 };
   }
 
   private terminalJobRecords(): RuntimeProjectTerminalJobRecord[] {
