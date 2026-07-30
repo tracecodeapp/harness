@@ -490,3 +490,43 @@ test('rejects private driver files outside the reserved Judge namespace', async 
     assert.match(error, new RegExp(JudgePlanError.name));
   }
 });
+
+test('rejects non-canonical file aliases before duplicate and namespace checks', async () => {
+  const control = new InMemoryJudgeRuntimeControl();
+  const exit = await Effect.runPromiseExit(Effect.scoped(
+    Effect.gen(function* () {
+      const state = yield* makeState();
+      const host = yield* makeTraceKernelHost({
+        providers: [fakeProvider(control, state)],
+      });
+      const port = new TraceKernelJudgePort({
+        host,
+        runtimeControl: control,
+      });
+      return yield* evaluateJudgePlan(
+        port,
+        makePlan([{ value: 1 }], {
+          workspace: {
+            cwd: '/workspace',
+            files: [
+              {
+                path: '/workspace/solution.fake',
+                contents: 'canonical',
+                visibility: 'submission',
+              },
+              {
+                path: '/workspace/./solution.fake',
+                contents: 'alias',
+                visibility: 'submission',
+              },
+            ],
+          },
+        })
+      );
+    })
+  ));
+  assert.equal(exit._tag, 'Failure');
+  if (exit._tag === 'Failure') {
+    assert.match(exit.cause.toString(), /canonical absolute file path/);
+  }
+});

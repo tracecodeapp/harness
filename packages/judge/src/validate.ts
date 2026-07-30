@@ -14,7 +14,8 @@ function fail(message: string): Effect.Effect<never, JudgePlanError> {
 
 function validateAbsolutePath(
   path: string,
-  description: string
+  description: string,
+  allowRoot = false
 ): Effect.Effect<void, JudgePlanError> {
   if (!path.startsWith('/') || path.includes('\0')) {
     return fail(`${description} must be an absolute path without NUL bytes.`);
@@ -22,6 +23,15 @@ function validateAbsolutePath(
   const parts = path.split('/');
   if (parts.includes('..')) {
     return fail(`${description} must not contain parent traversal.`);
+  }
+  const canonical = `/${parts
+    .filter((part) => part.length > 0 && part !== '.')
+    .join('/')}`;
+  if (path !== canonical || (!allowRoot && canonical === '/')) {
+    return fail(
+      `${description} must be a canonical absolute file path; received ` +
+      `${JSON.stringify(path)} and expected ${JSON.stringify(canonical)}.`
+    );
   }
   return Effect.void;
 }
@@ -35,7 +45,7 @@ function validateProcess(
       return yield* fail(`${description} command must not be empty.`);
     }
     if (process.cwd !== undefined) {
-      yield* validateAbsolutePath(process.cwd, `${description} cwd`);
+      yield* validateAbsolutePath(process.cwd, `${description} cwd`, true);
     }
     if (
       process.timeoutMs !== undefined &&
@@ -102,7 +112,7 @@ export function validateJudgePlan(
       return yield* fail('Judge plan must define at least one case.');
     }
     if (plan.workspace.cwd !== undefined) {
-      yield* validateAbsolutePath(plan.workspace.cwd, 'Judge workspace cwd');
+      yield* validateAbsolutePath(plan.workspace.cwd, 'Judge workspace cwd', true);
     }
 
     const paths = new Set<string>();
