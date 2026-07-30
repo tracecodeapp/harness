@@ -473,6 +473,7 @@ import {
 import { WorkspaceLifecycleState } from './workspace-lifecycle-state';
 import { createWorkspaceShellCommandRegistry } from './shell-command-registry';
 import { WorkspaceIdentityCommands } from './userland-identity-commands';
+import { WorkspaceTerminalCommands } from './userland-terminal-commands';
 
 const PRINCIPAL_ACTOR: RuntimeWorkspaceActor = runtimeWorkspaceActorPreset('principal');
 const RUNTIME_ACTOR: RuntimeWorkspaceActor = runtimeWorkspaceActorPreset('runtime');
@@ -626,6 +627,7 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
   private readonly processExecutionHandles = this.processState.executionHandles;
   private readonly eventState = new WorkspaceEventState();
   private readonly lifecycleState = new WorkspaceLifecycleState();
+  private readonly terminalCommands = new WorkspaceTerminalCommands();
   private readonly readonlyFiles = new Set<string>();
   private kernelSyscallGenerationBuffer?: SharedArrayBuffer;
   private kernelSyscallGenerationUnsubscribe?: RuntimeWorkspaceUnsubscribe;
@@ -876,19 +878,45 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
         ps: (args, context) => this.runKernelPs(args, context),
         ss: (args, context) => this.runKernelSs(args, context),
         stat: (args, context) => this.runKernelStat(args, context),
-        stty: (args, context) => this.runKernelStty(args, context),
-        tput: (args, context) => this.runKernelTput(args, context),
+        stty: (args, context) =>
+          this.terminalCommands.stty(
+            args,
+            this.terminalForCommand(context)
+          ),
+        tput: (args, context) =>
+          this.terminalCommands.tput(
+            args,
+            this.terminalForCommand(context)
+          ),
         tracekernelctl: (args, context) => this.runTraceKernelCtl(args, context),
-        tty: (args, context) => this.runKernelTty(args, context),
-        umask: (args, context) => this.runKernelUmask(args, context),
+        tty: (args, context) =>
+          this.terminalCommands.tty(
+            args,
+            this.terminalForCommand(context)
+          ),
+        umask: (args, context) =>
+          this.terminalCommands.umask(
+            args,
+            this.resolveCommandContext(context)
+          ),
         uname: (args) => this.identityCommands.uname(args),
         wait: (args, context) => this.runKernelWait(args, 'wait', context),
         wget: (args, context) => this.runKernelWget(args, context),
         which: (args, context) => this.runTraceKernelWhich(args, 'which', context),
         whoami: (args) => this.identityCommands.whoami(args),
         command: (args, context) => this.runTraceKernelCommandBuiltin(args, context),
-        test: (args, context) => this.runKernelTestBuiltin(args, 'test', context),
-        'test-bracket': (args, context) => this.runKernelTestBuiltin(args, '[', context),
+        test: (args, context) =>
+          this.terminalCommands.testTerminal(
+            args,
+            'test',
+            this.terminalForCommand(context)
+          ),
+        'test-bracket': (args, context) =>
+          this.terminalCommands.testTerminal(
+            args,
+            '[',
+            this.terminalForCommand(context)
+          ),
       },
       help: (name, args) => this.traceKernelCommandHelp(name, args),
       withSignalContext: (context) => this.withCurrentKernelSignal(context),
@@ -6749,98 +6777,6 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
     );
   }
 
-  private runKernelTty(args: readonly string[], ctx: CommandContext): RuntimeCommandResult {
-    if (args.length > 0 && (args.length !== 1 || args[0] !== '-s')) {
-      return { stdout: '', stderr: 'usage: tty [-s]\n', exitCode: 2 };
-    }
-    if (!this.terminalForCommand(ctx)?.isTTY) {
-      return { stdout: args[0] === '-s' ? '' : 'not a tty\n', stderr: '', exitCode: 1 };
-    }
-    return { stdout: args[0] === '-s' ? '' : '/dev/tty\n', stderr: '', exitCode: 0 };
-  }
-
-  private runKernelTestBuiltin(
-    args: string[],
-    commandName: 'test' | '[',
-    ctx: CommandContext
-  ): RuntimeCommandResult {
-    const expression = commandName === '[' && args.at(-1) === ']' ? args.slice(0, -1) : args;
-    const bracketClosed = commandName !== '[' || args.at(-1) === ']';
-    const negated = expression[0] === '!';
-    const ttyExpression = negated ? expression.slice(1) : expression;
-    if (bracketClosed && ttyExpression.length === 2 && ttyExpression[0] === '-t') {
-      const rawFd = ttyExpression[1] ?? '';
-      const fd = /^\d+$/.test(rawFd) ? Number(rawFd) : -1;
-      const attached = this.terminalForCommand(ctx)?.isTTY === true && fd >= 0 && fd <= 2;
-      return { stdout: '', stderr: '', exitCode: (negated ? !attached : attached) ? 0 : 1 };
-    }
-    return { stdout: '', stderr: `${commandName}: invalid terminal test\n`, exitCode: 2 };
-  }
-
-  private runKernelUmask(args: readonly string[], ctx: CommandContext): RuntimeCommandResult {
-    const commandContext = this.resolveCommandContext(ctx);
-    const current = commandContext?.umask ?? 0o022;
-    if (args.length === 0) {
-      return { stdout: `${current.toString(8).padStart(4, '0')}\n`, stderr: '', exitCode: 0 };
-    }
-    if (args.length === 1 && args[0] === '-p') {
-      return { stdout: `umask ${current.toString(8).padStart(4, '0')}\n`, stderr: '', exitCode: 0 };
-    }
-    if (args.length === 1 && args[0] === '-S') {
-      const allowed = 0o777 & ~current;
-      const permissions = (bits: number) => `${bits & 4 ? 'r' : ''}${bits & 2 ? 'w' : ''}${bits & 1 ? 'x' : ''}`;
-      return {
-        stdout: `u=${permissions((allowed >> 6) & 7)},g=${permissions((allowed >> 3) & 7)},o=${permissions(allowed & 7)}\n`,
-        stderr: '',
-        exitCode: 0,
-      };
-    }
-    if (args.length !== 1) {
-      return { stdout: '', stderr: `bash: umask: ${args.join(' ')}: invalid symbolic mode operator\n`, exitCode: 1 };
-    }
-    const rawMode = args[0]!;
-    let next: number;
-    if (/^[0-7]{1,4}$/.test(rawMode)) {
-      next = Number.parseInt(rawMode, 8);
-      if (next > 0o777) {
-        return { stdout: '', stderr: `bash: umask: ${rawMode}: octal number out of range\n`, exitCode: 1 };
-      }
-    } else {
-      const clauses = rawMode.split(',');
-      let allowed = 0o777 & ~current;
-      for (const clause of clauses) {
-        const match = /^([ugoa]*)([+=-][rwx]*)+$/.exec(clause);
-        if (!match) {
-          return { stdout: '', stderr: `bash: umask: ${rawMode}: invalid symbolic mode operator\n`, exitCode: 1 };
-        }
-        const whoText = match[1] || 'a';
-        const classes = new Set(whoText.includes('a') ? ['u', 'g', 'o'] : [...whoText]);
-        const classMask = (classes.has('u') ? 0o700 : 0) |
-          (classes.has('g') ? 0o070 : 0) |
-          (classes.has('o') ? 0o007 : 0);
-        const operations = clause.slice(match[1]!.length).match(/[+=-][rwx]*/g) ?? [];
-        for (const operation of operations) {
-          const permissionText = operation.slice(1);
-          const permissionBits = (permissionText.includes('r') ? 4 : 0) |
-            (permissionText.includes('w') ? 2 : 0) |
-            (permissionText.includes('x') ? 1 : 0);
-          const requested = (classes.has('u') ? permissionBits << 6 : 0) |
-            (classes.has('g') ? permissionBits << 3 : 0) |
-            (classes.has('o') ? permissionBits : 0);
-          if (operation[0] === '=') allowed = (allowed & ~classMask) | requested;
-          else if (operation[0] === '+') allowed |= requested;
-          else allowed &= ~requested;
-        }
-      }
-      next = 0o777 & ~allowed;
-    }
-    if (commandContext) {
-      commandContext.umask = next;
-      commandContext.onUmaskChange?.(next);
-    }
-    return { stdout: '', stderr: '', exitCode: 0 };
-  }
-
   private runKernelMan(args: readonly string[]): RuntimeCommandResult {
     const command = args.find((arg) => !arg.startsWith('-'));
     if (!command) {
@@ -6859,60 +6795,6 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
 
   private terminalForCommand(ctx: CommandContext): RuntimeCommandOptions['terminal'] | undefined {
     return this.resolveCommandContext(ctx)?.terminal;
-  }
-
-  private runKernelStty(args: readonly string[], ctx: CommandContext): RuntimeCommandResult {
-    const terminal = this.terminalForCommand(ctx);
-    if (!terminal?.isTTY) {
-      return {
-        stdout: '',
-        stderr: 'stty: standard input: Inappropriate ioctl for device\n',
-        exitCode: 1,
-      };
-    }
-    if (args.length === 0) {
-      return { stdout: `speed 38400 baud; rows ${terminal.rows}; columns ${terminal.columns}; line = 0;\n`, stderr: '', exitCode: 0 };
-    }
-    if (args.length === 1 && args[0] === 'size') {
-      return { stdout: `${terminal.rows} ${terminal.columns}\n`, stderr: '', exitCode: 0 };
-    }
-    if (args.length === 1 && args[0] === '-a') {
-      return {
-        stdout: [
-          `speed 38400 baud; rows ${terminal.rows}; columns ${terminal.columns}; line = 0;`,
-          'intr = ^C; quit = ^\\; erase = ^?; kill = ^U; eof = ^D;',
-          'echo icanon isig',
-        ].join('\n') + '\n',
-        stderr: '',
-        exitCode: 0,
-      };
-    }
-    return {
-      stdout: '',
-      stderr: `stty: unsupported terminal setting: ${args.join(' ')}\n`,
-      exitCode: 1,
-    };
-  }
-
-  private runKernelTput(args: readonly string[], ctx: CommandContext): RuntimeCommandResult {
-    const terminal = this.terminalForCommand(ctx);
-    if (!terminal?.isTTY) {
-      return { stdout: '', stderr: 'tput: No value for $TERM and no -T specified\n', exitCode: 2 };
-    }
-    const capability = args[0];
-    if (!capability) return { stdout: '', stderr: 'tput: missing operand\n', exitCode: 2 };
-    if (capability === 'cols') return { stdout: `${terminal.columns}\n`, stderr: '', exitCode: 0 };
-    if (capability === 'lines') return { stdout: `${terminal.rows}\n`, stderr: '', exitCode: 0 };
-    if (capability === 'colors') {
-      const colors = [-1, 16, 256, 16_777_216][terminal.colorLevel] ?? -1;
-      return { stdout: `${colors}\n`, stderr: '', exitCode: 0 };
-    }
-    if (capability === 'longname') return { stdout: `${terminal.columns}-column ${terminal.term} terminal\n`, stderr: '', exitCode: 0 };
-    // TERM=dumb deliberately has no cursor-addressing or styling sequences.
-    if (['clear', 'el', 'ed', 'cup', 'bold', 'sgr0', 'setaf', 'setab'].includes(capability)) {
-      return { stdout: '', stderr: '', exitCode: 0 };
-    }
-    return { stdout: '', stderr: `tput: unknown terminfo capability '${capability}'\n`, exitCode: 4 };
   }
 
   private async runKernelWget(args: readonly string[], ctx: CommandContext): Promise<RuntimeCommandResult> {
