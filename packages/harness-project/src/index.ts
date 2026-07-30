@@ -52,9 +52,7 @@ import {
   runtimeKernelDeviceInputRoute,
   runtimeKernelDeviceOutputRoute,
   runtimeKernelDirectoryTarget,
-  runtimeKernelFileCopyTarget,
   runtimeKernelFileReadErrorMessage,
-  runtimeKernelFileReadTarget,
   runtimeKernelLinkTarget,
   runtimeKernelMkdirTarget,
   runtimeKernelMetadataErrorMessage,
@@ -74,8 +72,6 @@ import {
   runtimeKernelWriteTarget,
   publicRuntimeKernelInfo,
   publicRuntimeKernelVirtualFiles,
-  readPublicRuntimeProcFile,
-  readRuntimeProcFile,
   createRuntimeKernelReadonlyFileError,
 } from '@tracecode/harness-core';
 import { getLanguageRuntimeInfo, TRACECODE_HARNESS_VERSION } from '@tracecode/harness-core';
@@ -300,7 +296,6 @@ import {
   collectSnapshotFiles,
   contentToBytes,
   contentToBytesForRuntimeFile,
-  contentToText,
   decodeUtf8,
   filterHiddenSnapshotFiles,
   filterReadonlySnapshotDeletions,
@@ -311,19 +306,9 @@ import {
   isKernelVirtualFilesystemError,
   isRuntimeFileGenerationConflict,
   isRuntimeWorkspaceStorageLimitError,
-  kernelAccessTarget,
   kernelCommandFailure,
-  kernelDirectoryTarget,
-  kernelFileCopyTarget,
-  kernelFileReadTarget,
-  kernelMkdirTarget,
   kernelMutationTarget,
-  kernelReadTarget,
   kernelRemoveTarget,
-  kernelRenameTarget,
-  kernelStatTarget,
-  kernelWriteTarget,
-  normalizeProcPath,
   normalizeRuntimeFileEncoding,
   prepareFinalDiffChange,
   runtimeCommandError,
@@ -333,8 +318,6 @@ import {
   commandContextForFs,
   registerCommandContext,
   throwKernelMutationTargetError,
-  throwKernelReadTargetError,
-  throwKernelWriteTargetError,
   type RuntimeDynamicProcProvider,
   type RuntimeCommandExecutionContext,
   type RuntimeFileChangeObserver,
@@ -447,6 +430,7 @@ import { WorkspaceProcFileSystem } from './workspace-proc-filesystem';
 import { WorkspaceVirtualFileSystem } from './workspace-virtual-filesystem';
 import { WorkspaceTerminalNavigation } from './workspace-terminal-navigation';
 import { WorkspaceAccessPolicy } from './workspace-access-policy';
+import { WorkspaceFileApi } from './workspace-file-api';
 
 const PRINCIPAL_ACTOR: RuntimeWorkspaceActor = runtimeWorkspaceActorPreset('principal');
 const RUNTIME_ACTOR: RuntimeWorkspaceActor = runtimeWorkspaceActorPreset('runtime');
@@ -588,6 +572,7 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
   private readonly commandCatalog: WorkspaceCommandCatalog;
   private readonly procFiles: WorkspaceProcFileSystem;
   private readonly virtualFiles: WorkspaceVirtualFileSystem;
+  private readonly fileApi: WorkspaceFileApi;
   private readonly terminalNavigation: WorkspaceTerminalNavigation;
   private readonly identityCommands: WorkspaceIdentityCommands;
   private readonly virtualExecutableRecords = new Map<string, VirtualExecutableRecord>();
@@ -854,6 +839,26 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
       kernelInfo: this.kernelInfo,
       commandCatalog: this.commandCatalog,
       procFiles: this.procFiles,
+    });
+    this.fileApi = new WorkspaceFileApi({
+      cwd: this.cwd,
+      kernelInfo: this.kernelInfo,
+      fileSystem: this.fs,
+      virtualFiles: this.virtualFiles,
+      accessPolicy: this.accessPolicy,
+      assertNotDestroyed: () => this.assertNotDestroyed(),
+      ensureUsableForMutation: (operation) =>
+        this.assertWorkspaceUsableForMutation(operation),
+      assertActorFileCapability: (actor, capability, path) =>
+        this.assertActorFileCapability(actor, capability, path),
+      readDevice: (device) => this.readDevice(device),
+      writeDevice: (device, data, actor) =>
+        this.writeDevice(device, data, actor),
+      emitFileChange: (event, process) =>
+        this.emitLocalRuntimeEvent(event, undefined, process),
+      invalidateSnapshotCache: () => {
+        this.snapshotCache = null;
+      },
     });
     this.terminalNavigation = new WorkspaceTerminalNavigation({
       cwd: this.cwd,
@@ -5465,8 +5470,7 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
   }
 
   async writeFile(path: string, contents: string, encoding?: RuntimeFileEncoding): Promise<void> {
-    this.assertWorkspaceUsableForMutation('write');
-    await this.writeFileAs(path, contents, PRINCIPAL_ACTOR, encoding, 'live');
+    return this.fileApi.writeFile(path, contents, encoding);
   }
 
   private toWorkspacePath(path: string): string {
@@ -5583,33 +5587,6 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
     return this.terminalNavigation.completeCommand(input, cursor, options);
   }
 
-  private readProcFile(path: string, encoding?: RuntimeFileEncoding, options: { publicView?: boolean } = {}): string | null {
-    const procPath = normalizeProcPath(path);
-    if (procPath === null) return null;
-    if (encoding === 'base64') {
-      throw new Error(`Kernel proc path does not support base64 reads: ${path}`);
-    }
-    try {
-      const dynamicFile = this.procFiles.readFile(procPath);
-      if (dynamicFile !== null) return dynamicFile;
-      return options.publicView === false
-        ? readRuntimeProcFile(procPath, this.kernelInfo)
-        : readPublicRuntimeProcFile(procPath, this.kernelInfo);
-    } catch (error) {
-      if ((error as { code?: unknown }).code === 'ENOENT') throw new Error(`Kernel proc path not found: ${path}`);
-      throw error;
-    }
-  }
-
-  private readDeviceFile(path: string, encoding?: RuntimeFileEncoding): string | null {
-    const readTarget = kernelReadTarget(path);
-    if (readTarget.kind === 'workspace' || readTarget.kind === 'proc-file' || readTarget.kind === 'proc-directory') return null;
-    if (readTarget.kind === 'device-directory') throw new Error(`Kernel device path is a directory: ${path}`);
-    if (readTarget.kind === 'error') throwKernelReadTargetError(path, readTarget);
-    if (encoding === 'base64') return base64FromBytes(new TextEncoder().encode(this.readDevice(readTarget.path)));
-    return this.readDevice(readTarget.path);
-  }
-
   private readDevice(device: RuntimeKernelDevicePath, context?: RuntimeCommandExecutionContext): string {
     if (!runtimeKernelDeviceInputRoute(undefined, device)) return '';
     const stdinPipe = context?.stdinPipe;
@@ -5712,424 +5689,69 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
     phase: RuntimeFileMutationPhase = 'live',
     process?: RuntimeKernelProcessRecord
   ): Promise<void> {
-    this.assertActorFileCapability(actor, 'write', path);
-    this.assertWorkspaceUsableForMutation('write');
-    this.accessPolicy.assertDynamicVirtualWritable(path, 'write');
-    const writeTarget = kernelWriteTarget(path);
-    if (writeTarget.kind === 'error') throwKernelWriteTargetError(path, writeTarget);
-    if (writeTarget.kind === 'device') {
-      const normalizedEncoding = assertSupportedEncoding(encoding);
-      this.writeDevice(
-        writeTarget.device,
-        normalizedEncoding === 'base64'
-          ? new TextDecoder().decode(bytesFromBase64(contents))
-          : contents,
-        actor
-      );
-      return;
-    }
-    const normalizedEncoding = assertSupportedEncoding(encoding);
-    const absolutePath = this.toWorkspacePath(path);
-    const mutationKind: RuntimeFileSystemMutationKind = await this.bash.fs.exists(absolutePath) ? 'file-write' : 'file-create';
-    await this.fs.withBaseMutation([absolutePath], async (fs) => {
-      this.accessPolicy.assertWorkspacePathWritable(
-        absolutePath,
-        'write'
-      );
-      await fs.writeFile(
-        absolutePath,
-        normalizedEncoding === 'base64' ? bytesFromBase64(contents) : contents
-      );
-    }, mutationKind);
-    this.emitLocalRuntimeEvent({
-      type: 'file-change',
-      change: {
-        path: toProjectPath(this.cwd, absolutePath),
-        contents,
-        ...(normalizedEncoding === 'base64' ? { encoding: 'base64' as const } : {}),
-      },
-      phase,
+    return this.fileApi.writeFileAs(
+      path,
+      contents,
       actor,
-    }, undefined, process);
+      encoding,
+      phase,
+      process
+    );
   }
 
   async writeFiles(files: readonly RuntimeFile[]): Promise<void> {
-    for (const file of files) {
-      await this.writeFile(file.path, file.contents, file.encoding);
-    }
+    return this.fileApi.writeFiles(files);
   }
 
   async writeSkillFiles(files: readonly RuntimeFile[]): Promise<void> {
-    await this.writeSkillFilesAs(files, SYSTEM_ACTOR);
+    return this.fileApi.writeSkillFiles(files);
   }
 
   private async writeSkillFilesAs(
     files: readonly RuntimeFile[],
     actor: RuntimeWorkspaceActor = SYSTEM_ACTOR
   ): Promise<void> {
-    this.assertNotDestroyed();
-    this.virtualFiles.writeSkillFiles(files, (absolutePath) => {
-      this.assertActorFileCapability(actor, 'write', absolutePath);
-    });
-    this.snapshotCache = null;
+    return this.fileApi.writeSkillFilesAs(files, actor);
   }
 
   async appendFile(path: string, contents: string, encoding?: RuntimeFileEncoding): Promise<void> {
-    this.assertWorkspaceUsableForMutation('append');
-    this.accessPolicy.assertDynamicVirtualWritable(path, 'append');
-    const normalizedEncoding = assertSupportedEncoding(encoding);
-    const writeTarget = kernelWriteTarget(path);
-    if (writeTarget.kind === 'error') throwKernelWriteTargetError(path, writeTarget);
-    if (writeTarget.kind === 'device') {
-      this.writeDevice(
-        writeTarget.device,
-        normalizedEncoding === 'base64'
-          ? new TextDecoder().decode(bytesFromBase64(contents))
-          : contents,
-        PRINCIPAL_ACTOR
-      );
-      return;
-    }
-    const absolutePath = this.toWorkspacePath(path);
-    const mutationKind: RuntimeFileSystemMutationKind = await this.bash.fs.exists(absolutePath) ? 'file-write' : 'file-create';
-    const nextBytes = normalizedEncoding === 'base64'
-      ? bytesFromBase64(contents)
-      : new TextEncoder().encode(contents);
-    const bytes = await this.fs.withBaseMutation([absolutePath], async (fs) => {
-      this.accessPolicy.assertWorkspacePathWritable(
-        absolutePath,
-        'append'
-      );
-      await fs.appendFile(absolutePath, nextBytes);
-      return fs.readFileBuffer(absolutePath);
-    }, mutationKind);
-    this.emitLocalRuntimeEvent({
-      type: 'file-change',
-      change: normalizedEncoding === 'base64'
-        ? { path: toProjectPath(this.cwd, absolutePath), contents: base64FromBytes(bytes), encoding: 'base64' }
-        : { path: toProjectPath(this.cwd, absolutePath), contents: new TextDecoder().decode(bytes) },
-      phase: 'live',
-      actor: PRINCIPAL_ACTOR,
-    });
+    return this.fileApi.appendFile(path, contents, encoding);
   }
 
   async readFile(path: string, encoding?: RuntimeFileEncoding, options: { publicProc?: boolean } = {}): Promise<string> {
-    this.assertNotDestroyed();
-    const dynamicVirtualFile = this.virtualFiles.readFile(path);
-    if (dynamicVirtualFile !== null) {
-      if (encoding === 'base64') throw new Error(`Kernel virtual path does not support base64 reads: ${path}`);
-      return dynamicVirtualFile;
-    }
-    const procFile = this.readProcFile(path, encoding, { publicView: options.publicProc !== false });
-    if (procFile !== null) return procFile;
-    const readTarget = kernelReadTarget(path);
-    if (readTarget.kind === 'proc-file') {
-      if (encoding === 'base64') throw new Error(`Kernel proc path does not support base64 reads: ${path}`);
-      return options.publicProc === false
-        ? readRuntimeProcFile(readTarget.path, this.kernelInfo)
-        : readPublicRuntimeProcFile(readTarget.path, this.kernelInfo);
-    }
-    if (readTarget.kind === 'proc-directory') throw new Error(`Kernel proc path is a directory: ${path}`);
-    if (readTarget.kind === 'device-file') {
-      if (encoding === 'base64') return base64FromBytes(new TextEncoder().encode(this.readDevice(readTarget.path)));
-      return this.readDevice(readTarget.path);
-    }
-    if (readTarget.kind === 'device-directory') throw new Error(`Kernel device path is a directory: ${path}`);
-    if (readTarget.kind === 'error') throwKernelReadTargetError(path, readTarget);
-    const normalizedEncoding = assertSupportedEncoding(encoding);
-    const absolutePath = this.toWorkspacePath(path);
-    this.accessPolicy.assertWorkspacePathVisible(absolutePath, 'open');
-    if (normalizedEncoding === 'base64') {
-      const bytes = await this.bash.fs.readFileBuffer(absolutePath);
-      return base64FromBytes(bytes);
-    }
-    return this.bash.fs.readFile(absolutePath);
+    return this.fileApi.readFile(path, encoding, options);
   }
 
   async exists(path: string): Promise<boolean> {
-    this.assertNotDestroyed();
-    if (this.virtualFiles.entryKind(path) !== null) return true;
-    const accessTarget = kernelAccessTarget(path);
-    if (accessTarget.kind === 'allowed') return true;
-    if (accessTarget.kind === 'denied') return false;
-    const absolutePath = this.toWorkspaceEntryPath(path);
-    if (this.accessPolicy.isWorkspacePathHidden(absolutePath)) return false;
-    return this.bash.fs.exists(absolutePath);
+    return this.fileApi.exists(path);
   }
 
   async stat(path: string): Promise<RuntimeWorkspaceStat> {
-    this.assertNotDestroyed();
-    const dynamicStat = this.virtualFiles.stat(path);
-    if (dynamicStat) return {
-      isFile: dynamicStat.isFile,
-      isDirectory: dynamicStat.isDirectory,
-      mode: dynamicStat.mode,
-      size: dynamicStat.size,
-      mtimeMs: 0,
-      nlink: dynamicStat.isDirectory ? 2 : 1,
-      uid: dynamicStat.uid,
-      gid: dynamicStat.gid,
-      owner: dynamicStat.owner,
-      group: dynamicStat.group,
-    };
-    const statTarget = kernelStatTarget(path, this.kernelInfo);
-    if (statTarget.kind === 'stat') {
-      return {
-        isFile: statTarget.stat.isFile,
-        isDirectory: statTarget.stat.isDirectory,
-        mode: statTarget.stat.mode,
-        size: statTarget.stat.size,
-        mtimeMs: 0,
-        nlink: statTarget.stat.isDirectory ? 2 : 1,
-        uid: statTarget.stat.uid,
-        gid: statTarget.stat.gid,
-        owner: statTarget.stat.owner,
-        group: statTarget.stat.group,
-      };
-    }
-    if (statTarget.kind === 'error') throw new Error(`Kernel virtual path not found: ${path}`);
-    const absolutePath = this.toWorkspaceEntryPath(path);
-    this.accessPolicy.assertWorkspacePathVisible(absolutePath, 'stat');
-    const stat = await this.bash.fs.stat(absolutePath);
-    return {
-      isFile: stat.isFile,
-      isDirectory: stat.isDirectory,
-      mode: stat.mode,
-      size: stat.size,
-      mtimeMs: stat.mtime instanceof Date ? stat.mtime.getTime() : undefined,
-      nlink: typeof (stat as { nlink?: unknown }).nlink === 'number' ? (stat as { nlink?: number }).nlink : 1,
-      ino: this.fs.inodeForPath(absolutePath),
-    };
+    return this.fileApi.stat(path);
   }
 
   async readDir(path = '.'): Promise<string[]> {
-    this.assertNotDestroyed();
-    const dynamicEntries = this.virtualFiles.readDir(path);
-    if (dynamicEntries) return dynamicEntries.map((entry) => entry.name);
-    const directoryTarget = kernelDirectoryTarget(path);
-    if (directoryTarget.kind === 'directory') return directoryTarget.entries.map((entry) => entry.name);
-    if (directoryTarget.kind === 'error') {
-      throw new Error(
-        directoryTarget.reason === 'not-directory'
-          ? `Kernel virtual path is not a directory: ${path}`
-          : `Kernel virtual path not found: ${path}`
-      );
-    }
-    const absoluteDirectoryPath = this.toWorkspaceEntryPath(path);
-    this.accessPolicy.assertWorkspacePathVisible(
-      absoluteDirectoryPath,
-      'scandir'
-    );
-    const entries = await this.bash.fs.readdir(absoluteDirectoryPath);
-    const directoryPath = absoluteDirectoryPath === this.cwd ? '' : toProjectPath(this.cwd, absoluteDirectoryPath);
-    return [...entries]
-      .filter((entry) => {
-        const entryPath = directoryPath ? `${directoryPath}/${entry}` : entry;
-        return !this.accessPolicy.isProjectPathHidden(entryPath);
-      })
-      .sort((left, right) => left.localeCompare(right));
+    return this.fileApi.readDir(path);
   }
 
   async mkdir(path: string): Promise<void> {
-    this.assertWorkspaceUsableForMutation('mkdir');
-    this.accessPolicy.assertDynamicVirtualWritable(path, 'mkdir');
-    const mkdirTarget = kernelMkdirTarget(path);
-    if (mkdirTarget.kind === 'error') throwKernelMutationTargetError(path, mkdirTarget);
-    const absolutePath = this.toWorkspaceEntryPath(path);
-    let createdDirectories: string[] = [];
-    await this.fs.withBaseMutation([absolutePath], async (fs) => {
-      this.accessPolicy.assertWorkspacePathWritable(
-        absolutePath,
-        'mkdir'
-      );
-      createdDirectories = await this.collectMissingWorkspaceDirectories(absolutePath);
-      await fs.mkdir(absolutePath, { recursive: true });
-    }, 'directory-create');
-    for (const relativePath of createdDirectories) {
-      this.emitLocalRuntimeEvent({
-        type: 'file-change',
-        change: { path: relativePath, directory: true },
-        phase: 'live',
-        actor: PRINCIPAL_ACTOR,
-      });
-    }
+    return this.fileApi.mkdir(path);
   }
 
   async copyFile(sourcePath: string, destinationPath: string): Promise<void> {
-    this.assertWorkspaceUsableForMutation('copy');
-    this.accessPolicy.assertDynamicVirtualWritable(
-      destinationPath,
-      'copy'
-    );
-    const dynamicSourceFile = this.virtualFiles.readFile(sourcePath);
-    if (dynamicSourceFile !== null) {
-      await this.writeFileAs(destinationPath, dynamicSourceFile, PRINCIPAL_ACTOR, undefined, 'live');
-      return;
-    }
-    const copyTarget = kernelFileCopyTarget(sourcePath, destinationPath);
-    if (copyTarget.kind === 'virtual-source' || copyTarget.kind === 'device-destination') {
-      await this.copyFileLike(sourcePath, destinationPath, copyTarget);
-      return;
-    }
-    if (copyTarget.kind === 'error') {
-      throw new Error(
-        copyTarget.reason === 'is-directory'
-          ? `Kernel virtual path is a directory: ${sourcePath}`
-          : copyTarget.side === 'destination'
-            ? `Kernel virtual destination is not writable: ${destinationPath}`
-            : `Kernel virtual path not found: ${sourcePath}`
-      );
-    }
-    const absoluteDestinationPath = this.toWorkspacePath(destinationPath);
-    const absoluteSourcePath = this.toWorkspacePath(sourcePath);
-    this.accessPolicy.assertWorkspacePathVisible(
-      absoluteSourcePath,
-      'open'
-    );
-    const sourceBytes = await this.fs.withBaseMutation(
-      [absoluteSourcePath, absoluteDestinationPath],
-      async (fs) => {
-        this.accessPolicy.assertWorkspacePathWritable(
-          absoluteDestinationPath,
-          'copy'
-        );
-        const bytes = await fs.readFileBuffer(absoluteSourcePath);
-        await fs.writeFile(absoluteDestinationPath, bytes);
-        return bytes;
-      },
-      'copy'
-    );
-    this.emitLocalRuntimeEvent({
-      type: 'file-change',
-      change: { path: toProjectPath(this.cwd, absoluteDestinationPath), contents: base64FromBytes(sourceBytes), encoding: 'base64' },
-      phase: 'live',
-      actor: PRINCIPAL_ACTOR,
-    });
-  }
-
-  private async copyFileLike(
-    sourcePath: string,
-    destinationPath: string,
-    copyTarget: Exclude<ReturnType<typeof runtimeKernelFileCopyTarget>, { kind: 'workspace' | 'error' }>
-  ): Promise<void> {
-    const sourceBytes = await this.readKernelCopyBytes(sourcePath, copyTarget.source);
-    if (copyTarget.kind === 'device-destination') {
-      this.writeDevice(copyTarget.device, contentToText(sourceBytes), PRINCIPAL_ACTOR);
-      return;
-    }
-    await this.writeFileAs(destinationPath, base64FromBytes(sourceBytes), PRINCIPAL_ACTOR, 'base64', 'live');
-  }
-
-  private async readKernelCopyBytes(
-    sourcePath: string,
-    sourceTarget: ReturnType<typeof runtimeKernelFileReadTarget> = kernelFileReadTarget(sourcePath)
-  ): Promise<Uint8Array> {
-    const dynamicSourceFile = this.virtualFiles.readFile(sourcePath);
-    if (dynamicSourceFile !== null) return new TextEncoder().encode(dynamicSourceFile);
-    if (sourceTarget.kind === 'device-file') return new TextEncoder().encode(this.readDevice(sourceTarget.path));
-    if (sourceTarget.kind === 'proc-file') return new TextEncoder().encode(readPublicRuntimeProcFile(sourceTarget.path, this.kernelInfo));
-    if (sourceTarget.kind === 'error') {
-      throw new Error(
-        sourceTarget.reason === 'is-directory'
-          ? `Kernel virtual path is a directory: ${sourcePath}`
-          : `Kernel virtual path not found: ${sourcePath}`
-      );
-    }
-    const absolutePath = this.toWorkspacePath(sourcePath);
-    this.accessPolicy.assertWorkspacePathVisible(absolutePath, 'open');
-    return this.bash.fs.readFileBuffer(absolutePath);
+    return this.fileApi.copyFile(sourcePath, destinationPath);
   }
 
   async moveFile(sourcePath: string, destinationPath: string): Promise<void> {
-    this.assertWorkspaceUsableForMutation('move');
-    this.accessPolicy.assertDynamicVirtualWritable(sourcePath, 'move');
-    this.accessPolicy.assertDynamicVirtualWritable(
-      destinationPath,
-      'move'
-    );
-    const renameTarget = kernelRenameTarget(sourcePath, destinationPath);
-    if (renameTarget.kind === 'error') throw new Error('Kernel virtual paths are read-only for move operations.');
-    const absoluteSourcePath = this.toWorkspacePath(sourcePath);
-    const absoluteDestinationPath = this.toWorkspacePath(destinationPath);
-    let sourceBytes = new Uint8Array() as Awaited<ReturnType<IFileSystem['readFileBuffer']>>;
-    await this.fs.withBaseMutation([absoluteSourcePath, absoluteDestinationPath], async (fs) => {
-      this.accessPolicy.assertWorkspaceSubtreeWritable(
-        this.toWorkspaceEntryPath(sourcePath),
-        'move'
-      );
-      this.accessPolicy.assertWorkspaceSubtreeWritable(
-        this.toWorkspaceEntryPath(destinationPath),
-        'move'
-      );
-      this.accessPolicy.assertWorkspacePathWritable(
-        absoluteDestinationPath,
-        'move'
-      );
-      sourceBytes = await fs.readFileBuffer(absoluteSourcePath);
-      await fs.mv(absoluteSourcePath, absoluteDestinationPath);
-    }, 'rename');
-    this.fs.moveInode(absoluteSourcePath, absoluteDestinationPath);
-    this.emitLocalRuntimeEvent({
-      type: 'file-change',
-      change: { path: toProjectPath(this.cwd, absoluteDestinationPath), contents: base64FromBytes(sourceBytes), encoding: 'base64' },
-      phase: 'live',
-      actor: PRINCIPAL_ACTOR,
-    });
-    this.emitLocalRuntimeEvent({
-      type: 'file-change',
-      change: { path: this.toWorkspaceRelativePath(sourcePath), deleted: true },
-      phase: 'live',
-      actor: PRINCIPAL_ACTOR,
-    });
+    return this.fileApi.moveFile(sourcePath, destinationPath);
   }
 
   async deleteFile(path: string): Promise<void> {
-    this.assertWorkspaceUsableForMutation('delete');
-    this.accessPolicy.assertDynamicVirtualWritable(path, 'delete');
-    const removeTarget = kernelRemoveTarget(path);
-    if (removeTarget.kind === 'error') throwKernelMutationTargetError(path, removeTarget);
-    const absolutePath = this.toWorkspacePath(path);
-    await this.fs.withBaseMutation([absolutePath], async (fs) => {
-      this.accessPolicy.assertWorkspacePathWritable(
-        absolutePath,
-        'delete'
-      );
-      await fs.rm(absolutePath, { force: true });
-    }, 'delete');
-    this.emitLocalRuntimeEvent({
-      type: 'file-change',
-      change: { path: this.toWorkspaceRelativePath(path), deleted: true },
-      phase: 'live',
-      actor: PRINCIPAL_ACTOR,
-    });
+    return this.fileApi.deleteFile(path);
   }
 
   async remove(path: string, options: RuntimeWorkspaceRemoveOptions = {}): Promise<void> {
-    this.assertWorkspaceUsableForMutation('remove');
-    this.accessPolicy.assertDynamicVirtualWritable(path, 'remove');
-    const removeTarget = kernelRemoveTarget(path);
-    if (removeTarget.kind === 'error') throwKernelMutationTargetError(path, removeTarget);
-    let deletedChanges: RuntimeFileChange[] = [];
-    const absolutePath = this.toWorkspaceEntryPath(path);
-    await this.fs.withBaseMutation([absolutePath], async (fs) => {
-      deletedChanges = await this.collectDeletedChangesForRemove(path, options, fs);
-      this.accessPolicy.assertWorkspaceSubtreeWritable(
-        absolutePath,
-        'remove'
-      );
-      await fs.rm(absolutePath, {
-        force: options.force ?? true,
-        recursive: options.recursive,
-      });
-    }, options.recursive ? 'recursive-delete' : 'delete');
-    for (const change of deletedChanges) {
-      this.emitLocalRuntimeEvent({
-        type: 'file-change',
-        change,
-        phase: 'live',
-        actor: PRINCIPAL_ACTOR,
-      });
-    }
+    return this.fileApi.remove(path, options);
   }
 
   async runCommand(command: string, options: RuntimeCommandOptions = {}): Promise<RuntimeCommandResult> {
@@ -7993,49 +7615,6 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
       ...event,
       ...(actor && !event.actor ? { actor } : {}),
     };
-  }
-
-  private async collectMissingWorkspaceDirectories(absolutePath: string): Promise<string[]> {
-    if (!isWithinWorkspace(this.cwd, absolutePath) || absolutePath === this.cwd) return [];
-    const relativeParts = toProjectPath(this.cwd, absolutePath).split('/').filter(Boolean);
-    const missing: string[] = [];
-    let current = this.cwd;
-    for (const part of relativeParts) {
-      current = `${current}/${part}`;
-      if (!(await this.bash.fs.exists(current))) missing.push(toProjectPath(this.cwd, current));
-    }
-    return missing;
-  }
-
-  private async collectDeletedChangesForRemove(
-    path: string,
-    options: RuntimeWorkspaceRemoveOptions,
-    fs: IFileSystem = this.bash.fs
-  ): Promise<RuntimeFileChange[]> {
-    const absolutePath = this.toWorkspaceEntryPath(path);
-    if (!(await fs.exists(absolutePath))) return [];
-    const stat = await fs.stat(absolutePath);
-    if (stat.isFile) return [{ path: toProjectPath(this.cwd, absolutePath), deleted: true }];
-    if (!stat.isDirectory || !options.recursive) return [];
-
-    const files: RuntimeFile[] = [];
-    const directories: string[] = [];
-    const symlinks: RuntimeSymlink[] = [];
-    await collectSnapshotFiles(fs, this.cwd, absolutePath, files, directories, symlinks);
-    const directoryPath = toProjectDirectoryPath(this.cwd, absolutePath);
-    const deletedDirectories = [
-      ...directories,
-      ...(directoryPath ? [directoryPath] : []),
-    ].sort((left, right) => right.localeCompare(left));
-    return [
-      ...files.map((file): RuntimeFileDeletion => ({ path: file.path, deleted: true })),
-      ...symlinks.map((symlink): RuntimeFileDeletion => ({ path: symlink.path, deleted: true })),
-      ...deletedDirectories.map((deletedPath): RuntimeDirectoryChange => ({
-        path: deletedPath,
-        directory: true,
-        deleted: true,
-      })),
-    ];
   }
 
   private async collectWorkspaceFilesCached(): Promise<{ files: RuntimeFile[]; directories: string[]; directoryMetadata: RuntimeDirectory[]; symlinks: RuntimeSymlink[]; kernelFiles: RuntimeFile[] }> {
