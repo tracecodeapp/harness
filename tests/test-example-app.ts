@@ -1,10 +1,12 @@
 #!/usr/bin/env npx tsx
 
 import { test } from 'node:test';
+import { readFile } from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 
 import {
+  assertCondition,
   runCommand,
   runExampleBrowserSmoke,
   startPreviewServer,
@@ -15,6 +17,39 @@ async function main(): Promise<void> {
   const repoRoot = join(dirname(fileURLToPath(import.meta.url)), '..');
   const exampleDir = join(repoRoot, 'examples', 'web-ide');
   const previewPort = 4300 + Math.floor(Math.random() * 200);
+
+  const exampleSource = await readFile(
+    join(exampleDir, 'src', 'main.ts'),
+    'utf8',
+  );
+  for (const requiredPublicApi of [
+    'createBrowserRuntimeHost',
+    'createBrowserRuntimeJudge',
+    'Effect.scoped',
+    'signal: controller.signal',
+    'runtimeHost.dispose()',
+    'VITE_JAVA_RUNTIME_ASSET_BASE_URL',
+    'runtimeAssetBaseUrl: javaRuntimeAssetBaseUrl',
+  ]) {
+    assertCondition(
+      exampleSource.includes(requiredPublicApi),
+      `Example source must demonstrate ${requiredPublicApi}`,
+    );
+  }
+  for (const retiredSurface of [
+    'createBrowserHarness',
+    '.getClient(',
+    '.executeCode(',
+    '.executeWithTracing(',
+    'BrowserRuntimeAssetManifest',
+    '@tracecode/harness/core',
+    'cjrtnc.leaningtech.com',
+  ]) {
+    assertCondition(
+      !exampleSource.includes(retiredSurface),
+      `Example source must not use retired surface ${retiredSurface}`,
+    );
+  }
 
   await runCommand('pnpm', ['--dir', exampleDir, 'build'], repoRoot);
 
@@ -35,7 +70,7 @@ async function main(): Promise<void> {
     await preview.waitForExit;
   }
 
-  console.log('PASS: example web IDE boots and runs all supported browser runtimes');
+  console.log('PASS: example web IDE boots and runs all enabled browser runtimes');
 }
 
 test('example app', main);

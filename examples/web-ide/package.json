@@ -10,6 +10,7 @@
   },
   "dependencies": {
     "@tracecode/harness": "workspace:*",
+    "effect": "3.22.0",
     "monaco-editor": "^0.55.1"
   },
   "devDependencies": {

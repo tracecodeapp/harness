@@ -261,7 +261,7 @@ async function runLanguageExampleSmoke(
   options: {
     executionTimeoutMs: number;
     traceTimeoutMs: number;
-    assertTrace?: (traceResult: { kind?: string; trace?: unknown }) => void;
+    assertTrace?: (traceResult: { status?: string; trace?: unknown }) => void;
   }
 ): Promise<void> {
   await page.selectOption('#language', language);
@@ -275,13 +275,13 @@ async function runLanguageExampleSmoke(
         if (!text) return false;
 
         try {
-          const parsed = JSON.parse(text) as { kind?: string; output?: unknown };
+          const parsed = JSON.parse(text) as { status?: string; value?: unknown };
           return (
-            parsed.kind === 'completed' &&
-            Array.isArray(parsed.output) &&
-            parsed.output.length === 2 &&
-            parsed.output[0] === 0 &&
-            parsed.output[1] === 1
+            parsed.status === 'completed' &&
+            Array.isArray(parsed.value) &&
+            parsed.value.length === 2 &&
+            parsed.value[0] === 0 &&
+            parsed.value[1] === 1
           );
         } catch {
           return false;
@@ -305,14 +305,14 @@ async function runLanguageExampleSmoke(
         if (!text) return false;
 
         try {
-          const parsed = JSON.parse(text) as { kind?: string; trace?: unknown };
+          const parsed = JSON.parse(text) as { status?: string; trace?: unknown };
           const trace = parsed.trace;
           const events = Array.isArray(trace)
             ? trace
             : trace && typeof trace === 'object' && Array.isArray((trace as { events?: unknown }).events)
               ? (trace as { events: unknown[] }).events
               : [];
-          return parsed.kind === 'completed' && events.length > 0;
+          return parsed.status === 'completed' && events.length > 0;
         } catch {
           return false;
         }
@@ -328,9 +328,9 @@ async function runLanguageExampleSmoke(
 
   const traceText = await page.textContent('#trace-output');
   assertCondition(typeof traceText === 'string', `Expected trace output for ${language}`);
-  const traceResult = JSON.parse(traceText) as { kind?: string; trace?: unknown };
+  const traceResult = JSON.parse(traceText) as { status?: string; trace?: unknown };
   const traceEvents = runtimeTraceEvents(traceResult.trace);
-  assertCondition(traceResult.kind === 'completed', `Expected successful trace result for ${language}`);
+  assertCondition(traceResult.status === 'completed', `Expected successful trace result for ${language}`);
   assertCondition(
     traceEvents.length > 0,
     `Expected non-empty runtime trace events for ${language}`
@@ -349,8 +349,8 @@ async function runCSharpExampleSmoke(page: import('playwright').Page): Promise<v
         if (!text) return false;
 
         try {
-          const parsed = JSON.parse(text) as { kind?: string; output?: unknown };
-          return parsed.kind === 'completed' && parsed.output === 5;
+          const parsed = JSON.parse(text) as { status?: string; value?: unknown };
+          return parsed.status === 'completed' && parsed.value === 5;
         } catch {
           return false;
         }
@@ -363,6 +363,50 @@ async function runCSharpExampleSmoke(page: import('playwright').Page): Promise<v
       cause: error,
     });
   }
+}
+
+async function runScopedCancellationSmoke(page: import('playwright').Page): Promise<void> {
+  await page.selectOption('#language', 'javascript');
+  await page.click('#trace');
+  await page.waitForFunction(
+    () => document.querySelector('#status')?.textContent === 'Tracing...',
+    undefined,
+    { timeout: 60_000 },
+  );
+
+  await page.click('#run');
+  try {
+    await page.waitForFunction(
+      () => {
+        const output = document.querySelector('#execution-output');
+        const text = output?.textContent;
+        if (!text) return false;
+        try {
+          const parsed = JSON.parse(text) as { status?: string; value?: unknown };
+          return (
+            parsed.status === 'completed' &&
+            Array.isArray(parsed.value) &&
+            parsed.value[0] === 0 &&
+            parsed.value[1] === 1
+          );
+        } catch {
+          return false;
+        }
+      },
+      undefined,
+      { timeout: 60_000 },
+    );
+  } catch (error) {
+    throw new Error(
+      `Example did not recover after interrupting a scoped trace: ${await readExampleSmokeDiagnostics(page)}`,
+      { cause: error },
+    );
+  }
+
+  assertCondition(
+    (await page.textContent('#trace-output') ?? '').length === 0,
+    'Interrupted trace must not publish a stale result',
+  );
 }
 
 async function runDevTerminalSmoke(page: import('playwright').Page, previewUrl: string): Promise<void> {
@@ -1443,25 +1487,51 @@ export async function runExampleBrowserSmoke(previewUrl: string): Promise<void> 
       'Example deployment must provide COOP/COEP headers for SharedArrayBuffer-backed runtimes'
     );
 
+    const enabledLanguages = new Set(
+      await page.locator('#language option').evaluateAll((options) =>
+        options.map((option) => (option as HTMLOptionElement).value)
+      )
+    );
+    for (const requiredLanguage of [
+      'python',
+      'javascript',
+      'typescript',
+      'csharp',
+      'cpp',
+    ]) {
+      assertCondition(
+        enabledLanguages.has(requiredLanguage),
+        `Expected the example to enable ${requiredLanguage}`,
+      );
+    }
+
+    await runScopedCancellationSmoke(page);
     for (const language of ['python', 'javascript', 'typescript', 'java', 'cpp'] as const) {
+      if (!enabledLanguages.has(language)) continue;
       await runLanguageExampleSmoke(page, language, {
         executionTimeoutMs: language === 'python' || language === 'java' || language === 'cpp' ? 240_000 : 60_000,
         traceTimeoutMs: language === 'python' || language === 'java' || language === 'cpp' ? 240_000 : 60_000,
       });
     }
-    await runCSharpExampleSmoke(page);
+    if (enabledLanguages.has('csharp')) {
+      await runCSharpExampleSmoke(page);
+    }
   } finally {
     await browser.close();
   }
 }
 
-export async function runJavaExampleBrowserSmoke(previewUrl: string): Promise<void> {
+export async function runJavaExampleBrowserSmoke(previewUrl: string): Promise<boolean> {
   const browser = await chromium.launch({ headless: true });
 
   try {
     const page = await browser.newPage();
     page.setDefaultTimeout(240_000);
     await page.goto(previewUrl, { waitUntil: 'networkidle' });
+    const javaEnabled = await page.locator(
+      '#language option[value="java"]'
+    ).count() > 0;
+    if (!javaEnabled) return false;
 
     await runLanguageExampleSmoke(page, 'java', {
       executionTimeoutMs: 240_000,
@@ -1478,6 +1548,7 @@ export async function runJavaExampleBrowserSmoke(previewUrl: string): Promise<vo
         assertCondition(accessKinds.has('read'), 'Expected Java trace to include read access events');
       },
     });
+    return true;
   } finally {
     await browser.close();
   }

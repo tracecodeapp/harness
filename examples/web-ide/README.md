@@ -6,8 +6,9 @@ This app is intentionally small. It exists to prove that a third-party browser a
 
 - install the package
 - sync the published worker assets
-- create an explicit browser harness instance
-- execute and trace Python, JavaScript, TypeScript, Java, C#, and C++
+- create a browser-owned runtime host
+- evaluate each action through the scoped browser Judge
+- execute and trace Python, JavaScript, TypeScript, C++, C#, and optionally Java
 - render execution output and full trace payloads
 
 It is not the canonical TraceCode product UI, and it does not exercise
@@ -24,17 +25,33 @@ pnpm --dir examples/web-ide dev
 ```
 
 The app syncs harness worker assets into `public/workers` before `dev`, `build`, and `preview`.
-The Java example also publishes an explicit consumer-owned runtime manifest
-that selects the official CheerpJ 4.2 loader. CheerpJ itself is not copied by
-`sync-assets`; production consumers should replace that manifest with the
-versioned loader and origin policy approved for their deployment.
+The browser runtime host resolves the package's canonical bridge assets from
+that directory. Java is enabled only when the build defines an external,
+immutable Java runtime asset root:
+
+```bash
+VITE_JAVA_RUNTIME_ASSET_BASE_URL=https://assets.example.com/java/v1/ pnpm --dir examples/web-ide dev
+```
+
+The URL is passed through the provider-neutral
+`java.runtimeAssetBaseUrl` host option. The external tree must expose the
+versioned engine modules, Wasm, and profile files expected by the Java bridge,
+with CORS and cross-origin resource headers compatible with the app's
+cross-origin-isolated deployment. The example deliberately does not publish a
+runtime-specific manifest or copy that engine tree into the root package.
+Without the environment variable, Java is omitted from the language selector.
 
 ## What It Demonstrates
 
-- `createBrowserHarness(...)` from `@tracecode/harness/browser`
+- `createBrowserRuntimeHost(...)` from `@tracecode/harness/browser`
+- `createBrowserRuntimeJudge(...)` from `@tracecode/harness/judge`
+- `Effect.scoped(...)` ownership for each Judge evaluation
 - worker asset syncing through `tracecode-harness sync-assets`
-- runtime initialization for Python, JavaScript, TypeScript, Java, C#, and C++
+- runtime initialization for Python, JavaScript, TypeScript, C++, C#, and
+  configured Java deployments
 - execution output and full trace payload rendering
+- interruption of a previous action before starting the next one
+- host disposal after active scoped work has finished
 
 ## Production Note
 

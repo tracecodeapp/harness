@@ -37,6 +37,7 @@ async function createPackagedExampleApp(tempRoot: string): Promise<string> {
     },
     dependencies: {
       '@tracecode/harness': '',
+      effect: '3.22.0',
       'monaco-editor': '^0.55.1',
     },
     devDependencies: {

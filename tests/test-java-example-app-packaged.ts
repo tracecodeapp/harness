@@ -36,6 +36,7 @@ async function createPackagedExampleApp(tempRoot: string): Promise<string> {
     },
     dependencies: {
       '@tracecode/harness': '',
+      effect: '3.22.0',
       'monaco-editor': '^0.55.1',
     },
     devDependencies: {
@@ -89,7 +90,12 @@ async function runWithTempRoot(tempRoot: string): Promise<void> {
   try {
     const previewUrl = await preview.waitForUrl;
     await waitForHttp(previewUrl, 30_000);
-    await runJavaExampleBrowserSmoke(previewUrl);
+    const ranJava = await runJavaExampleBrowserSmoke(previewUrl);
+    if (!ranJava) {
+      console.log(
+        'SKIP: packaged example Java runtime requires VITE_JAVA_RUNTIME_ASSET_BASE_URL'
+      );
+    }
   } finally {
     if (!preview.process.killed) {
       preview.process.kill('SIGTERM');
@@ -97,7 +103,7 @@ async function runWithTempRoot(tempRoot: string): Promise<void> {
     await preview.waitForExit;
   }
 
-  console.log('PASS: packaged example web IDE runs dedicated Java browser smoke');
+  console.log('PASS: packaged example honors optional Java runtime configuration');
 }
 
 async function main(): Promise<void> {

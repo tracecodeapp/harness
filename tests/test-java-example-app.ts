@@ -27,7 +27,12 @@ async function main(): Promise<void> {
   try {
     const previewUrl = await preview.waitForUrl;
     await waitForHttp(previewUrl, 30_000);
-    await runJavaExampleBrowserSmoke(previewUrl);
+    const ranJava = await runJavaExampleBrowserSmoke(previewUrl);
+    if (!ranJava) {
+      console.log(
+        'SKIP: example Java runtime requires VITE_JAVA_RUNTIME_ASSET_BASE_URL'
+      );
+    }
   } finally {
     if (!preview.process.killed) {
       preview.process.kill('SIGTERM');
@@ -35,7 +40,7 @@ async function main(): Promise<void> {
     await preview.waitForExit;
   }
 
-  console.log('PASS: example web IDE runs dedicated Java browser smoke');
+  console.log('PASS: example web IDE honors optional Java runtime configuration');
 }
 
 test('java example app', main);

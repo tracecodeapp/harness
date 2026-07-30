@@ -5,12 +5,19 @@ import editorWorker from 'monaco-editor/esm/vs/editor/editor.worker?worker';
 import jsonWorker from 'monaco-editor/esm/vs/language/json/json.worker?worker';
 import tsWorker from 'monaco-editor/esm/vs/language/typescript/ts.worker?worker';
 
+import * as Effect from 'effect/Effect';
 import {
-  createBrowserHarness,
   SUPPORTED_LANGUAGES,
-  type BrowserRuntimeAssetManifest,
+  type Language,
+} from '@tracecode/harness';
+import {
+  createBrowserRuntimeHost,
 } from '@tracecode/harness/browser';
-import type { Language } from '@tracecode/harness/core';
+import {
+  createBrowserRuntimeJudge,
+  type JudgeEvaluationPlan,
+  type RuntimeJudgeBinding,
+} from '@tracecode/harness/judge';
 
 // ----------------------------------------------------------------------
 // Monaco Environment Setup
@@ -188,56 +195,69 @@ for (int index = 0; index < nums.size(); ++index) {
   },
 };
 
+const javaRuntimeAssetBaseUrl =
+  import.meta.env.VITE_JAVA_RUNTIME_ASSET_BASE_URL?.trim() || undefined;
+const enabledLanguages = SUPPORTED_LANGUAGES.filter(
+  (language) => language !== 'java' || javaRuntimeAssetBaseUrl !== undefined,
+);
+
 function bootIde(): void {
 // ----------------------------------------------------------------------
 // Harness Setup
 // ----------------------------------------------------------------------
-const javaRuntimeManifest: BrowserRuntimeAssetManifest<'java'> = {
-  runtime: 'java',
-  runtimeVersion: 'java-17-cheerpj-4.2',
-  protocolVersion: 'browser-runtime-assets-v1',
+const runtimeHost = createBrowserRuntimeHost({
   assetBaseUrl: '/workers',
-  originPolicy: { mode: 'any' },
-  workerFormat: 'classic',
-  loaderFormat: 'classic-script',
-  assets: {
-    worker: { url: 'java-worker.js' },
-    loader: { url: 'https://cjrtnc.leaningtech.com/4.2/loader.js' },
-    helperJar: {
-      url: 'vendor/java-browser-helper.jar',
-      runtimePath: '/app/workers/vendor/java-browser-helper.jar',
-    },
-    compilerJar: {
-      url: 'vendor/jdk.compiler-17.jar',
-      runtimePath: '/app/workers/vendor/jdk.compiler-17.jar',
-    },
-    rewriterJar: {
-      url: 'vendor/java-rewriter.jar',
-      runtimePath: '/app/workers/vendor/java-rewriter.jar',
-    },
-    parserJar: {
-      url: 'vendor/javaparser-core-3.25.10.jar',
-      runtimePath: '/app/workers/vendor/javaparser-core-3.25.10.jar',
-    },
-  },
-};
-
-const harness = createBrowserHarness({
-  assetBaseUrl: '/workers',
-  assets: { runtimeManifests: { java: javaRuntimeManifest } },
+  providers: enabledLanguages,
+  ...(javaRuntimeAssetBaseUrl
+    ? {
+        java: {
+          runtimeAssetBaseUrl: javaRuntimeAssetBaseUrl,
+        },
+      }
+    : {}),
 });
 
-const disposeHarness = (): void => {
-  harness.dispose();
+type ActiveOperation = {
+  readonly controller: AbortController;
+  readonly completion: Promise<unknown>;
 };
 
-if (typeof window !== 'undefined') {
-  window.addEventListener('beforeunload', disposeHarness);
-}
+let activeOperation: ActiveOperation | null = null;
+let operationRevision = 0;
+let shutdownPromise: Promise<void> | null = null;
+
+const cancelActiveOperation = (): ActiveOperation | null => {
+  operationRevision += 1;
+  const operation = activeOperation;
+  operation?.controller.abort();
+  return operation;
+};
+
+const disposeIde = (): Promise<void> => {
+  if (shutdownPromise) return shutdownPromise;
+  const operation = cancelActiveOperation();
+  shutdownPromise = (async () => {
+    if (operation) {
+      await operation.completion.catch(() => undefined);
+    }
+    runtimeHost.dispose();
+  })();
+  return shutdownPromise;
+};
+
+const requestIdeDisposal = (): void => {
+  void disposeIde().catch((error) => {
+    console.error('Failed to dispose the browser runtime host.', error);
+  });
+};
+
+window.addEventListener('pagehide', () => {
+  requestIdeDisposal();
+}, { once: true });
 
 if (import.meta.hot) {
   import.meta.hot.dispose(() => {
-    disposeHarness();
+    requestIdeDisposal();
   });
 }
 
@@ -319,6 +339,7 @@ function setStatus(value: string, state: 'idle' | 'active' | 'success' | 'error'
 }
 
 function applyExample(language: Language): void {
+  cancelActiveOperation();
   activeLanguage = language;
   const example = EXAMPLES[language];
   
@@ -361,24 +382,135 @@ function focusTab(tabName: string) {
   if (tabContent) tabContent.classList.add('active');
 }
 
+function createEvaluationPlan(
+  language: Language,
+  sourcePath: string,
+  code: string,
+  inputs: Record<string, unknown>,
+): JudgeEvaluationPlan<Record<string, unknown>> {
+  return {
+    id: `web-ide-${language}`,
+    runtime: language,
+    workspace: {
+      cwd: '/workspace',
+      files: [{
+        path: sourcePath,
+        contents: code,
+        visibility: 'submission',
+      }],
+    },
+    driver: { files: [] },
+    run: {
+      command: 'judge-case',
+      cwd: '/workspace',
+      timeoutMs: 240_000,
+    },
+    cases: [{
+      id: 'example',
+      input: inputs,
+    }],
+    isolation: {
+      mode: 'fresh-session-per-case',
+    },
+  };
+}
+
+async function evaluateCode(
+  trace: boolean,
+  onReady: () => void,
+): Promise<unknown> {
+  const language = activeLanguage;
+  const code = codeEditor.getValue();
+  const inputs = readInputs();
+  const functionName = functionNameInput.value.trim();
+  const sourcePath = `/workspace/solution${getExtension(language)}`;
+  const executionStyle = EXAMPLES[language].executionStyle ?? 'function';
+  const binding: RuntimeJudgeBinding = trace
+    ? {
+        sourcePath,
+        trace: true,
+        ...(functionName ? { functionName } : {}),
+        executionStyle,
+        traceOptions: {
+          maxTraceSteps: 200,
+          maxLineEvents: 200,
+          maxSingleLineHits: 50,
+        },
+      }
+    : {
+        sourcePath,
+        ...(functionName ? { functionName } : {}),
+        executionStyle,
+      };
+  const plan = createEvaluationPlan(language, sourcePath, code, inputs);
+
+  const revision = ++operationRevision;
+  const previousOperation = activeOperation;
+  previousOperation?.controller.abort();
+  if (previousOperation) {
+    await previousOperation.completion.catch(() => undefined);
+  }
+  if (revision !== operationRevision || shutdownPromise) {
+    return undefined;
+  }
+
+  const controller = new AbortController();
+  const completion = (async () => {
+    await runtimeHost.preflightLanguage(language);
+    if (controller.signal.aborted) return;
+    await runtimeHost.warmLanguage(language);
+    if (controller.signal.aborted) return;
+    onReady();
+
+    const evaluation = await Effect.runPromise(
+      Effect.scoped(
+        Effect.gen(function* () {
+          const judge = yield* createBrowserRuntimeJudge({
+            host: runtimeHost,
+            language,
+            binding,
+          });
+          return yield* judge.evaluate(plan);
+        })
+      ),
+      { signal: controller.signal },
+    );
+
+    if (revision !== operationRevision || controller.signal.aborted) return;
+    return evaluation.status === 'completed'
+      ? evaluation.cases[0] ?? evaluation
+      : evaluation;
+  })();
+  activeOperation = {
+    controller,
+    completion,
+  };
+
+  try {
+    return await completion;
+  } catch (error) {
+    if (revision !== operationRevision || controller.signal.aborted) {
+      return undefined;
+    }
+    throw error;
+  } finally {
+    if (activeOperation?.controller === controller) {
+      activeOperation = null;
+    }
+  }
+}
+
 // ----------------------------------------------------------------------
 // Actions
 // ----------------------------------------------------------------------
 async function runCode(): Promise<void> {
   focusTab('console');
   try {
-    const inputs = readInputs();
-    const code = codeEditor.getValue();
-    const fnName = functionNameInput.value;
-    const executionStyle = EXAMPLES[activeLanguage].executionStyle ?? 'function';
-    
-    const client = harness.getClient(activeLanguage);
     setStatus(`Initializing runtime...`, 'active');
-    await client.init();
-
-    setStatus(`Executing...`, 'active');
-    const result = await client.executeCode({ code: code, functionName: fnName, inputs: inputs, executionStyle: executionStyle });
-    
+    const result = await evaluateCode(false, () => {
+      setStatus(`Executing...`, 'active');
+    });
+    if (result === undefined) return;
     renderOutput(executionOutput, consoleEmpty, result);
     setStatus(`Execution complete`, 'success');
   } catch (error) {
@@ -392,22 +524,11 @@ async function runCode(): Promise<void> {
 async function traceCode(): Promise<void> {
   focusTab('trace');
   try {
-    const inputs = readInputs();
-    const code = codeEditor.getValue();
-    const fnName = functionNameInput.value;
-    const executionStyle = EXAMPLES[activeLanguage].executionStyle ?? 'function';
-    
-    const client = harness.getClient(activeLanguage);
     setStatus(`Initializing runtime...`, 'active');
-    await client.init();
-    
-    setStatus(`Tracing...`, 'active');
-    const result = await client.executeWithTracing({ code: code, functionName: fnName, inputs: inputs, traceOptions: {
-        maxTraceSteps: 200,
-        maxLineEvents: 200,
-        maxSingleLineHits: 50,
-      }, executionStyle: executionStyle });
-
+    const result = await evaluateCode(true, () => {
+      setStatus(`Tracing...`, 'active');
+    });
+    if (result === undefined) return;
     renderOutput(traceOutput, traceEmpty, result);
     setStatus(`Trace complete`, 'success');
   } catch (error) {
@@ -421,7 +542,7 @@ async function traceCode(): Promise<void> {
 // ----------------------------------------------------------------------
 // Event Listeners
 // ----------------------------------------------------------------------
-languageSelect.innerHTML = SUPPORTED_LANGUAGES.map((language) => {
+languageSelect.innerHTML = enabledLanguages.map((language) => {
   const label = language === 'csharp' ? 'C#' : language.charAt(0).toUpperCase() + language.slice(1);
   return `<option value="${language}">${label}</option>`;
 }).join('');
