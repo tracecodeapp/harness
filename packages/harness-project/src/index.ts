@@ -1,10 +1,7 @@
 import * as Effect from 'effect/Effect';
 import * as Exit from 'effect/Exit';
 import * as Scope from 'effect/Scope';
-import {
-  Bash,
-  defineCommand,
-} from 'just-bash/browser';
+import { Bash } from 'just-bash/browser';
 import {
   applyRuntimeCommandResultFiles,
   assertRuntimeFinalDiffBudget,
@@ -123,9 +120,7 @@ import {
 } from '@tracecode/tracekernel';
 import type {
   BashOptions,
-  Command,
   CommandContext,
-  CustomCommand,
   FileContent,
   IFileSystem,
 } from 'just-bash/browser';
@@ -476,6 +471,7 @@ import {
   type KernelJournalEntry,
 } from './workspace-event-state';
 import { WorkspaceLifecycleState } from './workspace-lifecycle-state';
+import { createWorkspaceShellCommandRegistry } from './shell-command-registry';
 
 const PRINCIPAL_ACTOR: RuntimeWorkspaceActor = runtimeWorkspaceActorPreset('principal');
 const RUNTIME_ACTOR: RuntimeWorkspaceActor = runtimeWorkspaceActorPreset('runtime');
@@ -521,11 +517,6 @@ function traceKernelTsv(value: unknown): string {
   return String(value ?? '').replace(/[\t\r\n]+/g, ' ');
 }
 
-interface RuntimeLazyCommand {
-  name: string;
-  load: () => Promise<Command>;
-}
-
 function runtimeCommandEnvChanges(
   baselineEnv: Record<string, string>,
   finalEnv: Record<string, string> | undefined
@@ -539,14 +530,6 @@ function runtimeCommandEnvChanges(
     if (!(key in finalEnv)) changes[key] = undefined;
   }
   return changes;
-}
-
-function isRuntimeCommand(command: CustomCommand): command is Command {
-  return typeof (command as Command).execute === 'function';
-}
-
-function isRuntimeLazyCommand(command: CustomCommand): command is RuntimeLazyCommand {
-  return typeof (command as RuntimeLazyCommand).load === 'function';
 }
 
 function createTraceKernelInfo(config: RuntimeTraceKernelConfig | undefined, cwdOption: string | undefined): RuntimeKernelInfo {
@@ -827,7 +810,7 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
     const includeHiddenFilesForCurrentCommand = (ctx?: CommandContext) => this.resolveCommandContext(ctx)?.includeHiddenFiles === true;
     const snapshotProjectForCurrentCommand = (_ctx: CommandContext, includeHiddenFiles: boolean) =>
       this.snapshotForCommand(includeHiddenFiles);
-    const exposedCustomCommands: CustomCommand[] = [
+    const runtimeCommands = [
       ...(options.pythonRunner ? createPythonProjectCommands(withEvents(options.pythonRunner, { kernelSyscalls: true, descriptorStdio: true }), this.cwd, this.entrypoint, observeFileChange, this.kernelInfo.workspaceAlias, this.kernelInfo, this.projectSession?.readonlyFiles, this.projectSession?.hiddenFiles, includeHiddenFilesForCurrentCommand, snapshotProjectForCurrentCommand) : []),
       ...(options.nodeRunner ? createNodeProjectCommands(withEvents(options.nodeRunner, { kernelSyscalls: true, descriptorStdio: true }), this.cwd, this.entrypoint, observeFileChange, this.kernelInfo.workspaceAlias, this.kernelInfo, this.projectSession?.readonlyFiles, this.projectSession?.hiddenFiles, includeHiddenFilesForCurrentCommand, snapshotProjectForCurrentCommand) : []),
       ...(options.typescriptRunner ? createTypeScriptProjectCommands(withEvents(options.typescriptRunner), this.cwd, this.entrypoint, observeFileChange, this.kernelInfo.workspaceAlias, this.kernelInfo, this.projectSession?.readonlyFiles, this.projectSession?.hiddenFiles, includeHiddenFilesForCurrentCommand, snapshotProjectForCurrentCommand) : []),
@@ -845,111 +828,69 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
         snapshotProject: snapshotProjectForCurrentCommand,
       }) : []),
       ...(options.csharpRunner ? createCSharpProjectCommands(withEvents(options.csharpRunner, { kernelSyscalls: true, descriptorStdio: true }), this.cwd, this.entrypoint, observeFileChange, this.kernelInfo.workspaceAlias, this.kernelInfo, this.projectSession?.readonlyFiles, this.projectSession?.hiddenFiles, includeHiddenFilesForCurrentCommand, snapshotProjectForCurrentCommand) : []),
-      defineCommand(TRACEKERNEL_EXEC_COMMAND, (args, ctx) => this.runTraceKernelExec(args, ctx)),
-      defineCommand('bg', async (args, ctx) => this.runKernelJobPlacement(args, 'bg', ctx)),
-      defineCommand('curl', async (args, ctx) => this.runKernelCurl(args, ctx)),
-      defineCommand('df', async (args, ctx) => this.runKernelDf(args, ctx)),
-      defineCommand('du', async (args, ctx) => this.runKernelDu(args, ctx)),
-      defineCommand('fastfetch', async (args, ctx) => this.runKernelFastfetch(args, ctx)),
-      defineCommand('fg', async (args, ctx) => this.runKernelJobPlacement(args, 'fg', ctx)),
-      defineCommand('getconf', async (args) => this.runKernelGetconf(args)),
-      defineCommand('getent', async (args) => this.runKernelGetent(args)),
-      defineCommand('groups', async (args) => this.runKernelGroups(args)),
-      defineCommand('kill', async (args, ctx) => this.runKernelKill(args, 'kill', ctx)),
-      defineCommand('jobs', async (args, ctx) => this.runKernelJobs(args, ctx)),
-      defineCommand('hostname', async (args) => this.runKernelHostname(args)),
-      defineCommand('id', async (args) => this.runKernelId(args)),
-      defineCommand('lsof', async (args, ctx) => this.runKernelLsof(args, ctx)),
-      defineCommand('locale', async (args) => this.runKernelLocale(args)),
-      defineCommand('ls', async (args, ctx) => this.runKernelAwareLs(args, ctx)),
-      defineCommand('man', async (args) => this.runKernelMan(args)),
-      defineCommand('mktemp', async (args, ctx) => this.runKernelMktemp(args, ctx)),
-      defineCommand('mount', async (args) => this.runKernelMount(args)),
-      defineCommand('neofetch', async (args, ctx) => this.runKernelFastfetch(args, ctx)),
-      defineCommand('pgrep', async (args, ctx) => this.runKernelProcessMatch(args, 'pgrep', ctx)),
-      defineCommand('ping', async (args, ctx) => this.runKernelPing(args, ctx)),
-      defineCommand('pkill', async (args, ctx) => this.runKernelProcessMatch(args, 'pkill', ctx)),
-      defineCommand('ps', async (args, ctx) => this.runKernelPs(args, ctx)),
-      defineCommand('ss', async (args, ctx) => this.runKernelSs(args, ctx)),
-      defineCommand('stat', async (args, ctx) => this.runKernelStat(args, ctx)),
-      defineCommand('stty', async (args, ctx) => this.runKernelStty(args, ctx)),
-      defineCommand('tput', async (args, ctx) => this.runKernelTput(args, ctx)),
-      defineCommand('tracekernelctl', (args, ctx) => this.runTraceKernelCtl(args, ctx)),
-      defineCommand('tty', async (args, ctx) => this.runKernelTty(args, ctx)),
-      defineCommand('umask', async (args, ctx) => this.runKernelUmask(args, ctx)),
-      defineCommand('uname', async (args) => this.runKernelUname(args)),
-      defineCommand('wait', (args, ctx) => this.runKernelWait(args, 'wait', ctx)),
-      defineCommand('wget', async (args, ctx) => this.runKernelWget(args, ctx)),
-      defineCommand('which', async (args, ctx) => this.runTraceKernelWhich(args, 'which', ctx)),
-      defineCommand('whoami', async (args) => this.runKernelWhoami(args)),
-      defineCommand('command', async (args, ctx) => this.runTraceKernelCommandBuiltin(args, ctx)),
-      ...(options.customCommands ?? []),
-      defineCommand(`${TRACEKERNEL_SHELL_COMMAND_PREFIX}bg`, async (args, ctx) => this.runKernelJobPlacement(args, 'bg', ctx)),
-      defineCommand(`${TRACEKERNEL_SHELL_COMMAND_PREFIX}command`, async (args, ctx) => this.runTraceKernelCommandBuiltin(args, ctx)),
-      defineCommand(`${TRACEKERNEL_SHELL_COMMAND_PREFIX}fg`, async (args, ctx) => this.runKernelJobPlacement(args, 'fg', ctx)),
-      defineCommand(`${TRACEKERNEL_SHELL_COMMAND_PREFIX}kill`, async (args, ctx) => this.runKernelKill(args, 'kill', ctx)),
-      defineCommand(`${TRACEKERNEL_SHELL_COMMAND_PREFIX}jobs`, async (args, ctx) => this.runKernelJobs(args, ctx)),
-      defineCommand(`${TRACEKERNEL_SHELL_COMMAND_PREFIX}lsof`, async (args, ctx) => this.runKernelLsof(args, ctx)),
-      defineCommand(`${TRACEKERNEL_SHELL_COMMAND_PREFIX}pgrep`, async (args, ctx) => this.runKernelProcessMatch(args, 'pgrep', ctx)),
-      defineCommand(`${TRACEKERNEL_SHELL_COMMAND_PREFIX}pkill`, async (args, ctx) => this.runKernelProcessMatch(args, 'pkill', ctx)),
-      defineCommand(`${TRACEKERNEL_SHELL_COMMAND_PREFIX}ps`, async (args, ctx) => this.runKernelPs(args, ctx)),
-      defineCommand(`${TRACEKERNEL_SHELL_COMMAND_PREFIX}ss`, async (args, ctx) => this.runKernelSs(args, ctx)),
-      defineCommand(`${TRACEKERNEL_SHELL_COMMAND_PREFIX}test`, async (args, ctx) => this.runKernelTestBuiltin(args, 'test', ctx)),
-      defineCommand(`${TRACEKERNEL_SHELL_COMMAND_PREFIX}test-bracket`, async (args, ctx) => this.runKernelTestBuiltin(args, '[', ctx)),
-      defineCommand(`${TRACEKERNEL_SHELL_COMMAND_PREFIX}wait`, (args, ctx) => this.runKernelWait(args, 'wait', ctx)),
     ];
-    this.traceKernelCommandDispatchNames = new Map(
-      exposedCustomCommands.map((command) => [
-        command.name,
-        `${TRACEKERNEL_COMMAND_DISPATCH_PREFIX}${command.name}`,
-      ])
-    );
-    const customCommands: CustomCommand[] = [
-      ...exposedCustomCommands,
-      ...exposedCustomCommands.map((command) => this.aliasKernelCommand(
-        command,
-        this.traceKernelCommandDispatchNames.get(command.name)!
-      )),
-    ].map((command) => this.withKernelCommandSignal(command));
+    const shellCommands = createWorkspaceShellCommandRegistry({
+      runtimeCommands,
+      customCommands: options.customCommands,
+      handlers: {
+        exec: (args, context) => this.runTraceKernelExec(args, context),
+        bg: (args, context) => this.runKernelJobPlacement(args, 'bg', context),
+        curl: (args, context) => this.runKernelCurl(args, context),
+        df: (args, context) => this.runKernelDf(args, context),
+        du: (args, context) => this.runKernelDu(args, context),
+        fastfetch: (args, context) => this.runKernelFastfetch(args, context),
+        fg: (args, context) => this.runKernelJobPlacement(args, 'fg', context),
+        getconf: (args) => this.runKernelGetconf(args),
+        getent: (args) => this.runKernelGetent(args),
+        groups: (args) => this.runKernelGroups(args),
+        kill: (args, context) => this.runKernelKill(args, 'kill', context),
+        jobs: (args, context) => this.runKernelJobs(args, context),
+        hostname: (args) => this.runKernelHostname(args),
+        id: (args) => this.runKernelId(args),
+        lsof: (args, context) => this.runKernelLsof(args, context),
+        locale: (args) => this.runKernelLocale(args),
+        ls: (args, context) => this.runKernelAwareLs(args, context),
+        man: (args) => this.runKernelMan(args),
+        mktemp: (args, context) => this.runKernelMktemp(args, context),
+        mount: (args) => this.runKernelMount(args),
+        neofetch: (args, context) => this.runKernelFastfetch(args, context),
+        pgrep: (args, context) => this.runKernelProcessMatch(args, 'pgrep', context),
+        ping: (args, context) => this.runKernelPing(args, context),
+        pkill: (args, context) => this.runKernelProcessMatch(args, 'pkill', context),
+        ps: (args, context) => this.runKernelPs(args, context),
+        ss: (args, context) => this.runKernelSs(args, context),
+        stat: (args, context) => this.runKernelStat(args, context),
+        stty: (args, context) => this.runKernelStty(args, context),
+        tput: (args, context) => this.runKernelTput(args, context),
+        tracekernelctl: (args, context) => this.runTraceKernelCtl(args, context),
+        tty: (args, context) => this.runKernelTty(args, context),
+        umask: (args, context) => this.runKernelUmask(args, context),
+        uname: (args) => this.runKernelUname(args),
+        wait: (args, context) => this.runKernelWait(args, 'wait', context),
+        wget: (args, context) => this.runKernelWget(args, context),
+        which: (args, context) => this.runTraceKernelWhich(args, 'which', context),
+        whoami: (args) => this.runKernelWhoami(args),
+        command: (args, context) => this.runTraceKernelCommandBuiltin(args, context),
+        test: (args, context) => this.runKernelTestBuiltin(args, 'test', context),
+        'test-bracket': (args, context) => this.runKernelTestBuiltin(args, '[', context),
+      },
+      help: (name, args) => this.traceKernelCommandHelp(name, args),
+      withSignalContext: (context) => this.withCurrentKernelSignal(context),
+    });
+    this.traceKernelCommandDispatchNames = shellCommands.dispatchNames;
     this.bashOptions = {
       fs: this.fs,
       cwd: this.cwd,
       env: this.baseEnv,
       commands: options.commands as never,
-      customCommands: customCommands.length > 0 ? customCommands : undefined,
+      customCommands: shellCommands.commands.length > 0
+        ? [...shellCommands.commands]
+        : undefined,
       python: options.python,
       javascript: options.javascript,
       executionLimits: options.executionLimits as never,
     };
     this.bash = this.createBash();
-  }
-
-  private withKernelCommandSignal(command: CustomCommand): CustomCommand {
-    if (isRuntimeCommand(command)) {
-      return {
-        ...command,
-        execute: (args, ctx) => {
-          const help = this.traceKernelCommandHelp(command.name, args);
-          if (help) return Promise.resolve(help);
-          return command.execute(args, this.withCurrentKernelSignal(ctx));
-        },
-      };
-    }
-    if (isRuntimeLazyCommand(command)) {
-      return {
-        ...command,
-        load: async () => this.withKernelCommandSignal(await command.load()) as Command,
-      };
-    }
-    return command;
-  }
-
-  private aliasKernelCommand(command: CustomCommand, name: string): CustomCommand {
-    if (isRuntimeCommand(command)) return { ...command, name };
-    return {
-      name,
-      load: async () => ({ ...(await command.load()), name }),
-    };
   }
 
   private withCurrentKernelSignal(ctx: CommandContext): CommandContext {
