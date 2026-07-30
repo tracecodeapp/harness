@@ -62,9 +62,11 @@ the same host-owned syscall dispatcher.
 
 ## Public compatibility boundary
 
-The package root is the only supported code import. Deep imports into `src/` or
-`dist/` are private implementation details. Both ESM and CommonJS consumers use
-the same root export surface.
+The package root and `@tracecode/tracekernel/workspace` are the only supported
+code imports. The workspace entry point owns TraceKernel's stateful workspace
+implementation and configuration; runtime-neutral contracts remain outside
+that boundary. Deep imports into `src/` or `dist/` are private implementation
+details. Both ESM and CommonJS consumers use the same export surfaces.
 
 Runtime adapters can identify the bounded binary protocol through:
 

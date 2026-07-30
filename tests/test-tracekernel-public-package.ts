@@ -30,12 +30,44 @@ assertCondition(
     packageJson.sideEffects === false,
   'TraceKernel package identity or side-effect contract changed.'
 );
+
+const supportedEntryPoints = [
+  '.',
+  './workspace',
+  './package.json',
+] as const;
 assertCondition(
   JSON.stringify(Object.keys(packageJson.exports).sort()) ===
-    JSON.stringify(['.', './package.json']),
+    JSON.stringify([...supportedEntryPoints].sort()),
   `Unsupported deep package exports became public: ${JSON.stringify(
     packageJson.exports
   )}`
+);
+for (const [entryPoint, expectedTargets] of Object.entries({
+  '.': {
+    types: './dist/index.d.ts',
+    import: './dist/index.js',
+    require: './dist/index.cjs',
+    default: './dist/index.js',
+  },
+  './workspace': {
+    types: './dist/workspace.d.ts',
+    import: './dist/workspace.js',
+    require: './dist/workspace.cjs',
+    default: './dist/workspace.js',
+  },
+})) {
+  assertCondition(
+    JSON.stringify(packageJson.exports[entryPoint]) ===
+      JSON.stringify(expectedTargets),
+    `TraceKernel entry point ${entryPoint} targets changed: ${JSON.stringify(
+      packageJson.exports[entryPoint]
+    )}`
+  );
+}
+assertCondition(
+  packageJson.exports['./package.json'] === './package.json',
+  'TraceKernel package metadata entry point changed.'
 );
 assertCondition(
   JSON.stringify([...packageJson.files].sort()) ===
@@ -51,6 +83,15 @@ const esm = await import(
 const require = createRequire(import.meta.url);
 const cjs = require(resolve(packageRoot, 'dist/index.cjs')) as
   Record<string, unknown>;
+const [
+  workspaceDeclarations,
+  workspaceEsmSource,
+  workspaceCjsSource,
+] = await Promise.all([
+  readFile(resolve(packageRoot, 'dist/workspace.d.ts'), 'utf8'),
+  readFile(resolve(packageRoot, 'dist/workspace.js'), 'utf8'),
+  readFile(resolve(packageRoot, 'dist/workspace.cjs'), 'utf8'),
+]);
 const requiredExports = [
   'makeTraceKernelHost',
   'TraceKernelControlledRuntime',
@@ -65,6 +106,31 @@ for (const name of requiredExports) {
   assertCondition(
     name in esm && name in cjs,
     `The ${name} public export is missing from ESM or CommonJS.`
+  );
+}
+const requiredWorkspaceExports = [
+  'RuntimeProjectWorkspace',
+  'RuntimeProjectWorkspaceTerminalSession',
+  'createRuntimeWorkspace',
+  'createPackageManagerProjectCommands',
+  'createPythonProjectCommands',
+  'createNodeProjectCommands',
+  'createTypeScriptProjectCommands',
+  'createJavaProjectCommands',
+  'createCppProjectCommands',
+  'createCSharpProjectCommands',
+  'normalizeRuntimeWorkspaceStorageLimits',
+] as const;
+const workspaceDeclarationExport =
+  workspaceDeclarations
+    .split('\n')
+    .find((line) => line.startsWith('export {')) ?? '';
+for (const name of requiredWorkspaceExports) {
+  assertCondition(
+    workspaceDeclarationExport.includes(name) &&
+      workspaceEsmSource.includes(name) &&
+      workspaceCjsSource.includes(name),
+    `The workspace ${name} public export is missing from declarations, ESM, or CommonJS.`
   );
 }
 assertCondition(
@@ -83,6 +149,7 @@ const readme = await readFile(resolve(packageRoot, 'README.md'), 'utf8');
 assertCondition(
   readme.includes('## Public compatibility boundary') &&
     readme.includes('## Supported kernel boundary') &&
+    readme.includes('@tracecode/tracekernel/workspace') &&
     readme.includes('tracekernel.syscall.v1'),
   'The packed README does not document the public or wire boundary.'
 );
@@ -92,7 +159,7 @@ console.log(JSON.stringify({
   package: packageJson.name,
   version: packageJson.version,
   esmAndCommonJsParity: true,
-  supportedEntryPoints: Object.keys(packageJson.exports),
+  supportedEntryPoints,
   wireSchema: esm.TRACEKERNEL_SYSCALL_WIRE_SCHEMA,
   wireVersion: esm.TRACEKERNEL_SYSCALL_WIRE_VERSION,
   operationCount: Object.keys(
