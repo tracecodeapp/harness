@@ -70,8 +70,6 @@ let pythonModuleBootstrapPromise = null;
 let moduleLoadPyodide = null;
 let trustedPythonUserAuthorityLockdown = null;
 let pythonCompileCacheLimit = DEFAULT_PYTHON_COMPILE_CACHE_LIMIT;
-let nextPreparedPythonProgramId = 0;
-const preparedPythonPrograms = new Map();
 
 function configurePythonWorkerOptions(payload) {
   if (payload?.compileCacheLimit === undefined) return;
@@ -8991,40 +8989,19 @@ async function executeCodeBatch(code, functionName, inputBatch, executionStyle =
 async function preparePythonProgram(request) {
   await loadPyodideInstance();
   const runtimeCore = loadPyodideRuntimeCore();
-  const prepared = await withPythonUserAuthorityLockdown(() =>
+  return withPythonUserAuthorityLockdown(() =>
     runtimeCore.prepareProgram(buildRuntimeDeps(), request)
   );
-  if (!prepared?.success) return prepared;
-
-  const programId = `python-prepared-${++nextPreparedPythonProgramId}`;
-  preparedPythonPrograms.set(programId, prepared);
-  return {
-    success: true,
-    programId,
-    mode: prepared.mode,
-    consoleOutput: [],
-    timings: prepared.timings,
-  };
 }
 
-async function executePreparedPythonProgram(programId, inputs, limits) {
-  const prepared = preparedPythonPrograms.get(programId);
-  if (!prepared) {
-    throw new Error(`Unknown or disposed prepared Python program: ${String(programId)}`);
-  }
+async function executePreparedPythonProgram(artifact, inputs, limits) {
+  await loadPyodideInstance();
+  const runtimeCore = loadPyodideRuntimeCore();
   return withPythonUserAuthorityLockdown(() =>
-    prepared.execute(inputs, {
+    runtimeCore.executePreparedProgram(buildRuntimeDeps(), artifact, inputs, {
       guest: guestGuardOptionsFromLimits(limits),
     })
   );
-}
-
-function disposePreparedPythonProgram(programId) {
-  const prepared = preparedPythonPrograms.get(programId);
-  if (!prepared) return { success: true, disposed: false };
-  preparedPythonPrograms.delete(programId);
-  prepared.dispose();
-  return { success: true, disposed: true };
 }
 
 async function processMessage(data) {
@@ -9111,7 +9088,7 @@ async function processMessage(data) {
 
       case 'execute-prepared-program': {
         const result = await executePreparedPythonProgram(
-          payload?.programId,
+          payload?.artifact,
           payload?.inputs ?? {},
           payload?.limits
         );
@@ -9132,17 +9109,6 @@ async function processMessage(data) {
             protocolToken,
           });
         }
-        break;
-      }
-
-      case 'dispose-prepared-program': {
-        const result = disposePreparedPythonProgram(payload?.programId);
-        trustedPythonWorkerPostMessage({
-          id,
-          type: 'dispose-result',
-          payload: result,
-          protocolToken,
-        });
         break;
       }
 

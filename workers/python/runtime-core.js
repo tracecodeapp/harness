@@ -36,15 +36,39 @@ const isolatedPythonExecutionGuards = new WeakMap();
 function createIsolatedPythonExecutionGuard(pyodide) {
   const guard = pyodide.runPython(`
 import builtins as __tracecode_guard_builtins
+import base64 as __tracecode_guard_base64
 import copy as _tracecode_guard_copy
+import importlib.util as __tracecode_guard_importlib_util
+import marshal as __tracecode_guard_marshal
+import os as __tracecode_guard_os
+import random as __tracecode_guard_random
 import sys as __tracecode_guard_sys
 
 class __TracecodeExecutionGuard:
-    def __init__(self, builtins_module, sys_module):
+    def __init__(
+        self,
+        base64_module,
+        builtins_module,
+        importlib_util_module,
+        marshal_module,
+        os_module,
+        random_module,
+        sys_module,
+    ):
+        self._base64 = base64_module
         self._builtins_dict = builtins_module.__dict__
+        self._importlib_util = importlib_util_module
+        self._marshal = marshal_module
         self._modules = sys_module.modules
+        self._sys = sys_module
         self._gettrace = sys_module.gettrace
         self._settrace = sys_module.settrace
+        self._getrecursionlimit = sys_module.getrecursionlimit
+        self._setrecursionlimit = sys_module.setrecursionlimit
+        self._getcwd = os_module.getcwd
+        self._chdir = os_module.chdir
+        self._random_getstate = random_module.getstate
+        self._random_setstate = random_module.setstate
         self._guard_globals = globals()
         self._deepcopy = _tracecode_guard_copy.deepcopy
         self._builtins_snapshot = None
@@ -52,6 +76,9 @@ class __TracecodeExecutionGuard:
         self._module_dict_snapshots = None
         self._module_mutable_snapshots = None
         self._trace_snapshot = None
+        self._recursion_limit_snapshot = None
+        self._cwd_snapshot = None
+        self._random_state_snapshot = None
         self._compiled = {}
         self._compiled_limit = 4
 
@@ -97,6 +124,9 @@ class __TracecodeExecutionGuard:
                     except Exception:
                         pass
         self._trace_snapshot = self._gettrace()
+        self._recursion_limit_snapshot = self._getrecursionlimit()
+        self._cwd_snapshot = self._getcwd()
+        self._random_state_snapshot = self._random_getstate()
 
     def restore(self):
         builtins_snapshot = self._builtins_snapshot
@@ -104,11 +134,17 @@ class __TracecodeExecutionGuard:
         module_dict_snapshots = self._module_dict_snapshots
         module_mutable_snapshots = self._module_mutable_snapshots
         trace_snapshot = self._trace_snapshot
+        recursion_limit_snapshot = self._recursion_limit_snapshot
+        cwd_snapshot = self._cwd_snapshot
+        random_state_snapshot = self._random_state_snapshot
         self._builtins_snapshot = None
         self._modules_snapshot = None
         self._module_dict_snapshots = None
         self._module_mutable_snapshots = None
         self._trace_snapshot = None
+        self._recursion_limit_snapshot = None
+        self._cwd_snapshot = None
+        self._random_state_snapshot = None
         if builtins_snapshot is None or modules_snapshot is None:
             raise RuntimeError('TraceCode Python execution scope was not active')
         self._settrace(None)
@@ -137,7 +173,28 @@ class __TracecodeExecutionGuard:
         self._builtins_dict.update(builtins_snapshot)
         self._modules.clear()
         self._modules.update(modules_snapshot)
-        self._settrace(trace_snapshot)
+        restore_errors = []
+        try:
+            self._setrecursionlimit(recursion_limit_snapshot)
+        except Exception as error:
+            restore_errors.append(('recursion limit', error))
+        try:
+            self._random_setstate(random_state_snapshot)
+        except Exception as error:
+            restore_errors.append(('random state', error))
+        try:
+            self._chdir(cwd_snapshot)
+        except Exception as error:
+            restore_errors.append(('working directory', error))
+        try:
+            self._settrace(trace_snapshot)
+        except Exception as error:
+            restore_errors.append(('trace function', error))
+        if restore_errors:
+            label, error = restore_errors[0]
+            raise RuntimeError(
+                'TraceCode could not restore Python ' + label + ': ' + str(error)
+            ) from error
 
     def run(self, source, namespace, result_name):
         code = self._compiled.pop(source, None)
@@ -152,6 +209,23 @@ class __TracecodeExecutionGuard:
     def compile(self, source, filename):
         return compile(source, filename, 'exec')
 
+    def artifact_fingerprint(self):
+        return {
+            'cacheTag': str(getattr(self._sys.implementation, 'cache_tag', '')),
+            'magicNumber': self._importlib_util.MAGIC_NUMBER.hex(),
+            'marshalVersion': int(self._marshal.version),
+        }
+
+    def serialize_code(self, code):
+        return self._base64.b64encode(
+            self._marshal.dumps(code, self._marshal.version)
+        ).decode('ascii')
+
+    def deserialize_code(self, encoded):
+        return self._marshal.loads(
+            self._base64.b64decode(str(encoded).encode('ascii'), validate=True)
+        )
+
     def run_compiled(self, code, namespace, result_name):
         exec(code, namespace)
         return namespace[result_name]
@@ -162,16 +236,35 @@ class __TracecodeExecutionGuard:
             del self._compiled[next(iter(self._compiled))]
 
 __tracecode_execution_guard = __TracecodeExecutionGuard(
+    __tracecode_guard_base64,
     __tracecode_guard_builtins,
+    __tracecode_guard_importlib_util,
+    __tracecode_guard_marshal,
+    __tracecode_guard_os,
+    __tracecode_guard_random,
     __tracecode_guard_sys,
 )
 __tracecode_execution_guard
 `);
   pyodide.globals.delete('__tracecode_execution_guard');
   pyodide.globals.delete('__TracecodeExecutionGuard');
+  pyodide.globals.delete('__tracecode_guard_base64');
   pyodide.globals.delete('__tracecode_guard_builtins');
   pyodide.globals.delete('_tracecode_guard_copy');
+  pyodide.globals.delete('__tracecode_guard_importlib_util');
+  pyodide.globals.delete('__tracecode_guard_marshal');
+  pyodide.globals.delete('__tracecode_guard_os');
+  pyodide.globals.delete('__tracecode_guard_random');
   pyodide.globals.delete('__tracecode_guard_sys');
+  return guard;
+}
+
+function getIsolatedPythonExecutionGuard(pyodide) {
+  let guard = isolatedPythonExecutionGuards.get(pyodide);
+  if (!guard) {
+    guard = createIsolatedPythonExecutionGuard(pyodide);
+    isolatedPythonExecutionGuards.set(pyodide, guard);
+  }
   return guard;
 }
 
@@ -187,11 +280,7 @@ async function runPythonInFreshExecutionScope(deps, source, resultName) {
   ) {
     return pyodide.runPythonAsync(source);
   }
-  let guard = isolatedPythonExecutionGuards.get(pyodide);
-  if (!guard) {
-    guard = createIsolatedPythonExecutionGuard(pyodide);
-    isolatedPythonExecutionGuards.set(pyodide, guard);
-  }
+  const guard = getIsolatedPythonExecutionGuard(pyodide);
   const namespace = pyodide.toPy({ __name__: '__main__' });
   guard.set_compiled_limit(deps.pythonCompileCacheLimit ?? 4);
   guard.begin();
@@ -221,12 +310,39 @@ async function compilePythonProgram(deps, source, filename) {
   ) {
     throw new Error('Prepared Python programs require the full browser Python runtime.');
   }
-  let guard = isolatedPythonExecutionGuards.get(pyodide);
-  if (!guard) {
-    guard = createIsolatedPythonExecutionGuard(pyodide);
-    isolatedPythonExecutionGuards.set(pyodide, guard);
-  }
+  const guard = getIsolatedPythonExecutionGuard(pyodide);
   return guard.compile(source, filename);
+}
+
+function pythonPreparedArtifactFingerprint(deps) {
+  const pyodide = deps.getPyodide();
+  if (typeof pyodide?.runPython !== 'function') {
+    throw new Error('Prepared Python programs require the full browser Python runtime.');
+  }
+  const fingerprintProxy = getIsolatedPythonExecutionGuard(pyodide).artifact_fingerprint();
+  try {
+    return fingerprintProxy.toJs({
+      dict_converter: Object.fromEntries,
+    });
+  } finally {
+    fingerprintProxy?.destroy?.();
+  }
+}
+
+function serializePythonCodeArtifact(deps, code) {
+  const pyodide = deps.getPyodide();
+  if (typeof pyodide?.runPython !== 'function') {
+    throw new Error('Prepared Python programs require the full browser Python runtime.');
+  }
+  return getIsolatedPythonExecutionGuard(pyodide).serialize_code(code);
+}
+
+function deserializePythonCodeArtifact(deps, encoded) {
+  const pyodide = deps.getPyodide();
+  if (typeof pyodide?.runPython !== 'function') {
+    throw new Error('Prepared Python programs require the full browser Python runtime.');
+  }
+  return getIsolatedPythonExecutionGuard(pyodide).deserialize_code(encoded);
 }
 
 async function runCompiledPythonInFreshExecutionScope(
@@ -243,11 +359,7 @@ async function runCompiledPythonInFreshExecutionScope(
   ) {
     throw new Error('Prepared Python programs require the full browser Python runtime.');
   }
-  let guard = isolatedPythonExecutionGuards.get(pyodide);
-  if (!guard) {
-    guard = createIsolatedPythonExecutionGuard(pyodide);
-    isolatedPythonExecutionGuards.set(pyodide, guard);
-  }
+  const guard = getIsolatedPythonExecutionGuard(pyodide);
   const namespace = pyodide.toPy({ __name__: '__main__' });
   guard.begin();
   try {
@@ -5390,65 +5502,32 @@ async function prepareProgram(
       throw new Error(`Unsupported prepared Python mode: ${String(mode)}`);
     }
 
-    let disposed = false;
+    const fingerprint = pythonPreparedArtifactFingerprint(deps);
+    const artifact = {
+      schemaVersion: 'tracecode.python.prepared-program.v1',
+      fingerprint,
+      mode,
+      code,
+      functionName: functionName ?? null,
+      executionStyle,
+      traceOptions,
+      userCode: serializePythonCodeArtifact(deps, userCodeObject),
+      executorCode: serializePythonCodeArtifact(deps, executorCode),
+    };
     const preparationMs = deps.performanceNow() - startedAt;
     return {
       success: true,
       mode,
+      artifact,
+      consoleOutput: [],
       timings: {
         totalMs: preparationMs,
         compileMs: preparationMs,
         compileCacheHit: false,
         artifactCacheHit: false,
       },
-      async execute(inputs, limits) {
-        if (disposed) {
-          throw new Error('Prepared Python program has been disposed.');
-        }
-        const caseStartedAt = deps.performanceNow();
-        const result = mode === 'trace'
-          ? await executeWithTracing(
-              deps,
-              code,
-              functionName,
-              inputs,
-              executionStyle,
-              traceOptions,
-              { executorCode, userCodeObject, limits }
-            )
-          : await executeCode(
-              deps,
-              code,
-              functionName ?? '',
-              inputs,
-              executionStyle,
-              limits?.guest ?? {},
-              { executorCode, userCodeObject }
-            );
-        const runMs = deps.performanceNow() - caseStartedAt;
-        return {
-          ...result,
-          timings: {
-            ...(result.timings ?? {}),
-            totalMs: runMs,
-            runMs,
-            compileCacheHit: true,
-            artifactCacheHit: true,
-          },
-        };
-      },
-      dispose() {
-        if (disposed) return;
-        disposed = true;
-        executorCode?.destroy?.();
-        userCodeObject?.destroy?.();
-        executorCode = undefined;
-        userCodeObject = undefined;
-      },
     };
   } catch (error) {
-    executorCode?.destroy?.();
-    userCodeObject?.destroy?.();
     const rawError = error instanceof Error ? error.message : String(error);
     const parsed = parsePythonError(rawError, 1, code.split('\n').length);
     const preparationMs = deps.performanceNow() - startedAt;
@@ -5464,6 +5543,80 @@ async function prepareProgram(
         artifactCacheHit: false,
       },
     };
+  } finally {
+    executorCode?.destroy?.();
+    userCodeObject?.destroy?.();
+  }
+}
+
+function assertPythonPreparedArtifact(deps, artifact) {
+  if (
+    !artifact ||
+    typeof artifact !== 'object' ||
+    artifact.schemaVersion !== 'tracecode.python.prepared-program.v1' ||
+    (artifact.mode !== 'code' && artifact.mode !== 'trace') ||
+    typeof artifact.code !== 'string' ||
+    typeof artifact.userCode !== 'string' ||
+    typeof artifact.executorCode !== 'string'
+  ) {
+    throw new Error('Invalid prepared Python artifact.');
+  }
+  const current = pythonPreparedArtifactFingerprint(deps);
+  const expected = artifact.fingerprint;
+  if (
+    !expected ||
+    expected.cacheTag !== current.cacheTag ||
+    expected.magicNumber !== current.magicNumber ||
+    expected.marshalVersion !== current.marshalVersion
+  ) {
+    throw new Error(
+      'Prepared Python artifact does not match the active interpreter generation.'
+    );
+  }
+}
+
+async function executePreparedProgram(deps, artifact, inputs, limits) {
+  const startedAt = deps.performanceNow();
+  await deps.loadPyodideInstance();
+  assertPythonPreparedArtifact(deps, artifact);
+  let userCodeObject;
+  let executorCode;
+  try {
+    userCodeObject = deserializePythonCodeArtifact(deps, artifact.userCode);
+    executorCode = deserializePythonCodeArtifact(deps, artifact.executorCode);
+    const result = artifact.mode === 'trace'
+      ? await executeWithTracing(
+          deps,
+          artifact.code,
+          artifact.functionName,
+          inputs,
+          artifact.executionStyle ?? 'function',
+          artifact.traceOptions ?? {},
+          { executorCode, userCodeObject, limits }
+        )
+      : await executeCode(
+          deps,
+          artifact.code,
+          artifact.functionName ?? '',
+          inputs,
+          artifact.executionStyle ?? 'function',
+          limits?.guest ?? {},
+          { executorCode, userCodeObject }
+        );
+    const runMs = deps.performanceNow() - startedAt;
+    return {
+      ...result,
+      timings: {
+        ...(result.timings ?? {}),
+        totalMs: runMs,
+        runMs,
+        compileCacheHit: true,
+        artifactCacheHit: true,
+      },
+    };
+  } finally {
+    executorCode?.destroy?.();
+    userCodeObject?.destroy?.();
   }
 }
 
@@ -5474,5 +5627,6 @@ async function prepareProgram(
     executeCode,
     executeCodeBatch,
     prepareProgram,
+    executePreparedProgram,
   };
 })(typeof self !== 'undefined' ? self : globalThis);

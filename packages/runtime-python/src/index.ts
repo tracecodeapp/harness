@@ -4,10 +4,13 @@ export * from './generated/python-harness-snippets';
 export {
   createPythonPreparedExecutionProvider,
   createPythonRuntimeClient,
+  type PythonPreparedExecutionProviderController,
+  type PythonPreparedExecutionProviderOptions,
 } from './python-runtime-client';
 export {
   PythonWorkerClient,
   type ExecutionStyle,
+  type PythonPreparedProgramArtifact,
   type PythonWorkerClientOptions,
 } from './python-worker-client';
 export {

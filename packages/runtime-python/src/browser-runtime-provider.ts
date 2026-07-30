@@ -1,12 +1,22 @@
-import type { Language, RuntimeClient } from '@tracecode/runtime-core';
+import type {
+  Language,
+  RuntimeClient,
+  RuntimePreparedExecutionProvider,
+} from '@tracecode/runtime-core';
 import type {
   BrowserRuntimeProvider,
   BrowserRuntimeProviderContext,
   BrowserRuntimeProviderLease,
 } from '@tracecode/runtime-browser';
 import { FreshWorkerRuntimeClient } from '@tracecode/runtime-browser/internal';
-import { createPythonRuntimeClient } from './python-runtime-client';
-import { PythonWorkerClient } from './python-worker-client';
+import {
+  createPythonPreparedExecutionProvider,
+  createPythonRuntimeClient,
+} from './python-runtime-client';
+import {
+  PythonWorkerClient,
+  type PythonWorkerClientOptions,
+} from './python-worker-client';
 
 export interface PythonBrowserRuntimeProviderOptions {
   compileCacheLimit?: number;
@@ -22,7 +32,7 @@ export function createPythonBrowserRuntimeProvider(
       const workerFactory = context.workerFactoryFor('python');
       const pythonPackageDescriptors = context.manifestAssetCollection('python', 'packages');
       const pythonManifest = context.assets.runtimeManifests?.python;
-      const worker = new PythonWorkerClient({
+      const workerOptions: PythonWorkerClientOptions = {
         workerUrl: context.assets.pythonWorker,
         ...(workerFactory ? { workerFactory } : {}),
         compileCacheLimit: options.compileCacheLimit,
@@ -61,7 +71,9 @@ export function createPythonBrowserRuntimeProvider(
               }
             : {}),
         },
-      });
+      };
+      const createWorkerClient = () => new PythonWorkerClient(workerOptions);
+      const worker = createWorkerClient();
       const directClient = createPythonRuntimeClient(worker);
       const safeClient = new FreshWorkerRuntimeClient(directClient, {
         retireWorker: () => worker.terminate(),
@@ -71,9 +83,23 @@ export function createPythonBrowserRuntimeProvider(
       const client: RuntimeClient =
         context.executionIsolation === 'safe' ? safeClient : directClient;
       const clients = new Map<Language, RuntimeClient>([['python', client]]);
+      const preparedProvider = createPythonPreparedExecutionProvider({
+        createWorkerClient,
+        prewarmAfterUse: context.prewarmAfterUse,
+      });
+      const preparedProviders = new Map<
+        Language,
+        RuntimePreparedExecutionProvider
+      >([['python', preparedProvider]]);
 
-      return {
+      const lease: BrowserRuntimeProviderLease & {
+        readonly preparedProviders: ReadonlyMap<
+          Language,
+          RuntimePreparedExecutionProvider
+        >;
+      } = {
         clients,
+        preparedProviders,
         warm: () =>
           context.executionIsolation === 'safe'
             ? safeClient.prepare()
@@ -81,12 +107,15 @@ export function createPythonBrowserRuntimeProvider(
         disposeLanguage: () => {
           if (context.executionIsolation === 'safe') safeClient.reset();
           else worker.terminate();
+          preparedProvider.terminate();
         },
         dispose: () => {
           if (context.executionIsolation === 'safe') safeClient.reset();
           worker.terminate();
+          preparedProvider.terminate();
         },
       };
+      return lease;
     },
   };
 }

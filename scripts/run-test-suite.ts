@@ -84,6 +84,7 @@ export const TEST_PHASES: TestPhase[] = [
       { ...task('test:project', 2), exclusive: true },
       task('test:js-runtime'),
       task('test:python-runtime'),
+      task('test:python-prepared-provider', 2),
       task('test:python-browser-worker'),
       task('test:python-worker-client-http'),
       task('test:cpp-rewriter'),

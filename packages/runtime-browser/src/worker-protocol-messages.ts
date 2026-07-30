@@ -24,7 +24,6 @@ export const WORKER_REQUEST_MESSAGES: Readonly<Record<BrowserWorkerProtocolLangu
     'analyze-code',
     'prepare-program',
     'execute-prepared-program',
-    'dispose-prepared-program',
     'execute-code',
     'execute-code-batch',
     'execute-with-tracing',

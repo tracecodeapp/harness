@@ -109,8 +109,24 @@ interface StatusResult {
   isLoading: boolean;
 }
 
+export interface PythonPreparedProgramArtifact {
+  readonly schemaVersion: 'tracecode.python.prepared-program.v1';
+  readonly fingerprint: {
+    readonly cacheTag: string;
+    readonly magicNumber: string;
+    readonly marshalVersion: number;
+  };
+  readonly mode: 'code' | 'trace';
+  readonly code: string;
+  readonly functionName: string | null;
+  readonly executionStyle: RuntimeProgramPreparationCall['executionStyle'];
+  readonly traceOptions: RuntimeProgramPreparationCall['traceOptions'];
+  readonly userCode: string;
+  readonly executorCode: string;
+}
+
 export type PythonPreparedProgramHandle = {
-  programId: string;
+  artifact: PythonPreparedProgramArtifact;
   mode: 'code' | 'trace';
   consoleOutput: string[];
   timings?: RuntimeExecutionTimings;
@@ -487,7 +503,7 @@ export class PythonWorkerClient {
       this.core.sendMessageEffect<RawExecutionPayload>(
         'execute-prepared-program',
         {
-          programId: handle.programId,
+          artifact: handle.artifact,
           mode: 'code',
           inputs: call.inputs,
           ...(guestLimits ? { limits: guestLimits } : {}),
@@ -510,7 +526,7 @@ export class PythonWorkerClient {
       this.core.sendMessageEffect<PythonRawTraceResult>(
         'execute-prepared-program',
         {
-          programId: handle.programId,
+          artifact: handle.artifact,
           mode: 'trace',
           inputs: call.inputs,
           ...(guestLimits ? { limits: guestLimits } : {}),
@@ -538,10 +554,6 @@ export class PythonWorkerClient {
       }
       throw error;
     }
-  }
-
-  async disposePreparedProgram(programId: string): Promise<void> {
-    await this.core.sendMessage('dispose-prepared-program', { programId });
   }
 
   async executeProjectPython(

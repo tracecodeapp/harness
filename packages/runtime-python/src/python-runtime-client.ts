@@ -378,7 +378,18 @@ function normalizePythonExecutionResult(value: unknown): ExecutionResult {
   );
 }
 
-class PythonRuntimeClient implements RuntimeClient, RuntimePreparedExecutionProvider {
+export interface PythonPreparedExecutionProviderOptions {
+  readonly createWorkerClient: () => PythonWorkerClient;
+  readonly prewarmAfterUse?: boolean;
+}
+
+export interface PythonPreparedExecutionProviderController
+  extends RuntimePreparedExecutionProvider {
+  /** Force-retire compiler, standby, and active case workers owned by this provider. */
+  terminate(): void;
+}
+
+class PythonRuntimeClient implements RuntimeClient {
   constructor(private readonly workerClient: PythonWorkerClient) {}
 
   async init(): Promise<{ success: boolean; loadTimeMs: number }> {
@@ -442,16 +453,215 @@ class PythonRuntimeClient implements RuntimeClient, RuntimePreparedExecutionProv
     });
     return this.workerClient.executeCode(call);
   }
+}
 
-  async prepareProgram(
+type WarmedPythonWorker = {
+  readonly client: PythonWorkerClient;
+  readonly warmup: { success: boolean; loadTimeMs: number };
+};
+
+class PreparedPythonProgramLifetime {
+  private phase: 'active' | 'disposing' | 'disposed' = 'active';
+  private operationTail: Promise<void> = Promise.resolve();
+  private disposal: Promise<void> | undefined;
+  private standby: Promise<WarmedPythonWorker> | null = null;
+  private generation = 1;
+  private readonly ownedWorkers = new Set<PythonWorkerClient>();
+
+  constructor(
+    private readonly handle: PythonPreparedProgramHandle,
+    private readonly options: PythonPreparedExecutionProviderOptions,
+    private readonly onDisposed: (lifetime: PreparedPythonProgramLifetime) => void
+  ) {
+    this.startStandby();
+  }
+
+  executeCode(
+    call: Pick<RuntimeCodeCall, 'inputs' | 'signal' | 'limits'>
+  ): Promise<CodeExecutionResult> {
+    return this.executeSerial(call.signal, (client) =>
+      client.executePreparedCode(this.handle, call)
+    );
+  }
+
+  executeTrace(
+    call: Pick<RuntimeTraceCall, 'inputs' | 'signal' | 'limits'>
+  ): Promise<ExecutionResult> {
+    return this.executeSerial(call.signal, async (client) =>
+      normalizePythonExecutionResult(
+        await client.executePreparedTrace(this.handle, call)
+      )
+    );
+  }
+
+  dispose = (): Promise<void> => {
+    if (this.disposal) return this.disposal;
+    this.phase = 'disposing';
+    this.disposal = this.operationTail.then(async () => {
+      this.generation += 1;
+      const standby = this.standby;
+      this.standby = null;
+      if (standby) await standby.catch(() => undefined);
+      this.terminateOwnedWorkers();
+      this.phase = 'disposed';
+      this.onDisposed(this);
+    });
+    this.operationTail = this.disposal.then(
+      () => undefined,
+      () => undefined
+    );
+    return this.disposal;
+  };
+
+  forceTerminate(): void {
+    if (this.phase === 'disposed') return;
+    this.phase = 'disposed';
+    this.generation += 1;
+    this.standby = null;
+    this.terminateOwnedWorkers();
+    this.onDisposed(this);
+  }
+
+  private executeSerial<T>(
+    signal: AbortSignal | undefined,
+    operation: (client: PythonWorkerClient) => Promise<T>
+  ): Promise<T> {
+    if (this.phase !== 'active') {
+      return Promise.reject(new Error('Prepared Python program has been disposed.'));
+    }
+    const result = this.operationTail.then(async () => {
+      if (this.phase === 'disposed') {
+        throw new Error('Prepared Python program has been disposed.');
+      }
+      if (signal?.aborted) {
+        throw signal.reason ?? new Error('Prepared Python execution was aborted.');
+      }
+      const { client } = await this.takeStandby();
+      if (this.isDisposed()) {
+        this.retireWorker(client);
+        throw new Error('Prepared Python program has been disposed.');
+      }
+      try {
+        return await operation(client);
+      } finally {
+        // Every case gets a hard interpreter boundary. The marshaled code
+        // artifact survives; the Pyodide worker, heap, modules, cwd, RNG, and
+        // filesystem do not.
+        this.retireWorker(client);
+        if (
+          this.phase === 'active' &&
+          (this.options.prewarmAfterUse ?? true)
+        ) {
+          this.startStandby();
+        }
+      }
+    });
+    this.operationTail = result.then(
+      () => undefined,
+      () => undefined
+    );
+    return result;
+  }
+
+  private startStandby(): Promise<WarmedPythonWorker> {
+    if (this.standby) return this.standby;
+    const generation = this.generation;
+    const client = this.options.createWorkerClient();
+    this.ownedWorkers.add(client);
+    const standby = client.warmup().then(
+      (warmup) => {
+        if (generation !== this.generation || this.phase === 'disposed') {
+          this.retireWorker(client);
+          throw new Error('Prepared Python worker warmup was superseded.');
+        }
+        return { client, warmup };
+      },
+      (error: unknown) => {
+        this.retireWorker(client);
+        throw error;
+      }
+    );
+    this.standby = standby;
+    void standby.catch(() => undefined);
+    return standby;
+  }
+
+  private async takeStandby(): Promise<WarmedPythonWorker> {
+    const standby = this.standby ?? this.startStandby();
+    this.standby = null;
+    return standby;
+  }
+
+  private retireWorker(client: PythonWorkerClient): void {
+    if (!this.ownedWorkers.delete(client)) return;
+    client.terminate();
+  }
+
+  private terminateOwnedWorkers(): void {
+    for (const worker of this.ownedWorkers) worker.terminate();
+    this.ownedWorkers.clear();
+  }
+
+  private isDisposed(): boolean {
+    return this.phase === 'disposed';
+  }
+}
+
+class PythonPreparedExecutionProvider
+  implements PythonPreparedExecutionProviderController {
+  private preparationTail: Promise<void> = Promise.resolve();
+  private compilerStandby: Promise<WarmedPythonWorker> | null = null;
+  private generation = 1;
+  private terminated = false;
+  private readonly compilerWorkers = new Set<PythonWorkerClient>();
+  private readonly programs = new Set<PreparedPythonProgramLifetime>();
+
+  constructor(private readonly options: PythonPreparedExecutionProviderOptions) {}
+
+  async init(): Promise<{ success: boolean; loadTimeMs: number }> {
+    this.assertActive();
+    return (await this.startCompilerStandby()).warmup;
+  }
+
+  prepareProgram(
     call: RuntimeProgramPreparationCall
   ): Promise<RuntimeProgramPreparationResult> {
+    this.assertActive();
     assertRuntimeRequestSupported(getLanguageRuntimeProfile('python'), {
       request: call.mode === 'trace' ? 'trace' : 'execute',
       executionStyle: call.executionStyle ?? 'function',
       functionName: call.functionName,
     });
-    const result = await this.workerClient.prepareProgram(call);
+    const result = this.preparationTail.then(() => this.prepareSerial(call));
+    this.preparationTail = result.then(
+      () => undefined,
+      () => undefined
+    );
+    return result;
+  }
+
+  terminate(): void {
+    if (this.terminated) return;
+    this.terminated = true;
+    this.generation += 1;
+    this.compilerStandby = null;
+    for (const client of this.compilerWorkers) client.terminate();
+    this.compilerWorkers.clear();
+    for (const program of [...this.programs]) program.forceTerminate();
+    this.programs.clear();
+  }
+
+  private async prepareSerial(
+    call: RuntimeProgramPreparationCall
+  ): Promise<RuntimeProgramPreparationResult> {
+    this.assertActive();
+    const { client } = await this.takeCompilerStandby();
+    let result;
+    try {
+      result = await client.prepareProgram(call);
+    } finally {
+      this.retireCompiler(client);
+    }
     if (!result.success) {
       return {
         kind: 'failed',
@@ -464,17 +674,12 @@ class PythonRuntimeClient implements RuntimeClient, RuntimePreparedExecutionProv
     }
 
     const handle: PythonPreparedProgramHandle = result;
-    let disposed = false;
-    const dispose = async (): Promise<void> => {
-      if (disposed) return;
-      disposed = true;
-      await this.workerClient.disposePreparedProgram(handle.programId);
-    };
-    const assertActive = (): void => {
-      if (disposed) {
-        throw new Error('Prepared Python program has been disposed.');
-      }
-    };
+    const lifetime = new PreparedPythonProgramLifetime(
+      handle,
+      this.options,
+      (program) => this.programs.delete(program)
+    );
+    this.programs.add(lifetime);
 
     if (call.mode === 'trace') {
       return {
@@ -487,15 +692,9 @@ class PythonRuntimeClient implements RuntimeClient, RuntimePreparedExecutionProv
             caseIsolation: 'fresh-case-state',
             maxConcurrency: 1,
           },
-          executeIsolated: async (executionCall) => {
-            assertActive();
-            const raw = await this.workerClient.executePreparedTrace(
-              handle,
-              executionCall
-            );
-            return normalizePythonExecutionResult(raw);
-          },
-          dispose,
+          executeIsolated: (executionCall) =>
+            lifetime.executeTrace(executionCall),
+          dispose: lifetime.dispose,
         },
       };
     }
@@ -510,24 +709,64 @@ class PythonRuntimeClient implements RuntimeClient, RuntimePreparedExecutionProv
           caseIsolation: 'fresh-case-state',
           maxConcurrency: 1,
         },
-        executeIsolated: async (executionCall) => {
-          assertActive();
-          return this.workerClient.executePreparedCode(handle, executionCall);
-        },
-        dispose,
+        executeIsolated: (executionCall) =>
+          lifetime.executeCode(executionCall),
+        dispose: lifetime.dispose,
       },
     };
+  }
+
+  private startCompilerStandby(): Promise<WarmedPythonWorker> {
+    if (this.compilerStandby) return this.compilerStandby;
+    this.assertActive();
+    const generation = this.generation;
+    const client = this.options.createWorkerClient();
+    this.compilerWorkers.add(client);
+    const standby = client.warmup().then(
+      (warmup) => {
+        if (generation !== this.generation || this.terminated) {
+          this.retireCompiler(client);
+          throw new Error('Prepared Python compiler warmup was superseded.');
+        }
+        return { client, warmup };
+      },
+      (error: unknown) => {
+        if (generation === this.generation) this.compilerStandby = null;
+        this.retireCompiler(client);
+        throw error;
+      }
+    );
+    this.compilerStandby = standby;
+    void standby.catch(() => undefined);
+    return standby;
+  }
+
+  private async takeCompilerStandby(): Promise<WarmedPythonWorker> {
+    const standby = this.compilerStandby ?? this.startCompilerStandby();
+    this.compilerStandby = null;
+    return standby;
+  }
+
+  private retireCompiler(client: PythonWorkerClient): void {
+    if (!this.compilerWorkers.delete(client)) return;
+    client.terminate();
+  }
+
+  private assertActive(): void {
+    if (this.terminated) {
+      throw new Error('Prepared Python execution provider has been terminated.');
+    }
   }
 }
 
 export function createPythonRuntimeClient(
   workerClient: PythonWorkerClient
-): RuntimeClient & RuntimePreparedExecutionProvider {
+): RuntimeClient {
   return new PythonRuntimeClient(workerClient);
 }
 
 export function createPythonPreparedExecutionProvider(
-  workerClient: PythonWorkerClient
-): RuntimePreparedExecutionProvider {
-  return new PythonRuntimeClient(workerClient);
+  options: PythonPreparedExecutionProviderOptions
+): PythonPreparedExecutionProviderController {
+  return new PythonPreparedExecutionProvider(options);
 }
