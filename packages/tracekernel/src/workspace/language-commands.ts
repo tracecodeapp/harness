@@ -52,7 +52,11 @@ import {
   createRuntimeKernelReadonlyFileError,
   type RuntimeKernelVirtualStat,
 } from '@tracecode/runtime-core';
-import { BROWSER_PROJECT_NODE_COMPAT_VERSION, getLanguageRuntimeInfo } from '@tracecode/runtime-core';
+import {
+  BROWSER_PROJECT_NODE_COMPAT_VERSION,
+  getLanguageRuntimeInfo,
+  getRuntimeCommandVersion,
+} from '@tracecode/runtime-core';
 import type { Language } from '@tracecode/runtime-core';
 import type {
   CommandContext,
@@ -1140,7 +1144,7 @@ export function createCSharpProjectCommands(
     if (isDotnetCommandResult(parsed)) return parsed;
 
     if (parsed.showVersion) {
-      const version = getLanguageRuntimeInfo('csharp').runtime.version ?? 'unknown';
+      const version = getRuntimeCommandVersion('dotnet');
       if (expandedArgs.includes('--info')) {
         return {
           stdout: [

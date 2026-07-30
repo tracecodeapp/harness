@@ -2,6 +2,7 @@ import { existsSync, readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import ts from 'typescript';
 import { getLanguageRuntimeInfo } from '../packages/runtime-core/src/runtime-language-info';
+import { getRuntimeCommandVersion } from '../packages/runtime-core/src/runtime-command-info';
 import { DEFAULT_BROWSER_RUNTIME_ASSET_RELATIVE_PATHS } from '../packages/runtime-browser/src/runtime-assets';
 import { createNativeHarness } from '../packages/runtime-native/src/index';
 
@@ -208,6 +209,26 @@ function main(): void {
   assertCondition(
     !PROVIDER_BRAND.test(embeddedCSharpMetadata()),
     'Bundled C# runtime metadata must remain provider-neutral'
+  );
+  const runtimeConfig = JSON.parse(
+    readFileSync(
+      resolve(
+        process.cwd(),
+        'workers/vendor/csharp/TraceCode.CSharpHost.runtimeconfig.json'
+      ),
+      'utf8'
+    )
+  ) as {
+    runtimeOptions?: {
+      includedFrameworks?: Array<{ name?: string; version?: string }>;
+    };
+  };
+  const shippedRuntimeVersion = runtimeConfig.runtimeOptions?.includedFrameworks?.find(
+    (framework) => framework.name === 'Microsoft.NETCore.App'
+  )?.version;
+  assertCondition(
+    getRuntimeCommandVersion('dotnet') === shippedRuntimeVersion,
+    'dotnet CLI identity must be generated from the shipped C# runtime'
   );
   const nativeHarness = createNativeHarness();
   try {

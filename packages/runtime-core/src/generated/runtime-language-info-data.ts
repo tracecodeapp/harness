@@ -7,6 +7,7 @@
 
 import type { Language } from '../runtime-types';
 import type { LanguageRuntimeInfo } from '../runtime-language-info';
+import type { RuntimeCommandName } from '../runtime-command-info';
 
 export const LANGUAGE_RUNTIME_INFOS = Object.freeze(
   Object.assign(Object.create(null), {
@@ -319,3 +320,14 @@ export const LANGUAGE_RUNTIME_INFOS = Object.freeze(
   }
 })
 ) as Record<Language, LanguageRuntimeInfo>;
+
+/**
+ * Implementation identities for CLI shims. These stay separate from
+ * provider-neutral language metadata but are generated from the shipped
+ * runtime artifacts so terminal output cannot drift from the runtime.
+ */
+export const RUNTIME_COMMAND_VERSIONS = Object.freeze(
+  Object.assign(Object.create(null), {
+  "dotnet": "10.0.10"
+})
+) as Record<RuntimeCommandName, string>;

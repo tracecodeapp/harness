@@ -14,6 +14,8 @@ const GENERATED_PATH = join(
   'runtime-language-info-data.ts'
 );
 
+type RuntimeCommandName = 'dotnet';
+
 type PackageJson = {
   dependencies?: Record<string, string>;
   devDependencies?: Record<string, string>;
@@ -450,7 +452,25 @@ async function buildRuntimeInfo(): Promise<Record<string, RuntimeInfo>> {
   };
 }
 
-function buildGeneratedTypeScript(info: Record<string, RuntimeInfo>): string {
+async function buildRuntimeCommandVersions(): Promise<Record<RuntimeCommandName, string>> {
+  const csharpRuntimeConfig = await readJson<{
+    runtimeOptions?: {
+      includedFrameworks?: Array<{ name?: string; version?: string }>;
+    };
+  }>('workers', 'vendor', 'csharp', 'TraceCode.CSharpHost.runtimeconfig.json');
+  const dotnetVersion = csharpRuntimeConfig.runtimeOptions?.includedFrameworks?.find(
+    (framework) => framework.name === 'Microsoft.NETCore.App'
+  )?.version;
+  if (!dotnetVersion) {
+    throw new Error('Unable to derive runtime command info: missing .NET runtime version');
+  }
+  return { dotnet: dotnetVersion };
+}
+
+function buildGeneratedTypeScript(
+  info: Record<string, RuntimeInfo>,
+  commandVersions: Record<RuntimeCommandName, string>
+): string {
   return `/**
  * AUTO-GENERATED FILE. DO NOT EDIT MANUALLY.
  *
@@ -460,10 +480,20 @@ function buildGeneratedTypeScript(info: Record<string, RuntimeInfo>): string {
 
 import type { Language } from '../runtime-types';
 import type { LanguageRuntimeInfo } from '../runtime-language-info';
+import type { RuntimeCommandName } from '../runtime-command-info';
 
 export const LANGUAGE_RUNTIME_INFOS = Object.freeze(
   Object.assign(Object.create(null), ${JSON.stringify(info, null, 2)})
 ) as Record<Language, LanguageRuntimeInfo>;
+
+/**
+ * Implementation identities for CLI shims. These stay separate from
+ * provider-neutral language metadata but are generated from the shipped
+ * runtime artifacts so terminal output cannot drift from the runtime.
+ */
+export const RUNTIME_COMMAND_VERSIONS = Object.freeze(
+  Object.assign(Object.create(null), ${JSON.stringify(commandVersions, null, 2)})
+) as Record<RuntimeCommandName, string>;
 `;
 }
 
@@ -493,7 +523,11 @@ async function writeOrCheck(pathname: string, nextContent: string): Promise<void
 }
 
 async function main(): Promise<void> {
-  const output = buildGeneratedTypeScript(await buildRuntimeInfo());
+  const [runtimeInfo, runtimeCommandVersions] = await Promise.all([
+    buildRuntimeInfo(),
+    buildRuntimeCommandVersions(),
+  ]);
+  const output = buildGeneratedTypeScript(runtimeInfo, runtimeCommandVersions);
   await writeOrCheck(GENERATED_PATH, output);
   console.log(CHECK_MODE ? 'Runtime language info is up to date.' : 'Generated runtime language info.');
 }
