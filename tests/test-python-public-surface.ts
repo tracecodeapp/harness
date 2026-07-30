@@ -170,9 +170,26 @@ function main(): void {
   ) as {
     exports?: Record<string, unknown>;
   };
+  const rootEntrypoints = Object.keys(rootPackage.exports ?? {});
+  for (const entrypoint of [
+    '.',
+    './browser',
+    './browser/project',
+    './project',
+    './project-node',
+    './judge',
+  ]) {
+    assertCondition(
+      rootEntrypoints.includes(entrypoint),
+      `The root package must expose the neutral ${entrypoint} entrypoint`
+    );
+  }
   assertCondition(
-    rootPackage.exports?.['./python'] !== undefined,
-    'The root package must expose the canonical @tracecode/harness/python entrypoint'
+    rootEntrypoints.every(
+      (entrypoint) =>
+        entrypoint !== './python' && !entrypoint.startsWith('./python/')
+    ),
+    'The retired @tracecode/harness/python language subpath must not return'
   );
   const runtimePackage = JSON.parse(
     readFileSync(resolve(process.cwd(), 'packages/runtime-python/package.json'), 'utf8')
