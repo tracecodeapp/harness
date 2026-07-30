@@ -180,7 +180,7 @@ export class CSharpWorkerClient {
   /**
    * One authority spans every prepared handle backed by this client. Prepared
    * programs may share the immutable host artifact cache, but never a mutable
-   * .NET process generation.
+   * C# runtime process generation.
    */
   private preparedOperationTail: Promise<void> = Promise.resolve();
   private readonly debug: boolean;
@@ -366,7 +366,7 @@ export class CSharpWorkerClient {
    * Run one prepared lifecycle operation in a clean outer worker generation.
    *
    * A collectible AssemblyLoadContext only isolates learner assemblies. The
-   * .NET process also owns its filesystem, environment, current directory,
+   * C# runtime process also owns its filesystem, environment, current directory,
    * cultures, thread/runtime switches, and other framework state. Retiring the
    * whole worker before and after each case is the only honest
    * fresh-case-state boundary; the opaque PE remains reusable through the
