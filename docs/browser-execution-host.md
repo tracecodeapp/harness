@@ -2,35 +2,41 @@
 
 TraceCode browser runtimes should not share an origin with the application. A
 Worker creates a separate JavaScript realm, but it retains the page origin's
-IndexedDB, Cache Storage, cookies, and network authority. The bundled Classic
-Java client also uses an IndexedDB-backed writable mount.
+storage and network authority. Runtime implementation details must not inherit
+application cookies, authenticated fetch access, or learner-visible data.
 
-The browser harness therefore provides a narrow cross-origin Worker broker:
+`BrowserRuntimeHost` can therefore route selected runtime Workers through a
+narrow cross-origin broker:
 
-- the application keeps the workspace, TraceKernel policy, HTTP bridge, and
+- the application keeps the Judge plan, TraceKernel policy, workspace, and
   synchronous SharedArrayBuffer protocol;
 - a hidden iframe on the execution origin creates runtime Workers;
 - the iframe accepts only an exact parent origin and exact worker origins;
-- worker messages and SharedArrayBuffers are relayed over one MessagePort;
-- implementation-specific runtime storage is enabled only when a client
-  explicitly opts into that execution-origin contract.
+- worker messages and SharedArrayBuffers are relayed over one `MessagePort`;
+- runtime storage, if any, remains on the credential-free execution origin.
+
+The host owns asset resolution, readiness, warmup, and provider teardown. It
+does not expose runtime clients, prepared providers, or direct execution
+methods. `createBrowserRuntimeJudge` is the public composition boundary.
 
 ## Execution-origin endpoint
 
 Bundle this module on the dedicated execution origin:
 
-~~~ts
-import { installBrowserExecutionWorkerHost } from '@tracecode/harness/browser';
+```ts
+import {
+  installBrowserExecutionWorkerHost,
+} from '@tracecode/harness/browser';
 
 installBrowserExecutionWorkerHost({
   allowedParentOrigins: ['https://app.tracecode.app'],
 });
-~~~
+```
 
 The endpoint must not receive application authentication cookies or contain
 application data. A representative response policy is:
 
-~~~text
+```text
 Cross-Origin-Opener-Policy: same-origin
 Cross-Origin-Embedder-Policy: require-corp
 Cross-Origin-Resource-Policy: cross-origin
@@ -38,46 +44,131 @@ Content-Security-Policy:
   default-src 'none';
   script-src 'self';
   worker-src 'self';
-  connect-src 'self' https://cjrtnc.leaningtech.com;
+  connect-src 'self';
   frame-ancestors https://app.tracecode.app
 Referrer-Policy: no-referrer
-~~~
+```
 
-The application page must also be cross-origin isolated. The harness rejects
-execution-host creation otherwise because Java stdin and TraceKernel HTTP use
-SharedArrayBuffer and Atomics.
+The application page must also be cross-origin isolated. Host creation fails
+closed without the SharedArrayBuffer and Atomics support used by runtime I/O
+and TraceKernel bridges. If immutable runtime assets live on another origin,
+add only that exact origin to the endpoint CSP and configure its CORS and CORP
+headers explicitly.
 
-## Provider routing
+## Host and Judge composition
 
-Classic can route any selected worker-backed provider through the host without
-changing where the other providers load. Project mode can route Python,
-JavaScript/TypeScript, C#, and C++ through the same host. Each hosted worker URL
-must resolve on the execution origin; runtime manifests and CDN locations stay
+Route selected languages when creating the host, then create Judge inside an
+Effect scope. The host can outlive one evaluation; the scope cannot.
+
+```ts
+import * as Effect from 'effect/Effect';
+import {
+  createBrowserRuntimeHost,
+  type BrowserRuntimeAssetManifest,
+} from '@tracecode/harness/browser';
+import {
+  createBrowserRuntimeJudge,
+  type JudgeEvaluationPlan,
+} from '@tracecode/harness/judge';
+
+async function evaluateJava(
+  plan: JudgeEvaluationPlan<Record<string, unknown>, unknown>,
+  javaRuntimeManifest: BrowserRuntimeAssetManifest<'java'>
+) {
+  const host = createBrowserRuntimeHost({
+    providers: ['java'],
+    executionHost: {
+      url: 'https://runtime.example.com/host.html',
+      providers: ['java'],
+    },
+    assets: {
+      runtimeManifests: {
+        java: javaRuntimeManifest,
+      },
+    },
+  });
+
+  try {
+    await host.preflightLanguage('java');
+    await host.warmLanguage('java');
+
+    return await Effect.runPromise(
+      Effect.scoped(
+        Effect.gen(function* () {
+          const judge = yield* createBrowserRuntimeJudge({
+            host,
+            language: 'java',
+            binding: {
+              sourcePath: '/workspace/Solution.java',
+              functionName: 'solve',
+              executionStyle: 'function',
+            },
+          });
+          return yield* judge.evaluate(plan);
+        })
+      )
+    );
+  } finally {
+    host.dispose();
+  }
+}
+```
+
+The Effect scope releases TraceKernel sessions and prepared evaluation
+artifacts on success, failure, or interruption. `host.dispose()` retires the
+longer-lived browser runtime resources. A structurally similar object cannot
+inject a provider into Browser Judge; the host must come from
+`createBrowserRuntimeHost`.
+
+When `executionHost.providers` is omitted, every language selected by the host
+is routed through the broker. JavaScript and TypeScript share one browser
+worker and must be routed together. Every hosted worker URL must resolve on the
+execution origin; runtime manifests and their immutable asset locations remain
 consumer-owned.
 
-~~~ts
-const harness = createBrowserHarness({
-  executionHost: {
-    url: 'https://runtime.example.com/host.html',
-    providers: ['java'],
-  },
-  assets: { runtimeManifests: { java: javaRuntimeManifest } },
-});
-~~~
+## Java runtime asset tree
 
-Classic defaults to all selected providers when `executionHost.providers` is
-omitted. JavaScript and TypeScript share one Classic worker and therefore must
-be routed together. Project mode defaults to its selected non-Java providers.
-TypeScript project compilation occurs in the trusted page and its emitted
-JavaScript executes through the JavaScript project worker, so hosted TypeScript
-requires the JavaScript project provider.
+The root `@tracecode/harness` asset set contains Java's Harness bridge worker
+and Harness-owned helper assets. It intentionally does not make the external
+engine distribution part of the npm package.
 
-Browser Project Java is different: its Java 23 provider owns the Worker
-boundary supplied by `java.createClient`. Project
-`executionHost.providers` therefore rejects `java`; configure the provider's
-client factory to create Workers on the desired credential-free origin.
+Serve the engine module, engine WASM, and complete runtime profile from one
+versioned, immutable tree:
 
-~~~ts
+```text
+https://assets.example.com/java/engine-2026-07-30/
+  browser-client.js
+  bjvm_main.wasm
+  profiles/core/...
+```
+
+The configured tree URL must end in `/`. The bridge resolves module, WASM, and
+profile requests relative to that base; without the slash, URL resolution
+treats the last path component as a file and can escape the versioned
+directory. Do not mix profile files or WASM from different releases, and do not
+put mutable responses behind an immutable manifest address.
+
+The bridge worker belongs on the credential-free execution origin. The engine
+tree may be served there as well, or from a separately allowlisted static
+origin with compatible cross-origin headers. This is an asset-delivery
+contract, not a public engine selector or provider-specific API.
+
+## Browser project workspaces
+
+Browser project mode has a separate public composition at
+`@tracecode/harness/browser/project`. Python, JavaScript/TypeScript, C#, and C++
+project workers can use the execution broker. TypeScript compilation occurs in
+the trusted page and emitted JavaScript runs through the JavaScript project
+worker, so hosted TypeScript requires the JavaScript project provider.
+
+Java project mode uses the implementation-neutral client factory supplied by
+the application:
+
+```ts
+import {
+  createBrowserProjectWorkspace,
+} from '@tracecode/harness/browser/project';
+
 const workspace = await createBrowserProjectWorkspace({
   providers: ['java'],
   java: {
@@ -85,19 +176,17 @@ const workspace = await createBrowserProjectWorkspace({
   },
   files,
 });
-~~~
+```
 
-Here `createJavaClientOnExecutionOrigin` is the application's compatible Java
-provider factory, configured to create its Worker on the credential-free
-origin.
+The application-provided factory owns its Worker origin and runtime assets. It
+must return a fresh disposable client for each admitted Java invocation so
+learner-observable VM state cannot cross process boundaries. Destroying the
+workspace releases the provider and all Workers owned by that workspace.
 
-The generic adapter admits every `javac` or `java` invocation to a fresh client
-and terminates it at the invocation boundary. A provider may warm immutable
-runtime infrastructure internally, but it must not reuse learner-observable VM
-state. Destroying or disposing the workspace releases the provider and every
-hosted worker owned by the workspace.
+## Publication boundary
 
-Consumers that explicitly pass the bundled low-level `javaWorkerClient` own
-its asset, storage, origin, and retirement policy. Its current CheerpJ asset
-requirements and licensing boundary are documented in
-`THIRD_PARTY_NOTICES.md`; they are not part of the Java 23 provider contract.
+This repository publishes only `@tracecode/harness`. The supported package
+entrypoints are the root, `/browser`, `/browser/project`, `/project`,
+`/project-node`, `/judge`, and `/package.json`. Per-language, `/core`,
+`/native`, and `/internal/*` subpaths are not public. See
+[Root Package Publishing](./publishing.md) for the audited release path.
