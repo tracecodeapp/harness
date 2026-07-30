@@ -10,10 +10,14 @@ import type {
 } from '@tracecode/harness-core';
 import type { RuntimeCommandResult } from '@tracecode/harness-core';
 import type { CodeExecutionResult, ExecutionResult } from '@tracecode/harness-core';
-import { assertRuntimeRequestSupported } from './runtime-capability-guards';
-import { getLanguageRuntimeProfile } from './runtime-profiles';
+import { assertRuntimeRequestSupported } from '@tracecode/harness-browser/internal';
+import { getLanguageRuntimeProfile } from '@tracecode/harness-browser/internal';
 import type { CSharpExecutionStyle, CSharpProjectCommandRequest, CSharpWorkerClient } from './csharp-worker-client';
-import { batchCodeResultToExecuteResult, executeRuntimeRequest, isRuntimeProjectExecuteRequest } from './runtime-execute';
+import {
+  batchCodeResultToExecuteResult,
+  executeRuntimeRequest,
+  isRuntimeProjectExecuteRequest,
+} from '@tracecode/harness-browser/internal';
 
 class CSharpRuntimeClient implements RuntimeClient {
   constructor(private readonly workerClient: CSharpWorkerClient) {}

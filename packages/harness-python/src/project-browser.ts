@@ -15,7 +15,7 @@ import {
   runRuntimeProjectWorkerBridge,
   withRuntimeProjectCommandRunnerCapabilities,
 } from '@tracecode/harness-core';
-import type { PythonWorkerClient } from '../../harness-browser/src/pyodide-worker-client';
+import type { PythonWorkerClient } from './python-worker-client';
 
 export type PythonProjectFileEncoding = RuntimeFileEncoding;
 export type PythonProjectFile = RuntimeFile;

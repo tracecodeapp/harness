@@ -769,7 +769,7 @@ async function buildPublicHarnessBundle(tempRoot: string): Promise<{
   const outfile = join(tempRoot, 'benchmark-harness.mjs');
   const startedAt = performance.now();
   await build({
-    entryPoints: [resolve(process.cwd(), 'packages/harness-browser/src/index.ts')],
+    entryPoints: [resolve(process.cwd(), 'src/browser.ts')],
     outfile,
     bundle: true,
     format: 'esm',
@@ -1873,7 +1873,7 @@ async function main(): Promise<void> {
         runtimeManifestRuntimes: runtimeManifests ? Object.keys(runtimeManifests).sort() : [],
       },
       bundle: {
-        entrypoint: 'packages/harness-browser/src/index.ts',
+        entrypoint: 'src/browser.ts',
         rawBytes: bundle.rawBytes,
         gzipBytes: bundle.gzipBytes,
         buildMs: bundle.buildMs,

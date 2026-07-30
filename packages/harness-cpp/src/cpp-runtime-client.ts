@@ -11,15 +11,15 @@ import type {
 import type { RuntimeCommandResult } from '@tracecode/harness-core';
 import type { CodeExecutionResult, ExecutionResult } from '@tracecode/harness-core';
 import { createEmptyRuntimeTrace } from '@tracecode/harness-core';
-import { assertRuntimeRequestSupported } from './runtime-capability-guards';
-import { getLanguageRuntimeProfile } from './runtime-profiles';
+import { assertRuntimeRequestSupported } from '@tracecode/harness-browser/internal';
+import { getLanguageRuntimeProfile } from '@tracecode/harness-browser/internal';
 import type { CppProjectCommandRequest, CppWorkerClient } from './cpp-worker-client';
 import {
   batchCodeResultToExecuteResult,
   batchTraceResultToExecuteResult,
   executeRuntimeRequest,
   isRuntimeProjectExecuteRequest,
-} from './runtime-execute';
+} from '@tracecode/harness-browser/internal';
 
 class CppRuntimeClient implements RuntimeClient {
   constructor(private readonly workerClient: CppWorkerClient) {}

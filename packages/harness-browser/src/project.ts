@@ -8,12 +8,11 @@ import type {
   BrowserJavaScriptProjectRunnerOptions,
   BrowserTypeScriptProjectRunnerOptions,
 } from '../../harness-javascript/src/project-browser';
-import type { CSharpWorkerClient, CSharpWorkerClientOptions } from './csharp-worker-client';
-import type { CppWorkerClient, CppWorkerClientOptions } from './cpp-worker-client';
-import type { JavaWorkerClient, JavaWorkerClientOptions } from './java-worker-client';
+import type { CSharpWorkerClient, CSharpWorkerClientOptions } from '../../harness-csharp/src/csharp-worker-client';
+import type { CppWorkerClient, CppWorkerClientOptions } from '../../harness-cpp/src/cpp-worker-client';
+import type { JavaWorkerClient, JavaWorkerClientOptions } from '../../harness-java/src/java-worker-client';
 import type { TraceJVMProjectRunnerOptions } from '../../harness-java/src/tracejvm-project';
-import { runJavaSafeStorageExclusive } from './java-storage-isolation';
-import type { PythonWorkerClient, PythonWorkerClientOptions } from './pyodide-worker-client';
+import type { PythonWorkerClient, PythonWorkerClientOptions } from '../../harness-python/src/python-worker-client';
 import {
   resolveBrowserHarnessAssets,
   type BrowserRuntimeAssetDescriptor,
@@ -542,13 +541,14 @@ function createPerCommandPythonWorkerClient(
 function createPerCommandJavaWorkerClient(
   prewarmDepth: number,
   createClient: () => JavaWorkerClient,
+  runExclusive: <T>(operation: () => Promise<T>) => Promise<T>,
   validateRuntimeAssets?: () => void
 ): Pick<JavaWorkerClient, 'executeProjectJava' | 'terminate'> {
   const pool = createOneShotPrewarmedWorkerPool('Java', prewarmDepth, createClient);
   return {
     async executeProjectJava(request, timeoutMs, onEvent, signal) {
       validateRuntimeAssets?.();
-      return runJavaSafeStorageExclusive(() =>
+      return runExclusive(() =>
         pool.run(signal, undefined, async (client) => {
           await client.resetPersistentStorage();
           return client.executeProjectJava(request, timeoutMs, onEvent, signal);
@@ -718,7 +718,7 @@ export async function createBrowserProjectWorkspace(
     hasProvider('python')
       ? Promise.all([
           import('../../harness-python/src/project-browser'),
-          import('./pyodide-worker-client'),
+          import('../../harness-python/src/python-worker-client'),
         ])
       : undefined,
     hasProvider('javascript') || hasProvider('typescript')
@@ -727,20 +727,21 @@ export async function createBrowserProjectWorkspace(
     hasProvider('java')
       ? Promise.all([
           import('../../harness-java/src/project-browser'),
-          import('./java-worker-client'),
+          import('../../harness-java/src/java-worker-client'),
           import('../../harness-java/src/tracejvm-project'),
+          import('../../harness-java/src/java-storage-isolation'),
         ])
       : undefined,
     hasProvider('csharp')
       ? Promise.all([
           import('../../harness-csharp/src/project-browser'),
-          import('./csharp-worker-client'),
+          import('../../harness-csharp/src/csharp-worker-client'),
         ])
       : undefined,
     hasProvider('cpp')
       ? Promise.all([
           import('../../harness-cpp/src/project-browser'),
-          import('./cpp-worker-client'),
+          import('../../harness-cpp/src/cpp-worker-client'),
         ])
       : undefined,
   ]);
@@ -1160,6 +1161,7 @@ export async function createBrowserProjectWorkspace(
             ? createPerCommandJavaWorkerClient(
                 projectPrewarm.java,
                 () => new JavaWorkerClientConstructor!(javaWorkerOptions),
+                javaProvider![3].runJavaSafeStorageExclusive,
                 assertProjectJavaRuntimeAssets
               )
             : new JavaWorkerClientConstructor!(javaWorkerOptions)

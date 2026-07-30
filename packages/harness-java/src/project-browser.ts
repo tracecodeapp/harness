@@ -15,7 +15,7 @@ import {
   runRuntimeProjectWorkerBridge,
   withRuntimeProjectCommandRunnerCapabilities,
 } from '@tracecode/harness-core';
-import type { JavaWorkerClient } from '../../harness-browser/src/java-worker-client';
+import type { JavaWorkerClient } from './java-worker-client';
 
 export type JavaProjectFileEncoding = RuntimeFileEncoding;
 export type JavaProjectFile = RuntimeFile;

@@ -25,11 +25,11 @@ import {
 
 /** Raw wire payload from the tracing command; lifted into the outcome union here. */
 type JavaScriptRawTraceResult = RawExecutionPayload & { trace?: RuntimeTrace };
-import { appendWorkerUrlQueryParameter, isDevEnvironment } from './browser-client-env';
-import type { BrowserWorkerFactory, BrowserWorkerLike } from './execution-host';
-import { restoreTransferredTraceEvents, traceEventTransferRequest } from './trace-event-transport';
-import { WorkerTerminatedError } from './worker-errors';
-import { WorkerSessionCore } from './worker-session-core';
+import { appendWorkerUrlQueryParameter, isDevEnvironment } from '@tracecode/harness-browser/internal';
+import type { BrowserWorkerFactory, BrowserWorkerLike } from '@tracecode/harness-browser/internal';
+import { restoreTransferredTraceEvents, traceEventTransferRequest } from '@tracecode/harness-browser/internal';
+import { WorkerTerminatedError } from '@tracecode/harness-browser/internal';
+import { WorkerSessionCore } from '@tracecode/harness-browser/internal';
 
 export type JavaScriptExecutionStyle = 'function' | 'solution-method' | 'ops-class';
 export type JavaScriptWorkerLanguage = 'javascript' | 'typescript';

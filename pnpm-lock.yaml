@@ -199,21 +199,39 @@ importers:
 
   packages/harness-cpp:
     dependencies:
+      '@tracecode/harness-browser':
+        specifier: workspace:*
+        version: link:../harness-browser
       '@tracecode/harness-core':
         specifier: workspace:*
         version: link:../harness-core
+      effect:
+        specifier: ^3.22.0
+        version: 3.22.0
 
   packages/harness-csharp:
     dependencies:
+      '@tracecode/harness-browser':
+        specifier: workspace:*
+        version: link:../harness-browser
       '@tracecode/harness-core':
         specifier: workspace:*
         version: link:../harness-core
+      effect:
+        specifier: ^3.22.0
+        version: 3.22.0
 
   packages/harness-java:
     dependencies:
+      '@tracecode/harness-browser':
+        specifier: workspace:*
+        version: link:../harness-browser
       '@tracecode/harness-core':
         specifier: workspace:*
         version: link:../harness-core
+      effect:
+        specifier: ^3.22.0
+        version: 3.22.0
 
   packages/harness-javascript:
     dependencies:
@@ -247,12 +265,18 @@ importers:
       '@datastructures-js/trie':
         specifier: 4.2.3
         version: 4.2.3
+      '@tracecode/harness-browser':
+        specifier: workspace:*
+        version: link:../harness-browser
       '@tracecode/harness-core':
         specifier: workspace:*
         version: link:../harness-core
       '@tracecode/tracekernel':
         specifier: workspace:*
         version: link:../tracekernel
+      effect:
+        specifier: ^3.22.0
+        version: 3.22.0
       lodash:
         specifier: 4.17.21
         version: 4.17.21
@@ -319,9 +343,15 @@ importers:
 
   packages/harness-python:
     dependencies:
+      '@tracecode/harness-browser':
+        specifier: workspace:*
+        version: link:../harness-browser
       '@tracecode/harness-core':
         specifier: workspace:*
         version: link:../harness-core
+      effect:
+        specifier: ^3.22.0
+        version: 3.22.0
 
   packages/runtime-sql: {}
 

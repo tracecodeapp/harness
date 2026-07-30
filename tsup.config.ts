@@ -10,12 +10,13 @@ export default defineConfig([
     // Symbol.for registry in harness-core.
     noExternal: [
       ...commonConfig.noExternal,
+      '@tracecode/harness-browser',
       '@tracecode/harness-core',
       '@tracecode/tracekernel',
     ],
     entry: {
       index: 'src/index.ts',
-      browser: 'packages/harness-browser/src/index.ts',
+      browser: 'src/browser.ts',
       'browser/project': 'packages/harness-browser/src/project.ts',
       project: 'packages/harness-project/src/index.ts',
       'project-node': 'src/project-node.ts',

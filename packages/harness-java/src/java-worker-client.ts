@@ -23,19 +23,19 @@ import {
   handleKernelHttpCloseMessage,
   handleKernelHttpDispatchSyncMessage,
   handleKernelHttpListenSyncMessage,
-} from './kernel-http-sync';
-import { logRuntimeDiagnostic } from './runtime-diagnostics';
-import { restoreTransferredTraceEvents, traceEventTransferRequest } from './trace-event-transport';
-import { isDevEnvironment } from './browser-client-env';
+} from '@tracecode/harness-browser/internal';
+import { logRuntimeDiagnostic } from '@tracecode/harness-browser/internal';
+import { restoreTransferredTraceEvents, traceEventTransferRequest } from '@tracecode/harness-browser/internal';
+import { isDevEnvironment } from '@tracecode/harness-browser/internal';
 import {
   WorkerCrashedError,
   WorkerReadyTimeoutError,
   WorkerRequestTimeoutError,
   WorkerTerminatedError,
-} from './worker-errors';
-import { WorkerSessionCore, type WorkerSessionMessage } from './worker-session-core';
-import type { BrowserWorkerFactory, BrowserWorkerLike } from './execution-host';
-import { handleHostArtifactCacheRequest, HostArtifactCache } from './host-artifact-cache';
+} from '@tracecode/harness-browser/internal';
+import { WorkerSessionCore, type WorkerSessionMessage } from '@tracecode/harness-browser/internal';
+import type { BrowserWorkerFactory, BrowserWorkerLike } from '@tracecode/harness-browser/internal';
+import { handleHostArtifactCacheRequest, HostArtifactCache } from '@tracecode/harness-browser/internal';
 
 export type JavaExecutionStyle = 'function' | 'solution-method' | 'ops-class';
 

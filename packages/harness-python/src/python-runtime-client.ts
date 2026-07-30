@@ -1,4 +1,4 @@
-import type { PythonProjectCommandRequest, PythonWorkerClient } from './pyodide-worker-client';
+import type { PythonProjectCommandRequest, PythonWorkerClient } from './python-worker-client';
 import type {
   RuntimeClient,
   RuntimeCodeCall,
@@ -22,9 +22,13 @@ import {
   type RuntimeTraceSourceSpan,
   type RuntimeTraceTarget,
 } from '@tracecode/harness-core';
-import { assertRuntimeRequestSupported } from './runtime-capability-guards';
-import { getLanguageRuntimeProfile } from './runtime-profiles';
-import { batchCodeResultToExecuteResult, executeRuntimeRequest, isRuntimeProjectExecuteRequest } from './runtime-execute';
+import { assertRuntimeRequestSupported } from '@tracecode/harness-browser/internal';
+import { getLanguageRuntimeProfile } from '@tracecode/harness-browser/internal';
+import {
+  batchCodeResultToExecuteResult,
+  executeRuntimeRequest,
+  isRuntimeProjectExecuteRequest,
+} from '@tracecode/harness-browser/internal';
 
 const PYTHON_TRACE_EVENT_KINDS = new Set<RuntimeTraceEventKind>([
   'line',

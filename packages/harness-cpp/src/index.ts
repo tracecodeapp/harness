@@ -1,10 +1,14 @@
-export { createCppRuntimeClient } from '../../harness-browser/src/cpp-runtime-client';
+export { createCppRuntimeClient } from './cpp-runtime-client';
 export {
   CppWorkerClient,
   type CppExecutionStyle,
   type CppWorkerAssets,
   type CppWorkerClientOptions,
-} from '../../harness-browser/src/cpp-worker-client';
+} from './cpp-worker-client';
+export {
+  createCppBrowserRuntimeProvider,
+  type CppBrowserRuntimeProviderOptions,
+} from './browser-runtime-provider';
 export {
   createBrowserCppProjectRunner,
   type BrowserCppProjectCommandRunner,

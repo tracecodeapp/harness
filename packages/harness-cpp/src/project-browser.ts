@@ -15,7 +15,7 @@ import {
   runRuntimeProjectWorkerBridge,
   withRuntimeProjectCommandRunnerCapabilities,
 } from '@tracecode/harness-core';
-import type { CppWorkerClient } from '../../harness-browser/src/cpp-worker-client';
+import type { CppWorkerClient } from './cpp-worker-client';
 
 export type CppProjectFileEncoding = RuntimeFileEncoding;
 export type CppProjectFile = RuntimeFile;

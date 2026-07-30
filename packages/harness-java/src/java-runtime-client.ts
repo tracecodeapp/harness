@@ -11,10 +11,14 @@ import type {
 import type { RuntimeCommandResult } from '@tracecode/harness-core';
 import type { CodeExecutionResult, ExecutionResult } from '@tracecode/harness-core';
 import { liftTraceOutcome } from '@tracecode/harness-core';
-import { assertRuntimeRequestSupported } from './runtime-capability-guards';
-import { getLanguageRuntimeProfile } from './runtime-profiles';
+import { assertRuntimeRequestSupported } from '@tracecode/harness-browser/internal';
+import { getLanguageRuntimeProfile } from '@tracecode/harness-browser/internal';
 import type { JavaWorkerClient, JavaWorkerProjectRequest } from './java-worker-client';
-import { batchCodeResultToExecuteResult, executeRuntimeRequest, isRuntimeProjectExecuteRequest } from './runtime-execute';
+import {
+  batchCodeResultToExecuteResult,
+  executeRuntimeRequest,
+  isRuntimeProjectExecuteRequest,
+} from '@tracecode/harness-browser/internal';
 
 const JAVA_DEFAULT_FILE = 'solution.java';
 

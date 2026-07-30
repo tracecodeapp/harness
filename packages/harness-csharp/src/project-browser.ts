@@ -16,7 +16,7 @@ import {
   runRuntimeProjectWorkerBridge,
   withRuntimeProjectCommandRunnerCapabilities,
 } from '@tracecode/harness-core';
-import type { CSharpWorkerClient } from '../../harness-browser/src/csharp-worker-client';
+import type { CSharpWorkerClient } from './csharp-worker-client';
 
 export type CSharpProjectFileEncoding = RuntimeFileEncoding;
 export type CSharpProjectFile = RuntimeFile;

@@ -3,6 +3,7 @@ export * from './runtime-capability-guards';
 export * from './runtime-profiles';
 export * from './execution-host';
 export * from './runtime-environment';
+export * from './runtime-provider-registry';
 export * from '../../harness-core/src/runtime-language-info';
 export {
   BROWSER_RUNTIME_ASSET_PROTOCOL_VERSION,
@@ -19,6 +20,8 @@ export {
   type BrowserRuntimeId,
   type BrowserRuntimeLoaderFormat,
   type BrowserRuntimeWorkerFormat,
+  type CppToolchainIntegrityEntry,
+  type CppToolchainIntegrityManifest,
 } from './runtime-assets';
 export {
   createBrowserRuntimeAssetPreflight,

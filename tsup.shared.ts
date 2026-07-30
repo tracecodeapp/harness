@@ -38,6 +38,7 @@ export const libraryConfig = {
   ...commonConfig,
   external: [
     ...commonConfig.external,
+    '@tracecode/harness-browser',
     '@tracecode/harness-core',
     '@tracecode/tracekernel',
   ],

@@ -1,4 +1,4 @@
-export { createJavaRuntimeClient } from '../../harness-browser/src/java-runtime-client';
+export { createJavaRuntimeClient } from './java-runtime-client';
 export {
   JavaWorkerClient,
   type JavaExecutionStyle,
@@ -6,7 +6,11 @@ export {
   type JavaWorkerClientOptions,
   type JavaWorkerRawTraceResult,
   type JavaWorkerTraceResult,
-} from '../../harness-browser/src/java-worker-client';
+} from './java-worker-client';
+export {
+  createJavaBrowserRuntimeProvider,
+  type JavaBrowserRuntimeProviderOptions,
+} from './browser-runtime-provider';
 export {
   createBrowserJavaProjectRunner,
   type BrowserJavaProjectCommandRunner,

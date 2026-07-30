@@ -38,6 +38,7 @@ import {
   type RawExecutionPayload,
 } from '@tracecode/harness-core';
 import type { RuntimeTrace } from '@tracecode/harness-core';
+import type { CppToolchainIntegrityManifest } from '../../harness-browser/src/runtime-assets';
 
 /** Raw wire payload from the tracing commands; lifted into the outcome union here. */
 type CppRawTraceResult = RawExecutionPayload & { trace?: RuntimeTrace };
@@ -47,20 +48,20 @@ import {
   handleKernelHttpCloseMessage,
   handleKernelHttpDispatchSyncMessage,
   handleKernelHttpListenSyncMessage,
-} from './kernel-http-sync';
-import { isDevEnvironment } from './browser-client-env';
-import { logRuntimeDiagnostic } from './runtime-diagnostics';
-import type { BrowserWorkerFactory, BrowserWorkerLike } from './execution-host';
-import { restoreTransferredTraceEvents, traceEventTransferRequest } from './trace-event-transport';
+} from '@tracecode/harness-browser/internal';
+import { isDevEnvironment } from '@tracecode/harness-browser/internal';
+import { logRuntimeDiagnostic } from '@tracecode/harness-browser/internal';
+import type { BrowserWorkerFactory, BrowserWorkerLike } from '@tracecode/harness-browser/internal';
+import { restoreTransferredTraceEvents, traceEventTransferRequest } from '@tracecode/harness-browser/internal';
 import {
   WorkerCrashedError,
   WorkerReadyTimeoutError,
   WorkerReportedError,
   WorkerRequestTimeoutError,
   WorkerTerminatedError,
-} from './worker-errors';
-import { WorkerSessionCore, type WorkerSessionMessage } from './worker-session-core';
-import { createWorkerProtocolToken } from './worker-protocol';
+} from '@tracecode/harness-browser/internal';
+import { WorkerSessionCore, type WorkerSessionMessage } from '@tracecode/harness-browser/internal';
+import { createWorkerProtocolToken } from '@tracecode/harness-browser/internal';
 
 const CPP_KERNEL_HTTP_RUNTIME_LABEL = 'C++';
 
@@ -94,16 +95,6 @@ export interface CppWorkerClientOptions extends CppWorkerAssets {
   programCacheLimit?: number;
   usePrecompiledHeader?: boolean;
   externalCompilerUrl?: string;
-}
-
-export interface CppToolchainIntegrityEntry {
-  url: string;
-  sha256: string;
-  size?: number;
-}
-
-export interface CppToolchainIntegrityManifest {
-  assets: readonly CppToolchainIntegrityEntry[];
 }
 
 interface PendingCompilerFrameRequest {

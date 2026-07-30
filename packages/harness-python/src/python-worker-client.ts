@@ -36,30 +36,30 @@ import type {
   RuntimeProjectSnapshot,
   RuntimeTraceCall,
 } from '@tracecode/harness-core';
-import { appendWorkerUrlQueryParameter, isDevEnvironment } from './browser-client-env';
+import { appendWorkerUrlQueryParameter, isDevEnvironment } from '@tracecode/harness-browser/internal';
 import {
   cleanupAsyncKernelHttp,
   handleAsyncKernelHttpProtocolMessage,
   type AsyncKernelHttpHost,
-} from './kernel-http-async';
-import { logRuntimeDiagnostic } from './runtime-diagnostics';
-import type { BrowserWorkerFactory, BrowserWorkerLike } from './execution-host';
-import { restoreTransferredTraceEvents, traceEventTransferRequest } from './trace-event-transport';
+} from '@tracecode/harness-browser/internal';
+import { logRuntimeDiagnostic } from '@tracecode/harness-browser/internal';
+import type { BrowserWorkerFactory, BrowserWorkerLike } from '@tracecode/harness-browser/internal';
+import { restoreTransferredTraceEvents, traceEventTransferRequest } from '@tracecode/harness-browser/internal';
 import {
   ExecutionTimeoutError,
   WorkerCrashedError,
   WorkerReadyTimeoutError,
   WorkerRequestTimeoutError,
   WorkerTerminatedError,
-} from './worker-errors';
-import { WorkerSessionCore } from './worker-session-core';
+} from '@tracecode/harness-browser/internal';
+import { WorkerSessionCore } from '@tracecode/harness-browser/internal';
 
 export type ExecutionStyle = 'function' | 'solution-method' | 'ops-class';
 
 export interface PythonWorkerClientOptions {
   workerUrl: string;
   workerFactory?: BrowserWorkerFactory;
-  /** Worker construction mode. Module Pyodide loaders require a module worker. */
+  /** Worker construction mode. Module Python runtime loaders require a module worker. */
   workerFormat?: 'classic' | 'module';
   /** Bounded compiled Classic harness/source entries retained by this worker (0-16). */
   compileCacheLimit?: number;

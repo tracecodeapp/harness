@@ -14,9 +14,13 @@ import type {
 } from '@tracecode/harness-core';
 import type { RuntimeCommandResult } from '@tracecode/harness-core';
 import type { CodeExecutionResult, ExecutionResult } from '@tracecode/harness-core';
-import { assertRuntimeRequestSupported } from './runtime-capability-guards';
-import { getLanguageRuntimeProfile } from './runtime-profiles';
-import { batchCodeResultToExecuteResult, executeRuntimeRequest, isRuntimeProjectExecuteRequest } from './runtime-execute';
+import { assertRuntimeRequestSupported } from '@tracecode/harness-browser/internal';
+import { getLanguageRuntimeProfile } from '@tracecode/harness-browser/internal';
+import {
+  batchCodeResultToExecuteResult,
+  executeRuntimeRequest,
+  isRuntimeProjectExecuteRequest,
+} from '@tracecode/harness-browser/internal';
 
 export interface JavaScriptRuntimeClientOptions {
   executeProject?: (request: RuntimeExecuteProjectRequest) => Promise<RuntimeCommandResult>;

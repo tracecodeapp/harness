@@ -1,5 +1,3 @@
-import type { CppToolchainIntegrityManifest } from './cpp-worker-client';
-
 const DEFAULT_ASSET_BASE_URL = '/workers';
 
 /**
@@ -29,6 +27,16 @@ export type BrowserRuntimeAssetOriginPolicy =
 
 export type BrowserRuntimeWorkerFormat = 'classic' | 'module';
 export type BrowserRuntimeLoaderFormat = 'classic-script' | 'module';
+
+export interface CppToolchainIntegrityEntry {
+  url: string;
+  sha256: string;
+  size?: number;
+}
+
+export interface CppToolchainIntegrityManifest {
+  assets: readonly CppToolchainIntegrityEntry[];
+}
 
 export interface BrowserRuntimeAssetDelivery {
   /** The publisher promises that bytes at this URL never change. */

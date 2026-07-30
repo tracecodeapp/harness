@@ -32,15 +32,15 @@ import type {
   RuntimeProjectCommandRequest,
   RuntimeProjectEngineLeaseController,
 } from '@tracecode/harness-core';
-import { isDevEnvironment } from './browser-client-env';
+import { isDevEnvironment } from '@tracecode/harness-browser/internal';
 import {
   cleanupAsyncKernelHttp,
   handleAsyncKernelHttpProtocolMessage,
   type AsyncKernelHttpHost,
-} from './kernel-http-async';
-import { logRuntimeDiagnostic } from './runtime-diagnostics';
-import type { BrowserWorkerFactory, BrowserWorkerLike } from './execution-host';
-import { restoreTransferredTraceEvents, traceEventTransferRequest } from './trace-event-transport';
+} from '@tracecode/harness-browser/internal';
+import { logRuntimeDiagnostic } from '@tracecode/harness-browser/internal';
+import type { BrowserWorkerFactory, BrowserWorkerLike } from '@tracecode/harness-browser/internal';
+import { restoreTransferredTraceEvents, traceEventTransferRequest } from '@tracecode/harness-browser/internal';
 import {
   ExecutionTimeoutError,
   WorkerCrashedError,
@@ -48,10 +48,10 @@ import {
   WorkerReportedError,
   WorkerRequestTimeoutError,
   WorkerTerminatedError,
-} from './worker-errors';
-import { WorkerSessionCore } from './worker-session-core';
-import type { WorkerSessionMessage } from './worker-session-core';
-import { handleHostArtifactCacheRequest, HostArtifactCache } from './host-artifact-cache';
+} from '@tracecode/harness-browser/internal';
+import { WorkerSessionCore } from '@tracecode/harness-browser/internal';
+import type { WorkerSessionMessage } from '@tracecode/harness-browser/internal';
+import { handleHostArtifactCacheRequest, HostArtifactCache } from '@tracecode/harness-browser/internal';
 
 export type CSharpExecutionStyle = 'function' | 'solution-method' | 'ops-class';
 
