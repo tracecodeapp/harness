@@ -475,6 +475,7 @@ import {
   WorkspaceEventState,
   type KernelJournalEntry,
 } from './workspace-event-state';
+import { WorkspaceLifecycleState } from './workspace-lifecycle-state';
 
 const PRINCIPAL_ACTOR: RuntimeWorkspaceActor = runtimeWorkspaceActorPreset('principal');
 const RUNTIME_ACTOR: RuntimeWorkspaceActor = runtimeWorkspaceActorPreset('runtime');
@@ -639,16 +640,11 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
   private readonly processTable = this.processState.table;
   private readonly processExecutionHandles = this.processState.executionHandles;
   private readonly eventState = new WorkspaceEventState();
+  private readonly lifecycleState = new WorkspaceLifecycleState();
   private readonly readonlyFiles = new Set<string>();
   private kernelSyscallGenerationBuffer?: SharedArrayBuffer;
   private kernelSyscallGenerationUnsubscribe?: RuntimeWorkspaceUnsubscribe;
   private readonlySuspendDepth = 0;
-  private nextCommandId = 1;
-  private nextTemporaryEntry = 1;
-  private nextTerminalSessionId = 1;
-  private destroyed = false;
-  private expirationDestroyScheduled = false;
-  private terminalVerbose = false;
 
   constructor(options: CreateRuntimeWorkspaceOptions = {}) {
     this.kernelInfo = createTraceKernelInfo(options.kernel, options.cwd);
@@ -6097,7 +6093,7 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
           `user=${this.kernelInfo.user.username}`,
           `host=${this.kernelInfo.host.hostname}`,
           `workspace=${this.kernelInfo.workspaceRoot}`,
-          `verbose=${this.terminalVerbose ? 'on' : 'off'}`,
+          `verbose=${this.lifecycleState.terminalVerbose ? 'on' : 'off'}`,
           `scheduler.maxConcurrent=${scheduler.maxConcurrentCommands}`,
           `scheduler.running=${scheduler.running}`,
           `scheduler.queued=${scheduler.queued}`,
@@ -6116,15 +6112,19 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
       }
       const mode = args[1];
       if (mode === undefined) {
-        this.terminalVerbose = !this.terminalVerbose;
+        this.lifecycleState.toggleTerminalVerbose();
       } else if (mode === 'on' || mode === 'true' || mode === '1' || mode === 'enable' || mode === 'enabled') {
-        this.terminalVerbose = true;
+        this.lifecycleState.setTerminalVerbose(true);
       } else if (mode === 'off' || mode === 'false' || mode === '0' || mode === 'disable' || mode === 'disabled') {
-        this.terminalVerbose = false;
+        this.lifecycleState.setTerminalVerbose(false);
       } else if (mode !== 'status') {
         return { stdout: '', stderr: 'usage: tracekernelctl verbose [on|off|status]\n', exitCode: 2 };
       }
-      return { stdout: `tracekernelctl: verbose ${this.terminalVerbose ? 'on' : 'off'}\n`, stderr: '', exitCode: 0 };
+      return {
+        stdout: `tracekernelctl: verbose ${this.lifecycleState.terminalVerbose ? 'on' : 'off'}\n`,
+        stderr: '',
+        exitCode: 0,
+      };
     }
     if (command === 'reset') {
       if (args.length > 1) {
@@ -7313,7 +7313,11 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
       ? normalizeWorkspaceCwd(parent)
       : normalizeWorkspaceCwd(`${ctx.cwd}/${parent}`);
     for (let attempt = 0; attempt < 100; attempt += 1) {
-      const token = (this.nextTemporaryEntry++).toString(36).padStart(match[0].length, '0').slice(-match[0].length);
+      const token = this.lifecycleState
+        .allocateTemporaryEntry()
+        .toString(36)
+        .padStart(match[0].length, '0')
+        .slice(-match[0].length);
       const name = `${template.slice(0, match.index)}${token}${template.slice(match.index + match[0].length)}${suffix}`;
       const path = normalizeWorkspaceCwd(`${normalizedParent}/${name}`);
       if (await ctx.fs.exists(path)) continue;
@@ -7392,7 +7396,7 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
         }),
         scope
       ));
-      if (this.destroyed) {
+      if (this.lifecycleState.destroyed) {
         await Effect.runPromise(Scope.close(scope, Exit.void));
         throw new Error('Runtime workspace was destroyed while TraceKernel initialized.');
       }
@@ -7577,8 +7581,7 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
   }
 
   private scheduleDestroyAfterExpiration(): void {
-    if (this.expirationDestroyScheduled) return;
-    this.expirationDestroyScheduled = true;
+    if (!this.lifecycleState.scheduleExpirationDestroy()) return;
     queueMicrotask(() => {
       void this.destroy({ reason: 'expired', clearStorage: true }).catch(() => undefined);
     });
@@ -7589,7 +7592,7 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
   }
 
   private assertNotDestroyed(): void {
-    if (!this.destroyed) return;
+    if (!this.lifecycleState.destroyed) return;
     throw Object.assign(new Error('EINVAL: project session is no longer available'), { code: 'EINVAL' });
   }
 
@@ -7623,7 +7626,7 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
   }
 
   private assertWorkspaceUsableForRun(command: string): RuntimeCommandResult | null {
-    if (this.destroyed) {
+    if (this.lifecycleState.destroyed) {
       return { stdout: '', stderr: 'project session is no longer available\n', exitCode: 1 };
     }
     const lifecycle = this.projectSession?.lifecycle;
@@ -9238,7 +9241,8 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
     parent?: RuntimeKernelProcessRecord
   ): RuntimeProjectTerminalSession {
     this.assertNotDestroyed();
-    const terminalSessionId = `terminal-${this.nextTerminalSessionId++}`;
+    const terminalSessionId =
+      this.lifecycleState.allocateTerminalSessionId();
     return new RuntimeProjectWorkspaceTerminalSession(
       {
         workspaceRoot: this.cwd,
@@ -9256,7 +9260,7 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
         resizeTerminal: (columns, rows) =>
           this.resizeKernelTerminal(columns, rows),
         jobRecords: () => this.terminalJobRecords(),
-        isVerbose: () => this.terminalVerbose,
+        isVerbose: () => this.lifecycleState.terminalVerbose,
       },
       {
         ...options,
@@ -9282,7 +9286,7 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
   }
 
   private async destroyNow(options: { reason?: string; clearStorage?: boolean } = {}): Promise<void> {
-    if (this.destroyed) return;
+    if (this.lifecycleState.destroyed) return;
     if (this.projectSession) {
       this.projectSession.lifecycle.destroyedAt = new Date().toISOString();
     }
@@ -9317,7 +9321,7 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
     this.notifyRuntimeChildSelectorWaiters();
     this.processState.childWaits.clear();
     this.recordKernelEvent('kernel-destroy', 1, { reason: options.reason ?? 'destroy', clearStorage: options.clearStorage === true });
-    this.destroyed = true;
+    this.lifecycleState.destroyed = true;
   }
 
   private async tryRunVirtualExecutable(
@@ -9655,8 +9659,8 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
   }
 
   dispose(): void {
-    if (this.destroyed) return;
-    this.destroyed = true;
+    if (this.lifecycleState.destroyed) return;
+    this.lifecycleState.destroyed = true;
     if (!this.httpState.lifecycleAbortController.signal.aborted) this.httpState.lifecycleAbortController.abort();
     this.closeAllHttpListeners();
     this.eventState.clearWatchers();
@@ -9970,7 +9974,7 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
 
   private createRuntimeActor(): RuntimeWorkspaceActor {
     return {
-      id: `runtime:${this.nextCommandId++}`,
+      id: this.lifecycleState.allocateRuntimeActorId(),
       kind: 'runtime',
       capabilities: {
         read: [`${this.cwd}/**`],
@@ -9996,7 +10000,11 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
   }
 
   private shouldEmitCommandOptionEvent(options: RuntimeCommandOptions, event: RuntimeCommandEvent): boolean {
-    return options.presentation !== 'terminal' || event.type !== 'status' || this.terminalVerbose;
+    return (
+      options.presentation !== 'terminal' ||
+      event.type !== 'status' ||
+      this.lifecycleState.terminalVerbose
+    );
   }
 
   private createCommandEventHandler(options: RuntimeCommandOptions): RuntimeCommandEventHandler | undefined {
