@@ -38,6 +38,7 @@ export interface RuntimeTraceCall {
   traceOptions?: TraceExecutionOptions;
   executionStyle?: RuntimeExecutionStyle;
   signal?: AbortSignal;
+  limits?: RuntimeExecutionLimits;
 }
 
 export type RuntimePreparedProgramMode = 'code' | 'trace';
