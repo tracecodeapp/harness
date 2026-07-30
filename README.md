@@ -86,6 +86,14 @@ Use `harness.warmLanguage(language)` when Python, TypeScript, Java, C#, or C++
 is selected so runtime/compiler startup happens before the first latency-sensitive
 execution. JavaScript `init()` prepares a clean one-shot executor directly.
 
+### 0.13 lifecycle notice
+
+The 0.13 release line is the final line exposing the direct BrowserHarness
+runtime-client lifecycle and engine-branded public runtime APIs. They remain
+available for 0.13.x stabilization without runtime deprecation warnings.
+Beginning with 0.14, evaluation will use the TraceKernel-backed Judge API and
+language-based runtime providers.
+
 ## Packages
 
 The umbrella package exposes `/browser`, `/core`, `/python`, `/javascript`,

@@ -6,6 +6,25 @@ This repo uses Git tags as release boundaries. Version notes below summarize wha
 
 ## [Unreleased]
 
+## [0.13.1] - 2026-07-30
+
+This stabilization release closes a cross-runtime process teardown race. The
+0.13 release line is also the final line exposing the direct BrowserHarness
+runner lifecycle and engine-branded runtime APIs. Those APIs remain available
+through 0.13.x stabilization releases without runtime deprecation warnings;
+0.14 will replace them with TraceKernel-backed Judge and language-provider
+surfaces.
+
+### Fixed
+
+- Prevented an outstanding JavaScript child-process wait from emitting a late
+  user `error` after its parent runtime had already entered cancellation. This
+  removes intermittent `ECLOSED: async syscall client is closed` page errors
+  during cross-runtime process-group teardown.
+- Preserved full browser error stacks in the C# cross-runtime conformance gate
+  so any future teardown regression identifies the originating worker and
+  syscall boundary.
+
 ## [0.13.0] - 2026-07-29
 
 This release declares the kernelized execution architecture stable after two

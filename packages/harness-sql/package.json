@@ -1,6 +1,6 @@
 {
   "name": "@tracecode/harness-sql",
-  "version": "0.13.0",
+  "version": "0.13.1",
   "description": "Browser-first SQL trace contract and client wrappers for TraceCode harness.",
   "license": "AGPL-3.0-only",
   "homepage": "https://tracecode.app",
