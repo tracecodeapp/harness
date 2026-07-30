@@ -79,6 +79,12 @@
       "require": "./dist/internal/browser.cjs",
       "default": "./dist/internal/browser.js"
     },
+    "./internal/tracekernel/workspace": {
+      "types": "./dist/internal/tracekernel/workspace.d.ts",
+      "import": "./dist/internal/tracekernel/workspace.js",
+      "require": "./dist/internal/tracekernel/workspace.cjs",
+      "default": "./dist/internal/tracekernel/workspace.js"
+    },
     "./python": {
       "types": "./dist/python.d.ts",
       "import": "./dist/python.js",
@@ -121,7 +127,8 @@
     "prepublishOnly": "pnpm release:check && pnpm build && pnpm release:check",
     "release:check": "node scripts/check-publish-safety.mjs",
     "release:root": "pnpm release:check && pnpm publish . --access public",
-    "build": "pnpm generate:runtime-info && pnpm generate:python-harness && pnpm generate:kernel-policy && pnpm generate:typescript-project-libs && pnpm generate:javascript-project-worker && pnpm generate:java-helper && pnpm sync:package-assets && pnpm build:tracekernel && pnpm exec tsup --config tsup.core.config.ts && pnpm build:browser-host && pnpm exec tsup && pnpm --dir packages/judge build",
+    "build": "pnpm generate:runtime-info && pnpm generate:python-harness && pnpm generate:kernel-policy && pnpm generate:typescript-project-libs && pnpm generate:javascript-project-worker && pnpm generate:java-helper && pnpm sync:package-assets && pnpm build:tracekernel && pnpm exec tsup --config tsup.core.config.ts && pnpm build:browser-host && pnpm exec tsup && pnpm rewrite:root-declarations && pnpm --dir packages/judge build",
+    "rewrite:root-declarations": "node scripts/rewrite-root-declaration-imports.mjs",
     "build:browser-host": "pnpm exec tsup --config tsup.browser-host.config.ts",
     "build:tracekernel": "pnpm exec tsup --config tsup.tracekernel.config.ts",
     "generate:runtime-info": "pnpm exec tsx --tsconfig tsconfig.base.json scripts/generate-runtime-language-info.ts",

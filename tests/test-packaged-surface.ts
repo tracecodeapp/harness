@@ -125,6 +125,9 @@ async function runWithTempRoot(tempRoot: string): Promise<void> {
     'dist/native.js',
     'dist/native.cjs',
     'dist/native.d.ts',
+    'dist/internal/tracekernel/workspace.js',
+    'dist/internal/tracekernel/workspace.cjs',
+    'dist/internal/tracekernel/workspace.d.ts',
     'dist/zlib-browser-shim.js',
     'dist/zlib-browser-shim.cjs',
     'dist/core.js',
@@ -205,6 +208,29 @@ async function runWithTempRoot(tempRoot: string): Promise<void> {
   const projectTypes = await readFile(join(packageDir, 'dist/project.d.ts'), 'utf8');
   const projectNodeTypes = await readFile(join(packageDir, 'dist/project-node.d.ts'), 'utf8');
   const nativeTypes = await readFile(join(packageDir, 'dist/native.d.ts'), 'utf8');
+  const traceKernelWorkspaceTypes = await readFile(
+    join(packageDir, 'dist/internal/tracekernel/workspace.d.ts'),
+    'utf8'
+  );
+  const packagedDeclarations = await readDeclarationTree(join(packageDir, 'dist'));
+  for (const privateWorkspaceName of [
+    '@tracecode/harness-browser',
+    '@tracecode/harness-core',
+    '@tracecode/harness-cpp',
+    '@tracecode/harness-csharp',
+    '@tracecode/harness-java',
+    '@tracecode/harness-javascript',
+    '@tracecode/harness-native',
+    '@tracecode/harness-project',
+    '@tracecode/harness-python',
+    '@tracecode/judge',
+    '@tracecode/tracekernel',
+  ]) {
+    assertCondition(
+      !packagedDeclarations.includes(privateWorkspaceName),
+      `Packed declarations must not depend on private workspace package ${privateWorkspaceName}`
+    );
+  }
   assertCondition(
     projectTypes.includes('RuntimeProjectWorkspace') &&
       projectTypes.includes('JustBashRuntimeWorkspace') &&
@@ -213,10 +239,12 @@ async function runWithTempRoot(tempRoot: string): Promise<void> {
     'Project declarations should expose RuntimeProjectWorkspace and the deprecated JustBashRuntimeWorkspace alias'
   );
   assertCondition(
-    projectTypes.includes('ProjectWorkspaceCommand = CustomCommand') &&
+    traceKernelWorkspaceTypes.includes('ProjectWorkspaceCommand = CustomCommand') &&
+      projectTypes.includes('ProjectWorkspaceCommand') &&
       projectNodeTypes.includes('ProjectWorkspaceCommand') &&
       !projectTypes.includes('ProjectWorkspaceCommand = unknown') &&
-      !projectNodeTypes.includes('ProjectWorkspaceCommand = unknown'),
+      !projectNodeTypes.includes('ProjectWorkspaceCommand = unknown') &&
+      !traceKernelWorkspaceTypes.includes('ProjectWorkspaceCommand = unknown'),
     'ProjectWorkspaceCommand declarations should be typed as CustomCommand, not unknown'
   );
   const projectNodeTypeSurface = [
