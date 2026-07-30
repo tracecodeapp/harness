@@ -17,6 +17,43 @@ Import path:
 import { JavaWorkerClient, createJavaRuntimeClient } from '@tracecode/harness/java';
 ```
 
+## Judge prepared provider
+
+Judge-backed evaluation must bind Java through
+`createJavaBrowserPreparedExecutionProvider`. The root browser registry passes
+the explicitly selected prepared-worker URL, worker factory, and asset
+preflights to that constructor:
+
+```ts
+const java = createJavaBrowserPreparedExecutionProvider({
+  workerUrl: assets.javaWorker,
+  workerFactory: workerFactoryFor('java'),
+  assetPreflight: preflight('java', ['worker']),
+});
+```
+
+That factory rewrites and compiles the source once into an immutable class
+snapshot, then destroys the compiler worker. Every case restores that snapshot
+into a brand-new hard Worker, runs exactly once, and destroys the Worker before
+the next case starts. Mutable VM state cannot cross that boundary: static
+fields and class initialization, system properties, locale and time-zone
+defaults, runtime filesystem writes, thread state, shutdown hooks, and future
+engine-owned host state all die with the case Worker. No case invokes `javac`.
+
+Its program advertises `fresh-case-state` with `maxConcurrency: 1`. Judge owns
+the corresponding backpressure and calls `dispose()` when the evaluation
+ends. Concurrent case requests are serialized; disposal hard-aborts an active
+Worker, drains the operation boundary, and prevents queued requests from
+starting.
+
+The prepared registry must not construct Java through
+`createJavaRuntimeClient`. That is the legacy single-call adapter and would
+silently recompile once per case. There is no legacy fallback in the prepared
+factory: a missing or invalid prepared-worker URL is a construction error.
+The root browser lease exposes this provider explicitly in its
+`preparedProviders` map under `java`; it must never infer a prepared provider
+from the legacy `clients` map.
+
 ## Java 23 project provider
 
 The Java root subpath adapts a structural Java 23 client to TraceKernel's

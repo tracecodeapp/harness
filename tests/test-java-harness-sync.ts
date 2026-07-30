@@ -119,12 +119,16 @@ async function main(): Promise<void> {
   console.log('PASS: java worker contract markers present');
 
   for (const marker of [
-    'TraceJVMWorkerClient',
+    'TraceJVMEngine',
     "traceJVMWorkerParameters.get('tracejvmBaseUrl')",
     'traceJVMRewriteSource',
     'traceJVMCompileAndRun',
     'traceJVMCompileAndTrace',
     'traceJVMCompileAndRunBatch',
+    'traceJVMPrepareRuntimeProgram',
+    'traceJVMRestoreRuntimeProgram',
+    'traceJVMRunPreparedRuntimeProgram',
+    'tracecode.java.tracejvm-prepared-program.v1',
     'processFiles: processFiles()',
     'self.importScripts(CLASSIC_JAVA_WORKER_URL.href)',
   ]) {

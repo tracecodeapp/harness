@@ -1,0 +1,656 @@
+#!/usr/bin/env npx tsx
+
+import assert from 'node:assert/strict';
+import { test } from 'node:test';
+import {
+  createEmptyRuntimeTrace,
+  type RuntimeProgramPreparationCall,
+} from '../packages/runtime-core/src/index';
+import {
+  ExecutionTimeoutError,
+} from '../packages/runtime-browser/src/internal';
+import {
+  createJavaBrowserPreparedExecutionProvider,
+  createJavaPreparedExecutionProvider,
+} from '../packages/runtime-java/src/java-prepared-provider';
+import type {
+  JavaWorkerClient,
+  JavaWorkerPreparedProgramSnapshot,
+  JavaWorkerPreparedProgramResult,
+} from '../packages/runtime-java/src/java-worker-client';
+
+interface FakeClientState {
+  initCalls: number;
+  prepareCalls: RuntimeProgramPreparationCall[];
+  restoreCalls: JavaWorkerPreparedProgramSnapshot[];
+  codeCalls: Array<{ programId: string; inputs: Record<string, unknown> }>;
+  traceCalls: Array<{ programId: string; inputs: Record<string, unknown> }>;
+  disposeCalls: string[];
+  terminateCalls: number;
+}
+
+function createFakeClient(options: {
+  prepareResult?: JavaWorkerPreparedProgramResult;
+  executePrepare?: (
+    call: RuntimeProgramPreparationCall,
+    state: FakeClientState
+  ) => Promise<JavaWorkerPreparedProgramResult>;
+  codeFailure?: Error;
+  traceFailure?: Error;
+  retireAfterCodeCalls?: ReadonlySet<number>;
+  executeCode?: (
+    programId: string,
+    call: { inputs: Record<string, unknown> },
+    state: FakeClientState
+  ) => Promise<{
+    kind: 'completed';
+    output: unknown;
+    consoleOutput: string[];
+    timings: { compileMs: number; runMs: number; totalMs: number };
+    retirementRecommended: boolean;
+  }>;
+  onTerminate?: () => void;
+} = {}): { client: JavaWorkerClient; state: FakeClientState } {
+  const state: FakeClientState = {
+    initCalls: 0,
+    prepareCalls: [],
+    restoreCalls: [],
+    codeCalls: [],
+    traceCalls: [],
+    disposeCalls: [],
+    terminateCalls: 0,
+  };
+  const client = {
+    async init() {
+      state.initCalls += 1;
+      return { success: true, loadTimeMs: 7 };
+    },
+    async prepareRuntimeProgram(call: RuntimeProgramPreparationCall) {
+      state.prepareCalls.push(call);
+      if (options.executePrepare) {
+        return options.executePrepare(call, state);
+      }
+      return (
+        options.prepareResult ?? {
+          success: true,
+          programId: 'prepared-java-1',
+          snapshot: {
+            schema: 'tracecode.java.prepared-program-snapshot.v1',
+            programId: 'prepared-java-1',
+          },
+          consoleOutput: [],
+          timings: { compileMs: 12, totalMs: 15 },
+        }
+      );
+    },
+    async restorePreparedRuntimeProgram(
+      snapshot: JavaWorkerPreparedProgramSnapshot
+    ) {
+      state.restoreCalls.push(snapshot);
+      return {
+        success: true,
+        programId: snapshot.programId,
+        snapshot,
+        consoleOutput: [],
+        timings: { compileMs: 0, totalMs: 0 },
+      };
+    },
+    async executePreparedCode(
+      programId: string,
+      call: { inputs: Record<string, unknown> }
+    ) {
+      state.codeCalls.push({ programId, inputs: call.inputs });
+      if (options.codeFailure) throw options.codeFailure;
+      if (options.executeCode) {
+        return options.executeCode(programId, call, state);
+      }
+      return {
+        kind: 'completed' as const,
+        output: call.inputs.value,
+        consoleOutput: [],
+        timings: { compileMs: 0, runMs: 2, totalMs: 2 },
+        retirementRecommended:
+          options.retireAfterCodeCalls?.has(state.codeCalls.length) === true,
+      };
+    },
+    async executePreparedWithTracing(
+      programId: string,
+      call: { inputs: Record<string, unknown> }
+    ) {
+      state.traceCalls.push({ programId, inputs: call.inputs });
+      if (options.traceFailure) throw options.traceFailure;
+      return {
+        success: true,
+        output: call.inputs.value,
+        events: [],
+        sourceText: 'class Solution {}',
+        executionTimeMs: 2,
+        consoleOutput: [],
+        trace: createEmptyRuntimeTrace('java'),
+        timings: { compileMs: 0, runMs: 2, totalMs: 2 },
+        retirementRecommended: false,
+      };
+    },
+    async disposePreparedRuntimeProgram(programId: string) {
+      state.disposeCalls.push(programId);
+    },
+    terminate() {
+      state.terminateCalls += 1;
+      options.onTerminate?.();
+    },
+  } as unknown as JavaWorkerClient;
+  return { client, state };
+}
+
+function deferred<Value = void>(): {
+  promise: Promise<Value>;
+  resolve: (value: Value) => void;
+  reject: (reason?: unknown) => void;
+} {
+  let resolvePromise!: (value: Value) => void;
+  let rejectPromise!: (reason?: unknown) => void;
+  const promise = new Promise<Value>((resolve, reject) => {
+    resolvePromise = resolve;
+    rejectPromise = reject;
+  });
+  return {
+    promise,
+    resolve: resolvePromise,
+    reject: rejectPromise,
+  };
+}
+
+test('Java prepared provider plans once, executes many isolated cases, and disposes exactly once', async () => {
+  const preparationWorker = createFakeClient();
+  const firstCaseWorker = createFakeClient();
+  const secondCaseWorker = createFakeClient();
+  const workers = [
+    preparationWorker.client,
+    firstCaseWorker.client,
+    secondCaseWorker.client,
+  ];
+  const provider = createJavaPreparedExecutionProvider({
+    createWorkerClient: () => {
+      const worker = workers.shift();
+      if (!worker) throw new Error('Unexpected extra Java worker.');
+      return worker;
+    },
+  });
+
+  assert.deepEqual(await provider.init(), { success: true, loadTimeMs: 7 });
+  const preparation = await provider.prepareProgram({
+    mode: 'code',
+    code: 'class Solution { int value(int value) { return value; } }',
+    functionName: 'value',
+    executionStyle: 'solution-method',
+  });
+  assert.equal(preparation.kind, 'prepared');
+  if (preparation.kind !== 'prepared' || preparation.program.mode !== 'code') {
+    throw new Error('Expected a prepared Java code program.');
+  }
+
+  assert.deepEqual(preparation.program.capabilities, {
+    caseIsolation: 'fresh-case-state',
+    maxConcurrency: 1,
+  });
+  assert.equal(
+    (await preparation.program.executeIsolated({
+      inputs: { value: 1 },
+    })).kind,
+    'completed'
+  );
+  assert.equal(
+    (await preparation.program.executeIsolated({
+      inputs: { value: 2 },
+    })).kind,
+    'completed'
+  );
+
+  assert.equal(preparationWorker.state.initCalls, 1);
+  assert.equal(preparationWorker.state.prepareCalls.length, 1);
+  assert.equal(preparationWorker.state.terminateCalls, 1);
+  assert.equal(firstCaseWorker.state.prepareCalls.length, 0);
+  assert.equal(firstCaseWorker.state.restoreCalls.length, 1);
+  assert.equal(secondCaseWorker.state.prepareCalls.length, 0);
+  assert.equal(secondCaseWorker.state.restoreCalls.length, 1);
+  assert.ok(
+    [
+      ...firstCaseWorker.state.codeCalls,
+      ...secondCaseWorker.state.codeCalls,
+    ].every((call) => call.programId === 'prepared-java-1')
+  );
+  assert.deepEqual(
+    [
+      ...firstCaseWorker.state.codeCalls,
+      ...secondCaseWorker.state.codeCalls,
+    ].map((call) => call.inputs),
+    [{ value: 1 }, { value: 2 }]
+  );
+
+  await preparation.program.dispose();
+  await preparation.program.dispose();
+  provider.dispose();
+  assert.deepEqual(firstCaseWorker.state.disposeCalls, []);
+  assert.deepEqual(secondCaseWorker.state.disposeCalls, []);
+  assert.equal(firstCaseWorker.state.terminateCalls, 1);
+  assert.equal(secondCaseWorker.state.terminateCalls, 1);
+  await assert.rejects(
+    preparation.program.executeIsolated({ inputs: { value: 3 } }),
+    /already disposed/
+  );
+});
+
+test('Java prepared program serializes concurrent case requests instead of overlapping workers', async () => {
+  const firstEntered = deferred();
+  const releaseFirst = deferred();
+  let activeExecutions = 0;
+  let maximumActiveExecutions = 0;
+  const executeCode = async (
+    _programId: string,
+    call: { inputs: Record<string, unknown> }
+  ) => {
+    activeExecutions += 1;
+    maximumActiveExecutions = Math.max(
+      maximumActiveExecutions,
+      activeExecutions
+    );
+    if (call.inputs.value === 1) {
+      firstEntered.resolve(undefined);
+      await releaseFirst.promise;
+    }
+    activeExecutions -= 1;
+    return {
+      kind: 'completed' as const,
+      output: call.inputs.value,
+      consoleOutput: [],
+      timings: { compileMs: 0, runMs: 1, totalMs: 1 },
+      retirementRecommended: false,
+    };
+  };
+  const preparationWorker = createFakeClient();
+  const firstCaseWorker = createFakeClient({ executeCode });
+  const secondCaseWorker = createFakeClient({ executeCode });
+  const clients = [
+    preparationWorker.client,
+    firstCaseWorker.client,
+    secondCaseWorker.client,
+  ];
+  let createdClients = 0;
+  const provider = createJavaPreparedExecutionProvider({
+    createWorkerClient: () => {
+      createdClients += 1;
+      const client = clients.shift();
+      if (!client) throw new Error('Unexpected extra Java worker.');
+      return client;
+    },
+  });
+  const prepared = await provider.prepareProgram({
+    mode: 'code',
+    code: 'class Solution { int value(int value) { return value; } }',
+    functionName: 'value',
+    executionStyle: 'solution-method',
+  });
+  if (prepared.kind !== 'prepared' || prepared.program.mode !== 'code') {
+    throw new Error('Expected a prepared Java code program.');
+  }
+
+  const first = prepared.program.executeIsolated({
+    inputs: { value: 1 },
+  });
+  await firstEntered.promise;
+  const second = prepared.program.executeIsolated({
+    inputs: { value: 2 },
+  });
+  await Promise.resolve();
+
+  assert.equal(createdClients, 2);
+  assert.equal(secondCaseWorker.state.initCalls, 0);
+  assert.equal(maximumActiveExecutions, 1);
+
+  releaseFirst.resolve(undefined);
+  assert.equal(completedOutput(await first), 1);
+  assert.equal(completedOutput(await second), 2);
+  assert.equal(maximumActiveExecutions, 1);
+  assert.equal(createdClients, 3);
+
+  await prepared.program.dispose();
+  provider.dispose();
+  assert.equal(firstCaseWorker.state.terminateCalls, 1);
+  assert.equal(secondCaseWorker.state.terminateCalls, 1);
+});
+
+test('disposing an active Java prepared program aborts once, drains the boundary, and rejects queued work', async () => {
+  const activeEntered = deferred();
+  const activeExecution = deferred<never>();
+  const preparationWorker = createFakeClient();
+  const activeWorker = createFakeClient({
+    executeCode: async () => {
+      activeEntered.resolve(undefined);
+      return activeExecution.promise;
+    },
+    onTerminate: () => {
+      activeExecution.reject(new DOMException('Worker terminated', 'AbortError'));
+    },
+  });
+  const clients = [preparationWorker.client, activeWorker.client];
+  let createdClients = 0;
+  const provider = createJavaPreparedExecutionProvider({
+    createWorkerClient: () => {
+      createdClients += 1;
+      const client = clients.shift();
+      if (!client) throw new Error('Unexpected extra Java worker.');
+      return client;
+    },
+  });
+  const prepared = await provider.prepareProgram({
+    mode: 'code',
+    code: 'class Solution { int hang(int value) { return value; } }',
+    functionName: 'hang',
+    executionStyle: 'solution-method',
+  });
+  if (prepared.kind !== 'prepared' || prepared.program.mode !== 'code') {
+    throw new Error('Expected a prepared Java code program.');
+  }
+
+  const first = prepared.program
+    .executeIsolated({ inputs: { value: 1 } })
+    .then(
+      () => ({ status: 'completed' as const }),
+      (error: unknown) => ({ status: 'rejected' as const, error })
+    );
+  await activeEntered.promise;
+  const queued = prepared.program
+    .executeIsolated({ inputs: { value: 2 } })
+    .then(
+      () => ({ status: 'completed' as const }),
+      (error: unknown) => ({ status: 'rejected' as const, error })
+    );
+
+  const disposal = prepared.program.dispose();
+  const [firstResult, queuedResult] = await Promise.all([first, queued]);
+  await disposal;
+
+  assert.equal(firstResult.status, 'rejected');
+  assert.ok(
+    firstResult.status === 'rejected' &&
+      firstResult.error instanceof DOMException &&
+      firstResult.error.name === 'AbortError'
+  );
+  assert.equal(queuedResult.status, 'rejected');
+  assert.match(
+    queuedResult.status === 'rejected'
+      ? String(queuedResult.error)
+      : '',
+    /already disposed/
+  );
+  assert.equal(createdClients, 2);
+  assert.equal(activeWorker.state.terminateCalls, 1);
+
+  await prepared.program.dispose();
+  provider.dispose();
+  assert.equal(activeWorker.state.terminateCalls, 1);
+});
+
+test('Java prepared provider owns and retires a failed preparation worker', async () => {
+  const fake = createFakeClient({
+    prepareResult: {
+      success: false,
+      error: 'incompatible types',
+      errorLine: 4,
+      consoleOutput: ['Solution.java:4: error'],
+      timings: { compileMs: 3, totalMs: 5 },
+    },
+  });
+  const provider = createJavaPreparedExecutionProvider({
+    createWorkerClient: () => fake.client,
+  });
+  const result = await provider.prepareProgram({
+    mode: 'code',
+    code: 'class Solution {',
+    functionName: 'solve',
+  });
+
+  assert.deepEqual(result, {
+    kind: 'failed',
+    error: 'incompatible types',
+    errorLine: 4,
+    diagnosticStage: 'compile',
+    consoleOutput: ['Solution.java:4: error'],
+    timings: { compileMs: 3, totalMs: 5 },
+  });
+  assert.equal(fake.state.prepareCalls.length, 1);
+  assert.equal(fake.state.terminateCalls, 1);
+  provider.dispose();
+  assert.equal(fake.state.terminateCalls, 1);
+});
+
+test('disposing the Java provider hard-aborts an active preparation exactly once', async () => {
+  const preparationEntered = deferred();
+  const activePreparation = deferred<never>();
+  const fake = createFakeClient({
+    executePrepare: async () => {
+      preparationEntered.resolve(undefined);
+      return activePreparation.promise;
+    },
+    onTerminate: () => {
+      activePreparation.reject(
+        new DOMException('Preparation worker terminated', 'AbortError')
+      );
+    },
+  });
+  const provider = createJavaPreparedExecutionProvider({
+    createWorkerClient: () => fake.client,
+  });
+  const preparation = provider
+    .prepareProgram({
+      mode: 'code',
+      code: 'class Solution {}',
+      functionName: 'solve',
+    })
+    .then(
+      () => ({ status: 'completed' as const }),
+      (error: unknown) => ({ status: 'rejected' as const, error })
+    );
+  await preparationEntered.promise;
+
+  provider.dispose();
+  const result = await preparation;
+
+  assert.equal(result.status, 'rejected');
+  assert.ok(
+    result.status === 'rejected' &&
+      result.error instanceof DOMException &&
+      result.error.name === 'AbortError'
+  );
+  assert.equal(fake.state.terminateCalls, 1);
+  provider.dispose();
+  assert.equal(fake.state.terminateCalls, 1);
+});
+
+test('Java prepared provider maps caller wall-clock limits without masking cancellation', async () => {
+  const timeout = new ExecutionTimeoutError({
+    runtimeLabel: 'Java',
+    timeoutMs: 25,
+  });
+  const codePreparationFake = createFakeClient();
+  const codeFake = createFakeClient({ codeFailure: timeout });
+  const codeWorkers = [codePreparationFake.client, codeFake.client];
+  const codeProvider = createJavaPreparedExecutionProvider({
+    createWorkerClient: () => {
+      const worker = codeWorkers.shift();
+      if (!worker) throw new Error('Unexpected extra Java worker.');
+      return worker;
+    },
+  });
+  const codePreparation = await codeProvider.prepareProgram({
+    mode: 'code',
+    code: 'class Solution {}',
+    functionName: 'hang',
+  });
+  assert.equal(codePreparation.kind, 'prepared');
+  if (
+    codePreparation.kind !== 'prepared' ||
+    codePreparation.program.mode !== 'code'
+  ) {
+    throw new Error('Expected a prepared Java code program.');
+  }
+  assert.deepEqual(
+    await codePreparation.program.executeIsolated({
+      inputs: {},
+      limits: { wallClockMs: 25 },
+    }),
+    {
+      kind: 'limit',
+      reason: 'client-timeout',
+      error: 'Java execution timed out after 0 seconds.',
+      consoleOutput: [],
+    }
+  );
+  await codePreparation.program.dispose();
+  codeProvider.dispose();
+
+  const tracePreparationFake = createFakeClient();
+  const traceFake = createFakeClient({ traceFailure: timeout });
+  const traceWorkers = [tracePreparationFake.client, traceFake.client];
+  const traceProvider = createJavaPreparedExecutionProvider({
+    createWorkerClient: () => {
+      const worker = traceWorkers.shift();
+      if (!worker) throw new Error('Unexpected extra Java worker.');
+      return worker;
+    },
+  });
+  const tracePreparation = await traceProvider.prepareProgram({
+    mode: 'trace',
+    code: 'class Solution {}',
+    functionName: 'hang',
+  });
+  assert.equal(tracePreparation.kind, 'prepared');
+  if (
+    tracePreparation.kind !== 'prepared' ||
+    tracePreparation.program.mode !== 'trace'
+  ) {
+    throw new Error('Expected a prepared Java trace program.');
+  }
+  const traceResult = await tracePreparation.program.executeIsolated({
+    inputs: {},
+    limits: { wallClockMs: 25 },
+  });
+  assert.equal(traceResult.kind, 'limit');
+  assert.equal(
+    traceResult.kind === 'limit' ? traceResult.reason : undefined,
+    'client-timeout'
+  );
+  assert.equal(traceResult.trace.language, 'java');
+  await tracePreparation.program.dispose();
+  traceProvider.dispose();
+
+  const abort = new DOMException('Aborted by caller', 'AbortError');
+  const abortPreparationFake = createFakeClient();
+  const abortFake = createFakeClient({ codeFailure: abort });
+  const abortWorkers = [abortPreparationFake.client, abortFake.client];
+  const abortProvider = createJavaPreparedExecutionProvider({
+    createWorkerClient: () => {
+      const worker = abortWorkers.shift();
+      if (!worker) throw new Error('Unexpected extra Java worker.');
+      return worker;
+    },
+  });
+  const abortPreparation = await abortProvider.prepareProgram({
+    mode: 'code',
+    code: 'class Solution {}',
+    functionName: 'hang',
+  });
+  if (
+    abortPreparation.kind !== 'prepared' ||
+    abortPreparation.program.mode !== 'code'
+  ) {
+    throw new Error('Expected a prepared Java code program.');
+  }
+  await assert.rejects(
+    abortPreparation.program.executeIsolated({
+      inputs: {},
+      limits: { wallClockMs: 25 },
+    }),
+    (error: unknown) =>
+      error instanceof DOMException && error.name === 'AbortError'
+  );
+  await abortPreparation.program.dispose();
+  abortProvider.dispose();
+});
+
+test('Java prepared provider hard-retires a tainted worker and restores immutable classes without recompiling', async () => {
+  const preparation = createFakeClient();
+  const first = createFakeClient({
+    retireAfterCodeCalls: new Set([1]),
+  });
+  const second = createFakeClient();
+  const clients = [preparation.client, first.client, second.client];
+  const provider = createJavaPreparedExecutionProvider({
+    createWorkerClient: () => {
+      const client = clients.shift();
+      if (!client) throw new Error('Unexpected extra Java worker.');
+      return client;
+    },
+  });
+  const prepared = await provider.prepareProgram({
+    mode: 'code',
+    code: 'class Solution { int value(int value) { return value; } }',
+    functionName: 'value',
+    executionStyle: 'solution-method',
+  });
+  if (prepared.kind !== 'prepared' || prepared.program.mode !== 'code') {
+    throw new Error('Expected a prepared Java code program.');
+  }
+
+  assert.equal(
+    completedOutput(
+      await prepared.program.executeIsolated({
+        inputs: { value: 1 },
+      })
+    ),
+    1
+  );
+  assert.equal(first.state.terminateCalls, 1);
+  assert.equal(preparation.state.prepareCalls.length, 1);
+  assert.equal(first.state.prepareCalls.length, 0);
+
+  assert.equal(
+    completedOutput(
+      await prepared.program.executeIsolated({
+        inputs: { value: 2 },
+      })
+    ),
+    2
+  );
+  assert.equal(second.state.initCalls, 1);
+  assert.equal(second.state.prepareCalls.length, 0);
+  assert.equal(second.state.restoreCalls.length, 1);
+  assert.equal(
+    second.state.restoreCalls[0]?.programId,
+    'prepared-java-1'
+  );
+
+  await prepared.program.dispose();
+  provider.dispose();
+  assert.equal(second.state.terminateCalls, 1);
+  assert.deepEqual(second.state.disposeCalls, []);
+});
+
+test('browser prepared construction requires an explicit worker and has no legacy fallback', () => {
+  assert.throws(
+    () =>
+      createJavaBrowserPreparedExecutionProvider({
+        workerUrl: '',
+      }),
+    /explicit workerUrl/
+  );
+});
+
+function completedOutput(
+  result: { kind: string; output?: unknown; error?: string }
+): unknown {
+  if (result.kind !== 'completed') {
+    throw new Error(result.error ?? `Expected completion, received ${result.kind}`);
+  }
+  return result.output;
+}
