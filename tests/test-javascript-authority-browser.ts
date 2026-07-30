@@ -215,7 +215,7 @@ async function main(): Promise<void> {
       const { createBrowserProjectWorkspace } = await import(browserProjectModulePath);
       const workspace = await createBrowserProjectWorkspace({
         assetBaseUrl: '/workers',
-        javaRuntime: 'legacy',
+        providers: ['javascript'],
         files: [{ path: 'seed.txt', contents: 'seed\n' }],
         nodeProjectTimeoutMs: 20_000,
       });
@@ -291,7 +291,7 @@ async function main(): Promise<void> {
       ].join('\n');
       const workspace = await createBrowserProjectWorkspace({
         assetBaseUrl: '/workers',
-        javaRuntime: 'legacy',
+        providers: ['javascript'],
         files: [{ path: 'detached-promise.js', contents: code }],
         nodeProjectTimeoutMs: 20_000,
       });
@@ -361,7 +361,7 @@ async function main(): Promise<void> {
 `;
       const workspace = await createBrowserProjectWorkspace({
         assetBaseUrl: '/workers',
-        javaRuntime: 'legacy',
+        providers: ['javascript'],
         files: [{ path: 'authority.js', contents: code }],
         nodeProjectTimeoutMs: 20_000,
       });

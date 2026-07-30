@@ -615,7 +615,6 @@ async function runWithTempRoot(tempRoot: string): Promise<void> {
           },
           terminate() {},
         },
-        javaRuntime: 'legacy',
         javaWorkerClient: {
           async executeProjectJava(request, _timeoutMs, _onEvent, signal) {
             if (request.scriptPath === 'JavaClient') {
@@ -758,7 +757,6 @@ async function runWithTempRoot(tempRoot: string): Promise<void> {
           },
           terminate() {},
         },
-        javaRuntime: 'legacy',
         javaWorkerClient: {
           async executeProjectJava(request) {
             return { stdout: request.source + ':' + request.scriptPath + ':browser-java\\n', stderr: '', exitCode: 0 };

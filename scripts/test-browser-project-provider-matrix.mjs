@@ -4,7 +4,7 @@ import { spawn } from 'node:child_process';
 import { join, resolve } from 'node:path';
 
 const ALL_ENGINES = ['chromium', 'firefox', 'webkit'];
-const ALL_LANGUAGES = ['python', 'javascript', 'typescript', 'java', 'csharp', 'cpp'];
+const ALL_LANGUAGES = ['python', 'javascript', 'typescript', 'csharp', 'cpp'];
 
 function selectedValues(environmentName, defaults, allowed) {
   const raw = process.env[environmentName]?.trim();
@@ -53,8 +53,6 @@ if (performanceGate && !reportDirectory) {
 const tsxCli = resolve('node_modules/tsx/dist/cli.mjs');
 const benchmark = resolve('scripts/benchmark-browser-project-runtimes.ts');
 const performanceCheck = resolve('scripts/check-browser-project-performance.mjs');
-const javaManifest = resolve('tests/fixtures/browser-project-java-cheerpj-4.2.json');
-
 for (const engine of engines) {
   for (const language of languages) {
     console.log(`\n=== Browser project provider matrix: ${engine}/${language} ===`);
@@ -71,7 +69,6 @@ for (const engine of engines) {
       `--iterations=${iterations}`,
       '--cache-assets',
       '--execution-host',
-      `--runtime-manifests=${javaManifest}`,
       `--request-timeout-ms=${timeoutMs}`,
       ...(reportPath ? [`--report=${reportPath}`] : ['--no-report']),
     ]);

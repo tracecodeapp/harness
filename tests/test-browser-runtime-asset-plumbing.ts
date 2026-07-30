@@ -215,6 +215,22 @@ async function testManifestAssetsReachWorkerInitialization(): Promise<void> {
     'C# runtime dependencies must reach the worker init payload'
   );
   harness.dispose();
+
+  CapturingWorker.instances = [];
+  const directLoaderHarness = createBrowserHarness({
+    assetBaseUrl: '/direct-java-loader',
+    providers: ['java'],
+    java: { loaderUrl: '/app/runtime/java-loader.js' },
+  });
+  await directLoaderHarness.getClient('java').init();
+  const directLoaderPayload = initMessage(
+    findWorker('/direct-java-loader/java-worker.js')
+  ).payload;
+  assertCondition(
+    directLoaderPayload?.cheerpjLoaderUrl === '/app/runtime/java-loader.js',
+    'The generic Java loader option must map to the bundled client protocol'
+  );
+  directLoaderHarness.dispose();
 }
 
 async function testMetadataMismatchStopsBeforeWorkerConstruction(): Promise<void> {
@@ -415,74 +431,6 @@ async function testProjectManifestAssetBinding(): Promise<void> {
   legacy.dispose();
 }
 
-async function testProjectJavaRequiresCompleteManifestBeforeWorkerConstruction(): Promise<void> {
-  const cases: Array<{ label: string; assets?: { runtimeManifests: BrowserRuntimeAssetManifests } }> = [
-    { label: 'missing manifest' },
-    {
-      label: 'partial manifest',
-      assets: {
-        runtimeManifests: {
-          java: {
-            runtime: 'java',
-            runtimeVersion: 'consumer-partial',
-            protocolVersion: BROWSER_RUNTIME_ASSET_PROTOCOL_VERSION,
-            workerFormat: 'classic',
-            loaderFormat: 'classic-script',
-            assetBaseUrl: 'https://cdn.consumer.example/java/',
-            originPolicy,
-            assets: { worker: descriptor('worker.js') },
-          },
-        },
-      },
-    },
-  ];
-
-  for (const testCase of cases) {
-    CapturingWorker.instances = [];
-    const workspace = await createBrowserProjectWorkspace({
-      providers: ['java'],
-      javaRuntime: 'legacy',
-      ...(testCase.assets ? { assets: testCase.assets } : {}),
-      files: [{ path: 'Main.java', contents: 'class Main {}\n' }],
-    });
-    try {
-      const result = await workspace.runCommand('javac Main.java');
-      const diagnostic = String(result.error?.detail?.diagnostic ?? '');
-      assertCondition(
-        result.exitCode === 137 &&
-          result.stdout === '' &&
-          result.stderr === '' &&
-          result.error?.code === 'EIO' &&
-          diagnostic.includes('Browser project Java is unavailable because CheerpJ is not vendored') &&
-          diagnostic.includes('assets.runtimeManifests.java') &&
-          diagnostic.includes('javaWorkerClient'),
-        `Project Java must keep provider configuration out of learner stderr while retaining host diagnostics for ${testCase.label}: ${JSON.stringify(result)}`
-      );
-      assertCondition(
-        !CapturingWorker.instances.some((worker) => String(worker.url).includes('java')),
-        `Project Java must reject ${testCase.label} before constructing a worker`
-      );
-    } finally {
-      workspace.dispose();
-    }
-  }
-
-  let prewarmError = '';
-  try {
-    await createBrowserProjectWorkspace({
-      providers: ['java'],
-      javaRuntime: 'legacy',
-      projectWorkerPrewarm: { java: 1 },
-    });
-  } catch (error) {
-    prewarmError = error instanceof Error ? error.message : String(error);
-  }
-  assertCondition(
-    prewarmError.includes('Browser project Java is unavailable because CheerpJ is not vendored'),
-    `Explicit Java prewarm must validate configuration immediately: ${JSON.stringify(prewarmError)}`
-  );
-}
-
 async function testProjectManifestAssetsArePreflightedAndForwarded(): Promise<void> {
   CapturingWorker.instances = [];
   CapturingWorker.fetches = [];
@@ -528,12 +476,11 @@ async function testProjectManifestAssetsArePreflightedAndForwarded(): Promise<vo
     return new Response('asset', { status: 200 });
   };
   const workspace = await createBrowserProjectWorkspace({
-    javaRuntime: 'legacy',
+    providers: ['javascript', 'typescript', 'csharp'],
     assets: { runtimeManifests: manifests },
     files: [
       { path: 'index.js', contents: 'console.log("project-js");\n' },
       { path: 'main.ts', contents: 'const value: number = 1;\n' },
-      { path: 'Main.java', contents: 'class Main {}\n' },
       { path: 'Program.cs', contents: 'Console.WriteLine("project-csharp");\n' },
       {
         path: 'Project.csproj',
@@ -544,22 +491,12 @@ async function testProjectManifestAssetsArePreflightedAndForwarded(): Promise<vo
   try {
     assertCondition((await workspace.runCommand('node index.js')).exitCode === 0, 'Project JavaScript should run');
     assertCondition((await workspace.runCommand('tsc --noEmit main.ts')).exitCode === 0, 'Project TypeScript should compile');
-    assertCondition((await workspace.runCommand('javac Main.java')).exitCode === 0, 'Project Java should compile');
     assertCondition((await workspace.runCommand('dotnet build Project.csproj')).exitCode === 0, 'Project C# should build');
 
     const javascriptWorker = findWorker('/javascript/project-worker.js');
-    const javaWorker = findWorker('/java/worker.js');
     const csharpWorker = findWorker('/csharp/worker.js');
     const requiredBeforeExecution = {
       javascript: ['https://cdn.consumer.example/javascript/project-worker.js'],
-      java: [
-        'https://cdn.consumer.example/java/worker.js',
-        'https://cdn.consumer.example/java/cheerpj-loader.js',
-        'https://cdn.consumer.example/java/helper.jar',
-        'https://cdn.consumer.example/java/compiler.jar',
-        'https://cdn.consumer.example/java/rewriter.jar',
-        'https://cdn.consumer.example/java/parser.jar',
-      ],
       csharp: [
         'https://cdn.consumer.example/csharp/worker.js',
         'https://cdn.consumer.example/csharp/runtime',
@@ -574,16 +511,6 @@ async function testProjectManifestAssetsArePreflightedAndForwarded(): Promise<vo
           `observed ${JSON.stringify(javascriptWorker.fetchesAtMessage.get('execute-project-javascript'))}`
       );
     }
-    for (const url of requiredBeforeExecution.java) {
-      assertCondition(
-        javaWorker.fetchesAtMessage.get('init')?.includes(url),
-        `Java project assets must be verified before worker initialization: ${url}`
-      );
-      assertCondition(
-        javaWorker.fetchesAtMessage.get('execute-project-java')?.includes(url),
-        `Java project assets must be verified before execution: ${url}`
-      );
-    }
     for (const url of requiredBeforeExecution.csharp) {
       assertCondition(
         csharpWorker.fetchesAtMessage.get('execute-project-csharp')?.includes(url),
@@ -595,12 +522,6 @@ async function testProjectManifestAssetsArePreflightedAndForwarded(): Promise<vo
       'TypeScript compiler must be verified before its lazy project load'
     );
 
-    const javaAssets = initMessage(javaWorker).payload?.runtimeAssets as Record<string, string> | undefined;
-    assertCondition(
-      javaAssets?.loaderUrl === 'https://cdn.consumer.example/java/cheerpj-loader.js' &&
-        javaAssets.compilerJarUrl === 'https://cdn.consumer.example/java/compiler.jar',
-      'Java project worker init must receive manifest loader and jar URLs'
-    );
     const csharpDependencies = initMessage(csharpWorker).payload?.runtimeDependencies as
       | Record<string, string>
       | undefined;
@@ -623,7 +544,6 @@ try {
   await testIntegrityAndMediaTypeVerification();
   await testPreflightRetriesFailuresAndSharesConcurrentWork();
   await testProjectManifestAssetBinding();
-  await testProjectJavaRequiresCompleteManifestBeforeWorkerConstruction();
   await testProjectManifestAssetsArePreflightedAndForwarded();
   console.log('PASS: browser runtime asset manifest plumbing and preflight');
 } finally {

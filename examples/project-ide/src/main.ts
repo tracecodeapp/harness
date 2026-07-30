@@ -9,6 +9,7 @@ import {
   type BrowserRuntimeAssetManifests,
 } from '@tracecode/harness/browser';
 import type { Language, RuntimeCommandEvent, RuntimeWorkspaceEvent } from '@tracecode/harness/core';
+import type { JavaProjectRunnerOptions } from '@tracecode/harness-java/java-project';
 
 // ----------------------------------------------------------------------
 // Monaco Environment Setup
@@ -231,14 +232,23 @@ async function bootDevTerminal(): Promise<void> {
     }
   ).__tracecodeCreateBrowserProjectWorkspace = createBrowserProjectWorkspace;
 
-  const runtimeManifests = (
-    window as Window & { __tracecodeRuntimeAssetManifests?: BrowserRuntimeAssetManifests }
-  ).__tracecodeRuntimeAssetManifests;
-  const javaAvailable = runtimeManifests?.java !== undefined;
+  const configurationWindow = window as Window & {
+    __tracecodeRuntimeAssetManifests?: BrowserRuntimeAssetManifests;
+    __tracecodeJavaProjectProvider?: Omit<JavaProjectRunnerOptions, 'applyFileChange'>;
+  };
+  const runtimeManifests = configurationWindow.__tracecodeRuntimeAssetManifests;
+  const javaProjectProvider = configurationWindow.__tracecodeJavaProjectProvider;
+  const javaAvailable = javaProjectProvider !== undefined;
 
   const workspace = await createBrowserProjectWorkspace({
     assetBaseUrl: '/workers',
     ...(runtimeManifests ? { assets: { runtimeManifests } } : {}),
+    ...(javaProjectProvider
+      ? {
+          providers: ['python', 'javascript', 'typescript', 'java', 'csharp', 'cpp'] as const,
+          java: javaProjectProvider,
+        }
+      : {}),
     pythonProjectTimeoutMs: 120_000,
     javaProjectTimeoutMs: 120_000,
     csharpProjectTimeoutMs: 120_000,

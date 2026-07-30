@@ -7,6 +7,7 @@ import type {
   RuntimeWorkspaceEvent,
 } from '@tracecode/harness/core';
 import type { BrowserProjectProvider, BrowserRuntimeAssetManifests } from '@tracecode/harness/browser';
+import type { JavaProjectRunnerOptions } from '@tracecode/harness-java/java-project';
 
 async function bootProjectTerminal(): Promise<void> {
   document.body.innerHTML = `
@@ -64,10 +65,13 @@ async function bootProjectTerminal(): Promise<void> {
     }
   ).__tracecodeCreateBrowserProjectWorkspace = createBrowserProjectWorkspace;
 
-  const runtimeManifests = (
-    window as Window & { __tracecodeRuntimeAssetManifests?: BrowserRuntimeAssetManifests }
-  ).__tracecodeRuntimeAssetManifests;
-  const javaAvailable = runtimeManifests?.java !== undefined;
+  const configurationWindow = window as Window & {
+    __tracecodeRuntimeAssetManifests?: BrowserRuntimeAssetManifests;
+    __tracecodeJavaProjectProvider?: Omit<JavaProjectRunnerOptions, 'applyFileChange'>;
+  };
+  const runtimeManifests = configurationWindow.__tracecodeRuntimeAssetManifests;
+  const javaProjectProvider = configurationWindow.__tracecodeJavaProjectProvider;
+  const javaAvailable = javaProjectProvider !== undefined;
   const providers: BrowserProjectProvider[] = [
     'python',
     'javascript',
@@ -81,6 +85,7 @@ async function bootProjectTerminal(): Promise<void> {
     assetBaseUrl: '/workers',
     ...(runtimeManifests ? { assets: { runtimeManifests } } : {}),
     providers,
+    ...(javaProjectProvider ? { java: javaProjectProvider } : {}),
     javaProjectTimeoutMs: 120_000,
     cppProjectTimeoutMs: 120_000,
     kernel: {
@@ -123,7 +128,7 @@ async function bootProjectTerminal(): Promise<void> {
                 ]
               : [
                   'Java:',
-                  '  unavailable until the host injects a complete consumer runtime manifest',
+                  '  unavailable until the host injects a Java project provider',
                 ]),
             '',
           ].join('\n'),
@@ -283,7 +288,7 @@ public class TicketTriage {
         appendLine(
           javaAvailable
             ? 'Java: javac java/TicketTriage.java && java -cp java TicketTriage'
-            : 'Java: inject window.__tracecodeRuntimeAssetManifests.java before boot',
+            : 'Java: inject window.__tracecodeJavaProjectProvider before boot',
           'status'
         );
         appendLine('Reset: tracekernelctl reset', 'status');
@@ -370,7 +375,7 @@ public class TicketTriage {
     appendLine('Java: javac java/TicketTriage.java');
     appendLine('      java -cp java TicketTriage');
   } else {
-    appendLine('Java: inject window.__tracecodeRuntimeAssetManifests.java before boot');
+    appendLine('Java: inject window.__tracecodeJavaProjectProvider before boot');
   }
   appendLine('Reset saved demo data with: tracekernelctl reset');
   input.disabled = false;

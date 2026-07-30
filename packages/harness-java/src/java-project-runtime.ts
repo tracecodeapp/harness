@@ -1,18 +1,16 @@
-import type { TraceJVMProjectClient } from './tracejvm-project';
+import type { JavaProjectClient } from './java-project';
 
-export type TraceJVMHarnessClient = TraceJVMProjectClient;
-
-export interface TraceJVMHarnessWarmupResult {
+export interface JavaProjectWarmupResult {
   totalMs: number;
   runtimeInitializeMs: number;
   compileMs: number;
   runMs: number;
 }
 
-const warmupGates = new WeakMap<object, Promise<TraceJVMHarnessWarmupResult>>();
+const warmupGates = new WeakMap<object, Promise<JavaProjectWarmupResult>>();
 
-const WARMUP_CLASS = 'tracecode.harness.warmup.TraceJVMHarnessWarmup';
-const WARMUP_STDOUT = '__TRACECODE_TRACEJVM_WARM__';
+const WARMUP_CLASS = 'tracecode.harness.warmup.JavaProjectHarnessWarmup';
+const WARMUP_STDOUT = '__TRACECODE_JAVA_PROJECT_WARM__';
 const WARMUP_SOURCE = `package tracecode.harness.warmup;
 
 import java.lang.reflect.InvocationTargetException;
@@ -22,7 +20,7 @@ import java.util.ArrayList;
 import java.util.Base64;
 import java.util.List;
 
-public final class TraceJVMHarnessWarmup {
+public final class JavaProjectHarnessWarmup {
   private static int processLocal = 0;
 
   private static int add(int left, int right) {
@@ -31,7 +29,7 @@ public final class TraceJVMHarnessWarmup {
 
   private static int invokeAdd(int left, int right) throws Exception {
     try {
-      Method method = TraceJVMHarnessWarmup.class.getDeclaredMethod(
+      Method method = JavaProjectHarnessWarmup.class.getDeclaredMethod(
           "add", int.class, int.class);
       return ((Integer) method.invoke(null, left, right)).intValue();
     } catch (InvocationTargetException error) {
@@ -69,14 +67,14 @@ function elapsedSince(startedAt: number): number {
 }
 
 async function performWarmup(
-  client: TraceJVMHarnessClient,
-): Promise<TraceJVMHarnessWarmupResult> {
+  client: JavaProjectClient,
+): Promise<JavaProjectWarmupResult> {
   const startedAt = performance.now();
   const initialization = await client.initialize?.();
   const compileStartedAt = performance.now();
   const compile = await client.compile({
     sources: [{
-      path: 'tracecode/harness/warmup/TraceJVMHarnessWarmup.java',
+      path: 'tracecode/harness/warmup/JavaProjectHarnessWarmup.java',
       content: WARMUP_SOURCE,
     }],
   });
@@ -89,7 +87,7 @@ async function performWarmup(
     throw new Error(
       compile.stderr ||
       compile.stdout ||
-      `TraceJVM harness warmup compilation ended with ${compile.status}.`
+      `Java project warmup compilation ended with ${compile.status}.`
     );
   }
 
@@ -106,7 +104,7 @@ async function performWarmup(
   ) {
     throw new Error(
       run.stderr ||
-      `TraceJVM harness warmup execution ended with ${run.status}: ${JSON.stringify(run.stdout)}.`
+      `Java project warmup execution ended with ${run.status}: ${JSON.stringify(run.stdout)}.`
     );
   }
   if (
@@ -114,12 +112,12 @@ async function performWarmup(
     run.isolation.hardBoundaryRecommended
   ) {
     throw new Error(
-      `TraceJVM harness warmup did not leave a reusable isolated VM: ${JSON.stringify(run.isolation)}.`
+      `Java project warmup did not leave a reusable isolated VM: ${JSON.stringify(run.isolation)}.`
     );
   }
   if (run.retirementRecommended) {
     throw new Error(
-      'TraceJVM harness warmup exhausted the configured execution boundary; ' +
+      'Java project warmup exhausted the configured execution boundary; ' +
       'the client must allow at least one learner execution after warmup.'
     );
   }
@@ -137,9 +135,9 @@ async function performWarmup(
  * per client. Callers may start this in the background; commands can await the
  * same promise without duplicating work.
  */
-export function warmTraceJVMHarnessClient(
-  client: TraceJVMHarnessClient,
-): Promise<TraceJVMHarnessWarmupResult> {
+export function warmJavaProjectClient(
+  client: JavaProjectClient,
+): Promise<JavaProjectWarmupResult> {
   const identity = client as object;
   const existing = warmupGates.get(identity);
   if (existing) return existing;
@@ -156,8 +154,8 @@ export function warmTraceJVMHarnessClient(
  * when its host client object is reused. Invalidate before admitting another
  * learner process so the replacement Worker receives the same warmup.
  */
-export function invalidateTraceJVMHarnessWarmup(
-  client: TraceJVMHarnessClient,
+export function invalidateJavaProjectWarmup(
+  client: JavaProjectClient,
 ): void {
   warmupGates.delete(client as object);
 }

@@ -53,7 +53,6 @@ interface BenchmarkArgs {
 
 interface ProjectWorkerPrewarm {
   python: number;
-  java: number;
   csharp: number;
 }
 
@@ -179,9 +178,14 @@ interface SummaryRecord {
   filesystemShellAvgMs?: number | null;
 }
 
-const ALL_LANGUAGES: Language[] = ['python', 'javascript', 'typescript', 'java', 'csharp', 'cpp'];
+/**
+ * Java 23 is supplied by an independently installed project provider. This
+ * generic harness benchmark has no authority to select or bundle one, so Java
+ * is measured by that provider's browser integration suite instead.
+ */
+const ALL_LANGUAGES: Language[] = ['python', 'javascript', 'typescript', 'csharp', 'cpp'];
 const ALL_ENGINES: BrowserEngine[] = ['chromium', 'firefox', 'webkit'];
-const PREWARM_LANGUAGES = ['python', 'java', 'csharp'] as const;
+const PREWARM_LANGUAGES = ['python', 'csharp'] as const;
 const ALL_PHASES: Phase[] = [
   'workspace-construction',
   'first-command',
@@ -349,18 +353,18 @@ function usage(): string {
     '',
     'Options:',
     '  --engine=chromium|firefox|webkit Browser engine. Default: chromium.',
-    '  --languages=python,javascript,typescript,java,csharp,cpp',
-    '                                  Project-browser runtimes. Default: all.',
+    '  --languages=python,javascript,typescript,csharp,cpp',
+    '                                  Built-in project-browser runtimes. Default: all.',
     '  --iterations=5                  Fresh BrowserContext/workspace samples. Default: 5 (smoke: 1).',
     `  --seed=${DEFAULT_SEED}          Deterministic per-iteration shuffle seed.`,
-    '  --prewarm=python:1,java:1       One-shot clean worker pool depths (0-2 each, total <=4). Default: all 0.',
+    '  --prewarm=python:1,csharp:1     One-shot clean worker pool depths (0-2 each, total <=4). Default: all 0.',
     '  --request-timeout-ms=180000     Per public operation timeout.',
     '  --runtime-manifests=file.json   Consumer-owned cross-runtime asset manifests.',
     '  --smoke                         One JavaScript browser-project sample unless overridden.',
     '  --report=reports/file.json      JSON report path.',
     '  --no-report                     Do not write a JSON report.',
     '  --cache-assets                  Serve immutable cache headers so repeated commands exclude downloads.',
-    '  --execution-host               Run Java through a dedicated cross-origin session host.',
+    '  --execution-host               Route selected built-in workers through a dedicated origin.',
     '  --headful                       Run the selected browser with a visible window.',
   ].join('\n');
 }
@@ -393,7 +397,7 @@ function nonNegativeInteger(raw: string, label: string): number {
 }
 
 function parsePrewarm(raw: string): ProjectWorkerPrewarm {
-  const result: ProjectWorkerPrewarm = { python: 0, java: 0, csharp: 0 };
+  const result: ProjectWorkerPrewarm = { python: 0, csharp: 0 };
   const entries = raw.split(',').map((entry) => entry.trim()).filter(Boolean);
   if (entries.length === 0) throw new Error('--prewarm requires at least one language:depth entry.');
   const seen = new Set<string>();
@@ -414,7 +418,7 @@ function parsePrewarm(raw: string): ProjectWorkerPrewarm {
     }
     result[language as keyof ProjectWorkerPrewarm] = depth;
   }
-  const total = result.python + result.java + result.csharp;
+  const total = result.python + result.csharp;
   if (total > 4) throw new Error(`Total prewarm depth must not exceed 4; received ${total}.`);
   return result;
 }
@@ -426,7 +430,7 @@ function parseArgs(argv: string[]): BenchmarkArgs {
     iterations: 5,
     requestTimeoutMs: 180_000,
     seed: DEFAULT_SEED,
-    prewarm: { python: 0, java: 0, csharp: 0 },
+    prewarm: { python: 0, csharp: 0 },
     headful: false,
     smoke: false,
     cacheAssets: false,
@@ -962,7 +966,6 @@ async function runBrowserPlanItem(
   let cdpUnsupportedReason: string | undefined;
   const samplePrewarm: ProjectWorkerPrewarm = {
     python: item.language === 'python' ? args.prewarm.python : 0,
-    java: item.language === 'java' ? args.prewarm.java : 0,
     csharp: item.language === 'csharp' ? args.prewarm.csharp : 0,
   };
 
@@ -1142,13 +1145,8 @@ async function runBrowserPlanItem(
               assetBaseUrl: '/workers',
               providers: language === 'typescript' ? ['typescript', 'javascript'] : [language],
               ...(runtimeManifests ? { assets: { runtimeManifests } } : {}),
-              ...(language === 'java' && executionHostUrl
-                ? {
-                    executionHost: {
-                      url: executionHostUrl,
-                      javaLifecycle: 'workspace-session',
-                    },
-                  }
+              ...(executionHostUrl
+                ? { executionHost: { url: executionHostUrl } }
                 : {}),
               projectWorkerIsolation: 'per-command',
               projectWorkerPrewarm: prewarm,
@@ -1848,7 +1846,7 @@ async function main(): Promise<void> {
     }> = [];
 
     console.log(
-      `Prewarm depths: python=${args.prewarm.python}, java=${args.prewarm.java}, csharp=${args.prewarm.csharp} `
+      `Prewarm depths: python=${args.prewarm.python}, csharp=${args.prewarm.csharp} `
       + '(default baseline is zero)'
     );
     console.log(`Run order seed ${args.seed}: ${runPlan.map((item) => `${item.language}#${item.iteration + 1}`).join(', ')}`);

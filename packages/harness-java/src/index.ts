@@ -17,11 +17,10 @@ export {
   type BrowserJavaProjectRunnerOptions,
 } from './project-browser';
 export {
-  invalidateTraceJVMHarnessWarmup,
-  warmTraceJVMHarnessClient,
-  type TraceJVMHarnessClient,
-  type TraceJVMHarnessWarmupResult,
-} from './tracejvm-runtime';
+  invalidateJavaProjectWarmup,
+  warmJavaProjectClient,
+  type JavaProjectWarmupResult,
+} from './java-project-runtime';
 export {
   createNativeJavaProjectRunner,
   type JavaProjectCommandRequest,
@@ -33,20 +32,20 @@ export {
   type NativeJavaProjectRunnerOptions,
 } from './project-node';
 export {
-  TRACEJVM_PROJECT_CAPABILITIES,
-  createTraceJVMProjectRunner,
-  type TraceJVMProjectClient,
-  type TraceJVMProjectClientContext,
-  type TraceJVMProjectClientFactory,
-  type TraceJVMProjectBinaryFile,
-  type TraceJVMProjectCompileRequest,
-  type TraceJVMProjectCompileResult,
-  type TraceJVMProjectExecuteResult,
-  type TraceJVMProjectExecutionReport,
-  type TraceJVMProjectHost,
-  type TraceJVMProjectHostRequest,
-  type TraceJVMProjectIsolationReport,
-  type TraceJVMProjectRunRequest,
-  type TraceJVMProjectRunnerOptions,
-  type TraceJVMProjectSourceFile,
-} from './tracejvm-project';
+  JAVA_PROJECT_CAPABILITIES,
+  createJavaProjectRunner,
+  type JavaProjectClient,
+  type JavaProjectClientContext,
+  type JavaProjectClientFactory,
+  type JavaProjectBinaryFile,
+  type JavaProjectCompileRequest,
+  type JavaProjectCompileResult,
+  type JavaProjectExecuteResult,
+  type JavaProjectExecutionReport,
+  type JavaProjectHost,
+  type JavaProjectHostRequest,
+  type JavaProjectIsolationReport,
+  type JavaProjectRunRequest,
+  type JavaProjectRunnerOptions,
+  type JavaProjectSourceFile,
+} from './java-project';

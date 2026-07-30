@@ -101,13 +101,6 @@ function parseJavaDefaultImports(javaWorkerSource: string): string[] {
     .filter((value): value is string => Boolean(value));
 }
 
-function parseCheerpJVersion(javaWorkerSource: string): string | undefined {
-  const localLoaderVersion = javaWorkerSource.match(/const\s+CHEERPJ_LOADER_VERSION\s*=\s*['"]([^'"]+)['"]/);
-  if (localLoaderVersion?.[1]) return localLoaderVersion[1];
-
-  return javaWorkerSource.match(/cjrtnc\.leaningtech\.com\/([^/]+)\/loader\.js/)?.[1];
-}
-
 function parseCSharpGlobalUsings(compilerHostSource: string): string[] {
   return unique(
     [...compilerHostSource.matchAll(/^\s*global using\s+([^;]+);/gm)]
@@ -247,14 +240,10 @@ function buildTypeScriptDescription(input: {
 
 function buildJavaDescription(input: {
   javaVersion: string;
-  cheerpjVersion?: string;
   defaultImports: readonly string[];
 }): string {
-  const runtimeDetail = input.cheerpjVersion
-    ? `CheerpJ ${input.cheerpjVersion}`
-    : 'consumer-configured CheerpJ runtime assets';
   return [
-    `Java ${input.javaVersion} is compiled with javac ${input.javaVersion} and executed in the browser through ${runtimeDetail}.`,
+    `Java ${input.javaVersion} is compiled with javac ${input.javaVersion} and executed through the consumer-configured browser Java provider.`,
     '',
     `Common imports are added automatically: ${input.defaultImports.join(', ')}.`,
   ].join('\n');
@@ -319,8 +308,17 @@ async function buildRuntimeInfo(): Promise<Record<string, RuntimeInfo>> {
   const typeScriptCompileOptions = parseTypeScriptCompileOptions(javascriptWorkerSource);
 
   const javaWorkerSource = await readText('workers', 'java', 'java-worker.js');
-  const javaVersion = requireMatch(javaWorkerSource, /cheerpjInit\(\{\s*version:\s*([0-9]+)/, 'Java runtime version')[1]!;
-  const cheerpjVersion = parseCheerpJVersion(javaWorkerSource);
+  const javaProjectSource = await readText(
+    'packages',
+    'harness-java',
+    'src',
+    'java-project.ts'
+  );
+  const javaVersion = requireMatch(
+    javaProjectSource,
+    /javaVersion:\s*'([0-9]+)'/,
+    'Java project provider version'
+  )[1]!;
   const javaParserVersion = requireMatch(javaWorkerSource, /javaparser-core-([0-9.]+)\.jar/, 'JavaParser version')[1]!;
   const javaDefaultImports = parseJavaDefaultImports(javaWorkerSource);
 
@@ -422,15 +420,12 @@ async function buildRuntimeInfo(): Promise<Record<string, RuntimeInfo>> {
       versionLabel: `Java ${javaVersion}`,
       description: buildJavaDescription({
         javaVersion,
-        cheerpjVersion,
         defaultImports: javaDefaultImports,
       }),
       runtime: {
-        name: 'CheerpJ browser-local OpenJDK runtime',
+        name: 'Browser Java runtime',
         version: javaVersion,
-        detail: cheerpjVersion
-          ? `Loaded through CheerpJ ${cheerpjVersion}.`
-          : 'Loaded from consumer-configured runtime assets (same-origin or an approved CDN).',
+        detail: 'Runs through the consumer-configured Java project provider.',
       },
       compiler: {
         name: 'javac',

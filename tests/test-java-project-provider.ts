@@ -7,9 +7,9 @@ import type {
   RuntimeProjectEngineLeaseController,
 } from '../packages/harness-core/src/index';
 import {
-  createTraceJVMProjectRunner,
-  type TraceJVMProjectClient,
-} from '../packages/harness-java/src/tracejvm-project';
+  createJavaProjectRunner,
+  type JavaProjectClient,
+} from '../packages/harness-java/src/java-project';
 import { createBrowserProjectWorkspace } from '../packages/harness-browser/src/project';
 
 function assertCondition(condition: boolean, message: string): void {
@@ -24,8 +24,8 @@ const timings = {
 };
 
 function completed(
-  overrides: Partial<Awaited<ReturnType<TraceJVMProjectClient['run']>>> = {}
-): Awaited<ReturnType<TraceJVMProjectClient['run']>> {
+  overrides: Partial<Awaited<ReturnType<JavaProjectClient['run']>>> = {}
+): Awaited<ReturnType<JavaProjectClient['run']>> {
   return {
     status: 'completed',
     exitCode: 0,
@@ -104,7 +104,7 @@ async function testKernelLeaseUsesFreshWorkers(): Promise<void> {
   };
   let clientCount = 0;
   const terminated: number[] = [];
-  const runner = createTraceJVMProjectRunner({
+  const runner = createJavaProjectRunner({
     createClient() {
       const id = ++clientCount;
       return {
@@ -188,7 +188,7 @@ async function testKernelLeaseUsesFreshWorkers(): Promise<void> {
   const run = await runner(runRequest);
   assertCondition(
     run.exitCode === 0 && run.stdout === 'argument\n',
-    `TraceJVM run result changed: ${JSON.stringify(run)}`
+    `Java project run result changed: ${JSON.stringify(run)}`
   );
   assertCondition(
     attachCount === 1,
@@ -203,7 +203,7 @@ async function testKernelLeaseUsesFreshWorkers(): Promise<void> {
   );
   assertCondition(
     attachment?.revalidate === undefined,
-    'TraceJVM must not claim mutable Worker revalidation before reset proof exists'
+    'Java project provider must not claim mutable Worker revalidation before reset proof exists'
   );
   await attachment?.release({ kind: 'destroy', reason: 'unvalidated' });
 }
@@ -211,7 +211,7 @@ async function testKernelLeaseUsesFreshWorkers(): Promise<void> {
 async function testCancellationHardRetiresWorker(): Promise<void> {
   let terminateCount = 0;
   let rejectRun: ((error: Error) => void) | undefined;
-  const runner = createTraceJVMProjectRunner({
+  const runner = createJavaProjectRunner({
     createClient() {
       return {
         async compile() {
@@ -240,7 +240,7 @@ async function testCancellationHardRetiresWorker(): Promise<void> {
     result.exitCode === 130 &&
       result.handledSignal === 'SIGINT' &&
       terminateCount >= 1,
-    `SIGINT did not hard-retire TraceJVM: ${JSON.stringify({
+    `SIGINT did not hard-retire the Java project client: ${JSON.stringify({
       result,
       terminateCount,
     })}`
@@ -249,7 +249,7 @@ async function testCancellationHardRetiresWorker(): Promise<void> {
 
 async function testUnsupportedBoundaryIsExplicit(): Promise<void> {
   let clientCount = 0;
-  const runner = createTraceJVMProjectRunner({
+  const runner = createJavaProjectRunner({
     createClient() {
       clientCount += 1;
       throw new Error('unsupported snapshots must not allocate a VM');
@@ -267,13 +267,13 @@ async function testUnsupportedBoundaryIsExplicit(): Promise<void> {
       result.error?.code === 'ENOTSUP' &&
       result.error.syscall === 'materialize' &&
       clientCount === 0,
-    `unsupported TraceJVM filesystem semantics were not explicit: ${JSON.stringify(result)}`
+    `unsupported Java project filesystem semantics were not explicit: ${JSON.stringify(result)}`
   );
 }
 
 async function testClientReuseIsRejected(): Promise<void> {
   let terminateCount = 0;
-  const reusedClient: TraceJVMProjectClient = {
+  const reusedClient: JavaProjectClient = {
     async compile() {
       throw new Error('compile should not run');
     },
@@ -284,7 +284,7 @@ async function testClientReuseIsRejected(): Promise<void> {
       terminateCount += 1;
     },
   };
-  const runner = createTraceJVMProjectRunner({
+  const runner = createJavaProjectRunner({
     createClient: () => reusedClient,
   });
   const first = await runner(request('run', []));
@@ -294,7 +294,7 @@ async function testClientReuseIsRejected(): Promise<void> {
       second.exitCode !== 0 &&
       String(second.error?.detail?.diagnostic).includes('mutable VM reuse') &&
       terminateCount >= 2,
-    `reused TraceJVM client was admitted across processes: ${JSON.stringify({
+    `reused Java project client was admitted across processes: ${JSON.stringify({
       first,
       second,
       terminateCount,
@@ -327,14 +327,14 @@ async function testProcessHostMapsGenericPosixCalls(): Promise<void> {
     async service() {},
     close() {},
   };
-  const runner = createTraceJVMProjectRunner({
+  const runner = createJavaProjectRunner({
     createClient(context) {
       assertCondition(
         context.cwd === '/workspace/service' &&
           context.hostStandardDescriptors === true &&
           context.process?.pid === 42 &&
           context.host !== undefined,
-        `TraceJVM client did not receive its process-scoped host: ${JSON.stringify(context.process)}`
+        `Java project client did not receive its process-scoped host: ${JSON.stringify(context.process)}`
       );
       return {
         async compile() {
@@ -367,7 +367,7 @@ async function testProcessHostMapsGenericPosixCalls(): Promise<void> {
             failure instanceof Error &&
               failure.name === 'EBADF' &&
               failure.message === 'bad file descriptor',
-            `TraceKernel errno was not preserved for TraceJVM: ${String(failure)}`
+            `TraceKernel errno was not preserved for Java: ${String(failure)}`
           );
           return completed();
         },
@@ -387,7 +387,7 @@ async function testProcessHostMapsGenericPosixCalls(): Promise<void> {
         },
         { fd: 999, op: 'close' },
       ]),
-    `TraceJVM host calls did not reach the process syscall bridge: ${JSON.stringify({
+    `Java project host calls did not reach the process syscall bridge: ${JSON.stringify({
       result,
       dispatched,
     })}`
@@ -408,7 +408,7 @@ async function testBrowserWorkspaceCommitsArtifactsToTKFS(): Promise<void> {
         '}',
       ].join('\n'),
     }],
-    traceJVM: {
+    java: {
       createClient() {
         clientCount += 1;
         return {
@@ -443,7 +443,7 @@ async function testBrowserWorkspaceCommitsArtifactsToTKFS(): Promise<void> {
       result.exitCode === 0 &&
         result.stdout === 'kernel-java\n' &&
         clientCount === 2,
-      `browser TraceJVM command chain failed: ${JSON.stringify({
+      `browser Java project command chain failed: ${JSON.stringify({
         result,
         clientCount,
       })}`
@@ -457,7 +457,21 @@ async function testBrowserWorkspaceCommitsArtifactsToTKFS(): Promise<void> {
   }
 }
 
-async function testBrowserWorkspaceDefaultsToTraceJVM(): Promise<void> {
+async function testBrowserWorkspaceRequiresExplicitJavaProvider(): Promise<void> {
+  const defaultWorkspace = await createBrowserProjectWorkspace({
+    files: [{ path: 'Main.java', contents: 'class Main {}\n' }],
+  });
+  try {
+    const implicitJava = await defaultWorkspace.runCommand('javac Main.java');
+    assertCondition(
+      implicitJava.exitCode !== 0 &&
+        /command (?:not found|not available)/u.test(implicitJava.stderr),
+      `Java must not be selected without an explicit provider: ${JSON.stringify(implicitJava)}`
+    );
+  } finally {
+    await defaultWorkspace.destroy();
+  }
+
   let missingProviderError: unknown;
   try {
     await createBrowserProjectWorkspace({
@@ -469,49 +483,48 @@ async function testBrowserWorkspaceDefaultsToTraceJVM(): Promise<void> {
   }
   assertCondition(
     missingProviderError instanceof Error &&
-      missingProviderError.message.includes('defaults to TraceJVM') &&
-      missingProviderError.message.includes('javaRuntime: "legacy"'),
-    `Java did not require the default TraceJVM provider: ${String(missingProviderError)}`
+      missingProviderError.message.includes('requires a Java 23 project provider') &&
+      missingProviderError.message.includes('java.createClient'),
+    `Java did not require an explicit project provider: ${String(missingProviderError)}`
   );
 
-  let legacyInvocations = 0;
-  const legacyWorkspace = await createBrowserProjectWorkspace({
+  let directClientInvocations = 0;
+  const directClientWorkspace = await createBrowserProjectWorkspace({
     providers: ['java'],
-    javaRuntime: 'legacy',
     files: [{ path: 'Main.java', contents: 'class Main {}\n' }],
     javaWorkerClient: {
       async executeProjectJava() {
-        legacyInvocations += 1;
+        directClientInvocations += 1;
         return { stdout: '', stderr: '', exitCode: 0 };
       },
       terminate() {},
     },
   });
   try {
-    const result = await legacyWorkspace.runCommand('javac Main.java');
+    const result = await directClientWorkspace.runCommand('javac Main.java');
     assertCondition(
-      result.exitCode === 0 && legacyInvocations === 1,
-      `explicit legacy rollback did not invoke the legacy provider: ${JSON.stringify({
+      result.exitCode === 0 && directClientInvocations === 1,
+      `explicit Java worker client was not invoked: ${JSON.stringify({
         result,
-        legacyInvocations,
+        directClientInvocations,
       })}`
     );
   } finally {
-    await legacyWorkspace.destroy();
+    await directClientWorkspace.destroy();
   }
 }
 
 await testKernelLeaseUsesFreshWorkers();
-console.log('PASS: TraceJVM adapter binds one kernel coordinator and fresh Workers per invocation');
+console.log('PASS: Java project adapter binds one kernel coordinator and fresh Workers per invocation');
 await testCancellationHardRetiresWorker();
-console.log('PASS: TraceJVM adapter maps signals to hard Worker retirement');
+console.log('PASS: Java project adapter maps signals to hard Worker retirement');
 await testUnsupportedBoundaryIsExplicit();
-console.log('PASS: TraceJVM adapter exposes its current filesystem boundary');
+console.log('PASS: Java project adapter exposes its current filesystem boundary');
 await testClientReuseIsRejected();
-console.log('PASS: TraceJVM adapter rejects mutable client reuse');
+console.log('PASS: Java project adapter rejects mutable client reuse');
 await testProcessHostMapsGenericPosixCalls();
-console.log('PASS: TraceJVM generic POSIX host maps to process-scoped TraceKernel syscalls');
+console.log('PASS: Java project POSIX host maps to process-scoped TraceKernel syscalls');
 await testBrowserWorkspaceCommitsArtifactsToTKFS();
-console.log('PASS: browser TraceJVM javac/java chains exchange artifacts through TKFS');
-await testBrowserWorkspaceDefaultsToTraceJVM();
-console.log('PASS: browser Java defaults to TraceJVM with an explicit legacy rollback');
+console.log('PASS: browser Java javac/java chains exchange artifacts through TKFS');
+await testBrowserWorkspaceRequiresExplicitJavaProvider();
+console.log('PASS: browser Java requires an explicit implementation-neutral provider');

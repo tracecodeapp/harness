@@ -20,31 +20,30 @@ import {
 type JavaProjectRequest = RuntimeProjectCommandRequest<'compile' | 'run'>;
 
 /**
- * Structural TraceJVM boundary consumed by the Harness adapter.
+ * Structural Java runtime boundary consumed by the Harness adapter.
  *
- * These types deliberately live in Harness: TraceJVM is an optional,
- * independently released runtime, and building Harness must not require a
- * sibling checkout or an installed TraceJVM package. A compatible TraceJVM
- * client satisfies this contract without either project importing the other.
+ * These types deliberately live in Harness so a Java runtime provider can be
+ * installed and released independently. A compatible client satisfies this
+ * contract without either project importing the other.
  */
-export interface TraceJVMProjectBinaryFile {
+export interface JavaProjectBinaryFile {
   readonly path: string;
   readonly content: Uint8Array;
 }
 
-export interface TraceJVMProjectSourceFile {
+export interface JavaProjectSourceFile {
   readonly path: string;
   readonly content: string;
 }
 
-export interface TraceJVMProjectIsolationReport {
+export interface JavaProjectIsolationReport {
   readonly status: 'not-applicable' | 'clean' | 'tainted';
   readonly restored: readonly string[];
   readonly taintReasons: readonly string[];
   readonly hardBoundaryRecommended: boolean;
 }
 
-export interface TraceJVMProjectExecuteResult {
+export interface JavaProjectExecuteResult {
   readonly status:
     | 'completed'
     | 'compile-error'
@@ -60,31 +59,31 @@ export interface TraceJVMProjectExecuteResult {
     readonly compileAndRunMs: number;
     readonly totalMs: number;
   };
-  readonly isolation: TraceJVMProjectIsolationReport;
+  readonly isolation: JavaProjectIsolationReport;
   readonly retirementRecommended: boolean;
   readonly diagnostics?: unknown;
 }
 
-export interface TraceJVMProjectCompileRequest {
-  readonly sources: readonly TraceJVMProjectSourceFile[];
-  readonly classpath?: readonly TraceJVMProjectBinaryFile[];
+export interface JavaProjectCompileRequest {
+  readonly sources: readonly JavaProjectSourceFile[];
+  readonly classpath?: readonly JavaProjectBinaryFile[];
   readonly signal?: AbortSignal;
   readonly onStdout?: (chunk: string) => void;
   readonly onStderr?: (chunk: string) => void;
 }
 
-export interface TraceJVMProjectCompileResult
-  extends TraceJVMProjectExecuteResult {
+export interface JavaProjectCompileResult
+  extends JavaProjectExecuteResult {
   readonly program?: {
-    readonly files: readonly TraceJVMProjectBinaryFile[];
+    readonly files: readonly JavaProjectBinaryFile[];
   };
 }
 
-export interface TraceJVMProjectRunRequest {
+export interface JavaProjectRunRequest {
   readonly program: {
-    readonly files: readonly TraceJVMProjectBinaryFile[];
+    readonly files: readonly JavaProjectBinaryFile[];
   };
-  readonly classpath?: readonly TraceJVMProjectBinaryFile[];
+  readonly classpath?: readonly JavaProjectBinaryFile[];
   readonly mainClass: string;
   readonly args?: readonly string[];
   readonly systemProperties?: Readonly<Record<string, string>>;
@@ -93,30 +92,30 @@ export interface TraceJVMProjectRunRequest {
   readonly onStderr?: (chunk: string) => void;
 }
 
-export interface TraceJVMProjectClient {
+export interface JavaProjectClient {
   initialize?(signal?: AbortSignal): Promise<{ initializeMs: number }>;
   compile(
-    request: TraceJVMProjectCompileRequest
-  ): Promise<TraceJVMProjectCompileResult>;
-  run(request: TraceJVMProjectRunRequest): Promise<TraceJVMProjectExecuteResult>;
+    request: JavaProjectCompileRequest
+  ): Promise<JavaProjectCompileResult>;
+  run(request: JavaProjectRunRequest): Promise<JavaProjectExecuteResult>;
   /**
-   * TraceJVM currently requires a hard Worker boundary for complete disposal.
-   * A client handed to this adapter is always terminated after one invocation.
+   * A client handed to this adapter is terminated after one invocation so
+   * mutable runtime state never crosses the command boundary.
    */
   terminate(): void;
 }
 
-export interface TraceJVMProjectHostRequest<Payload = unknown> {
+export interface JavaProjectHostRequest<Payload = unknown> {
   readonly service: string;
   readonly operation: string;
   readonly payload?: Payload;
 }
 
-export interface TraceJVMProjectHost {
-  dispatch(request: TraceJVMProjectHostRequest): Promise<unknown> | unknown;
+export interface JavaProjectHost {
+  dispatch(request: JavaProjectHostRequest): Promise<unknown> | unknown;
 }
 
-export interface TraceJVMProjectClientContext {
+export interface JavaProjectClientContext {
   /** Absolute kernel working directory for this process invocation. */
   readonly cwd: string;
   /**
@@ -126,21 +125,21 @@ export interface TraceJVMProjectClientContext {
   readonly process?: RuntimeProjectProcessInfo;
   /**
    * Present when this command is attached to TraceKernel's process-bound
-   * syscall dispatcher. This is structurally compatible with TraceJVM's
-   * generic Worker host and does not expose TraceKernel transport internals.
+   * syscall dispatcher. The structural host contract does not expose
+   * TraceKernel transport internals.
    */
-  readonly host?: TraceJVMProjectHost;
+  readonly host?: JavaProjectHost;
   /** Kernel owns fd 0, 1, and 2 for this invocation. */
   readonly hostStandardDescriptors: boolean;
 }
 
-export type TraceJVMProjectClientFactory =
+export type JavaProjectClientFactory =
   (
-    context: TraceJVMProjectClientContext
-  ) => TraceJVMProjectClient | Promise<TraceJVMProjectClient>;
+    context: JavaProjectClientContext
+  ) => JavaProjectClient | Promise<JavaProjectClient>;
 
-export const TRACEJVM_PROJECT_CAPABILITIES = Object.freeze({
-  provider: 'tracejvm',
+export const JAVA_PROJECT_CAPABILITIES = Object.freeze({
+  provider: 'java',
   javaVersion: '23',
   filesystem: 'live-kernel-syscalls',
   descriptorStdio: true,
@@ -149,25 +148,25 @@ export const TRACEJVM_PROJECT_CAPABILITIES = Object.freeze({
   workerIsolation: 'per-invocation',
 } as const);
 
-export interface TraceJVMProjectExecutionReport {
+export interface JavaProjectExecutionReport {
   readonly pid?: number;
   readonly source: JavaProjectRequest['source'];
-  readonly result: TraceJVMProjectExecuteResult;
+  readonly result: JavaProjectExecuteResult;
 }
 
-export interface TraceJVMProjectRunnerOptions {
+export interface JavaProjectRunnerOptions {
   /**
-   * Must return a fresh, unleased TraceJVM Worker client. The adapter never
-   * admits one client to two javac/java invocations.
+   * Must return a fresh, unleased Java runtime client. The adapter never admits
+   * one client to two javac/java invocations.
    */
-  createClient: TraceJVMProjectClientFactory;
+  createClient: JavaProjectClientFactory;
   timeoutMs?: number;
   applyFileChange?: (
     change: RuntimeFileChange,
     phase: RuntimeFileMutationPhase,
     options?: RuntimeProjectFileChangeApplyOptions
   ) => Promise<boolean | void>;
-  onExecutionReport?: (report: TraceJVMProjectExecutionReport) => void;
+  onExecutionReport?: (report: JavaProjectExecutionReport) => void;
 }
 
 interface ParsedCompileInvocation {
@@ -178,7 +177,7 @@ interface ParsedCompileInvocation {
 
 interface KernelProcessCoordinator {
   released: boolean;
-  activeClient?: TraceJVMProjectClient;
+  activeClient?: JavaProjectClient;
   tail: Promise<void>;
 }
 
@@ -276,7 +275,7 @@ function optionValue(
 
 function assertJava23Option(option: string, value: string): void {
   if (value !== '23') {
-    throw new Error(`${option}: TraceJVM supports Java 23; requested ${value}`);
+    throw new Error(`${option}: Java project provider supports Java 23; requested ${value}`);
   }
 }
 
@@ -322,7 +321,7 @@ function parseCompileInvocation(args: readonly string[]): ParsedCompileInvocatio
       const value = optionValue(args, index, arg);
       if (value.toUpperCase() !== 'UTF-8') {
         throw new Error(
-          `javac: TraceJVM source files are UTF-8; requested encoding ${value}`
+          `javac: Java project source files are UTF-8; requested encoding ${value}`
         );
       }
       index += 1;
@@ -352,10 +351,10 @@ function parseCompileInvocation(args: readonly string[]): ParsedCompileInvocatio
 function classpathFiles(
   request: JavaProjectRequest,
   specification: string | undefined
-): TraceJVMProjectBinaryFile[] {
+): JavaProjectBinaryFile[] {
   const files = projectFileMap(request);
   const entries = (specification ?? '.').split(':').filter(Boolean);
-  const output: TraceJVMProjectBinaryFile[] = [];
+  const output: JavaProjectBinaryFile[] = [];
   for (const entry of entries) {
     const path = resolveProjectPath(request, entry);
     const exact = files.get(path);
@@ -379,7 +378,7 @@ function classpathFiles(
 }
 
 function mapOutcome(
-  result: TraceJVMProjectExecuteResult,
+  result: JavaProjectExecuteResult,
   files?: RuntimeFile[]
 ): RuntimeCommandResult {
   return {
@@ -427,7 +426,7 @@ function cancelledResult(signal: AbortSignal | undefined): RuntimeCommandResult 
   };
 }
 
-function terminateClient(client: TraceJVMProjectClient | undefined): void {
+function terminateClient(client: JavaProjectClient | undefined): void {
   try {
     client?.terminate();
   } catch {
@@ -483,7 +482,7 @@ function unwrapKernelSyscallValue(
 
 function createProcessHost(
   request: JavaProjectRequest
-): TraceJVMProjectHost | undefined {
+): JavaProjectHost | undefined {
   const kernelSyscalls = request.kernelSyscalls;
   if (!kernelSyscalls) return undefined;
   const signalMailbox = request.kernelSignals?.mailbox;
@@ -492,7 +491,7 @@ function createProcessHost(
     : undefined;
   let signalSequence = 0;
   return Object.freeze({
-    async dispatch(hostRequest: TraceJVMProjectHostRequest): Promise<unknown> {
+    async dispatch(hostRequest: JavaProjectHostRequest): Promise<unknown> {
       if (
         hostRequest.service === 'signal' &&
         hostRequest.operation === 'poll'
@@ -505,14 +504,14 @@ function createProcessHost(
       }
       if (hostRequest.service !== 'posix') {
         throw Object.assign(
-          new Error(`TraceJVM host service is not available: ${hostRequest.service}`),
+          new Error(`Java project host service is not available: ${hostRequest.service}`),
           { name: 'ENOSYS' }
         );
       }
       const rawPayload = hostRequest.payload;
       if (rawPayload !== undefined && !isRecord(rawPayload)) {
         throw Object.assign(
-          new Error('TraceJVM POSIX syscall payload must be an object.'),
+          new Error('Java project POSIX syscall payload must be an object.'),
           { name: 'EINVAL' }
         );
       }
@@ -533,30 +532,30 @@ function unsupportedSnapshot(request: JavaProjectRequest): RuntimeCommandResult 
   if ((request.project.symlinks?.length ?? 0) > 0) {
     return {
       ...commandError(
-        'java: ENOTSUP: TraceJVM value adapter cannot materialize symbolic links'
+        'java: ENOTSUP: browser project provider cannot materialize symbolic links'
       ),
       error: {
         code: 'ENOTSUP',
-        message: 'TraceJVM value adapter cannot materialize symbolic links.',
+        message: 'Browser project provider cannot materialize symbolic links.',
         syscall: 'materialize',
       },
     };
   }
   if (request.options?.enablePreview === true) {
-    return commandError('java: --enable-preview is not supported by TraceJVM');
+    return commandError('java: --enable-preview is not supported by this Java project provider');
   }
   if (request.options?.enableAssertions === true) {
-    return commandError('java: -ea is not supported by TraceJVM');
+    return commandError('java: -ea is not supported by this Java project provider');
   }
   return undefined;
 }
 
 async function executeWithClient(
-  client: TraceJVMProjectClient,
+  client: JavaProjectClient,
   request: JavaProjectRequest,
   signal: AbortSignal | undefined,
   onEvent: RuntimeCommandEventHandler | undefined,
-  onExecutionReport: TraceJVMProjectRunnerOptions['onExecutionReport']
+  onExecutionReport: JavaProjectRunnerOptions['onExecutionReport']
 ): Promise<RuntimeCommandResult> {
   if (request.source === 'compile') {
     let invocation: ParsedCompileInvocation;
@@ -639,8 +638,8 @@ async function executeWithClient(
 }
 
 /**
- * Adapts TraceJVM's value-oriented public API to TraceKernel's javac/java
- * command boundary.
+ * Adapts a value-oriented Java runtime API to TraceKernel's javac/java command
+ * boundary.
  *
  * javac still receives an immutable TKFS snapshot and commits its artifacts as
  * a final filesystem diff. Java application filesystem calls use the generic,
@@ -648,8 +647,8 @@ async function executeWithClient(
  * authoritative TraceKernel state. Standard descriptors, process pipes,
  * sockets, selectors, and watch services use that same host boundary.
  */
-export function createTraceJVMProjectRunner(
-  options: TraceJVMProjectRunnerOptions
+export function createJavaProjectRunner(
+  options: JavaProjectRunnerOptions
 ): RuntimeProjectCommandRunner<JavaProjectRequest> {
   const timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS;
   const coordinators =
@@ -690,10 +689,10 @@ export function createTraceJVMProjectRunner(
 
     const execute = async (): Promise<RuntimeCommandResult> => {
       if (coordinator.released) {
-        throw new Error('TraceJVM kernel process lease was released before execution.');
+        throw new Error('Java project kernel process lease was released before execution.');
       }
       const bounded = combineWithTimeout(request.signal, timeoutMs);
-      let client: TraceJVMProjectClient | undefined;
+      let client: JavaProjectClient | undefined;
       const terminateActive = (): void => terminateClient(client);
       bounded.signal?.addEventListener('abort', terminateActive, { once: true });
       try {
@@ -713,13 +712,13 @@ export function createTraceJVMProjectRunner(
           client === null
         ) {
           throw new TypeError(
-            'TraceJVM createClient must return a fresh Worker client object.'
+            'Java project createClient must return a fresh Worker client object.'
           );
         }
         if (admittedClients.has(client)) {
           terminateClient(client);
           throw new Error(
-            'TraceJVM createClient returned a client that was already admitted; mutable VM reuse across invocations is forbidden.'
+            'Java project createClient returned a client that was already admitted; mutable VM reuse across invocations is forbidden.'
           );
         }
         admittedClients.add(client);
@@ -762,10 +761,10 @@ export function createTraceJVMProjectRunner(
       startPhase: request.source === 'compile' ? 'compile-start' : 'process-start',
       startMessage:
         request.source === 'compile'
-          ? 'Starting TraceJVM browser compile'
-          : 'Starting TraceJVM browser run',
+          ? 'Starting Java browser compile'
+          : 'Starting Java browser run',
       startDetail: {
-        provider: 'tracejvm',
+        provider: 'java',
         source: request.source,
         scriptPath: request.scriptPath,
         args: request.args,
@@ -775,10 +774,10 @@ export function createTraceJVMProjectRunner(
       finishPhase: request.source === 'compile' ? 'compile-end' : 'process-exit',
       finishMessage:
         request.source === 'compile'
-          ? 'Finished TraceJVM browser compile'
-          : 'Finished TraceJVM browser run',
+          ? 'Finished Java browser compile'
+          : 'Finished Java browser run',
       finishDetail: (result) => ({
-        provider: 'tracejvm',
+        provider: 'java',
         source: request.source,
         exitCode: result.exitCode,
         pid: request.process?.pid,
@@ -786,6 +785,6 @@ export function createTraceJVMProjectRunner(
       applyFileChange: options.applyFileChange,
       run: invoke,
     }),
-    { descriptorStdio: TRACEJVM_PROJECT_CAPABILITIES.descriptorStdio }
+    { descriptorStdio: JAVA_PROJECT_CAPABILITIES.descriptorStdio }
   );
 }

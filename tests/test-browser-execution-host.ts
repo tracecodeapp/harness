@@ -15,7 +15,6 @@ import {
   createBrowserTypeScriptProjectRunner,
 } from '../packages/harness-javascript/src/project-browser';
 import { createBrowserProjectWorkspace } from '../packages/harness-browser/src/project';
-import { BROWSER_RUNTIME_ASSET_PROTOCOL_VERSION } from '../packages/harness-browser/src/runtime-assets';
 
 const asJsProjectRequest = (request: object) =>
   request as import('../packages/harness-javascript/src/project-browser').JavaScriptProjectCommandRequest;
@@ -371,121 +370,32 @@ async function main(): Promise<void> {
   }
   assertCondition(sameOriginError.includes('different origin'), 'Same-origin execution hosts must fail closed');
 
-  const delayedExecutionWindow = new FakeWindow('https://lazy-exec.tracecode.test/host.html');
-  delayedExecutionWindow.parent = parentWindow;
-  const delayedWorkers: Array<{ url: string; worker: MockWorker }> = [];
-  const delayedInstallation = installBrowserExecutionWorkerHost({
-    window: delayedExecutionWindow as unknown as Window,
-    allowedParentOrigins: [parentWindow.location.origin],
-    workerFactory(url) {
-      const worker = new MockWorker();
-      delayedWorkers.push({ url: String(url), worker });
-      return worker;
-    },
-  });
-  const delayedIframe = new FakeIframe({
-    postMessage(data, targetOrigin, ports) {
-      assertCondition(targetOrigin === delayedExecutionWindow.location.origin, 'Lazy host must use its exact origin');
-      delayedExecutionWindow.emitMessage(
-        data,
-        parentWindow.location.origin,
-        parentWindow,
-        ports as MessagePort[]
-      );
-    },
-  });
-  let hostFrameAppended: (() => void) | undefined;
-  const hostFrameWasAppended = new Promise<void>((resolve) => {
-    hostFrameAppended = resolve;
-  });
-  const delayedParent = {
-    appendChild(node: FakeIframe) {
-      assertCondition(node === delayedIframe, 'Unexpected lazy execution iframe');
-      hostFrameAppended?.();
-      return node;
-    },
-  };
-  const delayedDocument = {
-    body: delayedParent,
-    createElement(name: string) {
-      assertCondition(name === 'iframe', 'Lazy execution host must create an iframe');
-      return delayedIframe;
-    },
-  };
-  const originalFetch = globalThis.fetch;
-  globalThis.fetch = async () => new Response('asset', { status: 200 });
-  let lazyWorkspace: Awaited<ReturnType<typeof createBrowserProjectWorkspace>> | undefined;
+  let hostedJavaError = '';
   try {
-    const workspacePromise = createBrowserProjectWorkspace({
+    await createBrowserProjectWorkspace({
       providers: ['java'],
-      javaRuntime: 'legacy',
+      java: {
+        createClient() {
+          throw new Error('Java client construction must not run after invalid host routing.');
+        },
+      },
       executionHost: {
-        url: delayedExecutionWindow.location.href,
+        url: executionWindow.location.href,
         window: parentWindow as unknown as Window,
-        document: delayedDocument as unknown as Document,
-        parent: delayedParent as unknown as HTMLElement,
+        document: documentObject as unknown as Document,
+        parent: parentElement as unknown as HTMLElement,
         allowUnisolatedForTesting: true,
         providers: ['java'],
-        javaLifecycle: 'workspace-session',
-      },
-      projectWorkerPrewarm: { java: 1 },
-      assets: {
-        runtimeManifests: {
-          java: {
-            runtime: 'java',
-            runtimeVersion: 'lazy-host-test',
-            protocolVersion: BROWSER_RUNTIME_ASSET_PROTOCOL_VERSION,
-            workerFormat: 'classic',
-            loaderFormat: 'classic-script',
-            assetBaseUrl: `${delayedExecutionWindow.location.origin}/workers/`,
-            originPolicy: { mode: 'any' },
-            assets: {
-              worker: { url: 'java-worker.js' },
-              loader: { url: 'cheerpj-loader.js' },
-              helperJar: { url: 'helper.jar' },
-              compilerJar: { url: 'compiler.jar' },
-              rewriterJar: { url: 'rewriter.jar' },
-              parserJar: { url: 'parser.jar' },
-            },
-          },
-        },
       },
       files: [{ path: 'Main.java', contents: 'class Main {}\n' }],
     });
-    await hostFrameWasAppended;
-    lazyWorkspace = await Promise.race([
-      workspacePromise,
-      new Promise<never>((_, reject) => setTimeout(
-        () => reject(new Error('Project workspace waited for the background Java host.')),
-        500
-      )),
-    ]);
-    const listing = await lazyWorkspace.runCommand('ls');
-    assertCondition(listing.stdout.includes('Main.java'), 'Terminal/filesystem must be usable while Java warms');
-
-    let javaCommandSettled = false;
-    const javaCommand = lazyWorkspace.runCommand('java Main').finally(() => {
-      javaCommandSettled = true;
-    });
-    await new Promise((resolve) => setTimeout(resolve, 20));
-    assertCondition(!javaCommandSettled, 'Java command must wait for the existing background warmup');
-    assertCondition(delayedWorkers.length === 0, 'Java worker must wait for the execution-host handshake');
-
-    delayedIframe.triggerLoad();
-    const javaCommandResult = await javaCommand;
-    assertCondition(javaCommandResult.exitCode === 0, 'Java command should continue after background readiness');
-    const javaMessages = delayedWorkers[0]?.worker.posted as Array<{ type?: string }> | undefined;
-    const warmupIndex = javaMessages?.findIndex((message) => message.type === 'warmup') ?? -1;
-    const executeIndex = javaMessages?.findIndex((message) => message.type === 'execute-project-java') ?? -1;
-    assertCondition(
-      warmupIndex >= 0 && executeIndex > warmupIndex,
-      'A command arriving during startup must share and await the background Java warmup'
-    );
-  } finally {
-    lazyWorkspace?.dispose();
-    delayedInstallation.dispose();
-    globalThis.fetch = originalFetch;
+  } catch (error) {
+    hostedJavaError = error instanceof Error ? error.message : String(error);
   }
+  assertCondition(
+    hostedJavaError.includes('Java providers own their Worker boundary'),
+    `Browser project Java must reject the generic execution host: ${hostedJavaError}`
+  );
 
   let releaseTypeScriptPreflight!: () => void;
   const typeScriptPreflight = new Promise<void>((resolve) => {

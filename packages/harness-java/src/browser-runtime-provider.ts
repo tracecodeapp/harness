@@ -13,7 +13,7 @@ export interface JavaBrowserRuntimeProviderOptions {
   workerIdleTimeoutMs?: number;
   compileCacheLimit?: number;
   externalCompilerUrl?: string;
-  cheerpjLoaderUrl?: string;
+  loaderUrl?: string;
 }
 
 export function createJavaBrowserRuntimeProvider(
@@ -25,10 +25,10 @@ export function createJavaBrowserRuntimeProvider(
     create(context: BrowserRuntimeProviderContext): BrowserRuntimeProviderLease {
       if (
         context.assets.runtimeManifests?.java?.assets.loader &&
-        options.cheerpjLoaderUrl
+        options.loaderUrl
       ) {
         throw new TypeError(
-          'Java runtime assets cannot combine manifest.assets.loader with java.cheerpjLoaderUrl.'
+          'Java runtime assets cannot combine manifest.assets.loader with java.loaderUrl.'
         );
       }
 
@@ -43,7 +43,7 @@ export function createJavaBrowserRuntimeProvider(
         workerIdleTimeoutMs: options.workerIdleTimeoutMs,
         compileCacheLimit: options.compileCacheLimit,
         externalCompilerUrl: options.externalCompilerUrl,
-        cheerpjLoaderUrl: options.cheerpjLoaderUrl,
+        loaderUrl: options.loaderUrl,
         assetPreflight: context.preflight('java', ['worker']),
         runtimeAssetPreflight: context.preflight('java', [
           'loader',

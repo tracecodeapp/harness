@@ -38,7 +38,7 @@ function decodeTraceKernelWatchEvent(frame) {
   });
 }
 
-// packages/tracekernel/src/transport.ts
+// packages/tracekernel/src/transport/wire/protocol.ts
 var TRACEKERNEL_SYSCALL_WIRE_VERSION = 1;
 var FRAME_MAGIC = 1414222592 | TRACEKERNEL_SYSCALL_WIRE_VERSION;
 var FRAME_REQUEST = 1;
@@ -140,19 +140,6 @@ var SYSCALL_ERROR_CODES = /* @__PURE__ */ new Set([
   "EOPNOTSUPP",
   "EROFS",
   "ESRCH"
-]);
-var SOCKET_ERROR_CODES = /* @__PURE__ */ new Set([
-  "EADDRINUSE",
-  "EAFNOSUPPORT",
-  "EALREADY",
-  "EBADF",
-  "ECONNREFUSED",
-  "EDESTADDRREQ",
-  "EINPROGRESS",
-  "EISCONN",
-  "EINVAL",
-  "ENOTCONN",
-  "EOPNOTSUPP"
 ]);
 var TraceKernelTransportError = class extends Error {
   constructor(code, message) {
@@ -283,6 +270,366 @@ function readOperation(reader) {
   }
   return operation;
 }
+
+// packages/tracekernel/src/transport/wire/filesystem-codec.ts
+function readStat(reader) {
+  const path = reader.string();
+  const kindCode = reader.u8();
+  if (kindCode !== 1 && kindCode !== 2 && kindCode !== 3) {
+    throw new TraceKernelTransportError(
+      "EPROTO",
+      `invalid stat kind ${kindCode}`
+    );
+  }
+  return Object.freeze({
+    path,
+    kind: kindCode === 1 ? "file" : kindCode === 2 ? "directory" : "symlink",
+    inode: reader.f64(),
+    nlink: reader.f64(),
+    mode: reader.u32(),
+    size: reader.f64(),
+    generation: reader.f64(),
+    createdAt: reader.f64(),
+    modifiedAt: reader.f64(),
+    changedAt: reader.f64()
+  });
+}
+function encodeFilesystemRequest(writer, request) {
+  switch (request.op) {
+    case "open": {
+      writer.string(request.path);
+      const access = request.options?.access === "write" ? 2 : request.options?.access === "read-write" ? 3 : request.options?.access === "read" ? 1 : 0;
+      writer.u8(access);
+      writer.u8(
+        (request.options?.create ? 1 : 0) | (request.options?.exclusive ? 2 : 0) | (request.options?.truncate ? 4 : 0) | (request.options?.append ? 8 : 0)
+      );
+      break;
+    }
+    case "read":
+      writer.i32(request.fd);
+      writer.u32(request.maxBytes);
+      writer.u8(request.position === void 0 ? 0 : 1);
+      if (request.position !== void 0) writer.f64(request.position);
+      break;
+    case "write":
+      writer.i32(request.fd);
+      writer.byteArray(request.bytes);
+      writer.u8(request.position === void 0 ? 0 : 1);
+      if (request.position !== void 0) writer.f64(request.position);
+      break;
+    case "seek":
+      writer.i32(request.fd);
+      writer.f64(request.offset);
+      writer.u8(
+        request.whence === "set" ? 1 : request.whence === "current" ? 2 : 3
+      );
+      break;
+    case "close":
+    case "dup":
+    case "fstat":
+      writer.i32(request.fd);
+      break;
+    case "dup2":
+      writer.i32(request.fd);
+      writer.i32(request.targetFd);
+      break;
+    case "dup3":
+      writer.i32(request.fd);
+      writer.i32(request.targetFd);
+      writer.u8(request.closeOnExec ? 1 : 0);
+      break;
+    case "fcntl":
+      writer.i32(request.fd);
+      writer.u8(
+        request.action === "get-close-on-exec" ? 1 : request.action === "set-close-on-exec" ? 2 : request.action === "get-nonblocking" ? 3 : 4
+      );
+      if (request.action === "set-close-on-exec") {
+        writer.u8(request.closeOnExec ? 1 : 0);
+      } else if (request.action === "set-nonblocking") {
+        writer.u8(request.nonblocking ? 1 : 0);
+      }
+      break;
+    case "ftruncate":
+      writer.i32(request.fd);
+      writer.f64(request.length);
+      break;
+    case "stat":
+    case "lstat":
+    case "realpath":
+    case "readdir":
+    case "rmdir":
+    case "unlink":
+    case "readFile":
+      writer.string(request.path);
+      break;
+    case "mkdir":
+      writer.string(request.path);
+      writer.u8(
+        (request.options?.recursive ? 1 : 0) | (request.options?.mode === void 0 ? 0 : 2)
+      );
+      if (request.options?.mode !== void 0) writer.u32(request.options.mode);
+      break;
+    case "rename":
+      writer.string(request.sourcePath);
+      writer.string(request.destinationPath);
+      break;
+    case "link":
+      writer.string(request.existingPath);
+      writer.string(request.newPath);
+      break;
+    case "symlink":
+      writer.string(request.target);
+      writer.string(request.linkPath);
+      break;
+    case "readlink":
+      writer.string(request.path);
+      break;
+    case "writeFile":
+      writer.string(request.path);
+      writer.byteArray(request.bytes);
+      break;
+    default:
+      return false;
+  }
+  return true;
+}
+function decodeFilesystemResult(reader, operation) {
+  let value;
+  switch (operation) {
+    case "open":
+    case "dup":
+    case "dup2":
+      value = { op: operation, fd: reader.i32() };
+      break;
+    case "dup3": {
+      const fd2 = reader.i32();
+      const closeOnExec = reader.u8();
+      if (closeOnExec > 1) {
+        throw new TraceKernelTransportError(
+          "EPROTO",
+          "Invalid dup3 close-on-exec result"
+        );
+      }
+      value = { op: "dup3", fd: fd2, closeOnExec: closeOnExec === 1 };
+      break;
+    }
+    case "fcntl": {
+      const closeOnExec = reader.u8();
+      const nonblocking = reader.u8();
+      if (closeOnExec > 1 || nonblocking > 1) {
+        throw new TraceKernelTransportError(
+          "EPROTO",
+          `invalid descriptor flag result ${closeOnExec}:${nonblocking}`
+        );
+      }
+      value = {
+        op: "fcntl",
+        closeOnExec: closeOnExec === 1,
+        nonblocking: nonblocking === 1
+      };
+      break;
+    }
+    case "read":
+      value = { op: "read", bytes: reader.byteArray() };
+      break;
+    case "write":
+      value = { op: "write", bytesWritten: reader.u32() };
+      break;
+    case "seek":
+      value = { op: "seek", offset: reader.f64() };
+      break;
+    case "stat":
+      value = { op: "stat", stat: readStat(reader) };
+      break;
+    case "lstat":
+      value = { op: "lstat", stat: readStat(reader) };
+      break;
+    case "fstat":
+      value = { op: "fstat", stat: readStat(reader) };
+      break;
+    case "realpath":
+      value = { op: "realpath", path: reader.string() };
+      break;
+    case "readlink":
+      value = { op: "readlink", target: reader.string() };
+      break;
+    case "readdir": {
+      const length = reader.u32();
+      const entries = [];
+      for (let index = 0; index < length; index += 1) {
+        const name = reader.string();
+        const kindCode = reader.u8();
+        if (kindCode !== 1 && kindCode !== 2 && kindCode !== 3) {
+          throw new TraceKernelTransportError("EPROTO", `invalid directory entry kind ${kindCode}`);
+        }
+        entries.push(Object.freeze({
+          name,
+          kind: kindCode === 1 ? "file" : kindCode === 2 ? "directory" : "symlink",
+          inode: reader.f64()
+        }));
+      }
+      value = { op: "readdir", entries: Object.freeze(entries) };
+      break;
+    }
+    case "readFile":
+      value = {
+        op: "readFile",
+        cacheGeneration: reader.i32(),
+        bytes: reader.byteArray()
+      };
+      break;
+    case "close":
+    case "mkdir":
+    case "rmdir":
+    case "unlink":
+    case "link":
+    case "symlink":
+    case "rename":
+    case "writeFile":
+    case "ftruncate":
+      value = { op: operation };
+      break;
+    default:
+      return void 0;
+  }
+  return value;
+}
+
+// packages/tracekernel/src/transport/wire/network-codec.ts
+var SOCKET_ERROR_CODES = /* @__PURE__ */ new Set([
+  "EADDRINUSE",
+  "EAFNOSUPPORT",
+  "EALREADY",
+  "EBADF",
+  "ECONNREFUSED",
+  "EDESTADDRREQ",
+  "EINPROGRESS",
+  "EISCONN",
+  "EINVAL",
+  "ENOTCONN",
+  "EOPNOTSUPP"
+]);
+function writeAddress(writer, address) {
+  writer.string(address.host);
+  writer.u32(address.port);
+}
+function readAddress(reader) {
+  return Object.freeze({
+    host: reader.string(),
+    port: reader.u32()
+  });
+}
+function encodeNetworkRequest(writer, request) {
+  switch (request.op) {
+    case "socket":
+      break;
+    case "bind":
+    case "connect":
+      writer.i32(request.fd);
+      writeAddress(writer, request.address);
+      break;
+    case "listen":
+      writer.i32(request.fd);
+      writer.u8(
+        (request.options?.backlog === void 0 ? 0 : 1) | (request.options?.capacityChunks === void 0 ? 0 : 2)
+      );
+      if (request.options?.backlog !== void 0) writer.u32(request.options.backlog);
+      if (request.options?.capacityChunks !== void 0) {
+        writer.u32(request.options.capacityChunks);
+      }
+      break;
+    case "accept":
+    case "getsockname":
+    case "getpeername":
+      writer.i32(request.fd);
+      break;
+    case "getsockopt":
+      writer.i32(request.fd);
+      writer.u8(request.option === "error" ? 1 : 0);
+      break;
+    case "send":
+      writer.i32(request.fd);
+      writer.byteArray(request.bytes);
+      break;
+    case "recv":
+      writer.i32(request.fd);
+      writer.u32(request.maxBytes);
+      break;
+    case "shutdown":
+      writer.i32(request.fd);
+      writer.u8(request.how === "read" ? 1 : request.how === "write" ? 2 : 3);
+      break;
+    default:
+      return false;
+  }
+  return true;
+}
+function decodeNetworkResult(reader, operation) {
+  let value;
+  switch (operation) {
+    case "socket":
+      value = { op: operation, fd: reader.i32() };
+      break;
+    case "bind":
+      value = { op: "bind", address: readAddress(reader) };
+      break;
+    case "accept":
+      value = {
+        op: "accept",
+        fd: reader.i32(),
+        localAddress: readAddress(reader),
+        remoteAddress: readAddress(reader)
+      };
+      break;
+    case "connect":
+      value = {
+        op: "connect",
+        localAddress: readAddress(reader),
+        remoteAddress: readAddress(reader)
+      };
+      break;
+    case "send":
+      value = { op: "send", bytesWritten: reader.u32() };
+      break;
+    case "recv":
+      value = { op: "recv", bytes: reader.byteArray() };
+      break;
+    case "getsockname":
+    case "getpeername":
+      value = { op: operation, address: readAddress(reader) };
+      break;
+    case "getsockopt": {
+      const hasError = reader.u8();
+      if (hasError > 1) {
+        throw new TraceKernelTransportError(
+          "EPROTO",
+          `invalid socket error presence flag ${hasError}`
+        );
+      }
+      const error = hasError === 1 ? reader.string() : void 0;
+      if (error !== void 0 && !SOCKET_ERROR_CODES.has(error)) {
+        throw new TraceKernelTransportError(
+          "EPROTO",
+          `invalid socket error code ${JSON.stringify(error)}`
+        );
+      }
+      value = {
+        op: "getsockopt",
+        ...error === void 0 ? {} : { error }
+      };
+      break;
+    }
+    case "listen":
+    case "shutdown":
+      value = { op: operation };
+      break;
+    default:
+      return void 0;
+  }
+  return value;
+}
+
+// packages/tracekernel/src/transport/wire/process-codec.ts
 function traceKernelSignalCode(signal) {
   switch (signal) {
     case "SIGINT":
@@ -331,16 +678,6 @@ function readTraceKernelTerminatingSignal(reader, context) {
   }
   return signal;
 }
-function writeAddress(writer, address) {
-  writer.string(address.host);
-  writer.u32(address.port);
-}
-function readAddress(reader) {
-  return Object.freeze({
-    host: reader.string(),
-    port: reader.u32()
-  });
-}
 function readProcessPhase(reader) {
   const code = reader.u8();
   if (code < 1 || code > 5) {
@@ -388,10 +725,7 @@ function writeSpawnStdioMode(writer, mode) {
     mode === void 0 ? 0 : mode === "pipe" ? 1 : mode === "inherit" ? 2 : 3
   );
 }
-function encodeTraceKernelSyscallRequest(request) {
-  const writer = new BinaryFrameWriter();
-  writeFramePrefix(writer, FRAME_REQUEST);
-  writeOperation(writer, request.op);
+function encodeProcessRequest(writer, request) {
   switch (request.op) {
     case "pipe":
       writer.u32(request.options?.capacityChunks ?? 0);
@@ -489,97 +823,6 @@ function encodeTraceKernelSyscallRequest(request) {
       writer.u32(request.rows);
       writer.u32(request.columns);
       break;
-    case "socket":
-      break;
-    case "bind":
-    case "connect":
-      writer.i32(request.fd);
-      writeAddress(writer, request.address);
-      break;
-    case "listen":
-      writer.i32(request.fd);
-      writer.u8(
-        (request.options?.backlog === void 0 ? 0 : 1) | (request.options?.capacityChunks === void 0 ? 0 : 2)
-      );
-      if (request.options?.backlog !== void 0) writer.u32(request.options.backlog);
-      if (request.options?.capacityChunks !== void 0) {
-        writer.u32(request.options.capacityChunks);
-      }
-      break;
-    case "accept":
-    case "getsockname":
-    case "getpeername":
-      writer.i32(request.fd);
-      break;
-    case "getsockopt":
-      writer.i32(request.fd);
-      writer.u8(request.option === "error" ? 1 : 0);
-      break;
-    case "send":
-      writer.i32(request.fd);
-      writer.byteArray(request.bytes);
-      break;
-    case "recv":
-      writer.i32(request.fd);
-      writer.u32(request.maxBytes);
-      break;
-    case "shutdown":
-      writer.i32(request.fd);
-      writer.u8(request.how === "read" ? 1 : request.how === "write" ? 2 : 3);
-      break;
-    case "open": {
-      writer.string(request.path);
-      const access = request.options?.access === "write" ? 2 : request.options?.access === "read-write" ? 3 : request.options?.access === "read" ? 1 : 0;
-      writer.u8(access);
-      writer.u8(
-        (request.options?.create ? 1 : 0) | (request.options?.exclusive ? 2 : 0) | (request.options?.truncate ? 4 : 0) | (request.options?.append ? 8 : 0)
-      );
-      break;
-    }
-    case "read":
-      writer.i32(request.fd);
-      writer.u32(request.maxBytes);
-      writer.u8(request.position === void 0 ? 0 : 1);
-      if (request.position !== void 0) writer.f64(request.position);
-      break;
-    case "write":
-      writer.i32(request.fd);
-      writer.byteArray(request.bytes);
-      writer.u8(request.position === void 0 ? 0 : 1);
-      if (request.position !== void 0) writer.f64(request.position);
-      break;
-    case "seek":
-      writer.i32(request.fd);
-      writer.f64(request.offset);
-      writer.u8(
-        request.whence === "set" ? 1 : request.whence === "current" ? 2 : 3
-      );
-      break;
-    case "close":
-    case "dup":
-    case "fstat":
-      writer.i32(request.fd);
-      break;
-    case "dup2":
-      writer.i32(request.fd);
-      writer.i32(request.targetFd);
-      break;
-    case "dup3":
-      writer.i32(request.fd);
-      writer.i32(request.targetFd);
-      writer.u8(request.closeOnExec ? 1 : 0);
-      break;
-    case "fcntl":
-      writer.i32(request.fd);
-      writer.u8(
-        request.action === "get-close-on-exec" ? 1 : request.action === "set-close-on-exec" ? 2 : request.action === "get-nonblocking" ? 3 : 4
-      );
-      if (request.action === "set-close-on-exec") {
-        writer.u8(request.closeOnExec ? 1 : 0);
-      } else if (request.action === "set-nonblocking") {
-        writer.u8(request.nonblocking ? 1 : 0);
-      }
-      break;
     case "poll":
       writer.u32(request.entries.length);
       for (const entry of request.entries) {
@@ -589,90 +832,12 @@ function encodeTraceKernelSyscallRequest(request) {
       writer.u8(request.timeoutMs === void 0 ? 0 : 1);
       if (request.timeoutMs !== void 0) writer.f64(request.timeoutMs);
       break;
-    case "ftruncate":
-      writer.i32(request.fd);
-      writer.f64(request.length);
-      break;
-    case "stat":
-    case "lstat":
-    case "realpath":
-    case "readdir":
-    case "rmdir":
-    case "unlink":
-    case "readFile":
-      writer.string(request.path);
-      break;
-    case "mkdir":
-      writer.string(request.path);
-      writer.u8(
-        (request.options?.recursive ? 1 : 0) | (request.options?.mode === void 0 ? 0 : 2)
-      );
-      if (request.options?.mode !== void 0) writer.u32(request.options.mode);
-      break;
-    case "rename":
-      writer.string(request.sourcePath);
-      writer.string(request.destinationPath);
-      break;
-    case "link":
-      writer.string(request.existingPath);
-      writer.string(request.newPath);
-      break;
-    case "symlink":
-      writer.string(request.target);
-      writer.string(request.linkPath);
-      break;
-    case "readlink":
-      writer.string(request.path);
-      break;
-    case "writeFile":
-      writer.string(request.path);
-      writer.byteArray(request.bytes);
-      break;
+    default:
+      return false;
   }
-  return writer.finish();
+  return true;
 }
-function readStat(reader) {
-  const path = reader.string();
-  const kindCode = reader.u8();
-  if (kindCode !== 1 && kindCode !== 2 && kindCode !== 3) {
-    throw new TraceKernelTransportError("EPROTO", `invalid stat kind ${kindCode}`);
-  }
-  return Object.freeze({
-    path,
-    kind: kindCode === 1 ? "file" : kindCode === 2 ? "directory" : "symlink",
-    inode: reader.f64(),
-    nlink: reader.f64(),
-    mode: reader.u32(),
-    size: reader.f64(),
-    generation: reader.f64(),
-    createdAt: reader.f64(),
-    modifiedAt: reader.f64(),
-    changedAt: reader.f64()
-  });
-}
-function decodeTraceKernelSyscallResult(bytes) {
-  const reader = new BinaryFrameReader(bytes);
-  readFramePrefix(reader, FRAME_RESPONSE);
-  const success = reader.u8();
-  if (success > 1) {
-    throw new TraceKernelTransportError("EPROTO", `invalid syscall result status ${success}`);
-  }
-  if (success === 0) {
-    const code = reader.string();
-    if (!SYSCALL_ERROR_CODES.has(code)) {
-      throw new TraceKernelTransportError("EPROTO", `unknown syscall error code ${code}`);
-    }
-    const result = {
-      ok: false,
-      error: {
-        code,
-        message: reader.string()
-      }
-    };
-    reader.done();
-    return result;
-  }
-  const operation = readOperation(reader);
+function decodeProcessResult(reader, operation) {
   let value;
   switch (operation) {
     case "pipe":
@@ -794,40 +959,6 @@ function decodeTraceKernelSyscallResult(bytes) {
       }
       break;
     }
-    case "socket":
-    case "open":
-    case "dup":
-    case "dup2":
-      value = { op: operation, fd: reader.i32() };
-      break;
-    case "dup3": {
-      const fd2 = reader.i32();
-      const closeOnExec = reader.u8();
-      if (closeOnExec > 1) {
-        throw new TraceKernelTransportError(
-          "EPROTO",
-          "Invalid dup3 close-on-exec result"
-        );
-      }
-      value = { op: "dup3", fd: fd2, closeOnExec: closeOnExec === 1 };
-      break;
-    }
-    case "fcntl": {
-      const closeOnExec = reader.u8();
-      const nonblocking = reader.u8();
-      if (closeOnExec > 1 || nonblocking > 1) {
-        throw new TraceKernelTransportError(
-          "EPROTO",
-          `invalid descriptor flag result ${closeOnExec}:${nonblocking}`
-        );
-      }
-      value = {
-        op: "fcntl",
-        closeOnExec: closeOnExec === 1,
-        nonblocking: nonblocking === 1
-      };
-      break;
-    }
     case "poll": {
       const length = reader.u32();
       const entries = [];
@@ -920,122 +1051,69 @@ function decodeTraceKernelSyscallResult(bytes) {
       };
       break;
     }
-    case "bind":
-      value = { op: "bind", address: readAddress(reader) };
-      break;
-    case "accept":
-      value = {
-        op: "accept",
-        fd: reader.i32(),
-        localAddress: readAddress(reader),
-        remoteAddress: readAddress(reader)
-      };
-      break;
-    case "connect":
-      value = {
-        op: "connect",
-        localAddress: readAddress(reader),
-        remoteAddress: readAddress(reader)
-      };
-      break;
-    case "send":
-      value = { op: "send", bytesWritten: reader.u32() };
-      break;
-    case "recv":
-      value = { op: "recv", bytes: reader.byteArray() };
-      break;
-    case "getsockname":
-    case "getpeername":
-      value = { op: operation, address: readAddress(reader) };
-      break;
-    case "getsockopt": {
-      const hasError = reader.u8();
-      if (hasError > 1) {
-        throw new TraceKernelTransportError(
-          "EPROTO",
-          `invalid socket error presence flag ${hasError}`
-        );
-      }
-      const error = hasError === 1 ? reader.string() : void 0;
-      if (error !== void 0 && !SOCKET_ERROR_CODES.has(error)) {
-        throw new TraceKernelTransportError(
-          "EPROTO",
-          `invalid socket error code ${JSON.stringify(error)}`
-        );
-      }
-      value = {
-        op: "getsockopt",
-        ...error === void 0 ? {} : { error }
-      };
-      break;
-    }
-    case "read":
-      value = { op: "read", bytes: reader.byteArray() };
-      break;
-    case "write":
-      value = { op: "write", bytesWritten: reader.u32() };
-      break;
-    case "seek":
-      value = { op: "seek", offset: reader.f64() };
-      break;
-    case "stat":
-      value = { op: "stat", stat: readStat(reader) };
-      break;
-    case "lstat":
-      value = { op: "lstat", stat: readStat(reader) };
-      break;
-    case "fstat":
-      value = { op: "fstat", stat: readStat(reader) };
-      break;
-    case "realpath":
-      value = { op: "realpath", path: reader.string() };
-      break;
-    case "readlink":
-      value = { op: "readlink", target: reader.string() };
-      break;
-    case "readdir": {
-      const length = reader.u32();
-      const entries = [];
-      for (let index = 0; index < length; index += 1) {
-        const name = reader.string();
-        const kindCode = reader.u8();
-        if (kindCode !== 1 && kindCode !== 2 && kindCode !== 3) {
-          throw new TraceKernelTransportError("EPROTO", `invalid directory entry kind ${kindCode}`);
-        }
-        entries.push(Object.freeze({
-          name,
-          kind: kindCode === 1 ? "file" : kindCode === 2 ? "directory" : "symlink",
-          inode: reader.f64()
-        }));
-      }
-      value = { op: "readdir", entries: Object.freeze(entries) };
-      break;
-    }
-    case "readFile":
-      value = {
-        op: "readFile",
-        cacheGeneration: reader.i32(),
-        bytes: reader.byteArray()
-      };
-      break;
-    case "close":
     case "kill":
-    case "listen":
-    case "shutdown":
-    case "mkdir":
-    case "rmdir":
-    case "unlink":
-    case "link":
-    case "symlink":
-    case "rename":
-    case "writeFile":
-    case "ftruncate":
       value = { op: operation };
       break;
+    default:
+      return void 0;
+  }
+  return value;
+}
+
+// packages/tracekernel/src/transport/wire.ts
+function encodeTraceKernelSyscallRequest(request) {
+  const writer = new BinaryFrameWriter();
+  writeFramePrefix(writer, FRAME_REQUEST);
+  writeOperation(writer, request.op);
+  if (!encodeProcessRequest(writer, request) && !encodeNetworkRequest(writer, request) && !encodeFilesystemRequest(writer, request)) {
+    throw new TraceKernelTransportError(
+      "ENOSYS",
+      `cannot encode unknown syscall request ${JSON.stringify(request)}`
+    );
+  }
+  return writer.finish();
+}
+function decodeTraceKernelSyscallResult(bytes) {
+  const reader = new BinaryFrameReader(bytes);
+  readFramePrefix(reader, FRAME_RESPONSE);
+  const success = reader.u8();
+  if (success > 1) {
+    throw new TraceKernelTransportError(
+      "EPROTO",
+      `invalid syscall result status ${success}`
+    );
+  }
+  if (success === 0) {
+    const code = reader.string();
+    if (!SYSCALL_ERROR_CODES.has(code)) {
+      throw new TraceKernelTransportError(
+        "EPROTO",
+        `unknown syscall error code ${code}`
+      );
+    }
+    const result = {
+      ok: false,
+      error: {
+        code,
+        message: reader.string()
+      }
+    };
+    reader.done();
+    return result;
+  }
+  const operation = readOperation(reader);
+  const value = decodeProcessResult(reader, operation) ?? decodeNetworkResult(reader, operation) ?? decodeFilesystemResult(reader, operation);
+  if (value === void 0) {
+    throw new TraceKernelTransportError(
+      "ENOSYS",
+      `cannot decode unsupported syscall result ${operation}`
+    );
   }
   reader.done();
   return { ok: true, value };
 }
+
+// packages/tracekernel/src/transport/shared-channel.ts
 var SHARED_HEADER_INTS = 8;
 var SHARED_HEADER_BYTES = SHARED_HEADER_INTS * Int32Array.BYTES_PER_ELEMENT;
 var STATE_INDEX = 0;
@@ -1150,6 +1228,8 @@ var TraceKernelSharedSyscallClient = class {
     Atomics.notify(this.header, STATE_INDEX);
   }
 };
+
+// packages/tracekernel/src/transport/runtime-file-client.ts
 var TraceKernelSharedGenerationSource = class {
   generation;
   constructor(buffer) {
@@ -1657,7 +1737,8 @@ var package_default = {
   },
   scripts: {
     prepublishOnly: "pnpm build",
-    build: "pnpm generate:runtime-info && pnpm generate:python-harness && pnpm generate:kernel-policy && pnpm generate:typescript-project-libs && pnpm generate:javascript-project-worker && pnpm generate:java-helper && pnpm sync:package-assets && pnpm build:tracekernel && pnpm exec tsup --config tsup.core.config.ts && pnpm exec tsup",
+    build: "pnpm generate:runtime-info && pnpm generate:python-harness && pnpm generate:kernel-policy && pnpm generate:typescript-project-libs && pnpm generate:javascript-project-worker && pnpm generate:java-helper && pnpm sync:package-assets && pnpm build:tracekernel && pnpm exec tsup --config tsup.core.config.ts && pnpm build:browser-host && pnpm exec tsup && pnpm --dir packages/judge build",
+    "build:browser-host": "pnpm exec tsup --config tsup.browser-host.config.ts",
     "build:tracekernel": "pnpm exec tsup --config tsup.tracekernel.config.ts",
     "generate:runtime-info": "pnpm exec tsx --tsconfig tsconfig.base.json scripts/generate-runtime-language-info.ts",
     "generate:python-harness": "pnpm exec tsx --tsconfig tsconfig.base.json scripts/generate-python-harness-artifacts.ts",
@@ -1676,7 +1757,8 @@ var package_default = {
     typecheck: "pnpm typecheck:root && pnpm typecheck:packages && pnpm typecheck:tests",
     "typecheck:root": "pnpm exec tsc -p tsconfig.root.json --noEmit",
     "typecheck:tests": "pnpm exec tsc -p tsconfig.tests.json --noEmit",
-    "typecheck:packages": "pnpm exec tsc -p packages/tracekernel/tsconfig.json --noEmit && pnpm exec tsc -p packages/harness-core/tsconfig.json --noEmit && pnpm exec tsc -p packages/harness-browser/tsconfig.json --noEmit && pnpm exec tsc -p packages/harness-python/tsconfig.json --noEmit && pnpm exec tsc -p packages/harness-javascript/tsconfig.json --noEmit && pnpm exec tsc -p packages/harness-java/tsconfig.json --noEmit && pnpm exec tsc -p packages/harness-csharp/tsconfig.json --noEmit && pnpm exec tsc -p packages/harness-cpp/tsconfig.json --noEmit && pnpm exec tsc -p packages/harness-project/tsconfig.json --noEmit && pnpm exec tsc -p packages/harness-native/tsconfig.json --noEmit && pnpm exec tsc -p packages/runtime-sql/tsconfig.json --noEmit",
+    "typecheck:packages": "pnpm exec tsc -p packages/tracekernel/tsconfig.json --noEmit && pnpm exec tsc -p packages/harness-core/tsconfig.json --noEmit && pnpm exec tsc -p packages/judge/tsconfig.json --noEmit && pnpm exec tsc -p packages/harness-browser/tsconfig.json --noEmit && pnpm exec tsc -p packages/harness-python/tsconfig.json --noEmit && pnpm exec tsc -p packages/harness-javascript/tsconfig.json --noEmit && pnpm exec tsc -p packages/harness-java/tsconfig.json --noEmit && pnpm exec tsc -p packages/harness-csharp/tsconfig.json --noEmit && pnpm exec tsc -p packages/harness-cpp/tsconfig.json --noEmit && pnpm exec tsc -p packages/harness-project/tsconfig.json --noEmit && pnpm exec tsc -p packages/harness-native/tsconfig.json --noEmit && pnpm exec tsc -p packages/runtime-sql/tsconfig.json --noEmit",
+    "test:judge": "pnpm --dir packages/judge test",
     "test:tracekernel": "pnpm build:tracekernel && pnpm exec tsx --tsconfig tsconfig.base.json tests/test-tracekernel-public-package.ts && pnpm exec tsx --tsconfig tsconfig.base.json tests/test-tracekernel-lifecycle.ts && pnpm exec tsx --tsconfig tsconfig.base.json tests/test-tracekernel-runtime-recovery.ts && pnpm exec tsx --tsconfig tsconfig.base.json tests/test-tracekernel-controlled-runtime.ts && pnpm exec tsx --tsconfig tsconfig.base.json tests/test-tracekernel-watchdog.ts && pnpm exec tsx --tsconfig tsconfig.base.json tests/test-tracekernel-descriptors.ts && pnpm exec tsx --tsconfig tsconfig.base.json tests/test-tracekernel-terminal.ts && pnpm exec tsx --tsconfig tsconfig.base.json tests/test-tracekernel-watch.ts && pnpm exec tsx --tsconfig tsconfig.base.json tests/test-tracekernel-vfs.ts && pnpm exec tsx --tsconfig tsconfig.base.json tests/test-tracekernel-tkfs-backing.ts && pnpm exec tsx --tsconfig tsconfig.base.json tests/test-tracekernel-namespace.ts && pnpm exec tsx --tsconfig tsconfig.base.json tests/test-tracekernel-network.ts && pnpm exec tsx --tsconfig tsconfig.base.json tests/test-tracekernel-adversarial-teardown.ts && pnpm exec tsx --tsconfig tsconfig.base.json tests/test-tracekernel-workspace-processes.ts && pnpm exec tsx --tsconfig tsconfig.base.json tests/test-tracekernel-workspace-job-control.ts && pnpm exec tsx --tsconfig tsconfig.base.json tests/test-tracekernel-http1.ts && pnpm exec tsx --tsconfig tsconfig.base.json tests/test-tracekernel-http-tcp.ts && pnpm exec tsx --tsconfig tsconfig.base.json tests/test-tracekernel-syscalls.ts && pnpm exec tsx --tsconfig tsconfig.base.json tests/test-tracekernel-transport.ts",
     "test:tracekernel:browser": "pnpm generate:javascript-project-worker && pnpm exec tsx --tsconfig tsconfig.base.json tests/test-tracekernel-javascript-stdio.ts && pnpm exec tsx --tsconfig tsconfig.base.json tests/test-tracekernel-javascript-browser.ts",
     "test:tracekernel:python-browser": "pnpm sync:package-assets && pnpm exec tsx --tsconfig tsconfig.base.json tests/test-tracekernel-python-browser.ts",
@@ -1694,7 +1776,7 @@ var package_default = {
     "test:smoke": "pnpm exec tsx --tsconfig tsconfig.base.json tests/test-harness-workspace-smoke.ts",
     "test:packaged-surface": "pnpm exec tsx --tsconfig tsconfig.base.json tests/test-packaged-surface.ts",
     "test:bundle-gates": "node scripts/check-browser-project-bundle.mjs",
-    "test:browser-harness": "pnpm exec tsx --tsconfig tsconfig.base.json tests/test-host-artifact-cache.ts && pnpm exec tsx --tsconfig tsconfig.base.json tests/test-worker-session-core.ts && pnpm exec tsx --tsconfig tsconfig.base.json tests/test-browser-execution-host.ts && pnpm exec tsx --tsconfig tsconfig.base.json tests/test-browser-runtime-assets.ts && pnpm exec tsx --tsconfig tsconfig.base.json tests/test-browser-runtime-asset-plumbing.ts && pnpm exec tsx --tsconfig tsconfig.base.json tests/test-browser-runtime-environment.ts && pnpm exec tsx --tsconfig tsconfig.base.json tests/test-browser-trace-event-transport.ts && pnpm exec tsx --tsconfig tsconfig.base.json tests/test-runtime-authority-lockdown.ts && pnpm exec tsx --tsconfig tsconfig.base.json tests/test-browser-harness.ts",
+    "test:browser-harness": "pnpm exec tsx --tsconfig tsconfig.base.json tests/test-host-artifact-cache.ts && pnpm exec tsx --tsconfig tsconfig.base.json tests/test-worker-session-core.ts && pnpm exec tsx --tsconfig tsconfig.base.json tests/test-browser-provider-registry.ts && pnpm exec tsx --tsconfig tsconfig.base.json tests/test-browser-execution-host.ts && pnpm exec tsx --tsconfig tsconfig.base.json tests/test-browser-runtime-assets.ts && pnpm exec tsx --tsconfig tsconfig.base.json tests/test-browser-runtime-asset-plumbing.ts && pnpm exec tsx --tsconfig tsconfig.base.json tests/test-browser-runtime-environment.ts && pnpm exec tsx --tsconfig tsconfig.base.json tests/test-browser-trace-event-transport.ts && pnpm exec tsx --tsconfig tsconfig.base.json tests/test-runtime-authority-lockdown.ts && pnpm exec tsx --tsconfig tsconfig.base.json tests/test-browser-harness.ts",
     "test:asset-sync": "pnpm exec tsx --tsconfig tsconfig.base.json tests/test-asset-sync.ts",
     "test:language-packages": "pnpm exec tsx --tsconfig tsconfig.base.json tests/test-language-package-surface.ts",
     "test:example-app": "pnpm exec tsx --tsconfig tsconfig.base.json tests/test-example-app.ts",
@@ -1710,7 +1792,7 @@ var package_default = {
     "test:typescript-project-libs-sync": "pnpm exec tsx --tsconfig tsconfig.base.json scripts/generate-typescript-project-libs.ts --check",
     "test:java-sync": "pnpm generate:java-helper --check && pnpm exec tsx --tsconfig tsconfig.base.json tests/test-java-harness-sync.ts",
     "test:python-runtime": "pnpm exec tsx --tsconfig tsconfig.base.json tests/test-python-runtime.ts",
-    "test:java-runtime": "pnpm exec tsx --tsconfig tsconfig.base.json tests/test-java-runtime.ts && pnpm exec tsx --tsconfig tsconfig.base.json tests/test-java-project-filesystem.ts && node --import tsx --test tests/test-java-jar-manifest.ts && pnpm exec tsx --tsconfig tsconfig.base.json tests/test-tracekernel-tracejvm-adapter.ts",
+    "test:java-runtime": "pnpm exec tsx --tsconfig tsconfig.base.json tests/test-java-runtime.ts && pnpm exec tsx --tsconfig tsconfig.base.json tests/test-java-project-filesystem.ts && node --import tsx --test tests/test-java-jar-manifest.ts && pnpm exec tsx --tsconfig tsconfig.base.json tests/test-java-project-provider.ts",
     "test:tracejvm-semantic-trace": "node --import tsx tests/test-tracejvm-semantic-trace-matrix.ts",
     "test:java-trace-provider-differential": "node --import tsx tests/test-java-trace-provider-differential.ts",
     "test:csharp-runtime": "pnpm exec tsx --tsconfig tsconfig.base.json tests/test-csharp-runtime.ts && pnpm exec tsx --tsconfig tsconfig.base.json tests/test-csharp-project-fs-parity.ts",
@@ -1741,6 +1823,9 @@ var package_default = {
     "test:classic-browser-matrix": "node scripts/test-browser-classic-provider-matrix.mjs",
     "test:python-worker-client-http": "pnpm exec tsx --tsconfig tsconfig.base.json tests/test-python-worker-client-http.ts",
     "test:runtime-contract": "pnpm exec tsx --tsconfig tsconfig.base.json tests/test-runtime-contract.ts",
+    "test:core-public-surface": "pnpm exec tsx --tsconfig tsconfig.base.json tests/test-harness-core-public-surface.ts",
+    "test:python-public-surface": "pnpm exec tsx --tsconfig tsconfig.base.json tests/test-python-public-surface.ts",
+    "test:java-public-surface": "pnpm exec tsx --tsconfig tsconfig.base.json tests/test-java-public-surface.ts",
     "test:native-harness": "pnpm exec tsx --tsconfig tsconfig.base.json tests/test-native-harness.ts",
     "test:runtime-info-sync": "pnpm exec tsx --tsconfig tsconfig.base.json scripts/generate-runtime-language-info.ts --check",
     "test:runtime-trace-parity": "pnpm exec tsx --tsconfig tsconfig.base.json tests/test-runtime-trace-parity.ts",
@@ -1774,6 +1859,7 @@ var package_default = {
   devDependencies: {
     "@types/node": "^20.0.0",
     esbuild: "0.27.3",
+    "just-bash": "3.1.0",
     playwright: "^1.53.2",
     pyodide: "^0.29.0",
     tsup: "^8.5.0",
@@ -1983,16 +2069,16 @@ var LANGUAGE_RUNTIME_INFOS = Object.freeze(
     "java": {
       "language": "java",
       "displayName": "Java",
-      "versionLabel": "Java 17",
-      "description": "Java 17 is compiled with javac 17 and executed in the browser through consumer-configured CheerpJ runtime assets.\n\nCommon imports are added automatically: java.util.*, java.io.*, java.math.*, java.util.stream.*, javafx.util.Pair.",
+      "versionLabel": "Java 23",
+      "description": "Java 23 is compiled with javac 23 and executed through the consumer-configured browser Java provider.\n\nCommon imports are added automatically: java.util.*, java.io.*, java.math.*, java.util.stream.*, javafx.util.Pair.",
       "runtime": {
-        "name": "CheerpJ browser-local OpenJDK runtime",
-        "version": "17",
-        "detail": "Loaded from consumer-configured runtime assets (same-origin or an approved CDN)."
+        "name": "Browser Java runtime",
+        "version": "23",
+        "detail": "Runs through the consumer-configured Java project provider."
       },
       "compiler": {
         "name": "javac",
-        "version": "17"
+        "version": "23"
       },
       "defaultImports": [
         "java.util.*",
@@ -2139,51 +2225,38 @@ function getLanguageRuntimeInfo(language) {
   return info;
 }
 
-// packages/harness-core/src/runtime-project.ts
-var RUNTIME_WORKSPACE_HTTP_CAPABILITY_PRESETS = {
-  workspace: {
-    listen: true,
-    dispatch: true,
-    readDiagnostics: true
-  },
-  system: {
-    listen: true,
-    dispatch: true,
-    externalFetch: true,
-    readDiagnostics: true
-  },
-  none: {}
-};
-var RUNTIME_WORKSPACE_ACTOR_PRESETS = {
-  principal: {
-    id: "principal",
-    kind: "principal",
-    capabilities: { http: RUNTIME_WORKSPACE_HTTP_CAPABILITY_PRESETS.workspace }
-  },
-  test: {
-    id: "test",
-    kind: "test",
-    capabilities: { http: RUNTIME_WORKSPACE_HTTP_CAPABILITY_PRESETS.workspace }
-  },
-  "hidden-test": {
-    id: "hidden-test",
-    kind: "hidden-test",
-    capabilities: { http: RUNTIME_WORKSPACE_HTTP_CAPABILITY_PRESETS.workspace }
-  },
-  runtime: {
-    id: "runtime",
-    kind: "runtime",
-    capabilities: {
-      execute: true,
-      http: RUNTIME_WORKSPACE_HTTP_CAPABILITY_PRESETS.workspace
-    }
-  },
-  system: {
-    id: "system",
-    kind: "system",
-    capabilities: { http: RUNTIME_WORKSPACE_HTTP_CAPABILITY_PRESETS.system }
+// packages/harness-core/src/runtime-command-internal.ts
+var RUNTIME_SIGNAL_EXIT_CODES = /* @__PURE__ */ new Map([
+  ["SIGHUP", 1],
+  ["SIGINT", 2],
+  ["SIGQUIT", 3],
+  ["SIGKILL", 9],
+  ["SIGTERM", 15]
+]);
+function runtimeErrorMessage(error) {
+  return error instanceof Error ? error.message : String(error);
+}
+function isRuntimeAbortError(error) {
+  return error instanceof Error && error.name === "AbortError";
+}
+function isRuntimeTimeoutError(error) {
+  const message = runtimeErrorMessage(error).toLowerCase();
+  return message.includes("timed out") || message.includes("timeout");
+}
+var textEncoder2 = new TextEncoder();
+function runtimeFileChangeByteSize(change) {
+  let size = textEncoder2.encode(change.path).byteLength;
+  if (change.symlink === true) {
+    return size + textEncoder2.encode(change.target).byteLength;
   }
-};
+  const file = change;
+  if (file.contents !== void 0) {
+    size += file.encoding === "base64" ? Math.ceil(file.contents.length * 3 / 4) : textEncoder2.encode(file.contents).byteLength;
+  }
+  return size;
+}
+
+// packages/harness-core/src/runtime-command.ts
 var RUNTIME_STDIN_PIPE_HEADER_INTS = 3;
 var RUNTIME_STDIN_PIPE_HEADER_BYTES = RUNTIME_STDIN_PIPE_HEADER_INTS * Int32Array.BYTES_PER_ELEMENT;
 var RUNTIME_STDIN_PIPE_READ_INDEX = 0;
@@ -2226,13 +2299,6 @@ function readRuntimeCommandStdinPipeBytes(pipe, maxLength = RUNTIME_STDIN_PIPE_D
   Atomics.notify(state.header, RUNTIME_STDIN_PIPE_READ_INDEX);
   return out;
 }
-var RUNTIME_SIGNAL_EXIT_CODES = /* @__PURE__ */ new Map([
-  ["SIGHUP", 1],
-  ["SIGINT", 2],
-  ["SIGQUIT", 3],
-  ["SIGKILL", 9],
-  ["SIGTERM", 15]
-]);
 function runtimeAbortSignalName(signal, fallback = "SIGTERM") {
   const reason = signal?.reason;
   const raw = typeof reason?.signal === "string" && reason.signal.trim() ? reason.signal.trim() : fallback;
@@ -2411,27 +2477,16 @@ function runtimeProjectTruncateUtf8(value, maxBytes) {
   }
   return value.slice(0, end);
 }
-function runtimeFileChangeByteSize(change) {
-  let size = runtimeProjectUtf8Bytes(change.path);
-  if (change.symlink === true) {
-    return size + runtimeProjectUtf8Bytes(change.target);
-  }
-  const file = change;
-  if (file.contents !== void 0) {
-    size += file.encoding === "base64" ? Math.ceil(file.contents.length * 3 / 4) : runtimeProjectUtf8Bytes(file.contents);
-  }
-  return size;
-}
-function runtimeErrorMessage(error) {
-  return error instanceof Error ? error.message : String(error);
-}
-function isRuntimeAbortError(error) {
-  return error instanceof Error && error.name === "AbortError";
-}
-function isRuntimeTimeoutError(error) {
-  const message = runtimeErrorMessage(error).toLowerCase();
-  return message.includes("timed out") || message.includes("timeout");
-}
+var RUNTIME_PROJECT_HIDDEN_COMMAND_ACCESS_REGISTRY = /* @__PURE__ */ Symbol.for(
+  "@tracecode/harness-core/runtimeProjectHiddenCommandAccesses"
+);
+var runtimeProjectHiddenCommandAccesses = (() => {
+  const globalRegistry = globalThis;
+  globalRegistry[RUNTIME_PROJECT_HIDDEN_COMMAND_ACCESS_REGISTRY] ??= /* @__PURE__ */ new WeakSet();
+  return globalRegistry[RUNTIME_PROJECT_HIDDEN_COMMAND_ACCESS_REGISTRY];
+})();
+
+// packages/harness-core/src/runtime-command-bridge.ts
 function runtimeProjectInfrastructureFailure(error, signal) {
   const diagnostic = runtimeErrorMessage(error);
   const aborted = isRuntimeAbortError(error) || signal?.aborted;
@@ -2711,16 +2766,8 @@ var RuntimeProjectLiveIoController = class {
     this.outputTracker.emitMissingFinalOutput(result, output);
   }
 };
-var RUNTIME_PROJECT_HIDDEN_COMMAND_ACCESS_REGISTRY = /* @__PURE__ */ Symbol.for(
-  "@tracecode/harness-core/runtimeProjectHiddenCommandAccesses"
-);
-var runtimeProjectHiddenCommandAccesses = (() => {
-  const globalRegistry = globalThis;
-  globalRegistry[RUNTIME_PROJECT_HIDDEN_COMMAND_ACCESS_REGISTRY] ??= /* @__PURE__ */ new WeakSet();
-  return globalRegistry[RUNTIME_PROJECT_HIDDEN_COMMAND_ACCESS_REGISTRY];
-})();
 
-// packages/harness-core/src/runtime-kernel.ts
+// packages/harness-core/src/runtime-kernel-paths.ts
 var RUNTIME_KERNEL_DEVICE_ENTRIES = ["fd/0", "fd/1", "fd/2", "null", "stderr", "stdin", "stdout", "tty"];
 function runtimeKernelReadonlyFileErrorMessage(path, operation) {
   return `EROFS: readonly project file, ${operation} '${path}'`;
@@ -2926,6 +2973,252 @@ function runtimeDeviceStat(path, devices) {
     group: "root"
   };
 }
+function runtimeKernelVirtualDevices() {
+  return RUNTIME_KERNEL_DEVICE_ENTRIES.map((name) => {
+    const path = `/dev/${name}`;
+    const inputDevice = runtimeDeviceInputSource(path) ?? void 0;
+    const outputDevice = runtimeDeviceOutputTarget(path) ?? void 0;
+    return {
+      path,
+      readable: inputDevice !== void 0,
+      writable: outputDevice !== void 0,
+      ...inputDevice ? { inputDevice } : {},
+      ...outputDevice ? { outputDevice } : {}
+    };
+  });
+}
+
+// packages/harness-core/src/runtime-kernel-proc.ts
+function runtimeProcInfoJson(info) {
+  return `${JSON.stringify(info, null, 2)}
+`;
+}
+function publicRuntimeKernelInfo(info) {
+  const workspaceRoot = "/workspace";
+  const home = "/home/user";
+  const workspaceName = "workspace";
+  return {
+    name: info.name,
+    version: info.version,
+    user: {
+      id: "user",
+      username: "user",
+      home
+    },
+    host: {
+      hostname: "tracevm",
+      osName: "tracekernel"
+    },
+    workspace: {
+      id: workspaceName,
+      name: workspaceName,
+      root: workspaceRoot,
+      startedAt: "1970-01-01T00:00:00.000Z"
+    },
+    home,
+    cwd: workspaceRoot,
+    workspaceRoot
+  };
+}
+function runtimeMountInfoField(value) {
+  return value.replace(/\\/g, "\\134").replace(/ /g, "\\040").replace(/\t/g, "\\011").replace(/\n/g, "\\012");
+}
+function runtimeKernelMounts(info) {
+  const workspaceName = `name=${info.workspace.name}`;
+  const mounts = [
+    {
+      id: 20,
+      parentId: 0,
+      device: "0:0",
+      root: "/",
+      target: "/",
+      type: "tracefs",
+      source: "tracekernel:system",
+      options: ["ro", "relatime"],
+      superOptions: ["ro"]
+    },
+    {
+      id: 21,
+      parentId: 20,
+      device: "0:6",
+      root: "/",
+      target: "/tmp",
+      type: "tracefs",
+      source: "tracekernel:tmp",
+      options: ["rw", "nosuid", "nodev"],
+      superOptions: ["rw", "mode=1777"]
+    },
+    {
+      id: 22,
+      parentId: 20,
+      device: "0:7",
+      root: "/",
+      target: "/var/tmp",
+      type: "tracefs",
+      source: "tracekernel:var-tmp",
+      options: ["rw", "nosuid", "nodev"],
+      superOptions: ["rw", "mode=1777"]
+    },
+    {
+      id: 24,
+      parentId: 20,
+      device: "0:1",
+      root: "/",
+      target: info.workspaceRoot,
+      type: "tracefs",
+      source: "tracekernel:workspace",
+      options: ["rw", "relatime"],
+      superOptions: ["rw", workspaceName]
+    },
+    {
+      id: 25,
+      parentId: 20,
+      device: "0:2",
+      root: "/",
+      target: "/dev",
+      type: "tracefs",
+      source: "tracekernel:dev",
+      options: ["rw", "nosuid"],
+      superOptions: ["rw", "mode=755"]
+    },
+    {
+      id: 26,
+      parentId: 20,
+      device: "0:3",
+      root: "/",
+      target: "/proc",
+      type: "traceproc",
+      source: "tracekernel:proc",
+      options: ["ro", "nosuid", "nodev", "noexec"],
+      superOptions: ["ro"]
+    },
+    {
+      id: 28,
+      parentId: 20,
+      device: "0:4",
+      root: "/",
+      target: "/tracekernel",
+      type: "tracefs",
+      source: "tracekernel:control",
+      options: ["ro", "nosuid", "nodev", "noexec"],
+      superOptions: ["ro"]
+    },
+    {
+      id: 29,
+      parentId: 20,
+      device: "0:5",
+      root: "/",
+      target: "/skills",
+      type: "tracefs",
+      source: "tracekernel:skills",
+      options: ["ro", "nosuid", "nodev", "noexec"],
+      superOptions: ["ro"]
+    }
+  ];
+  if (info.workspaceAlias && info.workspaceAlias !== info.workspaceRoot) {
+    mounts.splice(1, 0, {
+      id: 27,
+      parentId: 20,
+      device: "0:1",
+      root: "/",
+      target: info.workspaceAlias,
+      type: "tracefs",
+      source: "tracekernel:workspace",
+      options: ["rw", "relatime"],
+      superOptions: ["rw", workspaceName],
+      optionalFields: [`alias=${info.workspaceRoot}`]
+    });
+  }
+  return mounts;
+}
+function runtimeProcMountInfo(info) {
+  return runtimeKernelMounts(info).map((mount) => [
+    mount.id,
+    mount.parentId,
+    mount.device,
+    runtimeMountInfoField(mount.root),
+    runtimeMountInfoField(mount.target),
+    mount.options.join(","),
+    ...(mount.optionalFields ?? []).map(runtimeMountInfoField),
+    "-",
+    mount.type,
+    runtimeMountInfoField(mount.source),
+    mount.superOptions.map(runtimeMountInfoField).join(",")
+  ].join(" ")).join("\n") + "\n";
+}
+function runtimeProcMounts(info) {
+  return runtimeKernelMounts(info).map((mount) => [
+    runtimeMountInfoField(mount.source),
+    runtimeMountInfoField(mount.target),
+    mount.type,
+    mount.options.map(runtimeMountInfoField).join(","),
+    "0",
+    "0"
+  ].join(" ")).join("\n") + "\n";
+}
+function runtimeProcKernelVersion(info) {
+  return `${info.name} ${info.version}
+`;
+}
+function runtimeProcDirEntries(path) {
+  if (path === "/proc") return ["kernel", "mounts", "self"];
+  if (path === "/proc/kernel") return ["info", "version"];
+  if (path === "/proc/self") return ["mountinfo"];
+  return null;
+}
+function runtimeProcEntryKind(path) {
+  if (runtimeProcDirEntries(path)) return "directory";
+  if (path === "/proc/kernel/info" || path === "/proc/kernel/version" || path === "/proc/mounts" || path === "/proc/self/mountinfo") return "file";
+  return null;
+}
+function runtimeKernelIdentityStat(path, info) {
+  const kind = runtimeKernelIdentityEntryKind(path);
+  if (!kind) return null;
+  const isDirectory = kind === "directory";
+  const content = isDirectory ? "" : readRuntimeKernelIdentityFile(path, info);
+  return {
+    isFile: !isDirectory,
+    isDirectory,
+    isCharacterDevice: false,
+    mode: isDirectory ? 493 : 420,
+    size: new TextEncoder().encode(content).byteLength,
+    uid: 0,
+    gid: 0,
+    owner: "root",
+    group: "root"
+  };
+}
+function readRuntimeProcFile(path, info) {
+  if (path === "/proc/kernel/info") return runtimeProcInfoJson(info);
+  if (path === "/proc/kernel/version") return runtimeProcKernelVersion(info);
+  if (path === "/proc/mounts") return runtimeProcMounts(info);
+  if (path === "/proc/self/mountinfo") return runtimeProcMountInfo(info);
+  if (runtimeProcDirEntries(path)) {
+    throw Object.assign(new Error(`EISDIR: illegal operation on a directory, read '${path}'`), { code: "EISDIR" });
+  }
+  throw Object.assign(new Error(`ENOENT: no such file or directory, open '${path}'`), { code: "ENOENT" });
+}
+function readPublicRuntimeProcFile(path, info) {
+  return readRuntimeProcFile(path, publicRuntimeKernelInfo(info));
+}
+function runtimeProcStat(path, info) {
+  const kind = runtimeProcEntryKind(path);
+  if (!kind) return null;
+  const isDirectory = kind === "directory";
+  return {
+    isFile: !isDirectory,
+    isDirectory,
+    isCharacterDevice: false,
+    mode: isDirectory ? 365 : 292,
+    size: isDirectory ? 0 : new TextEncoder().encode(readRuntimeProcFile(path, info)).byteLength,
+    uid: 0,
+    gid: 0,
+    owner: "root",
+    group: "root"
+  };
+}
+
+// packages/harness-core/src/runtime-kernel-filesystem.ts
 function runtimeKernelWriteTarget(path, devices) {
   const virtualPath = classifyRuntimeKernelVirtualPath(path);
   if (virtualPath === null) return { kind: "workspace" };
@@ -3324,248 +3617,6 @@ function runtimeKernelTruncateTarget(path, devices) {
 }
 function runtimeKernelTruncateErrorCode(reason) {
   return runtimeKernelMutationErrorCode(reason);
-}
-function runtimeProcInfoJson(info) {
-  return `${JSON.stringify(info, null, 2)}
-`;
-}
-function publicRuntimeKernelInfo(info) {
-  const workspaceRoot = "/workspace";
-  const home = "/home/user";
-  const workspaceName = "workspace";
-  return {
-    name: info.name,
-    version: info.version,
-    user: {
-      id: "user",
-      username: "user",
-      home
-    },
-    host: {
-      hostname: "tracevm",
-      osName: "tracekernel"
-    },
-    workspace: {
-      id: workspaceName,
-      name: workspaceName,
-      root: workspaceRoot,
-      startedAt: "1970-01-01T00:00:00.000Z"
-    },
-    home,
-    cwd: workspaceRoot,
-    workspaceRoot
-  };
-}
-function runtimeMountInfoField(value) {
-  return value.replace(/\\/g, "\\134").replace(/ /g, "\\040").replace(/\t/g, "\\011").replace(/\n/g, "\\012");
-}
-function runtimeKernelMounts(info) {
-  const workspaceName = `name=${info.workspace.name}`;
-  const mounts = [
-    {
-      id: 20,
-      parentId: 0,
-      device: "0:0",
-      root: "/",
-      target: "/",
-      type: "tracefs",
-      source: "tracekernel:system",
-      options: ["ro", "relatime"],
-      superOptions: ["ro"]
-    },
-    {
-      id: 21,
-      parentId: 20,
-      device: "0:6",
-      root: "/",
-      target: "/tmp",
-      type: "tracefs",
-      source: "tracekernel:tmp",
-      options: ["rw", "nosuid", "nodev"],
-      superOptions: ["rw", "mode=1777"]
-    },
-    {
-      id: 22,
-      parentId: 20,
-      device: "0:7",
-      root: "/",
-      target: "/var/tmp",
-      type: "tracefs",
-      source: "tracekernel:var-tmp",
-      options: ["rw", "nosuid", "nodev"],
-      superOptions: ["rw", "mode=1777"]
-    },
-    {
-      id: 24,
-      parentId: 20,
-      device: "0:1",
-      root: "/",
-      target: info.workspaceRoot,
-      type: "tracefs",
-      source: "tracekernel:workspace",
-      options: ["rw", "relatime"],
-      superOptions: ["rw", workspaceName]
-    },
-    {
-      id: 25,
-      parentId: 20,
-      device: "0:2",
-      root: "/",
-      target: "/dev",
-      type: "tracefs",
-      source: "tracekernel:dev",
-      options: ["rw", "nosuid"],
-      superOptions: ["rw", "mode=755"]
-    },
-    {
-      id: 26,
-      parentId: 20,
-      device: "0:3",
-      root: "/",
-      target: "/proc",
-      type: "traceproc",
-      source: "tracekernel:proc",
-      options: ["ro", "nosuid", "nodev", "noexec"],
-      superOptions: ["ro"]
-    },
-    {
-      id: 28,
-      parentId: 20,
-      device: "0:4",
-      root: "/",
-      target: "/tracekernel",
-      type: "tracefs",
-      source: "tracekernel:control",
-      options: ["ro", "nosuid", "nodev", "noexec"],
-      superOptions: ["ro"]
-    },
-    {
-      id: 29,
-      parentId: 20,
-      device: "0:5",
-      root: "/",
-      target: "/skills",
-      type: "tracefs",
-      source: "tracekernel:skills",
-      options: ["ro", "nosuid", "nodev", "noexec"],
-      superOptions: ["ro"]
-    }
-  ];
-  if (info.workspaceAlias && info.workspaceAlias !== info.workspaceRoot) {
-    mounts.splice(1, 0, {
-      id: 27,
-      parentId: 20,
-      device: "0:1",
-      root: "/",
-      target: info.workspaceAlias,
-      type: "tracefs",
-      source: "tracekernel:workspace",
-      options: ["rw", "relatime"],
-      superOptions: ["rw", workspaceName],
-      optionalFields: [`alias=${info.workspaceRoot}`]
-    });
-  }
-  return mounts;
-}
-function runtimeProcMountInfo(info) {
-  return runtimeKernelMounts(info).map((mount) => [
-    mount.id,
-    mount.parentId,
-    mount.device,
-    runtimeMountInfoField(mount.root),
-    runtimeMountInfoField(mount.target),
-    mount.options.join(","),
-    ...(mount.optionalFields ?? []).map(runtimeMountInfoField),
-    "-",
-    mount.type,
-    runtimeMountInfoField(mount.source),
-    mount.superOptions.map(runtimeMountInfoField).join(",")
-  ].join(" ")).join("\n") + "\n";
-}
-function runtimeProcMounts(info) {
-  return runtimeKernelMounts(info).map((mount) => [
-    runtimeMountInfoField(mount.source),
-    runtimeMountInfoField(mount.target),
-    mount.type,
-    mount.options.map(runtimeMountInfoField).join(","),
-    "0",
-    "0"
-  ].join(" ")).join("\n") + "\n";
-}
-function runtimeProcKernelVersion(info) {
-  return `${info.name} ${info.version}
-`;
-}
-function runtimeProcDirEntries(path) {
-  if (path === "/proc") return ["kernel", "mounts", "self"];
-  if (path === "/proc/kernel") return ["info", "version"];
-  if (path === "/proc/self") return ["mountinfo"];
-  return null;
-}
-function runtimeProcEntryKind(path) {
-  if (runtimeProcDirEntries(path)) return "directory";
-  if (path === "/proc/kernel/info" || path === "/proc/kernel/version" || path === "/proc/mounts" || path === "/proc/self/mountinfo") return "file";
-  return null;
-}
-function runtimeKernelVirtualDevices() {
-  return RUNTIME_KERNEL_DEVICE_ENTRIES.map((name) => {
-    const path = `/dev/${name}`;
-    const inputDevice = runtimeDeviceInputSource(path) ?? void 0;
-    const outputDevice = runtimeDeviceOutputTarget(path) ?? void 0;
-    return {
-      path,
-      readable: inputDevice !== void 0,
-      writable: outputDevice !== void 0,
-      ...inputDevice ? { inputDevice } : {},
-      ...outputDevice ? { outputDevice } : {}
-    };
-  });
-}
-function runtimeKernelIdentityStat(path, info) {
-  const kind = runtimeKernelIdentityEntryKind(path);
-  if (!kind) return null;
-  const isDirectory = kind === "directory";
-  const content = isDirectory ? "" : readRuntimeKernelIdentityFile(path, info);
-  return {
-    isFile: !isDirectory,
-    isDirectory,
-    isCharacterDevice: false,
-    mode: isDirectory ? 493 : 420,
-    size: new TextEncoder().encode(content).byteLength,
-    uid: 0,
-    gid: 0,
-    owner: "root",
-    group: "root"
-  };
-}
-function readRuntimeProcFile(path, info) {
-  if (path === "/proc/kernel/info") return runtimeProcInfoJson(info);
-  if (path === "/proc/kernel/version") return runtimeProcKernelVersion(info);
-  if (path === "/proc/mounts") return runtimeProcMounts(info);
-  if (path === "/proc/self/mountinfo") return runtimeProcMountInfo(info);
-  if (runtimeProcDirEntries(path)) {
-    throw Object.assign(new Error(`EISDIR: illegal operation on a directory, read '${path}'`), { code: "EISDIR" });
-  }
-  throw Object.assign(new Error(`ENOENT: no such file or directory, open '${path}'`), { code: "ENOENT" });
-}
-function readPublicRuntimeProcFile(path, info) {
-  return readRuntimeProcFile(path, publicRuntimeKernelInfo(info));
-}
-function runtimeProcStat(path, info) {
-  const kind = runtimeProcEntryKind(path);
-  if (!kind) return null;
-  const isDirectory = kind === "directory";
-  return {
-    isFile: !isDirectory,
-    isDirectory,
-    isCharacterDevice: false,
-    mode: isDirectory ? 365 : 292,
-    size: isDirectory ? 0 : new TextEncoder().encode(readRuntimeProcFile(path, info)).byteLength,
-    uid: 0,
-    gid: 0,
-    owner: "root",
-    group: "root"
-  };
 }
 
 // packages/harness-javascript/src/kernel/path-normalization.ts
@@ -5939,12 +5990,12 @@ function unzipSync(data, opts) {
 }
 
 // packages/harness-javascript/src/internal/encoding.ts
-var textEncoder2 = new TextEncoder();
+var textEncoder3 = new TextEncoder();
 var textDecoder2 = new TextDecoder();
 var fflateRecord = browser_exports;
 var fflate = typeof fflateRecord.gzipSync === "function" ? browser_exports : fflateRecord.default;
 function utf8Bytes(value) {
-  return textEncoder2.encode(value);
+  return textEncoder3.encode(value);
 }
 function base64ToBytes(value) {
   if (typeof Buffer !== "undefined") {
@@ -6391,7 +6442,7 @@ function runtimeStatTarget(path, info, devices, procSnapshot) {
         isDirectory: procKind === "directory",
         isCharacterDevice: false,
         mode: procKind === "directory" ? 365 : 292,
-        size: textEncoder2.encode(contents).byteLength
+        size: textEncoder3.encode(contents).byteLength
       }
     };
   }
@@ -9457,7 +9508,7 @@ function createBrowserJavaScriptRequestState(request, options, executionState) {
     ])
   );
   for (const [path, contents] of virtualTextFiles) {
-    fileStore.set(path, textEncoder2.encode(contents));
+    fileStore.set(path, textEncoder3.encode(contents));
   }
   const initialVisibleBytes = visibleProjectFiles.reduce((total, file) => total + fileBytes(file).byteLength, 0) + visibleProjectSymlinks.reduce((total, symlink) => total + utf8Bytes(symlink.target).byteLength, 0);
   const initialVisibleEntries = /* @__PURE__ */ new Set([

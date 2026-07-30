@@ -20,7 +20,7 @@ filesystem, policy, and HTTP behavior, so their results should not be merged.
 
 ## Run it
 
-The full six-language matrix is the default:
+The five built-in project-provider lanes are the default:
 
 ```bash
 pnpm bench:browser-project-runtimes
@@ -38,9 +38,9 @@ Useful overrides include:
 ```bash
 pnpm bench:browser-project-runtimes --languages=python,typescript,cpp --iterations=10 --seed=20260711
 pnpm bench:browser-project-runtimes --engine=firefox --languages=python,csharp,cpp --iterations=5
-pnpm bench:browser-project-runtimes --languages=python,java,csharp --prewarm=python:1,java:1,csharp:1
+pnpm bench:browser-project-runtimes --languages=python,csharp --prewarm=python:1,csharp:1
 pnpm bench:browser-project-runtimes --runtime-manifests=./runtime-assets.json
-pnpm bench:browser-project-runtimes --languages=java --prewarm=java:1 --execution-host --cache-assets
+pnpm bench:browser-project-runtimes --languages=python,csharp --execution-host --cache-assets
 pnpm bench:browser-project-runtimes --report=reports/project-browser-before.json
 ```
 
@@ -48,7 +48,8 @@ pnpm bench:browser-project-runtimes --report=reports/project-browser-before.json
 defaults to Chromium. Performance reports from different engines are separate
 workloads and must not be merged into one latency distribution.
 
-The correctness matrix runs all six providers against all three engines:
+The correctness matrix runs the five built-in providers against all three
+engines:
 
 ```bash
 pnpm test:project-browser-matrix
@@ -63,23 +64,18 @@ previous provider's WASM/JIT memory from contaminating compatibility or timing.
 `--runtime-manifests` accepts either a runtime map directly or an object with a
 `runtimeManifests` property. `TRACECODE_BENCH_RUNTIME_MANIFESTS` is the CI
 equivalent. This is the same generic, consumer-owned manifest mechanism used by
-the public browser harness; it is not tied to TraceCode hosting and applies
-across Python, JavaScript, TypeScript, Java, C#, and C++.
+the public browser harness; it is not tied to TraceCode hosting.
 
-Java requires a complete consumer-provided runtime manifest (`worker`,
-`loader`, `helperJar`, `compilerJar`, `rewriterJar`, and `parserJar`). The
-harness deliberately does not redistribute or silently select CheerpJ. If the
-manifest is missing or partial, Java fails before Worker construction; the
-benchmark keeps the command failure in the report, continues the independent
-workspace probes and remaining matrix, writes the partial report, and exits
-non-zero.
+Java 23 is supplied by an independently installed project provider through
+`java.createClient`. The generic Harness benchmark does not select, bundle, or
+pretend to measure one implementation; Java is covered by the selected
+provider's browser integration and performance suites. The focused Harness
+gate verifies the implementation-neutral adapter and browser workspace
+contract.
 
-`--execution-host` starts a second local origin and routes Java through the
-public dedicated-origin contract. In this profile, `java:1` warms the one
-workspace-session VM during construction; the two command phases reuse that VM
-while retaining fresh project/class directories. This profile measures the
-recommended interactive TraceCode architecture. Omit it to measure the stricter
-one-shot Java profile.
+`--execution-host` starts a second local origin and routes the selected built-in
+worker through the public dedicated-origin contract. Java Project providers own
+their Worker origin and are therefore outside this generic host benchmark.
 
 ## Browser fixtures
 
@@ -90,27 +86,25 @@ Every language uses a small deterministic project and the public project shell:
 | Python | `python3 main.py` | No |
 | JavaScript | `node main.js` via the browser project worker | No |
 | TypeScript | `tsc --project tsconfig.json && node dist/main.js` via browser compiler/worker assets | No |
-| Java | `javac Main.java && java Main` | No |
 | C# | `dotnet run --project App.csproj` | No |
 | C++ | `clang++ -std=c++17 main.cpp -o project-bench && ./project-bench` | No |
 
 Each language/iteration receives a new Playwright `BrowserContext`, then a new
-workspace configured with `projectWorkerIsolation: "per-command"`. With
-`--execution-host`, Java alone uses a workspace-session VM on the second origin;
-the other project runtimes remain per-command. The run order is shuffled
-independently per iteration using a seeded Fisher-Yates shuffle.
+workspace configured with `projectWorkerIsolation: "per-command"`. The run
+order is shuffled independently per iteration using a seeded Fisher-Yates
+shuffle.
 
-Prewarming is off by default (`python:0,java:0,csharp:0`), so the baseline does
-not hide cold-start work. `--prewarm=python:1,java:1,csharp:1` exercises the
-public security-preserving one-shot pools: a clean worker is warmed, leased for
-at most one user command, terminated, and replaced. Depth is limited to 2 per
-language and 4 total, matching the public API. JavaScript, TypeScript, and C++
-do not accept this option. Use separate reports with identical seeds and sample
-counts to compare cold-safe and prewarmed runs. Because each benchmark sample is
-language-specific, its workspace receives only that language's requested depth;
-warming unrelated runtimes would contaminate the comparison. The requested map
-and per-sample applied map are retained in report options, methodology, and
-workspace-construction records.
+Prewarming is off by default (`python:0,csharp:0`), so the baseline does not
+hide cold-start work. `--prewarm=python:1,csharp:1` exercises the public
+security-preserving one-shot pools: a clean worker is warmed, leased for at
+most one user command, terminated, and replaced. Depth is limited to 2 per
+language and 4 total. JavaScript, TypeScript, and C++ do not accept this option.
+Use separate reports with identical seeds and sample counts to compare
+cold-safe and prewarmed runs. Because each benchmark sample is
+language-specific, its workspace receives only that language's requested
+depth; warming unrelated runtimes would contaminate the comparison. The
+requested map and per-sample applied map are retained in report options,
+methodology, and workspace-construction records.
 
 ## Measured phases
 

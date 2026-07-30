@@ -720,33 +720,11 @@ async function main(): Promise<void> {
     const beforeAuthorityWorkerCount = workerInstances.length;
     const authorityProjectWorkspace = await createBrowserProjectWorkspace({
       assetBaseUrl: '/project-authority',
-      javaRuntime: 'legacy',
-      assets: {
-        runtimeManifests: {
-          java: {
-            runtime: 'java',
-            runtimeVersion: 'test-java-project-assets',
-            protocolVersion: BROWSER_RUNTIME_ASSET_PROTOCOL_VERSION,
-            workerFormat: 'classic',
-            loaderFormat: 'classic-script',
-            assetBaseUrl: '/project-authority/',
-            originPolicy: { mode: 'any' },
-            assets: {
-              worker: { url: 'java-worker.js' },
-              loader: { url: 'cheerpj-loader.js' },
-              helperJar: { url: 'helper.jar' },
-              compilerJar: { url: 'compiler.jar' },
-              rewriterJar: { url: 'rewriter.jar' },
-              parserJar: { url: 'parser.jar' },
-            },
-          },
-        },
-      },
+      providers: ['python', 'javascript', 'typescript', 'csharp', 'cpp'],
       projectWorkerPrewarm: {
         python: 1,
         javascript: 1,
         typescript: 1,
-        java: 1,
         csharp: 1,
         cpp: 1,
       },
@@ -754,7 +732,6 @@ async function main(): Promise<void> {
         { path: 'main.py', contents: 'print("python")\n' },
         { path: 'main.js', contents: 'console.log("javascript")\n' },
         { path: 'main.ts', contents: 'console.log("typescript")\n' },
-        { path: 'Main.java', contents: 'class Main { public static void main(String[] args) {} }\n' },
         { path: 'main.cpp', contents: 'int main() { return 0; }\n' },
         {
           path: 'App.csproj',
@@ -767,7 +744,7 @@ async function main(): Promise<void> {
       const prewarmedWorkerUrls = workerInstances
         .slice(beforeAuthorityWorkerCount)
         .map((worker) => String(worker.url));
-      for (const workerName of ['python-worker.js', 'javascript-project-worker.js', 'java-worker.js', 'csharp-worker.js', 'cpp-worker.js']) {
+      for (const workerName of ['python-worker.js', 'javascript-project-worker.js', 'csharp-worker.js', 'cpp-worker.js']) {
         assertCondition(
           prewarmedWorkerUrls.some((url) => url.includes(workerName)),
           `Project workspace should begin ${workerName} warmup without waiting for a command: ${JSON.stringify(prewarmedWorkerUrls)}`
@@ -775,7 +752,6 @@ async function main(): Promise<void> {
       }
       await authorityProjectWorkspace.runCommand('python3 main.py');
       await authorityProjectWorkspace.runCommand('node main.js');
-      await authorityProjectWorkspace.runCommand('java Main');
       await authorityProjectWorkspace.runCommand('dotnet run --project App.csproj');
       const cppChainedResult = await authorityProjectWorkspace.runCommand(
         'clang++ main.cpp -o app && ./app'
@@ -787,7 +763,6 @@ async function main(): Promise<void> {
       const authorityWorkers = workerInstances.slice(beforeAuthorityWorkerCount);
       for (const [runtime, workerName, messageType] of [
         ['Python', 'python-worker.js', 'execute-project-python'],
-        ['Java', 'java-worker.js', 'execute-project-java'],
         ['C#', 'csharp-worker.js', 'execute-project-csharp'],
         ['C++', 'cpp-worker.js', 'execute-project-cpp'],
       ] as const) {
@@ -829,18 +804,6 @@ async function main(): Promise<void> {
                 candidate.terminated
               ),
             'One C++ kernel PID must reuse only its trusted coordinator while compile and run use distinct retired execution workers'
-          );
-        }
-        if (runtime === 'Java') {
-          const resetIndex = worker?.messages.findIndex(
-            (message) => message.type === 'reset-persistent-storage'
-          ) ?? -1;
-          const executeIndex = worker?.messages.findIndex(
-            (message) => message.type === 'execute-project-java'
-          ) ?? -1;
-          assertCondition(
-            resetIndex >= 0 && resetIndex + 1 === executeIndex,
-            'A clean Java project worker must reset CheerpJ persistent storage immediately before its one user lease'
           );
         }
         assertCondition(worker?.terminated === true, `${runtime} one-shot project worker must be retired after the command`);

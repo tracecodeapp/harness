@@ -50,7 +50,7 @@ export interface JavaWorkerClientOptions {
   /** Bounded content-addressed compiled-class entries retained by this worker (0-64). */
   compileCacheLimit?: number;
   externalCompilerUrl?: string;
-  cheerpjLoaderUrl?: string;
+  loaderUrl?: string;
   assetPreflight?: () => Promise<void>;
   runtimeAssetPreflight?: () => Promise<void>;
   workerFactory?: BrowserWorkerFactory;
@@ -410,7 +410,7 @@ export class JavaWorkerClient {
       ...(this.options.workerIdleTimeoutMs === undefined ? {} : { idleTimeoutMs: this.options.workerIdleTimeoutMs }),
       ...(this.options.compileCacheLimit === undefined ? {} : { compileCacheLimit: this.options.compileCacheLimit }),
       ...(this.options.externalCompilerUrl ? { externalCompilerEnabled: true } : {}),
-      ...(this.options.cheerpjLoaderUrl ? { cheerpjLoaderUrl: this.options.cheerpjLoaderUrl } : {}),
+      ...(this.options.loaderUrl ? { cheerpjLoaderUrl: this.options.loaderUrl } : {}),
       ...(this.options.runtimeAssets ? { runtimeAssets: this.options.runtimeAssets } : {}),
       ...(this.options.isolatedRuntimeStorage ? { allowIsolatedRuntimeStorage: true } : {}),
     };
@@ -434,7 +434,7 @@ export class JavaWorkerClient {
     return this.warmupPromise;
   }
 
-  /** Clears CheerpJ's persistent learner-addressable filesystem before a safe execution. */
+  /** Clears persistent learner-addressable runtime storage before a safe execution. */
   async resetPersistentStorage(): Promise<void> {
     await this.init();
     await this.core.sendMessage<{ success: boolean }>(

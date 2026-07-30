@@ -74,9 +74,10 @@ sources.
 ### CheerpJ Core
 
 - Use: browser-hosted JVM runtime loaded by the Java worker.
-- Runtime loader: consumer-supplied. The direct legacy client retains
-  `/app/workers/vendor/cheerpj-loader.js` as its same-origin fallback; owned
-  browser project runners require an explicit, complete Java runtime manifest.
+- Runtime loader: consumer-supplied. The Classic Java client retains
+  `/app/workers/vendor/cheerpj-loader.js` as its same-origin fallback and also
+  accepts the implementation-neutral `loaderUrl` option or a runtime manifest.
+  Java 23 project providers own their runtime assets behind `java.createClient`.
 - Provider: Leaning Technologies.
 - Terms: CheerpJ Community License or CheerpJ Commercial License depending on
   the user's use case.
@@ -85,8 +86,9 @@ sources.
 
 CheerpJ is not vendored in this package. This package redistributes the
 TraceCode-authored Java worker and Java helper assets, but does not redistribute
-CheerpJ itself. Host applications that enable the Java lane must provide the
-CheerpJ loader through their own licensed asset pipeline or approved CDN.
+CheerpJ itself. Host applications that use the bundled Classic Java client must
+provide the CheerpJ loader through their own licensed asset pipeline or
+approved CDN.
 
 The CheerpJ Community License currently covers individuals, one-person
 companies, FOSS projects, and technical evaluations. That is expected to cover
@@ -97,7 +99,7 @@ with redistributed assets, can require a CheerpJ Commercial License.
 Supply-chain note: browser worker `importScripts()` does not provide
 browser-enforced subresource integrity. Consumer runtime manifests may
 authorize HTTP(S) loader and JAR URLs under an explicit origin policy, while
-the legacy `cheerpjLoaderUrl` override remains restricted to same-origin
+the direct `loaderUrl` override remains restricted to same-origin
 `/app/` paths. Manifest integrity is a credential-free preflight, not
 execution-bound SRI, so use immutable URLs and maintain deployment hashes and
 allowlists for this trusted third-party runtime code.

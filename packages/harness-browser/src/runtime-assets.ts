@@ -51,7 +51,7 @@ export interface BrowserRuntimeAssetDescriptor {
   url: string;
   /**
    * Optional runtime-native reference for an asset whose delivery URL is not
-   * the value the runtime consumes (for example CheerpJ's /app/... VFS path).
+   * the value the runtime consumes (for example a runtime-native VFS path).
    * Preflight and origin policy always apply to url.
    */
   runtimePath?: string;

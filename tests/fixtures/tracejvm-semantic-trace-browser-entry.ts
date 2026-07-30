@@ -6,9 +6,9 @@ import {
   type TraceJVMWorkerLike,
 } from '@tracecode/tracejvm';
 import {
-  invalidateTraceJVMHarnessWarmup,
-  warmTraceJVMHarnessClient,
-} from '../../packages/harness-java/src/tracejvm-runtime';
+  invalidateJavaProjectWarmup,
+  warmJavaProjectClient,
+} from '../../packages/harness-java/src/java-project-runtime';
 
 declare const __TRACECODE_TRACEJVM_HOT_AOT__: boolean;
 
@@ -102,11 +102,11 @@ const helperJarPromise = binaryFileFromUrl(
   '/fixture/java-browser-helper.jar',
 );
 function prewarmClient(): void {
-  void warmTraceJVMHarnessClient(client).catch(() => undefined);
+  void warmJavaProjectClient(client).catch(() => undefined);
 }
 
 function retireAndPrewarmClient(): void {
-  invalidateTraceJVMHarnessWarmup(client);
+  invalidateJavaProjectWarmup(client);
   prewarmClient();
 }
 
@@ -115,7 +115,7 @@ prewarmClient();
 globalThis.runTraceJVMSemanticTrace = async (request) => {
   const [helperJar] = await Promise.all([
     helperJarPromise,
-    warmTraceJVMHarnessClient(client),
+    warmJavaProjectClient(client),
   ]);
   const startedAt = performance.now();
   const sourceClass = request.entryClass.split('.').at(-1);
@@ -129,7 +129,7 @@ globalThis.runTraceJVMSemanticTrace = async (request) => {
       classpath: [helperJar],
     });
   } catch (error) {
-    invalidateTraceJVMHarnessWarmup(client);
+    invalidateJavaProjectWarmup(client);
     throw error;
   }
   const compileEndedAt = performance.now();
@@ -162,7 +162,7 @@ globalThis.runTraceJVMSemanticTrace = async (request) => {
       },
     });
   } catch (error) {
-    invalidateTraceJVMHarnessWarmup(client);
+    invalidateJavaProjectWarmup(client);
     throw error;
   }
   if (run.retirementRecommended) {

@@ -17,6 +17,14 @@ This repo uses Git tags as release boundaries. Version notes below summarize wha
   worker and browser-project APIs now define their own contracts, legacy
   engine-branded aliases are no longer exported, and distributable worker
   assets now use `python-worker.js` and `python/runtime-core.js`.
+- Replaced engine-branded Java Project exports, provider fields, and package
+  subpaths with the implementation-neutral Java 23 contract
+  (`java`, `JavaProject*`, and `java-project`). Removed the 0.13 runtime
+  selector and implicit rollback path; browser workspaces now require an
+  explicit Java provider or low-level worker client.
+- Published Java runtime metadata as Java 23 without naming a provider
+  implementation. The bundled Classic Java client's implementation and
+  licensing facts remain documented separately.
 
 ## [0.13.1] - 2026-07-30
 

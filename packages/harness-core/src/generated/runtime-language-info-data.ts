@@ -178,16 +178,16 @@ export const LANGUAGE_RUNTIME_INFOS = Object.freeze(
   "java": {
     "language": "java",
     "displayName": "Java",
-    "versionLabel": "Java 17",
-    "description": "Java 17 is compiled with javac 17 and executed in the browser through consumer-configured CheerpJ runtime assets.\n\nCommon imports are added automatically: java.util.*, java.io.*, java.math.*, java.util.stream.*, javafx.util.Pair.",
+    "versionLabel": "Java 23",
+    "description": "Java 23 is compiled with javac 23 and executed through the consumer-configured browser Java provider.\n\nCommon imports are added automatically: java.util.*, java.io.*, java.math.*, java.util.stream.*, javafx.util.Pair.",
     "runtime": {
-      "name": "CheerpJ browser-local OpenJDK runtime",
-      "version": "17",
-      "detail": "Loaded from consumer-configured runtime assets (same-origin or an approved CDN)."
+      "name": "Browser Java runtime",
+      "version": "23",
+      "detail": "Runs through the consumer-configured Java project provider."
     },
     "compiler": {
       "name": "javac",
-      "version": "17"
+      "version": "23"
     },
     "defaultImports": [
       "java.util.*",

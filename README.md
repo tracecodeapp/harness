@@ -134,16 +134,18 @@ for integrity, origin, and immutable-URL requirements.
 
 For untrusted browser execution, route selected Classic or project providers
 through the [browser execution host](./docs/browser-execution-host.md) on a
-dedicated credential-free origin. Provider routing is explicit, so a consumer
-can host Java remotely while Python, JavaScript/TypeScript, C#, and C++ continue
-to use its application-owned asset paths. This is the TraceCode-recommended
-Java project profile because CheerpJ's /files mount is IndexedDB-backed and
-must not share the application origin.
+dedicated credential-free origin. Classic Java can use that host with the
+consumer-owned runtime manifest. Browser Project Java instead uses the
+implementation-neutral Java 23 contract: select `java`, provide
+`java.createClient`, and let that provider own its Worker boundary. An explicit
+low-level `javaWorkerClient` remains available for consumers that own its
+lifecycle. There is no engine selector or implicit fallback.
 
-CheerpJ is not redistributed. An owned browser project Java runner therefore
-requires a complete `assets.runtimeManifests.java` asset set before its first
-Java command (or a consumer-provided `javaWorkerClient`). Non-Java workspaces
-remain lazy and do not need Java assets.
+The bundled Classic Java client currently integrates with CheerpJ, which is not
+redistributed. Consumers using that client must provide a complete
+`assets.runtimeManifests.java` asset set and an appropriately licensed loader.
+Those implementation-specific assets are not selected by the high-level Java
+23 Project provider.
 
 ## Project Workspaces
 

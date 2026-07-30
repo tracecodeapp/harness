@@ -1,9 +1,9 @@
 # Browser execution origin
 
-TraceCode browser project runtimes should not share an origin with the
-application. A Worker creates a separate JavaScript realm, but it retains the
-page origin's IndexedDB, Cache Storage, cookies, and network authority. CheerpJ
-also requires its IndexedDB-backed /files mount for full Java project mode.
+TraceCode browser runtimes should not share an origin with the application. A
+Worker creates a separate JavaScript realm, but it retains the page origin's
+IndexedDB, Cache Storage, cookies, and network authority. The bundled Classic
+Java client also uses an IndexedDB-backed writable mount.
 
 The browser harness therefore provides a narrow cross-origin Worker broker:
 
@@ -12,14 +12,8 @@ The browser harness therefore provides a narrow cross-origin Worker broker:
 - a hidden iframe on the execution origin creates runtime Workers;
 - the iframe accepts only an exact parent origin and exact worker origins;
 - worker messages and SharedArrayBuffers are relayed over one MessagePort;
-- CheerpJ runtime storage is enabled only for Java workers created through this
-  explicit execution-origin contract.
-
-For `workspace-session`, the execution origin—not mutation of CheerpJ's live
-JavaScript globals—is the application-authority boundary. The Java VM remains
-mutable for the lifetime of that one workspace and is terminated on workspace
-dispose. The host origin must therefore be credential-free and enforce a
-network CSP; it is not a second application origin.
+- implementation-specific runtime storage is enabled only when a client
+  explicitly opts into that execution-origin contract.
 
 ## Execution-origin endpoint
 
@@ -55,8 +49,9 @@ SharedArrayBuffer and Atomics.
 
 ## Provider routing
 
-Classic and project surfaces can route any worker-backed provider through the
-host without changing where the other providers load. Each hosted worker URL
+Classic can route any selected worker-backed provider through the host without
+changing where the other providers load. Project mode can route Python,
+JavaScript/TypeScript, C#, and C++ through the same host. Each hosted worker URL
 must resolve on the execution origin; runtime manifests and CDN locations stay
 consumer-owned.
 
@@ -72,67 +67,37 @@ const harness = createBrowserHarness({
 
 Classic defaults to all selected providers when `executionHost.providers` is
 omitted. JavaScript and TypeScript share one Classic worker and therefore must
-be routed together. Project mode preserves the 0.10 Java-only default; pass an
-explicit provider list to host Python, JavaScript/TypeScript execution, C#,
-C++, or several providers. TypeScript project compilation occurs in the
-trusted page and its emitted JavaScript executes through the JavaScript project
-worker, so hosted TypeScript requires the JavaScript project provider.
+be routed together. Project mode defaults to its selected non-Java providers.
+TypeScript project compilation occurs in the trusted page and its emitted
+JavaScript executes through the JavaScript project worker, so hosted TypeScript
+requires the JavaScript project provider.
 
-## TraceCode workspace profile
+Browser Project Java is different: its Java 23 provider owns the Worker
+boundary supplied by `java.createClient`. Project
+`executionHost.providers` therefore rejects `java`; configure the provider's
+client factory to create Workers on the desired credential-free origin.
 
 ~~~ts
 const workspace = await createBrowserProjectWorkspace({
-  executionHost: {
-    url: 'https://exec.tracecode.app/host.html',
-    providers: ['java'],
-    javaLifecycle: 'workspace-session',
-  },
-  assets: {
-    runtimeManifests: {
-      java: javaRuntimeManifest,
-    },
+  providers: ['java'],
+  java: {
+    createClient: createJavaClientOnExecutionOrigin,
   },
   files,
 });
 ~~~
 
-Java runtime assets must use delivery URLs on the execution/CDN origins. JAR
-descriptors use runtimePath for CheerpJ's VFS:
+Here `createJavaClientOnExecutionOrigin` is the application's compatible Java
+provider factory, configured to create its Worker on the credential-free
+origin.
 
-~~~ts
-{
-  url: 'https://exec.tracecode.app/workers/vendor/java-browser-helper.jar',
-  runtimePath: '/app/workers/vendor/java-browser-helper.jar'
-}
-~~~
+The generic adapter admits every `javac` or `java` invocation to a fresh client
+and terminates it at the invocation boundary. A provider may warm immutable
+runtime infrastructure internally, but it must not reuse learner-observable VM
+state. Destroying or disposing the workspace releases the provider and every
+hosted worker owned by the workspace.
 
-TraceCode's first-party manifest may select the official CheerpJ 4.2 loader.
-The harness does not embed that URL or version; other consumers remain free to
-publish their own manifests.
-
-## Lifecycle profiles
-
-| Surface | Java lifecycle | Reason |
-|---|---|---|
-| Interactive editor | workspace-session | Pay CheerpJ/JDK warmup once; use fresh classloaders and command state |
-| Hidden tests or adversarial evaluation | per-command with clean prewarm depth 1 | Retire all user runtime state after each evaluated command |
-
-A dedicated origin protects the TraceCode application, but a session-lived VM
-does not by itself prove that hostile Java threads or runtime state cannot
-influence a later command. Hidden-test and multi-principal workloads should use
-the per-command profile until the compiler and execution VMs are separated.
-
-Destroying or disposing the workspace terminates hosted workers, closes the
-MessagePort, and removes the iframe. Each Java command also deletes its unique
-`/files/java-worker/<compileId>` request tree after the result and file changes
-have been materialized. The session VM warmup tree remains available for the
-owning workspace, so cleanup does not turn every command into a cold JDK start.
-Execution-origin storage should still have server/product-level quota and
-expiration cleanup as defense in depth for browser crashes or abrupt process
-termination before request cleanup completes.
-
-In a three-context Chromium measurement with the official CheerpJ 4.2 loader,
-`java:1` prewarm averaged 14.03 s during workspace construction, then 1.45 s
-for the first tiny `javac && java` command and 0.77 s for the identical second
-command. Both measured command phases transferred zero response-body bytes.
-These are development-machine measurements, not universal latency guarantees.
+Consumers that explicitly pass the bundled low-level `javaWorkerClient` own
+its asset, storage, origin, and retirement policy. Its current CheerpJ asset
+requirements and licensing boundary are documented in
+`THIRD_PARTY_NOTICES.md`; they are not part of the Java 23 provider contract.

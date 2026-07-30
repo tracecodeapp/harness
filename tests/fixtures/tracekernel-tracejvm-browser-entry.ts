@@ -347,7 +347,7 @@ globalThis.runTraceKernelTraceJVMTest = async (): Promise<TraceKernelTraceJVMRes
         '}',
       ].join('\n'),
     }],
-    traceJVM: {
+    java: {
       // This conformance source intentionally exercises the entire adapter
       // surface and Firefox needs longer than the product's normal 20s command
       // budget to compile it in the browser.

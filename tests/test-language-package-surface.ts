@@ -159,12 +159,12 @@ const PACKAGE_CHECKS: PackageCheck[] = [
       'dist/project-browser.js',
       'dist/project-browser.cjs',
       'dist/project-browser.d.ts',
-      'dist/tracejvm-project.js',
-      'dist/tracejvm-project.cjs',
-      'dist/tracejvm-project.d.ts',
-      'dist/tracejvm-runtime.js',
-      'dist/tracejvm-runtime.cjs',
-      'dist/tracejvm-runtime.d.ts',
+      'dist/java-project.js',
+      'dist/java-project.cjs',
+      'dist/java-project.d.ts',
+      'dist/java-project-runtime.js',
+      'dist/java-project-runtime.cjs',
+      'dist/java-project-runtime.d.ts',
       'workers/java-worker.js',
       'workers/java-source-augmentations.js',
       'workers/shared/runtime-kernel-policy-classic.js',
@@ -700,6 +700,37 @@ async function runWithTempRoot(tempRoot: string): Promise<void> {
       );
     }
     if (packageCheck.name === '@tracecode/harness-java') {
+      const declarationPaths = [
+        'dist/index.d.ts',
+        'dist/project-browser.d.ts',
+        'dist/java-project.d.ts',
+        'dist/java-project-runtime.d.ts',
+      ] as const;
+      const declarationLeaks: string[] = [];
+      for (const declarationPath of declarationPaths) {
+        const declaration = await readFile(join(packageDir, declarationPath), 'utf8');
+        if (/(?:TraceJVM|CheerpJ)/iu.test(declaration)) {
+          declarationLeaks.push(declarationPath);
+        }
+      }
+      assertCondition(
+        declarationLeaks.length === 0,
+        `@tracecode/harness-java public declarations must be implementation-neutral: ${declarationLeaks.join(', ')}`
+      );
+      const javaPackageJson = JSON.parse(
+        await readFile(join(packageDir, 'package.json'), 'utf8')
+      ) as { exports?: Record<string, unknown> };
+      const javaSubpaths = Object.keys(javaPackageJson.exports ?? {});
+      assertCondition(
+        javaSubpaths.includes('./java-project') &&
+          javaSubpaths.includes('./java-project-runtime') &&
+          javaSubpaths.every((subpath) => !/(?:tracejvm|cheerpj)/iu.test(subpath)),
+        `@tracecode/harness-java public subpaths must be implementation-neutral: ${javaSubpaths.join(', ')}`
+      );
+      assertCondition(
+        ![...packedFiles].some((path) => /dist\/(?:tracejvm|cheerpj)/iu.test(path)),
+        '@tracecode/harness-java tarball must not retain engine-branded public entrypoints'
+      );
       const worker = await readFile(join(packageDir, 'workers/java-worker.js'), 'utf8');
       assertCondition(
         worker.includes('new tracecode.browser.ProjectEvents.ProjectFile('),
@@ -1119,7 +1150,6 @@ async function runWithTempRoot(tempRoot: string): Promise<void> {
             },
             terminate() {},
           },
-          javaRuntime: 'legacy',
           javaWorkerClient: {
               async executeProjectJava(request) {
                 return { stdout: request.source + ':' + request.scriptPath + ':browser-only-java\\n', stderr: '', exitCode: 0 };
@@ -1486,13 +1516,13 @@ async function runWithTempRoot(tempRoot: string): Promise<void> {
       if (typeof javaProjectBrowser.createBrowserJavaProjectRunner !== 'function') {
         throw new Error('@tracecode/harness-java/project-browser missing createBrowserJavaProjectRunner');
       }
-      const traceJVMProject = await import('@tracecode/harness-java/tracejvm-project');
-      if (typeof traceJVMProject.createTraceJVMProjectRunner !== 'function') {
-        throw new Error('@tracecode/harness-java/tracejvm-project missing createTraceJVMProjectRunner');
+      const javaProject = await import('@tracecode/harness-java/java-project');
+      if (typeof javaProject.createJavaProjectRunner !== 'function') {
+        throw new Error('@tracecode/harness-java/java-project missing createJavaProjectRunner');
       }
-      const traceJVMRuntime = await import('@tracecode/harness-java/tracejvm-runtime');
-      if (typeof traceJVMRuntime.warmTraceJVMHarnessClient !== 'function') {
-        throw new Error('@tracecode/harness-java/tracejvm-runtime missing warmTraceJVMHarnessClient');
+      const javaProjectRuntime = await import('@tracecode/harness-java/java-project-runtime');
+      if (typeof javaProjectRuntime.warmJavaProjectClient !== 'function') {
+        throw new Error('@tracecode/harness-java/java-project-runtime missing warmJavaProjectClient');
       }
       const cppProjectNode = await import('@tracecode/harness-cpp/project-node');
       if (typeof cppProjectNode.createNativeCppProjectRunner !== 'function') {
@@ -1599,7 +1629,6 @@ async function runWithTempRoot(tempRoot: string): Promise<void> {
           },
           terminate() {},
         },
-        javaRuntime: 'legacy',
         javaWorkerClient: {
           async executeProjectJava(request) {
             return { stdout: request.source + ':' + request.scriptPath + ':standalone-browser-java\\n', stderr: '', exitCode: 0 };

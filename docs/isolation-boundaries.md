@@ -173,34 +173,24 @@ keyed by normalized paths beneath `runtimeIndex`, to preflight the lockfile,
 stdlib, WASM/module files, package metadata, and other transitive distribution
 artifacts. This is a complete preflight inventory, not execution-bound SRI.
 
-CheerpJ is not vendored. The owned browser project Java runner requires a
-complete Java manifest (`worker`, `loader`, `helperJar`, `compilerJar`,
-`rewriterJar`, and `parserJar`) or a consumer-provided `javaWorkerClient`.
-Validation is lazy for ordinary workspaces, so non-Java projects do not pay for
-or configure Java. An explicitly prewarmed Java lane validates immediately;
-otherwise the first Java command fails before Worker construction when the
-manifest is missing or partial. The Java client preflights declared runtime
-assets before its `init` message can import CheerpJ.
+Browser Project Java has no implicit runtime or manifest fallback. A workspace
+that selects Java must provide an implementation-neutral Java 23 provider
+through `java.createClient`, or deliberately supply a low-level
+`javaWorkerClient`. The high-level adapter admits each `javac` or `java`
+invocation to a fresh disposable client, and the provider owns the Worker
+origin plus any implementation-specific asset validation. Project
+`executionHost.providers` excludes Java so the harness cannot accidentally
+claim authority over that provider-owned boundary.
 
-Asset descriptors may declare a runtimePath when a runtime consumes a
-different identifier from the browser delivery url. Java JARs are the
-canonical case: url is the fetch/preflight location, while runtimePath is
-CheerpJ's /app/... virtual-filesystem classpath. Origin policy, metadata, and
-integrity always apply to url; runtimePath is passed only to the runtime
-adapter. The Java authority boundary leaves arbitrary fetch denied and
-substitutes a guarded fetch that permits only GET/HEAD requests under the
-configured CheerpJ loader directory or to declared Java runtime artifacts.
-CheerpJ's /files mount is IndexedDB-backed. The default permanent project
-authority boundary therefore cannot safely expose it on an application origin:
-granting the native IndexedDB factory would also expose unrelated same-origin
-databases. Java project deployments that require /files must use a dedicated
-execution origin or a broker restricted to a CheerpJ-owned database namespace.
-The built-in browser execution host implements the dedicated-origin option with
-an exact-origin, token-bound MessagePort broker. Its `workspace-session` Java
-profile reuses one CheerpJ VM only within the owning workspace; the host must be
-credential-free and CSP-restricted. Adversarial or multi-principal evaluation
-must retain `per-command`, which permanently removes ambient worker authority
-and retires the Java worker after the command.
+The bundled low-level Java client currently integrates with CheerpJ, which is
+not vendored. Consumers choosing that client must provide and preflight its
+`worker`, `loader`, `helperJar`, `compilerJar`, `rewriterJar`, and `parserJar`
+assets. JAR descriptors may use `runtimePath` for CheerpJ's virtual filesystem
+while `url` remains the delivery and integrity boundary. Its `/files` mount is
+IndexedDB-backed, so it must not receive application-origin storage authority;
+use a credential-free execution origin and retire the client at the untrusted
+command boundary. These constraints describe that concrete low-level client,
+not the generic Java 23 provider contract.
 
 C++ manifests retain an additional exact-binding boundary. The compiler frame
 and compiler worker must share an origin. Compiler resources hosted on another

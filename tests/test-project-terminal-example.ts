@@ -45,7 +45,7 @@ async function runProjectTerminalSmoke(previewUrl: string): Promise<void> {
     assertCondition(
       initial.output.includes('C++: cd cpp && clang++ -std=c++17 report.cpp -o ../report') &&
         initial.output.includes('     ../report') &&
-        initial.output.includes('Java: inject window.__tracecodeRuntimeAssetManifests.java before boot') &&
+        initial.output.includes('Java: inject window.__tracecodeJavaProjectProvider before boot') &&
         !initial.output.includes('Project workspace ready.') &&
         !initial.output.includes('../report, ./report'),
       `project terminal should print copyable compile/run commands on separate lines: ${JSON.stringify(initial.output)}`

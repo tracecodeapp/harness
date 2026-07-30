@@ -39,17 +39,17 @@
       "require": "./dist/project-browser.cjs",
       "default": "./dist/project-browser.js"
     },
-    "./tracejvm-project": {
-      "types": "./dist/tracejvm-project.d.ts",
-      "import": "./dist/tracejvm-project.js",
-      "require": "./dist/tracejvm-project.cjs",
-      "default": "./dist/tracejvm-project.js"
+    "./java-project": {
+      "types": "./dist/java-project.d.ts",
+      "import": "./dist/java-project.js",
+      "require": "./dist/java-project.cjs",
+      "default": "./dist/java-project.js"
     },
-    "./tracejvm-runtime": {
-      "types": "./dist/tracejvm-runtime.d.ts",
-      "import": "./dist/tracejvm-runtime.js",
-      "require": "./dist/tracejvm-runtime.cjs",
-      "default": "./dist/tracejvm-runtime.js"
+    "./java-project-runtime": {
+      "types": "./dist/java-project-runtime.d.ts",
+      "import": "./dist/java-project-runtime.js",
+      "require": "./dist/java-project-runtime.cjs",
+      "default": "./dist/java-project-runtime.js"
     },
     "./workers/*": "./workers/*",
     "./package.json": "./package.json"

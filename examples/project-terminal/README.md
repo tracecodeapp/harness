@@ -17,19 +17,17 @@ pnpm --dir examples/project-terminal dev
 
 The app syncs harness worker assets into `public/workers` before `dev`, `build`, and `preview`.
 
-CheerpJ is intentionally not synced or selected by the harness. A host that
-wants the Java demo must set `window.__tracecodeRuntimeAssetManifests` before
-the app boots, with a complete `java` manifest containing `worker`, `loader`,
-`helperJar`, `compilerJar`, `rewriterJar`, and `parserJar`. The URLs may point
-to the host's own origin or consumer-approved CDN; this example does not embed
-a TraceCode product CDN.
+The harness does not select a Java implementation. A host that wants the Java
+demo must set `window.__tracecodeJavaProjectProvider` before the app boots with
+an implementation-neutral `JavaProjectRunnerOptions` object. That provider
+owns its Worker, runtime assets, and delivery policy.
 
 ## What It Demonstrates
 
 - `createBrowserProjectWorkspace(...)` from `@tracecode/harness/browser/project`
 - `workspace.createTerminalSession(...)` for prompt state and live stdin
 - C++ compile/run through TraceKernel
-- Java compile/run through TraceKernel when a complete consumer manifest is injected
+- Java compile/run through TraceKernel when a compatible Java project provider is injected
 - prompted stdin, stdout/stderr, and generated project files
 
 Browser workspace persistence is intentionally not enabled by default in this
@@ -55,5 +53,5 @@ java -cp java TicketTriage
 cat ticket.json
 ```
 
-Without the injected Java manifest, the Java command fails before Worker
-construction with configuration guidance; the C++ demo remains fully usable.
+Without the injected Java provider, Java actions stay hidden and the C++ demo
+remains fully usable.
