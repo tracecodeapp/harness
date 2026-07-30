@@ -1,5 +1,5 @@
 import { readFile } from 'node:fs/promises';
-import { resolve } from 'node:path';
+import { dirname, extname, resolve } from 'node:path';
 import ts from 'typescript';
 
 function assertCondition(condition: unknown, message: string): asserts condition {
@@ -39,30 +39,36 @@ function exportedDeclarationNames(sourceText: string, fileName: string): string[
   return names;
 }
 
+async function collectPublicDeclarationNames(
+  filePath: string,
+  visited = new Set<string>()
+): Promise<string[]> {
+  if (visited.has(filePath)) return [];
+  visited.add(filePath);
+
+  const sourceText = await readFile(filePath, 'utf8');
+  const source = ts.createSourceFile(filePath, sourceText, ts.ScriptTarget.Latest, true);
+  const reexportedNames = await Promise.all(
+    source.statements
+      .filter(ts.isExportDeclaration)
+      .filter((statement) => !statement.exportClause && statement.moduleSpecifier)
+      .map(async (statement) => {
+        const specifier = (statement.moduleSpecifier as ts.StringLiteral).text;
+        if (!specifier.startsWith('.')) return [];
+        const unresolved = resolve(dirname(filePath), specifier);
+        const target = extname(unresolved) ? unresolved : `${unresolved}.ts`;
+        return collectPublicDeclarationNames(target, visited);
+      })
+  );
+
+  return [...exportedDeclarationNames(sourceText, filePath), ...reexportedNames.flat()];
+}
+
 async function main(): Promise<void> {
   const coreSourceDir = resolve(process.cwd(), 'packages/harness-core/src');
-  const publicModules = [
-    'execution-outcome.ts',
-    'harness-version.ts',
-    'runtime-external-http.ts',
-    'runtime-kernel.ts',
-    'runtime-language-info.ts',
-    'runtime-project.ts',
-    'runtime-raw-emission-contract.ts',
-    'runtime-trace.ts',
-    'runtime-types.ts',
-    'types.ts',
-    'trace-adapters/java.ts',
-  ];
-
-  const exportedNames = (
-    await Promise.all(
-      publicModules.map(async (relativePath) => {
-        const filePath = resolve(coreSourceDir, relativePath);
-        return exportedDeclarationNames(await readFile(filePath, 'utf8'), filePath);
-      })
-    )
-  ).flat();
+  const exportedNames = await collectPublicDeclarationNames(
+    resolve(coreSourceDir, 'index.ts')
+  );
 
   const vendorBrandedPythonNames = exportedNames.filter((name) => /pyodide/i.test(name));
   assertCondition(
