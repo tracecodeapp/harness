@@ -1,4 +1,4 @@
-import type { RuntimeFile, RuntimeFileEncoding } from '@tracecode/harness-core';
+import type { RuntimeFile, RuntimeFileEncoding } from '@tracecode/runtime-core';
 import type { FileContent } from 'just-bash/browser';
 
 

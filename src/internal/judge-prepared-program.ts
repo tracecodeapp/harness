@@ -7,7 +7,7 @@ import type {
   RuntimePreparedTraceCall,
   RuntimeProgramPreparationCall,
   RuntimeProgramPreparationResult,
-} from '../../packages/harness-core/src/index';
+} from '../../packages/runtime-core/src/index';
 
 export function isPreparedExecutionProvider(
   provider: object
