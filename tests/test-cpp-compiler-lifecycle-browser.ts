@@ -202,6 +202,74 @@ async function main(): Promise<void> {
       });
       await preparedTrace.program.dispose();
 
+      const preparedOpsProvider = createCppPreparedExecutionProvider({
+        createWorkerClient: () => new CppWorkerClient(workerOptions),
+      });
+      await preparedOpsProvider.init();
+      const preparedOps = await preparedOpsProvider.prepareProgram({
+        mode: 'code',
+        code: [
+          'class Counter {',
+          'public:',
+          '  Counter(int seed) : value(seed) {}',
+          '  void increment() { value += 1; }',
+          '  int add(int delta) { value += delta; return value; }',
+          '  int current() const { return value; }',
+          'private:',
+          '  int value;',
+          '};',
+        ].join('\\n'),
+        functionName: 'Counter',
+        executionStyle: 'ops-class',
+      });
+      if (preparedOps.kind !== 'prepared' || preparedOps.program.mode !== 'code') {
+        throw new Error('C++ ops-class preparation failed: ' + JSON.stringify(preparedOps));
+      }
+      const preparedOpsFirstCase = await preparedOps.program.executeIsolated({
+        inputs: {
+          operations: ['Counter', 'increment', 'current'],
+          arguments: [[10], [], []],
+        },
+      });
+      const preparedOpsSecondCase = await preparedOps.program.executeIsolated({
+        inputs: {
+          ops: ['Counter', 'add', 'current'],
+          args: [[2], [5], []],
+        },
+      });
+      await preparedOps.program.dispose();
+
+      const preparedOpsTraceProvider = createCppPreparedExecutionProvider({
+        createWorkerClient: () => new CppWorkerClient(workerOptions),
+      });
+      await preparedOpsTraceProvider.init();
+      const preparedOpsTrace = await preparedOpsTraceProvider.prepareProgram({
+        mode: 'trace',
+        code: [
+          'class Counter {',
+          'public:',
+          '  Counter(int seed) : value(seed) {}',
+          '  void increment() { value += 1; }',
+          '  int current() const { return value; }',
+          'private:',
+          '  int value;',
+          '};',
+        ].join('\\n'),
+        functionName: 'Counter',
+        executionStyle: 'ops-class',
+        traceOptions: { maxTraceSteps: 1000 },
+      });
+      if (preparedOpsTrace.kind !== 'prepared' || preparedOpsTrace.program.mode !== 'trace') {
+        throw new Error('C++ ops-class trace preparation failed: ' + JSON.stringify(preparedOpsTrace));
+      }
+      const preparedOpsTraceCase = await preparedOpsTrace.program.executeIsolated({
+        inputs: {
+          operations: ['Counter', 'increment', 'current'],
+          arguments: [[4], [], []],
+        },
+      });
+      await preparedOpsTrace.program.dispose();
+
       const protocolClient = new CppWorkerClient(workerOptions);
       await protocolClient.init();
       const invalidPreparationError = await protocolClient.prepareRuntimeProgram({
@@ -274,6 +342,15 @@ async function main(): Promise<void> {
           preparationTimings: preparedTrace.timings,
           result: preparedTraceCase,
         },
+        preparedOps: {
+          preparationTimings: preparedOps.timings,
+          firstCase: preparedOpsFirstCase,
+          secondCase: preparedOpsSecondCase,
+        },
+        preparedOpsTrace: {
+          preparationTimings: preparedOpsTrace.timings,
+          result: preparedOpsTraceCase,
+        },
         protocolErrors: {
           invalidPreparationError,
           missingExecutionError,
@@ -300,6 +377,15 @@ async function main(): Promise<void> {
         executeAfterDispose: string;
       };
       preparedTrace: {
+        preparationTimings?: Record<string, unknown>;
+        result: { kind: string; output?: unknown; trace?: { events?: unknown[] }; timings?: Record<string, unknown> };
+      };
+      preparedOps: {
+        preparationTimings?: Record<string, unknown>;
+        firstCase: { kind: string; output?: unknown; timings?: Record<string, unknown> };
+        secondCase: { kind: string; output?: unknown; timings?: Record<string, unknown> };
+      };
+      preparedOpsTrace: {
         preparationTimings?: Record<string, unknown>;
         result: { kind: string; output?: unknown; trace?: { events?: unknown[] }; timings?: Record<string, unknown> };
       };
@@ -371,6 +457,26 @@ async function main(): Promise<void> {
         result.preparedTrace.result.timings?.compileMs === 0 &&
         result.preparedTrace.result.timings?.artifactCacheHit === true,
       `prepared C++ tracing must execute from the cached module with an isolated trace: ${JSON.stringify(result.preparedTrace)}`
+    );
+    assertCondition(
+      result.preparedOps.firstCase.kind === 'completed' &&
+        JSON.stringify(result.preparedOps.firstCase.output) === JSON.stringify([null, null, 11]) &&
+        result.preparedOps.secondCase.kind === 'completed' &&
+        JSON.stringify(result.preparedOps.secondCase.output) === JSON.stringify([null, 7, 7]),
+      `prepared C++ ops-class execution must support heterogeneous operation sequences: ${JSON.stringify(result.preparedOps)}`
+    );
+    assertCondition(
+      result.preparedOps.preparationTimings?.artifactCacheHit === false &&
+        typeof result.preparedOps.preparationTimings?.compileMs === 'number' &&
+        result.preparedOps.preparationTimings.compileMs > 0,
+      `prepared C++ ops-class preparation must compile once and reuse the artifact across cases: ${JSON.stringify(result.preparedOps.preparationTimings)}`
+    );
+    assertCondition(
+      result.preparedOpsTrace.result.kind === 'completed' &&
+        JSON.stringify(result.preparedOpsTrace.result.output) === JSON.stringify([null, null, 5]) &&
+        Array.isArray(result.preparedOpsTrace.result.trace?.events) &&
+        result.preparedOpsTrace.result.trace.events.length > 0,
+      `prepared C++ ops-class tracing must preserve execution traces: ${JSON.stringify(result.preparedOpsTrace)}`
     );
     assertCondition(
       result.protocolErrors.invalidPreparationError ===

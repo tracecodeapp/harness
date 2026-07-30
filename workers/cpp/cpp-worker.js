@@ -5959,9 +5959,11 @@ function parseConstructorSignature(source, className, aliases = new Map(), optio
         continue;
       }
       candidates.push({
+        name: className,
         returnType: className,
         parameters,
         line: cleaned.slice(0, match.index).split(/\r?\n/).length,
+        bodyLine: cleaned.slice(0, match.index).split(/\r?\n/).length,
       });
     }
   }
@@ -5972,6 +5974,49 @@ function parseConstructorSignature(source, className, aliases = new Map(), optio
   if (candidates.length > 0) return candidates[0];
 
   return { returnType: className, parameters: [], line: 1 };
+}
+
+function collectCppConstructorSignatures(source, className, aliases = new Map()) {
+  const cleaned = stripComments(source);
+  const constructorNames = [...new Set([className, normalizeCppType(className, aliases), resolveCppType(className, aliases)])]
+    .filter(Boolean);
+  const candidates = [];
+  for (const constructorName of constructorNames) {
+    const escaped = constructorName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    const namePattern = new RegExp(`\\b${escaped}\\s*\\(`, 'g');
+    let match = null;
+
+    while ((match = namePattern.exec(cleaned))) {
+      const prefix = cleaned.slice(Math.max(0, match.index - 96), match.index);
+      if (/~\s*$/.test(prefix)) continue;
+      const previousToken = prefix.match(/([A-Za-z_]\w*)\s*$/)?.[1];
+      if (
+        previousToken &&
+        previousToken !== 'public' &&
+        previousToken !== 'private' &&
+        previousToken !== 'protected' &&
+        !/^(?:explicit|inline|constexpr|consteval)$/.test(previousToken)
+      ) {
+        continue;
+      }
+      const openParenIndex = cleaned.indexOf('(', match.index);
+      const closeParenIndex = findMatchingParen(cleaned, openParenIndex);
+      if (closeParenIndex < 0) continue;
+      const parameterText = cleaned.slice(openParenIndex + 1, closeParenIndex);
+      let parameters;
+      try {
+        parameters = parseCppParameters(parameterText);
+      } catch (_error) {
+        continue;
+      }
+      candidates.push({
+        returnType: className,
+        parameters,
+        line: cleaned.slice(0, match.index).split(/\r?\n/).length,
+      });
+    }
+  }
+  return candidates.sort((left, right) => left.line - right.line || left.parameters.length - right.parameters.length);
 }
 
 function parseCppParameters(parameterText) {
@@ -6145,14 +6190,6 @@ function parseCppFunctionSignatures(source) {
     }
     if (cleaned[cursor] !== '{') continue;
     const closeBraceIndex = findMatchingBrace(cleaned, cursor);
-    if (
-      closeBraceIndex > cursor &&
-      cleaned.slice(0, closeBraceIndex).split(/\r?\n/).length === cleaned.slice(0, cursor).split(/\r?\n/).length
-    ) {
-      namePattern.lastIndex = closeParenIndex + 1;
-      continue;
-    }
-
     const signaturePrefix = cleaned.slice(0, match.index);
     const returnTypeMatch = signaturePrefix.match(/([A-Za-z_][\w:\s<>,*&]*?)\s*$/);
     if (!returnTypeMatch) continue;
@@ -6375,22 +6412,6 @@ function isNullCppReturnType(type, aliases = new Map()) {
 
 function materializedCppType(type, aliases = new Map()) {
   return localCppType(resolveCppType(type, aliases));
-}
-
-function findCppClassBodyRange(source, className) {
-  const cleaned = stripComments(String(source || ''));
-  const escapedName = String(className).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-  const pattern = new RegExp(`\\b(class|struct)\\s+${escapedName}\\b`, 'g');
-  let match;
-  while ((match = pattern.exec(cleaned))) {
-    const openBrace = cleaned.indexOf('{', match.index + match[0].length);
-    if (openBrace < 0) continue;
-    const closeBrace = findMatchingBrace(cleaned, openBrace);
-    if (closeBrace > openBrace) {
-      return { kind: match[1], start: openBrace + 1, end: closeBrace, body: cleaned.slice(openBrace + 1, closeBrace) };
-    }
-  }
-  return null;
 }
 
 function cppBraceDepthBefore(source, endIndex) {
@@ -10830,7 +10851,7 @@ function buildOpsClassBatchDriverSource(userCode, className, inputBatch, options
       return 1;
     }`);
 
-return `${buildGeneratedIncludes(userCode, { parameters: [] })}
+  return `${buildGeneratedIncludes(userCode, { parameters: [] })}
 using namespace std;
 ${buildTracecodeFallbackAliases(userCode)}
 
@@ -10882,6 +10903,283 @@ ${lines.join('\n')}
   }
   __tc_results += "]";
   tracecode::write_result_json_raw(__tc_results);
+  return 0;
+}
+`;
+}
+
+function findCppClassBodyRange(source, className) {
+  const cleaned = stripComments(source);
+  const escaped = escapeRegExp(className);
+  const match = cleaned.match(new RegExp(`\\b(?:class|struct)\\s+${escaped}\\b[^\\{;]*\\{`));
+  if (!match) return null;
+  const openBraceIndex = cleaned.indexOf('{', match.index);
+  if (openBraceIndex < 0) return null;
+  const closeBraceIndex = findMatchingBrace(cleaned, openBraceIndex);
+  if (closeBraceIndex < 0) return null;
+  return {
+    kind: match[1] || 'class',
+    start: openBraceIndex + 1,
+    end: closeBraceIndex,
+    body: cleaned.slice(openBraceIndex + 1, closeBraceIndex),
+    startLine: cleaned.slice(0, openBraceIndex).split(/\r?\n/).length,
+    endLine: cleaned.slice(0, closeBraceIndex).split(/\r?\n/).length,
+  };
+}
+
+function collectPreparedOpsClassSignatures(source, className) {
+  const cleaned = stripComments(source);
+  const classRange = findCppClassBodyRange(cleaned, className);
+  const qualifiedPattern = new RegExp(`\\b${escapeRegExp(className)}::([A-Za-z_]\\w*)\\s*\\(`, 'g');
+  const qualifiedNames = new Set();
+  let qualifiedMatch;
+  while ((qualifiedMatch = qualifiedPattern.exec(cleaned))) {
+    qualifiedNames.add(qualifiedMatch[1]);
+  }
+  const constructorSignature = parseConstructorSignature(source, className, collectCppTypeAliases(source));
+  const constructorSignatures = constructorSignature ? [constructorSignature] : [];
+  const signatures = parseCppFunctionSignatures(source).filter((signature) => {
+    if (signature.name === className) return true;
+    if (qualifiedNames.has(signature.name)) return true;
+    if (classRange && signature.line >= classRange.startLine && signature.line <= classRange.endLine) return true;
+    return false;
+  });
+  return [...constructorSignatures, ...signatures].sort((left, right) =>
+    left.line - right.line ||
+    (left.bodyLine || left.line) - (right.bodyLine || right.line)
+  );
+}
+
+function buildPreparedOpsClassDriverSource(userCode, className, options = {}) {
+  userCode = normalizeCppUserSource(userCode, options);
+  const aliases = collectCppTypeAliases(userCode);
+  const signatures = collectPreparedOpsClassSignatures(userCode, className);
+  const constructorSignatures = signatures.filter((signature) => signature.name === className);
+  const methodSignatures = signatures.filter((signature) => signature.name !== className);
+  const traceMethodName = methodSignatures[0]?.name || constructorSignatures[0]?.name || null;
+  let sourceForDriver = userCode;
+  if (options.tracing === true && traceMethodName) {
+    try {
+      sourceForDriver = instrumentCppSourceForTracing(userCode, traceMethodName, { traceMemberClassName: className });
+    } catch {
+      sourceForDriver = userCode;
+    }
+  }
+  const typeContext = buildCppDriverTypeContext(userCode, className, null, aliases);
+  const sanitizedClassName = className.replace(/[^A-Za-z0-9_]/g, '_');
+  const hasZeroArgConstructorSignature = constructorSignatures.some((signature) => signature.parameters.length === 0);
+
+  const decodeArguments = (signature, argsExpr, prefix) => {
+    const lines = [];
+    const argNames = [];
+    signature.parameters.forEach((parameter, index) => {
+      const localName = `${prefix}_${index}`;
+      const type = materializedCppType(parameter.type, aliases);
+      lines.push(`const ${type} ${localName} = tracecode::json_to<${type}>(__tc_ops_arg_at(${argsExpr}, ${index}));`);
+      argNames.push(localName);
+    });
+    return { lines, argNames };
+  };
+
+  const lines = [];
+  lines.push(`  ${configureTraceBudgetCall(options)}`);
+  lines.push('  std::string __tc_results = "[";');
+  lines.push('  const tracecode::JsonValue __tc_null_value;');
+  lines.push('  auto __tc_ops_item_at = [&__tc_null_value](const tracecode::JsonValue& values, std::size_t index) -> const tracecode::JsonValue& {');
+  lines.push('    if (values.kind == tracecode::JsonValue::Kind::Array && index < values.array_values.size()) return values.array_values[index];');
+  lines.push('    return __tc_null_value;');
+  lines.push('  };');
+  lines.push('  auto __tc_ops_arg_at = [&__tc_ops_item_at](const tracecode::JsonValue& values, std::size_t index) -> const tracecode::JsonValue& {');
+  lines.push('    if (values.kind == tracecode::JsonValue::Kind::Array) return __tc_ops_item_at(values, index);');
+  lines.push('    return values;');
+  lines.push('  };');
+  lines.push('  tracecode::JsonValue __tc_cases = tracecode::parse_json(tracecode::read_stdin_all());');
+  lines.push('  if (__tc_cases.kind != tracecode::JsonValue::Kind::Array) {');
+  lines.push(`    std::fputs(${cppStringLiteral('C++ ops-class batch input must be a JSON array.\\n')}, stderr);`);
+  lines.push('    return 1;');
+  lines.push('  }');
+
+  if (constructorSignatures.length === 0) {
+    lines.push(`  auto __tc_make_default_${sanitizedClassName} = [&](std::unique_ptr<${className}>& __tc_instance) -> bool {`);
+    lines.push(`    if constexpr (std::is_default_constructible_v<${className}>) {`);
+    lines.push(`      __tc_instance = std::make_unique<${className}>();`);
+    lines.push('      return true;');
+    lines.push('    }');
+    lines.push('    return false;');
+    lines.push('  };');
+  } else {
+    lines.push(`  auto __tc_make_default_${sanitizedClassName} = [&](std::unique_ptr<${className}>&) -> bool {`);
+    lines.push('    return false;');
+    lines.push('  };');
+  }
+
+  const namedMethodSignatures = methodSignatures.filter((signature) => typeof signature.name === 'string' && signature.name.trim() !== '');
+  lines.push(`  auto __tc_construct_${sanitizedClassName} = [&](const tracecode::JsonValue& __tc_ctor_args, std::unique_ptr<${className}>& __tc_instance) -> bool {`);
+  if (constructorSignatures.length === 0) {
+    lines.push('    if (__tc_ctor_args.kind == tracecode::JsonValue::Kind::Array && !__tc_ctor_args.array_values.empty()) {');
+    lines.push(`      std::fputs(${cppStringLiteral('C++ ops-class constructor arguments were provided, but no matching constructor signature was found.\\n')}, stderr);`);
+    lines.push('      return false;');
+    lines.push('    }');
+    lines.push(`    return __tc_make_default_${sanitizedClassName}(__tc_instance);`);
+  } else {
+    lines.push('    if (__tc_ctor_args.kind != tracecode::JsonValue::Kind::Array) {');
+    lines.push(`      std::fputs(${cppStringLiteral('C++ ops-class constructor arguments must be a JSON array.\\n')}, stderr);`);
+    lines.push('      return false;');
+    lines.push('    }');
+    constructorSignatures.forEach((signature, index) => {
+      const { lines: argLines, argNames } = decodeArguments(signature, '__tc_ctor_args', `__tc_ctor_${signature.line}_${signature.bodyLine}`);
+      const keyword = index === 0 ? 'if' : 'else if';
+      lines.push(`    ${keyword} (__tc_ctor_args.array_values.size() == ${signature.parameters.length}) {`);
+      lines.push(...argLines.map((line) => `      ${line}`));
+      if (options.tracing === true) {
+        const callEventPrefix = `{"kind":"call","line":${signature.line},"function":${jsonStringLiteral(signature.name)},"args":`;
+        const argsExpression = buildTraceArgsJsonExpression(signature, (_parameter, argIndex) => argNames[argIndex], aliases);
+        lines.push(`      std::string __tc_ctor_args_json_${signature.line}_${signature.bodyLine} = std::string("{") + ${argsExpression} + "}";`);
+        lines.push(`      tracecode::write_trace_event_json(std::string(${cppStringLiteral(callEventPrefix)}) + __tc_ctor_args_json_${signature.line}_${signature.bodyLine} + "}", ${signature.line});`);
+      }
+      const ctorCall = argNames.length > 0
+        ? `std::make_unique<${className}>(${argNames.join(', ')})`
+        : `std::make_unique<${className}>()`;
+      lines.push(`      __tc_instance = ${ctorCall};`);
+      lines.push('      return true;');
+      lines.push('    }');
+    });
+    lines.push(`    return __tc_make_default_${sanitizedClassName}(__tc_instance);`);
+  }
+  lines.push('  };');
+
+  const groupedMethods = new Map();
+  for (const signature of namedMethodSignatures) {
+    if (!groupedMethods.has(signature.name)) groupedMethods.set(signature.name, []);
+    groupedMethods.get(signature.name).push(signature);
+  }
+
+  for (const [methodName, signaturesForMethod] of groupedMethods) {
+    if (typeof methodName !== 'string' || methodName.trim() === '') continue;
+    const sanitizedMethodName = methodName.replace(/[^A-Za-z0-9_]/g, '_');
+    lines.push(`  auto __tc_call_${sanitizedMethodName} = [&](const tracecode::JsonValue& __tc_op_args, std::vector<std::string>& __tc_case_outputs, std::unique_ptr<${className}>& __tc_instance) -> bool {`);
+    lines.push('    if (__tc_op_args.kind != tracecode::JsonValue::Kind::Array) {');
+    lines.push(`      std::fputs(${cppStringLiteral(`C++ ops-class method "${methodName}" arguments must be a JSON array.\\n`)}, stderr);`);
+    lines.push('      return false;');
+    lines.push('    }');
+    signaturesForMethod.forEach((signature, index) => {
+      const { lines: argLines, argNames } = decodeArguments(signature, '__tc_op_args', `__tc_op_${signature.line}_${signature.bodyLine}`);
+      const returnIsVoid = normalizeCppType(signature.returnType, aliases) === 'void' || isNullCppReturnType(signature.returnType, aliases);
+      const resultVar = `__tc_result_${signature.line}_${signature.bodyLine}`;
+      const keyword = index === 0 ? 'if' : 'else if';
+      lines.push(`    ${keyword} (__tc_op_args.array_values.size() == ${signature.parameters.length}) {`);
+      lines.push(...argLines.map((line) => `      ${line}`));
+      if (options.tracing === true) {
+        const callEventPrefix = `{"kind":"call","line":${signature.line},"function":${jsonStringLiteral(signature.name)},"args":`;
+        const argsExpression = buildTraceArgsJsonExpression(signature, (_parameter, argIndex) => argNames[argIndex], aliases);
+        lines.push(`      std::string __tc_args_json_${signature.line}_${signature.bodyLine} = std::string("{") + ${argsExpression} + "}";`);
+        lines.push(`      tracecode::write_trace_event_json(std::string(${cppStringLiteral(callEventPrefix)}) + __tc_args_json_${signature.line}_${signature.bodyLine} + "}", ${signature.line});`);
+      }
+      if (returnIsVoid) {
+        lines.push(`      __tc_instance->${signature.name}(${argNames.join(', ')});`);
+        lines.push(`      __tc_case_outputs.push_back(${cppStringLiteral('null')});`);
+      } else {
+        lines.push(`      auto ${resultVar} = __tc_instance->${signature.name}(${argNames.join(', ')});`);
+        lines.push(`      __tc_case_outputs.push_back(${cppJsonExpressionForValue(resultVar, signature.returnType, userCode)});`);
+      }
+      lines.push('      return true;');
+      lines.push('    }');
+    });
+    lines.push('    return false;');
+    lines.push('  };');
+  }
+
+  lines.push('  for (std::size_t __tc_case_index = 0; __tc_case_index < __tc_cases.array_values.size(); ++__tc_case_index) {');
+  lines.push('    const tracecode::JsonValue& __tc_case = __tc_cases.array_values[__tc_case_index];');
+  lines.push('    const tracecode::JsonValue* __tc_operations = tracecode::object_get(__tc_case, "operations");');
+  lines.push('    if (!__tc_operations) __tc_operations = tracecode::object_get(__tc_case, "ops");');
+  lines.push('    const tracecode::JsonValue* __tc_arguments = tracecode::object_get(__tc_case, "arguments");');
+  lines.push('    if (!__tc_arguments) __tc_arguments = tracecode::object_get(__tc_case, "args");');
+  lines.push('    if (!__tc_operations || __tc_operations->kind != tracecode::JsonValue::Kind::Array) {');
+  lines.push(`      std::fputs(${cppStringLiteral('C++ ops-class case must include operations or ops array.\\n')}, stderr);`);
+  lines.push('      return 1;');
+  lines.push('    }');
+  lines.push('    if (!__tc_arguments || __tc_arguments->kind != tracecode::JsonValue::Kind::Array) {');
+  lines.push(`      std::fputs(${cppStringLiteral('C++ ops-class case must include arguments or args array.\\n')}, stderr);`);
+  lines.push('      return 1;');
+  lines.push('    }');
+  lines.push('    if (__tc_operations->array_values.size() != __tc_arguments->array_values.size()) {');
+  lines.push(`      std::fputs(${cppStringLiteral('C++ ops-class operations and arguments must have the same length.\\n')}, stderr);`);
+  lines.push('      return 1;');
+  lines.push('    }');
+  lines.push('    if (__tc_case_index > 0) __tc_results += ",";');
+  if (options.tracing === true) {
+    lines.push(`    tracecode::write_trace_event_json(std::string(${cppStringLiteral(`{"kind":"call","line":1,"function":"${CPP_BATCH_TRACE_CASE_MARKER_FUNCTION}","args":{"index":`)}) + std::to_string(__tc_case_index) + "}}", 1);`);
+  }
+  lines.push('    std::vector<std::string> __tc_case_outputs;');
+  lines.push(`    std::unique_ptr<${className}> __tc_instance;`);
+  lines.push('    std::size_t __tc_case_start_index = 0;');
+  lines.push('    if (!__tc_operations->array_values.empty()) {');
+  lines.push('      const tracecode::JsonValue& __tc_first_operation = __tc_operations->array_values[0];');
+  lines.push('      const std::string __tc_first_operation_name = __tc_first_operation.kind == tracecode::JsonValue::Kind::String ? __tc_first_operation.string_value : std::string();');
+  lines.push(`      const bool __tc_constructor_requested = __tc_first_operation_name == ${cppStringLiteral(className)} || __tc_first_operation_name == ${cppStringLiteral('__init__')};`);
+  lines.push('      if (__tc_constructor_requested) {');
+  lines.push('        const tracecode::JsonValue& __tc_ctor_args = __tc_ops_item_at(*__tc_arguments, 0);');
+      lines.push(`        if (!__tc_construct_${sanitizedClassName}(__tc_ctor_args, __tc_instance)) {`);
+      lines.push(`          std::fputs(${cppStringLiteral(`C++ ops-class constructor "${className}" could not be matched to the provided arguments.\\n`)}, stderr);`);
+      lines.push('          return 1;');
+      lines.push('        }');
+      lines.push(`        __tc_case_outputs.push_back(${cppStringLiteral('null')});`);
+      lines.push('        __tc_case_start_index = 1;');
+      lines.push('      } else {');
+      lines.push(`        if (!__tc_make_default_${sanitizedClassName}(__tc_instance)) {`);
+      lines.push(`          std::fputs(${cppStringLiteral(`C++ ops-class constructor "${className}" must be the first operation unless the class is default constructible.\\n`)}, stderr);`);
+      lines.push('          return 1;');
+      lines.push('        }');
+      lines.push('      }');
+    lines.push('    } else {');
+  lines.push(`      if (!__tc_make_default_${sanitizedClassName}(__tc_instance)) {`);
+  lines.push(`        std::fputs(${cppStringLiteral(`C++ ops-class constructor "${className}" must be the first operation unless the class is default constructible.\\n`)}, stderr);`);
+  lines.push('        return 1;');
+  lines.push('      }');
+    lines.push('    }');
+  lines.push('    for (std::size_t __tc_op_index = __tc_case_start_index; __tc_op_index < __tc_operations->array_values.size(); ++__tc_op_index) {');
+  lines.push('      const tracecode::JsonValue& __tc_operation = __tc_ops_item_at(*__tc_operations, __tc_op_index);');
+  lines.push('      const std::string __tc_operation_name = __tc_operation.kind == tracecode::JsonValue::Kind::String ? __tc_operation.string_value : std::string();');
+  lines.push('      const tracecode::JsonValue& __tc_op_args = __tc_ops_item_at(*__tc_arguments, __tc_op_index);');
+  lines.push('      if (__tc_operation_name.empty()) {');
+  lines.push(`        std::fputs(${cppStringLiteral('C++ ops-class operation name must be a string.\\n')}, stderr);`);
+  lines.push('        return 1;');
+  lines.push('      }');
+  lines.push('      bool __tc_operation_handled = false;');
+  for (const [methodName] of groupedMethods) {
+    const sanitizedMethodName = methodName.replace(/[^A-Za-z0-9_]/g, '_');
+    lines.push(`      if (__tc_operation_name == ${cppStringLiteral(methodName)}) {`);
+    lines.push(`        __tc_operation_handled = __tc_call_${sanitizedMethodName}(__tc_op_args, __tc_case_outputs, __tc_instance);`);
+    lines.push('      }');
+  }
+  lines.push('      if (!__tc_operation_handled) {');
+  lines.push(`        std::fputs(${cppStringLiteral('C++ ops-class method could not be resolved.\\n')}, stderr);`);
+  lines.push('        return 1;');
+  lines.push('      }');
+  lines.push('    }');
+  lines.push('    std::string __tc_case_json = "[";');
+  lines.push('    for (std::size_t __tc_i = 0; __tc_i < __tc_case_outputs.size(); ++__tc_i) {');
+  lines.push('      if (__tc_i > 0) __tc_case_json += ",";');
+  lines.push('      __tc_case_json += __tc_case_outputs[__tc_i];');
+  lines.push('    }');
+  lines.push('    __tc_case_json += "]";');
+  lines.push('    __tc_results += __tc_case_json;');
+  lines.push('  }');
+  lines.push('  __tc_results += "]";');
+  lines.push('  tracecode::write_result_json_raw(__tc_results);');
+
+  return `${buildGeneratedIncludes(userCode, { parameters: [] })}
+using namespace std;
+${buildTracecodeFallbackAliases(userCode)}
+${buildCppJsonObjectAdapters(typeContext, aliases)}
+
+#line 1 "${CPP_USER_SOURCE_FILE}"
+${sourceForDriver}
+
+#line 1 "TraceCodeDriver.cpp"
+int main() {
+${lines.join('\n')}
   return 0;
 }
 `;
@@ -14411,14 +14709,6 @@ async function handlePrepareRuntimeProgram(payload) {
       timings: { totalMs: elapsedMs(startedAt) },
     };
   }
-  if (executionStyle === 'ops-class') {
-    return {
-      success: false,
-      error: 'C++ prepared execution does not support ops-class programs because their operation shape is case data.',
-      consoleOutput: [],
-      timings: { totalMs: elapsedMs(startedAt) },
-    };
-  }
   if (!functionName.trim() && !scriptRequest) {
     return {
       success: false,
@@ -14433,7 +14723,13 @@ async function handlePrepareRuntimeProgram(payload) {
   const driverStartedAt = now();
   let preparedDriverSource;
   try {
-    preparedDriverSource = scriptRequest
+    preparedDriverSource = executionStyle === 'ops-class'
+      ? buildPreparedOpsClassDriverSource(source, functionName, {
+          executionStyle,
+          tracing,
+          traceOptions: payload?.traceOptions || {},
+        })
+      : scriptRequest
       ? buildScriptDriverSource(source, {
           executionStyle,
           tracing,

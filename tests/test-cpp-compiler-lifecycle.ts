@@ -5,6 +5,7 @@ import { readFile } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import vm from 'node:vm';
+import { createCppBrowserRuntimeProvider } from '../packages/runtime-cpp/src/browser-runtime-provider';
 import { CppWorkerClient } from '../packages/runtime-cpp/src/cpp-worker-client';
 import { createCppPreparedExecutionProvider } from '../packages/runtime-cpp/src/cpp-prepared-provider';
 
@@ -277,6 +278,47 @@ function createClient(options: Partial<ConstructorParameters<typeof CppWorkerCli
     externalCompilerUrl: 'https://compiler.example/compile',
     ...options,
   });
+}
+
+async function testBrowserProviderPreparedLeaseExposure(): Promise<void> {
+  const lease = createCppBrowserRuntimeProvider().create({
+    assets: {
+      cppWorker: '/workers/cpp-worker.js',
+      cppCompilerFrame: '/workers/cpp-compiler-frame.html',
+      cppCompilerWorker: '/workers/cpp-compiler-worker.js',
+      cppCompilerWasm: '/workers/cpp/compiler/compiler.wasm',
+      cppLinkerWasm: '/workers/cpp/compiler/linker.wasm',
+      cppSysroot: '/workers/vendor/cpp/sysroot.tar',
+      cppRuntimeHeader: '/workers/cpp/tracecode_runtime.hpp',
+      cppCompilerBundle: '/workers/cpp/compiler/bundle.js',
+      cppCompilerIntegrity: {
+        assets: [{
+          url: '/workers/cpp/compiler/bundle.js',
+          size: 1,
+          sha256: 'a'.repeat(64),
+        }],
+      },
+    } as never,
+    debug: false,
+    executionIsolation: 'safe',
+    prewarmAfterUse: true,
+    workerFactoryFor: () => undefined,
+    preflight: () => async () => undefined,
+    manifestAsset: () => undefined,
+    manifestAssetCollection: () => undefined,
+  } as never);
+  try {
+    assertCondition(
+      lease.preparedProviders?.get('cpp') !== undefined,
+      'C++ browser runtime leases should expose an explicit prepared-provider map'
+    );
+    assertCondition(
+      lease.clients.get('cpp') !== undefined,
+      'C++ browser runtime leases should still expose the interactive client'
+    );
+  } finally {
+    lease.dispose();
+  }
 }
 
 async function testPreparedProviderProtocolLifecycle(): Promise<void> {
@@ -909,6 +951,7 @@ async function testCompilerFrameKeepsOnlyTrustedCompilerWarm(): Promise<void> {
 }
 
 async function main(): Promise<void> {
+  await testBrowserProviderPreparedLeaseExposure();
   await testPreparedProviderProtocolLifecycle();
   await testContentAddressedArtifactsAndDisposableExecution();
   await testInvalidArtifactsFailClosedAndAreNotCached();

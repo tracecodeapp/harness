@@ -4,6 +4,7 @@ import type {
   BrowserRuntimeProviderContext,
   BrowserRuntimeProviderLease,
 } from '@tracecode/runtime-browser';
+import { createCppPreparedExecutionProvider } from './cpp-prepared-provider';
 import { createCppRuntimeClient } from './cpp-runtime-client';
 import { CppWorkerClient } from './cpp-worker-client';
 
@@ -25,7 +26,7 @@ export function createCppBrowserRuntimeProvider(
     languages: ['cpp'],
     create(context: BrowserRuntimeProviderContext): BrowserRuntimeProviderLease {
       const workerFactory = context.workerFactoryFor('cpp');
-      const worker = new CppWorkerClient({
+      const workerOptions = {
         workerUrl: context.assets.cppWorker,
         ...(workerFactory ? { workerFactory } : {}),
         assetPreflight: context.preflight('cpp', ['worker']),
@@ -55,11 +56,18 @@ export function createCppBrowserRuntimeProvider(
         programCacheLimit: options.programCacheLimit,
         usePrecompiledHeader: options.usePrecompiledHeader,
         externalCompilerUrl: options.externalCompilerUrl,
-      });
+      };
+      const createWorkerClient = () => new CppWorkerClient(workerOptions);
+      const worker = createWorkerClient();
       const client = createCppRuntimeClient(worker);
+      const preparedProvider = createCppPreparedExecutionProvider({
+        createWorkerClient,
+      });
       const clients = new Map<Language, RuntimeClient>([['cpp', client]]);
+      const preparedProviders = new Map([['cpp', preparedProvider]]);
       return {
         clients,
+        preparedProviders,
         warm: () => worker.warmup(),
         disposeLanguage: () => worker.terminate(),
         dispose: () => worker.terminate(),
