@@ -158,9 +158,8 @@ async function main(): Promise<void> {
       const harness = createBrowserHarness({ assetBaseUrl: '/workers' });
       try {
         const client = harness.getClient('javascript');
-        const exercisePrepared = async (
-          language: 'javascript' | 'typescript'
-        ) => {
+        const preparedResults: Record<string, any> = {};
+        for (const language of ['javascript', 'typescript'] as const) {
           const preparedClient = harness.getClient(language) as typeof client & {
             prepareProgram(call: {
               mode: 'code';
@@ -194,7 +193,8 @@ function isolated(value) {
             preparation.kind !== 'prepared' ||
             preparation.program.mode !== 'code'
           ) {
-            return { preparation };
+            preparedResults[language] = { preparation };
+            continue;
           }
           try {
             const [first, second] = await Promise.all([
@@ -205,11 +205,15 @@ function isolated(value) {
                 inputs: { value: 7 },
               }),
             ]);
-            return { preparation: { kind: 'prepared' }, first, second };
+            preparedResults[language] = {
+              preparation: { kind: 'prepared' },
+              first,
+              second,
+            };
           } finally {
             await preparation.program.dispose();
           }
-        };
+        }
         const control = await client.executeCode({ code: 'function add(a, b) { return a + b; }', functionName: 'add', inputs: { a: 2, b: 3 }, executionStyle: 'function' });
         const computed = await client.executeCode({ code: `function escape() {
   const key = 'con' + 'structor';
@@ -231,8 +235,6 @@ function isolated(value) {
 }`, functionName: 'escapeLater', inputs: {}, executionStyle: 'function' });
         const typed = await harness.getClient('typescript').executeCode({ code: 'function multiply(a: number, b: number): number { return a * b; }', functionName: 'multiply', inputs: { a: 3, b: 4 }, executionStyle: 'function' });
         const traced = await client.executeWithTracing({ code: 'function increment(value) { return value + 1; }', functionName: 'increment', inputs: { value: 8 } });
-        const preparedJavaScript = await exercisePrepared('javascript');
-        const preparedTypeScript = await exercisePrepared('typescript');
         return {
           control,
           computed,
@@ -243,8 +245,8 @@ function isolated(value) {
             output: traced.kind === 'completed' ? traced.output : undefined,
             eventCount: traced.trace?.events?.length ?? 0,
           },
-          preparedJavaScript,
-          preparedTypeScript,
+          preparedJavaScript: preparedResults.javascript,
+          preparedTypeScript: preparedResults.typescript,
         };
       } finally {
         harness.dispose();
