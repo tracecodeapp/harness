@@ -70,6 +70,9 @@ importers:
       esbuild:
         specifier: 0.27.3
         version: 0.27.3
+      just-bash:
+        specifier: 3.1.0
+        version: 3.1.0(patch_hash=85fdd503145cc4fc6f226395623ee247ff72fd3b070ed14e629867c9ae9e1e85)
       playwright:
         specifier: ^1.53.2
         version: 1.58.2
