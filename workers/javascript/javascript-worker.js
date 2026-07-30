@@ -1572,22 +1572,29 @@ function orderInputArgumentsByParameterDescriptors(parameterDescriptors, inputs,
   return [...matched, ...extras.map((key) => ({ key, rest: false }))];
 }
 
-async function resolveOrderedInputArguments(code, functionName, inputs, executionStyle, language = 'javascript') {
-  const fallbackKeys = Object.keys(inputs ?? {});
+async function resolveInputParameterDescriptors(
+  code,
+  functionName,
+  executionStyle,
+  language = 'javascript'
+) {
   if (!functionName || executionStyle === 'ops-class') {
-    return fallbackKeys.map((key) => ({ key, rest: false }));
+    return [];
   }
 
   if (language !== 'typescript') {
-    const parameterDescriptors = extractSimpleJavaScriptParameterDescriptors(code, functionName, executionStyle);
-    return orderInputArgumentsByParameterDescriptors(parameterDescriptors, inputs, fallbackKeys);
+    return extractSimpleJavaScriptParameterDescriptors(
+      code,
+      functionName,
+      executionStyle
+    );
   }
 
   try {
     await ensureTypeScriptCompiler();
     const ts = getTypeScriptCompiler();
     if (!ts) {
-      return fallbackKeys.map((key) => ({ key, rest: false }));
+      return null;
     }
 
     const sourceFile = ts.createSourceFile(
@@ -1599,14 +1606,28 @@ async function resolveOrderedInputArguments(code, functionName, inputs, executio
     );
     const target = findFunctionLikeNode(ts, sourceFile, functionName, executionStyle);
     if (!target) {
-      return fallbackKeys.map((key) => ({ key, rest: false }));
+      return null;
     }
 
-    const parameterDescriptors = collectParameterDescriptors(ts, target);
-    return orderInputArgumentsByParameterDescriptors(parameterDescriptors, inputs, fallbackKeys);
+    return collectParameterDescriptors(ts, target);
   } catch (_error) {
-    return fallbackKeys.map((key) => ({ key, rest: false }));
+    return null;
   }
+}
+
+async function resolveOrderedInputArguments(code, functionName, inputs, executionStyle, language = 'javascript') {
+  const fallbackKeys = Object.keys(inputs ?? {});
+  const parameterDescriptors = await resolveInputParameterDescriptors(
+    code,
+    functionName,
+    executionStyle,
+    language
+  );
+  return orderInputArgumentsByParameterDescriptors(
+    parameterDescriptors,
+    inputs,
+    fallbackKeys
+  );
 }
 
 function stripEngineSuggestionHints(message) {
@@ -6901,6 +6922,7 @@ function preparedExecutionFromPayload(payload) {
 }
 
 async function prepareExecutionRequest(payload) {
+  const startedAt = performanceNow();
   const operation = payload?.operation;
   const request = payload?.request;
   if (!['execute-code', 'execute-code-batch', 'execute-with-tracing'].includes(operation)) {
@@ -6913,8 +6935,6 @@ async function prepareExecutionRequest(payload) {
   const {
     code,
     functionName,
-    inputs,
-    inputBatch,
     options,
     executionStyle = 'function',
     language = 'javascript',
@@ -6942,17 +6962,9 @@ async function prepareExecutionRequest(payload) {
 
   let inputArguments = [];
   if (hasNamedFunction && executionStyle !== 'ops-class') {
-    const signatureInputs = operation === 'execute-code-batch'
-      ? batchSignatureSampleInput(Array.isArray(inputBatch) ? inputBatch : [])
-      : normalizeInputs(inputs);
-    const materializedSignatureInputs = applyInputMaterializers(
-      normalizeInputs(signatureInputs),
-      materializers
-    );
-    inputArguments = await resolveOrderedInputArguments(
+    inputArguments = await resolveInputParameterDescriptors(
       code,
       targetName,
-      materializedSignatureInputs,
       executionStyle,
       language
     );
@@ -6995,6 +7007,7 @@ async function prepareExecutionRequest(payload) {
     }
   }
 
+  const totalMs = performanceNow() - startedAt;
   return {
     preparedExecution: {
       schema: PREPARED_EXECUTION_SCHEMA,
@@ -7005,6 +7018,9 @@ async function prepareExecutionRequest(payload) {
       ...(instrumentedCode === undefined ? {} : { instrumentedCode }),
       ...(traceLineBounds === undefined ? {} : { traceLineBounds }),
     },
+    timings: language === 'typescript'
+      ? { totalMs, compileMs: totalMs, compileCacheHit: false }
+      : { totalMs, rewriteMs: totalMs },
   };
 }
 
@@ -7056,13 +7072,19 @@ async function executeCode(payload) {
           Promise.resolve(runner(consoleProxy, operations, argumentsList, runtimeGlobal))
         );
       } else {
-        const inputArguments = prepared?.inputArguments ?? await resolveOrderedInputArguments(
-          code,
-          targetName,
-          materializedInputs,
-          executionStyle,
-          language
-        );
+        const inputArguments = prepared
+          ? orderInputArgumentsByParameterDescriptors(
+            prepared.inputArguments,
+            materializedInputs,
+            Object.keys(materializedInputs)
+          )
+          : await resolveOrderedInputArguments(
+            code,
+            targetName,
+            materializedInputs,
+            executionStyle,
+            language
+          );
         const argNames = inputArguments.map((argument, index) => `__arg${index}${argument.rest ? '__tracecodeRest' : ''}`);
         const argValues = inputArguments.map((argument) => materializedInputs[argument.key]);
         const argumentMaterializers = inputArguments.map((argument) => materializers[argument.key] ?? null);
@@ -7087,13 +7109,19 @@ async function executeCode(payload) {
       }
     }
 
+    const totalMs = performanceNow() - startedAt;
     return {
       success: true,
       output: serializeOutputValue(output),
       consoleOutput,
-      timings: { totalMs: performanceNow() - startedAt },
+      timings: {
+        totalMs,
+        runMs: totalMs,
+        artifactCacheHit: Boolean(prepared),
+      },
     };
   } catch (error) {
+    const totalMs = performanceNow() - startedAt;
     const message = formatRuntimeErrorMessage(error);
     return {
       success: false,
@@ -7101,7 +7129,11 @@ async function executeCode(payload) {
       error: message,
       errorLine: extractUserErrorLine(error),
       consoleOutput,
-      timings: { totalMs: performanceNow() - startedAt },
+      timings: {
+        totalMs,
+        runMs: totalMs,
+        artifactCacheHit: Boolean(prepared),
+      },
     };
   }
 }
@@ -7175,13 +7207,19 @@ async function executeCodeBatch(payload) {
         runner = buildFunctionExecutionRunner(executableCode, executionStyle, [], [], code, targetName);
       } else {
         const sampleInputs = applyInputMaterializers(normalizeInputs(batchSignatureSampleInput(inputBatch)), materializers);
-        inputArguments = prepared?.inputArguments ?? await resolveOrderedInputArguments(
-          code,
-          targetName,
-          sampleInputs,
-          executionStyle,
-          language
-        );
+        inputArguments = prepared
+          ? orderInputArgumentsByParameterDescriptors(
+            prepared.inputArguments,
+            sampleInputs,
+            Object.keys(sampleInputs)
+          )
+          : await resolveOrderedInputArguments(
+            code,
+            targetName,
+            sampleInputs,
+            executionStyle,
+            language
+          );
         argNames = inputArguments.map((argument, index) => `__arg${index}${argument.rest ? '__tracecodeRest' : ''}`);
         argumentMaterializers = inputArguments.map((argument) => materializers[argument.key] ?? null);
         runner = buildFunctionExecutionRunner(executableCode, executionStyle, argNames, argumentMaterializers, code, targetName);
@@ -7247,11 +7285,16 @@ async function executeCodeBatch(payload) {
     }
   }
 
+  const totalMs = performanceNow() - startedAt;
   return {
     success: results.every((result) => result.success === true),
     results,
     consoleOutput: results.flatMap((result) => result.consoleOutput ?? []),
-    timings: { totalMs: performanceNow() - startedAt },
+    timings: {
+      totalMs,
+      runMs: totalMs,
+      artifactCacheHit: Boolean(prepared),
+    },
   };
 }
 
@@ -7343,6 +7386,11 @@ async function executeWithTracing(payload) {
           consoleOutput: fallbackResult.consoleOutput ?? [],
           lineEventCount: trace.lineEventCount,
           traceStepCount: trace.traceStepCount,
+          timings: {
+            totalMs: executionTimeMs,
+            runMs: executionTimeMs,
+            artifactCacheHit: Boolean(prepared),
+          },
         };
       }
 
@@ -7355,6 +7403,11 @@ async function executeWithTracing(payload) {
         consoleOutput: fallbackResult.consoleOutput ?? [],
         lineEventCount: trace.lineEventCount,
         traceStepCount: trace.traceStepCount,
+        timings: {
+          totalMs: executionTimeMs,
+          runMs: executionTimeMs,
+          artifactCacheHit: Boolean(prepared),
+        },
       };
     }
 
@@ -7379,13 +7432,19 @@ async function executeWithTracing(payload) {
           ))
         );
       } else {
-        const inputArguments = prepared?.inputArguments ?? await resolveOrderedInputArguments(
-          code,
-          targetName,
-          materializedInputs,
-          executionStyle,
-          language
-        );
+        const inputArguments = prepared
+          ? orderInputArgumentsByParameterDescriptors(
+            prepared.inputArguments,
+            materializedInputs,
+            Object.keys(materializedInputs)
+          )
+          : await resolveOrderedInputArguments(
+            code,
+            targetName,
+            materializedInputs,
+            executionStyle,
+            language
+          );
         const argNames = inputArguments.map((argument, index) => `__arg${index}${argument.rest ? '__tracecodeRest' : ''}`);
         const argValues = inputArguments.map((argument) => materializedInputs[argument.key]);
         const argumentMaterializers = inputArguments.map((argument) => materializers[argument.key] ?? null);
@@ -7429,6 +7488,11 @@ async function executeWithTracing(payload) {
       traceStepCount: trace.traceStepCount,
       traceLimitExceeded: traceRecorder.isTraceLimitExceeded(),
       timeoutReason: traceRecorder.getTimeoutReason(),
+      timings: {
+        totalMs: executionTimeMs,
+        runMs: executionTimeMs,
+        artifactCacheHit: Boolean(prepared),
+      },
     };
   } catch (error) {
     const executionTimeMs = performanceNow() - startedAt;
@@ -7464,6 +7528,11 @@ async function executeWithTracing(payload) {
       traceStepCount: trace.traceStepCount,
       traceLimitExceeded,
       timeoutReason,
+      timings: {
+        totalMs: executionTimeMs,
+        runMs: executionTimeMs,
+        artifactCacheHit: Boolean(prepared),
+      },
     };
   }
 }
