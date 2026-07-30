@@ -15,8 +15,8 @@ const ASSET_COPY_PLAN = [
     target: ['THIRD_PARTY_NOTICES.md'],
   },
   {
-    source: ['workers', 'python', 'pyodide-worker.js'],
-    target: ['pyodide-worker.js'],
+    source: ['workers', 'python', 'python-worker.js'],
+    target: ['python-worker.js'],
     languages: ['python'],
   },
   {
@@ -26,7 +26,7 @@ const ASSET_COPY_PLAN = [
   },
   {
     source: ['workers', 'python', 'runtime-core.js'],
-    target: ['pyodide', 'runtime-core.js'],
+    target: ['python', 'runtime-core.js'],
     languages: ['python'],
   },
   {

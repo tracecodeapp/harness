@@ -14,6 +14,7 @@ const ORIGINAL_ALL_SCRIPTS = [
   'test:kernel-policy-sync',
   'test:typescript-project-libs-sync',
   'test:core-public-surface',
+  'test:python-public-surface',
   'typecheck',
   'test:trace-adapters',
   'test:sql-trace',

@@ -18,6 +18,7 @@ Public surface:
 The umbrella package also exposes the same public surface at
 `@tracecode/harness/python` for backwards-compatible all-in-one installs.
 
-Runtime assets are published under `workers/`. Review
-`THIRD_PARTY_NOTICES.md` before redistributing this package, especially the
-Pyodide and CPython sections.
+Runtime assets are published at `workers/python-worker.js` and
+`workers/python/runtime-core.js`. Review `THIRD_PARTY_NOTICES.md` before
+redistributing this package, especially the Python runtime and CPython
+sections.

@@ -130,7 +130,7 @@ async function runWithTempRoot(tempRoot: string): Promise<void> {
     'dist/sql.cjs',
     'dist/sql.d.ts',
     'THIRD_PARTY_NOTICES.md',
-    'workers/python/pyodide-worker.js',
+    'workers/python/python-worker.js',
     'workers/javascript/javascript-worker.js',
     'workers/javascript/javascript-project-worker.js',
     'workers/java/java-worker.js',

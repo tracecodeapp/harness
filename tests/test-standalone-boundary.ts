@@ -59,7 +59,7 @@ const SCANNED_FILES = [
   'workers/java/java-worker.js',
   'workers/java/java-source-augmentations.js',
   'workers/csharp/csharp-worker.js',
-  'workers/python/pyodide-worker.js',
+  'workers/python/python-worker.js',
   'workers/python/runtime-core.js',
 ];
 

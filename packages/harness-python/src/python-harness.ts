@@ -10,7 +10,7 @@
  * - packages/harness-python/src/generated/python-harness-snippets.ts (consumed here)
  * - workers/python/generated-python-harness-snippets.js
  *
- * Note: workers/python/pyodide-worker.js still contains runtime-specific embedded
+ * Note: workers/python/python-worker.js still contains runtime-specific embedded
  * harness code. Keep it aligned via:
  *   pnpm test:python-harness-sync
  */

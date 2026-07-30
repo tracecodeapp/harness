@@ -150,7 +150,7 @@ const consumerManifests = {
 
 function testLegacyCompatibility(): void {
   const defaultAssets = resolveBrowserHarnessAssets();
-  assertCondition(defaultAssets.pythonWorker === '/workers/pyodide-worker.js', 'Default asset paths must remain unchanged');
+  assertCondition(defaultAssets.pythonWorker === '/workers/python-worker.js', 'Default asset paths must use canonical runtime names');
   assertCondition(defaultAssets.cppClangWasm === '', 'Disabled legacy asset paths must remain disabled');
   assertCondition(defaultAssets.runtimeManifests === undefined, 'Legacy resolution must not synthesize version metadata');
 

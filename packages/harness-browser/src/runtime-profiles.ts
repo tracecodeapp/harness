@@ -629,7 +629,7 @@ function getNodeRuntimeProjectIoSupport(language: Language): RuntimeProjectIoSup
 
 const PROJECT_IO_LIMITATIONS: Record<Language, readonly string[]> = {
   python: [
-    'Browser project mode advertises Pyodide-level live interception; node project mode uses host filesystem execution with final-diff reconciliation.',
+    'Browser project mode advertises Python runtime live interception; node project mode uses host filesystem execution with final-diff reconciliation.',
   ],
   javascript: [
     'Browser project mode is the reference live TraceKernel path; node project mode uses host filesystem execution with final-diff reconciliation.',

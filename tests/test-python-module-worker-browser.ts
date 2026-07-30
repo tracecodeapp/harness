@@ -61,7 +61,7 @@ async function main(): Promise<void> {
     await page.goto(origin);
 
     const result = await page.evaluate<ModuleSmokeResult>(`(async () => {
-      const worker = new Worker('/workers/pyodide-worker.js?tracecodePythonWorkerFormat=module', {
+      const worker = new Worker('/workers/python-worker.js?tracecodePythonWorkerFormat=module', {
         type: 'module',
       });
       const pending = new Map();
@@ -100,7 +100,7 @@ async function main(): Promise<void> {
           loaderFormat: 'module',
           loaderUrl: 'https://cdn.jsdelivr.net/pyodide/v314.0.2/full/pyodide.mjs',
           indexUrl: 'https://cdn.jsdelivr.net/pyodide/v314.0.2/full/',
-          runtimeCoreUrl: location.origin + '/workers/pyodide/runtime-core.js',
+          runtimeCoreUrl: location.origin + '/workers/python/runtime-core.js',
           snippetsUrl: location.origin + '/workers/generated-python-harness-snippets.js',
         },
       });
@@ -137,7 +137,7 @@ async function main(): Promise<void> {
       });
       worker.terminate();
 
-      const failingWorker = new Worker('/workers/pyodide-worker.js?tracecodePythonWorkerFormat=module', {
+      const failingWorker = new Worker('/workers/python-worker.js?tracecodePythonWorkerFormat=module', {
         type: 'module',
       });
       const failingPending = new Map();
@@ -174,7 +174,7 @@ async function main(): Promise<void> {
           loaderFormat: 'module',
           loaderUrl: 'https://cdn.jsdelivr.net/pyodide/v314.0.2/full/pyodide.mjs',
           indexUrl: 'https://cdn.jsdelivr.net/pyodide/v314.0.2/full/',
-          runtimeCoreUrl: location.origin + '/workers/pyodide/runtime-core.js',
+          runtimeCoreUrl: location.origin + '/workers/python/runtime-core.js',
           snippetsUrl: location.origin + '/workers/generated-python-harness-snippets.js',
           packageUrls: {
             missing: location.origin + '/missing_package-1.0.0-py3-none-any.whl',

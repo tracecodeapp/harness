@@ -14,7 +14,7 @@ import {
   toPythonLiteral as canonicalToPythonLiteral,
 } from '../packages/harness-python/src/python-harness';
 
-const WORKER_PATH = join(process.cwd(), 'workers', 'python', 'pyodide-worker.js');
+const WORKER_PATH = join(process.cwd(), 'workers', 'python', 'python-worker.js');
 const RUNTIME_CORE_PATH = join(process.cwd(), 'workers', 'python', 'runtime-core.js');
 const SHARED_POLICY_PATH = join(process.cwd(), 'workers', 'shared', 'runtime-kernel-policy-classic.js');
 const LEGACY_RUNTIME_PATH = join(process.cwd(), 'packages', 'harness-python', 'src', 'pyodide.ts');
@@ -75,7 +75,7 @@ function createWorkerContext(source: string): vm.Context {
   });
 
   vm.runInContext(source, context, {
-    filename: 'pyodide-worker.js',
+    filename: 'python-worker.js',
   });
 
   return context;
@@ -128,7 +128,7 @@ async function assertWorkerInitWarmupContract(
   });
 
   vm.runInContext(workerSource, context, {
-    filename: 'pyodide-worker.js',
+    filename: 'python-worker.js',
   });
 
   const onmessage = selfObject.onmessage as ((event: { data: Record<string, unknown> }) => void) | null;
@@ -237,7 +237,7 @@ async function assertProjectPythonEnvContract(workerSource: string, sharedPolicy
   }) as typeof context;
 
   vm.runInContext(workerSource, context, {
-    filename: 'pyodide-worker.js',
+    filename: 'python-worker.js',
   });
 
   assertCondition(typeof context.executeProjectPython === 'function', 'Worker should expose executeProjectPython in VM context');

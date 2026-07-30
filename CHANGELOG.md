@@ -13,6 +13,10 @@ This repo uses Git tags as release boundaries. Version notes below summarize wha
   `@tracecode/harness/sql` facade. The high-level SQL runtime trace API now
   uses provider-neutral names and defaults; integrations supply provider
   metadata such as PGlite/Postgres explicitly.
+- Made the Python package surface implementation-neutral: canonical Python
+  worker and browser-project APIs now define their own contracts, legacy
+  engine-branded aliases are no longer exported, and distributable worker
+  assets now use `python-worker.js` and `python/runtime-core.js`.
 
 ## [0.13.1] - 2026-07-30
 

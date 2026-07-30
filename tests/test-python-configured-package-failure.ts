@@ -24,7 +24,7 @@ interface WorkerMessage {
 }
 
 const posted: WorkerMessage[] = [];
-const workerUrl = new URL(pathToFileURL(`${process.cwd()}/workers/python/pyodide-worker.js`).href);
+const workerUrl = new URL(pathToFileURL(`${process.cwd()}/workers/python/python-worker.js`).href);
 workerUrl.searchParams.set('tracecodePythonWorkerFormat', 'module');
 workerUrl.searchParams.set('configured-package-failure-test', String(Date.now()));
 const scope = {

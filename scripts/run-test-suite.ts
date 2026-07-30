@@ -59,6 +59,7 @@ export const TEST_PHASES: TestPhase[] = [
       task('test:python-sync'),
       task('test:java-sync'),
       task('test:core-public-surface'),
+      task('test:python-public-surface'),
       task('typecheck', 2),
     ],
   },

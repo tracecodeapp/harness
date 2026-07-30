@@ -504,9 +504,6 @@ export class PythonWorkerClient {
   }
 }
 
-export type PyodideWorkerClientOptions = PythonWorkerClientOptions;
-export { PythonWorkerClient as PyodideWorkerClient };
-
 /**
  * Check if the worker client is supported
  */

@@ -115,9 +115,9 @@ const PACKAGE_CHECKS: PackageCheck[] = [
       'dist/project-browser.js',
       'dist/project-browser.cjs',
       'dist/project-browser.d.ts',
-      'workers/pyodide-worker.js',
+      'workers/python-worker.js',
       'workers/generated-python-harness-snippets.js',
-      'workers/pyodide/runtime-core.js',
+      'workers/python/runtime-core.js',
       'workers/shared/runtime-kernel-policy-classic.js',
       'LICENSE',
       'THIRD_PARTY_NOTICES.md',
@@ -492,7 +492,29 @@ async function runWithTempRoot(tempRoot: string): Promise<void> {
       );
     }
     if (packageCheck.name === '@tracecode/harness-python') {
-      const worker = await readFile(join(packageDir, 'workers/pyodide-worker.js'), 'utf8');
+      assertCondition(
+        !packedFiles.has('package/workers/pyodide-worker.js') &&
+          !packedFiles.has('package/workers/pyodide/runtime-core.js'),
+        '@tracecode/harness-python must not publish engine-branded worker paths'
+      );
+      const declarations = (
+        await Promise.all(
+          (await readdir(join(packageDir, 'dist')))
+            .filter((file) => file.endsWith('.d.ts'))
+            .map((file) => readFile(join(packageDir, 'dist', file), 'utf8'))
+        )
+      ).join('\n');
+      assertCondition(
+        !/pyodide/i.test(declarations),
+        '@tracecode/harness-python declarations must remain implementation-neutral'
+      );
+      assertCondition(
+        declarations.includes('interface PythonWorkerClientOptions') &&
+          declarations.includes('interface BrowserPythonProjectRunnerOptions') &&
+          declarations.includes('interface BrowserPythonProjectWorkerClient'),
+        '@tracecode/harness-python canonical option and worker-client types must be defining interfaces'
+      );
+      const worker = await readFile(join(packageDir, 'workers/python-worker.js'), 'utf8');
       assertCondition(
         !worker.includes('"/dev/stdout": {"readable": False, "writable": True'),
         '@tracecode/harness-python worker should not ship fallback /dev/stdout device semantics'
@@ -1402,10 +1424,12 @@ async function runWithTempRoot(tempRoot: string): Promise<void> {
       const pythonMain = await import('@tracecode/harness-python');
       if (
         typeof pythonMain.createNativePythonProjectRunner !== 'function' ||
-        typeof pythonMain.createBrowserPythonProjectRunner !== 'function' ||
-        typeof pythonMain.createPyodidePythonProjectRunner !== 'function'
+        typeof pythonMain.createBrowserPythonProjectRunner !== 'function'
       ) {
         throw new Error('@tracecode/harness-python missing main project runner exports');
+      }
+      if (Object.keys(pythonMain).some((name) => /pyodide/i.test(name))) {
+        throw new Error('@tracecode/harness-python must not expose engine-branded exports');
       }
       const javascriptMain = await import('@tracecode/harness-javascript');
       if (
@@ -1440,11 +1464,11 @@ async function runWithTempRoot(tempRoot: string): Promise<void> {
         throw new Error('@tracecode/harness-python/project-node missing createNativePythonProjectRunner');
       }
       const pythonProjectBrowser = await import('@tracecode/harness-python/project-browser');
-      if (
-        typeof pythonProjectBrowser.createBrowserPythonProjectRunner !== 'function' ||
-        typeof pythonProjectBrowser.createPyodidePythonProjectRunner !== 'function'
-      ) {
+      if (typeof pythonProjectBrowser.createBrowserPythonProjectRunner !== 'function') {
         throw new Error('@tracecode/harness-python/project-browser missing browser project runner exports');
+      }
+      if (Object.keys(pythonProjectBrowser).some((name) => /pyodide/i.test(name))) {
+        throw new Error('@tracecode/harness-python/project-browser must not expose engine-branded exports');
       }
       const javascriptProjectNode = await import('@tracecode/harness-javascript/project-node');
       if (typeof javascriptProjectNode.createNativeJavaScriptProjectRunner !== 'function') {

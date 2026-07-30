@@ -15,7 +15,7 @@ import {
 } from '../packages/harness-python/src/python-harness';
 
 const RUNTIME_CORE_PATH = join(process.cwd(), 'workers', 'python', 'runtime-core.js');
-const PYODIDE_WORKER_PATH = join(process.cwd(), 'workers', 'python', 'pyodide-worker.js');
+const PYTHON_WORKER_PATH = join(process.cwd(), 'workers', 'python', 'python-worker.js');
 
 type TraceAccess = {
   variable?: string;
@@ -326,7 +326,7 @@ function caughtMessage(run: () => unknown): string {
 }
 
 async function assertPyodideProjectFsEventsRejectTraversal(): Promise<void> {
-  const source = await readFile(PYODIDE_WORKER_PATH, 'utf8');
+  const source = await readFile(PYTHON_WORKER_PATH, 'utf8');
   const events: Array<{ type?: string; change?: { path?: string; directory?: boolean } }> = [];
   const fakeFs = createFakePyodideFs();
   const selfObject = {
@@ -342,7 +342,7 @@ async function assertPyodideProjectFsEventsRejectTraversal(): Promise<void> {
     Uint8Array,
     btoa: (binary: string) => Buffer.from(binary, 'binary').toString('base64'),
   });
-  vm.runInContext(source, context, { filename: 'pyodide-worker.js' });
+  vm.runInContext(source, context, { filename: 'python-worker.js' });
   (context as { __fakeFs?: FakePyodideFs }).__fakeFs = fakeFs;
   vm.runInContext(
     'pyodide = { FS: __fakeFs }; self.__cleanupProjectFs = installPyodideProjectFsMutationEvents("/workspace", []);',
@@ -426,7 +426,7 @@ async function assertPyodideProjectFsEventsRejectTraversal(): Promise<void> {
 }
 
 async function assertPyodideProjectEventsApplyResourceBudgets(): Promise<void> {
-  const source = await readFile(PYODIDE_WORKER_PATH, 'utf8');
+  const source = await readFile(PYTHON_WORKER_PATH, 'utf8');
   const events: Array<{ type?: string; stream?: string; data?: string; change?: { path?: string } }> = [];
   const fakeFs = createFakePyodideFs();
   const selfObject = {
@@ -442,7 +442,7 @@ async function assertPyodideProjectEventsApplyResourceBudgets(): Promise<void> {
     Uint8Array,
     btoa: (binary: string) => Buffer.from(binary, 'binary').toString('base64'),
   });
-  vm.runInContext(source, context, { filename: 'pyodide-worker.js' });
+  vm.runInContext(source, context, { filename: 'python-worker.js' });
 
   const budgetResult = vm.runInContext(
     `(() => {
@@ -499,7 +499,7 @@ async function assertPyodideProjectEventsApplyResourceBudgets(): Promise<void> {
 }
 
 async function assertPyodideProviderOutputCallbacksRemainUntouched(): Promise<void> {
-  const source = await readFile(PYODIDE_WORKER_PATH, 'utf8');
+  const source = await readFile(PYTHON_WORKER_PATH, 'utf8');
   const events: Array<{ type?: string; stream?: string; device?: string; data?: string }> = [];
   let stdoutInstallCount = 0;
   const selfObject: Record<string, unknown> = {
@@ -521,7 +521,7 @@ async function assertPyodideProviderOutputCallbacksRemainUntouched(): Promise<vo
       stdoutInstallCount += 1;
     },
   });
-  vm.runInContext(source, context, { filename: 'pyodide-worker.js' });
+  vm.runInContext(source, context, { filename: 'python-worker.js' });
   vm.runInContext(
     `pyodide = {
       setStdout() {
@@ -3931,7 +3931,7 @@ def solve(box):
 }
 
 async function assertVirtualScandirMatchesIteratorContract(): Promise<void> {
-  const source = await readFile(PYODIDE_WORKER_PATH, 'utf8');
+  const source = await readFile(PYTHON_WORKER_PATH, 'utf8');
   const match = source.match(/class _TraceDirEntry:[\s\S]*?\nclass _TraceProcFile:/);
   assertCondition(match !== null, 'Python worker should define virtual scandir helpers');
   const helperSource = match[0].replace(/\nclass _TraceProcFile:$/, '');

@@ -40,10 +40,7 @@ import {
   parseTerminalCommandList,
 } from '../packages/harness-project/src/arg-parsers';
 import { createNativePythonProjectRunner } from '../packages/harness-python/src/project-node';
-import {
-  createBrowserPythonProjectRunner,
-  createPyodidePythonProjectRunner,
-} from '../packages/harness-python/src/project-browser';
+import { createBrowserPythonProjectRunner } from '../packages/harness-python/src/project-browser';
 import {
   type CreateBrowserProjectWorkspaceOptions,
   createBrowserProjectWorkspace,
@@ -9545,7 +9542,7 @@ async function testBrowserJavaProjectRunnerAdapter(): Promise<void> {
   assertCondition(callCount === 1, 'browser java runner should reject assertions mode before invoking the worker');
 }
 
-async function testPyodidePythonProjectRunnerAdapter(): Promise<void> {
+async function testBrowserPythonProjectRunnerAdapter(): Promise<void> {
   let received: PythonProjectCommandRequest | null = null;
   const events: RuntimeCommandEvent[] = [];
   const appliedChanges: string[] = [];
@@ -9595,18 +9592,18 @@ async function testPyodidePythonProjectRunnerAdapter(): Promise<void> {
     },
   });
 
-  assertCondition(result.stdout === 'streamed\nmain.py:2', 'pyodide runner should delegate full project snapshot to worker client');
-  assertCondition((received as PythonProjectCommandRequest | null)?.scriptPath === 'main.py', 'pyodide runner should pass through request');
+  assertCondition(result.stdout === 'streamed\nmain.py:2', 'browser Python runner should delegate full project snapshot to worker client');
+  assertCondition((received as PythonProjectCommandRequest | null)?.scriptPath === 'main.py', 'browser Python runner should pass through request');
   assertCondition(
     (received as PythonProjectCommandRequest | null)?.project.files.some((file) => file.path === 'helper.py') === true,
-    'pyodide runner should include imported helper files in project requests'
+    'browser Python runner should include imported helper files in project requests'
   );
   assertCondition(
     events
       .filter((event) => event.type === 'output' && event.stream === 'stdout')
       .map((event) => (event as OutputEvent).data)
       .join('') === result.stdout,
-    `pyodide runner should stream missing final stdout suffix after streamed stdout events: ${JSON.stringify(events)}`
+    `browser Python runner should stream missing final stdout suffix after streamed stdout events: ${JSON.stringify(events)}`
   );
   assertCondition(
     events.some((event) =>
@@ -9614,15 +9611,11 @@ async function testPyodidePythonProjectRunnerAdapter(): Promise<void> {
       event.phase === 'live' &&
       event.change.path === 'py-live.txt'
     ),
-    `pyodide runner should forward worker live file-change events: ${JSON.stringify(events)}`
+    `browser Python runner should forward worker live file-change events: ${JSON.stringify(events)}`
   );
   assertCondition(
     fileChangeObservedAfterApply,
-    `pyodide runner should apply live file-change before forwarding it: ${JSON.stringify({ appliedChanges, events })}`
-  );
-  assertCondition(
-    createPyodidePythonProjectRunner(client) !== runner,
-    'pyodide python project runner alias should remain available'
+    `browser Python runner should apply live file-change before forwarding it: ${JSON.stringify({ appliedChanges, events })}`
   );
 
   const rejectedEvents: RuntimeCommandEvent[] = [];
@@ -9650,7 +9643,7 @@ async function testPyodidePythonProjectRunnerAdapter(): Promise<void> {
       rejectedResult.stderr === '' &&
       rejectedResult.error?.code === 'EIO' &&
       rejectedResult.error.detail?.diagnostic === 'py-worker-disconnected',
-    `pyodide runner should keep worker diagnostics out of terminal stderr: ${JSON.stringify(rejectedResult)}`
+    `browser Python runner should keep worker diagnostics out of terminal stderr: ${JSON.stringify(rejectedResult)}`
   );
   assertCondition(
     rejectedEvents.some((event) => event.type === 'status' && event.phase === 'process-start') &&
@@ -9661,7 +9654,7 @@ async function testPyodidePythonProjectRunnerAdapter(): Promise<void> {
           event.detail?.diagnostic === 'py-worker-disconnected'
       ) &&
       !rejectedEvents.some((event) => event.type === 'output' && event.stream === 'stderr'),
-    `pyodide runner should report worker diagnostics through status metadata only: ${JSON.stringify(rejectedEvents)}`
+    `browser Python runner should report worker diagnostics through status metadata only: ${JSON.stringify(rejectedEvents)}`
   );
 
   const failedApplyEvents: RuntimeCommandEvent[] = [];
@@ -9692,7 +9685,7 @@ async function testPyodidePythonProjectRunnerAdapter(): Promise<void> {
       failedApplyResult.stderr === '' &&
       failedApplyResult.error?.code === 'EIO' &&
       failedApplyResult.error.detail?.diagnostic === 'reject-live:bad-live.txt',
-    `pyodide runner should keep live-apply diagnostics out of terminal stderr: ${JSON.stringify(failedApplyResult)}`
+    `browser Python runner should keep live-apply diagnostics out of terminal stderr: ${JSON.stringify(failedApplyResult)}`
   );
   assertCondition(
     failedApplyEvents.some((event) =>
@@ -9703,7 +9696,7 @@ async function testPyodidePythonProjectRunnerAdapter(): Promise<void> {
     ) &&
       !failedApplyEvents.some((event) => event.type === 'output' && event.stream === 'stderr') &&
       !failedApplyEvents.some((event) => event.type === 'output' && event.data.includes('after-bad-live')),
-    `pyodide runner should stop later output after live apply failures: ${JSON.stringify(failedApplyEvents)}`
+    `browser Python runner should stop later output after live apply failures: ${JSON.stringify(failedApplyEvents)}`
   );
 }
 
@@ -10264,7 +10257,7 @@ async function testBrowserProjectWorkspaceFactory(): Promise<void> {
       },
     });
     assertCondition(python.exitCode === 0, `browser project workspace python should succeed: ${python.stderr}`);
-    assertCondition(python.stdout === 'file:main.py:5:2\n', `browser project workspace should wire Pyodide runner with directories: ${python.stdout}`);
+    assertCondition(python.stdout === 'file:main.py:5:2\n', `browser project workspace should wire the Python runner with directories: ${python.stdout}`);
     assertCondition(pythonTimeoutMs === 11, 'browser project workspace should pass pythonProjectTimeoutMs to the Python runner');
     assertCondition(await workspace.readFile('python.txt') === 'python\n', 'browser project workspace should apply Python file changes');
     assertCondition(await workspace.readFile('python-live.txt') === 'python-live\n', 'browser project workspace should apply Python live file changes');
@@ -14570,7 +14563,7 @@ async function main(): Promise<void> {
   await testNativeCSharpCommandLinePropertiesProjectRunner();
   await testLiveStdinAcrossProjectRunners();
   await testBrowserJavaProjectRunnerAdapter();
-  await testPyodidePythonProjectRunnerAdapter();
+  await testBrowserPythonProjectRunnerAdapter();
   await testBrowserCSharpProjectRunnerAdapter();
   await testBrowserCppProjectRunnerAdapter();
   await testBrowserProjectWorkspaceFactory();

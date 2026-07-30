@@ -60,7 +60,7 @@ function modulePythonManifest(): BrowserRuntimeAssetManifest<'python'> {
     assetBaseUrl: 'https://cdn.consumer.example/python/314.0.2/',
     originPolicy: { mode: 'allow-list', origins: ['https://cdn.consumer.example'] },
     assets: {
-      worker: { url: 'pyodide-worker.js' },
+      worker: { url: 'python-worker.js' },
       runtimeCore: { url: 'runtime-core.js' },
       snippets: { url: 'generated-python-harness-snippets.js' },
       runtimeLoader: { url: 'pyodide.mjs' },
@@ -96,7 +96,7 @@ async function assertClientConstructionAndPreflight(): Promise<void> {
   CapturingWorker.instances = [];
   CapturingWorker.lifecycle = [];
   const client = new PythonWorkerClient({
-    workerUrl: 'https://cdn.consumer.example/python/314.0.2/pyodide-worker.js',
+    workerUrl: 'https://cdn.consumer.example/python/314.0.2/python-worker.js',
     workerFormat: 'module',
     runtimeAssets: {
       loaderFormat: 'module',
@@ -135,7 +135,7 @@ async function assertClientConstructionAndPreflight(): Promise<void> {
 }
 
 async function assertClassicAndHarnessPaths(): Promise<void> {
-  const classic = new PythonWorkerClient({ workerUrl: '/workers/pyodide-worker.js' });
+  const classic = new PythonWorkerClient({ workerUrl: '/workers/python-worker.js' });
   await classic.init();
   const classicWorker = CapturingWorker.instances.at(-1);
   assertCondition(classicWorker?.options === undefined, 'Legacy Python path must remain a classic Worker');
@@ -150,6 +150,7 @@ async function assertClassicAndHarnessPaths(): Promise<void> {
 
   CapturingWorker.instances = [];
   const workspace = await createBrowserProjectWorkspace({
+    providers: ['python'],
     assets: { runtimeManifests: { python: modulePythonManifest() } },
     files: [{ path: 'main.py', contents: 'print("module-project-ok")' }],
   });

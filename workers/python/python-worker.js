@@ -5,8 +5,6 @@
  * This worker handles loading the Python runtime, executing code, and returning traces.
  * 
  * This is the canonical worker implementation for the browser Python runtime.
- * The legacy lib/execution/pyodide.ts path is deprecated and should not be used.
- * 
  * IMPORTANT: Shared harness snippets are defined in:
  * - packages/harness-python/src/python-harness-template.ts
  * and generated into:
@@ -1063,7 +1061,7 @@ async function loadPyodideInstance() {
 
         if (!loadedBootstrap || typeof self.loadPyodide !== 'function') {
           throw new Error(
-            `Unable to load Pyodide bootstrap script. Tried: ${bootstrapErrors.join(' | ')}`
+            `Unable to load Python runtime bootstrap script. Tried: ${bootstrapErrors.join(' | ')}`
           );
         }
       }
@@ -1081,7 +1079,7 @@ async function loadPyodideInstance() {
         }
       }
 
-      throw new Error(`Unable to initialize Pyodide runtime. Tried: ${initErrors.join(' | ')}`);
+      throw new Error(`Unable to initialize Python runtime. Tried: ${initErrors.join(' | ')}`);
     } catch (error) {
       // A partially initialized interpreter must never turn a failed explicit
       // package contract into a healthy retry. The client can retire this
@@ -1100,7 +1098,7 @@ async function loadPyodideInstance() {
 
 
 const PYODIDE_RUNTIME_CORE_PATHS = [
-  './pyodide/runtime-core.js',
+  './python/runtime-core.js',
 ];
 
 let pyodideRuntimeCore = null;
@@ -1140,7 +1138,7 @@ function loadPyodideRuntimeCore() {
       : null;
 
   if (!runtime) {
-    throw new Error('Pyodide runtime core failed to load');
+    throw new Error('Python runtime core failed to load');
   }
 
   pyodideRuntimeCore = runtime;

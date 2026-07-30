@@ -1,6 +1,6 @@
 #!/usr/bin/env npx tsx
 
-import { PyodideWorkerClient } from '../packages/harness-python/src/python-worker-client';
+import { PythonWorkerClient } from '../packages/harness-python/src/python-worker-client';
 
 function assertCondition(condition: unknown, message: string): asserts condition {
   if (!condition) throw new Error(message);
@@ -78,8 +78,8 @@ async function main(): Promise<void> {
   const syscallBuffer = new SharedArrayBuffer(288);
   const generationBuffer = new SharedArrayBuffer(Int32Array.BYTES_PER_ELEMENT);
   let serviceCalls = 0;
-  const client = new PyodideWorkerClient({
-    workerUrl: '/workers/pyodide-worker.js',
+  const client = new PythonWorkerClient({
+    workerUrl: '/workers/python-worker.js',
   });
   try {
     await client.executeProjectPython({

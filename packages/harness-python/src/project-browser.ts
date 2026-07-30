@@ -26,7 +26,6 @@ export type PythonProjectCommandRequest = RuntimeProjectCommandRequest<
 export type PythonProjectCommandResult = RuntimeCommandResult;
 export type PythonProjectCommandRunner = RuntimeProjectCommandRunner<PythonProjectCommandRequest>;
 export type BrowserPythonProjectCommandRunner = PythonProjectCommandRunner;
-export type PyodidePythonProjectCommandRunner = PythonProjectCommandRunner;
 
 export interface BrowserPythonProjectRunnerOptions {
   timeoutMs?: number;
@@ -37,9 +36,7 @@ export interface BrowserPythonProjectRunnerOptions {
   ) => Promise<boolean | void>;
 }
 
-export type CreatePyodidePythonProjectRunnerOptions = BrowserPythonProjectRunnerOptions;
-
-export interface PyodidePythonProjectWorkerClient {
+export interface BrowserPythonProjectWorkerClient {
   executeProjectPython(
     request: PythonProjectCommandRequest,
     timeoutMs?: number,
@@ -49,10 +46,8 @@ export interface PyodidePythonProjectWorkerClient {
   ): Promise<PythonProjectCommandResult>;
 }
 
-export type BrowserPythonProjectWorkerClient = PyodidePythonProjectWorkerClient;
-
 export function createBrowserPythonProjectRunner(
-  workerClient: PyodidePythonProjectWorkerClient | PythonWorkerClient,
+  workerClient: BrowserPythonProjectWorkerClient | PythonWorkerClient,
   options: BrowserPythonProjectRunnerOptions = {}
 ): BrowserPythonProjectCommandRunner {
   return withRuntimeProjectCommandRunnerCapabilities(
@@ -81,5 +76,3 @@ export function createBrowserPythonProjectRunner(
     { descriptorStdio: true }
   );
 }
-
-export const createPyodidePythonProjectRunner = createBrowserPythonProjectRunner;

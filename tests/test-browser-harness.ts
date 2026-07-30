@@ -425,7 +425,7 @@ async function main(): Promise<void> {
 
   try {
     const defaultAssets = resolveBrowserHarnessAssets();
-    assertCondition(defaultAssets.pythonWorker === '/workers/pyodide-worker.js', 'Default python worker path should resolve');
+    assertCondition(defaultAssets.pythonWorker === '/workers/python-worker.js', 'Default python worker path should resolve');
     assertCondition(defaultAssets.javaWorker === '/workers/java-worker.js', 'Default java worker path should resolve');
     assertCondition(defaultAssets.csharpWorker === '/workers/csharp-worker.js', 'Default C# worker path should resolve');
     assertCondition(defaultAssets.csharpAssetBaseUrl === '/workers/vendor/csharp', 'Default C# asset base URL should resolve');
@@ -648,7 +648,7 @@ async function main(): Promise<void> {
       const client = await concurrentProjectWorkspace.runCommand('python3 client.py');
       const projectPythonWorkers = workerInstances
         .slice(beforeWorkerCount)
-        .filter((worker) => String(worker.url).startsWith('/project-concurrency/pyodide-worker.js'));
+        .filter((worker) => String(worker.url).startsWith('/project-concurrency/python-worker.js'));
       assertCondition(client.exitCode === 0, `Browser project workspace should run a second Python command while the first is active: ${JSON.stringify(client)}`);
       assertCondition(client.stdout === 'execute-project-python:client.py\n', `Second Python project command should complete normally: ${client.stdout}`);
       assertCondition(projectPythonWorkers.length >= 2, `Browser project workspace should create separate Python workers for concurrent commands: ${projectPythonWorkers.length}`);
@@ -689,7 +689,7 @@ async function main(): Promise<void> {
       await Promise.resolve();
       const sharedWorkers = workerInstances
         .slice(beforeWorkerCount)
-        .filter((worker) => String(worker.url).startsWith('/project-shared-serialization/pyodide-worker.js'));
+        .filter((worker) => String(worker.url).startsWith('/project-shared-serialization/python-worker.js'));
       const projectMessagesBeforeRelease = sharedWorkers.flatMap((worker) =>
         worker.messages.filter((message) => message.type === 'execute-project-python')
       );
@@ -767,7 +767,7 @@ async function main(): Promise<void> {
       const prewarmedWorkerUrls = workerInstances
         .slice(beforeAuthorityWorkerCount)
         .map((worker) => String(worker.url));
-      for (const workerName of ['pyodide-worker.js', 'javascript-project-worker.js', 'java-worker.js', 'csharp-worker.js', 'cpp-worker.js']) {
+      for (const workerName of ['python-worker.js', 'javascript-project-worker.js', 'java-worker.js', 'csharp-worker.js', 'cpp-worker.js']) {
         assertCondition(
           prewarmedWorkerUrls.some((url) => url.includes(workerName)),
           `Project workspace should begin ${workerName} warmup without waiting for a command: ${JSON.stringify(prewarmedWorkerUrls)}`
@@ -786,7 +786,7 @@ async function main(): Promise<void> {
       );
       const authorityWorkers = workerInstances.slice(beforeAuthorityWorkerCount);
       for (const [runtime, workerName, messageType] of [
-        ['Python', 'pyodide-worker.js', 'execute-project-python'],
+        ['Python', 'python-worker.js', 'execute-project-python'],
         ['Java', 'java-worker.js', 'execute-project-java'],
         ['C#', 'csharp-worker.js', 'execute-project-csharp'],
         ['C++', 'cpp-worker.js', 'execute-project-cpp'],
@@ -859,7 +859,7 @@ async function main(): Promise<void> {
     try {
       await trustedSharedProjectWorkspace.runCommand('python3 main.py');
       const trustedWorker = workerInstances.findLast((worker) =>
-        String(worker.url).startsWith('/project-authority-shared/pyodide-worker.js')
+        String(worker.url).startsWith('/project-authority-shared/python-worker.js')
       );
       const projectMessage = trustedWorker?.messages.find((message) => message.type === 'execute-project-python');
       assertCondition(
@@ -902,7 +902,7 @@ async function main(): Promise<void> {
       assertCondition(first.exitCode === 0 && second.exitCode === 0, 'Prewarmed Python project commands should complete');
       const poolWorkers = workerInstances
         .slice(beforePrewarmWorkerCount)
-        .filter((worker) => String(worker.url).startsWith('/project-prewarm/pyodide-worker.js'));
+        .filter((worker) => String(worker.url).startsWith('/project-prewarm/python-worker.js'));
       const executedWorkers = poolWorkers.filter((worker) =>
         worker.messages.some((message) => message.type === 'execute-project-python')
       );
@@ -922,12 +922,12 @@ async function main(): Promise<void> {
     assertCondition(
       workerInstances
         .slice(beforePrewarmWorkerCount)
-        .filter((worker) => String(worker.url).startsWith('/project-prewarm/pyodide-worker.js'))
+        .filter((worker) => String(worker.url).startsWith('/project-prewarm/python-worker.js'))
         .every((worker) => worker.terminated),
       'Disposing a prewarmed workspace must retire idle, warming, and leased workers'
     );
 
-    const abortWarmupPrefix = '/project-cold-warmup-abort/pyodide-worker.js';
+    const abortWarmupPrefix = '/project-cold-warmup-abort/python-worker.js';
     holdPythonWarmupForUrlPrefix = abortWarmupPrefix;
     const abortWarmupWorkspace = await createBrowserProjectWorkspace({
       assetBaseUrl: '/project-cold-warmup-abort',
@@ -1067,7 +1067,7 @@ async function main(): Promise<void> {
         })))
     );
 
-    failedWarmupUrlPrefix = '/project-prewarm-failure/pyodide-worker.js';
+    failedWarmupUrlPrefix = '/project-prewarm-failure/python-worker.js';
     remainingFailedWarmups = 1;
     const beforeFailedPrewarmCount = workerInstances.length;
     const retryingPrewarmWorkspace = await createBrowserProjectWorkspace({
@@ -1081,7 +1081,7 @@ async function main(): Promise<void> {
       assertCondition(result.exitCode === 0, `A failed prewarm should be evicted and retried: ${JSON.stringify(result)}`);
       const retryWorkers = workerInstances
         .slice(beforeFailedPrewarmCount)
-        .filter((worker) => String(worker.url).startsWith('/project-prewarm-failure/pyodide-worker.js'));
+        .filter((worker) => String(worker.url).startsWith('/project-prewarm-failure/python-worker.js'));
       assertCondition(retryWorkers.length >= 2, 'A failed prewarm should create a fresh replacement worker');
       assertCondition(
         retryWorkers[0]?.terminated === true &&
@@ -1112,7 +1112,7 @@ async function main(): Promise<void> {
     const retiringCommand = retiringPrewarmWorkspace.runCommand('python3 hold.py');
     await retiringStarted;
     const retiringWorker = workerInstances.findLast((worker) =>
-      String(worker.url).startsWith('/project-prewarm-retire/pyodide-worker.js') &&
+      String(worker.url).startsWith('/project-prewarm-retire/python-worker.js') &&
       worker.messages.some((message) => message.type === 'execute-project-python')
     );
     retiringPrewarmWorkspace.dispose();
@@ -1184,14 +1184,14 @@ async function main(): Promise<void> {
       'Harness A should use its own C++ worker URL'
     );
     assertCondition(
-      workerInstances.some((worker) => String(worker.url).startsWith('/instance-b/pyodide-worker.js?dev=')),
+      workerInstances.some((worker) => String(worker.url).startsWith('/instance-b/python-worker.js?dev=')),
       'Harness B should use its own Python worker URL when debug is enabled'
     );
     console.log('PASS: browser harness uses per-instance worker URLs');
 
     const pythonWarmupResult = await harnessB.warmLanguage('python');
     const pythonWarmupWorker = workerInstances.findLast((worker) =>
-      String(worker.url).startsWith('/instance-b/pyodide-worker.js')
+      String(worker.url).startsWith('/instance-b/python-worker.js')
     );
     assertCondition(pythonWarmupResult.success, 'Python warmLanguage should resolve successfully');
     assertCondition(
@@ -1202,7 +1202,7 @@ async function main(): Promise<void> {
 
     const coldPythonHarness = createBrowserHarness({ assetBaseUrl: '/cold-python' });
     const coldPythonResult = await coldPythonHarness.getClient('python').executeCode({ code: 'result = 1', functionName: 'noop', inputs: {}, executionStyle: 'function' });
-    const coldPythonWorker = workerInstances.findLast((worker) => String(worker.url).startsWith('/cold-python/pyodide-worker.js'));
+    const coldPythonWorker = workerInstances.findLast((worker) => String(worker.url).startsWith('/cold-python/python-worker.js'));
     const coldPythonMessageTypes = coldPythonWorker?.messages.map((message) => message.type).join(',');
     assertCondition(coldPythonResult.kind === 'completed', 'Cold Python harness should execute successfully');
     assertCondition(
@@ -1215,7 +1215,7 @@ async function main(): Promise<void> {
     );
     await new Promise<void>((resolve) => setTimeout(resolve, 0));
     const cleanPythonStandby = workerInstances.findLast((worker) =>
-      String(worker.url).startsWith('/cold-python/pyodide-worker.js') && !worker.terminated
+      String(worker.url).startsWith('/cold-python/python-worker.js') && !worker.terminated
     );
     assertCondition(
       cleanPythonStandby !== coldPythonWorker &&
@@ -1224,7 +1224,7 @@ async function main(): Promise<void> {
     );
     await coldPythonHarness.getClient('python').executeCode({ code: 'result = 2', functionName: 'noop', inputs: {}, executionStyle: 'function' });
     const secondColdPythonWorker = workerInstances.findLast((worker) =>
-      String(worker.url).startsWith('/cold-python/pyodide-worker.js')
+      String(worker.url).startsWith('/cold-python/python-worker.js')
     );
     assertCondition(
       secondColdPythonWorker === cleanPythonStandby &&
@@ -1242,7 +1242,7 @@ async function main(): Promise<void> {
     await noPrewarmPythonHarness.getClient('python').executeCode({ code: 'result = 1', functionName: 'noop', inputs: {}, executionStyle: 'function' });
     await new Promise<void>((resolve) => setTimeout(resolve, 0));
     const noPrewarmWorkers = workerInstances.filter((worker) =>
-      String(worker.url).startsWith('/safe-python-no-prewarm/pyodide-worker.js')
+      String(worker.url).startsWith('/safe-python-no-prewarm/python-worker.js')
     );
     assertCondition(
       noPrewarmWorkers.length === 1 && noPrewarmWorkers[0]?.terminated === true,
@@ -1256,11 +1256,11 @@ async function main(): Promise<void> {
     });
     await unsafePythonHarness.getClient('python').executeCode({ code: 'result = 1', functionName: 'noop', inputs: {}, executionStyle: 'function' });
     const unsafePythonWorker = workerInstances.findLast((worker) =>
-      String(worker.url).startsWith('/unsafe-python-reuse/pyodide-worker.js')
+      String(worker.url).startsWith('/unsafe-python-reuse/python-worker.js')
     );
     await unsafePythonHarness.getClient('python').executeCode({ code: 'result = 2', functionName: 'noop', inputs: {}, executionStyle: 'function' });
     const reusedUnsafePythonWorker = workerInstances.findLast((worker) =>
-      String(worker.url).startsWith('/unsafe-python-reuse/pyodide-worker.js')
+      String(worker.url).startsWith('/unsafe-python-reuse/python-worker.js')
     );
     assertCondition(
       unsafePythonWorker === reusedUnsafePythonWorker && unsafePythonWorker?.terminated === false,
@@ -1269,7 +1269,7 @@ async function main(): Promise<void> {
     unsafePythonHarness.dispose();
     console.log('PASS: browser harness defaults to fresh workers and requires explicit unsafe reuse');
 
-    const timeoutPythonUrl = '/cold-python-timeout/pyodide-worker.js';
+    const timeoutPythonUrl = '/cold-python-timeout/python-worker.js';
     const timeoutPythonClient = new PythonWorkerClient({ workerUrl: timeoutPythonUrl });
     const beforePythonTimeoutWorkerCount = workerInstances.length;
     let coldWarmupTimeoutError = '';
@@ -1720,7 +1720,7 @@ async function main(): Promise<void> {
     );
     console.log('PASS: browser harness warms TypeScript compiler on demand');
 
-    const survivingWorker = workerInstances.find((worker) => String(worker.url).startsWith('/instance-b/pyodide-worker.js'));
+    const survivingWorker = workerInstances.find((worker) => String(worker.url).startsWith('/instance-b/python-worker.js'));
     harnessA.dispose();
     assertCondition(
       Boolean(survivingWorker && !survivingWorker.terminated),
@@ -1740,7 +1740,7 @@ async function main(): Promise<void> {
     });
     assertCondition(pythonBatchResult.success, 'Python unified execute should route multi-case run requests');
     assertCondition(
-      workerInstances.findLast((worker) => String(worker.url).startsWith('/instance-b/pyodide-worker.js'))?.messages.at(-1)?.type === 'execute-code-batch',
+      workerInstances.findLast((worker) => String(worker.url).startsWith('/instance-b/python-worker.js'))?.messages.at(-1)?.type === 'execute-code-batch',
       'Python unified execute should send execute-code-batch for multi-case run requests'
     );
     const javascriptBatchResult = await harnessB.getClient('javascript').execute({

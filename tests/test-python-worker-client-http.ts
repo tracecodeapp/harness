@@ -196,7 +196,7 @@ async function testPythonWorkerHttpRequestsAreSerializableAndReentrant(): Promis
   };
 
   try {
-    const client = new PythonWorkerClient({ workerUrl: '/workers/pyodide-worker.js', debug: false });
+    const client = new PythonWorkerClient({ workerUrl: '/workers/python-worker.js', debug: false });
     const executePromise = client.executeProjectPython(
       ({
         source: 'file',

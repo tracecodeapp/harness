@@ -12,7 +12,7 @@ sources.
 
 ### Pyodide
 
-- Use: Python runtime loaded by `workers/python/pyodide-worker.js`.
+- Use: Python runtime loaded by `workers/python/python-worker.js`.
 - Version: the compatibility fallback currently loads Pyodide `0.29.0`, and
   the workspace package resolves `pyodide` `0.29.3`. Consumer-owned runtime
   manifests can instead select a module-worker distribution; the adapter is

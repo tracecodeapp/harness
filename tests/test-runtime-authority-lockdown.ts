@@ -448,7 +448,7 @@ async function testPermanentLockdownSealsPrototypeAndDeferredEscapes(): Promise<
 }
 
 function testLanguageWorkerIntegrationAndCppBoundary(): void {
-  const pythonSource = readFileSync(join(process.cwd(), 'workers/python/pyodide-worker.js'), 'utf8');
+  const pythonSource = readFileSync(join(process.cwd(), 'workers/python/python-worker.js'), 'utf8');
   const javaSource = readFileSync(join(process.cwd(), 'workers/java/java-worker.js'), 'utf8');
   const csharpSource = readFileSync(join(process.cwd(), 'workers/csharp/csharp-worker.js'), 'utf8');
   const cppSource = readFileSync(join(process.cwd(), 'workers/cpp/cpp-worker.js'), 'utf8');

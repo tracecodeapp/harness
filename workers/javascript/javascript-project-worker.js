@@ -1818,12 +1818,12 @@ var LANGUAGE_RUNTIME_INFOS = Object.freeze(
     "python": {
       "language": "python",
       "displayName": "Python",
-      "versionLabel": "Python 3.13.2 (Pyodide 0.29.0)",
-      "description": "Python 3.13.2 (Pyodide 0.29.0).\n\nCommon algorithm helpers are imported automatically, including array, bisect, collections, functools, heapq, itertools. Other standard-library modules can be imported normally.\n\nOptional third-party packages are consumer-owned runtime assets and are available only when declared by the browser runtime manifest.",
+      "versionLabel": "Python 3.13.2",
+      "description": "Python 3.13.2.\n\nCommon algorithm helpers are imported automatically, including array, bisect, collections, functools, heapq, itertools. Other standard-library modules can be imported normally.\n\nOptional third-party packages are consumer-owned runtime assets and are available only when declared by the browser runtime manifest.",
       "runtime": {
-        "name": "Pyodide",
-        "version": "0.29.0",
-        "detail": "CPython 3.13.2 compiled to WebAssembly."
+        "name": "Python",
+        "version": "3.13.2",
+        "detail": "Runs in an isolated browser runtime."
       },
       "defaultImports": [
         "array",

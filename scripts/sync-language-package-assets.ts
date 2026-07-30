@@ -95,8 +95,8 @@ const PACKAGE_ASSET_PLANS: PackageAssetPlan[] = [
     packageDir: 'packages/harness-python',
     assets: [
       {
-        source: ['workers', 'python', 'pyodide-worker.js'],
-        target: ['workers', 'pyodide-worker.js'],
+        source: ['workers', 'python', 'python-worker.js'],
+        target: ['workers', 'python-worker.js'],
       },
       {
         source: ['workers', 'python', 'generated-python-harness-snippets.js'],
@@ -104,7 +104,7 @@ const PACKAGE_ASSET_PLANS: PackageAssetPlan[] = [
       },
       {
         source: ['workers', 'python', 'runtime-core.js'],
-        target: ['workers', 'pyodide', 'runtime-core.js'],
+        target: ['workers', 'python', 'runtime-core.js'],
       },
       {
         source: ['workers', 'shared', 'runtime-kernel-policy-classic.js'],

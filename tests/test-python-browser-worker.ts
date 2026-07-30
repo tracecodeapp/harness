@@ -82,7 +82,7 @@ async function main(): Promise<void> {
     await page.goto(origin);
 
     const results = await page.evaluate(`(async () => {
-      const worker = new Worker('/workers/pyodide-worker.js');
+      const worker = new Worker('/workers/python-worker.js');
       let nextId = 0;
       let nextHttpRequestId = 0;
       const pending = new Map();

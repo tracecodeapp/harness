@@ -27,9 +27,9 @@ async function main(): Promise<void> {
 
   const requiredFiles = [
     'THIRD_PARTY_NOTICES.md',
-    'pyodide-worker.js',
+    'python-worker.js',
     'generated-python-harness-snippets.js',
-    'pyodide/runtime-core.js',
+    'python/runtime-core.js',
     'shared/runtime-kernel-policy-classic.js',
     'javascript-worker.js',
     'javascript-project-worker.js',
@@ -66,7 +66,7 @@ async function main(): Promise<void> {
   }
 
   const rootEntries = await readdir(targetDir);
-  assertCondition(rootEntries.includes('pyodide-worker.js'), 'Asset sync should flatten the Python worker into the target root');
+  assertCondition(rootEntries.includes('python-worker.js'), 'Asset sync should flatten the Python worker into the target root');
   assertCondition(rootEntries.includes('javascript-worker.js'), 'Asset sync should flatten the JavaScript worker into the target root');
   assertCondition(
     rootEntries.includes('javascript-project-worker.js'),
@@ -106,9 +106,9 @@ async function main(): Promise<void> {
 
   for (const relativePath of [
     'THIRD_PARTY_NOTICES.md',
-    'pyodide-worker.js',
+    'python-worker.js',
     'generated-python-harness-snippets.js',
-    'pyodide/runtime-core.js',
+    'python/runtime-core.js',
     'shared/runtime-kernel-policy-classic.js',
   ]) {
     const fileStat = await stat(join(filteredTargetDir, relativePath));

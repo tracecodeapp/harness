@@ -1313,7 +1313,7 @@ function assertWorkerProtocolDeclarations(): void {
   const sources: Record<BrowserWorkerProtocolLanguage, { client: string; worker: string }> = {
     python: {
       client: 'packages/harness-python/src/python-worker-client.ts',
-      worker: 'workers/python/pyodide-worker.js',
+      worker: 'workers/python/python-worker.js',
     },
     javascript: {
       client: 'packages/harness-javascript/src/javascript-worker-client.ts',
@@ -2033,7 +2033,7 @@ async function main(): Promise<void> {
     pythonProfile.capabilities.project.filesystem.providerLiveInterception &&
       pythonProfile.capabilities.project.filesystem.finalDiff &&
       pythonProfile.capabilities.project.stdio.deviceFiles,
-    'Python should advertise Pyodide live project I/O interception plus final-diff reconciliation'
+    'Python should advertise runtime live project I/O interception plus final-diff reconciliation'
   );
   assertCondition(javaProfile.capabilities.execution.styles.function, 'Java should support function execution');
   assertCondition(

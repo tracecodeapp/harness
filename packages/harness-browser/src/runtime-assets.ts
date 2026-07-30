@@ -76,16 +76,16 @@ export interface BrowserRuntimeAssetsByRuntime {
     worker: BrowserRuntimeAssetDescriptor;
     runtimeCore: BrowserRuntimeAssetDescriptor;
     snippets: BrowserRuntimeAssetDescriptor;
-    /** Pyodide bootstrap module/script (for example pyodide.js). */
+    /** Python runtime bootstrap module or script. */
     runtimeLoader: BrowserRuntimeAssetDescriptor;
-    /** Base URL used by Pyodide to resolve its lockfile, stdlib, and WASM assets. */
+    /** Base URL used by the Python runtime to resolve its distribution assets. */
     runtimeIndex: BrowserRuntimeAssetDescriptor;
     /**
      * Optional complete self-hosted distribution inventory keyed by the exact
      * deployment-relative path beneath runtimeIndex.
      */
     distribution?: Readonly<Record<string, BrowserRuntimeAssetDescriptor>>;
-    /** Optional package artifacts keyed by the package name passed to Pyodide. */
+    /** Optional package artifacts keyed by the package name passed to the Python runtime. */
     packages?: Readonly<Record<string, BrowserRuntimeAssetDescriptor>>;
   };
   javascript: {
@@ -186,8 +186,8 @@ export type BrowserHarnessAssetOverrides = LegacyBrowserHarnessAssetOverrides & 
 };
 
 export const DEFAULT_BROWSER_HARNESS_ASSET_RELATIVE_PATHS: Readonly<BrowserHarnessAssets> = Object.freeze({
-  pythonWorker: 'pyodide-worker.js',
-  pythonRuntimeCore: 'pyodide/runtime-core.js',
+  pythonWorker: 'python-worker.js',
+  pythonRuntimeCore: 'python/runtime-core.js',
   pythonSnippets: 'generated-python-harness-snippets.js',
   javascriptWorker: 'javascript-worker.js',
   javascriptProjectWorker: 'javascript-project-worker.js',

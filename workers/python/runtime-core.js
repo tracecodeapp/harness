@@ -1,5 +1,5 @@
 /**
- * Pyodide runtime core helpers loaded by pyodide-worker.js.
+ * Python runtime core helpers loaded by python-worker.js.
  *
  * Exposes runtime helpers behind a dependency-injected surface so
  * the top-level worker can stay focused on loading + message dispatch.

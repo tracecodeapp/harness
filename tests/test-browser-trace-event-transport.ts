@@ -81,7 +81,7 @@ class TraceTransportWorker {
 
   constructor(readonly url: string | URL) {
     const workerUrl = String(url);
-    this.runtime = workerUrl.includes('pyodide')
+    this.runtime = workerUrl.includes('python-worker')
       ? 'python'
       : workerUrl.includes('csharp')
         ? 'csharp'
@@ -293,7 +293,7 @@ async function testClientsRestorePublicResults(): Promise<void> {
   });
 
   try {
-    const python = new PythonWorkerClient({ workerUrl: '/workers/pyodide-worker.js', debug: false });
+    const python = new PythonWorkerClient({ workerUrl: '/workers/python-worker.js', debug: false });
     const pythonResult = await python.executeWithTracing({ code: 'def solve():\n    return 42', functionName: 'solve', inputs: {}, executionStyle: 'function' });
     assertCondition((pythonResult.trace as { events: unknown[] }).events.length === 900, 'Python client lost transferred trace events');
     assertCondition(!('__traceEventTransport' in pythonResult), 'Python leaked its transport envelope publicly');
@@ -418,7 +418,7 @@ function workerTransferSummary(workerPath: string, endMarker: string, path: 'tra
 function testWorkerBatchingIsBoundedAndCompatible(): void {
   const cases = [
     ['workers/javascript/javascript-worker.js', 'function emitRuntimeDiagnostic', 'trace.events'],
-    ['workers/python/pyodide-worker.js', 'function projectUtf8Bytes', 'trace.events'],
+    ['workers/python/python-worker.js', 'function projectUtf8Bytes', 'trace.events'],
     ['workers/java/java-worker.js', 'function javaHttpEncodeUtf8', 'events'],
   ] as const;
 
@@ -569,7 +569,7 @@ function testMalformedBatchTransferFailsClosed(): void {
 }
 
 async function testPythonOptionalPackagesAreManifestDriven(): Promise<void> {
-  const source = readFileSync(join(process.cwd(), 'workers/python/pyodide-worker.js'), 'utf8');
+  const source = readFileSync(join(process.cwd(), 'workers/python/python-worker.js'), 'utf8');
   const selfObject: Record<string, unknown> = {
     location: { search: '' },
     postMessage() {},
@@ -599,7 +599,7 @@ async function testPythonOptionalPackagesAreManifestDriven(): Promise<void> {
     setTimeout,
     clearTimeout,
   });
-  vm.runInContext(source, context, { filename: 'pyodide-worker.js' });
+  vm.runInContext(source, context, { filename: 'python-worker.js' });
   await vm.runInContext(
     `ensurePythonLibraryPackages({
       loadedPackages: {},

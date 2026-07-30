@@ -17,7 +17,7 @@ import { createPythonRuntimeClient } from '../packages/harness-python/src/python
 import type { PythonWorkerClient } from '../packages/harness-python/src/python-worker-client';
 
 const RUNTIME_CORE_PATH = join(process.cwd(), 'workers', 'python', 'runtime-core.js');
-const PYODIDE_WORKER_PATH = join(process.cwd(), 'workers', 'python', 'pyodide-worker.js');
+const PYTHON_WORKER_PATH = join(process.cwd(), 'workers', 'python', 'python-worker.js');
 
 type RuntimeDeps = {
   PYTHON_CLASS_DEFINITIONS_SNIPPET: string;
@@ -96,7 +96,7 @@ async function testPythonInputLiteralSerializationHandlesCycles(): Promise<void>
     `generated Python input literal serialization should replace cycles with None: ${generatedLiteral}`
   );
 
-  const source = await readFile(PYODIDE_WORKER_PATH, 'utf8');
+  const source = await readFile(PYTHON_WORKER_PATH, 'utf8');
   const context = vm.createContext({
     console,
     self: {
@@ -105,7 +105,7 @@ async function testPythonInputLiteralSerializationHandlesCycles(): Promise<void>
       postMessage: () => {},
     },
   });
-  vm.runInContext(source, context, { filename: 'pyodide-worker.js' });
+  vm.runInContext(source, context, { filename: 'python-worker.js' });
   const fallbackLiteral = vm.runInContext(
     `(() => {
       const objectValue = { label: 'root' };
@@ -293,7 +293,7 @@ async function testPythonRuntimeClientNormalizesTraceResponse(): Promise<void> {
 }
 
 async function testPythonProjectBridgeHardeningHooksArePresent(): Promise<void> {
-  const source = await readFile(PYODIDE_WORKER_PATH, 'utf8');
+  const source = await readFile(PYTHON_WORKER_PATH, 'utf8');
   assertCondition(source.includes('_tracekernel_http_validate_component'), 'Python HTTPServer shim should validate request-line and host components');
   assertCondition(source.includes('_reserved_query_names'), 'Python ASGI shim should reserve explicit and injected parameter names before copying query params');
   assertCondition(source.includes('_kwargs[_name] = _request_obj'), 'Python ASGI shim should let Request injection overwrite query parameters');

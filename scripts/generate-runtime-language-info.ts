@@ -292,12 +292,14 @@ function buildCppDescription(input: {
 async function buildRuntimeInfo(): Promise<Record<string, RuntimeInfo>> {
   const rootPackage = await readJson<PackageJson>('package.json');
   const pythonRuntimeCoreSource = await readText('workers', 'python', 'runtime-core.js');
-  const pyodideLock = await readJson<{
+  const pythonDistributionLock = await readJson<{
     info?: { python?: string };
     packages?: Record<string, { version?: string }>;
   }>('node_modules', 'pyodide', 'pyodide-lock.json');
-  const pythonVersion = pyodideLock.info?.python;
-  if (!pythonVersion) throw new Error('Unable to derive runtime info: missing Pyodide Python version');
+  const pythonVersion = pythonDistributionLock.info?.python;
+  if (!pythonVersion) {
+    throw new Error('Unable to derive runtime info: missing Python version in runtime distribution lockfile');
+  }
 
   const javascriptEntrySource = await readText('workers', 'javascript', 'javascript-libraries-entry.js');
   const javascriptWorkerSource = await readText('workers', 'javascript', 'javascript-worker.js');

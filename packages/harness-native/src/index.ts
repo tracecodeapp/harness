@@ -797,7 +797,6 @@ print(json.dumps({
     this.runtimePromise = (async () => {
       const runtimeCorePath = resolveNativeAsset(this.options.runtimeCorePath, (root) => [
         join(root, 'workers', 'python', 'runtime-core.js'),
-        join(root, 'workers', 'pyodide', 'runtime-core.js'),
         join(root, '..', 'workers', 'python', 'runtime-core.js'),
       ]);
       const source = await readFile(runtimeCorePath, 'utf8');
