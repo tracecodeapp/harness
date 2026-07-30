@@ -146,10 +146,11 @@ function caseResult<Input, Expected, Result>(
       verdict: notEvaluated('case-did-not-complete'),
     });
   }
-  if (
-    resultPolicy === 'required' &&
-    outcome.structuredResult === undefined
-  ) {
+  const structuredResultPublished = Object.prototype.hasOwnProperty.call(
+    outcome,
+    'structuredResult'
+  );
+  if (resultPolicy === 'required' && !structuredResultPublished) {
     return Object.freeze({
       ...base,
       ...expected,
@@ -184,9 +185,7 @@ function caseResult<Input, Expected, Result>(
           comparator
         )
       : notEvaluated('expected-not-provided'),
-    ...(outcome.structuredResult === undefined
-      ? {}
-      : { value: actual }),
+    ...(structuredResultPublished ? { value: actual } : {}),
   });
 }
 

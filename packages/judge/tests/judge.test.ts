@@ -31,6 +31,7 @@ interface FakeCaseInput {
   readonly publish?: boolean;
   readonly exitCode?: number;
   readonly trace?: boolean;
+  readonly undefinedResult?: boolean;
 }
 
 interface FakeProviderState {
@@ -131,10 +132,12 @@ function executeFakeCase(
       input.publish === false
         ? Effect.void
         : control.publish(invocationId, {
-            value: {
-              doubled: input.value * 2,
-              caseId: invocation.caseId,
-            },
+            value: input.undefinedResult
+              ? undefined
+              : {
+                  doubled: input.value * 2,
+                  caseId: invocation.caseId,
+                },
             ...(input.trace
               ? {
                   trace: {
@@ -592,6 +595,51 @@ test('reports a protocol error when a successful runtime omits its structured re
         result.cases[0]?.protocolError ?? '',
         /without publishing a structured Judge result/
       );
+      assert.equal(control.activeInvocationCount(), 0);
+    })
+  ));
+});
+
+test('accepts an explicitly published undefined result under the required policy', async () => {
+  await Effect.runPromise(Effect.scoped(
+    Effect.gen(function* () {
+      const control = new InMemoryJudgeRuntimeControl();
+      const state = yield* makeState();
+      const host = yield* makeTraceKernelHost({
+        providers: [fakeProvider(control, state)],
+      });
+      const port = new TraceKernelJudgePort({
+        host,
+        runtimeControl: control,
+      });
+      const result = yield* evaluateJudgePlan<
+        TraceKernelFileSystemImage,
+        FakeCaseInput,
+        undefined,
+        undefined
+      >(
+        port,
+        makePlan<undefined>([], {
+          compile: undefined,
+          cases: [{
+            id: 'undefined-result',
+            input: {
+              value: 1,
+              undefinedResult: true,
+            },
+            expected: undefined,
+          }],
+        })
+      );
+
+      assert.equal(result.status, 'completed');
+      assert.equal(result.cases[0]?.status, 'completed');
+      assert.equal(result.cases[0]?.verdict.kind, 'passed');
+      assert.equal(
+        Object.prototype.hasOwnProperty.call(result.cases[0], 'value'),
+        true
+      );
+      assert.equal(result.cases[0]?.value, undefined);
       assert.equal(control.activeInvocationCount(), 0);
     })
   ));

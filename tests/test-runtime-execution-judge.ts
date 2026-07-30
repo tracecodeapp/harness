@@ -308,11 +308,7 @@ test('preserves 0.13 JSON comparison and distinguishes omitted from explicit und
         },
         expected: undefined,
       },
-    ], {
-      // A completed `undefined` output is a valid legacy code result. The
-      // current Judge model uses optional structured results to represent it.
-      structuredResult: 'optional',
-    })
+    ])
   );
 
   assert.equal(result.status, 'completed');
@@ -329,6 +325,11 @@ test('preserves 0.13 JSON comparison and distinguishes omitted from explicit und
     true
   );
   assert.equal(result.cases[3]?.expected, undefined);
+  assert.equal(
+    Object.prototype.hasOwnProperty.call(result.cases[4], 'value'),
+    true
+  );
+  assert.equal(result.cases[4]?.value, undefined);
   assert.ok(
     state.codeCalls.every((call) =>
       !Object.prototype.hasOwnProperty.call(call, 'expected') &&
