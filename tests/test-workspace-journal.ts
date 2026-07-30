@@ -89,6 +89,7 @@ function main(): void {
     {
       method: 'POST',
       url: 'https://api.example.test/items',
+      path: '/items',
       headers: {
         authorization: secret,
         'content-type': 'application/json',
@@ -122,10 +123,12 @@ function main(): void {
   );
 
   journal.recordFileSystemMutation({
+    generation: 1,
+    eventType: 'change',
     operation: 'write',
     paths: ['/home/user/project/generated.txt'],
     origin: {},
-  } as TraceKernelFileSystemMutation);
+  } satisfies TraceKernelFileSystemMutation);
   const mutationRecord = journal.journal().at(-1);
   assertCondition(
     mutationRecord?.kind === 'fs' &&

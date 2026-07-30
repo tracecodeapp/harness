@@ -69,7 +69,10 @@ async function main(): Promise<void> {
 
     const procStat = await workspace.stat('/proc/tracekernel/runtimes');
     assertCondition(
-      procStat.isFile && procStat.mode === 0o444 && procStat.size > 0,
+      procStat.isFile &&
+        procStat.mode === 0o444 &&
+        typeof procStat.size === 'number' &&
+        procStat.size > 0,
       `proc projection should expose read-only file metadata: ${JSON.stringify(
         procStat
       )}`

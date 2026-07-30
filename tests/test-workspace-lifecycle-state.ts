@@ -131,10 +131,18 @@ async function main(): Promise<void> {
   const runResult = readonly.unusableRunResult('npm test');
   assertCondition(
     mutationCode === 'EROFS' &&
-      runResult?.stderr.includes('project session expired') === true &&
-      expiredTransitions === 1 &&
-      destroyed === 0,
+      runResult?.stderr.includes('project session expired') === true,
     'readonly expiration should transition once and block mutations and runs'
+  );
+  assertEqual(
+    expiredTransitions,
+    1,
+    'readonly expiration should transition exactly once'
+  );
+  assertEqual(
+    destroyed,
+    0,
+    'readonly expiration should not destroy the workspace'
   );
 
   const noneSession = session('none', past);
@@ -167,9 +175,13 @@ async function main(): Promise<void> {
   destroy.unusableRunResult('npm test');
   await Promise.resolve();
   assertCondition(
-    destroyRun?.stderr.includes('project session expired') === true &&
-      destroyed === 1,
+    destroyRun?.stderr.includes('project session expired') === true,
     'destroy expiration should schedule teardown once'
+  );
+  assertEqual(
+    destroyed,
+    1,
+    'destroy expiration should schedule teardown exactly once'
   );
 
   destroy.destroyed = true;

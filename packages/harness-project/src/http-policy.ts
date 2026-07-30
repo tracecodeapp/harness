@@ -227,7 +227,7 @@ export class WorkspaceHttpPolicy {
   }
 
   normalizeRequest(
-    request: RuntimeKernelHttpRequest
+    request: Omit<RuntimeKernelHttpRequest, 'path'> & { path?: string }
   ): RuntimeKernelHttpRequestResult {
     let url: URL;
     try {

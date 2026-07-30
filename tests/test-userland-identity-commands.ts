@@ -86,6 +86,7 @@ const fastfetch = commands.fastfetch([], {
   term: 'xterm-256color',
   columns: 120,
   rows: 40,
+  colorLevel: 2,
 });
 assertCondition(
   fastfetch.stdout.includes('OS: TraceKernel'),
