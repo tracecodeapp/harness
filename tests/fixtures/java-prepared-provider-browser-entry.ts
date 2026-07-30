@@ -66,7 +66,7 @@ function trackedWorker(url: string | URL): BrowserWorkerLike {
 function createClient(): JavaWorkerClient {
   return new JavaWorkerClient({
     workerUrl:
-      '/workers/tracejvm-java-worker.js?tracejvmBaseUrl=/tracejvm',
+      '/workers/java-runtime-worker.js?tracejvmBaseUrl=/tracejvm',
     workerFactory: trackedWorker,
     debug: false,
     tracingTimeoutMs: 60_000,

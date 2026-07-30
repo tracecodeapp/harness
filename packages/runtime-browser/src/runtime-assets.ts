@@ -186,9 +186,9 @@ export const DEFAULT_BROWSER_RUNTIME_ASSET_RELATIVE_PATHS: Readonly<BrowserRunti
   pythonSnippets: 'generated-python-harness-snippets.js',
   javascriptWorker: 'javascript-worker.js',
   javascriptProjectWorker: 'javascript-project-worker.js',
-  // The TraceJVM provider extends the canonical Classic protocol and imports
+  // The Java runtime bridge extends the canonical Classic protocol and imports
   // java-worker.js as its sibling, so deployments must continue shipping both.
-  javaWorker: 'tracejvm-java-worker.js',
+  javaWorker: 'java-runtime-worker.js',
   csharpWorker: 'csharp-worker.js',
   csharpAssetBaseUrl: 'vendor/csharp',
   typescriptCompiler: 'vendor/typescript.js',

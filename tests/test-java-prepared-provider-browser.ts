@@ -167,8 +167,8 @@ try {
   const bundle = readFileSync(bundlePath);
   const staticRoutes = new Map<string, string>([
     [
-      '/workers/tracejvm-java-worker.js',
-      resolve('workers/java/tracejvm-java-worker.js'),
+      '/workers/java-runtime-worker.js',
+      resolve('workers/java/java-runtime-worker.js'),
     ],
     ['/workers/java-worker.js', resolve('workers/java/java-worker.js')],
     [

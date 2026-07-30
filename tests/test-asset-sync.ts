@@ -35,7 +35,7 @@ async function main(t: TestContext): Promise<void> {
     'javascript-worker.js',
     'javascript-project-worker.js',
     'java-worker.js',
-    'tracejvm-java-worker.js',
+    'java-runtime-worker.js',
     'cpp-worker.js',
     'shared/runtime-kernel-policy.js',
     'cpp-compiler-frame.html',
@@ -102,8 +102,12 @@ async function main(t: TestContext): Promise<void> {
   );
   assertCondition(rootEntries.includes('java-worker.js'), 'Asset sync should flatten the Java worker into the target root');
   assertCondition(
-    rootEntries.includes('tracejvm-java-worker.js'),
-    'Asset sync should flatten the default TraceJVM Java worker into the target root'
+    rootEntries.includes('java-runtime-worker.js'),
+    'Asset sync should flatten the default Java runtime worker into the target root'
+  );
+  assertCondition(
+    !rootEntries.includes('tracejvm-java-worker.js'),
+    'Asset sync must not expose the Java engine implementation in the consumer worker filename'
   );
   assertCondition(rootEntries.includes('csharp-worker.js'), 'Asset sync should flatten the C# worker into the target root');
   assertCondition(rootEntries.includes('cpp-worker.js'), 'Asset sync should flatten the C++ worker into the target root');
@@ -150,8 +154,12 @@ async function main(t: TestContext): Promise<void> {
   const filteredEntries = await readdir(filteredTargetDir);
   assertCondition(!filteredEntries.includes('java-worker.js'), 'Filtered Python sync should not copy Java assets');
   assertCondition(
+    !filteredEntries.includes('java-runtime-worker.js'),
+    'Filtered Python sync should not copy the Java runtime worker'
+  );
+  assertCondition(
     !filteredEntries.includes('tracejvm-java-worker.js'),
-    'Filtered Python sync should not copy the TraceJVM Java worker'
+    'Filtered asset sync must not expose the retired implementation-branded Java worker filename'
   );
   assertCondition(!filteredEntries.includes('javascript-worker.js'), 'Filtered Python sync should not copy JavaScript assets');
   assertCondition(

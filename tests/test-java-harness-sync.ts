@@ -26,7 +26,7 @@ async function main(): Promise<void> {
     root,
     'workers',
     'java',
-    'tracejvm-java-worker.js'
+    'java-runtime-worker.js'
   );
   const augmentationPath = join(root, 'workers', 'java', 'java-source-augmentations.js');
   const helperJarPath = join(root, 'workers', 'vendor', 'java-browser-helper.jar');

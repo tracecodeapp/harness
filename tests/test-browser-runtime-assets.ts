@@ -148,8 +148,12 @@ function testLegacyCompatibility(): void {
   const defaultAssets = resolveBrowserRuntimeAssets();
   assertCondition(defaultAssets.pythonWorker === '/workers/python-worker.js', 'Default asset paths must use canonical runtime names');
   assertCondition(
-    defaultAssets.javaWorker === '/workers/tracejvm-java-worker.js',
-    'Default Java assets must select the TraceJVM worker required by prepared execution'
+    defaultAssets.javaWorker === '/workers/java-runtime-worker.js',
+    'Default Java assets must select the provider-neutral runtime worker required by prepared execution'
+  );
+  assertCondition(
+    !defaultAssets.javaWorker.includes('tracejvm-java-worker.js'),
+    'Default Java asset URLs must not expose the runtime engine implementation'
   );
   assertCondition(defaultAssets.cppCompilerWasm === '', 'Disabled direct compiler paths must remain disabled');
   assertCondition(defaultAssets.runtimeManifests === undefined, 'Legacy resolution must not synthesize version metadata');

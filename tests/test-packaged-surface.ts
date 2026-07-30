@@ -365,7 +365,7 @@ async function runWithTempRoot(tempRoot: string): Promise<void> {
     'workers/javascript/javascript-worker.js',
     'workers/javascript/javascript-project-worker.js',
     'workers/java/java-worker.js',
-    'workers/java/tracejvm-java-worker.js',
+    'workers/java/java-runtime-worker.js',
     'workers/java/java-source-augmentations.js',
     'workers/csharp/csharp-worker.js',
     'workers/vendor/java-browser-helper.jar',
@@ -382,6 +382,7 @@ async function runWithTempRoot(tempRoot: string): Promise<void> {
     assertCondition(fileStat.isFile(), `Packed tarball should include ${relativePath}`);
   }
   for (const retiredJavaArtifact of [
+    'workers/java/tracejvm-java-worker.js',
     'workers/vendor/java-rewriter.jar',
     'workers/vendor/javaparser-core-3.25.10.jar',
     'workers/vendor/jdk.compiler-17.jar',

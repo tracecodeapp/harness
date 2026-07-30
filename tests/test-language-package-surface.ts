@@ -172,7 +172,7 @@ const PACKAGE_CHECKS: PackageCheck[] = [
       'dist/java-project-runtime.cjs',
       'dist/java-project-runtime.d.ts',
       'workers/java-worker.js',
-      'workers/tracejvm-java-worker.js',
+      'workers/java-runtime-worker.js',
       'workers/java-source-augmentations.js',
       'workers/shared/runtime-kernel-policy-classic.js',
       'workers/vendor/java-browser-helper.jar',
@@ -180,6 +180,7 @@ const PACKAGE_CHECKS: PackageCheck[] = [
       'THIRD_PARTY_NOTICES.md',
     ],
     forbiddenFiles: [
+      'workers/tracejvm-java-worker.js',
       'workers/vendor/java-rewriter.jar',
       'workers/vendor/javaparser-core-3.25.10.jar',
       'workers/vendor/jdk.compiler-17.jar',
