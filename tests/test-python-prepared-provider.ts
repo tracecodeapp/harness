@@ -172,8 +172,7 @@ test('Python prepared provider compiles once and executes in owned fresh workers
   );
 });
 
-test('Python prepared provider serializes cases and drains active work before disposal', async () => {
-  const gates = [deferred(), deferred()];
+test('Python prepared provider aborts active and queued work before disposal resolves', async () => {
   let started = 0;
   let active = 0;
   let maxActive = 0;
@@ -197,22 +196,23 @@ test('Python prepared provider serializes cases and drains active work before di
           consoleOutput: [],
         };
       },
-      async executePreparedCode() {
-        const execution = started;
+      async executePreparedCode(
+        _handle: unknown,
+        call: { signal?: AbortSignal }
+      ) {
         started += 1;
         active += 1;
         maxActive = Math.max(maxActive, active);
         workerExecutions.push(worker);
-        try {
-          await gates[execution]?.promise;
-          return {
-            kind: 'completed' as const,
-            output: execution + 1,
-            consoleOutput: [],
-          };
-        } finally {
+        return new Promise<CodeExecutionResult>((_resolve, reject) => {
+          call.signal?.addEventListener(
+            'abort',
+            () => reject(call.signal?.reason ?? new Error('aborted')),
+            { once: true }
+          );
+        }).finally(() => {
           active -= 1;
-        }
+        });
       },
       terminate() {
         assert.equal(terminated, false, `Worker ${worker} terminated twice`);
@@ -248,36 +248,152 @@ test('Python prepared provider serializes cases and drains active work before di
     /disposed/
   );
 
-  gates[0]?.resolve();
-  await waitUntil(
-    () => started === 2,
-    'The second prepared Python case never started after the first completed'
-  );
-  assert.equal(active, 1);
-  assert.equal(maxActive, 1, 'Provider exceeded its advertised maxConcurrency');
-
-  gates[1]?.resolve();
-  const [firstResult, secondResult] = await Promise.all([first, second]);
+  const [firstResult, secondResult] = await Promise.allSettled([first, second]);
   await disposal;
   await preparation.program.dispose();
   provider.terminate();
 
-  assert.deepEqual(
-    [firstResult.output, secondResult.output],
-    [1, 2],
-    'Accepted cases did not complete before disposal'
-  );
+  assert.equal(firstResult.status, 'rejected');
+  assert.equal(secondResult.status, 'rejected');
+  assert.equal(started, 1, 'Queued work started after disposal began');
   assert.equal(maxActive, 1);
-  assert.equal(terminatedWhileActive, false);
+  assert.equal(active, 0);
+  assert.equal(terminatedWhileActive, true);
   assert.equal(
-    new Set(workerExecutions).size,
-    2,
-    'Two isolated cases shared one Python worker generation'
+    workerExecutions.length,
+    1,
+    'A queued case reached a Python worker after disposal'
   );
   assert.deepEqual(
     workerTerminations.sort((left, right) => left - right),
-    [0, 1, 2],
-    'Compiler and both case workers were not retired'
+    [0, 1],
+    'Compiler and active case worker were not retired exactly once'
+  );
+});
+
+test('Python prepared provider aborts a case while its worker is still warming', async () => {
+  const warming = deferred();
+  let nextWorker = 0;
+  let executeCalls = 0;
+  const terminated: number[] = [];
+  const createWorkerClient = (): PythonWorkerClient => {
+    const worker = nextWorker++;
+    let isTerminated = false;
+    return {
+      async warmup() {
+        if (worker === 1) await warming.promise;
+        return { success: true, loadTimeMs: 1 };
+      },
+      async prepareProgram(call: RuntimeProgramPreparationCall) {
+        return {
+          success: true as const,
+          artifact: artifact(call.mode),
+          mode: call.mode,
+          consoleOutput: [],
+        };
+      },
+      async executePreparedCode() {
+        executeCalls += 1;
+        return {
+          kind: 'completed' as const,
+          output: 42,
+          consoleOutput: [],
+        };
+      },
+      terminate() {
+        assert.equal(isTerminated, false, `Worker ${worker} terminated twice`);
+        isTerminated = true;
+        terminated.push(worker);
+      },
+    } as unknown as PythonWorkerClient;
+  };
+
+  const provider = createPythonPreparedExecutionProvider({
+    createWorkerClient,
+  });
+  const preparation = await provider.prepareProgram(preparationCall());
+  assert.equal(preparation.kind, 'prepared');
+  if (
+    preparation.kind !== 'prepared' ||
+    preparation.program.mode !== 'code'
+  ) return;
+
+  const controller = new AbortController();
+  const cancelled = preparation.program.executeIsolated({
+    inputs: { value: 1 },
+    signal: controller.signal,
+  });
+  await waitUntil(
+    () => nextWorker === 2,
+    'The prepared Python execution worker never started warming'
+  );
+  controller.abort(new DOMException('cancelled during warmup', 'AbortError'));
+  await assert.rejects(cancelled, { name: 'AbortError' });
+  assert.ok(
+    terminated.includes(1),
+    'Cancellation did not retire the warming execution worker'
+  );
+  assert.equal(executeCalls, 0);
+
+  await waitUntil(
+    () => nextWorker === 3,
+    'Cancellation did not replenish the clean standby worker'
+  );
+  await preparation.program.dispose();
+  provider.terminate();
+  assert.deepEqual(
+    terminated.sort((left, right) => left - right),
+    [0, 1, 2]
+  );
+});
+
+test('Python prepared program disposal does not wait for standby warmup', async () => {
+  const warming = deferred();
+  let nextWorker = 0;
+  const terminated: number[] = [];
+  const provider = createPythonPreparedExecutionProvider({
+    createWorkerClient: () => {
+      const worker = nextWorker++;
+      return {
+        async warmup() {
+          if (worker === 1) await warming.promise;
+          return { success: true, loadTimeMs: 1 };
+        },
+        async prepareProgram(call: RuntimeProgramPreparationCall) {
+          return {
+            success: true as const,
+            artifact: artifact(call.mode),
+            mode: call.mode,
+            consoleOutput: [],
+          };
+        },
+        terminate() {
+          terminated.push(worker);
+        },
+      } as unknown as PythonWorkerClient;
+    },
+  });
+  const preparation = await provider.prepareProgram(preparationCall());
+  assert.equal(preparation.kind, 'prepared');
+  if (preparation.kind !== 'prepared') return;
+  await waitUntil(
+    () => nextWorker === 2,
+    'The prepared Python standby worker never started warming'
+  );
+
+  await Promise.race([
+    preparation.program.dispose(),
+    new Promise<never>((_resolve, reject) => {
+      setTimeout(
+        () => reject(new Error('Program disposal waited for standby warmup')),
+        100
+      );
+    }),
+  ]);
+  provider.terminate();
+  assert.deepEqual(
+    terminated.sort((left, right) => left - right),
+    [0, 1]
   );
 });
 
@@ -402,13 +518,174 @@ test('Python prepared provider cannot publish a program after termination races 
   provider.terminate();
   compilation.resolve();
 
-  await assert.rejects(preparing, /provider has been terminated/);
+  await assert.rejects(preparing, {
+    name: 'AbortError',
+    message: 'Prepared Python execution provider was terminated.',
+  });
   assert.equal(
     createdWorkers,
     1,
     'Termination race created a post-shutdown execution worker'
   );
   assert.equal(terminatedWorkers, 1);
+});
+
+test('Python prepared provider cannot publish a program after caller cancellation races compilation', async () => {
+  const compilation = deferred();
+  let compilationStarted = false;
+  let createdWorkers = 0;
+  let terminatedWorkers = 0;
+  const provider = createPythonPreparedExecutionProvider({
+    createWorkerClient: () => {
+      createdWorkers += 1;
+      return {
+        async warmup() {
+          return { success: true, loadTimeMs: 1 };
+        },
+        async prepareProgram(call: RuntimeProgramPreparationCall) {
+          compilationStarted = true;
+          await compilation.promise;
+          return {
+            success: true as const,
+            artifact: artifact(call.mode),
+            mode: call.mode,
+            consoleOutput: [],
+          };
+        },
+        terminate() {
+          terminatedWorkers += 1;
+        },
+      } as unknown as PythonWorkerClient;
+    },
+  });
+
+  const controller = new AbortController();
+  const preparing = provider.prepareProgram({
+    ...preparationCall(),
+    signal: controller.signal,
+  });
+  await waitUntil(
+    () => compilationStarted,
+    'The cancellable Python compiler request never started'
+  );
+  controller.abort(new DOMException('cancelled compilation', 'AbortError'));
+  await assert.rejects(preparing, { name: 'AbortError' });
+  compilation.resolve();
+  await waitUntil(
+    () => terminatedWorkers === 1,
+    'The cancelled Python compiler worker was not retired'
+  );
+  await Promise.resolve();
+
+  assert.equal(
+    createdWorkers,
+    1,
+    'Caller cancellation published a prepared program and execution standby'
+  );
+  provider.terminate();
+});
+
+test('Python prepared provider reset releases resources and permits later reuse', async () => {
+  let nextWorker = 0;
+  const terminations = new Map<number, number>();
+  const executions: number[] = [];
+  let firstExecutionStarted = false;
+  const createWorkerClient = (): PythonWorkerClient => {
+    const worker = nextWorker++;
+    return {
+      async warmup() {
+        return { success: true, loadTimeMs: 1 };
+      },
+      async prepareProgram(call: RuntimeProgramPreparationCall) {
+        return {
+          success: true as const,
+          artifact: artifact(call.mode),
+          mode: call.mode,
+          consoleOutput: [],
+        };
+      },
+      async executePreparedCode(
+        _handle: unknown,
+        call: { signal?: AbortSignal }
+      ) {
+        if (worker === 1) {
+          firstExecutionStarted = true;
+          return new Promise<CodeExecutionResult>((_resolve, reject) => {
+            call.signal?.addEventListener(
+              'abort',
+              () => reject(call.signal?.reason ?? new Error('aborted')),
+              { once: true }
+            );
+          });
+        }
+        executions.push(worker);
+        return {
+          kind: 'completed' as const,
+          output: worker,
+          consoleOutput: [],
+        };
+      },
+      terminate() {
+        terminations.set(worker, (terminations.get(worker) ?? 0) + 1);
+      },
+    } as unknown as PythonWorkerClient;
+  };
+
+  const provider = createPythonPreparedExecutionProvider({
+    createWorkerClient,
+  });
+  await provider.init();
+  const first = await provider.prepareProgram(preparationCall());
+  assert.equal(first.kind, 'prepared');
+  if (first.kind !== 'prepared' || first.program.mode !== 'code') return;
+
+  const active = first.program.executeIsolated({
+    inputs: { value: 1 },
+  });
+  await waitUntil(
+    () => firstExecutionStarted,
+    'The pre-reset Python execution never started'
+  );
+  provider.reset();
+  await assert.rejects(active, {
+    name: 'AbortError',
+    message: 'Prepared Python execution provider was reset.',
+  });
+  await Promise.resolve();
+  assert.equal(
+    nextWorker,
+    2,
+    'Reset allowed an aborted program to replenish a standby worker'
+  );
+  await assert.rejects(
+    first.program.executeIsolated({ inputs: { value: 1 } }),
+    /disposed/
+  );
+
+  assert.deepEqual(await provider.init(), { success: true, loadTimeMs: 1 });
+  const second = await provider.prepareProgram(preparationCall());
+  assert.equal(second.kind, 'prepared');
+  if (second.kind !== 'prepared' || second.program.mode !== 'code') return;
+  const result = await second.program.executeIsolated({
+    inputs: { value: 2 },
+  });
+  assert.equal(result.output, 3);
+  await second.program.dispose();
+  provider.terminate();
+
+  assert.deepEqual(executions, [3]);
+  assert.equal(nextWorker, 5);
+  assert.deepEqual(
+    [...terminations.entries()].sort(([left], [right]) => left - right),
+    [
+      [0, 1],
+      [1, 1],
+      [2, 1],
+      [3, 1],
+      [4, 1],
+    ],
+    'Reset/reuse did not retire every owned worker exactly once'
+  );
 });
 
 test('Python prepared provider maps compilation failures and normalizes trace timings', async () => {

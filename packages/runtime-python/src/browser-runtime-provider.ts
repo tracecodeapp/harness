@@ -107,7 +107,7 @@ export function createPythonBrowserRuntimeProvider(
         disposeLanguage: () => {
           if (context.executionIsolation === 'safe') safeClient.reset();
           else worker.terminate();
-          preparedProvider.terminate();
+          preparedProvider.reset();
         },
         dispose: () => {
           if (context.executionIsolation === 'safe') safeClient.reset();

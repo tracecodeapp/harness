@@ -385,6 +385,8 @@ export interface PythonPreparedExecutionProviderOptions {
 
 export interface PythonPreparedExecutionProviderController
   extends RuntimePreparedExecutionProvider {
+  /** Release current programs and workers while keeping the provider reusable. */
+  reset(): void;
   /** Force-retire compiler, standby, and active case workers owned by this provider. */
   terminate(): void;
 }
@@ -460,13 +462,74 @@ type WarmedPythonWorker = {
   readonly warmup: { success: boolean; loadTimeMs: number };
 };
 
+type PythonWorkerSlot = {
+  readonly client: PythonWorkerClient;
+  readonly ready: Promise<WarmedPythonWorker>;
+};
+
+function abortReason(signal: AbortSignal, fallback: string): unknown {
+  return signal.reason ?? new DOMException(fallback, 'AbortError');
+}
+
+function linkAbortSignal(
+  source: AbortSignal | undefined,
+  target: AbortController
+): () => void {
+  if (!source) return () => undefined;
+  const forward = () => {
+    if (!target.signal.aborted) {
+      target.abort(abortReason(source, 'Python execution was aborted.'));
+    }
+  };
+  if (source.aborted) {
+    forward();
+    return () => undefined;
+  }
+  source.addEventListener('abort', forward, { once: true });
+  return () => source.removeEventListener('abort', forward);
+}
+
+function raceWithAbort<T>(
+  promise: Promise<T>,
+  signal: AbortSignal,
+  onAbort: () => void = () => undefined
+): Promise<T> {
+  if (signal.aborted) {
+    onAbort();
+    return Promise.reject(
+      abortReason(signal, 'Python execution was aborted.')
+    );
+  }
+  return new Promise<T>((resolve, reject) => {
+    let settled = false;
+    const finish = (operation: () => void) => {
+      if (settled) return;
+      settled = true;
+      signal.removeEventListener('abort', handleAbort);
+      operation();
+    };
+    const handleAbort = () =>
+      finish(() => {
+        onAbort();
+        reject(abortReason(signal, 'Python execution was aborted.'));
+      });
+    signal.addEventListener('abort', handleAbort, { once: true });
+    promise.then(
+      (value) => finish(() => resolve(value)),
+      (error: unknown) => finish(() => reject(error))
+    );
+  });
+}
+
 class PreparedPythonProgramLifetime {
   private phase: 'active' | 'disposing' | 'disposed' = 'active';
   private operationTail: Promise<void> = Promise.resolve();
   private disposal: Promise<void> | undefined;
-  private standby: Promise<WarmedPythonWorker> | null = null;
+  private standby: PythonWorkerSlot | null = null;
   private generation = 1;
+  private disposedNotificationSent = false;
   private readonly ownedWorkers = new Set<PythonWorkerClient>();
+  private readonly operationControllers = new Set<AbortController>();
 
   constructor(
     private readonly handle: PythonPreparedProgramHandle,
@@ -479,32 +542,30 @@ class PreparedPythonProgramLifetime {
   executeCode(
     call: Pick<RuntimeCodeCall, 'inputs' | 'signal' | 'limits'>
   ): Promise<CodeExecutionResult> {
-    return this.executeSerial(call.signal, (client) =>
-      client.executePreparedCode(this.handle, call)
+    return this.executeSerial(call.signal, (client, signal) =>
+      client.executePreparedCode(this.handle, { ...call, signal })
     );
   }
 
   executeTrace(
     call: Pick<RuntimeTraceCall, 'inputs' | 'signal' | 'limits'>
   ): Promise<ExecutionResult> {
-    return this.executeSerial(call.signal, async (client) =>
+    return this.executeSerial(call.signal, async (client, signal) =>
       normalizePythonExecutionResult(
-        await client.executePreparedTrace(this.handle, call)
+        await client.executePreparedTrace(this.handle, { ...call, signal })
       )
     );
   }
 
   dispose = (): Promise<void> => {
     if (this.disposal) return this.disposal;
+    if (this.phase === 'disposed') return Promise.resolve();
     this.phase = 'disposing';
-    this.disposal = this.operationTail.then(async () => {
-      this.generation += 1;
-      const standby = this.standby;
-      this.standby = null;
-      if (standby) await standby.catch(() => undefined);
-      this.terminateOwnedWorkers();
-      this.phase = 'disposed';
-      this.onDisposed(this);
+    this.abortAndRetire(
+      new DOMException('Prepared Python program has been disposed.', 'AbortError')
+    );
+    this.disposal = this.operationTail.then(() => {
+      this.finishDisposed();
     });
     this.operationTail = this.disposal.then(
       () => undefined,
@@ -513,41 +574,51 @@ class PreparedPythonProgramLifetime {
     return this.disposal;
   };
 
-  forceTerminate(): void {
+  forceTerminate(
+    reason: unknown = new DOMException(
+      'Prepared Python program has been terminated.',
+      'AbortError'
+    )
+  ): void {
     if (this.phase === 'disposed') return;
-    this.phase = 'disposed';
-    this.generation += 1;
-    this.standby = null;
-    this.terminateOwnedWorkers();
-    this.onDisposed(this);
+    this.phase = 'disposing';
+    this.abortAndRetire(reason);
+    this.finishDisposed();
   }
 
   private executeSerial<T>(
     signal: AbortSignal | undefined,
-    operation: (client: PythonWorkerClient) => Promise<T>
+    operation: (client: PythonWorkerClient, signal: AbortSignal) => Promise<T>
   ): Promise<T> {
     if (this.phase !== 'active') {
       return Promise.reject(new Error('Prepared Python program has been disposed.'));
     }
-    const result = this.operationTail.then(async () => {
-      if (this.phase === 'disposed') {
-        throw new Error('Prepared Python program has been disposed.');
-      }
-      if (signal?.aborted) {
-        throw signal.reason ?? new Error('Prepared Python execution was aborted.');
-      }
-      const { client } = await this.takeStandby();
-      if (this.isDisposed()) {
-        this.retireWorker(client);
-        throw new Error('Prepared Python program has been disposed.');
-      }
+    const controller = new AbortController();
+    const unlink = linkAbortSignal(signal, controller);
+    this.operationControllers.add(controller);
+    const previous = this.operationTail;
+    const underlying = previous.then(async () => {
+      let client: PythonWorkerClient | undefined;
       try {
-        return await operation(client);
+        if (this.phase !== 'active') {
+          throw new Error('Prepared Python program has been disposed.');
+        }
+        if (controller.signal.aborted) {
+          throw abortReason(
+            controller.signal,
+            'Prepared Python execution was aborted.'
+          );
+        }
+        ({ client } = await this.takeStandby(controller.signal));
+        if (this.phase !== 'active') {
+          throw new Error('Prepared Python program has been disposed.');
+        }
+        return await operation(client, controller.signal);
       } finally {
         // Every case gets a hard interpreter boundary. The marshaled code
         // artifact survives; the Pyodide worker, heap, modules, cwd, RNG, and
         // filesystem do not.
-        this.retireWorker(client);
+        if (client) this.retireWorker(client);
         if (
           this.phase === 'active' &&
           (this.options.prewarmAfterUse ?? true)
@@ -556,21 +627,40 @@ class PreparedPythonProgramLifetime {
         }
       }
     });
-    this.operationTail = result.then(
+    this.operationTail = underlying.then(
       () => undefined,
       () => undefined
     );
-    return result;
+    void underlying.then(
+      () => {
+        unlink();
+        this.operationControllers.delete(controller);
+      },
+      () => {
+        unlink();
+        this.operationControllers.delete(controller);
+      }
+    );
+    // A queued caller observes its own cancellation immediately without
+    // breaking the internal serialization tail that preserves maxConcurrency.
+    return raceWithAbort(underlying, controller.signal);
   }
 
-  private startStandby(): Promise<WarmedPythonWorker> {
+  private startStandby(): PythonWorkerSlot {
     if (this.standby) return this.standby;
+    if (this.phase !== 'active') {
+      throw new Error('Prepared Python program has been disposed.');
+    }
     const generation = this.generation;
     const client = this.options.createWorkerClient();
     this.ownedWorkers.add(client);
-    const standby = client.warmup().then(
+    const ready = client.warmup().then(
       (warmup) => {
-        if (generation !== this.generation || this.phase === 'disposed') {
+        if (
+          generation !== this.generation ||
+          this.phase !== 'active' ||
+          !this.ownedWorkers.has(client)
+        ) {
           this.retireWorker(client);
           throw new Error('Prepared Python worker warmup was superseded.');
         }
@@ -581,15 +671,18 @@ class PreparedPythonProgramLifetime {
         throw error;
       }
     );
+    const standby = { client, ready };
     this.standby = standby;
-    void standby.catch(() => undefined);
+    void ready.catch(() => undefined);
     return standby;
   }
 
-  private async takeStandby(): Promise<WarmedPythonWorker> {
+  private takeStandby(signal: AbortSignal): Promise<WarmedPythonWorker> {
     const standby = this.standby ?? this.startStandby();
     this.standby = null;
-    return standby;
+    return raceWithAbort(standby.ready, signal, () =>
+      this.retireWorker(standby.client)
+    );
   }
 
   private retireWorker(client: PythonWorkerClient): void {
@@ -602,25 +695,40 @@ class PreparedPythonProgramLifetime {
     this.ownedWorkers.clear();
   }
 
-  private isDisposed(): boolean {
-    return this.phase === 'disposed';
+  private abortAndRetire(reason: unknown): void {
+    this.generation += 1;
+    this.standby = null;
+    const controllers = [...this.operationControllers];
+    this.operationControllers.clear();
+    for (const controller of controllers) {
+      if (!controller.signal.aborted) controller.abort(reason);
+    }
+    this.terminateOwnedWorkers();
+  }
+
+  private finishDisposed(): void {
+    this.phase = 'disposed';
+    if (this.disposedNotificationSent) return;
+    this.disposedNotificationSent = true;
+    this.onDisposed(this);
   }
 }
 
 class PythonPreparedExecutionProvider
   implements PythonPreparedExecutionProviderController {
   private preparationTail: Promise<void> = Promise.resolve();
-  private compilerStandby: Promise<WarmedPythonWorker> | null = null;
+  private compilerStandby: PythonWorkerSlot | null = null;
   private generation = 1;
   private terminated = false;
   private readonly compilerWorkers = new Set<PythonWorkerClient>();
   private readonly programs = new Set<PreparedPythonProgramLifetime>();
+  private readonly preparationControllers = new Set<AbortController>();
 
   constructor(private readonly options: PythonPreparedExecutionProviderOptions) {}
 
   async init(): Promise<{ success: boolean; loadTimeMs: number }> {
     this.assertActive();
-    return (await this.startCompilerStandby()).warmup;
+    return (await this.startCompilerStandby().ready).warmup;
   }
 
   prepareProgram(
@@ -632,41 +740,88 @@ class PythonPreparedExecutionProvider
       executionStyle: call.executionStyle ?? 'function',
       functionName: call.functionName,
     });
-    const result = this.preparationTail.then(() => this.prepareSerial(call));
-    this.preparationTail = result.then(
+    const generation = this.generation;
+    const controller = new AbortController();
+    const unlink = linkAbortSignal(call.signal, controller);
+    this.preparationControllers.add(controller);
+    const previous = this.preparationTail;
+    const underlying = previous.then(() =>
+      this.prepareSerial(call, generation, controller.signal)
+    );
+    this.preparationTail = underlying.then(
       () => undefined,
       () => undefined
     );
-    return result;
+    void underlying.then(
+      () => {
+        unlink();
+        this.preparationControllers.delete(controller);
+      },
+      () => {
+        unlink();
+        this.preparationControllers.delete(controller);
+      }
+    );
+    return raceWithAbort(underlying, controller.signal);
+  }
+
+  reset(): void {
+    this.assertActive();
+    this.releaseResources(
+      new DOMException(
+        'Prepared Python execution provider was reset.',
+        'AbortError'
+      )
+    );
   }
 
   terminate(): void {
     if (this.terminated) return;
     this.terminated = true;
+    this.releaseResources(
+      new DOMException(
+        'Prepared Python execution provider was terminated.',
+        'AbortError'
+      )
+    );
+  }
+
+  private releaseResources(reason: unknown): void {
     this.generation += 1;
     this.compilerStandby = null;
+    this.preparationTail = Promise.resolve();
+    const controllers = [...this.preparationControllers];
+    this.preparationControllers.clear();
+    for (const controller of controllers) {
+      if (!controller.signal.aborted) controller.abort(reason);
+    }
     for (const client of this.compilerWorkers) client.terminate();
     this.compilerWorkers.clear();
-    for (const program of [...this.programs]) program.forceTerminate();
+    for (const program of [...this.programs]) program.forceTerminate(reason);
     this.programs.clear();
   }
 
   private async prepareSerial(
-    call: RuntimeProgramPreparationCall
+    call: RuntimeProgramPreparationCall,
+    generation: number,
+    signal: AbortSignal
   ): Promise<RuntimeProgramPreparationResult> {
-    this.assertActive();
-    const { client } = await this.takeCompilerStandby();
+    this.assertGeneration(generation);
+    const { client } = await this.takeCompilerStandby(signal);
     let result;
     try {
-      result = await client.prepareProgram(call);
+      result = await client.prepareProgram({ ...call, signal });
     } finally {
       this.retireCompiler(client);
     }
     // A provider shutdown can race an in-flight compiler request. The worker
-    // may still settle its request after terminate() has retired it, but that
-    // result must never publish a new program lifetime beyond the shutdown
-    // boundary.
-    this.assertActive();
+    // may still settle its request after termination, reset, or caller
+    // cancellation has retired it, but that result must never publish a new
+    // program lifetime beyond the abandoned request boundary.
+    if (signal.aborted) {
+      throw abortReason(signal, 'Prepared Python compilation was aborted.');
+    }
+    this.assertGeneration(generation);
     if (!result.success) {
       return {
         kind: 'failed',
@@ -721,15 +876,19 @@ class PythonPreparedExecutionProvider
     };
   }
 
-  private startCompilerStandby(): Promise<WarmedPythonWorker> {
+  private startCompilerStandby(): PythonWorkerSlot {
     if (this.compilerStandby) return this.compilerStandby;
     this.assertActive();
     const generation = this.generation;
     const client = this.options.createWorkerClient();
     this.compilerWorkers.add(client);
-    const standby = client.warmup().then(
+    const ready = client.warmup().then(
       (warmup) => {
-        if (generation !== this.generation || this.terminated) {
+        if (
+          generation !== this.generation ||
+          this.terminated ||
+          !this.compilerWorkers.has(client)
+        ) {
           this.retireCompiler(client);
           throw new Error('Prepared Python compiler warmup was superseded.');
         }
@@ -741,15 +900,18 @@ class PythonPreparedExecutionProvider
         throw error;
       }
     );
+    const standby = { client, ready };
     this.compilerStandby = standby;
-    void standby.catch(() => undefined);
+    void ready.catch(() => undefined);
     return standby;
   }
 
-  private async takeCompilerStandby(): Promise<WarmedPythonWorker> {
+  private takeCompilerStandby(signal: AbortSignal): Promise<WarmedPythonWorker> {
     const standby = this.compilerStandby ?? this.startCompilerStandby();
     this.compilerStandby = null;
-    return standby;
+    return raceWithAbort(standby.ready, signal, () =>
+      this.retireCompiler(standby.client)
+    );
   }
 
   private retireCompiler(client: PythonWorkerClient): void {
@@ -760,6 +922,13 @@ class PythonPreparedExecutionProvider
   private assertActive(): void {
     if (this.terminated) {
       throw new Error('Prepared Python execution provider has been terminated.');
+    }
+  }
+
+  private assertGeneration(generation: number): void {
+    this.assertActive();
+    if (generation !== this.generation) {
+      throw new Error('Prepared Python execution provider was reset.');
     }
   }
 }
