@@ -15,6 +15,7 @@ import {
   evaluateJudgePlan,
   InMemoryJudgeRuntimeControl,
   JudgePlanError,
+  type JudgeComparator,
   type JudgeEvaluationPlan,
   type JudgeRuntimeInvocationInput,
 } from '../src/index';
@@ -29,12 +30,14 @@ interface FakeCaseInput {
   readonly block?: boolean;
   readonly publish?: boolean;
   readonly exitCode?: number;
+  readonly trace?: boolean;
 }
 
 interface FakeProviderState {
   readonly acquired: TraceKernelRuntimeProcessContext[];
   readonly completedCases: string[];
   readonly releases: TraceKernelRuntimeLeaseReleaseDisposition[];
+  readonly invocations: JudgeRuntimeInvocationInput[];
   readonly startedBlockingCase: Deferred.Deferred<void>;
 }
 
@@ -117,6 +120,7 @@ function executeFakeCase(
   invocation: JudgeRuntimeInvocationInput
 ): Effect.Effect<TraceKernelRuntimeResult, Error> {
   const input = invocation.value as FakeCaseInput;
+  state.invocations.push(invocation);
   if (input.block) {
     return Deferred.succeed(state.startedBlockingCase, undefined).pipe(
       Effect.andThen(Effect.never)
@@ -131,6 +135,16 @@ function executeFakeCase(
               doubled: input.value * 2,
               caseId: invocation.caseId,
             },
+            ...(input.trace
+              ? {
+                  trace: {
+                    events: [{
+                      kind: 'line',
+                      line: 1,
+                    }],
+                  },
+                }
+              : {}),
             diagnostics: [{
               severity: 'info',
               message: `observed ${input.value}`,
@@ -151,10 +165,10 @@ function executeFakeCase(
   );
 }
 
-function makePlan(
+function makePlan<Expected = unknown>(
   cases: readonly FakeCaseInput[],
-  overrides: Partial<JudgeEvaluationPlan<FakeCaseInput>> = {}
-): JudgeEvaluationPlan<FakeCaseInput> {
+  overrides: Partial<JudgeEvaluationPlan<FakeCaseInput, Expected>> = {}
+): JudgeEvaluationPlan<FakeCaseInput, Expected> {
   return {
     id: 'fake-evaluation',
     runtime: 'fake',
@@ -199,6 +213,7 @@ function makeState(): Effect.Effect<FakeProviderState> {
       acquired: [],
       completedCases: [],
       releases: [],
+      invocations: [],
       startedBlockingCase,
     }))
   );
@@ -318,6 +333,203 @@ test('mounts submission and private driver files into the kernel snapshot withou
       assert.ok(!serialized.includes('private generated driver'));
       assert.ok(!serialized.includes('/.tracecode/judge/driver.fake'));
       assert.deepEqual(host.sessionIds(), []);
+    })
+  ));
+});
+
+test('constructs positive, negative, and missing-expected verdicts from raw runtime values', async () => {
+  await Effect.runPromise(Effect.scoped(
+    Effect.gen(function* () {
+      const control = new InMemoryJudgeRuntimeControl();
+      const state = yield* makeState();
+      const host = yield* makeTraceKernelHost({
+        providers: [fakeProvider(control, state)],
+      });
+      const port = new TraceKernelJudgePort({
+        host,
+        runtimeControl: control,
+      });
+      const result = yield* evaluateJudgePlan<
+        TraceKernelFileSystemImage,
+        FakeCaseInput,
+        { readonly doubled: number; readonly caseId: string },
+        { readonly doubled: number; readonly caseId: string }
+      >(
+        port,
+        makePlan(
+          [
+            { value: 2 },
+            { value: 3 },
+            { value: 4 },
+          ],
+          {
+            compile: undefined,
+            cases: [
+              {
+                id: 'matching',
+                input: { value: 2 },
+                expected: {
+                  doubled: 4,
+                  caseId: 'matching',
+                },
+              },
+              {
+                id: 'mismatching',
+                input: { value: 3 },
+                expected: {
+                  doubled: 999,
+                  caseId: 'mismatching',
+                },
+              },
+              {
+                id: 'execution-only',
+                input: { value: 4 },
+              },
+            ],
+          }
+        )
+      );
+
+      assert.equal(result.status, 'completed');
+      assert.equal(result.cases[0]?.status, 'completed');
+      assert.equal(result.cases[0]?.verdict.kind, 'passed');
+      assert.equal(
+        result.cases[0]?.verdict.kind === 'passed'
+          ? result.cases[0].verdict.comparatorId
+          : undefined,
+        'structural-json'
+      );
+      assert.equal(result.cases[1]?.status, 'completed');
+      assert.equal(result.cases[1]?.verdict.kind, 'failed');
+      assert.equal(result.cases[2]?.status, 'completed');
+      assert.deepEqual(result.cases[2]?.verdict, {
+        kind: 'not-evaluated',
+        reason: 'expected-not-provided',
+      });
+      assert.ok(
+        state.invocations.every((invocation) =>
+          !Object.prototype.hasOwnProperty.call(invocation, 'expected') &&
+          !Object.prototype.hasOwnProperty.call(invocation, 'verdict')
+        ),
+        'Runtime providers must receive only invocation inputs, never Judge policy.'
+      );
+    })
+  ));
+});
+
+test('preserves traced and non-traced raw outcomes while constructing identical verdicts', async () => {
+  await Effect.runPromise(Effect.scoped(
+    Effect.gen(function* () {
+      const control = new InMemoryJudgeRuntimeControl();
+      const state = yield* makeState();
+      const host = yield* makeTraceKernelHost({
+        providers: [fakeProvider(control, state)],
+      });
+      const port = new TraceKernelJudgePort({
+        host,
+        runtimeControl: control,
+      });
+      const result = yield* evaluateJudgePlan<
+        TraceKernelFileSystemImage,
+        FakeCaseInput,
+        { readonly doubled: number; readonly caseId: string },
+        { readonly doubled: number; readonly caseId: string }
+      >(
+        port,
+        makePlan([], {
+          compile: undefined,
+          cases: [
+            {
+              id: 'plain',
+              input: { value: 5 },
+              expected: {
+                doubled: 10,
+                caseId: 'plain',
+              },
+            },
+            {
+              id: 'traced',
+              input: { value: 5, trace: true },
+              expected: {
+                doubled: 10,
+                caseId: 'traced',
+              },
+            },
+          ],
+        })
+      );
+
+      assert.equal(result.status, 'completed');
+      assert.deepEqual(
+        result.cases.map((caseResult) => caseResult.verdict.kind),
+        ['passed', 'passed']
+      );
+      assert.equal(result.cases[0] && 'trace' in result.cases[0], false);
+      assert.deepEqual(result.cases[1]?.trace, {
+        events: [{
+          kind: 'line',
+          line: 1,
+        }],
+      });
+    })
+  ));
+});
+
+test('accepts a product comparator without exposing it to the runtime provider', async () => {
+  await Effect.runPromise(Effect.scoped(
+    Effect.gen(function* () {
+      const control = new InMemoryJudgeRuntimeControl();
+      const state = yield* makeState();
+      const host = yield* makeTraceKernelHost({
+        providers: [fakeProvider(control, state)],
+      });
+      const port = new TraceKernelJudgePort({
+        host,
+        runtimeControl: control,
+      });
+      const comparator: JudgeComparator<
+        FakeCaseInput,
+        { readonly doubled: number },
+        { readonly doubled: number; readonly caseId: string }
+      > = {
+        id: 'doubled-value',
+        compare: ({ actual, expected }) => ({
+          matched: actual.doubled === expected.doubled,
+        }),
+      };
+      const result = yield* evaluateJudgePlan<
+        TraceKernelFileSystemImage,
+        FakeCaseInput,
+        { readonly doubled: number; readonly caseId: string },
+        { readonly doubled: number }
+      >(
+        port,
+        makePlan([], {
+          compile: undefined,
+          cases: [{
+            id: 'custom',
+            input: { value: 6 },
+            expected: {
+              doubled: 12,
+            },
+          }],
+        }),
+        { comparator }
+      );
+
+      assert.equal(result.status, 'completed');
+      assert.equal(result.cases[0]?.verdict.kind, 'passed');
+      assert.equal(
+        result.cases[0]?.verdict.kind === 'passed'
+          ? result.cases[0].verdict.comparatorId
+          : undefined,
+        'doubled-value'
+      );
+      assert.ok(
+        state.invocations.every((invocation) =>
+          !Object.prototype.hasOwnProperty.call(invocation, 'comparator')
+        )
+      );
     })
   ));
 });
