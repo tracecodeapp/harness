@@ -39,7 +39,7 @@
   "sideEffects": false,
   "scripts": {
     "build": "tsup --config tsup.config.ts",
-    "test": "node --import tsx --test tests/*.test.ts",
+    "test": "tsx --tsconfig tsconfig.json --test tests/*.test.ts",
     "typecheck": "tsc -p tsconfig.json --noEmit"
   },
   "dependencies": {
