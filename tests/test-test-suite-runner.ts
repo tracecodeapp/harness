@@ -39,6 +39,7 @@ const ORIGINAL_ALL_SCRIPTS = [
   'test:project',
   'test:runtime-contract',
   'test:judge',
+  'test:runtime-execution-judge',
   'test:native-harness',
   'test:runtime-trace',
   'test:standalone-boundary',
