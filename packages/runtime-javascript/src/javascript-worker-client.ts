@@ -13,7 +13,20 @@
  */
 
 import * as Effect from 'effect/Effect';
-import type { CodeExecutionBatchResult, CodeExecutionResult, ExecutionResult, RuntimeBatchCall, RuntimeCodeCall, RuntimeTrace, RuntimeTraceCall } from '@tracecode/runtime-core';
+import type {
+  CodeExecutionBatchResult,
+  CodeExecutionResult,
+  ExecutionResult,
+  RuntimeBatchCall,
+  RuntimeCodeCall,
+  RuntimeExecutionTimings,
+  RuntimePreparedCodeCall,
+  RuntimePreparedTraceCall,
+  RuntimeProgramPreparationCall,
+  RuntimeProgramPreparationResult,
+  RuntimeTrace,
+  RuntimeTraceCall,
+} from '@tracecode/runtime-core';
 import {
   createEmptyRuntimeTrace,
   liftCodeBatchOutcome,
@@ -28,8 +41,13 @@ type JavaScriptRawTraceResult = RawExecutionPayload & { trace?: RuntimeTrace };
 import { appendWorkerUrlQueryParameter, isDevEnvironment } from '@tracecode/runtime-browser/internal';
 import type { BrowserWorkerFactory, BrowserWorkerLike } from '@tracecode/runtime-browser/internal';
 import { restoreTransferredTraceEvents, traceEventTransferRequest } from '@tracecode/runtime-browser/internal';
-import { WorkerTerminatedError } from '@tracecode/runtime-browser/internal';
+import {
+  ExecutionTimeoutError,
+  WorkerReportedError,
+  WorkerTerminatedError,
+} from '@tracecode/runtime-browser/internal';
 import { WorkerSessionCore } from '@tracecode/runtime-browser/internal';
+import { createJavaScriptPreparedProgram } from './javascript-prepared-program';
 
 export type JavaScriptExecutionStyle = 'function' | 'solution-method' | 'ops-class';
 export type JavaScriptWorkerLanguage = 'javascript' | 'typescript';
@@ -55,6 +73,11 @@ interface WarmupResult {
   loadTimeMs: number;
 }
 
+interface PreparedExecutionReply {
+  preparedExecution: unknown;
+  timings?: RuntimeExecutionTimings;
+}
+
 const EXECUTION_TIMEOUT_MS = 20000;
 const TRACING_TIMEOUT_MS = 20000;
 const INIT_TIMEOUT_MS = 10000;
@@ -63,6 +86,21 @@ const MESSAGE_TIMEOUT_MS = 12000;
 const WORKER_READY_TIMEOUT_MS = 10000;
 
 type JavaScriptWorkerRole = 'coordinator' | 'executor';
+
+function performanceNow(): number {
+  return typeof performance !== 'undefined' &&
+    typeof performance.now === 'function'
+    ? performance.now()
+    : Date.now();
+}
+
+function preparationErrorLine(error: unknown): number | undefined {
+  const message = error instanceof Error ? error.message : String(error);
+  const match = /\bline\s+(\d+)\b/i.exec(message);
+  if (!match) return undefined;
+  const line = Number.parseInt(match[1], 10);
+  return Number.isSafeInteger(line) && line > 0 ? line : undefined;
+}
 
 class JavaScriptWorkerConnection {
   private disposed = false;
@@ -287,6 +325,38 @@ export class JavaScriptWorkerClient {
     });
   }
 
+  /**
+   * Dispatch a previously prepared immutable artifact to a disposable
+   * executor. Trusted compiler preparation must never re-enter this path.
+   */
+  private dispatchPreparedExecutionEffect<T>(
+    worker: JavaScriptWorkerConnection,
+    operation: 'execute-code' | 'execute-with-tracing',
+    payload: Record<string, unknown>
+  ): Effect.Effect<T, Error> {
+    return Effect.gen(this, function* () {
+      yield* Effect.tryPromise({
+        try: () =>
+          this.options.runtimeAssetPreflight?.() ?? Promise.resolve(),
+        catch: (error) =>
+          error instanceof Error ? error : new Error(String(error)),
+      });
+
+      return yield* worker.sendMessageEffect<T>(
+        operation,
+        this.options.javascriptLibrariesUrl
+          ? {
+              ...payload,
+              runtimeAssets: {
+                javascriptLibrariesUrl: this.options.javascriptLibrariesUrl,
+              },
+            }
+          : payload,
+        null
+      );
+    });
+  }
+
   private async runIsolatedExecution<T>(
     executor: (worker: JavaScriptWorkerConnection) => Promise<T>
   ): Promise<T> {
@@ -385,6 +455,259 @@ export class JavaScriptWorkerClient {
       return await warmupPromise;
     } catch (error) {
       this.warmupPromises.delete(language);
+      throw error;
+    }
+  }
+
+  /**
+   * Prepare immutable source artifacts once on the trusted coordinator, then
+   * expose only isolated case execution and disposal.
+   */
+  async prepareProgram(
+    call: RuntimeProgramPreparationCall,
+    language: JavaScriptWorkerLanguage = 'javascript'
+  ): Promise<RuntimeProgramPreparationResult> {
+    const startedAt = performanceNow();
+    const preparation = Object.freeze({
+      mode: call.mode,
+      code: call.code,
+      functionName: call.functionName,
+      executionStyle: call.executionStyle ?? 'function',
+      ...(call.traceOptions
+        ? { traceOptions: Object.freeze({ ...call.traceOptions }) }
+        : {}),
+    });
+
+    try {
+      if (call.signal?.aborted) {
+        const error = new Error('Prepared JavaScript execution aborted.');
+        error.name = 'AbortError';
+        throw error;
+      }
+      if (language === 'typescript' || call.mode === 'trace') {
+        await this.options.typescriptCompilerPreflight?.();
+      }
+      await this.init();
+      if (call.signal?.aborted) {
+        const error = new Error('Prepared JavaScript execution aborted.');
+        error.name = 'AbortError';
+        throw error;
+      }
+
+      const operation =
+        call.mode === 'trace' ? 'execute-with-tracing' : 'execute-code';
+      const coordinator = this.getCoordinator();
+      const reply = await coordinator.core.runClientEffect(
+        coordinator.sendMessageEffect<PreparedExecutionReply>(
+          'prepare-execution',
+          {
+            operation,
+            request: {
+              code: preparation.code,
+              functionName: preparation.functionName,
+              executionStyle: preparation.executionStyle,
+              language,
+              ...(preparation.traceOptions
+                ? { options: preparation.traceOptions }
+                : {}),
+            },
+          },
+          null
+        ),
+        call.signal
+      );
+      if (
+        !reply ||
+        typeof reply !== 'object' ||
+        !('preparedExecution' in reply)
+      ) {
+        throw new Error(
+          'JavaScript coordinator returned an invalid prepared artifact.'
+        );
+      }
+
+      let preparedExecution: unknown | undefined = reply.preparedExecution;
+      const requirePreparedExecution = (): unknown => {
+        if (preparedExecution === undefined) {
+          const error = new Error(
+            'Prepared JavaScript program has been disposed.'
+          );
+          error.name = 'AbortError';
+          throw error;
+        }
+        return preparedExecution;
+      };
+
+      const program = createJavaScriptPreparedProgram({
+        mode: preparation.mode,
+        executeCode:
+          preparation.mode === 'code'
+            ? (caseCall) =>
+                this.executePreparedCode(
+                  language,
+                  preparation,
+                  requirePreparedExecution(),
+                  caseCall
+                )
+            : undefined,
+        executeTrace:
+          preparation.mode === 'trace'
+            ? (caseCall) =>
+                this.executePreparedTrace(
+                  language,
+                  preparation,
+                  requirePreparedExecution(),
+                  caseCall
+                )
+            : undefined,
+        dispose: () => {
+          preparedExecution = undefined;
+        },
+      });
+      const totalMs = performanceNow() - startedAt;
+      return {
+        kind: 'prepared',
+        program,
+        consoleOutput: [],
+        timings: {
+          ...(reply.timings ?? {}),
+          totalMs,
+        },
+      };
+    } catch (error) {
+      if (
+        error instanceof Error &&
+        (error.name === 'AbortError' || call.signal?.aborted)
+      ) {
+        throw error;
+      }
+      if (!(error instanceof WorkerReportedError)) {
+        throw error;
+      }
+      const errorLine = preparationErrorLine(error);
+      return {
+        kind: 'failed',
+        error: error.message,
+        ...(errorLine !== undefined ? { errorLine } : {}),
+        diagnosticStage: 'compile',
+        consoleOutput: [],
+        timings: { totalMs: performanceNow() - startedAt },
+      };
+    }
+  }
+
+  private async executePreparedCode(
+    language: JavaScriptWorkerLanguage,
+    preparation: {
+      readonly code: string;
+      readonly functionName: string | null;
+      readonly executionStyle: JavaScriptExecutionStyle;
+    },
+    preparedExecution: unknown,
+    call: RuntimePreparedCodeCall
+  ): Promise<CodeExecutionResult> {
+    const wallClockMs = call.limits?.wallClockMs ?? EXECUTION_TIMEOUT_MS;
+    try {
+      const result = await this.runIsolatedExecution((worker) =>
+        this.runExecution(
+          worker,
+          this.dispatchPreparedExecutionEffect<RawExecutionPayload>(
+            worker,
+            'execute-code',
+            {
+              code: preparation.code,
+              functionName: preparation.functionName ?? '',
+              inputs: call.inputs,
+              executionStyle: preparation.executionStyle,
+              language,
+              preparedExecution,
+            }
+          ),
+          wallClockMs,
+          call.signal
+        )
+      );
+      return liftCodeOutcome(result, 'JavaScript execution failed');
+    } catch (error) {
+      if (
+        call.limits?.wallClockMs !== undefined &&
+        error instanceof ExecutionTimeoutError
+      ) {
+        return {
+          kind: 'limit',
+          reason: 'client-timeout',
+          error: error.message,
+          consoleOutput: [],
+          timings: {
+            totalMs: call.limits.wallClockMs,
+            runMs: call.limits.wallClockMs,
+            artifactCacheHit: true,
+          },
+        };
+      }
+      throw error;
+    }
+  }
+
+  private async executePreparedTrace(
+    language: JavaScriptWorkerLanguage,
+    preparation: {
+      readonly code: string;
+      readonly functionName: string | null;
+      readonly executionStyle: JavaScriptExecutionStyle;
+      readonly traceOptions?: RuntimeTraceCall['traceOptions'];
+    },
+    preparedExecution: unknown,
+    call: RuntimePreparedTraceCall
+  ): Promise<ExecutionResult> {
+    const wallClockMs = call.limits?.wallClockMs ?? TRACING_TIMEOUT_MS;
+    try {
+      const result = await this.runIsolatedExecution((worker) =>
+        this.runExecution(
+          worker,
+          this.dispatchPreparedExecutionEffect<JavaScriptRawTraceResult>(
+            worker,
+            'execute-with-tracing',
+            {
+              code: preparation.code,
+              functionName: preparation.functionName,
+              inputs: call.inputs,
+              options: preparation.traceOptions,
+              executionStyle: preparation.executionStyle,
+              language,
+              preparedExecution,
+              traceEventTransport: traceEventTransferRequest(),
+            }
+          ),
+          wallClockMs,
+          call.signal
+        )
+      );
+      return liftTraceOutcome(
+        result,
+        result.trace ??
+          createEmptyRuntimeTrace(language, { runId: `${language}:run` }),
+        'JavaScript tracing failed'
+      );
+    } catch (error) {
+      if (
+        call.limits?.wallClockMs !== undefined &&
+        error instanceof ExecutionTimeoutError
+      ) {
+        return {
+          kind: 'limit',
+          reason: 'client-timeout',
+          error: error.message,
+          trace: createEmptyRuntimeTrace(language),
+          executionTimeMs: call.limits.wallClockMs,
+          consoleOutput: [],
+          timings: {
+            totalMs: call.limits.wallClockMs,
+            runMs: call.limits.wallClockMs,
+            artifactCacheHit: true,
+          },
+        };
+      }
       throw error;
     }
   }

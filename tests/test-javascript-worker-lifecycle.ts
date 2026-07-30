@@ -1,11 +1,18 @@
 #!/usr/bin/env npx tsx
 
 import { test } from 'node:test';
+import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import vm from 'node:vm';
 import ts from 'typescript';
 import { JavaScriptWorkerClient } from '../packages/runtime-javascript/src/javascript-worker-client';
+import { createJavaScriptRuntimeClient } from '../packages/runtime-javascript/src/javascript-runtime-client';
+import { createJavaScriptPreparedProgram } from '../packages/runtime-javascript/src/javascript-prepared-program';
+import type {
+  CodeExecutionResult,
+  RuntimePreparedCodeCall,
+} from '../packages/runtime-core/src/index';
 
 interface ProtocolMessage {
   id?: string;
@@ -124,6 +131,390 @@ class VmJavaScriptWorker {
   hasLifecyclePoison(): boolean {
     return Boolean(vm.runInContext('Array.prototype.__tracecodeLifecyclePoison', this.context));
   }
+
+  hasPreparedIntrinsicMutation(): boolean {
+    return Boolean(
+      vm.runInContext(
+        'Array.prototype.__tracecodePreparedIntrinsic',
+        this.context
+      )
+    );
+  }
+}
+
+function resetVmWorkers(): void {
+  for (const worker of VmJavaScriptWorker.instances) {
+    if (!worker.terminated) worker.terminate();
+  }
+  VmJavaScriptWorker.instances.length = 0;
+  VmJavaScriptWorker.typeScriptImports.clear();
+}
+
+function preparedMutationSource(language: 'javascript' | 'typescript'): string {
+  if (language === 'typescript') {
+    return `let lexicalCount = 0;
+class PreparedState {
+  static count = 0;
+}
+function solve(values: number[], marker: string) {
+  lexicalCount += 1;
+  PreparedState.count += 1;
+  (globalThis as any).__tracecodePreparedGlobal =
+    ((globalThis as any).__tracecodePreparedGlobal ?? 0) + 1;
+  (module.exports as any).__tracecodePreparedModule =
+    ((module.exports as any).__tracecodePreparedModule ?? 0) + 1;
+  (Array.prototype as any).__tracecodePreparedIntrinsic =
+    ((Array.prototype as any).__tracecodePreparedIntrinsic ?? 0) + 1;
+  values.push(lexicalCount);
+  return {
+    lexicalCount,
+    staticCount: PreparedState.count,
+    globalCount: (globalThis as any).__tracecodePreparedGlobal,
+    moduleCount: (module.exports as any).__tracecodePreparedModule,
+    intrinsicCount: (Array.prototype as any).__tracecodePreparedIntrinsic,
+    marker,
+    values
+  };
+}`;
+  }
+  return `let lexicalCount = 0;
+class PreparedState {
+  static count = 0;
+}
+function solve(values, marker) {
+  lexicalCount += 1;
+  PreparedState.count += 1;
+  globalThis.__tracecodePreparedGlobal =
+    (globalThis.__tracecodePreparedGlobal ?? 0) + 1;
+  module.exports.__tracecodePreparedModule =
+    (module.exports.__tracecodePreparedModule ?? 0) + 1;
+  Array.prototype.__tracecodePreparedIntrinsic =
+    (Array.prototype.__tracecodePreparedIntrinsic ?? 0) + 1;
+  values.push(lexicalCount);
+  return {
+    lexicalCount,
+    staticCount: PreparedState.count,
+    globalCount: globalThis.__tracecodePreparedGlobal,
+    moduleCount: module.exports.__tracecodePreparedModule,
+    intrinsicCount: Array.prototype.__tracecodePreparedIntrinsic,
+    marker,
+    values
+  };
+}`;
+}
+
+async function exercisePreparedProvider(
+  language: 'javascript' | 'typescript'
+): Promise<void> {
+  resetVmWorkers();
+  const workerClient = new JavaScriptWorkerClient({
+    workerUrl: '/workers/javascript/javascript-worker.js',
+    debug: false,
+  });
+  const runtime = createJavaScriptRuntimeClient(language, workerClient);
+
+  try {
+    const prepared = await runtime.prepareProgram({
+      mode: 'code',
+      code: preparedMutationSource(language),
+      functionName: 'solve',
+      executionStyle: 'function',
+    });
+    assertCondition(
+      prepared.kind === 'prepared' && prepared.program.mode === 'code',
+      `${language} code preparation failed: ${JSON.stringify(prepared)}`
+    );
+    assertCondition(
+      prepared.program.capabilities.caseIsolation === 'fresh-case-state' &&
+        prepared.program.capabilities.maxConcurrency === 1,
+      `${language} prepared program reported unsafe isolation capabilities`
+    );
+    assertCondition(
+      typeof prepared.timings?.totalMs === 'number' &&
+        (language === 'typescript'
+          ? prepared.timings.compileCacheHit === false &&
+            typeof prepared.timings.compileMs === 'number'
+          : typeof prepared.timings.rewriteMs === 'number'),
+      `${language} preparation did not report preparation timings: ${JSON.stringify(prepared.timings)}`
+    );
+
+    const firstInput = [11];
+    const secondInput = [22];
+    const [firstCase, secondCase] = await Promise.all([
+      prepared.program.executeIsolated({
+        inputs: { marker: 'first', values: firstInput },
+      }),
+      prepared.program.executeIsolated({
+        inputs: { marker: 'second', values: secondInput },
+      }),
+    ]);
+    for (const [label, result, expectedValues, marker] of [
+      ['first', firstCase, [11, 1], 'first'],
+      ['second', secondCase, [22, 1], 'second'],
+    ] as const) {
+      assertCondition(
+        result.kind === 'completed',
+        `${language} ${label} prepared case failed: ${JSON.stringify(result)}`
+      );
+      assertCondition(
+        JSON.stringify(result.output) ===
+          JSON.stringify({
+            lexicalCount: 1,
+            staticCount: 1,
+            globalCount: 1,
+            moduleCount: 1,
+            intrinsicCount: 1,
+            marker,
+            values: expectedValues,
+          }),
+        `${language} ${label} prepared case leaked mutable state: ${JSON.stringify(result.output)}`
+      );
+      assertCondition(
+        result.timings?.artifactCacheHit === true &&
+          typeof result.timings.runMs === 'number' &&
+          typeof result.timings.totalMs === 'number',
+        `${language} ${label} prepared case did not report cached-artifact run timings`
+      );
+    }
+    assert.deepEqual(
+      firstInput,
+      [11],
+      `${language} prepared execution mutated the caller's first input`
+    );
+    assert.deepEqual(
+      secondInput,
+      [22],
+      `${language} prepared execution mutated the caller's second input`
+    );
+
+    const coordinator = VmJavaScriptWorker.instances.find(
+      (worker) => worker.role === 'coordinator'
+    );
+    assertCondition(
+      coordinator,
+      `${language} prepared execution did not create a trusted coordinator`
+    );
+    assertCondition(
+      coordinator.postedTypes.filter((type) => type === 'prepare-execution')
+        .length === 1,
+      `${language} prepared code should prepare exactly once for multiple cases`
+    );
+    const codeExecutors = VmJavaScriptWorker.instances.filter(
+      (worker) =>
+        worker.role === 'executor' &&
+        worker.postedTypes.includes('execute-code')
+    );
+    assertCondition(
+      codeExecutors.length === 2 &&
+        codeExecutors.every(
+          (worker) =>
+            worker.terminated && worker.hasPreparedIntrinsicMutation()
+        ),
+      `${language} prepared cases must each use and retire a fresh executor`
+    );
+    assertCondition(
+      !coordinator.hasPreparedIntrinsicMutation(),
+      `${language} coordinator artifact observed executor prototype state`
+    );
+    assertCondition(
+      (VmJavaScriptWorker.typeScriptImports.get('executor') ?? 0) === 0,
+      `${language} prepared executors must not load the TypeScript compiler`
+    );
+
+    const tracePrepared = await runtime.prepareProgram({
+      mode: 'trace',
+      code:
+        language === 'typescript'
+          ? `function increment(value: number): number {
+  const next = value + 1;
+  return next;
+}`
+          : `function increment(value) {
+  const next = value + 1;
+  return next;
+}`,
+      functionName: 'increment',
+      executionStyle: 'function',
+    });
+    assertCondition(
+      tracePrepared.kind === 'prepared' &&
+        tracePrepared.program.mode === 'trace',
+      `${language} trace preparation failed: ${JSON.stringify(tracePrepared)}`
+    );
+    const [firstTrace, secondTrace] = await Promise.all([
+      tracePrepared.program.executeIsolated({ inputs: { value: 4 } }),
+      tracePrepared.program.executeIsolated({ inputs: { value: 8 } }),
+    ]);
+    assertCondition(
+      firstTrace.kind === 'completed' &&
+        firstTrace.output === 5 &&
+        firstTrace.trace.events.length > 0 &&
+        firstTrace.trace.events.some(
+          (event) => event.kind === 'return' && event.line === 3
+        ) &&
+        firstTrace.timings?.artifactCacheHit === true &&
+        typeof firstTrace.timings.runMs === 'number' &&
+        secondTrace.kind === 'completed' &&
+        secondTrace.output === 9 &&
+        secondTrace.trace.events.length > 0 &&
+        secondTrace.trace.events.some(
+          (event) => event.kind === 'return' && event.line === 3
+        ) &&
+        secondTrace.timings?.artifactCacheHit === true &&
+        typeof secondTrace.timings.runMs === 'number',
+      `${language} prepared trace cases failed: ${JSON.stringify([
+        firstTrace,
+        secondTrace,
+      ])}`
+    );
+    assertCondition(
+      coordinator.postedTypes.filter((type) => type === 'prepare-execution')
+        .length === 2,
+      `${language} prepared trace should add exactly one preparation`
+    );
+
+    const cancellable = await runtime.prepareProgram({
+      mode: 'code',
+      code:
+        language === 'typescript'
+          ? `async function maybeWait(wait: boolean): Promise<number> {
+  if (wait) await new Promise<void>(() => {});
+  return 42;
+}`
+          : `async function maybeWait(wait) {
+  if (wait) await new Promise(() => {});
+  return 42;
+}`,
+      functionName: 'maybeWait',
+      executionStyle: 'function',
+    });
+    assertCondition(
+      cancellable.kind === 'prepared' && cancellable.program.mode === 'code',
+      `${language} cancellation fixture failed to prepare`
+    );
+    const limited = await cancellable.program.executeIsolated({
+      inputs: { wait: true },
+      limits: { wallClockMs: 5 },
+    });
+    assertCondition(
+      limited.kind === 'limit' &&
+        limited.reason === 'client-timeout' &&
+        limited.timings?.totalMs === 5,
+      `${language} prepared execution did not honor its wall-clock limit: ${JSON.stringify(limited)}`
+    );
+    const abortController = new AbortController();
+    const cancelled = cancellable.program.executeIsolated({
+      inputs: { wait: true },
+      signal: abortController.signal,
+    });
+    setTimeout(() => abortController.abort(), 5);
+    await assert.rejects(
+      cancelled,
+      (error: unknown) =>
+        error instanceof Error && error.name === 'AbortError',
+      `${language} prepared execution did not propagate cancellation`
+    );
+    const recovered = await cancellable.program.executeIsolated({
+      inputs: { wait: false },
+    });
+    assertCondition(
+      recovered.kind === 'completed' && recovered.output === 42,
+      `${language} prepared program could not execute after a cancelled case: ${JSON.stringify(recovered)}`
+    );
+
+    const activeAtDispose = cancellable.program.executeIsolated({
+      inputs: { wait: true },
+    });
+    await new Promise<void>((resolve) => setTimeout(resolve, 0));
+    const executorCountBeforeDispose = VmJavaScriptWorker.instances.length;
+    const disposal = Promise.all([
+      cancellable.program.dispose(),
+      cancellable.program.dispose(),
+    ]);
+    await assert.rejects(
+      activeAtDispose,
+      (error: unknown) =>
+        error instanceof Error && error.name === 'AbortError',
+      `${language} disposal did not abort an active prepared execution`
+    );
+    await disposal;
+    await assert.rejects(
+      cancellable.program.executeIsolated({ inputs: { wait: false } }),
+      (error: unknown) =>
+        error instanceof Error && error.name === 'AbortError',
+      `${language} disposed prepared program accepted another case`
+    );
+    assert.equal(
+      VmJavaScriptWorker.instances.length,
+      executorCountBeforeDispose,
+      `${language} disposed prepared program allocated a worker`
+    );
+    await tracePrepared.program.dispose();
+    await prepared.program.dispose();
+
+    if (language === 'typescript') {
+      const failed = await runtime.prepareProgram({
+        mode: 'code',
+        code: 'function broken(value: number { return value; }',
+        functionName: 'broken',
+        executionStyle: 'function',
+      });
+      assertCondition(
+        failed.kind === 'failed' &&
+          failed.diagnosticStage === 'compile' &&
+          failed.errorLine === 1 &&
+          typeof failed.error === 'string' &&
+          failed.error.length > 0,
+        `Invalid TypeScript preparation should return a compile failure: ${JSON.stringify(failed)}`
+      );
+    }
+  } finally {
+    workerClient.terminate();
+    resetVmWorkers();
+  }
+}
+
+async function exercisePreparedDisposalOwner(): Promise<void> {
+  let disposeCalls = 0;
+  let observedLifecycleAbort = false;
+  const program = createJavaScriptPreparedProgram({
+    mode: 'code',
+    executeCode: (
+      _call: RuntimePreparedCodeCall,
+      signal: AbortSignal
+    ): Promise<CodeExecutionResult> =>
+      new Promise((resolve) => {
+        signal.addEventListener(
+          'abort',
+          () => {
+            observedLifecycleAbort = true;
+            resolve({
+              kind: 'completed',
+              output: 1,
+              consoleOutput: [],
+            });
+          },
+          { once: true }
+        );
+      }),
+    dispose: () => {
+      disposeCalls += 1;
+    },
+  });
+  const activeCase = program.executeIsolated({ inputs: {} });
+  await Promise.resolve();
+  await Promise.all([program.dispose(), program.dispose(), program.dispose()]);
+  await activeCase;
+  assert.equal(
+    disposeCalls,
+    1,
+    'Prepared-program owner must dispose its artifact exactly once'
+  );
+  assert.equal(
+    observedLifecycleAbort,
+    true,
+    'Prepared-program disposal must abort active cases before releasing artifacts'
+  );
 }
 
 async function main(): Promise<void> {
@@ -279,6 +670,9 @@ async function main(): Promise<void> {
       standbyExecutorWorkers[0].terminated,
       'Explicit client termination should stop the clean standby executor'
     );
+    await exercisePreparedProvider('javascript');
+    await exercisePreparedProvider('typescript');
+    await exercisePreparedDisposalOwner();
     console.log('PASS: JavaScript/TypeScript coordinator and disposable execution lifecycle');
   } finally {
     if (originalWorker === undefined) {

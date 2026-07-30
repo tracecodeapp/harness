@@ -1,7 +1,11 @@
 export * from './javascript-executor';
 export * from './typescript-runtime-declarations';
 export * from './typescript-project';
-export { createJavaScriptRuntimeClient } from './javascript-runtime-client';
+export {
+  createJavaScriptRuntimeClient,
+  type JavaScriptRuntimeClient,
+  type JavaScriptRuntimeClientOptions,
+} from './javascript-runtime-client';
 export {
   JavaScriptWorkerClient,
   type JavaScriptExecutionStyle,

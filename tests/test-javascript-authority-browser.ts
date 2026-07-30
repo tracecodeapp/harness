@@ -158,6 +158,58 @@ async function main(): Promise<void> {
       const harness = createBrowserHarness({ assetBaseUrl: '/workers' });
       try {
         const client = harness.getClient('javascript');
+        const exercisePrepared = async (
+          language: 'javascript' | 'typescript'
+        ) => {
+          const preparedClient = harness.getClient(language) as typeof client & {
+            prepareProgram(call: {
+              mode: 'code';
+              code: string;
+              functionName: string;
+              executionStyle: 'function';
+            }): Promise<any>;
+          };
+          const preparation = await preparedClient.prepareProgram({
+            mode: 'code',
+            code:
+              language === 'typescript'
+                ? `let count = 0;
+function isolated(value: number): number[] {
+  count += 1;
+  (globalThis as any).__preparedBrowserCount =
+    ((globalThis as any).__preparedBrowserCount ?? 0) + 1;
+  return [value, count, (globalThis as any).__preparedBrowserCount];
+}`
+                : `let count = 0;
+function isolated(value) {
+  count += 1;
+  globalThis.__preparedBrowserCount =
+    (globalThis.__preparedBrowserCount ?? 0) + 1;
+  return [value, count, globalThis.__preparedBrowserCount];
+}`,
+            functionName: 'isolated',
+            executionStyle: 'function',
+          });
+          if (
+            preparation.kind !== 'prepared' ||
+            preparation.program.mode !== 'code'
+          ) {
+            return { preparation };
+          }
+          try {
+            const [first, second] = await Promise.all([
+              preparation.program.executeIsolated({
+                inputs: { value: 3 },
+              }),
+              preparation.program.executeIsolated({
+                inputs: { value: 7 },
+              }),
+            ]);
+            return { preparation: { kind: 'prepared' }, first, second };
+          } finally {
+            await preparation.program.dispose();
+          }
+        };
         const control = await client.executeCode({ code: 'function add(a, b) { return a + b; }', functionName: 'add', inputs: { a: 2, b: 3 }, executionStyle: 'function' });
         const computed = await client.executeCode({ code: `function escape() {
   const key = 'con' + 'structor';
@@ -179,6 +231,8 @@ async function main(): Promise<void> {
 }`, functionName: 'escapeLater', inputs: {}, executionStyle: 'function' });
         const typed = await harness.getClient('typescript').executeCode({ code: 'function multiply(a: number, b: number): number { return a * b; }', functionName: 'multiply', inputs: { a: 3, b: 4 }, executionStyle: 'function' });
         const traced = await client.executeWithTracing({ code: 'function increment(value) { return value + 1; }', functionName: 'increment', inputs: { value: 8 } });
+        const preparedJavaScript = await exercisePrepared('javascript');
+        const preparedTypeScript = await exercisePrepared('typescript');
         return {
           control,
           computed,
@@ -189,6 +243,8 @@ async function main(): Promise<void> {
             output: traced.kind === 'completed' ? traced.output : undefined,
             eventCount: traced.trace?.events?.length ?? 0,
           },
+          preparedJavaScript,
+          preparedTypeScript,
         };
       } finally {
         harness.dispose();
@@ -209,6 +265,21 @@ async function main(): Promise<void> {
       classic.traced.success && classic.traced.output === 9 && classic.traced.eventCount > 0,
       `Classic tracing control failed: ${JSON.stringify(classic.traced)}`
     );
+    for (const [language, result] of [
+      ['javascript', classic.preparedJavaScript],
+      ['typescript', classic.preparedTypeScript],
+    ] as const) {
+      assertCondition(
+        result.preparation.kind === 'prepared' &&
+          result.first?.kind === 'completed' &&
+          JSON.stringify(result.first.output) === JSON.stringify([3, 1, 1]) &&
+          result.first.timings?.artifactCacheHit === true &&
+          result.second?.kind === 'completed' &&
+          JSON.stringify(result.second.output) === JSON.stringify([7, 1, 1]) &&
+          result.second.timings?.artifactCacheHit === true,
+        `Browser ${language} prepared isolation failed: ${JSON.stringify(result)}`
+      );
+    }
 
     const projectJournal = await page.evaluate(async () => {
       const browserProjectModulePath = '/browser-project.js';

@@ -10,6 +10,9 @@ import type {
   RuntimeExecuteRequest,
   RuntimeExecuteResponse,
   RuntimeExecuteResult,
+  RuntimePreparedExecutionProvider,
+  RuntimeProgramPreparationCall,
+  RuntimeProgramPreparationResult,
   RuntimeTraceCall,
 } from '@tracecode/runtime-core';
 import type { RuntimeCommandResult } from '@tracecode/runtime-core';
@@ -26,7 +29,12 @@ export interface JavaScriptRuntimeClientOptions {
   executeProject?: (request: RuntimeExecuteProjectRequest) => Promise<RuntimeCommandResult>;
 }
 
-class JavaScriptRuntimeClient implements RuntimeClient {
+export interface JavaScriptRuntimeClient
+  extends RuntimeClient,
+    RuntimePreparedExecutionProvider {}
+
+class JavaScriptRuntimeClientImplementation
+  implements JavaScriptRuntimeClient {
   constructor(
     private readonly runtimeLanguage: JavaScriptWorkerLanguage,
     private readonly workerClient: JavaScriptWorkerClient,
@@ -35,6 +43,20 @@ class JavaScriptRuntimeClient implements RuntimeClient {
 
   async init(): Promise<{ success: boolean; loadTimeMs: number }> {
     return this.workerClient.init();
+  }
+
+  async prepareProgram(
+    call: RuntimeProgramPreparationCall
+  ): Promise<RuntimeProgramPreparationResult> {
+    assertRuntimeRequestSupported(
+      getLanguageRuntimeProfile(this.runtimeLanguage),
+      {
+        request: call.mode === 'trace' ? 'trace' : 'execute',
+        executionStyle: call.executionStyle ?? 'function',
+        functionName: call.functionName ?? '',
+      }
+    );
+    return this.workerClient.prepareProgram(call, this.runtimeLanguage);
   }
 
   async execute(request: RuntimeExecuteCodeRequest): Promise<RuntimeExecuteResult>;
@@ -104,6 +126,10 @@ export function createJavaScriptRuntimeClient(
   runtimeLanguage: JavaScriptWorkerLanguage,
   workerClient: JavaScriptWorkerClient,
   options: JavaScriptRuntimeClientOptions = {}
-): RuntimeClient {
-  return new JavaScriptRuntimeClient(runtimeLanguage, workerClient, options);
+): JavaScriptRuntimeClient {
+  return new JavaScriptRuntimeClientImplementation(
+    runtimeLanguage,
+    workerClient,
+    options
+  );
 }
