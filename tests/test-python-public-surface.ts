@@ -123,6 +123,7 @@ function main(): void {
   for (const name of [
     'PythonWorkerClient',
     'PythonWorkerClientOptions',
+    'createPythonPreparedExecutionProvider',
     'createPythonRuntimeClient',
     'createBrowserPythonProjectRunner',
     'BrowserPythonProjectRunnerOptions',
@@ -172,6 +173,15 @@ function main(): void {
   assertCondition(
     rootPackage.exports?.['./python'] !== undefined,
     'The root package must expose the canonical @tracecode/harness/python entrypoint'
+  );
+  const runtimePackage = JSON.parse(
+    readFileSync(resolve(process.cwd(), 'packages/runtime-python/package.json'), 'utf8')
+  ) as {
+    private?: boolean;
+  };
+  assertCondition(
+    runtimePackage.private === true,
+    'The Python runtime package must remain a private root-package implementation detail'
   );
   assertCondition(
     !/pyodide/i.test(JSON.stringify(getLanguageRuntimeInfo('python'))),

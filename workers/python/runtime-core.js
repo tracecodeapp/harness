@@ -36,6 +36,7 @@ const isolatedPythonExecutionGuards = new WeakMap();
 function createIsolatedPythonExecutionGuard(pyodide) {
   const guard = pyodide.runPython(`
 import builtins as __tracecode_guard_builtins
+import copy as _tracecode_guard_copy
 import sys as __tracecode_guard_sys
 
 class __TracecodeExecutionGuard:
@@ -44,8 +45,12 @@ class __TracecodeExecutionGuard:
         self._modules = sys_module.modules
         self._gettrace = sys_module.gettrace
         self._settrace = sys_module.settrace
+        self._guard_globals = globals()
+        self._deepcopy = _tracecode_guard_copy.deepcopy
         self._builtins_snapshot = None
         self._modules_snapshot = None
+        self._module_dict_snapshots = None
+        self._module_mutable_snapshots = None
         self._trace_snapshot = None
         self._compiled = {}
         self._compiled_limit = 4
@@ -55,18 +60,79 @@ class __TracecodeExecutionGuard:
             raise RuntimeError('Nested TraceCode Python execution scope')
         self._builtins_snapshot = dict(self._builtins_dict)
         self._modules_snapshot = dict(self._modules)
+        self._module_dict_snapshots = []
+        self._module_mutable_snapshots = []
+        # sys.modules is interpreter-global in Pyodide. Preserve the
+        # Python-visible module boundary explicitly: module attributes and the
+        # built-in mutable containers reachable from them are restored after
+        # each case. Opaque engine-owned state inside C-extension objects is
+        # not cloneable here and is not treated as learner case state.
+        for module in self._modules_snapshot.values():
+            try:
+                namespace = module.__dict__
+            except Exception:
+                continue
+            if (
+                isinstance(namespace, dict)
+                and namespace is not self._guard_globals
+                and namespace is not self._builtins_dict
+            ):
+                self._module_dict_snapshots.append((module, dict(namespace)))
+                module_name = namespace.get('__name__')
+                for name, value in namespace.items():
+                    if module_name == 'os' and name == 'environ':
+                        try:
+                            self._module_mutable_snapshots.append(
+                                (value, 'mapping', self._deepcopy(dict(value)))
+                            )
+                        except Exception:
+                            pass
+                        continue
+                    if type(value) not in (dict, list, set, bytearray):
+                        continue
+                    try:
+                        self._module_mutable_snapshots.append(
+                            (value, type(value).__name__, self._deepcopy(value))
+                        )
+                    except Exception:
+                        pass
         self._trace_snapshot = self._gettrace()
 
     def restore(self):
         builtins_snapshot = self._builtins_snapshot
         modules_snapshot = self._modules_snapshot
+        module_dict_snapshots = self._module_dict_snapshots
+        module_mutable_snapshots = self._module_mutable_snapshots
         trace_snapshot = self._trace_snapshot
         self._builtins_snapshot = None
         self._modules_snapshot = None
+        self._module_dict_snapshots = None
+        self._module_mutable_snapshots = None
         self._trace_snapshot = None
         if builtins_snapshot is None or modules_snapshot is None:
             raise RuntimeError('TraceCode Python execution scope was not active')
         self._settrace(None)
+        for module, namespace_snapshot in module_dict_snapshots or ():
+            try:
+                namespace = module.__dict__
+                namespace.clear()
+                namespace.update(namespace_snapshot)
+            except Exception:
+                pass
+        for value, value_kind, value_snapshot in module_mutable_snapshots or ():
+            try:
+                if value_kind in ('dict', 'mapping'):
+                    value.clear()
+                    value.update(value_snapshot)
+                elif value_kind == 'list':
+                    value[:] = value_snapshot
+                elif value_kind == 'set':
+                    value.clear()
+                    value.update(value_snapshot)
+                elif value_kind == 'bytearray':
+                    value[:] = value_snapshot
+            except Exception:
+                pass
         self._builtins_dict.clear()
         self._builtins_dict.update(builtins_snapshot)
         self._modules.clear()
@@ -80,6 +146,13 @@ class __TracecodeExecutionGuard:
         self._compiled[source] = code
         while len(self._compiled) > self._compiled_limit:
             del self._compiled[next(iter(self._compiled))]
+        exec(code, namespace)
+        return namespace[result_name]
+
+    def compile(self, source, filename):
+        return compile(source, filename, 'exec')
+
+    def run_compiled(self, code, namespace, result_name):
         exec(code, namespace)
         return namespace[result_name]
 
@@ -97,6 +170,7 @@ __tracecode_execution_guard
   pyodide.globals.delete('__tracecode_execution_guard');
   pyodide.globals.delete('__TracecodeExecutionGuard');
   pyodide.globals.delete('__tracecode_guard_builtins');
+  pyodide.globals.delete('_tracecode_guard_copy');
   pyodide.globals.delete('__tracecode_guard_sys');
   return guard;
 }
@@ -132,6 +206,62 @@ async function runPythonInFreshExecutionScope(deps, source, resultName) {
   }
 }
 
+function setPythonNamespaceBindings(namespace, bindings) {
+  if (!bindings) return;
+  for (const [name, value] of Object.entries(bindings)) {
+    namespace.set(name, value);
+  }
+}
+
+async function compilePythonProgram(deps, source, filename) {
+  const pyodide = deps.getPyodide();
+  if (
+    typeof pyodide?.runPython !== 'function' ||
+    typeof pyodide?.globals?.delete !== 'function'
+  ) {
+    throw new Error('Prepared Python programs require the full browser Python runtime.');
+  }
+  let guard = isolatedPythonExecutionGuards.get(pyodide);
+  if (!guard) {
+    guard = createIsolatedPythonExecutionGuard(pyodide);
+    isolatedPythonExecutionGuards.set(pyodide, guard);
+  }
+  return guard.compile(source, filename);
+}
+
+async function runCompiledPythonInFreshExecutionScope(
+  deps,
+  code,
+  resultName,
+  bindings
+) {
+  const pyodide = deps.getPyodide();
+  if (
+    typeof pyodide?.runPython !== 'function' ||
+    typeof pyodide?.toPy !== 'function' ||
+    typeof pyodide?.globals?.delete !== 'function'
+  ) {
+    throw new Error('Prepared Python programs require the full browser Python runtime.');
+  }
+  let guard = isolatedPythonExecutionGuards.get(pyodide);
+  if (!guard) {
+    guard = createIsolatedPythonExecutionGuard(pyodide);
+    isolatedPythonExecutionGuards.set(pyodide, guard);
+  }
+  const namespace = pyodide.toPy({ __name__: '__main__' });
+  guard.begin();
+  try {
+    setPythonNamespaceBindings(namespace, bindings);
+    return guard.run_compiled(code, namespace, resultName);
+  } finally {
+    try {
+      guard.restore();
+    } finally {
+      namespace?.destroy?.();
+    }
+  }
+}
+
 function getTraceMaxPathDepth(value) {
   if (typeof value !== 'number' || !Number.isFinite(value) || value <= 0) {
     return DEFAULT_TRACE_MAX_PATH_DEPTH;
@@ -139,10 +269,32 @@ function getTraceMaxPathDepth(value) {
   return Math.min(MAX_TRACE_MAX_PATH_DEPTH, Math.max(1, Math.floor(value)));
 }
 
-function generateTracingCode(deps, userCode, functionName, inputs, executionStyle = 'function', options = {}) {
-  const inputSetup = Object.entries(inputs)
-    .map(([key, value]) => `${key} = ${deps.toPythonLiteral(value)}`)
-    .join('\n');
+function generateTracingCode(
+  deps,
+  userCode,
+  functionName,
+  inputs,
+  executionStyle = 'function',
+  options = {},
+  prepared = undefined
+) {
+  const usesPreparedBindings = prepared?.bindings === true;
+  const preparedInputPrelude = usesPreparedBindings
+    ? `
+import ast as _tracecode_input_ast
+import copy as _tracecode_input_copy
+_tracecode_raw_inputs = _tracecode_input_ast.literal_eval(__tracecode_inputs_literal)
+_tracecode_case_limits = _tracecode_input_ast.literal_eval(__tracecode_limits_literal)
+`
+    : '';
+  const inputSetup = usesPreparedBindings
+    ? `
+for _tracecode_input_name, _tracecode_input_value in _tracecode_raw_inputs.items():
+    globals()[str(_tracecode_input_name)] = _tracecode_input_copy.deepcopy(_tracecode_input_value)
+`
+    : Object.entries(inputs)
+        .map(([key, value]) => `${key} = ${deps.toPythonLiteral(value)}`)
+        .join('\n');
 
   const escapedCode = userCode.replace(/\\/g, '\\\\').replace(/"""/g, '\\"\\"\\"');
   const targetFunction = functionName || '';
@@ -170,6 +322,7 @@ import builtins as _builtins
 import typing as _tracecode_typing
 from typing import *
 ${deps.PYTHON_CLASS_DEFINITIONS_SNIPPET}
+${preparedInputPrelude}
 
 _TRACECODE_TYPING_GLOBALS = _builtins.set(getattr(_tracecode_typing, '__all__', ()))
 
@@ -184,7 +337,11 @@ _MINIMAL_TRACE = ${minimalTrace ? 'True' : 'False'}
 _TRACE_MAX_PATH_DEPTH = ${maxPathDepth}
 _TRACE_MAX_BULK_ACCESSES = 512
 _SCRIPT_MODE = ${functionName ? 'False' : 'True'}
-_TRACE_INPUT_NAMES = _builtins.set(${JSON.stringify(Object.keys(inputs))})
+_TRACE_INPUT_NAMES = ${
+    usesPreparedBindings
+      ? '_builtins.set(str(_name) for _name in _tracecode_raw_inputs.keys())'
+      : `_builtins.set(${JSON.stringify(Object.keys(inputs))})`
+  }
 
 class _InfiniteLoopDetected(Exception):
     pass
@@ -214,6 +371,7 @@ ${deps.PYTHON_TRACE_SERIALIZE_FUNCTION_SNIPPET}
 _call_stack = []
 _pending_accesses = {}
 _last_trace_index_by_frame = {}
+_tracecode_tracemalloc_started = False
 _TRACE_MUTATING_METHODS = {'append', 'appendleft', 'pop', 'popleft', 'extend', 'insert', 'add', 'remove', 'discard', 'clear', 'sort', 'reverse'}
 _tracecode_user_class_names = _builtins.set()
 _tracecode_explicit_return_function_names = _builtins.set()
@@ -225,9 +383,9 @@ _internal_locals = {
     '_SCRIPT_MODE', '_TRACE_INPUT_NAMES', '_SCRIPT_PRE_USER_GLOBALS',
     '_tracecode_builtin_id', '_tracecode_operator', '_tracecode_typing',
     '_TRACECODE_TYPING_GLOBALS',
-    '_call_stack', '_pending_accesses', '_last_trace_index_by_frame', '_TRACE_MUTATING_METHODS', '_tracecode_user_class_names', '_tracecode_explicit_return_function_names', '_internal_funcs', '_internal_locals', '_max_trace_steps',
+    '_call_stack', '_pending_accesses', '_last_trace_index_by_frame', '_tracecode_tracemalloc', '_tracecode_tracemalloc_started', '_TRACE_MUTATING_METHODS', '_tracecode_user_class_names', '_tracecode_explicit_return_function_names', '_internal_funcs', '_internal_locals', '_max_trace_steps',
     '_trace_limit_exceeded', '_timeout_reason', '_total_line_events', '_max_line_events', '_max_stored_events',
-    '_line_hit_count', '_max_single_line_hits', '_infinite_loop_line',
+    '_line_hit_count', '_max_single_line_hits', '_max_call_depth', '_max_memory_bytes', '_memory_check_every', '_infinite_loop_line',
     '_MAX_SERIALIZE_DEPTH', '_trace_failed', '_inplace',
     '_custom_print', '_tracer', '_serialize', '_serialize_output', '_tracecode_ref_id', '_dict_to_tree', '_dict_to_list', '_tracecode_materialize_input',
     '_tracecode_materialize_custom_input', '_tracecode_materialize_named_inputs', '_tracecode_hydrate_for_annotation',
@@ -258,10 +416,34 @@ _max_stored_events = ${maxStoredEvents}
 _trace_limit_exceeded = False
 _timeout_reason = None
 _total_line_events = 0
-_max_line_events = ${maxLineEvents}
+_max_line_events = ${
+    usesPreparedBindings
+      ? `int(_tracecode_case_limits.get('maxLineEvents', ${maxLineEvents}))`
+      : maxLineEvents
+  }
 _line_hit_count = {}
-_max_single_line_hits = ${maxSingleLineHits}
+_max_single_line_hits = ${
+    usesPreparedBindings
+      ? `int(_tracecode_case_limits.get('maxSingleLineHits', ${maxSingleLineHits}))`
+      : maxSingleLineHits
+  }
+_max_call_depth = ${
+    usesPreparedBindings
+      ? `(max(100, int(_tracecode_case_limits.get('maxCallDepth', 100))) if 'maxCallDepth' in _tracecode_case_limits else 0)`
+      : 0
+  }
+_max_memory_bytes = ${
+    usesPreparedBindings
+      ? `(max(8 * 1024 * 1024, int(_tracecode_case_limits.get('maxMemoryBytes', 8 * 1024 * 1024))) if 'maxMemoryBytes' in _tracecode_case_limits else 0)`
+      : 0
+  }
+_memory_check_every = 10
 _infinite_loop_line = -1
+
+try:
+    import tracemalloc as _tracecode_tracemalloc
+except Exception:
+    _tracecode_tracemalloc = None
 
 def _is_structural_constructor_frame(frame):
     if frame.f_code.co_name != '__init__':
@@ -2970,6 +3152,32 @@ def _tracer(frame, event, arg,
             return _tracer
         _total_line_events += 1
 
+        if (
+            _max_memory_bytes > 0
+            and _tracecode_tracemalloc is not None
+            and (_total_line_events % _memory_check_every) == 0
+        ):
+            try:
+                _current_memory, _peak_memory = _tracecode_tracemalloc.get_traced_memory()
+            except Exception:
+                _current_memory, _peak_memory = (0, 0)
+            if _current_memory >= _max_memory_bytes or _peak_memory >= _max_memory_bytes:
+                if not _trace_limit_exceeded:
+                    _trace_limit_exceeded = True
+                    _timeout_reason = 'memory-limit'
+                    _infinite_loop_line = frame.f_lineno
+                    __tracecode_append_trace_step(frame, {
+                        'line': frame.f_lineno,
+                        'event': 'timeout',
+                        'variables': {'timeoutReason': _timeout_reason},
+                        'function': func_name,
+                        'callStack': _snapshot_call_stack(),
+                        'stdoutLineCount': len(_console_output),
+                        'accesses': [],
+                    })
+                    sys.settrace(None)
+                    raise _InfiniteLoopDetected(f"Exceeded {_max_memory_bytes} bytes")
+
         # Check total line events before duplicate-line suppression so
         # tight no-op loops cannot bypass the in-runtime guard.
         if _total_line_events >= _max_line_events:
@@ -3049,6 +3257,22 @@ def _tracer(frame, event, arg,
         return None
 
     if event == 'call':
+        if _max_call_depth > 0 and func_name != '<module>' and len(_call_stack) + 1 > _max_call_depth:
+            if not _trace_limit_exceeded:
+                _trace_limit_exceeded = True
+                _timeout_reason = 'recursion-limit'
+                _infinite_loop_line = frame.f_lineno
+                __tracecode_append_trace_step(frame, {
+                    'line': frame.f_lineno,
+                    'event': 'timeout',
+                    'variables': {'timeoutReason': _timeout_reason},
+                    'function': func_name,
+                    'callStack': _snapshot_call_stack(),
+                    'stdoutLineCount': len(_console_output),
+                    'accesses': [],
+                })
+                sys.settrace(None)
+                raise _InfiniteLoopDetected(f"Exceeded {_max_call_depth} calls")
         local_vars, local_sources = _snapshot_locals(frame, with_sources=True)
         if func_name != '<module>':
             _call_stack.append({
@@ -3149,11 +3373,11 @@ pow = _builtins.pow
     }
   });
 
-  const treeConversions = treeInputKeys.length > 0
+  const treeConversions = !usesPreparedBindings && treeInputKeys.length > 0
     ? treeInputKeys.map(key => `${key} = _dict_to_tree(${key})`).join('\n')
     : '';
   
-  const listConversions = listInputKeys.length > 0
+  const listConversions = !usesPreparedBindings && listInputKeys.length > 0
     ? listInputKeys.map(key => `${key} = _dict_to_list(${key})`).join('\n')
     : '';
 
@@ -3162,8 +3386,12 @@ pow = _builtins.pow
     .join(', ');
   const inplaceCandidates = ['nums1', 'nums', 'arr', 'array', 'matrix', 'board', 'grid']
     .filter((key) => Object.prototype.hasOwnProperty.call(inputs, key));
-  const inplaceCandidatesLiteral = JSON.stringify(inplaceCandidates);
-  const traceInputNamesLiteral = JSON.stringify(Object.keys(inputs));
+  const inplaceCandidatesLiteral = usesPreparedBindings
+    ? "[_name for _name in ('nums1', 'nums', 'arr', 'array', 'matrix', 'board', 'grid') if _name in _TRACE_INPUT_NAMES]"
+    : JSON.stringify(inplaceCandidates);
+  const traceInputNamesLiteral = usesPreparedBindings
+    ? '_builtins.list(_TRACE_INPUT_NAMES)'
+    : JSON.stringify(Object.keys(inputs));
   const functionNameLiteral = deps.toPythonLiteral(functionName);
   const executionStyleLiteral = deps.toPythonLiteral(executionStyle);
   const executionCode = functionName
@@ -3214,8 +3442,27 @@ pow = _builtins.pow
     `_tracecode_user_class_names = _tracecode_collect_user_class_names(ast.parse(_user_code_str, filename='solution.py', mode='exec'))`,
     `_tracecode_explicit_return_function_names = _tracecode_collect_explicit_return_function_names(ast.parse(_user_code_str, filename='solution.py', mode='exec'))`,
     `_tracecode_collapsed_literal_lines = _tracecode_collect_collapsed_literal_lines(_user_code_str)`,
-    `__tracecode_compiled = __tracecode_compile_user_code(_user_code_str)`,
+    usesPreparedBindings
+      ? `__tracecode_compiled = __tracecode_prepared_user_code`
+      : `__tracecode_compiled = __tracecode_compile_user_code(_user_code_str)`,
     ].join('\n');
+
+  if (prepared?.compileUserOnly === true) {
+    const preparationSetup = [
+      `\n_user_code_str = """${escapedCode}"""`,
+      `import textwrap as _textwrap`,
+      `_user_code_str = _textwrap.dedent(_user_code_str.lstrip("\\n"))`,
+      `_tracecode_user_class_names = _tracecode_collect_user_class_names(ast.parse(_user_code_str, filename='solution.py', mode='exec'))`,
+      `_tracecode_explicit_return_function_names = _tracecode_collect_explicit_return_function_names(ast.parse(_user_code_str, filename='solution.py', mode='exec'))`,
+      `_tracecode_collapsed_literal_lines = _tracecode_collect_collapsed_literal_lines(_user_code_str)`,
+      `__tracecode_prepared_user_code_result = __tracecode_compile_user_code(_user_code_str)`,
+      `__tracecode_prepared_user_code_result`,
+    ].join('\n');
+    return {
+      code: harnessPrefix + preparationSetup,
+      userCodeStartLine,
+    };
+  }
 
   const preloadUserDefinitions = functionName ? `exec(__tracecode_compiled, _globals_dict)\n` : '';
 
@@ -3440,6 +3687,14 @@ _tracecode_hydrate_annotated_inputs(${traceInputNamesLiteral}, ${functionNameLit
 if _SCRIPT_MODE:
     _SCRIPT_PRE_USER_GLOBALS = _builtins.set(globals().keys()) - _TRACE_INPUT_NAMES
 
+if _max_memory_bytes > 0 and _tracecode_tracemalloc is not None:
+    try:
+        if not _tracecode_tracemalloc.is_tracing():
+            _tracecode_tracemalloc.start()
+            _tracecode_tracemalloc_started = True
+    except Exception:
+        _tracecode_tracemalloc_started = False
+
 sys.settrace(_tracer)
 _trace_failed = False
 
@@ -3482,6 +3737,11 @@ if (not _trace_failed) and _result is None:
         _result = _inplace
 
 sys.settrace(None)
+if _tracecode_tracemalloc is not None and _tracecode_tracemalloc_started:
+    try:
+        _tracecode_tracemalloc.stop()
+    except Exception:
+        pass
 
 _builtins.print = _original_print
 print = _original_print
@@ -3731,25 +3991,58 @@ function remapPythonRuntimeTrace(runtimeTrace, userCodeStartLine, userCodeLineCo
  * @param {object} inputs - Input parameters
  * @param {object} options - Optional limits for tracing
  */
-async function executeWithTracing(deps, code, functionName, inputs, executionStyle = 'function', options = {}) {
+async function executeWithTracing(
+  deps,
+  code,
+  functionName,
+  inputs,
+  executionStyle = 'function',
+  options = {},
+  prepared = undefined
+) {
   const startTime = deps.performanceNow();
   const userCodeLineCount = code.split('\n').length;
-  const { code: tracingCode, userCodeStartLine } = generateTracingCode(deps, 
+  const generated = generateTracingCode(deps,
     code,
     functionName,
-    inputs,
+    prepared ? {} : inputs,
     executionStyle,
-    options
+    options,
+    prepared ? { bindings: true } : undefined
   );
+  const tracingCode = generated.code;
+  const userCodeStartLine = prepared ? 1 : generated.userCodeStartLine;
 
   try {
     await deps.loadPyodideInstance();
     
-    const resultJson = await runPythonInFreshExecutionScope(
-      deps,
-      tracingCode,
-      '__tracecode_execution_result_json'
-    );
+    if (prepared?.compileOnly === true) {
+      return {
+        success: true,
+        output: null,
+        trace: { events: [] },
+        executionTimeMs: deps.performanceNow() - startTime,
+        consoleOutput: [],
+        __preparedSource: tracingCode,
+      };
+    }
+
+    const resultJson = prepared
+      ? await runCompiledPythonInFreshExecutionScope(
+          deps,
+          prepared.executorCode,
+          '__tracecode_execution_result_json',
+          {
+            __tracecode_prepared_user_code: prepared.userCodeObject,
+            __tracecode_inputs_literal: deps.toPythonLiteral(inputs),
+            __tracecode_limits_literal: deps.toPythonLiteral(prepared.limits?.guest ?? {}),
+          }
+        )
+      : await runPythonInFreshExecutionScope(
+          deps,
+          tracingCode,
+          '__tracecode_execution_result_json'
+        );
     const result = JSON.parse(resultJson);
 
     const executionTimeMs = deps.performanceNow() - startTime;
@@ -3843,6 +4136,7 @@ async function executeWithTracing(deps, code, functionName, inputs, executionSty
       timeoutReason,
       lineEventCount: result.lineEventCount,
       traceStepCount: result.traceStepCount,
+      timings: { totalMs: executionTimeMs, runMs: executionTimeMs },
     };
   } catch (error) {
     const executionTimeMs = deps.performanceNow() - startTime;
@@ -3864,6 +4158,7 @@ async function executeWithTracing(deps, code, functionName, inputs, executionSty
       traceLimitExceeded: isClientTimeout ? true : undefined,
       lineEventCount: 0,
       traceStepCount: 0,
+      timings: { totalMs: executionTimeMs, runMs: executionTimeMs },
     };
   }
 }
@@ -3871,11 +4166,23 @@ async function executeWithTracing(deps, code, functionName, inputs, executionSty
 /**
  * Execute Python code without tracing (for running tests)
  */
-async function executeCode(deps, code, functionName, inputs, executionStyle = 'function', options = {}) {
+async function executeCode(
+  deps,
+  code,
+  functionName,
+  inputs,
+  executionStyle = 'function',
+  options = {},
+  prepared = undefined
+) {
   const startedAt = deps.performanceNow();
   const userCodeLineCount = code.split('\n').length;
   let userCodeStartLine = 1;
-  const interviewGuardEnabled = options.interviewGuard === true;
+  const usesPreparedBindings = prepared !== undefined;
+  // Prepared executors are compiled once, so their guard code must be present
+  // even when the first case has no limits. Each execution decides whether to
+  // enable it from its own immutable limits binding.
+  const interviewGuardEnabled = options.interviewGuard === true || usesPreparedBindings;
   const interviewGuardConfig = {
     maxLineEvents: Math.max(10000, options.maxLineEvents ?? deps.INTERVIEW_GUARD_DEFAULTS.maxLineEvents),
     maxSingleLineHits: Math.max(1000, options.maxSingleLineHits ?? deps.INTERVIEW_GUARD_DEFAULTS.maxSingleLineHits),
@@ -3887,9 +4194,21 @@ async function executeCode(deps, code, functionName, inputs, executionStyle = 'f
   try {
     await deps.loadPyodideInstance();
 
-    const inputSetup = Object.entries(inputs)
-      .map(([key, value]) => `${key} = ${deps.toPythonLiteral(value)}`)
-      .join('\n');
+    const preparedInputPrelude = usesPreparedBindings
+      ? `
+import ast as _tracecode_input_ast
+import copy as _tracecode_input_copy
+_tracecode_raw_inputs = _tracecode_input_ast.literal_eval(__tracecode_inputs_literal)
+_tracecode_case_limits = _tracecode_input_ast.literal_eval(__tracecode_limits_literal)
+for _tracecode_input_name, _tracecode_input_value in _tracecode_raw_inputs.items():
+    globals()[str(_tracecode_input_name)] = _tracecode_input_copy.deepcopy(_tracecode_input_value)
+`
+      : '';
+    const inputSetup = usesPreparedBindings
+      ? ''
+      : Object.entries(inputs)
+          .map(([key, value]) => `${key} = ${deps.toPythonLiteral(value)}`)
+          .join('\n');
 
     // Separate tree inputs (have left/right) from list inputs (have next)
     const treeInputKeys = [];
@@ -3910,11 +4229,11 @@ async function executeCode(deps, code, functionName, inputs, executionStyle = 'f
       }
     });
 
-    const treeConversions = treeInputKeys.length > 0
+    const treeConversions = !usesPreparedBindings && treeInputKeys.length > 0
       ? treeInputKeys.map(key => `${key} = _dict_to_tree(${key})`).join('\n')
       : '';
     
-    const listConversions = listInputKeys.length > 0
+    const listConversions = !usesPreparedBindings && listInputKeys.length > 0
       ? listInputKeys.map(key => `${key} = _dict_to_list(${key})`).join('\n')
       : '';
 
@@ -3923,8 +4242,12 @@ async function executeCode(deps, code, functionName, inputs, executionStyle = 'f
       .join(', ');
     const inplaceCandidates = ['nums1', 'nums', 'arr', 'array', 'matrix', 'board', 'grid']
       .filter((key) => Object.prototype.hasOwnProperty.call(inputs, key));
-    const inplaceCandidatesLiteral = JSON.stringify(inplaceCandidates);
-    const traceInputNamesLiteral = JSON.stringify(Object.keys(inputs));
+    const inplaceCandidatesLiteral = usesPreparedBindings
+      ? "[_name for _name in ('nums1', 'nums', 'arr', 'array', 'matrix', 'board', 'grid') if _name in _tracecode_raw_inputs]"
+      : JSON.stringify(inplaceCandidates);
+    const traceInputNamesLiteral = usesPreparedBindings
+      ? '_builtins.list(str(_name) for _name in _tracecode_raw_inputs.keys())'
+      : JSON.stringify(Object.keys(inputs));
     const functionNameLiteral = deps.toPythonLiteral(functionName);
     const executionStyleLiteral = deps.toPythonLiteral(executionStyle);
     const executionCall = executionStyle === 'solution-method'
@@ -3974,6 +4297,7 @@ import sys
 import builtins as _builtins
 ${deps.PYTHON_CLASS_DEFINITIONS_SNIPPET}
 ${PYTHON_DEFAULT_IMPORT_PRELUDE}
+${preparedInputPrelude}
 pow = _builtins.pow
 
 _console_output = []
@@ -4007,11 +4331,36 @@ _INTERVIEW_GUARD_INTERNAL_FUNCS = {
     '_interview_guard_start', '_interview_guard_stop'
 }
 
-_INTERVIEW_GUARD_MAX_LINE_EVENTS = ${interviewGuardConfig.maxLineEvents}
-_INTERVIEW_GUARD_MAX_SINGLE_LINE_HITS = ${interviewGuardConfig.maxSingleLineHits}
-_INTERVIEW_GUARD_MAX_CALL_DEPTH = ${interviewGuardConfig.maxCallDepth}
-_INTERVIEW_GUARD_MAX_MEMORY_BYTES = ${interviewGuardConfig.maxMemoryBytes}
-_INTERVIEW_GUARD_MEMORY_CHECK_EVERY = ${interviewGuardConfig.memoryCheckEvery}
+_INTERVIEW_GUARD_ENABLED = ${
+  usesPreparedBindings
+    ? `_builtins.bool(_tracecode_case_limits.get('interviewGuard', False))`
+    : 'True'
+}
+_INTERVIEW_GUARD_MAX_LINE_EVENTS = ${
+  usesPreparedBindings
+    ? `_builtins.max(10000, _builtins.int(_tracecode_case_limits.get('maxLineEvents', ${interviewGuardConfig.maxLineEvents})))`
+    : interviewGuardConfig.maxLineEvents
+}
+_INTERVIEW_GUARD_MAX_SINGLE_LINE_HITS = ${
+  usesPreparedBindings
+    ? `_builtins.max(1000, _builtins.int(_tracecode_case_limits.get('maxSingleLineHits', ${interviewGuardConfig.maxSingleLineHits})))`
+    : interviewGuardConfig.maxSingleLineHits
+}
+_INTERVIEW_GUARD_MAX_CALL_DEPTH = ${
+  usesPreparedBindings
+    ? `_builtins.max(100, _builtins.int(_tracecode_case_limits.get('maxCallDepth', ${interviewGuardConfig.maxCallDepth})))`
+    : interviewGuardConfig.maxCallDepth
+}
+_INTERVIEW_GUARD_MAX_MEMORY_BYTES = ${
+  usesPreparedBindings
+    ? `_builtins.max(8 * 1024 * 1024, _builtins.int(_tracecode_case_limits.get('maxMemoryBytes', ${interviewGuardConfig.maxMemoryBytes})))`
+    : interviewGuardConfig.maxMemoryBytes
+}
+_INTERVIEW_GUARD_MEMORY_CHECK_EVERY = ${
+  usesPreparedBindings
+    ? `_builtins.max(10, _builtins.int(_tracecode_case_limits.get('memoryCheckEvery', ${interviewGuardConfig.memoryCheckEvery})))`
+    : interviewGuardConfig.memoryCheckEvery
+}
 
 try:
     import tracemalloc as _interview_tracemalloc
@@ -4304,11 +4653,13 @@ _interview_guard_triggered = False
 _interview_guard_reason = None
 
 try:
-    _interview_guard_start()
+    if _INTERVIEW_GUARD_ENABLED:
+        _interview_guard_start()
     try:
 ${executionCallInNestedTry}
     finally:
-        _interview_guard_stop()
+        if _INTERVIEW_GUARD_ENABLED:
+            _interview_guard_stop()
 except _InterviewGuardTriggered as _guard_error:
     _interview_guard_triggered = True
     _interview_guard_reason = _interview_timeout_reason or str(_guard_error)
@@ -4564,9 +4915,36 @@ _json_out = json.dumps({
 })
 _json_out
 `;
-    const execCode = execPrefix + code + execSuffix;
+    const execCode =
+      execPrefix +
+      (usesPreparedBindings
+        ? 'exec(__tracecode_prepared_user_code, globals())'
+        : code) +
+      execSuffix;
 
-    const resultJson = await runPythonInFreshExecutionScope(deps, execCode, '_json_out');
+    if (prepared?.compileOnly === true) {
+      return {
+        success: true,
+        output: null,
+        consoleOutput: [],
+        timings: { totalMs: deps.performanceNow() - startedAt },
+        __preparedSource: execCode,
+      };
+    }
+
+    if (usesPreparedBindings) userCodeStartLine = 1;
+    const resultJson = usesPreparedBindings
+      ? await runCompiledPythonInFreshExecutionScope(
+          deps,
+          prepared.executorCode,
+          '_json_out',
+          {
+            __tracecode_prepared_user_code: prepared.userCodeObject,
+            __tracecode_inputs_literal: deps.toPythonLiteral(inputs),
+            __tracecode_limits_literal: deps.toPythonLiteral(options),
+          }
+        )
+      : await runPythonInFreshExecutionScope(deps, execCode, '_json_out');
     const result = JSON.parse(resultJson);
 
     if (result.guardTriggered) {
@@ -4936,11 +5314,165 @@ _json_out
   }
 }
 
+async function prepareProgram(
+  deps,
+  {
+    mode,
+    code,
+    functionName,
+    executionStyle = 'function',
+    traceOptions = {},
+  }
+) {
+  const startedAt = deps.performanceNow();
+  let userCodeObject;
+  let executorCode;
+
+  try {
+    await deps.loadPyodideInstance();
+
+    if (mode === 'trace') {
+      const compilePayload = generateTracingCode(
+        deps,
+        code,
+        functionName,
+        {},
+        executionStyle,
+        traceOptions,
+        { compileUserOnly: true }
+      );
+      const compileDriver = await compilePythonProgram(
+        deps,
+        compilePayload.code,
+        '<tracecode-trace-prepare>'
+      );
+      try {
+        userCodeObject = await runCompiledPythonInFreshExecutionScope(
+          deps,
+          compileDriver,
+          '__tracecode_prepared_user_code_result'
+        );
+      } finally {
+        compileDriver?.destroy?.();
+      }
+
+      const executionPayload = await executeWithTracing(
+        deps,
+        code,
+        functionName,
+        {},
+        executionStyle,
+        traceOptions,
+        { compileOnly: true }
+      );
+      executorCode = await compilePythonProgram(
+        deps,
+        executionPayload.__preparedSource,
+        '<tracecode-prepared-trace>'
+      );
+    } else if (mode === 'code') {
+      userCodeObject = await compilePythonProgram(deps, code, 'solution.py');
+      const executionPayload = await executeCode(
+        deps,
+        code,
+        functionName ?? '',
+        {},
+        executionStyle,
+        {},
+        { compileOnly: true }
+      );
+      executorCode = await compilePythonProgram(
+        deps,
+        executionPayload.__preparedSource,
+        '<tracecode-prepared-code>'
+      );
+    } else {
+      throw new Error(`Unsupported prepared Python mode: ${String(mode)}`);
+    }
+
+    let disposed = false;
+    const preparationMs = deps.performanceNow() - startedAt;
+    return {
+      success: true,
+      mode,
+      timings: {
+        totalMs: preparationMs,
+        compileMs: preparationMs,
+        compileCacheHit: false,
+        artifactCacheHit: false,
+      },
+      async execute(inputs, limits) {
+        if (disposed) {
+          throw new Error('Prepared Python program has been disposed.');
+        }
+        const caseStartedAt = deps.performanceNow();
+        const result = mode === 'trace'
+          ? await executeWithTracing(
+              deps,
+              code,
+              functionName,
+              inputs,
+              executionStyle,
+              traceOptions,
+              { executorCode, userCodeObject, limits }
+            )
+          : await executeCode(
+              deps,
+              code,
+              functionName ?? '',
+              inputs,
+              executionStyle,
+              limits?.guest ?? {},
+              { executorCode, userCodeObject }
+            );
+        const runMs = deps.performanceNow() - caseStartedAt;
+        return {
+          ...result,
+          timings: {
+            ...(result.timings ?? {}),
+            totalMs: runMs,
+            runMs,
+            compileCacheHit: true,
+            artifactCacheHit: true,
+          },
+        };
+      },
+      dispose() {
+        if (disposed) return;
+        disposed = true;
+        executorCode?.destroy?.();
+        userCodeObject?.destroy?.();
+        executorCode = undefined;
+        userCodeObject = undefined;
+      },
+    };
+  } catch (error) {
+    executorCode?.destroy?.();
+    userCodeObject?.destroy?.();
+    const rawError = error instanceof Error ? error.message : String(error);
+    const parsed = parsePythonError(rawError, 1, code.split('\n').length);
+    const preparationMs = deps.performanceNow() - startedAt;
+    return {
+      success: false,
+      error: parsed.message,
+      errorLine: parsed.line,
+      consoleOutput: [],
+      timings: {
+        totalMs: preparationMs,
+        compileMs: preparationMs,
+        compileCacheHit: false,
+        artifactCacheHit: false,
+      },
+    };
+  }
+}
+
   globalScope.__TRACECODE_PYODIDE_RUNTIME__ = {
     generateTracingCode,
     parsePythonError,
     executeWithTracing,
     executeCode,
     executeCodeBatch,
+    prepareProgram,
   };
 })(typeof self !== 'undefined' ? self : globalThis);

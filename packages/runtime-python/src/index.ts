@@ -1,7 +1,10 @@
 export * from './python-harness';
 export * from './python-harness-template';
 export * from './generated/python-harness-snippets';
-export { createPythonRuntimeClient } from './python-runtime-client';
+export {
+  createPythonPreparedExecutionProvider,
+  createPythonRuntimeClient,
+} from './python-runtime-client';
 export {
   PythonWorkerClient,
   type ExecutionStyle,

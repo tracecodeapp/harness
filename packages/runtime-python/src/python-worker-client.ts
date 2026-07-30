@@ -34,6 +34,8 @@ import type {
   RuntimeProjectCommandRequest,
   RuntimeProjectEngineLeaseController,
   RuntimeProjectSnapshot,
+  RuntimeProgramPreparationCall,
+  RuntimeExecutionTimings,
   RuntimeTraceCall,
 } from '@tracecode/runtime-core';
 import { appendWorkerUrlQueryParameter, isDevEnvironment } from '@tracecode/runtime-browser/internal';
@@ -106,6 +108,24 @@ interface StatusResult {
   isReady: boolean;
   isLoading: boolean;
 }
+
+export type PythonPreparedProgramHandle = {
+  programId: string;
+  mode: 'code' | 'trace';
+  consoleOutput: string[];
+  timings?: RuntimeExecutionTimings;
+};
+
+type PythonPreparedProgramFailure = {
+  error: string;
+  errorLine?: number;
+  consoleOutput: string[];
+  timings?: RuntimeExecutionTimings;
+};
+
+export type PythonPreparedProgramResult =
+  | ({ success: true } & PythonPreparedProgramHandle)
+  | ({ success: false } & PythonPreparedProgramFailure);
 
 export type PythonProjectFile = RuntimeFile;
 export type PythonProjectSnapshot = RuntimeProjectSnapshot;
@@ -431,6 +451,97 @@ export class PythonWorkerClient {
 
     const result = await this.core.runClientEffect(program, signal);
     return liftCodeBatchOutcome(result, 'Python execution failed');
+  }
+
+  async prepareProgram(
+    call: RuntimeProgramPreparationCall
+  ): Promise<PythonPreparedProgramResult> {
+    const program = this.warmupEffect().pipe(
+      Effect.andThen(
+        this.core.withExecutionDeadline(
+          this.core.sendMessageEffect<PythonPreparedProgramResult>(
+            'prepare-program',
+            {
+              mode: call.mode,
+              code: call.code,
+              functionName: call.functionName,
+              executionStyle: call.executionStyle ?? 'function',
+              traceOptions: call.traceOptions ?? {},
+            },
+            null
+          ),
+          EXECUTION_TIMEOUT_MS
+        )
+      )
+    );
+    return this.core.runClientEffect(program, call.signal);
+  }
+
+  async executePreparedCode(
+    handle: PythonPreparedProgramHandle,
+    call: Pick<RuntimeCodeCall, 'inputs' | 'signal' | 'limits'>
+  ): Promise<CodeExecutionResult> {
+    const wallClockMs = call.limits?.wallClockMs ?? EXECUTION_TIMEOUT_MS;
+    const guestLimits = pickGuestLimits(call.limits);
+    const program = this.core.withExecutionDeadline(
+      this.core.sendMessageEffect<RawExecutionPayload>(
+        'execute-prepared-program',
+        {
+          programId: handle.programId,
+          mode: 'code',
+          inputs: call.inputs,
+          ...(guestLimits ? { limits: guestLimits } : {}),
+        },
+        null
+      ),
+      wallClockMs
+    );
+    const result = await this.core.runClientEffect(program, call.signal);
+    return liftCodeOutcome(result, 'Prepared Python execution failed');
+  }
+
+  async executePreparedTrace(
+    handle: PythonPreparedProgramHandle,
+    call: Pick<RuntimeTraceCall, 'inputs' | 'signal' | 'limits'>
+  ): Promise<PythonRawTraceResult> {
+    const wallClockMs = call.limits?.wallClockMs ?? TRACING_TIMEOUT_MS;
+    const guestLimits = pickGuestLimits(call.limits);
+    const program = this.core.withExecutionDeadline(
+      this.core.sendMessageEffect<PythonRawTraceResult>(
+        'execute-prepared-program',
+        {
+          programId: handle.programId,
+          mode: 'trace',
+          inputs: call.inputs,
+          ...(guestLimits ? { limits: guestLimits } : {}),
+          traceEventTransport: traceEventTransferRequest(),
+        },
+        null
+      ),
+      wallClockMs
+    );
+    try {
+      return await this.core.runClientEffect(program, call.signal);
+    } catch (error) {
+      if (error instanceof ExecutionTimeoutError) {
+        return {
+          success: false,
+          error: error.message,
+          trace: createEmptyRuntimeTrace('python', {
+            runId: 'python:run',
+            file: 'solution.py',
+          }),
+          executionTimeMs: wallClockMs,
+          consoleOutput: [],
+          timeoutReason: 'client-timeout',
+        };
+      }
+      throw error;
+    }
+  }
+
+  async disposePreparedProgram(programId: string): Promise<void> {
+    await this.core.sendMessage('dispose-prepared-program', { programId });
   }
 
   async executeProjectPython(

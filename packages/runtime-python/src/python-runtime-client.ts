@@ -1,4 +1,8 @@
-import type { PythonProjectCommandRequest, PythonWorkerClient } from './python-worker-client';
+import type {
+  PythonPreparedProgramHandle,
+  PythonProjectCommandRequest,
+  PythonWorkerClient,
+} from './python-worker-client';
 import type {
   RuntimeClient,
   RuntimeCodeCall,
@@ -7,6 +11,10 @@ import type {
   RuntimeExecuteRequest,
   RuntimeExecuteResponse,
   RuntimeExecuteResult,
+  RuntimeExecutionTimings,
+  RuntimePreparedExecutionProvider,
+  RuntimeProgramPreparationCall,
+  RuntimeProgramPreparationResult,
   RuntimeTraceCall,
 } from '@tracecode/runtime-core';
 import type { RuntimeCommandResult } from '@tracecode/runtime-core';
@@ -50,7 +58,14 @@ const PYTHON_TIMEOUT_REASONS = new Set<ExecutionLimitReason>([
   'memory-limit',
   'client-timeout',
 ]);
-const PYTHON_TRACE_TIMEOUT_REASONS = new Set(['trace-limit', 'line-limit', 'single-line-limit', 'client-timeout']);
+const PYTHON_TRACE_TIMEOUT_REASONS = new Set([
+  'trace-limit',
+  'line-limit',
+  'single-line-limit',
+  'recursion-limit',
+  'memory-limit',
+  'client-timeout',
+]);
 const MAX_NORMALIZED_TRACE_EVENTS = 500000;
 const MAX_NORMALIZED_ARRAY_ITEMS = 256;
 const MAX_NORMALIZED_OBJECT_FIELDS = 128;
@@ -118,6 +133,39 @@ function normalizeStringArray(value: unknown): string[] {
   return value
     .filter((item): item is string => typeof item === 'string')
     .map((item) => normalizedString(item) ?? '');
+}
+
+function normalizeExecutionTimings(value: unknown): RuntimeExecutionTimings | undefined {
+  if (!value || typeof value !== 'object') return undefined;
+  const record = value as Record<string, unknown>;
+  const timings: RuntimeExecutionTimings = {};
+  for (const key of [
+    'totalMs',
+    'initMs',
+    'warmupMs',
+    'compilerLoadMs',
+    'rewriteMs',
+    'driverBuildMs',
+    'compileMs',
+    'pchMs',
+    'linkMs',
+    'wasmCompileMs',
+    'classLoadMs',
+    'runMs',
+    'hostCallMs',
+  ] as const) {
+    const normalized = finiteNumber(record[key]);
+    if (normalized !== undefined) timings[key] = normalized;
+  }
+  for (const key of [
+    'pchCacheHit',
+    'pchFallback',
+    'compileCacheHit',
+    'artifactCacheHit',
+  ] as const) {
+    if (typeof record[key] === 'boolean') timings[key] = record[key];
+  }
+  return Object.keys(timings).length > 0 ? timings : undefined;
 }
 
 function normalizeTracePath(value: unknown): Array<string | number> | undefined {
@@ -311,6 +359,7 @@ function normalizePythonExecutionResult(value: unknown): ExecutionResult {
   const timeoutReason = typeof record.timeoutReason === 'string' && PYTHON_TIMEOUT_REASONS.has(record.timeoutReason as ExecutionLimitReason)
     ? record.timeoutReason as ExecutionLimitReason
     : undefined;
+  const timings = normalizeExecutionTimings(record.timings);
   return liftTraceOutcome(
     {
       success: record.success === true,
@@ -322,13 +371,14 @@ function normalizePythonExecutionResult(value: unknown): ExecutionResult {
       ...(record.traceLimitExceeded === true ? { traceLimitExceeded: true } : {}),
       ...(timeoutReason ? { timeoutReason } : {}),
       ...(record.diagnostic !== undefined ? { diagnostic: sanitizeJsonValue(record.diagnostic) } : {}),
+      ...(timings ? { timings } : {}),
     },
     normalizePythonRuntimeTrace(record.trace),
     'Python tracing failed'
   );
 }
 
-class PythonRuntimeClient implements RuntimeClient {
+class PythonRuntimeClient implements RuntimeClient, RuntimePreparedExecutionProvider {
   constructor(private readonly workerClient: PythonWorkerClient) {}
 
   async init(): Promise<{ success: boolean; loadTimeMs: number }> {
@@ -393,8 +443,91 @@ class PythonRuntimeClient implements RuntimeClient {
     return this.workerClient.executeCode(call);
   }
 
+  async prepareProgram(
+    call: RuntimeProgramPreparationCall
+  ): Promise<RuntimeProgramPreparationResult> {
+    assertRuntimeRequestSupported(getLanguageRuntimeProfile('python'), {
+      request: call.mode === 'trace' ? 'trace' : 'execute',
+      executionStyle: call.executionStyle ?? 'function',
+      functionName: call.functionName,
+    });
+    const result = await this.workerClient.prepareProgram(call);
+    if (!result.success) {
+      return {
+        kind: 'failed',
+        error: result.error,
+        ...(result.errorLine !== undefined ? { errorLine: result.errorLine } : {}),
+        diagnosticStage: 'compile',
+        consoleOutput: result.consoleOutput,
+        ...(result.timings ? { timings: result.timings } : {}),
+      };
+    }
+
+    const handle: PythonPreparedProgramHandle = result;
+    let disposed = false;
+    const dispose = async (): Promise<void> => {
+      if (disposed) return;
+      disposed = true;
+      await this.workerClient.disposePreparedProgram(handle.programId);
+    };
+    const assertActive = (): void => {
+      if (disposed) {
+        throw new Error('Prepared Python program has been disposed.');
+      }
+    };
+
+    if (call.mode === 'trace') {
+      return {
+        kind: 'prepared',
+        consoleOutput: result.consoleOutput,
+        ...(result.timings ? { timings: result.timings } : {}),
+        program: {
+          mode: 'trace',
+          capabilities: {
+            caseIsolation: 'fresh-case-state',
+            maxConcurrency: 1,
+          },
+          executeIsolated: async (executionCall) => {
+            assertActive();
+            const raw = await this.workerClient.executePreparedTrace(
+              handle,
+              executionCall
+            );
+            return normalizePythonExecutionResult(raw);
+          },
+          dispose,
+        },
+      };
+    }
+
+    return {
+      kind: 'prepared',
+      consoleOutput: result.consoleOutput,
+      ...(result.timings ? { timings: result.timings } : {}),
+      program: {
+        mode: 'code',
+        capabilities: {
+          caseIsolation: 'fresh-case-state',
+          maxConcurrency: 1,
+        },
+        executeIsolated: async (executionCall) => {
+          assertActive();
+          return this.workerClient.executePreparedCode(handle, executionCall);
+        },
+        dispose,
+      },
+    };
+  }
 }
 
-export function createPythonRuntimeClient(workerClient: PythonWorkerClient): RuntimeClient {
+export function createPythonRuntimeClient(
+  workerClient: PythonWorkerClient
+): RuntimeClient & RuntimePreparedExecutionProvider {
+  return new PythonRuntimeClient(workerClient);
+}
+
+export function createPythonPreparedExecutionProvider(
+  workerClient: PythonWorkerClient
+): RuntimePreparedExecutionProvider {
   return new PythonRuntimeClient(workerClient);
 }

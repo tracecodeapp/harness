@@ -6,7 +6,12 @@ This is a private workspace bundled into the published root package. Consumers
 use the supported root subpath:
 
 ```ts
-import { PythonWorkerClient, createPythonRuntimeClient, generateSolutionScript } from '@tracecode/harness/python';
+import {
+  PythonWorkerClient,
+  createPythonPreparedExecutionProvider,
+  createPythonRuntimeClient,
+  generateSolutionScript,
+} from '@tracecode/harness/python';
 ```
 
 Public surface:
@@ -15,6 +20,7 @@ Public surface:
 - generated snippet exports
 - Python-side serialization helpers used by the runtime/tests
 - browser worker client and runtime client
+- prepare-once code and trace execution with fresh per-case Python state
 
 Runtime assets are shipped at `workers/python-worker.js` and
 `workers/python/runtime-core.js`. Review `THIRD_PARTY_NOTICES.md` before
