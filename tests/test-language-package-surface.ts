@@ -994,7 +994,7 @@ async function runWithTempRoot(tempRoot: string): Promise<void> {
     }
     if (packageCheck.name === '@tracecode/harness-cpp') {
       const worker = await readFile(join(packageDir, 'workers/cpp-worker.js'), 'utf8');
-      const declarations = await readFile(join(packageDir, 'dist/index.d.ts'), 'utf8');
+      const declarations = await readDeclarationTree(join(packageDir, 'dist'));
       assertCondition(
         declarations.includes('CppCompilerIntegrityManifest') &&
           declarations.includes('compilerWasmUrl') &&
