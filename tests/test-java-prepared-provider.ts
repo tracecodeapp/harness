@@ -30,6 +30,9 @@ interface FakeClientState {
 }
 
 function createFakeClient(options: {
+  executeInit?: (
+    state: FakeClientState
+  ) => Promise<{ success: boolean; loadTimeMs: number }>;
   prepareResult?: JavaWorkerPreparedProgramResult;
   executePrepare?: (
     call: RuntimeProgramPreparationCall,
@@ -50,6 +53,10 @@ function createFakeClient(options: {
     retirementRecommended: boolean;
   }>;
   onTerminate?: () => void;
+  executeRestore?: (
+    snapshot: JavaWorkerPreparedProgramSnapshot,
+    state: FakeClientState
+  ) => Promise<JavaWorkerPreparedProgramResult>;
 } = {}): { client: JavaWorkerClient; state: FakeClientState } {
   const state: FakeClientState = {
     initCalls: 0,
@@ -63,6 +70,7 @@ function createFakeClient(options: {
   const client = {
     async init() {
       state.initCalls += 1;
+      if (options.executeInit) return options.executeInit(state);
       return { success: true, loadTimeMs: 7 };
     },
     async prepareRuntimeProgram(call: RuntimeProgramPreparationCall) {
@@ -87,6 +95,9 @@ function createFakeClient(options: {
       snapshot: JavaWorkerPreparedProgramSnapshot
     ) {
       state.restoreCalls.push(snapshot);
+      if (options.executeRestore) {
+        return options.executeRestore(snapshot, state);
+      }
       return {
         success: true,
         programId: snapshot.programId,
@@ -317,6 +328,79 @@ test('Java prepared program serializes concurrent case requests instead of overl
   provider.dispose();
   assert.equal(firstCaseWorker.state.terminateCalls, 1);
   assert.equal(secondCaseWorker.state.terminateCalls, 1);
+});
+
+test('caller cancellation hard-terminates Java case boot and snapshot restoration', async () => {
+  for (const stage of ['init', 'restore'] as const) {
+    const lifecycleEntered = deferred();
+    const activeLifecycle = deferred<never>();
+    const preparationWorker = createFakeClient();
+    const caseWorker = createFakeClient({
+      ...(stage === 'init'
+        ? {
+            executeInit: async () => {
+              lifecycleEntered.resolve(undefined);
+              return activeLifecycle.promise;
+            },
+          }
+        : {
+            executeRestore: async () => {
+              lifecycleEntered.resolve(undefined);
+              return activeLifecycle.promise;
+            },
+          }),
+      onTerminate: () => {
+        activeLifecycle.reject(
+          new DOMException(`${stage} worker terminated`, 'AbortError')
+        );
+      },
+    });
+    const clients = [preparationWorker.client, caseWorker.client];
+    const provider = createJavaPreparedExecutionProvider({
+      createWorkerClient: () => {
+        const client = clients.shift();
+        if (!client) throw new Error('Unexpected extra Java worker.');
+        return client;
+      },
+    });
+    const prepared = await provider.prepareProgram({
+      mode: 'code',
+      code: 'class Solution { int value(int value) { return value; } }',
+      functionName: 'value',
+      executionStyle: 'solution-method',
+    });
+    if (prepared.kind !== 'prepared' || prepared.program.mode !== 'code') {
+      throw new Error('Expected a prepared Java code program.');
+    }
+
+    const abortController = new AbortController();
+    const execution = prepared.program
+      .executeIsolated({
+        inputs: { value: 1 },
+        signal: abortController.signal,
+      })
+      .then(
+        () => ({ status: 'completed' as const }),
+        (error: unknown) => ({ status: 'rejected' as const, error })
+      );
+    await lifecycleEntered.promise;
+    abortController.abort();
+    const result = await execution;
+
+    assert.equal(result.status, 'rejected', `${stage} must reject on abort`);
+    assert.ok(
+      result.status === 'rejected' &&
+        result.error instanceof DOMException &&
+        result.error.name === 'AbortError',
+      `${stage} must preserve caller cancellation`
+    );
+    assert.equal(caseWorker.state.terminateCalls, 1);
+    assert.equal(caseWorker.state.codeCalls.length, 0);
+
+    await prepared.program.dispose();
+    provider.dispose();
+    assert.equal(caseWorker.state.terminateCalls, 1);
+  }
 });
 
 test('disposing an active Java prepared program aborts once, drains the boundary, and rejects queued work', async () => {

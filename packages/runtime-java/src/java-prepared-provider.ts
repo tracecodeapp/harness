@@ -76,6 +76,11 @@ function preparationFailure(
   };
 }
 
+function abortReason(signal: AbortSignal): unknown {
+  return signal.reason ??
+    new DOMException('Java prepared execution was aborted.', 'AbortError');
+}
+
 abstract class JavaPreparedProgramBase {
   readonly capabilities = Object.freeze({
     caseIsolation: 'fresh-case-state' as const,
@@ -121,10 +126,11 @@ abstract class JavaPreparedProgramBase {
   protected async executeWithClient<
     Result extends JavaWorkerPreparedExecutionMetadata,
   >(
-    operation: (client: JavaWorkerClient) => Promise<Result>
+    operation: (client: JavaWorkerClient) => Promise<Result>,
+    signal?: AbortSignal
   ): Promise<Result> {
     const execution = this.operationTail.then(() =>
-      this.executeInFreshWorker(operation)
+      this.executeInFreshWorker(operation, signal)
     );
     this.operationTail = execution.then(
       () => undefined,
@@ -136,12 +142,20 @@ abstract class JavaPreparedProgramBase {
   private async executeInFreshWorker<
     Result extends JavaWorkerPreparedExecutionMetadata,
   >(
-    operation: (client: JavaWorkerClient) => Promise<Result>
+    operation: (client: JavaWorkerClient) => Promise<Result>,
+    signal?: AbortSignal
   ): Promise<Result> {
     this.assertActive();
+    if (signal?.aborted) throw abortReason(signal);
     const client = this.createWorkerClient();
     this.activeClient = client;
+    const abortClient = () => this.terminateClientOnce(client);
+    signal?.addEventListener('abort', abortClient, { once: true });
     try {
+      if (signal?.aborted) {
+        abortClient();
+        throw abortReason(signal);
+      }
       const initialized = await client.init();
       if (!initialized.success) {
         throw new Error(
@@ -162,7 +176,11 @@ abstract class JavaPreparedProgramBase {
       }
       this.assertActive();
       return await operation(client);
+    } catch (error) {
+      if (signal?.aborted) throw abortReason(signal);
+      throw error;
     } finally {
+      signal?.removeEventListener('abort', abortClient);
       if (this.activeClient === client) {
         this.activeClient = undefined;
       }
@@ -185,8 +203,9 @@ class JavaPreparedCodeProgramImpl
   executeIsolated(
     call: RuntimePreparedCodeCall
   ): Promise<CodeExecutionResult> {
-    return this.executeWithClient((client) =>
-      client.executePreparedCode(this.programId, call)
+    return this.executeWithClient(
+      (client) => client.executePreparedCode(this.programId, call),
+      call.signal
     )
       .catch((error: unknown) => {
         if (
@@ -227,12 +246,13 @@ class JavaPreparedTraceProgramImpl
   ): Promise<ExecutionResult> {
     let result: JavaWorkerTraceResult;
     try {
-      result = await this.executeWithClient((client) =>
-        client.executePreparedWithTracing(
+      result = await this.executeWithClient(
+        (client) => client.executePreparedWithTracing(
           this.programId,
           call,
           this.traceCall.traceOptions
-        )
+        ),
+        call.signal
       );
     } catch (error) {
       if (
