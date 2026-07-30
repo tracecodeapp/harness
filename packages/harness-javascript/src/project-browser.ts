@@ -2532,6 +2532,11 @@ function createChildProcessApi(
           );
         },
         (error) => {
+          // Once the parent runtime is terminating there is no JavaScript
+          // event loop left to receive child-process callbacks. Closing the
+          // command transport releases any outstanding kernel wait; that
+          // expected cancellation must not escape as a late user error.
+          if (executionState.cancelled) return;
           child.emit('error', error);
           child.emit('close', null, null);
         }

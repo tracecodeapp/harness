@@ -133,7 +133,7 @@ async function main(): Promise<void> {
       const page = await browser.newPage();
       page.setDefaultTimeout(240_000);
       const browserErrors: string[] = [];
-      page.on('pageerror', (error) => browserErrors.push(error.message));
+      page.on('pageerror', (error) => browserErrors.push(error.stack ?? error.message));
       await page.goto(`${server.origin}/index.html`, { waitUntil: 'load' });
       await page.evaluate('globalThis.__name = (fn) => fn');
       const result = await page.evaluate(async () => {

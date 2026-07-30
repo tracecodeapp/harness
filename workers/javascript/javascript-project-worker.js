@@ -7580,6 +7580,7 @@ function createChildProcessApi(executionState, eventLoopApi, request) {
           );
         },
         (error) => {
+          if (executionState.cancelled) return;
           child.emit("error", error);
           child.emit("close", null, null);
         }
