@@ -322,6 +322,28 @@ importers:
 
   packages/harness-sql: {}
 
+  packages/judge:
+    dependencies:
+      '@tracecode/tracekernel':
+        specifier: workspace:*
+        version: link:../tracekernel
+      effect:
+        specifier: 3.22.0
+        version: 3.22.0
+    devDependencies:
+      '@types/node':
+        specifier: ^20.0.0
+        version: 20.19.37
+      tsup:
+        specifier: ^8.5.0
+        version: 8.5.1(postcss@8.5.10)(tsx@4.21.0)(typescript@5.9.3)(yaml@2.9.0)
+      tsx:
+        specifier: ^4.21.0
+        version: 4.21.0
+      typescript:
+        specifier: ^5.0.0
+        version: 5.9.3
+
   packages/tracekernel:
     dependencies:
       effect:

@@ -40,6 +40,21 @@ const PACKAGE_CHECKS: PackageCheck[] = [
     ],
   },
   {
+    name: '@tracecode/judge',
+    dir: 'packages/judge',
+    exportName: 'evaluateJudgePlan',
+    requiredFiles: [
+      'dist/index.js',
+      'dist/index.cjs',
+      'dist/index.d.ts',
+      'dist/tracekernel.js',
+      'dist/tracekernel.cjs',
+      'dist/tracekernel.d.ts',
+      'LICENSE',
+      'THIRD_PARTY_NOTICES.md',
+    ],
+  },
+  {
     name: '@tracecode/harness-browser',
     dir: 'packages/harness-browser',
     exportName: 'createBrowserHarness',

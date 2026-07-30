@@ -39,6 +39,10 @@ const PACKAGE_ASSET_PLANS: PackageAssetPlan[] = [
     assets: [],
   },
   {
+    packageDir: 'packages/judge',
+    assets: [],
+  },
+  {
     packageDir: 'packages/harness-browser',
     assets: [],
   },
