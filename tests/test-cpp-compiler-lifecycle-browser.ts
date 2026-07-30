@@ -54,6 +54,16 @@ async function main(): Promise<void> {
     tsconfig: join(root, 'tsconfig.base.json'),
     define: { 'process.env.NODE_ENV': '"production"' },
   });
+  await build({
+    entryPoints: [join(root, 'packages', 'runtime-cpp', 'src', 'cpp-prepared-provider.ts')],
+    outfile: join(tempRoot, 'cpp-prepared-provider.js'),
+    bundle: true,
+    format: 'esm',
+    platform: 'browser',
+    target: 'es2022',
+    tsconfig: join(root, 'tsconfig.base.json'),
+    define: { 'process.env.NODE_ENV': '"production"' },
+  });
   await writeFile(join(tempRoot, 'index.html'), '<!doctype html><title>C++ lifecycle benchmark</title>', 'utf8');
 
   const server = spawn('python3', ['-c', [
@@ -78,7 +88,8 @@ async function main(): Promise<void> {
     await page.goto(origin);
     const result = await page.evaluate(`(async () => {
       const { CppWorkerClient } = await import('/cpp-worker-client.js');
-      const client = new CppWorkerClient({
+      const { createCppPreparedExecutionProvider } = await import('/cpp-prepared-provider.js');
+      const workerOptions = {
         workerUrl: '/workers/cpp-worker.js',
         compilerFrameUrl: '/workers/cpp-compiler-frame.html',
         compilerWorkerUrl: '/workers/cpp-compiler-worker.js',
@@ -89,7 +100,8 @@ async function main(): Promise<void> {
         compilerBundleUrl: '/workers/cpp/compiler/bundle.js',
         compilerIntegrity: ${JSON.stringify(manifest)},
         executionTimeoutMs: 30000,
-      });
+      };
+      const client = new CppWorkerClient(workerOptions);
       const execute = async (code) => {
         const startedAt = performance.now();
         const response = await client.executeCode({ code: code, functionName: 'add', inputs: { a: 2, b: 3 }, executionStyle: 'solution-method' });
@@ -107,6 +119,120 @@ async function main(): Promise<void> {
       const exact = await execute('class Solution { public: int add(int a, int b) { return a + b + 1; } };');
       const invalid = await execute('class Solution { public: int add(int a, int b) { return a + ; } };');
       const recovered = await execute('class Solution { public: int add(int a, int b) { return a * b; } };');
+
+      const preparedProvider = createCppPreparedExecutionProvider({
+        createWorkerClient: () => new CppWorkerClient(workerOptions),
+      });
+      await preparedProvider.init();
+      const prepared = await preparedProvider.prepareProgram({
+        mode: 'code',
+        code: [
+          '#include <vector>',
+          'class Solution {',
+          'public:',
+          '  int observe(std::vector<int>& nums, bool hang) {',
+          '    if (hang) { while (true) {} }',
+          '    static int calls = 0;',
+          '    calls += 1;',
+          '    nums.push_back(99);',
+          '    return calls * 100 + static_cast<int>(nums.size());',
+          '  }',
+          '};',
+        ].join('\\n'),
+        functionName: 'observe',
+        executionStyle: 'solution-method',
+      });
+      if (prepared.kind !== 'prepared' || prepared.program.mode !== 'code') {
+        throw new Error('C++ code preparation failed: ' + JSON.stringify(prepared));
+      }
+      const mutableInput = [1, 2];
+      const firstPreparedCase = await prepared.program.executeIsolated({
+        inputs: { nums: mutableInput, hang: false },
+      });
+      const secondPreparedCase = await prepared.program.executeIsolated({
+        inputs: { nums: mutableInput, hang: false },
+      });
+      const abortController = new AbortController();
+      const abortedExecution = prepared.program.executeIsolated({
+        inputs: { nums: mutableInput, hang: true },
+        signal: abortController.signal,
+      }).then(
+        () => ({ resolved: true }),
+        (error) => ({
+          resolved: false,
+          name: error instanceof Error ? error.name : '',
+          message: error instanceof Error ? error.message : String(error),
+        })
+      );
+      setTimeout(() => abortController.abort(), 25);
+      const abortedPreparedCase = await abortedExecution;
+      await prepared.program.dispose();
+      await prepared.program.dispose();
+      const executeAfterDispose = await prepared.program.executeIsolated({
+        inputs: { nums: mutableInput, hang: false },
+      }).then(
+        () => '',
+        (error) => error instanceof Error ? error.message : String(error)
+      );
+
+      const traceProvider = createCppPreparedExecutionProvider({
+        createWorkerClient: () => new CppWorkerClient(workerOptions),
+      });
+      await traceProvider.init();
+      const preparedTrace = await traceProvider.prepareProgram({
+        mode: 'trace',
+        code: [
+          'class Solution {',
+          'public:',
+          '  int add(int a, int b) {',
+          '    int sum = a + b;',
+          '    return sum;',
+          '  }',
+          '};',
+        ].join('\\n'),
+        functionName: 'add',
+        executionStyle: 'solution-method',
+        traceOptions: { maxTraceSteps: 1000 },
+      });
+      if (preparedTrace.kind !== 'prepared' || preparedTrace.program.mode !== 'trace') {
+        throw new Error('C++ trace preparation failed: ' + JSON.stringify(preparedTrace));
+      }
+      const preparedTraceCase = await preparedTrace.program.executeIsolated({
+        inputs: { a: 2, b: 4 },
+      });
+      await preparedTrace.program.dispose();
+
+      const protocolClient = new CppWorkerClient(workerOptions);
+      await protocolClient.init();
+      const invalidPreparationError = await protocolClient.prepareRuntimeProgram({
+        mode: 'invalid',
+        code: 'int main() { return 0; }',
+        functionName: '',
+        executionStyle: 'function',
+      }).then(
+        () => '',
+        (error) => error instanceof Error ? error.message : String(error)
+      );
+      const missingExecutionError = await protocolClient.executePreparedCode({
+        programId: 'cpp-prepared-missing',
+        mode: 'code',
+        lifecycleGeneration: 0,
+      }, {
+        inputs: {},
+      }).then(
+        () => '',
+        (error) => error instanceof Error ? error.message : String(error)
+      );
+      const missingDisposalError = await protocolClient.disposePreparedProgram({
+        programId: 'cpp-prepared-missing',
+        mode: 'code',
+        lifecycleGeneration: 0,
+      }).then(
+        () => '',
+        (error) => error instanceof Error ? error.message : String(error)
+      );
+      protocolClient.terminate();
+
       const projectFiles = [{
         path: 'main.cpp',
         contents: '#include <iostream>\\nint main() { std::cout << "permanent-project\\\\n"; return 0; }\\n',
@@ -135,6 +261,24 @@ async function main(): Promise<void> {
         exact,
         invalid,
         recovered,
+        prepared: {
+          preparationTimings: prepared.timings,
+          capabilities: prepared.program.capabilities,
+          firstPreparedCase,
+          secondPreparedCase,
+          mutableInput,
+          abortedPreparedCase,
+          executeAfterDispose,
+        },
+        preparedTrace: {
+          preparationTimings: preparedTrace.timings,
+          result: preparedTraceCase,
+        },
+        protocolErrors: {
+          invalidPreparationError,
+          missingExecutionError,
+          missingDisposalError,
+        },
         projectCompile,
         projectRun,
         framesBeforeTerminate,
@@ -146,6 +290,24 @@ async function main(): Promise<void> {
       exact: { durationMs: number; success: boolean; output?: unknown; error?: string; timings?: Record<string, unknown> };
       invalid: { durationMs: number; success: boolean; output?: unknown; error?: string; timings?: Record<string, unknown> };
       recovered: { durationMs: number; success: boolean; output?: unknown; error?: string; timings?: Record<string, unknown> };
+      prepared: {
+        preparationTimings?: Record<string, unknown>;
+        capabilities: { caseIsolation: string; maxConcurrency: number };
+        firstPreparedCase: { kind: string; output?: unknown; timings?: Record<string, unknown> };
+        secondPreparedCase: { kind: string; output?: unknown; timings?: Record<string, unknown> };
+        mutableInput: unknown[];
+        abortedPreparedCase: { resolved: boolean; name?: string; message?: string };
+        executeAfterDispose: string;
+      };
+      preparedTrace: {
+        preparationTimings?: Record<string, unknown>;
+        result: { kind: string; output?: unknown; trace?: { events?: unknown[] }; timings?: Record<string, unknown> };
+      };
+      protocolErrors: {
+        invalidPreparationError: string;
+        missingExecutionError: string;
+        missingDisposalError: string;
+      };
       projectCompile: { stdout: string; stderr: string; exitCode: number; files?: unknown[] };
       projectRun: { stdout: string; stderr: string; exitCode: number };
       framesBeforeTerminate: number;
@@ -159,6 +321,65 @@ async function main(): Promise<void> {
     assertCondition(
       result.recovered.success && result.recovered.output === 6,
       `compiler diagnostics must not poison the next fresh compiler instance: ${JSON.stringify(result)}`
+    );
+    assertCondition(
+      result.prepared.capabilities.caseIsolation === 'fresh-case-state' &&
+        result.prepared.capabilities.maxConcurrency === 1,
+      `prepared C++ capabilities must report truthful isolation and serialization: ${JSON.stringify(result.prepared)}`
+    );
+    assertCondition(
+      result.prepared.firstPreparedCase.kind === 'completed' &&
+        result.prepared.firstPreparedCase.output === 103 &&
+        result.prepared.secondPreparedCase.kind === 'completed' &&
+        result.prepared.secondPreparedCase.output === 103,
+      `fresh C++ module memory must reset function statics between repeated cases: ${JSON.stringify(result.prepared)}`
+    );
+    assertCondition(
+      result.prepared.mutableInput.length === 2,
+      `prepared C++ execution must not mutate caller-owned inputs: ${JSON.stringify(result.prepared.mutableInput)}`
+    );
+    assertCondition(
+      result.prepared.firstPreparedCase.timings?.compileMs === 0 &&
+        result.prepared.firstPreparedCase.timings?.wasmCompileMs === 0 &&
+        typeof result.prepared.firstPreparedCase.timings?.runMs === 'number' &&
+        typeof result.prepared.firstPreparedCase.timings?.totalMs === 'number' &&
+        result.prepared.firstPreparedCase.timings?.artifactCacheHit === true &&
+        result.prepared.secondPreparedCase.timings?.compileMs === 0 &&
+        result.prepared.secondPreparedCase.timings?.artifactCacheHit === true,
+      `prepared cases must reuse the immutable compiled artifact without recompiling: ${JSON.stringify(result.prepared)}`
+    );
+    assertCondition(
+      typeof result.prepared.preparationTimings?.compileMs === 'number' &&
+        (result.prepared.preparationTimings.compileMs as number) > 0 &&
+        result.prepared.preparationTimings.artifactCacheHit === false,
+      `preparation timings must report the one real compiler load separately from cached case runs: ${JSON.stringify(result.prepared.preparationTimings)}`
+    );
+    assertCondition(
+      result.prepared.abortedPreparedCase.resolved === false &&
+        result.prepared.abortedPreparedCase.name === 'AbortError',
+      `caller cancellation must terminate the prepared worker and preserve AbortError: ${JSON.stringify(result.prepared.abortedPreparedCase)}`
+    );
+    assertCondition(
+      result.prepared.executeAfterDispose.includes('already disposed'),
+      `disposed prepared programs must fail deterministically: ${JSON.stringify(result.prepared)}`
+    );
+    assertCondition(
+      result.preparedTrace.result.kind === 'completed' &&
+        result.preparedTrace.result.output === 6 &&
+        Array.isArray(result.preparedTrace.result.trace?.events) &&
+        result.preparedTrace.result.trace.events.length > 0 &&
+        result.preparedTrace.result.timings?.compileMs === 0 &&
+        result.preparedTrace.result.timings?.artifactCacheHit === true,
+      `prepared C++ tracing must execute from the cached module with an isolated trace: ${JSON.stringify(result.preparedTrace)}`
+    );
+    assertCondition(
+      result.protocolErrors.invalidPreparationError ===
+        'C++ prepared program mode must be "code" or "trace".' &&
+        result.protocolErrors.missingExecutionError ===
+          'C++ prepared program "cpp-prepared-missing" does not exist or was disposed.' &&
+        result.protocolErrors.missingDisposalError ===
+          'C++ prepared program "cpp-prepared-missing" does not exist or was disposed.',
+      `prepared protocol failures must be deterministic: ${JSON.stringify(result.protocolErrors)}`
     );
     assertCondition(
       result.projectCompile.exitCode === 0 &&

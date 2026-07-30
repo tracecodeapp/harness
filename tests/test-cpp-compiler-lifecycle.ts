@@ -6,6 +6,7 @@ import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import vm from 'node:vm';
 import { CppWorkerClient } from '../packages/runtime-cpp/src/cpp-worker-client';
+import { createCppPreparedExecutionProvider } from '../packages/runtime-cpp/src/cpp-prepared-provider';
 
 function assertCondition(condition: unknown, message: string): asserts condition {
   if (!condition) throw new Error(message);
@@ -112,6 +113,159 @@ class CompilerBridgeWorker {
   }
 }
 
+class PreparedProtocolWorker {
+  static instances: PreparedProtocolWorker[] = [];
+  static compileRequests = 0;
+  static executions = 0;
+  static disposals = 0;
+
+  onmessage: ((event: MessageEvent<WorkerMessage>) => void) | null = null;
+  onerror: ((event: ErrorEvent) => void) | null = null;
+  terminated = false;
+  private pendingPreparation: WorkerMessage | null = null;
+  private preparedMode: 'code' | 'trace' | null = null;
+
+  constructor(readonly url: string | URL) {
+    PreparedProtocolWorker.instances.push(this);
+    queueMicrotask(() => this.onmessage?.({
+      data: { type: 'worker-ready' },
+    } as unknown as MessageEvent<WorkerMessage>));
+  }
+
+  postMessage(message: WorkerMessage): void {
+    if (this.terminated) return;
+    if (message.type === 'init') {
+      queueMicrotask(() => this.reply(message, {
+        success: true,
+        loadTimeMs: 0,
+      }));
+      return;
+    }
+    if (message.type === 'prepare-runtime-program') {
+      PreparedProtocolWorker.compileRequests += 1;
+      this.pendingPreparation = message;
+      this.preparedMode = message.payload?.mode === 'trace' ? 'trace' : 'code';
+      queueMicrotask(() => this.onmessage?.({
+        data: {
+          type: 'compile-request',
+          requestId: `prepared-compile-${PreparedProtocolWorker.compileRequests}`,
+          protocolToken: message.protocolToken,
+          payload: {
+            assets: {
+              compilerBundleUrl: 'https://assets.example/cpp/bundle.js',
+              toolchainIntegrity: {
+                assets: [{
+                  url: 'https://assets.example/cpp/bundle.js',
+                  sha256: 'a'.repeat(64),
+                }],
+              },
+            },
+            driverSource: `prepared:${String(message.payload?.code ?? '')}`,
+            standard: 'c++23',
+            stackSize: 8 * 1024 * 1024,
+          },
+        },
+      } as unknown as MessageEvent<WorkerMessage>));
+      return;
+    }
+    if (message.type === 'compile-response') {
+      const preparation = this.pendingPreparation;
+      this.pendingPreparation = null;
+      if (!preparation) return;
+      const compilation = message.payload ?? {};
+      queueMicrotask(() => this.reply(preparation, compilation.success === true
+        ? {
+            success: true,
+            programId: 'prepared-1',
+            mode: this.preparedMode,
+            consoleOutput: [],
+            timings: compilation.timings,
+          }
+        : {
+            success: false,
+            error: String(compilation.error ?? 'compile failed'),
+            consoleOutput: [],
+          }));
+      return;
+    }
+    if (message.type === 'execute-prepared-runtime-program') {
+      PreparedProtocolWorker.executions += 1;
+      if (message.payload?.inputs && (message.payload.inputs as { hang?: unknown }).hang === true) {
+        return;
+      }
+      if (message.payload?.mode !== this.preparedMode) {
+        queueMicrotask(() => this.onmessage?.({
+          data: {
+            id: message.id,
+            type: 'error',
+            protocolToken: message.protocolToken,
+            payload: {
+              error: `C++ prepared program "prepared-1" was prepared for ${this.preparedMode}, not ${String(message.payload?.mode)}.`,
+            },
+          },
+        } as unknown as MessageEvent<WorkerMessage>));
+        return;
+      }
+      const value = Number((message.payload?.inputs as { value?: unknown } | undefined)?.value ?? 0);
+      queueMicrotask(() => this.reply(message, this.preparedMode === 'trace'
+        ? {
+            success: true,
+            output: value,
+            trace: {
+              schemaVersion: 'runtime-trace-2026-04-28',
+              language: 'cpp',
+              runId: 'prepared:test',
+              events: [{ kind: 'line', runId: 'prepared:test', line: 1 }],
+              lineEventCount: 1,
+              traceStepCount: 1,
+            },
+            executionTimeMs: 1,
+            consoleOutput: [],
+            timings: {
+              compileMs: 0,
+              wasmCompileMs: 0,
+              runMs: 1,
+              artifactCacheHit: true,
+              compileCacheHit: true,
+            },
+          }
+        : {
+            success: true,
+            output: value,
+            executionTimeMs: 1,
+            consoleOutput: [],
+            timings: {
+              compileMs: 0,
+              wasmCompileMs: 0,
+              runMs: 1,
+              artifactCacheHit: true,
+              compileCacheHit: true,
+            },
+          }));
+      return;
+    }
+    if (message.type === 'dispose-prepared-runtime-program') {
+      PreparedProtocolWorker.disposals += 1;
+      queueMicrotask(() => this.reply(message, { success: true }));
+    }
+  }
+
+  private reply(message: WorkerMessage, payload: Record<string, unknown>): void {
+    this.onmessage?.({
+      data: {
+        id: message.id,
+        type: message.type,
+        protocolToken: message.protocolToken,
+        payload,
+      },
+    } as unknown as MessageEvent<WorkerMessage>);
+  }
+
+  terminate(): void {
+    this.terminated = true;
+  }
+}
+
 function createClient(options: Partial<ConstructorParameters<typeof CppWorkerClient>[0]> = {}): CppWorkerClient {
   return new CppWorkerClient({
     workerUrl: '/workers/cpp-worker.js',
@@ -123,6 +277,197 @@ function createClient(options: Partial<ConstructorParameters<typeof CppWorkerCli
     externalCompilerUrl: 'https://compiler.example/compile',
     ...options,
   });
+}
+
+async function testPreparedProviderProtocolLifecycle(): Promise<void> {
+  const originalWorker = globalThis.Worker;
+  const originalFetch = globalThis.fetch;
+  PreparedProtocolWorker.instances = [];
+  PreparedProtocolWorker.compileRequests = 0;
+  PreparedProtocolWorker.executions = 0;
+  PreparedProtocolWorker.disposals = 0;
+  let compilerFetches = 0;
+  // @ts-expect-error focused Worker test double
+  globalThis.Worker = PreparedProtocolWorker;
+  globalThis.fetch = async () => {
+    compilerFetches += 1;
+    return new Response(MINIMAL_WASM.slice(), {
+      status: 200,
+      headers: {
+        'content-type': 'application/wasm',
+        'x-tracecode-compile-ms': '5',
+      },
+    });
+  };
+
+  const provider = createCppPreparedExecutionProvider({
+    createWorkerClient: () => createClient(),
+  });
+  try {
+    await provider.init();
+    const preparation = await provider.prepareProgram({
+      mode: 'code',
+      code: 'class Solution { public: int identity(int value) { return value; } };',
+      functionName: 'identity',
+      executionStyle: 'solution-method',
+    });
+    assertCondition(
+      preparation.kind === 'prepared' && preparation.program.mode === 'code',
+      `C++ prepared provider should return a code program: ${JSON.stringify(preparation)}`
+    );
+    assertCondition(
+      preparation.program.capabilities.caseIsolation === 'fresh-case-state' &&
+        preparation.program.capabilities.maxConcurrency === 1,
+      'C++ prepared provider should report fresh state and its serialized worker capacity'
+    );
+    const first = await preparation.program.executeIsolated({
+      inputs: { value: 1 },
+    });
+    const second = await preparation.program.executeIsolated({
+      inputs: { value: 2 },
+    });
+    assertCondition(
+      first.kind === 'completed' && first.output === 1 &&
+        second.kind === 'completed' && second.output === 2,
+      `prepared executions should reuse one program: ${JSON.stringify({ first, second })}`
+    );
+    assertCondition(
+      PreparedProtocolWorker.compileRequests === 1 &&
+        compilerFetches === 1 &&
+        PreparedProtocolWorker.executions === 2,
+      `one preparation must compile exactly once regardless of case count: ${JSON.stringify({
+        compileRequests: PreparedProtocolWorker.compileRequests,
+        compilerFetches,
+        executions: PreparedProtocolWorker.executions,
+      })}`
+    );
+    await preparation.program.dispose();
+    await preparation.program.dispose();
+    assertCondition(
+      PreparedProtocolWorker.disposals === 1,
+      'prepared-program disposal should cross the worker protocol exactly once'
+    );
+    let disposedError = '';
+    try {
+      await preparation.program.executeIsolated({ inputs: { value: 3 } });
+    } catch (error) {
+      disposedError = error instanceof Error ? error.message : String(error);
+    }
+    assertCondition(
+      disposedError === 'C++ prepared program "prepared-1" was already disposed.',
+      `execution after disposal should fail deterministically: ${disposedError}`
+    );
+
+    const abortProvider = createCppPreparedExecutionProvider({
+      createWorkerClient: () => createClient(),
+    });
+    const abortPreparation = await abortProvider.prepareProgram({
+      mode: 'code',
+      code: 'class Solution { public: int hang(int value) { return value; } };',
+      functionName: 'hang',
+      executionStyle: 'solution-method',
+    });
+    assertCondition(
+      abortPreparation.kind === 'prepared' && abortPreparation.program.mode === 'code',
+      `abort preparation should succeed: ${JSON.stringify(abortPreparation)}`
+    );
+    const controller = new AbortController();
+    const execution = abortPreparation.program.executeIsolated({
+      inputs: { value: 0, hang: true },
+      signal: controller.signal,
+    });
+    controller.abort();
+    let abortError: unknown;
+    try {
+      await execution;
+    } catch (error) {
+      abortError = error;
+    }
+    assertCondition(
+      abortError instanceof Error && abortError.name === 'AbortError',
+      `prepared caller cancellation should preserve AbortError: ${String(abortError)}`
+    );
+    const workerCountBeforeDispose = PreparedProtocolWorker.instances.length;
+    await abortPreparation.program.dispose();
+    assertCondition(
+      PreparedProtocolWorker.instances.length === workerCountBeforeDispose,
+      'disposing an already-aborted prepared program must not recreate its worker'
+    );
+
+    const timeoutProvider = createCppPreparedExecutionProvider({
+      createWorkerClient: () => createClient(),
+    });
+    const timeoutPreparation = await timeoutProvider.prepareProgram({
+      mode: 'code',
+      code: 'class Solution { public: int hang(int value) { return value; } };',
+      functionName: 'hang',
+      executionStyle: 'solution-method',
+    });
+    assertCondition(
+      timeoutPreparation.kind === 'prepared' &&
+        timeoutPreparation.program.mode === 'code',
+      `timeout preparation should succeed: ${JSON.stringify(timeoutPreparation)}`
+    );
+    const timedOut = await timeoutPreparation.program.executeIsolated({
+      inputs: { value: 0, hang: true },
+      limits: { wallClockMs: 5 },
+    });
+    assertCondition(
+      timedOut.kind === 'limit' && timedOut.reason === 'client-timeout',
+      `prepared wall-clock limits should return a structured limit: ${JSON.stringify(timedOut)}`
+    );
+    const workerCountBeforeTimeoutDispose =
+      PreparedProtocolWorker.instances.length;
+    await timeoutPreparation.program.dispose();
+    assertCondition(
+      PreparedProtocolWorker.instances.length ===
+        workerCountBeforeTimeoutDispose,
+      'disposing a timed-out prepared program must not recreate its worker'
+    );
+
+    const recycledClient = createClient();
+    const firstGeneration = await recycledClient.prepareRuntimeProgram({
+      mode: 'code',
+      code: 'class Solution { public: int identity(int value) { return value; } };',
+      functionName: 'identity',
+      executionStyle: 'solution-method',
+    });
+    assertCondition(
+      firstGeneration.success,
+      `first low-level preparation should succeed: ${JSON.stringify(firstGeneration)}`
+    );
+    recycledClient.terminate();
+    await recycledClient.disposePreparedProgram(firstGeneration.handle);
+    const secondGeneration = await recycledClient.prepareRuntimeProgram({
+      mode: 'code',
+      code: 'class Solution { public: int identity(int value) { return value; } };',
+      functionName: 'identity',
+      executionStyle: 'solution-method',
+    });
+    assertCondition(
+      secondGeneration.success &&
+        secondGeneration.handle.programId === firstGeneration.handle.programId &&
+        secondGeneration.handle.lifecycleGeneration !==
+          firstGeneration.handle.lifecycleGeneration,
+      `worker-local ids may be reused only behind generation fencing: ${JSON.stringify({
+        firstGeneration,
+        secondGeneration,
+      })}`
+    );
+    const recycledResult = await recycledClient.executePreparedCode(
+      secondGeneration.handle,
+      { inputs: { value: 7 } }
+    );
+    assertCondition(
+      recycledResult.kind === 'completed' && recycledResult.output === 7,
+      `disposing a stale generation must not poison a recycled program id: ${JSON.stringify(recycledResult)}`
+    );
+    await recycledClient.disposePreparedProgram(secondGeneration.handle);
+    recycledClient.terminate();
+  } finally {
+    globalThis.fetch = originalFetch;
+    globalThis.Worker = originalWorker;
+  }
 }
 
 async function testContentAddressedArtifactsAndDisposableExecution(): Promise<void> {
@@ -564,6 +909,7 @@ async function testCompilerFrameKeepsOnlyTrustedCompilerWarm(): Promise<void> {
 }
 
 async function main(): Promise<void> {
+  await testPreparedProviderProtocolLifecycle();
   await testContentAddressedArtifactsAndDisposableExecution();
   await testInvalidArtifactsFailClosedAndAreNotCached();
   await testTerminationDuringAssetPreflightCannotRecreateWorkerAndClientRecovers();
