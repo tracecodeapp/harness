@@ -8,13 +8,10 @@ import {
   createRuntimeCommandStdinPipe,
   createRuntimeCommandStdinPipeFromText,
   readRuntimeCommandStdinPipeBytes,
-  RUNTIME_PROJECT_MAX_LIVE_FILE_CHANGES,
-  RUNTIME_PROJECT_MAX_LIVE_FILE_CHANGE_BYTES,
   RUNTIME_PROJECT_MAX_OUTPUT_STREAM_BYTES,
   runtimeCommandStdinPipeClosed,
   runtimeFileChangePath,
   runtimeProjectTruncateUtf8,
-  runtimeProjectUtf8Bytes,
 } from '@tracecode/runtime-core';
 import {
   isRuntimeKernelVirtualNamespacePath,
@@ -126,6 +123,7 @@ import {
   runtimeFileSystemEntryIsSymlink,
   type RuntimeFinalDiffPreparedChange,
 } from './fs-observed/snapshot-image';
+import { RuntimeLiveFileChangeProjector } from './fs-observed/live-file-change-projector';
 import { assertNoNul, dirname, isRuntimeSkillsNamespacePath, isWithinWorkspace, mapWorkspaceAlias, normalizeRuntimeSkillPath, normalizeRuntimeSkillsVirtualPath, normalizeWorkspaceCwd, resolveWorkspaceCommandPath, toProjectPath, toWorkspacePath } from './paths';
 import { RuntimeFileGenerationConflictError, RuntimeFileSystemLockCoordinator, fsMutationGenerationPaths, fsMutationLockRequests, normalizeFsLockPath, type RuntimeFileSystemLockRequest, type RuntimeFileSystemMutationKind } from './locks';
 import { RuntimeKernelInterruptedError } from './scheduler';
@@ -786,9 +784,7 @@ export class KernelObservedFileSystem implements IFileSystem {
     new Set<(revision: number, mutation: RuntimeFileSystemMutation) => void>();
   private readonly beforeMutationObservers =
     new Set<RuntimeFileSystemBeforeMutationObserver>();
-  private liveFileChangeBudgetPid: number | undefined;
-  private liveFileChangeCount = 0;
-  private liveFileChangeBytes = 0;
+  private readonly liveFileChanges: RuntimeLiveFileChangeProjector<RuntimeCommandExecutionContext>;
 
   constructor(
     base: IFileSystem,
@@ -808,6 +804,12 @@ export class KernelObservedFileSystem implements IFileSystem {
   ) {
     this.quotaFileSystem = new RuntimeWorkspaceQuotaFileSystem(base, workspaceRoot, storageLimits);
     this.base = this.quotaFileSystem;
+    this.liveFileChanges = new RuntimeLiveFileChangeProjector(
+      this.base,
+      workspaceRoot,
+      () => this.suspendDepth > 0,
+      onFileChange
+    );
   }
 
   suspendNotifications<T>(fn: () => Promise<T>): Promise<T> {
@@ -1204,7 +1206,7 @@ export class KernelObservedFileSystem implements IFileSystem {
     const createdAncestors = new Set<string>();
     for (const path of targetPaths) {
       entries.push(await this.snapshotRollbackEntry(path));
-      for (const directoryPath of await this.collectMissingDirectories(dirname(path))) {
+      for (const directoryPath of await this.liveFileChanges.collectMissingDirectories(dirname(path))) {
         createdAncestors.add(directoryPath);
       }
     }
@@ -1310,7 +1312,7 @@ export class KernelObservedFileSystem implements IFileSystem {
             deletedPaths.add(path);
           }
         } else {
-          for (const directoryPath of await this.collectExistingDirectories(change.absolutePath)) {
+          for (const directoryPath of await this.liveFileChanges.collectExistingDirectories(change.absolutePath)) {
             this.inodeForPath(directoryPath);
           }
         }
@@ -1731,7 +1733,7 @@ export class KernelObservedFileSystem implements IFileSystem {
       }
       this.inodeForPath(mappedPath);
       this.recordMutation(context, [mappedPath], mutationKind);
-      await this.emitFileWrite(context, mappedPath);
+      await this.liveFileChanges.emitFileWrite(context, mappedPath);
     });
   }
 
@@ -1787,7 +1789,7 @@ export class KernelObservedFileSystem implements IFileSystem {
       }
       this.recordMutation(context, linkedPaths, 'file-write');
       for (const linkedPath of linkedPaths) {
-        await this.emitFileWrite(context, linkedPath);
+        await this.liveFileChanges.emitFileWrite(context, linkedPath);
       }
     });
   }
@@ -1819,7 +1821,7 @@ export class KernelObservedFileSystem implements IFileSystem {
       }
       this.inodeForPath(mappedPath);
       this.recordMutation(context, [mappedPath], mutationKind);
-      await this.emitFileWrite(context, mappedPath);
+      await this.liveFileChanges.emitFileWrite(context, mappedPath);
     });
   }
 
@@ -1874,7 +1876,7 @@ export class KernelObservedFileSystem implements IFileSystem {
     ));
     const mappedPath = this.mapPath(path);
     await this.withMutationLocks(context, [mappedPath], 'directory-create', async () => {
-      const createdDirectories = await this.collectMissingDirectories(mappedPath);
+      const createdDirectories = await this.liveFileChanges.collectMissingDirectories(mappedPath);
       this.assertWritable(mappedPath, 'mkdir');
       await this.base.mkdir(mappedPath, options);
       for (const directoryPath of createdDirectories) {
@@ -1883,7 +1885,7 @@ export class KernelObservedFileSystem implements IFileSystem {
       }
       if (createdDirectories.length > 0) this.recordMutation(context, createdDirectories, 'directory-create');
       for (const directoryPath of createdDirectories) {
-        this.emitDirectoryCreate(context, directoryPath);
+        this.liveFileChanges.emitDirectoryCreate(context, directoryPath);
       }
     });
   }
@@ -1962,18 +1964,18 @@ export class KernelObservedFileSystem implements IFileSystem {
     if (removeTarget.kind === 'error') throwKernelMutationTargetError(path, removeTarget);
     const mappedPath = this.mapPath(path);
     await this.withMutationLocks(context, [mappedPath], options?.recursive ? 'recursive-delete' : 'delete', async () => {
-      const deletedFiles = await this.collectExistingFiles(mappedPath);
-      const deletedDirectories = await this.collectExistingDirectories(mappedPath);
+      const deletedFiles = await this.liveFileChanges.collectExistingFiles(mappedPath);
+      const deletedDirectories = await this.liveFileChanges.collectExistingDirectories(mappedPath);
       this.assertWritable(mappedPath, 'remove');
       this.assertWritableFiles(deletedFiles, 'remove');
       await this.base.rm(mappedPath, options);
       this.forgetInodes([mappedPath, ...deletedFiles, ...deletedDirectories]);
       this.recordMutation(context, [mappedPath, ...deletedFiles, ...deletedDirectories], options?.recursive ? 'recursive-delete' : 'delete');
       for (const deletedPath of deletedFiles) {
-        this.emitFileDelete(context, deletedPath);
+        this.liveFileChanges.emitFileDelete(context, deletedPath);
       }
       for (const deletedPath of deletedDirectories) {
-        this.emitDirectoryDelete(context, deletedPath);
+        this.liveFileChanges.emitDirectoryDelete(context, deletedPath);
       }
     });
   }
@@ -2011,8 +2013,8 @@ export class KernelObservedFileSystem implements IFileSystem {
       await this.base.cp(mappedSource, mappedDestination, options);
       this.inodeForPath(mappedDestination);
       this.recordMutation(context, [mappedSource, mappedDestination], 'copy');
-      await this.emitExistingDirectories(context, mappedDestination);
-      await this.emitExistingFiles(context, mappedDestination);
+      await this.liveFileChanges.emitExistingDirectories(context, mappedDestination);
+      await this.liveFileChanges.emitExistingFiles(context, mappedDestination);
     });
   }
 
@@ -2033,7 +2035,7 @@ export class KernelObservedFileSystem implements IFileSystem {
       await this.base.writeFile(mappedDestination, sourceBytes);
       this.inodeForPath(mappedDestination);
       this.recordMutation(context, [mappedDestination], 'file-create');
-      await this.emitFileWrite(context, mappedDestination);
+      await this.liveFileChanges.emitFileWrite(context, mappedDestination);
     });
   }
 
@@ -2068,7 +2070,7 @@ export class KernelObservedFileSystem implements IFileSystem {
       await this.base.writeFile(mappedDestination, content);
       this.inodeForPath(mappedDestination);
       this.recordMutation(context, [mappedDestination], mutationKind);
-      await this.emitFileWrite(context, mappedDestination);
+      await this.liveFileChanges.emitFileWrite(context, mappedDestination);
     });
   }
 
@@ -2100,8 +2102,8 @@ export class KernelObservedFileSystem implements IFileSystem {
     const mappedSource = this.mapPath(src);
     const mappedDestination = this.mapPath(dest);
     await this.withMutationLocks(context, [mappedSource, mappedDestination], 'rename', async () => {
-      const deletedFiles = await this.collectExistingFiles(mappedSource);
-      const deletedDirectories = await this.collectExistingDirectories(mappedSource);
+      const deletedFiles = await this.liveFileChanges.collectExistingFiles(mappedSource);
+      const deletedDirectories = await this.liveFileChanges.collectExistingDirectories(mappedSource);
       const movedPaths = [...deletedDirectories, ...deletedFiles];
       this.assertWritableFiles(deletedFiles, 'move');
       this.assertWritable(mappedDestination, 'move');
@@ -2112,13 +2114,13 @@ export class KernelObservedFileSystem implements IFileSystem {
       if (deletedFiles.length > 0 || deletedDirectories.length > 0) {
         this.recordMutation(context, [...deletedFiles, ...deletedDirectories], 'recursive-delete');
       }
-      await this.emitExistingDirectories(context, mappedDestination);
-      await this.emitExistingFiles(context, mappedDestination);
+      await this.liveFileChanges.emitExistingDirectories(context, mappedDestination);
+      await this.liveFileChanges.emitExistingFiles(context, mappedDestination);
       for (const deletedPath of deletedFiles) {
-        this.emitFileDelete(context, deletedPath);
+        this.liveFileChanges.emitFileDelete(context, deletedPath);
       }
       for (const deletedPath of deletedDirectories) {
-        this.emitDirectoryDelete(context, deletedPath);
+        this.liveFileChanges.emitDirectoryDelete(context, deletedPath);
       }
     });
   }
@@ -2197,7 +2199,7 @@ export class KernelObservedFileSystem implements IFileSystem {
       this.assertWritable(mappedPath, 'symlink');
       await this.base.symlink(target, mappedPath);
       this.recordMutation(context, [mappedPath], 'file-create');
-      this.emitSymlinkCreate(context, mappedPath, target);
+      this.liveFileChanges.emitSymlinkCreate(context, mappedPath, target);
     });
   }
 
@@ -2350,133 +2352,6 @@ export class KernelObservedFileSystem implements IFileSystem {
   private mapPath(path: string): string {
     if (!path.startsWith('/')) return path;
     return mapWorkspaceAlias(this.workspaceRoot(), this.workspaceAlias(), path);
-  }
-
-  private async emitExistingFiles(context: RuntimeCommandExecutionContext | undefined, path: string): Promise<void> {
-    for (const filePath of await this.collectExistingFiles(path)) {
-      await this.emitFileWrite(context, filePath);
-    }
-  }
-
-  private async emitExistingDirectories(context: RuntimeCommandExecutionContext | undefined, path: string): Promise<void> {
-    for (const directoryPath of await this.collectExistingDirectories(path)) {
-      this.emitDirectoryCreate(context, directoryPath);
-    }
-  }
-
-  private resetLiveFileChangeBudgetFor(pid: number): void {
-    if (this.liveFileChangeBudgetPid === pid) return;
-    this.liveFileChangeBudgetPid = pid;
-    this.liveFileChangeCount = 0;
-    this.liveFileChangeBytes = 0;
-  }
-
-  private liveFileChangeContentBytes(stat: Awaited<ReturnType<IFileSystem['stat']>>): number | null {
-    const size = (stat as { size?: unknown }).size;
-    if (typeof size === 'number') return Number.isFinite(size) && size >= 0 ? Math.floor(size) : null;
-    if (typeof size === 'bigint') {
-      if (size < BigInt(0) || size > BigInt(Number.MAX_SAFE_INTEGER)) return null;
-      return Number(size);
-    }
-    return null;
-  }
-
-  private tryReserveLiveFileChange(
-    context: RuntimeCommandExecutionContext | undefined,
-    relativePath: string,
-    contentBytes = 0
-  ): boolean {
-    if (!context) return false;
-    this.resetLiveFileChangeBudgetFor(context.process.pid);
-    const eventBytes = runtimeProjectUtf8Bytes(relativePath) + contentBytes;
-    if (this.liveFileChangeCount + 1 > RUNTIME_PROJECT_MAX_LIVE_FILE_CHANGES) return false;
-    if (eventBytes > RUNTIME_PROJECT_MAX_LIVE_FILE_CHANGE_BYTES) return false;
-    if (this.liveFileChangeBytes + eventBytes > RUNTIME_PROJECT_MAX_LIVE_FILE_CHANGE_BYTES) return false;
-    this.liveFileChangeCount += 1;
-    this.liveFileChangeBytes += eventBytes;
-    return true;
-  }
-
-  private async collectMissingDirectories(path: string): Promise<string[]> {
-    const root = this.workspaceRoot();
-    if (!isWithinWorkspace(root, path)) return [];
-    if (path === root) return [];
-    const relativeParts = toProjectPath(root, path).split('/').filter(Boolean);
-    const missing: string[] = [];
-    let current = root;
-    for (const part of relativeParts) {
-      current = `${current}/${part}`;
-      if (!(await this.base.exists(current))) missing.push(current);
-    }
-    return missing;
-  }
-
-  private async collectExistingFiles(path: string): Promise<string[]> {
-    if (!isWithinWorkspace(this.workspaceRoot(), path) || !(await this.base.exists(path))) return [];
-    const stat = await this.base.stat(path);
-    if (stat.isFile) return [path];
-    if (!stat.isDirectory) return [];
-    const files: string[] = [];
-    for (const entry of await this.base.readdir(path)) {
-      files.push(...await this.collectExistingFiles(`${path}/${entry}`));
-    }
-    return files;
-  }
-
-  private async collectExistingDirectories(path: string): Promise<string[]> {
-    if (!isWithinWorkspace(this.workspaceRoot(), path) || !(await this.base.exists(path))) return [];
-    const stat = await this.base.stat(path);
-    if (!stat.isDirectory) return [];
-    const directories: string[] = [];
-    for (const entry of await this.base.readdir(path)) {
-      directories.push(...await this.collectExistingDirectories(`${path}/${entry}`));
-    }
-    directories.push(path);
-    return directories.filter((directoryPath) => directoryPath !== this.workspaceRoot());
-  }
-
-  private async emitFileWrite(context: RuntimeCommandExecutionContext | undefined, path: string): Promise<void> {
-    if (this.suspendDepth > 0 || !isWithinWorkspace(this.workspaceRoot(), path)) return;
-    const projectPath = toProjectPath(this.workspaceRoot(), path);
-    const stat = await this.base.stat(path).catch(() => null);
-    if (!stat?.isFile) return;
-    const contentBytes = this.liveFileChangeContentBytes(stat);
-    if (contentBytes === null || !this.tryReserveLiveFileChange(context, projectPath, contentBytes)) return;
-    const bytes = await this.base.readFileBuffer(path);
-    const text = decodeUtf8(bytes);
-    this.onFileChange(context, {
-      path: projectPath,
-      contents: text ?? base64FromBytes(bytes),
-      ...(text === null ? { encoding: 'base64' as const } : {}),
-    });
-  }
-
-  private emitFileDelete(context: RuntimeCommandExecutionContext | undefined, path: string): void {
-    if (this.suspendDepth > 0 || !isWithinWorkspace(this.workspaceRoot(), path)) return;
-    const projectPath = toProjectPath(this.workspaceRoot(), path);
-    if (!this.tryReserveLiveFileChange(context, projectPath)) return;
-    this.onFileChange(context, { path: projectPath, deleted: true });
-  }
-
-  private emitSymlinkCreate(context: RuntimeCommandExecutionContext | undefined, path: string, target: string): void {
-    if (this.suspendDepth > 0 || !isWithinWorkspace(this.workspaceRoot(), path)) return;
-    const projectPath = toProjectPath(this.workspaceRoot(), path);
-    if (!this.tryReserveLiveFileChange(context, projectPath, runtimeProjectUtf8Bytes(target))) return;
-    this.onFileChange(context, { path: projectPath, symlink: true, target });
-  }
-
-  private emitDirectoryCreate(context: RuntimeCommandExecutionContext | undefined, path: string): void {
-    if (this.suspendDepth > 0 || !isWithinWorkspace(this.workspaceRoot(), path) || path === this.workspaceRoot()) return;
-    const projectPath = toProjectPath(this.workspaceRoot(), path);
-    if (!this.tryReserveLiveFileChange(context, projectPath)) return;
-    this.onFileChange(context, { path: projectPath, directory: true });
-  }
-
-  private emitDirectoryDelete(context: RuntimeCommandExecutionContext | undefined, path: string): void {
-    if (this.suspendDepth > 0 || !isWithinWorkspace(this.workspaceRoot(), path) || path === this.workspaceRoot()) return;
-    const projectPath = toProjectPath(this.workspaceRoot(), path);
-    if (!this.tryReserveLiveFileChange(context, projectPath)) return;
-    this.onFileChange(context, { path: projectPath, directory: true, deleted: true });
   }
 
   private readDeviceFile(

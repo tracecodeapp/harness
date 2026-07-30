@@ -3,7 +3,7 @@ import {
   publicRuntimeKernelVirtualFiles,
   runtimeKernelVirtualDevices,
   runtimeKernelVirtualFiles,
-} from '@tracecode/harness-core';
+} from '@tracecode/runtime-core';
 import type {
   RuntimeCommandResult,
   RuntimeDirectory,
@@ -14,7 +14,7 @@ import type {
   RuntimeKernelInfo,
   RuntimeProjectSnapshot,
   RuntimeSymlink,
-} from '@tracecode/harness-core';
+} from '@tracecode/runtime-core';
 import type {
   CommandContext,
   IFileSystem,
