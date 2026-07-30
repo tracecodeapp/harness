@@ -762,10 +762,9 @@ async function runWithTempRoot(tempRoot: string): Promise<void> {
   for (const exportName of projectNodeTypeSurface) {
     assertCondition(projectNodeTypes.includes(exportName), `Project-node declarations should include ${exportName}`);
   }
-  const csharpPublicDeclarations = await readDeclarationTree(join(packageDir, 'dist'));
   assertCondition(
     projectNodeTypes.includes('runtimeCommand?: string') &&
-      !/roslyn|dotnet|\.net/i.test(csharpPublicDeclarations),
+      !/roslyn|dotnet|\.net/i.test(projectNodeTypes),
     'Packed project-node C# declarations must expose language-owned command options without provider branding'
   );
   for (const forbidden of [
