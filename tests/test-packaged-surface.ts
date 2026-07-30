@@ -100,6 +100,33 @@ async function runWithTempRoot(tempRoot: string): Promise<void> {
   await mkdir(packageDir, { recursive: true });
 
   const tarballPath = isAbsolute(tarballName!) ? tarballName! : join(tempRoot, tarballName!);
+  const tarballInventory = spawnSync('tar', ['-tf', tarballPath], {
+    encoding: 'utf8',
+  });
+  if (tarballInventory.status !== 0) {
+    throw new Error(
+      tarballInventory.stderr ||
+        tarballInventory.stdout ||
+        'Failed to inspect packed harness tarball'
+    );
+  }
+  const tarballEntries = String(tarballInventory.stdout || '')
+    .trim()
+    .split('\n')
+    .filter(Boolean);
+  const packagedManifests = tarballEntries.filter((entry) =>
+    entry.endsWith('/package.json')
+  );
+  assertCondition(
+    packagedManifests.length === 1 &&
+      packagedManifests[0] === 'package/package.json',
+    'Packed tarball must contain only the root @tracecode/harness package manifest'
+  );
+  assertCondition(
+    !tarballEntries.some((entry) => entry.startsWith('package/packages/')),
+    'Packed tarball must not contain private workspace sources or manifests'
+  );
+
   const extract = spawnSync('tar', ['-xf', tarballPath, '-C', packageDir, '--strip-components=1'], {
     encoding: 'utf8',
   });
