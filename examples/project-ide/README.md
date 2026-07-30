@@ -25,14 +25,17 @@ pnpm --dir examples/project-ide dev
 The app syncs harness worker assets into `public/workers` before `dev`, `build`, and `preview`.
 
 To enable Java actions, inject `window.__tracecodeJavaProjectProvider` before
-boot with an implementation-neutral `JavaProjectRunnerOptions` object. The
-provider owns its Worker and runtime assets. The example hides Java session/MVP
-actions when that provider is absent and never selects a runtime
-implementation.
+boot with the `java` configuration accepted by
+`CreateBrowserProjectWorkspaceOptions` from
+`@tracecode/harness/browser/project`. The provider owns its Worker and runtime
+assets. The example hides Java session/MVP actions when that provider is absent
+and never selects a runtime implementation.
 
 ## What It Demonstrates
 
 - `createBrowserProjectWorkspace(...)` from `@tracecode/harness/browser/project`
+- workspace and terminal contracts from `@tracecode/harness/project`
+- runtime and language metadata from `@tracecode/harness/browser`
 - `ProjectSession` commands, readonly starter files, and hidden fixture data
 - shell-style project commands through TraceKernel
 - live runtime filesystem and stdio events across browser runtimes

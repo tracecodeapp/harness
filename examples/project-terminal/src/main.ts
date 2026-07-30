@@ -5,9 +5,15 @@ import type {
   RuntimeCommandResult,
   RuntimeProjectTerminalInputState,
   RuntimeWorkspaceEvent,
-} from '@tracecode/harness/core';
-import type { BrowserProjectProvider, BrowserRuntimeAssetManifests } from '@tracecode/harness/browser';
-import type { JavaProjectRunnerOptions } from '@tracecode/harness/java';
+} from '@tracecode/harness/project';
+import type { BrowserRuntimeAssetManifests } from '@tracecode/harness/browser';
+import type {
+  BrowserProjectProvider,
+  CreateBrowserProjectWorkspaceOptions,
+} from '@tracecode/harness/browser/project';
+
+type JavaProjectProviderConfiguration =
+  NonNullable<CreateBrowserProjectWorkspaceOptions['java']>;
 
 async function bootProjectTerminal(): Promise<void> {
   document.body.innerHTML = `
@@ -67,7 +73,7 @@ async function bootProjectTerminal(): Promise<void> {
 
   const configurationWindow = window as Window & {
     __tracecodeRuntimeAssetManifests?: BrowserRuntimeAssetManifests;
-    __tracecodeJavaProjectProvider?: Omit<JavaProjectRunnerOptions, 'applyFileChange'>;
+    __tracecodeJavaProjectProvider?: JavaProjectProviderConfiguration;
   };
   const runtimeManifests = configurationWindow.__tracecodeRuntimeAssetManifests;
   const javaProjectProvider = configurationWindow.__tracecodeJavaProjectProvider;
@@ -263,6 +269,7 @@ public class TicketTriage {
 
   const terminalSession = workspace.createTerminalSession({
     onTerminalEvent: (event) => {
+      if (event.type !== 'input-state') return;
       applyTerminalInputState(event.state);
     },
   });

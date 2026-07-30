@@ -1,40 +1,49 @@
 import './styles.css';
 
-import editorWorker from 'monaco-editor/esm/vs/editor/editor.worker?worker';
-import jsonWorker from 'monaco-editor/esm/vs/language/json/json.worker?worker';
-import tsWorker from 'monaco-editor/esm/vs/language/typescript/ts.worker?worker';
+import editorWorker from 'monaco-editor/esm/vs/editor/editor.worker.js?worker';
+import jsonWorker from 'monaco-editor/esm/vs/language/json/json.worker.js?worker';
+import tsWorker from 'monaco-editor/esm/vs/language/typescript/ts.worker.js?worker';
 
 import {
   getRuntimeProjectIoCapabilityMatrix,
   type BrowserRuntimeAssetManifests,
+  type Language,
 } from '@tracecode/harness/browser';
-import type { Language, RuntimeCommandEvent, RuntimeWorkspaceEvent } from '@tracecode/harness/core';
-import type { JavaProjectRunnerOptions } from '@tracecode/harness/java';
+import type { RuntimeCommandEvent, RuntimeWorkspaceEvent } from '@tracecode/harness/project';
+import type { CreateBrowserProjectWorkspaceOptions } from '@tracecode/harness/browser/project';
+
+type JavaProjectProviderConfiguration =
+  NonNullable<CreateBrowserProjectWorkspaceOptions['java']>;
 
 // ----------------------------------------------------------------------
 // Monaco Environment Setup
 // ----------------------------------------------------------------------
-self.MonacoEnvironment = {
-  getWorker(_, label) {
+const monacoGlobal = self as typeof self & {
+  MonacoEnvironment: {
+    getWorker(moduleId: string, label: string): Worker;
+  };
+};
+monacoGlobal.MonacoEnvironment = {
+  getWorker(_moduleId: string, label: string) {
     if (label === 'json') return new jsonWorker();
     if (label === 'typescript' || label === 'javascript') return new tsWorker();
     return new editorWorker();
   }
 };
 
-type MonacoModule = typeof import('monaco-editor/esm/vs/editor/editor.api');
+type MonacoModule = typeof import('monaco-editor/esm/vs/editor/editor.api.js');
 
 async function loadProjectEditor(): Promise<MonacoModule> {
   const [monaco] = await Promise.all([
-    import('monaco-editor/esm/vs/editor/editor.api'),
-    import('monaco-editor/esm/vs/language/json/monaco.contribution'),
-    import('monaco-editor/esm/vs/language/typescript/monaco.contribution'),
-    import('monaco-editor/esm/vs/basic-languages/python/python.contribution'),
-    import('monaco-editor/esm/vs/basic-languages/javascript/javascript.contribution'),
-    import('monaco-editor/esm/vs/basic-languages/typescript/typescript.contribution'),
-    import('monaco-editor/esm/vs/basic-languages/java/java.contribution'),
-    import('monaco-editor/esm/vs/basic-languages/csharp/csharp.contribution'),
-    import('monaco-editor/esm/vs/basic-languages/cpp/cpp.contribution'),
+    import('monaco-editor/esm/vs/editor/editor.api.js'),
+    import('monaco-editor/esm/vs/language/json/monaco.contribution.js'),
+    import('monaco-editor/esm/vs/language/typescript/monaco.contribution.js'),
+    import('monaco-editor/esm/vs/basic-languages/python/python.contribution.js'),
+    import('monaco-editor/esm/vs/basic-languages/javascript/javascript.contribution.js'),
+    import('monaco-editor/esm/vs/basic-languages/typescript/typescript.contribution.js'),
+    import('monaco-editor/esm/vs/basic-languages/java/java.contribution.js'),
+    import('monaco-editor/esm/vs/basic-languages/csharp/csharp.contribution.js'),
+    import('monaco-editor/esm/vs/basic-languages/cpp/cpp.contribution.js'),
   ]);
 
   monaco.editor.defineTheme('tracecodeDark', {
@@ -234,7 +243,7 @@ async function bootDevTerminal(): Promise<void> {
 
   const configurationWindow = window as Window & {
     __tracecodeRuntimeAssetManifests?: BrowserRuntimeAssetManifests;
-    __tracecodeJavaProjectProvider?: Omit<JavaProjectRunnerOptions, 'applyFileChange'>;
+    __tracecodeJavaProjectProvider?: JavaProjectProviderConfiguration;
   };
   const runtimeManifests = configurationWindow.__tracecodeRuntimeAssetManifests;
   const javaProjectProvider = configurationWindow.__tracecodeJavaProjectProvider;
@@ -1090,7 +1099,7 @@ int main(int argc, char** argv) {
     if (
       event.type === 'lifecycle' &&
       event.phase === 'session-destroyed' &&
-      event.detail.reason === 'tracekernelctl-reset' &&
+      event.detail?.reason === 'tracekernelctl-reset' &&
       !reloadingForTraceKernelReset
     ) {
       reloadingForTraceKernelReset = true;

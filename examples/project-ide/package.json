@@ -5,7 +5,8 @@
   "scripts": {
     "sync:assets": "node ../../dist/cli.cjs sync-assets public/workers",
     "dev": "pnpm sync:assets && vite",
-    "build": "pnpm sync:assets && vite build",
+    "typecheck": "tsc --noEmit",
+    "build": "pnpm typecheck && pnpm sync:assets && vite build",
     "preview": "pnpm sync:assets && vite preview --host 127.0.0.1 --port 4173"
   },
   "dependencies": {

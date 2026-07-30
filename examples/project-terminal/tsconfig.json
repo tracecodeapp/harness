@@ -4,6 +4,7 @@
     "module": "ESNext",
     "moduleResolution": "Bundler",
     "strict": true,
+    "skipLibCheck": true,
     "noEmit": true,
     "isolatedModules": true,
     "lib": ["DOM", "ES2022"]

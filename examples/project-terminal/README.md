@@ -19,12 +19,16 @@ The app syncs harness worker assets into `public/workers` before `dev`, `build`,
 
 The harness does not select a Java implementation. A host that wants the Java
 demo must set `window.__tracecodeJavaProjectProvider` before the app boots with
-an implementation-neutral `JavaProjectRunnerOptions` object. That provider
-owns its Worker, runtime assets, and delivery policy.
+the `java` configuration accepted by
+`CreateBrowserProjectWorkspaceOptions` from
+`@tracecode/harness/browser/project`. That provider owns its Worker, runtime
+assets, and delivery policy.
 
 ## What It Demonstrates
 
 - `createBrowserProjectWorkspace(...)` from `@tracecode/harness/browser/project`
+- workspace and terminal contracts from `@tracecode/harness/project`
+- runtime and language metadata from `@tracecode/harness/browser`
 - `workspace.createTerminalSession(...)` for prompt state and live stdin
 - C++ compile/run through TraceKernel
 - Java compile/run through TraceKernel when a compatible Java project provider is injected
