@@ -38,7 +38,11 @@ import {
   type RawExecutionPayload,
 } from '@tracecode/harness-core';
 import type { RuntimeTrace } from '@tracecode/harness-core';
-import type { CppToolchainIntegrityManifest } from '../../harness-browser/src/runtime-assets';
+import type { CppCompilerIntegrityManifest } from '../../harness-browser/src/runtime-assets';
+export type {
+  CppCompilerIntegrityEntry,
+  CppCompilerIntegrityManifest,
+} from '../../harness-browser/src/runtime-assets';
 
 /** Raw wire payload from the tracing commands; lifted into the outcome union here. */
 type CppRawTraceResult = RawExecutionPayload & { trace?: RuntimeTrace };
@@ -70,14 +74,14 @@ export type CppProjectCommandRequest = RuntimeProjectCommandRequest<'compile' | 
 export type CppProjectCommandResult = RuntimeCommandResult;
 
 export interface CppWorkerAssets {
-  clangWasmUrl: string;
-  lldWasmUrl: string;
+  compilerWasmUrl: string;
+  linkerWasmUrl: string;
   sysrootUrl: string;
   runtimeHeaderUrl: string;
   compilerBundleUrl: string;
   compilerFrameUrl?: string;
   compilerWorkerUrl?: string;
-  toolchainIntegrity?: CppToolchainIntegrityManifest;
+  compilerIntegrity?: CppCompilerIntegrityManifest;
 }
 
 export interface CppWorkerClientOptions extends CppWorkerAssets {
@@ -85,7 +89,7 @@ export interface CppWorkerClientOptions extends CppWorkerAssets {
   workerFactory?: BrowserWorkerFactory;
   /** Verifies the execution-worker asset before constructing a Worker. */
   assetPreflight?: () => Promise<void>;
-  /** Verifies compiler-frame and toolchain assets only when compilation is requested. */
+  /** Verifies compiler-frame and compiler assets only when compilation is requested. */
   runtimeAssetPreflight?: () => Promise<void>;
   debug?: boolean;
   initTimeoutMs?: number;
@@ -547,7 +551,7 @@ export class CppWorkerClient {
     ) {
       return true;
     }
-    // Worker-reported load failures arrive as prose from the toolchain loader;
+    // Worker-reported load failures arrive as prose from the compiler loader;
     // fetch failures are the one retryable class we recognize by text.
     return error instanceof WorkerReportedError && (
       error.message.includes('Failed to fetch') || error.message.includes('timed out')
@@ -566,15 +570,15 @@ export class CppWorkerClient {
         'init',
         {
           assets: {
-            clangWasmUrl: this.options.clangWasmUrl,
-            lldWasmUrl: this.options.lldWasmUrl,
+            clangWasmUrl: this.options.compilerWasmUrl,
+            lldWasmUrl: this.options.linkerWasmUrl,
             sysrootUrl: this.options.sysrootUrl,
             runtimeHeaderUrl: this.options.runtimeHeaderUrl,
             compilerBundleUrl: this.options.compilerBundleUrl,
             compilerFrameEnabled: Boolean(this.externalCompilerUrl || (this.compilerFrameUrl && typeof document !== 'undefined')),
             compilerFrameUrl: this.compilerFrameUrl,
             compilerWorkerUrl: this.options.compilerWorkerUrl,
-            toolchainIntegrity: this.options.toolchainIntegrity,
+            toolchainIntegrity: this.options.compilerIntegrity,
           },
           ...this.workerOptionsPayload(),
         },

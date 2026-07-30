@@ -1152,8 +1152,8 @@ globalThis.__tracecodeCppFixture = { handleInit, handleExecuteWithTracing };`,
   const init = await bridge.handleInit({
     assets: {
       compilerBundleUrl: pathToFileURL(CPP_COMPILER_BUNDLE_PATH).href,
-      clangWasmUrl: 'file:///missing/clang.wasm',
-      lldWasmUrl: 'file:///missing/lld.wasm',
+      compilerWasmUrl: 'file:///missing/clang.wasm',
+      linkerWasmUrl: 'file:///missing/lld.wasm',
       sysrootUrl: 'file:///missing/sysroot.tar',
       runtimeHeaderUrl: pathToFileURL(CPP_RUNTIME_HEADER_PATH).href,
     },

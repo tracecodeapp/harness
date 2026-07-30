@@ -190,11 +190,11 @@ async function testCppClientTerminatesCompileStageTimeouts(): Promise<void> {
   (globalThis as { Worker?: unknown }).Worker = CompileStageHangingWorker as unknown as typeof Worker;
   const client = new CppWorkerClient({
     workerUrl: '/workers/cpp-worker.js',
-    clangWasmUrl: '/workers/vendor/cpp/clang.wasm',
-    lldWasmUrl: '/workers/vendor/cpp/lld.wasm',
+    compilerWasmUrl: '/workers/cpp/compiler/compiler.wasm',
+    linkerWasmUrl: '/workers/cpp/compiler/linker.wasm',
     sysrootUrl: '/workers/vendor/cpp/sysroot.tar',
     runtimeHeaderUrl: '/workers/cpp/tracecode_runtime.hpp',
-    compilerBundleUrl: '/workers/vendor/cpp/yowasp/bundle.js',
+    compilerBundleUrl: '/workers/cpp/compiler/bundle.js',
     executionTimeoutMs: 5,
   });
   try {

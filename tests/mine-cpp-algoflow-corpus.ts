@@ -285,8 +285,8 @@ async function createCppWorkerHarness() {
   await api.handleInit({
     assets: {
       compilerBundleUrl: pathToFileURL(YOWASP_COMPILER_BUNDLE_PATH).href,
-      clangWasmUrl: 'file:///missing/clang.wasm',
-      lldWasmUrl: 'file:///missing/lld.wasm',
+      compilerWasmUrl: 'file:///missing/clang.wasm',
+      linkerWasmUrl: 'file:///missing/lld.wasm',
       sysrootUrl: 'file:///missing/sysroot.tar',
       runtimeHeaderUrl: pathToFileURL(CPP_RUNTIME_HEADER_PATH).href,
     },

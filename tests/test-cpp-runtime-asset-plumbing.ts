@@ -91,8 +91,8 @@ async function testCppKernelSyscallChannelPlumbing(): Promise<void> {
   const generationBuffer = new SharedArrayBuffer(Int32Array.BYTES_PER_ELEMENT);
   const client = new CppWorkerClient({
     workerUrl: '/cpp/cpp-worker.js',
-    clangWasmUrl: '',
-    lldWasmUrl: '',
+    compilerWasmUrl: '',
+    linkerWasmUrl: '',
     sysrootUrl: '',
     runtimeHeaderUrl: '/cpp/tracecode_runtime.hpp',
     compilerBundleUrl: '/cpp/compiler-bundle.js',
@@ -173,7 +173,7 @@ async function cppManifest(): Promise<{
     manifests: {
       cpp: {
         runtime: 'cpp',
-        runtimeVersion: 'clang-22-consumer-build',
+        runtimeVersion: 'cpp23-consumer-build',
         protocolVersion: BROWSER_RUNTIME_ASSET_PROTOCOL_VERSION,
         workerFormat: 'module',
         assetBaseUrl: '/cpp/',
@@ -184,7 +184,7 @@ async function cppManifest(): Promise<{
           compilerWorker: await asset('/cpp/compiler-worker.js'),
           runtimeHeader: await asset('/cpp/tracecode_runtime.hpp'),
           compilerBundle: await asset('/cpp/compiler-bundle.js'),
-          toolchain: {
+          compilerResources: {
             'llvm.core.wasm': await asset('/cpp/llvm.core.wasm'),
             'llvm-resources.tar': await asset('/cpp/llvm-resources.tar'),
           },
@@ -202,11 +202,11 @@ async function testCppClientPreflightsLazily(): Promise<void> {
     compilerWorkerUrl: '/cpp/compiler-worker.js',
     runtimeHeaderUrl: '/cpp/tracecode_runtime.hpp',
     compilerBundleUrl: '/cpp/compiler-bundle.js',
-    clangWasmUrl: '',
-    lldWasmUrl: '',
+    compilerWasmUrl: '',
+    linkerWasmUrl: '',
     sysrootUrl: '',
     assetPreflight: async () => { calls.push('worker'); },
-    runtimeAssetPreflight: async () => { calls.push('toolchain'); },
+    runtimeAssetPreflight: async () => { calls.push('compiler'); },
   });
   try {
     await client.init();
@@ -224,8 +224,8 @@ async function testCppClientPreflightsLazily(): Promise<void> {
       project: { files: [{ path: 'program.wasm', contents: '', encoding: 'base64' }] },
     });
     assertCondition(
-      !calls.includes('toolchain'),
-      `running an existing project artifact should not fetch the compiler toolchain: ${JSON.stringify(calls)}`
+      !calls.includes('compiler'),
+      `running an existing project artifact should not fetch compiler resources: ${JSON.stringify(calls)}`
     );
     await client.executeProjectCpp({
       code: '',
@@ -237,7 +237,7 @@ async function testCppClientPreflightsLazily(): Promise<void> {
       project: { files: [{ path: 'main.cpp', contents: 'int main() { return 0; }\n' }] },
     });
     assertCondition(
-      calls.filter((call) => call === 'toolchain').length === 1,
+      calls.filter((call) => call === 'compiler').length === 1,
       `project compilation should verify compiler assets exactly once: ${JSON.stringify(calls)}`
     );
   } finally {
@@ -261,8 +261,8 @@ async function testClassicAndProjectManifestPlumbing(): Promise<void> {
   try {
     const resolvedAssets = resolveBrowserHarnessAssets({ assets: { runtimeManifests: manifests } });
     assertCondition(
-      resolvedAssets.cppToolchainIntegrity?.assets.length === 4,
-      `C++ manifest should derive four exact pins before client construction: ${JSON.stringify(resolvedAssets.cppToolchainIntegrity)}`
+      resolvedAssets.cppCompilerIntegrity?.assets.length === 4,
+      `C++ manifest should derive four exact pins before client construction: ${JSON.stringify(resolvedAssets.cppCompilerIntegrity)}`
     );
     const harness = createBrowserHarness({ assets: { runtimeManifests: manifests } });
     await harness.getClient('cpp').init();
@@ -273,7 +273,7 @@ async function testClassicAndProjectManifestPlumbing(): Promise<void> {
       ?.toolchainIntegrity?.assets;
     assertCondition(
       Array.isArray(pins) && pins.length === 4,
-      `Classic C++ init should receive derived exact toolchain pins: ${JSON.stringify(classicInit)}`
+      `Classic C++ init should receive derived exact compiler pins: ${JSON.stringify(classicInit)}`
     );
     assertCondition(
       AssetWorker.fetches.length === 1 && AssetWorker.fetches[0] === '/cpp/cpp-worker.js',
@@ -304,7 +304,7 @@ async function testClassicAndProjectManifestPlumbing(): Promise<void> {
       ];
       assertCondition(
         requiredRuntimeAssets.every((url) => projectWorker.fetchesAtProjectExecution.includes(url)),
-        `project compile must finish toolchain preflight before worker execution: ${JSON.stringify(projectWorker.fetchesAtProjectExecution)}`
+        `project compile must finish compiler preflight before worker execution: ${JSON.stringify(projectWorker.fetchesAtProjectExecution)}`
       );
     } finally {
       workspace.dispose();

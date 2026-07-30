@@ -1826,6 +1826,7 @@ var package_default = {
     "test:core-public-surface": "pnpm exec tsx --tsconfig tsconfig.base.json tests/test-harness-core-public-surface.ts",
     "test:python-public-surface": "pnpm exec tsx --tsconfig tsconfig.base.json tests/test-python-public-surface.ts",
     "test:java-public-surface": "pnpm exec tsx --tsconfig tsconfig.base.json tests/test-java-public-surface.ts",
+    "test:cpp-public-surface": "pnpm exec tsx --tsconfig tsconfig.base.json tests/test-cpp-public-surface.ts",
     "test:native-harness": "pnpm exec tsx --tsconfig tsconfig.base.json tests/test-native-harness.ts",
     "test:runtime-info-sync": "pnpm exec tsx --tsconfig tsconfig.base.json scripts/generate-runtime-language-info.ts --check",
     "test:runtime-trace-parity": "pnpm exec tsx --tsconfig tsconfig.base.json tests/test-runtime-trace-parity.ts",
@@ -2127,15 +2128,15 @@ var LANGUAGE_RUNTIME_INFOS = Object.freeze(
     "cpp": {
       "language": "cpp",
       "displayName": "C++",
-      "versionLabel": "C++23 (YoWASP Clang 22)",
-      "description": "C++ is compiled with YoWASP Clang/LLD 22.0.0-git20542-10 using the C++23 standard.\n\nSubmissions compile to WebAssembly and run in a browser-local WASI-style execution lane. The harness currently compiles with -O0 and -fno-exceptions, with a fixed program stack size.\n\nCommon standard library headers are included automatically, including <algorithm>, <array>, <bitset>, <climits>, <cmath>, <cstdint>, <functional>, <limits>, <numeric>, <sstream>, <tuple>, <vector>, <unordered_map>, <unordered_set> and more.",
+      "versionLabel": "C++23",
+      "description": "C++ source is compiled using the C++23 standard.\n\nSubmissions compile to WebAssembly and run in a browser-local WASI-style execution lane. The harness currently compiles with -O0 and -fno-exceptions, with a fixed program stack size.\n\nCommon standard library headers are included automatically, including <algorithm>, <array>, <bitset>, <climits>, <cmath>, <cstdint>, <functional>, <limits>, <numeric>, <sstream>, <tuple>, <vector>, <unordered_map>, <unordered_set> and more.",
       "runtime": {
         "name": "WASI/WebAssembly execution lane",
         "detail": "Compiled and executed in a browser-local WASI-style worker lane."
       },
       "compiler": {
-        "name": "YoWASP Clang/LLD",
-        "version": "22.0.0-git20542-10"
+        "name": "C++ browser compiler",
+        "version": "C++23"
       },
       "standard": "C++23",
       "defaultImports": [
@@ -2204,7 +2205,7 @@ var LANGUAGE_RUNTIME_INFOS = Object.freeze(
       "libraries": [
         {
           "name": "C++ standard library and WASI libc",
-          "detail": "Provided by the YoWASP Clang toolchain bundle."
+          "detail": "Provided by the configured browser compiler resources."
         }
       ]
     }

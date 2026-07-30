@@ -83,8 +83,8 @@ if (typeof sandbox.SharedArrayBuffer !== 'undefined') {
 const initResult = await sandbox.__tracecodeCppTest.handleInit({
   assets: {
     compilerBundleUrl: pathToFileURL(process.cwd() + '/node_modules/@yowasp/clang/gen/bundle.js').href,
-    clangWasmUrl: 'file:///missing/clang.wasm',
-    lldWasmUrl: 'file:///missing/lld.wasm',
+    compilerWasmUrl: 'file:///missing/clang.wasm',
+    linkerWasmUrl: 'file:///missing/lld.wasm',
     sysrootUrl: 'file:///missing/sysroot.tar',
     runtimeHeaderUrl: 'file://' + process.cwd() + '/workers/cpp/tracecode_runtime.hpp',
   },

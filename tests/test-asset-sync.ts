@@ -51,12 +51,12 @@ async function main(): Promise<void> {
     'vendor/csharp/_framework/dotnet.native.wasm',
     'vendor/csharp/_framework/dotnet.runtime.js',
     'vendor/csharp/_framework/dotnet.boot.js',
-    'vendor/cpp/yowasp/bundle.js',
-    'vendor/cpp/yowasp/llvm-resources.tar',
-    'vendor/cpp/yowasp/llvm.core.wasm',
-    'vendor/cpp/yowasp/llvm.core2.wasm',
-    'vendor/cpp/yowasp/llvm.core3.wasm',
-    'vendor/cpp/yowasp/llvm.core4.wasm',
+    'cpp/compiler/bundle.js',
+    'cpp/compiler/llvm-resources.tar',
+    'cpp/compiler/llvm.core.wasm',
+    'cpp/compiler/llvm.core2.wasm',
+    'cpp/compiler/llvm.core3.wasm',
+    'cpp/compiler/llvm.core4.wasm',
   ];
 
   for (const relativePath of requiredFiles) {
@@ -64,6 +64,19 @@ async function main(): Promise<void> {
     const fileStat = await stat(filePath);
     assertCondition(fileStat.isFile(), `Expected synced asset at ${relativePath}`);
   }
+  const removedBrandedCppPathExists = await stat(
+    join(targetDir, 'vendor/cpp/yowasp/bundle.js')
+  ).then(
+    () => true,
+    (error: NodeJS.ErrnoException) => {
+      if (error.code === 'ENOENT') return false;
+      throw error;
+    }
+  );
+  assertCondition(
+    !removedBrandedCppPathExists,
+    'Asset sync must not republish C++ compiler assets under an implementation-branded path'
+  );
 
   const rootEntries = await readdir(targetDir);
   assertCondition(rootEntries.includes('python-worker.js'), 'Asset sync should flatten the Python worker into the target root');
@@ -86,11 +99,11 @@ async function main(): Promise<void> {
     const source = await readFile(join(targetDir, relativePath), 'utf8');
     assertCondition(
       source.includes('toolchainIntegrity'),
-      `${relativePath} should enforce pinned C++ toolchain integrity manifests`
+      `${relativePath} should enforce private pinned C++ compiler integrity payloads`
     );
     assertCondition(
       !source.includes('trusted HTTP(S) asset origin'),
-      `${relativePath} should not trust arbitrary HTTP(S) C++ toolchain assets`
+      `${relativePath} should not trust arbitrary HTTP(S) C++ compiler assets`
     );
   }
 

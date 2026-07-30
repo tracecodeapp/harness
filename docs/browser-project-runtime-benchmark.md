@@ -133,7 +133,7 @@ as aggregates, including:
 - Per-phase wall time, output, status, correctness errors, resource timing,
   window Long Tasks, and `performance.memory` snapshots when the engine exposes
   them.
-- Playwright network request sizes for page, worker, WebAssembly/toolchain, and
+- Playwright network request sizes for page, worker, WebAssembly/compiler, and
   consumer-CDN requests Playwright reports. `Content-Length` is the fallback when
   worker body-size counters are zero. Credentials and sensitive signed-URL query
   parameters are redacted from the stored URLs without changing byte counters.

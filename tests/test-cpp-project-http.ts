@@ -891,8 +891,8 @@ async function main(): Promise<void> {
   const cppClientOptions = {
     workerUrl: 'cpp-worker.js',
     debug: false,
-    clangWasmUrl: 'file:///missing/clang.wasm',
-    lldWasmUrl: 'file:///missing/lld.wasm',
+    compilerWasmUrl: 'file:///missing/compiler.wasm',
+    linkerWasmUrl: 'file:///missing/linker.wasm',
     sysrootUrl: 'file:///missing/sysroot.tar',
     runtimeHeaderUrl: pathToFileURL(join(process.cwd(), 'workers/cpp/tracecode_runtime.hpp')).href,
     compilerBundleUrl: pathToFileURL(join(process.cwd(), 'node_modules/@yowasp/clang/gen/bundle.js')).href,

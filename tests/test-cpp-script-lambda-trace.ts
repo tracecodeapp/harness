@@ -99,8 +99,8 @@ async function createCppWorkerHarness() {
   const init = await bridge.handleInit({
     assets: {
       compilerBundleUrl: pathToFileURL(`${process.cwd()}/node_modules/@yowasp/clang/gen/bundle.js`).href,
-      clangWasmUrl: 'file:///missing/clang.wasm',
-      lldWasmUrl: 'file:///missing/lld.wasm',
+      compilerWasmUrl: 'file:///missing/clang.wasm',
+      linkerWasmUrl: 'file:///missing/lld.wasm',
       sysrootUrl: 'file:///missing/sysroot.tar',
       runtimeHeaderUrl: pathToFileURL(`${process.cwd()}/workers/cpp/tracecode_runtime.hpp`).href,
     },

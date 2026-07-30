@@ -2912,7 +2912,7 @@ async function testCppCompilerLifecycleSeparatesCompilationFromExecution(): Prom
     frameSource.includes('let compilerWorker = null') &&
       frameSource.includes('function getCompilerWorker()') &&
       frameSource.includes("resetCompilerWorker(new Error('C++ compiler worker request timed out'))"),
-    'C++ compiler frame should retain only the trusted compiler/toolchain worker and reset it on timeout'
+    'C++ compiler frame should retain only the trusted compiler worker and reset it on timeout'
   );
   const compilerWorkerSource = await readFile(join(dirname(testDirectory), 'workers', 'cpp', 'cpp-compiler-worker.js'), 'utf8');
   assertCondition(
@@ -2922,7 +2922,7 @@ async function testCppCompilerLifecycleSeparatesCompilationFromExecution(): Prom
     'the persistent C++ compiler worker must never instantiate or execute compiled user programs'
   );
 
-  const clientSource = await readFile(join(dirname(testDirectory), 'packages', 'harness-browser', 'src', 'cpp-worker-client.ts'), 'utf8');
+  const clientSource = await readFile(join(dirname(testDirectory), 'packages', 'harness-cpp', 'src', 'cpp-worker-client.ts'), 'utf8');
   assertCondition(
     clientSource.includes('private runInDisposableExecutionWorker<T>') &&
       clientSource.includes('this.retireExecutionWorker();') &&

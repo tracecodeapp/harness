@@ -331,11 +331,11 @@ async function testClientsRestorePublicResults(): Promise<void> {
 
     const cpp = new CppWorkerClient({
       workerUrl: '/workers/cpp-worker.js',
-      clangWasmUrl: '',
-      lldWasmUrl: '',
+      compilerWasmUrl: '',
+      linkerWasmUrl: '',
       sysrootUrl: '',
       runtimeHeaderUrl: '/workers/cpp/tracecode_runtime.hpp',
-      compilerBundleUrl: '/workers/vendor/cpp/yowasp/bundle.js',
+      compilerBundleUrl: '/workers/cpp/compiler/bundle.js',
       debug: false,
     });
     const cppResult = await cpp.executeWithTracing({ code: 'class Solution { public: int solve() { return 42; } };', functionName: 'solve', inputs: {}, executionStyle: 'solution-method' });

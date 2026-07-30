@@ -95,7 +95,7 @@ when those modes are selected.
 The JSON report distinguishes measured values from unavailable ones:
 
 - Operation wall time surrounds the public `RuntimeClient` call.
-- Compile, run, total, cache-hit, and toolchain timings come only from public
+- Compile, run, total, cache-hit, and compiler timings come only from public
   result timing fields. Missing runtime fields remain unsupported; wall time is
   never relabeled as compile or run time.
 - Trace event count and serialized trace/response bytes are computed from the

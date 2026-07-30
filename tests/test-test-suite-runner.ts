@@ -17,6 +17,7 @@ const ORIGINAL_ALL_SCRIPTS = [
   'test:python-public-surface',
   'test:java-public-surface',
   'test:csharp-public-surface',
+  'test:cpp-public-surface',
   'typecheck',
   'test:trace-adapters',
   'test:sql-trace',

@@ -19,7 +19,7 @@ export interface RuntimeExecutionTimings {
   totalMs?: number;
   initMs?: number;
   warmupMs?: number;
-  toolchainLoadMs?: number;
+  compilerLoadMs?: number;
   rewriteMs?: number;
   driverBuildMs?: number;
   compileMs?: number;

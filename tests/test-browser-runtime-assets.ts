@@ -119,10 +119,10 @@ const consumerManifests = {
   },
   cpp: {
     runtime: 'cpp',
-    runtimeVersion: 'clang-22-browser-1',
+    runtimeVersion: 'cpp23-browser-1',
     protocolVersion: BROWSER_RUNTIME_ASSET_PROTOCOL_VERSION,
     workerFormat: 'module',
-    assetBaseUrl: 'https://assets.consumer.example/cpp/clang-22-browser-1',
+    assetBaseUrl: 'https://assets.consumer.example/cpp/cpp23-browser-1',
     originPolicy: consumerOriginPolicy,
     assets: {
       worker: { url: 'cpp-worker.js' },
@@ -134,10 +134,10 @@ const consumerManifests = {
         integrity: 'sha256-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=',
         size: 123,
       },
-      clangWasm: { url: 'clang.wasm' },
-      lldWasm: { url: 'lld.wasm' },
+      compilerWasm: { url: 'compiler.wasm' },
+      linkerWasm: { url: 'linker.wasm' },
       sysroot: { url: 'sysroot.tar' },
-      toolchain: {
+      compilerResources: {
         'llvm.core.wasm': {
           url: 'llvm.core.wasm',
           integrity: 'sha256-AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE=',
@@ -151,7 +151,7 @@ const consumerManifests = {
 function testLegacyCompatibility(): void {
   const defaultAssets = resolveBrowserHarnessAssets();
   assertCondition(defaultAssets.pythonWorker === '/workers/python-worker.js', 'Default asset paths must use canonical runtime names');
-  assertCondition(defaultAssets.cppClangWasm === '', 'Disabled legacy asset paths must remain disabled');
+  assertCondition(defaultAssets.cppCompilerWasm === '', 'Disabled direct compiler paths must remain disabled');
   assertCondition(defaultAssets.runtimeManifests === undefined, 'Legacy resolution must not synthesize version metadata');
 
   const legacyAssets = resolveBrowserHarnessAssets({
@@ -188,14 +188,14 @@ function testConsumerCdnManifests(): void {
     javaWorker: 'https://assets.consumer.example/java/17-browser-1/java-worker.js',
     csharpWorker: 'https://assets.consumer.example/csharp/csharp-browser-1/csharp-worker.js',
     csharpAssetBaseUrl: 'https://assets.consumer.example/csharp/csharp-browser-1/runtime',
-    cppWorker: 'https://assets.consumer.example/cpp/clang-22-browser-1/cpp-worker.js',
-    cppCompilerFrame: 'https://assets.consumer.example/cpp/clang-22-browser-1/compiler-frame.html',
-    cppCompilerWorker: 'https://assets.consumer.example/cpp/clang-22-browser-1/compiler-worker.js',
-    cppRuntimeHeader: 'https://assets.consumer.example/cpp/clang-22-browser-1/tracecode_runtime.hpp',
-    cppCompilerBundle: 'https://assets.consumer.example/cpp/clang-22-browser-1/compiler-bundle.js',
-    cppClangWasm: 'https://assets.consumer.example/cpp/clang-22-browser-1/clang.wasm',
-    cppLldWasm: 'https://assets.consumer.example/cpp/clang-22-browser-1/lld.wasm',
-    cppSysroot: 'https://assets.consumer.example/cpp/clang-22-browser-1/sysroot.tar',
+    cppWorker: 'https://assets.consumer.example/cpp/cpp23-browser-1/cpp-worker.js',
+    cppCompilerFrame: 'https://assets.consumer.example/cpp/cpp23-browser-1/compiler-frame.html',
+    cppCompilerWorker: 'https://assets.consumer.example/cpp/cpp23-browser-1/compiler-worker.js',
+    cppRuntimeHeader: 'https://assets.consumer.example/cpp/cpp23-browser-1/tracecode_runtime.hpp',
+    cppCompilerBundle: 'https://assets.consumer.example/cpp/cpp23-browser-1/compiler-bundle.js',
+    cppCompilerWasm: 'https://assets.consumer.example/cpp/cpp23-browser-1/compiler.wasm',
+    cppLinkerWasm: 'https://assets.consumer.example/cpp/cpp23-browser-1/linker.wasm',
+    cppSysroot: 'https://assets.consumer.example/cpp/cpp23-browser-1/sysroot.tar',
   } as const;
   for (const [key, value] of Object.entries(expected)) {
     assertCondition(
@@ -237,19 +237,19 @@ function testConsumerCdnManifests(): void {
     'C# runtime dependency declarations must survive normalization'
   );
   assertCondition(
-    JSON.stringify(assets.cppToolchainIntegrity?.assets) === JSON.stringify([
+    JSON.stringify(assets.cppCompilerIntegrity?.assets) === JSON.stringify([
       {
-        url: 'https://assets.consumer.example/cpp/clang-22-browser-1/compiler-bundle.js',
+        url: 'https://assets.consumer.example/cpp/cpp23-browser-1/compiler-bundle.js',
         sha256: '0'.repeat(64),
         size: 123,
       },
       {
-        url: 'https://assets.consumer.example/cpp/clang-22-browser-1/llvm.core.wasm',
+        url: 'https://assets.consumer.example/cpp/cpp23-browser-1/llvm.core.wasm',
         sha256: '01'.repeat(32),
         size: 456,
       },
     ]),
-    `C++ SHA-256 SRI metadata must derive the exact internal toolchain pins: ${JSON.stringify(assets.cppToolchainIntegrity)}`
+    `C++ SHA-256 SRI metadata must derive the exact internal compiler pins: ${JSON.stringify(assets.cppCompilerIntegrity)}`
   );
 }
 
@@ -279,7 +279,7 @@ function testManifestAlternativesAndRelativeBases(): void {
         },
         cpp: {
           runtime: 'cpp',
-          runtimeVersion: 'raw-toolchain',
+          runtimeVersion: 'direct-compiler',
           protocolVersion: BROWSER_RUNTIME_ASSET_PROTOCOL_VERSION,
           assetBaseUrl: '/raw-cpp',
           originPolicy: { mode: 'same-origin' },
@@ -288,8 +288,8 @@ function testManifestAlternativesAndRelativeBases(): void {
             compilerFrame: { url: 'frame.html' },
             compilerWorker: { url: 'compiler-worker.js' },
             runtimeHeader: { url: 'runtime.hpp' },
-            clangWasm: { url: 'clang.wasm' },
-            lldWasm: { url: 'lld.wasm' },
+            compilerWasm: { url: 'compiler.wasm' },
+            linkerWasm: { url: 'linker.wasm' },
             sysroot: { url: 'sysroot.tar' },
           },
         },
@@ -300,8 +300,8 @@ function testManifestAlternativesAndRelativeBases(): void {
     assets.javaWorker === '/consumer-assets/java/relative-build/worker.js',
     'Relative manifest bases must resolve against the consumer assetBaseUrl'
   );
-  assertCondition(assets.cppCompilerBundle === '', 'A raw C++ toolchain manifest must not re-enable the default bundle');
-  assertCondition(assets.cppClangWasm === '/raw-cpp/clang.wasm', 'Raw C++ toolchain assets must flatten normally');
+  assertCondition(assets.cppCompilerBundle === '', 'A direct C++ compiler manifest must not re-enable the default bundle');
+  assertCondition(assets.cppCompilerWasm === '/raw-cpp/compiler.wasm', 'Direct C++ compiler assets must flatten normally');
 }
 
 function testInvalidManifestsFailClearly(): void {

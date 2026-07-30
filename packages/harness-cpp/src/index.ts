@@ -1,6 +1,8 @@
 export { createCppRuntimeClient } from './cpp-runtime-client';
 export {
   CppWorkerClient,
+  type CppCompilerIntegrityEntry,
+  type CppCompilerIntegrityManifest,
   type CppExecutionStyle,
   type CppWorkerAssets,
   type CppWorkerClientOptions,

@@ -438,9 +438,9 @@ async function main(): Promise<void> {
       defaultAssets.cppCompilerWorker === '/workers/cpp-compiler-worker.js',
       'Default C++ compiler worker path should resolve'
     );
-    assertCondition(defaultAssets.cppClangWasm === '', 'Default C++ raw clang path should be disabled');
+    assertCondition(defaultAssets.cppCompilerWasm === '', 'Default C++ direct compiler path should be disabled');
     assertCondition(
-      defaultAssets.cppCompilerBundle === '/workers/vendor/cpp/yowasp/bundle.js',
+      defaultAssets.cppCompilerBundle === '/workers/cpp/compiler/bundle.js',
       'Default C++ compiler bundle path should resolve'
     );
     assertCondition(
@@ -452,7 +452,7 @@ async function main(): Promise<void> {
       'Default JavaScript project worker path should resolve'
     );
 
-    const cppToolchainIntegrity = {
+    const cppCompilerIntegrity = {
       assets: [
         {
           url: 'https://cdn.example.com/cpp/bundle.js',
@@ -468,19 +468,19 @@ async function main(): Promise<void> {
         javascriptProjectWorker: 'workers/js-project-runtime.js',
         pythonWorker: 'https://cdn.example.com/python-worker.js',
         csharpAssetBaseUrl: 'runtimes/csharp',
-        cppClangWasm: 'https://cdn.example.com/cpp/clang.wasm',
+        cppCompilerWasm: 'https://cdn.example.com/cpp/compiler.wasm',
         cppCompilerFrame: 'workers/cpp-compiler-frame.html',
         cppCompilerWorker: 'workers/cpp-compiler-worker.js',
         cppCompilerBundle: 'https://cdn.example.com/cpp/bundle.js',
-        cppToolchainIntegrity,
+        cppCompilerIntegrity,
       },
     });
     assertCondition(customAssets.pythonWorker === 'https://cdn.example.com/python-worker.js', 'Explicit asset URLs should be preserved');
-    assertCondition(customAssets.cppClangWasm === 'https://cdn.example.com/cpp/clang.wasm', 'Explicit C++ asset URLs should be preserved');
+    assertCondition(customAssets.cppCompilerWasm === 'https://cdn.example.com/cpp/compiler.wasm', 'Explicit C++ asset URLs should be preserved');
     assertCondition(customAssets.cppCompilerFrame === '/sdk-assets/workers/cpp-compiler-frame.html', 'Relative custom C++ compiler frame should join assetBaseUrl');
     assertCondition(customAssets.cppCompilerWorker === '/sdk-assets/workers/cpp-compiler-worker.js', 'Relative custom C++ compiler worker should join assetBaseUrl');
     assertCondition(customAssets.cppCompilerBundle === 'https://cdn.example.com/cpp/bundle.js', 'Explicit C++ compiler bundle URLs should be preserved');
-    assertCondition(customAssets.cppToolchainIntegrity === cppToolchainIntegrity, 'C++ toolchain integrity manifest should be preserved');
+    assertCondition(customAssets.cppCompilerIntegrity === cppCompilerIntegrity, 'C++ compiler integrity manifest should be preserved');
     assertCondition(customAssets.javascriptWorker === '/sdk-assets/workers/js-runtime.js', 'Relative custom assets should join assetBaseUrl');
     assertCondition(
       customAssets.javascriptProjectWorker === '/sdk-assets/workers/js-project-runtime.js',
@@ -795,7 +795,7 @@ async function main(): Promise<void> {
           );
           assertCondition(
             cppWarmupWorkerIndex >= 0 && cppCommandWorkerIndex > cppWarmupWorkerIndex,
-            'C++ toolchain warmup must start before the disposable user execution worker'
+            'C++ compiler warmup must start before the disposable user execution worker'
           );
           assertCondition(
             cppExecutionWorkers.length === 2 &&
@@ -1466,11 +1466,11 @@ async function main(): Promise<void> {
     console.log('PASS: browser harness warms C++ runtime on demand');
 
     const cppWorkerAssets = {
-      clangWasmUrl: '/instance-a/vendor/cpp/clang.wasm',
-      lldWasmUrl: '/instance-a/vendor/cpp/lld.wasm',
-      sysrootUrl: '/instance-a/vendor/cpp/sysroot.tar',
-      runtimeHeaderUrl: '/instance-a/vendor/cpp/tracecode_runtime.hpp',
-      compilerBundleUrl: '/instance-a/vendor/cpp/yowasp/bundle.js',
+      compilerWasmUrl: '/instance-a/cpp/compiler/compiler.wasm',
+      linkerWasmUrl: '/instance-a/cpp/compiler/linker.wasm',
+      sysrootUrl: '/instance-a/cpp/compiler/sysroot.tar',
+      runtimeHeaderUrl: '/instance-a/cpp/tracecode_runtime.hpp',
+      compilerBundleUrl: '/instance-a/cpp/compiler/bundle.js',
     };
     let cppHttpDispatchPath = '';
     const cppHttpClient = new CppWorkerClient({ workerUrl: '/instance-a/cpp-worker.js', ...cppWorkerAssets });
@@ -1933,11 +1933,11 @@ async function main(): Promise<void> {
     globalThis.Worker = HangingCppWorker;
     const timeoutClient = new CppWorkerClient({
       workerUrl: '/workers/cpp-worker.js',
-      clangWasmUrl: '/workers/vendor/cpp/clang.wasm',
-      lldWasmUrl: '/workers/vendor/cpp/lld.wasm',
-      sysrootUrl: '/workers/vendor/cpp/sysroot.tar',
+      compilerWasmUrl: '/workers/cpp/compiler/compiler.wasm',
+      linkerWasmUrl: '/workers/cpp/compiler/linker.wasm',
+      sysrootUrl: '/workers/cpp/compiler/sysroot.tar',
       runtimeHeaderUrl: '/workers/cpp/tracecode_runtime.hpp',
-      compilerBundleUrl: '/workers/vendor/cpp/yowasp/bundle.js',
+      compilerBundleUrl: '/workers/cpp/compiler/bundle.js',
       executionTimeoutMs: 5,
     });
     const timeoutResult = await timeoutClient.executeCode({ code: 'class Solution { public: int add(int a, int b) { while(true){} return a + b; } };', functionName: 'add', inputs: { a: 1, b: 2 }, executionStyle: 'solution-method' });
@@ -1956,11 +1956,11 @@ async function main(): Promise<void> {
 
     const traceTimeoutClient = new CppWorkerClient({
       workerUrl: '/workers/cpp-worker.js',
-      clangWasmUrl: '/workers/vendor/cpp/clang.wasm',
-      lldWasmUrl: '/workers/vendor/cpp/lld.wasm',
-      sysrootUrl: '/workers/vendor/cpp/sysroot.tar',
+      compilerWasmUrl: '/workers/cpp/compiler/compiler.wasm',
+      linkerWasmUrl: '/workers/cpp/compiler/linker.wasm',
+      sysrootUrl: '/workers/cpp/compiler/sysroot.tar',
       runtimeHeaderUrl: '/workers/cpp/tracecode_runtime.hpp',
-      compilerBundleUrl: '/workers/vendor/cpp/yowasp/bundle.js',
+      compilerBundleUrl: '/workers/cpp/compiler/bundle.js',
       tracingTimeoutMs: 5,
     });
     const traceTimeoutResult = await traceTimeoutClient.executeWithTracing({ code: 'class Solution { public: int add(int a, int b) { while(true){} return a + b; } };', functionName: 'add', inputs: { a: 1, b: 2 }, traceOptions: {}, executionStyle: 'solution-method' });
@@ -1976,11 +1976,11 @@ async function main(): Promise<void> {
 
     const wallClockLimitClient = new CppWorkerClient({
       workerUrl: '/workers/cpp-worker.js',
-      clangWasmUrl: '/workers/vendor/cpp/clang.wasm',
-      lldWasmUrl: '/workers/vendor/cpp/lld.wasm',
-      sysrootUrl: '/workers/vendor/cpp/sysroot.tar',
+      compilerWasmUrl: '/workers/cpp/compiler/compiler.wasm',
+      linkerWasmUrl: '/workers/cpp/compiler/linker.wasm',
+      sysrootUrl: '/workers/cpp/compiler/sysroot.tar',
       runtimeHeaderUrl: '/workers/cpp/tracecode_runtime.hpp',
-      compilerBundleUrl: '/workers/vendor/cpp/yowasp/bundle.js',
+      compilerBundleUrl: '/workers/cpp/compiler/bundle.js',
     });
     const wallClockLimitTimeout = await wallClockLimitClient.executeCode({ code: 'class Solution { public: int add(int a, int b) { while(true){} return a + b; } };', functionName: 'add', inputs: { a: 1, b: 2 }, executionStyle: 'solution-method', limits: { wallClockMs: 5 } });
     assertCondition(

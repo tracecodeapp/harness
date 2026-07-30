@@ -219,12 +219,12 @@ const PACKAGE_CHECKS: PackageCheck[] = [
       'workers/cpp-compiler-frame.html',
       'workers/cpp-compiler-worker.js',
       'workers/cpp/tracecode_runtime.hpp',
-      'workers/vendor/cpp/yowasp/bundle.js',
-      'workers/vendor/cpp/yowasp/llvm-resources.tar',
-      'workers/vendor/cpp/yowasp/llvm.core.wasm',
-      'workers/vendor/cpp/yowasp/llvm.core2.wasm',
-      'workers/vendor/cpp/yowasp/llvm.core3.wasm',
-      'workers/vendor/cpp/yowasp/llvm.core4.wasm',
+      'workers/cpp/compiler/bundle.js',
+      'workers/cpp/compiler/llvm-resources.tar',
+      'workers/cpp/compiler/llvm.core.wasm',
+      'workers/cpp/compiler/llvm.core2.wasm',
+      'workers/cpp/compiler/llvm.core3.wasm',
+      'workers/cpp/compiler/llvm.core4.wasm',
       'LICENSE',
       'THIRD_PARTY_NOTICES.md',
     ],
@@ -356,6 +356,15 @@ async function runWithTempRoot(tempRoot: string): Promise<void> {
       assertCondition(
         packedFiles.has(`package/${relativePath}`),
         `${packageCheck.name} tarball should include ${relativePath}`
+      );
+    }
+    if (packageCheck.name === '@tracecode/harness-cpp') {
+      const brandedCompilerPaths = [...packedFiles].filter((path) =>
+        /(?:yowasp|toolchain)/iu.test(path)
+      );
+      assertCondition(
+        brandedCompilerPaths.length === 0,
+        `@tracecode/harness-cpp tarball must publish language-owned compiler paths: ${brandedCompilerPaths.join(', ')}`
       );
     }
 
@@ -985,6 +994,15 @@ async function runWithTempRoot(tempRoot: string): Promise<void> {
     }
     if (packageCheck.name === '@tracecode/harness-cpp') {
       const worker = await readFile(join(packageDir, 'workers/cpp-worker.js'), 'utf8');
+      const declarations = await readFile(join(packageDir, 'dist/index.d.ts'), 'utf8');
+      assertCondition(
+        declarations.includes('CppCompilerIntegrityManifest') &&
+          declarations.includes('compilerWasmUrl') &&
+          declarations.includes('linkerWasmUrl') &&
+          declarations.includes('compilerIntegrity') &&
+          !/(?:YoWASP|CppToolchain|clangWasmUrl|lldWasmUrl|toolchainIntegrity)/iu.test(declarations),
+        '@tracecode/harness-cpp declarations must expose the language-owned compiler contract'
+      );
       assertCondition(
         worker.includes('function standaloneKernelDevices()') &&
           !worker.includes('options.kernelDevices instanceof Map ? options.kernelDevices : projectKernelDevices()'),

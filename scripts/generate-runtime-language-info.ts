@@ -254,11 +254,10 @@ function buildCSharpDescription(input: {
 
 function buildCppDescription(input: {
   cppStandardLabel: string;
-  yowaspClangVersion: string;
   defaultHeaders: readonly string[];
 }): string {
   return [
-    `C++ is compiled with YoWASP Clang/LLD ${input.yowaspClangVersion} using the ${input.cppStandardLabel} standard.`,
+    `C++ source is compiled using the ${input.cppStandardLabel} standard.`,
     '',
     'Submissions compile to WebAssembly and run in a browser-local WASI-style execution lane. The harness currently compiles with -O0 and -fno-exceptions, with a fixed program stack size.',
     '',
@@ -321,8 +320,6 @@ async function buildRuntimeInfo(): Promise<Record<string, RuntimeInfo>> {
 
   const cppWorkerSource = await readText('workers', 'cpp', 'cpp-worker.js');
   const cppStandard = requireMatch(cppWorkerSource, /const CPP_STANDARD = '([^']+)';/, 'C++ standard')[1]!;
-  const yowaspClangVersion = await packageVersion('@yowasp/clang', rootPackage);
-  const yowaspClangMajor = yowaspClangVersion.match(/^[0-9]+/)?.[0] ?? yowaspClangVersion;
   const cppDefaultHeaders = parseCppDefaultHeaders(cppWorkerSource);
   const cppStandardLabel = cppStandard.toUpperCase();
   const pythonDefaultImports = parsePythonDefaultImports(pythonRuntimeCoreSource);
@@ -428,10 +425,9 @@ async function buildRuntimeInfo(): Promise<Record<string, RuntimeInfo>> {
     cpp: {
       language: 'cpp',
       displayName: 'C++',
-      versionLabel: `${cppStandardLabel} (YoWASP Clang ${yowaspClangMajor})`,
+      versionLabel: cppStandardLabel,
       description: buildCppDescription({
         cppStandardLabel,
-        yowaspClangVersion,
         defaultHeaders: cppDefaultHeaders,
       }),
       runtime: {
@@ -439,15 +435,15 @@ async function buildRuntimeInfo(): Promise<Record<string, RuntimeInfo>> {
         detail: 'Compiled and executed in a browser-local WASI-style worker lane.',
       },
       compiler: {
-        name: 'YoWASP Clang/LLD',
-        version: yowaspClangVersion,
+        name: 'C++ browser compiler',
+        version: cppStandardLabel,
       },
       standard: cppStandardLabel,
       defaultImports: cppDefaultHeaders,
       libraries: [
         {
           name: 'C++ standard library and WASI libc',
-          detail: 'Provided by the YoWASP Clang toolchain bundle.',
+          detail: 'Provided by the configured browser compiler resources.',
         },
       ],
     },

@@ -70,7 +70,7 @@ interface RuntimeTimingRecord {
   totalMs?: number;
   initMs?: number;
   warmupMs?: number;
-  toolchainLoadMs?: number;
+  compilerLoadMs?: number;
   rewriteMs?: number;
   driverBuildMs?: number;
   compileMs?: number;
@@ -1175,7 +1175,7 @@ async function runBrowserPlanItem(
             'totalMs',
             'initMs',
             'warmupMs',
-            'toolchainLoadMs',
+            'compilerLoadMs',
             'rewriteMs',
             'driverBuildMs',
             'compileMs',

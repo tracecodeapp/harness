@@ -45,7 +45,7 @@ interface CppProjectWorkerResponse {
   }>;
 }
 
-async function cppToolchainIntegrity(workersRoot: string, origin: string): Promise<{
+async function cppCompilerIntegrity(workersRoot: string, origin: string): Promise<{
   assets: Array<{ url: string; size: number; sha256: string }>;
 }> {
   const files = [
@@ -58,9 +58,9 @@ async function cppToolchainIntegrity(workersRoot: string, origin: string): Promi
   ];
   const assets = [];
   for (const file of files) {
-    const bytes = await readFile(join(workersRoot, 'vendor', 'cpp', 'yowasp', file));
+    const bytes = await readFile(join(workersRoot, 'cpp', 'compiler', file));
     assets.push({
-      url: `${origin}/workers/vendor/cpp/yowasp/${file}`,
+      url: `${origin}/workers/cpp/compiler/${file}`,
       size: bytes.byteLength,
       sha256: createHash('sha256').update(bytes).digest('hex'),
     });
@@ -100,10 +100,10 @@ async function main(): Promise<void> {
     const page = await browser.newPage();
     page.setDefaultTimeout(120_000);
     await page.goto(origin);
-    const integrityManifest = await cppToolchainIntegrity(workersRoot, origin);
+    const integrityManifest = await cppCompilerIntegrity(workersRoot, origin);
 
     const results = (await page.evaluate(`(async () => {
-      const cppToolchainIntegrity = ${JSON.stringify(integrityManifest)};
+      const cppCompilerIntegrity = ${JSON.stringify(integrityManifest)};
       const worker = new Worker('/workers/cpp-worker.js', { type: 'module' });
       let nextId = 0;
       const pending = new Map();
@@ -282,13 +282,13 @@ async function main(): Promise<void> {
 
       await send('init', {
         assets: {
-          compilerBundleUrl: '/workers/vendor/cpp/yowasp/bundle.js',
+          compilerBundleUrl: '/workers/cpp/compiler/bundle.js',
           compilerFrameEnabled: true,
-          clangWasmUrl: '/workers/vendor/cpp/clang.wasm',
-          lldWasmUrl: '/workers/vendor/cpp/lld.wasm',
-          sysrootUrl: '/workers/vendor/cpp/sysroot.tar',
+          clangWasmUrl: '/workers/cpp/compiler/compiler.wasm',
+          lldWasmUrl: '/workers/cpp/compiler/linker.wasm',
+          sysrootUrl: '/workers/cpp/compiler/sysroot.tar',
           runtimeHeaderUrl: '/workers/cpp/tracecode_runtime.hpp',
-          toolchainIntegrity: cppToolchainIntegrity,
+          toolchainIntegrity: cppCompilerIntegrity,
         },
       });
       const warmup = await send('warmup', {});
@@ -1290,7 +1290,7 @@ async function main(): Promise<void> {
       };
     })()`)) as Record<string, unknown>;
 
-    const warmup = results.warmup as { success?: boolean; timings?: { toolchainLoadMs?: number; compilerWorkerMs?: number; externalCompileMs?: number } };
+    const warmup = results.warmup as { success?: boolean; timings?: { compilerLoadMs?: number; compilerWorkerMs?: number; externalCompileMs?: number } };
     const add = results.add as { success?: boolean; output?: unknown; error?: string; timings?: { compilerWorkerMs?: number } };
     const cachedAdd = results.cachedAdd as { success?: boolean; output?: unknown; timings?: { compileCacheHit?: boolean } };
     const twoSum = results.twoSum as { success?: boolean; output?: unknown; error?: string };
@@ -1524,8 +1524,8 @@ async function main(): Promise<void> {
     const plainRun = results.plainRun as { success?: boolean; output?: unknown; trace?: unknown };
     assertCondition(warmup.success === true, `C++ browser warmup failed: ${JSON.stringify(warmup)}`);
     assertCondition(
-      warmup.timings?.toolchainLoadMs === 0 && typeof warmup.timings?.compilerWorkerMs === 'number' && warmup.timings.compilerWorkerMs > 0,
-      `C++ browser warmup should compile outside the main worker without loading the main toolchain: ${JSON.stringify(warmup)}`
+      warmup.timings?.compilerLoadMs === 0 && typeof warmup.timings?.compilerWorkerMs === 'number' && warmup.timings.compilerWorkerMs > 0,
+      `C++ browser warmup should compile outside the main worker without loading the main compiler: ${JSON.stringify(warmup)}`
     );
     assertCondition(add.success === true && add.output === 5, `C++ browser add failed: ${JSON.stringify(add)}`);
     assertCondition(

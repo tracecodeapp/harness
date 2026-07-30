@@ -14,7 +14,7 @@ function assertCondition(condition: unknown, message: string): asserts condition
   if (!condition) throw new Error(message);
 }
 
-async function toolchainIntegrity(workersRoot: string, origin: string): Promise<{
+async function compilerIntegrity(workersRoot: string, origin: string): Promise<{
   assets: Array<{ url: string; size: number; sha256: string }>;
 }> {
   const assets = [];
@@ -26,9 +26,9 @@ async function toolchainIntegrity(workersRoot: string, origin: string): Promise<
     'llvm.core3.wasm',
     'llvm.core4.wasm',
   ]) {
-    const bytes = await readFile(join(workersRoot, 'vendor', 'cpp', 'yowasp', file));
+    const bytes = await readFile(join(workersRoot, 'cpp', 'compiler', file));
     assets.push({
-      url: `${origin}/workers/vendor/cpp/yowasp/${file}`,
+      url: `${origin}/workers/cpp/compiler/${file}`,
       size: bytes.byteLength,
       sha256: createHash('sha256').update(bytes).digest('hex'),
     });
@@ -45,7 +45,7 @@ async function main(): Promise<void> {
 
   await runCommand('pnpm', ['exec', 'tsx', 'src/cli.ts', 'sync-assets', workersRoot, '--languages', 'cpp'], root);
   await build({
-    entryPoints: [join(root, 'packages', 'harness-browser', 'src', 'cpp-worker-client.ts')],
+    entryPoints: [join(root, 'packages', 'harness-cpp', 'src', 'cpp-worker-client.ts')],
     outfile: join(tempRoot, 'cpp-worker-client.js'),
     bundle: true,
     format: 'esm',
@@ -72,7 +72,7 @@ async function main(): Promise<void> {
   const browser = await chromium.launch({ headless: true });
   try {
     await waitForHttp(origin, 30_000);
-    const manifest = await toolchainIntegrity(workersRoot, origin);
+    const manifest = await compilerIntegrity(workersRoot, origin);
     const page = await browser.newPage();
     page.setDefaultTimeout(120_000);
     await page.goto(origin);
@@ -82,12 +82,12 @@ async function main(): Promise<void> {
         workerUrl: '/workers/cpp-worker.js',
         compilerFrameUrl: '/workers/cpp-compiler-frame.html',
         compilerWorkerUrl: '/workers/cpp-compiler-worker.js',
-        clangWasmUrl: '',
-        lldWasmUrl: '',
+        compilerWasmUrl: '',
+        linkerWasmUrl: '',
         sysrootUrl: '',
         runtimeHeaderUrl: '/workers/cpp/tracecode_runtime.hpp',
-        compilerBundleUrl: '/workers/vendor/cpp/yowasp/bundle.js',
-        toolchainIntegrity: ${JSON.stringify(manifest)},
+        compilerBundleUrl: '/workers/cpp/compiler/bundle.js',
+        compilerIntegrity: ${JSON.stringify(manifest)},
         executionTimeoutMs: 30000,
       });
       const execute = async (code) => {
@@ -174,7 +174,7 @@ async function main(): Promise<void> {
     );
     assertCondition(
       result.edited.durationMs < result.cold.durationMs,
-      `edited source should reuse warm compiler/toolchain state: ${JSON.stringify(result)}`
+      `edited source should reuse warm compiler state: ${JSON.stringify(result)}`
     );
     console.log(JSON.stringify(result, null, 2));
     console.log('PASS: C++ browser compiler lifecycle keeps compile state warm and execution disposable');

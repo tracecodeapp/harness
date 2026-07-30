@@ -225,32 +225,32 @@ const PACKAGE_ASSET_PLANS: PackageAssetPlan[] = [
       {
         packageName: '@yowasp/clang',
         source: ['gen', 'bundle.js'],
-        target: ['workers', 'vendor', 'cpp', 'yowasp', 'bundle.js'],
+        target: ['workers', 'cpp', 'compiler', 'bundle.js'],
       },
       {
         packageName: '@yowasp/clang',
         source: ['gen', 'llvm-resources.tar'],
-        target: ['workers', 'vendor', 'cpp', 'yowasp', 'llvm-resources.tar'],
+        target: ['workers', 'cpp', 'compiler', 'llvm-resources.tar'],
       },
       {
         packageName: '@yowasp/clang',
         source: ['gen', 'llvm.core.wasm'],
-        target: ['workers', 'vendor', 'cpp', 'yowasp', 'llvm.core.wasm'],
+        target: ['workers', 'cpp', 'compiler', 'llvm.core.wasm'],
       },
       {
         packageName: '@yowasp/clang',
         source: ['gen', 'llvm.core2.wasm'],
-        target: ['workers', 'vendor', 'cpp', 'yowasp', 'llvm.core2.wasm'],
+        target: ['workers', 'cpp', 'compiler', 'llvm.core2.wasm'],
       },
       {
         packageName: '@yowasp/clang',
         source: ['gen', 'llvm.core3.wasm'],
-        target: ['workers', 'vendor', 'cpp', 'yowasp', 'llvm.core3.wasm'],
+        target: ['workers', 'cpp', 'compiler', 'llvm.core3.wasm'],
       },
       {
         packageName: '@yowasp/clang',
         source: ['gen', 'llvm.core4.wasm'],
-        target: ['workers', 'vendor', 'cpp', 'yowasp', 'llvm.core4.wasm'],
+        target: ['workers', 'cpp', 'compiler', 'llvm.core4.wasm'],
       },
     ],
   },

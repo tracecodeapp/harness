@@ -13680,7 +13680,7 @@ async function compileAndRun(source, functionName, inputs, options = {}) {
         ...options,
         timings: {
           ...(options.timings && typeof options.timings === 'object' ? options.timings : {}),
-          toolchainLoadMs: 0,
+          compilerLoadMs: 0,
         },
       });
     } catch {
@@ -13695,7 +13695,7 @@ async function compileAndRun(source, functionName, inputs, options = {}) {
   emitRequestProgress('toolchain-load:complete', { tracing: Boolean(options.tracing) });
   const timings = {
     ...(options.timings && typeof options.timings === 'object' ? options.timings : {}),
-    toolchainLoadMs: elapsedMs(toolchainStartedAt),
+    compilerLoadMs: elapsedMs(toolchainStartedAt),
   };
   if (toolchain.compiler === 'yowasp') {
     return compileAndRunWithYowasp(toolchain, source, functionName, inputs, start, {
@@ -14325,7 +14325,7 @@ async function handleInit(payload) {
     loadTimeMs: totalMs,
     timings: {
       totalMs,
-      toolchainLoadMs: 0,
+      compilerLoadMs: 0,
       warmupMs: 0,
     },
   };
@@ -14336,25 +14336,25 @@ async function handleWarmup(payload) {
     configuredAssets = payload.assets;
   }
   const start = now();
-  let toolchainLoadMs = 0;
+  let compilerLoadMs = 0;
   if (!canUseEphemeralCompilerWorker()) {
     const toolchainStartedAt = now();
     await loadToolchain();
-    toolchainLoadMs = elapsedMs(toolchainStartedAt);
+    compilerLoadMs = elapsedMs(toolchainStartedAt);
   }
   const warmupStartedAt = now();
   const warmupTimings = await warmToolchain();
   const warmupMs = elapsedMs(warmupStartedAt);
   const reportedToolchainLoadMs =
-    toolchainLoadMs ||
-    (typeof warmupTimings.toolchainLoadMs === 'number' ? warmupTimings.toolchainLoadMs : 0);
+    compilerLoadMs ||
+    (typeof warmupTimings.compilerLoadMs === 'number' ? warmupTimings.compilerLoadMs : 0);
   const totalMs = elapsedMs(start);
   return {
     success: true,
     loadTimeMs: totalMs,
     timings: {
       totalMs,
-      toolchainLoadMs: reportedToolchainLoadMs,
+      compilerLoadMs: reportedToolchainLoadMs,
       warmupMs,
       ...(typeof warmupTimings.compileMs === 'number' ? { compileMs: warmupTimings.compileMs } : {}),
       ...(typeof warmupTimings.externalCompileMs === 'number' ? { externalCompileMs: warmupTimings.externalCompileMs } : {}),

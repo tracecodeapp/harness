@@ -20,8 +20,8 @@ export {
   type BrowserRuntimeId,
   type BrowserRuntimeLoaderFormat,
   type BrowserRuntimeWorkerFormat,
-  type CppToolchainIntegrityEntry,
-  type CppToolchainIntegrityManifest,
+  type CppCompilerIntegrityEntry,
+  type CppCompilerIntegrityManifest,
 } from './runtime-assets';
 export {
   createBrowserRuntimeAssetPreflight,

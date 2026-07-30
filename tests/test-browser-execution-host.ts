@@ -296,8 +296,8 @@ async function main(): Promise<void> {
   const cppClient = new CppWorkerClient({
     workerUrl: '/workers/cpp-worker.js',
     workerFactory: host.workerFactory,
-    clangWasmUrl: '/workers/clang.wasm',
-    lldWasmUrl: '/workers/lld.wasm',
+    compilerWasmUrl: '/workers/compiler.wasm',
+    linkerWasmUrl: '/workers/linker.wasm',
     sysrootUrl: '/workers/sysroot.tar',
     runtimeHeaderUrl: '/workers/runtime.hpp',
     compilerBundleUrl: '/workers/compiler.js',

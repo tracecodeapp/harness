@@ -81,7 +81,17 @@ function preflightAssets(
     case 'csharp':
       return ['worker', 'assetBaseUrl', 'dependencies'];
     case 'cpp':
-      return ['worker', 'compilerFrame', 'compilerWorker', 'runtimeHeader', 'compilerBundle', 'clangWasm', 'lldWasm', 'sysroot', 'toolchain'];
+      return [
+        'worker',
+        'compilerFrame',
+        'compilerWorker',
+        'runtimeHeader',
+        'compilerBundle',
+        'compilerWasm',
+        'linkerWasm',
+        'sysroot',
+        'compilerResources',
+      ];
   }
 }
 

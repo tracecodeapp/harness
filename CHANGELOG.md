@@ -30,6 +30,10 @@ This repo uses Git tags as release boundaries. Version notes below summarize wha
   exposing the browser compiler or execution engine as public API. Native
   project runners now accept `runtimeCommand`, while the multi-language native
   harness accepts `csharpCommand`.
+- Replaced C++ compiler implementation names in public asset manifests,
+  integrity contracts, timing metadata, and published paths with language-owned
+  compiler names. Provider-specific dependency, worker-protocol, and licensing
+  identifiers remain private and truthful.
 
 ## [0.13.1] - 2026-07-30
 

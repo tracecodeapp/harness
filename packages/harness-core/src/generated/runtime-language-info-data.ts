@@ -236,15 +236,15 @@ export const LANGUAGE_RUNTIME_INFOS = Object.freeze(
   "cpp": {
     "language": "cpp",
     "displayName": "C++",
-    "versionLabel": "C++23 (YoWASP Clang 22)",
-    "description": "C++ is compiled with YoWASP Clang/LLD 22.0.0-git20542-10 using the C++23 standard.\n\nSubmissions compile to WebAssembly and run in a browser-local WASI-style execution lane. The harness currently compiles with -O0 and -fno-exceptions, with a fixed program stack size.\n\nCommon standard library headers are included automatically, including <algorithm>, <array>, <bitset>, <climits>, <cmath>, <cstdint>, <functional>, <limits>, <numeric>, <sstream>, <tuple>, <vector>, <unordered_map>, <unordered_set> and more.",
+    "versionLabel": "C++23",
+    "description": "C++ source is compiled using the C++23 standard.\n\nSubmissions compile to WebAssembly and run in a browser-local WASI-style execution lane. The harness currently compiles with -O0 and -fno-exceptions, with a fixed program stack size.\n\nCommon standard library headers are included automatically, including <algorithm>, <array>, <bitset>, <climits>, <cmath>, <cstdint>, <functional>, <limits>, <numeric>, <sstream>, <tuple>, <vector>, <unordered_map>, <unordered_set> and more.",
     "runtime": {
       "name": "WASI/WebAssembly execution lane",
       "detail": "Compiled and executed in a browser-local WASI-style worker lane."
     },
     "compiler": {
-      "name": "YoWASP Clang/LLD",
-      "version": "22.0.0-git20542-10"
+      "name": "C++ browser compiler",
+      "version": "C++23"
     },
     "standard": "C++23",
     "defaultImports": [
@@ -313,7 +313,7 @@ export const LANGUAGE_RUNTIME_INFOS = Object.freeze(
     "libraries": [
       {
         "name": "C++ standard library and WASI libc",
-        "detail": "Provided by the YoWASP Clang toolchain bundle."
+        "detail": "Provided by the configured browser compiler resources."
       }
     ]
   }

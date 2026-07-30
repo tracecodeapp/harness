@@ -117,37 +117,37 @@ const ASSET_COPY_PLAN = [
   {
     packageName: '@yowasp/clang',
     source: ['gen', 'bundle.js'],
-    target: ['vendor', 'cpp', 'yowasp', 'bundle.js'],
+    target: ['cpp', 'compiler', 'bundle.js'],
     languages: ['cpp'],
   },
   {
     packageName: '@yowasp/clang',
     source: ['gen', 'llvm-resources.tar'],
-    target: ['vendor', 'cpp', 'yowasp', 'llvm-resources.tar'],
+    target: ['cpp', 'compiler', 'llvm-resources.tar'],
     languages: ['cpp'],
   },
   {
     packageName: '@yowasp/clang',
     source: ['gen', 'llvm.core.wasm'],
-    target: ['vendor', 'cpp', 'yowasp', 'llvm.core.wasm'],
+    target: ['cpp', 'compiler', 'llvm.core.wasm'],
     languages: ['cpp'],
   },
   {
     packageName: '@yowasp/clang',
     source: ['gen', 'llvm.core2.wasm'],
-    target: ['vendor', 'cpp', 'yowasp', 'llvm.core2.wasm'],
+    target: ['cpp', 'compiler', 'llvm.core2.wasm'],
     languages: ['cpp'],
   },
   {
     packageName: '@yowasp/clang',
     source: ['gen', 'llvm.core3.wasm'],
-    target: ['vendor', 'cpp', 'yowasp', 'llvm.core3.wasm'],
+    target: ['cpp', 'compiler', 'llvm.core3.wasm'],
     languages: ['cpp'],
   },
   {
     packageName: '@yowasp/clang',
     source: ['gen', 'llvm.core4.wasm'],
-    target: ['vendor', 'cpp', 'yowasp', 'llvm.core4.wasm'],
+    target: ['cpp', 'compiler', 'llvm.core4.wasm'],
     languages: ['cpp'],
   },
   {

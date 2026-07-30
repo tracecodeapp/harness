@@ -538,7 +538,7 @@ const CPP_RUNTIME_PROFILE: LanguageRuntimeProfile = {
     },
   },
   notes: [
-    'C++ uses a focused browser-local Clang/LLD/WASI compiler lane with TraceCode-owned execution glue.',
+    'C++ uses a focused browser-local compiler and WASI execution lane with TraceCode-owned execution glue.',
     'The runtime intentionally does not depend on a generic multi-language container/runtime SDK.',
     'Script-style C++ uses an empty function name with executionStyle="function"; the snippet must assign a serializable result variable.',
     'Interview-mode C++ reuses the tracing compiler path with a trace budget and returns a non-trace execution result.',

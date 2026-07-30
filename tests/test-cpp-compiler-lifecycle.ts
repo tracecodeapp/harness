@@ -115,11 +115,11 @@ class CompilerBridgeWorker {
 function createClient(options: Partial<ConstructorParameters<typeof CppWorkerClient>[0]> = {}): CppWorkerClient {
   return new CppWorkerClient({
     workerUrl: '/workers/cpp-worker.js',
-    clangWasmUrl: '/workers/vendor/cpp/clang.wasm',
-    lldWasmUrl: '/workers/vendor/cpp/lld.wasm',
+    compilerWasmUrl: '/workers/cpp/compiler/compiler.wasm',
+    linkerWasmUrl: '/workers/cpp/compiler/linker.wasm',
     sysrootUrl: '/workers/vendor/cpp/sysroot.tar',
     runtimeHeaderUrl: '/workers/cpp/tracecode_runtime.hpp',
-    compilerBundleUrl: '/workers/vendor/cpp/yowasp/bundle.js',
+    compilerBundleUrl: '/workers/cpp/compiler/bundle.js',
     externalCompilerUrl: 'https://compiler.example/compile',
     ...options,
   });
@@ -550,13 +550,13 @@ async function testCompilerFrameKeepsOnlyTrustedCompilerWarm(): Promise<void> {
   }
   assertCondition(
     (compilerWorkers.length as number) === 1,
-    `edited source should reuse one trusted compiler/toolchain worker: ${compilerWorkers.length}; responses=${JSON.stringify(responses)}`
+    `edited source should reuse one trusted compiler worker: ${compilerWorkers.length}; responses=${JSON.stringify(responses)}`
   );
   assertCondition(
     compilerWorkers[0].url === 'https://cdn.example/cpp/compiler-worker.js',
     `consumer CDN compiler worker URL should remain bound to the frame origin: ${compilerWorkers[0].url}`
   );
-  assertCondition(!compilerWorkers[0].terminated, 'healthy compiler/toolchain worker should stay warm between edited sources');
+  assertCondition(!compilerWorkers[0].terminated, 'healthy compiler worker should stay warm between edited sources');
   assertCondition(responses.filter((message) => message.type === 'compile-result').length === 2, 'both compiles should complete');
 
   handlers.get('pagehide')?.({});

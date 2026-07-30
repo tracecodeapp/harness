@@ -150,8 +150,8 @@ license.
 ### YoWASP Clang
 
 - Use: browser C++ compiler bundle and LLVM resource bundle.
-- Vendored/copied assets: `vendor/cpp/yowasp/bundle.js`,
-  `vendor/cpp/yowasp/llvm-resources.tar`, and `vendor/cpp/yowasp/*.wasm`.
+- Published assets: `cpp/compiler/bundle.js`,
+  `cpp/compiler/llvm-resources.tar`, and `cpp/compiler/*.wasm`.
 - Version: `@yowasp/clang` `22.0.0-git20542-10`.
 - Local package metadata license: ISC.
 - Upstream README license statement: Apache-2.0, matching the base LLVM license.

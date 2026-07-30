@@ -196,10 +196,9 @@ C++ manifests retain an additional exact-binding boundary. The compiler frame
 and compiler worker must share an origin. Compiler resources hosted on another
 origin must declare an unambiguous `sha256-...` SRI token; the harness converts
 that token and optional decoded `size` into the compiler worker's exact pin
-manifest. List lazy compiler resources such as YoWASP `llvm.core*.wasm` and
-`llvm-resources.tar` under `assets.toolchain`. Missing or incompatible pins fail
-closed before compilation, and any lazy compiler fetch omitted from that map is
-still rejected by the compiler worker.
+manifest. List lazy compiler resources under `assets.compilerResources`.
+Missing or incompatible pins fail closed before compilation, and any lazy
+compiler fetch omitted from that map is still rejected by the compiler worker.
 
 ## Consumer Checklist
 
