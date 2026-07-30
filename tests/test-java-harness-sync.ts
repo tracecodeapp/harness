@@ -121,6 +121,7 @@ async function main(): Promise<void> {
   for (const marker of [
     'TraceJVMEngine',
     "traceJVMWorkerParameters.get('tracejvmBaseUrl')",
+    'normalizeTraceJVMBaseUrl',
     'traceJVMRewriteSource',
     'traceJVMCompileAndRun',
     'traceJVMCompileAndTrace',

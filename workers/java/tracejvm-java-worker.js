@@ -10,9 +10,19 @@
 const traceJVMWorkerParameters = new URL(self.location.href).searchParams;
 const configuredTraceJVMBaseUrl =
   traceJVMWorkerParameters.get('tracejvmBaseUrl');
-const TRACEJVM_BASE_URL = new URL(
-  configuredTraceJVMBaseUrl || '/tracejvm/',
-  self.location.href
+
+function normalizeTraceJVMBaseUrl(value) {
+  const url = new URL(value || '/tracejvm/', self.location.href);
+  if (!url.pathname.endsWith('/')) {
+    url.pathname += '/';
+  }
+  url.search = '';
+  url.hash = '';
+  return url;
+}
+
+const TRACEJVM_BASE_URL = normalizeTraceJVMBaseUrl(
+  configuredTraceJVMBaseUrl
 );
 const TRACEJVM_MODULE_URL = new URL('browser-client.js', TRACEJVM_BASE_URL);
 const TRACEJVM_WASM_URL = new URL('bjvm_main.wasm', TRACEJVM_BASE_URL);
