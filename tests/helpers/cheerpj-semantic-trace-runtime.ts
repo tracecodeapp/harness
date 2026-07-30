@@ -19,7 +19,7 @@ import {
 import type {
   JavaExecutionStyle,
   JavaWorkerTraceResult,
-} from '../../packages/harness-browser/src/java-worker-client';
+} from '../../packages/harness-java/src/java-worker-client';
 import type {
   TraceExecutionOptions,
 } from '../../packages/harness-core/src/runtime-types';

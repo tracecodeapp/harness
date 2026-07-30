@@ -946,11 +946,28 @@ async function runWithTempRoot(tempRoot: string): Promise<void> {
         !Object.prototype.hasOwnProperty.call(packedPackageJson.dependencies ?? {}, 'just-bash'),
         '@tracecode/harness-browser should not install just-bash unless consumers opt into project workspace primitives'
       );
+      for (const languagePackage of [
+        '@tracecode/harness-python',
+        '@tracecode/harness-javascript',
+        '@tracecode/harness-java',
+        '@tracecode/harness-csharp',
+        '@tracecode/harness-cpp',
+      ]) {
+        assertCondition(
+          !Object.prototype.hasOwnProperty.call(packedPackageJson.dependencies ?? {}, languagePackage),
+          `@tracecode/harness-browser must not depend on ${languagePackage}`
+        );
+      }
       const browserDeclarations = await readFile(join(packageDir, 'dist/index.d.ts'), 'utf8');
       assertCondition(
         browserDeclarations.includes('getRuntimeProjectIoSupport') &&
           browserDeclarations.includes('RuntimeProjectIoSupport'),
         '@tracecode/harness-browser declarations should export the derived project I/O support helper'
+      );
+      assertCondition(
+        browserDeclarations.includes('createBrowserRuntimeProviderRegistry') &&
+          browserDeclarations.includes('BrowserRuntimeProviderRegistry'),
+        '@tracecode/harness-browser declarations should export provider-registry composition'
       );
       const browserDistDir = join(packageDir, 'dist');
       const browserProjectDist = (
@@ -1156,6 +1173,25 @@ async function runWithTempRoot(tempRoot: string): Promise<void> {
         '@tracecode/harness-project should declare the just-bash-backed project workspace dependency'
       );
     }
+    const browserProviderExports: Record<string, string> = {
+      '@tracecode/harness-python': 'createPythonBrowserRuntimeProvider',
+      '@tracecode/harness-javascript': 'createJavaScriptBrowserRuntimeProvider',
+      '@tracecode/harness-java': 'createJavaBrowserRuntimeProvider',
+      '@tracecode/harness-csharp': 'createCSharpBrowserRuntimeProvider',
+      '@tracecode/harness-cpp': 'createCppBrowserRuntimeProvider',
+    };
+    const browserProviderExport = browserProviderExports[packageCheck.name];
+    if (browserProviderExport) {
+      assertCondition(
+        Boolean(packedPackageJson.dependencies?.['@tracecode/harness-browser']),
+        `${packageCheck.name} should declare its generic browser-host dependency`
+      );
+      const indexTypes = await readFile(join(packageDir, 'dist/index.d.ts'), 'utf8');
+      assertCondition(
+        indexTypes.includes(browserProviderExport),
+        `${packageCheck.name} main declarations should export ${browserProviderExport}`
+      );
+    }
     const browserRunnerTypeAliases: Record<string, string> = {
       '@tracecode/harness-python': 'BrowserPythonProjectCommandRunner',
       '@tracecode/harness-javascript': 'BrowserJavaScriptProjectCommandRunner',
@@ -1198,15 +1234,18 @@ async function runWithTempRoot(tempRoot: string): Promise<void> {
       const java = await import('@tracecode/harness-java');
       const csharp = await import('@tracecode/harness-csharp');
       const cpp = await import('@tracecode/harness-cpp');
-      for (const [name, mod, projectExport] of [
-        ['@tracecode/harness-python', python, 'createNativePythonProjectRunner'],
-        ['@tracecode/harness-javascript', javascript, 'createNativeJavaScriptProjectRunner'],
-        ['@tracecode/harness-java', java, 'createNativeJavaProjectRunner'],
-        ['@tracecode/harness-csharp', csharp, 'createNativeCSharpProjectRunner'],
-        ['@tracecode/harness-cpp', cpp, 'createNativeCppProjectRunner'],
+      for (const [name, mod, projectExport, browserProviderExport] of [
+        ['@tracecode/harness-python', python, 'createNativePythonProjectRunner', 'createPythonBrowserRuntimeProvider'],
+        ['@tracecode/harness-javascript', javascript, 'createNativeJavaScriptProjectRunner', 'createJavaScriptBrowserRuntimeProvider'],
+        ['@tracecode/harness-java', java, 'createNativeJavaProjectRunner', 'createJavaBrowserRuntimeProvider'],
+        ['@tracecode/harness-csharp', csharp, 'createNativeCSharpProjectRunner', 'createCSharpBrowserRuntimeProvider'],
+        ['@tracecode/harness-cpp', cpp, 'createNativeCppProjectRunner', 'createCppBrowserRuntimeProvider'],
       ]) {
         if (typeof mod[projectExport] !== 'function') {
           throw new Error(name + ' missing additive project runner export ' + projectExport);
+        }
+        if (typeof mod[browserProviderExport] !== 'function') {
+          throw new Error(name + ' missing browser provider export ' + browserProviderExport);
         }
       }
       console.log('ok');

@@ -5,7 +5,7 @@ import { readFile } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import vm from 'node:vm';
-import { CppWorkerClient } from '../packages/harness-browser/src/cpp-worker-client';
+import { CppWorkerClient } from '../packages/harness-cpp/src/cpp-worker-client';
 
 function assertCondition(condition: unknown, message: string): asserts condition {
   if (!condition) throw new Error(message);

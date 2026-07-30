@@ -1,6 +1,6 @@
 #!/usr/bin/env npx tsx
 
-import { PyodideWorkerClient } from '../packages/harness-browser/src/pyodide-worker-client';
+import { PyodideWorkerClient } from '../packages/harness-python/src/python-worker-client';
 
 function assertCondition(condition: unknown, message: string): asserts condition {
   if (!condition) throw new Error(message);

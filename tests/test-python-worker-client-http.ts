@@ -1,6 +1,6 @@
 #!/usr/bin/env npx tsx
 
-import { PythonWorkerClient, type PythonProjectCommandRequest } from '../packages/harness-browser/src/pyodide-worker-client';
+import { PythonWorkerClient, type PythonProjectCommandRequest } from '../packages/harness-python/src/python-worker-client';
 import type {
   RuntimeKernelHttpBridge,
   RuntimeKernelHttpHandler,

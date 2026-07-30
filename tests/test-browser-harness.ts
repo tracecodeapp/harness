@@ -5,11 +5,11 @@ import {
   BROWSER_RUNTIME_ASSET_PROTOCOL_VERSION,
   createBrowserHarness,
   resolveBrowserHarnessAssets,
-} from '../packages/harness-browser/src';
+} from '../src/browser';
 import { createBrowserProjectWorkspace } from '../packages/harness-browser/src/project';
-import { CppWorkerClient } from '../packages/harness-browser/src/cpp-worker-client';
-import { JavaWorkerClient } from '../packages/harness-browser/src/java-worker-client';
-import { PythonWorkerClient } from '../packages/harness-browser/src/pyodide-worker-client';
+import { CppWorkerClient } from '../packages/harness-cpp/src/cpp-worker-client';
+import { JavaWorkerClient } from '../packages/harness-java/src/java-worker-client';
+import { PythonWorkerClient } from '../packages/harness-python/src/python-worker-client';
 import { createRuntimeCommandStdinPipeFromText } from '../packages/harness-core/src/runtime-project';
 
 function assertCondition(condition: unknown, message: string): asserts condition {
@@ -491,6 +491,7 @@ async function main(): Promise<void> {
 
     const browserProjectWorkspace = await createBrowserProjectWorkspace({
       assetBaseUrl: '/project-assets',
+      providers: ['javascript'],
       files: [{ path: 'index.js', contents: 'console.log("browser-project-node")\n' }],
       nodeProjectTimeoutMs: 1000,
     });
@@ -630,6 +631,7 @@ async function main(): Promise<void> {
 
     const concurrentProjectWorkspace = await createBrowserProjectWorkspace({
       assetBaseUrl: '/project-concurrency',
+      providers: ['python'],
       pythonProjectTimeoutMs: 5000,
       files: [
         { path: 'hold.py', contents: 'print("hold")\n' },
@@ -662,6 +664,7 @@ async function main(): Promise<void> {
 
     const sharedSerialWorkspace = await createBrowserProjectWorkspace({
       assetBaseUrl: '/project-shared-serialization',
+      providers: ['python'],
       projectWorkerIsolation: 'shared',
       trustedSharedWorkerReuse: true,
       pythonProjectTimeoutMs: 5000,
@@ -717,6 +720,7 @@ async function main(): Promise<void> {
     const beforeAuthorityWorkerCount = workerInstances.length;
     const authorityProjectWorkspace = await createBrowserProjectWorkspace({
       assetBaseUrl: '/project-authority',
+      javaRuntime: 'legacy',
       assets: {
         runtimeManifests: {
           java: {
@@ -847,6 +851,7 @@ async function main(): Promise<void> {
 
     const trustedSharedProjectWorkspace = await createBrowserProjectWorkspace({
       assetBaseUrl: '/project-authority-shared',
+      providers: ['python'],
       projectWorkerIsolation: 'shared',
       trustedSharedWorkerReuse: true,
       files: [{ path: 'main.py', contents: 'print("trusted")\n' }],
@@ -869,7 +874,10 @@ async function main(): Promise<void> {
 
     let invalidPrewarmError = '';
     try {
-      await createBrowserProjectWorkspace({ projectWorkerPrewarm: { python: 3 } });
+      await createBrowserProjectWorkspace({
+        providers: ['python'],
+        projectWorkerPrewarm: { python: 3 },
+      });
     } catch (error) {
       invalidPrewarmError = error instanceof Error ? error.message : String(error);
     }
@@ -881,6 +889,7 @@ async function main(): Promise<void> {
     const beforePrewarmWorkerCount = workerInstances.length;
     const prewarmedWorkspace = await createBrowserProjectWorkspace({
       assetBaseUrl: '/project-prewarm',
+      providers: ['python'],
       projectWorkerPrewarm: { python: 1 },
       files: [
         { path: 'first.py', contents: 'print("first")\n' },
@@ -922,6 +931,7 @@ async function main(): Promise<void> {
     holdPythonWarmupForUrlPrefix = abortWarmupPrefix;
     const abortWarmupWorkspace = await createBrowserProjectWorkspace({
       assetBaseUrl: '/project-cold-warmup-abort',
+      providers: ['python'],
       projectWorkerPrewarm: { python: 0 },
       files: [{ path: 'abort.py', contents: 'while True: pass\n' }],
     });
@@ -1062,6 +1072,7 @@ async function main(): Promise<void> {
     const beforeFailedPrewarmCount = workerInstances.length;
     const retryingPrewarmWorkspace = await createBrowserProjectWorkspace({
       assetBaseUrl: '/project-prewarm-failure',
+      providers: ['python'],
       projectWorkerPrewarm: { python: 1 },
       files: [{ path: 'retry.py', contents: 'print("retry")\n' }],
     });
@@ -1091,6 +1102,7 @@ async function main(): Promise<void> {
 
     const retiringPrewarmWorkspace = await createBrowserProjectWorkspace({
       assetBaseUrl: '/project-prewarm-retire',
+      providers: ['python'],
       projectWorkerPrewarm: { python: 1 },
       files: [{ path: 'hold.py', contents: 'print("hold")\n' }],
     });

@@ -11,12 +11,12 @@ import { createHash } from 'node:crypto';
 import vm from 'node:vm';
 import ts from 'typescript';
 import type { Language, RuntimeExecutionStyle } from '../packages/harness-core/src/runtime-types';
-import { createJavaRuntimeClient } from '../packages/harness-browser/src/java-runtime-client';
+import { createJavaRuntimeClient } from '../packages/harness-java/src/java-runtime-client';
 import type {
   JavaWorkerClient,
   JavaWorkerRawTraceResult,
   JavaWorkerTraceResult,
-} from '../packages/harness-browser/src/java-worker-client';
+} from '../packages/harness-java/src/java-worker-client';
 import {
   createEmptyRuntimeTrace,
   withRuntimeTraceOptions,

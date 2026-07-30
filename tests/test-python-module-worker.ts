@@ -3,8 +3,8 @@ import {
   createBrowserHarness,
   resolveBrowserRuntimeAssetManifests,
   type BrowserRuntimeAssetManifest,
-} from '../packages/harness-browser/src';
-import { PythonWorkerClient } from '../packages/harness-browser/src/pyodide-worker-client';
+} from '../src/browser';
+import { PythonWorkerClient } from '../packages/harness-python/src/python-worker-client';
 import { createBrowserProjectWorkspace } from '../packages/harness-browser/src/project';
 
 function assertCondition(condition: unknown, message: string): asserts condition {

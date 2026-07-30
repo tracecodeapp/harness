@@ -2,12 +2,12 @@
 
 import { test } from 'node:test';
 import { readFileSync } from 'node:fs';
-import { createCSharpRuntimeClient } from '../packages/harness-browser/src/csharp-runtime-client';
+import { createCSharpRuntimeClient } from '../packages/harness-csharp/src/csharp-runtime-client';
 import {
   CSharpWorkerClient,
   type CSharpDiagnostic,
   type CSharpExecutionStyle,
-} from '../packages/harness-browser/src/csharp-worker-client';
+} from '../packages/harness-csharp/src/csharp-worker-client';
 import { getLanguageRuntimeProfile } from '../packages/harness-browser/src/runtime-profiles';
 import {
   RUNTIME_TRACE_SCHEMA_VERSION,

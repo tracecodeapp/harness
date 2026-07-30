@@ -5,11 +5,11 @@ import {
   installBrowserExecutionWorkerHost,
   type BrowserWorkerLike,
 } from '../packages/harness-browser/src/execution-host';
-import { JavaWorkerClient } from '../packages/harness-browser/src/java-worker-client';
-import { PythonWorkerClient } from '../packages/harness-browser/src/pyodide-worker-client';
-import { JavaScriptWorkerClient } from '../packages/harness-browser/src/javascript-worker-client';
-import { CSharpWorkerClient } from '../packages/harness-browser/src/csharp-worker-client';
-import { CppWorkerClient } from '../packages/harness-browser/src/cpp-worker-client';
+import { JavaWorkerClient } from '../packages/harness-java/src/java-worker-client';
+import { PythonWorkerClient } from '../packages/harness-python/src/python-worker-client';
+import { JavaScriptWorkerClient } from '../packages/harness-javascript/src/javascript-worker-client';
+import { CSharpWorkerClient } from '../packages/harness-csharp/src/csharp-worker-client';
+import { CppWorkerClient } from '../packages/harness-cpp/src/cpp-worker-client';
 import {
   createBrowserJavaScriptProjectRunner,
   createBrowserTypeScriptProjectRunner,

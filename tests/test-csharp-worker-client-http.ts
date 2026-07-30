@@ -1,6 +1,6 @@
 #!/usr/bin/env npx tsx
 
-import { CSharpWorkerClient, type CSharpProjectCommandRequest } from '../packages/harness-browser/src/csharp-worker-client';
+import { CSharpWorkerClient, type CSharpProjectCommandRequest } from '../packages/harness-csharp/src/csharp-worker-client';
 import type {
   RuntimeKernelHttpBridge,
   RuntimeKernelHttpDispatchOptions,

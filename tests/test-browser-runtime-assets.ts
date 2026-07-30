@@ -5,7 +5,7 @@ import {
   type AnyBrowserRuntimeAssetManifest,
   type BrowserRuntimeAssetManifests,
   type CreateBrowserHarnessOptions,
-} from '../packages/harness-browser/src';
+} from '../src/browser';
 
 function assertCondition(condition: unknown, message: string): asserts condition {
   if (!condition) throw new Error(message);

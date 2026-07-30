@@ -25,7 +25,7 @@ async function main(): Promise<void> {
   );
   await Promise.all([
     build({
-      entryPoints: [join(root, 'packages', 'harness-browser', 'src', 'index.ts')],
+      entryPoints: [join(root, 'src', 'browser.ts')],
       outfile: join(tempRoot, 'browser-harness.js'),
       bundle: true,
       format: 'esm',

@@ -27,12 +27,12 @@ import {
   summarizeRuntimeTraceEmissions,
   type RuntimeRawEmissionSummary,
 } from '../packages/harness-core/src/runtime-raw-emission-contract';
-import { createJavaRuntimeClient } from '../packages/harness-browser/src/java-runtime-client';
+import { createJavaRuntimeClient } from '../packages/harness-java/src/java-runtime-client';
 import type {
   JavaWorkerClient,
   JavaWorkerRawTraceResult,
   JavaWorkerTraceResult,
-} from '../packages/harness-browser/src/java-worker-client';
+} from '../packages/harness-java/src/java-worker-client';
 import { javaTraceHooksEventsToRuntimeTrace } from '../packages/harness-core/src/trace-adapters/java';
 import {
   PYTHON_CLASS_DEFINITIONS,

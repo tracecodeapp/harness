@@ -1,6 +1,7 @@
 #!/usr/bin/env npx tsx
 
 import { test } from 'node:test';
+import { existsSync } from 'node:fs';
 import { readFile } from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
@@ -15,14 +16,14 @@ const SCANNED_FILES = [
   'packages/harness-browser/src/browser-harness.ts',
   'packages/harness-browser/src/index.ts',
   'packages/harness-browser/src/internal.ts',
-  'packages/harness-browser/src/javascript-runtime-client.ts',
-  'packages/harness-browser/src/javascript-worker-client.ts',
-  'packages/harness-browser/src/java-runtime-client.ts',
-  'packages/harness-browser/src/java-worker-client.ts',
-  'packages/harness-browser/src/csharp-runtime-client.ts',
-  'packages/harness-browser/src/csharp-worker-client.ts',
-  'packages/harness-browser/src/pyodide-worker-client.ts',
-  'packages/harness-browser/src/python-runtime-client.ts',
+  'packages/harness-javascript/src/javascript-runtime-client.ts',
+  'packages/harness-javascript/src/javascript-worker-client.ts',
+  'packages/harness-java/src/java-runtime-client.ts',
+  'packages/harness-java/src/java-worker-client.ts',
+  'packages/harness-csharp/src/csharp-runtime-client.ts',
+  'packages/harness-csharp/src/csharp-worker-client.ts',
+  'packages/harness-python/src/python-worker-client.ts',
+  'packages/harness-python/src/python-runtime-client.ts',
   'packages/harness-browser/src/runtime-assets.ts',
   'packages/harness-browser/src/runtime-capability-guards.ts',
   'packages/harness-browser/src/runtime-profiles.ts',
@@ -78,6 +79,56 @@ function assertCondition(condition: unknown, message: string): asserts condition
 }
 
 async function main(): Promise<void> {
+  const clientOwnership = [
+    ['cpp-runtime-client.ts', 'cpp-runtime-client.ts', 'harness-cpp'],
+    ['cpp-worker-client.ts', 'cpp-worker-client.ts', 'harness-cpp'],
+    ['csharp-runtime-client.ts', 'csharp-runtime-client.ts', 'harness-csharp'],
+    ['csharp-worker-client.ts', 'csharp-worker-client.ts', 'harness-csharp'],
+    ['java-runtime-client.ts', 'java-runtime-client.ts', 'harness-java'],
+    ['java-storage-isolation.ts', 'java-storage-isolation.ts', 'harness-java'],
+    ['java-worker-client.ts', 'java-worker-client.ts', 'harness-java'],
+    ['javascript-runtime-client.ts', 'javascript-runtime-client.ts', 'harness-javascript'],
+    ['javascript-worker-client.ts', 'javascript-worker-client.ts', 'harness-javascript'],
+    ['python-runtime-client.ts', 'python-runtime-client.ts', 'harness-python'],
+    ['pyodide-worker-client.ts', 'python-worker-client.ts', 'harness-python'],
+  ] as const;
+  for (const [oldFileName, fileName, ownerPackage] of clientOwnership) {
+    assertCondition(
+      !existsSync(join(ROOT, 'packages/harness-browser/src', oldFileName)),
+      `${oldFileName} must not remain owned by @tracecode/harness-browser`
+    );
+    assertCondition(
+      existsSync(join(ROOT, `packages/${ownerPackage}/src`, fileName)),
+      `${fileName} must be owned by @tracecode/${ownerPackage}`
+    );
+  }
+
+  const browserPackage = JSON.parse(
+    await readFile(join(ROOT, 'packages/harness-browser/package.json'), 'utf8')
+  ) as { dependencies?: Record<string, string> };
+  for (const languagePackage of [
+    'harness-python',
+    'harness-javascript',
+    'harness-java',
+    'harness-csharp',
+    'harness-cpp',
+  ]) {
+    assertCondition(
+      !Object.prototype.hasOwnProperty.call(
+        browserPackage.dependencies ?? {},
+        `@tracecode/${languagePackage}`
+      ),
+      `@tracecode/harness-browser must not depend on @tracecode/${languagePackage}`
+    );
+    const languageManifest = JSON.parse(
+      await readFile(join(ROOT, `packages/${languagePackage}/package.json`), 'utf8')
+    ) as { dependencies?: Record<string, string> };
+    assertCondition(
+      languageManifest.dependencies?.['@tracecode/harness-browser'] === 'workspace:*',
+      `@tracecode/${languagePackage} must depend on the generic browser host`
+    );
+  }
+
   for (const relativePath of SCANNED_FILES) {
     const content = await readFile(join(ROOT, relativePath), 'utf8');
 
@@ -109,6 +160,14 @@ async function main(): Promise<void> {
     `Classic browser entry must not bundle project implementations; use the explicit browser/project entry instead. Found: ${projectImplementationInputs.join(', ')}`
   );
   const classicBrowserOutput = classicBrowserBundle.outputFiles.map((file) => file.text).join('\n');
+  const languageImplementationInputs = Object.keys(classicBrowserBundle.metafile?.inputs ?? {})
+    .filter((input) =>
+      /\/harness-(?:python|javascript|java|csharp|cpp)\/src\//u.test(input)
+    );
+  assertCondition(
+    languageImplementationInputs.length === 0,
+    `Classic browser entry must receive language providers through registry injection. Found: ${languageImplementationInputs.join(', ')}`
+  );
   assertCondition(
     !classicBrowserOutput.includes('localStorage'),
     'Classic browser entry must not bundle same-origin storage authority; project workers may explicitly deny it.'

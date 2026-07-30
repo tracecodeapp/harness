@@ -19,18 +19,18 @@ import {
   getSupportedLanguageRuntimeInfos,
   getSupportedLanguageProfiles,
   isLanguageSupported,
-} from '../packages/harness-browser/src';
+} from '../src/browser';
 import { assertRuntimeRequestSupported } from '../packages/harness-browser/src/runtime-capability-guards';
 import { executeRuntimeRequest } from '../packages/harness-browser/src/runtime-execute';
 import { FreshWorkerRuntimeClient } from '../packages/harness-browser/src/runtime-client-isolation';
-import { runJavaSafeStorageExclusive } from '../packages/harness-browser/src/java-storage-isolation';
+import { runJavaSafeStorageExclusive } from '../packages/harness-java/src/java-storage-isolation';
 import { ExecutionTimeoutError } from '../packages/harness-browser/src/worker-errors';
 import {
   WORKER_REQUEST_MESSAGES,
   type BrowserWorkerProtocolLanguage,
 } from '../packages/harness-browser/src/worker-protocol-messages';
-import { createJavaRuntimeClient } from '../packages/harness-browser/src/java-runtime-client';
-import type { JavaWorkerClient } from '../packages/harness-browser/src/java-worker-client';
+import { createJavaRuntimeClient } from '../packages/harness-java/src/java-runtime-client';
+import type { JavaWorkerClient } from '../packages/harness-java/src/java-worker-client';
 import { executeJavaScriptCode, executeTypeScriptCode } from '../packages/harness-javascript/src/javascript-executor';
 import { generateSolutionScript } from '../packages/harness-python/src/python-harness';
 import type { RuntimeKernelInfo } from '../packages/harness-core/src/runtime-project';
@@ -1311,18 +1311,33 @@ function assertProfileCoverageAlignment(profile: LanguageRuntimeProfile): void {
 
 function assertWorkerProtocolDeclarations(): void {
   const sources: Record<BrowserWorkerProtocolLanguage, { client: string; worker: string }> = {
-    python: { client: 'pyodide-worker-client.ts', worker: 'workers/python/pyodide-worker.js' },
-    javascript: { client: 'javascript-worker-client.ts', worker: 'workers/javascript/javascript-worker.js' },
-    java: { client: 'java-worker-client.ts', worker: 'workers/java/java-worker.js' },
-    csharp: { client: 'csharp-worker-client.ts', worker: 'workers/csharp/csharp-worker.js' },
-    cpp: { client: 'cpp-worker-client.ts', worker: 'workers/cpp/cpp-worker.js' },
+    python: {
+      client: 'packages/harness-python/src/python-worker-client.ts',
+      worker: 'workers/python/pyodide-worker.js',
+    },
+    javascript: {
+      client: 'packages/harness-javascript/src/javascript-worker-client.ts',
+      worker: 'workers/javascript/javascript-worker.js',
+    },
+    java: {
+      client: 'packages/harness-java/src/java-worker-client.ts',
+      worker: 'workers/java/java-worker.js',
+    },
+    csharp: {
+      client: 'packages/harness-csharp/src/csharp-worker-client.ts',
+      worker: 'workers/csharp/csharp-worker.js',
+    },
+    cpp: {
+      client: 'packages/harness-cpp/src/cpp-worker-client.ts',
+      worker: 'workers/cpp/cpp-worker.js',
+    },
   };
 
   for (const [language, { client, worker }] of Object.entries(sources) as Array<
     [BrowserWorkerProtocolLanguage, { client: string; worker: string }]
   >) {
     const declared = new Set(WORKER_REQUEST_MESSAGES[language]);
-    const clientSource = readFileSync(`packages/harness-browser/src/${client}`, 'utf8');
+    const clientSource = readFileSync(client, 'utf8');
     const workerSource = readFileSync(worker, 'utf8');
 
     const sent = new Set<string>();

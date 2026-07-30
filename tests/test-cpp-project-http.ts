@@ -17,7 +17,7 @@ import { join } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import vm from 'node:vm';
 import { Worker as NodeWorker } from 'node:worker_threads';
-import { CppWorkerClient } from '../packages/harness-browser/src/cpp-worker-client';
+import { CppWorkerClient } from '../packages/harness-cpp/src/cpp-worker-client';
 import { createBrowserCppProjectRunner } from '../packages/harness-cpp/src/project-browser';
 import { createBrowserJavaScriptProjectRunner } from '../packages/harness-javascript/src/project-browser';
 import { createRuntimeWorkspace } from '../packages/harness-project/src/index';

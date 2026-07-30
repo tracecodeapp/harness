@@ -4,7 +4,7 @@ import {
   createBrowserHarness,
   resolveBrowserRuntimeAssetManifests,
   type BrowserRuntimeAssetManifests,
-} from '../packages/harness-browser/src';
+} from '../src/browser';
 import { createBrowserProjectWorkspace } from '../packages/harness-browser/src/project';
 
 function assertCondition(condition: unknown, message: string): asserts condition {

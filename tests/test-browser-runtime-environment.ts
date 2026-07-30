@@ -4,7 +4,7 @@ import { test } from 'node:test';
 import {
   createBrowserHarness,
   createBrowserRuntimeEnvironment,
-} from '../packages/harness-browser/src';
+} from '../src/browser';
 
 function assertCondition(condition: unknown, message: string): asserts condition {
   if (!condition) throw new Error(message);

@@ -13,8 +13,8 @@ import {
   toPythonLiteral,
 } from '../packages/harness-python/src/python-harness';
 import { RUNTIME_TRACE_SCHEMA_VERSION } from '../packages/harness-core/src/runtime-trace';
-import { createPythonRuntimeClient } from '../packages/harness-browser/src/python-runtime-client';
-import type { PythonWorkerClient } from '../packages/harness-browser/src/pyodide-worker-client';
+import { createPythonRuntimeClient } from '../packages/harness-python/src/python-runtime-client';
+import type { PythonWorkerClient } from '../packages/harness-python/src/python-worker-client';
 
 const RUNTIME_CORE_PATH = join(process.cwd(), 'workers', 'python', 'runtime-core.js');
 const PYODIDE_WORKER_PATH = join(process.cwd(), 'workers', 'python', 'pyodide-worker.js');
