@@ -1774,7 +1774,7 @@ async function testNativeProjectRunnersRejectVirtualPathTraversal(): Promise<voi
   assertCondition(javaError.includes('must not escape the workspace'), `native Java runner should reject virtual traversal before spawn: ${javaError}`);
 
   const csharpError = await rejectedMessage(() => createNativeCSharpProjectRunner({
-    dotnetCommand: process.execPath,
+    runtimeCommand: process.execPath,
     timeoutMs: 1000,
   })({
     code: '',

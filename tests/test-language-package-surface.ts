@@ -257,6 +257,18 @@ function assertCondition(condition: unknown, message: string): asserts condition
   }
 }
 
+async function readDeclarationTree(directory: string): Promise<string> {
+  const entries = await readdir(directory, { withFileTypes: true });
+  const sources = await Promise.all(entries.map(async (entry) => {
+    const path = join(directory, entry.name);
+    if (entry.isDirectory()) return readDeclarationTree(path);
+    return entry.isFile() && (entry.name.endsWith('.d.ts') || entry.name.endsWith('.d.cts'))
+      ? readFile(path, 'utf8')
+      : '';
+  }));
+  return sources.join('\n');
+}
+
 function resolvePnpmCommand(): string {
   const executable = process.platform === 'win32' ? 'pnpm.cmd' : 'pnpm';
   const candidates = [
@@ -886,6 +898,17 @@ async function runWithTempRoot(tempRoot: string): Promise<void> {
       );
     }
     if (packageCheck.name === '@tracecode/harness-csharp') {
+      const csharpPublicDeclarations = await readDeclarationTree(join(packageDir, 'dist'));
+      assertCondition(
+        csharpPublicDeclarations.includes('runtimeCommand?: string') &&
+          !/roslyn|dotnet|\.net/i.test(csharpPublicDeclarations),
+        '@tracecode/harness-csharp declarations must expose the language-owned runtime command without provider branding'
+      );
+      const csharpReadme = await readFile(join(packageDir, 'README.md'), 'utf8');
+      assertCondition(
+        !/roslyn|dotnet|\.net/i.test(csharpReadme),
+        '@tracecode/harness-csharp packaged documentation must remain provider-neutral'
+      );
       const worker = await readFile(join(packageDir, 'workers/csharp-worker.js'), 'utf8');
       assertCondition(
         !worker.includes('FALLBACK_KERNEL_DEVICES'),
@@ -950,6 +973,14 @@ async function runWithTempRoot(tempRoot: string): Promise<void> {
           csharpHostApi.includes('IsProjectFileMutationMethod') &&
           csharpHostApi.includes('EmitLiveProjectFileSnapshot'),
         '@tracecode/harness-csharp worker should ship managed project stdin and live file bridge methods'
+      );
+    }
+    if (packageCheck.name === '@tracecode/harness-native') {
+      const nativeDeclarations = await readDeclarationTree(join(packageDir, 'dist'));
+      assertCondition(
+        nativeDeclarations.includes('csharpCommand?: string') &&
+          !/roslyn|dotnet|\.net/i.test(nativeDeclarations),
+        '@tracecode/harness-native declarations must expose csharpCommand without provider branding'
       );
     }
     if (packageCheck.name === '@tracecode/harness-cpp') {

@@ -254,6 +254,23 @@ async function main(): Promise<void> {
   queue.dispose();
 
   harness.dispose();
+
+  const configuredCSharpHarness = createNativeHarness({
+    csharpCommand: 'tracecode-missing-csharp-runtime-command',
+  });
+  let configuredCSharpError = '';
+  try {
+    await configuredCSharpHarness.getClient('csharp').init();
+  } catch (error) {
+    configuredCSharpError = error instanceof Error ? error.message : String(error);
+  } finally {
+    configuredCSharpHarness.dispose();
+  }
+  assertCondition(
+    configuredCSharpError.includes('tracecode-missing-csharp-runtime-command'),
+    `native C# code client should honor csharpCommand: ${configuredCSharpError}`
+  );
+
   console.log('Native harness smoke tests passed.');
 }
 

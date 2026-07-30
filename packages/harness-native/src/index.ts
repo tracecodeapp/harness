@@ -115,7 +115,7 @@ export interface NativeHarnessOptions {
   nodeCommand?: string;
   javacCommand?: string;
   javaCommand?: string;
-  dotnetCommand?: string;
+  csharpCommand?: string;
   cppCompilerCommand?: string;
   pythonTimeoutMs?: number;
   javaTimeoutMs?: number;
@@ -227,7 +227,7 @@ function getNativeLanguageSupport(language: Language): NativeLanguageSupport {
       ? [
           'Native code execution uses trusted host-side runners and is not a sandbox.',
           ...(language === 'csharp'
-            ? ['C# native execution and batching use dotnet; native tracing currently returns a minimal trace until host-side instrumentation is added.']
+            ? ['C# native execution and batching use the configured host runtime; native tracing currently returns a minimal trace until host-side instrumentation is added.']
             : []),
           ...(language === 'java'
             ? ['Java native execution and batching use javac/java; host-side Java trace rewriting is not wired into native code clients yet.']
@@ -2269,7 +2269,7 @@ class NativeCSharpRuntimeClient implements RuntimeClient {
     const startedAt = Date.now();
     const result = await runProcess(this.options.dotnetCommand, ['--version'], { timeoutMs: this.options.timeoutMs });
     if (result.exitCode !== 0 || result.timedOut) {
-      throw new Error(result.stderr || result.stdout || 'Unable to run dotnet.');
+      throw new Error(result.stderr || result.stdout || 'Unable to run the configured C# runtime command.');
     }
     return { success: true, loadTimeMs: Date.now() - startedAt };
   }
@@ -2451,7 +2451,7 @@ function createNativeRuntimeClient(language: Language, options: NativeHarnessOpt
   }
   if (language === 'csharp') {
     return new NativeCSharpRuntimeClient({
-      dotnetCommand: options.dotnetCommand ?? 'dotnet',
+      dotnetCommand: options.csharpCommand ?? 'dotnet',
       timeoutMs: options.csharpTimeoutMs ?? 30_000,
       targetFramework: options.csharpTargetFramework ?? 'net10.0',
       keepTempDirs: options.keepNativeTempDirs,

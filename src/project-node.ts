@@ -132,7 +132,7 @@ export interface CreateNativeProjectWorkspaceOptions
   javacCommand?: string;
   javaCommand?: string;
   cppCompilerCommand?: string;
-  dotnetCommand?: string;
+  runtimeCommand?: string;
   pythonProjectTimeoutMs?: number;
   nodeProjectTimeoutMs?: number;
   javaProjectTimeoutMs?: number;
@@ -150,7 +150,7 @@ export async function createNativeProjectWorkspace(
     javacCommand,
     javaCommand,
     cppCompilerCommand,
-    dotnetCommand,
+    runtimeCommand,
     pythonProjectTimeoutMs,
     nodeProjectTimeoutMs,
     javaProjectTimeoutMs,
@@ -185,7 +185,7 @@ export async function createNativeProjectWorkspace(
       keepTempDir: keepNativeTempDirs,
     }),
     csharpRunner: createNativeCSharpProjectRunner({
-      dotnetCommand,
+      runtimeCommand,
       timeoutMs: csharpProjectTimeoutMs,
       keepTempDir: keepNativeTempDirs,
     }),

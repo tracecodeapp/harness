@@ -102,11 +102,11 @@ const consumerManifests = {
   },
   csharp: {
     runtime: 'csharp',
-    runtimeVersion: 'dotnet-10-browser-1',
+    runtimeVersion: 'csharp-browser-1',
     protocolVersion: BROWSER_RUNTIME_ASSET_PROTOCOL_VERSION,
     workerFormat: 'module',
     loaderFormat: 'module',
-    assetBaseUrl: 'https://assets.consumer.example/csharp/dotnet-10-browser-1',
+    assetBaseUrl: 'https://assets.consumer.example/csharp/csharp-browser-1',
     originPolicy: consumerOriginPolicy,
     assets: {
       worker: { url: 'csharp-worker.js' },
@@ -186,8 +186,8 @@ function testConsumerCdnManifests(): void {
     javascriptProjectWorker: 'https://assets.consumer.example/javascript/es2022/project-worker.js',
     typescriptCompiler: 'https://assets.consumer.example/typescript/5.9.3/typescript.js',
     javaWorker: 'https://assets.consumer.example/java/17-browser-1/java-worker.js',
-    csharpWorker: 'https://assets.consumer.example/csharp/dotnet-10-browser-1/csharp-worker.js',
-    csharpAssetBaseUrl: 'https://assets.consumer.example/csharp/dotnet-10-browser-1/runtime',
+    csharpWorker: 'https://assets.consumer.example/csharp/csharp-browser-1/csharp-worker.js',
+    csharpAssetBaseUrl: 'https://assets.consumer.example/csharp/csharp-browser-1/runtime',
     cppWorker: 'https://assets.consumer.example/cpp/clang-22-browser-1/cpp-worker.js',
     cppCompilerFrame: 'https://assets.consumer.example/cpp/clang-22-browser-1/compiler-frame.html',
     cppCompilerWorker: 'https://assets.consumer.example/cpp/clang-22-browser-1/compiler-worker.js',
@@ -233,7 +233,7 @@ function testConsumerCdnManifests(): void {
   );
   assertCondition(
     assets.runtimeManifests?.csharp?.assets.dependencies?.['_framework/dotnet.js']?.url ===
-      'https://assets.consumer.example/csharp/dotnet-10-browser-1/runtime/_framework/dotnet.js',
+      'https://assets.consumer.example/csharp/csharp-browser-1/runtime/_framework/dotnet.js',
     'C# runtime dependency declarations must survive normalization'
   );
   assertCondition(

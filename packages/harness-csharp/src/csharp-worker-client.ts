@@ -68,7 +68,7 @@ export interface CSharpWorkerClientOptions {
   runtimeAssetPreflight?: () => Promise<void>;
   /** Permanent mode is only safe when this worker is retired after its project command. */
   projectUserAuthorityMode?: 'temporary' | 'permanent';
-  /** Declared runtime files preflighted by the browser harness; dotnet still resolves them from assetBaseUrl. */
+  /** Declared runtime files preflighted by the browser harness and resolved beneath assetBaseUrl. */
   runtimeDependencies?: Readonly<Record<string, string>>;
 }
 
@@ -254,8 +254,8 @@ export class CSharpWorkerClient {
   }
 
   /**
-   * A C# worker that misses a request deadline is presumed stuck (dotnet has
-   * no in-worker cancellation), so request timeouts also tear the session down.
+   * A C# worker that misses a request deadline is presumed stuck because the
+   * runtime has no in-worker cancellation, so request timeouts tear the session down.
    */
   private sendCommandEffect<T>(
     type: string,

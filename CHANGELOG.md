@@ -25,6 +25,11 @@ This repo uses Git tags as release boundaries. Version notes below summarize wha
 - Published Java runtime metadata as Java 23 without naming a provider
   implementation. The bundled Classic Java client's implementation and
   licensing facts remain documented separately.
+- Made the C# package, native runner options, generated runtime metadata, and
+  consumer documentation describe the language-owned runtime contract without
+  exposing the browser compiler or execution engine as public API. Native
+  project runners now accept `runtimeCommand`, while the multi-language native
+  harness accepts `csharpCommand`.
 
 ## [0.13.1] - 2026-07-30
 

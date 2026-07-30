@@ -32,7 +32,7 @@ export type CSharpProjectCommandResult = RuntimeCommandResult;
 export type CSharpProjectCommandRunner = RuntimeProjectCommandRunner<CSharpProjectCommandRequest>;
 
 export interface NativeCSharpProjectRunnerOptions {
-  dotnetCommand?: string;
+  runtimeCommand?: string;
   timeoutMs?: number;
   keepTempDir?: boolean;
 }
@@ -790,11 +790,11 @@ async function resolveDotnetCommand(command: string): Promise<string> {
 export function createNativeCSharpProjectRunner(
   options: NativeCSharpProjectRunnerOptions = {}
 ): CSharpProjectCommandRunner {
-  const dotnetCommand = options.dotnetCommand ?? 'dotnet';
+  const runtimeCommand = options.runtimeCommand ?? 'dotnet';
   const timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS;
 
   return async (request) => {
-    const resolvedDotnetCommand = await resolveDotnetCommand(dotnetCommand);
+    const resolvedDotnetCommand = await resolveDotnetCommand(runtimeCommand);
     const root = await realpath(await mkdtemp(join(tmpdir(), 'tracecode-csharp-project-')));
     try {
       validateNativeProjectFileItems(request.project);

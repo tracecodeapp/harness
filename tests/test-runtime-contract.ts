@@ -1863,10 +1863,10 @@ async function main(): Promise<void> {
     'Java runtime info should expose the Pair default import'
   );
   assertCondition(
-    Boolean(csharpInfo.runtime.version) &&
-      csharpInfo.compiler?.name === 'Microsoft.CodeAnalysis.CSharp' &&
-      Boolean(csharpInfo.compiler.version),
-    'C# runtime info should expose generated .NET and Roslyn versions'
+    csharpInfo.runtime.name === 'C#' &&
+      csharpInfo.compiler?.name === 'C# compiler' &&
+      csharpInfo.compiler.version === csharpInfo.standard,
+    'C# runtime info should expose the language-owned runtime and compiler contract'
   );
   assertCondition(
     csharpInfo.standard?.startsWith('C# ') === true && csharpInfo.versionLabel.startsWith(csharpInfo.standard),
@@ -1883,7 +1883,7 @@ async function main(): Promise<void> {
   assertCondition(
     pythonInfo.description.includes('consumer-owned runtime assets') &&
       javaInfo.description.includes('javac') &&
-      csharpInfo.description.includes('.NET') &&
+      csharpInfo.description.includes(csharpInfo.standard ?? 'C#') &&
       cppInfo.description.includes(cppInfo.standard ?? 'C++'),
     'Runtime descriptions should expose language-specific natural-language details'
   );

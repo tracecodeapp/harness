@@ -290,7 +290,7 @@ async function main(): Promise<void> {
   const csharpClient = new CSharpWorkerClient({
     workerUrl: '/workers/csharp-worker.js',
     workerFactory: host.workerFactory,
-    assetBaseUrl: '/workers/dotnet',
+    assetBaseUrl: '/workers/csharp',
     debug: false,
   });
   const cppClient = new CppWorkerClient({

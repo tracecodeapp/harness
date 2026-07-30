@@ -2102,16 +2102,15 @@ var LANGUAGE_RUNTIME_INFOS = Object.freeze(
     "csharp": {
       "language": "csharp",
       "displayName": "C#",
-      "versionLabel": "C# 14 (.NET 10.0.10)",
-      "description": "C# 14 with .NET 10.0.10 runtime.\n\nCode is compiled with Microsoft.CodeAnalysis.CSharp 5.3.0 and executed by a browser-local .NET WebAssembly runtime.\n\nCommon namespaces are imported automatically: System, System.Collections, System.Collections.Generic, System.IO, System.Linq, System.Numerics, System.Text, System.Text.RegularExpressions.",
+      "versionLabel": "C# 14",
+      "description": "C# 14 source is compiled and executed in an isolated browser runtime.\n\nCommon namespaces are imported automatically: System, System.Collections, System.Collections.Generic, System.IO, System.Linq, System.Numerics, System.Text, System.Text.RegularExpressions.",
       "runtime": {
-        "name": ".NET WebAssembly runtime",
-        "version": "10.0.10",
-        "detail": "Browser-local .NET runtime targeting net10.0."
+        "name": "C#",
+        "detail": "Runs in an isolated browser runtime."
       },
       "compiler": {
-        "name": "Microsoft.CodeAnalysis.CSharp",
-        "version": "5.3.0"
+        "name": "C# compiler",
+        "version": "C# 14"
       },
       "standard": "C# 14",
       "defaultImports": [

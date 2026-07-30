@@ -136,14 +136,6 @@ function parseCppDefaultHeaders(cppWorkerSource: string): string[] {
   );
 }
 
-function parsePackageReferenceVersion(csprojSource: string, packageName: string): string {
-  return requireMatch(
-    csprojSource,
-    new RegExp(`<PackageReference\\s+Include="${packageName}"\\s+Version="([^"]+)"\\s*/>`),
-    `${packageName} package reference`
-  )[1]!;
-}
-
 function parseTypeScriptCompileOptions(javascriptWorkerSource: string): string[] {
   const transpileBlock = requireMatch(
     javascriptWorkerSource,
@@ -251,14 +243,10 @@ function buildJavaDescription(input: {
 
 function buildCSharpDescription(input: {
   csharpLanguageVersion: string;
-  dotnetVersion: string;
-  roslynVersion: string;
   defaultImports: readonly string[];
 }): string {
   return [
-    `${input.csharpLanguageVersion} with .NET ${input.dotnetVersion} runtime.`,
-    '',
-    `Code is compiled with Microsoft.CodeAnalysis.CSharp ${input.roslynVersion} and executed by a browser-local .NET WebAssembly runtime.`,
+    `${input.csharpLanguageVersion} source is compiled and executed in an isolated browser runtime.`,
     '',
     `Common namespaces are imported automatically: ${input.defaultImports.join(', ')}.`,
   ].join('\n');
@@ -322,25 +310,6 @@ async function buildRuntimeInfo(): Promise<Record<string, RuntimeInfo>> {
   const javaParserVersion = requireMatch(javaWorkerSource, /javaparser-core-([0-9.]+)\.jar/, 'JavaParser version')[1]!;
   const javaDefaultImports = parseJavaDefaultImports(javaWorkerSource);
 
-  const csharpRuntimeConfig = await readJson<{
-    runtimeOptions?: {
-      tfm?: string;
-      includedFrameworks?: Array<{ name?: string; version?: string }>;
-    };
-  }>('workers', 'vendor', 'csharp', 'TraceCode.CSharpHost.runtimeconfig.json');
-  const dotnetFramework = csharpRuntimeConfig.runtimeOptions?.includedFrameworks?.find(
-    (framework) => framework.name === 'Microsoft.NETCore.App'
-  );
-  const dotnetVersion = dotnetFramework?.version;
-  const csharpTfm = csharpRuntimeConfig.runtimeOptions?.tfm;
-  if (!dotnetVersion) throw new Error('Unable to derive runtime info: missing .NET runtime version');
-  const csharpProjectSource = await readText(
-    'runtimes',
-    'csharp',
-    'TraceCode.CSharpHost',
-    'TraceCode.CSharpHost.csproj'
-  );
-  const roslynVersion = parsePackageReferenceVersion(csharpProjectSource, 'Microsoft.CodeAnalysis.CSharp');
   const csharpHostSource = await readText(
     'runtimes',
     'csharp',
@@ -440,21 +409,18 @@ async function buildRuntimeInfo(): Promise<Record<string, RuntimeInfo>> {
     csharp: {
       language: 'csharp',
       displayName: 'C#',
-      versionLabel: `${csharpLanguageVersion} (.NET ${dotnetVersion})`,
+      versionLabel: csharpLanguageVersion,
       description: buildCSharpDescription({
         csharpLanguageVersion,
-        dotnetVersion,
-        roslynVersion,
         defaultImports: csharpDefaultImports,
       }),
       runtime: {
-        name: '.NET WebAssembly runtime',
-        version: dotnetVersion,
-        detail: `Browser-local .NET runtime targeting ${csharpTfm ?? 'the configured target framework'}.`,
+        name: 'C#',
+        detail: 'Runs in an isolated browser runtime.',
       },
       compiler: {
-        name: 'Microsoft.CodeAnalysis.CSharp',
-        version: roslynVersion,
+        name: 'C# compiler',
+        version: csharpLanguageVersion,
       },
       standard: csharpLanguageVersion,
       defaultImports: csharpDefaultImports,

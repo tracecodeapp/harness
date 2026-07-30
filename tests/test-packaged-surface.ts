@@ -14,6 +14,18 @@ function assertCondition(condition: unknown, message: string): asserts condition
   }
 }
 
+async function readDeclarationTree(directory: string): Promise<string> {
+  const entries = await readdir(directory, { withFileTypes: true });
+  const sources = await Promise.all(entries.map(async (entry) => {
+    const path = join(directory, entry.name);
+    if (entry.isDirectory()) return readDeclarationTree(path);
+    return entry.isFile() && (entry.name.endsWith('.d.ts') || entry.name.endsWith('.d.cts'))
+      ? readFile(path, 'utf8')
+      : '';
+  }));
+  return sources.join('\n');
+}
+
 async function testWorkspacePackageVersionsMatchRelease(): Promise<void> {
   const rootPackage = JSON.parse(await readFile(join(process.cwd(), 'package.json'), 'utf8')) as {
     version?: string;
@@ -191,6 +203,7 @@ async function runWithTempRoot(tempRoot: string): Promise<void> {
   }
   const projectTypes = await readFile(join(packageDir, 'dist/project.d.ts'), 'utf8');
   const projectNodeTypes = await readFile(join(packageDir, 'dist/project-node.d.ts'), 'utf8');
+  const nativeTypes = await readFile(join(packageDir, 'dist/native.d.ts'), 'utf8');
   assertCondition(
     projectTypes.includes('RuntimeProjectWorkspace') &&
       projectTypes.includes('JustBashRuntimeWorkspace') &&
@@ -305,6 +318,13 @@ async function runWithTempRoot(tempRoot: string): Promise<void> {
   for (const exportName of projectNodeTypeSurface) {
     assertCondition(projectNodeTypes.includes(exportName), `Project-node declarations should include ${exportName}`);
   }
+  const csharpPublicDeclarations = await readDeclarationTree(join(packageDir, 'dist'));
+  assertCondition(
+    projectNodeTypes.includes('runtimeCommand?: string') &&
+      nativeTypes.includes('csharpCommand?: string') &&
+      !/roslyn|dotnet|\.net/i.test(csharpPublicDeclarations),
+    'Packed C# declarations must expose language-owned command options without provider branding'
+  );
   for (const forbidden of [
     'createRuntimeProjectIoBridge',
     'runRuntimeProjectWorkerBridge',
@@ -377,6 +397,10 @@ async function runWithTempRoot(tempRoot: string): Promise<void> {
 
       if (typeof browser.createBrowserHarness !== 'function') throw new Error('Missing createBrowserHarness export');
       if (typeof sql.createSqlRuntimeTraceClient !== 'function') throw new Error('Missing SQL runtime trace client export');
+      const csharpRuntimeInfo = core.getLanguageRuntimeInfo('csharp');
+      if (/roslyn|dotnet|\\.net/i.test(JSON.stringify(csharpRuntimeInfo))) {
+        throw new Error('Packed C# runtime metadata must remain provider-neutral');
+      }
       if (typeof sql.createSqlTraceClient !== 'function') throw new Error('Missing SQL trace client export');
       if ('createPgliteSqlTraceClient' in sql) throw new Error('Removed PGlite-branded SQL helper should not be exported');
       if (typeof sql.assertValidSqlTrace !== 'function') throw new Error('Missing SQL trace validation export');

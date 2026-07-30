@@ -8758,7 +8758,7 @@ async function testNativeCSharpProjectRunner(): Promise<void> {
     const timeoutCommand = join(timeoutRoot, 'dotnet-timeout');
     await writeFile(timeoutCommand, '#!/bin/sh\nsleep 1\n', 'utf8');
     await chmod(timeoutCommand, 0o755);
-    const timeoutRunner = createNativeCSharpProjectRunner({ dotnetCommand: timeoutCommand, timeoutMs: 5 });
+    const timeoutRunner = createNativeCSharpProjectRunner({ runtimeCommand: timeoutCommand, timeoutMs: 5 });
     const timeoutResult = await timeoutRunner({
       code: '',
       source: 'compile',
@@ -8790,7 +8790,7 @@ async function testNativeCSharpProjectRunner(): Promise<void> {
   }
 
   const startErrorEvents: RuntimeCommandEvent[] = [];
-  const startErrorRunner = createNativeCSharpProjectRunner({ dotnetCommand: 'tracecode-missing-dotnet-command' });
+  const startErrorRunner = createNativeCSharpProjectRunner({ runtimeCommand: 'tracecode-missing-dotnet-command' });
   const startErrorResult = await startErrorRunner({
     code: '',
     source: 'compile',
