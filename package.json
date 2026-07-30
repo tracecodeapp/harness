@@ -22,6 +22,8 @@
     "!workers/java/.build/**",
     "!workers/java/src",
     "!workers/java/src/**",
+    "!workers/javascript/javascript-libraries-entry.js",
+    "!workers/vendor/csharp/.stamp",
     "!workers/vendor/java-rewriter.jar",
     "!workers/vendor/javaparser-core-3.25.10.jar",
     "!workers/vendor/jdk.compiler-17.jar",
