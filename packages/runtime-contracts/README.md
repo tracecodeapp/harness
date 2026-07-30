@@ -1,4 +1,4 @@
-# `@tracecode/runtime-core`
+# `@tracecode/runtime-contracts`
 
 Shared runtime contracts and trace helpers for TraceCode Harness.
 
@@ -7,7 +7,7 @@ package. It is not a standalone registry contract, and the root package has no
 `/core` subpath. Code inside this monorepo imports it directly:
 
 ```ts
-import type { ExecutionResult } from '@tracecode/runtime-core';
+import type { ExecutionResult } from '@tracecode/runtime-contracts';
 ```
 
 Internal workspace surface:
@@ -16,9 +16,8 @@ Internal workspace surface:
 - runtime trace types and helpers
 
 Published consumers use the provider-neutral contracts exposed from
-`@tracecode/harness`, `@tracecode/harness/browser`,
-`@tracecode/harness/project`, or `@tracecode/harness/judge`, according to the
-lifecycle they own. The private runtime package may become standalone only
+`@tracecode/harness/tracekernel` or `@tracecode/harness/judge`, according to the
+lifecycle they own. The private contracts package may become standalone only
 after its independent contract is defined.
 
 See the root README for the package overview.

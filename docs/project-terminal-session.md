@@ -12,13 +12,13 @@ workspaces, and any consumer UI that needs to show an active
 ## Basic Usage
 
 ```ts
-import { createBrowserProjectWorkspace } from '@tracecode/harness/browser/project';
+import { createBrowserWorkspace } from '@tracecode/harness/tracekernel';
 import type {
   RuntimeCommandEvent,
   RuntimeProjectTerminalInputState,
-} from '@tracecode/harness/project';
+} from '@tracecode/harness/tracekernel';
 
-const workspace = await createBrowserProjectWorkspace({
+const workspace = await createBrowserWorkspace({
   assetBaseUrl: '/workers',
   kernel: {
     user: { username: 'ada' },

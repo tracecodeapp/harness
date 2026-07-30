@@ -1,6 +1,6 @@
 # Browser project cross-engine baseline — 2026-07-12
 
-This checkpoint used the public `createBrowserProjectWorkspace()` API, five
+This checkpoint used the public `createBrowserWorkspace()` API, five
 fresh BrowserContexts per provider/engine cell, immutable local asset delivery,
 the consumer-owned CheerpJ 4.2 manifest fixture, and a dedicated Java execution
 origin. Runtime downloads belong to the first-command environment; the second

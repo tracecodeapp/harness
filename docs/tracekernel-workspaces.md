@@ -1,7 +1,7 @@
 # TraceKernel Workspaces
 
-TraceKernel is the simulated workspace and process policy layer behind
-project-mode execution. It gives browser and native runners one shared model for
+TraceKernel is the workspace and process policy layer behind interactive
+execution. It gives browser runtimes one shared model for
 paths, shell commands, virtual devices, project sessions, snapshots, terminal
 state, and in-workspace HTTP.
 
@@ -13,9 +13,9 @@ sandbox. For isolation limits, see [Isolation Boundaries](./isolation-boundaries
 Browser apps usually create a workspace through the environment factory:
 
 ```ts
-import { createBrowserProjectWorkspace } from '@tracecode/harness/browser/project';
+import { createBrowserWorkspace } from '@tracecode/harness/tracekernel';
 
-const workspace = await createBrowserProjectWorkspace({
+const workspace = await createBrowserWorkspace({
   assetBaseUrl: '/workers',
   kernel: {
     user: { username: 'ada' },
@@ -28,19 +28,9 @@ const workspace = await createBrowserProjectWorkspace({
 ```
 
 `createRuntimeWorkspace(...)` is the shared lower-level factory from
-`@tracecode/harness/project`. TraceKernel owns the workspace model; browser and
-native factories add language runners.
-
-Node applications that need host-tool execution create the native workspace
-from the dedicated native entrypoint:
-
-```ts
-import { createNativeProjectWorkspace } from '@tracecode/harness/project-node';
-```
-
-Keep workspace and terminal contracts imported from `@tracecode/harness/project`;
-`@tracecode/harness/project-node` is the Node-only factory and native runner
-surface.
+`@tracecode/harness/tracekernel`. TraceKernel owns the workspace model; the
+browser factory adds the installed language runtimes. Host-native adapters are
+private development infrastructure rather than a second public workspace API.
 
 ## Kernel Identity
 
@@ -187,7 +177,7 @@ one-command-per-worker; only its trusted compiler coordinator survives.
 Heavy runtime startup can be hidden with an opt-in one-shot prewarm depth:
 
 ```ts
-const workspace = await createBrowserProjectWorkspace({
+const workspace = await createBrowserWorkspace({
   projectWorkerPrewarm: {
     python: 1,
     javascript: 1,

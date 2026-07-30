@@ -4,7 +4,7 @@
 consumer gets from the public project entrypoint:
 
 ```text
-createBrowserProjectWorkspace() -> RuntimeWorkspace public methods -> dispose()
+createBrowserWorkspace() -> RuntimeWorkspace public methods -> dispose()
 ```
 
 The measured product surface is the public browser project workspace only.
@@ -66,7 +66,7 @@ previous provider's WASM/JIT memory from contaminating compatibility or timing.
 `--runtime-manifests` accepts either a runtime map directly or an object with a
 `runtimeManifests` property. `TRACECODE_BENCH_RUNTIME_MANIFESTS` is the CI
 equivalent. This is the same generic, consumer-owned manifest mechanism used by
-`BrowserRuntimeHost` and the browser project workspace; it is not tied to
+the private browser runtime infrastructure and the TraceKernel browser workspace; it is not tied to
 TraceCode hosting.
 
 Java 23 is supplied by an independently installed project adapter. The generic
@@ -113,7 +113,7 @@ methodology, and workspace-construction records.
 
 | Phase | Public behavior measured | Correctness gate |
 |---|---|---|
-| `workspace-construction` | Await `createBrowserProjectWorkspace()` with fixture and protected session files | Workspace resolves successfully |
+| `workspace-construction` | Await `createBrowserWorkspace()` with fixture and protected session files | Workspace resolves successfully |
 | `first-command` | First full compile/run or run command | Exit 0 and exact output |
 | `second-fresh-command` | Identical command on the same workspace; worker-backed execution gets a new per-command user worker | Exit 0 and exact output |
 | `filesystem` | Public `writeFile`/`readFile`, then shell write/read | Host and shell contents persist exactly |

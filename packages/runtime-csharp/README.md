@@ -18,7 +18,7 @@ import {
 
 Published browser consumers select C# through the provider-neutral runtime host
 and Judge contracts. Browser project consumers use
-`@tracecode/harness/browser/project`; neither path exposes C# runtime clients
+`@tracecode/harness/tracekernel`; neither path exposes C# runtime clients
 directly.
 
 Runtime assets are shipped at `workers/csharp-worker.js` and beneath

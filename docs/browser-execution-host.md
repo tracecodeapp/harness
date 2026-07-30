@@ -5,7 +5,7 @@ Worker creates a separate JavaScript realm, but it retains the page origin's
 storage and network authority. Runtime implementation details must not inherit
 application cookies, authenticated fetch access, or learner-visible data.
 
-`BrowserRuntimeHost` can therefore route selected runtime Workers through a
+`BrowserJudgeHost` can therefore route selected runtime Workers through a
 narrow cross-origin broker:
 
 - the application keeps the Judge plan, TraceKernel policy, workspace, and
@@ -17,7 +17,7 @@ narrow cross-origin broker:
 
 The host owns asset resolution, readiness, warmup, and provider teardown. It
 does not expose runtime clients, prepared providers, or direct execution
-methods. `createBrowserRuntimeJudge` is the public composition boundary.
+methods. `host.createJudge(...)` is the public composition boundary.
 
 ## Execution-origin endpoint
 
@@ -26,7 +26,7 @@ Bundle this module on the dedicated execution origin:
 ```ts
 import {
   installBrowserExecutionWorkerHost,
-} from '@tracecode/harness/browser';
+} from '@tracecode/harness/tracekernel';
 
 installBrowserExecutionWorkerHost({
   allowedParentOrigins: ['https://app.tracecode.app'],
@@ -63,10 +63,7 @@ Effect scope. The host can outlive one evaluation; the scope cannot.
 ```ts
 import * as Effect from 'effect/Effect';
 import {
-  createBrowserRuntimeHost,
-} from '@tracecode/harness/browser';
-import {
-  createBrowserRuntimeJudge,
+  createBrowserJudgeHost,
   type JudgeEvaluationPlan,
 } from '@tracecode/harness/judge';
 
@@ -74,7 +71,7 @@ async function evaluateJava(
   plan: JudgeEvaluationPlan<Record<string, unknown>, unknown>,
   javaRuntimeAssetBaseUrl: string
 ) {
-  const host = createBrowserRuntimeHost({
+  const host = createBrowserJudgeHost({
     providers: ['java'],
     java: {
       runtimeAssetBaseUrl: javaRuntimeAssetBaseUrl,
@@ -92,8 +89,7 @@ async function evaluateJava(
     return await Effect.runPromise(
       Effect.scoped(
         Effect.gen(function* () {
-          const judge = yield* createBrowserRuntimeJudge({
-            host,
+          const judge = yield* host.createJudge({
             language: 'java',
             binding: {
               sourcePath: '/workspace/Solution.java',
@@ -115,7 +111,7 @@ The Effect scope releases TraceKernel sessions and prepared evaluation
 artifacts on success, failure, or interruption. `host.dispose()` retires the
 longer-lived browser runtime resources. A structurally similar object cannot
 inject a provider into Browser Judge; the host must come from
-`createBrowserRuntimeHost`.
+`createBrowserJudgeHost`.
 
 When `executionHost.providers` is omitted, every language selected by the host
 is routed through the broker. JavaScript and TypeScript share one browser
@@ -154,7 +150,7 @@ contract, not a public engine selector or provider-specific API.
 ## Browser project workspaces
 
 Browser project mode has a separate public composition at
-`@tracecode/harness/browser/project`. Python, JavaScript/TypeScript, C#, and C++
+`@tracecode/harness/tracekernel`. Python, JavaScript/TypeScript, C#, and C++
 project workers can use the execution broker. TypeScript compilation occurs in
 the trusted page and emitted JavaScript runs through the JavaScript project
 worker, so hosted TypeScript requires the JavaScript project provider.
@@ -164,10 +160,10 @@ the application:
 
 ```ts
 import {
-  createBrowserProjectWorkspace,
-} from '@tracecode/harness/browser/project';
+  createBrowserWorkspace,
+} from '@tracecode/harness/tracekernel';
 
-const workspace = await createBrowserProjectWorkspace({
+const workspace = await createBrowserWorkspace({
   providers: ['java'],
   java: {
     createClient: createJavaClientOnExecutionOrigin,
@@ -186,7 +182,7 @@ workspace.
 ## Publication boundary
 
 This repository publishes only `@tracecode/harness`. The supported package
-entrypoints are the root, `/browser`, `/browser/project`, `/project`,
-`/project-node`, `/judge`, and `/package.json`. Per-language, `/core`,
-`/native`, and `/internal/*` subpaths are not public. See
+entrypoints are `/tracekernel`, `/judge`, and `/package.json`. The package
+root, per-language, `/browser`, `/project`, `/core`, `/native`, and
+`/internal/*` subpaths are not public. See
 [Root Package Publishing](./publishing.md) for the audited release path.

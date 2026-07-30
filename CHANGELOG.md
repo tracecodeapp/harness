@@ -6,6 +6,30 @@ This repo uses Git tags as release boundaries. Version notes below summarize wha
 
 ## [Unreleased]
 
+### Changed
+
+- Collapsed the public SDK to two code entrypoints:
+  `@tracecode/harness/tracekernel` for interactive execution and
+  `@tracecode/harness/judge` for evaluation.
+- Moved browser workspace creation, persistence, runtime metadata, and
+  execution-host configuration behind the TraceKernel entrypoint.
+- Replaced public browser-runtime assembly with `createBrowserJudgeHost()`.
+  The Judge host owns runtime providers and exposes scoped
+  `host.createJudge(...)` without exposing provider registries or clients.
+- Removed the package-root, `/browser`, `/browser/project`, `/project`, and
+  `/project-node` exports and deleted the redundant private
+  `workspace-facade`; TraceKernel already owned its implementation.
+- Renamed the private `runtime-core` workspace to `runtime-contracts`.
+  TraceKernel is the execution core; this package now names its actual
+  responsibility as the environment-neutral contract boundary shared by
+  private implementations.
+
+### Fixed
+
+- Restored declaration files omitted by the patched `just-bash` distribution,
+  so strict TypeScript consumers can resolve the TraceKernel surface without
+  disabling dependency checks.
+
 ## [0.14.0] - 2026-07-30
 
 This release makes TraceKernel-backed Judge the browser evaluation boundary.

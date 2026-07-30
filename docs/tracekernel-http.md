@@ -85,11 +85,11 @@ and interact with the same files and HTTP listeners.
 
 ```ts
 import {
-  createBrowserProjectWorkspace,
+  createBrowserWorkspace,
   runtimeHttpResponseText,
-} from '@tracecode/harness/browser/project';
+} from '@tracecode/harness/tracekernel';
 
-const workspace = await createBrowserProjectWorkspace({
+const workspace = await createBrowserWorkspace({
   assetBaseUrl: '/workers',
   kernel: {
     scheduler: { maxConcurrentCommands: 4 },
@@ -160,7 +160,7 @@ files or call `curl`, and the grader can use `workspace.http.request(...)`
 without bypassing the simulated filesystem, process table, or network table.
 
 ```ts
-const workspace = await createBrowserProjectWorkspace({
+const workspace = await createBrowserWorkspace({
   assetBaseUrl: '/workers',
   kernel: { scheduler: { maxConcurrentCommands: 4 } },
   files: [{ path: 'server.js', contents: submittedServerSource }],
@@ -206,7 +206,7 @@ import {
   runtimeHttpBodyFromBytes,
   runtimeHttpResponseBytes,
   runtimeHttpResponseText,
-} from '@tracecode/harness/project';
+} from '@tracecode/harness/tracekernel';
 
 const binaryResponse = await workspace.http.request({
   method: 'POST',

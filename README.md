@@ -1,56 +1,93 @@
 # TraceCode Harness
 
-Browser-first execution and tracing runtime for Python, JavaScript,
-TypeScript, Java, C#, and C++.
+Browser-native execution for Python, JavaScript, TypeScript, Java, C#, and C++.
 
-`@tracecode/harness` is a runtime SDK for browser applications that need code
-execution, runtime traces, package-managed worker assets, and explicit
-capability profiles. It is not a curriculum product, web IDE framework,
-visualizer planner, analytics layer, or complete application UI.
+The package has two public code entrypoints:
+
+- `@tracecode/harness/tracekernel` for interactive workspaces
+- `@tracecode/harness/judge` for isolated evaluation
+
+That is the entire public architecture. Runtime workers, provider registries,
+language adapters, and browser transport are private implementation details.
 
 Project site: [tracecode.app](https://tracecode.app)
 
 ## Install
 
-Use the umbrella package for the full public surface:
-
 ```bash
 pnpm add @tracecode/harness effect
 ```
 
-`@tracecode/harness` is the only TraceCode package published from this
-repository. Its public entrypoints are the package root plus `/browser`,
-`/browser/project`, `/project`, `/project-node`, and `/judge`; `package.json`
-is also exported for tooling. Language, core, native, SQL, and internal
-workspaces are implementation boundaries, not public subpaths. Browser assets
-can still be copied selectively with
-`tracecode-harness sync-assets --languages ...`.
-
-If your app bundles dependencies, transpiling the package is usually safest. For
-Next.js:
+For Next.js, transpile the package:
 
 ```ts
 transpilePackages: ['@tracecode/harness']
 ```
 
-## Quick Start
-
-Copy browser worker assets into your app's public directory:
+Copy the browser assets into the application's public directory:
 
 ```bash
 pnpm exec tracecode-harness sync-assets public/workers
 ```
 
-Create a browser-owned runtime host, then evaluate a Judge plan inside an
-Effect scope:
+Limit the copied assets when an application uses only some languages:
+
+```bash
+pnpm exec tracecode-harness sync-assets public/workers \
+  --languages python,javascript
+```
+
+## TraceKernel
+
+TraceKernel owns interactive execution. Its public surface includes the kernel,
+workspace and terminal contracts, browser persistence, execution-host
+plumbing, runtime capability information, and the browser workspace factory.
+
+```ts
+import {
+  createBrowserWorkspace,
+} from '@tracecode/harness/tracekernel';
+
+const workspace = await createBrowserWorkspace({
+  assetBaseUrl: '/workers',
+  providers: ['javascript'],
+  files: [
+    {
+      path: 'package.json',
+      contents: JSON.stringify({
+        scripts: { start: 'node src/index.js' },
+      }),
+    },
+    {
+      path: 'src/index.js',
+      contents: 'console.log("hello from TraceKernel")\n',
+    },
+  ],
+});
+
+try {
+  const result = await workspace.runCommand('npm start');
+  console.log(result.stdout);
+} finally {
+  await workspace.destroy();
+}
+```
+
+Use `workspace.createTerminalSession(...)` for an interactive terminal UI.
+The same workspace can expose files, processes, HTTP endpoints, storage, and
+multiple language runtimes without the application assembling those systems
+itself.
+
+## Judge
+
+Judge owns evaluation. A `BrowserJudgeHost` manages browser assets, warm
+runtime capacity, and provider teardown. Each scoped Judge owns its
+TraceKernel session, case processes, comparison policy, and prepared program.
 
 ```ts
 import * as Effect from 'effect/Effect';
 import {
-  createBrowserRuntimeHost,
-} from '@tracecode/harness/browser';
-import {
-  createBrowserRuntimeJudge,
+  createBrowserJudgeHost,
   type JudgeEvaluationPlan,
 } from '@tracecode/harness/judge';
 
@@ -88,7 +125,7 @@ const plan: JudgeEvaluationPlan<
   },
 };
 
-const host = createBrowserRuntimeHost({
+const host = createBrowserJudgeHost({
   assetBaseUrl: '/workers',
   providers: ['python'],
 });
@@ -100,8 +137,7 @@ try {
   const result = await Effect.runPromise(
     Effect.scoped(
       Effect.gen(function* () {
-        const judge = yield* createBrowserRuntimeJudge({
-          host,
+        const judge = yield* host.createJudge({
           language: 'python',
           binding: {
             sourcePath: '/workspace/solution.py',
@@ -120,88 +156,50 @@ try {
 }
 ```
 
-`BrowserRuntimeHost` owns assets, readiness, warmup, and provider teardown. It
-does not expose runtime clients, prepared providers, or direct execution
-methods. `Effect.scoped` owns the Judge/TraceKernel composition and releases its
-prepared program on success, failure, or interruption. A host may serve
-multiple scoped evaluations; call `host.dispose()` when the application is
-finished with it.
+Set `trace: true` and optional `traceOptions` on the Judge binding for traced
+evaluation. Expected values, comparators, verdicts, scoring, and isolation stay
+in Judge rather than leaking into language runtimes.
 
-For Trace Mode, set `trace: true` and optional `traceOptions` on the Judge
-binding. Expected values, comparators, verdicts, and case isolation remain
-Judge policy rather than runtime-provider inputs.
+## Public surface
 
-### Judge facade
+The package export map contains exactly:
 
-`@tracecode/harness/judge` is the supported 0.14 surface for algorithm
-evaluation. It composes evaluation policy, a TraceKernel host, and the selected
-browser runtime without exposing a provider-injection seam:
-
-`BrowserRuntimeHost -> Browser Judge -> TraceKernel -> isolated cases`
-
-The private Judge workspace owns comparison policy, lifecycle validation, and
-result shaping. `createBrowserRuntimeJudge` accepts only a genuine
-`BrowserRuntimeHost`; generic runtime-provider composition remains private.
-
-## Packages
-
-The root-only release exports exactly:
-
-- `@tracecode/harness`
-- `@tracecode/harness/browser`
-- `@tracecode/harness/browser/project`
-- `@tracecode/harness/project`
-- `@tracecode/harness/project-node`
+- `@tracecode/harness/tracekernel`
 - `@tracecode/harness/judge`
 - `@tracecode/harness/package.json`
 
-There are no public `/python`, `/javascript`, `/java`, `/csharp`, `/cpp`,
-`/sql`, `/core`, `/native`, or `/internal/*` subpaths. The matching
-`packages/*` workspaces are private build, test, and ownership boundaries.
+There is intentionally no package-root code export and no public `/browser`,
+`/project`, `/project-node`, `/core`, `/native`, `/python`, `/javascript`,
+`/java`, `/csharp`, `/cpp`, `/sql`, or `/internal/*` entrypoint.
 
-All supported languages are stable. Use `getLanguageRuntimeProfile(language)`
-for detailed capability checks and `getLanguageRuntimeInfo(language)` for
-runtime labels/descriptions.
+The repository still uses private workspaces to keep implementation ownership
+clear:
 
-## Worker Assets
+- `tracekernel` owns processes, resources, syscalls, networking, filesystems,
+  terminals, and interactive workspaces.
+- `judge` owns evaluation plans, comparisons, verdicts, and isolated case
+  lifecycle.
+- `runtime-browser` owns browser assets, worker transport, environment
+  detection, and runtime provider assembly.
+- `runtime-*` packages own the implementation of each language.
+- `runtime-contracts` owns contracts shared by those private packages.
 
-`tracecode-harness sync-assets <target-dir>` copies the canonical browser asset
-set for installed languages, including runtime workers, vendored compiler
-assets, and `THIRD_PARTY_NOTICES.md`.
+Those names are not application architecture. Consumers choose TraceKernel or
+Judge.
 
-Copy only selected languages from the umbrella package:
+## Runtime assets
 
-```bash
-pnpm exec tracecode-harness sync-assets public/workers --languages python,javascript
-```
+Browser consumers may use versioned runtime manifests or override individual
+asset URLs. For untrusted execution, route workers through a dedicated,
+credential-free execution origin. See
+[Browser execution host](./docs/browser-execution-host.md) and
+[Isolation boundaries](./docs/isolation-boundaries.md).
 
-The private language workspaces maintain their own `workers/` directories with
-the same target layout. The published root package assembles those assets, and
-consumers can copy only selected languages with `sync-assets`. Advanced
-consumers can override individual asset URLs through
-`createBrowserRuntimeHost({ assets })`.
-
-Runtime delivery is consumer-owned. Browser consumers may pass versioned
-`assets.runtimeManifests` (or a `runtimeAssetProvider`) for package-managed
-runtime assets without depending on a TraceCode-operated CDN. Java's external
-engine tree uses the provider-neutral directory option described below. A
-first-party TraceCode application can publish runtime locations as application
-configuration; they are not embedded as harness product dependencies. See
-[Isolation Boundaries](./docs/isolation-boundaries.md#runtime-assets-and-cdns)
-for integrity, origin, and immutable-URL requirements.
-
-For untrusted browser execution, route selected browser-host languages through
-the [browser execution host](./docs/browser-execution-host.md) on a dedicated
-credential-free origin.
-
-The root asset set contains Java's Harness bridge worker and Harness-owned
-helper files. The bridge uses TraceJVM internally; the TraceJVM engine module,
-WebAssembly binary, and runtime profile are consumer-served runtime assets.
-Publish them as one versioned, immutable tree and pass that directory through
-the provider-neutral Java option:
+Java uses TraceJVM. Publish its engine module, WebAssembly binary, and runtime
+profile as one immutable directory:
 
 ```ts
-const host = createBrowserRuntimeHost({
+const workspace = await createBrowserWorkspace({
   providers: ['java'],
   assetBaseUrl: '/workers',
   java: {
@@ -210,50 +208,23 @@ const host = createBrowserRuntimeHost({
 });
 ```
 
-The configured value is normalized as a directory, so a trailing slash is not
-required. Examples include it to make the directory boundary visible. A
-compatible immutable tree contains:
+The configured directory contains:
 
 ```text
-https://assets.example.com/java/2026-07-30/
-  browser-client.js
-  bjvm_main.wasm
-  profiles/core/...
+browser-client.js
+bjvm_main.wasm
+profiles/core/...
 ```
 
-The bridge resolves every engine asset relative to that tree. Do not split one
-runtime release across mutable roots or mix engine and profile files from
-different releases.
+Do not mix files from different runtime releases.
 
-## Project Workspaces
+## Documentation
 
-Project/workspace mode is for browser IDEs, interview workspaces, terminal
-demos, and local project runners that need shell-style multi-file execution.
-
-Use `createBrowserProjectWorkspace(...)` for browser workspaces,
-`createNativeProjectWorkspace(...)` for local trusted project execution, and
-`workspace.createTerminalSession(...)` for terminal UIs. See
-[Project Terminal Sessions](./docs/project-terminal-session.md) and the
-[project IDE](./examples/project-ide) / [project terminal](./examples/project-terminal)
-examples.
-
-## Native Project Workspaces
-
-`@tracecode/harness/project-node` provides
-`createNativeProjectWorkspace(...)` for trusted local project execution and
-CI. It runs host-native tools, so it is not a sandbox for arbitrary untrusted
-code. There is no public `/native` package subpath.
-
-## Docs And Examples
-
-- [Docs index](./docs/README.md)
-- [Harness Execution Contract](./docs/harness-execution-contract.md)
-- [Isolation Boundaries](./docs/isolation-boundaries.md)
-- [TraceKernel Workspaces](./docs/tracekernel-workspaces.md)
-- [TraceKernel HTTP Simulation](./docs/tracekernel-http.md)
-- [Example Web IDE](./examples/web-ide)
-- [Example Project IDE](./examples/project-ide)
-- [Example Project Terminal](./examples/project-terminal)
+- [Harness execution contract](./docs/harness-execution-contract.md)
+- [TraceKernel workspaces](./docs/tracekernel-workspaces.md)
+- [TraceKernel HTTP simulation](./docs/tracekernel-http.md)
+- [Isolation boundaries](./docs/isolation-boundaries.md)
+- [Browser execution host](./docs/browser-execution-host.md)
 
 ## Development
 
@@ -262,33 +233,15 @@ pnpm install
 pnpm test
 ```
 
-The full gate schedules independent runtime families concurrently while keeping
-build-dependent and timing-sensitive work behind explicit boundaries. It uses
-a conservative capacity derived from the host by default. Set
-`TRACECODE_TEST_JOBS=<n>` to lower the capacity on a constrained machine or to
-opt into more local parallelism; `pnpm test:ci` uses the smaller CI profile.
+The full gate schedules independent runtime families concurrently while
+keeping build-dependent and timing-sensitive work behind explicit boundaries.
+Set `TRACECODE_TEST_JOBS=<n>` to lower local concurrency.
 
 Useful focused commands:
 
 ```bash
-pnpm generate:python-harness
-pnpm update:csharp-runtime
-pnpm test:runtime-info-sync
+pnpm typecheck
+pnpm test:packaged-surface
+pnpm test:tracekernel
+pnpm test:judge
 ```
-
-The C# runtime updater reads the host under
-`runtimes/csharp/TraceCode.CSharpHost`, publishes the browser-WASM bundle,
-replaces `workers/vendor/csharp`, and regenerates runtime language info.
-It publishes the browser-oriented minimal compiler reference pack by default;
-asset publishers that need the broader BCL surface can set
-`TRACECODE_CSHARP_REFERENCE_PACK=Compatibility` for that bundle.
-
-## Releases And Notices
-
-Release history lives in [CHANGELOG.md](./CHANGELOG.md). The
-[root release policy](./docs/publishing.md) documents the audited,
-root-only publish path. Runtime dependency and license notes live in
-[THIRD_PARTY_NOTICES.md](./THIRD_PARTY_NOTICES.md); keep that file with any
-redistribution of worker assets.
-
-License: AGPL-3.0-only

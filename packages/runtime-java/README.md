@@ -10,10 +10,9 @@ algorithm runtime:
 
 ```ts
 import * as Effect from 'effect/Effect';
-import { createBrowserRuntimeHost } from '@tracecode/harness/browser';
-import { createBrowserRuntimeJudge } from '@tracecode/harness/judge';
+import { createBrowserJudgeHost } from '@tracecode/harness/judge';
 
-const host = createBrowserRuntimeHost({
+const host = createBrowserJudgeHost({
   providers: ['java'],
   assetBaseUrl: '/workers',
   java: {
@@ -25,8 +24,7 @@ try {
   await Effect.runPromise(
     Effect.scoped(
       Effect.gen(function* () {
-        const judge = yield* createBrowserRuntimeJudge({
-          host,
+        const judge = yield* host.createJudge({
           language: 'java',
           binding: {
             sourcePath: '/workspace/Solution.java',
@@ -43,7 +41,7 @@ try {
 }
 ```
 
-`BrowserRuntimeHost` owns readiness, warmup, and provider teardown. Judge owns
+`BrowserJudgeHost` owns readiness, warmup, and provider teardown. Judge owns
 program preparation, case execution, comparison policy, and the scoped
 TraceKernel lifecycle. Runtime clients and prepared providers remain private.
 
@@ -84,15 +82,15 @@ incompatible. There is no public direct-client or alternate-engine fallback.
 ## Browser project workspaces
 
 Browser project mode is exposed through
-`@tracecode/harness/browser/project`. Its Java lane accepts an
+`@tracecode/harness/tracekernel`. Its Java lane accepts an
 implementation-neutral structural client factory:
 
 ```ts
 import {
-  createBrowserProjectWorkspace,
-} from '@tracecode/harness/browser/project';
+  createBrowserWorkspace,
+} from '@tracecode/harness/tracekernel';
 
-const workspace = await createBrowserProjectWorkspace({
+const workspace = await createBrowserWorkspace({
   providers: ['java'],
   java: {
     createClient: createFreshJavaProjectClient,

@@ -147,16 +147,16 @@ resolves and pins public addresses on every hop.
 
 ## Runtime Assets And CDNs
 
-Runtime delivery is consumer-owned configuration. `BrowserRuntimeHost` resolves
+Runtime delivery is consumer-owned configuration. `BrowserJudgeHost` resolves
 provider-neutral, versioned asset manifests for its browser providers; it does
 not require a TraceCode-operated CDN. A first-party TraceCode application may
 publish its own manifest, but that is application configuration rather than an
 open-source harness dependency.
 
-Create the host from `@tracecode/harness/browser`. Algorithm execution enters
-that lifecycle through a scoped
-`createBrowserRuntimeJudge({ host, language, binding })` from
-`@tracecode/harness/judge`. The public API does not expose a runtime client or
+Create the host with `createBrowserJudgeHost(...)` from
+`@tracecode/harness/judge`. Algorithm execution enters that lifecycle through
+a scoped `host.createJudge({ language, binding })`. The public API does not
+expose a runtime client or
 prepared provider that can bypass host disposal, language retirement, or
 Judge's fresh TraceKernel session per case.
 
@@ -183,7 +183,7 @@ artifacts. This is a complete preflight inventory, not execution-bound SRI.
 Java has no implicit engine-tree fallback. Its bridge Worker is resolved like
 the other browser Worker assets, while the immutable Java runtime tree is
 configured with the provider-neutral `java.runtimeAssetBaseUrl` option passed
-to `createBrowserRuntimeHost(...)`. The base is treated as a directory and
+to `createBrowserJudgeHost(...)`. The base is treated as a directory and
 normalized before the Worker receives it. The runtime tree contains the engine
 module, WebAssembly binary, and Java 23 profile; it is not bundled into the
 root npm package.

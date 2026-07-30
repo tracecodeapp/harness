@@ -24,7 +24,7 @@ Internal workspace surface:
 
 Published browser consumers select JavaScript or TypeScript through the
 provider-neutral runtime host and Judge contracts. Browser project consumers
-use `@tracecode/harness/browser/project`; neither path exposes language runtime
+use `@tracecode/harness/tracekernel`; neither path exposes language runtime
 clients directly.
 
 Runtime assets are shipped under `workers/`. Review `THIRD_PARTY_NOTICES.md`

@@ -38,12 +38,6 @@ Use `runJobs(...)` or `runJobsEach(...)` for trusted batch workloads. For best
 throughput, make each job one solution with many cases instead of one job per
 test case.
 
-Published consumers that need shell-style trusted local project execution use
-the provider-neutral root entrypoint:
-
-```ts
-import { createNativeProjectWorkspace } from '@tracecode/harness/project-node';
-```
-
-The private `createNativeHarness(...)` batch API may become standalone only
-after its independent contract is defined.
+The native project factory remains private with this workspace. Public
+applications choose the browser TraceKernel workspace or Judge rather than a
+second host-native API.

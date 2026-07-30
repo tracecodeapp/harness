@@ -30,7 +30,7 @@ Internal workspace surface:
 
 Published browser consumers select Python through the provider-neutral runtime
 host and Judge contracts. Browser project consumers use
-`@tracecode/harness/browser/project`; neither path exposes Python runtime
+`@tracecode/harness/tracekernel`; neither path exposes Python runtime
 clients directly.
 
 Runtime assets are shipped at `workers/python-worker.js` and

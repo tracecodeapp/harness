@@ -6,7 +6,7 @@ This app is intentionally small. It exists to prove that a third-party browser a
 
 - install the package
 - sync the published worker assets
-- create a browser-owned runtime host
+- create a browser-owned Judge host
 - evaluate each action through the scoped browser Judge
 - execute and trace Python, JavaScript, TypeScript, C++, C#, and optionally Java
 - render execution output and full trace payloads
@@ -25,7 +25,7 @@ pnpm --dir examples/web-ide dev
 ```
 
 The app syncs harness worker assets into `public/workers` before `dev`, `build`, and `preview`.
-The browser runtime host resolves the package's canonical bridge assets from
+The browser Judge host resolves the package's canonical bridge assets from
 that directory. Java is enabled only when the build defines an external,
 immutable Java runtime asset root:
 
@@ -43,8 +43,8 @@ Without the environment variable, Java is omitted from the language selector.
 
 ## What It Demonstrates
 
-- `createBrowserRuntimeHost(...)` from `@tracecode/harness/browser`
-- `createBrowserRuntimeJudge(...)` from `@tracecode/harness/judge`
+- `createBrowserJudgeHost(...)` from `@tracecode/harness/judge`
+- `host.createJudge(...)` for each scoped evaluation
 - `Effect.scoped(...)` ownership for each Judge evaluation
 - worker asset syncing through `tracecode-harness sync-assets`
 - runtime initialization for Python, JavaScript, TypeScript, C++, C#, and
