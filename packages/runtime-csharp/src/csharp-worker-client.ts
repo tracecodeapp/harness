@@ -15,7 +15,16 @@ import {
   type RuntimeTrace,
   type RuntimeTraceEvent,
 } from '@tracecode/runtime-core';
-import type { ExecutionLimitReason, RuntimeBatchCall, RuntimeCodeCall, RuntimeTraceCall } from '@tracecode/runtime-core';
+import type {
+  ExecutionLimitReason,
+  RuntimeBatchCall,
+  RuntimeCodeCall,
+  RuntimePreparedCodeCall,
+  RuntimePreparedTraceCall,
+  RuntimeProgramPreparationCall,
+  RuntimeTraceCall,
+  TraceExecutionOptions,
+} from '@tracecode/runtime-core';
 import { liftCodeBatchOutcome, liftTraceOutcome, type RawExecutionBatchPayload } from '@tracecode/runtime-core';
 import type {
   CodeExecutionResult,
@@ -127,6 +136,21 @@ interface CSharpWorkerExecuteResult {
   traceLimitExceeded?: boolean;
   timeoutReason?: ExecutionLimitReason;
   timings?: RuntimeExecutionTimings;
+}
+
+export interface CSharpWorkerPrepareResult extends CSharpWorkerExecuteResult {
+  compiledArtifactKey?: string;
+  compiledArtifactBase64?: string;
+}
+
+export interface CSharpPreparedProgramArtifact {
+  readonly mode: 'code' | 'trace';
+  readonly code: string;
+  readonly functionName: string;
+  readonly executionStyle: CSharpExecutionStyle;
+  readonly traceOptions?: TraceExecutionOptions;
+  readonly compiledArtifactKey: string;
+  readonly compiledArtifactBase64: string;
 }
 
 function isCSharpUserFile(file: string | undefined): boolean {
@@ -462,6 +486,106 @@ export class CSharpWorkerClient {
     return liftCodeBatchOutcome(result, 'C# execution failed');
   }
 
+  async prepareProgram(
+    call: RuntimeProgramPreparationCall
+  ): Promise<CSharpWorkerPrepareResult> {
+    const functionName = call.functionName ?? '';
+    const executionStyle = call.executionStyle ?? 'solution-method';
+    const timeoutMs = call.mode === 'trace'
+      ? this.resolveTracingTimeoutMs(functionName, executionStyle)
+      : this.executionTimeoutMs;
+    const program = this.warmupEffect().pipe(
+      Effect.andThen(
+        this.core.withExecutionDeadline(
+          this.sendCommandEffect<CSharpWorkerPrepareResult>('prepare-program', {
+            mode: call.mode,
+            code: call.code,
+            functionName,
+            executionStyle,
+            traceOptions: call.traceOptions,
+            assetBaseUrl: this.options.assetBaseUrl,
+            timeoutMs: Math.max(100, timeoutMs - 1_000),
+            ...this.workerOptionsPayload(),
+          }, null),
+          timeoutMs
+        )
+      )
+    );
+
+    return this.core.runClientEffect(program, call.signal);
+  }
+
+  async executePreparedCode(
+    prepared: CSharpPreparedProgramArtifact,
+    call: RuntimePreparedCodeCall
+  ): Promise<CodeExecutionResult> {
+    const wallClockMs = call.limits?.wallClockMs ?? this.executionTimeoutMs;
+    const program = this.warmupEffect().pipe(
+      Effect.andThen(
+        this.core.withExecutionDeadline(
+          this.sendCommandEffect<CSharpWorkerExecuteResult>('execute-prepared-code', {
+            prepared,
+            inputs: call.inputs,
+            assetBaseUrl: this.options.assetBaseUrl,
+            timeoutMs: Math.max(100, wallClockMs - 1_000),
+            ...this.workerOptionsPayload(),
+          }, null),
+          wallClockMs
+        )
+      )
+    );
+    const result = await this.core.runClientEffect(program, call.signal);
+    return this.toCodeExecutionResult(result);
+  }
+
+  async executePreparedTrace(
+    prepared: CSharpPreparedProgramArtifact,
+    call: RuntimePreparedTraceCall
+  ): Promise<ExecutionResult> {
+    const wallClockMs = call.limits?.wallClockMs
+      ?? this.resolveTracingTimeoutMs(prepared.functionName, prepared.executionStyle);
+    let result: CSharpWorkerExecuteResult;
+    const program = this.warmupEffect().pipe(
+      Effect.andThen(
+        this.core.withExecutionDeadline(
+          this.sendCommandEffect<CSharpWorkerExecuteResult>('execute-prepared-trace', {
+            prepared,
+            inputs: call.inputs,
+            assetBaseUrl: this.options.assetBaseUrl,
+            timeoutMs: Math.max(100, wallClockMs - 1_000),
+            traceEventTransport: traceEventTransferRequest(),
+            ...this.workerOptionsPayload(),
+          }, null),
+          wallClockMs
+        )
+      )
+    );
+
+    try {
+      result = await this.core.runClientEffect(program, call.signal);
+    } catch (error) {
+      return this.traceClientFailure(error, wallClockMs);
+    }
+
+    return this.toTraceExecutionResult(
+      result,
+      prepared.traceOptions,
+      wallClockMs
+    );
+  }
+
+  async disposePreparedProgram(
+    prepared: Pick<CSharpPreparedProgramArtifact, 'compiledArtifactKey'>
+  ): Promise<void> {
+    if (!this.core.isWorkerRunning) return;
+    await this.core.runClientEffect(
+      this.sendCommandEffect<{ success: boolean }>(
+        'dispose-prepared-program',
+        { compiledArtifactKey: prepared.compiledArtifactKey }
+      )
+    );
+  }
+
   async executeWithTracing(call: RuntimeTraceCall): Promise<ExecutionResult> {
     const { code, inputs, traceOptions, executionStyle = 'solution-method', signal } = call;
     const functionName = call.functionName ?? '';
@@ -494,26 +618,48 @@ export class CSharpWorkerClient {
     try {
       result = await this.core.runClientEffect(program, signal);
     } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      const trace = this.createTrace([
-        {
-          kind: 'timeout',
-          runId: 'csharp:run',
-          file: CSHARP_DEFAULT_FILE,
-          message,
-        },
-      ]);
+      return this.traceClientFailure(error, tracingTimeoutMs);
+    }
+
+    return this.toTraceExecutionResult(result, traceOptions, tracingTimeoutMs);
+  }
+
+  private toCodeExecutionResult(
+    result: CSharpWorkerExecuteResult
+  ): CodeExecutionResult {
+    if (!result.success) {
+      if (result.timeoutReason) {
+        return {
+          kind: 'limit',
+          reason: result.timeoutReason,
+          error: result.error ?? 'C# execution failed',
+          consoleOutput: result.consoleOutput ?? [],
+          timings: result.timings,
+        };
+      }
+      const firstUserDiagnostic = result.diagnostics?.find(isCSharpUserDiagnostic);
       return {
-        kind: 'limit',
-        reason: 'client-timeout',
-        error: message,
-        trace,
-        executionTimeMs: tracingTimeoutMs,
-        consoleOutput: [],
-        timings: { totalMs: tracingTimeoutMs },
+        kind: 'failed',
+        error: result.error ?? 'C# execution failed',
+        ...(firstUserDiagnostic ? { errorLine: firstUserDiagnostic.line } : {}),
+        consoleOutput: result.consoleOutput ?? [],
+        timings: result.timings,
       };
     }
 
+    return {
+      kind: 'completed',
+      output: result.output ?? null,
+      consoleOutput: result.consoleOutput ?? [],
+      timings: result.timings,
+    };
+  }
+
+  private toTraceExecutionResult(
+    result: CSharpWorkerExecuteResult,
+    traceOptions: TraceExecutionOptions | undefined,
+    fallbackExecutionTimeMs: number
+  ): ExecutionResult {
     const consoleOutput = result.consoleOutput ?? [];
     const hostEmittedStdout = result.events?.some((event) => event.kind === 'stdout') === true;
     const events = [
@@ -533,12 +679,37 @@ export class CSharpWorkerClient {
     return liftTraceOutcome(
       {
         ...result,
+        executionTimeMs: result.executionTimeMs ?? fallbackExecutionTimeMs,
         consoleOutput,
         ...(firstUserDiagnostic ? { errorLine: firstUserDiagnostic.line } : {}),
       },
       trace,
       'C# execution failed'
     );
+  }
+
+  private traceClientFailure(
+    error: unknown,
+    executionTimeMs: number
+  ): ExecutionResult {
+    const message = error instanceof Error ? error.message : String(error);
+    const trace = this.createTrace([
+      {
+        kind: 'timeout',
+        runId: 'csharp:run',
+        file: CSHARP_DEFAULT_FILE,
+        message,
+      },
+    ]);
+    return {
+      kind: 'limit',
+      reason: 'client-timeout',
+      error: message,
+      trace,
+      executionTimeMs,
+      consoleOutput: [],
+      timings: { totalMs: executionTimeMs },
+    };
   }
 
   async executeProjectCSharp(
