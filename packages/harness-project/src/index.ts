@@ -55,9 +55,6 @@ import {
   runtimeKernelFileCopyTarget,
   runtimeKernelFileReadErrorMessage,
   runtimeKernelFileReadTarget,
-  runtimeKernelIdentityDirEntries,
-  runtimeKernelIdentityEntryKind,
-  runtimeKernelIdentityStat,
   runtimeKernelLinkTarget,
   runtimeKernelMkdirTarget,
   runtimeKernelMetadataErrorMessage,
@@ -78,10 +75,8 @@ import {
   publicRuntimeKernelInfo,
   publicRuntimeKernelVirtualFiles,
   readPublicRuntimeProcFile,
-  readRuntimeKernelIdentityFile,
   readRuntimeProcFile,
   createRuntimeKernelReadonlyFileError,
-  type RuntimeKernelVirtualStat,
 } from '@tracecode/harness-core';
 import { getLanguageRuntimeInfo, TRACECODE_HARNESS_VERSION } from '@tracecode/harness-core';
 import type { Language } from '@tracecode/harness-core';
@@ -229,11 +224,9 @@ import {
   TRACE_KERNEL_ARCHITECTURE,
   TRACE_KERNEL_NAME,
   TRACEKERNEL_BIN_PATH,
-  TRACEKERNEL_COMMAND_DISPATCH_PREFIX,
   TRACEKERNEL_EXEC_COMMAND,
   TRACEKERNEL_MAX_PROJECT_COMMAND_STEPS,
   TRACEKERNEL_SHELL_COMMAND_PREFIX,
-  TRACEKERNEL_SKILLS_ROOT,
 } from './constants';
 import {
   assertNoNul,
@@ -243,15 +236,11 @@ import {
   isTraceKernelVirtualNamespacePath,
   isWithinWorkspace,
   mapWorkspaceAlias,
-  normalizeRuntimeSkillPath,
   normalizeRuntimeProjectPath,
-  normalizeRuntimeSkillsVirtualPath,
-  normalizeTraceKernelVirtualPath,
   normalizeTerminalAbsolutePath,
   normalizeWorkspaceCwd,
   resolveWorkspaceCommandPath,
   resolveWorkspaceContextPath,
-  runtimeSkillAbsolutePath,
   terminalCwdLabel,
   toProjectDirectoryPath,
   toWorkspaceEntryPath,
@@ -348,7 +337,6 @@ import {
   throwKernelMutationTargetError,
   throwKernelReadTargetError,
   throwKernelWriteTargetError,
-  type RuntimeDynamicProcEntry,
   type RuntimeDynamicProcProvider,
   type RuntimeCommandExecutionContext,
   type RuntimeFileChangeObserver,
@@ -385,9 +373,7 @@ import {
   createTraceKernelCommandRegistry,
   createTypeScriptProjectCommands,
   traceKernelCommandPath,
-  traceKernelRuntimeRegistry,
   type TraceKernelCommandInfo,
-  type TraceKernelRuntimeInfo,
 } from './language-commands';
 import {
   RuntimeProjectWorkspaceTerminalSession,
@@ -460,6 +446,9 @@ import { WorkspaceFilesystemCommands } from './userland-filesystem-commands';
 import { WorkspaceNetworkCommands } from './userland-network-commands';
 import { WorkspaceProcessInspection } from './userland-process-inspection';
 import { WorkspaceTerminalCommands } from './userland-terminal-commands';
+import { WorkspaceCommandCatalog } from './workspace-command-catalog';
+import { WorkspaceProcFileSystem } from './workspace-proc-filesystem';
+import { WorkspaceVirtualFileSystem } from './workspace-virtual-filesystem';
 
 const PRINCIPAL_ACTOR: RuntimeWorkspaceActor = runtimeWorkspaceActorPreset('principal');
 const RUNTIME_ACTOR: RuntimeWorkspaceActor = runtimeWorkspaceActorPreset('runtime');
@@ -500,10 +489,6 @@ const TRACEKERNEL_SYSCALL_ERROR_CODES: ReadonlySet<TraceKernelSyscallErrorCode> 
 ]);
 
 const TRACEKERNEL_ZOMBIE_RETENTION_MS = 30_000;
-
-function traceKernelTsv(value: unknown): string {
-  return String(value ?? '').replace(/[\t\r\n]+/g, ' ');
-}
 
 function runtimeCommandEnvChanges(
   baselineEnv: Record<string, string>,
@@ -602,8 +587,10 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
   private readonly hiddenCommandAccess?: RuntimeProjectHiddenCommandAccess;
   private readonly traceKernelCommandRegistry: TraceKernelCommandInfo[];
   private readonly traceKernelCommandDispatchNames: ReadonlyMap<string, string>;
+  private readonly commandCatalog: WorkspaceCommandCatalog;
+  private readonly procFiles: WorkspaceProcFileSystem;
+  private readonly virtualFiles: WorkspaceVirtualFileSystem;
   private readonly identityCommands: WorkspaceIdentityCommands;
-  private readonly skillFiles = new Map<string, RuntimeFile>();
   private readonly virtualExecutableRecords = new Map<string, VirtualExecutableRecord>();
   private readonly processState = new WorkspaceProcessState();
   // Temporary 0.13 introspection aliases. The process state module remains
@@ -767,7 +754,7 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
                     ppid: processSnapshot.ppid,
                     pgid: processSnapshot.pgid,
                     sid: processSnapshot.sid,
-                    descriptors: this.processDescriptorNumbers(
+                    descriptors: this.procFiles.descriptorNumbers(
                       commandContext.process as RuntimeKernelProcessRecord
                     ),
                   },
@@ -824,6 +811,34 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
       Boolean(options.nodeRunner || options.typescriptRunner)
     );
     this.traceKernelCommandRegistry = createTraceKernelCommandRegistry(options, packageManagerConfig);
+    this.commandCatalog = new WorkspaceCommandCatalog(
+      this.traceKernelCommandRegistry,
+      () => this.traceKernelCommandDispatchNames
+    );
+    this.procFiles = new WorkspaceProcFileSystem({
+      commandCatalog: this.commandCatalog,
+      currentProcess: (context) => this.currentProcSelfRecord(context),
+      processes: (actor) => this.kernelPresentationProcessRecords(actor),
+      findProcess: (pid, actor) =>
+        this.findKernelPresentationProcessRecord(pid, actor),
+      authoritativeProcessSnapshot: (process) =>
+        this.authoritativeProcessSnapshot(process),
+      renderInodes: () => this.fs.renderInodes(),
+      events: () => this.eventState.kernelEvents(),
+      locks: () => this.fsLocks.snapshot(),
+      httpListeners: () =>
+        [...this.httpState.listeners.values()].map((listener) => listener.info),
+      httpRequests: () => this.httpState.requestLog,
+      scheduler: () => this.commandScheduler.snapshot(),
+      processTableUsage: () => this.processTableUsage(),
+      processTableLimit: () => this.processTableLimit(),
+      nextPid: () => this.processState.nextPid,
+    });
+    this.virtualFiles = new WorkspaceVirtualFileSystem({
+      kernelInfo: this.kernelInfo,
+      commandCatalog: this.commandCatalog,
+      procFiles: this.procFiles,
+    });
     this.identityCommands = new WorkspaceIdentityCommands({
       kernelInfo: this.kernelInfo,
       environment: this.baseEnv,
@@ -1009,7 +1024,7 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
             this.terminalForCommand(context)
           ),
       },
-      help: (name, args) => this.traceKernelCommandHelp(name, args),
+      help: (name, args) => this.commandCatalog.help(name, args),
       withSignalContext: (context) => this.withCurrentKernelSignal(context),
     });
     this.traceKernelCommandDispatchNames = shellCommands.dispatchNames;
@@ -3526,10 +3541,10 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
 
   private createDynamicProcProvider(): RuntimeDynamicProcProvider {
     return {
-      readFile: (path, context) => this.readDynamicVirtualFile(path, context),
-      readDir: (path, context) => this.readDynamicVirtualDir(path, context),
-      entryKind: (path, context) => this.dynamicVirtualEntryKind(path, context),
-      stat: (path, context) => this.dynamicVirtualStat(path, context),
+      readFile: (path, context) => this.virtualFiles.readFile(path, context),
+      readDir: (path, context) => this.virtualFiles.readDir(path, context),
+      entryKind: (path, context) => this.virtualFiles.entryKind(path, context),
+      stat: (path, context) => this.virtualFiles.stat(path, context),
       readonlyNamespace: (path) =>
         Boolean(normalizeRuntimeProcPath(path)) ||
         isTraceKernelVirtualNamespacePath(path) ||
@@ -4646,7 +4661,7 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
     const commandName = traceKernelBinCommandName(rawCommandName) ?? rawCommandName;
     const currentPid = parent?.pid ?? 1;
     if (commandName === 'wait' || commandName === `${TRACEKERNEL_SHELL_COMMAND_PREFIX}wait`) {
-      const help = this.traceKernelCommandHelp('wait', words.slice(1));
+      const help = this.commandCatalog.help('wait', words.slice(1));
       if (help) return Promise.resolve(help);
       return this.runKernelWaitForParent(words.slice(1), 'wait', currentPid);
     }
@@ -4699,564 +4714,6 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
     }
     signal.addEventListener('abort', abort, { once: true });
     return () => signal.removeEventListener('abort', abort);
-  }
-
-  private traceKernelCommandInfo(nameOrPath: string): TraceKernelCommandInfo | undefined {
-    const rawCommandName = traceKernelBinCommandName(nameOrPath) ?? nameOrPath;
-    const dispatchCommandName = rawCommandName.startsWith(TRACEKERNEL_COMMAND_DISPATCH_PREFIX)
-      ? rawCommandName.slice(TRACEKERNEL_COMMAND_DISPATCH_PREFIX.length)
-      : rawCommandName;
-    const commandName = dispatchCommandName.startsWith(TRACEKERNEL_SHELL_COMMAND_PREFIX)
-      ? dispatchCommandName.slice(TRACEKERNEL_SHELL_COMMAND_PREFIX.length)
-      : dispatchCommandName;
-    return this.traceKernelCommandRegistry.find((command) => command.name === commandName);
-  }
-
-  private renderTraceKernelBinCommand(info: TraceKernelCommandInfo): string {
-    const dispatchName = this.traceKernelCommandDispatchNames.get(info.name)
-      ?? `${TRACEKERNEL_COMMAND_DISPATCH_PREFIX}${info.name}`;
-    return `#!/bin/sh\nexec ${dispatchName} "$@"\n`;
-  }
-
-  private traceKernelCommandHelp(name: string, args: readonly string[]): RuntimeCommandResult | null {
-    const info = this.traceKernelCommandInfo(name);
-    const help = info?.help;
-    if (!help || args.length !== 1 || !(help.flags ?? ['--help']).includes(args[0]!)) return null;
-    const flags = help.flags ?? ['--help'];
-    const helpFlags = flags.join(', ');
-    const helpOption = `${helpFlags}${' '.repeat(Math.max(1, 20 - helpFlags.length))}display this help and exit`;
-    return {
-      stdout: [
-        `${info.name} - ${help.summary}`,
-        '',
-        `Usage: ${help.usage}`,
-        ...((help.options?.length ?? 0) > 0 || flags.length > 0
-          ? ['', 'Options:', ...(help.options ?? []).map((option) => `  ${option}`), `  ${helpOption}`]
-          : []),
-        ...((help.notes?.length ?? 0) > 0
-          ? ['', 'Notes:', ...help.notes!.map((note) => `  ${note}`)]
-          : []),
-      ].join('\n') + '\n',
-      stderr: '',
-      exitCode: 0,
-    };
-  }
-
-  private readDynamicTraceKernelFile(path: string): string | null {
-    const commandName = traceKernelBinCommandName(path);
-    if (!commandName) return null;
-    if (commandName.startsWith(TRACEKERNEL_COMMAND_DISPATCH_PREFIX)) return null;
-    const info = this.traceKernelCommandInfo(commandName);
-    return info ? this.renderTraceKernelBinCommand(info) : null;
-  }
-
-  private readDynamicTraceKernelDir(path: string): RuntimeDynamicProcEntry[] | null {
-    const normalized = normalizeTraceKernelVirtualPath(path);
-    if (normalized === '/tracekernel') return [{ name: 'bin', kind: 'directory' }];
-    if (normalized === TRACEKERNEL_BIN_PATH) {
-      return this.traceKernelCommandRegistry.map((command) => ({ name: command.name, kind: 'file' as const }));
-    }
-    return null;
-  }
-
-  private dynamicTraceKernelEntryKind(path: string): 'file' | 'directory' | null {
-    if (this.readDynamicTraceKernelDir(path)) return 'directory';
-    return this.readDynamicTraceKernelFile(path) !== null ? 'file' : null;
-  }
-
-  private dynamicTraceKernelStat(path: string): RuntimeKernelVirtualStat | null {
-    const kind = this.dynamicTraceKernelEntryKind(path);
-    if (!kind) return null;
-    const content = kind === 'file' ? this.readDynamicTraceKernelFile(path) ?? '' : '';
-    return {
-      isFile: kind === 'file',
-      isDirectory: kind === 'directory',
-      isCharacterDevice: false,
-      mode: 0o555,
-      size: new TextEncoder().encode(content).byteLength,
-      uid: 0,
-      gid: 0,
-      owner: 'root',
-      group: 'root',
-    };
-  }
-
-  private normalizeSkillFile(file: RuntimeFile): RuntimeFile {
-    const normalizedEncoding = assertSupportedEncoding(file.encoding);
-    return {
-      path: normalizeRuntimeSkillPath(file.path),
-      contents: file.contents,
-      ...(normalizedEncoding === 'base64' ? { encoding: normalizedEncoding } : {}),
-    };
-  }
-
-  private skillFileContent(file: RuntimeFile): string {
-    return (file.encoding ?? 'utf8') === 'base64'
-      ? contentToText(bytesFromBase64(file.contents))
-      : file.contents;
-  }
-
-  private skillRelativePathFromVirtualPath(path: string): string | null {
-    const normalized = normalizeRuntimeSkillsVirtualPath(path);
-    if (!normalized || normalized === TRACEKERNEL_SKILLS_ROOT) return null;
-    return normalizeRuntimeSkillPath(normalized.slice(TRACEKERNEL_SKILLS_ROOT.length + 1));
-  }
-
-  private readDynamicSkillsFile(path: string): string | null {
-    const relativePath = this.skillRelativePathFromVirtualPath(path);
-    if (!relativePath) return null;
-    const file = this.skillFiles.get(relativePath);
-    return file ? this.skillFileContent(file) : null;
-  }
-
-  private readDynamicSkillsDir(path: string): RuntimeDynamicProcEntry[] | null {
-    const normalized = normalizeRuntimeSkillsVirtualPath(path);
-    if (!normalized) return null;
-    const directoryPath = normalized === TRACEKERNEL_SKILLS_ROOT
-      ? ''
-      : normalizeRuntimeSkillPath(normalized.slice(TRACEKERNEL_SKILLS_ROOT.length + 1));
-    const prefix = directoryPath ? `${directoryPath}/` : '';
-    const entries = new Map<string, RuntimeDynamicProcEntry>();
-    for (const skillPath of this.skillFiles.keys()) {
-      if (directoryPath && skillPath === directoryPath) continue;
-      if (!skillPath.startsWith(prefix)) continue;
-      const remainder = skillPath.slice(prefix.length);
-      if (!remainder) continue;
-      const [name, ...rest] = remainder.split('/');
-      if (!name) continue;
-      entries.set(name, { name, kind: rest.length > 0 ? 'directory' : 'file' });
-    }
-    if (normalized === TRACEKERNEL_SKILLS_ROOT) {
-      return [...entries.values()].sort((left, right) => left.name.localeCompare(right.name));
-    }
-    return entries.size > 0
-      ? [...entries.values()].sort((left, right) => left.name.localeCompare(right.name))
-      : null;
-  }
-
-  private dynamicSkillsEntryKind(path: string): 'file' | 'directory' | null {
-    if (this.readDynamicSkillsDir(path)) return 'directory';
-    return this.readDynamicSkillsFile(path) !== null ? 'file' : null;
-  }
-
-  private dynamicSkillsStat(path: string): RuntimeKernelVirtualStat | null {
-    const kind = this.dynamicSkillsEntryKind(path);
-    if (!kind) return null;
-    const content = kind === 'file' ? this.readDynamicSkillsFile(path) ?? '' : '';
-    return {
-      isFile: kind === 'file',
-      isDirectory: kind === 'directory',
-      isCharacterDevice: false,
-      mode: kind === 'directory' ? 0o555 : 0o444,
-      size: new TextEncoder().encode(content).byteLength,
-      uid: 0,
-      gid: 0,
-      owner: 'root',
-      group: 'root',
-    };
-  }
-
-  private readDynamicIdentityFile(path: string): string | null {
-    return runtimeKernelIdentityEntryKind(path) === 'file'
-      ? readRuntimeKernelIdentityFile(path, this.kernelInfo)
-      : null;
-  }
-
-  private readDynamicIdentityDir(path: string): RuntimeDynamicProcEntry[] | null {
-    const entries = runtimeKernelIdentityDirEntries(path);
-    return entries?.map((name) => ({ name, kind: 'file' as const })) ?? null;
-  }
-
-  private readDynamicVirtualFile(path: string, context?: RuntimeCommandExecutionContext): string | null {
-    const identityFile = this.readDynamicIdentityFile(path);
-    if (identityFile !== null) return identityFile;
-    const skillFile = this.readDynamicSkillsFile(path);
-    if (skillFile !== null) return skillFile;
-    const traceKernelFile = this.readDynamicTraceKernelFile(path);
-    if (traceKernelFile !== null) return traceKernelFile;
-    return this.readDynamicProcFile(path, context);
-  }
-
-  private readDynamicVirtualDir(path: string, context?: RuntimeCommandExecutionContext): RuntimeDynamicProcEntry[] | null {
-    return this.readDynamicIdentityDir(path) ??
-      this.readDynamicSkillsDir(path) ??
-      this.readDynamicTraceKernelDir(path) ??
-      this.readDynamicProcDir(path, context);
-  }
-
-  private dynamicVirtualEntryKind(path: string, context?: RuntimeCommandExecutionContext): 'file' | 'directory' | null {
-    return runtimeKernelIdentityEntryKind(path) ??
-      this.dynamicSkillsEntryKind(path) ??
-      this.dynamicTraceKernelEntryKind(path) ??
-      this.dynamicProcEntryKind(path, context);
-  }
-
-  private dynamicVirtualStat(path: string, context?: RuntimeCommandExecutionContext): RuntimeKernelVirtualStat | null {
-    return runtimeKernelIdentityStat(path, this.kernelInfo) ??
-      this.dynamicSkillsStat(path) ??
-      this.dynamicTraceKernelStat(path) ??
-      this.dynamicProcStat(path, context);
-  }
-
-  private readDynamicProcFile(path: string, context?: RuntimeCommandExecutionContext): string | null {
-    const procPath = normalizeRuntimeProcPath(path);
-    if (!procPath) return null;
-    if (procPath === '/proc/self/status') return this.renderProcStatus(this.currentProcSelfRecord(context));
-    if (procPath === '/proc/self/cmdline') return `${this.currentProcSelfRecord(context).command}\0`;
-    {
-      const selfFd = procPath.match(/^\/proc\/self\/fd\/([0-9]+)$/);
-      if (selfFd) return this.renderProcFd(this.currentProcSelfRecord(context), Number(selfFd[1]));
-      const selfFdInfo = procPath.match(/^\/proc\/self\/fdinfo\/([0-9]+)$/);
-      if (selfFdInfo) return this.renderProcFdInfo(this.currentProcSelfRecord(context), Number(selfFdInfo[1]));
-    }
-    if (procPath === '/proc/tracekernel/commands') return this.renderProcCommands();
-    if (procPath === '/proc/tracekernel/events') return this.renderProcEvents();
-    if (procPath === '/proc/tracekernel/inodes') return this.fs.renderInodes();
-    if (procPath === '/proc/tracekernel/locks') return this.renderProcLocks();
-    if (procPath === '/proc/tracekernel/net/listeners') return this.renderProcHttpListeners();
-    if (procPath === '/proc/tracekernel/net/requests') return this.renderProcHttpRequests();
-    if (procPath === '/proc/tracekernel/processes') return this.renderProcProcesses(context?.actor);
-    if (procPath === '/proc/tracekernel/runtimes') return this.renderProcRuntimes();
-    if (procPath === '/proc/tracekernel/sched') return this.renderProcScheduler();
-
-    const match = procPath.match(/^\/proc\/([1-9][0-9]*)\/(status|cmdline|fd\/[0-9]+|fdinfo\/[0-9]+)$/);
-    if (!match) return null;
-    const process = this.findKernelPresentationProcessRecord(
-      Number(match[1]),
-      context?.actor
-    );
-    if (!process) return null;
-    const file = match[2];
-    if (file === 'status') return this.renderProcStatus(process);
-    if (file === 'cmdline') return `${process.command}\0`;
-    const fd = Number(file.split('/')[1]);
-    return file.startsWith('fdinfo/') ? this.renderProcFdInfo(process, fd) : this.renderProcFd(process, fd);
-  }
-
-  private readDynamicProcDir(path: string, context?: RuntimeCommandExecutionContext): RuntimeDynamicProcEntry[] | null {
-    const procPath = normalizeRuntimeProcPath(path);
-    if (!procPath) return null;
-    if (procPath === '/proc') {
-      return [
-        { name: 'kernel', kind: 'directory' },
-        { name: 'mounts', kind: 'file' },
-        { name: 'self', kind: 'directory' },
-        { name: 'tracekernel', kind: 'directory' },
-        ...this.kernelPresentationProcessRecords(context?.actor).map((process) => ({ name: String(process.pid), kind: 'directory' as const })),
-      ];
-    }
-    if (procPath === '/proc/self') {
-      return [
-        { name: 'cmdline', kind: 'file' },
-        { name: 'fd', kind: 'directory' },
-        { name: 'fdinfo', kind: 'directory' },
-        { name: 'mountinfo', kind: 'file' },
-        { name: 'status', kind: 'file' },
-      ];
-    }
-    if (procPath === '/proc/self/fd') {
-      return this.processDescriptorNumbers(this.currentProcSelfRecord(context))
-        .map((fd) => ({ name: String(fd), kind: 'file' as const }));
-    }
-    if (procPath === '/proc/self/fdinfo') {
-      return this.processDescriptorNumbers(this.currentProcSelfRecord(context))
-        .map((fd) => ({ name: String(fd), kind: 'file' as const }));
-    }
-    if (procPath === '/proc/tracekernel') {
-      return [
-        { name: 'commands', kind: 'file' },
-        { name: 'events', kind: 'file' },
-        { name: 'inodes', kind: 'file' },
-        { name: 'locks', kind: 'file' },
-        { name: 'net', kind: 'directory' },
-        { name: 'processes', kind: 'file' },
-        { name: 'runtimes', kind: 'file' },
-        { name: 'sched', kind: 'file' },
-      ];
-    }
-    if (procPath === '/proc/tracekernel/net') {
-      return [
-        { name: 'listeners', kind: 'file' },
-        { name: 'requests', kind: 'file' },
-      ];
-    }
-    const fdDirMatch = procPath.match(/^\/proc\/([1-9][0-9]*)\/(fd|fdinfo)$/);
-    if (fdDirMatch) {
-      const process = this.findKernelPresentationProcessRecord(
-        Number(fdDirMatch[1]),
-        context?.actor
-      );
-      if (!process) return null;
-      return this.processDescriptorNumbers(process)
-        .map((fd) => ({ name: String(fd), kind: 'file' as const }));
-    }
-    const match = procPath.match(/^\/proc\/([1-9][0-9]*)$/);
-    if (!match) return null;
-    const process = this.findKernelPresentationProcessRecord(
-      Number(match[1]),
-      context?.actor
-    );
-    if (!process) return null;
-    return [
-      { name: 'cmdline', kind: 'file' },
-      { name: 'fd', kind: 'directory' },
-      { name: 'fdinfo', kind: 'directory' },
-      { name: 'status', kind: 'file' },
-    ];
-  }
-
-  private dynamicProcEntryKind(path: string, context?: RuntimeCommandExecutionContext): 'file' | 'directory' | null {
-    const procPath = normalizeRuntimeProcPath(path);
-    if (!procPath) return null;
-    if (this.readDynamicProcDir(procPath, context)) return 'directory';
-    return this.readDynamicProcFile(procPath, context) !== null ? 'file' : null;
-  }
-
-  private dynamicProcStat(path: string, context?: RuntimeCommandExecutionContext): RuntimeKernelVirtualStat | null {
-    const kind = this.dynamicProcEntryKind(path, context);
-    if (!kind) return null;
-    const content = kind === 'file' ? this.readDynamicProcFile(path, context) ?? '' : '';
-    return {
-      isFile: kind === 'file',
-      isDirectory: kind === 'directory',
-      isCharacterDevice: false,
-      mode: kind === 'directory' ? 0o555 : 0o444,
-      size: new TextEncoder().encode(content).byteLength,
-      uid: 0,
-      gid: 0,
-      owner: 'root',
-      group: 'root',
-    };
-  }
-
-  private renderProcStatus(process: RuntimeKernelProcessRecord): string {
-    const state =
-      process.state === 'queued'
-        ? 'S (queued)'
-        : process.state === 'blocked'
-          ? 'S (blocked)'
-        : process.state === 'running'
-        ? 'R (running)'
-        : process.state === 'signaled'
-          ? 'X (signaled)'
-          : process.state === 'zombie'
-            ? 'Z (zombie)'
-            : 'X (dead)';
-    return [
-      `Name:\t${process.command.split(/\s+/, 1)[0] || 'bash'}`,
-      `State:\t${state}`,
-      `Pid:\t${process.pid}`,
-      `PPid:\t${process.ppid}`,
-      `PGid:\t${process.pgid}`,
-      `Sid:\t${process.sid}`,
-      `FDSize:\t${this.processDescriptorNumbers(process).length}`,
-      `Tty:\t${process.tty}`,
-      `Foreground:\t${process.foreground ? 1 : 0}`,
-      'Uid:\t1000\t1000\t1000\t1000',
-      'Gid:\t1000\t1000\t1000\t1000',
-      `Cwd:\t${process.cwd}`,
-      `Command:\t${process.command}`,
-      `Actor:\t${process.actor.kind}:${process.actor.id}`,
-      ...(process.signal ? [`Signal:\t${process.signal}`] : []),
-      ...(process.signalCode !== undefined ? [`SignalCode:\t${process.signalCode}`] : []),
-      `Started:\t${process.startedAt}`,
-      ...(process.endedAt ? [`Ended:\t${process.endedAt}`] : []),
-      ...(process.exitCode !== undefined ? [`ExitCode:\t${process.exitCode}`] : []),
-    ].join('\n') + '\n';
-  }
-
-  private renderProcFd(process: RuntimeKernelProcessRecord, fd: number): string | null {
-    const kernelSnapshot = this.authoritativeProcessSnapshot(process);
-    const kernelDescriptor = kernelSnapshot?.descriptors.find(
-      (descriptor) => descriptor.fd === fd
-    );
-    if (kernelDescriptor) {
-      const target =
-        kernelDescriptor.kind === 'device'
-          ? fd === 0
-            ? '/dev/stdin'
-            : fd === 1
-              ? '/dev/stdout'
-              : fd === 2
-                ? '/dev/stderr'
-                : '/dev/null'
-          : kernelDescriptor.kind === 'terminal'
-            ? '/dev/tty'
-            : kernelDescriptor.kind === 'tcp-socket'
-              ? `socket:[${kernelDescriptor.resourceId}]`
-              : kernelDescriptor.kind === 'pipe-reader' ||
-                  kernelDescriptor.kind === 'pipe-writer'
-                ? `pipe:[${kernelDescriptor.resourceId}]`
-                : kernelDescriptor.kind === 'fs-watch'
-                  ? `anon_inode:[${kernelDescriptor.resourceId}]`
-                  : `tkfs:[${kernelDescriptor.resourceId}]`;
-      return `${target}\n`;
-    }
-    if (kernelSnapshot) return null;
-    return process.fds.find((entry) => entry.fd === fd)?.target.concat('\n') ?? null;
-  }
-
-  private renderProcFdInfo(process: RuntimeKernelProcessRecord, fd: number): string | null {
-    const kernelSnapshot = this.authoritativeProcessSnapshot(process);
-    const kernelDescriptor = kernelSnapshot?.descriptors.find(
-      (descriptor) => descriptor.fd === fd
-    );
-    if (kernelDescriptor) {
-      const target = this.renderProcFd(process, fd)?.trim() ?? '';
-      const flags =
-        kernelDescriptor.kind === 'device' && fd === 0
-          ? 'r'
-          : kernelDescriptor.kind === 'device' && (fd === 1 || fd === 2)
-            ? 'w'
-            : kernelDescriptor.kind === 'pipe-reader' ||
-                kernelDescriptor.kind === 'fs-watch'
-              ? 'r'
-              : kernelDescriptor.kind === 'pipe-writer'
-                ? 'w'
-            : 'rw';
-      return [
-        'pos:\t0',
-        `flags:\t${flags}`,
-        `close_on_exec:\t${kernelDescriptor.closeOnExec ? 1 : 0}`,
-        `nonblocking:\t${kernelDescriptor.nonblocking ? 1 : 0}`,
-        `kind:\t${kernelDescriptor.kind}`,
-        `resource:\t${kernelDescriptor.resourceId}`,
-        `target:\t${target}`,
-      ].join('\n') + '\n';
-    }
-    if (kernelSnapshot) return null;
-    const descriptor = process.fds.find((entry) => entry.fd === fd);
-    if (!descriptor) return null;
-    return [
-      `pos:\t0`,
-      `flags:\t${descriptor.flags}`,
-      `mnt_id:\tdev`,
-      `target:\t${descriptor.target}`,
-    ].join('\n') + '\n';
-  }
-
-  private processDescriptorNumbers(
-    process: RuntimeKernelProcessRecord
-  ): readonly number[] {
-    const kernelSnapshot = this.authoritativeProcessSnapshot(process);
-    return kernelSnapshot
-      ? kernelSnapshot.descriptors.map((descriptor) => descriptor.fd)
-      : process.fds.map((descriptor) => descriptor.fd);
-  }
-
-  private renderProcCommands(): string {
-    const rows = this.traceKernelCommandRegistry.map((command) => [
-      command.name,
-      command.path,
-      command.kind,
-      command.language ?? '',
-      command.adapter,
-      command.versionLabel ?? '',
-      command.description ?? '',
-    ].map(traceKernelTsv).join('\t'));
-    return ['name\tpath\tkind\tlanguage\tadapter\tversion\tdescription', ...rows].join('\n') + '\n';
-  }
-
-  private renderProcRuntimes(): string {
-    return JSON.stringify({
-      schema: 'tracekernel.runtimes.v1',
-      binPath: TRACEKERNEL_BIN_PATH,
-      runtimes: traceKernelRuntimeRegistry(this.traceKernelCommandRegistry),
-    }, null, 2) + '\n';
-  }
-
-  private renderProcProcesses(actor?: RuntimeWorkspaceActor): string {
-    const rows = this.kernelPresentationProcessRecords(actor).map((process) =>
-      [
-        process.pid,
-        process.ppid,
-        process.pgid,
-        process.sid,
-        process.state,
-        process.tty,
-        process.foreground ? 1 : 0,
-        process.cwd,
-        process.command,
-      ].join('\t')
-    );
-    return ['pid\tppid\tpgid\tsid\tstate\ttty\tfg\tcwd\tcmd', ...rows].join('\n') + '\n';
-  }
-
-  private renderProcEvents(): string {
-    const rows = this.eventState.kernelEvents().map((event) =>
-      [
-        event.seq,
-        event.time,
-        event.type,
-        event.pid ?? '',
-        event.detail ? JSON.stringify(event.detail) : '',
-      ].join('\t')
-    );
-    return ['seq\ttime\ttype\tpid\tdetail', ...rows].join('\n') + '\n';
-  }
-
-  private renderProcLocks(): string {
-    const rows = this.fsLocks.snapshot().map((lock) =>
-      `${lock.path}\t${lock.active ? 1 : 0}\t${lock.waiting}\t${lock.readers}\t${lock.writer ? 1 : 0}\t${lock.waitingReaders}\t${lock.waitingWriters}`
-    );
-    return ['path\tactive\twaiting\treaders\twriter\twaiting_readers\twaiting_writers', ...rows].join('\n') + '\n';
-  }
-
-  private renderProcHttpListeners(): string {
-    const rows = [...this.httpState.listeners.values()]
-      .map((listener) => listener.info)
-      .sort((left, right) => left.port - right.port || left.host.localeCompare(right.host))
-      .map((listener) => [
-        workspaceHttpPolicy.sanitizeDiagnosticField(listener.id),
-        listener.pid,
-        workspaceHttpPolicy.sanitizeDiagnosticField(listener.protocol),
-        workspaceHttpPolicy.sanitizeDiagnosticField(listener.host),
-        listener.port,
-        workspaceHttpPolicy.sanitizeDiagnosticField(listener.startedAt),
-      ].join('\t'));
-    return ['id\tpid\tproto\thost\tport\tstarted', ...rows].join('\n') + '\n';
-  }
-
-  private renderProcHttpRequests(): string {
-    const rows = this.httpState.requestLog.map((request) => [
-      request.seq,
-      workspaceHttpPolicy.sanitizeDiagnosticField(request.time),
-      workspaceHttpPolicy.sanitizeDiagnosticField(request.listenerId ?? ''),
-      request.pid ?? '',
-      workspaceHttpPolicy.sanitizeDiagnosticField(request.method),
-      workspaceHttpPolicy.sanitizeDiagnosticField(request.url),
-      request.status ?? '',
-      workspaceHttpPolicy.sanitizeDiagnosticField(request.error ?? ''),
-      request.external ? 'external' : '',
-    ].join('\t'));
-    return ['seq\ttime\tlistener\tpid\tmethod\turl\tstatus\terror\texternal', ...rows].join('\n') + '\n';
-  }
-
-  private renderProcScheduler(): string {
-    const active = this.kernelPresentationProcessRecords();
-    const scheduler = this.commandScheduler.snapshot();
-    const processTableUsage = this.processTableUsage();
-    const processTableLimit = this.processTableLimit();
-    const queued = active.filter((process) => process.state === 'queued').length;
-    const running = active.filter((process) => process.state === 'running').length;
-    const blocked = active.filter((process) => process.state === 'blocked').length;
-    const zombies = active.filter((process) => process.state === 'zombie').length;
-    return [
-      `tasks\t${active.length}`,
-      `queued\t${queued}`,
-      `running\t${running}`,
-      `blocked\t${blocked}`,
-      `zombies\t${zombies}`,
-      `admitted\t${scheduler.running}`,
-      `waiting\t${scheduler.queued}`,
-      `processes\t${processTableUsage}`,
-      `max_processes\t${processTableLimit ?? 'unlimited'}`,
-      `available_processes\t${processTableLimit === null ? 'unlimited' : Math.max(0, processTableLimit - processTableUsage)}`,
-      `max_concurrent\t${scheduler.maxConcurrentCommands}`,
-      `max_queued\t${scheduler.maxQueuedCommands ?? 'unlimited'}`,
-      `next_pid\t${this.processState.nextPid}`,
-      ...active.map((process) => `task\t${process.pid}\t${process.state}\t${process.command}`),
-    ].join('\n') + '\n';
   }
 
   private hasVirtualExecutableLoaders(): boolean {
@@ -5366,7 +4823,7 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
       }
       interpreter = interpreterArgs.shift() ?? '';
     }
-    const supported = this.traceKernelCommandInfo(interpreter);
+    const supported = this.commandCatalog.info(interpreter);
     if (!supported && interpreter !== 'bash' && interpreter !== 'sh') return null;
     const command = interpreter === 'sh' ? 'bash' : interpreter;
     return [command, ...interpreterArgs, executable, ...args].map(shellQuote).join(' ');
@@ -5394,7 +4851,7 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
     let stderr = '';
     let exitCode = 0;
     for (const name of names) {
-      const info = this.traceKernelCommandInfo(name);
+      const info = this.commandCatalog.info(name);
       if (info) {
         stdout += `${info.path}\n`;
         continue;
@@ -5770,11 +5227,11 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
     if (!command) {
       return { stdout: '', stderr: 'What manual page do you want?\n', exitCode: 1 };
     }
-    const info = this.traceKernelCommandInfo(command);
+    const info = this.commandCatalog.info(command);
     if (!info?.help) {
       return { stdout: '', stderr: `No manual entry for ${command}\n`, exitCode: 1 };
     }
-    return this.traceKernelCommandHelp(info.name, ['--help']) ?? {
+    return this.commandCatalog.help(info.name, ['--help']) ?? {
       stdout: '',
       stderr: `No manual entry for ${command}\n`,
       exitCode: 1,
@@ -6259,7 +5716,7 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
   }
 
   private async listTerminalDirectory(path: string): Promise<string[]> {
-    const dynamicEntries = this.readDynamicVirtualDir(path);
+    const dynamicEntries = this.virtualFiles.readDir(path);
     if (dynamicEntries) return dynamicEntries.map((entry) => entry.name).sort();
     const directoryTarget = kernelDirectoryTarget(path);
     if (directoryTarget.kind === 'directory') return directoryTarget.entries.map((entry) => entry.name).sort();
@@ -6283,7 +5740,7 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
   }
 
   private async terminalPathIsDirectory(path: string): Promise<boolean> {
-    const dynamicKind = this.dynamicVirtualEntryKind(path);
+    const dynamicKind = this.virtualFiles.entryKind(path);
     if (dynamicKind) return dynamicKind === 'directory';
     const statTarget = kernelStatTarget(path, this.kernelInfo);
     if (statTarget.kind === 'stat') return statTarget.stat.isDirectory;
@@ -6365,7 +5822,7 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
       throw new Error(`Kernel proc path does not support base64 reads: ${path}`);
     }
     try {
-      const dynamicFile = this.readDynamicProcFile(procPath);
+      const dynamicFile = this.procFiles.readFile(procPath);
       if (dynamicFile !== null) return dynamicFile;
       return options.publicView === false
         ? readRuntimeProcFile(procPath, this.kernelInfo)
@@ -6540,20 +5997,9 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
     actor: RuntimeWorkspaceActor = SYSTEM_ACTOR
   ): Promise<void> {
     this.assertNotDestroyed();
-    const nextFiles = new Map(this.skillFiles);
-    for (const file of files) {
-      const normalized = this.normalizeSkillFile(file);
-      this.assertActorFileCapability(actor, 'write', runtimeSkillAbsolutePath(normalized.path));
-      for (const existingPath of nextFiles.keys()) {
-        if (existingPath === normalized.path) continue;
-        if (existingPath.startsWith(`${normalized.path}/`) || normalized.path.startsWith(`${existingPath}/`)) {
-          throw new Error(`Skill path conflicts with an existing skill path: ${runtimeSkillAbsolutePath(normalized.path)}`);
-        }
-      }
-      nextFiles.set(normalized.path, normalized);
-    }
-    this.skillFiles.clear();
-    for (const [path, file] of nextFiles) this.skillFiles.set(path, file);
+    this.virtualFiles.writeSkillFiles(files, (absolutePath) => {
+      this.assertActorFileCapability(actor, 'write', absolutePath);
+    });
     this.snapshotCache = null;
   }
 
@@ -6595,7 +6041,7 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
 
   async readFile(path: string, encoding?: RuntimeFileEncoding, options: { publicProc?: boolean } = {}): Promise<string> {
     this.assertNotDestroyed();
-    const dynamicVirtualFile = this.readDynamicVirtualFile(path);
+    const dynamicVirtualFile = this.virtualFiles.readFile(path);
     if (dynamicVirtualFile !== null) {
       if (encoding === 'base64') throw new Error(`Kernel virtual path does not support base64 reads: ${path}`);
       return dynamicVirtualFile;
@@ -6628,7 +6074,7 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
 
   async exists(path: string): Promise<boolean> {
     this.assertNotDestroyed();
-    if (this.dynamicVirtualEntryKind(path) !== null) return true;
+    if (this.virtualFiles.entryKind(path) !== null) return true;
     const accessTarget = kernelAccessTarget(path);
     if (accessTarget.kind === 'allowed') return true;
     if (accessTarget.kind === 'denied') return false;
@@ -6639,7 +6085,7 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
 
   async stat(path: string): Promise<RuntimeWorkspaceStat> {
     this.assertNotDestroyed();
-    const dynamicStat = this.dynamicVirtualStat(path);
+    const dynamicStat = this.virtualFiles.stat(path);
     if (dynamicStat) return {
       isFile: dynamicStat.isFile,
       isDirectory: dynamicStat.isDirectory,
@@ -6684,7 +6130,7 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
 
   async readDir(path = '.'): Promise<string[]> {
     this.assertNotDestroyed();
-    const dynamicEntries = this.readDynamicVirtualDir(path);
+    const dynamicEntries = this.virtualFiles.readDir(path);
     if (dynamicEntries) return dynamicEntries.map((entry) => entry.name);
     const directoryTarget = kernelDirectoryTarget(path);
     if (directoryTarget.kind === 'directory') return directoryTarget.entries.map((entry) => entry.name);
@@ -6732,7 +6178,7 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
   async copyFile(sourcePath: string, destinationPath: string): Promise<void> {
     this.assertWorkspaceUsableForMutation('copy');
     this.assertDynamicVirtualWritable(destinationPath, 'copy');
-    const dynamicSourceFile = this.readDynamicVirtualFile(sourcePath);
+    const dynamicSourceFile = this.virtualFiles.readFile(sourcePath);
     if (dynamicSourceFile !== null) {
       await this.writeFileAs(destinationPath, dynamicSourceFile, PRINCIPAL_ACTOR, undefined, 'live');
       return;
@@ -6789,7 +6235,7 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
     sourcePath: string,
     sourceTarget: ReturnType<typeof runtimeKernelFileReadTarget> = kernelFileReadTarget(sourcePath)
   ): Promise<Uint8Array> {
-    const dynamicSourceFile = this.readDynamicVirtualFile(sourcePath);
+    const dynamicSourceFile = this.virtualFiles.readFile(sourcePath);
     if (dynamicSourceFile !== null) return new TextEncoder().encode(dynamicSourceFile);
     if (sourceTarget.kind === 'device-file') return new TextEncoder().encode(this.readDevice(sourceTarget.path));
     if (sourceTarget.kind === 'proc-file') return new TextEncoder().encode(readPublicRuntimeProcFile(sourceTarget.path, this.kernelInfo));
