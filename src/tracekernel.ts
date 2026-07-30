@@ -44,6 +44,7 @@ export {
 export {
   BROWSER_RUNTIME_ASSET_PROTOCOL_VERSION,
   BROWSER_RUNTIME_IDS,
+  resolveBrowserRuntimeAssets,
   resolveBrowserRuntimeAssetManifests,
   type AnyBrowserRuntimeAssetManifest,
   type BrowserRuntimeAssetDelivery,
@@ -61,6 +62,16 @@ export {
   type CppCompilerIntegrityEntry,
   type CppCompilerIntegrityManifest,
 } from '../packages/runtime-browser/src/runtime-assets';
+
+export {
+  assertRuntimeRequestSupported,
+} from '../packages/runtime-browser/src/runtime-capability-guards';
+
+export {
+  createPythonAnalysisClient,
+  type CreatePythonAnalysisClientOptions,
+  type PythonAnalysisClient,
+} from './internal/python-analysis';
 
 export {
   createBrowserRuntimeEnvironment,
@@ -88,6 +99,10 @@ export {
 } from '../packages/runtime-browser/src/runtime-profiles';
 
 export {
+  createEmptyRuntimeTrace,
+} from '../packages/runtime-contracts/src/runtime-trace';
+
+export {
   NODE_RUNTIME_COMPAT_VERSION,
   LANGUAGE_RUNTIME_INFOS,
   SUPPORTED_LANGUAGE_RUNTIME_INFOS,
@@ -99,6 +114,10 @@ export {
 } from '../packages/runtime-contracts/src/runtime-language-info';
 
 export type {
+  CodeExecutionResult,
+  ExecutionDiagnosticStage,
+  ExecutionLimitReason,
+  ExecutionResult,
   Language,
   LanguageRuntimeProfile,
   RuntimeCapabilities,
@@ -118,6 +137,10 @@ export type {
   RuntimeExecutionLimits,
   RuntimeExecutionPipeline,
   RuntimeExecutionStyle,
+  RuntimeExecuteCase,
+  RuntimeExecuteCaseResult,
+  RuntimeExecuteCodeRequest,
+  RuntimeExecuteResult,
   RuntimeFile,
   RuntimeFileChange,
   RuntimeFileEncoding,
@@ -173,6 +196,7 @@ export type {
   RuntimeProjectWorkerBridgeOptions,
   RuntimeTraceKernelConfig,
   RuntimeTraceKernelSchedulerConfig,
+  RuntimeTrace,
   RuntimeWorkspace,
   RuntimeWorkspaceActor,
   RuntimeWorkspaceActorKind,
@@ -187,4 +211,5 @@ export type {
   RuntimeWorkspaceRemoveOptions,
   RuntimeWorkspaceStat,
   RuntimeWorkspaceUnsubscribe,
+  TraceExecutionOptions,
 } from '../packages/runtime-contracts/src/index';
