@@ -12,6 +12,7 @@ export default defineConfig([
       ...commonConfig.noExternal,
       '@tracecode/runtime-browser',
       '@tracecode/runtime-contracts',
+      '@tracecode/tracejvm',
       '@tracecode/tracekernel',
     ],
     entry: {

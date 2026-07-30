@@ -3,6 +3,8 @@ declare module '@tracecode/tracejvm' {
     import('../../packages/runtime-java/src/java-project').JavaProjectBinaryFile;
   export type TraceJVMCompileResult =
     import('../../packages/runtime-java/src/java-project').JavaProjectCompileResult;
+  export type TraceJVMWorkerHost =
+    import('../../packages/runtime-java/src/java-project').JavaProjectHost;
 
   export interface TraceJVMExecutionDiagnostics {
     bytecodeProfile?: unknown;

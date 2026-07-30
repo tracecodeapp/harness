@@ -50,6 +50,8 @@ import {
   type TraceKernelRuntimeResult,
 } from '@tracecode/tracekernel';
 import {
+  createAlgorithmJudgeReceipt,
+  createJudgeComparator,
   evaluateJudgePlan,
   InMemoryJudgeRuntimeControl,
   structuralJsonComparator,
@@ -58,18 +60,27 @@ import {
   type JudgeEvaluationOptions,
   type JudgeEvaluationPlan,
   type JudgeEvaluationResult,
+  type JudgeAlgorithmBundle,
+  type JudgeAlgorithmReceipt,
   JudgeInfrastructureError,
   type JudgePlanError,
   type JudgeRuntimeControlPort,
   type JudgeRuntimeInvocationInput,
   type JudgeRuntimeInvocationOutput,
   type JudgeRuntimeTimings,
+  validateAlgorithmJudgeBundle,
 } from '../../packages/judge/src/index';
 import {
   JUDGE_INVOCATION_ID_ENV,
   TraceKernelJudgePort,
 } from '../../packages/judge/src/tracekernel';
 import { RuntimePreparedProgramRegistry } from './judge-prepared-program';
+import {
+  createBrowserProjectJudge,
+  type BrowserProjectJudge,
+  type BrowserProjectJudgeWorkspaceOptions,
+  type CreateBrowserProjectJudgeOptions,
+} from './browser-project-judge';
 
 export {
   evaluateJudgePlan,
@@ -223,6 +234,13 @@ export interface CreateBrowserJudgeHostOptions {
   readonly java?: BrowserJudgeJavaOptions;
   readonly csharp?: BrowserJudgeCSharpOptions;
   readonly cpp?: BrowserJudgeCppOptions;
+  /**
+   * Browser TraceKernel configuration used by project evaluations.
+   *
+   * The Judge owns evaluation policy; this object configures only the
+   * execution substrate shared by client-side and mux browser slots.
+   */
+  readonly project?: BrowserProjectJudgeWorkspaceOptions;
 }
 
 /**
@@ -246,6 +264,19 @@ export interface BrowserJudgeHost {
   createJudge(
     options: CreateBrowserJudgeOptions
   ): Effect.Effect<RuntimeJudge, never, Scope.Scope>;
+  evaluateAlgorithm<
+    Input extends Record<string, unknown> = Record<string, unknown>,
+    Result = unknown,
+    Expected = unknown,
+  >(
+    options: {
+      readonly bundle: JudgeAlgorithmBundle<Input, Expected, Result>;
+      readonly signal?: AbortSignal;
+    }
+  ): Promise<JudgeAlgorithmReceipt<Result, Expected>>;
+  createProjectJudge(
+    options?: Omit<CreateBrowserProjectJudgeOptions, 'workspace'>
+  ): BrowserProjectJudge;
   dispose(): void;
 }
 
@@ -841,6 +872,17 @@ export interface RuntimeJudge {
     JudgeEvaluationResult<Result, Expected>,
     JudgePlanError | JudgeInfrastructureError
   >;
+
+  evaluateAlgorithm<
+    Input extends Record<string, unknown> = Record<string, unknown>,
+    Result = unknown,
+    Expected = unknown,
+  >(
+    bundle: JudgeAlgorithmBundle<Input, Expected, Result>
+  ): Effect.Effect<
+    JudgeAlgorithmReceipt<Result, Expected>,
+    JudgePlanError | JudgeInfrastructureError
+  >;
 }
 
 class RuntimeJudgeComposition
@@ -910,6 +952,33 @@ class RuntimeJudgeComposition
         })
       );
     });
+  }
+
+  evaluateAlgorithm<
+    Input extends Record<string, unknown> = Record<string, unknown>,
+    Result = unknown,
+    Expected = unknown,
+  >(
+    bundle: JudgeAlgorithmBundle<Input, Expected, Result>
+  ): Effect.Effect<
+    JudgeAlgorithmReceipt<Result, Expected>,
+    JudgePlanError | JudgeInfrastructureError
+  > {
+    return validateAlgorithmJudgeBundle(bundle).pipe(
+      Effect.flatMap(() =>
+        this.evaluate<Input, Result, Expected>(
+          bundle.plan,
+          {
+            comparator: bundle.comparison
+              ? createJudgeComparator<Input>(bundle.comparison)
+              : undefined,
+          }
+        )
+      ),
+      Effect.map((evaluation) =>
+        createAlgorithmJudgeReceipt(bundle, evaluation)
+      )
+    );
   }
 }
 
@@ -985,6 +1054,70 @@ export function createBrowserJudgeHost(
         host,
         ...judgeOptions,
       }),
+    evaluateAlgorithm: <
+      Input extends Record<string, unknown> = Record<string, unknown>,
+      Result = unknown,
+      Expected = unknown,
+    >(
+      judgeOptions: {
+        readonly bundle: JudgeAlgorithmBundle<Input, Expected, Result>;
+        readonly signal?: AbortSignal;
+      }
+    ) => {
+      const { bundle, signal } = judgeOptions;
+      const language = bundle.plan.runtime as Language;
+      if (!host.isLanguageSupported(language)) {
+        return Promise.reject(
+          new Error(
+            `Judge runtime ${JSON.stringify(bundle.plan.runtime)} is not supported by this browser authority.`
+          )
+        );
+      }
+      const execution = bundle.execution;
+      const createOptions: CreateBrowserJudgeOptions = {
+        language,
+        binding: execution.trace
+          ? {
+              sourcePath: execution.sourcePath,
+              trace: true,
+              functionName: execution.functionName,
+              executionStyle: execution.executionStyle,
+              traceOptions: execution.traceOptions,
+              limits: execution.limits,
+            }
+          : {
+              sourcePath: execution.sourcePath,
+              functionName: execution.functionName ?? undefined,
+              executionStyle: execution.executionStyle,
+              limits: execution.limits,
+            },
+      };
+      return Effect.runPromise(
+        Effect.scoped(
+          createBrowserRuntimeJudge({
+            host,
+            ...createOptions,
+          }).pipe(
+            Effect.flatMap((judge) => judge.evaluateAlgorithm(bundle))
+          )
+        ),
+        signal ? { signal } : undefined
+      );
+    },
+    createProjectJudge: (projectOptions = {}) =>
+      createBrowserProjectJudge({
+        ...projectOptions,
+        workspace: options.project,
+      }),
     dispose: host.dispose.bind(host),
   });
 }
+
+export {
+  createBrowserProjectJudge,
+};
+export type {
+  BrowserProjectJudge,
+  BrowserProjectJudgeWorkspaceOptions,
+  CreateBrowserProjectJudgeOptions,
+};

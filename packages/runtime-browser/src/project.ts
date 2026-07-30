@@ -315,6 +315,7 @@ const DEFAULT_BROWSER_PROJECT_PROVIDERS: readonly BrowserProjectProvider[] = Obj
   'python',
   'javascript',
   'typescript',
+  'java',
   'csharp',
   'cpp',
 ]);
@@ -888,6 +889,8 @@ export interface CreateBrowserProjectWorkspaceOptions
    * javac/java invocation and hard-retired by the TraceKernel adapter.
    */
   java?: BrowserProjectJavaRuntimeOptions;
+  /** Immutable TraceJVM runtime tree used by the built-in Java provider. */
+  javaRuntimeAssetBaseUrl?: string;
   /** Runs selected project workers on a dedicated, credential-free origin. */
   executionHost?: BrowserProjectExecutionHostOptions;
   nodeProject?: BrowserProjectNodeOptions;
@@ -917,12 +920,7 @@ export async function createBrowserProjectWorkspace(
   const projectRuntimePromise = import(
     '@tracecode/tracekernel/workspace'
   );
-  const providers = normalizeBrowserProjectProviders(
-    options.providers ??
-      (options.java || runtimeProviders.java
-        ? [...DEFAULT_BROWSER_PROJECT_PROVIDERS, 'java']
-        : undefined)
-  );
+  const providers = normalizeBrowserProjectProviders(options.providers);
   const hasProvider = (provider: BrowserProjectProvider) => providers.includes(provider);
   const [pythonProvider, javascriptProvider, javaProvider, csharpProvider, cppProvider] = await Promise.all([
     hasProvider('python')
@@ -938,6 +936,7 @@ export async function createBrowserProjectWorkspace(
       ? Promise.all([
           import('../../runtime-java/src/project-browser'),
           import('../../runtime-java/src/java-project'),
+          import('../../runtime-java/src/tracejvm-project-client'),
         ])
       : undefined,
     hasProvider('csharp')
@@ -987,6 +986,7 @@ export async function createBrowserProjectWorkspace(
     debug,
     runtimeProviders: _runtimeProviders,
     java,
+    javaRuntimeAssetBaseUrl,
     executionHost: executionHostOptions,
     nodeProject,
     typescriptProject,
@@ -1069,10 +1069,10 @@ export async function createBrowserProjectWorkspace(
   if (java && !hasProvider('java')) {
     throw new Error('java requires providers to include "java".');
   }
-  if (hasProvider('java') && !java && !injectedJavaProvider) {
+  if (hasProvider('java') && !java && !injectedJavaProvider && !javaProvider) {
     throw new Error(
       'Browser project Java requires a Java 23 project provider. ' +
-        'Provide java.createClient or runtimeProviders.java.'
+        'Provide java.createClient, runtimeProviders.java, or make the built-in TraceJVM provider available.'
     );
   }
   if (java && injectedJavaProvider) {
@@ -1162,6 +1162,16 @@ export async function createBrowserProjectWorkspace(
   }
   const ownedWorkers: Array<{ terminate(): void }> = [];
   try {
+    const builtInJava: BrowserProjectJavaRuntimeOptions | undefined =
+      hasProvider('java') && !java && !injectedJavaProvider && javaProvider
+        ? {
+            createClient:
+              javaProvider[2].createTraceJVMProjectClientFactory({
+                runtimeAssetBaseUrl: javaRuntimeAssetBaseUrl,
+              }),
+          }
+        : undefined;
+    const selectedJava = java ?? builtInJava;
     const pythonWorkerOptions: PythonWorkerClientOptions = {
       workerUrl: assets.pythonWorker,
       ...(executionHost && isExecutionHosted('python') ? { workerFactory: executionHost.workerFactory } : {}),
@@ -1360,11 +1370,11 @@ export async function createBrowserProjectWorkspace(
             }),
           }
         : {}),
-      ...(java && javaProvider
+      ...(selectedJava && javaProvider
         ? {
             javaRunner: javaProvider[1].createJavaProjectRunner({
-              ...java,
-              timeoutMs: javaProjectTimeoutMs ?? java.timeoutMs,
+              ...selectedJava,
+              timeoutMs: javaProjectTimeoutMs ?? selectedJava.timeoutMs,
             }),
           }
         : injectedJavaProvider && javaProvider
