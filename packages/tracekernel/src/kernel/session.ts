@@ -78,6 +78,7 @@ import {
 } from './process';
 import { TraceKernelProcessTable } from './process-table';
 import { TraceKernelProcessWatchdogs } from './process-watchdogs';
+import { TraceKernelResourceRegistry } from './resources';
 import { executeProcessWithRuntimeLease } from './runtime-execution';
 
 export class TraceKernelSession {
@@ -85,12 +86,8 @@ export class TraceKernelSession {
   private readonly processWatchdogs: TraceKernelProcessWatchdogs;
   private readonly watchRegistry = new TraceKernelWatchRegistry();
   private readonly stopWatchingFileSystemMutations: () => void;
-  private readonly resources = new Map<
-    string,
-    TraceKernelPipe | TraceKernelOpenFileDescription | TraceKernelTerminal
-  >();
+  private readonly resources = new TraceKernelResourceRegistry();
   private readonly controllingTerminalsBySession = new Map<number, string>();
-  private nextResourceId = 1;
   private closed = false;
 
   constructor(
@@ -449,7 +446,7 @@ export class TraceKernelSession {
           message: `EPERM: session ${snapshot.sid} already controls terminal ${existingId}`,
         }));
       }
-      const resourceId = `tty-${this.nextResourceId++}`;
+      const resourceId = this.resources.allocateId('tty');
       const terminal = yield* TraceKernelTerminal.make(
         resourceId,
         snapshot.sid,
@@ -501,7 +498,7 @@ export class TraceKernelSession {
           message: `EPERM: process ${process.pid} cannot bootstrap terminal for session ${snapshot.sid}`,
         }));
       }
-      const resourceId = `tty-${this.nextResourceId++}`;
+      const resourceId = this.resources.allocateId('tty');
       const terminal = yield* TraceKernelTerminal.make(
         resourceId,
         snapshot.sid,
@@ -904,7 +901,9 @@ export class TraceKernelSession {
   ): Effect.Effect<number, TraceKernelProcessStateError | TraceKernelDescriptorLimitError> {
     return Effect.gen(this, function* () {
       yield* this.processTable.assertOwned(process);
-      const descriptorId = `null-${process.pid}-${fd ?? 'auto'}-${this.nextResourceId++}`;
+      const descriptorId = this.resources.allocateId(
+        `null-${process.pid}-${fd ?? 'auto'}`
+      );
       return yield* this.installDescriptor(
         process,
         makeTraceKernelNullDescriptor(descriptorId, access),
@@ -998,8 +997,9 @@ export class TraceKernelSession {
   }, Error> {
     return Effect.gen(this, function* () {
       yield* this.processTable.assertOwned(process);
-      const resourcePrefix =
-        `null-${process.pid}-replace-${this.nextResourceId++}`;
+      const resourcePrefix = this.resources.allocateId(
+        `null-${process.pid}-replace`
+      );
       yield* process.descriptors.replaceMany([
         {
           fd: 0,
@@ -1039,7 +1039,7 @@ export class TraceKernelSession {
       yield* this.processTable.assertOwned(process);
       const createPipe = (stream: 'stdin' | 'stdout' | 'stderr') =>
         TraceKernelPipe.make(
-          `host-${stream}-${process.pid}-${this.nextResourceId++}`,
+          this.resources.allocateId(`host-${stream}-${process.pid}`),
           options,
           (closedId) => this.resources.delete(closedId)
         ).pipe(
@@ -1155,7 +1155,7 @@ export class TraceKernelSession {
     return Effect.gen(this, function* () {
       yield* this.processTable.assertOwned(reader);
       yield* this.processTable.assertOwned(writer);
-      const resourceId = `pipe-${this.nextResourceId++}`;
+      const resourceId = this.resources.allocateId('pipe');
       const pipe = yield* TraceKernelPipe.make(
         resourceId,
         options,
@@ -1398,7 +1398,7 @@ export class TraceKernelSession {
   ): Effect.Effect<number, TraceKernelProcessStateError | Error> {
     return Effect.gen(this, function* () {
       yield* this.processTable.assertOwned(process);
-      const resourceId = `file-${this.nextResourceId++}`;
+      const resourceId = this.resources.allocateId('file');
       const description = yield* TraceKernelOpenFileDescription.make(
         resourceId,
         this.fileSystem,
