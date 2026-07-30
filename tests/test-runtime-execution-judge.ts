@@ -14,7 +14,6 @@ import {
   type CodeExecutionResult,
   type ExecutionResult,
   type RuntimeCodeCall,
-  type RuntimeExecutionProvider,
   type RuntimePreparedCodeCall,
   type RuntimePreparedExecutionProvider,
   type RuntimePreparedTraceCall,
@@ -45,9 +44,11 @@ interface FakeInput extends Record<string, unknown> {
 
 interface FakeProviderState {
   initCalls: number;
+  readonly prepareCalls: RuntimeProgramPreparationCall[];
   readonly codeCalls: RuntimeCodeCall[];
   readonly traceCalls: RuntimeTraceCall[];
   readonly completions: string[];
+  disposals: number;
   aborts: number;
   onStart?: (input: FakeInput) => void;
 }
@@ -73,9 +74,11 @@ interface PreparedProviderState {
 function makeState(): FakeProviderState {
   return {
     initCalls: 0,
+    prepareCalls: [],
     codeCalls: [],
     traceCalls: [],
     completions: [],
+    disposals: 0,
     aborts: 0,
   };
 }
@@ -148,7 +151,9 @@ function completedOutput(input: FakeInput): unknown {
     : input.label;
 }
 
-function fakeProvider(state: FakeProviderState): RuntimeExecutionProvider {
+function fakeProvider(
+  state: FakeProviderState
+): RuntimePreparedExecutionProvider {
   return {
     async init() {
       state.initCalls += 1;
@@ -157,90 +162,141 @@ function fakeProvider(state: FakeProviderState): RuntimeExecutionProvider {
         loadTimeMs: 2,
       };
     },
-    async executeCode(call): Promise<CodeExecutionResult> {
-      state.codeCalls.push(call);
-      const input = call.inputs as FakeInput;
-      await waitForInput(input, call.signal, state);
-      state.completions.push(input.label);
-      if (input.mode === 'throw') {
-        throw new Error('provider transport exploded');
-      }
-      if (input.mode === 'failed') {
-        return {
-          kind: 'failed',
-          error: 'runtime exploded',
-          errorLine: 7,
-          diagnosticStage: 'runtime',
-          diagnostic: {
-            engine: 'fake',
-          },
-          consoleOutput: consoleOutput(input),
-        };
-      }
-      if (input.mode === 'limit') {
-        return {
-          kind: 'limit',
-          reason: 'line-limit',
-          error: 'line budget reached',
-          diagnostic: {
-            observedLines: 11,
-          },
-          consoleOutput: consoleOutput(input),
-        };
-      }
-      return {
-        kind: 'completed',
-        output: completedOutput(input),
-        consoleOutput: consoleOutput(input),
+    async prepareProgram(preparation) {
+      state.prepareCalls.push(preparation);
+      const capabilities = {
+        caseIsolation: 'fresh-case-state' as const,
+        maxConcurrency: 3,
       };
-    },
-    async executeWithTracing(call): Promise<ExecutionResult> {
-      state.traceCalls.push(call);
-      const input = call.inputs as FakeInput;
-      await waitForInput(input, call.signal, state);
-      state.completions.push(input.label);
-      const trace: RuntimeTrace = {
-        schemaVersion: RUNTIME_TRACE_SCHEMA_VERSION,
-        language: 'javascript' as const,
-        runId: `run:${input.label}`,
-        events: [{
-          kind: 'line' as const,
-          runId: `run:${input.label}`,
-          line: 2,
-        }],
-        lineEventCount: 1,
-        traceStepCount: 1,
+      const dispose = async () => {
+        state.disposals += 1;
       };
-      if (input.mode === 'failed') {
+      if (preparation.mode === 'code') {
         return {
-          kind: 'failed',
-          error: 'traced runtime exploded',
-          errorLine: 2,
-          trace,
-          executionTimeMs: 3,
-          consoleOutput: consoleOutput(input),
-          diagnosticStage: 'runtime',
+          kind: 'prepared',
+          consoleOutput: [],
+          program: {
+            mode: 'code',
+            capabilities,
+            async executeIsolated(call): Promise<CodeExecutionResult> {
+              const providerCall: RuntimeCodeCall = {
+                code: preparation.code,
+                functionName:
+                  typeof preparation.functionName === 'string'
+                    ? preparation.functionName
+                    : '',
+                inputs: call.inputs,
+                executionStyle: preparation.executionStyle,
+                signal: call.signal,
+                limits: call.limits,
+              };
+              state.codeCalls.push(providerCall);
+              const input = call.inputs as FakeInput;
+              await waitForInput(input, call.signal, state);
+              state.completions.push(input.label);
+              if (input.mode === 'throw') {
+                throw new Error('provider transport exploded');
+              }
+              if (input.mode === 'failed') {
+                return {
+                  kind: 'failed',
+                  error: 'runtime exploded',
+                  errorLine: 7,
+                  diagnosticStage: 'runtime',
+                  diagnostic: {
+                    engine: 'fake',
+                  },
+                  consoleOutput: consoleOutput(input),
+                };
+              }
+              if (input.mode === 'limit') {
+                return {
+                  kind: 'limit',
+                  reason: 'line-limit',
+                  error: 'line budget reached',
+                  diagnostic: {
+                    observedLines: 11,
+                  },
+                  consoleOutput: consoleOutput(input),
+                };
+              }
+              return {
+                kind: 'completed',
+                output: completedOutput(input),
+                consoleOutput: consoleOutput(input),
+              };
+            },
+            dispose,
+          },
         };
       }
-      if (input.mode === 'limit') {
-        return {
-          kind: 'limit',
-          reason: 'trace-limit',
-          error: 'trace budget reached',
-          trace,
-          executionTimeMs: 3,
-          consoleOutput: consoleOutput(input),
-        };
-      }
+
       return {
-        kind: 'completed',
-        output: completedOutput(input),
-        trace,
-        executionTimeMs: 3,
-        consoleOutput: consoleOutput(input),
-        ...(input.mode === 'trace-truncated'
-          ? { traceTruncated: 'trace-limit' as const }
-          : {}),
+        kind: 'prepared',
+        consoleOutput: [],
+        program: {
+          mode: 'trace',
+          capabilities,
+          async executeIsolated(call): Promise<ExecutionResult> {
+            const providerCall: RuntimeTraceCall = {
+              code: preparation.code,
+              functionName: preparation.functionName,
+              inputs: call.inputs,
+              executionStyle: preparation.executionStyle,
+              traceOptions: preparation.traceOptions,
+              signal: call.signal,
+              limits: call.limits,
+            };
+            state.traceCalls.push(providerCall);
+            const input = call.inputs as FakeInput;
+            await waitForInput(input, call.signal, state);
+            state.completions.push(input.label);
+            const trace: RuntimeTrace = {
+              schemaVersion: RUNTIME_TRACE_SCHEMA_VERSION,
+              language: 'javascript' as const,
+              runId: `run:${input.label}`,
+              events: [{
+                kind: 'line' as const,
+                runId: `run:${input.label}`,
+                line: 2,
+              }],
+              lineEventCount: 1,
+              traceStepCount: 1,
+            };
+            if (input.mode === 'failed') {
+              return {
+                kind: 'failed',
+                error: 'traced runtime exploded',
+                errorLine: 2,
+                trace,
+                executionTimeMs: 3,
+                consoleOutput: consoleOutput(input),
+                diagnosticStage: 'runtime',
+              };
+            }
+            if (input.mode === 'limit') {
+              return {
+                kind: 'limit',
+                reason: 'trace-limit',
+                error: 'trace budget reached',
+                trace,
+                executionTimeMs: 3,
+                consoleOutput: consoleOutput(input),
+              };
+            }
+            return {
+              kind: 'completed',
+              output: completedOutput(input),
+              trace,
+              executionTimeMs: 3,
+              consoleOutput: consoleOutput(input),
+              ...(input.mode === 'trace-truncated'
+                ? { traceTruncated: 'trace-limit' as const }
+                : {}),
+            };
+          },
+          dispose,
+        },
       };
     },
   };
@@ -564,7 +620,7 @@ test('preserves 0.13 JSON comparison and distinguishes omitted from explicit und
       !Object.prototype.hasOwnProperty.call(call, 'expected') &&
       !Object.prototype.hasOwnProperty.call(call, 'verdict')
     ),
-    'Expected values and Judge policy must never enter RuntimeExecutionProvider calls.'
+    'Expected values and Judge policy must never enter prepared runtime calls.'
   );
 });
 
@@ -834,15 +890,16 @@ test('preserves case order under concurrency and opens an isolated TraceKernel s
   assert.equal(state.initCalls, 1);
 });
 
-test('fails a separate compile phase explicitly instead of pretending to compile', async () => {
+test('uses an explicit compile phase as the prepare-once boundary', async () => {
   const state = makeState();
   const result = await evaluate(
     state,
     makePlan([{
-      id: 'not-run',
+      id: 'prepared-run',
       input: {
-        label: 'not-run',
+        label: 'prepared-run',
       },
+      expected: 'prepared-run',
     }], {
       compile: {
         command: 'compile',
@@ -850,14 +907,13 @@ test('fails a separate compile phase explicitly instead of pretending to compile
     })
   );
 
-  assert.equal(result.status, 'compile-failed');
-  assert.equal(result.compile.status, 'compile-failed');
-  assert.equal(
-    result.compile.diagnostics[0]?.code,
-    'runtime-provider-compile-unsupported'
-  );
-  assert.equal(state.codeCalls.length, 0);
+  assert.equal(result.status, 'completed');
+  assert.equal(result.compile?.status, 'compiled');
+  assert.equal(result.cases[0]?.verdict.kind, 'passed');
+  assert.equal(state.prepareCalls.length, 1);
+  assert.equal(state.codeCalls.length, 1);
   assert.equal(state.traceCalls.length, 0);
+  assert.equal(state.disposals, 1);
 });
 
 test('prepares once, preserves timings, throttles provider concurrency, and disposes exactly once', async () => {

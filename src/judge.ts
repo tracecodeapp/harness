@@ -6,7 +6,6 @@ import type {
   CodeExecutionResult,
   ExecutionResult,
   RuntimeExecutionLimits,
-  RuntimeExecutionProvider,
   RuntimeExecutionStyle,
   RuntimePreparedExecutionProvider,
   RuntimeProgramPreparationCall,
@@ -42,10 +41,7 @@ import {
   JUDGE_INVOCATION_ID_ENV,
   TraceKernelJudgePort,
 } from '../packages/judge/src/tracekernel';
-import {
-  isPreparedExecutionProvider,
-  RuntimePreparedProgramRegistry,
-} from './internal/judge-prepared-program';
+import { RuntimePreparedProgramRegistry } from './internal/judge-prepared-program';
 
 export {
   evaluateJudgePlan,
@@ -70,12 +66,7 @@ export type {
 } from '../packages/judge/src/index';
 
 const PROVIDER_ERROR_CODE = 'runtime-provider-error';
-const UNSUPPORTED_COMPILE_CODE = 'runtime-provider-compile-unsupported';
 const INTERNAL_PREPARE_COMMAND = 'runtime-provider-prepare';
-
-export type RuntimeJudgeExecutionProvider =
-  | RuntimePreparedExecutionProvider
-  | RuntimeExecutionProvider;
 
 interface RuntimeJudgeBindingBase {
   /**
@@ -106,7 +97,7 @@ export interface RuntimeJudgeTraceBinding
 
 /**
  * Binding from a lowered Judge plan to the neutral
- * `RuntimeExecutionProvider` call contract.
+ * `RuntimePreparedExecutionProvider` call contract.
  *
  * This intentionally contains execution mechanics only. Expected values,
  * comparators, verdicts, and scoring never cross into the runtime provider.
@@ -117,19 +108,15 @@ export type RuntimeJudgeBinding =
 
 interface RuntimeJudgeProviderOptions {
   readonly runtime: string;
-  readonly provider: RuntimeJudgeExecutionProvider;
+  readonly provider: RuntimePreparedExecutionProvider;
   readonly runtimeControl: JudgeRuntimeControlPort;
   readonly binding: RuntimeJudgeBinding;
 }
 
 export interface CreateRuntimeJudgeOptions {
   readonly runtime: string;
-  /**
-   * Prepared providers are the durable Judge path. RuntimeExecutionProvider is
-   * accepted temporarily while language packages migrate from single-call
-   * execution to plan-scoped preparation.
-   */
-  readonly provider: RuntimeJudgeExecutionProvider;
+  /** Prepare-once provider for the selected language runtime. */
+  readonly provider: RuntimePreparedExecutionProvider;
   readonly binding: RuntimeJudgeBinding;
   /**
    * Override the same-realm control port. A future worker transport can supply
@@ -146,10 +133,10 @@ function validateProviderOptions(
   options: RuntimeJudgeProviderOptions
 ): void {
   if (options.runtime.trim().length === 0) {
-    throw new Error('RuntimeExecutionProvider Judge runtime name must not be empty.');
+    throw new Error('Prepared runtime Judge name must not be empty.');
   }
   if (options.binding.sourcePath.trim().length === 0) {
-    throw new Error('RuntimeExecutionProvider Judge sourcePath must not be empty.');
+    throw new Error('Prepared runtime Judge sourcePath must not be empty.');
   }
 }
 
@@ -169,7 +156,7 @@ function runtimeInputs(
     Array.isArray(value)
   ) {
     throw new TypeError(
-      'RuntimeExecutionProvider Judge case input must be a record.'
+      'Prepared runtime Judge case input must be a record.'
     );
   }
   return value as Record<string, unknown>;
@@ -404,63 +391,10 @@ function evaluationId(
 ): string {
   if (!invocation.evaluationId) {
     throw new Error(
-      'Prepared RuntimeExecutionProvider Judge invocation is missing an evaluationId.'
+      'Prepared runtime Judge invocation is missing an evaluationId.'
     );
   }
   return invocation.evaluationId;
-}
-
-function executeLegacyProviderCase(
-  options: RuntimeJudgeProviderOptions,
-  context: TraceKernelRuntimeProcessContext,
-  invocation: JudgeRuntimeInvocationInput
-): Effect.Effect<MappedRuntimeOutcome, Error> {
-  const provider = options.provider;
-  if (isPreparedExecutionProvider(provider)) {
-    return Effect.fail(
-      new Error('Prepared provider entered the legacy Judge execution path.')
-    );
-  }
-  return Effect.gen(function* () {
-    const binding = options.binding;
-    const code = yield* readSubmissionSource(
-      context,
-      binding.sourcePath
-    );
-    const inputs = yield* Effect.try({
-      try: () => runtimeInputs(invocation),
-      catch: errorFromUnknown,
-    });
-    if (isTraceBinding(binding)) {
-      const outcome = yield* Effect.tryPromise({
-        try: (signal) =>
-          provider.executeWithTracing({
-            code,
-            functionName: binding.functionName ?? null,
-            inputs,
-            traceOptions: binding.traceOptions,
-            executionStyle: binding.executionStyle,
-            signal,
-            limits: binding.limits,
-          }),
-        catch: errorFromUnknown,
-      });
-      return mappedTraceOutcome(options.runtime, outcome);
-    }
-    const outcome = yield* Effect.tryPromise({
-      try: (signal) =>
-        provider.executeCode({
-          code,
-          functionName: binding.functionName ?? '',
-          inputs,
-          executionStyle: binding.executionStyle,
-          signal,
-          limits: binding.limits,
-        }),
-      catch: errorFromUnknown,
-    });
-    return mappedCodeOutcome(options.runtime, outcome);
-  });
 }
 
 function prepareProviderProgram(
@@ -560,60 +494,50 @@ function providerFailure(
 
 function executeProviderProcess(
   options: RuntimeJudgeProviderOptions,
-  programs: RuntimePreparedProgramRegistry | undefined,
+  programs: RuntimePreparedProgramRegistry,
   context: TraceKernelRuntimeProcessContext
 ): Effect.Effect<TraceKernelRuntimeResult, Error> {
   const invocationId = context.env[JUDGE_INVOCATION_ID_ENV];
   if (!invocationId) {
     return Effect.fail(
       new Error(
-        `RuntimeExecutionProvider Judge process is missing ${JUDGE_INVOCATION_ID_ENV}.`
+        `Prepared runtime Judge process is missing ${JUDGE_INVOCATION_ID_ENV}.`
       )
     );
   }
   return options.runtimeControl.read(invocationId).pipe(
     Effect.flatMap((invocation) => {
       if (invocation.phase === 'compile') {
-        if (programs) {
-          return prepareProviderProgram(
-            options,
-            programs,
-            context,
-            invocation
-          ).pipe(
-            Effect.matchEffect({
-              onFailure: (error) => {
-                const mapped = providerFailure(
-                  options.runtime,
-                  error.message
-                );
-                return options.runtimeControl.publish(
-                  invocationId,
-                  mapped.output
-                ).pipe(Effect.as(mapped.process));
-              },
-              onSuccess: (mapped) =>
-                options.runtimeControl.publish(
-                  invocationId,
-                  mapped.output
-                ).pipe(Effect.as(mapped.process)),
-            })
-          );
-        }
-        const mapped = providerFailure(
-          options.runtime,
-          'RuntimeExecutionProvider performs compilation as part of each code call; ' +
-            'this Judge facade does not implement a separate compile phase.',
-          UNSUPPORTED_COMPILE_CODE
-        );
-        return options.runtimeControl.publish(invocationId, mapped.output).pipe(
-          Effect.as(mapped.process)
+        return prepareProviderProgram(
+          options,
+          programs,
+          context,
+          invocation
+        ).pipe(
+          Effect.matchEffect({
+            onFailure: (error) => {
+              const mapped = providerFailure(
+                options.runtime,
+                error.message
+              );
+              return options.runtimeControl.publish(
+                invocationId,
+                mapped.output
+              ).pipe(Effect.as(mapped.process));
+            },
+            onSuccess: (mapped) =>
+              options.runtimeControl.publish(
+                invocationId,
+                mapped.output
+              ).pipe(Effect.as(mapped.process)),
+          })
         );
       }
-      const execute = programs
-        ? executePreparedProviderCase(options, programs, invocation)
-        : executeLegacyProviderCase(options, context, invocation);
-      return execute.pipe(
+      return executePreparedProviderCase(
+        options,
+        programs,
+        invocation
+      ).pipe(
         Effect.matchEffect({
           onFailure: (error) => {
             const mapped = providerFailure(options.runtime, error.message);
@@ -635,15 +559,13 @@ function executeProviderProcess(
 
 interface RuntimeJudgeProviderBridge {
   readonly runtimeProvider: TraceKernelRuntimeProvider;
-  readonly prepared: boolean;
   beginEvaluation(evaluationId: string): void;
   disposeEvaluation(evaluationId: string): Effect.Effect<void, Error>;
 }
 
 /**
  * Low-level bridge for callers that already own a TraceKernel
- * host. Prepared providers get a plan-scoped program registry; legacy
- * RuntimeExecutionProvider remains a temporary single-call compatibility path.
+ * host. Each provider gets a plan-scoped prepared-program registry.
  */
 function makeRuntimeJudgeProvider(
   options: RuntimeJudgeProviderOptions
@@ -671,9 +593,9 @@ function makeRuntimeJudgeProvider(
       ...options,
       binding,
     });
-  const programs = isPreparedExecutionProvider(providerOptions.provider)
-    ? new RuntimePreparedProgramRegistry(providerOptions.provider)
-    : undefined;
+  const programs = new RuntimePreparedProgramRegistry(
+    providerOptions.provider
+  );
   let nextLeaseId = 1;
   const runtimeProvider: TraceKernelRuntimeProvider = Object.freeze({
     runtime: providerOptions.runtime,
@@ -700,7 +622,7 @@ function makeRuntimeJudgeProvider(
             })
           : Effect.fail(
               new Error(
-                `RuntimeExecutionProvider ${JSON.stringify(providerOptions.runtime)} ` +
+                `Prepared runtime provider ${JSON.stringify(providerOptions.runtime)} ` +
                 'reported unsuccessful initialization.'
               )
             )
@@ -709,17 +631,14 @@ function makeRuntimeJudgeProvider(
   });
   return Object.freeze({
     runtimeProvider,
-    prepared: programs !== undefined,
     beginEvaluation: (evaluationId: string) => {
-      programs?.begin(evaluationId);
+      programs.begin(evaluationId);
     },
     disposeEvaluation: (evaluationId: string) =>
-      programs
-        ? Effect.tryPromise({
-            try: () => programs.dispose(evaluationId),
-            catch: errorFromUnknown,
-          })
-        : Effect.void,
+      Effect.tryPromise({
+        try: () => programs.dispose(evaluationId),
+        catch: errorFromUnknown,
+      }),
   });
 }
 
@@ -779,7 +698,7 @@ function preparedEvaluationPlan<Input, Expected>(
  * Public runtime-judge facade for 0.14.
  *
  * This is the stable root surface for Judge-backed execution. It keeps the
- * Judge -> TraceKernel -> RuntimeExecutionProvider boundary public while the
+ * Judge -> TraceKernel -> prepared runtime provider boundary public while the
  * lower-level engine packages remain internal implementation details.
  */
 export interface RuntimeJudge {
@@ -838,9 +757,7 @@ class RuntimeJudgeComposition
         host: this.host,
         runtimeControl: evaluationControl,
       });
-      const effectivePlan = this.bridge.prepared
-        ? preparedEvaluationPlan(plan)
-        : plan;
+      const effectivePlan = preparedEvaluationPlan(plan);
       const evaluation = evaluateJudgePlan<
         TraceKernelFileSystemImage,
         Input,
