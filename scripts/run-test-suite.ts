@@ -96,6 +96,7 @@ export const TEST_PHASES: TestPhase[] = [
       task('test:runtime-contract'),
       task('test:judge'),
       task('test:runtime-execution-judge'),
+      task('test:prepared-provider-release-gate'),
       task('test:native-harness'),
       task('test:standalone-boundary'),
     ],

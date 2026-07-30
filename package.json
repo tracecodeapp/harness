@@ -224,6 +224,7 @@
     "test:python-worker-client-http": "pnpm exec tsx --tsconfig tsconfig.base.json tests/test-python-worker-client-http.ts",
     "test:runtime-contract": "pnpm exec tsx --tsconfig tsconfig.base.json tests/test-runtime-contract.ts",
     "test:runtime-execution-judge": "TSX_TSCONFIG_PATH=tsconfig.base.json node --import tsx --test tests/test-runtime-execution-judge.ts",
+    "test:prepared-provider-release-gate": "TSX_TSCONFIG_PATH=tsconfig.base.json node --import tsx --test tests/test-prepared-provider-release-gate.ts",
     "test:core-public-surface": "pnpm exec tsx --tsconfig tsconfig.base.json tests/test-runtime-core-public-surface.ts",
     "test:python-public-surface": "pnpm exec tsx --tsconfig tsconfig.base.json tests/test-python-public-surface.ts",
     "test:java-public-surface": "pnpm exec tsx --tsconfig tsconfig.base.json tests/test-java-public-surface.ts",
