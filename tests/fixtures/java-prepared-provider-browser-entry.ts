@@ -7,6 +7,9 @@ import {
 import type {
   BrowserWorkerLike,
 } from '../../packages/runtime-browser/src/internal';
+import type {
+  RuntimeTraceEvent,
+} from '../../packages/runtime-core/src/runtime-trace';
 
 interface PreparedBrowserResult {
   createdWorkers: number;
@@ -77,6 +80,14 @@ function completedOutput(
     throw new Error(result.error ?? `Expected completed result, got ${result.kind}`);
   }
   return result.output;
+}
+
+function traceEventShape(event: RuntimeTraceEvent) {
+  return {
+    kind: event.kind,
+    line: event.line,
+    function: 'function' in event ? event.function : undefined,
+  };
 }
 
 async function preparedCode(
@@ -305,8 +316,9 @@ globalThis.runJavaPreparedProviderBrowserTest =
           : 'Java trace preparation did not return a trace program.'
       );
     }
+    const traceProgram = tracePreparation.program;
     const traceResult = await executePreparedCase(() =>
-      tracePreparation.program.executeIsolated({
+      traceProgram.executeIsolated({
         inputs: { values: [1, 2, 3] },
       })
     );
@@ -316,12 +328,8 @@ globalThis.runJavaPreparedProviderBrowserTest =
       throw new Error('Prepared Java trace did not complete.');
     }
     const traceKinds = traceResult.trace.events.map((event) => event.kind);
-    const preparedTraceShape = traceResult.trace.events.map((event) => ({
-      kind: event.kind,
-      line: event.line,
-      function: event.function,
-    }));
-    await tracePreparation.program.dispose();
+    const preparedTraceShape = traceResult.trace.events.map(traceEventShape);
+    await traceProgram.dispose();
 
     const legacyTraceClient = createClient();
     const legacyTrace = await legacyTraceClient.executeWithTracing({
@@ -331,11 +339,7 @@ globalThis.runJavaPreparedProviderBrowserTest =
       executionStyle: 'solution-method',
       traceOptions: { maxStoredEvents: 2_000 },
     });
-    const legacyTraceShape = legacyTrace.trace.events.map((event) => ({
-      kind: event.kind,
-      line: event.line,
-      function: event.function,
-    }));
+    const legacyTraceShape = legacyTrace.trace.events.map(traceEventShape);
     const traceParity =
       legacyTrace.success &&
       JSON.stringify(legacyTrace.output) === JSON.stringify(traceOutput) &&
