@@ -13,23 +13,23 @@ function loadProgram(): {
 } {
   const configPath = resolve(
     process.cwd(),
-    'packages/runtime-core/tsconfig.json'
+    'packages/runtime-contracts/tsconfig.json'
   );
   const config = ts.readConfigFile(configPath, ts.sys.readFile);
   assertCondition(
     !config.error,
-    `Could not read runtime-core TypeScript config: ${
+    `Could not read runtime-contracts TypeScript config: ${
       config.error ? ts.flattenDiagnosticMessageText(config.error.messageText, '\n') : ''
     }`
   );
   const parsed = ts.parseJsonConfigFileContent(
     config.config,
     ts.sys,
-    resolve(process.cwd(), 'packages/runtime-core')
+    resolve(process.cwd(), 'packages/runtime-contracts')
   );
   assertCondition(
     parsed.errors.length === 0,
-    `Could not parse runtime-core TypeScript config: ${parsed.errors
+    `Could not parse runtime-contracts TypeScript config: ${parsed.errors
       .map((error) => ts.flattenDiagnosticMessageText(error.messageText, '\n'))
       .join('\n')}`
   );
@@ -39,10 +39,10 @@ function loadProgram(): {
   });
   const entrypointPath = resolve(
     process.cwd(),
-    'packages/runtime-core/src/index.ts'
+    'packages/runtime-contracts/src/index.ts'
   );
   const entrypoint = program.getSourceFile(entrypointPath);
-  assertCondition(entrypoint, `Missing runtime-core entrypoint ${entrypointPath}`);
+  assertCondition(entrypoint, `Missing runtime-contracts entrypoint ${entrypointPath}`);
   return {
     checker: program.getTypeChecker(),
     entrypoint,
@@ -67,7 +67,7 @@ function declarationSurfaceText(symbol: ts.Symbol): string {
 function main(): void {
   const { checker, entrypoint } = loadProgram();
   const moduleSymbol = checker.getSymbolAtLocation(entrypoint);
-  assertCondition(moduleSymbol, 'Could not resolve the runtime-core public module');
+  assertCondition(moduleSymbol, 'Could not resolve the runtime-contracts public module');
 
   const exports = checker.getExportsOfModule(moduleSymbol);
   const publicNames = new Set<string>();
@@ -98,7 +98,7 @@ function main(): void {
   );
 
   console.log(
-    `PASS: ${publicNames.size} runtime-core exports are implementation-neutral`
+    `PASS: ${publicNames.size} runtime-contracts exports are implementation-neutral`
   );
 }
 

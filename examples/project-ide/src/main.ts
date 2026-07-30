@@ -8,12 +8,12 @@ import {
   getRuntimeProjectIoCapabilityMatrix,
   type BrowserRuntimeAssetManifests,
   type Language,
-} from '@tracecode/harness/browser';
-import type { RuntimeCommandEvent, RuntimeWorkspaceEvent } from '@tracecode/harness/project';
-import type { CreateBrowserProjectWorkspaceOptions } from '@tracecode/harness/browser/project';
+} from '@tracecode/harness/tracekernel';
+import type { RuntimeCommandEvent, RuntimeWorkspaceEvent } from '@tracecode/harness/tracekernel';
+import type { CreateBrowserWorkspaceOptions } from '@tracecode/harness/tracekernel';
 
 type JavaProjectProviderConfiguration =
-  NonNullable<CreateBrowserProjectWorkspaceOptions['java']>;
+  NonNullable<CreateBrowserWorkspaceOptions['java']>;
 
 // ----------------------------------------------------------------------
 // Monaco Environment Setup
@@ -234,12 +234,12 @@ async function bootDevTerminal(): Promise<void> {
 
   appendLine('Loading project workspace...');
 
-  const { createBrowserProjectWorkspace } = await import('@tracecode/harness/browser/project');
+  const { createBrowserWorkspace } = await import('@tracecode/harness/tracekernel');
   (
     window as Window & {
-      __tracecodeCreateBrowserProjectWorkspace?: typeof createBrowserProjectWorkspace;
+      __tracecodeCreateBrowserProjectWorkspace?: typeof createBrowserWorkspace;
     }
-  ).__tracecodeCreateBrowserProjectWorkspace = createBrowserProjectWorkspace;
+  ).__tracecodeCreateBrowserProjectWorkspace = createBrowserWorkspace;
 
   const configurationWindow = window as Window & {
     __tracecodeRuntimeAssetManifests?: BrowserRuntimeAssetManifests;
@@ -249,7 +249,7 @@ async function bootDevTerminal(): Promise<void> {
   const javaProjectProvider = configurationWindow.__tracecodeJavaProjectProvider;
   const javaAvailable = javaProjectProvider !== undefined;
 
-  const workspace = await createBrowserProjectWorkspace({
+  const workspace = await createBrowserWorkspace({
     assetBaseUrl: '/workers',
     ...(runtimeManifests ? { assets: { runtimeManifests } } : {}),
     ...(javaProjectProvider

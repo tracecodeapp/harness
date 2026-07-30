@@ -16,7 +16,7 @@ import type {
   RuntimeKernelHttpProtocolMessage,
   RuntimeKernelHttpRequest,
   RuntimeKernelHttpResponse,
-} from '@tracecode/runtime-core';
+} from '@tracecode/runtime-contracts';
 
 export interface AsyncKernelHttpPendingState {
   readonly kernelHttp?: RuntimeKernelHttpBridge;

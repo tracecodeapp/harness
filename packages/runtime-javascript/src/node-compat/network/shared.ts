@@ -1,4 +1,4 @@
-import type { RuntimeFileEncoding, RuntimeKernelHttpRequest, RuntimeKernelHttpResponse } from "@tracecode/runtime-core";
+import type { RuntimeFileEncoding, RuntimeKernelHttpRequest, RuntimeKernelHttpResponse } from "@tracecode/runtime-contracts";
 
 import type { TraceKernelSyscallRequest, TraceKernelSyscallValue } from "@tracecode/tracekernel";
 

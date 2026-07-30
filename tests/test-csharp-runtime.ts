@@ -12,9 +12,9 @@ import { getLanguageRuntimeProfile } from '../packages/runtime-browser/src/runti
 import {
   RUNTIME_TRACE_SCHEMA_VERSION,
   type RuntimeTraceEvent,
-} from '../packages/runtime-core/src/runtime-trace';
-import type { RuntimeExecutionStyle } from '../packages/runtime-core/src/runtime-types';
-import type { ExecutionLimitReason } from '../packages/runtime-core/src/types';
+} from '../packages/runtime-contracts/src/runtime-trace';
+import type { RuntimeExecutionStyle } from '../packages/runtime-contracts/src/runtime-types';
+import type { ExecutionLimitReason } from '../packages/runtime-contracts/src/types';
 
 function assertCondition(condition: unknown, message: string): asserts condition {
   if (!condition) {

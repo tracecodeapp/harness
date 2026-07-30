@@ -4,7 +4,7 @@ import {
 } from '@tracecode/tracejvm';
 import {
   createRuntimeCommandStdinPipeFromText,
-} from '../../packages/runtime-core/src/index';
+} from '../../packages/runtime-contracts/src/index';
 import { createBrowserProjectWorkspace } from '../../packages/runtime-browser/src/project';
 import type {
   TraceKernelTraceJVMResult,

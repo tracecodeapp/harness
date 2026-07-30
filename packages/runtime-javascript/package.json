@@ -1,7 +1,7 @@
 {
   "name": "@tracecode/runtime-javascript",
   "private": true,
-  "version": "0.13.1",
+  "version": "0.14.0",
   "description": "JavaScript and TypeScript runtime helpers and browser worker assets for TraceCode harness.",
   "license": "AGPL-3.0-only",
   "homepage": "https://tracecode.app",
@@ -56,7 +56,7 @@
     "@datastructures-js/stack": "3.1.6",
     "@datastructures-js/trie": "4.2.3",
     "@tracecode/runtime-browser": "workspace:*",
-    "@tracecode/runtime-core": "workspace:*",
+    "@tracecode/runtime-contracts": "workspace:*",
     "@tracecode/tracekernel": "workspace:*",
     "effect": "^3.22.0",
     "lodash": "4.17.21",

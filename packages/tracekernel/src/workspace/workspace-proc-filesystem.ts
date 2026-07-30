@@ -1,11 +1,11 @@
 import type {
   RuntimeKernelHttpListenerInfo,
   RuntimeWorkspaceActor,
-} from '@tracecode/runtime-core';
+} from '@tracecode/runtime-contracts';
 import {
   normalizeRuntimeProcPath,
   type RuntimeKernelVirtualStat,
-} from '@tracecode/runtime-core';
+} from '@tracecode/runtime-contracts';
 import type {
   TraceKernelProcessSnapshot,
 } from '..';

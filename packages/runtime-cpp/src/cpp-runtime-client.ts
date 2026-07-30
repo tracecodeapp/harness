@@ -7,10 +7,10 @@ import type {
   RuntimeExecuteResponse,
   RuntimeExecuteResult,
   RuntimeTraceCall,
-} from '@tracecode/runtime-core';
-import type { RuntimeCommandResult } from '@tracecode/runtime-core';
-import type { CodeExecutionResult, ExecutionResult } from '@tracecode/runtime-core';
-import { createEmptyRuntimeTrace } from '@tracecode/runtime-core';
+} from '@tracecode/runtime-contracts';
+import type { RuntimeCommandResult } from '@tracecode/runtime-contracts';
+import type { CodeExecutionResult, ExecutionResult } from '@tracecode/runtime-contracts';
+import { createEmptyRuntimeTrace } from '@tracecode/runtime-contracts';
 import { assertRuntimeRequestSupported } from '@tracecode/runtime-browser/internal';
 import { getLanguageRuntimeProfile } from '@tracecode/runtime-browser/internal';
 import type { CppProjectCommandRequest, CppWorkerClient } from './cpp-worker-client';

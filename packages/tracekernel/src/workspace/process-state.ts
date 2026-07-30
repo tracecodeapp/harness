@@ -5,7 +5,7 @@ import type {
   RuntimeKernelSignalNotification,
   RuntimeWorkspaceActor,
   RuntimeWorkspaceProcessSignalPolicy,
-} from '@tracecode/runtime-core';
+} from '@tracecode/runtime-contracts';
 import type {
   TraceKernelHost,
   TraceKernelHostStandardIo,

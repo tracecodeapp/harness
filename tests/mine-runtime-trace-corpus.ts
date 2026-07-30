@@ -10,7 +10,7 @@ import { pathToFileURL } from 'node:url';
 import { createHash } from 'node:crypto';
 import vm from 'node:vm';
 import ts from 'typescript';
-import type { Language, RuntimeExecutionStyle } from '../packages/runtime-core/src/runtime-types';
+import type { Language, RuntimeExecutionStyle } from '../packages/runtime-contracts/src/runtime-types';
 import { createJavaRuntimeClient } from '../packages/runtime-java/src/java-runtime-client';
 import type {
   JavaWorkerClient,
@@ -22,7 +22,7 @@ import {
   withRuntimeTraceOptions,
   type RuntimeTraceEvent,
   type RuntimeTrace,
-} from '../packages/runtime-core/src/runtime-trace';
+} from '../packages/runtime-contracts/src/runtime-trace';
 import {
   PYTHON_CLASS_DEFINITIONS,
   PYTHON_CONVERSION_HELPERS,
@@ -30,8 +30,8 @@ import {
   PYTHON_TRACE_SERIALIZE_FUNCTION,
   toPythonLiteral,
 } from '../packages/runtime-python/src/python-harness';
-import { javaTraceHooksEventsToRuntimeTrace } from '../packages/runtime-core/src/trace-adapters/java';
-import { liftCodeOutcome } from '../packages/runtime-core/src/execution-outcome';
+import { javaTraceHooksEventsToRuntimeTrace } from '../packages/runtime-contracts/src/trace-adapters/java';
+import { liftCodeOutcome } from '../packages/runtime-contracts/src/execution-outcome';
 
 const DEFAULT_CORPUS_PATH = '/Users/obinnanwachukwu/Code/algoflow/tests/v3-corpus/tracecode-final300-slice.json';
 const PYTHON_RUNTIME_CORE_PATH = join(process.cwd(), 'workers', 'python', 'runtime-core.js');

@@ -15,7 +15,7 @@ import {
   type RuntimeWorkspaceActor,
   type RuntimeWorkspaceRemoveOptions,
   type RuntimeWorkspaceStat,
-} from '@tracecode/runtime-core';
+} from '@tracecode/runtime-contracts';
 import type { IFileSystem } from 'just-bash/browser';
 import {
   assertSupportedEncoding,

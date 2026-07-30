@@ -2,7 +2,7 @@ import type {
   RuntimePreparedExecutionProvider,
   RuntimeProgramPreparationCall,
   RuntimeProgramPreparationResult,
-} from '@tracecode/runtime-core';
+} from '@tracecode/runtime-contracts';
 import { CppWorkerClient } from './cpp-worker-client';
 
 export interface CppPreparedExecutionProviderOptions {

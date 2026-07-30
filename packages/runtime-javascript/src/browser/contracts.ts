@@ -8,7 +8,7 @@ import type {
   RuntimeProjectCommandRunner,
   RuntimeProjectFileChangeApplyOptions,
   RuntimeProjectSnapshot,
-} from "@tracecode/runtime-core";
+} from "@tracecode/runtime-contracts";
 
 import type {
   TraceKernelDirectoryEntry,

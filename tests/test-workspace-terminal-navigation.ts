@@ -1,6 +1,6 @@
 #!/usr/bin/env npx tsx
 
-import { createRuntimeWorkspace } from '../packages/workspace-facade/src/index';
+import { createRuntimeWorkspace } from '../packages/tracekernel/src/workspace/index';
 
 function assertCondition(
   condition: unknown,

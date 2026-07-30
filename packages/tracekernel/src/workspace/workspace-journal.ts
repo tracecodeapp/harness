@@ -6,7 +6,7 @@ import {
   type RuntimeKernelHttpRequest,
   type RuntimeKernelHttpResponse,
   type RuntimeWorkspaceActor,
-} from '@tracecode/runtime-core';
+} from '@tracecode/runtime-contracts';
 import type {
   TraceKernelFileSystemMutation,
   TraceKernelProcessSnapshot,

@@ -11,7 +11,7 @@ import type {
   RuntimeKernelHttpRequest,
   RuntimeKernelHttpResponse,
   RuntimeKernelSyscallBridge,
-} from '@tracecode/runtime-core';
+} from '@tracecode/runtime-contracts';
 import {
   TraceKernelRuntimeFileClient,
   TraceKernelSharedGenerationSource,

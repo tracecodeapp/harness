@@ -1,4 +1,4 @@
-import type { RuntimeFileEncoding, RuntimeKernelHttpBridge, RuntimeKernelHttpListenerHandle, RuntimeKernelHttpResponse } from "@tracecode/runtime-core";
+import type { RuntimeFileEncoding, RuntimeKernelHttpBridge, RuntimeKernelHttpListenerHandle, RuntimeKernelHttpResponse } from "@tracecode/runtime-contracts";
 
 import { bytesFromFsWriteValue, bytesFromRuntimeHttpBody, bytesToRuntimeHttpBody, concatBytes, textFromBytes } from "../../internal/encoding";
 

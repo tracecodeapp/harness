@@ -24,14 +24,14 @@ import type {
   RuntimePreparedTraceCall,
   RuntimeExecutionTimings,
   RuntimeProgramPreparationCall,
-} from '@tracecode/runtime-core';
+} from '@tracecode/runtime-contracts';
 import type {
   RuntimeCommandEventHandler,
   RuntimeCommandResult,
   RuntimeKernelHttpBridge,
   RuntimeProjectCommandRequest,
   RuntimeProjectEngineLeaseController,
-} from '@tracecode/runtime-core';
+} from '@tracecode/runtime-contracts';
 import {
   createEmptyRuntimeTrace,
   liftCodeBatchOutcome,
@@ -39,8 +39,8 @@ import {
   liftTraceOutcome,
   type RawExecutionBatchPayload,
   type RawExecutionPayload,
-} from '@tracecode/runtime-core';
-import type { RuntimeTrace } from '@tracecode/runtime-core';
+} from '@tracecode/runtime-contracts';
+import type { RuntimeTrace } from '@tracecode/runtime-contracts';
 import type { CppCompilerIntegrityManifest } from '../../runtime-browser/src/runtime-assets';
 export type {
   CppCompilerIntegrityEntry,
@@ -49,7 +49,7 @@ export type {
 
 /** Raw wire payload from the tracing commands; lifted into the outcome union here. */
 type CppRawTraceResult = RawExecutionPayload & { trace?: RuntimeTrace };
-import type { RuntimeBatchCall, RuntimeCodeCall, RuntimeTraceCall, TraceExecutionOptions } from '@tracecode/runtime-core';
+import type { RuntimeBatchCall, RuntimeCodeCall, RuntimeTraceCall, TraceExecutionOptions } from '@tracecode/runtime-contracts';
 import {
   closeKernelHttpSyncServers,
   handleKernelHttpCloseMessage,

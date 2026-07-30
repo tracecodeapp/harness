@@ -2,7 +2,7 @@ import {
   runtimeKernelMounts,
   type RuntimeCommandResult,
   type RuntimeKernelInfo,
-} from '@tracecode/runtime-core';
+} from '@tracecode/runtime-contracts';
 import type { CommandContext } from 'just-bash/browser';
 import {
   dirname,

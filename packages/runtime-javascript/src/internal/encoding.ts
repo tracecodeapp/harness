@@ -1,6 +1,6 @@
 import type {
   RuntimeFileEncoding,
-} from "@tracecode/runtime-core";
+} from "@tracecode/runtime-contracts";
 
 import * as fflateModule from "fflate/browser";
 

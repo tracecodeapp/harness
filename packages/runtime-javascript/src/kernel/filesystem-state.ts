@@ -1,6 +1,6 @@
 import type {
   RuntimeKernelDevicePath,
-} from "@tracecode/runtime-core";
+} from "@tracecode/runtime-contracts";
 import type {
   TraceKernelStat,
 } from "@tracecode/tracekernel";
@@ -14,7 +14,7 @@ import {
   runtimeKernelOpenErrorCode,
   runtimeKernelOpenErrorMessage,
   type RuntimeKernelVirtualStat,
-} from "@tracecode/runtime-core";
+} from "@tracecode/runtime-contracts";
 import {
   BrowserBuffer,
   bytesFromFsWriteValue,

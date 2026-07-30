@@ -5,15 +5,15 @@ import type {
   RuntimeCommandResult,
   RuntimeProjectTerminalInputState,
   RuntimeWorkspaceEvent,
-} from '@tracecode/harness/project';
-import type { BrowserRuntimeAssetManifests } from '@tracecode/harness/browser';
+} from '@tracecode/harness/tracekernel';
+import type { BrowserRuntimeAssetManifests } from '@tracecode/harness/tracekernel';
 import type {
-  BrowserProjectProvider,
-  CreateBrowserProjectWorkspaceOptions,
-} from '@tracecode/harness/browser/project';
+  BrowserWorkspaceProvider,
+  CreateBrowserWorkspaceOptions,
+} from '@tracecode/harness/tracekernel';
 
 type JavaProjectProviderConfiguration =
-  NonNullable<CreateBrowserProjectWorkspaceOptions['java']>;
+  NonNullable<CreateBrowserWorkspaceOptions['java']>;
 
 async function bootProjectTerminal(): Promise<void> {
   document.body.innerHTML = `
@@ -64,12 +64,12 @@ async function bootProjectTerminal(): Promise<void> {
 
   appendLine('Loading tracekernel project workspace...');
 
-  const { createBrowserProjectWorkspace } = await import('@tracecode/harness/browser/project');
+  const { createBrowserWorkspace } = await import('@tracecode/harness/tracekernel');
   (
     window as Window & {
-      __tracecodeCreateBrowserProjectWorkspace?: typeof createBrowserProjectWorkspace;
+      __tracecodeCreateBrowserProjectWorkspace?: typeof createBrowserWorkspace;
     }
-  ).__tracecodeCreateBrowserProjectWorkspace = createBrowserProjectWorkspace;
+  ).__tracecodeCreateBrowserProjectWorkspace = createBrowserWorkspace;
 
   const configurationWindow = window as Window & {
     __tracecodeRuntimeAssetManifests?: BrowserRuntimeAssetManifests;
@@ -78,7 +78,7 @@ async function bootProjectTerminal(): Promise<void> {
   const runtimeManifests = configurationWindow.__tracecodeRuntimeAssetManifests;
   const javaProjectProvider = configurationWindow.__tracecodeJavaProjectProvider;
   const javaAvailable = javaProjectProvider !== undefined;
-  const providers: BrowserProjectProvider[] = [
+  const providers: BrowserWorkspaceProvider[] = [
     'python',
     'javascript',
     'typescript',
@@ -87,7 +87,7 @@ async function bootProjectTerminal(): Promise<void> {
     'cpp',
   ];
 
-  const workspace = await createBrowserProjectWorkspace({
+  const workspace = await createBrowserWorkspace({
     assetBaseUrl: '/workers',
     ...(runtimeManifests ? { assets: { runtimeManifests } } : {}),
     providers,

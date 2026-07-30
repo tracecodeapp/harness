@@ -1,1496 +1,241 @@
 #!/usr/bin/env npx tsx
 
-import { test } from 'node:test';
-import { mkdtemp, mkdir, readFile, readdir, rm, stat, symlink, writeFile } from 'node:fs/promises';
+import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { createRequire } from 'node:module';
+import {
+  mkdir,
+  mkdtemp,
+  readFile,
+  rm,
+  symlink,
+  writeFile,
+} from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { isAbsolute, join } from 'node:path';
+import { join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
+import { test } from 'node:test';
 
-function assertCondition(condition: unknown, message: string): asserts condition {
-  if (!condition) {
-    throw new Error(message);
-  }
-}
+const ROOT = process.cwd();
+const PUBLIC_CODE_EXPORTS = ['./tracekernel', './judge'] as const;
+const RETIRED_EXPORTS = [
+  '.',
+  './browser',
+  './browser/project',
+  './project',
+  './project-node',
+] as const;
 
-async function readDeclarationTree(directory: string): Promise<string> {
-  const entries = await readdir(directory, { withFileTypes: true });
-  const sources = await Promise.all(entries.map(async (entry) => {
-    const path = join(directory, entry.name);
-    if (entry.isDirectory()) return readDeclarationTree(path);
-    return entry.isFile() && (entry.name.endsWith('.d.ts') || entry.name.endsWith('.d.cts'))
-      ? readFile(path, 'utf8')
-      : '';
-  }));
-  return sources.join('\n');
-}
-
-function declarationCode(source: string): string {
-  return source
-    .replace(/\/\*[\s\S]*?\*\//gu, '')
-    .replace(/^\s*\/\/.*$/gmu, '');
-}
-
-function namedInterfaceDeclaration(source: string, name: string): string {
-  const code = declarationCode(source);
-  const match = new RegExp(`\\binterface\\s+${name}\\b`, 'u').exec(code);
-  assertCondition(match, `Packed declarations should contain interface ${name}`);
-  const openBrace = code.indexOf('{', match.index);
-  assertCondition(openBrace !== -1, `Packed interface ${name} should have a body`);
-  let depth = 0;
-  for (let index = openBrace; index < code.length; index += 1) {
-    if (code[index] === '{') depth += 1;
-    if (code[index] !== '}') continue;
-    depth -= 1;
-    if (depth === 0) return code.slice(match.index, index + 1);
-  }
-  throw new Error(`Packed interface ${name} should have a closing brace`);
-}
-
-async function testPackedNodeNextConsumer(appDir: string): Promise<void> {
-  const consumerDependencies = ['effect', 'typescript'];
-  for (const dependency of consumerDependencies) {
-    await symlink(
-      join(process.cwd(), 'node_modules', dependency),
-      join(appDir, 'node_modules', dependency),
-      'dir'
-    );
-  }
-
-  await writeFile(
-    join(appDir, 'package.json'),
-    JSON.stringify(
-      {
-        private: true,
-        type: 'module',
-      },
-      null,
-      2
-    ) + '\n',
-    'utf8'
-  );
-  await writeFile(
-    join(appDir, 'tsconfig.json'),
-    JSON.stringify(
-      {
-        compilerOptions: {
-          lib: ['ES2022', 'DOM', 'DOM.Iterable'],
-          module: 'NodeNext',
-          moduleResolution: 'NodeNext',
-          noEmit: true,
-          resolveJsonModule: true,
-          skipLibCheck: false,
-          strict: true,
-          target: 'ES2022',
-          verbatimModuleSyntax: true,
-        },
-        files: ['consumer.ts', 'third-party-shims.d.ts'],
-      },
-      null,
-      2
-    ) + '\n',
-    'utf8'
-  );
-
-  // The patched just-bash 3.1 package references two declaration files that it
-  // does not publish. Model only the two opaque types that escape through our
-  // hidden declaration closure so this gate remains strict for harness .d.ts
-  // files without inheriting that unrelated upstream packaging defect.
-  await writeFile(
-    join(appDir, 'third-party-shims.d.ts'),
-    [
-      "declare module 'just-bash/browser' {",
-      '  export interface CommandContext {}',
-      '  export interface CustomCommand {',
-      '    readonly name: string;',
-      '  }',
-      '}',
-      '',
-    ].join('\n'),
-    'utf8'
-  );
-
-  const unpublishedWorkspacePackages = [
-    '@tracecode/judge',
-    '@tracecode/runtime-browser',
-    '@tracecode/runtime-core',
-    '@tracecode/runtime-cpp',
-    '@tracecode/runtime-csharp',
-    '@tracecode/runtime-java',
-    '@tracecode/runtime-javascript',
-    '@tracecode/runtime-native',
-    '@tracecode/runtime-python',
-    '@tracecode/runtime-sql',
-    '@tracecode/tracekernel',
-    '@tracecode/workspace-facade',
-  ];
-  const forbiddenHarnessSubpaths = [
-    '@tracecode/harness/core',
-    '@tracecode/harness/internal/browser',
-    '@tracecode/harness/internal/tracekernel/workspace',
-  ];
-  const unavailableImports = [
-    ...forbiddenHarnessSubpaths,
-    ...unpublishedWorkspacePackages,
-  ].map((specifier) => [
-    `// @ts-expect-error ${specifier} must remain unavailable to packed consumers`,
-    `import type {} from '${specifier}';`,
-  ].join('\n'));
-
-  await writeFile(
-    join(appDir, 'consumer.ts'),
-    [
-      "import { getLanguageRuntimeInfo } from '@tracecode/harness';",
-      "import { createBrowserRuntimeHost } from '@tracecode/harness/browser';",
-      "import { createBrowserProjectWorkspace } from '@tracecode/harness/browser/project';",
-      "import { createRuntimeWorkspace } from '@tracecode/harness/project';",
-      "import { createNativeProjectWorkspace } from '@tracecode/harness/project-node';",
-      "import { createBrowserRuntimeJudge } from '@tracecode/harness/judge';",
-      "import harnessManifest from '@tracecode/harness/package.json' with { type: 'json' };",
-      '',
-      ...unavailableImports,
-      '',
-      'const publicSurface = [',
-      '  getLanguageRuntimeInfo,',
-      '  createBrowserRuntimeHost,',
-      '  createBrowserProjectWorkspace,',
-      '  createRuntimeWorkspace,',
-      '  createNativeProjectWorkspace,',
-      '  createBrowserRuntimeJudge,',
-      '  harnessManifest.name,',
-      '] as const;',
-      'void publicSurface;',
-      '',
-    ].join('\n'),
-    'utf8'
-  );
-
-  const typecheck = spawnSync(
-    join(process.cwd(), 'node_modules', '.bin', 'tsc'),
-    ['--project', 'tsconfig.json', '--pretty', 'false'],
-    {
-      cwd: appDir,
-      encoding: 'utf8',
-    }
-  );
-  if (typecheck.status !== 0) {
-    throw new Error(
-      [
-        'Packed NodeNext TypeScript consumer failed.',
-        typecheck.stdout,
-        typecheck.stderr,
-      ].filter(Boolean).join('\n')
-    );
-  }
-}
-
-async function testPublishableWorkspacePackageVersionsMatchRelease(): Promise<void> {
-  const rootPackage = JSON.parse(await readFile(join(process.cwd(), 'package.json'), 'utf8')) as {
-    version?: string;
-  };
-  assertCondition(rootPackage.version, 'Root harness package must declare a release version');
-
-  const packageDirectories = await readdir(join(process.cwd(), 'packages'));
-  for (const packageDirectory of packageDirectories) {
-    const manifestPath = join(process.cwd(), 'packages', packageDirectory, 'package.json');
-    let manifest: { name?: string; version?: string; private?: boolean };
-    try {
-      manifest = JSON.parse(await readFile(manifestPath, 'utf8')) as typeof manifest;
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException).code === 'ENOENT') continue;
-      throw error;
-    }
-    if (manifest.private === true) continue;
-    assertCondition(
-      manifest.version === rootPackage.version,
-      `Publishable package ${manifest.name ?? packageDirectory} version ${manifest.version ?? '(missing)'} must match root release ${rootPackage.version}`
-    );
-  }
-}
-
-async function testHiddenCommandAccessTokenRoundTripsAcrossEntrypoints(): Promise<void> {
-  // Exercised at the runtime-core ESM<->CJS boundary rather than through a full
-  // workspace: the hidden-command token brand lives in runtime-core (a
-  // globalThis Symbol.for-keyed WeakSet), so if the ESM and CJS builds shared no
-  // identity this cross-recognition would fail. We deliberately avoid importing
-  // the workspace-facade workspace bundle here because its ESM output
-  // dynamic-requires turndown/@mixmark-io/domino, a pre-existing packaging
-  // limitation unrelated to token identity.
-  const coreEsm = await import(pathToFileURL(join(process.cwd(), 'packages/runtime-core/dist/index.js')).href);
-  const require = createRequire(import.meta.url);
-  const coreCjs = require(join(process.cwd(), 'packages/runtime-core/dist/index.cjs'));
-
-  const cjsToken = coreCjs.createRuntimeProjectHiddenCommandAccess();
-  const esmToken = coreEsm.createRuntimeProjectHiddenCommandAccess();
-  assertCondition(
-    coreEsm.isRuntimeProjectHiddenCommandAccess(cjsToken) === true,
-    'Hidden command token minted from the CJS core build should be recognized by the ESM core build'
-  );
-  assertCondition(
-    coreCjs.isRuntimeProjectHiddenCommandAccess(esmToken) === true,
-    'Hidden command token minted from the ESM core build should be recognized by the CJS core build'
-  );
-  assertCondition(
-    coreEsm.isRuntimeProjectHiddenCommandAccess({}) === false &&
-      coreCjs.isRuntimeProjectHiddenCommandAccess({}) === false,
-    'Hidden command token guard should reject plain objects across both core builds'
+function runNode(
+  cwd: string,
+  source: string,
+  module = false
+): ReturnType<typeof spawnSync> {
+  return spawnSync(
+    process.execPath,
+    [...(module ? ['--input-type=module'] : []), '-e', source],
+    { cwd, encoding: 'utf8' }
   );
 }
 
-async function runWithTempRoot(tempRoot: string): Promise<void> {
-  const packOutput = spawnSync('pnpm', ['pack', '--pack-destination', tempRoot], {
-    cwd: process.cwd(),
-    encoding: 'utf8',
-  });
-
-  if (packOutput.status !== 0) {
-    throw new Error(packOutput.stderr || packOutput.stdout || 'pnpm pack failed');
-  }
-
-  const tarballName = String(packOutput.stdout || '')
-    .trim()
-    .split('\n')
-    .filter(Boolean)
-    .at(-1);
-  assertCondition(Boolean(tarballName), 'pnpm pack should print the generated tarball name');
-
-  const packageDir = join(tempRoot, 'app', 'node_modules', '@tracecode', 'harness');
-  await mkdir(packageDir, { recursive: true });
-
-  const tarballPath = isAbsolute(tarballName!) ? tarballName! : join(tempRoot, tarballName!);
-  const tarballInventory = spawnSync('tar', ['-tf', tarballPath], {
-    encoding: 'utf8',
-  });
-  if (tarballInventory.status !== 0) {
-    throw new Error(
-      tarballInventory.stderr ||
-        tarballInventory.stdout ||
-        'Failed to inspect packed harness tarball'
-    );
-  }
-  const tarballEntries = String(tarballInventory.stdout || '')
-    .trim()
-    .split('\n')
-    .filter(Boolean);
-  const packagedManifests = tarballEntries.filter((entry) =>
-    entry.endsWith('/package.json')
-  );
-  const allowedPackagedManifests = new Set([
-    'package/package.json',
-    // Browser .NET consumes this as runtime metadata. It is a vendored asset
-    // nested beneath the root package, not a publishable workspace manifest.
-    'package/workers/vendor/csharp/package.json',
-  ]);
-  assertCondition(
-    packagedManifests.includes('package/package.json') &&
-      packagedManifests.every((entry) => allowedPackagedManifests.has(entry)),
-    'Packed tarball must contain only the root registry manifest and explicitly allowed runtime metadata'
-  );
-  assertCondition(
-    !tarballEntries.some((entry) => entry.startsWith('package/packages/')),
-    'Packed tarball must not contain private workspace sources or manifests'
-  );
-
-  const extract = spawnSync('tar', ['-xf', tarballPath, '-C', packageDir, '--strip-components=1'], {
-    encoding: 'utf8',
-  });
-  if (extract.status !== 0) {
-    throw new Error(extract.stderr || extract.stdout || 'Failed to extract packed harness tarball');
-  }
-
-  const packedManifest = JSON.parse(
-    await readFile(join(packageDir, 'package.json'), 'utf8')
+test('published package has only TraceKernel and Judge code entrypoints', async () => {
+  const manifest = JSON.parse(
+    await readFile(join(ROOT, 'package.json'), 'utf8')
   ) as {
     exports?: Record<string, unknown>;
-    bin?: Record<string, string>;
+    main?: unknown;
+    module?: unknown;
+    types?: unknown;
   };
-  const expectedPublicSubpaths = [
-    '.',
-    './browser',
-    './browser/project',
-    './judge',
-    './package.json',
-    './project',
-    './project-node',
-  ];
-  assertCondition(
-    Object.keys(packedManifest.exports ?? {}).sort().join(',') ===
-      expectedPublicSubpaths.join(','),
-    `Packed package exports must be exactly ${expectedPublicSubpaths.join(', ')}`
-  );
-  assertCondition(
-    packedManifest.bin?.['tracecode-harness'] === './dist/cli.cjs' &&
-      !Object.prototype.hasOwnProperty.call(
-        packedManifest.exports ?? {},
-        './cli'
-      ),
-    'The CLI may remain a package bin but must not be importable as a public subpath'
-  );
 
-  const requiredPackagedFiles = [
-    'dist/index.js',
-    'dist/index.cjs',
-    'dist/index.d.ts',
-    'dist/browser.js',
-    'dist/browser.cjs',
-    'dist/browser.d.ts',
-    'dist/browser/project.js',
-    'dist/browser/project.cjs',
-    'dist/project.js',
-    'dist/project.cjs',
-    'dist/project.d.ts',
-    'dist/project-node.js',
-    'dist/project-node.cjs',
-    'dist/project-node.d.ts',
-    // Build-only declaration closure. These artifacts are intentionally absent
-    // from the package export map.
-    'dist/core.js',
-    'dist/core.cjs',
-    'dist/core.d.ts',
-    'dist/internal/browser.js',
-    'dist/internal/browser.cjs',
-    'dist/internal/browser.d.ts',
-    'dist/internal/tracekernel/workspace.js',
-    'dist/internal/tracekernel/workspace.cjs',
-    'dist/internal/tracekernel/workspace.d.ts',
-    'dist/judge.js',
-    'dist/judge.cjs',
-    'dist/judge.d.ts',
-    'dist/zlib-browser-shim.js',
-    'dist/zlib-browser-shim.cjs',
-    'dist/cli.cjs',
-    'THIRD_PARTY_NOTICES.md',
-    'workers/python/python-worker.js',
-    'workers/javascript/javascript-worker.js',
-    'workers/javascript/javascript-project-worker.js',
-    'workers/java/java-worker.js',
-    'workers/java/java-runtime-worker.js',
-    'workers/java/java-source-augmentations.js',
-    'workers/csharp/csharp-worker.js',
-    'workers/vendor/java-browser-helper.jar',
-    'workers/vendor/typescript.js',
-    'workers/vendor/csharp/_framework/dotnet.js',
-    'workers/vendor/csharp/_framework/dotnet.native.wasm',
-    'workers/vendor/csharp/_framework/dotnet.runtime.js',
-    'workers/vendor/csharp/_framework/dotnet.boot.js',
-  ];
-
-  for (const relativePath of requiredPackagedFiles) {
-    const filePath = join(packageDir, relativePath);
-    const fileStat = await stat(filePath);
-    assertCondition(fileStat.isFile(), `Packed tarball should include ${relativePath}`);
+  assert.deepEqual(
+    Object.keys(manifest.exports ?? {}).sort(),
+    ['./judge', './package.json', './tracekernel'],
+    'the package export map should name only the two product authorities'
+  );
+  assert.equal(manifest.main, undefined);
+  assert.equal(manifest.module, undefined);
+  assert.equal(manifest.types, undefined);
+  for (const retired of RETIRED_EXPORTS) {
+    assert.equal(
+      manifest.exports?.[retired],
+      undefined,
+      `${retired} must not return as a public compatibility surface`
+    );
   }
 
-  const thirdPartyNotices = await readFile(
-    join(packageDir, 'THIRD_PARTY_NOTICES.md'),
+  const traceKernelTypes = await readFile(
+    join(ROOT, 'dist/tracekernel.d.ts'),
     'utf8'
   );
-  for (const requiredNotice of [
-    '### Effect',
-    '### fflate',
-    '### just-bash',
-    '@datastructures-js/queue` `3.1.4` and `4.3.0`',
-    '### Harness Java bridge',
-    '### Separately deployed TraceJVM assets',
-    'workers/java/java-runtime-worker.js',
-    'workers/vendor/java-browser-helper.jar',
-    '3fd56c74656602eb32efefca46f51f074bef6bca',
-    'Eclipse Temurin/OpenJDK',
-    '23.0.2+7',
-    'Emscripten `4.0.2`',
-  ]) {
-    assertCondition(
-      thirdPartyNotices.includes(requiredNotice),
-      `Packed third-party notices should include ${requiredNotice}`
-    );
-  }
-  assertCondition(
-    /The `@tracecode\/harness` npm tarball does \*\*not\*\*\s+redistribute the TraceJVM engine module/u.test(
-      thirdPartyNotices
-    ),
-    'Packed third-party notices must distinguish the root tarball from the separately deployed TraceJVM runtime tree'
-  );
-  for (const retiredJavaNotice of [
-    'CheerpJ',
-    'JavaParser',
-    'workers/java/tracejvm-java-worker.js',
-    'workers/vendor/java-rewriter.jar',
-    'workers/vendor/javaparser-core-3.25.10.jar',
-    'workers/vendor/jdk.compiler-17.jar',
-  ]) {
-    assertCondition(
-      !thirdPartyNotices.includes(retiredJavaNotice),
-      `Packed third-party notices must not claim current use of ${retiredJavaNotice}`
-    );
-  }
+  const judgeTypes = await readFile(join(ROOT, 'dist/judge.d.ts'), 'utf8');
+  assert.match(traceKernelTypes, /createBrowserWorkspace/u);
+  assert.doesNotMatch(traceKernelTypes, /createBrowserRuntimeHost/u);
+  assert.match(judgeTypes, /createBrowserJudgeHost/u);
+  assert.match(judgeTypes, /createJudge/u);
+  assert.doesNotMatch(judgeTypes, /createBrowserRuntimeJudge/u);
+});
 
-  for (const retiredJavaArtifact of [
-    'workers/java/tracejvm-java-worker.js',
-    'workers/vendor/java-rewriter.jar',
-    'workers/vendor/javaparser-core-3.25.10.jar',
-    'workers/vendor/jdk.compiler-17.jar',
-  ]) {
-    assertCondition(
-      !tarballEntries.includes(`package/${retiredJavaArtifact}`),
-      `Packed tarball must not include retired Java artifact ${retiredJavaArtifact}`
-    );
-  }
-  for (const privateJavaBuildPrefix of [
-    'package/workers/java/.build/',
-    'package/workers/java/src/',
-  ]) {
-    assertCondition(
-      !tarballEntries.some((entry) => entry.startsWith(privateJavaBuildPrefix)),
-      `Packed tarball must not include private Java build tree ${privateJavaBuildPrefix}`
-    );
-  }
-  for (const buildOnlyWorkerArtifact of [
-    'package/workers/javascript/javascript-libraries-entry.js',
-    'package/workers/vendor/csharp/.stamp',
-  ]) {
-    assertCondition(
-      !tarballEntries.includes(buildOnlyWorkerArtifact),
-      `Packed tarball must not include build-only worker artifact ${buildOnlyWorkerArtifact}`
-    );
-  }
-  for (const removedRootEntrypoint of [
-    'native',
-    'python',
-    'javascript',
-    'java',
-    'csharp',
-    'cpp',
-    'sql',
-  ]) {
-    assertCondition(
-      !tarballEntries.includes(`package/dist/${removedRootEntrypoint}.js`) &&
-        !tarballEntries.includes(`package/dist/${removedRootEntrypoint}.cjs`) &&
-        !tarballEntries.includes(`package/dist/${removedRootEntrypoint}.d.ts`),
-      `Packed root must not build the removed ${removedRootEntrypoint} entrypoint`
-    );
-  }
+test('built ESM surfaces execute through their owning authority', async () => {
+  const traceKernel = await import(
+    pathToFileURL(join(ROOT, 'dist/tracekernel.js')).href
+  );
+  const judge = await import(pathToFileURL(join(ROOT, 'dist/judge.js')).href);
 
-  const rootTypes = await readFile(join(packageDir, 'dist/index.d.ts'), 'utf8');
-  const browserTypes = await readFile(join(packageDir, 'dist/browser.d.ts'), 'utf8');
-  const judgeTypes = await readFile(join(packageDir, 'dist/judge.d.ts'), 'utf8');
-  const javaProviderTypes = namedInterfaceDeclaration(
-    browserTypes,
-    'JavaBrowserRuntimeProviderOptions'
-  );
-  assertCondition(
-    javaProviderTypes.includes('runtimeAssetBaseUrl') &&
-      !/\b(?:loaderUrl|externalCompilerUrl)\b/u.test(javaProviderTypes),
-    'The public Java provider declaration must expose only runtimeAssetBaseUrl for engine asset configuration'
-  );
-  assertCondition(
-    rootTypes.includes('createBrowserRuntimeHost') &&
-      rootTypes.includes('CreateBrowserRuntimeHostOptions') &&
-      rootTypes.includes('DefaultBrowserRuntimeProviderOptions') &&
-      rootTypes.includes('BrowserRuntimeReadiness') &&
-      rootTypes.includes('BrowserRuntimeAssets') &&
-      rootTypes.includes('createBrowserRuntimeJudge') &&
-      rootTypes.includes('RuntimeJudge'),
-    'Root declarations should expose only the supported browser host, metadata, assets, and Browser Judge facade'
-  );
-  assertCondition(
-    browserTypes.includes('createBrowserRuntimeHost') &&
-      browserTypes.includes('CreateBrowserRuntimeHostOptions') &&
-      browserTypes.includes('DefaultBrowserRuntimeProviderOptions') &&
-      browserTypes.includes('BrowserRuntimeReadiness') &&
-      browserTypes.includes('BrowserRuntimeAssets') &&
-      browserTypes.includes('installBrowserExecutionWorkerHost') &&
-      browserTypes.includes('createBrowserRuntimeEnvironment') &&
-      browserTypes.includes('createBrowserRuntimeAssetPreflight') &&
-      browserTypes.includes('resolveBrowserRuntimeAssetManifests') &&
-      browserTypes.includes('getRuntimeProjectIoSupport') &&
-      browserTypes.includes('getRuntimeProjectIoCapabilityMatrix') &&
-      browserTypes.includes('getRuntimeProjectIoCapability'),
-    'Browser declarations should expose the supported host lifecycle, readiness, asset, and metadata surface'
-  );
-  assertCondition(
-    judgeTypes.includes('createBrowserRuntimeJudge') &&
-      judgeTypes.includes('CreateBrowserRuntimeJudgeOptions') &&
-      judgeTypes.includes('RuntimeJudge') &&
-      judgeTypes.includes('RuntimeJudgeBinding') &&
-      judgeTypes.includes('JudgeEvaluationPlan'),
-    'Judge declarations should expose the Browser-bound Judge facade and evaluation types'
-  );
-  for (const declarationSource of [
-    ['root', rootTypes],
-    ['browser', browserTypes],
-    ['judge', judgeTypes],
-  ] as const) {
-    const code = declarationCode(declarationSource[1]);
-    assertCondition(
-      !code.includes('export *'),
-      `Packed ${declarationSource[0]} declarations must remain an explicit allowlist`
-    );
-    assertCondition(
-      !/\bBrowserHarness[A-Za-z0-9_$]*\b/u.test(code),
-      `Packed ${declarationSource[0]} declarations must not expose retired BrowserHarness* names`
-    );
-    for (const retiredBrowserAssetName of [
-      'resolveBrowserHarnessAssets',
-      'DEFAULT_BROWSER_HARNESS_ASSET_RELATIVE_PATHS',
-      'LegacyBrowserHarnessAssetOverrides',
-    ]) {
-      assertCondition(
-        !new RegExp(`\\b${retiredBrowserAssetName}\\b`, 'u').test(code),
-        `Packed ${declarationSource[0]} declarations must not expose retired ${retiredBrowserAssetName}`
-      );
-    }
-    for (const forbiddenPublicName of [
-      'BrowserHarness',
-      'CreateBrowserHarnessOptions',
-      'createBrowserHarness',
-      'BrowserRuntimeProvider',
-      'BrowserRuntimeProviderContext',
-      'BrowserRuntimeProviderLease',
-      'BrowserRuntimeProviderRegistry',
-      'createBrowserRuntimeProviderRegistry',
-      'createDefaultBrowserRuntimeProviderRegistry',
-      'RuntimeClient',
-      'RuntimeExecutionProvider',
-      'RuntimePreparedExecutionProvider',
-      'RuntimePreparedProgram',
-      'getClient',
-      'getPreparedProvider',
-      'executeCode',
-      'executeWithTracing',
-      'CreateRuntimeJudgeOptions',
-      'createRuntimeJudge',
-    ]) {
-      assertCondition(
-        !new RegExp(`\\b${forbiddenPublicName}\\b`, 'u').test(
-          code
-        ),
-        `Packed ${declarationSource[0]} declarations must not expose ${forbiddenPublicName}`
-      );
-    }
-  }
-  for (const allowedMetadataName of [
-    'getLanguageRuntimeInfo',
-    'getLanguageRuntimeProfile',
-    'getRuntimeProjectIoSupport',
-    'getRuntimeProjectIoCapabilityMatrix',
-    'RuntimeProjectIoCapabilityRow',
-  ]) {
-    assertCondition(
-      rootTypes.includes(allowedMetadataName) &&
-        browserTypes.includes(allowedMetadataName),
-      `Root and browser declarations should expose safe metadata API ${allowedMetadataName}`
-    );
-  }
-  const browserProjectTypes = await readFile(
-    join(packageDir, 'dist/browser/project.d.ts'),
-    'utf8'
-  );
-  assertCondition(
-    browserProjectTypes.includes('interface BrowserProjectRuntimeProvider') &&
-      browserProjectTypes.includes(
-        'runtimeProviders?: BrowserProjectRuntimeProviders'
-      ),
-    'Packed browser Project declarations should expose the provider-neutral command boundary'
-  );
-  for (const leakedProjectRuntimeType of [
-    'PythonWorkerClient',
-    'JavaWorkerClient',
-    'CSharpWorkerClient',
-    'CppWorkerClient',
-    'JavaProjectRunnerOptions',
-    'BrowserJavaScriptProjectRunnerOptions',
-    'BrowserTypeScriptProjectRunnerOptions',
-    'pythonWorkerClient',
-    'javaWorkerClient',
-    'csharpWorkerClient',
-    'cppWorkerClient',
-  ]) {
-    assertCondition(
-      !browserProjectTypes.includes(leakedProjectRuntimeType),
-      `Packed browser Project declarations must not expose concrete runtime type ${leakedProjectRuntimeType}`
-    );
-  }
-  const projectTypes = await readFile(join(packageDir, 'dist/project.d.ts'), 'utf8');
-  const projectNodeTypes = await readFile(join(packageDir, 'dist/project-node.d.ts'), 'utf8');
-  const traceKernelWorkspaceTypes = await readFile(
-    join(packageDir, 'dist/internal/tracekernel/workspace.d.ts'),
-    'utf8'
-  );
-  const packagedDeclarations = await readDeclarationTree(join(packageDir, 'dist'));
-  for (const privateWorkspaceName of [
-    '@tracecode/runtime-browser',
-    '@tracecode/runtime-core',
-    '@tracecode/runtime-cpp',
-    '@tracecode/runtime-csharp',
-    '@tracecode/runtime-java',
-    '@tracecode/runtime-javascript',
-    '@tracecode/runtime-native',
-    '@tracecode/workspace-facade',
-    '@tracecode/runtime-python',
-    '@tracecode/judge',
-    '@tracecode/tracekernel',
-  ]) {
-    assertCondition(
-      !packagedDeclarations.includes(privateWorkspaceName),
-      `Packed declarations must not depend on private workspace package ${privateWorkspaceName}`
-    );
-  }
-  for (const forbiddenHarnessSubpath of [
-    '@tracecode/harness/core',
-    '@tracecode/harness/internal/browser',
-    '@tracecode/harness/internal/tracekernel/workspace',
-  ]) {
-    assertCondition(
-      !packagedDeclarations.includes(forbiddenHarnessSubpath),
-      `Packed declarations must reach hidden declaration closure through relative paths, not ${forbiddenHarnessSubpath}`
-    );
-  }
-  assertCondition(
-    projectTypes.includes('RuntimeProjectWorkspace') &&
-      projectTypes.includes('JustBashRuntimeWorkspace') &&
-      projectNodeTypes.includes('RuntimeProjectWorkspace') &&
-      projectNodeTypes.includes('JustBashRuntimeWorkspace'),
-    'Project declarations should expose RuntimeProjectWorkspace and the deprecated JustBashRuntimeWorkspace alias'
-  );
-  assertCondition(
-    traceKernelWorkspaceTypes.includes('ProjectWorkspaceCommand = CustomCommand') &&
-      projectTypes.includes('ProjectWorkspaceCommand') &&
-      projectNodeTypes.includes('ProjectWorkspaceCommand') &&
-      !projectTypes.includes('ProjectWorkspaceCommand = unknown') &&
-      !projectNodeTypes.includes('ProjectWorkspaceCommand = unknown') &&
-      !traceKernelWorkspaceTypes.includes('ProjectWorkspaceCommand = unknown'),
-    'ProjectWorkspaceCommand declarations should be typed as CustomCommand, not unknown'
-  );
-  const projectNodeTypeSurface = [
-    'CreateRuntimeWorkspaceOptions',
-    'ProjectWorkspaceCommand',
-    'ProjectWorkspaceJavaScriptConfig',
-    'ProjectWorkspaceExecutionLimits',
-    'RuntimeTraceKernelControlOptions',
-    'RuntimePackageManagerName',
-    'RuntimePackageManifest',
-    'RuntimePackageInstallRequest',
-    'RuntimePackageDependencyProvider',
-    'RuntimePackageManagerConfig',
-    'PythonProjectCommandRequest',
-    'PythonProjectCommandRunner',
-    'JavaScriptProjectCommandRequest',
-    'JavaScriptProjectCommandRunner',
-    'TypeScriptProjectCommandRequest',
-    'TypeScriptProjectCommandRunner',
-    'JavaProjectCommandRequest',
-    'JavaProjectCommandRunner',
-    'CppProjectCommandRequest',
-    'CppProjectCommandRunner',
-    'CSharpProjectCommandRequest',
-    'CSharpProjectCommandRunner',
-    'RuntimeCommandOptions',
-    'RuntimeCommandResult',
-    'RuntimeCommandEvent',
-    'RuntimeCommandEventHandler',
-    'RuntimeCommandEventStream',
-    'RuntimeCommandFileChangeEvent',
-    'RuntimeCommandOutputEvent',
-    'RuntimeCommandStatusEvent',
-    'RuntimeFile',
-    'RuntimeFileChange',
-    'RuntimeFileEncoding',
-    'RuntimeKernelHostConfig',
-    'RuntimeKernelHostInfo',
-    'RuntimeKernelInfo',
-    'RuntimeKernelHttpBridge',
-    'RuntimeKernelHttpBodyInit',
-    'RuntimeKernelHttpBodyPayload',
-    'RuntimeKernelHttpHandler',
-    'RuntimeKernelHttpListenOptions',
-    'RuntimeKernelHttpListenerHandle',
-    'RuntimeKernelHttpListenerInfo',
-    'RuntimeKernelHttpRequest',
-    'RuntimeKernelHttpResponse',
-    'RuntimeKernelUserConfig',
-    'RuntimeKernelUserInfo',
-    'RuntimeKernelWorkspaceConfig',
-    'RuntimeKernelWorkspaceInfo',
-    'RuntimeTraceKernelSchedulerConfig',
-    'RuntimeKernelDevicePath',
-    'RuntimeFileMutationPhase',
-    'RuntimeTraceKernelConfig',
-    'RuntimeProjectCommandRequest',
-    'RuntimeProjectCommandRunner',
-    'RuntimeProjectTerminalPrompt',
-    'RuntimeProjectTerminalEvent',
-    'RuntimeProjectTerminalEventHandler',
-    'RuntimeProjectTerminalInputState',
-    'RuntimeProjectTerminalInputStateReason',
-    'RuntimeProjectTerminalRunOptions',
-    'RuntimeProjectTerminalSession',
-    'RuntimeProjectTerminalSessionOptions',
-    'RuntimeProjectSession',
-    'RuntimeProjectSessionCommand',
-    'RuntimeProjectSessionCommandDefinition',
-    'RuntimeProjectSessionFile',
-    'RuntimeProjectSessionInfo',
-    'RuntimeProjectIoBridge',
-    'RuntimeProjectPatch',
-    'RuntimeProjectPatchBase',
-    'RuntimeProjectPatchChange',
-    'RuntimeProjectPatchDirectoryCreate',
-    'RuntimeProjectPatchDirectoryDelete',
-    'RuntimeProjectPatchFileDelete',
-    'RuntimeProjectPatchFileWrite',
-    'RuntimeProjectPatchOptions',
-    'RuntimeProjectLiveIoControllerOptions',
-    'RuntimeProjectWorkerBridgeOptions',
-    'RuntimeProjectSnapshot',
-    'RuntimeWorkspace',
-    'RuntimeWorkspaceActor',
-    'RuntimeWorkspaceActorKind',
-    'RuntimeWorkspaceCapabilities',
-    'RuntimeWorkspaceEvent',
-    'RuntimeWorkspaceEventHandler',
-    'RuntimeWorkspaceHttpClient',
-    'RuntimeWorkspaceHttpJsonRequestOptions',
-    'RuntimeWorkspaceHttpJsonResponse',
-    'RuntimeWorkspaceHttpRequestOptions',
-    'RuntimeWorkspaceKernel',
-    'RuntimeWorkspaceRemoveOptions',
-    'RuntimeWorkspaceStat',
-    'RuntimeWorkspaceUnsubscribe',
-    'CreateNativeProjectWorkspaceOptions',
-  ];
-  for (const exportName of projectNodeTypeSurface) {
-    assertCondition(projectNodeTypes.includes(exportName), `Project-node declarations should include ${exportName}`);
-  }
-  assertCondition(
-    projectNodeTypes.includes('runtimeCommand?: string') &&
-      !/roslyn|dotnet|\.net/i.test(projectNodeTypes),
-    'Packed project-node C# declarations must expose language-owned command options without provider branding'
-  );
-  for (const forbidden of [
-    'createRuntimeProjectIoBridge',
-    'runRuntimeProjectWorkerBridge',
-    'createPythonProjectCommands',
-    'createNodeProjectCommands',
-    'createTypeScriptProjectCommands',
-    'createJavaProjectCommands',
-    'createCppProjectCommands',
-    'createCSharpProjectCommands',
-    'createPackageManagerProjectCommands',
-    'class RuntimeProjectLiveIoController',
-    'RuntimeProjectLiveIoController,',
-  ]) {
-    assertCondition(!projectNodeTypes.includes(forbidden), `Project-node declarations should not expose ${forbidden}`);
-  }
+  assert.equal(typeof traceKernel.createBrowserWorkspace, 'function');
+  assert.equal(typeof traceKernel.createRuntimeWorkspace, 'function');
+  assert.equal(typeof traceKernel.makeTraceKernelHost, 'function');
+  assert.equal(typeof judge.createBrowserJudgeHost, 'function');
+  assert.equal(typeof judge.evaluateJudgePlan, 'function');
 
-  const appDir = join(tempRoot, 'app');
-  await testPackedNodeNextConsumer(appDir);
-  const evalScript = `
-    (async () => {
-      const expectedBrowserRuntimeExports = [
-        'BROWSER_EXECUTION_HOST_PROTOCOL',
-        'BROWSER_PROJECT_NODE_COMPAT_VERSION',
-        'BROWSER_RUNTIME_ASSET_PROTOCOL_VERSION',
-        'BROWSER_RUNTIME_IDS',
-        'LANGUAGE_RUNTIME_INFOS',
-        'LANGUAGE_RUNTIME_PROFILES',
-        'SUPPORTED_LANGUAGES',
-        'SUPPORTED_LANGUAGE_RUNTIME_INFOS',
-        'assertRuntimeRequestSupported',
-        'createBrowserRuntimeAssetPreflight',
-        'createBrowserRuntimeEnvironment',
-        'createBrowserRuntimeHost',
-        'getLanguageRuntimeInfo',
-        'getLanguageRuntimeProfile',
-        'getRuntimeProjectIoCapability',
-        'getRuntimeProjectIoCapabilityMatrix',
-        'getRuntimeProjectIoSupport',
-        'getSupportedLanguageProfiles',
-        'getSupportedLanguageRuntimeInfos',
-        'installBrowserExecutionWorkerHost',
-        'isLanguageSupported',
-        'isRuntimeSafeForUntrustedReuse',
-        'resolveBrowserRuntimeAssetManifests',
-      ].sort();
-      const expectedJudgeRuntimeExports = [
-        'createBrowserRuntimeJudge',
-        'evaluateJudgePlan',
-        'structuralJsonComparator',
-      ].sort();
-      const expectedRootRuntimeExports = [
-        ...expectedBrowserRuntimeExports,
-        ...expectedJudgeRuntimeExports,
-      ].sort();
-      const forbiddenDirectRuntimeNames = [
-        'createBrowserHarness',
-        'createBrowserExecutionWorkerHost',
-        'createBrowserRuntimeProviderRegistry',
-        'createDefaultBrowserRuntimeProviderRegistry',
-        'createRuntimeJudge',
-        'executeCode',
-        'executeWithTracing',
-        'getClient',
-        'getPreparedProvider',
-      ];
-      function assertExactRuntimeSurface(label, namespace, expected) {
-        const actual = Object.keys(namespace).sort();
-        if (actual.join(',') !== expected.join(',')) {
-          throw new Error(label + ' exports changed: ' + actual.join(','));
-        }
-        for (const forbiddenName of forbiddenDirectRuntimeNames) {
-          if (forbiddenName in namespace) {
-            throw new Error(label + ' must not expose direct execution API ' + forbiddenName);
-          }
-        }
-        for (const name of actual) {
-          if (/(?:Client|PreparedProvider|PreparedExecutionProvider|ProviderRegistry)$/u.test(name)) {
-            throw new Error(label + ' must not expose runtime/provider implementation ' + name);
-          }
-        }
-      }
-
-      const rootRequire = require('@tracecode/harness');
-      const browserRequire = require('@tracecode/harness/browser');
-      const judgeRequire = require('@tracecode/harness/judge');
-      assertExactRuntimeSurface('CommonJS root', rootRequire, expectedRootRuntimeExports);
-      assertExactRuntimeSurface('CommonJS browser', browserRequire, expectedBrowserRuntimeExports);
-      assertExactRuntimeSurface('CommonJS judge', judgeRequire, expectedJudgeRuntimeExports);
-      const projectRequire = require('@tracecode/harness/project');
-      if (typeof projectRequire.createRuntimeWorkspace !== 'function') {
-        throw new Error('Missing CommonJS root project subpath export');
-      }
-      const projectNodeRequire = require('@tracecode/harness/project-node');
-      if (typeof projectNodeRequire.createNativeProjectWorkspace !== 'function') {
-        throw new Error('Missing CommonJS root native project subpath export');
-      }
-
-      const forbiddenSubpaths = [
-        'cli',
-        'core',
-        'native',
-        'internal/browser',
-        'internal/tracekernel/workspace',
-        'python',
-        'javascript',
-        'java',
-        'csharp',
-        'cpp',
-        'sql',
-      ];
-      for (const subpath of forbiddenSubpaths) {
-        const specifier = '@tracecode/harness/' + subpath;
-        try {
-          require(specifier);
-          throw new Error('CommonJS unexpectedly resolved forbidden subpath ' + specifier);
-        } catch (error) {
-          if (error && error.message && error.message.startsWith('CommonJS unexpectedly resolved')) {
-            throw error;
-          }
-          if (!error || error.code !== 'ERR_PACKAGE_PATH_NOT_EXPORTED') {
-            throw new Error(
-              'CommonJS forbidden subpath ' + specifier +
-              ' should fail with ERR_PACKAGE_PATH_NOT_EXPORTED: ' +
-              String(error && (error.stack || error.message || error))
-            );
-          }
-        }
-        try {
-          await import(specifier);
-          throw new Error('ESM unexpectedly resolved forbidden subpath ' + specifier);
-        } catch (error) {
-          if (error && error.message && error.message.startsWith('ESM unexpectedly resolved')) {
-            throw error;
-          }
-          if (!error || error.code !== 'ERR_PACKAGE_PATH_NOT_EXPORTED') {
-            throw new Error(
-              'ESM forbidden subpath ' + specifier +
-              ' should fail with ERR_PACKAGE_PATH_NOT_EXPORTED: ' +
-              String(error && (error.stack || error.message || error))
-            );
-          }
-        }
-      }
-
-      const root = await import('@tracecode/harness');
-      const project = await import('@tracecode/harness/project');
-      const projectNode = await import('@tracecode/harness/project-node');
-      const browser = await import('@tracecode/harness/browser');
-      const judge = await import('@tracecode/harness/judge');
-      const browserProject = await import('@tracecode/harness/browser/project');
-      assertExactRuntimeSurface('ESM root', root, expectedRootRuntimeExports);
-      assertExactRuntimeSurface('ESM browser', browser, expectedBrowserRuntimeExports);
-      assertExactRuntimeSurface('ESM judge', judge, expectedJudgeRuntimeExports);
-
-      async function waitForPackedHttpListener(workspace, port) {
-        let listeners = '';
-        for (let attempt = 0; attempt < 40; attempt += 1) {
-          listeners = await workspace.readFile('/proc/tracekernel/net/listeners');
-          if (listeners.includes('\\thttp\\t127.0.0.1\\t' + port + '\\t')) return listeners;
-          await new Promise((resolve) => setTimeout(resolve, 0));
-        }
-        throw new Error('Packed consumer HTTP listener did not start on ' + port + ':\\n' + listeners);
-      }
-
-      async function killPackedHttpListener(workspace, port) {
-        const listeners = await waitForPackedHttpListener(workspace, port);
-        const row = listeners.split('\\n').find((line) => line.includes('\\thttp\\t127.0.0.1\\t' + port + '\\t'));
-        const pid = row && row.split('\\t')[1];
-        if (!pid) throw new Error('Packed consumer HTTP listener row should include pid: ' + listeners);
-        const killed = await workspace.runCommand('kill ' + pid);
-        if (killed.exitCode !== 0) throw new Error('Packed consumer HTTP listener should be killable: ' + JSON.stringify(killed));
-        await workspace.runCommand('wait ' + pid);
-      }
-
-      if (typeof browser.createBrowserRuntimeHost !== 'function') {
-        throw new Error('Missing browser runtime host export');
-      }
-      const csharpRuntimeInfo = browser.getLanguageRuntimeInfo('csharp');
-      if (/roslyn|dotnet|\\.net/i.test(JSON.stringify(csharpRuntimeInfo))) {
-        throw new Error('Packed C# runtime metadata must remain provider-neutral');
-      }
-      if (typeof browser.getLanguageRuntimeInfo !== 'function') throw new Error('Missing browser runtime info export');
-      if (typeof browser.getRuntimeProjectIoSupport !== 'function') {
-        throw new Error('Missing browser project I/O support helper export');
-      }
-      if (typeof browserProject.createBrowserProjectWorkspace !== 'function') {
-        throw new Error('Missing browser project workspace export');
-      }
-      if (typeof browserProject.runtimeHttpResponseText !== 'function') {
-        throw new Error('Missing browser project HTTP body helper export');
-      }
-      if (typeof project.createRuntimeWorkspace !== 'function') {
-        throw new Error('Missing root project workspace subpath export');
-      }
-      if (typeof project.runtimeHttpBodyFromBytes !== 'function' || typeof project.runtimeHttpResponseText !== 'function') {
-        throw new Error('Missing project HTTP body helper exports');
-      }
-      if (typeof project.RuntimeProjectLiveIoController !== 'function') {
-        throw new Error('Missing project live I/O controller subpath export');
-      }
-      if (typeof projectNode.createNativeProjectWorkspace !== 'function') {
-        throw new Error('Missing root native project workspace subpath export');
-      }
-      const expectedProjectNodeRuntimeExports = [
-        'JustBashRuntimeWorkspace',
-        'RuntimeProjectWorkspace',
-        'createNativeProjectWorkspace',
-        'createRuntimeProjectHiddenCommandAccess',
-        'createRuntimeWorkspace',
-        'normalizeRuntimeProjectPath',
-        'runtimeHttpBodyBytes',
-        'runtimeHttpBodyFromBytes',
-        'runtimeHttpBodyFromText',
-        'runtimeHttpBodyText',
-        'runtimeHttpRequestBytes',
-        'runtimeHttpRequestText',
-        'runtimeHttpResponseBytes',
-        'runtimeHttpResponseText',
-      ];
-      const actualProjectNodeRuntimeExports = Object.keys(projectNode).sort();
-      if (actualProjectNodeRuntimeExports.join(',') !== expectedProjectNodeRuntimeExports.join(',')) {
-        throw new Error('Unexpected project-node runtime exports: ' + actualProjectNodeRuntimeExports.join(','));
-      }
-      if (projectNode.JustBashRuntimeWorkspace !== projectNode.RuntimeProjectWorkspace) {
-        throw new Error('Deprecated project-node workspace alias should point at RuntimeProjectWorkspace');
-      }
-      for (const exportName of [
-        'RuntimeProjectLiveIoController',
-        'createRuntimeProjectIoBridge',
-        'runRuntimeProjectWorkerBridge',
-        'createPythonProjectCommands',
-        'createNodeProjectCommands',
-        'createTypeScriptProjectCommands',
-        'createJavaProjectCommands',
-        'createCppProjectCommands',
-        'createCSharpProjectCommands',
-        'createPackageManagerProjectCommands',
-      ]) {
-        if (exportName in projectNode) {
-          throw new Error('Project-node should not expose ' + exportName);
-        }
-      }
-      const nativeWorkspace = await projectNode.createNativeProjectWorkspace({
-        // A cold .NET SDK can spend well beyond the normal interactive command
-        // budget initializing and compiling. This smoke validates the packed
-        // project API, so give that one runtime an explicit setup budget without
-        // weakening the product default for ordinary workspace commands.
-        csharpProjectTimeoutMs: 90_000,
-        files: [
-          { path: 'index.js', contents: 'console.log("packed-native-project")\\n' },
-          { path: 'main.py', contents: 'print("packed-native-python")\\n' },
-          { path: 'Main.java', contents: 'class Main { public static void main(String[] args) { System.out.println("packed-native-java"); } }\\n' },
-          { path: 'main.cpp', contents: '#include <iostream>\\nint main() { std::cout << "packed-native-cpp\\\\n"; return 0; }\\n' },
-          {
-            path: 'NativePacked.csproj',
-            contents: [
-              '<Project Sdk="Microsoft.NET.Sdk">',
-              '  <PropertyGroup>',
-              '    <OutputType>Exe</OutputType>',
-              '    <TargetFramework>net10.0</TargetFramework>',
-              '    <ImplicitUsings>enable</ImplicitUsings>',
-              '  </PropertyGroup>',
-              '</Project>',
-              '',
-            ].join('\\n'),
-          },
-          { path: 'Program.cs', contents: 'Console.WriteLine("packed-native-csharp");\\n' },
-        ],
-      });
-      const nativeNode = await nativeWorkspace.runCommand('node index.js');
-      if (nativeNode.exitCode !== 0 || nativeNode.stdout !== 'packed-native-project\\n') {
-        throw new Error('Packed native project workspace Node smoke failed: ' + JSON.stringify(nativeNode));
-      }
-      const nativePython = await nativeWorkspace.runCommand('python3 main.py');
-      if (nativePython.exitCode !== 0 || nativePython.stdout !== 'packed-native-python\\n') {
-        throw new Error('Packed native project workspace Python smoke failed: ' + JSON.stringify(nativePython));
-      }
-      const nativeJavac = await nativeWorkspace.runCommand('javac Main.java');
-      if (nativeJavac.exitCode !== 0) {
-        throw new Error('Packed native project workspace javac smoke failed: ' + JSON.stringify(nativeJavac));
-      }
-      const nativeJava = await nativeWorkspace.runCommand('java Main');
-      if (nativeJava.exitCode !== 0 || nativeJava.stdout !== 'packed-native-java\\n') {
-        throw new Error('Packed native project workspace Java smoke failed: ' + JSON.stringify(nativeJava));
-      }
-      const nativeCppCompile = await nativeWorkspace.runCommand('clang++ main.cpp -o native-cpp');
-      if (nativeCppCompile.exitCode !== 0) {
-        throw new Error('Packed native project workspace C++ compile smoke failed: ' + JSON.stringify(nativeCppCompile));
-      }
-      const nativeCpp = await nativeWorkspace.runCommand('./native-cpp');
-      if (nativeCpp.exitCode !== 0 || nativeCpp.stdout !== 'packed-native-cpp\\n') {
-        throw new Error('Packed native project workspace C++ run smoke failed: ' + JSON.stringify(nativeCpp));
-      }
-      const nativeCSharp = await nativeWorkspace.runCommand('dotnet run --project NativePacked.csproj');
-      if (nativeCSharp.exitCode !== 0 || !nativeCSharp.stdout.endsWith('packed-native-csharp\\n')) {
-        throw new Error('Packed native project workspace C# smoke failed: ' + JSON.stringify(nativeCSharp));
-      }
-      const packedMock = nativeWorkspace.http.listen({ host: '127.0.0.1', port: 0 }, (request) => ({
-        status: 208,
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ method: request.method, path: request.path, body: request.body || '' }) + '\\n',
-      }));
-      const packedHttp = await nativeWorkspace.http.request({
-        method: 'POST',
-        url: 'http://localhost:' + packedMock.info.port + '/packed',
-        body: 'from-package',
-      });
-      if (packedHttp.status !== 208 || project.runtimeHttpResponseText(packedHttp) !== '{"method":"POST","path":"/packed","body":"from-package"}\\n') {
-        throw new Error('Packed native project workspace HTTP smoke failed: ' + JSON.stringify(packedHttp));
-      }
-      packedMock.close();
-      const packedStall = nativeWorkspace.http.listen({ host: '127.0.0.1', port: 0 }, () => new Promise(() => {}));
-      const packedTimeout = await nativeWorkspace.http.request({ url: 'http://localhost:' + packedStall.info.port + '/stall', timeoutMs: 1 });
-      if (packedTimeout.status !== 0 || packedTimeout.body !== 'Network request timed out after 1 milliseconds\\n') {
-        throw new Error('Packed native project workspace HTTP timeout smoke failed: ' + JSON.stringify(packedTimeout));
-      }
-      packedStall.close();
-      const consumerHttpRequests = [];
-      const consumerWorkspace = await browserProject.createBrowserProjectWorkspace({
-        kernel: { scheduler: { maxConcurrentCommands: 4 } },
-        files: [
-          {
-            path: 'server.js',
-            contents: [
-              'const http = require("node:http");',
-              'const queue = [];',
-              'http.createServer((req, res) => {',
-              '  const chunks = [];',
-              '  req.on("data", (chunk) => chunks.push(chunk));',
-              '  req.on("end", () => {',
-              '    const body = Buffer.concat(chunks).toString();',
-              '    if (req.method === "POST" && req.url === "/enqueue") {',
-              '      queue.push(JSON.parse(body));',
-              '      res.writeHead(201, { "content-type": "application/json" });',
-              '      res.end(JSON.stringify({ size: queue.length }) + "\\\\n");',
-              '      return;',
-              '    }',
-              '    if (req.method === "GET" && req.url === "/dequeue") {',
-              '      res.writeHead(200, { "content-type": "application/json" });',
-              '      res.end(JSON.stringify(queue.shift() || null) + "\\\\n");',
-              '      return;',
-              '    }',
-              '    res.writeHead(404, { "content-type": "text/plain" });',
-              '    res.end("missing\\\\n");',
-              '  });',
-              '}).listen(9101, "127.0.0.1");',
-              '',
-            ].join('\\n'),
-          },
-          {
-            path: 'node-client.js',
-            contents: [
-              '(async () => {',
-              '  const response = await fetch("http://localhost:9100/from-node", {',
-              '    method: "POST",',
-              '    headers: { "content-type": "text/plain", "x-client": "node" },',
-              '    body: "node-body",',
-              '  });',
-              '  console.log(response.status + ":" + JSON.stringify(await response.json()));',
-              '})().catch((error) => { console.error(error.message); process.exitCode = 1; });',
-              '',
-            ].join('\\n'),
-          },
-          { path: 'python-client.py', contents: 'print("python client")\\n' },
-          { path: 'python-server.py', contents: 'print("python server")\\n' },
-          { path: 'JavaClient.java', contents: 'class JavaClient { public static void main(String[] args) {} }\\n' },
-          { path: 'JavaServer.java', contents: 'class JavaServer { public static void main(String[] args) {} }\\n' },
-        ],
-        nodeProjectTimeoutMs: 20000,
-        nodeProject: {
-          allowDynamicEval: true,
-          allowMainThreadExecution: true,
-          trustedMainThreadExecution: true,
-        },
-        runtimeProviders: {
-          python: {
-            async execute(request, execution) {
-              if (request.scriptPath === 'python-client.py') {
-                const response = await request.kernelHttp.dispatch({
-                  method: 'POST',
-                  url: 'http://localhost:9100/from-python',
-                  path: '/from-python',
-                  headers: { 'content-type': 'text/plain', 'x-client': 'python' },
-                  body: 'python-body',
-                });
-                return { stdout: response.status + ':' + response.body, stderr: '', exitCode: response.status === 207 ? 0 : 1 };
-              }
-              if (request.scriptPath === 'python-server.py') {
-                const handle = request.kernelHttp.listen({ host: '127.0.0.1', port: 9102 }, (httpRequest) => ({
-                  status: 203,
-                  headers: { 'content-type': 'application/json' },
-                  body: JSON.stringify({ language: 'python', method: httpRequest.method, path: httpRequest.path, body: httpRequest.body || '' }) + '\\n',
-                }));
-                await new Promise((resolve) => {
-                  if (execution.signal?.aborted) {
-                    resolve();
-                    return;
-                  }
-                  execution.signal?.addEventListener('abort', resolve, { once: true });
-                });
-                handle.close();
-                return { stdout: '', stderr: '', exitCode: 143 };
-              }
-              return { stdout: request.scriptPath + ':unused-python\\n', stderr: '', exitCode: 0 };
-            },
-          },
-          java: {
-            async execute(request, execution) {
-              if (request.scriptPath === 'JavaClient') {
-                const response = await request.kernelHttp.dispatch({
-                  method: 'POST',
-                  url: 'http://localhost:9100/from-java',
-                  path: '/from-java',
-                  headers: { 'content-type': 'text/plain', 'x-client': 'java' },
-                  body: 'java-body',
-                });
-                return { stdout: response.status + ':' + response.body, stderr: '', exitCode: response.status === 207 ? 0 : 1 };
-              }
-              if (request.scriptPath === 'JavaServer') {
-                const handle = request.kernelHttp.listen({ host: '127.0.0.1', port: 9103 }, (httpRequest) => ({
-                  status: 206,
-                  headers: { 'content-type': 'application/json' },
-                  body: JSON.stringify({ language: 'java', method: httpRequest.method, path: httpRequest.path, body: httpRequest.body || '' }) + '\\n',
-                }));
-                await new Promise((resolve) => {
-                  if (execution.signal?.aborted) {
-                    resolve();
-                    return;
-                  }
-                  execution.signal?.addEventListener('abort', resolve, { once: true });
-                });
-                handle.close();
-                return { stdout: '', stderr: '', exitCode: 143 };
-              }
-              return { stdout: request.source + ':' + request.scriptPath + ':unused-java\\n', stderr: '', exitCode: 0 };
-            },
-          },
-          csharp: {
-            async execute(request) {
-              return { stdout: request.source + ':' + request.args.join(',') + ':unused-csharp\\n', stderr: '', exitCode: 0 };
-            },
-          },
-          cpp: {
-            async execute(request) {
-              return { stdout: request.source + ':' + request.args.join(',') + ':unused-cpp\\n', stderr: '', exitCode: 0 };
-            },
-          },
-        },
-      });
-      const upstream = consumerWorkspace.http.listen({ host: '127.0.0.1', port: 9100 }, (request) => {
-        consumerHttpRequests.push({ method: request.method, path: request.path, body: request.body || '', client: request.headers?.['x-client'] || '' });
-        return {
-          status: 207,
-          headers: { 'content-type': 'application/json' },
-          body: JSON.stringify({ method: request.method, path: request.path, body: request.body || '', client: request.headers?.['x-client'] || '' }) + '\\n',
-        };
-      });
-      try {
-        const terminal = consumerWorkspace.createTerminalSession();
-        const startNodeServer = await terminal.run('node server.js &');
-        if (startNodeServer.exitCode !== 0) {
-          throw new Error('Packed consumer terminal server should start: ' + JSON.stringify(startNodeServer));
-        }
-        await waitForPackedHttpListener(consumerWorkspace, 9101);
-        const agentEnqueue = await consumerWorkspace.runCommand('curl -s --json \\'{"id":1}\\' http://localhost:9101/enqueue');
-        if (agentEnqueue.exitCode !== 0 || agentEnqueue.stdout !== '{"size":1}\\n') {
-          throw new Error('Packed consumer agent command should call terminal-owned server: ' + JSON.stringify(agentEnqueue));
-        }
-        const apiDequeue = await consumerWorkspace.http.json({
-          method: 'GET',
-          url: 'http://localhost:9101/dequeue',
-          timeoutMs: 1000,
-        });
-        if (apiDequeue.status !== 200 || apiDequeue.json?.id !== 1) {
-          throw new Error('Packed consumer workspace HTTP API should call terminal-owned server: ' + JSON.stringify(apiDequeue));
-        }
-        const nodeClient = await consumerWorkspace.runCommand('node node-client.js');
-        if (nodeClient.exitCode !== 0 || nodeClient.stdout !== '207:{"method":"POST","path":"/from-node","body":"node-body","client":"node"}\\n') {
-          throw new Error('Packed consumer Node project should call mock upstream: ' + JSON.stringify(nodeClient));
-        }
-        const pythonClient = await consumerWorkspace.runCommand('python3 python-client.py');
-        if (pythonClient.exitCode !== 0 || pythonClient.stdout !== '207:{"method":"POST","path":"/from-python","body":"python-body","client":"python"}\\n') {
-          throw new Error('Packed consumer Python project should call mock upstream: ' + JSON.stringify(pythonClient));
-        }
-        const javaClient = await consumerWorkspace.runCommand('java JavaClient');
-        if (javaClient.exitCode !== 0 || javaClient.stdout !== '207:{"method":"POST","path":"/from-java","body":"java-body","client":"java"}\\n') {
-          throw new Error('Packed consumer Java project should call mock upstream: ' + JSON.stringify(javaClient));
-        }
-        const startPythonServer = await terminal.run('python3 python-server.py &');
-        if (startPythonServer.exitCode !== 0) {
-          throw new Error('Packed consumer Python server should start: ' + JSON.stringify(startPythonServer));
-        }
-        await waitForPackedHttpListener(consumerWorkspace, 9102);
-        const pythonServerResponse = await consumerWorkspace.http.request({
-          method: 'POST',
-          url: 'http://localhost:9102/from-test',
-          body: 'test-body',
-          timeoutMs: 1000,
-        });
-        if (pythonServerResponse.status !== 203 || project.runtimeHttpResponseText(pythonServerResponse) !== '{"language":"python","method":"POST","path":"/from-test","body":"test-body"}\\n') {
-          throw new Error('Packed consumer API should call Python project server: ' + JSON.stringify(pythonServerResponse));
-        }
-        const startJavaServer = await terminal.run('java JavaServer &');
-        if (startJavaServer.exitCode !== 0) {
-          throw new Error('Packed consumer Java server should start: ' + JSON.stringify(startJavaServer));
-        }
-        await waitForPackedHttpListener(consumerWorkspace, 9103);
-        const javaServerResponse = await consumerWorkspace.http.request({
-          method: 'POST',
-          url: 'http://localhost:9103/from-test',
-          body: 'test-body',
-          timeoutMs: 1000,
-        });
-        if (javaServerResponse.status !== 206 || project.runtimeHttpResponseText(javaServerResponse) !== '{"language":"java","method":"POST","path":"/from-test","body":"test-body"}\\n') {
-          throw new Error('Packed consumer API should call Java project server: ' + JSON.stringify(javaServerResponse));
-        }
-        if (consumerHttpRequests.map((request) => request.path + ':' + request.client).join(',') !== '/from-node:node,/from-python:python,/from-java:java') {
-          throw new Error('Packed consumer mock upstream should receive Node/Python/Java project requests: ' + JSON.stringify(consumerHttpRequests));
-        }
-        await killPackedHttpListener(consumerWorkspace, 9103);
-        await killPackedHttpListener(consumerWorkspace, 9102);
-        await killPackedHttpListener(consumerWorkspace, 9101);
-      } finally {
-        upstream.close();
-        consumerWorkspace.dispose();
-      }
-      const browserWorkspace = await browserProject.createBrowserProjectWorkspace({
-        files: [
-          { path: 'main.py', contents: 'print("browser-python")\\n' },
-          { path: 'index.js', contents: 'const fs = require("node:fs"); fs.writeFileSync("node.txt", "browser-node\\\\n"); console.log("browser-node");\\n' },
-          { path: 'Main.java', contents: 'class Main {}\\n' },
-          { path: 'Program.cs', contents: 'Console.WriteLine("browser-csharp");\\n' },
-          { path: 'main.cpp', contents: 'int main() { return 0; }\\n' },
-        ],
-        nodeProjectTimeoutMs: 20000,
-        nodeProject: {
-          allowDynamicEval: true,
-          allowMainThreadExecution: true,
-          trustedMainThreadExecution: true,
-        },
-        runtimeProviders: {
-          python: {
-            async execute(request) {
-              return { stdout: request.scriptPath + ':browser-python\\n', stderr: '', exitCode: 0 };
-            },
-          },
-          java: {
-            async execute(request) {
-              return { stdout: request.source + ':' + request.scriptPath + ':browser-java\\n', stderr: '', exitCode: 0 };
-            },
-          },
-          csharp: {
-            async execute(request) {
-              return { stdout: request.source + ':' + request.args.join(',') + ':browser-csharp\\n', stderr: '', exitCode: 0 };
-            },
-          },
-          cpp: {
-            async execute(request) {
-              return { stdout: request.source + ':' + request.args.join(',') + ':browser-cpp\\n', stderr: '', exitCode: 0 };
-            },
-          },
-        },
-      });
-      try {
-        const browserPython = await browserWorkspace.runCommand('python3 main.py');
-        if (browserPython.exitCode !== 0 || browserPython.stdout !== 'main.py:browser-python\\n') {
-          throw new Error('Packed browser project Python smoke failed: ' + JSON.stringify(browserPython));
-        }
-        const browserNode = await browserWorkspace.runCommand('node index.js');
-        if (browserNode.exitCode !== 0 || browserNode.stdout !== 'browser-node\\n') {
-          throw new Error('Packed browser project Node smoke failed: ' + JSON.stringify(browserNode));
-        }
-        const nodeSideEffect = await browserWorkspace.readFile('node.txt');
-        if (nodeSideEffect !== 'browser-node\\n') {
-          throw new Error('Packed browser project Node side effect failed: ' + JSON.stringify(nodeSideEffect));
-        }
-        const browserJava = await browserWorkspace.runCommand('java Main');
-        if (browserJava.exitCode !== 0 || browserJava.stdout !== 'run:Main:browser-java\\n') {
-          throw new Error('Packed browser project Java smoke failed: ' + JSON.stringify(browserJava));
-        }
-        const browserCSharp = await browserWorkspace.runCommand('dotnet run -- alpha beta');
-        if (browserCSharp.exitCode !== 0 || browserCSharp.stdout !== 'run:alpha,beta:browser-csharp\\n') {
-          throw new Error('Packed browser project C# smoke failed: ' + JSON.stringify(browserCSharp));
-        }
-        const browserCpp = await browserWorkspace.runCommand('clang++ main.cpp -o a.out');
-        if (browserCpp.exitCode !== 0 || browserCpp.stdout !== 'compile:main.cpp,-o,a.out:browser-cpp\\n') {
-          throw new Error('Packed browser project C++ smoke failed: ' + JSON.stringify(browserCpp));
-        }
-        const browserGcc = await browserWorkspace.runCommand('gcc main.cpp -o c-app');
-        if (browserGcc.exitCode !== 0 || browserGcc.stdout !== 'compile:main.cpp,-o,c-app:browser-cpp\\n') {
-          throw new Error('Packed browser project gcc alias smoke failed: ' + JSON.stringify(browserGcc));
-        }
-        const browserCc = await browserWorkspace.runCommand('cc main.cpp -o cc-app');
-        if (browserCc.exitCode !== 0 || browserCc.stdout !== 'compile:main.cpp,-o,cc-app:browser-cpp\\n') {
-          throw new Error('Packed browser project cc alias smoke failed: ' + JSON.stringify(browserCc));
-        }
-        const browserCppRun = await browserWorkspace.runCommand('./a.out alpha beta');
-        if (browserCppRun.exitCode !== 0 || browserCppRun.stdout !== 'run:alpha,beta:browser-cpp\\n') {
-          throw new Error('Packed browser project C++ executable smoke failed: ' + JSON.stringify(browserCppRun));
-        }
-      } finally {
-        browserWorkspace.dispose();
-      }
-      if (typeof root.createBrowserRuntimeHost !== 'function') {
-        throw new Error('Root export should expose createBrowserRuntimeHost');
-      }
-      if (typeof root.createBrowserRuntimeJudge !== 'function') {
-        throw new Error('Root export should expose createBrowserRuntimeJudge');
-      }
-      if (typeof root.getRuntimeProjectIoSupport !== 'function') {
-        throw new Error('Root export should expose project I/O support helper');
-      }
-      const jsProjectIo = root.getRuntimeProjectIoSupport('javascript');
-      const tsProjectIo = browser.getRuntimeProjectIoSupport('typescript');
-      if (jsProjectIo.tier !== 'native-live' || tsProjectIo.tier !== 'bridged-live') {
-        throw new Error('Project I/O support helper returned unexpected tiers');
-      }
-      const projectIoMatrix = root.getRuntimeProjectIoCapabilityMatrix();
-      const javaProjectIo = browser.getRuntimeProjectIoCapability('java');
-      if (!Array.isArray(projectIoMatrix) || projectIoMatrix.length < 6) {
-        throw new Error('Project I/O capability matrix should include supported language rows');
-      }
-      if (javaProjectIo.browser.tier !== 'bridged-live' || javaProjectIo.node.tier !== 'final-diff') {
-        throw new Error('Project I/O capability row returned unexpected Java tiers');
-      }
-      for (const exportName of ['createRuntimeWorkspace', 'createNativeProjectWorkspace', 'createBrowserProjectWorkspace']) {
-        if (exportName in root) {
-          throw new Error('Root default surface should not include project-mode just-bash API: ' + exportName);
-        }
-      }
-      for (const exportName of ['createRuntimeWorkspace', 'createBrowserProjectWorkspace']) {
-        if (exportName in browser) {
-          throw new Error('Browser default surface should not include project-mode just-bash API: ' + exportName);
-        }
-      }
-      const javaInfo = root.getLanguageRuntimeInfo('java');
-      if (javaInfo.versionLabel !== 'Java ' + javaInfo.runtime.version) {
-        throw new Error('Root export should expose language runtime info');
-      }
-      if (!javaInfo.description.includes('javac')) {
-        throw new Error('Root export should expose natural-language language runtime info');
-      }
-      console.log('ok');
-    })().catch((error) => {
-      console.error(error);
-      process.exit(1);
-    });
-  `;
-  const run = spawnSync('node', ['-e', evalScript], {
-    cwd: appDir,
-    encoding: 'utf8',
+  const workspace = await traceKernel.createRuntimeWorkspace({
+    files: [{ path: 'surface.txt', contents: 'simple\\n' }],
   });
-
-  if (run.status !== 0) {
-    throw new Error(run.stderr || run.stdout || 'Packed surface import check failed');
-  }
-
-  await writeFile(
-    join(appDir, 'browser-project-entry.js'),
-    [
-      'import { createBrowserProjectWorkspace } from "@tracecode/harness/browser/project";',
-      'import { RuntimeProjectLiveIoController, createRuntimeWorkspace } from "@tracecode/harness/project";',
-      'if (typeof createBrowserProjectWorkspace !== "function") throw new Error("missing project export");',
-      'if (typeof createRuntimeWorkspace !== "function") throw new Error("missing root project export");',
-      'if (typeof RuntimeProjectLiveIoController !== "function") throw new Error("missing live io controller export");',
-      'console.log("ok");',
-      '',
-    ].join('\n'),
-    'utf8'
-  );
-  const esbuildPath = join(process.cwd(), 'node_modules', '.bin', 'esbuild');
-  const browserBundle = spawnSync(
-    esbuildPath,
-    [
-      'browser-project-entry.js',
-      '--bundle',
-      '--platform=browser',
-      '--format=esm',
-      '--conditions=browser',
-      '--outfile=browser-project-bundle.js',
-      '--log-level=error',
-    ],
-    {
-      cwd: appDir,
-      encoding: 'utf8',
-    }
-  );
-  if (browserBundle.status !== 0) {
-    throw new Error(browserBundle.stderr || browserBundle.stdout || 'Packed browser project bundle check failed');
-  }
-  const bundledBrowserProject = await readFile(join(appDir, 'browser-project-bundle.js'), 'utf8');
-  for (const forbidden of ['createRequire', 'worker_threads', 'from "module"']) {
-    assertCondition(
-      !bundledBrowserProject.includes(forbidden),
-      `Packed browser project bundle should not include Node-only ${forbidden}`
-    );
-  }
-
-  const packagedBrowserProject = await readFile(join(packageDir, 'dist/browser/project.cjs'), 'utf8');
-  assertCondition(
-    packagedBrowserProject.includes('data: normalizeTerminalFilesystemStderr(event.data)'),
-    'Packed browser project bundle must normalize streamed terminal filesystem errors before publishing'
-  );
-
-  const bundledZlibShim = await readFile(join(packageDir, 'dist/zlib-browser-shim.js'), 'utf8');
-  for (const forbidden of ['createRequire', 'worker_threads', 'from "module"']) {
-    assertCondition(
-      !bundledZlibShim.includes(forbidden),
-      `Packed zlib browser shim should not include Node-only ${forbidden}`
-    );
-  }
-
-  console.log('PASS: packaged public surface imports through published subpaths');
-}
-
-async function main(): Promise<void> {
-  await testPublishableWorkspacePackageVersionsMatchRelease();
-  await testHiddenCommandAccessTokenRoundTripsAcrossEntrypoints();
-  const tempRoot = await mkdtemp(join(tmpdir(), 'tracecode-harness-pack-'));
   try {
-    await runWithTempRoot(tempRoot);
+    const result = await workspace.runCommand('cat surface.txt');
+    assert.equal(result.exitCode, 0);
+    assert.equal(result.stdout, 'simple\\n');
   } finally {
-    await rm(tempRoot, { recursive: true, force: true });
+    await workspace.destroy();
   }
-}
+});
 
-test('packaged surface', main);
+test('installed package resolves both module systems and rejects retired paths', async () => {
+  const fixture = await mkdtemp(join(tmpdir(), 'tracecode-surface-'));
+  try {
+    const scope = join(fixture, 'node_modules', '@tracecode');
+    await mkdir(scope, { recursive: true });
+    await symlink(ROOT, join(scope, 'harness'), 'dir');
+    await writeFile(
+      join(fixture, 'package.json'),
+      JSON.stringify({ private: true, type: 'module' }),
+      'utf8'
+    );
+
+    const esm = runNode(
+      fixture,
+      `
+        import * as tracekernel from '@tracecode/harness/tracekernel';
+        import * as judge from '@tracecode/harness/judge';
+        if (typeof tracekernel.createBrowserWorkspace !== 'function') throw new Error('missing TraceKernel browser workspace');
+        if (typeof tracekernel.createRuntimeWorkspace !== 'function') throw new Error('missing TraceKernel workspace');
+        if (typeof judge.createBrowserJudgeHost !== 'function') throw new Error('missing Judge host');
+      `,
+      true
+    );
+    assert.equal(esm.status, 0, `${esm.stdout}\n${esm.stderr}`);
+
+    const cjs = runNode(
+      fixture,
+      `
+        const tracekernel = require('@tracecode/harness/tracekernel');
+        const judge = require('@tracecode/harness/judge');
+        if (typeof tracekernel.createBrowserWorkspace !== 'function') throw new Error('missing TraceKernel browser workspace');
+        if (typeof judge.createBrowserJudgeHost !== 'function') throw new Error('missing Judge host');
+      `
+    );
+    assert.equal(cjs.status, 0, `${cjs.stdout}\n${cjs.stderr}`);
+
+    for (const retired of RETIRED_EXPORTS) {
+      const specifier =
+        retired === '.'
+          ? '@tracecode/harness'
+          : `@tracecode/harness/${retired.slice(2)}`;
+      const rejected = runNode(
+        fixture,
+        `import(${JSON.stringify(specifier)}).then(
+          () => process.exit(2),
+          (error) => {
+            if (error?.code !== 'ERR_PACKAGE_PATH_NOT_EXPORTED') {
+              console.error(error);
+              process.exit(3);
+            }
+          }
+        )`,
+        true
+      );
+      assert.equal(
+        rejected.status,
+        0,
+        `${specifier} unexpectedly resolved:\n${rejected.stdout}\n${rejected.stderr}`
+      );
+    }
+  } finally {
+    await rm(fixture, { recursive: true, force: true });
+  }
+});
+
+test('public TypeScript declarations are consumable without internal imports', async () => {
+  const fixture = await mkdtemp(join(tmpdir(), 'tracecode-types-'));
+  try {
+    const scope = join(fixture, 'node_modules', '@tracecode');
+    await mkdir(scope, { recursive: true });
+    await symlink(ROOT, join(scope, 'harness'), 'dir');
+    await writeFile(
+      join(fixture, 'consumer.ts'),
+      `
+        import {
+          createBrowserWorkspace,
+          createRuntimeWorkspace,
+          type CreateBrowserWorkspaceOptions,
+        } from '@tracecode/harness/tracekernel';
+        import {
+          createBrowserJudgeHost,
+          type CreateBrowserJudgeOptions,
+        } from '@tracecode/harness/judge';
+
+        void createBrowserWorkspace;
+        void createRuntimeWorkspace;
+        void createBrowserJudgeHost;
+        const workspaceOptions: CreateBrowserWorkspaceOptions = {};
+        const judgeOptions = null as CreateBrowserJudgeOptions | null;
+        void workspaceOptions;
+        void judgeOptions;
+      `,
+      'utf8'
+    );
+    await writeFile(
+      join(fixture, 'tsconfig.json'),
+      JSON.stringify({
+        compilerOptions: {
+          target: 'ES2022',
+          lib: ['ES2022', 'DOM'],
+          module: 'ESNext',
+          moduleResolution: 'Bundler',
+          strict: true,
+          skipLibCheck: false,
+          noEmit: true,
+        },
+        include: ['consumer.ts'],
+      }),
+      'utf8'
+    );
+
+    const tsc = spawnSync(
+      resolve(ROOT, 'node_modules/.bin/tsc'),
+      ['-p', 'tsconfig.json'],
+      { cwd: fixture, encoding: 'utf8' }
+    );
+    assert.equal(tsc.status, 0, `${tsc.stdout}\n${tsc.stderr}`);
+  } finally {
+    await rm(fixture, { recursive: true, force: true });
+  }
+});
+
+test('root package remains the only publishable workspace', async () => {
+  const result = spawnSync(
+    process.execPath,
+    ['scripts/check-publish-safety.mjs'],
+    { cwd: ROOT, encoding: 'utf8' }
+  );
+  assert.equal(result.status, 0, `${result.stdout}\n${result.stderr}`);
+  assert.match(
+    result.stdout,
+    /@tracecode\/harness is the only publishable workspace manifest/u
+  );
+
+  for (const entrypoint of PUBLIC_CODE_EXPORTS) {
+    assert.ok(entrypoint in JSON.parse(
+      await readFile(join(ROOT, 'package.json'), 'utf8')
+    ).exports);
+  }
+});

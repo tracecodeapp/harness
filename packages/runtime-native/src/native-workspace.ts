@@ -15,7 +15,7 @@ export {
   runtimeHttpRequestText,
   runtimeHttpResponseBytes,
   runtimeHttpResponseText,
-} from '@tracecode/runtime-core';
+} from '@tracecode/runtime-contracts';
 
 export type {
   CreateRuntimeWorkspaceOptions,
@@ -115,18 +115,18 @@ export type {
   RuntimeWorkspaceRemoveOptions,
   RuntimeWorkspaceStat,
   RuntimeWorkspaceUnsubscribe,
-} from '@tracecode/runtime-core';
+} from '@tracecode/runtime-contracts';
 
 import {
   createRuntimeWorkspace,
   type CreateRuntimeWorkspaceOptions,
   type RuntimeProjectWorkspace,
 } from '@tracecode/tracekernel/workspace';
-import { createNativeCppProjectRunner } from '../packages/runtime-cpp/src/project-node';
-import { createNativeCSharpProjectRunner } from '../packages/runtime-csharp/src/project-node';
-import { createNativeJavaProjectRunner } from '../packages/runtime-java/src/project-node';
-import { createNativeJavaScriptProjectRunner, createTypeScriptProjectRunner } from '../packages/runtime-javascript/src/project-node';
-import { createNativePythonProjectRunner } from '../packages/runtime-python/src/project-node';
+import { createNativeCppProjectRunner } from '../../runtime-cpp/src/project-node';
+import { createNativeCSharpProjectRunner } from '../../runtime-csharp/src/project-node';
+import { createNativeJavaProjectRunner } from '../../runtime-java/src/project-node';
+import { createNativeJavaScriptProjectRunner, createTypeScriptProjectRunner } from '../../runtime-javascript/src/project-node';
+import { createNativePythonProjectRunner } from '../../runtime-python/src/project-node';
 
 export interface CreateNativeProjectWorkspaceOptions
   extends Omit<

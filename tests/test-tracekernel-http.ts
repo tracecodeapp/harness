@@ -10,7 +10,7 @@ import {
   runtimeHttpResponseText,
   type RuntimeKernelHttpRequest,
   type RuntimeKernelHttpResponse,
-} from '../packages/workspace-facade/src/index';
+} from '../packages/tracekernel/src/workspace/index';
 import { commandContextForFs } from '../packages/tracekernel/src/workspace/fs-observed';
 import {
   createBrowserJavaScriptProjectRunner,
@@ -63,7 +63,7 @@ async function testExternalFetchRoutesThroughDelegate(): Promise<void> {
   const workspace = await createRuntimeWorkspace({
     externalHttp: {
       hosts: ['allowed.example'],
-      fetch: async (request): Promise<import('../packages/runtime-core/src/runtime-external-http').RuntimeExternalHttpResponse> => {
+      fetch: async (request): Promise<import('../packages/runtime-contracts/src/runtime-external-http').RuntimeExternalHttpResponse> => {
         calls.push({
           method: request.method,
           url: request.url,

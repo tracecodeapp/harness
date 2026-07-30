@@ -1,7 +1,7 @@
 {
   "name": "@tracecode/tracekernel",
   "private": true,
-  "version": "0.13.1",
+  "version": "0.14.0",
   "description": "Browser-native process, resource, and syscall kernel for TraceCode.",
   "license": "AGPL-3.0-only",
   "homepage": "https://tracecode.app",
@@ -41,7 +41,7 @@
   },
   "sideEffects": false,
   "dependencies": {
-    "@tracecode/runtime-core": "workspace:*",
+    "@tracecode/runtime-contracts": "workspace:*",
     "effect": "3.22.0",
     "fflate": "^0.8.3",
     "just-bash": "3.1.0"

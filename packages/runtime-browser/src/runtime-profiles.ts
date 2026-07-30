@@ -4,7 +4,7 @@ import type {
   RuntimeProjectIoCapabilityRow,
   RuntimeProjectIoSupport,
   RuntimeProjectIoTier,
-} from '@tracecode/runtime-core';
+} from '@tracecode/runtime-contracts';
 
 const LIVE_PROJECT_IO_CAPABILITIES: LanguageRuntimeProfile['capabilities']['project'] = {
   workspace: {

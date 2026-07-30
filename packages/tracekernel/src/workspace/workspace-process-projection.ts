@@ -1,7 +1,7 @@
 import * as Effect from 'effect/Effect';
 import type {
   RuntimeWorkspaceActor,
-} from '@tracecode/runtime-core';
+} from '@tracecode/runtime-contracts';
 import type {
   TraceKernelPrincipal,
   TraceKernelProcess,

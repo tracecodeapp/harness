@@ -3,7 +3,7 @@ import type {
   RuntimeCommandResult,
   RuntimeFileChange,
   RuntimeKernelDevicePath,
-} from "@tracecode/runtime-core";
+} from "@tracecode/runtime-contracts";
 
 import type {
   TraceKernelStat,
@@ -20,12 +20,9 @@ import {
   runtimeProjectInfrastructureFailure,
   runtimeCommandStdinPipeClosed,
   runtimeCommandStdinPipeRemainingBytes,
-} from "@tracecode/runtime-core";
+} from "@tracecode/runtime-contracts";
 
-import {
-  BROWSER_PROJECT_NODE_COMPAT_VERSION,
-  getLanguageRuntimeInfo,
-} from "@tracecode/runtime-core";
+import { getLanguageRuntimeInfo } from "@tracecode/runtime-contracts";
 
 import {
   createRuntimeKernelReadonlyFileError,
@@ -45,7 +42,7 @@ import {
   runtimeKernelStatTarget,
   runtimeKernelWriteFsErrorMessage,
   type RuntimeKernelVirtualStat,
-} from "@tracecode/runtime-core";
+} from "@tracecode/runtime-contracts";
 
 import {
   BrowserJavaScriptProjectExecutionState,

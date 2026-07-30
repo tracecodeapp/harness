@@ -8,7 +8,7 @@ import {
 import type {
   CodeExecutionResult,
   RuntimeProgramPreparationCall,
-} from '../packages/runtime-core/src/index';
+} from '../packages/runtime-contracts/src/index';
 
 function preparationCall(
   mode: 'code' | 'trace' = 'code'

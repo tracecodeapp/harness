@@ -4,7 +4,7 @@ import { test } from 'node:test';
 import { readdir, readFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import vm from 'node:vm';
-import { createRuntimeCommandStdinPipeFromText } from '../packages/runtime-core/src/runtime-project';
+import { createRuntimeCommandStdinPipeFromText } from '../packages/runtime-contracts/src/runtime-project';
 import {
   PYTHON_CLASS_DEFINITIONS,
   PYTHON_CONVERSION_HELPERS,

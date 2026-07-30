@@ -1,6 +1,6 @@
 import type {
   RuntimeKernelInfo,
-} from "@tracecode/runtime-core";
+} from "@tracecode/runtime-contracts";
 
 import {
   dirname,

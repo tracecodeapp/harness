@@ -3,7 +3,7 @@ import type {
   RuntimePreparedExecutionProvider,
   RuntimeProgramPreparationCall,
   RuntimeProgramPreparationResult,
-} from '@tracecode/runtime-core';
+} from '@tracecode/runtime-contracts';
 import type {
   BrowserRuntimeAssetOverrides,
   BrowserRuntimeAssets,

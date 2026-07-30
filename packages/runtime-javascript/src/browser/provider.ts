@@ -1,13 +1,13 @@
 import type {
   RuntimeCommandResult,
-} from "@tracecode/runtime-core";
+} from "@tracecode/runtime-contracts";
 
 import {
   createRuntimeProjectIoBridge,
   runtimeAbortSignalName,
   runtimeProjectInfrastructureFailure,
   runRuntimeProjectWorkerBridge,
-} from "@tracecode/runtime-core";
+} from "@tracecode/runtime-contracts";
 
 import {
   DEFAULT_SIGNAL_GRACE_MS,

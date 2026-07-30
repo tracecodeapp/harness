@@ -7,7 +7,7 @@ import type {
   RuntimePreparedTraceCall,
   RuntimeProgramPreparationCall,
   RuntimeProgramPreparationResult,
-} from '../../packages/runtime-core/src/index';
+} from '../../packages/runtime-contracts/src/index';
 
 export function isPreparedExecutionProvider(
   provider: object

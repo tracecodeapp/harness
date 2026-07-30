@@ -633,8 +633,8 @@ async function buildPublicProjectBundle(tempRoot: string): Promise<{
     sourcemap: false,
     logLevel: 'warning',
     alias: {
-      zlib: resolve(process.cwd(), 'packages/workspace-facade/src/zlib-browser-shim.ts'),
-      'node:zlib': resolve(process.cwd(), 'packages/workspace-facade/src/zlib-browser-shim.ts'),
+      zlib: resolve(process.cwd(), 'packages/tracekernel/src/zlib-browser-shim.ts'),
+      'node:zlib': resolve(process.cwd(), 'packages/tracekernel/src/zlib-browser-shim.ts'),
     },
     define: { 'process.env.NODE_ENV': '"production"' },
   });

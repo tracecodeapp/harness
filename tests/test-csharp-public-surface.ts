@@ -2,8 +2,8 @@ import { existsSync, readFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import { resolve } from 'node:path';
 import ts from 'typescript';
-import { getLanguageRuntimeInfo } from '../packages/runtime-core/src/runtime-language-info';
-import { getRuntimeCommandVersion } from '../packages/runtime-core/src/runtime-command-info';
+import { getLanguageRuntimeInfo } from '../packages/runtime-contracts/src/runtime-language-info';
+import { getRuntimeCommandVersion } from '../packages/runtime-contracts/src/runtime-command-info';
 import { DEFAULT_BROWSER_RUNTIME_ASSET_RELATIVE_PATHS } from '../packages/runtime-browser/src/runtime-assets';
 import { createNativeHarness } from '../packages/runtime-native/src/index';
 
@@ -168,7 +168,7 @@ function embeddedCSharpMetadata(): string {
     'utf8'
   );
   const metadataStart = generatedProjectWorker.indexOf(
-    '// packages/runtime-core/src/generated/runtime-language-info-data.ts'
+    '// packages/runtime-contracts/src/generated/runtime-language-info-data.ts'
   );
   const metadataEnd = generatedProjectWorker.indexOf('\n// packages/', metadataStart + 1);
   assertCondition(
@@ -192,7 +192,7 @@ function main(): void {
     resolve(process.cwd(), 'packages/runtime-csharp/src/project-node.ts'),
     resolve(process.cwd(), 'packages/runtime-csharp/src/project-browser.ts'),
     resolve(process.cwd(), 'packages/runtime-native/src/index.ts'),
-    resolve(process.cwd(), 'src/project-node.ts'),
+    resolve(process.cwd(), 'packages/runtime-native/src/native-workspace.ts'),
   ];
   const { checker, entrypoints } = loadProgram(entrypointPaths);
   const exportsByModule = new Map(
@@ -212,11 +212,11 @@ function main(): void {
     process.cwd(),
     'packages/runtime-native/src/index.ts'
   ));
-  const rootProjectNodeExports = exportsByModule.get(resolve(process.cwd(), 'src/project-node.ts'));
+  const nativeWorkspaceExports = exportsByModule.get(resolve(process.cwd(), 'packages/runtime-native/src/native-workspace.ts'));
   assertCondition(csharpExports, 'Missing @tracecode/runtime-csharp export map');
   assertCondition(csharpProjectNodeExports, 'Missing C# project-node export map');
   assertCondition(nativeExports, 'Missing native harness export map');
-  assertCondition(rootProjectNodeExports, 'Missing root project-node export map');
+  assertCondition(nativeWorkspaceExports, 'Missing native workspace export map');
 
   for (const name of [
     'CSharpWorkerClient',
@@ -247,7 +247,7 @@ function main(): void {
 
   const workspaceProperties = definingInterfaceProperties(
     checker,
-    rootProjectNodeExports.get('CreateNativeProjectWorkspaceOptions'),
+    nativeWorkspaceExports.get('CreateNativeProjectWorkspaceOptions'),
     'CreateNativeProjectWorkspaceOptions'
   );
   assertCondition(workspaceProperties.has('runtimeCommand'), 'CreateNativeProjectWorkspaceOptions must define runtimeCommand');

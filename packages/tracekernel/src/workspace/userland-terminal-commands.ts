@@ -1,7 +1,7 @@
 import type {
   RuntimeCommandOptions,
   RuntimeCommandResult,
-} from '@tracecode/runtime-core';
+} from '@tracecode/runtime-contracts';
 
 type RuntimeTerminalSnapshot =
   | RuntimeCommandOptions['terminal']

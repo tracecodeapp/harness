@@ -7,7 +7,7 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 import vm from 'node:vm';
 
 import { CppWorkerClient } from '../packages/runtime-cpp/src/cpp-worker-client';
-import { createRuntimeWorkspace } from '../packages/workspace-facade/src/index';
+import { createRuntimeWorkspace } from '../packages/tracekernel/src/workspace/index';
 
 const testFilePath = fileURLToPath(import.meta.url);
 const testDirectory = dirname(testFilePath);

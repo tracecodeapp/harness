@@ -6,7 +6,7 @@ import {
   runtimeHttpRequestBytes,
   runtimeHttpResponseBytes,
   type KernelJournalRecord,
-} from '../packages/workspace-facade/src/index';
+} from '../packages/tracekernel/src/workspace/index';
 import {
   encodeTraceKernelHttp1Request,
   encodeTraceKernelHttp1Response,

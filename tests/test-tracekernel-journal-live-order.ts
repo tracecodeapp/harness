@@ -4,7 +4,7 @@ import {
   createRuntimeWorkspace,
   type KernelJournalRecord,
   type RuntimeCommandEvent,
-} from '../packages/workspace-facade/src/index';
+} from '../packages/tracekernel/src/workspace/index';
 
 function assertCondition(condition: unknown, message: string): asserts condition {
   if (!condition) throw new Error(message);

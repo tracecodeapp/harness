@@ -14,7 +14,7 @@ import {
   runtimeFileChangePath,
   runtimeProjectTruncateUtf8,
   runtimeProjectUtf8Bytes,
-} from '@tracecode/runtime-core';
+} from '@tracecode/runtime-contracts';
 import {
   isRuntimeKernelVirtualNamespacePath,
   normalizeRuntimeProcPath,
@@ -51,13 +51,13 @@ import {
   readRuntimeProcFile,
   createRuntimeKernelReadonlyFileError,
   type RuntimeKernelVirtualStat,
-} from '@tracecode/runtime-core';
+} from '@tracecode/runtime-contracts';
 import {
-  BROWSER_PROJECT_NODE_COMPAT_VERSION,
+  NODE_RUNTIME_COMPAT_VERSION,
   getLanguageRuntimeInfo,
   getRuntimeCommandVersion,
-} from '@tracecode/runtime-core';
-import type { Language } from '@tracecode/runtime-core';
+} from '@tracecode/runtime-contracts';
+import type { Language } from '@tracecode/runtime-contracts';
 import type {
   CommandContext,
   FileContent,
@@ -91,7 +91,7 @@ import type {
   RuntimeProjectPatchFileWrite,
   RuntimeProjectSnapshot,
   RuntimeWorkspaceActor,
-} from '@tracecode/runtime-core';
+} from '@tracecode/runtime-contracts';
 import type {
   CppProjectCommandRunner,
   CSharpProjectCommandRunner,
@@ -777,7 +777,7 @@ export function createNodeProjectCommands(
     if (isNodeCommandResult(parsed)) return parsed;
 
     if (parsed.showVersion) {
-      return { stdout: `v${BROWSER_PROJECT_NODE_COMPAT_VERSION}\n`, stderr: '', exitCode: 0 };
+      return { stdout: `v${NODE_RUNTIME_COMPAT_VERSION}\n`, stderr: '', exitCode: 0 };
     }
 
     const stdin = decodeCommandStdin(ctx.stdin);

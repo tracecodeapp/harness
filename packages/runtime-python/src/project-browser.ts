@@ -10,11 +10,11 @@ import type {
   RuntimeProjectEngineLeaseController,
   RuntimeProjectFileChangeApplyOptions,
   RuntimeProjectSnapshot,
-} from '@tracecode/runtime-core';
+} from '@tracecode/runtime-contracts';
 import {
   runRuntimeProjectWorkerBridge,
   withRuntimeProjectCommandRunnerCapabilities,
-} from '@tracecode/runtime-core';
+} from '@tracecode/runtime-contracts';
 import type { PythonWorkerClient } from './python-worker-client';
 
 export type PythonProjectFileEncoding = RuntimeFileEncoding;

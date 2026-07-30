@@ -1,6 +1,6 @@
 import type {
   RuntimeKernelHttpRequest,
-} from "@tracecode/runtime-core";
+} from "@tracecode/runtime-contracts";
 
 import {
   JavaScriptProjectCommandRequest,

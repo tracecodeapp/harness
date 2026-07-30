@@ -4,7 +4,7 @@ import { test } from 'node:test';
 import type {
   Language,
   RuntimePreparedExecutionProvider,
-} from '../packages/runtime-core/src';
+} from '../packages/runtime-contracts/src';
 import {
   createBrowserRuntimeHost,
   createBrowserRuntimeProviderRegistry,

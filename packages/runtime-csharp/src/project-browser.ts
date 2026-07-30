@@ -10,12 +10,12 @@ import type {
   RuntimeProjectEngineLeaseController,
   RuntimeProjectFileChangeApplyOptions,
   RuntimeProjectSnapshot,
-} from '@tracecode/runtime-core';
+} from '@tracecode/runtime-contracts';
 import {
   createRuntimeProjectIoBridge,
   runRuntimeProjectWorkerBridge,
   withRuntimeProjectCommandRunnerCapabilities,
-} from '@tracecode/runtime-core';
+} from '@tracecode/runtime-contracts';
 import type { CSharpWorkerClient } from './csharp-worker-client';
 
 export type CSharpProjectFileEncoding = RuntimeFileEncoding;

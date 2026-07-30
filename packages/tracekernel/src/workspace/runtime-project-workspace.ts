@@ -33,14 +33,14 @@ import {
   runtimeFileChangePath,
   runRuntimeProjectWorkerBridge,
   isRuntimeProjectHiddenCommandAccess,
-} from '@tracecode/runtime-core';
+} from '@tracecode/runtime-contracts';
 import {
   createDefaultExternalHttpFetch,
   isBlockedExternalHttpHost,
   RUNTIME_EXTERNAL_HTTP_MAX_BODY_BYTES,
   type RuntimeExternalHttpConfig,
   type RuntimeExternalHttpRequest,
-} from '@tracecode/runtime-core';
+} from '@tracecode/runtime-contracts';
 import {
   isRuntimeKernelVirtualNamespacePath,
   normalizeRuntimeProcPath,
@@ -70,9 +70,9 @@ import {
   publicRuntimeKernelInfo,
   publicRuntimeKernelVirtualFiles,
   createRuntimeKernelReadonlyFileError,
-} from '@tracecode/runtime-core';
-import { getLanguageRuntimeInfo, TRACECODE_HARNESS_VERSION } from '@tracecode/runtime-core';
-import type { Language } from '@tracecode/runtime-core';
+} from '@tracecode/runtime-contracts';
+import { getLanguageRuntimeInfo, TRACECODE_HARNESS_VERSION } from '@tracecode/runtime-contracts';
+import type { Language } from '@tracecode/runtime-contracts';
 import {
   encodeTraceKernelHttp1Request,
   encodeTraceKernelHttp1Response,
@@ -206,7 +206,7 @@ import type {
   RuntimeWorkspaceRemoveOptions,
   RuntimeWorkspaceStat,
   RuntimeWorkspaceUnsubscribe,
-} from '@tracecode/runtime-core';
+} from '@tracecode/runtime-contracts';
 import {
   CPP_COMPILER_COMMANDS,
   DEFAULT_CWD,
@@ -5166,17 +5166,17 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
           const attachment = engineAttachment;
           engineAttachment = undefined;
           if (
-            attachment &&
             disposition.kind === 'destroy' &&
             disposition.reason === 'interrupted' &&
             !abortController.signal.aborted
           ) {
             // TraceKernel never delivers SIGKILL to a catchable runtime signal
             // handler. A forced kernel exit reaches the host through lease
-            // interruption instead, so an interrupted attached engine must
-            // tear down its active executor. Other destroy dispositions happen
-            // after execution has already settled: retiring an unvalidated or
-            // failed engine is lease cleanup, not a new process signal.
+            // interruption instead, so every interrupted host execution must
+            // tear down even when its runner does not attach a reusable engine.
+            // Other destroy dispositions happen after execution has already
+            // settled: retiring an unvalidated or failed engine is lease
+            // cleanup, not a new process signal.
             // Preserve an already delivered signal when one exists; otherwise
             // this is the uncatchable SIGKILL path.
             executionHandle.pendingSignal ??= {

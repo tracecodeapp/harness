@@ -39,7 +39,7 @@ export const libraryConfig = {
   external: [
     ...commonConfig.external,
     '@tracecode/runtime-browser',
-    '@tracecode/runtime-core',
+    '@tracecode/runtime-contracts',
     '@tracecode/tracekernel',
   ],
 };

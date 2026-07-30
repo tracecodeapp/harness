@@ -3,7 +3,7 @@ import {
   publicRuntimeKernelVirtualFiles,
   runtimeKernelVirtualDevices,
   runtimeKernelVirtualFiles,
-} from '@tracecode/runtime-core';
+} from '@tracecode/runtime-contracts';
 import type {
   RuntimeCommandResult,
   RuntimeDirectory,
@@ -14,7 +14,7 @@ import type {
   RuntimeKernelInfo,
   RuntimeProjectSnapshot,
   RuntimeSymlink,
-} from '@tracecode/runtime-core';
+} from '@tracecode/runtime-contracts';
 import type {
   CommandContext,
   IFileSystem,

@@ -5,7 +5,7 @@ import type {
   RuntimePreparedProgram,
   RuntimePreparedProgramMode,
   RuntimePreparedTraceCall,
-} from '@tracecode/runtime-core';
+} from '@tracecode/runtime-contracts';
 
 interface LinkedAbortSignal {
   readonly signal: AbortSignal;

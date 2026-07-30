@@ -24,7 +24,7 @@ import {
   runtimeAbortSignalName,
   runtimeCommandStdinPipeClosed,
   runtimeSignalExitCode,
-} from '@tracecode/runtime-core';
+} from '@tracecode/runtime-contracts';
 import type {
   RuntimeCommandResult,
   RuntimeCommandEventHandler,
@@ -35,7 +35,7 @@ import type {
   RuntimeProjectCommandRunner,
   RuntimeProjectSnapshot,
   RuntimeCommandStdinSharedBuffer,
-} from '@tracecode/runtime-core';
+} from '@tracecode/runtime-contracts';
 
 export type JavaProjectFileEncoding = RuntimeFileEncoding;
 export type JavaProjectFile = RuntimeFile;

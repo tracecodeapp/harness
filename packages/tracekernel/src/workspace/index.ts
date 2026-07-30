@@ -1,10 +1,11 @@
 /**
  * TraceKernel's stateful workspace implementation.
  *
- * Runtime-neutral contracts remain owned by `@tracecode/runtime-core`; this
- * entrypoint exports only the implementation and configuration that
- * TraceKernel owns.
+ * Runtime-neutral contracts remain owned by `@tracecode/runtime-contracts`.
+ * TraceKernel re-exports them here so callers receive the complete contract
+ * implemented by the workspace without importing a private package directly.
  */
+export * from '@tracecode/runtime-contracts';
 export {
   RuntimeProjectWorkspace,
   createRuntimeWorkspace,

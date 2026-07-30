@@ -4,7 +4,7 @@ import type {
   RuntimeFileChange,
   RuntimeFileDeletion,
   RuntimeSymlink,
-} from '@tracecode/runtime-core';
+} from '@tracecode/runtime-contracts';
 import type { FileContent, IFileSystem } from 'just-bash/browser';
 import { bytesFromBase64, contentToBytesForRuntimeFile } from './file-content';
 import { normalizeFsLockPath } from './locks';

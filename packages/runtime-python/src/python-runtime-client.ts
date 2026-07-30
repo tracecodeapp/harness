@@ -16,10 +16,10 @@ import type {
   RuntimeProgramPreparationCall,
   RuntimeProgramPreparationResult,
   RuntimeTraceCall,
-} from '@tracecode/runtime-core';
-import type { RuntimeCommandResult } from '@tracecode/runtime-core';
-import type { CodeExecutionResult, ExecutionLimitReason, ExecutionResult } from '@tracecode/runtime-core';
-import { liftTraceOutcome } from '@tracecode/runtime-core';
+} from '@tracecode/runtime-contracts';
+import type { RuntimeCommandResult } from '@tracecode/runtime-contracts';
+import type { CodeExecutionResult, ExecutionLimitReason, ExecutionResult } from '@tracecode/runtime-contracts';
+import { liftTraceOutcome } from '@tracecode/runtime-contracts';
 import {
   RUNTIME_TRACE_SCHEMA_VERSION,
   createEmptyRuntimeTrace,
@@ -29,7 +29,7 @@ import {
   type RuntimeTraceEventKind,
   type RuntimeTraceSourceSpan,
   type RuntimeTraceTarget,
-} from '@tracecode/runtime-core';
+} from '@tracecode/runtime-contracts';
 import { assertRuntimeRequestSupported } from '@tracecode/runtime-browser/internal';
 import { getLanguageRuntimeProfile } from '@tracecode/runtime-browser/internal';
 import {

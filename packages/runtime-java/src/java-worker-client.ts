@@ -19,15 +19,15 @@ import type {
   RuntimePreparedTraceCall,
   RuntimeProgramPreparationCall,
   RuntimeTraceCall,
-} from '@tracecode/runtime-core';
-import { liftCodeBatchOutcome, liftCodeOutcome, type RawExecutionBatchPayload } from '@tracecode/runtime-core';
+} from '@tracecode/runtime-contracts';
+import { liftCodeBatchOutcome, liftCodeOutcome, type RawExecutionBatchPayload } from '@tracecode/runtime-contracts';
 import type {
   RuntimeCommandEventHandler,
   RuntimeCommandResult,
   RuntimeProjectCommandRequest,
-} from '@tracecode/runtime-core';
-import { javaTraceHooksEventsToRuntimeTrace } from '@tracecode/runtime-core';
-import { createEmptyRuntimeTrace, type RuntimeTrace } from '@tracecode/runtime-core';
+} from '@tracecode/runtime-contracts';
+import { javaTraceHooksEventsToRuntimeTrace } from '@tracecode/runtime-contracts';
+import { createEmptyRuntimeTrace, type RuntimeTrace } from '@tracecode/runtime-contracts';
 import {
   closeKernelHttpSyncServers,
   handleKernelHttpCloseMessage,

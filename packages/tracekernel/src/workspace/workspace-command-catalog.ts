@@ -1,9 +1,9 @@
 import type {
   RuntimeCommandResult,
-} from '@tracecode/runtime-core';
+} from '@tracecode/runtime-contracts';
 import type {
   RuntimeKernelVirtualStat,
-} from '@tracecode/runtime-core';
+} from '@tracecode/runtime-contracts';
 import {
   TRACEKERNEL_BIN_PATH,
   TRACEKERNEL_COMMAND_DISPATCH_PREFIX,

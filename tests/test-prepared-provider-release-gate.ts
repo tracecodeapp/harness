@@ -7,10 +7,12 @@ import {
 } from '../src/browser';
 import * as judgeExports from '../src/judge';
 import {
-  createBrowserRuntimeJudge,
-  type CreateBrowserRuntimeJudgeOptions,
   type JudgeEvaluationPlan,
 } from '../src/judge';
+import {
+  createBrowserRuntimeJudge,
+  type CreateBrowserRuntimeJudgeOptions,
+} from '../src/internal/browser-judge';
 import type {
   BrowserRuntimeHost,
 } from '../packages/runtime-browser/src/browser-runtime-host';
@@ -22,7 +24,7 @@ import type {
   Language,
   RuntimePreparedExecutionProvider,
   RuntimePreparedProgramCapabilities,
-} from '@tracecode/runtime-core';
+} from '@tracecode/runtime-contracts';
 import {
   createBrowserRuntimeHost,
   createBrowserRuntimeProviderRegistry,

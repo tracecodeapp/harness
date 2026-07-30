@@ -18,21 +18,21 @@ import type {
   RuntimeExecutionStyle,
   RuntimeTraceCall,
   TraceExecutionOptions,
-} from '@tracecode/runtime-core';
-import type { RuntimeCommandResult } from '@tracecode/runtime-core';
-import type { CodeExecutionBatchResult, CodeExecutionResult, ExecutionLimitReason, ExecutionResult } from '@tracecode/runtime-core';
+} from '@tracecode/runtime-contracts';
+import type { RuntimeCommandResult } from '@tracecode/runtime-contracts';
+import type { CodeExecutionBatchResult, CodeExecutionResult, ExecutionLimitReason, ExecutionResult } from '@tracecode/runtime-contracts';
 import {
   liftCodeBatchOutcome,
   liftCodeOutcome,
   liftTraceOutcome,
   type RawExecutionBatchPayload,
   type RawExecutionPayload,
-} from '@tracecode/runtime-core';
+} from '@tracecode/runtime-contracts';
 import {
   createEmptyRuntimeTrace,
   type RuntimeTrace,
-} from '@tracecode/runtime-core';
-import { javaTraceHooksEventsToRuntimeTrace } from '@tracecode/runtime-core';
+} from '@tracecode/runtime-contracts';
+import { javaTraceHooksEventsToRuntimeTrace } from '@tracecode/runtime-contracts';
 import {
   PYTHON_CLASS_DEFINITIONS,
   PYTHON_CONVERSION_HELPERS,
@@ -43,11 +43,11 @@ import {
 import {
   createNativeProjectWorkspace,
   type CreateNativeProjectWorkspaceOptions,
-} from '../../../src/project-node';
+} from './native-workspace';
 import {
   getLanguageRuntimeInfo,
   getSupportedLanguageRuntimeInfos,
-} from '@tracecode/runtime-core';
+} from '@tracecode/runtime-contracts';
 import {
   getLanguageRuntimeProfile,
   getSupportedLanguageProfiles,

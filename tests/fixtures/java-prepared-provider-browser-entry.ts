@@ -9,7 +9,7 @@ import type {
 } from '../../packages/runtime-browser/src/internal';
 import type {
   RuntimeTraceEvent,
-} from '../../packages/runtime-core/src/runtime-trace';
+} from '../../packages/runtime-contracts/src/runtime-trace';
 
 interface PreparedBrowserResult {
   createdWorkers: number;

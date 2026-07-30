@@ -1,6 +1,6 @@
 #!/usr/bin/env npx tsx
 
-import type { RuntimeKernelInfo } from '../packages/runtime-core/src/index';
+import type { RuntimeKernelInfo } from '../packages/runtime-contracts/src/index';
 import { WorkspaceIdentityCommands } from '../packages/tracekernel/src/workspace/userland-identity-commands';
 
 function assertCondition(

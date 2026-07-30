@@ -2,7 +2,7 @@ import type {
   RuntimeCommandOptions,
   RuntimeCommandResult,
   RuntimeKernelInfo,
-} from '@tracecode/runtime-core';
+} from '@tracecode/runtime-contracts';
 import {
   TRACE_KERNEL_ARCHITECTURE,
   TRACEKERNEL_BIN_PATH,

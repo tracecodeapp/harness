@@ -1,8 +1,8 @@
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import ts from 'typescript';
-import { getLanguageRuntimeInfo } from '../packages/runtime-core/src/runtime-language-info';
-import { getRuntimeCommandVersion } from '../packages/runtime-core/src/runtime-command-info';
+import { getLanguageRuntimeInfo } from '../packages/runtime-contracts/src/runtime-language-info';
+import { getRuntimeCommandVersion } from '../packages/runtime-contracts/src/runtime-command-info';
 import {
   DEFAULT_BROWSER_RUNTIME_ASSET_RELATIVE_PATHS,
   resolveBrowserRuntimeAssets,
@@ -12,11 +12,7 @@ const ROOT = process.cwd();
 const VIRTUAL_OUT_DIR = '/tracecode-cpp-public-declarations';
 const FORBIDDEN_PUBLIC_COMPILER_NAME = /(?:YoWASP|Toolchain|Clang|LLVM)/iu;
 const ROOT_NEUTRAL_EXPORTS = new Set([
-  '.',
-  './browser',
-  './browser/project',
-  './project',
-  './project-node',
+  './tracekernel',
   './judge',
   './package.json',
 ]);
@@ -67,7 +63,7 @@ function generatedLanguageMetadataSlice(): string {
     'utf8'
   );
   const start = generatedProjectWorker.indexOf(
-    '// packages/runtime-core/src/generated/runtime-language-info-data.ts'
+    '// packages/runtime-contracts/src/generated/runtime-language-info-data.ts'
   );
   const end = generatedProjectWorker.indexOf(
     '\nvar RUNTIME_COMMAND_VERSIONS',
@@ -82,7 +78,7 @@ function generatedLanguageMetadataSlice(): string {
 
 function main(): void {
   const configs = [
-    parsedConfig('packages/runtime-core/tsconfig.json'),
+    parsedConfig('packages/runtime-contracts/tsconfig.json'),
     parsedConfig('packages/runtime-browser/tsconfig.json'),
     parsedConfig('packages/runtime-cpp/tsconfig.json'),
   ];
@@ -130,7 +126,7 @@ function main(): void {
   // need a language-owned, implementation-neutral contract because the root
   // workspace composes them behind its neutral project and judge entrypoints.
   const runtimeSources = [
-    'packages/runtime-core/src/runtime-execution.ts',
+    'packages/runtime-contracts/src/runtime-execution.ts',
     'packages/runtime-browser/src/runtime-assets.ts',
     'packages/runtime-browser/src/runtime-environment.ts',
     'packages/runtime-cpp/src/browser-runtime-provider.ts',
@@ -205,7 +201,7 @@ function main(): void {
   }
 
   const timingDeclaration = runtimeDeclarations.get(
-    'packages/runtime-core/src/runtime-execution.ts'
+    'packages/runtime-contracts/src/runtime-execution.ts'
   )!;
   assertCondition(
     timingDeclaration.includes('compilerLoadMs') &&
@@ -275,7 +271,7 @@ function main(): void {
   );
   assertCondition(
     rootExports.every((subpath) => ROOT_NEUTRAL_EXPORTS.has(subpath)),
-    `The root package may expose only neutral orchestration entrypoints: ${rootExports.join(', ')}`
+    `The root package may expose only TraceKernel, Judge, and its manifest: ${rootExports.join(', ')}`
   );
 
   const runtimePackage = JSON.parse(

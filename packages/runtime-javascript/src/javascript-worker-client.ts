@@ -26,7 +26,7 @@ import type {
   RuntimeProgramPreparationResult,
   RuntimeTrace,
   RuntimeTraceCall,
-} from '@tracecode/runtime-core';
+} from '@tracecode/runtime-contracts';
 import {
   createEmptyRuntimeTrace,
   liftCodeBatchOutcome,
@@ -34,7 +34,7 @@ import {
   liftTraceOutcome,
   type RawExecutionBatchPayload,
   type RawExecutionPayload,
-} from '@tracecode/runtime-core';
+} from '@tracecode/runtime-contracts';
 
 /** Raw wire payload from the tracing command; lifted into the outcome union here. */
 type JavaScriptRawTraceResult = RawExecutionPayload & { trace?: RuntimeTrace };

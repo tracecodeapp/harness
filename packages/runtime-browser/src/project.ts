@@ -6,7 +6,7 @@ import type {
   RuntimeProjectCommandRequest,
   RuntimeProjectProcessInfo,
   RuntimeWorkspace,
-} from '@tracecode/runtime-core';
+} from '@tracecode/runtime-contracts';
 import type { CreateRuntimeWorkspaceOptions } from '@tracecode/tracekernel/workspace';
 import type { CSharpWorkerClient, CSharpWorkerClientOptions } from '../../runtime-csharp/src/csharp-worker-client';
 import type { CppWorkerClient, CppWorkerClientOptions } from '../../runtime-cpp/src/cpp-worker-client';
@@ -47,7 +47,7 @@ export {
   runtimeHttpRequestText,
   runtimeHttpResponseBytes,
   runtimeHttpResponseText,
-} from '@tracecode/runtime-core';
+} from '@tracecode/runtime-contracts';
 export {
   BROWSER_EXECUTION_HOST_PROTOCOL,
   createBrowserExecutionWorkerHost,

@@ -1,14 +1,14 @@
 {
-  "name": "@tracecode/runtime-core",
+  "name": "@tracecode/runtime-contracts",
   "private": true,
-  "version": "0.13.1",
+  "version": "0.14.0",
   "description": "Shared TraceCode harness runtime contracts and trace helpers.",
   "license": "AGPL-3.0-only",
   "homepage": "https://tracecode.app",
   "repository": {
     "type": "git",
     "url": "https://github.com/tracecodeapp/harness.git",
-    "directory": "packages/runtime-core"
+    "directory": "packages/runtime-contracts"
   },
   "type": "module",
   "main": "./dist/index.cjs",

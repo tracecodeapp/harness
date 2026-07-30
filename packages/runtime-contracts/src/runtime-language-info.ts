@@ -33,7 +33,7 @@ export interface LanguageRuntimeInfo {
 export { LANGUAGE_RUNTIME_INFOS };
 
 /** Node.js CLI/API compatibility level exposed by browser project workspaces. */
-export const BROWSER_PROJECT_NODE_COMPAT_VERSION = '22.0.0';
+export const NODE_RUNTIME_COMPAT_VERSION = '22.0.0';
 
 export const SUPPORTED_LANGUAGE_RUNTIME_INFOS: readonly LanguageRuntimeInfo[] = Object.freeze(
   Object.values(LANGUAGE_RUNTIME_INFOS)

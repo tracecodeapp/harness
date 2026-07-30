@@ -14,7 +14,7 @@ import {
   runtimeFileChangePath,
   runtimeProjectTruncateUtf8,
   runtimeProjectUtf8Bytes,
-} from '@tracecode/runtime-core';
+} from '@tracecode/runtime-contracts';
 import {
   isRuntimeKernelVirtualNamespacePath,
   normalizeRuntimeProcPath,
@@ -51,9 +51,9 @@ import {
   readRuntimeProcFile,
   createRuntimeKernelReadonlyFileError,
   type RuntimeKernelVirtualStat,
-} from '@tracecode/runtime-core';
-import { BROWSER_PROJECT_NODE_COMPAT_VERSION } from '@tracecode/runtime-core';
-import type { Language } from '@tracecode/runtime-core';
+} from '@tracecode/runtime-contracts';
+import { NODE_RUNTIME_COMPAT_VERSION } from '@tracecode/runtime-contracts';
+import type { Language } from '@tracecode/runtime-contracts';
 import type {
   CommandContext,
   FileContent,
@@ -85,7 +85,7 @@ import type {
   RuntimeProjectPatchFileWrite,
   RuntimeProjectSnapshot,
   RuntimeWorkspaceActor,
-} from '@tracecode/runtime-core';
+} from '@tracecode/runtime-contracts';
 import type {
   CppProjectCommandRunner,
   CSharpProjectCommandRunner,
@@ -686,7 +686,7 @@ export function packageScriptEnv(
   eventName: string,
   script: string
 ): Record<string, string> {
-  const nodeVersion = BROWSER_PROJECT_NODE_COMPAT_VERSION;
+  const nodeVersion = NODE_RUNTIME_COMPAT_VERSION;
   return {
     ...baseEnv,
     INIT_CWD: originalCwd,
@@ -780,7 +780,7 @@ export async function runPackageExec(
     await ensurePackageBinShims(ctx, workspaceRoot, manifest.directory);
   }
   const baseEnv = commandEnv(ctx);
-  const nodeVersion = BROWSER_PROJECT_NODE_COMPAT_VERSION;
+  const nodeVersion = NODE_RUNTIME_COMPAT_VERSION;
   const shellCommand = appendScriptArgs(command, args);
   return ctx.exec(shellCommand, {
     cwd: manifest.directory,

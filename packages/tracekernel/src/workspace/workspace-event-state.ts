@@ -3,7 +3,7 @@ import type {
   RuntimeCommandEvent,
   RuntimeWorkspaceEventHandler,
   RuntimeWorkspaceUnsubscribe,
-} from '@tracecode/runtime-core';
+} from '@tracecode/runtime-contracts';
 
 const DEFAULT_WORKSPACE_EVENT_LOG_LIMIT = 256;
 

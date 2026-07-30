@@ -4,7 +4,7 @@ import type {
   RuntimeProjectPatchChange,
   RuntimeProjectPatchOptions,
   RuntimeProjectSnapshot,
-} from '@tracecode/runtime-core';
+} from '@tracecode/runtime-contracts';
 import {
   RUNTIME_PROJECT_PATCH_VERSION,
   createRuntimeProjectPatchSnapshotView,

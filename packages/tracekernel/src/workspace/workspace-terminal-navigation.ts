@@ -3,7 +3,7 @@ import type {
   RuntimeCommandCompletionMatch,
   RuntimeCommandCompletionOptions,
   RuntimeKernelInfo,
-} from '@tracecode/runtime-core';
+} from '@tracecode/runtime-contracts';
 import type {
   IFileSystem,
 } from 'just-bash/browser';

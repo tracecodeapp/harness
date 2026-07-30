@@ -4,30 +4,27 @@ import { commonConfig, libraryConfig } from './tsup.shared';
 export default defineConfig([
   {
     ...commonConfig,
-    // The root @tracecode/harness bundle stays self-contained: inline runtime-core
-    // rather than leaving a bare @tracecode/runtime-core import the packed tarball
+    // The root @tracecode/harness bundle stays self-contained: inline runtime-contracts
+    // rather than leaving a bare @tracecode/runtime-contracts import the packed tarball
     // cannot resolve. Cross-copy token identity is preserved by the globalThis
-    // Symbol.for registry in runtime-core.
+    // Symbol.for registry in runtime-contracts.
     noExternal: [
       ...commonConfig.noExternal,
       '@tracecode/runtime-browser',
-      '@tracecode/runtime-core',
+      '@tracecode/runtime-contracts',
       '@tracecode/tracekernel',
     ],
     entry: {
-      index: 'src/index.ts',
-      browser: 'src/browser.ts',
-      'browser/project': 'packages/runtime-browser/src/project.ts',
-      project: 'packages/workspace-facade/src/index.ts',
-      'project-node': 'src/project-node.ts',
-      // Build-only declaration closure for the public project entrypoints.
+      tracekernel: 'src/tracekernel.ts',
+      // Build-only declaration closure for the two public entrypoints.
       // These files are deliberately absent from the package export map.
-      core: 'packages/runtime-core/src/index.ts',
+      core: 'packages/runtime-contracts/src/index.ts',
+      'internal/tracekernel': 'packages/tracekernel/src/index.ts',
+      'internal/tracekernel-workspace':
+        'packages/tracekernel/src/workspace/index.ts',
       'internal/browser': 'packages/runtime-browser/src/internal.ts',
-      'internal/tracekernel/workspace':
-        'src/internal/tracekernel/workspace.ts',
       judge: 'src/judge.ts',
-      'zlib-browser-shim': 'packages/workspace-facade/src/zlib-browser-shim.ts',
+      'zlib-browser-shim': 'packages/tracekernel/src/zlib-browser-shim.ts',
       cli: 'src/cli.ts',
     },
   },
@@ -77,14 +74,6 @@ export default defineConfig([
       'project-browser': 'packages/runtime-cpp/src/project-browser.ts',
     },
     outDir: 'packages/runtime-cpp/dist',
-  },
-  {
-    ...libraryConfig,
-    entry: {
-      index: 'packages/workspace-facade/src/index.ts',
-      'zlib-browser-shim': 'packages/workspace-facade/src/zlib-browser-shim.ts',
-    },
-    outDir: 'packages/workspace-facade/dist',
   },
   {
     ...libraryConfig,

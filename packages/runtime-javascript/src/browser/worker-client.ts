@@ -9,12 +9,12 @@ import type {
   RuntimeKernelSignalBridge,
   RuntimeKernelSyscallBridge,
   RuntimeProjectEngineLeaseController,
-} from "@tracecode/runtime-core";
+} from "@tracecode/runtime-contracts";
 
 import {
   createRuntimeProjectIoBridge,
   runtimeAbortSignalName,
-} from "@tracecode/runtime-core";
+} from "@tracecode/runtime-contracts";
 
 import {
   DEFAULT_SIGNAL_GRACE_MS,

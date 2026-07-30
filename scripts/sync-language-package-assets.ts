@@ -35,7 +35,7 @@ const PACKAGE_ASSET_PLANS: PackageAssetPlan[] = [
     assets: [],
   },
   {
-    packageDir: 'packages/runtime-core',
+    packageDir: 'packages/runtime-contracts',
     assets: [],
   },
   {
@@ -44,10 +44,6 @@ const PACKAGE_ASSET_PLANS: PackageAssetPlan[] = [
   },
   {
     packageDir: 'packages/runtime-browser',
-    assets: [],
-  },
-  {
-    packageDir: 'packages/workspace-facade',
     assets: [],
   },
   {

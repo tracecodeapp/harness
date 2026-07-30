@@ -7,7 +7,7 @@ import {
   createRuntimeCommandStdinPipeFromText,
   type RuntimeCommandEvent,
   type RuntimeCommandResult,
-} from '../packages/runtime-core/src/runtime-project';
+} from '../packages/runtime-contracts/src/runtime-project';
 import { createBrowserProjectWorkspace } from '../packages/runtime-browser/src/project';
 import { createBrowserPythonProjectRunner } from '../packages/runtime-python/src/project-browser';
 import { createBrowserJavaProjectRunner } from '../packages/runtime-java/src/project-browser';

@@ -10,7 +10,8 @@
     "preview": "pnpm sync:assets && vite preview --host 127.0.0.1 --port 4174"
   },
   "dependencies": {
-    "@tracecode/harness": "workspace:*"
+    "@tracecode/harness": "workspace:*",
+    "fflate": "^0.8.3"
   },
   "devDependencies": {
     "typescript": "^5.0.0",

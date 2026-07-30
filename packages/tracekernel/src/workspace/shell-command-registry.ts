@@ -1,4 +1,4 @@
-import type { RuntimeCommandResult } from '@tracecode/runtime-core';
+import type { RuntimeCommandResult } from '@tracecode/runtime-contracts';
 import {
   defineCommand,
   type Command,

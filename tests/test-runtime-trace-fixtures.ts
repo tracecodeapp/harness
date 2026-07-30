@@ -13,27 +13,27 @@ import type {
   Language,
   RuntimeExecutionStyle,
   RuntimeTraceCall,
-} from '../packages/runtime-core/src/runtime-types';
+} from '../packages/runtime-contracts/src/runtime-types';
 import {
   createEmptyRuntimeTrace,
   type RuntimeTraceEventKind,
   type RuntimeTraceParityAccessTarget,
   type RuntimeTrace,
-} from '../packages/runtime-core/src/runtime-trace';
+} from '../packages/runtime-contracts/src/runtime-trace';
 import {
   assertSupportedRawEmissions,
   compareRawEmissionParity,
   summarizeJavaRawEmissions,
   summarizeRuntimeTraceEmissions,
   type RuntimeRawEmissionSummary,
-} from '../packages/runtime-core/src/runtime-raw-emission-contract';
+} from '../packages/runtime-contracts/src/runtime-raw-emission-contract';
 import { createJavaRuntimeClient } from '../packages/runtime-java/src/java-runtime-client';
 import type {
   JavaWorkerClient,
   JavaWorkerRawTraceResult,
   JavaWorkerTraceResult,
 } from '../packages/runtime-java/src/java-worker-client';
-import { javaTraceHooksEventsToRuntimeTrace } from '../packages/runtime-core/src/trace-adapters/java';
+import { javaTraceHooksEventsToRuntimeTrace } from '../packages/runtime-contracts/src/trace-adapters/java';
 import {
   PYTHON_CLASS_DEFINITIONS,
   PYTHON_CONVERSION_HELPERS,

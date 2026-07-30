@@ -4,7 +4,7 @@ export * from './runtime-profiles';
 export * from './execution-host';
 export * from './runtime-environment';
 export * from './runtime-provider-registry';
-export * from '../../runtime-core/src/runtime-language-info';
+export * from '../../runtime-contracts/src/runtime-language-info';
 export {
   BROWSER_RUNTIME_ASSET_PROTOCOL_VERSION,
   BROWSER_RUNTIME_IDS,

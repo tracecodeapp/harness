@@ -5,7 +5,7 @@ import { test } from 'node:test';
 import {
   createEmptyRuntimeTrace,
   type RuntimeProgramPreparationCall,
-} from '../packages/runtime-core/src/index';
+} from '../packages/runtime-contracts/src/index';
 import {
   ExecutionTimeoutError,
 } from '../packages/runtime-browser/src/internal';

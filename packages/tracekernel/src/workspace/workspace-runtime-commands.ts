@@ -8,7 +8,7 @@ import type {
   RuntimeProjectCommandRequest,
   RuntimeProjectCommandRunner,
   RuntimeProjectSnapshot,
-} from '@tracecode/runtime-core';
+} from '@tracecode/runtime-contracts';
 import type { CommandContext } from 'just-bash/browser';
 import {
   createPackageManagerProjectCommands,

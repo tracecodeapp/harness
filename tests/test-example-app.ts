@@ -23,11 +23,11 @@ async function main(): Promise<void> {
     'utf8',
   );
   for (const requiredPublicApi of [
-    'createBrowserRuntimeHost',
-    'createBrowserRuntimeJudge',
+    'createBrowserJudgeHost',
+    'judgeHost.createJudge',
     'Effect.scoped',
     'signal: controller.signal',
-    'runtimeHost.dispose()',
+    'judgeHost.dispose()',
     'VITE_JAVA_RUNTIME_ASSET_BASE_URL',
     'runtimeAssetBaseUrl: javaRuntimeAssetBaseUrl',
   ]) {

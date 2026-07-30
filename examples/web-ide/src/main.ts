@@ -9,12 +9,9 @@ import * as Effect from 'effect/Effect';
 import {
   SUPPORTED_LANGUAGES,
   type Language,
-} from '@tracecode/harness';
+} from '@tracecode/harness/tracekernel';
 import {
-  createBrowserRuntimeHost,
-} from '@tracecode/harness/browser';
-import {
-  createBrowserRuntimeJudge,
+  createBrowserJudgeHost,
   type JudgeEvaluationPlan,
   type RuntimeJudgeBinding,
 } from '@tracecode/harness/judge';
@@ -205,7 +202,7 @@ function bootIde(): void {
 // ----------------------------------------------------------------------
 // Harness Setup
 // ----------------------------------------------------------------------
-const runtimeHost = createBrowserRuntimeHost({
+const judgeHost = createBrowserJudgeHost({
   assetBaseUrl: '/workers',
   providers: enabledLanguages,
   ...(javaRuntimeAssetBaseUrl
@@ -240,7 +237,7 @@ const disposeIde = (): Promise<void> => {
     if (operation) {
       await operation.completion.catch(() => undefined);
     }
-    runtimeHost.dispose();
+    judgeHost.dispose();
   })();
   return shutdownPromise;
 };
@@ -456,17 +453,16 @@ async function evaluateCode(
 
   const controller = new AbortController();
   const completion = (async () => {
-    await runtimeHost.preflightLanguage(language);
+    await judgeHost.preflightLanguage(language);
     if (controller.signal.aborted) return;
-    await runtimeHost.warmLanguage(language);
+    await judgeHost.warmLanguage(language);
     if (controller.signal.aborted) return;
     onReady();
 
     const evaluation = await Effect.runPromise(
       Effect.scoped(
         Effect.gen(function* () {
-          const judge = yield* createBrowserRuntimeJudge({
-            host: runtimeHost,
+          const judge = yield* judgeHost.createJudge({
             language,
             binding,
           });

@@ -9,14 +9,14 @@
  */
 
 import * as Effect from 'effect/Effect';
-import type { CodeExecutionBatchResult, CodeExecutionResult } from '@tracecode/runtime-core';
+import type { CodeExecutionBatchResult, CodeExecutionResult } from '@tracecode/runtime-contracts';
 import {
   createEmptyRuntimeTrace,
   liftCodeBatchOutcome,
   liftCodeOutcome,
   type RawExecutionBatchPayload,
   type RawExecutionPayload,
-} from '@tracecode/runtime-core';
+} from '@tracecode/runtime-contracts';
 
 /**
  * Raw wire payload from the tracing command. The Python runtime client
@@ -37,7 +37,7 @@ import type {
   RuntimeProgramPreparationCall,
   RuntimeExecutionTimings,
   RuntimeTraceCall,
-} from '@tracecode/runtime-core';
+} from '@tracecode/runtime-contracts';
 import { appendWorkerUrlQueryParameter, isDevEnvironment } from '@tracecode/runtime-browser/internal';
 import {
   cleanupAsyncKernelHttp,

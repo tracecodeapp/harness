@@ -8,15 +8,15 @@ import { delimiter, join } from 'node:path';
 import { dirname } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import vm from 'node:vm';
-import { javaTraceHooksEventsToRuntimeTrace } from '../packages/runtime-core/src/trace-adapters/java';
+import { javaTraceHooksEventsToRuntimeTrace } from '../packages/runtime-contracts/src/trace-adapters/java';
 import {
   RUNTIME_WORKSPACE_DEFAULT_MAX_BYTES,
   RUNTIME_WORKSPACE_DEFAULT_MAX_ENTRY_COUNT,
   RUNTIME_WORKSPACE_DEFAULT_MAX_FILE_BYTES,
   createRuntimeWorkspace,
   normalizeRuntimeWorkspaceStorageLimits,
-} from '../packages/workspace-facade/src/index';
-import { assertRuntimeFinalDiffBudget, type RuntimeCommandEvent, type RuntimeProjectCommandSource } from '../packages/runtime-core/src/runtime-project';
+} from '../packages/tracekernel/src/workspace/index';
+import { assertRuntimeFinalDiffBudget, type RuntimeCommandEvent, type RuntimeProjectCommandSource } from '../packages/runtime-contracts/src/runtime-project';
 import type { JavaScriptProjectCommandRequest } from '../packages/runtime-javascript/src/project-browser';
 import type { TypeScriptProjectCommandRequest } from '../packages/runtime-javascript/src/typescript-project';
 import { createIndexedDbKernelStorage } from '../packages/runtime-browser/src/project';

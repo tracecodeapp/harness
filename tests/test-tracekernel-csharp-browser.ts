@@ -117,8 +117,8 @@ async function main(): Promise<void> {
       target: ['es2022'],
       logLevel: 'warning',
       alias: {
-        zlib: resolve('packages/workspace-facade/src/zlib-browser-shim.ts'),
-        'node:zlib': resolve('packages/workspace-facade/src/zlib-browser-shim.ts'),
+        zlib: resolve('packages/tracekernel/src/zlib-browser-shim.ts'),
+        'node:zlib': resolve('packages/tracekernel/src/zlib-browser-shim.ts'),
       },
       define: { 'process.env.NODE_ENV': '"production"' },
     });

@@ -34,8 +34,8 @@ const PACKAGE_CHECKS: PackageCheck[] = [
     ],
   },
   {
-    name: '@tracecode/runtime-core',
-    dir: 'packages/runtime-core',
+    name: '@tracecode/runtime-contracts',
+    dir: 'packages/runtime-contracts',
     exportName: 'createEmptyRuntimeTrace',
     requiredFiles: [
       'dist/index.js',
@@ -89,20 +89,6 @@ const PACKAGE_CHECKS: PackageCheck[] = [
       'dist/index.d.ts',
       'package.json',
       'README.md',
-      'LICENSE',
-      'THIRD_PARTY_NOTICES.md',
-    ],
-  },
-  {
-    name: '@tracecode/workspace-facade',
-    dir: 'packages/workspace-facade',
-    exportName: 'createRuntimeWorkspace',
-    requiredFiles: [
-      'dist/index.js',
-      'dist/index.cjs',
-      'dist/index.d.ts',
-      'dist/zlib-browser-shim.js',
-      'dist/zlib-browser-shim.cjs',
       'LICENSE',
       'THIRD_PARTY_NOTICES.md',
     ],
@@ -398,12 +384,12 @@ async function runWithTempRoot(tempRoot: string): Promise<void> {
       assertCondition(fileStat.isFile(), `${packageCheck.name} extracted file should exist at ${relativePath}`);
     }
 
-    if (packageCheck.name === '@tracecode/runtime-core') {
+    if (packageCheck.name === '@tracecode/runtime-contracts') {
       const declarations = await readFile(join(packageDir, 'dist/index.d.ts'), 'utf8');
       assertCondition(
         declarations.includes('interface RuntimeDirectoryChange') &&
           declarations.includes('type RuntimeFileChange = RuntimeFile | RuntimeSymlink | RuntimeFileDeletion | RuntimeDirectoryChange'),
-        '@tracecode/runtime-core declarations should ship directory file-change events'
+        '@tracecode/runtime-contracts declarations should ship directory file-change events'
       );
       assertCondition(
         declarations.includes('runtimeKernelWriteTarget') &&
@@ -423,19 +409,19 @@ async function runWithTempRoot(tempRoot: string): Promise<void> {
           declarations.includes('runtimeKernelTruncateTarget') &&
           declarations.includes('type RuntimeKernelTruncateTarget') &&
           declarations.includes('normalizeRuntimeDevicePath'),
-        '@tracecode/runtime-core declarations should export shared tracekernel helpers'
+        '@tracecode/runtime-contracts declarations should export shared tracekernel helpers'
       );
       assertCondition(
         declarations.includes('class RuntimeProjectLiveIoController') &&
           declarations.includes('interface RuntimeProjectLiveIoControllerOptions') &&
           declarations.includes('filterAppliedResultFiles') &&
           declarations.includes('emitMissingFinalOutput'),
-        '@tracecode/runtime-core declarations should export the shared live project I/O controller'
+        '@tracecode/runtime-contracts declarations should export the shared live project I/O controller'
       );
       assertCondition(
         declarations.includes("type RuntimeProjectIoTier = 'unsupported' | 'final-diff' | 'bridged-live' | 'native-live'") &&
           declarations.includes('interface RuntimeProjectIoSupport'),
-        '@tracecode/runtime-core declarations should export project I/O support tier types'
+        '@tracecode/runtime-contracts declarations should export project I/O support tier types'
       );
     }
     if (packageCheck.name === '@tracecode/tracekernel') {
@@ -537,36 +523,6 @@ async function runWithTempRoot(tempRoot: string): Promise<void> {
           manifest.version === '0.14.0' &&
           manifest.repository?.directory === 'packages/runtime-sql',
         '@tracecode/runtime-sql package artifact should preserve the 0.14 runtime identity'
-      );
-    }
-    if (packageCheck.name === '@tracecode/workspace-facade') {
-      const projectDeclarations = await readFile(join(packageDir, 'dist/index.d.ts'), 'utf8');
-      assertCondition(
-        projectDeclarations.includes('RuntimeProjectLiveIoController') &&
-          projectDeclarations.includes('RuntimeProjectLiveIoControllerOptions'),
-        '@tracecode/workspace-facade declarations should re-export the shared live project I/O controller'
-      );
-      // workspace-facade references the shared HTTP client type from runtime-core
-      // rather than inlining it, so the project declarations expose the name while
-      // the abortable method signature is asserted in runtime-core's declarations.
-      assertCondition(
-        projectDeclarations.includes('RuntimeWorkspaceHttpClient'),
-        '@tracecode/workspace-facade declarations should expose the shared workspace HTTP client type'
-      );
-      const coreCheckForHttp = PACKAGE_CHECKS.find((check) => check.name === '@tracecode/runtime-core');
-      if (!coreCheckForHttp) {
-        throw new Error('@tracecode/runtime-core package check is required to verify the workspace HTTP API surface');
-      }
-      const coreDeclarations = await readFile(
-        join(packageNodeModulesDir(appDir, coreCheckForHttp.name), 'dist/index.d.ts'),
-        'utf8'
-      );
-      assertCondition(
-        coreDeclarations.includes('RuntimeWorkspaceHttpClient') &&
-          coreDeclarations.includes('listen(options: RuntimeKernelHttpListenOptions') &&
-          coreDeclarations.includes('timeoutMs?: number') &&
-          coreDeclarations.includes('signal?: AbortSignal'),
-        '@tracecode/runtime-core declarations should expose the abortable workspace HTTP API'
       );
     }
     if (packageCheck.name === '@tracecode/runtime-python') {
@@ -1161,12 +1117,12 @@ async function runWithTempRoot(tempRoot: string): Promise<void> {
       if (browserOnlyExtract.status !== 0) {
         throw new Error(browserOnlyExtract.stderr || browserOnlyExtract.stdout || '@tracecode/runtime-browser isolated extraction failed');
       }
-      // runtime-browser declares a runtime dependency on @tracecode/runtime-core,
+      // runtime-browser declares a runtime dependency on @tracecode/runtime-contracts,
       // so an isolated consumer install must resolve it too (npm would install it
       // transitively). Extract it alongside into the browser-only app.
-      const coreCheck = PACKAGE_CHECKS.find((check) => check.name === '@tracecode/runtime-core');
+      const coreCheck = PACKAGE_CHECKS.find((check) => check.name === '@tracecode/runtime-contracts');
       if (!coreCheck) {
-        throw new Error('@tracecode/runtime-core package check is required to satisfy runtime-browser isolated imports');
+        throw new Error('@tracecode/runtime-contracts package check is required to satisfy runtime-browser isolated imports');
       }
       const browserOnlyCoreDir = packageNodeModulesDir(browserOnlyAppDir, coreCheck.name);
       await mkdir(browserOnlyCoreDir, { recursive: true });
@@ -1175,20 +1131,20 @@ async function runWithTempRoot(tempRoot: string): Promise<void> {
         encoding: 'utf8',
       });
       if (coreOnlyPack.status !== 0) {
-        throw new Error(spawnFailure(coreOnlyPack, '@tracecode/runtime-core pack for browser-only app failed'));
+        throw new Error(spawnFailure(coreOnlyPack, '@tracecode/runtime-contracts pack for browser-only app failed'));
       }
       const coreOnlyTarballName = String(coreOnlyPack.stdout || '')
         .trim()
         .split('\n')
         .filter(Boolean)
         .at(-1);
-      assertCondition(Boolean(coreOnlyTarballName), '@tracecode/runtime-core pack should print a tarball for the browser-only app');
+      assertCondition(Boolean(coreOnlyTarballName), '@tracecode/runtime-contracts pack should print a tarball for the browser-only app');
       const coreOnlyTarballPath = isAbsolute(coreOnlyTarballName!) ? coreOnlyTarballName! : join(tempRoot, coreOnlyTarballName!);
       const browserOnlyCoreExtract = spawnSync('tar', ['-xf', coreOnlyTarballPath, '-C', browserOnlyCoreDir, '--strip-components=1'], {
         encoding: 'utf8',
       });
       if (browserOnlyCoreExtract.status !== 0) {
-        throw new Error(browserOnlyCoreExtract.stderr || browserOnlyCoreExtract.stdout || '@tracecode/runtime-core isolated extraction failed');
+        throw new Error(browserOnlyCoreExtract.stderr || browserOnlyCoreExtract.stdout || '@tracecode/runtime-contracts isolated extraction failed');
       }
       const traceKernelCheck = PACKAGE_CHECKS.find((check) => check.name === '@tracecode/tracekernel');
       if (!traceKernelCheck) {
@@ -1374,7 +1330,6 @@ async function runWithTempRoot(tempRoot: string): Promise<void> {
   const nonProjectImportScript = `
     (async () => {
       const checks = ${JSON.stringify(PACKAGE_CHECKS
-        .filter(({ name }) => name !== '@tracecode/workspace-facade')
         .map(({ name, exportName }) => ({ name, exportName })))};
       for (const check of checks) {
         const mod = await import(check.name);
@@ -1451,7 +1406,8 @@ async function runWithTempRoot(tempRoot: string): Promise<void> {
           throw new Error(check.name + ' missing ' + check.exportName);
         }
       }
-      const projectMod = await import('@tracecode/workspace-facade');
+      const projectMod = await import('@tracecode/tracekernel/workspace');
+      const coreMod = await import('@tracecode/runtime-contracts');
       for (const exportName of [
         'createRuntimeWorkspace',
         'createPythonProjectCommands',
@@ -1460,12 +1416,9 @@ async function runWithTempRoot(tempRoot: string): Promise<void> {
         'createCppProjectCommands',
         'createCSharpProjectCommands',
         'normalizeRuntimeProjectPath',
-        'runtimeHttpBodyBytes',
-        'runtimeHttpBodyFromBytes',
-        'runtimeHttpResponseText',
       ]) {
         if (typeof projectMod[exportName] !== 'function') {
-          throw new Error('@tracecode/workspace-facade missing ' + exportName);
+          throw new Error('@tracecode/tracekernel/workspace missing ' + exportName);
         }
       }
       const projectWorkspace = await projectMod.createRuntimeWorkspace({
@@ -1478,21 +1431,21 @@ async function runWithTempRoot(tempRoot: string): Promise<void> {
       });
       const projectCat = await projectWorkspace.runCommand('cat hello.txt');
       if (projectCat.stdout !== 'hello\\n' || projectCat.exitCode !== 0) {
-        throw new Error('@tracecode/workspace-facade workspace command smoke failed');
+        throw new Error('@tracecode/tracekernel/workspace command smoke failed');
       }
       if (projectWorkspace.cwd !== '/home/surface/surface-project') {
-        throw new Error('@tracecode/workspace-facade tracekernel cwd mismatch: ' + projectWorkspace.cwd);
+        throw new Error('@tracecode/tracekernel/workspace cwd mismatch: ' + projectWorkspace.cwd);
       }
       if (projectWorkspace.kernel.info.name !== 'tracekernel' || projectWorkspace.kernel.info.workspaceAlias !== '/workspace') {
-        throw new Error('@tracecode/workspace-facade tracekernel info missing: ' + JSON.stringify(projectWorkspace.kernel.info));
+        throw new Error('@tracecode/tracekernel/workspace kernel info missing: ' + JSON.stringify(projectWorkspace.kernel.info));
       }
       await projectWorkspace.writeFile('/workspace/alias.txt', 'alias\\n');
       if ((await projectWorkspace.readFile('/home/surface/surface-project/alias.txt')) !== 'alias\\n') {
-        throw new Error('@tracecode/workspace-facade /workspace alias smoke failed');
+        throw new Error('@tracecode/tracekernel/workspace /workspace alias smoke failed');
       }
       const mountInfo = await projectWorkspace.readFile('/proc/self/mountinfo');
       if (!mountInfo.includes('tracekernel:workspace') || !mountInfo.includes(' /workspace ')) {
-        throw new Error('@tracecode/workspace-facade mountinfo smoke failed: ' + mountInfo);
+        throw new Error('@tracecode/tracekernel/workspace mountinfo smoke failed: ' + mountInfo);
       }
       const outputEvents = [];
       const output = await projectWorkspace.runCommand('printf "surface-out\\\\n" > /dev/stdout', {
@@ -1501,14 +1454,14 @@ async function runWithTempRoot(tempRoot: string): Promise<void> {
         },
       });
       if (output.stdout !== 'surface-out\\n' || !outputEvents.some((event) => event.type === 'output' && event.device === '/dev/stdout')) {
-        throw new Error('@tracecode/workspace-facade /dev/stdout event smoke failed: ' + JSON.stringify({ output, outputEvents }));
+        throw new Error('@tracecode/tracekernel/workspace /dev/stdout event smoke failed: ' + JSON.stringify({ output, outputEvents }));
       }
       if (
         typeof projectWorkspace.http.request !== 'function' ||
         typeof projectWorkspace.http.json !== 'function' ||
         typeof projectWorkspace.http.listen !== 'function'
       ) {
-        throw new Error('@tracecode/workspace-facade workspace HTTP client surface missing');
+        throw new Error('@tracecode/tracekernel/workspace HTTP client surface missing');
       }
       const mockHttp = projectWorkspace.http.listen({ host: '127.0.0.1', port: 0 }, (request) => ({
         status: 209,
@@ -1522,21 +1475,21 @@ async function runWithTempRoot(tempRoot: string): Promise<void> {
         body: 'payload',
       });
       if (httpRequest.status !== 209 || httpRequest.body !== '{"method":"POST","path":"/surface","body":"payload"}\\n') {
-        throw new Error('@tracecode/workspace-facade workspace HTTP request/listen smoke failed: ' + JSON.stringify(httpRequest));
+        throw new Error('@tracecode/tracekernel/workspace HTTP request/listen smoke failed: ' + JSON.stringify(httpRequest));
       }
-      if (projectMod.runtimeHttpResponseText(httpRequest) !== '{"method":"POST","path":"/surface","body":"payload"}\\n') {
-        throw new Error('@tracecode/workspace-facade HTTP response text helper smoke failed: ' + JSON.stringify(httpRequest));
+      if (coreMod.runtimeHttpResponseText(httpRequest) !== '{"method":"POST","path":"/surface","body":"payload"}\\n') {
+        throw new Error('@tracecode/runtime-contracts HTTP response text helper smoke failed: ' + JSON.stringify(httpRequest));
       }
-      const binaryPayload = projectMod.runtimeHttpBodyFromBytes(new Uint8Array([0, 255, 1]));
+      const binaryPayload = coreMod.runtimeHttpBodyFromBytes(new Uint8Array([0, 255, 1]));
       if (
         binaryPayload.bodyEncoding !== 'base64' ||
-        Array.from(projectMod.runtimeHttpBodyBytes(binaryPayload)).join(',') !== '0,255,1'
+        Array.from(coreMod.runtimeHttpBodyBytes(binaryPayload)).join(',') !== '0,255,1'
       ) {
-        throw new Error('@tracecode/workspace-facade HTTP body byte helper smoke failed: ' + JSON.stringify(binaryPayload));
+        throw new Error('@tracecode/runtime-contracts HTTP body byte helper smoke failed: ' + JSON.stringify(binaryPayload));
       }
-      const bomPayload = projectMod.runtimeHttpBodyFromBytes(new Uint8Array([0xef, 0xbb, 0xbf, 0x41]));
-      if (Array.from(projectMod.runtimeHttpBodyBytes(bomPayload)).join(',') !== '239,187,191,65') {
-        throw new Error('@tracecode/workspace-facade HTTP body byte helper should preserve UTF-8 BOM bytes: ' + JSON.stringify(bomPayload));
+      const bomPayload = coreMod.runtimeHttpBodyFromBytes(new Uint8Array([0xef, 0xbb, 0xbf, 0x41]));
+      if (Array.from(coreMod.runtimeHttpBodyBytes(bomPayload)).join(',') !== '239,187,191,65') {
+        throw new Error('@tracecode/runtime-contracts HTTP body byte helper should preserve UTF-8 BOM bytes: ' + JSON.stringify(bomPayload));
       }
       const httpJson = await projectWorkspace.http.json({
         method: 'POST',
@@ -1544,7 +1497,7 @@ async function runWithTempRoot(tempRoot: string): Promise<void> {
         body: { ok: true },
       });
       if (httpJson.status !== 209 || httpJson.json.body !== '{"ok":true}') {
-        throw new Error('@tracecode/workspace-facade workspace HTTP json smoke failed: ' + JSON.stringify(httpJson));
+        throw new Error('@tracecode/tracekernel/workspace HTTP json smoke failed: ' + JSON.stringify(httpJson));
       }
       mockHttp.close();
       const stalledHttp = projectWorkspace.http.listen({ host: '127.0.0.1', port: 0 }, () => new Promise(() => {}));
@@ -1553,7 +1506,7 @@ async function runWithTempRoot(tempRoot: string): Promise<void> {
         timeoutMs: 1,
       });
       if (timedOutHttp.status !== 0 || timedOutHttp.body !== 'Network request timed out after 1 milliseconds\\n') {
-        throw new Error('@tracecode/workspace-facade workspace HTTP timeout smoke failed: ' + JSON.stringify(timedOutHttp));
+        throw new Error('@tracecode/tracekernel/workspace HTTP timeout smoke failed: ' + JSON.stringify(timedOutHttp));
       }
       stalledHttp.close();
       const pythonMain = await import('@tracecode/runtime-python');
@@ -1826,7 +1779,7 @@ async function runWithTempRoot(tempRoot: string): Promise<void> {
     join(appDir, 'browser-project-entry.js'),
     [
       'import { createBrowserProjectWorkspace } from "@tracecode/runtime-browser/project";',
-      'import { createRuntimeWorkspace } from "@tracecode/workspace-facade";',
+      'import { createRuntimeWorkspace } from "@tracecode/tracekernel/workspace";',
       'if (typeof createBrowserProjectWorkspace !== "function") throw new Error("missing browser project export");',
       'if (typeof createRuntimeWorkspace !== "function") throw new Error("missing project export");',
       'console.log("ok");',

@@ -120,7 +120,7 @@ async function main(): Promise<void> {
   );
   assert.match(
     repositoryAudit.stdout,
-    /@tracecode\/harness is the only publishable workspace manifest; 16 internal manifests are private/u
+    /@tracecode\/harness is the only publishable workspace manifest; 15 internal manifests are private/u
   );
 
   const inventory = await repositoryManifestInventory();
@@ -225,7 +225,7 @@ async function main(): Promise<void> {
     for (const [key, value] of [
       ['npm_config_recursive', 'true'],
       ['npm_config_filter', '@tracecode/harness'],
-      ['npm_config_workspace', 'packages/runtime-core'],
+      ['npm_config_workspace', 'packages/runtime-contracts'],
       ['npm_config_workspace_root', 'true'],
       ['npm_config_workspaces', 'true'],
     ] as const) {

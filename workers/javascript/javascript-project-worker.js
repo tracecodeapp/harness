@@ -1633,9 +1633,6 @@ var package_default = {
   },
   packageManager: "pnpm@10.4.1",
   type: "module",
-  main: "./dist/index.cjs",
-  module: "./dist/index.js",
-  types: "./dist/index.d.ts",
   files: [
     "dist",
     "workers",
@@ -1661,35 +1658,11 @@ var package_default = {
     "node:zlib": "./dist/zlib-browser-shim.js"
   },
   exports: {
-    ".": {
-      types: "./dist/index.d.ts",
-      import: "./dist/index.js",
-      require: "./dist/index.cjs",
-      default: "./dist/index.js"
-    },
-    "./browser": {
-      types: "./dist/browser.d.ts",
-      import: "./dist/browser.js",
-      require: "./dist/browser.cjs",
-      default: "./dist/browser.js"
-    },
-    "./browser/project": {
-      types: "./dist/browser/project.d.ts",
-      import: "./dist/browser/project.js",
-      require: "./dist/browser/project.cjs",
-      default: "./dist/browser/project.js"
-    },
-    "./project": {
-      types: "./dist/project.d.ts",
-      import: "./dist/project.js",
-      require: "./dist/project.cjs",
-      default: "./dist/project.js"
-    },
-    "./project-node": {
-      types: "./dist/project-node.d.ts",
-      import: "./dist/project-node.js",
-      require: "./dist/project-node.cjs",
-      default: "./dist/project-node.js"
+    "./tracekernel": {
+      types: "./dist/tracekernel.d.ts",
+      import: "./dist/tracekernel.js",
+      require: "./dist/tracekernel.cjs",
+      default: "./dist/tracekernel.js"
     },
     "./judge": {
       types: "./dist/judge.d.ts",
@@ -1703,7 +1676,7 @@ var package_default = {
     prepublishOnly: "pnpm release:check && pnpm build && pnpm release:check",
     "release:check": "node scripts/check-publish-safety.mjs",
     "release:root": "pnpm release:check && pnpm publish . --access public",
-    build: "pnpm generate:runtime-info && pnpm generate:python-harness && pnpm generate:kernel-policy && pnpm generate:typescript-project-libs && pnpm generate:javascript-project-worker && pnpm generate:java-helper && pnpm sync:package-assets && pnpm build:tracekernel && pnpm exec tsup --config tsup.runtime-core.config.ts && pnpm build:browser-host && pnpm exec tsup && pnpm rewrite:root-declarations && pnpm --dir packages/judge build",
+    build: "pnpm generate:runtime-info && pnpm generate:python-harness && pnpm generate:kernel-policy && pnpm generate:typescript-project-libs && pnpm generate:javascript-project-worker && pnpm generate:java-helper && pnpm sync:package-assets && pnpm build:tracekernel && pnpm exec tsup --config tsup.runtime-contracts.config.ts && pnpm build:browser-host && pnpm exec tsup && pnpm rewrite:root-declarations && pnpm --dir packages/judge build",
     "rewrite:root-declarations": "node scripts/rewrite-root-declaration-imports.mjs",
     "build:browser-host": "pnpm exec tsup --config tsup.browser-host.config.ts",
     "build:tracekernel": "pnpm exec tsup --config tsup.tracekernel.config.ts",
@@ -1724,7 +1697,7 @@ var package_default = {
     typecheck: "pnpm typecheck:root && pnpm typecheck:packages && pnpm typecheck:tests",
     "typecheck:root": "pnpm exec tsc -p tsconfig.root.json --noEmit",
     "typecheck:tests": "pnpm exec tsc -p tsconfig.tests.json --noEmit",
-    "typecheck:packages": "pnpm exec tsc -p packages/tracekernel/tsconfig.json --noEmit && pnpm exec tsc -p packages/runtime-core/tsconfig.json --noEmit && pnpm exec tsc -p packages/judge/tsconfig.json --noEmit && pnpm exec tsc -p packages/runtime-browser/tsconfig.json --noEmit && pnpm exec tsc -p packages/runtime-python/tsconfig.json --noEmit && pnpm exec tsc -p packages/runtime-javascript/tsconfig.json --noEmit && pnpm exec tsc -p packages/runtime-java/tsconfig.json --noEmit && pnpm exec tsc -p packages/runtime-csharp/tsconfig.json --noEmit && pnpm exec tsc -p packages/runtime-cpp/tsconfig.json --noEmit && pnpm exec tsc -p packages/workspace-facade/tsconfig.json --noEmit && pnpm exec tsc -p packages/runtime-native/tsconfig.json --noEmit && pnpm exec tsc -p packages/runtime-sql/tsconfig.json --noEmit",
+    "typecheck:packages": "pnpm exec tsc -p packages/tracekernel/tsconfig.json --noEmit && pnpm exec tsc -p packages/runtime-contracts/tsconfig.json --noEmit && pnpm exec tsc -p packages/judge/tsconfig.json --noEmit && pnpm exec tsc -p packages/runtime-browser/tsconfig.json --noEmit && pnpm exec tsc -p packages/runtime-python/tsconfig.json --noEmit && pnpm exec tsc -p packages/runtime-javascript/tsconfig.json --noEmit && pnpm exec tsc -p packages/runtime-java/tsconfig.json --noEmit && pnpm exec tsc -p packages/runtime-csharp/tsconfig.json --noEmit && pnpm exec tsc -p packages/runtime-cpp/tsconfig.json --noEmit && pnpm exec tsc -p packages/runtime-native/tsconfig.json --noEmit && pnpm exec tsc -p packages/runtime-sql/tsconfig.json --noEmit",
     "test:judge": "pnpm --dir packages/judge test",
     "test:tracekernel": "pnpm build:tracekernel && pnpm exec tsx --tsconfig tsconfig.base.json tests/test-tracekernel-public-package.ts && pnpm exec tsx --tsconfig tsconfig.base.json tests/test-tracekernel-lifecycle.ts && pnpm exec tsx --tsconfig tsconfig.base.json tests/test-tracekernel-runtime-recovery.ts && pnpm exec tsx --tsconfig tsconfig.base.json tests/test-tracekernel-controlled-runtime.ts && pnpm exec tsx --tsconfig tsconfig.base.json tests/test-tracekernel-watchdog.ts && pnpm exec tsx --tsconfig tsconfig.base.json tests/test-tracekernel-descriptors.ts && pnpm exec tsx --tsconfig tsconfig.base.json tests/test-tracekernel-terminal.ts && pnpm exec tsx --tsconfig tsconfig.base.json tests/test-tracekernel-watch.ts && pnpm exec tsx --tsconfig tsconfig.base.json tests/test-tracekernel-vfs.ts && pnpm exec tsx --tsconfig tsconfig.base.json tests/test-tracekernel-tkfs-backing.ts && pnpm exec tsx --tsconfig tsconfig.base.json tests/test-tracekernel-namespace.ts && pnpm exec tsx --tsconfig tsconfig.base.json tests/test-tracekernel-network.ts && pnpm exec tsx --tsconfig tsconfig.base.json tests/test-tracekernel-adversarial-teardown.ts && pnpm exec tsx --tsconfig tsconfig.base.json tests/test-tracekernel-workspace-processes.ts && pnpm exec tsx --tsconfig tsconfig.base.json tests/test-tracekernel-workspace-job-control.ts && pnpm exec tsx --tsconfig tsconfig.base.json tests/test-tracekernel-http1.ts && pnpm exec tsx --tsconfig tsconfig.base.json tests/test-tracekernel-http-tcp.ts && pnpm exec tsx --tsconfig tsconfig.base.json tests/test-tracekernel-syscalls.ts && pnpm exec tsx --tsconfig tsconfig.base.json tests/test-tracekernel-transport.ts",
     "test:tracekernel:browser": "pnpm generate:javascript-project-worker && pnpm exec tsx --tsconfig tsconfig.base.json tests/test-tracekernel-javascript-stdio.ts && pnpm exec tsx --tsconfig tsconfig.base.json tests/test-tracekernel-javascript-browser.ts",
@@ -1794,7 +1767,7 @@ var package_default = {
     "test:runtime-contract": "pnpm exec tsx --tsconfig tsconfig.base.json tests/test-runtime-contract.ts",
     "test:runtime-execution-judge": "TSX_TSCONFIG_PATH=tsconfig.base.json node --import tsx --test tests/test-runtime-execution-judge.ts",
     "test:prepared-provider-release-gate": "TSX_TSCONFIG_PATH=tsconfig.base.json node --import tsx --test tests/test-prepared-provider-release-gate.ts",
-    "test:core-public-surface": "pnpm exec tsx --tsconfig tsconfig.base.json tests/test-runtime-core-public-surface.ts",
+    "test:contracts-public-surface": "pnpm exec tsx --tsconfig tsconfig.base.json tests/test-runtime-contracts-public-surface.ts",
     "test:python-public-surface": "pnpm exec tsx --tsconfig tsconfig.base.json tests/test-python-public-surface.ts",
     "test:java-public-surface": "pnpm exec tsx --tsconfig tsconfig.base.json tests/test-java-public-surface.ts",
     "test:csharp-public-surface": "pnpm exec tsx --tsconfig tsconfig.base.json tests/test-csharp-public-surface.ts",
@@ -1829,7 +1802,7 @@ var package_default = {
     "check:browser-project-performance": "node scripts/check-browser-project-performance.mjs"
   },
   devDependencies: {
-    "@tracecode/runtime-core": "workspace:^",
+    "@tracecode/runtime-contracts": "workspace:^",
     "@tracecode/tracekernel": "workspace:^",
     "@types/node": "^20.0.0",
     esbuild: "0.27.3",
@@ -1869,10 +1842,10 @@ var package_default = {
   }
 };
 
-// packages/runtime-core/src/harness-version.ts
+// packages/runtime-contracts/src/harness-version.ts
 var TRACECODE_HARNESS_VERSION = package_default.version;
 
-// packages/runtime-core/src/generated/runtime-language-info-data.ts
+// packages/runtime-contracts/src/generated/runtime-language-info-data.ts
 var LANGUAGE_RUNTIME_INFOS = Object.freeze(
   Object.assign(/* @__PURE__ */ Object.create(null), {
     "python": {
@@ -2191,8 +2164,8 @@ var RUNTIME_COMMAND_VERSIONS = Object.freeze(
   })
 );
 
-// packages/runtime-core/src/runtime-language-info.ts
-var BROWSER_PROJECT_NODE_COMPAT_VERSION = "22.0.0";
+// packages/runtime-contracts/src/runtime-language-info.ts
+var NODE_RUNTIME_COMPAT_VERSION = "22.0.0";
 var SUPPORTED_LANGUAGE_RUNTIME_INFOS = Object.freeze(
   Object.values(LANGUAGE_RUNTIME_INFOS)
 );
@@ -2204,7 +2177,7 @@ function getLanguageRuntimeInfo(language) {
   return info;
 }
 
-// packages/runtime-core/src/runtime-command-internal.ts
+// packages/runtime-contracts/src/runtime-command-internal.ts
 var RUNTIME_SIGNAL_EXIT_CODES = /* @__PURE__ */ new Map([
   ["SIGHUP", 1],
   ["SIGINT", 2],
@@ -2235,7 +2208,7 @@ function runtimeFileChangeByteSize(change) {
   return size;
 }
 
-// packages/runtime-core/src/runtime-command.ts
+// packages/runtime-contracts/src/runtime-command.ts
 var RUNTIME_STDIN_PIPE_HEADER_INTS = 3;
 var RUNTIME_STDIN_PIPE_HEADER_BYTES = RUNTIME_STDIN_PIPE_HEADER_INTS * Int32Array.BYTES_PER_ELEMENT;
 var RUNTIME_STDIN_PIPE_READ_INDEX = 0;
@@ -2467,7 +2440,7 @@ var runtimeProjectHiddenCommandAccesses = (() => {
   return globalRegistry[RUNTIME_PROJECT_HIDDEN_COMMAND_ACCESS_REGISTRY];
 })();
 
-// packages/runtime-core/src/runtime-command-bridge.ts
+// packages/runtime-contracts/src/runtime-command-bridge.ts
 function runtimeProjectInfrastructureFailure(error, signal) {
   const diagnostic = runtimeErrorMessage(error);
   const aborted = isRuntimeAbortError(error) || signal?.aborted;
@@ -2748,7 +2721,7 @@ var RuntimeProjectLiveIoController = class {
   }
 };
 
-// packages/runtime-core/src/runtime-kernel-paths.ts
+// packages/runtime-contracts/src/runtime-kernel-paths.ts
 var RUNTIME_KERNEL_DEVICE_ENTRIES = ["fd/0", "fd/1", "fd/2", "null", "stderr", "stdin", "stdout", "tty"];
 function runtimeKernelReadonlyFileErrorMessage(path, operation) {
   return `EROFS: readonly project file, ${operation} '${path}'`;
@@ -2969,7 +2942,7 @@ function runtimeKernelVirtualDevices() {
   });
 }
 
-// packages/runtime-core/src/runtime-kernel-proc.ts
+// packages/runtime-contracts/src/runtime-kernel-proc.ts
 function runtimeProcInfoJson(info) {
   return `${JSON.stringify(info, null, 2)}
 `;
@@ -3199,7 +3172,7 @@ function runtimeProcStat(path, info) {
   };
 }
 
-// packages/runtime-core/src/runtime-kernel-filesystem.ts
+// packages/runtime-contracts/src/runtime-kernel-filesystem.ts
 function runtimeKernelWriteTarget(path, devices) {
   const virtualPath = classifyRuntimeKernelVirtualPath(path);
   if (virtualPath === null) return { kind: "workspace" };
@@ -9958,7 +9931,7 @@ function createBrowserJavaScriptRequestState(request, options, executionState) {
     request.terminal,
     kernelDescriptorIsTerminal(0)
   );
-  const nodeVersion = BROWSER_PROJECT_NODE_COMPAT_VERSION;
+  const nodeVersion = NODE_RUNTIME_COMPAT_VERSION;
   const processListeners = /* @__PURE__ */ new Map();
   const addProcessListener = (event, listener) => {
     if (event === "SIGKILL" || event === "SIGSTOP") {

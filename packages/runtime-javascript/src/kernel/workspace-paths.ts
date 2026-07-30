@@ -3,11 +3,11 @@ import type {
   RuntimeKernelDeviceInfo,
   RuntimeKernelInfo,
   RuntimeProjectSnapshot,
-} from "@tracecode/runtime-core";
+} from "@tracecode/runtime-contracts";
 
 import {
   TRACECODE_HARNESS_VERSION,
-} from "@tracecode/runtime-core";
+} from "@tracecode/runtime-contracts";
 
 import {
   runtimeKernelAccessTarget,
@@ -40,7 +40,7 @@ import {
   runtimeKernelWriteTarget,
   readPublicRuntimeProcFile as readPublicProcFile,
   type RuntimeKernelDirectoryEntry,
-} from "@tracecode/runtime-core";
+} from "@tracecode/runtime-contracts";
 
 import {
   JavaScriptProjectCommandRequest,

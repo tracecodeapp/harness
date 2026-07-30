@@ -12,7 +12,7 @@ import {
   PYTHON_TRACE_SERIALIZE_FUNCTION,
   toPythonLiteral,
 } from '../packages/runtime-python/src/python-harness';
-import { RUNTIME_TRACE_SCHEMA_VERSION } from '../packages/runtime-core/src/runtime-trace';
+import { RUNTIME_TRACE_SCHEMA_VERSION } from '../packages/runtime-contracts/src/runtime-trace';
 import { createPythonRuntimeClient } from '../packages/runtime-python/src/python-runtime-client';
 import type { PythonWorkerClient } from '../packages/runtime-python/src/python-worker-client';
 

@@ -2,10 +2,10 @@ import {
   RUNTIME_PROJECT_MAX_LIVE_FILE_CHANGES,
   RUNTIME_PROJECT_MAX_LIVE_FILE_CHANGE_BYTES,
   runtimeProjectUtf8Bytes,
-} from '@tracecode/runtime-core';
+} from '@tracecode/runtime-contracts';
 import type {
   RuntimeFileChange,
-} from '@tracecode/runtime-core';
+} from '@tracecode/runtime-contracts';
 import type {
   IFileSystem,
 } from 'just-bash/browser';

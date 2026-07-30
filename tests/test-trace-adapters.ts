@@ -1,7 +1,7 @@
 #!/usr/bin/env npx tsx
 
 import { test } from 'node:test';
-import { javaTraceHooksEventsToRuntimeTrace } from '../packages/runtime-core/src/trace-adapters/java';
+import { javaTraceHooksEventsToRuntimeTrace } from '../packages/runtime-contracts/src/trace-adapters/java';
 
 function assertCondition(condition: unknown, message: string): asserts condition {
   if (!condition) throw new Error(message);

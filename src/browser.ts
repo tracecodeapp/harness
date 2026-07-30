@@ -17,9 +17,9 @@ import type {
   RuntimeProjectIoTier,
   TraceBudget,
   TraceExecutionOptions,
-} from '../packages/runtime-core/src/runtime-capabilities';
+} from '../packages/runtime-contracts/src/runtime-capabilities';
 import {
-  BROWSER_PROJECT_NODE_COMPAT_VERSION,
+  NODE_RUNTIME_COMPAT_VERSION,
   LANGUAGE_RUNTIME_INFOS,
   SUPPORTED_LANGUAGE_RUNTIME_INFOS,
   getLanguageRuntimeInfo,
@@ -27,7 +27,7 @@ import {
   type LanguageRuntimeInfo,
   type RuntimeComponentInfo,
   type RuntimeLibraryInfo,
-} from '../packages/runtime-core/src/runtime-language-info';
+} from '../packages/runtime-contracts/src/runtime-language-info';
 import {
   createBrowserRuntimeHost as createProviderBrowserRuntimeHost,
   type BrowserRuntimeHost,
@@ -173,7 +173,7 @@ export type {
 
 export {
   BROWSER_EXECUTION_HOST_PROTOCOL,
-  BROWSER_PROJECT_NODE_COMPAT_VERSION,
+  NODE_RUNTIME_COMPAT_VERSION,
   BROWSER_RUNTIME_ASSET_PROTOCOL_VERSION,
   BROWSER_RUNTIME_IDS,
   LANGUAGE_RUNTIME_INFOS,

@@ -280,7 +280,7 @@ function assertJavaLexicalScannersAreCached(): void {
     'utf8'
   );
   const adapterSource = readFileSync(
-    join(process.cwd(), 'packages', 'runtime-core', 'src', 'trace-adapters', 'java.ts'),
+    join(process.cwd(), 'packages', 'runtime-contracts', 'src', 'trace-adapters', 'java.ts'),
     'utf8'
   );
   const stripCommentStart = rewriteLibrarySource.indexOf('private static String stripTrailingLineComment');

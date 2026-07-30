@@ -9,12 +9,12 @@ import type {
   RuntimeProjectCommandRunner,
   RuntimeProjectFileChangeApplyOptions,
   RuntimeProjectSnapshot,
-} from '@tracecode/runtime-core';
+} from '@tracecode/runtime-contracts';
 import {
   createRuntimeProjectIoBridge,
   runRuntimeProjectWorkerBridge,
   withRuntimeProjectCommandRunnerCapabilities,
-} from '@tracecode/runtime-core';
+} from '@tracecode/runtime-contracts';
 import type { JavaWorkerClient } from './java-worker-client';
 
 export type JavaProjectFileEncoding = RuntimeFileEncoding;

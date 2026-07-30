@@ -8,7 +8,7 @@ const ROOT = process.cwd();
 const GENERATED_PATH = join(
   ROOT,
   'packages',
-  'runtime-core',
+  'runtime-contracts',
   'src',
   'generated',
   'runtime-language-info-data.ts'

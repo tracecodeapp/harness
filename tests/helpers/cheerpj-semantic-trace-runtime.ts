@@ -22,7 +22,7 @@ import type {
 } from '../../packages/runtime-java/src/java-worker-client';
 import type {
   TraceExecutionOptions,
-} from '../../packages/runtime-core/src/runtime-types';
+} from '../../packages/runtime-contracts/src/runtime-types';
 
 interface CheerpJSemanticTraceRequest {
   code: string;

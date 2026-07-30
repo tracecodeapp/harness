@@ -7,7 +7,7 @@ import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { promisify } from 'node:util';
-import type { RuntimeWorkspaceStat } from '../packages/runtime-core/src/runtime-project';
+import type { RuntimeWorkspaceStat } from '../packages/runtime-contracts/src/runtime-project';
 import { MessageChannel, Worker as NodeWorker } from 'node:worker_threads';
 import {
   type JavaScriptProjectCommandRequest,
@@ -24,15 +24,15 @@ import {
   createRuntimeProjectHiddenCommandAccess,
   createRuntimeWorkspace,
   normalizeRuntimeProjectPath,
-} from '../packages/workspace-facade/src/index';
+} from '../packages/tracekernel/src/workspace/index';
 import {
   createRuntimeCommandStdinPipe,
   createRuntimeCommandStdinPipeFromText,
   type RuntimeFile,
   RuntimeProjectEventQueue,
   readRuntimeCommandStdinPipeBytes,
-} from '../packages/runtime-core/src/runtime-project';
-import { getLanguageRuntimeInfo } from '../packages/runtime-core/src/runtime-language-info';
+} from '../packages/runtime-contracts/src/runtime-project';
+import { getLanguageRuntimeInfo } from '../packages/runtime-contracts/src/runtime-language-info';
 import packageJson from '../package.json' with { type: 'json' };
 import {
   leadingPersistentCdTarget,
@@ -54,7 +54,7 @@ import { createNativeCppProjectRunner } from '../packages/runtime-cpp/src/projec
 import { createBrowserCppProjectRunner } from '../packages/runtime-cpp/src/project-browser';
 import { createNativeCSharpProjectRunner } from '../packages/runtime-csharp/src/project-node';
 import { createBrowserCSharpProjectRunner } from '../packages/runtime-csharp/src/project-browser';
-import { createNativeProjectWorkspace } from '../src/project-node';
+import { createNativeProjectWorkspace } from '../packages/runtime-native/src/native-workspace';
 
 const execFileAsync = promisify(execFile);
 const testTextDecoder = new TextDecoder();

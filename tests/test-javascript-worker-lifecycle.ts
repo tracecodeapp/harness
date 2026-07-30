@@ -22,7 +22,7 @@ import { createJavaScriptPreparedProgram } from '../packages/runtime-javascript/
 import type {
   CodeExecutionResult,
   RuntimePreparedCodeCall,
-} from '../packages/runtime-core/src/index';
+} from '../packages/runtime-contracts/src/index';
 
 interface ProtocolMessage {
   id?: string;

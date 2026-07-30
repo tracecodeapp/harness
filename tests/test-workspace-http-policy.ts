@@ -1,6 +1,6 @@
 #!/usr/bin/env npx tsx
 
-import { runtimeWorkspaceActorPreset } from '../packages/runtime-core/src/index';
+import { runtimeWorkspaceActorPreset } from '../packages/runtime-contracts/src/index';
 import {
   TRACEKERNEL_EXTERNAL_HTTP_MAX_TIMEOUT_MS,
   TRACEKERNEL_HTTP_MAX_BODY_BYTES,

@@ -1,14 +1,13 @@
 import { existsSync, readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import ts from 'typescript';
-import { getLanguageRuntimeInfo } from '../packages/runtime-core/src/runtime-language-info';
+import { getLanguageRuntimeInfo } from '../packages/runtime-contracts/src/runtime-language-info';
 
 const ROOT = process.cwd();
 const VIRTUAL_OUT_DIR = '/tracecode-java-public-declarations';
 const FORBIDDEN_IMPLEMENTATION_NAME = /(?:TraceJVM|CheerpJ)/iu;
 const REQUIRED_ROOT_JAVA_CAPABILITY_SUBPATHS = [
-  './browser',
-  './browser/project',
+  './tracekernel',
   './judge',
 ] as const;
 const RETIRED_ROOT_JAVA_SUBPATH = './java';

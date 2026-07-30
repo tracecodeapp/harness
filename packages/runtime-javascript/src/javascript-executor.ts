@@ -1,6 +1,6 @@
-import type { RuntimeExecutionStyle } from '@tracecode/runtime-core';
-import type { RawExecutionPayload, RuntimeTrace } from '@tracecode/runtime-core';
-import { createEmptyRuntimeTrace } from '@tracecode/runtime-core';
+import type { RuntimeExecutionStyle } from '@tracecode/runtime-contracts';
+import type { RawExecutionPayload, RuntimeTrace } from '@tracecode/runtime-contracts';
+import { createEmptyRuntimeTrace } from '@tracecode/runtime-contracts';
 import { withTypeScriptRuntimeDeclarations } from './typescript-runtime-declarations';
 
 type TypeScriptModule = typeof import('typescript');

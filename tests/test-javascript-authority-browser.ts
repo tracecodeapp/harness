@@ -40,8 +40,8 @@ async function main(): Promise<void> {
       target: 'es2022',
       tsconfig: join(root, 'tsconfig.base.json'),
       alias: {
-        zlib: join(root, 'packages', 'workspace-facade', 'src', 'zlib-browser-shim.ts'),
-        'node:zlib': join(root, 'packages', 'workspace-facade', 'src', 'zlib-browser-shim.ts'),
+        zlib: join(root, 'packages', 'tracekernel', 'src', 'zlib-browser-shim.ts'),
+        'node:zlib': join(root, 'packages', 'tracekernel', 'src', 'zlib-browser-shim.ts'),
       },
       define: { 'process.env.NODE_ENV': '"production"' },
     }),
@@ -54,8 +54,8 @@ async function main(): Promise<void> {
       target: 'es2022',
       tsconfig: join(root, 'tsconfig.base.json'),
       alias: {
-        zlib: join(root, 'packages', 'workspace-facade', 'src', 'zlib-browser-shim.ts'),
-        'node:zlib': join(root, 'packages', 'workspace-facade', 'src', 'zlib-browser-shim.ts'),
+        zlib: join(root, 'packages', 'tracekernel', 'src', 'zlib-browser-shim.ts'),
+        'node:zlib': join(root, 'packages', 'tracekernel', 'src', 'zlib-browser-shim.ts'),
       },
       define: { 'process.env.NODE_ENV': '"production"' },
     }),

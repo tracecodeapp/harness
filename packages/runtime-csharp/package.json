@@ -1,7 +1,7 @@
 {
   "name": "@tracecode/runtime-csharp",
   "private": true,
-  "version": "0.13.1",
+  "version": "0.14.0",
   "description": "C# runtime client and browser worker assets for TraceCode harness.",
   "license": "AGPL-3.0-only",
   "homepage": "https://tracecode.app",
@@ -46,7 +46,7 @@
   "sideEffects": false,
   "dependencies": {
     "@tracecode/runtime-browser": "workspace:*",
-    "@tracecode/runtime-core": "workspace:*",
+    "@tracecode/runtime-contracts": "workspace:*",
     "effect": "^3.22.0"
   }
 }

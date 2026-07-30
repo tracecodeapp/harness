@@ -2,7 +2,7 @@ import type {
   RuntimeCommandResult,
   RuntimeKernelHttpListenerInfo,
   RuntimeKernelInfo,
-} from '@tracecode/runtime-core';
+} from '@tracecode/runtime-contracts';
 import {
   normalizeTraceKernelSignal,
   type RuntimeKernelProcessRecord,

@@ -10,7 +10,7 @@ import type {
   RuntimeSymlink,
   RuntimeDirectory,
   RuntimeTraceKernelConfig,
-} from '@tracecode/runtime-core';
+} from '@tracecode/runtime-contracts';
 import type { CustomCommand } from 'just-bash/browser';
 import type { RuntimeWorkspaceStorageLimits } from './workspace-storage-policy';
 
@@ -43,7 +43,7 @@ export interface RuntimePackageInstallRequest {
 }
 
 export interface RuntimePackageDependencyProvider {
-  install(request: RuntimePackageInstallRequest): Promise<import('@tracecode/runtime-core').RuntimeCommandResult>;
+  install(request: RuntimePackageInstallRequest): Promise<import('@tracecode/runtime-contracts').RuntimeCommandResult>;
 }
 
 export interface RuntimePackageManagerConfig {

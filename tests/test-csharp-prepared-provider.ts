@@ -7,7 +7,7 @@ import type {
   CodeExecutionResult,
   RuntimePreparedCodeCall,
   RuntimeProgramPreparationCall,
-} from '../packages/runtime-core/src/index';
+} from '../packages/runtime-contracts/src/index';
 import { createCSharpRuntimeClient } from '../packages/runtime-csharp/src/csharp-runtime-client';
 import type {
   CSharpPreparedProgramArtifact,

@@ -7,7 +7,7 @@ import type {
   RuntimeKernelHttpListenOptions,
   RuntimeKernelHttpListenerHandle,
   RuntimeKernelHttpRequest,
-} from '../packages/runtime-core/src/runtime-project';
+} from '../packages/runtime-contracts/src/runtime-project';
 
 function assertCondition(condition: unknown, message: string): asserts condition {
   if (!condition) {

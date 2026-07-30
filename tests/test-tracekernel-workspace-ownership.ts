@@ -1,6 +1,6 @@
 #!/usr/bin/env npx tsx
 
-import * as legacyProject from '../packages/workspace-facade/src/index';
+import * as publicTraceKernel from '../src/tracekernel';
 import * as traceKernelWorkspace from '../packages/tracekernel/src/workspace/index';
 
 function assertCondition(
@@ -12,18 +12,18 @@ function assertCondition(
 
 async function main(): Promise<void> {
   assertCondition(
-    typeof legacyProject.createRuntimeWorkspace === 'function' &&
+    typeof publicTraceKernel.createRuntimeWorkspace === 'function' &&
       typeof traceKernelWorkspace.createRuntimeWorkspace ===
         'function',
-    'both the compatibility facade and TraceKernel workspace entrypoint should expose the workspace factory'
+    'the public TraceKernel surface should expose the TraceKernel-owned workspace factory'
   );
   assertCondition(
-    !('runtimeHttpBodyText' in traceKernelWorkspace),
-    'the TraceKernel workspace surface should not re-export core helpers'
+    typeof traceKernelWorkspace.runtimeHttpBodyText === 'function',
+    'the TraceKernel workspace surface should re-export the contracts it implements'
   );
   assertCondition(
-    typeof legacyProject.runtimeHttpBodyText === 'function',
-    'the compatibility facade should preserve the legacy core helper surface'
+    typeof publicTraceKernel.runtimeHttpBodyText === 'function',
+    'the public TraceKernel surface should compose its shared HTTP helpers'
   );
 
   const workspace =

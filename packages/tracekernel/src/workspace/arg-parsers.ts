@@ -18,7 +18,7 @@ import {
   runtimeFileChangePath,
   runtimeProjectTruncateUtf8,
   runtimeProjectUtf8Bytes,
-} from '@tracecode/runtime-core';
+} from '@tracecode/runtime-contracts';
 import {
   isRuntimeKernelVirtualNamespacePath,
   normalizeRuntimeProcPath,
@@ -55,9 +55,9 @@ import {
   readRuntimeProcFile,
   createRuntimeKernelReadonlyFileError,
   type RuntimeKernelVirtualStat,
-} from '@tracecode/runtime-core';
-import { getLanguageRuntimeInfo } from '@tracecode/runtime-core';
-import type { Language } from '@tracecode/runtime-core';
+} from '@tracecode/runtime-contracts';
+import { getLanguageRuntimeInfo } from '@tracecode/runtime-contracts';
+import type { Language } from '@tracecode/runtime-contracts';
 import type {
   CommandContext,
   FileContent,
@@ -89,7 +89,7 @@ import type {
   RuntimeProjectPatchFileWrite,
   RuntimeProjectSnapshot,
   RuntimeWorkspaceActor,
-} from '@tracecode/runtime-core';
+} from '@tracecode/runtime-contracts';
 import type {
   CppProjectCommandRunner,
   CSharpProjectCommandRunner,

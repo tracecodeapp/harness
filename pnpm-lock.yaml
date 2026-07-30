@@ -11,7 +11,7 @@ overrides:
 
 patchedDependencies:
   just-bash@3.1.0:
-    hash: 85fdd503145cc4fc6f226395623ee247ff72fd3b070ed14e629867c9ae9e1e85
+    hash: 6a36ea907567d837a4aa697071ac174a80c93ad872227c45630621b385c13872
     path: patches/just-bash@3.1.0.patch
 
 importers:
@@ -64,9 +64,9 @@ importers:
         specifier: ^5.0.0
         version: 5.9.3
     devDependencies:
-      '@tracecode/runtime-core':
+      '@tracecode/runtime-contracts':
         specifier: workspace:^
-        version: link:packages/runtime-core
+        version: link:packages/runtime-contracts
       '@tracecode/tracekernel':
         specifier: workspace:^
         version: link:packages/tracekernel
@@ -78,7 +78,7 @@ importers:
         version: 0.27.3
       just-bash:
         specifier: 3.1.0
-        version: 3.1.0(patch_hash=85fdd503145cc4fc6f226395623ee247ff72fd3b070ed14e629867c9ae9e1e85)
+        version: 3.1.0(patch_hash=6a36ea907567d837a4aa697071ac174a80c93ad872227c45630621b385c13872)
       playwright:
         specifier: ^1.53.2
         version: 1.58.2
@@ -97,6 +97,9 @@ importers:
       '@tracecode/harness':
         specifier: workspace:*
         version: link:../..
+      fflate:
+        specifier: ^0.8.3
+        version: 0.8.3
       monaco-editor:
         specifier: ^0.55.1
         version: 0.55.1
@@ -113,6 +116,9 @@ importers:
       '@tracecode/harness':
         specifier: workspace:*
         version: link:../..
+      fflate:
+        specifier: ^0.8.3
+        version: 0.8.3
     devDependencies:
       typescript:
         specifier: ^5.0.0
@@ -145,6 +151,9 @@ importers:
       effect:
         specifier: 3.22.0
         version: 3.22.0
+      fflate:
+        specifier: ^0.8.3
+        version: 0.8.3
       monaco-editor:
         specifier: ^0.55.1
         version: 0.55.1
@@ -180,9 +189,9 @@ importers:
 
   packages/runtime-browser:
     dependencies:
-      '@tracecode/runtime-core':
+      '@tracecode/runtime-contracts':
         specifier: workspace:*
-        version: link:../runtime-core
+        version: link:../runtime-contracts
       '@tracecode/tracekernel':
         specifier: workspace:*
         version: link:../tracekernel
@@ -190,16 +199,16 @@ importers:
         specifier: ^3.22.0
         version: 3.22.0
 
-  packages/runtime-core: {}
+  packages/runtime-contracts: {}
 
   packages/runtime-cpp:
     dependencies:
       '@tracecode/runtime-browser':
         specifier: workspace:*
         version: link:../runtime-browser
-      '@tracecode/runtime-core':
+      '@tracecode/runtime-contracts':
         specifier: workspace:*
-        version: link:../runtime-core
+        version: link:../runtime-contracts
       effect:
         specifier: ^3.22.0
         version: 3.22.0
@@ -209,9 +218,9 @@ importers:
       '@tracecode/runtime-browser':
         specifier: workspace:*
         version: link:../runtime-browser
-      '@tracecode/runtime-core':
+      '@tracecode/runtime-contracts':
         specifier: workspace:*
-        version: link:../runtime-core
+        version: link:../runtime-contracts
       effect:
         specifier: ^3.22.0
         version: 3.22.0
@@ -221,9 +230,9 @@ importers:
       '@tracecode/runtime-browser':
         specifier: workspace:*
         version: link:../runtime-browser
-      '@tracecode/runtime-core':
+      '@tracecode/runtime-contracts':
         specifier: workspace:*
-        version: link:../runtime-core
+        version: link:../runtime-contracts
       effect:
         specifier: ^3.22.0
         version: 3.22.0
@@ -263,9 +272,9 @@ importers:
       '@tracecode/runtime-browser':
         specifier: workspace:*
         version: link:../runtime-browser
-      '@tracecode/runtime-core':
+      '@tracecode/runtime-contracts':
         specifier: workspace:*
-        version: link:../runtime-core
+        version: link:../runtime-contracts
       '@tracecode/tracekernel':
         specifier: workspace:*
         version: link:../tracekernel
@@ -311,9 +320,9 @@ importers:
       '@datastructures-js/trie':
         specifier: 4.2.3
         version: 4.2.3
-      '@tracecode/runtime-core':
+      '@tracecode/runtime-contracts':
         specifier: workspace:*
-        version: link:../runtime-core
+        version: link:../runtime-contracts
       lodash:
         specifier: 4.17.21
         version: 4.17.21
@@ -326,9 +335,9 @@ importers:
       '@tracecode/runtime-browser':
         specifier: workspace:*
         version: link:../runtime-browser
-      '@tracecode/runtime-core':
+      '@tracecode/runtime-contracts':
         specifier: workspace:*
-        version: link:../runtime-core
+        version: link:../runtime-contracts
       effect:
         specifier: ^3.22.0
         version: 3.22.0
@@ -337,9 +346,9 @@ importers:
 
   packages/tracekernel:
     dependencies:
-      '@tracecode/runtime-core':
+      '@tracecode/runtime-contracts':
         specifier: workspace:*
-        version: link:../runtime-core
+        version: link:../runtime-contracts
       effect:
         specifier: 3.22.0
         version: 3.22.0
@@ -348,19 +357,7 @@ importers:
         version: 0.8.3
       just-bash:
         specifier: 3.1.0
-        version: 3.1.0(patch_hash=85fdd503145cc4fc6f226395623ee247ff72fd3b070ed14e629867c9ae9e1e85)
-
-  packages/workspace-facade:
-    dependencies:
-      '@tracecode/runtime-core':
-        specifier: workspace:*
-        version: link:../runtime-core
-      '@tracecode/tracekernel':
-        specifier: workspace:*
-        version: link:../tracekernel
-      fflate:
-        specifier: ^0.8.3
-        version: 0.8.3
+        version: 3.1.0(patch_hash=6a36ea907567d837a4aa697071ac174a80c93ad872227c45630621b385c13872)
 
 packages:
 
@@ -1735,7 +1732,7 @@ snapshots:
 
   joycon@3.1.1: {}
 
-  just-bash@3.1.0(patch_hash=85fdd503145cc4fc6f226395623ee247ff72fd3b070ed14e629867c9ae9e1e85):
+  just-bash@3.1.0(patch_hash=6a36ea907567d837a4aa697071ac174a80c93ad872227c45630621b385c13872):
     dependencies:
       diff: 8.0.4
       fast-xml-parser: 5.8.0

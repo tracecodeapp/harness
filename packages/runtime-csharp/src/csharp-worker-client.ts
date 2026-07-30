@@ -14,7 +14,7 @@ import {
   withRuntimeTraceOptions,
   type RuntimeTrace,
   type RuntimeTraceEvent,
-} from '@tracecode/runtime-core';
+} from '@tracecode/runtime-contracts';
 import type {
   ExecutionLimitReason,
   RuntimeBatchCall,
@@ -24,14 +24,14 @@ import type {
   RuntimeProgramPreparationCall,
   RuntimeTraceCall,
   TraceExecutionOptions,
-} from '@tracecode/runtime-core';
-import { liftCodeBatchOutcome, liftTraceOutcome, type RawExecutionBatchPayload } from '@tracecode/runtime-core';
+} from '@tracecode/runtime-contracts';
+import { liftCodeBatchOutcome, liftTraceOutcome, type RawExecutionBatchPayload } from '@tracecode/runtime-contracts';
 import type {
   CodeExecutionResult,
   CodeExecutionBatchResult,
   ExecutionResult,
   RuntimeExecutionTimings,
-} from '@tracecode/runtime-core';
+} from '@tracecode/runtime-contracts';
 import type {
   RuntimeCommandEventHandler,
   RuntimeCommandResult,
@@ -40,7 +40,7 @@ import type {
   RuntimeKernelSyscallBridge,
   RuntimeProjectCommandRequest,
   RuntimeProjectEngineLeaseController,
-} from '@tracecode/runtime-core';
+} from '@tracecode/runtime-contracts';
 import { isDevEnvironment } from '@tracecode/runtime-browser/internal';
 import {
   cleanupAsyncKernelHttp,

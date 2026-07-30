@@ -10,7 +10,7 @@ import {
   runtimeAbortSignalName,
   runtimeCommandStdinPipeClosed,
   runtimeSignalExitCode,
-} from '@tracecode/runtime-core';
+} from '@tracecode/runtime-contracts';
 import type {
   RuntimeCommandResult,
   RuntimeCommandEventHandler,
@@ -22,7 +22,7 @@ import type {
   RuntimeProjectCommandRunner,
   RuntimeProjectSnapshot,
   RuntimeCommandStdinSharedBuffer,
-} from '@tracecode/runtime-core';
+} from '@tracecode/runtime-contracts';
 
 export type CSharpProjectFileEncoding = RuntimeFileEncoding;
 export type CSharpProjectFile = RuntimeFile;

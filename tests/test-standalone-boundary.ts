@@ -9,9 +9,9 @@ import { build } from 'esbuild';
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
 const SCANNED_FILES = [
-  'src/index.ts',
+  'src/tracekernel.ts',
+  'src/judge.ts',
   'src/cli.ts',
-  'src/native.ts',
   'packages/runtime-browser/src/index.ts',
   'packages/runtime-browser/src/internal.ts',
   'packages/runtime-javascript/src/javascript-runtime-client.ts',
@@ -26,12 +26,12 @@ const SCANNED_FILES = [
   'packages/runtime-browser/src/runtime-capability-guards.ts',
   'packages/runtime-browser/src/runtime-profiles.ts',
   'packages/runtime-browser/src/project.ts',
-  'packages/runtime-core/src/index.ts',
-  'packages/runtime-core/src/runtime-types.ts',
-  'packages/runtime-core/src/runtime-project.ts',
-  'packages/runtime-core/src/types.ts',
-  'packages/workspace-facade/src/index.ts',
-  'packages/workspace-facade/src/zlib-browser-shim.ts',
+  'packages/runtime-contracts/src/index.ts',
+  'packages/runtime-contracts/src/runtime-types.ts',
+  'packages/runtime-contracts/src/runtime-project.ts',
+  'packages/runtime-contracts/src/types.ts',
+  'packages/tracekernel/src/workspace/index.ts',
+  'packages/tracekernel/src/zlib-browser-shim.ts',
   'packages/runtime-native/src/index.ts',
   'packages/runtime-sql/src/index.ts',
   'packages/runtime-javascript/src/index.ts',
@@ -170,7 +170,6 @@ async function main(): Promise<void> {
   });
   const projectImplementationInputs = Object.keys(classicBrowserBundle.metafile?.inputs ?? {})
     .filter((input) =>
-      input.includes('/workspace-facade/') ||
       input.endsWith('/project-browser.ts') ||
       input.endsWith('/runtime-browser/src/project.ts')
     );

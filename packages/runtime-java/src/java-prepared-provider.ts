@@ -9,11 +9,11 @@ import type {
   RuntimeProgramPreparationCall,
   RuntimeProgramPreparationResult,
   RuntimeTraceCall,
-} from '@tracecode/runtime-core';
+} from '@tracecode/runtime-contracts';
 import {
   createEmptyRuntimeTrace,
   liftTraceOutcome,
-} from '@tracecode/runtime-core';
+} from '@tracecode/runtime-contracts';
 import { getLanguageRuntimeProfile } from '@tracecode/runtime-browser/internal';
 import { assertRuntimeRequestSupported } from '@tracecode/runtime-browser/internal';
 import { ExecutionTimeoutError } from '@tracecode/runtime-browser/internal';

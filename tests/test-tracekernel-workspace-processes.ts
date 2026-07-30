@@ -3,16 +3,16 @@
 import {
   createRuntimeWorkspace,
   type JavaScriptProjectCommandRunner,
-} from '../packages/workspace-facade/src/index';
+} from '../packages/tracekernel/src/workspace/index';
 import type {
   RuntimeKernelSyscallBridge,
   RuntimeProjectCommandRequest,
-} from '../packages/runtime-core/src/runtime-project';
+} from '../packages/runtime-contracts/src/runtime-project';
 import {
   createRuntimeCommandStdinPipe,
   createRuntimeCommandStdinPipeFromText,
   runtimeCommandStdinPipeRemainingBytes,
-} from '../packages/runtime-core/src/runtime-project';
+} from '../packages/runtime-contracts/src/runtime-project';
 import type {
   TraceKernelSession,
   TraceKernelSyscallRequest,
@@ -34,7 +34,7 @@ function syscalls(
 }
 
 /**
- * runtime-core deliberately treats the syscall wire as unknown so it does not
+ * runtime-contracts deliberately treats the syscall wire as unknown so it does not
  * depend on TraceKernel. Runtime adapters own this single validation/typing
  * boundary before working with the versioned kernel protocol.
  */

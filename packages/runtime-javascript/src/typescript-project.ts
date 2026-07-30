@@ -1,4 +1,4 @@
-import { emitRuntimeCommandFileChanges } from '@tracecode/runtime-core';
+import { emitRuntimeCommandFileChanges } from '@tracecode/runtime-contracts';
 import type {
   RuntimeCommandResult,
   RuntimeFile,
@@ -7,7 +7,7 @@ import type {
   RuntimeProjectCommandRequest,
   RuntimeProjectCommandRunner,
   RuntimeProjectSnapshot,
-} from '@tracecode/runtime-core';
+} from '@tracecode/runtime-contracts';
 import {
   TYPESCRIPT_PROJECT_DEFAULT_LIB_FILE,
   TYPESCRIPT_PROJECT_LIB_FILES,

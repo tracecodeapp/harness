@@ -1,7 +1,7 @@
 import type {
   Language,
   RuntimePreparedExecutionProvider,
-} from '@tracecode/runtime-core';
+} from '@tracecode/runtime-contracts';
 import type { BrowserRuntimeHost } from './browser-runtime-host';
 
 type PreparedProviderResolver = (

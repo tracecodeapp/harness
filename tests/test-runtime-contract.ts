@@ -31,17 +31,17 @@ import { createJavaRuntimeClient } from '../packages/runtime-java/src/java-runti
 import type { JavaWorkerClient } from '../packages/runtime-java/src/java-worker-client';
 import { executeJavaScriptCode, executeTypeScriptCode } from '../packages/runtime-javascript/src/javascript-executor';
 import { generateSolutionScript } from '../packages/runtime-python/src/python-harness';
-import type { RuntimeKernelInfo } from '../packages/runtime-core/src/runtime-project';
+import type { RuntimeKernelInfo } from '../packages/runtime-contracts/src/runtime-project';
 import type {
   Language,
   LanguageRuntimeProfile,
   RuntimeCapabilities,
   RuntimeExecutionLimits,
-} from '../packages/runtime-core/src/runtime-types';
+} from '../packages/runtime-contracts/src/runtime-types';
 import {
   javaTraceHooksEventsToRuntimeTrace,
   normalizeJavaSerializedResult,
-} from '../packages/runtime-core/src/trace-adapters/java';
+} from '../packages/runtime-contracts/src/trace-adapters/java';
 import {
   runtimeKernelCopyTarget,
   runtimeKernelCopyErrorCode,
@@ -77,7 +77,7 @@ import {
   runtimeKernelWriteFsErrorMessage,
   runtimeKernelWriteTarget,
   normalizeRuntimeKernelManifestDevicePath,
-} from '../packages/runtime-core/src/runtime-kernel';
+} from '../packages/runtime-contracts/src/runtime-kernel';
 import {
   RuntimeProjectLiveIoController,
   createRuntimeCommandStdinPipeFromText,
@@ -85,7 +85,7 @@ import {
   runRuntimeProjectWorkerBridge,
   type RuntimeCommandEvent,
   type RuntimeProjectCommandRequest,
-} from '../packages/runtime-core/src/runtime-project';
+} from '../packages/runtime-contracts/src/runtime-project';
 import { runPackageScript } from '../packages/tracekernel/src/workspace/package-manager';
 import {
   normalizeRuntimeKernelManifestDevicePath as normalizeWorkerKernelManifestDevicePath,

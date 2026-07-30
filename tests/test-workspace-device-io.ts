@@ -4,7 +4,7 @@ import {
   createRuntimeCommandStdinPipeFromText,
   RUNTIME_PROJECT_MAX_OUTPUT_STREAM_BYTES,
   runtimeWorkspaceActorPreset,
-} from '../packages/runtime-core/src/index';
+} from '../packages/runtime-contracts/src/index';
 import type { RuntimeCommandExecutionContext } from '../packages/tracekernel/src/workspace/fs-observed';
 import { WorkspaceDeviceIo } from '../packages/tracekernel/src/workspace/workspace-device-io';
 

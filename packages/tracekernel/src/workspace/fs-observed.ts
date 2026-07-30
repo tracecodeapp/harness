@@ -12,7 +12,7 @@ import {
   runtimeCommandStdinPipeClosed,
   runtimeFileChangePath,
   runtimeProjectTruncateUtf8,
-} from '@tracecode/runtime-core';
+} from '@tracecode/runtime-contracts';
 import {
   isRuntimeKernelVirtualNamespacePath,
   normalizeRuntimeProcPath,
@@ -50,9 +50,9 @@ import {
   readRuntimeProcFile,
   createRuntimeKernelReadonlyFileError,
   type RuntimeKernelVirtualStat,
-} from '@tracecode/runtime-core';
-import { getLanguageRuntimeInfo } from '@tracecode/runtime-core';
-import type { Language } from '@tracecode/runtime-core';
+} from '@tracecode/runtime-contracts';
+import { getLanguageRuntimeInfo } from '@tracecode/runtime-contracts';
+import type { Language } from '@tracecode/runtime-contracts';
 import type {
   CommandContext,
   FileContent,
@@ -84,7 +84,7 @@ import type {
   RuntimeCommandEventHandler,
   RuntimeCommandOptions,
   RuntimeProjectLiveIoController,
-} from '@tracecode/runtime-core';
+} from '@tracecode/runtime-contracts';
 import type { TraceKernelFileSystemMutation } from '..';
 import type {
   CppProjectCommandRunner,
@@ -208,7 +208,7 @@ export interface RuntimeCommandExecutionContext {
     readonly pid: number;
     [key: string]: any;
   };
-  readonly engineLease?: import('@tracecode/runtime-core').RuntimeProjectEngineLeaseController;
+  readonly engineLease?: import('@tracecode/runtime-contracts').RuntimeProjectEngineLeaseController;
   readonly signal: AbortSignal;
   readonly stdinPipe?: RuntimeCommandOptions['stdinPipe'];
   readonly terminal?: RuntimeCommandOptions['terminal'];

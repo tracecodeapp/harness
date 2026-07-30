@@ -4,9 +4,11 @@ import {
   type Language,
 } from '../../src/browser';
 import {
-  createBrowserRuntimeJudge,
   type JudgeEvaluationResult,
 } from '../../src/judge';
+import {
+  createBrowserRuntimeJudge,
+} from '../../src/internal/browser-judge';
 
 export interface BrowserRuntimeEvaluationRequest {
   readonly language: Extract<Language, 'javascript' | 'typescript'>;

@@ -5,7 +5,7 @@ import type {
   Language,
   RuntimePreparedExecutionProvider,
   RuntimePreparedProgramCapabilities,
-} from '../packages/runtime-core/src';
+} from '../packages/runtime-contracts/src';
 import {
   createBrowserRuntimeHost,
   createBrowserRuntimeProviderRegistry,

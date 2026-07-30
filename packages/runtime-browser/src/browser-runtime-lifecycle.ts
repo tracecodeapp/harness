@@ -1,6 +1,6 @@
 import type {
   Language,
-} from '@tracecode/runtime-core';
+} from '@tracecode/runtime-contracts';
 import { createBrowserRuntimeAssetPreflight } from './runtime-asset-preflight';
 import type {
   BrowserRuntimeAssetOverrides,

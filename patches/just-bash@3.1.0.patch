@@ -1923,3 +1923,107 @@ index a7dadbf9eda0394b042926ae60d1d5237c54ba79..f04c66930b09904fd8b64528c5fe16ab
  `,exitCode:1};let a="",l="",c=0;for(let u of o)try{let f=e.fs.resolvePath(e.cwd,u);if((await e.fs.stat(f)).isDirectory&&!r){l+=`rm: cannot remove '${u}': Is a directory
  `,c=1;continue}await e.fs.rm(f,{recursive:r,force:s}),i&&(a+=`removed '${u}'
  `)}catch(f){if(!s){let h=ct(f);h.includes("ENOENT")||h.includes("no such file")?l+=`rm: cannot remove '${u}': No such file or directory
+diff --git a/dist/security/types.d.ts b/dist/security/types.d.ts
+new file mode 100644
+index 0000000000000000000000000000000000000000..16f26a1c81ddb0339b02e47e6f393ec417415734
+--- /dev/null
++++ b/dist/security/types.d.ts
+@@ -0,0 +1,64 @@
++export type SecurityViolationType =
++  | "function_constructor"
++  | "eval"
++  | "setTimeout"
++  | "setInterval"
++  | "setImmediate"
++  | "async_function_constructor"
++  | "generator_function_constructor"
++  | "async_generator_function_constructor"
++  | "weak_ref"
++  | "finalization_registry"
++  | "reflect"
++  | "proxy"
++  | "process_env"
++  | "process_binding"
++  | "process_dlopen"
++  | "process_main_module"
++  | "process_exit"
++  | "process_kill"
++  | "process_setuid"
++  | "process_umask"
++  | "process_argv"
++  | "process_exec_path"
++  | "process_chdir"
++  | "process_connected"
++  | "process_send"
++  | "process_channel"
++  | "process_timing"
++  | "module_load"
++  | "webassembly"
++  | "shared_array_buffer"
++  | "atomics"
++  | "process_get_builtin_module"
++  | "error_prepare_stack_trace"
++  | "performance_timing"
++  | "process_stdout"
++  | "process_stderr"
++  | "module_resolve_filename"
++  | "dynamic_import_builtin"
++  | "missing_defense_context"
++  | "promise_then_after_deactivate"
++  | "bound_callback_after_deactivate"
++  | "prototype_mutation"
++  | "json_mutation"
++  | "math_mutation"
++  | "process_report"
++  | "process_exception_handler";
++
++export interface SecurityViolation {
++  timestamp: number;
++  type: SecurityViolationType;
++  message: string;
++  path: string;
++  stack?: string;
++  executionId?: string;
++}
++
++export interface DefenseInDepthConfig {
++  enabled?: boolean | "auto";
++  processLifetimeIntrinsicHardening?: boolean;
++  auditMode?: boolean;
++  onViolation?: (violation: SecurityViolation) => void;
++  excludeViolationTypes?: SecurityViolationType[];
++}
+diff --git a/dist/transform/types.d.ts b/dist/transform/types.d.ts
+new file mode 100644
+index 0000000000000000000000000000000000000000..7f47a4ac462368f6a3d2bc226e07e506f3bd63b7
+--- /dev/null
++++ b/dist/transform/types.d.ts
+@@ -0,0 +1,28 @@
++import type { ScriptNode } from "../ast/types.js";
++
++export interface TransformPlugin<
++  TMetadata extends object = Record<string, unknown>,
++> {
++  name: string;
++  transform(context: TransformContext): TransformResult<TMetadata>;
++}
++
++export interface TransformContext {
++  ast: ScriptNode;
++  metadata: Record<string, unknown>;
++}
++
++export interface TransformResult<
++  TMetadata extends object = Record<string, unknown>,
++> {
++  ast: ScriptNode;
++  metadata?: TMetadata;
++}
++
++export interface BashTransformResult<
++  TMetadata extends object = Record<string, unknown>,
++> {
++  script: string;
++  ast: ScriptNode;
++  metadata: TMetadata;
++}

@@ -1,4 +1,4 @@
-import type { Language } from '@tracecode/runtime-core';
+import type { Language } from '@tracecode/runtime-contracts';
 import {
   resolveBrowserRuntimeAssets,
   type BrowserRuntimeAssets,

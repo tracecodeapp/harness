@@ -14,7 +14,7 @@ const ORIGINAL_ALL_SCRIPTS = [
   'test:kernel-policy-sync',
   'test:typescript-project-libs-sync',
   'test:publish-safety',
-  'test:core-public-surface',
+  'test:contracts-public-surface',
   'test:python-public-surface',
   'test:java-public-surface',
   'test:csharp-public-surface',

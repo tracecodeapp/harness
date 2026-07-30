@@ -1,23 +1,23 @@
 import type {
   RuntimeCommandEvent,
   RuntimeKernelDevicePath,
-} from "@tracecode/runtime-core";
+} from "@tracecode/runtime-contracts";
 import {
   RuntimeProjectLiveIoController,
   createRuntimeProjectIoBridge,
   readRuntimeCommandStdinPipeBytes,
   runtimeCommandStdinPipeClosed,
   runtimeCommandStdinPipeRemainingBytes,
-} from "@tracecode/runtime-core";
+} from "@tracecode/runtime-contracts";
 import {
-  BROWSER_PROJECT_NODE_COMPAT_VERSION,
+  NODE_RUNTIME_COMPAT_VERSION,
   getLanguageRuntimeInfo,
-} from "@tracecode/runtime-core";
+} from "@tracecode/runtime-contracts";
 import {
   runtimeKernelDeviceInputRoute,
   runtimeKernelDeviceOutputRoute,
   runtimeKernelDeviceOutputTarget,
-} from "@tracecode/runtime-core";
+} from "@tracecode/runtime-contracts";
 import {
   type BrowserJavaScriptProjectExecutionState,
   type BrowserJavaScriptProjectRunnerOptions,
@@ -794,7 +794,7 @@ export function createBrowserJavaScriptRequestState(
         kernelDescriptorIsTerminal(0)
       );
 
-  const nodeVersion = BROWSER_PROJECT_NODE_COMPAT_VERSION;
+  const nodeVersion = NODE_RUNTIME_COMPAT_VERSION;
 
   const processListeners = new Map<string, Array<(...args: unknown[]) => void>>();
 

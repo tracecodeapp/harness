@@ -9,13 +9,13 @@ import type {
   RuntimeProjectEngineLeaseController,
   RuntimeProjectFileChangeApplyOptions,
   RuntimeProjectProcessInfo,
-} from '@tracecode/runtime-core';
+} from '@tracecode/runtime-contracts';
 import {
   runRuntimeProjectWorkerBridge,
   runtimeAbortSignalName,
   runtimeSignalExitCode,
   withRuntimeProjectCommandRunnerCapabilities,
-} from '@tracecode/runtime-core';
+} from '@tracecode/runtime-contracts';
 
 type JavaProjectRequest = RuntimeProjectCommandRequest<'compile' | 'run'>;
 

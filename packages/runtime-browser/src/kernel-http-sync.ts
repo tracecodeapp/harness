@@ -16,7 +16,7 @@ import type {
   RuntimeKernelHttpListenerHandle,
   RuntimeKernelHttpRequest,
   RuntimeKernelHttpResponse,
-} from '@tracecode/runtime-core';
+} from '@tracecode/runtime-contracts';
 
 export const KERNEL_HTTP_SYNC_HEADER_BYTES = 8;
 export const KERNEL_HTTP_SYNC_STATE_INDEX = 0;

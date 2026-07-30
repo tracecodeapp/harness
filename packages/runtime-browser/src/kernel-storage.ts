@@ -1,12 +1,13 @@
 import type {
   RuntimeFile,
+  RuntimeFileEncoding,
   RuntimeDirectory,
   RuntimeProjectSnapshot,
   RuntimeSymlink,
   RuntimeWorkspace,
   RuntimeWorkspaceUnsubscribe,
-} from '@tracecode/runtime-core';
-import { normalizeRuntimeProjectPath } from '@tracecode/runtime-core';
+} from '@tracecode/runtime-contracts';
+import { normalizeRuntimeProjectPath } from '@tracecode/runtime-contracts';
 
 const STORAGE_VERSION = 1;
 const LEGACY_ENCRYPTED_STORAGE_VERSION = 2;
@@ -706,7 +707,9 @@ function normalizeStoredFile(value: unknown, label: string): RuntimeFile {
   return {
     path,
     contents: value.contents,
-    ...(value.encoding ? { encoding: value.encoding } : {}),
+    ...(value.encoding
+      ? { encoding: value.encoding as RuntimeFileEncoding }
+      : {}),
     ...(value.mode !== undefined ? { mode: value.mode as number } : {}),
     ...(value.atimeMs !== undefined ? { atimeMs: value.atimeMs as number } : {}),
     ...(value.mtimeMs !== undefined ? { mtimeMs: value.mtimeMs as number } : {}),

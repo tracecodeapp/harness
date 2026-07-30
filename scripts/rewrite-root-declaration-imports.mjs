@@ -5,20 +5,16 @@ const root = process.cwd();
 const dist = join(root, 'dist');
 
 const packageMappings = new Map([
-  ['@tracecode/runtime-core', 'core'],
-  ['@tracecode/runtime-browser', 'browser'],
+  ['@tracecode/runtime-contracts', 'core'],
   ['@tracecode/runtime-browser/internal', 'internal/browser'],
-  ['@tracecode/runtime-browser/project', 'browser/project'],
-  ['@tracecode/workspace-facade', 'project'],
-  ['@tracecode/tracekernel/workspace', 'internal/tracekernel/workspace'],
+  ['@tracecode/runtime-browser/project', 'tracekernel'],
+  ['@tracecode/runtime-browser', 'tracekernel'],
+  ['@tracecode/tracekernel/workspace', 'internal/tracekernel-workspace'],
+  ['@tracecode/tracekernel', 'internal/tracekernel'],
   // Also repair declarations produced by an earlier rewrite. This keeps the
   // transform idempotent across incremental and reused-dist builds.
   ['@tracecode/harness/core', 'core'],
   ['@tracecode/harness/internal/browser', 'internal/browser'],
-  [
-    '@tracecode/harness/internal/tracekernel/workspace',
-    'internal/tracekernel/workspace',
-  ],
 ]);
 
 async function declarationFiles(directory) {

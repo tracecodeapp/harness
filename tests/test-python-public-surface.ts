@@ -1,7 +1,7 @@
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import ts from 'typescript';
-import { getLanguageRuntimeInfo } from '../packages/runtime-core/src/runtime-language-info';
+import { getLanguageRuntimeInfo } from '../packages/runtime-contracts/src/runtime-language-info';
 
 function assertCondition(condition: unknown, message: string): asserts condition {
   if (!condition) throw new Error(message);
@@ -171,19 +171,11 @@ function main(): void {
     exports?: Record<string, unknown>;
   };
   const rootEntrypoints = Object.keys(rootPackage.exports ?? {});
-  for (const entrypoint of [
-    '.',
-    './browser',
-    './browser/project',
-    './project',
-    './project-node',
-    './judge',
-  ]) {
-    assertCondition(
-      rootEntrypoints.includes(entrypoint),
-      `The root package must expose the neutral ${entrypoint} entrypoint`
-    );
-  }
+  assertCondition(
+    JSON.stringify(rootEntrypoints.sort()) ===
+      JSON.stringify(['./judge', './package.json', './tracekernel']),
+    `The root package may expose only TraceKernel, Judge, and its manifest: ${rootEntrypoints.join(', ')}`
+  );
   assertCondition(
     rootEntrypoints.every(
       (entrypoint) =>
@@ -209,7 +201,7 @@ function main(): void {
     'utf8'
   );
   const generatedMetadataStart = generatedProjectWorker.indexOf(
-    '// packages/runtime-core/src/generated/runtime-language-info-data.ts'
+    '// packages/runtime-contracts/src/generated/runtime-language-info-data.ts'
   );
   const generatedMetadataEnd = generatedProjectWorker.indexOf(
     '\n// packages/',

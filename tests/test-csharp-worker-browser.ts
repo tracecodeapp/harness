@@ -10,10 +10,10 @@ import { fileURLToPath } from 'node:url';
 import { chromium, type Browser, type Page } from 'playwright';
 import { CSharpWorkerClient } from '../packages/runtime-csharp/src/csharp-worker-client';
 import { createBrowserCSharpProjectRunner } from '../packages/runtime-csharp/src/project-browser';
-import { createRuntimeCommandStdinPipeFromText, readRuntimeCommandStdinPipeBytes } from '../packages/runtime-core/src/runtime-project';
-import type { RuntimeCommandEvent } from '../packages/runtime-core/src/runtime-project';
-import { assertNoSameLineMicroFrames } from '../packages/runtime-core/src/runtime-raw-emission-contract';
-import { RUNTIME_TRACE_SCHEMA_VERSION, type RuntimeTrace } from '../packages/runtime-core/src/runtime-trace';
+import { createRuntimeCommandStdinPipeFromText, readRuntimeCommandStdinPipeBytes } from '../packages/runtime-contracts/src/runtime-project';
+import type { RuntimeCommandEvent } from '../packages/runtime-contracts/src/runtime-project';
+import { assertNoSameLineMicroFrames } from '../packages/runtime-contracts/src/runtime-raw-emission-contract';
+import { RUNTIME_TRACE_SCHEMA_VERSION, type RuntimeTrace } from '../packages/runtime-contracts/src/runtime-trace';
 
 interface CSharpWorkerResponse {
   success: boolean;

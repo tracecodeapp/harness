@@ -35,7 +35,7 @@ import type {
   RuntimeKernelSignalBridge,
   RuntimeKernelSyscallBridge,
   RuntimeProjectEngineLeaseController,
-} from '@tracecode/runtime-core';
+} from '@tracecode/runtime-contracts';
 import type { KernelHttpSyncServerBridge } from './kernel-http-sync';
 import type { BrowserWorkerLike } from './execution-host';
 import { logRuntimeDiagnostic } from './runtime-diagnostics';

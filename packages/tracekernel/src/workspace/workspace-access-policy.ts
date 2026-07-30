@@ -1,6 +1,6 @@
 import {
   createRuntimeKernelReadonlyFileError,
-} from '@tracecode/runtime-core';
+} from '@tracecode/runtime-contracts';
 import {
   isRuntimeSkillsNamespacePath,
   isTraceKernelVirtualNamespacePath,

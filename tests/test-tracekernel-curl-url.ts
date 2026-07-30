@@ -4,7 +4,7 @@ import { test } from 'node:test';
 import {
   createRuntimeWorkspace,
   type RuntimeKernelHttpRequest,
-} from '../packages/workspace-facade/src/index';
+} from '../packages/tracekernel/src/workspace/index';
 import {
   CURL_PROTOCOLS,
   DEFAULT_CURL_SCHEME,

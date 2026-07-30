@@ -1,6 +1,6 @@
 import type {
   RuntimeProjectCommandRequest,
-} from "@tracecode/runtime-core";
+} from "@tracecode/runtime-contracts";
 
 import {
   BrowserBuffer,

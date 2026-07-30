@@ -1,4 +1,4 @@
-import type { RuntimeFile, RuntimeFileEncoding } from '@tracecode/runtime-core';
+import type { RuntimeFile, RuntimeFileEncoding } from '@tracecode/runtime-contracts';
 import type { FileContent } from 'just-bash/browser';
 
 

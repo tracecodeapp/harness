@@ -2,7 +2,7 @@ import type {
   LanguageRuntimeProfile,
   RuntimeExecutionLimits,
   RuntimeExecutionStyle,
-} from '@tracecode/runtime-core';
+} from '@tracecode/runtime-contracts';
 
 type RuntimeRequestKind = 'execute' | 'trace';
 

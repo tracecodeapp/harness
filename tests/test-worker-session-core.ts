@@ -6,7 +6,7 @@ import { ExecutionAbortedError, WorkerTerminatedError } from '../packages/runtim
 import type {
   RuntimeProjectEngineLeaseAttachment,
   RuntimeProjectEngineLeaseController,
-} from '../packages/runtime-core/src/runtime-project';
+} from '../packages/runtime-contracts/src/runtime-project';
 
 function createCore(): WorkerSessionCore {
   return new WorkerSessionCore({

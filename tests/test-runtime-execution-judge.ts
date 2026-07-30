@@ -5,10 +5,12 @@ import * as Effect from 'effect/Effect';
 import * as Fiber from 'effect/Fiber';
 import * as Option from 'effect/Option';
 import {
-  createBrowserRuntimeJudge,
   type JudgeEvaluationPlan,
   type RuntimeJudgeBinding,
 } from '../src/judge';
+import {
+  createBrowserRuntimeJudge,
+} from '../src/internal/browser-judge';
 import {
   createBrowserRuntimeHost,
   createBrowserRuntimeProviderRegistry,
@@ -26,7 +28,7 @@ import {
   type RuntimeProgramPreparationCall,
   type RuntimeTrace,
   type RuntimeTraceCall,
-} from '@tracecode/runtime-core';
+} from '@tracecode/runtime-contracts';
 
 const RUNTIME = 'javascript';
 const BROWSER_FEATURES = {

@@ -5,7 +5,7 @@ import {
   type RuntimeKernelHttpRequest,
   type RuntimeKernelHttpResponse,
   type RuntimeWorkspaceActor,
-} from '@tracecode/runtime-core';
+} from '@tracecode/runtime-contracts';
 import {
   TRACEKERNEL_HTTP_MAX_BODY_BYTES,
   TRACEKERNEL_HTTP_MAX_DIAGNOSTIC_FIELD_LENGTH,

@@ -11,7 +11,7 @@ import {
   runtimeKernelOpenErrorMessage,
   runtimeKernelStatTarget,
   runtimeKernelWriteFsErrorMessage,
-} from "@tracecode/runtime-core";
+} from "@tracecode/runtime-contracts";
 
 import {
   BrowserBuffer,

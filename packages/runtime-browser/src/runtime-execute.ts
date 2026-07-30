@@ -7,9 +7,9 @@ import type {
   RuntimeExecuteResult,
   RuntimeExecutionStyle,
   RuntimeTraceCall,
-} from '@tracecode/runtime-core';
-import type { RuntimeCommandResult } from '@tracecode/runtime-core';
-import type { CodeExecutionBatchResult, CodeExecutionResult, ExecutionResult } from '@tracecode/runtime-core';
+} from '@tracecode/runtime-contracts';
+import type { RuntimeCommandResult } from '@tracecode/runtime-contracts';
+import type { CodeExecutionBatchResult, CodeExecutionResult, ExecutionResult } from '@tracecode/runtime-contracts';
 import { ExecutionTimeoutError } from './worker-errors';
 
 type RuntimeExecuteHandlers = {

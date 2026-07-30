@@ -1,7 +1,7 @@
 #!/usr/bin/env npx tsx
 
 import { test } from 'node:test';
-import { createNativeHarness } from '../src/native';
+import { createNativeHarness } from '../packages/runtime-native/src/index';
 
 function assertCondition(condition: unknown, message: string): asserts condition {
   if (!condition) throw new Error(message);
