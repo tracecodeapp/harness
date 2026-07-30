@@ -78,18 +78,12 @@ import type { TraceKernelHost } from './host';
 import {
   SYSTEM_PRINCIPAL,
   TraceKernelProcess,
-  processInfoProjection,
-  type MutableProcessRecord,
   type TraceKernelHostStandardIo,
 } from './process';
+import { TraceKernelProcessTable } from './process-table';
 
 export class TraceKernelSession {
-  private readonly processes = new Map<number, TraceKernelProcess>();
-  private readonly exitedChildren = new Map<number, TraceKernelProcess>();
-  private readonly initRetainedProcesses = new Set<number>();
-  private readonly waitingChildren = new Set<number>();
-  private readonly reapedBeforeUnregister = new Set<number>();
-  private readonly childWaiters = new Set<Deferred.Deferred<void>>();
+  private readonly processTable: TraceKernelProcessTable;
   private readonly watchRegistry = new TraceKernelWatchRegistry();
   private readonly stopWatchingFileSystemMutations: () => void;
   private readonly processWatchdogs = new Map<
@@ -107,7 +101,6 @@ export class TraceKernelSession {
     TraceKernelPipe | TraceKernelOpenFileDescription | TraceKernelTerminal
   >();
   private readonly controllingTerminalsBySession = new Map<number, string>();
-  private nextPid = 100;
   private nextResourceId = 1;
   private closed = false;
 
@@ -125,6 +118,16 @@ export class TraceKernelSession {
     private readonly ownsFileSystem: boolean,
     private readonly fileSystemPolicy?: TraceKernelFileSystemPolicy
   ) {
+    this.processTable = new TraceKernelProcessTable({
+      sessionId: id,
+      cwd,
+      env,
+      maxDescriptorsPerProcess,
+      maxProcesses,
+      signalGracePeriodMs,
+      controllingTerminalForSession: (sessionId) =>
+        this.controllingTerminalsBySession.get(sessionId),
+    });
     this.stopWatchingFileSystemMutations = fileSystem.watchMutations((mutation) => {
       Effect.runSync(this.watchRegistry.publish(mutation));
     });
@@ -160,7 +163,7 @@ export class TraceKernelSession {
     return Effect.gen(this, function* () {
       const started = yield* Deferred.make<void, TraceKernelProcessStateError>();
       const process = yield* Effect.try({
-        try: () => this.registerProcess(spec, started),
+        try: () => this.processTable.register(spec, started),
         catch: (error) =>
           error instanceof TraceKernelSessionClosedError ||
           error instanceof TraceKernelProcessLimitError ||
@@ -172,10 +175,10 @@ export class TraceKernelSession {
               message: error instanceof Error ? error.message : String(error),
             }),
       });
-      yield* this.inheritProcessDescriptors(process, spec).pipe(
+      yield* this.processTable.inheritDescriptors(process, spec).pipe(
         Effect.tapError(() =>
           process.descriptors.closeAll().pipe(
-            Effect.ensuring(Effect.sync(() => this.unregisterProcess(process.pid)))
+            Effect.ensuring(Effect.sync(() => this.processTable.unregister(process.pid)))
           )
         )
       );
@@ -183,7 +186,7 @@ export class TraceKernelSession {
         yield* prepare(process).pipe(
           Effect.tapError(() =>
             process.descriptors.closeAll().pipe(
-              Effect.ensuring(Effect.sync(() => this.unregisterProcess(process.pid)))
+              Effect.ensuring(Effect.sync(() => this.processTable.unregister(process.pid)))
             )
           )
         );
@@ -191,7 +194,7 @@ export class TraceKernelSession {
       yield* this.applyProcessDescriptorActions(process, spec).pipe(
         Effect.tapError(() =>
           process.descriptors.closeAll().pipe(
-            Effect.ensuring(Effect.sync(() => this.unregisterProcess(process.pid)))
+            Effect.ensuring(Effect.sync(() => this.processTable.unregister(process.pid)))
           )
         )
       );
@@ -234,7 +237,7 @@ export class TraceKernelSession {
         ),
         Effect.ensuring(this.clearProcessWatchdog(process)),
         Effect.ensuring(process.descriptors.closeAll()),
-        Effect.ensuring(Effect.sync(() => this.unregisterProcess(process.pid)))
+        Effect.ensuring(Effect.sync(() => this.processTable.unregister(process.pid)))
       );
 
       const fiber = yield* Effect.forkIn(program, this.scope);
@@ -258,7 +261,7 @@ export class TraceKernelSession {
       TraceKernelDescriptorInheritanceError
   > {
     return Effect.gen(this, function* () {
-      yield* this.assertOwnedProcess(parent);
+      yield* this.processTable.assertOwned(parent);
       const parentSnapshot = parent.snapshot();
       return yield* this.spawn({
         ...spec,
@@ -290,7 +293,7 @@ export class TraceKernelSession {
     Error
   > {
     return Effect.gen(this, function* () {
-      yield* this.assertOwnedProcess(parent);
+      yield* this.processTable.assertOwned(parent);
       const parentSnapshot = parent.snapshot();
       const replacedStdioFds = new Set<number>(
         ([
@@ -350,25 +353,7 @@ export class TraceKernelSession {
     TraceKernelProcessSnapshot | undefined,
     TraceKernelProcessStateError | TraceKernelChildProcessError
   > {
-    return Effect.gen(this, function* () {
-      const selector = Math.trunc(pid);
-      if (!Number.isSafeInteger(pid)) {
-        return yield* Effect.fail(new TraceKernelChildProcessError({
-          code: 'ECHILD',
-          pid: selector,
-          message: `ECHILD: invalid child selector ${pid}`,
-        }));
-      }
-      yield* this.assertOwnedProcess(parent);
-      const snapshot = parent.snapshot();
-      return yield* this.waitChildSelection(
-        snapshot.pid,
-        snapshot.pgid,
-        selector,
-        options,
-        false
-      );
-    });
+    return this.processTable.waitChild(parent, pid, options);
   }
 
   waitInitChild(
@@ -378,122 +363,7 @@ export class TraceKernelSession {
     TraceKernelProcessSnapshot | undefined,
     TraceKernelProcessStateError | TraceKernelChildProcessError
   > {
-    return Effect.suspend(() => {
-      const selector = Math.trunc(pid);
-      if (!Number.isSafeInteger(pid)) {
-        return Effect.fail(new TraceKernelChildProcessError({
-          code: 'ECHILD',
-          pid: selector,
-          message: `ECHILD: invalid child selector ${pid}`,
-        }));
-      }
-      return this.waitChildSelection(1, 1, selector, options, true);
-    });
-  }
-
-  private waitChildSelection(
-    parentPid: number,
-    parentProcessGroupId: number,
-    selector: number,
-    options: { readonly noHang?: boolean },
-    requireInitRetention: boolean
-  ): Effect.Effect<
-    TraceKernelProcessSnapshot | undefined,
-    TraceKernelProcessStateError | TraceKernelChildProcessError
-  > {
-    return Effect.gen(this, function* () {
-      const changed = yield* Deferred.make<void>();
-      this.childWaiters.add(changed);
-      const candidates = this.waitableChildren(
-        parentPid,
-        parentProcessGroupId,
-        selector,
-        requireInitRetention
-      );
-      if (candidates.length === 0) {
-        this.childWaiters.delete(changed);
-        return yield* Effect.fail(new TraceKernelChildProcessError({
-          code: 'ECHILD',
-          pid: selector,
-          message: `ECHILD: selector ${selector} has no unreaped children of process ${parentPid}`,
-        }));
-      }
-      const child = candidates.find(
-        (candidate) => candidate.snapshot().phase === 'exited'
-      );
-      if (!child && options.noHang) {
-        this.childWaiters.delete(changed);
-        return undefined;
-      }
-      if (!child) {
-        yield* Deferred.await(changed).pipe(
-          Effect.ensuring(Effect.sync(() => {
-            this.childWaiters.delete(changed);
-          }))
-        );
-        return yield* this.waitChildSelection(
-          parentPid,
-          parentProcessGroupId,
-          selector,
-          options,
-          requireInitRetention
-        );
-      }
-      this.childWaiters.delete(changed);
-      this.waitingChildren.add(child.pid);
-      let reaped = false;
-      if (this.processes.has(child.pid)) {
-        this.reapedBeforeUnregister.add(child.pid);
-      }
-      return yield* child.wait().pipe(
-        Effect.tap(() => Effect.sync(() => {
-          reaped = true;
-          this.exitedChildren.delete(child.pid);
-          this.initRetainedProcesses.delete(child.pid);
-        })),
-        Effect.ensuring(Effect.sync(() => {
-          this.waitingChildren.delete(child.pid);
-          if (!reaped) {
-            this.reapedBeforeUnregister.delete(child.pid);
-            Effect.runSync(this.notifyChildWaiters());
-          }
-        }))
-      );
-    });
-  }
-
-  private waitableChildren(
-    parentPid: number,
-    parentProcessGroupId: number,
-    selector: number,
-    requireInitRetention: boolean
-  ): readonly TraceKernelProcess[] {
-    const children = new Map<number, TraceKernelProcess>([
-      ...this.processes,
-      ...this.exitedChildren,
-    ]);
-    return [...children.values()]
-      .filter((child) => {
-        const snapshot = child.snapshot();
-        if (
-          snapshot.ppid !== parentPid ||
-          this.waitingChildren.has(snapshot.pid) ||
-          this.reapedBeforeUnregister.has(snapshot.pid) ||
-          (
-            requireInitRetention &&
-            !this.initRetainedProcesses.has(snapshot.pid)
-          )
-        ) {
-          return false;
-        }
-        if (selector > 0) return snapshot.pid === selector;
-        if (selector === -1) return true;
-        const processGroupId = selector === 0
-          ? parentProcessGroupId
-          : -selector;
-        return snapshot.pgid === processGroupId;
-      })
-      .sort((left, right) => left.pid - right.pid);
+    return this.processTable.waitInitChild(pid, options);
   }
 
   execute(
@@ -520,46 +390,20 @@ export class TraceKernelSession {
   processSnapshots(
     requester: TraceKernelPrincipal = SYSTEM_PRINCIPAL
   ): readonly TraceKernelProcessSnapshot[] {
-    return this.visibleProcessSnapshots(this.processes.values(), requester);
+    return this.processTable.processSnapshots(requester);
   }
 
   processTableSnapshots(
     requester: TraceKernelPrincipal = SYSTEM_PRINCIPAL
   ): readonly TraceKernelProcessSnapshot[] {
-    return this.visibleProcessSnapshots(
-      new Map<number, TraceKernelProcess>([
-        ...this.processes,
-        ...this.exitedChildren,
-      ]).values(),
-      requester
-    );
+    return this.processTable.processTableSnapshots(requester);
   }
 
   setProcessSchedulingState(
     process: TraceKernelProcess,
     state: TraceKernelProcessSchedulingState
   ): Effect.Effect<TraceKernelProcessSchedulingState, TraceKernelProcessStateError> {
-    return this.assertOwnedProcess(process).pipe(
-      Effect.tap(() => Effect.sync(() => process.setSchedulingState(state))),
-      Effect.as(state)
-    );
-  }
-
-  private visibleProcessSnapshots(
-    processes: Iterable<TraceKernelProcess>,
-    requester: TraceKernelPrincipal
-  ): readonly TraceKernelProcessSnapshot[] {
-    return [...processes]
-      .map((process) => process.snapshot())
-      .filter((process) =>
-        requester.kind === 'system' ||
-        process.visible ||
-        (
-          process.owner.id === requester.id &&
-          process.owner.kind === requester.kind
-        )
-      )
-      .sort((left, right) => left.pid - right.pid);
+    return this.processTable.setSchedulingState(process, state);
   }
 
   processIdentity(
@@ -574,86 +418,20 @@ export class TraceKernelSession {
     },
     TraceKernelProcessStateError
   > {
-    return Effect.gen(this, function* () {
-      yield* this.assertOwnedProcess(caller);
-      const pid = requestedPid === undefined || requestedPid === 0
-        ? caller.pid
-        : Math.trunc(requestedPid);
-      if (
-        !Number.isSafeInteger(requestedPid ?? 0) ||
-        pid <= 0
-      ) {
-        return yield* Effect.fail(new TraceKernelProcessStateError({
-          pid,
-          message: `ESRCH: invalid process identity target ${requestedPid}`,
-        }));
-      }
-      const target = this.processes.get(pid) ?? this.exitedChildren.get(pid);
-      if (!target) {
-        return yield* Effect.fail(new TraceKernelProcessStateError({
-          pid,
-          message: `ESRCH: process ${pid} does not exist in session ${this.id}`,
-        }));
-      }
-      const callerOwner = caller.snapshot().owner;
-      const snapshot = target.snapshot();
-      if (
-        !snapshot.visible &&
-        callerOwner.kind !== 'system' &&
-        (
-          callerOwner.id !== snapshot.owner.id ||
-          callerOwner.kind !== snapshot.owner.kind
-        )
-      ) {
-        return yield* Effect.fail(new TraceKernelProcessStateError({
-          pid,
-          message: `ESRCH: process ${pid} does not exist in session ${this.id}`,
-        }));
-      }
-      return {
-        pid: snapshot.pid,
-        ppid: snapshot.ppid,
-        pgid: snapshot.pgid,
-        sid: snapshot.sid,
-      };
-    });
+    return this.processTable.processIdentity(caller, requestedPid);
   }
 
   processInfo(
     caller: TraceKernelProcess,
     requestedPid?: number
-  ): Effect.Effect<
-    TraceKernelProcessInfo,
-    TraceKernelProcessStateError
-  > {
-    return Effect.gen(this, function* () {
-      const identity = yield* this.processIdentity(caller, requestedPid);
-      const target =
-        this.processes.get(identity.pid) ?? this.exitedChildren.get(identity.pid);
-      if (!target) {
-        return yield* Effect.fail(new TraceKernelProcessStateError({
-          pid: identity.pid,
-          message: `ESRCH: process ${identity.pid} does not exist in session ${this.id}`,
-        }));
-      }
-      return processInfoProjection(target.snapshot());
-    });
+  ): Effect.Effect<TraceKernelProcessInfo, TraceKernelProcessStateError> {
+    return this.processTable.processInfo(caller, requestedPid);
   }
 
   processList(
     caller: TraceKernelProcess
-  ): Effect.Effect<
-    readonly TraceKernelProcessInfo[],
-    TraceKernelProcessStateError
-  > {
-    return this.assertOwnedProcess(caller).pipe(
-      Effect.map(() =>
-        Object.freeze(
-          this.processTableSnapshots(caller.snapshot().owner)
-            .map(processInfoProjection)
-        )
-      )
-    );
+  ): Effect.Effect<readonly TraceKernelProcessInfo[], TraceKernelProcessStateError> {
+    return this.processTable.processList(caller);
   }
 
   processEnvironment(
@@ -662,9 +440,7 @@ export class TraceKernelSession {
     Readonly<Record<string, string>>,
     TraceKernelProcessStateError
   > {
-    return this.assertOwnedProcess(caller).pipe(
-      Effect.map(() => Object.freeze({ ...caller.snapshot().env }))
-    );
+    return this.processTable.processEnvironment(caller);
   }
 
   createProcessSession(
@@ -673,22 +449,7 @@ export class TraceKernelSession {
     number,
     TraceKernelProcessStateError | TraceKernelProcessPermissionError
   > {
-    return Effect.gen(this, function* () {
-      yield* this.assertOwnedProcess(process);
-      const snapshot = process.snapshot();
-      if (snapshot.pgid === snapshot.pid) {
-        return yield* Effect.fail(new TraceKernelProcessPermissionError({
-          code: 'EPERM',
-          pid: process.pid,
-          requesterId: snapshot.owner.id,
-          message: `EPERM: process ${process.pid} is already a process-group leader`,
-        }));
-      }
-      process.setTopology(process.pid, process.pid);
-      process.setControllingTerminal(undefined);
-      yield* this.notifyChildWaiters();
-      return process.pid;
-    });
+    return this.processTable.createProcessSession(process);
   }
 
   createControllingTerminal(
@@ -699,7 +460,7 @@ export class TraceKernelSession {
     TraceKernelProcessStateError | TraceKernelProcessPermissionError
   > {
     return Effect.gen(this, function* () {
-      yield* this.assertOwnedProcess(process);
+      yield* this.processTable.assertOwned(process);
       const snapshot = process.snapshot();
       if (snapshot.sid !== snapshot.pid) {
         return yield* Effect.fail(new TraceKernelProcessPermissionError({
@@ -727,7 +488,7 @@ export class TraceKernelSession {
       );
       this.resources.set(resourceId, terminal);
       this.controllingTerminalsBySession.set(snapshot.sid, resourceId);
-      for (const candidate of this.processes.values()) {
+      for (const candidate of this.processTable.activeProcesses()) {
         if (candidate.snapshot().sid === snapshot.sid) {
           candidate.setControllingTerminal(resourceId);
         }
@@ -750,7 +511,7 @@ export class TraceKernelSession {
     options: TraceKernelTerminalOptions = {}
   ): Effect.Effect<TraceKernelTerminal, Error> {
     return Effect.gen(this, function* () {
-      yield* this.assertOwnedProcess(process);
+      yield* this.processTable.assertOwned(process);
       const snapshot = process.snapshot();
       const existingId = this.controllingTerminalsBySession.get(snapshot.sid);
       if (existingId) {
@@ -779,7 +540,7 @@ export class TraceKernelSession {
       );
       this.resources.set(resourceId, terminal);
       this.controllingTerminalsBySession.set(snapshot.sid, resourceId);
-      for (const candidate of this.processes.values()) {
+      for (const candidate of this.processTable.activeProcesses()) {
         if (candidate.snapshot().sid === snapshot.sid) {
           candidate.setControllingTerminal(resourceId);
         }
@@ -795,7 +556,7 @@ export class TraceKernelSession {
     fd?: number
   ): Effect.Effect<number, Error> {
     return Effect.gen(this, function* () {
-      yield* this.assertOwnedProcess(process);
+      yield* this.processTable.assertOwned(process);
       const terminal = yield* this.terminalById(terminalId);
       const snapshot = process.snapshot();
       if (
@@ -855,7 +616,7 @@ export class TraceKernelSession {
     readonly stderrFd: 2;
   }, Error> {
     return Effect.gen(this, function* () {
-      yield* this.assertOwnedProcess(process);
+      yield* this.processTable.assertOwned(process);
       const terminal = yield* this.terminalById(terminalId);
       const snapshot = process.snapshot();
       if (
@@ -887,7 +648,7 @@ export class TraceKernelSession {
     boolean,
     TraceKernelProcessStateError | TraceKernelBadFileDescriptorError
   > {
-    return this.assertOwnedProcess(process).pipe(
+    return this.processTable.assertOwned(process).pipe(
       Effect.andThen(process.descriptors.lookup(fd)),
       Effect.map((descriptor) => descriptor.resource instanceof TraceKernelTerminal)
     );
@@ -917,7 +678,7 @@ export class TraceKernelSession {
           message: `EINVAL: invalid terminal foreground process group ${processGroupId}`,
         }));
       }
-      const member = [...this.processes.values()].find((candidate) => {
+      const member = [...this.processTable.activeProcesses()].find((candidate) => {
         const candidateSnapshot = candidate.snapshot();
         return candidateSnapshot.pgid === pgid &&
           candidateSnapshot.sid === terminal.sessionId;
@@ -990,7 +751,7 @@ export class TraceKernelSession {
     return Effect.gen(this, function* () {
       const terminal = yield* this.terminalById(terminalId);
       const pgid = terminal.snapshot().foregroundProcessGroupId;
-      const members = [...this.processes.values()].filter((candidate) => {
+      const members = [...this.processTable.activeProcesses()].filter((candidate) => {
         const snapshot = candidate.snapshot();
         return snapshot.sid === terminal.sessionId && snapshot.pgid === pgid;
       });
@@ -1091,7 +852,7 @@ export class TraceKernelSession {
       const terminalSnapshot = terminal.snapshot();
       if (terminalSnapshot.closed) return;
 
-      const foregroundMembers = [...this.processes.values()].filter(
+      const foregroundMembers = [...this.processTable.activeProcesses()].filter(
         (candidate) => {
           const snapshot = candidate.snapshot();
           return snapshot.sid === terminalSnapshot.sessionId &&
@@ -1100,7 +861,7 @@ export class TraceKernelSession {
       );
       yield* terminal.dispose();
       this.controllingTerminalsBySession.delete(terminalSnapshot.sessionId);
-      for (const candidate of this.processes.values()) {
+      for (const candidate of this.processTable.activeProcesses()) {
         if (
           candidate.snapshot().controllingTerminalId === terminal.id
         ) {
@@ -1135,65 +896,7 @@ export class TraceKernelSession {
       TraceKernelProcessPermissionError |
       TraceKernelInvalidArgumentError
   > {
-    return Effect.gen(this, function* () {
-      yield* this.assertOwnedProcess(caller);
-      const requestedPid = Math.trunc(targetPid);
-      const requestedGroup = Math.trunc(processGroupId);
-      if (
-        !Number.isSafeInteger(targetPid) ||
-        !Number.isSafeInteger(processGroupId) ||
-        requestedPid < 0 ||
-        requestedGroup < 0
-      ) {
-        return yield* Effect.fail(new TraceKernelInvalidArgumentError({
-          code: 'EINVAL',
-          argument: 'setpgid',
-          message: `EINVAL: invalid setpgid(${targetPid}, ${processGroupId})`,
-        }));
-      }
-      const target = requestedPid === 0 ? caller : this.processes.get(requestedPid);
-      if (!target) {
-        return yield* Effect.fail(new TraceKernelProcessStateError({
-          pid: requestedPid,
-          message: `ESRCH: process ${requestedPid} does not exist in session ${this.id}`,
-        }));
-      }
-      if (target !== caller) {
-        return yield* Effect.fail(new TraceKernelProcessPermissionError({
-          code: 'EPERM',
-          pid: target.pid,
-          requesterId: caller.snapshot().owner.id,
-          message: `EPERM: a running process may only change its own process group`,
-        }));
-      }
-      const snapshot = target.snapshot();
-      if (snapshot.sid === snapshot.pid) {
-        return yield* Effect.fail(new TraceKernelProcessPermissionError({
-          code: 'EPERM',
-          pid: target.pid,
-          requesterId: snapshot.owner.id,
-          message: `EPERM: session leader ${target.pid} cannot change process group`,
-        }));
-      }
-      const pgid = requestedGroup === 0 ? target.pid : requestedGroup;
-      if (
-        pgid !== target.pid &&
-        ![...this.processes.values()].some((candidate) => {
-          const candidateSnapshot = candidate.snapshot();
-          return candidateSnapshot.pgid === pgid &&
-            candidateSnapshot.sid === snapshot.sid;
-        })
-      ) {
-        return yield* Effect.fail(new TraceKernelInvalidArgumentError({
-          code: 'EINVAL',
-          argument: 'processGroupId',
-          message: `EINVAL: process group ${pgid} does not exist in session ${snapshot.sid}`,
-        }));
-      }
-      target.setTopology(pgid, snapshot.sid);
-      yield* this.notifyChildWaiters();
-      return pgid;
-    });
+    return this.processTable.setProcessGroup(caller, targetPid, processGroupId);
   }
 
   signalProcess(
@@ -1204,24 +907,9 @@ export class TraceKernelSession {
     void,
     TraceKernelProcessStateError | TraceKernelProcessPermissionError
   > {
-    const process = this.processes.get(pid);
-    return process
-      ? process.signal(signal, requester)
-      : Effect.fail(new TraceKernelProcessStateError({
-          pid,
-          message: `ESRCH: process ${pid} does not exist in session ${this.id}`,
-        }));
+    return this.processTable.signalProcess(requester, pid, signal);
   }
 
-  /**
-   * Apply the POSIX kill(2) PID selector rules inside this session.
-   *
-   * A positive value selects one process, zero selects the caller's process
-   * group, a value below -1 selects that process group, and -1 selects every
-   * other process the requester may signal. Group delivery succeeds when at
-   * least one member accepts the signal; an entirely protected target set
-   * reports EACCES, while an empty selector reports ESRCH.
-   */
   signalProcessTarget(
     requester: TraceKernelPrincipal,
     caller: TraceKernelProcess,
@@ -1231,56 +919,12 @@ export class TraceKernelSession {
     void,
     TraceKernelProcessStateError | TraceKernelProcessPermissionError
   > {
-    return Effect.gen(this, function* () {
-      yield* this.assertOwnedProcess(caller);
-      const selector = Math.trunc(targetPid);
-      if (!Number.isSafeInteger(targetPid)) {
-        return yield* Effect.fail(new TraceKernelProcessStateError({
-          pid: selector,
-          message: `ESRCH: invalid process selector ${targetPid}`,
-        }));
-      }
-      if (selector > 0) {
-        return yield* this.signalProcess(requester, selector, signal);
-      }
-
-      const callerSnapshot = caller.snapshot();
-      const candidates = [...this.processes.values()].filter((process) => {
-        const snapshot = process.snapshot();
-        if (selector === -1) return snapshot.pid !== caller.pid;
-        const processGroupId = selector === 0
-          ? callerSnapshot.pgid
-          : -selector;
-        return snapshot.pgid === processGroupId;
-      });
-      if (candidates.length === 0) {
-        return yield* Effect.fail(new TraceKernelProcessStateError({
-          pid: selector,
-          message: selector === -1
-            ? `ESRCH: no other processes exist in session ${this.id}`
-            : `ESRCH: process group ${selector === 0 ? callerSnapshot.pgid : -selector} does not exist in session ${this.id}`,
-        }));
-      }
-
-      const deliveries = yield* Effect.forEach(
-        candidates,
-        (process) => process.signal(signal, requester).pipe(
-          Effect.match({
-            onFailure: (error) => ({ delivered: false as const, error }),
-            onSuccess: () => ({ delivered: true as const }),
-          })
-        ),
-        { concurrency: 'unbounded' }
-      );
-      if (deliveries.some((delivery) => delivery.delivered)) return;
-      const denied = deliveries.find(
-        (delivery): delivery is {
-          readonly delivered: false;
-          readonly error: TraceKernelProcessPermissionError;
-        } => !delivery.delivered
-      );
-      if (denied) return yield* Effect.fail(denied.error);
-    });
+    return this.processTable.signalProcessTarget(
+      requester,
+      caller,
+      targetPid,
+      signal
+    );
   }
 
   openNullDevice(
@@ -1289,7 +933,7 @@ export class TraceKernelSession {
     fd?: number
   ): Effect.Effect<number, TraceKernelProcessStateError | TraceKernelDescriptorLimitError> {
     return Effect.gen(this, function* () {
-      yield* this.assertOwnedProcess(process);
+      yield* this.processTable.assertOwned(process);
       const descriptorId = `null-${process.pid}-${fd ?? 'auto'}-${this.nextResourceId++}`;
       return yield* this.installDescriptor(
         process,
@@ -1340,7 +984,7 @@ export class TraceKernelSession {
     readonly stderrFd: 2;
   }, Error> {
     return Effect.gen(this, function* () {
-      yield* this.assertOwnedProcess(process);
+      yield* this.processTable.assertOwned(process);
       const existing = new Set(
         process.descriptors.snapshots().map((descriptor) => descriptor.fd)
       );
@@ -1383,7 +1027,7 @@ export class TraceKernelSession {
     readonly stderrFd: 2;
   }, Error> {
     return Effect.gen(this, function* () {
-      yield* this.assertOwnedProcess(process);
+      yield* this.processTable.assertOwned(process);
       const resourcePrefix =
         `null-${process.pid}-replace-${this.nextResourceId++}`;
       yield* process.descriptors.replaceMany([
@@ -1422,7 +1066,7 @@ export class TraceKernelSession {
     options: TraceKernelPipeOptions = {}
   ): Effect.Effect<TraceKernelHostStandardIo, Error> {
     return Effect.gen(this, function* () {
-      yield* this.assertOwnedProcess(process);
+      yield* this.processTable.assertOwned(process);
       const createPipe = (stream: 'stdin' | 'stdout' | 'stderr') =>
         TraceKernelPipe.make(
           `host-${stream}-${process.pid}-${this.nextResourceId++}`,
@@ -1490,7 +1134,7 @@ export class TraceKernelSession {
     } = {}
   ): Effect.Effect<TraceKernelWatchdogSnapshot | undefined, Error> {
     return Effect.gen(this, function* () {
-      yield* this.assertOwnedProcess(process);
+      yield* this.processTable.assertOwned(process);
       const current = this.processWatchdogs.get(process.pid);
       if (action === 'status') return current
         ? Object.freeze({
@@ -1607,8 +1251,8 @@ export class TraceKernelSession {
     readonly writeFd: number;
   }, Error> {
     return Effect.gen(this, function* () {
-      yield* this.assertOwnedProcess(reader);
-      yield* this.assertOwnedProcess(writer);
+      yield* this.processTable.assertOwned(reader);
+      yield* this.processTable.assertOwned(writer);
       const resourceId = `pipe-${this.nextResourceId++}`;
       const pipe = yield* TraceKernelPipe.make(
         resourceId,
@@ -1782,7 +1426,7 @@ export class TraceKernelSession {
       TraceKernelDescriptorLimitError
   > {
     return Effect.gen(this, function* () {
-      yield* this.assertOwnedProcess(process);
+      yield* this.processTable.assertOwned(process);
       const socket = yield* this.networkNamespace.createSocket();
       return yield* this.installDescriptor(process, socket.descriptor());
     });
@@ -1895,7 +1539,7 @@ export class TraceKernelSession {
     options: TraceKernelOpenFileOptions = {}
   ): Effect.Effect<number, TraceKernelProcessStateError | Error> {
     return Effect.gen(this, function* () {
-      yield* this.assertOwnedProcess(process);
+      yield* this.processTable.assertOwned(process);
       const resourceId = `file-${this.nextResourceId++}`;
       const description = yield* TraceKernelOpenFileDescription.make(
         resourceId,
@@ -1927,7 +1571,7 @@ export class TraceKernelSession {
   ): Effect.Effect<void, Error> {
     if (!this.fileSystemPolicy || accesses.length === 0) return Effect.void;
     return Effect.gen(this, function* () {
-      yield* this.assertOwnedProcess(process);
+      yield* this.processTable.assertOwned(process);
       const snapshot = process.snapshot();
       const normalized = yield* Effect.forEach(
         accesses,
@@ -1955,7 +1599,7 @@ export class TraceKernelSession {
     options: TraceKernelWatchOptions = {}
   ): Effect.Effect<number, Error> {
     return Effect.gen(this, function* () {
-      yield* this.assertOwnedProcess(process);
+      yield* this.processTable.assertOwned(process);
       const resolved = yield* this.fileSystem.resolve(path, process.snapshot().cwd);
       const stat = yield* this.fileSystem.stat(resolved, '/');
       const descriptor = yield* this.watchRegistry.create(
@@ -2034,7 +1678,8 @@ export class TraceKernelSession {
     return Effect.suspend(() => {
       if (this.closed) return Effect.void;
       this.closed = true;
-      const processes = [...this.processes.values()];
+      this.processTable.close();
+      const processes = this.processTable.activeProcesses();
       return Effect.forEach(
         processes,
         (process) => process.signal('SIGKILL'),
@@ -2049,12 +1694,7 @@ export class TraceKernelSession {
         Effect.andThen(Scope.close(this.scope, Exit.void)),
         Effect.ensuring(Effect.sync(() => {
           this.stopWatchingFileSystemMutations();
-          this.processes.clear();
-          this.exitedChildren.clear();
-          this.initRetainedProcesses.clear();
-          this.waitingChildren.clear();
-          this.reapedBeforeUnregister.clear();
-          this.childWaiters.clear();
+          this.processTable.clear();
           this.processWatchdogs.clear();
           this.controllingTerminalsBySession.clear();
           this.resources.clear();
@@ -2068,126 +1708,6 @@ export class TraceKernelSession {
     });
   }
 
-  private registerProcess(
-    spec: TraceKernelProcessSpec,
-    started: Deferred.Deferred<void, TraceKernelProcessStateError>
-  ): TraceKernelProcess {
-    if (this.closed) {
-      throw new TraceKernelSessionClosedError({
-        sessionId: this.id,
-        message: `TraceKernel session ${this.id} is closed.`,
-      });
-    }
-    if (this.processes.size + this.exitedChildren.size >= this.maxProcesses) {
-      throw new TraceKernelProcessLimitError({
-        code: 'EAGAIN',
-        maxProcesses: this.maxProcesses,
-        message: `EAGAIN: session process limit ${this.maxProcesses} reached`,
-      });
-    }
-    const ppid = spec.parentPid ?? 1;
-    const parent = ppid === 1 ? undefined : this.processes.get(ppid);
-    if (ppid !== 1 && !parent) {
-      throw new TraceKernelProcessStateError({
-        pid: ppid,
-        message: `ESRCH: parent process ${ppid} does not exist in session ${this.id}`,
-      });
-    }
-    const pid = this.nextPid;
-    const parentSnapshot = parent?.snapshot();
-    if (
-      spec.sessionId !== undefined &&
-      (!Number.isSafeInteger(spec.sessionId) || spec.sessionId < 0)
-    ) {
-      throw new TraceKernelInvalidArgumentError({
-        code: 'EINVAL',
-        argument: 'sessionId',
-        message: `EINVAL: invalid session id ${spec.sessionId}`,
-      });
-    }
-    if (
-      spec.processGroupId !== undefined &&
-      (!Number.isSafeInteger(spec.processGroupId) || spec.processGroupId < 0)
-    ) {
-      throw new TraceKernelInvalidArgumentError({
-        code: 'EINVAL',
-        argument: 'processGroupId',
-        message: `EINVAL: invalid process group id ${spec.processGroupId}`,
-      });
-    }
-    const startsNewSession = spec.sessionId === 0;
-    const inheritedSid = parentSnapshot?.sid ?? pid;
-    if (
-      parent &&
-      spec.sessionId !== undefined &&
-      !startsNewSession &&
-      spec.sessionId !== inheritedSid
-    ) {
-      throw new TraceKernelInvalidArgumentError({
-        code: 'EINVAL',
-        argument: 'sessionId',
-        message: `EINVAL: child session ${spec.sessionId} does not match parent session ${inheritedSid}`,
-      });
-    }
-    const sid = startsNewSession
-      ? pid
-      : parent
-        ? inheritedSid
-        : spec.sessionId ?? inheritedSid;
-    const pgid = startsNewSession || spec.processGroupId === 0
-      ? pid
-      : spec.processGroupId ?? parentSnapshot?.pgid ?? pid;
-    if (
-      pgid !== pid &&
-      ![...this.processes.values()].some((candidate) => {
-        const snapshot = candidate.snapshot();
-        return snapshot.pgid === pgid && snapshot.sid === sid;
-      })
-    ) {
-      throw new TraceKernelInvalidArgumentError({
-        code: 'EINVAL',
-        argument: 'processGroupId',
-        message: `EINVAL: process group ${pgid} does not exist in session ${sid}`,
-      });
-    }
-    this.nextPid += 1;
-    const controllingTerminalId = !startsNewSession
-      ? parentSnapshot?.controllingTerminalId ??
-        this.controllingTerminalsBySession.get(sid)
-      : undefined;
-    const record: MutableProcessRecord = {
-      pid,
-      ppid,
-      pgid,
-      sid,
-      ...(controllingTerminalId === undefined
-        ? {}
-        : { controllingTerminalId }),
-      phase: 'created',
-      schedulingState: 'queued',
-      runtime: spec.runtime,
-      command: spec.command,
-      args: Object.freeze([...(spec.args ?? [])]),
-      cwd: spec.cwd ?? this.cwd,
-      env: Object.freeze({ ...this.env, ...(spec.env ?? {}) }),
-      owner: spec.owner ?? SYSTEM_PRINCIPAL,
-      protected: spec.protected ?? false,
-      visible: spec.visible ?? true,
-      stdout: '',
-      stderr: '',
-    };
-    const process = new TraceKernelProcess(
-      record,
-      started,
-      this.maxDescriptorsPerProcess,
-      this.signalGracePeriodMs
-    );
-    this.processes.set(pid, process);
-    if (ppid === 1 && spec.retainOnExit === true) {
-      this.initRetainedProcesses.add(pid);
-    }
-    return process;
-  }
 
   private normalizePolicyAccess(
     path: string,
@@ -2237,84 +1757,6 @@ export class TraceKernelSession {
     });
   }
 
-  private unregisterProcess(pid: number): void {
-    const exited = this.processes.get(pid);
-    this.processes.delete(pid);
-    const alreadyReaped = this.reapedBeforeUnregister.delete(pid);
-    if (exited) {
-      const snapshot = exited.snapshot();
-      if (
-        snapshot.phase === 'exited' &&
-        !alreadyReaped &&
-        (
-          snapshot.ppid !== 1 ||
-          this.initRetainedProcesses.has(pid)
-        )
-      ) {
-        this.exitedChildren.set(pid, exited);
-      } else {
-        this.initRetainedProcesses.delete(pid);
-      }
-    } else {
-      this.initRetainedProcesses.delete(pid);
-    }
-    for (const process of this.processes.values()) {
-      process.reparent(pid, 1);
-    }
-    for (const [childPid, child] of this.exitedChildren) {
-      if (childPid === pid) continue;
-      if (child.snapshot().ppid === pid) {
-        child.reparent(pid, 1);
-        this.exitedChildren.delete(childPid);
-      }
-    }
-    Effect.runSync(this.notifyChildWaiters());
-  }
-
-  private notifyChildWaiters(): Effect.Effect<void> {
-    return Effect.forEach(
-      [...this.childWaiters],
-      (waiter) => Deferred.succeed(waiter, undefined),
-      { concurrency: 'unbounded', discard: true }
-    );
-  }
-
-  private inheritProcessDescriptors(
-    process: TraceKernelProcess,
-    spec: TraceKernelProcessSpec
-  ): Effect.Effect<void, TraceKernelProcessStateError | TraceKernelDescriptorInheritanceError> {
-    if (
-      spec.inheritDescriptors === undefined &&
-      (spec.descriptorMappings?.length ?? 0) === 0
-    ) {
-      return Effect.void;
-    }
-    const parentPid = spec.parentPid ?? 1;
-    const parent = this.processes.get(parentPid);
-    if (!parent || parent === process) {
-      return Effect.fail(new TraceKernelProcessStateError({
-        pid: parentPid,
-        message: `ESRCH: descriptor inheritance requires a live parent process in session ${this.id}`,
-      }));
-    }
-    return Effect.gen(function* () {
-      if (spec.inheritDescriptors !== undefined) {
-        yield* process.descriptors.inherit(
-          parent.descriptors,
-          spec.inheritDescriptors === 'all' ? undefined : spec.inheritDescriptors
-        );
-      }
-      if (spec.descriptorMappings && spec.descriptorMappings.length > 0) {
-        yield* process.descriptors.inheritMapped(
-          parent.descriptors,
-          spec.descriptorMappings.map(({ parentFd, childFd }) => ({
-            sourceFd: parentFd,
-            targetFd: childFd,
-          }))
-        );
-      }
-    });
-  }
 
   private applyProcessDescriptorActions(
     process: TraceKernelProcess,
@@ -2329,18 +1771,6 @@ export class TraceKernelSession {
     );
   }
 
-  private assertOwnedProcess(
-    process: TraceKernelProcess
-  ): Effect.Effect<void, TraceKernelProcessStateError> {
-    return !this.closed && this.processes.get(process.pid) === process
-      ? Effect.void
-      : Effect.fail(new TraceKernelProcessStateError({
-          pid: process.pid,
-          message: this.closed
-            ? `Session ${this.id} is closed.`
-            : `Process ${process.pid} is not running in session ${this.id}.`,
-        }));
-  }
 
   private tcpSocketFor(
     process: TraceKernelProcess,
@@ -2349,7 +1779,7 @@ export class TraceKernelSession {
     TraceKernelTcpSocket,
     TraceKernelProcessStateError | TraceKernelBadFileDescriptorError | TraceKernelNetworkError
   > {
-    return this.assertOwnedProcess(process).pipe(
+    return this.processTable.assertOwned(process).pipe(
       Effect.andThen(process.descriptors.lookup(fd)),
       Effect.flatMap((descriptor) => descriptor.resource instanceof TraceKernelTcpSocket
         ? Effect.succeed(descriptor.resource)
@@ -2377,7 +1807,7 @@ export class TraceKernelSession {
     fd: number
   ): Effect.Effect<TraceKernelTerminal, Error> {
     return Effect.gen(this, function* () {
-      yield* this.assertOwnedProcess(process);
+      yield* this.processTable.assertOwned(process);
       const descriptor = yield* process.descriptors.lookup(fd);
       if (!(descriptor.resource instanceof TraceKernelTerminal)) {
         return yield* Effect.fail(new TraceKernelTerminalError({
