@@ -117,10 +117,16 @@ async function runWithTempRoot(tempRoot: string): Promise<void> {
   const packagedManifests = tarballEntries.filter((entry) =>
     entry.endsWith('/package.json')
   );
+  const allowedPackagedManifests = new Set([
+    'package/package.json',
+    // Browser .NET consumes this as runtime metadata. It is a vendored asset
+    // nested beneath the root package, not a publishable workspace manifest.
+    'package/workers/vendor/csharp/package.json',
+  ]);
   assertCondition(
-    packagedManifests.length === 1 &&
-      packagedManifests[0] === 'package/package.json',
-    'Packed tarball must contain only the root @tracecode/harness package manifest'
+    packagedManifests.includes('package/package.json') &&
+      packagedManifests.every((entry) => allowedPackagedManifests.has(entry)),
+    'Packed tarball must contain only the root registry manifest and explicitly allowed runtime metadata'
   );
   assertCondition(
     !tarballEntries.some((entry) => entry.startsWith('package/packages/')),
@@ -407,6 +413,13 @@ async function runWithTempRoot(tempRoot: string): Promise<void> {
       if (typeof browserRequire.createBrowserHarness !== 'function') {
         throw new Error('Missing CommonJS browser export');
       }
+      if (typeof browserRequire.createBrowserRuntimeHost !== 'function') {
+        throw new Error('Missing CommonJS prepared browser host export');
+      }
+      const judgeRequire = require('@tracecode/harness/judge');
+      if (typeof judgeRequire.createBrowserRuntimeJudge !== 'function') {
+        throw new Error('Missing CommonJS browser Judge export');
+      }
       const projectRequire = require('@tracecode/harness/project');
       if (typeof projectRequire.createRuntimeWorkspace !== 'function') {
         throw new Error('Missing CommonJS root project subpath export');
@@ -456,7 +469,13 @@ async function runWithTempRoot(tempRoot: string): Promise<void> {
       }
 
       if (typeof browser.createBrowserHarness !== 'function') throw new Error('Missing createBrowserHarness export');
+      if (typeof browser.createBrowserRuntimeHost !== 'function') {
+        throw new Error('Missing prepared browser runtime host export');
+      }
       if (typeof judge.createRuntimeJudge !== 'function') throw new Error('Missing judge export');
+      if (typeof judge.createBrowserRuntimeJudge !== 'function') {
+        throw new Error('Missing browser Judge composition export');
+      }
       if (typeof sql.createSqlRuntimeTraceClient !== 'function') throw new Error('Missing SQL runtime trace client export');
       const csharpRuntimeInfo = core.getLanguageRuntimeInfo('csharp');
       if (/roslyn|dotnet|\\.net/i.test(JSON.stringify(csharpRuntimeInfo))) {
@@ -915,8 +934,14 @@ async function runWithTempRoot(tempRoot: string): Promise<void> {
       if (typeof sql.createSqlRuntimeTraceClient !== 'function') throw new Error('Missing SQL runtime export');
       if (typeof sql.createSqlTraceClient !== 'function') throw new Error('Missing sql trace export');
       if (typeof root.createBrowserHarness !== 'function') throw new Error('Root export should expose createBrowserHarness');
+      if (typeof root.createBrowserRuntimeHost !== 'function') {
+        throw new Error('Root export should expose createBrowserRuntimeHost');
+      }
       if (typeof root.createRuntimeJudge !== 'function') {
         throw new Error('Root export should expose createRuntimeJudge');
+      }
+      if (typeof root.createBrowserRuntimeJudge !== 'function') {
+        throw new Error('Root export should expose createBrowserRuntimeJudge');
       }
       if ('createSqlTraceClient' in root || 'createSqlRuntimeTraceClient' in root) {
         throw new Error('Root export should not expose SQL helpers; use @tracecode/harness/sql');
