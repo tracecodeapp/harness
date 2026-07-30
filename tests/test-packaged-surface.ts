@@ -1,7 +1,7 @@
 #!/usr/bin/env npx tsx
 
 import { test } from 'node:test';
-import { mkdtemp, mkdir, readFile, readdir, rm, stat, writeFile } from 'node:fs/promises';
+import { mkdtemp, mkdir, readFile, readdir, rm, stat, symlink, writeFile } from 'node:fs/promises';
 import { spawnSync } from 'node:child_process';
 import { createRequire } from 'node:module';
 import { tmpdir } from 'node:os';
@@ -30,6 +30,143 @@ function declarationCode(source: string): string {
   return source
     .replace(/\/\*[\s\S]*?\*\//gu, '')
     .replace(/^\s*\/\/.*$/gmu, '');
+}
+
+async function testPackedNodeNextConsumer(appDir: string): Promise<void> {
+  const consumerDependencies = ['effect', 'typescript'];
+  for (const dependency of consumerDependencies) {
+    await symlink(
+      join(process.cwd(), 'node_modules', dependency),
+      join(appDir, 'node_modules', dependency),
+      'dir'
+    );
+  }
+
+  await writeFile(
+    join(appDir, 'package.json'),
+    JSON.stringify(
+      {
+        private: true,
+        type: 'module',
+      },
+      null,
+      2
+    ) + '\n',
+    'utf8'
+  );
+  await writeFile(
+    join(appDir, 'tsconfig.json'),
+    JSON.stringify(
+      {
+        compilerOptions: {
+          lib: ['ES2022', 'DOM', 'DOM.Iterable'],
+          module: 'NodeNext',
+          moduleResolution: 'NodeNext',
+          noEmit: true,
+          resolveJsonModule: true,
+          skipLibCheck: false,
+          strict: true,
+          target: 'ES2022',
+          verbatimModuleSyntax: true,
+        },
+        files: ['consumer.ts', 'third-party-shims.d.ts'],
+      },
+      null,
+      2
+    ) + '\n',
+    'utf8'
+  );
+
+  // The patched just-bash 3.1 package references two declaration files that it
+  // does not publish. Model only the two opaque types that escape through our
+  // hidden declaration closure so this gate remains strict for harness .d.ts
+  // files without inheriting that unrelated upstream packaging defect.
+  await writeFile(
+    join(appDir, 'third-party-shims.d.ts'),
+    [
+      "declare module 'just-bash/browser' {",
+      '  export interface CommandContext {}',
+      '  export interface CustomCommand {',
+      '    readonly name: string;',
+      '  }',
+      '}',
+      '',
+    ].join('\n'),
+    'utf8'
+  );
+
+  const unpublishedWorkspacePackages = [
+    '@tracecode/judge',
+    '@tracecode/runtime-browser',
+    '@tracecode/runtime-core',
+    '@tracecode/runtime-cpp',
+    '@tracecode/runtime-csharp',
+    '@tracecode/runtime-java',
+    '@tracecode/runtime-javascript',
+    '@tracecode/runtime-native',
+    '@tracecode/runtime-python',
+    '@tracecode/runtime-sql',
+    '@tracecode/tracekernel',
+    '@tracecode/workspace-facade',
+  ];
+  const forbiddenHarnessSubpaths = [
+    '@tracecode/harness/core',
+    '@tracecode/harness/internal/browser',
+    '@tracecode/harness/internal/tracekernel/workspace',
+  ];
+  const unavailableImports = [
+    ...forbiddenHarnessSubpaths,
+    ...unpublishedWorkspacePackages,
+  ].map((specifier) => [
+    `// @ts-expect-error ${specifier} must remain unavailable to packed consumers`,
+    `import type {} from '${specifier}';`,
+  ].join('\n'));
+
+  await writeFile(
+    join(appDir, 'consumer.ts'),
+    [
+      "import { getLanguageRuntimeInfo } from '@tracecode/harness';",
+      "import { createBrowserRuntimeHost } from '@tracecode/harness/browser';",
+      "import { createBrowserProjectWorkspace } from '@tracecode/harness/browser/project';",
+      "import { createRuntimeWorkspace } from '@tracecode/harness/project';",
+      "import { createNativeProjectWorkspace } from '@tracecode/harness/project-node';",
+      "import { createBrowserRuntimeJudge } from '@tracecode/harness/judge';",
+      "import harnessManifest from '@tracecode/harness/package.json' with { type: 'json' };",
+      '',
+      ...unavailableImports,
+      '',
+      'const publicSurface = [',
+      '  getLanguageRuntimeInfo,',
+      '  createBrowserRuntimeHost,',
+      '  createBrowserProjectWorkspace,',
+      '  createRuntimeWorkspace,',
+      '  createNativeProjectWorkspace,',
+      '  createBrowserRuntimeJudge,',
+      '  harnessManifest.name,',
+      '] as const;',
+      'void publicSurface;',
+      '',
+    ].join('\n'),
+    'utf8'
+  );
+
+  const typecheck = spawnSync(
+    join(process.cwd(), 'node_modules', '.bin', 'tsc'),
+    ['--project', 'tsconfig.json', '--pretty', 'false'],
+    {
+      cwd: appDir,
+      encoding: 'utf8',
+    }
+  );
+  if (typecheck.status !== 0) {
+    throw new Error(
+      [
+        'Packed NodeNext TypeScript consumer failed.',
+        typecheck.stdout,
+        typecheck.stderr,
+      ].filter(Boolean).join('\n')
+    );
+  }
 }
 
 async function testPublishableWorkspacePackageVersionsMatchRelease(): Promise<void> {
@@ -361,6 +498,16 @@ async function runWithTempRoot(tempRoot: string): Promise<void> {
       `Packed declarations must not depend on private workspace package ${privateWorkspaceName}`
     );
   }
+  for (const forbiddenHarnessSubpath of [
+    '@tracecode/harness/core',
+    '@tracecode/harness/internal/browser',
+    '@tracecode/harness/internal/tracekernel/workspace',
+  ]) {
+    assertCondition(
+      !packagedDeclarations.includes(forbiddenHarnessSubpath),
+      `Packed declarations must reach hidden declaration closure through relative paths, not ${forbiddenHarnessSubpath}`
+    );
+  }
   assertCondition(
     projectTypes.includes('RuntimeProjectWorkspace') &&
       projectTypes.includes('JustBashRuntimeWorkspace') &&
@@ -500,6 +647,7 @@ async function runWithTempRoot(tempRoot: string): Promise<void> {
   }
 
   const appDir = join(tempRoot, 'app');
+  await testPackedNodeNextConsumer(appDir);
   const evalScript = `
     (async () => {
       const expectedBrowserRuntimeExports = [
