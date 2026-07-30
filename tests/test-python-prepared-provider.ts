@@ -475,6 +475,8 @@ test('Python prepared provider retires an actively cancelled worker before recov
   const recovered = await preparation.program.executeIsolated({
     inputs: { value: 2 },
   });
+  assert.equal(recovered.kind, 'completed');
+  if (recovered.kind !== 'completed') return;
   assert.equal(recovered.output, 42);
   assert.equal(new Set(executedBy).size, 2);
   await preparation.program.dispose();
@@ -669,6 +671,8 @@ test('Python prepared provider reset releases resources and permits later reuse'
   const result = await second.program.executeIsolated({
     inputs: { value: 2 },
   });
+  assert.equal(result.kind, 'completed');
+  if (result.kind !== 'completed') return;
   assert.equal(result.output, 3);
   await second.program.dispose();
   provider.terminate();
