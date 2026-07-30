@@ -46,6 +46,7 @@ function loadProgram(): {
   const entrypoints = [
     resolve(packageRoot, 'src/index.ts'),
     resolve(packageRoot, 'src/project-browser.ts'),
+    resolve(packageRoot, 'src/project-node.ts'),
   ].map((entrypointPath) => {
     const entrypoint = program.getSourceFile(entrypointPath);
     assertCondition(entrypoint, `Missing harness-python entrypoint ${entrypointPath}`);
@@ -111,8 +112,13 @@ function main(): void {
     process.cwd(),
     'packages/harness-python/src/project-browser.ts'
   ));
+  const nativeExports = exportsByEntrypoint.get(resolve(
+    process.cwd(),
+    'packages/harness-python/src/project-node.ts'
+  ));
   assertCondition(mainExports, 'Missing harness-python main export map');
   assertCondition(browserExports, 'Missing harness-python browser-project export map');
+  assertCondition(nativeExports, 'Missing harness-python native-project export map');
 
   for (const name of [
     'PythonWorkerClient',
@@ -139,6 +145,34 @@ function main(): void {
     browserExports.get('BrowserPythonProjectWorkerClient'),
     'BrowserPythonProjectWorkerClient'
   );
+  assertDefiningInterface(
+    checker,
+    nativeExports.get('NativePythonProjectRunnerOptions'),
+    'NativePythonProjectRunnerOptions'
+  );
+  const packageDocumentationPath = resolve(
+    process.cwd(),
+    'packages/harness-python/README.md'
+  );
+  const packageDocumentation = readFileSync(packageDocumentationPath, 'utf8');
+  const runtimeAssetsHeading = packageDocumentation.indexOf('\nRuntime assets ');
+  assertCondition(
+    runtimeAssetsHeading > 0,
+    `Python package documentation must keep a distinct runtime-assets section: ${packageDocumentationPath}`
+  );
+  assertCondition(
+    !/pyodide/i.test(packageDocumentation.slice(0, runtimeAssetsHeading)),
+    `Public Python API documentation must describe the language contract, not its engine: ${packageDocumentationPath}`
+  );
+  const rootPackage = JSON.parse(
+    readFileSync(resolve(process.cwd(), 'package.json'), 'utf8')
+  ) as {
+    exports?: Record<string, unknown>;
+  };
+  assertCondition(
+    rootPackage.exports?.['./python'] !== undefined,
+    'The root package must expose the canonical @tracecode/harness/python entrypoint'
+  );
   assertCondition(
     !/pyodide/i.test(JSON.stringify(getLanguageRuntimeInfo('python'))),
     'Generated Python runtime metadata must describe the language contract, not its engine'
@@ -164,7 +198,9 @@ function main(): void {
   );
 
   console.log(
-    `PASS: ${mainExports.size + browserExports.size} Python package exports are implementation-neutral`
+    `PASS: ${
+      mainExports.size + browserExports.size + nativeExports.size
+    } Python package exports and public docs are implementation-neutral`
   );
 }
 
