@@ -41,3 +41,25 @@ test('rejects malformed and oversized manifest archives', () => {
   });
   assert.equal(extractJarMainClass(jar), null);
 });
+
+test('rejects compressed manifests whose declared size does not match their DEFLATE stream', () => {
+  const jar = zipSync({
+    'META-INF/MANIFEST.MF': manifest,
+  }, { level: 6 });
+  const centralDirectorySignature = new Uint8Array([0x50, 0x4b, 0x01, 0x02]);
+  const centralDirectoryOffset = jar.findIndex((byte, index) =>
+    centralDirectorySignature.every((signatureByte, signatureIndex) =>
+      jar[index + signatureIndex] === signatureByte
+    )
+  );
+  assert.notEqual(centralDirectoryOffset, -1);
+
+  const malformedJar = jar.slice();
+  const declaredSizeOffset = centralDirectoryOffset + 24;
+  malformedJar[declaredSizeOffset] = manifest.byteLength - 1;
+  malformedJar[declaredSizeOffset + 1] = 0;
+  malformedJar[declaredSizeOffset + 2] = 0;
+  malformedJar[declaredSizeOffset + 3] = 0;
+
+  assert.equal(extractJarMainClass(malformedJar), null);
+});

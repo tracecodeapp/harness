@@ -111,6 +111,26 @@ import { decodeUtf8 } from './fs-observed';
 import type { CSharpProjectCommandRequest } from './index';
 
 
+type FflateBrowserRuntime = Pick<typeof import('fflate/browser'), 'inflateSync'>;
+
+function resolveFflateBrowserRuntime(): FflateBrowserRuntime | null {
+  if (typeof fflateBrowser.inflateSync === 'function') {
+    return fflateBrowser;
+  }
+
+  // tsx loads fflate's explicit browser CommonJS entry as a default-only
+  // namespace even though browser ESM and bundlers expose named exports.
+  const interoperableModule = fflateBrowser as unknown as {
+    default?: Partial<FflateBrowserRuntime>;
+  };
+  return typeof interoperableModule.default?.inflateSync === 'function'
+    ? interoperableModule.default as FflateBrowserRuntime
+    : null;
+}
+
+const fflateBrowserRuntime = resolveFflateBrowserRuntime();
+
+
 
 export type VirtualExecutableKind = 'cpp';
 
@@ -468,7 +488,14 @@ export function extractJarMainClass(bytes: Uint8Array): string | null {
       let manifestBytes: Uint8Array;
       try {
         if (method === 0) manifestBytes = compressed;
-        else if (method === 8) manifestBytes = fflateBrowser.inflateSync(compressed);
+        else if (method === 8 && fflateBrowserRuntime) {
+          // The central directory's uncompressed size is already bounded.
+          // Supplying one extra byte avoids allocating from attacker-controlled
+          // DEFLATE output while still detecting a stream larger than advertised.
+          manifestBytes = fflateBrowserRuntime.inflateSync(compressed, {
+            out: new Uint8Array(uncompressedSize + 1),
+          });
+        }
         else return null;
       } catch {
         return null;
