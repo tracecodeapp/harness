@@ -1,9 +1,8 @@
 import type { Language } from '@tracecode/runtime-core';
 import {
-  resolveBrowserHarnessAssets,
-  type BrowserHarnessAssets,
-  type BrowserHarnessAssetOverrides,
-  type BrowserRuntimeAssetManifest,
+  resolveBrowserRuntimeAssets,
+  type BrowserRuntimeAssets,
+  type BrowserRuntimeAssetOverrides,
   type BrowserRuntimeId,
 } from './runtime-assets';
 import { createBrowserRuntimeAssetPreflight } from './runtime-asset-preflight';
@@ -48,7 +47,7 @@ export interface BrowserRuntimeEnvironmentReport {
 
 export interface BrowserRuntimeEnvironmentOptions {
   assetBaseUrl?: string;
-  assets?: BrowserHarnessAssetOverrides;
+  assets?: BrowserRuntimeAssetOverrides;
   providers?: readonly Language[];
   surface?: BrowserRuntimeSurface;
   engine?: BrowserRuntimeEngine;
@@ -56,7 +55,7 @@ export interface BrowserRuntimeEnvironmentOptions {
 }
 
 export interface BrowserRuntimeEnvironment {
-  readonly assets: BrowserHarnessAssets;
+  readonly assets: BrowserRuntimeAssets;
   readonly providers: readonly Language[];
   readonly engine: BrowserRuntimeEngine;
   readonly surface: BrowserRuntimeSurface;
@@ -77,7 +76,7 @@ function preflightAssets(
     case 'typescript':
       return surface === 'project' ? ['projectWorker', 'libraries', 'compiler'] : ['worker', 'libraries', 'compiler'];
     case 'java':
-      return ['worker', 'loader', 'helperJar', 'compilerJar', 'rewriterJar', 'parserJar'];
+      return ['worker'];
     case 'csharp':
       return ['worker', 'assetBaseUrl', 'dependencies'];
     case 'cpp':
@@ -124,19 +123,6 @@ function requiredFeatures(language: Language, surface: BrowserRuntimeSurface): r
   return required;
 }
 
-function completeJavaManifest(
-  manifest: BrowserRuntimeAssetManifest<'java'> | undefined
-): boolean {
-  return Boolean(
-    manifest?.assets.worker &&
-    manifest.assets.loader &&
-    manifest.assets.helperJar &&
-    manifest.assets.compilerJar &&
-    manifest.assets.rewriterJar &&
-    manifest.assets.parserJar
-  );
-}
-
 function knownIssues(engine: BrowserRuntimeEngine, language: Language): readonly BrowserRuntimeKnownIssue[] {
   if (engine === 'webkit' && language === 'cpp') {
     return Object.freeze([{
@@ -163,7 +149,7 @@ function normalizeProviders(providers: readonly Language[] | undefined): readonl
 export function createBrowserRuntimeEnvironment(
   options: BrowserRuntimeEnvironmentOptions = {}
 ): BrowserRuntimeEnvironment {
-  const assets = resolveBrowserHarnessAssets(options);
+  const assets = resolveBrowserRuntimeAssets(options);
   const providers = normalizeProviders(options.providers);
   const engine = options.engine ?? detectEngine();
   const surface = options.surface ?? 'classic';
@@ -173,9 +159,7 @@ export function createBrowserRuntimeEnvironment(
   const preflight = async (language: Language): Promise<BrowserRuntimeReadiness> => {
     const selected = providers.includes(language);
     const manifest = assets.runtimeManifests?.[language];
-    const configured = language !== 'java' || completeJavaManifest(
-      manifest as BrowserRuntimeAssetManifest<'java'> | undefined
-    );
+    const configured = true;
     const missingFeatures = requiredFeatures(language, surface).filter((feature) => !features[feature]);
     const issues = knownIssues(engine, language);
     let error: string | undefined;

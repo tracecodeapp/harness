@@ -38,8 +38,8 @@ import {
   BROWSER_RUNTIME_IDS,
   resolveBrowserRuntimeAssetManifests,
   type AnyBrowserRuntimeAssetManifest,
-  BrowserHarnessAssetOverrides,
-  BrowserHarnessAssets,
+  BrowserRuntimeAssetOverrides,
+  BrowserRuntimeAssets,
   type BrowserRuntimeAssetDelivery,
   type BrowserRuntimeAssetDescriptor,
   type BrowserRuntimeAssetManifest,
@@ -116,8 +116,8 @@ import {
 
 export type {
   AnyBrowserRuntimeAssetManifest,
-  BrowserHarnessAssetOverrides,
-  BrowserHarnessAssets,
+  BrowserRuntimeAssetOverrides,
+  BrowserRuntimeAssets,
   BrowserExecutionWorkerHostOptions,
   BrowserRuntimeAssetDelivery,
   BrowserRuntimeAssetDescriptor,
@@ -217,7 +217,7 @@ export interface DefaultBrowserRuntimeProviderOptions {
 export interface CreateBrowserRuntimeHostOptions
   extends DefaultBrowserRuntimeProviderOptions {
   assetBaseUrl?: string;
-  assets?: BrowserHarnessAssetOverrides;
+  assets?: BrowserRuntimeAssetOverrides;
   /** Optional shared deployment/readiness environment. */
   environment?: BrowserRuntimeEnvironment;
   /** Languages exposed by this host. Defaults to every installed language. */

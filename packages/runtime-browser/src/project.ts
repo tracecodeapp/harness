@@ -14,9 +14,9 @@ import type { JavaWorkerClient } from '../../runtime-java/src/java-worker-client
 import type { JavaProjectRunnerOptions } from '../../runtime-java/src/java-project';
 import type { PythonWorkerClient, PythonWorkerClientOptions } from '../../runtime-python/src/python-worker-client';
 import {
-  resolveBrowserHarnessAssets,
+  resolveBrowserRuntimeAssets,
   type BrowserRuntimeAssetDescriptor,
-  type BrowserHarnessAssetOverrides,
+  type BrowserRuntimeAssetOverrides,
 } from './runtime-assets';
 import { createBrowserRuntimeAssetPreflight } from './runtime-asset-preflight';
 import {
@@ -588,7 +588,7 @@ function createPerCommandCppWorkerClient(
 export interface CreateBrowserProjectWorkspaceOptions
   extends Omit<CreateRuntimeWorkspaceOptions, 'pythonRunner' | 'nodeRunner' | 'javaRunner' | 'csharpRunner' | 'cppRunner'> {
   assetBaseUrl?: string;
-  assets?: BrowserHarnessAssetOverrides;
+  assets?: BrowserRuntimeAssetOverrides;
   /**
    * Runtime providers assembled into this workspace. Defaults to providers
    * that do not require an independently installed client factory. Supplying
@@ -669,7 +669,7 @@ export async function createBrowserProjectWorkspace(
       : undefined,
   ]);
   const { createRuntimeWorkspace } = await projectRuntimePromise;
-  const assets = resolveBrowserHarnessAssets(options);
+  const assets = resolveBrowserRuntimeAssets(options);
   const runtimeAssetPreflight = createBrowserRuntimeAssetPreflight(assets.runtimeManifests);
   const pythonManifest = assets.runtimeManifests?.python;
   const pythonAsset = (name: string): BrowserRuntimeAssetDescriptor | undefined => {

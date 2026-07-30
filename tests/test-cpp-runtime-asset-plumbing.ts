@@ -7,7 +7,7 @@ import {
   type BrowserRuntimeAssetManifests,
 } from '../src/browser';
 import {
-  resolveBrowserHarnessAssets,
+  resolveBrowserRuntimeAssets,
 } from '../packages/runtime-browser/src/runtime-assets';
 import { CppWorkerClient } from '../packages/runtime-cpp/src/cpp-worker-client';
 import { createBrowserProjectWorkspace } from '../packages/runtime-browser/src/project';
@@ -261,7 +261,7 @@ async function testClassicAndProjectManifestPlumbing(): Promise<void> {
       : new Response(body, { status: 200 });
   };
   try {
-    const resolvedAssets = resolveBrowserHarnessAssets({ assets: { runtimeManifests: manifests } });
+    const resolvedAssets = resolveBrowserRuntimeAssets({ assets: { runtimeManifests: manifests } });
     assertCondition(
       resolvedAssets.cppCompilerIntegrity?.assets.length === 4,
       `C++ manifest should derive four exact pins before client construction: ${JSON.stringify(resolvedAssets.cppCompilerIntegrity)}`

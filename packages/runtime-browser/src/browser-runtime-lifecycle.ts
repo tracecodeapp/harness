@@ -3,8 +3,8 @@ import type {
 } from '@tracecode/runtime-core';
 import { createBrowserRuntimeAssetPreflight } from './runtime-asset-preflight';
 import type {
-  BrowserHarnessAssetOverrides,
-  BrowserHarnessAssets,
+  BrowserRuntimeAssetOverrides,
+  BrowserRuntimeAssets,
   BrowserRuntimeAssetDescriptor,
   BrowserRuntimeId,
 } from './runtime-assets';
@@ -35,7 +35,7 @@ export interface BrowserRuntimeLifecycleExecutionHostOptions
 export interface BrowserRuntimeLifecycleOptions {
   providerRegistry: BrowserRuntimeProviderRegistry;
   assetBaseUrl?: string;
-  assets?: BrowserHarnessAssetOverrides;
+  assets?: BrowserRuntimeAssetOverrides;
   environment?: BrowserRuntimeEnvironment;
   providers?: readonly Language[];
   engine?: BrowserRuntimeEngine;
@@ -59,7 +59,7 @@ export interface ResolvedBrowserRuntimeLifecycleContext {
   readonly options: BrowserRuntimeLifecycleOptions;
   readonly providerRegistry: BrowserRuntimeProviderRegistry;
   readonly environment: BrowserRuntimeEnvironment;
-  readonly assets: BrowserHarnessAssets;
+  readonly assets: BrowserRuntimeAssets;
   readonly supportedLanguages: readonly Language[];
   readonly executionHostProviders: ReadonlySet<Language>;
   readonly preflight: (

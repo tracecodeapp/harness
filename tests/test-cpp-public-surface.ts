@@ -3,8 +3,8 @@ import { resolve } from 'node:path';
 import ts from 'typescript';
 import { getLanguageRuntimeInfo } from '../packages/runtime-core/src/runtime-language-info';
 import {
-  DEFAULT_BROWSER_HARNESS_ASSET_RELATIVE_PATHS,
-  resolveBrowserHarnessAssets,
+  DEFAULT_BROWSER_RUNTIME_ASSET_RELATIVE_PATHS,
+  resolveBrowserRuntimeAssets,
 } from '../packages/runtime-browser/src/runtime-assets';
 
 const ROOT = process.cwd();
@@ -210,16 +210,16 @@ function main(): void {
     `Generated C++ runtime metadata must be implementation-neutral: ${JSON.stringify(cppInfo)}`
   );
 
-  const defaultAssets = resolveBrowserHarnessAssets();
+  const defaultAssets = resolveBrowserRuntimeAssets();
   assertCondition(
-    DEFAULT_BROWSER_HARNESS_ASSET_RELATIVE_PATHS.cppCompilerBundle ===
+    DEFAULT_BROWSER_RUNTIME_ASSET_RELATIVE_PATHS.cppCompilerBundle ===
       'cpp/compiler/bundle.js' &&
       defaultAssets.cppCompilerBundle === '/workers/cpp/compiler/bundle.js',
     `C++ defaults must use the canonical compiler path: ${JSON.stringify(defaultAssets)}`
   );
   assertCondition(
     !FORBIDDEN_PUBLIC_COMPILER_NAME.test(
-      JSON.stringify(DEFAULT_BROWSER_HARNESS_ASSET_RELATIVE_PATHS)
+      JSON.stringify(DEFAULT_BROWSER_RUNTIME_ASSET_RELATIVE_PATHS)
     ),
     'Default browser asset paths must not expose a C++ compiler implementation'
   );

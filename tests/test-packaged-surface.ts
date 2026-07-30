@@ -32,6 +32,22 @@ function declarationCode(source: string): string {
     .replace(/^\s*\/\/.*$/gmu, '');
 }
 
+function namedInterfaceDeclaration(source: string, name: string): string {
+  const code = declarationCode(source);
+  const match = new RegExp(`\\binterface\\s+${name}\\b`, 'u').exec(code);
+  assertCondition(match, `Packed declarations should contain interface ${name}`);
+  const openBrace = code.indexOf('{', match.index);
+  assertCondition(openBrace !== -1, `Packed interface ${name} should have a body`);
+  let depth = 0;
+  for (let index = openBrace; index < code.length; index += 1) {
+    if (code[index] === '{') depth += 1;
+    if (code[index] !== '}') continue;
+    depth -= 1;
+    if (depth === 0) return code.slice(match.index, index + 1);
+  }
+  throw new Error(`Packed interface ${name} should have a closing brace`);
+}
+
 async function testPackedNodeNextConsumer(appDir: string): Promise<void> {
   const consumerDependencies = ['effect', 'typescript'];
   for (const dependency of consumerDependencies) {
@@ -388,12 +404,21 @@ async function runWithTempRoot(tempRoot: string): Promise<void> {
   const rootTypes = await readFile(join(packageDir, 'dist/index.d.ts'), 'utf8');
   const browserTypes = await readFile(join(packageDir, 'dist/browser.d.ts'), 'utf8');
   const judgeTypes = await readFile(join(packageDir, 'dist/judge.d.ts'), 'utf8');
+  const javaProviderTypes = namedInterfaceDeclaration(
+    browserTypes,
+    'JavaBrowserRuntimeProviderOptions'
+  );
+  assertCondition(
+    javaProviderTypes.includes('runtimeAssetBaseUrl') &&
+      !/\b(?:loaderUrl|externalCompilerUrl)\b/u.test(javaProviderTypes),
+    'The public Java provider declaration must expose only runtimeAssetBaseUrl for engine asset configuration'
+  );
   assertCondition(
     rootTypes.includes('createBrowserRuntimeHost') &&
       rootTypes.includes('CreateBrowserRuntimeHostOptions') &&
       rootTypes.includes('DefaultBrowserRuntimeProviderOptions') &&
       rootTypes.includes('BrowserRuntimeReadiness') &&
-      rootTypes.includes('BrowserHarnessAssets') &&
+      rootTypes.includes('BrowserRuntimeAssets') &&
       rootTypes.includes('createBrowserRuntimeJudge') &&
       rootTypes.includes('RuntimeJudge'),
     'Root declarations should expose only the supported browser host, metadata, assets, and Browser Judge facade'
@@ -403,7 +428,7 @@ async function runWithTempRoot(tempRoot: string): Promise<void> {
       browserTypes.includes('CreateBrowserRuntimeHostOptions') &&
       browserTypes.includes('DefaultBrowserRuntimeProviderOptions') &&
       browserTypes.includes('BrowserRuntimeReadiness') &&
-      browserTypes.includes('BrowserHarnessAssets') &&
+      browserTypes.includes('BrowserRuntimeAssets') &&
       browserTypes.includes('installBrowserExecutionWorkerHost') &&
       browserTypes.includes('createBrowserRuntimeEnvironment') &&
       browserTypes.includes('createBrowserRuntimeAssetPreflight') &&
@@ -431,6 +456,20 @@ async function runWithTempRoot(tempRoot: string): Promise<void> {
       !code.includes('export *'),
       `Packed ${declarationSource[0]} declarations must remain an explicit allowlist`
     );
+    assertCondition(
+      !/\bBrowserHarness[A-Za-z0-9_$]*\b/u.test(code),
+      `Packed ${declarationSource[0]} declarations must not expose retired BrowserHarness* names`
+    );
+    for (const retiredBrowserAssetName of [
+      'resolveBrowserHarnessAssets',
+      'DEFAULT_BROWSER_HARNESS_ASSET_RELATIVE_PATHS',
+      'LegacyBrowserHarnessAssetOverrides',
+    ]) {
+      assertCondition(
+        !new RegExp(`\\b${retiredBrowserAssetName}\\b`, 'u').test(code),
+        `Packed ${declarationSource[0]} declarations must not expose retired ${retiredBrowserAssetName}`
+      );
+    }
     for (const forbiddenPublicName of [
       'BrowserHarness',
       'CreateBrowserHarnessOptions',

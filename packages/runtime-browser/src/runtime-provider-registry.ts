@@ -3,14 +3,14 @@ import type {
   RuntimePreparedExecutionProvider,
 } from '@tracecode/runtime-core';
 import type {
-  BrowserHarnessAssets,
+  BrowserRuntimeAssets,
   BrowserRuntimeAssetDescriptor,
   BrowserRuntimeId,
 } from './runtime-assets';
 import type { BrowserWorkerFactory } from './execution-host';
 
 export interface BrowserRuntimeProviderContext {
-  readonly assets: BrowserHarnessAssets;
+  readonly assets: BrowserRuntimeAssets;
   readonly debug: boolean;
   readonly prewarmAfterUse: boolean;
   readonly workerFactoryFor: (language: Language) => BrowserWorkerFactory | undefined;

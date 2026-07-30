@@ -5,7 +5,7 @@ import {
   type BrowserRuntimeAssetManifests,
 } from '../src/browser';
 import {
-  resolveBrowserHarnessAssets,
+  resolveBrowserRuntimeAssets,
 } from '../packages/runtime-browser/src/runtime-assets';
 
 function assertCondition(condition: unknown, message: string): asserts condition {
@@ -94,11 +94,6 @@ const consumerManifests = {
     originPolicy: consumerOriginPolicy,
     assets: {
       worker: { url: 'java-worker.js' },
-      loader: { url: 'cheerpj-loader.js' },
-      helperJar: { url: 'java-browser-helper.jar', runtimePath: '/app/java/java-browser-helper.jar' },
-      compilerJar: { url: 'jdk.compiler-17.jar' },
-      rewriterJar: { url: 'java-rewriter.jar' },
-      parserJar: { url: 'javaparser.jar' },
     },
   },
   csharp: {
@@ -150,7 +145,7 @@ const consumerManifests = {
 } satisfies BrowserRuntimeAssetManifests;
 
 function testLegacyCompatibility(): void {
-  const defaultAssets = resolveBrowserHarnessAssets();
+  const defaultAssets = resolveBrowserRuntimeAssets();
   assertCondition(defaultAssets.pythonWorker === '/workers/python-worker.js', 'Default asset paths must use canonical runtime names');
   assertCondition(
     defaultAssets.javaWorker === '/workers/tracejvm-java-worker.js',
@@ -159,7 +154,7 @@ function testLegacyCompatibility(): void {
   assertCondition(defaultAssets.cppCompilerWasm === '', 'Disabled direct compiler paths must remain disabled');
   assertCondition(defaultAssets.runtimeManifests === undefined, 'Legacy resolution must not synthesize version metadata');
 
-  const legacyAssets = resolveBrowserHarnessAssets({
+  const legacyAssets = resolveBrowserRuntimeAssets({
     assetBaseUrl: '/consumer-assets',
     assets: {
       pythonWorker: 'python/worker.js',
@@ -181,7 +176,7 @@ function testConsumerCdnManifests(): void {
     assetBaseUrl: '/legacy-assets',
     assets: { runtimeManifests: consumerManifests },
   };
-  const assets = resolveBrowserHarnessAssets(assetOptions);
+  const assets = resolveBrowserRuntimeAssets(assetOptions);
 
   const expected = {
     pythonWorker: 'https://assets.consumer.example/python/314.0.2/worker.js',
@@ -228,15 +223,6 @@ function testConsumerCdnManifests(): void {
     'Python self-hosted distribution inventory paths must resolve beneath runtimeIndex'
   );
   assertCondition(
-    assets.runtimeManifests?.java?.assets.helperJar?.url ===
-      'https://assets.consumer.example/java/17-browser-1/java-browser-helper.jar',
-    'Java runtime jars must remain available to worker initialization'
-  );
-  assertCondition(
-    assets.runtimeManifests?.java?.assets.helperJar?.runtimePath === '/app/java/java-browser-helper.jar',
-    'Runtime-native asset paths must survive manifest normalization without replacing delivery URLs'
-  );
-  assertCondition(
     assets.runtimeManifests?.csharp?.assets.dependencies?.['_framework/dotnet.js']?.url ===
       'https://assets.consumer.example/csharp/csharp-browser-1/runtime/_framework/dotnet.js',
     'C# runtime dependency declarations must survive normalization'
@@ -270,7 +256,7 @@ function testProviderResolution(): void {
 }
 
 function testManifestAlternativesAndRelativeBases(): void {
-  const assets = resolveBrowserHarnessAssets({
+  const assets = resolveBrowserRuntimeAssets({
     assetBaseUrl: '/consumer-assets',
     assets: {
       runtimeManifests: {
@@ -343,6 +329,22 @@ function testInvalidManifestsFailClearly(): void {
     () =>
       resolveBrowserRuntimeAssetManifests({
         manifests: {
+          java: {
+            ...consumerManifests.java,
+            assets: {
+              worker: { url: 'java-worker.js' },
+              loader: { url: 'retired-loader.js' },
+            },
+          } as unknown as BrowserRuntimeAssetManifests['java'],
+        },
+      }),
+    'unknown asset "loader"'
+  );
+
+  assertThrowsMessage(
+    () =>
+      resolveBrowserRuntimeAssetManifests({
+        manifests: {
           typescript: {
             ...consumerManifests.typescript,
             protocolVersion: 'browser-runtime-assets-v2',
@@ -386,7 +388,7 @@ function testInvalidManifestsFailClearly(): void {
 
   assertThrowsMessage(
     () =>
-      resolveBrowserHarnessAssets({
+      resolveBrowserRuntimeAssets({
         assets: {
           runtimeManifests: { python: consumerManifests.python },
           pythonWorker: '/ambiguous-worker.js',

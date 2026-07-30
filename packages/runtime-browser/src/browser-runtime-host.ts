@@ -5,8 +5,8 @@ import type {
   RuntimeProgramPreparationResult,
 } from '@tracecode/runtime-core';
 import type {
-  BrowserHarnessAssetOverrides,
-  BrowserHarnessAssets,
+  BrowserRuntimeAssetOverrides,
+  BrowserRuntimeAssets,
 } from './runtime-assets';
 import {
   type BrowserRuntimeEngine,
@@ -41,7 +41,7 @@ export interface CreateBrowserRuntimeHostOptions {
   /** Installed language providers available to this host. */
   providerRegistry: BrowserRuntimeProviderRegistry;
   assetBaseUrl?: string;
-  assets?: BrowserHarnessAssetOverrides;
+  assets?: BrowserRuntimeAssetOverrides;
   /** Optional shared V2 deployment/readiness environment. */
   environment?: BrowserRuntimeEnvironment;
   /** Languages exposed by this host. Defaults to every registered language. */
@@ -66,7 +66,7 @@ export interface CreateBrowserRuntimeHostOptions {
  * point a program is prepared.
  */
 export interface BrowserRuntimeHost {
-  readonly assets: BrowserHarnessAssets;
+  readonly assets: BrowserRuntimeAssets;
   readonly environment: BrowserRuntimeEnvironment;
   readonly supportedLanguages: readonly Language[];
   isLanguageSupported(language: Language): boolean;
@@ -207,7 +207,7 @@ function safePreparedProvider(
 }
 
 class BrowserRuntimeHostImplementation implements BrowserRuntimeHost {
-  readonly assets: BrowserHarnessAssets;
+  readonly assets: BrowserRuntimeAssets;
   readonly environment: BrowserRuntimeEnvironment;
   readonly supportedLanguages: readonly Language[];
 

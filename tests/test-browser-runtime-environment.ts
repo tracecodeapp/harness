@@ -71,7 +71,10 @@ async function main(): Promise<void> {
     },
   });
   const javaReadiness = await projectJava.preflight('java');
-  assertCondition(javaReadiness.configured === false, 'Java should require a complete consumer runtime manifest');
+  assertCondition(
+    javaReadiness.configured === true,
+    'Java engine assets should be configured by the bridge provider rather than public manifest roles'
+  );
   assertCondition(
     javaReadiness.missingFeatures.includes('sharedArrayBuffer') &&
       javaReadiness.missingFeatures.includes('crossOriginIsolated'),

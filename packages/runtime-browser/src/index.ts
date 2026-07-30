@@ -8,8 +8,8 @@ export * from '../../runtime-core/src/runtime-language-info';
 export {
   BROWSER_RUNTIME_ASSET_PROTOCOL_VERSION,
   BROWSER_RUNTIME_IDS,
-  DEFAULT_BROWSER_HARNESS_ASSET_RELATIVE_PATHS,
-  resolveBrowserHarnessAssets,
+  DEFAULT_BROWSER_RUNTIME_ASSET_RELATIVE_PATHS,
+  resolveBrowserRuntimeAssets,
   resolveBrowserRuntimeAssetManifests,
   type AnyBrowserRuntimeAssetManifest,
   type BrowserRuntimeAssetDelivery,
@@ -22,8 +22,8 @@ export {
   type BrowserRuntimeId,
   type BrowserRuntimeLoaderFormat,
   type BrowserRuntimeWorkerFormat,
-  type BrowserHarnessAssetOverrides,
-  type BrowserHarnessAssets,
+  type BrowserRuntimeAssetOverrides,
+  type BrowserRuntimeAssets,
   type CppCompilerIntegrityEntry,
   type CppCompilerIntegrityManifest,
 } from './runtime-assets';

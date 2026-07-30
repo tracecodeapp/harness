@@ -113,11 +113,6 @@ function consumerManifests(): BrowserRuntimeAssetManifests {
       originPolicy,
       assets: {
         worker: descriptor('worker.js'),
-        loader: descriptor('cheerpj-loader.js'),
-        helperJar: { ...descriptor('helper.jar'), runtimePath: '/app/workers/vendor/helper.jar' },
-        compilerJar: descriptor('compiler.jar'),
-        rewriterJar: descriptor('rewriter.jar'),
-        parserJar: descriptor('parser.jar'),
       },
     },
     csharp: {
@@ -201,11 +196,9 @@ async function testManifestAssetsReachWorkerInitialization(): Promise<void> {
   );
 
   const javaPayload = initMessage(findWorker('/java/worker.js')).payload;
-  const javaAssets = javaPayload?.runtimeAssets as Record<string, unknown> | undefined;
   assertCondition(
-    javaAssets?.loaderUrl === 'https://cdn.consumer.example/java/cheerpj-loader.js' &&
-      javaAssets.helperJarUrl === '/app/workers/vendor/helper.jar',
-    'Java loader and jars must reach the worker init payload'
+    javaPayload?.runtimeAssets === undefined,
+    'The Java bridge worker must own its engine asset tree instead of receiving retired manifest roles'
   );
 
   const csharpWorker = findWorker('/csharp/worker.js');
@@ -219,21 +212,24 @@ async function testManifestAssetsReachWorkerInitialization(): Promise<void> {
   host.dispose();
 
   CapturingWorker.instances = [];
-  const directLoaderHost = createBrowserRuntimeHost({
+  const runtimeAssetHost = createBrowserRuntimeHost({
     assetBaseUrl: '/direct-java-loader',
     assets: { javaWorker: 'java-worker.js' },
     providers: ['java'],
-    java: { loaderUrl: '/app/runtime/java-loader.js' },
+    java: {
+      runtimeAssetBaseUrl:
+        'https://runtime.example/java engine/?release=17&channel=stable#wasm',
+    },
   });
-  await directLoaderHost.warmLanguage('java');
-  const directLoaderPayload = initMessage(
-    findWorker('/direct-java-loader/java-worker.js')
-  ).payload;
+  await runtimeAssetHost.warmLanguage('java');
+  const runtimeAssetWorker = findWorker('/direct-java-loader/java-worker.js');
   assertCondition(
-    directLoaderPayload?.cheerpjLoaderUrl === '/app/runtime/java-loader.js',
-    'The generic Java loader option must map to the bundled client protocol'
+    String(runtimeAssetWorker.url).includes(
+      'tracejvmBaseUrl=https%3A%2F%2Fruntime.example%2Fjava%20engine%2F%3Frelease%3D17%26channel%3Dstable%23wasm'
+    ),
+    `Java runtimeAssetBaseUrl must be URL-encoded onto the bridge worker URL: ${String(runtimeAssetWorker.url)}`
   );
-  directLoaderHost.dispose();
+  runtimeAssetHost.dispose();
 }
 
 async function testMetadataMismatchStopsBeforeWorkerConstruction(): Promise<void> {
@@ -451,17 +447,6 @@ async function testProjectManifestAssetsArePreflightedAndForwarded(): Promise<vo
   manifests.typescript = {
     ...manifests.typescript!,
     assets: { compiler: sized('typescript.js') },
-  };
-  manifests.java = {
-    ...manifests.java!,
-    assets: {
-      worker: sized('worker.js'),
-      loader: sized('cheerpj-loader.js'),
-      helperJar: sized('helper.jar'),
-      compilerJar: sized('compiler.jar'),
-      rewriterJar: sized('rewriter.jar'),
-      parserJar: sized('parser.jar'),
-    },
   };
   manifests.csharp = {
     ...manifests.csharp!,

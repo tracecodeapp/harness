@@ -2,7 +2,7 @@ import { existsSync, readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import ts from 'typescript';
 import { getLanguageRuntimeInfo } from '../packages/runtime-core/src/runtime-language-info';
-import { DEFAULT_BROWSER_HARNESS_ASSET_RELATIVE_PATHS } from '../packages/runtime-browser/src/runtime-assets';
+import { DEFAULT_BROWSER_RUNTIME_ASSET_RELATIVE_PATHS } from '../packages/runtime-browser/src/runtime-assets';
 import { createNativeHarness } from '../packages/runtime-native/src/index';
 
 const PROVIDER_BRAND = /roslyn|dotnet|\.net/i;
@@ -228,8 +228,8 @@ function main(): void {
     '@tracecode/runtime-csharp README must describe its public language surface without provider branding'
   );
   assertCondition(
-    DEFAULT_BROWSER_HARNESS_ASSET_RELATIVE_PATHS.csharpWorker === 'csharp-worker.js' &&
-      DEFAULT_BROWSER_HARNESS_ASSET_RELATIVE_PATHS.csharpAssetBaseUrl === 'vendor/csharp',
+    DEFAULT_BROWSER_RUNTIME_ASSET_RELATIVE_PATHS.csharpWorker === 'csharp-worker.js' &&
+      DEFAULT_BROWSER_RUNTIME_ASSET_RELATIVE_PATHS.csharpAssetBaseUrl === 'vendor/csharp',
     'Default C# assets must use the canonical language worker and language-owned vendor root'
   );
   assertCondition(

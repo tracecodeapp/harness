@@ -98,11 +98,6 @@ export interface BrowserRuntimeAssetsByRuntime {
   };
   java: {
     worker: BrowserRuntimeAssetDescriptor;
-    loader?: BrowserRuntimeAssetDescriptor;
-    helperJar?: BrowserRuntimeAssetDescriptor;
-    compilerJar?: BrowserRuntimeAssetDescriptor;
-    rewriterJar?: BrowserRuntimeAssetDescriptor;
-    parserJar?: BrowserRuntimeAssetDescriptor;
   };
   csharp: {
     worker: BrowserRuntimeAssetDescriptor;
@@ -155,7 +150,7 @@ export type BrowserRuntimeAssetManifestProvider = (
   runtime: BrowserRuntimeId
 ) => AnyBrowserRuntimeAssetManifest | undefined;
 
-export interface BrowserHarnessAssets {
+export interface BrowserRuntimeAssets {
   pythonWorker: string;
   pythonRuntimeCore: string;
   pythonSnippets: string;
@@ -178,14 +173,14 @@ export interface BrowserHarnessAssets {
   runtimeManifests?: BrowserRuntimeAssetManifests;
 }
 
-type LegacyBrowserHarnessAssetOverrides = Partial<Omit<BrowserHarnessAssets, 'runtimeManifests'>>;
+type LegacyBrowserRuntimeAssetOverrides = Partial<Omit<BrowserRuntimeAssets, 'runtimeManifests'>>;
 
-export type BrowserHarnessAssetOverrides = LegacyBrowserHarnessAssetOverrides & {
+export type BrowserRuntimeAssetOverrides = LegacyBrowserRuntimeAssetOverrides & {
   runtimeManifests?: BrowserRuntimeAssetManifests;
   runtimeAssetProvider?: BrowserRuntimeAssetManifestProvider;
 };
 
-export const DEFAULT_BROWSER_HARNESS_ASSET_RELATIVE_PATHS: Readonly<BrowserHarnessAssets> = Object.freeze({
+export const DEFAULT_BROWSER_RUNTIME_ASSET_RELATIVE_PATHS: Readonly<BrowserRuntimeAssets> = Object.freeze({
   pythonWorker: 'python-worker.js',
   pythonRuntimeCore: 'python/runtime-core.js',
   pythonSnippets: 'generated-python-harness-snippets.js',
@@ -211,7 +206,7 @@ const RUNTIME_ASSET_NAMES = Object.freeze({
   python: ['worker', 'runtimeCore', 'snippets', 'runtimeLoader', 'runtimeIndex', 'distribution', 'packages'],
   javascript: ['worker', 'projectWorker', 'libraries'],
   typescript: ['compiler'],
-  java: ['worker', 'loader', 'helperJar', 'compilerJar', 'rewriterJar', 'parserJar'],
+  java: ['worker'],
   csharp: ['worker', 'assetBaseUrl', 'dependencies'],
   cpp: [
     'worker',
@@ -273,7 +268,7 @@ const RUNTIME_LEGACY_ASSET_KEYS = Object.freeze({
     'cppRuntimeHeader',
     'cppCompilerBundle',
   ],
-} satisfies Record<BrowserRuntimeId, readonly (keyof LegacyBrowserHarnessAssetOverrides)[]>);
+} satisfies Record<BrowserRuntimeId, readonly (keyof LegacyBrowserRuntimeAssetOverrides)[]>);
 
 function isExplicitAssetPath(pathname: string): boolean {
   return (
@@ -910,7 +905,7 @@ export function resolveBrowserRuntimeAssetManifests(options: {
 }
 
 function assertNoAmbiguousLegacyOverrides(
-  assets: BrowserHarnessAssetOverrides,
+  assets: BrowserRuntimeAssetOverrides,
   manifests: BrowserRuntimeAssetManifests
 ): void {
   for (const runtime of BROWSER_RUNTIME_IDS) {
@@ -943,10 +938,10 @@ function optionalManifestAssetUrl(
   return manifestAssetUrl(manifests, runtime, assetName) ?? '';
 }
 
-export function resolveBrowserHarnessAssets(options: {
+export function resolveBrowserRuntimeAssets(options: {
   assetBaseUrl?: string;
-  assets?: BrowserHarnessAssetOverrides;
-} = {}): BrowserHarnessAssets {
+  assets?: BrowserRuntimeAssetOverrides;
+} = {}): BrowserRuntimeAssets {
   const assetBaseUrl = options.assetBaseUrl ?? DEFAULT_ASSET_BASE_URL;
   const assets = options.assets ?? {};
   const runtimeManifests = resolveBrowserRuntimeAssetManifests({
@@ -966,87 +961,87 @@ export function resolveBrowserHarnessAssets(options: {
   return {
     pythonWorker: resolve(
       assets.pythonWorker,
-      DEFAULT_BROWSER_HARNESS_ASSET_RELATIVE_PATHS.pythonWorker,
+      DEFAULT_BROWSER_RUNTIME_ASSET_RELATIVE_PATHS.pythonWorker,
       manifestAssetUrl(runtimeManifests, 'python', 'worker')
     ),
     pythonRuntimeCore: resolve(
       assets.pythonRuntimeCore,
-      DEFAULT_BROWSER_HARNESS_ASSET_RELATIVE_PATHS.pythonRuntimeCore,
+      DEFAULT_BROWSER_RUNTIME_ASSET_RELATIVE_PATHS.pythonRuntimeCore,
       manifestAssetUrl(runtimeManifests, 'python', 'runtimeCore')
     ),
     pythonSnippets: resolve(
       assets.pythonSnippets,
-      DEFAULT_BROWSER_HARNESS_ASSET_RELATIVE_PATHS.pythonSnippets,
+      DEFAULT_BROWSER_RUNTIME_ASSET_RELATIVE_PATHS.pythonSnippets,
       manifestAssetUrl(runtimeManifests, 'python', 'snippets')
     ),
     javascriptWorker: resolve(
       assets.javascriptWorker,
-      DEFAULT_BROWSER_HARNESS_ASSET_RELATIVE_PATHS.javascriptWorker,
+      DEFAULT_BROWSER_RUNTIME_ASSET_RELATIVE_PATHS.javascriptWorker,
       manifestAssetUrl(runtimeManifests, 'javascript', 'worker')
     ),
     javascriptProjectWorker: resolve(
       assets.javascriptProjectWorker,
-      DEFAULT_BROWSER_HARNESS_ASSET_RELATIVE_PATHS.javascriptProjectWorker,
+      DEFAULT_BROWSER_RUNTIME_ASSET_RELATIVE_PATHS.javascriptProjectWorker,
       manifestAssetUrl(runtimeManifests, 'javascript', 'projectWorker')
     ),
     javaWorker: resolve(
       assets.javaWorker,
-      DEFAULT_BROWSER_HARNESS_ASSET_RELATIVE_PATHS.javaWorker,
+      DEFAULT_BROWSER_RUNTIME_ASSET_RELATIVE_PATHS.javaWorker,
       manifestAssetUrl(runtimeManifests, 'java', 'worker')
     ),
     csharpWorker: resolve(
       assets.csharpWorker,
-      DEFAULT_BROWSER_HARNESS_ASSET_RELATIVE_PATHS.csharpWorker,
+      DEFAULT_BROWSER_RUNTIME_ASSET_RELATIVE_PATHS.csharpWorker,
       manifestAssetUrl(runtimeManifests, 'csharp', 'worker')
     ),
     csharpAssetBaseUrl: resolve(
       assets.csharpAssetBaseUrl,
-      DEFAULT_BROWSER_HARNESS_ASSET_RELATIVE_PATHS.csharpAssetBaseUrl,
+      DEFAULT_BROWSER_RUNTIME_ASSET_RELATIVE_PATHS.csharpAssetBaseUrl,
       manifestAssetUrl(runtimeManifests, 'csharp', 'assetBaseUrl')
     ),
     typescriptCompiler: resolve(
       assets.typescriptCompiler,
-      DEFAULT_BROWSER_HARNESS_ASSET_RELATIVE_PATHS.typescriptCompiler,
+      DEFAULT_BROWSER_RUNTIME_ASSET_RELATIVE_PATHS.typescriptCompiler,
       manifestAssetUrl(runtimeManifests, 'typescript', 'compiler')
     ),
     cppWorker: resolve(
       assets.cppWorker,
-      DEFAULT_BROWSER_HARNESS_ASSET_RELATIVE_PATHS.cppWorker,
+      DEFAULT_BROWSER_RUNTIME_ASSET_RELATIVE_PATHS.cppWorker,
       manifestAssetUrl(runtimeManifests, 'cpp', 'worker')
     ),
     cppCompilerFrame: resolve(
       assets.cppCompilerFrame,
-      DEFAULT_BROWSER_HARNESS_ASSET_RELATIVE_PATHS.cppCompilerFrame,
+      DEFAULT_BROWSER_RUNTIME_ASSET_RELATIVE_PATHS.cppCompilerFrame,
       manifestAssetUrl(runtimeManifests, 'cpp', 'compilerFrame')
     ),
     cppCompilerWorker: resolve(
       assets.cppCompilerWorker,
-      DEFAULT_BROWSER_HARNESS_ASSET_RELATIVE_PATHS.cppCompilerWorker,
+      DEFAULT_BROWSER_RUNTIME_ASSET_RELATIVE_PATHS.cppCompilerWorker,
       manifestAssetUrl(runtimeManifests, 'cpp', 'compilerWorker')
     ),
     cppCompilerWasm: resolve(
       assets.cppCompilerWasm,
-      DEFAULT_BROWSER_HARNESS_ASSET_RELATIVE_PATHS.cppCompilerWasm,
+      DEFAULT_BROWSER_RUNTIME_ASSET_RELATIVE_PATHS.cppCompilerWasm,
       optionalManifestAssetUrl(runtimeManifests, 'cpp', 'compilerWasm')
     ),
     cppLinkerWasm: resolve(
       assets.cppLinkerWasm,
-      DEFAULT_BROWSER_HARNESS_ASSET_RELATIVE_PATHS.cppLinkerWasm,
+      DEFAULT_BROWSER_RUNTIME_ASSET_RELATIVE_PATHS.cppLinkerWasm,
       optionalManifestAssetUrl(runtimeManifests, 'cpp', 'linkerWasm')
     ),
     cppSysroot: resolve(
       assets.cppSysroot,
-      DEFAULT_BROWSER_HARNESS_ASSET_RELATIVE_PATHS.cppSysroot,
+      DEFAULT_BROWSER_RUNTIME_ASSET_RELATIVE_PATHS.cppSysroot,
       optionalManifestAssetUrl(runtimeManifests, 'cpp', 'sysroot')
     ),
     cppRuntimeHeader: resolve(
       assets.cppRuntimeHeader,
-      DEFAULT_BROWSER_HARNESS_ASSET_RELATIVE_PATHS.cppRuntimeHeader,
+      DEFAULT_BROWSER_RUNTIME_ASSET_RELATIVE_PATHS.cppRuntimeHeader,
       manifestAssetUrl(runtimeManifests, 'cpp', 'runtimeHeader')
     ),
     cppCompilerBundle: resolve(
       assets.cppCompilerBundle,
-      DEFAULT_BROWSER_HARNESS_ASSET_RELATIVE_PATHS.cppCompilerBundle,
+      DEFAULT_BROWSER_RUNTIME_ASSET_RELATIVE_PATHS.cppCompilerBundle,
       optionalManifestAssetUrl(runtimeManifests, 'cpp', 'compilerBundle')
     ),
     ...(cppCompilerIntegrity ? { cppCompilerIntegrity } : {}),
