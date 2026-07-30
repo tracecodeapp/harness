@@ -51,6 +51,10 @@ export const WORKER_REQUEST_MESSAGES: Readonly<Record<BrowserWorkerProtocolLangu
     'execute-code',
     'execute-code-batch',
     'execute-with-tracing',
+    'prepare-program',
+    'execute-prepared-code',
+    'execute-prepared-trace',
+    'dispose-prepared-program',
     'execute-project-csharp',
   ],
   cpp: [

@@ -156,6 +156,11 @@ class CSharpRuntimeClient implements RuntimeClient, RuntimePreparedExecutionProv
       compiledArtifactBase64: result.compiledArtifactBase64,
     });
     let disposed = false;
+    let disposePromise: Promise<void> | undefined;
+    const activeExecutions = new Set<{
+      readonly controller: AbortController;
+      readonly settled: Promise<unknown>;
+    }>();
     const capabilities = Object.freeze({
       caseIsolation: 'fresh-case-state' as const,
       maxConcurrency: 1,
@@ -166,34 +171,95 @@ class CSharpRuntimeClient implements RuntimeClient, RuntimePreparedExecutionProv
       }
       return artifact;
     };
-    const dispose = async (): Promise<void> => {
-      if (disposed) return;
+    const executeOwned = async <
+      TCall extends { readonly signal?: AbortSignal },
+      TResult,
+    >(
+      preparedCall: TCall,
+      execute: (
+        preparedArtifact: CSharpPreparedProgramArtifact,
+        forwardedCall: TCall
+      ) => Promise<TResult>
+    ): Promise<TResult> => {
+      const ownedArtifact = requireArtifact();
+      const controller = new AbortController();
+      const relayCallerAbort = (): void => {
+        controller.abort(preparedCall.signal?.reason);
+      };
+      if (preparedCall.signal?.aborted) {
+        relayCallerAbort();
+      } else {
+        preparedCall.signal?.addEventListener('abort', relayCallerAbort, {
+          once: true,
+        });
+      }
+
+      const forwardedCall = {
+        ...preparedCall,
+        signal: controller.signal,
+      } as TCall;
+      let activeExecution!: {
+        readonly controller: AbortController;
+        readonly settled: Promise<unknown>;
+      };
+      const settled = Promise.resolve()
+        .then(() => execute(ownedArtifact, forwardedCall))
+        .finally(() => {
+          preparedCall.signal?.removeEventListener('abort', relayCallerAbort);
+          activeExecutions.delete(activeExecution);
+        });
+      activeExecution = { controller, settled };
+      activeExecutions.add(activeExecution);
+      return settled;
+    };
+    const dispose = (): Promise<void> => {
+      if (disposePromise) return disposePromise;
       disposed = true;
       const ownedArtifact = artifact;
-      artifact = undefined;
-      if (ownedArtifact) {
-        await this.workerClient.disposePreparedProgram(ownedArtifact);
-      }
+      const executionsToDrain = [...activeExecutions];
+      disposePromise = (async () => {
+        const reason = new Error(
+          'Prepared C# program was disposed during active execution.'
+        );
+        for (const execution of executionsToDrain) {
+          execution.controller.abort(reason);
+        }
+        await Promise.allSettled(
+          executionsToDrain.map((execution) => execution.settled)
+        );
+
+        // Keep ownership of the descriptor until every execution that captured
+        // it has settled. The host artifact may only be released afterwards.
+        artifact = undefined;
+        if (ownedArtifact) {
+          await this.workerClient.disposePreparedProgram(ownedArtifact);
+        }
+      })();
+      return disposePromise;
     };
 
     const program: RuntimePreparedProgram = call.mode === 'trace'
       ? {
           mode: 'trace',
           capabilities,
-          executeIsolated: async (preparedCall) =>
-            this.workerClient.executePreparedTrace(
-              requireArtifact(),
-              preparedCall
+          executeIsolated: (preparedCall) =>
+            executeOwned(preparedCall, (preparedArtifact, forwardedCall) =>
+              this.workerClient.executePreparedTrace(
+                preparedArtifact,
+                forwardedCall
+              )
             ),
           dispose,
         }
       : {
           mode: 'code',
           capabilities,
-          executeIsolated: async (preparedCall) =>
-            this.workerClient.executePreparedCode(
-              requireArtifact(),
-              preparedCall
+          executeIsolated: (preparedCall) =>
+            executeOwned(preparedCall, (preparedArtifact, forwardedCall) =>
+              this.workerClient.executePreparedCode(
+                preparedArtifact,
+                forwardedCall
+              )
             ),
           dispose,
         };

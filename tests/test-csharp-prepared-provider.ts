@@ -1,6 +1,7 @@
 #!/usr/bin/env npx tsx
 
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
 import { test } from 'node:test';
 import type {
   CodeExecutionResult,
@@ -166,8 +167,40 @@ test('C# prepared execution forwards cancellation into the active worker request
   const reason = new Error('cancel prepared C#');
   controller.abort(reason);
   await assert.rejects(execution, reason);
-  assert.strictEqual(worker.executeCalls[0]?.call.signal, controller.signal);
+  assert.notStrictEqual(worker.executeCalls[0]?.call.signal, controller.signal);
+  assert.equal(worker.executeCalls[0]?.call.signal?.aborted, true);
+  assert.strictEqual(worker.executeCalls[0]?.call.signal?.reason, reason);
   await prepared.program.dispose();
+});
+
+test('C# prepared disposal aborts and drains active execution before releasing its artifact', async () => {
+  const worker = new FakePreparedCSharpWorker();
+  const provider = createCSharpRuntimeClient(worker as unknown as CSharpWorkerClient);
+  const prepared = await provider.prepareProgram({
+    mode: 'code',
+    code: 'public class Solution { public int Wait() { while (true) {} } }',
+    functionName: 'Wait',
+  });
+  assert.equal(prepared.kind, 'prepared');
+  if (prepared.kind !== 'prepared' || prepared.program.mode !== 'code') return;
+
+  const execution = prepared.program.executeIsolated({
+    inputs: { wait: true },
+  });
+  const disposal = prepared.program.dispose();
+  assert.deepEqual(
+    worker.disposeCalls,
+    [],
+    'artifact disposal must wait for the active case to settle'
+  );
+  await assert.rejects(execution, /disposed during active execution/);
+  await disposal;
+  assert.equal(worker.executeCalls[0]?.call.signal?.aborted, true);
+  assert.deepEqual(worker.disposeCalls, ['artifact-key']);
+  await assert.rejects(
+    prepared.program.executeIsolated({ inputs: {} }),
+    /disposed/
+  );
 });
 
 test('C# prepared execution preserves per-case limits and limit results', async () => {
@@ -201,4 +234,25 @@ test('C# prepared execution preserves per-case limits and limit results', async 
   assert.equal(result.timings?.compileCacheHit, true);
   assert.equal(result.timings?.artifactCacheHit, true);
   await prepared.program.dispose();
+});
+
+test('C# host prepared entry point cannot fall through to the compiling execution path', () => {
+  const source = readFileSync(
+    'runtimes/csharp/TraceCode.CSharpHost/CompilerHost.cs',
+    'utf8'
+  );
+  const preparedEntryPoint = source.slice(
+    source.indexOf('public static string ExecutePrepared(string requestJson)'),
+    source.indexOf('public static bool DisposePreparedArtifact(string artifactKey)')
+  );
+
+  assert.match(
+    preparedEntryPoint,
+    /Invalid prepared C# execution request\./
+  );
+  assert.doesNotMatch(
+    preparedEntryPoint,
+    /return Execute\(requestJson\);/,
+    'invalid prepared requests must not regain access to Roslyn through Execute'
+  );
 });

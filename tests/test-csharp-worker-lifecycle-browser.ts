@@ -214,6 +214,170 @@ async function main(): Promise<void> {
         timeoutMs: 10_000,
       });
 
+      const scriptSource = [
+        'int result = TraceCode.Internal.TraceCodeJsonInput.Read<int>("value", 0);',
+      ].join('\n');
+      const scriptPreparation = await firstWorker.send<ExecuteResult>('prepare-program', {
+        mode: 'code',
+        code: scriptSource,
+        functionName: '',
+        executionStyle: 'function',
+        assetBaseUrl,
+        timeoutMs: 10_000,
+      });
+      const preparedScript = {
+        mode: 'code',
+        code: scriptSource,
+        functionName: '',
+        executionStyle: 'function',
+        compiledArtifactKey: scriptPreparation.compiledArtifactKey,
+        compiledArtifactBase64: scriptPreparation.compiledArtifactBase64,
+      };
+      const preparedScriptFirst = await firstWorker.send('execute-prepared-code', {
+        prepared: preparedScript,
+        inputs: { value: 37 },
+        assetBaseUrl,
+        timeoutMs: 10_000,
+      });
+      const preparedScriptSecond = await firstWorker.send('execute-prepared-code', {
+        prepared: preparedScript,
+        inputs: { value: 41 },
+        assetBaseUrl,
+        timeoutMs: 10_000,
+      });
+
+      const opsSource = [
+        'public class Counter {',
+        '  private int value;',
+        '  public Counter(int start) { value = start; }',
+        '  public int Add(int delta) { value += delta; return value; }',
+        '}',
+      ].join('\n');
+      const opsPreparation = await firstWorker.send<ExecuteResult>('prepare-program', {
+        mode: 'code',
+        code: opsSource,
+        functionName: 'Counter',
+        executionStyle: 'ops-class',
+        assetBaseUrl,
+        timeoutMs: 10_000,
+      });
+      const preparedOps = {
+        mode: 'code',
+        code: opsSource,
+        functionName: 'Counter',
+        executionStyle: 'ops-class',
+        compiledArtifactKey: opsPreparation.compiledArtifactKey,
+        compiledArtifactBase64: opsPreparation.compiledArtifactBase64,
+      };
+      const preparedOpsFirst = await firstWorker.send('execute-prepared-code', {
+        prepared: preparedOps,
+        inputs: {
+          operations: ['Counter', 'Add', 'Add'],
+          arguments: [[2], [3], [5]],
+        },
+        assetBaseUrl,
+        timeoutMs: 10_000,
+      });
+      const preparedOpsSecond = await firstWorker.send('execute-prepared-code', {
+        prepared: preparedOps,
+        inputs: {
+          operations: ['Counter', 'Add'],
+          arguments: [[10], [7]],
+        },
+        assetBaseUrl,
+        timeoutMs: 10_000,
+      });
+
+      const processStateSource = [
+        'using System;',
+        'using System.Globalization;',
+        'using System.IO;',
+        'public class Solution {',
+        '  public string State(bool mutate) {',
+        '    const string path = "/tmp/tracecode-prepared-process-state.txt";',
+        '    const string environmentKey = "TRACECODE_PREPARED_PROCESS_STATE";',
+        '    const string switchName = "TraceCode.PreparedProcessState";',
+        '    if (mutate) {',
+        '      File.WriteAllText(path, "leak");',
+        '      Directory.SetCurrentDirectory("/tmp");',
+        '      Environment.SetEnvironmentVariable(environmentKey, "leak");',
+        '      var currentCulture = (CultureInfo)CultureInfo.InvariantCulture.Clone();',
+        '      currentCulture.NumberFormat.NegativeSign = "current-leak";',
+        '      CultureInfo.CurrentCulture = currentCulture;',
+        '      var currentUICulture = (CultureInfo)CultureInfo.InvariantCulture.Clone();',
+        '      currentUICulture.DateTimeFormat.DateSeparator = "ui-leak";',
+        '      CultureInfo.CurrentUICulture = currentUICulture;',
+        '      var defaultCulture = (CultureInfo)CultureInfo.InvariantCulture.Clone();',
+        '      defaultCulture.NumberFormat.PositiveSign = "default-leak";',
+        '      CultureInfo.DefaultThreadCurrentCulture = defaultCulture;',
+        '      var defaultUICulture = (CultureInfo)CultureInfo.InvariantCulture.Clone();',
+        '      defaultUICulture.DateTimeFormat.TimeSeparator = "default-ui-leak";',
+        '      CultureInfo.DefaultThreadCurrentUICulture = defaultUICulture;',
+        '      AppContext.SetSwitch(switchName, true);',
+        '    }',
+        '    AppContext.TryGetSwitch(switchName, out bool switchValue);',
+        '    return string.Join("|", new[] {',
+        '      File.Exists(path).ToString(),',
+        '      Environment.GetEnvironmentVariable(environmentKey) ?? "<null>",',
+        '      Directory.GetCurrentDirectory(),',
+        '      CultureInfo.CurrentCulture.NumberFormat.NegativeSign,',
+        '      CultureInfo.CurrentUICulture.DateTimeFormat.DateSeparator,',
+        '      CultureInfo.DefaultThreadCurrentCulture?.NumberFormat.PositiveSign ?? "<null>",',
+        '      CultureInfo.DefaultThreadCurrentUICulture?.DateTimeFormat.TimeSeparator ?? "<null>",',
+        '      switchValue.ToString(),',
+        '    });',
+        '  }',
+        '}',
+      ].join('\n');
+      const processStatePreparation = await firstWorker.send<ExecuteResult>('prepare-program', {
+        mode: 'code',
+        code: processStateSource,
+        functionName: 'State',
+        executionStyle: 'solution-method',
+        assetBaseUrl,
+        timeoutMs: 10_000,
+      });
+      const preparedProcessState = {
+        mode: 'code',
+        code: processStateSource,
+        functionName: 'State',
+        executionStyle: 'solution-method',
+        compiledArtifactKey: processStatePreparation.compiledArtifactKey,
+        compiledArtifactBase64: processStatePreparation.compiledArtifactBase64,
+      };
+      const executeProcessStateInFreshWorker = async (mutate: boolean) => {
+        const worker = await createWorkerHarness();
+        try {
+          return await worker.send('execute-prepared-code', {
+            prepared: preparedProcessState,
+            inputs: { mutate },
+            assetBaseUrl,
+            timeoutMs: 10_000,
+          });
+        } finally {
+          worker.terminate();
+        }
+      };
+      const processStateBaseline = await executeProcessStateInFreshWorker(false);
+      const processStateMutation = await executeProcessStateInFreshWorker(true);
+      const processStateAfterMutation = await executeProcessStateInFreshWorker(false);
+
+      const unavailableArtifact = await firstWorker.send('execute-prepared-code', {
+        prepared: {
+          mode: 'code',
+          code: [
+            'public class Solution {',
+            '  public int NeverCompilePreparedFallback(int value) => value + 9000;',
+            '}',
+          ].join('\n'),
+          functionName: 'NeverCompilePreparedFallback',
+          executionStyle: 'solution-method',
+        },
+        inputs: { value: 5 },
+        assetBaseUrl,
+        timeoutMs: 10_000,
+      });
+
       const failureSource = [
         'public class Solution {',
         '  public int Fail(int value) {',
@@ -355,6 +519,17 @@ async function main(): Promise<void> {
         prepared,
         preparedFirst,
         preparedSecond,
+        scriptPreparation,
+        preparedScriptFirst,
+        preparedScriptSecond,
+        opsPreparation,
+        preparedOpsFirst,
+        preparedOpsSecond,
+        processStatePreparation,
+        processStateBaseline,
+        processStateMutation,
+        processStateAfterMutation,
+        unavailableArtifact,
         failurePreparation,
         preparedFailure,
         tracePreparation,
@@ -372,6 +547,17 @@ async function main(): Promise<void> {
       prepared: ExecuteResult;
       preparedFirst: ExecuteResult;
       preparedSecond: ExecuteResult;
+      scriptPreparation: ExecuteResult;
+      preparedScriptFirst: ExecuteResult;
+      preparedScriptSecond: ExecuteResult;
+      opsPreparation: ExecuteResult;
+      preparedOpsFirst: ExecuteResult;
+      preparedOpsSecond: ExecuteResult;
+      processStatePreparation: ExecuteResult;
+      processStateBaseline: ExecuteResult;
+      processStateMutation: ExecuteResult;
+      processStateAfterMutation: ExecuteResult;
+      unavailableArtifact: ExecuteResult;
       failurePreparation: ExecuteResult;
       preparedFailure: ExecuteResult;
       tracePreparation: ExecuteResult;
@@ -417,6 +603,100 @@ async function main(): Promise<void> {
         metrics.preparedSecond.timings?.artifactCacheHit === true &&
         metrics.preparedSecond.timings?.executionRealm === 'collectible-assembly-load-context',
       `Second prepared C# case leaked static state or recompiled: ${JSON.stringify(metrics.preparedSecond)}`
+    );
+    assertCondition(
+      metrics.scriptPreparation.success &&
+        metrics.preparedScriptFirst.success &&
+        metrics.preparedScriptFirst.output === 37 &&
+        metrics.preparedScriptFirst.timings?.compileCacheHit === true &&
+        metrics.preparedScriptFirst.timings?.artifactCacheHit === true &&
+        metrics.preparedScriptSecond.success &&
+        metrics.preparedScriptSecond.output === 41 &&
+        metrics.preparedScriptSecond.timings?.compileCacheHit === true &&
+        metrics.preparedScriptSecond.timings?.artifactCacheHit === true,
+      `Prepared C# script did not read distinct inputs from one compiled artifact: ${JSON.stringify({
+        preparation: metrics.scriptPreparation,
+        first: metrics.preparedScriptFirst,
+        second: metrics.preparedScriptSecond,
+      })}`
+    );
+    assertCondition(
+      metrics.opsPreparation.success &&
+        metrics.preparedOpsFirst.success &&
+        JSON.stringify(metrics.preparedOpsFirst.output) === JSON.stringify([null, 5, 10]) &&
+        metrics.preparedOpsFirst.timings?.compileCacheHit === true &&
+        metrics.preparedOpsFirst.timings?.artifactCacheHit === true &&
+        metrics.preparedOpsSecond.success &&
+        JSON.stringify(metrics.preparedOpsSecond.output) === JSON.stringify([null, 17]) &&
+        metrics.preparedOpsSecond.timings?.compileCacheHit === true &&
+        metrics.preparedOpsSecond.timings?.artifactCacheHit === true,
+      `Prepared C# ops-class did not read distinct operation streams from one compiled artifact: ${JSON.stringify({
+        preparation: metrics.opsPreparation,
+        first: metrics.preparedOpsFirst,
+        second: metrics.preparedOpsSecond,
+      })}`
+    );
+    assertCondition(
+      metrics.processStatePreparation.success &&
+        metrics.processStateBaseline.success &&
+        metrics.processStateBaseline.timings?.compileCacheHit === true &&
+        metrics.processStateBaseline.timings?.artifactCacheHit === true &&
+        metrics.processStateMutation.success &&
+        metrics.processStateMutation.timings?.compileCacheHit === true &&
+        metrics.processStateMutation.timings?.artifactCacheHit === true &&
+      metrics.processStateAfterMutation.success &&
+        metrics.processStateAfterMutation.timings?.compileCacheHit === true &&
+        metrics.processStateAfterMutation.timings?.artifactCacheHit === true,
+      `Prepared C# process-state probe did not reuse one artifact in fresh workers: ${JSON.stringify({
+        preparation: {
+          success: metrics.processStatePreparation.success,
+          error: metrics.processStatePreparation.error,
+          timings: metrics.processStatePreparation.timings,
+        },
+        baseline: {
+          success: metrics.processStateBaseline.success,
+          output: metrics.processStateBaseline.output,
+          error: metrics.processStateBaseline.error,
+          timings: metrics.processStateBaseline.timings,
+        },
+        mutation: {
+          success: metrics.processStateMutation.success,
+          output: metrics.processStateMutation.output,
+          error: metrics.processStateMutation.error,
+          timings: metrics.processStateMutation.timings,
+        },
+        afterMutation: {
+          success: metrics.processStateAfterMutation.success,
+          output: metrics.processStateAfterMutation.output,
+          error: metrics.processStateAfterMutation.error,
+          timings: metrics.processStateAfterMutation.timings,
+        },
+      })}`
+    );
+    assertCondition(
+      metrics.processStateBaseline.output === metrics.processStateAfterMutation.output,
+      `Fresh prepared C# cases leaked process state across workers: ${JSON.stringify({
+        baseline: metrics.processStateBaseline.output,
+        mutation: metrics.processStateMutation.output,
+        afterMutation: metrics.processStateAfterMutation.output,
+      })}`
+    );
+    assertCondition(
+      typeof metrics.processStateMutation.output === 'string' &&
+        metrics.processStateMutation.output.startsWith(
+          'True|leak|/tmp|current-leak|ui-leak|default-leak|default-ui-leak|True'
+        ) &&
+        metrics.processStateMutation.output !== metrics.processStateBaseline.output,
+      `Prepared C# process-state mutation did not exercise every isolation surface: ${JSON.stringify(
+        metrics.processStateMutation.output
+      )}`
+    );
+    assertCondition(
+      metrics.unavailableArtifact.success === false &&
+        metrics.unavailableArtifact.error === 'Prepared C# artifact is unavailable or invalid.' &&
+        metrics.unavailableArtifact.timings?.compileCacheHit === false &&
+        metrics.unavailableArtifact.timings?.artifactCacheHit === false,
+      `Missing prepared C# artifact must fail closed without compilation: ${JSON.stringify(metrics.unavailableArtifact)}`
     );
     assertCondition(
       metrics.failurePreparation.success &&

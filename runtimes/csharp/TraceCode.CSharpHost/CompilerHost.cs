@@ -218,21 +218,44 @@ public static partial class CompilerHost
     [SupportedOSPlatform("browser")]
     public static string ExecutePrepared(string requestJson)
     {
+        Stopwatch stopwatch = Stopwatch.StartNew();
+        TextWriter originalOut = Console.Out;
+        using TracingConsoleWriter capturedOut = new();
+        Console.SetOut(capturedOut);
+        Dictionary<string, object> timings = new();
+
         try
         {
             CSharpExecuteRequest? request = JsonSerializer.Deserialize<CSharpExecuteRequest>(requestJson, JsonOptions);
             if (request is null)
             {
-                return Execute(requestJson);
+                return SerializeError(
+                    "Invalid prepared C# execution request.",
+                    stopwatch,
+                    capturedOut,
+                    timings: timings
+                );
             }
 
             request.PreparedProgram = true;
             request.RequirePreparedArtifact = true;
             return Execute(JsonSerializer.Serialize(request, JsonOptions));
         }
-        catch
+        catch (Exception)
         {
-            return Execute(requestJson);
+            // Prepared execution is a fail-closed boundary. Malformed requests
+            // must never fall through to Execute, whose non-prepared path is
+            // allowed to invoke Roslyn.
+            return SerializeError(
+                "Invalid prepared C# execution request.",
+                stopwatch,
+                capturedOut,
+                timings: timings
+            );
+        }
+        finally
+        {
+            Console.SetOut(originalOut);
         }
     }
 
@@ -3688,6 +3711,11 @@ public sealed class ProjectFileStream : System.IO.FileStream
         if (IsScriptExecutionRequest(request)
             || string.Equals(request.ExecutionStyle, "ops-class", StringComparison.Ordinal))
         {
+            // Both supported shapes are input-independent at compile time.
+            // Script code can read TraceCodeJsonInput, and the ops-class driver
+            // reads operations/arguments only when Run executes. Browser
+            // lifecycle coverage executes each prepared shape with distinct
+            // input payloads to guard this invariant.
             return GenerateDriverSource(userTree, request);
         }
 

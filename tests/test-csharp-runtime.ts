@@ -57,6 +57,8 @@ interface MockCSharpWorkerRawResult {
   executionTimeMs?: number;
   traceLimitExceeded?: boolean;
   timeoutReason?: ExecutionLimitReason;
+  compiledArtifactKey?: string;
+  compiledArtifactBase64?: string;
 }
 
 class MockCSharpWorker {
@@ -669,6 +671,145 @@ async function testWorkerErrorReset(): Promise<void> {
   console.log('PASS: C# worker client error reset contract');
 }
 
+async function testPreparedWorkerGenerationAuthority(): Promise<void> {
+  const originalWorker = globalThis.Worker;
+  MockCSharpWorker.responses = [];
+  MockCSharpWorker.received = [];
+  MockCSharpWorker.instances = [];
+  MockCSharpWorker.hangingMessageTypes = new Set<string>();
+  MockCSharpWorker.erroringMessageTypes = new Set<string>();
+  // @ts-expect-error test stub
+  globalThis.Worker = MockCSharpWorker;
+
+  const workerClient = new CSharpWorkerClient({
+    workerUrl: '/workers/csharp-worker.js',
+    assetBaseUrl: '/workers/vendor/csharp',
+  });
+  const provider = createCSharpRuntimeClient(workerClient);
+
+  try {
+    MockCSharpWorker.responses.push(
+      {
+        success: true,
+        compiledArtifactKey: 'prepared-a',
+        compiledArtifactBase64: 'TVqQAAMAAAAEAAAA',
+        consoleOutput: [],
+      },
+      {
+        success: true,
+        compiledArtifactKey: 'prepared-b',
+        compiledArtifactBase64: 'TVqQAAMAAAAEAAAB',
+        consoleOutput: [],
+      }
+    );
+    const preparedA = await provider.prepareProgram({
+      mode: 'code',
+      code: 'public class Solution { public int Echo(int value) => value; }',
+      functionName: 'Echo',
+    });
+    const preparedB = await provider.prepareProgram({
+      mode: 'code',
+      code: 'public class Solution { public int Echo(int value) => value; }',
+      functionName: 'Echo',
+    });
+    assertCondition(
+      preparedA.kind === 'prepared' &&
+        preparedA.program.mode === 'code' &&
+        preparedB.kind === 'prepared' &&
+        preparedB.program.mode === 'code',
+      'C# prepared authority test requires two prepared code handles'
+    );
+    if (
+      preparedA.kind !== 'prepared' ||
+      preparedA.program.mode !== 'code' ||
+      preparedB.kind !== 'prepared' ||
+      preparedB.program.mode !== 'code'
+    ) {
+      return;
+    }
+    assertCondition(
+      MockCSharpWorker.instances.every((worker) => worker.terminated),
+      'C# preparation must retire its compiler worker before exposing a fresh-case-state handle'
+    );
+
+    MockCSharpWorker.hangingMessageTypes = new Set<string>(['execute-prepared-code']);
+    const firstExecution = preparedA.program.executeIsolated({
+      inputs: { value: 1 },
+    });
+    await new Promise<void>((resolve) => setTimeout(resolve, 0));
+    const secondExecution = preparedB.program.executeIsolated({
+      inputs: { value: 2 },
+    });
+    await new Promise<void>((resolve) => setTimeout(resolve, 0));
+
+    const firstMessage = MockCSharpWorker.received.find(
+      (message) => message.type === 'execute-prepared-code'
+    );
+    assertCondition(Boolean(firstMessage?.id), 'First prepared C# execution should reach its worker');
+    assertCondition(
+      MockCSharpWorker.received.filter(
+        (message) => message.type === 'execute-prepared-code'
+      ).length === 1,
+      'prepared handles sharing one C# client must serialize through one authority'
+    );
+    const activeWorker = MockCSharpWorker.instances.find((worker) => !worker.terminated);
+    assertCondition(Boolean(activeWorker), 'First prepared C# execution should own one active worker generation');
+
+    MockCSharpWorker.hangingMessageTypes = new Set<string>();
+    MockCSharpWorker.responses.push({
+      success: true,
+      output: 2,
+      consoleOutput: [],
+      executionTimeMs: 1,
+    });
+    activeWorker!.onmessage?.({
+      data: {
+        id: firstMessage!.id,
+        type: firstMessage!.type,
+        protocolToken: firstMessage!.protocolToken,
+        payload: {
+          success: true,
+          output: 1,
+          consoleOutput: [],
+          executionTimeMs: 1,
+        },
+      },
+    } as MessageEvent<WorkerMessage>);
+
+    const [firstResult, secondResult] = await Promise.all([
+      firstExecution,
+      secondExecution,
+    ]);
+    assertCondition(
+      firstResult.kind === 'completed' && firstResult.output === 1,
+      'First prepared C# execution should complete through its owned worker generation'
+    );
+    assertCondition(
+      secondResult.kind === 'completed' && secondResult.output === 2,
+      'Second prepared C# handle should execute only after the shared authority releases'
+    );
+    assertCondition(
+      MockCSharpWorker.received.filter(
+        (message) => message.type === 'execute-prepared-code'
+      ).length === 2,
+      'Both serialized prepared C# executions should eventually reach a worker'
+    );
+    assertCondition(
+      MockCSharpWorker.instances.every((worker) => worker.terminated),
+      'every prepared C# case must retire its outer worker generation'
+    );
+
+    await preparedA.program.dispose();
+    await preparedB.program.dispose();
+  } finally {
+    MockCSharpWorker.hangingMessageTypes = new Set<string>();
+    workerClient.terminate();
+    globalThis.Worker = originalWorker;
+  }
+
+  console.log('PASS: C# prepared handles share one fresh-worker execution authority');
+}
+
 function testTraceRewriterTargetTypedFieldWritesDoNotReadAssignedMembers(): void {
   const source = readFileSync('runtimes/csharp/TraceCode.CSharpHost/TraceRewriter.cs', 'utf8');
   assertCondition(
@@ -707,6 +848,7 @@ async function main(): Promise<void> {
   await testWarmupTimeoutReset();
   await testWallClockLimitClientTimeout();
   await testWorkerErrorReset();
+  await testPreparedWorkerGenerationAuthority();
   testTraceRewriterTargetTypedFieldWritesDoNotReadAssignedMembers();
   testTraceRewriterIndexedAssignmentsDoNotReadAssignedIndexers();
 }

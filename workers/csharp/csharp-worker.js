@@ -4193,10 +4193,9 @@ async function executePreparedCSharpProgram(message) {
       ...(result?.timings && typeof result.timings === 'object' ? result.timings : {}),
       initMs,
       hostCallMs,
-      // ExecutePrepared rejects missing or mismatched artifacts before it can
-      // enter learner code. Once the host returns, this request used the
-      // prepared artifact even when learner execution itself failed.
-      artifactCacheHit: true,
+      // A learner exception still reports a hit because the host reached the
+      // cached assembly. Missing/malformed prepared artifacts remain misses.
+      artifactCacheHit: result?.timings?.compileCacheHit === true,
       totalMs: elapsedMs(startedAt),
     },
   };

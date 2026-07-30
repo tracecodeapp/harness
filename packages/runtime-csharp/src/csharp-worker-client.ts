@@ -177,6 +177,12 @@ export class CSharpWorkerClient {
   /** Memoized runtime-load results for the current session; cleared by the session finalizer. */
   private initPromise: Promise<InitResult> | null = null;
   private warmupPromise: Promise<WarmupResult> | null = null;
+  /**
+   * One authority spans every prepared handle backed by this client. Prepared
+   * programs may share the immutable host artifact cache, but never a mutable
+   * .NET process generation.
+   */
+  private preparedOperationTail: Promise<void> = Promise.resolve();
   private readonly debug: boolean;
   private readonly initTimeoutMs: number;
   private readonly executionTimeoutMs: number;
@@ -339,6 +345,47 @@ export class CSharpWorkerClient {
     };
   }
 
+  private runPreparedExclusive<T>(
+    signal: AbortSignal | undefined,
+    operation: () => Promise<T>
+  ): Promise<T> {
+    const queued = this.preparedOperationTail.then(async () => {
+      if (signal?.aborted) {
+        throw signal.reason ?? new Error('Prepared C# operation was aborted.');
+      }
+      return operation();
+    });
+    this.preparedOperationTail = queued.then(
+      () => undefined,
+      () => undefined
+    );
+    return queued;
+  }
+
+  /**
+   * Run one prepared lifecycle operation in a clean outer worker generation.
+   *
+   * A collectible AssemblyLoadContext only isolates learner assemblies. The
+   * .NET process also owns its filesystem, environment, current directory,
+   * cultures, thread/runtime switches, and other framework state. Retiring the
+   * whole worker before and after each case is the only honest
+   * fresh-case-state boundary; the opaque PE remains reusable through the
+   * host-owned artifact cache and the descriptor's base64 payload.
+   */
+  private runFreshPreparedGeneration<T>(
+    signal: AbortSignal | undefined,
+    operation: () => Promise<T>
+  ): Promise<T> {
+    return this.runPreparedExclusive(signal, async () => {
+      this.terminate();
+      try {
+        return await operation();
+      } finally {
+        this.terminate();
+      }
+    });
+  }
+
   /**
    * The init program: one attempt, and on a runtime-load failure, reset the
    * session and run the same description once more.
@@ -489,101 +536,109 @@ export class CSharpWorkerClient {
   async prepareProgram(
     call: RuntimeProgramPreparationCall
   ): Promise<CSharpWorkerPrepareResult> {
-    const functionName = call.functionName ?? '';
-    const executionStyle = call.executionStyle ?? 'solution-method';
-    const timeoutMs = call.mode === 'trace'
-      ? this.resolveTracingTimeoutMs(functionName, executionStyle)
-      : this.executionTimeoutMs;
-    const program = this.warmupEffect().pipe(
-      Effect.andThen(
-        this.core.withExecutionDeadline(
-          this.sendCommandEffect<CSharpWorkerPrepareResult>('prepare-program', {
-            mode: call.mode,
-            code: call.code,
-            functionName,
-            executionStyle,
-            traceOptions: call.traceOptions,
-            assetBaseUrl: this.options.assetBaseUrl,
-            timeoutMs: Math.max(100, timeoutMs - 1_000),
-            ...this.workerOptionsPayload(),
-          }, null),
-          timeoutMs
+    return this.runFreshPreparedGeneration(call.signal, async () => {
+      const functionName = call.functionName ?? '';
+      const executionStyle = call.executionStyle ?? 'solution-method';
+      const timeoutMs = call.mode === 'trace'
+        ? this.resolveTracingTimeoutMs(functionName, executionStyle)
+        : this.executionTimeoutMs;
+      const program = this.warmupEffect().pipe(
+        Effect.andThen(
+          this.core.withExecutionDeadline(
+            this.sendCommandEffect<CSharpWorkerPrepareResult>('prepare-program', {
+              mode: call.mode,
+              code: call.code,
+              functionName,
+              executionStyle,
+              traceOptions: call.traceOptions,
+              assetBaseUrl: this.options.assetBaseUrl,
+              timeoutMs: Math.max(100, timeoutMs - 1_000),
+              ...this.workerOptionsPayload(),
+            }, null),
+            timeoutMs
+          )
         )
-      )
-    );
+      );
 
-    return this.core.runClientEffect(program, call.signal);
+      return this.core.runClientEffect(program, call.signal);
+    });
   }
 
   async executePreparedCode(
     prepared: CSharpPreparedProgramArtifact,
     call: RuntimePreparedCodeCall
   ): Promise<CodeExecutionResult> {
-    const wallClockMs = call.limits?.wallClockMs ?? this.executionTimeoutMs;
-    const program = this.warmupEffect().pipe(
-      Effect.andThen(
-        this.core.withExecutionDeadline(
-          this.sendCommandEffect<CSharpWorkerExecuteResult>('execute-prepared-code', {
-            prepared,
-            inputs: call.inputs,
-            assetBaseUrl: this.options.assetBaseUrl,
-            timeoutMs: Math.max(100, wallClockMs - 1_000),
-            ...this.workerOptionsPayload(),
-          }, null),
-          wallClockMs
+    return this.runFreshPreparedGeneration(call.signal, async () => {
+      const wallClockMs = call.limits?.wallClockMs ?? this.executionTimeoutMs;
+      const program = this.warmupEffect().pipe(
+        Effect.andThen(
+          this.core.withExecutionDeadline(
+            this.sendCommandEffect<CSharpWorkerExecuteResult>('execute-prepared-code', {
+              prepared,
+              inputs: call.inputs,
+              assetBaseUrl: this.options.assetBaseUrl,
+              timeoutMs: Math.max(100, wallClockMs - 1_000),
+              ...this.workerOptionsPayload(),
+            }, null),
+            wallClockMs
+          )
         )
-      )
-    );
-    const result = await this.core.runClientEffect(program, call.signal);
-    return this.toCodeExecutionResult(result);
+      );
+      const result = await this.core.runClientEffect(program, call.signal);
+      return this.toCodeExecutionResult(result);
+    });
   }
 
   async executePreparedTrace(
     prepared: CSharpPreparedProgramArtifact,
     call: RuntimePreparedTraceCall
   ): Promise<ExecutionResult> {
-    const wallClockMs = call.limits?.wallClockMs
-      ?? this.resolveTracingTimeoutMs(prepared.functionName, prepared.executionStyle);
-    let result: CSharpWorkerExecuteResult;
-    const program = this.warmupEffect().pipe(
-      Effect.andThen(
-        this.core.withExecutionDeadline(
-          this.sendCommandEffect<CSharpWorkerExecuteResult>('execute-prepared-trace', {
-            prepared,
-            inputs: call.inputs,
-            assetBaseUrl: this.options.assetBaseUrl,
-            timeoutMs: Math.max(100, wallClockMs - 1_000),
-            traceEventTransport: traceEventTransferRequest(),
-            ...this.workerOptionsPayload(),
-          }, null),
-          wallClockMs
+    return this.runFreshPreparedGeneration(call.signal, async () => {
+      const wallClockMs = call.limits?.wallClockMs
+        ?? this.resolveTracingTimeoutMs(prepared.functionName, prepared.executionStyle);
+      let result: CSharpWorkerExecuteResult;
+      const program = this.warmupEffect().pipe(
+        Effect.andThen(
+          this.core.withExecutionDeadline(
+            this.sendCommandEffect<CSharpWorkerExecuteResult>('execute-prepared-trace', {
+              prepared,
+              inputs: call.inputs,
+              assetBaseUrl: this.options.assetBaseUrl,
+              timeoutMs: Math.max(100, wallClockMs - 1_000),
+              traceEventTransport: traceEventTransferRequest(),
+              ...this.workerOptionsPayload(),
+            }, null),
+            wallClockMs
+          )
         )
-      )
-    );
+      );
 
-    try {
-      result = await this.core.runClientEffect(program, call.signal);
-    } catch (error) {
-      return this.traceClientFailure(error, wallClockMs);
-    }
+      try {
+        result = await this.core.runClientEffect(program, call.signal);
+      } catch (error) {
+        return this.traceClientFailure(error, wallClockMs);
+      }
 
-    return this.toTraceExecutionResult(
-      result,
-      prepared.traceOptions,
-      wallClockMs
-    );
+      return this.toTraceExecutionResult(
+        result,
+        prepared.traceOptions,
+        wallClockMs
+      );
+    });
   }
 
   async disposePreparedProgram(
     prepared: Pick<CSharpPreparedProgramArtifact, 'compiledArtifactKey'>
   ): Promise<void> {
-    if (!this.core.isWorkerRunning) return;
-    await this.core.runClientEffect(
-      this.sendCommandEffect<{ success: boolean }>(
-        'dispose-prepared-program',
-        { compiledArtifactKey: prepared.compiledArtifactKey }
-      )
-    );
+    await this.runPreparedExclusive(undefined, async () => {
+      if (!this.core.isWorkerRunning) return;
+      await this.core.runClientEffect(
+        this.sendCommandEffect<{ success: boolean }>(
+          'dispose-prepared-program',
+          { compiledArtifactKey: prepared.compiledArtifactKey }
+        )
+      );
+    });
   }
 
   async executeWithTracing(call: RuntimeTraceCall): Promise<ExecutionResult> {
