@@ -11,6 +11,15 @@ import {
 const ROOT = process.cwd();
 const VIRTUAL_OUT_DIR = '/tracecode-cpp-public-declarations';
 const FORBIDDEN_PUBLIC_COMPILER_NAME = /(?:YoWASP|Toolchain|Clang|LLVM)/iu;
+const ROOT_NEUTRAL_EXPORTS = new Set([
+  '.',
+  './browser',
+  './browser/project',
+  './project',
+  './project-node',
+  './judge',
+  './package.json',
+]);
 
 function assertCondition(condition: unknown, message: string): asserts condition {
   if (!condition) throw new Error(message);
@@ -52,7 +61,7 @@ function declarationIsDefiningInterface(
   return new RegExp(`\\binterface\\s+${name}\\b`, 'u').test(declaration);
 }
 
-function generatedMetadataSlice(): string {
+function generatedLanguageMetadataSlice(): string {
   const generatedProjectWorker = readFileSync(
     resolve(ROOT, 'workers/javascript/javascript-project-worker.js'),
     'utf8'
@@ -60,10 +69,13 @@ function generatedMetadataSlice(): string {
   const start = generatedProjectWorker.indexOf(
     '// packages/runtime-core/src/generated/runtime-language-info-data.ts'
   );
-  const end = generatedProjectWorker.indexOf('\n// packages/', start + 1);
+  const end = generatedProjectWorker.indexOf(
+    '\nvar RUNTIME_COMMAND_VERSIONS',
+    start + 1
+  );
   assertCondition(
     start >= 0 && end > start,
-    'Generated JavaScript project worker must embed runtime language metadata'
+    'Generated JavaScript project worker must embed language runtime metadata separately from CLI implementation identities'
   );
   return generatedProjectWorker.slice(start, end);
 }
@@ -114,7 +126,10 @@ function main(): void {
       .join('\n')}`
   );
 
-  const publicSources = [
+  // These are private implementation-package entrypoints in 0.14. They still
+  // need a language-owned, implementation-neutral contract because the root
+  // workspace composes them behind its neutral project and judge entrypoints.
+  const runtimeSources = [
     'packages/runtime-core/src/runtime-execution.ts',
     'packages/runtime-browser/src/runtime-assets.ts',
     'packages/runtime-browser/src/runtime-environment.ts',
@@ -124,23 +139,23 @@ function main(): void {
     'packages/runtime-cpp/src/project-browser.ts',
     'packages/runtime-cpp/src/project-node.ts',
   ] as const;
-  const publicDeclarations = new Map<string, string>();
+  const runtimeDeclarations = new Map<string, string>();
   const implementationLeaks: string[] = [];
-  for (const sourcePath of publicSources) {
+  for (const sourcePath of runtimeSources) {
     const outputPath = declarationPath(sourcePath);
     const declaration = emitted.get(outputPath);
     assertCondition(declaration, `Missing emitted declaration ${outputPath}`);
-    publicDeclarations.set(sourcePath, declaration);
+    runtimeDeclarations.set(sourcePath, declaration);
     if (FORBIDDEN_PUBLIC_COMPILER_NAME.test(declaration)) {
       implementationLeaks.push(sourcePath);
     }
   }
   assertCondition(
     implementationLeaks.length === 0,
-    `C++ declarations must describe language-owned compiler capabilities: ${implementationLeaks.join(', ')}`
+    `C++ runtime declarations must describe language-owned compiler capabilities: ${implementationLeaks.join(', ')}`
   );
 
-  const clientDeclaration = publicDeclarations.get(
+  const clientDeclaration = runtimeDeclarations.get(
     'packages/runtime-cpp/src/cpp-worker-client.ts'
   )!;
   for (const name of [
@@ -163,7 +178,7 @@ function main(): void {
     );
   }
 
-  const assetDeclaration = publicDeclarations.get(
+  const assetDeclaration = runtimeDeclarations.get(
     'packages/runtime-browser/src/runtime-assets.ts'
   )!;
   for (const name of [
@@ -189,7 +204,7 @@ function main(): void {
     );
   }
 
-  const timingDeclaration = publicDeclarations.get(
+  const timingDeclaration = runtimeDeclarations.get(
     'packages/runtime-core/src/runtime-execution.ts'
   )!;
   assertCondition(
@@ -207,7 +222,7 @@ function main(): void {
   );
   assertCondition(
     !FORBIDDEN_PUBLIC_COMPILER_NAME.test(JSON.stringify(cppInfo)) &&
-      !FORBIDDEN_PUBLIC_COMPILER_NAME.test(generatedMetadataSlice()),
+      !FORBIDDEN_PUBLIC_COMPILER_NAME.test(generatedLanguageMetadataSlice()),
     `Generated C++ runtime metadata must be implementation-neutral: ${JSON.stringify(cppInfo)}`
   );
   const shippedCompilerPackage = JSON.parse(
@@ -248,8 +263,33 @@ function main(): void {
     );
   }
 
+  const rootPackage = JSON.parse(
+    readFileSync(resolve(ROOT, 'package.json'), 'utf8')
+  ) as {
+    exports?: Record<string, unknown>;
+  };
+  const rootExports = Object.keys(rootPackage.exports ?? {});
+  assertCondition(
+    rootPackage.exports?.['./cpp'] === undefined,
+    'The retired @tracecode/harness/cpp language subpath must not return'
+  );
+  assertCondition(
+    rootExports.every((subpath) => ROOT_NEUTRAL_EXPORTS.has(subpath)),
+    `The root package may expose only neutral orchestration entrypoints: ${rootExports.join(', ')}`
+  );
+
+  const runtimePackage = JSON.parse(
+    readFileSync(resolve(ROOT, 'packages/runtime-cpp/package.json'), 'utf8')
+  ) as {
+    private?: boolean;
+  };
+  assertCondition(
+    runtimePackage.private === true,
+    'The C++ runtime package must remain an unpublished implementation workspace'
+  );
+
   console.log(
-    `PASS: ${publicSources.length} C++ declaration surfaces, metadata, and canonical asset defaults are implementation-neutral`
+    `PASS: ${runtimeSources.length} private C++ runtime surfaces stay implementation-neutral behind ${rootExports.length} neutral root exports`
   );
 }
 
