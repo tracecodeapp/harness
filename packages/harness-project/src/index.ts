@@ -446,6 +446,7 @@ import { WorkspaceCommandCatalog } from './workspace-command-catalog';
 import { WorkspaceProcFileSystem } from './workspace-proc-filesystem';
 import { WorkspaceVirtualFileSystem } from './workspace-virtual-filesystem';
 import { WorkspaceTerminalNavigation } from './workspace-terminal-navigation';
+import { WorkspaceAccessPolicy } from './workspace-access-policy';
 
 const PRINCIPAL_ACTOR: RuntimeWorkspaceActor = runtimeWorkspaceActorPreset('principal');
 const RUNTIME_ACTOR: RuntimeWorkspaceActor = runtimeWorkspaceActorPreset('runtime');
@@ -603,9 +604,9 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
   private readonly networkCommands: WorkspaceNetworkCommands;
   private readonly processInspection: WorkspaceProcessInspection;
   private readonly readonlyFiles = new Set<string>();
+  private readonly accessPolicy: WorkspaceAccessPolicy;
   private kernelSyscallGenerationBuffer?: SharedArrayBuffer;
   private kernelSyscallGenerationUnsubscribe?: RuntimeWorkspaceUnsubscribe;
-  private readonlySuspendDepth = 0;
 
   constructor(options: CreateRuntimeWorkspaceOptions = {}) {
     this.kernelInfo = createTraceKernelInfo(options.kernel, options.cwd);
@@ -628,6 +629,14 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
     for (const path of this.projectSession?.readonlyFiles ?? []) {
       this.readonlyFiles.add(path);
     }
+    this.accessPolicy = new WorkspaceAccessPolicy({
+      cwd: this.cwd,
+      workspaceAlias: this.kernelInfo.workspaceAlias,
+      readonlyFiles: this.readonlyFiles,
+      hiddenFiles: this.projectSession?.hiddenFiles ?? [],
+      ensureUsableForMutation: (operation) =>
+        this.assertWorkspaceUsableForMutation(operation),
+    });
     this.entrypoint = options.entrypoint ? this.toWorkspaceRelativePath(options.entrypoint) : undefined;
     this.kernelControl = options.kernelControl;
     this.cppRunner = options.cppRunner;
@@ -650,9 +659,18 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
       () => this.cwd,
       () => this.kernelInfo.workspaceAlias,
       () => this.kernelInfo,
-      (absolutePath, operation) => this.assertWorkspacePathWritable(absolutePath, operation),
-      (absolutePath, operation) => this.assertWorkspaceSubtreeWritable(absolutePath, operation),
-      (absolutePath) => this.isWorkspacePathHidden(absolutePath),
+      (absolutePath, operation) =>
+        this.accessPolicy.assertWorkspacePathWritable(
+          absolutePath,
+          operation
+        ),
+      (absolutePath, operation) =>
+        this.accessPolicy.assertWorkspaceSubtreeWritable(
+          absolutePath,
+          operation
+        ),
+      (absolutePath) =>
+        this.accessPolicy.isWorkspacePathHidden(absolutePath),
       (event) => this.recordKernelEvent(event.type, event.pid, event.detail),
       this.createDynamicProcProvider(),
       (context, change) => {
@@ -842,7 +860,8 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
       kernelInfo: this.kernelInfo,
       fileSystem: this.fs,
       virtualFiles: this.virtualFiles,
-      isProjectPathHidden: (path) => this.isProjectPathHidden(path),
+      isProjectPathHidden: (path) =>
+        this.accessPolicy.isProjectPathHidden(path),
     });
     this.identityCommands = new WorkspaceIdentityCommands({
       kernelInfo: this.kernelInfo,
@@ -5409,14 +5428,20 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
           if (request.owner.kind === 'system') return;
           for (const access of request.accesses) {
             if (access.permission === 'read' || access.permission === 'metadata') {
-              this.assertWorkspacePathVisible(
+              this.accessPolicy.assertWorkspacePathVisible(
                 access.path,
                 access.permission === 'read' ? 'read' : 'stat'
               );
             } else if (access.permission === 'delete') {
-              this.assertWorkspaceSubtreeWritable(access.path, 'delete');
+              this.accessPolicy.assertWorkspaceSubtreeWritable(
+                access.path,
+                'delete'
+              );
             } else {
-              this.assertWorkspacePathWritable(access.path, 'write');
+              this.accessPolicy.assertWorkspacePathWritable(
+                access.path,
+                'write'
+              );
             }
           }
         },
@@ -5457,11 +5482,7 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
   }
 
   isReadOnly(path: string): boolean {
-    return this.isWorkspacePathReadOnly(this.toWorkspacePath(path));
-  }
-
-  private isReadonlyPolicySuspended(): boolean {
-    return this.readonlySuspendDepth > 0;
+    return this.accessPolicy.isReadOnly(path);
   }
 
   private isSessionExpired(): boolean {
@@ -5510,7 +5531,7 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
 
   private assertWorkspaceUsableForMutation(operation: string): void {
     this.assertNotDestroyed();
-    if (this.isReadonlyPolicySuspended()) return;
+    if (this.accessPolicy.isReadonlyPolicySuspended()) return;
     const lifecycle = this.projectSession?.lifecycle;
     if (lifecycle?.expiresAt && !lifecycle.expiredAt) {
       this.transitionExpiredIfDue(Date.now());
@@ -5525,14 +5546,6 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
     }
     throw Object.assign(
       new Error(`EROFS: project session expired, ${operation} '${this.cwd}'`),
-      { code: 'EROFS' }
-    );
-  }
-
-  private assertDynamicVirtualWritable(path: string, operation: string): void {
-    if (!isTraceKernelVirtualNamespacePath(path) && !isRuntimeSkillsNamespacePath(path)) return;
-    throw Object.assign(
-      new Error(`EROFS: read-only file system, ${operation} '${path}'`),
       { code: 'EROFS' }
     );
   }
@@ -5557,96 +5570,8 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
     return null;
   }
 
-  private isWorkspacePathReadOnly(absolutePath: string): boolean {
-    if (!isWithinWorkspace(this.cwd, absolutePath) || absolutePath === this.cwd) return false;
-    const relativePath = toProjectPath(this.cwd, absolutePath);
-    return [...this.readonlyFiles].some((path) => path === relativePath || relativePath.startsWith(`${path}/`));
-  }
-
-  private isProjectPathHidden(path: string): boolean {
-    const normalized = normalizeRuntimeProjectPath(path);
-    return (this.projectSession?.hiddenFiles ?? []).some((hiddenPath) => {
-      if (hiddenPath === normalized || hiddenPath.startsWith(`${normalized}/`)) return true;
-      const separatorIndex = hiddenPath.lastIndexOf('/');
-      if (separatorIndex <= 0) return false;
-      const hiddenDirectory = hiddenPath.slice(0, separatorIndex);
-      return normalized === hiddenDirectory || normalized.startsWith(`${hiddenDirectory}/`);
-    });
-  }
-
-  private isWorkspacePathHidden(absolutePath: string): boolean {
-    if (!isWithinWorkspace(this.cwd, absolutePath) || absolutePath === this.cwd) return false;
-    return this.isProjectPathHidden(toProjectPath(this.cwd, absolutePath));
-  }
-
-  private assertWorkspacePathVisible(absolutePath: string, operation: string): void {
-    if (!this.isWorkspacePathHidden(absolutePath)) return;
-    throw Object.assign(
-      new Error(`ENOENT: no such file or directory, ${operation} '${toProjectPath(this.cwd, absolutePath)}'`),
-      { code: 'ENOENT' }
-    );
-  }
-
-  private isWorkspaceSubtreeReadOnly(absolutePath: string): boolean {
-    if (!isWithinWorkspace(this.cwd, absolutePath)) return false;
-    if (this.isWorkspacePathReadOnly(absolutePath)) return true;
-    const relativePath = absolutePath === this.cwd ? '' : toProjectDirectoryPath(this.cwd, absolutePath);
-    const prefix = relativePath ? `${relativePath}/` : '';
-    return [...this.readonlyFiles].some((path) => path.startsWith(prefix));
-  }
-
-  private isPathOutsideWritableMounts(absolutePath: string): boolean {
-    return !isWithinWorkspace(this.cwd, absolutePath) &&
-      !isWithinWorkspace('/tmp', absolutePath) &&
-      !isWithinWorkspace('/var/tmp', absolutePath);
-  }
-
-  private assertWorkspacePathWritable(absolutePath: string, operation: string): void {
-    this.assertWorkspaceUsableForMutation(operation);
-    if (this.isPathOutsideWritableMounts(absolutePath)) {
-      throw Object.assign(
-        new Error(`EROFS: read-only file system, ${operation} '${absolutePath}'`),
-        { code: 'EROFS' }
-      );
-    }
-    if (!this.isReadonlyPolicySuspended() && this.isWorkspacePathHidden(absolutePath)) {
-      throw Object.assign(
-        new Error(`EROFS: hidden project path is read-only, ${operation} '${toProjectPath(this.cwd, absolutePath)}'`),
-        { code: 'EROFS' }
-      );
-    }
-    if (this.isReadonlyPolicySuspended() || !this.isWorkspacePathReadOnly(absolutePath)) return;
-    throw createRuntimeKernelReadonlyFileError(toProjectPath(this.cwd, absolutePath), operation);
-  }
-
-  private assertWorkspaceSubtreeWritable(absolutePath: string, operation: string): void {
-    this.assertWorkspaceUsableForMutation(operation);
-    if (this.isPathOutsideWritableMounts(absolutePath)) {
-      throw Object.assign(
-        new Error(`EROFS: read-only file system, ${operation} '${absolutePath}'`),
-        { code: 'EROFS' }
-      );
-    }
-    if (!this.isReadonlyPolicySuspended() && this.isWorkspacePathHidden(absolutePath)) {
-      throw Object.assign(
-        new Error(`EROFS: hidden project subtree is read-only, ${operation} '${toProjectDirectoryPath(this.cwd, absolutePath)}'`),
-        { code: 'EROFS' }
-      );
-    }
-    if (this.isReadonlyPolicySuspended() || !this.isWorkspaceSubtreeReadOnly(absolutePath)) return;
-    throw Object.assign(
-      new Error(`EROFS: readonly project subtree, ${operation} '${toProjectDirectoryPath(this.cwd, absolutePath)}'`),
-      { code: 'EROFS' }
-    );
-  }
-
   async withSuspendedReadonlyPolicy<T>(fn: () => Promise<T>): Promise<T> {
-    this.readonlySuspendDepth += 1;
-    try {
-      return await fn();
-    } finally {
-      this.readonlySuspendDepth -= 1;
-    }
+    return this.accessPolicy.withSuspendedReadonlyPolicy(fn);
   }
 
  async completeCommand(
@@ -5789,7 +5714,7 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
   ): Promise<void> {
     this.assertActorFileCapability(actor, 'write', path);
     this.assertWorkspaceUsableForMutation('write');
-    this.assertDynamicVirtualWritable(path, 'write');
+    this.accessPolicy.assertDynamicVirtualWritable(path, 'write');
     const writeTarget = kernelWriteTarget(path);
     if (writeTarget.kind === 'error') throwKernelWriteTargetError(path, writeTarget);
     if (writeTarget.kind === 'device') {
@@ -5807,7 +5732,10 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
     const absolutePath = this.toWorkspacePath(path);
     const mutationKind: RuntimeFileSystemMutationKind = await this.bash.fs.exists(absolutePath) ? 'file-write' : 'file-create';
     await this.fs.withBaseMutation([absolutePath], async (fs) => {
-      this.assertWorkspacePathWritable(absolutePath, 'write');
+      this.accessPolicy.assertWorkspacePathWritable(
+        absolutePath,
+        'write'
+      );
       await fs.writeFile(
         absolutePath,
         normalizedEncoding === 'base64' ? bytesFromBase64(contents) : contents
@@ -5848,7 +5776,7 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
 
   async appendFile(path: string, contents: string, encoding?: RuntimeFileEncoding): Promise<void> {
     this.assertWorkspaceUsableForMutation('append');
-    this.assertDynamicVirtualWritable(path, 'append');
+    this.accessPolicy.assertDynamicVirtualWritable(path, 'append');
     const normalizedEncoding = assertSupportedEncoding(encoding);
     const writeTarget = kernelWriteTarget(path);
     if (writeTarget.kind === 'error') throwKernelWriteTargetError(path, writeTarget);
@@ -5868,7 +5796,10 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
       ? bytesFromBase64(contents)
       : new TextEncoder().encode(contents);
     const bytes = await this.fs.withBaseMutation([absolutePath], async (fs) => {
-      this.assertWorkspacePathWritable(absolutePath, 'append');
+      this.accessPolicy.assertWorkspacePathWritable(
+        absolutePath,
+        'append'
+      );
       await fs.appendFile(absolutePath, nextBytes);
       return fs.readFileBuffer(absolutePath);
     }, mutationKind);
@@ -5907,7 +5838,7 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
     if (readTarget.kind === 'error') throwKernelReadTargetError(path, readTarget);
     const normalizedEncoding = assertSupportedEncoding(encoding);
     const absolutePath = this.toWorkspacePath(path);
-    this.assertWorkspacePathVisible(absolutePath, 'open');
+    this.accessPolicy.assertWorkspacePathVisible(absolutePath, 'open');
     if (normalizedEncoding === 'base64') {
       const bytes = await this.bash.fs.readFileBuffer(absolutePath);
       return base64FromBytes(bytes);
@@ -5922,7 +5853,7 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
     if (accessTarget.kind === 'allowed') return true;
     if (accessTarget.kind === 'denied') return false;
     const absolutePath = this.toWorkspaceEntryPath(path);
-    if (this.isWorkspacePathHidden(absolutePath)) return false;
+    if (this.accessPolicy.isWorkspacePathHidden(absolutePath)) return false;
     return this.bash.fs.exists(absolutePath);
   }
 
@@ -5958,7 +5889,7 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
     }
     if (statTarget.kind === 'error') throw new Error(`Kernel virtual path not found: ${path}`);
     const absolutePath = this.toWorkspaceEntryPath(path);
-    this.assertWorkspacePathVisible(absolutePath, 'stat');
+    this.accessPolicy.assertWorkspacePathVisible(absolutePath, 'stat');
     const stat = await this.bash.fs.stat(absolutePath);
     return {
       isFile: stat.isFile,
@@ -5985,26 +5916,32 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
       );
     }
     const absoluteDirectoryPath = this.toWorkspaceEntryPath(path);
-    this.assertWorkspacePathVisible(absoluteDirectoryPath, 'scandir');
+    this.accessPolicy.assertWorkspacePathVisible(
+      absoluteDirectoryPath,
+      'scandir'
+    );
     const entries = await this.bash.fs.readdir(absoluteDirectoryPath);
     const directoryPath = absoluteDirectoryPath === this.cwd ? '' : toProjectPath(this.cwd, absoluteDirectoryPath);
     return [...entries]
       .filter((entry) => {
         const entryPath = directoryPath ? `${directoryPath}/${entry}` : entry;
-        return !this.isProjectPathHidden(entryPath);
+        return !this.accessPolicy.isProjectPathHidden(entryPath);
       })
       .sort((left, right) => left.localeCompare(right));
   }
 
   async mkdir(path: string): Promise<void> {
     this.assertWorkspaceUsableForMutation('mkdir');
-    this.assertDynamicVirtualWritable(path, 'mkdir');
+    this.accessPolicy.assertDynamicVirtualWritable(path, 'mkdir');
     const mkdirTarget = kernelMkdirTarget(path);
     if (mkdirTarget.kind === 'error') throwKernelMutationTargetError(path, mkdirTarget);
     const absolutePath = this.toWorkspaceEntryPath(path);
     let createdDirectories: string[] = [];
     await this.fs.withBaseMutation([absolutePath], async (fs) => {
-      this.assertWorkspacePathWritable(absolutePath, 'mkdir');
+      this.accessPolicy.assertWorkspacePathWritable(
+        absolutePath,
+        'mkdir'
+      );
       createdDirectories = await this.collectMissingWorkspaceDirectories(absolutePath);
       await fs.mkdir(absolutePath, { recursive: true });
     }, 'directory-create');
@@ -6020,7 +5957,10 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
 
   async copyFile(sourcePath: string, destinationPath: string): Promise<void> {
     this.assertWorkspaceUsableForMutation('copy');
-    this.assertDynamicVirtualWritable(destinationPath, 'copy');
+    this.accessPolicy.assertDynamicVirtualWritable(
+      destinationPath,
+      'copy'
+    );
     const dynamicSourceFile = this.virtualFiles.readFile(sourcePath);
     if (dynamicSourceFile !== null) {
       await this.writeFileAs(destinationPath, dynamicSourceFile, PRINCIPAL_ACTOR, undefined, 'live');
@@ -6042,11 +5982,17 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
     }
     const absoluteDestinationPath = this.toWorkspacePath(destinationPath);
     const absoluteSourcePath = this.toWorkspacePath(sourcePath);
-    this.assertWorkspacePathVisible(absoluteSourcePath, 'open');
+    this.accessPolicy.assertWorkspacePathVisible(
+      absoluteSourcePath,
+      'open'
+    );
     const sourceBytes = await this.fs.withBaseMutation(
       [absoluteSourcePath, absoluteDestinationPath],
       async (fs) => {
-        this.assertWorkspacePathWritable(absoluteDestinationPath, 'copy');
+        this.accessPolicy.assertWorkspacePathWritable(
+          absoluteDestinationPath,
+          'copy'
+        );
         const bytes = await fs.readFileBuffer(absoluteSourcePath);
         await fs.writeFile(absoluteDestinationPath, bytes);
         return bytes;
@@ -6090,23 +6036,35 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
       );
     }
     const absolutePath = this.toWorkspacePath(sourcePath);
-    this.assertWorkspacePathVisible(absolutePath, 'open');
+    this.accessPolicy.assertWorkspacePathVisible(absolutePath, 'open');
     return this.bash.fs.readFileBuffer(absolutePath);
   }
 
   async moveFile(sourcePath: string, destinationPath: string): Promise<void> {
     this.assertWorkspaceUsableForMutation('move');
-    this.assertDynamicVirtualWritable(sourcePath, 'move');
-    this.assertDynamicVirtualWritable(destinationPath, 'move');
+    this.accessPolicy.assertDynamicVirtualWritable(sourcePath, 'move');
+    this.accessPolicy.assertDynamicVirtualWritable(
+      destinationPath,
+      'move'
+    );
     const renameTarget = kernelRenameTarget(sourcePath, destinationPath);
     if (renameTarget.kind === 'error') throw new Error('Kernel virtual paths are read-only for move operations.');
     const absoluteSourcePath = this.toWorkspacePath(sourcePath);
     const absoluteDestinationPath = this.toWorkspacePath(destinationPath);
     let sourceBytes = new Uint8Array() as Awaited<ReturnType<IFileSystem['readFileBuffer']>>;
     await this.fs.withBaseMutation([absoluteSourcePath, absoluteDestinationPath], async (fs) => {
-      this.assertWorkspaceSubtreeWritable(this.toWorkspaceEntryPath(sourcePath), 'move');
-      this.assertWorkspaceSubtreeWritable(this.toWorkspaceEntryPath(destinationPath), 'move');
-      this.assertWorkspacePathWritable(absoluteDestinationPath, 'move');
+      this.accessPolicy.assertWorkspaceSubtreeWritable(
+        this.toWorkspaceEntryPath(sourcePath),
+        'move'
+      );
+      this.accessPolicy.assertWorkspaceSubtreeWritable(
+        this.toWorkspaceEntryPath(destinationPath),
+        'move'
+      );
+      this.accessPolicy.assertWorkspacePathWritable(
+        absoluteDestinationPath,
+        'move'
+      );
       sourceBytes = await fs.readFileBuffer(absoluteSourcePath);
       await fs.mv(absoluteSourcePath, absoluteDestinationPath);
     }, 'rename');
@@ -6127,12 +6085,15 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
 
   async deleteFile(path: string): Promise<void> {
     this.assertWorkspaceUsableForMutation('delete');
-    this.assertDynamicVirtualWritable(path, 'delete');
+    this.accessPolicy.assertDynamicVirtualWritable(path, 'delete');
     const removeTarget = kernelRemoveTarget(path);
     if (removeTarget.kind === 'error') throwKernelMutationTargetError(path, removeTarget);
     const absolutePath = this.toWorkspacePath(path);
     await this.fs.withBaseMutation([absolutePath], async (fs) => {
-      this.assertWorkspacePathWritable(absolutePath, 'delete');
+      this.accessPolicy.assertWorkspacePathWritable(
+        absolutePath,
+        'delete'
+      );
       await fs.rm(absolutePath, { force: true });
     }, 'delete');
     this.emitLocalRuntimeEvent({
@@ -6145,14 +6106,17 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
 
   async remove(path: string, options: RuntimeWorkspaceRemoveOptions = {}): Promise<void> {
     this.assertWorkspaceUsableForMutation('remove');
-    this.assertDynamicVirtualWritable(path, 'remove');
+    this.accessPolicy.assertDynamicVirtualWritable(path, 'remove');
     const removeTarget = kernelRemoveTarget(path);
     if (removeTarget.kind === 'error') throwKernelMutationTargetError(path, removeTarget);
     let deletedChanges: RuntimeFileChange[] = [];
     const absolutePath = this.toWorkspaceEntryPath(path);
     await this.fs.withBaseMutation([absolutePath], async (fs) => {
       deletedChanges = await this.collectDeletedChangesForRemove(path, options, fs);
-      this.assertWorkspaceSubtreeWritable(absolutePath, 'remove');
+      this.accessPolicy.assertWorkspaceSubtreeWritable(
+        absolutePath,
+        'remove'
+      );
       await fs.rm(absolutePath, {
         force: options.force ?? true,
         recursive: options.recursive,
@@ -7711,7 +7675,10 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
     const relativePath = this.toWorkspaceRelativePath(path);
     const absolutePath = this.toWorkspacePath(path);
     await this.fs.withBaseMutation([absolutePath], async (fs) => {
-      this.assertWorkspacePathWritable(absolutePath, 'delete');
+      this.accessPolicy.assertWorkspacePathWritable(
+        absolutePath,
+        'delete'
+      );
       await fs.rm(absolutePath, { force: true });
     }, 'delete');
     this.emitLocalRuntimeEvent({
@@ -7819,7 +7786,10 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
       const absolutePath = this.toWorkspaceEntryPath(change.path);
       await this.fs.withBaseMutationWithContext(context, [absolutePath], async (fs) => {
         if (change.deleted === true) {
-          this.assertWorkspaceSubtreeWritable(absolutePath, 'delete');
+          this.accessPolicy.assertWorkspaceSubtreeWritable(
+            absolutePath,
+            'delete'
+          );
           await fs.rm(absolutePath, { force: true, recursive: true });
         } else {
           await fs.mkdir(absolutePath, { recursive: true });
@@ -7856,7 +7826,10 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
     if ((change as RuntimeFileDeletion).deleted === true) {
       const absolutePath = this.toWorkspacePath(change.path);
       await this.fs.withBaseMutationWithContext(context, [absolutePath], async (fs) => {
-        this.assertWorkspacePathWritable(absolutePath, 'delete');
+        this.accessPolicy.assertWorkspacePathWritable(
+          absolutePath,
+          'delete'
+        );
         await fs.rm(absolutePath, { force: true });
       }, 'delete');
       if (emit) {
@@ -7874,7 +7847,10 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
       const absolutePath = this.toWorkspaceEntryPath(change.path);
       const mutationKind: RuntimeFileSystemMutationKind = await this.bash.fs.exists(absolutePath) ? 'file-write' : 'file-create';
       await this.fs.withBaseMutationWithContext(context, [absolutePath], async (fs) => {
-        this.assertWorkspacePathWritable(absolutePath, 'symlink');
+        this.accessPolicy.assertWorkspacePathWritable(
+          absolutePath,
+          'symlink'
+        );
         await fs.mkdir(dirname(absolutePath), { recursive: true });
         await fs.rm(absolutePath, { force: true, recursive: true });
         await fs.symlink(change.target, absolutePath);
@@ -7894,7 +7870,7 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
     const normalizedEncoding = assertSupportedEncoding(changedFile.encoding);
     const absolutePath = this.toWorkspacePath(changedFile.path);
     if (
-      this.isWorkspacePathReadOnly(absolutePath) &&
+      this.accessPolicy.isWorkspacePathReadOnly(absolutePath) &&
       changedFile.mode === undefined && changedFile.atimeMs === undefined && changedFile.mtimeMs === undefined &&
       await this.runtimeFileChangeContentEquals(absolutePath, changedFile, normalizedEncoding)
     ) {
@@ -7906,7 +7882,10 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
     // different live runtime must not make this independent target stale.
     const freshnessKind: RuntimeFileSystemMutationKind = mutationKind === 'file-create' ? 'file-write' : mutationKind;
     await this.fs.withBaseMutationWithContext(context, [absolutePath], async (fs) => {
-      this.assertWorkspacePathWritable(absolutePath, 'write');
+      this.accessPolicy.assertWorkspacePathWritable(
+        absolutePath,
+        'write'
+      );
       if (normalizedEncoding === 'base64') {
         await fs.writeFile(absolutePath, bytesFromBase64(changedFile.contents));
       } else {
