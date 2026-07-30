@@ -6,6 +6,17 @@ import { getLanguageRuntimeInfo } from '../packages/runtime-core/src/runtime-lan
 const ROOT = process.cwd();
 const VIRTUAL_OUT_DIR = '/tracecode-java-public-declarations';
 const FORBIDDEN_IMPLEMENTATION_NAME = /(?:TraceJVM|CheerpJ)/iu;
+const REQUIRED_ROOT_JAVA_CAPABILITY_SUBPATHS = [
+  './browser',
+  './browser/project',
+  './judge',
+] as const;
+const RETIRED_ROOT_JAVA_SUBPATH = './java';
+
+interface PackageManifest {
+  readonly private?: boolean;
+  readonly exports?: Record<string, unknown>;
+}
 
 function assertCondition(condition: unknown, message: string): asserts condition {
   if (!condition) throw new Error(message);
@@ -83,7 +94,7 @@ function main(): void {
       .join('\n')}`
   );
 
-  const publicSources = [
+  const implementationNeutralSources = [
     'packages/runtime-java/src/index.ts',
     'packages/runtime-java/src/java-project.ts',
     'packages/runtime-java/src/java-project-runtime.ts',
@@ -95,7 +106,7 @@ function main(): void {
     'packages/runtime-browser/src/runtime-assets.ts',
   ] as const;
   const implementationLeaks: string[] = [];
-  for (const sourcePath of publicSources) {
+  for (const sourcePath of implementationNeutralSources) {
     const outputPath = declarationPath(sourcePath);
     const declaration = emitted.get(outputPath);
     assertCondition(declaration, `Missing emitted declaration ${outputPath}`);
@@ -147,20 +158,39 @@ function main(): void {
     'Browser project options must expose provider-neutral command/runtime factories without concrete client or engine types'
   );
 
+  const rootPackageJson = JSON.parse(
+    readFileSync(resolve(ROOT, 'package.json'), 'utf8')
+  ) as PackageManifest;
+  const rootSubpaths = Object.keys(rootPackageJson.exports ?? {});
+  for (const subpath of REQUIRED_ROOT_JAVA_CAPABILITY_SUBPATHS) {
+    assertCondition(
+      rootSubpaths.includes(subpath),
+      `Root Harness package is missing the neutral Java capability entrypoint ${subpath}`
+    );
+  }
+  assertCondition(
+    !rootSubpaths.includes(RETIRED_ROOT_JAVA_SUBPATH),
+    `Root Harness package must not restore the retired language-specific export @tracecode/harness/java: ${rootSubpaths.join(', ')}`
+  );
+
   const javaPackageJson = JSON.parse(
     readFileSync(resolve(ROOT, 'packages/runtime-java/package.json'), 'utf8')
-  ) as { exports?: Record<string, unknown> };
-  const publicSubpaths = Object.keys(javaPackageJson.exports ?? {});
+  ) as PackageManifest;
   assertCondition(
-    publicSubpaths.includes('./java-project') &&
-      publicSubpaths.includes('./java-project-runtime'),
-    `Java package is missing generic project subpaths: ${publicSubpaths.join(', ')}`
+    javaPackageJson.private === true,
+    'The Java runtime workspace must remain private until it has a standalone published contract'
+  );
+  const internalJavaSubpaths = Object.keys(javaPackageJson.exports ?? {});
+  assertCondition(
+    internalJavaSubpaths.includes('./java-project') &&
+      internalJavaSubpaths.includes('./java-project-runtime'),
+    `Private Java runtime workspace is missing generic project subpaths: ${internalJavaSubpaths.join(', ')}`
   );
   assertCondition(
-    publicSubpaths.every(
+    internalJavaSubpaths.every(
       (subpath) => !FORBIDDEN_IMPLEMENTATION_NAME.test(subpath)
     ),
-    `Java package exposes an engine-branded subpath: ${publicSubpaths.join(', ')}`
+    `Private Java runtime workspace exposes an engine-branded subpath: ${internalJavaSubpaths.join(', ')}`
   );
   assertCondition(
     !existsSync(resolve(ROOT, 'packages/runtime-java/src/tracejvm-project.ts')) &&
@@ -181,7 +211,7 @@ function main(): void {
   );
 
   console.log(
-    `PASS: ${publicSources.length} Java declaration surfaces and ${publicSubpaths.length} package subpaths are implementation-neutral`
+    `PASS: ${implementationNeutralSources.length} Java declaration surfaces and ${internalJavaSubpaths.length} private runtime subpaths are implementation-neutral; root Java access stays behind ${REQUIRED_ROOT_JAVA_CAPABILITY_SUBPATHS.join(', ')}`
   );
 }
 
