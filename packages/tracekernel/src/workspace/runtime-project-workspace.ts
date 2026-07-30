@@ -353,12 +353,9 @@ import {
   WorkspaceProcessState,
   normalizeTraceKernelSignal,
   type RuntimeKernelExecutionHandle,
-  type RuntimeKernelFileDescriptorRecord,
   type RuntimeKernelProcessLaunchHooks,
   type RuntimeKernelProcessRecord,
-  type RuntimeKernelProcessState,
   type RuntimeKernelSpawnedChild,
-  type RuntimeKernelTtyName,
   type RuntimeTraceKernelAuthority,
 } from './process-state';
 import {
@@ -403,6 +400,7 @@ import { WorkspaceAccessPolicy } from './workspace-access-policy';
 import { WorkspaceFileApi } from './workspace-file-api';
 import { WorkspaceDeviceIo } from './workspace-device-io';
 import { WorkspaceJournal } from './workspace-journal';
+import { WorkspaceProcessProjection } from './workspace-process-projection';
 import {
   createWorkspaceRuntimeCommands,
   createWorkspaceRuntimeRunnerBridge,
@@ -559,6 +557,7 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
   private readonly identityCommands: WorkspaceIdentityCommands;
   private readonly virtualExecutableRecords = new Map<string, VirtualExecutableRecord>();
   private readonly processState = new WorkspaceProcessState();
+  private readonly processProjection: WorkspaceProcessProjection;
   // Temporary 0.13 introspection aliases. The process state module remains
   // authoritative; these preserve existing hardening probes while 0.14 moves
   // callers onto explicit diagnostic APIs.
@@ -704,8 +703,8 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
     });
     this.processInspection = new WorkspaceProcessInspection({
       kernelInfo: this.kernelInfo,
-      principalProcess: () => this.principalProcessRecord(),
-      findProcess: (pid) => this.findProcessRecord(pid),
+      principalProcess: () => this.processProjection.principalRecord(),
+      findProcess: (pid) => this.processProjection.find(pid),
       signalProcess: (process, signal) =>
         this.queueKernelProcessSignal(process, signal),
     });
@@ -714,7 +713,7 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
       eventState: this.eventState,
       systemActor: SYSTEM_ACTOR,
       authoritativeProcessSnapshot: (process) =>
-        this.authoritativeProcessSnapshot(process),
+        this.processProjection.authoritativeSnapshot(process),
       resolveFileSystemMutationProcess: (mutation) => {
         const origin = mutation.origin as
           | { readonly pid?: unknown }
@@ -724,7 +723,7 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
         }
         const process = this.processState.table.get(origin.pid as number);
         const kernelProcess = process
-          ? this.kernelProcessFor(process)
+          ? this.processProjection.kernelProcess(process)
           : undefined;
         if (
           !process ||
@@ -747,6 +746,22 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
           commandContext
         ),
     });
+    this.processProjection = new WorkspaceProcessProjection({
+      state: this.processState,
+      systemActor: SYSTEM_ACTOR,
+      cwd: this.cwd,
+      baseEnv: this.baseEnv,
+      projectCreatedAt:
+        this.projectSession?.lifecycle.createdAt,
+      maxProcesses: this.maxProcesses,
+      authority: () => this.traceKernelAuthority,
+      principal: (actor) => this.traceKernelPrincipal(actor),
+      actorFromProcess: (process, hintedActor) =>
+        this.journalState.actorFromProcess(
+          process,
+          hintedActor
+        ),
+    });
     this.stopObservingExternalTraceKernelMutations =
       this.traceKernelBackingFileSystem.watchExternalMutations((mutation) => {
         this.fs.observeExternalTraceKernelMutation(mutation);
@@ -756,13 +771,13 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
       resolveCommandContext: (context) =>
         this.resolveCommandContext(context),
       bindProcess: (context, descriptorStdio) => {
-        const executionHandle = this.processExecutionHandle(
+        const executionHandle = this.processProjection.executionHandle(
           context.process
         );
         if (executionHandle) {
           executionHandle.descriptorStdio = descriptorStdio;
         }
-        const processSnapshot = this.authoritativeProcessSnapshot(
+        const processSnapshot = this.processProjection.authoritativeSnapshot(
           context.process
         );
         return {
@@ -811,12 +826,12 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
     );
     this.procFiles = new WorkspaceProcFileSystem({
       commandCatalog: this.commandCatalog,
-      currentProcess: (context) => this.currentProcSelfRecord(context),
-      processes: (actor) => this.kernelPresentationProcessRecords(actor),
+      currentProcess: (context) => this.processProjection.currentRecord(context),
+      processes: (actor) => this.processProjection.presentationRecords(actor),
       findProcess: (pid, actor) =>
-        this.findKernelPresentationProcessRecord(pid, actor),
+        this.processProjection.findPresentationRecord(pid, actor),
       authoritativeProcessSnapshot: (process) =>
-        this.authoritativeProcessSnapshot(process),
+        this.processProjection.authoritativeSnapshot(process),
       renderInodes: () => this.fs.renderInodes(),
       events: () => this.eventState.kernelEvents(),
       locks: () => this.fsLocks.snapshot(),
@@ -824,8 +839,8 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
         [...this.httpState.listeners.values()].map((listener) => listener.info),
       httpRequests: () => this.httpState.requestLog,
       scheduler: () => this.commandScheduler.snapshot(),
-      processTableUsage: () => this.processTableUsage(),
-      processTableLimit: () => this.processTableLimit(),
+      processTableUsage: () => this.processProjection.tableUsage(),
+      processTableLimit: () => this.processProjection.tableLimit(),
       nextPid: () => this.processState.nextPid,
     });
     this.virtualFiles = new WorkspaceVirtualFileSystem({
@@ -911,9 +926,9 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
       commandCatalog: this.commandCatalog,
       resolveCommandContext: (context) =>
         this.resolveCommandContext(context),
-      principalProcess: () => this.principalProcessRecord(),
+      principalProcess: () => this.processProjection.principalRecord(),
       presentationProcesses: (actor) =>
-        this.kernelPresentationProcessRecords(actor),
+        this.processProjection.presentationRecords(actor),
       httpListeners: () =>
         [...this.httpState.listeners.values()].map(
           (listener) => listener.info
@@ -956,7 +971,7 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
   private withCurrentKernelSignal(ctx: CommandContext): CommandContext {
     const process = this.resolveCommandContext(ctx)?.process;
     const signal = process
-      ? this.processExecutionHandle(process)?.abortController?.signal
+      ? this.processProjection.executionHandle(process)?.abortController?.signal
       : undefined;
     return signal && signal !== ctx.signal ? { ...ctx, signal } : ctx;
   }
@@ -1114,7 +1129,7 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
   ): Promise<TraceKernelSyscallResult> {
     const authority = this.traceKernelAuthority;
     const process = context?.process
-      ? this.kernelProcessFor(context.process)
+      ? this.processProjection.kernelProcess(context.process)
       : authority?.hostServiceProcess;
     if (!authority || !process) {
       return Promise.resolve({
@@ -1186,7 +1201,7 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
     actor: RuntimeWorkspaceActor
   ): Promise<TraceKernelSyscallResult> | undefined {
     const kernelProcess = context?.process
-      ? this.kernelProcessFor(context.process)
+      ? this.processProjection.kernelProcess(context.process)
       : this.traceKernelAuthority?.hostServiceProcess;
     if (!kernelProcess) {
       return undefined;
@@ -1235,7 +1250,7 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
           .descriptors.find(
             (candidate) => candidate.fd === request.fd
           );
-        const currentHandle = this.processExecutionHandle(
+        const currentHandle = this.processProjection.executionHandle(
           context.process as RuntimeKernelProcessRecord
         );
         const hostOutputHandle = currentHandle?.hostStandardIo &&
@@ -1330,7 +1345,7 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
     request: TraceKernelSyscallRequest,
     context: RuntimeCommandExecutionContext | undefined
   ): Promise<TraceKernelSyscallResult> | undefined {
-    if (!context?.process || !this.kernelProcessFor(context.process)) {
+    if (!context?.process || !this.processProjection.kernelProcess(context.process)) {
       return undefined;
     }
     switch (request.op) {
@@ -1537,7 +1552,7 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
     const command = [request.command, ...(request.args ?? [])]
       .map(shellQuote)
       .join(' ');
-    const admissionError = this.processAdmissionError(command);
+    const admissionError = this.processProjection.admissionError(command);
     if (admissionError) throw admissionError;
 
     let created = false;
@@ -1564,7 +1579,7 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
       stderrFd?: number;
     } = {};
     const authority = this.traceKernelAuthority;
-    const parentKernelProcess = this.kernelProcessFor(parent);
+    const parentKernelProcess = this.processProjection.kernelProcess(parent);
     if (!authority || !parentKernelProcess) {
       throw Object.assign(
         new Error('ESRCH: parent is not attached to the authoritative TraceKernel session'),
@@ -1620,7 +1635,7 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
       const bytes = new TextEncoder().encode(data);
       outputTail = outputTail.then(async () => {
         try {
-          const childProcess = this.kernelProcessFor(
+          const childProcess = this.processProjection.kernelProcess(
             childContext!.process as RuntimeKernelProcessRecord
           );
           if (!childProcess) throw Object.assign(new Error('ESRCH'), { code: 'ESRCH' });
@@ -1668,7 +1683,7 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
               stdinPump = (async () => {
                 try {
                   while (true) {
-                    const kernelChild = this.kernelProcessFor(child);
+                    const kernelChild = this.processProjection.kernelProcess(child);
                     if (!kernelChild) {
                       throw Object.assign(new Error('ESRCH'), { code: 'ESRCH' });
                     }
@@ -1770,7 +1785,7 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
         { code: 'ECHILD' }
       );
     }
-    const parentSnapshot = this.authoritativeProcessSnapshot(parent);
+    const parentSnapshot = this.processProjection.authoritativeSnapshot(parent);
     if (!parentSnapshot) {
       throw Object.assign(
         new Error(`ECHILD: parent process ${parent.pid} does not exist`),
@@ -1778,7 +1793,7 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
       );
     }
     const matchesSelector = (child: RuntimeKernelProcessRecord): boolean => {
-      const childSnapshot = this.authoritativeProcessSnapshot(child);
+      const childSnapshot = this.processProjection.authoritativeSnapshot(child);
       if (
         this.processState.childWaits.has(child.pid)
       ) {
@@ -1795,7 +1810,7 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
     };
 
     while (true) {
-      const candidates = this.activeProcessRecords().filter(matchesSelector);
+      const candidates = this.processProjection.activeRecords().filter(matchesSelector);
       if (candidates.length === 0) {
         throw Object.assign(
           new Error(
@@ -1807,7 +1822,7 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
       const zombie = candidates.find((child) =>
         (
           kernelAlreadyReaped ||
-          this.authoritativeProcessSnapshot(child)?.phase === 'exited'
+          this.processProjection.authoritativeSnapshot(child)?.phase === 'exited'
         ) &&
         this.processState.zombies.has(child.pid)
       );
@@ -3462,245 +3477,8 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
     };
   }
 
-  private principalProcessRecord(): RuntimeKernelProcessRecord {
-    return {
-      pid: 1,
-      ppid: 0,
-      pgid: 1,
-      sid: 1,
-      fds: this.standardProcessFileDescriptors(),
-      tty: '/dev/tty',
-      command: 'tracekernel',
-      cwd: this.cwd,
-      env: Object.freeze({ ...this.baseEnv }),
-      actor: SYSTEM_ACTOR,
-      signalPolicy: 'system-only',
-      startedAt: this.projectSession?.lifecycle.createdAt ?? new Date(0).toISOString(),
-      state: 'running',
-      foreground: true,
-    };
-  }
-
-  private currentProcSelfRecord(context?: RuntimeCommandExecutionContext): RuntimeKernelProcessRecord {
-    return (context?.process as RuntimeKernelProcessRecord | undefined) ?? this.principalProcessRecord();
-  }
-
-  private standardProcessFileDescriptors(): readonly RuntimeKernelFileDescriptorRecord[] {
-    return [
-      { fd: 0, target: '/dev/stdin', flags: 'r' },
-      { fd: 1, target: '/dev/stdout', flags: 'w' },
-      { fd: 2, target: '/dev/stderr', flags: 'w' },
-    ];
-  }
-
-  private bindAuthoritativeProcessProjection(
-    process: RuntimeKernelProcessRecord,
-    fallback: TraceKernelProcessSnapshot
-  ): RuntimeKernelProcessRecord {
-    const fallbackActor = process.actor;
-    const fallbackStartedAt = process.startedAt;
-    const snapshot = (): TraceKernelProcessSnapshot =>
-      this.authoritativeProcessSnapshot(process) ?? fallback;
-    const tty = (): RuntimeKernelTtyName =>
-      snapshot().descriptors.some(
-        (descriptor) =>
-          descriptor.fd >= 0 &&
-          descriptor.fd <= 2 &&
-          descriptor.kind === 'terminal'
-      )
-        ? '/dev/tty'
-        : '?';
-    const signal = (): { readonly name: string; readonly code?: number } | undefined => {
-      const pending = snapshot().pendingSignal;
-      if (pending) {
-        return {
-          name: pending,
-          code: TRACEKERNEL_SIGNAL_NUMBERS.get(pending),
-        };
-      }
-      const zombie = this.processState.zombies.get(process.pid)?.outcome;
-      if (zombie?.signal) {
-        return {
-          name: zombie.signal,
-          ...(zombie.signalCode === undefined
-            ? {}
-            : { code: zombie.signalCode }),
-        };
-      }
-      const termination = snapshot().termination;
-      if (termination?.kind !== 'signal') return undefined;
-      return {
-        name: termination.signal,
-        code: TRACEKERNEL_SIGNAL_NUMBERS.get(termination.signal),
-      };
-    };
-    Object.defineProperties(process, {
-      ppid: {
-        enumerable: true,
-        get: () => snapshot().ppid,
-      },
-      pgid: {
-        enumerable: true,
-        get: () => snapshot().pgid,
-      },
-      sid: {
-        enumerable: true,
-        get: () => snapshot().sid,
-      },
-      command: {
-        enumerable: true,
-        get: () => snapshot().command,
-      },
-      cwd: {
-        enumerable: true,
-        get: () => snapshot().cwd,
-      },
-      env: {
-        enumerable: true,
-        get: () => snapshot().env,
-      },
-      actor: {
-        enumerable: true,
-        get: () =>
-          this.journalActorFromProcess(snapshot(), fallbackActor),
-      },
-      signalPolicy: {
-        enumerable: true,
-        get: () =>
-          snapshot().protected ? 'system-only' : 'standard',
-      },
-      startedAt: {
-        enumerable: true,
-        get: () => {
-          const startedAt = snapshot().startedAt;
-          return startedAt === undefined
-            ? fallbackStartedAt
-            : new Date(startedAt).toISOString();
-        },
-      },
-      tty: {
-        enumerable: true,
-        get: tty,
-      },
-      foreground: {
-        enumerable: true,
-        get: () => {
-          const current = snapshot();
-          if (tty() === '?') return false;
-          const terminal = current.controllingTerminalId
-            ? this.traceKernelAuthority?.session
-                .terminalSnapshots()
-                .find(
-                  (candidate) =>
-                    candidate.id === current.controllingTerminalId
-                )
-            : undefined;
-          return terminal?.foregroundProcessGroupId === current.pgid;
-        },
-      },
-      state: {
-        enumerable: true,
-        get: (): RuntimeKernelProcessState => {
-          const current = this.authoritativeProcessSnapshot(process);
-          if (current?.phase === 'exited') return 'zombie';
-          if (current?.pendingSignal) return 'signaled';
-          if (current?.schedulingState === 'queued') return 'queued';
-          if (current?.schedulingState === 'blocked') return 'blocked';
-          if (current) return 'running';
-          return this.processState.zombies.has(process.pid)
-            ? 'zombie'
-            : fallback.phase === 'exited'
-              ? 'zombie'
-              : fallback.schedulingState;
-        },
-      },
-      signal: {
-        enumerable: true,
-        get: () => signal()?.name,
-      },
-      signalCode: {
-        enumerable: true,
-        get: () => signal()?.code,
-      },
-      exitCode: {
-        enumerable: true,
-        get: () =>
-          this.authoritativeProcessSnapshot(process)?.termination?.exitCode ??
-          this.processState.zombies.get(process.pid)?.outcome.exitCode,
-      },
-      endedAt: {
-        enumerable: true,
-        get: () => {
-          const endedAt = this.authoritativeProcessSnapshot(process)?.endedAt;
-          return endedAt === undefined
-            ? this.processState.zombies.get(process.pid)?.outcome.endedAt
-            : new Date(endedAt).toISOString();
-        },
-      },
-    });
-    return process;
-  }
-
-  private purgeZombieProcessTable(nowMs = Date.now()): void {
-    for (const [pid, zombie] of this.processState.zombies) {
-      if (zombie.expiresAtMs > nowMs) continue;
-      this.processState.zombies.delete(pid);
-      this.processState.waitRequests.delete(pid);
-      const authority = this.traceKernelAuthority;
-      if (!authority) continue;
-      const zombieSnapshot = this.authoritativeProcessSnapshot(zombie.process);
-      const parentPid = zombieSnapshot?.ppid ?? zombie.process.ppid;
-      const parent =
-        this.processState.table.get(parentPid) ??
-        this.processState.zombies.get(parentPid)?.process;
-      const parentKernelProcess = parent
-        ? this.kernelProcessFor(parent)
-        : undefined;
-      const liveParent = parentKernelProcess &&
-        authority.session.processSnapshots().some(
-          (snapshot) => snapshot.pid === parentKernelProcess.pid
-        )
-        ? parentKernelProcess
-        : undefined;
-      Effect.runFork(
-        (
-          liveParent
-            ? authority.session.waitChild(
-                liveParent,
-                zombie.process.pid,
-                { noHang: true }
-              )
-            : authority.session.waitInitChild(
-                zombie.process.pid,
-                { noHang: true }
-              )
-        ).pipe(Effect.catchAll(() => Effect.void))
-      );
-    }
-  }
-
-  private findProcessRecord(pid: number): RuntimeKernelProcessRecord | undefined {
-    this.purgeZombieProcessTable();
-    return this.processState.table.get(pid) ?? this.processState.zombies.get(pid)?.process;
-  }
-
   private observeKernelReparentedChildren(_exitedPid: number): void {
     this.notifyRuntimeChildSelectorWaiters();
-  }
-
-  private activeProcessRecords(): RuntimeKernelProcessRecord[] {
-    this.purgeZombieProcessTable();
-    return [
-      ...this.processState.table.values(),
-      ...[...this.processState.zombies.values()].map((zombie) => zombie.process),
-    ]
-      .sort((left, right) => left.pid - right.pid);
-  }
-
-  private processExecutionHandle(
-    process: { readonly pid: number }
-  ): RuntimeKernelExecutionHandle | undefined {
-    return this.processState.executionHandles.get(process.pid);
   }
 
   private startHostStandardOutputDrains(
@@ -3723,7 +3501,7 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
   private startHostStandardInputPump(
     context: RuntimeCommandExecutionContext
   ): void {
-    const handle = this.processExecutionHandle(context.process);
+    const handle = this.processProjection.executionHandle(context.process);
     const stdio = handle?.hostStandardIo;
     if (!handle || !stdio || handle.hostStdinPumpStarted) return;
     handle.hostStdinPumpStarted = true;
@@ -3764,135 +3542,6 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
     await Effect.runPromise(stdio.close());
   }
 
-  private kernelProcessFor(
-    process: { readonly pid: number }
-  ): TraceKernelProcess | undefined {
-    return this.processExecutionHandle(process)?.kernelProcess;
-  }
-
-  private authoritativeProcessSnapshot(
-    process: { readonly pid: number }
-  ): TraceKernelProcessSnapshot | undefined {
-    return this.kernelProcessFor(process)?.snapshot() ??
-      this.traceKernelAuthority?.session
-      .processTableSnapshots()
-      .find((snapshot) => snapshot.pid === process.pid);
-  }
-
-  private kernelPresentationProcessRecords(
-    actor?: RuntimeWorkspaceActor
-  ): RuntimeKernelProcessRecord[] {
-    const authority = this.traceKernelAuthority;
-    if (!authority) return this.activeProcessRecords();
-    const terminals = new Map(
-      authority.session.terminalSnapshots().map((terminal) => [
-        terminal.id,
-        terminal,
-      ])
-    );
-    const project = (
-      snapshot: TraceKernelProcessSnapshot
-    ): RuntimeKernelProcessRecord | undefined => {
-      const record =
-        this.processState.table.get(snapshot.pid) ??
-        this.processState.zombies.get(snapshot.pid)?.process;
-      if (!record) return undefined;
-      const terminal = snapshot.controllingTerminalId
-        ? terminals.get(snapshot.controllingTerminalId)
-        : undefined;
-      const hasTerminalStdio = snapshot.descriptors.some(
-        (descriptor) =>
-          descriptor.fd >= 0 &&
-          descriptor.fd <= 2 &&
-          descriptor.kind === 'terminal'
-      );
-      const terminationSignal =
-        snapshot.termination?.kind === 'signal'
-          ? snapshot.termination.signal
-          : undefined;
-      const signalCode = terminationSignal
-        ? TRACEKERNEL_SIGNAL_NUMBERS.get(terminationSignal)
-        : undefined;
-      const state: RuntimeKernelProcessState =
-        snapshot.phase === 'exited'
-          ? 'zombie'
-          : snapshot.pendingSignal
-            ? 'signaled'
-          : snapshot.schedulingState === 'queued'
-            ? 'queued'
-            : snapshot.schedulingState === 'blocked'
-              ? 'blocked'
-              : 'running';
-      return {
-        ...record,
-        ppid: snapshot.ppid,
-        pgid: snapshot.pgid,
-        sid: snapshot.sid,
-        command: snapshot.command,
-        cwd: snapshot.cwd,
-        env: snapshot.env,
-        state,
-        tty: hasTerminalStdio ? '/dev/tty' : '?',
-        foreground:
-          hasTerminalStdio &&
-          terminal?.foregroundProcessGroupId === snapshot.pgid,
-        ...(snapshot.startedAt === undefined
-          ? {}
-          : { startedAt: new Date(snapshot.startedAt).toISOString() }),
-        ...(snapshot.endedAt === undefined
-          ? {}
-          : { endedAt: new Date(snapshot.endedAt).toISOString() }),
-        ...(snapshot.termination === undefined
-          ? {}
-          : { exitCode: snapshot.termination.exitCode }),
-        ...(terminationSignal === undefined
-          ? {}
-          : {
-              signal: terminationSignal,
-              ...(signalCode === undefined ? {} : { signalCode }),
-            }),
-      };
-    };
-    return authority.session
-      .processTableSnapshots(
-        actor === undefined ? undefined : this.traceKernelPrincipal(actor)
-      )
-      .map(project)
-      .filter(
-        (record): record is RuntimeKernelProcessRecord => record !== undefined
-      );
-  }
-
-  private findKernelPresentationProcessRecord(
-    pid: number,
-    actor?: RuntimeWorkspaceActor
-  ): RuntimeKernelProcessRecord | undefined {
-    return this.kernelPresentationProcessRecords(actor).find(
-      (process) => process.pid === pid
-    );
-  }
-
-  /** Read the authoritative live-plus-unreaped process capacity from TraceKernel. */
-  private processTableUsage(): number {
-    return this.traceKernelAuthority?.session.processTableSnapshots().length ??
-      1 + this.activeProcessRecords().length;
-  }
-
-  private processTableLimit(): number | null {
-    return this.traceKernelAuthority?.session.maxProcesses ??
-      this.maxProcesses;
-  }
-
-  private processAdmissionError(command: string): RuntimeKernelAdmissionRejectedError | null {
-    const limit = this.processTableLimit();
-    if (limit === null || this.processTableUsage() < limit) return null;
-    return new RuntimeKernelAdmissionRejectedError(
-      command,
-      `EAGAIN: resource temporarily unavailable, fork '${command}'`,
-      'fork'
-    );
-  }
-
   private recordProcessAdmissionRejection(
     command: string,
     error: RuntimeKernelAdmissionRejectedError,
@@ -3903,8 +3552,8 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
       code: error.code,
       errno: error.errno,
       syscall: error.syscall,
-      activeProcesses: this.processTableUsage(),
-      maxProcesses: this.processTableLimit() ?? 'unlimited',
+      activeProcesses: this.processProjection.tableUsage(),
+      maxProcesses: this.processProjection.tableLimit() ?? 'unlimited',
       ...(actor ? { actor: this.journalActorId(actor) } : {}),
     });
   }
@@ -3918,7 +3567,7 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
     const process = attributedProcess ??
       (pid === undefined
         ? undefined
-        : this.authoritativeProcessSnapshot({ pid }));
+        : this.processProjection.authoritativeSnapshot({ pid }));
     this.eventState.recordKernelEvent({
       type,
       ...(pid !== undefined ? { pid } : {}),
@@ -4015,13 +3664,6 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
     return this.journalState.journal(sinceSeq);
   }
 
-  private firstZombieProcessRecord(): RuntimeKernelProcessRecord | undefined {
-    this.purgeZombieProcessTable();
-    return [...this.processState.zombies.values()]
-      .map((zombie) => zombie.process)
-      .sort((left, right) => left.pid - right.pid)[0];
-  }
-
   private signalCommandError(process: RuntimeKernelProcessRecord): RuntimeCommandError | undefined {
     const signal = this.runtimeTerminationSignal(process);
     if (!signal) return undefined;
@@ -4056,7 +3698,7 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
   private runtimeTerminationSignal(
     process: RuntimeKernelProcessRecord
   ): { readonly name: string; readonly code?: number } | undefined {
-    const executionHandle = this.processExecutionHandle(process);
+    const executionHandle = this.processProjection.executionHandle(process);
     if (executionHandle) return executionHandle.pendingSignal;
     if (!process.signal) return undefined;
     return {
@@ -4070,11 +3712,11 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
     signalName = 'SIGTERM'
   ): boolean {
     const signal = normalizeTraceKernelSignal(signalName);
-    const snapshot = this.authoritativeProcessSnapshot(process);
+    const snapshot = this.processProjection.authoritativeSnapshot(process);
     if (!signal || !snapshot || snapshot.phase === 'exited') return false;
     if (signal.name === 'SIGWINCH') {
       const delivery =
-        this.processExecutionHandle(process)?.signalChannel?.publish({
+        this.processProjection.executionHandle(process)?.signalChannel?.publish({
           signal: signal.name,
           code: signal.code,
         }) ?? 'closed';
@@ -4086,7 +3728,7 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
       });
       return true;
     }
-    const executionHandle = this.processExecutionHandle(process);
+    const executionHandle = this.processProjection.executionHandle(process);
     if (!executionHandle) return false;
     executionHandle.pendingSignal = {
       name: signal.name,
@@ -4122,8 +3764,8 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
     authority: 'workspace' | 'system' = 'workspace'
   ): boolean {
     const signal = normalizeTraceKernelSignal(signalName);
-    const snapshot = this.authoritativeProcessSnapshot(process);
-    const kernelProcess = this.kernelProcessFor(process);
+    const snapshot = this.processProjection.authoritativeSnapshot(process);
+    const kernelProcess = this.processProjection.kernelProcess(process);
     if (
       !signal ||
       !snapshot ||
@@ -4157,8 +3799,8 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
   ): { signaled: number; denied: number } {
     let signaled = 0;
     let denied = 0;
-    for (const process of this.activeProcessRecords()) {
-      const snapshot = this.authoritativeProcessSnapshot(process);
+    for (const process of this.processProjection.activeRecords()) {
+      const snapshot = this.processProjection.authoritativeSnapshot(process);
       if (
         !snapshot ||
         snapshot.pgid !== pgid ||
@@ -4183,9 +3825,9 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
     const foregroundPid = this.processState.terminalForeground.get(terminalSessionId);
     const foregroundProcess = foregroundPid === undefined
       ? undefined
-      : this.findProcessRecord(foregroundPid);
+      : this.processProjection.find(foregroundPid);
     const foregroundSnapshot = foregroundProcess
-      ? this.authoritativeProcessSnapshot(foregroundProcess)
+      ? this.processProjection.authoritativeSnapshot(foregroundProcess)
       : undefined;
     if (foregroundSnapshot && foregroundSnapshot.phase !== 'exited') {
       const result = this.signalProcessGroup(foregroundSnapshot.pgid, signal);
@@ -4301,19 +3943,19 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
     let selectedPid = pid;
     if (authority) {
       const candidates = pid === undefined
-        ? this.kernelPresentationProcessRecords().filter(
+        ? this.processProjection.presentationRecords().filter(
             (candidate) =>
               candidate.pid !== currentPid &&
               candidate.ppid === 1
           )
-        : [this.findKernelPresentationProcessRecord(pid)].filter(
+        : [this.processProjection.findPresentationRecord(pid)].filter(
             (candidate): candidate is RuntimeKernelProcessRecord =>
               candidate !== undefined &&
               candidate.pid !== currentPid &&
               candidate.ppid === 1
       );
       for (const candidate of candidates) {
-        const productRecord = this.findProcessRecord(candidate.pid);
+        const productRecord = this.processProjection.find(candidate.pid);
         if (productRecord) this.processState.waitRequests.add(productRecord.pid);
       }
       const selected = await Effect.runPromise(
@@ -4343,7 +3985,7 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
     this.processState.waitRequests.delete(process.pid);
     if (!authority) {
       await this.reapControlledTraceKernelChild(
-        this.findProcessRecord(process.ppid),
+        this.processProjection.find(process.ppid),
         process.pid
       );
     }
@@ -4408,8 +4050,8 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
   }
 
   private waitForZombieProcess(pid?: number, currentPid?: number): Promise<RuntimeKernelProcessRecord | undefined> {
-    this.purgeZombieProcessTable();
-    const zombie = pid === undefined ? this.firstZombieProcessRecord() : this.processState.zombies.get(pid)?.process;
+    this.processProjection.purgeZombies();
+    const zombie = pid === undefined ? this.processProjection.firstZombie() : this.processState.zombies.get(pid)?.process;
     if (zombie?.state === 'zombie') return Promise.resolve(zombie);
     if (pid !== undefined && (pid === currentPid || !this.processState.table.has(pid))) return Promise.resolve(undefined);
     if (pid === undefined && ![...this.processState.table.keys()].some((activePid) => activePid !== currentPid)) {
@@ -4660,8 +4302,8 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
           `scheduler.running=${scheduler.running}`,
           `scheduler.queued=${scheduler.queued}`,
           `scheduler.maxQueued=${scheduler.maxQueuedCommands ?? 'unlimited'}`,
-          `processes.active=${this.processTableUsage()}`,
-          `processes.max=${this.processTableLimit() ?? 'unlimited'}`,
+          `processes.active=${this.processProjection.tableUsage()}`,
+          `processes.max=${this.processProjection.tableLimit() ?? 'unlimited'}`,
           ...(this.kernelInfo.workspaceAlias ? [`alias=${this.kernelInfo.workspaceAlias}`] : []),
         ].join('\n') + '\n',
         stderr: '',
@@ -4692,7 +4334,7 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
       if (args.length > 1) {
         return { stdout: '', stderr: 'usage: tracekernelctl reset\n', exitCode: 2 };
       }
-      if (this.activeProcessRecords().some((process) => process.signalPolicy === 'system-only')) {
+      if (this.processProjection.activeRecords().some((process) => process.signalPolicy === 'system-only')) {
         return {
           stdout: '',
           stderr: 'tracekernelctl: reset: Operation not permitted\n',
@@ -4724,9 +4366,9 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
         if (result.signaled === 0) return { stdout: '', stderr: `tracekernelctl: no such process group: ${pgid}\n`, exitCode: 3 };
         return { stdout: `tracekernelctl: sent ${signal.name} to process group ${pgid} (${result.signaled} process${result.signaled === 1 ? '' : 'es'})\n`, stderr: '', exitCode: 0 };
       }
-      const process = this.findProcessRecord(target);
+      const process = this.processProjection.find(target);
       const snapshot = process
-        ? this.authoritativeProcessSnapshot(process)
+        ? this.processProjection.authoritativeSnapshot(process)
         : undefined;
       if (!process || !snapshot || snapshot.phase === 'exited') {
         return { stdout: '', stderr: `tracekernelctl: no such process: ${target}\n`, exitCode: 3 };
@@ -4750,7 +4392,7 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
   }
 
   private terminalJobRecords(): RuntimeProjectTerminalJobRecord[] {
-    return this.kernelPresentationProcessRecords().map((process, index) => ({
+    return this.processProjection.presentationRecords().map((process, index) => ({
       index: index + 1,
       pid: process.pid,
       command: process.command,
@@ -4758,7 +4400,7 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
   }
 
   private kernelJobRecords(currentPid?: number): RuntimeKernelProcessRecord[] {
-    return this.kernelPresentationProcessRecords().filter(
+    return this.processProjection.presentationRecords().filter(
       (process) => process.pid !== currentPid && process.pid !== 1
     );
   }
@@ -4770,11 +4412,11 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
     if (jobMatch) return jobs[Number(jobMatch[1]) - 1];
     const pid = Number(target);
     if (!Number.isInteger(pid) || pid <= 0) return undefined;
-    const process = this.findKernelPresentationProcessRecord(pid);
+    const process = this.processProjection.findPresentationRecord(pid);
     if (!process || process.pid === 1 || process.pid === currentPid) {
       return undefined;
     }
-    return this.findProcessRecord(process.pid);
+    return this.processProjection.find(process.pid);
   }
 
   private async runKernelJobPlacement(
@@ -4795,9 +4437,9 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
       | undefined;
     const authority = this.traceKernelAuthority;
     const callerKernelProcess = caller
-      ? this.kernelProcessFor(caller)
+      ? this.processProjection.kernelProcess(caller)
       : undefined;
-    const targetKernelProcess = this.kernelProcessFor(process);
+    const targetKernelProcess = this.processProjection.kernelProcess(process);
     if (authority && callerKernelProcess && targetKernelProcess) {
       if (foreground) {
         const terminal = authority.session.terminalSnapshots()[0] ??
@@ -4864,7 +4506,7 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
       };
     }
     const placement =
-      this.findKernelPresentationProcessRecord(process.pid) ?? process;
+      this.processProjection.findPresentationRecord(process.pid) ?? process;
     this.recordKernelEvent(foreground ? 'process-foreground' : 'process-background', process.pid, {
       command: process.command,
       pgid: placement.pgid,
@@ -4935,9 +4577,9 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
         }
         continue;
       }
-      const process = this.findProcessRecord(target);
+      const process = this.processProjection.find(target);
       const snapshot = process
-        ? this.authoritativeProcessSnapshot(process)
+        ? this.processProjection.authoritativeSnapshot(process)
         : undefined;
       if (!process || !snapshot || snapshot.phase === 'exited') {
         return { stdout: '', stderr: `${commandName}: no such process: ${target}\n`, exitCode: 3 };
@@ -5089,7 +4731,7 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
       throw new Error('TraceKernel session authority is unavailable.');
     }
     const parentPid = options.parent
-      ? this.kernelProcessFor(options.parent)?.pid
+      ? this.processProjection.kernelProcess(options.parent)?.pid
       : undefined;
     const process = await Effect.runPromise(authority.session.spawn({
       runtime: this.traceKernelControlledRuntime.runtime,
@@ -5122,7 +4764,7 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
     const authority = this.traceKernelAuthority;
     if (!authority) return;
     const parentKernelProcess = parent
-      ? this.kernelProcessFor(parent)
+      ? this.processProjection.kernelProcess(parent)
       : undefined;
     await Effect.runPromise(
       parentKernelProcess
@@ -5345,7 +4987,7 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
     if (inProcessWait) return inProcessWait;
     await this.awaitControlPlaneProcessDisposals();
     const actor = parent?.actor ?? this.createRuntimeActor();
-    const admissionError = this.processAdmissionError(command);
+    const admissionError = this.processProjection.admissionError(command);
     if (admissionError) {
       this.recordProcessAdmissionRejection(command, admissionError, actor);
       return {
@@ -5432,7 +5074,7 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
       ppid: kernelSnapshot.ppid,
       pgid: kernelSnapshot.pgid,
       sid: kernelSnapshot.sid,
-      fds: this.standardProcessFileDescriptors(),
+      fds: this.processProjection.standardFileDescriptors(),
       tty: terminalPresentation ? '/dev/tty' : '?',
       command,
       cwd: commandCwd,
@@ -5443,7 +5085,7 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
       state: 'queued',
       foreground,
     };
-    this.bindAuthoritativeProcessProjection(process, kernelSnapshot);
+    this.processProjection.bindAuthoritativeRecord(process, kernelSnapshot);
     let engineAttachment: RuntimeProjectEngineLeaseAttachment | undefined;
     let engineLeaseReleased = false;
     const engineLease: RuntimeProjectEngineLeaseController = Object.freeze({
@@ -5617,12 +5259,12 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
           await this.flushRuntimeEventQueue(commandContext);
           const output = this.captureReturnedOutput(commandContext, directExecutableResult);
           this.emitReturnedOutputEvents(output, commandContext);
-          const deliveredSignal = this.processExecutionHandle(process)?.pendingSignal;
+          const deliveredSignal = this.processProjection.executionHandle(process)?.pendingSignal;
           if (
             commandContext.handledSignal &&
             deliveredSignal?.name === commandContext.handledSignal
           ) {
-            delete this.processExecutionHandle(process)?.pendingSignal;
+            delete this.processProjection.executionHandle(process)?.pendingSignal;
             this.recordKernelEvent('process-signal-handled', process.pid, {
               signal: commandContext.handledSignal,
             });
@@ -5668,12 +5310,12 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
         const output = this.captureReturnedOutput(commandContext, result);
         this.emitReturnedOutputEvents(output, commandContext);
         processExitCode = result.exitCode;
-        const deliveredSignal = this.processExecutionHandle(process)?.pendingSignal;
+        const deliveredSignal = this.processProjection.executionHandle(process)?.pendingSignal;
         if (
           commandContext.handledSignal &&
           deliveredSignal?.name === commandContext.handledSignal
         ) {
-          delete this.processExecutionHandle(process)?.pendingSignal;
+          delete this.processProjection.executionHandle(process)?.pendingSignal;
           this.recordKernelEvent('process-signal-handled', process.pid, {
             signal: commandContext.handledSignal,
           });
@@ -5685,7 +5327,7 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
             ? normalizeTraceKernelSignal(interruptedBy)
             : null;
           if (!this.runtimeTerminationSignal(process) && interruptedSignal) {
-            const executionHandle = this.processExecutionHandle(process);
+            const executionHandle = this.processProjection.executionHandle(process);
             if (executionHandle) {
               executionHandle.pendingSignal = {
                 name: interruptedSignal.name,
@@ -5786,7 +5428,7 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
       } finally {
       }
       await launchHooks?.afterDescriptorClose?.(process, commandContext);
-      const pendingSignal = this.processExecutionHandle(process)?.pendingSignal;
+      const pendingSignal = this.processProjection.executionHandle(process)?.pendingSignal;
       const normalizedTerminationSignal = pendingSignal
         ? normalizeTraceKernelSignal(pendingSignal.name)?.name
         : undefined;
@@ -5812,7 +5454,7 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
         kernelProcess.wait()
       ).catch(() => undefined);
       await this.closeHostStandardIo(
-        this.processExecutionHandle(process)
+        this.processProjection.executionHandle(process)
       );
       if (!retainProcessOnExit) {
         await this.reapControlledTraceKernelChild(parent, process.pid);
@@ -6289,13 +5931,13 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
       ? request.executable.slice(2)
       : request.executable;
     const kernelSyscalls = this.createKernelSyscallBridge(request.commandContext);
-    const signal = this.processExecutionHandle(
+    const signal = this.processProjection.executionHandle(
       request.commandContext.process
     )?.abortController?.signal;
-    const processSnapshot = this.authoritativeProcessSnapshot(
+    const processSnapshot = this.processProjection.authoritativeSnapshot(
       request.commandContext.process
     );
-    const executionHandle = this.processExecutionHandle(
+    const executionHandle = this.processProjection.executionHandle(
       request.commandContext.process
     );
     const descriptorStdio =
@@ -6524,7 +6166,7 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
     this.assertNotDestroyed();
     const name = options.name.trim();
     if (!name) throw new Error('Runtime workspace process name must not be empty.');
-    const admissionError = this.processAdmissionError(name);
+    const admissionError = this.processProjection.admissionError(name);
     if (admissionError) {
       this.recordProcessAdmissionRejection(name, admissionError, options.actor);
       throw admissionError;
@@ -6559,7 +6201,7 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
       ppid: kernelSnapshot.ppid,
       pgid: kernelSnapshot.pgid,
       sid: kernelSnapshot.sid,
-      fds: this.standardProcessFileDescriptors(),
+      fds: this.processProjection.standardFileDescriptors(),
       tty: '?',
       command: name,
       cwd,
@@ -6570,7 +6212,7 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
       state: 'running',
       foreground: false,
     };
-    this.bindAuthoritativeProcessProjection(process, kernelSnapshot);
+    this.processProjection.bindAuthoritativeRecord(process, kernelSnapshot);
     this.processState.executionHandles.set(process.pid, { kernelProcess });
     this.processState.table.set(process.pid, process);
     let clearKernelSignalHandler: (() => void) | undefined;
@@ -6663,8 +6305,8 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
         if (disposed) return;
         disposed = true;
         clearKernelSignalHandler?.();
-        for (const child of this.activeProcessRecords()) {
-          if (this.authoritativeProcessSnapshot(child)?.ppid === process.pid) {
+        for (const child of this.processProjection.activeRecords()) {
+          if (this.processProjection.authoritativeSnapshot(child)?.ppid === process.pid) {
             this.queueKernelProcessSignal(child, 'SIGTERM', 'system');
           }
         }
