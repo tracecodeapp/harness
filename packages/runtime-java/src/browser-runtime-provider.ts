@@ -17,8 +17,38 @@ import {
 export interface JavaBrowserRuntimeProviderOptions {
   workerIdleTimeoutMs?: number;
   compileCacheLimit?: number;
-  externalCompilerUrl?: string;
-  loaderUrl?: string;
+  /**
+   * Base URL of the immutable Java runtime asset tree used by the bridge
+   * worker. The tree contains the engine module, WebAssembly binary, and
+   * runtime profile.
+   */
+  runtimeAssetBaseUrl?: string;
+}
+
+function configureJavaRuntimeAssetBaseUrl(
+  workerUrl: string,
+  runtimeAssetBaseUrl: string | undefined
+): string {
+  if (runtimeAssetBaseUrl === undefined) return workerUrl;
+  if (!runtimeAssetBaseUrl.trim()) {
+    throw new TypeError('Java runtimeAssetBaseUrl must not be empty.');
+  }
+
+  const hashIndex = workerUrl.indexOf('#');
+  const beforeHash =
+    hashIndex === -1 ? workerUrl : workerUrl.slice(0, hashIndex);
+  const hash = hashIndex === -1 ? '' : workerUrl.slice(hashIndex);
+  if (/(?:^|[?&])tracejvmBaseUrl=/.test(beforeHash)) {
+    throw new TypeError(
+      'Java worker URL and java.runtimeAssetBaseUrl cannot both configure the runtime asset base.'
+    );
+  }
+
+  const separator = beforeHash.includes('?') ? '&' : '?';
+  return (
+    `${beforeHash}${separator}tracejvmBaseUrl=` +
+    `${encodeURIComponent(runtimeAssetBaseUrl)}${hash}`
+  );
 }
 
 export function createJavaBrowserRuntimeProvider(
@@ -28,75 +58,19 @@ export function createJavaBrowserRuntimeProvider(
     id: '@tracecode/runtime-java',
     languages: ['java'],
     create(context: BrowserRuntimeProviderContext): BrowserRuntimeProviderLease {
-      if (
-        context.assets.runtimeManifests?.java?.assets.loader &&
-        options.loaderUrl
-      ) {
-        throw new TypeError(
-          'Java runtime assets cannot combine manifest.assets.loader with java.loaderUrl.'
-        );
-      }
-
       const workerFactory = context.workerFactoryFor('java');
-      const javaManifest = context.assets.runtimeManifests?.java;
       const workerOptions: JavaWorkerClientOptions = {
-        workerUrl: context.assets.javaWorker,
+        workerUrl: configureJavaRuntimeAssetBaseUrl(
+          context.assets.javaWorker,
+          options.runtimeAssetBaseUrl
+        ),
         ...(workerFactory
           ? { workerFactory, isolatedRuntimeStorage: true }
           : {}),
         debug: context.debug,
         workerIdleTimeoutMs: options.workerIdleTimeoutMs,
         compileCacheLimit: options.compileCacheLimit,
-        externalCompilerUrl: options.externalCompilerUrl,
-        loaderUrl: options.loaderUrl,
         assetPreflight: context.preflight('java', ['worker']),
-        runtimeAssetPreflight: context.preflight('java', [
-          'loader',
-          'helperJar',
-          'compilerJar',
-          'rewriterJar',
-          'parserJar',
-        ]),
-        ...(javaManifest
-          ? {
-              runtimeAssets: {
-                ...(context.manifestAsset('java', 'loader')?.url
-                  ? {
-                      loaderUrl:
-                        context.manifestAsset('java', 'loader')?.url,
-                    }
-                  : {}),
-                ...(context.manifestAsset('java', 'helperJar')?.url
-                  ? {
-                      helperJarUrl:
-                        context.manifestAsset('java', 'helperJar')?.runtimePath ??
-                        context.manifestAsset('java', 'helperJar')?.url,
-                    }
-                  : {}),
-                ...(context.manifestAsset('java', 'compilerJar')?.url
-                  ? {
-                      compilerJarUrl:
-                        context.manifestAsset('java', 'compilerJar')?.runtimePath ??
-                        context.manifestAsset('java', 'compilerJar')?.url,
-                    }
-                  : {}),
-                ...(context.manifestAsset('java', 'rewriterJar')?.url
-                  ? {
-                      rewriterJarUrl:
-                        context.manifestAsset('java', 'rewriterJar')?.runtimePath ??
-                        context.manifestAsset('java', 'rewriterJar')?.url,
-                    }
-                  : {}),
-                ...(context.manifestAsset('java', 'parserJar')?.url
-                  ? {
-                      parserJarUrl:
-                        context.manifestAsset('java', 'parserJar')?.runtimePath ??
-                        context.manifestAsset('java', 'parserJar')?.url,
-                    }
-                  : {}),
-              },
-            }
-          : {}),
       };
       const preparedProvider =
         createJavaBrowserPreparedExecutionProvider(workerOptions);
