@@ -121,7 +121,6 @@ import type {
 import type {
   RuntimeCommandOptions,
   RuntimeCommandCompletion,
-  RuntimeCommandCompletionMatch,
   RuntimeCommandCompletionOptions,
   RuntimeCommandError,
   RuntimeCommandResult,
@@ -237,7 +236,6 @@ import {
   isWithinWorkspace,
   mapWorkspaceAlias,
   normalizeRuntimeProjectPath,
-  normalizeTerminalAbsolutePath,
   normalizeWorkspaceCwd,
   resolveWorkspaceCommandPath,
   resolveWorkspaceContextPath,
@@ -377,8 +375,6 @@ import {
 } from './language-commands';
 import {
   RuntimeProjectWorkspaceTerminalSession,
-  commandInputTokenBounds,
-  longestCommonPrefix,
   type RuntimeProjectTerminalJobRecord,
 } from './terminal-session';
 import {
@@ -449,6 +445,7 @@ import { WorkspaceTerminalCommands } from './userland-terminal-commands';
 import { WorkspaceCommandCatalog } from './workspace-command-catalog';
 import { WorkspaceProcFileSystem } from './workspace-proc-filesystem';
 import { WorkspaceVirtualFileSystem } from './workspace-virtual-filesystem';
+import { WorkspaceTerminalNavigation } from './workspace-terminal-navigation';
 
 const PRINCIPAL_ACTOR: RuntimeWorkspaceActor = runtimeWorkspaceActorPreset('principal');
 const RUNTIME_ACTOR: RuntimeWorkspaceActor = runtimeWorkspaceActorPreset('runtime');
@@ -590,6 +587,7 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
   private readonly commandCatalog: WorkspaceCommandCatalog;
   private readonly procFiles: WorkspaceProcFileSystem;
   private readonly virtualFiles: WorkspaceVirtualFileSystem;
+  private readonly terminalNavigation: WorkspaceTerminalNavigation;
   private readonly identityCommands: WorkspaceIdentityCommands;
   private readonly virtualExecutableRecords = new Map<string, VirtualExecutableRecord>();
   private readonly processState = new WorkspaceProcessState();
@@ -838,6 +836,13 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
       kernelInfo: this.kernelInfo,
       commandCatalog: this.commandCatalog,
       procFiles: this.procFiles,
+    });
+    this.terminalNavigation = new WorkspaceTerminalNavigation({
+      cwd: this.cwd,
+      kernelInfo: this.kernelInfo,
+      fileSystem: this.fs,
+      virtualFiles: this.virtualFiles,
+      isProjectPathHidden: (path) => this.isProjectPathHidden(path),
     });
     this.identityCommands = new WorkspaceIdentityCommands({
       kernelInfo: this.kernelInfo,
@@ -5644,175 +5649,13 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
     }
   }
 
-  private resolveTerminalPathInRoot(currentCwd: string, target: string, root: string, rootLabel: string): string {
-    const rawTarget = target.trim() || this.cwd;
-    const normalizedTarget = rawTarget === '~' ? this.kernelInfo.home : rawTarget;
-    const absolutePath = normalizedTarget.startsWith('/')
-      ? normalizeTerminalAbsolutePath(mapWorkspaceAlias(this.cwd, this.kernelInfo.workspaceAlias, normalizedTarget))
-      : normalizeTerminalAbsolutePath(`${currentCwd}/${normalizedTarget}`);
-    if (!isWithinWorkspace(root, absolutePath)) {
-      throw new Error(`path must stay inside ${rootLabel}: ${target}`);
-    }
-    return absolutePath;
-  }
-
-  private resolveTerminalPath(currentCwd: string, target: string): string {
-    return this.resolveTerminalPathInRoot(currentCwd, target, this.cwd, 'the workspace');
-  }
-
-  private resolveTerminalNavigationPath(currentCwd: string, target: string): string {
-    return this.resolveTerminalPathInRoot(currentCwd, target, this.kernelInfo.home, 'home');
-  }
-
-  private resolveCommandCwd(target: string): string {
-    return isWithinWorkspace(this.kernelInfo.home, this.cwd)
-      ? this.resolveTerminalNavigationPath(this.cwd, target)
-      : this.toWorkspacePath(target);
-  }
-
-  private async resolveTerminalCwd(currentCwd: string, target: string): Promise<string> {
-    const absolutePath = isWithinWorkspace(this.kernelInfo.home, this.cwd)
-      ? this.resolveTerminalNavigationPath(currentCwd, target)
-      : this.resolveTerminalPath(currentCwd, target);
-    const statTarget = kernelStatTarget(absolutePath, this.kernelInfo);
-    const stat = statTarget.kind === 'stat'
-      ? { isDirectory: statTarget.stat.isDirectory }
-      : await this.bash.fs.stat(absolutePath);
-    if (!stat.isDirectory) {
-      throw new Error(`not a directory: ${target}`);
-    }
-    return absolutePath;
-  }
-
-  private commandPathCompletionTarget(
-    token: string,
-    cwd: string
-  ): { listPath: string; partial: string; replacementPrefix: string } {
-    if (token === '~' || token.startsWith('~/')) {
-      const afterHome = token === '~' ? '' : token.slice(2);
-      const slashIndex = afterHome.lastIndexOf('/');
-      if (slashIndex >= 0) {
-        const parent = afterHome.slice(0, slashIndex);
-        return {
-          listPath: parent ? this.resolveTerminalNavigationPath(this.kernelInfo.home, parent) : this.kernelInfo.home,
-          partial: afterHome.slice(slashIndex + 1),
-          replacementPrefix: `~/${parent ? `${parent}/` : ''}`,
-        };
-      }
-      return { listPath: this.kernelInfo.home, partial: afterHome, replacementPrefix: '~/' };
-    }
-
-    const slashIndex = token.lastIndexOf('/');
-    if (slashIndex >= 0) {
-      const parent = token.slice(0, slashIndex);
-      return {
-        listPath: this.resolveTerminalNavigationPath(cwd, parent || '/'),
-        partial: token.slice(slashIndex + 1),
-        replacementPrefix: token.slice(0, slashIndex + 1),
-      };
-    }
-
-    return { listPath: cwd, partial: token, replacementPrefix: '' };
-  }
-
-  private async listTerminalDirectory(path: string): Promise<string[]> {
-    const dynamicEntries = this.virtualFiles.readDir(path);
-    if (dynamicEntries) return dynamicEntries.map((entry) => entry.name).sort();
-    const directoryTarget = kernelDirectoryTarget(path);
-    if (directoryTarget.kind === 'directory') return directoryTarget.entries.map((entry) => entry.name).sort();
-    if (directoryTarget.kind === 'error') {
-      throw new Error(
-        directoryTarget.reason === 'not-directory'
-          ? `Kernel virtual path is not a directory: ${path}`
-          : `Kernel virtual path not found: ${path}`
-      );
-    }
-
-    const entries = await this.bash.fs.readdir(path);
-    return [...entries]
-      .filter((entry) => {
-        if (!isWithinWorkspace(this.cwd, path)) return true;
-        const directoryPath = path === this.cwd ? '' : toProjectPath(this.cwd, path);
-        const entryPath = directoryPath ? `${directoryPath}/${entry}` : entry;
-        return !this.isProjectPathHidden(entryPath);
-      })
-      .sort((left, right) => left.localeCompare(right));
-  }
-
-  private async terminalPathIsDirectory(path: string): Promise<boolean> {
-    const dynamicKind = this.virtualFiles.entryKind(path);
-    if (dynamicKind) return dynamicKind === 'directory';
-    const statTarget = kernelStatTarget(path, this.kernelInfo);
-    if (statTarget.kind === 'stat') return statTarget.stat.isDirectory;
-    if (statTarget.kind === 'error') return false;
-    try {
-      return (await this.bash.fs.stat(path)).isDirectory;
-    } catch {
-      return false;
-    }
-  }
-
-  async completeCommand(
+ async completeCommand(
     input: string,
     cursor: number,
     options: RuntimeCommandCompletionOptions = {}
   ): Promise<RuntimeCommandCompletion | null> {
     this.assertNotDestroyed();
-    const cwd = options.cwd
-      ? this.resolveTerminalNavigationPath(this.cwd, options.cwd)
-      : this.cwd;
-    const boundedCursor = Math.max(0, Math.min(cursor, input.length));
-    const { start, end } = commandInputTokenBounds(input, boundedCursor);
-    const token = input.slice(start, boundedCursor);
-    if (!token || token.includes('"') || token.includes("'")) return null;
-
-    let target: { listPath: string; partial: string; replacementPrefix: string };
-    try {
-      target = this.commandPathCompletionTarget(token, cwd);
-    } catch {
-      return null;
-    }
-
-    let entries: string[];
-    try {
-      entries = await this.listTerminalDirectory(target.listPath);
-    } catch {
-      return null;
-    }
-
-    const matchingNames = entries.filter((entry) => entry.startsWith(target.partial));
-    if (matchingNames.length === 0) return null;
-    const matches: RuntimeCommandCompletionMatch[] = await Promise.all(
-      matchingNames.map(async (name) => ({
-        name,
-        kind: await this.terminalPathIsDirectory(normalizeTerminalAbsolutePath(`${target.listPath}/${name}`))
-          ? 'directory'
-          : 'file',
-      }))
-    );
-    const completedName = matchingNames.length === 1 ? matchingNames[0] : longestCommonPrefix(matchingNames);
-    if (!completedName || (matchingNames.length > 1 && completedName === target.partial)) {
-      return {
-        input,
-        cursor: boundedCursor,
-        matches,
-        replacementChanged: false,
-      };
-    }
-
-    const completedPath = normalizeTerminalAbsolutePath(`${target.listPath}/${completedName}`);
-    const suffix = matchingNames.length === 1 && await this.terminalPathIsDirectory(completedPath)
-      ? '/'
-      : matchingNames.length === 1 ? ' ' : '';
-    const replacement = `${target.replacementPrefix}${completedName}${suffix}`;
-    const nextInput = `${input.slice(0, start)}${replacement}${input.slice(end)}`;
-    const nextCursor = start + replacement.length;
-    return {
-      input: nextInput,
-      cursor: nextCursor,
-      matches,
-      replacementChanged: nextInput !== input || nextCursor !== boundedCursor,
-    };
+    return this.terminalNavigation.completeCommand(input, cursor, options);
   }
 
   private readProcFile(path: string, encoding?: RuntimeFileEncoding, options: { publicView?: boolean } = {}): string | null {
@@ -6351,7 +6194,9 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
         error: admissionError.toCommandError(),
       };
     }
-    const commandCwd = options.cwd ? this.resolveCommandCwd(options.cwd) : this.cwd;
+    const commandCwd = options.cwd
+      ? this.terminalNavigation.resolveCommandCwd(options.cwd)
+      : this.cwd;
     const stdinPipe = options.stdinPipe;
     const abortController = new AbortController();
     const processEnv = Object.freeze({
@@ -6993,7 +6838,7 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
         ...options,
         ...(executionLimits ? { executionLimits } : {}),
         cwd: commandCwd
-          ? this.resolveTerminalPath(this.cwd, commandCwd)
+          ? this.terminalNavigation.resolvePath(this.cwd, commandCwd)
           : this.projectSession?.cwd,
         env: {
           ...(this.projectSession?.env ?? {}),
@@ -7086,7 +6931,9 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
           step: stepIndex + 1,
           stepCount: command.steps.length,
           shellCommand: step.command,
-          ...(commandCwd ? { cwd: this.resolveTerminalPath(this.cwd, commandCwd) } : {}),
+          ...(commandCwd
+            ? { cwd: this.terminalNavigation.resolvePath(this.cwd, commandCwd) }
+            : {}),
         },
         actor: SYSTEM_ACTOR,
       });
@@ -7143,7 +6990,8 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
       {
         workspaceRoot: this.cwd,
         kernelInfo: this.kernelInfo,
-        resolveCwd: (currentCwd, target) => this.resolveTerminalCwd(currentCwd, target),
+        resolveCwd: (currentCwd, target) =>
+          this.terminalNavigation.resolveTerminalCwd(currentCwd, target),
         runCommand: (command, commandOptions) => this.runCommandAs(command, {
           ...commandOptions,
           terminalSessionId,
@@ -7160,7 +7008,9 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
       },
       {
         ...options,
-        cwd: options.cwd ? this.resolveTerminalPath(this.cwd, options.cwd) : this.cwd,
+        cwd: options.cwd
+          ? this.terminalNavigation.resolvePath(this.cwd, options.cwd)
+          : this.cwd,
       }
     );
   }
@@ -7232,7 +7082,9 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
     if (!words || words.length === 0) return null;
     if (traceKernelBinCommandName(words[0] ?? '')) return null;
 
-    const cwd = options.cwd ? this.resolveCommandCwd(options.cwd) : this.cwd;
+    const cwd = options.cwd
+      ? this.terminalNavigation.resolveCommandCwd(options.cwd)
+      : this.cwd;
     if (!isWithinWorkspace(this.cwd, cwd)) return null;
     const env = {
       ...this.bash.getEnv(),
@@ -7628,7 +7480,9 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
       this.recordProcessAdmissionRejection(name, admissionError, options.actor);
       throw admissionError;
     }
-    const cwd = options.cwd ? this.resolveCommandCwd(options.cwd) : this.cwd;
+    const cwd = options.cwd
+      ? this.terminalNavigation.resolveCommandCwd(options.cwd)
+      : this.cwd;
     const authority = this.traceKernelAuthority;
     if (!authority) {
       throw new Error('TraceKernel session authority is unavailable.');
