@@ -51,7 +51,11 @@ export function createCppPreparedExecutionProvider(
       try {
         await client.init();
         const preparation = await client.prepareRuntimeProgram(call);
-        if (!preparation.success) {
+        // Use an explicit literal comparison here. The declaration bundler
+        // type-checks with a different strictness envelope than the package
+        // project, and `!preparation.success` does not reliably preserve the
+        // discriminated-union branch there.
+        if (preparation.success === false) {
           client.terminate();
           if (preparation.limitReason === 'client-timeout') {
             return {
