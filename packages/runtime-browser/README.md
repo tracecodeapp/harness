@@ -100,22 +100,37 @@ clients.
 
 `tracecode-harness sync-assets` copies Harness-owned bridge workers and helper
 assets from the root package. Consumer-owned engine distributions remain
-outside the npm package and are supplied through versioned runtime manifests.
+outside the npm package. Runtime manifests configure package-managed assets;
+Java's external engine tree uses the directory option below.
 
-For Java, the root assets include the Harness bridge worker. Serve the engine
-module, engine WASM, and complete runtime profile as one immutable versioned
-tree whose base URL ends in `/`, for example:
+For Java, the root assets include the Harness bridge worker. The bridge uses
+TraceJVM internally, while the TraceJVM engine module, WebAssembly binary, and
+complete runtime profile remain external assets. Serve them as one immutable
+versioned tree and configure the host through the provider-neutral Java
+option:
+
+```ts
+const host = createBrowserRuntimeHost({
+  providers: ['java'],
+  assetBaseUrl: '/workers',
+  java: {
+    runtimeAssetBaseUrl: 'https://assets.example.com/java/engine-2026-07-30/',
+  },
+});
+```
+
+A compatible tree contains:
 
 ```text
-/runtimes/java/engine-2026-07-30/
+https://assets.example.com/java/engine-2026-07-30/
   browser-client.js
   bjvm_main.wasm
   profiles/core/...
 ```
 
-The bridge resolves all engine files relative to that slash-terminated base.
-Do not mix engine releases, split one profile across mutable roots, or omit the
-trailing slash.
+`java.runtimeAssetBaseUrl` is normalized as a directory, so a trailing slash is
+not required. The bridge resolves all engine files relative to that directory.
+Do not mix engine releases or split one profile across mutable roots.
 
 See the [root README](../../README.md) for installation and a complete Judge
 plan, and [Browser execution origin](../../docs/browser-execution-host.md) for

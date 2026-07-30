@@ -64,7 +64,6 @@ Effect scope. The host can outlive one evaluation; the scope cannot.
 import * as Effect from 'effect/Effect';
 import {
   createBrowserRuntimeHost,
-  type BrowserRuntimeAssetManifest,
 } from '@tracecode/harness/browser';
 import {
   createBrowserRuntimeJudge,
@@ -73,18 +72,16 @@ import {
 
 async function evaluateJava(
   plan: JudgeEvaluationPlan<Record<string, unknown>, unknown>,
-  javaRuntimeManifest: BrowserRuntimeAssetManifest<'java'>
+  javaRuntimeAssetBaseUrl: string
 ) {
   const host = createBrowserRuntimeHost({
     providers: ['java'],
+    java: {
+      runtimeAssetBaseUrl: javaRuntimeAssetBaseUrl,
+    },
     executionHost: {
       url: 'https://runtime.example.com/host.html',
       providers: ['java'],
-    },
-    assets: {
-      runtimeManifests: {
-        java: javaRuntimeManifest,
-      },
     },
   });
 
@@ -123,14 +120,14 @@ inject a provider into Browser Judge; the host must come from
 When `executionHost.providers` is omitted, every language selected by the host
 is routed through the broker. JavaScript and TypeScript share one browser
 worker and must be routed together. Every hosted worker URL must resolve on the
-execution origin; runtime manifests and their immutable asset locations remain
-consumer-owned.
+execution origin. External runtime trees and their immutable asset locations
+remain consumer-owned.
 
 ## Java runtime asset tree
 
 The root `@tracecode/harness` asset set contains Java's Harness bridge worker
-and Harness-owned helper assets. It intentionally does not make the external
-engine distribution part of the npm package.
+and Harness-owned helper assets. The bridge uses TraceJVM internally; it does
+not make the external TraceJVM distribution part of the npm package.
 
 Serve the engine module, engine WASM, and complete runtime profile from one
 versioned, immutable tree:
@@ -142,11 +139,12 @@ https://assets.example.com/java/engine-2026-07-30/
   profiles/core/...
 ```
 
-The configured tree URL must end in `/`. The bridge resolves module, WASM, and
-profile requests relative to that base; without the slash, URL resolution
-treats the last path component as a file and can escape the versioned
-directory. Do not mix profile files or WASM from different releases, and do not
-put mutable responses behind an immutable manifest address.
+Pass the tree directory through `java.runtimeAssetBaseUrl` when creating the
+host. Harness normalizes that value as a directory, so the trailing slash is
+optional; examples include it to make the boundary explicit. The bridge
+resolves module, WASM, and profile requests relative to that directory. Do not
+mix profile files or WASM from different releases, and do not put mutable
+responses behind an immutable release URL.
 
 The bridge worker belongs on the credential-free execution origin. The engine
 tree may be served there as well, or from a separately allowlisted static
@@ -180,8 +178,10 @@ const workspace = await createBrowserProjectWorkspace({
 
 The application-provided factory owns its Worker origin and runtime assets. It
 must return a fresh disposable client for each admitted Java invocation so
-learner-observable VM state cannot cross process boundaries. Destroying the
-workspace releases the provider and all Workers owned by that workspace.
+learner-observable VM state cannot cross process boundaries. This structural
+client is a project-workspace boundary, not a public Java language subpath.
+Destroying the workspace releases the provider and all Workers owned by that
+workspace.
 
 ## Publication boundary
 

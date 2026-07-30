@@ -1,127 +1,113 @@
-# `@tracecode/runtime-java`
+# Java runtime workspace
 
-Java runtime clients, project-provider contracts, and browser worker assets for
-TraceCode Harness.
+`packages/runtime-java` is a private implementation workspace. It is bundled
+into the root `@tracecode/harness` release and must not be installed or
+imported as a standalone package. There is no public per-language Java
+entrypoint.
 
-This is a private workspace bundled into the published root package. Import the
-supported `@tracecode/harness/java` subpath when an application needs the Java
-lane. The high-level Java 23 project contract is implementation-neutral. The
-bundled Classic browser worker and helper JARs currently integrate with
-CheerpJ; CheerpJ itself is not vendored or redistributed, and consumers of
-those assets must provide a licensed loader as documented in
-`THIRD_PARTY_NOTICES.md`.
-
-Import path:
+Applications evaluate Java through the same public boundary as every other
+algorithm runtime:
 
 ```ts
-import { JavaWorkerClient, createJavaRuntimeClient } from '@tracecode/harness/java';
-```
+import * as Effect from 'effect/Effect';
+import { createBrowserRuntimeHost } from '@tracecode/harness/browser';
+import { createBrowserRuntimeJudge } from '@tracecode/harness/judge';
 
-## Judge prepared provider
-
-Judge-backed evaluation must bind Java through
-`createJavaBrowserPreparedExecutionProvider`. The root browser registry passes
-the explicitly selected prepared-worker URL, worker factory, and asset
-preflights to that constructor:
-
-```ts
-const java = createJavaBrowserPreparedExecutionProvider({
-  workerUrl: assets.javaWorker,
-  workerFactory: workerFactoryFor('java'),
-  assetPreflight: preflight('java', ['worker']),
+const host = createBrowserRuntimeHost({
+  providers: ['java'],
+  assetBaseUrl: '/workers',
+  java: {
+    runtimeAssetBaseUrl: 'https://assets.example.com/java/2026-07-30/',
+  },
 });
+
+try {
+  await Effect.runPromise(
+    Effect.scoped(
+      Effect.gen(function* () {
+        const judge = yield* createBrowserRuntimeJudge({
+          host,
+          language: 'java',
+          binding: {
+            sourcePath: '/workspace/Solution.java',
+            functionName: 'solve',
+            executionStyle: 'function',
+          },
+        });
+        return yield* judge.evaluate(plan);
+      })
+    )
+  );
+} finally {
+  host.dispose();
+}
 ```
 
-That factory rewrites and compiles the source once into an immutable class
-snapshot, then destroys the compiler worker. Every case restores that snapshot
-into a brand-new hard Worker, runs exactly once, and destroys the Worker before
-the next case starts. Mutable VM state cannot cross that boundary: static
-fields and class initialization, system properties, locale and time-zone
-defaults, runtime filesystem writes, thread state, shutdown hooks, and future
-engine-owned host state all die with the case Worker. No case invokes `javac`.
+`BrowserRuntimeHost` owns readiness, warmup, and provider teardown. Judge owns
+program preparation, case execution, comparison policy, and the scoped
+TraceKernel lifecycle. Runtime clients and prepared providers remain private.
 
-Its program advertises `fresh-case-state` with `maxConcurrency: 1`. Judge owns
-the corresponding backpressure and calls `dispose()` when the evaluation
-ends. Concurrent case requests are serialized; disposal hard-aborts an active
-Worker, drains the operation boundary, and prevents queued requests from
-starting.
+## Runtime assets
 
-Browser-host language release calls `releaseStandby()`, which discards only an
-unused warm Worker and allows the next `init()` or `prepareProgram()` to restart
-lazily. Full `dispose()` is final and permanently invalidates the provider.
+The root package supplies the Harness Java bridge worker and Harness-owned
+helper assets. The bridge uses TraceJVM internally. The TraceJVM engine module,
+WebAssembly binary, and runtime profile are not bundled into the npm package;
+the consumer serves them as one versioned, immutable tree and configures its
+directory through `java.runtimeAssetBaseUrl`.
 
-The prepared registry must not construct Java through
-`createJavaRuntimeClient`. That is the legacy single-call adapter and would
-silently recompile once per case. There is no legacy fallback in the prepared
-factory: a missing or invalid prepared-worker URL is a construction error.
-The URL must select the TraceJVM-backed Java worker. The classic/CheerpJ worker
-does not expose the prepared artifact protocol, so preparation fails closed
-instead of recompiling cases or falling back to the legacy client.
-The root browser lease exposes this provider explicitly in its
-`preparedProviders` map under `java`; it must never infer a prepared provider
-from the legacy `clients` map.
+Harness normalizes that value as a directory, so a trailing slash is optional.
+The bridge resolves all engine assets relative to the normalized directory.
+One runtime release must not combine a mutable file, a profile from another
+release, or assets from unrelated roots.
 
-## Java 23 project provider
+The provider option is intentionally expressed as a runtime asset directory.
+Individual engine, compiler, helper, or loader URLs are not public
+configuration roles.
 
-The Java root subpath adapts a structural Java 23 client to TraceKernel's
-process and filesystem contracts. Applications install a compatible runtime
-independently and provide a factory for fresh Worker clients. For example,
-TraceJVM satisfies that structural contract:
+## Prepared evaluation
+
+The private Java provider compiles a submission once into an immutable class
+snapshot. Each Judge case restores that snapshot into a fresh Worker, executes
+once, and destroys the Worker before another case begins. Static fields, class
+initialization, system properties, locale and time-zone defaults, runtime
+filesystem writes, thread state, and shutdown hooks therefore cannot cross the
+case boundary.
+
+The prepared program advertises `fresh-case-state` isolation and serial case
+execution. Judge applies backpressure and disposes the program when its Effect
+scope ends. Releasing an idle language discards only standby state so a later
+warmup can restart it; disposing the host is final.
+
+Preparation fails closed when the bridge or external runtime tree is
+incompatible. There is no public direct-client or alternate-engine fallback.
+
+## Browser project workspaces
+
+Browser project mode is exposed through
+`@tracecode/harness/browser/project`. Its Java lane accepts an
+implementation-neutral structural client factory:
 
 ```ts
-import { TraceJVMWorkerClient } from '@tracecode/tracejvm';
-import { createBrowserProjectWorkspace } from '@tracecode/harness/browser/project';
+import {
+  createBrowserProjectWorkspace,
+} from '@tracecode/harness/browser/project';
 
 const workspace = await createBrowserProjectWorkspace({
   providers: ['java'],
   java: {
-    createClient: () => new TraceJVMWorkerClient({
-      engine: {
-        assets: {
-          wasmUrl: '/tracejvm/bjvm_main.wasm',
-          runtimeProfileBaseUrls: {
-            core: '/tracejvm/profiles/core',
-          },
-        },
-        runtimeProfile: 'core',
-      },
-      createWorker: () => new Worker('/tracejvm/browser-worker.js', {
-        type: 'module',
-      }),
-    }),
+    createClient: createFreshJavaProjectClient,
   },
+  files,
 });
 ```
 
-Harness does not declare the example runtime as a package or peer dependency.
-The adapter consumes a small exported structural client contract so Harness can
-build and ship independently. Browser project workspaces expose this provider
-only as `java`; there is no engine-branded selector or implicit fallback.
-A workspace that selects Java must provide `java.createClient` or a low-level
-`javaWorkerClient` satisfying the browser project command contract.
+The application owns that factory's Worker origin and external runtime assets.
+It must return a fresh disposable client for every admitted `javac` or `java`
+invocation. The project adapter maps the client to TraceKernel process,
+filesystem, descriptor, pipe, socket, selector, and watch-service contracts.
+Compilation artifacts are committed to the TraceKernel filesystem so later
+commands and other runtime processes observe the same workspace state.
 
-The adapter binds one coordinator to the TraceKernel PID but admits each
-`javac` or `java` invocation to a fresh Worker. Compilation artifacts are
-committed to TKFS and subsequent commands read them from TKFS, including
-commands chained inside one kernel process.
-
-Compilation remains value-oriented: `javac` receives an immutable TKFS snapshot
-and commits its output as a final diff. Running Java programs use the
-provider's process-scoped host port for live kernel operations. Ordinary Java
-file and random-access APIs use authoritative TKFS; stdin, stdout, stderr,
-pipes, and socket channels use process-owned descriptors; `ProcessBuilder`
-creates kernel-supervised children; selectors multiplex kernel readiness; and
-ordinary `WatchService` registrations observe live cross-runtime TKFS changes.
-The standalone `io.tracecode.tracekernel.TraceKernel` API adds process identity,
-watchdog arm/pet/disarm/status, `setsid`, `setpgid`, `tcgetpgrp`, and
-`tcsetpgrp` without patching `java.base`; the adapter routes those calls through
-the same generic host port to authoritative TraceKernel state.
-
-The adapter requires a fresh disposable Worker for every invocation and never
-reuses mutable VM state across kernel process leases.
-
-The Java project provider contract intentionally has no Trace Mode protocol.
-Harness remains responsible for Java rewriting, instrumentation, trace limits,
-event transport, and trace reconstruction.
-
-Review `THIRD_PARTY_NOTICES.md` before redistributing Java runtime assets.
+The structural client is a project-workspace seam, not a public per-language
+package. Destroying the workspace releases the provider and every Worker owned
+by that workspace.

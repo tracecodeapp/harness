@@ -182,10 +182,11 @@ consumers can override individual asset URLs through
 `createBrowserRuntimeHost({ assets })`.
 
 Runtime delivery is consumer-owned. Browser consumers may pass versioned
-`assets.runtimeManifests` (or a `runtimeAssetProvider`) for Python, JavaScript,
-TypeScript, Java, C#, and C++ without depending on a TraceCode-operated CDN. A
-first-party TraceCode application can publish one such manifest as application
-configuration; it is not embedded as a harness product dependency. See
+`assets.runtimeManifests` (or a `runtimeAssetProvider`) for package-managed
+runtime assets without depending on a TraceCode-operated CDN. Java's external
+engine tree uses the provider-neutral directory option described below. A
+first-party TraceCode application can publish runtime locations as application
+configuration; they are not embedded as harness product dependencies. See
 [Isolation Boundaries](./docs/isolation-boundaries.md#runtime-assets-and-cdns)
 for integrity, origin, and immutable-URL requirements.
 
@@ -194,21 +195,35 @@ the [browser execution host](./docs/browser-execution-host.md) on a dedicated
 credential-free origin.
 
 The root asset set contains Java's Harness bridge worker and Harness-owned
-helper files. The Java engine module, engine WASM, and runtime profile are
-consumer-served runtime assets. Publish them as one versioned, immutable tree
-and configure its base URL with a trailing slash, for example:
+helper files. The bridge uses TraceJVM internally; the TraceJVM engine module,
+WebAssembly binary, and runtime profile are consumer-served runtime assets.
+Publish them as one versioned, immutable tree and pass that directory through
+the provider-neutral Java option:
+
+```ts
+const host = createBrowserRuntimeHost({
+  providers: ['java'],
+  assetBaseUrl: '/workers',
+  java: {
+    runtimeAssetBaseUrl: 'https://assets.example.com/java/2026-07-30/',
+  },
+});
+```
+
+The configured value is normalized as a directory, so a trailing slash is not
+required. Examples include it to make the directory boundary visible. A
+compatible immutable tree contains:
 
 ```text
-/runtimes/java/2026-07-30/
+https://assets.example.com/java/2026-07-30/
   browser-client.js
   bjvm_main.wasm
   profiles/core/...
 ```
 
-The slash is part of the contract: the bridge resolves every engine asset
-relative to that tree. Splitting those files across mutable roots or omitting
-the trailing slash can resolve requests outside the intended versioned
-directory.
+The bridge resolves every engine asset relative to that tree. Do not split one
+runtime release across mutable roots or mix engine and profile files from
+different releases.
 
 ## Project Workspaces
 
