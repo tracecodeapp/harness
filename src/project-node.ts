@@ -2,6 +2,9 @@ export {
   createRuntimeWorkspace,
   RuntimeProjectWorkspace,
   JustBashRuntimeWorkspace,
+} from '@tracecode/tracekernel/workspace';
+
+export {
   createRuntimeProjectHiddenCommandAccess,
   normalizeRuntimeProjectPath,
   runtimeHttpBodyBytes,
@@ -12,7 +15,7 @@ export {
   runtimeHttpRequestText,
   runtimeHttpResponseBytes,
   runtimeHttpResponseText,
-} from '../packages/harness-project/src/index';
+} from '@tracecode/harness-core';
 
 export type {
   CreateRuntimeWorkspaceOptions,
@@ -37,6 +40,9 @@ export type {
   CppProjectCommandRunner,
   CSharpProjectCommandRequest,
   CSharpProjectCommandRunner,
+} from '@tracecode/tracekernel/workspace';
+
+export type {
   RuntimeCommandOptions,
   RuntimeCommandResult,
   RuntimeCommandEvent,
@@ -109,13 +115,13 @@ export type {
   RuntimeWorkspaceRemoveOptions,
   RuntimeWorkspaceStat,
   RuntimeWorkspaceUnsubscribe,
-} from '../packages/harness-project/src/index';
+} from '@tracecode/harness-core';
 
 import {
   createRuntimeWorkspace,
   type CreateRuntimeWorkspaceOptions,
   type RuntimeProjectWorkspace,
-} from '../packages/harness-project/src/index';
+} from '@tracecode/tracekernel/workspace';
 import { createNativeCppProjectRunner } from '../packages/harness-cpp/src/project-node';
 import { createNativeCSharpProjectRunner } from '../packages/harness-csharp/src/project-node';
 import { createNativeJavaProjectRunner } from '../packages/harness-java/src/project-node';

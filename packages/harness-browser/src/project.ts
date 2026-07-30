@@ -3,7 +3,7 @@ import type {
   RuntimeProjectEngineLeaseController,
   RuntimeWorkspace,
 } from '@tracecode/harness-core';
-import type { CreateRuntimeWorkspaceOptions } from '../../harness-project/src/index';
+import type { CreateRuntimeWorkspaceOptions } from '@tracecode/tracekernel/workspace';
 import type {
   BrowserJavaScriptProjectRunnerOptions,
   BrowserTypeScriptProjectRunnerOptions,
@@ -628,7 +628,9 @@ export interface CreateBrowserProjectWorkspaceOptions
 export async function createBrowserProjectWorkspace(
   options: CreateBrowserProjectWorkspaceOptions = {}
 ): Promise<BrowserProjectWorkspace> {
-  const projectRuntimePromise = import('../../harness-project/src/index');
+  const projectRuntimePromise = import(
+    '@tracecode/tracekernel/workspace'
+  );
   const providers = normalizeBrowserProjectProviders(options.providers);
   const hasProvider = (provider: BrowserProjectProvider) => providers.includes(provider);
   const [pythonProvider, javascriptProvider, javaProvider, csharpProvider, cppProvider] = await Promise.all([
