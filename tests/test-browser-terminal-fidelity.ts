@@ -117,16 +117,16 @@ async function testNativeCommandIdentity(): Promise<void> {
       ['python3 --version', 'Python 3.13.2\n', ''],
       ['node --version', 'v22.0.0\n', ''],
       ['tsc --version', 'Version 5.9.3\n', ''],
-      ['javac --version', 'javac 17\n', ''],
+      ['javac --version', 'javac 23\n', ''],
       [
         'java --version',
-        'openjdk 17\nOpenJDK Runtime Environment (build 17)\nOpenJDK 64-Bit Server VM (build 17, mixed mode)\n',
+        'openjdk 23\nOpenJDK Runtime Environment (build 23)\nOpenJDK 64-Bit Server VM (build 23, mixed mode)\n',
         '',
       ],
       [
         'java -version',
         '',
-        'openjdk 17\nOpenJDK Runtime Environment (build 17)\nOpenJDK 64-Bit Server VM (build 17, mixed mode)\n',
+        'openjdk 23\nOpenJDK Runtime Environment (build 23)\nOpenJDK 64-Bit Server VM (build 23, mixed mode)\n',
       ],
       [
         'clang++ --version',
