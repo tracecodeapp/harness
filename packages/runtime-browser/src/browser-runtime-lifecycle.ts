@@ -1,6 +1,5 @@
 import type {
   Language,
-  RuntimeExecutionIsolationPolicy,
 } from '@tracecode/runtime-core';
 import { createBrowserRuntimeAssetPreflight } from './runtime-asset-preflight';
 import type {
@@ -291,13 +290,11 @@ export function createBrowserRuntimeExecutionHostSlot(
 
 export function createBrowserRuntimeProviderContext(
   context: ResolvedBrowserRuntimeLifecycleContext,
-  executionHostSlot: BrowserRuntimeExecutionHostSlot,
-  executionIsolation: RuntimeExecutionIsolationPolicy
+  executionHostSlot: BrowserRuntimeExecutionHostSlot
 ): BrowserRuntimeProviderContext {
   return Object.freeze({
     assets: context.assets,
     debug: context.options.debug ?? false,
-    executionIsolation,
     prewarmAfterUse:
       context.options.safeExecution?.prewarmAfterUse ?? true,
     workerFactoryFor: executionHostSlot.workerFactoryFor,

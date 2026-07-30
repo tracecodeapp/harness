@@ -2,11 +2,13 @@
 
 import {
   BROWSER_RUNTIME_ASSET_PROTOCOL_VERSION,
-  createBrowserHarness,
-  resolveBrowserHarnessAssets,
+  createBrowserRuntimeHost,
   type BrowserRuntimeAssetDescriptor,
   type BrowserRuntimeAssetManifests,
 } from '../src/browser';
+import {
+  resolveBrowserHarnessAssets,
+} from '../packages/runtime-browser/src/runtime-assets';
 import { CppWorkerClient } from '../packages/runtime-cpp/src/cpp-worker-client';
 import { createBrowserProjectWorkspace } from '../packages/runtime-browser/src/project';
 
@@ -264,8 +266,11 @@ async function testClassicAndProjectManifestPlumbing(): Promise<void> {
       resolvedAssets.cppCompilerIntegrity?.assets.length === 4,
       `C++ manifest should derive four exact pins before client construction: ${JSON.stringify(resolvedAssets.cppCompilerIntegrity)}`
     );
-    const harness = createBrowserHarness({ assets: { runtimeManifests: manifests } });
-    await harness.getClient('cpp').init();
+    const host = createBrowserRuntimeHost({
+      assets: { runtimeManifests: manifests },
+      providers: ['cpp'],
+    });
+    await host.warmLanguage('cpp');
     const classicWorker = AssetWorker.instances.find((worker) => String(worker.url) === '/cpp/cpp-worker.js');
     assertCondition(classicWorker, 'Classic C++ should construct the consumer manifest worker');
     const classicInit = classicWorker.messages.find((message) => message.type === 'init');
@@ -279,7 +284,7 @@ async function testClassicAndProjectManifestPlumbing(): Promise<void> {
       AssetWorker.fetches.length === 1 && AssetWorker.fetches[0] === '/cpp/cpp-worker.js',
       `Classic init should preflight only its execution worker: ${JSON.stringify(AssetWorker.fetches)}`
     );
-    harness.dispose();
+    host.dispose();
 
     AssetWorker.instances = [];
     AssetWorker.fetches = [];

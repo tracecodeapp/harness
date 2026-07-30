@@ -1,7 +1,5 @@
 import type {
   Language,
-  RuntimeClient,
-  RuntimeExecutionIsolationPolicy,
   RuntimePreparedExecutionProvider,
 } from '@tracecode/runtime-core';
 import type {
@@ -14,7 +12,6 @@ import type { BrowserWorkerFactory } from './execution-host';
 export interface BrowserRuntimeProviderContext {
   readonly assets: BrowserHarnessAssets;
   readonly debug: boolean;
-  readonly executionIsolation: RuntimeExecutionIsolationPolicy;
   readonly prewarmAfterUse: boolean;
   readonly workerFactoryFor: (language: Language) => BrowserWorkerFactory | undefined;
   readonly preflight: (
@@ -33,11 +30,6 @@ export interface BrowserRuntimeProviderContext {
 
 export interface BrowserRuntimeProviderLease {
   /**
-   * Legacy direct clients retained only while BrowserHarness remains available
-   * to existing workspace integrations.
-   */
-  readonly clients: ReadonlyMap<Language, RuntimeClient>;
-  /**
    * Prepare-once providers consumed by BrowserRuntimeHost and Judge.
    *
    * A lease must expose every selected language it owns here. The host rejects
@@ -48,7 +40,6 @@ export interface BrowserRuntimeProviderLease {
     Language,
     RuntimePreparedExecutionProvider
   >;
-  warm(language: Language): Promise<{ success: boolean; loadTimeMs: number }>;
   disposeLanguage(language: Language): void;
   dispose(): void;
 }

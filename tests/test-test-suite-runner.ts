@@ -41,6 +41,7 @@ const ORIGINAL_ALL_SCRIPTS = [
   'test:runtime-contract',
   'test:judge',
   'test:runtime-execution-judge',
+  'test:prepared-provider-release-gate',
   'test:native-harness',
   'test:runtime-trace',
   'test:standalone-boundary',
@@ -49,7 +50,7 @@ const ORIGINAL_ALL_SCRIPTS = [
   'test:language-packages',
   'test:sql-package-surface',
   'test:smoke',
-  'test:browser-harness',
+  'test:browser-runtime-host',
   'test:asset-sync',
   'test:example-app',
   'test:java-example-app',
@@ -78,7 +79,7 @@ test('CI profile excludes only browser examples and full-package examples', () =
   const actual = scriptsFor('ci');
   const fullOnly = [
     'test:sql-browser-example',
-    'test:browser-harness',
+    'test:browser-runtime-host',
     'test:example-app',
     'test:java-example-app',
     'test:project-ide-example',

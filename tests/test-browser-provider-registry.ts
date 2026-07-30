@@ -1,33 +1,19 @@
 #!/usr/bin/env npx tsx
 
 import { test } from 'node:test';
-import type { Language, RuntimeClient } from '../packages/runtime-core/src';
+import type {
+  Language,
+  RuntimePreparedExecutionProvider,
+} from '../packages/runtime-core/src';
 import {
-  createBrowserHarness,
+  createBrowserRuntimeHost,
   createBrowserRuntimeProviderRegistry,
   type BrowserRuntimeProvider,
-  type CreateBrowserHarnessOptions,
+  type CreateBrowserRuntimeHostOptions,
 } from '../packages/runtime-browser/src';
 
 function assertCondition(condition: unknown, message: string): asserts condition {
   if (!condition) throw new Error(message);
-}
-
-function fakeClient(): RuntimeClient {
-  return {
-    async init() {
-      return { success: true, loadTimeMs: 0 };
-    },
-    async execute() {
-      throw new Error('not used');
-    },
-    async executeWithTracing() {
-      throw new Error('not used');
-    },
-    async executeCode() {
-      throw new Error('not used');
-    },
-  };
 }
 
 function recordingProvider(
@@ -35,18 +21,30 @@ function recordingProvider(
   languages: readonly Language[],
   events: string[]
 ): BrowserRuntimeProvider {
+  const preparedProviders = new Map<
+    Language,
+    RuntimePreparedExecutionProvider
+  >(
+    languages.map((language) => [
+      language,
+      {
+        async init() {
+          events.push(`init:${id}:${language}`);
+          return { success: true, loadTimeMs: 0 };
+        },
+        async prepareProgram() {
+          throw new Error('not used');
+        },
+      },
+    ])
+  );
   return {
     id,
     languages,
     create() {
       events.push(`create:${id}`);
       return {
-        clients: new Map(languages.map((language) => [language, fakeClient()])),
-        preparedProviders: new Map(),
-        async warm(language) {
-          events.push(`warm:${id}:${language}`);
-          return { success: true, loadTimeMs: 0 };
-        },
+        preparedProviders,
         disposeLanguage(language) {
           events.push(`dispose-language:${id}:${language}`);
         },
@@ -61,13 +59,13 @@ function recordingProvider(
 async function main(): Promise<void> {
   let missingRegistryError = '';
   try {
-    createBrowserHarness({} as CreateBrowserHarnessOptions);
+    createBrowserRuntimeHost({} as CreateBrowserRuntimeHostOptions);
   } catch (error) {
     missingRegistryError = error instanceof Error ? error.message : String(error);
   }
   assertCondition(
     missingRegistryError.includes('providerRegistry is required'),
-    `Standalone browser composition must require provider injection: ${missingRegistryError}`
+    `Browser host composition must require provider injection: ${missingRegistryError}`
   );
 
   const duplicateEvents: string[] = [];
@@ -93,11 +91,7 @@ async function main(): Promise<void> {
       create() {
         malformedEvents.push('create');
         return {
-          clients: new Map(),
           preparedProviders: new Map(),
-          async warm() {
-            return { success: true, loadTimeMs: 0 };
-          },
           disposeLanguage() {},
           dispose() {
             malformedEvents.push('dispose');
@@ -108,7 +102,7 @@ async function main(): Promise<void> {
   ]);
   let malformedProviderError = '';
   try {
-    createBrowserHarness({
+    createBrowserRuntimeHost({
       providerRegistry: malformedRegistry,
       featureOverrides: {
         worker: true,
@@ -119,11 +113,12 @@ async function main(): Promise<void> {
       },
     });
   } catch (error) {
-    malformedProviderError = error instanceof Error ? error.message : String(error);
+    malformedProviderError =
+      error instanceof Error ? error.message : String(error);
   }
   assertCondition(
-    malformedProviderError.includes('did not create its selected'),
-    `Harness must reject providers missing an owned client: ${malformedProviderError}`
+    malformedProviderError.includes('invalid prepared provider'),
+    `Host must reject providers missing an owned prepared provider: ${malformedProviderError}`
   );
   assertCondition(
     malformedEvents.join(',') === 'create,dispose',
@@ -133,9 +128,13 @@ async function main(): Promise<void> {
   const events: string[] = [];
   const registry = createBrowserRuntimeProviderRegistry([
     recordingProvider('python-provider', ['python'], events),
-    recordingProvider('javascript-provider', ['javascript', 'typescript'], events),
+    recordingProvider(
+      'javascript-provider',
+      ['javascript', 'typescript'],
+      events
+    ),
   ]);
-  const harness = createBrowserHarness({
+  const host = createBrowserRuntimeHost({
     providerRegistry: registry,
     providers: ['python'],
     featureOverrides: {
@@ -151,20 +150,22 @@ async function main(): Promise<void> {
     `Only selected providers may be acquired: ${events.join(',')}`
   );
   assertCondition(
-    harness.supportedLanguages.join(',') === 'python',
-    'Harness language exposure must come from the selected registry entries'
+    host.supportedLanguages.join(',') === 'python',
+    'Host language exposure must come from the selected registry entries'
   );
-  await harness.warmLanguage('python');
-  harness.disposeLanguage('python');
-  harness.dispose();
+  await host.warmLanguage('python');
+  host.disposeLanguage('python');
+  host.dispose();
   assertCondition(
     events.join(',') ===
-      'create:python-provider,warm:python-provider:python,' +
+      'create:python-provider,init:python-provider:python,' +
         'dispose-language:python-provider:python,dispose:python-provider',
-    `Provider leases must own warmup and teardown: ${events.join(',')}`
+    `Prepared providers must own warmup while leases own teardown: ${events.join(',')}`
   );
 
-  console.log('PASS: browser provider registry injects selected language ownership and lifecycle');
+  console.log(
+    'PASS: browser provider registry injects prepared-provider ownership and lifecycle'
+  );
 }
 
 test('browser provider registry', main);

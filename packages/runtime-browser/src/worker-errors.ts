@@ -7,7 +7,7 @@
  * (`success: false`), never through these classes.
  *
  * Messages are load-bearing: consumers and tests assert on exact substrings
- * (e.g. tests/test-browser-harness.ts matches 'Worker request timed out:'),
+ * (e.g. focused worker tests match 'Worker request timed out:'),
  * so each class reproduces the historical message verbatim.
  */
 

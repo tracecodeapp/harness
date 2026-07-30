@@ -1,6 +1,5 @@
 import type {
   Language,
-  RuntimeClient,
   RuntimePreparedExecutionProvider,
 } from '@tracecode/runtime-core';
 import type {
@@ -8,7 +7,6 @@ import type {
   BrowserRuntimeProviderContext,
   BrowserRuntimeProviderLease,
 } from '@tracecode/runtime-browser';
-import { FreshWorkerRuntimeClient } from '@tracecode/runtime-browser/internal';
 import { createCSharpRuntimeClient } from './csharp-runtime-client';
 import { CSharpWorkerClient } from './csharp-worker-client';
 
@@ -50,35 +48,18 @@ export function createCSharpBrowserRuntimeProvider(
             }
           : {}),
       });
-      const directClient = createCSharpRuntimeClient(worker);
-      const safeClient = new FreshWorkerRuntimeClient(directClient, {
-        retireWorker: () => worker.terminate(),
-        prepareWorker: () => worker.warmup(),
-        prewarmAfterUse: context.prewarmAfterUse,
-      });
-      const client: RuntimeClient =
-        context.executionIsolation === 'safe' ? safeClient : directClient;
-      const clients = new Map<Language, RuntimeClient>([['csharp', client]]);
+      // The C# adapter is also its prepared provider. It remains private to
+      // this lease; no direct-client capability crosses the host boundary.
+      const preparedProvider = createCSharpRuntimeClient(worker);
       const preparedProviders = new Map<
         Language,
         RuntimePreparedExecutionProvider
-      >([['csharp', directClient]]);
+      >([['csharp', preparedProvider]]);
 
       return {
-        clients,
         preparedProviders,
-        warm: () =>
-          context.executionIsolation === 'safe'
-            ? safeClient.prepare()
-            : worker.warmup(),
-        disposeLanguage: () => {
-          if (context.executionIsolation === 'safe') safeClient.reset();
-          else worker.terminate();
-        },
-        dispose: () => {
-          if (context.executionIsolation === 'safe') safeClient.reset();
-          worker.terminate();
-        },
+        disposeLanguage: () => worker.terminate(),
+        dispose: () => worker.terminate(),
       };
     },
   };

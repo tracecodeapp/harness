@@ -3,7 +3,6 @@
 import { test } from 'node:test';
 import type {
   Language,
-  RuntimeClient,
   RuntimePreparedExecutionProvider,
   RuntimePreparedProgramCapabilities,
 } from '../packages/runtime-core/src';
@@ -26,23 +25,6 @@ function assertCondition(
   message: string
 ): asserts condition {
   if (!condition) throw new Error(message);
-}
-
-function fakeClient(): RuntimeClient {
-  return {
-    async init() {
-      return { success: true, loadTimeMs: 0 };
-    },
-    async execute() {
-      throw new Error('direct execution must not be used');
-    },
-    async executeWithTracing() {
-      throw new Error('direct execution must not be used');
-    },
-    async executeCode() {
-      throw new Error('direct execution must not be used');
-    },
-  };
 }
 
 function fakePreparedProvider(
@@ -95,14 +77,7 @@ function recordingProvider(
     create(): BrowserRuntimeProviderLease {
       events.push(`create:${id}`);
       return {
-        clients: new Map(
-          languages.map((language) => [language, fakeClient()])
-        ),
         preparedProviders: preparedByLanguage,
-        async warm(language) {
-          events.push(`warm:${language}`);
-          return { success: true, loadTimeMs: 0 };
-        },
         disposeLanguage(language) {
           events.push(`dispose-language:${language}`);
         },

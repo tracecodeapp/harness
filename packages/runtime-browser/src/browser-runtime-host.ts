@@ -112,7 +112,6 @@ function assertLeaseShape(
     );
   }
   if (
-    typeof lease.warm !== 'function' ||
     typeof lease.disposeLanguage !== 'function' ||
     typeof lease.dispose !== 'function'
   ) {
@@ -236,8 +235,7 @@ class BrowserRuntimeHostImplementation implements BrowserRuntimeHost {
 
     const providerContext = createBrowserRuntimeProviderContext(
       context,
-      this.#executionHostSlot,
-      'safe'
+      this.#executionHostSlot
     );
 
     try {

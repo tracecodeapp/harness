@@ -1,6 +1,5 @@
 import type {
   Language,
-  RuntimeClient,
   RuntimePreparedExecutionProvider,
 } from '@tracecode/runtime-core';
 import type {
@@ -9,7 +8,6 @@ import type {
   BrowserRuntimeProviderLease,
 } from '@tracecode/runtime-browser';
 import { createCppPreparedExecutionProvider } from './cpp-prepared-provider';
-import { createCppRuntimeClient } from './cpp-runtime-client';
 import { CppWorkerClient } from './cpp-worker-client';
 
 export interface CppBrowserRuntimeProviderOptions {
@@ -62,22 +60,17 @@ export function createCppBrowserRuntimeProvider(
         externalCompilerUrl: options.externalCompilerUrl,
       };
       const createWorkerClient = () => new CppWorkerClient(workerOptions);
-      const worker = createWorkerClient();
-      const client = createCppRuntimeClient(worker);
       const preparedProvider = createCppPreparedExecutionProvider({
         createWorkerClient,
       });
-      const clients = new Map<Language, RuntimeClient>([['cpp', client]]);
       const preparedProviders = new Map<
         Language,
         RuntimePreparedExecutionProvider
       >([['cpp', preparedProvider]]);
       return {
-        clients,
         preparedProviders,
-        warm: () => worker.warmup(),
-        disposeLanguage: () => worker.terminate(),
-        dispose: () => worker.terminate(),
+        disposeLanguage: () => preparedProvider.reset(),
+        dispose: () => preparedProvider.terminate(),
       };
     },
   };

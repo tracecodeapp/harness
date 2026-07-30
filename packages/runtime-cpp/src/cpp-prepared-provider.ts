@@ -9,6 +9,14 @@ export interface CppPreparedExecutionProviderOptions {
   createWorkerClient(): CppWorkerClient;
 }
 
+export interface CppPreparedExecutionProviderController
+  extends RuntimePreparedExecutionProvider {
+  /** Retire standby, preparation, and prepared-program workers but allow reuse. */
+  reset(): void;
+  /** Permanently retire every worker owned by this provider. */
+  terminate(): void;
+}
+
 /**
  * Compile-once C++ provider for Judge-backed execution.
  *
@@ -19,27 +27,60 @@ export interface CppPreparedExecutionProviderOptions {
  */
 export function createCppPreparedExecutionProvider(
   options: CppPreparedExecutionProviderOptions
-): RuntimePreparedExecutionProvider {
+): CppPreparedExecutionProviderController {
   let standbyClient: CppWorkerClient | null = null;
+  let generation = 0;
+  let terminated = false;
+  const ownedClients = new Set<CppWorkerClient>();
+  const activePrograms = new Set<() => void>();
+
+  const createClient = (): CppWorkerClient => {
+    const client = options.createWorkerClient();
+    ownedClients.add(client);
+    return client;
+  };
+
+  const retireClient = (client: CppWorkerClient): void => {
+    if (!ownedClients.delete(client)) return;
+    if (standbyClient === client) standbyClient = null;
+    client.terminate();
+  };
+
+  const assertActive = (): void => {
+    if (terminated) {
+      throw new Error('Prepared C++ execution provider has been terminated.');
+    }
+  };
+
+  const assertGeneration = (expected: number): void => {
+    assertActive();
+    if (generation !== expected) {
+      throw new Error('Prepared C++ execution provider was reset.');
+    }
+  };
 
   const acquireClient = (): CppWorkerClient => {
-    const client = standbyClient ?? options.createWorkerClient();
+    assertActive();
+    const client = standbyClient ?? createClient();
     standbyClient = null;
     return client;
   };
 
   return {
     async init() {
-      const client = standbyClient ?? options.createWorkerClient();
+      assertActive();
+      const expectedGeneration = generation;
+      const client = standbyClient ?? createClient();
       try {
         const result = await client.init();
+        assertGeneration(expectedGeneration);
         standbyClient = client;
         return {
           success: result.success,
           loadTimeMs: result.loadTimeMs,
         };
       } catch (error) {
-        client.terminate();
+        retireClient(client);
         throw error;
       }
     },
@@ -47,16 +88,19 @@ export function createCppPreparedExecutionProvider(
     async prepareProgram(
       call: RuntimeProgramPreparationCall
     ): Promise<RuntimeProgramPreparationResult> {
+      const expectedGeneration = generation;
       const client = acquireClient();
       try {
         await client.init();
+        assertGeneration(expectedGeneration);
         const preparation = await client.prepareRuntimeProgram(call);
+        assertGeneration(expectedGeneration);
         // Use an explicit literal comparison here. The declaration bundler
         // type-checks with a different strictness envelope than the package
         // project, and `!preparation.success` does not reliably preserve the
         // discriminated-union branch there.
         if (preparation.success === false) {
-          client.terminate();
+          retireClient(client);
           if (preparation.limitReason === 'client-timeout') {
             return {
               kind: 'limit',
@@ -85,6 +129,13 @@ export function createCppPreparedExecutionProvider(
         }
 
         let disposed = false;
+        const forceDispose = (): void => {
+          if (disposed) return;
+          disposed = true;
+          activePrograms.delete(forceDispose);
+          retireClient(client);
+        };
+        activePrograms.add(forceDispose);
         const capabilities = {
           caseIsolation: 'fresh-case-state' as const,
           maxConcurrency: 1,
@@ -92,10 +143,11 @@ export function createCppPreparedExecutionProvider(
         const dispose = async (): Promise<void> => {
           if (disposed) return;
           disposed = true;
+          activePrograms.delete(forceDispose);
           try {
             await client.disposePreparedProgram(preparation.handle);
           } finally {
-            client.terminate();
+            retireClient(client);
           }
         };
 
@@ -151,9 +203,26 @@ export function createCppPreparedExecutionProvider(
                 : {}),
             };
       } catch (error) {
-        client.terminate();
+        retireClient(client);
         throw error;
       }
+    },
+
+    reset(): void {
+      assertActive();
+      generation += 1;
+      for (const forceDispose of [...activePrograms]) forceDispose();
+      for (const client of [...ownedClients]) retireClient(client);
+      standbyClient = null;
+    },
+
+    terminate(): void {
+      if (terminated) return;
+      generation += 1;
+      terminated = true;
+      for (const forceDispose of [...activePrograms]) forceDispose();
+      for (const client of [...ownedClients]) retireClient(client);
+      standbyClient = null;
     },
   };
 }

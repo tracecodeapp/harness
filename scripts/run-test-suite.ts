@@ -109,7 +109,7 @@ export const TEST_PHASES: TestPhase[] = [
   {
     name: 'packaged and example tests',
     tasks: [
-      task('test:browser-harness', 2, ['all']),
+      task('test:browser-runtime-host', 2, ['all']),
       task('test:java-example-app-packaged', 2, ['all']),
       task('test:example-app-packaged', 2, ['all']),
       { ...task('test:java-example-app', 2, ['all']), resources: ['example:web-ide'] },

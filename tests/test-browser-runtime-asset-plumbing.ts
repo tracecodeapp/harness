@@ -1,7 +1,7 @@
 import {
   BROWSER_RUNTIME_ASSET_PROTOCOL_VERSION,
   createBrowserRuntimeAssetPreflight,
-  createBrowserHarness,
+  createBrowserRuntimeHost,
   resolveBrowserRuntimeAssetManifests,
   type BrowserRuntimeAssetManifests,
 } from '../src/browser';
@@ -162,11 +162,13 @@ function findInitializedWorker(fragment: string): CapturingWorker {
 
 async function testManifestAssetsReachWorkerInitialization(): Promise<void> {
   CapturingWorker.instances = [];
-  const harness = createBrowserHarness({ assets: { runtimeManifests: consumerManifests() } });
-  await harness.getClient('python').init();
-  await harness.warmLanguage('typescript');
-  await harness.getClient('java').init();
-  await harness.getClient('csharp').init();
+  const host = createBrowserRuntimeHost({
+    assets: { runtimeManifests: consumerManifests() },
+  });
+  await host.warmLanguage('python');
+  await host.warmLanguage('typescript');
+  await host.warmLanguage('java');
+  await host.warmLanguage('csharp');
 
   const pythonWorker = findWorker('/python/worker.js');
   assertCondition(
@@ -214,16 +216,16 @@ async function testManifestAssetsReachWorkerInitialization(): Promise<void> {
       'https://cdn.consumer.example/csharp/runtime/_framework/dotnet.js',
     'C# runtime dependencies must reach the worker init payload'
   );
-  harness.dispose();
+  host.dispose();
 
   CapturingWorker.instances = [];
-  const directLoaderHarness = createBrowserHarness({
+  const directLoaderHost = createBrowserRuntimeHost({
     assetBaseUrl: '/direct-java-loader',
     assets: { javaWorker: 'java-worker.js' },
     providers: ['java'],
     java: { loaderUrl: '/app/runtime/java-loader.js' },
   });
-  await directLoaderHarness.getClient('java').init();
+  await directLoaderHost.warmLanguage('java');
   const directLoaderPayload = initMessage(
     findWorker('/direct-java-loader/java-worker.js')
   ).payload;
@@ -231,7 +233,7 @@ async function testManifestAssetsReachWorkerInitialization(): Promise<void> {
     directLoaderPayload?.cheerpjLoaderUrl === '/app/runtime/java-loader.js',
     'The generic Java loader option must map to the bundled client protocol'
   );
-  directLoaderHarness.dispose();
+  directLoaderHost.dispose();
 }
 
 async function testMetadataMismatchStopsBeforeWorkerConstruction(): Promise<void> {
@@ -253,16 +255,18 @@ async function testMetadataMismatchStopsBeforeWorkerConstruction(): Promise<void
     headers: { 'content-type': 'text/javascript; charset=utf-8' },
   });
   try {
-    const harness = createBrowserHarness({ assets: { runtimeManifests: manifests } });
+    const host = createBrowserRuntimeHost({
+      assets: { runtimeManifests: manifests },
+    });
     let message = '';
     try {
-      await harness.warmLanguage('typescript');
+      await host.warmLanguage('typescript');
     } catch (error) {
       message = error instanceof Error ? error.message : String(error);
     }
     assertCondition(message.includes('decoded size 3 did not match declared size 4'), 'Size mismatch must be reported');
     assertCondition(CapturingWorker.instances.length === 0, 'Metadata mismatch must fail before worker construction');
-    harness.dispose();
+    host.dispose();
   } finally {
     globalThis.fetch = originalFetch;
   }

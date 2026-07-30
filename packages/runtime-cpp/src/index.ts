@@ -11,6 +11,7 @@ export {
 } from './cpp-worker-client';
 export {
   createCppPreparedExecutionProvider,
+  type CppPreparedExecutionProviderController,
   type CppPreparedExecutionProviderOptions,
 } from './cpp-prepared-provider';
 export {

@@ -1,6 +1,5 @@
 import type {
   Language,
-  RuntimeClient,
   RuntimePreparedExecutionProvider,
 } from '@tracecode/runtime-core';
 import type {
@@ -8,14 +7,10 @@ import type {
   BrowserRuntimeProviderContext,
   BrowserRuntimeProviderLease,
 } from '@tracecode/runtime-browser';
-import { FreshWorkerRuntimeClient } from '@tracecode/runtime-browser/internal';
-import { createJavaRuntimeClient } from './java-runtime-client';
 import {
   createJavaBrowserPreparedExecutionProvider,
 } from './java-prepared-provider';
-import { runJavaSafeStorageExclusive } from './java-storage-isolation';
 import {
-  JavaWorkerClient,
   type JavaWorkerClientOptions,
 } from './java-worker-client';
 
@@ -103,18 +98,6 @@ export function createJavaBrowserRuntimeProvider(
             }
           : {}),
       };
-      const worker = new JavaWorkerClient(workerOptions);
-      const directClient = createJavaRuntimeClient(worker);
-      const safeClient = new FreshWorkerRuntimeClient(directClient, {
-        retireWorker: () => worker.terminate(),
-        prepareWorker: () => worker.warmup(),
-        prewarmAfterUse: context.prewarmAfterUse,
-        beforeExecution: () => worker.resetPersistentStorage(),
-        runExclusive: runJavaSafeStorageExclusive,
-      });
-      const client: RuntimeClient =
-        context.executionIsolation === 'safe' ? safeClient : directClient;
-      const clients = new Map<Language, RuntimeClient>([['java', client]]);
       const preparedProvider =
         createJavaBrowserPreparedExecutionProvider(workerOptions);
       const preparedProviders = new Map<
@@ -123,22 +106,9 @@ export function createJavaBrowserRuntimeProvider(
       >([['java', preparedProvider]]);
 
       return {
-        clients,
         preparedProviders,
-        warm: () =>
-          context.executionIsolation === 'safe'
-            ? safeClient.prepare()
-            : worker.warmup(),
-        disposeLanguage: () => {
-          if (context.executionIsolation === 'safe') safeClient.reset();
-          else worker.terminate();
-          preparedProvider.releaseStandby();
-        },
-        dispose: () => {
-          if (context.executionIsolation === 'safe') safeClient.reset();
-          worker.terminate();
-          preparedProvider.dispose();
-        },
+        disposeLanguage: () => preparedProvider.releaseStandby(),
+        dispose: () => preparedProvider.dispose(),
       };
     },
   };

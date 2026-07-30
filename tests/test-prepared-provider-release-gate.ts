@@ -234,11 +234,7 @@ function capabilityProvider(
     languages: ['python'],
     create() {
       return {
-        clients: new Map(),
         preparedProviders: new Map([['python', preparedProvider]]),
-        async warm() {
-          return { success: true, loadTimeMs: 0 };
-        },
         disposeLanguage() {},
         dispose() {},
       };
@@ -255,9 +251,7 @@ function browserHostFor(
       languages: [RUNTIME],
       create() {
         return {
-          clients: new Map(),
           preparedProviders: new Map([[RUNTIME, provider]]),
-          warm: () => provider.init(),
           disposeLanguage() {},
           dispose() {},
         };

@@ -300,7 +300,6 @@ async function testBrowserProviderPreparedLeaseExposure(): Promise<void> {
       },
     } as never,
     debug: false,
-    executionIsolation: 'safe',
     prewarmAfterUse: true,
     workerFactoryFor: () => undefined,
     preflight: () => async () => undefined,
@@ -313,8 +312,8 @@ async function testBrowserProviderPreparedLeaseExposure(): Promise<void> {
       'C++ browser runtime leases should expose an explicit prepared-provider map'
     );
     assertCondition(
-      lease.clients.get('cpp') !== undefined,
-      'C++ browser runtime leases should still expose the interactive client'
+      !('clients' in lease),
+      'C++ browser runtime leases must not expose a direct client map'
     );
   } finally {
     lease.dispose();
@@ -465,6 +464,55 @@ async function testPreparedProviderProtocolLifecycle(): Promise<void> {
       PreparedProtocolWorker.instances.length ===
         workerCountBeforeTimeoutDispose,
       'disposing a timed-out prepared program must not recreate its worker'
+    );
+
+    const lifecycleProvider = createCppPreparedExecutionProvider({
+      createWorkerClient: () => createClient(),
+    });
+    await lifecycleProvider.init();
+    const warmedWorker = PreparedProtocolWorker.instances.at(-1);
+    lifecycleProvider.reset();
+    assertCondition(
+      warmedWorker?.terminated,
+      'reset must retire the prepared C++ standby worker'
+    );
+    const lifecyclePreparation = await lifecycleProvider.prepareProgram({
+      mode: 'code',
+      code: 'class Solution { public: int identity(int value) { return value; } };',
+      functionName: 'identity',
+      executionStyle: 'solution-method',
+    });
+    assertCondition(
+      lifecyclePreparation.kind === 'prepared' &&
+        lifecyclePreparation.program.mode === 'code',
+      `prepared C++ provider must remain reusable after reset: ${JSON.stringify(lifecyclePreparation)}`
+    );
+    lifecycleProvider.reset();
+    let resetProgramError = '';
+    try {
+      await lifecyclePreparation.program.executeIsolated({
+        inputs: { value: 9 },
+      });
+    } catch (error) {
+      resetProgramError =
+        error instanceof Error ? error.message : String(error);
+    }
+    assertCondition(
+      resetProgramError.includes('already disposed'),
+      `reset must retire programs owned by the prior provider generation: ${resetProgramError}`
+    );
+    await lifecyclePreparation.program.dispose();
+    lifecycleProvider.terminate();
+    let terminatedProviderError = '';
+    try {
+      await lifecycleProvider.init();
+    } catch (error) {
+      terminatedProviderError =
+        error instanceof Error ? error.message : String(error);
+    }
+    assertCondition(
+      terminatedProviderError.includes('has been terminated'),
+      `terminated prepared C++ providers must not restart: ${terminatedProviderError}`
     );
 
     const recycledClient = createClient();

@@ -2,7 +2,7 @@
 
 import { test } from 'node:test';
 import {
-  createBrowserHarness,
+  createBrowserRuntimeHost,
   createBrowserRuntimeEnvironment,
 } from '../src/browser';
 
@@ -37,26 +37,28 @@ async function main(): Promise<void> {
   assertCondition(java?.selected === false && java.status === 'unavailable', 'unselected providers should report unavailable');
   assertCondition(selected.providers.join(',') === 'typescript,cpp', 'provider selection should retain stable order');
 
-  const harness = createBrowserHarness({
+  const host = createBrowserRuntimeHost({
     providers: ['typescript', 'cpp'],
     engine: 'webkit',
     featureOverrides: readyFeatures,
   });
-  assertCondition(harness.environment.surface === 'classic', 'browser harness should create a Classic environment');
-  assertCondition(harness.supportedLanguages.join(',') === 'typescript,cpp', 'harness should expose only selected providers');
-  assertCondition(harness.getSupportedLanguageInfos().length === 2, 'language info should follow deployment selection');
-  assertCondition(harness.getSupportedLanguageProfiles().length === 2, 'profiles should follow deployment selection');
-  assertCondition(!harness.isLanguageSupported('python'), 'unselected source support should not imply deployment support');
-  let rejectedUnselectedClient = false;
+  assertCondition(host.environment.surface === 'classic', 'browser host should create a Classic environment');
+  assertCondition(host.supportedLanguages.join(',') === 'typescript,cpp', 'host should expose only selected providers');
+  assertCondition(!host.isLanguageSupported('python'), 'unselected source support should not imply deployment support');
+  let rejectedUnselectedWarmup = false;
   try {
-    harness.getClient('python');
+    await host.warmLanguage('python');
   } catch (error) {
-    rejectedUnselectedClient = error instanceof Error && error.message.includes('not selected');
+    rejectedUnselectedWarmup =
+      error instanceof Error && error.message.includes('not selected');
   }
-  assertCondition(rejectedUnselectedClient, 'harness should reject clients outside the deployment selection');
-  const harnessCpp = await harness.preflightLanguage('cpp');
-  assertCondition(harnessCpp.status === 'degraded', 'harness should expose engine-aware readiness');
-  harness.dispose();
+  assertCondition(
+    rejectedUnselectedWarmup,
+    'host should reject lifecycle operations outside the deployment selection'
+  );
+  const hostCpp = await host.preflightLanguage('cpp');
+  assertCondition(hostCpp.status === 'degraded', 'host should expose engine-aware readiness');
+  host.dispose();
 
   const projectJava = createBrowserRuntimeEnvironment({
     providers: ['java'],

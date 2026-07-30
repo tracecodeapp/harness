@@ -1,6 +1,6 @@
 import {
   BROWSER_RUNTIME_ASSET_PROTOCOL_VERSION,
-  createBrowserHarness,
+  createBrowserRuntimeHost,
   resolveBrowserRuntimeAssetManifests,
   type BrowserRuntimeAssetManifest,
 } from '../src/browser';
@@ -134,7 +134,7 @@ async function assertClientConstructionAndPreflight(): Promise<void> {
   client.terminate();
 }
 
-async function assertClassicAndHarnessPaths(): Promise<void> {
+async function assertClientHostAndProjectPaths(): Promise<void> {
   const classic = new PythonWorkerClient({ workerUrl: '/workers/python-worker.js' });
   await classic.init();
   const classicWorker = CapturingWorker.instances.at(-1);
@@ -142,11 +142,17 @@ async function assertClassicAndHarnessPaths(): Promise<void> {
   classic.terminate();
 
   CapturingWorker.instances = [];
-  const harness = createBrowserHarness({ assets: { runtimeManifests: { python: modulePythonManifest() } } });
-  await harness.getClient('python').init();
-  const harnessWorker = CapturingWorker.instances[0];
-  assertCondition(harnessWorker?.options?.type === 'module', 'Classic harness entry did not honor module Python manifest');
-  harness.dispose();
+  const host = createBrowserRuntimeHost({
+    assets: { runtimeManifests: { python: modulePythonManifest() } },
+    providers: ['python'],
+  });
+  await host.warmLanguage('python');
+  const hostWorker = CapturingWorker.instances[0];
+  assertCondition(
+    hostWorker?.options?.type === 'module',
+    'Browser runtime host did not honor the module Python manifest'
+  );
+  host.dispose();
 
   CapturingWorker.instances = [];
   const workspace = await createBrowserProjectWorkspace({
@@ -172,7 +178,7 @@ Object.defineProperty(globalThis, 'Worker', { configurable: true, writable: true
 try {
   assertFormatValidation();
   await assertClientConstructionAndPreflight();
-  await assertClassicAndHarnessPaths();
+  await assertClientHostAndProjectPaths();
   console.log('PASS: consumer-generic Python module worker manifest, protocol, and project plumbing');
 } finally {
   if (originalWorker) Object.defineProperty(globalThis, 'Worker', originalWorker);

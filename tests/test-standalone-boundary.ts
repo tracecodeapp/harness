@@ -13,7 +13,6 @@ const SCANNED_FILES = [
   'src/cli.ts',
   'src/native.ts',
   'src/sql.ts',
-  'packages/runtime-browser/src/browser-harness.ts',
   'packages/runtime-browser/src/index.ts',
   'packages/runtime-browser/src/internal.ts',
   'packages/runtime-javascript/src/javascript-runtime-client.ts',

@@ -1,6 +1,5 @@
 import type {
   Language,
-  RuntimeClient,
   RuntimePreparedExecutionProvider,
 } from '@tracecode/runtime-core';
 import type {
@@ -8,10 +7,8 @@ import type {
   BrowserRuntimeProviderContext,
   BrowserRuntimeProviderLease,
 } from '@tracecode/runtime-browser';
-import { FreshWorkerRuntimeClient } from '@tracecode/runtime-browser/internal';
 import {
   createPythonPreparedExecutionProvider,
-  createPythonRuntimeClient,
 } from './python-runtime-client';
 import {
   PythonWorkerClient,
@@ -73,16 +70,6 @@ export function createPythonBrowserRuntimeProvider(
         },
       };
       const createWorkerClient = () => new PythonWorkerClient(workerOptions);
-      const worker = createWorkerClient();
-      const directClient = createPythonRuntimeClient(worker);
-      const safeClient = new FreshWorkerRuntimeClient(directClient, {
-        retireWorker: () => worker.terminate(),
-        prepareWorker: () => worker.warmup(),
-        prewarmAfterUse: context.prewarmAfterUse,
-      });
-      const client: RuntimeClient =
-        context.executionIsolation === 'safe' ? safeClient : directClient;
-      const clients = new Map<Language, RuntimeClient>([['python', client]]);
       const preparedProvider = createPythonPreparedExecutionProvider({
         createWorkerClient,
         prewarmAfterUse: context.prewarmAfterUse,
@@ -98,22 +85,9 @@ export function createPythonBrowserRuntimeProvider(
           RuntimePreparedExecutionProvider
         >;
       } = {
-        clients,
         preparedProviders,
-        warm: () =>
-          context.executionIsolation === 'safe'
-            ? safeClient.prepare()
-            : worker.warmup(),
-        disposeLanguage: () => {
-          if (context.executionIsolation === 'safe') safeClient.reset();
-          else worker.terminate();
-          preparedProvider.reset();
-        },
-        dispose: () => {
-          if (context.executionIsolation === 'safe') safeClient.reset();
-          worker.terminate();
-          preparedProvider.terminate();
-        },
+        disposeLanguage: () => preparedProvider.reset(),
+        dispose: () => preparedProvider.terminate(),
       };
       return lease;
     },

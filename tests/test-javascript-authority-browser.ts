@@ -25,8 +25,15 @@ async function main(): Promise<void> {
   );
   await Promise.all([
     build({
-      entryPoints: [join(root, 'src', 'browser.ts')],
-      outfile: join(tempRoot, 'browser-harness.js'),
+      entryPoints: [
+        join(
+          root,
+          'tests',
+          'fixtures',
+          'javascript-judge-authority-browser-entry.ts'
+        ),
+      ],
+      outfile: join(tempRoot, 'browser-judge.js'),
       bundle: true,
       format: 'esm',
       platform: 'browser',
@@ -152,75 +159,54 @@ async function main(): Promise<void> {
       }
     });
 
-    const classic = await page.evaluate(async ({ testOrigin }) => {
-      const browserHarnessUrl = '/browser-harness.js';
-      const { createBrowserHarness } = await import(browserHarnessUrl);
-      const harness = createBrowserHarness({ assetBaseUrl: '/workers' });
-      try {
-        const client = harness.getClient('javascript');
-        const preparedResults: Record<string, any> = {};
-        for (const language of ['javascript', 'typescript'] as const) {
-          const preparedClient = harness.getClient(language) as typeof client & {
-            prepareProgram(call: {
-              mode: 'code';
-              code: string;
-              functionName: string;
-              executionStyle: 'function';
-            }): Promise<any>;
-          };
-          const preparation = await preparedClient.prepareProgram({
-            mode: 'code',
-            code:
-              language === 'typescript'
-                ? `let count = 0;
+    const judged = await page.evaluate(async ({ testOrigin }) => {
+      // @ts-expect-error This module is built and served by the browser fixture.
+      const { evaluateBrowserRuntime } = await import('/browser-judge.js');
+      const preparedResults: Record<string, any> = {};
+      for (const language of ['javascript', 'typescript'] as const) {
+        const code =
+          language === 'typescript'
+            ? `let count = 0;
 function isolated(value: number): number[] {
   count += 1;
   (globalThis as any).__preparedBrowserCount =
     ((globalThis as any).__preparedBrowserCount ?? 0) + 1;
   return [value, count, (globalThis as any).__preparedBrowserCount];
 }`
-                : `let count = 0;
+            : `let count = 0;
 function isolated(value) {
   count += 1;
   globalThis.__preparedBrowserCount =
     (globalThis.__preparedBrowserCount ?? 0) + 1;
   return [value, count, globalThis.__preparedBrowserCount];
-}`,
-            functionName: 'isolated',
-            executionStyle: 'function',
-          });
-          if (
-            preparation.kind !== 'prepared' ||
-            preparation.program.mode !== 'code'
-          ) {
-            preparedResults[language] = { preparation };
-            continue;
-          }
-          try {
-            const [first, second] = await Promise.all([
-              preparation.program.executeIsolated({
-                inputs: { value: 3 },
-              }),
-              preparation.program.executeIsolated({
-                inputs: { value: 7 },
-              }),
-            ]);
-            preparedResults[language] = {
-              preparation: { kind: 'prepared' },
-              first,
-              second,
-            };
-          } finally {
-            await preparation.program.dispose();
-          }
-        }
-        const control = await client.executeCode({ code: 'function add(a, b) { return a + b; }', functionName: 'add', inputs: { a: 2, b: 3 }, executionStyle: 'function' });
-        const computed = await client.executeCode({ code: `function escape() {
+}`;
+        preparedResults[language] = (await evaluateBrowserRuntime({
+          language,
+          code,
+          functionName: 'isolated',
+          inputs: [{ value: 3 }, { value: 7 }],
+          maxConcurrency: 2,
+        })).cases;
+      }
+      const [control] = (await evaluateBrowserRuntime({
+        language: 'javascript',
+        code: 'function add(a, b) { return a + b; }',
+        functionName: 'add',
+        inputs: [{ a: 2, b: 3 }],
+      })).cases;
+      const [computed] = (await evaluateBrowserRuntime({
+        language: 'javascript',
+        code: `function escape() {
   const key = 'con' + 'structor';
   const scope = ({})[key][key]('return self')();
   return scope.fetch(${JSON.stringify(`${testOrigin}/authority-escape/classic-computed`)});
-}`, functionName: 'escape', inputs: {}, executionStyle: 'function' });
-        const deferred = await client.executeCode({ code: `async function escapeLater() {
+}`,
+        functionName: 'escape',
+        inputs: [{}],
+      })).cases;
+      const [deferred] = (await evaluateBrowserRuntime({
+        language: 'javascript',
+        code: `async function escapeLater() {
   const key = 'con' + 'structor';
   const scope = ({})[key][key]('return self')();
   const schedule = scope.setTimeout;
@@ -232,53 +218,76 @@ function isolated(value) {
       reject(error);
     }
   }, 0));
-}`, functionName: 'escapeLater', inputs: {}, executionStyle: 'function' });
-        const typed = await harness.getClient('typescript').executeCode({ code: 'function multiply(a: number, b: number): number { return a * b; }', functionName: 'multiply', inputs: { a: 3, b: 4 }, executionStyle: 'function' });
-        const traced = await client.executeWithTracing({ code: 'function increment(value) { return value + 1; }', functionName: 'increment', inputs: { value: 8 } });
-        return {
-          control,
-          computed,
-          deferred,
-          typed,
-          traced: {
-            success: traced.kind === 'completed',
-            output: traced.kind === 'completed' ? traced.output : undefined,
-            eventCount: traced.trace?.events?.length ?? 0,
-          },
-          preparedJavaScript: preparedResults.javascript,
-          preparedTypeScript: preparedResults.typescript,
-        };
-      } finally {
-        harness.dispose();
-      }
+}`,
+        functionName: 'escapeLater',
+        inputs: [{}],
+      })).cases;
+      const [typed] = (await evaluateBrowserRuntime({
+        language: 'typescript',
+        code:
+          'function multiply(a: number, b: number): number { return a * b; }',
+        functionName: 'multiply',
+        inputs: [{ a: 3, b: 4 }],
+      })).cases;
+      const [traced] = (await evaluateBrowserRuntime({
+        language: 'javascript',
+        code: 'function increment(value) { return value + 1; }',
+        functionName: 'increment',
+        inputs: [{ value: 8 }],
+        trace: true,
+      })).cases;
+      return {
+        control,
+        computed,
+        deferred,
+        typed,
+        traced,
+        preparedJavaScript: preparedResults.javascript,
+        preparedTypeScript: preparedResults.typescript,
+      };
     }, { testOrigin: origin });
 
-    assertCondition(classic.control.kind === 'completed' && classic.control.output === 5, `Classic control failed: ${JSON.stringify(classic)}`);
     assertCondition(
-      classic.computed.kind === 'failed' && classic.computed.error === 'fetch is not defined',
-      `Classic computed Function escape was not denied: ${JSON.stringify(classic.computed)}`
+      judged.control.status === 'completed' && judged.control.value === 5,
+      `Browser Judge control failed: ${JSON.stringify(judged)}`
     );
     assertCondition(
-      classic.deferred.kind === 'failed' && classic.deferred.error === 'fetch is not defined',
-      `Classic deferred Function escape was not denied: ${JSON.stringify(classic.deferred)}`
+      judged.computed.status === 'runtime-error' &&
+        judged.computed.diagnostics.some(
+          (diagnostic: { message?: string }) =>
+            diagnostic.message === 'fetch is not defined'
+        ),
+      `Browser Judge computed Function escape was not denied: ${JSON.stringify(judged.computed)}`
     );
-    assertCondition(classic.typed.kind === 'completed' && classic.typed.output === 12, `TypeScript control failed: ${JSON.stringify(classic.typed)}`);
     assertCondition(
-      classic.traced.success && classic.traced.output === 9 && classic.traced.eventCount > 0,
-      `Classic tracing control failed: ${JSON.stringify(classic.traced)}`
+      judged.deferred.status === 'runtime-error' &&
+        judged.deferred.diagnostics.some(
+          (diagnostic: { message?: string }) =>
+            diagnostic.message === 'fetch is not defined'
+        ),
+      `Browser Judge deferred Function escape was not denied: ${JSON.stringify(judged.deferred)}`
+    );
+    assertCondition(
+      judged.typed.status === 'completed' && judged.typed.value === 12,
+      `Browser Judge TypeScript control failed: ${JSON.stringify(judged.typed)}`
+    );
+    assertCondition(
+      judged.traced.status === 'completed' &&
+        judged.traced.value === 9 &&
+        judged.traced.trace?.events?.length > 0,
+      `Browser Judge tracing control failed: ${JSON.stringify(judged.traced)}`
     );
     for (const [language, result] of [
-      ['javascript', classic.preparedJavaScript],
-      ['typescript', classic.preparedTypeScript],
+      ['javascript', judged.preparedJavaScript],
+      ['typescript', judged.preparedTypeScript],
     ] as const) {
       assertCondition(
-        result.preparation.kind === 'prepared' &&
-          result.first?.kind === 'completed' &&
-          JSON.stringify(result.first.output) === JSON.stringify([3, 1, 1]) &&
-          result.first.timings?.artifactCacheHit === true &&
-          result.second?.kind === 'completed' &&
-          JSON.stringify(result.second.output) === JSON.stringify([7, 1, 1]) &&
-          result.second.timings?.artifactCacheHit === true,
+        result?.[0]?.status === 'completed' &&
+          JSON.stringify(result[0].value) === JSON.stringify([3, 1, 1]) &&
+          result[0].timings?.artifactCacheHit === true &&
+          result?.[1]?.status === 'completed' &&
+          JSON.stringify(result[1].value) === JSON.stringify([7, 1, 1]) &&
+          result[1].timings?.artifactCacheHit === true,
         `Browser ${language} prepared isolation failed: ${JSON.stringify(result)}`
       );
     }
@@ -465,8 +474,8 @@ function isolated(value) {
       );
     }
     assertCondition(networkHits.length === 0, `Native browser authority reached the server: ${networkHits.join(', ')}`);
-    console.log(JSON.stringify({ exposure, classic, project: { outcomes, probeNames: project.probeNames } }, null, 2));
-    console.log('PASS: public Classic and project browser paths deny ambient authority in real Chromium');
+    console.log(JSON.stringify({ exposure, judged, project: { outcomes, probeNames: project.probeNames } }, null, 2));
+    console.log('PASS: public Browser Judge and project paths deny ambient authority in real Chromium');
   } finally {
     await browser?.close();
     await new Promise<void>((resolveClose) => {

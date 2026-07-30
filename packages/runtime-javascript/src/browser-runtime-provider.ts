@@ -1,6 +1,5 @@
 import type {
   Language,
-  RuntimeClient,
   RuntimePreparedExecutionProvider,
 } from '@tracecode/runtime-core';
 import type {
@@ -8,7 +7,9 @@ import type {
   BrowserRuntimeProviderContext,
   BrowserRuntimeProviderLease,
 } from '@tracecode/runtime-browser';
-import { createJavaScriptRuntimeClient } from './javascript-runtime-client';
+import {
+  createJavaScriptPreparedExecutionProvider,
+} from './javascript-runtime-client';
 import { JavaScriptWorkerClient } from './javascript-worker-client';
 
 export function createJavaScriptBrowserRuntimeProvider(): BrowserRuntimeProvider {
@@ -34,12 +35,10 @@ export function createJavaScriptBrowserRuntimeProvider(): BrowserRuntimeProvider
         typescriptCompilerUrl: context.assets.typescriptCompiler,
         typescriptCompilerPreflight: context.preflight('typescript', ['compiler']),
       });
-      const javascript = createJavaScriptRuntimeClient('javascript', worker);
-      const typescript = createJavaScriptRuntimeClient('typescript', worker);
-      const clients = new Map<Language, RuntimeClient>([
-        ['javascript', javascript],
-        ['typescript', typescript],
-      ]);
+      const javascript =
+        createJavaScriptPreparedExecutionProvider('javascript', worker);
+      const typescript =
+        createJavaScriptPreparedExecutionProvider('typescript', worker);
       const preparedProviders = new Map<
         Language,
         RuntimePreparedExecutionProvider
@@ -49,12 +48,7 @@ export function createJavaScriptBrowserRuntimeProvider(): BrowserRuntimeProvider
       ]);
 
       return {
-        clients,
         preparedProviders,
-        warm: (language) =>
-          language === 'typescript'
-            ? worker.warmup('typescript')
-            : javascript.init(),
         disposeLanguage: () => worker.terminate(),
         dispose: () => worker.terminate(),
       };

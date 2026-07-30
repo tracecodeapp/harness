@@ -1902,7 +1902,6 @@ async function main(): Promise<void> {
         hostNodeRuntimeAssessed: false,
         hostDriver: 'Node.js/tsx launches Playwright, serves static assets, and writes JSON only; its timings are excluded',
         javascriptCommandNote: '`node` is the public browser-project CLI spelling backed by javascript-project-worker.js',
-        classicBenchmarkIndependent: 'scripts/benchmark-browser-runtimes.ts',
       },
       methodology: {
         isolation: 'fresh Playwright BrowserContext and fresh project workspace per language/iteration sample',

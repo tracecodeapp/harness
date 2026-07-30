@@ -62,7 +62,7 @@ const PACKAGE_CHECKS: PackageCheck[] = [
   {
     name: '@tracecode/runtime-browser',
     dir: 'packages/runtime-browser',
-    exportName: 'createBrowserHarness',
+    exportName: 'createBrowserRuntimeHost',
     requiredFiles: [
       'dist/index.js',
       'dist/index.cjs',

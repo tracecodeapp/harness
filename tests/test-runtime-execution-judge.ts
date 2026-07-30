@@ -536,9 +536,7 @@ function browserHostFor(
     languages: [RUNTIME],
     create() {
       return {
-        clients: new Map(),
         preparedProviders: new Map([[RUNTIME, provider]]),
-        warm: () => provider.init(),
         disposeLanguage() {},
         dispose() {},
       };

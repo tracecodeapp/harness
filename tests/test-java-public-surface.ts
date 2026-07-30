@@ -90,7 +90,7 @@ function main(): void {
     'packages/runtime-java/src/project-browser.ts',
     'packages/runtime-java/src/java-worker-client.ts',
     'packages/runtime-java/src/java-prepared-provider.ts',
-    'packages/runtime-browser/src/browser-harness.ts',
+    'packages/runtime-browser/src/browser-runtime-host.ts',
     'packages/runtime-browser/src/project.ts',
     'packages/runtime-browser/src/runtime-assets.ts',
   ] as const;

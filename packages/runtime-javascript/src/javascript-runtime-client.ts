@@ -33,6 +33,38 @@ export interface JavaScriptRuntimeClient
   extends RuntimeClient,
     RuntimePreparedExecutionProvider {}
 
+class JavaScriptPreparedExecutionProviderImplementation
+  implements RuntimePreparedExecutionProvider {
+  constructor(
+    private readonly runtimeLanguage: JavaScriptWorkerLanguage,
+    private readonly workerClient: JavaScriptWorkerClient
+  ) {}
+
+  async init(): Promise<{ success: boolean; loadTimeMs: number }> {
+    const result = this.runtimeLanguage === 'typescript'
+      ? await this.workerClient.warmup('typescript')
+      : await this.workerClient.init();
+    return {
+      success: result.success,
+      loadTimeMs: result.loadTimeMs,
+    };
+  }
+
+  async prepareProgram(
+    call: RuntimeProgramPreparationCall
+  ): Promise<RuntimeProgramPreparationResult> {
+    assertRuntimeRequestSupported(
+      getLanguageRuntimeProfile(this.runtimeLanguage),
+      {
+        request: call.mode === 'trace' ? 'trace' : 'execute',
+        executionStyle: call.executionStyle ?? 'function',
+        functionName: call.functionName ?? '',
+      }
+    );
+    return this.workerClient.prepareProgram(call, this.runtimeLanguage);
+  }
+}
+
 class JavaScriptRuntimeClientImplementation
   implements JavaScriptRuntimeClient {
   constructor(
@@ -131,5 +163,15 @@ export function createJavaScriptRuntimeClient(
     runtimeLanguage,
     workerClient,
     options
+  );
+}
+
+export function createJavaScriptPreparedExecutionProvider(
+  runtimeLanguage: JavaScriptWorkerLanguage,
+  workerClient: JavaScriptWorkerClient
+): RuntimePreparedExecutionProvider {
+  return new JavaScriptPreparedExecutionProviderImplementation(
+    runtimeLanguage,
+    workerClient
   );
 }
