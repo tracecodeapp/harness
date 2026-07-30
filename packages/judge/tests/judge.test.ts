@@ -101,6 +101,10 @@ function executeFakeProcess(
             severity: 'info',
             message: 'compiled by fake runtime',
           }],
+          timings: {
+            compileMs: 7,
+            compileCacheHit: false,
+          },
         }).pipe(
           Effect.as({
             exitCode: 0,
@@ -153,6 +157,10 @@ function executeFakeCase(
               message: `observed ${input.value}`,
               source: 'fake-runtime',
             }],
+            timings: {
+              runMs: input.value,
+              artifactCacheHit: true,
+            },
           })
     ),
     Effect.tap(() =>
@@ -250,6 +258,10 @@ test('runs compile and cases as protected TraceKernel processes with ordered iso
 
       assert.equal(result.status, 'completed');
       assert.equal(result.compile?.status, 'compiled');
+      assert.deepEqual(result.compile?.timings, {
+        compileMs: 7,
+        compileCacheHit: false,
+      });
       assert.deepEqual(
         result.cases.map((caseResult) => caseResult.caseId),
         ['case-1', 'case-2', 'case-3'],
@@ -275,6 +287,15 @@ test('runs compile and cases as protected TraceKernel processes with ordered iso
           caseResult.diagnostics[0]?.source === 'fake-runtime'
         ),
         'Structured diagnostics must arrive on the control port.'
+      );
+      assert.deepEqual(
+        result.cases.map((caseResult) => caseResult.timings),
+        [
+          { runMs: 1, artifactCacheHit: true },
+          { runMs: 2, artifactCacheHit: true },
+          { runMs: 3, artifactCacheHit: true },
+        ],
+        'Provider timing metadata must survive Judge orchestration.'
       );
 
       const caseSessionIds = result.cases.map((caseResult) =>

@@ -73,6 +73,9 @@ function processResult(
     stdout: outcome.stdout,
     stderr: outcome.stderr,
     diagnostics: Object.freeze([...(outcome.diagnostics ?? [])]),
+    ...(outcome.timings
+      ? { timings: Object.freeze({ ...outcome.timings }) }
+      : {}),
     timedOut: outcome.timedOut,
     ...(outcome.startedAt === undefined ? {} : { startedAt: outcome.startedAt }),
     ...(outcome.endedAt === undefined ? {} : { endedAt: outcome.endedAt }),

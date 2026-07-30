@@ -3,6 +3,7 @@ import type * as Scope from 'effect/Scope';
 import type {
   JudgeDiagnostic,
   JudgeProcessPlan,
+  JudgeRuntimeTimings,
   JudgeTermination,
   JudgeWorkspaceFile,
 } from './model';
@@ -12,6 +13,12 @@ export type JudgeKernelSignal = 'SIGINT' | 'SIGTERM' | 'SIGKILL';
 export interface JudgeRuntimeInvocationInput<Input = unknown> {
   readonly phase: 'compile' | 'case';
   readonly planId: string;
+  /**
+   * Opaque lifecycle key shared by every process in one evaluation. Runtime
+   * adapters may use it to own plan-scoped prepared artifacts without treating
+   * the semantic plan id as a globally unique execution id.
+   */
+  readonly evaluationId?: string;
   readonly caseId?: string;
   readonly value?: Input;
 }
@@ -24,6 +31,7 @@ export interface JudgeRuntimeInvocationOutput<Result = unknown> {
    */
   readonly trace?: unknown;
   readonly diagnostics?: readonly JudgeDiagnostic[];
+  readonly timings?: JudgeRuntimeTimings;
 }
 
 export interface JudgeRuntimeControlPort {
@@ -50,6 +58,7 @@ export interface JudgeKernelProcessOutcome {
   readonly stdout: string;
   readonly stderr: string;
   readonly diagnostics?: readonly JudgeDiagnostic[];
+  readonly timings?: JudgeRuntimeTimings;
   readonly structuredResult?: unknown;
   readonly trace?: unknown;
   readonly timedOut: boolean;

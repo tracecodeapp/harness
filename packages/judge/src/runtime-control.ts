@@ -71,6 +71,9 @@ export class InMemoryJudgeRuntimeControl implements JudgeRuntimeControlPort {
       record.output = Object.freeze({
         ...output,
         diagnostics: Object.freeze([...(output.diagnostics ?? [])]),
+        ...(output.timings
+          ? { timings: Object.freeze({ ...output.timings }) }
+          : {}),
       });
       return Effect.void;
     });

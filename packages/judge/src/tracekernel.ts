@@ -86,6 +86,9 @@ class TraceKernelJudgeProcess implements JudgeKernelProcess {
             diagnostics: Object.freeze([
               ...(controlOutput?.diagnostics ?? []),
             ]),
+            ...(controlOutput?.timings
+              ? { timings: Object.freeze({ ...controlOutput.timings }) }
+              : {}),
             ...(controlOutput && 'value' in controlOutput
               ? { structuredResult: controlOutput.value }
               : {}),

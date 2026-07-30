@@ -114,6 +114,10 @@ export interface JudgeDiagnostic {
   readonly column?: number;
 }
 
+export interface JudgeRuntimeTimings {
+  readonly [name: string]: number | boolean | undefined;
+}
+
 export interface JudgeProcessResult {
   readonly sessionId: string;
   readonly pid: number;
@@ -121,6 +125,7 @@ export interface JudgeProcessResult {
   readonly stdout: string;
   readonly stderr: string;
   readonly diagnostics: readonly JudgeDiagnostic[];
+  readonly timings?: JudgeRuntimeTimings;
   readonly timedOut: boolean;
   readonly startedAt?: number;
   readonly endedAt?: number;
