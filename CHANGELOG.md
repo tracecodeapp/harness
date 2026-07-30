@@ -6,29 +6,59 @@ This repo uses Git tags as release boundaries. Version notes below summarize wha
 
 ## [Unreleased]
 
+## [0.14.0] - 2026-07-30
+
+This release makes TraceKernel-backed Judge the browser evaluation boundary.
+The root Harness package remains the only published artifact; renamed runtime
+workspaces are private implementation modules whose standalone contracts have
+not yet been declared.
+
+### Added
+
+- Added the TraceKernel-backed Judge as the single browser evaluation path.
+  A `BrowserRuntimeHost` owns runtime capacity, while scoped Judges own
+  preparation, cases, verdicts, cancellation, and teardown.
+- Added reusable prepared-program contracts for JavaScript, TypeScript,
+  Python, Java, C#, and C++. Compilation and immutable artifacts can be reused
+  within one evaluation while every learner case runs behind a fresh
+  language-appropriate isolation boundary.
+- Added release gates that exercise prepared-provider lifecycle, cancellation,
+  repeated-case isolation, and disposal in Chromium, Firefox, and WebKit.
+
 ### Changed
 
 - Renamed private implementation workspaces from the legacy `harness-*`
   namespace to ownership-based `runtime-*` names. The former project workspace
-  is now the private `workspace-facade`; published
-  `@tracecode/harness/*` entrypoints remain unchanged.
-- Renamed the standalone SQL package from `@tracecode/harness-sql` to
-  `@tracecode/runtime-sql` for 0.14 while preserving the
-  `@tracecode/harness/sql` facade. The high-level SQL runtime trace API now
-  uses provider-neutral names and defaults; integrations supply provider
-  metadata such as PGlite/Postgres explicitly.
+  is now the private `workspace-facade`. These workspaces remain unpublished
+  implementation boundaries in 0.14.
+- Reduced the published root package to seven intentional entrypoints:
+  `.`, `./browser`, `./browser/project`, `./project`, `./project-node`,
+  `./judge`, and `./package.json`. Language, core, native, SQL, and internal
+  implementation subpaths are no longer public.
+- Replaced the direct BrowserHarness lifecycle with
+  `BrowserRuntimeHost` plus `createBrowserRuntimeJudge`. Runtime providers and
+  prepared programs are host internals and cannot be acquired through the
+  public package.
+- Moved Judge comparison policy, raw outcomes, limits, workspace validation,
+  and preparation ownership behind the stable root Judge facade.
+- Decomposed TraceKernel's project workspace implementation into explicit
+  process, filesystem, terminal, network, journal, device I/O, access-policy,
+  persistence, and runtime-command modules without changing the kernel's
+  authority.
+- Made the private SQL runtime API provider-neutral. Integrations now supply
+  provider metadata explicitly instead of exposing an engine-branded public
+  package.
 - Made the Python package surface implementation-neutral: canonical Python
   worker and browser-project APIs now define their own contracts, legacy
   engine-branded aliases are no longer exported, and distributable worker
   assets now use `python-worker.js` and `python/runtime-core.js`.
 - Replaced engine-branded Java Project exports, provider fields, and package
   subpaths with the implementation-neutral Java 23 contract
-  (`java`, `JavaProject*`, and `java-project`). Removed the 0.13 runtime
-  selector and implicit rollback path; browser workspaces now require an
-  explicit Java provider or low-level worker client.
+  (`java`, `JavaProject*`, and `java-project`). TraceJVM is the only prepared
+  browser worker path; the 0.13 runtime selector and implicit legacy fallback
+  are removed.
 - Published Java runtime metadata as Java 23 without naming a provider
-  implementation. The bundled Classic Java client's implementation and
-  licensing facts remain documented separately.
+  implementation.
 - Made the C# package, native runner options, generated runtime metadata, and
   consumer documentation describe the language-owned runtime contract without
   exposing the browser compiler or execution engine as public API. Native
@@ -42,6 +72,15 @@ This repo uses Git tags as release boundaries. Version notes below summarize wha
   package boundaries are private, recursive workspace publication cannot
   release them, and the root publish lifecycle now audits that invariant before
   and after building.
+
+### Fixed
+
+- Normalized configured TraceJVM asset roots before resolving module, WebAssembly,
+  and runtime-profile files, so both slash-terminated and non-terminated base
+  URLs remain under the intended immutable asset prefix.
+- Prevented caller cancellation during Java prepared-provider boot from
+  starting a replacement worker after the evaluation had already been
+  abandoned.
 
 ## [0.13.1] - 2026-07-30
 
