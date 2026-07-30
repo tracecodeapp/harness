@@ -591,16 +591,38 @@ function closeAllJavaProjectHttpServers() {
 
 function isJavaHarnessStackFrame(line) {
   const trimmed = String(line ?? '').trim();
-  return (
-    /^at tracecode(?:\.|\$)/.test(trimmed) ||
-    /^at tracecode\//.test(trimmed) ||
-    /^at harness(?:\.|\/)user(?:\.|\/)[^(]*(?:Exports[^.(\/]*)(?:\.|\/)/.test(trimmed) ||
-    /^at java(?:\.|\/)lang(?:\.|\/)invoke(?:\.|\/)/.test(trimmed) ||
-    /^at java(?:\.|\/)lang(?:\.|\/)reflect(?:\.|\/)Method\.invoke/.test(trimmed) ||
-    /^at jdk(?:\.|\/)internal(?:\.|\/)reflect(?:\.|\/)/.test(trimmed) ||
-    /^at jdk(?:\.|\/)internal(?:\.|\/)tracecode(?:\.|\/)/.test(trimmed) ||
-    trimmed.startsWith('at com.leaningtech.cheerpj.CheerpJLibrary.')
-  );
+  const candidates = [trimmed];
+  if (trimmed.startsWith('at ')) {
+    const target = trimmed.slice(3);
+    // Java 9+ stack traces may prefix frames with a module, or with both a
+    // class-loader and a module (for example java.base/java.lang.reflect...).
+    // Classify the underlying frame as well as the rendered, qualified form.
+    const firstSeparator = target.indexOf('/');
+    if (firstSeparator >= 0) {
+      const firstPrefix = target.slice(0, firstSeparator);
+      const afterFirstPrefix = target.slice(firstSeparator + 1);
+      if (firstPrefix.includes('.') || firstPrefix.includes('@')) {
+        candidates.push(`at ${afterFirstPrefix}`);
+      }
+      const secondSeparator = afterFirstPrefix.indexOf('/');
+      if (secondSeparator >= 0) {
+        const modulePrefix = afterFirstPrefix.slice(0, secondSeparator);
+        if (modulePrefix === '' || modulePrefix.includes('.') || modulePrefix.includes('@')) {
+          candidates.push(`at ${afterFirstPrefix.slice(secondSeparator + 1)}`);
+        }
+      }
+    }
+  }
+  return candidates.some((candidate) => (
+    /^at tracecode(?:\.|\$)/.test(candidate) ||
+    /^at tracecode\//.test(candidate) ||
+    /^at harness(?:\.|\/)user(?:\.|\/)[^(]*(?:Exports[^.(\/]*)(?:\.|\/)/.test(candidate) ||
+    /^at java(?:\.|\/)lang(?:\.|\/)invoke(?:\.|\/)/.test(candidate) ||
+    /^at java(?:\.|\/)lang(?:\.|\/)reflect(?:\.|\/)Method\.invoke/.test(candidate) ||
+    /^at jdk(?:\.|\/)internal(?:\.|\/)reflect(?:\.|\/)/.test(candidate) ||
+    /^at jdk(?:\.|\/)internal(?:\.|\/)tracecode(?:\.|\/)/.test(candidate) ||
+    candidate.startsWith('at com.leaningtech.cheerpj.CheerpJLibrary.')
+  ));
 }
 
 function sanitizeJavaRuntimeStderr(stderr) {

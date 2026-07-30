@@ -3340,7 +3340,10 @@ function createWorkerHarness(workerSource: string, augmentationSource: string) {
                   'Exception in thread "main" java.lang.RuntimeException: boom-java-stack',
                   '\tat Main.inner(Unknown Source)',
                   '\tat Main.main(Unknown Source)',
-                  '\tat java.lang.reflect.Method.invoke(Unknown Source)',
+                  '\tat examples/tracecode/UserBridge.call(Unknown Source)',
+                  '\tat java.base/jdk.internal.reflect.NativeMethodAccessorImpl.invoke0(Native Method)',
+                  '\tat java.base/jdk.internal.reflect.NativeMethodAccessorImpl.invoke(NativeMethodAccessorImpl.java:77)',
+                  '\tat java.base/java.lang.reflect.Method.invoke(Method.java:569)',
                   '\tat tracecode.browser.BrowserCompileAndTraceLibrary.runEntryClass(Unknown Source)',
                   '\tat tracecode.browser.BrowserCompileAndTraceLibrary.compileAndRunProjectSourcesWithWorkspace(Unknown Source)',
                   '\tat com.leaningtech.cheerpj.CheerpJLibrary.run(Unknown Source)',
@@ -5687,17 +5690,23 @@ async function main(): Promise<void> {
         .filter((event) => event.type === 'output' && event.stream === 'stderr')
         .map((event) => event.data ?? ''),
     ].join('\n');
+    const expectedRuntimeFailureStderr = [
+      'Exception in thread "main" java.lang.RuntimeException: boom-java-stack',
+      '\tat Main.inner(Unknown Source)',
+      '\tat Main.main(Unknown Source)',
+      '\tat examples/tracecode/UserBridge.call(Unknown Source)',
+      '',
+    ].join('\n');
     assertCondition(runtimeFailureProjectExecute.exitCode === 1, 'Java execute-project-java should return runtime failure exit codes');
     assertCondition(
-      runtimeFailureProjectExecute.stderr.includes('RuntimeException: boom-java-stack') &&
-        runtimeFailureProjectExecute.stderr.includes('at Main.inner') &&
-        runtimeFailureProjectExecute.stderr.includes('at Main.main') &&
-        runtimeFailureProjectExecute.stderr.includes('java.lang.reflect.Method.invoke'),
-      `Java execute-project-java should preserve user runtime stack frames: ${runtimeFailureProjectExecute.stderr}`
+      runtimeFailureProjectExecute.stderr === expectedRuntimeFailureStderr,
+      `Java execute-project-java should match native launcher stderr and preserve only user runtime stack frames: ${runtimeFailureProjectExecute.stderr}`
     );
     assertCondition(
       !runtimeFailureStderr.includes('tracecode.browser') &&
-        !runtimeFailureStderr.includes('CheerpJLibrary'),
+        !runtimeFailureStderr.includes('CheerpJLibrary') &&
+        !runtimeFailureStderr.includes('java.lang.reflect.Method.invoke') &&
+        !runtimeFailureStderr.includes('jdk.internal.reflect'),
       `Java execute-project-java should not leak harness stack frames through stderr/events: ${runtimeFailureStderr}`
     );
     console.log('PASS: java worker sanitizes browser project runtime stack traces');
