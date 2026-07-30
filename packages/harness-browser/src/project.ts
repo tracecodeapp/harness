@@ -591,8 +591,9 @@ export interface CreateBrowserProjectWorkspaceOptions
   assets?: BrowserHarnessAssetOverrides;
   /**
    * Runtime providers assembled into this workspace. Defaults to providers
-   * that do not require an independently installed client factory; Java must
-   * be selected explicitly.
+   * that do not require an independently installed client factory. Supplying
+   * `java` or `javaWorkerClient` selects Java when this list is omitted; an
+   * explicit list remains authoritative.
    */
   providers?: readonly BrowserProjectProvider[];
   debug?: boolean;
@@ -631,7 +632,12 @@ export async function createBrowserProjectWorkspace(
   const projectRuntimePromise = import(
     '@tracecode/tracekernel/workspace'
   );
-  const providers = normalizeBrowserProjectProviders(options.providers);
+  const providers = normalizeBrowserProjectProviders(
+    options.providers ??
+      (options.java || options.javaWorkerClient
+        ? [...DEFAULT_BROWSER_PROJECT_PROVIDERS, 'java']
+        : undefined)
+  );
   const hasProvider = (provider: BrowserProjectProvider) => providers.includes(provider);
   const [pythonProvider, javascriptProvider, javaProvider, csharpProvider, cppProvider] = await Promise.all([
     hasProvider('python')

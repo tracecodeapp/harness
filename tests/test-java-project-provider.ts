@@ -490,7 +490,6 @@ async function testBrowserWorkspaceRequiresExplicitJavaProvider(): Promise<void>
 
   let directClientInvocations = 0;
   const directClientWorkspace = await createBrowserProjectWorkspace({
-    providers: ['java'],
     files: [{ path: 'Main.java', contents: 'class Main {}\n' }],
     javaWorkerClient: {
       async executeProjectJava() {
@@ -512,6 +511,27 @@ async function testBrowserWorkspaceRequiresExplicitJavaProvider(): Promise<void>
   } finally {
     await directClientWorkspace.destroy();
   }
+
+  let excludedProviderError: unknown;
+  try {
+    await createBrowserProjectWorkspace({
+      providers: [],
+      files: [{ path: 'Main.java', contents: 'class Main {}\n' }],
+      javaWorkerClient: {
+        async executeProjectJava() {
+          return { stdout: '', stderr: '', exitCode: 0 };
+        },
+        terminate() {},
+      },
+    });
+  } catch (error) {
+    excludedProviderError = error;
+  }
+  assertCondition(
+    excludedProviderError instanceof Error &&
+      excludedProviderError.message.includes('javaWorkerClient requires providers to include "java"'),
+    `An explicit provider list must remain authoritative: ${String(excludedProviderError)}`
+  );
 }
 
 await testKernelLeaseUsesFreshWorkers();
@@ -527,4 +547,4 @@ console.log('PASS: Java project POSIX host maps to process-scoped TraceKernel sy
 await testBrowserWorkspaceCommitsArtifactsToTKFS();
 console.log('PASS: browser Java javac/java chains exchange artifacts through TKFS');
 await testBrowserWorkspaceRequiresExplicitJavaProvider();
-console.log('PASS: browser Java requires an explicit implementation-neutral provider');
+console.log('PASS: browser Java derives omitted provider selection but honors explicit provider lists');
