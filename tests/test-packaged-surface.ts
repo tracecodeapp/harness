@@ -26,7 +26,7 @@ async function readDeclarationTree(directory: string): Promise<string> {
   return sources.join('\n');
 }
 
-async function testWorkspacePackageVersionsMatchRelease(): Promise<void> {
+async function testPublishableWorkspacePackageVersionsMatchRelease(): Promise<void> {
   const rootPackage = JSON.parse(await readFile(join(process.cwd(), 'package.json'), 'utf8')) as {
     version?: string;
   };
@@ -35,16 +35,17 @@ async function testWorkspacePackageVersionsMatchRelease(): Promise<void> {
   const packageDirectories = await readdir(join(process.cwd(), 'packages'));
   for (const packageDirectory of packageDirectories) {
     const manifestPath = join(process.cwd(), 'packages', packageDirectory, 'package.json');
-    let manifest: { name?: string; version?: string };
+    let manifest: { name?: string; version?: string; private?: boolean };
     try {
       manifest = JSON.parse(await readFile(manifestPath, 'utf8')) as typeof manifest;
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code === 'ENOENT') continue;
       throw error;
     }
+    if (manifest.private === true) continue;
     assertCondition(
       manifest.version === rootPackage.version,
-      `${manifest.name ?? packageDirectory} version ${manifest.version ?? '(missing)'} must match root release ${rootPackage.version}`
+      `Publishable package ${manifest.name ?? packageDirectory} version ${manifest.version ?? '(missing)'} must match root release ${rootPackage.version}`
     );
   }
 }
@@ -964,7 +965,7 @@ async function runWithTempRoot(tempRoot: string): Promise<void> {
 }
 
 async function main(): Promise<void> {
-  await testWorkspacePackageVersionsMatchRelease();
+  await testPublishableWorkspacePackageVersionsMatchRelease();
   await testHiddenCommandAccessTokenRoundTripsAcrossEntrypoints();
   const tempRoot = await mkdtemp(join(tmpdir(), 'tracecode-harness-pack-'));
   try {

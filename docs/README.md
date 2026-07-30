@@ -17,6 +17,8 @@ triage logs should not live in this public docs tree.
   knobs.
 - [TraceKernel HTTP Simulation](./tracekernel-http.md)
   Documents the in-workspace HTTP model for browser project mode.
+- [Root Package Publishing](./publishing.md)
+  Documents the root-only release boundary and its local audit.
 
 For package installation, asset syncing, examples, and release notes, start from
 the root [README](../README.md) and [CHANGELOG](../CHANGELOG.md).

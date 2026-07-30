@@ -34,6 +34,10 @@ This repo uses Git tags as release boundaries. Version notes below summarize wha
   integrity contracts, timing metadata, and published paths with language-owned
   compiler names. Provider-specific dependency, worker-protocol, and licensing
   identifiers remain private and truthful.
+- Made `@tracecode/harness` the sole publishable workspace manifest. Internal
+  package boundaries are private, recursive workspace publication cannot
+  release them, and the root publish lifecycle now audits that invariant before
+  and after building.
 
 ## [0.13.1] - 2026-07-30
 

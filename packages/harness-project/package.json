@@ -1,5 +1,6 @@
 {
   "name": "@tracecode/harness-project",
+  "private": true,
   "version": "0.13.1",
   "description": "Project-mode workspace primitives for TraceCode harness.",
   "license": "AGPL-3.0-only",

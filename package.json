@@ -7,6 +7,9 @@
     "type": "git",
     "url": "https://github.com/tracecodeapp/harness.git"
   },
+  "publishConfig": {
+    "access": "public"
+  },
   "packageManager": "pnpm@10.4.1",
   "type": "module",
   "main": "./dist/index.cjs",
@@ -115,7 +118,9 @@
     }
   },
   "scripts": {
-    "prepublishOnly": "pnpm build",
+    "prepublishOnly": "pnpm release:check && pnpm build && pnpm release:check",
+    "release:check": "node scripts/check-publish-safety.mjs",
+    "release:root": "pnpm release:check && pnpm publish . --access public",
     "build": "pnpm generate:runtime-info && pnpm generate:python-harness && pnpm generate:kernel-policy && pnpm generate:typescript-project-libs && pnpm generate:javascript-project-worker && pnpm generate:java-helper && pnpm sync:package-assets && pnpm build:tracekernel && pnpm exec tsup --config tsup.core.config.ts && pnpm build:browser-host && pnpm exec tsup && pnpm --dir packages/judge build",
     "build:browser-host": "pnpm exec tsup --config tsup.browser-host.config.ts",
     "build:tracekernel": "pnpm exec tsup --config tsup.tracekernel.config.ts",
@@ -154,6 +159,7 @@
     "test:tracekernel:physical:check": "node scripts/run-tracekernel-physical.mjs --check=webkit",
     "test:smoke": "pnpm exec tsx --tsconfig tsconfig.base.json tests/test-harness-workspace-smoke.ts",
     "test:packaged-surface": "pnpm exec tsx --tsconfig tsconfig.base.json tests/test-packaged-surface.ts",
+    "test:publish-safety": "pnpm exec tsx --tsconfig tsconfig.base.json tests/test-publish-safety.ts",
     "test:bundle-gates": "node scripts/check-browser-project-bundle.mjs",
     "test:browser-harness": "pnpm exec tsx --tsconfig tsconfig.base.json tests/test-host-artifact-cache.ts && pnpm exec tsx --tsconfig tsconfig.base.json tests/test-worker-session-core.ts && pnpm exec tsx --tsconfig tsconfig.base.json tests/test-browser-provider-registry.ts && pnpm exec tsx --tsconfig tsconfig.base.json tests/test-browser-execution-host.ts && pnpm exec tsx --tsconfig tsconfig.base.json tests/test-browser-runtime-assets.ts && pnpm exec tsx --tsconfig tsconfig.base.json tests/test-browser-runtime-asset-plumbing.ts && pnpm exec tsx --tsconfig tsconfig.base.json tests/test-browser-runtime-environment.ts && pnpm exec tsx --tsconfig tsconfig.base.json tests/test-browser-trace-event-transport.ts && pnpm exec tsx --tsconfig tsconfig.base.json tests/test-runtime-authority-lockdown.ts && pnpm exec tsx --tsconfig tsconfig.base.json tests/test-browser-harness.ts",
     "test:asset-sync": "pnpm exec tsx --tsconfig tsconfig.base.json tests/test-asset-sync.ts",

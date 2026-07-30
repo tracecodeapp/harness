@@ -96,12 +96,11 @@ language-based runtime providers.
 
 ## Packages
 
-The umbrella package exposes `/browser`, `/core`, `/python`, `/javascript`,
+The published `@tracecode/harness` package exposes `/browser`, `/core`, `/python`, `/javascript`,
 `/java`, `/csharp`, `/cpp`, `/sql`, `/project`, `/project-node`, and `/native`
-entrypoints. Standalone packages expose the same surfaces with smaller installs:
-`@tracecode/harness-core`, `@tracecode/harness-browser`, the language packages,
-`@tracecode/runtime-sql`, `@tracecode/harness-project`, and
-`@tracecode/harness-native`.
+entrypoints. The matching `packages/*` workspaces are private implementation
+boundaries used to build and test those root subpaths; they are not separate
+registry releases.
 
 All supported languages are stable. Use `getLanguageRuntimeProfile(language)`
 for detailed capability checks and `getLanguageRuntimeInfo(language)` for
@@ -119,10 +118,10 @@ Copy only selected languages from the umbrella package:
 pnpm exec tracecode-harness sync-assets public/workers --languages python,javascript
 ```
 
-Standalone language packages publish their own `workers/` directories with the
-same target layout, so consumers can distribute only the runtime assets they
-install. Advanced consumers can override individual asset URLs through
-`createBrowserHarness({ assets })`.
+The private language workspaces maintain their own `workers/` directories with
+the same target layout. The published root package assembles those assets, and
+consumers can copy only selected languages with `sync-assets`. Advanced
+consumers can override individual asset URLs through `createBrowserHarness({ assets })`.
 
 Runtime delivery is consumer-owned. Browser consumers may pass versioned
 `assets.runtimeManifests` (or a `runtimeAssetProvider`) for Python, JavaScript,
@@ -209,8 +208,10 @@ asset publishers that need the broader BCL surface can set
 
 ## Releases And Notices
 
-Release history lives in [CHANGELOG.md](./CHANGELOG.md). Runtime dependency and
-license notes live in [THIRD_PARTY_NOTICES.md](./THIRD_PARTY_NOTICES.md); keep
-that file with any redistribution of worker assets.
+Release history lives in [CHANGELOG.md](./CHANGELOG.md). The
+[root release policy](./docs/publishing.md) documents the audited,
+root-only publish path. Runtime dependency and license notes live in
+[THIRD_PARTY_NOTICES.md](./THIRD_PARTY_NOTICES.md); keep that file with any
+redistribution of worker assets.
 
 License: AGPL-3.0-only

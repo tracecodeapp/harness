@@ -58,6 +58,7 @@ export const TEST_PHASES: TestPhase[] = [
       task('test:typescript-project-libs-sync'),
       task('test:python-sync'),
       task('test:java-sync'),
+      task('test:publish-safety'),
       task('test:core-public-surface'),
       task('test:python-public-surface'),
       task('test:java-public-surface'),

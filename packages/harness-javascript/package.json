@@ -1,5 +1,6 @@
 {
   "name": "@tracecode/harness-javascript",
+  "private": true,
   "version": "0.13.1",
   "description": "JavaScript and TypeScript runtime helpers and browser worker assets for TraceCode harness.",
   "license": "AGPL-3.0-only",
