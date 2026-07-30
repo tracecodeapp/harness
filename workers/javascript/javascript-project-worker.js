@@ -1826,6 +1826,7 @@ var package_default = {
     "test:core-public-surface": "pnpm exec tsx --tsconfig tsconfig.base.json tests/test-harness-core-public-surface.ts",
     "test:python-public-surface": "pnpm exec tsx --tsconfig tsconfig.base.json tests/test-python-public-surface.ts",
     "test:java-public-surface": "pnpm exec tsx --tsconfig tsconfig.base.json tests/test-java-public-surface.ts",
+    "test:csharp-public-surface": "pnpm exec tsx --tsconfig tsconfig.base.json tests/test-csharp-public-surface.ts",
     "test:cpp-public-surface": "pnpm exec tsx --tsconfig tsconfig.base.json tests/test-cpp-public-surface.ts",
     "test:native-harness": "pnpm exec tsx --tsconfig tsconfig.base.json tests/test-native-harness.ts",
     "test:runtime-info-sync": "pnpm exec tsx --tsconfig tsconfig.base.json scripts/generate-runtime-language-info.ts --check",
