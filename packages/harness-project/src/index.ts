@@ -582,7 +582,7 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
   private readonly processExecutionHandles = this.processState.executionHandles;
   private readonly eventState = new WorkspaceEventState();
   private readonly journalState: WorkspaceJournal;
-  private readonly lifecycleState = new WorkspaceLifecycleState();
+  private readonly lifecycleState: WorkspaceLifecycleState;
   private readonly terminalCommands = new WorkspaceTerminalCommands();
   private readonly filesystemCommands: WorkspaceFilesystemCommands;
   private readonly networkCommands: WorkspaceNetworkCommands;
@@ -610,6 +610,30 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
     this.projectSessionCommands = projectSession?.commands;
     this.projectSession = projectSession ? publicProjectSessionInfo(projectSession) : undefined;
     this.hiddenCommandAccess = options.hiddenCommandAccess;
+    this.lifecycleState = new WorkspaceLifecycleState({
+      session: this.projectSession,
+      workspaceRoot: this.cwd,
+      isReadonlyPolicySuspended: () =>
+        this.accessPolicy.isReadonlyPolicySuspended(),
+      onExpired: (lifecycle) => {
+        this.emitRuntimeEvent({
+          type: 'lifecycle',
+          phase: 'session-expired',
+          message: 'Project session expired',
+          detail: {
+            ...(this.projectSession
+              ? { sessionId: this.projectSession.id }
+              : {}),
+            expiresAt: lifecycle.expiresAt,
+            expiredAt: lifecycle.expiredAt,
+            expirationBehavior: lifecycle.expirationBehavior,
+          },
+          actor: SYSTEM_ACTOR,
+        });
+      },
+      destroyExpired: () =>
+        this.destroy({ reason: 'expired', clearStorage: true }),
+    });
     for (const path of this.projectSession?.readonlyFiles ?? []) {
       this.readonlyFiles.add(path);
     }
@@ -5356,89 +5380,16 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
     return this.accessPolicy.isReadOnly(path);
   }
 
-  private isSessionExpired(): boolean {
-    return Boolean(this.projectSession?.lifecycle.expiredAt);
-  }
-
-  private transitionExpiredIfDue(nowMs: number): boolean {
-    const session = this.projectSession;
-    if (!session) return false;
-    const lifecycle = session.lifecycle;
-    if (!lifecycle?.expiresAt) return false;
-    if (lifecycle.expiredAt) return true;
-    const expiresTime = new Date(lifecycle.expiresAt).getTime();
-    if (Number.isNaN(nowMs) || Number.isNaN(expiresTime) || nowMs < expiresTime) return false;
-    lifecycle.expiredAt = new Date(nowMs).toISOString();
-    this.emitRuntimeEvent({
-      type: 'lifecycle',
-      phase: 'session-expired',
-      message: 'Project session expired',
-      detail: {
-        sessionId: session.id,
-        expiresAt: lifecycle.expiresAt,
-        expiredAt: lifecycle.expiredAt,
-        expirationBehavior: lifecycle.expirationBehavior,
-      },
-      actor: SYSTEM_ACTOR,
-    });
-    return true;
-  }
-
-  private scheduleDestroyAfterExpiration(): void {
-    if (!this.lifecycleState.scheduleExpirationDestroy()) return;
-    queueMicrotask(() => {
-      void this.destroy({ reason: 'expired', clearStorage: true }).catch(() => undefined);
-    });
-  }
-
-  private expiredCommandResult(command: string): RuntimeCommandResult {
-    return { stdout: '', stderr: `project session expired; command not run: ${command}\n`, exitCode: 1 };
-  }
-
   private assertNotDestroyed(): void {
-    if (!this.lifecycleState.destroyed) return;
-    throw Object.assign(new Error('EINVAL: project session is no longer available'), { code: 'EINVAL' });
+    this.lifecycleState.assertNotDestroyed();
   }
 
   private assertWorkspaceUsableForMutation(operation: string): void {
-    this.assertNotDestroyed();
-    if (this.accessPolicy.isReadonlyPolicySuspended()) return;
-    const lifecycle = this.projectSession?.lifecycle;
-    if (lifecycle?.expiresAt && !lifecycle.expiredAt) {
-      this.transitionExpiredIfDue(Date.now());
-    }
-    if (!this.isSessionExpired()) return;
-    const expirationBehavior = this.projectSession?.lifecycle.expirationBehavior;
-    if (expirationBehavior === 'none') return;
-    if (expirationBehavior === 'destroy') {
-      this.scheduleDestroyAfterExpiration();
-    } else if (expirationBehavior !== 'readonly') {
-      return;
-    }
-    throw Object.assign(
-      new Error(`EROFS: project session expired, ${operation} '${this.cwd}'`),
-      { code: 'EROFS' }
-    );
+    this.lifecycleState.assertUsableForMutation(operation);
   }
 
   private assertWorkspaceUsableForRun(command: string): RuntimeCommandResult | null {
-    if (this.lifecycleState.destroyed) {
-      return { stdout: '', stderr: 'project session is no longer available\n', exitCode: 1 };
-    }
-    const lifecycle = this.projectSession?.lifecycle;
-    if (lifecycle?.expiresAt && !lifecycle.expiredAt) {
-      this.transitionExpiredIfDue(Date.now());
-    }
-    if (this.isSessionExpired()) {
-      if (this.projectSession?.lifecycle.expirationBehavior === 'readonly') {
-        return this.expiredCommandResult(command);
-      }
-      if (this.projectSession?.lifecycle.expirationBehavior === 'destroy') {
-        this.scheduleDestroyAfterExpiration();
-        return this.expiredCommandResult(command);
-      }
-    }
-    return null;
+    return this.lifecycleState.unusableRunResult(command);
   }
 
   async withSuspendedReadonlyPolicy<T>(fn: () => Promise<T>): Promise<T> {
@@ -6410,15 +6361,7 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
   }
 
   async checkExpiration(now: Date | string | number = new Date()): Promise<RuntimeProjectSessionLifecycle | null> {
-    this.assertNotDestroyed();
-    if (!this.projectSession?.lifecycle.expiresAt) return this.projectSession?.lifecycle ?? null;
-    const wasExpired = Boolean(this.projectSession.lifecycle.expiredAt);
-    const nowTime = now instanceof Date ? now.getTime() : new Date(now).getTime();
-    const expired = this.transitionExpiredIfDue(nowTime);
-    if (expired && !wasExpired && this.projectSession.lifecycle.expirationBehavior === 'destroy') {
-      await this.destroy({ reason: 'expired', clearStorage: true });
-    }
-    return this.projectSession.lifecycle;
+    return this.lifecycleState.checkExpiration(now);
   }
 
   async destroy(options: { reason?: string; clearStorage?: boolean } = {}): Promise<void> {
