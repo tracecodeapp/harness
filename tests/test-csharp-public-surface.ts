@@ -1,9 +1,9 @@
 import { existsSync, readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import ts from 'typescript';
-import { getLanguageRuntimeInfo } from '../packages/harness-core/src/runtime-language-info';
-import { DEFAULT_BROWSER_HARNESS_ASSET_RELATIVE_PATHS } from '../packages/harness-browser/src/runtime-assets';
-import { createNativeHarness } from '../packages/harness-native/src/index';
+import { getLanguageRuntimeInfo } from '../packages/runtime-core/src/runtime-language-info';
+import { DEFAULT_BROWSER_HARNESS_ASSET_RELATIVE_PATHS } from '../packages/runtime-browser/src/runtime-assets';
+import { createNativeHarness } from '../packages/runtime-native/src/index';
 
 const PROVIDER_BRAND = /roslyn|dotnet|\.net/i;
 
@@ -108,7 +108,7 @@ function embeddedCSharpMetadata(): string {
     'utf8'
   );
   const metadataStart = generatedProjectWorker.indexOf(
-    '// packages/harness-core/src/generated/runtime-language-info-data.ts'
+    '// packages/runtime-core/src/generated/runtime-language-info-data.ts'
   );
   const metadataEnd = generatedProjectWorker.indexOf('\n// packages/', metadataStart + 1);
   assertCondition(
@@ -127,10 +127,10 @@ function embeddedCSharpMetadata(): string {
 
 function main(): void {
   const entrypointPaths = [
-    resolve(process.cwd(), 'packages/harness-csharp/src/index.ts'),
-    resolve(process.cwd(), 'packages/harness-csharp/src/project-node.ts'),
-    resolve(process.cwd(), 'packages/harness-csharp/src/project-browser.ts'),
-    resolve(process.cwd(), 'packages/harness-native/src/index.ts'),
+    resolve(process.cwd(), 'packages/runtime-csharp/src/index.ts'),
+    resolve(process.cwd(), 'packages/runtime-csharp/src/project-node.ts'),
+    resolve(process.cwd(), 'packages/runtime-csharp/src/project-browser.ts'),
+    resolve(process.cwd(), 'packages/runtime-native/src/index.ts'),
     resolve(process.cwd(), 'src/project-node.ts'),
   ];
   const { checker, entrypoints } = loadProgram(entrypointPaths);
@@ -141,18 +141,18 @@ function main(): void {
 
   const csharpExports = exportsByModule.get(resolve(
     process.cwd(),
-    'packages/harness-csharp/src/index.ts'
+    'packages/runtime-csharp/src/index.ts'
   ));
   const csharpProjectNodeExports = exportsByModule.get(resolve(
     process.cwd(),
-    'packages/harness-csharp/src/project-node.ts'
+    'packages/runtime-csharp/src/project-node.ts'
   ));
   const nativeExports = exportsByModule.get(resolve(
     process.cwd(),
-    'packages/harness-native/src/index.ts'
+    'packages/runtime-native/src/index.ts'
   ));
   const rootProjectNodeExports = exportsByModule.get(resolve(process.cwd(), 'src/project-node.ts'));
-  assertCondition(csharpExports, 'Missing @tracecode/harness-csharp export map');
+  assertCondition(csharpExports, 'Missing @tracecode/runtime-csharp export map');
   assertCondition(csharpProjectNodeExports, 'Missing C# project-node export map');
   assertCondition(nativeExports, 'Missing native harness export map');
   assertCondition(rootProjectNodeExports, 'Missing root project-node export map');
@@ -166,7 +166,7 @@ function main(): void {
     'createBrowserCSharpProjectRunner',
     'createNativeCSharpProjectRunner',
   ]) {
-    assertCondition(csharpExports.has(name), `@tracecode/harness-csharp must export ${name}`);
+    assertCondition(csharpExports.has(name), `@tracecode/runtime-csharp must export ${name}`);
   }
 
   const clientProperties = definingInterfaceProperties(
@@ -220,12 +220,12 @@ function main(): void {
   }
 
   const packageReadme = readFileSync(
-    resolve(process.cwd(), 'packages/harness-csharp/README.md'),
+    resolve(process.cwd(), 'packages/runtime-csharp/README.md'),
     'utf8'
   );
   assertCondition(
     !PROVIDER_BRAND.test(packageReadme),
-    '@tracecode/harness-csharp README must describe its public language surface without provider branding'
+    '@tracecode/runtime-csharp README must describe its public language surface without provider branding'
   );
   assertCondition(
     DEFAULT_BROWSER_HARNESS_ASSET_RELATIVE_PATHS.csharpWorker === 'csharp-worker.js' &&

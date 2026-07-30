@@ -11,14 +11,14 @@ import {
   TEMPLATE_PYTHON_TRACE_SERIALIZE_FUNCTION,
   TEMPLATE_PYTHON_SERIALIZE_FUNCTION,
   templateToPythonLiteral,
-} from '../packages/harness-python/src/python-harness-template';
+} from '../packages/runtime-python/src/python-harness-template';
 
 const CHECK_MODE = process.argv.includes('--check');
 
 const GENERATED_TS_PATH = join(
   process.cwd(),
   'packages',
-  'harness-python',
+  'runtime-python',
   'src',
   'generated',
   'python-harness-snippets.ts'
@@ -50,7 +50,7 @@ function buildGeneratedTypeScript(): string {
   return `/**
  * AUTO-GENERATED FILE. DO NOT EDIT MANUALLY.
  *
- * Source: packages/harness-python/src/python-harness-template.ts
+ * Source: packages/runtime-python/src/python-harness-template.ts
  * Generator: scripts/generate-python-harness-artifacts.ts
  */
 
@@ -80,7 +80,7 @@ function buildGeneratedWorkerScript(): string {
   return `/**
  * AUTO-GENERATED FILE. DO NOT EDIT MANUALLY.
  *
- * Source: packages/harness-python/src/python-harness-template.ts
+ * Source: packages/runtime-python/src/python-harness-template.ts
  * Generator: scripts/generate-python-harness-artifacts.ts
  */
 

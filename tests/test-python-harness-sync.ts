@@ -4,7 +4,7 @@ import { test } from 'node:test';
 import { readdir, readFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import vm from 'node:vm';
-import { createRuntimeCommandStdinPipeFromText } from '../packages/harness-core/src/runtime-project';
+import { createRuntimeCommandStdinPipeFromText } from '../packages/runtime-core/src/runtime-project';
 import {
   PYTHON_CLASS_DEFINITIONS,
   PYTHON_CONVERSION_HELPERS,
@@ -12,12 +12,12 @@ import {
   PYTHON_TRACE_SERIALIZE_FUNCTION,
   PYTHON_SERIALIZE_FUNCTION,
   toPythonLiteral as canonicalToPythonLiteral,
-} from '../packages/harness-python/src/python-harness';
+} from '../packages/runtime-python/src/python-harness';
 
 const WORKER_PATH = join(process.cwd(), 'workers', 'python', 'python-worker.js');
 const RUNTIME_CORE_PATH = join(process.cwd(), 'workers', 'python', 'runtime-core.js');
 const SHARED_POLICY_PATH = join(process.cwd(), 'workers', 'shared', 'runtime-kernel-policy-classic.js');
-const LEGACY_RUNTIME_PATH = join(process.cwd(), 'packages', 'harness-python', 'src', 'pyodide.ts');
+const LEGACY_RUNTIME_PATH = join(process.cwd(), 'packages', 'runtime-python', 'src', 'pyodide.ts');
 
 function assertCondition(condition: unknown, message: string): asserts condition {
   if (!condition) {

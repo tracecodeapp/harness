@@ -7,7 +7,7 @@ import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { promisify } from 'node:util';
-import type { RuntimeWorkspaceStat } from '../packages/harness-core/src/runtime-project';
+import type { RuntimeWorkspaceStat } from '../packages/runtime-core/src/runtime-project';
 import { MessageChannel, Worker as NodeWorker } from 'node:worker_threads';
 import {
   type JavaScriptProjectCommandRequest,
@@ -24,36 +24,36 @@ import {
   createRuntimeProjectHiddenCommandAccess,
   createRuntimeWorkspace,
   normalizeRuntimeProjectPath,
-} from '../packages/harness-project/src/index';
+} from '../packages/workspace-facade/src/index';
 import {
   createRuntimeCommandStdinPipe,
   createRuntimeCommandStdinPipeFromText,
   type RuntimeFile,
   RuntimeProjectEventQueue,
   readRuntimeCommandStdinPipeBytes,
-} from '../packages/harness-core/src/runtime-project';
-import { getLanguageRuntimeInfo } from '../packages/harness-core/src/runtime-language-info';
+} from '../packages/runtime-core/src/runtime-project';
+import { getLanguageRuntimeInfo } from '../packages/runtime-core/src/runtime-language-info';
 import packageJson from '../package.json' with { type: 'json' };
 import {
   leadingPersistentCdTarget,
   parseSimpleCommandWords,
   parseTerminalCommandList,
 } from '../packages/tracekernel/src/workspace/arg-parsers';
-import { createNativePythonProjectRunner } from '../packages/harness-python/src/project-node';
-import { createBrowserPythonProjectRunner } from '../packages/harness-python/src/project-browser';
+import { createNativePythonProjectRunner } from '../packages/runtime-python/src/project-node';
+import { createBrowserPythonProjectRunner } from '../packages/runtime-python/src/project-browser';
 import {
   type CreateBrowserProjectWorkspaceOptions,
   createBrowserProjectWorkspace,
   createIndexedDbKernelStorage,
-} from '../packages/harness-browser/src/project';
-import { createNativeJavaScriptProjectRunner, createTypeScriptProjectRunner } from '../packages/harness-javascript/src/project-node';
-import { createBrowserJavaScriptProjectRunner } from '../packages/harness-javascript/src/project-browser';
-import { createNativeJavaProjectRunner } from '../packages/harness-java/src/project-node';
-import { createBrowserJavaProjectRunner } from '../packages/harness-java/src/project-browser';
-import { createNativeCppProjectRunner } from '../packages/harness-cpp/src/project-node';
-import { createBrowserCppProjectRunner } from '../packages/harness-cpp/src/project-browser';
-import { createNativeCSharpProjectRunner } from '../packages/harness-csharp/src/project-node';
-import { createBrowserCSharpProjectRunner } from '../packages/harness-csharp/src/project-browser';
+} from '../packages/runtime-browser/src/project';
+import { createNativeJavaScriptProjectRunner, createTypeScriptProjectRunner } from '../packages/runtime-javascript/src/project-node';
+import { createBrowserJavaScriptProjectRunner } from '../packages/runtime-javascript/src/project-browser';
+import { createNativeJavaProjectRunner } from '../packages/runtime-java/src/project-node';
+import { createBrowserJavaProjectRunner } from '../packages/runtime-java/src/project-browser';
+import { createNativeCppProjectRunner } from '../packages/runtime-cpp/src/project-node';
+import { createBrowserCppProjectRunner } from '../packages/runtime-cpp/src/project-browser';
+import { createNativeCSharpProjectRunner } from '../packages/runtime-csharp/src/project-node';
+import { createBrowserCSharpProjectRunner } from '../packages/runtime-csharp/src/project-browser';
 import { createNativeProjectWorkspace } from '../src/project-node';
 
 const execFileAsync = promisify(execFile);

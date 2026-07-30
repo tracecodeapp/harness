@@ -6,7 +6,7 @@ import {
   type RuntimeKernelHttpRequest,
   type RuntimeKernelHttpResponse,
   type RuntimeWorkspaceActor,
-} from '@tracecode/harness-core';
+} from '@tracecode/runtime-core';
 import type {
   TraceKernelFileSystemMutation,
   TraceKernelProcessSnapshot,

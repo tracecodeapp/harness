@@ -7,8 +7,8 @@ import {
   type BrowserRuntimeAssetDescriptor,
   type BrowserRuntimeAssetManifests,
 } from '../src/browser';
-import { CppWorkerClient } from '../packages/harness-cpp/src/cpp-worker-client';
-import { createBrowserProjectWorkspace } from '../packages/harness-browser/src/project';
+import { CppWorkerClient } from '../packages/runtime-cpp/src/cpp-worker-client';
+import { createBrowserProjectWorkspace } from '../packages/runtime-browser/src/project';
 
 function assertCondition(condition: unknown, message: string): asserts condition {
   if (!condition) throw new Error(message);

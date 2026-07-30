@@ -9,7 +9,7 @@ import {
   type BrowserRuntimeAssetManifests,
 } from '@tracecode/harness/browser';
 import type { Language, RuntimeCommandEvent, RuntimeWorkspaceEvent } from '@tracecode/harness/core';
-import type { JavaProjectRunnerOptions } from '@tracecode/harness-java/java-project';
+import type { JavaProjectRunnerOptions } from '@tracecode/harness/java';
 
 // ----------------------------------------------------------------------
 // Monaco Environment Setup

@@ -3,7 +3,7 @@
 import { test } from 'node:test';
 import { readFile, readdir } from 'node:fs/promises';
 import { join } from 'node:path';
-import type { Language } from '../packages/harness-core/src/runtime-types';
+import type { Language } from '../packages/runtime-core/src/runtime-types';
 
 const FIXTURES_DIR = join(process.cwd(), 'fixtures', 'runtime-parity');
 

@@ -1,8 +1,8 @@
 declare module '@tracecode/tracejvm' {
   export type TraceJVMBinaryFile =
-    import('../../packages/harness-java/src/java-project').JavaProjectBinaryFile;
+    import('../../packages/runtime-java/src/java-project').JavaProjectBinaryFile;
   export type TraceJVMCompileResult =
-    import('../../packages/harness-java/src/java-project').JavaProjectCompileResult;
+    import('../../packages/runtime-java/src/java-project').JavaProjectCompileResult;
 
   export interface TraceJVMExecutionDiagnostics {
     bytecodeProfile?: unknown;
@@ -10,7 +10,7 @@ declare module '@tracecode/tracejvm' {
   }
 
   export type TraceJVMExecuteResult =
-    import('../../packages/harness-java/src/java-project').JavaProjectExecuteResult & {
+    import('../../packages/runtime-java/src/java-project').JavaProjectExecuteResult & {
       diagnostics?: TraceJVMExecutionDiagnostics;
     };
 
@@ -43,17 +43,17 @@ declare module '@tracecode/tracejvm' {
         };
       };
       createWorker: () => TraceJVMWorkerLike;
-      host?: import('../../packages/harness-java/src/java-project').JavaProjectHost;
+      host?: import('../../packages/runtime-java/src/java-project').JavaProjectHost;
     });
 
     initialize(signal?: AbortSignal): Promise<{ initializeMs: number }>;
     compile(
-      request: import('../../packages/harness-java/src/java-project').JavaProjectCompileRequest
+      request: import('../../packages/runtime-java/src/java-project').JavaProjectCompileRequest
     ): Promise<
-      import('../../packages/harness-java/src/java-project').JavaProjectCompileResult
+      import('../../packages/runtime-java/src/java-project').JavaProjectCompileResult
     >;
     run(
-      request: import('../../packages/harness-java/src/java-project').JavaProjectRunRequest & {
+      request: import('../../packages/runtime-java/src/java-project').JavaProjectRunRequest & {
         diagnostics?: {
           bytecodeProfile?: boolean;
         };

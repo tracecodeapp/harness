@@ -6,7 +6,7 @@ import {
   type RuntimeFile,
   type RuntimeKernelInfo,
   type RuntimeKernelVirtualStat,
-} from '@tracecode/harness-core';
+} from '@tracecode/runtime-core';
 import { TRACEKERNEL_SKILLS_ROOT } from './constants';
 import {
   assertSupportedEncoding,

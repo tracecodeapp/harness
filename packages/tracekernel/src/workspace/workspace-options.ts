@@ -10,7 +10,7 @@ import type {
   RuntimeSymlink,
   RuntimeDirectory,
   RuntimeTraceKernelConfig,
-} from '@tracecode/harness-core';
+} from '@tracecode/runtime-core';
 import type { CustomCommand } from 'just-bash/browser';
 import type { RuntimeWorkspaceStorageLimits } from './workspace-storage-policy';
 
@@ -43,7 +43,7 @@ export interface RuntimePackageInstallRequest {
 }
 
 export interface RuntimePackageDependencyProvider {
-  install(request: RuntimePackageInstallRequest): Promise<import('@tracecode/harness-core').RuntimeCommandResult>;
+  install(request: RuntimePackageInstallRequest): Promise<import('@tracecode/runtime-core').RuntimeCommandResult>;
 }
 
 export interface RuntimePackageManagerConfig {

@@ -6,8 +6,8 @@ import { basename, dirname, join } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import vm from 'node:vm';
 
-import { CppWorkerClient } from '../packages/harness-cpp/src/cpp-worker-client';
-import { createRuntimeWorkspace } from '../packages/harness-project/src/index';
+import { CppWorkerClient } from '../packages/runtime-cpp/src/cpp-worker-client';
+import { createRuntimeWorkspace } from '../packages/workspace-facade/src/index';
 
 const testFilePath = fileURLToPath(import.meta.url);
 const testDirectory = dirname(testFilePath);

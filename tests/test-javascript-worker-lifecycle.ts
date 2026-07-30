@@ -5,7 +5,7 @@ import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import vm from 'node:vm';
 import ts from 'typescript';
-import { JavaScriptWorkerClient } from '../packages/harness-javascript/src/javascript-worker-client';
+import { JavaScriptWorkerClient } from '../packages/runtime-javascript/src/javascript-worker-client';
 
 interface ProtocolMessage {
   id?: string;

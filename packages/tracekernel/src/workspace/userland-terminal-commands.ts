@@ -1,7 +1,7 @@
 import type {
   RuntimeCommandOptions,
   RuntimeCommandResult,
-} from '@tracecode/harness-core';
+} from '@tracecode/runtime-core';
 
 type RuntimeTerminalSnapshot =
   | RuntimeCommandOptions['terminal']

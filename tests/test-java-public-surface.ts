@@ -1,7 +1,7 @@
 import { existsSync, readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import ts from 'typescript';
-import { getLanguageRuntimeInfo } from '../packages/harness-core/src/runtime-language-info';
+import { getLanguageRuntimeInfo } from '../packages/runtime-core/src/runtime-language-info';
 
 const ROOT = process.cwd();
 const VIRTUAL_OUT_DIR = '/tracecode-java-public-declarations';
@@ -41,8 +41,8 @@ function declarationPath(sourcePath: string): string {
 }
 
 function main(): void {
-  const javaConfig = parsedConfig('packages/harness-java/tsconfig.json');
-  const browserConfig = parsedConfig('packages/harness-browser/tsconfig.json');
+  const javaConfig = parsedConfig('packages/runtime-java/tsconfig.json');
+  const browserConfig = parsedConfig('packages/runtime-browser/tsconfig.json');
   const program = ts.createProgram({
     rootNames: [...new Set([...javaConfig.fileNames, ...browserConfig.fileNames])],
     options: {
@@ -84,14 +84,14 @@ function main(): void {
   );
 
   const publicSources = [
-    'packages/harness-java/src/index.ts',
-    'packages/harness-java/src/java-project.ts',
-    'packages/harness-java/src/java-project-runtime.ts',
-    'packages/harness-java/src/project-browser.ts',
-    'packages/harness-java/src/java-worker-client.ts',
-    'packages/harness-browser/src/browser-harness.ts',
-    'packages/harness-browser/src/project.ts',
-    'packages/harness-browser/src/runtime-assets.ts',
+    'packages/runtime-java/src/index.ts',
+    'packages/runtime-java/src/java-project.ts',
+    'packages/runtime-java/src/java-project-runtime.ts',
+    'packages/runtime-java/src/project-browser.ts',
+    'packages/runtime-java/src/java-worker-client.ts',
+    'packages/runtime-browser/src/browser-harness.ts',
+    'packages/runtime-browser/src/project.ts',
+    'packages/runtime-browser/src/runtime-assets.ts',
   ] as const;
   const implementationLeaks: string[] = [];
   for (const sourcePath of publicSources) {
@@ -108,7 +108,7 @@ function main(): void {
   );
 
   const javaProjectDeclaration = emitted.get(
-    declarationPath('packages/harness-java/src/java-project.ts')
+    declarationPath('packages/runtime-java/src/java-project.ts')
   )!;
   for (const expected of [
     'JAVA_PROJECT_CAPABILITIES',
@@ -128,7 +128,7 @@ function main(): void {
   );
 
   const browserProjectDeclaration = emitted.get(
-    declarationPath('packages/harness-browser/src/project.ts')
+    declarationPath('packages/runtime-browser/src/project.ts')
   )!;
   assertCondition(
     browserProjectDeclaration.includes('java?: Omit<JavaProjectRunnerOptions') &&
@@ -138,7 +138,7 @@ function main(): void {
   );
 
   const javaPackageJson = JSON.parse(
-    readFileSync(resolve(ROOT, 'packages/harness-java/package.json'), 'utf8')
+    readFileSync(resolve(ROOT, 'packages/runtime-java/package.json'), 'utf8')
   ) as { exports?: Record<string, unknown> };
   const publicSubpaths = Object.keys(javaPackageJson.exports ?? {});
   assertCondition(
@@ -153,8 +153,8 @@ function main(): void {
     `Java package exposes an engine-branded subpath: ${publicSubpaths.join(', ')}`
   );
   assertCondition(
-    !existsSync(resolve(ROOT, 'packages/harness-java/src/tracejvm-project.ts')) &&
-      !existsSync(resolve(ROOT, 'packages/harness-java/src/tracejvm-runtime.ts')),
+    !existsSync(resolve(ROOT, 'packages/runtime-java/src/tracejvm-project.ts')) &&
+      !existsSync(resolve(ROOT, 'packages/runtime-java/src/tracejvm-runtime.ts')),
     'Removed engine-branded Java entrypoint sources must not return'
   );
 

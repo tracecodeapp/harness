@@ -101,7 +101,7 @@ async function runWithTempRoot(tempRoot: string): Promise<void> {
 }
 
 async function main(): Promise<void> {
-  const tempRoot = await mkdtemp(join(tmpdir(), 'tracecode-harness-java-pack-'));
+  const tempRoot = await mkdtemp(join(tmpdir(), 'tracecode-runtime-java-pack-'));
   try {
     await runWithTempRoot(tempRoot);
   } finally {

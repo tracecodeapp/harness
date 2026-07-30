@@ -1,0 +1,54 @@
+{
+  "name": "@tracecode/runtime-browser",
+  "private": true,
+  "version": "0.13.1",
+  "description": "Browser execution host, runtime assets, transport, and provider registry for TraceCode.",
+  "license": "AGPL-3.0-only",
+  "homepage": "https://tracecode.app",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/tracecodeapp/harness.git",
+    "directory": "packages/runtime-browser"
+  },
+  "type": "module",
+  "main": "./dist/index.cjs",
+  "module": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE",
+    "THIRD_PARTY_NOTICES.md"
+  ],
+  "browser": {
+    "zlib": "./dist/zlib-browser-shim.js",
+    "node:zlib": "./dist/zlib-browser-shim.js"
+  },
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js",
+      "require": "./dist/index.cjs",
+      "default": "./dist/index.js"
+    },
+    "./internal": {
+      "types": "./dist/internal.d.ts",
+      "import": "./dist/internal.js",
+      "require": "./dist/internal.cjs",
+      "default": "./dist/internal.js"
+    },
+    "./project": {
+      "types": "./dist/project.d.ts",
+      "import": "./dist/project.js",
+      "require": "./dist/project.cjs",
+      "default": "./dist/project.js"
+    },
+    "./package.json": "./package.json"
+  },
+  "sideEffects": false,
+  "dependencies": {
+    "@tracecode/runtime-core": "workspace:*",
+    "@tracecode/tracekernel": "workspace:*",
+    "effect": "^3.22.0"
+  }
+}

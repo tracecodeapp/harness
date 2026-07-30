@@ -6,9 +6,9 @@
  * 
  * This is the canonical worker implementation for the browser Python runtime.
  * IMPORTANT: Shared harness snippets are defined in:
- * - packages/harness-python/src/python-harness-template.ts
+ * - packages/runtime-python/src/python-harness-template.ts
  * and generated into:
- * - packages/harness-python/src/generated/python-harness-snippets.ts
+ * - packages/runtime-python/src/generated/python-harness-snippets.ts
  * - workers/python/generated-python-harness-snippets.js
  *
  * Runtime trace/execute builders now live in:

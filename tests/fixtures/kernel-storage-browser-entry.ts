@@ -1,4 +1,4 @@
-import { createIndexedDbKernelStorage } from '../../packages/harness-browser/src/kernel-storage';
+import { createIndexedDbKernelStorage } from '../../packages/runtime-browser/src/kernel-storage';
 
 declare global {
   var runKernelStorageBrowserTest: (() => Promise<{

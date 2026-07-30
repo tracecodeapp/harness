@@ -1,6 +1,6 @@
 #!/usr/bin/env npx tsx
 
-import { CSharpWorkerClient, type CSharpProjectCommandRequest } from '../packages/harness-csharp/src/csharp-worker-client';
+import { CSharpWorkerClient, type CSharpProjectCommandRequest } from '../packages/runtime-csharp/src/csharp-worker-client';
 import type {
   RuntimeKernelHttpBridge,
   RuntimeKernelHttpDispatchOptions,
@@ -10,7 +10,7 @@ import type {
   RuntimeKernelHttpRequest,
   RuntimeKernelHttpResponse,
   RuntimeKernelSyscallBridge,
-} from '../packages/harness-core/src/runtime-project';
+} from '../packages/runtime-core/src/runtime-project';
 
 function assertCondition(condition: boolean, message: string): asserts condition {
   if (!condition) throw new Error(message);

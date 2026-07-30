@@ -2,7 +2,8 @@
 
 Browser-first SQL runtime trace contracts and client wrappers for TraceCode.
 
-Import path:
+This is a private workspace bundled into the published root package. Consumers
+use the supported root subpath:
 
 ```ts
 import {
@@ -11,7 +12,7 @@ import {
   runIsolatedSqlCases,
   assertValidSqlTrace,
   type SqlTrace,
-} from '@tracecode/runtime-sql';
+} from '@tracecode/harness/sql';
 ```
 
 Public surface:
@@ -24,10 +25,7 @@ Public surface:
 - provider-neutral runtime metadata and persistence helpers
 - an isolated SQL case runner that creates fresh database state per case
 
-The umbrella package also exposes the same public surface at
-`@tracecode/harness/sql` for backwards-compatible all-in-one installs.
-
-This package does not vendor a SQL engine. Browser apps inject a client with
+The root package does not vendor a SQL engine. Browser apps inject a client with
 `query`, optional `exec`, and optional `transaction` methods.
 
 Use `createSqlRuntimeTraceClient(...)` for the high-level runtime wrapper. It
@@ -38,7 +36,7 @@ explicitly when it is known.
 
 ```ts
 import { PGlite } from '@electric-sql/pglite';
-import { createSqlRuntimeTraceClient } from '@tracecode/runtime-sql';
+import { createSqlRuntimeTraceClient } from '@tracecode/harness/sql';
 
 const db = await PGlite.create('memory://tracecode-sql');
 const traced = createSqlRuntimeTraceClient(db, {

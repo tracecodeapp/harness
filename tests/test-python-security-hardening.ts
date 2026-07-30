@@ -11,10 +11,10 @@ import {
   PYTHON_EXECUTE_SERIALIZE_FUNCTION,
   PYTHON_TRACE_SERIALIZE_FUNCTION,
   toPythonLiteral,
-} from '../packages/harness-python/src/python-harness';
-import { RUNTIME_TRACE_SCHEMA_VERSION } from '../packages/harness-core/src/runtime-trace';
-import { createPythonRuntimeClient } from '../packages/harness-python/src/python-runtime-client';
-import type { PythonWorkerClient } from '../packages/harness-python/src/python-worker-client';
+} from '../packages/runtime-python/src/python-harness';
+import { RUNTIME_TRACE_SCHEMA_VERSION } from '../packages/runtime-core/src/runtime-trace';
+import { createPythonRuntimeClient } from '../packages/runtime-python/src/python-runtime-client';
+import type { PythonWorkerClient } from '../packages/runtime-python/src/python-worker-client';
 
 const RUNTIME_CORE_PATH = join(process.cwd(), 'workers', 'python', 'runtime-core.js');
 const PYTHON_WORKER_PATH = join(process.cwd(), 'workers', 'python', 'python-worker.js');

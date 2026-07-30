@@ -8,7 +8,7 @@ import {
 import {
   invalidateJavaProjectWarmup,
   warmJavaProjectClient,
-} from '../../packages/harness-java/src/java-project-runtime';
+} from '../../packages/runtime-java/src/java-project-runtime';
 
 declare const __TRACECODE_TRACEJVM_HOT_AOT__: boolean;
 

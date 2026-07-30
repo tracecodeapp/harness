@@ -21,7 +21,7 @@ import {
   type RuntimeProgramPreparationCall,
   type RuntimeTrace,
   type RuntimeTraceCall,
-} from '@tracecode/harness-core';
+} from '@tracecode/runtime-core';
 
 const RUNTIME = 'fake-runtime-execution-provider';
 const SOURCE = [

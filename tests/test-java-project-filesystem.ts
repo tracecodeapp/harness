@@ -1,8 +1,8 @@
 #!/usr/bin/env npx tsx
 
-import type { JavaProjectCommandRequest } from '../packages/harness-java/src/project-node';
-import { createBrowserJavaProjectRunner } from '../packages/harness-java/src/project-browser';
-import { createNativeJavaProjectRunner } from '../packages/harness-java/src/project-node';
+import type { JavaProjectCommandRequest } from '../packages/runtime-java/src/project-node';
+import { createBrowserJavaProjectRunner } from '../packages/runtime-java/src/project-browser';
+import { createNativeJavaProjectRunner } from '../packages/runtime-java/src/project-node';
 
 function assertCondition(condition: boolean, message: string): void {
   if (!condition) throw new Error(message);

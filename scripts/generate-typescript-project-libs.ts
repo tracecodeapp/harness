@@ -9,7 +9,7 @@ const TYPESCRIPT_LIB_DIR = join(ROOT, 'node_modules', 'typescript', 'lib');
 const GENERATED_PATH = join(
   ROOT,
   'packages',
-  'harness-javascript',
+  'runtime-javascript',
   'src',
   'generated',
   'typescript-project-libs.ts'

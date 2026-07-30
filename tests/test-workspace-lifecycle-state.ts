@@ -1,6 +1,6 @@
 #!/usr/bin/env npx tsx
 
-import type { RuntimeProjectSessionInfo } from '../packages/harness-core/src/index';
+import type { RuntimeProjectSessionInfo } from '../packages/runtime-core/src/index';
 import { WorkspaceLifecycleState } from '../packages/tracekernel/src/workspace/workspace-lifecycle-state';
 
 function assertCondition(

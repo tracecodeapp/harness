@@ -18,24 +18,11 @@ Use the umbrella package for the full public surface:
 pnpm add @tracecode/harness
 ```
 
-For smaller installs, combine the core/browser packages with only the language
-assets your app ships:
-
-```bash
-pnpm add @tracecode/harness-core @tracecode/harness-browser @tracecode/harness-python
-pnpm add @tracecode/harness-javascript
-pnpm add @tracecode/harness-java
-pnpm add @tracecode/harness-csharp
-pnpm add @tracecode/harness-cpp
-pnpm add @tracecode/runtime-sql
-```
-
-Add project/workspace execution only when you need shell-style multi-file
-workspaces:
-
-```bash
-pnpm add @tracecode/harness-project
-```
+`@tracecode/harness` is the only published package. Import its focused public
+subpaths, such as `@tracecode/harness/browser`, `@tracecode/harness/python`, or
+`@tracecode/harness/project`, without installing implementation workspaces
+directly. Browser assets can still be copied selectively with
+`tracecode-harness sync-assets --languages ...`.
 
 If your app bundles dependencies, transpiling the package is usually safest. For
 Next.js:

@@ -3,16 +3,16 @@
 import {
   createRuntimeWorkspace,
   type JavaScriptProjectCommandRunner,
-} from '../packages/harness-project/src/index';
+} from '../packages/workspace-facade/src/index';
 import type {
   RuntimeKernelSyscallBridge,
   RuntimeProjectCommandRequest,
-} from '../packages/harness-core/src/runtime-project';
+} from '../packages/runtime-core/src/runtime-project';
 import {
   createRuntimeCommandStdinPipe,
   createRuntimeCommandStdinPipeFromText,
   runtimeCommandStdinPipeRemainingBytes,
-} from '../packages/harness-core/src/runtime-project';
+} from '../packages/runtime-core/src/runtime-project';
 import type {
   TraceKernelSession,
   TraceKernelSyscallRequest,
@@ -34,7 +34,7 @@ function syscalls(
 }
 
 /**
- * harness-core deliberately treats the syscall wire as unknown so it does not
+ * runtime-core deliberately treats the syscall wire as unknown so it does not
  * depend on TraceKernel. Runtime adapters own this single validation/typing
  * boundary before working with the versioned kernel protocol.
  */

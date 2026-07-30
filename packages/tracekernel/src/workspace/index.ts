@@ -1,7 +1,7 @@
 /**
  * TraceKernel's stateful workspace implementation.
  *
- * Runtime-neutral contracts remain owned by `@tracecode/harness-core`; this
+ * Runtime-neutral contracts remain owned by `@tracecode/runtime-core`; this
  * entrypoint exports only the implementation and configuration that
  * TraceKernel owns.
  */

@@ -3,12 +3,12 @@
 import {
   createRuntimeCommandStdinPipeFromText,
   runtimeCommandStdinPipeRemainingBytes,
-} from '../packages/harness-core/src/index';
+} from '../packages/runtime-core/src/index';
 import {
   runBrowserJavaScriptProjectRequest,
   type BrowserJavaScriptProjectExecutionState,
   type JavaScriptProjectCommandRequest,
-} from '../packages/harness-javascript/src/project-browser';
+} from '../packages/runtime-javascript/src/project-browser';
 import type {
   TraceKernelSyscallRequest,
   TraceKernelSyscallResult,

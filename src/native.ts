@@ -1,1 +1,1 @@
-export * from '../packages/harness-native/src/index';
+export * from '../packages/runtime-native/src/index';

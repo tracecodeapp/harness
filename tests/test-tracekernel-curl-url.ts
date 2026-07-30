@@ -4,7 +4,7 @@ import { test } from 'node:test';
 import {
   createRuntimeWorkspace,
   type RuntimeKernelHttpRequest,
-} from '../packages/harness-project/src/index';
+} from '../packages/workspace-facade/src/index';
 import {
   CURL_PROTOCOLS,
   DEFAULT_CURL_SCHEME,

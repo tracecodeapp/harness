@@ -1,6 +1,6 @@
 #!/usr/bin/env npx tsx
 
-import * as legacyProject from '../packages/harness-project/src/index';
+import * as legacyProject from '../packages/workspace-facade/src/index';
 import * as traceKernelWorkspace from '../packages/tracekernel/src/workspace/index';
 
 function assertCondition(

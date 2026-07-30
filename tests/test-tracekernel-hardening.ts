@@ -8,26 +8,26 @@ import { delimiter, join } from 'node:path';
 import { dirname } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import vm from 'node:vm';
-import { javaTraceHooksEventsToRuntimeTrace } from '../packages/harness-core/src/trace-adapters/java';
+import { javaTraceHooksEventsToRuntimeTrace } from '../packages/runtime-core/src/trace-adapters/java';
 import {
   RUNTIME_WORKSPACE_DEFAULT_MAX_BYTES,
   RUNTIME_WORKSPACE_DEFAULT_MAX_ENTRY_COUNT,
   RUNTIME_WORKSPACE_DEFAULT_MAX_FILE_BYTES,
   createRuntimeWorkspace,
   normalizeRuntimeWorkspaceStorageLimits,
-} from '../packages/harness-project/src/index';
-import { assertRuntimeFinalDiffBudget, type RuntimeCommandEvent, type RuntimeProjectCommandSource } from '../packages/harness-core/src/runtime-project';
-import type { JavaScriptProjectCommandRequest } from '../packages/harness-javascript/src/project-browser';
-import type { TypeScriptProjectCommandRequest } from '../packages/harness-javascript/src/typescript-project';
-import { createIndexedDbKernelStorage } from '../packages/harness-browser/src/project';
+} from '../packages/workspace-facade/src/index';
+import { assertRuntimeFinalDiffBudget, type RuntimeCommandEvent, type RuntimeProjectCommandSource } from '../packages/runtime-core/src/runtime-project';
+import type { JavaScriptProjectCommandRequest } from '../packages/runtime-javascript/src/project-browser';
+import type { TypeScriptProjectCommandRequest } from '../packages/runtime-javascript/src/typescript-project';
+import { createIndexedDbKernelStorage } from '../packages/runtime-browser/src/project';
 import {
   createBrowserJavaScriptProjectRunner,
   createBrowserTypeScriptProjectRunner,
-} from '../packages/harness-javascript/src/project-browser';
-import { executeTypeScriptCode } from '../packages/harness-javascript/src/javascript-executor';
-import { createNativeCSharpProjectRunner } from '../packages/harness-csharp/src/project-node';
-import { createNativeCppProjectRunner } from '../packages/harness-cpp/src/project-node';
-import { createNativeJavaProjectRunner } from '../packages/harness-java/src/project-node';
+} from '../packages/runtime-javascript/src/project-browser';
+import { executeTypeScriptCode } from '../packages/runtime-javascript/src/javascript-executor';
+import { createNativeCSharpProjectRunner } from '../packages/runtime-csharp/src/project-node';
+import { createNativeCppProjectRunner } from '../packages/runtime-cpp/src/project-node';
+import { createNativeJavaProjectRunner } from '../packages/runtime-java/src/project-node';
 
 const testFilePath = fileURLToPath(import.meta.url);
 const testDirectory = dirname(testFilePath);
@@ -260,7 +260,7 @@ async function withProtocolTestWorker(run: (workerUrl: string) => Promise<void>)
       workers.push(this);
     }
   };
-  const workerUrl = `${pathToFileURL(join(testDirectory, '../packages/harness-javascript/src/project-browser-worker.ts')).href}?hardening=${Date.now()}-${Math.random()}`;
+  const workerUrl = `${pathToFileURL(join(testDirectory, '../packages/runtime-javascript/src/project-browser-worker.ts')).href}?hardening=${Date.now()}-${Math.random()}`;
   try {
     await run(workerUrl);
   } finally {
@@ -1493,7 +1493,7 @@ async function testJavaScriptInputMaterializerAvoidsTypeNameEval(): Promise<void
     ['worker', await readFile(join(dirname(testDirectory), 'workers', 'javascript', 'javascript-worker.js'), 'utf8')],
     [
       'package executor',
-      await readFile(join(dirname(testDirectory), 'packages', 'harness-javascript', 'src', 'javascript-executor.ts'), 'utf8'),
+      await readFile(join(dirname(testDirectory), 'packages', 'runtime-javascript', 'src', 'javascript-executor.ts'), 'utf8'),
     ],
   ] as const;
 
@@ -1635,7 +1635,7 @@ async function testJavaScriptInputHydrationIsBounded(): Promise<void> {
     ['worker', await readFile(join(dirname(testDirectory), 'workers', 'javascript', 'javascript-worker.js'), 'utf8')],
     [
       'package executor',
-      await readFile(join(dirname(testDirectory), 'packages', 'harness-javascript', 'src', 'javascript-executor.ts'), 'utf8'),
+      await readFile(join(dirname(testDirectory), 'packages', 'runtime-javascript', 'src', 'javascript-executor.ts'), 'utf8'),
     ],
   ] as const;
 
@@ -2044,7 +2044,7 @@ async function testCSharpInputHydrationConstructorsAreBounded(): Promise<void> {
 }
 
 async function testNativeCSharpInputConversionPrefersStringDictionaries(): Promise<void> {
-  const source = await readFile(join(dirname(testDirectory), 'packages', 'harness-native', 'src', 'index.ts'), 'utf8');
+  const source = await readFile(join(dirname(testDirectory), 'packages', 'runtime-native', 'src', 'index.ts'), 'utf8');
   const convertStart = source.indexOf('private static object? ConvertJsonElement');
   const convertEnd = source.indexOf('private static Type? ListElementType', convertStart);
   const convertSource = source.slice(convertStart, convertEnd);
@@ -2096,7 +2096,7 @@ async function testCSharpBrowserRuntimeNetworkAssembliesAreDenied(): Promise<voi
   const frameworkRoots = [
     join(root, 'workers', 'vendor', 'csharp', '_framework'),
   ];
-  const syncedPackageFramework = join(root, 'packages', 'harness-csharp', 'workers', 'vendor', 'csharp', '_framework');
+  const syncedPackageFramework = join(root, 'packages', 'runtime-csharp', 'workers', 'vendor', 'csharp', '_framework');
   try {
     await access(syncedPackageFramework);
     frameworkRoots.push(syncedPackageFramework);
@@ -2498,7 +2498,7 @@ public class JavaHelperStateSmoke {
 }
 
 async function testNativeJavaHostCacheUsesPrivateTempDirectory(): Promise<void> {
-  const source = await readFile(join(dirname(testDirectory), 'packages', 'harness-native', 'src', 'index.ts'), 'utf8');
+  const source = await readFile(join(dirname(testDirectory), 'packages', 'runtime-native', 'src', 'index.ts'), 'utf8');
   assertCondition(
     source.includes("await mkdtemp(join(tmpdir(), 'tracecode-native-java-host-'))"),
     'Native Java host helper should compile into a fresh private temp directory'
@@ -2922,7 +2922,7 @@ async function testCppCompilerLifecycleSeparatesCompilationFromExecution(): Prom
     'the persistent C++ compiler worker must never instantiate or execute compiled user programs'
   );
 
-  const clientSource = await readFile(join(dirname(testDirectory), 'packages', 'harness-cpp', 'src', 'cpp-worker-client.ts'), 'utf8');
+  const clientSource = await readFile(join(dirname(testDirectory), 'packages', 'runtime-cpp', 'src', 'cpp-worker-client.ts'), 'utf8');
   assertCondition(
     clientSource.includes('private runInDisposableExecutionWorker<T>') &&
       clientSource.includes('this.retireExecutionWorker();') &&

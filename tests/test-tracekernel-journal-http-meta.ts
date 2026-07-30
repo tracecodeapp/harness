@@ -3,7 +3,7 @@
 import {
   createRuntimeWorkspace,
   type KernelJournalRecord,
-} from '../packages/harness-project/src/index';
+} from '../packages/workspace-facade/src/index';
 
 function assertCondition(condition: unknown, message: string): asserts condition {
   if (!condition) throw new Error(message);
@@ -27,7 +27,7 @@ async function main(): Promise<void> {
   const workspace = await createRuntimeWorkspace({
     externalHttp: {
       hosts: ['meta.example'],
-      fetch: async (request): Promise<import('../packages/harness-core/src/runtime-external-http').RuntimeExternalHttpResponse> => {
+      fetch: async (request): Promise<import('../packages/runtime-core/src/runtime-external-http').RuntimeExternalHttpResponse> => {
         const path = new URL(request.url).pathname;
         if (path === '/limited') {
           return {

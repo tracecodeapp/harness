@@ -35,7 +35,7 @@ const PACKAGE_ASSET_PLANS: PackageAssetPlan[] = [
     assets: [],
   },
   {
-    packageDir: 'packages/harness-core',
+    packageDir: 'packages/runtime-core',
     assets: [],
   },
   {
@@ -43,11 +43,11 @@ const PACKAGE_ASSET_PLANS: PackageAssetPlan[] = [
     assets: [],
   },
   {
-    packageDir: 'packages/harness-browser',
+    packageDir: 'packages/runtime-browser',
     assets: [],
   },
   {
-    packageDir: 'packages/harness-project',
+    packageDir: 'packages/workspace-facade',
     assets: [],
   },
   {
@@ -55,7 +55,7 @@ const PACKAGE_ASSET_PLANS: PackageAssetPlan[] = [
     assets: [],
   },
   {
-    packageDir: 'packages/harness-native',
+    packageDir: 'packages/runtime-native',
     assets: [
       {
         source: ['workers', 'python', 'runtime-core.js'],
@@ -92,7 +92,7 @@ const PACKAGE_ASSET_PLANS: PackageAssetPlan[] = [
     ],
   },
   {
-    packageDir: 'packages/harness-python',
+    packageDir: 'packages/runtime-python',
     assets: [
       {
         source: ['workers', 'python', 'python-worker.js'],
@@ -117,7 +117,7 @@ const PACKAGE_ASSET_PLANS: PackageAssetPlan[] = [
     ],
   },
   {
-    packageDir: 'packages/harness-javascript',
+    packageDir: 'packages/runtime-javascript',
     assets: [
       {
         source: ['workers', 'javascript', 'javascript-worker.js'],
@@ -142,7 +142,7 @@ const PACKAGE_ASSET_PLANS: PackageAssetPlan[] = [
     ],
   },
   {
-    packageDir: 'packages/harness-java',
+    packageDir: 'packages/runtime-java',
     assets: [
       {
         source: ['workers', 'java', 'java-worker.js'],
@@ -179,7 +179,7 @@ const PACKAGE_ASSET_PLANS: PackageAssetPlan[] = [
     ],
   },
   {
-    packageDir: 'packages/harness-csharp',
+    packageDir: 'packages/runtime-csharp',
     assets: [
       {
         source: ['workers', 'csharp', 'csharp-worker.js'],
@@ -200,7 +200,7 @@ const PACKAGE_ASSET_PLANS: PackageAssetPlan[] = [
     ],
   },
   {
-    packageDir: 'packages/harness-cpp',
+    packageDir: 'packages/runtime-cpp',
     assets: [
       {
         source: ['workers', 'cpp', 'cpp-worker.js'],

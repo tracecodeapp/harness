@@ -1,6 +1,6 @@
 #!/usr/bin/env npx tsx
 
-import { PythonWorkerClient } from '../packages/harness-python/src/python-worker-client';
+import { PythonWorkerClient } from '../packages/runtime-python/src/python-worker-client';
 
 function assertCondition(condition: unknown, message: string): asserts condition {
   if (!condition) throw new Error(message);

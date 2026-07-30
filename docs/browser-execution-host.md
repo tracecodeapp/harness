@@ -20,7 +20,7 @@ The browser harness therefore provides a narrow cross-origin Worker broker:
 Bundle this module on the dedicated execution origin:
 
 ~~~ts
-import { installBrowserExecutionWorkerHost } from '@tracecode/harness-browser';
+import { installBrowserExecutionWorkerHost } from '@tracecode/harness/browser';
 
 installBrowserExecutionWorkerHost({
   allowedParentOrigins: ['https://app.tracecode.app'],

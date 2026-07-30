@@ -1,13 +1,13 @@
 #!/usr/bin/env npx tsx
 
-import { PythonWorkerClient, type PythonProjectCommandRequest } from '../packages/harness-python/src/python-worker-client';
+import { PythonWorkerClient, type PythonProjectCommandRequest } from '../packages/runtime-python/src/python-worker-client';
 import type {
   RuntimeKernelHttpBridge,
   RuntimeKernelHttpHandler,
   RuntimeKernelHttpListenOptions,
   RuntimeKernelHttpListenerHandle,
   RuntimeKernelHttpRequest,
-} from '../packages/harness-core/src/runtime-project';
+} from '../packages/runtime-core/src/runtime-project';
 
 function assertCondition(condition: unknown, message: string): asserts condition {
   if (!condition) {

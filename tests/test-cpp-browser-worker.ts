@@ -8,7 +8,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { chromium } from 'playwright';
 import { runCommand, waitForHttp } from './example-app-smoke';
-import { createRuntimeCommandStdinPipeFromText } from '../packages/harness-core/src/runtime-project';
+import { createRuntimeCommandStdinPipeFromText } from '../packages/runtime-core/src/runtime-project';
 
 function assertCondition(condition: unknown, message: string): asserts condition {
   if (!condition) {

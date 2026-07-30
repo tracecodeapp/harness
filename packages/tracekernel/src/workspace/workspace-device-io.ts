@@ -12,7 +12,7 @@ import {
   type RuntimeCommandResult,
   type RuntimeKernelDevicePath,
   type RuntimeWorkspaceActor,
-} from '@tracecode/harness-core';
+} from '@tracecode/runtime-core';
 import {
   decodeUtf8,
   type RuntimeCommandExecutionContext,

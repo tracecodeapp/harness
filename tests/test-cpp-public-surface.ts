@@ -1,11 +1,11 @@
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import ts from 'typescript';
-import { getLanguageRuntimeInfo } from '../packages/harness-core/src/runtime-language-info';
+import { getLanguageRuntimeInfo } from '../packages/runtime-core/src/runtime-language-info';
 import {
   DEFAULT_BROWSER_HARNESS_ASSET_RELATIVE_PATHS,
   resolveBrowserHarnessAssets,
-} from '../packages/harness-browser/src/runtime-assets';
+} from '../packages/runtime-browser/src/runtime-assets';
 
 const ROOT = process.cwd();
 const VIRTUAL_OUT_DIR = '/tracecode-cpp-public-declarations';
@@ -57,7 +57,7 @@ function generatedMetadataSlice(): string {
     'utf8'
   );
   const start = generatedProjectWorker.indexOf(
-    '// packages/harness-core/src/generated/runtime-language-info-data.ts'
+    '// packages/runtime-core/src/generated/runtime-language-info-data.ts'
   );
   const end = generatedProjectWorker.indexOf('\n// packages/', start + 1);
   assertCondition(
@@ -69,9 +69,9 @@ function generatedMetadataSlice(): string {
 
 function main(): void {
   const configs = [
-    parsedConfig('packages/harness-core/tsconfig.json'),
-    parsedConfig('packages/harness-browser/tsconfig.json'),
-    parsedConfig('packages/harness-cpp/tsconfig.json'),
+    parsedConfig('packages/runtime-core/tsconfig.json'),
+    parsedConfig('packages/runtime-browser/tsconfig.json'),
+    parsedConfig('packages/runtime-cpp/tsconfig.json'),
   ];
   const program = ts.createProgram({
     rootNames: [...new Set(configs.flatMap((config) => config.fileNames))],
@@ -114,14 +114,14 @@ function main(): void {
   );
 
   const publicSources = [
-    'packages/harness-core/src/runtime-execution.ts',
-    'packages/harness-browser/src/runtime-assets.ts',
-    'packages/harness-browser/src/runtime-environment.ts',
-    'packages/harness-cpp/src/browser-runtime-provider.ts',
-    'packages/harness-cpp/src/cpp-worker-client.ts',
-    'packages/harness-cpp/src/index.ts',
-    'packages/harness-cpp/src/project-browser.ts',
-    'packages/harness-cpp/src/project-node.ts',
+    'packages/runtime-core/src/runtime-execution.ts',
+    'packages/runtime-browser/src/runtime-assets.ts',
+    'packages/runtime-browser/src/runtime-environment.ts',
+    'packages/runtime-cpp/src/browser-runtime-provider.ts',
+    'packages/runtime-cpp/src/cpp-worker-client.ts',
+    'packages/runtime-cpp/src/index.ts',
+    'packages/runtime-cpp/src/project-browser.ts',
+    'packages/runtime-cpp/src/project-node.ts',
   ] as const;
   const publicDeclarations = new Map<string, string>();
   const implementationLeaks: string[] = [];
@@ -140,7 +140,7 @@ function main(): void {
   );
 
   const clientDeclaration = publicDeclarations.get(
-    'packages/harness-cpp/src/cpp-worker-client.ts'
+    'packages/runtime-cpp/src/cpp-worker-client.ts'
   )!;
   for (const name of [
     'CppWorkerAssets',
@@ -163,7 +163,7 @@ function main(): void {
   }
 
   const assetDeclaration = publicDeclarations.get(
-    'packages/harness-browser/src/runtime-assets.ts'
+    'packages/runtime-browser/src/runtime-assets.ts'
   )!;
   for (const name of [
     'CppCompilerIntegrityEntry',
@@ -189,7 +189,7 @@ function main(): void {
   }
 
   const timingDeclaration = publicDeclarations.get(
-    'packages/harness-core/src/runtime-execution.ts'
+    'packages/runtime-core/src/runtime-execution.ts'
   )!;
   assertCondition(
     timingDeclaration.includes('compilerLoadMs') &&

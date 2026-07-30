@@ -6,11 +6,11 @@ import {
   createBrowserHarness,
   resolveBrowserHarnessAssets,
 } from '../src/browser';
-import { createBrowserProjectWorkspace } from '../packages/harness-browser/src/project';
-import { CppWorkerClient } from '../packages/harness-cpp/src/cpp-worker-client';
-import { JavaWorkerClient } from '../packages/harness-java/src/java-worker-client';
-import { PythonWorkerClient } from '../packages/harness-python/src/python-worker-client';
-import { createRuntimeCommandStdinPipeFromText } from '../packages/harness-core/src/runtime-project';
+import { createBrowserProjectWorkspace } from '../packages/runtime-browser/src/project';
+import { CppWorkerClient } from '../packages/runtime-cpp/src/cpp-worker-client';
+import { JavaWorkerClient } from '../packages/runtime-java/src/java-worker-client';
+import { PythonWorkerClient } from '../packages/runtime-python/src/python-worker-client';
+import { createRuntimeCommandStdinPipeFromText } from '../packages/runtime-core/src/runtime-project';
 
 function assertCondition(condition: unknown, message: string): asserts condition {
   if (!condition) {
@@ -1116,7 +1116,7 @@ async function main(): Promise<void> {
       'Browser harness should expose natural-language TypeScript runtime info'
     );
     assertCondition(
-      supportedInfos.some((info) => info.language === 'csharp' && Boolean(info.runtime.version)),
+      supportedInfos.some((info) => info.language === 'csharp' && Boolean(info.compiler?.version)),
       'Browser harness should expose supported language runtime infos'
     );
     assertCondition(
@@ -1801,7 +1801,7 @@ async function main(): Promise<void> {
       .execute({
         kind: 'project',
         code: '',
-        source: 'run' as unknown as import('../packages/harness-core/src/runtime-project').RuntimeProjectCommandSource,
+        source: 'run' as unknown as import('../packages/runtime-core/src/runtime-project').RuntimeProjectCommandSource,
         scriptPath: 'Main',
         args: [],
         cwd: '/home/user/project',

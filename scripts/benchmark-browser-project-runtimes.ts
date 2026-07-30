@@ -624,7 +624,7 @@ async function buildPublicProjectBundle(tempRoot: string): Promise<{
   const outfile = join(tempRoot, 'benchmark-project-harness.mjs');
   const startedAt = performance.now();
   await build({
-    entryPoints: [resolve(process.cwd(), 'packages/harness-browser/src/project.ts')],
+    entryPoints: [resolve(process.cwd(), 'packages/runtime-browser/src/project.ts')],
     outfile,
     bundle: true,
     format: 'esm',
@@ -633,8 +633,8 @@ async function buildPublicProjectBundle(tempRoot: string): Promise<{
     sourcemap: false,
     logLevel: 'warning',
     alias: {
-      zlib: resolve(process.cwd(), 'packages/harness-project/src/zlib-browser-shim.ts'),
-      'node:zlib': resolve(process.cwd(), 'packages/harness-project/src/zlib-browser-shim.ts'),
+      zlib: resolve(process.cwd(), 'packages/workspace-facade/src/zlib-browser-shim.ts'),
+      'node:zlib': resolve(process.cwd(), 'packages/workspace-facade/src/zlib-browser-shim.ts'),
     },
     define: { 'process.env.NODE_ENV': '"production"' },
   });
@@ -650,7 +650,7 @@ async function buildPublicProjectBundle(tempRoot: string): Promise<{
 
 async function buildExecutionHostBundle(tempRoot: string): Promise<void> {
   await build({
-    entryPoints: [resolve(process.cwd(), 'packages/harness-browser/src/execution-host.ts')],
+    entryPoints: [resolve(process.cwd(), 'packages/runtime-browser/src/execution-host.ts')],
     outfile: join(tempRoot, 'benchmark-execution-host.mjs'),
     bundle: true,
     format: 'esm',
@@ -1943,7 +1943,7 @@ async function main(): Promise<void> {
         runtimeManifestRuntimes: runtimeManifests ? Object.keys(runtimeManifests).sort() : [],
       },
       bundle: {
-        entrypoint: 'packages/harness-browser/src/project.ts',
+        entrypoint: 'packages/runtime-browser/src/project.ts',
         rawBytes: bundle.rawBytes,
         gzipBytes: bundle.gzipBytes,
         buildMs: bundle.buildMs,

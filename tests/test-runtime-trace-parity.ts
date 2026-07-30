@@ -1,14 +1,14 @@
 #!/usr/bin/env npx tsx
 
 import { test } from 'node:test';
-import { javaTraceHooksEventsToRuntimeTrace } from '../packages/harness-core/src/trace-adapters/java';
+import { javaTraceHooksEventsToRuntimeTrace } from '../packages/runtime-core/src/trace-adapters/java';
 import {
   RUNTIME_TRACE_SCHEMA_VERSION,
   buildRuntimeTraceParitySignature,
   type RuntimeTraceEvent,
   type RuntimeTraceParitySignature,
   type RuntimeTrace,
-} from '../packages/harness-core/src/runtime-trace';
+} from '../packages/runtime-core/src/runtime-trace';
 
 function assertCondition(condition: unknown, message: string): asserts condition {
   if (!condition) throw new Error(message);

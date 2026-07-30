@@ -1,6 +1,6 @@
 #!/usr/bin/env npx tsx
 
-import type { RuntimeProjectTerminalCapabilities } from '../packages/harness-core/src/index';
+import type { RuntimeProjectTerminalCapabilities } from '../packages/runtime-core/src/index';
 import {
   WorkspaceTerminalCommands,
   type RuntimeCommandUmaskState,

@@ -1,7 +1,7 @@
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import ts from 'typescript';
-import { getLanguageRuntimeInfo } from '../packages/harness-core/src/runtime-language-info';
+import { getLanguageRuntimeInfo } from '../packages/runtime-core/src/runtime-language-info';
 
 function assertCondition(condition: unknown, message: string): asserts condition {
   if (!condition) throw new Error(message);
@@ -23,19 +23,19 @@ function loadProgram(): {
   checker: ts.TypeChecker;
   entrypoints: ts.SourceFile[];
 } {
-  const packageRoot = resolve(process.cwd(), 'packages/harness-python');
+  const packageRoot = resolve(process.cwd(), 'packages/runtime-python');
   const configPath = resolve(packageRoot, 'tsconfig.json');
   const config = ts.readConfigFile(configPath, ts.sys.readFile);
   assertCondition(
     !config.error,
-    `Could not read harness-python TypeScript config: ${
+    `Could not read runtime-python TypeScript config: ${
       config.error ? ts.flattenDiagnosticMessageText(config.error.messageText, '\n') : ''
     }`
   );
   const parsed = ts.parseJsonConfigFileContent(config.config, ts.sys, packageRoot);
   assertCondition(
     parsed.errors.length === 0,
-    `Could not parse harness-python TypeScript config: ${parsed.errors
+    `Could not parse runtime-python TypeScript config: ${parsed.errors
       .map((error) => ts.flattenDiagnosticMessageText(error.messageText, '\n'))
       .join('\n')}`
   );
@@ -49,7 +49,7 @@ function loadProgram(): {
     resolve(packageRoot, 'src/project-node.ts'),
   ].map((entrypointPath) => {
     const entrypoint = program.getSourceFile(entrypointPath);
-    assertCondition(entrypoint, `Missing harness-python entrypoint ${entrypointPath}`);
+    assertCondition(entrypoint, `Missing runtime-python entrypoint ${entrypointPath}`);
     return entrypoint;
   });
   return {
@@ -106,19 +106,19 @@ function main(): void {
 
   const mainExports = exportsByEntrypoint.get(resolve(
     process.cwd(),
-    'packages/harness-python/src/index.ts'
+    'packages/runtime-python/src/index.ts'
   ));
   const browserExports = exportsByEntrypoint.get(resolve(
     process.cwd(),
-    'packages/harness-python/src/project-browser.ts'
+    'packages/runtime-python/src/project-browser.ts'
   ));
   const nativeExports = exportsByEntrypoint.get(resolve(
     process.cwd(),
-    'packages/harness-python/src/project-node.ts'
+    'packages/runtime-python/src/project-node.ts'
   ));
-  assertCondition(mainExports, 'Missing harness-python main export map');
-  assertCondition(browserExports, 'Missing harness-python browser-project export map');
-  assertCondition(nativeExports, 'Missing harness-python native-project export map');
+  assertCondition(mainExports, 'Missing runtime-python main export map');
+  assertCondition(browserExports, 'Missing runtime-python browser-project export map');
+  assertCondition(nativeExports, 'Missing runtime-python native-project export map');
 
   for (const name of [
     'PythonWorkerClient',
@@ -128,7 +128,7 @@ function main(): void {
     'BrowserPythonProjectRunnerOptions',
     'BrowserPythonProjectWorkerClient',
   ]) {
-    assertCondition(mainExports.has(name), `@tracecode/harness-python must export ${name}`);
+    assertCondition(mainExports.has(name), `@tracecode/runtime-python must export ${name}`);
   }
   assertDefiningInterface(
     checker,
@@ -152,7 +152,7 @@ function main(): void {
   );
   const packageDocumentationPath = resolve(
     process.cwd(),
-    'packages/harness-python/README.md'
+    'packages/runtime-python/README.md'
   );
   const packageDocumentation = readFileSync(packageDocumentationPath, 'utf8');
   const runtimeAssetsHeading = packageDocumentation.indexOf('\nRuntime assets ');
@@ -182,7 +182,7 @@ function main(): void {
     'utf8'
   );
   const generatedMetadataStart = generatedProjectWorker.indexOf(
-    '// packages/harness-core/src/generated/runtime-language-info-data.ts'
+    '// packages/runtime-core/src/generated/runtime-language-info-data.ts'
   );
   const generatedMetadataEnd = generatedProjectWorker.indexOf(
     '\n// packages/',

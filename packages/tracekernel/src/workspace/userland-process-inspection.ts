@@ -2,7 +2,7 @@ import type {
   RuntimeCommandResult,
   RuntimeKernelHttpListenerInfo,
   RuntimeKernelInfo,
-} from '@tracecode/harness-core';
+} from '@tracecode/runtime-core';
 import {
   normalizeTraceKernelSignal,
   type RuntimeKernelProcessRecord,

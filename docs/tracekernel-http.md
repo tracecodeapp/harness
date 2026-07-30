@@ -206,7 +206,7 @@ import {
   runtimeHttpBodyFromBytes,
   runtimeHttpResponseBytes,
   runtimeHttpResponseText,
-} from '@tracecode/harness-project';
+} from '@tracecode/harness/project';
 
 const binaryResponse = await workspace.http.request({
   method: 'POST',

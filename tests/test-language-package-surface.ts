@@ -33,8 +33,8 @@ const PACKAGE_CHECKS: PackageCheck[] = [
     ],
   },
   {
-    name: '@tracecode/harness-core',
-    dir: 'packages/harness-core',
+    name: '@tracecode/runtime-core',
+    dir: 'packages/runtime-core',
     exportName: 'createEmptyRuntimeTrace',
     requiredFiles: [
       'dist/index.js',
@@ -60,8 +60,8 @@ const PACKAGE_CHECKS: PackageCheck[] = [
     ],
   },
   {
-    name: '@tracecode/harness-browser',
-    dir: 'packages/harness-browser',
+    name: '@tracecode/runtime-browser',
+    dir: 'packages/runtime-browser',
     exportName: 'createBrowserHarness',
     requiredFiles: [
       'dist/index.js',
@@ -93,8 +93,8 @@ const PACKAGE_CHECKS: PackageCheck[] = [
     ],
   },
   {
-    name: '@tracecode/harness-project',
-    dir: 'packages/harness-project',
+    name: '@tracecode/workspace-facade',
+    dir: 'packages/workspace-facade',
     exportName: 'createRuntimeWorkspace',
     requiredFiles: [
       'dist/index.js',
@@ -107,8 +107,8 @@ const PACKAGE_CHECKS: PackageCheck[] = [
     ],
   },
   {
-    name: '@tracecode/harness-python',
-    dir: 'packages/harness-python',
+    name: '@tracecode/runtime-python',
+    dir: 'packages/runtime-python',
     exportName: 'createPythonRuntimeClient',
     requiredFiles: [
       'dist/index.js',
@@ -129,8 +129,8 @@ const PACKAGE_CHECKS: PackageCheck[] = [
     ],
   },
   {
-    name: '@tracecode/harness-javascript',
-    dir: 'packages/harness-javascript',
+    name: '@tracecode/runtime-javascript',
+    dir: 'packages/runtime-javascript',
     exportName: 'createJavaScriptRuntimeClient',
     requiredFiles: [
       'dist/index.js',
@@ -151,8 +151,8 @@ const PACKAGE_CHECKS: PackageCheck[] = [
     ],
   },
   {
-    name: '@tracecode/harness-java',
-    dir: 'packages/harness-java',
+    name: '@tracecode/runtime-java',
+    dir: 'packages/runtime-java',
     exportName: 'createJavaRuntimeClient',
     requiredFiles: [
       'dist/index.js',
@@ -182,8 +182,8 @@ const PACKAGE_CHECKS: PackageCheck[] = [
     ],
   },
   {
-    name: '@tracecode/harness-csharp',
-    dir: 'packages/harness-csharp',
+    name: '@tracecode/runtime-csharp',
+    dir: 'packages/runtime-csharp',
     exportName: 'createCSharpRuntimeClient',
     requiredFiles: [
       'dist/index.js',
@@ -206,8 +206,8 @@ const PACKAGE_CHECKS: PackageCheck[] = [
     ],
   },
   {
-    name: '@tracecode/harness-cpp',
-    dir: 'packages/harness-cpp',
+    name: '@tracecode/runtime-cpp',
+    dir: 'packages/runtime-cpp',
     exportName: 'createCppRuntimeClient',
     requiredFiles: [
       'dist/index.js',
@@ -235,8 +235,8 @@ const PACKAGE_CHECKS: PackageCheck[] = [
     ],
   },
   {
-    name: '@tracecode/harness-native',
-    dir: 'packages/harness-native',
+    name: '@tracecode/runtime-native',
+    dir: 'packages/runtime-native',
     exportName: 'createNativeHarness',
     requiredFiles: [
       'dist/index.js',
@@ -363,13 +363,13 @@ async function runWithTempRoot(tempRoot: string): Promise<void> {
         `${packageCheck.name} tarball should include ${relativePath}`
       );
     }
-    if (packageCheck.name === '@tracecode/harness-cpp') {
+    if (packageCheck.name === '@tracecode/runtime-cpp') {
       const brandedCompilerPaths = [...packedFiles].filter((path) =>
         /(?:yowasp|toolchain)/iu.test(path)
       );
       assertCondition(
         brandedCompilerPaths.length === 0,
-        `@tracecode/harness-cpp tarball must publish language-owned compiler paths: ${brandedCompilerPaths.join(', ')}`
+        `@tracecode/runtime-cpp tarball must publish language-owned compiler paths: ${brandedCompilerPaths.join(', ')}`
       );
     }
 
@@ -387,12 +387,12 @@ async function runWithTempRoot(tempRoot: string): Promise<void> {
       assertCondition(fileStat.isFile(), `${packageCheck.name} extracted file should exist at ${relativePath}`);
     }
 
-    if (packageCheck.name === '@tracecode/harness-core') {
+    if (packageCheck.name === '@tracecode/runtime-core') {
       const declarations = await readFile(join(packageDir, 'dist/index.d.ts'), 'utf8');
       assertCondition(
         declarations.includes('interface RuntimeDirectoryChange') &&
           declarations.includes('type RuntimeFileChange = RuntimeFile | RuntimeSymlink | RuntimeFileDeletion | RuntimeDirectoryChange'),
-        '@tracecode/harness-core declarations should ship directory file-change events'
+        '@tracecode/runtime-core declarations should ship directory file-change events'
       );
       assertCondition(
         declarations.includes('runtimeKernelWriteTarget') &&
@@ -412,19 +412,19 @@ async function runWithTempRoot(tempRoot: string): Promise<void> {
           declarations.includes('runtimeKernelTruncateTarget') &&
           declarations.includes('type RuntimeKernelTruncateTarget') &&
           declarations.includes('normalizeRuntimeDevicePath'),
-        '@tracecode/harness-core declarations should export shared tracekernel helpers'
+        '@tracecode/runtime-core declarations should export shared tracekernel helpers'
       );
       assertCondition(
         declarations.includes('class RuntimeProjectLiveIoController') &&
           declarations.includes('interface RuntimeProjectLiveIoControllerOptions') &&
           declarations.includes('filterAppliedResultFiles') &&
           declarations.includes('emitMissingFinalOutput'),
-        '@tracecode/harness-core declarations should export the shared live project I/O controller'
+        '@tracecode/runtime-core declarations should export the shared live project I/O controller'
       );
       assertCondition(
         declarations.includes("type RuntimeProjectIoTier = 'unsupported' | 'final-diff' | 'bridged-live' | 'native-live'") &&
           declarations.includes('interface RuntimeProjectIoSupport'),
-        '@tracecode/harness-core declarations should export project I/O support tier types'
+        '@tracecode/runtime-core declarations should export project I/O support tier types'
       );
     }
     if (packageCheck.name === '@tracecode/tracekernel') {
@@ -525,26 +525,26 @@ async function runWithTempRoot(tempRoot: string): Promise<void> {
         manifest.name === '@tracecode/runtime-sql' &&
           manifest.version === '0.14.0' &&
           manifest.repository?.directory === 'packages/runtime-sql',
-        '@tracecode/runtime-sql tarball should publish the 0.14 runtime package identity'
+        '@tracecode/runtime-sql package artifact should preserve the 0.14 runtime identity'
       );
     }
-    if (packageCheck.name === '@tracecode/harness-project') {
+    if (packageCheck.name === '@tracecode/workspace-facade') {
       const projectDeclarations = await readFile(join(packageDir, 'dist/index.d.ts'), 'utf8');
       assertCondition(
         projectDeclarations.includes('RuntimeProjectLiveIoController') &&
           projectDeclarations.includes('RuntimeProjectLiveIoControllerOptions'),
-        '@tracecode/harness-project declarations should re-export the shared live project I/O controller'
+        '@tracecode/workspace-facade declarations should re-export the shared live project I/O controller'
       );
-      // harness-project references the shared HTTP client type from harness-core
+      // workspace-facade references the shared HTTP client type from runtime-core
       // rather than inlining it, so the project declarations expose the name while
-      // the abortable method signature is asserted in harness-core's declarations.
+      // the abortable method signature is asserted in runtime-core's declarations.
       assertCondition(
         projectDeclarations.includes('RuntimeWorkspaceHttpClient'),
-        '@tracecode/harness-project declarations should expose the shared workspace HTTP client type'
+        '@tracecode/workspace-facade declarations should expose the shared workspace HTTP client type'
       );
-      const coreCheckForHttp = PACKAGE_CHECKS.find((check) => check.name === '@tracecode/harness-core');
+      const coreCheckForHttp = PACKAGE_CHECKS.find((check) => check.name === '@tracecode/runtime-core');
       if (!coreCheckForHttp) {
-        throw new Error('@tracecode/harness-core package check is required to verify the workspace HTTP API surface');
+        throw new Error('@tracecode/runtime-core package check is required to verify the workspace HTTP API surface');
       }
       const coreDeclarations = await readFile(
         join(packageNodeModulesDir(appDir, coreCheckForHttp.name), 'dist/index.d.ts'),
@@ -555,14 +555,14 @@ async function runWithTempRoot(tempRoot: string): Promise<void> {
           coreDeclarations.includes('listen(options: RuntimeKernelHttpListenOptions') &&
           coreDeclarations.includes('timeoutMs?: number') &&
           coreDeclarations.includes('signal?: AbortSignal'),
-        '@tracecode/harness-core declarations should expose the abortable workspace HTTP API'
+        '@tracecode/runtime-core declarations should expose the abortable workspace HTTP API'
       );
     }
-    if (packageCheck.name === '@tracecode/harness-python') {
+    if (packageCheck.name === '@tracecode/runtime-python') {
       assertCondition(
         !packedFiles.has('package/workers/pyodide-worker.js') &&
           !packedFiles.has('package/workers/pyodide/runtime-core.js'),
-        '@tracecode/harness-python must not publish engine-branded worker paths'
+        '@tracecode/runtime-python must not publish engine-branded worker paths'
       );
       const declarations = (
         await Promise.all(
@@ -573,18 +573,18 @@ async function runWithTempRoot(tempRoot: string): Promise<void> {
       ).join('\n');
       assertCondition(
         !/pyodide/i.test(declarations),
-        '@tracecode/harness-python declarations must remain implementation-neutral'
+        '@tracecode/runtime-python declarations must remain implementation-neutral'
       );
       assertCondition(
         declarations.includes('interface PythonWorkerClientOptions') &&
           declarations.includes('interface BrowserPythonProjectRunnerOptions') &&
           declarations.includes('interface BrowserPythonProjectWorkerClient'),
-        '@tracecode/harness-python canonical option and worker-client types must be defining interfaces'
+        '@tracecode/runtime-python canonical option and worker-client types must be defining interfaces'
       );
       const worker = await readFile(join(packageDir, 'workers/python-worker.js'), 'utf8');
       assertCondition(
         !worker.includes('"/dev/stdout": {"readable": False, "writable": True'),
-        '@tracecode/harness-python worker should not ship fallback /dev/stdout device semantics'
+        '@tracecode/runtime-python worker should not ship fallback /dev/stdout device semantics'
       );
       assertCondition(
         worker.includes('function installPyodideProjectStdioBridge(') &&
@@ -597,13 +597,13 @@ async function runWithTempRoot(tempRoot: string): Promise<void> {
           worker.includes('sys.__stderr__ = _previous_dunder_stderr') &&
           !worker.includes('pyodide.setStdout({ write: writeHandler(') &&
           !worker.includes('pyodide.setStderr({ write: writeHandler('),
-        '@tracecode/harness-python worker should ship bounded project stdio hooks without provider callback re-entry'
+        '@tracecode/runtime-python worker should ship bounded project stdio hooks without provider callback re-entry'
       );
       assertCondition(
         worker.includes('self.__tracecodeReadProjectStdinByte = readProjectStdinByte') &&
           worker.includes('sys.stdin = _TraceProjectInputStream()') &&
           worker.includes('return _read_project_input(_device, _length)'),
-        '@tracecode/harness-python worker should route sys.stdin and device reads through one kernel stdin cursor'
+        '@tracecode/runtime-python worker should route sys.stdin and device reads through one kernel stdin cursor'
       );
       assertCondition(
         worker.includes('sourceDevice') &&
@@ -611,14 +611,14 @@ async function runWithTempRoot(tempRoot: string): Promise<void> {
           worker.includes('_device = str(_output_device or ("/dev/stderr" if self._stream == "stderr" else "/dev/stdout"))') &&
           worker.includes('_target.write(bytes(_data).decode("utf-8", "replace"), self._device, _output_device)') &&
           worker.includes('_target.write(_bytes.decode("utf-8", "replace"), _device, _output_device)'),
-        '@tracecode/harness-python worker should ship routed output/source device events'
+        '@tracecode/runtime-python worker should ship routed output/source device events'
       );
       assertCondition(
         worker.includes("patch('open'") &&
           worker.includes('isCreateOrTruncateOpenFlags') &&
           worker.includes('kernelVirtualMutationTarget(path)') &&
           worker.includes('emitFileChange(streamPath(stream))'),
-        '@tracecode/harness-python worker should ship shared-kernel live empty-open file mutation hooks'
+        '@tracecode/runtime-python worker should ship shared-kernel live empty-open file mutation hooks'
       );
       assertCondition(
         worker.includes('shared-kernel-policy-loaded') &&
@@ -630,34 +630,34 @@ async function runWithTempRoot(tempRoot: string): Promise<void> {
           worker.includes('runtimeKernelVirtualPathTarget(path, { devices })') &&
           worker.includes('runtimeKernelDeviceOutputTarget(devices, target.path)') &&
           worker.includes('runtimeKernelDeviceInputSource(devices, device)'),
-        '@tracecode/harness-python worker should load shared worker kernel policy for virtual path, open, mutation, and device routing decisions'
+        '@tracecode/runtime-python worker should load shared worker kernel policy for virtual path, open, mutation, and device routing decisions'
       );
       assertCondition(
         worker.includes("patch('mkdir'") &&
           worker.includes("patch('rmdir'") &&
           worker.includes('emitDirectoryCreate(path)') &&
           worker.includes('emitDirectoryDelete(path)'),
-        '@tracecode/harness-python worker should ship live directory mutation hooks'
+        '@tracecode/runtime-python worker should ship live directory mutation hooks'
       );
       assertCondition(
         /const emitPathSnapshot = \(path(?:, [^)]+)?\) =>/.test(worker) &&
           worker.includes('emitPathSnapshot(`${String(path).replace(/\\/+$/, \'\')}/${entry}`, budget)') &&
           worker.includes('emitPathSnapshot(newPath)'),
-        '@tracecode/harness-python worker should ship recursive moved-directory live snapshots'
+        '@tracecode/runtime-python worker should ship recursive moved-directory live snapshots'
       );
       assertCondition(
         worker.includes('_patched_os_fchmod') &&
           worker.includes('_patched_os_fchown') &&
           worker.includes('if _fd in _proc_file_descriptors:') &&
           worker.includes('Kernel proc path is read-only'),
-        '@tracecode/harness-python worker should ship virtual fd metadata guards'
+        '@tracecode/runtime-python worker should ship virtual fd metadata guards'
       );
       assertCondition(
         worker.includes('_patched_os_readv') &&
           worker.includes('_patched_os_writev') &&
           worker.includes('os.readv = _patched_os_readv') &&
           worker.includes('os.writev = _patched_os_writev'),
-        '@tracecode/harness-python worker should ship vectored fd I/O bridge hooks'
+        '@tracecode/runtime-python worker should ship vectored fd I/O bridge hooks'
       );
       assertCondition(
         worker.includes('def _tracekernel_http_dispatch_async(') &&
@@ -665,24 +665,24 @@ async function runWithTempRoot(tempRoot: string): Promise<void> {
           worker.includes('_http_client.HTTPConnection = _TraceKernelHTTPConnection') &&
           worker.includes('_requests_module.request = _tracekernel_requests_request') &&
           worker.includes('_requests_module.post = lambda url, **kwargs: _tracekernel_requests_request("POST", url, **kwargs)'),
-        '@tracecode/harness-python worker should ship outbound TraceKernel HTTP client shims'
+        '@tracecode/runtime-python worker should ship outbound TraceKernel HTTP client shims'
       );
       assertCondition(
         worker.includes('class _TraceKernelHTTPServer(_TraceKernelTCPServer):') &&
           worker.includes('_http_server.HTTPServer = _TraceKernelHTTPServer') &&
           worker.includes('_http_server.ThreadingHTTPServer = _TraceKernelThreadingHTTPServer') &&
           worker.includes('_socketserver.TCPServer = _TraceKernelTCPServer'),
-        '@tracecode/harness-python worker should ship stdlib HTTPServer/TCPServer TraceKernel listener shims'
+        '@tracecode/runtime-python worker should ship stdlib HTTPServer/TCPServer TraceKernel listener shims'
       );
       assertCondition(
         worker.includes('class FastAPI:') &&
           worker.includes('_uvicorn_module.run = _uvicorn_run') &&
           worker.includes('sys.modules.setdefault("fastapi", _fastapi_module)') &&
           worker.includes('sys.modules["uvicorn"] = _uvicorn_module'),
-        '@tracecode/harness-python worker should ship FastAPI/uvicorn endpoint shims'
+        '@tracecode/runtime-python worker should ship FastAPI/uvicorn endpoint shims'
       );
     }
-    if (packageCheck.name === '@tracecode/harness-javascript') {
+    if (packageCheck.name === '@tracecode/runtime-javascript') {
       const projectBrowser = (
         await Promise.all(
           (await readdir(join(packageDir, 'dist')))
@@ -698,7 +698,7 @@ async function runWithTempRoot(tempRoot: string): Promise<void> {
         projectWorker.includes('sourceDevice') &&
           projectWorker.includes('io.output(stream, data, device, sourceDevice)') &&
           projectWorker.includes('device !== outputDevice ? { sourceDevice: device } :'),
-        '@tracecode/harness-javascript browser project runner should ship routed source device output events'
+        '@tracecode/runtime-javascript browser project runner should ship routed source device output events'
       );
       assertCondition(
         projectBrowser.includes('readRuntimeCommandStdinPipeBytes') &&
@@ -709,14 +709,14 @@ async function runWithTempRoot(tempRoot: string): Promise<void> {
           projectBrowser.includes('(size) => readDeviceBytes("/dev/stdin", size)') &&
           projectBrowser.includes('eventLoopApi.setTimeout') &&
           projectBrowser.includes('if (entry.kind === "device") return readDeviceBytes(entry.device ?? "/dev/stdin");'),
-        '@tracecode/harness-javascript browser project runner should share process.stdin and device stdin cursor through live stdin pipes'
+        '@tracecode/runtime-javascript browser project runner should share process.stdin and device stdin cursor through live stdin pipes'
       );
       assertCondition(
         projectBrowser.includes('const emitDirectoryCreate = (path) =>') &&
           projectBrowser.includes('directory: true') &&
           projectBrowser.includes('atimeMs: metadata.atimeMs, mtimeMs: metadata.mtimeMs') &&
           projectBrowser.includes('io.fileChange({ path, directory: true, deleted: true }, "live")'),
-        '@tracecode/harness-javascript browser project runner should ship metadata-bearing live directory mutation events'
+        '@tracecode/runtime-javascript browser project runner should ship metadata-bearing live directory mutation events'
       );
       assertCondition(
         projectBrowser.includes('readvSync') &&
@@ -726,12 +726,12 @@ async function runWithTempRoot(tempRoot: string): Promise<void> {
           projectBrowser.includes('writeFileToHandle') &&
           projectBrowser.includes('appendFileToHandle') &&
           projectBrowser.includes('createWriteStream'),
-        '@tracecode/harness-javascript browser project runner should ship FileHandle/vector/truncate/metadata live I/O bridge'
+        '@tracecode/runtime-javascript browser project runner should ship FileHandle/vector/truncate/metadata live I/O bridge'
       );
       assertCondition(
         projectBrowser.includes('runtimeKernelStatTarget') &&
           projectBrowser.includes('statForKernelTarget'),
-        '@tracecode/harness-javascript browser project runner should use shared tracekernel stat targets'
+        '@tracecode/runtime-javascript browser project runner should use shared tracekernel stat targets'
       );
       assertCondition(
         projectBrowser.includes('function createHttpApi(kernelHttp, signal)') &&
@@ -739,14 +739,14 @@ async function runWithTempRoot(tempRoot: string): Promise<void> {
           projectBrowser.includes('class TraceKernelResponse') &&
           projectBrowser.includes('["node:http", httpApi.module]') &&
           projectBrowser.includes('void kernelHttp.dispatch({'),
-        '@tracecode/harness-javascript browser project runner should ship TraceKernel fetch/node:http client and server shims'
+        '@tracecode/runtime-javascript browser project runner should ship TraceKernel fetch/node:http client and server shims'
       );
       assertCondition(
         projectBrowser.includes('dispatchWorkerKernelHttpRequest') &&
           projectBrowser.includes('handleKernelHttpProtocolMessage') &&
           projectBrowser.includes('kernel-http-dispatch-result') &&
           projectBrowser.includes('kernel-http-request'),
-        '@tracecode/harness-javascript browser project runner should ship the worker-safe HTTP message bridge'
+        '@tracecode/runtime-javascript browser project runner should ship the worker-safe HTTP message bridge'
       );
       assertCondition(
         projectWorker.includes('function createHttpApi(kernelHttp, signal)') &&
@@ -763,10 +763,10 @@ async function runWithTempRoot(tempRoot: string): Promise<void> {
           projectWorker.includes('"kernel-syscall-async"') &&
           projectWorker.includes('protocolToken !== command.protocolToken') &&
           projectWorker.includes('["node:http", httpApi.module]'),
-        '@tracecode/harness-javascript packaged project worker should include TraceKernel fs, node:net, and node:http bridges'
+        '@tracecode/runtime-javascript packaged project worker should include TraceKernel fs, node:net, and node:http bridges'
       );
     }
-    if (packageCheck.name === '@tracecode/harness-java') {
+    if (packageCheck.name === '@tracecode/runtime-java') {
       const declarationPaths = [
         'dist/index.d.ts',
         'dist/project-browser.d.ts',
@@ -782,7 +782,7 @@ async function runWithTempRoot(tempRoot: string): Promise<void> {
       }
       assertCondition(
         declarationLeaks.length === 0,
-        `@tracecode/harness-java public declarations must be implementation-neutral: ${declarationLeaks.join(', ')}`
+        `@tracecode/runtime-java public declarations must be implementation-neutral: ${declarationLeaks.join(', ')}`
       );
       const javaPackageJson = JSON.parse(
         await readFile(join(packageDir, 'package.json'), 'utf8')
@@ -792,16 +792,16 @@ async function runWithTempRoot(tempRoot: string): Promise<void> {
         javaSubpaths.includes('./java-project') &&
           javaSubpaths.includes('./java-project-runtime') &&
           javaSubpaths.every((subpath) => !/(?:tracejvm|cheerpj)/iu.test(subpath)),
-        `@tracecode/harness-java public subpaths must be implementation-neutral: ${javaSubpaths.join(', ')}`
+        `@tracecode/runtime-java public subpaths must be implementation-neutral: ${javaSubpaths.join(', ')}`
       );
       assertCondition(
         ![...packedFiles].some((path) => /dist\/(?:tracejvm|cheerpj)/iu.test(path)),
-        '@tracecode/harness-java tarball must not retain engine-branded public entrypoints'
+        '@tracecode/runtime-java tarball must not retain engine-branded public entrypoints'
       );
       const worker = await readFile(join(packageDir, 'workers/java-worker.js'), 'utf8');
       assertCondition(
         worker.includes('new tracecode.browser.ProjectEvents.ProjectFile('),
-        '@tracecode/harness-java worker should ship java.io.File live-mutation rewrites'
+        '@tracecode/runtime-java worker should ship java.io.File live-mutation rewrites'
       );
       assertCondition(
         worker.includes('emitLiveJavaProjectDirectoryCreate') &&
@@ -809,7 +809,7 @@ async function runWithTempRoot(tempRoot: string): Promise<void> {
           worker.includes('Java_tracecode_browser_ProjectEvents_emitDirectoryCreateNative') &&
           worker.includes('Java_tracecode_browser_ProjectEvents_emitDirectoryDeleteNative') &&
           worker.includes('createFile|createDirectory|createDirectories'),
-        '@tracecode/harness-java worker should ship live directory mutation bridge hooks'
+        '@tracecode/runtime-java worker should ship live directory mutation bridge hooks'
       );
       assertCondition(
         worker.includes("emitLiveJavaProjectOutput(String(bridgeRunId ?? ''), String(stream ?? 'stdout'), String(data ?? ''), String(sourceDevice ?? ''), String(outputDevice ?? ''))") &&
@@ -821,12 +821,12 @@ async function runWithTempRoot(tempRoot: string): Promise<void> {
           worker.includes('isRuntimeKernelDeviceNamespacePath') &&
           worker.includes('sourceDevice') &&
           worker.includes('outputDevicePath'),
-        '@tracecode/harness-java worker should load shared worker kernel policy for routed source, output device, and kernel manifest path decisions'
+        '@tracecode/runtime-java worker should load shared worker kernel policy for routed source, output device, and kernel manifest path decisions'
       );
       assertCondition(
         worker.includes('projectKernelFileManifest') &&
           worker.includes('ProjectEvents.setKernelFiles('),
-        '@tracecode/harness-java worker should ship manifest kernel file bridge setup'
+        '@tracecode/runtime-java worker should ship manifest kernel file bridge setup'
       );
       assertCondition(
         worker.includes('Java_tracecode_browser_ProjectEvents_registerHttpServerNative') &&
@@ -834,7 +834,7 @@ async function runWithTempRoot(tempRoot: string): Promise<void> {
           worker.includes('Java_tracecode_browser_ProjectEvents_completeHttpServerRequestNative') &&
           worker.includes('closeAllJavaProjectHttpServers()') &&
           worker.includes('registerJavaProjectHttpServerSync'),
-        '@tracecode/harness-java worker should ship Java HttpServer TraceKernel listener bridge hooks'
+        '@tracecode/runtime-java worker should ship Java HttpServer TraceKernel listener bridge hooks'
       );
       assertCondition(
         worker.includes('HttpClient\\.newHttpClient') &&
@@ -843,23 +843,23 @@ async function runWithTempRoot(tempRoot: string): Promise<void> {
           worker.includes('tracecode.browser.ProjectEvents.httpClientBuilder(') &&
           worker.includes('HttpServer\\.create') &&
           worker.includes('tracecode.browser.ProjectEvents.httpServer('),
-        '@tracecode/harness-java worker should rewrite Java HTTP clients and HttpServer creation into TraceKernel shims'
+        '@tracecode/runtime-java worker should rewrite Java HTTP clients and HttpServer creation into TraceKernel shims'
       );
       assertCondition(
         worker.includes('newInputStream|newBufferedReader') &&
           worker.includes('readAllLines|lines|list') &&
           worker.includes('isReadable|isWritable|size'),
-        '@tracecode/harness-java worker should ship NIO read/stat device rewrites'
+        '@tracecode/runtime-java worker should ship NIO read/stat device rewrites'
       );
       const helperJarListing = spawnSync('jar', ['tf', join(packageDir, 'workers/vendor/java-browser-helper.jar')], {
         encoding: 'utf8',
       });
       if (helperJarListing.status !== 0) {
-        throw new Error(helperJarListing.stderr || helperJarListing.stdout || '@tracecode/harness-java helper jar listing failed');
+        throw new Error(helperJarListing.stderr || helperJarListing.stdout || '@tracecode/runtime-java helper jar listing failed');
       }
       assertCondition(
         helperJarListing.stdout.includes('tracecode/browser/ProjectEvents$ProjectFile.class'),
-        '@tracecode/harness-java helper jar should include ProjectEvents.ProjectFile'
+        '@tracecode/runtime-java helper jar should include ProjectEvents.ProjectFile'
       );
       assertCondition(
         helperJarListing.stdout.includes('tracecode/browser/ProjectEvents$ProjectHttpClient.class') &&
@@ -867,7 +867,7 @@ async function runWithTempRoot(tempRoot: string): Promise<void> {
           helperJarListing.stdout.includes('tracecode/browser/ProjectEvents$ProjectHttpServer.class') &&
           helperJarListing.stdout.includes('tracecode/browser/ProjectEvents$ProjectHttpExchange.class') &&
           helperJarListing.stdout.includes('tracecode/browser/ProjectEvents$TraceKernelHttpResponse.class'),
-        '@tracecode/harness-java helper jar should include TraceKernel HTTP client and server bridge classes'
+        '@tracecode/runtime-java helper jar should include TraceKernel HTTP client and server bridge classes'
       );
       const helperApi = spawnSync(
         'javap',
@@ -875,24 +875,24 @@ async function runWithTempRoot(tempRoot: string): Promise<void> {
         { encoding: 'utf8' }
       );
       if (helperApi.status !== 0) {
-        throw new Error(helperApi.stderr || helperApi.stdout || '@tracecode/harness-java helper jar API listing failed');
+        throw new Error(helperApi.stderr || helperApi.stdout || '@tracecode/runtime-java helper jar API listing failed');
       }
       assertCondition(
         helperApi.stdout.includes('emitOutputNative(java.lang.String, java.lang.String, java.lang.String, java.lang.String, java.lang.String)'),
-        '@tracecode/harness-java helper jar should expose run-bound source/output-device native bridge'
+        '@tracecode/runtime-java helper jar should expose run-bound source/output-device native bridge'
       );
       assertCondition(
         helperApi.stdout.includes('emitDirectoryCreateNative(java.lang.String, java.lang.String)') &&
           helperApi.stdout.includes('emitDirectoryDeleteNative(java.lang.String, java.lang.String)'),
-        '@tracecode/harness-java helper jar should expose run-bound directory native bridge hooks'
+        '@tracecode/runtime-java helper jar should expose run-bound directory native bridge hooks'
       );
       assertCondition(
         helperApi.stdout.includes('setKernelFiles(java.lang.String)'),
-        '@tracecode/harness-java helper jar should expose manifest kernel file bridge'
+        '@tracecode/runtime-java helper jar should expose manifest kernel file bridge'
       );
       assertCondition(
         helperApi.stdout.includes('inputStream()'),
-        '@tracecode/harness-java helper jar should expose shared stdin input stream'
+        '@tracecode/runtime-java helper jar should expose shared stdin input stream'
       );
       assertCondition(
         helperApi.stdout.includes('httpClient()') &&
@@ -903,7 +903,7 @@ async function runWithTempRoot(tempRoot: string): Promise<void> {
           helperApi.stdout.includes('pollHttpServerRequestNative(java.lang.String)') &&
           helperApi.stdout.includes('completeHttpServerRequestNative(java.lang.String, java.lang.String)') &&
           helperApi.stdout.includes('closeHttpServerNative(java.lang.String)'),
-        '@tracecode/harness-java helper jar should expose TraceKernel HTTP client/server bridge methods'
+        '@tracecode/runtime-java helper jar should expose TraceKernel HTTP client/server bridge methods'
       );
       assertCondition(
         helperApi.stdout.includes('newInputStream(java.nio.file.Path, java.nio.file.OpenOption...)') &&
@@ -913,7 +913,7 @@ async function runWithTempRoot(tempRoot: string): Promise<void> {
           helperApi.stdout.includes('isReadable(java.nio.file.Path)') &&
           helperApi.stdout.includes('isWritable(java.nio.file.Path)') &&
           helperApi.stdout.includes('size(java.nio.file.Path)'),
-        '@tracecode/harness-java helper jar should expose NIO read/stat device bridge'
+        '@tracecode/runtime-java helper jar should expose NIO read/stat device bridge'
       );
       const streamingOutputApi = spawnSync(
         'javap',
@@ -921,14 +921,14 @@ async function runWithTempRoot(tempRoot: string): Promise<void> {
         { encoding: 'utf8' }
       );
       if (streamingOutputApi.status !== 0) {
-        throw new Error(streamingOutputApi.stderr || streamingOutputApi.stdout || '@tracecode/harness-java streaming output API listing failed');
+        throw new Error(streamingOutputApi.stderr || streamingOutputApi.stdout || '@tracecode/runtime-java streaming output API listing failed');
       }
       assertCondition(
         streamingOutputApi.stdout.includes('public void write(int) throws java.io.IOException;') &&
           streamingOutputApi.stdout.includes('public void write(byte[], int, int) throws java.io.IOException;') &&
           streamingOutputApi.stdout.includes('invokevirtual #') &&
           streamingOutputApi.stdout.includes('// Method flush:()V'),
-        '@tracecode/harness-java helper jar should flush live stdio after unbuffered writes'
+        '@tracecode/runtime-java helper jar should flush live stdio after unbuffered writes'
       );
       const fileWriterApi = spawnSync(
         'javap',
@@ -936,7 +936,7 @@ async function runWithTempRoot(tempRoot: string): Promise<void> {
         { encoding: 'utf8' }
       );
       if (fileWriterApi.status !== 0) {
-        throw new Error(fileWriterApi.stderr || fileWriterApi.stdout || '@tracecode/harness-java file writer API listing failed');
+        throw new Error(fileWriterApi.stderr || fileWriterApi.stdout || '@tracecode/runtime-java file writer API listing failed');
       }
       const fileOutputStreamApi = spawnSync(
         'javap',
@@ -944,53 +944,53 @@ async function runWithTempRoot(tempRoot: string): Promise<void> {
         { encoding: 'utf8' }
       );
       if (fileOutputStreamApi.status !== 0) {
-        throw new Error(fileOutputStreamApi.stderr || fileOutputStreamApi.stdout || '@tracecode/harness-java file output stream API listing failed');
+        throw new Error(fileOutputStreamApi.stderr || fileOutputStreamApi.stdout || '@tracecode/runtime-java file output stream API listing failed');
       }
       assertCondition(
         fileWriterApi.stdout.includes('// Method emitOpenSnapshot:(Z)V') &&
           fileOutputStreamApi.stdout.includes('// Method emitOpenSnapshot:(Z)V'),
-        '@tracecode/harness-java helper jar should emit live snapshots for classic open/truncate constructors'
+        '@tracecode/runtime-java helper jar should emit live snapshots for classic open/truncate constructors'
       );
     }
-    if (packageCheck.name === '@tracecode/harness-csharp') {
+    if (packageCheck.name === '@tracecode/runtime-csharp') {
       const csharpPublicDeclarations = await readDeclarationTree(join(packageDir, 'dist'));
       assertCondition(
         csharpPublicDeclarations.includes('runtimeCommand?: string') &&
           !/roslyn|dotnet|\.net/i.test(csharpPublicDeclarations),
-        '@tracecode/harness-csharp declarations must expose the language-owned runtime command without provider branding'
+        '@tracecode/runtime-csharp declarations must expose the language-owned runtime command without provider branding'
       );
       const csharpReadme = await readFile(join(packageDir, 'README.md'), 'utf8');
       assertCondition(
         !/roslyn|dotnet|\.net/i.test(csharpReadme),
-        '@tracecode/harness-csharp packaged documentation must remain provider-neutral'
+        '@tracecode/runtime-csharp packaged documentation must remain provider-neutral'
       );
       const worker = await readFile(join(packageDir, 'workers/csharp-worker.js'), 'utf8');
       assertCondition(
         !worker.includes('FALLBACK_KERNEL_DEVICES'),
-        '@tracecode/harness-csharp worker should not ship fallback kernel device inventory'
+        '@tracecode/runtime-csharp worker should not ship fallback kernel device inventory'
       );
       assertCondition(
         worker.includes('sourceDevice') &&
           worker.includes('const currentSourceDevice = stream === \'stdout\' ? context.stdoutSourceDevice : context.stderrSourceDevice') &&
           worker.includes('flushProjectOutput(stream)') &&
           worker.includes('context.stdoutSourceDevice = nextSourceDevice'),
-        '@tracecode/harness-csharp worker should ship routed source device events and flush on device changes'
+        '@tracecode/runtime-csharp worker should ship routed source device events and flush on device changes'
       );
       assertCondition(
         worker.includes('readProjectInputByte: () => readProjectInputByte(\'/dev/stdin\') ?? -1'),
-        '@tracecode/harness-csharp worker should route managed stdin through the kernel stdin cursor'
+        '@tracecode/runtime-csharp worker should route managed stdin through the kernel stdin cursor'
       );
       assertCondition(
         worker.includes('function isCreateOrTruncateOpenFlags(') &&
           worker.includes('fs.open = function openWithProjectEvents') &&
           worker.includes('emitProjectFileSnapshot(stream.path)'),
-        '@tracecode/harness-csharp worker should ship live empty-open file mutation hooks'
+        '@tracecode/runtime-csharp worker should ship live empty-open file mutation hooks'
       );
       assertCondition(
         worker.includes("const CSHARP_PROJECT_WORKSPACE_ROOT = '/tmp/tracecode-csharp-project'") &&
           worker.includes('function runtimeFsPath(') &&
           worker.includes('emitProjectPathSnapshot(runtimeFsPath(path) || path)'),
-        '@tracecode/harness-csharp worker should map provider-root live events back to project paths'
+        '@tracecode/runtime-csharp worker should map provider-root live events back to project paths'
       );
       assertCondition(
         worker.includes('emitProjectDirectoryCreate(path)') &&
@@ -998,7 +998,7 @@ async function runWithTempRoot(tempRoot: string): Promise<void> {
           worker.includes('fs.mkdir = function mkdirWithProjectEvents') &&
           worker.includes('fs.rmdir = function rmdirWithProjectEvents') &&
           worker.includes('emitProjectPathSnapshot(newPath)'),
-        '@tracecode/harness-csharp worker should ship provider-level live directory mutation hooks'
+        '@tracecode/runtime-csharp worker should ship provider-level live directory mutation hooks'
       );
       assertCondition(
         worker.includes('let materializedKernelDevicePaths = new Set()') &&
@@ -1011,34 +1011,34 @@ async function runWithTempRoot(tempRoot: string): Promise<void> {
           worker.includes('function isReadableOpenFlags(flags)') &&
           worker.includes('function isKernelDeviceNamespacePath(value)') &&
           worker.includes("runtimeKernelDeviceOutputTarget(kernelDeviceEntries(request), path)"),
-        '@tracecode/harness-csharp worker should load shared worker kernel policy for manifest-scoped /dev cleanup and namespace guards'
+        '@tracecode/runtime-csharp worker should load shared worker kernel policy for manifest-scoped /dev cleanup and namespace guards'
       );
       assertCondition(
         worker.includes('function emitMissingProjectResultOutput(result)') &&
           worker.includes('context.eventStdout.join(\'\') !== stdout'),
-        '@tracecode/harness-csharp worker should stream returned compiler/build output events'
+        '@tracecode/runtime-csharp worker should stream returned compiler/build output events'
       );
       const csharpSupportFilesDir = join(packageDir, 'workers/vendor/csharp/_framework/supportFiles');
       const csharpHostDllName = (await readdir(csharpSupportFilesDir)).find((entry) => entry.endsWith('_TraceCode.CSharpHost.dll'));
-      assertCondition(Boolean(csharpHostDllName), '@tracecode/harness-csharp should ship TraceCode.CSharpHost support file');
+      assertCondition(Boolean(csharpHostDllName), '@tracecode/runtime-csharp should ship TraceCode.CSharpHost support file');
       const csharpHostDll = await readFile(join(csharpSupportFilesDir, csharpHostDllName!));
       const csharpHostApi = `${csharpHostDll.toString('utf8')}\n${csharpHostDll.toString('utf16le')}`;
       assertCondition(
         csharpHostApi.includes('ReadProjectInputByte') &&
           csharpHostApi.includes('IsProjectFileMutationMethod') &&
           csharpHostApi.includes('EmitLiveProjectFileSnapshot'),
-        '@tracecode/harness-csharp worker should ship managed project stdin and live file bridge methods'
+        '@tracecode/runtime-csharp worker should ship managed project stdin and live file bridge methods'
       );
     }
-    if (packageCheck.name === '@tracecode/harness-native') {
+    if (packageCheck.name === '@tracecode/runtime-native') {
       const nativeDeclarations = await readDeclarationTree(join(packageDir, 'dist'));
       assertCondition(
         nativeDeclarations.includes('csharpCommand?: string') &&
           !/roslyn|dotnet|\.net/i.test(nativeDeclarations),
-        '@tracecode/harness-native declarations must expose csharpCommand without provider branding'
+        '@tracecode/runtime-native declarations must expose csharpCommand without provider branding'
       );
     }
-    if (packageCheck.name === '@tracecode/harness-cpp') {
+    if (packageCheck.name === '@tracecode/runtime-cpp') {
       const worker = await readFile(join(packageDir, 'workers/cpp-worker.js'), 'utf8');
       const declarations = await readDeclarationTree(join(packageDir, 'dist'));
       assertCondition(
@@ -1047,75 +1047,75 @@ async function runWithTempRoot(tempRoot: string): Promise<void> {
           declarations.includes('linkerWasmUrl') &&
           declarations.includes('compilerIntegrity') &&
           !/(?:YoWASP|CppToolchain|clangWasmUrl|lldWasmUrl|toolchainIntegrity)/iu.test(declarations),
-        '@tracecode/harness-cpp declarations must expose the language-owned compiler contract'
+        '@tracecode/runtime-cpp declarations must expose the language-owned compiler contract'
       );
       assertCondition(
         worker.includes('function standaloneKernelDevices()') &&
           !worker.includes('options.kernelDevices instanceof Map ? options.kernelDevices : projectKernelDevices()'),
-        '@tracecode/harness-cpp worker should keep standalone stdio separate from project kernel devices'
+        '@tracecode/runtime-cpp worker should keep standalone stdio separate from project kernel devices'
       );
       assertCondition(
         worker.includes('sourceDevice') &&
           worker.includes('this.onOutput?.(stream, decodeUtf8(concatBytes(outputChunks)), entry.device, entry.outputDevice)') &&
           worker.includes('const resolvedOutputDevice = outputDevice || (stream === \'stderr\' ? \'/dev/stderr\' : \'/dev/stdout\')'),
-        '@tracecode/harness-cpp worker should ship stdio source and resolved output device events'
+        '@tracecode/runtime-cpp worker should ship stdio source and resolved output device events'
       );
       assertCondition(
         worker.includes('directory: true') &&
           worker.includes('this.fileChangeObserver?.({ path: normalized, directory: true, metadata: { ...this.getMetadata(normalized) } })') &&
           worker.includes('this.fileChangeObserver?.({ path: normalized, directory: true, deleted: true })'),
-        '@tracecode/harness-cpp worker should ship metadata-bearing live directory mutation events'
+        '@tracecode/runtime-cpp worker should ship metadata-bearing live directory mutation events'
       );
       assertCondition(
         worker.includes('function emitProjectResultOutputEvents(events, result)') &&
           worker.includes('emitProjectResultOutputEvents(events, result)'),
-        '@tracecode/harness-cpp worker should stream returned compiler output events'
+        '@tracecode/runtime-cpp worker should stream returned compiler output events'
       );
       assertCondition(
         worker.includes("from './shared/runtime-kernel-policy.js'") &&
           worker.includes('runtimeKernelVirtualPathTarget(pathname') &&
           worker.includes('runtimeKernelVirtualMutationTarget(pathname') &&
           worker.includes('knownDevices: this.knownKernelDevices'),
-        '@tracecode/harness-cpp worker should classify and guard manifest kernel namespaces with shared worker kernel policy'
+        '@tracecode/runtime-cpp worker should classify and guard manifest kernel namespaces with shared worker kernel policy'
       );
       assertCondition(
         worker.includes('emitPathSnapshot(pathname)') &&
           worker.includes('this.fs.emitPathSnapshot(normalized)') &&
           worker.includes('bytes: this.readFile(normalized), metadata: { ...this.getMetadata(normalized) }'),
-        '@tracecode/harness-cpp worker should ship metadata-only live file snapshots'
+        '@tracecode/runtime-cpp worker should ship metadata-only live file snapshots'
       );
     }
 
     const packedPackageJson = JSON.parse(await readFile(join(packageDir, 'package.json'), 'utf8')) as {
       dependencies?: Record<string, string>;
     };
-    if (packageCheck.name === '@tracecode/harness-browser') {
+    if (packageCheck.name === '@tracecode/runtime-browser') {
       assertCondition(
         !Object.prototype.hasOwnProperty.call(packedPackageJson.dependencies ?? {}, 'just-bash'),
-        '@tracecode/harness-browser should not install just-bash unless consumers opt into project workspace primitives'
+        '@tracecode/runtime-browser should not install just-bash unless consumers opt into project workspace primitives'
       );
       for (const languagePackage of [
-        '@tracecode/harness-python',
-        '@tracecode/harness-javascript',
-        '@tracecode/harness-java',
-        '@tracecode/harness-csharp',
-        '@tracecode/harness-cpp',
+        '@tracecode/runtime-python',
+        '@tracecode/runtime-javascript',
+        '@tracecode/runtime-java',
+        '@tracecode/runtime-csharp',
+        '@tracecode/runtime-cpp',
       ]) {
         assertCondition(
           !Object.prototype.hasOwnProperty.call(packedPackageJson.dependencies ?? {}, languagePackage),
-          `@tracecode/harness-browser must not depend on ${languagePackage}`
+          `@tracecode/runtime-browser must not depend on ${languagePackage}`
         );
       }
       const browserDeclarations = await readFile(join(packageDir, 'dist/index.d.ts'), 'utf8');
       assertCondition(
         browserDeclarations.includes('getRuntimeProjectIoSupport') &&
           browserDeclarations.includes('RuntimeProjectIoSupport'),
-        '@tracecode/harness-browser declarations should export the derived project I/O support helper'
+        '@tracecode/runtime-browser declarations should export the derived project I/O support helper'
       );
       assertCondition(
         browserDeclarations.includes('createBrowserRuntimeProviderRegistry') &&
           browserDeclarations.includes('BrowserRuntimeProviderRegistry'),
-        '@tracecode/harness-browser declarations should export provider-registry composition'
+        '@tracecode/runtime-browser declarations should export provider-registry composition'
       );
       const browserDistDir = join(packageDir, 'dist');
       const browserProjectDist = (
@@ -1130,7 +1130,7 @@ async function runWithTempRoot(tempRoot: string): Promise<void> {
           browserProjectDist.includes('drainKernelHttpSyncServerQueue(bridge, runtimeLabel)') &&
           browserProjectDist.includes('dispatchKernelHttpSyncServerRequest(bridge, entry.request, runtimeLabel)') &&
           browserProjectDist.includes('Service Unavailable\\n'),
-        '@tracecode/harness-browser project bundle should ship the shared queued sync HTTP server bridge'
+        '@tracecode/runtime-browser project bundle should ship the shared queued sync HTTP server bridge'
       );
       const browserOnlyAppDir = join(tempRoot, 'browser-only-app');
       const browserOnlyPackageDir = packageNodeModulesDir(browserOnlyAppDir, packageCheck.name);
@@ -1148,14 +1148,14 @@ async function runWithTempRoot(tempRoot: string): Promise<void> {
         encoding: 'utf8',
       });
       if (browserOnlyExtract.status !== 0) {
-        throw new Error(browserOnlyExtract.stderr || browserOnlyExtract.stdout || '@tracecode/harness-browser isolated extraction failed');
+        throw new Error(browserOnlyExtract.stderr || browserOnlyExtract.stdout || '@tracecode/runtime-browser isolated extraction failed');
       }
-      // harness-browser declares a runtime dependency on @tracecode/harness-core,
+      // runtime-browser declares a runtime dependency on @tracecode/runtime-core,
       // so an isolated consumer install must resolve it too (npm would install it
       // transitively). Extract it alongside into the browser-only app.
-      const coreCheck = PACKAGE_CHECKS.find((check) => check.name === '@tracecode/harness-core');
+      const coreCheck = PACKAGE_CHECKS.find((check) => check.name === '@tracecode/runtime-core');
       if (!coreCheck) {
-        throw new Error('@tracecode/harness-core package check is required to satisfy harness-browser isolated imports');
+        throw new Error('@tracecode/runtime-core package check is required to satisfy runtime-browser isolated imports');
       }
       const browserOnlyCoreDir = packageNodeModulesDir(browserOnlyAppDir, coreCheck.name);
       await mkdir(browserOnlyCoreDir, { recursive: true });
@@ -1164,24 +1164,24 @@ async function runWithTempRoot(tempRoot: string): Promise<void> {
         encoding: 'utf8',
       });
       if (coreOnlyPack.status !== 0) {
-        throw new Error(spawnFailure(coreOnlyPack, '@tracecode/harness-core pack for browser-only app failed'));
+        throw new Error(spawnFailure(coreOnlyPack, '@tracecode/runtime-core pack for browser-only app failed'));
       }
       const coreOnlyTarballName = String(coreOnlyPack.stdout || '')
         .trim()
         .split('\n')
         .filter(Boolean)
         .at(-1);
-      assertCondition(Boolean(coreOnlyTarballName), '@tracecode/harness-core pack should print a tarball for the browser-only app');
+      assertCondition(Boolean(coreOnlyTarballName), '@tracecode/runtime-core pack should print a tarball for the browser-only app');
       const coreOnlyTarballPath = isAbsolute(coreOnlyTarballName!) ? coreOnlyTarballName! : join(tempRoot, coreOnlyTarballName!);
       const browserOnlyCoreExtract = spawnSync('tar', ['-xf', coreOnlyTarballPath, '-C', browserOnlyCoreDir, '--strip-components=1'], {
         encoding: 'utf8',
       });
       if (browserOnlyCoreExtract.status !== 0) {
-        throw new Error(browserOnlyCoreExtract.stderr || browserOnlyCoreExtract.stdout || '@tracecode/harness-core isolated extraction failed');
+        throw new Error(browserOnlyCoreExtract.stderr || browserOnlyCoreExtract.stdout || '@tracecode/runtime-core isolated extraction failed');
       }
       const traceKernelCheck = PACKAGE_CHECKS.find((check) => check.name === '@tracecode/tracekernel');
       if (!traceKernelCheck) {
-        throw new Error('@tracecode/tracekernel package check is required to satisfy harness-browser isolated imports');
+        throw new Error('@tracecode/tracekernel package check is required to satisfy runtime-browser isolated imports');
       }
       const browserOnlyTraceKernelDir = packageNodeModulesDir(browserOnlyAppDir, traceKernelCheck.name);
       await mkdir(browserOnlyTraceKernelDir, { recursive: true });
@@ -1223,13 +1223,13 @@ async function runWithTempRoot(tempRoot: string): Promise<void> {
       );
       const browserOnlyImportScript = `
         (async () => {
-          const main = await import('@tracecode/harness-browser');
+          const main = await import('@tracecode/runtime-browser');
           if (typeof main.createBrowserProjectWorkspace !== 'undefined') {
-            throw new Error('@tracecode/harness-browser main export should not expose project workspace helpers');
+            throw new Error('@tracecode/runtime-browser main export should not expose project workspace helpers');
           }
-          const project = await import('@tracecode/harness-browser/project');
+          const project = await import('@tracecode/runtime-browser/project');
           if (typeof project.createBrowserProjectWorkspace !== 'function') {
-            throw new Error('@tracecode/harness-browser/project missing createBrowserProjectWorkspace');
+            throw new Error('@tracecode/runtime-browser/project missing createBrowserProjectWorkspace');
           }
           const workspace = await project.createBrowserProjectWorkspace({
             providers: ['python', 'javascript', 'typescript', 'java', 'csharp', 'cpp'],
@@ -1311,7 +1311,7 @@ async function runWithTempRoot(tempRoot: string): Promise<void> {
         throw new Error(
           browserOnlyImportRun.stderr ||
             browserOnlyImportRun.stdout ||
-            '@tracecode/harness-browser/project should work as an isolated bundled project-mode subpath'
+            '@tracecode/runtime-browser/project should work as an isolated bundled project-mode subpath'
         );
       }
     }
@@ -1322,16 +1322,16 @@ async function runWithTempRoot(tempRoot: string): Promise<void> {
       );
     }
     const browserProviderExports: Record<string, string> = {
-      '@tracecode/harness-python': 'createPythonBrowserRuntimeProvider',
-      '@tracecode/harness-javascript': 'createJavaScriptBrowserRuntimeProvider',
-      '@tracecode/harness-java': 'createJavaBrowserRuntimeProvider',
-      '@tracecode/harness-csharp': 'createCSharpBrowserRuntimeProvider',
-      '@tracecode/harness-cpp': 'createCppBrowserRuntimeProvider',
+      '@tracecode/runtime-python': 'createPythonBrowserRuntimeProvider',
+      '@tracecode/runtime-javascript': 'createJavaScriptBrowserRuntimeProvider',
+      '@tracecode/runtime-java': 'createJavaBrowserRuntimeProvider',
+      '@tracecode/runtime-csharp': 'createCSharpBrowserRuntimeProvider',
+      '@tracecode/runtime-cpp': 'createCppBrowserRuntimeProvider',
     };
     const browserProviderExport = browserProviderExports[packageCheck.name];
     if (browserProviderExport) {
       assertCondition(
-        Boolean(packedPackageJson.dependencies?.['@tracecode/harness-browser']),
+        Boolean(packedPackageJson.dependencies?.['@tracecode/runtime-browser']),
         `${packageCheck.name} should declare its generic browser-host dependency`
       );
       const indexTypes = await readFile(join(packageDir, 'dist/index.d.ts'), 'utf8');
@@ -1341,11 +1341,11 @@ async function runWithTempRoot(tempRoot: string): Promise<void> {
       );
     }
     const browserRunnerTypeAliases: Record<string, string> = {
-      '@tracecode/harness-python': 'BrowserPythonProjectCommandRunner',
-      '@tracecode/harness-javascript': 'BrowserJavaScriptProjectCommandRunner',
-      '@tracecode/harness-java': 'BrowserJavaProjectCommandRunner',
-      '@tracecode/harness-csharp': 'BrowserCSharpProjectCommandRunner',
-      '@tracecode/harness-cpp': 'BrowserCppProjectCommandRunner',
+      '@tracecode/runtime-python': 'BrowserPythonProjectCommandRunner',
+      '@tracecode/runtime-javascript': 'BrowserJavaScriptProjectCommandRunner',
+      '@tracecode/runtime-java': 'BrowserJavaProjectCommandRunner',
+      '@tracecode/runtime-csharp': 'BrowserCSharpProjectCommandRunner',
+      '@tracecode/runtime-cpp': 'BrowserCppProjectCommandRunner',
     };
     const browserRunnerTypeAlias = browserRunnerTypeAliases[packageCheck.name];
     if (browserRunnerTypeAlias) {
@@ -1365,7 +1365,7 @@ async function runWithTempRoot(tempRoot: string): Promise<void> {
   const nonProjectImportScript = `
     (async () => {
       const checks = ${JSON.stringify(PACKAGE_CHECKS
-        .filter(({ name }) => name !== '@tracecode/harness-project')
+        .filter(({ name }) => name !== '@tracecode/workspace-facade')
         .map(({ name, exportName }) => ({ name, exportName })))};
       for (const check of checks) {
         const mod = await import(check.name);
@@ -1373,21 +1373,21 @@ async function runWithTempRoot(tempRoot: string): Promise<void> {
           throw new Error(check.name + ' missing ' + check.exportName);
         }
       }
-      const browser = await import('@tracecode/harness-browser');
+      const browser = await import('@tracecode/runtime-browser');
       if (typeof browser.createBrowserProjectWorkspace !== 'undefined') {
-        throw new Error('@tracecode/harness-browser main export should not include project workspace helpers');
+        throw new Error('@tracecode/runtime-browser main export should not include project workspace helpers');
       }
-      const python = await import('@tracecode/harness-python');
-      const javascript = await import('@tracecode/harness-javascript');
-      const java = await import('@tracecode/harness-java');
-      const csharp = await import('@tracecode/harness-csharp');
-      const cpp = await import('@tracecode/harness-cpp');
+      const python = await import('@tracecode/runtime-python');
+      const javascript = await import('@tracecode/runtime-javascript');
+      const java = await import('@tracecode/runtime-java');
+      const csharp = await import('@tracecode/runtime-csharp');
+      const cpp = await import('@tracecode/runtime-cpp');
       for (const [name, mod, projectExport, browserProviderExport] of [
-        ['@tracecode/harness-python', python, 'createNativePythonProjectRunner', 'createPythonBrowserRuntimeProvider'],
-        ['@tracecode/harness-javascript', javascript, 'createNativeJavaScriptProjectRunner', 'createJavaScriptBrowserRuntimeProvider'],
-        ['@tracecode/harness-java', java, 'createNativeJavaProjectRunner', 'createJavaBrowserRuntimeProvider'],
-        ['@tracecode/harness-csharp', csharp, 'createNativeCSharpProjectRunner', 'createCSharpBrowserRuntimeProvider'],
-        ['@tracecode/harness-cpp', cpp, 'createNativeCppProjectRunner', 'createCppBrowserRuntimeProvider'],
+        ['@tracecode/runtime-python', python, 'createNativePythonProjectRunner', 'createPythonBrowserRuntimeProvider'],
+        ['@tracecode/runtime-javascript', javascript, 'createNativeJavaScriptProjectRunner', 'createJavaScriptBrowserRuntimeProvider'],
+        ['@tracecode/runtime-java', java, 'createNativeJavaProjectRunner', 'createJavaBrowserRuntimeProvider'],
+        ['@tracecode/runtime-csharp', csharp, 'createNativeCSharpProjectRunner', 'createCSharpBrowserRuntimeProvider'],
+        ['@tracecode/runtime-cpp', cpp, 'createNativeCppProjectRunner', 'createCppBrowserRuntimeProvider'],
       ]) {
         if (typeof mod[projectExport] !== 'function') {
           throw new Error(name + ' missing additive project runner export ' + projectExport);
@@ -1442,7 +1442,7 @@ async function runWithTempRoot(tempRoot: string): Promise<void> {
           throw new Error(check.name + ' missing ' + check.exportName);
         }
       }
-      const projectMod = await import('@tracecode/harness-project');
+      const projectMod = await import('@tracecode/workspace-facade');
       for (const exportName of [
         'createRuntimeWorkspace',
         'createPythonProjectCommands',
@@ -1456,7 +1456,7 @@ async function runWithTempRoot(tempRoot: string): Promise<void> {
         'runtimeHttpResponseText',
       ]) {
         if (typeof projectMod[exportName] !== 'function') {
-          throw new Error('@tracecode/harness-project missing ' + exportName);
+          throw new Error('@tracecode/workspace-facade missing ' + exportName);
         }
       }
       const projectWorkspace = await projectMod.createRuntimeWorkspace({
@@ -1469,21 +1469,21 @@ async function runWithTempRoot(tempRoot: string): Promise<void> {
       });
       const projectCat = await projectWorkspace.runCommand('cat hello.txt');
       if (projectCat.stdout !== 'hello\\n' || projectCat.exitCode !== 0) {
-        throw new Error('@tracecode/harness-project workspace command smoke failed');
+        throw new Error('@tracecode/workspace-facade workspace command smoke failed');
       }
       if (projectWorkspace.cwd !== '/home/surface/surface-project') {
-        throw new Error('@tracecode/harness-project tracekernel cwd mismatch: ' + projectWorkspace.cwd);
+        throw new Error('@tracecode/workspace-facade tracekernel cwd mismatch: ' + projectWorkspace.cwd);
       }
       if (projectWorkspace.kernel.info.name !== 'tracekernel' || projectWorkspace.kernel.info.workspaceAlias !== '/workspace') {
-        throw new Error('@tracecode/harness-project tracekernel info missing: ' + JSON.stringify(projectWorkspace.kernel.info));
+        throw new Error('@tracecode/workspace-facade tracekernel info missing: ' + JSON.stringify(projectWorkspace.kernel.info));
       }
       await projectWorkspace.writeFile('/workspace/alias.txt', 'alias\\n');
       if ((await projectWorkspace.readFile('/home/surface/surface-project/alias.txt')) !== 'alias\\n') {
-        throw new Error('@tracecode/harness-project /workspace alias smoke failed');
+        throw new Error('@tracecode/workspace-facade /workspace alias smoke failed');
       }
       const mountInfo = await projectWorkspace.readFile('/proc/self/mountinfo');
       if (!mountInfo.includes('tracekernel:workspace') || !mountInfo.includes(' /workspace ')) {
-        throw new Error('@tracecode/harness-project mountinfo smoke failed: ' + mountInfo);
+        throw new Error('@tracecode/workspace-facade mountinfo smoke failed: ' + mountInfo);
       }
       const outputEvents = [];
       const output = await projectWorkspace.runCommand('printf "surface-out\\\\n" > /dev/stdout', {
@@ -1492,14 +1492,14 @@ async function runWithTempRoot(tempRoot: string): Promise<void> {
         },
       });
       if (output.stdout !== 'surface-out\\n' || !outputEvents.some((event) => event.type === 'output' && event.device === '/dev/stdout')) {
-        throw new Error('@tracecode/harness-project /dev/stdout event smoke failed: ' + JSON.stringify({ output, outputEvents }));
+        throw new Error('@tracecode/workspace-facade /dev/stdout event smoke failed: ' + JSON.stringify({ output, outputEvents }));
       }
       if (
         typeof projectWorkspace.http.request !== 'function' ||
         typeof projectWorkspace.http.json !== 'function' ||
         typeof projectWorkspace.http.listen !== 'function'
       ) {
-        throw new Error('@tracecode/harness-project workspace HTTP client surface missing');
+        throw new Error('@tracecode/workspace-facade workspace HTTP client surface missing');
       }
       const mockHttp = projectWorkspace.http.listen({ host: '127.0.0.1', port: 0 }, (request) => ({
         status: 209,
@@ -1513,21 +1513,21 @@ async function runWithTempRoot(tempRoot: string): Promise<void> {
         body: 'payload',
       });
       if (httpRequest.status !== 209 || httpRequest.body !== '{"method":"POST","path":"/surface","body":"payload"}\\n') {
-        throw new Error('@tracecode/harness-project workspace HTTP request/listen smoke failed: ' + JSON.stringify(httpRequest));
+        throw new Error('@tracecode/workspace-facade workspace HTTP request/listen smoke failed: ' + JSON.stringify(httpRequest));
       }
       if (projectMod.runtimeHttpResponseText(httpRequest) !== '{"method":"POST","path":"/surface","body":"payload"}\\n') {
-        throw new Error('@tracecode/harness-project HTTP response text helper smoke failed: ' + JSON.stringify(httpRequest));
+        throw new Error('@tracecode/workspace-facade HTTP response text helper smoke failed: ' + JSON.stringify(httpRequest));
       }
       const binaryPayload = projectMod.runtimeHttpBodyFromBytes(new Uint8Array([0, 255, 1]));
       if (
         binaryPayload.bodyEncoding !== 'base64' ||
         Array.from(projectMod.runtimeHttpBodyBytes(binaryPayload)).join(',') !== '0,255,1'
       ) {
-        throw new Error('@tracecode/harness-project HTTP body byte helper smoke failed: ' + JSON.stringify(binaryPayload));
+        throw new Error('@tracecode/workspace-facade HTTP body byte helper smoke failed: ' + JSON.stringify(binaryPayload));
       }
       const bomPayload = projectMod.runtimeHttpBodyFromBytes(new Uint8Array([0xef, 0xbb, 0xbf, 0x41]));
       if (Array.from(projectMod.runtimeHttpBodyBytes(bomPayload)).join(',') !== '239,187,191,65') {
-        throw new Error('@tracecode/harness-project HTTP body byte helper should preserve UTF-8 BOM bytes: ' + JSON.stringify(bomPayload));
+        throw new Error('@tracecode/workspace-facade HTTP body byte helper should preserve UTF-8 BOM bytes: ' + JSON.stringify(bomPayload));
       }
       const httpJson = await projectWorkspace.http.json({
         method: 'POST',
@@ -1535,7 +1535,7 @@ async function runWithTempRoot(tempRoot: string): Promise<void> {
         body: { ok: true },
       });
       if (httpJson.status !== 209 || httpJson.json.body !== '{"ok":true}') {
-        throw new Error('@tracecode/harness-project workspace HTTP json smoke failed: ' + JSON.stringify(httpJson));
+        throw new Error('@tracecode/workspace-facade workspace HTTP json smoke failed: ' + JSON.stringify(httpJson));
       }
       mockHttp.close();
       const stalledHttp = projectWorkspace.http.listen({ host: '127.0.0.1', port: 0 }, () => new Promise(() => {}));
@@ -1544,104 +1544,104 @@ async function runWithTempRoot(tempRoot: string): Promise<void> {
         timeoutMs: 1,
       });
       if (timedOutHttp.status !== 0 || timedOutHttp.body !== 'Network request timed out after 1 milliseconds\\n') {
-        throw new Error('@tracecode/harness-project workspace HTTP timeout smoke failed: ' + JSON.stringify(timedOutHttp));
+        throw new Error('@tracecode/workspace-facade workspace HTTP timeout smoke failed: ' + JSON.stringify(timedOutHttp));
       }
       stalledHttp.close();
-      const pythonMain = await import('@tracecode/harness-python');
+      const pythonMain = await import('@tracecode/runtime-python');
       if (
         typeof pythonMain.createNativePythonProjectRunner !== 'function' ||
         typeof pythonMain.createBrowserPythonProjectRunner !== 'function'
       ) {
-        throw new Error('@tracecode/harness-python missing main project runner exports');
+        throw new Error('@tracecode/runtime-python missing main project runner exports');
       }
       if (Object.keys(pythonMain).some((name) => /pyodide/i.test(name))) {
-        throw new Error('@tracecode/harness-python must not expose engine-branded exports');
+        throw new Error('@tracecode/runtime-python must not expose engine-branded exports');
       }
-      const javascriptMain = await import('@tracecode/harness-javascript');
+      const javascriptMain = await import('@tracecode/runtime-javascript');
       if (
         typeof javascriptMain.createNativeJavaScriptProjectRunner !== 'function' ||
         typeof javascriptMain.createBrowserJavaScriptProjectRunner !== 'function'
       ) {
-        throw new Error('@tracecode/harness-javascript missing main project runner exports');
+        throw new Error('@tracecode/runtime-javascript missing main project runner exports');
       }
-      const javaMain = await import('@tracecode/harness-java');
+      const javaMain = await import('@tracecode/runtime-java');
       if (
         typeof javaMain.createNativeJavaProjectRunner !== 'function' ||
         typeof javaMain.createBrowserJavaProjectRunner !== 'function'
       ) {
-        throw new Error('@tracecode/harness-java missing main project runner exports');
+        throw new Error('@tracecode/runtime-java missing main project runner exports');
       }
-      const csharpMain = await import('@tracecode/harness-csharp');
+      const csharpMain = await import('@tracecode/runtime-csharp');
       if (
         typeof csharpMain.createNativeCSharpProjectRunner !== 'function' ||
         typeof csharpMain.createBrowserCSharpProjectRunner !== 'function'
       ) {
-        throw new Error('@tracecode/harness-csharp missing main project runner exports');
+        throw new Error('@tracecode/runtime-csharp missing main project runner exports');
       }
-      const cppMain = await import('@tracecode/harness-cpp');
+      const cppMain = await import('@tracecode/runtime-cpp');
       if (
         typeof cppMain.createNativeCppProjectRunner !== 'function' ||
         typeof cppMain.createBrowserCppProjectRunner !== 'function'
       ) {
-        throw new Error('@tracecode/harness-cpp missing main project runner exports');
+        throw new Error('@tracecode/runtime-cpp missing main project runner exports');
       }
-      const pythonProjectNode = await import('@tracecode/harness-python/project-node');
+      const pythonProjectNode = await import('@tracecode/runtime-python/project-node');
       if (typeof pythonProjectNode.createNativePythonProjectRunner !== 'function') {
-        throw new Error('@tracecode/harness-python/project-node missing createNativePythonProjectRunner');
+        throw new Error('@tracecode/runtime-python/project-node missing createNativePythonProjectRunner');
       }
-      const pythonProjectBrowser = await import('@tracecode/harness-python/project-browser');
+      const pythonProjectBrowser = await import('@tracecode/runtime-python/project-browser');
       if (typeof pythonProjectBrowser.createBrowserPythonProjectRunner !== 'function') {
-        throw new Error('@tracecode/harness-python/project-browser missing browser project runner exports');
+        throw new Error('@tracecode/runtime-python/project-browser missing browser project runner exports');
       }
       if (Object.keys(pythonProjectBrowser).some((name) => /pyodide/i.test(name))) {
-        throw new Error('@tracecode/harness-python/project-browser must not expose engine-branded exports');
+        throw new Error('@tracecode/runtime-python/project-browser must not expose engine-branded exports');
       }
-      const javascriptProjectNode = await import('@tracecode/harness-javascript/project-node');
+      const javascriptProjectNode = await import('@tracecode/runtime-javascript/project-node');
       if (typeof javascriptProjectNode.createNativeJavaScriptProjectRunner !== 'function') {
-        throw new Error('@tracecode/harness-javascript/project-node missing createNativeJavaScriptProjectRunner');
+        throw new Error('@tracecode/runtime-javascript/project-node missing createNativeJavaScriptProjectRunner');
       }
-      const javascriptProjectBrowser = await import('@tracecode/harness-javascript/project-browser');
+      const javascriptProjectBrowser = await import('@tracecode/runtime-javascript/project-browser');
       if (typeof javascriptProjectBrowser.createBrowserJavaScriptProjectRunner !== 'function') {
-        throw new Error('@tracecode/harness-javascript/project-browser missing createBrowserJavaScriptProjectRunner');
+        throw new Error('@tracecode/runtime-javascript/project-browser missing createBrowserJavaScriptProjectRunner');
       }
-      const javaProjectNode = await import('@tracecode/harness-java/project-node');
+      const javaProjectNode = await import('@tracecode/runtime-java/project-node');
       if (typeof javaProjectNode.createNativeJavaProjectRunner !== 'function') {
-        throw new Error('@tracecode/harness-java/project-node missing createNativeJavaProjectRunner');
+        throw new Error('@tracecode/runtime-java/project-node missing createNativeJavaProjectRunner');
       }
-      const javaProjectBrowser = await import('@tracecode/harness-java/project-browser');
+      const javaProjectBrowser = await import('@tracecode/runtime-java/project-browser');
       if (typeof javaProjectBrowser.createBrowserJavaProjectRunner !== 'function') {
-        throw new Error('@tracecode/harness-java/project-browser missing createBrowserJavaProjectRunner');
+        throw new Error('@tracecode/runtime-java/project-browser missing createBrowserJavaProjectRunner');
       }
-      const javaProject = await import('@tracecode/harness-java/java-project');
+      const javaProject = await import('@tracecode/runtime-java/java-project');
       if (typeof javaProject.createJavaProjectRunner !== 'function') {
-        throw new Error('@tracecode/harness-java/java-project missing createJavaProjectRunner');
+        throw new Error('@tracecode/runtime-java/java-project missing createJavaProjectRunner');
       }
-      const javaProjectRuntime = await import('@tracecode/harness-java/java-project-runtime');
+      const javaProjectRuntime = await import('@tracecode/runtime-java/java-project-runtime');
       if (typeof javaProjectRuntime.warmJavaProjectClient !== 'function') {
-        throw new Error('@tracecode/harness-java/java-project-runtime missing warmJavaProjectClient');
+        throw new Error('@tracecode/runtime-java/java-project-runtime missing warmJavaProjectClient');
       }
-      const cppProjectNode = await import('@tracecode/harness-cpp/project-node');
+      const cppProjectNode = await import('@tracecode/runtime-cpp/project-node');
       if (typeof cppProjectNode.createNativeCppProjectRunner !== 'function') {
-        throw new Error('@tracecode/harness-cpp/project-node missing createNativeCppProjectRunner');
+        throw new Error('@tracecode/runtime-cpp/project-node missing createNativeCppProjectRunner');
       }
-      const cppProjectBrowser = await import('@tracecode/harness-cpp/project-browser');
+      const cppProjectBrowser = await import('@tracecode/runtime-cpp/project-browser');
       if (typeof cppProjectBrowser.createBrowserCppProjectRunner !== 'function') {
-        throw new Error('@tracecode/harness-cpp/project-browser missing createBrowserCppProjectRunner');
+        throw new Error('@tracecode/runtime-cpp/project-browser missing createBrowserCppProjectRunner');
       }
-      const csharpProjectNode = await import('@tracecode/harness-csharp/project-node');
+      const csharpProjectNode = await import('@tracecode/runtime-csharp/project-node');
       if (typeof csharpProjectNode.createNativeCSharpProjectRunner !== 'function') {
-        throw new Error('@tracecode/harness-csharp/project-node missing createNativeCSharpProjectRunner');
+        throw new Error('@tracecode/runtime-csharp/project-node missing createNativeCSharpProjectRunner');
       }
-      const csharpProjectBrowser = await import('@tracecode/harness-csharp/project-browser');
+      const csharpProjectBrowser = await import('@tracecode/runtime-csharp/project-browser');
       if (typeof csharpProjectBrowser.createBrowserCSharpProjectRunner !== 'function') {
-        throw new Error('@tracecode/harness-csharp/project-browser missing createBrowserCSharpProjectRunner');
+        throw new Error('@tracecode/runtime-csharp/project-browser missing createBrowserCSharpProjectRunner');
       }
-      const nativeMain = await import('@tracecode/harness-native');
+      const nativeMain = await import('@tracecode/runtime-native');
       if (
         typeof nativeMain.createNativeHarness !== 'function' ||
         typeof nativeMain.createNativeProjectWorkspace !== 'function'
       ) {
-        throw new Error('@tracecode/harness-native missing native harness exports');
+        throw new Error('@tracecode/runtime-native missing native harness exports');
       }
       const nativeStandaloneWorkspace = await projectMod.createRuntimeWorkspace({
         files: [
@@ -1698,12 +1698,12 @@ async function runWithTempRoot(tempRoot: string): Promise<void> {
       if (nativeCSharp.exitCode !== 0 || !nativeCSharp.stdout.endsWith('standalone-native-csharp\\n')) {
         throw new Error('@tracecode standalone native C# project smoke failed: ' + JSON.stringify(nativeCSharp));
       }
-      const browserProject = await import('@tracecode/harness-browser/project');
+      const browserProject = await import('@tracecode/runtime-browser/project');
       if (typeof browserProject.createBrowserProjectWorkspace !== 'function') {
-        throw new Error('@tracecode/harness-browser/project missing createBrowserProjectWorkspace');
+        throw new Error('@tracecode/runtime-browser/project missing createBrowserProjectWorkspace');
       }
       if (typeof browserProject.runtimeHttpResponseText !== 'function') {
-        throw new Error('@tracecode/harness-browser/project missing HTTP body helpers');
+        throw new Error('@tracecode/runtime-browser/project missing HTTP body helpers');
       }
       const browserWorkspace = await browserProject.createBrowserProjectWorkspace({
         providers: ['python', 'javascript', 'typescript', 'java', 'csharp', 'cpp'],
@@ -1751,50 +1751,50 @@ async function runWithTempRoot(tempRoot: string): Promise<void> {
       });
       try {
         if (browserWorkspace.cwd !== '/home/surface/surface-browser') {
-          throw new Error('@tracecode/harness-browser/project tracekernel cwd mismatch: ' + browserWorkspace.cwd);
+          throw new Error('@tracecode/runtime-browser/project tracekernel cwd mismatch: ' + browserWorkspace.cwd);
         }
         await browserWorkspace.writeFile('/workspace/browser-alias.txt', 'browser-alias\\n');
         if ((await browserWorkspace.readFile('/home/surface/surface-browser/browser-alias.txt')) !== 'browser-alias\\n') {
-          throw new Error('@tracecode/harness-browser/project /workspace alias smoke failed');
+          throw new Error('@tracecode/runtime-browser/project /workspace alias smoke failed');
         }
         const browserMountInfo = await browserWorkspace.readFile('/proc/self/mountinfo');
         if (!browserMountInfo.includes('tracekernel:workspace') || !browserMountInfo.includes(' /workspace ')) {
-          throw new Error('@tracecode/harness-browser/project mountinfo smoke failed: ' + browserMountInfo);
+          throw new Error('@tracecode/runtime-browser/project mountinfo smoke failed: ' + browserMountInfo);
         }
         const browserPython = await browserWorkspace.runCommand('python3 main.py');
         if (browserPython.exitCode !== 0 || browserPython.stdout !== 'main.py:standalone-browser-python\\n') {
-          throw new Error('@tracecode/harness-browser/project Python smoke failed: ' + JSON.stringify(browserPython));
+          throw new Error('@tracecode/runtime-browser/project Python smoke failed: ' + JSON.stringify(browserPython));
         }
         const browserNode = await browserWorkspace.runCommand('node index.js');
         if (browserNode.exitCode !== 0 || browserNode.stdout !== 'standalone-browser-node\\n') {
-          throw new Error('@tracecode/harness-browser/project Node smoke failed: ' + JSON.stringify(browserNode));
+          throw new Error('@tracecode/runtime-browser/project Node smoke failed: ' + JSON.stringify(browserNode));
         }
         if ((await browserWorkspace.readFile('node.txt')) !== 'standalone-browser-node\\n') {
-          throw new Error('@tracecode/harness-browser/project Node side effect failed');
+          throw new Error('@tracecode/runtime-browser/project Node side effect failed');
         }
         const browserJava = await browserWorkspace.runCommand('java Main');
         if (browserJava.exitCode !== 0 || browserJava.stdout !== 'run:Main:standalone-browser-java\\n') {
-          throw new Error('@tracecode/harness-browser/project Java smoke failed: ' + JSON.stringify(browserJava));
+          throw new Error('@tracecode/runtime-browser/project Java smoke failed: ' + JSON.stringify(browserJava));
         }
         const browserCSharp = await browserWorkspace.runCommand('dotnet run -- alpha beta');
         if (browserCSharp.exitCode !== 0 || browserCSharp.stdout !== 'run:alpha,beta:standalone-browser-csharp\\n') {
-          throw new Error('@tracecode/harness-browser/project C# smoke failed: ' + JSON.stringify(browserCSharp));
+          throw new Error('@tracecode/runtime-browser/project C# smoke failed: ' + JSON.stringify(browserCSharp));
         }
         const browserCpp = await browserWorkspace.runCommand('clang++ main.cpp -o a.out');
         if (browserCpp.exitCode !== 0 || browserCpp.stdout !== 'compile:main.cpp,-o,a.out:standalone-browser-cpp\\n') {
-          throw new Error('@tracecode/harness-browser/project C++ smoke failed: ' + JSON.stringify(browserCpp));
+          throw new Error('@tracecode/runtime-browser/project C++ smoke failed: ' + JSON.stringify(browserCpp));
         }
         const browserGcc = await browserWorkspace.runCommand('gcc main.cpp -o c-app');
         if (browserGcc.exitCode !== 0 || browserGcc.stdout !== 'compile:main.cpp,-o,c-app:standalone-browser-cpp\\n') {
-          throw new Error('@tracecode/harness-browser/project gcc alias smoke failed: ' + JSON.stringify(browserGcc));
+          throw new Error('@tracecode/runtime-browser/project gcc alias smoke failed: ' + JSON.stringify(browserGcc));
         }
         const browserCc = await browserWorkspace.runCommand('cc main.cpp -o cc-app');
         if (browserCc.exitCode !== 0 || browserCc.stdout !== 'compile:main.cpp,-o,cc-app:standalone-browser-cpp\\n') {
-          throw new Error('@tracecode/harness-browser/project cc alias smoke failed: ' + JSON.stringify(browserCc));
+          throw new Error('@tracecode/runtime-browser/project cc alias smoke failed: ' + JSON.stringify(browserCc));
         }
         const browserCppRun = await browserWorkspace.runCommand('./a.out alpha beta');
         if (browserCppRun.exitCode !== 0 || browserCppRun.stdout !== 'run:alpha,beta:standalone-browser-cpp\\n') {
-          throw new Error('@tracecode/harness-browser/project C++ executable smoke failed: ' + JSON.stringify(browserCppRun));
+          throw new Error('@tracecode/runtime-browser/project C++ executable smoke failed: ' + JSON.stringify(browserCppRun));
         }
       } finally {
         browserWorkspace.dispose();
@@ -1818,8 +1818,8 @@ async function runWithTempRoot(tempRoot: string): Promise<void> {
   await writeFile(
     join(appDir, 'browser-project-entry.js'),
     [
-      'import { createBrowserProjectWorkspace } from "@tracecode/harness-browser/project";',
-      'import { createRuntimeWorkspace } from "@tracecode/harness-project";',
+      'import { createBrowserProjectWorkspace } from "@tracecode/runtime-browser/project";',
+      'import { createRuntimeWorkspace } from "@tracecode/workspace-facade";',
       'if (typeof createBrowserProjectWorkspace !== "function") throw new Error("missing browser project export");',
       'if (typeof createRuntimeWorkspace !== "function") throw new Error("missing project export");',
       'console.log("ok");',
@@ -1848,7 +1848,7 @@ async function runWithTempRoot(tempRoot: string): Promise<void> {
     throw new Error(browserBundle.stderr || browserBundle.stdout || 'Language browser project bundle check failed');
   }
 
-  console.log('PASS: standalone language packages include scoped assets and public exports');
+  console.log('PASS: private runtime workspaces include scoped assets and root-compatible exports');
 }
 
 async function main(): Promise<void> {

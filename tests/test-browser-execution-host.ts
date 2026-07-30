@@ -4,20 +4,20 @@ import {
   createBrowserExecutionWorkerHost,
   installBrowserExecutionWorkerHost,
   type BrowserWorkerLike,
-} from '../packages/harness-browser/src/execution-host';
-import { JavaWorkerClient } from '../packages/harness-java/src/java-worker-client';
-import { PythonWorkerClient } from '../packages/harness-python/src/python-worker-client';
-import { JavaScriptWorkerClient } from '../packages/harness-javascript/src/javascript-worker-client';
-import { CSharpWorkerClient } from '../packages/harness-csharp/src/csharp-worker-client';
-import { CppWorkerClient } from '../packages/harness-cpp/src/cpp-worker-client';
+} from '../packages/runtime-browser/src/execution-host';
+import { JavaWorkerClient } from '../packages/runtime-java/src/java-worker-client';
+import { PythonWorkerClient } from '../packages/runtime-python/src/python-worker-client';
+import { JavaScriptWorkerClient } from '../packages/runtime-javascript/src/javascript-worker-client';
+import { CSharpWorkerClient } from '../packages/runtime-csharp/src/csharp-worker-client';
+import { CppWorkerClient } from '../packages/runtime-cpp/src/cpp-worker-client';
 import {
   createBrowserJavaScriptProjectRunner,
   createBrowserTypeScriptProjectRunner,
-} from '../packages/harness-javascript/src/project-browser';
-import { createBrowserProjectWorkspace } from '../packages/harness-browser/src/project';
+} from '../packages/runtime-javascript/src/project-browser';
+import { createBrowserProjectWorkspace } from '../packages/runtime-browser/src/project';
 
 const asJsProjectRequest = (request: object) =>
-  request as import('../packages/harness-javascript/src/project-browser').JavaScriptProjectCommandRequest;
+  request as import('../packages/runtime-javascript/src/project-browser').JavaScriptProjectCommandRequest;
 
 function assertCondition(condition: unknown, message: string): asserts condition {
   if (!condition) throw new Error(message);

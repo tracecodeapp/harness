@@ -7,7 +7,7 @@ import {
   RUNTIME_EXTERNAL_HTTP_MAX_BODY_BYTES,
   type RuntimeExternalHttpRequest,
   type RuntimeExternalHttpResponse,
-} from '../packages/harness-core/src/runtime-external-http';
+} from '../packages/runtime-core/src/runtime-external-http';
 
 function assertCondition(condition: boolean, message: string): asserts condition {
   if (!condition) throw new Error(message);

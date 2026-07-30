@@ -3,7 +3,7 @@ import {
   type RuntimeCommandResult,
   type RuntimeKernelHttpRequest,
   type RuntimeKernelHttpResponse,
-} from '@tracecode/harness-core';
+} from '@tracecode/runtime-core';
 import type { CommandContext } from 'just-bash/browser';
 import { CURL_PROTOCOLS, resolveCurlUrl } from './curl-url';
 import {

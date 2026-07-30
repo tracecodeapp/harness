@@ -12,6 +12,7 @@ const ROOT_RELEASE_SCRIPT = 'pnpm release:check && pnpm publish . --access publi
 const PREPUBLISH_SCRIPT = 'pnpm release:check && pnpm build && pnpm release:check';
 
 interface FixtureOptions {
+  internalName?: string;
   rootName?: string;
   internalPrivate?: boolean;
   npmrc?: string;
@@ -70,7 +71,7 @@ async function writeFixture(root: string, options: FixtureOptions = {}): Promise
   await writeFile(
     join(internalDir, 'package.json'),
     JSON.stringify({
-      name: '@tracecode/internal-test-package',
+      name: options.internalName ?? '@tracecode/internal-test-package',
       private: options.internalPrivate ?? true,
       version: '99.0.0-private-test',
     }),
@@ -197,6 +198,11 @@ async function main(): Promise<void> {
       /packages\/internal\/package\.json .* must set "private": true/u
     );
 
+    await writeFixture(fixtureRoot, {
+      internalName: '@tracecode/harness-python',
+    });
+    assertAuditFailure(fixtureRoot, /retired harness-\* workspace namespace/u);
+
     await writeFixture(fixtureRoot, { npmrc: 'include-workspace-root=true\n' });
     assertAuditFailure(fixtureRoot, /include-workspace-root=false/u);
 
@@ -219,7 +225,7 @@ async function main(): Promise<void> {
     for (const [key, value] of [
       ['npm_config_recursive', 'true'],
       ['npm_config_filter', '@tracecode/harness'],
-      ['npm_config_workspace', 'packages/harness-core'],
+      ['npm_config_workspace', 'packages/runtime-core'],
       ['npm_config_workspace_root', 'true'],
       ['npm_config_workspaces', 'true'],
     ] as const) {

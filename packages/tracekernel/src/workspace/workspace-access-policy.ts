@@ -1,6 +1,6 @@
 import {
   createRuntimeKernelReadonlyFileError,
-} from '@tracecode/harness-core';
+} from '@tracecode/runtime-core';
 import {
   isRuntimeSkillsNamespacePath,
   isTraceKernelVirtualNamespacePath,

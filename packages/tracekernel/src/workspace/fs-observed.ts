@@ -15,7 +15,7 @@ import {
   runtimeFileChangePath,
   runtimeProjectTruncateUtf8,
   runtimeProjectUtf8Bytes,
-} from '@tracecode/harness-core';
+} from '@tracecode/runtime-core';
 import {
   isRuntimeKernelVirtualNamespacePath,
   normalizeRuntimeProcPath,
@@ -57,9 +57,9 @@ import {
   readRuntimeProcFile,
   createRuntimeKernelReadonlyFileError,
   type RuntimeKernelVirtualStat,
-} from '@tracecode/harness-core';
-import { getLanguageRuntimeInfo } from '@tracecode/harness-core';
-import type { Language } from '@tracecode/harness-core';
+} from '@tracecode/runtime-core';
+import { getLanguageRuntimeInfo } from '@tracecode/runtime-core';
+import type { Language } from '@tracecode/runtime-core';
 import type {
   CommandContext,
   FileContent,
@@ -95,7 +95,7 @@ import type {
   RuntimeCommandEventHandler,
   RuntimeCommandOptions,
   RuntimeProjectLiveIoController,
-} from '@tracecode/harness-core';
+} from '@tracecode/runtime-core';
 import type { TraceKernelFileSystemMutation } from '..';
 import type {
   CppProjectCommandRunner,
@@ -195,7 +195,7 @@ export interface RuntimeCommandExecutionContext {
     readonly pid: number;
     [key: string]: any;
   };
-  readonly engineLease?: import('@tracecode/harness-core').RuntimeProjectEngineLeaseController;
+  readonly engineLease?: import('@tracecode/runtime-core').RuntimeProjectEngineLeaseController;
   readonly signal: AbortSignal;
   readonly stdinPipe?: RuntimeCommandOptions['stdinPipe'];
   readonly terminal?: RuntimeCommandOptions['terminal'];

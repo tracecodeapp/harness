@@ -8,6 +8,10 @@ This repo uses Git tags as release boundaries. Version notes below summarize wha
 
 ### Changed
 
+- Renamed private implementation workspaces from the legacy `harness-*`
+  namespace to ownership-based `runtime-*` names. The former project workspace
+  is now the private `workspace-facade`; published
+  `@tracecode/harness/*` entrypoints remain unchanged.
 - Renamed the standalone SQL package from `@tracecode/harness-sql` to
   `@tracecode/runtime-sql` for 0.14 while preserving the
   `@tracecode/harness/sql` facade. The high-level SQL runtime trace API now

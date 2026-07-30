@@ -2,7 +2,7 @@ import type {
   RuntimeCommandOptions,
   RuntimeCommandResult,
   RuntimeKernelInfo,
-} from '@tracecode/harness-core';
+} from '@tracecode/runtime-core';
 import {
   TRACE_KERNEL_ARCHITECTURE,
   TRACEKERNEL_BIN_PATH,

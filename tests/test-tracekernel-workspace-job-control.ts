@@ -4,7 +4,7 @@ import * as Effect from 'effect/Effect';
 import {
   createRuntimeWorkspace,
   type JavaScriptProjectCommandRunner,
-} from '../packages/harness-project/src/index';
+} from '../packages/workspace-facade/src/index';
 import type { TraceKernelSession } from '../packages/tracekernel/src/index';
 
 function assertCondition(condition: unknown, message: string): asserts condition {

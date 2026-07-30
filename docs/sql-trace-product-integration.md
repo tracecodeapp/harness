@@ -1,6 +1,6 @@
 # SQL Trace Product Integration
 
-This guide shows how a browser product can use `@tracecode/runtime-sql` with
+This guide shows how a browser product can use `@tracecode/harness/sql` with
 PGlite while keeping the SQL trace contract separate from product UI state.
 
 ## Basic Browser Flow
@@ -10,7 +10,7 @@ import { PGlite } from '@electric-sql/pglite';
 import {
   assertValidSqlTrace,
   createSqlRuntimeTraceClient,
-} from '@tracecode/runtime-sql';
+} from '@tracecode/harness/sql';
 
 const db = await PGlite.create('memory://lesson-sql');
 
@@ -144,7 +144,7 @@ import { PGlite } from '@electric-sql/pglite';
 import {
   createSqlRuntimeTraceClient,
   runIsolatedSqlCases,
-} from '@tracecode/runtime-sql';
+} from '@tracecode/harness/sql';
 
 const result = await runIsolatedSqlCases({
   problemId: 'active-customers',
@@ -245,7 +245,7 @@ For a first product UI, render:
 Standalone package:
 
 ```ts
-import { createSqlRuntimeTraceClient } from '@tracecode/runtime-sql';
+import { createSqlRuntimeTraceClient } from '@tracecode/harness/sql';
 ```
 
 Umbrella package subpath:

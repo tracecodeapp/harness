@@ -5,11 +5,11 @@ const root = process.cwd();
 const dist = join(root, 'dist');
 
 const packageMappings = new Map([
-  ['@tracecode/harness-core', '@tracecode/harness/core'],
-  ['@tracecode/harness-browser', '@tracecode/harness/browser'],
-  ['@tracecode/harness-browser/internal', '@tracecode/harness/internal/browser'],
-  ['@tracecode/harness-browser/project', '@tracecode/harness/browser/project'],
-  ['@tracecode/harness-project', '@tracecode/harness/project'],
+  ['@tracecode/runtime-core', '@tracecode/harness/core'],
+  ['@tracecode/runtime-browser', '@tracecode/harness/browser'],
+  ['@tracecode/runtime-browser/internal', '@tracecode/harness/internal/browser'],
+  ['@tracecode/runtime-browser/project', '@tracecode/harness/browser/project'],
+  ['@tracecode/workspace-facade', '@tracecode/harness/project'],
   [
     '@tracecode/tracekernel/workspace',
     '@tracecode/harness/internal/tracekernel/workspace',
@@ -37,7 +37,7 @@ async function declarationFiles(directory) {
 for (const file of await declarationFiles(dist)) {
   const source = await readFile(file, 'utf8');
   let rewritten = source;
-  // Longest match first so @tracecode/harness-browser/internal is not
+  // Longest match first so @tracecode/runtime-browser/internal is not
   // partially rewritten as @tracecode/harness/browser/internal.
   for (const [workspacePackage, rootSubpath] of [...packageMappings].sort(
     ([left], [right]) => right.length - left.length

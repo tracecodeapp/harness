@@ -51,16 +51,16 @@ async function testPublishableWorkspacePackageVersionsMatchRelease(): Promise<vo
 }
 
 async function testHiddenCommandAccessTokenRoundTripsAcrossEntrypoints(): Promise<void> {
-  // Exercised at the harness-core ESM<->CJS boundary rather than through a full
-  // workspace: the hidden-command token brand lives in harness-core (a
+  // Exercised at the runtime-core ESM<->CJS boundary rather than through a full
+  // workspace: the hidden-command token brand lives in runtime-core (a
   // globalThis Symbol.for-keyed WeakSet), so if the ESM and CJS builds shared no
   // identity this cross-recognition would fail. We deliberately avoid importing
-  // the harness-project workspace bundle here because its ESM output
+  // the workspace-facade workspace bundle here because its ESM output
   // dynamic-requires turndown/@mixmark-io/domino, a pre-existing packaging
   // limitation unrelated to token identity.
-  const coreEsm = await import(pathToFileURL(join(process.cwd(), 'packages/harness-core/dist/index.js')).href);
+  const coreEsm = await import(pathToFileURL(join(process.cwd(), 'packages/runtime-core/dist/index.js')).href);
   const require = createRequire(import.meta.url);
-  const coreCjs = require(join(process.cwd(), 'packages/harness-core/dist/index.cjs'));
+  const coreCjs = require(join(process.cwd(), 'packages/runtime-core/dist/index.cjs'));
 
   const cjsToken = coreCjs.createRuntimeProjectHiddenCommandAccess();
   const esmToken = coreEsm.createRuntimeProjectHiddenCommandAccess();
@@ -217,15 +217,15 @@ async function runWithTempRoot(tempRoot: string): Promise<void> {
   );
   const packagedDeclarations = await readDeclarationTree(join(packageDir, 'dist'));
   for (const privateWorkspaceName of [
-    '@tracecode/harness-browser',
-    '@tracecode/harness-core',
-    '@tracecode/harness-cpp',
-    '@tracecode/harness-csharp',
-    '@tracecode/harness-java',
-    '@tracecode/harness-javascript',
-    '@tracecode/harness-native',
-    '@tracecode/harness-project',
-    '@tracecode/harness-python',
+    '@tracecode/runtime-browser',
+    '@tracecode/runtime-core',
+    '@tracecode/runtime-cpp',
+    '@tracecode/runtime-csharp',
+    '@tracecode/runtime-java',
+    '@tracecode/runtime-javascript',
+    '@tracecode/runtime-native',
+    '@tracecode/workspace-facade',
+    '@tracecode/runtime-python',
     '@tracecode/judge',
     '@tracecode/tracekernel',
   ]) {

@@ -17,19 +17,19 @@ import { join } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import vm from 'node:vm';
 import { Worker as NodeWorker } from 'node:worker_threads';
-import { CppWorkerClient } from '../packages/harness-cpp/src/cpp-worker-client';
-import { createBrowserCppProjectRunner } from '../packages/harness-cpp/src/project-browser';
-import { createBrowserJavaScriptProjectRunner } from '../packages/harness-javascript/src/project-browser';
-import { createRuntimeWorkspace } from '../packages/harness-project/src/index';
+import { CppWorkerClient } from '../packages/runtime-cpp/src/cpp-worker-client';
+import { createBrowserCppProjectRunner } from '../packages/runtime-cpp/src/project-browser';
+import { createBrowserJavaScriptProjectRunner } from '../packages/runtime-javascript/src/project-browser';
+import { createRuntimeWorkspace } from '../packages/workspace-facade/src/index';
 import type {
   RuntimeKernelHttpBridge,
   RuntimeKernelHttpHandler,
   RuntimeKernelHttpListenOptions,
   RuntimeKernelHttpRequest,
-} from '../packages/harness-core/src/runtime-project';
+} from '../packages/runtime-core/src/runtime-project';
 import {
   createRuntimeCommandStdinPipeFromText,
-} from '../packages/harness-core/src/runtime-project';
+} from '../packages/runtime-core/src/runtime-project';
 
 const EXTERNAL_COMPILER_URL = 'http://tracecode-cpp-test.invalid/compile';
 
@@ -1553,7 +1553,7 @@ async function main(): Promise<void> {
       args: [],
       cwd: '/workspace',
       env: {},
-      project: { files: [...projectFiles, ...compiledFiles] as import('../packages/harness-core/src/runtime-project').RuntimeFile[] },
+      project: { files: [...projectFiles, ...compiledFiles] as import('../packages/runtime-core/src/runtime-project').RuntimeFile[] },
       kernelHttp,
     }, 120_000);
 

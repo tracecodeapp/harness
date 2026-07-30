@@ -20,20 +20,20 @@ import {
   getSupportedLanguageProfiles,
   isLanguageSupported,
 } from '../src/browser';
-import { assertRuntimeRequestSupported } from '../packages/harness-browser/src/runtime-capability-guards';
-import { executeRuntimeRequest } from '../packages/harness-browser/src/runtime-execute';
-import { FreshWorkerRuntimeClient } from '../packages/harness-browser/src/runtime-client-isolation';
-import { runJavaSafeStorageExclusive } from '../packages/harness-java/src/java-storage-isolation';
-import { ExecutionTimeoutError } from '../packages/harness-browser/src/worker-errors';
+import { assertRuntimeRequestSupported } from '../packages/runtime-browser/src/runtime-capability-guards';
+import { executeRuntimeRequest } from '../packages/runtime-browser/src/runtime-execute';
+import { FreshWorkerRuntimeClient } from '../packages/runtime-browser/src/runtime-client-isolation';
+import { runJavaSafeStorageExclusive } from '../packages/runtime-java/src/java-storage-isolation';
+import { ExecutionTimeoutError } from '../packages/runtime-browser/src/worker-errors';
 import {
   WORKER_REQUEST_MESSAGES,
   type BrowserWorkerProtocolLanguage,
-} from '../packages/harness-browser/src/worker-protocol-messages';
-import { createJavaRuntimeClient } from '../packages/harness-java/src/java-runtime-client';
-import type { JavaWorkerClient } from '../packages/harness-java/src/java-worker-client';
-import { executeJavaScriptCode, executeTypeScriptCode } from '../packages/harness-javascript/src/javascript-executor';
-import { generateSolutionScript } from '../packages/harness-python/src/python-harness';
-import type { RuntimeKernelInfo } from '../packages/harness-core/src/runtime-project';
+} from '../packages/runtime-browser/src/worker-protocol-messages';
+import { createJavaRuntimeClient } from '../packages/runtime-java/src/java-runtime-client';
+import type { JavaWorkerClient } from '../packages/runtime-java/src/java-worker-client';
+import { executeJavaScriptCode, executeTypeScriptCode } from '../packages/runtime-javascript/src/javascript-executor';
+import { generateSolutionScript } from '../packages/runtime-python/src/python-harness';
+import type { RuntimeKernelInfo } from '../packages/runtime-core/src/runtime-project';
 import type {
   Language,
   LanguageRuntimeProfile,
@@ -47,12 +47,12 @@ import type {
   RuntimeExecuteResponse,
   RuntimeExecuteResult,
   RuntimeTraceCall,
-} from '../packages/harness-core/src/runtime-types';
-import type { CodeExecutionResult, ExecutionResult } from '../packages/harness-core/src/types';
+} from '../packages/runtime-core/src/runtime-types';
+import type { CodeExecutionResult, ExecutionResult } from '../packages/runtime-core/src/types';
 import {
   javaTraceHooksEventsToRuntimeTrace,
   normalizeJavaSerializedResult,
-} from '../packages/harness-core/src/trace-adapters/java';
+} from '../packages/runtime-core/src/trace-adapters/java';
 import {
   runtimeKernelCopyTarget,
   runtimeKernelCopyErrorCode,
@@ -88,7 +88,7 @@ import {
   runtimeKernelWriteFsErrorMessage,
   runtimeKernelWriteTarget,
   normalizeRuntimeKernelManifestDevicePath,
-} from '../packages/harness-core/src/runtime-kernel';
+} from '../packages/runtime-core/src/runtime-kernel';
 import {
   RuntimeProjectLiveIoController,
   createRuntimeCommandStdinPipeFromText,
@@ -96,7 +96,7 @@ import {
   runRuntimeProjectWorkerBridge,
   type RuntimeCommandEvent,
   type RuntimeProjectCommandRequest,
-} from '../packages/harness-core/src/runtime-project';
+} from '../packages/runtime-core/src/runtime-project';
 import { runPackageScript } from '../packages/tracekernel/src/workspace/package-manager';
 import {
   normalizeRuntimeKernelManifestDevicePath as normalizeWorkerKernelManifestDevicePath,
@@ -1312,23 +1312,23 @@ function assertProfileCoverageAlignment(profile: LanguageRuntimeProfile): void {
 function assertWorkerProtocolDeclarations(): void {
   const sources: Record<BrowserWorkerProtocolLanguage, { client: string; worker: string }> = {
     python: {
-      client: 'packages/harness-python/src/python-worker-client.ts',
+      client: 'packages/runtime-python/src/python-worker-client.ts',
       worker: 'workers/python/python-worker.js',
     },
     javascript: {
-      client: 'packages/harness-javascript/src/javascript-worker-client.ts',
+      client: 'packages/runtime-javascript/src/javascript-worker-client.ts',
       worker: 'workers/javascript/javascript-worker.js',
     },
     java: {
-      client: 'packages/harness-java/src/java-worker-client.ts',
+      client: 'packages/runtime-java/src/java-worker-client.ts',
       worker: 'workers/java/java-worker.js',
     },
     csharp: {
-      client: 'packages/harness-csharp/src/csharp-worker-client.ts',
+      client: 'packages/runtime-csharp/src/csharp-worker-client.ts',
       worker: 'workers/csharp/csharp-worker.js',
     },
     cpp: {
-      client: 'packages/harness-cpp/src/cpp-worker-client.ts',
+      client: 'packages/runtime-cpp/src/cpp-worker-client.ts',
       worker: 'workers/cpp/cpp-worker.js',
     },
   };

@@ -2,19 +2,19 @@
 
 import { test } from 'node:test';
 import { readFileSync } from 'node:fs';
-import { createCSharpRuntimeClient } from '../packages/harness-csharp/src/csharp-runtime-client';
+import { createCSharpRuntimeClient } from '../packages/runtime-csharp/src/csharp-runtime-client';
 import {
   CSharpWorkerClient,
   type CSharpDiagnostic,
   type CSharpExecutionStyle,
-} from '../packages/harness-csharp/src/csharp-worker-client';
-import { getLanguageRuntimeProfile } from '../packages/harness-browser/src/runtime-profiles';
+} from '../packages/runtime-csharp/src/csharp-worker-client';
+import { getLanguageRuntimeProfile } from '../packages/runtime-browser/src/runtime-profiles';
 import {
   RUNTIME_TRACE_SCHEMA_VERSION,
   type RuntimeTraceEvent,
-} from '../packages/harness-core/src/runtime-trace';
-import type { RuntimeExecutionStyle } from '../packages/harness-core/src/runtime-types';
-import type { ExecutionLimitReason } from '../packages/harness-core/src/types';
+} from '../packages/runtime-core/src/runtime-trace';
+import type { RuntimeExecutionStyle } from '../packages/runtime-core/src/runtime-types';
+import type { ExecutionLimitReason } from '../packages/runtime-core/src/types';
 
 function assertCondition(condition: unknown, message: string): asserts condition {
   if (!condition) {

@@ -1628,6 +1628,9 @@ var package_default = {
     type: "git",
     url: "https://github.com/tracecodeapp/harness.git"
   },
+  publishConfig: {
+    access: "public"
+  },
   packageManager: "pnpm@10.4.1",
   type: "module",
   main: "./dist/index.cjs",
@@ -1697,6 +1700,18 @@ var package_default = {
       require: "./dist/internal/browser.cjs",
       default: "./dist/internal/browser.js"
     },
+    "./internal/tracekernel/workspace": {
+      types: "./dist/internal/tracekernel/workspace.d.ts",
+      import: "./dist/internal/tracekernel/workspace.js",
+      require: "./dist/internal/tracekernel/workspace.cjs",
+      default: "./dist/internal/tracekernel/workspace.js"
+    },
+    "./judge": {
+      types: "./dist/judge.d.ts",
+      import: "./dist/judge.js",
+      require: "./dist/judge.cjs",
+      default: "./dist/judge.js"
+    },
     "./python": {
       types: "./dist/python.d.ts",
       import: "./dist/python.js",
@@ -1736,14 +1751,17 @@ var package_default = {
     }
   },
   scripts: {
-    prepublishOnly: "pnpm build",
-    build: "pnpm generate:runtime-info && pnpm generate:python-harness && pnpm generate:kernel-policy && pnpm generate:typescript-project-libs && pnpm generate:javascript-project-worker && pnpm generate:java-helper && pnpm sync:package-assets && pnpm build:tracekernel && pnpm exec tsup --config tsup.core.config.ts && pnpm build:browser-host && pnpm exec tsup && pnpm --dir packages/judge build",
+    prepublishOnly: "pnpm release:check && pnpm build && pnpm release:check",
+    "release:check": "node scripts/check-publish-safety.mjs",
+    "release:root": "pnpm release:check && pnpm publish . --access public",
+    build: "pnpm generate:runtime-info && pnpm generate:python-harness && pnpm generate:kernel-policy && pnpm generate:typescript-project-libs && pnpm generate:javascript-project-worker && pnpm generate:java-helper && pnpm sync:package-assets && pnpm build:tracekernel && pnpm exec tsup --config tsup.runtime-core.config.ts && pnpm build:browser-host && pnpm exec tsup && pnpm rewrite:root-declarations && pnpm --dir packages/judge build",
+    "rewrite:root-declarations": "node scripts/rewrite-root-declaration-imports.mjs",
     "build:browser-host": "pnpm exec tsup --config tsup.browser-host.config.ts",
     "build:tracekernel": "pnpm exec tsup --config tsup.tracekernel.config.ts",
     "generate:runtime-info": "pnpm exec tsx --tsconfig tsconfig.base.json scripts/generate-runtime-language-info.ts",
     "generate:python-harness": "pnpm exec tsx --tsconfig tsconfig.base.json scripts/generate-python-harness-artifacts.ts",
     "generate:typescript-project-libs": "pnpm exec tsx --tsconfig tsconfig.base.json scripts/generate-typescript-project-libs.ts",
-    "generate:javascript-project-worker": "pnpm exec esbuild packages/harness-javascript/src/project-browser-worker.ts --bundle --format=esm --platform=browser --target=es2022 --outfile=workers/javascript/javascript-project-worker.js",
+    "generate:javascript-project-worker": "pnpm exec esbuild packages/runtime-javascript/src/project-browser-worker.ts --bundle --format=esm --platform=browser --target=es2022 --outfile=workers/javascript/javascript-project-worker.js",
     "generate:java-helper": "node scripts/build-java-browser-helper.mjs",
     "generate:kernel-policy": "pnpm exec tsx --tsconfig tsconfig.base.json scripts/generate-runtime-kernel-policy-classic.ts",
     "sync:package-assets": "pnpm exec tsx --tsconfig tsconfig.base.json scripts/sync-language-package-assets.ts",
@@ -1757,7 +1775,7 @@ var package_default = {
     typecheck: "pnpm typecheck:root && pnpm typecheck:packages && pnpm typecheck:tests",
     "typecheck:root": "pnpm exec tsc -p tsconfig.root.json --noEmit",
     "typecheck:tests": "pnpm exec tsc -p tsconfig.tests.json --noEmit",
-    "typecheck:packages": "pnpm exec tsc -p packages/tracekernel/tsconfig.json --noEmit && pnpm exec tsc -p packages/harness-core/tsconfig.json --noEmit && pnpm exec tsc -p packages/judge/tsconfig.json --noEmit && pnpm exec tsc -p packages/harness-browser/tsconfig.json --noEmit && pnpm exec tsc -p packages/harness-python/tsconfig.json --noEmit && pnpm exec tsc -p packages/harness-javascript/tsconfig.json --noEmit && pnpm exec tsc -p packages/harness-java/tsconfig.json --noEmit && pnpm exec tsc -p packages/harness-csharp/tsconfig.json --noEmit && pnpm exec tsc -p packages/harness-cpp/tsconfig.json --noEmit && pnpm exec tsc -p packages/harness-project/tsconfig.json --noEmit && pnpm exec tsc -p packages/harness-native/tsconfig.json --noEmit && pnpm exec tsc -p packages/runtime-sql/tsconfig.json --noEmit",
+    "typecheck:packages": "pnpm exec tsc -p packages/tracekernel/tsconfig.json --noEmit && pnpm exec tsc -p packages/runtime-core/tsconfig.json --noEmit && pnpm exec tsc -p packages/judge/tsconfig.json --noEmit && pnpm exec tsc -p packages/runtime-browser/tsconfig.json --noEmit && pnpm exec tsc -p packages/runtime-python/tsconfig.json --noEmit && pnpm exec tsc -p packages/runtime-javascript/tsconfig.json --noEmit && pnpm exec tsc -p packages/runtime-java/tsconfig.json --noEmit && pnpm exec tsc -p packages/runtime-csharp/tsconfig.json --noEmit && pnpm exec tsc -p packages/runtime-cpp/tsconfig.json --noEmit && pnpm exec tsc -p packages/workspace-facade/tsconfig.json --noEmit && pnpm exec tsc -p packages/runtime-native/tsconfig.json --noEmit && pnpm exec tsc -p packages/runtime-sql/tsconfig.json --noEmit",
     "test:judge": "pnpm --dir packages/judge test",
     "test:tracekernel": "pnpm build:tracekernel && pnpm exec tsx --tsconfig tsconfig.base.json tests/test-tracekernel-public-package.ts && pnpm exec tsx --tsconfig tsconfig.base.json tests/test-tracekernel-lifecycle.ts && pnpm exec tsx --tsconfig tsconfig.base.json tests/test-tracekernel-runtime-recovery.ts && pnpm exec tsx --tsconfig tsconfig.base.json tests/test-tracekernel-controlled-runtime.ts && pnpm exec tsx --tsconfig tsconfig.base.json tests/test-tracekernel-watchdog.ts && pnpm exec tsx --tsconfig tsconfig.base.json tests/test-tracekernel-descriptors.ts && pnpm exec tsx --tsconfig tsconfig.base.json tests/test-tracekernel-terminal.ts && pnpm exec tsx --tsconfig tsconfig.base.json tests/test-tracekernel-watch.ts && pnpm exec tsx --tsconfig tsconfig.base.json tests/test-tracekernel-vfs.ts && pnpm exec tsx --tsconfig tsconfig.base.json tests/test-tracekernel-tkfs-backing.ts && pnpm exec tsx --tsconfig tsconfig.base.json tests/test-tracekernel-namespace.ts && pnpm exec tsx --tsconfig tsconfig.base.json tests/test-tracekernel-network.ts && pnpm exec tsx --tsconfig tsconfig.base.json tests/test-tracekernel-adversarial-teardown.ts && pnpm exec tsx --tsconfig tsconfig.base.json tests/test-tracekernel-workspace-processes.ts && pnpm exec tsx --tsconfig tsconfig.base.json tests/test-tracekernel-workspace-job-control.ts && pnpm exec tsx --tsconfig tsconfig.base.json tests/test-tracekernel-http1.ts && pnpm exec tsx --tsconfig tsconfig.base.json tests/test-tracekernel-http-tcp.ts && pnpm exec tsx --tsconfig tsconfig.base.json tests/test-tracekernel-syscalls.ts && pnpm exec tsx --tsconfig tsconfig.base.json tests/test-tracekernel-transport.ts",
     "test:tracekernel:browser": "pnpm generate:javascript-project-worker && pnpm exec tsx --tsconfig tsconfig.base.json tests/test-tracekernel-javascript-stdio.ts && pnpm exec tsx --tsconfig tsconfig.base.json tests/test-tracekernel-javascript-browser.ts",
@@ -1775,6 +1793,7 @@ var package_default = {
     "test:tracekernel:physical:check": "node scripts/run-tracekernel-physical.mjs --check=webkit",
     "test:smoke": "pnpm exec tsx --tsconfig tsconfig.base.json tests/test-harness-workspace-smoke.ts",
     "test:packaged-surface": "pnpm exec tsx --tsconfig tsconfig.base.json tests/test-packaged-surface.ts",
+    "test:publish-safety": "pnpm exec tsx --tsconfig tsconfig.base.json tests/test-publish-safety.ts",
     "test:bundle-gates": "node scripts/check-browser-project-bundle.mjs",
     "test:browser-harness": "pnpm exec tsx --tsconfig tsconfig.base.json tests/test-host-artifact-cache.ts && pnpm exec tsx --tsconfig tsconfig.base.json tests/test-worker-session-core.ts && pnpm exec tsx --tsconfig tsconfig.base.json tests/test-browser-provider-registry.ts && pnpm exec tsx --tsconfig tsconfig.base.json tests/test-browser-execution-host.ts && pnpm exec tsx --tsconfig tsconfig.base.json tests/test-browser-runtime-assets.ts && pnpm exec tsx --tsconfig tsconfig.base.json tests/test-browser-runtime-asset-plumbing.ts && pnpm exec tsx --tsconfig tsconfig.base.json tests/test-browser-runtime-environment.ts && pnpm exec tsx --tsconfig tsconfig.base.json tests/test-browser-trace-event-transport.ts && pnpm exec tsx --tsconfig tsconfig.base.json tests/test-runtime-authority-lockdown.ts && pnpm exec tsx --tsconfig tsconfig.base.json tests/test-browser-harness.ts",
     "test:asset-sync": "pnpm exec tsx --tsconfig tsconfig.base.json tests/test-asset-sync.ts",
@@ -1823,7 +1842,8 @@ var package_default = {
     "test:classic-browser-matrix": "node scripts/test-browser-classic-provider-matrix.mjs",
     "test:python-worker-client-http": "pnpm exec tsx --tsconfig tsconfig.base.json tests/test-python-worker-client-http.ts",
     "test:runtime-contract": "pnpm exec tsx --tsconfig tsconfig.base.json tests/test-runtime-contract.ts",
-    "test:core-public-surface": "pnpm exec tsx --tsconfig tsconfig.base.json tests/test-harness-core-public-surface.ts",
+    "test:runtime-execution-judge": "TSX_TSCONFIG_PATH=tsconfig.base.json node --import tsx --test tests/test-runtime-execution-judge.ts",
+    "test:core-public-surface": "pnpm exec tsx --tsconfig tsconfig.base.json tests/test-runtime-core-public-surface.ts",
     "test:python-public-surface": "pnpm exec tsx --tsconfig tsconfig.base.json tests/test-python-public-surface.ts",
     "test:java-public-surface": "pnpm exec tsx --tsconfig tsconfig.base.json tests/test-java-public-surface.ts",
     "test:csharp-public-surface": "pnpm exec tsx --tsconfig tsconfig.base.json tests/test-csharp-public-surface.ts",
@@ -1859,6 +1879,8 @@ var package_default = {
     "check:browser-project-performance": "node scripts/check-browser-project-performance.mjs"
   },
   devDependencies: {
+    "@tracecode/runtime-core": "workspace:^",
+    "@tracecode/tracekernel": "workspace:^",
     "@types/node": "^20.0.0",
     esbuild: "0.27.3",
     "just-bash": "3.1.0",
@@ -1897,10 +1919,10 @@ var package_default = {
   }
 };
 
-// packages/harness-core/src/harness-version.ts
+// packages/runtime-core/src/harness-version.ts
 var TRACECODE_HARNESS_VERSION = package_default.version;
 
-// packages/harness-core/src/generated/runtime-language-info-data.ts
+// packages/runtime-core/src/generated/runtime-language-info-data.ts
 var LANGUAGE_RUNTIME_INFOS = Object.freeze(
   Object.assign(/* @__PURE__ */ Object.create(null), {
     "python": {
@@ -2213,7 +2235,7 @@ var LANGUAGE_RUNTIME_INFOS = Object.freeze(
   })
 );
 
-// packages/harness-core/src/runtime-language-info.ts
+// packages/runtime-core/src/runtime-language-info.ts
 var BROWSER_PROJECT_NODE_COMPAT_VERSION = "22.0.0";
 var SUPPORTED_LANGUAGE_RUNTIME_INFOS = Object.freeze(
   Object.values(LANGUAGE_RUNTIME_INFOS)
@@ -2226,7 +2248,7 @@ function getLanguageRuntimeInfo(language) {
   return info;
 }
 
-// packages/harness-core/src/runtime-command-internal.ts
+// packages/runtime-core/src/runtime-command-internal.ts
 var RUNTIME_SIGNAL_EXIT_CODES = /* @__PURE__ */ new Map([
   ["SIGHUP", 1],
   ["SIGINT", 2],
@@ -2257,7 +2279,7 @@ function runtimeFileChangeByteSize(change) {
   return size;
 }
 
-// packages/harness-core/src/runtime-command.ts
+// packages/runtime-core/src/runtime-command.ts
 var RUNTIME_STDIN_PIPE_HEADER_INTS = 3;
 var RUNTIME_STDIN_PIPE_HEADER_BYTES = RUNTIME_STDIN_PIPE_HEADER_INTS * Int32Array.BYTES_PER_ELEMENT;
 var RUNTIME_STDIN_PIPE_READ_INDEX = 0;
@@ -2479,6 +2501,8 @@ function runtimeProjectTruncateUtf8(value, maxBytes) {
   return value.slice(0, end);
 }
 var RUNTIME_PROJECT_HIDDEN_COMMAND_ACCESS_REGISTRY = /* @__PURE__ */ Symbol.for(
+  // This global registry key is a runtime protocol identifier, not a package import.
+  // Keep it stable so mixed bundles share one authority registry during upgrades.
   "@tracecode/harness-core/runtimeProjectHiddenCommandAccesses"
 );
 var runtimeProjectHiddenCommandAccesses = (() => {
@@ -2487,7 +2511,7 @@ var runtimeProjectHiddenCommandAccesses = (() => {
   return globalRegistry[RUNTIME_PROJECT_HIDDEN_COMMAND_ACCESS_REGISTRY];
 })();
 
-// packages/harness-core/src/runtime-command-bridge.ts
+// packages/runtime-core/src/runtime-command-bridge.ts
 function runtimeProjectInfrastructureFailure(error, signal) {
   const diagnostic = runtimeErrorMessage(error);
   const aborted = isRuntimeAbortError(error) || signal?.aborted;
@@ -2768,7 +2792,7 @@ var RuntimeProjectLiveIoController = class {
   }
 };
 
-// packages/harness-core/src/runtime-kernel-paths.ts
+// packages/runtime-core/src/runtime-kernel-paths.ts
 var RUNTIME_KERNEL_DEVICE_ENTRIES = ["fd/0", "fd/1", "fd/2", "null", "stderr", "stdin", "stdout", "tty"];
 function runtimeKernelReadonlyFileErrorMessage(path, operation) {
   return `EROFS: readonly project file, ${operation} '${path}'`;
@@ -2989,7 +3013,7 @@ function runtimeKernelVirtualDevices() {
   });
 }
 
-// packages/harness-core/src/runtime-kernel-proc.ts
+// packages/runtime-core/src/runtime-kernel-proc.ts
 function runtimeProcInfoJson(info) {
   return `${JSON.stringify(info, null, 2)}
 `;
@@ -3219,7 +3243,7 @@ function runtimeProcStat(path, info) {
   };
 }
 
-// packages/harness-core/src/runtime-kernel-filesystem.ts
+// packages/runtime-core/src/runtime-kernel-filesystem.ts
 function runtimeKernelWriteTarget(path, devices) {
   const virtualPath = classifyRuntimeKernelVirtualPath(path);
   if (virtualPath === null) return { kind: "workspace" };
@@ -3620,7 +3644,7 @@ function runtimeKernelTruncateErrorCode(reason) {
   return runtimeKernelMutationErrorCode(reason);
 }
 
-// packages/harness-javascript/src/kernel/path-normalization.ts
+// packages/runtime-javascript/src/kernel/path-normalization.ts
 function normalizeProjectPath(path) {
   const cleaned = path.replace(/\\/g, "/").replace(/^\.\//, "").replace(/^\/workspace\//, "");
   const parts = [];
@@ -5990,7 +6014,7 @@ function unzipSync(data, opts) {
   return files;
 }
 
-// packages/harness-javascript/src/internal/encoding.ts
+// packages/runtime-javascript/src/internal/encoding.ts
 var textEncoder3 = new TextEncoder();
 var textDecoder2 = new TextDecoder();
 var fflateRecord = browser_exports;
@@ -6148,7 +6172,7 @@ function createZlibApi() {
   };
 }
 
-// packages/harness-javascript/src/kernel/process-control.ts
+// packages/runtime-javascript/src/kernel/process-control.ts
 function processArgvForRequest(request) {
   const executable = "/usr/local/bin/node";
   if (request.source === "argument") {
@@ -6257,7 +6281,7 @@ function createTraceKernelApi(executionState) {
   });
 }
 
-// packages/harness-javascript/src/kernel/workspace-paths.ts
+// packages/runtime-javascript/src/kernel/workspace-paths.ts
 function workspacePathInputToString(path) {
   if (path instanceof URL) {
     if (path.protocol !== "file:") {
@@ -6636,7 +6660,7 @@ function assertSafeWorkspaceFilePath(path, basePath = "", workspace = { root: "/
   return normalizeWorkspaceEntryPath(path, basePath, false, workspace);
 }
 
-// packages/harness-javascript/src/modules/resolution.ts
+// packages/runtime-javascript/src/modules/resolution.ts
 function workspaceFilename(path, workspaceRoot = "/workspace") {
   const normalized = normalizeProjectPath(path);
   return normalized ? `${workspaceRoot}/${normalized}` : workspaceRoot;
@@ -6995,17 +7019,17 @@ function sanitizeBrowserJavaScriptStack(error, sourcePath) {
   return error;
 }
 
-// packages/harness-javascript/src/browser/worker-client.ts
+// packages/runtime-javascript/src/browser/worker-client.ts
 function requireModulesForRequest(request) {
   return Array.isArray(request.options?.require) ? request.options.require.filter((item) => typeof item === "string") : [];
 }
 
-// packages/harness-javascript/src/modules/constructors.ts
+// packages/runtime-javascript/src/modules/constructors.ts
 var AsyncFunction = Object.getPrototypeOf(async function noop() {
 }).constructor;
 var BrowserFunction = Function;
 
-// packages/harness-javascript/src/kernel/filesystem-identity.ts
+// packages/runtime-javascript/src/kernel/filesystem-identity.ts
 function inodeForPath(path) {
   let hash = 2166136261;
   for (let index = 0; index < path.length; index += 1) {
@@ -7015,7 +7039,7 @@ function inodeForPath(path) {
   return hash >>> 0 || 1;
 }
 
-// packages/harness-javascript/src/kernel/stdio.ts
+// packages/runtime-javascript/src/kernel/stdio.ts
 function createReadableStdinDevice(readBytes, remainingBytes, isClosed = () => true, schedulePoll = (callback, delay) => setTimeout(callback, delay), terminal, kernelIsTerminal) {
   let encoding;
   let flowScheduled = false;
@@ -7151,7 +7175,7 @@ function createReadableStdinDevice(readBytes, remainingBytes, isClosed = () => t
   return stream;
 }
 
-// packages/harness-javascript/src/node-compat/assert.ts
+// packages/runtime-javascript/src/node-compat/assert.ts
 var BrowserAssertionError = class extends Error {
   code = "ERR_ASSERTION";
   actual;
@@ -7280,7 +7304,7 @@ function createAssertApi() {
   return assert;
 }
 
-// packages/harness-javascript/src/node-compat/events-util.ts
+// packages/runtime-javascript/src/node-compat/events-util.ts
 var BrowserEventEmitter = class {
   listeners = /* @__PURE__ */ new Map();
   on(eventName, listener) {
@@ -7375,7 +7399,7 @@ function createUtilApi() {
   };
 }
 
-// packages/harness-javascript/src/node-compat/network/shared.ts
+// packages/runtime-javascript/src/node-compat/network/shared.ts
 function createListenerMap() {
   const listeners = /* @__PURE__ */ new Map();
   const on = (event, listener) => {
@@ -7711,7 +7735,7 @@ async function dispatchBrowserNetworkSyscall(kernelNetwork, request) {
   return result.value;
 }
 
-// packages/harness-javascript/src/node-compat/network/net.ts
+// packages/runtime-javascript/src/node-compat/network/net.ts
 function normalizeNetConnectArgs(args) {
   const callback = args.find((value) => typeof value === "function");
   const first = args[0];
@@ -8160,7 +8184,7 @@ function createNetApi(kernelNetwork, signal) {
   };
 }
 
-// packages/harness-javascript/src/node-compat/network/http.ts
+// packages/runtime-javascript/src/node-compat/network/http.ts
 function createHttpApi(kernelHttp, signal) {
   const activeHandles = /* @__PURE__ */ new Set();
   const activeClientAborters = /* @__PURE__ */ new Set();
@@ -8647,7 +8671,7 @@ function createHttpApi(kernelHttp, signal) {
   };
 }
 
-// packages/harness-javascript/src/node-compat/child-process.ts
+// packages/runtime-javascript/src/node-compat/child-process.ts
 function createChildProcessApi(executionState, eventLoopApi, request) {
   const runtimeForCommand = (command) => {
     const name = command.split("/").at(-1)?.toLowerCase() ?? command.toLowerCase();
@@ -9036,7 +9060,7 @@ function createChildProcessApi(executionState, eventLoopApi, request) {
   };
 }
 
-// packages/harness-javascript/src/node-compat/crypto.ts
+// packages/runtime-javascript/src/node-compat/crypto.ts
 function createCryptoApi() {
   const randomFill = (target) => {
     const cryptoApi = globalThis.crypto;
@@ -9056,7 +9080,7 @@ function createCryptoApi() {
   };
 }
 
-// packages/harness-javascript/src/node-compat/event-loop.ts
+// packages/runtime-javascript/src/node-compat/event-loop.ts
 function createBrowserEventLoopApi(executionState) {
   const hostSetTimeout = globalThis.setTimeout.bind(globalThis);
   const hostClearTimeout = globalThis.clearTimeout.bind(globalThis);
@@ -9174,7 +9198,7 @@ function createBrowserEventLoopApi(executionState) {
   };
 }
 
-// packages/harness-javascript/src/node-compat/path-os.ts
+// packages/runtime-javascript/src/node-compat/path-os.ts
 function createPathApi(getCwd, workspaceRoot) {
   const normalizePath = (value) => {
     const raw = String(value).replace(/\\/g, "/");
@@ -9333,7 +9357,7 @@ function createOsApi(workspaceRoot, kernelInfo) {
   };
 }
 
-// packages/harness-javascript/src/node-compat/streams.ts
+// packages/runtime-javascript/src/node-compat/streams.ts
 var streamInternalCloseListeners = /* @__PURE__ */ new WeakMap();
 function setStreamInternalCloseListeners(stream, listeners) {
   streamInternalCloseListeners.set(stream, listeners);
@@ -9373,7 +9397,7 @@ function createStreamApi() {
   };
 }
 
-// packages/harness-javascript/src/node-compat/timers.ts
+// packages/runtime-javascript/src/node-compat/timers.ts
 function createTimersPromisesApi(eventLoopApi) {
   return {
     setTimeout: (delay, value) => new Promise((resolve) => {
@@ -9385,7 +9409,7 @@ function createTimersPromisesApi(eventLoopApi) {
   };
 }
 
-// packages/harness-javascript/src/node-compat/url.ts
+// packages/runtime-javascript/src/node-compat/url.ts
 function createUrlApi() {
   return {
     URL,
@@ -9415,7 +9439,7 @@ function createUrlApi() {
   };
 }
 
-// packages/harness-javascript/src/browser/request-state.ts
+// packages/runtime-javascript/src/browser/request-state.ts
 function createBrowserJavaScriptRequestState(request, options, executionState) {
   const stdout = [];
   const stderr = [];
@@ -10210,7 +10234,7 @@ function createBrowserJavaScriptRequestState(request, options, executionState) {
   };
 }
 
-// packages/harness-javascript/src/kernel/filesystem-state.ts
+// packages/runtime-javascript/src/kernel/filesystem-state.ts
 function createBrowserFileSystemState(requestState, request, executionState) {
   const {
     assertApi,
@@ -11654,7 +11678,7 @@ function createBrowserFileSystemState(requestState, request, executionState) {
   };
 }
 
-// packages/harness-javascript/src/kernel/fs-api.ts
+// packages/runtime-javascript/src/kernel/fs-api.ts
 function createBrowserFsApi(requestState, filesystemState, request, executionState) {
   const {
     assertApi,
@@ -13443,7 +13467,7 @@ function createBrowserFsApi(requestState, filesystemState, request, executionSta
   return fsApi;
 }
 
-// packages/harness-javascript/src/kernel/fs-promises-api.ts
+// packages/runtime-javascript/src/kernel/fs-promises-api.ts
 function createBrowserFsPromisesApi(requestState, filesystemState, fsApi) {
   const {
     assertApi,
@@ -13792,7 +13816,7 @@ function createBrowserFsPromisesApi(requestState, filesystemState, fsApi) {
   return fsPromisesApi;
 }
 
-// packages/harness-javascript/src/security/authority-boundary.ts
+// packages/runtime-javascript/src/security/authority-boundary.ts
 var permanentBrowserAuthorityDefineProperty = Object.defineProperty;
 var permanentBrowserAuthorityGetOwnPropertyDescriptor = Object.getOwnPropertyDescriptor;
 var permanentBrowserAuthorityGetPrototypeOf = Object.getPrototypeOf;
@@ -14073,7 +14097,7 @@ function installBrowserTimerGlobals(eventLoopApi) {
   };
 }
 
-// packages/harness-javascript/src/modules/runtime-loader.ts
+// packages/runtime-javascript/src/modules/runtime-loader.ts
 function createBrowserModuleRuntime(requestState, filesystemState, fsApi, fsPromisesApi, request, executionState, options) {
   const {
     assertApi,
@@ -14427,7 +14451,7 @@ function createBrowserModuleRuntime(requestState, filesystemState, fsApi, fsProm
   };
 }
 
-// packages/harness-javascript/src/browser/request-execution.ts
+// packages/runtime-javascript/src/browser/request-execution.ts
 async function runBrowserJavaScriptProjectRequest(request, options, executionState) {
   if (options.allowDynamicEval === false) {
     const stderr2 = "node: JavaScript runtime is unavailable\n";
@@ -14738,7 +14762,7 @@ async function runBrowserJavaScriptProjectRequest(request, options, executionSta
   }
 }
 
-// packages/harness-javascript/src/project-browser-worker.ts
+// packages/runtime-javascript/src/project-browser-worker.ts
 var workerScope = self;
 var postWorkerMessage = workerScope.postMessage.bind(workerScope);
 function errorMessage(error) {

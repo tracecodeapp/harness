@@ -4,8 +4,8 @@ import {
   resolveBrowserRuntimeAssetManifests,
   type BrowserRuntimeAssetManifest,
 } from '../src/browser';
-import { PythonWorkerClient } from '../packages/harness-python/src/python-worker-client';
-import { createBrowserProjectWorkspace } from '../packages/harness-browser/src/project';
+import { PythonWorkerClient } from '../packages/runtime-python/src/python-worker-client';
+import { createBrowserProjectWorkspace } from '../packages/runtime-browser/src/project';
 
 function assertCondition(condition: unknown, message: string): asserts condition {
   if (!condition) throw new Error(message);

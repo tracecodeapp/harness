@@ -9,7 +9,7 @@ import {
   PYTHON_EXECUTE_SERIALIZE_FUNCTION,
   PYTHON_TRACE_SERIALIZE_FUNCTION,
   toPythonLiteral,
-} from '../../packages/harness-python/src/python-harness';
+} from '../../packages/runtime-python/src/python-harness';
 
 export interface PythonConformanceFixture {
   id: string;

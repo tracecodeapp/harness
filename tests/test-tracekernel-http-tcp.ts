@@ -6,7 +6,7 @@ import {
   runtimeHttpRequestBytes,
   runtimeHttpResponseBytes,
   type KernelJournalRecord,
-} from '../packages/harness-project/src/index';
+} from '../packages/workspace-facade/src/index';
 import {
   encodeTraceKernelHttp1Request,
   encodeTraceKernelHttp1Response,

@@ -5,7 +5,7 @@ import { test } from 'node:test';
 import {
   handleHostArtifactCacheRequest,
   HostArtifactCache,
-} from '../packages/harness-browser/src/host-artifact-cache';
+} from '../packages/runtime-browser/src/host-artifact-cache';
 
 test('host artifact cache is byte bounded and refreshes LRU recency', () => {
   const cache = new HostArtifactCache(2, 8);

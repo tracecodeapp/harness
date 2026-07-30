@@ -58,6 +58,7 @@ async function main(): Promise<void> {
     ]);
   const manifest = JSON.parse(manifestText) as {
     name?: unknown;
+    private?: unknown;
     version?: unknown;
     repository?: { directory?: unknown };
   };
@@ -66,7 +67,8 @@ async function main(): Promise<void> {
   };
 
   assertCondition(manifest.name === '@tracecode/runtime-sql', 'SQL runtime package name should be @tracecode/runtime-sql');
-  assertCondition(manifest.version === '0.14.0', 'SQL runtime package should publish the 0.14.0 API');
+  assertCondition(manifest.private === true, 'SQL runtime workspace should remain private behind the root ./sql facade');
+  assertCondition(manifest.version === '0.14.0', 'SQL runtime workspace should expose the 0.14.0 API');
   assertCondition(
     manifest.repository?.directory === 'packages/runtime-sql',
     'SQL runtime package repository directory should match its workspace path'
@@ -77,12 +79,10 @@ async function main(): Promise<void> {
     'Root ./sql source facade should re-export the SQL runtime package'
   );
   assertCondition(
-    lockfile.includes("'@tracecode/runtime-sql':") &&
-      lockfile.includes('version: link:../../packages/runtime-sql') &&
-      lockfile.includes('packages/runtime-sql: {}') &&
+    lockfile.includes('packages/runtime-sql: {}') &&
       !lockfile.includes('@tracecode/harness-sql') &&
       !lockfile.includes('packages/harness-sql'),
-    'Workspace lockfile should link the renamed SQL runtime package'
+    'Workspace lockfile should include the private SQL runtime workspace without retired package names'
   );
   assertCondition(
     !manifestText.includes('@tracecode/harness-sql') &&

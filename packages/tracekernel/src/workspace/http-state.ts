@@ -6,7 +6,7 @@ import type {
   RuntimeKernelHttpRequest,
   RuntimeKernelHttpResponse,
   RuntimeWorkspaceActor,
-} from '@tracecode/harness-core';
+} from '@tracecode/runtime-core';
 
 export const TRACEKERNEL_HTTP_LISTENER_LIMIT = 128;
 export const TRACEKERNEL_HTTP_REQUEST_LOG_LIMIT = 256;

@@ -2,7 +2,7 @@ import type {
   RuntimeCommandResult,
   RuntimeProjectSessionInfo,
   RuntimeProjectSessionLifecycle,
-} from '@tracecode/harness-core';
+} from '@tracecode/runtime-core';
 
 export interface WorkspaceLifecycleStateOptions {
   readonly session?: RuntimeProjectSessionInfo;

@@ -3,7 +3,7 @@ import type {
   RuntimeCommandResult,
   RuntimeKernelHttpListenerInfo,
   RuntimeWorkspaceActor,
-} from '@tracecode/harness-core';
+} from '@tracecode/runtime-core';
 import type { CommandContext } from 'just-bash/browser';
 import type { RuntimeCommandExecutionContext } from './fs-observed';
 import type { RuntimeKernelProcessRecord } from './process-state';

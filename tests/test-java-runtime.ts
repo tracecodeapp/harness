@@ -7,8 +7,8 @@ import { readFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import vm from 'node:vm';
-import { javaTraceHooksEventsToRuntimeTrace } from '../packages/harness-core/src/trace-adapters/java';
-import { createRuntimeCommandStdinPipeFromText } from '../packages/harness-core/src/runtime-project';
+import { javaTraceHooksEventsToRuntimeTrace } from '../packages/runtime-core/src/trace-adapters/java';
+import { createRuntimeCommandStdinPipeFromText } from '../packages/runtime-core/src/runtime-project';
 
 interface WorkerMessage {
   id?: string;

@@ -10,12 +10,12 @@ import {
   runtimeHttpResponseText,
   type RuntimeKernelHttpRequest,
   type RuntimeKernelHttpResponse,
-} from '../packages/harness-project/src/index';
+} from '../packages/workspace-facade/src/index';
 import { commandContextForFs } from '../packages/tracekernel/src/workspace/fs-observed';
 import {
   createBrowserJavaScriptProjectRunner,
   createBrowserTypeScriptProjectRunner,
-} from '../packages/harness-javascript/src/project-browser';
+} from '../packages/runtime-javascript/src/project-browser';
 
 function assertCondition(condition: unknown, message: string): asserts condition {
   if (!condition) throw new Error(message);
@@ -63,7 +63,7 @@ async function testExternalFetchRoutesThroughDelegate(): Promise<void> {
   const workspace = await createRuntimeWorkspace({
     externalHttp: {
       hosts: ['allowed.example'],
-      fetch: async (request): Promise<import('../packages/harness-core/src/runtime-external-http').RuntimeExternalHttpResponse> => {
+      fetch: async (request): Promise<import('../packages/runtime-core/src/runtime-external-http').RuntimeExternalHttpResponse> => {
         calls.push({
           method: request.method,
           url: request.url,

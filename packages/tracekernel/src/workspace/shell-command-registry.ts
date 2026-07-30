@@ -1,4 +1,4 @@
-import type { RuntimeCommandResult } from '@tracecode/harness-core';
+import type { RuntimeCommandResult } from '@tracecode/runtime-core';
 import {
   defineCommand,
   type Command,

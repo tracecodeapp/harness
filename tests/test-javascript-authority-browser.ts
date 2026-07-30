@@ -33,13 +33,13 @@ async function main(): Promise<void> {
       target: 'es2022',
       tsconfig: join(root, 'tsconfig.base.json'),
       alias: {
-        zlib: join(root, 'packages', 'harness-project', 'src', 'zlib-browser-shim.ts'),
-        'node:zlib': join(root, 'packages', 'harness-project', 'src', 'zlib-browser-shim.ts'),
+        zlib: join(root, 'packages', 'workspace-facade', 'src', 'zlib-browser-shim.ts'),
+        'node:zlib': join(root, 'packages', 'workspace-facade', 'src', 'zlib-browser-shim.ts'),
       },
       define: { 'process.env.NODE_ENV': '"production"' },
     }),
     build({
-      entryPoints: [join(root, 'packages', 'harness-browser', 'src', 'project.ts')],
+      entryPoints: [join(root, 'packages', 'runtime-browser', 'src', 'project.ts')],
       outfile: join(tempRoot, 'browser-project.js'),
       bundle: true,
       format: 'esm',
@@ -47,8 +47,8 @@ async function main(): Promise<void> {
       target: 'es2022',
       tsconfig: join(root, 'tsconfig.base.json'),
       alias: {
-        zlib: join(root, 'packages', 'harness-project', 'src', 'zlib-browser-shim.ts'),
-        'node:zlib': join(root, 'packages', 'harness-project', 'src', 'zlib-browser-shim.ts'),
+        zlib: join(root, 'packages', 'workspace-facade', 'src', 'zlib-browser-shim.ts'),
+        'node:zlib': join(root, 'packages', 'workspace-facade', 'src', 'zlib-browser-shim.ts'),
       },
       define: { 'process.env.NODE_ENV': '"production"' },
     }),

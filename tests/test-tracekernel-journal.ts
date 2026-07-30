@@ -5,7 +5,7 @@ import {
   createRuntimeWorkspace,
   type KernelJournalRecord,
   type RuntimeCommandEvent,
-} from '../packages/harness-project/src/index';
+} from '../packages/workspace-facade/src/index';
 
 function assertCondition(condition: unknown, message: string): asserts condition {
   if (!condition) throw new Error(message);

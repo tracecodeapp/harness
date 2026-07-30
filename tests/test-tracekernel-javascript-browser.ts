@@ -265,7 +265,7 @@ async function main(): Promise<void> {
   try {
     await syncAssets(join(tempRoot, 'workers'));
     await build({
-      entryPoints: [resolve('packages/harness-browser/src/project.ts')],
+      entryPoints: [resolve('packages/runtime-browser/src/project.ts')],
       outfile: join(tempRoot, 'project-harness.mjs'),
       bundle: true,
       format: 'esm',
@@ -273,8 +273,8 @@ async function main(): Promise<void> {
       target: ['es2022'],
       logLevel: 'warning',
       alias: {
-        zlib: resolve('packages/harness-project/src/zlib-browser-shim.ts'),
-        'node:zlib': resolve('packages/harness-project/src/zlib-browser-shim.ts'),
+        zlib: resolve('packages/workspace-facade/src/zlib-browser-shim.ts'),
+        'node:zlib': resolve('packages/workspace-facade/src/zlib-browser-shim.ts'),
       },
       define: { 'process.env.NODE_ENV': '"production"' },
     });

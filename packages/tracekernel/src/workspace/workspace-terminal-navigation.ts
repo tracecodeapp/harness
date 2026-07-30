@@ -3,7 +3,7 @@ import type {
   RuntimeCommandCompletionMatch,
   RuntimeCommandCompletionOptions,
   RuntimeKernelInfo,
-} from '@tracecode/harness-core';
+} from '@tracecode/runtime-core';
 import type {
   IFileSystem,
 } from 'just-bash/browser';

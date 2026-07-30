@@ -24,8 +24,7 @@ Context:
 Current SQL architecture:
 - SQL remains a sibling trace contract, not an extension of V4 RuntimeTrace.
 - The root `@tracecode/harness` export does not expose SQL helpers.
-- SQL is available from `@tracecode/harness/sql` and from the standalone
-  `@tracecode/runtime-sql` workspace package.
+- SQL is available from the focused `@tracecode/harness/sql` root subpath.
 - We are reusing V4 principles, not V4 event shapes:
   schemaVersion, runId on every event, closed event kinds, source spans,
   capture/redaction gates, trace budgets, validation, and no visualizer or
@@ -130,8 +129,7 @@ Research findings that led here:
 
 Where I am leaning:
 - Keep SQL as a sibling contract.
-- Keep SQL out of the root export; use `@tracecode/harness/sql` or
-  `@tracecode/runtime-sql`.
+- Keep SQL out of the root export; use `@tracecode/harness/sql`.
 - Do not add SQL event kinds to V4.
 - Do not add `sql` to the V4 `Language` union unless a future display envelope
   needs it.
@@ -144,7 +142,7 @@ Questions:
 1. Is the sibling contract still the right boundary now that fixtures, plan
    events, and transaction nuance exist?
 2. Is the root export decision right: no SQL helpers from `@tracecode/harness`,
-   but `@tracecode/harness/sql` and `@tracecode/runtime-sql` are public?
+   but a focused `@tracecode/harness/sql` subpath?
 3. Is the EXPLAIN estimate behavior too eager, too limited, or about right for
    a browser-first Postgres-compatible SQL trace?
 4. Should plan events also emit relation-access events derived from EXPLAIN, or

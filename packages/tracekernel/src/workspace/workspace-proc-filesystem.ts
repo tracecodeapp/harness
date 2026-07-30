@@ -1,11 +1,11 @@
 import type {
   RuntimeKernelHttpListenerInfo,
   RuntimeWorkspaceActor,
-} from '@tracecode/harness-core';
+} from '@tracecode/runtime-core';
 import {
   normalizeRuntimeProcPath,
   type RuntimeKernelVirtualStat,
-} from '@tracecode/harness-core';
+} from '@tracecode/runtime-core';
 import type {
   TraceKernelProcessSnapshot,
 } from '..';

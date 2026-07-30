@@ -9,7 +9,7 @@
   },
   "dependencies": {
     "@electric-sql/pglite": "^0.5.2",
-    "@tracecode/runtime-sql": "workspace:*"
+    "@tracecode/harness": "workspace:*"
   },
   "devDependencies": {
     "typescript": "^5.0.0",

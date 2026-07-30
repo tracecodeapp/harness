@@ -1,6 +1,6 @@
 #!/usr/bin/env npx tsx
 
-import { createNativeCSharpProjectRunner } from '../packages/harness-csharp/src/project-node';
+import { createNativeCSharpProjectRunner } from '../packages/runtime-csharp/src/project-node';
 
 function assertCondition(condition: boolean, message: string): void {
   if (!condition) throw new Error(message);

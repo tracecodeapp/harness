@@ -2,7 +2,7 @@
 
 import * as Effect from 'effect/Effect';
 import { TraceKernelFileSystem } from '@tracecode/tracekernel';
-import { createRuntimeWorkspace } from '../packages/harness-project/src/index';
+import { createRuntimeWorkspace } from '../packages/workspace-facade/src/index';
 import { TraceKernelBackingFileSystem } from '../packages/tracekernel/src/workspace/tkfs-backing-filesystem';
 
 function assertCondition(condition: boolean, message: string): void {

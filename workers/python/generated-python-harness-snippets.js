@@ -1,7 +1,7 @@
 /**
  * AUTO-GENERATED FILE. DO NOT EDIT MANUALLY.
  *
- * Source: packages/harness-python/src/python-harness-template.ts
+ * Source: packages/runtime-python/src/python-harness-template.ts
  * Generator: scripts/generate-python-harness-artifacts.ts
  */
 

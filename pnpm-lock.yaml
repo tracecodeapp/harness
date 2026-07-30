@@ -64,9 +64,9 @@ importers:
         specifier: ^5.0.0
         version: 5.9.3
     devDependencies:
-      '@tracecode/harness-core':
+      '@tracecode/runtime-core':
         specifier: workspace:^
-        version: link:packages/harness-core
+        version: link:packages/runtime-core
       '@tracecode/tracekernel':
         specifier: workspace:^
         version: link:packages/tracekernel
@@ -97,18 +97,6 @@ importers:
       '@tracecode/harness':
         specifier: workspace:*
         version: link:../..
-      '@tracecode/harness-java':
-        specifier: workspace:*
-        version: link:../../packages/harness-java
-      '@tracecode/harness-javascript':
-        specifier: workspace:*
-        version: link:../../packages/harness-javascript
-      '@tracecode/harness-project':
-        specifier: workspace:*
-        version: link:../../packages/harness-project
-      '@tracecode/harness-python':
-        specifier: workspace:*
-        version: link:../../packages/harness-python
       monaco-editor:
         specifier: ^0.55.1
         version: 0.55.1
@@ -125,18 +113,6 @@ importers:
       '@tracecode/harness':
         specifier: workspace:*
         version: link:../..
-      '@tracecode/harness-java':
-        specifier: workspace:*
-        version: link:../../packages/harness-java
-      '@tracecode/harness-javascript':
-        specifier: workspace:*
-        version: link:../../packages/harness-javascript
-      '@tracecode/harness-project':
-        specifier: workspace:*
-        version: link:../../packages/harness-project
-      '@tracecode/harness-python':
-        specifier: workspace:*
-        version: link:../../packages/harness-python
     devDependencies:
       typescript:
         specifier: ^5.0.0
@@ -150,9 +126,9 @@ importers:
       '@electric-sql/pglite':
         specifier: ^0.5.2
         version: 0.5.2
-      '@tracecode/runtime-sql':
+      '@tracecode/harness':
         specifier: workspace:*
-        version: link:../../packages/runtime-sql
+        version: link:../..
     devDependencies:
       typescript:
         specifier: ^5.0.0
@@ -166,18 +142,6 @@ importers:
       '@tracecode/harness':
         specifier: workspace:*
         version: link:../..
-      '@tracecode/harness-java':
-        specifier: workspace:*
-        version: link:../../packages/harness-java
-      '@tracecode/harness-javascript':
-        specifier: workspace:*
-        version: link:../../packages/harness-javascript
-      '@tracecode/harness-project':
-        specifier: workspace:*
-        version: link:../../packages/harness-project
-      '@tracecode/harness-python':
-        specifier: workspace:*
-        version: link:../../packages/harness-python
       monaco-editor:
         specifier: ^0.55.1
         version: 0.55.1
@@ -188,173 +152,6 @@ importers:
       vite:
         specifier: ^7.3.2
         version: 7.3.2(@types/node@20.19.37)(tsx@4.21.0)(yaml@2.9.0)
-
-  packages/harness-browser:
-    dependencies:
-      '@tracecode/harness-core':
-        specifier: workspace:*
-        version: link:../harness-core
-      '@tracecode/tracekernel':
-        specifier: workspace:*
-        version: link:../tracekernel
-      effect:
-        specifier: ^3.22.0
-        version: 3.22.0
-
-  packages/harness-core: {}
-
-  packages/harness-cpp:
-    dependencies:
-      '@tracecode/harness-browser':
-        specifier: workspace:*
-        version: link:../harness-browser
-      '@tracecode/harness-core':
-        specifier: workspace:*
-        version: link:../harness-core
-      effect:
-        specifier: ^3.22.0
-        version: 3.22.0
-
-  packages/harness-csharp:
-    dependencies:
-      '@tracecode/harness-browser':
-        specifier: workspace:*
-        version: link:../harness-browser
-      '@tracecode/harness-core':
-        specifier: workspace:*
-        version: link:../harness-core
-      effect:
-        specifier: ^3.22.0
-        version: 3.22.0
-
-  packages/harness-java:
-    dependencies:
-      '@tracecode/harness-browser':
-        specifier: workspace:*
-        version: link:../harness-browser
-      '@tracecode/harness-core':
-        specifier: workspace:*
-        version: link:../harness-core
-      effect:
-        specifier: ^3.22.0
-        version: 3.22.0
-
-  packages/harness-javascript:
-    dependencies:
-      '@datastructures-js/binary-search-tree':
-        specifier: 5.4.0
-        version: 5.4.0
-      '@datastructures-js/deque':
-        specifier: 1.0.8
-        version: 1.0.8
-      '@datastructures-js/graph':
-        specifier: 5.3.1
-        version: 5.3.1
-      '@datastructures-js/heap':
-        specifier: 4.3.7
-        version: 4.3.7
-      '@datastructures-js/linked-list':
-        specifier: 6.1.4
-        version: 6.1.4
-      '@datastructures-js/priority-queue':
-        specifier: 6.3.5
-        version: 6.3.5
-      '@datastructures-js/queue':
-        specifier: 4.3.0
-        version: 4.3.0
-      '@datastructures-js/set':
-        specifier: 4.2.2
-        version: 4.2.2
-      '@datastructures-js/stack':
-        specifier: 3.1.6
-        version: 3.1.6
-      '@datastructures-js/trie':
-        specifier: 4.2.3
-        version: 4.2.3
-      '@tracecode/harness-browser':
-        specifier: workspace:*
-        version: link:../harness-browser
-      '@tracecode/harness-core':
-        specifier: workspace:*
-        version: link:../harness-core
-      '@tracecode/tracekernel':
-        specifier: workspace:*
-        version: link:../tracekernel
-      effect:
-        specifier: ^3.22.0
-        version: 3.22.0
-      lodash:
-        specifier: 4.17.21
-        version: 4.17.21
-      typescript:
-        specifier: ^5.0.0
-        version: 5.9.3
-
-  packages/harness-native:
-    dependencies:
-      '@datastructures-js/binary-search-tree':
-        specifier: 5.4.0
-        version: 5.4.0
-      '@datastructures-js/deque':
-        specifier: 1.0.8
-        version: 1.0.8
-      '@datastructures-js/graph':
-        specifier: 5.3.1
-        version: 5.3.1
-      '@datastructures-js/heap':
-        specifier: 4.3.7
-        version: 4.3.7
-      '@datastructures-js/linked-list':
-        specifier: 6.1.4
-        version: 6.1.4
-      '@datastructures-js/priority-queue':
-        specifier: 6.3.5
-        version: 6.3.5
-      '@datastructures-js/queue':
-        specifier: 4.3.0
-        version: 4.3.0
-      '@datastructures-js/set':
-        specifier: 4.2.2
-        version: 4.2.2
-      '@datastructures-js/stack':
-        specifier: 3.1.6
-        version: 3.1.6
-      '@datastructures-js/trie':
-        specifier: 4.2.3
-        version: 4.2.3
-      '@tracecode/harness-core':
-        specifier: workspace:*
-        version: link:../harness-core
-      lodash:
-        specifier: 4.17.21
-        version: 4.17.21
-      typescript:
-        specifier: ^5.0.0
-        version: 5.9.3
-
-  packages/harness-project:
-    dependencies:
-      '@tracecode/harness-core':
-        specifier: workspace:*
-        version: link:../harness-core
-      '@tracecode/tracekernel':
-        specifier: workspace:*
-        version: link:../tracekernel
-      fflate:
-        specifier: ^0.8.3
-        version: 0.8.3
-
-  packages/harness-python:
-    dependencies:
-      '@tracecode/harness-browser':
-        specifier: workspace:*
-        version: link:../harness-browser
-      '@tracecode/harness-core':
-        specifier: workspace:*
-        version: link:../harness-core
-      effect:
-        specifier: ^3.22.0
-        version: 3.22.0
 
   packages/judge:
     dependencies:
@@ -378,13 +175,168 @@ importers:
         specifier: ^5.0.0
         version: 5.9.3
 
+  packages/runtime-browser:
+    dependencies:
+      '@tracecode/runtime-core':
+        specifier: workspace:*
+        version: link:../runtime-core
+      '@tracecode/tracekernel':
+        specifier: workspace:*
+        version: link:../tracekernel
+      effect:
+        specifier: ^3.22.0
+        version: 3.22.0
+
+  packages/runtime-core: {}
+
+  packages/runtime-cpp:
+    dependencies:
+      '@tracecode/runtime-browser':
+        specifier: workspace:*
+        version: link:../runtime-browser
+      '@tracecode/runtime-core':
+        specifier: workspace:*
+        version: link:../runtime-core
+      effect:
+        specifier: ^3.22.0
+        version: 3.22.0
+
+  packages/runtime-csharp:
+    dependencies:
+      '@tracecode/runtime-browser':
+        specifier: workspace:*
+        version: link:../runtime-browser
+      '@tracecode/runtime-core':
+        specifier: workspace:*
+        version: link:../runtime-core
+      effect:
+        specifier: ^3.22.0
+        version: 3.22.0
+
+  packages/runtime-java:
+    dependencies:
+      '@tracecode/runtime-browser':
+        specifier: workspace:*
+        version: link:../runtime-browser
+      '@tracecode/runtime-core':
+        specifier: workspace:*
+        version: link:../runtime-core
+      effect:
+        specifier: ^3.22.0
+        version: 3.22.0
+
+  packages/runtime-javascript:
+    dependencies:
+      '@datastructures-js/binary-search-tree':
+        specifier: 5.4.0
+        version: 5.4.0
+      '@datastructures-js/deque':
+        specifier: 1.0.8
+        version: 1.0.8
+      '@datastructures-js/graph':
+        specifier: 5.3.1
+        version: 5.3.1
+      '@datastructures-js/heap':
+        specifier: 4.3.7
+        version: 4.3.7
+      '@datastructures-js/linked-list':
+        specifier: 6.1.4
+        version: 6.1.4
+      '@datastructures-js/priority-queue':
+        specifier: 6.3.5
+        version: 6.3.5
+      '@datastructures-js/queue':
+        specifier: 4.3.0
+        version: 4.3.0
+      '@datastructures-js/set':
+        specifier: 4.2.2
+        version: 4.2.2
+      '@datastructures-js/stack':
+        specifier: 3.1.6
+        version: 3.1.6
+      '@datastructures-js/trie':
+        specifier: 4.2.3
+        version: 4.2.3
+      '@tracecode/runtime-browser':
+        specifier: workspace:*
+        version: link:../runtime-browser
+      '@tracecode/runtime-core':
+        specifier: workspace:*
+        version: link:../runtime-core
+      '@tracecode/tracekernel':
+        specifier: workspace:*
+        version: link:../tracekernel
+      effect:
+        specifier: ^3.22.0
+        version: 3.22.0
+      lodash:
+        specifier: 4.17.21
+        version: 4.17.21
+      typescript:
+        specifier: ^5.0.0
+        version: 5.9.3
+
+  packages/runtime-native:
+    dependencies:
+      '@datastructures-js/binary-search-tree':
+        specifier: 5.4.0
+        version: 5.4.0
+      '@datastructures-js/deque':
+        specifier: 1.0.8
+        version: 1.0.8
+      '@datastructures-js/graph':
+        specifier: 5.3.1
+        version: 5.3.1
+      '@datastructures-js/heap':
+        specifier: 4.3.7
+        version: 4.3.7
+      '@datastructures-js/linked-list':
+        specifier: 6.1.4
+        version: 6.1.4
+      '@datastructures-js/priority-queue':
+        specifier: 6.3.5
+        version: 6.3.5
+      '@datastructures-js/queue':
+        specifier: 4.3.0
+        version: 4.3.0
+      '@datastructures-js/set':
+        specifier: 4.2.2
+        version: 4.2.2
+      '@datastructures-js/stack':
+        specifier: 3.1.6
+        version: 3.1.6
+      '@datastructures-js/trie':
+        specifier: 4.2.3
+        version: 4.2.3
+      '@tracecode/runtime-core':
+        specifier: workspace:*
+        version: link:../runtime-core
+      lodash:
+        specifier: 4.17.21
+        version: 4.17.21
+      typescript:
+        specifier: ^5.0.0
+        version: 5.9.3
+
+  packages/runtime-python:
+    dependencies:
+      '@tracecode/runtime-browser':
+        specifier: workspace:*
+        version: link:../runtime-browser
+      '@tracecode/runtime-core':
+        specifier: workspace:*
+        version: link:../runtime-core
+      effect:
+        specifier: ^3.22.0
+        version: 3.22.0
+
   packages/runtime-sql: {}
 
   packages/tracekernel:
     dependencies:
-      '@tracecode/harness-core':
+      '@tracecode/runtime-core':
         specifier: workspace:*
-        version: link:../harness-core
+        version: link:../runtime-core
       effect:
         specifier: 3.22.0
         version: 3.22.0
@@ -394,6 +346,18 @@ importers:
       just-bash:
         specifier: 3.1.0
         version: 3.1.0(patch_hash=85fdd503145cc4fc6f226395623ee247ff72fd3b070ed14e629867c9ae9e1e85)
+
+  packages/workspace-facade:
+    dependencies:
+      '@tracecode/runtime-core':
+        specifier: workspace:*
+        version: link:../runtime-core
+      '@tracecode/tracekernel':
+        specifier: workspace:*
+        version: link:../tracekernel
+      fflate:
+        specifier: ^0.8.3
+        version: 0.8.3
 
 packages:
 

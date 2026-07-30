@@ -1,14 +1,14 @@
 #!/usr/bin/env npx tsx
 
-import { javaTraceHooksEventsToRuntimeTrace } from '../packages/harness-core/src/trace-adapters/java';
+import { javaTraceHooksEventsToRuntimeTrace } from '../packages/runtime-core/src/trace-adapters/java';
 import {
   assertNoSameLineMicroFrames,
   assertSupportedRawEmissions,
   compareRawEmissionParity,
   summarizeJavaRawEmissions,
   summarizeRuntimeTraceEmissions,
-} from '../packages/harness-core/src/runtime-raw-emission-contract';
-import { RUNTIME_TRACE_SCHEMA_VERSION, type RuntimeTrace } from '../packages/harness-core/src/runtime-trace';
+} from '../packages/runtime-core/src/runtime-raw-emission-contract';
+import { RUNTIME_TRACE_SCHEMA_VERSION, type RuntimeTrace } from '../packages/runtime-core/src/runtime-trace';
 
 function assertCondition(condition: unknown, message: string): asserts condition {
   if (!condition) throw new Error(message);

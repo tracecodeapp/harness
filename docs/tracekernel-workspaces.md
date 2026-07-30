@@ -28,8 +28,8 @@ const workspace = await createBrowserProjectWorkspace({
 ```
 
 `createRuntimeWorkspace(...)` is the shared lower-level factory from
-`@tracecode/harness-project`. It owns the workspace model; browser and native
-factories add language runners.
+`@tracecode/harness/project`. TraceKernel owns the workspace model; browser and
+native factories add language runners.
 
 ## Kernel Identity
 

@@ -6,7 +6,7 @@ import { readFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import vm from 'node:vm';
 import ts from 'typescript';
-import { executeJavaScriptCode, executeTypeScriptCode } from '../packages/harness-javascript/src/javascript-executor';
+import { executeJavaScriptCode, executeTypeScriptCode } from '../packages/runtime-javascript/src/javascript-executor';
 
 interface WorkerMessage {
   id?: string;

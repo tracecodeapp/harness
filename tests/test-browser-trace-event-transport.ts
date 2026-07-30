@@ -4,12 +4,12 @@ import { test } from 'node:test';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import vm from 'node:vm';
-import { CppWorkerClient } from '../packages/harness-cpp/src/cpp-worker-client';
-import { CSharpWorkerClient } from '../packages/harness-csharp/src/csharp-worker-client';
-import { JavaWorkerClient } from '../packages/harness-java/src/java-worker-client';
-import { JavaScriptWorkerClient } from '../packages/harness-javascript/src/javascript-worker-client';
-import { PythonWorkerClient } from '../packages/harness-python/src/python-worker-client';
-import { restoreTransferredTraceEvents } from '../packages/harness-browser/src/trace-event-transport';
+import { CppWorkerClient } from '../packages/runtime-cpp/src/cpp-worker-client';
+import { CSharpWorkerClient } from '../packages/runtime-csharp/src/csharp-worker-client';
+import { JavaWorkerClient } from '../packages/runtime-java/src/java-worker-client';
+import { JavaScriptWorkerClient } from '../packages/runtime-javascript/src/javascript-worker-client';
+import { PythonWorkerClient } from '../packages/runtime-python/src/python-worker-client';
+import { restoreTransferredTraceEvents } from '../packages/runtime-browser/src/trace-event-transport';
 
 interface ProtocolMessage {
   id?: string;

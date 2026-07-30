@@ -13,7 +13,7 @@ import type {
   RuntimeProgramPreparationResult,
   RuntimeExecutionTimings,
   TraceExecutionOptions,
-} from '../packages/harness-core/src/index';
+} from '../packages/runtime-core/src/index';
 import {
   makeTraceKernelHost,
   type TraceKernelFileSystemImage,

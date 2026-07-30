@@ -7,12 +7,12 @@ import {
   createRuntimeCommandStdinPipeFromText,
   type RuntimeCommandEvent,
   type RuntimeCommandResult,
-} from '../packages/harness-core/src/runtime-project';
-import { createBrowserProjectWorkspace } from '../packages/harness-browser/src/project';
-import { createBrowserPythonProjectRunner } from '../packages/harness-python/src/project-browser';
-import { createBrowserJavaProjectRunner } from '../packages/harness-java/src/project-browser';
-import { createBrowserCSharpProjectRunner } from '../packages/harness-csharp/src/project-browser';
-import { createBrowserCppProjectRunner } from '../packages/harness-cpp/src/project-browser';
+} from '../packages/runtime-core/src/runtime-project';
+import { createBrowserProjectWorkspace } from '../packages/runtime-browser/src/project';
+import { createBrowserPythonProjectRunner } from '../packages/runtime-python/src/project-browser';
+import { createBrowserJavaProjectRunner } from '../packages/runtime-java/src/project-browser';
+import { createBrowserCSharpProjectRunner } from '../packages/runtime-csharp/src/project-browser';
+import { createBrowserCppProjectRunner } from '../packages/runtime-cpp/src/project-browser';
 import packageJson from '../package.json' with { type: 'json' };
 
 const testDirectory = dirname(fileURLToPath(import.meta.url));
@@ -1175,9 +1175,9 @@ async function testBrowserWorkerFailureBoundary(): Promise<void> {
     },
     {
       label: 'C++',
-      diagnostic: 'C++ compiler worker crashed in /packages/harness-cpp',
+      diagnostic: 'C++ compiler worker crashed in /packages/runtime-cpp',
       run: (onEvent: (event: RuntimeCommandEvent) => void) => createBrowserCppProjectRunner({
-        async executeProjectCpp() { throw new Error('C++ compiler worker crashed in /packages/harness-cpp'); },
+        async executeProjectCpp() { throw new Error('C++ compiler worker crashed in /packages/runtime-cpp'); },
       })({ code: '', source: 'run', scriptPath: 'app', args: [], cwd: '/workspace', env: {}, project, onEvent }),
     },
   ];

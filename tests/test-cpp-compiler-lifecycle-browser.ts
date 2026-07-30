@@ -45,7 +45,7 @@ async function main(): Promise<void> {
 
   await runCommand('pnpm', ['exec', 'tsx', 'src/cli.ts', 'sync-assets', workersRoot, '--languages', 'cpp'], root);
   await build({
-    entryPoints: [join(root, 'packages', 'harness-cpp', 'src', 'cpp-worker-client.ts')],
+    entryPoints: [join(root, 'packages', 'runtime-cpp', 'src', 'cpp-worker-client.ts')],
     outfile: join(tempRoot, 'cpp-worker-client.js'),
     bundle: true,
     format: 'esm',

@@ -7,7 +7,7 @@ import type {
   RuntimeWorkspaceEvent,
 } from '@tracecode/harness/core';
 import type { BrowserProjectProvider, BrowserRuntimeAssetManifests } from '@tracecode/harness/browser';
-import type { JavaProjectRunnerOptions } from '@tracecode/harness-java/java-project';
+import type { JavaProjectRunnerOptions } from '@tracecode/harness/java';
 
 async function bootProjectTerminal(): Promise<void> {
   document.body.innerHTML = `

@@ -1,0 +1,52 @@
+{
+  "name": "@tracecode/runtime-csharp",
+  "private": true,
+  "version": "0.13.1",
+  "description": "C# runtime client and browser worker assets for TraceCode harness.",
+  "license": "AGPL-3.0-only",
+  "homepage": "https://tracecode.app",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/tracecodeapp/harness.git",
+    "directory": "packages/runtime-csharp"
+  },
+  "type": "module",
+  "main": "./dist/index.cjs",
+  "module": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "files": [
+    "dist",
+    "workers",
+    "README.md",
+    "LICENSE",
+    "THIRD_PARTY_NOTICES.md"
+  ],
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js",
+      "require": "./dist/index.cjs",
+      "default": "./dist/index.js"
+    },
+    "./project-node": {
+      "types": "./dist/project-node.d.ts",
+      "import": "./dist/project-node.js",
+      "require": "./dist/project-node.cjs",
+      "default": "./dist/project-node.js"
+    },
+    "./project-browser": {
+      "types": "./dist/project-browser.d.ts",
+      "import": "./dist/project-browser.js",
+      "require": "./dist/project-browser.cjs",
+      "default": "./dist/project-browser.js"
+    },
+    "./workers/*": "./workers/*",
+    "./package.json": "./package.json"
+  },
+  "sideEffects": false,
+  "dependencies": {
+    "@tracecode/runtime-browser": "workspace:*",
+    "@tracecode/runtime-core": "workspace:*",
+    "effect": "^3.22.0"
+  }
+}

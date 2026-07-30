@@ -4,8 +4,8 @@ import {
 } from '@tracecode/tracejvm';
 import {
   createRuntimeCommandStdinPipeFromText,
-} from '../../packages/harness-core/src/index';
-import { createBrowserProjectWorkspace } from '../../packages/harness-browser/src/project';
+} from '../../packages/runtime-core/src/index';
+import { createBrowserProjectWorkspace } from '../../packages/runtime-browser/src/project';
 import type {
   TraceKernelTraceJVMResult,
 } from './tracekernel-tracejvm-result';

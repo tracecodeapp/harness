@@ -4,6 +4,9 @@ TraceKernel is the browser-native machine boundary for TraceCode. It owns
 sessions, processes, descriptors, shared resources, runtime leases, and their
 lifecycles.
 
+This workspace is private in the 0.14 release line and is bundled behind the
+published `@tracecode/harness` surfaces; it is not released independently.
+
 The package is under active architectural development. Its Effect-native
 API keeps acquisition, interruption, and release structurally connected while
 leaving process and syscall semantics explicit in TraceKernel domain state.

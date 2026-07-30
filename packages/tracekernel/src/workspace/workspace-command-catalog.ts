@@ -1,9 +1,9 @@
 import type {
   RuntimeCommandResult,
-} from '@tracecode/harness-core';
+} from '@tracecode/runtime-core';
 import type {
   RuntimeKernelVirtualStat,
-} from '@tracecode/harness-core';
+} from '@tracecode/runtime-core';
 import {
   TRACEKERNEL_BIN_PATH,
   TRACEKERNEL_COMMAND_DISPATCH_PREFIX,

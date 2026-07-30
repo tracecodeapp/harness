@@ -33,14 +33,14 @@ import {
   runtimeFileChangePath,
   runRuntimeProjectWorkerBridge,
   isRuntimeProjectHiddenCommandAccess,
-} from '@tracecode/harness-core';
+} from '@tracecode/runtime-core';
 import {
   createDefaultExternalHttpFetch,
   isBlockedExternalHttpHost,
   RUNTIME_EXTERNAL_HTTP_MAX_BODY_BYTES,
   type RuntimeExternalHttpConfig,
   type RuntimeExternalHttpRequest,
-} from '@tracecode/harness-core';
+} from '@tracecode/runtime-core';
 import {
   isRuntimeKernelVirtualNamespacePath,
   normalizeRuntimeProcPath,
@@ -70,9 +70,9 @@ import {
   publicRuntimeKernelInfo,
   publicRuntimeKernelVirtualFiles,
   createRuntimeKernelReadonlyFileError,
-} from '@tracecode/harness-core';
-import { getLanguageRuntimeInfo, TRACECODE_HARNESS_VERSION } from '@tracecode/harness-core';
-import type { Language } from '@tracecode/harness-core';
+} from '@tracecode/runtime-core';
+import { getLanguageRuntimeInfo, TRACECODE_HARNESS_VERSION } from '@tracecode/runtime-core';
+import type { Language } from '@tracecode/runtime-core';
 import {
   encodeTraceKernelHttp1Request,
   encodeTraceKernelHttp1Response,
@@ -206,7 +206,7 @@ import type {
   RuntimeWorkspaceRemoveOptions,
   RuntimeWorkspaceStat,
   RuntimeWorkspaceUnsubscribe,
-} from '@tracecode/harness-core';
+} from '@tracecode/runtime-core';
 import {
   CPP_COMPILER_COMMANDS,
   DEFAULT_CWD,

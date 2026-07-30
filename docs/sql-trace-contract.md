@@ -1,6 +1,6 @@
 # SQL Trace Contract
 
-Status: implemented V1 contract for `@tracecode/runtime-sql`, with PGlite as
+Status: implemented V1 contract for `@tracecode/harness/sql`, with PGlite as
 the primary browser Postgres-compatible engine target.
 
 ## Purpose
@@ -52,7 +52,7 @@ PGlite is the primary engine candidate because it is a WASM Postgres build that
 runs in the browser and supports in-memory or IndexedDB persistence. It gives
 the harness a Postgres-compatible dialect without requiring a server process.
 
-`@tracecode/runtime-sql` intentionally does not vendor PGlite. The package owns
+`@tracecode/harness/sql` intentionally does not vendor PGlite. The package owns
 the trace contract, validation, redaction, result capture, statement splitting,
 and dependency-injection wrappers. Browser apps inject their chosen SQL client
 and use `createSqlRuntimeTraceClient(...)`, setting known provider metadata such

@@ -15,7 +15,7 @@ export {
   runtimeHttpRequestText,
   runtimeHttpResponseBytes,
   runtimeHttpResponseText,
-} from '@tracecode/harness-core';
+} from '@tracecode/runtime-core';
 
 export type {
   CreateRuntimeWorkspaceOptions,
@@ -115,18 +115,18 @@ export type {
   RuntimeWorkspaceRemoveOptions,
   RuntimeWorkspaceStat,
   RuntimeWorkspaceUnsubscribe,
-} from '@tracecode/harness-core';
+} from '@tracecode/runtime-core';
 
 import {
   createRuntimeWorkspace,
   type CreateRuntimeWorkspaceOptions,
   type RuntimeProjectWorkspace,
 } from '@tracecode/tracekernel/workspace';
-import { createNativeCppProjectRunner } from '../packages/harness-cpp/src/project-node';
-import { createNativeCSharpProjectRunner } from '../packages/harness-csharp/src/project-node';
-import { createNativeJavaProjectRunner } from '../packages/harness-java/src/project-node';
-import { createNativeJavaScriptProjectRunner, createTypeScriptProjectRunner } from '../packages/harness-javascript/src/project-node';
-import { createNativePythonProjectRunner } from '../packages/harness-python/src/project-node';
+import { createNativeCppProjectRunner } from '../packages/runtime-cpp/src/project-node';
+import { createNativeCSharpProjectRunner } from '../packages/runtime-csharp/src/project-node';
+import { createNativeJavaProjectRunner } from '../packages/runtime-java/src/project-node';
+import { createNativeJavaScriptProjectRunner, createTypeScriptProjectRunner } from '../packages/runtime-javascript/src/project-node';
+import { createNativePythonProjectRunner } from '../packages/runtime-python/src/project-node';
 
 export interface CreateNativeProjectWorkspaceOptions
   extends Omit<

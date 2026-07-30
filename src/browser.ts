@@ -1,4 +1,4 @@
-export * from '../packages/harness-browser/src/index';
+export * from '../packages/runtime-browser/src/index';
 
 import {
   createBrowserHarness as createProviderBrowserHarness,
@@ -6,26 +6,26 @@ import {
   type BrowserHarness,
   type BrowserRuntimeProviderRegistry,
   type CreateBrowserHarnessOptions as ProviderBrowserHarnessOptions,
-} from '../packages/harness-browser/src/index';
+} from '../packages/runtime-browser/src/index';
 import {
   createPythonBrowserRuntimeProvider,
   type PythonBrowserRuntimeProviderOptions,
-} from '../packages/harness-python/src/index';
+} from '../packages/runtime-python/src/index';
 import {
   createJavaScriptBrowserRuntimeProvider,
-} from '../packages/harness-javascript/src/index';
+} from '../packages/runtime-javascript/src/index';
 import {
   createJavaBrowserRuntimeProvider,
   type JavaBrowserRuntimeProviderOptions,
-} from '../packages/harness-java/src/index';
+} from '../packages/runtime-java/src/index';
 import {
   createCSharpBrowserRuntimeProvider,
   type CSharpBrowserRuntimeProviderOptions,
-} from '../packages/harness-csharp/src/index';
+} from '../packages/runtime-csharp/src/index';
 import {
   createCppBrowserRuntimeProvider,
   type CppBrowserRuntimeProviderOptions,
-} from '../packages/harness-cpp/src/index';
+} from '../packages/runtime-cpp/src/index';
 
 export type CreateBrowserHarnessOptions = Omit<
   ProviderBrowserHarnessOptions,

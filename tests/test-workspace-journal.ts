@@ -3,7 +3,7 @@
 import {
   runtimeWorkspaceActorPreset,
   type KernelJournalRecord,
-} from '../packages/harness-core/src/index';
+} from '../packages/runtime-core/src/index';
 import type {
   TraceKernelFileSystemMutation,
   TraceKernelProcessSnapshot,

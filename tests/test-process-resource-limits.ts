@@ -3,7 +3,7 @@
 import {
   createRuntimeWorkspace,
   type RuntimeCommandResult,
-} from '../packages/harness-project/src/index';
+} from '../packages/workspace-facade/src/index';
 
 function assert(condition: unknown, message: string): asserts condition {
   if (!condition) throw new Error(message);

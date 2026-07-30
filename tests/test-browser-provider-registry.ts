@@ -1,13 +1,13 @@
 #!/usr/bin/env npx tsx
 
 import { test } from 'node:test';
-import type { Language, RuntimeClient } from '../packages/harness-core/src';
+import type { Language, RuntimeClient } from '../packages/runtime-core/src';
 import {
   createBrowserHarness,
   createBrowserRuntimeProviderRegistry,
   type BrowserRuntimeProvider,
   type CreateBrowserHarnessOptions,
-} from '../packages/harness-browser/src';
+} from '../packages/runtime-browser/src';
 
 function assertCondition(condition: unknown, message: string): asserts condition {
   if (!condition) throw new Error(message);

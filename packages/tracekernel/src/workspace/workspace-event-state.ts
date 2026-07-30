@@ -3,7 +3,7 @@ import type {
   RuntimeCommandEvent,
   RuntimeWorkspaceEventHandler,
   RuntimeWorkspaceUnsubscribe,
-} from '@tracecode/harness-core';
+} from '@tracecode/runtime-core';
 
 const DEFAULT_WORKSPACE_EVENT_LOG_LIMIT = 256;
 

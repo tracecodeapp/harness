@@ -13,34 +13,34 @@ import type {
   Language,
   RuntimeExecutionStyle,
   RuntimeTraceCall,
-} from '../packages/harness-core/src/runtime-types';
+} from '../packages/runtime-core/src/runtime-types';
 import {
   createEmptyRuntimeTrace,
   type RuntimeTraceEventKind,
   type RuntimeTraceParityAccessTarget,
   type RuntimeTrace,
-} from '../packages/harness-core/src/runtime-trace';
+} from '../packages/runtime-core/src/runtime-trace';
 import {
   assertSupportedRawEmissions,
   compareRawEmissionParity,
   summarizeJavaRawEmissions,
   summarizeRuntimeTraceEmissions,
   type RuntimeRawEmissionSummary,
-} from '../packages/harness-core/src/runtime-raw-emission-contract';
-import { createJavaRuntimeClient } from '../packages/harness-java/src/java-runtime-client';
+} from '../packages/runtime-core/src/runtime-raw-emission-contract';
+import { createJavaRuntimeClient } from '../packages/runtime-java/src/java-runtime-client';
 import type {
   JavaWorkerClient,
   JavaWorkerRawTraceResult,
   JavaWorkerTraceResult,
-} from '../packages/harness-java/src/java-worker-client';
-import { javaTraceHooksEventsToRuntimeTrace } from '../packages/harness-core/src/trace-adapters/java';
+} from '../packages/runtime-java/src/java-worker-client';
+import { javaTraceHooksEventsToRuntimeTrace } from '../packages/runtime-core/src/trace-adapters/java';
 import {
   PYTHON_CLASS_DEFINITIONS,
   PYTHON_CONVERSION_HELPERS,
   PYTHON_EXECUTE_SERIALIZE_FUNCTION,
   PYTHON_TRACE_SERIALIZE_FUNCTION,
   toPythonLiteral,
-} from '../packages/harness-python/src/python-harness';
+} from '../packages/runtime-python/src/python-harness';
 import {
   createTraceJVMSemanticTraceRuntime,
   type TraceJVMSemanticTraceRuntime,

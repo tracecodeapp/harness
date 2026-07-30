@@ -4,7 +4,7 @@ import { dirname, resolve } from 'node:path';
 
 const entries = [
   resolve('dist/browser/project.js'),
-  resolve('packages/harness-browser/dist/project.js'),
+  resolve('packages/runtime-browser/dist/project.js'),
 ];
 const MAX_STATIC_RAW_BYTES = 350 * 1024;
 const MAX_STATIC_GZIP_BYTES = 90 * 1024;

@@ -8,12 +8,12 @@ import { tmpdir } from 'node:os';
 import { dirname, extname, join, normalize, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { chromium, type Browser, type Page } from 'playwright';
-import { CSharpWorkerClient } from '../packages/harness-csharp/src/csharp-worker-client';
-import { createBrowserCSharpProjectRunner } from '../packages/harness-csharp/src/project-browser';
-import { createRuntimeCommandStdinPipeFromText, readRuntimeCommandStdinPipeBytes } from '../packages/harness-core/src/runtime-project';
-import type { RuntimeCommandEvent } from '../packages/harness-core/src/runtime-project';
-import { assertNoSameLineMicroFrames } from '../packages/harness-core/src/runtime-raw-emission-contract';
-import { RUNTIME_TRACE_SCHEMA_VERSION, type RuntimeTrace } from '../packages/harness-core/src/runtime-trace';
+import { CSharpWorkerClient } from '../packages/runtime-csharp/src/csharp-worker-client';
+import { createBrowserCSharpProjectRunner } from '../packages/runtime-csharp/src/project-browser';
+import { createRuntimeCommandStdinPipeFromText, readRuntimeCommandStdinPipeBytes } from '../packages/runtime-core/src/runtime-project';
+import type { RuntimeCommandEvent } from '../packages/runtime-core/src/runtime-project';
+import { assertNoSameLineMicroFrames } from '../packages/runtime-core/src/runtime-raw-emission-contract';
+import { RUNTIME_TRACE_SCHEMA_VERSION, type RuntimeTrace } from '../packages/runtime-core/src/runtime-trace';
 
 interface CSharpWorkerResponse {
   success: boolean;

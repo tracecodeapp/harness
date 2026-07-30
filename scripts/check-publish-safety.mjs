@@ -5,6 +5,17 @@ import { isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { pathToFileURL } from 'node:url';
 
 const ROOT_PACKAGE_NAME = '@tracecode/harness';
+const RETIRED_INTERNAL_PACKAGE_NAMES = new Set([
+  '@tracecode/harness-browser',
+  '@tracecode/harness-core',
+  '@tracecode/harness-cpp',
+  '@tracecode/harness-csharp',
+  '@tracecode/harness-java',
+  '@tracecode/harness-javascript',
+  '@tracecode/harness-native',
+  '@tracecode/harness-project',
+  '@tracecode/harness-python',
+]);
 const RELEASE_CHECK_SCRIPT = 'node scripts/check-publish-safety.mjs';
 const ROOT_RELEASE_SCRIPT = 'pnpm release:check && pnpm publish . --access public';
 const PREPUBLISH_SCRIPT = 'pnpm release:check && pnpm build && pnpm release:check';
@@ -244,6 +255,12 @@ export async function auditPublishSafety(rootDirectory = process.cwd(), environm
     const manifest = await readJson(manifestPath, `workspace package manifest ${relativeManifestPath}`);
     if (typeof manifest.name !== 'string' || manifest.name.length === 0) {
       fail(`${relativeManifestPath} must declare a package name`);
+    }
+    if (RETIRED_INTERNAL_PACKAGE_NAMES.has(manifest.name)) {
+      fail(
+        `${relativeManifestPath} (${manifest.name}) uses a retired harness-* ` +
+        'workspace namespace; private implementation packages must use ownership-based names'
+      );
     }
     const existingPath = names.get(manifest.name);
     if (existingPath) {

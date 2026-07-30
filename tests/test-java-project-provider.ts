@@ -5,12 +5,12 @@ import type {
   RuntimeProjectCommandRequest,
   RuntimeProjectEngineLeaseAttachment,
   RuntimeProjectEngineLeaseController,
-} from '../packages/harness-core/src/index';
+} from '../packages/runtime-core/src/index';
 import {
   createJavaProjectRunner,
   type JavaProjectClient,
-} from '../packages/harness-java/src/java-project';
-import { createBrowserProjectWorkspace } from '../packages/harness-browser/src/project';
+} from '../packages/runtime-java/src/java-project';
+import { createBrowserProjectWorkspace } from '../packages/runtime-browser/src/project';
 
 function assertCondition(condition: boolean, message: string): void {
   if (!condition) throw new Error(message);

@@ -1,12 +1,12 @@
 import { strict as assert } from 'node:assert';
 import { test } from 'node:test';
 import * as Effect from 'effect/Effect';
-import { WorkerSessionCore } from '../packages/harness-browser/src/worker-session-core';
-import { ExecutionAbortedError, WorkerTerminatedError } from '../packages/harness-browser/src/worker-errors';
+import { WorkerSessionCore } from '../packages/runtime-browser/src/worker-session-core';
+import { ExecutionAbortedError, WorkerTerminatedError } from '../packages/runtime-browser/src/worker-errors';
 import type {
   RuntimeProjectEngineLeaseAttachment,
   RuntimeProjectEngineLeaseController,
-} from '../packages/harness-core/src/runtime-project';
+} from '../packages/runtime-core/src/runtime-project';
 
 function createCore(): WorkerSessionCore {
   return new WorkerSessionCore({

@@ -5,7 +5,7 @@ import {
   type RuntimeKernelHttpRequest,
   type RuntimeKernelHttpResponse,
   type RuntimeWorkspaceActor,
-} from '@tracecode/harness-core';
+} from '@tracecode/runtime-core';
 import {
   TRACEKERNEL_HTTP_MAX_BODY_BYTES,
   TRACEKERNEL_HTTP_MAX_DIAGNOSTIC_FIELD_LENGTH,

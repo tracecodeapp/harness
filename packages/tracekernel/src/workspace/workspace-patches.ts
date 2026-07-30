@@ -4,7 +4,7 @@ import type {
   RuntimeProjectPatchChange,
   RuntimeProjectPatchOptions,
   RuntimeProjectSnapshot,
-} from '@tracecode/harness-core';
+} from '@tracecode/runtime-core';
 import {
   RUNTIME_PROJECT_PATCH_VERSION,
   createRuntimeProjectPatchSnapshotView,

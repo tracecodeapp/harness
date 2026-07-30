@@ -1,6 +1,6 @@
 #!/usr/bin/env npx tsx
 
-import { createRuntimeWorkspace } from '../packages/harness-project/src/index';
+import { createRuntimeWorkspace } from '../packages/workspace-facade/src/index';
 
 function assertCondition(
   condition: unknown,

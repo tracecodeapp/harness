@@ -1,7 +1,7 @@
 import * as Effect from 'effect/Effect';
 import type {
   RuntimeWorkspaceActor,
-} from '@tracecode/harness-core';
+} from '@tracecode/runtime-core';
 import type {
   TraceKernelPrincipal,
   TraceKernelProcess,

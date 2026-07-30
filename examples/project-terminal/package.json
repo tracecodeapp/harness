@@ -9,11 +9,7 @@
     "preview": "pnpm sync:assets && vite preview --host 127.0.0.1 --port 4174"
   },
   "dependencies": {
-    "@tracecode/harness": "workspace:*",
-    "@tracecode/harness-java": "workspace:*",
-    "@tracecode/harness-javascript": "workspace:*",
-    "@tracecode/harness-project": "workspace:*",
-    "@tracecode/harness-python": "workspace:*"
+    "@tracecode/harness": "workspace:*"
   },
   "devDependencies": {
     "typescript": "^5.0.0",

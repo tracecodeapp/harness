@@ -8,7 +8,7 @@ const ROOT = process.cwd();
 const GENERATED_PATH = join(
   ROOT,
   'packages',
-  'harness-core',
+  'runtime-core',
   'src',
   'generated',
   'runtime-language-info-data.ts'
@@ -297,7 +297,7 @@ async function buildRuntimeInfo(): Promise<Record<string, RuntimeInfo>> {
   const javaWorkerSource = await readText('workers', 'java', 'java-worker.js');
   const javaProjectSource = await readText(
     'packages',
-    'harness-java',
+    'runtime-java',
     'src',
     'java-project.ts'
   );

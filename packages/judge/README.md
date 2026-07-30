@@ -3,6 +3,9 @@
 `@tracecode/judge` turns a language-neutral evaluation plan into protected
 TraceKernel compile and case processes.
 
+This workspace is private in the 0.14 release line. Consumers use the supported
+`@tracecode/harness/judge` root subpath.
+
 It owns:
 
 - workspace and generated-driver mounting;
