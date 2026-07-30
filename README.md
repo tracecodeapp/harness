@@ -80,50 +80,39 @@ itself.
 
 ## Judge
 
-Judge owns evaluation. A `BrowserJudgeHost` manages browser assets, warm
-runtime capacity, and provider teardown. Each scoped Judge owns its
-TraceKernel session, case processes, comparison policy, and prepared program.
+Judge owns evaluation. Products lower their problem or project definition into
+a versioned, serializable bundle. A `BrowserJudgeHost` executes that bundle
+through TraceKernel and returns a receipt containing raw process observations,
+comparison results, policy evaluation, and the final technical verdict.
+
+Expected values, comparator strategies, semantic facts, scoring rules, and
+pass/fail policy stay in Judge. Language runtimes receive only source and case
+input. The same bundle crosses unchanged into a browser mux slot, so local and
+remote evaluation do not maintain separate correctness implementations.
 
 ```ts
-import * as Effect from 'effect/Effect';
 import {
+  createAlgorithmJudgeBundle,
   createBrowserJudgeHost,
-  type JudgeEvaluationPlan,
 } from '@tracecode/harness/judge';
 
-const source = String.raw`
+const code = String.raw`
 def solve(nums):
     return sum(nums)
 `;
 
-const plan: JudgeEvaluationPlan<
-  { readonly nums: readonly number[] },
-  number
-> = {
-  id: 'sum-example',
-  runtime: 'python',
-  workspace: {
-    cwd: '/workspace',
-    files: [{
-      path: '/workspace/solution.py',
-      contents: source,
-      visibility: 'submission',
-    }],
-  },
-  driver: { files: [] },
-  run: {
-    command: 'judge-case',
-    timeoutMs: 1_000,
-  },
+const bundle = await createAlgorithmJudgeBundle({
+  id: 'sum-attempt',
+  language: 'python',
+  code,
+  functionName: 'solve',
   cases: [{
     id: 'small-list',
     input: { nums: [1, 2, 3] },
     expected: 6,
   }],
-  isolation: {
-    mode: 'fresh-session-per-case',
-  },
-};
+  limits: { wallClockMs: 1_000 },
+});
 
 const host = createBrowserJudgeHost({
   assetBaseUrl: '/workers',
@@ -134,31 +123,52 @@ try {
   await host.preflightLanguage('python');
   await host.warmLanguage('python');
 
-  const result = await Effect.runPromise(
-    Effect.scoped(
-      Effect.gen(function* () {
-        const judge = yield* host.createJudge({
-          language: 'python',
-          binding: {
-            sourcePath: '/workspace/solution.py',
-            functionName: 'solve',
-            executionStyle: 'function',
-          },
-        });
-        return yield* judge.evaluate(plan);
-      })
-    )
-  );
-
-  console.log(result.cases[0]?.verdict);
+  const receipt = await host.evaluateAlgorithm({ bundle });
+  console.log(receipt.verdict);
 } finally {
   host.dispose();
 }
 ```
 
-Set `trace: true` and optional `traceOptions` on the Judge binding for traced
-evaluation. Expected values, comparators, verdicts, scoring, and isolation stay
-in Judge rather than leaking into language runtimes.
+Set `trace: true` and optional `traceOptions` on the bundle for traced
+evaluation. A `JudgeVerdictPolicy` can combine case outcomes with
+workspace-bound facts such as semantic complexity:
+
+```text
+passWhen all cases pass AND runtime complexity is at most logarithmic
+```
+
+Facts identify their producer, version, verification tier, and exact workspace
+digest. Missing, stale, or insufficiently trusted facts produce an
+`indeterminate` verdict rather than silently passing.
+
+Project Judge uses the same model at workspace scale. A project definition has
+its own schema, id, and revision; each evaluator pattern has an independent
+kind and version. The definition declares command and service-probe steps,
+private artifacts, evaluator references, and `passWhen`. The resulting receipt
+contains changed files, isolated process results, attributed observations,
+claims, policy trace, score, and verdict.
+
+## Browser and mux ownership
+
+One browser Judge slot is the canonical execution authority. It owns a
+TraceKernel-backed Judge host and can evaluate both algorithm and project
+bundles. Mux is that browser slot multiplied by N:
+
+```text
+product bundle
+  -> browser Judge slot
+  -> Judge receipt
+
+mux = browser Judge slot × N
+    + queueing
+    + capacity
+    + slot replacement
+```
+
+Mux does not reimplement comparison or project grading. A product Worker signs
+the exact request sent to mux and verifies a signature over the exact status
+and response body before persisting a receipt.
 
 ## Public surface
 
@@ -221,6 +231,7 @@ Do not mix files from different runtime releases.
 ## Documentation
 
 - [Harness execution contract](./docs/harness-execution-contract.md)
+- [Judge architecture](./packages/judge/ARCHITECTURE.md)
 - [TraceKernel workspaces](./docs/tracekernel-workspaces.md)
 - [TraceKernel HTTP simulation](./docs/tracekernel-http.md)
 - [Isolation boundaries](./docs/isolation-boundaries.md)

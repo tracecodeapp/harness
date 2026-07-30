@@ -25,20 +25,27 @@ TraceKernel owns sessions, processes, PIDs, signals, filesystem images,
 descriptors, watchdogs, and runtime leases. Runtime packages own language
 semantics. Judge owns how those primitives become one evaluation.
 
-## Evaluation plan
+## Portable authority bundles
 
-A plan is already lowered to process-level intent:
+An algorithm bundle contains:
 
-- submission files;
-- private generated-driver files;
-- an optional compile process;
-- a run process template;
-- ordered case inputs and optional expected outputs;
-- isolation and concurrency policy.
+- a schema and bundle id;
+- the exact submitted workspace digest;
+- language-neutral execution binding;
+- ordered inputs and optional expected values;
+- serializable comparator policy;
+- workspace-bound semantic facts;
+- declarative verdict and scoring policy.
 
-Judge does not generate language-specific source in this package. A problem
-adapter or runtime package may generate a driver and then supply it as a
-`judge-private` file.
+A project bundle contains a versioned definition and attempt. The definition
+declares workspace artifacts, isolated command or service-probe steps,
+versioned evaluator patterns, and verdict policy. The attempt supplies the
+submitted artifact, attributed observations, semantic facts, and optionally
+precomputed technical evidence from an already-running browser TraceKernel
+workspace.
+
+Bundles are JSON-compatible authority messages. A client browser and a mux
+browser slot validate and evaluate the same data model.
 
 ## Comparison and verdicts
 
@@ -51,16 +58,33 @@ comparators, or verdict policy. After a case process completes, Judge applies a
 - `comparison-error`;
 - `not-evaluated`, when no expected output exists or the case did not complete.
 
-`structuralJsonComparator` is the default. It intentionally uses the
-`JSON.stringify(actual) === JSON.stringify(expected)` semantics from the 0.13
-browser and native paths so moving execution behind TraceKernel does not also
-change correctness policy. Products can inject another pure comparator through
-`JudgeEvaluationOptions` without changing a runtime provider or evaluation
-plan.
+Comparator strategies are serializable. Judge materializes the executable
+comparator inside the current authority, including registered custom
+validators, without forwarding expected values to a runtime.
 
 Trace metadata is part of the raw case observation. Judge preserves it in the
 case result but compares only the published value, so tracing cannot change a
 case verdict.
+
+`passWhen` is a small three-valued policy language. It can combine case
+outcomes, claims, process observations, and workspace-bound facts. A missing
+required fact yields `unknown`, which becomes an indeterminate or not-evaluated
+technical verdict. It never defaults to pass.
+
+Weighted score dimensions are evaluated from the same expressions. Product
+recommendations and explanatory prose remain above Judge.
+
+## Pattern and definition versioning
+
+Project protocol and authored content do not share a version counter:
+
+- the project definition schema versions the portable workflow contract;
+- each evaluator reference has a `kind` and independent `version`;
+- the definition `revision` pins a particular authored assessment.
+
+This allows a new debugging evaluator to coexist with existing definitions
+without changing the transport schema, and lets content revisions remain
+auditable without fabricating protocol versions.
 
 ## Private driver boundary
 
@@ -124,15 +148,16 @@ cancelled UI state.
 
 ## What integration still needs
 
-The 0.14 integration must reconcile:
+The 0.14 browser integration provides one reusable `BrowserJudgeHost`.
+Applications select runtime capacity but cannot acquire direct providers.
+Algorithms call `evaluateAlgorithm`; projects call `createProjectJudge`.
 
-1. the neutral runtime provider contract and final package names;
-2. a worker-capable `JudgeRuntimeControlPort` transport;
-3. language-specific driver generation outside Judge;
-4. artifact/cache policy for compiled outputs;
-5. product scoring and explanation policy above Judge;
-6. root build, typecheck, packaged-surface, and release scripts;
-7. browser differential coverage against the final 0.13 direct-runner oracle.
+Mux hosts the same browser module and multiplies it across replaceable slots.
+It owns capacity, queues, readiness, and slot lifecycle only. The product
+Worker and mux authenticate requests and sign exact responses; Judge receipts
+remain portable data rather than embedding deployment credentials.
 
-Judge must not be adapted by calling `createBrowserHarness` or a direct
-`RuntimeClient`. The adapter boundary is TraceKernel sessions and processes.
+The remaining rollout work is operational: publish the root Harness artifact,
+deploy matching immutable runtime assets, canary mux capacity, and compare
+receipts with the final 0.13 oracle. No direct-runner fallback belongs in the
+0.14 public API.

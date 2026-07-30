@@ -6,36 +6,12 @@ This repo uses Git tags as release boundaries. Version notes below summarize wha
 
 ## [Unreleased]
 
-### Changed
-
-- Collapsed the public SDK to two code entrypoints:
-  `@tracecode/harness/tracekernel` for interactive execution and
-  `@tracecode/harness/judge` for evaluation.
-- Moved browser workspace creation, persistence, runtime metadata, and
-  execution-host configuration behind the TraceKernel entrypoint.
-- Replaced public browser-runtime assembly with `createBrowserJudgeHost()`.
-  The Judge host owns runtime providers and exposes scoped
-  `host.createJudge(...)` without exposing provider registries or clients.
-- Removed the package-root, `/browser`, `/browser/project`, `/project`, and
-  `/project-node` exports and deleted the redundant private
-  `workspace-facade`; TraceKernel already owned its implementation.
-- Renamed the private `runtime-core` workspace to `runtime-contracts`.
-  TraceKernel is the execution core; this package now names its actual
-  responsibility as the environment-neutral contract boundary shared by
-  private implementations.
-
-### Fixed
-
-- Restored declaration files omitted by the patched `just-bash` distribution,
-  so strict TypeScript consumers can resolve the TraceKernel surface without
-  disabling dependency checks.
-
 ## [0.14.0] - 2026-07-30
 
-This release makes TraceKernel-backed Judge the browser evaluation boundary.
-The root Harness package remains the only published artifact; renamed runtime
-workspaces are private implementation modules whose standalone contracts have
-not yet been declared.
+This release reduces Harness to two public authorities: TraceKernel for
+interactive execution and Judge for evaluation. The root Harness package
+remains the only published artifact; runtime workspaces are private
+implementation modules.
 
 ### Added
 
@@ -48,23 +24,30 @@ not yet been declared.
   language-appropriate isolation boundary.
 - Added release gates that exercise prepared-provider lifecycle, cancellation,
   repeated-case isolation, and disposal in Chromium, Firefox, and WebKit.
+- Added versioned, serializable algorithm and project bundles. Browser and mux
+  now consume the same authority message and return the same Judge receipt.
+- Added declarative comparator policies, workspace-bound semantic facts,
+  three-valued `passWhen`, weighted scoring, and final technical verdicts.
+- Added versioned project evaluator patterns for debugging evidence and
+  behavioral invariants.
+- Added a browser Project Judge that executes definition steps in isolated
+  TraceKernel workspaces or evaluates precomputed evidence from an already
+  running interactive workspace.
 
 ### Changed
 
 - Renamed private implementation workspaces from the legacy `harness-*`
-  namespace to ownership-based `runtime-*` names. The former project workspace
-  is now the private `workspace-facade`. These workspaces remain unpublished
-  implementation boundaries in 0.14.
-- Reduced the published root package to seven intentional entrypoints:
-  `.`, `./browser`, `./browser/project`, `./project`, `./project-node`,
-  `./judge`, and `./package.json`. Language, core, native, SQL, and internal
-  implementation subpaths are no longer public.
+  namespace to ownership-based `runtime-*` names. These workspaces remain
+  unpublished implementation boundaries in 0.14.
+- Reduced the published root package to exactly two code entrypoints:
+  `@tracecode/harness/tracekernel` and `@tracecode/harness/judge`, plus package
+  metadata. Package-root, browser, project, language, core, native, SQL, and
+  internal code subpaths are no longer public.
 - Replaced the direct BrowserHarness lifecycle with
-  `BrowserRuntimeHost` plus `createBrowserRuntimeJudge`. Runtime providers and
-  prepared programs are host internals and cannot be acquired through the
-  public package.
-- Moved Judge comparison policy, raw outcomes, limits, workspace validation,
-  and preparation ownership behind the stable root Judge facade.
+  `createBrowserJudgeHost`. Runtime providers and prepared programs are host
+  internals and cannot be acquired through the public package.
+- Moved comparison policy, project evaluation, raw outcomes, limits, workspace
+  validation, policy traces, and preparation ownership behind Judge.
 - Decomposed TraceKernel's project workspace implementation into explicit
   process, filesystem, terminal, network, journal, device I/O, access-policy,
   persistence, and runtime-command modules without changing the kernel's
@@ -96,6 +79,9 @@ not yet been declared.
   package boundaries are private, recursive workspace publication cannot
   release them, and the root publish lifecycle now audits that invariant before
   and after building.
+- Renamed the private `runtime-core` workspace to `runtime-contracts`.
+  TraceKernel is the execution core; this private package now names its actual
+  responsibility as the shared environment-neutral contract boundary.
 
 ### Fixed
 
@@ -105,6 +91,9 @@ not yet been declared.
 - Prevented caller cancellation during Java prepared-provider boot from
   starting a replacement worker after the evaluation had already been
   abandoned.
+- Restored declaration files omitted by the patched `just-bash` distribution,
+  so strict TypeScript consumers can resolve TraceKernel without disabling
+  dependency checks.
 
 ## [0.13.1] - 2026-07-30
 
