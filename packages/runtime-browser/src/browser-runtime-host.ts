@@ -1,0 +1,381 @@
+import type {
+  Language,
+  RuntimePreparedExecutionProvider,
+  RuntimeProgramPreparationCall,
+  RuntimeProgramPreparationResult,
+} from '@tracecode/runtime-core';
+import type {
+  BrowserHarnessAssetOverrides,
+  BrowserHarnessAssets,
+} from './runtime-assets';
+import {
+  type BrowserRuntimeEngine,
+  type BrowserRuntimeEnvironment,
+  type BrowserRuntimeEnvironmentReport,
+  type BrowserRuntimeFeatureSupport,
+  type BrowserRuntimeReadiness,
+} from './runtime-environment';
+import type { BrowserExecutionWorkerHostOptions } from './execution-host';
+import type {
+  BrowserRuntimeProviderLease,
+  BrowserRuntimeProviderRegistry,
+} from './runtime-provider-registry';
+import {
+  createBrowserRuntimeExecutionHostSlot,
+  createBrowserRuntimeProviderContext,
+  disposeBrowserRuntimeProviderLeases,
+  resolveBrowserRuntimeLifecycleContext,
+  type BrowserRuntimeExecutionHostSlot,
+} from './browser-runtime-lifecycle';
+
+export interface BrowserRuntimeHostExecutionHostOptions
+  extends BrowserExecutionWorkerHostOptions {
+  /** Languages routed through the credential-free execution origin. */
+  providers?: readonly Language[];
+}
+
+export interface CreateBrowserRuntimeHostOptions {
+  /** Installed language providers available to this host. */
+  providerRegistry: BrowserRuntimeProviderRegistry;
+  assetBaseUrl?: string;
+  assets?: BrowserHarnessAssetOverrides;
+  /** Optional shared V2 deployment/readiness environment. */
+  environment?: BrowserRuntimeEnvironment;
+  /** Languages exposed by this host. Defaults to every registered language. */
+  providers?: readonly Language[];
+  engine?: BrowserRuntimeEngine;
+  featureOverrides?: Partial<BrowserRuntimeFeatureSupport>;
+  /** Runs selected provider workers on a dedicated, credential-free origin. */
+  executionHost?: BrowserRuntimeHostExecutionHostOptions;
+  debug?: boolean;
+  safeExecution?: {
+    prewarmAfterUse?: boolean;
+  };
+}
+
+/**
+ * Browser-owned runtime lifecycle for Judge-backed execution.
+ *
+ * This host deliberately has no direct execution surface. It owns deployment
+ * assets, readiness, provider acquisition, warmup, and teardown, then exposes
+ * only prepare-once providers whose case-isolation contract is checked at the
+ * point a program is prepared.
+ */
+export interface BrowserRuntimeHost {
+  readonly assets: BrowserHarnessAssets;
+  readonly environment: BrowserRuntimeEnvironment;
+  readonly supportedLanguages: readonly Language[];
+  getPreparedProvider(language: Language): RuntimePreparedExecutionProvider;
+  isLanguageSupported(language: Language): boolean;
+  preflightLanguage(language: Language): Promise<BrowserRuntimeReadiness>;
+  preflight(): Promise<BrowserRuntimeEnvironmentReport>;
+  warmLanguage(
+    language: Language
+  ): Promise<{ success: boolean; loadTimeMs: number }>;
+  disposeLanguage(language: Language): void;
+  dispose(): void;
+}
+
+function resolveHostContext(
+  options: CreateBrowserRuntimeHostOptions
+) {
+  return resolveBrowserRuntimeLifecycleContext(options, {
+    optionsName: 'CreateBrowserRuntimeHostOptions',
+    ownerName: 'browser runtime host',
+    emptySelectionMessage:
+      'Browser runtime host must select at least one provider.',
+    emptyExecutionHostMessage:
+      'executionHost.providers must select at least one runtime provider.',
+    sharedWorkerName: 'shared',
+  });
+}
+
+function assertLeaseShape(
+  providerId: string,
+  lease: BrowserRuntimeProviderLease
+): void {
+  if (!lease || typeof lease !== 'object') {
+    throw new Error(
+      `Browser runtime provider ${JSON.stringify(providerId)} did not return a lease.`
+    );
+  }
+  if (
+    !lease.preparedProviders ||
+    typeof lease.preparedProviders.get !== 'function' ||
+    typeof lease.preparedProviders[Symbol.iterator] !== 'function'
+  ) {
+    throw new Error(
+      `Browser runtime provider ${JSON.stringify(providerId)} did not return a prepared provider map.`
+    );
+  }
+  if (
+    typeof lease.warm !== 'function' ||
+    typeof lease.disposeLanguage !== 'function' ||
+    typeof lease.dispose !== 'function'
+  ) {
+    throw new Error(
+      `Browser runtime provider ${JSON.stringify(providerId)} returned an incomplete lifecycle lease.`
+    );
+  }
+}
+
+function assertPreparedProviderShape(
+  providerId: string,
+  language: Language,
+  provider: RuntimePreparedExecutionProvider | undefined
+): asserts provider is RuntimePreparedExecutionProvider {
+  if (
+    !provider ||
+    typeof provider !== 'object' ||
+    typeof provider.init !== 'function' ||
+    typeof provider.prepareProgram !== 'function'
+  ) {
+    throw new Error(
+      `Browser runtime provider ${JSON.stringify(providerId)} returned an invalid ` +
+        `prepared provider for ${JSON.stringify(language)}.`
+    );
+  }
+}
+
+async function rejectUnsafePreparedProgram(
+  language: Language,
+  result: RuntimeProgramPreparationResult
+): Promise<RuntimeProgramPreparationResult> {
+  if (result.kind !== 'prepared') return result;
+
+  const { program } = result;
+  const capabilities = program?.capabilities;
+  const valid =
+    program &&
+    (program.mode === 'code' || program.mode === 'trace') &&
+    typeof program.dispose === 'function' &&
+    typeof program.executeIsolated === 'function' &&
+    capabilities?.caseIsolation === 'fresh-case-state' &&
+    Number.isInteger(capabilities.maxConcurrency) &&
+    capabilities.maxConcurrency > 0;
+  if (valid) return result;
+
+  let disposalError: unknown;
+  try {
+    if (program && typeof program.dispose === 'function') {
+      await program.dispose();
+    }
+  } catch (error) {
+    disposalError = error;
+  }
+  const contractError = new Error(
+    `Prepared browser runtime for ${JSON.stringify(language)} must provide ` +
+      'fresh-case-state isolation and a positive integer maxConcurrency.'
+  );
+  if (disposalError !== undefined) {
+    throw new AggregateError(
+      [contractError, disposalError],
+      `Unsafe prepared browser runtime for ${JSON.stringify(language)} also failed disposal.`
+    );
+  }
+  throw contractError;
+}
+
+function safePreparedProvider(
+  language: Language,
+  delegate: RuntimePreparedExecutionProvider,
+  assertActive: () => void
+): RuntimePreparedExecutionProvider {
+  return Object.freeze({
+    async init(): Promise<{ success: boolean; loadTimeMs: number }> {
+      assertActive();
+      return delegate.init();
+    },
+    async prepareProgram(
+      call: RuntimeProgramPreparationCall
+    ): Promise<RuntimeProgramPreparationResult> {
+      assertActive();
+      const result = await delegate.prepareProgram(call);
+      const checked = await rejectUnsafePreparedProgram(language, result);
+      if (checked.kind === 'prepared' && checked.program.mode !== call.mode) {
+        await checked.program.dispose();
+        throw new Error(
+          `Prepared browser runtime for ${JSON.stringify(language)} returned a ` +
+            `${JSON.stringify(checked.program.mode)} program for a ${JSON.stringify(call.mode)} preparation.`
+        );
+      }
+      return checked;
+    },
+  });
+}
+
+class BrowserRuntimeHostImplementation implements BrowserRuntimeHost {
+  readonly assets: BrowserHarnessAssets;
+  readonly environment: BrowserRuntimeEnvironment;
+  readonly supportedLanguages: readonly Language[];
+
+  private readonly preparedProviders = new Map<
+    Language,
+    RuntimePreparedExecutionProvider
+  >();
+  private readonly leases: BrowserRuntimeProviderLease[] = [];
+  private readonly leaseByLanguage = new Map<
+    Language,
+    BrowserRuntimeProviderLease
+  >();
+  private readonly executionHostSlot: BrowserRuntimeExecutionHostSlot;
+  private readonly executionHostProviders: ReadonlySet<Language>;
+  private disposed = false;
+
+  constructor(options: CreateBrowserRuntimeHostOptions) {
+    const context = resolveHostContext(options);
+    this.environment = context.environment;
+    this.assets = context.assets;
+    this.supportedLanguages = context.supportedLanguages;
+    this.executionHostProviders = context.executionHostProviders;
+    this.executionHostSlot =
+      createBrowserRuntimeExecutionHostSlot(context);
+
+    const providerContext = createBrowserRuntimeProviderContext(
+      context,
+      this.executionHostSlot,
+      'safe'
+    );
+
+    try {
+      for (const provider of context.providerRegistry.providers) {
+        const selectedLanguages = provider.languages.filter((language) =>
+          this.supportedLanguages.includes(language)
+        );
+        if (selectedLanguages.length === 0) continue;
+
+        const lease = provider.create(providerContext);
+        // Track first so malformed providers cannot leak partially acquired
+        // runtime resources.
+        this.leases.push(lease);
+        assertLeaseShape(provider.id, lease);
+
+        for (const [language, preparedProvider] of lease.preparedProviders) {
+          if (!provider.languages.includes(language)) {
+            throw new Error(
+              `Browser runtime provider ${JSON.stringify(provider.id)} returned an unowned ` +
+                `prepared provider for ${JSON.stringify(language)}.`
+            );
+          }
+          assertPreparedProviderShape(provider.id, language, preparedProvider);
+        }
+
+        for (const language of selectedLanguages) {
+          const preparedProvider = lease.preparedProviders.get(language);
+          assertPreparedProviderShape(
+            provider.id,
+            language,
+            preparedProvider
+          );
+          this.preparedProviders.set(
+            language,
+            safePreparedProvider(
+              language,
+              preparedProvider,
+              () => this.assertActive()
+            )
+          );
+          this.leaseByLanguage.set(language, lease);
+        }
+      }
+      for (const language of this.supportedLanguages) {
+        if (!this.preparedProviders.has(language)) {
+          throw new Error(
+            `Browser runtime host did not acquire a prepared provider for selected ` +
+              `language ${JSON.stringify(language)}.`
+          );
+        }
+      }
+    } catch (error) {
+      try {
+        disposeBrowserRuntimeProviderLeases(
+          this.leases,
+          this.executionHostSlot.host,
+          'Browser runtime host disposal failed.'
+        );
+      } catch {
+        // Preserve the provider construction failure after best-effort cleanup.
+      }
+      throw error;
+    }
+  }
+
+  private assertActive(): void {
+    if (this.disposed) {
+      throw new Error('Browser runtime host has been disposed.');
+    }
+  }
+
+  getPreparedProvider(language: Language): RuntimePreparedExecutionProvider {
+    this.assertActive();
+    if (!this.supportedLanguages.includes(language)) {
+      throw new Error(
+        `Runtime for language "${language}" is not selected in this browser environment.`
+      );
+    }
+    const provider = this.preparedProviders.get(language);
+    if (!provider) {
+      throw new Error(
+        `Prepared runtime for language "${language}" is not registered.`
+      );
+    }
+    return provider;
+  }
+
+  isLanguageSupported(language: Language): boolean {
+    return this.supportedLanguages.includes(language);
+  }
+
+  preflightLanguage(language: Language): Promise<BrowserRuntimeReadiness> {
+    this.assertActive();
+    return Promise.all([
+      this.environment.preflight(language),
+      this.executionHostProviders.has(language)
+        ? this.executionHostSlot.host?.ready() ?? Promise.resolve()
+        : Promise.resolve(),
+    ]).then(([readiness]) => readiness);
+  }
+
+  preflight(): Promise<BrowserRuntimeEnvironmentReport> {
+    this.assertActive();
+    return Promise.all([
+      this.environment.preflightAll(),
+      this.executionHostSlot.host?.ready() ?? Promise.resolve(),
+    ]).then(([report]) => report);
+  }
+
+  warmLanguage(
+    language: Language
+  ): Promise<{ success: boolean; loadTimeMs: number }> {
+    this.assertActive();
+    if (!this.supportedLanguages.includes(language)) {
+      return Promise.reject(
+        new Error(
+          `Runtime for language "${language}" is not selected in this browser environment.`
+        )
+      );
+    }
+    return this.leaseByLanguage.get(language)!.warm(language);
+  }
+
+  disposeLanguage(language: Language): void {
+    if (this.disposed || !this.supportedLanguages.includes(language)) return;
+    this.leaseByLanguage.get(language)?.disposeLanguage(language);
+  }
+
+  dispose(): void {
+    if (this.disposed) return;
+    this.disposed = true;
+    disposeBrowserRuntimeProviderLeases(
+      this.leases,
+      this.executionHostSlot.host,
+      'Browser runtime host disposal failed.'
+    );
+  }
+}
+
+export function createBrowserRuntimeHost(
+  options: CreateBrowserRuntimeHostOptions
+): BrowserRuntimeHost {
+  return new BrowserRuntimeHostImplementation(options);
+}

@@ -1,4 +1,5 @@
 export * from './browser-harness';
+export * from './browser-runtime-host';
 export * from './runtime-capability-guards';
 export * from './runtime-profiles';
 export * from './execution-host';

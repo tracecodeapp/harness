@@ -42,6 +42,7 @@ function recordingProvider(
       events.push(`create:${id}`);
       return {
         clients: new Map(languages.map((language) => [language, fakeClient()])),
+        preparedProviders: new Map(),
         async warm(language) {
           events.push(`warm:${id}:${language}`);
           return { success: true, loadTimeMs: 0 };
@@ -93,6 +94,7 @@ async function main(): Promise<void> {
         malformedEvents.push('create');
         return {
           clients: new Map(),
+          preparedProviders: new Map(),
           async warm() {
             return { success: true, loadTimeMs: 0 };
           },

@@ -2,6 +2,7 @@ import type {
   Language,
   RuntimeClient,
   RuntimeExecutionIsolationPolicy,
+  RuntimePreparedExecutionProvider,
 } from '@tracecode/runtime-core';
 import type {
   BrowserHarnessAssets,
@@ -31,7 +32,22 @@ export interface BrowserRuntimeProviderContext {
 }
 
 export interface BrowserRuntimeProviderLease {
+  /**
+   * Legacy direct clients retained only while BrowserHarness remains available
+   * to existing workspace integrations.
+   */
   readonly clients: ReadonlyMap<Language, RuntimeClient>;
+  /**
+   * Prepare-once providers consumed by BrowserRuntimeHost and Judge.
+   *
+   * A lease must expose every selected language it owns here. The host rejects
+   * incomplete, unowned, or unsafe prepared providers before they can become a
+   * public execution capability.
+   */
+  readonly preparedProviders: ReadonlyMap<
+    Language,
+    RuntimePreparedExecutionProvider
+  >;
   warm(language: Language): Promise<{ success: boolean; loadTimeMs: number }>;
   disposeLanguage(language: Language): void;
   dispose(): void;
@@ -76,6 +92,11 @@ export function createBrowserRuntimeProviderRegistry(
     }
     if (!Array.isArray(provider.languages) || provider.languages.length === 0) {
       throw new TypeError(`Browser runtime provider ${JSON.stringify(provider.id)} must own at least one language.`);
+    }
+    if (typeof provider.create !== 'function') {
+      throw new TypeError(
+        `Browser runtime provider ${JSON.stringify(provider.id)} must declare a create function.`
+      );
     }
 
     const providerLanguages: Language[] = [];

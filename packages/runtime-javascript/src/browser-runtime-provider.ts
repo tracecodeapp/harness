@@ -1,4 +1,8 @@
-import type { Language, RuntimeClient } from '@tracecode/runtime-core';
+import type {
+  Language,
+  RuntimeClient,
+  RuntimePreparedExecutionProvider,
+} from '@tracecode/runtime-core';
 import type {
   BrowserRuntimeProvider,
   BrowserRuntimeProviderContext,
@@ -36,9 +40,17 @@ export function createJavaScriptBrowserRuntimeProvider(): BrowserRuntimeProvider
         ['javascript', javascript],
         ['typescript', typescript],
       ]);
+      const preparedProviders = new Map<
+        Language,
+        RuntimePreparedExecutionProvider
+      >([
+        ['javascript', javascript],
+        ['typescript', typescript],
+      ]);
 
       return {
         clients,
+        preparedProviders,
         warm: (language) =>
           language === 'typescript'
             ? worker.warmup('typescript')
