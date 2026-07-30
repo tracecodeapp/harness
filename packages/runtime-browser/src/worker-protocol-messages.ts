@@ -44,6 +44,10 @@ export const WORKER_REQUEST_MESSAGES: Readonly<Record<BrowserWorkerProtocolLangu
     'execute-code-batch',
     'execute-with-tracing',
     'execute-project-java',
+    'prepare-runtime-program',
+    'restore-prepared-runtime-program',
+    'execute-prepared-runtime-program',
+    'dispose-prepared-runtime-program',
   ],
   csharp: [
     'init',

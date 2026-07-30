@@ -9,7 +9,17 @@
  */
 
 import * as Effect from 'effect/Effect';
-import type { CodeExecutionBatchResult, CodeExecutionResult, RuntimeBatchCall, RuntimeCodeCall, RuntimeExecutionTimings, RuntimeTraceCall } from '@tracecode/runtime-core';
+import type {
+  CodeExecutionBatchResult,
+  CodeExecutionResult,
+  RuntimeBatchCall,
+  RuntimeCodeCall,
+  RuntimeExecutionTimings,
+  RuntimePreparedCodeCall,
+  RuntimePreparedTraceCall,
+  RuntimeProgramPreparationCall,
+  RuntimeTraceCall,
+} from '@tracecode/runtime-core';
 import { liftCodeBatchOutcome, liftCodeOutcome, type RawExecutionBatchPayload } from '@tracecode/runtime-core';
 import type {
   RuntimeCommandEventHandler,
@@ -92,6 +102,8 @@ export interface JavaWorkerRawTraceResult {
   timeoutReason?: 'trace-limit';
   droppedEventCount?: number;
   timings?: RuntimeExecutionTimings;
+  retirementRecommended?: boolean;
+  runtimeIsolation?: unknown;
   /** Default-off VM diagnostics used by compatibility/performance campaigns. */
   bytecodeProfile?: unknown;
   diagnosticError?: string;
@@ -109,7 +121,36 @@ interface JavaWorkerCodeResult {
   errorLine?: number;
   consoleOutput?: string[];
   timings?: RuntimeExecutionTimings;
+  retirementRecommended?: boolean;
+  runtimeIsolation?: unknown;
 }
+
+export interface JavaWorkerPreparedProgramSnapshot {
+  readonly schema: 'tracecode.java.prepared-program-snapshot.v1';
+  readonly programId: string;
+  readonly [key: string]: unknown;
+}
+
+export interface JavaWorkerPreparedProgramResult {
+  success: boolean;
+  programId?: string;
+  snapshot?: JavaWorkerPreparedProgramSnapshot;
+  error?: string;
+  errorLine?: number;
+  consoleOutput?: string[];
+  timings?: RuntimeExecutionTimings;
+}
+
+export interface JavaWorkerPreparedExecutionMetadata {
+  readonly retirementRecommended: boolean;
+  readonly runtimeIsolation?: unknown;
+}
+
+export type JavaWorkerPreparedCodeResult =
+  CodeExecutionResult & JavaWorkerPreparedExecutionMetadata;
+
+export type JavaWorkerPreparedTraceResult =
+  JavaWorkerTraceResult & JavaWorkerPreparedExecutionMetadata;
 
 export type JavaWorkerProjectRequest = RuntimeProjectCommandRequest<'compile' | 'run'>;
 export type JavaWorkerProjectResult = RuntimeCommandResult;
@@ -530,6 +571,133 @@ export class JavaWorkerClient {
 
     const result = await this.core.runClientEffect(program, signal);
     return liftCodeBatchOutcome(result, 'Java execution failed');
+  }
+
+  async prepareRuntimeProgram(
+    call: RuntimeProgramPreparationCall
+  ): Promise<JavaWorkerPreparedProgramResult> {
+    const program = this.initGateEffect().pipe(
+      Effect.andThen(
+        this.core.sendMessageEffect<JavaWorkerPreparedProgramResult>(
+          'prepare-runtime-program',
+          {
+            mode: call.mode,
+            code: call.code,
+            functionName: call.functionName ?? '',
+            executionStyle: call.executionStyle ?? 'function',
+            options: call.traceOptions,
+            ...this.workerOptionsPayload(),
+          },
+          null
+        )
+      )
+    );
+    return this.core.runClientEffect(program, call.signal);
+  }
+
+  async restorePreparedRuntimeProgram(
+    snapshot: JavaWorkerPreparedProgramSnapshot
+  ): Promise<JavaWorkerPreparedProgramResult> {
+    const program = this.initGateEffect().pipe(
+      Effect.andThen(
+        this.core.sendMessageEffect<JavaWorkerPreparedProgramResult>(
+          'restore-prepared-runtime-program',
+          {
+            snapshot,
+            ...this.workerOptionsPayload(),
+          },
+          null
+        )
+      )
+    );
+    return this.core.runClientEffect(program);
+  }
+
+  async executePreparedCode(
+    programId: string,
+    call: RuntimePreparedCodeCall
+  ): Promise<JavaWorkerPreparedCodeResult> {
+    const wallClockMs = call.limits?.wallClockMs ?? EXECUTION_TIMEOUT_MS;
+    const program = this.initGateEffect().pipe(
+      Effect.andThen(
+        this.core.withExecutionDeadline(
+          this.core.sendMessageEffect<JavaWorkerCodeResult>(
+            'execute-prepared-runtime-program',
+            {
+              programId,
+              inputs: call.inputs,
+            },
+            null
+          ),
+          wallClockMs
+        )
+      )
+    );
+    const result = await this.core.runClientEffect(program, call.signal);
+    return {
+      ...liftCodeOutcome(result, 'Java prepared execution failed'),
+      retirementRecommended: result.retirementRecommended === true,
+      ...(result.runtimeIsolation === undefined
+        ? {}
+        : { runtimeIsolation: result.runtimeIsolation }),
+    };
+  }
+
+  async executePreparedWithTracing(
+    programId: string,
+    call: RuntimePreparedTraceCall,
+    traceOptions?: JavaTraceExecutionOptions
+  ): Promise<JavaWorkerPreparedTraceResult> {
+    const wallClockMs = call.limits?.wallClockMs ??
+      (
+        Number.isFinite(this.options.tracingTimeoutMs) &&
+        Number(this.options.tracingTimeoutMs) > 0
+          ? Math.floor(Number(this.options.tracingTimeoutMs))
+          : TRACING_TIMEOUT_MS
+      );
+    const program = this.initGateEffect().pipe(
+      Effect.andThen(
+        this.core.withExecutionDeadline(
+          this.core.sendMessageEffect<JavaWorkerRawTraceResult>(
+            'execute-prepared-runtime-program',
+            {
+              programId,
+              inputs: call.inputs,
+              traceEventTransport: traceEventTransferRequest(),
+            },
+            null
+          ),
+          wallClockMs
+        )
+      )
+    );
+    const result = await this.core.runClientEffect(program, call.signal);
+    return {
+      ...result,
+      trace: result.success
+        ? javaTraceHooksEventsToRuntimeTrace(result.events, result.sourceText, {
+            runId: 'java:run',
+            file: JAVA_DEFAULT_FILE,
+            maxPathDepth: traceOptions?.maxPathDepth,
+          })
+        : createEmptyRuntimeTrace('java', {
+            runId: 'java:run',
+            file: JAVA_DEFAULT_FILE,
+          }),
+      retirementRecommended: result.retirementRecommended === true,
+      ...(result.runtimeIsolation === undefined
+        ? {}
+        : { runtimeIsolation: result.runtimeIsolation }),
+    };
+  }
+
+  async disposePreparedRuntimeProgram(programId: string): Promise<void> {
+    if (!this.core.isWorkerRunning) return;
+    await this.core.sendMessage<{ success: boolean }>(
+      'dispose-prepared-runtime-program',
+      { programId },
+      MESSAGE_TIMEOUT_MS
+    );
   }
 
   async executeProjectJava(

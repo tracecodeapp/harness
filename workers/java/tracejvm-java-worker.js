@@ -15,11 +15,17 @@ const TRACEJVM_BASE_URL = new URL(
   self.location.href
 );
 const TRACEJVM_MODULE_URL = new URL('browser-client.js', TRACEJVM_BASE_URL);
-const TRACEJVM_WORKER_URL = new URL('browser-worker.js', TRACEJVM_BASE_URL);
 const TRACEJVM_WASM_URL = new URL('bjvm_main.wasm', TRACEJVM_BASE_URL);
 const TRACEJVM_CORE_PROFILE_URL = new URL('profiles/core', TRACEJVM_BASE_URL);
 const TRACEJVM_HELPER_JAR_URL = new URL('./vendor/java-browser-helper.jar', self.location.href);
 const CLASSIC_JAVA_WORKER_URL = new URL('./java-worker.js', self.location.href);
+
+// The canonical Java worker removes ambient fetch authority while learner code
+// runs. Declare only this provider's immutable runtime asset root so TraceJVM
+// can continue demand-loading its pinned JDK image inside that boundary.
+self.TraceCodeJavaProviderRuntimeFetchPrefixes = [
+  TRACEJVM_BASE_URL.href,
+];
 
 const traceJVMStringFiles = new Map();
 let traceJVMModulePromise;
@@ -28,6 +34,8 @@ let traceJVMHelperJarPromise;
 let traceJVMRewriteProgramPromise;
 const traceJVMCompileCache = new Map();
 const TRACEJVM_COMPILE_CACHE_LIMIT = 64;
+const traceJVMPreparedPrograms = new Map();
+let traceJVMPreparedCompileCount = 0;
 
 const TRACE_OUTPUT_MARKER = '__TRACECODE_TRACE_OUTPUT__:';
 const TRACE_EVENT_MARKER = '__TRACECODE_TRACE_EVENT__:';
@@ -119,21 +127,16 @@ async function loadTraceJVMHelperJar() {
 }
 
 async function createTraceJVMClient() {
-  const { TraceJVMWorkerClient } = await loadTraceJVMModule();
-  return new TraceJVMWorkerClient({
-    engine: {
-      assets: {
-        runtimeProfileBaseUrls: {
-          core: TRACEJVM_CORE_PROFILE_URL.href.replace(/\/+$/, ''),
-        },
-        wasmUrl: TRACEJVM_WASM_URL.href,
+  const { TraceJVMEngine } = await loadTraceJVMModule();
+  return new TraceJVMEngine({
+    assets: {
+      runtimeProfileBaseUrls: {
+        core: TRACEJVM_CORE_PROFILE_URL.href.replace(/\/+$/, ''),
       },
-      runtimeProfile: 'core',
-      retirementAfterExecutions: 64,
+      wasmUrl: TRACEJVM_WASM_URL.href,
     },
-    createWorker: () => new Worker(TRACEJVM_WORKER_URL, {
-      type: 'module',
-    }),
+    runtimeProfile: 'core',
+    retirementAfterExecutions: 64,
   });
 }
 
@@ -144,7 +147,7 @@ async function getTraceJVMClient() {
 
 function invalidateTraceJVMClient() {
   void traceJVMClientPromise
-    ?.then((client) => client.terminate())
+    ?.then((client) => client.dispose())
     .catch(() => undefined);
   traceJVMClientPromise = undefined;
   traceJVMRewriteProgramPromise = undefined;
@@ -295,7 +298,9 @@ function executionReport(
     ? decodeText(encodedError)
     : run.status !== 'completed' || run.exitCode !== 0
       ? run.stderr || `TraceJVM execution ended with ${run.status}.`
-      : undefined;
+      : encodedOutput === undefined
+        ? 'TraceJVM execution completed without a Harness result marker.'
+        : undefined;
   const traceLimitExceeded =
     markerValue(lines, TRACE_LIMIT_MARKER) === 'true';
   const droppedEventCount = Number.parseInt(
@@ -325,6 +330,8 @@ function executionReport(
     ...(run.diagnostics?.diagnosticError
       ? { diagnosticError: run.diagnostics.diagnosticError }
       : {}),
+    isolation: run.isolation,
+    retirementRecommended: run.retirementRecommended === true,
   };
 }
 
@@ -494,6 +501,190 @@ async function traceJVMCompileAndRunBatch(
   });
 }
 
+async function traceJVMPrepareRuntimeProgram(
+  programId,
+  sourcePath,
+  compilerDebugProfile
+) {
+  const normalizedProgramId = String(programId);
+  if (!normalizedProgramId) {
+    throw new TypeError('TraceJVM prepared programs require a non-empty id.');
+  }
+  if (traceJVMPreparedPrograms.has(normalizedProgramId)) {
+    throw new Error(`TraceJVM prepared program already exists: ${normalizedProgramId}`);
+  }
+
+  const context = await compileSource(
+    String(sourcePath),
+    String(compilerDebugProfile)
+  );
+  traceJVMPreparedCompileCount += context.compileCacheHit ? 0 : 1;
+  if (
+    context.compile.status !== 'completed' ||
+    context.compile.exitCode !== 0 ||
+    !context.compile.program
+  ) {
+    return JSON.stringify({
+      ...compileFailureReport(context.compile, compilerDebugProfile),
+      preparedCompileCount: traceJVMPreparedCompileCount,
+    });
+  }
+
+  traceJVMPreparedPrograms.set(normalizedProgramId, {
+    program: context.compile.program,
+    compilerDebugProfile: String(compilerDebugProfile),
+    compilerStdout: context.compile.stdout,
+    compilerStderr: context.compile.stderr,
+    compileTimeMs: context.compileCacheHit
+      ? 0
+      : (context.compile.timings?.totalMs ?? 0),
+    compileCacheHit: context.compileCacheHit,
+    executions: 0,
+    retired: false,
+  });
+
+  return JSON.stringify({
+    success: true,
+    compilerStdout: context.compile.stdout,
+    compilerStderr: context.compile.stderr,
+    compileTimeMs: context.compileCacheHit
+      ? 0
+      : (context.compile.timings?.totalMs ?? 0),
+    compileCacheHit: context.compileCacheHit,
+    preparedCompileCount: traceJVMPreparedCompileCount,
+    preparedArtifact: serializeTraceJVMPreparedProgram(
+      context.compile.program
+    ),
+  });
+}
+
+async function traceJVMRunPreparedRuntimeProgram(
+  programId,
+  entryClass,
+  maxStoredEvents = '1'
+) {
+  const normalizedProgramId = String(programId);
+  const prepared = traceJVMPreparedPrograms.get(normalizedProgramId);
+  if (!prepared) {
+    throw new Error(`Unknown TraceJVM prepared program: ${normalizedProgramId}`);
+  }
+  if (prepared.retired) {
+    throw new Error(
+      `TraceJVM prepared program requires hard Worker retirement: ${normalizedProgramId}`
+    );
+  }
+
+  const [client, helperJar] = await Promise.all([
+    getTraceJVMClient(),
+    loadTraceJVMHelperJar(),
+  ]);
+  const run = await client.run({
+    program: prepared.program,
+    classpath: [helperJar],
+    processFiles: processFiles(),
+    mainClass: 'tracecode.browser.TraceExecutionRunner',
+    args: [
+      String(entryClass),
+      String(Number.parseInt(String(maxStoredEvents), 10) || 1),
+    ],
+  });
+  prepared.executions += 1;
+  const report = executionReport(
+    run,
+    {
+      stdout: prepared.compilerStdout,
+      stderr: prepared.compilerStderr,
+      timings: { totalMs: prepared.compileTimeMs },
+    },
+    prepared.compilerDebugProfile,
+    true
+  );
+  // A tainted result remains valid for the case that just completed, but the
+  // same warm VM must not admit another case. Do not pretend that disposing
+  // and rebuilding TraceJVM inside this Worker is a hard boundary: the
+  // evaluation owner will terminate the outer Worker during disposal.
+  if (
+    run.isolation?.status === 'tainted' ||
+    run.isolation?.hardBoundaryRecommended === true ||
+    run.retirementRecommended
+  ) {
+    prepared.retired = true;
+  }
+  return JSON.stringify({
+    ...report,
+    preparedExecutionCount: prepared.executions,
+    preparedCompileCount: traceJVMPreparedCompileCount,
+  });
+}
+
+function traceJVMDisposeRuntimeProgram(programId) {
+  return traceJVMPreparedPrograms.delete(String(programId));
+}
+
+function serializeTraceJVMPreparedProgram(program) {
+  return {
+    schema: 'tracecode.java.tracejvm-prepared-program.v1',
+    files: program.files.map((file) => ({
+      path: file.path,
+      contentBase64: bytesToBase64(file.content),
+    })),
+  };
+}
+
+function deserializeTraceJVMPreparedProgram(value) {
+  if (
+    !value ||
+    value.schema !== 'tracecode.java.tracejvm-prepared-program.v1' ||
+    !Array.isArray(value.files)
+  ) {
+    throw new TypeError('Invalid TraceJVM prepared program artifact.');
+  }
+  return {
+    files: value.files.map((file) => {
+      if (
+        !file ||
+        typeof file.path !== 'string' ||
+        typeof file.contentBase64 !== 'string'
+      ) {
+        throw new TypeError('Invalid TraceJVM prepared class artifact.');
+      }
+      return {
+        path: file.path,
+        content: base64ToBytes(file.contentBase64),
+      };
+    }),
+  };
+}
+
+function traceJVMRestoreRuntimeProgram(
+  programId,
+  serializedProgram,
+  compilerDebugProfile
+) {
+  const normalizedProgramId = String(programId);
+  if (!normalizedProgramId) {
+    throw new TypeError('TraceJVM restored programs require a non-empty id.');
+  }
+  if (traceJVMPreparedPrograms.has(normalizedProgramId)) {
+    throw new Error(`TraceJVM prepared program already exists: ${normalizedProgramId}`);
+  }
+  const artifact =
+    typeof serializedProgram === 'string'
+      ? JSON.parse(serializedProgram)
+      : serializedProgram;
+  traceJVMPreparedPrograms.set(normalizedProgramId, {
+    program: deserializeTraceJVMPreparedProgram(artifact),
+    compilerDebugProfile: String(compilerDebugProfile),
+    compilerStdout: '',
+    compilerStderr: '',
+    compileTimeMs: 0,
+    compileCacheHit: true,
+    executions: 0,
+    retired: false,
+  });
+  return true;
+}
+
 self.cheerpjInit = async () => {
   const client = await getTraceJVMClient();
   await client.initialize();
@@ -517,6 +708,10 @@ self.cheerpjRunLibrary = async () => ({
         compileAndRun: traceJVMCompileAndRun,
         compileAndTrace: traceJVMCompileAndTrace,
         compileAndRunBatch: traceJVMCompileAndRunBatch,
+        prepareRuntimeProgram: traceJVMPrepareRuntimeProgram,
+        runPreparedRuntimeProgram: traceJVMRunPreparedRuntimeProgram,
+        restoreRuntimeProgram: traceJVMRestoreRuntimeProgram,
+        disposeRuntimeProgram: traceJVMDisposeRuntimeProgram,
         resetPersistentRuntimeStorage() {
           traceJVMStringFiles.clear();
         },
@@ -540,6 +735,7 @@ self.close = () => {
   invalidateTraceJVMClient();
   traceJVMStringFiles.clear();
   traceJVMCompileCache.clear();
+  traceJVMPreparedPrograms.clear();
   traceJVMLegacyClose();
 };
 

@@ -2,6 +2,13 @@ const DEFAULT_CHEERPJ_LOADER_URL = '/app/workers/vendor/cheerpj-loader.js';
 const trustedJavaWorkerPostMessage = self.postMessage.bind(self);
 const trustedJavaWorkerFetch = typeof self.fetch === 'function' ? self.fetch.bind(self) : null;
 const trustedJavaIndexedDB = self.indexedDB;
+const trustedJavaProviderRuntimeFetchPrefixes = Array.isArray(
+  self.TraceCodeJavaProviderRuntimeFetchPrefixes
+)
+  ? self.TraceCodeJavaProviderRuntimeFetchPrefixes
+      .filter((value) => typeof value === 'string' && value.length > 0)
+      .map((value) => new URL(value, self.location.href).href)
+  : [];
 let HELPER_JAR_PATH = '/app/workers/vendor/java-browser-helper.jar';
 let JDK17_COMPILER_JAR_PATH = '/app/workers/vendor/jdk.compiler-17.jar';
 let REWRITER_JAR_PATH = '/app/workers/vendor/java-rewriter.jar';
@@ -168,6 +175,7 @@ let javaCompileIsolationCounter = 0;
 let javaProjectBridgeRunCounter = 0;
 let javaCompileCacheLimit = DEFAULT_JAVA_COMPILE_CACHE_LIMIT;
 const javaCompileCache = new Map();
+const preparedJavaRuntimePrograms = new Map();
 const activeProtocolTokens = new Map();
 const pendingExternalJavaCompiles = new Map();
 const pendingCompilerArtifactCacheRequests = new Map();
@@ -937,7 +945,10 @@ function applyWorkerOptions(payload) {
   cheerpjLoaderUrl = resolveCheerpjLoaderUrl(payload);
   if (typeof URL === 'function') {
     const loaderUrl = new URL(cheerpjLoaderUrl, javaWorkerHref());
-    cheerpjRuntimeFetchPrefixes = [new URL('./', loaderUrl).href];
+    cheerpjRuntimeFetchPrefixes = [
+      new URL('./', loaderUrl).href,
+      ...trustedJavaProviderRuntimeFetchPrefixes,
+    ];
     cheerpjRuntimeFetchExactUrls = new Set(
       [HELPER_JAR_PATH, JDK17_COMPILER_JAR_PATH, REWRITER_JAR_PATH, JAVAPARSER_JAR_PATH]
         .filter((value) => typeof value === 'string' && value.startsWith('/app/'))
@@ -1150,22 +1161,49 @@ function isDynamicJavaInputType(typeSource, value) {
   return isDynamicJavaScalarType(normalized, value);
 }
 
-function dynamicJavaInputExpression(typeSource, inputPath) {
+function rawJavaClassLiteral(typeSource) {
   const normalized = normalizedJavaInputType(typeSource);
-  const quotedPath = JSON.stringify(inputPath);
-  if (normalized.endsWith('[]')) {
-    return `((${normalized}) readJsonInput(${quotedPath}, ${normalized}.class))`;
+  let depth = 0;
+  let raw = '';
+  for (const ch of normalized) {
+    if (ch === '<') {
+      depth += 1;
+      continue;
+    }
+    if (ch === '>') {
+      depth = Math.max(0, depth - 1);
+      continue;
+    }
+    if (depth === 0) raw += ch;
   }
-  if (normalized === 'byte' || normalized === 'Byte') return `((Number) readJsonInput(${quotedPath}, Byte.class)).byteValue()`;
-  if (normalized === 'short' || normalized === 'Short') return `((Number) readJsonInput(${quotedPath}, Short.class)).shortValue()`;
-  if (normalized === 'int' || normalized === 'Integer') return `((Number) readJsonInput(${quotedPath}, Integer.class)).intValue()`;
-  if (normalized === 'long' || normalized === 'Long') return `((Number) readJsonInput(${quotedPath}, Long.class)).longValue()`;
-  if (normalized === 'float' || normalized === 'Float') return `((Number) readJsonInput(${quotedPath}, Float.class)).floatValue()`;
-  if (normalized === 'double' || normalized === 'Double') return `((Number) readJsonInput(${quotedPath}, Double.class)).doubleValue()`;
-  if (normalized === 'boolean' || normalized === 'Boolean') return `((Boolean) readJsonInput(${quotedPath}, Boolean.class)).booleanValue()`;
-  if (normalized === 'char' || normalized === 'Character') return `((Character) readJsonInput(${quotedPath}, Character.class)).charValue()`;
-  if (normalized === 'String') return `((String) readJsonInput(${quotedPath}, String.class))`;
-  return null;
+  if (!/^(?:[A-Za-z_$][A-Za-z0-9_$.]*|byte|short|int|long|float|double|boolean|char)(?:\[\])*$/.test(raw)) {
+    return 'Object.class';
+  }
+  return `${raw}.class`;
+}
+
+function dynamicJavaInputExpression(typeSource, dynamicInput) {
+  const normalized = normalizedJavaInputType(typeSource);
+  const quotedPath = JSON.stringify(dynamicInput.path);
+  const parameterTypes = Array.isArray(dynamicInput.parameterTypes)
+    ? dynamicInput.parameterTypes
+    : [];
+  const reflectedType = parameterTypes.length > 0
+    ? `preparedParameterType(${dynamicInput.ownerClass}.class, ${JSON.stringify(dynamicInput.methodName)}, ${dynamicInput.parameterIndex}, new Class<?>[] { ${parameterTypes.map(rawJavaClassLiteral).join(', ')} })`
+    : rawJavaClassLiteral(normalized);
+  const readExpression = `readJsonInput(${quotedPath}, ${reflectedType})`;
+  if (normalized.endsWith('[]')) {
+    return `((${normalized}) ${readExpression})`;
+  }
+  if (normalized === 'byte' || normalized === 'Byte') return `((Number) ${readExpression}).byteValue()`;
+  if (normalized === 'short' || normalized === 'Short') return `((Number) ${readExpression}).shortValue()`;
+  if (normalized === 'int' || normalized === 'Integer') return `((Number) ${readExpression}).intValue()`;
+  if (normalized === 'long' || normalized === 'Long') return `((Number) ${readExpression}).longValue()`;
+  if (normalized === 'float' || normalized === 'Float') return `((Number) ${readExpression}).floatValue()`;
+  if (normalized === 'double' || normalized === 'Double') return `((Number) ${readExpression}).doubleValue()`;
+  if (normalized === 'boolean' || normalized === 'Boolean') return `((Boolean) ${readExpression}).booleanValue()`;
+  if (normalized === 'char' || normalized === 'Character') return `((Character) ${readExpression}).charValue()`;
+  return `((${normalized}) ${readExpression})`;
 }
 
 function isPrimitiveJavaScalarType(typeSource) {
@@ -1438,7 +1476,7 @@ function buildJavaExpression(value, expectedType) {
 
 function buildDynamicInputHelperMethods() {
   return `
-  private static Object readJsonInput(String path, Class<?> targetType) {
+  private static Object readJsonInput(String path, java.lang.reflect.Type targetType) {
     try {
       String source = java.nio.file.Files.readString(java.nio.file.Paths.get(path), java.nio.charset.StandardCharsets.UTF_8);
       return coerceJsonInput(new __TracecodeJsonParser(source).parse(), targetType);
@@ -1447,29 +1485,465 @@ function buildDynamicInputHelperMethods() {
     }
   }
 
-  private static Object coerceJsonInput(Object value, Class<?> targetType) {
+  private static java.lang.reflect.Type preparedParameterType(
+      Class<?> owner,
+      String methodName,
+      int parameterIndex,
+      Class<?>[] parameterTypes
+  ) {
+    try {
+      java.lang.reflect.Method method = owner.getDeclaredMethod(methodName, parameterTypes);
+      return method.getGenericParameterTypes()[parameterIndex];
+    } catch (ReflectiveOperationException exactFailure) {
+      for (java.lang.reflect.Method method : owner.getDeclaredMethods()) {
+        if (method.getName().equals(methodName) && method.getParameterCount() == parameterTypes.length) {
+          return method.getGenericParameterTypes()[parameterIndex];
+        }
+      }
+      throw new RuntimeException("Unable to resolve prepared Java parameter " + methodName, exactFailure);
+    }
+  }
+
+  private static Class<?> preparedRawClass(java.lang.reflect.Type type) {
+    if (type instanceof Class<?>) return (Class<?>) type;
+    if (type instanceof java.lang.reflect.ParameterizedType) {
+      return preparedRawClass(((java.lang.reflect.ParameterizedType) type).getRawType());
+    }
+    if (type instanceof java.lang.reflect.GenericArrayType) {
+      Class<?> component = preparedRawClass(
+          ((java.lang.reflect.GenericArrayType) type).getGenericComponentType()
+      );
+      return java.lang.reflect.Array.newInstance(component, 0).getClass();
+    }
+    return Object.class;
+  }
+
+  private static java.lang.reflect.Type preparedTypeArgument(
+      java.lang.reflect.Type type,
+      int index
+  ) {
+    if (type instanceof java.lang.reflect.ParameterizedType) {
+      java.lang.reflect.Type[] arguments =
+          ((java.lang.reflect.ParameterizedType) type).getActualTypeArguments();
+      if (index >= 0 && index < arguments.length) return arguments[index];
+    }
+    return Object.class;
+  }
+
+  private static java.util.Collection<Object> preparedCollection(
+      Class<?> targetType
+  ) {
+    try {
+      if (
+          targetType == java.util.Set.class ||
+          targetType == java.util.HashSet.class ||
+          targetType == java.util.LinkedHashSet.class
+      ) {
+        return new java.util.LinkedHashSet<>();
+      }
+      if (
+          targetType == java.util.Queue.class ||
+          targetType == java.util.Deque.class ||
+          targetType == java.util.ArrayDeque.class
+      ) {
+        return new java.util.ArrayDeque<>();
+      }
+      if (
+          targetType.isInterface() ||
+          java.lang.reflect.Modifier.isAbstract(targetType.getModifiers())
+      ) {
+        return new java.util.ArrayList<>();
+      }
+      @SuppressWarnings("unchecked")
+      java.util.Collection<Object> value =
+          (java.util.Collection<Object>) targetType.getDeclaredConstructor().newInstance();
+      return value;
+    } catch (ReflectiveOperationException error) {
+      throw new RuntimeException("Unable to create prepared Java collection " + targetType.getName(), error);
+    }
+  }
+
+  private static java.util.Map<Object, Object> preparedMap(Class<?> targetType) {
+    try {
+      if (
+          targetType == java.util.SortedMap.class ||
+          targetType == java.util.NavigableMap.class ||
+          targetType == java.util.TreeMap.class
+      ) {
+        return new java.util.TreeMap<>();
+      }
+      if (
+          targetType.isInterface() ||
+          java.lang.reflect.Modifier.isAbstract(targetType.getModifiers())
+      ) {
+        return new java.util.LinkedHashMap<>();
+      }
+      @SuppressWarnings("unchecked")
+      java.util.Map<Object, Object> value =
+          (java.util.Map<Object, Object>) targetType.getDeclaredConstructor().newInstance();
+      return value;
+    } catch (ReflectiveOperationException error) {
+      throw new RuntimeException("Unable to create prepared Java map " + targetType.getName(), error);
+    }
+  }
+
+  private static java.lang.reflect.Field preparedField(
+      Class<?> targetType,
+      String name
+  ) {
+    Class<?> current = targetType;
+    while (current != null && current != Object.class) {
+      try {
+        return current.getDeclaredField(name);
+      } catch (NoSuchFieldException ignored) {
+        current = current.getSuperclass();
+      }
+    }
+    return null;
+  }
+
+  private static void assignPreparedJsonFields(
+      Class<?> targetType,
+      Object instance,
+      java.util.Map<?, ?> fields
+  ) throws ReflectiveOperationException {
+    for (java.util.Map.Entry<?, ?> entry : fields.entrySet()) {
+      String name = String.valueOf(entry.getKey());
+      if (name.startsWith("__")) continue;
+      java.lang.reflect.Field field = preparedField(targetType, name);
+      if (field == null) continue;
+      field.setAccessible(true);
+      field.set(instance, coerceJsonInput(entry.getValue(), field.getGenericType()));
+    }
+  }
+
+  private static Object materializePreparedJsonObject(
+      java.util.Map<?, ?> fields,
+      Class<?> targetType
+  ) {
+    java.util.ArrayList<Object> materializedValues = new java.util.ArrayList<>();
+    for (java.util.Map.Entry<?, ?> entry : fields.entrySet()) {
+      if (!String.valueOf(entry.getKey()).startsWith("__")) {
+        materializedValues.add(entry.getValue());
+      }
+    }
+    Object[] values = materializedValues.toArray();
+    for (java.lang.reflect.Constructor<?> constructor : targetType.getDeclaredConstructors()) {
+      if (constructor.getParameterCount() != values.length) continue;
+      try {
+        java.lang.reflect.Type[] parameterTypes = constructor.getGenericParameterTypes();
+        Object[] arguments = new Object[values.length];
+        for (int index = 0; index < values.length; index += 1) {
+          arguments[index] = coerceJsonInput(values[index], parameterTypes[index]);
+        }
+        constructor.setAccessible(true);
+        Object instance = constructor.newInstance(arguments);
+        assignPreparedJsonFields(targetType, instance, fields);
+        return instance;
+      } catch (ReflectiveOperationException | IllegalArgumentException ignored) {
+      }
+    }
+    try {
+      java.lang.reflect.Constructor<?> constructor = targetType.getDeclaredConstructor();
+      constructor.setAccessible(true);
+      Object instance = constructor.newInstance();
+      assignPreparedJsonFields(targetType, instance, fields);
+      return instance;
+    } catch (ReflectiveOperationException error) {
+      throw new RuntimeException("Unable to materialize prepared Java input " + targetType.getName(), error);
+    }
+  }
+
+  private static Object preparedLinkedNodes(
+      java.util.List<?> values,
+      Class<?> targetType
+  ) {
+    if (values.isEmpty()) return null;
+    Object head = null;
+    Object tail = null;
+    for (Object value : values) {
+      java.util.LinkedHashMap<String, Object> fields = new java.util.LinkedHashMap<>();
+      fields.put("val", value);
+      fields.put("next", null);
+      Object node = materializePreparedJsonObject(fields, targetType);
+      if (head == null) {
+        head = node;
+      } else {
+        try {
+          java.lang.reflect.Field next = preparedField(targetType, "next");
+          if (next == null) throw new NoSuchFieldException("next");
+          next.setAccessible(true);
+          next.set(tail, node);
+        } catch (ReflectiveOperationException error) {
+          throw new RuntimeException("Unable to link prepared ListNode input", error);
+        }
+      }
+      tail = node;
+    }
+    return head;
+  }
+
+  private static Object preparedTreeNodes(
+      java.util.List<?> values,
+      Class<?> targetType
+  ) {
+    if (values.isEmpty() || values.get(0) == null) return null;
+    java.util.ArrayList<Object> nodes = new java.util.ArrayList<>();
+    for (Object value : values) {
+      if (value == null) {
+        nodes.add(null);
+        continue;
+      }
+      java.util.LinkedHashMap<String, Object> fields = new java.util.LinkedHashMap<>();
+      fields.put("val", value);
+      fields.put("left", null);
+      fields.put("right", null);
+      nodes.add(materializePreparedJsonObject(fields, targetType));
+    }
+    int child = 1;
+    for (int index = 0; index < nodes.size() && child < nodes.size(); index += 1) {
+      Object parent = nodes.get(index);
+      if (parent == null) continue;
+      try {
+        java.lang.reflect.Field left = preparedField(targetType, "left");
+        java.lang.reflect.Field right = preparedField(targetType, "right");
+        if (left == null || right == null) throw new NoSuchFieldException("left/right");
+        left.setAccessible(true);
+        right.setAccessible(true);
+        left.set(parent, nodes.get(child++));
+        if (child < nodes.size()) right.set(parent, nodes.get(child++));
+      } catch (ReflectiveOperationException error) {
+        throw new RuntimeException("Unable to link prepared TreeNode input", error);
+      }
+    }
+    return nodes.get(0);
+  }
+
+  private static Object coerceJsonInput(
+      Object value,
+      java.lang.reflect.Type targetType
+  ) {
     if (value == null) return null;
-    if (targetType.isArray()) {
+    Class<?> rawType = preparedRawClass(targetType);
+    if (rawType == Object.class) return value;
+    if (rawType.isArray()) {
       java.util.List<?> list = (java.util.List<?>) value;
-      Class<?> componentType = targetType.getComponentType();
+      Class<?> componentType = rawType.getComponentType();
       Object array = java.lang.reflect.Array.newInstance(componentType, list.size());
       for (int i = 0; i < list.size(); i++) {
         java.lang.reflect.Array.set(array, i, coerceJsonInput(list.get(i), componentType));
       }
       return array;
     }
-    if ((targetType == byte.class || targetType == Byte.class) && value instanceof Number) return ((Number) value).byteValue();
-    if ((targetType == short.class || targetType == Short.class) && value instanceof Number) return ((Number) value).shortValue();
-    if ((targetType == int.class || targetType == Integer.class) && value instanceof Number) return ((Number) value).intValue();
-    if ((targetType == long.class || targetType == Long.class) && value instanceof Number) return ((Number) value).longValue();
-    if ((targetType == float.class || targetType == Float.class) && value instanceof Number) return ((Number) value).floatValue();
-    if ((targetType == double.class || targetType == Double.class) && value instanceof Number) return ((Number) value).doubleValue();
-    if ((targetType == boolean.class || targetType == Boolean.class) && value instanceof Boolean) return value;
-    if ((targetType == char.class || targetType == Character.class) && value instanceof String && ((String) value).length() == 1) {
+    if ((rawType == byte.class || rawType == Byte.class) && value instanceof Number) return ((Number) value).byteValue();
+    if ((rawType == short.class || rawType == Short.class) && value instanceof Number) return ((Number) value).shortValue();
+    if ((rawType == int.class || rawType == Integer.class) && value instanceof Number) return ((Number) value).intValue();
+    if ((rawType == long.class || rawType == Long.class) && value instanceof Number) return ((Number) value).longValue();
+    if ((rawType == float.class || rawType == Float.class) && value instanceof Number) return ((Number) value).floatValue();
+    if ((rawType == double.class || rawType == Double.class) && value instanceof Number) return ((Number) value).doubleValue();
+    if ((rawType == boolean.class || rawType == Boolean.class) && value instanceof Boolean) return value;
+    if ((rawType == char.class || rawType == Character.class) && value instanceof String && ((String) value).length() == 1) {
       return ((String) value).charAt(0);
     }
-    if (targetType == String.class && value instanceof String) return value;
-    return value;
+    if (rawType == String.class) return String.valueOf(value);
+    if (rawType == StringBuilder.class) return new StringBuilder(String.valueOf(value));
+    if (rawType.isEnum()) {
+      @SuppressWarnings({"unchecked", "rawtypes"})
+      Object enumValue = java.lang.Enum.valueOf(
+          (Class<? extends java.lang.Enum>) rawType,
+          String.valueOf(value)
+      );
+      return enumValue;
+    }
+    if (java.util.Collection.class.isAssignableFrom(rawType)) {
+      java.util.Collection<Object> output = preparedCollection(rawType);
+      java.lang.reflect.Type itemType = preparedTypeArgument(targetType, 0);
+      for (Object item : (java.util.List<?>) value) {
+        output.add(coerceJsonInput(item, itemType));
+      }
+      return output;
+    }
+    if (java.util.Map.class.isAssignableFrom(rawType)) {
+      java.util.Map<Object, Object> output = preparedMap(rawType);
+      java.lang.reflect.Type keyType = preparedTypeArgument(targetType, 0);
+      java.lang.reflect.Type valueType = preparedTypeArgument(targetType, 1);
+      for (java.util.Map.Entry<?, ?> entry : ((java.util.Map<?, ?>) value).entrySet()) {
+        output.put(
+            coerceJsonInput(entry.getKey(), keyType),
+            coerceJsonInput(entry.getValue(), valueType)
+        );
+      }
+      return output;
+    }
+    if (
+        value instanceof java.util.List<?> &&
+        rawType.getSimpleName().equals("ListNode")
+    ) {
+      return preparedLinkedNodes((java.util.List<?>) value, rawType);
+    }
+    if (
+        value instanceof java.util.List<?> &&
+        rawType.getSimpleName().equals("TreeNode")
+    ) {
+      return preparedTreeNodes((java.util.List<?>) value, rawType);
+    }
+    if (value instanceof java.util.Map<?, ?>) {
+      return materializePreparedJsonObject((java.util.Map<?, ?>) value, rawType);
+    }
+    if (rawType.isInstance(value)) return value;
+    throw new IllegalArgumentException(
+        "Cannot materialize prepared Java input as " + rawType.getTypeName()
+    );
+  }
+
+  private static Object[] preparedArguments(
+      java.util.List<?> rawArguments,
+      java.lang.reflect.Type[] parameterTypes
+  ) {
+    if (rawArguments.size() != parameterTypes.length) {
+      throw new IllegalArgumentException("Prepared Java argument count mismatch");
+    }
+    Object[] arguments = new Object[parameterTypes.length];
+    for (int index = 0; index < parameterTypes.length; index += 1) {
+      arguments[index] = coerceJsonInput(rawArguments.get(index), parameterTypes[index]);
+    }
+    return arguments;
+  }
+
+  private static Object constructPreparedReceiver(
+      Class<?> targetType,
+      java.util.List<?> rawArguments
+  ) {
+    Throwable lastFailure = null;
+    for (java.lang.reflect.Constructor<?> constructor : targetType.getDeclaredConstructors()) {
+      if (constructor.getParameterCount() != rawArguments.size()) continue;
+      try {
+        Object[] arguments = preparedArguments(
+            rawArguments,
+            constructor.getGenericParameterTypes()
+        );
+        constructor.setAccessible(true);
+        return constructor.newInstance(arguments);
+      } catch (Throwable error) {
+        lastFailure = error;
+      }
+    }
+    throw new RuntimeException(
+        "No matching prepared Java constructor for " + targetType.getName(),
+        lastFailure
+    );
+  }
+
+  private static java.lang.reflect.Method preparedOperationMethod(
+      Class<?> targetType,
+      String operation,
+      java.util.List<?> rawArguments
+  ) {
+    for (java.lang.reflect.Method method : targetType.getDeclaredMethods()) {
+      if (
+          method.getName().equals(operation) &&
+          method.getParameterCount() == rawArguments.size()
+      ) {
+        try {
+          preparedArguments(rawArguments, method.getGenericParameterTypes());
+          method.setAccessible(true);
+          return method;
+        } catch (RuntimeException ignored) {
+        }
+      }
+    }
+    throw new IllegalArgumentException(
+        "No matching prepared Java operation " + targetType.getName() + "." + operation
+    );
+  }
+
+  private static String runPreparedOperations(
+      Class<?> targetType,
+      Object rawInput
+  ) {
+    if (!(rawInput instanceof java.util.Map<?, ?>)) {
+      throw new IllegalArgumentException("Prepared ops-class input must be an object");
+    }
+    java.util.Map<?, ?> input = (java.util.Map<?, ?>) rawInput;
+    Object rawOperations = input.get("operations");
+    Object rawArgumentLists = input.get("arguments");
+    if (
+        !(rawOperations instanceof java.util.List<?>) ||
+        !(rawArgumentLists instanceof java.util.List<?>)
+    ) {
+      throw new IllegalArgumentException(
+          "Prepared ops-class input requires operations and arguments arrays"
+      );
+    }
+    java.util.List<?> operations = (java.util.List<?>) rawOperations;
+    java.util.List<?> argumentLists = (java.util.List<?>) rawArgumentLists;
+    if (operations.size() != argumentLists.size()) {
+      throw new IllegalArgumentException(
+          "Prepared ops-class operations and arguments must have equal lengths"
+      );
+    }
+
+    int operationIndex = 0;
+    java.util.List<?> constructorArguments = java.util.Collections.emptyList();
+    if (!operations.isEmpty()) {
+      String firstOperation = String.valueOf(operations.get(0));
+      boolean namesConstructor =
+          firstOperation.equals(targetType.getSimpleName()) ||
+          firstOperation.equals("__init__") ||
+          firstOperation.equals("init");
+      boolean namesMethod = false;
+      for (java.lang.reflect.Method method : targetType.getDeclaredMethods()) {
+        if (method.getName().equals(firstOperation)) {
+          namesMethod = true;
+          break;
+        }
+      }
+      if (namesConstructor || !namesMethod) {
+        Object firstArguments = argumentLists.get(0);
+        if (!(firstArguments instanceof java.util.List<?>)) {
+          throw new IllegalArgumentException(
+              "Prepared ops-class constructor arguments must be an array"
+          );
+        }
+        constructorArguments = (java.util.List<?>) firstArguments;
+        operationIndex = 1;
+      }
+    }
+
+    Object receiver = constructPreparedReceiver(targetType, constructorArguments);
+    java.util.ArrayList<Object> output = new java.util.ArrayList<>();
+    if (operationIndex == 1) output.add(null);
+    for (; operationIndex < operations.size(); operationIndex += 1) {
+      String operation = String.valueOf(operations.get(operationIndex));
+      Object rawArguments = argumentLists.get(operationIndex);
+      if (!(rawArguments instanceof java.util.List<?>)) {
+        throw new IllegalArgumentException(
+            "Prepared ops-class method arguments must be arrays"
+        );
+      }
+      java.util.List<?> methodArguments = (java.util.List<?>) rawArguments;
+      java.lang.reflect.Method method = preparedOperationMethod(
+          targetType,
+          operation,
+          methodArguments
+      );
+      try {
+        Object result = method.invoke(
+            receiver,
+            preparedArguments(methodArguments, method.getGenericParameterTypes())
+        );
+        output.add(method.getReturnType() == void.class ? null : result);
+      } catch (ReflectiveOperationException error) {
+        Throwable cause = error.getCause();
+        if (cause instanceof RuntimeException) throw (RuntimeException) cause;
+        if (cause instanceof Error) throw (Error) cause;
+        throw new RuntimeException(
+            "Prepared Java operation failed: " + operation,
+            cause == null ? error : cause
+        );
+      }
+    }
+    return TraceHooks.serializeOutputResult(output);
   }
 
   private static final class __TracecodeJsonParser {
@@ -3491,6 +3965,24 @@ function dynamicInputEntriesForPayload(payload, compileId) {
   return entries;
 }
 
+function preparedDynamicInputEntriesForPayload(payload, compileId) {
+  if (payload.executionStyle === 'ops-class') {
+    return [{
+      key: '__ops__',
+      index: 0,
+      type: 'Object',
+      path: `${DYNAMIC_INPUT_PREFIX}-${compileId}-ops.json`,
+    }];
+  }
+  const parameters = extractMethodParameters(payload.code, payload.functionName);
+  return parameters.map((parameter, index) => ({
+    key: parameter.name,
+    index,
+    type: parameter.type,
+    path: `${DYNAMIC_INPUT_PREFIX}-${compileId}-${index}-${String(parameter.name).replace(/[^A-Za-z0-9_$-]/g, '_')}.json`,
+  }));
+}
+
 function buildJavaCompileSeed(payload, compileMode = 'trace') {
   if (payload.executionStyle === 'ops-class') {
     return {
@@ -3589,6 +4081,18 @@ function buildExportsSource(source, functionName, executionStyle, input, options
   const dynamicInputsByKey = dynamicInputByKey(options.dynamicInputs ?? []);
 
   if (executionStyle === 'ops-class') {
+    const preparedOpsInput = dynamicInputsByKey.get('__ops__');
+    if (preparedOpsInput) {
+      return `${nodePreludeSource}public class Exports {
+${helperMethods}
+
+  public static String run() {
+    Object input = readJsonInput(${JSON.stringify(preparedOpsInput.path)}, Object.class);
+    return runPreparedOperations(${functionName}.class, input);
+  }
+}
+`;
+    }
     const operations = Array.isArray(input.operations) ? input.operations : [];
     const argumentsList = Array.isArray(input.arguments) ? input.arguments : [];
     const lines = ['    java.util.List<Object> out = new java.util.ArrayList<>();'];
@@ -3659,7 +4163,13 @@ ${lines.join('\n')}
     const value = inputValueForParameter(input, key, index);
     const dynamicInput = dynamicInputsByKey.get(key);
     const expression = dynamicInput
-      ? dynamicJavaInputExpression(type, dynamicInput.path)
+      ? dynamicJavaInputExpression(type, {
+          ...dynamicInput,
+          ownerClass: nestedTypeOwner,
+          methodName: functionName,
+          parameterIndex: index,
+          parameterTypes: parameters.map((entry) => entry.type),
+        })
       : buildJavaExpression(value, type);
     if (dynamicInput && !expression) {
       throw new Error(`Unsupported dynamic Java input type: ${type}`);
@@ -5894,6 +6404,39 @@ function projectChangedFiles(report) {
         });
 }
 
+async function buildJavaTraceRunnableSource(
+  normalizedPayload,
+  stableCompileId,
+  dynamicInputs
+) {
+  let rewrittenSource = await rewriteSource(
+    normalizedPayload,
+    stableCompileId,
+    dynamicInputs
+  );
+  const applyRewriteStage = (stage, transform) => {
+    try {
+      rewrittenSource = transform(rewrittenSource);
+    } catch (error) {
+      throw makeWorkerStageError(`trace source ${stage}`, error);
+    }
+  };
+  applyRewriteStage('call argument snapshots', augmentTraceCallArgumentSnapshots);
+  applyRewriteStage('array length reads', augmentArrayLengthReads);
+  applyRewriteStage('collection operations', (source) =>
+    self.TraceCodeJavaSourceAugmentations.augmentJavaCollectionOperations(
+      source,
+      normalizedPayload.sourceText
+    )
+  );
+  applyRewriteStage('object field operations', augmentJavaObjectFieldOperations);
+  applyRewriteStage('stdout events', augmentJavaStdoutEvents);
+  applyRewriteStage('throw events', augmentJavaThrowEvents);
+  applyRewriteStage('local snapshots', augmentJavaLocalSnapshots);
+  applyRewriteStage('return value snapshots', augmentTraceReturnValueSnapshots);
+  return rewrittenSource;
+}
+
 async function runJavaTraceRequest(payload, requestId) {
   const totalStart = performance.now();
   const rewriteStart = performance.now();
@@ -5908,27 +6451,11 @@ async function runJavaTraceRequest(payload, requestId) {
 
   let rewrittenSource;
   try {
-    rewrittenSource = await rewriteSource(normalizedPayload, stableCompileId, dynamicInputs);
-    const applyRewriteStage = (stage, transform) => {
-      try {
-        rewrittenSource = transform(rewrittenSource);
-      } catch (error) {
-        throw makeWorkerStageError(`trace source ${stage}`, error);
-      }
-    };
-    applyRewriteStage('call argument snapshots', augmentTraceCallArgumentSnapshots);
-    applyRewriteStage('array length reads', augmentArrayLengthReads);
-    applyRewriteStage('collection operations', (source) =>
-      self.TraceCodeJavaSourceAugmentations.augmentJavaCollectionOperations(
-        source,
-        normalizedPayload.sourceText
-      )
+    rewrittenSource = await buildJavaTraceRunnableSource(
+      normalizedPayload,
+      stableCompileId,
+      dynamicInputs
     );
-    applyRewriteStage('object field operations', augmentJavaObjectFieldOperations);
-    applyRewriteStage('stdout events', augmentJavaStdoutEvents);
-    applyRewriteStage('throw events', augmentJavaThrowEvents);
-    applyRewriteStage('local snapshots', augmentJavaLocalSnapshots);
-    applyRewriteStage('return value snapshots', augmentTraceReturnValueSnapshots);
   } catch (error) {
     const rewriteError = formatWorkerErrorMessage(error);
     const skipDiagnosticProbe =
@@ -6691,6 +7218,429 @@ async function runJavaCodeBatchRequest(payload, requestId) {
   };
 }
 
+async function prepareJavaRuntimeProgram(payload, requestId) {
+  const totalStart = performance.now();
+  const mode = payload?.mode;
+  if (mode !== 'code' && mode !== 'trace') {
+    return {
+      success: false,
+      error: `Unsupported Java prepared program mode: ${String(mode)}`,
+      consoleOutput: [],
+      timings: { totalMs: performance.now() - totalStart },
+    };
+  }
+
+  let normalizedPayload;
+  let dynamicInputs;
+  let source;
+  let stableCompileId;
+  let rewriteMs = 0;
+  try {
+    normalizedPayload = normalizeJavaExecutionPayload({
+      ...payload,
+      inputs: {},
+      options: payload.options ?? {},
+    });
+    stableCompileId = stableHash({
+      compileMode: `prepared-${mode}`,
+      code: normalizedPayload.code,
+      functionName: normalizedPayload.functionName,
+      executionStyle: normalizedPayload.executionStyle,
+      scriptMode: normalizedPayload.scriptMode === true,
+      options: mode === 'trace' ? normalizedPayload.options ?? {} : {},
+    });
+    dynamicInputs = preparedDynamicInputEntriesForPayload(
+      normalizedPayload,
+      stableCompileId
+    );
+    const sourceStart = performance.now();
+    source = mode === 'trace'
+      ? await buildJavaTraceRunnableSource(
+          normalizedPayload,
+          stableCompileId,
+          dynamicInputs
+        )
+      : buildPlainRunnableSource(
+          normalizedPayload,
+          stableCompileId,
+          dynamicInputs
+        );
+    rewriteMs = performance.now() - sourceStart;
+  } catch (error) {
+    return {
+      success: false,
+      error: formatWorkerErrorMessage(error),
+      consoleOutput: [],
+      timings: {
+        rewriteMs,
+        totalMs: performance.now() - totalStart,
+      },
+    };
+  }
+
+  const programId = isolateJavaCompileId(stableCompileId, requestId);
+  const exportsClassName = buildExportsClassName(stableCompileId);
+  const packageName = buildPackageName(stableCompileId);
+  const sourcePath = `/str/${exportsClassName}.java`;
+  const entryClass = `${packageName}.${exportsClassName}`;
+
+  try {
+    await self.cheerpOSAddStringFile(sourcePath, source);
+  } catch (error) {
+    return {
+      success: false,
+      error: `Java prepared source file write failed: ${formatWorkerErrorMessage(error)}`,
+      consoleOutput: [],
+      timings: {
+        rewriteMs,
+        totalMs: performance.now() - totalStart,
+      },
+    };
+  }
+
+  let compileLibraryClass;
+  try {
+    compileLibraryClass = await getCompileLibraryClass();
+    if (typeof compileLibraryClass?.prepareRuntimeProgram !== 'function') {
+      throw new Error(
+        'The selected Java runtime does not support prepared program execution.'
+      );
+    }
+  } catch (error) {
+    return {
+      success: false,
+      error: formatWorkerErrorMessage(error),
+      consoleOutput: [],
+      timings: {
+        rewriteMs,
+        totalMs: performance.now() - totalStart,
+      },
+    };
+  }
+
+  const libraryCallStart = performance.now();
+  let report;
+  try {
+    const reportText = await compileLibraryClass.prepareRuntimeProgram(
+      programId,
+      sourcePath,
+      mode === 'trace'
+        ? DEFAULT_COMPILER_DEBUG_PROFILE
+        : DEFAULT_EXECUTE_COMPILER_DEBUG_PROFILE
+    );
+    report = JSON.parse(reportText);
+  } catch (error) {
+    return {
+      success: false,
+      error: `Java prepared compilation failed: ${formatWorkerErrorMessage(error)}`,
+      consoleOutput: [],
+      timings: {
+        rewriteMs,
+        hostCallMs: performance.now() - libraryCallStart,
+        totalMs: performance.now() - totalStart,
+      },
+    };
+  }
+  const libraryCallEnd = performance.now();
+  const consoleOutput = javaReportConsoleOutput(report, {
+    includeSuccessfulDiagnostics: false,
+  });
+  const timings = {
+    rewriteMs,
+    compileMs: report.compileTimeMs ?? 0,
+    classLoadMs: 0,
+    runMs: 0,
+    hostCallMs: libraryCallEnd - libraryCallStart,
+    totalMs: performance.now() - totalStart,
+    compileCacheHit: report.compileCacheHit ?? false,
+    artifactCacheHit: false,
+  };
+
+  if (report.success !== true) {
+    return {
+      success: false,
+      error: javaReportFailureMessage(
+        report,
+        'Java prepared compilation failed without compiler diagnostics'
+      ),
+      consoleOutput,
+      timings,
+    };
+  }
+
+  const preparedState = {
+    mode,
+    entryClass,
+    dynamicInputs,
+    normalizedPayload: {
+      sourceText: normalizedPayload.sourceText,
+      scriptMode: normalizedPayload.scriptMode === true,
+      userCodeLineCount: normalizedPayload.userCodeLineCount,
+      sourceLineMap: normalizedPayload.sourceLineMap,
+    },
+    traceOptions: payload.options ?? {},
+  };
+  preparedJavaRuntimePrograms.set(programId, preparedState);
+  return {
+    success: true,
+    programId,
+    snapshot: {
+      schema: 'tracecode.java.prepared-program-snapshot.v1',
+      programId,
+      ...preparedState,
+      runtimeArtifact: report.preparedArtifact,
+    },
+    consoleOutput,
+    timings,
+  };
+}
+
+function assertPreparedJavaRuntimeSnapshot(snapshot) {
+  if (
+    !snapshot ||
+    snapshot.schema !== 'tracecode.java.prepared-program-snapshot.v1' ||
+    typeof snapshot.programId !== 'string' ||
+    !snapshot.programId ||
+    (snapshot.mode !== 'code' && snapshot.mode !== 'trace') ||
+    typeof snapshot.entryClass !== 'string' ||
+    !snapshot.entryClass ||
+    !Array.isArray(snapshot.dynamicInputs) ||
+    !snapshot.normalizedPayload ||
+    typeof snapshot.normalizedPayload !== 'object' ||
+    !snapshot.runtimeArtifact ||
+    typeof snapshot.runtimeArtifact !== 'object'
+  ) {
+    throw new TypeError('Invalid Java prepared program snapshot.');
+  }
+}
+
+async function restorePreparedJavaRuntimeProgram(payload) {
+  const snapshot = payload?.snapshot;
+  assertPreparedJavaRuntimeSnapshot(snapshot);
+  if (preparedJavaRuntimePrograms.has(snapshot.programId)) {
+    throw new Error(
+      `Java prepared program already exists: ${snapshot.programId}`
+    );
+  }
+
+  const compileLibraryClass = await getCompileLibraryClass();
+  if (typeof compileLibraryClass?.restoreRuntimeProgram !== 'function') {
+    throw new Error(
+      'The selected Java runtime cannot restore a prepared program.'
+    );
+  }
+  await compileLibraryClass.restoreRuntimeProgram(
+    snapshot.programId,
+    JSON.stringify(snapshot.runtimeArtifact),
+    snapshot.mode === 'trace'
+      ? DEFAULT_COMPILER_DEBUG_PROFILE
+      : DEFAULT_EXECUTE_COMPILER_DEBUG_PROFILE
+  );
+  preparedJavaRuntimePrograms.set(snapshot.programId, {
+    mode: snapshot.mode,
+    entryClass: snapshot.entryClass,
+    dynamicInputs: snapshot.dynamicInputs,
+    normalizedPayload: snapshot.normalizedPayload,
+    traceOptions: snapshot.traceOptions ?? {},
+  });
+  return {
+    success: true,
+    programId: snapshot.programId,
+    consoleOutput: [],
+    timings: {
+      compileMs: 0,
+      classLoadMs: 0,
+      runMs: 0,
+      totalMs: 0,
+      compileCacheHit: true,
+      artifactCacheHit: true,
+    },
+  };
+}
+
+function preparedJavaInputValue(program, inputs, dynamicInput) {
+  if (dynamicInput.key === '__ops__') return inputs;
+  if (Object.prototype.hasOwnProperty.call(inputs, dynamicInput.key)) {
+    return inputs[dynamicInput.key];
+  }
+  const values = Object.values(inputs);
+  if (dynamicInput.index < values.length) return values[dynamicInput.index];
+  throw new Error(
+    `Java prepared execution is missing input "${dynamicInput.key}".`
+  );
+}
+
+async function executePreparedJavaRuntimeProgram(payload) {
+  const totalStart = performance.now();
+  const programId = String(payload?.programId ?? '');
+  const program = preparedJavaRuntimePrograms.get(programId);
+  if (!program) {
+    return {
+      success: false,
+      output: null,
+      events: [],
+      error: `Unknown Java prepared program: ${programId}`,
+      consoleOutput: [],
+      executionTimeMs: performance.now() - totalStart,
+      timings: { totalMs: performance.now() - totalStart },
+    };
+  }
+  const inputs =
+    payload?.inputs && typeof payload.inputs === 'object' && !Array.isArray(payload.inputs)
+      ? payload.inputs
+      : {};
+
+  try {
+    const files = program.dynamicInputs.map((dynamicInput) => ({
+      ...dynamicInput,
+      value: preparedJavaInputValue(program, inputs, dynamicInput),
+    }));
+    await writeDynamicInputFiles(files);
+  } catch (error) {
+    return {
+      success: false,
+      output: null,
+      events: [],
+      error: `Java prepared input materialization failed: ${formatWorkerErrorMessage(error)}`,
+      consoleOutput: [],
+      executionTimeMs: performance.now() - totalStart,
+      ...(program.normalizedPayload.sourceText
+        ? { sourceText: program.normalizedPayload.sourceText }
+        : {}),
+      timings: { totalMs: performance.now() - totalStart },
+    };
+  }
+
+  let compileLibraryClass;
+  const libraryCallStart = performance.now();
+  let report;
+  try {
+    compileLibraryClass = await getCompileLibraryClass();
+    if (typeof compileLibraryClass?.runPreparedRuntimeProgram !== 'function') {
+      throw new Error(
+        'The selected Java runtime does not support prepared program execution.'
+      );
+    }
+    const reportText = await compileLibraryClass.runPreparedRuntimeProgram(
+      programId,
+      program.entryClass,
+      String(
+        program.mode === 'trace'
+          ? resolveMaxStoredEvents(program.traceOptions)
+          : 1
+      )
+    );
+    report = JSON.parse(reportText);
+  } catch (error) {
+    return {
+      success: false,
+      output: null,
+      events: [],
+      error: `Java prepared execution failed: ${formatWorkerErrorMessage(error)}`,
+      consoleOutput: [],
+      executionTimeMs: performance.now() - totalStart,
+      ...(program.normalizedPayload.sourceText
+        ? { sourceText: program.normalizedPayload.sourceText }
+        : {}),
+      timings: {
+        hostCallMs: performance.now() - libraryCallStart,
+        totalMs: performance.now() - totalStart,
+      },
+    };
+  }
+  const libraryCallEnd = performance.now();
+  const totalEnd = performance.now();
+  const consoleOutput = javaReportConsoleOutput(report, {
+    includeSuccessfulDiagnostics: false,
+  });
+  const timings = {
+    compileMs: 0,
+    classLoadMs: report.classLoadTimeMs ?? 0,
+    runMs: report.runTimeMs ?? 0,
+    hostCallMs: libraryCallEnd - libraryCallStart,
+    totalMs: totalEnd - totalStart,
+    compileCacheHit: true,
+    artifactCacheHit: true,
+  };
+
+  if (program.mode === 'trace') {
+    const events = normalizeJavaTraceEvents(
+      report.events,
+      program.normalizedPayload
+    );
+    return {
+      success: report.success === true,
+      ...(report.success === true
+        ? { output: parseJavaReportOutput(report.output) }
+        : {
+            error: javaReportFailureMessage(
+              report,
+              'Java prepared trace failed without compiler/runtime diagnostics'
+            ),
+          }),
+      events,
+      ...(program.normalizedPayload.sourceText
+        ? { sourceText: program.normalizedPayload.sourceText }
+        : {}),
+      executionTimeMs: totalEnd - totalStart,
+      consoleOutput,
+      ...(report.traceLimitExceeded !== undefined
+        ? {
+            traceLimitExceeded: Boolean(report.traceLimitExceeded),
+            timeoutReason: report.traceLimitExceeded
+              ? 'trace-limit'
+              : undefined,
+            droppedEventCount: report.droppedEventCount ?? 0,
+          }
+        : {}),
+      ...(report.bytecodeProfile
+        ? { bytecodeProfile: report.bytecodeProfile }
+        : {}),
+      ...(report.diagnosticError
+        ? { diagnosticError: report.diagnosticError }
+        : {}),
+      runtimeIsolation: report.isolation,
+      retirementRecommended: report.retirementRecommended === true,
+      timings,
+    };
+  }
+
+  if (report.success !== true) {
+    return {
+      success: false,
+      output: null,
+      error: javaReportFailureMessage(
+        report,
+        'Java prepared execution failed without compiler/runtime diagnostics'
+      ),
+      consoleOutput,
+      executionTimeMs: totalEnd - totalStart,
+      runtimeIsolation: report.isolation,
+      retirementRecommended: report.retirementRecommended === true,
+      timings,
+    };
+  }
+  return {
+    success: true,
+    output: parseJavaReportOutput(report.output),
+    consoleOutput,
+    executionTimeMs: totalEnd - totalStart,
+    runtimeIsolation: report.isolation,
+    retirementRecommended: report.retirementRecommended === true,
+    timings,
+  };
+}
+
+async function disposePreparedJavaRuntimeProgram(payload) {
+  const programId = String(payload?.programId ?? '');
+  const existed = preparedJavaRuntimePrograms.delete(programId);
+  const compileLibraryClass = await getCompileLibraryClass();
+  if (typeof compileLibraryClass?.disposeRuntimeProgram === 'function') {
+    await compileLibraryClass.disposeRuntimeProgram(programId);
+  }
+  return { success: true, disposed: existed };
+}
+
 self.onmessage = (event) => {
   const message = event.data;
   if (!message || typeof message !== 'object') {
@@ -6704,6 +7654,7 @@ self.onmessage = (event) => {
   idleGeneration += 1;
 
   if (message.type === 'terminate') {
+    preparedJavaRuntimePrograms.clear();
     for (const [, pending] of pendingExternalJavaCompiles) {
       pending.reject(new Error('Java worker terminated during external compile.'));
     }
@@ -6853,7 +7804,11 @@ self.onmessage = (event) => {
     message.type === 'execute-with-tracing' ||
     message.type === 'execute-code' ||
     message.type === 'execute-code-batch' ||
-    message.type === 'execute-project-java'
+    message.type === 'execute-project-java' ||
+    message.type === 'prepare-runtime-program' ||
+    message.type === 'restore-prepared-runtime-program' ||
+    message.type === 'execute-prepared-runtime-program' ||
+    message.type === 'dispose-prepared-runtime-program'
   ) {
     queue = queue.then(async () => {
       try {
@@ -6865,16 +7820,35 @@ self.onmessage = (event) => {
         const requestedAuthorityMode = message.type === 'execute-project-java'
           ? message.payload?.projectUserAuthorityMode ?? 'temporary'
           : 'temporary';
-        const executeUserRequest = () => message.type === 'execute-with-tracing'
-              ? runJavaTraceRequest(message.payload, message.id)
-              : message.type === 'execute-code-batch'
-                ? runJavaCodeBatchRequest(message.payload, message.id)
-                : message.type === 'execute-project-java'
-                  ? runJavaProjectRequest(message.payload, message.id)
-                  : runJavaCodeRequest(message.payload, message.id);
+        const preparedProgramMode =
+          message.type === 'execute-prepared-runtime-program'
+            ? preparedJavaRuntimePrograms.get(
+                String(message.payload?.programId ?? '')
+              )?.mode
+            : undefined;
+        const executeUserRequest = () =>
+          message.type === 'execute-with-tracing'
+            ? runJavaTraceRequest(message.payload, message.id)
+            : message.type === 'execute-code-batch'
+              ? runJavaCodeBatchRequest(message.payload, message.id)
+              : message.type === 'execute-project-java'
+                ? runJavaProjectRequest(message.payload, message.id)
+                : message.type === 'prepare-runtime-program'
+                  ? prepareJavaRuntimeProgram(message.payload, message.id)
+                  : message.type === 'restore-prepared-runtime-program'
+                    ? restorePreparedJavaRuntimeProgram(message.payload)
+                  : message.type === 'execute-prepared-runtime-program'
+                    ? executePreparedJavaRuntimeProgram(message.payload)
+                    : message.type === 'dispose-prepared-runtime-program'
+                      ? disposePreparedJavaRuntimeProgram(message.payload)
+                      : runJavaCodeRequest(message.payload, message.id);
         const postExecutionResult = (result) => postMessageResponse(
           { id: message.id, type: message.type, payload: result },
-          message.type === 'execute-with-tracing'
+          message.type === 'execute-with-tracing' ||
+          (
+            message.type === 'execute-prepared-runtime-program' &&
+            preparedProgramMode === 'trace'
+          )
             ? {
                 traceEventTransport: message.payload?.traceEventTransport,
                 traceEventPath: 'events',

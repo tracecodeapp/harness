@@ -12,6 +12,13 @@ export {
   type JavaBrowserRuntimeProviderOptions,
 } from './browser-runtime-provider';
 export {
+  createJavaBrowserPreparedExecutionProvider,
+  createJavaPreparedExecutionProvider,
+  type JavaBrowserPreparedExecutionProviderOptions,
+  type JavaPreparedExecutionProvider,
+  type JavaPreparedExecutionProviderOptions,
+} from './java-prepared-provider';
+export {
   createBrowserJavaProjectRunner,
   type BrowserJavaProjectCommandRunner,
   type BrowserJavaProjectRunnerOptions,
