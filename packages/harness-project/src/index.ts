@@ -471,11 +471,14 @@ import {
   type RuntimeKernelHttpTcpDispatchContext,
 } from './http-state';
 import { workspaceHttpPolicy } from './http-policy';
+import {
+  WorkspaceEventState,
+  type KernelJournalEntry,
+} from './workspace-event-state';
 
 const PRINCIPAL_ACTOR: RuntimeWorkspaceActor = runtimeWorkspaceActorPreset('principal');
 const RUNTIME_ACTOR: RuntimeWorkspaceActor = runtimeWorkspaceActorPreset('runtime');
 const SYSTEM_ACTOR: RuntimeWorkspaceActor = runtimeWorkspaceActorPreset('system');
-const TRACEKERNEL_EVENT_LOG_LIMIT = 256;
 const TRACEKERNEL_SYSCALL_ERROR_CODES: ReadonlySet<TraceKernelSyscallErrorCode> = new Set([
   'E2BIG',
   'EAGAIN',
@@ -516,17 +519,6 @@ const TRACEKERNEL_ZOMBIE_RETENTION_MS = 30_000;
 function traceKernelTsv(value: unknown): string {
   return String(value ?? '').replace(/[\t\r\n]+/g, ' ');
 }
-
-interface RuntimeKernelEventRecord {
-  seq: number;
-  time: string;
-  type: string;
-  pid?: number;
-  detail?: Record<string, unknown>;
-}
-
-type DistributiveOmit<T, K extends keyof any> = T extends unknown ? Omit<T, K> : never;
-type KernelJournalEntry = DistributiveOmit<KernelJournalRecord, 'seq' | 'ts'>;
 
 interface RuntimeLazyCommand {
   name: string;
@@ -646,16 +638,12 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
   // callers onto explicit diagnostic APIs.
   private readonly processTable = this.processState.table;
   private readonly processExecutionHandles = this.processState.executionHandles;
-  private readonly kernelEventLog: RuntimeKernelEventRecord[] = [];
-  private readonly kernelJournalLog: KernelJournalRecord[] = [];
+  private readonly eventState = new WorkspaceEventState();
   private readonly readonlyFiles = new Set<string>();
-  private readonly eventWatchers = new Set<RuntimeWorkspaceEventHandler>();
   private kernelSyscallGenerationBuffer?: SharedArrayBuffer;
   private kernelSyscallGenerationUnsubscribe?: RuntimeWorkspaceUnsubscribe;
   private readonlySuspendDepth = 0;
   private nextCommandId = 1;
-  private nextKernelEventSeq = 1;
-  private nextJournalSeq = 1;
   private nextTemporaryEntry = 1;
   private nextTerminalSessionId = 1;
   private destroyed = false;
@@ -3934,9 +3922,7 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
       (pid === undefined
         ? undefined
         : this.authoritativeProcessSnapshot({ pid }));
-    this.kernelEventLog.push({
-      seq: this.nextKernelEventSeq++,
-      time: new Date().toISOString(),
+    this.eventState.recordKernelEvent({
       type,
       ...(pid !== undefined ? { pid } : {}),
       ...(
@@ -3960,16 +3946,11 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
           : {}
       ),
     });
-    if (this.kernelEventLog.length > TRACEKERNEL_EVENT_LOG_LIMIT) {
-      this.kernelEventLog.splice(0, this.kernelEventLog.length - TRACEKERNEL_EVENT_LOG_LIMIT);
-    }
   }
 
   private dispatchRuntimeEvent(event: RuntimeCommandEvent, commandContext?: RuntimeCommandExecutionContext): void {
     commandContext?.eventHandler?.(event);
-    for (const watcher of this.eventWatchers) {
-      watcher(event);
-    }
+    this.eventState.dispatch(event);
   }
 
   private journalActorId(actor: RuntimeWorkspaceActor | undefined): string | undefined {
@@ -4057,14 +4038,7 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
           authoritativeActor!
         )
       : entry;
-    const record = {
-      seq: this.nextJournalSeq++,
-      ...attributedEntry,
-    } as KernelJournalRecord;
-    this.kernelJournalLog.push(record);
-    if (this.kernelJournalLog.length > TRACEKERNEL_EVENT_LOG_LIMIT) {
-      this.kernelJournalLog.splice(0, this.kernelJournalLog.length - TRACEKERNEL_EVENT_LOG_LIMIT);
-    }
+    const record = this.eventState.recordJournal(attributedEntry);
     this.handleRuntimeCommandEvent({
       type: 'kernel-journal',
       record,
@@ -4215,8 +4189,7 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
   }
 
   journal(sinceSeq?: number): readonly KernelJournalRecord[] {
-    if (sinceSeq === undefined) return [...this.kernelJournalLog];
-    return this.kernelJournalLog.filter((record) => record.seq > sinceSeq);
+    return this.eventState.journal(sinceSeq);
   }
 
   private firstZombieProcessRecord(): RuntimeKernelProcessRecord | undefined {
@@ -5138,7 +5111,7 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
   }
 
   private renderProcEvents(): string {
-    const rows = this.kernelEventLog.map((event) =>
+    const rows = this.eventState.kernelEvents().map((event) =>
       [
         event.seq,
         event.time,
@@ -9324,7 +9297,7 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
       },
       actor: SYSTEM_ACTOR,
     });
-    this.eventWatchers.clear();
+    this.eventState.clearWatchers();
     await this.closeTraceKernelAuthority();
     await this.withSuspendedReadonlyPolicy(() =>
       this.fs.withBaseMutation([this.cwd], (fs) => fs.rm(this.cwd, { force: true, recursive: true }), 'recursive-delete')
@@ -9686,7 +9659,7 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
     this.destroyed = true;
     if (!this.httpState.lifecycleAbortController.signal.aborted) this.httpState.lifecycleAbortController.abort();
     this.closeAllHttpListeners();
-    this.eventWatchers.clear();
+    this.eventState.clearWatchers();
     this.kernelSyscallGenerationUnsubscribe?.();
     this.kernelSyscallGenerationUnsubscribe = undefined;
     this.stopObservingExternalTraceKernelMutations();
@@ -9704,10 +9677,7 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
   }
 
   watch(listener: RuntimeWorkspaceEventHandler): RuntimeWorkspaceUnsubscribe {
-    this.eventWatchers.add(listener);
-    return () => {
-      this.eventWatchers.delete(listener);
-    };
+    return this.eventState.watch(listener);
   }
 
   async applyKernelFileChange(
