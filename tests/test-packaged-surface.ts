@@ -186,6 +186,7 @@ async function runWithTempRoot(tempRoot: string): Promise<void> {
     'workers/javascript/javascript-worker.js',
     'workers/javascript/javascript-project-worker.js',
     'workers/java/java-worker.js',
+    'workers/java/tracejvm-java-worker.js',
     'workers/java/java-source-augmentations.js',
     'workers/csharp/csharp-worker.js',
     'workers/vendor/java-browser-helper.jar',

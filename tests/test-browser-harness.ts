@@ -4,6 +4,8 @@ import { test } from 'node:test';
 import {
   BROWSER_RUNTIME_ASSET_PROTOCOL_VERSION,
   createBrowserHarness,
+  createBrowserRuntimeHost,
+  createDefaultBrowserRuntimeProviderRegistry,
   resolveBrowserHarnessAssets,
 } from '../src/browser';
 import { createBrowserProjectWorkspace } from '../packages/runtime-browser/src/project';
@@ -426,7 +428,10 @@ async function main(): Promise<void> {
   try {
     const defaultAssets = resolveBrowserHarnessAssets();
     assertCondition(defaultAssets.pythonWorker === '/workers/python-worker.js', 'Default python worker path should resolve');
-    assertCondition(defaultAssets.javaWorker === '/workers/java-worker.js', 'Default java worker path should resolve');
+    assertCondition(
+      defaultAssets.javaWorker === '/workers/tracejvm-java-worker.js',
+      'Default Java worker path should select TraceJVM'
+    );
     assertCondition(defaultAssets.csharpWorker === '/workers/csharp-worker.js', 'Default C# worker path should resolve');
     assertCondition(defaultAssets.csharpAssetBaseUrl === '/workers/vendor/csharp', 'Default C# asset base URL should resolve');
     assertCondition(defaultAssets.cppWorker === '/workers/cpp-worker.js', 'Default C++ worker path should resolve');
@@ -451,6 +456,35 @@ async function main(): Promise<void> {
       defaultAssets.javascriptProjectWorker === '/workers/javascript-project-worker.js',
       'Default JavaScript project worker path should resolve'
     );
+
+    const preparedJavaHost = createBrowserRuntimeHost({
+      providerRegistry: createDefaultBrowserRuntimeProviderRegistry(),
+      assetBaseUrl: '/prepared-default',
+      providers: ['java'],
+      featureOverrides: {
+        worker: true,
+        webAssembly: true,
+        webCrypto: true,
+        sharedArrayBuffer: true,
+        crossOriginIsolated: true,
+      },
+    });
+    try {
+      const initialized = await preparedJavaHost
+        .getPreparedProvider('java')
+        .init();
+      const preparedJavaWorker = workerInstances.findLast((worker) =>
+        String(worker.url).startsWith(
+          '/prepared-default/tracejvm-java-worker.js'
+        )
+      );
+      assertCondition(
+        initialized.success && preparedJavaWorker !== undefined,
+        'Default prepared Java provider must construct the TraceJVM worker'
+      );
+    } finally {
+      preparedJavaHost.dispose();
+    }
 
     const cppCompilerIntegrity = {
       assets: [
@@ -1085,7 +1119,10 @@ async function main(): Promise<void> {
     releaseHeldPythonProject = undefined;
     console.log('PASS: opt-in one-shot prewarm pools warm before lease, never reuse user workers, and evict failures');
 
-    const harnessA = createBrowserHarness({ assetBaseUrl: '/instance-a' });
+    const harnessA = createBrowserHarness({
+      assetBaseUrl: '/instance-a',
+      assets: { javaWorker: 'java-worker.js' },
+    });
     const harnessB = createBrowserHarness({ assetBaseUrl: '/instance-b', debug: true });
     assertCondition(harnessA.isLanguageSupported('java'), 'Browser harness should expose Java support');
     assertCondition(harnessA.isLanguageSupported('csharp'), 'Browser harness should expose C# support');
@@ -1135,8 +1172,10 @@ async function main(): Promise<void> {
       'Harness A should use its own JavaScript worker URL'
     );
     assertCondition(
-      workerInstances.some((worker) => String(worker.url).startsWith('/instance-a/java-worker.js')),
-      'Harness A should use its own Java worker URL'
+      workerInstances.some((worker) =>
+        String(worker.url).startsWith('/instance-a/java-worker.js')
+      ),
+      'Harness A should preserve its explicit Classic Java worker URL'
     );
     assertCondition(
       workerInstances.some((worker) => String(worker.url).startsWith('/instance-a/csharp-worker.js')),
@@ -1269,7 +1308,9 @@ async function main(): Promise<void> {
     console.log('PASS: Python cold warmup is bounded by runtime warmup timeout');
 
     const javaWarmupResult = await harnessA.warmLanguage('java');
-    const javaWarmupWorker = workerInstances.findLast((worker) => String(worker.url).startsWith('/instance-a/java-worker.js'));
+    const javaWarmupWorker = workerInstances.findLast((worker) =>
+      String(worker.url).startsWith('/instance-a/java-worker.js')
+    );
     assertCondition(javaWarmupResult.success, 'Java warmLanguage should resolve successfully');
     assertCondition(
       javaWarmupWorker?.messages.at(-1)?.type === 'warmup',
@@ -1743,7 +1784,9 @@ async function main(): Promise<void> {
       .getClient('java')
       .executeCode({ code: 'int search(int[] nums, int target) { return 0; }', functionName: 'search', inputs: {}, executionStyle: 'function' });
     assertCondition(javaExecuteResult.kind === 'completed', 'Java runtime should route function-style executeCode through the browser harness client');
-    const javaWorker = workerInstances.findLast((worker) => String(worker.url).startsWith('/instance-a/java-worker.js'));
+    const javaWorker = workerInstances.findLast((worker) =>
+      String(worker.url).startsWith('/instance-a/java-worker.js')
+    );
     const javaMessageTypes = javaWorker?.messages.map((message) => message.type) ?? [];
     assertCondition(
       javaWorker?.messages.at(-1)?.type === 'execute-code' &&

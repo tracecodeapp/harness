@@ -219,6 +219,7 @@ async function testManifestAssetsReachWorkerInitialization(): Promise<void> {
   CapturingWorker.instances = [];
   const directLoaderHarness = createBrowserHarness({
     assetBaseUrl: '/direct-java-loader',
+    assets: { javaWorker: 'java-worker.js' },
     providers: ['java'],
     java: { loaderUrl: '/app/runtime/java-loader.js' },
   });

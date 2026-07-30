@@ -151,6 +151,10 @@ const consumerManifests = {
 function testLegacyCompatibility(): void {
   const defaultAssets = resolveBrowserHarnessAssets();
   assertCondition(defaultAssets.pythonWorker === '/workers/python-worker.js', 'Default asset paths must use canonical runtime names');
+  assertCondition(
+    defaultAssets.javaWorker === '/workers/tracejvm-java-worker.js',
+    'Default Java assets must select the TraceJVM worker required by prepared execution'
+  );
   assertCondition(defaultAssets.cppCompilerWasm === '', 'Disabled direct compiler paths must remain disabled');
   assertCondition(defaultAssets.runtimeManifests === undefined, 'Legacy resolution must not synthesize version metadata');
 
@@ -167,7 +171,7 @@ function testLegacyCompatibility(): void {
   );
   assertCondition(
     legacyAssets.javaWorker === 'https://legacy.example/java-worker.js',
-    'Absolute legacy overrides must still be preserved'
+    'Explicit classic Java worker overrides must remain available to legacy Project consumers'
   );
 }
 

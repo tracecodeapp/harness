@@ -191,7 +191,9 @@ export const DEFAULT_BROWSER_HARNESS_ASSET_RELATIVE_PATHS: Readonly<BrowserHarne
   pythonSnippets: 'generated-python-harness-snippets.js',
   javascriptWorker: 'javascript-worker.js',
   javascriptProjectWorker: 'javascript-project-worker.js',
-  javaWorker: 'java-worker.js',
+  // The TraceJVM provider extends the canonical Classic protocol and imports
+  // java-worker.js as its sibling, so deployments must continue shipping both.
+  javaWorker: 'tracejvm-java-worker.js',
   csharpWorker: 'csharp-worker.js',
   csharpAssetBaseUrl: 'vendor/csharp',
   typescriptCompiler: 'vendor/typescript.js',

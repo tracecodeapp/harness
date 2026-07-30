@@ -34,6 +34,7 @@ async function main(): Promise<void> {
     'javascript-worker.js',
     'javascript-project-worker.js',
     'java-worker.js',
+    'tracejvm-java-worker.js',
     'cpp-worker.js',
     'shared/runtime-kernel-policy.js',
     'cpp-compiler-frame.html',
@@ -86,6 +87,10 @@ async function main(): Promise<void> {
     'Asset sync should flatten the JavaScript project worker into the target root'
   );
   assertCondition(rootEntries.includes('java-worker.js'), 'Asset sync should flatten the Java worker into the target root');
+  assertCondition(
+    rootEntries.includes('tracejvm-java-worker.js'),
+    'Asset sync should flatten the default TraceJVM Java worker into the target root'
+  );
   assertCondition(rootEntries.includes('csharp-worker.js'), 'Asset sync should flatten the C# worker into the target root');
   assertCondition(rootEntries.includes('cpp-worker.js'), 'Asset sync should flatten the C++ worker into the target root');
   assertCondition(rootEntries.includes('cpp-compiler-frame.html'), 'Asset sync should flatten the C++ compiler frame into the target root');
@@ -130,6 +135,10 @@ async function main(): Promise<void> {
 
   const filteredEntries = await readdir(filteredTargetDir);
   assertCondition(!filteredEntries.includes('java-worker.js'), 'Filtered Python sync should not copy Java assets');
+  assertCondition(
+    !filteredEntries.includes('tracejvm-java-worker.js'),
+    'Filtered Python sync should not copy the TraceJVM Java worker'
+  );
   assertCondition(!filteredEntries.includes('javascript-worker.js'), 'Filtered Python sync should not copy JavaScript assets');
   assertCondition(
     !filteredEntries.includes('javascript-project-worker.js'),
