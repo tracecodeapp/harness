@@ -46,11 +46,19 @@ export function createJavaScriptBrowserRuntimeProvider(): BrowserRuntimeProvider
         ['javascript', javascript],
         ['typescript', typescript],
       ]);
+      const resetSharedRuntime = (): void => {
+        // JavaScript and TypeScript share one coordinator/executor pool.
+        // JavaScriptWorkerClient termination retires the current connections
+        // and clears warm state, but deliberately remains restartable. A
+        // language-scoped disposal must therefore reset the whole shared
+        // runtime so its sibling can acquire fresh workers on its next call.
+        worker.terminate();
+      };
 
       return {
         preparedProviders,
-        disposeLanguage: () => worker.terminate(),
-        dispose: () => worker.terminate(),
+        disposeLanguage: resetSharedRuntime,
+        dispose: resetSharedRuntime,
       };
     },
   };

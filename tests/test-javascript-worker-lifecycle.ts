@@ -6,6 +6,16 @@ import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import vm from 'node:vm';
 import ts from 'typescript';
+import {
+  createBrowserRuntimeHost,
+  createBrowserRuntimeProviderRegistry,
+} from '../packages/runtime-browser/src';
+import {
+  getBrowserRuntimeHostPreparedProvider,
+} from '../packages/runtime-browser/src/browser-runtime-host-internal';
+import {
+  createJavaScriptBrowserRuntimeProvider,
+} from '../packages/runtime-javascript/src/browser-runtime-provider';
 import { JavaScriptWorkerClient } from '../packages/runtime-javascript/src/javascript-worker-client';
 import { createJavaScriptRuntimeClient } from '../packages/runtime-javascript/src/javascript-runtime-client';
 import { createJavaScriptPreparedProgram } from '../packages/runtime-javascript/src/javascript-prepared-program';
@@ -517,6 +527,103 @@ async function exercisePreparedDisposalOwner(): Promise<void> {
   );
 }
 
+async function executeHostProgram(
+  host: ReturnType<typeof createBrowserRuntimeHost>,
+  language: 'javascript' | 'typescript',
+  value: number
+): Promise<void> {
+  const provider = getBrowserRuntimeHostPreparedProvider(host, language);
+  const preparation = await provider.prepareProgram({
+    mode: 'code',
+    code:
+      language === 'typescript'
+        ? 'function increment(value: number): number { return value + 1; }'
+        : 'function increment(value) { return value + 1; }',
+    functionName: 'increment',
+    executionStyle: 'function',
+  });
+  assertCondition(
+    preparation.kind === 'prepared' && preparation.program.mode === 'code',
+    `${language} host preparation failed: ${JSON.stringify(preparation)}`
+  );
+  const execution = await preparation.program.executeIsolated({
+    inputs: { value },
+  });
+  assertCondition(
+    execution.kind === 'completed' && execution.output === value + 1,
+    `${language} host execution failed: ${JSON.stringify(execution)}`
+  );
+  await preparation.program.dispose();
+}
+
+async function exerciseSharedProviderLanguageDisposal(): Promise<void> {
+  resetVmWorkers();
+  const host = createBrowserRuntimeHost({
+    providerRegistry: createBrowserRuntimeProviderRegistry([
+      createJavaScriptBrowserRuntimeProvider(),
+    ]),
+    providers: ['javascript', 'typescript'],
+    featureOverrides: {
+      worker: true,
+      webAssembly: true,
+      webCrypto: true,
+      sharedArrayBuffer: true,
+      crossOriginIsolated: true,
+    },
+    debug: false,
+  });
+
+  try {
+    await executeHostProgram(host, 'javascript', 1);
+    const firstGeneration = [...VmJavaScriptWorker.instances];
+    assertCondition(
+      firstGeneration.some((worker) => !worker.terminated),
+      'JavaScript host execution did not leave a reusable shared worker generation'
+    );
+
+    host.disposeLanguage('javascript');
+    assertCondition(
+      firstGeneration.every((worker) => worker.terminated),
+      'Disposing JavaScript must retire every worker in its shared JavaScript/TypeScript generation'
+    );
+
+    await executeHostProgram(host, 'typescript', 2);
+    const secondGeneration = VmJavaScriptWorker.instances.slice(
+      firstGeneration.length
+    );
+    assertCondition(
+      secondGeneration.length > 0 &&
+        secondGeneration.some((worker) => !worker.terminated),
+      'TypeScript did not reacquire fresh workers after JavaScript disposal'
+    );
+
+    host.disposeLanguage('typescript');
+    assertCondition(
+      secondGeneration.every((worker) => worker.terminated),
+      'Disposing TypeScript must retire every worker in its shared JavaScript/TypeScript generation'
+    );
+
+    await executeHostProgram(host, 'javascript', 3);
+    const thirdGeneration = VmJavaScriptWorker.instances.slice(
+      firstGeneration.length + secondGeneration.length
+    );
+    assertCondition(
+      thirdGeneration.length > 0 &&
+        thirdGeneration.some((worker) => !worker.terminated),
+      'JavaScript did not reacquire fresh workers after TypeScript disposal'
+    );
+
+    host.dispose();
+    assertCondition(
+      thirdGeneration.every((worker) => worker.terminated),
+      'Whole-host disposal must terminate the final shared JavaScript/TypeScript worker generation'
+    );
+  } finally {
+    host.dispose();
+    resetVmWorkers();
+  }
+}
+
 async function main(): Promise<void> {
   const originalWorker = globalThis.Worker;
   Object.defineProperty(globalThis, 'Worker', {
@@ -673,6 +780,7 @@ async function main(): Promise<void> {
     await exercisePreparedProvider('javascript');
     await exercisePreparedProvider('typescript');
     await exercisePreparedDisposalOwner();
+    await exerciseSharedProviderLanguageDisposal();
     console.log('PASS: JavaScript/TypeScript coordinator and disposable execution lifecycle');
   } finally {
     if (originalWorker === undefined) {
