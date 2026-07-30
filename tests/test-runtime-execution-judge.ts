@@ -1,7 +1,9 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
+import * as Cause from 'effect/Cause';
 import * as Effect from 'effect/Effect';
 import * as Fiber from 'effect/Fiber';
+import * as Option from 'effect/Option';
 import {
   createRuntimeJudge,
   type JudgeEvaluationPlan,
@@ -13,6 +15,10 @@ import {
   type ExecutionResult,
   type RuntimeCodeCall,
   type RuntimeExecutionProvider,
+  type RuntimePreparedCodeCall,
+  type RuntimePreparedExecutionProvider,
+  type RuntimePreparedTraceCall,
+  type RuntimeProgramPreparationCall,
   type RuntimeTrace,
   type RuntimeTraceCall,
 } from '@tracecode/harness-core';
@@ -46,6 +52,24 @@ interface FakeProviderState {
   onStart?: (input: FakeInput) => void;
 }
 
+interface PreparedProviderState {
+  initCalls: number;
+  readonly prepareCalls: RuntimeProgramPreparationCall[];
+  readonly codeCalls: RuntimePreparedCodeCall[];
+  readonly traceCalls: RuntimePreparedTraceCall[];
+  readonly completions: string[];
+  disposals: number;
+  aborts: number;
+  active: number;
+  maxActive: number;
+  maxConcurrency: number;
+  preparationDelayMs: number;
+  failPreparation: boolean;
+  failDisposal: boolean;
+  onPrepareStart?: () => void;
+  onStart?: (input: FakeInput) => void;
+}
+
 function makeState(): FakeProviderState {
   return {
     initCalls: 0,
@@ -53,6 +77,27 @@ function makeState(): FakeProviderState {
     traceCalls: [],
     completions: [],
     aborts: 0,
+  };
+}
+
+function makePreparedState(
+  overrides: Partial<PreparedProviderState> = {}
+): PreparedProviderState {
+  return {
+    initCalls: 0,
+    prepareCalls: [],
+    codeCalls: [],
+    traceCalls: [],
+    completions: [],
+    disposals: 0,
+    aborts: 0,
+    active: 0,
+    maxActive: 0,
+    maxConcurrency: 2,
+    preparationDelayMs: 0,
+    failPreparation: false,
+    failDisposal: false,
+    ...overrides,
   };
 }
 
@@ -201,6 +246,173 @@ function fakeProvider(state: FakeProviderState): RuntimeExecutionProvider {
   };
 }
 
+function preparedProvider(
+  state: PreparedProviderState
+): RuntimePreparedExecutionProvider {
+  const dispose = async () => {
+    state.disposals += 1;
+    if (state.failDisposal) {
+      throw new Error('prepared program teardown exploded');
+    }
+  };
+  const executeCode = async (
+    call: RuntimePreparedCodeCall
+  ): Promise<CodeExecutionResult> => {
+    state.codeCalls.push(call);
+    const input = call.inputs as FakeInput;
+    state.onStart?.(input);
+    state.active += 1;
+    state.maxActive = Math.max(state.maxActive, state.active);
+    try {
+      await waitForPreparedInput(input, call.signal, state);
+      state.completions.push(input.label);
+      return {
+        kind: 'completed',
+        output: completedOutput(input),
+        consoleOutput: consoleOutput(input),
+        timings: {
+          runMs: input.delayMs ?? 0,
+          artifactCacheHit: true,
+        },
+      };
+    } finally {
+      state.active -= 1;
+    }
+  };
+  const executeTrace = async (
+    call: RuntimePreparedTraceCall
+  ): Promise<ExecutionResult> => {
+    state.traceCalls.push(call);
+    const input = call.inputs as FakeInput;
+    state.onStart?.(input);
+    state.active += 1;
+    state.maxActive = Math.max(state.maxActive, state.active);
+    try {
+      await waitForPreparedInput(input, call.signal, state);
+      state.completions.push(input.label);
+      return {
+        kind: 'completed',
+        output: completedOutput(input),
+        trace: {
+          schemaVersion: RUNTIME_TRACE_SCHEMA_VERSION,
+          language: 'javascript',
+          runId: `prepared:${input.label}`,
+          events: [{
+            kind: 'line',
+            runId: `prepared:${input.label}`,
+            line: 2,
+          }],
+          lineEventCount: 1,
+          traceStepCount: 1,
+        },
+        executionTimeMs: input.delayMs ?? 0,
+        consoleOutput: consoleOutput(input),
+        timings: {
+          runMs: input.delayMs ?? 0,
+          artifactCacheHit: true,
+        },
+      };
+    } finally {
+      state.active -= 1;
+    }
+  };
+
+  return {
+    async init() {
+      state.initCalls += 1;
+      return {
+        success: true,
+        loadTimeMs: 2,
+      };
+    },
+    async prepareProgram(call) {
+      state.prepareCalls.push(call);
+      state.onPrepareStart?.();
+      if (state.preparationDelayMs > 0) {
+        await new Promise<void>((resolve) => {
+          setTimeout(resolve, state.preparationDelayMs);
+        });
+      }
+      if (state.failPreparation) {
+        return {
+          kind: 'failed',
+          error: 'prepared compilation exploded',
+          errorLine: 4,
+          diagnosticStage: 'compile',
+          consoleOutput: ['compiler output'],
+          timings: {
+            compileMs: 11,
+            compileCacheHit: false,
+          },
+        };
+      }
+      const capabilities = {
+        caseIsolation: 'fresh-case-state' as const,
+        maxConcurrency: state.maxConcurrency,
+      };
+      return call.mode === 'trace'
+        ? {
+            kind: 'prepared' as const,
+            program: {
+              mode: 'trace' as const,
+              capabilities,
+              executeIsolated: executeTrace,
+              dispose,
+            },
+            consoleOutput: ['prepared once'],
+            timings: {
+              compileMs: 11,
+              compileCacheHit: false,
+            },
+          }
+        : {
+            kind: 'prepared' as const,
+            program: {
+              mode: 'code' as const,
+              capabilities,
+              executeIsolated: executeCode,
+              dispose,
+            },
+            consoleOutput: ['prepared once'],
+            timings: {
+              compileMs: 11,
+              compileCacheHit: false,
+            },
+          };
+    },
+  };
+}
+
+function waitForPreparedInput(
+  input: FakeInput,
+  signal: AbortSignal | undefined,
+  state: PreparedProviderState
+): Promise<void> {
+  if (input.mode === 'hang') {
+    return new Promise((_, reject) => {
+      if (!signal) return;
+      const abort = () => {
+        state.aborts += 1;
+        reject(abortError(signal));
+      };
+      if (signal.aborted) abort();
+      else signal.addEventListener('abort', abort, { once: true });
+    });
+  }
+  const delayMs = input.delayMs ?? 0;
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(resolve, delayMs);
+    if (!signal) return;
+    const abort = () => {
+      clearTimeout(timer);
+      state.aborts += 1;
+      reject(abortError(signal));
+    };
+    if (signal.aborted) abort();
+    else signal.addEventListener('abort', abort, { once: true });
+  });
+}
+
 function makePlan<Expected = unknown>(
   cases: readonly {
     readonly id: string;
@@ -257,6 +469,23 @@ async function evaluate(
       const judge = yield* createRuntimeJudge({
         runtime: RUNTIME,
         provider: fakeProvider(state),
+        binding,
+      });
+      return yield* judge.evaluate<FakeInput>(plan);
+    })
+  ));
+}
+
+async function evaluatePrepared(
+  state: PreparedProviderState,
+  plan: JudgeEvaluationPlan<FakeInput>,
+  binding: RuntimeJudgeBinding = codeBinding()
+) {
+  return Effect.runPromise(Effect.scoped(
+    Effect.gen(function* () {
+      const judge = yield* createRuntimeJudge({
+        runtime: RUNTIME,
+        provider: preparedProvider(state),
         binding,
       });
       return yield* judge.evaluate<FakeInput>(plan);
@@ -629,4 +858,354 @@ test('fails a separate compile phase explicitly instead of pretending to compile
   );
   assert.equal(state.codeCalls.length, 0);
   assert.equal(state.traceCalls.length, 0);
+});
+
+test('prepares once, preserves timings, throttles provider concurrency, and disposes exactly once', async () => {
+  const state = makePreparedState({
+    maxConcurrency: 2,
+  });
+  const result = await evaluatePrepared(
+    state,
+    makePlan([
+      {
+        id: 'slow',
+        input: {
+          label: 'slow',
+          delayMs: 35,
+        },
+        expected: 'slow',
+      },
+      {
+        id: 'fast',
+        input: {
+          label: 'fast',
+          delayMs: 2,
+        },
+        expected: 'fast',
+      },
+      {
+        id: 'middle',
+        input: {
+          label: 'middle',
+          delayMs: 15,
+        },
+        expected: 'middle',
+      },
+    ]),
+    codeBinding({
+      limits: {
+        wallClockMs: 900,
+        maxLineEvents: 10,
+      },
+    })
+  );
+
+  assert.equal(result.status, 'completed');
+  assert.equal(result.compile?.status, 'compiled');
+  assert.equal(result.compile?.stdout, 'prepared once\n');
+  assert.deepEqual(result.compile?.timings, {
+    compileMs: 11,
+    compileCacheHit: false,
+  });
+  assert.deepEqual(
+    result.cases.map((caseResult) => caseResult.caseId),
+    ['slow', 'fast', 'middle']
+  );
+  assert.deepEqual(
+    result.cases.map((caseResult) => caseResult.timings),
+    [
+      { runMs: 35, artifactCacheHit: true },
+      { runMs: 2, artifactCacheHit: true },
+      { runMs: 15, artifactCacheHit: true },
+    ]
+  );
+  assert.equal(state.prepareCalls.length, 1);
+  assert.equal(state.prepareCalls[0]?.code, SOURCE);
+  assert.equal(state.prepareCalls[0]?.mode, 'code');
+  assert.equal(state.prepareCalls[0]?.functionName, 'solve');
+  assert.ok(
+    !Object.prototype.hasOwnProperty.call(state.prepareCalls[0], 'inputs') &&
+    !Object.prototype.hasOwnProperty.call(state.prepareCalls[0], 'expected')
+  );
+  assert.equal(state.codeCalls.length, 3);
+  assert.ok(state.codeCalls.every((call) =>
+    call.limits?.wallClockMs === 900 &&
+    call.limits.maxLineEvents === 10
+  ));
+  assert.equal(state.maxActive, 2);
+  assert.equal(state.disposals, 1);
+  assert.equal(
+    new Set(result.cases.map((caseResult) => caseResult.sessionId)).size,
+    3
+  );
+  assert.ok(
+    result.cases.every((caseResult) =>
+      caseResult.sessionId !== result.compile?.sessionId
+    ),
+    'Prepared artifacts must not collapse Judge-owned per-case sessions.'
+  );
+});
+
+test('reports a prepared compilation error once and never starts a case', async () => {
+  const state = makePreparedState({
+    failPreparation: true,
+  });
+  const result = await evaluatePrepared(
+    state,
+    makePlan([
+      {
+        id: 'first',
+        input: {
+          label: 'first',
+        },
+      },
+      {
+        id: 'second',
+        input: {
+          label: 'second',
+        },
+      },
+    ])
+  );
+
+  assert.equal(result.status, 'compile-failed');
+  assert.equal(result.compile.status, 'compile-failed');
+  assert.equal(result.compile.stderr, 'prepared compilation exploded\n');
+  assert.equal(result.compile.stdout, 'compiler output\n');
+  assert.equal(result.compile.diagnostics.length, 1);
+  assert.equal(result.compile.diagnostics[0]?.code, 'compile');
+  assert.deepEqual(result.compile.timings, {
+    compileMs: 11,
+    compileCacheHit: false,
+  });
+  assert.deepEqual(result.cases, []);
+  assert.equal(state.prepareCalls.length, 1);
+  assert.equal(state.codeCalls.length, 0);
+  assert.equal(state.disposals, 0);
+});
+
+test('prepares tracing once and keeps tracing policy out of individual cases', async () => {
+  const state = makePreparedState();
+  const result = await evaluatePrepared(
+    state,
+    makePlan([{
+      id: 'traced',
+      input: {
+        label: 'traced',
+        output: 7,
+      },
+      expected: 7,
+    }]),
+    codeBinding({
+      trace: true,
+      traceOptions: {
+        maxTraceSteps: 20,
+        minimalTrace: true,
+      },
+      limits: {
+        wallClockMs: 700,
+        maxLineEvents: 12,
+      },
+    })
+  );
+
+  assert.equal(result.status, 'completed');
+  assert.equal(result.cases[0]?.verdict.kind, 'passed');
+  assert.equal(state.prepareCalls.length, 1);
+  assert.equal(state.prepareCalls[0]?.mode, 'trace');
+  assert.deepEqual(state.prepareCalls[0]?.traceOptions, {
+    maxTraceSteps: 20,
+    minimalTrace: true,
+  });
+  assert.equal(state.traceCalls.length, 1);
+  assert.ok(
+    !Object.prototype.hasOwnProperty.call(
+      state.traceCalls[0],
+      'traceOptions'
+    )
+  );
+  assert.deepEqual(state.traceCalls[0]?.limits, {
+    wallClockMs: 700,
+    maxLineEvents: 12,
+  });
+  assert.equal(state.disposals, 1);
+});
+
+test('interrupting prepared execution aborts active work, clears queued work, and disposes once', async () => {
+  const state = makePreparedState({
+    maxConcurrency: 1,
+  });
+  let started!: () => void;
+  const didStart = new Promise<void>((resolve) => {
+    started = resolve;
+  });
+  state.onStart = () => started();
+
+  await Effect.runPromise(Effect.scoped(
+    Effect.gen(function* () {
+      const judge = yield* createRuntimeJudge({
+        runtime: RUNTIME,
+        provider: preparedProvider(state),
+        binding: codeBinding(),
+      });
+      const fiber = yield* Effect.fork(
+        judge.evaluate(
+          makePlan([
+            {
+              id: 'active',
+              input: {
+                label: 'active',
+                mode: 'hang',
+              },
+            },
+            {
+              id: 'queued',
+              input: {
+                label: 'queued',
+                mode: 'hang',
+              },
+            },
+          ], {
+            run: {
+              command: 'runtime-provider-case',
+            },
+          })
+        )
+      );
+      yield* Effect.promise(() => didStart);
+      yield* Fiber.interrupt(fiber);
+
+      assert.equal(state.prepareCalls.length, 1);
+      assert.equal(state.codeCalls.length, 1);
+      assert.equal(state.aborts, 1);
+      assert.equal(state.disposals, 1);
+      assert.deepEqual(judge.activeSessionIds(), []);
+    })
+  ));
+});
+
+test('disposes a prepared artifact that arrives after its evaluation was interrupted', async () => {
+  const state = makePreparedState({
+    preparationDelayMs: 20,
+  });
+  let started!: () => void;
+  const didStart = new Promise<void>((resolve) => {
+    started = resolve;
+  });
+  state.onPrepareStart = () => started();
+
+  await Effect.runPromise(Effect.scoped(
+    Effect.gen(function* () {
+      const judge = yield* createRuntimeJudge({
+        runtime: RUNTIME,
+        provider: preparedProvider(state),
+        binding: codeBinding(),
+      });
+      const fiber = yield* Effect.fork(
+        judge.evaluate(
+          makePlan([{
+            id: 'never-executed',
+            input: {
+              label: 'never-executed',
+            },
+          }])
+        )
+      );
+      yield* Effect.promise(() => didStart);
+      yield* Fiber.interrupt(fiber);
+      assert.equal(state.prepareCalls.length, 1);
+      assert.equal(state.codeCalls.length, 0);
+      assert.equal(state.disposals, 0);
+      assert.deepEqual(judge.activeSessionIds(), []);
+
+      yield* Effect.promise(
+        () => new Promise<void>((resolve) => setTimeout(resolve, 35))
+      );
+      assert.equal(state.disposals, 1);
+      assert.deepEqual(judge.activeSessionIds(), []);
+    })
+  ));
+});
+
+test('uses unique preparation scopes when one judge evaluates the same semantic plan twice', async () => {
+  const state = makePreparedState();
+
+  await Effect.runPromise(Effect.scoped(
+    Effect.gen(function* () {
+      const judge = yield* createRuntimeJudge({
+        runtime: RUNTIME,
+        provider: preparedProvider(state),
+        binding: codeBinding(),
+      });
+      const plan = makePlan([{
+        id: 'same',
+        input: {
+          label: 'same',
+        },
+        expected: 'same',
+      }]);
+      const evaluation = judge.evaluate(plan);
+      assert.equal(
+        state.prepareCalls.length,
+        0,
+        'Constructing an Effect must not eagerly register or prepare an evaluation.'
+      );
+      const first = yield* evaluation;
+      const second = yield* evaluation;
+
+      assert.equal(first.status, 'completed');
+      assert.equal(second.status, 'completed');
+      assert.equal(state.prepareCalls.length, 2);
+      assert.equal(state.codeCalls.length, 2);
+      assert.equal(state.disposals, 2);
+      assert.deepEqual(judge.activeSessionIds(), []);
+    })
+  ));
+});
+
+test('surfaces prepared program teardown failure as Judge infrastructure failure', async () => {
+  const state = makePreparedState({
+    failDisposal: true,
+  });
+  let judgeSessions = (): readonly string[] => ['not-evaluated'];
+
+  const exit = await Effect.runPromiseExit(Effect.scoped(
+    Effect.gen(function* () {
+      const judge = yield* createRuntimeJudge({
+        runtime: RUNTIME,
+        provider: preparedProvider(state),
+        binding: codeBinding(),
+      });
+      judgeSessions = () => judge.activeSessionIds();
+      return yield* judge.evaluate(
+        makePlan([{
+          id: 'completed-before-teardown',
+          input: {
+            label: 'completed-before-teardown',
+          },
+        }])
+      );
+    })
+  ));
+  assert.equal(exit._tag, 'Failure');
+  if (exit._tag === 'Failure') {
+    const failure = Cause.failureOption(exit.cause);
+    assert.equal(Option.isSome(failure), true);
+    if (Option.isSome(failure)) {
+      assert.equal(
+        (failure.value as { readonly _tag?: string })._tag,
+        'JudgeInfrastructureError'
+      );
+      assert.equal(
+        (failure.value as { readonly operation?: string }).operation,
+        'dispose prepared runtime program'
+      );
+      assert.match(
+        (failure.value as { readonly message?: string }).message ?? '',
+        /teardown exploded/
+      );
+    }
+  }
+  assert.equal(state.disposals, 1);
+  assert.deepEqual(judgeSessions(), []);
 });
