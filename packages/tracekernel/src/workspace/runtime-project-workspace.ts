@@ -5165,12 +5165,20 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
           engineLeaseReleased = true;
           const attachment = engineAttachment;
           engineAttachment = undefined;
-          if (disposition.kind === 'destroy' && !abortController.signal.aborted) {
+          if (
+            attachment &&
+            disposition.kind === 'destroy' &&
+            disposition.reason === 'interrupted' &&
+            !abortController.signal.aborted
+          ) {
             // TraceKernel never delivers SIGKILL to a catchable runtime signal
             // handler. A forced kernel exit reaches the host through lease
-            // destruction instead, so destruction itself must tear down the
-            // active executor. Preserve an already delivered signal when one
-            // exists; otherwise this is the uncatchable SIGKILL path.
+            // interruption instead, so an interrupted attached engine must
+            // tear down its active executor. Other destroy dispositions happen
+            // after execution has already settled: retiring an unvalidated or
+            // failed engine is lease cleanup, not a new process signal.
+            // Preserve an already delivered signal when one exists; otherwise
+            // this is the uncatchable SIGKILL path.
             executionHandle.pendingSignal ??= {
               name: 'SIGKILL',
               code: 9,
@@ -6474,6 +6482,21 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
         const enriched = this.enrichRuntimeEvent(event, actor) as RuntimeCommandFileChangeEvent;
         this.recordFileChangeJournal(enriched, context);
         event = enriched;
+      }
+      if (
+        event.type === 'kernel-journal' &&
+        event.record.kind === 'process' &&
+        event.record.op === 'exit'
+      ) {
+        // Process exit is an authoritative host settlement event, not output
+        // arriving from a runtime after cancellation. The runtime I/O ingress
+        // correctly rejects late provider events once its AbortSignal fires,
+        // but that boundary must not suppress the exit record already appended
+        // to the kernel journal. The command has flushed its runtime event
+        // queue before process settlement, so publish the terminal journal
+        // record directly and preserve live/snapshot parity.
+        runtimeIo.emit(event);
+        return;
       }
       runtimeIo.handleRuntimeEvent(event);
       return;

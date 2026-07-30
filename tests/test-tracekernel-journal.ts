@@ -279,6 +279,66 @@ async function testLiveAndSnapshotAgree(): Promise<void> {
   }
 }
 
+async function testInterruptedExitStillSettlesLiveJournal(): Promise<void> {
+  const workspace = await createRuntimeWorkspace();
+  const events: RuntimeCommandEvent[] = [];
+  const controller = new AbortController();
+  let resolveExec!: () => void;
+  const execObserved = new Promise<void>((resolve) => {
+    resolveExec = resolve;
+  });
+  const unsubscribe = workspace.watch((event) => {
+    events.push(event);
+    if (
+      event.type === 'kernel-journal' &&
+      event.record.kind === 'process' &&
+      event.record.op === 'exec'
+    ) {
+      resolveExec();
+    }
+  });
+  try {
+    const command = workspace.runCommand('sleep 30', {
+      signal: controller.signal,
+    });
+    let timeout: ReturnType<typeof setTimeout> | undefined;
+    await Promise.race([
+      execObserved,
+      new Promise<never>((_resolve, reject) => {
+        timeout = setTimeout(
+          () => reject(new Error('timed out waiting for process exec')),
+          1_000
+        );
+      }),
+    ]).finally(() => {
+      if (timeout) clearTimeout(timeout);
+    });
+    controller.abort();
+    const result = await command;
+    assertCondition(
+      result.exitCode === 143,
+      `interrupted command should terminate with SIGTERM status: ${JSON.stringify(result)}`
+    );
+    const snapshot = workspace.journal();
+    const exit = snapshot.at(-1);
+    assertCondition(
+      exit?.kind === 'process' &&
+        exit.op === 'exit' &&
+        exit.exitCode === 143,
+      `interrupted command should append its authoritative exit record: ${JSON.stringify(snapshot)}`
+    );
+    assertDeepEqual(
+      journalEvents(events),
+      snapshot,
+      'runtime cancellation must not close live journal delivery before process settlement'
+    );
+  } finally {
+    controller.abort();
+    unsubscribe();
+    await workspace.destroy();
+  }
+}
+
 async function main(): Promise<void> {
   await testAbsoluteCrossKindOrdering();
   await testFsBothPaths();
@@ -288,6 +348,7 @@ async function main(): Promise<void> {
   await testInVmCannotForge();
   await testDeterminism();
   await testLiveAndSnapshotAgree();
+  await testInterruptedExitStillSettlesLiveJournal();
 }
 
 await test('tracekernel journal', main);
