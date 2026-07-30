@@ -134,6 +134,117 @@ public static partial class CompilerHost
 
     [JSExport]
     [SupportedOSPlatform("browser")]
+    public static string Prepare(string requestJson)
+    {
+        Stopwatch stopwatch = Stopwatch.StartNew();
+        TextWriter originalOut = Console.Out;
+        using TracingConsoleWriter capturedOut = new();
+        Console.SetOut(capturedOut);
+        Dictionary<string, object> timings = new();
+
+        try
+        {
+            CSharpExecuteRequest? request = JsonSerializer.Deserialize<CSharpExecuteRequest>(requestJson, JsonOptions);
+            if (request is null)
+            {
+                return SerializeError("Invalid C# preparation request.", stopwatch, capturedOut, timings: timings);
+            }
+
+            request.PreparedProgram = true;
+            request.RequirePreparedArtifact = false;
+            request.Inputs = new Dictionary<string, JsonElement>(StringComparer.Ordinal);
+            string artifactKey = CompiledArtifactKey(request);
+            double compileStartedAt = stopwatch.Elapsed.TotalMilliseconds;
+            byte[]? peBytes = TryGetCompiledArtifact(artifactKey);
+            bool compileCacheHit = peBytes is not null;
+
+            if (peBytes is null)
+            {
+                CSharpCompilation compilation = CreateCompilation(request);
+                using MemoryStream peStream = new();
+                EmitResult emitResult = compilation.Emit(peStream);
+                timings["compileMs"] = stopwatch.Elapsed.TotalMilliseconds - compileStartedAt;
+                if (!emitResult.Success)
+                {
+                    List<CSharpDiagnostic> diagnostics = emitResult.Diagnostics
+                        .Where(diagnostic => diagnostic.Severity == DiagnosticSeverity.Error)
+                        .Select(CSharpDiagnostic.FromRoslyn)
+                        .ToList();
+                    return Serialize(new CSharpExecuteResponse
+                    {
+                        Success = false,
+                        Error = diagnostics.FirstOrDefault()?.Message ?? "C# compilation failed.",
+                        Diagnostics = diagnostics,
+                        ConsoleOutput = SplitConsoleOutput(capturedOut),
+                        ExecutionTimeMs = stopwatch.Elapsed.TotalMilliseconds,
+                        Timings = WithTotalTiming(timings, stopwatch),
+                    });
+                }
+
+                peBytes = peStream.ToArray();
+                StoreCompiledArtifact(artifactKey, peBytes);
+            }
+            else
+            {
+                timings["compileMs"] = stopwatch.Elapsed.TotalMilliseconds - compileStartedAt;
+            }
+
+            timings["compileCacheHit"] = compileCacheHit;
+            timings["compileArtifactKey"] = artifactKey;
+            timings["compileArtifactBytes"] = peBytes.LongLength;
+            timings["compileCacheEntries"] = CompiledArtifacts.Count;
+            timings["compileCacheBytes"] = compiledArtifactCacheBytes;
+            return Serialize(new CSharpExecuteResponse
+            {
+                Success = true,
+                ConsoleOutput = SplitConsoleOutput(capturedOut),
+                ExecutionTimeMs = stopwatch.Elapsed.TotalMilliseconds,
+                Timings = WithTotalTiming(timings, stopwatch),
+                CompiledArtifactKey = artifactKey,
+                CompiledArtifactBase64 = Convert.ToBase64String(peBytes),
+            });
+        }
+        catch (Exception error)
+        {
+            return SerializeError(error.GetBaseException().Message, stopwatch, capturedOut, timings: timings);
+        }
+        finally
+        {
+            Console.SetOut(originalOut);
+        }
+    }
+
+    [JSExport]
+    [SupportedOSPlatform("browser")]
+    public static string ExecutePrepared(string requestJson)
+    {
+        try
+        {
+            CSharpExecuteRequest? request = JsonSerializer.Deserialize<CSharpExecuteRequest>(requestJson, JsonOptions);
+            if (request is null)
+            {
+                return Execute(requestJson);
+            }
+
+            request.PreparedProgram = true;
+            request.RequirePreparedArtifact = true;
+            return Execute(JsonSerializer.Serialize(request, JsonOptions));
+        }
+        catch
+        {
+            return Execute(requestJson);
+        }
+    }
+
+    [JSExport]
+    [SupportedOSPlatform("browser")]
+    public static bool DisposePreparedArtifact(string artifactKey)
+    {
+        return RemoveCompiledArtifact(artifactKey);
+    }
+
+    [JSExport]
+    [SupportedOSPlatform("browser")]
     public static string Execute(string requestJson)
     {
         Stopwatch stopwatch = Stopwatch.StartNew();
@@ -186,6 +297,17 @@ public static partial class CompilerHost
             double compileStartedAt = stopwatch.Elapsed.TotalMilliseconds;
             if (peBytes is null)
             {
+                if (request.RequirePreparedArtifact)
+                {
+                    timings["compileMs"] = stopwatch.Elapsed.TotalMilliseconds - compileStartedAt;
+                    return SerializeError(
+                        "Prepared C# artifact is unavailable or invalid.",
+                        stopwatch,
+                        capturedOut,
+                        timings: timings
+                    );
+                }
+
                 CSharpCompilation compilation = CreateCompilation(request);
                 using MemoryStream peStream = new();
                 var emitResult = compilation.Emit(peStream);
@@ -253,6 +375,7 @@ public static partial class CompilerHost
                     ExecutionTimeMs = stopwatch.Elapsed.TotalMilliseconds,
                     Timings = WithTotalTiming(timings, stopwatch),
                     CompiledArtifactBase64 = compiledArtifactForHost ? Convert.ToBase64String(peBytes) : null,
+                    CompiledArtifactKey = artifactKey,
                 });
             }
             finally
@@ -1074,11 +1197,19 @@ public static partial class CompilerHost
         AppendCacheKeyPart(key, request.FunctionName);
         AppendCacheKeyPart(key, request.ExecutionStyle);
         key.Append(request.Trace ? "trace\n" : "plain\n");
-        foreach ((string name, JsonElement value) in request.Inputs)
+        if (request.PreparedProgram)
         {
-            AppendCacheKeyPart(key, name);
-            AppendInputCompileShape(key, value);
-            key.Append('\n');
+            key.Append("prepared-driver-v1\n");
+        }
+        else
+        {
+            key.Append("input-shaped-driver-v1\n");
+            foreach ((string name, JsonElement value) in request.Inputs)
+            {
+                AppendCacheKeyPart(key, name);
+                AppendInputCompileShape(key, value);
+                key.Append('\n');
+            }
         }
 
         return Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(key.ToString()))).ToLowerInvariant();
@@ -1180,6 +1311,18 @@ public static partial class CompilerHost
         }
     }
 
+    private static bool RemoveCompiledArtifact(string key)
+    {
+        if (!CompiledArtifacts.Remove(key, out CompiledArtifact? artifact))
+        {
+            return false;
+        }
+
+        CompiledArtifactRecency.Remove(artifact.RecencyNode);
+        compiledArtifactCacheBytes -= artifact.PeBytes.LongLength;
+        return true;
+    }
+
     private static CSharpCompilation CreateCompilation(CSharpExecuteRequest request)
     {
         SyntaxTree originalUserTree = CSharpSyntaxTree.ParseText(
@@ -1203,7 +1346,9 @@ public static partial class CompilerHost
             path: "TraceCodeRuntime.cs"
         );
         SyntaxTree driverTree = CSharpSyntaxTree.ParseText(
-            GenerateDriverSource(originalUserTree, request),
+            request.PreparedProgram
+                ? GeneratePreparedDriverSource(originalUserTree, request)
+                : GenerateDriverSource(originalUserTree, request),
             ParseOptions,
             path: "TraceCodeDriver.cs"
         );
@@ -3536,6 +3681,252 @@ public sealed class ProjectFileStream : System.IO.FileStream
     {
         return text.EndsWith("\n", StringComparison.Ordinal)
             || text.EndsWith("\r", StringComparison.Ordinal);
+    }
+
+    private static string GeneratePreparedDriverSource(SyntaxTree userTree, CSharpExecuteRequest request)
+    {
+        if (IsScriptExecutionRequest(request)
+            || string.Equals(request.ExecutionStyle, "ops-class", StringComparison.Ordinal))
+        {
+            return GenerateDriverSource(userTree, request);
+        }
+
+        _ = FindSolutionMethod(
+            userTree,
+            request.FunctionName,
+            new Dictionary<string, JsonElement>(StringComparer.Ordinal)
+        );
+        string functionNameLiteral = JsonSerializer.Serialize(request.FunctionName);
+
+        return $$"""
+using System;
+using System.Linq;
+using System.Reflection;
+using System.Text.Json;
+using System.Threading.Tasks;
+
+public static class TraceCodeDriver
+{
+    public static object? Run()
+    {
+        using JsonDocument inputs = JsonDocument.Parse(TraceCode.CSharpHost.CompilerHost.GetCurrentInputsJson());
+        JsonElement rawInputs = inputs.RootElement;
+        MethodInfo method = SelectSolutionMethod(rawInputs);
+        ParameterInfo[] parameters = method.GetParameters();
+        object?[] args = new object?[parameters.Length];
+
+        for (int index = 0; index < parameters.Length; index++)
+        {
+            ParameterInfo parameter = parameters[index];
+            Type targetType = ParameterType(parameter);
+            if (parameter.IsOut)
+            {
+                args[index] = DefaultValue(targetType);
+                continue;
+            }
+
+            if (TryGetInput(rawInputs, parameter.Name ?? string.Empty, index, out JsonElement input))
+            {
+                args[index] = TraceCode.Internal.TraceCodeJsonInput.Convert(input, targetType);
+                continue;
+            }
+
+            if (parameter.HasDefaultValue)
+            {
+                args[index] = parameter.DefaultValue;
+                continue;
+            }
+
+            throw new InvalidOperationException($"Missing input value for parameter \"{parameter.Name}\".");
+        }
+
+        object? instance = method.IsStatic ? null : Activator.CreateInstance(method.DeclaringType!);
+        object? output = AwaitInvocation(method.Invoke(instance, args), method.ReturnType);
+        if (IsVoidLike(method.ReturnType))
+        {
+            return ShouldReturnFirstVoidArgument(parameters) ? args[0] : null;
+        }
+
+        return output;
+    }
+
+    private static MethodInfo SelectSolutionMethod(JsonElement rawInputs)
+    {
+        MethodInfo[] methods = typeof(Solution)
+            .GetMethods(BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Static | BindingFlags.Instance)
+            .Where(method =>
+                !method.ContainsGenericParameters
+                && string.Equals(method.Name, {{functionNameLiteral}}, StringComparison.Ordinal))
+            .ToArray();
+        if (methods.Length == 0)
+        {
+            methods = typeof(Solution)
+                .GetMethods(BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Static | BindingFlags.Instance)
+                .Where(method =>
+                    !method.ContainsGenericParameters
+                    && string.Equals(method.Name, {{functionNameLiteral}}, StringComparison.OrdinalIgnoreCase))
+                .ToArray();
+        }
+        if (methods.Length == 0)
+        {
+            throw new InvalidOperationException($"Expected public method Solution.{{request.FunctionName}}.");
+        }
+
+        MethodInfo? compatible = methods
+            .Select(method => new { Method = method, Score = ScoreMethod(method, rawInputs) })
+            .Where(candidate => candidate.Score > int.MinValue)
+            .OrderByDescending(candidate => candidate.Method.IsPublic)
+            .ThenByDescending(candidate => candidate.Score)
+            .Select(candidate => candidate.Method)
+            .FirstOrDefault();
+        return compatible ?? methods.FirstOrDefault(method => method.IsPublic) ?? methods[0];
+    }
+
+    private static int ScoreMethod(MethodInfo method, JsonElement rawInputs)
+    {
+        int score = 0;
+        ParameterInfo[] parameters = method.GetParameters();
+        for (int index = 0; index < parameters.Length; index++)
+        {
+            ParameterInfo parameter = parameters[index];
+            if (parameter.IsOut)
+            {
+                score += 1;
+                continue;
+            }
+
+            if (!TryGetInput(rawInputs, parameter.Name ?? string.Empty, index, out JsonElement input))
+            {
+                if (parameter.HasDefaultValue)
+                {
+                    continue;
+                }
+                return int.MinValue;
+            }
+
+            try
+            {
+                _ = TraceCode.Internal.TraceCodeJsonInput.Convert(input, ParameterType(parameter));
+                score += 4;
+            }
+            catch
+            {
+                return int.MinValue;
+            }
+        }
+
+        return score;
+    }
+
+    private static bool TryGetInput(
+        JsonElement rawInputs,
+        string name,
+        int index,
+        out JsonElement input
+    )
+    {
+        if (rawInputs.ValueKind == JsonValueKind.Object)
+        {
+            if (rawInputs.TryGetProperty(name, out input))
+            {
+                return true;
+            }
+
+            int propertyIndex = 0;
+            foreach (JsonProperty property in rawInputs.EnumerateObject())
+            {
+                if (propertyIndex == index)
+                {
+                    input = property.Value;
+                    return true;
+                }
+                propertyIndex++;
+            }
+        }
+
+        input = default;
+        return false;
+    }
+
+    private static Type ParameterType(ParameterInfo parameter)
+    {
+        Type type = parameter.ParameterType;
+        return type.IsByRef ? type.GetElementType() ?? typeof(object) : type;
+    }
+
+    private static object? DefaultValue(Type type)
+    {
+        return type.IsValueType && Nullable.GetUnderlyingType(type) is null
+            ? Activator.CreateInstance(type)
+            : null;
+    }
+
+    private static bool ShouldReturnFirstVoidArgument(ParameterInfo[] parameters)
+    {
+        if (parameters.Length == 0)
+        {
+            return false;
+        }
+
+        Type type = ParameterType(parameters[0]);
+        return parameters[0].ParameterType.IsByRef
+            || type.IsArray
+            || (!type.IsPrimitive
+                && type != typeof(string)
+                && type != typeof(decimal)
+                && type != typeof(DateTime));
+    }
+
+    private static bool IsVoidLike(Type returnType)
+    {
+        if (returnType == typeof(void)
+            || returnType == typeof(Task)
+            || returnType == typeof(ValueTask))
+        {
+            return true;
+        }
+
+        return false;
+    }
+
+    private static object? AwaitInvocation(object? result, Type returnType)
+    {
+        if (result is Task task)
+        {
+            task.GetAwaiter().GetResult();
+            return TaskResult(task);
+        }
+
+        if (result is ValueTask valueTask)
+        {
+            valueTask.GetAwaiter().GetResult();
+            return null;
+        }
+
+        if (result is not null
+            && returnType.IsGenericType
+            && returnType.GetGenericTypeDefinition() == typeof(ValueTask<>))
+        {
+            MethodInfo asTask = returnType.GetMethod("AsTask", BindingFlags.Public | BindingFlags.Instance)
+                ?? throw new InvalidOperationException("Unable to await ValueTask result.");
+            Task taskResult = (Task)(asTask.Invoke(result, null)
+                ?? throw new InvalidOperationException("ValueTask did not expose a Task."));
+            taskResult.GetAwaiter().GetResult();
+            return TaskResult(taskResult);
+        }
+
+        return result;
+    }
+
+    private static object? TaskResult(Task task)
+    {
+        Type taskType = task.GetType();
+        return taskType.IsGenericType
+            ? taskType.GetProperty("Result", BindingFlags.Instance | BindingFlags.Public)?.GetValue(task)
+            : null;
+    }
+}
+""";
     }
 
     private static string GenerateDriverSource(SyntaxTree userTree, CSharpExecuteRequest request)

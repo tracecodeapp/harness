@@ -2,6 +2,9 @@ let runtimePromise = null;
 const trustedCSharpWorkerPostMessage = self.postMessage.bind(self);
 let warmupPromise = null;
 let executeExport = null;
+let prepareExport = null;
+let executePreparedExport = null;
+let disposePreparedArtifactExport = null;
 let executeProjectExport = null;
 let getCompiledArtifactKeyExport = null;
 let configuredAssetBaseUrl = null;
@@ -3123,7 +3126,7 @@ function resolveAssetUrl(assetBaseUrl, pathname) {
 
 function configureAssetBaseUrl(assetBaseUrl) {
   if (typeof assetBaseUrl === 'string' && assetBaseUrl.trim()) {
-    if (!configuredAssetBaseUrl || (!executeExport && !executeProjectExport && !getCompiledArtifactKeyExport && !runtimePromise)) {
+    if (!configuredAssetBaseUrl || (!executeExport && !prepareExport && !executeProjectExport && !getCompiledArtifactKeyExport && !runtimePromise)) {
       configuredAssetBaseUrl = assetBaseUrl;
     }
   }
@@ -3141,7 +3144,14 @@ function runWarmup() {
 
 async function loadRuntime(assetBaseUrl) {
   const resolvedAssetBaseUrl = configureAssetBaseUrl(assetBaseUrl);
-  if (executeExport && executeProjectExport && getCompiledArtifactKeyExport) {
+  if (
+    executeExport &&
+    prepareExport &&
+    executePreparedExport &&
+    disposePreparedArtifactExport &&
+    executeProjectExport &&
+    getCompiledArtifactKeyExport
+  ) {
     return {
       success: true,
       loadTimeMs: 0,
@@ -3171,6 +3181,9 @@ async function loadRuntime(assetBaseUrl) {
       });
       const exports = await runtime.getAssemblyExports(runtime.getConfig().mainAssemblyName);
       executeExport = exports?.TraceCode?.CSharpHost?.CompilerHost?.Execute;
+      prepareExport = exports?.TraceCode?.CSharpHost?.CompilerHost?.Prepare;
+      executePreparedExport = exports?.TraceCode?.CSharpHost?.CompilerHost?.ExecutePrepared;
+      disposePreparedArtifactExport = exports?.TraceCode?.CSharpHost?.CompilerHost?.DisposePreparedArtifact;
       executeProjectExport = exports?.TraceCode?.CSharpHost?.CompilerHost?.ExecuteProject;
       getCompiledArtifactKeyExport = exports?.TraceCode?.CSharpHost?.CompilerHost?.GetCompiledArtifactKey;
       if (typeof executeExport !== 'function') {
@@ -3178,6 +3191,15 @@ async function loadRuntime(assetBaseUrl) {
       }
       if (typeof executeProjectExport !== 'function') {
         throw new Error('Unable to resolve TraceCode.CSharpHost.CompilerHost.ExecuteProject JS export');
+      }
+      if (typeof prepareExport !== 'function') {
+        throw new Error('Unable to resolve TraceCode.CSharpHost.CompilerHost.Prepare JS export');
+      }
+      if (typeof executePreparedExport !== 'function') {
+        throw new Error('Unable to resolve TraceCode.CSharpHost.CompilerHost.ExecutePrepared JS export');
+      }
+      if (typeof disposePreparedArtifactExport !== 'function') {
+        throw new Error('Unable to resolve TraceCode.CSharpHost.CompilerHost.DisposePreparedArtifact JS export');
       }
       if (typeof getCompiledArtifactKeyExport !== 'function') {
         throw new Error('Unable to resolve TraceCode.CSharpHost.CompilerHost.GetCompiledArtifactKey JS export');
@@ -3193,6 +3215,9 @@ async function loadRuntime(assetBaseUrl) {
     runtimePromise.catch(() => {
       runtimePromise = null;
       executeExport = null;
+      prepareExport = null;
+      executePreparedExport = null;
+      disposePreparedArtifactExport = null;
       executeProjectExport = null;
       getCompiledArtifactKeyExport = null;
     });
@@ -4059,6 +4084,138 @@ function requestCompilerArtifactCache(operation, key, commandId, value) {
   });
 }
 
+async function prepareCSharpProgram(message) {
+  const startedAt = now();
+  const payload = message.payload ?? {};
+  const mode = payload.mode === 'trace' ? 'trace' : 'code';
+  const request = {
+    source: payload.code ?? '',
+    functionName: payload.functionName ?? '',
+    inputs: {},
+    executionStyle: payload.executionStyle ?? 'solution-method',
+    trace: mode === 'trace',
+    timeoutMs: payload.timeoutMs,
+    maxTraceSteps: payload.traceOptions?.maxTraceSteps,
+    maxLineEvents: payload.traceOptions?.maxLineEvents,
+    maxSingleLineHits: payload.traceOptions?.maxSingleLineHits,
+    maxStoredEvents: payload.traceOptions?.maxStoredEvents,
+    maxPathDepth: payload.traceOptions?.maxPathDepth,
+    minimalTrace: payload.traceOptions?.minimalTrace,
+    preparedProgram: true,
+  };
+  const runtimeStartedAt = now();
+  const runtimeResult = await loadRuntime(payload.assetBaseUrl);
+  const initMs = elapsedMs(runtimeStartedAt) || runtimeResult.timings?.initMs || 0;
+  const hostCallStartedAt = now();
+  const result = await withCSharpUserAuthorityLockdown(() =>
+    JSON.parse(prepareExport(JSON.stringify(request)))
+  );
+  const hostCallMs = elapsedMs(hostCallStartedAt);
+  if (
+    result?.success === true &&
+    (
+      typeof result.compiledArtifactKey !== 'string' ||
+      !result.compiledArtifactKey ||
+      typeof result.compiledArtifactBase64 !== 'string' ||
+      !result.compiledArtifactBase64
+    )
+  ) {
+    return {
+      success: false,
+      error: 'C# preparation did not produce a reusable compiled artifact.',
+      consoleOutput: Array.isArray(result.consoleOutput) ? result.consoleOutput : [],
+      timings: {
+        ...(result.timings && typeof result.timings === 'object' ? result.timings : {}),
+        initMs,
+        hostCallMs,
+        totalMs: elapsedMs(startedAt),
+      },
+    };
+  }
+
+  return {
+    ...result,
+    timings: {
+      ...(result?.timings && typeof result.timings === 'object' ? result.timings : {}),
+      initMs,
+      hostCallMs,
+      totalMs: elapsedMs(startedAt),
+    },
+  };
+}
+
+async function executePreparedCSharpProgram(message) {
+  const startedAt = now();
+  const payload = message.payload ?? {};
+  const prepared = payload.prepared && typeof payload.prepared === 'object'
+    ? payload.prepared
+    : {};
+  const inputs = payload.inputs && typeof payload.inputs === 'object' ? payload.inputs : {};
+  try {
+    validateCSharpInputsForJson(inputs);
+  } catch (error) {
+    return {
+      success: false,
+      error: error instanceof Error ? error.message : String(error),
+      consoleOutput: [],
+      timings: { totalMs: elapsedMs(startedAt) },
+    };
+  }
+
+  const request = {
+    source: prepared.code ?? '',
+    functionName: prepared.functionName ?? '',
+    inputs,
+    executionStyle: prepared.executionStyle ?? 'solution-method',
+    trace: prepared.mode === 'trace',
+    timeoutMs: payload.timeoutMs,
+    maxTraceSteps: prepared.traceOptions?.maxTraceSteps,
+    maxLineEvents: prepared.traceOptions?.maxLineEvents,
+    maxSingleLineHits: prepared.traceOptions?.maxSingleLineHits,
+    maxStoredEvents: prepared.traceOptions?.maxStoredEvents,
+    maxPathDepth: prepared.traceOptions?.maxPathDepth,
+    minimalTrace: prepared.traceOptions?.minimalTrace,
+    preparedProgram: true,
+    compiledArtifactKey: prepared.compiledArtifactKey,
+    compiledArtifactBase64: prepared.compiledArtifactBase64,
+  };
+  const runtimeStartedAt = now();
+  const runtimeResult = await loadRuntime(payload.assetBaseUrl);
+  const initMs = elapsedMs(runtimeStartedAt) || runtimeResult.timings?.initMs || 0;
+  const hostCallStartedAt = now();
+  const result = await withCSharpUserAuthorityLockdown(() =>
+    normalizeCSharpResult(JSON.parse(executePreparedExport(JSON.stringify(request))), request)
+  );
+  const hostCallMs = elapsedMs(hostCallStartedAt);
+  return {
+    ...result,
+    timings: {
+      ...(result?.timings && typeof result.timings === 'object' ? result.timings : {}),
+      initMs,
+      hostCallMs,
+      // ExecutePrepared rejects missing or mismatched artifacts before it can
+      // enter learner code. Once the host returns, this request used the
+      // prepared artifact even when learner execution itself failed.
+      artifactCacheHit: true,
+      totalMs: elapsedMs(startedAt),
+    },
+  };
+}
+
+function disposePreparedCSharpProgram(payload) {
+  const artifactKey = typeof payload?.compiledArtifactKey === 'string'
+    ? payload.compiledArtifactKey
+    : '';
+  if (!artifactKey || typeof disposePreparedArtifactExport !== 'function') {
+    return { success: true, disposed: false };
+  }
+
+  return {
+    success: true,
+    disposed: disposePreparedArtifactExport(artifactKey) === true,
+  };
+}
+
 async function executeCSharpCodePayload(payload, messageType = 'execute-code', commandId) {
   const startedAt = now();
   const request = {
@@ -4217,6 +4374,21 @@ async function handleMessage(message) {
 
   if (message.type === 'execute-code-batch') {
     return executeCSharpCodeBatch(message);
+  }
+
+  if (message.type === 'prepare-program') {
+    return prepareCSharpProgram(message);
+  }
+
+  if (
+    message.type === 'execute-prepared-code' ||
+    message.type === 'execute-prepared-trace'
+  ) {
+    return executePreparedCSharpProgram(message);
+  }
+
+  if (message.type === 'dispose-prepared-program') {
+    return disposePreparedCSharpProgram(message.payload);
   }
 
   if (
@@ -4406,7 +4578,7 @@ self.addEventListener('message', (event) => {
         kernelSyscallChannel,
         kernelSignalMailbox,
       });
-      const transported = type === 'execute-with-tracing'
+      const transported = type === 'execute-with-tracing' || type === 'execute-prepared-trace'
         ? prepareCSharpTraceEventTransfer(result, payload?.traceEventTransport)
         : null;
       trustedCSharpWorkerPostMessage(

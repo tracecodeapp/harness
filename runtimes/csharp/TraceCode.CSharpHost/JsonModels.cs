@@ -45,6 +45,12 @@ public sealed class CSharpExecuteRequest
 
     [JsonPropertyName("compiledArtifactBase64")]
     public string? CompiledArtifactBase64 { get; set; }
+
+    [JsonPropertyName("preparedProgram")]
+    public bool PreparedProgram { get; set; }
+
+    [JsonPropertyName("requirePreparedArtifact")]
+    public bool RequirePreparedArtifact { get; set; }
 }
 
 public sealed class CSharpProjectCommandRequest
@@ -210,6 +216,10 @@ public sealed class CSharpExecuteResponse
     [JsonPropertyName("compiledArtifactBase64")]
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public string? CompiledArtifactBase64 { get; set; }
+
+    [JsonPropertyName("compiledArtifactKey")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? CompiledArtifactKey { get; set; }
 }
 
 public sealed class RuntimeTraceEvent

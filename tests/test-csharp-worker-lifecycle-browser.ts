@@ -12,9 +12,13 @@ interface ExecuteResult {
   success: boolean;
   output?: unknown;
   error?: string;
+  events?: Array<{ kind?: string; line?: number }>;
+  compiledArtifactKey?: string;
+  compiledArtifactBase64?: string;
   timings?: {
     compileCacheHit?: boolean;
     hostArtifactCacheHit?: boolean;
+    artifactCacheHit?: boolean;
     compileMs?: number;
     compileCacheEntries?: number;
     compileCacheBytes?: number;
@@ -180,11 +184,121 @@ async function main(): Promise<void> {
       const cold = await firstWorker.send('execute-code', request(source, 7));
       const warm = await firstWorker.send('execute-code', request(source, 9));
       const edited = await firstWorker.send('execute-code', request(editedSource, 3));
-      const hang = firstWorker.send('execute-code', {
-        code: 'public class Solution { public int Hang() { while (true) { } } }',
-        functionName: 'Hang',
-        inputs: {},
+
+      const prepared = await firstWorker.send<ExecuteResult>('prepare-program', {
+        mode: 'code',
+        code: source,
+        functionName: 'Touch',
         executionStyle: 'solution-method',
+        assetBaseUrl,
+        timeoutMs: 10_000,
+      });
+      const preparedProgram = {
+        mode: 'code',
+        code: source,
+        functionName: 'Touch',
+        executionStyle: 'solution-method',
+        compiledArtifactKey: prepared.compiledArtifactKey,
+        compiledArtifactBase64: prepared.compiledArtifactBase64,
+      };
+      const preparedFirst = await firstWorker.send('execute-prepared-code', {
+        prepared: preparedProgram,
+        inputs: { value: 13 },
+        assetBaseUrl,
+        timeoutMs: 10_000,
+      });
+      const preparedSecond = await firstWorker.send('execute-prepared-code', {
+        prepared: preparedProgram,
+        inputs: { value: 17 },
+        assetBaseUrl,
+        timeoutMs: 10_000,
+      });
+
+      const failureSource = [
+        'public class Solution {',
+        '  public int Fail(int value) {',
+        '    throw new System.InvalidOperationException("prepared failure " + value);',
+        '  }',
+        '}',
+      ].join('\n');
+      const failurePreparation = await firstWorker.send<ExecuteResult>('prepare-program', {
+        mode: 'code',
+        code: failureSource,
+        functionName: 'Fail',
+        executionStyle: 'solution-method',
+        assetBaseUrl,
+        timeoutMs: 10_000,
+      });
+      const preparedFailure = await firstWorker.send('execute-prepared-code', {
+        prepared: {
+          mode: 'code',
+          code: failureSource,
+          functionName: 'Fail',
+          executionStyle: 'solution-method',
+          compiledArtifactKey: failurePreparation.compiledArtifactKey,
+          compiledArtifactBase64: failurePreparation.compiledArtifactBase64,
+        },
+        inputs: { value: 23 },
+        assetBaseUrl,
+        timeoutMs: 10_000,
+      });
+
+      const tracePreparation = await firstWorker.send<ExecuteResult>('prepare-program', {
+        mode: 'trace',
+        code: source,
+        functionName: 'Touch',
+        executionStyle: 'solution-method',
+        traceOptions: { maxTraceSteps: 1_000, maxLineEvents: 1_000 },
+        assetBaseUrl,
+        timeoutMs: 10_000,
+      });
+      const preparedTrace = await firstWorker.send('execute-prepared-trace', {
+        prepared: {
+          mode: 'trace',
+          code: source,
+          functionName: 'Touch',
+          executionStyle: 'solution-method',
+          traceOptions: { maxTraceSteps: 1_000, maxLineEvents: 1_000 },
+          compiledArtifactKey: tracePreparation.compiledArtifactKey,
+          compiledArtifactBase64: tracePreparation.compiledArtifactBase64,
+        },
+        inputs: { value: 19 },
+        assetBaseUrl,
+        timeoutMs: 10_000,
+      });
+
+      const disposed = await firstWorker.send<{ success: boolean; disposed: boolean }>(
+        'dispose-prepared-program',
+        { compiledArtifactKey: prepared.compiledArtifactKey }
+      );
+
+      const cancellableSource = [
+        'public class Solution {',
+        '  public int MaybeHang(bool hang, int value) {',
+        '    if (hang) { while (true) { } }',
+        '    return value;',
+        '  }',
+        '}',
+      ].join('\n');
+      const cancellablePreparation = await firstWorker.send<ExecuteResult>('prepare-program', {
+        mode: 'code',
+        code: cancellableSource,
+        functionName: 'MaybeHang',
+        executionStyle: 'solution-method',
+        assetBaseUrl,
+        timeoutMs: 10_000,
+      });
+      const cancellableProgram = {
+        mode: 'code',
+        code: cancellableSource,
+        functionName: 'MaybeHang',
+        executionStyle: 'solution-method',
+        compiledArtifactKey: cancellablePreparation.compiledArtifactKey,
+        compiledArtifactBase64: cancellablePreparation.compiledArtifactBase64,
+      };
+      const hang = firstWorker.send('execute-prepared-code', {
+        prepared: cancellableProgram,
+        inputs: { hang: true, value: 29 },
         assetBaseUrl,
         timeoutMs: 60_000,
       });
@@ -197,6 +311,12 @@ async function main(): Promise<void> {
       await hang.catch(() => undefined);
 
       const replacementWorker = await createWorkerHarness();
+      const preparedAfterTimeout = await replacementWorker.send('execute-prepared-code', {
+        prepared: cancellableProgram,
+        inputs: { hang: false, value: 31 },
+        assetBaseUrl,
+        timeoutMs: 10_000,
+      });
       const afterTimeout = await replacementWorker.send('execute-code', request(source, 11));
       replacementWorker.terminate();
       const projectWorker = await createWorkerHarness();
@@ -228,11 +348,37 @@ async function main(): Promise<void> {
         },
       });
       projectWorker.terminate();
-      return { cold, warm, edited, procDirectory, afterTimeout };
+      return {
+        cold,
+        warm,
+        edited,
+        prepared,
+        preparedFirst,
+        preparedSecond,
+        failurePreparation,
+        preparedFailure,
+        tracePreparation,
+        preparedTrace,
+        disposed,
+        cancellablePreparation,
+        preparedAfterTimeout,
+        procDirectory,
+        afterTimeout,
+      };
     }, { origin }) as {
       cold: ExecuteResult;
       warm: ExecuteResult;
       edited: ExecuteResult;
+      prepared: ExecuteResult;
+      preparedFirst: ExecuteResult;
+      preparedSecond: ExecuteResult;
+      failurePreparation: ExecuteResult;
+      preparedFailure: ExecuteResult;
+      tracePreparation: ExecuteResult;
+      preparedTrace: ExecuteResult;
+      disposed: { success: boolean; disposed: boolean };
+      cancellablePreparation: ExecuteResult;
+      preparedAfterTimeout: ExecuteResult;
       procDirectory: ProjectExecuteResult;
       afterTimeout: ExecuteResult;
     };
@@ -247,6 +393,67 @@ async function main(): Promise<void> {
     );
     assertCondition(metrics.edited.success && metrics.edited.output === 1003, `Edited C# run failed: ${JSON.stringify(metrics.edited)}`);
     assertCondition(metrics.edited.timings?.compileCacheHit === false, 'Edited C# source must miss the compiled artifact cache.');
+    assertCondition(
+      metrics.prepared.success &&
+        Boolean(metrics.prepared.compiledArtifactKey) &&
+        Boolean(metrics.prepared.compiledArtifactBase64),
+      `C# preparation did not return an opaque reusable artifact: ${JSON.stringify(metrics.prepared)}`
+    );
+    assertCondition(
+      metrics.prepared.timings?.compileCacheHit === false,
+      'C# program preparation should perform its only compilation before case execution.'
+    );
+    assertCondition(
+      metrics.preparedFirst.success &&
+        metrics.preparedFirst.output === 113 &&
+        metrics.preparedFirst.timings?.compileCacheHit === true &&
+        metrics.preparedFirst.timings?.artifactCacheHit === true,
+      `First prepared C# case did not reuse the prepared artifact: ${JSON.stringify(metrics.preparedFirst)}`
+    );
+    assertCondition(
+      metrics.preparedSecond.success &&
+        metrics.preparedSecond.output === 117 &&
+        metrics.preparedSecond.timings?.compileCacheHit === true &&
+        metrics.preparedSecond.timings?.artifactCacheHit === true &&
+        metrics.preparedSecond.timings?.executionRealm === 'collectible-assembly-load-context',
+      `Second prepared C# case leaked static state or recompiled: ${JSON.stringify(metrics.preparedSecond)}`
+    );
+    assertCondition(
+      metrics.failurePreparation.success &&
+        metrics.preparedFailure.success === false &&
+        metrics.preparedFailure.error?.includes('prepared failure 23') === true &&
+        metrics.preparedFailure.timings?.compileCacheHit === true &&
+        metrics.preparedFailure.timings?.artifactCacheHit === true,
+      `Prepared C# learner failure did not preserve prepared-artifact timing: ${JSON.stringify({
+        preparation: metrics.failurePreparation,
+        execution: metrics.preparedFailure,
+      })}`
+    );
+    assertCondition(
+      metrics.tracePreparation.success &&
+        metrics.preparedTrace.success &&
+        metrics.preparedTrace.output === 119 &&
+        metrics.preparedTrace.events?.some((event) => event.kind === 'line') === true &&
+        metrics.preparedTrace.timings?.compileCacheHit === true &&
+        metrics.preparedTrace.timings?.artifactCacheHit === true,
+      `Prepared C# trace did not reuse its instrumented assembly: ${JSON.stringify(metrics.preparedTrace)}`
+    );
+    assertCondition(
+      metrics.disposed.success && metrics.disposed.disposed,
+      `Prepared C# artifact disposal did not remove the owned host cache entry: ${JSON.stringify(metrics.disposed)}`
+    );
+    assertCondition(
+      metrics.cancellablePreparation.success &&
+        metrics.preparedAfterTimeout.success &&
+        metrics.preparedAfterTimeout.output === 31 &&
+        metrics.preparedAfterTimeout.timings?.compileCacheHit === true &&
+        metrics.preparedAfterTimeout.timings?.hostArtifactCacheHit === true &&
+        metrics.preparedAfterTimeout.timings?.artifactCacheHit === true,
+      `Prepared C# artifact did not survive cancellation through a replacement worker: ${JSON.stringify({
+        preparation: metrics.cancellablePreparation,
+        execution: metrics.preparedAfterTimeout,
+      })}`
+    );
     assertCondition(
       metrics.procDirectory.exitCode === 0 &&
         metrics.procDirectory.stdout === 'info,version\ninfo=info-body\nversion=version-body\n',
@@ -274,8 +481,12 @@ async function main(): Promise<void> {
       cacheEntries: metrics.edited.timings?.compileCacheEntries,
       cacheBytes: metrics.edited.timings?.compileCacheBytes,
       artifactBytes: metrics.warm.timings?.compileArtifactBytes,
+      preparedCompileMs: metrics.prepared.timings?.compileMs,
+      preparedFirstTotalMs: metrics.preparedFirst.timings?.totalMs,
+      preparedSecondTotalMs: metrics.preparedSecond.timings?.totalMs,
+      preparedReplacementTotalMs: metrics.preparedAfterTimeout.timings?.totalMs,
     }));
-    console.log('PASS: C# browser compiler lifecycle isolates execution and project /proc directories remain enumerable');
+    console.log('PASS: C# browser compiler lifecycle prepares once, isolates every case, survives cancellation, traces, fails, and disposes exactly');
   } finally {
     await browser.close();
     await new Promise<void>((resolve) => server.close(() => resolve()));
