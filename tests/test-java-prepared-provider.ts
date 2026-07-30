@@ -251,6 +251,54 @@ test('Java prepared provider plans once, executes many isolated cases, and dispo
   );
 });
 
+test('releasing the Java standby preserves lazy restart and later preparation', async () => {
+  const firstStandby = createFakeClient();
+  const replacementStandby = createFakeClient();
+  const caseWorker = createFakeClient();
+  const clients = [
+    firstStandby.client,
+    replacementStandby.client,
+    caseWorker.client,
+  ];
+  const provider = createJavaPreparedExecutionProvider({
+    createWorkerClient: () => {
+      const client = clients.shift();
+      if (!client) throw new Error('Unexpected extra Java worker.');
+      return client;
+    },
+  });
+
+  assert.deepEqual(await provider.init(), { success: true, loadTimeMs: 7 });
+  provider.releaseStandby();
+  provider.releaseStandby();
+  assert.equal(firstStandby.state.terminateCalls, 1);
+
+  assert.deepEqual(await provider.init(), { success: true, loadTimeMs: 7 });
+  const prepared = await provider.prepareProgram({
+    mode: 'code',
+    code: 'class Solution { int value(int value) { return value; } }',
+    functionName: 'value',
+    executionStyle: 'solution-method',
+  });
+  if (prepared.kind !== 'prepared' || prepared.program.mode !== 'code') {
+    throw new Error('Expected a prepared Java code program.');
+  }
+  assert.equal(replacementStandby.state.initCalls, 1);
+  assert.equal(replacementStandby.state.prepareCalls.length, 1);
+  assert.equal(replacementStandby.state.terminateCalls, 1);
+  assert.equal(
+    completedOutput(
+      await prepared.program.executeIsolated({ inputs: { value: 9 } })
+    ),
+    9
+  );
+
+  await prepared.program.dispose();
+  provider.dispose();
+  assert.equal(caseWorker.state.terminateCalls, 1);
+  assert.throws(() => provider.releaseStandby(), /disposed/);
+});
+
 test('Java prepared program serializes concurrent case requests instead of overlapping workers', async () => {
   const firstEntered = deferred();
   const releaseFirst = deferred();

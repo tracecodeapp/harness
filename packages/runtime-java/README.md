@@ -46,10 +46,17 @@ ends. Concurrent case requests are serialized; disposal hard-aborts an active
 Worker, drains the operation boundary, and prevents queued requests from
 starting.
 
+Browser-host language release calls `releaseStandby()`, which discards only an
+unused warm Worker and allows the next `init()` or `prepareProgram()` to restart
+lazily. Full `dispose()` is final and permanently invalidates the provider.
+
 The prepared registry must not construct Java through
 `createJavaRuntimeClient`. That is the legacy single-call adapter and would
 silently recompile once per case. There is no legacy fallback in the prepared
 factory: a missing or invalid prepared-worker URL is a construction error.
+The URL must select the TraceJVM-backed Java worker. The classic/CheerpJ worker
+does not expose the prepared artifact protocol, so preparation fails closed
+instead of recompiling cases or falling back to the legacy client.
 The root browser lease exposes this provider explicitly in its
 `preparedProviders` map under `java`; it must never infer a prepared provider
 from the legacy `clients` map.

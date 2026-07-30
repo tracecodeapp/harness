@@ -49,7 +49,13 @@ export type JavaBrowserPreparedExecutionProviderOptions =
 export interface JavaPreparedExecutionProvider
   extends RuntimePreparedExecutionProvider {
   /**
-   * Releases an initialized standby worker that was not consumed by a
+   * Releases only an unused warm standby. The provider remains valid and will
+   * lazily create a new standby on its next init or preparation.
+   */
+  releaseStandby(): void;
+
+  /**
+   * Permanently invalidates the provider and releases its standby or active
    * preparation. Prepared programs remain independently owned and must still
    * be disposed by their evaluation owner.
    */
@@ -390,6 +396,13 @@ class JavaPreparedExecutionProviderImpl
     for (const client of this.activePreparationClients) {
       this.terminatePreparationClientOnce(client);
     }
+  }
+
+  releaseStandby(): void {
+    this.assertActive();
+    if (!this.standby) return;
+    this.terminatePreparationClientOnce(this.standby.client);
+    this.standby = undefined;
   }
 
   private assertActive(): void {
