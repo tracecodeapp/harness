@@ -86,21 +86,26 @@ Use `harness.warmLanguage(language)` when Python, TypeScript, Java, C#, or C++
 is selected so runtime/compiler startup happens before the first latency-sensitive
 execution. JavaScript `init()` prepares a clean one-shot executor directly.
 
-### 0.13 lifecycle notice
+### Judge facade
 
-The 0.13 release line is the final line exposing the direct BrowserHarness
-runtime-client lifecycle and engine-branded public runtime APIs. They remain
-available for 0.13.x stabilization without runtime deprecation warnings.
-Beginning with 0.14, evaluation will use the TraceKernel-backed Judge API and
-language-based runtime providers.
+`@tracecode/harness/judge` is the supported 0.14 surface for algorithm
+evaluation. It composes evaluation policy, a TraceKernel host, and a
+language-neutral runtime provider into one execution path:
+
+`Judge -> TraceKernel -> RuntimeExecutionProvider`
+
+The private Judge workspace owns comparison policy, lifecycle validation, and
+result shaping. The published root facade binds that policy to TraceKernel and
+the selected runtime provider without exposing those internal package
+boundaries.
 
 ## Packages
 
-The published `@tracecode/harness` package exposes `/browser`, `/core`, `/python`, `/javascript`,
-`/java`, `/csharp`, `/cpp`, `/sql`, `/project`, `/project-node`, and `/native`
-entrypoints. The matching `packages/*` workspaces are private implementation
-boundaries used to build and test those root subpaths; they are not separate
-registry releases.
+The published `@tracecode/harness` package exposes `/browser`, `/core`,
+`/judge`, `/python`, `/javascript`, `/java`, `/csharp`, `/cpp`, `/sql`,
+`/project`, `/project-node`, and `/native` entrypoints. The matching
+`packages/*` workspaces are private implementation boundaries used to build and
+test those root subpaths; they are not separate registry releases.
 
 All supported languages are stable. Use `getLanguageRuntimeProfile(language)`
 for detailed capability checks and `getLanguageRuntimeInfo(language)` for

@@ -85,6 +85,12 @@
       "require": "./dist/internal/tracekernel/workspace.cjs",
       "default": "./dist/internal/tracekernel/workspace.js"
     },
+    "./judge": {
+      "types": "./dist/judge.d.ts",
+      "import": "./dist/judge.js",
+      "require": "./dist/judge.cjs",
+      "default": "./dist/judge.js"
+    },
     "./python": {
       "types": "./dist/python.d.ts",
       "import": "./dist/python.js",

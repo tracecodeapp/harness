@@ -128,6 +128,9 @@ async function runWithTempRoot(tempRoot: string): Promise<void> {
     'dist/internal/tracekernel/workspace.js',
     'dist/internal/tracekernel/workspace.cjs',
     'dist/internal/tracekernel/workspace.d.ts',
+    'dist/judge.js',
+    'dist/judge.cjs',
+    'dist/judge.d.ts',
     'dist/zlib-browser-shim.js',
     'dist/zlib-browser-shim.cjs',
     'dist/core.js',
@@ -395,6 +398,7 @@ async function runWithTempRoot(tempRoot: string): Promise<void> {
       const projectNode = await import('@tracecode/harness/project-node');
       const native = await import('@tracecode/harness/native');
       const browser = await import('@tracecode/harness/browser');
+      const judge = await import('@tracecode/harness/judge');
       const browserProject = await import('@tracecode/harness/browser/project');
       const core = await import('@tracecode/harness/core');
       const python = await import('@tracecode/harness/python');
@@ -425,6 +429,7 @@ async function runWithTempRoot(tempRoot: string): Promise<void> {
       }
 
       if (typeof browser.createBrowserHarness !== 'function') throw new Error('Missing createBrowserHarness export');
+      if (typeof judge.createRuntimeJudge !== 'function') throw new Error('Missing judge export');
       if (typeof sql.createSqlRuntimeTraceClient !== 'function') throw new Error('Missing SQL runtime trace client export');
       const csharpRuntimeInfo = core.getLanguageRuntimeInfo('csharp');
       if (/roslyn|dotnet|\\.net/i.test(JSON.stringify(csharpRuntimeInfo))) {
@@ -883,6 +888,9 @@ async function runWithTempRoot(tempRoot: string): Promise<void> {
       if (typeof sql.createSqlRuntimeTraceClient !== 'function') throw new Error('Missing SQL runtime export');
       if (typeof sql.createSqlTraceClient !== 'function') throw new Error('Missing sql trace export');
       if (typeof root.createBrowserHarness !== 'function') throw new Error('Root export should expose createBrowserHarness');
+      if (typeof root.createRuntimeJudge !== 'function') {
+        throw new Error('Root export should expose createRuntimeJudge');
+      }
       if ('createSqlTraceClient' in root || 'createSqlRuntimeTraceClient' in root) {
         throw new Error('Root export should not expose SQL helpers; use @tracecode/harness/sql');
       }

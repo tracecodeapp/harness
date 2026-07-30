@@ -3,9 +3,9 @@ import test from 'node:test';
 import * as Effect from 'effect/Effect';
 import * as Fiber from 'effect/Fiber';
 import {
-  createProvisionalRuntimeExecutionJudge,
+  createRuntimeJudge,
   type JudgeEvaluationPlan,
-  type ProvisionalRuntimeExecutionJudgeBinding,
+  type RuntimeJudgeBinding,
 } from '../src/judge';
 import {
   RUNTIME_TRACE_SCHEMA_VERSION,
@@ -237,24 +237,24 @@ function makePlan<Expected = unknown>(
 }
 
 function codeBinding(
-  overrides: Partial<ProvisionalRuntimeExecutionJudgeBinding> = {}
-): ProvisionalRuntimeExecutionJudgeBinding {
+  overrides: Partial<RuntimeJudgeBinding> = {}
+): RuntimeJudgeBinding {
   return {
     sourcePath: '/workspace/solution.fake',
     functionName: 'solve',
     executionStyle: 'function',
     ...overrides,
-  } as ProvisionalRuntimeExecutionJudgeBinding;
+  } as RuntimeJudgeBinding;
 }
 
 async function evaluate(
   state: FakeProviderState,
   plan: JudgeEvaluationPlan<FakeInput>,
-  binding: ProvisionalRuntimeExecutionJudgeBinding = codeBinding()
+  binding: RuntimeJudgeBinding = codeBinding()
 ) {
   return Effect.runPromise(Effect.scoped(
     Effect.gen(function* () {
-      const judge = yield* createProvisionalRuntimeExecutionJudge({
+      const judge = yield* createRuntimeJudge({
         runtime: RUNTIME,
         provider: fakeProvider(state),
         binding,
@@ -523,7 +523,7 @@ test('interrupting evaluation cancels the provider call and releases all session
 
   await Effect.runPromise(Effect.scoped(
     Effect.gen(function* () {
-      const judge = yield* createProvisionalRuntimeExecutionJudge({
+      const judge = yield* createRuntimeJudge({
         runtime: RUNTIME,
         provider: fakeProvider(state),
         binding: codeBinding(),

@@ -61,7 +61,7 @@ export type {
 const PROVIDER_ERROR_CODE = 'runtime-provider-error';
 const UNSUPPORTED_COMPILE_CODE = 'runtime-provider-compile-unsupported';
 
-interface ProvisionalRuntimeExecutionJudgeBindingBase {
+interface RuntimeJudgeBindingBase {
   /**
    * Submission source to read with the process-bound TraceKernel syscall port.
    * Relative paths resolve against the Judge process cwd.
@@ -70,8 +70,8 @@ interface ProvisionalRuntimeExecutionJudgeBindingBase {
   readonly executionStyle?: RuntimeExecutionStyle;
 }
 
-export interface ProvisionalRuntimeExecutionJudgeCodeBinding
-  extends ProvisionalRuntimeExecutionJudgeBindingBase {
+export interface RuntimeJudgeCodeBinding
+  extends RuntimeJudgeBindingBase {
   readonly trace?: false;
   readonly functionName?: string;
   /**
@@ -81,35 +81,35 @@ export interface ProvisionalRuntimeExecutionJudgeCodeBinding
   readonly limits?: RuntimeExecutionLimits;
 }
 
-export interface ProvisionalRuntimeExecutionJudgeTraceBinding
-  extends ProvisionalRuntimeExecutionJudgeBindingBase {
+export interface RuntimeJudgeTraceBinding
+  extends RuntimeJudgeBindingBase {
   readonly trace: true;
   readonly functionName?: string | null;
   readonly traceOptions?: TraceExecutionOptions;
 }
 
 /**
- * Provisional 0.14 binding from a lowered Judge plan to the neutral
+ * Binding from a lowered Judge plan to the neutral
  * `RuntimeExecutionProvider` call contract.
  *
  * This intentionally contains execution mechanics only. Expected values,
  * comparators, verdicts, and scoring never cross into the runtime provider.
  */
-export type ProvisionalRuntimeExecutionJudgeBinding =
-  | ProvisionalRuntimeExecutionJudgeCodeBinding
-  | ProvisionalRuntimeExecutionJudgeTraceBinding;
+export type RuntimeJudgeBinding =
+  | RuntimeJudgeCodeBinding
+  | RuntimeJudgeTraceBinding;
 
-interface ProvisionalRuntimeExecutionJudgeProviderOptions {
+interface RuntimeJudgeProviderOptions {
   readonly runtime: string;
   readonly provider: RuntimeExecutionProvider;
   readonly runtimeControl: JudgeRuntimeControlPort;
-  readonly binding: ProvisionalRuntimeExecutionJudgeBinding;
+  readonly binding: RuntimeJudgeBinding;
 }
 
-export interface CreateProvisionalRuntimeExecutionJudgeOptions {
+export interface CreateRuntimeJudgeOptions {
   readonly runtime: string;
   readonly provider: RuntimeExecutionProvider;
-  readonly binding: ProvisionalRuntimeExecutionJudgeBinding;
+  readonly binding: RuntimeJudgeBinding;
   /**
    * Override the same-realm control port. A future worker transport can supply
    * this contract without changing Judge or the runtime-provider adapter.
@@ -122,7 +122,7 @@ function errorFromUnknown(error: unknown): Error {
 }
 
 function validateProviderOptions(
-  options: ProvisionalRuntimeExecutionJudgeProviderOptions
+  options: RuntimeJudgeProviderOptions
 ): void {
   if (options.runtime.trim().length === 0) {
     throw new Error('RuntimeExecutionProvider Judge runtime name must not be empty.');
@@ -133,8 +133,8 @@ function validateProviderOptions(
 }
 
 function isTraceBinding(
-  binding: ProvisionalRuntimeExecutionJudgeBinding
-): binding is ProvisionalRuntimeExecutionJudgeTraceBinding {
+  binding: RuntimeJudgeBinding
+): binding is RuntimeJudgeTraceBinding {
   return binding.trace === true;
 }
 
@@ -323,7 +323,7 @@ function mappedTraceOutcome(
 }
 
 function executeProviderCase(
-  options: ProvisionalRuntimeExecutionJudgeProviderOptions,
+  options: RuntimeJudgeProviderOptions,
   context: TraceKernelRuntimeProcessContext,
   invocation: JudgeRuntimeInvocationInput
 ): Effect.Effect<MappedRuntimeOutcome, Error> {
@@ -396,7 +396,7 @@ function providerFailure(
 }
 
 function executeProviderProcess(
-  options: ProvisionalRuntimeExecutionJudgeProviderOptions,
+  options: RuntimeJudgeProviderOptions,
   context: TraceKernelRuntimeProcessContext
 ): Effect.Effect<TraceKernelRuntimeResult, Error> {
   const invocationId = context.env[JUDGE_INVOCATION_ID_ENV];
@@ -413,7 +413,7 @@ function executeProviderProcess(
         const mapped = providerFailure(
           options.runtime,
           'RuntimeExecutionProvider performs compilation as part of each code call; ' +
-            'this provisional Judge adapter does not implement a separate compile phase.',
+            'this Judge facade does not implement a separate compile phase.',
           UNSUPPORTED_COMPILE_CODE
         );
         return options.runtimeControl.publish(invocationId, mapped.output).pipe(
@@ -441,15 +441,15 @@ function executeProviderProcess(
 }
 
 /**
- * Low-level provisional bridge for callers that already own a TraceKernel
+ * Low-level bridge for callers that already own a TraceKernel
  * host. The returned provider consumes `RuntimeExecutionProvider`, never the
  * legacy `RuntimeClient`.
  */
-function makeProvisionalRuntimeExecutionJudgeProvider(
-  options: ProvisionalRuntimeExecutionJudgeProviderOptions
+function makeRuntimeJudgeProvider(
+  options: RuntimeJudgeProviderOptions
 ): TraceKernelRuntimeProvider {
   validateProviderOptions(options);
-  const binding: ProvisionalRuntimeExecutionJudgeBinding =
+  const binding: RuntimeJudgeBinding =
     isTraceBinding(options.binding)
       ? Object.freeze({
           ...options.binding,
@@ -463,7 +463,7 @@ function makeProvisionalRuntimeExecutionJudgeProvider(
             ? { limits: Object.freeze({ ...options.binding.limits }) }
             : {}),
         });
-  const providerOptions: ProvisionalRuntimeExecutionJudgeProviderOptions =
+  const providerOptions: RuntimeJudgeProviderOptions =
     Object.freeze({
       ...options,
       binding,
@@ -500,13 +500,13 @@ function makeProvisionalRuntimeExecutionJudgeProvider(
 }
 
 /**
- * Root-package composition for the first executable 0.14 migration slice.
+ * Public runtime-judge facade for 0.14.
  *
- * The factory deliberately remains provisional: language-specific driver
- * generation, compile artifact policy, and worker-backed control transport
- * are still outside this slice.
+ * This is the stable root surface for Judge-backed execution. It keeps the
+ * Judge -> TraceKernel -> RuntimeExecutionProvider boundary public while the
+ * lower-level engine packages remain internal implementation details.
  */
-export interface ProvisionalRuntimeExecutionJudge {
+export interface RuntimeJudge {
   readonly runtime: string;
   readonly runtimeControl: JudgeRuntimeControlPort;
   activeSessionIds(): readonly string[];
@@ -524,8 +524,8 @@ export interface ProvisionalRuntimeExecutionJudge {
   >;
 }
 
-class ProvisionalRuntimeExecutionJudgeComposition
-  implements ProvisionalRuntimeExecutionJudge {
+class RuntimeJudgeComposition
+  implements RuntimeJudge {
   constructor(
     readonly runtime: string,
     readonly runtimeControl: JudgeRuntimeControlPort,
@@ -557,16 +557,16 @@ class ProvisionalRuntimeExecutionJudgeComposition
   }
 }
 
-export function createProvisionalRuntimeExecutionJudge(
-  options: CreateProvisionalRuntimeExecutionJudgeOptions
+export function createRuntimeJudge(
+  options: CreateRuntimeJudgeOptions
 ): Effect.Effect<
-  ProvisionalRuntimeExecutionJudge,
+  RuntimeJudge,
   never,
   Scope.Scope
 > {
   const runtimeControl =
     options.runtimeControl ?? new InMemoryJudgeRuntimeControl();
-  const runtimeProvider = makeProvisionalRuntimeExecutionJudgeProvider({
+  const runtimeProvider = makeRuntimeJudgeProvider({
     runtime: options.runtime,
     provider: options.provider,
     runtimeControl,
@@ -576,7 +576,7 @@ export function createProvisionalRuntimeExecutionJudge(
     providers: [runtimeProvider],
   }).pipe(
     Effect.map((host) =>
-      new ProvisionalRuntimeExecutionJudgeComposition(
+      new RuntimeJudgeComposition(
         options.runtime,
         runtimeControl,
         host,

@@ -24,6 +24,7 @@ export default defineConfig([
       'internal/browser': 'packages/harness-browser/src/internal.ts',
       'internal/tracekernel/workspace':
         'src/internal/tracekernel/workspace.ts',
+      judge: 'src/judge.ts',
       'zlib-browser-shim': 'packages/harness-project/src/zlib-browser-shim.ts',
       core: 'packages/harness-core/src/index.ts',
       python: 'packages/harness-python/src/index.ts',
