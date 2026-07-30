@@ -104,10 +104,12 @@ async function testNativeCommandIdentity(): Promise<void> {
       allowMainThreadExecution: true,
       trustedMainThreadExecution: true,
     },
-    pythonWorkerClient: { executeProjectPython: fail, terminate() {} },
-    javaWorkerClient: { executeProjectJava: fail, terminate() {} },
-    csharpWorkerClient: { executeProjectCSharp: fail, terminate() {} },
-    cppWorkerClient: { executeProjectCpp: fail, terminate() {} },
+    runtimeProviders: {
+      python: { execute: fail },
+      java: { execute: fail },
+      csharp: { execute: fail },
+      cpp: { execute: fail },
+    },
   });
 
   try {

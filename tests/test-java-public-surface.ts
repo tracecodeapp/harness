@@ -132,10 +132,19 @@ function main(): void {
     declarationPath('packages/runtime-browser/src/project.ts')
   )!;
   assertCondition(
-    browserProjectDeclaration.includes('java?: Omit<JavaProjectRunnerOptions') &&
+    browserProjectDeclaration.includes(
+      'java?: BrowserProjectJavaRuntimeOptions'
+    ) &&
+      browserProjectDeclaration.includes(
+        'runtimeProviders?: BrowserProjectRuntimeProviders'
+      ) &&
+      !/\b(?:Python|Java|CSharp|Cpp)WorkerClient\b/u.test(
+        browserProjectDeclaration
+      ) &&
+      !/\bJavaProjectRunnerOptions\b/u.test(browserProjectDeclaration) &&
       !/\bjavaRuntime\b/u.test(browserProjectDeclaration) &&
       !/\btraceJVM\b/u.test(browserProjectDeclaration),
-    'Browser project options must expose java without an engine selector or branded provider field'
+    'Browser project options must expose provider-neutral command/runtime factories without concrete client or engine types'
   );
 
   const javaPackageJson = JSON.parse(

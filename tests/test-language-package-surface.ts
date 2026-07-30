@@ -1251,29 +1251,27 @@ async function runWithTempRoot(tempRoot: string): Promise<void> {
               { path: 'Program.cs', contents: 'Console.WriteLine("browser-only-csharp");\\n' },
               { path: 'main.cpp', contents: 'int main() { return 0; }\\n' },
             ],
-            pythonWorkerClient: {
-              async executeProjectPython(request) {
-                return { stdout: request.scriptPath + ':browser-only-python\\n', stderr: '', exitCode: 0 };
-            },
-            terminate() {},
-          },
-          javaWorkerClient: {
-              async executeProjectJava(request) {
-                return { stdout: request.source + ':' + request.scriptPath + ':browser-only-java\\n', stderr: '', exitCode: 0 };
+            runtimeProviders: {
+              python: {
+                async execute(request) {
+                  return { stdout: request.scriptPath + ':browser-only-python\\n', stderr: '', exitCode: 0 };
+                },
               },
-              terminate() {},
-            },
-            csharpWorkerClient: {
-              async executeProjectCSharp(request) {
-                return { stdout: request.source + ':' + request.args.join(',') + ':browser-only-csharp\\n', stderr: '', exitCode: 0 };
+              java: {
+                async execute(request) {
+                  return { stdout: request.source + ':' + request.scriptPath + ':browser-only-java\\n', stderr: '', exitCode: 0 };
+                },
               },
-              terminate() {},
-            },
-            cppWorkerClient: {
-              async executeProjectCpp(request) {
-                return { stdout: request.source + ':' + request.args.join(',') + ':browser-only-cpp\\n', stderr: '', exitCode: 0 };
+              csharp: {
+                async execute(request) {
+                  return { stdout: request.source + ':' + request.args.join(',') + ':browser-only-csharp\\n', stderr: '', exitCode: 0 };
+                },
               },
-              terminate() {},
+              cpp: {
+                async execute(request) {
+                  return { stdout: request.source + ':' + request.args.join(',') + ':browser-only-cpp\\n', stderr: '', exitCode: 0 };
+                },
+              },
             },
             nodeProject: {
               allowMainThreadExecution: true,
@@ -1731,29 +1729,27 @@ async function runWithTempRoot(tempRoot: string): Promise<void> {
           { path: 'main.cpp', contents: 'int main() { return 0; }\\n' },
         ],
         nodeProjectTimeoutMs: 20000,
-        pythonWorkerClient: {
-          async executeProjectPython(request) {
-            return { stdout: request.scriptPath + ':standalone-browser-python\\n', stderr: '', exitCode: 0 };
+        runtimeProviders: {
+          python: {
+            async execute(request) {
+              return { stdout: request.scriptPath + ':standalone-browser-python\\n', stderr: '', exitCode: 0 };
+            },
           },
-          terminate() {},
-        },
-        javaWorkerClient: {
-          async executeProjectJava(request) {
-            return { stdout: request.source + ':' + request.scriptPath + ':standalone-browser-java\\n', stderr: '', exitCode: 0 };
+          java: {
+            async execute(request) {
+              return { stdout: request.source + ':' + request.scriptPath + ':standalone-browser-java\\n', stderr: '', exitCode: 0 };
+            },
           },
-          terminate() {},
-        },
-        csharpWorkerClient: {
-          async executeProjectCSharp(request) {
-            return { stdout: request.source + ':' + request.args.join(',') + ':standalone-browser-csharp\\n', stderr: '', exitCode: 0 };
+          csharp: {
+            async execute(request) {
+              return { stdout: request.source + ':' + request.args.join(',') + ':standalone-browser-csharp\\n', stderr: '', exitCode: 0 };
+            },
           },
-          terminate() {},
-        },
-        cppWorkerClient: {
-          async executeProjectCpp(request) {
-            return { stdout: request.source + ':' + request.args.join(',') + ':standalone-browser-cpp\\n', stderr: '', exitCode: 0 };
+          cpp: {
+            async execute(request) {
+              return { stdout: request.source + ':' + request.args.join(',') + ':standalone-browser-cpp\\n', stderr: '', exitCode: 0 };
+            },
           },
-          terminate() {},
         },
         nodeProject: {
           allowMainThreadExecution: true,

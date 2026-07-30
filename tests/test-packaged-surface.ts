@@ -582,6 +582,35 @@ async function runWithTempRoot(tempRoot: string): Promise<void> {
       `Root and browser declarations should expose safe metadata API ${allowedMetadataName}`
     );
   }
+  const browserProjectTypes = await readFile(
+    join(packageDir, 'dist/browser/project.d.ts'),
+    'utf8'
+  );
+  assertCondition(
+    browserProjectTypes.includes('interface BrowserProjectRuntimeProvider') &&
+      browserProjectTypes.includes(
+        'runtimeProviders?: BrowserProjectRuntimeProviders'
+      ),
+    'Packed browser Project declarations should expose the provider-neutral command boundary'
+  );
+  for (const leakedProjectRuntimeType of [
+    'PythonWorkerClient',
+    'JavaWorkerClient',
+    'CSharpWorkerClient',
+    'CppWorkerClient',
+    'JavaProjectRunnerOptions',
+    'BrowserJavaScriptProjectRunnerOptions',
+    'BrowserTypeScriptProjectRunnerOptions',
+    'pythonWorkerClient',
+    'javaWorkerClient',
+    'csharpWorkerClient',
+    'cppWorkerClient',
+  ]) {
+    assertCondition(
+      !browserProjectTypes.includes(leakedProjectRuntimeType),
+      `Packed browser Project declarations must not expose concrete runtime type ${leakedProjectRuntimeType}`
+    );
+  }
   const projectTypes = await readFile(join(packageDir, 'dist/project.d.ts'), 'utf8');
   const projectNodeTypes = await readFile(join(packageDir, 'dist/project-node.d.ts'), 'utf8');
   const traceKernelWorkspaceTypes = await readFile(
@@ -1113,81 +1142,79 @@ async function runWithTempRoot(tempRoot: string): Promise<void> {
           allowMainThreadExecution: true,
           trustedMainThreadExecution: true,
         },
-        pythonWorkerClient: {
-          async executeProjectPython(request, _timeoutMs, _onEvent, signal) {
-            if (request.scriptPath === 'python-client.py') {
-              const response = await request.kernelHttp.dispatch({
-                method: 'POST',
-                url: 'http://localhost:9100/from-python',
-                path: '/from-python',
-                headers: { 'content-type': 'text/plain', 'x-client': 'python' },
-                body: 'python-body',
-              });
-              return { stdout: response.status + ':' + response.body, stderr: '', exitCode: response.status === 207 ? 0 : 1 };
-            }
-            if (request.scriptPath === 'python-server.py') {
-              const handle = request.kernelHttp.listen({ host: '127.0.0.1', port: 9102 }, (httpRequest) => ({
-                status: 203,
-                headers: { 'content-type': 'application/json' },
-                body: JSON.stringify({ language: 'python', method: httpRequest.method, path: httpRequest.path, body: httpRequest.body || '' }) + '\\n',
-              }));
-              await new Promise((resolve) => {
-                if (signal?.aborted) {
-                  resolve();
-                  return;
-                }
-                signal?.addEventListener('abort', resolve, { once: true });
-              });
-              handle.close();
-              return { stdout: '', stderr: '', exitCode: 143 };
-            }
-            return { stdout: request.scriptPath + ':unused-python\\n', stderr: '', exitCode: 0 };
+        runtimeProviders: {
+          python: {
+            async execute(request, execution) {
+              if (request.scriptPath === 'python-client.py') {
+                const response = await request.kernelHttp.dispatch({
+                  method: 'POST',
+                  url: 'http://localhost:9100/from-python',
+                  path: '/from-python',
+                  headers: { 'content-type': 'text/plain', 'x-client': 'python' },
+                  body: 'python-body',
+                });
+                return { stdout: response.status + ':' + response.body, stderr: '', exitCode: response.status === 207 ? 0 : 1 };
+              }
+              if (request.scriptPath === 'python-server.py') {
+                const handle = request.kernelHttp.listen({ host: '127.0.0.1', port: 9102 }, (httpRequest) => ({
+                  status: 203,
+                  headers: { 'content-type': 'application/json' },
+                  body: JSON.stringify({ language: 'python', method: httpRequest.method, path: httpRequest.path, body: httpRequest.body || '' }) + '\\n',
+                }));
+                await new Promise((resolve) => {
+                  if (execution.signal?.aborted) {
+                    resolve();
+                    return;
+                  }
+                  execution.signal?.addEventListener('abort', resolve, { once: true });
+                });
+                handle.close();
+                return { stdout: '', stderr: '', exitCode: 143 };
+              }
+              return { stdout: request.scriptPath + ':unused-python\\n', stderr: '', exitCode: 0 };
+            },
           },
-          terminate() {},
-        },
-        javaWorkerClient: {
-          async executeProjectJava(request, _timeoutMs, _onEvent, signal) {
-            if (request.scriptPath === 'JavaClient') {
-              const response = await request.kernelHttp.dispatch({
-                method: 'POST',
-                url: 'http://localhost:9100/from-java',
-                path: '/from-java',
-                headers: { 'content-type': 'text/plain', 'x-client': 'java' },
-                body: 'java-body',
-              });
-              return { stdout: response.status + ':' + response.body, stderr: '', exitCode: response.status === 207 ? 0 : 1 };
-            }
-            if (request.scriptPath === 'JavaServer') {
-              const handle = request.kernelHttp.listen({ host: '127.0.0.1', port: 9103 }, (httpRequest) => ({
-                status: 206,
-                headers: { 'content-type': 'application/json' },
-                body: JSON.stringify({ language: 'java', method: httpRequest.method, path: httpRequest.path, body: httpRequest.body || '' }) + '\\n',
-              }));
-              await new Promise((resolve) => {
-                if (signal?.aborted) {
-                  resolve();
-                  return;
-                }
-                signal?.addEventListener('abort', resolve, { once: true });
-              });
-              handle.close();
-              return { stdout: '', stderr: '', exitCode: 143 };
-            }
-            return { stdout: request.source + ':' + request.scriptPath + ':unused-java\\n', stderr: '', exitCode: 0 };
+          java: {
+            async execute(request, execution) {
+              if (request.scriptPath === 'JavaClient') {
+                const response = await request.kernelHttp.dispatch({
+                  method: 'POST',
+                  url: 'http://localhost:9100/from-java',
+                  path: '/from-java',
+                  headers: { 'content-type': 'text/plain', 'x-client': 'java' },
+                  body: 'java-body',
+                });
+                return { stdout: response.status + ':' + response.body, stderr: '', exitCode: response.status === 207 ? 0 : 1 };
+              }
+              if (request.scriptPath === 'JavaServer') {
+                const handle = request.kernelHttp.listen({ host: '127.0.0.1', port: 9103 }, (httpRequest) => ({
+                  status: 206,
+                  headers: { 'content-type': 'application/json' },
+                  body: JSON.stringify({ language: 'java', method: httpRequest.method, path: httpRequest.path, body: httpRequest.body || '' }) + '\\n',
+                }));
+                await new Promise((resolve) => {
+                  if (execution.signal?.aborted) {
+                    resolve();
+                    return;
+                  }
+                  execution.signal?.addEventListener('abort', resolve, { once: true });
+                });
+                handle.close();
+                return { stdout: '', stderr: '', exitCode: 143 };
+              }
+              return { stdout: request.source + ':' + request.scriptPath + ':unused-java\\n', stderr: '', exitCode: 0 };
+            },
           },
-          terminate() {},
-        },
-        csharpWorkerClient: {
-          async executeProjectCSharp(request) {
-            return { stdout: request.source + ':' + request.args.join(',') + ':unused-csharp\\n', stderr: '', exitCode: 0 };
+          csharp: {
+            async execute(request) {
+              return { stdout: request.source + ':' + request.args.join(',') + ':unused-csharp\\n', stderr: '', exitCode: 0 };
+            },
           },
-          terminate() {},
-        },
-        cppWorkerClient: {
-          async executeProjectCpp(request) {
-            return { stdout: request.source + ':' + request.args.join(',') + ':unused-cpp\\n', stderr: '', exitCode: 0 };
+          cpp: {
+            async execute(request) {
+              return { stdout: request.source + ':' + request.args.join(',') + ':unused-cpp\\n', stderr: '', exitCode: 0 };
+            },
           },
-          terminate() {},
         },
       });
       const upstream = consumerWorkspace.http.listen({ host: '127.0.0.1', port: 9100 }, (request) => {
@@ -1281,29 +1308,27 @@ async function runWithTempRoot(tempRoot: string): Promise<void> {
           allowMainThreadExecution: true,
           trustedMainThreadExecution: true,
         },
-        pythonWorkerClient: {
-          async executeProjectPython(request) {
-            return { stdout: request.scriptPath + ':browser-python\\n', stderr: '', exitCode: 0 };
+        runtimeProviders: {
+          python: {
+            async execute(request) {
+              return { stdout: request.scriptPath + ':browser-python\\n', stderr: '', exitCode: 0 };
+            },
           },
-          terminate() {},
-        },
-        javaWorkerClient: {
-          async executeProjectJava(request) {
-            return { stdout: request.source + ':' + request.scriptPath + ':browser-java\\n', stderr: '', exitCode: 0 };
+          java: {
+            async execute(request) {
+              return { stdout: request.source + ':' + request.scriptPath + ':browser-java\\n', stderr: '', exitCode: 0 };
+            },
           },
-          terminate() {},
-        },
-        csharpWorkerClient: {
-          async executeProjectCSharp(request) {
-            return { stdout: request.source + ':' + request.args.join(',') + ':browser-csharp\\n', stderr: '', exitCode: 0 };
+          csharp: {
+            async execute(request) {
+              return { stdout: request.source + ':' + request.args.join(',') + ':browser-csharp\\n', stderr: '', exitCode: 0 };
+            },
           },
-          terminate() {},
-        },
-        cppWorkerClient: {
-          async executeProjectCpp(request) {
-            return { stdout: request.source + ':' + request.args.join(',') + ':browser-cpp\\n', stderr: '', exitCode: 0 };
+          cpp: {
+            async execute(request) {
+              return { stdout: request.source + ':' + request.args.join(',') + ':browser-cpp\\n', stderr: '', exitCode: 0 };
+            },
           },
-          terminate() {},
         },
       });
       try {

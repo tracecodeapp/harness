@@ -84,11 +84,92 @@ function cloneProjectSnapshot(snapshot: TestRuntimeProjectSnapshot): TestRuntime
   return JSON.parse(JSON.stringify(snapshot)) as TestRuntimeProjectSnapshot;
 }
 
+interface TestBrowserProjectClients {
+  pythonWorkerClient?: Parameters<typeof createBrowserPythonProjectRunner>[0] & {
+    terminate?: () => void;
+  };
+  javaWorkerClient?: Parameters<typeof createBrowserJavaProjectRunner>[0] & {
+    terminate?: () => void;
+  };
+  csharpWorkerClient?: Parameters<typeof createBrowserCSharpProjectRunner>[0] & {
+    terminate?: () => void;
+  };
+  cppWorkerClient?: Parameters<typeof createBrowserCppProjectRunner>[0] & {
+    terminate?: () => void;
+  };
+}
+
+function runtimeProviderOptions(
+  clients: TestBrowserProjectClients,
+  base: NonNullable<CreateBrowserProjectWorkspaceOptions['runtimeProviders']> = {}
+): Pick<CreateBrowserProjectWorkspaceOptions, 'runtimeProviders'> {
+  return {
+    runtimeProviders: {
+      ...base,
+      ...(clients.pythonWorkerClient
+        ? {
+            python: {
+              execute: (request, execution) =>
+                clients.pythonWorkerClient!.executeProjectPython(
+                  request as PythonProjectCommandRequest,
+                  execution.timeoutMs,
+                  execution.onEvent,
+                  execution.signal,
+                  execution.engineLease
+                ),
+            },
+          }
+        : {}),
+      ...(clients.javaWorkerClient
+        ? {
+            java: {
+              execute: (request, execution) =>
+                clients.javaWorkerClient!.executeProjectJava(
+                  request as JavaProjectCommandRequest,
+                  execution.timeoutMs,
+                  execution.onEvent,
+                  execution.signal
+                ),
+            },
+          }
+        : {}),
+      ...(clients.csharpWorkerClient
+        ? {
+            csharp: {
+              execute: (request, execution) =>
+                clients.csharpWorkerClient!.executeProjectCSharp(
+                  request as CSharpProjectCommandRequest,
+                  execution.timeoutMs,
+                  execution.onEvent,
+                  execution.signal,
+                  execution.engineLease
+                ),
+            },
+          }
+        : {}),
+      ...(clients.cppWorkerClient
+        ? {
+            cpp: {
+              execute: (request, execution) =>
+                clients.cppWorkerClient!.executeProjectCpp(
+                  request as CppProjectCommandRequest,
+                  execution.timeoutMs,
+                  execution.onEvent,
+                  execution.signal,
+                  execution.engineLease
+                ),
+            },
+          }
+        : {}),
+    },
+  };
+}
+
 function throwingBrowserWorkerClients(): Pick<
   CreateBrowserProjectWorkspaceOptions,
-  'pythonWorkerClient' | 'javaWorkerClient' | 'csharpWorkerClient' | 'cppWorkerClient'
+  'runtimeProviders'
 > {
-  return {
+  return runtimeProviderOptions({
     pythonWorkerClient: {
       async executeProjectPython() {
         throw new Error('unexpected Python runner call');
@@ -113,7 +194,7 @@ function throwingBrowserWorkerClients(): Pick<
       },
       terminate() {},
     },
-  };
+  });
 }
 
 function stdinPipe(text: string) {
@@ -9900,30 +9981,7 @@ async function testBrowserProjectWorkspaceFactory(): Promise<void> {
   const dynamicEvalDisabledWorkspace = await createBrowserProjectWorkspace({
     files: [{ path: 'index.js', contents: 'console.log("node")\n' }],
     nodeProject: { allowDynamicEval: false, allowMainThreadExecution: true, trustedMainThreadExecution: true },
-    pythonWorkerClient: {
-      async executeProjectPython() {
-        throw new Error('unexpected Python runner call');
-      },
-      terminate() {},
-    },
-    javaWorkerClient: {
-      async executeProjectJava() {
-        throw new Error('unexpected Java runner call');
-      },
-      terminate() {},
-    },
-    csharpWorkerClient: {
-      async executeProjectCSharp() {
-        throw new Error('unexpected C# runner call');
-      },
-      terminate() {},
-    },
-    cppWorkerClient: {
-      async executeProjectCpp() {
-        throw new Error('unexpected C++ runner call');
-      },
-      terminate() {},
-    },
+    ...throwingBrowserWorkerClients(),
   });
   try {
     const dynamicEvalDisabled = await dynamicEvalDisabledWorkspace.runCommand('node index.js');
@@ -9940,30 +9998,7 @@ async function testBrowserProjectWorkspaceFactory(): Promise<void> {
     files: [],
     nodeProject: { allowMainThreadExecution: true, trustedMainThreadExecution: true },
     nodeProjectTimeoutMs: 5,
-    pythonWorkerClient: {
-      async executeProjectPython() {
-        throw new Error('unexpected Python runner call');
-      },
-      terminate() {},
-    },
-    javaWorkerClient: {
-      async executeProjectJava() {
-        throw new Error('unexpected Java runner call');
-      },
-      terminate() {},
-    },
-    csharpWorkerClient: {
-      async executeProjectCSharp() {
-        throw new Error('unexpected C# runner call');
-      },
-      terminate() {},
-    },
-    cppWorkerClient: {
-      async executeProjectCpp() {
-        throw new Error('unexpected C++ runner call');
-      },
-      terminate() {},
-    },
+    ...throwingBrowserWorkerClients(),
   });
   try {
     const timeoutEvents: RuntimeCommandEvent[] = [];
@@ -10005,30 +10040,7 @@ async function testBrowserProjectWorkspaceFactory(): Promise<void> {
         storageEvents.push('flush');
       },
     },
-    pythonWorkerClient: {
-      async executeProjectPython() {
-        throw new Error('unexpected Python runner call');
-      },
-      terminate() {},
-    },
-    javaWorkerClient: {
-      async executeProjectJava() {
-        throw new Error('unexpected Java runner call');
-      },
-      terminate() {},
-    },
-    csharpWorkerClient: {
-      async executeProjectCSharp() {
-        throw new Error('unexpected C# runner call');
-      },
-      terminate() {},
-    },
-    cppWorkerClient: {
-      async executeProjectCpp() {
-        throw new Error('unexpected C++ runner call');
-      },
-      terminate() {},
-    },
+    ...throwingBrowserWorkerClients(),
   });
   await storageWorkspace.writeFile('persisted.txt', 'changed\n');
   await storageWorkspace.destroy({ reason: 'test', clearStorage: true });
@@ -10056,30 +10068,7 @@ async function testBrowserProjectWorkspaceFactory(): Promise<void> {
         resetStorageEvents.push('flush');
       },
     },
-    pythonWorkerClient: {
-      async executeProjectPython() {
-        throw new Error('unexpected Python runner call');
-      },
-      terminate() {},
-    },
-    javaWorkerClient: {
-      async executeProjectJava() {
-        throw new Error('unexpected Java runner call');
-      },
-      terminate() {},
-    },
-    csharpWorkerClient: {
-      async executeProjectCSharp() {
-        throw new Error('unexpected C# runner call');
-      },
-      terminate() {},
-    },
-    cppWorkerClient: {
-      async executeProjectCpp() {
-        throw new Error('unexpected C++ runner call');
-      },
-      terminate() {},
-    },
+    ...throwingBrowserWorkerClients(),
   });
   await resetStorageWorkspace.writeFile('persisted.txt', 'changed\n');
   const resetStorageResult = await resetStorageWorkspace.runCommand('tracekernelctl reset');
@@ -10185,60 +10174,84 @@ async function testBrowserProjectWorkspaceFactory(): Promise<void> {
     javaProjectTimeoutMs: 12,
     csharpProjectTimeoutMs: 13,
     cppProjectTimeoutMs: 14,
-    pythonWorkerClient: {
-      async executeProjectPython(request, timeoutMs, onEvent) {
-        pythonTimeoutMs = timeoutMs;
-        onEvent?.({ type: 'file-change', phase: 'live', change: { path: 'python-live.txt', contents: 'python-live\n' } });
-        return {
-          stdout: `${request.source}:${request.scriptPath}:${request.project.files.length}:${request.project.directories?.length ?? 0}\n`,
-          stderr: '',
-          exitCode: 0,
-          files: [{ path: 'python.txt', contents: 'python\n' }],
-        };
+    ...runtimeProviderOptions({
+      pythonWorkerClient: {
+        async executeProjectPython(request, timeoutMs, onEvent) {
+          pythonTimeoutMs = timeoutMs;
+          onEvent?.({
+            type: 'file-change',
+            phase: 'live',
+            change: {
+              path: 'python-live.txt',
+              contents: 'python-live\n',
+            },
+          });
+          return {
+            stdout: `${request.source}:${request.scriptPath}:${request.project.files.length}:${request.project.directories?.length ?? 0}\n`,
+            stderr: '',
+            exitCode: 0,
+            files: [{ path: 'python.txt', contents: 'python\n' }],
+          };
+        },
+        terminate() {},
       },
-      terminate() {},
-    },
-    javaWorkerClient: {
-      async executeProjectJava(request, timeoutMs, onEvent) {
-        javaTimeoutMs = timeoutMs;
-        onEvent?.({ type: 'file-change', phase: 'live', change: { path: 'java-live.txt', contents: 'java-live\n' } });
-        return {
-          stdout: `${request.source}:${request.scriptPath}:${request.project.files.length}:${request.project.directories?.length ?? 0}\n`,
-          stderr: '',
-          exitCode: 0,
-          files: [{ path: 'java.txt', contents: 'java\n' }],
-        };
+      javaWorkerClient: {
+        async executeProjectJava(request, timeoutMs, onEvent) {
+          javaTimeoutMs = timeoutMs;
+          onEvent?.({
+            type: 'file-change',
+            phase: 'live',
+            change: { path: 'java-live.txt', contents: 'java-live\n' },
+          });
+          return {
+            stdout: `${request.source}:${request.scriptPath}:${request.project.files.length}:${request.project.directories?.length ?? 0}\n`,
+            stderr: '',
+            exitCode: 0,
+            files: [{ path: 'java.txt', contents: 'java\n' }],
+          };
+        },
+        terminate() {},
       },
-      terminate() {},
-    },
-    csharpWorkerClient: {
-      async executeProjectCSharp(request, timeoutMs, onEvent) {
-        csharpTimeoutMs = timeoutMs;
-        onEvent?.({ type: 'file-change', phase: 'live', change: { path: 'csharp-live.txt', contents: 'csharp-live\n' } });
-        return {
-          stdout: `${request.source}:${request.scriptPath}:${request.args.join(',')}:${request.project.files.length}:${request.project.directories?.length ?? 0}\n`,
-          stderr: '',
-          exitCode: 0,
-          files: [{ path: 'csharp.txt', contents: 'csharp\n' }],
-        };
+      csharpWorkerClient: {
+        async executeProjectCSharp(request, timeoutMs, onEvent) {
+          csharpTimeoutMs = timeoutMs;
+          onEvent?.({
+            type: 'file-change',
+            phase: 'live',
+            change: {
+              path: 'csharp-live.txt',
+              contents: 'csharp-live\n',
+            },
+          });
+          return {
+            stdout: `${request.source}:${request.scriptPath}:${request.args.join(',')}:${request.project.files.length}:${request.project.directories?.length ?? 0}\n`,
+            stderr: '',
+            exitCode: 0,
+            files: [{ path: 'csharp.txt', contents: 'csharp\n' }],
+          };
+        },
+        terminate() {},
       },
-      terminate() {},
-    },
-    cppWorkerClient: {
-      async executeProjectCpp(request, timeoutMs, onEvent) {
-        cppTimeouts.push(timeoutMs);
-        if (request.source === 'compile') {
-          onEvent?.({ type: 'file-change', phase: 'live', change: { path: 'cpp-live.txt', contents: 'cpp-live\n' } });
-        }
-        return {
-          stdout: `${request.source}:${request.scriptPath}:${request.args.join(',')}:${request.project.files.length}:${request.project.directories?.length ?? 0}\n`,
-          stderr: '',
-          exitCode: 0,
-          files: [{ path: 'cpp.txt', contents: 'cpp\n' }],
-        };
+      cppWorkerClient: {
+        async executeProjectCpp(request, timeoutMs, onEvent) {
+          cppTimeouts.push(timeoutMs);
+          if (request.source === 'compile') {
+            onEvent?.({
+              type: 'file-change',
+              phase: 'live',
+              change: { path: 'cpp-live.txt', contents: 'cpp-live\n' },
+            });
+          }
+          return {
+            stdout: `${request.source}:${request.scriptPath}:${request.args.join(',')}:${request.project.files.length}:${request.project.directories?.length ?? 0}\n`,
+            stderr: '',
+            exitCode: 0,
+            files: [{ path: 'cpp.txt', contents: 'cpp\n' }],
+          };
+        },
+        terminate() {},
       },
-      terminate() {},
-    },
+    }),
   });
 
   try {
@@ -10435,39 +10448,56 @@ async function testBrowserProjectWorkspaceCrossRunnerFilesystemVisibility(): Pro
       { path: 'Writer.java', contents: 'class Writer {}\n' },
       { path: 'Program.cs', contents: 'Console.WriteLine("observer");\n' },
     ],
-    ...throwingBrowserWorkerClients(),
-    pythonWorkerClient: {
-      async executeProjectPython(request) {
-        heldPythonInitialContents = request.project.files.find((file) => file.path === 'shared.txt')?.contents;
-        heldPythonStarted();
-        await heldPythonReleased;
-        heldPythonContentsAfterJavaWrite = request.project.files.find((file) => file.path === 'shared.txt')?.contents;
-        return {
-          stdout: `${heldPythonInitialContents ?? 'missing'}:${heldPythonContentsAfterJavaWrite ?? 'missing'}\n`,
-          stderr: '',
-          exitCode: 0,
-        };
+    ...runtimeProviderOptions(
+      {
+        pythonWorkerClient: {
+          async executeProjectPython(request) {
+            heldPythonInitialContents = request.project.files.find(
+              (file) => file.path === 'shared.txt'
+            )?.contents;
+            heldPythonStarted();
+            await heldPythonReleased;
+            heldPythonContentsAfterJavaWrite = request.project.files.find(
+              (file) => file.path === 'shared.txt'
+            )?.contents;
+            return {
+              stdout: `${heldPythonInitialContents ?? 'missing'}:${heldPythonContentsAfterJavaWrite ?? 'missing'}\n`,
+              stderr: '',
+              exitCode: 0,
+            };
+          },
+          terminate() {},
+        },
+        javaWorkerClient: {
+          async executeProjectJava(_request, _timeoutMs, onEvent) {
+            onEvent?.({
+              type: 'file-change',
+              phase: 'live',
+              change: {
+                path: 'shared.txt',
+                contents: 'written-by-java\n',
+              },
+            });
+            return { stdout: 'writer:done\n', stderr: '', exitCode: 0 };
+          },
+          terminate() {},
+        },
+        csharpWorkerClient: {
+          async executeProjectCSharp(request) {
+            laterCSharpContents = request.project.files.find(
+              (file) => file.path === 'shared.txt'
+            )?.contents;
+            return {
+              stdout: laterCSharpContents ?? 'missing',
+              stderr: '',
+              exitCode: 0,
+            };
+          },
+          terminate() {},
+        },
       },
-      terminate() {},
-    },
-    javaWorkerClient: {
-      async executeProjectJava(_request, _timeoutMs, onEvent) {
-        onEvent?.({
-          type: 'file-change',
-          phase: 'live',
-          change: { path: 'shared.txt', contents: 'written-by-java\n' },
-        });
-        return { stdout: 'writer:done\n', stderr: '', exitCode: 0 };
-      },
-      terminate() {},
-    },
-    csharpWorkerClient: {
-      async executeProjectCSharp(request) {
-        laterCSharpContents = request.project.files.find((file) => file.path === 'shared.txt')?.contents;
-        return { stdout: laterCSharpContents ?? 'missing', stderr: '', exitCode: 0 };
-      },
-      terminate() {},
-    },
+      throwingBrowserWorkerClients().runtimeProviders
+    ),
   });
 
   try {
@@ -10525,33 +10555,37 @@ async function testBrowserProjectWorkspaceCrossRunnerFilesystemVisibility(): Pro
       { path: 'writer.py', contents: 'print("python")\n' },
       { path: 'Writer.java', contents: 'class Writer {}\n' },
     ],
-    ...throwingBrowserWorkerClients(),
-    pythonWorkerClient: {
-      async executeProjectPython(_request, _timeoutMs, onEvent) {
-        markConcurrentWriterStarted('python');
-        await concurrentWritersReleased;
-        onEvent?.({
-          type: 'file-change',
-          phase: 'live',
-          change: { path: 'python-output.txt', contents: 'python\n' },
-        });
-        return { stdout: 'python:done\n', stderr: '', exitCode: 0 };
+    ...runtimeProviderOptions(
+      {
+        pythonWorkerClient: {
+          async executeProjectPython(_request, _timeoutMs, onEvent) {
+            markConcurrentWriterStarted('python');
+            await concurrentWritersReleased;
+            onEvent?.({
+              type: 'file-change',
+              phase: 'live',
+              change: { path: 'python-output.txt', contents: 'python\n' },
+            });
+            return { stdout: 'python:done\n', stderr: '', exitCode: 0 };
+          },
+          terminate() {},
+        },
+        javaWorkerClient: {
+          async executeProjectJava(_request, _timeoutMs, onEvent) {
+            markConcurrentWriterStarted('java');
+            await concurrentWritersReleased;
+            onEvent?.({
+              type: 'file-change',
+              phase: 'live',
+              change: { path: 'java-output.txt', contents: 'java\n' },
+            });
+            return { stdout: 'java:done\n', stderr: '', exitCode: 0 };
+          },
+          terminate() {},
+        },
       },
-      terminate() {},
-    },
-    javaWorkerClient: {
-      async executeProjectJava(_request, _timeoutMs, onEvent) {
-        markConcurrentWriterStarted('java');
-        await concurrentWritersReleased;
-        onEvent?.({
-          type: 'file-change',
-          phase: 'live',
-          change: { path: 'java-output.txt', contents: 'java\n' },
-        });
-        return { stdout: 'java:done\n', stderr: '', exitCode: 0 };
-      },
-      terminate() {},
-    },
+      throwingBrowserWorkerClients().runtimeProviders
+    ),
   });
 
   try {
@@ -10595,33 +10629,37 @@ async function testBrowserProjectWorkspaceCrossRunnerFilesystemVisibility(): Pro
       { path: 'writer.py', contents: 'print("python")\n' },
       { path: 'Writer.java', contents: 'class Writer {}\n' },
     ],
-    ...throwingBrowserWorkerClients(),
-    pythonWorkerClient: {
-      async executeProjectPython(_request, _timeoutMs, onEvent) {
-        markConflictingWriterStarted('python');
-        await conflictingWritersReleased;
-        onEvent?.({
-          type: 'file-change',
-          phase: 'live',
-          change: { path: 'shared-output.txt', contents: 'python\n' },
-        });
-        return { stdout: 'python:done\n', stderr: '', exitCode: 0 };
+    ...runtimeProviderOptions(
+      {
+        pythonWorkerClient: {
+          async executeProjectPython(_request, _timeoutMs, onEvent) {
+            markConflictingWriterStarted('python');
+            await conflictingWritersReleased;
+            onEvent?.({
+              type: 'file-change',
+              phase: 'live',
+              change: { path: 'shared-output.txt', contents: 'python\n' },
+            });
+            return { stdout: 'python:done\n', stderr: '', exitCode: 0 };
+          },
+          terminate() {},
+        },
+        javaWorkerClient: {
+          async executeProjectJava(_request, _timeoutMs, onEvent) {
+            markConflictingWriterStarted('java');
+            await conflictingWritersReleased;
+            onEvent?.({
+              type: 'file-change',
+              phase: 'live',
+              change: { path: 'shared-output.txt', contents: 'java\n' },
+            });
+            return { stdout: 'java:done\n', stderr: '', exitCode: 0 };
+          },
+          terminate() {},
+        },
       },
-      terminate() {},
-    },
-    javaWorkerClient: {
-      async executeProjectJava(_request, _timeoutMs, onEvent) {
-        markConflictingWriterStarted('java');
-        await conflictingWritersReleased;
-        onEvent?.({
-          type: 'file-change',
-          phase: 'live',
-          change: { path: 'shared-output.txt', contents: 'java\n' },
-        });
-        return { stdout: 'java:done\n', stderr: '', exitCode: 0 };
-      },
-      terminate() {},
-    },
+      throwingBrowserWorkerClients().runtimeProviders
+    ),
   });
 
   try {
@@ -10672,30 +10710,7 @@ async function testBrowserKernelStorageRehydrationPreservesReadonlyPolicy(): Pro
       async save() {},
       async flush() {},
     },
-    pythonWorkerClient: {
-      async executeProjectPython() {
-        throw new Error('unexpected Python runner call');
-      },
-      terminate() {},
-    },
-    javaWorkerClient: {
-      async executeProjectJava() {
-        throw new Error('unexpected Java runner call');
-      },
-      terminate() {},
-    },
-    csharpWorkerClient: {
-      async executeProjectCSharp() {
-        throw new Error('unexpected C# runner call');
-      },
-      terminate() {},
-    },
-    cppWorkerClient: {
-      async executeProjectCpp() {
-        throw new Error('unexpected C++ runner call');
-      },
-      terminate() {},
-    },
+    ...throwingBrowserWorkerClients(),
   });
 
   try {
@@ -11012,7 +11027,8 @@ async function testBrowserProjectWorkspaceTraceKernelConfig(): Promise<void> {
       { path: 'browser/guide.md', contents: 'browser skill\n' },
     ],
     nodeProject: { allowMainThreadExecution: true, trustedMainThreadExecution: true },
-    pythonWorkerClient: {
+    ...runtimeProviderOptions({
+      pythonWorkerClient: {
       async executeProjectPython(request) {
         pythonRequests.push(request);
         return {
@@ -11051,7 +11067,8 @@ async function testBrowserProjectWorkspaceTraceKernelConfig(): Promise<void> {
         };
       },
       terminate() {},
-    },
+      },
+    }),
   });
   const unsubscribe = workspace.watch((event) => events.push(event));
 
@@ -11249,7 +11266,8 @@ async function testBrowserProjectWorkspaceAdvancedCommandTranslation(): Promise<
       { path: 'src/main.cpp', contents: 'int main() { return 0; }\n' },
       { path: 'lib/liblinked.a', contents: Buffer.from([1, 255]).toString('base64'), encoding: 'base64' },
     ],
-    pythonWorkerClient: {
+    ...runtimeProviderOptions({
+      pythonWorkerClient: {
       async executeProjectPython(request) {
         pythonRequests.push(request);
         return { stdout: `${request.source}:${request.scriptPath}\n`, stderr: '', exitCode: 0 };
@@ -11281,7 +11299,8 @@ async function testBrowserProjectWorkspaceAdvancedCommandTranslation(): Promise<
         };
       },
       terminate() {},
-    },
+      },
+    }),
   });
 
   try {

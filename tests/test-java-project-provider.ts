@@ -488,40 +488,84 @@ async function testBrowserWorkspaceRequiresExplicitJavaProvider(): Promise<void>
     `Java did not require an explicit project provider: ${String(missingProviderError)}`
   );
 
-  let directClientInvocations = 0;
-  const directClientWorkspace = await createBrowserProjectWorkspace({
+  let injectedProviderInvocations = 0;
+  const injectedProviderWorkspace = await createBrowserProjectWorkspace({
     files: [{ path: 'Main.java', contents: 'class Main {}\n' }],
-    javaWorkerClient: {
-      async executeProjectJava() {
-        directClientInvocations += 1;
-        return { stdout: '', stderr: '', exitCode: 0 };
+    runtimeProviders: {
+      java: {
+        async execute() {
+          injectedProviderInvocations += 1;
+          return { stdout: '', stderr: '', exitCode: 0 };
+        },
       },
-      terminate() {},
     },
   });
   try {
-    const result = await directClientWorkspace.runCommand('javac Main.java');
+    const result = await injectedProviderWorkspace.runCommand('javac Main.java');
     assertCondition(
-      result.exitCode === 0 && directClientInvocations === 1,
-      `explicit Java worker client was not invoked: ${JSON.stringify({
+      result.exitCode === 0 && injectedProviderInvocations === 1,
+      `explicit Java runtime provider was not invoked: ${JSON.stringify({
         result,
-        directClientInvocations,
+        injectedProviderInvocations,
       })}`
     );
   } finally {
-    await directClientWorkspace.destroy();
+    await injectedProviderWorkspace.destroy();
   }
+
+  let injectedLifecycleCalls = 0;
+  const callerOwnedProvider = {
+    async execute() {
+      return { stdout: '', stderr: '', exitCode: 0 };
+    },
+    warm() {
+      injectedLifecycleCalls += 1;
+    },
+    reset() {
+      injectedLifecycleCalls += 1;
+    },
+    terminate() {
+      injectedLifecycleCalls += 1;
+    },
+    dispose() {
+      injectedLifecycleCalls += 1;
+    },
+  };
+  const callerOwnedWorkspace = await createBrowserProjectWorkspace({
+    files: [{ path: 'Main.java', contents: 'class Main {}\n' }],
+    runtimeProviders: { java: callerOwnedProvider },
+  });
+  const callerOwnedResult = await callerOwnedWorkspace.runCommand(
+    'javac Main.java'
+  );
+  assertCondition(
+    callerOwnedResult.exitCode === 0,
+    `caller-owned Java runtime provider should execute commands: ${JSON.stringify(callerOwnedResult)}`
+  );
+  const resetResult = await callerOwnedWorkspace.runCommand(
+    'tracekernelctl reset'
+  );
+  assertCondition(
+    resetResult.exitCode === 0,
+    `caller-owned Java runtime provider should survive workspace reset: ${JSON.stringify(resetResult)}`
+  );
+  await callerOwnedWorkspace.destroy();
+  assertCondition(
+    injectedLifecycleCalls === 0,
+    'Browser Project must never warm, reset, terminate, or dispose caller-owned runtime providers'
+  );
 
   let excludedProviderError: unknown;
   try {
     await createBrowserProjectWorkspace({
       providers: [],
       files: [{ path: 'Main.java', contents: 'class Main {}\n' }],
-      javaWorkerClient: {
-        async executeProjectJava() {
-          return { stdout: '', stderr: '', exitCode: 0 };
+      runtimeProviders: {
+        java: {
+          async execute() {
+            return { stdout: '', stderr: '', exitCode: 0 };
+          },
         },
-        terminate() {},
       },
     });
   } catch (error) {
@@ -529,8 +573,32 @@ async function testBrowserWorkspaceRequiresExplicitJavaProvider(): Promise<void>
   }
   assertCondition(
     excludedProviderError instanceof Error &&
-      excludedProviderError.message.includes('javaWorkerClient requires providers to include "java"'),
+      excludedProviderError.message.includes(
+        'runtimeProviders.java requires providers to include "java"'
+      ),
     `An explicit provider list must remain authoritative: ${String(excludedProviderError)}`
+  );
+
+  let unknownProviderError: unknown;
+  try {
+    await createBrowserProjectWorkspace({
+      runtimeProviders: {
+        ruby: {
+          async execute() {
+            return { stdout: '', stderr: '', exitCode: 0 };
+          },
+        },
+      } as never,
+    });
+  } catch (error) {
+    unknownProviderError = error;
+  }
+  assertCondition(
+    unknownProviderError instanceof TypeError &&
+      unknownProviderError.message.includes(
+        'Browser project runtime provider "ruby" is not supported'
+      ),
+    `Unknown injected Project runtimes must fail before workspace boot: ${String(unknownProviderError)}`
   );
 }
 
