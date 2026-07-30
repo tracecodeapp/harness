@@ -445,56 +445,37 @@ import {
   type RuntimeKernelTtyName,
   type RuntimeTraceKernelAuthority,
 } from './process-state';
+import {
+  TRACEKERNEL_HTTP_LISTENER_LIMIT,
+  TRACEKERNEL_HTTP_MAX_BODY_BYTES,
+  TRACEKERNEL_HTTP_MAX_HEADER_BYTES,
+  TRACEKERNEL_HTTP_MAX_HEADER_COUNT,
+  TRACEKERNEL_HTTP_MAX_IN_FLIGHT_REQUESTS,
+  TRACEKERNEL_HTTP_REQUEST_FRAME_TIMEOUT_MS,
+  TRACEKERNEL_HTTP_REQUEST_LOG_LIMIT,
+  TRACEKERNEL_HTTP_STATUS_TEXT,
+  TRACEKERNEL_HTTP_TCP_READ_BYTES,
+  WorkspaceHttpState,
+  defaultRuntimeExternalHttpPort,
+  formatPingLatency,
+  isBareHostnameForExternalResolution,
+  redactRuntimeDiagnosticUrl,
+  stableKernelJournalFingerprint,
+  syntheticIp,
+  syntheticLatency,
+  type HostResolution,
+  type NormalizedRuntimeExternalHttpConfig,
+  type RuntimeKernelHttpListenerOwner,
+  type RuntimeKernelHttpListenerRecord,
+  type RuntimeKernelHttpRequestRecord,
+  type RuntimeKernelHttpTcpDispatchContext,
+} from './http-state';
+import { workspaceHttpPolicy } from './http-policy';
 
 const PRINCIPAL_ACTOR: RuntimeWorkspaceActor = runtimeWorkspaceActorPreset('principal');
 const RUNTIME_ACTOR: RuntimeWorkspaceActor = runtimeWorkspaceActorPreset('runtime');
 const SYSTEM_ACTOR: RuntimeWorkspaceActor = runtimeWorkspaceActorPreset('system');
 const TRACEKERNEL_EVENT_LOG_LIMIT = 256;
-const TRACEKERNEL_HTTP_LISTENER_LIMIT = 128;
-const TRACEKERNEL_HTTP_REQUEST_LOG_LIMIT = 256;
-const TRACEKERNEL_HTTP_MAX_IN_FLIGHT_REQUESTS = 256;
-const TRACEKERNEL_HTTP_MAX_BODY_BYTES = 4 * 1024 * 1024;
-const TRACEKERNEL_HTTP_MAX_HEADER_COUNT = 128;
-const TRACEKERNEL_HTTP_MAX_HEADER_BYTES = 64 * 1024;
-const TRACEKERNEL_HTTP_MAX_DIAGNOSTIC_FIELD_LENGTH = 4096;
-const TRACEKERNEL_HTTP_TCP_READ_BYTES = 64 * 1024;
-const TRACEKERNEL_HTTP_REQUEST_FRAME_TIMEOUT_MS = 30_000;
-const TRACEKERNEL_EXTERNAL_HTTP_DEFAULT_TIMEOUT_MS = 10_000;
-const TRACEKERNEL_EXTERNAL_HTTP_DEFAULT_MAX_CONCURRENT_REQUESTS = 8;
-const TRACEKERNEL_EXTERNAL_HTTP_DEFAULT_MAX_REQUESTS_PER_COMMAND = 64;
-const TRACEKERNEL_EXTERNAL_HTTP_MAX_TIMEOUT_MS = 60_000;
-const TRACEKERNEL_HTTP_STATUS_TEXT: Readonly<Record<number, string>> = Object.freeze({
-  100: 'Continue',
-  200: 'OK',
-  201: 'Created',
-  202: 'Accepted',
-  204: 'No Content',
-  206: 'Partial Content',
-  300: 'Multiple Choices',
-  301: 'Moved Permanently',
-  302: 'Found',
-  304: 'Not Modified',
-  307: 'Temporary Redirect',
-  308: 'Permanent Redirect',
-  400: 'Bad Request',
-  401: 'Unauthorized',
-  403: 'Forbidden',
-  404: 'Not Found',
-  405: 'Method Not Allowed',
-  408: 'Request Timeout',
-  409: 'Conflict',
-  410: 'Gone',
-  413: 'Payload Too Large',
-  415: 'Unsupported Media Type',
-  418: "I'm a Teapot",
-  422: 'Unprocessable Content',
-  429: 'Too Many Requests',
-  500: 'Internal Server Error',
-  501: 'Not Implemented',
-  502: 'Bad Gateway',
-  503: 'Service Unavailable',
-  504: 'Gateway Timeout',
-});
 const TRACEKERNEL_SYSCALL_ERROR_CODES: ReadonlySet<TraceKernelSyscallErrorCode> = new Set([
   'E2BIG',
   'EAGAIN',
@@ -530,41 +511,7 @@ const TRACEKERNEL_SYSCALL_ERROR_CODES: ReadonlySet<TraceKernelSyscallErrorCode> 
   'ESRCH',
 ]);
 
-interface NormalizedRuntimeExternalHttpHostRule {
-  hostname: string;
-  wildcardSubdomains: boolean;
-  port?: number;
-}
-
-interface NormalizedRuntimeExternalHttpConfig {
-  fetch: RuntimeExternalHttpConfig['fetch'];
-  hosts: readonly NormalizedRuntimeExternalHttpHostRule[] | ((url: URL) => boolean);
-  allowHttp: boolean;
-  timeoutMs: number;
-  maxConcurrentRequests: number;
-  maxRequestsPerCommand: number;
-}
-
-export type HostResolution =
-  | { reachable: true; via: 'loopback' | 'listener' | 'external'; ip: string; latencyMs: number }
-  | { reachable: false; reason: 'unknown-host' };
-
 const TRACEKERNEL_ZOMBIE_RETENTION_MS = 30_000;
-const TRACEKERNEL_SENSITIVE_URL_PARAM_NAMES = new Set([
-  'access_token',
-  'api_key',
-  'apikey',
-  'auth',
-  'authorization',
-  'code',
-  'key',
-  'password',
-  'secret',
-  'session',
-  'sig',
-  'signature',
-  'token',
-]);
 
 function traceKernelTsv(value: unknown): string {
   return String(value ?? '').replace(/[\t\r\n]+/g, ' ');
@@ -578,177 +525,8 @@ interface RuntimeKernelEventRecord {
   detail?: Record<string, unknown>;
 }
 
-interface RuntimeKernelHttpListenerRecord {
-  info: RuntimeKernelHttpListenerInfo;
-  handler: RuntimeKernelHttpHandler;
-  actor: RuntimeWorkspaceActor;
-  ready: Promise<void>;
-  listenerFd?: number;
-  transportAddress?: { host: string; port: number };
-  closed: boolean;
-  listening: boolean;
-  readonly connectionControllers: Map<number, AbortController>;
-}
-
-interface RuntimeKernelHttpTcpDispatchContext {
-  readonly url: URL;
-  readonly actor: RuntimeWorkspaceActor;
-  readonly signal: AbortSignal;
-  readonly response: Promise<RuntimeKernelHttpResponse>;
-  resolve(response: RuntimeKernelHttpResponse): void;
-  reject(error: unknown): void;
-}
-
-interface RuntimeKernelHttpListenerOwner {
-  pid: number;
-  idPrefix: string;
-  actor?: RuntimeWorkspaceActor;
-}
-
-interface RuntimeKernelHttpRequestRecord {
-  seq: number;
-  time: string;
-  listenerId?: string;
-  pid?: number;
-  method: string;
-  url: string;
-  status?: number;
-  error?: string;
-  external?: true;
-}
-
-type RuntimeKernelHttpPathResult =
-  | { ok: true; path: string }
-  | { ok: false; error: RuntimeKernelHttpError };
-
-type RuntimeKernelHttpRequestResult =
-  | { ok: true; request: RuntimeKernelHttpRequest }
-  | { ok: false; error: RuntimeKernelHttpError };
-
 type DistributiveOmit<T, K extends keyof any> = T extends unknown ? Omit<T, K> : never;
 type KernelJournalEntry = DistributiveOmit<KernelJournalRecord, 'seq' | 'ts'>;
-
-function redactRuntimeDiagnosticUrl(value: string): string {
-  try {
-    const url = new URL(value);
-    if (url.username) url.username = 'redacted';
-    if (url.password) url.password = 'redacted';
-    for (const [name] of url.searchParams) {
-      if (TRACEKERNEL_SENSITIVE_URL_PARAM_NAMES.has(name.toLowerCase())) {
-        url.searchParams.set(name, 'redacted');
-      }
-    }
-    return url.toString();
-  } catch {
-    return value.replace(/([?&](?:access_token|api_key|apikey|auth|authorization|code|key|password|secret|session|sig|signature|token)=)[^&#\s]*/gi, '$1redacted');
-  }
-}
-
-function clampRuntimeExternalHttpPositiveInteger(value: unknown, fallback: number, max: number): number {
-  if (value === undefined) return fallback;
-  const normalized = Math.trunc(Number(value));
-  if (!Number.isFinite(normalized)) return fallback;
-  return Math.min(max, Math.max(1, normalized));
-}
-
-function defaultRuntimeExternalHttpPort(protocol: string): number {
-  return protocol === 'http:' ? 80 : 443;
-}
-
-function stableHostnameHash(hostname: string): number {
-  let hash = 0x811c9dc5;
-  for (let index = 0; index < hostname.length; index += 1) {
-    hash ^= hostname.charCodeAt(index);
-    hash = Math.imul(hash, 0x01000193);
-  }
-  return hash >>> 0;
-}
-
-function stableKernelJournalFingerprint(value: string): string {
-  return stableHostnameHash(value).toString(16).padStart(8, '0').slice(0, 8);
-}
-
-export function syntheticIp(hostname: string): string {
-  const hash = stableHostnameHash(hostname.toLowerCase());
-  return `192.0.2.${(hash % 254) + 1}`;
-}
-
-export function syntheticLatency(hostname: string): number {
-  const hash = stableHostnameHash(hostname.toLowerCase());
-  return Number((0.1 + (hash % 291) / 100).toFixed(2));
-}
-
-function formatPingLatency(latencyMs: number): string {
-  return latencyMs.toFixed(2);
-}
-
-function isBareHostnameForExternalResolution(hostname: string): boolean {
-  return !!hostname && !/[\u0000-\u0020\u007f:/@[\]]/.test(hostname);
-}
-
-function normalizeRuntimeExternalHttpHostEntry(entry: string): NormalizedRuntimeExternalHttpHostRule {
-  const raw = entry.trim();
-  if (!raw || raw === '*') {
-    throw new TypeError('Runtime external HTTP host entries must not be empty or "*". Use a predicate for full-wildcard egress.');
-  }
-  const wildcardSubdomains = raw.startsWith('*.');
-  const hostAndPort = wildcardSubdomains ? raw.slice(2) : raw;
-  const lastColon = hostAndPort.lastIndexOf(':');
-  const hasPort = lastColon > -1 && /^[0-9]+$/.test(hostAndPort.slice(lastColon + 1));
-  const hostname = (hasPort ? hostAndPort.slice(0, lastColon) : hostAndPort).toLowerCase();
-  if (!hostname || hostname.includes('/') || hostname.includes('@') || hostname.includes('*')) {
-    throw new TypeError(`Invalid Runtime external HTTP host entry "${entry}".`);
-  }
-  let port: number | undefined;
-  if (hasPort) {
-    port = Math.trunc(Number(hostAndPort.slice(lastColon + 1)));
-    if (!Number.isFinite(port) || port < 1 || port > 65535) {
-      throw new TypeError(`Invalid Runtime external HTTP host port in "${entry}".`);
-    }
-  }
-  return {
-    hostname,
-    wildcardSubdomains,
-    ...(port !== undefined ? { port } : {}),
-  };
-}
-
-function normalizeRuntimeExternalHttpConfig(
-  config: RuntimeExternalHttpConfig | undefined
-): NormalizedRuntimeExternalHttpConfig | undefined {
-  if (config === undefined) return undefined;
-  if (typeof config.fetch !== 'function') {
-    throw new TypeError('Runtime external HTTP config requires a fetch delegate.');
-  }
-  const hosts = typeof config.hosts === 'function'
-    ? config.hosts
-    : Array.isArray(config.hosts)
-      ? config.hosts.map(normalizeRuntimeExternalHttpHostEntry)
-      : undefined;
-  if (!hosts) {
-    throw new TypeError('Runtime external HTTP config requires a hosts allowlist or predicate.');
-  }
-  return {
-    fetch: config.fetch,
-    hosts,
-    allowHttp: config.allowHttp === true,
-    timeoutMs: clampRuntimeExternalHttpPositiveInteger(
-      config.timeoutMs,
-      TRACEKERNEL_EXTERNAL_HTTP_DEFAULT_TIMEOUT_MS,
-      TRACEKERNEL_EXTERNAL_HTTP_MAX_TIMEOUT_MS
-    ),
-    maxConcurrentRequests: clampRuntimeExternalHttpPositiveInteger(
-      config.maxConcurrentRequests,
-      TRACEKERNEL_EXTERNAL_HTTP_DEFAULT_MAX_CONCURRENT_REQUESTS,
-      Number.MAX_SAFE_INTEGER
-    ),
-    maxRequestsPerCommand: clampRuntimeExternalHttpPositiveInteger(
-      config.maxRequestsPerCommand,
-      TRACEKERNEL_EXTERNAL_HTTP_DEFAULT_MAX_REQUESTS_PER_COMMAND,
-      Number.MAX_SAFE_INTEGER
-    ),
-  };
-}
 
 interface RuntimeLazyCommand {
   name: string;
@@ -852,7 +630,7 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
   private readonly fsLocks = new RuntimeFileSystemLockCoordinator();
   private readonly commandScheduler: RuntimeCommandScheduler;
   private readonly maxProcesses: number | null;
-  private readonly externalHttp?: NormalizedRuntimeExternalHttpConfig;
+  private readonly httpState: WorkspaceHttpState;
   private readonly entrypoint?: string;
   private readonly kernelControl?: RuntimeTraceKernelControlOptions;
   private readonly cppRunner?: CppProjectCommandRunner;
@@ -870,11 +648,6 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
   private readonly processExecutionHandles = this.processState.executionHandles;
   private readonly kernelEventLog: RuntimeKernelEventRecord[] = [];
   private readonly kernelJournalLog: KernelJournalRecord[] = [];
-  private readonly httpListeners = new Map<string, RuntimeKernelHttpListenerRecord>();
-  private readonly retiredHttpListeners = new Set<RuntimeKernelHttpListenerRecord>();
-  private readonly httpTcpDispatches = new Map<number, RuntimeKernelHttpTcpDispatchContext>();
-  private readonly httpRequestLog: RuntimeKernelHttpRequestRecord[] = [];
-  private readonly httpLifecycleAbortController = new AbortController();
   private readonly readonlyFiles = new Set<string>();
   private readonly eventWatchers = new Set<RuntimeWorkspaceEventHandler>();
   private kernelSyscallGenerationBuffer?: SharedArrayBuffer;
@@ -883,14 +656,8 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
   private nextCommandId = 1;
   private nextKernelEventSeq = 1;
   private nextJournalSeq = 1;
-  private nextHttpListenerSeq = 1;
-  private nextHttpRequestSeq = 1;
-  private nextEphemeralHttpPort = 49152;
   private nextTemporaryEntry = 1;
   private nextTerminalSessionId = 1;
-  private activeHttpRequests = 0;
-  private activeExternalHttpRequests = 0;
-  private workspaceExternalHttpRequestCount = 0;
   private destroyed = false;
   private expirationDestroyScheduled = false;
   private terminalVerbose = false;
@@ -898,7 +665,7 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
   constructor(options: CreateRuntimeWorkspaceOptions = {}) {
     this.kernelInfo = createTraceKernelInfo(options.kernel, options.cwd);
     this.baseEnv = { ...createTraceKernelEnvironment(this.kernelInfo), ...(options.env ?? {}) };
-    this.externalHttp = normalizeRuntimeExternalHttpConfig(options.externalHttp);
+    this.httpState = new WorkspaceHttpState(options.externalHttp);
     this.http = {
       request: (requestOptions) => this.requestHttp(requestOptions),
       json: (requestOptions) => this.requestHttpJson(requestOptions),
@@ -2112,9 +1879,9 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
     try {
       url = new URL(options.url);
     } catch {
-      return this.httpErrorResponse(
+      return workspaceHttpPolicy.errorResponse(
         400,
-        this.createHttpError('EINVAL', `EINVAL: invalid URL: ${options.url}`)
+        workspaceHttpPolicy.createError('EINVAL', `EINVAL: invalid URL: ${options.url}`)
       );
     }
     return this.dispatchHttpRequest({
@@ -2154,35 +1921,6 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
     };
   }
 
-  private sanitizeHttpDiagnosticField(value: unknown): string {
-    const text = String(value ?? '');
-    const escaped = text
-      .replace(/\\/g, '\\\\')
-      .replace(/\t/g, '\\t')
-      .replace(/\r/g, '\\r')
-      .replace(/\n/g, '\\n');
-    return escaped.length > TRACEKERNEL_HTTP_MAX_DIAGNOSTIC_FIELD_LENGTH
-      ? `${escaped.slice(0, TRACEKERNEL_HTTP_MAX_DIAGNOSTIC_FIELD_LENGTH)}...`
-      : escaped;
-  }
-
-  private createHttpError(code: string, message: string): RuntimeKernelHttpError {
-    return { code, message };
-  }
-
-  private httpErrorFromThrown(error: unknown, fallbackCode: string): RuntimeKernelHttpError {
-    const message = error instanceof Error ? error.message : String(error);
-    const taggedCode = typeof error === 'object' && error !== null && 'code' in error
-      ? String((error as { code?: unknown }).code ?? '')
-      : '';
-    const parsedCode = /^([A-Z][A-Z0-9_]*):/.exec(message)?.[1] ?? '';
-    return this.createHttpError(taggedCode || parsedCode || fallbackCode, message);
-  }
-
-  private httpErrorResponse(status: number, error: RuntimeKernelHttpError, body = `${error.message}\n`): RuntimeKernelHttpResponse {
-    return { status, body, error };
-  }
-
   private httpHostUnreachableResponse(
     normalizedRequest: RuntimeKernelHttpRequest,
     url: URL,
@@ -2198,7 +1936,7 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
       return {
         status: 0,
         body: `${message}\n`,
-        error: this.createHttpError('ENOTFOUND', message),
+        error: workspaceHttpPolicy.createError('ENOTFOUND', message),
       };
     }
     const port = url.port || (url.protocol === 'https:' ? '443' : '80');
@@ -2211,7 +1949,7 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
     return {
       status: 0,
       body: `curl: (7) Failed to connect to ${url.hostname} port ${port}: Host unreachable\n`,
-      error: this.createHttpError('EHOSTUNREACH', message),
+      error: workspaceHttpPolicy.createError('EHOSTUNREACH', message),
     };
   }
 
@@ -2220,239 +1958,15 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
     if (host === 'localhost' || host === '127.0.0.1' || host === '::1') {
       return { reachable: true, via: 'loopback', ip: '127.0.0.1', latencyMs: 0.05 };
     }
-    for (const listener of this.httpListeners.values()) {
+    for (const listener of this.httpState.listeners.values()) {
       if (listener.info.host === host) {
         return { reachable: true, via: 'listener', ip: syntheticIp(host), latencyMs: syntheticLatency(host) };
       }
     }
-    if (this.externalHttp && this.isExternalHttpHostReachable(this.externalHttp, host)) {
+    if (this.httpState.external && this.isExternalHttpHostReachable(this.httpState.external, host)) {
       return { reachable: true, via: 'external', ip: syntheticIp(host), latencyMs: syntheticLatency(host) };
     }
     return { reachable: false, reason: 'unknown-host' };
-  }
-
-  private normalizeHttpHost(host: string, kind: 'connect' | 'listen'): string {
-    if (host.length > 253 || /[\u0000-\u0020\u007f]/.test(host)) {
-      throw Object.assign(new Error(`EADDRNOTAVAIL: invalid ${kind} host '${this.sanitizeHttpDiagnosticField(host)}'`), {
-        code: 'EADDRNOTAVAIL',
-      });
-    }
-    return host;
-  }
-
-  private normalizeHttpMethod(method: unknown): string {
-    const normalized = String(method ?? 'GET').toUpperCase();
-    if (!/^[A-Z0-9!#$%&'*+\-.^_`|~]{1,64}$/.test(normalized)) {
-      throw Object.assign(new Error(`EINVAL: invalid HTTP method '${this.sanitizeHttpDiagnosticField(normalized)}'`), {
-        code: 'EINVAL',
-      });
-    }
-    return normalized;
-  }
-
-  private normalizeHttpHeaders(headers: Record<string, string> | undefined): Record<string, string> | undefined {
-    if (!headers) return undefined;
-    const entries = Object.entries(headers);
-    if (entries.length === 0) return undefined;
-    if (entries.length > TRACEKERNEL_HTTP_MAX_HEADER_COUNT) {
-      throw Object.assign(new Error('EMSGSIZE: HTTP header count limit exceeded'), { code: 'EMSGSIZE' });
-    }
-    let headerBytes = 0;
-    const normalized: Record<string, string> = {};
-    for (const [name, value] of entries) {
-      const key = String(name).toLowerCase();
-      const text = String(value);
-      if (!/^[a-z0-9!#$%&'*+\-.^_`|~]{1,128}$/.test(key) || /[\r\n\u0000]/.test(text)) {
-        throw Object.assign(new Error(`EINVAL: invalid HTTP header '${this.sanitizeHttpDiagnosticField(name)}'`), {
-          code: 'EINVAL',
-        });
-      }
-      headerBytes += key.length + text.length;
-      if (headerBytes > TRACEKERNEL_HTTP_MAX_HEADER_BYTES) {
-        throw Object.assign(new Error('EMSGSIZE: HTTP header byte limit exceeded'), { code: 'EMSGSIZE' });
-      }
-      normalized[key] = text;
-    }
-    return normalized;
-  }
-
-  private httpHeadersFromRawHeaders(rawHeaders: readonly [string, string][]): Record<string, string> {
-    const headers: Record<string, string> = {};
-    for (const [name, value] of rawHeaders) {
-      headers[String(name).toLowerCase()] = String(value);
-    }
-    return headers;
-  }
-
-  private normalizeHttpRawHeaders(
-    rawHeaders: readonly [string, string][] | undefined
-  ): readonly [string, string][] | undefined {
-    if (!rawHeaders) return undefined;
-    if (rawHeaders.length > TRACEKERNEL_HTTP_MAX_HEADER_COUNT) {
-      throw Object.assign(new Error('EMSGSIZE: HTTP raw header count limit exceeded'), { code: 'EMSGSIZE' });
-    }
-    let headerBytes = 0;
-    const normalized: [string, string][] = [];
-    for (const entry of rawHeaders) {
-      if (!Array.isArray(entry) || entry.length < 2) {
-        throw Object.assign(new Error('EINVAL: invalid HTTP raw header entry'), { code: 'EINVAL' });
-      }
-      const [name, value] = entry;
-      const key = String(name);
-      const text = String(value);
-      if (!/^[A-Za-z0-9!#$%&'*+\-.^_`|~]{1,128}$/.test(key) || /[\r\n\u0000]/.test(text)) {
-        throw Object.assign(new Error(`EINVAL: invalid HTTP raw header '${this.sanitizeHttpDiagnosticField(name)}'`), {
-          code: 'EINVAL',
-        });
-      }
-      headerBytes += key.length + text.length;
-      if (headerBytes > TRACEKERNEL_HTTP_MAX_HEADER_BYTES) {
-        throw Object.assign(new Error('EMSGSIZE: HTTP raw header byte limit exceeded'), { code: 'EMSGSIZE' });
-      }
-      normalized.push([key, text]);
-    }
-    return normalized;
-  }
-
-  private normalizeHttpRequestPath(path: unknown, url: URL): RuntimeKernelHttpPathResult {
-    const fallback = `${url.pathname || '/'}${url.search}`;
-    const normalized = String(path ?? fallback) || fallback;
-    if (!normalized.startsWith('/') || normalized.length > 8192 || /[\r\n\u0000]/.test(normalized)) {
-      return {
-        ok: false,
-        error: this.createHttpError('EINVAL', `EINVAL: invalid HTTP request path '${this.sanitizeHttpDiagnosticField(normalized)}'`),
-      };
-    }
-    return { ok: true, path: normalized };
-  }
-
-  private assertHttpBodyLimit(message: RuntimeKernelHttpBodyPayload, direction: 'request' | 'response'): void {
-    let bytes: Uint8Array;
-    try {
-      bytes = runtimeHttpBodyBytes(message);
-    } catch {
-      throw Object.assign(new Error(`EINVAL: invalid HTTP ${direction} body encoding`), { code: 'EINVAL' });
-    }
-    if (bytes.byteLength > TRACEKERNEL_HTTP_MAX_BODY_BYTES) {
-      throw Object.assign(new Error(`EMSGSIZE: HTTP ${direction} body limit exceeded`), { code: 'EMSGSIZE' });
-    }
-  }
-
-  private normalizeHttpRequest(request: RuntimeKernelHttpRequest): RuntimeKernelHttpRequestResult {
-    let url: URL;
-    try {
-      url = new URL(String(request.url));
-    } catch {
-      return { ok: false, error: this.createHttpError('EINVAL', 'EINVAL: invalid HTTP request URL') };
-    }
-    let rawHeaders: readonly [string, string][] | undefined;
-    let explicitHeaders: Record<string, string> | undefined;
-    try {
-      rawHeaders = this.normalizeHttpRawHeaders(request.rawHeaders);
-      explicitHeaders = this.normalizeHttpHeaders(request.headers);
-    } catch (error) {
-      return { ok: false, error: this.httpErrorFromThrown(error, 'EINVAL') };
-    }
-    const headers = explicitHeaders ?? (rawHeaders ? this.httpHeadersFromRawHeaders(rawHeaders) : undefined);
-    const path = this.normalizeHttpRequestPath(request.path, url);
-    if (!path.ok) {
-      return { ok: false, error: path.error };
-    }
-    let method: string;
-    try {
-      method = this.normalizeHttpMethod(request.method);
-    } catch (error) {
-      return { ok: false, error: this.httpErrorFromThrown(error, 'EINVAL') };
-    }
-    const normalized: RuntimeKernelHttpRequest = {
-      method,
-      url: url.toString(),
-      path: path.path,
-    };
-    if (headers) normalized.headers = headers;
-    if (explicitHeaders) {
-      normalized.rawHeaders = Object.entries(explicitHeaders);
-    } else if (rawHeaders) {
-      normalized.rawHeaders = rawHeaders;
-    }
-    if (request.body !== undefined) normalized.body = String(request.body);
-    if (request.bodyEncoding) normalized.bodyEncoding = request.bodyEncoding;
-    if (request.signal) normalized.signal = request.signal;
-    try {
-      this.assertHttpBodyLimit(normalized, 'request');
-    } catch (error) {
-      return { ok: false, error: this.httpErrorFromThrown(error, 'EINVAL') };
-    }
-    return { ok: true, request: normalized };
-  }
-
-  private normalizeHttpResponse(response: RuntimeKernelHttpResponse): RuntimeKernelHttpResponse {
-    const status = Math.trunc(Number(response.status));
-    if (!Number.isFinite(status) || status < 100 || status > 599) {
-      throw Object.assign(new Error(`EINVAL: invalid HTTP response status '${response.status}'`), {
-        code: 'EINVAL',
-      });
-    }
-    const normalized: RuntimeKernelHttpResponse = { status };
-    const rawHeaders = this.normalizeHttpRawHeaders(response.rawHeaders);
-    const headers = rawHeaders
-      ? this.httpHeadersFromRawHeaders(rawHeaders)
-      : this.normalizeHttpHeaders(response.headers);
-    if (headers) normalized.headers = headers;
-    if (rawHeaders) {
-      normalized.rawHeaders = rawHeaders;
-    } else if (headers) {
-      normalized.rawHeaders = Object.entries(headers);
-    }
-    if (response.body !== undefined) normalized.body = String(response.body);
-    if (response.bodyEncoding) normalized.bodyEncoding = response.bodyEncoding;
-    if (response.annotation !== undefined) normalized.annotation = response.annotation;
-    this.assertHttpBodyLimit(normalized, 'response');
-    return normalized;
-  }
-
-  private normalizeHttpConnectHost(host: string | undefined): string {
-    const normalized = (host ?? '127.0.0.1').trim().toLowerCase();
-    if (!normalized || normalized === '0.0.0.0' || normalized === '::' || normalized === '*') return '127.0.0.1';
-    if (normalized === 'localhost') return '127.0.0.1';
-    return this.normalizeHttpHost(normalized, 'connect');
-  }
-
-  private normalizeHttpListenHost(host: string | undefined, actor: RuntimeWorkspaceActor): string {
-    const defaultHost = actor.kind === 'runtime' ? '127.0.0.1' : '0.0.0.0';
-    const normalized = (host ?? defaultHost).trim().toLowerCase();
-    if (!normalized) return defaultHost;
-    if (normalized === '::' || normalized === '*') {
-      if (actor.kind === 'runtime') {
-        throw Object.assign(new Error('EACCES: wildcard listen is not permitted'), {
-          code: 'EACCES',
-        });
-      }
-      return '0.0.0.0';
-    }
-    if (normalized === 'localhost') return '127.0.0.1';
-    if (this.isHttpWildcardHost(normalized) && actor.kind === 'runtime') {
-      throw Object.assign(new Error('EACCES: wildcard listen is not permitted'), {
-        code: 'EACCES',
-      });
-    }
-    return this.normalizeHttpHost(normalized, 'listen');
-  }
-
-  private isHttpWildcardHost(host: string): boolean {
-    return host === '0.0.0.0';
-  }
-
-  private isHttpWildcardConnectHost(host: string): boolean {
-    return host === '127.0.0.1';
-  }
-
-  private normalizeHttpConnectPort(port: number): number {
-    const normalized = Math.trunc(Number(port));
-    if (!Number.isFinite(normalized) || normalized < 1 || normalized > 65535) {
-      throw Object.assign(new Error(`EADDRNOTAVAIL: invalid port '${port}'`), { code: 'EADDRNOTAVAIL' });
-    }
-    return normalized;
   }
 
   private normalizeHttpListenPort(port: number): number {
@@ -2462,9 +1976,9 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
     }
     if (normalized !== 0) return normalized;
     for (let attempt = 0; attempt < 16384; attempt += 1) {
-      const candidate = this.nextEphemeralHttpPort;
-      this.nextEphemeralHttpPort += 1;
-      if (this.nextEphemeralHttpPort > 65535) this.nextEphemeralHttpPort = 49152;
+      const candidate = this.httpState.nextEphemeralPort;
+      this.httpState.nextEphemeralPort += 1;
+      if (this.httpState.nextEphemeralPort > 65535) this.httpState.nextEphemeralPort = 49152;
       if (!this.hasHttpListenerOnPort(candidate, 'http')) return candidate;
     }
     throw Object.assign(new Error('EADDRNOTAVAIL: no ephemeral ports available'), { code: 'EADDRNOTAVAIL' });
@@ -2475,19 +1989,19 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
   }
 
   private hasHttpListenerOnPort(port: number, protocol: 'http'): boolean {
-    for (const listener of this.httpListeners.values()) {
+    for (const listener of this.httpState.listeners.values()) {
       if (listener.info.protocol === protocol && listener.info.port === port) return true;
     }
     return false;
   }
 
   private findHttpBindConflict(host: string, port: number, protocol: 'http'): RuntimeKernelHttpListenerRecord | undefined {
-    for (const listener of this.httpListeners.values()) {
+    for (const listener of this.httpState.listeners.values()) {
       if (listener.info.protocol !== protocol || listener.info.port !== port) continue;
       if (
         listener.info.host === host ||
-        this.isHttpWildcardHost(listener.info.host) ||
-        this.isHttpWildcardHost(host)
+        workspaceHttpPolicy.isWildcardHost(listener.info.host) ||
+        workspaceHttpPolicy.isWildcardHost(host)
       ) {
         return listener;
       }
@@ -2512,17 +2026,17 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
         code: 'EPROTONOSUPPORT',
       });
     }
-    const host = this.normalizeHttpListenHost(options.host, actor);
+    const host = workspaceHttpPolicy.normalizeListenHost(options.host, actor);
     const port = this.normalizeHttpListenPort(options.port);
     const key = this.httpListenerKey(host, port, protocol);
-    if (!this.httpListeners.has(key) && this.httpListeners.size >= TRACEKERNEL_HTTP_LISTENER_LIMIT) {
+    if (!this.httpState.listeners.has(key) && this.httpState.listeners.size >= TRACEKERNEL_HTTP_LISTENER_LIMIT) {
       throw Object.assign(new Error('EAGAIN: resource temporarily unavailable'), { code: 'EAGAIN' });
     }
     if (this.findHttpBindConflict(host, port, protocol)) {
       throw Object.assign(new Error(`EADDRINUSE: address already in use ${host}:${port}`), { code: 'EADDRINUSE' });
     }
     const info: RuntimeKernelHttpListenerInfo = {
-      id: `${listenerOwner.idPrefix}-${this.nextHttpListenerSeq++}`,
+      id: `${listenerOwner.idPrefix}-${this.httpState.nextListenerSeq++}`,
       pid: listenerOwner.pid,
       host,
       port,
@@ -2538,7 +2052,7 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
       listening: false,
       connectionControllers: new Map(),
     };
-    this.httpListeners.set(key, listener);
+    this.httpState.listeners.set(key, listener);
     listener.ready = this.initializeHttpTcpListener(key, listener);
     // Direct workspace consumers historically did not have to observe a
     // readiness promise. Keep asynchronous bind failures available to callers
@@ -2563,7 +2077,7 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
     try {
       fd = await this.openHttpTcpSocket(listener.info.pid);
       listener.listenerFd = fd;
-      if (listener.closed || this.httpListeners.get(key) !== listener) {
+      if (listener.closed || this.httpState.listeners.get(key) !== listener) {
         await this.closeHttpTcpDescriptor(listener.info.pid, fd);
         listener.listenerFd = undefined;
         return;
@@ -2580,7 +2094,7 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
       await this.listenHttpTcpSocket(listener.info.pid, fd, {
         backlog: TRACEKERNEL_HTTP_MAX_IN_FLIGHT_REQUESTS,
       });
-      if (listener.closed || this.httpListeners.get(key) !== listener) {
+      if (listener.closed || this.httpState.listeners.get(key) !== listener) {
         await this.closeHttpTcpDescriptor(listener.info.pid, fd);
         listener.listenerFd = undefined;
         listener.transportAddress = undefined;
@@ -2598,13 +2112,13 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
         this.recordKernelEvent('net-error', listener.info.pid, {
           id: listener.info.id,
           protocol: listener.info.protocol,
-          error: this.sanitizeHttpDiagnosticField(
+          error: workspaceHttpPolicy.sanitizeDiagnosticField(
             error instanceof Error ? error.message : String(error)
           ),
         });
       });
     } catch (error) {
-      if (this.httpListeners.get(key) === listener) this.httpListeners.delete(key);
+      if (this.httpState.listeners.get(key) === listener) this.httpState.listeners.delete(key);
       listener.closed = true;
       if (fd !== undefined) {
         await this.closeHttpTcpDescriptor(listener.info.pid, fd);
@@ -2625,7 +2139,7 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
       return;
     }
     listener.closed = true;
-    if (this.httpListeners.get(key) === listener) this.httpListeners.delete(key);
+    if (this.httpState.listeners.get(key) === listener) this.httpState.listeners.delete(key);
     if (listener.listening) {
       listener.listening = false;
       this.recordKernelEvent('net-close', listener.info.pid, {
@@ -2637,7 +2151,7 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
     }
     if (forceConnections) this.forceCloseHttpConnections(listener);
     else if (listener.connectionControllers.size > 0) {
-      this.retiredHttpListeners.add(listener);
+      this.httpState.retiredListeners.add(listener);
     }
     if (listener.listenerFd !== undefined) {
       void this.closeHttpTcpDescriptor(
@@ -2648,7 +2162,7 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
   }
 
   private forceCloseHttpConnections(listener: RuntimeKernelHttpListenerRecord): void {
-    this.retiredHttpListeners.delete(listener);
+    this.httpState.retiredListeners.delete(listener);
     for (const [fd, controller] of listener.connectionControllers) {
       if (!controller.signal.aborted) controller.abort();
       void this.closeHttpTcpDescriptor(listener.info.pid, fd);
@@ -2703,7 +2217,7 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
           this.recordKernelEvent('net-error', listener.info.pid, {
             id: listener.info.id,
             protocol: listener.info.protocol,
-            error: this.sanitizeHttpDiagnosticField(
+            error: workspaceHttpPolicy.sanitizeDiagnosticField(
               error instanceof Error ? error.message : String(error)
             ),
           });
@@ -2711,7 +2225,7 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
         .finally(() => {
           listener.connectionControllers.delete(accepted.fd);
           if (listener.closed && listener.connectionControllers.size === 0) {
-            this.retiredHttpListeners.delete(listener);
+            this.httpState.retiredListeners.delete(listener);
           }
           void this.closeHttpTcpDescriptor(listener.info.pid, accepted.fd);
         });
@@ -2742,7 +2256,7 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
     remotePort: number,
     controller: AbortController
   ): Promise<void> {
-    const context = this.httpTcpDispatches.get(remotePort);
+    const context = this.httpState.tcpDispatches.get(remotePort);
     const forwardAbort = (): void => {
       if (!controller.signal.aborted) controller.abort(context?.signal.reason);
     };
@@ -2792,14 +2306,14 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
         signal: controller.signal,
       };
       try {
-        response = this.normalizeHttpResponse(await listener.handler(request));
+        response = workspaceHttpPolicy.normalizeResponse(await listener.handler(request));
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
         this.recordKernelEvent('net-error', listener.info.pid, {
           id: listener.info.id,
           protocol: listener.info.protocol,
           phase: 'handler',
-          error: this.sanitizeHttpDiagnosticField(message),
+          error: workspaceHttpPolicy.sanitizeDiagnosticField(message),
         });
         response = {
           status: 500,
@@ -2837,33 +2351,33 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
   }
 
   private closeHttpListenersForProcess(pid: number): void {
-    for (const [key, listener] of this.httpListeners) {
+    for (const [key, listener] of this.httpState.listeners) {
       if (listener.info.pid !== pid) continue;
       this.closeHttpListener(key, listener, true);
     }
-    for (const listener of this.retiredHttpListeners) {
+    for (const listener of this.httpState.retiredListeners) {
       if (listener.info.pid === pid) this.forceCloseHttpConnections(listener);
     }
   }
 
   private closeAllHttpListeners(): void {
-    for (const [key, listener] of this.httpListeners) {
+    for (const [key, listener] of this.httpState.listeners) {
       this.closeHttpListener(key, listener, true);
     }
-    for (const listener of this.retiredHttpListeners) {
+    for (const listener of this.httpState.retiredListeners) {
       this.forceCloseHttpConnections(listener);
     }
-    this.httpTcpDispatches.clear();
+    this.httpState.tcpDispatches.clear();
   }
 
   private findHttpListener(url: URL): RuntimeKernelHttpListenerRecord | undefined {
     if (url.protocol !== 'http:') return undefined;
-    const host = this.normalizeHttpConnectHost(url.hostname);
-    const port = this.normalizeHttpConnectPort(url.port ? Number(url.port) : 80);
-    const exact = this.httpListeners.get(this.httpListenerKey(host, port, 'http'));
+    const host = workspaceHttpPolicy.normalizeConnectHost(url.hostname);
+    const port = workspaceHttpPolicy.normalizeConnectPort(url.port ? Number(url.port) : 80);
+    const exact = this.httpState.listeners.get(this.httpListenerKey(host, port, 'http'));
     if (exact) return exact;
-    return this.isHttpWildcardConnectHost(host)
-      ? this.httpListeners.get(this.httpListenerKey('0.0.0.0', port, 'http'))
+    return workspaceHttpPolicy.isWildcardConnectHost(host)
+      ? this.httpState.listeners.get(this.httpListenerKey('0.0.0.0', port, 'http'))
       : undefined;
   }
 
@@ -3090,8 +2604,8 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
       if (signal.aborted) onAbort();
       await Promise.race([
         this.connectHttpTcpSocket(pid, fd, {
-          host: this.normalizeHttpConnectHost(url.hostname),
-          port: this.normalizeHttpConnectPort(url.port ? Number(url.port) : 80),
+          host: workspaceHttpPolicy.normalizeConnectHost(url.hostname),
+          port: workspaceHttpPolicy.normalizeConnectPort(url.port ? Number(url.port) : 80),
         }),
         aborted,
       ]);
@@ -3181,7 +2695,7 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
         port: 0,
       });
       clientPort = localAddress.port;
-      this.httpTcpDispatches.set(clientPort, dispatchContext);
+      this.httpState.tcpDispatches.set(clientPort, dispatchContext);
       await this.connectHttpTcpSocket(clientPid, clientFd, {
         host: transportAddress.host === '0.0.0.0'
           ? '127.0.0.1'
@@ -3225,9 +2739,9 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
       handlerSignal.removeEventListener('abort', onAbort);
       if (
         clientPort !== undefined &&
-        this.httpTcpDispatches.get(clientPort) === dispatchContext
+        this.httpState.tcpDispatches.get(clientPort) === dispatchContext
       ) {
-        this.httpTcpDispatches.delete(clientPort);
+        this.httpState.tcpDispatches.delete(clientPort);
       }
       if (clientFd !== undefined) {
         await this.closeHttpTcpDescriptor(clientPid, clientFd);
@@ -3236,14 +2750,14 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
   }
 
   private recordHttpRequest(entry: Omit<RuntimeKernelHttpRequestRecord, 'seq' | 'time'>): void {
-    this.httpRequestLog.push({
-      seq: this.nextHttpRequestSeq++,
+    this.httpState.requestLog.push({
+      seq: this.httpState.nextRequestSeq++,
       time: new Date().toISOString(),
       ...entry,
       url: redactRuntimeDiagnosticUrl(entry.url),
     });
-    if (this.httpRequestLog.length > TRACEKERNEL_HTTP_REQUEST_LOG_LIMIT) {
-      this.httpRequestLog.splice(0, this.httpRequestLog.length - TRACEKERNEL_HTTP_REQUEST_LOG_LIMIT);
+    if (this.httpState.requestLog.length > TRACEKERNEL_HTTP_REQUEST_LOG_LIMIT) {
+      this.httpState.requestLog.splice(0, this.httpState.requestLog.length - TRACEKERNEL_HTTP_REQUEST_LOG_LIMIT);
     }
   }
 
@@ -3263,7 +2777,7 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
       try {
         return config.hosts(url) ? null : `host ${url.hostname} is not allowlisted`;
       } catch (error) {
-        return `host allowlist predicate failed: ${this.sanitizeHttpDiagnosticField(error instanceof Error ? error.message : String(error))}`;
+        return `host allowlist predicate failed: ${workspaceHttpPolicy.sanitizeDiagnosticField(error instanceof Error ? error.message : String(error))}`;
       }
     }
     const hostname = url.hostname.replace(/^\[|\]$/g, '').toLowerCase();
@@ -3330,8 +2844,8 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
       context.externalHttpRequestCount = count + 1;
       return true;
     }
-    if (this.workspaceExternalHttpRequestCount >= config.maxRequestsPerCommand) return false;
-    this.workspaceExternalHttpRequestCount += 1;
+    if (this.httpState.workspaceExternalRequestCount >= config.maxRequestsPerCommand) return false;
+    this.httpState.workspaceExternalRequestCount += 1;
     return true;
   }
 
@@ -3350,7 +2864,7 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
     const abortHandlerRequest = (): void => {
       if (!requestAbortController.signal.aborted) requestAbortController.abort();
     };
-    if (this.httpLifecycleAbortController.signal.aborted) {
+    if (this.httpState.lifecycleAbortController.signal.aborted) {
       abortHandlerRequest();
       onInvocationSkipped?.();
       return settleFailure('EINTR', 'Network request interrupted\n');
@@ -3382,7 +2896,7 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
         abortHandlerRequest();
         resolve(settleFailure('EINTR', 'Network request interrupted\n'));
       };
-      this.httpLifecycleAbortController.signal.addEventListener('abort', lifecycleAbortListener, { once: true });
+      this.httpState.lifecycleAbortController.signal.addEventListener('abort', lifecycleAbortListener, { once: true });
     }));
     try {
       return await Promise.race(races);
@@ -3390,7 +2904,7 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
       if (timeoutHandle !== undefined) clearTimeout(timeoutHandle);
       if (abortListener) signal?.removeEventListener('abort', abortListener);
       if (lifecycleAbortListener) {
-        this.httpLifecycleAbortController.signal.removeEventListener('abort', lifecycleAbortListener);
+        this.httpState.lifecycleAbortController.signal.removeEventListener('abort', lifecycleAbortListener);
       }
     }
   }
@@ -3404,7 +2918,7 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
     this.recordHttpRequest({
       method: normalizedRequest.method,
       url: normalizedRequest.url,
-      error: this.sanitizeHttpDiagnosticField(`${error}:${reason}`),
+      error: workspaceHttpPolicy.sanitizeDiagnosticField(`${error}:${reason}`),
       external: true,
     });
     const url = new URL(normalizedRequest.url);
@@ -3424,7 +2938,7 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
       // requested host. Browser fetch/http and curl translate this separately.
       status: 0,
       body: `${publicMessage}\n`,
-      error: this.createHttpError(publicCode, `${publicCode}: ${publicMessage}`),
+      error: workspaceHttpPolicy.createError(publicCode, `${publicCode}: ${publicMessage}`),
     };
   }
 
@@ -3462,14 +2976,14 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
         this.recordHttpRequest({
           method: normalizedRequest.method,
           url: normalizedRequest.url,
-          error: this.sanitizeHttpDiagnosticField(`ENOTFOUND:${blocklistReason}`),
+          error: workspaceHttpPolicy.sanitizeDiagnosticField(`ENOTFOUND:${blocklistReason}`),
           external: true,
         });
         this.recordHttpJournal(normalizedRequest, url, 'external', actor, options.commandContext, { error: 'ENOTFOUND' });
         return {
           status: 0,
           body: `${message}\n`,
-          error: this.createHttpError('ENOTFOUND', message),
+          error: workspaceHttpPolicy.createError('ENOTFOUND', message),
         };
       }
       return this.externalHttpBlockedResponse(normalizedRequest, 403, 'EHOSTBLOCKED', blocklistReason);
@@ -3489,7 +3003,7 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
         return {
           status: 0,
           body: `${message}\n`,
-          error: this.createHttpError('ENOTFOUND', message),
+          error: workspaceHttpPolicy.createError('ENOTFOUND', message),
         };
       }
       return this.externalHttpBlockedResponse(
@@ -3503,8 +3017,8 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
     if (allowlistReason) {
       return this.externalHttpBlockedResponse(normalizedRequest, 403, 'EHOSTUNREACH', allowlistReason);
     }
-    if (options.signal?.aborted || this.httpLifecycleAbortController.signal.aborted) {
-      const body = this.httpLifecycleAbortController.signal.aborted
+    if (options.signal?.aborted || this.httpState.lifecycleAbortController.signal.aborted) {
+      const body = this.httpState.lifecycleAbortController.signal.aborted
         ? 'Network request interrupted\n'
         : 'Network request aborted\n';
       this.recordHttpRequest({
@@ -3517,7 +3031,7 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
       return {
         status: 0,
         body,
-        error: this.createHttpError('EINTR', body.trim()),
+        error: workspaceHttpPolicy.createError('EINTR', body.trim()),
       };
     }
     if (!this.consumeExternalHttpBudget(config, options.commandContext)) {
@@ -3528,7 +3042,7 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
         `external fetch request budget exceeded (${config.maxRequestsPerCommand})`
       );
     }
-    if (this.activeExternalHttpRequests >= config.maxConcurrentRequests) {
+    if (this.httpState.activeExternalRequests >= config.maxConcurrentRequests) {
       return this.externalHttpBlockedResponse(
         normalizedRequest,
         429,
@@ -3540,9 +3054,9 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
       ? config.timeoutMs
       : Math.max(1, Math.ceil(Number(options.timeoutMs)));
     if (!Number.isFinite(requestedTimeoutMs)) {
-      return this.httpErrorResponse(
+      return workspaceHttpPolicy.errorResponse(
         400,
-        this.createHttpError('EINVAL', `EINVAL: invalid network timeout: ${options.timeoutMs}`)
+        workspaceHttpPolicy.createError('EINVAL', `EINVAL: invalid network timeout: ${options.timeoutMs}`)
       );
     }
     const timeoutMs = Math.min(config.timeoutMs, requestedTimeoutMs);
@@ -3558,9 +3072,9 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
         });
         this.recordHttpJournal(normalizedRequest, url, 'external', actor, options.commandContext, { error });
       }
-      return { status: 0, body, error: this.createHttpError(error, body.trim()) };
+      return { status: 0, body, error: workspaceHttpPolicy.createError(error, body.trim()) };
     };
-    this.activeExternalHttpRequests += 1;
+    this.httpState.activeExternalRequests += 1;
     const response = await this.runHttpDispatchWithAbortRace(options, timeoutMs, async (signal) => {
       try {
         const externalRequest: RuntimeExternalHttpRequest = {
@@ -3571,7 +3085,7 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
           ...(normalizedRequest.bodyEncoding ? { bodyEncoding: normalizedRequest.bodyEncoding } : {}),
           signal,
         };
-        const normalizedResponse = this.normalizeHttpResponse(await config.fetch(externalRequest));
+        const normalizedResponse = workspaceHttpPolicy.normalizeResponse(await config.fetch(externalRequest));
         if (!settled) {
           this.recordHttpRequest({
             method: normalizedRequest.method,
@@ -3587,7 +3101,7 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
         }
         return normalizedResponse;
       } catch (error) {
-        const message = this.sanitizeHttpDiagnosticField(error instanceof Error ? error.message : String(error));
+        const message = workspaceHttpPolicy.sanitizeDiagnosticField(error instanceof Error ? error.message : String(error));
         const rawCode = typeof (error as { code?: unknown } | null)?.code === 'string'
           ? String((error as { code: string }).code).toUpperCase()
           : '';
@@ -3609,13 +3123,13 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
         return {
           status: 0,
           body: `${publicMessage}\n`,
-          error: this.createHttpError(publicCode, publicMessage),
+          error: workspaceHttpPolicy.createError(publicCode, publicMessage),
         };
       } finally {
-        this.activeExternalHttpRequests = Math.max(0, this.activeExternalHttpRequests - 1);
+        this.httpState.activeExternalRequests = Math.max(0, this.httpState.activeExternalRequests - 1);
       }
     }, settleFailure, () => {
-      this.activeExternalHttpRequests = Math.max(0, this.activeExternalHttpRequests - 1);
+      this.httpState.activeExternalRequests = Math.max(0, this.httpState.activeExternalRequests - 1);
     });
     settled = true;
     return response;
@@ -3630,27 +3144,27 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
       commandContext?: RuntimeCommandExecutionContext;
     }
   ): Promise<RuntimeKernelHttpResponse> {
-    if (this.activeHttpRequests >= TRACEKERNEL_HTTP_MAX_IN_FLIGHT_REQUESTS) {
+    if (this.httpState.activeRequests >= TRACEKERNEL_HTTP_MAX_IN_FLIGHT_REQUESTS) {
       return {
         status: 503,
         body: 'Resource temporarily unavailable\n',
-        error: this.createHttpError('EAGAIN', 'Resource temporarily unavailable'),
+        error: workspaceHttpPolicy.createError('EAGAIN', 'Resource temporarily unavailable'),
       };
     }
     const timeoutMs = options.timeoutMs === undefined
       ? undefined
       : Math.max(1, Math.ceil(Number(options.timeoutMs)));
     if (timeoutMs !== undefined && !Number.isFinite(timeoutMs)) {
-      return this.httpErrorResponse(
+      return workspaceHttpPolicy.errorResponse(
         400,
-        this.createHttpError('EINVAL', `EINVAL: invalid network timeout: ${options.timeoutMs}`)
+        workspaceHttpPolicy.createError('EINVAL', `EINVAL: invalid network timeout: ${options.timeoutMs}`)
       );
     }
     if (options.signal?.aborted) {
       return {
         status: 0,
         body: 'Network request aborted\n',
-        error: this.createHttpError('EINTR', 'Network request aborted'),
+        error: workspaceHttpPolicy.createError('EINTR', 'Network request aborted'),
       };
     }
 
@@ -3677,11 +3191,11 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
       return {
         status: 0,
         body,
-        error: this.createHttpError(error, body.trim()),
+        error: workspaceHttpPolicy.createError(error, body.trim()),
       };
     };
 
-    this.activeHttpRequests += 1;
+    this.httpState.activeRequests += 1;
     const response = await this.runHttpDispatchWithAbortRace(
       options,
       timeoutMs,
@@ -3729,12 +3243,12 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
             : `connect ${code} ${url.hostname}:${port}\n`;
           return settleFailure(code, body);
         } finally {
-          this.activeHttpRequests = Math.max(0, this.activeHttpRequests - 1);
+          this.httpState.activeRequests = Math.max(0, this.httpState.activeRequests - 1);
         }
       },
       settleFailure,
       () => {
-        this.activeHttpRequests = Math.max(0, this.activeHttpRequests - 1);
+        this.httpState.activeRequests = Math.max(0, this.httpState.activeRequests - 1);
       }
     );
     settled = true;
@@ -3753,18 +3267,18 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
     try {
       this.assertHttpCapability(actor, 'dispatch');
     } catch (error) {
-      return this.httpErrorResponse(403, this.httpErrorFromThrown(error, 'EACCES'));
+      return workspaceHttpPolicy.errorResponse(403, workspaceHttpPolicy.errorFromThrown(error, 'EACCES'));
     }
-    const normalizedResult = this.normalizeHttpRequest(request);
+    const normalizedResult = workspaceHttpPolicy.normalizeRequest(request);
     if (!normalizedResult.ok) {
-      return this.httpErrorResponse(400, normalizedResult.error);
+      return workspaceHttpPolicy.errorResponse(400, normalizedResult.error);
     }
     const normalizedRequest = normalizedResult.request;
     let url: URL;
     try {
       url = new URL(normalizedRequest.url);
     } catch {
-      return this.httpErrorResponse(400, this.createHttpError('EINVAL', 'curl: invalid URL'));
+      return workspaceHttpPolicy.errorResponse(400, workspaceHttpPolicy.createError('EINVAL', 'curl: invalid URL'));
     }
     let listener: RuntimeKernelHttpListenerRecord | undefined;
     try {
@@ -3775,17 +3289,17 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
         url: normalizedRequest.url,
         error: error instanceof Error ? error.message : String(error),
       });
-      return this.httpErrorResponse(400, this.httpErrorFromThrown(error, 'EINVAL'));
+      return workspaceHttpPolicy.errorResponse(400, workspaceHttpPolicy.errorFromThrown(error, 'EINVAL'));
     }
-    if (this.httpLifecycleAbortController.signal.aborted) {
+    if (this.httpState.lifecycleAbortController.signal.aborted) {
       this.recordHttpRequest({
         ...(listener ? { listenerId: listener.info.id, pid: listener.info.pid } : {}),
         method: normalizedRequest.method,
         url: normalizedRequest.url,
         error: 'EINTR',
-        ...(!listener && this.externalHttp ? { external: true as const } : {}),
+        ...(!listener && this.httpState.external ? { external: true as const } : {}),
       });
-      if (listener || this.externalHttp) {
+      if (listener || this.httpState.external) {
         this.recordHttpJournal(
           normalizedRequest,
           url,
@@ -3798,7 +3312,7 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
       return {
         status: 0,
         body: 'Network request interrupted\n',
-        error: this.createHttpError('EINTR', 'Network request interrupted'),
+        error: workspaceHttpPolicy.createError('EINTR', 'Network request interrupted'),
       };
     }
     if (!listener) {
@@ -3810,8 +3324,8 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
           options
         );
       }
-      if (this.externalHttp) {
-        return this.dispatchExternalHttpRequest(this.externalHttp, normalizedRequest, url, actor, options);
+      if (this.httpState.external) {
+        return this.dispatchExternalHttpRequest(this.httpState.external, normalizedRequest, url, actor, options);
       }
       const hostResolution = this.resolveHost(url.hostname.replace(/^\[|\]$/g, ''));
       if (!hostResolution.reachable) {
@@ -3825,10 +3339,10 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
       return {
         status: 0,
         body: `curl: (7) Failed to connect to ${url.hostname} port ${url.port || '80'}: Connection refused\n`,
-        error: this.createHttpError('ECONNREFUSED', `ECONNREFUSED: Failed to connect to ${url.hostname} port ${url.port || '80'}`),
+        error: workspaceHttpPolicy.createError('ECONNREFUSED', `ECONNREFUSED: Failed to connect to ${url.hostname} port ${url.port || '80'}`),
       };
     }
-    if (this.activeHttpRequests >= TRACEKERNEL_HTTP_MAX_IN_FLIGHT_REQUESTS) {
+    if (this.httpState.activeRequests >= TRACEKERNEL_HTTP_MAX_IN_FLIGHT_REQUESTS) {
       this.recordHttpRequest({
         listenerId: listener.info.id,
         pid: listener.info.pid,
@@ -3839,14 +3353,14 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
       return {
         status: 503,
         body: 'Resource temporarily unavailable\n',
-        error: this.createHttpError('EAGAIN', 'Resource temporarily unavailable'),
+        error: workspaceHttpPolicy.createError('EAGAIN', 'Resource temporarily unavailable'),
       };
     }
     const timeoutMs = options.timeoutMs === undefined ? undefined : Math.max(1, Math.ceil(Number(options.timeoutMs)));
     if (timeoutMs !== undefined && !Number.isFinite(timeoutMs)) {
-      return this.httpErrorResponse(
+      return workspaceHttpPolicy.errorResponse(
         400,
-        this.createHttpError('EINVAL', `EINVAL: invalid network timeout: ${options.timeoutMs}`)
+        workspaceHttpPolicy.createError('EINVAL', `EINVAL: invalid network timeout: ${options.timeoutMs}`)
       );
     }
     const signal = options.signal;
@@ -3862,7 +3376,7 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
       return {
         status: 0,
         body: 'Network request aborted\n',
-        error: this.createHttpError('EINTR', 'Network request aborted'),
+        error: workspaceHttpPolicy.createError('EINTR', 'Network request aborted'),
       };
     }
 
@@ -3879,9 +3393,9 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
         });
         this.recordHttpJournal(normalizedRequest, url, 'listener', actor, options.commandContext, { error });
       }
-      return { status: 0, body, error: this.createHttpError(error, body.trim()) };
+      return { status: 0, body, error: workspaceHttpPolicy.createError(error, body.trim()) };
     };
-    this.activeHttpRequests += 1;
+    this.httpState.activeRequests += 1;
     const response = await this.runHttpDispatchWithAbortRace(options, timeoutMs, async (handlerSignal) => {
       try {
         const response = await this.dispatchLocalHttpOverTcp(
@@ -3936,10 +3450,10 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
         }
         return { status: 500, body: this.httpListenerErrorBody(listener, actor, message) };
       } finally {
-        this.activeHttpRequests = Math.max(0, this.activeHttpRequests - 1);
+        this.httpState.activeRequests = Math.max(0, this.httpState.activeRequests - 1);
       }
     }, settleFailure, () => {
-      this.activeHttpRequests = Math.max(0, this.activeHttpRequests - 1);
+      this.httpState.activeRequests = Math.max(0, this.httpState.activeRequests - 1);
     });
     settled = true;
     return response;
@@ -4629,7 +4143,7 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
   }
 
   private journalHttpError(error: string, headers: Record<string, string> | undefined): string {
-    let message = this.sanitizeHttpDiagnosticField(error);
+    let message = workspaceHttpPolicy.sanitizeDiagnosticField(error);
     const authorization = headers?.authorization;
     if (authorization) {
       message = message.split(authorization).join('redacted');
@@ -5644,30 +5158,30 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
   }
 
   private renderProcHttpListeners(): string {
-    const rows = [...this.httpListeners.values()]
+    const rows = [...this.httpState.listeners.values()]
       .map((listener) => listener.info)
       .sort((left, right) => left.port - right.port || left.host.localeCompare(right.host))
       .map((listener) => [
-        this.sanitizeHttpDiagnosticField(listener.id),
+        workspaceHttpPolicy.sanitizeDiagnosticField(listener.id),
         listener.pid,
-        this.sanitizeHttpDiagnosticField(listener.protocol),
-        this.sanitizeHttpDiagnosticField(listener.host),
+        workspaceHttpPolicy.sanitizeDiagnosticField(listener.protocol),
+        workspaceHttpPolicy.sanitizeDiagnosticField(listener.host),
         listener.port,
-        this.sanitizeHttpDiagnosticField(listener.startedAt),
+        workspaceHttpPolicy.sanitizeDiagnosticField(listener.startedAt),
       ].join('\t'));
     return ['id\tpid\tproto\thost\tport\tstarted', ...rows].join('\n') + '\n';
   }
 
   private renderProcHttpRequests(): string {
-    const rows = this.httpRequestLog.map((request) => [
+    const rows = this.httpState.requestLog.map((request) => [
       request.seq,
-      this.sanitizeHttpDiagnosticField(request.time),
-      this.sanitizeHttpDiagnosticField(request.listenerId ?? ''),
+      workspaceHttpPolicy.sanitizeDiagnosticField(request.time),
+      workspaceHttpPolicy.sanitizeDiagnosticField(request.listenerId ?? ''),
       request.pid ?? '',
-      this.sanitizeHttpDiagnosticField(request.method),
-      this.sanitizeHttpDiagnosticField(request.url),
+      workspaceHttpPolicy.sanitizeDiagnosticField(request.method),
+      workspaceHttpPolicy.sanitizeDiagnosticField(request.url),
       request.status ?? '',
-      this.sanitizeHttpDiagnosticField(request.error ?? ''),
+      workspaceHttpPolicy.sanitizeDiagnosticField(request.error ?? ''),
       request.external ? 'external' : '',
     ].join('\t'));
     return ['seq\ttime\tlistener\tpid\tmethod\turl\tstatus\terror\texternal', ...rows].join('\n') + '\n';
@@ -6866,7 +6380,7 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
     }
     const showListeners = flags.includes('l');
     const showProcesses = flags.includes('p');
-    const listeners = [...this.httpListeners.values()]
+    const listeners = [...this.httpState.listeners.values()]
       .map((listener) => listener.info)
       .sort((left, right) => left.port - right.port || left.host.localeCompare(right.host));
     const rows = listeners
@@ -6910,7 +6424,7 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
     if (port === undefined) {
       return { stdout: '', stderr: 'lsof: usage: lsof -i :PORT\n', exitCode: 1 };
     }
-    const listeners = [...this.httpListeners.values()]
+    const listeners = [...this.httpState.listeners.values()]
       .map((listener) => listener.info)
       .filter((listener) => listener.port === port)
       .sort((left, right) => left.pid - right.pid);
@@ -9816,7 +9330,7 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
       this.fs.withBaseMutation([this.cwd], (fs) => fs.rm(this.cwd, { force: true, recursive: true }), 'recursive-delete')
     );
     this.closeAllHttpListeners();
-    if (!this.httpLifecycleAbortController.signal.aborted) this.httpLifecycleAbortController.abort();
+    if (!this.httpState.lifecycleAbortController.signal.aborted) this.httpState.lifecycleAbortController.abort();
     this.kernelSyscallGenerationUnsubscribe?.();
     this.kernelSyscallGenerationUnsubscribe = undefined;
     this.stopObservingExternalTraceKernelMutations();
@@ -10170,7 +9684,7 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
   dispose(): void {
     if (this.destroyed) return;
     this.destroyed = true;
-    if (!this.httpLifecycleAbortController.signal.aborted) this.httpLifecycleAbortController.abort();
+    if (!this.httpState.lifecycleAbortController.signal.aborted) this.httpState.lifecycleAbortController.abort();
     this.closeAllHttpListeners();
     this.eventWatchers.clear();
     this.kernelSyscallGenerationUnsubscribe?.();
@@ -11023,6 +10537,11 @@ export type {
 export { normalizeRuntimeProjectPath } from './paths';
 export { RuntimeProjectWorkspaceTerminalSession } from './terminal-session';
 export { createPackageManagerProjectCommands } from './package-manager';
+export {
+  syntheticIp,
+  syntheticLatency,
+  type HostResolution,
+} from './http-state';
 export {
   RUNTIME_WORKSPACE_DEFAULT_MAX_BYTES,
   RUNTIME_WORKSPACE_DEFAULT_MAX_ENTRY_COUNT,
