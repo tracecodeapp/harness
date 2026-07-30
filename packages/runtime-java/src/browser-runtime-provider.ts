@@ -1,4 +1,8 @@
-import type { Language, RuntimeClient } from '@tracecode/runtime-core';
+import type {
+  Language,
+  RuntimeClient,
+  RuntimePreparedExecutionProvider,
+} from '@tracecode/runtime-core';
 import type {
   BrowserRuntimeProvider,
   BrowserRuntimeProviderContext,
@@ -6,8 +10,14 @@ import type {
 } from '@tracecode/runtime-browser';
 import { FreshWorkerRuntimeClient } from '@tracecode/runtime-browser/internal';
 import { createJavaRuntimeClient } from './java-runtime-client';
+import {
+  createJavaBrowserPreparedExecutionProvider,
+} from './java-prepared-provider';
 import { runJavaSafeStorageExclusive } from './java-storage-isolation';
-import { JavaWorkerClient } from './java-worker-client';
+import {
+  JavaWorkerClient,
+  type JavaWorkerClientOptions,
+} from './java-worker-client';
 
 export interface JavaBrowserRuntimeProviderOptions {
   workerIdleTimeoutMs?: number;
@@ -34,7 +44,7 @@ export function createJavaBrowserRuntimeProvider(
 
       const workerFactory = context.workerFactoryFor('java');
       const javaManifest = context.assets.runtimeManifests?.java;
-      const worker = new JavaWorkerClient({
+      const workerOptions: JavaWorkerClientOptions = {
         workerUrl: context.assets.javaWorker,
         ...(workerFactory
           ? { workerFactory, isolatedRuntimeStorage: true }
@@ -92,7 +102,8 @@ export function createJavaBrowserRuntimeProvider(
               },
             }
           : {}),
-      });
+      };
+      const worker = new JavaWorkerClient(workerOptions);
       const directClient = createJavaRuntimeClient(worker);
       const safeClient = new FreshWorkerRuntimeClient(directClient, {
         retireWorker: () => worker.terminate(),
@@ -104,9 +115,16 @@ export function createJavaBrowserRuntimeProvider(
       const client: RuntimeClient =
         context.executionIsolation === 'safe' ? safeClient : directClient;
       const clients = new Map<Language, RuntimeClient>([['java', client]]);
+      const preparedProvider =
+        createJavaBrowserPreparedExecutionProvider(workerOptions);
+      const preparedProviders = new Map<
+        Language,
+        RuntimePreparedExecutionProvider
+      >([['java', preparedProvider]]);
 
       return {
         clients,
+        preparedProviders,
         warm: () =>
           context.executionIsolation === 'safe'
             ? safeClient.prepare()
@@ -114,10 +132,12 @@ export function createJavaBrowserRuntimeProvider(
         disposeLanguage: () => {
           if (context.executionIsolation === 'safe') safeClient.reset();
           else worker.terminate();
+          preparedProvider.releaseStandby();
         },
         dispose: () => {
           if (context.executionIsolation === 'safe') safeClient.reset();
           worker.terminate();
+          preparedProvider.dispose();
         },
       };
     },

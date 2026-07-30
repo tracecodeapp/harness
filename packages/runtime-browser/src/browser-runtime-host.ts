@@ -355,7 +355,7 @@ class BrowserRuntimeHostImplementation implements BrowserRuntimeHost {
         )
       );
     }
-    return this.leaseByLanguage.get(language)!.warm(language);
+    return this.preparedProviders.get(language)!.init();
   }
 
   disposeLanguage(language: Language): void {

@@ -204,7 +204,7 @@ async function main(): Promise<void> {
   assertCondition(
     selectionEvents.join(',') ===
       'create:python-provider,init,prepare:code,execute,dispose-program,' +
-        'warm:python,dispose-language:python,dispose:python-provider',
+        'init,dispose-language:python,dispose:python-provider',
     `Host lifecycle must be provider-owned and exactly disposed: ${selectionEvents.join(',')}`
   );
   const disposedError = errorMessage(() => host.getPreparedProvider('python'));
