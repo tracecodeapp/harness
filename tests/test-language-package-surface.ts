@@ -1137,6 +1137,7 @@ async function runWithTempRoot(tempRoot: string): Promise<void> {
             throw new Error('@tracecode/harness-browser/project missing createBrowserProjectWorkspace');
           }
           const workspace = await project.createBrowserProjectWorkspace({
+            providers: ['python', 'javascript', 'typescript', 'java', 'csharp', 'cpp'],
             files: [
               { path: 'index.js', contents: 'console.log("browser-only-node")\\n' },
               { path: 'main.py', contents: 'print("browser-only-python")\\n' },
@@ -1610,6 +1611,7 @@ async function runWithTempRoot(tempRoot: string): Promise<void> {
         throw new Error('@tracecode/harness-browser/project missing HTTP body helpers');
       }
       const browserWorkspace = await browserProject.createBrowserProjectWorkspace({
+        providers: ['python', 'javascript', 'typescript', 'java', 'csharp', 'cpp'],
         kernel: {
           user: { id: 'browser-surface-user', username: 'surface' },
           host: { hostname: 'tracevm-browser' },
