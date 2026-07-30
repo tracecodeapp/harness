@@ -42,9 +42,6 @@ import type {
   TraceKernelProcessSchedulingState,
   TraceKernelProcessSnapshot,
   TraceKernelProcessSpec,
-  TraceKernelRuntimeLease,
-  TraceKernelRuntimeLeaseReleaseDisposition,
-  TraceKernelRuntimeProcessContext,
   TraceKernelSignal,
   TraceKernelWatchdogSignal,
   TraceKernelWatchdogSnapshot,
@@ -81,6 +78,7 @@ import {
   type TraceKernelHostStandardIo,
 } from './process';
 import { TraceKernelProcessTable } from './process-table';
+import { executeProcessWithRuntimeLease } from './runtime-execution';
 
 export class TraceKernelSession {
   private readonly processTable: TraceKernelProcessTable;
@@ -200,30 +198,10 @@ export class TraceKernelSession {
       );
       process.markStarting();
 
-      const program = Effect.acquireUseRelease(
-        this.host.acquireRuntimeLease(
-          spec.runtime,
-          this.runtimeContext(process)
-        ),
-        (lease) =>
-          process.execute(lease).pipe(
-            Effect.flatMap((snapshot) =>
-              this.revalidateRuntimeLease(lease, snapshot).pipe(
-                Effect.map((disposition) => ({ snapshot, disposition }))
-              )
-            )
-          ),
-        (lease, exit) =>
-          lease.release(
-            Exit.isSuccess(exit)
-              ? exit.value.disposition
-              : Object.freeze({
-                  kind: 'destroy',
-                  reason: 'interrupted',
-                })
-          )
+      const program = executeProcessWithRuntimeLease(
+        process,
+        (context) => this.host.acquireRuntimeLease(spec.runtime, context)
       ).pipe(
-        Effect.map(({ snapshot }) => snapshot),
         Effect.catchAll((error) =>
           process.failBeforeExecution(error).pipe(
             Effect.map(() => process.snapshot())
@@ -1366,50 +1344,6 @@ export class TraceKernelSession {
     });
   }
 
-  private revalidateRuntimeLease(
-    lease: TraceKernelRuntimeLease,
-    snapshot: TraceKernelProcessSnapshot
-  ): Effect.Effect<TraceKernelRuntimeLeaseReleaseDisposition> {
-    const termination = snapshot.termination;
-    if (!termination || termination.kind === 'failure') {
-      return Effect.succeed(Object.freeze({
-        kind: 'destroy',
-        reason: 'execution-failure',
-        ...(termination?.kind === 'failure' && termination.message
-          ? { message: termination.message }
-          : {}),
-      }));
-    }
-    if (termination.kind === 'signal') {
-      return Effect.succeed(Object.freeze({
-        kind: 'destroy',
-        reason: 'signaled',
-        message: termination.signal,
-      }));
-    }
-    if (!lease.revalidate) {
-      return Effect.succeed(Object.freeze({
-        kind: 'destroy',
-        reason: 'unvalidated',
-      }));
-    }
-    return lease.revalidate().pipe(
-      Effect.match({
-        onFailure: (error): TraceKernelRuntimeLeaseReleaseDisposition =>
-          Object.freeze({
-            kind: 'destroy',
-            reason: 'revalidation-failure',
-            message: error.message,
-          }),
-        onSuccess: (): TraceKernelRuntimeLeaseReleaseDisposition =>
-          Object.freeze({
-            kind: 'reuse',
-            reason: 'revalidated',
-          }),
-      })
-    );
-  }
-
   resourceIds(): readonly string[] {
     return [
       ...this.resources.keys(),
@@ -1826,23 +1760,6 @@ export class TraceKernelSession {
         }));
       }
       return descriptor.resource;
-    });
-  }
-
-  private runtimeContext(process: TraceKernelProcess): TraceKernelRuntimeProcessContext {
-    const snapshot = process.snapshot();
-    return Object.freeze({
-      pid: snapshot.pid,
-      ppid: snapshot.ppid,
-      pgid: snapshot.pgid,
-      sid: snapshot.sid,
-      ...(snapshot.controllingTerminalId === undefined
-        ? {}
-        : { controllingTerminalId: snapshot.controllingTerminalId }),
-      command: snapshot.command,
-      args: snapshot.args,
-      cwd: snapshot.cwd,
-      env: snapshot.env,
     });
   }
 
