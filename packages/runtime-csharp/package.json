@@ -1,7 +1,7 @@
 {
   "name": "@tracecode/runtime-csharp",
   "private": true,
-  "version": "0.14.1",
+  "version": "0.14.2",
   "description": "C# runtime client and browser worker assets for TraceCode harness.",
   "license": "AGPL-3.0-only",
   "homepage": "https://tracecode.app",

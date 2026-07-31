@@ -6,10 +6,25 @@ This repo uses Git tags as release boundaries. Version notes below summarize wha
 
 ## [Unreleased]
 
+## [0.14.2] - 2026-07-31
+
+This patch keeps every private implementation manifest aligned to the root
+Harness release and makes TraceKernel ownership explicit in user-facing
+runtime metadata.
+
+### Added
+
+- Added a generated execution-platform identity to every language runtime
+  description, including the root Harness version.
+- Added a workspace version synchronization command and made release checks
+  reject private package manifests that drift from the root release.
+
 ### Changed
 
 - Renamed the private browser Java project factory surface to remain
   implementation-neutral.
+- Described language compilation and execution through TraceKernel while
+  retaining the concrete TraceJVM or CheerpJ provider identity for Java.
 
 ### Fixed
 
