@@ -303,6 +303,13 @@ function packageNodeModulesDir(appDir: string, packageName: string): string {
 
 async function runWithTempRoot(tempRoot: string): Promise<void> {
   const pnpmCommand = resolvePnpmCommand();
+  const rootManifest = JSON.parse(
+    await readFile(join(process.cwd(), 'package.json'), 'utf8')
+  ) as { version?: unknown };
+  assertCondition(
+    typeof rootManifest.version === 'string',
+    'Root Harness manifest should declare a release version'
+  );
   assertCondition(
     !existsSync(join(process.cwd(), 'packages', 'harness-sql')),
     'Removed packages/harness-sql directory should not remain in the workspace'
@@ -312,6 +319,11 @@ async function runWithTempRoot(tempRoot: string): Promise<void> {
   await cp(
     join(process.cwd(), 'node_modules', 'effect'),
     join(appDir, 'node_modules', 'effect'),
+    { recursive: true, dereference: true }
+  );
+  await cp(
+    join(process.cwd(), 'node_modules', '@tracecode', 'tracejvm'),
+    join(appDir, 'node_modules', '@tracecode', 'tracejvm'),
     { recursive: true, dereference: true }
   );
   await writeFile(
@@ -520,9 +532,9 @@ async function runWithTempRoot(tempRoot: string): Promise<void> {
       }
       assertCondition(
         manifest.name === '@tracecode/runtime-sql' &&
-          manifest.version === '0.14.0' &&
+          manifest.version === rootManifest.version &&
           manifest.repository?.directory === 'packages/runtime-sql',
-        '@tracecode/runtime-sql package artifact should preserve the 0.14 runtime identity'
+        '@tracecode/runtime-sql package artifact should preserve the root Harness release identity'
       );
     }
     if (packageCheck.name === '@tracecode/runtime-python') {
@@ -1058,6 +1070,10 @@ async function runWithTempRoot(tempRoot: string): Promise<void> {
     };
     if (packageCheck.name === '@tracecode/runtime-browser') {
       assertCondition(
+        packedPackageJson.dependencies?.['@tracecode/tracejvm'] === '0.1.2',
+        '@tracecode/runtime-browser should declare the TraceJVM dependency imported by its project bundle'
+      );
+      assertCondition(
         !Object.prototype.hasOwnProperty.call(packedPackageJson.dependencies ?? {}, 'just-bash'),
         '@tracecode/runtime-browser should not install just-bash unless consumers opt into project workspace primitives'
       );
@@ -1186,6 +1202,11 @@ async function runWithTempRoot(tempRoot: string): Promise<void> {
       await cp(
         join(process.cwd(), 'node_modules', 'effect'),
         join(browserOnlyAppDir, 'node_modules', 'effect'),
+        { recursive: true, dereference: true }
+      );
+      await cp(
+        join(process.cwd(), 'node_modules', '@tracecode', 'tracejvm'),
+        join(browserOnlyAppDir, 'node_modules', '@tracecode', 'tracejvm'),
         { recursive: true, dereference: true }
       );
       const browserOnlyImportScript = `

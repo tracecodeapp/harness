@@ -6,6 +6,18 @@ This repo uses Git tags as release boundaries. Version notes below summarize wha
 
 ## [Unreleased]
 
+### Changed
+
+- Renamed the private browser Java project factory surface to remain
+  implementation-neutral.
+
+### Fixed
+
+- Declared TraceJVM in the private browser runtime manifest where its project
+  bundle imports it.
+- Made package-surface release checks derive workspace versions from the root
+  Harness manifest instead of retaining patch-specific literals.
+
 ## [0.14.1] - 2026-07-31
 
 This patch completes the 0.14 authority cutover in the published package. It

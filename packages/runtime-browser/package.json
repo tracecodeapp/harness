@@ -48,6 +48,7 @@
   "sideEffects": false,
   "dependencies": {
     "@tracecode/runtime-contracts": "workspace:*",
+    "@tracecode/tracejvm": "0.1.2",
     "@tracecode/tracekernel": "workspace:*",
     "effect": "^3.22.0"
   }

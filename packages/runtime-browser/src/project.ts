@@ -1166,7 +1166,7 @@ export async function createBrowserProjectWorkspace(
       hasProvider('java') && !java && !injectedJavaProvider && javaProvider
         ? {
             createClient:
-              javaProvider[2].createTraceJVMProjectClientFactory({
+              javaProvider[2].createJavaProjectClientFactory({
                 runtimeAssetBaseUrl: javaRuntimeAssetBaseUrl,
               }),
           }

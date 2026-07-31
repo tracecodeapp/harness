@@ -195,6 +195,9 @@ importers:
       '@tracecode/runtime-contracts':
         specifier: workspace:*
         version: link:../runtime-contracts
+      '@tracecode/tracejvm':
+        specifier: 0.1.2
+        version: 0.1.2
       '@tracecode/tracekernel':
         specifier: workspace:*
         version: link:../tracekernel

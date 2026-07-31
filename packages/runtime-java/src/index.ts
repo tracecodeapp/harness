@@ -57,6 +57,6 @@ export {
   type JavaProjectSourceFile,
 } from './java-project';
 export {
-  createTraceJVMProjectClientFactory,
-  type TraceJVMProjectClientFactoryOptions,
+  createJavaProjectClientFactory,
+  type JavaProjectClientFactoryOptions,
 } from './tracejvm-project-client';

@@ -8,10 +8,10 @@ import type {
   JavaProjectClientFactory,
 } from './java-project';
 
-export interface TraceJVMProjectClientFactoryOptions {
+export interface JavaProjectClientFactoryOptions {
   /**
-   * Immutable TraceJVM runtime tree. The tree must contain browser-worker.js,
-   * bjvm_main.wasm, and the supported runtime profiles.
+   * Immutable browser Java runtime tree. The tree must contain the worker,
+   * VM module, and supported runtime profiles expected by the Java engine.
    */
   readonly runtimeAssetBaseUrl?: string;
   readonly runtimeProfile?: 'core' | 'server' | 'spring-server';
@@ -30,14 +30,14 @@ function createWorker(workerUrl: string): TraceJVMWorkerLike {
 }
 
 /**
- * Creates the process-scoped TraceJVM client factory used by TraceKernel.
+ * Creates the process-scoped browser Java client factory used by TraceKernel.
  *
  * The factory deliberately creates a fresh Worker client for every admitted
  * javac/java invocation. Runtime artifacts remain browser-cacheable, while VM
  * state and learner authority never cross a process boundary.
  */
-export function createTraceJVMProjectClientFactory(
-  options: TraceJVMProjectClientFactoryOptions = {}
+export function createJavaProjectClientFactory(
+  options: JavaProjectClientFactoryOptions = {}
 ): JavaProjectClientFactory {
   const runtimeAssetBaseUrl = normalizeBaseUrl(options.runtimeAssetBaseUrl);
   const workerUrl = `${runtimeAssetBaseUrl}/browser-worker.js`;

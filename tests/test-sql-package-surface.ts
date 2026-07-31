@@ -62,11 +62,15 @@ async function main(): Promise<void> {
   };
   const rootManifest = JSON.parse(rootManifestText) as {
     exports?: Record<string, unknown>;
+    version?: unknown;
   };
 
   assertCondition(manifest.name === '@tracecode/runtime-sql', 'SQL runtime package name should be @tracecode/runtime-sql');
   assertCondition(manifest.private === true, 'SQL runtime workspace should remain private until its standalone contract is released');
-  assertCondition(manifest.version === '0.14.0', 'SQL runtime workspace should expose the 0.14.0 API');
+  assertCondition(
+    typeof rootManifest.version === 'string' && manifest.version === rootManifest.version,
+    'SQL runtime workspace version should match the root Harness release'
+  );
   assertCondition(
     manifest.repository?.directory === 'packages/runtime-sql',
     'SQL runtime package repository directory should match its workspace path'
@@ -150,8 +154,9 @@ async function main(): Promise<void> {
       version?: unknown;
     };
     assertCondition(
-      packedManifest.name === '@tracecode/runtime-sql' && packedManifest.version === '0.14.0',
-      'Packed SQL runtime manifest should preserve the 0.14 package identity'
+      packedManifest.name === '@tracecode/runtime-sql' &&
+        packedManifest.version === rootManifest.version,
+      'Packed SQL runtime manifest should preserve the root Harness release identity'
     );
   } finally {
     await rm(tempRoot, { recursive: true, force: true });

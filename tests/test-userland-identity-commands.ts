@@ -20,7 +20,7 @@ function assertEqual<T>(actual: T, expected: T, message: string): void {
 
 const kernelInfo: RuntimeKernelInfo = {
   name: 'tracekernel',
-  version: '0.14.0-test',
+  version: '0.0.0-test',
   user: {
     id: 'learner',
     username: 'learner',

@@ -48,7 +48,7 @@ async function writeFixture(root: string, options: FixtureOptions = {}): Promise
     join(root, 'package.json'),
     JSON.stringify({
       name: options.rootName ?? '@tracecode/harness',
-      version: '0.14.0-test',
+      version: '0.0.0-test',
       publishConfig: { access: 'public' },
       scripts: {
         prepublishOnly: PREPUBLISH_SCRIPT,
