@@ -55,6 +55,8 @@
     "prepublishOnly": "pnpm release:check && pnpm build && pnpm release:check",
     "release:check": "node scripts/check-publish-safety.mjs",
     "release:root": "pnpm release:check && pnpm publish . --access public",
+    "version:sync": "node scripts/sync-workspace-versions.mjs",
+    "version:check": "node scripts/sync-workspace-versions.mjs --check",
     "build": "pnpm generate:runtime-info && pnpm generate:python-harness && pnpm generate:kernel-policy && pnpm generate:typescript-project-libs && pnpm generate:javascript-project-worker && pnpm generate:java-helper && pnpm sync:package-assets && pnpm build:tracekernel && pnpm exec tsup --config tsup.runtime-contracts.config.ts && pnpm build:browser-host && pnpm exec tsup && pnpm rewrite:root-declarations && pnpm --dir packages/judge build",
     "rewrite:root-declarations": "node scripts/rewrite-root-declaration-imports.mjs",
     "build:browser-host": "pnpm exec tsup --config tsup.browser-host.config.ts",

@@ -7,12 +7,14 @@ import { test } from 'node:test';
 
 const ROOT = process.cwd();
 const CHECK_SCRIPT = resolve(ROOT, 'scripts/check-publish-safety.mjs');
+const VERSION_SYNC_SCRIPT = resolve(ROOT, 'scripts/sync-workspace-versions.mjs');
 const RELEASE_CHECK_SCRIPT = 'node scripts/check-publish-safety.mjs';
 const ROOT_RELEASE_SCRIPT = 'pnpm release:check && pnpm publish . --access public';
 const PREPUBLISH_SCRIPT = 'pnpm release:check && pnpm build && pnpm release:check';
 
 interface FixtureOptions {
   internalName?: string;
+  internalVersion?: string;
   rootName?: string;
   internalPrivate?: boolean;
   npmrc?: string;
@@ -28,6 +30,16 @@ function runAudit(
     cwd: ROOT,
     encoding: 'utf8',
     env: environment,
+  });
+}
+
+function runVersionSync(
+  root: string,
+  ...args: string[]
+): SpawnSyncReturns<string> {
+  return spawnSync(process.execPath, [VERSION_SYNC_SCRIPT, ...args], {
+    cwd: root,
+    encoding: 'utf8',
   });
 }
 
@@ -73,7 +85,7 @@ async function writeFixture(root: string, options: FixtureOptions = {}): Promise
     JSON.stringify({
       name: options.internalName ?? '@tracecode/internal-test-package',
       private: options.internalPrivate ?? true,
-      version: '99.0.0-private-test',
+      version: options.internalVersion ?? '0.0.0-test',
     }),
     'utf8'
   );
@@ -131,16 +143,11 @@ async function main(): Promise<void> {
     'only the root @tracecode/harness manifest may be publishable'
   );
   const rootVersion = publishable[0]?.version;
-  const independentlyVersioned = inventory
-    .filter(
-      (manifest) =>
-        manifest.path !== 'package.json' &&
-        typeof manifest.version === 'string' &&
-        manifest.version !== rootVersion
-    );
   assert.ok(
-    independentlyVersioned.every((manifest) => manifest.private === true),
-    'only private implementation workspaces may version independently of the registry release'
+    inventory
+      .filter((manifest) => manifest.path.startsWith('packages/'))
+      .every((manifest) => manifest.version === rootVersion),
+    'every private implementation package should share the root registry release version'
   );
 
   const rootManifest = JSON.parse(await readFile(join(ROOT, 'package.json'), 'utf8')) as {
@@ -192,10 +199,35 @@ async function main(): Promise<void> {
       `valid root-only fixture failed:\n${passingFixture.stdout}\n${passingFixture.stderr}`
     );
 
+    const synchronizedFixture = runVersionSync(fixtureRoot, '0.0.1-test.1');
+    assert.equal(
+      synchronizedFixture.status,
+      0,
+      `version synchronization failed:\n${synchronizedFixture.stdout}\n${synchronizedFixture.stderr}`
+    );
+    const synchronizedRoot = JSON.parse(
+      await readFile(join(fixtureRoot, 'package.json'), 'utf8')
+    ) as { version?: string };
+    const synchronizedInternal = JSON.parse(
+      await readFile(
+        join(fixtureRoot, 'packages', 'internal', 'package.json'),
+        'utf8'
+      )
+    ) as { version?: string };
+    assert.equal(synchronizedRoot.version, '0.0.1-test.1');
+    assert.equal(synchronizedInternal.version, synchronizedRoot.version);
+    assert.equal(runVersionSync(fixtureRoot, '--check').status, 0);
+
     await writeFixture(fixtureRoot, { internalPrivate: false });
     assertAuditFailure(
       fixtureRoot,
       /packages\/internal\/package\.json .* must set "private": true/u
+    );
+
+    await writeFixture(fixtureRoot, { internalVersion: '99.0.0-private-test' });
+    assertAuditFailure(
+      fixtureRoot,
+      /version must match @tracecode\/harness 0\.0\.0-test/u
     );
 
     await writeFixture(fixtureRoot, {

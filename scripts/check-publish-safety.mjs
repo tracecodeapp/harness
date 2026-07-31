@@ -212,6 +212,9 @@ function assertRootReleaseConfiguration(rootManifest, npmrcSource) {
   if (rootManifest.private === true) {
     fail(`${ROOT_PACKAGE_NAME} must remain publishable`);
   }
+  if (typeof rootManifest.version !== 'string' || rootManifest.version.length === 0) {
+    fail(`${ROOT_PACKAGE_NAME} must declare a release version`);
+  }
   if (rootManifest.publishConfig?.access !== 'public') {
     fail(`${ROOT_PACKAGE_NAME} publishConfig.access must be "public"`);
   }
@@ -269,6 +272,15 @@ export async function auditPublishSafety(rootDirectory = process.cwd(), environm
     names.set(manifest.name, relativeManifestPath);
     if (manifest.private !== true) {
       fail(`${relativeManifestPath} (${manifest.name}) must set "private": true`);
+    }
+    if (
+      relativeManifestPath.startsWith(`packages${sep}`) &&
+      manifest.version !== rootManifest.version
+    ) {
+      fail(
+        `${relativeManifestPath} (${manifest.name}) version must match ` +
+        `${ROOT_PACKAGE_NAME} ${rootManifest.version}, found ${JSON.stringify(manifest.version)}`
+      );
     }
     internalPackages.push({
       name: manifest.name,
