@@ -6,6 +6,39 @@ This repo uses Git tags as release boundaries. Version notes below summarize wha
 
 ## [Unreleased]
 
+## [0.14.1] - 2026-07-31
+
+This patch completes the 0.14 authority cutover in the published package. It
+contains the Judge and TraceKernel implementation that the 0.14.0 public
+contract described, with the root package remaining the only published
+artifact.
+
+### Added
+
+- Added versioned algorithm and project Judge bundles, declarative verdict
+  policy, comparator strategies, semantic-fact binding, and browser-produced
+  project evidence evaluation.
+- Added the TraceKernel-backed browser Judge host and isolated project Judge
+  execution path used by both client-side execution and mux slots.
+- Added a prepared TraceJVM project client and runtime-neutral browser tools
+  for Judge-owned execution.
+
+### Changed
+
+- Made Judge the sole browser evaluation authority and TraceKernel the sole
+  interactive execution authority.
+- Reduced the public package to the `judge` and `tracekernel` entrypoints and
+  kept every language runtime workspace private.
+- Renamed the shared private contract workspace from `runtime-core` to
+  `runtime-contracts` and removed the retired project facade.
+
+### Fixed
+
+- Rewrote published declarations against the renamed runtime-contract boundary
+  so strict consumers do not resolve retired internal package names.
+- Preserved generated worker assets, package declarations, and runtime
+  metadata across the root-only publish pipeline.
+
 ## [0.14.0] - 2026-07-30
 
 This release reduces Harness to two public authorities: TraceKernel for
