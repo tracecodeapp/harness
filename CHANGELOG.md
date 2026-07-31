@@ -6,6 +6,12 @@ This repo uses Git tags as release boundaries. Version notes below summarize wha
 
 ## [Unreleased]
 
+### Fixed
+
+- Kept Python, C#, and C++ execution available on non-isolated browser pages
+  by treating TraceKernel shared-memory signal mailboxes as an optional
+  capability instead of dereferencing `SharedArrayBuffer` unconditionally.
+
 ## [0.14.2] - 2026-07-31
 
 This patch keeps every private implementation manifest aligned to the root

@@ -2663,6 +2663,7 @@ class WasiProcess {
     this.kernelHttp = options.kernelHttp || null;
     this.kernelClient = options.kernelClient || null;
     this.kernelSignalState =
+      typeof SharedArrayBuffer !== 'undefined' &&
       options.kernelSignalMailbox?.buffer instanceof SharedArrayBuffer
         ? new Int32Array(options.kernelSignalMailbox.buffer)
         : null;

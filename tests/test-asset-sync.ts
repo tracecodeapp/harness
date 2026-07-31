@@ -130,6 +130,20 @@ async function main(t: TestContext): Promise<void> {
     );
   }
 
+  for (const relativePath of [
+    'python-worker.js',
+    'csharp-worker.js',
+    'cpp-worker.js',
+  ]) {
+    const source = await readFile(join(targetDir, relativePath), 'utf8');
+    assertCondition(
+      source.includes(
+        "typeof SharedArrayBuffer !== 'undefined' &&\n"
+      ),
+      `${relativePath} must guard optional TraceKernel shared-memory channels on non-isolated pages`
+    );
+  }
+
   const filteredTargetDir = join(tempRoot, 'public', 'python-workers');
   const filteredRun = spawnSync('node', ['dist/cli.js', 'sync-assets', filteredTargetDir, '--languages', 'python'], {
     cwd: resolve(process.cwd()),

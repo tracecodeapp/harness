@@ -3794,6 +3794,7 @@ async function executeProjectPythonUserCall(
     : null;
   const traceKernelFileSystemMounted = kernelClient !== null;
   const kernelSignalState =
+    typeof SharedArrayBuffer !== 'undefined' &&
     kernelSignalMailbox?.buffer instanceof SharedArrayBuffer
       ? new Int32Array(kernelSignalMailbox.buffer)
       : null;

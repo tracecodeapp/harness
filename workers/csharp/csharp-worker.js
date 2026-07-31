@@ -4474,6 +4474,7 @@ async function handleMessage(message) {
       activeProjectIo = projectIo;
       activeTraceKernelClient = kernelClient;
       activeKernelSignalState =
+        typeof SharedArrayBuffer !== 'undefined' &&
         message.kernelSignalMailbox?.buffer instanceof SharedArrayBuffer
           ? new Int32Array(message.kernelSignalMailbox.buffer)
           : null;
