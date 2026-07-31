@@ -19,6 +19,7 @@ import {
   getSupportedLanguageProfiles,
   isLanguageSupported,
 } from '../src/browser';
+import { TRACECODE_HARNESS_VERSION } from '../packages/runtime-contracts/src/harness-version';
 import { assertRuntimeRequestSupported } from '../packages/runtime-browser/src/runtime-capability-guards';
 import { executeRuntimeRequest } from '../packages/runtime-browser/src/runtime-execute';
 import { runJavaSafeStorageExclusive } from '../packages/runtime-java/src/java-storage-isolation';
@@ -1736,6 +1737,11 @@ async function main(): Promise<void> {
       getLanguageRuntimeInfo(language).description.length > 40,
       `${language} should expose a natural-language runtime description`
     );
+    assertCondition(
+      getLanguageRuntimeInfo(language).executionPlatform.name === 'TraceKernel' &&
+        getLanguageRuntimeInfo(language).executionPlatform.version === TRACECODE_HARNESS_VERSION,
+      `${language} should identify the root harness release as its TraceKernel platform`
+    );
   }
   const pythonInfo = getLanguageRuntimeInfo('python');
   const javascriptInfo = getLanguageRuntimeInfo('javascript');
@@ -1797,11 +1803,19 @@ async function main(): Promise<void> {
     'C++ runtime info should expose default header coverage'
   );
   assertCondition(
-    pythonInfo.description.includes('consumer-owned runtime assets') &&
+    pythonInfo.description.includes('TraceKernel') &&
+      pythonInfo.description.includes('consumer-owned runtime assets') &&
+      !pythonInfo.description.includes('browser runtime manifest') &&
+      javascriptInfo.description.includes('TraceKernel') &&
+      typescriptInfo.description.includes('TraceKernel') &&
       javaInfo.description.includes('javac') &&
+      javaInfo.description.includes('TraceKernel') &&
+      javaInfo.description.includes('TraceJVM or CheerpJ') &&
       csharpInfo.description.includes(csharpInfo.standard ?? 'C#') &&
-      cppInfo.description.includes(cppInfo.standard ?? 'C++'),
-    'Runtime descriptions should expose language-specific natural-language details'
+      csharpInfo.description.includes('TraceKernel') &&
+      cppInfo.description.includes(cppInfo.standard ?? 'C++') &&
+      cppInfo.description.includes('TraceKernel'),
+    'Runtime descriptions should expose language-specific details within TraceKernel'
   );
   console.log('PASS: runtime language/profile/info registry');
 

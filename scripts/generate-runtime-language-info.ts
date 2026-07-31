@@ -17,6 +17,7 @@ const GENERATED_PATH = join(
 type RuntimeCommandName = 'dotnet' | 'clang++';
 
 type PackageJson = {
+  version?: string;
   dependencies?: Record<string, string>;
   devDependencies?: Record<string, string>;
 };
@@ -196,11 +197,11 @@ function buildPythonDescription(input: {
   defaultImports: readonly string[];
 }): string {
   return [
-    `Python ${input.pythonVersion}.`,
+    `Python ${input.pythonVersion} runs in TraceKernel's isolated Python runtime.`,
     '',
     `Common algorithm helpers are imported automatically, including ${input.defaultImports.slice(0, 6).join(', ')}. Other standard-library modules can be imported normally.`,
     '',
-    'Optional third-party packages are consumer-owned runtime assets and are available only when declared by the browser runtime manifest.',
+    'Optional third-party packages are consumer-owned runtime assets and are available only when declared by the TraceKernel runtime manifest.',
   ].join('\n');
 }
 
@@ -209,7 +210,7 @@ function buildJavaScriptDescription(input: {
   libraries: readonly LibraryInfo[];
 }): string {
   return [
-    `JavaScript runs in an isolated browser Web Worker with ${input.standard}.`,
+    `JavaScript runs in TraceKernel's isolated JavaScript runtime with ${input.standard}.`,
     '',
     buildJavaScriptLibraryDescription(input.libraries),
   ].join('\n');
@@ -222,13 +223,13 @@ function buildTypeScriptDescription(input: {
   libraries: readonly LibraryInfo[];
 }): string {
   return [
-    `TypeScript ${input.typescriptVersion} is compiled in the browser and then executed on the JavaScript worker runtime.`,
+    `TypeScript ${input.typescriptVersion} is compiled with the TypeScript compiler and executed by TraceKernel's JavaScript runtime.`,
     '',
     `Compiler options: ${input.compileOptions.join(' ')}`,
     '',
     buildJavaScriptLibraryDescription(input.libraries),
     '',
-    `The compiled output runs on the same ${input.target} execution lane as JavaScript submissions.`,
+    `The compiled output runs on the same ${input.target} as JavaScript submissions.`,
   ].join('\n');
 }
 
@@ -237,7 +238,7 @@ function buildJavaDescription(input: {
   defaultImports: readonly string[];
 }): string {
   return [
-    `Java ${input.javaVersion} is compiled with javac ${input.javaVersion} and executed through the consumer-configured browser Java provider.`,
+    `Java ${input.javaVersion} is compiled with javac ${input.javaVersion} and executed through TraceJVM or CheerpJ on TraceKernel.`,
     '',
     `Common imports are added automatically: ${input.defaultImports.join(', ')}.`,
   ].join('\n');
@@ -248,7 +249,7 @@ function buildCSharpDescription(input: {
   defaultImports: readonly string[];
 }): string {
   return [
-    `${input.csharpLanguageVersion} source is compiled and executed in an isolated browser runtime.`,
+    `${input.csharpLanguageVersion} source is compiled and executed by TraceKernel's isolated C# runtime.`,
     '',
     `Common namespaces are imported automatically: ${input.defaultImports.join(', ')}.`,
   ].join('\n');
@@ -261,7 +262,7 @@ function buildCppDescription(input: {
   return [
     `C++ source is compiled using the ${input.cppStandardLabel} standard.`,
     '',
-    'Submissions compile to WebAssembly and run in a browser-local WASI-style execution lane. The harness currently compiles with -O0 and -fno-exceptions, with a fixed program stack size.',
+    'Submissions compile to WebAssembly and run in TraceKernel\'s WASI execution lane. The compiler currently uses -O0 and -fno-exceptions, with a fixed program stack size.',
     '',
     `Common standard library headers are included automatically, including ${input.defaultHeaders.slice(0, 14).join(', ')} and more.`,
   ].join('\n');
@@ -269,6 +270,13 @@ function buildCppDescription(input: {
 
 async function buildRuntimeInfo(): Promise<Record<string, RuntimeInfo>> {
   const rootPackage = await readJson<PackageJson>('package.json');
+  if (!rootPackage.version) {
+    throw new Error('Unable to derive runtime info: missing root harness version');
+  }
+  const executionPlatform = {
+    name: 'TraceKernel',
+    version: rootPackage.version,
+  };
   const pythonRuntimeCoreSource = await readText('workers', 'python', 'runtime-core.js');
   const pythonDistributionLock = await readJson<{
     info?: { python?: string };
@@ -328,8 +336,8 @@ async function buildRuntimeInfo(): Promise<Record<string, RuntimeInfo>> {
 
   const javascriptShared = {
     runtime: {
-      name: 'Browser Worker JavaScript runtime',
-      detail: 'Runs in the host browser worker; Node.js is not required for browser execution.',
+      name: 'TraceKernel JavaScript runtime',
+      detail: 'Runs in an isolated TraceKernel worker; Node.js is not required for execution.',
     },
     libraries: javascriptLibraries,
   };
@@ -339,6 +347,7 @@ async function buildRuntimeInfo(): Promise<Record<string, RuntimeInfo>> {
       language: 'python',
       displayName: 'Python',
       versionLabel: `Python ${pythonVersion}`,
+      executionPlatform,
       description: buildPythonDescription({
         pythonVersion,
         defaultImports: pythonDefaultImports,
@@ -346,7 +355,7 @@ async function buildRuntimeInfo(): Promise<Record<string, RuntimeInfo>> {
       runtime: {
         name: 'Python',
         version: pythonVersion,
-        detail: 'Runs in an isolated browser runtime.',
+        detail: 'Runs in TraceKernel\'s isolated Python runtime.',
       },
       defaultImports: pythonDefaultImports,
     },
@@ -354,8 +363,9 @@ async function buildRuntimeInfo(): Promise<Record<string, RuntimeInfo>> {
       language: 'javascript',
       displayName: 'JavaScript',
       versionLabel: 'JavaScript (ECMAScript 2023)',
+      executionPlatform,
       ...javascriptShared,
-      standard: 'ECMAScript 2023-compatible syntax in the browser worker lane.',
+      standard: 'ECMAScript 2023-compatible syntax in TraceKernel\'s JavaScript runtime.',
       description: buildJavaScriptDescription({
         standard: 'ECMAScript 2023-compatible syntax',
         libraries: javascriptLibraries,
@@ -365,35 +375,37 @@ async function buildRuntimeInfo(): Promise<Record<string, RuntimeInfo>> {
       language: 'typescript',
       displayName: 'TypeScript',
       versionLabel: `TypeScript ${typescriptVersion}`,
+      executionPlatform,
       description: buildTypeScriptDescription({
         typescriptVersion,
-        target: 'browser worker',
+        target: 'TraceKernel execution lane',
         compileOptions: typeScriptCompileOptions,
         libraries: javascriptLibraries,
       }),
       runtime: {
         ...javascriptShared.runtime,
-        detail: 'TypeScript is compiled before execution and runs on the JavaScript worker lane.',
+        detail: 'TypeScript is compiled before execution and runs on TraceKernel\'s JavaScript runtime.',
       },
       compiler: {
         name: 'TypeScript',
         version: typescriptVersion,
       },
-      standard: 'Transpiles to JavaScript for the browser worker lane.',
+      standard: 'Transpiles to JavaScript for TraceKernel\'s JavaScript runtime.',
       libraries: javascriptLibraries,
     },
     java: {
       language: 'java',
       displayName: 'Java',
       versionLabel: `Java ${javaVersion}`,
+      executionPlatform,
       description: buildJavaDescription({
         javaVersion,
         defaultImports: javaDefaultImports,
       }),
       runtime: {
-        name: 'Browser Java runtime',
+        name: 'TraceKernel Java runtime',
         version: javaVersion,
-        detail: 'Runs through the consumer-configured Java project provider.',
+        detail: 'Runs through TraceJVM or CheerpJ on TraceKernel.',
       },
       compiler: {
         name: 'javac',
@@ -409,13 +421,14 @@ async function buildRuntimeInfo(): Promise<Record<string, RuntimeInfo>> {
       language: 'csharp',
       displayName: 'C#',
       versionLabel: csharpLanguageVersion,
+      executionPlatform,
       description: buildCSharpDescription({
         csharpLanguageVersion,
         defaultImports: csharpDefaultImports,
       }),
       runtime: {
         name: 'C#',
-        detail: 'Runs in an isolated browser runtime.',
+        detail: 'Runs in TraceKernel\'s isolated C# runtime.',
       },
       compiler: {
         name: 'C# compiler',
@@ -428,16 +441,17 @@ async function buildRuntimeInfo(): Promise<Record<string, RuntimeInfo>> {
       language: 'cpp',
       displayName: 'C++',
       versionLabel: cppStandardLabel,
+      executionPlatform,
       description: buildCppDescription({
         cppStandardLabel,
         defaultHeaders: cppDefaultHeaders,
       }),
       runtime: {
-        name: 'WASI/WebAssembly execution lane',
-        detail: 'Compiled and executed in a browser-local WASI-style worker lane.',
+        name: 'TraceKernel WASI runtime',
+        detail: 'Compiled to WebAssembly and executed in TraceKernel\'s WASI runtime.',
       },
       compiler: {
-        name: 'C++ browser compiler',
+        name: 'C++ compiler',
         version: cppStandardLabel,
       },
       standard: cppStandardLabel,

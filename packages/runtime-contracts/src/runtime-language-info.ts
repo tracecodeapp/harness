@@ -16,10 +16,16 @@ export interface RuntimeLibraryInfo {
   detail?: string;
 }
 
+export interface RuntimeExecutionPlatformInfo {
+  name: 'TraceKernel';
+  version: string;
+}
+
 export interface LanguageRuntimeInfo {
   language: Language;
   displayName: string;
   versionLabel: string;
+  executionPlatform: RuntimeExecutionPlatformInfo;
   description: string;
   runtime: RuntimeComponentInfo;
   compiler?: RuntimeComponentInfo;
