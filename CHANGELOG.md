@@ -6,6 +6,11 @@ This repo uses Git tags as release boundaries. Version notes below summarize wha
 
 ## [Unreleased]
 
+## [0.14.3] - 2026-07-31
+
+This patch restores direct algorithm execution on browser pages that do not
+enable cross-origin isolation.
+
 ### Fixed
 
 - Kept Python, C#, and C++ execution available on non-isolated browser pages
