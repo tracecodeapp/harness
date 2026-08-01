@@ -4201,6 +4201,51 @@ async function executePreparedCSharpProgram(message) {
   };
 }
 
+async function executePreparedCSharpProgramBatch(message) {
+  const startedAt = now();
+  const inputBatch = Array.isArray(message.payload?.inputBatch)
+    ? message.payload.inputBatch.map((inputs) =>
+        inputs && typeof inputs === 'object' ? inputs : {}
+      )
+    : [];
+  if (inputBatch.length === 0) {
+    return {
+      success: false,
+      results: [],
+      error: 'Prepared C# batch execution requires a non-empty inputBatch array.',
+      timings: { totalMs: elapsedMs(startedAt) },
+    };
+  }
+
+  const results = [];
+  for (const inputs of inputBatch) {
+    results.push(await executePreparedCSharpProgram({
+      ...message,
+      payload: {
+        ...message.payload,
+        inputs,
+      },
+    }));
+  }
+  const success = results.every((result) => result.success === true);
+  return {
+    success,
+    results,
+    ...(success
+      ? {}
+      : {
+          error:
+            results.find((result) => result.success !== true)?.error ??
+            'Prepared C# batch execution failed.',
+        }),
+    timings: {
+      totalMs: elapsedMs(startedAt),
+      batchMode: 'prepared-artifact',
+      batchCaseCount: inputBatch.length,
+    },
+  };
+}
+
 function disposePreparedCSharpProgram(payload) {
   const artifactKey = typeof payload?.compiledArtifactKey === 'string'
     ? payload.compiledArtifactKey
@@ -4384,6 +4429,10 @@ async function handleMessage(message) {
     message.type === 'execute-prepared-trace'
   ) {
     return executePreparedCSharpProgram(message);
+  }
+
+  if (message.type === 'execute-prepared-batch') {
+    return executePreparedCSharpProgramBatch(message);
   }
 
   if (message.type === 'dispose-prepared-program') {

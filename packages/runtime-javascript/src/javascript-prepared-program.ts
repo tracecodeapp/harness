@@ -1,9 +1,11 @@
 import type {
   CodeExecutionResult,
   ExecutionResult,
+  RuntimePreparedCodeBatchCall,
   RuntimePreparedCodeCall,
   RuntimePreparedProgram,
   RuntimePreparedProgramMode,
+  RuntimePreparedTraceBatchCall,
   RuntimePreparedTraceCall,
 } from '@tracecode/runtime-contracts';
 
@@ -60,10 +62,18 @@ export interface JavaScriptPreparedProgramOperations {
     call: RuntimePreparedCodeCall,
     signal: AbortSignal
   ): Promise<CodeExecutionResult>;
+  executeCodeBatch?(
+    call: RuntimePreparedCodeBatchCall,
+    signal: AbortSignal
+  ): Promise<readonly CodeExecutionResult[]>;
   executeTrace?(
     call: RuntimePreparedTraceCall,
     signal: AbortSignal
   ): Promise<ExecutionResult>;
+  executeTraceBatch?(
+    call: RuntimePreparedTraceBatchCall,
+    signal: AbortSignal
+  ): Promise<readonly ExecutionResult[]>;
   dispose?(): void | Promise<void>;
 }
 
@@ -139,6 +149,14 @@ export function createJavaScriptPreparedProgram(
         run(call.signal, (signal) =>
           operations.executeCode!({ ...call, signal }, signal)
         ),
+      ...(operations.executeCodeBatch
+        ? {
+            executeBatchIsolated: (call: RuntimePreparedCodeBatchCall) =>
+              run(call.signal, (signal) =>
+                operations.executeCodeBatch!({ ...call, signal }, signal)
+              ),
+          }
+        : {}),
       dispose,
     });
   }
@@ -158,6 +176,14 @@ export function createJavaScriptPreparedProgram(
       run(call.signal, (signal) =>
         operations.executeTrace!({ ...call, signal }, signal)
       ),
+    ...(operations.executeTraceBatch
+      ? {
+          executeBatchIsolated: (call: RuntimePreparedTraceBatchCall) =>
+            run(call.signal, (signal) =>
+              operations.executeTraceBatch!({ ...call, signal }, signal)
+            ),
+        }
+      : {}),
     dispose,
   });
 }

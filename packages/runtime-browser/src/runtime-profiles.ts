@@ -191,6 +191,7 @@ const JAVASCRIPT_RUNTIME_PROFILE: LanguageRuntimeProfile = {
     project: LIVE_PROJECT_IO_CAPABILITIES,
     tracing: {
       supported: true,
+      batching: true,
       events: {
         line: true,
         call: true,
@@ -264,6 +265,7 @@ const TYPESCRIPT_RUNTIME_PROFILE: LanguageRuntimeProfile = {
     project: BRIDGED_PROJECT_IO_CAPABILITIES,
     tracing: {
       supported: true,
+      batching: true,
       events: {
         line: true,
         call: true,
@@ -338,6 +340,7 @@ const JAVA_RUNTIME_PROFILE: LanguageRuntimeProfile = {
     project: BRIDGED_PROJECT_IO_CAPABILITIES,
     tracing: {
       supported: true,
+      batching: true,
       events: {
         line: true,
         call: true,
@@ -418,6 +421,7 @@ const CSHARP_RUNTIME_PROFILE: LanguageRuntimeProfile = {
     project: BRIDGED_PROJECT_IO_CAPABILITIES,
     tracing: {
       supported: true,
+      batching: true,
       events: {
         line: true,
         call: true,
@@ -502,6 +506,7 @@ const CPP_RUNTIME_PROFILE: LanguageRuntimeProfile = {
     project: BRIDGED_PROJECT_IO_CAPABILITIES,
     tracing: {
       supported: true,
+      batching: true,
       events: {
         line: true,
         call: true,

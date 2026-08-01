@@ -1,10 +1,12 @@
 import type {
   CodeExecutionResult,
   ExecutionResult,
+  RuntimePreparedCodeBatchCall,
   RuntimePreparedCodeCall,
   RuntimePreparedCodeProgram,
   RuntimePreparedExecutionProvider,
   RuntimePreparedTraceCall,
+  RuntimePreparedTraceBatchCall,
   RuntimePreparedTraceProgram,
   RuntimeProgramPreparationCall,
   RuntimeProgramPreparationResult,
@@ -20,7 +22,6 @@ import { ExecutionTimeoutError } from '@tracecode/runtime-browser/internal';
 import {
   JavaWorkerClient,
   type JavaWorkerClientOptions,
-  type JavaWorkerPreparedExecutionMetadata,
   type JavaWorkerPreparedProgramSnapshot,
   type JavaWorkerPreparedProgramResult,
   type JavaWorkerTraceResult,
@@ -129,9 +130,7 @@ abstract class JavaPreparedProgramBase {
     return this.disposePromise;
   }
 
-  protected async executeWithClient<
-    Result extends JavaWorkerPreparedExecutionMetadata,
-  >(
+  protected async executeWithClient<Result>(
     operation: (client: JavaWorkerClient) => Promise<Result>,
     signal?: AbortSignal
   ): Promise<Result> {
@@ -145,9 +144,7 @@ abstract class JavaPreparedProgramBase {
     return execution;
   }
 
-  private async executeInFreshWorker<
-    Result extends JavaWorkerPreparedExecutionMetadata,
-  >(
+  private async executeInFreshWorker<Result>(
     operation: (client: JavaWorkerClient) => Promise<Result>,
     signal?: AbortSignal
   ): Promise<Result> {
@@ -228,6 +225,25 @@ class JavaPreparedCodeProgramImpl
         throw error;
       });
   }
+
+  executeBatchIsolated(
+    call: RuntimePreparedCodeBatchCall
+  ): Promise<readonly CodeExecutionResult[]> {
+    return this.executeWithClient(
+      async (client) => {
+        const results: CodeExecutionResult[] = [];
+        for (const inputs of call.inputBatch) {
+          results.push(await client.executePreparedCode(this.programId, {
+            inputs,
+            signal: call.signal,
+            limits: call.limits,
+          }));
+        }
+        return results;
+      },
+      call.signal
+    );
+  }
 }
 
 class JavaPreparedTraceProgramImpl
@@ -283,6 +299,36 @@ class JavaPreparedTraceProgramImpl
       result,
       result.trace,
       'Java prepared tracing failed'
+    );
+  }
+
+  executeBatchIsolated(
+    call: RuntimePreparedTraceBatchCall
+  ): Promise<readonly ExecutionResult[]> {
+    return this.executeWithClient(
+      async (client) => {
+        const results: ExecutionResult[] = [];
+        for (const inputs of call.inputBatch) {
+          const result = await client.executePreparedWithTracing(
+            this.programId,
+            {
+              inputs,
+              signal: call.signal,
+              limits: call.limits,
+            },
+            this.traceCall.traceOptions
+          );
+          results.push(
+            liftTraceOutcome(
+              result,
+              result.trace,
+              'Java prepared tracing failed'
+            )
+          );
+        }
+        return results;
+      },
+      call.signal
     );
   }
 }

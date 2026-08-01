@@ -6,8 +6,10 @@ import type {
   RuntimeExecuteRequest,
   RuntimeExecuteResponse,
   RuntimeExecuteResult,
+  RuntimePreparedCodeBatchCall,
   RuntimePreparedExecutionProvider,
   RuntimePreparedProgram,
+  RuntimePreparedTraceBatchCall,
   RuntimeProgramPreparationCall,
   RuntimeProgramPreparationResult,
   RuntimeTraceCall,
@@ -249,6 +251,15 @@ class CSharpRuntimeClient implements RuntimeClient, RuntimePreparedExecutionProv
                 forwardedCall
               )
             ),
+          executeBatchIsolated: (
+            preparedCall: RuntimePreparedTraceBatchCall
+          ) =>
+            executeOwned(preparedCall, (preparedArtifact, forwardedCall) =>
+              this.workerClient.executePreparedTraceBatch(
+                preparedArtifact,
+                forwardedCall
+              )
+            ),
           dispose,
         }
       : {
@@ -257,6 +268,15 @@ class CSharpRuntimeClient implements RuntimeClient, RuntimePreparedExecutionProv
           executeIsolated: (preparedCall) =>
             executeOwned(preparedCall, (preparedArtifact, forwardedCall) =>
               this.workerClient.executePreparedCode(
+                preparedArtifact,
+                forwardedCall
+              )
+            ),
+          executeBatchIsolated: (
+            preparedCall: RuntimePreparedCodeBatchCall
+          ) =>
+            executeOwned(preparedCall, (preparedArtifact, forwardedCall) =>
+              this.workerClient.executePreparedCodeBatch(
                 preparedArtifact,
                 forwardedCall
               )

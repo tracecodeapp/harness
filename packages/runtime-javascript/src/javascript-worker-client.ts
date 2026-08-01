@@ -20,7 +20,9 @@ import type {
   RuntimeBatchCall,
   RuntimeCodeCall,
   RuntimeExecutionTimings,
+  RuntimePreparedCodeBatchCall,
   RuntimePreparedCodeCall,
+  RuntimePreparedTraceBatchCall,
   RuntimePreparedTraceCall,
   RuntimeProgramPreparationCall,
   RuntimeProgramPreparationResult,
@@ -331,7 +333,11 @@ export class JavaScriptWorkerClient {
    */
   private dispatchPreparedExecutionEffect<T>(
     worker: JavaScriptWorkerConnection,
-    operation: 'execute-code' | 'execute-with-tracing',
+    operation:
+      | 'execute-code'
+      | 'execute-code-batch'
+      | 'execute-with-tracing'
+      | 'execute-trace-batch',
     payload: Record<string, unknown>
   ): Effect.Effect<T, Error> {
     return Effect.gen(this, function* () {
@@ -550,6 +556,16 @@ export class JavaScriptWorkerClient {
                   caseCall
                 )
             : undefined,
+        executeCodeBatch:
+          preparation.mode === 'code'
+            ? (batchCall) =>
+                this.executePreparedCodeBatch(
+                  language,
+                  preparation,
+                  requirePreparedExecution(),
+                  batchCall
+                )
+            : undefined,
         executeTrace:
           preparation.mode === 'trace'
             ? (caseCall) =>
@@ -558,6 +574,16 @@ export class JavaScriptWorkerClient {
                   preparation,
                   requirePreparedExecution(),
                   caseCall
+                )
+            : undefined,
+        executeTraceBatch:
+          preparation.mode === 'trace'
+            ? (batchCall) =>
+                this.executePreparedTraceBatch(
+                  language,
+                  preparation,
+                  requirePreparedExecution(),
+                  batchCall
                 )
             : undefined,
         dispose: () => {
@@ -707,6 +733,136 @@ export class JavaScriptWorkerClient {
             artifactCacheHit: true,
           },
         };
+      }
+      throw error;
+    }
+  }
+
+  private async executePreparedCodeBatch(
+    language: JavaScriptWorkerLanguage,
+    preparation: {
+      readonly code: string;
+      readonly functionName: string | null;
+      readonly executionStyle: JavaScriptExecutionStyle;
+    },
+    preparedExecution: unknown,
+    call: RuntimePreparedCodeBatchCall
+  ): Promise<readonly CodeExecutionResult[]> {
+    const wallClockMs = call.limits?.wallClockMs ?? EXECUTION_TIMEOUT_MS;
+    try {
+      const result = await this.runIsolatedExecution((worker) =>
+        this.runExecution(
+          worker,
+          this.dispatchPreparedExecutionEffect<RawExecutionBatchPayload>(
+            worker,
+            'execute-code-batch',
+            {
+              code: preparation.code,
+              functionName: preparation.functionName ?? '',
+              inputBatch: [...call.inputBatch],
+              executionStyle: preparation.executionStyle,
+              language,
+              preparedExecution,
+            }
+          ),
+          wallClockMs * call.inputBatch.length,
+          call.signal
+        )
+      );
+      return liftCodeBatchOutcome(
+        result,
+        'JavaScript batch execution failed'
+      ).results;
+    } catch (error) {
+      if (
+        call.limits?.wallClockMs !== undefined &&
+        error instanceof ExecutionTimeoutError
+      ) {
+        return call.inputBatch.map(() => ({
+          kind: 'limit' as const,
+          reason: 'client-timeout' as const,
+          error: error.message,
+          consoleOutput: [],
+          timings: {
+            totalMs: call.limits!.wallClockMs!,
+            runMs: call.limits!.wallClockMs!,
+            artifactCacheHit: true,
+          },
+        }));
+      }
+      throw error;
+    }
+  }
+
+  private async executePreparedTraceBatch(
+    language: JavaScriptWorkerLanguage,
+    preparation: {
+      readonly code: string;
+      readonly functionName: string | null;
+      readonly executionStyle: JavaScriptExecutionStyle;
+      readonly traceOptions?: RuntimeTraceCall['traceOptions'];
+    },
+    preparedExecution: unknown,
+    call: RuntimePreparedTraceBatchCall
+  ): Promise<readonly ExecutionResult[]> {
+    const wallClockMs = call.limits?.wallClockMs ?? TRACING_TIMEOUT_MS;
+    try {
+      const result = await this.runIsolatedExecution((worker) =>
+        this.runExecution(
+          worker,
+          this.dispatchPreparedExecutionEffect<{
+            results?: JavaScriptRawTraceResult[];
+            error?: string;
+          }>(
+            worker,
+            'execute-trace-batch',
+            {
+              code: preparation.code,
+              functionName: preparation.functionName,
+              inputBatch: [...call.inputBatch],
+              options: preparation.traceOptions,
+              executionStyle: preparation.executionStyle,
+              language,
+              preparedExecution,
+            }
+          ),
+          wallClockMs * call.inputBatch.length,
+          call.signal
+        )
+      );
+      if (!Array.isArray(result.results)) {
+        throw new Error(
+          result.error ?? 'JavaScript trace batch returned no results.'
+        );
+      }
+      return result.results.map((entry) =>
+        liftTraceOutcome(
+          entry,
+          entry.trace ??
+            createEmptyRuntimeTrace(language, {
+              runId: `${language}:run`,
+            }),
+          'JavaScript tracing failed'
+        )
+      );
+    } catch (error) {
+      if (
+        call.limits?.wallClockMs !== undefined &&
+        error instanceof ExecutionTimeoutError
+      ) {
+        return call.inputBatch.map(() => ({
+          kind: 'limit' as const,
+          reason: 'client-timeout' as const,
+          error: error.message,
+          trace: createEmptyRuntimeTrace(language),
+          executionTimeMs: call.limits!.wallClockMs!,
+          consoleOutput: [],
+          timings: {
+            totalMs: call.limits!.wallClockMs!,
+            runMs: call.limits!.wallClockMs!,
+            artifactCacheHit: true,
+          },
+        }));
       }
       throw error;
     }

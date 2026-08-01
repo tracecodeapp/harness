@@ -19,7 +19,9 @@ import type {
   ExecutionLimitReason,
   RuntimeBatchCall,
   RuntimeCodeCall,
+  RuntimePreparedCodeBatchCall,
   RuntimePreparedCodeCall,
+  RuntimePreparedTraceBatchCall,
   RuntimePreparedTraceCall,
   RuntimeProgramPreparationCall,
   RuntimeTraceCall,
@@ -135,6 +137,13 @@ interface CSharpWorkerExecuteResult {
   executionTimeMs?: number;
   traceLimitExceeded?: boolean;
   timeoutReason?: ExecutionLimitReason;
+  timings?: RuntimeExecutionTimings;
+}
+
+interface CSharpWorkerPreparedBatchResult {
+  success: boolean;
+  results?: CSharpWorkerExecuteResult[];
+  error?: string;
   timings?: RuntimeExecutionTimings;
 }
 
@@ -623,6 +632,90 @@ export class CSharpWorkerClient {
         result,
         prepared.traceOptions,
         wallClockMs
+      );
+    });
+  }
+
+  async executePreparedCodeBatch(
+    prepared: CSharpPreparedProgramArtifact,
+    call: RuntimePreparedCodeBatchCall
+  ): Promise<readonly CodeExecutionResult[]> {
+    return this.runFreshPreparedGeneration(call.signal, async () => {
+      const wallClockMs = call.limits?.wallClockMs ?? this.executionTimeoutMs;
+      const result = await this.core.runClientEffect(
+        this.warmupEffect().pipe(
+          Effect.andThen(
+            this.core.withExecutionDeadline(
+              this.sendCommandEffect<CSharpWorkerPreparedBatchResult>(
+                'execute-prepared-batch',
+                {
+                  prepared,
+                  inputBatch: [...call.inputBatch],
+                  assetBaseUrl: this.options.assetBaseUrl,
+                  timeoutMs: Math.max(100, wallClockMs - 1_000),
+                  ...this.workerOptionsPayload(),
+                },
+                null
+              ),
+              wallClockMs * call.inputBatch.length
+            )
+          )
+        ),
+        call.signal
+      );
+      if (!Array.isArray(result.results)) {
+        throw new Error(
+          result.error ?? 'Prepared C# batch returned no results.'
+        );
+      }
+      return result.results.map((entry) =>
+        this.toCodeExecutionResult(entry)
+      );
+    });
+  }
+
+  async executePreparedTraceBatch(
+    prepared: CSharpPreparedProgramArtifact,
+    call: RuntimePreparedTraceBatchCall
+  ): Promise<readonly ExecutionResult[]> {
+    return this.runFreshPreparedGeneration(call.signal, async () => {
+      const wallClockMs = call.limits?.wallClockMs ??
+        this.resolveTracingTimeoutMs(
+          prepared.functionName,
+          prepared.executionStyle
+        );
+      const result = await this.core.runClientEffect(
+        this.warmupEffect().pipe(
+          Effect.andThen(
+            this.core.withExecutionDeadline(
+              this.sendCommandEffect<CSharpWorkerPreparedBatchResult>(
+                'execute-prepared-batch',
+                {
+                  prepared,
+                  inputBatch: [...call.inputBatch],
+                  assetBaseUrl: this.options.assetBaseUrl,
+                  timeoutMs: Math.max(100, wallClockMs - 1_000),
+                  ...this.workerOptionsPayload(),
+                },
+                null
+              ),
+              wallClockMs * call.inputBatch.length
+            )
+          )
+        ),
+        call.signal
+      );
+      if (!Array.isArray(result.results)) {
+        throw new Error(
+          result.error ?? 'Prepared C# trace batch returned no results.'
+        );
+      }
+      return result.results.map((entry) =>
+        this.toTraceExecutionResult(
+          entry,
+          prepared.traceOptions,
+          wallClockMs
+        )
       );
     });
   }

@@ -7537,6 +7537,48 @@ async function executeWithTracing(payload) {
   }
 }
 
+async function executeTraceBatch(payload) {
+  const startedAt = performanceNow();
+  const inputBatch = Array.isArray(payload?.inputBatch)
+    ? payload.inputBatch.map((inputs) =>
+        inputs && typeof inputs === 'object' ? inputs : {}
+      )
+    : [];
+  if (inputBatch.length === 0) {
+    return {
+      success: false,
+      results: [],
+      error: 'JavaScript trace batch execution requires a non-empty inputBatch array.',
+      timings: { totalMs: performanceNow() - startedAt },
+    };
+  }
+
+  const results = [];
+  for (const inputs of inputBatch) {
+    results.push(await executeWithTracing({
+      ...payload,
+      inputs,
+    }));
+  }
+  const success = results.every((result) => result.success === true);
+  return {
+    success,
+    results,
+    ...(success
+      ? {}
+      : {
+          error:
+            results.find((result) => result.success !== true)?.error ??
+            'JavaScript trace batch execution failed.',
+        }),
+    timings: {
+      totalMs: performanceNow() - startedAt,
+      batchMode: 'prepared-artifact',
+      batchCaseCount: inputBatch.length,
+    },
+  };
+}
+
 
 async function initRuntime(payload = {}) {
   configureTypeScriptCompilerUrl(payload?.typescriptCompilerUrl);
@@ -7661,6 +7703,15 @@ async function processMessage(data) {
           payload?.traceEventTransport,
           'trace.events'
         );
+        break;
+      }
+
+      case 'execute-trace-batch': {
+        if (WORKER_ROLE === 'coordinator') {
+          throw new Error('Trusted JavaScript coordinator workers cannot execute user code.');
+        }
+        const result = await executeTraceBatch(payload);
+        postProtocolMessage(id, protocolToken, 'execute-result', result);
         break;
       }
 
