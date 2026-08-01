@@ -1,7 +1,7 @@
 {
   "name": "@tracecode/runtime-browser",
   "private": true,
-  "version": "0.14.3",
+  "version": "0.14.4",
   "description": "Browser execution host, runtime assets, transport, and provider registry for TraceCode.",
   "license": "AGPL-3.0-only",
   "homepage": "https://tracecode.app",

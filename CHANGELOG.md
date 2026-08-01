@@ -6,6 +6,30 @@ This repo uses Git tags as release boundaries. Version notes below summarize wha
 
 ## [Unreleased]
 
+## [0.14.4] - 2026-08-01
+
+This patch restores compile-once algorithm batches across the Judge and
+TraceKernel execution path without returning execution authority to the
+retired direct runners.
+
+### Added
+
+- Added a provider-isolated Judge batch protocol with ordered per-case
+  outcomes, diagnostics, timings, cancellation, and timeout propagation.
+- Added a real Chromium product-path gate proving that a ten-case Python
+  algorithm evaluation uses one compiler worker and one execution worker.
+- Added transactional Python filesystem isolation for warmed batches,
+  including rollback of created, overwritten, renamed, and deleted paths.
+
+### Changed
+
+- Run non-tracing algorithm test vectors through one TraceKernel process after
+  preparing the learner program once.
+- Reuse one warmed Python worker and one immutable C++ WebAssembly artifact
+  where those runtimes can preserve fresh learner-visible state internally.
+- Keep JavaScript, TypeScript, Java, and C# on their runtime-required fresh
+  execution-worker boundaries while still reusing the prepared artifact.
+
 ## [0.14.3] - 2026-07-31
 
 This patch restores direct algorithm execution on browser pages that do not

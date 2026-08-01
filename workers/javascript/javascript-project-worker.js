@@ -1621,7 +1621,7 @@ var TraceKernelRuntimeFileClient = class {
 // package.json
 var package_default = {
   name: "@tracecode/harness",
-  version: "0.14.3",
+  version: "0.14.4",
   license: "AGPL-3.0-only",
   homepage: "https://tracecode.app",
   repository: {
@@ -1701,7 +1701,7 @@ var package_default = {
     "typecheck:tests": "pnpm exec tsc -p tsconfig.tests.json --noEmit",
     "typecheck:packages": "pnpm exec tsc -p packages/tracekernel/tsconfig.json --noEmit && pnpm exec tsc -p packages/runtime-contracts/tsconfig.json --noEmit && pnpm exec tsc -p packages/judge/tsconfig.json --noEmit && pnpm exec tsc -p packages/runtime-browser/tsconfig.json --noEmit && pnpm exec tsc -p packages/runtime-python/tsconfig.json --noEmit && pnpm exec tsc -p packages/runtime-javascript/tsconfig.json --noEmit && pnpm exec tsc -p packages/runtime-java/tsconfig.json --noEmit && pnpm exec tsc -p packages/runtime-csharp/tsconfig.json --noEmit && pnpm exec tsc -p packages/runtime-cpp/tsconfig.json --noEmit && pnpm exec tsc -p packages/runtime-native/tsconfig.json --noEmit && pnpm exec tsc -p packages/runtime-sql/tsconfig.json --noEmit",
     "test:judge": "pnpm --dir packages/judge test",
-    "test:judge:browser": "pnpm exec tsx --tsconfig tsconfig.base.json tests/test-browser-project-judge.ts",
+    "test:judge:browser": "pnpm exec tsx --tsconfig tsconfig.base.json tests/test-browser-project-judge.ts && pnpm exec tsx --tsconfig tsconfig.base.json tests/test-browser-algorithm-batch.ts",
     "test:tracekernel": "pnpm build:tracekernel && pnpm exec tsx --tsconfig tsconfig.base.json tests/test-tracekernel-public-package.ts && pnpm exec tsx --tsconfig tsconfig.base.json tests/test-tracekernel-lifecycle.ts && pnpm exec tsx --tsconfig tsconfig.base.json tests/test-tracekernel-runtime-recovery.ts && pnpm exec tsx --tsconfig tsconfig.base.json tests/test-tracekernel-controlled-runtime.ts && pnpm exec tsx --tsconfig tsconfig.base.json tests/test-tracekernel-watchdog.ts && pnpm exec tsx --tsconfig tsconfig.base.json tests/test-tracekernel-descriptors.ts && pnpm exec tsx --tsconfig tsconfig.base.json tests/test-tracekernel-terminal.ts && pnpm exec tsx --tsconfig tsconfig.base.json tests/test-tracekernel-watch.ts && pnpm exec tsx --tsconfig tsconfig.base.json tests/test-tracekernel-vfs.ts && pnpm exec tsx --tsconfig tsconfig.base.json tests/test-tracekernel-tkfs-backing.ts && pnpm exec tsx --tsconfig tsconfig.base.json tests/test-tracekernel-namespace.ts && pnpm exec tsx --tsconfig tsconfig.base.json tests/test-tracekernel-network.ts && pnpm exec tsx --tsconfig tsconfig.base.json tests/test-tracekernel-adversarial-teardown.ts && pnpm exec tsx --tsconfig tsconfig.base.json tests/test-tracekernel-workspace-processes.ts && pnpm exec tsx --tsconfig tsconfig.base.json tests/test-tracekernel-workspace-job-control.ts && pnpm exec tsx --tsconfig tsconfig.base.json tests/test-tracekernel-http1.ts && pnpm exec tsx --tsconfig tsconfig.base.json tests/test-tracekernel-http-tcp.ts && pnpm exec tsx --tsconfig tsconfig.base.json tests/test-tracekernel-syscalls.ts && pnpm exec tsx --tsconfig tsconfig.base.json tests/test-tracekernel-transport.ts",
     "test:tracekernel:browser": "pnpm generate:javascript-project-worker && pnpm exec tsx --tsconfig tsconfig.base.json tests/test-tracekernel-javascript-stdio.ts && pnpm exec tsx --tsconfig tsconfig.base.json tests/test-tracekernel-javascript-browser.ts",
     "test:tracekernel:python-browser": "pnpm sync:package-assets && pnpm exec tsx --tsconfig tsconfig.base.json tests/test-tracekernel-python-browser.ts",
@@ -1858,7 +1858,7 @@ var LANGUAGE_RUNTIME_INFOS = Object.freeze(
       "versionLabel": "Python 3.13.2",
       "executionPlatform": {
         "name": "TraceKernel",
-        "version": "0.14.3"
+        "version": "0.14.4"
       },
       "description": "Python 3.13.2 runs in TraceKernel's isolated Python runtime.\n\nCommon algorithm helpers are imported automatically, including array, bisect, collections, functools, heapq, itertools. Other standard-library modules can be imported normally.\n\nOptional third-party packages are consumer-owned runtime assets and are available only when declared by the TraceKernel runtime manifest.",
       "runtime": {
@@ -1885,7 +1885,7 @@ var LANGUAGE_RUNTIME_INFOS = Object.freeze(
       "versionLabel": "JavaScript (ECMAScript 2023)",
       "executionPlatform": {
         "name": "TraceKernel",
-        "version": "0.14.3"
+        "version": "0.14.4"
       },
       "runtime": {
         "name": "TraceKernel JavaScript runtime",
@@ -1977,7 +1977,7 @@ Binary Search Tree, Trie, and Graph are bundled too, but are not exposed globall
       "versionLabel": "TypeScript 5.9.3",
       "executionPlatform": {
         "name": "TraceKernel",
-        "version": "0.14.3"
+        "version": "0.14.4"
       },
       "description": `TypeScript 5.9.3 is compiled with the TypeScript compiler and executed by TraceKernel's JavaScript runtime.
 
@@ -2077,7 +2077,7 @@ The compiled output runs on the same TraceKernel execution lane as JavaScript su
       "versionLabel": "Java 23",
       "executionPlatform": {
         "name": "TraceKernel",
-        "version": "0.14.3"
+        "version": "0.14.4"
       },
       "description": "Java 23 is compiled with javac 23 and executed through TraceJVM or CheerpJ on TraceKernel.\n\nCommon imports are added automatically: java.util.*, java.io.*, java.math.*, java.util.stream.*, javafx.util.Pair.",
       "runtime": {
@@ -2114,7 +2114,7 @@ The compiled output runs on the same TraceKernel execution lane as JavaScript su
       "versionLabel": "C# 14",
       "executionPlatform": {
         "name": "TraceKernel",
-        "version": "0.14.3"
+        "version": "0.14.4"
       },
       "description": "C# 14 source is compiled and executed by TraceKernel's isolated C# runtime.\n\nCommon namespaces are imported automatically: System, System.Collections, System.Collections.Generic, System.IO, System.Linq, System.Numerics, System.Text, System.Text.RegularExpressions.",
       "runtime": {
@@ -2143,7 +2143,7 @@ The compiled output runs on the same TraceKernel execution lane as JavaScript su
       "versionLabel": "C++23",
       "executionPlatform": {
         "name": "TraceKernel",
-        "version": "0.14.3"
+        "version": "0.14.4"
       },
       "description": "C++ source is compiled using the C++23 standard.\n\nSubmissions compile to WebAssembly and run in TraceKernel's WASI execution lane. The compiler currently uses -O0 and -fno-exceptions, with a fixed program stack size.\n\nCommon standard library headers are included automatically, including <algorithm>, <array>, <bitset>, <climits>, <cmath>, <cstdint>, <functional>, <limits>, <numeric>, <sstream>, <tuple>, <vector>, <unordered_map>, <unordered_set> and more.",
       "runtime": {
