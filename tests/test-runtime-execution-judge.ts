@@ -5,6 +5,7 @@ import * as Effect from 'effect/Effect';
 import * as Fiber from 'effect/Fiber';
 import * as Option from 'effect/Option';
 import {
+  createAlgorithmJudgeBundle,
   type JudgeEvaluationPlan,
   type RuntimeJudgeBinding,
 } from '../src/judge';
@@ -23,6 +24,7 @@ import {
   type ExecutionResult,
   type RuntimeCodeCall,
   type RuntimePreparedCodeCall,
+  type RuntimePreparedCodeBatchCall,
   type RuntimePreparedExecutionProvider,
   type RuntimePreparedTraceCall,
   type RuntimeProgramPreparationCall,
@@ -72,6 +74,7 @@ interface PreparedProviderState {
   initCalls: number;
   readonly prepareCalls: RuntimeProgramPreparationCall[];
   readonly codeCalls: RuntimePreparedCodeCall[];
+  readonly codeBatchCalls: RuntimePreparedCodeBatchCall[];
   readonly traceCalls: RuntimePreparedTraceCall[];
   readonly completions: string[];
   disposals: number;
@@ -105,6 +108,7 @@ function makePreparedState(
     initCalls: 0,
     prepareCalls: [],
     codeCalls: [],
+    codeBatchCalls: [],
     traceCalls: [],
     completions: [],
     disposals: 0,
@@ -1016,6 +1020,139 @@ test('uses an explicit compile phase as the prepare-once boundary', async () => 
   assert.equal(state.prepareCalls.length, 1);
   assert.equal(state.codeCalls.length, 1);
   assert.equal(state.traceCalls.length, 0);
+  assert.equal(state.disposals, 1);
+});
+
+test('algorithm evaluation prepares once and executes all cases through one isolated provider batch', async () => {
+  const state = makePreparedState();
+  const provider = preparedProvider(state);
+  const originalPrepare = provider.prepareProgram.bind(provider);
+  const batchProvider: RuntimePreparedExecutionProvider = {
+    ...provider,
+    async prepareProgram(call) {
+      const result = await originalPrepare(call);
+      if (result.kind !== 'prepared' || result.program.mode !== 'code') {
+        return result;
+      }
+      return {
+        ...result,
+        program: {
+          ...result.program,
+          async executeBatchIsolated(batchCall) {
+            state.codeBatchCalls.push(batchCall);
+            await new Promise<void>((resolve) => setTimeout(resolve, 40));
+            return batchCall.inputBatch.map((inputs) => ({
+              kind: 'completed' as const,
+              output: completedOutput(inputs as FakeInput),
+              consoleOutput: consoleOutput(inputs as FakeInput),
+              timings: {
+                artifactCacheHit: true,
+              },
+            }));
+          },
+        },
+      };
+    },
+  };
+  const bundle = await createAlgorithmJudgeBundle({
+    id: 'prepared-batch',
+    language: 'javascript',
+    code: SOURCE,
+    functionName: 'solve',
+    limits: { wallClockMs: 25 },
+    cases: [
+      {
+        id: 'first',
+        input: { label: 'first' },
+        expected: 'first',
+      },
+      {
+        id: 'second',
+        input: { label: 'second' },
+        expected: 'second',
+      },
+      {
+        id: 'third',
+        input: { label: 'third' },
+        expected: 'third',
+      },
+    ],
+  });
+
+  const receipt = await Effect.runPromise(Effect.scoped(
+    Effect.gen(function* () {
+      const judge = yield* createTestRuntimeJudge(
+        batchProvider,
+        codeBinding({
+          sourcePath: bundle.execution.sourcePath,
+          limits: bundle.execution.limits,
+        })
+      );
+      return yield* judge.evaluateAlgorithm(bundle);
+    })
+  ));
+
+  assert.equal(receipt.verdict, 'passed');
+  assert.equal(state.prepareCalls.length, 1);
+  assert.equal(state.codeBatchCalls.length, 1);
+  assert.deepEqual(
+    state.codeBatchCalls[0]?.inputBatch.map((inputs) => inputs.label),
+    ['first', 'second', 'third']
+  );
+  assert.equal(state.codeBatchCalls[0]?.limits?.wallClockMs, 25);
+  assert.equal(state.codeCalls.length, 0);
+  assert.equal(
+    new Set(
+      receipt.evaluation.status === 'completed'
+        ? receipt.evaluation.cases.map((caseResult) => caseResult.sessionId)
+        : []
+    ).size,
+    1
+  );
+  assert.equal(state.disposals, 1);
+});
+
+test('algorithm batch orchestration preserves provider-required fresh workers without recompiling', async () => {
+  const state = makePreparedState();
+  const bundle = await createAlgorithmJudgeBundle({
+    id: 'prepared-batch-fallback',
+    language: 'javascript',
+    code: SOURCE,
+    functionName: 'solve',
+    cases: [
+      { id: 'first', input: { label: 'first' }, expected: 'first' },
+      { id: 'second', input: { label: 'second' }, expected: 'second' },
+      { id: 'third', input: { label: 'third' }, expected: 'third' },
+    ],
+  });
+
+  const receipt = await Effect.runPromise(Effect.scoped(
+    Effect.gen(function* () {
+      const judge = yield* createTestRuntimeJudge(
+        preparedProvider(state),
+        codeBinding({
+          sourcePath: bundle.execution.sourcePath,
+        })
+      );
+      return yield* judge.evaluateAlgorithm(bundle);
+    })
+  ));
+
+  assert.equal(receipt.verdict, 'passed');
+  assert.equal(state.prepareCalls.length, 1);
+  assert.equal(state.codeBatchCalls.length, 0);
+  assert.deepEqual(
+    state.codeCalls.map((call) => call.inputs.label),
+    ['first', 'second', 'third']
+  );
+  assert.equal(
+    new Set(
+      receipt.evaluation.status === 'completed'
+        ? receipt.evaluation.cases.map((caseResult) => caseResult.sessionId)
+        : []
+    ).size,
+    1
+  );
   assert.equal(state.disposals, 1);
 });
 

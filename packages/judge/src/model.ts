@@ -45,7 +45,14 @@ export interface JudgeIsolationPolicy {
    * TraceKernel session. Process state, descriptors, environment mutations,
    * filesystem writes, and runtime leases cannot flow into another case.
    */
-  readonly mode: 'fresh-session-per-case';
+  readonly mode:
+    | 'fresh-session-per-case'
+    /**
+     * Run the case vector through one provider batch invocation. This mode is
+     * valid only when the runtime provider guarantees fresh mutable language
+     * state for every case in the batch.
+     */
+    | 'provider-isolated-batch';
   readonly maxConcurrency?: number;
 }
 

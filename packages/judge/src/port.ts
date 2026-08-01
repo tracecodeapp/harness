@@ -11,7 +11,7 @@ import type {
 export type JudgeKernelSignal = 'SIGINT' | 'SIGTERM' | 'SIGKILL';
 
 export interface JudgeRuntimeInvocationInput<Input = unknown> {
-  readonly phase: 'compile' | 'case';
+  readonly phase: 'compile' | 'case' | 'batch';
   readonly planId: string;
   /**
    * Opaque lifecycle key shared by every process in one evaluation. Runtime
@@ -21,6 +21,22 @@ export interface JudgeRuntimeInvocationInput<Input = unknown> {
   readonly evaluationId?: string;
   readonly caseId?: string;
   readonly value?: Input;
+  readonly cases?: readonly {
+    readonly caseId: string;
+    readonly value: Input;
+  }[];
+}
+
+export interface JudgeRuntimeBatchCaseOutput<Result = unknown> {
+  readonly caseId: string;
+  readonly termination: JudgeTermination;
+  readonly stdout: string;
+  readonly stderr: string;
+  readonly diagnostics?: readonly JudgeDiagnostic[];
+  readonly timings?: JudgeRuntimeTimings;
+  readonly value?: Result;
+  readonly trace?: unknown;
+  readonly timedOut: boolean;
 }
 
 export interface JudgeRuntimeInvocationOutput<Result = unknown> {
@@ -32,6 +48,7 @@ export interface JudgeRuntimeInvocationOutput<Result = unknown> {
   readonly trace?: unknown;
   readonly diagnostics?: readonly JudgeDiagnostic[];
   readonly timings?: JudgeRuntimeTimings;
+  readonly batch?: readonly JudgeRuntimeBatchCaseOutput<Result>[];
 }
 
 export interface JudgeRuntimeControlPort {
@@ -61,6 +78,7 @@ export interface JudgeKernelProcessOutcome {
   readonly timings?: JudgeRuntimeTimings;
   readonly structuredResult?: unknown;
   readonly trace?: unknown;
+  readonly batch?: readonly JudgeRuntimeBatchCaseOutput[];
   readonly timedOut: boolean;
   readonly startedAt?: number;
   readonly endedAt?: number;

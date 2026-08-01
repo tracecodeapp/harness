@@ -288,6 +288,96 @@ function runCase<Snapshot, Input, Expected, Result>(
   );
 }
 
+function runBatch<Snapshot, Input, Expected, Result>(
+  port: JudgeKernelPort<Snapshot>,
+  plan: JudgeEvaluationPlan<Input, Expected>,
+  snapshot: Snapshot,
+  comparator: JudgeComparator<Input, Expected, Result>
+): Effect.Effect<
+  readonly JudgeCaseResult<Result, Expected>[],
+  JudgeInfrastructureError
+> {
+  return Effect.scoped(
+    Effect.gen(function* () {
+      const session = yield* port.openSession({
+        cwd: plan.workspace.cwd,
+        snapshot,
+      }).pipe(
+        Effect.mapError((error) =>
+          infrastructureError('open isolated batch session', error)
+        )
+      );
+      const outcome = yield* runProcess(
+        session,
+        plan.runtime,
+        plan.run,
+        {
+          phase: 'batch',
+          planId: plan.id,
+          cases: Object.freeze(
+            plan.cases.map((testCase) => Object.freeze({
+              caseId: testCase.id,
+              value: testCase.input,
+            }))
+          ),
+        }
+      );
+      if (!outcome.batch) {
+        return yield* Effect.fail(new JudgeInfrastructureError({
+          operation: 'execute isolated batch',
+          message:
+            'The runtime batch process completed without publishing per-case outcomes.' +
+            (outcome.stderr ? ` ${outcome.stderr.trim()}` : ''),
+        }));
+      }
+      const byId = new Map(outcome.batch.map((item) => [item.caseId, item]));
+      if (byId.size !== plan.cases.length) {
+        return yield* Effect.fail(new JudgeInfrastructureError({
+          operation: 'execute isolated batch',
+          message:
+            `The runtime batch returned ${byId.size} unique cases for ` +
+            `${plan.cases.length} planned cases.`,
+        }));
+      }
+      const omitted = plan.cases.find((testCase) => !byId.has(testCase.id));
+      if (omitted) {
+        return yield* Effect.fail(new JudgeInfrastructureError({
+          operation: 'execute isolated batch',
+          message:
+            `The runtime batch omitted case ${JSON.stringify(omitted.id)}.`,
+        }));
+      }
+      return Object.freeze(plan.cases.map((testCase) => {
+        const item = byId.get(testCase.id)!;
+        return caseResult<Input, Expected, Result>(
+          plan.id,
+          testCase,
+          {
+            sessionId: outcome.sessionId,
+            pid: outcome.pid,
+            termination: item.termination,
+            stdout: item.stdout,
+            stderr: item.stderr,
+            diagnostics: item.diagnostics,
+            timings: item.timings,
+            ...(Object.prototype.hasOwnProperty.call(item, 'value')
+              ? { structuredResult: item.value }
+              : {}),
+            ...(Object.prototype.hasOwnProperty.call(item, 'trace')
+              ? { trace: item.trace }
+              : {}),
+            timedOut: item.timedOut,
+            startedAt: outcome.startedAt,
+            endedAt: outcome.endedAt,
+          },
+          plan.structuredResult ?? 'required',
+          comparator
+        );
+      }));
+    })
+  );
+}
+
 export function evaluateJudgePlan<
   Snapshot,
   Input = unknown,
@@ -319,21 +409,30 @@ export function evaluateJudgePlan<
       }));
     }
 
-    const cases = yield* Effect.forEach(
-      plan.cases,
-      (testCase) =>
-        runCase<Snapshot, Input, Expected, Result>(
+    const comparator =
+      options.comparator ??
+      structuralJsonComparator as JudgeComparator<Input, Expected, Result>;
+    const cases = plan.isolation?.mode === 'provider-isolated-batch'
+      ? yield* runBatch<Snapshot, Input, Expected, Result>(
           port,
           plan,
-          build.snapshot!,
-          testCase,
-          options.comparator ??
-            structuralJsonComparator as JudgeComparator<Input, Expected, Result>
-        ),
-      {
-        concurrency: plan.isolation?.maxConcurrency ?? 1,
-      }
-    );
+          build.snapshot,
+          comparator
+        )
+      : yield* Effect.forEach(
+          plan.cases,
+          (testCase) =>
+            runCase<Snapshot, Input, Expected, Result>(
+              port,
+              plan,
+              build.snapshot!,
+              testCase,
+              comparator
+            ),
+          {
+            concurrency: plan.isolation?.maxConcurrency ?? 1,
+          }
+        );
     return Object.freeze({
       planId: plan.id,
       status: 'completed' as const,

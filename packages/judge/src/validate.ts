@@ -164,5 +164,13 @@ export function validateJudgePlan(
     ) {
       return yield* fail('Judge isolation maxConcurrency must be a positive safe integer.');
     }
+    if (
+      plan.isolation?.mode === 'provider-isolated-batch' &&
+      plan.cases.some((testCase) => testCase.env !== undefined)
+    ) {
+      return yield* fail(
+        'Provider-isolated batch cases must not define per-case environment variables.'
+      );
+    }
   });
 }

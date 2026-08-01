@@ -811,3 +811,41 @@ test('rejects non-canonical file aliases before duplicate and namespace checks',
     assert.match(exit.cause.toString(), /canonical absolute file path/);
   }
 });
+
+test('rejects per-case environment overrides in provider-isolated batches', async () => {
+  const control = new InMemoryJudgeRuntimeControl();
+  const exit = await Effect.runPromiseExit(Effect.scoped(
+    Effect.gen(function* () {
+      const state = yield* makeState();
+      const host = yield* makeTraceKernelHost({
+        providers: [fakeProvider(control, state)],
+      });
+      const port = new TraceKernelJudgePort({
+        host,
+        runtimeControl: control,
+      });
+      return yield* evaluateJudgePlan(
+        port,
+        makePlan([], {
+          compile: undefined,
+          cases: [{
+            id: 'environment-dependent',
+            input: { value: 1 },
+            env: { CASE_SEED: 'one' },
+          }],
+          isolation: {
+            mode: 'provider-isolated-batch',
+          },
+        })
+      );
+    })
+  ));
+  assert.equal(exit._tag, 'Failure');
+  if (exit._tag === 'Failure') {
+    assert.match(
+      exit.cause.toString(),
+      /must not define per-case environment variables/
+    );
+    assert.match(exit.cause.toString(), new RegExp(JudgePlanError.name));
+  }
+});

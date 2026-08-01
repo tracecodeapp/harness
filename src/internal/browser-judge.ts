@@ -67,6 +67,7 @@ import {
   type JudgeRuntimeControlPort,
   type JudgeRuntimeInvocationInput,
   type JudgeRuntimeInvocationOutput,
+  type JudgeRuntimeBatchCaseOutput,
   type JudgeRuntimeTimings,
   validateAlgorithmJudgeBundle,
 } from '../../packages/judge/src/index';
@@ -620,6 +621,102 @@ function executePreparedProviderCase(
   });
 }
 
+function runtimeBatchCases(
+  invocation: JudgeRuntimeInvocationInput
+): readonly {
+  readonly caseId: string;
+  readonly inputs: Record<string, unknown>;
+}[] {
+  if (!invocation.cases || invocation.cases.length === 0) {
+    throw new TypeError(
+      'Prepared runtime Judge batch requires at least one case.'
+    );
+  }
+  return invocation.cases.map((testCase) => ({
+    caseId: testCase.caseId,
+    inputs: runtimeInputs({ ...invocation, value: testCase.value }),
+  }));
+}
+
+function batchCaseOutput(
+  caseId: string,
+  mapped: MappedRuntimeOutcome
+): JudgeRuntimeBatchCaseOutput {
+  const process = mapped.process;
+  const termination = process.termination ?? Object.freeze({
+    kind: 'exit' as const,
+    exitCode: process.exitCode,
+  });
+  return Object.freeze({
+    caseId,
+    termination,
+    stdout: process.stdout ?? '',
+    stderr: process.stderr ?? '',
+    diagnostics: mapped.output.diagnostics,
+    timings: mapped.output.timings,
+    ...(Object.prototype.hasOwnProperty.call(mapped.output, 'value')
+      ? { value: mapped.output.value }
+      : {}),
+    ...(Object.prototype.hasOwnProperty.call(mapped.output, 'trace')
+      ? { trace: mapped.output.trace }
+      : {}),
+    timedOut:
+      termination.kind === 'signal' ||
+      mapped.output.diagnostics?.some(
+        (diagnostic) => diagnostic.code === 'client-timeout'
+      ) === true,
+  });
+}
+
+function executePreparedProviderBatch(
+  options: RuntimeJudgeProviderOptions,
+  programs: RuntimePreparedProgramRegistry,
+  invocation: JudgeRuntimeInvocationInput
+): Effect.Effect<MappedRuntimeOutcome, Error> {
+  return Effect.gen(function* () {
+    if (isTraceBinding(options.binding)) {
+      return yield* Effect.fail(
+        new Error('Tracing runtime bindings do not support batch execution.')
+      );
+    }
+    const cases = yield* Effect.try({
+      try: () => runtimeBatchCases(invocation),
+      catch: errorFromUnknown,
+    });
+    const outcomes = yield* Effect.tryPromise({
+      try: (signal) =>
+        programs.executeCodeBatch(evaluationId(invocation), {
+          inputBatch: cases.map((testCase) => testCase.inputs),
+          signal,
+          limits: options.binding.limits,
+        }),
+      catch: errorFromUnknown,
+    });
+    if (outcomes.length !== cases.length) {
+      return yield* Effect.fail(
+        new Error(
+          `Prepared runtime returned ${outcomes.length} batch outcomes for ` +
+          `${cases.length} cases.`
+        )
+      );
+    }
+    const batch = Object.freeze(outcomes.map((outcome, index) =>
+      batchCaseOutput(
+        cases[index]!.caseId,
+        mappedCodeOutcome(options.runtime, outcome)
+      )
+    ));
+    return Object.freeze({
+      output: Object.freeze({ batch }),
+      process: Object.freeze({
+        exitCode: 0,
+        stdout: '',
+        stderr: '',
+      }),
+    });
+  });
+}
+
 function providerFailure(
   runtime: string,
   message: string,
@@ -675,6 +772,28 @@ function executeProviderProcess(
                 options.runtime,
                 error.message
               );
+              return options.runtimeControl.publish(
+                invocationId,
+                mapped.output
+              ).pipe(Effect.as(mapped.process));
+            },
+            onSuccess: (mapped) =>
+              options.runtimeControl.publish(
+                invocationId,
+                mapped.output
+              ).pipe(Effect.as(mapped.process)),
+          })
+        );
+      }
+      if (invocation.phase === 'batch') {
+        return executePreparedProviderBatch(
+          options,
+          programs,
+          invocation
+        ).pipe(
+          Effect.matchEffect({
+            onFailure: (error) => {
+              const mapped = providerFailure(options.runtime, error.message);
               return options.runtimeControl.publish(
                 invocationId,
                 mapped.output
@@ -838,14 +957,38 @@ class EvaluationJudgeRuntimeControl
 }
 
 function preparedEvaluationPlan<Input, Expected>(
-  plan: JudgeEvaluationPlan<Input, Expected>
+  plan: JudgeEvaluationPlan<Input, Expected>,
+  useProviderBatch: boolean
 ): JudgeEvaluationPlan<Input, Expected> {
-  if (plan.compile) return plan;
+  const batched = useProviderBatch && plan.cases.length > 1;
+  const timeoutMs =
+    batched && plan.run.timeoutMs !== undefined
+      ? Math.min(
+          2_147_483_647,
+          plan.run.timeoutMs * plan.cases.length
+        )
+      : plan.run.timeoutMs;
   return Object.freeze({
     ...plan,
-    compile: Object.freeze({
-      command: INTERNAL_PREPARE_COMMAND,
+    ...(plan.compile
+      ? {}
+      : {
+          compile: Object.freeze({
+            command: INTERNAL_PREPARE_COMMAND,
+          }),
+        }),
+    run: Object.freeze({
+      ...plan.run,
+      ...(timeoutMs === undefined ? {} : { timeoutMs }),
     }),
+    ...(batched
+      ? {
+          isolation: Object.freeze({
+            mode: 'provider-isolated-batch' as const,
+            maxConcurrency: 1,
+          }),
+        }
+      : {}),
   });
 }
 
@@ -911,6 +1054,21 @@ class RuntimeJudgeComposition
     JudgeEvaluationResult<Result, Expected>,
     JudgePlanError | JudgeInfrastructureError
   > {
+    return this.evaluatePlan(plan, options, false);
+  }
+
+  private evaluatePlan<
+    Input = Record<string, unknown>,
+    Result = unknown,
+    Expected = unknown,
+  >(
+    plan: JudgeEvaluationPlan<Input, Expected>,
+    options: JudgeEvaluationOptions<Input, Expected, Result>,
+    useProviderBatch: boolean
+  ): Effect.Effect<
+    JudgeEvaluationResult<Result, Expected>,
+    JudgePlanError | JudgeInfrastructureError
+  > {
     return Effect.suspend(() => {
       const evaluationId =
         `${this.runtime}-judge-evaluation-${this.nextEvaluationId++}`;
@@ -923,7 +1081,10 @@ class RuntimeJudgeComposition
         host: this.host,
         runtimeControl: evaluationControl,
       });
-      const effectivePlan = preparedEvaluationPlan(plan);
+      const effectivePlan = preparedEvaluationPlan(
+        plan,
+        useProviderBatch
+      );
       const evaluation = evaluateJudgePlan<
         TraceKernelFileSystemImage,
         Input,
@@ -966,13 +1127,14 @@ class RuntimeJudgeComposition
   > {
     return validateAlgorithmJudgeBundle(bundle).pipe(
       Effect.flatMap(() =>
-        this.evaluate<Input, Result, Expected>(
+        this.evaluatePlan<Input, Result, Expected>(
           bundle.plan,
           {
             comparator: bundle.comparison
               ? createJudgeComparator<Input>(bundle.comparison)
               : undefined,
-          }
+          },
+          !bundle.execution.trace
         )
       ),
       Effect.map((evaluation) =>

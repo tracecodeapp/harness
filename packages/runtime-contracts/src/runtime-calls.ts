@@ -66,6 +66,21 @@ export interface RuntimePreparedCodeCall {
   readonly limits?: RuntimeExecutionLimits;
 }
 
+/**
+ * A group of non-tracing cases executed against one prepared artifact.
+ *
+ * Providers that implement this capability must preserve the same
+ * `fresh-case-state` guarantee as `executeIsolated`. The batching boundary may
+ * reuse one warmed engine, but mutable language state may not flow between
+ * entries in `inputBatch`.
+ */
+export interface RuntimePreparedCodeBatchCall {
+  readonly inputBatch: readonly Record<string, unknown>[];
+  readonly signal?: AbortSignal;
+  /** Applied independently to each case in the batch. */
+  readonly limits?: RuntimeExecutionLimits;
+}
+
 /** One isolated tracing execution against a prepared program. */
 export interface RuntimePreparedTraceCall {
   readonly inputs: Record<string, unknown>;
@@ -103,6 +118,13 @@ export interface RuntimePreparedCodeProgram
   executeIsolated(
     call: RuntimePreparedCodeCall
   ): Promise<CodeExecutionResult>;
+  /**
+   * Optional fast path for runtimes that can isolate several cases inside one
+   * warmed engine. Judge falls back to `executeIsolated` when it is absent.
+   */
+  executeBatchIsolated?(
+    call: RuntimePreparedCodeBatchCall
+  ): Promise<readonly CodeExecutionResult[]>;
 }
 
 export interface RuntimePreparedTraceProgram
