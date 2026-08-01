@@ -131,7 +131,11 @@ async function main(): Promise<void> {
         verdict: string;
         caseVerdicts: string[];
         sessionIds: string[];
-        workerUrls: string[];
+        plainWorkerUrls: string[];
+        traceVerdict: string;
+        traceCaseVerdicts: string[];
+        traceSessionIds: string[];
+        traceWorkerUrls: string[];
       };
 
       assertCondition(
@@ -145,15 +149,30 @@ async function main(): Promise<void> {
         `Browser algorithm batch did not use one TraceKernel batch process: ${JSON.stringify(result.sessionIds)}`
       );
       assertCondition(
-        result.workerUrls.length === 2 &&
-          result.workerUrls.every((url) => url.includes('python-worker.js')),
-        `Python algorithm batch should construct one compiler and one execution worker: ${JSON.stringify(result.workerUrls)}`
+        result.plainWorkerUrls.length === 2 &&
+          result.plainWorkerUrls.every((url) => url.includes('python-worker.js')),
+        `Python algorithm batch should construct one compiler and one execution worker: ${JSON.stringify(result.plainWorkerUrls)}`
+      );
+      assertCondition(
+        result.traceVerdict === 'passed' &&
+          result.traceCaseVerdicts.length === 10 &&
+          result.traceCaseVerdicts.every((verdict) => verdict === 'passed'),
+        `Browser trace batch did not pass all ten cases: ${JSON.stringify(result)}`
+      );
+      assertCondition(
+        new Set(result.traceSessionIds).size === 1,
+        `Browser trace batch did not use one TraceKernel batch process: ${JSON.stringify(result.traceSessionIds)}`
+      );
+      assertCondition(
+        result.traceWorkerUrls.length === 2 &&
+          result.traceWorkerUrls.every((url) => url.includes('python-worker.js')),
+        `Python trace batch should construct one compiler and one execution worker: ${JSON.stringify(result.traceWorkerUrls)}`
       );
     } finally {
       await browser.close();
     }
     console.log(
-      'Browser algorithm Judge batch passed with one compiler and one execution worker.'
+      'Browser algorithm Judge code and trace batches each passed with one compiler and one execution worker.'
     );
   } finally {
     await server?.close();

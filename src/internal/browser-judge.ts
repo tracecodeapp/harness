@@ -674,22 +674,23 @@ function executePreparedProviderBatch(
   invocation: JudgeRuntimeInvocationInput
 ): Effect.Effect<MappedRuntimeOutcome, Error> {
   return Effect.gen(function* () {
-    if (isTraceBinding(options.binding)) {
-      return yield* Effect.fail(
-        new Error('Tracing runtime bindings do not support batch execution.')
-      );
-    }
     const cases = yield* Effect.try({
       try: () => runtimeBatchCases(invocation),
       catch: errorFromUnknown,
     });
     const outcomes = yield* Effect.tryPromise({
       try: (signal) =>
-        programs.executeCodeBatch(evaluationId(invocation), {
-          inputBatch: cases.map((testCase) => testCase.inputs),
-          signal,
-          limits: options.binding.limits,
-        }),
+        isTraceBinding(options.binding)
+          ? programs.executeTraceBatch(evaluationId(invocation), {
+              inputBatch: cases.map((testCase) => testCase.inputs),
+              signal,
+              limits: options.binding.limits,
+            })
+          : programs.executeCodeBatch(evaluationId(invocation), {
+              inputBatch: cases.map((testCase) => testCase.inputs),
+              signal,
+              limits: options.binding.limits,
+            }),
       catch: errorFromUnknown,
     });
     if (outcomes.length !== cases.length) {
@@ -703,7 +704,9 @@ function executePreparedProviderBatch(
     const batch = Object.freeze(outcomes.map((outcome, index) =>
       batchCaseOutput(
         cases[index]!.caseId,
-        mappedCodeOutcome(options.runtime, outcome)
+        isTraceBinding(options.binding)
+          ? mappedTraceOutcome(options.runtime, outcome as ExecutionResult)
+          : mappedCodeOutcome(options.runtime, outcome as CodeExecutionResult)
       )
     ));
     return Object.freeze({
@@ -1134,7 +1137,7 @@ class RuntimeJudgeComposition
               ? createJudgeComparator<Input>(bundle.comparison)
               : undefined,
           },
-          !bundle.execution.trace
+          true
         )
       ),
       Effect.map((evaluation) =>

@@ -24,6 +24,12 @@ import {
  * the worker client deliberately passes it through untyped-trace and all.
  */
 export type PythonRawTraceResult = RawExecutionPayload & { trace?: unknown };
+export type PythonRawTraceBatchResult = {
+  results?: PythonRawTraceResult[];
+  error?: string;
+  consoleOutput?: string[];
+  timings?: RuntimeExecutionTimings;
+};
 import type {
   RuntimeBatchCall,
   RuntimeCodeCall,
@@ -607,6 +613,55 @@ export class PythonWorkerClient {
           executionTimeMs: wallClockMs,
           consoleOutput: [],
           timeoutReason: 'client-timeout',
+        };
+      }
+      throw error;
+    }
+  }
+
+  async executePreparedTraceBatch(
+    handle: PythonPreparedProgramHandle,
+    call: {
+      readonly inputBatch: readonly Record<string, unknown>[];
+      readonly signal?: AbortSignal;
+      readonly limits?: RuntimeExecutionLimits;
+    }
+  ): Promise<PythonRawTraceBatchResult> {
+    const perCaseWallClockMs = call.limits?.wallClockMs ?? TRACING_TIMEOUT_MS;
+    const wallClockMs = Math.min(
+      2_147_483_647,
+      perCaseWallClockMs * Math.max(1, call.inputBatch.length)
+    );
+    const guestLimits = pickGuestLimits(call.limits);
+    const program = this.core.withExecutionDeadline(
+      this.core.sendMessageEffect<PythonRawTraceBatchResult>(
+        'execute-prepared-program-batch',
+        {
+          artifact: handle.artifact,
+          mode: 'trace',
+          inputBatch: call.inputBatch,
+          ...(guestLimits ? { limits: guestLimits } : {}),
+        },
+        null
+      ),
+      wallClockMs
+    );
+    try {
+      return await this.core.runClientEffect(program, call.signal);
+    } catch (error) {
+      if (error instanceof ExecutionTimeoutError) {
+        return {
+          results: call.inputBatch.map(() => ({
+            success: false,
+            error: error.message,
+            trace: createEmptyRuntimeTrace('python', {
+              runId: 'python:run',
+              file: 'solution.py',
+            }),
+            executionTimeMs: perCaseWallClockMs,
+            consoleOutput: [],
+            timeoutReason: 'client-timeout',
+          })),
         };
       }
       throw error;

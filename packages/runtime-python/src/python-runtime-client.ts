@@ -14,6 +14,7 @@ import type {
   RuntimeExecutionTimings,
   RuntimePreparedExecutionProvider,
   RuntimePreparedCodeBatchCall,
+  RuntimePreparedTraceBatchCall,
   RuntimeProgramPreparationCall,
   RuntimeProgramPreparationResult,
   RuntimeTraceCall,
@@ -570,6 +571,20 @@ class PreparedPythonProgramLifetime {
     });
   }
 
+  executeTraceBatch(
+    call: RuntimePreparedTraceBatchCall
+  ): Promise<readonly ExecutionResult[]> {
+    return this.executeSerial(call.signal, async (client, signal) => {
+      const result = await client.executePreparedTraceBatch(this.handle, {
+        ...call,
+        signal,
+      });
+      return (result.results ?? []).map((entry) =>
+        normalizePythonExecutionResult(entry)
+      );
+    });
+  }
+
   dispose = (): Promise<void> => {
     if (this.disposal) return this.disposal;
     if (this.phase === 'disposed') return Promise.resolve();
@@ -867,6 +882,8 @@ class PythonPreparedExecutionProvider
           },
           executeIsolated: (executionCall) =>
             lifetime.executeTrace(executionCall),
+          executeBatchIsolated: (executionCall) =>
+            lifetime.executeTraceBatch(executionCall),
           dispose: lifetime.dispose,
         },
       };

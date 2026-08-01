@@ -88,6 +88,19 @@ export interface RuntimePreparedTraceCall {
   readonly limits?: RuntimeExecutionLimits;
 }
 
+/**
+ * A group of tracing cases executed against one prepared artifact.
+ *
+ * Providers may keep the engine warm only when they restore fresh mutable
+ * language state before every entry.
+ */
+export interface RuntimePreparedTraceBatchCall {
+  readonly inputBatch: readonly Record<string, unknown>[];
+  readonly signal?: AbortSignal;
+  /** Applied independently to each case in the batch. */
+  readonly limits?: RuntimeExecutionLimits;
+}
+
 export interface RuntimePreparedProgramCapabilities {
   /**
    * Every call receives fresh mutable language state. Immutable compiler
@@ -133,6 +146,13 @@ export interface RuntimePreparedTraceProgram
   executeIsolated(
     call: RuntimePreparedTraceCall
   ): Promise<ExecutionResult>;
+  /**
+   * Optional fast path for runtimes that can trace isolated cases inside one
+   * warmed engine.
+   */
+  executeBatchIsolated?(
+    call: RuntimePreparedTraceBatchCall
+  ): Promise<readonly ExecutionResult[]>;
 }
 
 /**

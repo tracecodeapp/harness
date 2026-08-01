@@ -24,34 +24,57 @@ export async function runBrowserAlgorithmBatch(
     },
   });
   try {
-    const bundle = await createAlgorithmJudgeBundle({
-      id: 'browser-python-isolated-batch',
-      language: 'python',
-      code: [
+    const code = [
         'history = []',
         'def solve(value):',
         '    history.append(value)',
         '    return len(history)',
-      ].join('\n'),
-      functionName: 'solve',
-      cases: Array.from({ length: 10 }, (_, index) => ({
+      ].join('\n');
+    const cases = Array.from({ length: 10 }, (_, index) => ({
         id: `case-${index + 1}`,
         input: { value: index + 1 },
         expected: 1,
-      })),
+      }));
+    const plainBundle = await createAlgorithmJudgeBundle({
+      id: 'browser-python-isolated-batch',
+      language: 'python',
+      code,
+      functionName: 'solve',
+      cases,
     });
-    const receipt = await host.evaluateAlgorithm({ bundle });
+    const plainReceipt = await host.evaluateAlgorithm({ bundle: plainBundle });
+    const plainWorkerUrls = workerUrls.splice(0);
+    const traceBundle = await createAlgorithmJudgeBundle({
+      id: 'browser-python-isolated-trace-batch',
+      language: 'python',
+      code,
+      functionName: 'solve',
+      cases,
+      trace: true,
+    });
+    const traceReceipt = await host.evaluateAlgorithm({ bundle: traceBundle });
+    const traceWorkerUrls = workerUrls.splice(0);
     return {
-      verdict: receipt.verdict,
+      verdict: plainReceipt.verdict,
       caseVerdicts:
-        receipt.evaluation.status === 'completed'
-          ? receipt.evaluation.cases.map((testCase) => testCase.verdict.kind)
+        plainReceipt.evaluation.status === 'completed'
+          ? plainReceipt.evaluation.cases.map((testCase) => testCase.verdict.kind)
           : [],
       sessionIds:
-        receipt.evaluation.status === 'completed'
-          ? receipt.evaluation.cases.map((testCase) => testCase.sessionId)
+        plainReceipt.evaluation.status === 'completed'
+          ? plainReceipt.evaluation.cases.map((testCase) => testCase.sessionId)
           : [],
-      workerUrls,
+      plainWorkerUrls,
+      traceVerdict: traceReceipt.verdict,
+      traceCaseVerdicts:
+        traceReceipt.evaluation.status === 'completed'
+          ? traceReceipt.evaluation.cases.map((testCase) => testCase.verdict.kind)
+          : [],
+      traceSessionIds:
+        traceReceipt.evaluation.status === 'completed'
+          ? traceReceipt.evaluation.cases.map((testCase) => testCase.sessionId)
+          : [],
+      traceWorkerUrls,
     };
   } finally {
     host.dispose();

@@ -5835,9 +5835,6 @@ async function executePreparedProgramBatch(
   const startedAt = deps.performanceNow();
   await deps.loadPyodideInstance();
   assertPythonPreparedArtifact(deps, artifact);
-  if (artifact.mode !== 'code') {
-    throw new Error('Prepared Python trace programs cannot execute a code batch.');
-  }
   const cases = Array.isArray(inputBatch)
     ? inputBatch.map((inputs) =>
         inputs && typeof inputs === 'object' && !Array.isArray(inputs)
@@ -5858,9 +5855,9 @@ async function executePreparedProgramBatch(
   let userCodeObject;
   let executorCode;
   try {
-    // Deserialize the immutable compiler artifacts once. executeCode enters a
-    // fresh guarded namespace for every case, so interpreter state is restored
-    // between cases without paying for another Pyodide worker or compilation.
+    // Deserialize the immutable compiler artifacts once. Each executor enters
+    // a fresh guarded namespace, so interpreter state is restored between
+    // cases without paying for another Pyodide worker or compilation.
     userCodeObject = deserializePythonCodeArtifact(deps, artifact.userCode);
     executorCode = deserializePythonCodeArtifact(deps, artifact.executorCode);
     const results = [];
@@ -5868,15 +5865,25 @@ async function executePreparedProgramBatch(
     for (const inputs of cases) {
       filesystem.begin();
       try {
-        results.push(await executeCode(
-          deps,
-          artifact.code,
-          artifact.functionName ?? '',
-          inputs,
-          artifact.executionStyle ?? 'function',
-          limits?.guest ?? {},
-          { executorCode, userCodeObject }
-        ));
+        results.push(artifact.mode === 'trace'
+          ? await executeWithTracing(
+              deps,
+              artifact.code,
+              artifact.functionName,
+              inputs,
+              artifact.executionStyle ?? 'function',
+              artifact.traceOptions ?? {},
+              { executorCode, userCodeObject, limits }
+            )
+          : await executeCode(
+              deps,
+              artifact.code,
+              artifact.functionName ?? '',
+              inputs,
+              artifact.executionStyle ?? 'function',
+              limits?.guest ?? {},
+              { executorCode, userCodeObject }
+            ));
       } finally {
         filesystem.restore();
       }

@@ -5,6 +5,7 @@ import type {
   RuntimePreparedCodeBatchCall,
   RuntimePreparedExecutionProvider,
   RuntimePreparedProgram,
+  RuntimePreparedTraceBatchCall,
   RuntimePreparedTraceCall,
   RuntimeProgramPreparationCall,
   RuntimeProgramPreparationResult,
@@ -257,6 +258,32 @@ export class RuntimePreparedProgramRegistry {
       );
     }
     return gate.run(call.signal, () => program.executeIsolated(call));
+  }
+
+  executeTraceBatch(
+    evaluationId: string,
+    call: RuntimePreparedTraceBatchCall
+  ): Promise<readonly ExecutionResult[]> {
+    const { program, gate } = this.preparedState(evaluationId);
+    if (program.mode !== 'trace') {
+      return Promise.reject(
+        new Error('Code-only prepared program cannot execute a tracing batch.')
+      );
+    }
+    if (program.executeBatchIsolated) {
+      return gate.run(call.signal, () => program.executeBatchIsolated!(call));
+    }
+    return Promise.all(
+      call.inputBatch.map((inputs) =>
+        gate.run(call.signal, () =>
+          program.executeIsolated({
+            inputs,
+            signal: call.signal,
+            limits: call.limits,
+          })
+        )
+      )
+    );
   }
 
   async dispose(evaluationId: string): Promise<void> {
