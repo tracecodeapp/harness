@@ -9005,6 +9005,21 @@ async function executePreparedPythonProgram(artifact, inputs, limits) {
   );
 }
 
+async function executePreparedPythonProgramBatch(artifact, inputBatch, limits) {
+  await loadPyodideInstance();
+  const runtimeCore = loadPyodideRuntimeCore();
+  return withPythonUserAuthorityLockdown(() =>
+    runtimeCore.executePreparedProgramBatch(
+      buildRuntimeDeps(),
+      artifact,
+      inputBatch,
+      {
+        guest: guestGuardOptionsFromLimits(limits),
+      }
+    )
+  );
+}
+
 async function processMessage(data) {
   const {
     id,
@@ -9110,6 +9125,22 @@ async function processMessage(data) {
             protocolToken,
           });
         }
+        break;
+      }
+
+      case 'execute-prepared-program-batch': {
+        const result = await executePreparedPythonProgramBatch(
+          payload?.artifact,
+          payload?.inputBatch ?? [],
+          payload?.limits
+        );
+        analyzerInitialized = false;
+        trustedPythonWorkerPostMessage({
+          id,
+          type: 'execute-result',
+          payload: result,
+          protocolToken,
+        });
         break;
       }
 

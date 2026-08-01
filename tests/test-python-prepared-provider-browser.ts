@@ -10,6 +10,8 @@ import { runCommand, waitForHttp } from './example-app-smoke';
 interface BrowserResult {
   preparations: Record<string, Record<string, unknown>>;
   codeRuns: Array<Record<string, unknown>>;
+  batchRun: Record<string, unknown>;
+  batchBaselineAfter: Record<string, unknown>;
   traceRuns: Array<Record<string, unknown>>;
   legacyTrace: Record<string, unknown>;
   limitedRun: Record<string, unknown>;
@@ -151,6 +153,7 @@ async function main(): Promise<void> {
         '    value = 0',
         'def solve(action, items, root: TreeNode, head: ListNode):',
         '    path = "/tmp/tracecode-prepared-isolation.txt"',
+        '    baseline_path = "/tmp/tracecode-prepared-baseline.txt"',
         '    seeded_state = random.Random(12345).getstate()',
         '    before = {',
         '        "history": len(history),',
@@ -165,6 +168,7 @@ async function main(): Promise<void> {
         '        "recursionLimit": sys.getrecursionlimit(),',
         '        "cwd": os.getcwd(),',
         '        "fileExists": os.path.exists(path),',
+        '        "baseline": open(baseline_path).read() if os.path.exists(baseline_path) else None,',
         '    }',
         '    if action == "create":',
         '        with open(path, "w") as handle:',
@@ -178,6 +182,12 @@ async function main(): Promise<void> {
         '        with open(path, "w") as handle:',
         '            handle.write("delete-me")',
         '        os.unlink(path)',
+        '    if os.path.exists(baseline_path):',
+        '        if action == "delete":',
+        '            os.unlink(baseline_path)',
+        '        else:',
+        '            with open(baseline_path, "w") as handle:',
+        '                handle.write(action)',
         '    history.append(action)',
         '    Counter.value += 1',
         '    items.append(99)',
@@ -215,6 +225,12 @@ async function main(): Promise<void> {
         functionName: 'solve',
         executionStyle: 'function',
         traceOptions: { maxTraceSteps: 1000 },
+      });
+      const batch = await compiler.request('prepare-program', {
+        mode: 'code',
+        code: isolationCode,
+        functionName: 'solve',
+        executionStyle: 'function',
       });
       const limited = await compiler.request('prepare-program', {
         mode: 'code',
@@ -285,6 +301,50 @@ async function main(): Promise<void> {
       }
       codeRuns.push({ callerInputAfterRuns: sharedInput.slice() });
 
+      const batchClient = await createClient('code-batch');
+      const batchStartedAt = performance.now();
+      let batchRun;
+      let batchBaselineAfter;
+      try {
+        const setup = await batchClient.request('execute-code', {
+          code: [
+            'def setup():',
+            '    with open("/tmp/tracecode-prepared-baseline.txt", "w") as handle:',
+            '        handle.write("baseline")',
+            '    return True',
+          ].join('\\n'),
+          functionName: 'setup',
+          inputs: {},
+          executionStyle: 'function',
+        });
+        if (!setup.success) throw new Error('Could not create batch filesystem baseline.');
+        batchRun = await batchClient.request('execute-prepared-program-batch', {
+          artifact: batch.artifact,
+          mode: 'code',
+          inputBatch: ['create', 'inspect', 'modify', 'delete'].map((action) => ({
+            action,
+            items: sharedInput,
+            ...nodeInputs,
+          })),
+        });
+        batchBaselineAfter = await batchClient.request('execute-code', {
+          code: [
+            'def inspect():',
+            '    with open("/tmp/tracecode-prepared-baseline.txt") as handle:',
+            '        return handle.read()',
+          ].join('\\n'),
+          functionName: 'inspect',
+          inputs: {},
+          executionStyle: 'function',
+        });
+      } finally {
+        executions.push({
+          ...batchClient.metrics(),
+          executionMs: performance.now() - batchStartedAt,
+        });
+        batchClient.terminate();
+      }
+
       const traceRuns = [];
       let legacyTrace;
       let traceLimitedRun;
@@ -344,8 +404,10 @@ async function main(): Promise<void> {
       }
 
       return {
-        preparations: { code, trace, limited, traceLimited, invalid },
+        preparations: { code, trace, batch, limited, traceLimited, invalid },
         codeRuns,
+        batchRun,
+        batchBaselineAfter,
         traceRuns,
         legacyTrace,
         limitedRun,
@@ -355,7 +417,7 @@ async function main(): Promise<void> {
       };
     })()`);
 
-    for (const mode of ['code', 'trace', 'limited', 'traceLimited']) {
+    for (const mode of ['code', 'trace', 'batch', 'limited', 'traceLimited']) {
       assertCondition(
         result.preparations[mode]?.success === true,
         `${mode} preparation failed: ${JSON.stringify(result.preparations[mode])}`
@@ -375,8 +437,44 @@ async function main(): Promise<void> {
       `Invalid Python prepared successfully: ${JSON.stringify(result.preparations.invalid)}`
     );
     assertCondition(
-      result.compiler.prepareRequests === 5,
-      `Compiler worker received ${String(result.compiler.prepareRequests)} preparations instead of five`
+      result.compiler.prepareRequests === 6,
+      `Compiler worker received ${String(result.compiler.prepareRequests)} preparations instead of six`
+    );
+    const batchResults = result.batchRun.results as Array<Record<string, unknown>>;
+    const batchOutputs = batchResults.map(
+      (entry) => entry.output as Record<string, unknown>
+    );
+    assertCondition(
+      result.batchRun.success === true &&
+        batchResults.length === 4 &&
+        batchResults.every((entry) => entry.success === true) &&
+        batchOutputs.every((output) => {
+          const before = output.before as Record<string, unknown>;
+          return (
+            before.history === 0 &&
+            before.counter === 0 &&
+            before.builtinLeak === false &&
+            before.moduleLeak === false &&
+            before.existingModuleLeak === false &&
+            before.pathLeak === false &&
+            before.importerLeak === false &&
+            before.envLeak === null &&
+            before.rngLeak === false &&
+            before.fileExists === false &&
+            before.baseline === 'baseline' &&
+            before.cwd !== '/tmp'
+          );
+        }),
+      `Prepared Python batch did not isolate mutable case state: ${JSON.stringify(result.batchRun)}`
+    );
+    assertCondition(
+      result.batchBaselineAfter.success === true &&
+        result.batchBaselineAfter.output === 'baseline',
+      `Prepared Python batch did not restore its pre-existing filesystem state: ${JSON.stringify(result.batchBaselineAfter)}`
+    );
+    assertCondition(
+      result.executions.filter((entry) => entry.label === 'code-batch').length === 1,
+      'Prepared Python batch did not stay within one warmed executor worker'
     );
     assertCondition(
       result.executions.every((execution) => execution.prepareRequests === 0),

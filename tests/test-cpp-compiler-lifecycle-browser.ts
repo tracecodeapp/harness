@@ -152,6 +152,16 @@ async function main(): Promise<void> {
       const secondPreparedCase = await prepared.program.executeIsolated({
         inputs: { nums: mutableInput, hang: false },
       });
+      if (typeof prepared.program.executeBatchIsolated !== 'function') {
+        throw new Error('C++ prepared program did not expose isolated batch execution.');
+      }
+      const preparedBatchCases = await prepared.program.executeBatchIsolated({
+        inputBatch: [
+          { nums: mutableInput, hang: false },
+          { nums: mutableInput, hang: false },
+          { nums: mutableInput, hang: false },
+        ],
+      });
       const abortController = new AbortController();
       const abortedExecution = prepared.program.executeIsolated({
         inputs: { nums: mutableInput, hang: true },
@@ -334,6 +344,7 @@ async function main(): Promise<void> {
           capabilities: prepared.program.capabilities,
           firstPreparedCase,
           secondPreparedCase,
+          preparedBatchCases,
           mutableInput,
           abortedPreparedCase,
           executeAfterDispose,
@@ -372,6 +383,7 @@ async function main(): Promise<void> {
         capabilities: { caseIsolation: string; maxConcurrency: number };
         firstPreparedCase: { kind: string; output?: unknown; timings?: Record<string, unknown> };
         secondPreparedCase: { kind: string; output?: unknown; timings?: Record<string, unknown> };
+        preparedBatchCases: Array<{ kind: string; output?: unknown; timings?: Record<string, unknown> }>;
         mutableInput: unknown[];
         abortedPreparedCase: { resolved: boolean; name?: string; message?: string };
         executeAfterDispose: string;
@@ -419,6 +431,17 @@ async function main(): Promise<void> {
         result.prepared.secondPreparedCase.kind === 'completed' &&
         result.prepared.secondPreparedCase.output === 103,
       `fresh C++ module memory must reset function statics between repeated cases: ${JSON.stringify(result.prepared)}`
+    );
+    assertCondition(
+      result.prepared.preparedBatchCases.length === 3 &&
+        result.prepared.preparedBatchCases.every(
+          (item) =>
+            item.kind === 'completed' &&
+            item.output === 103 &&
+            item.timings?.compileMs === 0 &&
+            item.timings?.artifactCacheHit === true
+        ),
+      `batched C++ cases must reuse compilation while resetting module memory per case: ${JSON.stringify(result.prepared)}`
     );
     assertCondition(
       result.prepared.mutableInput.length === 2,

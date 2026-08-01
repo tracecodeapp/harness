@@ -6,6 +6,7 @@ import {
   type PythonWorkerClient,
 } from '../packages/runtime-python/src/index';
 import type {
+  CodeExecutionBatchResult,
   CodeExecutionResult,
   RuntimeProgramPreparationCall,
 } from '../packages/runtime-contracts/src/index';
@@ -170,6 +171,86 @@ test('Python prepared provider compiles once and executes in owned fresh workers
     preparation.program.executeIsolated({ inputs: { value: 1 } }),
     /disposed/
   );
+});
+
+test('Python prepared provider executes a case vector in one warmed worker', async () => {
+  const calls: Array<{ worker: number; method: string }> = [];
+  let nextWorker = 0;
+  const createWorkerClient = (): PythonWorkerClient => {
+    const worker = nextWorker++;
+    return {
+      async warmup() {
+        calls.push({ worker, method: 'warmup' });
+        return { success: true, loadTimeMs: 1 };
+      },
+      async prepareProgram(call: RuntimeProgramPreparationCall) {
+        calls.push({ worker, method: 'prepare' });
+        return {
+          success: true as const,
+          artifact: artifact(call.mode),
+          mode: call.mode,
+          consoleOutput: [],
+        };
+      },
+      async executePreparedCodeBatch(
+        _handle: unknown,
+        call: { inputBatch: readonly Record<string, unknown>[] }
+      ): Promise<CodeExecutionBatchResult> {
+        calls.push({ worker, method: 'execute-batch' });
+        return {
+          results: call.inputBatch.map((inputs) => ({
+            kind: 'completed' as const,
+            output: inputs.value,
+            consoleOutput: [],
+          })),
+        };
+      },
+      terminate() {
+        calls.push({ worker, method: 'terminate' });
+      },
+    } as unknown as PythonWorkerClient;
+  };
+  const provider = createPythonPreparedExecutionProvider({
+    createWorkerClient,
+  });
+  const preparation = await provider.prepareProgram(preparationCall());
+  assert.equal(preparation.kind, 'prepared');
+  if (
+    preparation.kind !== 'prepared' ||
+    preparation.program.mode !== 'code' ||
+    !preparation.program.executeBatchIsolated
+  ) {
+    return;
+  }
+
+  const results = await preparation.program.executeBatchIsolated({
+    inputBatch: [{ value: 1 }, { value: 2 }, { value: 3 }],
+  });
+
+  assert.deepEqual(
+    results.map((result) =>
+      result.kind === 'completed' ? result.output : undefined
+    ),
+    [1, 2, 3]
+  );
+  assert.equal(
+    calls.filter((call) => call.method === 'prepare').length,
+    1
+  );
+  assert.equal(
+    calls.filter((call) => call.method === 'execute-batch').length,
+    1
+  );
+  assert.equal(
+    new Set(
+      calls
+        .filter((call) => call.method === 'execute-batch')
+        .map((call) => call.worker)
+    ).size,
+    1
+  );
+  await preparation.program.dispose();
+  provider.terminate();
 });
 
 test('Python prepared provider aborts active and queued work before disposal resolves', async () => {

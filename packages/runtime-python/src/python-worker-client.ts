@@ -516,6 +516,63 @@ export class PythonWorkerClient {
     return liftCodeOutcome(result, 'Prepared Python execution failed');
   }
 
+  async executePreparedCodeBatch(
+    handle: PythonPreparedProgramHandle,
+    call: {
+      readonly inputBatch: readonly Record<string, unknown>[];
+      readonly signal?: AbortSignal;
+      readonly limits?: RuntimeExecutionLimits;
+    }
+  ): Promise<CodeExecutionBatchResult> {
+    const wallClockMs = call.limits?.wallClockMs === undefined
+      ? EXECUTION_TIMEOUT_MS
+      : Math.min(
+          2_147_483_647,
+          call.limits.wallClockMs * Math.max(1, call.inputBatch.length)
+        );
+    const guestLimits = pickGuestLimits(call.limits);
+    const program = this.core.withExecutionDeadline(
+      this.core.sendMessageEffect<RawExecutionBatchPayload>(
+        'execute-prepared-program-batch',
+        {
+          artifact: handle.artifact,
+          mode: 'code',
+          inputBatch: call.inputBatch,
+          ...(guestLimits ? { limits: guestLimits } : {}),
+        },
+        null
+      ),
+      wallClockMs
+    );
+    try {
+      const result = await this.core.runClientEffect(program, call.signal);
+      return liftCodeBatchOutcome(
+        result,
+        'Prepared Python batch execution failed'
+      );
+    } catch (error) {
+      if (
+        call.limits?.wallClockMs !== undefined &&
+        error instanceof ExecutionTimeoutError
+      ) {
+        return {
+          results: call.inputBatch.map(() => ({
+            kind: 'limit',
+            reason: 'client-timeout',
+            error: error.message,
+            consoleOutput: [],
+            timings: {
+              totalMs: call.limits!.wallClockMs,
+              runMs: call.limits!.wallClockMs,
+              artifactCacheHit: true,
+            },
+          })),
+        };
+      }
+      throw error;
+    }
+  }
+
   async executePreparedTrace(
     handle: PythonPreparedProgramHandle,
     call: Pick<RuntimeTraceCall, 'inputs' | 'signal' | 'limits'>

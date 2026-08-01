@@ -1,4 +1,6 @@
 import type {
+  CodeExecutionResult,
+  RuntimePreparedCodeBatchCall,
   RuntimePreparedExecutionProvider,
   RuntimeProgramPreparationCall,
   RuntimeProgramPreparationResult,
@@ -194,6 +196,27 @@ export function createCppPreparedExecutionProvider(
                     preparation.handle,
                     execution
                   );
+                },
+                executeBatchIsolated: async (
+                  execution: RuntimePreparedCodeBatchCall
+                ): Promise<readonly CodeExecutionResult[]> => {
+                  if (disposed) {
+                    throw new Error(
+                      `C++ prepared program "${preparation.handle.programId}" was already disposed.`
+                    );
+                  }
+                  const results: CodeExecutionResult[] = [];
+                  for (const inputs of execution.inputBatch) {
+                    results.push(await client.executePreparedCode(
+                      preparation.handle,
+                      {
+                        inputs,
+                        signal: execution.signal,
+                        limits: execution.limits,
+                      }
+                    ));
+                  }
+                  return results;
                 },
                 dispose,
               },

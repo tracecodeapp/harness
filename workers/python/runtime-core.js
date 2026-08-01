@@ -32,6 +32,212 @@ except Exception:
 const DEFAULT_TRACE_MAX_PATH_DEPTH = 3;
 const MAX_TRACE_MAX_PATH_DEPTH = 8;
 const isolatedPythonExecutionGuards = new WeakMap();
+const isolatedPythonFilesystemManagers = new WeakMap();
+
+function normalizePythonFilesystemPath(fs, path) {
+  const raw = String(path ?? '');
+  const absolute = raw.startsWith('/') ? raw : `${fs.cwd()}/${raw}`;
+  const parts = [];
+  for (const part of absolute.split('/')) {
+    if (!part || part === '.') continue;
+    if (part === '..') {
+      parts.pop();
+      continue;
+    }
+    parts.push(part);
+  }
+  return `/${parts.join('/')}`;
+}
+
+function createIsolatedPythonFilesystemManager(pyodide) {
+  const fs = pyodide?.FS;
+  if (!fs || typeof fs !== 'object') {
+    throw new Error('Python filesystem isolation requires the Pyodide filesystem.');
+  }
+
+  let activeJournal = null;
+  let restoring = false;
+  const isMissingPath = (error) =>
+    error &&
+    typeof error === 'object' &&
+    (error.errno === 44 || error.code === 'ENOENT');
+
+  const pathForNode = (value) => {
+    if (typeof value === 'string') {
+      return normalizePythonFilesystemPath(fs, value);
+    }
+    if (value && typeof value === 'object' && typeof fs.getPath === 'function') {
+      return normalizePythonFilesystemPath(fs, fs.getPath(value));
+    }
+    return null;
+  };
+
+  const snapshotPath = (path) => {
+    try {
+      const stat = fs.lstat(path);
+      const metadata = {
+        mode: stat.mode,
+        timestamp:
+          stat.mtime instanceof Date
+            ? stat.mtime.getTime()
+            : Number(stat.mtimeMs ?? stat.timestamp ?? Date.now()),
+      };
+      if (fs.isLink(stat.mode)) {
+        return {
+          kind: 'link',
+          ...metadata,
+          target: fs.readlink(path),
+        };
+      }
+      if (fs.isDir(stat.mode)) {
+        return {
+          kind: 'directory',
+          ...metadata,
+          entries: fs.readdir(path)
+            .filter((name) => name !== '.' && name !== '..')
+            .map((name) => [
+              name,
+              snapshotPath(path === '/' ? `/${name}` : `${path}/${name}`),
+            ]),
+        };
+      }
+      return {
+        kind: 'file',
+        ...metadata,
+        bytes: new Uint8Array(fs.readFile(path)),
+      };
+    } catch (error) {
+      if (isMissingPath(error)) {
+        return { kind: 'absent' };
+      }
+      throw error;
+    }
+  };
+
+  const capture = (value) => {
+    if (!activeJournal || restoring) return;
+    const path = pathForNode(value);
+    if (!path || activeJournal.has(path)) return;
+    activeJournal.set(path, snapshotPath(path));
+  };
+
+  const removePath = (path) => {
+    let stat;
+    try {
+      stat = fs.lstat(path);
+    } catch (error) {
+      if (isMissingPath(error)) return;
+      throw error;
+    }
+    if (fs.isDir(stat.mode) && !fs.isLink(stat.mode)) {
+      for (const name of fs.readdir(path)) {
+        if (name === '.' || name === '..') continue;
+        removePath(path === '/' ? `/${name}` : `${path}/${name}`);
+      }
+      if (path !== '/') fs.rmdir(path);
+      return;
+    }
+    fs.unlink(path);
+  };
+
+  const restorePath = (path, snapshot) => {
+    removePath(path);
+    if (snapshot.kind === 'absent') return;
+    if (snapshot.kind === 'link') {
+      fs.symlink(snapshot.target, path);
+      return;
+    }
+    if (snapshot.kind === 'directory') {
+      if (path !== '/') fs.mkdir(path, snapshot.mode);
+      for (const [name, child] of snapshot.entries) {
+        restorePath(path === '/' ? `/${name}` : `${path}/${name}`, child);
+      }
+      if (path !== '/' && typeof fs.chmod === 'function') {
+        fs.chmod(path, snapshot.mode);
+      }
+      if (path !== '/' && typeof fs.utime === 'function') {
+        fs.utime(path, snapshot.timestamp, snapshot.timestamp);
+      }
+      return;
+    }
+    fs.writeFile(path, snapshot.bytes, { canOwn: false });
+    if (typeof fs.chmod === 'function') fs.chmod(path, snapshot.mode);
+    if (typeof fs.utime === 'function') {
+      fs.utime(path, snapshot.timestamp, snapshot.timestamp);
+    }
+  };
+
+  const wrap = (name, before) => {
+    const method = fs[name];
+    if (typeof method !== 'function') return;
+    fs[name] = function isolatedPythonFilesystemOperation(...args) {
+      if (activeJournal && !restoring) before(...args);
+      return method.apply(this, args);
+    };
+  };
+
+  const mutatingOpen = (flags) => {
+    if (typeof flags === 'string') {
+      return flags.includes('w') || flags.includes('a') || flags.includes('+');
+    }
+    if (typeof flags !== 'number') return false;
+    // POSIX O_ACCMODE, O_CREAT, and O_TRUNC values used by Emscripten.
+    return (flags & 3) !== 0 || (flags & 64) !== 0 || (flags & 512) !== 0;
+  };
+
+  wrap('open', (path, flags) => {
+    if (mutatingOpen(flags)) capture(path);
+  });
+  wrap('write', (stream) => capture(stream?.path ?? stream?.node));
+  wrap('allocate', (stream) => capture(stream?.path ?? stream?.node));
+  wrap('msync', (stream) => capture(stream?.path ?? stream?.node));
+  wrap('truncate', (pathOrNode) => capture(pathOrNode));
+  wrap('mknod', (path) => capture(path));
+  wrap('mkdir', (path) => capture(path));
+  wrap('symlink', (_target, path) => capture(path));
+  wrap('rename', (oldPath, newPath) => {
+    capture(oldPath);
+    capture(newPath);
+  });
+  wrap('unlink', (path) => capture(path));
+  wrap('rmdir', (path) => capture(path));
+  wrap('chmod', (pathOrNode) => capture(pathOrNode));
+  wrap('chown', (pathOrNode) => capture(pathOrNode));
+  wrap('utime', (path) => capture(path));
+
+  return {
+    begin() {
+      if (activeJournal) {
+        throw new Error('Nested TraceCode Python filesystem execution scope.');
+      }
+      activeJournal = new Map();
+    },
+    restore() {
+      if (!activeJournal) {
+        throw new Error('TraceCode Python filesystem execution scope was not active.');
+      }
+      const journal = activeJournal;
+      activeJournal = null;
+      restoring = true;
+      try {
+        for (const [path, snapshot] of [...journal.entries()].reverse()) {
+          restorePath(path, snapshot);
+        }
+      } finally {
+        restoring = false;
+      }
+    },
+  };
+}
+
+function isolatedPythonFilesystemManager(pyodide) {
+  let manager = isolatedPythonFilesystemManagers.get(pyodide);
+  if (!manager) {
+    manager = createIsolatedPythonFilesystemManager(pyodide);
+    isolatedPythonFilesystemManagers.set(pyodide, manager);
+  }
+  return manager;
+}
 
 function createIsolatedPythonExecutionGuard(pyodide) {
   const guard = pyodide.runPython(`
@@ -5620,6 +5826,79 @@ async function executePreparedProgram(deps, artifact, inputs, limits) {
   }
 }
 
+async function executePreparedProgramBatch(
+  deps,
+  artifact,
+  inputBatch,
+  limits
+) {
+  const startedAt = deps.performanceNow();
+  await deps.loadPyodideInstance();
+  assertPythonPreparedArtifact(deps, artifact);
+  if (artifact.mode !== 'code') {
+    throw new Error('Prepared Python trace programs cannot execute a code batch.');
+  }
+  const cases = Array.isArray(inputBatch)
+    ? inputBatch.map((inputs) =>
+        inputs && typeof inputs === 'object' && !Array.isArray(inputs)
+          ? inputs
+          : {}
+      )
+    : [];
+  if (cases.length === 0) {
+    return {
+      success: false,
+      results: [],
+      error: 'Prepared Python batch execution requires a non-empty inputBatch array.',
+      consoleOutput: [],
+      timings: { totalMs: deps.performanceNow() - startedAt },
+    };
+  }
+
+  let userCodeObject;
+  let executorCode;
+  try {
+    // Deserialize the immutable compiler artifacts once. executeCode enters a
+    // fresh guarded namespace for every case, so interpreter state is restored
+    // between cases without paying for another Pyodide worker or compilation.
+    userCodeObject = deserializePythonCodeArtifact(deps, artifact.userCode);
+    executorCode = deserializePythonCodeArtifact(deps, artifact.executorCode);
+    const results = [];
+    const filesystem = isolatedPythonFilesystemManager(deps.getPyodide());
+    for (const inputs of cases) {
+      filesystem.begin();
+      try {
+        results.push(await executeCode(
+          deps,
+          artifact.code,
+          artifact.functionName ?? '',
+          inputs,
+          artifact.executionStyle ?? 'function',
+          limits?.guest ?? {},
+          { executorCode, userCodeObject }
+        ));
+      } finally {
+        filesystem.restore();
+      }
+    }
+    const runMs = deps.performanceNow() - startedAt;
+    return {
+      success: results.every((result) => result.success === true),
+      results,
+      consoleOutput: results.flatMap((result) => result.consoleOutput ?? []),
+      timings: {
+        totalMs: runMs,
+        runMs,
+        compileCacheHit: true,
+        artifactCacheHit: true,
+      },
+    };
+  } finally {
+    executorCode?.destroy?.();
+    userCodeObject?.destroy?.();
+  }
+}
+
   globalScope.__TRACECODE_PYODIDE_RUNTIME__ = {
     generateTracingCode,
     parsePythonError,
@@ -5628,5 +5907,6 @@ async function executePreparedProgram(deps, artifact, inputs, limits) {
     executeCodeBatch,
     prepareProgram,
     executePreparedProgram,
+    executePreparedProgramBatch,
   };
 })(typeof self !== 'undefined' ? self : globalThis);

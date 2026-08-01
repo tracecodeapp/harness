@@ -13,6 +13,7 @@ import type {
   RuntimeExecuteResult,
   RuntimeExecutionTimings,
   RuntimePreparedExecutionProvider,
+  RuntimePreparedCodeBatchCall,
   RuntimeProgramPreparationCall,
   RuntimeProgramPreparationResult,
   RuntimeTraceCall,
@@ -557,6 +558,18 @@ class PreparedPythonProgramLifetime {
     );
   }
 
+  executeCodeBatch(
+    call: RuntimePreparedCodeBatchCall
+  ): Promise<readonly CodeExecutionResult[]> {
+    return this.executeSerial(call.signal, async (client, signal) => {
+      const result = await client.executePreparedCodeBatch(this.handle, {
+        ...call,
+        signal,
+      });
+      return result.results;
+    });
+  }
+
   dispose = (): Promise<void> => {
     if (this.disposal) return this.disposal;
     if (this.phase === 'disposed') return Promise.resolve();
@@ -871,6 +884,8 @@ class PythonPreparedExecutionProvider
         },
         executeIsolated: (executionCall) =>
           lifetime.executeCode(executionCall),
+        executeBatchIsolated: (executionCall) =>
+          lifetime.executeCodeBatch(executionCall),
         dispose: lifetime.dispose,
       },
     };
