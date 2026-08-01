@@ -6,6 +6,25 @@ This repo uses Git tags as release boundaries. Version notes below summarize wha
 
 ## [Unreleased]
 
+## [0.14.5] - 2026-08-01
+
+This patch carries compile-once batching through traced algorithm runs so
+Practice does not reload a browser language runtime for every test case.
+
+### Added
+
+- Added a prepared trace-batch contract with the same fresh-case-state
+  guarantee as non-tracing batches.
+- Added a real Chromium gate proving ten traced Python cases use one
+  TraceKernel process, one compiler worker, and one execution worker.
+
+### Changed
+
+- Reuse one warmed Pyodide worker for a traced case vector while rolling back
+  Python globals and filesystem mutations between cases.
+- Let Judge use provider-isolated batching for traced and non-traced algorithm
+  evaluations.
+
 ## [0.14.4] - 2026-08-01
 
 This patch restores compile-once algorithm batches across the Judge and
