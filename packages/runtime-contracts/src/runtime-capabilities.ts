@@ -97,6 +97,11 @@ export interface RuntimeCapabilities {
   };
   tracing: {
     supported: boolean;
+    /**
+     * The runtime can trace multiple isolated cases through one prepared
+     * program without recompiling or reloading its engine per case.
+     */
+    batching?: boolean;
     events: {
       line: boolean;
       call: boolean;

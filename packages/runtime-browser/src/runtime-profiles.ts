@@ -117,6 +117,7 @@ const PYTHON_RUNTIME_PROFILE: LanguageRuntimeProfile = {
     project: LIVE_PROJECT_IO_CAPABILITIES,
     tracing: {
       supported: true,
+      batching: true,
       events: {
         line: true,
         call: true,

@@ -1125,6 +1125,7 @@ const LANGUAGE_CONFORMANCE_COVERAGE: Record<Language, readonly string[]> = {
     'execution.isolation.safeForUntrustedReuse',
     'execution.timeouts.runtimeTimeouts',
     'project.filesystem.providerLiveInterception',
+    'tracing.batching',
     'tracing.events.stdout',
     'diagnostics.mappedErrorLines',
   ],
@@ -1833,6 +1834,10 @@ async function main(): Promise<void> {
     assertProfileCoverageAlignment(profile);
   }
   assertCondition(pythonProfile.capabilities.tracing.supported, 'Python should support tracing');
+  assertCondition(
+    pythonProfile.capabilities.tracing.batching === true,
+    'Python should advertise prepared trace batching'
+  );
   assertCondition(
     pythonProfile.capabilities.execution.timeouts.runtimeTimeouts,
     'Python should advertise runtime-side timeouts'
