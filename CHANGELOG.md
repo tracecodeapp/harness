@@ -6,6 +6,17 @@ This repo uses Git tags as release boundaries. Version notes below summarize wha
 
 ## [Unreleased]
 
+## [0.14.6] - 2026-08-01
+
+This patch makes the traced batching shipped in 0.14.5 discoverable through
+the runtime capability contract.
+
+### Fixed
+
+- Advertise prepared Python trace batching so consumers use one traced batch
+  instead of following a plain batch with a redundant selected-case trace.
+- Declare the prepared batch worker request in the checked browser protocol.
+
 ## [0.14.5] - 2026-08-01
 
 This patch carries compile-once batching through traced algorithm runs so
