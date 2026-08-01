@@ -1134,6 +1134,7 @@ const LANGUAGE_CONFORMANCE_COVERAGE: Record<Language, readonly string[]> = {
     ...PROJECT_IO_COVERAGE,
     'execution.isolation.safeForUntrustedReuse',
     'project.filesystem.providerLiveInterception',
+    'tracing.batching',
   ],
   typescript: [
     ...COMMON_STABLE_COVERAGE,
@@ -1150,6 +1151,7 @@ const LANGUAGE_CONFORMANCE_COVERAGE: Record<Language, readonly string[]> = {
     'project.stdio.liveStdin',
     'project.stdio.outputEvents',
     'project.stdio.deviceFiles',
+    'tracing.batching',
     'diagnostics.compileErrors',
     'diagnostics.mappedErrorLines',
   ],
@@ -1175,6 +1177,7 @@ const LANGUAGE_CONFORMANCE_COVERAGE: Record<Language, readonly string[]> = {
     'project.stdio.outputEvents',
     'project.stdio.deviceFiles',
     'tracing.supported',
+    'tracing.batching',
     'tracing.events.line',
     'tracing.events.call',
     'tracing.events.return',
@@ -1216,6 +1219,7 @@ const LANGUAGE_CONFORMANCE_COVERAGE: Record<Language, readonly string[]> = {
     'project.stdio.outputEvents',
     'project.stdio.deviceFiles',
     'tracing.supported',
+    'tracing.batching',
     'tracing.events.line',
     'tracing.events.call',
     'tracing.events.return',
@@ -1262,6 +1266,7 @@ const LANGUAGE_CONFORMANCE_COVERAGE: Record<Language, readonly string[]> = {
     'project.stdio.outputEvents',
     'project.stdio.deviceFiles',
     'tracing.supported',
+    'tracing.batching',
     'tracing.events.line',
     'tracing.events.call',
     'tracing.events.return',
@@ -1834,10 +1839,12 @@ async function main(): Promise<void> {
     assertProfileCoverageAlignment(profile);
   }
   assertCondition(pythonProfile.capabilities.tracing.supported, 'Python should support tracing');
-  assertCondition(
-    pythonProfile.capabilities.tracing.batching === true,
-    'Python should advertise prepared trace batching'
-  );
+  for (const profile of profiles) {
+    assertCondition(
+      profile.capabilities.tracing.batching === true,
+      `${profile.language} should advertise prepared trace batching`
+    );
+  }
   assertCondition(
     pythonProfile.capabilities.execution.timeouts.runtimeTimeouts,
     'Python should advertise runtime-side timeouts'

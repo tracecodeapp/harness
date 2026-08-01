@@ -1,13 +1,48 @@
 #!/usr/bin/env npx tsx
 
 import { createReadStream, existsSync, statSync } from 'node:fs';
-import { mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { copyFile, cp, mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { createServer } from 'node:http';
 import { tmpdir } from 'node:os';
 import { extname, join, normalize, resolve, sep } from 'node:path';
 import { build } from 'esbuild';
 import { chromium } from 'playwright';
 import { runCommand } from './example-app-smoke';
+
+type BatchLanguage =
+  | 'python'
+  | 'javascript'
+  | 'typescript'
+  | 'java'
+  | 'csharp'
+  | 'cpp';
+
+interface ReceiptSummary {
+  readonly verdict: string;
+  readonly evaluationStatus: string;
+  readonly caseVerdicts: readonly string[];
+  readonly sessionIds: readonly string[];
+  readonly outputs: readonly unknown[];
+  readonly diagnostics: readonly unknown[];
+  readonly compileStdout: string;
+  readonly compileStderr: string;
+}
+
+interface BatchLanguageResult {
+  readonly plain: ReceiptSummary;
+  readonly plainWorkerUrls: readonly string[];
+  readonly trace: ReceiptSummary;
+  readonly traceWorkerUrls: readonly string[];
+}
+
+const LANGUAGES: readonly BatchLanguage[] = [
+  'python',
+  'javascript',
+  'typescript',
+  'java',
+  'csharp',
+  'cpp',
+] as const;
 
 function assertCondition(condition: unknown, message: string): asserts condition {
   if (!condition) throw new Error(message);
@@ -77,6 +112,46 @@ async function startStaticServer(root: string): Promise<{
   };
 }
 
+function assertReceipt(
+  language: BatchLanguage,
+  mode: 'code' | 'trace',
+  receipt: ReceiptSummary
+): void {
+  assertCondition(
+    receipt.verdict === 'passed' &&
+      receipt.caseVerdicts.length === 10 &&
+      receipt.caseVerdicts.every((verdict) => verdict === 'passed'),
+    `${language} ${mode} batch did not pass all ten cases: ${JSON.stringify(receipt)}`
+  );
+  assertCondition(
+    new Set(receipt.sessionIds).size === 1,
+    `${language} ${mode} batch did not use one TraceKernel batch process: ${JSON.stringify(receipt.sessionIds)}`
+  );
+  assertCondition(
+    receipt.outputs.length === 10 &&
+      receipt.outputs.every((output) => output === 1),
+    `${language} ${mode} batch leaked mutable state between cases: ${JSON.stringify(receipt.outputs)}`
+  );
+}
+
+function assertBoundedWorkers(
+  language: BatchLanguage,
+  mode: 'code' | 'trace',
+  workerUrls: readonly string[]
+): void {
+  const languageWorkers = workerUrls.filter((url) =>
+    language === 'typescript'
+      ? url.includes('javascript-worker.js')
+      : language === 'java'
+        ? url.includes('java-runtime-worker.js')
+        : url.includes(`${language}-worker.js`)
+  );
+  assertCondition(
+    languageWorkers.length > 0 && languageWorkers.length <= 3,
+    `${language} ${mode} batch should use a bounded preparation/execution worker set, not one worker per case: ${JSON.stringify(workerUrls)}`
+  );
+}
+
 async function main(): Promise<void> {
   const tempRoot = await mkdtemp(
     join(tmpdir(), 'tracecode-browser-algorithm-batch-')
@@ -92,9 +167,27 @@ async function main(): Promise<void> {
         'sync-assets',
         join(tempRoot, 'workers'),
         '--languages',
-        'python',
+        LANGUAGES.join(','),
       ],
       process.cwd()
+    );
+    const traceJVMRoot = resolve(
+      process.env.TRACECODE_TRACEJVM_ROOT ?? '../tracejvm'
+    );
+    const traceJVMTarget = join(tempRoot, 'tracejvm');
+    await mkdir(traceJVMTarget, { recursive: true });
+    await copyFile(
+      join(traceJVMRoot, 'dist/browser-client.js'),
+      join(traceJVMTarget, 'browser-client.js')
+    );
+    await copyFile(
+      join(traceJVMRoot, 'runtime/assets/bjvm_main.wasm'),
+      join(traceJVMTarget, 'bjvm_main.wasm')
+    );
+    await cp(
+      join(traceJVMRoot, 'runtime/assets/profiles/core'),
+      join(traceJVMTarget, 'profiles/core'),
+      { recursive: true, force: true }
     );
     await build({
       entryPoints: [
@@ -121,58 +214,41 @@ async function main(): Promise<void> {
     const browser = await chromium.launch({ headless: true });
     try {
       const page = await browser.newPage();
-      page.setDefaultTimeout(120_000);
+      page.setDefaultTimeout(180_000);
+      page.on('pageerror', (error) => {
+        console.error(`[browser pageerror] ${error.stack ?? error.message}`);
+      });
       await page.goto(`${server.origin}/index.html`, { waitUntil: 'load' });
       const result = await page.evaluate(async () => {
         const moduleUrl: string = '/algorithm-batch.mjs';
         const module = await import(moduleUrl);
         return module.runBrowserAlgorithmBatch('/workers');
-      }) as {
-        verdict: string;
-        caseVerdicts: string[];
-        sessionIds: string[];
-        plainWorkerUrls: string[];
-        traceVerdict: string;
-        traceCaseVerdicts: string[];
-        traceSessionIds: string[];
-        traceWorkerUrls: string[];
-      };
+      }) as Record<BatchLanguage, BatchLanguageResult>;
 
-      assertCondition(
-        result.verdict === 'passed' &&
-          result.caseVerdicts.length === 10 &&
-          result.caseVerdicts.every((verdict) => verdict === 'passed'),
-        `Browser algorithm batch did not pass all ten cases: ${JSON.stringify(result)}`
-      );
-      assertCondition(
-        new Set(result.sessionIds).size === 1,
-        `Browser algorithm batch did not use one TraceKernel batch process: ${JSON.stringify(result.sessionIds)}`
-      );
-      assertCondition(
-        result.plainWorkerUrls.length === 2 &&
-          result.plainWorkerUrls.every((url) => url.includes('python-worker.js')),
-        `Python algorithm batch should construct one compiler and one execution worker: ${JSON.stringify(result.plainWorkerUrls)}`
-      );
-      assertCondition(
-        result.traceVerdict === 'passed' &&
-          result.traceCaseVerdicts.length === 10 &&
-          result.traceCaseVerdicts.every((verdict) => verdict === 'passed'),
-        `Browser trace batch did not pass all ten cases: ${JSON.stringify(result)}`
-      );
-      assertCondition(
-        new Set(result.traceSessionIds).size === 1,
-        `Browser trace batch did not use one TraceKernel batch process: ${JSON.stringify(result.traceSessionIds)}`
-      );
-      assertCondition(
-        result.traceWorkerUrls.length === 2 &&
-          result.traceWorkerUrls.every((url) => url.includes('python-worker.js')),
-        `Python trace batch should construct one compiler and one execution worker: ${JSON.stringify(result.traceWorkerUrls)}`
-      );
+      for (const language of LANGUAGES) {
+        const languageResult = result[language];
+        assertCondition(
+          languageResult !== undefined,
+          `Browser algorithm batch omitted ${language}.`
+        );
+        assertReceipt(language, 'code', languageResult.plain);
+        assertBoundedWorkers(
+          language,
+          'code',
+          languageResult.plainWorkerUrls
+        );
+        assertReceipt(language, 'trace', languageResult.trace);
+        assertBoundedWorkers(
+          language,
+          'trace',
+          languageResult.traceWorkerUrls
+        );
+      }
     } finally {
       await browser.close();
     }
     console.log(
-      'Browser algorithm Judge code and trace batches each passed with one compiler and one execution worker.'
+      'Browser algorithm Judge code and trace batches passed for every language with isolated case state and bounded workers.'
     );
   } finally {
     await server?.close();
