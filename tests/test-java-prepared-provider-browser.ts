@@ -185,11 +185,12 @@ try {
     ],
   ]);
   const server = createServer((request, response) => {
-    response.setHeader('Cross-Origin-Opener-Policy', 'same-origin');
-    response.setHeader('Cross-Origin-Embedder-Policy', 'require-corp');
-    response.setHeader('Cross-Origin-Resource-Policy', 'same-origin');
-
     const url = new URL(request.url ?? '/', 'http://127.0.0.1');
+    if (url.searchParams.get('isolated') !== 'false') {
+      response.setHeader('Cross-Origin-Opener-Policy', 'same-origin');
+      response.setHeader('Cross-Origin-Embedder-Policy', 'require-corp');
+    }
+    response.setHeader('Cross-Origin-Resource-Policy', 'same-origin');
     if (url.pathname === '/test.js') {
       response.setHeader('content-type', 'text/javascript; charset=utf-8');
       response.end(bundle);
@@ -247,40 +248,48 @@ try {
     for (const engine of requestedEngines) {
       const browserType = browserTypes[engine];
       if (!browserType) throw new Error(`Unknown browser engine: ${engine}`);
-      const browser = await browserType.launch({ headless: true });
-      try {
-        const page = await browser.newPage();
-        const browserMessages: string[] = [];
-        page.on('console', (message) => {
-          if (message.type() === 'error') {
-            browserMessages.push(`[console] ${message.text()}`);
-          }
-        });
-        page.on('pageerror', (error) => {
-          browserMessages.push(`[pageerror] ${error.message}`);
-        });
-        await page.goto(origin);
-        const result = await page.evaluate(async () => {
-          if (!globalThis.runJavaPreparedProviderBrowserTest) {
-            throw new Error(
-              'Java prepared-provider browser fixture did not initialize.'
-            );
-          }
-          return globalThis.runJavaPreparedProviderBrowserTest();
-        });
+      const isolationModes = engine === 'chromium' ? [true, false] : [true];
+      for (const isolated of isolationModes) {
+        const browser = await browserType.launch({ headless: true });
         try {
-          assertPreparedResult(result, engine);
-        } catch (error) {
-          if (browserMessages.length > 0) {
-            console.error(browserMessages.join('\n'));
+          const page = await browser.newPage();
+          const browserMessages: string[] = [];
+          page.on('console', (message) => {
+            if (message.type() === 'error') {
+              browserMessages.push(`[console] ${message.text()}`);
+            }
+          });
+          page.on('pageerror', (error) => {
+            browserMessages.push(`[pageerror] ${error.message}`);
+          });
+          await page.goto(`${origin}?isolated=${isolated}`);
+          assert.equal(
+            await page.evaluate(() => globalThis.crossOriginIsolated),
+            isolated,
+            `${engine}: test document must exercise the requested isolation mode`
+          );
+          const result = await page.evaluate(async () => {
+            if (!globalThis.runJavaPreparedProviderBrowserTest) {
+              throw new Error(
+                'Java prepared-provider browser fixture did not initialize.'
+              );
+            }
+            return globalThis.runJavaPreparedProviderBrowserTest();
+          });
+          try {
+            assertPreparedResult(result, engine);
+          } catch (error) {
+            if (browserMessages.length > 0) {
+              console.error(browserMessages.join('\n'));
+            }
+            throw error;
           }
-          throw error;
+          console.log(
+            `PASS: Java prepared provider compiles once and isolates every case in ${engine} (${isolated ? 'cross-origin isolated' : 'ordinary document'})`
+          );
+        } finally {
+          await browser.close();
         }
-        console.log(
-          `PASS: Java prepared provider compiles once and isolates every case in ${engine}`
-        );
-      } finally {
-        await browser.close();
       }
     }
   } finally {
