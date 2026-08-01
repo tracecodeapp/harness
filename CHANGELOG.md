@@ -8,14 +8,23 @@ This repo uses Git tags as release boundaries. Version notes below summarize wha
 
 ## [0.14.6] - 2026-08-01
 
-This patch makes the traced batching shipped in 0.14.5 discoverable through
-the runtime capability contract.
+This patch carries prepared algorithm batching through every browser runtime
+and makes that support discoverable through the runtime capability contract.
 
-### Fixed
+### Added
 
-- Advertise prepared Python trace batching so consumers use one traced batch
-  instead of following a plain batch with a redundant selected-case trace.
-- Declare the prepared batch worker request in the checked browser protocol.
+- Added prepared code and trace batch execution for JavaScript, TypeScript,
+  Java, C#, and traced C++ programs.
+- Added a real Chromium matrix proving all six languages execute ten code and
+  ten trace cases with fresh learner-visible state and a bounded worker set.
+
+### Changed
+
+- Advertise prepared trace batching consistently for every browser language so
+  consumers do not fall back to a worker per case.
+- Keep immutable compiled artifacts and warmed runtime machinery alive for a
+  case vector while recreating or rolling back language state between cases.
+- Declare every prepared batch worker request in the checked browser protocol.
 
 ## [0.14.5] - 2026-08-01
 
