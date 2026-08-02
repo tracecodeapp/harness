@@ -37,10 +37,12 @@ A worker role that adopts Warm-and-Retire obeys all of these invariants:
    an object that is immediately disposed is not Warm-and-Retire; move the pool
    to a longer-lived provider/host or select `retire-only`.
 
-An implementation may keep independent pools for different roles. For example,
-a Java provider can maintain one clean preparation/compiler worker and one
-clean execution worker. A compiled immutable snapshot may cross between those
-roles; their mutable VM state may not.
+An implementation may keep independent lifecycle roles. Java keeps one outer
+compiler Worker warm while creating a disposable inner JVM and TraceKernel
+process for every case. The immutable class snapshot crosses that boundary;
+the runner heap, process, descriptors, and TKFS do not. A hard outer-Worker
+failure retires the compiler role too, and the next operation restores the
+snapshot into the replacement generation.
 
 ## State Model
 
@@ -87,15 +89,17 @@ network requests alone.
 | --- | --- |
 | Python prepared execution | `tests/test-python-prepared-provider.ts`: one-use retirement, cancellation retirement, replacement fencing, disposal |
 | JavaScript/TypeScript executor | `tests/test-javascript-worker-lifecycle.ts`: fresh executor, clean standby, generation reset, termination |
-| Java preparation and execution | `tests/test-java-prepared-provider.ts`: preparation retirement, fresh case workers, cancellation, disposal |
+| Java preparation and execution | `tests/test-java-prepared-provider.ts` and `tests/test-java-prepared-provider-browser.ts`: one warm compiler Worker, fresh inner JVM and TraceKernel process per case, generation restore after hard retirement, cancellation, non-isolated compatibility retirement, disposal |
 | C# preparation and execution | `tests/test-csharp-runtime.ts` and `tests/test-csharp-worker-lifecycle-browser.ts`: compiler retirement and fresh outer worker generations |
 | C++ execution | `tests/test-cpp-compiler-lifecycle.ts`: one-command retirement, bounded clean standby, reset fencing |
 | Browser-host policy selection | `tests/test-browser-worker-lifecycle-policy.ts`: named defaults, compatibility mapping, and conflict rejection |
 
 The matrix records existing lifecycle evidence; it does not claim every role
-already hides all startup cost. In particular, Java currently warms preparation
-capacity but creates execution capacity on demand. Moving Java execution to a
-provider-owned standby is required before claiming sub-three-second warm Runs.
+already hides all startup cost. Java now removes compiler and outer-Worker
+startup from ordinary kernel-bound case execution, but still creates inner JVM
+capacity on demand. The browser matrix is the authority for any warm-Run
+latency claim; non-isolated compatibility documents intentionally hard-retire
+the outer Worker because they cannot host the synchronous TraceKernel channel.
 
 ## Changing The Policy
 

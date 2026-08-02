@@ -64,12 +64,21 @@ configuration roles.
 
 ## Prepared evaluation
 
-The private Java provider compiles a submission once into an immutable class
-snapshot. Each Judge case restores that snapshot into a fresh Worker, executes
-once, and destroys the Worker before another case begins. Static fields, class
-initialization, system properties, locale and time-zone defaults, runtime
-filesystem writes, thread state, and shutdown hooks therefore cannot cross the
-case boundary.
+The private Java provider keeps one outer Worker and TraceJVM compiler warm for
+the lifetime of a prepared program. Compilation produces an immutable class
+snapshot. Each Judge case leases a fresh inner JVM bound to a fresh TraceKernel
+process and TKFS, executes once, then destroys only that inner JVM and process.
+Static fields, class initialization, system properties, locale and time-zone
+defaults, runtime filesystem writes, thread state, and shutdown hooks therefore
+cannot cross the case boundary without paying compiler startup again.
+
+Prepared input JSON travels as process-scoped Java properties rather than
+provider-owned files. Learner filesystem calls still use the process-bound
+TraceKernel syscall channel, so TraceKernel remains the filesystem authority.
+If a document does not expose the synchronous shared-memory transport required
+by that channel, the provider fails over to runner-local files and hard-retires
+the entire outer Worker after each case. That compatibility mode preserves
+isolation but deliberately gives up warm-compiler latency.
 
 The prepared program advertises `fresh-case-state` isolation and serial case
 execution. Judge applies backpressure and disposes the program when its Effect
@@ -77,7 +86,9 @@ scope ends. Releasing an idle language discards only standby state so a later
 warmup can restart it; disposing the host is final.
 
 Preparation fails closed when the bridge or external runtime tree is
-incompatible. There is no public direct-client or alternate-engine fallback.
+incompatible. A crashed or cancelled outer Worker is restored from the
+immutable snapshot on its replacement generation; ordinary successful
+kernel-bound cases do not restore or recompile.
 
 ## Browser project workspaces
 

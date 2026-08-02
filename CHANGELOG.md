@@ -16,6 +16,14 @@ This repo uses Git tags as release boundaries. Version notes below summarize wha
 
 ### Changed
 
+- Java prepared execution now retains one warm TraceJVM compiler Worker while
+  leasing a fresh inner JVM and authoritative TraceKernel process/TKFS for each
+  case. Prepared inputs no longer masquerade as filesystem state, hard worker
+  failures restore immutable class snapshots by generation, and documents
+  without synchronous kernel transport preserve isolation by falling back to
+  full Worker retirement.
+- Browser project inference no longer treats the built-in Java Worker provider
+  as available in hosts that do not expose the Worker API.
 - Deprecated `safeExecution.prewarmAfterUse` in favor of
   `safeExecution.workerLifecycle`; the compatibility boolean maps to one named
   policy, and contradictory old/new configuration now fails closed.
