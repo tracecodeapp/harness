@@ -1069,7 +1069,16 @@ export async function createBrowserProjectWorkspace(
   if (java && !hasProvider('java')) {
     throw new Error('java requires providers to include "java".');
   }
-  if (hasProvider('java') && !java && !injectedJavaProvider && !javaProvider) {
+  const builtInJavaAvailable =
+    javaProvider !== undefined &&
+    typeof Worker !== 'undefined';
+  if (
+    hasProvider('java') &&
+    options.providers !== undefined &&
+    !java &&
+    !injectedJavaProvider &&
+    !builtInJavaAvailable
+  ) {
     throw new Error(
       'Browser project Java requires a Java 23 project provider. ' +
         'Provide java.createClient, runtimeProviders.java, or make the built-in TraceJVM provider available.'
@@ -1163,7 +1172,11 @@ export async function createBrowserProjectWorkspace(
   const ownedWorkers: Array<{ terminate(): void }> = [];
   try {
     const builtInJava: BrowserProjectJavaRuntimeOptions | undefined =
-      hasProvider('java') && !java && !injectedJavaProvider && javaProvider
+      hasProvider('java') &&
+      !java &&
+      !injectedJavaProvider &&
+      builtInJavaAvailable &&
+      javaProvider
         ? {
             createClient:
               javaProvider[2].createJavaProjectClientFactory({
