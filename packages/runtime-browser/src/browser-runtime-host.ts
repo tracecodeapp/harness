@@ -30,6 +30,9 @@ import {
 import {
   registerBrowserRuntimeHostPreparedProviderResolver,
 } from './browser-runtime-host-internal';
+import type {
+  BrowserSafeExecutionOptions,
+} from './worker-lifecycle-policy';
 
 export interface BrowserRuntimeHostExecutionHostOptions
   extends BrowserExecutionWorkerHostOptions {
@@ -51,9 +54,7 @@ export interface CreateBrowserRuntimeHostOptions {
   /** Runs selected provider workers on a dedicated, credential-free origin. */
   executionHost?: BrowserRuntimeHostExecutionHostOptions;
   debug?: boolean;
-  safeExecution?: {
-    prewarmAfterUse?: boolean;
-  };
+  safeExecution?: BrowserSafeExecutionOptions;
 }
 
 /**

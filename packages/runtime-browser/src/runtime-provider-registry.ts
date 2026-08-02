@@ -8,10 +8,15 @@ import type {
   BrowserRuntimeId,
 } from './runtime-assets';
 import type { BrowserWorkerFactory } from './execution-host';
+import type {
+  BrowserWorkerLifecyclePolicy,
+} from './worker-lifecycle-policy';
 
 export interface BrowserRuntimeProviderContext {
   readonly assets: BrowserRuntimeAssets;
   readonly debug: boolean;
+  readonly workerLifecyclePolicy: BrowserWorkerLifecyclePolicy;
+  /** @deprecated Read `workerLifecyclePolicy` for new provider code. */
   readonly prewarmAfterUse: boolean;
   readonly workerFactoryFor: (language: Language) => BrowserWorkerFactory | undefined;
   readonly preflight: (

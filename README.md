@@ -235,6 +235,7 @@ Do not mix files from different runtime releases.
 - [TraceKernel workspaces](./docs/tracekernel-workspaces.md)
 - [TraceKernel HTTP simulation](./docs/tracekernel-http.md)
 - [Isolation boundaries](./docs/isolation-boundaries.md)
+- [Warm-and-Retire worker lifecycle policy](./docs/warm-and-retire-policy.md)
 - [Browser execution host](./docs/browser-execution-host.md)
 
 ## Development

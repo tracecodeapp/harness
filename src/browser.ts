@@ -93,6 +93,11 @@ import {
 import {
   assertRuntimeRequestSupported,
 } from '../packages/runtime-browser/src/runtime-capability-guards';
+import {
+  BROWSER_WORKER_LIFECYCLE_POLICIES,
+  type BrowserSafeExecutionOptions,
+  type BrowserWorkerLifecyclePolicy,
+} from '../packages/runtime-browser/src/worker-lifecycle-policy';
 import { createBrowserRuntimeProviderRegistry } from '../packages/runtime-browser/src/runtime-provider-registry';
 import {
   createPythonBrowserRuntimeProvider,
@@ -142,6 +147,8 @@ export type {
   BrowserRuntimeReadinessStatus,
   BrowserRuntimeSurface,
   BrowserRuntimeWorkerFormat,
+  BrowserSafeExecutionOptions,
+  BrowserWorkerLifecyclePolicy,
   BrowserWorkerFactory,
   BrowserWorkerLike,
   CppCompilerIntegrityEntry,
@@ -173,6 +180,7 @@ export type {
 
 export {
   BROWSER_EXECUTION_HOST_PROTOCOL,
+  BROWSER_WORKER_LIFECYCLE_POLICIES,
   NODE_RUNTIME_COMPAT_VERSION,
   BROWSER_RUNTIME_ASSET_PROTOCOL_VERSION,
   BROWSER_RUNTIME_IDS,
@@ -227,9 +235,7 @@ export interface CreateBrowserRuntimeHostOptions
   /** Runs selected provider workers on a dedicated, credential-free origin. */
   executionHost?: BrowserRuntimeHostExecutionHostOptions;
   debug?: boolean;
-  safeExecution?: {
-    prewarmAfterUse?: boolean;
-  };
+  safeExecution?: BrowserSafeExecutionOptions;
 }
 
 function createDefaultBrowserRuntimeProviderRegistry(

@@ -26,6 +26,11 @@ import type {
   BrowserRuntimeProviderLease,
   BrowserRuntimeProviderRegistry,
 } from './runtime-provider-registry';
+import {
+  resolveBrowserWorkerLifecyclePolicy,
+  type BrowserSafeExecutionOptions,
+  type BrowserWorkerLifecyclePolicy,
+} from './worker-lifecycle-policy';
 
 export interface BrowserRuntimeLifecycleExecutionHostOptions
   extends BrowserExecutionWorkerHostOptions {
@@ -42,9 +47,7 @@ export interface BrowserRuntimeLifecycleOptions {
   featureOverrides?: Partial<BrowserRuntimeFeatureSupport>;
   executionHost?: BrowserRuntimeLifecycleExecutionHostOptions;
   debug?: boolean;
-  safeExecution?: {
-    prewarmAfterUse?: boolean;
-  };
+  safeExecution?: BrowserSafeExecutionOptions;
 }
 
 export interface BrowserRuntimeLifecycleLabels {
@@ -62,6 +65,7 @@ export interface ResolvedBrowserRuntimeLifecycleContext {
   readonly assets: BrowserRuntimeAssets;
   readonly supportedLanguages: readonly Language[];
   readonly executionHostProviders: ReadonlySet<Language>;
+  readonly workerLifecyclePolicy: BrowserWorkerLifecyclePolicy;
   readonly preflight: (
     runtime: BrowserRuntimeId,
     assetNames: readonly string[]
@@ -128,12 +132,9 @@ export function resolveBrowserRuntimeLifecycleContext(
   labels: BrowserRuntimeLifecycleLabels
 ): ResolvedBrowserRuntimeLifecycleContext {
   assertProviderRegistry(options.providerRegistry, labels.optionsName);
-  if (
-    options.safeExecution?.prewarmAfterUse !== undefined &&
-    typeof options.safeExecution.prewarmAfterUse !== 'boolean'
-  ) {
-    throw new TypeError('safeExecution.prewarmAfterUse must be a boolean.');
-  }
+  const lifecyclePolicy = resolveBrowserWorkerLifecyclePolicy(
+    options.safeExecution
+  );
   if (
     options.environment &&
     (
@@ -240,6 +241,7 @@ export function resolveBrowserRuntimeLifecycleContext(
     assets,
     supportedLanguages,
     executionHostProviders,
+    workerLifecyclePolicy: lifecyclePolicy.workerLifecycle,
     preflight,
     manifestAsset,
     manifestAssetCollection,
@@ -295,8 +297,9 @@ export function createBrowserRuntimeProviderContext(
   return Object.freeze({
     assets: context.assets,
     debug: context.options.debug ?? false,
+    workerLifecyclePolicy: context.workerLifecyclePolicy,
     prewarmAfterUse:
-      context.options.safeExecution?.prewarmAfterUse ?? true,
+      context.workerLifecyclePolicy === 'warm-and-retire',
     workerFactoryFor: executionHostSlot.workerFactoryFor,
     preflight: context.preflight,
     manifestAsset: context.manifestAsset,

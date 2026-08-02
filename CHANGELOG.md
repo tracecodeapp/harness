@@ -6,6 +6,20 @@ This repo uses Git tags as release boundaries. Version notes below summarize wha
 
 ## [Unreleased]
 
+### Added
+
+- Named the browser worker lifecycle contract `warm-and-retire`, documented its
+  one-use retirement, durable ownership, bounded replenishment, and generation
+  fencing invariants, and added `retire-only` as its no-replenishment peer.
+- Added public lifecycle-policy types and conformance tests across the
+  browser-host configuration and provider-context boundary.
+
+### Changed
+
+- Deprecated `safeExecution.prewarmAfterUse` in favor of
+  `safeExecution.workerLifecycle`; the compatibility boolean maps to one named
+  policy, and contradictory old/new configuration now fails closed.
+
 ## [0.14.6] - 2026-08-01
 
 This patch carries prepared algorithm batching through every browser runtime

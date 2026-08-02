@@ -6,6 +6,7 @@
  * language, and create scoped Judge evaluations through that authority.
  */
 export {
+  BROWSER_WORKER_LIFECYCLE_POLICIES,
   createBrowserProjectJudge,
   createBrowserJudgeHost,
   evaluateJudgePlan,
@@ -13,12 +14,14 @@ export {
 } from './internal/browser-judge';
 
 export type {
+  BrowserSafeExecutionOptions,
   BrowserJudgeCppOptions,
   BrowserJudgeCSharpOptions,
   BrowserJudgeExecutionHostOptions,
   BrowserJudgeHost,
   BrowserJudgeJavaOptions,
   BrowserJudgePythonOptions,
+  BrowserWorkerLifecyclePolicy,
   BrowserProjectJudge,
   BrowserProjectJudgeWorkspaceOptions,
   CreateBrowserJudgeHostOptions,

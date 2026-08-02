@@ -41,6 +41,16 @@ import type {
   BrowserRuntimeEngine,
   BrowserRuntimeFeatureSupport,
 } from '../../packages/runtime-browser/src/runtime-environment';
+import type {
+  BrowserSafeExecutionOptions,
+} from '../../packages/runtime-browser/src/worker-lifecycle-policy';
+export {
+  BROWSER_WORKER_LIFECYCLE_POLICIES,
+} from '../../packages/runtime-browser/src/worker-lifecycle-policy';
+export type {
+  BrowserSafeExecutionOptions,
+  BrowserWorkerLifecyclePolicy,
+} from '../../packages/runtime-browser/src/worker-lifecycle-policy';
 import {
   makeTraceKernelHost,
   type TraceKernelFileSystemImage,
@@ -228,9 +238,7 @@ export interface CreateBrowserJudgeHostOptions {
   readonly featureOverrides?: Partial<BrowserRuntimeFeatureSupport>;
   readonly executionHost?: BrowserJudgeExecutionHostOptions;
   readonly debug?: boolean;
-  readonly safeExecution?: {
-    readonly prewarmAfterUse?: boolean;
-  };
+  readonly safeExecution?: BrowserSafeExecutionOptions;
   readonly python?: BrowserJudgePythonOptions;
   readonly java?: BrowserJudgeJavaOptions;
   readonly csharp?: BrowserJudgeCSharpOptions;

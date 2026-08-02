@@ -10,6 +10,7 @@ import {
   createBrowserRuntimeHost,
   createBrowserRuntimeProviderRegistry,
   type BrowserRuntimeProvider,
+  type BrowserRuntimeProviderContext,
   type BrowserRuntimeProviderLease,
   type CreateBrowserRuntimeHostOptions,
 } from '../packages/runtime-browser/src';
@@ -69,12 +70,14 @@ function recordingProvider(
       language,
       fakePreparedProvider(events),
     ])
-  )
+  ),
+  contexts?: BrowserRuntimeProviderContext[]
 ): BrowserRuntimeProvider {
   return {
     id,
     languages,
-    create(): BrowserRuntimeProviderLease {
+    create(context): BrowserRuntimeProviderLease {
+      contexts?.push(context);
       events.push(`create:${id}`);
       return {
         preparedProviders: preparedByLanguage,
@@ -131,6 +134,51 @@ async function main(): Promise<void> {
   assertCondition(
     missingRegistry.includes('providerRegistry is required'),
     `Host must require an explicit provider registry: ${missingRegistry}`
+  );
+
+  const lifecycleContexts: BrowserRuntimeProviderContext[] = [];
+  const lifecycleEvents: string[] = [];
+  const lifecycleRegistry = createBrowserRuntimeProviderRegistry([
+    recordingProvider(
+      'lifecycle-python',
+      ['python'],
+      lifecycleEvents,
+      undefined,
+      lifecycleContexts
+    ),
+  ]);
+  const lifecycleHost = createBrowserRuntimeHost({
+    providerRegistry: lifecycleRegistry,
+    providers: ['python'],
+    featureOverrides: browserFeatures,
+    safeExecution: {
+      workerLifecycle: 'retire-only',
+    },
+  });
+  assertCondition(
+    lifecycleContexts.length === 1 &&
+      lifecycleContexts[0]?.workerLifecyclePolicy === 'retire-only' &&
+      lifecycleContexts[0]?.prewarmAfterUse === false,
+    `Host must project one named lifecycle policy to providers: ${JSON.stringify(
+      lifecycleContexts
+    )}`
+  );
+  lifecycleHost.dispose();
+
+  const conflictingLifecycleError = errorMessage(() =>
+    createBrowserRuntimeHost({
+      providerRegistry: lifecycleRegistry,
+      providers: ['python'],
+      featureOverrides: browserFeatures,
+      safeExecution: {
+        workerLifecycle: 'warm-and-retire',
+        prewarmAfterUse: false,
+      },
+    })
+  );
+  assertCondition(
+    conflictingLifecycleError.includes('conflicts'),
+    `Host must reject contradictory lifecycle policy aliases: ${conflictingLifecycleError}`
   );
 
   const malformedRegistryError = errorMessage(() =>
