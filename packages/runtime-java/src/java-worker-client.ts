@@ -46,6 +46,7 @@ import {
 import { WorkerSessionCore, type WorkerSessionMessage } from '@tracecode/runtime-browser/internal';
 import type { BrowserWorkerFactory, BrowserWorkerLike } from '@tracecode/runtime-browser/internal';
 import { handleHostArtifactCacheRequest, HostArtifactCache } from '@tracecode/runtime-browser/internal';
+import { createJavaKernelProcess } from './java-process-kernel';
 
 export type JavaExecutionStyle = 'function' | 'solution-method' | 'ops-class';
 
@@ -182,6 +183,7 @@ export class JavaWorkerClient {
   /** Memoized runtime-load results for the current session; cleared by the session finalizer. */
   private initPromise: Promise<InitResult> | null = null;
   private warmupPromise: Promise<WarmupResult> | null = null;
+  private generation = 0;
   private activeExternalCompileControllers = new Set<AbortController>();
   private readonly debug: boolean;
   private readonly core: WorkerSessionCore;
@@ -216,6 +218,13 @@ export class JavaWorkerClient {
         }
       },
       onCommandMessage: (commandId, type, payload, pending) => {
+        if (type === 'kernel-syscall') {
+          if (!pending.kernelSyscalls) return true;
+          void pending.kernelSyscalls.service().catch(() => {
+            pending.kernelSyscalls?.close();
+          });
+          return true;
+        }
         if (!KERNEL_HTTP_SYNC_MESSAGE_TYPES.has(type)) return false;
         if (type === 'kernel-http-dispatch-sync') {
           handleKernelHttpDispatchSyncMessage(pending, payload, JAVA_KERNEL_HTTP_RUNTIME_LABEL);
@@ -255,6 +264,7 @@ export class JavaWorkerClient {
     this.core.executionTimeoutLabel = 'Java';
     this.core.cleanupPending = (pending) => closeKernelHttpSyncServers(pending, JAVA_KERNEL_HTTP_RUNTIME_LABEL);
     this.core.onSessionClosed = () => {
+      this.generation += 1;
       this.initPromise = null;
       this.warmupPromise = null;
       for (const controller of this.activeExternalCompileControllers) {
@@ -262,6 +272,11 @@ export class JavaWorkerClient {
       }
       this.activeExternalCompileControllers.clear();
     };
+  }
+
+  /** Changes whenever the physical Java Worker session is retired. */
+  get sessionGeneration(): number {
+    return this.generation;
   }
 
   isSupported(): boolean {
@@ -496,6 +511,7 @@ export class JavaWorkerClient {
   }
 
   async executeWithTracing(call: RuntimeTraceCall): Promise<JavaWorkerTraceResult> {
+    const kernelProcess = await createJavaKernelProcess();
     const { code, inputs, traceOptions, executionStyle = 'function', signal } = call;
     const functionName = call.functionName ?? '';
     const program = this.initGateEffect().pipe(
@@ -509,7 +525,8 @@ export class JavaWorkerClient {
             executionStyle,
             traceEventTransport: traceEventTransferRequest(),
             ...this.workerOptionsPayload(),
-          }, null), // the enclosing execution deadline is the only clock
+          }, null, undefined, undefined, undefined, kernelProcess.bridge),
+          // The enclosing execution deadline is the only clock.
           Number.isFinite(this.options.tracingTimeoutMs) && Number(this.options.tracingTimeoutMs) > 0
             ? Math.floor(Number(this.options.tracingTimeoutMs))
             : TRACING_TIMEOUT_MS
@@ -517,20 +534,28 @@ export class JavaWorkerClient {
       )
     );
 
-    const result = await this.core.runClientEffect(program, signal);
-    return {
-      ...result,
-      trace: result.success
-        ? javaTraceHooksEventsToRuntimeTrace(result.events, result.sourceText, {
-            runId: 'java:run',
-            file: JAVA_DEFAULT_FILE,
-            maxPathDepth: traceOptions?.maxPathDepth,
-          })
-        : createEmptyRuntimeTrace('java', { runId: 'java:run', file: JAVA_DEFAULT_FILE }),
-    };
+    try {
+      const result = await this.core.runClientEffect(program, signal);
+      await kernelProcess.complete(result.success ? 0 : 1);
+      if (kernelProcess.retireWorkerAfterCompletion) this.core.closeSession();
+      return {
+        ...result,
+        trace: result.success
+          ? javaTraceHooksEventsToRuntimeTrace(result.events, result.sourceText, {
+              runId: 'java:run',
+              file: JAVA_DEFAULT_FILE,
+              maxPathDepth: traceOptions?.maxPathDepth,
+            })
+          : createEmptyRuntimeTrace('java', { runId: 'java:run', file: JAVA_DEFAULT_FILE }),
+      };
+    } catch (error) {
+      await kernelProcess.fail(error);
+      throw error;
+    }
   }
 
   async executeCode(call: RuntimeCodeCall & { traceOptions?: JavaTraceExecutionOptions }): Promise<CodeExecutionResult> {
+    const kernelProcess = await createJavaKernelProcess();
     const { code, functionName, inputs, traceOptions, executionStyle = 'function', signal, limits } = call;
     const wallClockMs = limits?.wallClockMs ?? EXECUTION_TIMEOUT_MS;
     const program = this.initGateEffect().pipe(
@@ -543,17 +568,25 @@ export class JavaWorkerClient {
             options: traceOptions,
             executionStyle,
             ...this.workerOptionsPayload(),
-          }, null),
+          }, null, undefined, undefined, undefined, kernelProcess.bridge),
           wallClockMs
         )
       )
     );
 
-    const result = await this.core.runClientEffect(program, signal);
-    return liftCodeOutcome(result, 'Java execution failed');
+    try {
+      const result = await this.core.runClientEffect(program, signal);
+      await kernelProcess.complete(result.success ? 0 : 1);
+      if (kernelProcess.retireWorkerAfterCompletion) this.core.closeSession();
+      return liftCodeOutcome(result, 'Java execution failed');
+    } catch (error) {
+      await kernelProcess.fail(error);
+      throw error;
+    }
   }
 
   async executeCodeBatch(call: RuntimeBatchCall & { traceOptions?: JavaTraceExecutionOptions }): Promise<CodeExecutionBatchResult> {
+    const kernelProcess = await createJavaKernelProcess();
     const { code, functionName, inputBatch, traceOptions, executionStyle = 'function', signal } = call;
     const program = this.initGateEffect().pipe(
       Effect.andThen(
@@ -565,14 +598,21 @@ export class JavaWorkerClient {
             options: traceOptions,
             executionStyle,
             ...this.workerOptionsPayload(),
-          }, null),
+          }, null, undefined, undefined, undefined, kernelProcess.bridge),
           EXECUTION_TIMEOUT_MS
         )
       )
     );
 
-    const result = await this.core.runClientEffect(program, signal);
-    return liftCodeBatchOutcome(result, 'Java execution failed');
+    try {
+      const result = await this.core.runClientEffect(program, signal);
+      await kernelProcess.complete(result.success ? 0 : 1);
+      if (kernelProcess.retireWorkerAfterCompletion) this.core.closeSession();
+      return liftCodeBatchOutcome(result, 'Java execution failed');
+    } catch (error) {
+      await kernelProcess.fail(error);
+      throw error;
+    }
   }
 
   async prepareRuntimeProgram(
@@ -619,6 +659,7 @@ export class JavaWorkerClient {
     programId: string,
     call: RuntimePreparedCodeCall
   ): Promise<JavaWorkerPreparedCodeResult> {
+    const kernelProcess = await createJavaKernelProcess();
     const wallClockMs = call.limits?.wallClockMs ?? EXECUTION_TIMEOUT_MS;
     const program = this.initGateEffect().pipe(
       Effect.andThen(
@@ -629,20 +670,31 @@ export class JavaWorkerClient {
               programId,
               inputs: call.inputs,
             },
-            null
+            null,
+            undefined,
+            undefined,
+            undefined,
+            kernelProcess.bridge
           ),
           wallClockMs
         )
       )
     );
-    const result = await this.core.runClientEffect(program, call.signal);
-    return {
-      ...liftCodeOutcome(result, 'Java prepared execution failed'),
-      retirementRecommended: result.retirementRecommended === true,
-      ...(result.runtimeIsolation === undefined
-        ? {}
-        : { runtimeIsolation: result.runtimeIsolation }),
-    };
+    try {
+      const result = await this.core.runClientEffect(program, call.signal);
+      await kernelProcess.complete(result.success ? 0 : 1);
+      if (kernelProcess.retireWorkerAfterCompletion) this.core.closeSession();
+      return {
+        ...liftCodeOutcome(result, 'Java prepared execution failed'),
+        retirementRecommended: result.retirementRecommended === true,
+        ...(result.runtimeIsolation === undefined
+          ? {}
+          : { runtimeIsolation: result.runtimeIsolation }),
+      };
+    } catch (error) {
+      await kernelProcess.fail(error);
+      throw error;
+    }
   }
 
   async executePreparedWithTracing(
@@ -650,6 +702,7 @@ export class JavaWorkerClient {
     call: RuntimePreparedTraceCall,
     traceOptions?: JavaTraceExecutionOptions
   ): Promise<JavaWorkerPreparedTraceResult> {
+    const kernelProcess = await createJavaKernelProcess();
     const wallClockMs = call.limits?.wallClockMs ??
       (
         Number.isFinite(this.options.tracingTimeoutMs) &&
@@ -667,30 +720,41 @@ export class JavaWorkerClient {
               inputs: call.inputs,
               traceEventTransport: traceEventTransferRequest(),
             },
-            null
+            null,
+            undefined,
+            undefined,
+            undefined,
+            kernelProcess.bridge
           ),
           wallClockMs
         )
       )
     );
-    const result = await this.core.runClientEffect(program, call.signal);
-    return {
-      ...result,
-      trace: result.success
-        ? javaTraceHooksEventsToRuntimeTrace(result.events, result.sourceText, {
-            runId: 'java:run',
-            file: JAVA_DEFAULT_FILE,
-            maxPathDepth: traceOptions?.maxPathDepth,
-          })
-        : createEmptyRuntimeTrace('java', {
-            runId: 'java:run',
-            file: JAVA_DEFAULT_FILE,
-          }),
-      retirementRecommended: result.retirementRecommended === true,
-      ...(result.runtimeIsolation === undefined
-        ? {}
-        : { runtimeIsolation: result.runtimeIsolation }),
-    };
+    try {
+      const result = await this.core.runClientEffect(program, call.signal);
+      await kernelProcess.complete(result.success ? 0 : 1);
+      if (kernelProcess.retireWorkerAfterCompletion) this.core.closeSession();
+      return {
+        ...result,
+        trace: result.success
+          ? javaTraceHooksEventsToRuntimeTrace(result.events, result.sourceText, {
+              runId: 'java:run',
+              file: JAVA_DEFAULT_FILE,
+              maxPathDepth: traceOptions?.maxPathDepth,
+            })
+          : createEmptyRuntimeTrace('java', {
+              runId: 'java:run',
+              file: JAVA_DEFAULT_FILE,
+            }),
+        retirementRecommended: result.retirementRecommended === true,
+        ...(result.runtimeIsolation === undefined
+          ? {}
+          : { runtimeIsolation: result.runtimeIsolation }),
+      };
+    } catch (error) {
+      await kernelProcess.fail(error);
+      throw error;
+    }
   }
 
   async disposePreparedRuntimeProgram(programId: string): Promise<void> {

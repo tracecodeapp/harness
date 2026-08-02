@@ -31,6 +31,7 @@ const MAX_JAVA_COMPILE_CACHE_LIMIT = 64;
 const JAVA_COMPILE_CACHE_VERSION = 'classic-compiled-classes-v1';
 const SCRIPT_METHOD_NAME = '__tracecodeScript';
 const DYNAMIC_INPUT_PREFIX = '/str/tracecode-java-input';
+const PREPARED_INPUT_PROPERTY_PREFIX = 'tracecode.prepared.input.';
 const JAVA_DEFAULT_IMPORTS = [
   'import java.util.*;',
   'import java.io.*;',
@@ -1206,14 +1207,18 @@ function rawJavaClassLiteral(typeSource) {
 
 function dynamicJavaInputExpression(typeSource, dynamicInput) {
   const normalized = normalizedJavaInputType(typeSource);
-  const quotedPath = JSON.stringify(dynamicInput.path);
+  const quotedLocation = JSON.stringify(
+    dynamicInput.property ?? dynamicInput.path
+  );
   const parameterTypes = Array.isArray(dynamicInput.parameterTypes)
     ? dynamicInput.parameterTypes
     : [];
   const reflectedType = parameterTypes.length > 0
     ? `preparedParameterType(${dynamicInput.ownerClass}.class, ${JSON.stringify(dynamicInput.methodName)}, ${dynamicInput.parameterIndex}, new Class<?>[] { ${parameterTypes.map(rawJavaClassLiteral).join(', ')} })`
     : rawJavaClassLiteral(normalized);
-  const readExpression = `readJsonInput(${quotedPath}, ${reflectedType})`;
+  const readExpression = dynamicInput.property
+    ? `readJsonInputProperty(${quotedLocation}, ${reflectedType})`
+    : `readJsonInput(${quotedLocation}, ${reflectedType})`;
   if (normalized.endsWith('[]')) {
     return `((${normalized}) ${readExpression})`;
   }
@@ -1498,6 +1503,14 @@ function buildJavaExpression(value, expectedType) {
 
 function buildDynamicInputHelperMethods() {
   return `
+  private static Object readJsonInputProperty(String key, java.lang.reflect.Type targetType) {
+    String source = System.getProperty(key);
+    if (source == null) {
+      throw new RuntimeException("Missing TraceCode prepared input " + key);
+    }
+    return coerceJsonInput(new __TracecodeJsonParser(source).parse(), targetType);
+  }
+
   private static Object readJsonInput(String path, java.lang.reflect.Type targetType) {
     try {
       String source = java.nio.file.Files.readString(java.nio.file.Paths.get(path), java.nio.charset.StandardCharsets.UTF_8);
@@ -3994,6 +4007,7 @@ function preparedDynamicInputEntriesForPayload(payload, compileId) {
       index: 0,
       type: 'Object',
       path: `${DYNAMIC_INPUT_PREFIX}-${compileId}-ops.json`,
+      property: `${PREPARED_INPUT_PROPERTY_PREFIX}${compileId}.ops`,
     }];
   }
   const parameters = extractMethodParameters(payload.code, payload.functionName);
@@ -4002,6 +4016,7 @@ function preparedDynamicInputEntriesForPayload(payload, compileId) {
     index,
     type: parameter.type,
     path: `${DYNAMIC_INPUT_PREFIX}-${compileId}-${index}-${String(parameter.name).replace(/[^A-Za-z0-9_$-]/g, '_')}.json`,
+    property: `${PREPARED_INPUT_PROPERTY_PREFIX}${compileId}.${index}`,
   }));
 }
 
@@ -4109,7 +4124,7 @@ function buildExportsSource(source, functionName, executionStyle, input, options
 ${helperMethods}
 
   public static String run() {
-    Object input = readJsonInput(${JSON.stringify(preparedOpsInput.path)}, Object.class);
+    Object input = readJsonInputProperty(${JSON.stringify(preparedOpsInput.property)}, Object.class);
     return runPreparedOperations(${functionName}.class, input);
   }
 }
@@ -7512,12 +7527,14 @@ async function executePreparedJavaRuntimeProgram(payload) {
       ? payload.inputs
       : {};
 
+  let preparedInputProperties;
   try {
-    const files = program.dynamicInputs.map((dynamicInput) => ({
-      ...dynamicInput,
-      value: preparedJavaInputValue(program, inputs, dynamicInput),
-    }));
-    await writeDynamicInputFiles(files);
+    preparedInputProperties = Object.fromEntries(
+      program.dynamicInputs.map((dynamicInput) => [
+        dynamicInput.property,
+        JSON.stringify(preparedJavaInputValue(program, inputs, dynamicInput)),
+      ])
+    );
   } catch (error) {
     return {
       success: false,
@@ -7550,7 +7567,8 @@ async function executePreparedJavaRuntimeProgram(payload) {
         program.mode === 'trace'
           ? resolveMaxStoredEvents(program.traceOptions)
           : 1
-      )
+      ),
+      JSON.stringify(preparedInputProperties)
     );
     report = JSON.parse(reportText);
   } catch (error) {
@@ -7877,10 +7895,18 @@ self.onmessage = (event) => {
               }
             : undefined
         );
-        const result = await withJavaUserAuthorityLockdown(
-          executeUserRequest,
-          requestedAuthorityMode
-        );
+        self.TraceCodeActiveKernelRequestId = message.id;
+        let result;
+        try {
+          result = await withJavaUserAuthorityLockdown(
+            executeUserRequest,
+            requestedAuthorityMode
+          );
+        } finally {
+          if (self.TraceCodeActiveKernelRequestId === message.id) {
+            self.TraceCodeActiveKernelRequestId = undefined;
+          }
+        }
         postExecutionResult(result);
       } catch (error) {
         const errorMessage = await formatWorkerErrorMessageAsync(error);
@@ -7895,6 +7921,10 @@ self.onmessage = (event) => {
           payload: { error: errorMessage },
         });
       } finally {
+        self.TraceCodeReleaseKernelRequest?.(
+          message.id,
+          message.payload?.programId
+        );
         activeProtocolTokens.delete(message.id);
         resetIdleTimer();
       }

@@ -29,10 +29,11 @@ import {
 
 export interface JavaPreparedExecutionProviderOptions {
   /**
-   * Creates one worker client for preparation or one isolated case.
+   * Creates one warm compiler Worker client owned by this provider.
    *
-   * Prepared programs deliberately share only an immutable compiled class
-   * snapshot. They never share an outer Java Worker or mutable VM state.
+   * A prepared program leases that client while TraceJVM replaces the inner
+   * runner JVM and TraceKernel process for every case. A hard Worker failure
+   * restores only the immutable compiled snapshot into a new generation.
    */
   readonly createWorkerClient: () => JavaWorkerClient;
 }
@@ -100,14 +101,18 @@ abstract class JavaPreparedProgramBase {
   private disposed = false;
   private disposePromise: Promise<void> | undefined;
   private operationTail: Promise<void> = Promise.resolve();
-  private activeClient: JavaWorkerClient | undefined;
-  private readonly terminatedClients = new WeakSet<JavaWorkerClient>();
+  private active = false;
+  private released = false;
+  private restoredGeneration: number;
 
   constructor(
     protected readonly programId: string,
     private readonly snapshot: JavaWorkerPreparedProgramSnapshot,
-    private readonly createWorkerClient: () => JavaWorkerClient
-  ) {}
+    private readonly client: JavaWorkerClient,
+    private readonly releaseClient: (client: JavaWorkerClient) => void
+  ) {
+    this.restoredGeneration = client.sessionGeneration;
+  }
 
   protected assertActive(): void {
     if (this.disposed) {
@@ -119,13 +124,13 @@ abstract class JavaPreparedProgramBase {
     if (this.disposePromise) return this.disposePromise;
     this.disposed = true;
     this.disposePromise = (async () => {
-      if (this.activeClient) {
-        this.terminateClientOnce(this.activeClient);
-      }
-      // Any queued call observes disposed before it creates a Worker. An
-      // active call is interrupted by the hard termination above; wait for
-      // its boundary to settle before disposal completes.
+      if (this.active) this.client.terminate();
       await this.operationTail;
+      try {
+        await this.client.disposePreparedRuntimeProgram(this.programId);
+      } finally {
+        this.releaseOnce();
+      }
     })();
     return this.disposePromise;
   }
@@ -135,7 +140,7 @@ abstract class JavaPreparedProgramBase {
     signal?: AbortSignal
   ): Promise<Result> {
     const execution = this.operationTail.then(() =>
-      this.executeInFreshWorker(operation, signal)
+      this.executeInFreshProcess(operation, signal)
     );
     this.operationTail = execution.then(
       () => undefined,
@@ -144,57 +149,46 @@ abstract class JavaPreparedProgramBase {
     return execution;
   }
 
-  private async executeInFreshWorker<Result>(
+  private async executeInFreshProcess<Result>(
     operation: (client: JavaWorkerClient) => Promise<Result>,
     signal?: AbortSignal
   ): Promise<Result> {
     this.assertActive();
     if (signal?.aborted) throw abortReason(signal);
-    const client = this.createWorkerClient();
-    this.activeClient = client;
-    const abortClient = () => this.terminateClientOnce(client);
-    signal?.addEventListener('abort', abortClient, { once: true });
+    this.active = true;
     try {
-      if (signal?.aborted) {
-        abortClient();
-        throw abortReason(signal);
-      }
-      const initialized = await client.init(signal);
-      if (!initialized.success) {
-        throw new Error(
-          'Java runtime initialization was unsuccessful during prepared-program restoration.'
+      if (this.client.sessionGeneration !== this.restoredGeneration) {
+        const initialized = await this.client.init(signal);
+        if (!initialized.success) {
+          throw new Error(
+            'Java runtime initialization was unsuccessful during prepared execution.'
+          );
+        }
+        const restored = await this.client.restorePreparedRuntimeProgram(
+          this.snapshot
         );
-      }
-      const restored = await client.restorePreparedRuntimeProgram(
-        this.snapshot
-      );
-      if (
-        !restored.success ||
-        restored.programId !== this.programId
-      ) {
-        throw new Error(
-          restored.error ??
-            'Java prepared program restoration was unsuccessful.'
-        );
+        if (!restored.success || restored.programId !== this.programId) {
+          throw new Error(
+            restored.error ??
+              'Java prepared program restoration was unsuccessful.'
+          );
+        }
+        this.restoredGeneration = this.client.sessionGeneration;
       }
       this.assertActive();
-      return await operation(client);
+      return await operation(this.client);
     } catch (error) {
       if (signal?.aborted) throw abortReason(signal);
       throw error;
     } finally {
-      signal?.removeEventListener('abort', abortClient);
-      if (this.activeClient === client) {
-        this.activeClient = undefined;
-      }
-      this.terminateClientOnce(client);
+      this.active = false;
     }
   }
 
-  private terminateClientOnce(client: JavaWorkerClient): void {
-    if (this.terminatedClients.has(client)) return;
-    this.terminatedClients.add(client);
-    client.terminate();
+  private releaseOnce(): void {
+    if (this.released) return;
+    this.released = true;
+    this.releaseClient(this.client);
   }
 }
 
@@ -254,13 +248,14 @@ class JavaPreparedTraceProgramImpl
   constructor(
     programId: string,
     snapshot: JavaWorkerPreparedProgramSnapshot,
-    createWorkerClient: () => JavaWorkerClient,
+    client: JavaWorkerClient,
+    releaseClient: (client: JavaWorkerClient) => void,
     private readonly traceCall: Pick<
       RuntimeTraceCall,
       'traceOptions'
     >
   ) {
-    super(programId, snapshot, createWorkerClient);
+    super(programId, snapshot, client, releaseClient);
   }
 
   async executeIsolated(
@@ -406,23 +401,27 @@ class JavaPreparedExecutionProviderImpl
         ...(result.timings ? { timings: result.timings } : {}),
       };
     }
-    // Preparation may initialize compiler/runtime state. Cases must begin at
-    // a fresh hard Worker boundary, so only the immutable class snapshot
-    // crosses from preparation into execution.
-    this.terminatePreparationClientOnce(standby.client);
+    // Transfer the warm compiler Worker to the prepared program. TraceJVM
+    // creates and disposes a fresh runner JVM for every execution while this
+    // outer Worker and compiler survive until the program returns the lease.
+    this.activePreparationClients.delete(standby.client);
+    const returnClient = (client: JavaWorkerClient) =>
+      this.returnWarmClient(client);
 
     const program =
       call.mode === 'trace'
         ? new JavaPreparedTraceProgramImpl(
             result.programId,
             result.snapshot,
-            this.options.createWorkerClient,
+            standby.client,
+            returnClient,
             { traceOptions: call.traceOptions }
           )
         : new JavaPreparedCodeProgramImpl(
             result.programId,
             result.snapshot,
-            this.options.createWorkerClient
+            standby.client,
+            returnClient
           );
     return {
       kind: 'prepared',
@@ -475,6 +474,19 @@ class JavaPreparedExecutionProviderImpl
     const standby = this.ensureStandby();
     this.standby = undefined;
     return standby;
+  }
+
+  private returnWarmClient(client: JavaWorkerClient): void {
+    if (this.disposed || this.standby) {
+      this.terminatePreparationClientOnce(client);
+      return;
+    }
+    const standby = {
+      client,
+      ready: client.init(),
+    };
+    standby.ready.catch(() => undefined);
+    this.standby = standby;
   }
 
   private terminatePreparationClientOnce(client: JavaWorkerClient): void {

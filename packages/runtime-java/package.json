@@ -59,6 +59,7 @@
   "dependencies": {
     "@tracecode/runtime-browser": "workspace:*",
     "@tracecode/runtime-contracts": "workspace:*",
+    "@tracecode/tracekernel": "workspace:*",
     "@tracecode/tracejvm": "0.1.2",
     "effect": "^3.22.0"
   }

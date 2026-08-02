@@ -242,6 +242,9 @@ importers:
       '@tracecode/tracejvm':
         specifier: 0.1.2
         version: 0.1.2
+      '@tracecode/tracekernel':
+        specifier: workspace:*
+        version: link:../tracekernel
       effect:
         specifier: ^3.22.0
         version: 3.22.0

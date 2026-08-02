@@ -29,6 +29,10 @@ const TRACEJVM_WASM_URL = new URL('bjvm_main.wasm', TRACEJVM_BASE_URL);
 const TRACEJVM_CORE_PROFILE_URL = new URL('profiles/core', TRACEJVM_BASE_URL);
 const TRACEJVM_HELPER_JAR_URL = new URL('./vendor/java-browser-helper.jar', self.location.href);
 const CLASSIC_JAVA_WORKER_URL = new URL('./java-worker.js', self.location.href);
+const TRACEKERNEL_SYSCALL_CLIENT_URL = new URL(
+  './shared/tracekernel-syscall-client.js',
+  self.location.href
+);
 
 // The canonical Java worker removes ambient fetch authority while learner code
 // runs. Declare only this provider's immutable runtime asset root so TraceJVM
@@ -46,6 +50,8 @@ const traceJVMCompileCache = new Map();
 const TRACEJVM_COMPILE_CACHE_LIMIT = 64;
 const traceJVMPreparedPrograms = new Map();
 let traceJVMPreparedCompileCount = 0;
+const traceJVMKernelChannels = new Map();
+const traceJVMPostMessage = self.postMessage.bind(self);
 
 const TRACE_OUTPUT_MARKER = '__TRACECODE_TRACE_OUTPUT__:';
 const TRACE_EVENT_MARKER = '__TRACECODE_TRACE_EVENT__:';
@@ -137,8 +143,8 @@ async function loadTraceJVMHelperJar() {
 }
 
 async function createTraceJVMClient() {
-  const { TraceJVMEngine } = await loadTraceJVMModule();
-  return new TraceJVMEngine({
+  const { TraceJVMRuntimeHost } = await loadTraceJVMModule();
+  return new TraceJVMRuntimeHost({
     assets: {
       runtimeProfileBaseUrls: {
         core: TRACEJVM_CORE_PROFILE_URL.href.replace(/\/+$/, ''),
@@ -146,7 +152,7 @@ async function createTraceJVMClient() {
       wasmUrl: TRACEJVM_WASM_URL.href,
     },
     runtimeProfile: 'core',
-    retirementAfterExecutions: 64,
+    retirementAfterExecutions: 1,
   });
 }
 
@@ -161,6 +167,149 @@ function invalidateTraceJVMClient() {
     .catch(() => undefined);
   traceJVMClientPromise = undefined;
   traceJVMRewriteProgramPromise = undefined;
+}
+
+function unwrapTraceKernelResult(operation, result) {
+  if (!result || typeof result !== 'object' || typeof result.ok !== 'boolean') {
+    throw Object.assign(
+      new Error('TraceKernel returned an invalid syscall response.'),
+      { code: 'EPROTO' }
+    );
+  }
+  if (!result.ok) {
+    throw Object.assign(
+      new Error(result.error?.message ?? 'TraceKernel syscall failed.'),
+      { code: result.error?.code ?? 'EIO' }
+    );
+  }
+  if (
+    result.value &&
+    typeof result.value === 'object' &&
+    result.value.op === operation
+  ) {
+    const { op: _operation, ...value } = result.value;
+    return Object.keys(value).length === 0 ? undefined : value;
+  }
+  return result.value;
+}
+
+function traceJVMProcessHost(programId) {
+  const activeRequestId = self.TraceCodeActiveKernelRequestId;
+  const kernelRequest = programId === false
+    ? undefined
+    : (
+        (programId ? traceJVMKernelChannels.get(String(programId)) : undefined) ??
+        (activeRequestId
+          ? traceJVMKernelChannels.get(String(activeRequestId))
+          : undefined)
+      );
+  if (kernelRequest) {
+    const Client = self.TraceCodeTraceKernelSharedSyscallClient;
+    if (typeof Client !== 'function') {
+      throw new Error('TraceKernel shared syscall client is unavailable.');
+    }
+    const client = kernelRequest.client ??= new Client(
+      kernelRequest.channel,
+      () => traceJVMPostMessage({
+        id: kernelRequest.id,
+        type: 'kernel-syscall',
+        protocolToken: kernelRequest.protocolToken,
+      })
+    );
+    return {
+      kernelBound: true,
+      dispatchSync(request) {
+        return unwrapTraceKernelResult(
+          request.operation,
+          client.dispatchSync({
+            ...(request.payload ?? {}),
+            op: request.operation,
+          })
+        );
+      },
+      async dispatch(request) {
+        return this.dispatchSync(request);
+      },
+      // The host owns the process-bound channel and closes it after the outer
+      // request. A batch may replace several inner JVMs on that one process.
+      close() {},
+    };
+  }
+  const unsupported = (request) => {
+    throw Object.assign(
+      new Error(
+        `Unsupported Harness Java process host call: ` +
+        `${request?.service}.${request?.operation}`
+      ),
+      { code: 'ENOSYS' }
+    );
+  };
+  return {
+    dispatchSync: unsupported,
+    dispatch: async (request) => unsupported(request),
+  };
+}
+
+async function runInFreshTraceJVMProcess(client, request, programId) {
+  const processFiles = request.processFiles;
+  const host = traceJVMProcessHost(programId);
+  if (host.kernelBound && processFiles?.length) {
+    request = { ...request };
+    delete request.processFiles;
+  }
+  const process = await client.createProcess({
+    workingDirectory: '/workspace',
+    ...(host.kernelBound ? { host } : {}),
+  });
+  try {
+    for (const file of host.kernelBound ? processFiles ?? [] : []) {
+      const normalizedPath = `/${String(file.path).replace(/^\/+/, '')}`;
+      const parentPath = normalizedPath.slice(
+        0,
+        Math.max(1, normalizedPath.lastIndexOf('/'))
+      );
+      await host.dispatch({
+        service: 'posix',
+        operation: 'mkdir',
+        payload: {
+          path: parentPath,
+          options: { recursive: true },
+        },
+      });
+      const opened = await host.dispatch({
+        service: 'posix',
+        operation: 'open',
+        payload: {
+          path: normalizedPath,
+          options: {
+            access: 'write',
+            create: true,
+            truncate: true,
+          },
+        },
+      });
+      try {
+        await host.dispatch({
+          service: 'posix',
+          operation: 'write',
+          payload: {
+            fd: opened.fd,
+            bytes: file.content,
+          },
+        });
+      } finally {
+        await host.dispatch({
+          service: 'posix',
+          operation: 'close',
+          payload: { fd: opened.fd },
+        });
+      }
+    }
+    return await process.run(request);
+  } finally {
+    process.dispose();
+    host.close?.();
+  }
 }
 
 async function compileRewriteBridge(client, helperJar) {
@@ -241,20 +390,17 @@ async function traceJVMRewriteSource(
       packageName,
     ].map(encodeText))
   );
-  const result = await atStage('bridge execution', () => client.run({
+  const result = await atStage('bridge execution', () => runInFreshTraceJVMProcess(client, {
     program,
     classpath: [helperJar],
     mainClass: 'tracecode.harness.bridge.TraceJVMRewriteBridge',
     args: encodedArguments,
-  }));
+  }, false));
   if (result.status !== 'completed' || result.exitCode !== 0) {
     throw new Error(
       result.stderr ||
       `TraceJVM source rewrite ended with ${result.status}.`
     );
-  }
-  if (result.retirementRecommended) {
-    invalidateTraceJVMClient();
   }
   return atStage(
     'result decoding',
@@ -341,7 +487,7 @@ function executionReport(
       ? { diagnosticError: run.diagnostics.diagnosticError }
       : {}),
     isolation: run.isolation,
-    retirementRecommended: run.retirementRecommended === true,
+    retirementRecommended: false,
   };
 }
 
@@ -402,7 +548,7 @@ async function compileAndExecute(
   ) {
     return compileFailureReport(context.compile, compilerDebugProfile);
   }
-  const run = await context.client.run({
+  const run = await runInFreshTraceJVMProcess(context.client, {
     program: context.compile.program,
     classpath: [context.helperJar],
     processFiles: processFiles(),
@@ -415,7 +561,6 @@ async function compileAndExecute(
     compilerDebugProfile,
     context.compileCacheHit
   );
-  if (run.retirementRecommended) invalidateTraceJVMClient();
   return report;
 }
 
@@ -475,7 +620,7 @@ async function traceJVMCompileAndRunBatch(
     .filter(Boolean);
   const results = [];
   for (const entryClass of entryClasses) {
-    const run = await context.client.run({
+    const run = await runInFreshTraceJVMProcess(context.client, {
       program: context.compile.program,
       classpath: [context.helperJar],
       processFiles: processFiles(),
@@ -495,7 +640,6 @@ async function traceJVMCompileAndRunBatch(
       classLoadTimeMs: report.classLoadTimeMs,
       runTimeMs: report.runTimeMs,
     });
-    if (run.retirementRecommended) invalidateTraceJVMClient();
   }
 
   return JSON.stringify({
@@ -571,7 +715,8 @@ async function traceJVMPrepareRuntimeProgram(
 async function traceJVMRunPreparedRuntimeProgram(
   programId,
   entryClass,
-  maxStoredEvents = '1'
+  maxStoredEvents = '1',
+  preparedInputProperties = '{}'
 ) {
   const normalizedProgramId = String(programId);
   const prepared = traceJVMPreparedPrograms.get(normalizedProgramId);
@@ -588,16 +733,27 @@ async function traceJVMRunPreparedRuntimeProgram(
     getTraceJVMClient(),
     loadTraceJVMHelperJar(),
   ]);
-  const run = await client.run({
+  const systemProperties = JSON.parse(String(preparedInputProperties));
+  if (
+    !systemProperties ||
+    typeof systemProperties !== 'object' ||
+    Array.isArray(systemProperties) ||
+    Object.values(systemProperties).some((value) => typeof value !== 'string')
+  ) {
+    throw new TypeError(
+      'TraceJVM prepared inputs must be string system properties.'
+    );
+  }
+  const run = await runInFreshTraceJVMProcess(client, {
     program: prepared.program,
     classpath: [helperJar],
-    processFiles: processFiles(),
+    systemProperties,
     mainClass: 'tracecode.browser.TraceExecutionRunner',
     args: [
       String(entryClass),
       String(Number.parseInt(String(maxStoredEvents), 10) || 1),
     ],
-  });
+  }, normalizedProgramId);
   prepared.executions += 1;
   const report = executionReport(
     run,
@@ -609,17 +765,6 @@ async function traceJVMRunPreparedRuntimeProgram(
     prepared.compilerDebugProfile,
     true
   );
-  // A tainted result remains valid for the case that just completed, but the
-  // same warm VM must not admit another case. Do not pretend that disposing
-  // and rebuilding TraceJVM inside this Worker is a hard boundary: the
-  // evaluation owner will terminate the outer Worker during disposal.
-  if (
-    run.isolation?.status === 'tainted' ||
-    run.isolation?.hardBoundaryRecommended === true ||
-    run.retirementRecommended
-  ) {
-    prepared.retired = true;
-  }
   return JSON.stringify({
     ...report,
     preparedExecutionCount: prepared.executions,
@@ -740,6 +885,37 @@ self.cheerpjRunLibrary = async () => ({
   },
 });
 
+self.addEventListener('message', (event) => {
+  const message = event.data;
+  if (
+    !message?.kernelSyscallChannel ||
+    !message.id
+  ) {
+    return;
+  }
+  const kernelRequest = {
+    id: message.id,
+    protocolToken: message.protocolToken,
+    channel: message.kernelSyscallChannel,
+  };
+  traceJVMKernelChannels.set(String(message.id), kernelRequest);
+  if (message.payload?.programId) {
+    traceJVMKernelChannels.set(String(message.payload.programId), kernelRequest);
+  }
+});
+
+self.TraceCodeReleaseKernelRequest = (requestId, programId) => {
+  const request = traceJVMKernelChannels.get(String(requestId));
+  request?.client?.close();
+  traceJVMKernelChannels.delete(String(requestId));
+  if (
+    programId &&
+    traceJVMKernelChannels.get(String(programId)) === request
+  ) {
+    traceJVMKernelChannels.delete(String(programId));
+  }
+};
+
 const traceJVMLegacyClose = self.close.bind(self);
 self.close = () => {
   invalidateTraceJVMClient();
@@ -749,4 +925,7 @@ self.close = () => {
   traceJVMLegacyClose();
 };
 
-self.importScripts(CLASSIC_JAVA_WORKER_URL.href);
+self.importScripts(
+  TRACEKERNEL_SYSCALL_CLIENT_URL.href,
+  CLASSIC_JAVA_WORKER_URL.href
+);
