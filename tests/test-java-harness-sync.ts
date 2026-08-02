@@ -29,6 +29,12 @@ async function main(): Promise<void> {
     'java-runtime-worker.js'
   );
   const augmentationPath = join(root, 'workers', 'java', 'java-source-augmentations.js');
+  const syscallClientPath = join(
+    root,
+    'workers',
+    'shared',
+    'tracekernel-syscall-client.js'
+  );
   const helperJarPath = join(root, 'workers', 'vendor', 'java-browser-helper.jar');
   const compilerJarPath = join(root, 'workers', 'vendor', 'jdk.compiler-17.jar');
   const rewriterJarPath = join(root, 'workers', 'vendor', 'java-rewriter.jar');
@@ -37,6 +43,10 @@ async function main(): Promise<void> {
   await assertFileExists(workerPath, 'java worker asset exists');
   await assertFileExists(traceJVMWorkerPath, 'TraceJVM Java worker asset exists');
   await assertFileExists(augmentationPath, 'java source augmentation asset exists');
+  await assertFileExists(
+    syscallClientPath,
+    'TraceKernel syscall client asset exists'
+  );
   await assertFileExists(helperJarPath, 'java helper jar exists');
   await assertFileExists(compilerJarPath, 'java compiler jar exists');
   await assertFileExists(rewriterJarPath, 'java rewriter jar exists');
@@ -119,7 +129,7 @@ async function main(): Promise<void> {
   console.log('PASS: java worker contract markers present');
 
   for (const marker of [
-    'TraceJVMEngine',
+    'TraceJVMRuntimeHost',
     "traceJVMWorkerParameters.get('tracejvmBaseUrl')",
     'normalizeTraceJVMBaseUrl',
     'traceJVMRewriteSource',
@@ -130,8 +140,10 @@ async function main(): Promise<void> {
     'traceJVMRestoreRuntimeProgram',
     'traceJVMRunPreparedRuntimeProgram',
     'tracecode.java.tracejvm-prepared-program.v1',
+    'TraceCodeTraceKernelSharedSyscallClient',
+    'kernelBound: true',
     'processFiles: processFiles()',
-    'self.importScripts(CLASSIC_JAVA_WORKER_URL.href)',
+    'CLASSIC_JAVA_WORKER_URL.href',
   ]) {
     assertCondition(
       traceJVMWorkerSource.includes(marker),

@@ -59,7 +59,8 @@ function safeFile(root: string, relative: string): string | undefined {
 
 function assertPreparedResult(
   result: PreparedBrowserResult,
-  engine: BrowserEngine
+  engine: BrowserEngine,
+  isolated: boolean
 ): void {
   assert.equal(
     result.isolationOutputs.length,
@@ -129,8 +130,14 @@ function assertPreparedResult(
   );
   assert.ok(
     result.executionWorkerDeltas.length >= 6 &&
-      result.executionWorkerDeltas.every((value) => value === 1),
-    `${engine}: every prepared Java case must own one fresh hard Worker`
+      (
+        isolated
+          ? result.executionWorkerDeltas.every((value) => value === 0)
+          : result.executionWorkerDeltas.some((value) => value > 0)
+      ),
+    isolated
+      ? `${engine}: kernel-bound Java cases must replace inner JVMs without replacing the warm compiler Worker`
+      : `${engine}: compatibility execution without synchronous kernel transport must retire physical Workers`
   );
   assert.equal(
     result.aborted,
@@ -174,6 +181,10 @@ try {
     [
       '/workers/java-source-augmentations.js',
       resolve('workers/java/java-source-augmentations.js'),
+    ],
+    [
+      '/workers/shared/tracekernel-syscall-client.js',
+      resolve('workers/shared/tracekernel-syscall-client.js'),
     ],
     [
       '/workers/shared/runtime-kernel-policy-classic.js',
@@ -277,7 +288,7 @@ try {
             return globalThis.runJavaPreparedProviderBrowserTest();
           });
           try {
-            assertPreparedResult(result, engine);
+            assertPreparedResult(result, engine, isolated);
           } catch (error) {
             if (browserMessages.length > 0) {
               console.error(browserMessages.join('\n'));
