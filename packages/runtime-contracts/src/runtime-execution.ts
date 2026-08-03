@@ -53,6 +53,29 @@ export type ExecutionDiagnosticStage =
   | 'trace-driver-compile'
   | 'driver-link';
 
+export interface RuntimeExceptionFrame {
+  /** Learner-facing function name, with generated package identities removed. */
+  function: string;
+  file?: string;
+  line?: number;
+}
+
+/**
+ * Stable, language-neutral diagnostic for an exception thrown by learner code.
+ *
+ * `stack` is sanitized for display and support capture. Runtime and harness
+ * implementation frames must not cross this boundary.
+ */
+export interface RuntimeExceptionDiagnostic {
+  schema: 'tracecode.runtime-exception.v1';
+  language: string;
+  name: string;
+  qualifiedName?: string;
+  message?: string;
+  frames: RuntimeExceptionFrame[];
+  stack?: string;
+}
+
 /**
  * Non-tracing code execution outcome.
  *

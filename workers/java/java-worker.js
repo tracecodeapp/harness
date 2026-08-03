@@ -5241,6 +5241,97 @@ function javaReportFailureMessage(report, fallback = 'Java execution failed') {
   return parts.length > 0 ? parts.join('\n') : fallback;
 }
 
+function javaRuntimeExceptionDiagnostic(report) {
+  const rawRuntimeError = typeof report?.runtimeError === 'string'
+    ? report.runtimeError
+    : '';
+  const sanitizedStack = truncateJavaProjectDiagnostic(
+    sanitizeJavaRuntimeStderr(rawRuntimeError)
+  ).trim();
+  if (!sanitizedStack) return undefined;
+
+  const lines = sanitizedStack
+    .replace(/\r\n/g, '\n')
+    .split('\n')
+    .map((line) => line.trim())
+    .filter(Boolean);
+  const summary = lines.find((line) => !line.startsWith('at '));
+  if (!summary) return undefined;
+
+  const normalizedSummary = summary.replace(
+    /^Exception in thread "[^"]+"\s+/,
+    ''
+  );
+  const separator = normalizedSummary.indexOf(':');
+  const qualifiedName = (
+    separator >= 0
+      ? normalizedSummary.slice(0, separator)
+      : normalizedSummary
+  ).trim();
+  if (!qualifiedName || /\s/.test(qualifiedName)) return undefined;
+
+  const name = qualifiedName.split('.').pop() || qualifiedName;
+  const message = separator >= 0
+    ? normalizedSummary.slice(separator + 1).trim()
+    : '';
+  const frames = lines
+    .filter((line) => line.startsWith('at '))
+    .map((line) => line.slice(3).trim())
+    .map((frame) => {
+      const match = /^(.*?)(?:\(([^():]+)(?::(\d+))?\))?$/.exec(frame);
+      if (!match) return undefined;
+      const rawFunction = match[1];
+      const userClassMatch = /(?:^|\.)harness\.user\.[^.]+\.(.+)$/.exec(rawFunction);
+      const publicFunction = /^[A-Z][\w$]*(?:\.[\w$<>]+)+$/.test(rawFunction)
+        ? rawFunction
+        : undefined;
+      if (!userClassMatch && !publicFunction) return undefined;
+      const normalizedFunction = (
+        userClassMatch?.[1] ?? publicFunction
+      ).replace(/\$[^.]+/g, '');
+      const file = match[2] && match[2] !== 'Unknown Source'
+        ? match[2]
+        : undefined;
+      const line = match[3] ? Number(match[3]) : undefined;
+      return {
+        function: normalizedFunction,
+        ...(file ? { file } : {}),
+        ...(Number.isFinite(line) ? { line } : {}),
+      };
+    })
+    .filter(Boolean);
+
+  const publicStack = [
+    [name, message].filter(Boolean).join(': '),
+    ...frames.map((frame) => {
+      const location = frame.file
+        ? `${frame.file}${frame.line ? `:${frame.line}` : ''}`
+        : '';
+      return `at ${frame.function}${location ? ` (${location})` : ''}`;
+    }),
+  ].join('\n');
+
+  return {
+    schema: 'tracecode.runtime-exception.v1',
+    language: 'java',
+    name,
+    ...(qualifiedName !== name ? { qualifiedName } : {}),
+    ...(message ? { message } : {}),
+    frames,
+    stack: publicStack,
+  };
+}
+
+function javaReportFailure(report, fallback = 'Java execution failed') {
+  const diagnostic = javaRuntimeExceptionDiagnostic(report);
+  return {
+    error: diagnostic?.stack || javaReportFailureMessage(report, fallback),
+    ...(diagnostic
+      ? { diagnosticStage: 'runtime', diagnostic }
+      : {}),
+  };
+}
+
 function javaNormalizeProjectCompilerOutput(output, sourceRoot, projectRoot = '') {
   const root = String(sourceRoot ?? '').replace(/\\/g, '/').replace(/\/+$/, '');
   if (!root) return truncateJavaProjectDiagnostic(output);
@@ -7408,6 +7499,12 @@ async function prepareJavaRuntimeProgram(payload, requestId) {
   const preparedState = {
     mode,
     entryClass,
+    learnerFrame:
+      normalizedPayload.executionStyle === 'solution-method' &&
+      typeof normalizedPayload.functionName === 'string' &&
+      normalizedPayload.functionName
+        ? `Solution.${normalizedPayload.functionName}`
+        : '',
     dynamicInputs,
     normalizedPayload: {
       sourceText: normalizedPayload.sourceText,
@@ -7441,6 +7538,8 @@ function assertPreparedJavaRuntimeSnapshot(snapshot) {
     (snapshot.mode !== 'code' && snapshot.mode !== 'trace') ||
     typeof snapshot.entryClass !== 'string' ||
     !snapshot.entryClass ||
+    (snapshot.learnerFrame !== undefined &&
+      typeof snapshot.learnerFrame !== 'string') ||
     !Array.isArray(snapshot.dynamicInputs) ||
     !snapshot.normalizedPayload ||
     typeof snapshot.normalizedPayload !== 'object' ||
@@ -7476,6 +7575,10 @@ async function restorePreparedJavaRuntimeProgram(payload) {
   preparedJavaRuntimePrograms.set(snapshot.programId, {
     mode: snapshot.mode,
     entryClass: snapshot.entryClass,
+    learnerFrame:
+      typeof snapshot.learnerFrame === 'string'
+        ? snapshot.learnerFrame
+        : '',
     dynamicInputs: snapshot.dynamicInputs,
     normalizedPayload: snapshot.normalizedPayload,
     traceOptions: snapshot.traceOptions ?? {},
@@ -7544,12 +7647,10 @@ function preparedJavaResultFromReport(
       success: report.success === true,
       ...(report.success === true
         ? { output: parseJavaReportOutput(report.output) }
-        : {
-            error: javaReportFailureMessage(
-              report,
-              'Java prepared trace failed without compiler/runtime diagnostics'
-            ),
-          }),
+        : javaReportFailure(
+            report,
+            'Java prepared trace failed without compiler/runtime diagnostics'
+          )),
       events,
       ...(program.normalizedPayload.sourceText
         ? { sourceText: program.normalizedPayload.sourceText }
@@ -7581,7 +7682,7 @@ function preparedJavaResultFromReport(
     return {
       success: false,
       output: null,
-      error: javaReportFailureMessage(
+      ...javaReportFailure(
         report,
         'Java prepared execution failed without compiler/runtime diagnostics'
       ),
@@ -7659,7 +7760,8 @@ async function executePreparedJavaRuntimeProgram(payload) {
           ? resolveMaxStoredEvents(program.traceOptions)
           : 1
       ),
-      JSON.stringify(preparedInputProperties)
+      JSON.stringify(preparedInputProperties),
+      program.learnerFrame
     );
     report = JSON.parse(reportText);
   } catch (error) {
@@ -7757,7 +7859,8 @@ async function executePreparedJavaRuntimeProgramBatch(payload) {
           Number.isFinite(payload?.perCaseWallClockMs)
             ? Math.max(1, Math.floor(payload.perCaseWallClockMs))
             : 0
-        )
+        ),
+        program.learnerFrame
       );
     report = JSON.parse(reportText);
   } catch (error) {

@@ -1,7 +1,7 @@
 package tracecode.browser;
 
 import java.io.PrintWriter;
-import java.io.StringWriter;
+import java.io.Writer;
 import java.lang.reflect.InvocationTargetException;
 import java.lang.reflect.Method;
 import java.nio.charset.StandardCharsets;
@@ -26,10 +26,58 @@ public final class TraceExecutionRunner {
     return Base64.getEncoder().encodeToString(value.getBytes(StandardCharsets.UTF_8));
   }
 
-  private static String stackTrace(Throwable error) {
-    StringWriter text = new StringWriter();
+  private static final class BoundedStackWriter extends Writer {
+    private static final int MAX_CHARS = 2_048;
+    private final StringBuilder text = new StringBuilder(512);
+
+    @Override
+    public void write(char[] characters, int offset, int length) {
+      int remaining = MAX_CHARS - text.length();
+      if (remaining <= 0) return;
+      text.append(characters, offset, Math.min(length, remaining));
+    }
+
+    @Override
+    public void flush() {
+    }
+
+    @Override
+    public void close() {
+    }
+
+    @Override
+    public String toString() {
+      return text.toString();
+    }
+  }
+
+  private static String learnerFailure(
+      Throwable error,
+      String learnerFrame
+  ) {
+    if (learnerFrame != null && !learnerFrame.isEmpty()) {
+      StringBuilder result = new StringBuilder(128);
+      result.append(error.getClass().getName());
+      String message = error.getMessage();
+      if (message != null && !message.isEmpty()) {
+        result.append(": ").append(message);
+      }
+      result.append("\n\tat ").append(learnerFrame);
+      return result.toString();
+    }
+
+    BoundedStackWriter text = new BoundedStackWriter();
     error.printStackTrace(new PrintWriter(text));
-    return text.toString();
+    String result = text.toString();
+    if (result.isEmpty()) {
+      StringBuilder fallback = new StringBuilder(error.getClass().getName());
+      String message = error.getMessage();
+      if (message != null && !message.isEmpty()) {
+        fallback.append(": ").append(message);
+      }
+      return fallback.toString();
+    }
+    return result;
   }
 
   public static void main(String[] args) throws Exception {
@@ -40,6 +88,7 @@ public final class TraceExecutionRunner {
 
     String entryClass = args[0];
     int maxStoredEvents = Integer.parseInt(args[1]);
+    String learnerFrame = args.length >= 3 ? args[2] : "";
     int token = TraceHooks.beginRun(maxStoredEvents);
     Object output = null;
     Throwable failure = null;
@@ -63,7 +112,8 @@ public final class TraceExecutionRunner {
       System.out.println(LIMIT_MARKER + TraceHooks.traceLimitExceeded());
       System.out.println(DROPPED_MARKER + TraceHooks.droppedEventCount());
       if (failure != null) {
-        System.out.println(ERROR_MARKER + encode(stackTrace(failure)));
+        System.out.println(
+            ERROR_MARKER + encode(learnerFailure(failure, learnerFrame)));
       }
       TraceHooks.endRun(token);
     }

@@ -100,6 +100,8 @@ export interface JavaWorkerRawTraceResult {
   executionTimeMs: number;
   error?: string;
   errorLine?: number;
+  diagnosticStage?: 'runtime' | 'trace';
+  diagnostic?: unknown;
   consoleOutput: string[];
   traceLimitExceeded?: boolean;
   timeoutReason?: 'trace-limit';
@@ -122,6 +124,8 @@ interface JavaWorkerCodeResult {
   executionTimeMs?: number;
   error?: string;
   errorLine?: number;
+  diagnosticStage?: 'runtime';
+  diagnostic?: unknown;
   consoleOutput?: string[];
   timings?: RuntimeExecutionTimings;
   retirementRecommended?: boolean;

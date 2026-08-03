@@ -2553,16 +2553,42 @@ async function testJavaWorkerDiagnosticsAreBounded(): Promise<void> {
         sourceRoot,
         literalProjectRoot
       );
+      const runtimeFailure = javaReportFailure({
+        runtimeError: [
+          'java.lang.ArrayIndexOutOfBoundsException: Index 5 out of bounds for length 5',
+          '  at harness.user.jobm4fd62ckd78.Solution.search(Unknown Source)',
+          '  at jdk.internal.tracecode.TraceJVMRunner.main(TraceJVMRunner.java:42)',
+        ].join('\\n'),
+      });
       return {
         length: stderr.length,
         hasHugePath: stderr.includes('r'.repeat(4096)),
         hasTruncation: stderr.includes('<truncated'),
         literalStderr,
         literalExpected: literalProjectRoot + '/Main.java:1: error: boom',
+        runtimeFailure,
       };
     })()`,
     context
-  ) as { length: number; hasHugePath: boolean; hasTruncation: boolean; literalStderr: string; literalExpected: string };
+  ) as {
+    length: number;
+    hasHugePath: boolean;
+    hasTruncation: boolean;
+    literalStderr: string;
+    literalExpected: string;
+    runtimeFailure: {
+      error: string;
+      diagnosticStage?: string;
+      diagnostic?: {
+        schema?: string;
+        language?: string;
+        name?: string;
+        message?: string;
+        frames?: Array<{ function?: string }>;
+        stack?: string;
+      };
+    };
+  };
 
   assertCondition(result.length <= 66000, `Java project diagnostics should be capped: ${JSON.stringify(result)}`);
   assertCondition(!result.hasHugePath, `Java project diagnostics should cap replacement paths: ${JSON.stringify(result)}`);
@@ -2570,6 +2596,22 @@ async function testJavaWorkerDiagnosticsAreBounded(): Promise<void> {
   assertCondition(
     result.literalStderr === result.literalExpected,
     `Java project diagnostics should treat replacement roots literally: ${JSON.stringify(result)}`
+  );
+  assertCondition(
+    result.runtimeFailure.diagnosticStage === 'runtime' &&
+      result.runtimeFailure.diagnostic?.schema === 'tracecode.runtime-exception.v1' &&
+      result.runtimeFailure.diagnostic.language === 'java' &&
+      result.runtimeFailure.diagnostic.name === 'ArrayIndexOutOfBoundsException' &&
+      result.runtimeFailure.diagnostic.message === 'Index 5 out of bounds for length 5' &&
+      result.runtimeFailure.diagnostic.frames?.[0]?.function === 'Solution.search',
+    `Java runtime exceptions should emit a structured learner diagnostic: ${JSON.stringify(result.runtimeFailure)}`
+  );
+  assertCondition(
+    result.runtimeFailure.error === [
+      'ArrayIndexOutOfBoundsException: Index 5 out of bounds for length 5',
+      'at Solution.search',
+    ].join('\n'),
+    `Java runtime exception fallback text should hide generated package and runtime frames: ${JSON.stringify(result.runtimeFailure)}`
   );
 }
 

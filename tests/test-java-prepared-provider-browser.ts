@@ -26,6 +26,10 @@ interface PreparedBrowserResult {
   isolationOutputs: unknown[];
   batchIsolationOutputs: unknown[];
   batchRunnerProcessCount: number;
+  failureBatchElapsedMs: number;
+  failureBatchRunnerProcessCount: number;
+  failureBatchRecovered: boolean;
+  failureDiagnostic?: unknown;
   listOutput: unknown;
   opsOutput: unknown;
   traceOutput: unknown;
@@ -129,6 +133,32 @@ function assertPreparedResult(
     result.batchRunnerProcessCount,
     1,
     `${engine}: a clean Java batch must use exactly one inner runner process`
+  );
+  assert.equal(
+    result.failureBatchRunnerProcessCount,
+    1,
+    `${engine}: ordinary learner exceptions must not replace the leased Java runner`
+  );
+  assert.equal(
+    result.failureBatchRecovered,
+    true,
+    `${engine}: the same leased Java runner must continue after learner exceptions`
+  );
+  assert.deepEqual(
+    result.failureDiagnostic,
+    {
+      schema: 'tracecode.runtime-exception.v1',
+      language: 'java',
+      name: 'ArrayIndexOutOfBoundsException',
+      qualifiedName: 'java.lang.ArrayIndexOutOfBoundsException',
+      message: 'Index -1 out of bounds for array of length 0',
+      frames: [{ function: 'Solution.inspect' }],
+      stack: [
+        'ArrayIndexOutOfBoundsException: Index -1 out of bounds for array of length 0',
+        'at Solution.inspect',
+      ].join('\n'),
+    },
+    `${engine}: learner exceptions must expose a stable diagnostic without generated package identities`
   );
   assert.equal(
     result.listOutput,
@@ -354,7 +384,7 @@ try {
             throw error;
           }
           console.log(
-            `PASS: Java prepared provider compiles once and isolates every case in ${engine} (${isolated ? 'cross-origin isolated' : 'ordinary document'})`
+            `PASS: Java prepared provider compiles once and isolates every case in ${engine} (${isolated ? 'cross-origin isolated' : 'ordinary document'}); 2 failures + recovery ${result.failureBatchElapsedMs.toFixed(1)}ms`
           );
         } finally {
           await browser.close();

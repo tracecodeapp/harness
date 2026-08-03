@@ -951,7 +951,8 @@ async function traceJVMRunPreparedRuntimeProgram(
   programId,
   entryClass,
   maxStoredEvents = '1',
-  preparedInputProperties = '{}'
+  preparedInputProperties = '{}',
+  learnerFrame = ''
 ) {
   const normalizedProgramId = String(programId);
   const prepared = traceJVMPreparedPrograms.get(normalizedProgramId);
@@ -987,6 +988,7 @@ async function traceJVMRunPreparedRuntimeProgram(
     args: [
       String(entryClass),
       String(Number.parseInt(String(maxStoredEvents), 10) || 1),
+      String(learnerFrame),
     ],
   }, normalizedProgramId);
   prepared.executions += 1;
@@ -1012,7 +1014,8 @@ async function traceJVMRunPreparedRuntimeProgramBatch(
   entryClass,
   maxStoredEvents = '1',
   preparedInputPropertiesBatch = '[]',
-  perCaseWallClockMs = '0'
+  perCaseWallClockMs = '0',
+  learnerFrame = ''
 ) {
   const normalizedProgramId = String(programId);
   const prepared = traceJVMPreparedPrograms.get(normalizedProgramId);
@@ -1063,6 +1066,7 @@ async function traceJVMRunPreparedRuntimeProgramBatch(
         args: [
           String(entryClass),
           String(Number.parseInt(String(maxStoredEvents), 10) || 1),
+          String(learnerFrame),
         ],
       },
       systemPropertiesBatch,

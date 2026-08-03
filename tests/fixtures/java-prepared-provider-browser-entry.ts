@@ -17,6 +17,10 @@ interface PreparedBrowserResult {
   isolationOutputs: unknown[];
   batchIsolationOutputs: unknown[];
   batchRunnerProcessCount: number;
+  failureBatchElapsedMs: number;
+  failureBatchRunnerProcessCount: number;
+  failureBatchRecovered: boolean;
+  failureDiagnostic?: unknown;
   listOutput: unknown;
   opsOutput: unknown;
   traceOutput: unknown;
@@ -250,6 +254,46 @@ globalThis.runJavaPreparedProviderBrowserTest =
     await isolationPreparation.program.dispose();
     await isolationPreparation.program.dispose();
 
+    const failurePreparation = await preparedCode(
+      provider,
+      [
+        'class Solution {',
+        '  public int inspect(int value) {',
+        '    if (value < 0) return (new int[0])[value];',
+        '    return value;',
+        '  }',
+        '}',
+      ].join('\n'),
+      'inspect'
+    );
+    const failureBatchStart = performance.now();
+    const failureBatchResults =
+      await failurePreparation.program.executeBatchIsolated?.({
+        inputBatch: [{ value: -1 }, { value: -2 }, { value: 3 }],
+      });
+    const failureBatchElapsedMs = performance.now() - failureBatchStart;
+    if (!failureBatchResults) {
+      throw new Error('Prepared Java code program did not expose failure batch execution.');
+    }
+    const failureBatchRunnerProcessCount = Number(
+      (
+        failureBatchResults[0]?.timings as
+          | ({ runnerProcessCount?: number })
+          | undefined
+      )?.runnerProcessCount ?? -1
+    );
+    const failureDiagnostic =
+      failureBatchResults[0]?.kind === 'failed'
+        ? failureBatchResults[0].diagnostic
+        : undefined;
+    const failureBatchRecovered =
+      failureBatchResults.length === 3 &&
+      failureBatchResults[0]?.kind === 'failed' &&
+      failureBatchResults[1]?.kind === 'failed' &&
+      failureBatchResults[2]?.kind === 'completed' &&
+      failureBatchResults[2].output === 3;
+    await failurePreparation.program.dispose();
+
     const listPreparation = await preparedCode(
       provider,
       [
@@ -453,6 +497,10 @@ globalThis.runJavaPreparedProviderBrowserTest =
       isolationOutputs,
       batchIsolationOutputs,
       batchRunnerProcessCount,
+      failureBatchElapsedMs,
+      failureBatchRunnerProcessCount,
+      failureBatchRecovered,
+      failureDiagnostic,
       listOutput,
       opsOutput,
       traceOutput,
