@@ -1027,6 +1027,50 @@ export class TraceKernelFileSystem {
     );
   }
 
+  /**
+   * Replace a quiescent live namespace with a previously exported image.
+   *
+   * The owning kernel session must close every non-preserved file descriptor
+   * before calling this method. Keeping the operation in TKFS preserves one
+   * authoritative rollback boundary for hard links, metadata, and bytes.
+   */
+  restoreQuiescentImage(
+    image: TraceKernelFileSystemImage,
+    mutationContext?: TraceKernelFileSystemMutationContext
+  ): Effect.Effect<void, TraceKernelFileSystemError> {
+    return this.mutex.withPermits(1)(
+      Effect.try({
+        try: () => {
+          const previousPaths = [...this.nodes.keys()];
+          const previousGeneration = this.mutationGeneration;
+          this.restoreImage(image);
+          this.nextGeneration = Math.max(
+            this.nextGeneration,
+            previousGeneration + 2
+          );
+          const generation = this.beginMutation();
+          this.notifyMutation(
+            generation,
+            'rename',
+            'clear',
+            previousPaths,
+            mutationContext
+          );
+        },
+        catch: (error) =>
+          error instanceof TraceKernelFileSystemError
+            ? error
+            : this.error(
+                'EINVAL',
+                '/',
+                `EINVAL: could not restore TKFS execution scope: ${
+                  error instanceof Error ? error.message : String(error)
+                }`
+              ),
+      })
+    );
+  }
+
   clear(mutationContext?: TraceKernelFileSystemMutationContext): void {
     if (this.nodes.size > 0) {
       const paths = [...this.nodes.keys()];

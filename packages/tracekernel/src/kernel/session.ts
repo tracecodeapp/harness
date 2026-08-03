@@ -48,6 +48,7 @@ import {
   TraceKernelFileSystem,
   TraceKernelOpenFileDescription,
   type TraceKernelDirectoryEntry,
+  type TraceKernelFileSystemImage,
   type TraceKernelFileSnapshot,
   type TraceKernelMkdirOptions,
   type TraceKernelOpenFileOptions,
@@ -1250,6 +1251,65 @@ export class TraceKernelSession {
 
   fileSnapshots(): readonly TraceKernelFileSnapshot[] {
     return this.fileSystem.snapshots();
+  }
+
+  /**
+   * Restore one process-owned execution scope between cases in a leased
+   * language runtime. Non-standard descriptors are closed before TKFS rolls
+   * back, so no open file or socket can retain authority into the next case.
+   */
+  resetProcessExecutionScope(
+    process: TraceKernelProcess,
+    fileSystemImage: TraceKernelFileSystemImage,
+    preservedDescriptors: readonly number[] = [0, 1, 2]
+  ): Effect.Effect<void, Error> {
+    return Effect.gen(this, function* () {
+      yield* this.processTable.assertOwned(process);
+      yield* this.clearProcessWatchdog(process);
+      const descendantPids = new Set<number>([process.pid]);
+      const descendants: TraceKernelProcess[] = [];
+      let foundDescendant = true;
+      while (foundDescendant) {
+        foundDescendant = false;
+        for (const candidate of this.processTable.activeProcesses()) {
+          if (
+            candidate === process ||
+            descendantPids.has(candidate.pid) ||
+            !descendantPids.has(candidate.snapshot().ppid)
+          ) {
+            continue;
+          }
+          descendantPids.add(candidate.pid);
+          descendants.push(candidate);
+          foundDescendant = true;
+        }
+      }
+      yield* Effect.forEach(
+        descendants.reverse(),
+        (descendant) =>
+          descendant.signal('SIGKILL').pipe(
+            Effect.catchAll(() => Effect.void)
+          ),
+        { concurrency: 1, discard: true }
+      );
+      const preserved = new Set(preservedDescriptors);
+      const descriptors = process.descriptors
+        .snapshots()
+        .map(({ fd }) => fd)
+        .filter((fd) => !preserved.has(fd));
+      yield* Effect.forEach(
+        descriptors,
+        (fd) =>
+          process.close(fd).pipe(
+            Effect.catchAll(() => Effect.void)
+          ),
+        { concurrency: 'unbounded', discard: true }
+      );
+      yield* this.fileSystem.restoreQuiescentImage(
+        fileSystemImage,
+        { origin: process.fileSystemMutationOrigin }
+      );
+    });
   }
 
   get fileSystemGeneration(): number {
