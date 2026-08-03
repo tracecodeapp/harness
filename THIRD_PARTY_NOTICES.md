@@ -139,6 +139,14 @@ following provenance and licenses apply:
   `3fd56c74656602eb32efefca46f51f074bef6bca`, licensed under MIT,
   copyright 2025 bjvm Authors. Source:
   https://github.com/anematode/b-jvm
+- The TraceJVM 0.3 browser compiler is built from TeaVM-javac commit
+  `7e4a44cf521694a4e326e33850dd8aec165eb5c9`, licensed under Apache
+  License 2.0. Source:
+  https://github.com/konsoletyper/teavm-javac
+- TraceJVM applies a reproducible downstream overlay to TeaVM-javac. The
+  changed files and patch checksums are recorded in
+  `compiler/teavm-javac/manifest.json`; the deployed runtime retains both the
+  Apache 2.0 license text and a modification notice.
 - TraceJVM runtime profiles are assembled from Eclipse Temurin/OpenJDK
   `23.0.2+7`, distributed under GPL-2.0 WITH
   Classpath-exception-2.0. Distribution source:
@@ -152,9 +160,9 @@ following provenance and licenses apply:
 The TraceJVM runtime manifest pins the upstream archive and checksum. A
 deployed runtime asset release must retain TraceJVM's
 `THIRD_PARTY_NOTICES.md`, the b-jvm MIT notice, and the Eclipse
-Temurin/OpenJDK and Emscripten legal notices and corresponding source
-references. Those requirements belong to the separately deployed runtime
-asset surface, not to the Harness npm tarball described above.
+Temurin/OpenJDK, TeaVM-javac, and Emscripten legal notices and corresponding
+source references. Those requirements belong to the separately deployed
+runtime asset surface, not to the Harness npm tarball described above.
 
 ## C# Runtime
 
