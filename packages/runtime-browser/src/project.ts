@@ -889,7 +889,7 @@ export interface CreateBrowserProjectWorkspaceOptions
    * javac/java invocation and hard-retired by the TraceKernel adapter.
    */
   java?: BrowserProjectJavaRuntimeOptions;
-  /** Immutable TraceJVM runtime tree used by the built-in Java provider. */
+  /** Immutable Java runtime tree used by the built-in provider. */
   javaRuntimeAssetBaseUrl?: string;
   /** Runs selected project workers on a dedicated, credential-free origin. */
   executionHost?: BrowserProjectExecutionHostOptions;
@@ -936,7 +936,7 @@ export async function createBrowserProjectWorkspace(
       ? Promise.all([
           import('../../runtime-java/src/project-browser'),
           import('../../runtime-java/src/java-project'),
-          import('../../runtime-java/src/tracejvm-project-client'),
+          import('../../runtime-java/src/java-project-client'),
         ])
       : undefined,
     hasProvider('csharp')
@@ -1171,17 +1171,21 @@ export async function createBrowserProjectWorkspace(
   }
   const ownedWorkers: Array<{ terminate(): void }> = [];
   try {
-    const builtInJava: BrowserProjectJavaRuntimeOptions | undefined =
+    const builtInJavaFactory =
       hasProvider('java') &&
       !java &&
       !injectedJavaProvider &&
       builtInJavaAvailable &&
       javaProvider
+        ? javaProvider[2].createJavaProjectClientFactory({
+            runtimeAssetBaseUrl: javaRuntimeAssetBaseUrl,
+          })
+        : undefined;
+    if (builtInJavaFactory) ownedWorkers.push(builtInJavaFactory);
+    const builtInJava: BrowserProjectJavaRuntimeOptions | undefined =
+      builtInJavaFactory
         ? {
-            createClient:
-              javaProvider[2].createJavaProjectClientFactory({
-                runtimeAssetBaseUrl: javaRuntimeAssetBaseUrl,
-              }),
+            createClient: builtInJavaFactory,
           }
         : undefined;
     const selectedJava = java ?? builtInJava;

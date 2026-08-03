@@ -75,6 +75,8 @@ try {
       const requested = request.url.slice('/tracejvm/'.length);
       const relative = requested === 'browser-worker.js'
         ? 'dist/browser-worker.js'
+        : requested.startsWith('compiler/')
+          ? `.cache/teavm-javac/artifacts/${requested.slice('compiler/'.length)}`
         : `runtime/assets/${requested}`;
       const path = normalize(join(traceJVMRoot, relative));
       if (

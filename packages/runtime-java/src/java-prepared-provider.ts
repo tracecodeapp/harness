@@ -31,7 +31,7 @@ export interface JavaPreparedExecutionProviderOptions {
   /**
    * Creates one warm compiler Worker client owned by this provider.
    *
-   * A prepared program leases that client while TraceJVM replaces the inner
+   * A prepared program leases that client while the runtime replaces the inner
    * runner JVM and TraceKernel process for every case. A hard Worker failure
    * restores only the immutable compiled snapshot into a new generation.
    */

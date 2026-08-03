@@ -31,7 +31,9 @@ export interface TraceKernelTraceJVMResult {
   interrupted: TraceKernelCommandResult;
   restarted: TraceKernelCommandResult;
   classFileBase64: string;
-  workerCount: number;
+  compilerWorkerCount: number;
+  runnerWorkerCount: number;
+  processClientCount: number;
   reports: TraceKernelTraceJVMExecutionReport[];
 }
 
@@ -171,10 +173,16 @@ export function inspectTraceKernelTraceJVMResult(
       result.restarted
     ),
     check(
-      'worker-retirement',
-      'Every process-owned TraceJVM worker is retired at its boundary',
-      result.workerCount === 18,
-      { workerCount: result.workerCount }
+      'compiler-runner-lifecycle',
+      'One warm compiler serves fresh process-scoped runner workers',
+      result.compilerWorkerCount === 1 &&
+        result.runnerWorkerCount === 17 &&
+        result.processClientCount === 18,
+      {
+        compilerWorkerCount: result.compilerWorkerCount,
+        runnerWorkerCount: result.runnerWorkerCount,
+        processClientCount: result.processClientCount,
+      }
     ),
     check(
       'execution-reports',

@@ -44,6 +44,8 @@ export {
   type JavaProjectClient,
   type JavaProjectClientContext,
   type JavaProjectClientFactory,
+  type JavaProjectWorkerLike,
+  type ManagedJavaProjectClientFactory,
   type JavaProjectBinaryFile,
   type JavaProjectCompileRequest,
   type JavaProjectCompileResult,
@@ -59,4 +61,4 @@ export {
 export {
   createJavaProjectClientFactory,
   type JavaProjectClientFactoryOptions,
-} from './tracejvm-project-client';
+} from './java-project-client';

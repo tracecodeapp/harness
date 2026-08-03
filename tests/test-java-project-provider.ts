@@ -603,7 +603,7 @@ async function testBrowserWorkspaceRequiresExplicitJavaProvider(): Promise<void>
 }
 
 await testKernelLeaseUsesFreshWorkers();
-console.log('PASS: Java project adapter binds one kernel coordinator and fresh Workers per invocation');
+console.log('PASS: Java project adapter binds one kernel coordinator and fresh process clients per invocation');
 await testCancellationHardRetiresWorker();
 console.log('PASS: Java project adapter maps signals to hard Worker retirement');
 await testUnsupportedBoundaryIsExplicit();

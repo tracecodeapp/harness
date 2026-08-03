@@ -101,7 +101,9 @@ async function launchPage(
 
 export async function createTraceJVMSemanticTraceRuntime(
 ): Promise<TraceJVMSemanticTraceRuntime> {
-  const traceJVMRoot = resolve('../tracejvm');
+  const traceJVMRoot = resolve(
+    process.env.TRACECODE_TRACEJVM_ROOT ?? '../tracejvm'
+  );
   const temporaryDirectory = mkdtempSync(join(tmpdir(), 'tracejvm-semantic-trace-'));
   const bundlePath = join(temporaryDirectory, 'tracejvm-semantic-trace.js');
   await build({
@@ -141,6 +143,8 @@ export async function createTraceJVMSemanticTraceRuntime(
         const requested = request.url.slice('/tracejvm/'.length);
         const relative = requested === 'browser-worker.js'
           ? 'dist/browser-worker.js'
+          : requested.startsWith('compiler/')
+            ? `.cache/teavm-javac/artifacts/${requested.slice('compiler/'.length)}`
           : `runtime/assets/${requested}`;
         const path = normalize(join(traceJVMRoot, relative));
         if (!path.startsWith(`${traceJVMRoot}/`) || !statSync(path).isFile()) {

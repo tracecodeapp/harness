@@ -1,14 +1,11 @@
 import {
-  TraceJVMWorkerClient,
+  TraceJVMRuntimeHostWorkerClient,
   type TraceJVMBinaryFile,
   type TraceJVMCompileResult,
   type TraceJVMExecuteResult,
+  type TraceJVMWorkerHost,
   type TraceJVMWorkerLike,
 } from '@tracecode/tracejvm';
-import {
-  invalidateJavaProjectWarmup,
-  warmJavaProjectClient,
-} from '../../packages/runtime-java/src/java-project-runtime';
 
 declare const __TRACECODE_TRACEJVM_HOT_AOT__: boolean;
 
@@ -78,16 +75,21 @@ async function binaryFileFromUrl(
   };
 }
 
-const client = new TraceJVMWorkerClient({
-  engine: {
+const client = new TraceJVMRuntimeHostWorkerClient({
+  runtimeHost: {
     assets: {
       runtimeProfileBaseUrls: {
         core: '/tracejvm/profiles/core',
       },
       wasmUrl: '/tracejvm/bjvm_main.wasm',
     },
+    compiler: {
+      assets: {
+        baseUrl: '/tracejvm/compiler',
+      },
+    },
     runtimeProfile: 'core',
-    retirementAfterExecutions: 64,
+    retirementAfterExecutions: 1,
     experiments: {
       hotAot: __TRACECODE_TRACEJVM_HOT_AOT__,
     },
@@ -101,21 +103,20 @@ const helperJarPromise = binaryFileFromUrl(
   'java-browser-helper.jar',
   '/fixture/java-browser-helper.jar',
 );
-function prewarmClient(): void {
-  void warmJavaProjectClient(client).catch(() => undefined);
-}
-
-function retireAndPrewarmClient(): void {
-  invalidateJavaProjectWarmup(client);
-  prewarmClient();
-}
-
-prewarmClient();
+const unavailableHost: TraceJVMWorkerHost = Object.freeze({
+  dispatch() {
+    throw Object.assign(new Error('TraceKernel host is unavailable.'), {
+      name: 'ENOSYS',
+    });
+  },
+});
+const prewarm = client.initialize();
+void prewarm.catch(() => undefined);
 
 globalThis.runTraceJVMSemanticTrace = async (request) => {
   const [helperJar] = await Promise.all([
     helperJarPromise,
-    warmJavaProjectClient(client),
+    prewarm,
   ]);
   const startedAt = performance.now();
   const sourceClass = request.entryClass.split('.').at(-1);
@@ -129,7 +130,6 @@ globalThis.runTraceJVMSemanticTrace = async (request) => {
       classpath: [helperJar],
     });
   } catch (error) {
-    invalidateJavaProjectWarmup(client);
     throw error;
   }
   const compileEndedAt = performance.now();
@@ -151,8 +151,14 @@ globalThis.runTraceJVMSemanticTrace = async (request) => {
 
   const runStartedAt = performance.now();
   let run: TraceJVMExecuteResult;
+  const process = await client.createProcess({
+    host: unavailableHost,
+    workingDirectory: '/',
+    hostStandardDescriptors: false,
+    retirementAfterExecutions: 1,
+  });
   try {
-    run = await client.run({
+    run = await process.run({
       program: compile.program,
       classpath: [helperJar],
       mainClass: 'tracecode.browser.TraceExecutionRunner',
@@ -161,12 +167,8 @@ globalThis.runTraceJVMSemanticTrace = async (request) => {
         bytecodeProfile: request.profileBytecode,
       },
     });
-  } catch (error) {
-    invalidateJavaProjectWarmup(client);
-    throw error;
-  }
-  if (run.retirementRecommended) {
-    retireAndPrewarmClient();
+  } finally {
+    await process.disposeAsync();
   }
   const runEndedAt = performance.now();
   const lines = run.stdout.split(/\r?\n/u);

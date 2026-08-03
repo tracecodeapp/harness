@@ -138,6 +138,24 @@ export type JavaProjectClientFactory =
     context: JavaProjectClientContext
   ) => JavaProjectClient | Promise<JavaProjectClient>;
 
+export interface ManagedJavaProjectClientFactory extends JavaProjectClientFactory {
+  /** Retires the compiler/runtime host owned by this factory. */
+  terminate(): void;
+}
+
+export interface JavaProjectWorkerLike {
+  postMessage(message: unknown): void;
+  addEventListener(
+    type: 'message' | 'error',
+    listener: (event: MessageEvent | ErrorEvent) => void
+  ): void;
+  removeEventListener(
+    type: 'message' | 'error',
+    listener: (event: MessageEvent | ErrorEvent) => void
+  ): void;
+  terminate(): void;
+}
+
 export const JAVA_PROJECT_CAPABILITIES = Object.freeze({
   provider: 'java',
   javaVersion: '23',
@@ -712,7 +730,7 @@ export function createJavaProjectRunner(
           client === null
         ) {
           throw new TypeError(
-            'Java project createClient must return a fresh Worker client object.'
+            'Java project createClient must return a fresh process client object.'
           );
         }
         if (admittedClients.has(client)) {

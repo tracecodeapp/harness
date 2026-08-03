@@ -1,7 +1,9 @@
 import {
-  TraceJVMWorkerClient,
   type TraceJVMWorkerLike,
 } from '@tracecode/tracejvm';
+import {
+  createJavaProjectClientFactory,
+} from '../../packages/runtime-java/src/java-project-client';
 import {
   createRuntimeCommandStdinPipeFromText,
 } from '../../packages/runtime-contracts/src/index';
@@ -16,13 +18,26 @@ declare global {
 }
 
 globalThis.runTraceKernelTraceJVMTest = async (): Promise<TraceKernelTraceJVMResult> => {
-  let workerCount = 0;
+  let compilerWorkerCount = 0;
+  let runnerWorkerCount = 0;
+  let processClientCount = 0;
   const reports: Array<{
     source: string;
     status: string;
     isolation: string;
     retirementRecommended: boolean;
   }> = [];
+  const managedJavaFactory = createJavaProjectClientFactory({
+    runtimeAssetBaseUrl: '/tracejvm',
+    runtimeProfile: 'spring-server',
+    createWorker(workerUrl, role) {
+      if (role === 'compiler') compilerWorkerCount += 1;
+      else runnerWorkerCount += 1;
+      return new Worker(workerUrl, {
+        type: 'module',
+      }) as unknown as TraceJVMWorkerLike;
+    },
+  });
   const workspace = await createBrowserProjectWorkspace({
     providers: ['java', 'javascript'],
     env: { TRACE_PARENT: 'kernel-😀' },
@@ -109,6 +124,11 @@ globalThis.runTraceKernelTraceJVMTest = async (): Promise<TraceKernelTraceJVMRes
         '          && completedSleeper == sleeper',
         '          && sleeper.exitValue() == 143',
         '          && !sleeper.isAlive();',
+        '      if (!signalMatches) {',
+        '        System.err.println("sleeper-debug:" + sleeperReady + ":"',
+        '            + destroyAccepted + ":" + (completedSleeper == sleeper) + ":"',
+        '            + sleeper.exitValue() + ":" + sleeper.isAlive());',
+        '      }',
         '      ProcessBuilder childBuilder = new ProcessBuilder("java", "-cp", "build", "Child", "trace-😀").redirectErrorStream(true);',
         '      childBuilder.environment().put("TRACE_CHILD", "child-😀");',
         '      Process child = childBuilder.start();',
@@ -353,25 +373,8 @@ globalThis.runTraceKernelTraceJVMTest = async (): Promise<TraceKernelTraceJVMRes
       // budget to compile it in the browser.
       timeoutMs: 60_000,
       createClient(context) {
-        workerCount += 1;
-        return new TraceJVMWorkerClient({
-          engine: {
-            assets: {
-              runtimeProfileBaseUrls: {
-                core: '/tracejvm/profiles/core',
-              },
-              wasmUrl: '/tracejvm/bjvm_main.wasm',
-            },
-            workingDirectory: context.cwd,
-            hostStandardDescriptors: context.hostStandardDescriptors,
-            runtimeProfile: 'core',
-            retirementAfterExecutions: 1,
-          },
-          createWorker: () => new Worker('/tracejvm/browser-worker.js', {
-            type: 'module',
-          }) as unknown as TraceJVMWorkerLike,
-          ...(context.host ? { host: context.host } : {}),
-        });
+        processClientCount += 1;
+        return managedJavaFactory(context);
       },
       onExecutionReport(report) {
         reports.push({
@@ -498,10 +501,13 @@ globalThis.runTraceKernelTraceJVMTest = async (): Promise<TraceKernelTraceJVMRes
       interrupted,
       restarted,
       classFileBase64,
-      workerCount,
+      compilerWorkerCount,
+      runnerWorkerCount,
+      processClientCount,
       reports,
     };
   } finally {
     await workspace.destroy();
+    managedJavaFactory.terminate();
   }
 };

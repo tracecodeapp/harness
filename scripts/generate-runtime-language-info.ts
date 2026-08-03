@@ -238,7 +238,7 @@ function buildJavaDescription(input: {
   defaultImports: readonly string[];
 }): string {
   return [
-    `Java ${input.javaVersion} is compiled with javac ${input.javaVersion} and executed through TraceJVM or CheerpJ on TraceKernel.`,
+    `Java ${input.javaVersion} is compiled with javac ${input.javaVersion} and executed by the Java runtime on TraceKernel.`,
     '',
     `Common imports are added automatically: ${input.defaultImports.join(', ')}.`,
   ].join('\n');
@@ -405,7 +405,7 @@ async function buildRuntimeInfo(): Promise<Record<string, RuntimeInfo>> {
       runtime: {
         name: 'TraceKernel Java runtime',
         version: javaVersion,
-        detail: 'Runs through TraceJVM or CheerpJ on TraceKernel.',
+        detail: 'Runs through the Java runtime on TraceKernel.',
       },
       compiler: {
         name: 'javac',
