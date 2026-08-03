@@ -2082,11 +2082,11 @@ The compiled output runs on the same TraceKernel execution lane as JavaScript su
         "name": "TraceKernel",
         "version": "0.14.6"
       },
-      "description": "Java 23 is compiled with javac 23 and executed through TraceJVM or CheerpJ on TraceKernel.\n\nCommon imports are added automatically: java.util.*, java.io.*, java.math.*, java.util.stream.*, javafx.util.Pair.",
+      "description": "Java 23 is compiled with javac 23 and executed by the Java runtime on TraceKernel.\n\nCommon imports are added automatically: java.util.*, java.io.*, java.math.*, java.util.stream.*, javafx.util.Pair.",
       "runtime": {
         "name": "TraceKernel Java runtime",
         "version": "23",
-        "detail": "Runs through TraceJVM or CheerpJ on TraceKernel."
+        "detail": "Runs through the Java runtime on TraceKernel."
       },
       "compiler": {
         "name": "javac",
