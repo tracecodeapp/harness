@@ -254,6 +254,16 @@ descriptor/syscall protocol.
 Immutable reads may be cached only against kernel-issued generations. A kernel
 mutation invalidates any cache whose generation is no longer current.
 
+Regular-file nodes keep logical EOF separate from growable backing capacity.
+Small positioned writes therefore grow geometrically instead of cloning the
+complete file after every syscall. Reads, `stat`, quota accounting, snapshots,
+image export, hard links, append, sparse writes, and truncate observe only the
+logical size; a large backing allocation is compacted after a substantial
+truncate. This is a performance invariant, not a weaker filesystem model.
+`node --import tsx scripts/benchmark-tracekernel-seekable-output.mts` preserves
+the 133,322-write LLVM object-emission workload that originally exposed the
+quadratic path.
+
 The 0.12 filesystem syscall experiment established that synchronous browser
 workers can use a SharedArrayBuffer transport and that generation-validated hot
 reads can approach snapshot performance. SharedArrayBuffer is one transport

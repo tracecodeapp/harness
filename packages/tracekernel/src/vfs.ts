@@ -145,7 +145,9 @@ interface TraceKernelNodeBase {
 
 interface TraceKernelFileNode extends TraceKernelNodeBase {
   readonly kind: 'file';
+  /** Growable backing storage. Bytes at and beyond `size` are not file data. */
   contents: Uint8Array;
+  size: number;
 }
 
 interface TraceKernelDirectoryNode extends TraceKernelNodeBase {
@@ -558,7 +560,7 @@ export class TraceKernelFileSystem {
           if (!node) return this.fail('ENOENT', filePath, 'no such file');
           return node.kind === 'file'
             ? Effect.succeed(Object.freeze({
-                contents: Uint8Array.from(node.contents),
+                contents: node.contents.slice(0, node.size),
                 cacheGeneration: this.cacheGeneration,
               }))
             : this.fail('EISDIR', filePath, 'is a directory');
@@ -600,6 +602,7 @@ export class TraceKernelFileSystem {
           const timestamp = Date.now();
           if (existing) {
             existing.contents = Uint8Array.from(contents);
+            existing.size = contents.byteLength;
             this.touchNode(existing, generation, timestamp, true);
           } else {
             this.nodes.set(filePath, this.makeFile(
@@ -649,9 +652,9 @@ export class TraceKernelFileSystem {
           const quotaError = this.additionalQuotaError(
             [newResult],
             existing.kind === 'file'
-              ? existing.contents.byteLength
+              ? existing.size
               : new TextEncoder().encode(existing.target).byteLength,
-            existing.kind === 'file' ? existing.contents.byteLength : undefined
+            existing.kind === 'file' ? existing.size : undefined
           );
           if (quotaError) return Effect.fail(quotaError);
           this.nodes.set(newResult, existing);
@@ -888,7 +891,8 @@ export class TraceKernelFileSystem {
             }
             const quotaError = this.quotaResizeError(existing, 0);
             if (quotaError) return Effect.fail(quotaError);
-            existing.contents = new Uint8Array(0);
+            existing.size = 0;
+            this.releaseExcessFileCapacity(existing);
             const generation = this.beginMutation();
             this.touchNode(existing, generation, Date.now(), true);
             this.notifyMutation(generation, 'change', 'open-truncate', this.pathsForNode(existing), mutationContext);
@@ -905,7 +909,12 @@ export class TraceKernelFileSystem {
     maxBytes: number
   ): Effect.Effect<Uint8Array, TraceKernelFileSystemError> {
     return this.mutex.withPermits(1)(
-      Effect.sync(() => file.node.contents.slice(offset, offset + maxBytes))
+      Effect.sync(() =>
+        file.node.contents.slice(
+          Math.min(offset, file.node.size),
+          Math.min(offset + maxBytes, file.node.size)
+        )
+      )
     );
   }
 
@@ -923,12 +932,15 @@ export class TraceKernelFileSystem {
     return this.mutex.withPermits(1)(
       Effect.suspend(() => {
         const nextLength = Math.max(0, Math.floor(length));
-        if (file.node.contents.byteLength === nextLength) return Effect.void;
+        if (file.node.size === nextLength) return Effect.void;
         const quotaError = this.quotaResizeError(file.node, nextLength);
         if (quotaError) return Effect.fail(quotaError);
-        const next = new Uint8Array(nextLength);
-        next.set(file.node.contents.slice(0, nextLength));
-        file.node.contents = next;
+        this.ensureFileCapacity(file.node, nextLength);
+        if (nextLength > file.node.size) {
+          file.node.contents.fill(0, file.node.size, nextLength);
+        }
+        file.node.size = nextLength;
+        this.releaseExcessFileCapacity(file.node);
         const generation = this.beginMutation();
         this.touchNode(file.node, generation, Date.now(), true);
         this.notifyMutation(generation, 'change', 'truncate', this.pathsForNode(file.node), mutationContext);
@@ -947,14 +959,19 @@ export class TraceKernelFileSystem {
     return this.mutex.withPermits(1)(
       Effect.suspend(() => {
         const node = file.node;
-        const writeOffset = append ? node.contents.byteLength : offset;
-        const nextLength = Math.max(node.contents.byteLength, writeOffset + bytes.byteLength);
+        const writeOffset = append ? node.size : offset;
+        if (bytes.byteLength === 0) {
+          return Effect.succeed(writeOffset);
+        }
+        const nextLength = Math.max(node.size, writeOffset + bytes.byteLength);
         const quotaError = this.quotaResizeError(node, nextLength);
         if (quotaError) return Effect.fail(quotaError);
-        const next = new Uint8Array(nextLength);
-        next.set(node.contents);
-        next.set(bytes, writeOffset);
-        node.contents = next;
+        this.ensureFileCapacity(node, nextLength);
+        if (writeOffset > node.size) {
+          node.contents.fill(0, node.size, writeOffset);
+        }
+        node.contents.set(bytes, writeOffset);
+        node.size = nextLength;
         if (bytes.byteLength > 0) {
           const generation = this.beginMutation();
           this.touchNode(node, generation, Date.now(), true);
@@ -970,7 +987,7 @@ export class TraceKernelFileSystem {
       .filter((entry): entry is [string, TraceKernelFileNode] => entry[1].kind === 'file')
       .map(([path, node]) => Object.freeze({
         path,
-        contents: Uint8Array.from(node.contents),
+        contents: node.contents.slice(0, node.size),
         generation: node.generation,
       }))
       .sort((left, right) => left.path.localeCompare(right.path));
@@ -1005,7 +1022,7 @@ export class TraceKernelFileSystem {
               return Object.freeze({
                 ...metadata,
                 kind: 'file',
-                contents: Uint8Array.from(node.contents),
+                contents: node.contents.slice(0, node.size),
               });
             }
             if (node.kind === 'symlink') {
@@ -1090,6 +1107,7 @@ export class TraceKernelFileSystem {
           ...base,
           kind: 'file',
           contents: Uint8Array.from(inode.contents),
+          size: inode.contents.byteLength,
         };
       } else if (inode.kind === 'directory') {
         node = { ...base, kind: 'directory' };
@@ -1209,7 +1227,7 @@ export class TraceKernelFileSystem {
     }
     const usage = this.quotaUsage(this.nodes);
     const nextBytes =
-      usage.bytes + (nextSize - node.contents.byteLength) * countedPaths.length;
+      usage.bytes + (nextSize - node.size) * countedPaths.length;
     if (nextBytes > this.quota.maxBytes) {
       return this.error('ENOSPC', countedPaths[0]!, 'TKFS byte quota exceeded');
     }
@@ -1245,8 +1263,8 @@ export class TraceKernelFileSystem {
       if (!this.quotaCountsPath(path)) continue;
       entries += 1;
       if (node.kind === 'file') {
-        bytes += node.contents.byteLength;
-        largestFileBytes = Math.max(largestFileBytes, node.contents.byteLength);
+        bytes += node.size;
+        largestFileBytes = Math.max(largestFileBytes, node.size);
       } else if (node.kind === 'symlink') {
         bytes += new TextEncoder().encode(node.target).byteLength;
       }
@@ -1269,11 +1287,35 @@ export class TraceKernelFileSystem {
       inode: this.nextInode++,
       mode,
       contents,
+      size: contents.byteLength,
       generation,
       createdAt: timestamp,
       modifiedAt: timestamp,
       changedAt: timestamp,
     };
+  }
+
+  private ensureFileCapacity(node: TraceKernelFileNode, requiredSize: number): void {
+    if (requiredSize <= node.contents.byteLength) return;
+    let capacity = Math.max(4096, node.contents.byteLength);
+    while (capacity < requiredSize) {
+      capacity = Math.max(capacity + 1, capacity * 2);
+    }
+    const grown = new Uint8Array(capacity);
+    grown.set(node.contents.subarray(0, node.size));
+    node.contents = grown;
+  }
+
+  private releaseExcessFileCapacity(node: TraceKernelFileNode): void {
+    if (
+      node.contents.byteLength <= 1024 * 1024 ||
+      node.size * 4 >= node.contents.byteLength
+    ) {
+      return;
+    }
+    const compacted = new Uint8Array(node.size);
+    compacted.set(node.contents.subarray(0, node.size));
+    node.contents = compacted;
   }
 
   private makeDirectory(
@@ -1317,7 +1359,7 @@ export class TraceKernelFileSystem {
       nlink: this.linkCount(node),
       mode: node.mode,
       size: node.kind === 'file'
-        ? node.contents.byteLength
+        ? node.size
         : node.kind === 'symlink'
           ? new TextEncoder().encode(node.target).byteLength
           : 0,
