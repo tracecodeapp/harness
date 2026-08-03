@@ -36,6 +36,8 @@ async function main(t: TestContext): Promise<void> {
     'javascript-project-worker.js',
     'java-worker.js',
     'java-runtime-worker.js',
+    'shared/tracekernel-syscall-client.js',
+    'shared/tracekernel-local-java-host.js',
     'cpp-worker.js',
     'shared/runtime-kernel-policy.js',
     'cpp-compiler-frame.html',

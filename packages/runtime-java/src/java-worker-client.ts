@@ -15,7 +15,9 @@ import type {
   RuntimeBatchCall,
   RuntimeCodeCall,
   RuntimeExecutionTimings,
+  RuntimePreparedCodeBatchCall,
   RuntimePreparedCodeCall,
+  RuntimePreparedTraceBatchCall,
   RuntimePreparedTraceCall,
   RuntimeProgramPreparationCall,
   RuntimeTraceCall,
@@ -126,6 +128,19 @@ interface JavaWorkerCodeResult {
   runtimeIsolation?: unknown;
 }
 
+interface JavaWorkerPreparedBatchResult<Result> {
+  success: boolean;
+  results: Result[];
+  error?: string;
+  executionTimeMs?: number;
+  timings?: RuntimeExecutionTimings;
+}
+
+interface JavaWorkerRawPreparedTraceBatchItem
+  extends Omit<JavaWorkerRawTraceResult, 'events'> {
+  trace: { events: string[] };
+}
+
 export interface JavaWorkerPreparedProgramSnapshot {
   readonly schema: 'tracecode.java.prepared-program-snapshot.v1';
   readonly programId: string;
@@ -218,6 +233,52 @@ export class JavaWorkerClient {
         }
       },
       onCommandMessage: (commandId, type, payload, pending) => {
+        if (type === 'kernel-execution-scope-reset') {
+          const requestId =
+            typeof payload === 'object' &&
+            payload !== null &&
+            'requestId' in payload &&
+            typeof payload.requestId === 'string'
+              ? payload.requestId
+              : '';
+          const session = this.core.currentSession;
+          const reset = pending.kernelSyscalls?.resetExecutionScope;
+          void (
+            requestId && session && reset
+              ? reset()
+              : Promise.reject(
+                  new Error(
+                    'Java batch requested a TraceKernel execution-scope reset without an active host checkpoint.'
+                  )
+                )
+          ).then(
+            () => {
+              if (!session || this.core.currentSession !== session) return;
+              session.worker.postMessage({
+                id: commandId,
+                type: 'kernel-execution-scope-reset-complete',
+                protocolToken: pending.protocolToken,
+                payload: { requestId },
+              });
+            },
+            (error) => {
+              if (this.core.currentSession !== session) return;
+              session?.worker.postMessage({
+                id: commandId,
+                type: 'kernel-execution-scope-reset-failed',
+                protocolToken: pending.protocolToken,
+                payload: {
+                  requestId,
+                  error:
+                    error instanceof Error
+                      ? error.message
+                      : String(error),
+                },
+              });
+            }
+          );
+          return true;
+        }
         if (type === 'kernel-syscall') {
           if (!pending.kernelSyscalls) return true;
           void pending.kernelSyscalls.service().catch(() => {
@@ -697,6 +758,65 @@ export class JavaWorkerClient {
     }
   }
 
+  async executePreparedCodeBatch(
+    programId: string,
+    call: RuntimePreparedCodeBatchCall
+  ): Promise<readonly JavaWorkerPreparedCodeResult[]> {
+    if (call.inputBatch.length === 0) return [];
+    const kernelProcess = await createJavaKernelProcess();
+    const perCaseWallClockMs =
+      call.limits?.wallClockMs ?? EXECUTION_TIMEOUT_MS;
+    const program = this.initGateEffect().pipe(
+      Effect.andThen(
+        this.core.withExecutionDeadline(
+          this.core.sendMessageEffect<
+            JavaWorkerPreparedBatchResult<JavaWorkerCodeResult>
+          >(
+            'execute-prepared-runtime-program-batch',
+            {
+              programId,
+              inputBatch: call.inputBatch,
+              perCaseWallClockMs,
+            },
+            null,
+            undefined,
+            undefined,
+            undefined,
+            kernelProcess.bridge
+          ),
+          perCaseWallClockMs * call.inputBatch.length
+        )
+      )
+    );
+    try {
+      const result = await this.core.runClientEffect(program, call.signal);
+      if (result.results.length !== call.inputBatch.length) {
+        throw new Error(
+          result.error ??
+            `Java prepared batch returned ${result.results.length} results for ${call.inputBatch.length} cases.`
+        );
+      }
+      await kernelProcess.complete(result.success ? 0 : 1);
+      if (
+        kernelProcess.bridge &&
+        kernelProcess.retireWorkerAfterCompletion
+      ) {
+        this.core.closeSession();
+      }
+      return result.results.map((entry) => ({
+        ...liftCodeOutcome(entry, 'Java prepared execution failed'),
+        retirementRecommended:
+          entry.retirementRecommended === true,
+        ...(entry.runtimeIsolation === undefined
+          ? {}
+          : { runtimeIsolation: entry.runtimeIsolation }),
+      }));
+    } catch (error) {
+      await kernelProcess.fail(error);
+      throw error;
+    }
+  }
+
   async executePreparedWithTracing(
     programId: string,
     call: RuntimePreparedTraceCall,
@@ -751,6 +871,93 @@ export class JavaWorkerClient {
           ? {}
           : { runtimeIsolation: result.runtimeIsolation }),
       };
+    } catch (error) {
+      await kernelProcess.fail(error);
+      throw error;
+    }
+  }
+
+  async executePreparedTraceBatch(
+    programId: string,
+    call: RuntimePreparedTraceBatchCall,
+    traceOptions?: JavaTraceExecutionOptions
+  ): Promise<readonly JavaWorkerPreparedTraceResult[]> {
+    if (call.inputBatch.length === 0) return [];
+    const kernelProcess = await createJavaKernelProcess();
+    const perCaseWallClockMs =
+      call.limits?.wallClockMs ??
+      (
+        Number.isFinite(this.options.tracingTimeoutMs) &&
+        Number(this.options.tracingTimeoutMs) > 0
+          ? Math.floor(Number(this.options.tracingTimeoutMs))
+          : TRACING_TIMEOUT_MS
+      );
+    const program = this.initGateEffect().pipe(
+      Effect.andThen(
+        this.core.withExecutionDeadline(
+          this.core.sendMessageEffect<
+            JavaWorkerPreparedBatchResult<
+              JavaWorkerRawPreparedTraceBatchItem
+            >
+          >(
+            'execute-prepared-runtime-program-batch',
+            {
+              programId,
+              inputBatch: call.inputBatch,
+              perCaseWallClockMs,
+              traceEventTransport: traceEventTransferRequest(),
+            },
+            null,
+            undefined,
+            undefined,
+            undefined,
+            kernelProcess.bridge
+          ),
+          perCaseWallClockMs * call.inputBatch.length
+        )
+      )
+    );
+    try {
+      const result = await this.core.runClientEffect(program, call.signal);
+      if (result.results.length !== call.inputBatch.length) {
+        throw new Error(
+          result.error ??
+            `Java prepared trace batch returned ${result.results.length} results for ${call.inputBatch.length} cases.`
+        );
+      }
+      await kernelProcess.complete(result.success ? 0 : 1);
+      if (
+        kernelProcess.bridge &&
+        kernelProcess.retireWorkerAfterCompletion
+      ) {
+        this.core.closeSession();
+      }
+      return result.results.map((entry) => {
+        const events = entry.trace.events;
+        return {
+          ...entry,
+          events,
+          trace: entry.success
+            ? javaTraceHooksEventsToRuntimeTrace(
+                events,
+                entry.sourceText,
+                {
+                  runId: 'java:run',
+                  file: JAVA_DEFAULT_FILE,
+                  maxPathDepth: traceOptions?.maxPathDepth,
+                }
+              )
+            : createEmptyRuntimeTrace('java', {
+                runId: 'java:run',
+                file: JAVA_DEFAULT_FILE,
+              }),
+          retirementRecommended:
+            entry.retirementRecommended === true,
+          ...(entry.runtimeIsolation === undefined
+            ? {}
+            : { runtimeIsolation: entry.runtimeIsolation }),
+        };
+      });
     } catch (error) {
       await kernelProcess.fail(error);
       throw error;

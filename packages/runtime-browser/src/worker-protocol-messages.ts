@@ -51,6 +51,7 @@ export const WORKER_REQUEST_MESSAGES: Readonly<Record<BrowserWorkerProtocolLangu
     'prepare-runtime-program',
     'restore-prepared-runtime-program',
     'execute-prepared-runtime-program',
+    'execute-prepared-runtime-program-batch',
     'dispose-prepared-runtime-program',
   ],
   csharp: [

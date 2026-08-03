@@ -29,6 +29,14 @@ interface FakeClientState {
   restoreCalls: JavaWorkerPreparedProgramSnapshot[];
   codeCalls: Array<{ programId: string; inputs: Record<string, unknown> }>;
   traceCalls: Array<{ programId: string; inputs: Record<string, unknown> }>;
+  codeBatchCalls: Array<{
+    programId: string;
+    inputBatch: readonly Record<string, unknown>[];
+  }>;
+  traceBatchCalls: Array<{
+    programId: string;
+    inputBatch: readonly Record<string, unknown>[];
+  }>;
   disposeCalls: string[];
   terminateCalls: number;
 }
@@ -73,6 +81,8 @@ function createFakeClient(options: {
     restoreCalls: [],
     codeCalls: [],
     traceCalls: [],
+    codeBatchCalls: [],
+    traceBatchCalls: [],
     disposeCalls: [],
     terminateCalls: 0,
   };
@@ -137,6 +147,38 @@ function createFakeClient(options: {
           options.retireAfterCodeCalls?.has(state.codeCalls.length) === true,
       };
     },
+    async executePreparedCodeBatch(
+      programId: string,
+      call: {
+        inputBatch: readonly Record<string, unknown>[];
+        signal?: AbortSignal;
+      }
+    ) {
+      state.codeBatchCalls.push({
+        programId,
+        inputBatch: call.inputBatch,
+      });
+      return Promise.all(
+        call.inputBatch.map(async (inputs) => {
+          state.codeCalls.push({ programId, inputs });
+          if (options.codeFailure) throw options.codeFailure;
+          if (options.executeCode) {
+            return options.executeCode(
+              programId,
+              { inputs, signal: call.signal },
+              state
+            );
+          }
+          return {
+            kind: 'completed' as const,
+            output: inputs.value,
+            consoleOutput: [],
+            timings: { compileMs: 0, runMs: 2, totalMs: 2 },
+            retirementRecommended: false,
+          };
+        })
+      );
+    },
     async executePreparedWithTracing(
       programId: string,
       call: { inputs: Record<string, unknown> }
@@ -154,6 +196,31 @@ function createFakeClient(options: {
         timings: { compileMs: 0, runMs: 2, totalMs: 2 },
         retirementRecommended: false,
       };
+    },
+    async executePreparedTraceBatch(
+      programId: string,
+      call: {
+        inputBatch: readonly Record<string, unknown>[];
+      }
+    ) {
+      state.traceBatchCalls.push({
+        programId,
+        inputBatch: call.inputBatch,
+      });
+      return call.inputBatch.map((inputs) => {
+        state.traceCalls.push({ programId, inputs });
+        return {
+          success: true,
+          output: inputs.value,
+          events: [],
+          sourceText: 'class Solution {}',
+          executionTimeMs: 2,
+          consoleOutput: [],
+          trace: createEmptyRuntimeTrace('java'),
+          timings: { compileMs: 0, runMs: 2, totalMs: 2 },
+          retirementRecommended: false,
+        };
+      });
     },
     async disposePreparedRuntimeProgram(programId: string) {
       state.disposeCalls.push(programId);
@@ -244,6 +311,40 @@ test('Java prepared provider keeps one compiler worker and executes fresh proces
     preparation.program.executeIsolated({ inputs: { value: 3 } }),
     /already disposed/
   );
+});
+
+test('Java prepared batches cross the worker boundary once for the entire runner lease', async () => {
+  const preparationWorker = createFakeClient();
+  const provider = createJavaPreparedExecutionProvider({
+    createWorkerClient: () => preparationWorker.client,
+  });
+  const preparation = await provider.prepareProgram({
+    mode: 'code',
+    code: 'class Solution { int value(int value) { return value; } }',
+    functionName: 'value',
+    executionStyle: 'solution-method',
+  });
+  if (preparation.kind !== 'prepared' || preparation.program.mode !== 'code') {
+    throw new Error('Expected a prepared Java code program.');
+  }
+
+  const results = await preparation.program.executeBatchIsolated?.({
+    inputBatch: [{ value: 3 }, { value: 5 }, { value: 8 }],
+  });
+  assert.ok(results);
+  assert.deepEqual(results.map(completedOutput), [3, 5, 8]);
+  assert.deepEqual(preparationWorker.state.codeBatchCalls, [
+    {
+      programId: 'prepared-java-1',
+      inputBatch: [{ value: 3 }, { value: 5 }, { value: 8 }],
+    },
+  ]);
+  assert.equal(preparationWorker.state.initCalls, 1);
+  assert.equal(preparationWorker.state.prepareCalls.length, 1);
+  assert.equal(preparationWorker.state.terminateCalls, 0);
+
+  await preparation.program.dispose();
+  provider.dispose();
 });
 
 test('releasing the Java standby preserves lazy restart and later preparation', async () => {

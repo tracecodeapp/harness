@@ -161,6 +161,10 @@ const PACKAGE_ASSET_PLANS: PackageAssetPlan[] = [
         target: ['workers', 'shared', 'tracekernel-syscall-client.js'],
       },
       {
+        source: ['workers', 'shared', 'tracekernel-local-java-host.js'],
+        target: ['workers', 'shared', 'tracekernel-local-java-host.js'],
+      },
+      {
         source: ['workers', 'vendor', 'java-browser-helper.jar'],
         target: ['workers', 'vendor', 'java-browser-helper.jar'],
       },

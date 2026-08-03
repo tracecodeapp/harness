@@ -75,6 +75,16 @@ const ASSET_COPY_PLAN = [
     languages: ['java'],
   },
   {
+    source: ['workers', 'shared', 'tracekernel-syscall-client.js'],
+    target: ['shared', 'tracekernel-syscall-client.js'],
+    languages: ['java'],
+  },
+  {
+    source: ['workers', 'shared', 'tracekernel-local-java-host.js'],
+    target: ['shared', 'tracekernel-local-java-host.js'],
+    languages: ['java'],
+  },
+  {
     source: ['workers', 'csharp', 'csharp-worker.js'],
     target: ['csharp-worker.js'],
     languages: ['csharp'],

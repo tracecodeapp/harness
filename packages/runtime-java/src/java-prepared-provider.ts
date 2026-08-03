@@ -224,17 +224,8 @@ class JavaPreparedCodeProgramImpl
     call: RuntimePreparedCodeBatchCall
   ): Promise<readonly CodeExecutionResult[]> {
     return this.executeWithClient(
-      async (client) => {
-        const results: CodeExecutionResult[] = [];
-        for (const inputs of call.inputBatch) {
-          results.push(await client.executePreparedCode(this.programId, {
-            inputs,
-            signal: call.signal,
-            limits: call.limits,
-          }));
-        }
-        return results;
-      },
+      (client) =>
+        client.executePreparedCodeBatch(this.programId, call),
       call.signal
     );
   }
@@ -302,26 +293,18 @@ class JavaPreparedTraceProgramImpl
   ): Promise<readonly ExecutionResult[]> {
     return this.executeWithClient(
       async (client) => {
-        const results: ExecutionResult[] = [];
-        for (const inputs of call.inputBatch) {
-          const result = await client.executePreparedWithTracing(
-            this.programId,
-            {
-              inputs,
-              signal: call.signal,
-              limits: call.limits,
-            },
-            this.traceCall.traceOptions
-          );
-          results.push(
-            liftTraceOutcome(
-              result,
-              result.trace,
-              'Java prepared tracing failed'
-            )
-          );
-        }
-        return results;
+        const results = await client.executePreparedTraceBatch(
+          this.programId,
+          call,
+          this.traceCall.traceOptions
+        );
+        return results.map((result) =>
+          liftTraceOutcome(
+            result,
+            result.trace,
+            'Java prepared tracing failed'
+          )
+        );
       },
       call.signal
     );

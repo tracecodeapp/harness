@@ -136,8 +136,9 @@ function assertReceipt(
 
 function assertBoundedWorkers(
   language: BatchLanguage,
-  mode: 'code' | 'trace',
-  workerUrls: readonly string[]
+  scope: string,
+  workerUrls: readonly string[],
+  requireWorker: boolean
 ): void {
   const languageWorkers = workerUrls.filter((url) =>
     language === 'typescript'
@@ -147,8 +148,9 @@ function assertBoundedWorkers(
         : url.includes(`${language}-worker.js`)
   );
   assertCondition(
-    languageWorkers.length > 0 && languageWorkers.length <= 3,
-    `${language} ${mode} batch should use a bounded preparation/execution worker set, not one worker per case: ${JSON.stringify(workerUrls)}`
+    (!requireWorker || languageWorkers.length > 0) &&
+      languageWorkers.length <= 3,
+    `${language} ${scope} should use a bounded preparation/execution worker set, not one worker per case: ${JSON.stringify(workerUrls)}`
   );
 }
 
@@ -187,6 +189,11 @@ async function main(): Promise<void> {
     await cp(
       join(traceJVMRoot, 'runtime/assets/profiles/core'),
       join(traceJVMTarget, 'profiles/core'),
+      { recursive: true, force: true }
+    );
+    await cp(
+      join(traceJVMRoot, '.cache/teavm-javac/artifacts'),
+      join(traceJVMTarget, 'compiler'),
       { recursive: true, force: true }
     );
     await build({
@@ -232,16 +239,26 @@ async function main(): Promise<void> {
           `Browser algorithm batch omitted ${language}.`
         );
         assertReceipt(language, 'code', languageResult.plain);
-        assertBoundedWorkers(
-          language,
-          'code',
-          languageResult.plainWorkerUrls
-        );
         assertReceipt(language, 'trace', languageResult.trace);
         assertBoundedWorkers(
           language,
-          'trace',
-          languageResult.traceWorkerUrls
+          'code batch',
+          languageResult.plainWorkerUrls,
+          false
+        );
+        assertBoundedWorkers(
+          language,
+          'trace batch',
+          languageResult.traceWorkerUrls,
+          false
+        );
+        assertBoundedWorkers(
+          language,
+          'code or trace batch',
+          languageResult.plainWorkerUrls.length > 0
+            ? languageResult.plainWorkerUrls
+            : languageResult.traceWorkerUrls,
+          true
         );
       }
     } finally {

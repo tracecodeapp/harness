@@ -70,7 +70,19 @@ export async function createJavaKernelProcess(): Promise<
           const context = yield* controlledRuntime.awaitAttached(
             kernelProcess.pid
           );
-          return { context, kernelProcess };
+          const executionScopeImage =
+            yield* session.fileSystem.exportImage();
+          return {
+            context,
+            kernelProcess,
+            resetExecutionScope: () =>
+              Effect.runPromise(
+                session.resetProcessExecutionScope(
+                  kernelProcess,
+                  executionScopeImage
+                )
+              ),
+          };
         }),
         scope
       )
@@ -113,6 +125,7 @@ export async function createJavaKernelProcess(): Promise<
             authority.context.syscalls.dispatch(request as never)
           ),
         service: () => server!.servicePromise(),
+        resetExecutionScope: authority.resetExecutionScope,
         close: () => server?.close(),
       },
       complete: (exitCode = 0) => close({ exitCode }),

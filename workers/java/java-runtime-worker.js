@@ -26,11 +26,16 @@ const TRACEJVM_BASE_URL = normalizeTraceJVMBaseUrl(
 );
 const TRACEJVM_MODULE_URL = new URL('browser-client.js', TRACEJVM_BASE_URL);
 const TRACEJVM_WASM_URL = new URL('bjvm_main.wasm', TRACEJVM_BASE_URL);
+const TRACEJVM_COMPILER_URL = new URL('compiler', TRACEJVM_BASE_URL);
 const TRACEJVM_CORE_PROFILE_URL = new URL('profiles/core', TRACEJVM_BASE_URL);
 const TRACEJVM_HELPER_JAR_URL = new URL('./vendor/java-browser-helper.jar', self.location.href);
 const CLASSIC_JAVA_WORKER_URL = new URL('./java-worker.js', self.location.href);
 const TRACEKERNEL_SYSCALL_CLIENT_URL = new URL(
   './shared/tracekernel-syscall-client.js',
+  self.location.href
+);
+const TRACEKERNEL_LOCAL_JAVA_HOST_URL = new URL(
+  './shared/tracekernel-local-java-host.js',
   self.location.href
 );
 
@@ -43,6 +48,7 @@ self.TraceCodeJavaProviderRuntimeFetchPrefixes = [
 
 const traceJVMStringFiles = new Map();
 let traceJVMModulePromise;
+let traceKernelLocalJavaHostModulePromise;
 let traceJVMClientPromise;
 let traceJVMHelperJarPromise;
 let traceJVMRewriteProgramPromise;
@@ -51,7 +57,10 @@ const TRACEJVM_COMPILE_CACHE_LIMIT = 64;
 const traceJVMPreparedPrograms = new Map();
 let traceJVMPreparedCompileCount = 0;
 const traceJVMKernelChannels = new Map();
+const traceJVMLocalKernelAuthorities = new Map();
 const traceJVMPostMessage = self.postMessage.bind(self);
+const traceJVMPendingExecutionScopeResets = new Map();
+let traceJVMExecutionScopeResetSequence = 0;
 
 const TRACE_OUTPUT_MARKER = '__TRACECODE_TRACE_OUTPUT__:';
 const TRACE_EVENT_MARKER = '__TRACECODE_TRACE_EVENT__:';
@@ -126,6 +135,18 @@ async function loadTraceJVMModule() {
   return traceJVMModulePromise;
 }
 
+async function loadLocalTraceKernelModule() {
+  traceKernelLocalJavaHostModulePromise ??=
+    import(TRACEKERNEL_LOCAL_JAVA_HOST_URL.href);
+  return traceKernelLocalJavaHostModulePromise;
+}
+
+async function createLocalTraceKernelAuthority() {
+  const { createLocalJavaKernelAuthority } =
+    await loadLocalTraceKernelModule();
+  return createLocalJavaKernelAuthority();
+}
+
 async function loadTraceJVMHelperJar() {
   traceJVMHelperJarPromise ??= (async () => {
     const response = await fetch(TRACEJVM_HELPER_JAR_URL);
@@ -150,6 +171,11 @@ async function createTraceJVMClient() {
         core: TRACEJVM_CORE_PROFILE_URL.href.replace(/\/+$/, ''),
       },
       wasmUrl: TRACEJVM_WASM_URL.href,
+    },
+    compiler: {
+      assets: {
+        baseUrl: TRACEJVM_COMPILER_URL.href.replace(/\/+$/, ''),
+      },
     },
     runtimeProfile: 'core',
     retirementAfterExecutions: 1,
@@ -203,6 +229,9 @@ function traceJVMProcessHost(programId) {
           ? traceJVMKernelChannels.get(String(activeRequestId))
           : undefined)
       );
+  const localAuthority = programId === false
+    ? undefined
+    : traceJVMLocalKernelAuthorities.get(String(programId));
   if (kernelRequest) {
     const Client = self.TraceCodeTraceKernelSharedSyscallClient;
     if (typeof Client !== 'function') {
@@ -235,6 +264,24 @@ function traceJVMProcessHost(programId) {
       close() {},
     };
   }
+  if (localAuthority) {
+    return {
+      kernelBound: true,
+      dispatchSync(request) {
+        return unwrapTraceKernelResult(
+          request.operation,
+          localAuthority.dispatchSync(request)
+        );
+      },
+      async dispatch(request) {
+        return unwrapTraceKernelResult(
+          request.operation,
+          await localAuthority.dispatch(request)
+        );
+      },
+      close() {},
+    };
+  }
   const unsupported = (request) => {
     throw Object.assign(
       new Error(
@@ -248,6 +295,40 @@ function traceJVMProcessHost(programId) {
     dispatchSync: unsupported,
     dispatch: async (request) => unsupported(request),
   };
+}
+
+function resetTraceKernelExecutionScope(programId) {
+  const localAuthority = programId
+    ? traceJVMLocalKernelAuthorities.get(String(programId))
+    : undefined;
+  if (localAuthority) {
+    return localAuthority.resetExecutionScope();
+  }
+  const activeRequestId = self.TraceCodeActiveKernelRequestId;
+  const kernelRequest =
+    (programId
+      ? traceJVMKernelChannels.get(String(programId))
+      : undefined) ??
+    (activeRequestId
+      ? traceJVMKernelChannels.get(String(activeRequestId))
+      : undefined);
+  if (!kernelRequest) return Promise.resolve();
+
+  const requestId =
+    `java-case-reset-${++traceJVMExecutionScopeResetSequence}`;
+  return new Promise((resolve, reject) => {
+    traceJVMPendingExecutionScopeResets.set(requestId, {
+      resolve,
+      reject,
+      protocolToken: kernelRequest.protocolToken,
+    });
+    traceJVMPostMessage({
+      id: kernelRequest.id,
+      type: 'kernel-execution-scope-reset',
+      protocolToken: kernelRequest.protocolToken,
+      payload: { requestId },
+    });
+  });
 }
 
 async function runInFreshTraceJVMProcess(client, request, programId) {
@@ -309,6 +390,160 @@ async function runInFreshTraceJVMProcess(client, request, programId) {
   } finally {
     process.dispose();
     host.close?.();
+  }
+}
+
+async function runInLeasedTraceJVMBatchProcess(
+  client,
+  request,
+  systemPropertiesBatch,
+  programId,
+  perCaseWallClockMs
+) {
+  const processFiles = request.processFiles;
+  const results = [];
+  let processCount = 0;
+  let process;
+  let host;
+
+  const releaseProcess = () => {
+    process?.dispose();
+    process = undefined;
+    host?.close?.();
+    host = undefined;
+  };
+
+  const createProcess = async (remainingExecutions) => {
+    processCount += 1;
+    host = traceJVMProcessHost(programId);
+    const kernelBound = host.kernelBound;
+    process = await client.createProcess({
+      workingDirectory: '/workspace',
+      retirementAfterExecutions: remainingExecutions,
+      ...(kernelBound ? { host } : {}),
+    });
+    for (const file of kernelBound ? processFiles ?? [] : []) {
+      const normalizedPath = `/${String(file.path).replace(/^\/+/, '')}`;
+      const parentPath = normalizedPath.slice(
+        0,
+        Math.max(1, normalizedPath.lastIndexOf('/'))
+      );
+      await host.dispatch({
+        service: 'posix',
+        operation: 'mkdir',
+        payload: {
+          path: parentPath,
+          options: { recursive: true },
+        },
+      });
+      const opened = await host.dispatch({
+        service: 'posix',
+        operation: 'open',
+        payload: {
+          path: normalizedPath,
+          options: {
+            access: 'write',
+            create: true,
+            truncate: true,
+          },
+        },
+      });
+      try {
+        await host.dispatch({
+          service: 'posix',
+          operation: 'write',
+          payload: {
+            fd: opened.fd,
+            bytes: file.content,
+          },
+        });
+      } finally {
+        await host.dispatch({
+          service: 'posix',
+          operation: 'close',
+          payload: { fd: opened.fd },
+        });
+      }
+    }
+  };
+
+  try {
+    for (let index = 0; index < systemPropertiesBatch.length; index += 1) {
+      if (!process) {
+        await createProcess(systemPropertiesBatch.length - index);
+      }
+      const kernelBound = host.kernelBound;
+      const timedOut = Symbol('tracejvm-case-timeout');
+      let timeout;
+      const run = process.run({
+        ...request,
+        ...(kernelBound && request.processFiles
+          ? { processFiles: undefined }
+          : {}),
+        systemProperties: systemPropertiesBatch[index],
+      });
+      const timeoutResult =
+        Number.isFinite(perCaseWallClockMs) && perCaseWallClockMs > 0
+          ? new Promise((resolve) => {
+              timeout = setTimeout(
+                () => resolve(timedOut),
+                perCaseWallClockMs
+              );
+            })
+          : undefined;
+      let result;
+      try {
+        const outcome = timeoutResult
+          ? await Promise.race([run, timeoutResult])
+          : await run;
+        if (outcome === timedOut) {
+          releaseProcess();
+          result = {
+            status: 'cancelled',
+            exitCode: 124,
+            stdout: '',
+            stderr:
+              `Java execution timed out after ${perCaseWallClockMs}ms.`,
+            timings: {
+              runtimeInitMs: 0,
+              queueMs: 0,
+              compileAndRunMs: perCaseWallClockMs,
+              totalMs: perCaseWallClockMs,
+            },
+            isolation: {
+              status: 'tainted',
+              restored: [],
+              taintReasons: ['wall-clock-timeout'],
+              hardBoundaryRecommended: true,
+            },
+            retirementRecommended: true,
+          };
+        } else {
+          result = outcome;
+        }
+      } finally {
+        if (timeout !== undefined) clearTimeout(timeout);
+      }
+      results.push(result);
+      if (
+        kernelBound &&
+        index + 1 < systemPropertiesBatch.length
+      ) {
+        await resetTraceKernelExecutionScope(programId);
+      }
+      // The configured retirement threshold is the end of the batch. An
+      // earlier recommendation therefore means the execution tainted the JVM
+      // and the next case needs a hard process boundary.
+      if (
+        result.retirementRecommended &&
+        index + 1 < systemPropertiesBatch.length
+      ) {
+        releaseProcess();
+      }
+    }
+    return { results, processCount };
+  } finally {
+    releaseProcess();
   }
 }
 
@@ -772,6 +1007,96 @@ async function traceJVMRunPreparedRuntimeProgram(
   });
 }
 
+async function traceJVMRunPreparedRuntimeProgramBatch(
+  programId,
+  entryClass,
+  maxStoredEvents = '1',
+  preparedInputPropertiesBatch = '[]',
+  perCaseWallClockMs = '0'
+) {
+  const normalizedProgramId = String(programId);
+  const prepared = traceJVMPreparedPrograms.get(normalizedProgramId);
+  if (!prepared) {
+    throw new Error(`Unknown TraceJVM prepared program: ${normalizedProgramId}`);
+  }
+  if (prepared.retired) {
+    throw new Error(
+      `TraceJVM prepared program requires hard Worker retirement: ${normalizedProgramId}`
+    );
+  }
+
+  const [client, helperJar] = await Promise.all([
+    getTraceJVMClient(),
+    loadTraceJVMHelperJar(),
+  ]);
+  const systemPropertiesBatch = JSON.parse(
+    String(preparedInputPropertiesBatch)
+  );
+  if (
+    !Array.isArray(systemPropertiesBatch) ||
+    systemPropertiesBatch.length === 0 ||
+    systemPropertiesBatch.some(
+      (properties) =>
+        !properties ||
+        typeof properties !== 'object' ||
+        Array.isArray(properties) ||
+        Object.values(properties).some((value) => typeof value !== 'string')
+    )
+  ) {
+    throw new TypeError(
+      'TraceJVM prepared batch inputs must be a non-empty array of string system-property maps.'
+    );
+  }
+  let localAuthority;
+  if (!traceJVMProcessHost(normalizedProgramId).kernelBound) {
+    localAuthority = await createLocalTraceKernelAuthority();
+    traceJVMLocalKernelAuthorities.set(normalizedProgramId, localAuthority);
+  }
+  let batch;
+  try {
+    batch = await runInLeasedTraceJVMBatchProcess(
+      client,
+      {
+        program: prepared.program,
+        classpath: [helperJar],
+        mainClass: 'tracecode.browser.TraceExecutionRunner',
+        args: [
+          String(entryClass),
+          String(Number.parseInt(String(maxStoredEvents), 10) || 1),
+        ],
+      },
+      systemPropertiesBatch,
+      normalizedProgramId,
+      Number.parseInt(String(perCaseWallClockMs), 10) || 0
+    );
+  } finally {
+    if (localAuthority) {
+      traceJVMLocalKernelAuthorities.delete(normalizedProgramId);
+      await localAuthority.close();
+    }
+  }
+  prepared.executions += batch.results.length;
+  const reports = batch.results.map((run) =>
+    executionReport(
+      run,
+      {
+        stdout: prepared.compilerStdout,
+        stderr: prepared.compilerStderr,
+        timings: { totalMs: prepared.compileTimeMs },
+      },
+      prepared.compilerDebugProfile,
+      true
+    )
+  );
+  return JSON.stringify({
+    success: reports.every((report) => report.success),
+    results: reports,
+    runnerProcessCount: batch.processCount,
+    preparedExecutionCount: prepared.executions,
+    preparedCompileCount: traceJVMPreparedCompileCount,
+  });
+}
+
 function traceJVMDisposeRuntimeProgram(programId) {
   return traceJVMPreparedPrograms.delete(String(programId));
 }
@@ -841,7 +1166,10 @@ function traceJVMRestoreRuntimeProgram(
 }
 
 self.cheerpjInit = async () => {
-  const client = await getTraceJVMClient();
+  const [client] = await Promise.all([
+    getTraceJVMClient(),
+    loadLocalTraceKernelModule(),
+  ]);
   await client.initialize();
 };
 
@@ -865,6 +1193,8 @@ self.cheerpjRunLibrary = async () => ({
         compileAndRunBatch: traceJVMCompileAndRunBatch,
         prepareRuntimeProgram: traceJVMPrepareRuntimeProgram,
         runPreparedRuntimeProgram: traceJVMRunPreparedRuntimeProgram,
+        runPreparedRuntimeProgramBatch:
+          traceJVMRunPreparedRuntimeProgramBatch,
         restoreRuntimeProgram: traceJVMRestoreRuntimeProgram,
         disposeRuntimeProgram: traceJVMDisposeRuntimeProgram,
         resetPersistentRuntimeStorage() {
@@ -887,6 +1217,33 @@ self.cheerpjRunLibrary = async () => ({
 
 self.addEventListener('message', (event) => {
   const message = event.data;
+  if (
+    message?.type === 'kernel-execution-scope-reset-complete' ||
+    message?.type === 'kernel-execution-scope-reset-failed'
+  ) {
+    const requestId = String(message.payload?.requestId ?? '');
+    const pending =
+      traceJVMPendingExecutionScopeResets.get(requestId);
+    if (
+      !pending ||
+      pending.protocolToken !== message.protocolToken
+    ) {
+      return;
+    }
+    event.stopImmediatePropagation();
+    traceJVMPendingExecutionScopeResets.delete(requestId);
+    if (message.type === 'kernel-execution-scope-reset-complete') {
+      pending.resolve();
+    } else {
+      pending.reject(
+        new Error(
+          message.payload?.error ??
+            'TraceKernel execution-scope reset failed.'
+        )
+      );
+    }
+    return;
+  }
   if (
     !message?.kernelSyscallChannel ||
     !message.id
@@ -919,6 +1276,12 @@ self.TraceCodeReleaseKernelRequest = (requestId, programId) => {
 const traceJVMLegacyClose = self.close.bind(self);
 self.close = () => {
   invalidateTraceJVMClient();
+  for (const pending of traceJVMPendingExecutionScopeResets.values()) {
+    pending.reject(
+      new Error('Java worker closed during TraceKernel execution-scope reset.')
+    );
+  }
+  traceJVMPendingExecutionScopeResets.clear();
   traceJVMStringFiles.clear();
   traceJVMCompileCache.clear();
   traceJVMPreparedPrograms.clear();

@@ -24,13 +24,19 @@ interface PreparedBrowserResult {
   createdWorkers: number;
   terminatedWorkers: number;
   isolationOutputs: unknown[];
+  batchIsolationOutputs: unknown[];
+  batchRunnerProcessCount: number;
   listOutput: unknown;
   opsOutput: unknown;
   traceOutput: unknown;
+  traceBatchOutputs: unknown[];
+  traceBatchRunnerProcessCount: number;
+  traceBatchHasEvents: boolean;
   traceKinds: string[];
   traceParity: boolean;
   executionCompileMs: number[];
   executionWorkerDeltas: number[];
+  timeoutBatchRecovered: boolean;
   aborted: boolean;
 }
 
@@ -99,6 +105,32 @@ function assertPreparedResult(
     `${engine}: standard input and error streams must reset per case`
   );
   assert.equal(
+    result.batchIsolationOutputs[0],
+    result.batchIsolationOutputs[1],
+    `${engine}: one leased runner must reset application classes and process state between batch cases`
+  );
+  const batchBoundaryFields = String(result.batchIsolationOutputs[0]).split('|');
+  assert.equal(
+    batchBoundaryFields[0],
+    '101',
+    `${engine}: batch application statics must begin clean`
+  );
+  assert.equal(
+    batchBoundaryFields[4],
+    'missing',
+    `${engine}: batch System properties must begin clean`
+  );
+  assert.equal(
+    batchBoundaryFields[5],
+    'missing',
+    `${engine}: batch TKFS state must begin clean`
+  );
+  assert.equal(
+    result.batchRunnerProcessCount,
+    1,
+    `${engine}: a clean Java batch must use exactly one inner runner process`
+  );
+  assert.equal(
     result.listOutput,
     70,
     `${engine}: prepared arrays, generic collections/maps, nodes, custom objects, builders, and enums must be materialized`
@@ -117,6 +149,21 @@ function assertPreparedResult(
     result.traceParity,
     true,
     `${engine}: prepared and legacy Java traces must have the same observable shape`
+  );
+  assert.deepEqual(
+    result.traceBatchOutputs,
+    [6, 9],
+    `${engine}: prepared trace batches must preserve ordered outputs`
+  );
+  assert.equal(
+    result.traceBatchRunnerProcessCount,
+    1,
+    `${engine}: one kernel-bound runner must own the complete trace batch`
+  );
+  assert.equal(
+    result.traceBatchHasEvents,
+    true,
+    `${engine}: trace-event transport must preserve every batch case`
   );
   assert.ok(
     result.traceKinds.includes('line') &&
@@ -138,6 +185,11 @@ function assertPreparedResult(
     isolated
       ? `${engine}: kernel-bound Java cases must replace inner JVMs without replacing the warm compiler Worker`
       : `${engine}: compatibility execution without synchronous kernel transport must retire physical Workers`
+  );
+  assert.equal(
+    result.timeoutBatchRecovered,
+    true,
+    `${engine}: a per-case timeout must retire the tainted runner and allow the next batch case to run`
   );
   assert.equal(
     result.aborted,
@@ -187,6 +239,10 @@ try {
       resolve('workers/shared/tracekernel-syscall-client.js'),
     ],
     [
+      '/workers/shared/tracekernel-local-java-host.js',
+      resolve('workers/shared/tracekernel-local-java-host.js'),
+    ],
+    [
       '/workers/shared/runtime-kernel-policy-classic.js',
       resolve('workers/shared/runtime-kernel-policy-classic.js'),
     ],
@@ -222,6 +278,8 @@ try {
           ? 'dist/browser-client.js'
           : requested === 'browser-worker.js'
             ? 'dist/browser-worker.js'
+            : requested.startsWith('compiler/')
+              ? `.cache/teavm-javac/artifacts/${requested.slice('compiler/'.length)}`
             : `runtime/assets/${requested}`;
       const path = safeFile(traceJVMRoot, relative);
       if (!path) {

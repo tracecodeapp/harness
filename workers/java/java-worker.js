@@ -7507,6 +7507,102 @@ function preparedJavaInputValue(program, inputs, dynamicInput) {
   );
 }
 
+function preparedJavaInputProperties(program, inputs) {
+  return Object.fromEntries(
+    program.dynamicInputs.map((dynamicInput) => [
+      dynamicInput.property,
+      JSON.stringify(preparedJavaInputValue(program, inputs, dynamicInput)),
+    ])
+  );
+}
+
+function preparedJavaResultFromReport(
+  program,
+  report,
+  executionTimeMs,
+  hostCallMs
+) {
+  const consoleOutput = javaReportConsoleOutput(report, {
+    includeSuccessfulDiagnostics: false,
+  });
+  const timings = {
+    compileMs: 0,
+    classLoadMs: report.classLoadTimeMs ?? 0,
+    runMs: report.runTimeMs ?? 0,
+    hostCallMs,
+    totalMs: executionTimeMs,
+    compileCacheHit: true,
+    artifactCacheHit: true,
+  };
+
+  if (program.mode === 'trace') {
+    const events = normalizeJavaTraceEvents(
+      report.events,
+      program.normalizedPayload
+    );
+    return {
+      success: report.success === true,
+      ...(report.success === true
+        ? { output: parseJavaReportOutput(report.output) }
+        : {
+            error: javaReportFailureMessage(
+              report,
+              'Java prepared trace failed without compiler/runtime diagnostics'
+            ),
+          }),
+      events,
+      ...(program.normalizedPayload.sourceText
+        ? { sourceText: program.normalizedPayload.sourceText }
+        : {}),
+      executionTimeMs,
+      consoleOutput,
+      ...(report.traceLimitExceeded !== undefined
+        ? {
+            traceLimitExceeded: Boolean(report.traceLimitExceeded),
+            timeoutReason: report.traceLimitExceeded
+              ? 'trace-limit'
+              : undefined,
+            droppedEventCount: report.droppedEventCount ?? 0,
+          }
+        : {}),
+      ...(report.bytecodeProfile
+        ? { bytecodeProfile: report.bytecodeProfile }
+        : {}),
+      ...(report.diagnosticError
+        ? { diagnosticError: report.diagnosticError }
+        : {}),
+      runtimeIsolation: report.isolation,
+      retirementRecommended: report.retirementRecommended === true,
+      timings,
+    };
+  }
+
+  if (report.success !== true) {
+    return {
+      success: false,
+      output: null,
+      error: javaReportFailureMessage(
+        report,
+        'Java prepared execution failed without compiler/runtime diagnostics'
+      ),
+      consoleOutput,
+      executionTimeMs,
+      runtimeIsolation: report.isolation,
+      retirementRecommended: report.retirementRecommended === true,
+      timings,
+    };
+  }
+  return {
+    success: true,
+    output: parseJavaReportOutput(report.output),
+    consoleOutput,
+    executionTimeMs,
+    runtimeIsolation: report.isolation,
+    retirementRecommended: report.retirementRecommended === true,
+    timings,
+  };
+}
+
 async function executePreparedJavaRuntimeProgram(payload) {
   const totalStart = performance.now();
   const programId = String(payload?.programId ?? '');
@@ -7529,12 +7625,7 @@ async function executePreparedJavaRuntimeProgram(payload) {
 
   let preparedInputProperties;
   try {
-    preparedInputProperties = Object.fromEntries(
-      program.dynamicInputs.map((dynamicInput) => [
-        dynamicInput.property,
-        JSON.stringify(preparedJavaInputValue(program, inputs, dynamicInput)),
-      ])
-    );
+    preparedInputProperties = preparedJavaInputProperties(program, inputs);
   } catch (error) {
     return {
       success: false,
@@ -7590,84 +7681,136 @@ async function executePreparedJavaRuntimeProgram(payload) {
   }
   const libraryCallEnd = performance.now();
   const totalEnd = performance.now();
-  const consoleOutput = javaReportConsoleOutput(report, {
-    includeSuccessfulDiagnostics: false,
-  });
-  const timings = {
-    compileMs: 0,
-    classLoadMs: report.classLoadTimeMs ?? 0,
-    runMs: report.runTimeMs ?? 0,
-    hostCallMs: libraryCallEnd - libraryCallStart,
-    totalMs: totalEnd - totalStart,
-    compileCacheHit: true,
-    artifactCacheHit: true,
-  };
+  return preparedJavaResultFromReport(
+    program,
+    report,
+    totalEnd - totalStart,
+    libraryCallEnd - libraryCallStart
+  );
+}
 
-  if (program.mode === 'trace') {
-    const events = normalizeJavaTraceEvents(
-      report.events,
-      program.normalizedPayload
-    );
-    return {
-      success: report.success === true,
-      ...(report.success === true
-        ? { output: parseJavaReportOutput(report.output) }
-        : {
-            error: javaReportFailureMessage(
-              report,
-              'Java prepared trace failed without compiler/runtime diagnostics'
-            ),
-          }),
-      events,
-      ...(program.normalizedPayload.sourceText
-        ? { sourceText: program.normalizedPayload.sourceText }
-        : {}),
-      executionTimeMs: totalEnd - totalStart,
-      consoleOutput,
-      ...(report.traceLimitExceeded !== undefined
-        ? {
-            traceLimitExceeded: Boolean(report.traceLimitExceeded),
-            timeoutReason: report.traceLimitExceeded
-              ? 'trace-limit'
-              : undefined,
-            droppedEventCount: report.droppedEventCount ?? 0,
-          }
-        : {}),
-      ...(report.bytecodeProfile
-        ? { bytecodeProfile: report.bytecodeProfile }
-        : {}),
-      ...(report.diagnosticError
-        ? { diagnosticError: report.diagnosticError }
-        : {}),
-      runtimeIsolation: report.isolation,
-      retirementRecommended: report.retirementRecommended === true,
-      timings,
-    };
-  }
-
-  if (report.success !== true) {
+async function executePreparedJavaRuntimeProgramBatch(payload) {
+  const totalStart = performance.now();
+  const programId = String(payload?.programId ?? '');
+  const program = preparedJavaRuntimePrograms.get(programId);
+  const inputBatch = Array.isArray(payload?.inputBatch)
+    ? payload.inputBatch.map((inputs) =>
+        inputs && typeof inputs === 'object' && !Array.isArray(inputs)
+          ? inputs
+          : {}
+      )
+    : [];
+  if (!program) {
     return {
       success: false,
-      output: null,
-      error: javaReportFailureMessage(
-        report,
-        'Java prepared execution failed without compiler/runtime diagnostics'
-      ),
-      consoleOutput,
-      executionTimeMs: totalEnd - totalStart,
-      runtimeIsolation: report.isolation,
-      retirementRecommended: report.retirementRecommended === true,
-      timings,
+      results: [],
+      error: `Unknown Java prepared program: ${programId}`,
+      executionTimeMs: performance.now() - totalStart,
     };
   }
+  if (inputBatch.length === 0) {
+    return {
+      success: false,
+      results: [],
+      error: 'Java prepared batch execution requires a non-empty inputBatch.',
+      executionTimeMs: performance.now() - totalStart,
+    };
+  }
+
+  let preparedInputPropertiesBatch;
+  try {
+    preparedInputPropertiesBatch = inputBatch.map((inputs) =>
+      preparedJavaInputProperties(program, inputs)
+    );
+  } catch (error) {
+    return {
+      success: false,
+      results: [],
+      error: `Java prepared batch input materialization failed: ${formatWorkerErrorMessage(error)}`,
+      executionTimeMs: performance.now() - totalStart,
+    };
+  }
+
+  const libraryCallStart = performance.now();
+  let report;
+  try {
+    const compileLibraryClass = await getCompileLibraryClass();
+    if (
+      typeof compileLibraryClass?.runPreparedRuntimeProgramBatch !==
+      'function'
+    ) {
+      throw new Error(
+        'The selected Java runtime does not support prepared batch execution.'
+      );
+    }
+    const reportText =
+      await compileLibraryClass.runPreparedRuntimeProgramBatch(
+        programId,
+        program.entryClass,
+        String(
+          program.mode === 'trace'
+            ? resolveMaxStoredEvents(program.traceOptions)
+            : 1
+        ),
+        JSON.stringify(preparedInputPropertiesBatch),
+        String(
+          Number.isFinite(payload?.perCaseWallClockMs)
+            ? Math.max(1, Math.floor(payload.perCaseWallClockMs))
+            : 0
+        )
+      );
+    report = JSON.parse(reportText);
+  } catch (error) {
+    return {
+      success: false,
+      results: [],
+      error: `Java prepared batch execution failed: ${formatWorkerErrorMessage(error)}`,
+      executionTimeMs: performance.now() - totalStart,
+    };
+  }
+  const libraryCallEnd = performance.now();
+  const rawResults = Array.isArray(report.results) ? report.results : [];
+  const results = rawResults.map((entry) => {
+    const executionTimeMs =
+      (entry.classLoadTimeMs ?? 0) + (entry.runTimeMs ?? 0);
+    const result = preparedJavaResultFromReport(
+      program,
+      entry,
+      executionTimeMs,
+      0
+    );
+    return program.mode === 'trace'
+      ? {
+          ...result,
+          trace: { events: result.events ?? [] },
+          events: undefined,
+        }
+      : result;
+  });
+  if (results[0]?.timings) {
+    results[0].timings.runnerProcessCount =
+      report.runnerProcessCount ?? 0;
+  }
   return {
-    success: true,
-    output: parseJavaReportOutput(report.output),
-    consoleOutput,
-    executionTimeMs: totalEnd - totalStart,
-    runtimeIsolation: report.isolation,
-    retirementRecommended: report.retirementRecommended === true,
-    timings,
+    success:
+      report.success === true && results.length === inputBatch.length,
+    results,
+    executionTimeMs: performance.now() - totalStart,
+    timings: {
+      hostCallMs: libraryCallEnd - libraryCallStart,
+      totalMs: performance.now() - totalStart,
+      compileMs: 0,
+      classLoadMs: rawResults.reduce(
+        (sum, entry) => sum + (entry.classLoadTimeMs ?? 0),
+        0
+      ),
+      runMs: rawResults.reduce(
+        (sum, entry) => sum + (entry.runTimeMs ?? 0),
+        0
+      ),
+      compileCacheHit: true,
+      artifactCacheHit: true,
+    },
   };
 }
 
@@ -7848,6 +7991,7 @@ self.onmessage = (event) => {
     message.type === 'prepare-runtime-program' ||
     message.type === 'restore-prepared-runtime-program' ||
     message.type === 'execute-prepared-runtime-program' ||
+    message.type === 'execute-prepared-runtime-program-batch' ||
     message.type === 'dispose-prepared-runtime-program'
   ) {
     queue = queue.then(async () => {
@@ -7861,7 +8005,10 @@ self.onmessage = (event) => {
           ? message.payload?.projectUserAuthorityMode ?? 'temporary'
           : 'temporary';
         const preparedProgramMode =
-          message.type === 'execute-prepared-runtime-program'
+          (
+            message.type === 'execute-prepared-runtime-program' ||
+            message.type === 'execute-prepared-runtime-program-batch'
+          )
             ? preparedJavaRuntimePrograms.get(
                 String(message.payload?.programId ?? '')
               )?.mode
@@ -7879,6 +8026,9 @@ self.onmessage = (event) => {
                     ? restorePreparedJavaRuntimeProgram(message.payload)
                   : message.type === 'execute-prepared-runtime-program'
                     ? executePreparedJavaRuntimeProgram(message.payload)
+                    : message.type ===
+                        'execute-prepared-runtime-program-batch'
+                      ? executePreparedJavaRuntimeProgramBatch(message.payload)
                     : message.type === 'dispose-prepared-runtime-program'
                       ? disposePreparedJavaRuntimeProgram(message.payload)
                       : runJavaCodeRequest(message.payload, message.id);
@@ -7893,6 +8043,16 @@ self.onmessage = (event) => {
                 traceEventTransport: message.payload?.traceEventTransport,
                 traceEventPath: 'events',
               }
+            : (
+                message.type ===
+                  'execute-prepared-runtime-program-batch' &&
+                preparedProgramMode === 'trace'
+              )
+              ? {
+                  traceEventTransport:
+                    message.payload?.traceEventTransport,
+                  traceEventPath: 'results[].trace.events',
+                }
             : undefined
         );
         self.TraceCodeActiveKernelRequestId = message.id;

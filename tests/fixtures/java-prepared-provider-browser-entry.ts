@@ -15,13 +15,19 @@ interface PreparedBrowserResult {
   createdWorkers: number;
   terminatedWorkers: number;
   isolationOutputs: unknown[];
+  batchIsolationOutputs: unknown[];
+  batchRunnerProcessCount: number;
   listOutput: unknown;
   opsOutput: unknown;
   traceOutput: unknown;
+  traceBatchOutputs: unknown[];
+  traceBatchRunnerProcessCount: number;
+  traceBatchHasEvents: boolean;
   traceKinds: string[];
   traceParity: boolean;
   executionCompileMs: number[];
   executionWorkerDeltas: number[];
+  timeoutBatchRecovered: boolean;
   aborted: boolean;
 }
 
@@ -217,6 +223,30 @@ globalThis.runJavaPreparedProviderBrowserTest =
       isolationOutputs.push(completedOutput(result));
       executionCompileMs.push(result.timings?.compileMs ?? -1);
     }
+    const batchIsolationResults =
+      await isolationPreparation.program.executeBatchIsolated?.({
+        inputBatch: [
+          { marker: 'batch-first', spawnThread: false },
+          { marker: 'batch-second', spawnThread: false },
+        ],
+      });
+    if (!batchIsolationResults) {
+      throw new Error('Prepared Java code program did not expose batch execution.');
+    }
+    const batchIsolationOutputs =
+      batchIsolationResults.map(completedOutput);
+    const batchRunnerProcessCount = Number(
+      (
+        batchIsolationResults[0]?.timings as
+          | ({ runnerProcessCount?: number })
+          | undefined
+      )?.runnerProcessCount ?? -1
+    );
+    executionCompileMs.push(
+      ...batchIsolationResults.map(
+        (result) => result.timings?.compileMs ?? -1
+      )
+    );
     await isolationPreparation.program.dispose();
     await isolationPreparation.program.dispose();
 
@@ -329,6 +359,35 @@ globalThis.runJavaPreparedProviderBrowserTest =
     }
     const traceKinds = traceResult.trace.events.map((event) => event.kind);
     const preparedTraceShape = traceResult.trace.events.map(traceEventShape);
+    const traceBatchResults =
+      await traceProgram.executeBatchIsolated?.({
+        inputBatch: [
+          { values: [1, 2, 3] },
+          { values: [4, 5] },
+        ],
+      });
+    if (!traceBatchResults) {
+      throw new Error('Prepared Java trace program did not expose batch execution.');
+    }
+    const traceBatchOutputs = traceBatchResults.map(completedOutput);
+    const traceBatchRunnerProcessCount = Number(
+      (
+        traceBatchResults[0]?.timings as
+          | ({ runnerProcessCount?: number })
+          | undefined
+      )?.runnerProcessCount ?? -1
+    );
+    const traceBatchHasEvents = traceBatchResults.every(
+      (result) =>
+        result.kind === 'completed' &&
+        result.trace.events.some((event) => event.kind === 'line') &&
+        result.trace.events.some((event) => event.kind === 'return')
+    );
+    executionCompileMs.push(
+      ...traceBatchResults.map(
+        (result) => result.timings?.compileMs ?? -1
+      )
+    );
     await traceProgram.dispose();
 
     const legacyTraceClient = createClient();
@@ -351,12 +410,23 @@ globalThis.runJavaPreparedProviderBrowserTest =
       [
         'class Solution {',
         '  public int hang(int value) {',
-        '    while (true) value += 1;',
+        '    if (value == 0) while (true) value += 1;',
+        '    return value;',
         '  }',
         '}',
       ].join('\n'),
       'hang'
     );
+    const timeoutBatchResults =
+      await hangingPreparation.program.executeBatchIsolated?.({
+        inputBatch: [{ value: 0 }, { value: 1 }],
+        limits: { wallClockMs: 1_200 },
+      });
+    const timeoutBatchRecovered =
+      timeoutBatchResults?.length === 2 &&
+      timeoutBatchResults[0]?.kind !== 'completed' &&
+      timeoutBatchResults[1]?.kind === 'completed' &&
+      timeoutBatchResults[1].output === 1;
     const abortController = new AbortController();
     const pendingHang = executePreparedCase(() =>
       hangingPreparation.program.executeIsolated({
@@ -381,13 +451,19 @@ globalThis.runJavaPreparedProviderBrowserTest =
       createdWorkers,
       terminatedWorkers,
       isolationOutputs,
+      batchIsolationOutputs,
+      batchRunnerProcessCount,
       listOutput,
       opsOutput,
       traceOutput,
+      traceBatchOutputs,
+      traceBatchRunnerProcessCount,
+      traceBatchHasEvents,
       traceKinds,
       traceParity,
       executionCompileMs,
       executionWorkerDeltas,
+      timeoutBatchRecovered,
       aborted,
     };
   };

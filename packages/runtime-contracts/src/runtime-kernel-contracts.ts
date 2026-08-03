@@ -84,6 +84,12 @@ export interface RuntimeKernelSyscallBridge {
    */
   dispatch(request: unknown): Promise<unknown>;
   service(): Promise<void>;
+  /**
+   * Host-owned rollback boundary for another case inside the same leased
+   * language process. Runtime workers may request it but cannot supply or
+   * mutate the authoritative checkpoint.
+   */
+  resetExecutionScope?(): Promise<void>;
   close(): void;
 }
 
