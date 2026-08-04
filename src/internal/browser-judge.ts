@@ -216,6 +216,8 @@ export interface BrowserJudgeCSharpOptions {
   readonly compilerIdleTimeoutMs?: number;
   /** Idle timeout for an unused prewarmed disposable Judge runner. */
   readonly runnerIdleTimeoutMs?: number;
+  /** Maximum disposable runner leases executing one eager Judge batch concurrently. */
+  readonly preparedBatchConcurrency?: number;
 }
 
 export interface BrowserJudgeCppOptions {

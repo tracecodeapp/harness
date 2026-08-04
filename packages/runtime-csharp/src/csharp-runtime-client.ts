@@ -32,6 +32,7 @@ import {
 
 export interface CSharpPreparedWorkerAuthority {
   readonly compiler: CSharpWorkerClient;
+  readonly batchConcurrency: number;
   createRunner(): CSharpWorkerClient;
   releaseRunner(runner: CSharpWorkerClient): void;
 }
@@ -57,6 +58,54 @@ class CSharpRuntimeClient implements RuntimeClient, RuntimePreparedExecutionProv
       runner.terminate();
       this.preparedAuthority.releaseRunner(runner);
     }
+  }
+
+  private async withFreshPreparedRunners<TResult>(
+    inputBatch: readonly Record<string, unknown>[],
+    execute: (
+      runner: CSharpWorkerClient,
+      inputs: Record<string, unknown>
+    ) => Promise<TResult>,
+    signal?: AbortSignal
+  ): Promise<readonly TResult[]> {
+    const concurrency = Math.min(
+      inputBatch.length,
+      this.preparedAuthority?.batchConcurrency ?? 1
+    );
+    const settled: PromiseSettledResult<TResult>[] = new Array(
+      inputBatch.length
+    );
+    let nextIndex = 0;
+    await Promise.all(
+      Array.from({ length: concurrency }, async () => {
+        while (nextIndex < inputBatch.length) {
+          const index = nextIndex;
+          nextIndex += 1;
+          const inputs = inputBatch[index]!;
+          if (signal?.aborted) {
+            settled[index] = {
+              status: 'rejected',
+              reason: signal.reason ??
+                new Error('Prepared C# batch was aborted.'),
+            };
+            continue;
+          }
+          try {
+            const value = await this.withPreparedRunner((runner) =>
+              execute(runner, inputs)
+            );
+            settled[index] = { status: 'fulfilled', value };
+          } catch (reason) {
+            settled[index] = { status: 'rejected', reason };
+          }
+        }
+      })
+    );
+    const firstFailure = settled.find(
+      (result): result is PromiseRejectedResult => result.status === 'rejected'
+    );
+    if (firstFailure) throw firstFailure.reason;
+    return settled.map((result) => (result as PromiseFulfilledResult<TResult>).value);
   }
 
   async init(): Promise<{ success: boolean; loadTimeMs: number }> {
@@ -283,8 +332,15 @@ class CSharpRuntimeClient implements RuntimeClient, RuntimePreparedExecutionProv
             preparedCall: RuntimePreparedTraceBatchCall
           ) =>
             executeOwned(preparedCall, (preparedArtifact, forwardedCall) =>
-              this.withPreparedRunner((runner) =>
-                runner.executePreparedTraceBatch(preparedArtifact, forwardedCall)
+              this.withFreshPreparedRunners(
+                forwardedCall.inputBatch,
+                (runner, inputs) =>
+                  runner.executePreparedTrace(preparedArtifact, {
+                    inputs,
+                    signal: forwardedCall.signal,
+                    limits: forwardedCall.limits,
+                  }),
+                forwardedCall.signal
               )
             ),
           dispose,
@@ -302,8 +358,15 @@ class CSharpRuntimeClient implements RuntimeClient, RuntimePreparedExecutionProv
             preparedCall: RuntimePreparedCodeBatchCall
           ) =>
             executeOwned(preparedCall, (preparedArtifact, forwardedCall) =>
-              this.withPreparedRunner((runner) =>
-                runner.executePreparedCodeBatch(preparedArtifact, forwardedCall)
+              this.withFreshPreparedRunners(
+                forwardedCall.inputBatch,
+                (runner, inputs) =>
+                  runner.executePreparedCode(preparedArtifact, {
+                    inputs,
+                    signal: forwardedCall.signal,
+                    limits: forwardedCall.limits,
+                  }),
+                forwardedCall.signal
               )
             ),
           dispose,

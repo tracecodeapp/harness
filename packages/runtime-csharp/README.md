@@ -52,8 +52,13 @@ exactly without downloading a toolchain.
 
 The compiler may retain only trusted toolchain state and immutable compiled
 artifacts. Every runner that receives a learner assembly is terminated after
-its eager case batch. The runner validates both the source-derived artifact key
-and SHA-256 of the exact PE bytes before assembly load.
+one case. Eager batches fan the same immutable PE out to distinct disposable
+runner leases; they never loop learner cases inside one .NET process. The
+provider bounds simultaneous leases with `preparedBatchConcurrency` (default
+4, validated range 1--32), which makes the speed/physical-memory tradeoff an
+explicit deployment policy without weakening `fresh-case-state`. The runner
+validates both the source-derived artifact key and SHA-256 of the exact PE
+bytes before assembly load.
 
 Judge startup performs one fixed trusted traced compilation in the serialized
 compiler authority while loading a clean standby runner in parallel. The

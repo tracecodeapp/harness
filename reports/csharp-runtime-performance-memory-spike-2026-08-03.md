@@ -1696,3 +1696,94 @@ settled RSS was 197,623,808 bytes. Raw evidence:
   (`502bc424b833731f01d8ac86905a701924652140e3d1d24ce106a2b87ee7789c`);
 - `production-integration/path-normalized-review-final-production-corpus-chromium-200-comparison.json`
   (`a07b6ad5c45f136e46fb055429c41f6180260af1b332260c355fe499063e0778`).
+
+### Durable role archives and fresh-case batch correction
+
+The final review identified one isolation flaw in the eager prepared-batch
+primitive: it unloaded each learner assembly but executed every case inside
+one outer .NET/Wasm worker. A learner could therefore leave process-wide state
+in environment variables, culture, the runtime filesystem, runtime switches,
+or background tasks for a later case. The production provider now compiles
+once and distributes the immutable, SHA-bound PE to one disposable outer
+runner lease per case. The old worker-side multi-case command and public client
+methods were removed so no internal caller can accidentally claim
+`fresh-case-state` while reusing process state.
+
+Batch runner creation is bounded by the validated
+`preparedBatchConcurrency` policy (integer 1--32, default 4). All case
+executions settle before the prepared artifact can be released, output order
+is stable, and every learner-bearing runner is terminated and released even
+on cancellation or failure. The public browser Judge regression now mutates a
+static, an environment variable, and `/tmp` in all ten code and traced cases;
+Chromium, Firefox, and WebKit each returned ten clean outputs, proving that
+TraceKernel's one batch process does not imply one shared learner runtime.
+
+The ten-case code/trace concurrency frontier, measured in isolated sequential
+campaigns, was:
+
+| Engine | Concurrency | Code batch | Trace batch | Observed process-tree RSS |
+|---|---:|---:|---:|---:|
+| Chromium | 1 | 2,561 ms | 2,472 ms | 659,177,472 bytes |
+| Chromium | 2 | 1,603 ms | 1,747 ms | 769,949,696 bytes |
+| Chromium | 4 | 1,004--1,082 ms | 1,139--1,483 ms | 935,903,232--955,826,176 bytes |
+| Chromium | 10 | 888--1,169 ms | 1,056--1,164 ms | 1,270,251,520--1,383,038,976 bytes |
+| Firefox | 1 | 7,996 ms | 7,517 ms | 852,754,432 bytes |
+| Firefox | 4 | 4,177 ms | 3,959 ms | 852,230,144 bytes |
+| Firefox | 10 | 2,978 ms | 3,154 ms | 1,180,106,752 bytes |
+| WebKit | 1 | 3,400 ms | 4,010 ms | parent-only 225,280,000 bytes |
+| WebKit | 2 | 3,328 ms | 3,476 ms | parent-only 231,030,784 bytes |
+| WebKit | 10 | 3,572 ms | 3,752 ms | parent-only 231,997,440 bytes |
+
+The Chromium process-tree measurement is the most reliable deep-memory
+measurement. The simple WebKit command measurement does not include every
+browser-owned child and is retained only as a relative sweep; the earlier
+browser-server sampler remains authoritative for physical memory. Four-way
+fan-out is the practical Chromium knee. Ten-way is the absolute-latency mode
+on a high-memory Chromium or Firefox deployment, while WebKit should use one
+or two. The policy stays configurable because selecting the absolute fastest
+point globally would spend roughly 300--430 MB for a small and noisy Chromium
+gain.
+
+The clean worker suite after this correction measured 650.93 ms cold compile,
+1,085 ms cold end-to-end, 22.13 ms edited compile, 5 ms exact-repeat execution,
+182.38 ms visible trusted-authority compilation, 7--10 ms single prepared
+cases, and 360 ms replacement-runner execution. The complete C# TraceKernel
+browser conformance matrix also passed.
+
+The canonical compiler/runner archives are now part of a reproducible system,
+not a one-time repository cleanup. `pnpm update:csharp-runtime` remains the
+sole regeneration recipe. Source control retains two deterministic,
+content-addressed ZIPs plus a recipe/tree manifest; expanded role directories
+are ignored and disposable. Both package asset synchronization and the public
+`sync-assets` CLI detect a source checkout, verify archive SHA-256, inventory
+limits, safe paths, uncompressed limits, and complete tree SHA-256, then
+atomically materialize missing or stale trees. Published npm packages omit the
+source archives and ship the already-expanded runtime trees. A clean-package
+regression constructs a package root with archives only and proves that the
+bundled CLI recreates and publishes both roles.
+
+Additional final review corrections:
+
+- failed standby warm/prime attempts retry independently with 250 ms--5 s
+  bounded exponential backoff;
+- `disposeLanguage('csharp')` retires current compiler/runner capacity but
+  remains recoverable, while whole-host `dispose()` is terminal;
+- old asynchronous release and warm continuations are fenced by a capacity
+  epoch and cannot recreate retired capacity;
+- C# Project readiness excludes Judge-only compiler/runner roles;
+- manifest normalization rejects one-sided compiler/runner role declarations;
+- packed Judge readiness declares its WebCrypto requirement, while Project
+  and legacy general-only manifests do not inherit it.
+
+The post-correction Chromium production Judge -> TraceKernel corpus matched
+the preceding hardened baseline exactly for 200/200 rows and every compared
+field: source path/hash, verdict, preparation/completion status, case status,
+output, complete diagnostics, stdout/stderr, timeout state, trace event count,
+and ordered trace SHA-256. It completed in 125,156.99 ms browser wall time,
+peaked at 1,220,231,168 bytes across the Chromium process tree, and settled at
+187,006,976 bytes after context close. Raw evidence:
+
+- `production-integration/fresh-case-runner-review-production-corpus-chromium-200.json`
+  (`d0c6bde9771bb6c0f5328939d8987b8e2af3f2dfed2a8182b4f3367c7ef28d83`);
+- `production-integration/fresh-case-runner-review-production-corpus-chromium-200-comparison.json`
+  (`626f66f56eae8e7c14388143d36013f764121a16cb4d5101a9213f9663516cbf`).

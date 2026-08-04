@@ -392,6 +392,42 @@ function testInvalidManifestsFailClearly(): void {
 
   assertThrowsMessage(
     () =>
+      resolveBrowserRuntimeAssetManifests({
+        manifests: {
+          csharp: {
+            ...consumerManifests.csharp,
+            assets: {
+              ...consumerManifests.csharp.assets,
+              compilerAssetBaseUrl: { url: 'compiler' },
+            },
+          },
+        },
+      }),
+    'compilerAssetBaseUrl and runnerAssetBaseUrl together'
+  );
+
+  assertThrowsMessage(
+    () =>
+      resolveBrowserRuntimeAssetManifests({
+        manifests: {
+          csharp: {
+            ...consumerManifests.csharp,
+            assets: {
+              ...consumerManifests.csharp.assets,
+              runnerDependencies: {
+                '_framework/assemblies.pack-manifest.json': {
+                  url: 'runner/_framework/assemblies.pack-manifest.json',
+                },
+              },
+            },
+          },
+        },
+      }),
+    'runnerDependencies require the compiler/runner role pair'
+  );
+
+  assertThrowsMessage(
+    () =>
       resolveBrowserRuntimeAssets({
         assets: {
           runtimeManifests: { python: consumerManifests.python },

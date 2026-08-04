@@ -860,6 +860,28 @@ function normalizeManifest<Runtime extends BrowserRuntimeId>(
       );
     }
   }
+  if (expectedRuntime === 'csharp') {
+    const csharpAssets =
+      value.assets as unknown as BrowserRuntimeAssetsByRuntime['csharp'];
+    if (
+      Boolean(csharpAssets.compilerAssetBaseUrl) !==
+      Boolean(csharpAssets.runnerAssetBaseUrl)
+    ) {
+      throw manifestError(
+        expectedRuntime,
+        'assets must provide compilerAssetBaseUrl and runnerAssetBaseUrl together.'
+      );
+    }
+    if (
+      !csharpAssets.compilerAssetBaseUrl &&
+      (csharpAssets.compilerDependencies || csharpAssets.runnerDependencies)
+    ) {
+      throw manifestError(
+        expectedRuntime,
+        'compilerDependencies and runnerDependencies require the compiler/runner role pair.'
+      );
+    }
+  }
   const originPolicy = normalizeOriginPolicy(expectedRuntime, 'originPolicy', value.originPolicy);
   const assetBaseUrl = value.assetBaseUrl === undefined
     ? globalAssetBaseUrl

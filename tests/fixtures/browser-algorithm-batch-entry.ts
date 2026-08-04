@@ -68,11 +68,20 @@ const BATCH_FIXTURES: readonly BatchFixture[] = [
   {
     language: 'csharp',
     code: [
+      'using System;',
+      'using System.IO;',
       'public class Solution {',
       '  private static int history = 0;',
       '  public int Solve(int value) {',
+      '    const string key = "TRACECODE_CSHARP_BATCH_LEAK";',
+      '    const string path = "/tmp/tracecode-csharp-batch-leak.txt";',
+      '    bool clean = history == 0 &&',
+      '      Environment.GetEnvironmentVariable(key) == null &&',
+      '      !File.Exists(path);',
       '    history += 1;',
-      '    return history;',
+      '    Environment.SetEnvironmentVariable(key, "leaked");',
+      '    File.WriteAllText(path, value.ToString());',
+      '    return clean ? 1 : 0;',
       '  }',
       '}',
     ].join('\n'),
@@ -142,10 +151,13 @@ export async function runBrowserAlgorithmBatch(
   assetBaseUrl: string,
   selectedLanguages: readonly BatchLanguage[] = BATCH_FIXTURES.map(
     (fixture) => fixture.language
-  )
+  ),
+  csharpBatchConcurrency = 4
 ): Promise<unknown> {
   const NativeWorker = globalThis.Worker;
   const workerUrls: string[] = [];
+  let activeWorkers = 0;
+  let maximumActiveWorkers = 0;
   const workerCommands: Array<{
     type?: string;
     runtimeRole?: string;
@@ -154,9 +166,13 @@ export async function runBrowserAlgorithmBatch(
     inputs?: unknown;
   }> = [];
   class ObservedWorker extends NativeWorker {
+    private observedTerminated = false;
+
     constructor(url: string | URL, options?: WorkerOptions) {
       workerUrls.push(String(url));
       super(url, options);
+      activeWorkers += 1;
+      maximumActiveWorkers = Math.max(maximumActiveWorkers, activeWorkers);
       const nativePostMessage = this.postMessage.bind(this);
       this.postMessage = ((
         message: {
@@ -179,6 +195,14 @@ export async function runBrowserAlgorithmBatch(
         nativePostMessage(message, transferOrOptions as Transferable[]);
       }) as typeof this.postMessage;
     }
+
+    override terminate(): void {
+      if (!this.observedTerminated) {
+        this.observedTerminated = true;
+        activeWorkers -= 1;
+      }
+      super.terminate();
+    }
   }
   globalThis.Worker = ObservedWorker;
 
@@ -190,6 +214,9 @@ export async function runBrowserAlgorithmBatch(
       const host = createBrowserJudgeHost({
         assetBaseUrl,
         providers: [fixture.language],
+        ...(fixture.language === 'csharp'
+          ? { csharp: { preparedBatchConcurrency: csharpBatchConcurrency } }
+          : {}),
         safeExecution: {
           prewarmAfterUse: false,
         },
@@ -232,9 +259,13 @@ export async function runBrowserAlgorithmBatch(
             : {}),
           cases,
         });
+        maximumActiveWorkers = activeWorkers;
+        const plainStartedAt = performance.now();
         const plainReceipt = await host.evaluateAlgorithm({
           bundle: plainBundle,
         });
+        const plainMs = performance.now() - plainStartedAt;
+        const plainMaximumActiveWorkers = maximumActiveWorkers;
         const plainWorkerUrls = workerUrls.splice(0);
 
         const traceBundle = await createAlgorithmJudgeBundle({
@@ -248,17 +279,27 @@ export async function runBrowserAlgorithmBatch(
           cases,
           trace: true,
         });
+        maximumActiveWorkers = activeWorkers;
+        const traceStartedAt = performance.now();
         const traceReceipt = await host.evaluateAlgorithm({
           bundle: traceBundle,
         });
+        const traceMs = performance.now() - traceStartedAt;
+        const traceMaximumActiveWorkers = maximumActiveWorkers;
         const traceWorkerUrls = workerUrls.splice(0);
 
         results[fixture.language] = {
           plain: receiptSummary(plainReceipt),
+          plainMs,
+          plainMaximumActiveWorkers,
           plainWorkerUrls,
           trace: receiptSummary(traceReceipt),
+          traceMs,
+          traceMaximumActiveWorkers,
           traceWorkerUrls,
-          ...(fixture.language === 'csharp' ? { trustedPrewarm } : {}),
+          ...(fixture.language === 'csharp'
+            ? { csharpBatchConcurrency, trustedPrewarm }
+            : {}),
         };
       } finally {
         host.dispose();

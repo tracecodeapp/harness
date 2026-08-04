@@ -6,7 +6,7 @@ import { createServer } from 'node:http';
 import { tmpdir } from 'node:os';
 import { extname, join, normalize, resolve, sep } from 'node:path';
 import { build } from 'esbuild';
-import { chromium } from 'playwright';
+import { chromium, firefox, webkit } from 'playwright';
 import { runCommand } from './example-app-smoke';
 
 type BatchLanguage =
@@ -30,9 +30,14 @@ interface ReceiptSummary {
 
 interface BatchLanguageResult {
   readonly plain: ReceiptSummary;
+  readonly plainMs: number;
+  readonly plainMaximumActiveWorkers: number;
   readonly plainWorkerUrls: readonly string[];
   readonly trace: ReceiptSummary;
+  readonly traceMs: number;
+  readonly traceMaximumActiveWorkers: number;
   readonly traceWorkerUrls: readonly string[];
+  readonly csharpBatchConcurrency?: number;
   readonly trustedPrewarm?: boolean;
 }
 
@@ -52,6 +57,26 @@ const LANGUAGES: readonly BatchLanguage[] =
   requestedLanguages && requestedLanguages.length > 0
     ? requestedLanguages
     : ALL_LANGUAGES;
+const csharpBatchConcurrency = Number.parseInt(
+  process.env.TRACECODE_CSHARP_BATCH_CONCURRENCY ?? '4',
+  10
+);
+const browserEngine =
+  process.env.TRACECODE_BROWSER_ENGINE ?? 'chromium';
+const selectedBrowserType =
+  browserEngine === 'chromium'
+    ? chromium
+    : browserEngine === 'firefox'
+      ? firefox
+      : browserEngine === 'webkit'
+        ? webkit
+        : undefined;
+if (!selectedBrowserType) {
+  throw new Error(
+    `Unsupported TRACECODE_BROWSER_ENGINE ${JSON.stringify(browserEngine)}.`
+  );
+}
+const browserLauncher = selectedBrowserType!;
 
 function assertCondition(condition: unknown, message: string): asserts condition {
   if (!condition) throw new Error(message);
@@ -147,7 +172,9 @@ function assertBoundedWorkers(
   language: BatchLanguage,
   scope: string,
   workerUrls: readonly string[],
-  requireWorker: boolean
+  requireWorker: boolean,
+  maximumActiveWorkers: number,
+  configuredCSharpConcurrency?: number
 ): void {
   const languageWorkers = workerUrls.filter((url) =>
     language === 'typescript'
@@ -156,10 +183,20 @@ function assertBoundedWorkers(
         ? url.includes('java-runtime-worker.js')
         : url.includes(`${language}-worker.js`)
   );
-  // C# has three simultaneously bounded authorities (general, compiler, and
-  // runner). A fourth observed URL is the sequential replacement runner
-  // created only after the learner-bearing lease has been terminated.
-  const maximumWorkers = language === 'csharp' ? 4 : 3;
+  if (language === 'csharp') {
+    const concurrency = configuredCSharpConcurrency ?? 4;
+    assertCondition(
+      languageWorkers.length >= 10 &&
+        maximumActiveWorkers <= concurrency + 3,
+      `${language} ${scope} must use one disposable runner per case while bounding concurrent capacity: ${JSON.stringify({
+        workerCount: languageWorkers.length,
+        maximumActiveWorkers,
+        concurrency,
+      })}`
+    );
+    return;
+  }
+  const maximumWorkers = 3;
   assertCondition(
     (!requireWorker || languageWorkers.length > 0) &&
       languageWorkers.length <= maximumWorkers,
@@ -233,7 +270,7 @@ async function main(): Promise<void> {
       'utf8'
     );
     server = await startStaticServer(resolve(tempRoot));
-    const browser = await chromium.launch({ headless: true });
+    const browser = await browserLauncher.launch({ headless: true });
     try {
       const page = await browser.newPage();
       page.setDefaultTimeout(180_000);
@@ -262,8 +299,15 @@ async function main(): Promise<void> {
       const result = await page.evaluate(async (languages) => {
         const moduleUrl: string = '/algorithm-batch.mjs';
         const module = await import(moduleUrl);
-        return module.runBrowserAlgorithmBatch('/workers', languages);
-      }, LANGUAGES) as Record<BatchLanguage, BatchLanguageResult>;
+        return module.runBrowserAlgorithmBatch(
+          '/workers',
+          languages.selected,
+          languages.csharpBatchConcurrency
+        );
+      }, {
+        selected: LANGUAGES,
+        csharpBatchConcurrency,
+      }) as Record<BatchLanguage, BatchLanguageResult>;
 
       for (const language of LANGUAGES) {
         const languageResult = result[language];
@@ -277,13 +321,17 @@ async function main(): Promise<void> {
           language,
           'code batch',
           languageResult.plainWorkerUrls,
-          false
+          false,
+          languageResult.plainMaximumActiveWorkers,
+          languageResult.csharpBatchConcurrency
         );
         assertBoundedWorkers(
           language,
           'trace batch',
           languageResult.traceWorkerUrls,
-          false
+          false,
+          languageResult.traceMaximumActiveWorkers,
+          languageResult.csharpBatchConcurrency
         );
         assertBoundedWorkers(
           language,
@@ -291,12 +339,34 @@ async function main(): Promise<void> {
           languageResult.plainWorkerUrls.length > 0
             ? languageResult.plainWorkerUrls
             : languageResult.traceWorkerUrls,
-          true
+          true,
+          Math.max(
+            languageResult.plainMaximumActiveWorkers,
+            languageResult.traceMaximumActiveWorkers
+          ),
+          languageResult.csharpBatchConcurrency
         );
         if (language === 'csharp') {
           assertCondition(
             languageResult.trustedPrewarm === true,
             'C# public Judge provider must prime its standby runner with the fixed trusted traced artifact.'
+          );
+          console.log(
+            JSON.stringify({
+              csharpBatchConcurrency:
+                languageResult.csharpBatchConcurrency,
+              browserEngine,
+              plainMs: languageResult.plainMs,
+              traceMs: languageResult.traceMs,
+              plainWorkerCount:
+                languageResult.plainWorkerUrls.length,
+              traceWorkerCount:
+                languageResult.traceWorkerUrls.length,
+              plainMaximumActiveWorkers:
+                languageResult.plainMaximumActiveWorkers,
+              traceMaximumActiveWorkers:
+                languageResult.traceMaximumActiveWorkers,
+            })
           );
         }
       }

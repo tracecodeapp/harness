@@ -11,7 +11,6 @@ import {
   writeFile,
 } from 'node:fs/promises';
 import { dirname, join, relative, resolve, sep } from 'node:path';
-import { pathToFileURL } from 'node:url';
 import { unzipSync, zipSync, type Zippable } from 'fflate';
 
 export const CSHARP_ROLE_ARTIFACTS_SCHEMA =
@@ -598,7 +597,13 @@ async function main(): Promise<void> {
   );
 }
 
-if (import.meta.url === pathToFileURL(process.argv[1] ?? '').href) {
+const roleArtifactsEntrypoint = process.argv[1];
+if (
+  roleArtifactsEntrypoint &&
+  /(?:^|[/\\])csharp-role-artifacts\.(?:ts|js|mjs)$/u.test(
+    roleArtifactsEntrypoint
+  )
+) {
   main().catch((error) => {
     console.error(error instanceof Error ? error.message : String(error));
     process.exitCode = 1;

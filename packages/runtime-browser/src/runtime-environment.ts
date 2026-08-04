@@ -1,6 +1,7 @@
 import type { Language } from '@tracecode/runtime-contracts';
 import {
   resolveBrowserRuntimeAssets,
+  type AnyBrowserRuntimeAssetManifest,
   type BrowserRuntimeAssets,
   type BrowserRuntimeAssetOverrides,
   type BrowserRuntimeId,
@@ -78,6 +79,9 @@ function preflightAssets(
     case 'java':
       return ['worker'];
     case 'csharp':
+      if (surface === 'project') {
+        return ['worker', 'assetBaseUrl', 'dependencies'];
+      }
       return [
         'worker',
         'assetBaseUrl',
@@ -120,7 +124,11 @@ function detectFeatures(overrides: Partial<BrowserRuntimeFeatureSupport> = {}): 
   });
 }
 
-function requiredFeatures(language: Language, surface: BrowserRuntimeSurface): readonly (keyof BrowserRuntimeFeatureSupport)[] {
+function requiredFeatures(
+  language: Language,
+  surface: BrowserRuntimeSurface,
+  manifest: AnyBrowserRuntimeAssetManifest | undefined
+): readonly (keyof BrowserRuntimeFeatureSupport)[] {
   const required: Array<keyof BrowserRuntimeFeatureSupport> = ['worker'];
   if (language === 'python' || language === 'java' || language === 'csharp' || language === 'cpp') {
     required.push('webAssembly');
@@ -128,6 +136,18 @@ function requiredFeatures(language: Language, surface: BrowserRuntimeSurface): r
   if (language === 'java' && surface === 'project') {
     required.push('sharedArrayBuffer', 'crossOriginIsolated');
   }
+  const csharpPreparedRolesEnabled =
+    language === 'csharp' &&
+    surface === 'classic' &&
+    (
+      !manifest ||
+      (
+        manifest.runtime === 'csharp' &&
+        Boolean(manifest.assets.compilerAssetBaseUrl) &&
+        Boolean(manifest.assets.runnerAssetBaseUrl)
+      )
+    );
+  if (csharpPreparedRolesEnabled) required.push('webCrypto');
   return required;
 }
 
@@ -168,7 +188,9 @@ export function createBrowserRuntimeEnvironment(
     const selected = providers.includes(language);
     const manifest = assets.runtimeManifests?.[language];
     const configured = true;
-    const missingFeatures = requiredFeatures(language, surface).filter((feature) => !features[feature]);
+    const missingFeatures = requiredFeatures(language, surface, manifest).filter(
+      (feature) => !features[feature]
+    );
     const issues = knownIssues(engine, language);
     let error: string | undefined;
     if (selected && configured && missingFeatures.length === 0) {

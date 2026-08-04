@@ -1,10 +1,20 @@
 #!/usr/bin/env npx tsx
 
 import { test, type TestContext } from 'node:test';
-import { mkdtemp, readFile, readdir, rm, stat } from 'node:fs/promises';
+import {
+  copyFile,
+  mkdir,
+  mkdtemp,
+  readFile,
+  readdir,
+  rm,
+  stat,
+  writeFile,
+} from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { join, resolve } from 'node:path';
+import { dirname, join, resolve } from 'node:path';
 import { spawnSync } from 'node:child_process';
+import { createCSharpRoleArtifacts } from '../scripts/csharp-role-artifacts.js';
 
 function assertCondition(condition: unknown, message: string): asserts condition {
   if (!condition) {
@@ -245,6 +255,95 @@ async function main(t: TestContext): Promise<void> {
   ]) {
     const fileStat = await stat(join(filteredJavaScriptTargetDir, relativePath));
     assertCondition(fileStat.isFile(), `Expected filtered JavaScript synced asset at ${relativePath}`);
+  }
+
+  const cleanPackageRoot = join(tempRoot, 'clean-package');
+  await mkdir(join(cleanPackageRoot, 'dist'), { recursive: true });
+  await copyFile('dist/cli.cjs', join(cleanPackageRoot, 'dist/cli.cjs'));
+  await writeFile(
+    join(cleanPackageRoot, 'package.json'),
+    '{"type":"module"}\n'
+  );
+  const fixtureFiles = [
+    ['THIRD_PARTY_NOTICES.md', 'fixture notices'],
+    ['workers/csharp/csharp-worker.js', 'fixture worker'],
+    ['workers/shared/runtime-kernel-policy-classic.js', 'fixture classic policy'],
+    ['workers/shared/runtime-kernel-policy.js', 'fixture module policy'],
+    ['workers/vendor/csharp/general.txt', 'fixture general runtime'],
+  ] as const;
+  for (const [relativePath, contents] of fixtureFiles) {
+    const target = join(cleanPackageRoot, ...relativePath.split('/'));
+    await mkdir(dirname(target), { recursive: true });
+    await writeFile(target, contents);
+  }
+  const compilerSource = join(tempRoot, 'role-source/compiler');
+  const runnerSource = join(tempRoot, 'role-source/runner');
+  const roleFixtures = [
+    [
+      compilerSource,
+      'TraceCode.CSharpHost.runtimeconfig.json',
+      '_framework/compiler.wasm',
+    ],
+    [
+      runnerSource,
+      'TraceCode.CSharpJudgeRunner.runtimeconfig.json',
+      '_framework/assemblies-01.pack',
+    ],
+  ] as const;
+  for (const [directory, runtimeConfig, payloadPath] of roleFixtures) {
+    await mkdir(join(directory, '_framework'), { recursive: true });
+    await writeFile(
+      join(directory, runtimeConfig),
+      `${JSON.stringify({
+        runtimeOptions: {
+          tfm: 'net10.0',
+          includedFrameworks: [
+            { name: 'Microsoft.NETCore.App', version: '10.0.10' },
+          ],
+        },
+      })}\n`
+    );
+    await writeFile(join(directory, payloadPath), `${payloadPath}-bytes`);
+  }
+  await createCSharpRoleArtifacts({
+    artifactDirectory: join(
+      cleanPackageRoot,
+      'workers/vendor/csharp-role-artifacts'
+    ),
+    compilerDirectory: compilerSource,
+    compilerReferencePack: 'Minimal',
+    dotnetSdk: '10.0.110',
+    runnerDirectory: runnerSource,
+    runnerTrimProfile: 'JudgeReferences',
+    targetFramework: 'net10.0',
+  });
+  const cleanTarget = join(tempRoot, 'clean-package-output');
+  const cleanRun = spawnSync(
+    'node',
+    [
+      join(cleanPackageRoot, 'dist/cli.cjs'),
+      'sync-assets',
+      cleanTarget,
+      '--languages',
+      'csharp',
+    ],
+    { cwd: cleanPackageRoot, encoding: 'utf8' }
+  );
+  if (cleanRun.status !== 0) {
+    throw new Error(
+      cleanRun.stderr ||
+        cleanRun.stdout ||
+        'Clean-checkout C# asset sync CLI failed'
+    );
+  }
+  for (const relativePath of [
+    'vendor/csharp-compiler/_framework/compiler.wasm',
+    'vendor/csharp-runner/_framework/assemblies-01.pack',
+  ]) {
+    assertCondition(
+      (await stat(join(cleanTarget, relativePath))).isFile(),
+      `Clean-checkout sync should materialize ${relativePath}`
+    );
   }
 
   console.log('PASS: asset sync CLI copies canonical and language-filtered worker assets');

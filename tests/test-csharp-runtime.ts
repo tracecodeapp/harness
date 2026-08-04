@@ -70,6 +70,7 @@ class MockCSharpWorker {
   static instances: MockCSharpWorker[] = [];
   static hangingMessageTypes = new Set<string>();
   static erroringMessageTypes = new Set<string>();
+  static warmupFailuresRemaining = 0;
 
   public onmessage: ((event: MessageEvent<WorkerMessage>) => void) | null = null;
   public onerror: ((event: ErrorEvent) => void) | null = null;
@@ -98,6 +99,11 @@ class MockCSharpWorker {
       }
 
       if (type === 'warmup') {
+        if (MockCSharpWorker.warmupFailuresRemaining > 0) {
+          MockCSharpWorker.warmupFailuresRemaining -= 1;
+          this.onerror?.({ message: 'mock warmup worker error' } as ErrorEvent);
+          return;
+        }
         this.onmessage?.({
           data: {
             id,
@@ -949,6 +955,128 @@ async function testDisposedProviderDoesNotRecreateRunner(): Promise<void> {
   console.log('PASS: C# provider disposal cannot recreate runner capacity');
 }
 
+async function testStandbyWarmFailureRetriesWithBackoff(): Promise<void> {
+  MockCSharpWorker.responses = [];
+  MockCSharpWorker.received = [];
+  MockCSharpWorker.instances = [];
+  MockCSharpWorker.hangingMessageTypes = new Set<string>();
+  MockCSharpWorker.erroringMessageTypes = new Set<string>();
+  MockCSharpWorker.warmupFailuresRemaining = 1;
+  const context = {
+    assets: {
+      csharpWorker: '/workers/csharp-worker.js',
+      csharpAssetBaseUrl: '/workers/vendor/csharp',
+      csharpCompilerAssetBaseUrl: '/workers/vendor/csharp-compiler',
+      csharpRunnerAssetBaseUrl: '/workers/vendor/csharp-runner',
+    },
+    debug: false,
+    workerLifecyclePolicy: 'warm-and-retire',
+    prewarmAfterUse: true,
+    workerFactoryFor: () =>
+      (url: string | URL) =>
+        new MockCSharpWorker(url) as unknown as Worker,
+    preflight: () => async () => undefined,
+    manifestAsset: () => undefined,
+    manifestAssetCollection: () => undefined,
+  } as unknown as BrowserRuntimeProviderContext;
+  const lease = createCSharpBrowserRuntimeProvider().create(context);
+  try {
+    await new Promise<void>((resolve) => setTimeout(resolve, 325));
+    assertCondition(
+      MockCSharpWorker.received.filter((message) => message.type === 'warmup')
+        .length >= 3,
+      'A failed C# standby warmup should retry without waiting for a learner lease'
+    );
+    assertCondition(
+      MockCSharpWorker.instances.length >= 3,
+      'A failed C# standby warmup should create replacement capacity'
+    );
+  } finally {
+    lease.dispose();
+    MockCSharpWorker.warmupFailuresRemaining = 0;
+    await new Promise<void>((resolve) => setTimeout(resolve, 10));
+  }
+
+  console.log('PASS: C# standby warm failures retry with bounded backoff');
+}
+
+async function testLanguageDisposalCanReacquirePreparedCapacity(): Promise<void> {
+  MockCSharpWorker.responses = [];
+  MockCSharpWorker.received = [];
+  MockCSharpWorker.instances = [];
+  MockCSharpWorker.hangingMessageTypes = new Set<string>();
+  MockCSharpWorker.erroringMessageTypes = new Set<string>();
+  MockCSharpWorker.warmupFailuresRemaining = 0;
+  const context = {
+    assets: {
+      csharpWorker: '/workers/csharp-worker.js',
+      csharpAssetBaseUrl: '/workers/vendor/csharp',
+      csharpCompilerAssetBaseUrl: '/workers/vendor/csharp-compiler',
+      csharpRunnerAssetBaseUrl: '/workers/vendor/csharp-runner',
+    },
+    debug: false,
+    workerLifecyclePolicy: 'warm-and-retire',
+    prewarmAfterUse: true,
+    workerFactoryFor: () =>
+      (url: string | URL) =>
+        new MockCSharpWorker(url) as unknown as Worker,
+    preflight: () => async () => undefined,
+    manifestAsset: () => undefined,
+    manifestAssetCollection: () => undefined,
+  } as unknown as BrowserRuntimeProviderContext;
+  const lease = createCSharpBrowserRuntimeProvider().create(context);
+  await new Promise<void>((resolve) => setTimeout(resolve, 10));
+  const retiredInstances = [...MockCSharpWorker.instances];
+  lease.disposeLanguage('csharp');
+  assertCondition(
+    retiredInstances.every((worker) => worker.terminated),
+    'C# language disposal should retire current compiler and runner capacity'
+  );
+
+  const provider = lease.preparedProviders.get('csharp');
+  assertCondition(provider, 'C# lease should retain its prepared provider');
+  MockCSharpWorker.responses.push({
+    success: true,
+    compiledArtifactKey: 'reacquired-artifact',
+    compiledArtifactBase64: 'TVqQAAMAAAAEAAAA',
+    compiledArtifactSha256:
+      'ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff',
+    consoleOutput: [],
+  });
+  const prepared = await provider.prepareProgram({
+    mode: 'code',
+    code: 'public class Solution { public int Echo(int value) => value; }',
+    functionName: 'Echo',
+  });
+  assertCondition(
+    prepared.kind === 'prepared' && prepared.program.mode === 'code',
+    'C# preparation should reacquire the compiler after language disposal'
+  );
+  if (prepared.kind !== 'prepared' || prepared.program.mode !== 'code') return;
+
+  MockCSharpWorker.responses.push({
+    success: true,
+    output: 9,
+    consoleOutput: [],
+  });
+  const result = await prepared.program.executeIsolated({
+    inputs: { value: 9 },
+  });
+  assertCondition(
+    result.kind === 'completed' && result.output === 9,
+    'C# execution should reacquire a disposable runner after language disposal'
+  );
+  assertCondition(
+    MockCSharpWorker.instances.length > retiredInstances.length,
+    'C# language reuse should create fresh capacity'
+  );
+  lease.dispose();
+  await prepared.program.dispose();
+  await new Promise<void>((resolve) => setTimeout(resolve, 10));
+
+  console.log('PASS: C# language disposal remains recoverable');
+}
+
 async function testLegacyManifestUsesGeneralWorker(): Promise<void> {
   MockCSharpWorker.responses = [];
   MockCSharpWorker.received = [];
@@ -1066,6 +1194,8 @@ async function main(): Promise<void> {
   await testPreparedWorkerGenerationAuthority();
   await testCompilerAuthorityPrimesBeforePreparation();
   await testDisposedProviderDoesNotRecreateRunner();
+  await testStandbyWarmFailureRetriesWithBackoff();
+  await testLanguageDisposalCanReacquirePreparedCapacity();
   await testLegacyManifestUsesGeneralWorker();
   testTraceRewriterTargetTypedFieldWritesDoNotReadAssignedMembers();
   testTraceRewriterIndexedAssignmentsDoNotReadAssignedIndexers();

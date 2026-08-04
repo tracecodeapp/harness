@@ -4,6 +4,7 @@ import { copyFile, cp, mkdir, stat } from 'node:fs/promises';
 import { createRequire } from 'node:module';
 import { dirname, join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
+import { materializeCSharpRoleAssets } from '../scripts/csharp-role-artifacts.js';
 
 const require = createRequire(pathToFileURL(process.argv[1] ?? join(process.cwd(), 'tracecode-harness.js')));
 
@@ -276,6 +277,24 @@ function shouldCopyAsset(
 async function syncAssets(targetDir: string, selectedLanguages: ReadonlySet<AssetLanguage> | null): Promise<void> {
   const packageRoot = getPackageRoot();
   const resolvedTargetDir = resolve(process.cwd(), targetDir);
+  if (!selectedLanguages || selectedLanguages.has('csharp')) {
+    const roleArtifactManifest = join(
+      packageRoot,
+      'workers/vendor/csharp-role-artifacts/manifest.json'
+    );
+    const hasCanonicalRoleArtifacts = await stat(roleArtifactManifest).then(
+      () => true,
+      (error: NodeJS.ErrnoException) => {
+        if (error.code === 'ENOENT') return false;
+        throw error;
+      }
+    );
+    // Source checkouts retain only canonical, content-addressed archives.
+    // Published packages omit those archives and contain the expanded trees.
+    if (hasCanonicalRoleArtifacts) {
+      await materializeCSharpRoleAssets(packageRoot);
+    }
+  }
 
   for (const asset of ASSET_COPY_PLAN) {
     if (!shouldCopyAsset(asset, selectedLanguages)) continue;
