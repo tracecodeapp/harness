@@ -24,6 +24,8 @@ const engines = (process.env.JAVASCRIPT_JUDGE_BENCH_ENGINES ?? 'chromium')
     ['chromium', 'firefox', 'webkit'].includes(value)
   );
 const samples = Number(process.env.JAVASCRIPT_JUDGE_BENCH_SAMPLES ?? 12);
+const baselineRef =
+  process.env.JAVASCRIPT_JUDGE_BENCH_BASELINE_REF ?? 'origin/main';
 const batchPrewarmLimit = Number(
   process.env.JAVASCRIPT_JUDGE_BATCH_PREWARM_LIMIT ?? 8
 );
@@ -46,7 +48,7 @@ const baselineSources = new Set([
 ]);
 
 function gitSource(path: string): string {
-  return execFileSync('git', ['show', `origin/main:${path}`], {
+  return execFileSync('git', ['show', `${baselineRef}:${path}`], {
     cwd: root,
     encoding: 'utf8',
     maxBuffer: 32 * 1024 * 1024,
@@ -536,10 +538,11 @@ async function main(): Promise<void> {
       cwd: root,
       encoding: 'utf8',
     }).trim(),
-    baseline: execFileSync('git', ['rev-parse', 'origin/main'], {
+    baseline: execFileSync('git', ['rev-parse', baselineRef], {
       cwd: root,
       encoding: 'utf8',
     }).trim(),
+    baselineRef,
     engines,
     samples,
     batchPrewarmLimit,

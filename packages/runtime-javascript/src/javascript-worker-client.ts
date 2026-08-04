@@ -40,7 +40,7 @@ import {
 /** Raw wire payload from the tracing command; lifted into the outcome union here. */
 type JavaScriptRawTraceResult = RawExecutionPayload & { trace?: RuntimeTrace };
 import { appendWorkerUrlQueryParameter, isDevEnvironment } from '@tracecode/runtime-browser/internal';
-import type { BrowserWorkerFactory, BrowserWorkerLike } from '@tracecode/runtime-browser/internal';
+import type { BrowserWorkerFactory } from '@tracecode/runtime-browser/internal';
 import { restoreTransferredTraceEvents, traceEventTransferRequest } from '@tracecode/runtime-browser/internal';
 import {
   ExecutionTimeoutError,
@@ -177,14 +177,13 @@ class JavaScriptWorkerConnection {
 
 export class JavaScriptWorkerClient {
   private coordinator: JavaScriptWorkerConnection | null = null;
-  private activeExecutionWorker: JavaScriptWorkerConnection | null = null;
   private standbyExecutionWorker: JavaScriptWorkerConnection | null = null;
   private standbyExecutionPromise: Promise<void> | null = null;
   private initPromise: Promise<InitResult> | null = null;
   private warmupPromises = new Map<JavaScriptWorkerLanguage, Promise<WarmupResult>>();
   private executionTail: Promise<void> = Promise.resolve();
   private readonly preparedPrograms = new Set<RuntimePreparedProgram>();
-  private readonly batchExecutionWorkers =
+  private readonly leasedExecutionWorkers =
     new Set<JavaScriptWorkerConnection>();
   private generation = 1;
   private terminated = false;
@@ -234,11 +233,6 @@ export class JavaScriptWorkerClient {
       this.options.assetPreflight,
       this.options.workerFactory
     );
-  }
-
-  private terminateExecution(reason: Error = new Error('Execution worker was terminated')): void {
-    this.activeExecutionWorker?.terminate(reason);
-    this.activeExecutionWorker = null;
   }
 
   private terminateStandbyExecution(reason: Error = new Error('Standby execution worker was terminated')): void {
@@ -301,14 +295,13 @@ export class JavaScriptWorkerClient {
   private terminateGeneration(
     reason: Error = new WorkerTerminatedError()
   ): void {
-    this.terminateExecution(reason);
     this.terminateStandbyExecution(reason);
     this.coordinator?.terminate(reason);
     this.coordinator = null;
-    for (const worker of this.batchExecutionWorkers) {
+    for (const worker of this.leasedExecutionWorkers) {
       worker.terminate(reason);
     }
-    this.batchExecutionWorkers.clear();
+    this.leasedExecutionWorkers.clear();
     this.initPromise = null;
     this.warmupPromises.clear();
   }
@@ -419,7 +412,7 @@ export class JavaScriptWorkerClient {
     let worker: JavaScriptWorkerConnection | null = null;
     try {
       worker = await this.takeStandbyExecutionWorker(expectedGeneration);
-      this.activeExecutionWorker = worker;
+      this.leasedExecutionWorkers.add(worker);
       // Keep one clean executor ready while the current command runs. The
       // standby never receives user code, so every command still gets a fresh
       // authority boundary without paying worker bootstrap on its critical path.
@@ -430,8 +423,8 @@ export class JavaScriptWorkerClient {
       }
       return await executor(worker);
     } finally {
+      if (worker) this.leasedExecutionWorkers.delete(worker);
       worker?.terminate();
-      if (this.activeExecutionWorker === worker) this.activeExecutionWorker = null;
       release();
     }
   }
@@ -465,7 +458,7 @@ export class JavaScriptWorkerClient {
           ? await this.takeStandbyExecutionWorker(expectedGeneration)
           : null;
       if (initialStandby) {
-        this.batchExecutionWorkers.add(initialStandby);
+        this.leasedExecutionWorkers.add(initialStandby);
       }
       if (this.options.prewarmAfterUse ?? true) {
         void this.ensureStandbyExecutionWorker(expectedGeneration).catch(
@@ -488,7 +481,7 @@ export class JavaScriptWorkerClient {
               return initialStandby;
             }
             const worker = this.createExecutionWorker();
-            this.batchExecutionWorkers.add(worker);
+            this.leasedExecutionWorkers.add(worker);
             return worker;
           }
         );
@@ -507,12 +500,12 @@ export class JavaScriptWorkerClient {
               worker,
               offset + index
             );
-            this.batchExecutionWorkers.delete(worker);
+            this.leasedExecutionWorkers.delete(worker);
             worker.terminate();
           }
         } finally {
           for (const worker of workers) {
-            this.batchExecutionWorkers.delete(worker);
+            this.leasedExecutionWorkers.delete(worker);
             worker.terminate();
           }
         }
@@ -1115,22 +1108,13 @@ export class JavaScriptWorkerClient {
       throw new Error('JavaScript code batch prepared a tracing program.');
     }
     try {
-      const results = preparation.program.executeBatchIsolated
-        ? [
-            ...(await preparation.program.executeBatchIsolated({
-              inputBatch,
-              signal,
-            })),
-          ]
-        : await (async () => {
-            const isolated: CodeExecutionResult[] = [];
-            for (const inputs of inputBatch) {
-              isolated.push(
-                await preparation.program.executeIsolated({ inputs, signal })
-              );
-            }
-            return isolated;
-          })();
+      const executeBatch = preparation.program.executeBatchIsolated;
+      if (!executeBatch) {
+        throw new Error(
+          'Prepared JavaScript code program did not expose isolated batching.'
+        );
+      }
+      const results = [...(await executeBatch({ inputBatch, signal }))];
       const totalMs = performanceNow() - startedAt;
       return {
         results,
@@ -1168,8 +1152,4 @@ export class JavaScriptWorkerClient {
     this.terminateGeneration();
     this.executionTail = Promise.resolve();
   }
-}
-
-export function isJavaScriptWorkerSupported(): boolean {
-  return typeof Worker !== 'undefined';
 }

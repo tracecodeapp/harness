@@ -136,7 +136,6 @@ function emitRuntimeDiagnostic(level, phase, message, detail) {
 }
 
 let isInitialized = false;
-let isLoading = false;
 let typeScriptLoadPromise = null;
 const TYPESCRIPT_COMPILER_URLS = [
   './vendor/typescript.js',
@@ -1723,36 +1722,6 @@ function normalizeTraceIndexSources(indexSources, maxDepth = 3) {
 
 function isTraceableMutatingMethod(methodName) {
   return ['push', 'pop', 'shift', 'unshift', 'splice', 'sort', 'reverse', 'set', 'get', 'has', 'add', 'insert', 'delete', 'clear'].includes(methodName);
-}
-
-function readValueAtIndices(container, indices) {
-  let current = container;
-  for (const index of indices) {
-    if (current === null || current === undefined) {
-      return undefined;
-    }
-    current = current[index];
-  }
-  return current;
-}
-
-function writeValueAtIndices(container, indices, value) {
-  if (!Array.isArray(indices) || indices.length === 0) {
-    return value;
-  }
-  if (indices.length === 1) {
-    container[indices[0]] = value;
-    return value;
-  }
-
-  let parent = container;
-  for (let i = 0; i < indices.length - 1; i += 1) {
-    parent = parent?.[indices[i]];
-  }
-  if (parent !== null && parent !== undefined) {
-    parent[indices[indices.length - 1]] = value;
-  }
-  return value;
 }
 
 function traceLineParenDelta(line) {
@@ -4431,32 +4400,6 @@ function createTraceUpdateExpression(
   );
 }
 
-function createTraceMutatingCallExpression(
-  ts,
-  sourceFile,
-  node,
-  variableName,
-  methodName,
-  args,
-  indices = [],
-  indexSourceExpressions = indices
-) {
-  const receiverExpression = variableName === 'this'
-    ? ts.factory.createThis()
-    : ts.factory.createIdentifier(variableName);
-  return createTraceMutatingCallExpressionForReceiver(
-    ts,
-    sourceFile,
-    node,
-    variableName,
-    receiverExpression,
-    methodName,
-    args,
-    indices,
-    indexSourceExpressions
-  );
-}
-
 function createTraceMutatingCallExpressionForReceiver(
   ts,
   sourceFile,
@@ -6564,10 +6507,6 @@ function javascriptRuntimeCheckedCode(code, sourceCode = code) {
   return code;
 }
 
-function javascriptRuntimeSandboxedCode(code, sourceCode = code) {
-  return `${javascriptRuntimeSandboxPrelude()}\n${javascriptRuntimeCheckedCode(code, sourceCode)}`;
-}
-
 const JAVASCRIPT_RUNTIME_RESERVED_SELECTOR_WORDS = new Set([
   'await', 'break', 'case', 'catch', 'class', 'const', 'continue', 'debugger',
   'default', 'delete', 'do', 'else', 'enum', 'export', 'extends', 'false',
@@ -6913,7 +6852,6 @@ function preparedExecutionFromPayload(payload) {
     !prepared ||
     typeof prepared !== 'object' ||
     prepared.schema !== PREPARED_EXECUTION_SCHEMA ||
-    typeof prepared.sourceCode !== 'string' ||
     typeof prepared.executableCode !== 'string'
   ) {
     return null;
@@ -7011,7 +6949,6 @@ async function prepareExecutionRequest(payload) {
   return {
     preparedExecution: {
       schema: PREPARED_EXECUTION_SCHEMA,
-      sourceCode: code,
       executableCode,
       materializers,
       inputArguments,
@@ -7384,13 +7321,11 @@ async function initRuntime(payload = {}) {
     return { success: true, loadTimeMs: 0 };
   }
 
-  isLoading = true;
   const startedAt = performanceNow();
   if (WORKER_ROLE !== 'coordinator') {
     ensureJavaScriptLibraries();
   }
   isInitialized = true;
-  isLoading = false;
   return { success: true, loadTimeMs: performanceNow() - startedAt };
 }
 
@@ -7509,14 +7444,6 @@ async function processMessage(data) {
         }
         const result = await executeCode(payload);
         postProtocolMessage(id, protocolToken, 'execute-result', result);
-        break;
-      }
-
-      case 'status': {
-        postProtocolMessage(id, protocolToken, 'status-result', {
-            isReady: isInitialized,
-            isLoading,
-        });
         break;
       }
 

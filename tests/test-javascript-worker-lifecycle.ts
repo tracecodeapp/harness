@@ -495,11 +495,14 @@ async function exercisePreparedDisposalOwner(): Promise<void> {
   const program = createJavaScriptPreparedProgram({
     mode: 'code',
     executeCode: (
-      _call: RuntimePreparedCodeCall,
-      signal: AbortSignal
+      call: RuntimePreparedCodeCall
     ): Promise<CodeExecutionResult> =>
-      new Promise((resolve) => {
-        signal.addEventListener(
+      new Promise((resolve, reject) => {
+        if (!call.signal) {
+          reject(new Error('Prepared execution did not receive a lifecycle signal.'));
+          return;
+        }
+        call.signal.addEventListener(
           'abort',
           () => {
             observedLifecycleAbort = true;

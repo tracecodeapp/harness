@@ -105,13 +105,14 @@ Worker heaps and must not be used as the Python/JavaScript memory number.
 
 Current candidate algorithm worker:
 
-- Raw: 259,306 bytes
-- gzip -9: 43,811 bytes
-- Brotli -q 11: 36,065 bytes
-- SHA-256: `7f99c4758f82d3893051adcfeb5e2fe22c5ac7cd88126f9577e217277147c2ad`
+- Raw: 257,604 bytes
+- gzip -9: 43,536 bytes
+- Brotli -q 11: 35,893 bytes
+- SHA-256: `9fba4acac1f0c7d2a2909e9e15dc15d2c438a671aa93734a1b8a708ce5b02c51`
 
-The worker protocol deletion removes its unsafe batch materializers/handlers.
-There is no new runtime download.
+The worker protocol deletion removes its unsafe batch materializers/handlers,
+unused status endpoint, dead trace helpers, and the duplicate learner-source
+field from prepared artifacts. There is no new runtime download.
 
 ## Reproduction
 
