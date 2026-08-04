@@ -128,6 +128,11 @@ export function createJavaProjectClientFactory(
     server: `${runtimeAssetBaseUrl}/profiles/server`,
     'spring-server': `${runtimeAssetBaseUrl}/profiles/spring-server`,
   } as const;
+  if (!(runtimeProfile in runtimeProfileBaseUrls)) {
+    throw new TypeError(
+      `Unsupported TraceJVM runtime profile: ${String(runtimeProfile)}`
+    );
+  }
   const compilerHost = new TraceJVMCompilerWorkerClient({
     compiler: {
       assets: {

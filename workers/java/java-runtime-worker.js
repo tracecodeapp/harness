@@ -50,6 +50,7 @@ const traceJVMStringFiles = new Map();
 let traceJVMModulePromise;
 let traceKernelLocalJavaHostModulePromise;
 let traceJVMClientPromise;
+let traceJVMClient;
 let traceJVMHelperJarPromise;
 let traceJVMRewriteProgramPromise;
 const traceJVMCompileCache = new Map();
@@ -190,14 +191,15 @@ async function createTraceJVMClient() {
     runtimeProfile: 'core',
     retirementAfterExecutions: 1,
   });
-  await Promise.all([
+  const initialization = Promise.all([
     compiler.initialize(),
     runnerHost.initialize(),
-  ]);
+  ]).then(([compilerInitialization]) => compilerInitialization);
+  await initialization;
 
   return {
     initialize() {
-      return compiler.initialize();
+      return initialization;
     },
     compile(request) {
       return compiler.compile(request);
@@ -212,17 +214,40 @@ async function createTraceJVMClient() {
   };
 }
 
-async function getTraceJVMClient() {
-  traceJVMClientPromise ??= createTraceJVMClient();
+function getTraceJVMClient() {
+  if (!traceJVMClientPromise) {
+    const clientPromise = createTraceJVMClient().then(
+      (client) => {
+        if (traceJVMClientPromise === clientPromise) {
+          traceJVMClient = client;
+        }
+        return client;
+      },
+      (error) => {
+        if (traceJVMClientPromise === clientPromise) {
+          traceJVMClientPromise = undefined;
+        }
+        throw error;
+      }
+    );
+    traceJVMClientPromise = clientPromise;
+  }
   return traceJVMClientPromise;
 }
 
 function invalidateTraceJVMClient() {
-  void traceJVMClientPromise
-    ?.then((client) => client.dispose())
-    .catch(() => undefined);
+  const resolvedClient = traceJVMClient;
+  const pendingClient = traceJVMClientPromise;
+  traceJVMClient = undefined;
   traceJVMClientPromise = undefined;
   traceJVMRewriteProgramPromise = undefined;
+  if (resolvedClient) {
+    resolvedClient.dispose();
+    return;
+  }
+  void pendingClient
+    ?.then((client) => client.dispose())
+    .catch(() => undefined);
 }
 
 function unwrapTraceKernelResult(operation, result) {

@@ -131,6 +131,8 @@ async function main(): Promise<void> {
   for (const marker of [
     'TraceJVMCompiler',
     'TraceJVMRunnerHost',
+    'const initialization = Promise.all',
+    'resolvedClient.dispose()',
     "traceJVMWorkerParameters.get('tracejvmBaseUrl')",
     'normalizeTraceJVMBaseUrl',
     'traceJVMRewriteSource',
