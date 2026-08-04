@@ -65,6 +65,18 @@ export interface JavaScriptWorkerClientOptions {
   prewarmAfterUse?: boolean;
 }
 
+export interface JavaScriptWorkerBatchCall extends RuntimeBatchCall {
+  readonly language?: JavaScriptWorkerLanguage;
+  /** Applied independently to each case in the batch. */
+  readonly limits?: RuntimePreparedCodeBatchCall['limits'];
+  /**
+   * Aggregate safety deadline for the complete batch. Per-case limits remain
+   * in `limits`; this separate clock preserves the historical direct-batch
+   * budget without changing Judge's per-case semantics.
+   */
+  readonly batchWallClockMs?: number;
+}
+
 interface InitResult {
   success: boolean;
   loadTimeMs: number;
@@ -324,7 +336,8 @@ export class JavaScriptWorkerClient {
     worker: JavaScriptWorkerConnection,
     operation: 'execute-code' | 'execute-with-tracing',
     payload: Record<string, unknown>,
-    language: JavaScriptWorkerLanguage
+    language: JavaScriptWorkerLanguage,
+    expectedGeneration: number
   ): Effect.Effect<T, Error> {
     return Effect.gen(this, function* () {
       yield* Effect.tryPromise({
@@ -340,11 +353,11 @@ export class JavaScriptWorkerClient {
         yield* Effect.tryPromise({
           try: async () => {
             await this.options.typescriptCompilerPreflight?.();
-            await this.init();
+            await this.init(expectedGeneration);
           },
           catch: (error) => (error instanceof Error ? error : new Error(String(error))),
         });
-        const prepared = yield* this.getCoordinator().sendMessageEffect<{ preparedExecution: unknown }>(
+        const prepared = yield* this.getCoordinator(expectedGeneration).sendMessageEffect<{ preparedExecution: unknown }>(
           'prepare-execution',
           { operation, request: payload },
           null
@@ -399,7 +412,7 @@ export class JavaScriptWorkerClient {
 
   private async runIsolatedExecution<T>(
     executor: (worker: JavaScriptWorkerConnection) => Promise<T>,
-    expectedGeneration: number = this.generation
+    expectedGeneration: number
   ): Promise<T> {
     this.assertActive(expectedGeneration);
     const previous = this.executionTail;
@@ -408,9 +421,9 @@ export class JavaScriptWorkerClient {
       release = resolve;
     });
     await previous.catch(() => undefined);
-    this.assertActive(expectedGeneration);
     let worker: JavaScriptWorkerConnection | null = null;
     try {
+      this.assertActive(expectedGeneration);
       worker = await this.takeStandbyExecutionWorker(expectedGeneration);
       this.leasedExecutionWorkers.add(worker);
       // Keep one clean executor ready while the current command runs. The
@@ -449,10 +462,10 @@ export class JavaScriptWorkerClient {
       release = resolve;
     });
     await previous.catch(() => undefined);
-    this.assertActive(expectedGeneration);
 
     const results = new Array<T>(caseCount);
     try {
+      this.assertActive(expectedGeneration);
       const initialStandby =
         caseCount > 0
           ? await this.takeStandbyExecutionWorker(expectedGeneration)
@@ -485,6 +498,7 @@ export class JavaScriptWorkerClient {
             return worker;
           }
         );
+        const cleanupWorkers = new Set(workers);
         try {
           await Promise.all(
             workers.map((worker, index) =>
@@ -502,9 +516,10 @@ export class JavaScriptWorkerClient {
             );
             this.leasedExecutionWorkers.delete(worker);
             worker.terminate();
+            cleanupWorkers.delete(worker);
           }
         } finally {
-          for (const worker of workers) {
+          for (const worker of cleanupWorkers) {
             this.leasedExecutionWorkers.delete(worker);
             worker.terminate();
           }
@@ -526,9 +541,46 @@ export class JavaScriptWorkerClient {
     return worker.core.runClientEffect(worker.core.withExecutionDeadline(program, wallClockMs), signal);
   }
 
-  async init(): Promise<InitResult> {
-    this.assertActive();
-    const generation = this.generation;
+  private async runBatchWithDeadline<T>(
+    operation: (signal: AbortSignal) => Promise<T>,
+    timeoutMs: number,
+    signal?: AbortSignal
+  ): Promise<T> {
+    const controller = new AbortController();
+    let deadlineExpired = false;
+    const abortFromCaller = (): void => {
+      if (!controller.signal.aborted) controller.abort();
+    };
+    if (signal?.aborted) {
+      abortFromCaller();
+    } else {
+      signal?.addEventListener('abort', abortFromCaller, { once: true });
+    }
+    const timeout = setTimeout(() => {
+      if (controller.signal.aborted) return;
+      deadlineExpired = true;
+      controller.abort();
+    }, timeoutMs);
+
+    try {
+      return await operation(controller.signal);
+    } catch (error) {
+      if (deadlineExpired) {
+        throw new ExecutionTimeoutError({
+          timeoutMs,
+          runtimeLabel: 'JavaScript batch',
+        });
+      }
+      throw error;
+    } finally {
+      clearTimeout(timeout);
+      signal?.removeEventListener('abort', abortFromCaller);
+    }
+  }
+
+  async init(expectedGeneration: number = this.generation): Promise<InitResult> {
+    this.assertActive(expectedGeneration);
+    const generation = expectedGeneration;
     if (this.coordinator?.isDisposed) {
       this.coordinator = null;
       this.initPromise = null;
@@ -581,7 +633,7 @@ export class JavaScriptWorkerClient {
 
     const warmupPromise = (async () => {
       if (language === 'typescript') await this.options.typescriptCompilerPreflight?.();
-      await this.init();
+      await this.init(generation);
       this.assertActive(generation);
       return this.getCoordinator(generation).sendMessage<WarmupResult>(
         'warmup',
@@ -630,7 +682,7 @@ export class JavaScriptWorkerClient {
       if (language === 'typescript' || call.mode === 'trace') {
         await this.options.typescriptCompilerPreflight?.();
       }
-      await this.init();
+      await this.init(generation);
       this.assertActive(generation);
       if (call.signal?.aborted) {
         const error = new Error('Prepared JavaScript execution aborted.');
@@ -991,6 +1043,7 @@ export class JavaScriptWorkerClient {
   }
 
   async executeWithTracing(call: RuntimeTraceCall & { language?: JavaScriptWorkerLanguage }): Promise<ExecutionResult> {
+    const expectedGeneration = this.generation;
     const { code, functionName, inputs, traceOptions, executionStyle = 'function', language = 'javascript', signal } = call;
     const result = await this.runIsolatedExecution((worker) =>
       this.runExecution(
@@ -1007,11 +1060,13 @@ export class JavaScriptWorkerClient {
             language,
             traceEventTransport: traceEventTransferRequest(),
           },
-          language
+          language,
+          expectedGeneration
         ),
         TRACING_TIMEOUT_MS,
         signal
-      )
+      ),
+      expectedGeneration
     );
     return liftTraceOutcome(
       result,
@@ -1021,6 +1076,7 @@ export class JavaScriptWorkerClient {
   }
 
   async executeCode(call: RuntimeCodeCall & { language?: JavaScriptWorkerLanguage }): Promise<CodeExecutionResult> {
+    const expectedGeneration = this.generation;
     const { code, functionName, inputs, executionStyle = 'function', language = 'javascript', signal, limits } = call;
     const wallClockMs = limits?.wallClockMs ?? EXECUTION_TIMEOUT_MS;
     const result = await this.runIsolatedExecution((worker) =>
@@ -1036,16 +1092,18 @@ export class JavaScriptWorkerClient {
             executionStyle,
             language,
           },
-          language
+          language,
+          expectedGeneration
         ),
         wallClockMs,
         signal
-      )
+      ),
+      expectedGeneration
     );
     return liftCodeOutcome(result, 'JavaScript execution failed');
   }
 
-  async executeCodeBatch(call: RuntimeBatchCall & { language?: JavaScriptWorkerLanguage }): Promise<CodeExecutionBatchResult> {
+  async executeCodeBatch(call: JavaScriptWorkerBatchCall): Promise<CodeExecutionBatchResult> {
     const startedAt = performanceNow();
     const {
       code,
@@ -1054,6 +1112,8 @@ export class JavaScriptWorkerClient {
       executionStyle = 'function',
       language = 'javascript',
       signal,
+      limits,
+      batchWallClockMs = EXECUTION_TIMEOUT_MS,
     } = call;
     const preparation = await this.prepareProgram(
       {
@@ -1114,7 +1174,14 @@ export class JavaScriptWorkerClient {
           'Prepared JavaScript code program did not expose isolated batching.'
         );
       }
-      const results = [...(await executeBatch({ inputBatch, signal }))];
+      const results = [
+        ...(await this.runBatchWithDeadline(
+          (batchSignal) =>
+            executeBatch({ inputBatch, signal: batchSignal, limits }),
+          batchWallClockMs,
+          signal
+        )),
+      ];
       const totalMs = performanceNow() - startedAt;
       return {
         results,
