@@ -32,6 +32,7 @@ public static class TraceEventBackfill
                 if (next.Kind == "mutate"
                     && string.Equals(next.Method, "Sort", StringComparison.Ordinal)
                     && next.Target is not null
+                    && TargetsEqual(next.Target, traceEvent.Target)
                     && TraceArgsHaveItems(next.Args))
                 {
                     hasConcreteSortOnSameLine = true;

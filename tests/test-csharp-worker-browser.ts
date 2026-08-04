@@ -3730,6 +3730,44 @@ async function main(): Promise<void> {
       `C# worker traced Array.Sort case should include sorted-cell writes, received ${JSON.stringify(tracedArraySort.events)}`
     );
 
+    const tracedTwoListSortsOnOneLine = await runWorkerCase(
+      page,
+      [
+        'using System.Collections.Generic;',
+        'public class Solution {',
+        '  public int[] SortBoth() {',
+        '    var first = new List<int> { 2, 1 }; var second = new List<int> { 4, 3 };',
+        '    first.Sort(); second.Sort(Comparer<int>.Default);',
+        '    return new[] { first[0], second[0] };',
+        '  }',
+        '}',
+      ].join('\n'),
+      'SortBoth',
+      {},
+      assetBaseUrl,
+      true
+    );
+    assertCondition(
+      tracedTwoListSortsOnOneLine.success &&
+        JSON.stringify(tracedTwoListSortsOnOneLine.output) ===
+          JSON.stringify([1, 3]),
+      `C# worker same-line List.Sort case should succeed: ${JSON.stringify(tracedTwoListSortsOnOneLine)}`
+    );
+    const sameLineSortTargets = new Set(
+      (tracedTwoListSortsOnOneLine.events ?? [])
+        .filter(
+          (event) =>
+            event.kind === 'mutate' &&
+            event.line === 5 &&
+            event.method === 'Sort'
+        )
+        .map((event) => event.target?.variable)
+    );
+    assertCondition(
+      sameLineSortTargets.has('first') && sameLineSortTargets.has('second'),
+      `C# trace normalization must preserve same-line Sort mutations for distinct targets: ${JSON.stringify(tracedTwoListSortsOnOneLine.events)}`
+    );
+
     const tracedSystemArrayReverse = await runWorkerCase(
       page,
       [

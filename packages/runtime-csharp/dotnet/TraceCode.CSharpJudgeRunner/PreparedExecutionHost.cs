@@ -132,8 +132,9 @@ public static partial class PreparedExecutionHost
             timings["compileArtifactBytes"] = peBytes.LongLength;
             timings["compileMs"] = 0d;
 
-            JudgeRuntimeContext.SetCurrentInputsJson(
-                JsonSerializer.Serialize(request.Inputs, JsonOptions)
+            string inputsJson = JsonSerializer.Serialize(
+                request.Inputs,
+                JsonOptions
             );
             RuntimeTraceSink.Reset();
             RuntimeTraceSink.Configure(
@@ -153,7 +154,7 @@ public static partial class PreparedExecutionHost
             {
                 using MemoryStream assemblyStream = new(peBytes, writable: false);
                 Assembly userAssembly = loadContext.LoadFromStream(assemblyStream);
-                object? output = InvokeDriver(userAssembly);
+                object? output = InvokeDriver(userAssembly, inputsJson);
                 object? normalizedOutput = NormalizeOutput(output);
                 timings["runMs"] =
                     stopwatch.Elapsed.TotalMilliseconds - runStartedAt;
@@ -218,7 +219,7 @@ public static partial class PreparedExecutionHost
         }
         finally
         {
-            JudgeRuntimeContext.Reset();
+            RuntimeTraceSink.Reset();
             Console.SetOut(originalOut);
         }
     }
@@ -289,7 +290,7 @@ public static partial class PreparedExecutionHost
         }
     }
 
-    private static object? InvokeDriver(Assembly userAssembly)
+    private static object? InvokeDriver(Assembly userAssembly, string inputsJson)
     {
         Type driverType = userAssembly.GetType("TraceCodeDriver")
             ?? throw new InvalidOperationException(
@@ -301,7 +302,7 @@ public static partial class PreparedExecutionHost
         ) ?? throw new InvalidOperationException(
             "TraceCode generated driver did not expose Run()."
         );
-        object? result = method.Invoke(null, null);
+        object? result = method.Invoke(null, new object?[] { inputsJson });
         if (result is not Task task)
         {
             return result;

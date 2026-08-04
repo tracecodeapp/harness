@@ -216,6 +216,38 @@ public class Solution
         return $"{payload.Name}:{totals.Sum}:{totals.Weight}:{matched}:{document.RootElement.GetProperty("ok").GetBoolean()}";
     }
 }`;
+      const reflectiveInputMutationSource = `
+using System;
+using System.Reflection;
+using System.Runtime.CompilerServices;
+
+public static class ReflectiveInputHijack
+{
+    [ModuleInitializer]
+    public static void Initialize()
+    {
+        object domain = AppDomain.CurrentDomain;
+        foreach (var assembly in ((AppDomain)domain).GetAssemblies())
+        {
+            var context = assembly.GetType(
+                string.Concat("TraceCode.CSharp", "Host.JudgeRuntimeContext")
+            );
+            var setter = context?.GetMethod(
+                string.Concat("SetCurrentInputs", "Json"),
+                BindingFlags.Static | BindingFlags.NonPublic
+            );
+            setter?.Invoke(
+                null,
+                new object?[] { "{\\"left\\":100,\\"right\\":200}" }
+            );
+        }
+    }
+}
+
+public class Solution
+{
+    public int Add(int left, int right) => left + right;
+}`;
       const compilerBaseUrl = `${origin}/workers/vendor/csharp-compiler`;
       const runnerBaseUrl = `${origin}/${runnerAssetPath}`;
       const compiler = await createHarness('compiler', compilerBaseUrl);
@@ -276,6 +308,17 @@ public class Solution
         assetBaseUrl: compilerBaseUrl,
         timeoutMs: 10_000,
       });
+      const reflectiveInputMutationPrepared = await compiler.send(
+        'prepare-program',
+        {
+          mode: 'code',
+          code: reflectiveInputMutationSource,
+          functionName: 'Add',
+          executionStyle: 'solution-method',
+          assetBaseUrl: compilerBaseUrl,
+          timeoutMs: 10_000,
+        }
+      );
       compiler.terminate();
 
       const descriptor = (
@@ -307,6 +350,24 @@ public class Solution
         timeoutMs: 10_000,
       });
       runner.terminate();
+
+      const reflectiveMutationRunner = await createHarness(
+        'runner',
+        runnerBaseUrl
+      );
+      const reflectiveInputMutation =
+        await reflectiveMutationRunner.send('execute-prepared-code', {
+          prepared: descriptor(
+            reflectiveInputMutationSource,
+            'Add',
+            'code',
+            reflectiveInputMutationPrepared
+          ),
+          inputs: { left: 19, right: 23 },
+          assetBaseUrl: runnerBaseUrl,
+          timeoutMs: 10_000,
+        });
+      reflectiveMutationRunner.terminate();
 
       const structuredInputs = {
         payload: {
@@ -360,6 +421,8 @@ public class Solution
         structuredPrepared,
         structuredTracePrepared,
         inputMutationPrepared,
+        reflectiveInputMutationPrepared,
+        reflectiveInputMutation,
         runnerPrime,
         valid,
         structured,
@@ -408,6 +471,15 @@ public class Solution
       `C# learner module initializers must not mutate trusted Judge inputs: ${JSON.stringify(result.inputMutationPrepared)}`
     );
     assertCondition(
+      result.reflectiveInputMutationPrepared.success === true &&
+        result.reflectiveInputMutation.success === true &&
+        result.reflectiveInputMutation.output === 42,
+      `C# learner reflection must not reach mutable trusted Judge inputs: ${JSON.stringify({
+        prepared: result.reflectiveInputMutationPrepared,
+        execution: result.reflectiveInputMutation,
+      })}`
+    );
+    assertCondition(
       result.structured.success &&
         result.structured.output === 'Ada:6:7:True:True' &&
         result.structured.timings?.compileCacheHit === true,
@@ -438,6 +510,7 @@ public class Solution
         structuredOutput: result.structured.output,
         structuredTraceEvents: result.structuredTrace.events?.length ?? 0,
         inputMutationRejected: true,
+        reflectiveInputMutationIsolated: true,
         tamperedRejected: true,
         runnerAssetPath,
       })

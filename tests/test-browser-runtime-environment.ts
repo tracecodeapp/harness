@@ -175,6 +175,22 @@ async function main(): Promise<void> {
     'the public browser host must propagate disabled C# prepared authority into readiness'
   );
   disabledPreparedHost.dispose();
+  const inheritedPreparedEnvironment = createBrowserRuntimeEnvironment({
+    providers: ['csharp'],
+    surface: 'classic',
+    csharpPreparedAuthority: false,
+    featureOverrides: { ...readyFeatures, webCrypto: false },
+  });
+  const inheritedPreparedHost = createBrowserRuntimeHost({
+    environment: inheritedPreparedEnvironment,
+  });
+  assertCondition(
+    inheritedPreparedHost.environment.csharpPreparedAuthority === false &&
+      (await inheritedPreparedHost.preflightLanguage('csharp')).status ===
+        'ready',
+    'the public browser host must inherit prepared-authority mode from a shared environment'
+  );
+  inheritedPreparedHost.dispose();
   const legacyNoCryptoCSharp = createBrowserRuntimeEnvironment({
     providers: ['csharp'],
     surface: 'classic',

@@ -417,7 +417,7 @@ test('C# host prepared entry point cannot fall through to the compiling executio
   );
   assert.match(
     preparedEntryPoint,
-    /finally\s*\{\s*\/\/ This is the lifecycle boundary[\s\S]*?JudgeRuntimeContext\.Reset\(\);\s*Console\.SetOut\(originalOut\);/,
-    'prepared inputs and trace state must reset even when execution fails before assembly loading'
+    /finally\s*\{\s*\/\/ This is the lifecycle boundary[\s\S]*?RuntimeTraceSink\.Reset\(\);\s*Console\.SetOut\(originalOut\);/,
+    'prepared trace state must reset even when execution fails before assembly loading'
   );
 });

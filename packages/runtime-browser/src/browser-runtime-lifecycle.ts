@@ -145,8 +145,7 @@ export function resolveBrowserRuntimeLifecycleContext(
       options.engine !== undefined ||
       options.featureOverrides !== undefined ||
       (
-        options.csharpPreparedAuthority !== undefined &&
-        options.csharpPreparedAuthority !==
+        (options.csharpPreparedAuthority ?? true) !==
           (options.environment.csharpPreparedAuthority ?? true)
       )
     )

@@ -380,8 +380,9 @@ public static partial class CompilerHost
             timings["compileArtifactBytes"] = peBytes.LongLength;
             timings["compileMs"] = 0d;
 
-            JudgeRuntimeContext.SetCurrentInputsJson(
-                JsonSerializer.Serialize(request.Inputs, JsonOptions)
+            string inputsJson = JsonSerializer.Serialize(
+                request.Inputs,
+                JsonOptions
             );
             RuntimeTraceSink.Reset();
             RuntimeTraceSink.Configure(
@@ -407,7 +408,7 @@ public static partial class CompilerHost
                 Assembly userAssembly = loadContext.LoadFromStream(
                     assemblyStream
                 );
-                object? output = InvokeDriver(userAssembly);
+                object? output = InvokeDriver(userAssembly, inputsJson);
                 object? normalizedOutput = NormalizeOutput(output);
                 timings["runMs"] =
                     stopwatch.Elapsed.TotalMilliseconds - runStartedAt;
@@ -478,7 +479,7 @@ public static partial class CompilerHost
         {
             // This is the lifecycle boundary for all prepared attempts, not
             // only attempts that reached the collectible load context.
-            JudgeRuntimeContext.Reset();
+            RuntimeTraceSink.Reset();
             Console.SetOut(originalOut);
         }
     }
@@ -597,8 +598,9 @@ public static partial class CompilerHost
             timings["compileArtifactBytes"] = peBytes.LongLength;
             timings["compileCacheEntries"] = CompiledArtifacts.Count;
             timings["compileCacheBytes"] = compiledArtifactCacheBytes;
-            JudgeRuntimeContext.SetCurrentInputsJson(
-                JsonSerializer.Serialize(request.Inputs, JsonOptions)
+            string inputsJson = JsonSerializer.Serialize(
+                request.Inputs,
+                JsonOptions
             );
             RuntimeTraceSink.Configure(
                 request.TimeoutMs,
@@ -614,7 +616,7 @@ public static partial class CompilerHost
             {
                 using MemoryStream assemblyStream = new(peBytes, writable: false);
                 Assembly userAssembly = loadContext.LoadFromStream(assemblyStream);
-                object? output = InvokeDriver(userAssembly);
+                object? output = InvokeDriver(userAssembly, inputsJson);
                 object? normalizedOutput = NormalizeOutput(output);
                 timings["runMs"] = stopwatch.Elapsed.TotalMilliseconds - runStartedAt;
                 timings["executionRealm"] = "collectible-assembly-load-context";
@@ -671,7 +673,7 @@ public static partial class CompilerHost
         }
         finally
         {
-            JudgeRuntimeContext.Reset();
+            RuntimeTraceSink.Reset();
             Console.SetOut(originalOut);
         }
     }
@@ -3539,9 +3541,6 @@ public sealed class ProjectFileStream : System.IO.FileStream
             && string.IsNullOrWhiteSpace(request.FunctionName);
     }
 
-    public static string GetCurrentInputsJson() =>
-        JudgeRuntimeContext.GetCurrentInputsJson();
-
     private static void ValidateExecutionInputs(IReadOnlyDictionary<string, JsonElement> inputs)
     {
         InputTraversalBudget budget = new();
@@ -3635,6 +3634,13 @@ public sealed class ProjectFileStream : System.IO.FileStream
         }
 
         SourceText sourceText = originalUserTree.GetText();
+        string inputsParameterName = UniqueGeneratedIdentifier(
+            root,
+            "__tracecodeInputsJson"
+        );
+        var inputRewriter = new ScriptInputInvocationRewriter(
+            inputsParameterName
+        );
         var builder = new StringBuilder();
         AppendSourcePrelude(builder, sourceText, root);
 
@@ -3646,12 +3652,24 @@ public sealed class ProjectFileStream : System.IO.FileStream
         AppendLineIfNeeded(builder);
         builder.AppendLine($"internal static class {ScriptRunnerClassName}");
         builder.AppendLine("{");
-        builder.AppendLine("    public static object? Run()");
+        builder.AppendLine(
+            $"    public static object? Run(string {inputsParameterName})"
+        );
         builder.AppendLine("    {");
 
         foreach (GlobalStatementSyntax statement in globalStatements)
         {
-            AppendMappedSource(builder, sourceText, statement.FullSpan);
+            GlobalStatementSyntax rewritten =
+                (GlobalStatementSyntax?)inputRewriter.Visit(statement)
+                ?? throw new InvalidOperationException(
+                    "Unable to rewrite C# script input access."
+                );
+            AppendMappedText(
+                builder,
+                sourceText,
+                statement.FullSpan,
+                rewritten.ToFullString()
+            );
         }
 
         int resultLine = sourceText.Lines.GetLineFromPosition(globalStatements[^1].Span.End).LineNumber + 1;
@@ -3661,6 +3679,66 @@ public sealed class ProjectFileStream : System.IO.FileStream
         builder.AppendLine("}");
 
         return builder.ToString();
+    }
+
+    private static string UniqueGeneratedIdentifier(
+        SyntaxNode root,
+        string candidate
+    )
+    {
+        HashSet<string> identifiers = root
+            .DescendantTokens()
+            .Where(token => token.IsKind(SyntaxKind.IdentifierToken))
+            .Select(token => token.ValueText)
+            .ToHashSet(StringComparer.Ordinal);
+        while (identifiers.Contains(candidate))
+        {
+            candidate += "_";
+        }
+        return candidate;
+    }
+
+    private sealed class ScriptInputInvocationRewriter : CSharpSyntaxRewriter
+    {
+        private readonly string inputsParameterName;
+
+        public ScriptInputInvocationRewriter(string inputsParameterName)
+        {
+            this.inputsParameterName = inputsParameterName;
+        }
+
+        public override SyntaxNode? VisitInvocationExpression(
+            InvocationExpressionSyntax node
+        )
+        {
+            InvocationExpressionSyntax visited =
+                (InvocationExpressionSyntax?)base.VisitInvocationExpression(node)
+                ?? node;
+            if (
+                visited.ArgumentList.Arguments.Count != 2
+                || visited.Expression is not MemberAccessExpressionSyntax member
+                || !string.Equals(
+                    NormalizeCSharpSymbolText(member.Expression.ToString()),
+                    "TraceCode.Internal.TraceCodeJsonInput",
+                    StringComparison.Ordinal
+                )
+                || member.Name.Identifier.ValueText is not ("Read" or "Has")
+            )
+            {
+                return visited;
+            }
+
+            return visited.WithArgumentList(
+                visited.ArgumentList.WithArguments(
+                    visited.ArgumentList.Arguments.Insert(
+                        0,
+                        SyntaxFactory.Argument(
+                            SyntaxFactory.IdentifierName(inputsParameterName)
+                        )
+                    )
+                )
+            );
+        }
     }
 
     private static void AppendSourcePrelude(StringBuilder builder, SourceText sourceText, CompilationUnitSyntax root)
@@ -3685,10 +3763,24 @@ public sealed class ProjectFileStream : System.IO.FileStream
             return;
         }
 
+        AppendMappedText(
+            builder,
+            sourceText,
+            span,
+            sourceText.ToString(span)
+        );
+    }
+
+    private static void AppendMappedText(
+        StringBuilder builder,
+        SourceText sourceText,
+        TextSpan span,
+        string text
+    )
+    {
         AppendLineIfNeeded(builder);
         int line = sourceText.Lines.GetLineFromPosition(span.Start).LineNumber + 1;
         builder.AppendLine($"#line {line} \"{UserCodePath}\"");
-        string text = sourceText.ToString(span);
         builder.Append(text);
         if (!EndsWithLineBreak(text))
         {
@@ -3741,9 +3833,9 @@ using System.Threading.Tasks;
 
 public static class TraceCodeDriver
 {
-    public static object? Run()
+    public static object? Run(string inputsJson)
     {
-        using JsonDocument inputs = JsonDocument.Parse(TraceCode.CSharpHost.JudgeRuntimeContext.GetCurrentInputsJson());
+        using JsonDocument inputs = JsonDocument.Parse(inputsJson);
         JsonElement rawInputs = inputs.RootElement;
         MethodInfo method = SelectSolutionMethod(rawInputs);
         ParameterInfo[] parameters = method.GetParameters();
@@ -3972,9 +4064,9 @@ using System;
 
 public static class TraceCodeDriver
 {
-    public static object? Run()
+    public static object? Run(string inputsJson)
     {
-        return {{ScriptRunnerClassName}}.Run();
+        return {{ScriptRunnerClassName}}.Run(inputsJson);
     }
 }
 """;
@@ -3993,10 +4085,10 @@ using System.Text.Json;
 
 public static class TraceCodeDriver
 {
-    public static object? Run()
+    public static object? Run(string inputsJson)
     {
-        string[] operations = TraceCode.Internal.TraceCodeJsonInput.Read<string[]>("operations", 0) ?? Array.Empty<string>();
-        JsonElement[][] arguments = TraceCode.Internal.TraceCodeJsonInput.Read<JsonElement[][]>("arguments", 1) ?? Array.Empty<JsonElement[]>();
+        string[] operations = TraceCode.Internal.TraceCodeJsonInput.Read<string[]>(inputsJson, "operations", 0) ?? Array.Empty<string>();
+        JsonElement[][] arguments = TraceCode.Internal.TraceCodeJsonInput.Read<JsonElement[][]>(inputsJson, "arguments", 1) ?? Array.Empty<JsonElement[]>();
         if (operations.Length != arguments.Length)
         {
             throw new InvalidOperationException("operations and arguments must have the same length");
@@ -4076,10 +4168,10 @@ public static class TraceCodeDriver
 
             if (parameter.Default is not null)
             {
-                return $"        {parameterType} {parameterName} = TraceCode.Internal.TraceCodeJsonInput.Has({JsonSerializer.Serialize(parameterName)}, {index}) ? TraceCode.Internal.TraceCodeJsonInput.Read<{parameterType}>({JsonSerializer.Serialize(parameterName)}, {index})! : {parameter.Default.Value};";
+                return $"        {parameterType} {parameterName} = TraceCode.Internal.TraceCodeJsonInput.Has(inputsJson, {JsonSerializer.Serialize(parameterName)}, {index}) ? TraceCode.Internal.TraceCodeJsonInput.Read<{parameterType}>(inputsJson, {JsonSerializer.Serialize(parameterName)}, {index})! : {parameter.Default.Value};";
             }
 
-            return $"        {parameterType} {parameterName} = TraceCode.Internal.TraceCodeJsonInput.Read<{parameterType}>({JsonSerializer.Serialize(parameterName)}, {index})!;";
+            return $"        {parameterType} {parameterName} = TraceCode.Internal.TraceCodeJsonInput.Read<{parameterType}>(inputsJson, {JsonSerializer.Serialize(parameterName)}, {index})!;";
         }).ToList();
         string readStatements = string.Join("\n", parameterReads);
         string arguments = string.Join(", ", method.ParameterList.Parameters.Select(DriverArgumentExpression));
@@ -4101,8 +4193,8 @@ public static class TraceCodeDriver
                 : $"{invocation};\n        return null;"
             : $"return {invocation};";
         string runSignature = returnsTaskLike
-            ? "public static async System.Threading.Tasks.Task<object?> Run()"
-            : "public static object? Run()";
+            ? "public static async System.Threading.Tasks.Task<object?> Run(string inputsJson)"
+            : "public static object? Run(string inputsJson)";
 
         return $$"""
 using System;
@@ -4508,28 +4600,29 @@ public class TreeNode
     private static string GenerateRuntimeSourceTail()
     {
         return """
-        private static JsonElement Root => JsonSerializer.Deserialize<JsonElement>(
-            TraceCode.CSharpHost.JudgeRuntimeContext.GetCurrentInputsJson(),
-            JsonOptions
-        );
+        private static JsonElement ParseRoot(string inputsJson) =>
+            JsonSerializer.Deserialize<JsonElement>(inputsJson, JsonOptions);
 
-        private static string[] Keys => Root.ValueKind == JsonValueKind.Object
-            ? Root.EnumerateObject().Select(property => property.Name).ToArray()
-            : Array.Empty<string>();
-
-        public static T? Read<T>(string name, int index)
+        public static T? Read<T>(string inputsJson, string name, int index)
         {
-            if (Root.ValueKind != JsonValueKind.Object)
+            JsonElement root = ParseRoot(inputsJson);
+            if (root.ValueKind != JsonValueKind.Object)
             {
                 throw new InvalidOperationException("TraceCode C# inputs must be a JSON object.");
             }
 
-            if (Root.TryGetProperty(name, out JsonElement namedValue))
+            if (root.TryGetProperty(name, out JsonElement namedValue))
             {
                 return ReadValue<T>(namedValue);
             }
 
-            if (index >= 0 && index < Keys.Length && Root.TryGetProperty(Keys[index], out JsonElement indexedValue))
+            string[] keys = root
+                .EnumerateObject()
+                .Select(property => property.Name)
+                .ToArray();
+            if (index >= 0
+                && index < keys.Length
+                && root.TryGetProperty(keys[index], out JsonElement indexedValue))
             {
                 return ReadValue<T>(indexedValue);
             }
@@ -4537,19 +4630,26 @@ public class TreeNode
             throw new InvalidOperationException($"Missing input value for parameter \"{name}\".");
         }
 
-        public static bool Has(string name, int index)
+        public static bool Has(string inputsJson, string name, int index)
         {
-            if (Root.ValueKind != JsonValueKind.Object)
+            JsonElement root = ParseRoot(inputsJson);
+            if (root.ValueKind != JsonValueKind.Object)
             {
                 throw new InvalidOperationException("TraceCode C# inputs must be a JSON object.");
             }
 
-            if (Root.TryGetProperty(name, out _))
+            if (root.TryGetProperty(name, out _))
             {
                 return true;
             }
 
-            return index >= 0 && index < Keys.Length && Root.TryGetProperty(Keys[index], out _);
+            string[] keys = root
+                .EnumerateObject()
+                .Select(property => property.Name)
+                .ToArray();
+            return index >= 0
+                && index < keys.Length
+                && root.TryGetProperty(keys[index], out _);
         }
 
         public static object? Convert(JsonElement value, Type targetType)
@@ -6665,13 +6765,13 @@ public class TreeNode
         }
     }
 
-    private static object? InvokeDriver(Assembly userAssembly)
+    private static object? InvokeDriver(Assembly userAssembly, string inputsJson)
     {
         Type driverType = userAssembly.GetType("TraceCodeDriver")
             ?? throw new InvalidOperationException("TraceCode generated driver was not found.");
         MethodInfo method = driverType.GetMethod("Run", BindingFlags.Static | BindingFlags.Public)
             ?? throw new InvalidOperationException("TraceCode generated driver did not expose Run().");
-        object? result = method.Invoke(null, null);
+        object? result = method.Invoke(null, new object?[] { inputsJson });
         if (result is not Task task)
         {
             return result;

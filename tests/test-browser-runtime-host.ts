@@ -7,6 +7,7 @@ import type {
   RuntimePreparedProgramCapabilities,
 } from '../packages/runtime-contracts/src';
 import {
+  createBrowserRuntimeEnvironment,
   createBrowserRuntimeHost,
   createBrowserRuntimeProviderRegistry,
   type BrowserRuntimeProvider,
@@ -179,6 +180,27 @@ async function main(): Promise<void> {
   assertCondition(
     conflictingLifecycleError.includes('conflicts'),
     `Host must reject contradictory lifecycle policy aliases: ${conflictingLifecycleError}`
+  );
+
+  const csharpModeRegistry = createBrowserRuntimeProviderRegistry([
+    recordingProvider('csharp-mode', ['csharp'], []),
+  ]);
+  const generalCSharpEnvironment = createBrowserRuntimeEnvironment({
+    providers: ['csharp'],
+    csharpPreparedAuthority: false,
+    featureOverrides: { ...browserFeatures, webCrypto: false },
+  });
+  const omittedCSharpModeError = errorMessage(() =>
+    createBrowserRuntimeHost({
+      providerRegistry: csharpModeRegistry,
+      environment: generalCSharpEnvironment,
+    })
+  );
+  assertCondition(
+    omittedCSharpModeError.includes(
+      'environment cannot be combined with asset, provider, engine, or feature overrides'
+    ),
+    `A shared environment must reject an omitted provider mode that would re-enable prepared C#: ${omittedCSharpModeError}`
   );
 
   const malformedRegistryError = errorMessage(() =>

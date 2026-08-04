@@ -57,28 +57,29 @@ namespace TraceCode.Internal
         private const int MaxInputHydrationNodes = 750_000;
         private const int MaxInputConstructorCandidates = 32;
         private const int MaxInputConstructorParameters = 32;
-        private static JsonElement Root => JsonSerializer.Deserialize<JsonElement>(
-            TraceCode.CSharpHost.JudgeRuntimeContext.GetCurrentInputsJson(),
-            JsonOptions
-        );
+        private static JsonElement ParseRoot(string inputsJson) =>
+            JsonSerializer.Deserialize<JsonElement>(inputsJson, JsonOptions);
 
-        private static string[] Keys => Root.ValueKind == JsonValueKind.Object
-            ? Root.EnumerateObject().Select(property => property.Name).ToArray()
-            : Array.Empty<string>();
-
-        public static T? Read<T>(string name, int index)
+        public static T? Read<T>(string inputsJson, string name, int index)
         {
-            if (Root.ValueKind != JsonValueKind.Object)
+            JsonElement root = ParseRoot(inputsJson);
+            if (root.ValueKind != JsonValueKind.Object)
             {
                 throw new InvalidOperationException("TraceCode C# inputs must be a JSON object.");
             }
 
-            if (Root.TryGetProperty(name, out JsonElement namedValue))
+            if (root.TryGetProperty(name, out JsonElement namedValue))
             {
                 return ReadValue<T>(namedValue);
             }
 
-            if (index >= 0 && index < Keys.Length && Root.TryGetProperty(Keys[index], out JsonElement indexedValue))
+            string[] keys = root
+                .EnumerateObject()
+                .Select(property => property.Name)
+                .ToArray();
+            if (index >= 0
+                && index < keys.Length
+                && root.TryGetProperty(keys[index], out JsonElement indexedValue))
             {
                 return ReadValue<T>(indexedValue);
             }
@@ -86,19 +87,26 @@ namespace TraceCode.Internal
             throw new InvalidOperationException($"Missing input value for parameter \"{name}\".");
         }
 
-        public static bool Has(string name, int index)
+        public static bool Has(string inputsJson, string name, int index)
         {
-            if (Root.ValueKind != JsonValueKind.Object)
+            JsonElement root = ParseRoot(inputsJson);
+            if (root.ValueKind != JsonValueKind.Object)
             {
                 throw new InvalidOperationException("TraceCode C# inputs must be a JSON object.");
             }
 
-            if (Root.TryGetProperty(name, out _))
+            if (root.TryGetProperty(name, out _))
             {
                 return true;
             }
 
-            return index >= 0 && index < Keys.Length && Root.TryGetProperty(Keys[index], out _);
+            string[] keys = root
+                .EnumerateObject()
+                .Select(property => property.Name)
+                .ToArray();
+            return index >= 0
+                && index < keys.Length
+                && root.TryGetProperty(keys[index], out _);
         }
 
         public static object? Convert(JsonElement value, Type targetType)
