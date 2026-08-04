@@ -225,7 +225,7 @@
     "@datastructures-js/set": "4.2.2",
     "@datastructures-js/stack": "3.1.6",
     "@datastructures-js/trie": "4.2.3",
-    "@tracecode/tracejvm": "0.3.0",
+    "@tracecode/tracejvm": "0.4.0",
     "@yowasp/clang": "22.0.0-git20542-10",
     "effect": "3.22.0",
     "fflate": "0.8.3",
