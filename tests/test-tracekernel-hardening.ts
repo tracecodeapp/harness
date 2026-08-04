@@ -1953,7 +1953,7 @@ async function testCSharpWorkerProjectEventBudgets(): Promise<void> {
 }
 
 async function testCSharpManagedLiveSnapshotsReserveBeforeRead(): Promise<void> {
-  const source = await readFile(join(dirname(testDirectory), 'runtimes', 'csharp', 'TraceCode.CSharpHost', 'CompilerHost.cs'), 'utf8');
+  const source = await readFile(join(dirname(testDirectory), 'packages', 'runtime-csharp', 'dotnet', 'TraceCode.CSharpHost', 'CompilerHost.cs'), 'utf8');
   assertCondition(
     source.includes('TryReserveLiveProjectFileChangeBudget(ProjectFileChangeByteSize(change))') &&
       source.includes('TryReserveLiveFileSnapshotBudget') &&
@@ -2024,7 +2024,7 @@ async function testCSharpWorkerInputPreflightBudgets(): Promise<void> {
 }
 
 async function testCSharpInputHydrationConstructorsAreBounded(): Promise<void> {
-  const source = await readFile(join(dirname(testDirectory), 'runtimes', 'csharp', 'TraceCode.CSharpHost', 'CompilerHost.cs'), 'utf8');
+  const source = await readFile(join(dirname(testDirectory), 'packages', 'runtime-csharp', 'dotnet', 'TraceCode.CSharpHost', 'CompilerHost.cs'), 'utf8');
   assertCondition(
     source.includes('MaxInputConstructorCandidates = 32') &&
       source.includes('MaxInputConstructorParameters = 32'),
@@ -2121,7 +2121,7 @@ async function testCSharpBrowserRuntimeNetworkAssembliesAreDenied(): Promise<voi
     );
   }
 
-  const hostSource = await readFile(join(root, 'runtimes', 'csharp', 'TraceCode.CSharpHost', 'CompilerHost.cs'), 'utf8');
+  const hostSource = await readFile(join(root, 'packages', 'runtime-csharp', 'dotnet', 'TraceCode.CSharpHost', 'CompilerHost.cs'), 'utf8');
   assertCondition(
     hostSource.includes('ValidateUserSourcePolicy(originalUserTree)') &&
       hostSource.includes('ValidateUserSourcePolicy(projectTree)') &&
@@ -2140,7 +2140,7 @@ async function testCSharpBrowserRuntimeNetworkAssembliesAreDenied(): Promise<voi
     ].every((marker) => hostSource.includes(marker)),
     'C# compiler host should deny fully qualified and aliased reflection/runtime loader bypasses'
   );
-  const projectFile = await readFile(join(root, 'runtimes', 'csharp', 'TraceCode.CSharpHost', 'TraceCode.CSharpHost.csproj'), 'utf8');
+  const projectFile = await readFile(join(root, 'packages', 'runtime-csharp', 'dotnet', 'TraceCode.CSharpHost', 'TraceCode.CSharpHost.csproj'), 'utf8');
   assertCondition(
     projectFile.includes('Remove="$(TargetDir)System.Net*.dll"') &&
       projectFile.includes('Remove="$(TargetDir)System.Reflection.Emit*.dll"') &&
@@ -3159,8 +3159,8 @@ async function testBulkTraceWritesAreBudgetedBeforeLoops(): Promise<void> {
     readFile(join(root, 'workers', 'javascript', 'javascript-worker.js'), 'utf8'),
     readFile(join(root, 'workers', 'python', 'runtime-core.js'), 'utf8'),
     readFile(join(root, 'workers', 'java', 'src', 'tracecode', 'user', 'TraceHooks.java'), 'utf8'),
-    readFile(join(root, 'runtimes', 'csharp', 'TraceCode.CSharpHost', 'RuntimeTraceSink.cs'), 'utf8'),
-    readFile(join(root, 'runtimes', 'csharp', 'TraceCode.CSharpHost', 'CompilerHost.cs'), 'utf8'),
+    readFile(join(root, 'packages', 'runtime-csharp', 'dotnet', 'TraceCode.CSharpHost', 'RuntimeTraceSink.cs'), 'utf8'),
+    readFile(join(root, 'packages', 'runtime-csharp', 'dotnet', 'TraceCode.CSharpHost', 'CompilerHost.cs'), 'utf8'),
     readFile(join(root, 'workers', 'cpp', 'tracecode_runtime.hpp'), 'utf8'),
   ]);
   assertCondition(

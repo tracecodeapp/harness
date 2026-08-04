@@ -189,13 +189,13 @@ test('tracked C# role artifacts are reproducible from their materialized trees',
     manifest.recipe.dotnetSdk,
     (
       await readFile(
-        join(root, 'runtimes/csharp/Directory.Build.props'),
+        join(root, 'packages/runtime-csharp/dotnet/Directory.Build.props'),
         'utf8'
       )
     ).match(/<TraceCodeDotnetSdkVersion>([^<]+)</)?.[1]
   );
   const buildProps = await readFile(
-    join(root, 'runtimes/csharp/Directory.Build.props'),
+    join(root, 'packages/runtime-csharp/dotnet/Directory.Build.props'),
     'utf8'
   );
   equal(

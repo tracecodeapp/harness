@@ -2,9 +2,9 @@
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-HOST_PROJECT_FILE="$ROOT_DIR/runtimes/csharp/TraceCode.CSharpHost/TraceCode.CSharpHost.csproj"
-RUNNER_PROJECT_FILE="$ROOT_DIR/runtimes/csharp/TraceCode.CSharpJudgeRunner/TraceCode.CSharpJudgeRunner.csproj"
-CSHARP_BUILD_PROPS="$ROOT_DIR/runtimes/csharp/Directory.Build.props"
+HOST_PROJECT_FILE="$ROOT_DIR/packages/runtime-csharp/dotnet/TraceCode.CSharpHost/TraceCode.CSharpHost.csproj"
+RUNNER_PROJECT_FILE="$ROOT_DIR/packages/runtime-csharp/dotnet/TraceCode.CSharpJudgeRunner/TraceCode.CSharpJudgeRunner.csproj"
+CSHARP_BUILD_PROPS="$ROOT_DIR/packages/runtime-csharp/dotnet/Directory.Build.props"
 VENDOR_DIR="$ROOT_DIR/workers/vendor/csharp"
 COMPILER_VENDOR_DIR="$ROOT_DIR/workers/vendor/csharp-compiler"
 RUNNER_VENDOR_DIR="$ROOT_DIR/workers/vendor/csharp-runner"
@@ -19,7 +19,7 @@ publishes the host, replaces the general/compiler/runner C# bundles, and
 regenerates runtime language info plus package assets.
 
 Environment:
-  TRACECODE_DOTNET_VERSION             Override the exact SDK pinned in runtimes/csharp/Directory.Build.props.
+  TRACECODE_DOTNET_VERSION             Override the exact SDK pinned in packages/runtime-csharp/dotnet/Directory.Build.props.
   TRACECODE_DOTNET_CHANNEL             Use an SDK channel instead of the pinned exact version.
   TRACECODE_DOTNET_QUALITY             dotnet-install quality. Defaults to GA.
   TRACECODE_DOTNET_INSTALL_DIR         Local SDK install dir. Defaults to .dotnet/csharp-wasm.
@@ -138,8 +138,8 @@ fi
   -p:TrimMode=partial \
   -p:JsonSerializerIsReflectionEnabledByDefault=true
 
-host_publish_dir="$ROOT_DIR/runtimes/csharp/TraceCode.CSharpHost/bin/Release/$target_framework/browser-wasm/AppBundle"
-runner_publish_dir="$ROOT_DIR/runtimes/csharp/TraceCode.CSharpJudgeRunner/bin/Release/$target_framework/browser-wasm/AppBundle"
+host_publish_dir="$ROOT_DIR/packages/runtime-csharp/dotnet/TraceCode.CSharpHost/bin/Release/$target_framework/browser-wasm/AppBundle"
+runner_publish_dir="$ROOT_DIR/packages/runtime-csharp/dotnet/TraceCode.CSharpJudgeRunner/bin/Release/$target_framework/browser-wasm/AppBundle"
 if [[ ! -f "$host_publish_dir/_framework/dotnet.js" ]]; then
   echo "Missing published Host AppBundle at $host_publish_dir" >&2
   exit 1

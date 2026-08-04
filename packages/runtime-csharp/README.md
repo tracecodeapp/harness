@@ -7,6 +7,12 @@ is not published independently, and the root package has no `/csharp`
 subpath. It contains the C# worker plus its browser runtime and compiler
 assets.
 
+Repository-owned managed sources live under `dotnet/`, alongside this
+package's TypeScript client in `src/` and browser worker assets in `workers/`.
+The managed source tree contains the compiler host, shared Judge runtime,
+disposable Judge runner, and their pinned shared build properties. It is a
+build input and is excluded from the package publication allowlist.
+
 Code inside this monorepo imports it directly:
 
 ```ts
@@ -42,13 +48,14 @@ depend on somebody's old local publish directory.
 
 `pnpm update:csharp-runtime` is the sole regeneration path. It publishes all
 three roles from source with the exact SDK in
-`runtimes/csharp/Directory.Build.props`, skips mutable workload-manifest updates,
-prunes and packs the outputs, validates the isolation-oriented role surfaces,
-then replaces the canonical archives. The manifest records the SDK, target
-framework, runtime framework, linker/reference profiles, byte sizes, archive
-hashes, and expanded-tree hashes. The expanded compiler and runner directories
-are ignored and may be deleted at any time; materialization recreates them
-exactly without downloading a toolchain.
+`packages/runtime-csharp/dotnet/Directory.Build.props`, skips mutable
+workload-manifest updates, prunes and packs the outputs, validates the
+isolation-oriented role surfaces, then replaces the canonical archives. The
+manifest records the SDK, target framework, runtime framework,
+linker/reference profiles, byte sizes, archive hashes, and expanded-tree
+hashes. The expanded compiler and runner directories are ignored and may be
+deleted at any time; materialization recreates them exactly without
+downloading a toolchain.
 
 The compiler may retain only trusted toolchain state and immutable compiled
 artifacts. Every runner that receives a learner assembly is terminated after

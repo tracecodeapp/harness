@@ -384,7 +384,7 @@ test('C# prepared batch failure drains every active runner before rejection', as
 
 test('C# host prepared entry point cannot fall through to the compiling execution path', () => {
   const source = readFileSync(
-    'runtimes/csharp/TraceCode.CSharpHost/CompilerHost.cs',
+    'packages/runtime-csharp/dotnet/TraceCode.CSharpHost/CompilerHost.cs',
     'utf8'
   );
   const preparedEntryPoint = source.slice(

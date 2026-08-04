@@ -320,8 +320,9 @@ async function buildRuntimeInfo(): Promise<Record<string, RuntimeInfo>> {
   const javaDefaultImports = parseJavaDefaultImports(javaWorkerSource);
 
   const csharpHostSource = await readText(
-    'runtimes',
-    'csharp',
+    'packages',
+    'runtime-csharp',
+    'dotnet',
     'TraceCode.CSharpHost',
     'CompilerHost.cs'
   );

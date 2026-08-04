@@ -1154,7 +1154,7 @@ async function testLegacyManifestUsesGeneralWorker(): Promise<void> {
 }
 
 function testTraceRewriterTargetTypedFieldWritesDoNotReadAssignedMembers(): void {
-  const source = readFileSync('runtimes/csharp/TraceCode.CSharpHost/TraceRewriter.cs', 'utf8');
+  const source = readFileSync('packages/runtime-csharp/dotnet/TraceCode.CSharpHost/TraceRewriter.cs', 'utf8');
   assertCondition(
     source.includes('FieldWrite({Literal("this")}, {implicitThisPathExpression}, null, {line})'),
     'C# TraceRewriter target-typed implicit-this field writes should record without reading the assigned member'
@@ -1172,7 +1172,7 @@ function testTraceRewriterTargetTypedFieldWritesDoNotReadAssignedMembers(): void
 }
 
 function testTraceRewriterIndexedAssignmentsDoNotReadAssignedIndexers(): void {
-  const source = readFileSync('runtimes/csharp/TraceCode.CSharpHost/TraceRewriter.cs', 'utf8');
+  const source = readFileSync('packages/runtime-csharp/dotnet/TraceCode.CSharpHost/TraceRewriter.cs', 'utf8');
   assertCondition(
     source.includes('var {valueTempName} = ({arrayExpression}[{indexTempName}] = {assignment.Right});'),
     'C# TraceRewriter indexed assignments should capture the assignment expression result'
