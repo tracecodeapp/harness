@@ -266,16 +266,26 @@ function prepareTraceEventTransfer(result, request, path) {
   ) {
     return null;
   }
-  const events = path === 'trace.events' ? result?.trace?.events : result?.events;
+  const batch = path === 'results[].trace.events';
+  const eventArrays = batch
+    ? Array.isArray(result?.results)
+      ? result.results.map((entry) => entry?.trace?.events)
+      : []
+    : [path === 'trace.events' ? result?.trace?.events : result?.events];
+  if (eventArrays.length === 0 || eventArrays.some((events) => !Array.isArray(events))) {
+    return null;
+  }
+  const eventCounts = eventArrays.map((events) => events.length);
+  const eventCount = eventCounts.reduce((sum, count) => sum + count, 0);
   const requestedMinEvents = Number(request.minEventCount);
   const minEventCount = Number.isSafeInteger(requestedMinEvents)
     ? Math.max(TRACE_EVENT_TRANSFER_MIN_EVENTS, requestedMinEvents)
     : TRACE_EVENT_TRANSFER_MIN_EVENTS;
-  if (!Array.isArray(events) || events.length < minEventCount) return null;
+  if (eventCount < minEventCount) return null;
 
   let encoded;
   try {
-    encoded = new TextEncoder().encode(JSON.stringify(events));
+    encoded = new TextEncoder().encode(JSON.stringify(batch ? eventArrays : eventArrays[0]));
   } catch {
     return null;
   }
@@ -295,14 +305,23 @@ function prepareTraceEventTransfer(result, request, path) {
   for (let offset = 0; offset < encoded.byteLength; offset += chunkBytes) {
     chunks.push(encoded.slice(offset, Math.min(encoded.byteLength, offset + chunkBytes)).buffer);
   }
-  const payload = path === 'trace.events'
-    ? { ...result, trace: { ...result.trace, events: [] } }
-    : { ...result, events: [] };
+  const payload = batch
+    ? {
+        ...result,
+        results: result.results.map((entry) => ({
+          ...entry,
+          trace: { ...entry.trace, events: [] },
+        })),
+      }
+    : path === 'trace.events'
+      ? { ...result, trace: { ...result.trace, events: [] } }
+      : { ...result, events: [] };
   payload.__traceEventTransport = {
     schema: TRACE_EVENT_TRANSFER_SCHEMA,
     encoding: 'json-utf8',
     path,
-    eventCount: events.length,
+    eventCount,
+    ...(batch ? { eventCounts } : {}),
     byteLength: encoded.byteLength,
     chunks,
   };
@@ -9209,12 +9228,22 @@ async function processMessage(data) {
           payload?.limits
         );
         analyzerInitialized = false;
-        trustedPythonWorkerPostMessage({
-          id,
-          type: 'execute-result',
-          payload: result,
-          protocolToken,
-        });
+        if (payload?.mode === 'trace') {
+          postTraceResultMessage(
+            id,
+            protocolToken,
+            result,
+            payload?.traceEventTransport,
+            'results[].trace.events'
+          );
+        } else {
+          trustedPythonWorkerPostMessage({
+            id,
+            type: 'execute-result',
+            payload: result,
+            protocolToken,
+          });
+        }
         break;
       }
 

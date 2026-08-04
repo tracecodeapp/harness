@@ -694,6 +694,7 @@ export class PythonWorkerClient {
           mode: 'trace',
           inputBatch: call.inputBatch,
           ...(guestLimits ? { limits: guestLimits } : {}),
+          traceEventTransport: traceEventTransferRequest(),
         },
         null
       ),
