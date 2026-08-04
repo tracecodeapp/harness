@@ -148,6 +148,19 @@ async function main(t: TestContext): Promise<void> {
     !looseRunnerAssemblyExists,
     'Asset sync must not republish loose C# runner managed assemblies'
   );
+  const sourceControlArtifactsExist = await stat(
+    join(targetDir, 'vendor/csharp-role-artifacts')
+  ).then(
+    () => true,
+    (error: NodeJS.ErrnoException) => {
+      if (error.code === 'ENOENT') return false;
+      throw error;
+    }
+  );
+  assertCondition(
+    !sourceControlArtifactsExist,
+    'Asset sync must not publish build-time C# role archives to browsers'
+  );
 
   for (const relativePath of ['cpp-worker.js', 'cpp-compiler-worker.js']) {
     const source = await readFile(join(targetDir, relativePath), 'utf8');

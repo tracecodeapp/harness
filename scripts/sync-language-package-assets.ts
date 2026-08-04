@@ -12,6 +12,7 @@ import {
 import { createRequire } from 'node:module';
 import { dirname, join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
+import { materializeCSharpRoleAssets } from './csharp-role-artifacts.js';
 
 const ROOT = resolve(process.cwd());
 const require = createRequire(pathToFileURL(join(ROOT, 'scripts', 'sync-language-package-assets.ts')));
@@ -315,6 +316,7 @@ async function syncPackage(plan: PackageAssetPlan): Promise<void> {
 }
 
 async function main(): Promise<void> {
+  await materializeCSharpRoleAssets(ROOT);
   for (const plan of PACKAGE_ASSET_PLANS) {
     await syncPackage(plan);
   }

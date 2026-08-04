@@ -4,9 +4,11 @@ set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 HOST_PROJECT_FILE="$ROOT_DIR/runtimes/csharp/TraceCode.CSharpHost/TraceCode.CSharpHost.csproj"
 RUNNER_PROJECT_FILE="$ROOT_DIR/runtimes/csharp/TraceCode.CSharpJudgeRunner/TraceCode.CSharpJudgeRunner.csproj"
+CSHARP_BUILD_PROPS="$ROOT_DIR/runtimes/csharp/Directory.Build.props"
 VENDOR_DIR="$ROOT_DIR/workers/vendor/csharp"
 COMPILER_VENDOR_DIR="$ROOT_DIR/workers/vendor/csharp-compiler"
 RUNNER_VENDOR_DIR="$ROOT_DIR/workers/vendor/csharp-runner"
+ROLE_ARTIFACT_DIR="$ROOT_DIR/workers/vendor/csharp-role-artifacts"
 
 usage() {
   cat <<'EOF'
@@ -17,8 +19,8 @@ publishes the host, replaces the general/compiler/runner C# bundles, and
 regenerates runtime language info plus package assets.
 
 Environment:
-  TRACECODE_DOTNET_VERSION             Install an exact SDK version instead of the target-framework channel.
-  TRACECODE_DOTNET_CHANNEL             Override the SDK channel. Defaults to the C# host TargetFramework major.
+  TRACECODE_DOTNET_VERSION             Override the exact SDK pinned in runtimes/csharp/Directory.Build.props.
+  TRACECODE_DOTNET_CHANNEL             Use an SDK channel instead of the pinned exact version.
   TRACECODE_DOTNET_QUALITY             dotnet-install quality. Defaults to GA.
   TRACECODE_DOTNET_INSTALL_DIR         Local SDK install dir. Defaults to .dotnet/csharp-wasm.
   TRACECODE_DOTNET_CLI_HOME            Local .NET CLI home. Defaults to .dotnet/home.
@@ -47,13 +49,37 @@ if [[ -z "$target_major" ]]; then
   exit 1
 fi
 
+if [[ ! -f "$CSHARP_BUILD_PROPS" ]]; then
+  echo "Missing C# build properties at $CSHARP_BUILD_PROPS" >&2
+  exit 1
+fi
+pinned_dotnet_version="$(
+  sed -nE 's/.*<TraceCodeDotnetSdkVersion>([^<]+)<\/TraceCodeDotnetSdkVersion>.*/\1/p' \
+    "$CSHARP_BUILD_PROPS" | head -n 1
+)"
+if [[ ! "$pinned_dotnet_version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+  echo "Invalid pinned C# SDK version: $pinned_dotnet_version" >&2
+  exit 1
+fi
+
 dotnet_install_dir="${TRACECODE_DOTNET_INSTALL_DIR:-$ROOT_DIR/.dotnet/csharp-wasm}"
 dotnet_cli_home="${TRACECODE_DOTNET_CLI_HOME:-$ROOT_DIR/.dotnet/home}"
-dotnet_channel="${TRACECODE_DOTNET_CHANNEL:-$target_major.0}"
+dotnet_channel="${TRACECODE_DOTNET_CHANNEL:-}"
 dotnet_quality="${TRACECODE_DOTNET_QUALITY:-GA}"
 dotnet_version="${TRACECODE_DOTNET_VERSION:-}"
+if [[ -n "$dotnet_channel" && -n "$dotnet_version" ]]; then
+  echo "Set only one of TRACECODE_DOTNET_VERSION or TRACECODE_DOTNET_CHANNEL." >&2
+  exit 1
+fi
+if [[ -z "$dotnet_channel" && -z "$dotnet_version" ]]; then
+  dotnet_version="$pinned_dotnet_version"
+fi
+if [[ -z "$dotnet_channel" ]]; then
+  dotnet_channel="$target_major.0"
+fi
 dotnet_install_url="${TRACECODE_DOTNET_INSTALL_SCRIPT_URL:-https://dot.net/v1/dotnet-install.sh}"
 csharp_reference_pack="${TRACECODE_CSHARP_REFERENCE_PACK:-Minimal}"
+runner_trim_profile="JudgeReferences"
 
 if [[ "$csharp_reference_pack" != "Minimal" ]]; then
   echo "The role-split C# release requires TRACECODE_CSHARP_REFERENCE_PACK=Minimal." >&2
@@ -84,6 +110,7 @@ export DOTNET_ROOT="$dotnet_install_dir"
 export DOTNET_CLI_HOME="$dotnet_cli_home"
 export DOTNET_NOLOGO=1
 export DOTNET_SKIP_FIRST_TIME_EXPERIENCE=1
+export DOTNET_CLI_WORKLOAD_UPDATE_NOTIFY_DISABLE=1
 export PATH="$DOTNET_ROOT:$PATH"
 
 if [[ ! -x "$DOTNET_ROOT/dotnet" ]]; then
@@ -93,15 +120,20 @@ if [[ ! -x "$DOTNET_ROOT/dotnet" ]]; then
 fi
 
 "$DOTNET_ROOT/dotnet" --info
+resolved_dotnet_version="$("$DOTNET_ROOT/dotnet" --version)"
+if [[ -n "$dotnet_version" && "$resolved_dotnet_version" != "$dotnet_version" ]]; then
+  echo "C# runtime assets require .NET SDK $dotnet_version, but $resolved_dotnet_version is active." >&2
+  exit 1
+fi
 
 if [[ "${TRACECODE_DOTNET_SKIP_WORKLOAD:-0}" != "1" ]]; then
-  "$DOTNET_ROOT/dotnet" workload install wasm-tools
+  "$DOTNET_ROOT/dotnet" workload install wasm-tools --skip-manifest-update
 fi
 
 "$DOTNET_ROOT/dotnet" publish "$HOST_PROJECT_FILE" -c Release \
   -p:TraceCodeCompilerReferencePack="$csharp_reference_pack"
 "$DOTNET_ROOT/dotnet" publish "$RUNNER_PROJECT_FILE" -c Release \
-  -p:TraceCodeRunnerTrimProfile=JudgeReferences \
+  -p:TraceCodeRunnerTrimProfile="$runner_trim_profile" \
   -p:PublishTrimmed=true \
   -p:TrimMode=partial \
   -p:JsonSerializerIsReflectionEnabledByDefault=true
@@ -138,6 +170,14 @@ pnpm exec tsx "$ROOT_DIR/scripts/pack-csharp-managed-assemblies.ts" \
   "$tmp_runner_vendor"
 pnpm exec tsx "$ROOT_DIR/scripts/validate-csharp-runtime-role-assets.ts" \
   "$tmp_vendor" "$tmp_compiler_vendor" "$tmp_runner_vendor"
+pnpm exec tsx "$ROOT_DIR/scripts/csharp-role-artifacts.ts" create \
+  "$tmp_compiler_vendor" \
+  "$tmp_runner_vendor" \
+  "$ROLE_ARTIFACT_DIR" \
+  "$resolved_dotnet_version" \
+  "$target_framework" \
+  "$csharp_reference_pack" \
+  "$runner_trim_profile"
 
 rm -rf "$VENDOR_DIR" "$COMPILER_VENDOR_DIR" "$RUNNER_VENDOR_DIR"
 mv "$tmp_vendor" "$VENDOR_DIR"
@@ -151,4 +191,4 @@ mv "$tmp_runner_vendor" "$RUNNER_VENDOR_DIR"
   pnpm run test:runtime-info-sync
 )
 
-echo "Updated C# general/compiler/runner runtime assets."
+echo "Updated C# general runtime assets and canonical compiler/runner artifacts."

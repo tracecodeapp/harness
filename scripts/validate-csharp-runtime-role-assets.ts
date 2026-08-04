@@ -11,6 +11,7 @@ import {
   type AssemblyPackMetadata,
   type AssemblyPacksExtension,
 } from './pack-csharp-managed-assemblies.js';
+import { materializeCSharpRoleAssets } from './csharp-role-artifacts.js';
 
 interface BootAsset {
   name?: unknown;
@@ -400,6 +401,9 @@ function assertMaxBytes(
 }
 
 async function main(): Promise<void> {
+  if (process.argv.length === 2) {
+    await materializeCSharpRoleAssets(resolve(process.cwd()));
+  }
   const generalDir = resolve(
     process.argv[2] ?? 'workers/vendor/csharp'
   );

@@ -31,6 +31,25 @@ trees:
 - `workers/vendor/csharp-runner/` is the compiler-free disposable Judge
   runner.
 
+The compiler and runner trees are generated build outputs, not canonical
+source-control inputs. Git tracks their deterministic, content-addressed ZIPs
+and manifest under `workers/vendor/csharp-role-artifacts/`.
+`pnpm materialize:csharp-role-assets` verifies the ZIP SHA-256, inventory
+limits, every extracted path, and the complete tree digest before atomically
+publishing either tree. Package asset synchronization and C# browser test
+commands run that materializer automatically, so a clean checkout does not
+depend on somebody's old local publish directory.
+
+`pnpm update:csharp-runtime` is the sole regeneration path. It publishes all
+three roles from source with the exact SDK in
+`runtimes/csharp/Directory.Build.props`, skips mutable workload-manifest updates,
+prunes and packs the outputs, validates the isolation-oriented role surfaces,
+then replaces the canonical archives. The manifest records the SDK, target
+framework, runtime framework, linker/reference profiles, byte sizes, archive
+hashes, and expanded-tree hashes. The expanded compiler and runner directories
+are ignored and may be deleted at any time; materialization recreates them
+exactly without downloading a toolchain.
+
 The compiler may retain only trusted toolchain state and immutable compiled
 artifacts. Every runner that receives a learner assembly is terminated after
 its eager case batch. The runner validates both the source-derived artifact key

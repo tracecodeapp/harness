@@ -1,0 +1,34 @@
+{
+  "schema": "tracecode.csharp-role-artifacts.v1",
+  "format": "zip",
+  "recipe": {
+    "archiveTool": "fflate@0.8.3",
+    "command": "pnpm update:csharp-runtime",
+    "compilerReferencePack": "Minimal",
+    "dotnetSdk": "10.0.110",
+    "runnerTrimProfile": "JudgeReferences",
+    "targetFramework": "net10.0"
+  },
+  "runtime": {
+    "framework": "Microsoft.NETCore.App",
+    "version": "10.0.10"
+  },
+  "roles": {
+    "compiler": {
+      "artifact": "csharp-compiler.c4257008bb9112919cc0807baa95cd405b91c55fb21366a2aa731f9a91c98944.zip",
+      "artifactBytes": 18072228,
+      "artifactSha256": "c4257008bb9112919cc0807baa95cd405b91c55fb21366a2aa731f9a91c98944",
+      "fileCount": 241,
+      "treeSha256": "2986b8c3ac1cbac18d65000eca7f310191acd7359e8d14593112f1517634c99c",
+      "uncompressedBytes": 50211308
+    },
+    "runner": {
+      "artifact": "csharp-runner.a6341c3dd4fe4fb2d5768c137e32afd22839a19d6e46b5878f908f9da7865e4e.zip",
+      "artifactBytes": 4670592,
+      "artifactSha256": "a6341c3dd4fe4fb2d5768c137e32afd22839a19d6e46b5878f908f9da7865e4e",
+      "fileCount": 12,
+      "treeSha256": "c5d65c14e9d2a20e6a3a516db04fe2c6226ef9bc1a12a8afc3fd9a314af64981",
+      "uncompressedBytes": 12814019
+    }
+  }
+}
