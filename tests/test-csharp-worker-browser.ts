@@ -1018,6 +1018,27 @@ async function main(): Promise<void> {
     );
     assertCondition(cachedAdd.timings?.compileCacheHit === true, 'C# repeated Add execution should reuse the bounded compiled artifact cache');
 
+    const compilerHostDenied = await runWorkerCase(
+      page,
+      [
+        'public class Solution {',
+        '  public string ReadTrustedHostState() {',
+        '    return TraceCode.CSharpHost.CompilerHost.GetCurrentInputsJson();',
+        '  }',
+        '}',
+      ].join('\n'),
+      'ReadTrustedHostState',
+      {},
+      assetBaseUrl
+    );
+    assertCondition(
+      !compilerHostDenied.success &&
+        compilerHostDenied.error?.includes(
+          'denied browser runtime API: TraceCode.CSharpHost.CompilerHost'
+        ) === true,
+      `C# learner compilation must not reference the trusted compiler host assembly: ${JSON.stringify(compilerHostDenied)}`
+    );
+
     const scriptStyle = await runWorkerCase(
       page,
       [

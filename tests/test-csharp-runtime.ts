@@ -949,6 +949,82 @@ async function testDisposedProviderDoesNotRecreateRunner(): Promise<void> {
   console.log('PASS: C# provider disposal cannot recreate runner capacity');
 }
 
+async function testLegacyManifestUsesGeneralWorker(): Promise<void> {
+  MockCSharpWorker.responses = [];
+  MockCSharpWorker.received = [];
+  MockCSharpWorker.instances = [];
+  MockCSharpWorker.hangingMessageTypes = new Set<string>();
+  MockCSharpWorker.erroringMessageTypes = new Set<string>();
+
+  const legacyAsset = { url: '/legacy-cdn/csharp' };
+  const context = {
+    assets: {
+      csharpWorker: '/legacy-cdn/csharp-worker.js',
+      csharpAssetBaseUrl: '/legacy-cdn/csharp',
+      csharpCompilerAssetBaseUrl: '/workers/vendor/csharp-compiler',
+      csharpRunnerAssetBaseUrl: '/workers/vendor/csharp-runner',
+    },
+    debug: false,
+    workerLifecyclePolicy: 'warm-and-retire',
+    prewarmAfterUse: true,
+    workerFactoryFor: () =>
+      (url: string | URL) =>
+        new MockCSharpWorker(url) as unknown as Worker,
+    preflight: () => async () => undefined,
+    manifestAsset: (_runtime: string, name: string) =>
+      name === 'assetBaseUrl' ? legacyAsset : undefined,
+    manifestAssetCollection: () => undefined,
+  } as unknown as BrowserRuntimeProviderContext;
+
+  const lease = createCSharpBrowserRuntimeProvider().create(context);
+  MockCSharpWorker.responses.push({
+    success: true,
+    compiledArtifactKey: 'legacy-manifest-artifact',
+    compiledArtifactBase64: 'TVqQAAMAAAAEAAAA',
+    compiledArtifactSha256:
+      'eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee',
+    consoleOutput: [],
+  });
+  const provider = lease.preparedProviders.get('csharp');
+  assertCondition(provider, 'Legacy C# lease should expose prepared execution');
+  const prepared = await provider.prepareProgram({
+    mode: 'code',
+    code: 'public class Solution { public int Echo(int value) => value; }',
+    functionName: 'Echo',
+  });
+  assertCondition(
+    prepared.kind === 'prepared' &&
+      MockCSharpWorker.instances.length === 1 &&
+      MockCSharpWorker.instances[0]?.url === '/legacy-cdn/csharp-worker.js',
+    'A legacy C# manifest should retain its single general worker instead of loading default-origin role workers'
+  );
+  lease.dispose();
+  assertCondition(
+    MockCSharpWorker.instances[0]?.terminated,
+    'Legacy C# general worker should terminate with its provider lease'
+  );
+  assertCondition(
+    (() => {
+      try {
+        createCSharpBrowserRuntimeProvider({
+          preparedAuthority: true,
+        }).create(context);
+        return false;
+      } catch (error) {
+        return (
+          error instanceof TypeError &&
+          error.message.includes(
+            'preparedAuthority requires compiler and runner assets'
+          )
+        );
+      }
+    })(),
+    'Explicit prepared authority should reject a legacy manifest without role assets'
+  );
+
+  console.log('PASS: legacy C# manifests remain on their declared general bundle');
+}
+
 function testTraceRewriterTargetTypedFieldWritesDoNotReadAssignedMembers(): void {
   const source = readFileSync('runtimes/csharp/TraceCode.CSharpHost/TraceRewriter.cs', 'utf8');
   assertCondition(
@@ -990,6 +1066,7 @@ async function main(): Promise<void> {
   await testPreparedWorkerGenerationAuthority();
   await testCompilerAuthorityPrimesBeforePreparation();
   await testDisposedProviderDoesNotRecreateRunner();
+  await testLegacyManifestUsesGeneralWorker();
   testTraceRewriterTargetTypedFieldWritesDoNotReadAssignedMembers();
   testTraceRewriterIndexedAssignmentsDoNotReadAssignedIndexers();
 }

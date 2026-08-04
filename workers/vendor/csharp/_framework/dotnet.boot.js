@@ -1,7 +1,7 @@
 export const config = /*json-start*/{
   "mainAssemblyName": "TraceCode.CSharpHost.dll",
   "resources": {
-    "hash": "sha256-/3JcBuIC0b/DP3mCsMz0/ayKGG6vfu9tB6aDzbcn8ws=",
+    "hash": "sha256-Cw0JKx1eCtXA8dUTa7xWovV20PlIWYsXx+wL/mqAdrE=",
     "jsModuleNative": [
       {
         "name": "dotnet.native.js"
@@ -789,7 +789,7 @@ export const config = /*json-start*/{
       {
         "virtualPath": "TraceCode.CSharpHost.wasm",
         "name": "TraceCode.CSharpHost.wasm",
-        "hash": "sha256-Qi0pV2jJundm/5Bb8h/nZjmFYnBU7+7534S0O4+Thj8="
+        "hash": "sha256-4LTAKye8EvkzvT5pDDiVYe4+escvIJK72S7L3UtcEzE="
       },
       {
         "virtualPath": "TraceCode.CSharpJudgeRuntime.wasm",
@@ -964,7 +964,7 @@ export const config = /*json-start*/{
       {
         "virtualPath": "/tracecode-refs/TraceCode.CSharpHost.dll",
         "name": "supportFiles/0_TraceCode.CSharpHost.dll",
-        "hash": "sha256-6Ws3MxZSg/ZWmCIMD0fcMrvEDzz99yW7AKDUSni1VJo="
+        "hash": "sha256-JotJd/yo7s3Ok0LFxr8E0qaevnXlN+NYpEH46a+8P+c="
       },
       {
         "virtualPath": "/tracecode-refs/TraceCode.CSharpJudgeRuntime.dll",

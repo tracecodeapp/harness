@@ -3409,6 +3409,16 @@ function createTraceCodePackedAssemblyLoader(assetBaseUrl) {
           );
         }
         const bytes = new Uint8Array(buffer);
+        const digest = new Uint8Array(
+          await crypto.subtle.digest('SHA-256', bytes)
+        );
+        let digestBinary = '';
+        for (const byte of digest) {
+          digestBinary += String.fromCharCode(byte);
+        }
+        if (`sha256-${btoa(digestBinary)}` !== metadata.hash) {
+          throw new Error('TraceCode C# assembly pack integrity mismatch.');
+        }
         const indexLengthOffset = bytes.length - 12;
         const magic = textDecoder.decode(bytes.subarray(bytes.length - 8));
         if (magic !== packMagic) {
@@ -4690,16 +4700,41 @@ async function executeCSharpCodePayload(payload, messageType = 'execute-code', c
   const artifactKey = getCompiledArtifactKeyExport(JSON.stringify(request));
   const cachedArtifact = await requestCompilerArtifactCache('get', artifactKey, commandId);
   if (cachedArtifact?.hit === true && typeof cachedArtifact.value === 'string') {
-    request.compiledArtifactKey = artifactKey;
-    request.compiledArtifactBase64 = cachedArtifact.value;
+    try {
+      const cached = JSON.parse(cachedArtifact.value);
+      if (
+        cached?.schema === 'tracecode.csharp-compiled-artifact.v1' &&
+        typeof cached.base64 === 'string' &&
+        cached.base64.length > 0 &&
+        typeof cached.sha256 === 'string' &&
+        /^[0-9a-f]{64}$/.test(cached.sha256)
+      ) {
+        request.compiledArtifactKey = artifactKey;
+        request.compiledArtifactBase64 = cached.base64;
+        request.compiledArtifactSha256 = cached.sha256;
+      }
+    } catch {
+      // Opaque host cache corruption is a miss; managed code recompiles.
+    }
   }
   const hostCallStartedAt = now();
   const result = await withCSharpUserAuthorityLockdown(() =>
     normalizeCSharpResult(JSON.parse(executeExport(JSON.stringify(request))), request)
   );
-  if (typeof result?.compiledArtifactBase64 === 'string' && result.compiledArtifactBase64.length > 0) {
-    await requestCompilerArtifactCache('put', artifactKey, commandId, result.compiledArtifactBase64);
+  if (
+    typeof result?.compiledArtifactBase64 === 'string' &&
+    result.compiledArtifactBase64.length > 0 &&
+    typeof result?.compiledArtifactSha256 === 'string' &&
+    /^[0-9a-f]{64}$/.test(result.compiledArtifactSha256)
+  ) {
+    const cacheValue = JSON.stringify({
+      schema: 'tracecode.csharp-compiled-artifact.v1',
+      base64: result.compiledArtifactBase64,
+      sha256: result.compiledArtifactSha256,
+    });
+    await requestCompilerArtifactCache('put', artifactKey, commandId, cacheValue);
     delete result.compiledArtifactBase64;
+    delete result.compiledArtifactSha256;
   }
   const hostCallMs = elapsedMs(hostCallStartedAt);
   return {

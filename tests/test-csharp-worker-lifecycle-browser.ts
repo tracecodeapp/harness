@@ -185,6 +185,30 @@ async function main(): Promise<void> {
       const cold = await firstWorker.send('execute-code', request(source, 7));
       const warm = await firstWorker.send('execute-code', request(source, 9));
       const edited = await firstWorker.send('execute-code', request(editedSource, 3));
+      const cacheIntegritySource = source.replace(
+        'seen * 100 + value',
+        'seen * 10 + value'
+      );
+      const cacheIntegritySeed = await firstWorker.send(
+        'execute-code',
+        request(cacheIntegritySource, 5)
+      );
+      const cacheIntegrityKey = cacheIntegritySeed.compiledArtifactKey ?? '';
+      const cacheIntegrityValue = compilerArtifacts.get(cacheIntegrityKey);
+      if (cacheIntegrityValue) {
+        const corruptedEnvelope = JSON.parse(cacheIntegrityValue);
+        corruptedEnvelope.sha256 = '0'.repeat(64);
+        compilerArtifacts.set(
+          cacheIntegrityKey,
+          JSON.stringify(corruptedEnvelope)
+        );
+      }
+      const cacheIntegrityWorker = await createWorkerHarness();
+      const cacheIntegrityRestored = await cacheIntegrityWorker.send(
+        'execute-code',
+        request(cacheIntegritySource, 6)
+      );
+      cacheIntegrityWorker.terminate();
 
       const prepared = await firstWorker.send<ExecuteResult>('prepare-program', {
         mode: 'code',
@@ -541,6 +565,8 @@ async function main(): Promise<void> {
         cold,
         warm,
         edited,
+        cacheIntegritySeed,
+        cacheIntegrityRestored,
         prepared,
         preparedFirst,
         preparedSecond,
@@ -570,6 +596,8 @@ async function main(): Promise<void> {
       cold: ExecuteResult;
       warm: ExecuteResult;
       edited: ExecuteResult;
+      cacheIntegritySeed: ExecuteResult;
+      cacheIntegrityRestored: ExecuteResult;
       prepared: ExecuteResult;
       preparedFirst: ExecuteResult;
       preparedSecond: ExecuteResult;
@@ -606,6 +634,18 @@ async function main(): Promise<void> {
     );
     assertCondition(metrics.edited.success && metrics.edited.output === 1003, `Edited C# run failed: ${JSON.stringify(metrics.edited)}`);
     assertCondition(metrics.edited.timings?.compileCacheHit === false, 'Edited C# source must miss the compiled artifact cache.');
+    assertCondition(
+      metrics.cacheIntegritySeed.success &&
+        metrics.cacheIntegritySeed.output === 15 &&
+        metrics.cacheIntegrityRestored.success &&
+        metrics.cacheIntegrityRestored.output === 16 &&
+        metrics.cacheIntegrityRestored.timings?.compileCacheHit === false &&
+        metrics.cacheIntegrityRestored.timings?.hostArtifactCacheHit === false,
+      `C# replacement workers must reject a host-cache PE whose digest envelope was corrupted: ${JSON.stringify({
+        seed: metrics.cacheIntegritySeed,
+        restored: metrics.cacheIntegrityRestored,
+      })}`
+    );
     assertCondition(
       metrics.prepared.success &&
         Boolean(metrics.prepared.compiledArtifactKey) &&

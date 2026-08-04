@@ -303,6 +303,7 @@ function assetNames(config: BootConfig): string[] {
   return [
     ...(config.resources?.coreAssembly ?? []),
     ...(config.resources?.assembly ?? []),
+    ...(config.resources?.vfs ?? []),
   ].flatMap((asset) =>
     [asset.name, asset.virtualPath].filter(
       (value): value is string => typeof value === 'string'
@@ -445,6 +446,11 @@ async function main(): Promise<void> {
       bundle.names,
       /TraceCode\.CSharpHost\.wasm$/i,
       `${role} Host`
+    );
+    requireAsset(
+      bundle.names,
+      /\/tracecode-refs\/TraceCode\.CSharpHost\.dll$/i,
+      `${role} trusted Project bridge metadata`
     );
   }
 

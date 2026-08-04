@@ -288,7 +288,7 @@ test('production C# pack loader fails closed and returns exact assembly bytes', 
   );
 
   const corruptPack = Buffer.from(firstPackBytes);
-  corruptPack[corruptPack.length - 1] ^= 0xff;
+  corruptPack[requestedEntry.offset] ^= 0xff;
   const corruptLoader = instantiateProductionLoader(async () => ({
     ok: true,
     status: 200,
@@ -302,7 +302,7 @@ test('production C# pack loader fails closed and returns exact assembly bytes', 
   corruptLoader.onConfigLoaded(config);
   await assert.rejects(
     corruptLoader.loadBootResource('assembly', requestedAssembly)!,
-    /assembly pack magic mismatch/
+    /assembly pack integrity mismatch/
   );
 
   const invalidHashConfig = structuredClone(config);

@@ -10,7 +10,7 @@
  * this benchmark does not assess or invoke a host Node.js project runtime.
  */
 
-import { execFileSync, spawn, type ChildProcess } from 'node:child_process';
+import { execFile, spawn, type ChildProcess } from 'node:child_process';
 import { createReadStream, existsSync, statSync } from 'node:fs';
 import { cp, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
@@ -150,8 +150,24 @@ interface BrowserServerLike {
   close(): Promise<void>;
 }
 
-function browserProcessMemorySnapshot(browserPid: number): BrowserProcessMemorySnapshot {
-  const rows = execFileSync('ps', ['-axo', 'pid=,ppid=,rss='], { encoding: 'utf8' })
+async function browserProcessMemorySnapshot(
+  browserPid: number
+): Promise<BrowserProcessMemorySnapshot> {
+  const output = await new Promise<string>((resolvePromise, rejectPromise) => {
+    execFile(
+      'ps',
+      ['-axo', 'pid=,ppid=,rss='],
+      { encoding: 'utf8' },
+      (error, stdout) => {
+        if (error) {
+          rejectPromise(error);
+          return;
+        }
+        resolvePromise(stdout);
+      }
+    );
+  });
+  const rows = output
     .trim()
     .split('\n')
     .map((line) => line.trim().split(/\s+/u).map(Number))
@@ -985,15 +1001,25 @@ async function runBrowserPlanItem(
     phase: string;
     snapshot: BrowserProcessMemorySnapshot;
   }> = [];
-  const processMemorySampler = setInterval(() => {
-    try {
-      processMemorySamples.push({
-        phase: phaseRef.current,
-        snapshot: browserProcessMemorySnapshot(browserPid),
+  let pendingProcessMemorySample: Promise<void> | undefined;
+  const sampleProcessMemory = (): Promise<void> => {
+    if (pendingProcessMemorySample) return pendingProcessMemorySample;
+    const samplePhase = phaseRef.current;
+    pendingProcessMemorySample = browserProcessMemorySnapshot(browserPid)
+      .then((snapshot) => {
+        processMemorySamples.push({ phase: samplePhase, snapshot });
+      })
+      .catch(() => {
+        // Process enumeration is diagnostic only; never change benchmark outcome.
+      })
+      .finally(() => {
+        pendingProcessMemorySample = undefined;
       });
-    } catch {
-      // Process enumeration is diagnostic only; never change benchmark outcome.
-    }
+    return pendingProcessMemorySample;
+  };
+  void sampleProcessMemory();
+  const processMemorySampler = setInterval(() => {
+    void sampleProcessMemory();
   }, 50);
   const pendingNetwork: Promise<void>[] = [];
   collectNetworkMetrics(context, phaseRef, item, networkRecords, pendingNetwork);
@@ -1677,7 +1703,10 @@ async function runBrowserPlanItem(
     await page.waitForTimeout(25);
     const networkFlushComplete = await settleBeforeDeadline(Promise.allSettled(pendingNetwork), 2_000);
     if (result) {
-      const baseline = processMemorySamples[0]?.snapshot ?? browserProcessMemorySnapshot(browserPid);
+      await sampleProcessMemory();
+      const baseline =
+        processMemorySamples[0]?.snapshot ??
+        (await browserProcessMemorySnapshot(browserPid));
       const settled = processMemorySamples.at(-1)?.snapshot ?? baseline;
       const peak = processMemorySamples.reduce(
         (current, sample) => Math.max(current, sample.snapshot.rssBytes),
@@ -1721,6 +1750,7 @@ async function runBrowserPlanItem(
     };
   } finally {
     clearInterval(processMemorySampler);
+    await pendingProcessMemorySample;
     if (phaseWatchdog !== undefined) clearTimeout(phaseWatchdog);
     await settleBeforeDeadline(context.close(), 2_000);
   }

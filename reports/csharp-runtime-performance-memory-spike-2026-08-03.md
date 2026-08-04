@@ -1609,7 +1609,7 @@ keeps generated publish trees out of source review:
 
 | Role | Canonical ZIP SHA-256 | ZIP bytes | Expanded files/bytes | Tree SHA-256 |
 |---|---|---:|---:|---|
-| Compiler | `c4257008bb9112919cc0807baa95cd405b91c55fb21366a2aa731f9a91c98944` | 18,072,228 | 241 / 50,211,308 | `2986b8c3ac1cbac18d65000eca7f310191acd7359e8d14593112f1517634c99c` |
+| Compiler | `b86138bac6e5c400f14cb6a2061312ea1adbcc4981b76d39351198e6cfe25cc1` | 18,073,500 | 241 / 50,214,380 | `9afbc8aefbe4945ae7304fadf029235e394af93357b01b0bd7b927d854014591` |
 | Runner | `a6341c3dd4fe4fb2d5768c137e32afd22839a19d6e46b5878f908f9da7865e4e` | 4,670,592 | 12 / 12,814,019 | `c5d65c14e9d2a20e6a3a516db04fe2c6226ef9bc1a12a8afc3fd9a314af64981` |
 
 `pnpm update:csharp-runtime` regenerates them with the exact SDK in
@@ -1629,7 +1629,36 @@ A fresh Chromium corpus matched all 200/200 prior production rows:
 - comparison `b4b36d9134fd3053c4b836edf4f65d99307713558e50c41df8af949f57acf9ae`.
 
 Against the PR merge base this reduces the review surface from 344 files /
-24,283 additions to 99 files / 9,992 additions. The remaining generated
+24,283 additions to 100 files / 10,342 additions. The remaining generated
 changes are primarily the 54-file general C# runtime rebuild already required
 by the host changes; replacing that pre-existing tree with an archive in this
 PR would still appear as those deletions and would not improve reviewability.
+
+### Review hardening and final regression
+
+The post-review pass made five boundary corrections without weakening the
+compiler/runner split:
+
+- runner assembly packs are explicitly SHA-256 verified with WebCrypto after
+  fetch, in addition to fetch SRI, before their index or members are consumed;
+- the host compiler cache now stores a versioned PE-plus-SHA envelope and the
+  managed host validates the digest before hydrating a replacement worker;
+- pre-role-split consumer manifests stay on their declared general C# bundle
+  instead of silently loading compiler/runner defaults from another origin;
+- trusted `CompilerHost` metadata remains available for generated Project
+  glue, while semantic symbol validation rejects learner references to that
+  type, including aliases;
+- the public Project benchmark samples process RSS with asynchronous `ps`
+  calls so the 50 ms sampler does not block the asset server or Playwright.
+
+The full browser worker suite retained the sub-second compilation result:
+682.13 ms cold compile, 1,138 ms cold end-to-end, 24.11 ms edited compile,
+4 ms exact-repeat execution, and 7--10 ms prepared isolated cases. The complete
+Chromium production Judge -> TraceKernel corpus then matched the preceding
+canonical-artifact baseline exactly for all 200/200 rows and every compared
+receipt field. Raw evidence:
+
+- `production-integration/review-fixes-production-corpus-chromium-200.json`
+  (`6caa7c3b8a94312dc4a13a36eea56c222899e4c18715e4a60d2e0de5063c49d3`);
+- `production-integration/review-fixes-production-corpus-chromium-200-comparison.json`
+  (`4bfda750931982d3b8487a7ba47cc53c7807bfde40ef643238665fb536820ae0`).

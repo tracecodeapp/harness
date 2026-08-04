@@ -523,7 +523,14 @@ public static partial class CompilerHost
                     if (candidate.LongLength <= CompiledArtifactCacheMaxBytes
                         && candidate.Length >= 2
                         && candidate[0] == (byte)'M'
-                        && candidate[1] == (byte)'Z')
+                        && candidate[1] == (byte)'Z'
+                        && !string.IsNullOrEmpty(request.CompiledArtifactSha256)
+                        && string.Equals(
+                            request.CompiledArtifactSha256,
+                            Convert.ToHexString(SHA256.HashData(candidate))
+                                .ToLowerInvariant(),
+                            StringComparison.Ordinal
+                        ))
                     {
                         peBytes = candidate;
                         StoreCompiledArtifact(artifactKey, peBytes);
@@ -622,6 +629,10 @@ public static partial class CompilerHost
                     Timings = WithTotalTiming(timings, stopwatch),
                     CompiledArtifactBase64 = compiledArtifactForHost ? Convert.ToBase64String(peBytes) : null,
                     CompiledArtifactKey = artifactKey,
+                    CompiledArtifactSha256 = compiledArtifactForHost
+                        ? Convert.ToHexString(SHA256.HashData(peBytes))
+                            .ToLowerInvariant()
+                        : null,
                 });
             }
             finally
@@ -1150,6 +1161,13 @@ public static partial class CompilerHost
             .AddSyntaxTrees(userTree, driverTree)
             .WithAssemblyName("TraceCode.UserCode." + Guid.NewGuid().ToString("N"));
         RecordCompilePhase(timings, "compileCreateCompilationMs", phaseStopwatch);
+        phaseStopwatch.Restart();
+        ValidateUserSemanticPolicy(compilation, new[] { userTree });
+        RecordCompilePhase(
+            timings,
+            "compileSemanticPolicyValidationMs",
+            phaseStopwatch
+        );
         return compilation;
     }
 
@@ -1318,6 +1336,7 @@ public static partial class CompilerHost
             CompilerAuthorityState.ParseOptions.WithPreprocessorSymbols(
                 ResolveProjectDefineConstants(request)
             );
+        List<SyntaxTree> userSyntaxTrees = new();
         foreach (CSharpProjectFile file in request.Project.Files)
         {
             string path = NormalizeProjectPath(file.Path);
@@ -1331,7 +1350,11 @@ public static partial class CompilerHost
                 path: path
             );
             ValidateUserSourcePolicy(projectTree);
-            syntaxTrees.Add(RewriteProjectSyntaxTree(projectTree));
+            SyntaxTree rewrittenProjectTree = RewriteProjectSyntaxTree(
+                projectTree
+            );
+            syntaxTrees.Add(rewrittenProjectTree);
+            userSyntaxTrees.Add(rewrittenProjectTree);
         }
 
         CSharpCompilationOptions options = new CSharpCompilationOptions(
@@ -1346,7 +1369,7 @@ public static partial class CompilerHost
             options = options.WithMainTypeName(startupObject);
         }
 
-        return CSharpCompilation.Create(
+        CSharpCompilation compilation = CSharpCompilation.Create(
             assemblyName: "TraceCode.Project." + Guid.NewGuid().ToString("N"),
             syntaxTrees: syntaxTrees,
             references: CompilerAuthorityState.CachedReferences.Value.Concat(
@@ -1354,6 +1377,8 @@ public static partial class CompilerHost
             ),
             options: options
         );
+        ValidateUserSemanticPolicy(compilation, userSyntaxTrees);
+        return compilation;
     }
 
     private static void ValidateUserSourcePolicy(SyntaxTree tree)
@@ -1374,6 +1399,52 @@ public static partial class CompilerHost
                 throw new InvalidOperationException($"C# user code references denied browser runtime API: {deniedApi}.");
             }
         }
+    }
+
+    private static void ValidateUserSemanticPolicy(
+        CSharpCompilation compilation,
+        IEnumerable<SyntaxTree> userTrees
+    )
+    {
+        foreach (SyntaxTree tree in userTrees)
+        {
+            SemanticModel model = compilation.GetSemanticModel(
+                tree,
+                ignoreAccessibility: false
+            );
+            foreach (
+                SimpleNameSyntax name in tree
+                    .GetRoot()
+                    .DescendantNodesAndSelf()
+                    .OfType<SimpleNameSyntax>()
+            )
+            {
+                SymbolInfo symbolInfo = model.GetSymbolInfo(name);
+                IEnumerable<ISymbol> symbols = symbolInfo.Symbol is null
+                    ? symbolInfo.CandidateSymbols
+                    : new[] { symbolInfo.Symbol };
+                if (symbols.Any(IsTrustedCompilerHostSymbol))
+                {
+                    throw new InvalidOperationException(
+                        "C# user code references denied browser runtime API: TraceCode.CSharpHost.CompilerHost."
+                    );
+                }
+            }
+        }
+    }
+
+    private static bool IsTrustedCompilerHostSymbol(ISymbol symbol)
+    {
+        ISymbol target = symbol is IAliasSymbol alias ? alias.Target : symbol;
+        INamedTypeSymbol? containingType =
+            target as INamedTypeSymbol ?? target.ContainingType;
+        return string.Equals(
+            containingType?.ToDisplayString(
+                SymbolDisplayFormat.FullyQualifiedFormat
+            ),
+            "global::TraceCode.CSharpHost.CompilerHost",
+            StringComparison.Ordinal
+        );
     }
 
     private static string? DeniedUserApiForNode(SyntaxNode node, IReadOnlySet<string> deniedAliases)

@@ -40,6 +40,40 @@ export function createCSharpBrowserRuntimeProvider(
         'csharp',
         'dependencies'
       );
+      const generalManifestAsset = context.manifestAsset(
+        'csharp',
+        'assetBaseUrl'
+      );
+      const compilerManifestAsset = context.manifestAsset(
+        'csharp',
+        'compilerAssetBaseUrl'
+      );
+      const runnerManifestAsset = context.manifestAsset(
+        'csharp',
+        'runnerAssetBaseUrl'
+      );
+      if (Boolean(compilerManifestAsset) !== Boolean(runnerManifestAsset)) {
+        throw new TypeError(
+          'C# runtime manifests must publish compilerAssetBaseUrl and runnerAssetBaseUrl together.'
+        );
+      }
+      const manifestPublishesPreparedRoles =
+        Boolean(compilerManifestAsset) && Boolean(runnerManifestAsset);
+      if (
+        options.preparedAuthority === true &&
+        generalManifestAsset &&
+        !manifestPublishesPreparedRoles
+      ) {
+        throw new TypeError(
+          'C# preparedAuthority requires compiler and runner assets in the runtime manifest.'
+        );
+      }
+      // A pre-role-split manifest is a valid deployment contract. Keep it on
+      // the general worker rather than silently resolving role URLs from the
+      // package defaults, which may point at an unrelated origin.
+      const preparedAuthorityEnabled =
+        options.preparedAuthority !== false &&
+        (!generalManifestAsset || manifestPublishesPreparedRoles);
       // Firefox retained materially more process RSS after .NET worker warmup
       // in the C# spike. Preserve the prewarm needed for sub-second Judge runs,
       // but let unused prepared capacity retire sooner there. Explicit caller
@@ -83,7 +117,7 @@ export function createCSharpBrowserRuntimeProvider(
             }
           : {}),
       });
-      const compiler = options.preparedAuthority === false
+      const compiler = !preparedAuthorityEnabled
         ? worker
         : new CSharpWorkerClient({
             workerUrl: context.assets.csharpWorker,
@@ -131,7 +165,7 @@ export function createCSharpBrowserRuntimeProvider(
         return runner;
       };
       let standbyRunner =
-        options.preparedAuthority === false ? undefined : createRunnerClient();
+        preparedAuthorityEnabled ? createRunnerClient() : undefined;
       const compilerWarmup =
         compiler === worker
           ? undefined
@@ -172,9 +206,8 @@ export function createCSharpBrowserRuntimeProvider(
           });
       };
       if (standbyRunner) warmStandbyRunner(standbyRunner);
-      const preparedAuthority = options.preparedAuthority === false
-        ? undefined
-        : {
+      const preparedAuthority = preparedAuthorityEnabled
+        ? {
             compiler,
             createRunner(): CSharpWorkerClient {
               if (disposed) {
@@ -191,7 +224,8 @@ export function createCSharpBrowserRuntimeProvider(
                 warmStandbyRunner(standbyRunner);
               }
             },
-          };
+          }
+        : undefined;
       // The C# adapter is also its prepared provider. It remains private to
       // this lease; no direct-client capability crosses the host boundary.
       const preparedProvider = createCSharpRuntimeClient(
