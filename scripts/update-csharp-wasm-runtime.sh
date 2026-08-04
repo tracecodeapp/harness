@@ -178,11 +178,15 @@ for role_vendor in "$tmp_vendor" "$tmp_compiler_vendor" "$tmp_runner_vendor"; do
   done
   pnpm exec tsx "$ROOT_DIR/scripts/prune-csharp-wasm-runtime-assets.ts" "$role_vendor"
 done
+pnpm exec tsx "$ROOT_DIR/scripts/normalize-csharp-vfs-assets.ts" \
+  "$tmp_vendor" \
+  "$tmp_compiler_vendor"
 pnpm exec tsx "$ROOT_DIR/scripts/pack-csharp-managed-assemblies.ts" \
   "$tmp_runner_vendor"
 pnpm exec tsx "$ROOT_DIR/scripts/validate-csharp-runtime-role-assets.ts" \
   "$tmp_vendor" "$tmp_compiler_vendor" "$tmp_runner_vendor"
 pnpm exec tsx "$ROOT_DIR/scripts/csharp-role-artifacts.ts" create \
+  "$tmp_vendor" \
   "$tmp_compiler_vendor" \
   "$tmp_runner_vendor" \
   "$ROLE_ARTIFACT_DIR" \
@@ -203,4 +207,4 @@ mv "$tmp_runner_vendor" "$RUNNER_VENDOR_DIR"
   pnpm run test:runtime-info-sync
 )
 
-echo "Updated C# general runtime assets and canonical compiler/runner artifacts."
+echo "Updated canonical C# general/compiler/runner artifacts."

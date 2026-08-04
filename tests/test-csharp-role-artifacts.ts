@@ -72,22 +72,32 @@ async function compareDirectories(
 async function createFixture(t: TestContext): Promise<{
   artifactDirectory: string;
   compilerSource: string;
+  generalSource: string;
   root: string;
   runnerSource: string;
 }> {
   const root = await mkdtemp(join(tmpdir(), 'tracecode-csharp-role-artifacts-'));
   t.after(() => rm(root, { recursive: true, force: true }));
+  const generalSource = join(root, 'source/general');
   const compilerSource = join(root, 'source/compiler');
   const runnerSource = join(root, 'source/runner');
-  await fixtureRole(
-    compilerSource,
-    'TraceCode.CSharpHost.runtimeconfig.json',
-    {
-      '_framework/compiler.wasm': 'compiler-bytes',
-      '_framework/supportFiles/0_System.Runtime.dll': 'reference-bytes',
-      'main.mjs': 'export default {};\n',
-    }
-  );
+  const hostFiles = {
+    '_framework/compiler.wasm': 'compiler-bytes',
+    '_framework/supportFiles/System.Runtime.dll': 'reference-bytes',
+    'main.mjs': 'export default {};\n',
+  };
+  await Promise.all([
+    fixtureRole(
+      generalSource,
+      'TraceCode.CSharpHost.runtimeconfig.json',
+      hostFiles
+    ),
+    fixtureRole(
+      compilerSource,
+      'TraceCode.CSharpHost.runtimeconfig.json',
+      hostFiles
+    ),
+  ]);
   await fixtureRole(
     runnerSource,
     'TraceCode.CSharpJudgeRunner.runtimeconfig.json',
@@ -101,7 +111,13 @@ async function createFixture(t: TestContext): Promise<{
     root,
     'workers/vendor/csharp-role-artifacts'
   );
-  return { artifactDirectory, compilerSource, root, runnerSource };
+  return {
+    artifactDirectory,
+    compilerSource,
+    generalSource,
+    root,
+    runnerSource,
+  };
 }
 
 function creationOptions(fixture: Awaited<ReturnType<typeof createFixture>>) {
@@ -110,6 +126,7 @@ function creationOptions(fixture: Awaited<ReturnType<typeof createFixture>>) {
     compilerDirectory: fixture.compilerSource,
     compilerReferencePack: 'Minimal',
     dotnetSdk: SDK_VERSION,
+    generalDirectory: fixture.generalSource,
     runnerDirectory: fixture.runnerSource,
     runnerTrimProfile: 'JudgeReferences',
     targetFramework: TARGET_FRAMEWORK,
@@ -126,9 +143,18 @@ test('C# role artifacts are deterministic and materialize exact trees', async (t
   });
   deepStrictEqual(second, first);
   await compareDirectories(fixture.artifactDirectory, copyDirectory);
+  equal(
+    first.roles.general.artifact,
+    first.roles.compiler.artifact,
+    'identical general and compiler trees must share one content-addressed archive'
+  );
 
   const materialized = await materializeCSharpRoleAssets(fixture.root);
-  deepStrictEqual(materialized.changed, ['compiler', 'runner']);
+  deepStrictEqual(materialized.changed, ['general', 'compiler', 'runner']);
+  await compareDirectories(
+    fixture.generalSource,
+    join(fixture.root, 'workers/vendor/csharp')
+  );
   await compareDirectories(
     fixture.compilerSource,
     join(fixture.root, 'workers/vendor/csharp-compiler')
@@ -232,6 +258,7 @@ test('tracked C# role artifacts are reproducible from their materialized trees',
     compilerDirectory: join(root, 'workers/vendor/csharp-compiler'),
     compilerReferencePack: manifest.recipe.compilerReferencePack,
     dotnetSdk: manifest.recipe.dotnetSdk,
+    generalDirectory: join(root, 'workers/vendor/csharp'),
     runnerDirectory: join(root, 'workers/vendor/csharp-runner'),
     runnerTrimProfile: manifest.recipe.runnerTrimProfile,
     targetFramework: manifest.recipe.targetFramework,
@@ -260,7 +287,7 @@ test('tracked C# role artifacts are reproducible from their materialized trees',
   }
   deepStrictEqual(
     (await materializeCSharpRoleAssets(cleanRoot)).changed,
-    ['compiler', 'runner']
+    ['general', 'compiler', 'runner']
   );
   await verifyCSharpRoleAssets(cleanRoot);
 });

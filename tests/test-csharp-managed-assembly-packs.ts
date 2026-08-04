@@ -21,6 +21,7 @@ import {
   parseCSharpAssemblyPack,
   parseDotnetBootManifest,
 } from '../scripts/pack-csharp-managed-assemblies';
+import { normalizeCSharpVfsAssets } from '../scripts/normalize-csharp-vfs-assets';
 
 const ASSEMBLIES = [
   ['System.Private.CoreLib.wasm', 8_192],
@@ -167,6 +168,51 @@ async function run(t: TestContext): Promise<void> {
 }
 
 test('C# runner managed-assembly packs are deterministic and round-trip exact', run);
+
+test('C# VFS reference names are stable and preserve exact metadata bytes', async (t) => {
+  const root = await mkdtemp(join(tmpdir(), 'tracecode-csharp-vfs-assets-'));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const framework = join(root, '_framework');
+  const support = join(framework, 'supportFiles');
+  await mkdir(support, { recursive: true });
+  const reference = Buffer.from('reference-assembly-bytes');
+  const config = {
+    resources: {
+      hash: 'sha256-stale',
+      vfs: [{
+        virtualPath: '/tracecode-refs/System.Runtime.dll',
+        name: 'supportFiles/17_System.Runtime.dll',
+        hash: `sha256-${createHash('sha256').update(reference).digest('base64')}`,
+      }],
+    },
+  };
+  await writeFile(
+    join(framework, 'dotnet.boot.js'),
+    `export const config = /*json-start*/${JSON.stringify(config, null, 2)}/*json-end*/;`
+  );
+  await writeFile(join(support, '17_System.Runtime.dll'), reference);
+
+  assert.deepEqual(
+    await normalizeCSharpVfsAssets(root),
+    { bundleDirectory: root, files: 1, renamed: 1 }
+  );
+  assert.deepEqual(
+    await readFile(join(support, 'System.Runtime.dll')),
+    reference
+  );
+  await assertMissing(join(support, '17_System.Runtime.dll'));
+  assert.equal((await normalizeCSharpVfsAssets(root)).renamed, 0);
+
+  const parsed = parseDotnetBootManifest(
+    await readFile(join(framework, 'dotnet.boot.js'), 'utf8'),
+    join(framework, 'dotnet.boot.js')
+  ).config;
+  assert.equal(
+    (parsed.resources?.vfs as Array<{ name?: unknown }> | undefined)?.[0]?.name,
+    'supportFiles/System.Runtime.dll'
+  );
+  assert.match(String(parsed.resources?.hash), /^sha256-[A-Za-z0-9+/]{43}=$/);
+});
 
 interface PackedAssemblyLoader {
   onConfigLoaded(config: unknown): void;

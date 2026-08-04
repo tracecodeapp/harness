@@ -9,8 +9,9 @@ obj
 reports
 tests/conformance/generated/
 
-# Canonical C# compiler/runner ZIPs are tracked under csharp-role-artifacts.
+# Canonical C# general/compiler/runner ZIPs are tracked under csharp-role-artifacts.
 # These verified trees are recreated by `pnpm materialize:csharp-role-assets`.
+/workers/vendor/csharp/
 /workers/vendor/csharp-compiler/
 /workers/vendor/csharp-runner/
 

@@ -254,7 +254,7 @@ export function parseCSharpAssemblyPack(
   };
 }
 
-function updateResourceHash(resources: NonNullable<BootConfig['resources']>): void {
+export function updateResourceHash(resources: NonNullable<BootConfig['resources']>): void {
   resources.hash = `sha256-${sha256Base64(
     JSON.stringify({ ...resources, hash: undefined })
   )}`;

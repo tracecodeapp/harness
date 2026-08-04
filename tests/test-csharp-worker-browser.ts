@@ -7,7 +7,13 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, wri
 import { tmpdir } from 'node:os';
 import { dirname, extname, join, normalize, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { chromium, type Browser, type Page } from 'playwright';
+import {
+  chromium,
+  firefox,
+  webkit,
+  type Browser,
+  type Page,
+} from 'playwright';
 import { CSharpWorkerClient } from '../packages/runtime-csharp/src/csharp-worker-client';
 import { createBrowserCSharpProjectRunner } from '../packages/runtime-csharp/src/project-browser';
 import { createRuntimeCommandStdinPipeFromText, readRuntimeCommandStdinPipeBytes } from '../packages/runtime-contracts/src/runtime-project';
@@ -959,7 +965,15 @@ async function main(): Promise<void> {
   let browser: Browser | null = null;
 
   try {
-    browser = await chromium.launch();
+    const browserTypes = { chromium, firefox, webkit } as const;
+    const browserEngineName =
+      process.env.TRACECODE_CSHARP_BROWSER_ENGINE ?? 'chromium';
+    if (!(browserEngineName in browserTypes)) {
+      throw new Error(`Unsupported C# browser engine: ${browserEngineName}`);
+    }
+    const browserEngine =
+      browserTypes[browserEngineName as keyof typeof browserTypes];
+    browser = await browserEngine.launch();
     const page = await browser.newPage();
     if (CSHARP_BROWSER_PROGRESS) {
       page.on('console', (message) => console.log(`PAGE: ${message.text()}`));
@@ -969,6 +983,23 @@ async function main(): Promise<void> {
     await page.evaluate('globalThis.__name = (fn) => fn');
 
     const assetBaseUrl = `${server.origin}/workers/vendor/csharp`;
+    if (process.env.TRACECODE_CSHARP_BROWSER_SMOKE === '1') {
+      const add = await runWorkerCase(
+        page,
+        fixture('add.cs'),
+        'Add',
+        { a: 2, b: 3 },
+        assetBaseUrl
+      );
+      assertCondition(
+        add.success && add.output === 5,
+        `C# ${browserEngineName} asset smoke failed: ${add.error ?? JSON.stringify(add.output)}`
+      );
+      console.log(
+        `PASS: C# ${browserEngineName} boots stable VFS assets and executes managed code`
+      );
+      return;
+    }
     await testBrowserCSharpProjectDirectoryMetadata(page, assetBaseUrl);
     const externalCSharpDllBase64 = createExternalCSharpDllBase64();
     const add = await runWorkerCase(page, fixture('add.cs'), 'Add', { a: 2, b: 3 }, assetBaseUrl);
@@ -1110,7 +1141,8 @@ async function main(): Promise<void> {
     );
     assertCondition(
       staticStateBatch.timings?.batchMode === 'per-case-fallback' &&
-        staticStateBatch.timings?.batchFallbackReason === 'static-storage' &&
+        staticStateBatch.timings?.batchFallbackReason ===
+          'isolated-case-authority' &&
         staticStateBatch.timings?.batchCaseCount === 2,
       `C# worker batch should report static-storage fallback timings, received ${JSON.stringify(staticStateBatch.timings)}`
     );
@@ -1134,8 +1166,11 @@ async function main(): Promise<void> {
       `C# worker lower-camel batch should call the source method casing, received ${JSON.stringify(lowerCamelBatch.results)}`
     );
     assertCondition(
-      lowerCamelBatch.timings?.batchMode === 'compile-once' && lowerCamelBatch.timings?.batchCaseCount === 2,
-      `C# worker lower-camel batch should report compile-once timings, received ${JSON.stringify(lowerCamelBatch.timings)}`
+      lowerCamelBatch.timings?.batchMode === 'per-case-fallback' &&
+        lowerCamelBatch.timings?.batchFallbackReason ===
+          'isolated-case-authority' &&
+        lowerCamelBatch.timings?.batchCaseCount === 2,
+      `C# worker lower-camel batch should report isolated-case timings, received ${JSON.stringify(lowerCamelBatch.timings)}`
     );
 
     const opsClassFallbackBatch = await runWorkerBatchCase(
@@ -1163,7 +1198,8 @@ async function main(): Promise<void> {
     );
     assertCondition(
       opsClassFallbackBatch.timings?.batchMode === 'per-case-fallback' &&
-        opsClassFallbackBatch.timings?.batchFallbackReason === 'ops-class-reflection',
+        opsClassFallbackBatch.timings?.batchFallbackReason ===
+          'isolated-case-authority',
       `C# worker ops-class fallback batch should report fallback timings, received ${JSON.stringify(opsClassFallbackBatch.timings)}`
     );
 
@@ -5420,8 +5456,11 @@ async function main(): Promise<void> {
       `C# worker ListNode batch should preserve per-case stdout, received ${JSON.stringify(listNodeBatch.consoleOutput)}`
     );
     assertCondition(
-      listNodeBatch.timings?.batchMode === 'compile-once' && listNodeBatch.timings?.batchCaseCount === 3,
-      `C# worker ListNode batch should report compile-once timings, received ${JSON.stringify(listNodeBatch.timings)}`
+      listNodeBatch.timings?.batchMode === 'per-case-fallback' &&
+        listNodeBatch.timings?.batchFallbackReason ===
+          'isolated-case-authority' &&
+        listNodeBatch.timings?.batchCaseCount === 3,
+      `C# worker ListNode batch should report isolated-case timings, received ${JSON.stringify(listNodeBatch.timings)}`
     );
 
     const requiredConstructorListNodeInput = await runWorkerCase(

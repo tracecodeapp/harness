@@ -14,10 +14,15 @@ import { dirname, join, relative, resolve, sep } from 'node:path';
 import { unzipSync, zipSync, type Zippable } from 'fflate';
 
 export const CSHARP_ROLE_ARTIFACTS_SCHEMA =
-  'tracecode.csharp-role-artifacts.v1';
-const ROLE_NAMES = ['compiler', 'runner'] as const;
+  'tracecode.csharp-role-artifacts.v2';
+const ROLE_NAMES = ['general', 'compiler', 'runner'] as const;
 const ZIP_MTIME = new Date(1980, 0, 1);
 const MAX_ROLE_LIMITS = {
+  general: {
+    files: 512,
+    rawBytes: 64 * 1024 * 1024,
+    artifactBytes: 32 * 1024 * 1024,
+  },
   compiler: { files: 512, rawBytes: 64 * 1024 * 1024, artifactBytes: 32 * 1024 * 1024 },
   runner: { files: 64, rawBytes: 24 * 1024 * 1024, artifactBytes: 12 * 1024 * 1024 },
 } as const;
@@ -65,6 +70,7 @@ export interface CreateCSharpRoleArtifactsOptions {
   compilerDirectory?: string;
   compilerReferencePack: string;
   dotnetSdk: string;
+  generalDirectory?: string;
   runnerDirectory?: string;
   runnerTrimProfile: string;
   targetFramework: string;
@@ -181,9 +187,9 @@ async function roleRuntimeVersion(
   targetFramework: string
 ): Promise<string> {
   const runtimeConfigName =
-    role === 'compiler'
-      ? 'TraceCode.CSharpHost.runtimeconfig.json'
-      : 'TraceCode.CSharpJudgeRunner.runtimeconfig.json';
+    role === 'runner'
+      ? 'TraceCode.CSharpJudgeRunner.runtimeconfig.json'
+      : 'TraceCode.CSharpHost.runtimeconfig.json';
   return parseRuntimeVersion(
     JSON.parse(await readFile(join(directory, runtimeConfigName), 'utf8')),
     targetFramework
@@ -222,6 +228,9 @@ export async function createCSharpRoleArtifacts(
     options.artifactDirectory ?? join(root, 'workers/vendor/csharp-role-artifacts')
   );
   const directories: Record<CSharpArtifactRole, string> = {
+    general: resolve(
+      options.generalDirectory ?? join(root, 'workers/vendor/csharp')
+    ),
     compiler: resolve(
       options.compilerDirectory ?? join(root, 'workers/vendor/csharp-compiler')
     ),
@@ -235,7 +244,7 @@ export async function createCSharpRoleArtifacts(
     )
   );
   if (new Set(versions).size !== 1) {
-    throw new Error('C# compiler and runner use different .NET runtime versions.');
+    throw new Error('C# role bundles use different .NET runtime versions.');
   }
 
   await mkdir(dirname(artifactDirectory), { recursive: true });
@@ -263,8 +272,17 @@ export async function createCSharpRoleArtifacts(
         throw new Error(`C# ${role} role artifact exceeds its size limit.`);
       }
       const artifactSha256 = sha256(artifactBytes);
-      const artifact = `csharp-${role}.${artifactSha256}.zip`;
-      await writeFile(join(staging, artifact), artifactBytes);
+      const artifact = `csharp-bundle.${artifactSha256}.zip`;
+      const artifactPath = join(staging, artifact);
+      try {
+        const existing = await readFile(artifactPath);
+        if (!Buffer.from(existing).equals(Buffer.from(artifactBytes))) {
+          throw new Error(`C# ${role} role artifact hash collision.`);
+        }
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+        await writeFile(artifactPath, artifactBytes);
+      }
       roles[role] = {
         artifact,
         artifactBytes: artifactBytes.byteLength,
@@ -356,8 +374,7 @@ function validateManifest(
       typeof metadata !== 'object' ||
       !('artifact' in metadata) ||
       typeof metadata.artifact !== 'string' ||
-      !/^csharp-(?:compiler|runner)\.[a-f0-9]{64}\.zip$/.test(metadata.artifact) ||
-      !metadata.artifact.startsWith(`csharp-${role}.`) ||
+      !/^csharp-bundle\.[a-f0-9]{64}\.zip$/.test(metadata.artifact) ||
       !('artifactSha256' in metadata) ||
       typeof metadata.artifactSha256 !== 'string' ||
       !/^[a-f0-9]{64}$/.test(metadata.artifactSha256) ||
@@ -395,7 +412,7 @@ export async function readCSharpRoleArtifactsManifest(
   const actualFiles = (await readdir(artifactDirectory)).sort();
   const expectedFiles = [
     'manifest.json',
-    ...ROLE_NAMES.map((role) => manifest.roles[role].artifact),
+    ...new Set(ROLE_NAMES.map((role) => manifest.roles[role].artifact)),
   ].sort();
   if (JSON.stringify(actualFiles) !== JSON.stringify(expectedFiles)) {
     throw new Error('C# role artifact directory contains missing or stale files.');
@@ -494,7 +511,12 @@ export async function materializeCSharpRoleAssets(
   const manifest = await readCSharpRoleArtifactsManifest(artifactDirectory);
   const changed: CSharpArtifactRole[] = [];
   for (const role of ROLE_NAMES) {
-    const target = join(root, `workers/vendor/csharp-${role}`);
+    const target = join(
+      root,
+      role === 'general'
+        ? 'workers/vendor/csharp'
+        : `workers/vendor/csharp-${role}`
+    );
     const metadata = manifest.roles[role];
     const artifact = await readVerifiedArtifact(
       role,
@@ -529,7 +551,12 @@ export async function verifyCSharpRoleAssets(
   const manifest = await readCSharpRoleArtifactsManifest(artifactDirectory);
   for (const role of ROLE_NAMES) {
     await readVerifiedArtifact(role, artifactDirectory, manifest.roles[role]);
-    const target = join(root, `workers/vendor/csharp-${role}`);
+    const target = join(
+      root,
+      role === 'general'
+        ? 'workers/vendor/csharp'
+        : `workers/vendor/csharp-${role}`
+    );
     if (!(await directoryMatches(target, manifest.roles[role]))) {
       throw new Error(
         `Materialized C# ${role} role assets do not match their canonical artifact.`
@@ -559,6 +586,7 @@ async function main(): Promise<void> {
   }
   if (command === 'create') {
     const [
+      generalDirectory,
       compilerDirectory,
       runnerDirectory,
       artifactDirectory,
@@ -568,6 +596,7 @@ async function main(): Promise<void> {
       runnerTrimProfile,
     ] = process.argv.slice(3);
     if (
+      !generalDirectory ||
       !compilerDirectory ||
       !runnerDirectory ||
       !artifactDirectory ||
@@ -577,7 +606,7 @@ async function main(): Promise<void> {
       !runnerTrimProfile
     ) {
       throw new Error(
-        'Usage: csharp-role-artifacts.ts create <compiler-dir> <runner-dir> <artifact-dir> <dotnet-sdk> <target-framework> <compiler-reference-pack> <runner-trim-profile>'
+        'Usage: csharp-role-artifacts.ts create <general-dir> <compiler-dir> <runner-dir> <artifact-dir> <dotnet-sdk> <target-framework> <compiler-reference-pack> <runner-trim-profile>'
       );
     }
     const manifest = await createCSharpRoleArtifacts({
@@ -585,6 +614,7 @@ async function main(): Promise<void> {
       compilerDirectory,
       compilerReferencePack,
       dotnetSdk,
+      generalDirectory,
       runnerDirectory,
       runnerTrimProfile,
       targetFramework,

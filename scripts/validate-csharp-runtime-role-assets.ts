@@ -3,7 +3,7 @@
 import { createHash } from 'node:crypto';
 import { brotliCompressSync, constants as zlibConstants } from 'node:zlib';
 import { readdir, readFile, stat } from 'node:fs/promises';
-import { join, resolve } from 'node:path';
+import { basename, join, resolve } from 'node:path';
 import {
   CSHARP_ASSEMBLY_PACKS_SCHEMA,
   CSHARP_RUNNER_ASSEMBLY_PACK_COUNT,
@@ -368,6 +368,25 @@ function requireAssembly(names: readonly string[], assembly: string): void {
   }
 }
 
+function validateStableVfsNames(config: BootConfig, role: string): void {
+  const vfsAssets = config.resources?.vfs ?? [];
+  if (vfsAssets.length === 0) {
+    throw new Error(`${role} C# bundle is missing compiler VFS references.`);
+  }
+  for (const asset of vfsAssets) {
+    if (
+      typeof asset.virtualPath !== 'string' ||
+      !asset.virtualPath.startsWith('/tracecode-refs/') ||
+      typeof asset.name !== 'string' ||
+      asset.name !== `supportFiles/${basename(asset.virtualPath)}`
+    ) {
+      throw new Error(
+        `${role} C# bundle contains an unstable compiler VFS asset name.`
+      );
+    }
+  }
+}
+
 async function inspectBundle(
   role: 'general' | 'compiler' | 'runner',
   directory: string
@@ -426,6 +445,7 @@ async function main(): Promise<void> {
     ['general', general],
     ['compiler', compiler],
   ] as const) {
+    validateStableVfsNames(bundle.config, role);
     const extensions = bundle.config.resources?.extensions;
     if (
       extensions &&

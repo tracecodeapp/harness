@@ -287,16 +287,21 @@ async function main(t: TestContext): Promise<void> {
     ['workers/csharp/csharp-worker.js', 'fixture worker'],
     ['workers/shared/runtime-kernel-policy-classic.js', 'fixture classic policy'],
     ['workers/shared/runtime-kernel-policy.js', 'fixture module policy'],
-    ['workers/vendor/csharp/general.txt', 'fixture general runtime'],
   ] as const;
   for (const [relativePath, contents] of fixtureFiles) {
     const target = join(cleanPackageRoot, ...relativePath.split('/'));
     await mkdir(dirname(target), { recursive: true });
     await writeFile(target, contents);
   }
+  const generalSource = join(tempRoot, 'role-source/general');
   const compilerSource = join(tempRoot, 'role-source/compiler');
   const runnerSource = join(tempRoot, 'role-source/runner');
   const roleFixtures = [
+    [
+      generalSource,
+      'TraceCode.CSharpHost.runtimeconfig.json',
+      '_framework/general.wasm',
+    ],
     [
       compilerSource,
       'TraceCode.CSharpHost.runtimeconfig.json',
@@ -331,6 +336,7 @@ async function main(t: TestContext): Promise<void> {
     compilerDirectory: compilerSource,
     compilerReferencePack: 'Minimal',
     dotnetSdk: '10.0.110',
+    generalDirectory: generalSource,
     runnerDirectory: runnerSource,
     runnerTrimProfile: 'JudgeReferences',
     targetFramework: 'net10.0',
@@ -355,6 +361,7 @@ async function main(t: TestContext): Promise<void> {
     );
   }
   for (const relativePath of [
+    'vendor/csharp/_framework/general.wasm',
     'vendor/csharp-compiler/_framework/compiler.wasm',
     'vendor/csharp-runner/_framework/assemblies-01.pack',
   ]) {
