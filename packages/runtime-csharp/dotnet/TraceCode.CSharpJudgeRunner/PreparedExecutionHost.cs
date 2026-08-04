@@ -162,7 +162,11 @@ public static partial class PreparedExecutionHost
                     "collectible-assembly-load-context";
                 List<RuntimeTraceEvent> events =
                     SnapshotTraceEvents(capturedOut);
-                TraceEventBackfill.Apply(request.Source, events);
+                TraceEventBackfill.Apply(
+                    request.Source,
+                    events,
+                    request.Trace && request.MinimalTrace
+                );
                 return Serialize(new PreparedResponse
                 {
                     Success = true,

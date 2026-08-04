@@ -45,6 +45,7 @@ public static partial class CompilerHost
         "TraceCode.CSharpHost.JudgeRuntimeContext",
         "TraceCode.CSharpHost.RuntimeTraceSink",
         "TraceCode.CSharpHost.TraceCodeInstrumentation",
+        "TraceCode.Internal.TraceCodeTrace",
         "AssemblyLoadContext",
     };
     private static readonly string[] DeniedUserReflectionInvocations =
@@ -420,7 +421,8 @@ public static partial class CompilerHost
                     SnapshotTraceEvents(capturedOut);
                 TraceEventBackfill.Apply(
                     request.Source,
-                    events
+                    events,
+                    request.Trace && request.MinimalTrace
                 );
                 return Serialize(new CSharpExecuteResponse
                 {
@@ -623,7 +625,11 @@ public static partial class CompilerHost
                 timings["runMs"] = stopwatch.Elapsed.TotalMilliseconds - runStartedAt;
                 timings["executionRealm"] = "collectible-assembly-load-context";
                 List<RuntimeTraceEvent> events = SnapshotTraceEvents(capturedOut);
-                TraceEventBackfill.Apply(request.Source, events);
+                TraceEventBackfill.Apply(
+                    request.Source,
+                    events,
+                    request.Trace && request.MinimalTrace
+                );
                 return Serialize(new CSharpExecuteResponse
                 {
                     Success = true,
@@ -1515,8 +1521,7 @@ public static partial class CompilerHost
         )
         {
             if (node is IdentifierNameSyntax identifier
-                && model.GetTypeInfo(identifier).Type?.TypeKind
-                    == TypeKind.Dynamic)
+                && IsDeniedPreparedDynamicReference(model, identifier))
             {
                 throw new InvalidOperationException(
                     "C# user code references denied prepared Judge API: dynamic."
@@ -1544,6 +1549,30 @@ public static partial class CompilerHost
         }
     }
 
+    private static bool IsDeniedPreparedDynamicReference(
+        SemanticModel model,
+        IdentifierNameSyntax identifier
+    )
+    {
+        if (model.GetTypeInfo(identifier).Type?.TypeKind == TypeKind.Dynamic)
+        {
+            return true;
+        }
+
+        if (!string.Equals(
+                identifier.Identifier.ValueText,
+                "dynamic",
+                StringComparison.Ordinal
+            ))
+        {
+            return false;
+        }
+
+        SymbolInfo symbolInfo = model.GetSymbolInfo(identifier);
+        return symbolInfo.Symbol is null
+            && symbolInfo.CandidateSymbols.Length == 0;
+    }
+
     private static string? DeniedPreparedJudgeApiForSymbol(ISymbol symbol)
     {
         ISymbol target = symbol is IAliasSymbol alias ? alias.Target : symbol;
@@ -1564,6 +1593,11 @@ public static partial class CompilerHost
             || string.Equals(
                 typeName,
                 "global::TraceCode.CSharpHost.TraceCodeInstrumentation",
+                StringComparison.Ordinal
+            )
+            || string.Equals(
+                typeName,
+                "global::TraceCode.Internal.TraceCodeTrace",
                 StringComparison.Ordinal
             ))
         {
@@ -4572,7 +4606,37 @@ public static class TraceCodeDriver
             .OfType<InvocationExpressionSyntax>()
             .Any(invocation =>
                 invocation.Expression is MemberAccessExpressionSyntax memberAccess
-                && aliases.Any(alias => IsExpressionRootedAtParameter(memberAccess.Expression, alias)));
+                && IsKnownMutatingParameterMethod(
+                    memberAccess.Name.Identifier.ValueText
+                )
+                && aliases.Any(alias =>
+                    IsExpressionRootedAtParameter(
+                        memberAccess.Expression,
+                        alias
+                    )));
+    }
+
+    private static bool IsKnownMutatingParameterMethod(string method)
+    {
+        return method is
+            "Add"
+            or "AddFirst"
+            or "AddLast"
+            or "Append"
+            or "AppendLine"
+            or "Clear"
+            or "Dequeue"
+            or "Enqueue"
+            or "Insert"
+            or "Pop"
+            or "Push"
+            or "Remove"
+            or "RemoveAt"
+            or "RemoveFirst"
+            or "RemoveLast"
+            or "Replace"
+            or "Reverse"
+            or "Sort";
     }
 
     private static bool IsExpressionRootedAtParameter(ExpressionSyntax expression, string parameterName)

@@ -258,16 +258,47 @@ public class Solution
     }
 }`;
       const voidOutputSource = `
+using System.Collections.Generic;
+
 public class Solution
 {
-    public void Transform(int[] values)
+    public void Transform(List<int> values)
     {
-        _ = values.Length;
+        _ = values.Contains(1);
     }
 
     public void Transform(string[] values)
     {
         values[0] = "changed";
+    }
+}`;
+      const directTraceWrapperMutationSource = `
+using System;
+
+public class Solution
+{
+    public int Add(int left, int right)
+    {
+        TraceCode.Internal.TraceCodeTrace.Mutate(
+            "forged",
+            "Clear",
+            Array.Empty<object?>()
+        );
+        return left + right;
+    }
+}`;
+      const dynamicTraceSinkMutationSource = `
+public class Solution
+{
+    public int Add(int left, int right)
+    {
+        ((dynamic)new ListNode())
+            .GetType()
+            .Assembly
+            .GetType("TraceCode.CSharpHost.RuntimeTraceSink")
+            ?.GetMethod("Reset")
+            ?.Invoke(null, null);
+        return left + right;
     }
 }`;
       const compilerBaseUrl = `${origin}/workers/vendor/csharp-compiler`;
@@ -360,6 +391,28 @@ public class Solution
         assetBaseUrl: compilerBaseUrl,
         timeoutMs: 10_000,
       });
+      const directTraceWrapperMutationPrepared = await compiler.send(
+        'prepare-program',
+        {
+          mode: 'trace',
+          code: directTraceWrapperMutationSource,
+          functionName: 'Add',
+          executionStyle: 'solution-method',
+          assetBaseUrl: compilerBaseUrl,
+          timeoutMs: 10_000,
+        }
+      );
+      const dynamicTraceSinkMutationPrepared = await compiler.send(
+        'prepare-program',
+        {
+          mode: 'trace',
+          code: dynamicTraceSinkMutationSource,
+          functionName: 'Add',
+          executionStyle: 'solution-method',
+          assetBaseUrl: compilerBaseUrl,
+          timeoutMs: 10_000,
+        }
+      );
       compiler.terminate();
 
       const descriptor = (
@@ -483,6 +536,8 @@ public class Solution
         inputMutationPrepared,
         reflectiveInputMutationPrepared,
         directTraceSinkMutationPrepared,
+        directTraceWrapperMutationPrepared,
+        dynamicTraceSinkMutationPrepared,
         voidOutputPrepared,
         runnerPrime,
         valid,
@@ -548,6 +603,20 @@ public class Solution
       `C# learner code must not directly erase or forge trusted trace state: ${JSON.stringify(result.directTraceSinkMutationPrepared)}`
     );
     assertCondition(
+      result.directTraceWrapperMutationPrepared.success === false &&
+        result.directTraceWrapperMutationPrepared.error?.includes(
+          'denied browser runtime API: TraceCode.Internal.TraceCodeTrace'
+        ) === true,
+      `C# learner code must not forge trace state through the public instrumentation wrapper: ${JSON.stringify(result.directTraceWrapperMutationPrepared)}`
+    );
+    assertCondition(
+      result.dynamicTraceSinkMutationPrepared.success === false &&
+        result.dynamicTraceSinkMutationPrepared.error?.includes(
+          'denied prepared Judge API: dynamic'
+        ) === true,
+      `C# prepared Judge compilation must reject explicit dynamic reflection escapes: ${JSON.stringify(result.dynamicTraceSinkMutationPrepared)}`
+    );
+    assertCondition(
       result.voidOutputPrepared.success &&
         result.nonMutatingVoid.success &&
         result.nonMutatingVoid.output === null,
@@ -599,6 +668,8 @@ public class Solution
         inputMutationRejected: true,
         reflectiveRuntimeAccessRejected: true,
         directTraceSinkAccessRejected: true,
+        directTraceWrapperAccessRejected: true,
+        dynamicReflectionRejected: true,
         voidOutputSemanticsPreserved: true,
         tamperedRejected: true,
         runnerAssetPath,

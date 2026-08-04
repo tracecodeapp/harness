@@ -8,6 +8,13 @@ namespace TraceCode.CSharpHost;
 // Mono never resolves compiler-generated Roslyn-bearing closure metadata.
 public static class TraceEventBackfill
 {
+    private sealed record SourceCollectionMutation(
+        int Position,
+        RuntimeTraceTarget Target,
+        string Method,
+        List<object?> Args
+    );
+
     private static void RemoveSupersededSyntheticSortMutationEvents(
         List<RuntimeTraceEvent> events
     )
@@ -49,8 +56,17 @@ public static class TraceEventBackfill
         }
     }
 
-    public static void Apply(string source, List<RuntimeTraceEvent> events)
+    public static void Apply(
+        string source,
+        List<RuntimeTraceEvent> events,
+        bool minimalTrace = false
+    )
     {
+        if (minimalTrace)
+        {
+            return;
+        }
+
         string[] sourceLines = source.Split('\n');
         Dictionary<string, object?> latestValues = new(StringComparer.Ordinal);
         for (int index = 0; index < events.Count; index += 1)
@@ -63,115 +79,176 @@ public static class TraceEventBackfill
             }
 
             int end = index + 1;
-            while (end < events.Count && events[end].Kind != "line")
+            while (end < events.Count
+                && (events[end].Kind != "line"
+                    || events[end].Line == line))
             {
                 end += 1;
             }
-            if (end == index + 1
-                && end < events.Count
-                && events[end].Kind == "line"
-                && events[end].Line == line)
-            {
-                index = end - 1;
-                continue;
-            }
 
-            string sourceLine = sourceLines[line - 1];
-            Match sortMatch = Regex.Match(
-                sourceLine,
-                @"\b(?:(this)\s*\.\s*)?([A-Za-z_]\w*)\s*\.\s*Sort\s*\(([^)]*)\)"
-            );
-            Match removeAtMatch = Regex.Match(sourceLine, @"\b(?:(this)\s*\.\s*)?([A-Za-z_]\w*)\s*\.\s*RemoveAt\s*\(\s*([^)]*)\)");
-            if (!sortMatch.Success && !removeAtMatch.Success)
+            List<SourceCollectionMutation> mutations =
+                FindSourceCollectionMutations(sourceLines[line - 1]);
+            if (mutations.Count == 0)
             {
                 TrackLatestTraceValues(latestValues, events, index + 1, end);
                 index = end - 1;
                 continue;
             }
 
-            Match match = sortMatch.Success ? sortMatch : removeAtMatch;
-            string method = sortMatch.Success ? "Sort" : "RemoveAt";
-            string receiver = match.Groups[2].Value;
-            RuntimeTraceTarget target = match.Groups[1].Success
-                ? new RuntimeTraceTarget { Variable = "this", Path = new List<object?> { receiver } }
-                : new RuntimeTraceTarget { Variable = receiver };
-            string rawArguments = match.Groups[3].Value.Trim();
-            List<object?> args = method == "RemoveAt"
-                ? new List<object?> { ParseMutationArgument(rawArguments) }
-                : string.IsNullOrWhiteSpace(rawArguments)
-                    ? new List<object?>()
-                    : new List<object?> { "<unobserved-source-arguments>" };
-
-            bool hasMutation = events
+            List<RuntimeTraceEvent> observedMutations = events
                 .Skip(index + 1)
                 .Take(end - index - 1)
-                .Any(traceEvent =>
-                    traceEvent.Kind == "mutate" &&
-                    string.Equals(traceEvent.Method, method, StringComparison.Ordinal) &&
-                    traceEvent.Target is not null &&
-                    TargetsEqual(traceEvent.Target, target));
-
-            string targetKey = TargetKey(target);
-            object? baseValue = latestValues.TryGetValue(targetKey, out object? knownValue)
-                ? knownValue
-                : FindLatestLineValue(events, index + 1, end, target);
-            TrackLatestTraceValues(latestValues, events, index + 1, end);
+                .Where(traceEvent =>
+                    traceEvent.Kind == "mutate"
+                    && traceEvent.Target is not null)
+                .ToList();
+            bool[] consumedObservedMutations =
+                new bool[observedMutations.Count];
+            Dictionary<string, object?> workingValues =
+                new(StringComparer.Ordinal);
 
             var inserts = new List<RuntimeTraceEvent>();
-            if (!hasMutation)
+            foreach (SourceCollectionMutation mutation in mutations)
             {
-                inserts.Add(new RuntimeTraceEvent
+                bool hasMutation = TryConsumeObservedMutation(
+                    mutation,
+                    observedMutations,
+                    consumedObservedMutations
+                );
+                string targetKey = TargetKey(mutation.Target);
+                if (!workingValues.TryGetValue(
+                        targetKey,
+                        out object? baseValue
+                    ))
                 {
-                    IsSyntheticBackfill = true,
-                    Kind = "mutate",
-                    RunId = lineEvent.RunId,
-                    File = lineEvent.File,
-                    Line = line,
-                    Target = target,
-                    Method = method,
-                    Args = args,
-                    CallStack = lineEvent.CallStack,
-                });
+                    baseValue = latestValues.TryGetValue(
+                        targetKey,
+                        out object? knownValue
+                    )
+                        ? knownValue
+                        : FindLatestLineValue(
+                            events,
+                            index + 1,
+                            end,
+                            mutation.Target
+                        );
+                }
+
+                if (!hasMutation)
+                {
+                    inserts.Add(new RuntimeTraceEvent
+                    {
+                        IsSyntheticBackfill = true,
+                        Kind = "mutate",
+                        RunId = lineEvent.RunId,
+                        File = lineEvent.File,
+                        Line = line,
+                        Target = mutation.Target,
+                        Method = mutation.Method,
+                        Args = mutation.Args,
+                        CallStack = lineEvent.CallStack,
+                    });
+                }
+
+                if (TryDerivePostCollectionMutationValue(
+                        mutation.Method,
+                        baseValue,
+                        mutation.Args,
+                        out object? postValue
+                    ))
+                {
+                    if (!HasPostCollectionWrite(
+                            events,
+                            index + 1,
+                            end,
+                            mutation.Target,
+                            postValue
+                        )
+                        && !HasPostCollectionWrite(
+                            inserts,
+                            0,
+                            inserts.Count,
+                            mutation.Target,
+                            postValue
+                        ))
+                    {
+                        inserts.Add(new RuntimeTraceEvent
+                        {
+                            Kind = "write",
+                            RunId = lineEvent.RunId,
+                            File = lineEvent.File,
+                            Line = line,
+                            Target = CloneTarget(mutation.Target),
+                            Value = postValue,
+                            CallStack = lineEvent.CallStack,
+                        });
+                        inserts.AddRange(
+                            CreateIndexedWriteEvents(
+                                lineEvent,
+                                mutation.Target,
+                                postValue
+                            )
+                        );
+                    }
+                    workingValues[targetKey] = postValue;
+                }
+                else if (hasMutation
+                    && TryFindLatestValueAfterMutation(
+                        events,
+                        index + 1,
+                        end,
+                        mutation.Target,
+                        mutation.Method,
+                        out object? observedPostValue
+                    )
+                    && observedPostValue is not string
+                    && observedPostValue is
+                        System.Collections.IEnumerable)
+                {
+                    if (!HasPostCollectionWrite(
+                            events,
+                            index + 1,
+                            end,
+                            mutation.Target,
+                            observedPostValue
+                        )
+                        && !HasPostCollectionWrite(
+                            inserts,
+                            0,
+                            inserts.Count,
+                            mutation.Target,
+                            observedPostValue
+                        ))
+                    {
+                        inserts.Add(new RuntimeTraceEvent
+                        {
+                            Kind = "write",
+                            RunId = lineEvent.RunId,
+                            File = lineEvent.File,
+                            Line = line,
+                            Target = CloneTarget(mutation.Target),
+                            Value = observedPostValue,
+                            CallStack = lineEvent.CallStack,
+                        });
+                        inserts.AddRange(
+                            CreateIndexedWriteEvents(
+                                lineEvent,
+                                mutation.Target,
+                                observedPostValue
+                            )
+                        );
+                    }
+                    workingValues[targetKey] = observedPostValue;
+                }
             }
 
-            if (TryDerivePostCollectionMutationValue(method, baseValue, args, out object? postValue))
+            TrackLatestTraceValues(latestValues, events, index + 1, end);
+            foreach (
+                KeyValuePair<string, object?> workingValue
+                in workingValues
+            )
             {
-                if (!HasPostCollectionWrite(events, index + 1, end, target, postValue))
-                {
-                    inserts.Add(new RuntimeTraceEvent
-                    {
-                        Kind = "write",
-                        RunId = lineEvent.RunId,
-                        File = lineEvent.File,
-                        Line = line,
-                        Target = CloneTarget(target),
-                        Value = postValue,
-                        CallStack = lineEvent.CallStack,
-                    });
-                    inserts.AddRange(CreateIndexedWriteEvents(lineEvent, target, postValue));
-                }
-                latestValues[targetKey] = postValue;
-            }
-            else if (hasMutation
-                && TryFindLatestValueAfterMutation(events, index + 1, end, target, method, out object? observedPostValue)
-                && observedPostValue is not string
-                && observedPostValue is System.Collections.IEnumerable)
-            {
-                if (!HasPostCollectionWrite(events, index + 1, end, target, observedPostValue))
-                {
-                    inserts.Add(new RuntimeTraceEvent
-                    {
-                        Kind = "write",
-                        RunId = lineEvent.RunId,
-                        File = lineEvent.File,
-                        Line = line,
-                        Target = CloneTarget(target),
-                        Value = observedPostValue,
-                        CallStack = lineEvent.CallStack,
-                    });
-                    inserts.AddRange(CreateIndexedWriteEvents(lineEvent, target, observedPostValue));
-                }
-                latestValues[targetKey] = observedPostValue;
+                latestValues[workingValue.Key] = workingValue.Value;
             }
 
             if (inserts.Count > 0)
@@ -185,6 +262,80 @@ public static class TraceEventBackfill
             }
         }
         RemoveSupersededSyntheticSortMutationEvents(events);
+    }
+
+    private static List<SourceCollectionMutation>
+        FindSourceCollectionMutations(string sourceLine)
+    {
+        MatchCollection matches = Regex.Matches(
+            sourceLine,
+            @"\b(?:(this)\s*\.\s*)?([A-Za-z_]\w*)\s*\.\s*(Sort|RemoveAt)\s*\(([^)]*)\)"
+        );
+        var mutations = new List<SourceCollectionMutation>(
+            matches.Count
+        );
+        foreach (Match match in matches)
+        {
+            string receiver = match.Groups[2].Value;
+            string method = match.Groups[3].Value;
+            string rawArguments = match.Groups[4].Value.Trim();
+            RuntimeTraceTarget target = match.Groups[1].Success
+                ? new RuntimeTraceTarget
+                {
+                    Variable = "this",
+                    Path = new List<object?> { receiver },
+                }
+                : new RuntimeTraceTarget { Variable = receiver };
+            List<object?> args = method == "RemoveAt"
+                ? new List<object?>
+                {
+                    ParseMutationArgument(rawArguments),
+                }
+                : string.IsNullOrWhiteSpace(rawArguments)
+                    ? new List<object?>()
+                    : new List<object?>
+                    {
+                        "<unobserved-source-arguments>",
+                    };
+            mutations.Add(
+                new SourceCollectionMutation(
+                    match.Index,
+                    target,
+                    method,
+                    args
+                )
+            );
+        }
+
+        return mutations
+            .OrderBy(mutation => mutation.Position)
+            .ToList();
+    }
+
+    private static bool TryConsumeObservedMutation(
+        SourceCollectionMutation mutation,
+        IReadOnlyList<RuntimeTraceEvent> observedMutations,
+        bool[] consumed
+    )
+    {
+        for (int index = 0; index < observedMutations.Count; index += 1)
+        {
+            RuntimeTraceEvent observed = observedMutations[index];
+            if (!consumed[index]
+                && string.Equals(
+                    observed.Method,
+                    mutation.Method,
+                    StringComparison.Ordinal
+                )
+                && observed.Target is not null
+                && TargetsEqual(observed.Target, mutation.Target))
+            {
+                consumed[index] = true;
+                return true;
+            }
+        }
+
+        return false;
     }
 
     private static void TrackLatestTraceValues(Dictionary<string, object?> latestValues, List<RuntimeTraceEvent> events, int start, int end)

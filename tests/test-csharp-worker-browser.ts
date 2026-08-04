@@ -3315,6 +3315,36 @@ async function main(): Promise<void> {
       `C# worker minimalTrace should suppress detail events, received ${JSON.stringify(minimalTrace.events)}`
     );
 
+    const minimalCollectionTrace = await runWorkerCase(
+      page,
+      [
+        'using System.Collections.Generic;',
+        'using System.Linq;',
+        'public class Solution {',
+        '  private readonly List<int> items = new() { 3, 1, 2 };',
+        '  public int[] SortItems() { this.items.Sort(); return items.ToArray(); }',
+        '}',
+      ].join('\n'),
+      'SortItems',
+      {},
+      assetBaseUrl,
+      true,
+      { minimalTrace: true }
+    );
+    assertCondition(
+      minimalCollectionTrace.success &&
+        JSON.stringify(minimalCollectionTrace.output) ===
+          JSON.stringify([1, 2, 3]),
+      `C# worker collection minimalTrace should preserve output: ${JSON.stringify(minimalCollectionTrace)}`
+    );
+    assertCondition(
+      minimalCollectionTrace.events?.every(
+        (event) =>
+          !['snapshot', 'read', 'write', 'mutate'].includes(event.kind)
+      ) === true,
+      `C# collection backfill must honor minimalTrace detail suppression: ${JSON.stringify(minimalCollectionTrace.events)}`
+    );
+
     const timedOut = await runWorkerCase(
       page,
       'public class Solution { public int Add(int a, int b) { while (true) { a++; } return a + b; } }',
@@ -3805,6 +3835,67 @@ async function main(): Promise<void> {
           (event) => Array.isArray(event.args) && event.args.length > 0
         ),
       `C# trace normalization must preserve both real same-target Sort calls on one line: ${JSON.stringify(tracedTwoSortsOnSameTargetAndLine)}`
+    );
+
+    const tracedRemoveAndSortOnSameLine = await runWorkerCase(
+      page,
+      [
+        'using System.Collections.Generic;',
+        'using System.Linq;',
+        'public class Solution {',
+        '  private readonly List<int> items = new() { 3, 2, 1 };',
+        '  public int[] Normalize() {',
+        '    this.items.RemoveAt(0); this.items.Sort();',
+        '    return items.ToArray();',
+        '  }',
+        '}',
+      ].join('\n'),
+      'Normalize',
+      {},
+      assetBaseUrl,
+      true
+    );
+    const removeAndSortMutations = (
+      tracedRemoveAndSortOnSameLine.events ?? []
+    )
+      .filter(
+        (event) =>
+          event.kind === 'mutate' &&
+          event.line === 6 &&
+          event.target?.variable === 'items'
+      )
+      .map((event) => event.method);
+    const removeAndSortWholeWrites = (
+      tracedRemoveAndSortOnSameLine.events ?? []
+    )
+      .filter(
+        (event) =>
+          (event.kind === 'write' || event.kind === 'snapshot') &&
+          event.line === 6 &&
+          ((event.target?.variable === 'items' &&
+            (event.target.path?.length ?? 0) === 0) ||
+            (event.target?.variable === 'this' &&
+              JSON.stringify(event.target.path) ===
+                JSON.stringify(['items'])))
+      )
+      .map((event) => event.value);
+    const postRemovalWriteIndex = removeAndSortWholeWrites.findIndex(
+      (value) => JSON.stringify(value) === JSON.stringify([2, 1])
+    );
+    const postSortWriteIndex = removeAndSortWholeWrites.findIndex(
+      (value, index) =>
+        index > postRemovalWriteIndex &&
+        JSON.stringify(value) === JSON.stringify([1, 2])
+    );
+    assertCondition(
+      tracedRemoveAndSortOnSameLine.success &&
+        JSON.stringify(tracedRemoveAndSortOnSameLine.output) ===
+          JSON.stringify([1, 2]) &&
+        JSON.stringify(removeAndSortMutations) ===
+          JSON.stringify(['RemoveAt', 'Sort']) &&
+        postRemovalWriteIndex >= 0 &&
+        postSortWriteIndex > postRemovalWriteIndex,
+      `C# backfill must preserve same-line collection mutations in source order: ${JSON.stringify(tracedRemoveAndSortOnSameLine)}`
     );
 
     const tracedMemberComparerSort = await runWorkerCase(
