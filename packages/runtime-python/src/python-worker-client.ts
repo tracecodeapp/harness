@@ -278,6 +278,14 @@ export class PythonWorkerClient {
     return this.options.workerFactory !== undefined || typeof Worker !== 'undefined';
   }
 
+  private assertActive(): void {
+    if (this.terminated) {
+      throw new WorkerTerminatedError(
+        'Python worker client has been terminated.'
+      );
+    }
+  }
+
   private createWorker(): BrowserWorkerLike {
     let workerUrl = this.options.workerUrl;
     if (this.debug) {
@@ -331,11 +339,17 @@ export class PythonWorkerClient {
         try: async () => {
           if (this.options.runtimeImageFactory) {
             await this.options.runtimeAssetPreflight?.();
+            this.assertActive();
           }
+          const payload = await this.runtimeAssetsPayload();
+          this.assertActive();
           return this.core.sendMessage<InitResult>(
             'init',
-            await this.runtimeAssetsPayload(),
-            INIT_TIMEOUT_MS
+            payload,
+            INIT_TIMEOUT_MS,
+            undefined,
+            undefined,
+            () => this.assertActive()
           );
         },
         catch: (error) =>
@@ -365,9 +379,7 @@ export class PythonWorkerClient {
    * Initialize the Python worker. Runtime loading is lazy unless warmup() is called.
    */
   async init(): Promise<InitResult> {
-    if (this.terminated) {
-      throw new Error('Python worker client has been terminated.');
-    }
+    this.assertActive();
     if (this.initPromise) {
       return this.initPromise;
     }
@@ -391,6 +403,7 @@ export class PythonWorkerClient {
     const runtimeImage = this.options.runtimeImageFactory
       ? await this.options.runtimeImageFactory.acquire()
       : undefined;
+    this.assertActive();
     return {
       ...(this.options.compileCacheLimit === undefined
         ? {}
@@ -401,12 +414,21 @@ export class PythonWorkerClient {
   }
 
   async warmup(): Promise<WarmupResult> {
+    this.assertActive();
     if (this.warmupPromise) return this.warmupPromise;
 
     this.warmupPromise = (async () => {
       try {
         await this.init();
-        return await this.core.sendMessage<WarmupResult>('warmup', undefined, INIT_TIMEOUT_MS);
+        this.assertActive();
+        return await this.core.sendMessage<WarmupResult>(
+          'warmup',
+          undefined,
+          INIT_TIMEOUT_MS,
+          undefined,
+          undefined,
+          () => this.assertActive()
+        );
       } catch (error) {
         const warmupError = error instanceof Error ? error : new Error(String(error));
         this.warmupPromise = null;

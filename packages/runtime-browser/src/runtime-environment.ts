@@ -95,6 +95,12 @@ function preflightAssets(
 }
 
 function detectEngine(userAgent = globalThis.navigator?.userAgent ?? ''): BrowserRuntimeEngine {
+  if (
+    /applewebkit\//iu.test(userAgent) &&
+    /(?:crios|fxios|edgios|opios)\//iu.test(userAgent)
+  ) {
+    return 'webkit';
+  }
   if (/firefox\//iu.test(userAgent)) return 'firefox';
   if (/applewebkit\//iu.test(userAgent) && !/(?:chrome|chromium|crios|edg)\//iu.test(userAgent)) return 'webkit';
   if (/(?:chrome|chromium|crios|edg)\//iu.test(userAgent)) return 'chromium';

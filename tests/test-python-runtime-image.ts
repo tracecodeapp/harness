@@ -2,10 +2,12 @@ import { createHash } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
 import {
   createPythonRuntimeImageFactory,
+  type PythonRuntimeImage,
 } from '../packages/runtime-python/src/python-runtime-image';
 import {
   resolveBuiltInPythonRuntimeAssets,
 } from '../packages/runtime-python/src/python-runtime-assets';
+import { PythonWorkerClient } from '../packages/runtime-python/src/python-worker-client';
 
 function assertCondition(condition: unknown, message: string): asserts condition {
   if (!condition) throw new Error(message);
@@ -81,6 +83,72 @@ assertCondition(
   'Runtime-image factory must expose its retained snapshot footprint.'
 );
 
+const compileStreamingDescriptor = Object.getOwnPropertyDescriptor(
+  WebAssembly,
+  'compileStreaming'
+);
+let streamingAttempts = 0;
+Object.defineProperty(WebAssembly, 'compileStreaming', {
+  configurable: true,
+  writable: true,
+  value: async () => {
+    streamingAttempts += 1;
+    throw new TypeError('synthetic streaming compiler rejection');
+  },
+});
+try {
+  const fallbackFactory = createPythonRuntimeImageFactory({
+    descriptor: {
+      protocolVersion: 'tracecode-python-runtime-image-v1',
+      engine: 'chromium',
+      pythonHashSeed: '0',
+      wasm: {
+        url: 'https://runtime.test/fallback.wasm',
+        integrity: 'sha256-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=',
+        mediaType: 'application/wasm',
+        size: wasmBytes.byteLength,
+        delivery: immutable,
+      },
+      snapshot: {
+        url: 'https://runtime.test/fallback.snapshot',
+        integrity: 'sha256-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=',
+        mediaType: 'application/octet-stream',
+        size: snapshotBytes.byteLength,
+        delivery: immutable,
+      },
+    },
+    fetch: async (input) => {
+      const url = String(input);
+      const bytes = url.endsWith('.wasm') ? wasmBytes : snapshotBytes;
+      return new Response(bytes, {
+        status: 200,
+        headers: {
+          'content-length': String(bytes.byteLength),
+          'content-type': url.endsWith('.wasm')
+            ? 'application/wasm'
+            : 'application/octet-stream',
+        },
+      });
+    },
+  });
+  const fallbackImage = await fallbackFactory.acquire();
+  assertCondition(
+    streamingAttempts === 1 &&
+      fallbackImage.compiledModule instanceof WebAssembly.Module,
+    'Runtime-image factory must buffer and compile valid Wasm when streaming compilation rejects.'
+  );
+} finally {
+  if (compileStreamingDescriptor) {
+    Object.defineProperty(
+      WebAssembly,
+      'compileStreaming',
+      compileStreamingDescriptor
+    );
+  } else {
+    delete (WebAssembly as { compileStreaming?: unknown }).compileStreaming;
+  }
+}
+
 factory.dispose();
 await factory.acquire().then(
   () => {
@@ -152,5 +220,87 @@ assertCondition(
   unknownEngineError.includes('requires a recognized'),
   `Unknown browser engines must fail closed: ${unknownEngineError}`
 );
+
+interface Deferred {
+  readonly entered: Promise<void>;
+  enter(): void;
+  readonly released: Promise<void>;
+  release(): void;
+}
+
+function createDeferred(): Deferred {
+  let enter!: () => void;
+  let release!: () => void;
+  return {
+    entered: new Promise<void>((resolve) => {
+      enter = resolve;
+    }),
+    enter: () => enter(),
+    released: new Promise<void>((resolve) => {
+      release = resolve;
+    }),
+    release: () => release(),
+  };
+}
+
+const lifecycleImage: PythonRuntimeImage = Object.freeze({
+  protocolVersion: 'tracecode-python-runtime-image-v1',
+  compiledModule: await WebAssembly.compile(wasmBytes),
+  snapshot: snapshotBytes,
+  pythonHashSeed: '0',
+});
+
+for (const pendingGate of [
+  'runtime-preflight',
+  'image',
+  'asset-preflight',
+] as const) {
+  const gate = createDeferred();
+  let workersCreated = 0;
+  const client = new PythonWorkerClient({
+    workerUrl: '/workers/python-worker.js',
+    debug: false,
+    workerFactory: () => {
+      workersCreated += 1;
+      throw new Error('A terminated client attempted to create a worker.');
+    },
+    assetPreflight: async () => {
+      if (pendingGate !== 'asset-preflight') return;
+      gate.enter();
+      await gate.released;
+    },
+    runtimeAssetPreflight: async () => {
+      if (pendingGate !== 'runtime-preflight') return;
+      gate.enter();
+      await gate.released;
+    },
+    runtimeImageFactory: {
+      async acquire() {
+        if (pendingGate === 'image') {
+          gate.enter();
+          await gate.released;
+        }
+        return lifecycleImage;
+      },
+      metrics: () => undefined,
+      dispose() {},
+    },
+  });
+  const warmup = client.warmup();
+  await gate.entered;
+  client.terminate();
+  gate.release();
+  let terminationError = '';
+  try {
+    await warmup;
+  } catch (error) {
+    terminationError = error instanceof Error ? error.message : String(error);
+  }
+  assertCondition(
+    workersCreated === 0 && terminationError.includes('terminated'),
+    `Termination during ${pendingGate} must not create a worker: ` +
+      JSON.stringify({ workersCreated, terminationError })
+  );
+}
 
 console.log('PASS: Python immutable runtime-image factory');

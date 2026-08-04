@@ -98,18 +98,50 @@ export function createPythonRuntimeImageFactory(
           declaredContentLength
         );
       }
-      const compiledModule =
+      const compileBuffered = async (
+        bufferedResponse: Response
+      ): Promise<WebAssembly.Module> => {
+        const bytes = await bufferedResponse.arrayBuffer();
+        assertDeclaredLength(
+          'Wasm',
+          options.descriptor.wasm,
+          bytes.byteLength
+        );
+        return WebAssembly.compile(bytes);
+      };
+      let compiledModule: WebAssembly.Module;
+      if (
         hasUsableContentLength &&
         typeof WebAssembly.compileStreaming === 'function'
-        ? await WebAssembly.compileStreaming(Promise.resolve(response))
-        : await response.arrayBuffer().then((bytes) => {
-            assertDeclaredLength(
-              'Wasm',
-              options.descriptor.wasm,
-              bytes.byteLength
+      ) {
+        let bufferedFallback: Response | undefined;
+        try {
+          bufferedFallback = response.clone();
+        } catch {
+          // A non-cloneable response cannot preserve a second body for
+          // streaming recovery, so compile its bytes directly.
+        }
+        if (bufferedFallback) {
+          try {
+            compiledModule = await WebAssembly.compileStreaming(
+              Promise.resolve(response)
             );
-            return WebAssembly.compile(bytes);
-          });
+          } catch (streamingError) {
+            try {
+              compiledModule = await compileBuffered(bufferedFallback);
+            } catch (bufferedError) {
+              throw new AggregateError(
+                [streamingError, bufferedError],
+                'Python runtime image Wasm failed streaming and buffered compilation.'
+              );
+            }
+          }
+        } else {
+          compiledModule = await compileBuffered(response);
+        }
+      } else {
+        compiledModule = await compileBuffered(response);
+      }
       return {
         compiledModule,
         wasmCompileMs: performance.now() - startedAt,
