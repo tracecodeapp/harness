@@ -139,21 +139,54 @@ function receiptSummary(receipt: Awaited<ReturnType<ReturnType<
 }
 
 export async function runBrowserAlgorithmBatch(
-  assetBaseUrl: string
+  assetBaseUrl: string,
+  selectedLanguages: readonly BatchLanguage[] = BATCH_FIXTURES.map(
+    (fixture) => fixture.language
+  )
 ): Promise<unknown> {
   const NativeWorker = globalThis.Worker;
   const workerUrls: string[] = [];
+  const workerCommands: Array<{
+    type?: string;
+    runtimeRole?: string;
+    preparedMode?: string;
+    preparedFunctionName?: string;
+    inputs?: unknown;
+  }> = [];
   class ObservedWorker extends NativeWorker {
     constructor(url: string | URL, options?: WorkerOptions) {
       workerUrls.push(String(url));
       super(url, options);
+      const nativePostMessage = this.postMessage.bind(this);
+      this.postMessage = ((
+        message: {
+          type?: string;
+          payload?: {
+            runtimeRole?: string;
+            prepared?: { mode?: string; functionName?: string };
+            inputs?: unknown;
+          };
+        },
+        transferOrOptions?: StructuredSerializeOptions | Transferable[]
+      ) => {
+        workerCommands.push({
+          type: message?.type,
+          runtimeRole: message?.payload?.runtimeRole,
+          preparedMode: message?.payload?.prepared?.mode,
+          preparedFunctionName: message?.payload?.prepared?.functionName,
+          inputs: message?.payload?.inputs,
+        });
+        nativePostMessage(message, transferOrOptions as Transferable[]);
+      }) as typeof this.postMessage;
     }
   }
   globalThis.Worker = ObservedWorker;
 
   const results: Record<string, unknown> = {};
   try {
-    for (const fixture of BATCH_FIXTURES) {
+    for (const fixture of BATCH_FIXTURES.filter((candidate) =>
+      selectedLanguages.includes(candidate.language)
+    )) {
       const host = createBrowserJudgeHost({
         assetBaseUrl,
         providers: [fixture.language],
@@ -162,6 +195,28 @@ export async function runBrowserAlgorithmBatch(
         },
       });
       try {
+        let trustedPrewarm = false;
+        if (fixture.language === 'csharp') {
+          const deadline = performance.now() + 30_000;
+          while (
+            !workerCommands.some(
+              (command) =>
+                command.type === 'execute-prepared-code' &&
+                command.runtimeRole === 'runner' &&
+                command.preparedMode === 'trace' &&
+                command.preparedFunctionName === 'Add' &&
+                JSON.stringify(command.inputs) === '{"a":1,"b":2}'
+            )
+          ) {
+            if (performance.now() >= deadline) {
+              throw new Error(
+                'C# public Judge provider did not complete its fixed trusted standby-runner prime.'
+              );
+            }
+            await new Promise((resolve) => setTimeout(resolve, 10));
+          }
+          trustedPrewarm = true;
+        }
         const cases = Array.from({ length: 10 }, (_, index) => ({
           id: `case-${index + 1}`,
           input: { value: index + 1 },
@@ -203,6 +258,7 @@ export async function runBrowserAlgorithmBatch(
           plainWorkerUrls,
           trace: receiptSummary(traceReceipt),
           traceWorkerUrls,
+          ...(fixture.language === 'csharp' ? { trustedPrewarm } : {}),
         };
       } finally {
         host.dispose();

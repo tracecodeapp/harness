@@ -210,7 +210,12 @@ export interface BrowserJudgeJavaOptions {
 }
 
 export interface BrowserJudgeCSharpOptions {
+  /** Idle timeout for the general Project/terminal/server-capable worker. */
   readonly workerIdleTimeoutMs?: number;
+  /** Idle timeout for the trusted Roslyn compiler authority. */
+  readonly compilerIdleTimeoutMs?: number;
+  /** Idle timeout for an unused prewarmed disposable Judge runner. */
+  readonly runnerIdleTimeoutMs?: number;
 }
 
 export interface BrowserJudgeCppOptions {

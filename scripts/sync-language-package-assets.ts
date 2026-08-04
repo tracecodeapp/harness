@@ -189,6 +189,14 @@ const PACKAGE_ASSET_PLANS: PackageAssetPlan[] = [
         source: ['workers', 'vendor', 'csharp'],
         target: ['workers', 'vendor', 'csharp'],
       },
+      {
+        source: ['workers', 'vendor', 'csharp-compiler'],
+        target: ['workers', 'vendor', 'csharp-compiler'],
+      },
+      {
+        source: ['workers', 'vendor', 'csharp-runner'],
+        target: ['workers', 'vendor', 'csharp-runner'],
+      },
     ],
   },
   {

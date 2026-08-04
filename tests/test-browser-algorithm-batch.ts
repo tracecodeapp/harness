@@ -33,9 +33,10 @@ interface BatchLanguageResult {
   readonly plainWorkerUrls: readonly string[];
   readonly trace: ReceiptSummary;
   readonly traceWorkerUrls: readonly string[];
+  readonly trustedPrewarm?: boolean;
 }
 
-const LANGUAGES: readonly BatchLanguage[] = [
+const ALL_LANGUAGES: readonly BatchLanguage[] = [
   'python',
   'javascript',
   'typescript',
@@ -43,6 +44,14 @@ const LANGUAGES: readonly BatchLanguage[] = [
   'csharp',
   'cpp',
 ] as const;
+const requestedLanguages = process.env.TRACECODE_BROWSER_BATCH_LANGUAGES
+  ?.split(',')
+  .map((language) => language.trim())
+  .filter(Boolean) as BatchLanguage[] | undefined;
+const LANGUAGES: readonly BatchLanguage[] =
+  requestedLanguages && requestedLanguages.length > 0
+    ? requestedLanguages
+    : ALL_LANGUAGES;
 
 function assertCondition(condition: unknown, message: string): asserts condition {
   if (!condition) throw new Error(message);
@@ -147,9 +156,13 @@ function assertBoundedWorkers(
         ? url.includes('java-runtime-worker.js')
         : url.includes(`${language}-worker.js`)
   );
+  // C# has three simultaneously bounded authorities (general, compiler, and
+  // runner). A fourth observed URL is the sequential replacement runner
+  // created only after the learner-bearing lease has been terminated.
+  const maximumWorkers = language === 'csharp' ? 4 : 3;
   assertCondition(
     (!requireWorker || languageWorkers.length > 0) &&
-      languageWorkers.length <= 3,
+      languageWorkers.length <= maximumWorkers,
     `${language} ${scope} should use a bounded preparation/execution worker set, not one worker per case: ${JSON.stringify(workerUrls)}`
   );
 }
@@ -173,29 +186,31 @@ async function main(): Promise<void> {
       ],
       process.cwd()
     );
-    const traceJVMRoot = resolve(
-      process.env.TRACECODE_TRACEJVM_ROOT ?? '../tracejvm'
-    );
-    const traceJVMTarget = join(tempRoot, 'tracejvm');
-    await mkdir(traceJVMTarget, { recursive: true });
-    await copyFile(
-      join(traceJVMRoot, 'dist/browser-client.js'),
-      join(traceJVMTarget, 'browser-client.js')
-    );
-    await copyFile(
-      join(traceJVMRoot, 'runtime/assets/bjvm_main.wasm'),
-      join(traceJVMTarget, 'bjvm_main.wasm')
-    );
-    await cp(
-      join(traceJVMRoot, 'runtime/assets/profiles/core'),
-      join(traceJVMTarget, 'profiles/core'),
-      { recursive: true, force: true }
-    );
-    await cp(
-      join(traceJVMRoot, '.cache/teavm-javac/artifacts'),
-      join(traceJVMTarget, 'compiler'),
-      { recursive: true, force: true }
-    );
+    if (LANGUAGES.includes('java')) {
+      const traceJVMRoot = resolve(
+        process.env.TRACECODE_TRACEJVM_ROOT ?? '../tracejvm'
+      );
+      const traceJVMTarget = join(tempRoot, 'tracejvm');
+      await mkdir(traceJVMTarget, { recursive: true });
+      await copyFile(
+        join(traceJVMRoot, 'dist/browser-client.js'),
+        join(traceJVMTarget, 'browser-client.js')
+      );
+      await copyFile(
+        join(traceJVMRoot, 'runtime/assets/bjvm_main.wasm'),
+        join(traceJVMTarget, 'bjvm_main.wasm')
+      );
+      await cp(
+        join(traceJVMRoot, 'runtime/assets/profiles/core'),
+        join(traceJVMTarget, 'profiles/core'),
+        { recursive: true, force: true }
+      );
+      await cp(
+        join(traceJVMRoot, '.cache/teavm-javac/artifacts'),
+        join(traceJVMTarget, 'compiler'),
+        { recursive: true, force: true }
+      );
+    }
     await build({
       entryPoints: [
         resolve('tests/fixtures/browser-algorithm-batch-entry.ts'),
@@ -225,12 +240,30 @@ async function main(): Promise<void> {
       page.on('pageerror', (error) => {
         console.error(`[browser pageerror] ${error.stack ?? error.message}`);
       });
+      page.on('console', (message) => {
+        if (message.type() === 'error') {
+          console.error(`[browser console] ${message.text()}`);
+        }
+      });
+      if (process.env.TRACECODE_BROWSER_BATCH_DEBUG_ASSETS === '1') {
+        page.on('request', (request) => {
+          if (
+            request.url().includes('/vendor/csharp') &&
+            (
+              request.url().endsWith('/dotnet.boot.js') ||
+              request.url().includes('CodeAnalysis')
+            )
+          ) {
+            console.error(`[browser asset] ${request.url()}`);
+          }
+        });
+      }
       await page.goto(`${server.origin}/index.html`, { waitUntil: 'load' });
-      const result = await page.evaluate(async () => {
+      const result = await page.evaluate(async (languages) => {
         const moduleUrl: string = '/algorithm-batch.mjs';
         const module = await import(moduleUrl);
-        return module.runBrowserAlgorithmBatch('/workers');
-      }) as Record<BatchLanguage, BatchLanguageResult>;
+        return module.runBrowserAlgorithmBatch('/workers', languages);
+      }, LANGUAGES) as Record<BatchLanguage, BatchLanguageResult>;
 
       for (const language of LANGUAGES) {
         const languageResult = result[language];
@@ -260,6 +293,12 @@ async function main(): Promise<void> {
             : languageResult.traceWorkerUrls,
           true
         );
+        if (language === 'csharp') {
+          assertCondition(
+            languageResult.trustedPrewarm === true,
+            'C# public Judge provider must prime its standby runner with the fixed trusted traced artifact.'
+          );
+        }
       }
     } finally {
       await browser.close();

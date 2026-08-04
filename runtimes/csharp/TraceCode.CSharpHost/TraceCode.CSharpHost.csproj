@@ -13,6 +13,7 @@
     <PublishTrimmed>false</PublishTrimmed>
     <WasmEmitSymbolMap>false</WasmEmitSymbolMap>
     <WasmMainJSPath>main.mjs</WasmMainJSPath>
+    <DefaultItemExcludes>$(DefaultItemExcludes);obj/**;bin/**</DefaultItemExcludes>
     <!--
       The compiler needs reference assemblies as VFS data in addition to the
       assemblies used by the host itself. Shipping every SDK output assembly
@@ -21,10 +22,13 @@
       can build a compatibility bundle with TraceCodeCompilerReferencePack=Compatibility.
     -->
     <TraceCodeCompilerReferencePack Condition="'$(TraceCodeCompilerReferencePack)' == ''">Minimal</TraceCodeCompilerReferencePack>
+    <DefineConstants>$(DefineConstants);TRACECODE_PRECOMPILED_JUDGE_RUNTIME</DefineConstants>
   </PropertyGroup>
 
   <ItemGroup>
     <PackageReference Include="Microsoft.CodeAnalysis.CSharp" Version="5.3.0" />
+    <ProjectReference Include="../TraceCode.CSharpJudgeRuntime/TraceCode.CSharpJudgeRuntime.csproj" />
+    <Compile Remove="RuntimeTraceSink.cs" />
   </ItemGroup>
 
   <Target Name="TraceCodeIncludeCompilerReferenceAssembliesInVfs" BeforeTargets="_WasmGenerateAppBundle">
@@ -39,6 +43,7 @@
         Condition="'$(TraceCodeCompilerReferencePack)' == 'Minimal'"
         Include="
           $(TargetDir)TraceCode.CSharpHost.dll;
+          $(TargetDir)TraceCode.CSharpJudgeRuntime.dll;
           $(TargetDir)Microsoft.CSharp.dll;
           $(TargetDir)mscorlib.dll;
           $(TargetDir)netstandard.dll;

@@ -30,8 +30,34 @@ import {
   isRuntimeProjectExecuteRequest,
 } from '@tracecode/runtime-browser/internal';
 
+export interface CSharpPreparedWorkerAuthority {
+  readonly compiler: CSharpWorkerClient;
+  createRunner(): CSharpWorkerClient;
+  releaseRunner?(runner: CSharpWorkerClient): void;
+}
+
 class CSharpRuntimeClient implements RuntimeClient, RuntimePreparedExecutionProvider {
-  constructor(private readonly workerClient: CSharpWorkerClient) {}
+  constructor(
+    private readonly workerClient: CSharpWorkerClient,
+    private readonly preparedAuthority?: CSharpPreparedWorkerAuthority
+  ) {}
+
+  private get preparedCompiler(): CSharpWorkerClient {
+    return this.preparedAuthority?.compiler ?? this.workerClient;
+  }
+
+  private async withPreparedRunner<TResult>(
+    execute: (runner: CSharpWorkerClient) => Promise<TResult>
+  ): Promise<TResult> {
+    if (!this.preparedAuthority) return execute(this.workerClient);
+    const runner = this.preparedAuthority.createRunner();
+    try {
+      return await execute(runner);
+    } finally {
+      runner.terminate();
+      this.preparedAuthority.releaseRunner?.(runner);
+    }
+  }
 
   async init(): Promise<{ success: boolean; loadTimeMs: number }> {
     return this.workerClient.init();
@@ -106,7 +132,7 @@ class CSharpRuntimeClient implements RuntimeClient, RuntimePreparedExecutionProv
       functionName,
     });
 
-    const result = await this.workerClient.prepareProgram(call);
+    const result = await this.preparedCompiler.prepareProgram(call);
     if (!result.success) {
       if (result.timeoutReason) {
         return {
@@ -135,7 +161,9 @@ class CSharpRuntimeClient implements RuntimeClient, RuntimePreparedExecutionProv
       typeof result.compiledArtifactKey !== 'string' ||
       !result.compiledArtifactKey ||
       typeof result.compiledArtifactBase64 !== 'string' ||
-      !result.compiledArtifactBase64
+      !result.compiledArtifactBase64 ||
+      typeof result.compiledArtifactSha256 !== 'string' ||
+      !/^[0-9a-f]{64}$/.test(result.compiledArtifactSha256)
     ) {
       return {
         kind: 'failed',
@@ -156,6 +184,7 @@ class CSharpRuntimeClient implements RuntimeClient, RuntimePreparedExecutionProv
         : {}),
       compiledArtifactKey: result.compiledArtifactKey,
       compiledArtifactBase64: result.compiledArtifactBase64,
+      compiledArtifactSha256: result.compiledArtifactSha256,
     });
     let disposed = false;
     let disposePromise: Promise<void> | undefined;
@@ -234,7 +263,7 @@ class CSharpRuntimeClient implements RuntimeClient, RuntimePreparedExecutionProv
         // it has settled. The host artifact may only be released afterwards.
         artifact = undefined;
         if (ownedArtifact) {
-          await this.workerClient.disposePreparedProgram(ownedArtifact);
+          await this.preparedCompiler.disposePreparedProgram(ownedArtifact);
         }
       })();
       return disposePromise;
@@ -246,18 +275,16 @@ class CSharpRuntimeClient implements RuntimeClient, RuntimePreparedExecutionProv
           capabilities,
           executeIsolated: (preparedCall) =>
             executeOwned(preparedCall, (preparedArtifact, forwardedCall) =>
-              this.workerClient.executePreparedTrace(
-                preparedArtifact,
-                forwardedCall
+              this.withPreparedRunner((runner) =>
+                runner.executePreparedTrace(preparedArtifact, forwardedCall)
               )
             ),
           executeBatchIsolated: (
             preparedCall: RuntimePreparedTraceBatchCall
           ) =>
             executeOwned(preparedCall, (preparedArtifact, forwardedCall) =>
-              this.workerClient.executePreparedTraceBatch(
-                preparedArtifact,
-                forwardedCall
+              this.withPreparedRunner((runner) =>
+                runner.executePreparedTraceBatch(preparedArtifact, forwardedCall)
               )
             ),
           dispose,
@@ -267,18 +294,16 @@ class CSharpRuntimeClient implements RuntimeClient, RuntimePreparedExecutionProv
           capabilities,
           executeIsolated: (preparedCall) =>
             executeOwned(preparedCall, (preparedArtifact, forwardedCall) =>
-              this.workerClient.executePreparedCode(
-                preparedArtifact,
-                forwardedCall
+              this.withPreparedRunner((runner) =>
+                runner.executePreparedCode(preparedArtifact, forwardedCall)
               )
             ),
           executeBatchIsolated: (
             preparedCall: RuntimePreparedCodeBatchCall
           ) =>
             executeOwned(preparedCall, (preparedArtifact, forwardedCall) =>
-              this.workerClient.executePreparedCodeBatch(
-                preparedArtifact,
-                forwardedCall
+              this.withPreparedRunner((runner) =>
+                runner.executePreparedCodeBatch(preparedArtifact, forwardedCall)
               )
             ),
           dispose,
@@ -295,7 +320,8 @@ class CSharpRuntimeClient implements RuntimeClient, RuntimePreparedExecutionProv
 }
 
 export function createCSharpRuntimeClient(
-  workerClient: CSharpWorkerClient
+  workerClient: CSharpWorkerClient,
+  preparedAuthority?: CSharpPreparedWorkerAuthority
 ): RuntimeClient & RuntimePreparedExecutionProvider {
-  return new CSharpRuntimeClient(workerClient);
+  return new CSharpRuntimeClient(workerClient, preparedAuthority);
 }

@@ -10,9 +10,9 @@
  * this benchmark does not assess or invoke a host Node.js project runtime.
  */
 
-import { spawn } from 'node:child_process';
+import { execFileSync, spawn, type ChildProcess } from 'node:child_process';
 import { createReadStream, existsSync, statSync } from 'node:fs';
-import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { cp, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
 import { tmpdir } from 'node:os';
 import { dirname, extname, join, normalize, resolve, sep } from 'node:path';
@@ -48,6 +48,7 @@ interface BenchmarkArgs {
   cacheAssets: boolean;
   executionHost: boolean;
   runtimeManifestsPath: string | null;
+  csharpAssetSource: string | null;
   reportPath: string | null;
 }
 
@@ -124,7 +125,55 @@ interface BrowserSampleResult {
     userAgentSpecificMemory: boolean;
   };
   longTaskSupport: boolean;
+  processMemory?: {
+    browserPid: number;
+    baselineRssBytes: number;
+    peakRssBytes: number;
+    settledRssBytes: number;
+    peakByPhase: Record<string, {
+      peakRssBytes: number;
+      sampleCount: number;
+      processCount: number;
+    }>;
+  };
   records: PhaseRecord[];
+}
+
+interface BrowserProcessMemorySnapshot {
+  rssBytes: number;
+  processCount: number;
+}
+
+interface BrowserServerLike {
+  process(): ChildProcess;
+  wsEndpoint(): string;
+  close(): Promise<void>;
+}
+
+function browserProcessMemorySnapshot(browserPid: number): BrowserProcessMemorySnapshot {
+  const rows = execFileSync('ps', ['-axo', 'pid=,ppid=,rss='], { encoding: 'utf8' })
+    .trim()
+    .split('\n')
+    .map((line) => line.trim().split(/\s+/u).map(Number))
+    .filter((row) => row.length === 3 && row.every(Number.isFinite))
+    .map(([pid, ppid, rssKb]) => ({ pid, ppid, rssBytes: rssKb * 1024 }));
+  const children = new Map<number, number[]>();
+  for (const row of rows) {
+    children.set(row.ppid, [...(children.get(row.ppid) ?? []), row.pid]);
+  }
+  const processIds = new Set<number>();
+  const pending = [browserPid];
+  while (pending.length > 0) {
+    const pid = pending.pop()!;
+    if (processIds.has(pid)) continue;
+    processIds.add(pid);
+    pending.push(...(children.get(pid) ?? []));
+  }
+  const selected = rows.filter((row) => processIds.has(row.pid));
+  return {
+    rssBytes: selected.reduce((sum, row) => sum + row.rssBytes, 0),
+    processCount: selected.length,
+  };
 }
 
 interface NetworkResourceRecord {
@@ -360,6 +409,7 @@ function usage(): string {
     '  --prewarm=python:1,csharp:1     One-shot clean worker pool depths (0-2 each, total <=4). Default: all 0.',
     '  --request-timeout-ms=180000     Per public operation timeout.',
     '  --runtime-manifests=file.json   Consumer-owned cross-runtime asset manifests.',
+    '  --csharp-asset-source=directory Replace the temporary C# bundle for isolated experiments.',
     '  --smoke                         One JavaScript browser-project sample unless overridden.',
     '  --report=reports/file.json      JSON report path.',
     '  --no-report                     Do not write a JSON report.',
@@ -436,6 +486,7 @@ function parseArgs(argv: string[]): BenchmarkArgs {
     cacheAssets: false,
     executionHost: false,
     runtimeManifestsPath: process.env.TRACECODE_BENCH_RUNTIME_MANIFESTS?.trim() || null,
+    csharpAssetSource: null,
     reportPath: join('reports', 'browser-project-runtime-benchmark.json'),
   };
   let explicitLanguages = false;
@@ -498,6 +549,12 @@ function parseArgs(argv: string[]): BenchmarkArgs {
       const pathname = arg.slice('--runtime-manifests='.length).trim();
       if (!pathname) throw new Error('--runtime-manifests requires a non-empty path.');
       args.runtimeManifestsPath = pathname;
+      continue;
+    }
+    if (arg.startsWith('--csharp-asset-source=')) {
+      const pathname = arg.slice('--csharp-asset-source='.length).trim();
+      if (!pathname) throw new Error('--csharp-asset-source requires a non-empty path.');
+      args.csharpAssetSource = pathname;
       continue;
     }
     if (arg.startsWith('--report=')) {
@@ -909,6 +966,7 @@ function skippedRecord(item: RunPlanItem, phase: Phase, reason: string): PhaseRe
 async function runBrowserPlanItem(
   browserOrigin: string,
   browser: Browser,
+  browserPid: number,
   item: RunPlanItem,
   args: BenchmarkArgs,
   networkRecords: NetworkResourceRecord[],
@@ -923,6 +981,20 @@ async function runBrowserPlanItem(
 }> {
   const context = await browser.newContext();
   const phaseRef = { current: 'page-bootstrap' };
+  const processMemorySamples: Array<{
+    phase: string;
+    snapshot: BrowserProcessMemorySnapshot;
+  }> = [];
+  const processMemorySampler = setInterval(() => {
+    try {
+      processMemorySamples.push({
+        phase: phaseRef.current,
+        snapshot: browserProcessMemorySnapshot(browserPid),
+      });
+    } catch {
+      // Process enumeration is diagnostic only; never change benchmark outcome.
+    }
+  }, 50);
   const pendingNetwork: Promise<void>[] = [];
   collectNetworkMetrics(context, phaseRef, item, networkRecords, pendingNetwork);
   const page = await context.newPage();
@@ -1588,7 +1660,10 @@ async function runBrowserPlanItem(
       }
     );
 
-    const result = await Promise.race([evaluation, phaseWatchdogFailure]);
+    const result: BrowserSampleResult = await Promise.race([
+      evaluation,
+      phaseWatchdogFailure,
+    ]);
     if (phaseWatchdog !== undefined) {
       clearTimeout(phaseWatchdog);
       phaseWatchdog = undefined;
@@ -1601,6 +1676,38 @@ async function runBrowserPlanItem(
     }
     await page.waitForTimeout(25);
     const networkFlushComplete = await settleBeforeDeadline(Promise.allSettled(pendingNetwork), 2_000);
+    if (result) {
+      const baseline = processMemorySamples[0]?.snapshot ?? browserProcessMemorySnapshot(browserPid);
+      const settled = processMemorySamples.at(-1)?.snapshot ?? baseline;
+      const peak = processMemorySamples.reduce(
+        (current, sample) => Math.max(current, sample.snapshot.rssBytes),
+        baseline.rssBytes
+      );
+      const peakByPhase: NonNullable<BrowserSampleResult['processMemory']>['peakByPhase'] = {};
+      for (const sample of processMemorySamples) {
+        const current = peakByPhase[sample.phase];
+        if (!current) {
+          peakByPhase[sample.phase] = {
+            peakRssBytes: sample.snapshot.rssBytes,
+            sampleCount: 1,
+            processCount: sample.snapshot.processCount,
+          };
+        } else {
+          current.sampleCount += 1;
+          if (sample.snapshot.rssBytes > current.peakRssBytes) {
+            current.peakRssBytes = sample.snapshot.rssBytes;
+            current.processCount = sample.snapshot.processCount;
+          }
+        }
+      }
+      result.processMemory = {
+        browserPid,
+        baselineRssBytes: baseline.rssBytes,
+        peakRssBytes: peak,
+        settledRssBytes: settled.rssBytes,
+        peakByPhase,
+      };
+    }
     return { result, cdpMetrics, cdpUnsupportedReason, networkFlushComplete };
   } catch (error) {
     if (phaseWatchdog !== undefined) clearTimeout(phaseWatchdog);
@@ -1613,6 +1720,7 @@ async function runBrowserPlanItem(
       networkFlushComplete,
     };
   } finally {
+    clearInterval(processMemorySampler);
     if (phaseWatchdog !== undefined) clearTimeout(phaseWatchdog);
     await settleBeforeDeadline(context.close(), 2_000);
   }
@@ -1790,9 +1898,22 @@ async function main(): Promise<void> {
   let server: Awaited<ReturnType<typeof startStaticServer>> | undefined;
   let executionServer: Awaited<ReturnType<typeof startStaticServer>> | undefined;
   let browser: Browser | undefined;
+  let browserServer: BrowserServerLike | undefined;
 
   try {
     await runAssetSync(workersRoot, args.languages);
+    if (args.csharpAssetSource) {
+      if (!args.languages.includes('csharp')) {
+        throw new Error('--csharp-asset-source requires csharp in --languages.');
+      }
+      const destination = join(workersRoot, 'vendor', 'csharp');
+      await rm(destination, { recursive: true, force: true });
+      await cp(resolve(args.csharpAssetSource), destination, {
+        recursive: true,
+        force: false,
+        errorOnExist: true,
+      });
+    }
     const bundle = await buildPublicProjectBundle(tempRoot);
     if (args.executionHost) await buildExecutionHostBundle(tempRoot);
     await writeFile(join(tempRoot, 'index.html'), [
@@ -1825,10 +1946,15 @@ async function main(): Promise<void> {
       : args.engine === 'webkit'
         ? webkit
         : chromium;
-    browser = await browserType.launch({
+    browserServer = await browserType.launchServer({
       headless: !args.headful,
       ...(args.engine === 'chromium' ? { args: ['--enable-precise-memory-info'] } : {}),
     });
+    browser = await browserType.connect(browserServer.wsEndpoint());
+    const browserPid = browserServer.process().pid;
+    if (typeof browserPid !== 'number') {
+      throw new Error('Playwright browser server did not expose a process id');
+    }
 
     const samples: BrowserSampleResult[] = [];
     const records: PhaseRecord[] = [];
@@ -1855,6 +1981,7 @@ async function main(): Promise<void> {
       const run = await runBrowserPlanItem(
         server.origin,
         browser,
+        browserPid,
         item,
         args,
         networkRecords,
@@ -1993,6 +2120,7 @@ async function main(): Promise<void> {
     }
   } finally {
     await browser?.close();
+    await browserServer?.close();
     await executionServer?.close();
     await server?.close();
     await rm(tempRoot, { recursive: true, force: true });

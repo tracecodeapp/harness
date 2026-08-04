@@ -1,4 +1,7 @@
-export { createCSharpRuntimeClient } from './csharp-runtime-client';
+export {
+  createCSharpRuntimeClient,
+  type CSharpPreparedWorkerAuthority,
+} from './csharp-runtime-client';
 export {
   CSharpWorkerClient,
   type CSharpDiagnostic,

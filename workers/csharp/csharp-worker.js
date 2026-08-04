@@ -9,6 +9,7 @@ let executeProjectExport = null;
 let getCompiledArtifactKeyExport = null;
 let configuredAssetBaseUrl = null;
 let configuredRuntimeDependenciesSignature = null;
+let configuredRuntimeRole = 'general';
 let trustedRuntimeUserAuthorityLockdown = null;
 let runtimeModule = null;
 let runtimeFsHooksInstalled = false;
@@ -63,6 +64,16 @@ const CSHARP_WARMUP_REQUEST = Object.freeze({
   executionStyle: 'solution-method',
   trace: false,
   timeoutMs: 1_000,
+});
+const CSHARP_COMPILER_PRIME_REQUEST = Object.freeze({
+  ...CSHARP_WARMUP_REQUEST,
+  inputs: {},
+  trace: true,
+  maxTraceSteps: 1_000,
+  maxLineEvents: 2_000,
+  maxSingleLineHits: 1_000,
+  maxStoredEvents: 1_000,
+  preparedProgram: true,
 });
 
 function prepareCSharpTraceEventTransfer(result, request) {
@@ -3076,6 +3087,17 @@ function resetIdleTimer() {
 }
 
 function applyWorkerOptions(payload) {
+  if (payload?.runtimeRole !== undefined) {
+    const requestedRole = payload.runtimeRole;
+    if (!['general', 'compiler', 'runner'].includes(requestedRole)) {
+      throw new Error('C# runtimeRole must be general, compiler, or runner.');
+    }
+    if (configuredRuntimeRole !== 'general' && configuredRuntimeRole !== requestedRole) {
+      throw new Error('C# worker runtimeRole cannot change after worker configuration.');
+    }
+    configuredRuntimeRole = requestedRole;
+  }
+
   const requestedIdleTimeoutMs = Number(payload?.idleTimeoutMs);
   if (Number.isFinite(requestedIdleTimeoutMs) && requestedIdleTimeoutMs >= 1_000) {
     idleTimeoutMs = Math.round(requestedIdleTimeoutMs);
@@ -3142,16 +3164,106 @@ function runWarmup() {
   return elapsedMs(startedAt);
 }
 
+function runCompilerPrime() {
+  const startedAt = now();
+  const result = JSON.parse(
+    prepareExport(JSON.stringify(CSHARP_COMPILER_PRIME_REQUEST))
+  );
+  if (
+    !result?.success ||
+    typeof result.compiledArtifactKey !== 'string' ||
+    !result.compiledArtifactKey ||
+    typeof result.compiledArtifactBase64 !== 'string' ||
+    !result.compiledArtifactBase64 ||
+    typeof result.compiledArtifactSha256 !== 'string' ||
+    !/^[0-9a-f]{64}$/.test(result.compiledArtifactSha256)
+  ) {
+    throw new Error(result?.error || 'C# trusted compiler prime failed.');
+  }
+  // The immutable artifact remains only in the compiler authority's bounded,
+  // content-addressed cache. No learner source, input, runtime state, or
+  // capability is introduced by this fixed trusted request.
+  return {
+    warmupMs: elapsedMs(startedAt),
+    trustedPreparedArtifact: {
+      mode: 'trace',
+      code: CSHARP_COMPILER_PRIME_REQUEST.source,
+      functionName: CSHARP_COMPILER_PRIME_REQUEST.functionName,
+      executionStyle: CSHARP_COMPILER_PRIME_REQUEST.executionStyle,
+      compiledArtifactKey: result.compiledArtifactKey,
+      compiledArtifactBase64: result.compiledArtifactBase64,
+      compiledArtifactSha256: result.compiledArtifactSha256,
+    },
+  };
+}
+
+function requiredExportsForRole() {
+  if (configuredRuntimeRole === 'compiler') {
+    return [
+      ['Prepare', prepareExport],
+      ['GetCompiledArtifactKey', getCompiledArtifactKeyExport],
+    ];
+  }
+  if (configuredRuntimeRole === 'runner') {
+    return [
+      ['ExecutePrepared', executePreparedExport],
+      ['DisposePreparedArtifact', disposePreparedArtifactExport],
+    ];
+  }
+  return [
+    ['Execute', executeExport],
+    ['Prepare', prepareExport],
+    ['ExecutePrepared', executePreparedExport],
+    ['DisposePreparedArtifact', disposePreparedArtifactExport],
+    ['ExecuteProject', executeProjectExport],
+    ['GetCompiledArtifactKey', getCompiledArtifactKeyExport],
+  ];
+}
+
+function assertRequiredExportsForRole() {
+  for (const [name, value] of requiredExportsForRole()) {
+    if (typeof value !== 'function') {
+      throw new Error(
+        `Unable to resolve TraceCode.CSharpHost.CompilerHost.${name} JS export for ${configuredRuntimeRole} role`
+      );
+    }
+  }
+}
+
+// Experiment-facing physical-memory attribution. Linear Wasm memory is only
+// one component of browser process RSS; exposing its live capacity beside host
+// timings lets the performance spike distinguish it from compiled Wasm code,
+// runtime metadata, decoded assemblies, and browser allocator retention.
+function runtimeMemoryTimings() {
+  const linearBuffer =
+    runtimeModule?.HEAP8?.buffer ??
+    runtimeModule?.wasmMemory?.buffer ??
+    null;
+  const performanceMemory =
+    typeof performance === 'object' &&
+    performance &&
+    typeof performance.memory === 'object'
+      ? performance.memory
+      : null;
+  return {
+    wasmLinearMemoryBytes:
+      linearBuffer && Number.isFinite(linearBuffer.byteLength)
+        ? linearBuffer.byteLength
+        : 0,
+    workerJsHeapUsedBytes:
+      performanceMemory && Number.isFinite(performanceMemory.usedJSHeapSize)
+        ? performanceMemory.usedJSHeapSize
+        : 0,
+    workerJsHeapTotalBytes:
+      performanceMemory && Number.isFinite(performanceMemory.totalJSHeapSize)
+        ? performanceMemory.totalJSHeapSize
+        : 0,
+  };
+}
+
 async function loadRuntime(assetBaseUrl) {
   const resolvedAssetBaseUrl = configureAssetBaseUrl(assetBaseUrl);
-  if (
-    executeExport &&
-    prepareExport &&
-    executePreparedExport &&
-    disposePreparedArtifactExport &&
-    executeProjectExport &&
-    getCompiledArtifactKeyExport
-  ) {
+  if (requiredExportsForRole().every(([, value]) => typeof value === 'function')) {
     return {
       success: true,
       loadTimeMs: 0,
@@ -3182,28 +3294,20 @@ async function loadRuntime(assetBaseUrl) {
       const exports = await runtime.getAssemblyExports(runtime.getConfig().mainAssemblyName);
       executeExport = exports?.TraceCode?.CSharpHost?.CompilerHost?.Execute;
       prepareExport = exports?.TraceCode?.CSharpHost?.CompilerHost?.Prepare;
-      executePreparedExport = exports?.TraceCode?.CSharpHost?.CompilerHost?.ExecutePrepared;
-      disposePreparedArtifactExport = exports?.TraceCode?.CSharpHost?.CompilerHost?.DisposePreparedArtifact;
+      const preparedExecutionHost =
+        exports?.TraceCode?.CSharpHost?.PreparedExecutionHost;
+      executePreparedExport =
+        configuredRuntimeRole === 'runner'
+          ? preparedExecutionHost?.ExecutePrepared
+          : exports?.TraceCode?.CSharpHost?.CompilerHost?.ExecutePrepared;
+      disposePreparedArtifactExport =
+        configuredRuntimeRole === 'runner'
+          ? preparedExecutionHost?.DisposePreparedArtifact
+          : exports?.TraceCode?.CSharpHost?.CompilerHost
+              ?.DisposePreparedArtifact;
       executeProjectExport = exports?.TraceCode?.CSharpHost?.CompilerHost?.ExecuteProject;
       getCompiledArtifactKeyExport = exports?.TraceCode?.CSharpHost?.CompilerHost?.GetCompiledArtifactKey;
-      if (typeof executeExport !== 'function') {
-        throw new Error('Unable to resolve TraceCode.CSharpHost.CompilerHost.Execute JS export');
-      }
-      if (typeof executeProjectExport !== 'function') {
-        throw new Error('Unable to resolve TraceCode.CSharpHost.CompilerHost.ExecuteProject JS export');
-      }
-      if (typeof prepareExport !== 'function') {
-        throw new Error('Unable to resolve TraceCode.CSharpHost.CompilerHost.Prepare JS export');
-      }
-      if (typeof executePreparedExport !== 'function') {
-        throw new Error('Unable to resolve TraceCode.CSharpHost.CompilerHost.ExecutePrepared JS export');
-      }
-      if (typeof disposePreparedArtifactExport !== 'function') {
-        throw new Error('Unable to resolve TraceCode.CSharpHost.CompilerHost.DisposePreparedArtifact JS export');
-      }
-      if (typeof getCompiledArtifactKeyExport !== 'function') {
-        throw new Error('Unable to resolve TraceCode.CSharpHost.CompilerHost.GetCompiledArtifactKey JS export');
-      }
+      assertRequiredExportsForRole();
       const initMs = elapsedMs(startedAt);
       const totalMs = elapsedMs(startedAt);
       return {
@@ -3244,11 +3348,22 @@ async function warmRuntime(assetBaseUrl) {
       const runtimeStartedAt = now();
       const runtimeResult = await loadRuntime(assetBaseUrl);
       const initMs = elapsedMs(runtimeStartedAt);
-      const warmupMs = runWarmup();
+      const compilerPrime =
+        configuredRuntimeRole === 'compiler' ? runCompilerPrime() : null;
+      const warmupMs =
+        configuredRuntimeRole === 'general'
+          ? runWarmup()
+          : compilerPrime?.warmupMs ?? 0;
       const totalMs = elapsedMs(startedAt);
       return {
         success: true,
         loadTimeMs: totalMs,
+        ...(compilerPrime
+          ? {
+              trustedPreparedArtifact:
+                compilerPrime.trustedPreparedArtifact,
+            }
+          : {}),
         timings: {
           totalMs,
           initMs: initMs || runtimeResult.timings?.initMs || 0,
@@ -3605,10 +3720,7 @@ ${invocation}
 
 void __TraceCodeSetCurrentInputsJson(string __tracecodeInputsJson)
 {
-    var __tracecodeField = typeof(TraceCode.CSharpHost.CompilerHost).GetField(
-        "currentInputsJson",
-        System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Static);
-    __tracecodeField?.SetValue(null, __tracecodeInputsJson);
+    TraceCode.CSharpHost.JudgeRuntimeContext.SetCurrentInputsJson(__tracecodeInputsJson);
 }
 
 string[] __TraceCodeSplitConsole(string __tracecodeText) =>
@@ -3831,10 +3943,7 @@ object? result;
 
 void __TraceCodeSetCurrentInputsJson(string __tracecodeInputsJson)
 {
-    var __tracecodeField = typeof(TraceCode.CSharpHost.CompilerHost).GetField(
-        "currentInputsJson",
-        System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Static);
-    __tracecodeField?.SetValue(null, __tracecodeInputsJson);
+    TraceCode.CSharpHost.JudgeRuntimeContext.SetCurrentInputsJson(__tracecodeInputsJson);
 }
 
 string[] __TraceCodeSplitConsole(string __tracecodeText) =>
@@ -4117,7 +4226,9 @@ async function prepareCSharpProgram(message) {
       typeof result.compiledArtifactKey !== 'string' ||
       !result.compiledArtifactKey ||
       typeof result.compiledArtifactBase64 !== 'string' ||
-      !result.compiledArtifactBase64
+      !result.compiledArtifactBase64 ||
+      typeof result.compiledArtifactSha256 !== 'string' ||
+      !/^[0-9a-f]{64}$/.test(result.compiledArtifactSha256)
     )
   ) {
     return {
@@ -4128,6 +4239,7 @@ async function prepareCSharpProgram(message) {
         ...(result.timings && typeof result.timings === 'object' ? result.timings : {}),
         initMs,
         hostCallMs,
+        ...runtimeMemoryTimings(),
         totalMs: elapsedMs(startedAt),
       },
     };
@@ -4139,6 +4251,7 @@ async function prepareCSharpProgram(message) {
       ...(result?.timings && typeof result.timings === 'object' ? result.timings : {}),
       initMs,
       hostCallMs,
+      ...runtimeMemoryTimings(),
       totalMs: elapsedMs(startedAt),
     },
   };
@@ -4178,6 +4291,7 @@ async function executePreparedCSharpProgram(message) {
     preparedProgram: true,
     compiledArtifactKey: prepared.compiledArtifactKey,
     compiledArtifactBase64: prepared.compiledArtifactBase64,
+    compiledArtifactSha256: prepared.compiledArtifactSha256,
   };
   const runtimeStartedAt = now();
   const runtimeResult = await loadRuntime(payload.assetBaseUrl);
@@ -4193,6 +4307,7 @@ async function executePreparedCSharpProgram(message) {
       ...(result?.timings && typeof result.timings === 'object' ? result.timings : {}),
       initMs,
       hostCallMs,
+      ...runtimeMemoryTimings(),
       // A learner exception still reports a hit because the host reached the
       // cached assembly. Missing/malformed prepared artifacts remain misses.
       artifactCacheHit: result?.timings?.compileCacheHit === true,
@@ -4414,6 +4529,25 @@ async function handleMessage(message) {
 
   if (message.type === 'warmup') {
     return warmRuntime(message.payload?.assetBaseUrl);
+  }
+
+  if (
+    configuredRuntimeRole === 'compiler' &&
+    !['prepare-program', 'dispose-prepared-program'].includes(message.type)
+  ) {
+    throw new Error(`C# compiler authority rejects ${message.type}.`);
+  }
+
+  if (
+    configuredRuntimeRole === 'runner' &&
+    ![
+      'execute-prepared-code',
+      'execute-prepared-trace',
+      'execute-prepared-batch',
+      'dispose-prepared-program',
+    ].includes(message.type)
+  ) {
+    throw new Error(`C# disposable runner rejects ${message.type}.`);
   }
 
   if (message.type === 'execute-code-batch') {

@@ -180,6 +180,16 @@ const ASSET_COPY_PLAN = [
     target: ['vendor', 'csharp'],
     languages: ['csharp'],
   },
+  {
+    source: ['workers', 'vendor', 'csharp-compiler'],
+    target: ['vendor', 'csharp-compiler'],
+    languages: ['csharp'],
+  },
+  {
+    source: ['workers', 'vendor', 'csharp-runner'],
+    target: ['vendor', 'csharp-runner'],
+    languages: ['csharp'],
+  },
 ] as const;
 
 function usage(): string {

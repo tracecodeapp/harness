@@ -81,6 +81,8 @@ export interface CSharpWorkerClientOptions {
   projectUserAuthorityMode?: 'temporary' | 'permanent';
   /** Declared runtime files preflighted by the browser harness and resolved beneath assetBaseUrl. */
   runtimeDependencies?: Readonly<Record<string, string>>;
+  /** Capability role fixed for the lifetime of this worker. */
+  runtimeRole?: 'general' | 'compiler' | 'runner';
 }
 
 interface InitResult {
@@ -94,6 +96,7 @@ interface WarmupResult {
   loadTimeMs: number;
   error?: string;
   timings?: RuntimeExecutionTimings;
+  trustedPreparedArtifact?: CSharpPreparedProgramArtifact;
 }
 
 const EXECUTION_TIMEOUT_MS = 20_000;
@@ -150,6 +153,7 @@ interface CSharpWorkerPreparedBatchResult {
 export interface CSharpWorkerPrepareResult extends CSharpWorkerExecuteResult {
   compiledArtifactKey?: string;
   compiledArtifactBase64?: string;
+  compiledArtifactSha256?: string;
 }
 
 export interface CSharpPreparedProgramArtifact {
@@ -160,6 +164,7 @@ export interface CSharpPreparedProgramArtifact {
   readonly traceOptions?: TraceExecutionOptions;
   readonly compiledArtifactKey: string;
   readonly compiledArtifactBase64: string;
+  readonly compiledArtifactSha256: string;
 }
 
 function isCSharpUserFile(file: string | undefined): boolean {
@@ -343,8 +348,10 @@ export class CSharpWorkerClient {
   private workerOptionsPayload(): {
     idleTimeoutMs?: number;
     runtimeDependencies?: Readonly<Record<string, string>>;
+    runtimeRole: 'general' | 'compiler' | 'runner';
   } {
     return {
+      runtimeRole: this.options.runtimeRole ?? 'general',
       ...(this.options.workerIdleTimeoutMs === undefined
         ? {}
         : { idleTimeoutMs: this.options.workerIdleTimeoutMs }),
@@ -393,6 +400,21 @@ export class CSharpWorkerClient {
         this.terminate();
       }
     });
+  }
+
+  /**
+   * A role-scoped runner is already a disposable outer lease owned by the
+   * prepared authority. Keep that lease alive for the duration of one call or
+   * eager batch so it can be prewarmed, then let the authority retire it.
+   * Legacy/general workers retain the defensive fresh-generation behavior.
+   */
+  private runPreparedExecutionGeneration<T>(
+    signal: AbortSignal | undefined,
+    operation: () => Promise<T>
+  ): Promise<T> {
+    return this.options.runtimeRole === 'runner'
+      ? this.runPreparedExclusive(signal, operation)
+      : this.runFreshPreparedGeneration(signal, operation);
   }
 
   /**
@@ -466,6 +488,16 @@ export class CSharpWorkerClient {
       try: () => this.warmup().then(() => undefined),
       catch: (error) => (error instanceof Error ? error : new Error(String(error))),
     });
+  }
+
+  private preparedReadyEffect(): Effect.Effect<void, Error> {
+    // The compiler warmup performs one fixed trusted emit. Await the memoized
+    // promise so an immediate learner preparation cannot race ahead of Roslyn
+    // priming. A disposable runner only needs its runtime load, which the
+    // provider starts concurrently and execution itself will await.
+    return this.options.runtimeRole === 'runner'
+      ? Effect.void
+      : this.warmupEffect();
   }
 
   async executeCode(call: RuntimeCodeCall): Promise<CodeExecutionResult> {
@@ -545,13 +577,13 @@ export class CSharpWorkerClient {
   async prepareProgram(
     call: RuntimeProgramPreparationCall
   ): Promise<CSharpWorkerPrepareResult> {
-    return this.runFreshPreparedGeneration(call.signal, async () => {
+    const prepare = async () => {
       const functionName = call.functionName ?? '';
       const executionStyle = call.executionStyle ?? 'solution-method';
       const timeoutMs = call.mode === 'trace'
         ? this.resolveTracingTimeoutMs(functionName, executionStyle)
         : this.executionTimeoutMs;
-      const program = this.warmupEffect().pipe(
+      const program = this.preparedReadyEffect().pipe(
         Effect.andThen(
           this.core.withExecutionDeadline(
             this.sendCommandEffect<CSharpWorkerPrepareResult>('prepare-program', {
@@ -570,16 +602,19 @@ export class CSharpWorkerClient {
       );
 
       return this.core.runClientEffect(program, call.signal);
-    });
+    };
+    return this.options.runtimeRole === 'compiler'
+      ? this.runPreparedExclusive(call.signal, prepare)
+      : this.runFreshPreparedGeneration(call.signal, prepare);
   }
 
   async executePreparedCode(
     prepared: CSharpPreparedProgramArtifact,
     call: RuntimePreparedCodeCall
   ): Promise<CodeExecutionResult> {
-    return this.runFreshPreparedGeneration(call.signal, async () => {
+    return this.runPreparedExecutionGeneration(call.signal, async () => {
       const wallClockMs = call.limits?.wallClockMs ?? this.executionTimeoutMs;
-      const program = this.warmupEffect().pipe(
+      const program = this.preparedReadyEffect().pipe(
         Effect.andThen(
           this.core.withExecutionDeadline(
             this.sendCommandEffect<CSharpWorkerExecuteResult>('execute-prepared-code', {
@@ -602,11 +637,11 @@ export class CSharpWorkerClient {
     prepared: CSharpPreparedProgramArtifact,
     call: RuntimePreparedTraceCall
   ): Promise<ExecutionResult> {
-    return this.runFreshPreparedGeneration(call.signal, async () => {
+    return this.runPreparedExecutionGeneration(call.signal, async () => {
       const wallClockMs = call.limits?.wallClockMs
         ?? this.resolveTracingTimeoutMs(prepared.functionName, prepared.executionStyle);
       let result: CSharpWorkerExecuteResult;
-      const program = this.warmupEffect().pipe(
+      const program = this.preparedReadyEffect().pipe(
         Effect.andThen(
           this.core.withExecutionDeadline(
             this.sendCommandEffect<CSharpWorkerExecuteResult>('execute-prepared-trace', {
@@ -640,10 +675,10 @@ export class CSharpWorkerClient {
     prepared: CSharpPreparedProgramArtifact,
     call: RuntimePreparedCodeBatchCall
   ): Promise<readonly CodeExecutionResult[]> {
-    return this.runFreshPreparedGeneration(call.signal, async () => {
+    return this.runPreparedExecutionGeneration(call.signal, async () => {
       const wallClockMs = call.limits?.wallClockMs ?? this.executionTimeoutMs;
       const result = await this.core.runClientEffect(
-        this.warmupEffect().pipe(
+        this.preparedReadyEffect().pipe(
           Effect.andThen(
             this.core.withExecutionDeadline(
               this.sendCommandEffect<CSharpWorkerPreparedBatchResult>(
@@ -678,14 +713,14 @@ export class CSharpWorkerClient {
     prepared: CSharpPreparedProgramArtifact,
     call: RuntimePreparedTraceBatchCall
   ): Promise<readonly ExecutionResult[]> {
-    return this.runFreshPreparedGeneration(call.signal, async () => {
+    return this.runPreparedExecutionGeneration(call.signal, async () => {
       const wallClockMs = call.limits?.wallClockMs ??
         this.resolveTracingTimeoutMs(
           prepared.functionName,
           prepared.executionStyle
         );
       const result = await this.core.runClientEffect(
-        this.warmupEffect().pipe(
+        this.preparedReadyEffect().pipe(
           Effect.andThen(
             this.core.withExecutionDeadline(
               this.sendCommandEffect<CSharpWorkerPreparedBatchResult>(

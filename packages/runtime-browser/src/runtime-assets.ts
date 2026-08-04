@@ -102,8 +102,16 @@ export interface BrowserRuntimeAssetsByRuntime {
   csharp: {
     worker: BrowserRuntimeAssetDescriptor;
     assetBaseUrl: BrowserRuntimeAssetDescriptor;
+    /** Persistent trusted Roslyn authority bundle. */
+    compilerAssetBaseUrl?: BrowserRuntimeAssetDescriptor;
+    /** Disposable prepared-execution bundle with compiler assets removed. */
+    runnerAssetBaseUrl?: BrowserRuntimeAssetDescriptor;
     /** Runtime files beneath assetBaseUrl, keyed by their deployment-relative path. */
     dependencies?: Readonly<Record<string, BrowserRuntimeAssetDescriptor>>;
+    /** Compiler-authority files beneath compilerAssetBaseUrl. */
+    compilerDependencies?: Readonly<Record<string, BrowserRuntimeAssetDescriptor>>;
+    /** Disposable-runner files beneath runnerAssetBaseUrl. */
+    runnerDependencies?: Readonly<Record<string, BrowserRuntimeAssetDescriptor>>;
   };
   cpp: {
     worker: BrowserRuntimeAssetDescriptor;
@@ -159,6 +167,8 @@ export interface BrowserRuntimeAssets {
   javaWorker: string;
   csharpWorker: string;
   csharpAssetBaseUrl: string;
+  csharpCompilerAssetBaseUrl: string;
+  csharpRunnerAssetBaseUrl: string;
   typescriptCompiler: string;
   cppWorker: string;
   cppCompilerFrame: string;
@@ -191,6 +201,8 @@ export const DEFAULT_BROWSER_RUNTIME_ASSET_RELATIVE_PATHS: Readonly<BrowserRunti
   javaWorker: 'java-runtime-worker.js',
   csharpWorker: 'csharp-worker.js',
   csharpAssetBaseUrl: 'vendor/csharp',
+  csharpCompilerAssetBaseUrl: 'vendor/csharp-compiler',
+  csharpRunnerAssetBaseUrl: 'vendor/csharp-runner',
   typescriptCompiler: 'vendor/typescript.js',
   cppWorker: 'cpp-worker.js',
   cppCompilerFrame: 'cpp-compiler-frame.html',
@@ -207,7 +219,15 @@ const RUNTIME_ASSET_NAMES = Object.freeze({
   javascript: ['worker', 'projectWorker', 'libraries'],
   typescript: ['compiler'],
   java: ['worker'],
-  csharp: ['worker', 'assetBaseUrl', 'dependencies'],
+  csharp: [
+    'worker',
+    'assetBaseUrl',
+    'compilerAssetBaseUrl',
+    'runnerAssetBaseUrl',
+    'dependencies',
+    'compilerDependencies',
+    'runnerDependencies',
+  ],
   cpp: [
     'worker',
     'compilerFrame',
@@ -226,7 +246,7 @@ const RUNTIME_ASSET_COLLECTION_NAMES = Object.freeze({
   javascript: [],
   typescript: [],
   java: [],
-  csharp: ['dependencies'],
+  csharp: ['dependencies', 'compilerDependencies', 'runnerDependencies'],
   cpp: ['compilerResources'],
 } satisfies Record<BrowserRuntimeId, readonly string[]>);
 
@@ -257,7 +277,12 @@ const RUNTIME_LEGACY_ASSET_KEYS = Object.freeze({
   javascript: ['javascriptWorker', 'javascriptProjectWorker'],
   typescript: ['typescriptCompiler'],
   java: ['javaWorker'],
-  csharp: ['csharpWorker', 'csharpAssetBaseUrl'],
+  csharp: [
+    'csharpWorker',
+    'csharpAssetBaseUrl',
+    'csharpCompilerAssetBaseUrl',
+    'csharpRunnerAssetBaseUrl',
+  ],
   cpp: [
     'cppWorker',
     'cppCompilerFrame',
@@ -998,6 +1023,16 @@ export function resolveBrowserRuntimeAssets(options: {
       assets.csharpAssetBaseUrl,
       DEFAULT_BROWSER_RUNTIME_ASSET_RELATIVE_PATHS.csharpAssetBaseUrl,
       manifestAssetUrl(runtimeManifests, 'csharp', 'assetBaseUrl')
+    ),
+    csharpCompilerAssetBaseUrl: resolve(
+      assets.csharpCompilerAssetBaseUrl,
+      DEFAULT_BROWSER_RUNTIME_ASSET_RELATIVE_PATHS.csharpCompilerAssetBaseUrl,
+      manifestAssetUrl(runtimeManifests, 'csharp', 'compilerAssetBaseUrl')
+    ),
+    csharpRunnerAssetBaseUrl: resolve(
+      assets.csharpRunnerAssetBaseUrl,
+      DEFAULT_BROWSER_RUNTIME_ASSET_RELATIVE_PATHS.csharpRunnerAssetBaseUrl,
+      manifestAssetUrl(runtimeManifests, 'csharp', 'runnerAssetBaseUrl')
     ),
     typescriptCompiler: resolve(
       assets.typescriptCompiler,

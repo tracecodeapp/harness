@@ -59,6 +59,7 @@ interface MockCSharpWorkerRawResult {
   timeoutReason?: ExecutionLimitReason;
   compiledArtifactKey?: string;
   compiledArtifactBase64?: string;
+  compiledArtifactSha256?: string;
 }
 
 class MockCSharpWorker {
@@ -693,12 +694,16 @@ async function testPreparedWorkerGenerationAuthority(): Promise<void> {
         success: true,
         compiledArtifactKey: 'prepared-a',
         compiledArtifactBase64: 'TVqQAAMAAAAEAAAA',
+        compiledArtifactSha256:
+          'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
         consoleOutput: [],
       },
       {
         success: true,
         compiledArtifactKey: 'prepared-b',
         compiledArtifactBase64: 'TVqQAAMAAAAEAAAB',
+        compiledArtifactSha256:
+          'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb',
         consoleOutput: [],
       }
     );
@@ -810,6 +815,61 @@ async function testPreparedWorkerGenerationAuthority(): Promise<void> {
   console.log('PASS: C# prepared handles share one fresh-worker execution authority');
 }
 
+async function testCompilerAuthorityPrimesBeforePreparation(): Promise<void> {
+  const originalWorker = globalThis.Worker;
+  MockCSharpWorker.responses = [];
+  MockCSharpWorker.received = [];
+  MockCSharpWorker.instances = [];
+  MockCSharpWorker.hangingMessageTypes = new Set<string>();
+  MockCSharpWorker.erroringMessageTypes = new Set<string>();
+  // @ts-expect-error test stub
+  globalThis.Worker = MockCSharpWorker;
+
+  const workerClient = new CSharpWorkerClient({
+    workerUrl: '/workers/csharp-worker.js',
+    assetBaseUrl: '/workers/vendor/csharp-compiler',
+    runtimeRole: 'compiler',
+  });
+  const provider = createCSharpRuntimeClient(workerClient);
+
+  try {
+    MockCSharpWorker.responses.push({
+      success: true,
+      compiledArtifactKey: 'learner-after-prime',
+      compiledArtifactBase64: 'TVqQAAMAAAAEAAAA',
+      compiledArtifactSha256:
+        'cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc',
+      consoleOutput: [],
+    });
+    const prepared = await provider.prepareProgram({
+      mode: 'code',
+      code: 'public class Solution { public int Echo(int value) => value; }',
+      functionName: 'Echo',
+    });
+    assertCondition(
+      prepared.kind === 'prepared',
+      'C# compiler authority should prepare after trusted priming'
+    );
+    const commandOrder = MockCSharpWorker.received.map((message) => message.type);
+    const warmupIndex = commandOrder.indexOf('warmup');
+    const prepareIndex = commandOrder.indexOf('prepare-program');
+    assertCondition(
+      warmupIndex >= 0 && prepareIndex > warmupIndex,
+      `C# compiler preparation must await trusted priming: ${JSON.stringify(commandOrder)}`
+    );
+    assertCondition(
+      MockCSharpWorker.instances.length === 1 &&
+        MockCSharpWorker.instances[0]?.terminated === false,
+      'Trusted compiler authority should remain persistent after preparation'
+    );
+  } finally {
+    workerClient.terminate();
+    globalThis.Worker = originalWorker;
+  }
+
+  console.log('PASS: C# compiler authority primes one trusted emit before learner preparation');
+}
+
 function testTraceRewriterTargetTypedFieldWritesDoNotReadAssignedMembers(): void {
   const source = readFileSync('runtimes/csharp/TraceCode.CSharpHost/TraceRewriter.cs', 'utf8');
   assertCondition(
@@ -849,6 +909,7 @@ async function main(): Promise<void> {
   await testWallClockLimitClientTimeout();
   await testWorkerErrorReset();
   await testPreparedWorkerGenerationAuthority();
+  await testCompilerAuthorityPrimesBeforePreparation();
   testTraceRewriterTargetTypedFieldWritesDoNotReadAssignedMembers();
   testTraceRewriterIndexedAssignmentsDoNotReadAssignedIndexers();
 }

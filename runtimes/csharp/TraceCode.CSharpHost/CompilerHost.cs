@@ -53,12 +53,30 @@ public static partial class CompilerHost
         "AppDomain.CurrentDomain.GetAssemblies",
         "AssemblyLoadContext",
     };
-    private static readonly CSharpParseOptions ParseOptions = new(LanguageVersion.CSharp14);
-    private static readonly Lazy<MetadataReference[]> CachedReferences = new(() => ResolveReferences().ToArray());
+    // Keep every Roslyn-typed static inside a lazily touched compiler-only type.
+    // Disposable prepared runners load this host assembly without shipping
+    // Microsoft.CodeAnalysis, so the outer execution host must remain loadable
+    // without resolving compiler metadata.
+    private static class CompilerAuthorityState
+    {
+        internal static readonly CSharpParseOptions ParseOptions =
+            new(LanguageVersion.CSharp14);
+#if TRACECODE_CSHARP_DEBUG_EMIT
+        internal const OptimizationLevel JudgeOptimizationLevel =
+            OptimizationLevel.Debug;
+#else
+        internal const OptimizationLevel JudgeOptimizationLevel =
+            OptimizationLevel.Release;
+#endif
+        internal static readonly Lazy<MetadataReference[]> CachedReferences =
+            new(() => ResolveReferences().ToArray());
+        internal static readonly Dictionary<string, CSharpCompilation>
+            TrustedCompilationTemplates = new(StringComparer.Ordinal);
+        internal static readonly object TrustedCompilationTemplatesLock = new();
+    }
     private static readonly Dictionary<string, CompiledArtifact> CompiledArtifacts = new(StringComparer.Ordinal);
     private static readonly LinkedList<string> CompiledArtifactRecency = new();
     private static long compiledArtifactCacheBytes;
-    private static string currentInputsJson = "{}";
     private static int projectLiveFileChangeCount;
     private static long projectLiveFileChangeBytes;
     private static bool projectLiveFileChangeBudgetWarningEmitted;
@@ -137,39 +155,54 @@ public static partial class CompilerHost
     public static string Prepare(string requestJson)
     {
         Stopwatch stopwatch = Stopwatch.StartNew();
+        Stopwatch phaseStopwatch = Stopwatch.StartNew();
         TextWriter originalOut = Console.Out;
         using TracingConsoleWriter capturedOut = new();
         Console.SetOut(capturedOut);
-        Dictionary<string, object> timings = new();
+        Dictionary<string, object> timings = new()
+        {
+            ["compileCacheHit"] = false,
+            ["hostArtifactCacheHit"] = false,
+        };
 
         try
         {
             CSharpExecuteRequest? request = JsonSerializer.Deserialize<CSharpExecuteRequest>(requestJson, JsonOptions);
+            timings["prepareDeserializeMs"] = phaseStopwatch.Elapsed.TotalMilliseconds;
             if (request is null)
             {
                 return SerializeError("Invalid C# preparation request.", stopwatch, capturedOut, timings: timings);
             }
 
+            phaseStopwatch.Restart();
             request.PreparedProgram = true;
             request.RequirePreparedArtifact = false;
             request.Inputs = new Dictionary<string, JsonElement>(StringComparer.Ordinal);
             string artifactKey = CompiledArtifactKey(request);
+            timings["compileArtifactKeyMs"] = phaseStopwatch.Elapsed.TotalMilliseconds;
+
+            phaseStopwatch.Restart();
             double compileStartedAt = stopwatch.Elapsed.TotalMilliseconds;
             byte[]? peBytes = TryGetCompiledArtifact(artifactKey);
+            timings["compileCacheLookupMs"] = phaseStopwatch.Elapsed.TotalMilliseconds;
             bool compileCacheHit = peBytes is not null;
 
             if (peBytes is null)
             {
-                CSharpCompilation compilation = CreateCompilation(request);
+                CSharpCompilation compilation = CreateCompilation(request, timings);
                 using MemoryStream peStream = new();
+                phaseStopwatch.Restart();
                 EmitResult emitResult = compilation.Emit(peStream);
+                timings["compileEmitMs"] = phaseStopwatch.Elapsed.TotalMilliseconds;
                 timings["compileMs"] = stopwatch.Elapsed.TotalMilliseconds - compileStartedAt;
                 if (!emitResult.Success)
                 {
+                    phaseStopwatch.Restart();
                     List<CSharpDiagnostic> diagnostics = emitResult.Diagnostics
                         .Where(diagnostic => diagnostic.Severity == DiagnosticSeverity.Error)
                         .Select(CSharpDiagnostic.FromRoslyn)
                         .ToList();
+                    timings["compileDiagnosticsMs"] = phaseStopwatch.Elapsed.TotalMilliseconds;
                     return Serialize(new CSharpExecuteResponse
                     {
                         Success = false,
@@ -181,8 +214,12 @@ public static partial class CompilerHost
                     });
                 }
 
+                phaseStopwatch.Restart();
                 peBytes = peStream.ToArray();
+                timings["compilePeExtractionMs"] = phaseStopwatch.Elapsed.TotalMilliseconds;
+                phaseStopwatch.Restart();
                 StoreCompiledArtifact(artifactKey, peBytes);
+                timings["compileCacheStoreMs"] = phaseStopwatch.Elapsed.TotalMilliseconds;
             }
             else
             {
@@ -194,6 +231,12 @@ public static partial class CompilerHost
             timings["compileArtifactBytes"] = peBytes.LongLength;
             timings["compileCacheEntries"] = CompiledArtifacts.Count;
             timings["compileCacheBytes"] = compiledArtifactCacheBytes;
+            phaseStopwatch.Restart();
+            string compiledArtifactBase64 = Convert.ToBase64String(peBytes);
+            timings["prepareBase64EncodeMs"] = phaseStopwatch.Elapsed.TotalMilliseconds;
+            string compiledArtifactSha256 = Convert.ToHexString(
+                SHA256.HashData(peBytes)
+            ).ToLowerInvariant();
             return Serialize(new CSharpExecuteResponse
             {
                 Success = true,
@@ -201,7 +244,8 @@ public static partial class CompilerHost
                 ExecutionTimeMs = stopwatch.Elapsed.TotalMilliseconds,
                 Timings = WithTotalTiming(timings, stopwatch),
                 CompiledArtifactKey = artifactKey,
-                CompiledArtifactBase64 = Convert.ToBase64String(peBytes),
+                CompiledArtifactBase64 = compiledArtifactBase64,
+                CompiledArtifactSha256 = compiledArtifactSha256,
             });
         }
         catch (Exception error)
@@ -222,32 +266,202 @@ public static partial class CompilerHost
         TextWriter originalOut = Console.Out;
         using TracingConsoleWriter capturedOut = new();
         Console.SetOut(capturedOut);
-        Dictionary<string, object> timings = new();
+        Dictionary<string, object> timings = new()
+        {
+            ["compileCacheHit"] = false,
+            ["hostArtifactCacheHit"] = false,
+        };
 
+        CSharpExecuteRequest? request;
         try
         {
-            CSharpExecuteRequest? request = JsonSerializer.Deserialize<CSharpExecuteRequest>(requestJson, JsonOptions);
-            if (request is null)
-            {
-                return SerializeError(
-                    "Invalid prepared C# execution request.",
-                    stopwatch,
-                    capturedOut,
-                    timings: timings
-                );
-            }
-
-            request.PreparedProgram = true;
-            request.RequirePreparedArtifact = true;
-            return Execute(JsonSerializer.Serialize(request, JsonOptions));
+            request = JsonSerializer.Deserialize<CSharpExecuteRequest>(
+                requestJson,
+                JsonOptions
+            );
         }
         catch (Exception)
         {
             // Prepared execution is a fail-closed boundary. Malformed requests
             // must never fall through to Execute, whose non-prepared path is
             // allowed to invoke Roslyn.
-            return SerializeError(
+            string response = SerializeError(
                 "Invalid prepared C# execution request.",
+                stopwatch,
+                capturedOut,
+                timings: timings
+            );
+            Console.SetOut(originalOut);
+            return response;
+        }
+
+        if (request is null)
+        {
+            string response = SerializeError(
+                "Invalid prepared C# execution request.",
+                stopwatch,
+                capturedOut,
+                timings: timings
+            );
+            Console.SetOut(originalOut);
+            return response;
+        }
+
+        try
+        {
+            request.PreparedProgram = true;
+            request.RequirePreparedArtifact = true;
+            request.Inputs ??= new Dictionary<string, JsonElement>(
+                StringComparer.Ordinal
+            );
+            ValidateExecutionInputs(request.Inputs);
+
+            string artifactKey = CompiledArtifactKey(request);
+            if (
+                !string.Equals(
+                    request.CompiledArtifactKey,
+                    artifactKey,
+                    StringComparison.Ordinal
+                ) ||
+                string.IsNullOrEmpty(request.CompiledArtifactBase64)
+            )
+            {
+                return SerializeError(
+                    "Prepared C# artifact is unavailable or invalid.",
+                    stopwatch,
+                    capturedOut,
+                    timings: timings
+                );
+            }
+
+            byte[] peBytes;
+            try
+            {
+                peBytes = Convert.FromBase64String(
+                    request.CompiledArtifactBase64
+                );
+            }
+            catch (FormatException)
+            {
+                return SerializeError(
+                    "Prepared C# artifact is unavailable or invalid.",
+                    stopwatch,
+                    capturedOut,
+                    timings: timings
+                );
+            }
+
+            if (
+                peBytes.LongLength > CompiledArtifactCacheMaxBytes ||
+                peBytes.Length < 2 ||
+                peBytes[0] != (byte)'M' ||
+                peBytes[1] != (byte)'Z'
+            )
+            {
+                return SerializeError(
+                    "Prepared C# artifact is unavailable or invalid.",
+                    stopwatch,
+                    capturedOut,
+                    timings: timings
+                );
+            }
+
+            timings["compileCacheHit"] = true;
+            timings["hostArtifactCacheHit"] = true;
+            timings["compileArtifactKey"] = artifactKey;
+            timings["compileArtifactBytes"] = peBytes.LongLength;
+            timings["compileMs"] = 0d;
+
+            JudgeRuntimeContext.SetCurrentInputsJson(
+                JsonSerializer.Serialize(request.Inputs, JsonOptions)
+            );
+            RuntimeTraceSink.Reset();
+            RuntimeTraceSink.Configure(
+                request.TimeoutMs,
+                request.Trace ? request.MaxTraceSteps : null,
+                request.Trace ? request.MaxLineEvents : null,
+                request.Trace ? request.MaxSingleLineHits : null,
+                request.Trace ? request.MaxStoredEvents : null,
+                request.Trace && request.MinimalTrace
+            );
+
+            double runStartedAt = stopwatch.Elapsed.TotalMilliseconds;
+            var loadContext = new UserExecutionLoadContext(
+                "TraceCode.PreparedUserExecution." +
+                Guid.NewGuid().ToString("N")
+            );
+            try
+            {
+                using MemoryStream assemblyStream = new(
+                    peBytes,
+                    writable: false
+                );
+                Assembly userAssembly = loadContext.LoadFromStream(
+                    assemblyStream
+                );
+                object? output = InvokeDriver(userAssembly);
+                object? normalizedOutput = NormalizeOutput(output);
+                timings["runMs"] =
+                    stopwatch.Elapsed.TotalMilliseconds - runStartedAt;
+                timings["executionRealm"] =
+                    "collectible-assembly-load-context";
+                List<RuntimeTraceEvent> events =
+                    SnapshotTraceEvents(capturedOut);
+                TraceEventBackfill.Apply(
+                    request.Source,
+                    events
+                );
+                return Serialize(new CSharpExecuteResponse
+                {
+                    Success = true,
+                    Output = normalizedOutput,
+                    ConsoleOutput = SplitConsoleOutput(capturedOut),
+                    Events = events,
+                    TraceLimitExceeded =
+                        RuntimeTraceSink.TraceLimitExceeded,
+                    TimeoutReason =
+                        RuntimeTraceSink.TraceLimitExceeded
+                            ? RuntimeTraceSink.TimeoutReason
+                            : null,
+                    ExecutionTimeMs = stopwatch.Elapsed.TotalMilliseconds,
+                    Timings = WithTotalTiming(timings, stopwatch),
+                    CompiledArtifactKey = artifactKey,
+                });
+            }
+            finally
+            {
+                loadContext.Unload();
+                JudgeRuntimeContext.Reset();
+            }
+        }
+        catch (Exception error)
+            when (error.GetBaseException() is TraceCodeTimeoutException timeout)
+        {
+            return SerializeError(
+                timeout.Message,
+                stopwatch,
+                capturedOut,
+                traceLimitExceeded: RuntimeTraceSink.TraceLimitExceeded,
+                timeoutReason: "client-timeout",
+                timings: timings
+            );
+        }
+        catch (Exception error)
+            when (error.GetBaseException() is TraceLimitExceededException traceLimit)
+        {
+            return SerializeError(
+                traceLimit.Message,
+                stopwatch,
+                capturedOut,
+                traceLimitExceeded: true,
+                timeoutReason: traceLimit.TimeoutReason,
+                timings: timings
+            );
+        }
+        catch (Exception error)
+        {
+            return SerializeError(
+                error.GetBaseException().Message,
                 stopwatch,
                 capturedOut,
                 timings: timings
@@ -366,7 +580,9 @@ public static partial class CompilerHost
             timings["compileArtifactBytes"] = peBytes.LongLength;
             timings["compileCacheEntries"] = CompiledArtifacts.Count;
             timings["compileCacheBytes"] = compiledArtifactCacheBytes;
-            currentInputsJson = JsonSerializer.Serialize(request.Inputs, JsonOptions);
+            JudgeRuntimeContext.SetCurrentInputsJson(
+                JsonSerializer.Serialize(request.Inputs, JsonOptions)
+            );
             RuntimeTraceSink.Configure(
                 request.TimeoutMs,
                 request.Trace ? request.MaxTraceSteps : null,
@@ -386,7 +602,7 @@ public static partial class CompilerHost
                 timings["runMs"] = stopwatch.Elapsed.TotalMilliseconds - runStartedAt;
                 timings["executionRealm"] = "collectible-assembly-load-context";
                 List<RuntimeTraceEvent> events = SnapshotTraceEvents(capturedOut);
-                BackfillSourceCollectionMutationEvents(request.Source, events);
+                TraceEventBackfill.Apply(request.Source, events);
                 return Serialize(new CSharpExecuteResponse
                 {
                     Success = true,
@@ -735,483 +951,6 @@ public static partial class CompilerHost
         }
     }
 
-    private static void RemoveRedundantSourceSortMutationEvents(List<RuntimeTraceEvent> events)
-    {
-        for (int index = events.Count - 1; index >= 0; index -= 1)
-        {
-            RuntimeTraceEvent traceEvent = events[index];
-            if (traceEvent.Kind != "mutate"
-                || !string.Equals(traceEvent.Method, "Sort", StringComparison.Ordinal)
-                || traceEvent.Target is null
-                || TraceArgsHaveItems(traceEvent.Args))
-            {
-                continue;
-            }
-
-            bool hasConcreteSortOnSameLine = false;
-            for (int nextIndex = index + 1; nextIndex < events.Count; nextIndex += 1)
-            {
-                RuntimeTraceEvent next = events[nextIndex];
-                if (next.Line != traceEvent.Line)
-                {
-                    break;
-                }
-                if (next.Kind == "mutate"
-                    && string.Equals(next.Method, "Sort", StringComparison.Ordinal)
-                    && next.Target is not null
-                    && TraceArgsHaveItems(next.Args))
-                {
-                    hasConcreteSortOnSameLine = true;
-                    break;
-                }
-            }
-
-            if (hasConcreteSortOnSameLine)
-            {
-                events.RemoveAt(index);
-            }
-        }
-    }
-
-    private static bool TraceArgsHaveItems(object? args)
-    {
-        return args switch
-        {
-            null => false,
-            string => true,
-            System.Collections.ICollection collection => collection.Count > 0,
-            System.Collections.IEnumerable enumerable => enumerable.Cast<object?>().Any(),
-            _ => true,
-        };
-    }
-
-    private static void BackfillSourceCollectionMutationEvents(string source, List<RuntimeTraceEvent> events)
-    {
-        string[] sourceLines = source.Split('\n');
-        Dictionary<string, object?> latestValues = new(StringComparer.Ordinal);
-        for (int index = 0; index < events.Count; index += 1)
-        {
-            RuntimeTraceEvent lineEvent = events[index];
-            if (lineEvent.Kind != "line" || lineEvent.Line is not int line || line <= 0 || line > sourceLines.Length)
-            {
-                TrackLatestTraceValue(latestValues, lineEvent);
-                continue;
-            }
-
-            int end = index + 1;
-            while (end < events.Count && events[end].Kind != "line")
-            {
-                end += 1;
-            }
-            if (end == index + 1
-                && end < events.Count
-                && events[end].Kind == "line"
-                && events[end].Line == line)
-            {
-                index = end - 1;
-                continue;
-            }
-
-            string sourceLine = sourceLines[line - 1];
-            Match sortMatch = Regex.Match(sourceLine, @"\b(?:(this)\s*\.\s*)?([A-Za-z_]\w*)\s*\.\s*Sort\s*\(");
-            Match removeAtMatch = Regex.Match(sourceLine, @"\b(?:(this)\s*\.\s*)?([A-Za-z_]\w*)\s*\.\s*RemoveAt\s*\(\s*([^)]*)\)");
-            if (!sortMatch.Success && !removeAtMatch.Success)
-            {
-                TrackLatestTraceValues(latestValues, events, index + 1, end);
-                index = end - 1;
-                continue;
-            }
-
-            Match match = sortMatch.Success ? sortMatch : removeAtMatch;
-            string method = sortMatch.Success ? "Sort" : "RemoveAt";
-            string receiver = match.Groups[2].Value;
-            RuntimeTraceTarget target = match.Groups[1].Success
-                ? new RuntimeTraceTarget { Variable = "this", Path = new List<object?> { receiver } }
-                : new RuntimeTraceTarget { Variable = receiver };
-            List<object?> args = method == "RemoveAt"
-                ? new List<object?> { ParseMutationArgument(match.Groups[3].Value.Trim()) }
-                : new List<object?>();
-
-            bool hasMutation = events
-                .Skip(index + 1)
-                .Take(end - index - 1)
-                .Any(traceEvent =>
-                    traceEvent.Kind == "mutate" &&
-                    string.Equals(traceEvent.Method, method, StringComparison.Ordinal) &&
-                    traceEvent.Target is not null &&
-                    TargetsEqual(traceEvent.Target, target));
-
-            string targetKey = TargetKey(target);
-            object? baseValue = latestValues.TryGetValue(targetKey, out object? knownValue)
-                ? knownValue
-                : FindLatestLineValue(events, index + 1, end, target);
-            TrackLatestTraceValues(latestValues, events, index + 1, end);
-
-            var inserts = new List<RuntimeTraceEvent>();
-            if (!hasMutation)
-            {
-                inserts.Add(new RuntimeTraceEvent
-                {
-                    Kind = "mutate",
-                    RunId = lineEvent.RunId,
-                    File = lineEvent.File,
-                    Line = line,
-                    Target = target,
-                    Method = method,
-                    Args = args,
-                    CallStack = lineEvent.CallStack,
-                });
-            }
-
-            if (TryDerivePostCollectionMutationValue(method, baseValue, args, out object? postValue))
-            {
-                if (!HasPostCollectionWrite(events, index + 1, end, target, postValue))
-                {
-                    inserts.Add(new RuntimeTraceEvent
-                    {
-                        Kind = "write",
-                        RunId = lineEvent.RunId,
-                        File = lineEvent.File,
-                        Line = line,
-                        Target = CloneTarget(target),
-                        Value = postValue,
-                        CallStack = lineEvent.CallStack,
-                    });
-                    inserts.AddRange(CreateIndexedWriteEvents(lineEvent, target, postValue));
-                }
-                latestValues[targetKey] = postValue;
-            }
-            else if (hasMutation
-                && TryFindLatestValueAfterMutation(events, index + 1, end, target, method, out object? observedPostValue)
-                && observedPostValue is not string
-                && observedPostValue is System.Collections.IEnumerable)
-            {
-                if (!HasPostCollectionWrite(events, index + 1, end, target, observedPostValue))
-                {
-                    inserts.Add(new RuntimeTraceEvent
-                    {
-                        Kind = "write",
-                        RunId = lineEvent.RunId,
-                        File = lineEvent.File,
-                        Line = line,
-                        Target = CloneTarget(target),
-                        Value = observedPostValue,
-                        CallStack = lineEvent.CallStack,
-                    });
-                    inserts.AddRange(CreateIndexedWriteEvents(lineEvent, target, observedPostValue));
-                }
-                latestValues[targetKey] = observedPostValue;
-            }
-
-            if (inserts.Count > 0)
-            {
-                events.InsertRange(end, inserts);
-                index = end + inserts.Count - 1;
-            }
-            else
-            {
-                index = end - 1;
-            }
-        }
-        RemoveRedundantSourceSortMutationEvents(events);
-    }
-
-    private static void TrackLatestTraceValues(Dictionary<string, object?> latestValues, List<RuntimeTraceEvent> events, int start, int end)
-    {
-        for (int index = start; index < end; index += 1)
-        {
-            TrackLatestTraceValue(latestValues, events[index]);
-        }
-    }
-
-    private static void TrackLatestTraceValue(Dictionary<string, object?> latestValues, RuntimeTraceEvent traceEvent)
-    {
-        if (traceEvent.Kind is not ("read" or "write" or "snapshot") || traceEvent.Target is null)
-        {
-            return;
-        }
-
-        latestValues[TargetKey(traceEvent.Target)] = traceEvent.Value;
-    }
-
-    private static object? FindLatestLineValue(List<RuntimeTraceEvent> events, int start, int end, RuntimeTraceTarget target)
-    {
-        for (int index = end - 1; index >= start; index -= 1)
-        {
-            RuntimeTraceEvent traceEvent = events[index];
-            if (traceEvent.Kind is ("read" or "write" or "snapshot")
-                && traceEvent.Target is not null
-                && TargetsEqual(traceEvent.Target, target))
-            {
-                return traceEvent.Value;
-            }
-        }
-        return null;
-    }
-
-    private static bool TryFindLatestValueAfterMutation(
-        List<RuntimeTraceEvent> events,
-        int start,
-        int end,
-        RuntimeTraceTarget target,
-        string method,
-        out object? value)
-    {
-        bool sawMutation = false;
-        bool sawValue = false;
-        value = null;
-        for (int index = start; index < end; index += 1)
-        {
-            RuntimeTraceEvent traceEvent = events[index];
-            if (traceEvent.Kind == "mutate"
-                && string.Equals(traceEvent.Method, method, StringComparison.Ordinal)
-                && traceEvent.Target is not null
-                && TargetsEqual(traceEvent.Target, target))
-            {
-                sawMutation = true;
-                sawValue = false;
-                value = null;
-                continue;
-            }
-
-            if (sawMutation
-                && traceEvent.Kind is ("read" or "write" or "snapshot")
-                && traceEvent.Target is not null
-                && TargetsEqual(traceEvent.Target, target))
-            {
-                sawValue = true;
-                value = traceEvent.Value;
-            }
-        }
-
-        return sawValue;
-    }
-
-    private static bool TryDerivePostCollectionMutationValue(string method, object? baseValue, IReadOnlyList<object?> args, out object? postValue)
-    {
-        postValue = null;
-        if (baseValue is string || baseValue is not System.Collections.IEnumerable enumerable)
-        {
-            return false;
-        }
-
-        List<object?> values = enumerable.Cast<object?>().ToList();
-        if (method == "Sort")
-        {
-            if (!values.All(IsDeterministicallySortableTraceValue))
-            {
-                return false;
-            }
-            values.Sort(CompareTraceValues);
-            postValue = values;
-            return true;
-        }
-
-        if (method == "RemoveAt"
-            && args.Count >= 1
-            && TryCoerceIndex(args[0], out int index)
-            && index >= 0
-            && index < values.Count)
-        {
-            values.RemoveAt(index);
-            postValue = values;
-            return true;
-        }
-
-        return false;
-    }
-
-    private static bool HasPostCollectionWrite(List<RuntimeTraceEvent> events, int start, int end, RuntimeTraceTarget target, object? postValue)
-    {
-        for (int index = start; index < end; index += 1)
-        {
-            RuntimeTraceEvent traceEvent = events[index];
-            if (traceEvent.Kind == "write"
-                && traceEvent.Target is not null
-                && TargetsEqual(traceEvent.Target, target)
-                && TraceValuesEqual(traceEvent.Value, postValue))
-            {
-                return true;
-            }
-        }
-        return false;
-    }
-
-    private static bool TraceValuesEqual(object? left, object? right)
-    {
-        if (ReferenceEquals(left, right)) return true;
-        if (left is null || right is null) return false;
-        if (left is string || right is string) return object.Equals(left, right);
-        if (left is System.Collections.IEnumerable leftItems && right is System.Collections.IEnumerable rightItems)
-        {
-            IEnumerator<object?> leftEnumerator = leftItems.Cast<object?>().GetEnumerator();
-            IEnumerator<object?> rightEnumerator = rightItems.Cast<object?>().GetEnumerator();
-            while (true)
-            {
-                bool leftHasValue = leftEnumerator.MoveNext();
-                bool rightHasValue = rightEnumerator.MoveNext();
-                if (leftHasValue != rightHasValue) return false;
-                if (!leftHasValue) return true;
-                if (!TraceValuesEqual(leftEnumerator.Current, rightEnumerator.Current)) return false;
-            }
-        }
-        return object.Equals(left, right);
-    }
-
-    private static int CompareTraceValues(object? left, object? right)
-    {
-        if (left is null && right is null) return 0;
-        if (left is null) return -1;
-        if (right is null) return 1;
-        if (IsNumericTraceValue(left) && IsNumericTraceValue(right))
-        {
-            return Convert.ToDecimal(left, CultureInfo.InvariantCulture)
-                .CompareTo(Convert.ToDecimal(right, CultureInfo.InvariantCulture));
-        }
-        return string.CompareOrdinal(Convert.ToString(left, CultureInfo.InvariantCulture), Convert.ToString(right, CultureInfo.InvariantCulture));
-    }
-
-    private static bool IsDeterministicallySortableTraceValue(object? value)
-    {
-        return value is null
-            || value is string
-            || value is char
-            || value is bool
-            || value is byte
-            || value is sbyte
-            || value is short
-            || value is ushort
-            || value is int
-            || value is uint
-            || value is long
-            || value is ulong
-            || value is float
-            || value is double
-            || value is decimal;
-    }
-
-    private static bool IsNumericTraceValue(object value)
-    {
-        return value is byte or sbyte or short or ushort or int or uint or long or ulong or float or double or decimal;
-    }
-
-    private static bool TryCoerceIndex(object? value, out int index)
-    {
-        if (value is int intValue)
-        {
-            index = intValue;
-            return true;
-        }
-        if (value is long longValue && longValue >= int.MinValue && longValue <= int.MaxValue)
-        {
-            index = (int)longValue;
-            return true;
-        }
-        if (value is string text && int.TryParse(text, NumberStyles.Integer, CultureInfo.InvariantCulture, out int parsed))
-        {
-            index = parsed;
-            return true;
-        }
-        index = 0;
-        return false;
-    }
-
-    private static IEnumerable<RuntimeTraceEvent> CreateIndexedWriteEvents(RuntimeTraceEvent lineEvent, RuntimeTraceTarget target, object? postValue)
-    {
-        if (postValue is string || postValue is not System.Collections.IEnumerable enumerable)
-        {
-            yield break;
-        }
-
-        int index = 0;
-        foreach (object? item in enumerable)
-        {
-            yield return new RuntimeTraceEvent
-            {
-                Kind = "write",
-                RunId = lineEvent.RunId,
-                File = lineEvent.File,
-                Line = lineEvent.Line,
-                Target = new RuntimeTraceTarget
-                {
-                    Variable = target.Variable,
-                    Path = AppendPath(target.Path, index),
-                },
-                Value = item,
-                CallStack = lineEvent.CallStack,
-            };
-            index += 1;
-        }
-    }
-
-    private static RuntimeTraceTarget CloneTarget(RuntimeTraceTarget target)
-    {
-        return new RuntimeTraceTarget
-        {
-            Variable = target.Variable,
-            Path = target.Path?.ToList(),
-        };
-    }
-
-    private static List<object?> AppendPath(IReadOnlyList<object?>? path, object? value)
-    {
-        var next = path is null ? new List<object?>() : path.ToList();
-        next.Add(value);
-        return next;
-    }
-
-    private static string TargetKey(RuntimeTraceTarget target)
-    {
-        (string variable, List<object?>? pathParts) = CanonicalTargetParts(target);
-        string path = pathParts is null || pathParts.Count == 0
-            ? string.Empty
-            : string.Join("\u001f", pathParts.Select(part => Convert.ToString(part, CultureInfo.InvariantCulture)));
-        return $"{variable}\u001e{path}";
-    }
-
-    private static bool TargetsEqual(RuntimeTraceTarget left, RuntimeTraceTarget right)
-    {
-        (string leftVariable, List<object?>? leftPath) = CanonicalTargetParts(left);
-        (string rightVariable, List<object?>? rightPath) = CanonicalTargetParts(right);
-        return string.Equals(leftVariable, rightVariable, StringComparison.Ordinal)
-            && PathsEqual(leftPath, rightPath);
-    }
-
-    private static (string Variable, List<object?>? Path) CanonicalTargetParts(RuntimeTraceTarget target)
-    {
-        if (target.Path is not null && target.Path.Count > 0)
-        {
-            return (target.Variable, target.Path.ToList());
-        }
-
-        string[] parts = target.Variable.Split('.', StringSplitOptions.RemoveEmptyEntries);
-        if (parts.Length <= 1)
-        {
-            return (target.Variable, target.Path?.ToList());
-        }
-
-        return (parts[0], parts.Skip(1).Cast<object?>().ToList());
-    }
-
-    private static object? ParseMutationArgument(string raw)
-    {
-        return int.TryParse(raw, NumberStyles.Integer, CultureInfo.InvariantCulture, out int integer)
-            ? integer
-            : raw;
-    }
-
-    private static bool PathsEqual(IReadOnlyList<object?>? left, IReadOnlyList<object?>? right)
-    {
-        if (left is null || left.Count == 0) return right is null || right.Count == 0;
-        if (right is null || right.Count == 0) return false;
-        if (left.Count != right.Count) return false;
-        for (int index = 0; index < left.Count; index += 1)
-        {
-            if (!object.Equals(left[index], right[index])) return false;
-        }
-        return true;
-    }
-
     private static string CompiledArtifactKey(CSharpExecuteRequest request)
     {
         StringBuilder key = new();
@@ -1346,47 +1085,209 @@ public static partial class CompilerHost
         return true;
     }
 
-    private static CSharpCompilation CreateCompilation(CSharpExecuteRequest request)
+    private static CSharpCompilation CreateCompilation(
+        CSharpExecuteRequest request,
+        IDictionary<string, object>? timings = null
+    )
     {
+        Stopwatch phaseStopwatch = Stopwatch.StartNew();
         SyntaxTree originalUserTree = CSharpSyntaxTree.ParseText(
             request.Source,
-            ParseOptions,
+            CompilerAuthorityState.ParseOptions,
             path: UserCodePath
         );
+        RecordCompilePhase(timings, "compileParseUserMs", phaseStopwatch);
+
+        phaseStopwatch.Restart();
         ValidateUserSourcePolicy(originalUserTree);
+        RecordCompilePhase(timings, "compilePolicyValidationMs", phaseStopwatch);
+
+        phaseStopwatch.Restart();
         SyntaxTree executableUserTree = IsScriptExecutionRequest(request)
             ? CreateScriptUserTree(originalUserTree)
             : originalUserTree;
+        RecordCompilePhase(timings, "compileScriptTransformMs", phaseStopwatch);
+
+        phaseStopwatch.Restart();
         SyntaxTree userTree = TraceRewriter.Instrument(executableUserTree, request.Trace);
-        SyntaxTree globalUsingsTree = CSharpSyntaxTree.ParseText(
-            GenerateGlobalUsingsSource(),
-            ParseOptions,
-            path: "TraceCodeGlobalUsings.cs"
+        RecordCompilePhase(timings, "compileTraceRewriteMs", phaseStopwatch);
+
+        phaseStopwatch.Restart();
+        bool embedLearnerRuntime = UserDeclaresNodeSupport(originalUserTree);
+        if (timings is not null)
+        {
+            timings["compilePrecompiledRuntime"] = !embedLearnerRuntime;
+        }
+        CSharpCompilation trustedTemplate = GetTrustedCompilationTemplate(
+            originalUserTree,
+            embedLearnerRuntime,
+            timings
         );
-        SyntaxTree runtimeTree = CSharpSyntaxTree.ParseText(
-            GenerateRuntimeSource(request.Inputs, originalUserTree),
-            ParseOptions,
-            path: "TraceCodeRuntime.cs"
-        );
+        RecordCompilePhase(timings, "compileTrustedTemplateAccessMs", phaseStopwatch);
+
+        phaseStopwatch.Restart();
+        string driverSource = request.PreparedProgram
+            ? GeneratePreparedDriverSource(originalUserTree, request)
+            : GenerateDriverSource(originalUserTree, request);
+        RecordCompilePhase(timings, "compileGenerateDriverMs", phaseStopwatch);
+        phaseStopwatch.Restart();
         SyntaxTree driverTree = CSharpSyntaxTree.ParseText(
-            request.PreparedProgram
-                ? GeneratePreparedDriverSource(originalUserTree, request)
-                : GenerateDriverSource(originalUserTree, request),
-            ParseOptions,
+            driverSource,
+            CompilerAuthorityState.ParseOptions,
             path: "TraceCodeDriver.cs"
         );
+        RecordCompilePhase(timings, "compileParseDriverMs", phaseStopwatch);
 
+        phaseStopwatch.Restart();
+        CSharpCompilation compilation = trustedTemplate
+            .AddSyntaxTrees(userTree, driverTree)
+            .WithAssemblyName("TraceCode.UserCode." + Guid.NewGuid().ToString("N"));
+        RecordCompilePhase(timings, "compileCreateCompilationMs", phaseStopwatch);
+        return compilation;
+    }
+
+    private static CSharpCompilation GetTrustedCompilationTemplate(
+        SyntaxTree originalUserTree,
+        bool embedLearnerRuntime,
+        IDictionary<string, object>? timings
+    )
+    {
+        Stopwatch phaseStopwatch = Stopwatch.StartNew();
+#if TRACECODE_PRECOMPILED_JUDGE_RUNTIME
+        string preludeSource = embedLearnerRuntime
+            ? GenerateNodePreludeSource(originalUserTree)
+            : "precompiled-trusted-judge-runtime-v1";
+#else
+        string preludeSource = GenerateNodePreludeSource(originalUserTree);
+#endif
+        RecordCompilePhase(timings, "compileGenerateRuntimePreludeMs", phaseStopwatch);
+
+        lock (CompilerAuthorityState.TrustedCompilationTemplatesLock)
+        {
+            if (CompilerAuthorityState.TrustedCompilationTemplates.TryGetValue(
+                preludeSource,
+                out CSharpCompilation? cached
+            ))
+            {
+                timings?["compileTrustedTemplateHit"] = true;
+                timings?["compileGenerateGlobalUsingsMs"] = 0d;
+                timings?["compileParseGlobalUsingsMs"] = 0d;
+                timings?["compileGenerateRuntimeMs"] = 0d;
+                timings?["compileParseRuntimeMs"] = 0d;
+                timings?["compileReferenceAccessMs"] = 0d;
+                return cached;
+            }
+
+            timings?["compileTrustedTemplateHit"] = false;
+
+            phaseStopwatch.Restart();
+            string globalUsingsSource = GenerateGlobalUsingsSource();
+            RecordCompilePhase(timings, "compileGenerateGlobalUsingsMs", phaseStopwatch);
+            phaseStopwatch.Restart();
+            SyntaxTree globalUsingsTree = CSharpSyntaxTree.ParseText(
+                globalUsingsSource,
+                CompilerAuthorityState.ParseOptions,
+                path: "TraceCodeGlobalUsings.cs"
+            );
+            RecordCompilePhase(timings, "compileParseGlobalUsingsMs", phaseStopwatch);
+
+#if TRACECODE_PRECOMPILED_JUDGE_RUNTIME
+            if (!embedLearnerRuntime)
+            {
+                timings?["compileGenerateRuntimeMs"] = 0d;
+                timings?["compileParseRuntimeMs"] = 0d;
+                SyntaxTree[] precompiledSyntaxTrees = new[] { globalUsingsTree };
+                phaseStopwatch.Restart();
+                MetadataReference[] precompiledReferences =
+                    CompilerAuthorityState.CachedReferences.Value;
+                if (timings is not null)
+                {
+                    timings["compileReferenceCount"] = precompiledReferences.Length;
+                }
+                RecordCompilePhase(timings, "compileReferenceAccessMs", phaseStopwatch);
+                CSharpCompilation precompiledTemplate = CreateTrustedCompilationTemplate(
+                    preludeSource,
+                    precompiledSyntaxTrees,
+                    precompiledReferences
+                );
+                CompilerAuthorityState.TrustedCompilationTemplates[preludeSource] =
+                    precompiledTemplate;
+                return precompiledTemplate;
+            }
+#endif
+            phaseStopwatch.Restart();
+            string runtimeSource = GenerateRuntimeSource(preludeSource);
+            RecordCompilePhase(timings, "compileGenerateRuntimeMs", phaseStopwatch);
+            phaseStopwatch.Restart();
+            SyntaxTree runtimeTree = CSharpSyntaxTree.ParseText(
+                runtimeSource,
+                CompilerAuthorityState.ParseOptions,
+                path: "TraceCodeRuntime.cs"
+            );
+            RecordCompilePhase(timings, "compileParseRuntimeMs", phaseStopwatch);
+            SyntaxTree[] trustedSyntaxTrees = new[] { globalUsingsTree, runtimeTree };
+
+            phaseStopwatch.Restart();
+            MetadataReference[] references =
+                CompilerAuthorityState.CachedReferences.Value;
+            if (timings is not null)
+            {
+                timings["compileReferenceCount"] = references.Length;
+            }
+            RecordCompilePhase(timings, "compileReferenceAccessMs", phaseStopwatch);
+
+            CSharpCompilation template = CreateTrustedCompilationTemplate(
+                preludeSource,
+                trustedSyntaxTrees,
+                references
+            );
+            CompilerAuthorityState.TrustedCompilationTemplates[preludeSource] =
+                template;
+            return template;
+        }
+    }
+
+    private static CSharpCompilation CreateTrustedCompilationTemplate(
+        string assemblySuffix,
+        IEnumerable<SyntaxTree> syntaxTrees,
+        IEnumerable<MetadataReference> references
+    )
+    {
+        string assemblyNameSuffix = Convert.ToHexString(
+            SHA256.HashData(Encoding.UTF8.GetBytes(assemblySuffix))
+        )[..12];
         return CSharpCompilation.Create(
-            assemblyName: "TraceCode.UserCode." + Guid.NewGuid().ToString("N"),
-            syntaxTrees: new[] { globalUsingsTree, userTree, runtimeTree, driverTree },
-            references: CachedReferences.Value,
+            assemblyName: "TraceCode.TrustedCompilationTemplate." + assemblyNameSuffix,
+            syntaxTrees: syntaxTrees,
+            references: references,
             options: new CSharpCompilationOptions(
                 OutputKind.DynamicallyLinkedLibrary,
-                optimizationLevel: OptimizationLevel.Release,
+                optimizationLevel: CompilerAuthorityState.JudgeOptimizationLevel,
                 concurrentBuild: false,
                 allowUnsafe: false
             )
         );
+    }
+
+    private static bool UserDeclaresNodeSupport(SyntaxTree userTree)
+    {
+        return userTree
+            .GetCompilationUnitRoot()
+            .DescendantNodes()
+            .OfType<ClassDeclarationSyntax>()
+            .Any(type => type.Identifier.ValueText is "ListNode" or "TreeNode");
+    }
+
+    private static void RecordCompilePhase(
+        IDictionary<string, object>? timings,
+        string name,
+        Stopwatch stopwatch
+    )
+    {
+        if (timings is not null)
+        {
+            timings[name] = stopwatch.Elapsed.TotalMilliseconds;
+        }
     }
 
     private static CSharpCompilation CreateProjectCompilation(CSharpProjectCommandRequest request)
@@ -1395,18 +1296,21 @@ public static partial class CompilerHost
         {
             CSharpSyntaxTree.ParseText(
                 SourceText.From(GenerateGlobalUsingsSource(), Encoding.UTF8),
-                ParseOptions,
+                CompilerAuthorityState.ParseOptions,
                 path: "TraceCodeGlobalUsings.cs"
             ),
             CSharpSyntaxTree.ParseText(
                 SourceText.From(GenerateProjectRuntimeSource(), Encoding.UTF8),
-                ParseOptions,
+                CompilerAuthorityState.ParseOptions,
                 path: "TraceCodeProjectRuntime.cs"
             ),
         };
 
         HashSet<string> compileFilePaths = ResolveProjectCompileFilePaths(request);
-        CSharpParseOptions projectParseOptions = ParseOptions.WithPreprocessorSymbols(ResolveProjectDefineConstants(request));
+        CSharpParseOptions projectParseOptions =
+            CompilerAuthorityState.ParseOptions.WithPreprocessorSymbols(
+                ResolveProjectDefineConstants(request)
+            );
         foreach (CSharpProjectFile file in request.Project.Files)
         {
             string path = NormalizeProjectPath(file.Path);
@@ -1438,7 +1342,9 @@ public static partial class CompilerHost
         return CSharpCompilation.Create(
             assemblyName: "TraceCode.Project." + Guid.NewGuid().ToString("N"),
             syntaxTrees: syntaxTrees,
-            references: CachedReferences.Value.Concat(ResolveProjectMetadataReferences(request)),
+            references: CompilerAuthorityState.CachedReferences.Value.Concat(
+                ResolveProjectMetadataReferences(request)
+            ),
             options: options
         );
     }
@@ -2096,7 +2002,7 @@ public static partial class CompilerHost
         SyntaxNode rewrittenRoot = new ProjectConsoleRewriter(root).Visit(root) ?? root;
         return CSharpSyntaxTree.Create(
             (CSharpSyntaxNode)rewrittenRoot,
-            ParseOptions,
+            CompilerAuthorityState.ParseOptions,
             path: tree.FilePath,
             encoding: Encoding.UTF8
         );
@@ -3531,10 +3437,8 @@ public sealed class ProjectFileStream : System.IO.FileStream
             && string.IsNullOrWhiteSpace(request.FunctionName);
     }
 
-    public static string GetCurrentInputsJson()
-    {
-        return currentInputsJson;
-    }
+    public static string GetCurrentInputsJson() =>
+        JudgeRuntimeContext.GetCurrentInputsJson();
 
     private static void ValidateExecutionInputs(IReadOnlyDictionary<string, JsonElement> inputs)
     {
@@ -3614,7 +3518,7 @@ public sealed class ProjectFileStream : System.IO.FileStream
     {
         return CSharpSyntaxTree.ParseText(
             GenerateScriptUserSource(originalUserTree),
-            ParseOptions,
+            CompilerAuthorityState.ParseOptions,
             path: UserCodePath
         );
     }
@@ -3737,7 +3641,7 @@ public static class TraceCodeDriver
 {
     public static object? Run()
     {
-        using JsonDocument inputs = JsonDocument.Parse(TraceCode.CSharpHost.CompilerHost.GetCurrentInputsJson());
+        using JsonDocument inputs = JsonDocument.Parse(TraceCode.CSharpHost.JudgeRuntimeContext.GetCurrentInputsJson());
         JsonElement rawInputs = inputs.RootElement;
         MethodInfo method = SelectSolutionMethod(rawInputs);
         ParameterInfo[] parameters = method.GetParameters();
@@ -4410,8 +4314,12 @@ global using System.Text.RegularExpressions;
 
     private static string GenerateRuntimeSource(IReadOnlyDictionary<string, JsonElement> inputs, SyntaxTree userTree)
     {
-        string preludeSource = GenerateNodePreludeSource(userTree);
+        _ = inputs;
+        return GenerateRuntimeSource(GenerateNodePreludeSource(userTree));
+    }
 
+    private static string GenerateRuntimeSource(string preludeSource)
+    {
         return $$"""
 using System;
 using System.Collections.Generic;
@@ -4499,7 +4407,7 @@ public class TreeNode
     {
         return """
         private static JsonElement Root => JsonSerializer.Deserialize<JsonElement>(
-            TraceCode.CSharpHost.CompilerHost.GetCurrentInputsJson(),
+            TraceCode.CSharpHost.JudgeRuntimeContext.GetCurrentInputsJson(),
             JsonOptions
         );
 
