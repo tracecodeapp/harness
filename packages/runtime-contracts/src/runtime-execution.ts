@@ -17,10 +17,6 @@ export type ExecutionStatus =
 
 export interface RuntimeExecutionTimings {
   totalMs?: number;
-  /** UTF-8 trace-event bytes retained by the runtime before transport. */
-  traceBytes?: number;
-  /** Runtime-enforced byte ceiling for retained trace events. */
-  traceByteBudget?: number;
   initMs?: number;
   warmupMs?: number;
   compilerLoadMs?: number;

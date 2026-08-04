@@ -9065,20 +9065,6 @@ async function executeProjectPython(
   );
 }
 
-async function executeCodeBatch(code, functionName, inputBatch, executionStyle = 'function') {
-  await loadPyodideInstance();
-  const runtimeCore = loadPyodideRuntimeCore();
-  return withPythonUserAuthorityLockdown(() =>
-    runtimeCore.executeCodeBatch(
-      buildRuntimeDeps(),
-      code,
-      functionName,
-      inputBatch,
-      executionStyle
-    )
-  );
-}
-
 async function preparePythonProgram(request) {
   await loadPyodideInstance();
   const runtimeCore = loadPyodideRuntimeCore();
@@ -9170,14 +9156,6 @@ async function processMessage(data) {
           executionStyle ?? 'function',
           guestGuardOptionsFromLimits(payload.limits)
         );
-        analyzerInitialized = false;
-        trustedPythonWorkerPostMessage({ id, type: 'execute-result', payload: result, protocolToken });
-        break;
-      }
-
-      case 'execute-code-batch': {
-        const { code, functionName, inputBatch, executionStyle } = payload;
-        const result = await executeCodeBatch(code, functionName, inputBatch, executionStyle ?? 'function');
         analyzerInitialized = false;
         trustedPythonWorkerPostMessage({ id, type: 'execute-result', payload: result, protocolToken });
         break;

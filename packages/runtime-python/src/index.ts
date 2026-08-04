@@ -18,18 +18,6 @@ export {
   type PythonBrowserRuntimeProviderOptions,
 } from './browser-runtime-provider';
 export {
-  createPythonRuntimeImageFactory,
-  type PythonRuntimeImage,
-  type PythonRuntimeImageFactory,
-  type PythonRuntimeImageFactoryOptions,
-  type PythonRuntimeImageMetrics,
-} from './python-runtime-image';
-export {
-  TRACECODE_PYTHON_RUNTIME_VERSION,
-  resolveBuiltInPythonRuntimeAssets,
-  type BuiltInPythonRuntimeAssets,
-} from './python-runtime-assets';
-export {
   createBrowserPythonProjectRunner,
   type BrowserPythonProjectCommandRunner,
   type BrowserPythonProjectRunnerOptions,

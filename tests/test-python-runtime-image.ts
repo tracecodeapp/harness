@@ -23,39 +23,48 @@ const immutable = {
   mutability: 'immutable',
   address: 'content',
 } as const;
-const factory = createPythonRuntimeImageFactory({
-  descriptor: {
+
+function runtimeImageDescriptor(name: string) {
+  return {
     protocolVersion: 'tracecode-python-runtime-image-v1',
     engine: 'chromium',
     pythonHashSeed: '0',
     wasm: {
-      url: 'https://runtime.test/python.wasm',
+      url: `https://runtime.test/${name}.wasm`,
       integrity: 'sha256-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=',
       mediaType: 'application/wasm',
       size: wasmBytes.byteLength,
       delivery: immutable,
     },
     snapshot: {
-      url: 'https://runtime.test/python.snapshot',
+      url: `https://runtime.test/${name}.snapshot`,
       integrity: 'sha256-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=',
       mediaType: 'application/octet-stream',
       size: snapshotBytes.byteLength,
       delivery: immutable,
     },
-  },
+  } as const;
+}
+
+function runtimeImageResponse(input: RequestInfo | URL): Response {
+  const url = String(input);
+  const bytes = url.endsWith('.wasm') ? wasmBytes : snapshotBytes;
+  return new Response(bytes, {
+    status: 200,
+    headers: {
+      'content-length': String(bytes.byteLength),
+      'content-type': url.endsWith('.wasm')
+        ? 'application/wasm'
+        : 'application/octet-stream',
+    },
+  });
+}
+
+const factory = createPythonRuntimeImageFactory({
+  descriptor: runtimeImageDescriptor('python'),
   fetch: async (input) => {
-    const url = String(input);
-    requests.push(url);
-    const bytes = url.endsWith('.wasm') ? wasmBytes : snapshotBytes;
-    return new Response(bytes, {
-      status: 200,
-      headers: {
-        'content-length': String(bytes.byteLength),
-        'content-type': url.endsWith('.wasm')
-          ? 'application/wasm'
-          : 'application/octet-stream',
-      },
-    });
+    requests.push(String(input));
+    return runtimeImageResponse(input);
   },
 });
 
@@ -78,11 +87,6 @@ assertCondition(
     first.snapshot.byteLength === snapshotBytes.byteLength,
   'Runtime-image factory must retain one clean snapshot backing array.'
 );
-assertCondition(
-  factory.metrics()?.snapshotBytes === snapshotBytes.byteLength,
-  'Runtime-image factory must expose its retained snapshot footprint.'
-);
-
 const compileStreamingDescriptor = Object.getOwnPropertyDescriptor(
   WebAssembly,
   'compileStreaming'
@@ -98,38 +102,8 @@ Object.defineProperty(WebAssembly, 'compileStreaming', {
 });
 try {
   const fallbackFactory = createPythonRuntimeImageFactory({
-    descriptor: {
-      protocolVersion: 'tracecode-python-runtime-image-v1',
-      engine: 'chromium',
-      pythonHashSeed: '0',
-      wasm: {
-        url: 'https://runtime.test/fallback.wasm',
-        integrity: 'sha256-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=',
-        mediaType: 'application/wasm',
-        size: wasmBytes.byteLength,
-        delivery: immutable,
-      },
-      snapshot: {
-        url: 'https://runtime.test/fallback.snapshot',
-        integrity: 'sha256-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=',
-        mediaType: 'application/octet-stream',
-        size: snapshotBytes.byteLength,
-        delivery: immutable,
-      },
-    },
-    fetch: async (input) => {
-      const url = String(input);
-      const bytes = url.endsWith('.wasm') ? wasmBytes : snapshotBytes;
-      return new Response(bytes, {
-        status: 200,
-        headers: {
-          'content-length': String(bytes.byteLength),
-          'content-type': url.endsWith('.wasm')
-            ? 'application/wasm'
-            : 'application/octet-stream',
-        },
-      });
-    },
+    descriptor: runtimeImageDescriptor('fallback'),
+    fetch: async (input) => runtimeImageResponse(input),
   });
   const fallbackImage = await fallbackFactory.acquire();
   assertCondition(
@@ -162,20 +136,13 @@ await factory.acquire().then(
   }
 );
 
-const expectedSnapshots = {
-  chromium:
-    'f6e5a59006c18656d10b591681fe6bd009b7d1385ec395a3b0080d333bbb8151',
-  firefox:
-    'a334a4720d75dbc92c2062f41eb7cab2a1cd98192748ad09f43fd1ba5cce3ba9',
-  webkit:
-    'ebf430bc0a7a2408af4c736103fba70711058e0f9e60a890d50ed2e1d7076efb',
-} as const;
-for (const [engine, expectedHash] of Object.entries(expectedSnapshots)) {
+const engines = ['chromium', 'firefox', 'webkit'] as const;
+for (const engine of engines) {
   const builtIn = resolveBuiltInPythonRuntimeAssets(
     {
       pythonWorker: '/workers/python-worker.js',
     } as never,
-    engine as keyof typeof expectedSnapshots
+    engine
   );
   assertCondition(
     builtIn.loaderUrl === '/workers/python/pyodide-0.29.3/pyodide.js' &&
@@ -192,18 +159,23 @@ for (const [engine, expectedHash] of Object.entries(expectedSnapshots)) {
   );
   assertCondition(
     bytes.byteLength === builtIn.image.snapshot.size &&
-      createHash('sha256').update(bytes).digest('hex') === expectedHash,
+      builtIn.image.snapshot.integrity ===
+        `sha256-${createHash('sha256').update(bytes).digest('base64')}`,
     `Shipped ${engine} snapshot must match its immutable descriptor.`
   );
 }
 
+const builtIn = resolveBuiltInPythonRuntimeAssets(
+  { pythonWorker: '/workers/python-worker.js' } as never,
+  'chromium'
+);
 const shippedWasm = await readFile(
   'workers/python/pyodide-0.29.3/pyodide.asm.wasm'
 );
 assertCondition(
-  shippedWasm.byteLength === 8_647_684 &&
-    createHash('sha256').update(shippedWasm).digest('hex') ===
-      'e2f4ee75b325e35eb31bfb8c613d4dd5098f5502c156a97847686875b5025480',
+  shippedWasm.byteLength === builtIn.image.wasm.size &&
+    builtIn.image.wasm.integrity ===
+      `sha256-${createHash('sha256').update(shippedWasm).digest('base64')}`,
   'Shipped Pyodide Wasm must match the immutable runtime-image descriptor.'
 );
 
@@ -282,7 +254,6 @@ for (const pendingGate of [
         }
         return lifecycleImage;
       },
-      metrics: () => undefined,
       dispose() {},
     },
   });

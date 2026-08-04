@@ -42,7 +42,6 @@ async function main(t: TestContext): Promise<void> {
     'python/pyodide-0.29.3/snapshots/firefox.bin',
     'python/pyodide-0.29.3/snapshots/webkit.bin',
     'shared/runtime-kernel-policy-classic.js',
-    'shared/tracekernel-syscall-client.js',
     'javascript-worker.js',
     'javascript-project-worker.js',
     'java-worker.js',

@@ -10,27 +10,14 @@ export interface PythonRuntimeImage {
   readonly pythonHashSeed: string;
 }
 
-export interface PythonRuntimeImageMetrics {
-  readonly wasmCompileMs: number;
-  readonly snapshotFetchMs: number;
-  readonly snapshotBytes: number;
-}
-
 export interface PythonRuntimeImageFactory {
   acquire(): Promise<PythonRuntimeImage>;
-  metrics(): PythonRuntimeImageMetrics | undefined;
   dispose(): void;
 }
 
-export interface PythonRuntimeImageFactoryOptions {
+interface PythonRuntimeImageFactoryOptions {
   readonly descriptor: PythonRuntimeImageAssetDescriptor;
   readonly fetch?: typeof globalThis.fetch;
-}
-
-function responseError(name: string, response: Response): Error {
-  return new Error(
-    `Python runtime image ${name} request returned HTTP ${response.status}.`
-  );
 }
 
 function fetchOptions(
@@ -56,6 +43,27 @@ function assertDeclaredLength(
   }
 }
 
+async function fetchImageAsset(
+  fetchImplementation: typeof globalThis.fetch,
+  name: string,
+  descriptor: PythonRuntimeImageAssetDescriptor['wasm']
+): Promise<Response> {
+  const response = await fetchImplementation(
+    descriptor.url,
+    fetchOptions(descriptor)
+  );
+  if (!response.ok || response.type === 'opaque') {
+    throw new Error(
+      `Python runtime image ${name} request returned HTTP ${response.status}.`
+    );
+  }
+  const declaredLength = Number(response.headers.get('content-length'));
+  if (Number.isFinite(declaredLength) && declaredLength > 0) {
+    assertDeclaredLength(name, descriptor, declaredLength);
+  }
+  return response;
+}
+
 /**
  * Page-lifetime owner for immutable CPython/Wasm startup state.
  *
@@ -72,32 +80,21 @@ export function createPythonRuntimeImageFactory(
   }
   let disposed = false;
   let imagePromise: Promise<PythonRuntimeImage> | null = null;
-  let latestMetrics: PythonRuntimeImageMetrics | undefined;
 
   const build = async (): Promise<PythonRuntimeImage> => {
     if (disposed) throw new Error('Python runtime image factory is disposed.');
     const compileWasm = async () => {
-      const startedAt = performance.now();
-      const response = await fetchImplementation(
-        options.descriptor.wasm.url,
-        fetchOptions(options.descriptor.wasm)
+      const response = await fetchImageAsset(
+        fetchImplementation,
+        'Wasm',
+        options.descriptor.wasm
       );
-      if (!response.ok || response.type === 'opaque') {
-        throw responseError('Wasm', response);
-      }
       const declaredContentLength = Number(
         response.headers.get('content-length')
       );
       const hasUsableContentLength =
         Number.isFinite(declaredContentLength) &&
         declaredContentLength > 0;
-      if (hasUsableContentLength) {
-        assertDeclaredLength(
-          'Wasm',
-          options.descriptor.wasm,
-          declaredContentLength
-        );
-      }
       const compileBuffered = async (
         bufferedResponse: Response
       ): Promise<WebAssembly.Module> => {
@@ -142,41 +139,27 @@ export function createPythonRuntimeImageFactory(
       } else {
         compiledModule = await compileBuffered(response);
       }
-      return {
-        compiledModule,
-        wasmCompileMs: performance.now() - startedAt,
-      };
+      return compiledModule;
     };
     const loadSnapshot = async () => {
-      const startedAt = performance.now();
-      const response = await fetchImplementation(
-        options.descriptor.snapshot.url,
-        fetchOptions(options.descriptor.snapshot)
+      const response = await fetchImageAsset(
+        fetchImplementation,
+        'snapshot',
+        options.descriptor.snapshot
       );
-      if (!response.ok || response.type === 'opaque') {
-        throw responseError('snapshot', response);
-      }
       const snapshot = new Uint8Array(await response.arrayBuffer());
       assertDeclaredLength(
         'snapshot',
         options.descriptor.snapshot,
         snapshot.byteLength
       );
-      return {
-        snapshot,
-        snapshotFetchMs: performance.now() - startedAt,
-      };
+      return snapshot;
     };
-    const [
-      { compiledModule, wasmCompileMs },
-      { snapshot, snapshotFetchMs },
-    ] = await Promise.all([compileWasm(), loadSnapshot()]);
+    const [compiledModule, snapshot] = await Promise.all([
+      compileWasm(),
+      loadSnapshot(),
+    ]);
     if (disposed) throw new Error('Python runtime image factory was disposed while loading.');
-    latestMetrics = Object.freeze({
-      wasmCompileMs,
-      snapshotFetchMs,
-      snapshotBytes: snapshot.byteLength,
-    });
     return Object.freeze({
       protocolVersion: PYTHON_RUNTIME_IMAGE_PROTOCOL_VERSION,
       compiledModule,
@@ -196,13 +179,9 @@ export function createPythonRuntimeImageFactory(
       });
       return imagePromise;
     },
-    metrics(): PythonRuntimeImageMetrics | undefined {
-      return latestMetrics;
-    },
     dispose(): void {
       disposed = true;
       imagePromise = null;
-      latestMetrics = undefined;
     },
   });
 }

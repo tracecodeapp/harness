@@ -2,11 +2,7 @@ import {
   PYTHON_RUNTIME_IMAGE_PROTOCOL_VERSION,
   type BrowserRuntimeEngine,
   type BrowserRuntimeAssets,
-  type PythonRuntimeImageAssetDescriptor,
 } from '@tracecode/runtime-browser';
-
-export const TRACECODE_PYTHON_RUNTIME_VERSION =
-  'pyodide-0.29.3-cpython-3.13.2';
 
 const RUNTIME_DIRECTORY = 'python/pyodide-0.29.3';
 const IMMUTABLE_VERSIONED_DELIVERY = Object.freeze({
@@ -54,12 +50,6 @@ function assertImageEngine(
   }
 }
 
-export interface BuiltInPythonRuntimeAssets {
-  readonly loaderUrl: string;
-  readonly indexUrl: string;
-  readonly image: PythonRuntimeImageAssetDescriptor;
-}
-
 /**
  * Resolves the Python 0.15 runtime image shipped by the Harness asset bundle.
  *
@@ -70,7 +60,7 @@ export interface BuiltInPythonRuntimeAssets {
 export function resolveBuiltInPythonRuntimeAssets(
   assets: BrowserRuntimeAssets,
   engine: BrowserRuntimeEngine
-): BuiltInPythonRuntimeAssets {
+) {
   assertImageEngine(engine);
   const runtimeBase = siblingAssetUrl(
     assets.pythonWorker,

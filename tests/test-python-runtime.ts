@@ -83,24 +83,6 @@ type RuntimeCore = {
     executionStyle?: string,
     options?: Record<string, unknown>
   ) => Promise<{ success: boolean; output: unknown; error?: string; consoleOutput?: string[]; timeoutReason?: string }>;
-  executeCodeBatch: (
-    deps: RuntimeDeps & {
-      INTERVIEW_GUARD_DEFAULTS: {
-        maxLineEvents: number;
-        maxSingleLineHits: number;
-        maxCallDepth: number;
-        maxMemoryBytes: number;
-        memoryCheckEvery: number;
-      };
-      loadPyodideInstance: () => Promise<void>;
-      getPyodide: () => { runPythonAsync: (code: string) => Promise<string> };
-      performanceNow: () => number;
-    },
-    code: string,
-    functionName: string,
-    inputBatch: Array<Record<string, unknown>>,
-    executionStyle?: string
-  ) => Promise<{ success: boolean; results?: Array<{ success: boolean; output: unknown; error?: string }>; error?: string; consoleOutput?: string[] }>;
 };
 
 type RuntimeDeps = {
@@ -3895,118 +3877,6 @@ async function assertExecuteCodeGuestLimitsReportStructuredTrips(): Promise<void
   console.log('PASS: Python executeCode guest limits report structured timeoutReason');
 }
 
-async function assertExecuteCodeBatchIsolatesGlobalsAndMutableInputs(): Promise<void> {
-  const runtime = await loadRuntimeCore();
-  let now = 0;
-  const deps = {
-    PYTHON_CLASS_DEFINITIONS_SNIPPET: PYTHON_CLASS_DEFINITIONS,
-    PYTHON_CONVERSION_HELPERS_SNIPPET: PYTHON_CONVERSION_HELPERS,
-    PYTHON_TRACE_SERIALIZE_FUNCTION_SNIPPET: PYTHON_TRACE_SERIALIZE_FUNCTION,
-    PYTHON_EXECUTE_SERIALIZE_FUNCTION_SNIPPET: PYTHON_EXECUTE_SERIALIZE_FUNCTION,
-    INTERVIEW_GUARD_DEFAULTS: {
-      maxLineEvents: 10000,
-      maxSingleLineHits: 1000,
-      maxCallDepth: 100,
-      maxMemoryBytes: 8 * 1024 * 1024,
-      memoryCheckEvery: 10,
-    },
-    toPythonLiteral,
-    loadPyodideInstance: async () => {},
-    getPyodide: () => ({
-      runPythonAsync: async (code: string) => runPythonAsyncLikePyodide(code),
-    }),
-    performanceNow: () => ++now,
-  };
-
-  const globalBatch = await runtime.executeCodeBatch(
-    deps,
-    `seen = []
-def solve(x):
-    seen.append(x)
-    return len(seen)`,
-    'solve',
-    [{ x: 1 }, { x: 2 }],
-    'function'
-  );
-  assertCondition(globalBatch.success === true, `Python executeCodeBatch should succeed: ${JSON.stringify(globalBatch)}`);
-  assertCondition(
-    JSON.stringify(globalBatch.results?.map((result) => result.output)) === JSON.stringify([1, 1]),
-    `Python executeCodeBatch should isolate user globals per case: ${JSON.stringify(globalBatch)}`
-  );
-
-  const preludeBatch = await runtime.executeCodeBatch(
-    deps,
-    `def solve(items):
-    counts = Counter(items)
-    q = deque([counts["a"]])
-    return q.pop()`,
-    'solve',
-    [{ items: ['a', 'b', 'a'] }, { items: ['a'] }],
-    'function'
-  );
-  assertCondition(preludeBatch.success === true, `Python executeCodeBatch should expose default imports per case: ${JSON.stringify(preludeBatch)}`);
-  assertCondition(
-    JSON.stringify(preludeBatch.results?.map((result) => result.output)) === JSON.stringify([2, 1]),
-    `Python executeCodeBatch should preserve default prelude imports: ${JSON.stringify(preludeBatch)}`
-  );
-
-  const scriptBatch = await runtime.executeCodeBatch(
-    deps,
-    `result = x + 1`,
-    '',
-    [{ x: 1 }, { x: 4 }],
-    'function'
-  );
-  assertCondition(scriptBatch.success === true, `Python executeCodeBatch script mode should succeed: ${JSON.stringify(scriptBatch)}`);
-  assertCondition(
-    JSON.stringify(scriptBatch.results?.map((result) => result.output)) === JSON.stringify([2, 5]),
-    `Python executeCodeBatch script mode should return per-case result globals: ${JSON.stringify(scriptBatch)}`
-  );
-
-  const customObjectBatch = await runtime.executeCodeBatch(
-    deps,
-    `class Box:
-    def __init__(self, value):
-        self.value = value
-def solve(box):
-    return box.value`,
-    'solve',
-    [{ box: { __type__: 'Box', value: 3 } }, { box: { __type__: 'Box', value: 8 } }],
-    'function'
-  );
-  assertCondition(customObjectBatch.success === true, `Python executeCodeBatch custom object case should succeed: ${JSON.stringify(customObjectBatch)}`);
-  assertCondition(
-    JSON.stringify(customObjectBatch.results?.map((result) => result.output)) === JSON.stringify([3, 8]),
-    `Python executeCodeBatch should materialize custom objects from the per-case env: ${JSON.stringify(customObjectBatch)}`
-  );
-
-  const sharedHead = { __type__: 'ListNode', val: 1, next: { __type__: 'ListNode', val: 2, next: null } };
-  const mutableBatch = await runtime.executeCodeBatch(
-    deps,
-    `def reverseList(head):
-    prev = None
-    cur = head
-    while cur:
-        nxt = cur.next
-        cur.next = prev
-        prev = cur
-        cur = nxt
-    return prev`,
-    'reverseList',
-    [{ head: sharedHead }, { head: sharedHead }],
-    'function'
-  );
-  assertCondition(mutableBatch.success === true, `Python executeCodeBatch mutable case should succeed: ${JSON.stringify(mutableBatch)}`);
-  assertCondition(
-    JSON.stringify(mutableBatch.results?.map((result) => result.output)) === JSON.stringify([
-      { __type__: 'ListNode', val: 2, next: { __type__: 'ListNode', val: 1, next: null } },
-      { __type__: 'ListNode', val: 2, next: { __type__: 'ListNode', val: 1, next: null } },
-    ]),
-    `Python executeCodeBatch should isolate mutable linked-list inputs per case: ${JSON.stringify(mutableBatch)}`
-  );
-  console.log('PASS: Python executeCodeBatch isolates globals and mutable inputs');
-}
-
 async function assertVirtualScandirMatchesIteratorContract(): Promise<void> {
   const source = await readFile(PYTHON_WORKER_PATH, 'utf8');
   const match = source.match(/class _TraceDirEntry:[\s\S]*?\nclass _TraceProcFile:/);
@@ -4100,7 +3970,6 @@ async function main(): Promise<void> {
   await assertFunctionStyleFallsBackToSolutionMethod();
   await assertExecuteCodeHydratesAnnotatedCustomObjects();
   await assertExecuteCodeGuestLimitsReportStructuredTrips();
-  await assertExecuteCodeBatchIsolatesGlobalsAndMutableInputs();
   await assertVirtualScandirMatchesIteratorContract();
   console.log('\nPython runtime checks passed.');
 }

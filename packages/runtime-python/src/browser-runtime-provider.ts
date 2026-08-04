@@ -12,7 +12,6 @@ import {
 } from './python-runtime-client';
 import {
   PythonWorkerClient,
-  type PythonWorkerClientOptions,
 } from './python-worker-client';
 import { createPythonRuntimeImageFactory } from './python-runtime-image';
 import { resolveBuiltInPythonRuntimeAssets } from './python-runtime-assets';
@@ -66,7 +65,7 @@ export function createPythonBrowserRuntimeProvider(
           descriptor: runtimeImageDescriptor,
         });
       let runtimeImageFactory = createRuntimeImageFactory();
-      const workerOptions = (): PythonWorkerClientOptions => ({
+      const workerOptions = () => ({
         workerUrl: context.assets.pythonWorker,
         ...(workerFactory ? { workerFactory } : {}),
         compileCacheLimit: options.compileCacheLimit,

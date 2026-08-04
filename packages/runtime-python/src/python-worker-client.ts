@@ -31,7 +31,6 @@ export type PythonRawTraceBatchResult = {
   timings?: RuntimeExecutionTimings;
 };
 import type {
-  RuntimeBatchCall,
   RuntimeCodeCall,
   RuntimeCommandEventHandler,
   RuntimeCommandResult,
@@ -78,8 +77,6 @@ export interface PythonWorkerClientOptions {
   debug?: boolean;
   assetPreflight?: () => Promise<void>;
   runtimeAssetPreflight?: () => Promise<void>;
-  /** Immutable page-lifetime image factory used only by disposable prepared runners. */
-  runtimeImageFactory?: PythonRuntimeImageFactory;
   /** Permanent mode is only safe when this worker is retired after its project command. */
   projectUserAuthorityMode?: 'temporary' | 'permanent';
   runtimeAssets?: {
@@ -90,6 +87,11 @@ export interface PythonWorkerClientOptions {
     snippetsUrl?: string;
     packageUrls?: Readonly<Record<string, string>>;
   };
+}
+
+interface PythonWorkerClientInternalOptions extends PythonWorkerClientOptions {
+  /** Immutable page-lifetime image factory used only by disposable prepared runners. */
+  runtimeImageFactory?: PythonRuntimeImageFactory;
 }
 
 /** Guest-enforced limits forwarded to the worker; wallClockMs stays client-side. */
@@ -204,7 +206,7 @@ export class PythonWorkerClient {
   private readonly core: WorkerSessionCore;
   private terminated = false;
 
-  constructor(private readonly options: PythonWorkerClientOptions) {
+  constructor(private readonly options: PythonWorkerClientInternalOptions) {
     if (
       options.compileCacheLimit !== undefined &&
       (!Number.isInteger(options.compileCacheLimit) || options.compileCacheLimit < 0 || options.compileCacheLimit > 16)
@@ -506,26 +508,6 @@ export class PythonWorkerClient {
 
     const result = await this.core.runClientEffect(program, signal);
     return liftCodeOutcome(result, 'Python execution failed');
-  }
-
-  async executeCodeBatch(call: RuntimeBatchCall): Promise<CodeExecutionBatchResult> {
-    const { code, functionName, inputBatch, executionStyle = 'function', signal } = call;
-    const program = this.warmupEffect().pipe(
-      Effect.andThen(
-        this.core.withExecutionDeadline(
-          this.core.sendMessageEffect<RawExecutionBatchPayload>('execute-code-batch', {
-            code,
-            functionName,
-            inputBatch,
-            executionStyle,
-          }, null),
-          EXECUTION_TIMEOUT_MS
-        )
-      )
-    );
-
-    const result = await this.core.runClientEffect(program, signal);
-    return liftCodeBatchOutcome(result, 'Python execution failed');
   }
 
   async prepareProgram(
