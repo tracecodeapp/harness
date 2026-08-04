@@ -10,12 +10,30 @@
  * this benchmark does not assess or invoke a host Node.js project runtime.
  */
 
-import { spawn } from 'node:child_process';
+import { execFile, spawn, type ChildProcess } from 'node:child_process';
+import { createHash } from 'node:crypto';
 import { createReadStream, existsSync, statSync } from 'node:fs';
-import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import {
+  cp,
+  mkdir,
+  mkdtemp,
+  readFile,
+  readdir,
+  rm,
+  stat,
+  writeFile,
+} from 'node:fs/promises';
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
 import { tmpdir } from 'node:os';
-import { dirname, extname, join, normalize, resolve, sep } from 'node:path';
+import {
+  dirname,
+  extname,
+  join,
+  normalize,
+  relative,
+  resolve,
+  sep,
+} from 'node:path';
 import { gzipSync } from 'node:zlib';
 import { build } from 'esbuild';
 import { chromium, firefox, webkit, type Browser, type BrowserContext, type Request } from 'playwright';
@@ -48,6 +66,7 @@ interface BenchmarkArgs {
   cacheAssets: boolean;
   executionHost: boolean;
   runtimeManifestsPath: string | null;
+  csharpAssetSource: string | null;
   reportPath: string | null;
 }
 
@@ -124,7 +143,71 @@ interface BrowserSampleResult {
     userAgentSpecificMemory: boolean;
   };
   longTaskSupport: boolean;
+  processMemory?: {
+    browserPid: number;
+    baselineRssBytes: number;
+    peakRssBytes: number;
+    settledRssBytes: number;
+    peakByPhase: Record<string, {
+      peakRssBytes: number;
+      sampleCount: number;
+      processCount: number;
+    }>;
+  };
   records: PhaseRecord[];
+}
+
+interface BrowserProcessMemorySnapshot {
+  rssBytes: number;
+  processCount: number;
+}
+
+interface BrowserServerLike {
+  process(): ChildProcess;
+  wsEndpoint(): string;
+  close(): Promise<void>;
+}
+
+async function browserProcessMemorySnapshot(
+  browserPid: number
+): Promise<BrowserProcessMemorySnapshot> {
+  const output = await new Promise<string>((resolvePromise, rejectPromise) => {
+    execFile(
+      'ps',
+      ['-axo', 'pid=,ppid=,rss='],
+      { encoding: 'utf8' },
+      (error, stdout) => {
+        if (error) {
+          rejectPromise(error);
+          return;
+        }
+        resolvePromise(stdout);
+      }
+    );
+  });
+  const rows = output
+    .trim()
+    .split('\n')
+    .map((line) => line.trim().split(/\s+/u).map(Number))
+    .filter((row) => row.length === 3 && row.every(Number.isFinite))
+    .map(([pid, ppid, rssKb]) => ({ pid, ppid, rssBytes: rssKb * 1024 }));
+  const children = new Map<number, number[]>();
+  for (const row of rows) {
+    children.set(row.ppid, [...(children.get(row.ppid) ?? []), row.pid]);
+  }
+  const processIds = new Set<number>();
+  const pending = [browserPid];
+  while (pending.length > 0) {
+    const pid = pending.pop()!;
+    if (processIds.has(pid)) continue;
+    processIds.add(pid);
+    pending.push(...(children.get(pid) ?? []));
+  }
+  const selected = rows.filter((row) => processIds.has(row.pid));
+  return {
+    rssBytes: selected.reduce((sum, row) => sum + row.rssBytes, 0),
+    processCount: selected.length,
+  };
 }
 
 interface NetworkResourceRecord {
@@ -360,6 +443,7 @@ function usage(): string {
     '  --prewarm=python:1,csharp:1     One-shot clean worker pool depths (0-2 each, total <=4). Default: all 0.',
     '  --request-timeout-ms=180000     Per public operation timeout.',
     '  --runtime-manifests=file.json   Consumer-owned cross-runtime asset manifests.',
+    '  --csharp-asset-source=directory Replace the temporary C# bundle for isolated experiments.',
     '  --smoke                         One JavaScript browser-project sample unless overridden.',
     '  --report=reports/file.json      JSON report path.',
     '  --no-report                     Do not write a JSON report.',
@@ -436,6 +520,7 @@ function parseArgs(argv: string[]): BenchmarkArgs {
     cacheAssets: false,
     executionHost: false,
     runtimeManifestsPath: process.env.TRACECODE_BENCH_RUNTIME_MANIFESTS?.trim() || null,
+    csharpAssetSource: null,
     reportPath: join('reports', 'browser-project-runtime-benchmark.json'),
   };
   let explicitLanguages = false;
@@ -498,6 +583,12 @@ function parseArgs(argv: string[]): BenchmarkArgs {
       const pathname = arg.slice('--runtime-manifests='.length).trim();
       if (!pathname) throw new Error('--runtime-manifests requires a non-empty path.');
       args.runtimeManifestsPath = pathname;
+      continue;
+    }
+    if (arg.startsWith('--csharp-asset-source=')) {
+      const pathname = arg.slice('--csharp-asset-source='.length).trim();
+      if (!pathname) throw new Error('--csharp-asset-source requires a non-empty path.');
+      args.csharpAssetSource = pathname;
       continue;
     }
     if (arg.startsWith('--report=')) {
@@ -909,6 +1000,7 @@ function skippedRecord(item: RunPlanItem, phase: Phase, reason: string): PhaseRe
 async function runBrowserPlanItem(
   browserOrigin: string,
   browser: Browser,
+  browserPid: number,
   item: RunPlanItem,
   args: BenchmarkArgs,
   networkRecords: NetworkResourceRecord[],
@@ -923,6 +1015,30 @@ async function runBrowserPlanItem(
 }> {
   const context = await browser.newContext();
   const phaseRef = { current: 'page-bootstrap' };
+  const processMemorySamples: Array<{
+    phase: string;
+    snapshot: BrowserProcessMemorySnapshot;
+  }> = [];
+  let pendingProcessMemorySample: Promise<void> | undefined;
+  const sampleProcessMemory = (): Promise<void> => {
+    if (pendingProcessMemorySample) return pendingProcessMemorySample;
+    const samplePhase = phaseRef.current;
+    pendingProcessMemorySample = browserProcessMemorySnapshot(browserPid)
+      .then((snapshot) => {
+        processMemorySamples.push({ phase: samplePhase, snapshot });
+      })
+      .catch(() => {
+        // Process enumeration is diagnostic only; never change benchmark outcome.
+      })
+      .finally(() => {
+        pendingProcessMemorySample = undefined;
+      });
+    return pendingProcessMemorySample;
+  };
+  void sampleProcessMemory();
+  const processMemorySampler = setInterval(() => {
+    void sampleProcessMemory();
+  }, 50);
   const pendingNetwork: Promise<void>[] = [];
   collectNetworkMetrics(context, phaseRef, item, networkRecords, pendingNetwork);
   const page = await context.newPage();
@@ -1588,7 +1704,10 @@ async function runBrowserPlanItem(
       }
     );
 
-    const result = await Promise.race([evaluation, phaseWatchdogFailure]);
+    const result: BrowserSampleResult = await Promise.race([
+      evaluation,
+      phaseWatchdogFailure,
+    ]);
     if (phaseWatchdog !== undefined) {
       clearTimeout(phaseWatchdog);
       phaseWatchdog = undefined;
@@ -1601,6 +1720,44 @@ async function runBrowserPlanItem(
     }
     await page.waitForTimeout(25);
     const networkFlushComplete = await settleBeforeDeadline(Promise.allSettled(pendingNetwork), 2_000);
+    if (result) {
+      await sampleProcessMemory();
+      const baseline = processMemorySamples[0]?.snapshot;
+      if (baseline) {
+        const settled = processMemorySamples.at(-1)?.snapshot ?? baseline;
+        const peak = processMemorySamples.reduce(
+          (current, sample) =>
+            Math.max(current, sample.snapshot.rssBytes),
+          baseline.rssBytes
+        );
+        const peakByPhase: NonNullable<
+          BrowserSampleResult['processMemory']
+        >['peakByPhase'] = {};
+        for (const sample of processMemorySamples) {
+          const current = peakByPhase[sample.phase];
+          if (!current) {
+            peakByPhase[sample.phase] = {
+              peakRssBytes: sample.snapshot.rssBytes,
+              sampleCount: 1,
+              processCount: sample.snapshot.processCount,
+            };
+          } else {
+            current.sampleCount += 1;
+            if (sample.snapshot.rssBytes > current.peakRssBytes) {
+              current.peakRssBytes = sample.snapshot.rssBytes;
+              current.processCount = sample.snapshot.processCount;
+            }
+          }
+        }
+        result.processMemory = {
+          browserPid,
+          baselineRssBytes: baseline.rssBytes,
+          peakRssBytes: peak,
+          settledRssBytes: settled.rssBytes,
+          peakByPhase,
+        };
+      }
+    }
     return { result, cdpMetrics, cdpUnsupportedReason, networkFlushComplete };
   } catch (error) {
     if (phaseWatchdog !== undefined) clearTimeout(phaseWatchdog);
@@ -1613,6 +1770,8 @@ async function runBrowserPlanItem(
       networkFlushComplete,
     };
   } finally {
+    clearInterval(processMemorySampler);
+    await pendingProcessMemorySample;
     if (phaseWatchdog !== undefined) clearTimeout(phaseWatchdog);
     await settleBeforeDeadline(context.close(), 2_000);
   }
@@ -1781,6 +1940,69 @@ function metricCoverage(
   };
 }
 
+interface CSharpAssetSourceProvenance {
+  schema: 'tracecode-csharp-benchmark-asset-tree-v1';
+  sourceArgument: string;
+  resolvedPath: string;
+  fileCount: number;
+  rawBytes: number;
+  treeSha256: string;
+}
+
+async function inspectCSharpAssetSource(
+  sourceArgument: string
+): Promise<CSharpAssetSourceProvenance> {
+  const root = resolve(sourceArgument);
+  const rootStat = await stat(root);
+  if (!rootStat.isDirectory()) {
+    throw new TypeError('--csharp-asset-source must reference a directory.');
+  }
+
+  const hash = createHash('sha256');
+  hash.update('tracecode-csharp-benchmark-asset-tree-v1\0');
+  let fileCount = 0;
+  let rawBytes = 0;
+  const visit = async (directory: string): Promise<void> => {
+    const entries = await readdir(directory, { withFileTypes: true });
+    entries.sort((left, right) =>
+      left.name < right.name ? -1 : left.name > right.name ? 1 : 0
+    );
+    for (const entry of entries) {
+      const pathname = join(directory, entry.name);
+      if (entry.isDirectory()) {
+        await visit(pathname);
+        continue;
+      }
+      if (!entry.isFile()) {
+        throw new TypeError(
+          `--csharp-asset-source cannot contain links or special files: ${pathname}`
+        );
+      }
+      const bytes = await readFile(pathname);
+      const artifactPath = relative(root, pathname).split(sep).join('/');
+      const pathBytes = Buffer.from(artifactPath, 'utf8');
+      const header = Buffer.alloc(12);
+      header.writeUInt32BE(pathBytes.byteLength, 0);
+      header.writeBigUInt64BE(BigInt(bytes.byteLength), 4);
+      hash.update(header);
+      hash.update(pathBytes);
+      hash.update(createHash('sha256').update(bytes).digest());
+      fileCount += 1;
+      rawBytes += bytes.byteLength;
+    }
+  };
+  await visit(root);
+
+  return {
+    schema: 'tracecode-csharp-benchmark-asset-tree-v1',
+    sourceArgument,
+    resolvedPath: root,
+    fileCount,
+    rawBytes,
+    treeSha256: hash.digest('hex'),
+  };
+}
+
 async function main(): Promise<void> {
   const args = parseArgs(process.argv.slice(2));
   const runtimeManifests = await loadRuntimeManifests(args.runtimeManifestsPath);
@@ -1790,9 +2012,28 @@ async function main(): Promise<void> {
   let server: Awaited<ReturnType<typeof startStaticServer>> | undefined;
   let executionServer: Awaited<ReturnType<typeof startStaticServer>> | undefined;
   let browser: Browser | undefined;
+  let browserServer: BrowserServerLike | undefined;
+  let csharpAssetSourceProvenance: CSharpAssetSourceProvenance | null = null;
 
   try {
+    if (args.csharpAssetSource) {
+      if (!args.languages.includes('csharp')) {
+        throw new Error('--csharp-asset-source requires csharp in --languages.');
+      }
+      csharpAssetSourceProvenance = await inspectCSharpAssetSource(
+        args.csharpAssetSource
+      );
+    }
     await runAssetSync(workersRoot, args.languages);
+    if (args.csharpAssetSource) {
+      const destination = join(workersRoot, 'vendor', 'csharp');
+      await rm(destination, { recursive: true, force: true });
+      await cp(csharpAssetSourceProvenance!.resolvedPath, destination, {
+        recursive: true,
+        force: false,
+        errorOnExist: true,
+      });
+    }
     const bundle = await buildPublicProjectBundle(tempRoot);
     if (args.executionHost) await buildExecutionHostBundle(tempRoot);
     await writeFile(join(tempRoot, 'index.html'), [
@@ -1825,10 +2066,15 @@ async function main(): Promise<void> {
       : args.engine === 'webkit'
         ? webkit
         : chromium;
-    browser = await browserType.launch({
+    browserServer = await browserType.launchServer({
       headless: !args.headful,
       ...(args.engine === 'chromium' ? { args: ['--enable-precise-memory-info'] } : {}),
     });
+    browser = await browserType.connect(browserServer.wsEndpoint());
+    const browserPid = browserServer.process().pid;
+    if (typeof browserPid !== 'number') {
+      throw new Error('Playwright browser server did not expose a process id');
+    }
 
     const samples: BrowserSampleResult[] = [];
     const records: PhaseRecord[] = [];
@@ -1855,6 +2101,7 @@ async function main(): Promise<void> {
       const run = await runBrowserPlanItem(
         server.origin,
         browser,
+        browserPid,
         item,
         args,
         networkRecords,
@@ -1940,6 +2187,7 @@ async function main(): Promise<void> {
         smoke: args.smoke,
         runtimeManifestsPath: args.runtimeManifestsPath,
         runtimeManifestRuntimes: runtimeManifests ? Object.keys(runtimeManifests).sort() : [],
+        csharpAssetSource: csharpAssetSourceProvenance,
       },
       bundle: {
         entrypoint: 'packages/runtime-browser/src/project.ts',
@@ -1993,6 +2241,7 @@ async function main(): Promise<void> {
     }
   } finally {
     await browser?.close();
+    await browserServer?.close();
     await executionServer?.close();
     await server?.close();
     await rm(tempRoot, { recursive: true, force: true });

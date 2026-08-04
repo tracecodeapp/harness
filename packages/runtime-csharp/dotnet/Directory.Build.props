@@ -1,0 +1,19 @@
+<Project>
+  <PropertyGroup>
+    <TraceCodeDotnetSdkVersion>10.0.110</TraceCodeDotnetSdkVersion>
+    <!--
+      Browser runtime assets must be reproducible before and after the commit
+      that records them. The SDK otherwise appends the current Git revision to
+      AssemblyInformationalVersion, creating a circular artifact hash.
+    -->
+    <ContinuousIntegrationBuild>true</ContinuousIntegrationBuild>
+    <Deterministic>true</Deterministic>
+    <IncludeSourceRevisionInInformationalVersion>false</IncludeSourceRevisionInInformationalVersion>
+    <!--
+      Emscripten otherwise records the SDK and checkout roots in native DWARF
+      file names, making byte-identical artifacts depend on where they were
+      built. Keep those diagnostics useful but location-independent.
+    -->
+    <EmccExtraCFlags>&quot;-ffile-prefix-map=$(DOTNET_ROOT)=/tracecode/dotnet&quot; &quot;-ffile-prefix-map=$(MSBuildThisFileDirectory)=/tracecode/source/&quot;</EmccExtraCFlags>
+  </PropertyGroup>
+</Project>

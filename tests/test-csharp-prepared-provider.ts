@@ -8,7 +8,10 @@ import type {
   RuntimePreparedCodeCall,
   RuntimeProgramPreparationCall,
 } from '../packages/runtime-contracts/src/index';
-import { createCSharpRuntimeClient } from '../packages/runtime-csharp/src/csharp-runtime-client';
+import {
+  createCSharpRuntimeClient,
+  type CSharpPreparedWorkerAuthority,
+} from '../packages/runtime-csharp/src/csharp-runtime-client';
 import type {
   CSharpPreparedProgramArtifact,
   CSharpWorkerClient,
@@ -24,6 +27,7 @@ class FakePreparedCSharpWorker {
   disposeCalls: string[] = [];
   failPreparation = false;
   executionResult: CodeExecutionResult | undefined;
+  terminated = false;
 
   async init(): Promise<{ success: boolean; loadTimeMs: number }> {
     return { success: true, loadTimeMs: 2 };
@@ -52,6 +56,8 @@ class FakePreparedCSharpWorker {
       success: true,
       compiledArtifactKey: 'artifact-key',
       compiledArtifactBase64: 'TVqQAAMAAAAEAAAA',
+      compiledArtifactSha256:
+        'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
       consoleOutput: ['compiled once'],
       timings: { compileMs: 7, compileCacheHit: false },
     };
@@ -87,6 +93,10 @@ class FakePreparedCSharpWorker {
     prepared: Pick<CSharpPreparedProgramArtifact, 'compiledArtifactKey'>
   ): Promise<void> {
     this.disposeCalls.push(prepared.compiledArtifactKey);
+  }
+
+  terminate(): void {
+    this.terminated = true;
   }
 }
 
@@ -236,9 +246,159 @@ test('C# prepared execution preserves per-case limits and limit results', async 
   await prepared.program.dispose();
 });
 
+test('C# prepared batches lease one disposable outer runner per case', async () => {
+  const compiler = new FakePreparedCSharpWorker();
+  const runners: FakePreparedCSharpWorker[] = [];
+  const released: FakePreparedCSharpWorker[] = [];
+  const authority: CSharpPreparedWorkerAuthority = {
+    compiler: compiler as unknown as CSharpWorkerClient,
+    batchConcurrency: 3,
+    warmup: () => compiler.init(),
+    createRunner() {
+      const runner = new FakePreparedCSharpWorker();
+      runners.push(runner);
+      return runner as unknown as CSharpWorkerClient;
+    },
+    releaseRunner(runner) {
+      released.push(runner as unknown as FakePreparedCSharpWorker);
+    },
+  };
+  const provider = createCSharpRuntimeClient(
+    compiler as unknown as CSharpWorkerClient,
+    authority
+  );
+  const prepared = await provider.prepareProgram({
+    mode: 'code',
+    code: 'public class Solution { public int Echo(int value) => value; }',
+    functionName: 'Echo',
+  });
+  assert.equal(prepared.kind, 'prepared');
+  if (
+    prepared.kind !== 'prepared' ||
+    prepared.program.mode !== 'code' ||
+    !prepared.program.executeBatchIsolated
+  ) {
+    return;
+  }
+
+  const results = await prepared.program.executeBatchIsolated({
+    inputBatch: [{ value: 3 }, { value: 5 }, { value: 7 }],
+    limits: { wallClockMs: 2_000 },
+  });
+  assert.deepEqual(
+    results.map((result) => result.kind === 'completed' ? result.output : null),
+    [3, 5, 7]
+  );
+  assert.equal(runners.length, 3);
+  assert.equal(released.length, 3);
+  assert.equal(compiler.executeCalls.length, 0);
+  for (const runner of runners) {
+    assert.equal(runner.executeCalls.length, 1);
+    assert.equal(runner.executeCalls[0]?.call.limits?.wallClockMs, 2_000);
+    assert.equal(runner.terminated, true);
+    assert.strictEqual(
+      runner.executeCalls[0]?.prepared,
+      runners[0]?.executeCalls[0]?.prepared
+    );
+  }
+  await prepared.program.dispose();
+});
+
+test('C# prepared batch failure drains every active runner before rejection', async () => {
+  const compiler = new FakePreparedCSharpWorker();
+  const failedRunner = new FakePreparedCSharpWorker();
+  const slowRunner = new FakePreparedCSharpWorker();
+  const failure = new Error('synthetic runner failure');
+  failedRunner.executePreparedCode = async () => {
+    throw failure;
+  };
+  let releaseSlow!: () => void;
+  let markSlowStarted!: () => void;
+  const slowStarted = new Promise<void>((resolve) => {
+    markSlowStarted = resolve;
+  });
+  const slowGate = new Promise<void>((resolve) => {
+    releaseSlow = resolve;
+  });
+  slowRunner.executePreparedCode = async (_prepared, call) => {
+    markSlowStarted();
+    await slowGate;
+    return {
+      kind: 'completed',
+      output: call.inputs.value,
+      consoleOutput: [],
+    };
+  };
+  const available = [failedRunner, slowRunner];
+  const released: FakePreparedCSharpWorker[] = [];
+  let runnerLeaseCount = 0;
+  const authority: CSharpPreparedWorkerAuthority = {
+    compiler: compiler as unknown as CSharpWorkerClient,
+    batchConcurrency: 2,
+    warmup: () => compiler.init(),
+    createRunner() {
+      runnerLeaseCount += 1;
+      const runner = available.shift();
+      assert.ok(runner);
+      return runner as unknown as CSharpWorkerClient;
+    },
+    releaseRunner(runner) {
+      released.push(runner as unknown as FakePreparedCSharpWorker);
+    },
+  };
+  const provider = createCSharpRuntimeClient(
+    compiler as unknown as CSharpWorkerClient,
+    authority
+  );
+  const prepared = await provider.prepareProgram({
+    mode: 'code',
+    code: 'public class Solution { public int Echo(int value) => value; }',
+    functionName: 'Echo',
+  });
+  assert.equal(prepared.kind, 'prepared');
+  if (
+    prepared.kind !== 'prepared' ||
+    prepared.program.mode !== 'code' ||
+    !prepared.program.executeBatchIsolated
+  ) {
+    return;
+  }
+
+  const batch = prepared.program.executeBatchIsolated({
+    inputBatch: [
+      { value: 1 },
+      { value: 2 },
+      { value: 3 },
+      { value: 4 },
+    ],
+  });
+  await slowStarted;
+  let rejected = false;
+  void batch.catch(() => {
+    rejected = true;
+  });
+  await new Promise<void>((resolve) => setTimeout(resolve, 0));
+  assert.equal(
+    rejected,
+    false,
+    'batch rejection must wait for every active runner to settle'
+  );
+  releaseSlow();
+  await assert.rejects(batch, /synthetic runner failure/);
+  assert.equal(failedRunner.terminated, true);
+  assert.equal(slowRunner.terminated, true);
+  assert.equal(released.length, 2);
+  assert.equal(
+    runnerLeaseCount,
+    2,
+    'only the two already-active runners should have been leased'
+  );
+  await prepared.program.dispose();
+});
+
 test('C# host prepared entry point cannot fall through to the compiling execution path', () => {
   const source = readFileSync(
-    'runtimes/csharp/TraceCode.CSharpHost/CompilerHost.cs',
+    'packages/runtime-csharp/dotnet/TraceCode.CSharpHost/CompilerHost.cs',
     'utf8'
   );
   const preparedEntryPoint = source.slice(
@@ -254,5 +414,10 @@ test('C# host prepared entry point cannot fall through to the compiling executio
     preparedEntryPoint,
     /return Execute\(requestJson\);/,
     'invalid prepared requests must not regain access to Roslyn through Execute'
+  );
+  assert.match(
+    preparedEntryPoint,
+    /finally\s*\{\s*\/\/ This is the lifecycle boundary[\s\S]*?RuntimeTraceSink\.Reset\(\);\s*Console\.SetOut\(originalOut\);/,
+    'prepared trace state must reset even when execution fails before assembly loading'
   );
 });

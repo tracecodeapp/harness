@@ -2,6 +2,7 @@
 
 import { test } from 'node:test';
 import {
+  BROWSER_RUNTIME_ASSET_PROTOCOL_VERSION,
   createBrowserRuntimeHost,
   createBrowserRuntimeEnvironment,
 } from '../src/browser';
@@ -79,6 +80,140 @@ async function main(): Promise<void> {
     javaReadiness.missingFeatures.includes('sharedArrayBuffer') &&
       javaReadiness.missingFeatures.includes('crossOriginIsolated'),
     'project Java should report its missing synchronous bridge requirements'
+  );
+
+  const csharpRoleManifest = {
+    runtime: 'csharp',
+    runtimeVersion: 'test-role-split',
+    protocolVersion: BROWSER_RUNTIME_ASSET_PROTOCOL_VERSION,
+    workerFormat: 'module',
+    loaderFormat: 'module',
+    assets: {
+      worker: { url: '/workers/csharp-worker.js' },
+      assetBaseUrl: { url: '/workers/vendor/csharp' },
+      compilerAssetBaseUrl: {
+        url: '/workers/vendor/csharp-compiler',
+        size: 1,
+      },
+      runnerAssetBaseUrl: {
+        url: '/workers/vendor/csharp-runner',
+        size: 1,
+      },
+    },
+  } as const;
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async () => {
+    throw new Error('Judge role bundle unavailable');
+  };
+  try {
+    const projectCSharp = createBrowserRuntimeEnvironment({
+      providers: ['csharp'],
+      surface: 'project',
+      featureOverrides: readyFeatures,
+      assets: { runtimeManifests: { csharp: csharpRoleManifest } },
+    });
+    assertCondition(
+      (await projectCSharp.preflight('csharp')).status === 'ready',
+      'C# project readiness must not depend on Judge-only compiler and runner bundles'
+    );
+    const classicCSharp = createBrowserRuntimeEnvironment({
+      providers: ['csharp'],
+      surface: 'classic',
+      featureOverrides: readyFeatures,
+      assets: { runtimeManifests: { csharp: csharpRoleManifest } },
+    });
+    assertCondition(
+      (await classicCSharp.preflight('csharp')).status === 'unavailable',
+      'C# Judge readiness must preflight its compiler and runner role bundles'
+    );
+    const disabledPreparedCSharp = createBrowserRuntimeEnvironment({
+      providers: ['csharp'],
+      surface: 'classic',
+      csharpPreparedAuthority: false,
+      featureOverrides: readyFeatures,
+      assets: { runtimeManifests: { csharp: csharpRoleManifest } },
+    });
+    assertCondition(
+      (await disabledPreparedCSharp.preflight('csharp')).status === 'ready',
+      'disabled C# prepared authority must not preflight unused compiler and runner bundles'
+    );
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+
+  const noCryptoCSharp = createBrowserRuntimeEnvironment({
+    providers: ['csharp'],
+    surface: 'classic',
+    featureOverrides: { ...readyFeatures, webCrypto: false },
+  });
+  assertCondition(
+    (await noCryptoCSharp.preflight('csharp')).missingFeatures.includes(
+      'webCrypto'
+    ),
+    'default packed C# Judge runners must declare their Web Crypto requirement'
+  );
+  const disabledPreparedNoCryptoCSharp = createBrowserRuntimeEnvironment({
+    providers: ['csharp'],
+    surface: 'classic',
+    csharpPreparedAuthority: false,
+    featureOverrides: { ...readyFeatures, webCrypto: false },
+  });
+  assertCondition(
+    (await disabledPreparedNoCryptoCSharp.preflight('csharp')).status ===
+      'ready',
+    'C# readiness must not require Web Crypto when prepared authority is disabled'
+  );
+  const disabledPreparedHost = createBrowserRuntimeHost({
+    providers: ['csharp'],
+    csharp: { preparedAuthority: false },
+    featureOverrides: { ...readyFeatures, webCrypto: false },
+  });
+  assertCondition(
+    disabledPreparedHost.environment.csharpPreparedAuthority === false &&
+      (await disabledPreparedHost.preflightLanguage('csharp')).status ===
+        'ready',
+    'the public browser host must propagate disabled C# prepared authority into readiness'
+  );
+  disabledPreparedHost.dispose();
+  const inheritedPreparedEnvironment = createBrowserRuntimeEnvironment({
+    providers: ['csharp'],
+    surface: 'classic',
+    csharpPreparedAuthority: false,
+    featureOverrides: { ...readyFeatures, webCrypto: false },
+  });
+  const inheritedPreparedHost = createBrowserRuntimeHost({
+    environment: inheritedPreparedEnvironment,
+  });
+  assertCondition(
+    inheritedPreparedHost.environment.csharpPreparedAuthority === false &&
+      (await inheritedPreparedHost.preflightLanguage('csharp')).status ===
+        'ready',
+    'the public browser host must inherit prepared-authority mode from a shared environment'
+  );
+  inheritedPreparedHost.dispose();
+  const legacyNoCryptoCSharp = createBrowserRuntimeEnvironment({
+    providers: ['csharp'],
+    surface: 'classic',
+    featureOverrides: { ...readyFeatures, webCrypto: false },
+    assets: {
+      runtimeManifests: {
+        csharp: {
+          runtime: 'csharp',
+          runtimeVersion: 'legacy-general',
+          protocolVersion: BROWSER_RUNTIME_ASSET_PROTOCOL_VERSION,
+          workerFormat: 'module',
+          loaderFormat: 'module',
+          assets: {
+            worker: { url: '/legacy/csharp-worker.js' },
+            assetBaseUrl: { url: '/legacy/csharp' },
+          },
+        },
+      },
+    },
+  });
+  assertCondition(
+    (await legacyNoCryptoCSharp.preflight('csharp')).status === 'ready',
+    'legacy unpacked C# manifests must not inherit the packed-runner Web Crypto requirement'
   );
 
   let rejectedEmpty = false;

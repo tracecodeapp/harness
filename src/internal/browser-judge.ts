@@ -210,7 +210,16 @@ export interface BrowserJudgeJavaOptions {
 }
 
 export interface BrowserJudgeCSharpOptions {
+  /** Idle timeout for the general Project/terminal/server-capable worker. */
   readonly workerIdleTimeoutMs?: number;
+  /** Idle timeout for the trusted Roslyn compiler authority. */
+  readonly compilerIdleTimeoutMs?: number;
+  /** Idle timeout for an unused prewarmed disposable Judge runner. */
+  readonly runnerIdleTimeoutMs?: number;
+  /** Maximum disposable runner leases executing one eager Judge batch concurrently. */
+  readonly preparedBatchConcurrency?: number;
+  /** Disable only for deployments that have not published the compiler/runner role bundles. */
+  readonly preparedAuthority?: boolean;
 }
 
 export interface BrowserJudgeCppOptions {

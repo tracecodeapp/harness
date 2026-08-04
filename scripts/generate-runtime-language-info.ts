@@ -2,6 +2,7 @@
 
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
+import { readCSharpRoleArtifactsManifest } from './csharp-role-artifacts';
 
 const CHECK_MODE = process.argv.includes('--check');
 const ROOT = process.cwd();
@@ -37,6 +38,10 @@ async function readText(...parts: string[]): Promise<string> {
 
 async function readJson<T>(...parts: string[]): Promise<T> {
   return JSON.parse(await readText(...parts)) as T;
+}
+
+function isMissingFile(error: unknown): boolean {
+  return (error as NodeJS.ErrnoException).code === 'ENOENT';
 }
 
 function unique<T>(items: Iterable<T>): T[] {
@@ -320,8 +325,9 @@ async function buildRuntimeInfo(): Promise<Record<string, RuntimeInfo>> {
   const javaDefaultImports = parseJavaDefaultImports(javaWorkerSource);
 
   const csharpHostSource = await readText(
-    'runtimes',
-    'csharp',
+    'packages',
+    'runtime-csharp',
+    'dotnet',
     'TraceCode.CSharpHost',
     'CompilerHost.cs'
   );
@@ -468,16 +474,47 @@ async function buildRuntimeInfo(): Promise<Record<string, RuntimeInfo>> {
 
 async function buildRuntimeCommandVersions(): Promise<Record<RuntimeCommandName, string>> {
   const rootPackage = await readJson<PackageJson>('package.json');
-  const csharpRuntimeConfig = await readJson<{
-    runtimeOptions?: {
-      includedFrameworks?: Array<{ name?: string; version?: string }>;
-    };
-  }>('workers', 'vendor', 'csharp', 'TraceCode.CSharpHost.runtimeconfig.json');
-  const dotnetVersion = csharpRuntimeConfig.runtimeOptions?.includedFrameworks?.find(
-    (framework) => framework.name === 'Microsoft.NETCore.App'
-  )?.version;
+  let materializedDotnetVersion: string | undefined;
+  try {
+    const csharpRuntimeConfig = await readJson<{
+      runtimeOptions?: {
+        includedFrameworks?: Array<{ name?: string; version?: string }>;
+      };
+    }>('workers', 'vendor', 'csharp', 'TraceCode.CSharpHost.runtimeconfig.json');
+    materializedDotnetVersion =
+      csharpRuntimeConfig.runtimeOptions?.includedFrameworks?.find(
+        (framework) => framework.name === 'Microsoft.NETCore.App'
+      )?.version;
+    if (!materializedDotnetVersion) {
+      throw new Error(
+        'Unable to derive runtime command info: materialized C# runtime is missing its .NET runtime version'
+      );
+    }
+  } catch (error) {
+    if (!isMissingFile(error)) throw error;
+  }
+
+  let artifactDotnetVersion: string | undefined;
+  try {
+    artifactDotnetVersion = (await readCSharpRoleArtifactsManifest()).runtime.version;
+  } catch (error) {
+    if (!isMissingFile(error)) throw error;
+  }
+
+  if (
+    materializedDotnetVersion &&
+    artifactDotnetVersion &&
+    materializedDotnetVersion !== artifactDotnetVersion
+  ) {
+    throw new Error(
+      'Unable to derive runtime command info: materialized and canonical C# runtime versions differ'
+    );
+  }
+  const dotnetVersion = materializedDotnetVersion ?? artifactDotnetVersion;
   if (!dotnetVersion) {
-    throw new Error('Unable to derive runtime command info: missing .NET runtime version');
+    throw new Error(
+      'Unable to derive runtime command info: missing both materialized and canonical .NET runtime metadata'
+    );
   }
   return {
     dotnet: dotnetVersion,

@@ -68,11 +68,20 @@ const BATCH_FIXTURES: readonly BatchFixture[] = [
   {
     language: 'csharp',
     code: [
+      'using System;',
+      'using System.IO;',
       'public class Solution {',
       '  private static int history = 0;',
       '  public int Solve(int value) {',
+      '    const string key = "TRACECODE_CSHARP_BATCH_LEAK";',
+      '    const string path = "/tmp/tracecode-csharp-batch-leak.txt";',
+      '    bool clean = history == 0 &&',
+      '      Environment.GetEnvironmentVariable(key) == null &&',
+      '      !File.Exists(path);',
       '    history += 1;',
-      '    return history;',
+      '    Environment.SetEnvironmentVariable(key, "leaked");',
+      '    File.WriteAllText(path, value.ToString());',
+      '    return clean ? 1 : 0;',
       '  }',
       '}',
     ].join('\n'),
@@ -140,32 +149,128 @@ function receiptSummary(receipt: Awaited<ReturnType<ReturnType<
 
 export async function runBrowserAlgorithmBatch(
   assetBaseUrl: string,
-  selectedLanguages: readonly string[] = BATCH_FIXTURES.map(
+  selectedLanguages: readonly BatchLanguage[] = BATCH_FIXTURES.map(
     (fixture) => fixture.language
-  )
+  ),
+  csharpBatchConcurrency = 4
 ): Promise<unknown> {
   const NativeWorker = globalThis.Worker;
   const workerUrls: string[] = [];
+  let activeWorkers = 0;
+  let maximumActiveWorkers = 0;
+  const workerCommands: Array<{
+    id?: string;
+    type?: string;
+    runtimeRole?: string;
+    preparedMode?: string;
+    preparedFunctionName?: string;
+    inputs?: unknown;
+    responseReceived?: boolean;
+    responseSuccess?: boolean;
+    responseOutput?: unknown;
+  }> = [];
   class ObservedWorker extends NativeWorker {
+    private observedTerminated = false;
+
     constructor(url: string | URL, options?: WorkerOptions) {
       workerUrls.push(String(url));
       super(url, options);
+      activeWorkers += 1;
+      maximumActiveWorkers = Math.max(maximumActiveWorkers, activeWorkers);
+      const observedCommands = new Map<
+        string,
+        (typeof workerCommands)[number]
+      >();
+      this.addEventListener('message', (event) => {
+        const response = event.data as {
+          id?: string;
+          payload?: { success?: boolean; output?: unknown };
+        } | undefined;
+        if (!response?.id) return;
+        const command = observedCommands.get(response.id);
+        if (!command) return;
+        command.responseReceived = true;
+        command.responseSuccess = response.payload?.success === true;
+        command.responseOutput = response.payload?.output;
+      });
+      const nativePostMessage = this.postMessage.bind(this);
+      this.postMessage = ((
+        message: {
+          id?: string;
+          type?: string;
+          payload?: {
+            runtimeRole?: string;
+            prepared?: { mode?: string; functionName?: string };
+            inputs?: unknown;
+          };
+        },
+        transferOrOptions?: StructuredSerializeOptions | Transferable[]
+      ) => {
+        const command: (typeof workerCommands)[number] = {
+          id: message?.id,
+          type: message?.type,
+          runtimeRole: message?.payload?.runtimeRole,
+          preparedMode: message?.payload?.prepared?.mode,
+          preparedFunctionName: message?.payload?.prepared?.functionName,
+          inputs: message?.payload?.inputs,
+        };
+        workerCommands.push(command);
+        if (message?.id) observedCommands.set(message.id, command);
+        nativePostMessage(message, transferOrOptions as Transferable[]);
+      }) as typeof this.postMessage;
+    }
+
+    override terminate(): void {
+      if (!this.observedTerminated) {
+        this.observedTerminated = true;
+        activeWorkers -= 1;
+      }
+      super.terminate();
     }
   }
   globalThis.Worker = ObservedWorker;
 
   const results: Record<string, unknown> = {};
   try {
-    for (const fixture of BATCH_FIXTURES) {
-      if (!selectedLanguages.includes(fixture.language)) continue;
+    for (const fixture of BATCH_FIXTURES.filter((candidate) =>
+      selectedLanguages.includes(candidate.language)
+    )) {
       const host = createBrowserJudgeHost({
         assetBaseUrl,
         providers: [fixture.language],
+        ...(fixture.language === 'csharp'
+          ? { csharp: { preparedBatchConcurrency: csharpBatchConcurrency } }
+          : {}),
         safeExecution: {
           prewarmAfterUse: false,
         },
       });
       try {
+        let trustedPrewarm = false;
+        if (fixture.language === 'csharp') {
+          const deadline = performance.now() + 30_000;
+          while (
+            !workerCommands.some(
+              (command) =>
+                command.type === 'execute-prepared-code' &&
+                command.runtimeRole === 'runner' &&
+                command.preparedMode === 'trace' &&
+                command.preparedFunctionName === 'Add' &&
+                JSON.stringify(command.inputs) === '{"a":1,"b":2}' &&
+                command.responseReceived === true &&
+                command.responseSuccess === true &&
+                command.responseOutput === 3
+            )
+          ) {
+            if (performance.now() >= deadline) {
+              throw new Error(
+                'C# public Judge provider did not complete its fixed trusted standby-runner prime.'
+              );
+            }
+            await new Promise((resolve) => setTimeout(resolve, 10));
+          }
+          trustedPrewarm = true;
+        }
         const cases = Array.from({ length: 10 }, (_, index) => ({
           id: `case-${index + 1}`,
           input: { value: index + 1 },
@@ -181,9 +286,13 @@ export async function runBrowserAlgorithmBatch(
             : {}),
           cases,
         });
+        maximumActiveWorkers = activeWorkers;
+        const plainStartedAt = performance.now();
         const plainReceipt = await host.evaluateAlgorithm({
           bundle: plainBundle,
         });
+        const plainMs = performance.now() - plainStartedAt;
+        const plainMaximumActiveWorkers = maximumActiveWorkers;
         const plainWorkerUrls = workerUrls.splice(0);
 
         const traceBundle = await createAlgorithmJudgeBundle({
@@ -197,16 +306,27 @@ export async function runBrowserAlgorithmBatch(
           cases,
           trace: true,
         });
+        maximumActiveWorkers = activeWorkers;
+        const traceStartedAt = performance.now();
         const traceReceipt = await host.evaluateAlgorithm({
           bundle: traceBundle,
         });
+        const traceMs = performance.now() - traceStartedAt;
+        const traceMaximumActiveWorkers = maximumActiveWorkers;
         const traceWorkerUrls = workerUrls.splice(0);
 
         results[fixture.language] = {
           plain: receiptSummary(plainReceipt),
+          plainMs,
+          plainMaximumActiveWorkers,
           plainWorkerUrls,
           trace: receiptSummary(traceReceipt),
+          traceMs,
+          traceMaximumActiveWorkers,
           traceWorkerUrls,
+          ...(fixture.language === 'csharp'
+            ? { csharpBatchConcurrency, trustedPrewarm }
+            : {}),
         };
       } finally {
         host.dispose();

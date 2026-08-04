@@ -1,0 +1,101 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <RuntimeIdentifier>browser-wasm</RuntimeIdentifier>
+    <OutputType>Exe</OutputType>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    <InvariantGlobalization>true</InvariantGlobalization>
+    <DebugType>none</DebugType>
+    <DebugSymbols>false</DebugSymbols>
+    <WasmDebugLevel>0</WasmDebugLevel>
+    <PublishTrimmed>false</PublishTrimmed>
+    <WasmEmitSymbolMap>false</WasmEmitSymbolMap>
+    <WasmMainJSPath>main.mjs</WasmMainJSPath>
+    <DefaultItemExcludes>$(DefaultItemExcludes);obj/**;bin/**</DefaultItemExcludes>
+    <!--
+      The compiler needs reference assemblies as VFS data in addition to the
+      assemblies used by the host itself. Shipping every SDK output assembly
+      duplicates roughly the entire framework closure. Minimal is the durable
+      browser default; publishers that intentionally expose the broader BCL
+      can build a compatibility bundle with TraceCodeCompilerReferencePack=Compatibility.
+    -->
+    <TraceCodeCompilerReferencePack Condition="'$(TraceCodeCompilerReferencePack)' == ''">Minimal</TraceCodeCompilerReferencePack>
+    <DefineConstants>$(DefineConstants);TRACECODE_PRECOMPILED_JUDGE_RUNTIME</DefineConstants>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.CodeAnalysis.CSharp" Version="5.3.0" />
+    <ProjectReference Include="../TraceCode.CSharpJudgeRuntime/TraceCode.CSharpJudgeRuntime.csproj" />
+    <Compile Remove="RuntimeTraceSink.cs" />
+  </ItemGroup>
+
+  <Target Name="TraceCodeIncludeCompilerReferenceAssembliesInVfs" BeforeTargets="_WasmGenerateAppBundle">
+    <Error
+      Condition="'$(TraceCodeCompilerReferencePack)' != 'Minimal' and '$(TraceCodeCompilerReferencePack)' != 'Compatibility'"
+      Text="TraceCodeCompilerReferencePack must be Minimal or Compatibility." />
+    <ItemGroup>
+      <TraceCodeCompilerReference
+        Condition="'$(TraceCodeCompilerReferencePack)' == 'Compatibility'"
+        Include="$(TargetDir)*.dll" />
+      <TraceCodeCompilerReference
+        Condition="'$(TraceCodeCompilerReferencePack)' == 'Minimal'"
+        Include="
+          $(TargetDir)TraceCode.CSharpHost.dll;
+          $(TargetDir)TraceCode.CSharpJudgeRuntime.dll;
+          $(TargetDir)Microsoft.CSharp.dll;
+          $(TargetDir)mscorlib.dll;
+          $(TargetDir)netstandard.dll;
+          $(TargetDir)System.dll;
+          $(TargetDir)System.Core.dll;
+          $(TargetDir)System.Private.CoreLib.dll;
+          $(TargetDir)System.Runtime.dll;
+          $(TargetDir)System.Runtime.Extensions.dll;
+          $(TargetDir)System.Runtime.CompilerServices.Unsafe.dll;
+          $(TargetDir)System.Runtime.Numerics.dll;
+          $(TargetDir)System.Runtime.Serialization.Primitives.dll;
+          $(TargetDir)System.AppContext.dll;
+          $(TargetDir)System.Buffers.dll;
+          $(TargetDir)System.Collections.dll;
+          $(TargetDir)System.Collections.Concurrent.dll;
+          $(TargetDir)System.Collections.Immutable.dll;
+          $(TargetDir)System.Collections.NonGeneric.dll;
+          $(TargetDir)System.Collections.Specialized.dll;
+          $(TargetDir)System.ComponentModel.dll;
+          $(TargetDir)System.ComponentModel.Annotations.dll;
+          $(TargetDir)System.ComponentModel.Primitives.dll;
+          $(TargetDir)System.ComponentModel.TypeConverter.dll;
+          $(TargetDir)System.Console.dll;
+          $(TargetDir)System.Dynamic.Runtime.dll;
+          $(TargetDir)System.Globalization.dll;
+          $(TargetDir)System.IO.dll;
+          $(TargetDir)System.IO.FileSystem.dll;
+          $(TargetDir)System.IO.FileSystem.Primitives.dll;
+          $(TargetDir)System.Linq.dll;
+          $(TargetDir)System.Linq.Expressions.dll;
+          $(TargetDir)System.Linq.Queryable.dll;
+          $(TargetDir)System.Memory.dll;
+          $(TargetDir)System.Numerics.dll;
+          $(TargetDir)System.Numerics.Vectors.dll;
+          $(TargetDir)System.ObjectModel.dll;
+          $(TargetDir)System.Reflection.dll;
+          $(TargetDir)System.Reflection.Extensions.dll;
+          $(TargetDir)System.Reflection.Metadata.dll;
+          $(TargetDir)System.Reflection.Primitives.dll;
+          $(TargetDir)System.Text.Encoding.Extensions.dll;
+          $(TargetDir)System.Text.Json.dll;
+          $(TargetDir)System.Text.RegularExpressions.dll;
+          $(TargetDir)System.Threading.dll;
+          $(TargetDir)System.Threading.Tasks.dll;
+          $(TargetDir)System.Threading.Tasks.Extensions.dll;
+          $(TargetDir)System.ValueTuple.dll" />
+      <TraceCodeCompilerReference Remove="$(TargetDir)System.Net*.dll" />
+      <TraceCodeCompilerReference Remove="$(TargetDir)System.Reflection.Emit*.dll" />
+      <TraceCodeCompilerReference Remove="$(TargetDir)System.Runtime.InteropServices.JavaScript.dll" />
+      <WasmFilesToIncludeInFileSystem
+        Include="@(TraceCodeCompilerReference)"
+        TargetPath="/tracecode-refs/%(TraceCodeCompilerReference.FileName)%(TraceCodeCompilerReference.Extension)" />
+    </ItemGroup>
+  </Target>
+</Project>

@@ -270,12 +270,20 @@ export function createBrowserRuntimeHost(
     cpp,
     ...hostOptions
   } = options;
+  const csharpPreparedAuthority =
+    csharp?.preparedAuthority ??
+    hostOptions.environment?.csharpPreparedAuthority;
+  const effectiveCSharp =
+    csharpPreparedAuthority === undefined
+      ? csharp
+      : { ...csharp, preparedAuthority: csharpPreparedAuthority };
   return createProviderBrowserRuntimeHost({
     ...hostOptions,
+    csharpPreparedAuthority,
     providerRegistry: createDefaultBrowserRuntimeProviderRegistry({
       python,
       java,
-      csharp,
+      csharp: effectiveCSharp,
       cpp,
     }),
   });

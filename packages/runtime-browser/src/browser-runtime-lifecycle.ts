@@ -45,6 +45,7 @@ export interface BrowserRuntimeLifecycleOptions {
   providers?: readonly Language[];
   engine?: BrowserRuntimeEngine;
   featureOverrides?: Partial<BrowserRuntimeFeatureSupport>;
+  csharpPreparedAuthority?: boolean;
   executionHost?: BrowserRuntimeLifecycleExecutionHostOptions;
   debug?: boolean;
   safeExecution?: BrowserSafeExecutionOptions;
@@ -142,7 +143,11 @@ export function resolveBrowserRuntimeLifecycleContext(
       options.assets !== undefined ||
       options.providers !== undefined ||
       options.engine !== undefined ||
-      options.featureOverrides !== undefined
+      options.featureOverrides !== undefined ||
+      (
+        (options.csharpPreparedAuthority ?? true) !==
+          (options.environment.csharpPreparedAuthority ?? true)
+      )
     )
   ) {
     throw new TypeError(
@@ -167,6 +172,7 @@ export function resolveBrowserRuntimeLifecycleContext(
       surface: 'classic',
       engine: options.engine,
       featureOverrides: options.featureOverrides,
+      csharpPreparedAuthority: options.csharpPreparedAuthority,
     });
   const assets = environment.assets;
   const supportedLanguages = environment.providers;

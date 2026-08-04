@@ -7,7 +7,13 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, wri
 import { tmpdir } from 'node:os';
 import { dirname, extname, join, normalize, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { chromium, type Browser, type Page } from 'playwright';
+import {
+  chromium,
+  firefox,
+  webkit,
+  type Browser,
+  type Page,
+} from 'playwright';
 import { CSharpWorkerClient } from '../packages/runtime-csharp/src/csharp-worker-client';
 import { createBrowserCSharpProjectRunner } from '../packages/runtime-csharp/src/project-browser';
 import { createRuntimeCommandStdinPipeFromText, readRuntimeCommandStdinPipeBytes } from '../packages/runtime-contracts/src/runtime-project';
@@ -959,7 +965,15 @@ async function main(): Promise<void> {
   let browser: Browser | null = null;
 
   try {
-    browser = await chromium.launch();
+    const browserTypes = { chromium, firefox, webkit } as const;
+    const browserEngineName =
+      process.env.TRACECODE_CSHARP_BROWSER_ENGINE ?? 'chromium';
+    if (!(browserEngineName in browserTypes)) {
+      throw new Error(`Unsupported C# browser engine: ${browserEngineName}`);
+    }
+    const browserEngine =
+      browserTypes[browserEngineName as keyof typeof browserTypes];
+    browser = await browserEngine.launch();
     const page = await browser.newPage();
     if (CSHARP_BROWSER_PROGRESS) {
       page.on('console', (message) => console.log(`PAGE: ${message.text()}`));
@@ -969,6 +983,23 @@ async function main(): Promise<void> {
     await page.evaluate('globalThis.__name = (fn) => fn');
 
     const assetBaseUrl = `${server.origin}/workers/vendor/csharp`;
+    if (process.env.TRACECODE_CSHARP_BROWSER_SMOKE === '1') {
+      const add = await runWorkerCase(
+        page,
+        fixture('add.cs'),
+        'Add',
+        { a: 2, b: 3 },
+        assetBaseUrl
+      );
+      assertCondition(
+        add.success && add.output === 5,
+        `C# ${browserEngineName} asset smoke failed: ${add.error ?? JSON.stringify(add.output)}`
+      );
+      console.log(
+        `PASS: C# ${browserEngineName} boots stable VFS assets and executes managed code`
+      );
+      return;
+    }
     await testBrowserCSharpProjectDirectoryMetadata(page, assetBaseUrl);
     const externalCSharpDllBase64 = createExternalCSharpDllBase64();
     const add = await runWorkerCase(page, fixture('add.cs'), 'Add', { a: 2, b: 3 }, assetBaseUrl);
@@ -1017,6 +1048,27 @@ async function main(): Promise<void> {
       'C# cached Add execution should read the new runtime inputs'
     );
     assertCondition(cachedAdd.timings?.compileCacheHit === true, 'C# repeated Add execution should reuse the bounded compiled artifact cache');
+
+    const compilerHostDenied = await runWorkerCase(
+      page,
+      [
+        'public class Solution {',
+        '  public string ReadTrustedHostState() {',
+        '    return TraceCode.CSharpHost.CompilerHost.GetCurrentInputsJson();',
+        '  }',
+        '}',
+      ].join('\n'),
+      'ReadTrustedHostState',
+      {},
+      assetBaseUrl
+    );
+    assertCondition(
+      !compilerHostDenied.success &&
+        compilerHostDenied.error?.includes(
+          'denied browser runtime API: TraceCode.CSharpHost.CompilerHost'
+        ) === true,
+      `C# learner compilation must not reference the trusted compiler host assembly: ${JSON.stringify(compilerHostDenied)}`
+    );
 
     const scriptStyle = await runWorkerCase(
       page,
@@ -1089,7 +1141,8 @@ async function main(): Promise<void> {
     );
     assertCondition(
       staticStateBatch.timings?.batchMode === 'per-case-fallback' &&
-        staticStateBatch.timings?.batchFallbackReason === 'static-storage' &&
+        staticStateBatch.timings?.batchFallbackReason ===
+          'isolated-case-authority' &&
         staticStateBatch.timings?.batchCaseCount === 2,
       `C# worker batch should report static-storage fallback timings, received ${JSON.stringify(staticStateBatch.timings)}`
     );
@@ -1113,8 +1166,11 @@ async function main(): Promise<void> {
       `C# worker lower-camel batch should call the source method casing, received ${JSON.stringify(lowerCamelBatch.results)}`
     );
     assertCondition(
-      lowerCamelBatch.timings?.batchMode === 'compile-once' && lowerCamelBatch.timings?.batchCaseCount === 2,
-      `C# worker lower-camel batch should report compile-once timings, received ${JSON.stringify(lowerCamelBatch.timings)}`
+      lowerCamelBatch.timings?.batchMode === 'per-case-fallback' &&
+        lowerCamelBatch.timings?.batchFallbackReason ===
+          'isolated-case-authority' &&
+        lowerCamelBatch.timings?.batchCaseCount === 2,
+      `C# worker lower-camel batch should report isolated-case timings, received ${JSON.stringify(lowerCamelBatch.timings)}`
     );
 
     const opsClassFallbackBatch = await runWorkerBatchCase(
@@ -1142,7 +1198,8 @@ async function main(): Promise<void> {
     );
     assertCondition(
       opsClassFallbackBatch.timings?.batchMode === 'per-case-fallback' &&
-        opsClassFallbackBatch.timings?.batchFallbackReason === 'ops-class-reflection',
+        opsClassFallbackBatch.timings?.batchFallbackReason ===
+          'isolated-case-authority',
       `C# worker ops-class fallback batch should report fallback timings, received ${JSON.stringify(opsClassFallbackBatch.timings)}`
     );
 
@@ -3258,6 +3315,36 @@ async function main(): Promise<void> {
       `C# worker minimalTrace should suppress detail events, received ${JSON.stringify(minimalTrace.events)}`
     );
 
+    const minimalCollectionTrace = await runWorkerCase(
+      page,
+      [
+        'using System.Collections.Generic;',
+        'using System.Linq;',
+        'public class Solution {',
+        '  private readonly List<int> items = new() { 3, 1, 2 };',
+        '  public int[] SortItems() { this.items.Sort(); return items.ToArray(); }',
+        '}',
+      ].join('\n'),
+      'SortItems',
+      {},
+      assetBaseUrl,
+      true,
+      { minimalTrace: true }
+    );
+    assertCondition(
+      minimalCollectionTrace.success &&
+        JSON.stringify(minimalCollectionTrace.output) ===
+          JSON.stringify([1, 2, 3]),
+      `C# worker collection minimalTrace should preserve output: ${JSON.stringify(minimalCollectionTrace)}`
+    );
+    assertCondition(
+      minimalCollectionTrace.events?.every(
+        (event) =>
+          !['snapshot', 'read', 'write', 'mutate'].includes(event.kind)
+      ) === true,
+      `C# collection backfill must honor minimalTrace detail suppression: ${JSON.stringify(minimalCollectionTrace.events)}`
+    );
+
     const timedOut = await runWorkerCase(
       page,
       'public class Solution { public int Add(int a, int b) { while (true) { a++; } return a + b; } }',
@@ -3671,6 +3758,197 @@ async function main(): Promise<void> {
         && event.value === 'a'
       ) === true,
       `C# worker traced Array.Sort case should include sorted-cell writes, received ${JSON.stringify(tracedArraySort.events)}`
+    );
+
+    const tracedTwoListSortsOnOneLine = await runWorkerCase(
+      page,
+      [
+        'using System.Collections.Generic;',
+        'public class Solution {',
+        '  public int[] SortBoth() {',
+        '    var first = new List<int> { 2, 1 }; var second = new List<int> { 4, 3 };',
+        '    first.Sort(); second.Sort(Comparer<int>.Default);',
+        '    return new[] { first[0], second[0] };',
+        '  }',
+        '}',
+      ].join('\n'),
+      'SortBoth',
+      {},
+      assetBaseUrl,
+      true
+    );
+    assertCondition(
+      tracedTwoListSortsOnOneLine.success &&
+        JSON.stringify(tracedTwoListSortsOnOneLine.output) ===
+          JSON.stringify([1, 3]),
+      `C# worker same-line List.Sort case should succeed: ${JSON.stringify(tracedTwoListSortsOnOneLine)}`
+    );
+    const sameLineSortTargets = new Set(
+      (tracedTwoListSortsOnOneLine.events ?? [])
+        .filter(
+          (event) =>
+            event.kind === 'mutate' &&
+            event.line === 5 &&
+            event.method === 'Sort'
+        )
+        .map((event) => event.target?.variable)
+    );
+    assertCondition(
+      sameLineSortTargets.has('first') && sameLineSortTargets.has('second'),
+      `C# trace normalization must preserve same-line Sort mutations for distinct targets: ${JSON.stringify(tracedTwoListSortsOnOneLine.events)}`
+    );
+
+    const tracedTwoSortsOnSameTargetAndLine = await runWorkerCase(
+      page,
+      [
+        'using System.Collections.Generic;',
+        'public class Solution {',
+        '  public int[] SortTwice() {',
+        '    var items = new List<int> { 3, 1, 2 };',
+        '    items.Sort(); items.Sort(Comparer<int>.Default);',
+        '    return items.ToArray();',
+        '  }',
+        '}',
+      ].join('\n'),
+      'SortTwice',
+      {},
+      assetBaseUrl,
+      true
+    );
+    const sameTargetSortMutations = (
+      tracedTwoSortsOnSameTargetAndLine.events ?? []
+    ).filter(
+      (event) =>
+        event.kind === 'mutate' &&
+        event.line === 5 &&
+        event.method === 'Sort' &&
+        event.target?.variable === 'items'
+    );
+    assertCondition(
+      tracedTwoSortsOnSameTargetAndLine.success &&
+        JSON.stringify(tracedTwoSortsOnSameTargetAndLine.output) ===
+          JSON.stringify([1, 2, 3]) &&
+        sameTargetSortMutations.some(
+          (event) => Array.isArray(event.args) && event.args.length === 0
+        ) &&
+        sameTargetSortMutations.some(
+          (event) => Array.isArray(event.args) && event.args.length > 0
+        ),
+      `C# trace normalization must preserve both real same-target Sort calls on one line: ${JSON.stringify(tracedTwoSortsOnSameTargetAndLine)}`
+    );
+
+    const tracedRemoveAndSortOnSameLine = await runWorkerCase(
+      page,
+      [
+        'using System.Collections.Generic;',
+        'using System.Linq;',
+        'public class Solution {',
+        '  private readonly List<int> items = new() { 3, 2, 1 };',
+        '  public int[] Normalize() {',
+        '    this.items.RemoveAt(0); this.items.Sort();',
+        '    return items.ToArray();',
+        '  }',
+        '}',
+      ].join('\n'),
+      'Normalize',
+      {},
+      assetBaseUrl,
+      true
+    );
+    const removeAndSortMutations = (
+      tracedRemoveAndSortOnSameLine.events ?? []
+    )
+      .filter(
+        (event) =>
+          event.kind === 'mutate' &&
+          event.line === 6 &&
+          event.target?.variable === 'items'
+      )
+      .map((event) => event.method);
+    const removeAndSortWholeWrites = (
+      tracedRemoveAndSortOnSameLine.events ?? []
+    )
+      .filter(
+        (event) =>
+          (event.kind === 'write' || event.kind === 'snapshot') &&
+          event.line === 6 &&
+          ((event.target?.variable === 'items' &&
+            (event.target.path?.length ?? 0) === 0) ||
+            (event.target?.variable === 'this' &&
+              JSON.stringify(event.target.path) ===
+                JSON.stringify(['items'])))
+      )
+      .map((event) => event.value);
+    const postRemovalWriteIndex = removeAndSortWholeWrites.findIndex(
+      (value) => JSON.stringify(value) === JSON.stringify([2, 1])
+    );
+    const postSortWriteIndex = removeAndSortWholeWrites.findIndex(
+      (value, index) =>
+        index > postRemovalWriteIndex &&
+        JSON.stringify(value) === JSON.stringify([1, 2])
+    );
+    assertCondition(
+      tracedRemoveAndSortOnSameLine.success &&
+        JSON.stringify(tracedRemoveAndSortOnSameLine.output) ===
+          JSON.stringify([1, 2]) &&
+        JSON.stringify(removeAndSortMutations) ===
+          JSON.stringify(['RemoveAt', 'Sort']) &&
+        postRemovalWriteIndex >= 0 &&
+        postSortWriteIndex > postRemovalWriteIndex,
+      `C# backfill must preserve same-line collection mutations in source order: ${JSON.stringify(tracedRemoveAndSortOnSameLine)}`
+    );
+
+    const tracedMemberComparerSort = await runWorkerCase(
+      page,
+      [
+        'using System.Collections.Generic;',
+        'using System.Linq;',
+        'public class Solution {',
+        '  private readonly List<int> items = new() { 1, 3, 2 };',
+        '  public int[] SortDescending() {',
+        '    this.items.Sort(Comparer<int>.Create((left, right) => right.CompareTo(left)));',
+        '    return items.ToArray();',
+        '  }',
+        '}',
+      ].join('\n'),
+      'SortDescending',
+      {},
+      assetBaseUrl,
+      true
+    );
+    const memberSortEvents = (
+      tracedMemberComparerSort.events ?? []
+    ).filter((event) => event.line === 6);
+    const memberSortMutations = memberSortEvents.filter(
+      (event) => event.kind === 'mutate' && event.method === 'Sort'
+    );
+    const falseAscendingWholeWrite = memberSortEvents.some(
+      (event) =>
+        event.kind === 'write' &&
+        JSON.stringify(event.value) === JSON.stringify([1, 2, 3])
+    );
+    const falseAscendingIndexedWrites = memberSortEvents
+      .flatMap((event) => {
+        const path = event.target?.path;
+        const index = Array.isArray(path) ? path.at(-1) : undefined;
+        return event.kind === 'write' && typeof index === 'number'
+          ? [{ index, value: event.value }]
+          : [];
+      })
+      .sort((left, right) => left.index - right.index)
+      .map((entry) => entry.value)
+      .join(',') === '1,2,3';
+    assertCondition(
+      tracedMemberComparerSort.success &&
+        JSON.stringify(tracedMemberComparerSort.output) ===
+          JSON.stringify([3, 2, 1]) &&
+        memberSortMutations.length > 0 &&
+        memberSortMutations.every(
+          (event) => Array.isArray(event.args) && event.args.length > 0
+        ) &&
+        !falseAscendingWholeWrite &&
+        !falseAscendingIndexedWrites,
+      `C# backfill must not describe comparer-based member Sort as default ascending: ${JSON.stringify(tracedMemberComparerSort)}`
     );
 
     const tracedSystemArrayReverse = await runWorkerCase(
@@ -5399,8 +5677,11 @@ async function main(): Promise<void> {
       `C# worker ListNode batch should preserve per-case stdout, received ${JSON.stringify(listNodeBatch.consoleOutput)}`
     );
     assertCondition(
-      listNodeBatch.timings?.batchMode === 'compile-once' && listNodeBatch.timings?.batchCaseCount === 3,
-      `C# worker ListNode batch should report compile-once timings, received ${JSON.stringify(listNodeBatch.timings)}`
+      listNodeBatch.timings?.batchMode === 'per-case-fallback' &&
+        listNodeBatch.timings?.batchFallbackReason ===
+          'isolated-case-authority' &&
+        listNodeBatch.timings?.batchCaseCount === 3,
+      `C# worker ListNode batch should report isolated-case timings, received ${JSON.stringify(listNodeBatch.timings)}`
     );
 
     const requiredConstructorListNodeInput = await runWorkerCase(

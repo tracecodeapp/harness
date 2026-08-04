@@ -1,0 +1,18 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <RuntimeIdentifier>browser-wasm</RuntimeIdentifier>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <AllowUnsafeBlocks>false</AllowUnsafeBlocks>
+    <InvariantGlobalization>true</InvariantGlobalization>
+    <DebugType>none</DebugType>
+    <DebugSymbols>false</DebugSymbols>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <Compile Include="../TraceCode.CSharpHost/RuntimeTraceSink.cs" Link="RuntimeTraceSink.cs" />
+    <InternalsVisibleTo Include="TraceCode.CSharpHost" />
+    <InternalsVisibleTo Include="TraceCode.CSharpJudgeRunner" />
+  </ItemGroup>
+</Project>

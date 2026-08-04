@@ -1,10 +1,20 @@
 #!/usr/bin/env npx tsx
 
 import { test, type TestContext } from 'node:test';
-import { mkdtemp, readFile, readdir, rm, stat } from 'node:fs/promises';
+import {
+  copyFile,
+  mkdir,
+  mkdtemp,
+  readFile,
+  readdir,
+  rm,
+  stat,
+  writeFile,
+} from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { join, resolve } from 'node:path';
+import { dirname, join, resolve } from 'node:path';
 import { spawnSync } from 'node:child_process';
+import { createCSharpRoleArtifacts } from '../scripts/csharp-role-artifacts.js';
 
 function assertCondition(condition: unknown, message: string): asserts condition {
   if (!condition) {
@@ -62,6 +72,11 @@ async function main(t: TestContext): Promise<void> {
     'vendor/csharp/_framework/dotnet.native.wasm',
     'vendor/csharp/_framework/dotnet.runtime.js',
     'vendor/csharp/_framework/dotnet.boot.js',
+    'vendor/csharp-compiler/_framework/dotnet.boot.js',
+    'vendor/csharp-runner/_framework/dotnet.boot.js',
+    'vendor/csharp-runner/_framework/assemblies-01.pack',
+    'vendor/csharp-runner/_framework/assemblies-02.pack',
+    'vendor/csharp-runner/_framework/assemblies-03.pack',
     'cpp/compiler/bundle.js',
     'cpp/compiler/llvm-resources.tar',
     'cpp/compiler/llvm.core.wasm',
@@ -128,6 +143,43 @@ async function main(t: TestContext): Promise<void> {
   assertCondition(
     rootEntries.includes('java-source-augmentations.js'),
     'Asset sync should flatten the Java augmentation helper into the target root'
+  );
+  const syncedCSharpWorker = await readFile(
+    join(targetDir, 'csharp-worker.js'),
+    'utf8'
+  );
+  assertCondition(
+    syncedCSharpWorker.includes('createTraceCodePackedAssemblyLoader'),
+    'Asset sync should publish the C# packed-assembly boot loader'
+  );
+  const looseRunnerAssemblyExists = await stat(
+    join(
+      targetDir,
+      'vendor/csharp-runner/_framework/System.Private.CoreLib.wasm'
+    )
+  ).then(
+    () => true,
+    (error: NodeJS.ErrnoException) => {
+      if (error.code === 'ENOENT') return false;
+      throw error;
+    }
+  );
+  assertCondition(
+    !looseRunnerAssemblyExists,
+    'Asset sync must not republish loose C# runner managed assemblies'
+  );
+  const sourceControlArtifactsExist = await stat(
+    join(targetDir, 'vendor/csharp-role-artifacts')
+  ).then(
+    () => true,
+    (error: NodeJS.ErrnoException) => {
+      if (error.code === 'ENOENT') return false;
+      throw error;
+    }
+  );
+  assertCondition(
+    !sourceControlArtifactsExist,
+    'Asset sync must not publish build-time C# role archives to browsers'
   );
 
   for (const relativePath of ['cpp-worker.js', 'cpp-compiler-worker.js']) {
@@ -221,6 +273,102 @@ async function main(t: TestContext): Promise<void> {
   ]) {
     const fileStat = await stat(join(filteredJavaScriptTargetDir, relativePath));
     assertCondition(fileStat.isFile(), `Expected filtered JavaScript synced asset at ${relativePath}`);
+  }
+
+  const cleanPackageRoot = join(tempRoot, 'clean-package');
+  await mkdir(join(cleanPackageRoot, 'dist'), { recursive: true });
+  await copyFile('dist/cli.cjs', join(cleanPackageRoot, 'dist/cli.cjs'));
+  await writeFile(
+    join(cleanPackageRoot, 'package.json'),
+    '{"type":"module"}\n'
+  );
+  const fixtureFiles = [
+    ['THIRD_PARTY_NOTICES.md', 'fixture notices'],
+    ['workers/csharp/csharp-worker.js', 'fixture worker'],
+    ['workers/shared/runtime-kernel-policy-classic.js', 'fixture classic policy'],
+    ['workers/shared/runtime-kernel-policy.js', 'fixture module policy'],
+  ] as const;
+  for (const [relativePath, contents] of fixtureFiles) {
+    const target = join(cleanPackageRoot, ...relativePath.split('/'));
+    await mkdir(dirname(target), { recursive: true });
+    await writeFile(target, contents);
+  }
+  const generalSource = join(tempRoot, 'role-source/general');
+  const compilerSource = join(tempRoot, 'role-source/compiler');
+  const runnerSource = join(tempRoot, 'role-source/runner');
+  const roleFixtures = [
+    [
+      generalSource,
+      'TraceCode.CSharpHost.runtimeconfig.json',
+      '_framework/general.wasm',
+    ],
+    [
+      compilerSource,
+      'TraceCode.CSharpHost.runtimeconfig.json',
+      '_framework/compiler.wasm',
+    ],
+    [
+      runnerSource,
+      'TraceCode.CSharpJudgeRunner.runtimeconfig.json',
+      '_framework/assemblies-01.pack',
+    ],
+  ] as const;
+  for (const [directory, runtimeConfig, payloadPath] of roleFixtures) {
+    await mkdir(join(directory, '_framework'), { recursive: true });
+    await writeFile(
+      join(directory, runtimeConfig),
+      `${JSON.stringify({
+        runtimeOptions: {
+          tfm: 'net10.0',
+          includedFrameworks: [
+            { name: 'Microsoft.NETCore.App', version: '10.0.10' },
+          ],
+        },
+      })}\n`
+    );
+    await writeFile(join(directory, payloadPath), `${payloadPath}-bytes`);
+  }
+  await createCSharpRoleArtifacts({
+    artifactDirectory: join(
+      cleanPackageRoot,
+      'workers/vendor/csharp-role-artifacts'
+    ),
+    compilerDirectory: compilerSource,
+    compilerReferencePack: 'Minimal',
+    dotnetSdk: '10.0.110',
+    generalDirectory: generalSource,
+    runnerDirectory: runnerSource,
+    runnerTrimProfile: 'JudgeReferences',
+    targetFramework: 'net10.0',
+  });
+  const cleanTarget = join(tempRoot, 'clean-package-output');
+  const cleanRun = spawnSync(
+    'node',
+    [
+      join(cleanPackageRoot, 'dist/cli.cjs'),
+      'sync-assets',
+      cleanTarget,
+      '--languages',
+      'csharp',
+    ],
+    { cwd: cleanPackageRoot, encoding: 'utf8' }
+  );
+  if (cleanRun.status !== 0) {
+    throw new Error(
+      cleanRun.stderr ||
+        cleanRun.stdout ||
+        'Clean-checkout C# asset sync CLI failed'
+    );
+  }
+  for (const relativePath of [
+    'vendor/csharp/_framework/general.wasm',
+    'vendor/csharp-compiler/_framework/compiler.wasm',
+    'vendor/csharp-runner/_framework/assemblies-01.pack',
+  ]) {
+    assertCondition(
+      (await stat(join(cleanTarget, relativePath))).isFile(),
+      `Clean-checkout sync should materialize ${relativePath}`
+    );
   }
 
   console.log('PASS: asset sync CLI copies canonical and language-filtered worker assets');

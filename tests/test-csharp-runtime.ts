@@ -3,11 +3,13 @@
 import { test } from 'node:test';
 import { readFileSync } from 'node:fs';
 import { createCSharpRuntimeClient } from '../packages/runtime-csharp/src/csharp-runtime-client';
+import { createCSharpBrowserRuntimeProvider } from '../packages/runtime-csharp/src/browser-runtime-provider';
 import {
   CSharpWorkerClient,
   type CSharpDiagnostic,
   type CSharpExecutionStyle,
 } from '../packages/runtime-csharp/src/csharp-worker-client';
+import type { BrowserRuntimeProviderContext } from '../packages/runtime-browser/src/runtime-provider-registry';
 import { getLanguageRuntimeProfile } from '../packages/runtime-browser/src/runtime-profiles';
 import {
   RUNTIME_TRACE_SCHEMA_VERSION,
@@ -59,6 +61,7 @@ interface MockCSharpWorkerRawResult {
   timeoutReason?: ExecutionLimitReason;
   compiledArtifactKey?: string;
   compiledArtifactBase64?: string;
+  compiledArtifactSha256?: string;
 }
 
 class MockCSharpWorker {
@@ -67,6 +70,7 @@ class MockCSharpWorker {
   static instances: MockCSharpWorker[] = [];
   static hangingMessageTypes = new Set<string>();
   static erroringMessageTypes = new Set<string>();
+  static warmupFailuresRemaining = 0;
 
   public onmessage: ((event: MessageEvent<WorkerMessage>) => void) | null = null;
   public onerror: ((event: ErrorEvent) => void) | null = null;
@@ -83,6 +87,10 @@ class MockCSharpWorker {
     MockCSharpWorker.received.push(message);
     queueMicrotask(() => {
       const { id, type } = message;
+      const messagePayload = message.payload as {
+        runtimeRole?: string;
+        inputs?: Record<string, unknown>;
+      } | undefined;
       if (type === 'init') {
         this.onmessage?.({
           data: { id, type, payload: { success: true, loadTimeMs: 1 }, protocolToken: message.protocolToken },
@@ -95,11 +103,52 @@ class MockCSharpWorker {
       }
 
       if (type === 'warmup') {
+        if (MockCSharpWorker.warmupFailuresRemaining > 0) {
+          MockCSharpWorker.warmupFailuresRemaining -= 1;
+          this.onerror?.({ message: 'mock warmup worker error' } as ErrorEvent);
+          return;
+        }
         this.onmessage?.({
           data: {
             id,
             type,
-            payload: { success: true, loadTimeMs: 2, timings: { totalMs: 2, initMs: 0, warmupMs: 2 } },
+            payload: {
+              success: true,
+              loadTimeMs: 2,
+              timings: { totalMs: 2, initMs: 0, warmupMs: 2 },
+              ...(messagePayload?.runtimeRole === 'compiler'
+                ? {
+                    trustedPreparedArtifact: {
+                      mode: 'code',
+                      code:
+                        'public class Solution { public int Add(int a, int b) => a + b; }',
+                      functionName: 'Add',
+                      executionStyle: 'solution-method',
+                      compiledArtifactKey: 'trusted-prime',
+                      compiledArtifactBase64: 'TVqQAAMAAAAEAAAA',
+                      compiledArtifactSha256:
+                        'abababababababababababababababababababababababababababababababab',
+                    },
+                  }
+                : {}),
+            },
+            protocolToken: message.protocolToken,
+          },
+        } as MessageEvent<WorkerMessage>);
+        return;
+      }
+
+      if (
+        type === 'execute-prepared-code' &&
+        messagePayload?.runtimeRole === 'runner' &&
+        messagePayload.inputs?.a === 1 &&
+        messagePayload.inputs?.b === 2
+      ) {
+        this.onmessage?.({
+          data: {
+            id,
+            type,
+            payload: { success: true, output: 3, consoleOutput: [] },
             protocolToken: message.protocolToken,
           },
         } as MessageEvent<WorkerMessage>);
@@ -693,12 +742,16 @@ async function testPreparedWorkerGenerationAuthority(): Promise<void> {
         success: true,
         compiledArtifactKey: 'prepared-a',
         compiledArtifactBase64: 'TVqQAAMAAAAEAAAA',
+        compiledArtifactSha256:
+          'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
         consoleOutput: [],
       },
       {
         success: true,
         compiledArtifactKey: 'prepared-b',
         compiledArtifactBase64: 'TVqQAAMAAAAEAAAB',
+        compiledArtifactSha256:
+          'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb',
         consoleOutput: [],
       }
     );
@@ -810,8 +863,473 @@ async function testPreparedWorkerGenerationAuthority(): Promise<void> {
   console.log('PASS: C# prepared handles share one fresh-worker execution authority');
 }
 
+async function testCompilerAuthorityPrimesBeforePreparation(): Promise<void> {
+  const originalWorker = globalThis.Worker;
+  MockCSharpWorker.responses = [];
+  MockCSharpWorker.received = [];
+  MockCSharpWorker.instances = [];
+  MockCSharpWorker.hangingMessageTypes = new Set<string>();
+  MockCSharpWorker.erroringMessageTypes = new Set<string>();
+  // @ts-expect-error test stub
+  globalThis.Worker = MockCSharpWorker;
+
+  const workerClient = new CSharpWorkerClient({
+    workerUrl: '/workers/csharp-worker.js',
+    assetBaseUrl: '/workers/vendor/csharp-compiler',
+    runtimeRole: 'compiler',
+  });
+  const provider = createCSharpRuntimeClient(workerClient);
+
+  try {
+    MockCSharpWorker.responses.push({
+      success: true,
+      compiledArtifactKey: 'learner-after-prime',
+      compiledArtifactBase64: 'TVqQAAMAAAAEAAAA',
+      compiledArtifactSha256:
+        'cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc',
+      consoleOutput: [],
+    });
+    const prepared = await provider.prepareProgram({
+      mode: 'code',
+      code: 'public class Solution { public int Echo(int value) => value; }',
+      functionName: 'Echo',
+    });
+    assertCondition(
+      prepared.kind === 'prepared',
+      'C# compiler authority should prepare after trusted priming'
+    );
+    const commandOrder = MockCSharpWorker.received.map((message) => message.type);
+    const warmupIndex = commandOrder.indexOf('warmup');
+    const prepareIndex = commandOrder.indexOf('prepare-program');
+    assertCondition(
+      warmupIndex >= 0 && prepareIndex > warmupIndex,
+      `C# compiler preparation must await trusted priming: ${JSON.stringify(commandOrder)}`
+    );
+    assertCondition(
+      MockCSharpWorker.instances.length === 1 &&
+        MockCSharpWorker.instances[0]?.terminated === false,
+      'Trusted compiler authority should remain persistent after preparation'
+    );
+  } finally {
+    workerClient.terminate();
+    globalThis.Worker = originalWorker;
+  }
+
+  console.log('PASS: C# compiler authority primes one trusted emit before learner preparation');
+}
+
+async function testDisposedProviderDoesNotRecreateRunner(): Promise<void> {
+  MockCSharpWorker.responses = [];
+  MockCSharpWorker.received = [];
+  MockCSharpWorker.instances = [];
+  MockCSharpWorker.hangingMessageTypes = new Set<string>();
+  MockCSharpWorker.erroringMessageTypes = new Set<string>();
+
+  const context = {
+    assets: {
+      csharpWorker: '/workers/csharp-worker.js',
+      csharpAssetBaseUrl: '/workers/vendor/csharp',
+      csharpCompilerAssetBaseUrl: '/workers/vendor/csharp-compiler',
+      csharpRunnerAssetBaseUrl: '/workers/vendor/csharp-runner',
+    },
+    debug: false,
+    workerLifecyclePolicy: 'warm-and-retire',
+    prewarmAfterUse: true,
+    workerFactoryFor: () =>
+      (url: string | URL) =>
+        new MockCSharpWorker(url) as unknown as Worker,
+    preflight: () => async () => undefined,
+    manifestAsset: () => undefined,
+    manifestAssetCollection: () => undefined,
+  } as unknown as BrowserRuntimeProviderContext;
+  const lease = createCSharpBrowserRuntimeProvider().create(context);
+  // Let compiler/standby warmup and its fail-soft replacement settle before
+  // measuring the execution/disposal race.
+  await new Promise<void>((resolve) => setTimeout(resolve, 10));
+  const provider = lease.preparedProviders.get('csharp');
+  assertCondition(provider, 'C# provider lease should expose prepared execution');
+  MockCSharpWorker.responses.push({
+    success: true,
+    compiledArtifactKey: 'provider-disposal-artifact',
+    compiledArtifactBase64: 'TVqQAAMAAAAEAAAA',
+    compiledArtifactSha256:
+      'dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd',
+    consoleOutput: [],
+  });
+  const prepared = await provider.prepareProgram({
+    mode: 'code',
+    code: 'public class Solution { public int Echo(int value) => value; }',
+    functionName: 'Echo',
+  });
+  assertCondition(
+    prepared.kind === 'prepared' && prepared.program.mode === 'code',
+    'Provider disposal test requires a prepared C# code program'
+  );
+  if (prepared.kind !== 'prepared' || prepared.program.mode !== 'code') return;
+
+  MockCSharpWorker.hangingMessageTypes = new Set(['execute-prepared-code']);
+  const execution = prepared.program.executeIsolated({
+    inputs: { value: 7 },
+  });
+  while (
+    !MockCSharpWorker.received.some(
+      (message) => message.type === 'execute-prepared-code'
+    )
+  ) {
+    await new Promise<void>((resolve) => setTimeout(resolve, 0));
+  }
+  const instancesAtDisposal = MockCSharpWorker.instances.length;
+  lease.dispose();
+  await execution.catch(() => undefined);
+  await new Promise<void>((resolve) => setTimeout(resolve, 10));
+  assertCondition(
+    MockCSharpWorker.instances.length === instancesAtDisposal,
+    'C# provider disposal must not create a replacement runner from an in-flight release continuation'
+  );
+  assertCondition(
+    MockCSharpWorker.instances.every((worker) => worker.terminated),
+    'C# provider disposal should terminate general, compiler, standby, and active runner clients'
+  );
+  MockCSharpWorker.hangingMessageTypes = new Set<string>();
+
+  console.log('PASS: C# provider disposal cannot recreate runner capacity');
+}
+
+async function testPreparedAuthorityWarmupAwaitsCompilerAndRunner(): Promise<void> {
+  MockCSharpWorker.responses = [];
+  MockCSharpWorker.received = [];
+  MockCSharpWorker.instances = [];
+  MockCSharpWorker.hangingMessageTypes = new Set<string>();
+  MockCSharpWorker.erroringMessageTypes = new Set<string>();
+  MockCSharpWorker.warmupFailuresRemaining = 0;
+  const context = {
+    assets: {
+      csharpWorker: '/workers/csharp-worker.js',
+      csharpAssetBaseUrl: '/workers/vendor/csharp',
+      csharpCompilerAssetBaseUrl: '/workers/vendor/csharp-compiler',
+      csharpRunnerAssetBaseUrl: '/workers/vendor/csharp-runner',
+    },
+    debug: false,
+    workerLifecyclePolicy: 'warm-and-retire',
+    prewarmAfterUse: true,
+    workerFactoryFor: () =>
+      (url: string | URL) =>
+        new MockCSharpWorker(url) as unknown as Worker,
+    preflight: () => async () => undefined,
+    manifestAsset: () => undefined,
+    manifestAssetCollection: () => undefined,
+  } as unknown as BrowserRuntimeProviderContext;
+  const lease = createCSharpBrowserRuntimeProvider().create(context);
+  const provider = lease.preparedProviders.get('csharp');
+  assertCondition(provider, 'C# provider lease should expose prepared execution');
+
+  const ready = await provider.init();
+  const roleCommands = MockCSharpWorker.received.map((message) => ({
+    type: message.type,
+    role: (message.payload as { runtimeRole?: string } | undefined)
+      ?.runtimeRole,
+  }));
+  assertCondition(
+    ready.success &&
+      roleCommands.some(
+        (command) =>
+          command.type === 'warmup' && command.role === 'compiler'
+      ) &&
+      roleCommands.some(
+        (command) =>
+          command.type === 'warmup' && command.role === 'runner'
+      ) &&
+      roleCommands.some(
+        (command) =>
+          command.type === 'execute-prepared-code' &&
+          command.role === 'runner'
+      ),
+    `C# authority warmup must await compiler load, runner load, and trusted runner priming: ${JSON.stringify(roleCommands)}`
+  );
+  assertCondition(
+    !roleCommands.some(
+      (command) => command.type === 'warmup' && command.role === undefined
+    ),
+    'C# authority warmup must not load the unused general worker'
+  );
+  lease.dispose();
+
+  console.log(
+    'PASS: C# prepared authority warmup awaits compiler and trusted runner capacity'
+  );
+}
+
+async function testRetireOnlyDoesNotReplenishPreparedRunner(): Promise<void> {
+  MockCSharpWorker.responses = [];
+  MockCSharpWorker.received = [];
+  MockCSharpWorker.instances = [];
+  MockCSharpWorker.hangingMessageTypes = new Set<string>();
+  MockCSharpWorker.erroringMessageTypes = new Set<string>();
+  MockCSharpWorker.warmupFailuresRemaining = 0;
+  const context = {
+    assets: {
+      csharpWorker: '/workers/csharp-worker.js',
+      csharpAssetBaseUrl: '/workers/vendor/csharp',
+      csharpCompilerAssetBaseUrl: '/workers/vendor/csharp-compiler',
+      csharpRunnerAssetBaseUrl: '/workers/vendor/csharp-runner',
+    },
+    debug: false,
+    workerLifecyclePolicy: 'retire-only',
+    prewarmAfterUse: false,
+    workerFactoryFor: () =>
+      (url: string | URL) =>
+        new MockCSharpWorker(url) as unknown as Worker,
+    preflight: () => async () => undefined,
+    manifestAsset: () => undefined,
+    manifestAssetCollection: () => undefined,
+  } as unknown as BrowserRuntimeProviderContext;
+  const lease = createCSharpBrowserRuntimeProvider().create(context);
+  const provider = lease.preparedProviders.get('csharp');
+  assertCondition(provider, 'C# provider lease should expose prepared execution');
+  await provider.init();
+  const warmedInstances = MockCSharpWorker.instances.length;
+
+  MockCSharpWorker.responses.push({
+    success: true,
+    compiledArtifactKey: 'retire-only-artifact',
+    compiledArtifactBase64: 'TVqQAAMAAAAEAAAA',
+    compiledArtifactSha256:
+      'cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd',
+    consoleOutput: [],
+  });
+  const prepared = await provider.prepareProgram({
+    mode: 'code',
+    code: 'public class Solution { public int Echo(int value) => value; }',
+    functionName: 'Echo',
+  });
+  assertCondition(
+    prepared.kind === 'prepared' && prepared.program.mode === 'code',
+    'retire-only lifecycle test requires a prepared C# program'
+  );
+  if (prepared.kind !== 'prepared' || prepared.program.mode !== 'code') return;
+
+  MockCSharpWorker.responses.push({
+    success: true,
+    output: 7,
+    consoleOutput: [],
+  });
+  const result = await prepared.program.executeIsolated({
+    inputs: { value: 7 },
+  });
+  await new Promise<void>((resolve) => setTimeout(resolve, 10));
+  assertCondition(
+    result.kind === 'completed' &&
+      MockCSharpWorker.instances.length === warmedInstances,
+    'retire-only C# execution must retire its runner without creating replacement capacity'
+  );
+
+  MockCSharpWorker.responses.push({ success: true, consoleOutput: [] });
+  await prepared.program.dispose();
+  lease.dispose();
+
+  console.log('PASS: retire-only C# execution does not replenish runners');
+}
+
+async function testStandbyWarmFailureRetriesWithBackoff(): Promise<void> {
+  MockCSharpWorker.responses = [];
+  MockCSharpWorker.received = [];
+  MockCSharpWorker.instances = [];
+  MockCSharpWorker.hangingMessageTypes = new Set<string>();
+  MockCSharpWorker.erroringMessageTypes = new Set<string>();
+  MockCSharpWorker.warmupFailuresRemaining = 1;
+  const context = {
+    assets: {
+      csharpWorker: '/workers/csharp-worker.js',
+      csharpAssetBaseUrl: '/workers/vendor/csharp',
+      csharpCompilerAssetBaseUrl: '/workers/vendor/csharp-compiler',
+      csharpRunnerAssetBaseUrl: '/workers/vendor/csharp-runner',
+    },
+    debug: false,
+    workerLifecyclePolicy: 'warm-and-retire',
+    prewarmAfterUse: true,
+    workerFactoryFor: () =>
+      (url: string | URL) =>
+        new MockCSharpWorker(url) as unknown as Worker,
+    preflight: () => async () => undefined,
+    manifestAsset: () => undefined,
+    manifestAssetCollection: () => undefined,
+  } as unknown as BrowserRuntimeProviderContext;
+  const lease = createCSharpBrowserRuntimeProvider().create(context);
+  try {
+    await new Promise<void>((resolve) => setTimeout(resolve, 325));
+    assertCondition(
+      MockCSharpWorker.received.filter((message) => message.type === 'warmup')
+        .length >= 3,
+      'A failed C# standby warmup should retry without waiting for a learner lease'
+    );
+    assertCondition(
+      MockCSharpWorker.instances.length >= 3,
+      'A failed C# standby warmup should create replacement capacity'
+    );
+  } finally {
+    lease.dispose();
+    MockCSharpWorker.warmupFailuresRemaining = 0;
+    await new Promise<void>((resolve) => setTimeout(resolve, 10));
+  }
+
+  console.log('PASS: C# standby warm failures retry with bounded backoff');
+}
+
+async function testLanguageDisposalCanReacquirePreparedCapacity(): Promise<void> {
+  MockCSharpWorker.responses = [];
+  MockCSharpWorker.received = [];
+  MockCSharpWorker.instances = [];
+  MockCSharpWorker.hangingMessageTypes = new Set<string>();
+  MockCSharpWorker.erroringMessageTypes = new Set<string>();
+  MockCSharpWorker.warmupFailuresRemaining = 0;
+  const context = {
+    assets: {
+      csharpWorker: '/workers/csharp-worker.js',
+      csharpAssetBaseUrl: '/workers/vendor/csharp',
+      csharpCompilerAssetBaseUrl: '/workers/vendor/csharp-compiler',
+      csharpRunnerAssetBaseUrl: '/workers/vendor/csharp-runner',
+    },
+    debug: false,
+    workerLifecyclePolicy: 'warm-and-retire',
+    prewarmAfterUse: true,
+    workerFactoryFor: () =>
+      (url: string | URL) =>
+        new MockCSharpWorker(url) as unknown as Worker,
+    preflight: () => async () => undefined,
+    manifestAsset: () => undefined,
+    manifestAssetCollection: () => undefined,
+  } as unknown as BrowserRuntimeProviderContext;
+  const lease = createCSharpBrowserRuntimeProvider().create(context);
+  await new Promise<void>((resolve) => setTimeout(resolve, 10));
+  const retiredInstances = [...MockCSharpWorker.instances];
+  lease.disposeLanguage('csharp');
+  assertCondition(
+    retiredInstances.every((worker) => worker.terminated),
+    'C# language disposal should retire current compiler and runner capacity'
+  );
+
+  const provider = lease.preparedProviders.get('csharp');
+  assertCondition(provider, 'C# lease should retain its prepared provider');
+  MockCSharpWorker.responses.push({
+    success: true,
+    compiledArtifactKey: 'reacquired-artifact',
+    compiledArtifactBase64: 'TVqQAAMAAAAEAAAA',
+    compiledArtifactSha256:
+      'ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff',
+    consoleOutput: [],
+  });
+  const prepared = await provider.prepareProgram({
+    mode: 'code',
+    code: 'public class Solution { public int Echo(int value) => value; }',
+    functionName: 'Echo',
+  });
+  assertCondition(
+    prepared.kind === 'prepared' && prepared.program.mode === 'code',
+    'C# preparation should reacquire the compiler after language disposal'
+  );
+  if (prepared.kind !== 'prepared' || prepared.program.mode !== 'code') return;
+
+  MockCSharpWorker.responses.push({
+    success: true,
+    output: 9,
+    consoleOutput: [],
+  });
+  const result = await prepared.program.executeIsolated({
+    inputs: { value: 9 },
+  });
+  assertCondition(
+    result.kind === 'completed' && result.output === 9,
+    'C# execution should reacquire a disposable runner after language disposal'
+  );
+  assertCondition(
+    MockCSharpWorker.instances.length > retiredInstances.length,
+    'C# language reuse should create fresh capacity'
+  );
+  lease.dispose();
+  await prepared.program.dispose();
+  await new Promise<void>((resolve) => setTimeout(resolve, 10));
+
+  console.log('PASS: C# language disposal remains recoverable');
+}
+
+async function testLegacyManifestUsesGeneralWorker(): Promise<void> {
+  MockCSharpWorker.responses = [];
+  MockCSharpWorker.received = [];
+  MockCSharpWorker.instances = [];
+  MockCSharpWorker.hangingMessageTypes = new Set<string>();
+  MockCSharpWorker.erroringMessageTypes = new Set<string>();
+
+  const legacyAsset = { url: '/legacy-cdn/csharp' };
+  const context = {
+    assets: {
+      csharpWorker: '/legacy-cdn/csharp-worker.js',
+      csharpAssetBaseUrl: '/legacy-cdn/csharp',
+      csharpCompilerAssetBaseUrl: '/workers/vendor/csharp-compiler',
+      csharpRunnerAssetBaseUrl: '/workers/vendor/csharp-runner',
+    },
+    debug: false,
+    workerLifecyclePolicy: 'warm-and-retire',
+    prewarmAfterUse: true,
+    workerFactoryFor: () =>
+      (url: string | URL) =>
+        new MockCSharpWorker(url) as unknown as Worker,
+    preflight: () => async () => undefined,
+    manifestAsset: (_runtime: string, name: string) =>
+      name === 'assetBaseUrl' ? legacyAsset : undefined,
+    manifestAssetCollection: () => undefined,
+  } as unknown as BrowserRuntimeProviderContext;
+
+  const lease = createCSharpBrowserRuntimeProvider().create(context);
+  MockCSharpWorker.responses.push({
+    success: true,
+    compiledArtifactKey: 'legacy-manifest-artifact',
+    compiledArtifactBase64: 'TVqQAAMAAAAEAAAA',
+    compiledArtifactSha256:
+      'eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee',
+    consoleOutput: [],
+  });
+  const provider = lease.preparedProviders.get('csharp');
+  assertCondition(provider, 'Legacy C# lease should expose prepared execution');
+  const prepared = await provider.prepareProgram({
+    mode: 'code',
+    code: 'public class Solution { public int Echo(int value) => value; }',
+    functionName: 'Echo',
+  });
+  assertCondition(
+    prepared.kind === 'prepared' &&
+      MockCSharpWorker.instances.length === 1 &&
+      MockCSharpWorker.instances[0]?.url === '/legacy-cdn/csharp-worker.js',
+    'A legacy C# manifest should retain its single general worker instead of loading default-origin role workers'
+  );
+  lease.dispose();
+  assertCondition(
+    MockCSharpWorker.instances[0]?.terminated,
+    'Legacy C# general worker should terminate with its provider lease'
+  );
+  assertCondition(
+    (() => {
+      try {
+        createCSharpBrowserRuntimeProvider({
+          preparedAuthority: true,
+        }).create(context);
+        return false;
+      } catch (error) {
+        return (
+          error instanceof TypeError &&
+          error.message.includes(
+            'preparedAuthority requires compiler and runner assets'
+          )
+        );
+      }
+    })(),
+    'Explicit prepared authority should reject a legacy manifest without role assets'
+  );
+
+  console.log('PASS: legacy C# manifests remain on their declared general bundle');
+}
+
 function testTraceRewriterTargetTypedFieldWritesDoNotReadAssignedMembers(): void {
-  const source = readFileSync('runtimes/csharp/TraceCode.CSharpHost/TraceRewriter.cs', 'utf8');
+  const source = readFileSync('packages/runtime-csharp/dotnet/TraceCode.CSharpHost/TraceRewriter.cs', 'utf8');
   assertCondition(
     source.includes('FieldWrite({Literal("this")}, {implicitThisPathExpression}, null, {line})'),
     'C# TraceRewriter target-typed implicit-this field writes should record without reading the assigned member'
@@ -829,7 +1347,7 @@ function testTraceRewriterTargetTypedFieldWritesDoNotReadAssignedMembers(): void
 }
 
 function testTraceRewriterIndexedAssignmentsDoNotReadAssignedIndexers(): void {
-  const source = readFileSync('runtimes/csharp/TraceCode.CSharpHost/TraceRewriter.cs', 'utf8');
+  const source = readFileSync('packages/runtime-csharp/dotnet/TraceCode.CSharpHost/TraceRewriter.cs', 'utf8');
   assertCondition(
     source.includes('var {valueTempName} = ({arrayExpression}[{indexTempName}] = {assignment.Right});'),
     'C# TraceRewriter indexed assignments should capture the assignment expression result'
@@ -849,6 +1367,13 @@ async function main(): Promise<void> {
   await testWallClockLimitClientTimeout();
   await testWorkerErrorReset();
   await testPreparedWorkerGenerationAuthority();
+  await testCompilerAuthorityPrimesBeforePreparation();
+  await testDisposedProviderDoesNotRecreateRunner();
+  await testPreparedAuthorityWarmupAwaitsCompilerAndRunner();
+  await testRetireOnlyDoesNotReplenishPreparedRunner();
+  await testStandbyWarmFailureRetriesWithBackoff();
+  await testLanguageDisposalCanReacquirePreparedCapacity();
+  await testLegacyManifestUsesGeneralWorker();
   testTraceRewriterTargetTypedFieldWritesDoNotReadAssignedMembers();
   testTraceRewriterIndexedAssignmentsDoNotReadAssignedIndexers();
 }

@@ -1,0 +1,87 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <RuntimeIdentifier>browser-wasm</RuntimeIdentifier>
+    <OutputType>Exe</OutputType>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    <InvariantGlobalization>true</InvariantGlobalization>
+    <DebugType>none</DebugType>
+    <DebugSymbols>false</DebugSymbols>
+    <WasmDebugLevel>0</WasmDebugLevel>
+    <PublishTrimmed>false</PublishTrimmed>
+    <WasmEmitSymbolMap>false</WasmEmitSymbolMap>
+    <WasmMainJSPath>main.mjs</WasmMainJSPath>
+    <TraceCodeRunnerTrimProfile Condition="'$(TraceCodeRunnerTrimProfile)' == ''">JudgeReferences</TraceCodeRunnerTrimProfile>
+  </PropertyGroup>
+
+  <PropertyGroup Condition="'$(TraceCodeRunnerTrimProfile)' == 'JudgeReferences'">
+    <PublishTrimmed>true</PublishTrimmed>
+    <TrimMode>partial</TrimMode>
+    <JsonSerializerIsReflectionEnabledByDefault>true</JsonSerializerIsReflectionEnabledByDefault>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="../TraceCode.CSharpJudgeRuntime/TraceCode.CSharpJudgeRuntime.csproj" />
+  </ItemGroup>
+
+  <!--
+    Learner assemblies are compiled and loaded dynamically, so the linker
+    cannot discover their BCL calls. Root every assembly exposed by the
+    compiler's Minimal Judge reference pack; assemblies outside that language
+    surface may still be removed as whole units. The general/project runtime
+    and compiler authority are intentionally published without this profile.
+  -->
+  <ItemGroup Condition="'$(TraceCodeRunnerTrimProfile)' == 'JudgeReferences'">
+    <TrimmerRootAssembly Include="
+      TraceCode.CSharpJudgeRunner;
+      TraceCode.CSharpJudgeRuntime;
+      Microsoft.CSharp;
+      mscorlib;
+      netstandard;
+      System;
+      System.Core;
+      System.Private.CoreLib;
+      System.Runtime;
+      System.Runtime.Extensions;
+      System.Runtime.CompilerServices.Unsafe;
+      System.Runtime.Numerics;
+      System.Runtime.Serialization.Primitives;
+      System.AppContext;
+      System.Buffers;
+      System.Collections;
+      System.Collections.Concurrent;
+      System.Collections.Immutable;
+      System.Collections.NonGeneric;
+      System.Collections.Specialized;
+      System.ComponentModel;
+      System.ComponentModel.Annotations;
+      System.ComponentModel.Primitives;
+      System.ComponentModel.TypeConverter;
+      System.Console;
+      System.Dynamic.Runtime;
+      System.Globalization;
+      System.IO;
+      System.IO.FileSystem;
+      System.IO.FileSystem.Primitives;
+      System.Linq;
+      System.Linq.Expressions;
+      System.Linq.Queryable;
+      System.Memory;
+      System.Numerics;
+      System.Numerics.Vectors;
+      System.ObjectModel;
+      System.Reflection;
+      System.Reflection.Extensions;
+      System.Reflection.Metadata;
+      System.Reflection.Primitives;
+      System.Text.Encoding.Extensions;
+      System.Text.Json;
+      System.Text.RegularExpressions;
+      System.Threading;
+      System.Threading.Tasks;
+      System.Threading.Tasks.Extensions;
+      System.ValueTuple" />
+  </ItemGroup>
+</Project>

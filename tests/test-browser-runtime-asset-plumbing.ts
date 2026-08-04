@@ -1,6 +1,7 @@
 import {
   BROWSER_RUNTIME_ASSET_PROTOCOL_VERSION,
   createBrowserRuntimeAssetPreflight,
+  createBrowserRuntimeEnvironment,
   createBrowserRuntimeHost,
   resolveBrowserRuntimeAssetManifests,
   type BrowserRuntimeAssetManifests,
@@ -269,7 +270,14 @@ async function testManifestAssetsReachWorkerInitialization(): Promise<void> {
     'The Java bridge worker must own its engine asset tree instead of receiving retired manifest roles'
   );
 
-  const csharpWorker = findWorker('/csharp/worker.js');
+  const csharpWorker = CapturingWorker.instances.find((entry) => {
+    if (!String(entry.url).includes('/csharp/worker.js')) return false;
+    const payload = entry.messages.find(
+      (message) => message.type === 'init'
+    )?.payload;
+    return payload?.runtimeRole === 'general';
+  });
+  assertCondition(csharpWorker, 'Expected initialized general C# worker');
   const csharpPayload = initMessage(csharpWorker).payload;
   assertCondition(csharpWorker.options?.type === 'module', 'C# manifest must retain the module-worker boundary');
   assertCondition(
@@ -322,6 +330,7 @@ async function testMetadataMismatchStopsBeforeWorkerConstruction(): Promise<void
     const host = createBrowserRuntimeHost({
       engine: 'chromium',
       assets: { runtimeManifests: manifests },
+      providers: ['typescript'],
     });
     let message = '';
     try {
@@ -595,6 +604,66 @@ async function testProjectManifestAssetsArePreflightedAndForwarded(): Promise<vo
   }
 }
 
+async function testCSharpRoleBundlesAreIncludedInReadiness(): Promise<void> {
+  const manifests = consumerManifests();
+  const sized = (url: string) => ({ url, size: 5 });
+  manifests.csharp = {
+    ...manifests.csharp!,
+    assets: {
+      worker: sized('worker.js'),
+      assetBaseUrl: sized('runtime'),
+      compilerAssetBaseUrl: sized('compiler'),
+      runnerAssetBaseUrl: sized('runner'),
+      dependencies: {
+        '_framework/dotnet.js': sized('runtime/_framework/dotnet.js'),
+      },
+      compilerDependencies: {
+        '_framework/dotnet.js': sized('compiler/_framework/dotnet.js'),
+      },
+      runnerDependencies: {
+        '_framework/dotnet.js': sized('runner/_framework/dotnet.js'),
+      },
+    },
+  };
+  const fetched = new Set<string>();
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async (input) => {
+    fetched.add(input instanceof Request ? input.url : String(input));
+    return new Response('asset', { status: 200 });
+  };
+  try {
+    const environment = createBrowserRuntimeEnvironment({
+      providers: ['csharp'],
+      assets: { runtimeManifests: manifests },
+      featureOverrides: {
+        worker: true,
+        webAssembly: true,
+        webCrypto: true,
+        sharedArrayBuffer: true,
+        crossOriginIsolated: true,
+      },
+    });
+    const readiness = await environment.preflight('csharp');
+    assertCondition(
+      readiness.status === 'ready',
+      `C# role-bundle readiness should pass valid assets: ${readiness.error ?? 'unknown error'}`
+    );
+    for (const url of [
+      'https://cdn.consumer.example/csharp/compiler',
+      'https://cdn.consumer.example/csharp/runner',
+      'https://cdn.consumer.example/csharp/compiler/_framework/dotnet.js',
+      'https://cdn.consumer.example/csharp/runner/_framework/dotnet.js',
+    ]) {
+      assertCondition(
+        fetched.has(url),
+        `C# readiness must preflight prepared-role asset ${url}`
+      );
+    }
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+}
+
 const originalWorker = Object.getOwnPropertyDescriptor(globalThis, 'Worker');
 Object.defineProperty(globalThis, 'Worker', { configurable: true, writable: true, value: CapturingWorker });
 try {
@@ -605,6 +674,7 @@ try {
   await testPreflightRetriesFailuresAndSharesConcurrentWork();
   await testProjectManifestAssetBinding();
   await testProjectManifestAssetsArePreflightedAndForwarded();
+  await testCSharpRoleBundlesAreIncludedInReadiness();
   console.log('PASS: browser runtime asset manifest plumbing and preflight');
 } finally {
   if (originalWorker) Object.defineProperty(globalThis, 'Worker', originalWorker);

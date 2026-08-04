@@ -12,6 +12,7 @@ import {
 import { createRequire } from 'node:module';
 import { dirname, join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
+import { materializeCSharpRoleAssets } from './csharp-role-artifacts.js';
 
 const ROOT = resolve(process.cwd());
 const require = createRequire(pathToFileURL(join(ROOT, 'scripts', 'sync-language-package-assets.ts')));
@@ -193,6 +194,14 @@ const PACKAGE_ASSET_PLANS: PackageAssetPlan[] = [
         source: ['workers', 'vendor', 'csharp'],
         target: ['workers', 'vendor', 'csharp'],
       },
+      {
+        source: ['workers', 'vendor', 'csharp-compiler'],
+        target: ['workers', 'vendor', 'csharp-compiler'],
+      },
+      {
+        source: ['workers', 'vendor', 'csharp-runner'],
+        target: ['workers', 'vendor', 'csharp-runner'],
+      },
     ],
   },
   {
@@ -311,6 +320,7 @@ async function syncPackage(plan: PackageAssetPlan): Promise<void> {
 }
 
 async function main(): Promise<void> {
+  await materializeCSharpRoleAssets(ROOT);
   for (const plan of PACKAGE_ASSET_PLANS) {
     await syncPackage(plan);
   }
