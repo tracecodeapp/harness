@@ -118,6 +118,37 @@ async function main(): Promise<void> {
       yield* reader.close(seekFd);
       yield* reader.close(seekDuplicateFd);
 
+      yield* session.writeFile('growable.bin', bytes('abcdef'));
+      const growableFd = yield* session.openFile(writer, 'growable.bin', {
+        access: 'read-write',
+      });
+      yield* writer.ftruncate(growableFd, 2);
+      yield* writer.ftruncate(growableFd, 6);
+      yield* writer.write(growableFd, bytes('Z'), 5);
+      const growableBytes = yield* session.readFile('growable.bin');
+      assertCondition(
+        growableBytes.byteLength === 6 &&
+          growableBytes[0] === 'a'.charCodeAt(0) &&
+          growableBytes[1] === 'b'.charCodeAt(0) &&
+          growableBytes[2] === 0 &&
+          growableBytes[3] === 0 &&
+          growableBytes[4] === 0 &&
+          growableBytes[5] === 'Z'.charCodeAt(0),
+        'Growable file storage exposed truncated backing bytes or mishandled a sparse write.'
+      );
+      const growableImage = yield* session.fileSystem.exportImage();
+      const growableStat = yield* session.stat('growable.bin');
+      const growableInode = growableImage.inodes.find(
+        (inode) =>
+          inode.kind === 'file' &&
+          inode.inode === growableStat.inode
+      );
+      assertCondition(
+        growableInode?.kind === 'file' && growableInode.contents.byteLength === 6,
+        'A TKFS image leaked growable file backing capacity past logical EOF.'
+      );
+      yield* writer.close(growableFd);
+
       yield* session.writeFile('inode.txt', bytes('old-inode'));
       const oldInodeFd = yield* session.openFile(reader, 'inode.txt', { access: 'read' });
       yield* session.unlink('inode.txt');
@@ -341,6 +372,7 @@ async function main(): Promise<void> {
     dupSharesOffset: true,
     seekSharesOffsetAcrossDup: true,
     truncatePreservesOffset: true,
+    growableFilesPreserveSparseTruncateSemantics: true,
     unlinkPreservesOpenNode: true,
     atomicAppend: true,
     generationAdvancesOnMutation: true,

@@ -184,6 +184,7 @@
     "mine:runtime-trace-corpus": "pnpm exec tsx --tsconfig tsconfig.base.json tests/mine-runtime-trace-corpus.ts",
     "mine:runtime-trace-corpus:parallel": "pnpm exec tsx --tsconfig tsconfig.base.json tests/mine-runtime-trace-corpus.ts --jobs=8",
     "bench:browser-project-runtimes": "pnpm exec tsx --tsconfig tsconfig.base.json scripts/benchmark-browser-project-runtimes.ts",
+    "bench:tracekernel-seekable-output": "node --import tsx scripts/benchmark-tracekernel-seekable-output.mts",
     "check:browser-project-performance": "node scripts/check-browser-project-performance.mjs"
   },
   "devDependencies": {
