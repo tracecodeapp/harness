@@ -37,7 +37,7 @@ export function createPythonBrowserRuntimeProvider(
         pythonManifest?.assets.runtimeImage ?? builtInRuntime?.image;
       if (!runtimeImageDescriptor) {
         throw new Error(
-          'TraceCode Python 0.15 requires runtimeImage in a custom Python runtime manifest. ' +
+          'TraceCode Python 0.16 requires runtimeImage in a custom Python runtime manifest. ' +
             'Remove the custom manifest to use the image assets shipped by the Harness, or ' +
             'publish an engine-matched immutable image with the custom runtime.'
         );

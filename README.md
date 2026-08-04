@@ -30,7 +30,7 @@ Copy the browser assets into the application's public directory:
 pnpm exec tracecode-harness sync-assets public/workers
 ```
 
-Version 0.15 includes the Python runtime image in that asset tree. The Judge
+Version 0.16 includes the Python runtime image in that asset tree. The Judge
 provider automatically selects the Chromium, Firefox, or WebKit snapshot and
 does not require a Python-specific application API. Keep the copied
 `python/pyodide-0.29.3` directory intact and serve `.wasm` files as

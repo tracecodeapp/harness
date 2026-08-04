@@ -43,7 +43,7 @@ function assertImageEngine(
 ): asserts engine is keyof typeof SNAPSHOTS {
   if (engine === 'unknown') {
     throw new Error(
-      'TraceCode Python 0.15 requires a recognized Chromium, Firefox, or WebKit engine ' +
+      'TraceCode Python 0.16 requires a recognized Chromium, Firefox, or WebKit engine ' +
         'to select an isolation-safe CPython runtime image. Set the browser runtime engine ' +
         'explicitly only when user-agent detection is unavailable.'
     );
@@ -51,7 +51,7 @@ function assertImageEngine(
 }
 
 /**
- * Resolves the Python 0.15 runtime image shipped by the Harness asset bundle.
+ * Resolves the Python 0.16 runtime image shipped by the Harness asset bundle.
  *
  * These are deployment assets, not learner state. The provider retains the
  * immutable module/snapshot pair while every leased Worker receives fresh

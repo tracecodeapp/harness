@@ -16,7 +16,7 @@ notices, source references, and package metadata alongside the assets.
 ### Pyodide
 
 - Use: Python runtime loaded by `workers/python/python-worker.js`.
-- Version: the Python 0.15 Judge provider ships an owned Pyodide `0.29.3`
+- Version: the Python 0.16 Judge provider ships an owned Pyodide `0.29.3`
   distribution and engine-specific clean CPython startup images. Project
   processes may use a consumer-owned runtime manifest; the module-worker
   adapter is also verified against Pyodide `314.0.2`.

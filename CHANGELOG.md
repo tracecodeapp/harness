@@ -6,7 +6,7 @@ This repo uses Git tags as release boundaries. Version notes below summarize wha
 
 ## [Unreleased]
 
-## [0.15.0] - 2026-08-03
+## [0.16.0] - 2026-08-04
 
 This release replaces the browser Python Judge implementation with an
 image-backed, warm-and-retire CPython lifecycle while preserving Judge and
@@ -14,11 +14,6 @@ TraceKernel as the public authorities.
 
 ### Added
 
-- Named the browser worker lifecycle contract `warm-and-retire`, documented its
-  one-use retirement, durable ownership, bounded replenishment, and generation
-  fencing invariants, and added `retire-only` as its no-replenishment peer.
-- Added public lifecycle-policy types and conformance tests across the
-  browser-host configuration and provider-context boundary.
 - Added an owned Pyodide 0.29.3 distribution, a patched versioned loader seam,
   and immutable clean CPython startup images for Chromium, Firefox, and WebKit.
 - Added exact runtime-image integrity, size, engine-selection, asset-sync, and
@@ -36,6 +31,29 @@ TraceKernel as the public authorities.
   Pyodide initialization.
 - Python trace retention is byte-bounded before event storage and no longer
   duplicates the complete legacy trace payload during transport.
+
+### Fixed
+
+- Moved Python replacement warmup from the short-lived prepared-program object
+  to the durable provider, eliminating stranded post-evaluation interpreters.
+- Made explicit Python Worker termination terminal so teardown cannot be
+  misclassified as a load failure and respawn a Worker after disposal.
+- Preserved exact traced result values while bounding trace snapshots, made
+  runtime-image loading compression-safe and deadline-bound, and pinned the
+  owned loader input for reproducible rebuilds.
+
+## [0.15.0] - 2026-08-03
+
+### Added
+
+- Named the browser worker lifecycle contract `warm-and-retire`, documented its
+  one-use retirement, durable ownership, bounded replenishment, and generation
+  fencing invariants, and added `retire-only` as its no-replenishment peer.
+- Added public lifecycle-policy types and conformance tests across the
+  browser-host configuration and provider-context boundary.
+
+### Changed
+
 - Java prepared execution now retains one warm TraceJVM compiler Worker while
   leasing a fresh inner JVM and authoritative TraceKernel process/TKFS for each
   case. Prepared inputs no longer masquerade as filesystem state, hard worker
@@ -47,13 +65,6 @@ TraceKernel as the public authorities.
 - Deprecated `safeExecution.prewarmAfterUse` in favor of
   `safeExecution.workerLifecycle`; the compatibility boolean maps to one named
   policy, and contradictory old/new configuration now fails closed.
-
-### Fixed
-
-- Moved Python replacement warmup from the short-lived prepared-program object
-  to the durable provider, eliminating stranded post-evaluation interpreters.
-- Made explicit Python Worker termination terminal so teardown cannot be
-  misclassified as a load failure and respawn a Worker after disposal.
 
 ## [0.14.6] - 2026-08-01
 

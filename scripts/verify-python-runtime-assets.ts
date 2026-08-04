@@ -70,7 +70,7 @@ for (const [relativePath, expected] of Object.entries(EXPECTED)) {
   const sha256 = createHash('sha256').update(bytes).digest('hex');
   if (bytes.byteLength !== expected.size || sha256 !== expected.sha256) {
     throw new Error(
-      `Python runtime asset ${relativePath} does not match the 0.15 release ledger: ` +
+      `Python runtime asset ${relativePath} does not match the 0.16 release ledger: ` +
         `expected ${expected.size} bytes/${expected.sha256}, received ` +
         `${bytes.byteLength} bytes/${sha256}.`
     );
