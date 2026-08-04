@@ -12,5 +12,7 @@
 
   <ItemGroup>
     <Compile Include="../TraceCode.CSharpHost/RuntimeTraceSink.cs" Link="RuntimeTraceSink.cs" />
+    <InternalsVisibleTo Include="TraceCode.CSharpHost" />
+    <InternalsVisibleTo Include="TraceCode.CSharpJudgeRunner" />
   </ItemGroup>
 </Project>

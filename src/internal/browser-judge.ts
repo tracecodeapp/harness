@@ -218,6 +218,8 @@ export interface BrowserJudgeCSharpOptions {
   readonly runnerIdleTimeoutMs?: number;
   /** Maximum disposable runner leases executing one eager Judge batch concurrently. */
   readonly preparedBatchConcurrency?: number;
+  /** Disable only for deployments that have not published the compiler/runner role bundles. */
+  readonly preparedAuthority?: boolean;
 }
 
 export interface BrowserJudgeCppOptions {

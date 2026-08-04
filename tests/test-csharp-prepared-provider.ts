@@ -253,6 +253,7 @@ test('C# prepared batches lease one disposable outer runner per case', async () 
   const authority: CSharpPreparedWorkerAuthority = {
     compiler: compiler as unknown as CSharpWorkerClient,
     batchConcurrency: 3,
+    warmup: () => compiler.init(),
     createRunner() {
       const runner = new FakePreparedCSharpWorker();
       runners.push(runner);
@@ -330,10 +331,13 @@ test('C# prepared batch failure drains every active runner before rejection', as
   };
   const available = [failedRunner, slowRunner];
   const released: FakePreparedCSharpWorker[] = [];
+  let runnerLeaseCount = 0;
   const authority: CSharpPreparedWorkerAuthority = {
     compiler: compiler as unknown as CSharpWorkerClient,
     batchConcurrency: 2,
+    warmup: () => compiler.init(),
     createRunner() {
+      runnerLeaseCount += 1;
       const runner = available.shift();
       assert.ok(runner);
       return runner as unknown as CSharpWorkerClient;
@@ -361,7 +365,12 @@ test('C# prepared batch failure drains every active runner before rejection', as
   }
 
   const batch = prepared.program.executeBatchIsolated({
-    inputBatch: [{ value: 1 }, { value: 2 }],
+    inputBatch: [
+      { value: 1 },
+      { value: 2 },
+      { value: 3 },
+      { value: 4 },
+    ],
   });
   await slowStarted;
   let rejected = false;
@@ -379,6 +388,11 @@ test('C# prepared batch failure drains every active runner before rejection', as
   assert.equal(failedRunner.terminated, true);
   assert.equal(slowRunner.terminated, true);
   assert.equal(released.length, 2);
+  assert.equal(
+    runnerLeaseCount,
+    2,
+    'only the two already-active runners should have been leased'
+  );
   await prepared.program.dispose();
 });
 

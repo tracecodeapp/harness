@@ -1,7 +1,7 @@
 export const config = /*json-start*/{
   "mainAssemblyName": "TraceCode.CSharpHost.dll",
   "resources": {
-    "hash": "sha256-O9Prfn3gaHy4lvTPA+Pma7Dskr/rr7IZcMsSqymisU8=",
+    "hash": "sha256-KoLaWD/tLlDneOrElvRANnqzPsPpO6mTRvZP9jaAWn4=",
     "jsModuleNative": [
       {
         "name": "dotnet.native.js"
@@ -789,12 +789,12 @@ export const config = /*json-start*/{
       {
         "virtualPath": "TraceCode.CSharpHost.wasm",
         "name": "TraceCode.CSharpHost.wasm",
-        "hash": "sha256-mVHaTXL4ADvn1C56vjQencXtaVp2EHbqLUd6KMLMZaY="
+        "hash": "sha256-oMoz0zg139chLZhJJ+32br98l0fv1IhwCbT69qCgWow="
       },
       {
         "virtualPath": "TraceCode.CSharpJudgeRuntime.wasm",
         "name": "TraceCode.CSharpJudgeRuntime.wasm",
-        "hash": "sha256-yCSDulo4jDcu5o50AwBZoEqAZUtVwv9dd5tjYD7q10Y="
+        "hash": "sha256-mBQqylAnVYZE/I9uuO2sKIjHlMZFqvoJGkiatSQtXMc="
       },
       {
         "virtualPath": "WindowsBase.wasm",
@@ -964,12 +964,12 @@ export const config = /*json-start*/{
       {
         "virtualPath": "/tracecode-refs/TraceCode.CSharpHost.dll",
         "name": "supportFiles/0_TraceCode.CSharpHost.dll",
-        "hash": "sha256-D9w12ZACErQHGp3f63rxaktvKRL6whYPZ6rEW7ln7ds="
+        "hash": "sha256-KdT4mdVQthuM+wMVSM5lx6NfcPiGYeAVEU9fd6EuSYo="
       },
       {
         "virtualPath": "/tracecode-refs/TraceCode.CSharpJudgeRuntime.dll",
         "name": "supportFiles/1_TraceCode.CSharpJudgeRuntime.dll",
-        "hash": "sha256-XHA5Q8ZDGDFtxYIf0LTq4u1vYrIEV6fOCRXLm73lRZo="
+        "hash": "sha256-x4z2pUyi72S2V6+gNSITIcu6k0DC0pmKJ0w1deonxYo="
       },
       {
         "virtualPath": "/tracecode-refs/Microsoft.CSharp.dll",

@@ -33,6 +33,7 @@ import {
 export interface CSharpPreparedWorkerAuthority {
   readonly compiler: CSharpWorkerClient;
   readonly batchConcurrency: number;
+  warmup(): Promise<{ success: boolean; loadTimeMs: number }>;
   createRunner(): CSharpWorkerClient;
   releaseRunner(runner: CSharpWorkerClient): void;
 }
@@ -72,44 +73,42 @@ class CSharpRuntimeClient implements RuntimeClient, RuntimePreparedExecutionProv
       inputBatch.length,
       this.preparedAuthority?.batchConcurrency ?? 1
     );
-    const settled: PromiseSettledResult<TResult>[] = new Array(
-      inputBatch.length
-    );
+    const results: TResult[] = new Array(inputBatch.length);
     let nextIndex = 0;
+    let terminalFailure: { reason: unknown } | undefined;
     await Promise.all(
       Array.from({ length: concurrency }, async () => {
-        while (nextIndex < inputBatch.length) {
+        while (
+          terminalFailure === undefined &&
+          nextIndex < inputBatch.length
+        ) {
+          if (signal?.aborted) {
+            terminalFailure = {
+              reason:
+                signal.reason ??
+                new Error('Prepared C# batch was aborted.'),
+            };
+            break;
+          }
           const index = nextIndex;
           nextIndex += 1;
           const inputs = inputBatch[index]!;
-          if (signal?.aborted) {
-            settled[index] = {
-              status: 'rejected',
-              reason: signal.reason ??
-                new Error('Prepared C# batch was aborted.'),
-            };
-            continue;
-          }
           try {
-            const value = await this.withPreparedRunner((runner) =>
+            results[index] = await this.withPreparedRunner((runner) =>
               execute(runner, inputs)
             );
-            settled[index] = { status: 'fulfilled', value };
           } catch (reason) {
-            settled[index] = { status: 'rejected', reason };
+            terminalFailure ??= { reason };
           }
         }
       })
     );
-    const firstFailure = settled.find(
-      (result): result is PromiseRejectedResult => result.status === 'rejected'
-    );
-    if (firstFailure) throw firstFailure.reason;
-    return settled.map((result) => (result as PromiseFulfilledResult<TResult>).value);
+    if (terminalFailure) throw terminalFailure.reason;
+    return results;
   }
 
   async init(): Promise<{ success: boolean; loadTimeMs: number }> {
-    return this.workerClient.init();
+    return this.preparedAuthority?.warmup() ?? this.workerClient.init();
   }
 
   async execute(request: RuntimeExecuteCodeRequest): Promise<RuntimeExecuteResult>;

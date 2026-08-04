@@ -51,6 +51,8 @@ export interface CreateBrowserRuntimeHostOptions {
   providers?: readonly Language[];
   engine?: BrowserRuntimeEngine;
   featureOverrides?: Partial<BrowserRuntimeFeatureSupport>;
+  /** Must match the C# provider's prepared-authority mode. */
+  csharpPreparedAuthority?: boolean;
   /** Runs selected provider workers on a dedicated, credential-free origin. */
   executionHost?: BrowserRuntimeHostExecutionHostOptions;
   debug?: boolean;

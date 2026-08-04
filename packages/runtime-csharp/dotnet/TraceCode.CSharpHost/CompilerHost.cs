@@ -42,6 +42,7 @@ public static partial class CompilerHost
         "System.Type",
         "System.AppDomain",
         "System.Runtime.InteropServices.JavaScript",
+        "TraceCode.CSharpHost.JudgeRuntimeContext",
         "AssemblyLoadContext",
     };
     private static readonly string[] DeniedUserReflectionInvocations =
@@ -1432,6 +1433,12 @@ public static partial class CompilerHost
                         "C# user code references denied browser runtime API: TraceCode.CSharpHost.CompilerHost."
                     );
                 }
+                if (symbols.Any(IsTrustedJudgeRuntimeContextSymbol))
+                {
+                    throw new InvalidOperationException(
+                        "C# user code references denied browser runtime API: TraceCode.CSharpHost.JudgeRuntimeContext."
+                    );
+                }
             }
         }
     }
@@ -1446,6 +1453,20 @@ public static partial class CompilerHost
                 SymbolDisplayFormat.FullyQualifiedFormat
             ),
             "global::TraceCode.CSharpHost.CompilerHost",
+            StringComparison.Ordinal
+        );
+    }
+
+    private static bool IsTrustedJudgeRuntimeContextSymbol(ISymbol symbol)
+    {
+        ISymbol target = symbol is IAliasSymbol alias ? alias.Target : symbol;
+        INamedTypeSymbol? containingType =
+            target as INamedTypeSymbol ?? target.ContainingType;
+        return string.Equals(
+            containingType?.ToDisplayString(
+                SymbolDisplayFormat.FullyQualifiedFormat
+            ),
+            "global::TraceCode.CSharpHost.JudgeRuntimeContext",
             StringComparison.Ordinal
         );
     }

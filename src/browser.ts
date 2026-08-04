@@ -272,6 +272,7 @@ export function createBrowserRuntimeHost(
   } = options;
   return createProviderBrowserRuntimeHost({
     ...hostOptions,
+    csharpPreparedAuthority: csharp?.preparedAuthority,
     providerRegistry: createDefaultBrowserRuntimeProviderRegistry({
       python,
       java,

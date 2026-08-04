@@ -11,11 +11,29 @@
  */
 
 import { execFile, spawn, type ChildProcess } from 'node:child_process';
+import { createHash } from 'node:crypto';
 import { createReadStream, existsSync, statSync } from 'node:fs';
-import { cp, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import {
+  cp,
+  mkdir,
+  mkdtemp,
+  readFile,
+  readdir,
+  rm,
+  stat,
+  writeFile,
+} from 'node:fs/promises';
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
 import { tmpdir } from 'node:os';
-import { dirname, extname, join, normalize, resolve, sep } from 'node:path';
+import {
+  dirname,
+  extname,
+  join,
+  normalize,
+  relative,
+  resolve,
+  sep,
+} from 'node:path';
 import { gzipSync } from 'node:zlib';
 import { build } from 'esbuild';
 import { chromium, firefox, webkit, type Browser, type BrowserContext, type Request } from 'playwright';
@@ -1704,38 +1722,41 @@ async function runBrowserPlanItem(
     const networkFlushComplete = await settleBeforeDeadline(Promise.allSettled(pendingNetwork), 2_000);
     if (result) {
       await sampleProcessMemory();
-      const baseline =
-        processMemorySamples[0]?.snapshot ??
-        (await browserProcessMemorySnapshot(browserPid));
-      const settled = processMemorySamples.at(-1)?.snapshot ?? baseline;
-      const peak = processMemorySamples.reduce(
-        (current, sample) => Math.max(current, sample.snapshot.rssBytes),
-        baseline.rssBytes
-      );
-      const peakByPhase: NonNullable<BrowserSampleResult['processMemory']>['peakByPhase'] = {};
-      for (const sample of processMemorySamples) {
-        const current = peakByPhase[sample.phase];
-        if (!current) {
-          peakByPhase[sample.phase] = {
-            peakRssBytes: sample.snapshot.rssBytes,
-            sampleCount: 1,
-            processCount: sample.snapshot.processCount,
-          };
-        } else {
-          current.sampleCount += 1;
-          if (sample.snapshot.rssBytes > current.peakRssBytes) {
-            current.peakRssBytes = sample.snapshot.rssBytes;
-            current.processCount = sample.snapshot.processCount;
+      const baseline = processMemorySamples[0]?.snapshot;
+      if (baseline) {
+        const settled = processMemorySamples.at(-1)?.snapshot ?? baseline;
+        const peak = processMemorySamples.reduce(
+          (current, sample) =>
+            Math.max(current, sample.snapshot.rssBytes),
+          baseline.rssBytes
+        );
+        const peakByPhase: NonNullable<
+          BrowserSampleResult['processMemory']
+        >['peakByPhase'] = {};
+        for (const sample of processMemorySamples) {
+          const current = peakByPhase[sample.phase];
+          if (!current) {
+            peakByPhase[sample.phase] = {
+              peakRssBytes: sample.snapshot.rssBytes,
+              sampleCount: 1,
+              processCount: sample.snapshot.processCount,
+            };
+          } else {
+            current.sampleCount += 1;
+            if (sample.snapshot.rssBytes > current.peakRssBytes) {
+              current.peakRssBytes = sample.snapshot.rssBytes;
+              current.processCount = sample.snapshot.processCount;
+            }
           }
         }
+        result.processMemory = {
+          browserPid,
+          baselineRssBytes: baseline.rssBytes,
+          peakRssBytes: peak,
+          settledRssBytes: settled.rssBytes,
+          peakByPhase,
+        };
       }
-      result.processMemory = {
-        browserPid,
-        baselineRssBytes: baseline.rssBytes,
-        peakRssBytes: peak,
-        settledRssBytes: settled.rssBytes,
-        peakByPhase,
-      };
     }
     return { result, cdpMetrics, cdpUnsupportedReason, networkFlushComplete };
   } catch (error) {
@@ -1919,6 +1940,69 @@ function metricCoverage(
   };
 }
 
+interface CSharpAssetSourceProvenance {
+  schema: 'tracecode-csharp-benchmark-asset-tree-v1';
+  sourceArgument: string;
+  resolvedPath: string;
+  fileCount: number;
+  rawBytes: number;
+  treeSha256: string;
+}
+
+async function inspectCSharpAssetSource(
+  sourceArgument: string
+): Promise<CSharpAssetSourceProvenance> {
+  const root = resolve(sourceArgument);
+  const rootStat = await stat(root);
+  if (!rootStat.isDirectory()) {
+    throw new TypeError('--csharp-asset-source must reference a directory.');
+  }
+
+  const hash = createHash('sha256');
+  hash.update('tracecode-csharp-benchmark-asset-tree-v1\0');
+  let fileCount = 0;
+  let rawBytes = 0;
+  const visit = async (directory: string): Promise<void> => {
+    const entries = await readdir(directory, { withFileTypes: true });
+    entries.sort((left, right) =>
+      left.name < right.name ? -1 : left.name > right.name ? 1 : 0
+    );
+    for (const entry of entries) {
+      const pathname = join(directory, entry.name);
+      if (entry.isDirectory()) {
+        await visit(pathname);
+        continue;
+      }
+      if (!entry.isFile()) {
+        throw new TypeError(
+          `--csharp-asset-source cannot contain links or special files: ${pathname}`
+        );
+      }
+      const bytes = await readFile(pathname);
+      const artifactPath = relative(root, pathname).split(sep).join('/');
+      const pathBytes = Buffer.from(artifactPath, 'utf8');
+      const header = Buffer.alloc(12);
+      header.writeUInt32BE(pathBytes.byteLength, 0);
+      header.writeBigUInt64BE(BigInt(bytes.byteLength), 4);
+      hash.update(header);
+      hash.update(pathBytes);
+      hash.update(createHash('sha256').update(bytes).digest());
+      fileCount += 1;
+      rawBytes += bytes.byteLength;
+    }
+  };
+  await visit(root);
+
+  return {
+    schema: 'tracecode-csharp-benchmark-asset-tree-v1',
+    sourceArgument,
+    resolvedPath: root,
+    fileCount,
+    rawBytes,
+    treeSha256: hash.digest('hex'),
+  };
+}
+
 async function main(): Promise<void> {
   const args = parseArgs(process.argv.slice(2));
   const runtimeManifests = await loadRuntimeManifests(args.runtimeManifestsPath);
@@ -1929,16 +2013,22 @@ async function main(): Promise<void> {
   let executionServer: Awaited<ReturnType<typeof startStaticServer>> | undefined;
   let browser: Browser | undefined;
   let browserServer: BrowserServerLike | undefined;
+  let csharpAssetSourceProvenance: CSharpAssetSourceProvenance | null = null;
 
   try {
-    await runAssetSync(workersRoot, args.languages);
     if (args.csharpAssetSource) {
       if (!args.languages.includes('csharp')) {
         throw new Error('--csharp-asset-source requires csharp in --languages.');
       }
+      csharpAssetSourceProvenance = await inspectCSharpAssetSource(
+        args.csharpAssetSource
+      );
+    }
+    await runAssetSync(workersRoot, args.languages);
+    if (args.csharpAssetSource) {
       const destination = join(workersRoot, 'vendor', 'csharp');
       await rm(destination, { recursive: true, force: true });
-      await cp(resolve(args.csharpAssetSource), destination, {
+      await cp(csharpAssetSourceProvenance!.resolvedPath, destination, {
         recursive: true,
         force: false,
         errorOnExist: true,
@@ -2097,6 +2187,7 @@ async function main(): Promise<void> {
         smoke: args.smoke,
         runtimeManifestsPath: args.runtimeManifestsPath,
         runtimeManifestRuntimes: runtimeManifests ? Object.keys(runtimeManifests).sort() : [],
+        csharpAssetSource: csharpAssetSourceProvenance,
       },
       bundle: {
         entrypoint: 'packages/runtime-browser/src/project.ts',

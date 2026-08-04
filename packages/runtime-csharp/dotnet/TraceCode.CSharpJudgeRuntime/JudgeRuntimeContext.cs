@@ -12,12 +12,12 @@ public static class JudgeRuntimeContext
 
     public static string GetCurrentInputsJson() => currentInputsJson;
 
-    public static void SetCurrentInputsJson(string inputsJson)
+    internal static void SetCurrentInputsJson(string inputsJson)
     {
         currentInputsJson = string.IsNullOrWhiteSpace(inputsJson) ? "{}" : inputsJson;
     }
 
-    public static void Reset()
+    internal static void Reset()
     {
         currentInputsJson = "{}";
         RuntimeTraceSink.Reset();

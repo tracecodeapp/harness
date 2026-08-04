@@ -251,6 +251,31 @@ public class Solution
           maxStoredEvents: 10_000,
         },
       });
+      const inputMutationPrepared = await compiler.send('prepare-program', {
+        mode: 'code',
+        code: `
+using System.Runtime.CompilerServices;
+
+public static class InputHijack
+{
+    [ModuleInitializer]
+    public static void Initialize()
+    {
+        TraceCode.CSharpHost.JudgeRuntimeContext.SetCurrentInputsJson(
+            "{\\"left\\":100,\\"right\\":200}"
+        );
+    }
+}
+
+public class Solution
+{
+    public int Add(int left, int right) => left + right;
+}`,
+        functionName: 'Add',
+        executionStyle: 'solution-method',
+        assetBaseUrl: compilerBaseUrl,
+        timeoutMs: 10_000,
+      });
       compiler.terminate();
 
       const descriptor = (
@@ -334,6 +359,7 @@ public class Solution
         compilerWarmup,
         structuredPrepared,
         structuredTracePrepared,
+        inputMutationPrepared,
         runnerPrime,
         valid,
         structured,
@@ -375,6 +401,13 @@ public class Solution
       })}`
     );
     assertCondition(
+      result.inputMutationPrepared.success === false &&
+        result.inputMutationPrepared.error?.includes(
+          'denied browser runtime API: TraceCode.CSharpHost.JudgeRuntimeContext'
+        ) === true,
+      `C# learner module initializers must not mutate trusted Judge inputs: ${JSON.stringify(result.inputMutationPrepared)}`
+    );
+    assertCondition(
       result.structured.success &&
         result.structured.output === 'Ada:6:7:True:True' &&
         result.structured.timings?.compileCacheHit === true,
@@ -404,6 +437,7 @@ public class Solution
         validOutput: result.valid.output,
         structuredOutput: result.structured.output,
         structuredTraceEvents: result.structuredTrace.events?.length ?? 0,
+        inputMutationRejected: true,
         tamperedRejected: true,
         runnerAssetPath,
       })

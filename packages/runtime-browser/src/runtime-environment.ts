@@ -53,6 +53,8 @@ export interface BrowserRuntimeEnvironmentOptions {
   surface?: BrowserRuntimeSurface;
   engine?: BrowserRuntimeEngine;
   featureOverrides?: Partial<BrowserRuntimeFeatureSupport>;
+  /** Whether the classic C# surface uses packed compiler/runner role workers. */
+  csharpPreparedAuthority?: boolean;
 }
 
 export interface BrowserRuntimeEnvironment {
@@ -61,13 +63,15 @@ export interface BrowserRuntimeEnvironment {
   readonly engine: BrowserRuntimeEngine;
   readonly surface: BrowserRuntimeSurface;
   readonly features: Readonly<BrowserRuntimeFeatureSupport>;
+  readonly csharpPreparedAuthority?: boolean;
   preflight(language: Language): Promise<BrowserRuntimeReadiness>;
   preflightAll(): Promise<BrowserRuntimeEnvironmentReport>;
 }
 
 function preflightAssets(
   language: Language,
-  surface: BrowserRuntimeSurface
+  surface: BrowserRuntimeSurface,
+  csharpPreparedAuthority: boolean
 ): readonly string[] {
   switch (language) {
     case 'python':
@@ -79,7 +83,7 @@ function preflightAssets(
     case 'java':
       return ['worker'];
     case 'csharp':
-      if (surface === 'project') {
+      if (surface === 'project' || !csharpPreparedAuthority) {
         return ['worker', 'assetBaseUrl', 'dependencies'];
       }
       return [
@@ -133,7 +137,8 @@ function detectFeatures(overrides: Partial<BrowserRuntimeFeatureSupport> = {}): 
 function requiredFeatures(
   language: Language,
   surface: BrowserRuntimeSurface,
-  manifest: AnyBrowserRuntimeAssetManifest | undefined
+  manifest: AnyBrowserRuntimeAssetManifest | undefined,
+  csharpPreparedAuthority: boolean
 ): readonly (keyof BrowserRuntimeFeatureSupport)[] {
   const required: Array<keyof BrowserRuntimeFeatureSupport> = ['worker'];
   if (language === 'python' || language === 'java' || language === 'csharp' || language === 'cpp') {
@@ -143,6 +148,7 @@ function requiredFeatures(
     required.push('sharedArrayBuffer', 'crossOriginIsolated');
   }
   const csharpPreparedRolesEnabled =
+    csharpPreparedAuthority &&
     language === 'csharp' &&
     surface === 'classic' &&
     (
@@ -188,20 +194,27 @@ export function createBrowserRuntimeEnvironment(
   const engine = options.engine ?? detectEngine();
   const surface = options.surface ?? 'classic';
   const features = detectFeatures(options.featureOverrides);
+  const csharpPreparedAuthority = options.csharpPreparedAuthority !== false;
   const assetPreflight = createBrowserRuntimeAssetPreflight(assets.runtimeManifests);
 
   const preflight = async (language: Language): Promise<BrowserRuntimeReadiness> => {
     const selected = providers.includes(language);
     const manifest = assets.runtimeManifests?.[language];
     const configured = true;
-    const missingFeatures = requiredFeatures(language, surface, manifest).filter(
-      (feature) => !features[feature]
-    );
+    const missingFeatures = requiredFeatures(
+      language,
+      surface,
+      manifest,
+      csharpPreparedAuthority
+    ).filter((feature) => !features[feature]);
     const issues = knownIssues(engine, language);
     let error: string | undefined;
     if (selected && configured && missingFeatures.length === 0) {
       try {
-        await assetPreflight.preflight(language, preflightAssets(language, surface));
+        await assetPreflight.preflight(
+          language,
+          preflightAssets(language, surface, csharpPreparedAuthority)
+        );
       } catch (cause) {
         error = cause instanceof Error ? cause.message : String(cause);
       }
@@ -227,6 +240,7 @@ export function createBrowserRuntimeEnvironment(
     engine,
     surface,
     features,
+    csharpPreparedAuthority,
     preflight,
     async preflightAll(): Promise<BrowserRuntimeEnvironmentReport> {
       const runtimes = await Promise.all(SUPPORTED_LANGUAGES.map(preflight));

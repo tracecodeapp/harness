@@ -159,11 +159,15 @@ export async function runBrowserAlgorithmBatch(
   let activeWorkers = 0;
   let maximumActiveWorkers = 0;
   const workerCommands: Array<{
+    id?: string;
     type?: string;
     runtimeRole?: string;
     preparedMode?: string;
     preparedFunctionName?: string;
     inputs?: unknown;
+    responseReceived?: boolean;
+    responseSuccess?: boolean;
+    responseOutput?: unknown;
   }> = [];
   class ObservedWorker extends NativeWorker {
     private observedTerminated = false;
@@ -173,9 +177,26 @@ export async function runBrowserAlgorithmBatch(
       super(url, options);
       activeWorkers += 1;
       maximumActiveWorkers = Math.max(maximumActiveWorkers, activeWorkers);
+      const observedCommands = new Map<
+        string,
+        (typeof workerCommands)[number]
+      >();
+      this.addEventListener('message', (event) => {
+        const response = event.data as {
+          id?: string;
+          payload?: { success?: boolean; output?: unknown };
+        } | undefined;
+        if (!response?.id) return;
+        const command = observedCommands.get(response.id);
+        if (!command) return;
+        command.responseReceived = true;
+        command.responseSuccess = response.payload?.success === true;
+        command.responseOutput = response.payload?.output;
+      });
       const nativePostMessage = this.postMessage.bind(this);
       this.postMessage = ((
         message: {
+          id?: string;
           type?: string;
           payload?: {
             runtimeRole?: string;
@@ -185,13 +206,16 @@ export async function runBrowserAlgorithmBatch(
         },
         transferOrOptions?: StructuredSerializeOptions | Transferable[]
       ) => {
-        workerCommands.push({
+        const command: (typeof workerCommands)[number] = {
+          id: message?.id,
           type: message?.type,
           runtimeRole: message?.payload?.runtimeRole,
           preparedMode: message?.payload?.prepared?.mode,
           preparedFunctionName: message?.payload?.prepared?.functionName,
           inputs: message?.payload?.inputs,
-        });
+        };
+        workerCommands.push(command);
+        if (message?.id) observedCommands.set(message.id, command);
         nativePostMessage(message, transferOrOptions as Transferable[]);
       }) as typeof this.postMessage;
     }
@@ -232,7 +256,10 @@ export async function runBrowserAlgorithmBatch(
                 command.runtimeRole === 'runner' &&
                 command.preparedMode === 'trace' &&
                 command.preparedFunctionName === 'Add' &&
-                JSON.stringify(command.inputs) === '{"a":1,"b":2}'
+                JSON.stringify(command.inputs) === '{"a":1,"b":2}' &&
+                command.responseReceived === true &&
+                command.responseSuccess === true &&
+                command.responseOutput === 3
             )
           ) {
             if (performance.now() >= deadline) {
