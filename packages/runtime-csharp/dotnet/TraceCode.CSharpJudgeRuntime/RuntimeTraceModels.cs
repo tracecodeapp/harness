@@ -4,6 +4,8 @@ namespace TraceCode.CSharpHost;
 
 public sealed class RuntimeTraceEvent
 {
+    internal bool IsSyntheticBackfill { get; set; }
+
     [JsonPropertyName("kind")]
     public string Kind { get; set; } = string.Empty;
 

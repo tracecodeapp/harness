@@ -43,6 +43,8 @@ public static partial class CompilerHost
         "System.AppDomain",
         "System.Runtime.InteropServices.JavaScript",
         "TraceCode.CSharpHost.JudgeRuntimeContext",
+        "TraceCode.CSharpHost.RuntimeTraceSink",
+        "TraceCode.CSharpHost.TraceCodeInstrumentation",
         "AssemblyLoadContext",
     };
     private static readonly string[] DeniedUserReflectionInvocations =
@@ -1149,9 +1151,33 @@ public static partial class CompilerHost
         );
         RecordCompilePhase(timings, "compileTrustedTemplateAccessMs", phaseStopwatch);
 
+        CSharpCompilation? preparedPolicyCompilation = null;
+        if (request.PreparedProgram)
+        {
+            phaseStopwatch.Restart();
+            preparedPolicyCompilation = trustedTemplate
+                .AddSyntaxTrees(originalUserTree)
+                .WithAssemblyName(
+                    "TraceCode.PreparedPolicy." + Guid.NewGuid().ToString("N")
+                );
+            ValidatePreparedJudgeSemanticPolicy(
+                preparedPolicyCompilation,
+                originalUserTree
+            );
+            RecordCompilePhase(
+                timings,
+                "compilePreparedPolicyValidationMs",
+                phaseStopwatch
+            );
+        }
+
         phaseStopwatch.Restart();
         string driverSource = request.PreparedProgram
-            ? GeneratePreparedDriverSource(originalUserTree, request)
+            ? GeneratePreparedDriverSource(
+                originalUserTree,
+                request,
+                preparedPolicyCompilation!
+            )
             : GenerateDriverSource(originalUserTree, request);
         RecordCompilePhase(timings, "compileGenerateDriverMs", phaseStopwatch);
         phaseStopwatch.Restart();
@@ -1471,6 +1497,110 @@ public static partial class CompilerHost
             "global::TraceCode.CSharpHost.JudgeRuntimeContext",
             StringComparison.Ordinal
         );
+    }
+
+    private static void ValidatePreparedJudgeSemanticPolicy(
+        CSharpCompilation compilation,
+        SyntaxTree userTree
+    )
+    {
+        SemanticModel model = compilation.GetSemanticModel(
+            userTree,
+            ignoreAccessibility: false
+        );
+        foreach (
+            SyntaxNode node in userTree
+                .GetRoot()
+                .DescendantNodesAndSelf()
+        )
+        {
+            if (node is IdentifierNameSyntax identifier
+                && model.GetTypeInfo(identifier).Type?.TypeKind
+                    == TypeKind.Dynamic)
+            {
+                throw new InvalidOperationException(
+                    "C# user code references denied prepared Judge API: dynamic."
+                );
+            }
+
+            if (node is not SimpleNameSyntax name)
+            {
+                continue;
+            }
+
+            SymbolInfo symbolInfo = model.GetSymbolInfo(name);
+            IEnumerable<ISymbol> symbols = symbolInfo.Symbol is null
+                ? symbolInfo.CandidateSymbols
+                : new[] { symbolInfo.Symbol };
+            string? deniedApi = symbols
+                .Select(DeniedPreparedJudgeApiForSymbol)
+                .FirstOrDefault(api => api is not null);
+            if (deniedApi is not null)
+            {
+                throw new InvalidOperationException(
+                    $"C# user code references denied prepared Judge API: {deniedApi}."
+                );
+            }
+        }
+    }
+
+    private static string? DeniedPreparedJudgeApiForSymbol(ISymbol symbol)
+    {
+        ISymbol target = symbol is IAliasSymbol alias ? alias.Target : symbol;
+        INamedTypeSymbol? containingType =
+            target as INamedTypeSymbol ?? target.ContainingType;
+        string? typeName = containingType?.ToDisplayString(
+            SymbolDisplayFormat.FullyQualifiedFormat
+        );
+        string namespaceName = (
+            target as INamespaceSymbol ?? target.ContainingNamespace
+        )?.ToDisplayString() ?? string.Empty;
+
+        if (string.Equals(
+                typeName,
+                "global::TraceCode.CSharpHost.RuntimeTraceSink",
+                StringComparison.Ordinal
+            )
+            || string.Equals(
+                typeName,
+                "global::TraceCode.CSharpHost.TraceCodeInstrumentation",
+                StringComparison.Ordinal
+            ))
+        {
+            return typeName!["global::".Length..];
+        }
+
+        if (string.Equals(namespaceName, "System.Reflection", StringComparison.Ordinal)
+            || namespaceName.StartsWith(
+                "System.Reflection.",
+                StringComparison.Ordinal
+            ))
+        {
+            return "System.Reflection";
+        }
+
+        if (typeName is
+            "global::System.AppDomain"
+            or "global::System.Type"
+            or "global::System.Activator")
+        {
+            return typeName["global::".Length..];
+        }
+
+        if (target is IMethodSymbol method
+            && string.Equals(
+                method.ContainingType?.ToDisplayString(
+                    SymbolDisplayFormat.FullyQualifiedFormat
+                ),
+                "global::System.Object",
+                StringComparison.Ordinal
+            )
+            && string.Equals(method.Name, "GetType", StringComparison.Ordinal))
+        {
+            return "System.Object.GetType";
+        }
+
+        return null;
     }
 
     private static string? DeniedUserApiForNode(SyntaxNode node, IReadOnlySet<string> deniedAliases)
@@ -3804,7 +3934,11 @@ public sealed class ProjectFileStream : System.IO.FileStream
             || text.EndsWith("\r", StringComparison.Ordinal);
     }
 
-    private static string GeneratePreparedDriverSource(SyntaxTree userTree, CSharpExecuteRequest request)
+    private static string GeneratePreparedDriverSource(
+        SyntaxTree userTree,
+        CSharpExecuteRequest request,
+        CSharpCompilation policyCompilation
+    )
     {
         if (IsScriptExecutionRequest(request)
             || string.Equals(request.ExecutionStyle, "ops-class", StringComparison.Ordinal))
@@ -3823,6 +3957,11 @@ public sealed class ProjectFileStream : System.IO.FileStream
             new Dictionary<string, JsonElement>(StringComparer.Ordinal)
         );
         string functionNameLiteral = JsonSerializer.Serialize(request.FunctionName);
+        string voidMutationPredicate = GeneratePreparedVoidMutationPredicate(
+            userTree,
+            request.FunctionName,
+            policyCompilation
+        );
 
         return $$"""
 using System;
@@ -3870,7 +4009,7 @@ public static class TraceCodeDriver
         object? output = AwaitInvocation(method.Invoke(instance, args), method.ReturnType);
         if (IsVoidLike(method.ReturnType))
         {
-            return ShouldReturnFirstVoidArgument(parameters) ? args[0] : null;
+            return ShouldReturnFirstVoidArgument(method, parameters) ? args[0] : null;
         }
 
         return output;
@@ -3987,20 +4126,44 @@ public static class TraceCodeDriver
             : null;
     }
 
-    private static bool ShouldReturnFirstVoidArgument(ParameterInfo[] parameters)
+    private static bool ShouldReturnFirstVoidArgument(
+        MethodInfo method,
+        ParameterInfo[] parameters
+    )
     {
-        if (parameters.Length == 0)
+        if (method.ReturnType != typeof(void) || parameters.Length == 0)
         {
             return false;
         }
 
-        Type type = ParameterType(parameters[0]);
-        return parameters[0].ParameterType.IsByRef
-            || type.IsArray
-            || (!type.IsPrimitive
-                && type != typeof(string)
-                && type != typeof(decimal)
-                && type != typeof(DateTime));
+        if (parameters[0].ParameterType.IsByRef)
+        {
+            return true;
+        }
+
+        return {{voidMutationPredicate}};
+    }
+
+    private static bool ParameterTypesMatch(
+        MethodInfo method,
+        Type[] expectedTypes
+    )
+    {
+        ParameterInfo[] parameters = method.GetParameters();
+        if (parameters.Length != expectedTypes.Length)
+        {
+            return false;
+        }
+
+        for (int index = 0; index < parameters.Length; index++)
+        {
+            if (parameters[index].ParameterType != expectedTypes[index])
+            {
+                return false;
+            }
+        }
+
+        return true;
     }
 
     private static bool IsVoidLike(Type returnType)
@@ -4053,6 +4216,89 @@ public static class TraceCodeDriver
     }
 }
 """;
+    }
+
+    private static string GeneratePreparedVoidMutationPredicate(
+        SyntaxTree userTree,
+        string functionName,
+        CSharpCompilation compilation
+    )
+    {
+        CompilationUnitSyntax root = userTree.GetCompilationUnitRoot();
+        List<MethodDeclarationSyntax> candidates = root
+            .DescendantNodes()
+            .OfType<ClassDeclarationSyntax>()
+            .Where(type => type.Identifier.ValueText == "Solution")
+            .SelectMany(type => type.Members.OfType<MethodDeclarationSyntax>())
+            .Where(method => string.Equals(
+                method.Identifier.ValueText,
+                functionName,
+                StringComparison.Ordinal
+            ))
+            .ToList();
+        if (candidates.Count == 0)
+        {
+            candidates = root
+                .DescendantNodes()
+                .OfType<ClassDeclarationSyntax>()
+                .Where(type => type.Identifier.ValueText == "Solution")
+                .SelectMany(type => type.Members.OfType<MethodDeclarationSyntax>())
+                .Where(method => string.Equals(
+                    method.Identifier.ValueText,
+                    functionName,
+                    StringComparison.OrdinalIgnoreCase
+                ))
+                .ToList();
+        }
+
+        SemanticModel model = compilation.GetSemanticModel(
+            userTree,
+            ignoreAccessibility: false
+        );
+        List<string> predicates = new();
+        foreach (MethodDeclarationSyntax method in candidates)
+        {
+            IMethodSymbol? symbol = model.GetDeclaredSymbol(method);
+            ParameterSyntax? firstParameter =
+                method.ParameterList.Parameters.FirstOrDefault();
+            if (symbol is null
+                || symbol.IsGenericMethod
+                || !symbol.ReturnsVoid
+                || symbol.Parameters.Length == 0
+                || firstParameter is null
+                || symbol.Parameters[0].RefKind != RefKind.None
+                || !MutatesParameter(
+                    method,
+                    firstParameter.Identifier.ValueText
+                ))
+            {
+                continue;
+            }
+
+            string parameterTypes = string.Join(
+                ", ",
+                symbol.Parameters.Select(PreparedParameterTypeExpression)
+            );
+            predicates.Add(
+                $"(string.Equals(method.Name, {JsonSerializer.Serialize(symbol.Name)}, StringComparison.Ordinal)"
+                + $" && ParameterTypesMatch(method, new Type[] {{ {parameterTypes} }}))"
+            );
+        }
+
+        return predicates.Count == 0
+            ? "false"
+            : string.Join("\n            || ", predicates.Distinct(StringComparer.Ordinal));
+    }
+
+    private static string PreparedParameterTypeExpression(
+        IParameterSymbol parameter
+    )
+    {
+        string expression =
+            $"typeof({parameter.Type.ToDisplayString(SymbolDisplayFormat.FullyQualifiedFormat)})";
+        return parameter.RefKind == RefKind.None
+            ? expression
+            : expression + ".MakeByRefType()";
     }
 
     private static string GenerateDriverSource(SyntaxTree userTree, CSharpExecuteRequest request)

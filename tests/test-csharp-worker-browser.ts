@@ -3768,6 +3768,98 @@ async function main(): Promise<void> {
       `C# trace normalization must preserve same-line Sort mutations for distinct targets: ${JSON.stringify(tracedTwoListSortsOnOneLine.events)}`
     );
 
+    const tracedTwoSortsOnSameTargetAndLine = await runWorkerCase(
+      page,
+      [
+        'using System.Collections.Generic;',
+        'public class Solution {',
+        '  public int[] SortTwice() {',
+        '    var items = new List<int> { 3, 1, 2 };',
+        '    items.Sort(); items.Sort(Comparer<int>.Default);',
+        '    return items.ToArray();',
+        '  }',
+        '}',
+      ].join('\n'),
+      'SortTwice',
+      {},
+      assetBaseUrl,
+      true
+    );
+    const sameTargetSortMutations = (
+      tracedTwoSortsOnSameTargetAndLine.events ?? []
+    ).filter(
+      (event) =>
+        event.kind === 'mutate' &&
+        event.line === 5 &&
+        event.method === 'Sort' &&
+        event.target?.variable === 'items'
+    );
+    assertCondition(
+      tracedTwoSortsOnSameTargetAndLine.success &&
+        JSON.stringify(tracedTwoSortsOnSameTargetAndLine.output) ===
+          JSON.stringify([1, 2, 3]) &&
+        sameTargetSortMutations.some(
+          (event) => Array.isArray(event.args) && event.args.length === 0
+        ) &&
+        sameTargetSortMutations.some(
+          (event) => Array.isArray(event.args) && event.args.length > 0
+        ),
+      `C# trace normalization must preserve both real same-target Sort calls on one line: ${JSON.stringify(tracedTwoSortsOnSameTargetAndLine)}`
+    );
+
+    const tracedMemberComparerSort = await runWorkerCase(
+      page,
+      [
+        'using System.Collections.Generic;',
+        'using System.Linq;',
+        'public class Solution {',
+        '  private readonly List<int> items = new() { 1, 3, 2 };',
+        '  public int[] SortDescending() {',
+        '    this.items.Sort(Comparer<int>.Create((left, right) => right.CompareTo(left)));',
+        '    return items.ToArray();',
+        '  }',
+        '}',
+      ].join('\n'),
+      'SortDescending',
+      {},
+      assetBaseUrl,
+      true
+    );
+    const memberSortEvents = (
+      tracedMemberComparerSort.events ?? []
+    ).filter((event) => event.line === 6);
+    const memberSortMutations = memberSortEvents.filter(
+      (event) => event.kind === 'mutate' && event.method === 'Sort'
+    );
+    const falseAscendingWholeWrite = memberSortEvents.some(
+      (event) =>
+        event.kind === 'write' &&
+        JSON.stringify(event.value) === JSON.stringify([1, 2, 3])
+    );
+    const falseAscendingIndexedWrites = memberSortEvents
+      .flatMap((event) => {
+        const path = event.target?.path;
+        const index = Array.isArray(path) ? path.at(-1) : undefined;
+        return event.kind === 'write' && typeof index === 'number'
+          ? [{ index, value: event.value }]
+          : [];
+      })
+      .sort((left, right) => left.index - right.index)
+      .map((entry) => entry.value)
+      .join(',') === '1,2,3';
+    assertCondition(
+      tracedMemberComparerSort.success &&
+        JSON.stringify(tracedMemberComparerSort.output) ===
+          JSON.stringify([3, 2, 1]) &&
+        memberSortMutations.length > 0 &&
+        memberSortMutations.every(
+          (event) => Array.isArray(event.args) && event.args.length > 0
+        ) &&
+        !falseAscendingWholeWrite &&
+        !falseAscendingIndexedWrites,
+      `C# backfill must not describe comparer-based member Sort as default ascending: ${JSON.stringify(tracedMemberComparerSort)}`
+    );
+
     const tracedSystemArrayReverse = await runWorkerCase(
       page,
       [

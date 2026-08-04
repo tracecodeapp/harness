@@ -8,20 +8,22 @@ namespace TraceCode.CSharpHost;
 // Mono never resolves compiler-generated Roslyn-bearing closure metadata.
 public static class TraceEventBackfill
 {
-    private static void RemoveRedundantSourceSortMutationEvents(List<RuntimeTraceEvent> events)
+    private static void RemoveSupersededSyntheticSortMutationEvents(
+        List<RuntimeTraceEvent> events
+    )
     {
         for (int index = events.Count - 1; index >= 0; index -= 1)
         {
             RuntimeTraceEvent traceEvent = events[index];
-            if (traceEvent.Kind != "mutate"
+            if (!traceEvent.IsSyntheticBackfill
+                || traceEvent.Kind != "mutate"
                 || !string.Equals(traceEvent.Method, "Sort", StringComparison.Ordinal)
-                || traceEvent.Target is null
-                || TraceArgsHaveItems(traceEvent.Args))
+                || traceEvent.Target is null)
             {
                 continue;
             }
 
-            bool hasConcreteSortOnSameLine = false;
+            bool hasObservedSortOnSameLine = false;
             for (int nextIndex = index + 1; nextIndex < events.Count; nextIndex += 1)
             {
                 RuntimeTraceEvent next = events[nextIndex];
@@ -31,32 +33,20 @@ public static class TraceEventBackfill
                 }
                 if (next.Kind == "mutate"
                     && string.Equals(next.Method, "Sort", StringComparison.Ordinal)
+                    && !next.IsSyntheticBackfill
                     && next.Target is not null
-                    && TargetsEqual(next.Target, traceEvent.Target)
-                    && TraceArgsHaveItems(next.Args))
+                    && TargetsEqual(next.Target, traceEvent.Target))
                 {
-                    hasConcreteSortOnSameLine = true;
+                    hasObservedSortOnSameLine = true;
                     break;
                 }
             }
 
-            if (hasConcreteSortOnSameLine)
+            if (hasObservedSortOnSameLine)
             {
                 events.RemoveAt(index);
             }
         }
-    }
-
-    private static bool TraceArgsHaveItems(object? args)
-    {
-        return args switch
-        {
-            null => false,
-            string => true,
-            System.Collections.ICollection collection => collection.Count > 0,
-            System.Collections.IEnumerable enumerable => enumerable.Cast<object?>().Any(),
-            _ => true,
-        };
     }
 
     public static void Apply(string source, List<RuntimeTraceEvent> events)
@@ -87,7 +77,10 @@ public static class TraceEventBackfill
             }
 
             string sourceLine = sourceLines[line - 1];
-            Match sortMatch = Regex.Match(sourceLine, @"\b(?:(this)\s*\.\s*)?([A-Za-z_]\w*)\s*\.\s*Sort\s*\(");
+            Match sortMatch = Regex.Match(
+                sourceLine,
+                @"\b(?:(this)\s*\.\s*)?([A-Za-z_]\w*)\s*\.\s*Sort\s*\(([^)]*)\)"
+            );
             Match removeAtMatch = Regex.Match(sourceLine, @"\b(?:(this)\s*\.\s*)?([A-Za-z_]\w*)\s*\.\s*RemoveAt\s*\(\s*([^)]*)\)");
             if (!sortMatch.Success && !removeAtMatch.Success)
             {
@@ -102,9 +95,12 @@ public static class TraceEventBackfill
             RuntimeTraceTarget target = match.Groups[1].Success
                 ? new RuntimeTraceTarget { Variable = "this", Path = new List<object?> { receiver } }
                 : new RuntimeTraceTarget { Variable = receiver };
+            string rawArguments = match.Groups[3].Value.Trim();
             List<object?> args = method == "RemoveAt"
-                ? new List<object?> { ParseMutationArgument(match.Groups[3].Value.Trim()) }
-                : new List<object?>();
+                ? new List<object?> { ParseMutationArgument(rawArguments) }
+                : string.IsNullOrWhiteSpace(rawArguments)
+                    ? new List<object?>()
+                    : new List<object?> { "<unobserved-source-arguments>" };
 
             bool hasMutation = events
                 .Skip(index + 1)
@@ -126,6 +122,7 @@ public static class TraceEventBackfill
             {
                 inserts.Add(new RuntimeTraceEvent
                 {
+                    IsSyntheticBackfill = true,
                     Kind = "mutate",
                     RunId = lineEvent.RunId,
                     File = lineEvent.File,
@@ -187,7 +184,7 @@ public static class TraceEventBackfill
                 index = end - 1;
             }
         }
-        RemoveRedundantSourceSortMutationEvents(events);
+        RemoveSupersededSyntheticSortMutationEvents(events);
     }
 
     private static void TrackLatestTraceValues(Dictionary<string, object?> latestValues, List<RuntimeTraceEvent> events, int start, int end)
@@ -272,7 +269,8 @@ public static class TraceEventBackfill
         List<object?> values = enumerable.Cast<object?>().ToList();
         if (method == "Sort")
         {
-            if (!values.All(IsDeterministicallySortableTraceValue))
+            if (args.Count > 0
+                || !values.All(IsDeterministicallySortableTraceValue))
             {
                 return false;
             }
@@ -455,6 +453,17 @@ public static class TraceEventBackfill
     {
         if (target.Path is not null && target.Path.Count > 0)
         {
+            if (string.Equals(target.Variable, "this", StringComparison.Ordinal)
+                && target.Path[0] is string member
+                && !string.IsNullOrWhiteSpace(member))
+            {
+                return (
+                    member,
+                    target.Path.Count == 1
+                        ? null
+                        : target.Path.Skip(1).ToList()
+                );
+            }
             return (target.Variable, target.Path.ToList());
         }
 

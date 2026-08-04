@@ -248,6 +248,28 @@ public class Solution
 {
     public int Add(int left, int right) => left + right;
 }`;
+      const directTraceSinkMutationSource = `
+public class Solution
+{
+    public int Add(int left, int right)
+    {
+        TraceCode.CSharpHost.RuntimeTraceSink.Reset();
+        return left + right;
+    }
+}`;
+      const voidOutputSource = `
+public class Solution
+{
+    public void Transform(int[] values)
+    {
+        _ = values.Length;
+    }
+
+    public void Transform(string[] values)
+    {
+        values[0] = "changed";
+    }
+}`;
       const compilerBaseUrl = `${origin}/workers/vendor/csharp-compiler`;
       const runnerBaseUrl = `${origin}/${runnerAssetPath}`;
       const compiler = await createHarness('compiler', compilerBaseUrl);
@@ -319,6 +341,25 @@ public class Solution
           timeoutMs: 10_000,
         }
       );
+      const directTraceSinkMutationPrepared = await compiler.send(
+        'prepare-program',
+        {
+          mode: 'trace',
+          code: directTraceSinkMutationSource,
+          functionName: 'Add',
+          executionStyle: 'solution-method',
+          assetBaseUrl: compilerBaseUrl,
+          timeoutMs: 10_000,
+        }
+      );
+      const voidOutputPrepared = await compiler.send('prepare-program', {
+        mode: 'code',
+        code: voidOutputSource,
+        functionName: 'Transform',
+        executionStyle: 'solution-method',
+        assetBaseUrl: compilerBaseUrl,
+        timeoutMs: 10_000,
+      });
       compiler.terminate();
 
       const descriptor = (
@@ -350,24 +391,6 @@ public class Solution
         timeoutMs: 10_000,
       });
       runner.terminate();
-
-      const reflectiveMutationRunner = await createHarness(
-        'runner',
-        runnerBaseUrl
-      );
-      const reflectiveInputMutation =
-        await reflectiveMutationRunner.send('execute-prepared-code', {
-          prepared: descriptor(
-            reflectiveInputMutationSource,
-            'Add',
-            'code',
-            reflectiveInputMutationPrepared
-          ),
-          inputs: { left: 19, right: 23 },
-          assetBaseUrl: runnerBaseUrl,
-          timeoutMs: 10_000,
-        });
-      reflectiveMutationRunner.terminate();
 
       const structuredInputs = {
         payload: {
@@ -404,6 +427,43 @@ public class Solution
       });
       traceRunner.terminate();
 
+      const nonMutatingVoidRunner = await createHarness(
+        'runner',
+        runnerBaseUrl
+      );
+      const nonMutatingVoid = await nonMutatingVoidRunner.send(
+        'execute-prepared-code',
+        {
+          prepared: descriptor(
+            voidOutputSource,
+            'Transform',
+            'code',
+            voidOutputPrepared
+          ),
+          inputs: { values: [1, 2, 3] },
+          assetBaseUrl: runnerBaseUrl,
+          timeoutMs: 10_000,
+        }
+      );
+      nonMutatingVoidRunner.terminate();
+
+      const mutatingVoidRunner = await createHarness('runner', runnerBaseUrl);
+      const mutatingVoid = await mutatingVoidRunner.send(
+        'execute-prepared-code',
+        {
+          prepared: descriptor(
+            voidOutputSource,
+            'Transform',
+            'code',
+            voidOutputPrepared
+          ),
+          inputs: { values: ['a', 'b'] },
+          assetBaseUrl: runnerBaseUrl,
+          timeoutMs: 10_000,
+        }
+      );
+      mutatingVoidRunner.terminate();
+
       const tamperRunner = await createHarness('runner', runnerBaseUrl);
       const tampered = await tamperRunner.send('execute-prepared-code', {
         prepared: {
@@ -422,11 +482,14 @@ public class Solution
         structuredTracePrepared,
         inputMutationPrepared,
         reflectiveInputMutationPrepared,
-        reflectiveInputMutation,
+        directTraceSinkMutationPrepared,
+        voidOutputPrepared,
         runnerPrime,
         valid,
         structured,
         structuredTrace,
+        nonMutatingVoid,
+        mutatingVoid,
         tampered,
       };
     }, { origin, runnerAssetPath });
@@ -471,12 +534,36 @@ public class Solution
       `C# learner module initializers must not mutate trusted Judge inputs: ${JSON.stringify(result.inputMutationPrepared)}`
     );
     assertCondition(
-      result.reflectiveInputMutationPrepared.success === true &&
-        result.reflectiveInputMutation.success === true &&
-        result.reflectiveInputMutation.output === 42,
-      `C# learner reflection must not reach mutable trusted Judge inputs: ${JSON.stringify({
-        prepared: result.reflectiveInputMutationPrepared,
-        execution: result.reflectiveInputMutation,
+      result.reflectiveInputMutationPrepared.success === false &&
+        result.reflectiveInputMutationPrepared.error?.includes(
+          'denied prepared Judge API'
+        ) === true,
+      `C# prepared Judge compilation must reject reflection that can reach trusted runtime state: ${JSON.stringify(result.reflectiveInputMutationPrepared)}`
+    );
+    assertCondition(
+      result.directTraceSinkMutationPrepared.success === false &&
+        result.directTraceSinkMutationPrepared.error?.includes(
+          'denied browser runtime API: TraceCode.CSharpHost.RuntimeTraceSink'
+        ) === true,
+      `C# learner code must not directly erase or forge trusted trace state: ${JSON.stringify(result.directTraceSinkMutationPrepared)}`
+    );
+    assertCondition(
+      result.voidOutputPrepared.success &&
+        result.nonMutatingVoid.success &&
+        result.nonMutatingVoid.output === null,
+      `Prepared C# void methods must preserve null output when the first argument is not mutated: ${JSON.stringify({
+        prepared: result.voidOutputPrepared,
+        execution: result.nonMutatingVoid,
+      })}`
+    );
+    assertCondition(
+      result.voidOutputPrepared.success &&
+        result.mutatingVoid.success &&
+        JSON.stringify(result.mutatingVoid.output) ===
+          JSON.stringify(['changed', 'b']),
+      `Prepared C# void overloads must return a mutated first argument only for the selected mutating signature: ${JSON.stringify({
+        prepared: result.voidOutputPrepared,
+        execution: result.mutatingVoid,
       })}`
     );
     assertCondition(
@@ -510,7 +597,9 @@ public class Solution
         structuredOutput: result.structured.output,
         structuredTraceEvents: result.structuredTrace.events?.length ?? 0,
         inputMutationRejected: true,
-        reflectiveInputMutationIsolated: true,
+        reflectiveRuntimeAccessRejected: true,
+        directTraceSinkAccessRejected: true,
+        voidOutputSemanticsPreserved: true,
         tamperedRejected: true,
         runnerAssetPath,
       })
