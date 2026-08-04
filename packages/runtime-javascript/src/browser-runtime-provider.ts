@@ -34,6 +34,7 @@ export function createJavaScriptBrowserRuntimeProvider(): BrowserRuntimeProvider
           : {}),
         typescriptCompilerUrl: context.assets.typescriptCompiler,
         typescriptCompilerPreflight: context.preflight('typescript', ['compiler']),
+        prewarmAfterUse: context.prewarmAfterUse,
       });
       const javascript =
         createJavaScriptPreparedExecutionProvider('javascript', worker);
@@ -48,17 +49,15 @@ export function createJavaScriptBrowserRuntimeProvider(): BrowserRuntimeProvider
       ]);
       const resetSharedRuntime = (): void => {
         // JavaScript and TypeScript share one coordinator/executor pool.
-        // JavaScriptWorkerClient termination retires the current connections
-        // and clears warm state, but deliberately remains restartable. A
-        // language-scoped disposal must therefore reset the whole shared
-        // runtime so its sibling can acquire fresh workers on its next call.
-        worker.terminate();
+        // A language-scoped reset retires both sides of that shared generation
+        // so its sibling can acquire fresh workers on its next call.
+        worker.reset();
       };
 
       return {
         preparedProviders,
         disposeLanguage: resetSharedRuntime,
-        dispose: resetSharedRuntime,
+        dispose: () => worker.terminate(),
       };
     },
   };

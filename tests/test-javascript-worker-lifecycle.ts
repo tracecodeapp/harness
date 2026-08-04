@@ -239,6 +239,11 @@ async function exercisePreparedProvider(
         prepared.program.capabilities.maxConcurrency === 1,
       `${language} prepared program reported unsafe isolation capabilities`
     );
+    assert.equal(
+      typeof prepared.program.executeBatchIsolated,
+      'function',
+      `${language} should expose the fresh-worker batch path`
+    );
     assertCondition(
       typeof prepared.timings?.totalMs === 'number' &&
         (language === 'typescript'
@@ -575,6 +580,21 @@ async function exerciseSharedProviderLanguageDisposal(): Promise<void> {
 
   try {
     await executeHostProgram(host, 'javascript', 1);
+    const staleProvider = getBrowserRuntimeHostPreparedProvider(
+      host,
+      'javascript'
+    );
+    const stalePreparation = await staleProvider.prepareProgram({
+      mode: 'code',
+      code: 'function stale(value) { return value; }',
+      functionName: 'stale',
+      executionStyle: 'function',
+    });
+    assertCondition(
+      stalePreparation.kind === 'prepared' &&
+        stalePreparation.program.mode === 'code',
+      'JavaScript stale-generation fixture did not prepare'
+    );
     const firstGeneration = [...VmJavaScriptWorker.instances];
     assertCondition(
       firstGeneration.some((worker) => !worker.terminated),
@@ -582,6 +602,12 @@ async function exerciseSharedProviderLanguageDisposal(): Promise<void> {
     );
 
     host.disposeLanguage('javascript');
+    await assert.rejects(
+      stalePreparation.program.executeIsolated({ inputs: { value: 1 } }),
+      (error: unknown) =>
+        error instanceof Error && error.name === 'AbortError',
+      'Language reset must invalidate prepared artifacts from the retired generation'
+    );
     assertCondition(
       firstGeneration.every((worker) => worker.terminated),
       'Disposing JavaScript must retire every worker in its shared JavaScript/TypeScript generation'
@@ -620,6 +646,53 @@ async function exerciseSharedProviderLanguageDisposal(): Promise<void> {
     );
   } finally {
     host.dispose();
+    resetVmWorkers();
+  }
+}
+
+async function exerciseRetireOnlyPolicy(): Promise<void> {
+  resetVmWorkers();
+  const client = new JavaScriptWorkerClient({
+    workerUrl: '/workers/javascript/javascript-worker.js',
+    debug: false,
+    prewarmAfterUse: false,
+  });
+  try {
+    await client.init();
+    const first = await client.executeCode({
+      code: 'function identity(value) { return value; }',
+      functionName: 'identity',
+      inputs: { value: 1 },
+      executionStyle: 'function',
+      language: 'javascript',
+    });
+    assertCondition(
+      first.kind === 'completed' && first.output === 1,
+      `Retire-only JavaScript execution failed: ${JSON.stringify(first)}`
+    );
+    assertCondition(
+      VmJavaScriptWorker.instances
+        .filter((worker) => worker.role === 'executor')
+        .every((worker) => worker.terminated),
+      'Retire-only must not replenish a clean standby after execution'
+    );
+
+    const countAfterFirst = VmJavaScriptWorker.instances.length;
+    const second = await client.executeCode({
+      code: 'function identity(value) { return value; }',
+      functionName: 'identity',
+      inputs: { value: 2 },
+      executionStyle: 'function',
+      language: 'javascript',
+    });
+    assertCondition(
+      second.kind === 'completed' &&
+        second.output === 2 &&
+        VmJavaScriptWorker.instances.length > countAfterFirst,
+      'Retire-only must construct a fresh executor lazily for the next command'
+    );
+  } finally {
+    client.terminate();
     resetVmWorkers();
   }
 }
@@ -751,6 +824,32 @@ async function main(): Promise<void> {
         JSON.stringify(batchResult.results.map((result) => (result.kind === 'completed' ? result.output : undefined))) === JSON.stringify([4, 10]),
       `Prepared TypeScript batch execution failed: ${JSON.stringify(batchResult)}`
     );
+    for (const language of ['javascript', 'typescript'] as const) {
+      const intrinsicBatch = await client.executeCodeBatch({
+        code:
+          language === 'typescript'
+            ? `function poison(caseNumber: number): number | null {
+  const previous = (Array.prototype as any).__tracecodeBatchPoison ?? null;
+  (Array.prototype as any).__tracecodeBatchPoison = caseNumber;
+  return previous;
+}`
+            : `function poison(caseNumber) {
+  const previous = Array.prototype.__tracecodeBatchPoison ?? null;
+  Array.prototype.__tracecodeBatchPoison = caseNumber;
+  return previous;
+}`,
+        functionName: 'poison',
+        inputBatch: [{ caseNumber: 1 }, { caseNumber: 2 }],
+        executionStyle: 'function',
+        language,
+      });
+      assertCondition(
+        intrinsicBatch.results.every(
+          (result) => result.kind === 'completed' && result.output === null
+        ),
+        `${language} batch leaked realm intrinsics between cases: ${JSON.stringify(intrinsicBatch)}`
+      );
+    }
 
     const traceResult = await client.executeWithTracing({ code: `function increment(value) {
   return value + 1;
@@ -777,10 +876,28 @@ async function main(): Promise<void> {
       standbyExecutorWorkers[0].terminated,
       'Explicit client termination should stop the clean standby executor'
     );
+    const workerCountAfterTermination = VmJavaScriptWorker.instances.length;
+    await assert.rejects(
+      client.executeCode({
+        code: 'function shouldNotRun() { return 1; }',
+        functionName: 'shouldNotRun',
+        inputs: {},
+        executionStyle: 'function',
+        language: 'javascript',
+      }),
+      /terminated/,
+      'Terminal client disposal must not restart a worker generation'
+    );
+    assert.equal(
+      VmJavaScriptWorker.instances.length,
+      workerCountAfterTermination,
+      'Terminal client disposal allocated a new worker'
+    );
     await exercisePreparedProvider('javascript');
     await exercisePreparedProvider('typescript');
     await exercisePreparedDisposalOwner();
     await exerciseSharedProviderLanguageDisposal();
+    await exerciseRetireOnlyPolicy();
     console.log('PASS: JavaScript/TypeScript coordinator and disposable execution lifecycle');
   } finally {
     if (originalWorker === undefined) {

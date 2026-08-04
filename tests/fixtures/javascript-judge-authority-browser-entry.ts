@@ -1,14 +1,9 @@
-import * as Effect from 'effect/Effect';
 import {
-  createBrowserRuntimeHost,
-  type Language,
-} from '../../src/browser';
-import {
+  createAlgorithmJudgeBundle,
+  createBrowserJudgeHost,
   type JudgeEvaluationResult,
 } from '../../src/judge';
-import {
-  createBrowserRuntimeJudge,
-} from '../../src/internal/browser-judge';
+import type { Language } from '../../src/browser';
 
 export interface BrowserRuntimeEvaluationRequest {
   readonly language: Extract<Language, 'javascript' | 'typescript'>;
@@ -16,67 +11,36 @@ export interface BrowserRuntimeEvaluationRequest {
   readonly functionName: string;
   readonly inputs: readonly Readonly<Record<string, unknown>>[];
   readonly trace?: boolean;
-  readonly maxConcurrency?: number;
+  readonly limits?: {
+    readonly wallClockMs?: number;
+  };
 }
 
 export function evaluateBrowserRuntime(
   request: BrowserRuntimeEvaluationRequest
 ): Promise<JudgeEvaluationResult> {
-  const sourcePath =
-    request.language === 'typescript'
-      ? '/workspace/solution.ts'
-      : '/workspace/solution.js';
-  return Effect.runPromise(
-    Effect.scoped(
-      Effect.acquireRelease(
-        Effect.sync(() =>
-          createBrowserRuntimeHost({
-            assetBaseUrl: '/workers',
-            providers: [request.language],
-          })
-        ),
-        (host) => Effect.sync(() => host.dispose())
-      ).pipe(
-        Effect.flatMap((host) =>
-          createBrowserRuntimeJudge({
-            host,
-            language: request.language,
-            binding: {
-              sourcePath,
-              functionName: request.functionName,
-              executionStyle: 'function',
-              ...(request.trace ? { trace: true as const } : {}),
-            },
-          })
-        ),
-        Effect.flatMap((judge) =>
-          judge.evaluate({
-            id: `${request.language}-authority-browser`,
-            runtime: request.language,
-            workspace: {
-              cwd: '/workspace',
-              files: [{
-                path: sourcePath,
-                contents: request.code,
-                visibility: 'submission',
-              }],
-            },
-            driver: { files: [] },
-            run: {
-              command: 'runtime-provider-case',
-              timeoutMs: 20_000,
-            },
-            cases: request.inputs.map((input, index) => ({
-              id: `case-${index + 1}`,
-              input,
-            })),
-            isolation: {
-              mode: 'fresh-session-per-case',
-              maxConcurrency: request.maxConcurrency ?? 1,
-            },
-          })
-        )
-      )
-    )
-  );
+  const host = createBrowserJudgeHost({
+    assetBaseUrl: '/workers',
+    providers: [request.language],
+  });
+  return (async () => {
+    try {
+      const bundle = await createAlgorithmJudgeBundle({
+        id: `${request.language}-authority-browser`,
+        language: request.language,
+        code: request.code,
+        functionName: request.functionName,
+        executionStyle: 'function',
+        cases: request.inputs.map((input, index) => ({
+          id: `case-${index + 1}`,
+          input,
+        })),
+        ...(request.trace ? { trace: true as const } : {}),
+        ...(request.limits ? { limits: request.limits } : {}),
+      });
+      return (await host.evaluateAlgorithm({ bundle })).evaluation;
+    } finally {
+      host.dispose();
+    }
+  })();
 }

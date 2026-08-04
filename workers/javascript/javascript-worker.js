@@ -6925,7 +6925,7 @@ async function prepareExecutionRequest(payload) {
   const startedAt = performanceNow();
   const operation = payload?.operation;
   const request = payload?.request;
-  if (!['execute-code', 'execute-code-batch', 'execute-with-tracing'].includes(operation)) {
+  if (!['execute-code', 'execute-with-tracing'].includes(operation)) {
     throw new Error(`Unsupported JavaScript preparation operation: ${String(operation)}`);
   }
   if (!request || typeof request !== 'object') {
@@ -7136,166 +7136,6 @@ async function executeCode(payload) {
       },
     };
   }
-}
-
-function batchSignatureSampleInput(inputBatch) {
-  const sample = {};
-  for (const inputs of inputBatch) {
-    if (!inputs || typeof inputs !== 'object' || Array.isArray(inputs)) continue;
-    for (const key of Object.keys(inputs)) {
-      if (!Object.prototype.hasOwnProperty.call(sample, key)) {
-        sample[key] = inputs[key];
-      }
-    }
-  }
-  return sample;
-}
-
-async function executeCodeBatch(payload) {
-  const startedAt = performanceNow();
-  ensureJavaScriptLibraries();
-  const inputBatch = Array.isArray(payload?.inputBatch)
-    ? payload.inputBatch.map((inputs) => (inputs && typeof inputs === 'object' ? inputs : {}))
-    : [];
-  if (inputBatch.length === 0) {
-    return {
-      success: false,
-      results: [],
-      error: 'JavaScript batch execution requires a non-empty inputBatch array.',
-      consoleOutput: [],
-      timings: { totalMs: performanceNow() - startedAt },
-    };
-  }
-
-  const {
-    code,
-    functionName,
-    executionStyle = 'function',
-    language = 'javascript',
-  } = payload ?? {};
-
-  const results = [];
-  const prepared = preparedExecutionFromPayload(payload);
-  try {
-    if (typeof code !== 'string') {
-      throw new Error('`code` must be a string');
-    }
-    if (language !== 'javascript' && language !== 'typescript') {
-      throw new Error(`Unsupported language for JavaScript worker: ${String(language)}`);
-    }
-
-    const executableCode = prepared?.executableCode ?? await prepareExecutableCode(code, language);
-    const materializers = prepared?.materializers ?? await resolveInputMaterializers(code, functionName, executionStyle, language);
-    const hasNamedFunction = typeof functionName === 'string' && functionName.length > 0;
-    const targetName = hasNamedFunction
-      ? assertJavaScriptRuntimeSelectorAllowed(
-        functionName,
-        executionStyle === 'ops-class'
-          ? 'Class name'
-          : executionStyle === 'solution-method'
-            ? 'Solution method name'
-            : 'Function name'
-      )
-      : '';
-    let runner;
-    let inputArguments = [];
-    let argNames = [];
-    let argumentMaterializers = [];
-
-    if (hasNamedFunction) {
-      if (executionStyle === 'ops-class') {
-        runner = buildFunctionExecutionRunner(executableCode, executionStyle, [], [], code, targetName);
-      } else {
-        const sampleInputs = applyInputMaterializers(normalizeInputs(batchSignatureSampleInput(inputBatch)), materializers);
-        inputArguments = prepared
-          ? orderInputArgumentsByParameterDescriptors(
-            prepared.inputArguments,
-            sampleInputs,
-            Object.keys(sampleInputs)
-          )
-          : await resolveOrderedInputArguments(
-            code,
-            targetName,
-            sampleInputs,
-            executionStyle,
-            language
-          );
-        argNames = inputArguments.map((argument, index) => `__arg${index}${argument.rest ? '__tracecodeRest' : ''}`);
-        argumentMaterializers = inputArguments.map((argument) => materializers[argument.key] ?? null);
-        runner = buildFunctionExecutionRunner(executableCode, executionStyle, argNames, argumentMaterializers, code, targetName);
-      }
-    } else {
-      if (executionStyle !== 'function') {
-        throw new Error('Script-mode execution only supports executionStyle="function".');
-      }
-      runner = buildScriptExecutionRunner(executableCode, code);
-    }
-
-    await withJavaScriptUserAuthorityLockdown(async () => {
-    for (const inputs of inputBatch) {
-      const consoleOutput = [];
-      const consoleProxy = createConsoleProxy(consoleOutput);
-      const runtimeGlobal = createJavaScriptRuntimeGlobal(consoleProxy);
-      try {
-        const materializedInputs = applyInputMaterializers(normalizeInputs(inputs), materializers);
-        let output;
-        if (hasNamedFunction) {
-          if (executionStyle === 'ops-class') {
-            const { operations, argumentsList } = getOpsClassInputs(materializedInputs);
-            output = await Promise.resolve(runner(consoleProxy, operations, argumentsList, runtimeGlobal));
-          } else {
-            const argValues = inputArguments.map((argument) => materializedInputs[argument.key]);
-            output = executionStyle === 'solution-method'
-              ? await Promise.resolve(runner(consoleProxy, targetName, ...argValues, runtimeGlobal))
-              : await Promise.resolve(runner(consoleProxy, ...argValues, runtimeGlobal));
-          }
-        } else {
-          const scriptStdin = typeof materializedInputs.stdin === 'string' ? materializedInputs.stdin : undefined;
-          output = await Promise.resolve(runner(consoleProxy, scriptStdin, runtimeGlobal));
-          if (scriptStdin !== undefined && output === null) {
-            output = consoleOutput.length > 0 ? `${consoleOutput.join('\n')}\n` : '';
-          }
-        }
-        results.push({
-          success: true,
-          output: serializeOutputValue(output),
-          consoleOutput,
-        });
-      } catch (error) {
-        results.push({
-          success: false,
-          output: null,
-          error: formatRuntimeErrorMessage(error),
-          errorLine: extractUserErrorLine(error),
-          consoleOutput,
-        });
-      }
-    }
-    });
-  } catch (error) {
-    const message = formatRuntimeErrorMessage(error);
-    for (let index = 0; index < inputBatch.length; index += 1) {
-      results.push({
-        success: false,
-        output: null,
-        error: message,
-        errorLine: extractUserErrorLine(error),
-        consoleOutput: [],
-      });
-    }
-  }
-
-  const totalMs = performanceNow() - startedAt;
-  return {
-    success: results.every((result) => result.success === true),
-    results,
-    consoleOutput: results.flatMap((result) => result.consoleOutput ?? []),
-    timings: {
-      totalMs,
-      runMs: totalMs,
-      artifactCacheHit: Boolean(prepared),
-    },
-  };
 }
 
 async function executeWithTracing(payload) {
@@ -7537,49 +7377,6 @@ async function executeWithTracing(payload) {
   }
 }
 
-async function executeTraceBatch(payload) {
-  const startedAt = performanceNow();
-  const inputBatch = Array.isArray(payload?.inputBatch)
-    ? payload.inputBatch.map((inputs) =>
-        inputs && typeof inputs === 'object' ? inputs : {}
-      )
-    : [];
-  if (inputBatch.length === 0) {
-    return {
-      success: false,
-      results: [],
-      error: 'JavaScript trace batch execution requires a non-empty inputBatch array.',
-      timings: { totalMs: performanceNow() - startedAt },
-    };
-  }
-
-  const results = [];
-  for (const inputs of inputBatch) {
-    results.push(await executeWithTracing({
-      ...payload,
-      inputs,
-    }));
-  }
-  const success = results.every((result) => result.success === true);
-  return {
-    success,
-    results,
-    ...(success
-      ? {}
-      : {
-          error:
-            results.find((result) => result.success !== true)?.error ??
-            'JavaScript trace batch execution failed.',
-        }),
-    timings: {
-      totalMs: performanceNow() - startedAt,
-      batchMode: 'prepared-artifact',
-      batchCaseCount: inputBatch.length,
-    },
-  };
-}
-
-
 async function initRuntime(payload = {}) {
   configureTypeScriptCompilerUrl(payload?.typescriptCompilerUrl);
   configureJavaScriptLibrariesUrl(payload?.javascriptLibrariesUrl);
@@ -7706,29 +7503,11 @@ async function processMessage(data) {
         break;
       }
 
-      case 'execute-trace-batch': {
-        if (WORKER_ROLE === 'coordinator') {
-          throw new Error('Trusted JavaScript coordinator workers cannot execute user code.');
-        }
-        const result = await executeTraceBatch(payload);
-        postProtocolMessage(id, protocolToken, 'execute-result', result);
-        break;
-      }
-
       case 'execute-code': {
         if (WORKER_ROLE === 'coordinator') {
           throw new Error('Trusted JavaScript coordinator workers cannot execute user code.');
         }
         const result = await executeCode(payload);
-        postProtocolMessage(id, protocolToken, 'execute-result', result);
-        break;
-      }
-
-      case 'execute-code-batch': {
-        if (WORKER_ROLE === 'coordinator') {
-          throw new Error('Trusted JavaScript coordinator workers cannot execute user code.');
-        }
-        const result = await executeCodeBatch(payload);
         postProtocolMessage(id, protocolToken, 'execute-result', result);
         break;
       }

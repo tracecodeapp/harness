@@ -163,31 +163,52 @@ async function main(): Promise<void> {
       // @ts-expect-error This module is built and served by the browser fixture.
       const { evaluateBrowserRuntime } = await import('/browser-judge.js');
       const preparedResults: Record<string, any> = {};
+      const preparedTraceResults: Record<string, any> = {};
       for (const language of ['javascript', 'typescript'] as const) {
         const code =
           language === 'typescript'
             ? `let count = 0;
-function isolated(value: number): number[] {
+function isolated(value: number): Array<number | null> {
   count += 1;
   (globalThis as any).__preparedBrowserCount =
     ((globalThis as any).__preparedBrowserCount ?? 0) + 1;
-  return [value, count, (globalThis as any).__preparedBrowserCount];
+  const intrinsic = (Array.prototype as any).__preparedBrowserIntrinsic ?? null;
+  (Array.prototype as any).__preparedBrowserIntrinsic = value;
+  return [value, count, (globalThis as any).__preparedBrowserCount, intrinsic];
 }`
             : `let count = 0;
 function isolated(value) {
   count += 1;
   globalThis.__preparedBrowserCount =
     (globalThis.__preparedBrowserCount ?? 0) + 1;
-  return [value, count, globalThis.__preparedBrowserCount];
+  const intrinsic = Array.prototype.__preparedBrowserIntrinsic ?? null;
+  Array.prototype.__preparedBrowserIntrinsic = value;
+  return [value, count, globalThis.__preparedBrowserCount, intrinsic];
 }`;
         preparedResults[language] = (await evaluateBrowserRuntime({
           language,
           code,
           functionName: 'isolated',
           inputs: [{ value: 3 }, { value: 7 }],
-          maxConcurrency: 2,
+        })).cases;
+        preparedTraceResults[language] = (await evaluateBrowserRuntime({
+          language,
+          code,
+          functionName: 'isolated',
+          inputs: [{ value: 11 }, { value: 13 }],
+          trace: true,
         })).cases;
       }
+      const timeoutIsolation = (await evaluateBrowserRuntime({
+        language: 'javascript',
+        code: `async function maybeWait(wait) {
+  if (wait) await new Promise(() => {});
+  return 42;
+}`,
+        functionName: 'maybeWait',
+        inputs: [{ wait: true }, { wait: false }],
+        limits: { wallClockMs: 50 },
+      })).cases;
       const [control] = (await evaluateBrowserRuntime({
         language: 'javascript',
         code: 'function add(a, b) { return a + b; }',
@@ -244,6 +265,9 @@ function isolated(value) {
         traced,
         preparedJavaScript: preparedResults.javascript,
         preparedTypeScript: preparedResults.typescript,
+        preparedTraceJavaScript: preparedTraceResults.javascript,
+        preparedTraceTypeScript: preparedTraceResults.typescript,
+        timeoutIsolation,
       };
     }, { testOrigin: origin });
 
@@ -283,14 +307,36 @@ function isolated(value) {
     ] as const) {
       assertCondition(
         result?.[0]?.status === 'completed' &&
-          JSON.stringify(result[0].value) === JSON.stringify([3, 1, 1]) &&
+          JSON.stringify(result[0].value) === JSON.stringify([3, 1, 1, null]) &&
           result[0].timings?.artifactCacheHit === true &&
           result?.[1]?.status === 'completed' &&
-          JSON.stringify(result[1].value) === JSON.stringify([7, 1, 1]) &&
+          JSON.stringify(result[1].value) === JSON.stringify([7, 1, 1, null]) &&
           result[1].timings?.artifactCacheHit === true,
         `Browser ${language} prepared isolation failed: ${JSON.stringify(result)}`
       );
     }
+    for (const [language, result] of [
+      ['javascript', judged.preparedTraceJavaScript],
+      ['typescript', judged.preparedTraceTypeScript],
+    ] as const) {
+      assertCondition(
+        result?.[0]?.status === 'completed' &&
+          JSON.stringify(result[0].value) ===
+            JSON.stringify([11, 1, 1, null]) &&
+          result[0].trace?.events?.length > 0 &&
+          result?.[1]?.status === 'completed' &&
+          JSON.stringify(result[1].value) ===
+            JSON.stringify([13, 1, 1, null]) &&
+          result[1].trace?.events?.length > 0,
+        `Browser ${language} prepared trace isolation failed: ${JSON.stringify(result)}`
+      );
+    }
+    assertCondition(
+      judged.timeoutIsolation?.[0]?.status === 'timed-out' &&
+        judged.timeoutIsolation?.[1]?.status === 'completed' &&
+        judged.timeoutIsolation?.[1]?.value === 42,
+      `Browser Judge must apply timeouts independently per case: ${JSON.stringify(judged.timeoutIsolation)}`
+    );
 
     const projectJournal = await page.evaluate(async () => {
       const browserProjectModulePath = '/browser-project.js';
