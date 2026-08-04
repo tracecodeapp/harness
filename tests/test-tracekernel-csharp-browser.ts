@@ -204,9 +204,9 @@ async function main(): Promise<void> {
                 '    && TraceKernel.KernelTerminal.GetWindowSize(2)',
                 '        == new TraceKernel.TerminalWindowSize(66, 166);',
                 'bool managedIdentity = currentIdentity.ProcessId > 1',
-                '    && currentIdentity.ParentProcessId == 1',
+                '    && currentIdentity.ParentProcessId > 1',
                 '    && currentIdentity.ProcessGroupId == currentIdentity.ProcessId',
-                '    && currentIdentity.SessionId == 1;',
+                '    && currentIdentity.SessionId == currentIdentity.ParentProcessId;',
                 'string standardInput = Console.ReadLine() ?? "";',
                 'ParentState.Value = 73;',
                 'var nonblockingPipe = TraceKernel.KernelPipe.Create(capacityChunks: 1, nonblocking: true);',
@@ -714,17 +714,46 @@ async function main(): Promise<void> {
           ],
         });
         try {
-          const terminal = workspace.createTerminalSession();
-          terminal.resize(144, 55);
-          const pendingCommand = terminal.run('dotnet run --project App.csproj');
-          await new Promise((resolvePromise) => setTimeout(resolvePromise, 0));
-          if (
-            !terminal.writeStdin('kernel-stdin\n') ||
-            !terminal.endStdin()
-          ) {
-            throw new Error('C# terminal did not accept kernel-owned fd 0 input.');
-          }
-          const command = await pendingCommand;
+          const command = await (async () => {
+            const terminalOwner = workspace.kernel.createProcess({
+              name: 'project-client',
+              actor: {
+                id: 'learner',
+                kind: 'runtime',
+                capabilities: {
+                  execute: true,
+                  http: {
+                    listen: true,
+                    dispatch: true,
+                    readDiagnostics: true,
+                  },
+                },
+              },
+              signalPolicy: 'system-only',
+            });
+            const terminal = terminalOwner.createTerminalSession();
+            try {
+              terminal.resize(144, 55);
+              const pendingCommand = terminal.run(
+                'dotnet run --project App.csproj'
+              );
+              await new Promise((resolvePromise) =>
+                setTimeout(resolvePromise, 0)
+              );
+              if (
+                !terminal.writeStdin('kernel-stdin\n') ||
+                !terminal.endStdin()
+              ) {
+                throw new Error(
+                  'C# terminal did not accept kernel-owned fd 0 input.'
+                );
+              }
+              return await pendingCommand;
+            } finally {
+              terminal.close();
+              terminalOwner.dispose();
+            }
+          })();
           return {
             command,
             commandKeys: Object.keys(command ?? {}),

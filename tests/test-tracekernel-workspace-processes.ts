@@ -50,6 +50,8 @@ async function main(): Promise<void> {
     readonly scriptPath: string;
     readonly pid: number;
     readonly ppid: number;
+    readonly sid: number;
+    readonly terminalId?: string;
   }> = [];
   let terminalRuntimeCount = 0;
   let detachedRuntimeCount = 0;
@@ -94,6 +96,10 @@ async function main(): Promise<void> {
       scriptPath: request.scriptPath,
       pid: request.process?.pid ?? -1,
       ppid: request.process?.ppid ?? -1,
+      sid: request.process?.sid ?? -1,
+      ...(authoritativeProcess?.controllingTerminalId
+        ? { terminalId: authoritativeProcess.controllingTerminalId }
+        : {}),
     });
     const kernel = syscalls(request);
     const identity = await dispatch(kernel, { op: 'identity' });
@@ -838,6 +844,59 @@ async function main(): Promise<void> {
         terminalOutputResult
       )}`
     );
+
+    const terminalOwner = workspace.kernel.createProcess({
+      name: 'project-client',
+      actor: { id: 'learner', kind: 'runtime' },
+      signalPolicy: 'system-only',
+    });
+    const firstOwnedTerminal = terminalOwner.createTerminalSession();
+    const secondOwnedTerminal = terminalOwner.createTerminalSession();
+    const ownedObservationStart = observedProcesses.length;
+    const [firstOwnedResult, secondOwnedResult] = await Promise.all([
+      firstOwnedTerminal.run('node terminal-output.js'),
+      secondOwnedTerminal.run('node terminal-output.js'),
+    ]);
+    const ownedTerminalProcesses = observedProcesses
+      .slice(ownedObservationStart)
+      .filter((process) =>
+        process.scriptPath.endsWith('terminal-output.js')
+      );
+    assertCondition(
+      firstOwnedResult.exitCode === 0 &&
+        secondOwnedResult.exitCode === 0 &&
+        ownedTerminalProcesses.length === 2 &&
+        ownedTerminalProcesses.every(
+          (process) =>
+            process.ppid === process.sid &&
+            process.ppid !== terminalOwner.pid &&
+            typeof process.terminalId === 'string'
+        ) &&
+        new Set(ownedTerminalProcesses.map((process) => process.sid)).size === 2 &&
+        new Set(
+          ownedTerminalProcesses.map((process) => process.terminalId)
+        ).size === 2,
+      `process-owned terminals did not receive independent shell sessions: ${JSON.stringify({
+        results: [firstOwnedResult, secondOwnedResult],
+        ownerPid: terminalOwner.pid,
+        processes: ownedTerminalProcesses,
+      })}`
+    );
+    firstOwnedTerminal.close();
+    secondOwnedTerminal.close();
+    await terminalOwner.runCommand('node detached-stdio.js');
+    assertCondition(
+      authoritativeSession
+        .terminalSnapshots()
+        .filter((candidate) =>
+          ownedTerminalProcesses.some(
+            (process) => process.terminalId === candidate.id
+          )
+        )
+        .every((candidate) => candidate.closed),
+      'Closing process-owned terminal sessions did not release their kernel TTYs.'
+    );
+    terminalOwner.dispose();
     const terminalEofStarted = waitForTerminalEofStart();
     const terminalEofRun = terminal.run('node terminal-eof.js');
     await terminalEofStarted;
@@ -869,7 +928,7 @@ async function main(): Promise<void> {
       )}`
     );
     assertCondition(
-      terminalRuntimeCount === 8 && detachedRuntimeCount === 5,
+      terminalRuntimeCount === 10 && detachedRuntimeCount === 6,
       `controlling-terminal inheritance did not match parent/child execution: ${JSON.stringify({
         terminalRuntimeCount,
         detachedRuntimeCount,
@@ -964,6 +1023,9 @@ async function main(): Promise<void> {
     kernelOwnedDescriptors: true,
     kernelOwnedProcessControls: true,
     kernelOwnedTerminalDescriptors: true,
+    processOwnedTerminalSessionLeaders: true,
+    independentProcessOwnedTerminals: true,
+    processOwnedTerminalCleanup: true,
     kernelOwnedWatchdogs: true,
     distinctRuntimeProcessIdentity: true,
     processOwnedPipeInheritance: true,

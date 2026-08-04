@@ -103,7 +103,7 @@ Render the row from `label`, `hidden`, and `disabled`.
 
 - `command`: the terminal is ready for a shell command. `label` is the shell prompt, for example `ada@tracevm weather-api $`.
 - `busy`: a command is running but the process has not requested stdin. Hide or disable the input row; this matches normal terminal behavior while a foreground process owns the tty.
-- `stdin`: the running process printed an unterminated stdout prompt. `label` is that process prompt, for example `Name: `. Submit user text with `terminal.writeStdin(...)`.
+- `stdin`: the running process actually read fd 0 from its controlling terminal. If it printed an unterminated stdout prompt first, `label` is that prompt, for example `Name: `; otherwise the label is empty. Submit user text with `terminal.writeStdin(...)`.
 
 State changes are emitted through `onTerminalEvent` with one of these reasons:
 
@@ -219,6 +219,12 @@ would make possible.
 Terminal sessions preserve the normal command event stream, with one addition:
 stdout chunks that become stdin prompts are marked with terminal metadata.
 
+Chunk boundaries alone never put the terminal into stdin mode. Runtimes may
+emit ordinary output and its trailing newline as separate writes. TraceKernel
+holds a partial stdout line until it sees a newline, command completion, or an
+actual fd 0 terminal read. Only the read handshake can classify the pending
+line as a prompt.
+
 ```ts
 if (event.type === 'output' && event.terminal?.role === 'stdin-prompt') {
   // event.terminal.inputState is the same state emitted by onTerminalEvent.
@@ -283,6 +289,9 @@ After `exit`, `terminal.closed` is `true` and further commands fail with
 `EBADF`. Sibling terminal sessions and background workspace processes remain
 available. Ctrl+L is a UI keyboard binding: consumers should clear their
 rendered transcript through the same path as the `clear` control event.
+Closing a terminal tab should call `terminal.close()` so its logical shell,
+controlling terminal, and kernel process resources are released even when the
+user did not type `exit`.
 
 Foreground output may use carriage returns to redraw one line. Consumers should
 treat `\r` as a cursor reset within the current line, rather than committing a

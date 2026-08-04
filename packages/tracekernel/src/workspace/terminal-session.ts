@@ -89,6 +89,7 @@ import type {
   RuntimeProjectSnapshot,
   RuntimeProjectTerminalEventHandler,
   RuntimeProjectTerminalInputState,
+  RuntimeCommandOutputEvent,
   RuntimeProjectTerminalInputStateReason,
   RuntimeProjectTerminalPrompt,
   RuntimeProjectTerminalCapabilities,
@@ -214,6 +215,7 @@ export class RuntimeProjectWorkspaceTerminalSession implements RuntimeProjectTer
         end(): 'kernel' | 'legacy' | 'rejected';
       };
       resizeTerminal?: (columns: number, rows: number) => void;
+      closeTerminal?: () => void;
       jobRecords: () => readonly RuntimeProjectTerminalJobRecord[];
       isVerbose: () => boolean;
     },
@@ -272,6 +274,19 @@ export class RuntimeProjectWorkspaceTerminalSession implements RuntimeProjectTer
     this.terminalColumns = this.normalizeTerminalDimension(columns, this.terminalColumns, 'columns');
     this.terminalRows = this.normalizeTerminalDimension(rows, this.terminalRows, 'rows');
     this.options.resizeTerminal?.(this.terminalColumns, this.terminalRows);
+  }
+
+  close(): void {
+    this.closeSession();
+  }
+
+  private closeSession(exitCode?: number): void {
+    if (this.sessionClosed) return;
+    this.sessionClosed = true;
+    this.options.closeTerminal?.();
+    if (exitCode !== undefined) {
+      this.emitControlEvent('exit', exitCode);
+    }
   }
 
   private normalizeTerminalDimension(value: number | undefined, fallback: number, name: string): number {
@@ -565,8 +580,7 @@ export class RuntimeProjectWorkspaceTerminalSession implements RuntimeProjectTer
       const words = parseSimpleCommandWords(segment.command);
       if (words?.[0] !== 'exit' || words.length > 2) continue;
       const exitCode = words[1] === undefined ? 0 : parseTerminalExitCode(words[1]) ?? 2;
-      this.sessionClosed = true;
-      this.emitControlEvent('exit', exitCode);
+      this.closeSession(exitCode);
       return;
     }
   }
@@ -589,8 +603,7 @@ export class RuntimeProjectWorkspaceTerminalSession implements RuntimeProjectTer
       }
       const requestedExitCode = words[1] === undefined ? 0 : parseTerminalExitCode(words[1]);
       if (requestedExitCode === null) {
-        this.sessionClosed = true;
-        this.emitControlEvent('exit', 2);
+        this.closeSession(2);
         return {
           stdout: '',
           stderr: `exit: ${words[1]}: numeric argument required\n`,
@@ -598,8 +611,7 @@ export class RuntimeProjectWorkspaceTerminalSession implements RuntimeProjectTer
         };
       }
       const exitCode = requestedExitCode;
-      this.sessionClosed = true;
-      this.emitControlEvent('exit', exitCode);
+      this.closeSession(exitCode);
       return { stdout: '', stderr: '', exitCode };
     }
     if (words?.[0] === 'cd') {
@@ -649,18 +661,54 @@ export class RuntimeProjectWorkspaceTerminalSession implements RuntimeProjectTer
       }
     }
 
+    let pendingStdoutEvent: RuntimeCommandOutputEvent | undefined;
+    const flushPendingStdout = (): void => {
+      if (!this.activeStdinPrompt || !pendingStdoutEvent) return;
+      options.onEvent?.({
+        ...pendingStdoutEvent,
+        data: this.activeStdinPrompt,
+      });
+      this.activeStdinPrompt = '';
+      pendingStdoutEvent = undefined;
+    };
+    const handleTerminalStdinRead = (): void => {
+      const prompt = this.activeStdinPrompt;
+      const inputState = this.setInputState('stdin', 'stdin-prompt', prompt);
+      if (prompt && pendingStdoutEvent) {
+        options.onEvent?.({
+          ...pendingStdoutEvent,
+          data: prompt,
+          terminal: { role: 'stdin-prompt', inputState },
+        });
+      }
+      this.activeStdinPrompt = '';
+      pendingStdoutEvent = undefined;
+    };
     const handleCommandEvent = (event: RuntimeCommandEvent): void => {
       outputTracker.observe(event);
       if (event.type === 'status' && !this.options.isVerbose()) return;
       if (
         event.type === 'output' &&
         event.stream === 'stdout' &&
-        this.activeStdinPipe &&
-        !event.data.endsWith('\n')
+        this.activeStdinPipe
       ) {
-        this.activeStdinPrompt += event.data;
-        const inputState = this.setInputState('stdin', 'stdin-prompt', this.activeStdinPrompt);
-        options.onEvent?.({ ...event, terminal: { role: 'stdin-prompt', inputState } });
+        const combined = this.activeStdinPrompt + event.data;
+        if (combined.includes('\r')) {
+          this.activeStdinPrompt = combined;
+          pendingStdoutEvent = event;
+          flushPendingStdout();
+          return;
+        }
+        const lastNewline = combined.lastIndexOf('\n');
+        if (lastNewline < 0) {
+          this.activeStdinPrompt = combined;
+          pendingStdoutEvent = event;
+          return;
+        }
+        const completeOutput = combined.slice(0, lastNewline + 1);
+        this.activeStdinPrompt = combined.slice(lastNewline + 1);
+        pendingStdoutEvent = this.activeStdinPrompt ? event : undefined;
+        options.onEvent?.({ ...event, data: completeOutput });
         return;
       }
       if (event.type === 'output' && event.stream === 'stderr') {
@@ -689,6 +737,7 @@ export class RuntimeProjectWorkspaceTerminalSession implements RuntimeProjectTer
         LINES: String(this.terminalRows),
       },
       terminal: this.terminal,
+      onTerminalStdinRead: handleTerminalStdinRead,
       umask: this.currentUmask,
       onEvent: handleCommandEvent,
       onEnvChanges: (changes) => this.applySessionEnvChanges(changes),
@@ -696,6 +745,7 @@ export class RuntimeProjectWorkspaceTerminalSession implements RuntimeProjectTer
         this.currentUmask = this.normalizeUmask(umask);
       },
     });
+    flushPendingStdout();
     const completeOutput = outputTracker.completeFinalOutput(result);
     const completeResult = {
       ...result,

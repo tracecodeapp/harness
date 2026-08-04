@@ -60,6 +60,12 @@ export interface RuntimeCommandOptions {
   executionLimits?: RuntimeCommandExecutionLimits;
   onEvent?: RuntimeCommandEventHandler;
   /**
+   * Internal terminal handshake fired when the foreground process actually
+   * reads its controlling terminal. Terminal sessions use this explicit
+   * signal to enter stdin mode; stdout chunk boundaries are not prompts.
+   */
+  onTerminalStdinRead?: () => void;
+  /**
    * Called once after the kernel has allocated and published the process but
    * before its command executor is admitted. Terminal background submission
    * uses this instead of inferring PID creation from synchronous timing.
@@ -730,6 +736,8 @@ export interface RuntimeProjectTerminalSession {
   writeStdin(data: string): boolean;
   /** Resize the attached terminal for subsequent commands. */
   resize(columns: number, rows: number): void;
+  /** Close the logical shell session and release its kernel terminal resources. */
+  close(): void;
   run(command: string, options?: RuntimeProjectTerminalRunOptions): Promise<RuntimeCommandResult>;
 }
 

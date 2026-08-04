@@ -356,6 +356,7 @@ import {
   type RuntimeKernelProcessLaunchHooks,
   type RuntimeKernelProcessRecord,
   type RuntimeKernelSpawnedChild,
+  type RuntimeKernelTerminalShell,
   type RuntimeTraceKernelAuthority,
 } from './process-state';
 import {
@@ -557,6 +558,11 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
   private readonly identityCommands: WorkspaceIdentityCommands;
   private readonly virtualExecutableRecords = new Map<string, VirtualExecutableRecord>();
   private readonly processState = new WorkspaceProcessState();
+  private readonly terminalShells = new Map<
+    string,
+    Promise<RuntimeKernelTerminalShell>
+  >();
+  private readonly terminalResourceIds = new Map<string, string>();
   private readonly processProjection: WorkspaceProcessProjection;
   // Temporary 0.13 introspection aliases. The process state module remains
   // authoritative; these preserve existing hardening probes while 0.14 moves
@@ -1325,7 +1331,6 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
       case 'getsockname':
       case 'getpeername':
       case 'getsockopt':
-      case 'read':
       case 'seek':
       case 'close':
       case 'dup':
@@ -1336,6 +1341,18 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
       case 'fstat':
       case 'ftruncate':
         return this.dispatchExtractedTraceKernelSyscall(request, context);
+      case 'read': {
+        const descriptor = kernelProcess
+          .snapshot()
+          .descriptors.find((candidate) => candidate.fd === request.fd);
+        if (
+          request.fd === 0 &&
+          descriptor?.kind === 'terminal'
+        ) {
+          context?.onTerminalStdinRead?.();
+        }
+        return this.dispatchExtractedTraceKernelSyscall(request, context);
+      }
       default:
         return undefined;
     }
@@ -3841,7 +3858,12 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
       return result.signaled > 0;
     }
     const authority = this.traceKernelAuthority;
-    const terminal = authority?.session.terminalSnapshots()[0];
+    const terminalId = this.terminalResourceIds.get(terminalSessionId);
+    const terminal = terminalId === undefined
+      ? undefined
+      : authority?.session.terminalSnapshots().find(
+          (candidate) => candidate.id === terminalId
+        );
     if (authority && terminal && !terminal.closed) {
       const count = authority.session.processSnapshots().filter(
         (process) =>
@@ -3864,9 +3886,18 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
     return false;
   }
 
-  private resizeKernelTerminal(columns: number, rows: number): void {
+  private resizeKernelTerminal(
+    terminalSessionId: string,
+    columns: number,
+    rows: number
+  ): void {
     const authority = this.traceKernelAuthority;
-    const terminal = authority?.session.terminalSnapshots()[0];
+    const terminalId = this.terminalResourceIds.get(terminalSessionId);
+    const terminal = terminalId === undefined
+      ? undefined
+      : authority?.session.terminalSnapshots().find(
+          (candidate) => candidate.id === terminalId
+        );
     if (!authority || !terminal || terminal.closed) return;
     Effect.runFork(
       authority.session.resizeTerminal(terminal.id, columns, rows).pipe(
@@ -3889,10 +3920,16 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
   }
 
   private writeKernelTerminalInput(
+    terminalSessionId: string,
     data: string
   ): 'kernel' | 'legacy' | 'rejected' {
     const authority = this.traceKernelAuthority;
-    const terminal = authority?.session.terminalSnapshots()[0];
+    const terminalId = this.terminalResourceIds.get(terminalSessionId);
+    const terminal = terminalId === undefined
+      ? undefined
+      : authority?.session.terminalSnapshots().find(
+          (candidate) => candidate.id === terminalId
+        );
     if (!authority || !terminal || terminal.closed) return 'rejected';
     const signalByte = new TextEncoder().encode(data).find(
       (byte) => byte === 0x03 || byte === 0x1c
@@ -3925,9 +3962,16 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
     return 'kernel';
   }
 
-  private endKernelTerminalInput(): 'kernel' | 'legacy' | 'rejected' {
+  private endKernelTerminalInput(
+    terminalSessionId: string
+  ): 'kernel' | 'legacy' | 'rejected' {
     const authority = this.traceKernelAuthority;
-    const terminal = authority?.session.terminalSnapshots()[0];
+    const terminalId = this.terminalResourceIds.get(terminalSessionId);
+    const terminal = terminalId === undefined
+      ? undefined
+      : authority?.session.terminalSnapshots().find(
+          (candidate) => candidate.id === terminalId
+        );
     if (!authority || !terminal || terminal.closed) return 'rejected';
     if (this.kernelTerminalInputRoute(terminal) === 'legacy') return 'legacy';
     Effect.runFork(
@@ -3938,7 +3982,12 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
     return 'kernel';
   }
 
-  private async reapZombieProcess(pid?: number, commandName = 'tracekernelctl', currentPid?: number): Promise<RuntimeCommandResult> {
+  private async reapZombieProcess(
+    pid?: number,
+    commandName = 'tracekernelctl',
+    currentPid?: number,
+    kernelParentProcess?: TraceKernelProcess
+  ): Promise<RuntimeCommandResult> {
     const authority = this.traceKernelAuthority;
     let selectedPid = pid;
     if (authority) {
@@ -3946,20 +3995,27 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
         ? this.processProjection.presentationRecords().filter(
             (candidate) =>
               candidate.pid !== currentPid &&
-              candidate.ppid === 1
+              candidate.ppid === (kernelParentProcess?.pid ?? 1)
           )
         : [this.processProjection.findPresentationRecord(pid)].filter(
             (candidate): candidate is RuntimeKernelProcessRecord =>
               candidate !== undefined &&
               candidate.pid !== currentPid &&
-              candidate.ppid === 1
+              candidate.ppid === (kernelParentProcess?.pid ?? 1)
       );
       for (const candidate of candidates) {
         const productRecord = this.processProjection.find(candidate.pid);
         if (productRecord) this.processState.waitRequests.add(productRecord.pid);
       }
       const selected = await Effect.runPromise(
-        Effect.either(authority.session.waitInitChild(pid ?? -1))
+        Effect.either(
+          kernelParentProcess
+            ? authority.session.waitChild(
+                kernelParentProcess,
+                pid ?? -1
+              )
+            : authority.session.waitInitChild(pid ?? -1)
+        )
       );
       if (selected._tag === 'Left') {
         if (
@@ -4010,18 +4066,31 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
   private runKernelWaitForParent(
     args: readonly string[],
     commandName: 'wait' | 'tracekernelctl',
-    currentPid?: number
+    currentPid?: number,
+    kernelParentProcess?: TraceKernelProcess
   ): Promise<RuntimeCommandResult> {
     if (args.length > 1) {
       const usage = commandName === 'wait' ? 'wait [pid]' : 'tracekernelctl wait [pid]';
       return Promise.resolve({ stdout: '', stderr: `usage: ${usage}\n`, exitCode: 2 });
     }
-    if (args[0] === undefined) return this.reapZombieProcess(undefined, commandName, currentPid);
+    if (args[0] === undefined) {
+      return this.reapZombieProcess(
+        undefined,
+        commandName,
+        currentPid,
+        kernelParentProcess
+      );
+    }
     const pid = Number(args[0]);
     if (!Number.isInteger(pid) || pid <= 0) {
       return Promise.resolve({ stdout: '', stderr: `${commandName}: invalid pid: ${args[0]}\n`, exitCode: 22 });
     }
-    return this.reapZombieProcess(pid, commandName, currentPid);
+    return this.reapZombieProcess(
+      pid,
+      commandName,
+      currentPid,
+      kernelParentProcess
+    );
   }
 
   /**
@@ -4031,7 +4100,8 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
    */
   private tryRunInProcessWaitCommand(
     command: string,
-    parent?: RuntimeKernelProcessRecord
+    parent?: RuntimeKernelProcessRecord,
+    kernelParentProcess?: TraceKernelProcess
   ): Promise<RuntimeCommandResult> | null {
     const words = parseSimpleCommandWords(command);
     if (!words || words.length === 0) return null;
@@ -4041,10 +4111,20 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
     if (commandName === 'wait' || commandName === `${TRACEKERNEL_SHELL_COMMAND_PREFIX}wait`) {
       const help = this.commandCatalog.help('wait', words.slice(1));
       if (help) return Promise.resolve(help);
-      return this.runKernelWaitForParent(words.slice(1), 'wait', currentPid);
+      return this.runKernelWaitForParent(
+        words.slice(1),
+        'wait',
+        currentPid,
+        kernelParentProcess
+      );
     }
     if (commandName === 'tracekernelctl' && words[1] === 'wait') {
-      return this.runKernelWaitForParent(words.slice(2), 'tracekernelctl', currentPid);
+      return this.runKernelWaitForParent(
+        words.slice(2),
+        'tracekernelctl',
+        currentPid,
+        kernelParentProcess
+      );
     }
     return null;
   }
@@ -4382,7 +4462,15 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
       return { stdout: `tracekernelctl: sent ${signal.name} to ${target}\n`, stderr: '', exitCode: 0 };
     }
     if (command === 'wait') {
-      return this.runKernelWaitForParent(args.slice(1), 'tracekernelctl', this.resolveCommandContext(ctx)?.process.pid);
+      const commandContext = this.resolveCommandContext(ctx);
+      const caller = commandContext?.process;
+      return this.runKernelWaitForParent(
+        args.slice(1),
+        'tracekernelctl',
+        caller?.pid,
+        commandContext?.kernelParentProcess ??
+          (caller ? this.processProjection.kernelProcess(caller) : undefined)
+      );
     }
     return {
       stdout: '',
@@ -4442,7 +4530,11 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
     const targetKernelProcess = this.processProjection.kernelProcess(process);
     if (authority && callerKernelProcess && targetKernelProcess) {
       if (foreground) {
-        const terminal = authority.session.terminalSnapshots()[0] ??
+        const callerTerminalId =
+          callerKernelProcess.snapshot().controllingTerminalId;
+        const terminal = authority.session.terminalSnapshots().find(
+          (candidate) => candidate.id === callerTerminalId
+        ) ??
           await Effect.runPromise(
             authority.session.bootstrapSessionTerminal(callerKernelProcess, {
               name: '/dev/tty',
@@ -4476,6 +4568,7 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
         );
       } else {
         const targetSnapshot = targetKernelProcess.snapshot();
+        const targetTerminalId = targetSnapshot.controllingTerminalId;
         if (
           targetSnapshot.descriptors.some(
             (descriptor) =>
@@ -4488,7 +4581,9 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
             authority.session.replaceNullStandardIo(targetKernelProcess)
           );
         }
-        const terminal = authority.session.terminalSnapshots()[0];
+        const terminal = authority.session.terminalSnapshots().find(
+          (candidate) => candidate.id === targetTerminalId
+        );
         if (terminal) {
           await Effect.runPromise(
             authority.session.releaseTerminalForegroundToHost(
@@ -4593,10 +4688,14 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
   }
 
   private runKernelWait(args: string[], commandName: string, _ctx: CommandContext): Promise<RuntimeCommandResult> {
+    const commandContext = this.resolveCommandContext(_ctx);
+    const caller = commandContext?.process;
     return this.runKernelWaitForParent(
       args,
       commandName === 'tracekernelctl' ? 'tracekernelctl' : 'wait',
-      this.resolveCommandContext(_ctx)?.process.pid
+      caller?.pid,
+      commandContext?.kernelParentProcess ??
+        (caller ? this.processProjection.kernelProcess(caller) : undefined)
     );
   }
 
@@ -4722,6 +4821,7 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
     readonly env: Readonly<Record<string, string>>;
     readonly actor: RuntimeWorkspaceActor;
     readonly parent?: RuntimeKernelProcessRecord;
+    readonly kernelParentProcess?: TraceKernelProcess;
     readonly processGroupId?: number;
     readonly sessionId?: number;
   }): Promise<TraceKernelProcess> {
@@ -4730,9 +4830,11 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
     if (!authority) {
       throw new Error('TraceKernel session authority is unavailable.');
     }
-    const parentPid = options.parent
-      ? this.processProjection.kernelProcess(options.parent)?.pid
-      : undefined;
+    const parentPid =
+      options.kernelParentProcess?.pid ??
+      (options.parent
+        ? this.processProjection.kernelProcess(options.parent)?.pid
+        : undefined);
     const process = await Effect.runPromise(authority.session.spawn({
       runtime: this.traceKernelControlledRuntime.runtime,
       command: options.command,
@@ -4759,13 +4861,14 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
 
   private async reapControlledTraceKernelChild(
     parent: RuntimeKernelProcessRecord | undefined,
-    childPid: number
+    childPid: number,
+    kernelParentProcess?: TraceKernelProcess
   ): Promise<void> {
     const authority = this.traceKernelAuthority;
     if (!authority) return;
-    const parentKernelProcess = parent
-      ? this.processProjection.kernelProcess(parent)
-      : undefined;
+    const parentKernelProcess =
+      kernelParentProcess ??
+      (parent ? this.processProjection.kernelProcess(parent) : undefined);
     await Effect.runPromise(
       parentKernelProcess
         ? authority.session.waitChild(parentKernelProcess, childPid, {
@@ -4983,7 +5086,11 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
   ): Promise<RuntimeCommandResult> {
     const unusable = this.assertWorkspaceUsableForRun(command);
     if (unusable) return unusable;
-    const inProcessWait = this.tryRunInProcessWaitCommand(command, parent);
+    const inProcessWait = this.tryRunInProcessWaitCommand(
+      command,
+      parent,
+      launchHooks?.kernelParentProcess
+    );
     if (inProcessWait) return inProcessWait;
     await this.awaitControlPlaneProcessDisposals();
     const actor = parent?.actor ?? this.createRuntimeActor();
@@ -5015,6 +5122,7 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
         env: processEnv,
         actor,
         parent,
+        kernelParentProcess: launchHooks?.kernelParentProcess,
         processGroupId: launchHooks?.kernelProcessGroupId,
         sessionId: launchHooks?.kernelSessionId,
       });
@@ -5108,10 +5216,12 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
       eventHandler: this.createCommandEventHandler(options),
       actor,
       process,
+      kernelParentProcess: launchHooks?.kernelParentProcess,
       engineLease,
       signal: abortController.signal,
       stdinPipe,
       terminal: options.terminal,
+      onTerminalStdinRead: options.onTerminalStdinRead,
       umask: Number.isInteger(options.umask) && options.umask !== undefined && options.umask >= 0 && options.umask <= 0o777
         ? options.umask
         : 0o022,
@@ -5465,7 +5575,11 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
         this.processProjection.executionHandle(process)
       );
       if (!retainProcessOnExit) {
-        await this.reapControlledTraceKernelChild(parent, process.pid);
+        await this.reapControlledTraceKernelChild(
+          parent,
+          process.pid,
+          launchHooks?.kernelParentProcess
+        );
       }
       clearKernelSignalHandler();
       clearKernelLeaseHandler();
@@ -5790,6 +5904,110 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
     return this.createTerminalSessionAs(options);
   }
 
+  private ensureTerminalShell(
+    terminalSessionId: string,
+    options: RuntimeProjectTerminalSessionOptions,
+    parent?: RuntimeKernelProcessRecord
+  ): Promise<RuntimeKernelTerminalShell> {
+    const existing = this.terminalShells.get(terminalSessionId);
+    if (existing) return existing;
+    const creating = this.createTerminalShell(
+      terminalSessionId,
+      options,
+      parent
+    ).catch((error) => {
+      this.terminalShells.delete(terminalSessionId);
+      throw error;
+    });
+    this.terminalShells.set(terminalSessionId, creating);
+    return creating;
+  }
+
+  private async createTerminalShell(
+    terminalSessionId: string,
+    options: RuntimeProjectTerminalSessionOptions,
+    parent?: RuntimeKernelProcessRecord
+  ): Promise<RuntimeKernelTerminalShell> {
+    await this.ensureTraceKernelAuthority();
+    const authority = this.traceKernelAuthority;
+    if (!authority) {
+      throw new Error('TraceKernel session authority is unavailable.');
+    }
+    const parentKernelProcess = parent
+      ? this.processProjection.kernelProcess(parent)
+      : undefined;
+    if (parent && !parentKernelProcess) {
+      throw new Error(
+        `TraceKernel terminal parent is unavailable: ${parent.pid}`
+      );
+    }
+    const shell = await Effect.runPromise(authority.session.spawn({
+      runtime: this.traceKernelControlledRuntime.runtime,
+      command: '[terminal-shell]',
+      cwd: options.cwd ?? this.cwd,
+      env: Object.freeze({
+        ...(parent?.env ?? this.baseEnv),
+        ...(options.env ?? {}),
+      }),
+      ...(parentKernelProcess
+        ? { parentPid: parentKernelProcess.pid }
+        : { retainOnExit: true }),
+      sessionId: 0,
+      processGroupId: 0,
+      owner: this.traceKernelPrincipal(
+        parent?.actor ?? this.createRuntimeActor()
+      ),
+      visible: false,
+    }));
+    await Effect.runPromise(authority.session.attachNullStandardIo(shell));
+    await Effect.runPromise(shell.awaitStarted());
+    const terminal = await Effect.runPromise(
+      authority.session.bootstrapSessionTerminal(shell, {
+        name: '/dev/tty',
+        columns: options.columns,
+        rows: options.rows,
+      })
+    );
+    await Effect.runPromise(
+      authority.session.replaceTerminalStdio(shell, terminal.id)
+    );
+    this.terminalResourceIds.set(terminalSessionId, terminal.id);
+    return {
+      process: shell,
+      ...(parentKernelProcess ? { parent: parentKernelProcess } : {}),
+      terminalId: terminal.id,
+    };
+  }
+
+  private closeTerminalShell(terminalSessionId: string): void {
+    const shellPromise = this.terminalShells.get(terminalSessionId);
+    this.terminalShells.delete(terminalSessionId);
+    this.terminalResourceIds.delete(terminalSessionId);
+    if (!shellPromise) return;
+    const disposal = shellPromise.then(async (shell) => {
+      const authority = this.traceKernelAuthority;
+      if (!authority) return;
+      await Effect.runPromise(
+        authority.session.closeTerminal(shell.terminalId)
+      ).catch(() => undefined);
+      await Effect.runPromise(
+        this.traceKernelControlledRuntime.complete(shell.process.pid, {
+          exitCode: 0,
+        })
+      ).catch(() => undefined);
+      await Effect.runPromise(shell.process.wait()).catch(() => undefined);
+      await this.reapControlledTraceKernelChild(
+        undefined,
+        shell.process.pid,
+        shell.parent
+      );
+    }).catch(() => undefined);
+    this.processState.controlPlaneDisposals.add(disposal);
+    void disposal.finally(() => {
+      this.processState.controlPlaneDisposals.delete(disposal);
+    });
+  }
+
   private createTerminalSessionAs(
     options: RuntimeProjectTerminalSessionOptions = {},
     parent?: RuntimeKernelProcessRecord
@@ -5803,17 +6021,35 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
         kernelInfo: this.kernelInfo,
         resolveCwd: (currentCwd, target) =>
           this.terminalNavigation.resolveTerminalCwd(currentCwd, target),
-        runCommand: (command, commandOptions) => this.runCommandAs(command, {
-          ...commandOptions,
-          terminalSessionId,
-        }, parent),
+        runCommand: async (command, commandOptions) => {
+          const shell = await this.ensureTerminalShell(
+            terminalSessionId,
+            {
+              ...options,
+              cwd: options.cwd
+                ? this.terminalNavigation.resolvePath(this.cwd, options.cwd)
+                : this.cwd,
+            },
+            parent
+          );
+          return this.runCommandAs(
+            command,
+            {
+              ...commandOptions,
+              terminalSessionId,
+            },
+            parent,
+            { kernelParentProcess: shell.process }
+          );
+        },
         signalForeground: (signal) => this.signalTerminalForeground(terminalSessionId, signal),
         terminalInputRouter: {
-          write: (data) => this.writeKernelTerminalInput(data),
-          end: () => this.endKernelTerminalInput(),
+          write: (data) => this.writeKernelTerminalInput(terminalSessionId, data),
+          end: () => this.endKernelTerminalInput(terminalSessionId),
         },
         resizeTerminal: (columns, rows) =>
-          this.resizeKernelTerminal(columns, rows),
+          this.resizeKernelTerminal(terminalSessionId, columns, rows),
+        closeTerminal: () => this.closeTerminalShell(terminalSessionId),
         jobRecords: () => this.terminalJobRecords(),
         isVerbose: () => this.lifecycleState.terminalVerbose,
       },

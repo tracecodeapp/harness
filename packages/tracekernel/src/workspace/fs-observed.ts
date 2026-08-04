@@ -13,6 +13,7 @@ import {
   runtimeFileChangePath,
   runtimeProjectTruncateUtf8,
 } from '@tracecode/runtime-contracts';
+import type { TraceKernelProcess } from '../kernel/process';
 import {
   isRuntimeKernelVirtualNamespacePath,
   normalizeRuntimeProcPath,
@@ -208,10 +209,13 @@ export interface RuntimeCommandExecutionContext {
     readonly pid: number;
     [key: string]: any;
   };
+  /** Persistent shell/session leader that logically owns terminal jobs. */
+  readonly kernelParentProcess?: TraceKernelProcess;
   readonly engineLease?: import('@tracecode/runtime-contracts').RuntimeProjectEngineLeaseController;
   readonly signal: AbortSignal;
   readonly stdinPipe?: RuntimeCommandOptions['stdinPipe'];
   readonly terminal?: RuntimeCommandOptions['terminal'];
+  readonly onTerminalStdinRead?: RuntimeCommandOptions['onTerminalStdinRead'];
   umask: number;
   readonly onUmaskChange?: RuntimeCommandOptions['onUmaskChange'];
   readonly includeHiddenFiles?: boolean;

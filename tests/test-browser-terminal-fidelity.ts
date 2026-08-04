@@ -1137,7 +1137,7 @@ async function testBrowserProcessAndNetworkInspection(): Promise<void> {
       killed.exitCode === 0 && serverResult.exitCode === 143 && serverResult.error?.detail?.signal === 'SIGTERM',
       `pkill should signal the matched process instead of fabricating command output: ${JSON.stringify({ killed, serverResult })}`
     );
-    await inspectionTerminal.run('wait');
+    await serverTerminal.run('wait');
     const missing = await inspectionTerminal.run('pgrep -f "node server.js"');
     assertCondition(missing.exitCode === 1 && missing.stdout === '', 'pgrep should return 1 when no process matches');
     assertCondition(secondServerTerminal.interrupt(), 'the second server should remain independently interruptible');

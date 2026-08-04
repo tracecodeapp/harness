@@ -184,8 +184,16 @@ export interface RuntimeTraceKernelAuthority {
   readonly hostServiceProcess: TraceKernelProcess;
 }
 
+export interface RuntimeKernelTerminalShell {
+  readonly process: TraceKernelProcess;
+  readonly parent?: TraceKernelProcess;
+  readonly terminalId: string;
+}
+
 export interface RuntimeKernelProcessLaunchHooks {
   readonly kernelProcess?: TraceKernelProcess;
+  /** Explicit kernel parent when the product-facing authority record is not the OS parent. */
+  readonly kernelParentProcess?: TraceKernelProcess;
   readonly kernelProcessGroupId?: number;
   readonly kernelSessionId?: number;
   /**
