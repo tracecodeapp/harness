@@ -1,8 +1,16 @@
 #!/usr/bin/env npx tsx
 
+import { createHash } from 'node:crypto';
 import { brotliCompressSync, constants as zlibConstants } from 'node:zlib';
 import { readdir, readFile, stat } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
+import {
+  CSHARP_ASSEMBLY_PACKS_SCHEMA,
+  CSHARP_RUNNER_ASSEMBLY_PACK_COUNT,
+  parseCSharpAssemblyPack,
+  type AssemblyPackMetadata,
+  type AssemblyPacksExtension,
+} from './pack-csharp-managed-assemblies.js';
 
 interface BootAsset {
   name?: unknown;
@@ -79,6 +87,206 @@ const RUNNER_REQUIRED_JUDGE_ASSEMBLIES = [
   'System.Threading.Tasks.Extensions',
   'System.ValueTuple',
 ] as const;
+
+function sha256Base64(bytes: Buffer | string): string {
+  return createHash('sha256').update(bytes).digest('base64');
+}
+
+function sha256Hex(bytes: Buffer): string {
+  return createHash('sha256').update(bytes).digest('hex');
+}
+
+function managedAssemblyAssets(config: BootConfig): BootAsset[] {
+  return [
+    ...(config.resources?.coreAssembly ?? []),
+    ...(config.resources?.assembly ?? []),
+  ];
+}
+
+function requireAssemblyPacksExtension(config: BootConfig): AssemblyPacksExtension {
+  const extensions = config.resources?.extensions;
+  const extension =
+    extensions &&
+    typeof extensions === 'object' &&
+    !Array.isArray(extensions)
+      ? (extensions as { tracecodeAssemblyPacks?: unknown })
+          .tracecodeAssemblyPacks
+      : undefined;
+  if (
+    !extension ||
+    typeof extension !== 'object' ||
+    (extension as { schema?: unknown }).schema !== CSHARP_ASSEMBLY_PACKS_SCHEMA ||
+    !Array.isArray((extension as { packs?: unknown }).packs)
+  ) {
+    throw new Error(
+      'Disposable C# runner is missing its managed-assembly pack manifest.'
+    );
+  }
+  return extension as AssemblyPacksExtension;
+}
+
+async function fileExists(path: string): Promise<boolean> {
+  try {
+    await stat(path);
+    return true;
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return false;
+    throw error;
+  }
+}
+
+async function validateRunnerAssemblyPacks(
+  runnerDirectory: string,
+  config: BootConfig
+): Promise<void> {
+  const frameworkDirectory = join(runnerDirectory, '_framework');
+  const assemblyAssets = managedAssemblyAssets(config);
+  const expectedVirtualPaths = new Map<string, string>();
+  for (const asset of assemblyAssets) {
+    if (
+      typeof asset.name !== 'string' ||
+      typeof (asset.virtualPath ?? asset.name) !== 'string' ||
+      expectedVirtualPaths.has(asset.name)
+    ) {
+      throw new Error('C# runner boot manifest has invalid assembly metadata.');
+    }
+    expectedVirtualPaths.set(
+      asset.name,
+      (asset.virtualPath ?? asset.name) as string
+    );
+    if (await fileExists(join(frameworkDirectory, asset.name))) {
+      throw new Error(
+        `Packed C# runner still ships loose managed assembly ${asset.name}.`
+      );
+    }
+  }
+
+  const extension = requireAssemblyPacksExtension(config);
+  if (
+    extension.assemblyCount !== assemblyAssets.length ||
+    extension.packs.length !== CSHARP_RUNNER_ASSEMBLY_PACK_COUNT
+  ) {
+    throw new Error(
+      `C# runner must contain exactly ${CSHARP_RUNNER_ASSEMBLY_PACK_COUNT} packs covering all ${assemblyAssets.length} assemblies.`
+    );
+  }
+
+  const seenPackNames = new Set<string>();
+  const seenAssemblyNames = new Set<string>();
+  for (const metadata of extension.packs as AssemblyPackMetadata[]) {
+    if (
+      typeof metadata?.name !== 'string' ||
+      metadata.name !== metadata.name.split('/').at(-1) ||
+      metadata.name.includes('\\') ||
+      !metadata.name.endsWith('.pack') ||
+      seenPackNames.has(metadata.name) ||
+      typeof metadata.hash !== 'string' ||
+      !/^sha256-[A-Za-z0-9+/]{43}=$/.test(metadata.hash) ||
+      !Number.isSafeInteger(metadata.bytes) ||
+      metadata.bytes <= 12 ||
+      !Number.isSafeInteger(metadata.assemblyCount) ||
+      metadata.assemblyCount < 1 ||
+      !Array.isArray(metadata.assemblies) ||
+      metadata.assemblyCount !== metadata.assemblies.length
+    ) {
+      throw new Error('C# runner has invalid assembly-pack metadata.');
+    }
+    seenPackNames.add(metadata.name);
+    const packPath = join(frameworkDirectory, metadata.name);
+    const packBytes = await readFile(packPath);
+    if (
+      packBytes.byteLength !== metadata.bytes ||
+      `sha256-${sha256Base64(packBytes)}` !== metadata.hash
+    ) {
+      throw new Error(`C# runner assembly pack integrity failed: ${metadata.name}.`);
+    }
+    const parsed = parseCSharpAssemblyPack(packBytes, packPath);
+    const entries = Object.entries(parsed.index.entries);
+    if (entries.length !== metadata.assemblyCount) {
+      throw new Error(
+        `C# runner assembly pack index count differs from ${metadata.name}.`
+      );
+    }
+    const ranges: Array<[number, number]> = [];
+    for (const [name, entry] of entries) {
+      if (
+        !metadata.assemblies.includes(name) ||
+        !expectedVirtualPaths.has(name) ||
+        seenAssemblyNames.has(name) ||
+        entry.virtualPath !== expectedVirtualPaths.get(name) ||
+        !Number.isSafeInteger(entry.offset) ||
+        !Number.isSafeInteger(entry.length) ||
+        entry.offset < 0 ||
+        entry.length <= 0 ||
+        entry.offset + entry.length > parsed.indexOffset ||
+        !/^[a-f0-9]{64}$/.test(entry.sha256)
+      ) {
+        throw new Error(
+          `C# runner assembly pack has invalid entry ${metadata.name}:${name}.`
+        );
+      }
+      const assemblyBytes = packBytes.subarray(
+        entry.offset,
+        entry.offset + entry.length
+      );
+      if (sha256Hex(assemblyBytes) !== entry.sha256) {
+        throw new Error(
+          `C# runner packed assembly integrity failed: ${metadata.name}:${name}.`
+        );
+      }
+      seenAssemblyNames.add(name);
+      ranges.push([entry.offset, entry.offset + entry.length]);
+    }
+    ranges.sort((left, right) => left[0] - right[0]);
+    if (
+      ranges.some(
+        (range, index) => index > 0 && range[0] < ranges[index - 1][1]
+      )
+    ) {
+      throw new Error(`C# runner assembly pack entries overlap: ${metadata.name}.`);
+    }
+    if (
+      metadata.assemblies.some(
+        (name) => !Object.prototype.hasOwnProperty.call(parsed.index.entries, name)
+      )
+    ) {
+      throw new Error(
+        `C# runner assembly pack manifest differs from ${metadata.name}.`
+      );
+    }
+  }
+  if (
+    seenAssemblyNames.size !== expectedVirtualPaths.size ||
+    [...expectedVirtualPaths.keys()].some(
+      (name) => !seenAssemblyNames.has(name)
+    )
+  ) {
+    throw new Error('C# runner assembly packs do not cover its boot manifest.');
+  }
+
+  const resources = config.resources;
+  if (!resources) {
+    throw new Error('C# runner boot manifest is missing resources.');
+  }
+  const expectedResourceHash = `sha256-${sha256Base64(
+    JSON.stringify({ ...resources, hash: undefined })
+  )}`;
+  if (resources.hash !== expectedResourceHash) {
+    throw new Error('C# runner boot resource hash is stale after packing.');
+  }
+  for (const sourceMap of ['dotnet.js.map', 'dotnet.runtime.js.map']) {
+    if (await fileExists(join(frameworkDirectory, sourceMap))) {
+      throw new Error(`Packed C# runner must not ship unused ${sourceMap}.`);
+    }
+  }
+  const actualPackNames = (await readdir(frameworkDirectory))
+    .filter((name) => name.endsWith('.pack'))
+    .sort();
+  const expectedPackNames = [...seenPackNames].sort();
+  if (JSON.stringify(actualPackNames) !== JSON.stringify(expectedPackNames)) {
+    throw new Error('C# runner contains unreferenced assembly-pack files.');
+  }
+}
 
 function parseBootConfig(source: string, bootPath: string): BootConfig {
   const match = source.match(
@@ -207,11 +415,23 @@ async function main(): Promise<void> {
     inspectBundle('compiler', compilerDir),
     inspectBundle('runner', runnerDir),
   ]);
+  await validateRunnerAssemblyPacks(runnerDir, runner.config);
 
   for (const [role, bundle] of [
     ['general', general],
     ['compiler', compiler],
   ] as const) {
+    const extensions = bundle.config.resources?.extensions;
+    if (
+      extensions &&
+      typeof extensions === 'object' &&
+      !Array.isArray(extensions) &&
+      'tracecodeAssemblyPacks' in extensions
+    ) {
+      throw new Error(
+        `${role} C# bundle must not use Judge-only assembly packs.`
+      );
+    }
     requireAsset(
       bundle.names,
       /Microsoft\.CodeAnalysis\.CSharp\.wasm$/i,

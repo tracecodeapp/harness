@@ -54,6 +54,16 @@ The role-split release script fails closed if asked for the broader
 `Compatibility` compiler pack: that pack requires a correspondingly rooted
 runner and must never be paired with the Minimal runner accidentally.
 
+The disposable runner's managed Webcil assemblies are delivered in three
+deterministic, balanced packs. The .NET native runtime remains a standalone
+Wasm asset so browsers can compile it normally. A trusted boot-resource loader
+checks the manifest-to-pack SHA-256 binding, pack size, index bounds, complete
+assembly coverage, and per-entry metadata before returning assembly byte
+slices to .NET. It releases a pack buffer after .NET consumes its final member.
+This changes immutable runtime delivery only: learner filesystem, process,
+network, Mux, TraceKernel, trace state, and user authority remain scoped to the
+disposable runner exactly as before.
+
 Deploy each tree beneath a content-addressed or release-versioned URL and serve
 it with `Cache-Control: public, max-age=31536000, immutable`. Do not apply an
 immutable policy to a URL whose bytes can be overwritten. A consumer-owned
@@ -63,5 +73,6 @@ the role assets so successful preflights can be reused.
 
 `pnpm test:csharp-role-assets` fails if the runner contains compiler
 assemblies, the general Host, compiler VFS files, omits any rooted Minimal
-Judge reference, or exceeds its raw/Brotli size ceilings. Review
+Judge reference, ships loose managed assemblies or an invalid pack, or exceeds
+its raw/Brotli size ceilings. Review
 `THIRD_PARTY_NOTICES.md` before redistributing the root package.

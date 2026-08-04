@@ -1508,3 +1508,96 @@ the real provider completes the fixed trusted traced standby-runner prime
 before the tested lease. The prepared-boundary gate independently validates
 the trusted artifact output, learner POCO/collection/JSON/regex hydration,
 29-event tracing, and modified-SHA rejection.
+
+## Production integration: three managed-assembly packs
+
+The selected delivery optimization was integrated into the canonical C#
+worker and runner assets on 2026-08-04. It keeps `dotnet.native.wasm`
+standalone and replaces 84 individually fetched managed Webcil assemblies
+with three balanced binary packs. The format is:
+
+```text
+[managed assembly bytes][JSON member index][uint32 LE index length][TCPACK01]
+```
+
+The boot manifest binds each pack by SHA-256 SRI, exact byte length, assembly
+count, and complete member list. The worker rejects invalid schemas, duplicate
+or missing members, unsafe names, invalid sizes/hashes, malformed or
+out-of-bounds indexes, overlapping entries, and manifest/index disagreement.
+The build validator additionally hashes every embedded assembly and rejects
+loose managed assemblies, unused runner source maps, or unreferenced packs.
+Each pack buffer is released after .NET consumes its final member.
+
+This loader is trusted immutable boot transport only. It does not expose a
+filesystem or fetch primitive to learner code and does not alter TKFS,
+System.IO, processes, terminal, TCP/HTTP, Mux, TraceKernel, trace state, or
+worker retirement. The compiler authority and general Project host remain
+unpacked; learner assemblies and all learner authority remain confined to a
+disposable runner lease.
+
+### Final artifact
+
+| Artifact | Bytes | Assemblies | SHA-256 |
+|---|---:|---:|---|
+| `assemblies-01.pack` | 4,543,507 | 1 | `9d5450a36a24a4c0608a0c31f0f05cea86e80acb86b544f2c43615fd7116cc00` |
+| `assemblies-02.pack` | 2,387,582 | 42 | `3c9cfeea683b076edcd6d503bcb49d2901f536dbc0067cae49df84bc3432caa9` |
+| `assemblies-03.pack` | 2,383,929 | 41 | `3b981f3242167168dff0631ce2e2614f032b94844a0c784b07892bb33ddfe9e5` |
+
+The runner changed from 95 files / 13,122,947 raw bytes / 4,313,090
+Brotli-6 bytes to 12 files / 12,815,043 raw bytes / 4,081,812 Brotli-6
+bytes. Its final content-tree SHA-256 is
+`b6dd54d38bc77e4e1d56d397a3e613506e05a78cd3e65d95055f7b1cede91c0d`.
+The packs are normal binary Git blobs rather than generated source or base64,
+so they do not add tens of thousands of review-only text lines.
+
+### Repeated A/B result
+
+The final campaign alternated current and packed variants sequentially: ten
+Chromium pairs, five Firefox pairs, and five WebKit pairs. All 40 runs had
+exact outputs, errors, plain/trace digests, and six ordered trace events per
+case. Median runner load changed:
+
+| Engine | Loose assemblies | Three packs | Delta | Requests |
+|---|---:|---:|---:|---:|
+| Chromium | 849.6 ms | 349.9 ms | -58.8% | 89 to 8 |
+| Firefox | 698.4 ms | 335.4 ms | -52.0% | 85 to 4 in Playwright's event model |
+| WebKit | 792.9 ms | 364.4 ms | -54.0% | 89 to 8 |
+
+Visible ten-case Judge time remained effectively neutral (about -1.0%,
++0.9%, and -1.0%, respectively). Paired physical-memory results were also
+neutral-to-better except a noisy +2.3 MiB Chromium peak; Firefox reduced peak
+and context-close RSS by about 22 MiB, and WebKit reduced both by about
+3.6 MiB. Runner linear memory remained exactly 48,365,568 bytes.
+
+### Production-path correctness evidence
+
+After integration, the canonical checked-in worker and package asset sync—no
+experiment hook and no alternate runner directory—passed the complete
+200-problem Chromium production corpus against the prior production baseline:
+
+- 200/200 exact, zero mismatches;
+- exact source path and SHA-256, verdict, evaluation/compile/completion status,
+  output, diagnostics, stdout/stderr, timeout state, trace event count, and
+  ordered trace SHA-256;
+- candidate report SHA-256:
+  `d95762f1d38acbeba6645047a28de653741ed39f7de6a4693bd962a5b3c2a490`;
+- comparison report SHA-256:
+  `27cb3f2d483e88f7b4c3301fefa90759955a60c48385c3e5ffdf905987fbcf87`.
+
+Raw evidence:
+
+- `assembly-pack-runner/sharded3-ab-sweeps-2026-08-04/summary.json`
+- `production-integration/final-packed-runner-fast-judge-{chromium,firefox,webkit}.json`
+- `production-integration/final-packed-runner-production-corpus-chromium-200.json`
+- `production-integration/final-packed-runner-production-corpus-chromium-200-comparison.json`
+
+Production integration gates:
+
+```text
+pnpm run test:csharp-role-assets
+pnpm run test:csharp-runtime
+pnpm run test:csharp-worker-browser
+pnpm run test:tracekernel:csharp-browser
+pnpm run test:asset-sync
+pnpm run typecheck
+```

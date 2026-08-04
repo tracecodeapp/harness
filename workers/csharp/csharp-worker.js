@@ -3261,6 +3261,285 @@ function runtimeMemoryTimings() {
   };
 }
 
+// The disposable Judge runner keeps the .NET native runtime as its own Wasm
+// asset but groups managed Webcil assemblies into a few balanced immutable
+// packs. This loader is boot-transport only: it does not expose a filesystem,
+// fetch, process, Mux, or TraceKernel capability to learner code.
+function createTraceCodePackedAssemblyLoader(assetBaseUrl) {
+  const assemblyToPack = new Map();
+  const expectedAssemblyVirtualPaths = new Map();
+  const textDecoder = new TextDecoder();
+  const packMagic = 'TCPACK01';
+  let enabled = false;
+
+  function isSafeFrameworkFileName(value, suffix) {
+    return (
+      typeof value === 'string' &&
+      value.length > suffix.length &&
+      value.endsWith(suffix) &&
+      !value.includes('/') &&
+      !value.includes('\\') &&
+      value !== '.' &&
+      value !== '..'
+    );
+  }
+
+  function isSha256Integrity(value) {
+    return (
+      typeof value === 'string' &&
+      /^sha256-[A-Za-z0-9+/]{43}=$/.test(value)
+    );
+  }
+
+  function onConfigLoaded(config) {
+    const candidate =
+      config?.resources?.extensions?.tracecodeAssemblyPacks;
+    if (!candidate) return;
+    if (
+      candidate.schema !== 'tracecode.csharp-assembly-packs.v1' ||
+      !Array.isArray(candidate.packs) ||
+      candidate.packs.length < 1 ||
+      candidate.packs.length > 16
+    ) {
+      throw new Error('Invalid TraceCode C# assembly pack metadata.');
+    }
+
+    const expectedAssets = [
+      ...(config?.resources?.coreAssembly ?? []),
+      ...(config?.resources?.assembly ?? []),
+    ];
+    if (
+      !Number.isSafeInteger(candidate.assemblyCount) ||
+      candidate.assemblyCount !== expectedAssets.length
+    ) {
+      throw new Error(
+        'TraceCode C# assembly pack count does not match the boot manifest.'
+      );
+    }
+    for (const asset of expectedAssets) {
+      const name = asset?.name;
+      const virtualPath = asset?.virtualPath ?? name;
+      if (
+        !isSafeFrameworkFileName(name, '.wasm') ||
+        typeof virtualPath !== 'string' ||
+        virtualPath.length === 0 ||
+        expectedAssemblyVirtualPaths.has(name)
+      ) {
+        throw new Error(
+          `Invalid TraceCode C# boot assembly metadata: ${String(name)}`
+        );
+      }
+      expectedAssemblyVirtualPaths.set(name, virtualPath);
+    }
+
+    const seenNames = new Set();
+    const seenPackNames = new Set();
+    for (const metadata of candidate.packs) {
+      if (
+        !isSafeFrameworkFileName(metadata?.name, '.pack') ||
+        seenPackNames.has(metadata.name) ||
+        !isSha256Integrity(metadata.hash) ||
+        !Number.isSafeInteger(metadata.bytes) ||
+        metadata.bytes <= 12 ||
+        !Number.isSafeInteger(metadata.assemblyCount) ||
+        metadata.assemblyCount < 1 ||
+        !Array.isArray(metadata.assemblies) ||
+        metadata.assemblyCount !== metadata.assemblies.length
+      ) {
+        throw new Error('Invalid TraceCode C# assembly pack entry metadata.');
+      }
+      seenPackNames.add(metadata.name);
+      const state = {
+        metadata,
+        loadingPromise: null,
+        buffer: null,
+        entries: null,
+        consumedAssemblies: new Set(),
+      };
+      for (const name of metadata.assemblies) {
+        if (
+          !isSafeFrameworkFileName(name, '.wasm') ||
+          !expectedAssemblyVirtualPaths.has(name) ||
+          seenNames.has(name)
+        ) {
+          throw new Error(
+            `Invalid or duplicate TraceCode C# packed assembly: ${String(name)}`
+          );
+        }
+        seenNames.add(name);
+        assemblyToPack.set(name, state);
+      }
+    }
+    if (
+      seenNames.size !== expectedAssets.length ||
+      [...expectedAssemblyVirtualPaths.keys()].some(
+        (name) => !seenNames.has(name)
+      )
+    ) {
+      throw new Error(
+        'TraceCode C# assembly packs do not cover the boot manifest.'
+      );
+    }
+    enabled = true;
+  }
+
+  async function ensurePackLoaded(state) {
+    if (state.buffer && state.entries) return;
+    if (!state.loadingPromise) {
+      state.loadingPromise = (async () => {
+        const { metadata } = state;
+        const packUrl = resolveAssetUrl(
+          assetBaseUrl,
+          `_framework/${metadata.name}`
+        );
+        const response = await fetch(packUrl, {
+          cache: 'no-cache',
+          credentials: 'same-origin',
+          integrity: metadata.hash,
+        });
+        if (!response.ok) {
+          throw new Error(
+            `Unable to fetch TraceCode C# assembly pack: ${response.status} ${response.statusText}`
+          );
+        }
+        const buffer = await response.arrayBuffer();
+        if (buffer.byteLength !== metadata.bytes) {
+          throw new Error(
+            `TraceCode C# assembly pack size mismatch: expected ${metadata.bytes}, received ${buffer.byteLength}.`
+          );
+        }
+        const bytes = new Uint8Array(buffer);
+        const indexLengthOffset = bytes.length - 12;
+        const magic = textDecoder.decode(bytes.subarray(bytes.length - 8));
+        if (magic !== packMagic) {
+          throw new Error('TraceCode C# assembly pack magic mismatch.');
+        }
+        const indexLength = new DataView(
+          buffer,
+          indexLengthOffset,
+          4
+        ).getUint32(0, true);
+        const indexOffset = indexLengthOffset - indexLength;
+        if (indexLength <= 0 || indexOffset < 0) {
+          throw new Error('TraceCode C# assembly pack index is out of bounds.');
+        }
+        let index;
+        try {
+          index = JSON.parse(
+            textDecoder.decode(
+              bytes.subarray(indexOffset, indexLengthOffset)
+            )
+          );
+        } catch {
+          throw new Error('TraceCode C# assembly pack index is unreadable.');
+        }
+        if (
+          index?.schema !== 'tracecode.csharp-assembly-pack.v1' ||
+          !index.entries ||
+          typeof index.entries !== 'object' ||
+          Array.isArray(index.entries) ||
+          Object.keys(index.entries).length !== metadata.assemblyCount
+        ) {
+          throw new Error('TraceCode C# assembly pack index is invalid.');
+        }
+        const sortedRanges = [];
+        for (const [name, entry] of Object.entries(index.entries)) {
+          if (
+            !metadata.assemblies.includes(name) ||
+            !entry ||
+            entry.virtualPath !== expectedAssemblyVirtualPaths.get(name) ||
+            !Number.isSafeInteger(entry.offset) ||
+            !Number.isSafeInteger(entry.length) ||
+            entry.offset < 0 ||
+            entry.length <= 0 ||
+            entry.offset + entry.length > indexOffset ||
+            typeof entry.sha256 !== 'string' ||
+            !/^[a-f0-9]{64}$/.test(entry.sha256)
+          ) {
+            throw new Error(
+              `TraceCode C# assembly pack entry is invalid: ${name}`
+            );
+          }
+          sortedRanges.push([entry.offset, entry.offset + entry.length]);
+        }
+        sortedRanges.sort((left, right) => left[0] - right[0]);
+        if (
+          sortedRanges.some(
+            (range, index) =>
+              index > 0 && range[0] < sortedRanges[index - 1][1]
+          )
+        ) {
+          throw new Error('TraceCode C# assembly pack entries overlap.');
+        }
+        if (
+          metadata.assemblies.some(
+            (name) =>
+              !Object.prototype.hasOwnProperty.call(index.entries, name)
+          )
+        ) {
+          throw new Error(
+            `TraceCode C# assembly pack index does not match ${metadata.name}.`
+          );
+        }
+        state.buffer = buffer;
+        state.entries = index.entries;
+      })();
+    }
+    await state.loadingPromise;
+  }
+
+  function loadBootResource(type, name) {
+    if (type !== 'assembly' || !enabled) return undefined;
+    const state = assemblyToPack.get(name);
+    if (!state) {
+      throw new Error(
+        `TraceCode C# assembly packs are missing boot asset ${name}.`
+      );
+    }
+    return (async () => {
+      await ensurePackLoaded(state);
+      const entry = state.entries?.[name];
+      if (!entry) {
+        throw new Error(
+          `TraceCode C# assembly pack is missing boot asset ${name}.`
+        );
+      }
+      return {
+        ok: true,
+        status: 200,
+        statusText: 'OK',
+        url: `${state.metadata.name}#${encodeURIComponent(name)}`,
+        headers: new Headers({
+          'Content-Length': String(entry.length),
+          'Content-Type': 'application/wasm',
+        }),
+        arrayBuffer: async () => {
+          if (state.consumedAssemblies.has(name) || !state.buffer) {
+            throw new Error(
+              `TraceCode C# assembly pack asset was consumed twice: ${name}`
+            );
+          }
+          const copy = state.buffer.slice(
+            entry.offset,
+            entry.offset + entry.length
+          );
+          state.consumedAssemblies.add(name);
+          if (
+            state.consumedAssemblies.size ===
+            state.metadata.assemblyCount
+          ) {
+            state.buffer = null;
+            state.entries = null;
+          }
+          return copy;
+        },
+      };
+    })();
+  }
+
+  return { loadBootResource, onConfigLoaded };
+}
+
 async function loadRuntime(assetBaseUrl) {
   const resolvedAssetBaseUrl = configureAssetBaseUrl(assetBaseUrl);
   if (requiredExportsForRole().every(([, value]) => typeof value === 'function')) {
@@ -3275,12 +3554,16 @@ async function loadRuntime(assetBaseUrl) {
     runtimePromise = (async () => {
       const startedAt = now();
       const { dotnet } = await import(resolveAssetUrl(resolvedAssetBaseUrl, '_framework/dotnet.js'));
+      const packedAssemblyLoader =
+        createTraceCodePackedAssemblyLoader(resolvedAssetBaseUrl);
       const runtimeBuilder = dotnet
         .withModuleConfig({
           stdin: readProjectInputByte,
           stdout: (value) => writeProjectDeviceByte('/dev/stdout', value),
           stderr: (value) => writeProjectDeviceByte('/dev/stderr', value),
         })
+        .withOnConfigLoaded(packedAssemblyLoader.onConfigLoaded)
+        .withResourceLoader(packedAssemblyLoader.loadBootResource)
         .withApplicationArguments('tracecode-csharp-worker');
       const runtime = await runtimeBuilder.create();
       runtimeModule = runtime?.Module ?? null;

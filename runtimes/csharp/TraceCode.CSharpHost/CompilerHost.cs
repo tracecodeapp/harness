@@ -355,7 +355,14 @@ public static partial class CompilerHost
                 peBytes.LongLength > CompiledArtifactCacheMaxBytes ||
                 peBytes.Length < 2 ||
                 peBytes[0] != (byte)'M' ||
-                peBytes[1] != (byte)'Z'
+                peBytes[1] != (byte)'Z' ||
+                string.IsNullOrEmpty(request.CompiledArtifactSha256) ||
+                !string.Equals(
+                    request.CompiledArtifactSha256,
+                    Convert.ToHexString(SHA256.HashData(peBytes))
+                        .ToLowerInvariant(),
+                    StringComparison.Ordinal
+                )
             )
             {
                 return SerializeError(

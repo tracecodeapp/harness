@@ -104,7 +104,11 @@ export function createCSharpBrowserRuntimeProvider(
               : {}),
           });
       const activeRunners = new Set<CSharpWorkerClient>();
+      let disposed = false;
       const createRunnerClient = (): CSharpWorkerClient => {
+        if (disposed) {
+          throw new Error('C# browser runtime provider has been disposed.');
+        }
         const runner = new CSharpWorkerClient({
           workerUrl: context.assets.csharpWorker,
           ...(workerFactory ? { workerFactory } : {}),
@@ -157,7 +161,7 @@ export function createCSharpBrowserRuntimeProvider(
             }
           })
           .catch(() => {
-            if (standbyRunner !== runner) return;
+            if (disposed || standbyRunner !== runner) return;
             activeRunners.delete(runner);
             runner.terminate();
             const replacement = createRunnerClient();
@@ -173,13 +177,16 @@ export function createCSharpBrowserRuntimeProvider(
         : {
             compiler,
             createRunner(): CSharpWorkerClient {
+              if (disposed) {
+                throw new Error('C# browser runtime provider has been disposed.');
+              }
               const runner = standbyRunner ?? createRunnerClient();
               standbyRunner = undefined;
               return runner;
             },
             releaseRunner(runner: CSharpWorkerClient): void {
               activeRunners.delete(runner);
-              if (!standbyRunner) {
+              if (!disposed && !standbyRunner) {
                 standbyRunner = createRunnerClient();
                 warmStandbyRunner(standbyRunner);
               }
@@ -195,23 +202,22 @@ export function createCSharpBrowserRuntimeProvider(
         Language,
         RuntimePreparedExecutionProvider
       >([['csharp', preparedProvider]]);
+      const disposeLease = (): void => {
+        if (disposed) return;
+        // Set the terminal state before terminating workers so in-flight
+        // release/failure continuations cannot create replacement capacity.
+        disposed = true;
+        standbyRunner = undefined;
+        worker.terminate();
+        if (compiler !== worker) compiler.terminate();
+        for (const runner of activeRunners) runner.terminate();
+        activeRunners.clear();
+      };
 
       return {
         preparedProviders,
-        disposeLanguage: () => {
-          worker.terminate();
-          if (compiler !== worker) compiler.terminate();
-          for (const runner of activeRunners) runner.terminate();
-          activeRunners.clear();
-          standbyRunner = undefined;
-        },
-        dispose: () => {
-          worker.terminate();
-          if (compiler !== worker) compiler.terminate();
-          for (const runner of activeRunners) runner.terminate();
-          activeRunners.clear();
-          standbyRunner = undefined;
-        },
+        disposeLanguage: disposeLease,
+        dispose: disposeLease,
       };
     },
   };

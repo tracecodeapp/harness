@@ -15,6 +15,7 @@ interface ExecuteResult {
   events?: Array<{ kind?: string; line?: number }>;
   compiledArtifactKey?: string;
   compiledArtifactBase64?: string;
+  compiledArtifactSha256?: string;
   timings?: {
     compileCacheHit?: boolean;
     hostArtifactCacheHit?: boolean;
@@ -200,6 +201,7 @@ async function main(): Promise<void> {
         executionStyle: 'solution-method',
         compiledArtifactKey: prepared.compiledArtifactKey,
         compiledArtifactBase64: prepared.compiledArtifactBase64,
+        compiledArtifactSha256: prepared.compiledArtifactSha256,
       };
       const preparedFirst = await firstWorker.send('execute-prepared-code', {
         prepared: preparedProgram,
@@ -209,6 +211,22 @@ async function main(): Promise<void> {
       });
       const preparedSecond = await firstWorker.send('execute-prepared-code', {
         prepared: preparedProgram,
+        inputs: { value: 17 },
+        assetBaseUrl,
+        timeoutMs: 10_000,
+      });
+      const tamperedArtifactBytes = Uint8Array.from(
+        atob(prepared.compiledArtifactBase64 ?? ''),
+        (character) => character.charCodeAt(0)
+      );
+      tamperedArtifactBytes[tamperedArtifactBytes.length - 1] ^= 1;
+      const tamperedPrepared = await firstWorker.send('execute-prepared-code', {
+        prepared: {
+          ...preparedProgram,
+          compiledArtifactBase64: btoa(
+            String.fromCharCode(...tamperedArtifactBytes)
+          ),
+        },
         inputs: { value: 17 },
         assetBaseUrl,
         timeoutMs: 10_000,
@@ -232,6 +250,7 @@ async function main(): Promise<void> {
         executionStyle: 'function',
         compiledArtifactKey: scriptPreparation.compiledArtifactKey,
         compiledArtifactBase64: scriptPreparation.compiledArtifactBase64,
+        compiledArtifactSha256: scriptPreparation.compiledArtifactSha256,
       };
       const preparedScriptFirst = await firstWorker.send('execute-prepared-code', {
         prepared: preparedScript,
@@ -268,6 +287,7 @@ async function main(): Promise<void> {
         executionStyle: 'ops-class',
         compiledArtifactKey: opsPreparation.compiledArtifactKey,
         compiledArtifactBase64: opsPreparation.compiledArtifactBase64,
+        compiledArtifactSha256: opsPreparation.compiledArtifactSha256,
       };
       const preparedOpsFirst = await firstWorker.send('execute-prepared-code', {
         prepared: preparedOps,
@@ -344,6 +364,8 @@ async function main(): Promise<void> {
         executionStyle: 'solution-method',
         compiledArtifactKey: processStatePreparation.compiledArtifactKey,
         compiledArtifactBase64: processStatePreparation.compiledArtifactBase64,
+        compiledArtifactSha256:
+          processStatePreparation.compiledArtifactSha256,
       };
       const executeProcessStateInFreshWorker = async (mutate: boolean) => {
         const worker = await createWorkerHarness();
@@ -401,6 +423,7 @@ async function main(): Promise<void> {
           executionStyle: 'solution-method',
           compiledArtifactKey: failurePreparation.compiledArtifactKey,
           compiledArtifactBase64: failurePreparation.compiledArtifactBase64,
+          compiledArtifactSha256: failurePreparation.compiledArtifactSha256,
         },
         inputs: { value: 23 },
         assetBaseUrl,
@@ -425,6 +448,7 @@ async function main(): Promise<void> {
           traceOptions: { maxTraceSteps: 1_000, maxLineEvents: 1_000 },
           compiledArtifactKey: tracePreparation.compiledArtifactKey,
           compiledArtifactBase64: tracePreparation.compiledArtifactBase64,
+          compiledArtifactSha256: tracePreparation.compiledArtifactSha256,
         },
         inputs: { value: 19 },
         assetBaseUrl,
@@ -459,6 +483,7 @@ async function main(): Promise<void> {
         executionStyle: 'solution-method',
         compiledArtifactKey: cancellablePreparation.compiledArtifactKey,
         compiledArtifactBase64: cancellablePreparation.compiledArtifactBase64,
+        compiledArtifactSha256: cancellablePreparation.compiledArtifactSha256,
       };
       const hang = firstWorker.send('execute-prepared-code', {
         prepared: cancellableProgram,
@@ -519,6 +544,7 @@ async function main(): Promise<void> {
         prepared,
         preparedFirst,
         preparedSecond,
+        tamperedPrepared,
         scriptPreparation,
         preparedScriptFirst,
         preparedScriptSecond,
@@ -547,6 +573,7 @@ async function main(): Promise<void> {
       prepared: ExecuteResult;
       preparedFirst: ExecuteResult;
       preparedSecond: ExecuteResult;
+      tamperedPrepared: ExecuteResult;
       scriptPreparation: ExecuteResult;
       preparedScriptFirst: ExecuteResult;
       preparedScriptSecond: ExecuteResult;
@@ -603,6 +630,12 @@ async function main(): Promise<void> {
         metrics.preparedSecond.timings?.artifactCacheHit === true &&
         metrics.preparedSecond.timings?.executionRealm === 'collectible-assembly-load-context',
       `Second prepared C# case leaked static state or recompiled: ${JSON.stringify(metrics.preparedSecond)}`
+    );
+    assertCondition(
+      metrics.tamperedPrepared.success === false &&
+        metrics.tamperedPrepared.error ===
+          'Prepared C# artifact is unavailable or invalid.',
+      `General C# prepared execution must reject PE bytes that do not match the SHA-bound artifact: ${JSON.stringify(metrics.tamperedPrepared)}`
     );
     assertCondition(
       metrics.scriptPreparation.success &&

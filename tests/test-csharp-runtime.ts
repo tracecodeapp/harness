@@ -3,11 +3,13 @@
 import { test } from 'node:test';
 import { readFileSync } from 'node:fs';
 import { createCSharpRuntimeClient } from '../packages/runtime-csharp/src/csharp-runtime-client';
+import { createCSharpBrowserRuntimeProvider } from '../packages/runtime-csharp/src/browser-runtime-provider';
 import {
   CSharpWorkerClient,
   type CSharpDiagnostic,
   type CSharpExecutionStyle,
 } from '../packages/runtime-csharp/src/csharp-worker-client';
+import type { BrowserRuntimeProviderContext } from '../packages/runtime-browser/src/runtime-provider-registry';
 import { getLanguageRuntimeProfile } from '../packages/runtime-browser/src/runtime-profiles';
 import {
   RUNTIME_TRACE_SCHEMA_VERSION,
@@ -870,6 +872,83 @@ async function testCompilerAuthorityPrimesBeforePreparation(): Promise<void> {
   console.log('PASS: C# compiler authority primes one trusted emit before learner preparation');
 }
 
+async function testDisposedProviderDoesNotRecreateRunner(): Promise<void> {
+  MockCSharpWorker.responses = [];
+  MockCSharpWorker.received = [];
+  MockCSharpWorker.instances = [];
+  MockCSharpWorker.hangingMessageTypes = new Set<string>();
+  MockCSharpWorker.erroringMessageTypes = new Set<string>();
+
+  const context = {
+    assets: {
+      csharpWorker: '/workers/csharp-worker.js',
+      csharpAssetBaseUrl: '/workers/vendor/csharp',
+      csharpCompilerAssetBaseUrl: '/workers/vendor/csharp-compiler',
+      csharpRunnerAssetBaseUrl: '/workers/vendor/csharp-runner',
+    },
+    debug: false,
+    workerLifecyclePolicy: 'warm-and-retire',
+    prewarmAfterUse: true,
+    workerFactoryFor: () =>
+      (url: string | URL) =>
+        new MockCSharpWorker(url) as unknown as Worker,
+    preflight: () => async () => undefined,
+    manifestAsset: () => undefined,
+    manifestAssetCollection: () => undefined,
+  } as unknown as BrowserRuntimeProviderContext;
+  const lease = createCSharpBrowserRuntimeProvider().create(context);
+  // Let compiler/standby warmup and its fail-soft replacement settle before
+  // measuring the execution/disposal race.
+  await new Promise<void>((resolve) => setTimeout(resolve, 10));
+  const provider = lease.preparedProviders.get('csharp');
+  assertCondition(provider, 'C# provider lease should expose prepared execution');
+  MockCSharpWorker.responses.push({
+    success: true,
+    compiledArtifactKey: 'provider-disposal-artifact',
+    compiledArtifactBase64: 'TVqQAAMAAAAEAAAA',
+    compiledArtifactSha256:
+      'dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd',
+    consoleOutput: [],
+  });
+  const prepared = await provider.prepareProgram({
+    mode: 'code',
+    code: 'public class Solution { public int Echo(int value) => value; }',
+    functionName: 'Echo',
+  });
+  assertCondition(
+    prepared.kind === 'prepared' && prepared.program.mode === 'code',
+    'Provider disposal test requires a prepared C# code program'
+  );
+  if (prepared.kind !== 'prepared' || prepared.program.mode !== 'code') return;
+
+  MockCSharpWorker.hangingMessageTypes = new Set(['execute-prepared-code']);
+  const execution = prepared.program.executeIsolated({
+    inputs: { value: 7 },
+  });
+  while (
+    !MockCSharpWorker.received.some(
+      (message) => message.type === 'execute-prepared-code'
+    )
+  ) {
+    await new Promise<void>((resolve) => setTimeout(resolve, 0));
+  }
+  const instancesAtDisposal = MockCSharpWorker.instances.length;
+  lease.dispose();
+  await execution.catch(() => undefined);
+  await new Promise<void>((resolve) => setTimeout(resolve, 10));
+  assertCondition(
+    MockCSharpWorker.instances.length === instancesAtDisposal,
+    'C# provider disposal must not create a replacement runner from an in-flight release continuation'
+  );
+  assertCondition(
+    MockCSharpWorker.instances.every((worker) => worker.terminated),
+    'C# provider disposal should terminate general, compiler, standby, and active runner clients'
+  );
+  MockCSharpWorker.hangingMessageTypes = new Set<string>();
+
+  console.log('PASS: C# provider disposal cannot recreate runner capacity');
+}
+
 function testTraceRewriterTargetTypedFieldWritesDoNotReadAssignedMembers(): void {
   const source = readFileSync('runtimes/csharp/TraceCode.CSharpHost/TraceRewriter.cs', 'utf8');
   assertCondition(
@@ -910,6 +989,7 @@ async function main(): Promise<void> {
   await testWorkerErrorReset();
   await testPreparedWorkerGenerationAuthority();
   await testCompilerAuthorityPrimesBeforePreparation();
+  await testDisposedProviderDoesNotRecreateRunner();
   testTraceRewriterTargetTypedFieldWritesDoNotReadAssignedMembers();
   testTraceRewriterIndexedAssignmentsDoNotReadAssignedIndexers();
 }

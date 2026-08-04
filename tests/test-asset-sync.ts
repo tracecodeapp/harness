@@ -52,6 +52,11 @@ async function main(t: TestContext): Promise<void> {
     'vendor/csharp/_framework/dotnet.native.wasm',
     'vendor/csharp/_framework/dotnet.runtime.js',
     'vendor/csharp/_framework/dotnet.boot.js',
+    'vendor/csharp-compiler/_framework/dotnet.boot.js',
+    'vendor/csharp-runner/_framework/dotnet.boot.js',
+    'vendor/csharp-runner/_framework/assemblies-01.pack',
+    'vendor/csharp-runner/_framework/assemblies-02.pack',
+    'vendor/csharp-runner/_framework/assemblies-03.pack',
     'cpp/compiler/bundle.js',
     'cpp/compiler/llvm-resources.tar',
     'cpp/compiler/llvm.core.wasm',
@@ -118,6 +123,30 @@ async function main(t: TestContext): Promise<void> {
   assertCondition(
     rootEntries.includes('java-source-augmentations.js'),
     'Asset sync should flatten the Java augmentation helper into the target root'
+  );
+  const syncedCSharpWorker = await readFile(
+    join(targetDir, 'csharp-worker.js'),
+    'utf8'
+  );
+  assertCondition(
+    syncedCSharpWorker.includes('createTraceCodePackedAssemblyLoader'),
+    'Asset sync should publish the C# packed-assembly boot loader'
+  );
+  const looseRunnerAssemblyExists = await stat(
+    join(
+      targetDir,
+      'vendor/csharp-runner/_framework/System.Private.CoreLib.wasm'
+    )
+  ).then(
+    () => true,
+    (error: NodeJS.ErrnoException) => {
+      if (error.code === 'ENOENT') return false;
+      throw error;
+    }
+  );
+  assertCondition(
+    !looseRunnerAssemblyExists,
+    'Asset sync must not republish loose C# runner managed assemblies'
   );
 
   for (const relativePath of ['cpp-worker.js', 'cpp-compiler-worker.js']) {

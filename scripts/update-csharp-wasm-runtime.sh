@@ -126,11 +126,16 @@ cp -R "$host_publish_dir" "$tmp_compiler_vendor"
 cp -R "$runner_publish_dir" "$tmp_runner_vendor"
 
 for role_vendor in "$tmp_vendor" "$tmp_compiler_vendor" "$tmp_runner_vendor"; do
+  if [[ -f "$role_vendor/main.mjs" ]]; then
+    perl -0pi -e 's/\n+\z/\n/' "$role_vendor/main.mjs"
+  fi
   if [[ -f "$role_vendor/_framework/dotnet.native.js" ]]; then
     perl -pi -e 's/[ \t]+$//' "$role_vendor/_framework/dotnet.native.js"
   fi
   pnpm exec tsx "$ROOT_DIR/scripts/prune-csharp-wasm-runtime-assets.ts" "$role_vendor"
 done
+pnpm exec tsx "$ROOT_DIR/scripts/pack-csharp-managed-assemblies.ts" \
+  "$tmp_runner_vendor"
 pnpm exec tsx "$ROOT_DIR/scripts/validate-csharp-runtime-role-assets.ts" \
   "$tmp_vendor" "$tmp_compiler_vendor" "$tmp_runner_vendor"
 

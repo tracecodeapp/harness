@@ -78,7 +78,15 @@ function preflightAssets(
     case 'java':
       return ['worker'];
     case 'csharp':
-      return ['worker', 'assetBaseUrl', 'dependencies'];
+      return [
+        'worker',
+        'assetBaseUrl',
+        'compilerAssetBaseUrl',
+        'runnerAssetBaseUrl',
+        'dependencies',
+        'compilerDependencies',
+        'runnerDependencies',
+      ];
     case 'cpp':
       return [
         'worker',

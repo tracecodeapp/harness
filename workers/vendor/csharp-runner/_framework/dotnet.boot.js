@@ -1,7 +1,7 @@
 export const config = /*json-start*/{
   "mainAssemblyName": "TraceCode.CSharpJudgeRunner.dll",
   "resources": {
-    "hash": "sha256-3h50gyRhTlul3XCmqaT6YQdYlzX7mzbZnREL0+TLSdc=",
+    "hash": "sha256-xFiP4e+YM6X2RCOhiVbfHEDdv8E+Ei1zkCAKLxxNIb8=",
     "jsModuleNative": [
       {
         "name": "dotnet.native.js"
@@ -434,14 +434,130 @@ export const config = /*json-start*/{
       {
         "virtualPath": "TraceCode.CSharpJudgeRunner.wasm",
         "name": "TraceCode.CSharpJudgeRunner.wasm",
-        "hash": "sha256-/8626SmTJVusAymojawTCVr3z6Jw+9SJkcxB3Z51MBc="
+        "hash": "sha256-C9pbtegV7IdFCx27KklecI2twLPDpUihVsvefkD6Zpg="
       },
       {
         "virtualPath": "TraceCode.CSharpJudgeRuntime.wasm",
         "name": "TraceCode.CSharpJudgeRuntime.wasm",
-        "hash": "sha256-o6U6y2LvejSCNS66TkgB1vyYzxsuvwvUPezOkH0k27w="
+        "hash": "sha256-gszJ5LCVVku+Wkz88ckoC8EDq1EvN3yF/krC4Kqyt2I="
       }
-    ]
+    ],
+    "extensions": {
+      "tracecodeAssemblyPacks": {
+        "schema": "tracecode.csharp-assembly-packs.v1",
+        "assemblyCount": 84,
+        "packs": [
+          {
+            "name": "assemblies-01.pack",
+            "hash": "sha256-nVRQo2okpMBgigwx8PBc6oboCsuGtUTyxDYV/XEWzAA=",
+            "bytes": 4543507,
+            "assemblyCount": 1,
+            "assemblies": [
+              "System.Private.CoreLib.wasm"
+            ]
+          },
+          {
+            "name": "assemblies-02.pack",
+            "hash": "sha256-PJz+6mg7B27c1tUDvLSdKQH1NtvABnyuSd+EvDQyyqk=",
+            "bytes": 2387582,
+            "assemblyCount": 42,
+            "assemblies": [
+              "System.Runtime.InteropServices.JavaScript.wasm",
+              "Microsoft.Win32.Primitives.wasm",
+              "mscorlib.wasm",
+              "System.AppContext.wasm",
+              "System.Collections.wasm",
+              "System.Collections.Immutable.wasm",
+              "System.Collections.NonGeneric.wasm",
+              "System.ComponentModel.Annotations.wasm",
+              "System.ComponentModel.TypeConverter.wasm",
+              "System.Console.wasm",
+              "System.Diagnostics.Contracts.wasm",
+              "System.Diagnostics.DiagnosticSource.wasm",
+              "System.Diagnostics.Tracing.wasm",
+              "System.Drawing.wasm",
+              "System.IO.wasm",
+              "System.IO.FileSystem.wasm",
+              "System.IO.MemoryMappedFiles.wasm",
+              "System.Numerics.wasm",
+              "System.ObjectModel.wasm",
+              "System.Private.Uri.wasm",
+              "System.Reflection.Emit.ILGeneration.wasm",
+              "System.Reflection.Extensions.wasm",
+              "System.Reflection.Primitives.wasm",
+              "System.Runtime.CompilerServices.Unsafe.wasm",
+              "System.Runtime.wasm",
+              "System.Runtime.Extensions.wasm",
+              "System.Runtime.InteropServices.wasm",
+              "System.Runtime.Loader.wasm",
+              "System.Runtime.Numerics.wasm",
+              "System.Runtime.Serialization.Formatters.wasm",
+              "System.Security.Claims.wasm",
+              "System.Security.Cryptography.wasm",
+              "System.Text.Encoding.Extensions.wasm",
+              "System.Text.Json.wasm",
+              "System.Text.RegularExpressions.wasm",
+              "System.Threading.Tasks.wasm",
+              "System.Threading.Thread.wasm",
+              "System.Threading.ThreadPool.wasm",
+              "System.Xml.Linq.wasm",
+              "System.Xml.ReaderWriter.wasm",
+              "System.Xml.XPath.wasm",
+              "TraceCode.CSharpJudgeRunner.wasm"
+            ]
+          },
+          {
+            "name": "assemblies-03.pack",
+            "hash": "sha256-O5gfMkIWcWjf8GMc4uJhTwMrlIRKDHhLB4krsz3f6eU=",
+            "bytes": 2383929,
+            "assemblyCount": 41,
+            "assemblies": [
+              "Microsoft.CSharp.wasm",
+              "netstandard.wasm",
+              "System.Buffers.wasm",
+              "System.Collections.Concurrent.wasm",
+              "System.Collections.Specialized.wasm",
+              "System.ComponentModel.wasm",
+              "System.ComponentModel.Primitives.wasm",
+              "System.Core.wasm",
+              "System.Diagnostics.StackTrace.wasm",
+              "System.wasm",
+              "System.Drawing.Primitives.wasm",
+              "System.Dynamic.Runtime.wasm",
+              "System.Globalization.wasm",
+              "System.IO.Compression.wasm",
+              "System.IO.FileSystem.Primitives.wasm",
+              "System.IO.Pipelines.wasm",
+              "System.Linq.wasm",
+              "System.Linq.Expressions.wasm",
+              "System.Linq.Queryable.wasm",
+              "System.Memory.wasm",
+              "System.Numerics.Vectors.wasm",
+              "System.Private.Xml.wasm",
+              "System.Private.Xml.Linq.wasm",
+              "System.Reflection.wasm",
+              "System.Reflection.Emit.wasm",
+              "System.Reflection.Emit.Lightweight.wasm",
+              "System.Reflection.Metadata.wasm",
+              "System.Resources.Writer.wasm",
+              "System.Runtime.Intrinsics.wasm",
+              "System.Runtime.Serialization.Json.wasm",
+              "System.Runtime.Serialization.Primitives.wasm",
+              "System.Runtime.Serialization.Xml.wasm",
+              "System.Text.Encodings.Web.wasm",
+              "System.Threading.wasm",
+              "System.Threading.Overlapped.wasm",
+              "System.Threading.Tasks.Extensions.wasm",
+              "System.ValueTuple.wasm",
+              "System.Xml.XDocument.wasm",
+              "System.Xml.XmlSerializer.wasm",
+              "System.Xml.XPath.XDocument.wasm",
+              "TraceCode.CSharpJudgeRuntime.wasm"
+            ]
+          }
+        ]
+      }
+    }
   },
   "debugLevel": 0,
   "globalizationMode": "invariant",
