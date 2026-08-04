@@ -129,7 +129,8 @@ async function main(): Promise<void> {
   console.log('PASS: java worker contract markers present');
 
   for (const marker of [
-    'TraceJVMRuntimeHost',
+    'TraceJVMCompiler',
+    'TraceJVMRunnerHost',
     "traceJVMWorkerParameters.get('tracejvmBaseUrl')",
     'normalizeTraceJVMBaseUrl',
     'traceJVMRewriteSource',
@@ -150,6 +151,10 @@ async function main(): Promise<void> {
       `TraceJVM Java worker drift detected. Missing marker: ${marker}`
     );
   }
+  assertCondition(
+    !traceJVMWorkerSource.includes('TraceJVMRuntimeHost'),
+    'TraceJVM Java provider must not restore the combined compiler/runner host'
+  );
   console.log('PASS: TraceJVM Java provider markers present');
 
   const fullClasspathSource = workerSource.slice(workerSource.indexOf('const FULL_CLASSPATH'));

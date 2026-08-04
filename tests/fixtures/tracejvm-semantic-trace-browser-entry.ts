@@ -1,5 +1,6 @@
 import {
-  TraceJVMRuntimeHostWorkerClient,
+  TraceJVMCompilerWorkerClient,
+  TraceJVMWorkerClient,
   type TraceJVMBinaryFile,
   type TraceJVMCompileResult,
   type TraceJVMExecuteResult,
@@ -75,24 +76,16 @@ async function binaryFileFromUrl(
   };
 }
 
-const client = new TraceJVMRuntimeHostWorkerClient({
-  runtimeHost: {
+const compiler = new TraceJVMCompilerWorkerClient({
+  compiler: {
     assets: {
-      runtimeProfileBaseUrls: {
-        core: '/tracejvm/profiles/core',
-      },
-      wasmUrl: '/tracejvm/bjvm_main.wasm',
+      baseUrl: '/tracejvm/compiler',
     },
-    compiler: {
-      assets: {
-        baseUrl: '/tracejvm/compiler',
-      },
-    },
-    runtimeProfile: 'core',
-    retirementAfterExecutions: 1,
-    experiments: {
-      hotAot: __TRACECODE_TRACEJVM_HOT_AOT__,
-    },
+    platformArchiveUrl: '/tracejvm/profiles/core/jdk23.jar',
+    platformClasspath: [{
+      path: 'tracekernel-api.jar',
+      url: '/tracejvm/profiles/core/tracekernel-api.jar',
+    }],
   },
   createWorker: () => new Worker('/tracejvm/browser-worker.js', {
     type: 'module',
@@ -110,7 +103,7 @@ const unavailableHost: TraceJVMWorkerHost = Object.freeze({
     });
   },
 });
-const prewarm = client.initialize();
+const prewarm = compiler.initialize();
 void prewarm.catch(() => undefined);
 
 globalThis.runTraceJVMSemanticTrace = async (request) => {
@@ -122,7 +115,7 @@ globalThis.runTraceJVMSemanticTrace = async (request) => {
   const sourceClass = request.entryClass.split('.').at(-1);
   let compile: TraceJVMCompileResult;
   try {
-    compile = await client.compile({
+    compile = await compiler.compile({
       sources: [{
         path: `${sourceClass ?? 'Exports'}.java`,
         content: request.source,
@@ -151,14 +144,29 @@ globalThis.runTraceJVMSemanticTrace = async (request) => {
 
   const runStartedAt = performance.now();
   let run: TraceJVMExecuteResult;
-  const process = await client.createProcess({
+  const runner = new TraceJVMWorkerClient({
+    engine: {
+      assets: {
+        runtimeProfileBaseUrls: {
+          core: '/tracejvm/profiles/core',
+        },
+        wasmUrl: '/tracejvm/bjvm_main.wasm',
+      },
+      workingDirectory: '/',
+      hostStandardDescriptors: false,
+      runtimeProfile: 'core',
+      retirementAfterExecutions: 1,
+      experiments: {
+        hotAot: __TRACECODE_TRACEJVM_HOT_AOT__,
+      },
+    },
     host: unavailableHost,
-    workingDirectory: '/',
-    hostStandardDescriptors: false,
-    retirementAfterExecutions: 1,
+    createWorker: () => new Worker('/tracejvm/browser-worker.js', {
+      type: 'module',
+    }) as unknown as TraceJVMWorkerLike,
   });
   try {
-    run = await process.run({
+    run = await runner.run({
       program: compile.program,
       classpath: [helperJar],
       mainClass: 'tracecode.browser.TraceExecutionRunner',
@@ -168,7 +176,7 @@ globalThis.runTraceJVMSemanticTrace = async (request) => {
       },
     });
   } finally {
-    await process.disposeAsync();
+    runner.terminate();
   }
   const runEndedAt = performance.now();
   const lines = run.stdout.split(/\r?\n/u);
@@ -212,5 +220,5 @@ globalThis.runTraceJVMSemanticTrace = async (request) => {
 };
 
 globalThis.closeTraceJVMSemanticTrace = () => {
-  client.terminate();
+  compiler.terminate();
 };

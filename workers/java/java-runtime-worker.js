@@ -164,22 +164,52 @@ async function loadTraceJVMHelperJar() {
 }
 
 async function createTraceJVMClient() {
-  const { TraceJVMRuntimeHost } = await loadTraceJVMModule();
-  return new TraceJVMRuntimeHost({
+  const {
+    TraceJVMCompiler,
+    TraceJVMRunnerHost,
+  } = await loadTraceJVMModule();
+  const runtimeProfileBaseUrl =
+    TRACEJVM_CORE_PROFILE_URL.href.replace(/\/+$/, '');
+  const compiler = new TraceJVMCompiler({
+    assets: {
+      baseUrl: TRACEJVM_COMPILER_URL.href.replace(/\/+$/, ''),
+    },
+    platformArchiveUrl: `${runtimeProfileBaseUrl}/jdk23.jar`,
+    platformClasspath: [{
+      path: 'tracekernel-api.jar',
+      url: `${runtimeProfileBaseUrl}/tracekernel-api.jar`,
+    }],
+  });
+  const runnerHost = new TraceJVMRunnerHost({
     assets: {
       runtimeProfileBaseUrls: {
-        core: TRACEJVM_CORE_PROFILE_URL.href.replace(/\/+$/, ''),
+        core: runtimeProfileBaseUrl,
       },
       wasmUrl: TRACEJVM_WASM_URL.href,
-    },
-    compiler: {
-      assets: {
-        baseUrl: TRACEJVM_COMPILER_URL.href.replace(/\/+$/, ''),
-      },
     },
     runtimeProfile: 'core',
     retirementAfterExecutions: 1,
   });
+  await Promise.all([
+    compiler.initialize(),
+    runnerHost.initialize(),
+  ]);
+
+  return {
+    initialize() {
+      return compiler.initialize();
+    },
+    compile(request) {
+      return compiler.compile(request);
+    },
+    async createProcess(options = {}) {
+      return runnerHost.createProcess(options);
+    },
+    dispose() {
+      runnerHost.dispose();
+      compiler.dispose();
+    },
+  };
 }
 
 async function getTraceJVMClient() {
