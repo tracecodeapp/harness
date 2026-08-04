@@ -1629,14 +1629,14 @@ A fresh Chromium corpus matched all 200/200 prior production rows:
 - comparison `b4b36d9134fd3053c4b836edf4f65d99307713558e50c41df8af949f57acf9ae`.
 
 Against the PR merge base this reduces the review surface from 344 files /
-24,283 additions to 100 files / 10,342 additions. The remaining generated
+24,283 additions to 100 files / 10,396 additions. The remaining generated
 changes are primarily the 54-file general C# runtime rebuild already required
 by the host changes; replacing that pre-existing tree with an archive in this
 PR would still appear as those deletions and would not improve reviewability.
 
 ### Review hardening and final regression
 
-The post-review pass made five boundary corrections without weakening the
+The post-review pass made eight boundary corrections without weakening the
 compiler/runner split:
 
 - runner assembly packs are explicitly SHA-256 verified with WebCrypto after
@@ -1649,16 +1649,39 @@ compiler/runner split:
   glue, while semantic symbol validation rejects learner references to that
   type, including aliases;
 - the public Project benchmark samples process RSS with asynchronous `ps`
-  calls so the 50 ms sampler does not block the asset server or Playwright.
+  calls so the 50 ms sampler does not block the asset server or Playwright;
+- a standby runner remains in a distinct warming state and cannot be leased to
+  learner code until trusted priming has completed;
+- transient compiler warmup failure is no longer memoized at provider scope:
+  the runtime-warm runner remains usable and the next replacement retries the
+  trusted compiler authority;
+- runner release is a required prepared-authority lifecycle operation, so
+  disposable capacity is always replenished; general-worker idle policy no
+  longer silently controls compiler-authority retirement.
 
 The full browser worker suite retained the sub-second compilation result:
-682.13 ms cold compile, 1,138 ms cold end-to-end, 24.11 ms edited compile,
-4 ms exact-repeat execution, and 7--10 ms prepared isolated cases. The complete
-Chromium production Judge -> TraceKernel corpus then matched the preceding
-canonical-artifact baseline exactly for all 200/200 rows and every compared
-receipt field. Raw evidence:
+689.58 ms cold compile, 1,141 ms cold end-to-end, 23.49 ms edited compile,
+4 ms exact-repeat execution, and 7--10 ms prepared isolated cases.
 
-- `production-integration/review-fixes-production-corpus-chromium-200.json`
-  (`6caa7c3b8a94312dc4a13a36eea56c222899e4c18715e4a60d2e0de5063c49d3`);
-- `production-integration/review-fixes-production-corpus-chromium-200-comparison.json`
-  (`4bfda750931982d3b8487a7ba47cc53c7807bfde40ef643238665fb536820ae0`).
+A production-shaped fast-Judge sweep then passed in all three engines. Visible
+plain-plus-traced compile/run time after prewarm was 557.82 ms in Chromium,
+1,955.26 ms in Firefox, and 510.26 ms in WebKit. All engines produced identical
+plain and traced ordered digests. The reports and SHA-256 hashes are:
+
+- `production-integration/provider-lifecycle-review-fast-judge-chromium.json`
+  (`9e61ff0807c44b0087d899b246a4477c88d2b67f5c81994e70e7c9eeb84892b0`);
+- `production-integration/provider-lifecycle-review-fast-judge-firefox.json`
+  (`95babda71bce9146483499cee0ae9212d0c02485f05dbe7f29f28c0b2965e25e`);
+- `production-integration/provider-lifecycle-review-fast-judge-webkit.json`
+  (`38b65405a925f137d2f15bdb0365d43a2089005a7ca3cbbcaeb2777db70345ac`).
+
+Finally, the complete Chromium production Judge -> TraceKernel corpus matched
+the preceding hardened baseline exactly for all 200/200 rows and every
+compared receipt field. Browser wall time was 133,957.51 ms, observed process
+peak was 1,096,826,880 bytes, and post-context settled RSS was 183,189,504
+bytes. Raw evidence:
+
+- `production-integration/provider-lifecycle-review-production-corpus-chromium-200.json`
+  (`77c262c9250d18d6b16e5baf20e33064327fedcd2dd7016bbcbc779d24e00e25`);
+- `production-integration/provider-lifecycle-review-production-corpus-chromium-200-comparison.json`
+  (`8e54ed355afc88152692694707afa1a784fdc53fef833af655e52d6a7b255386`).

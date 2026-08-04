@@ -33,7 +33,7 @@ import {
 export interface CSharpPreparedWorkerAuthority {
   readonly compiler: CSharpWorkerClient;
   createRunner(): CSharpWorkerClient;
-  releaseRunner?(runner: CSharpWorkerClient): void;
+  releaseRunner(runner: CSharpWorkerClient): void;
 }
 
 class CSharpRuntimeClient implements RuntimeClient, RuntimePreparedExecutionProvider {
@@ -55,7 +55,7 @@ class CSharpRuntimeClient implements RuntimeClient, RuntimePreparedExecutionProv
       return await execute(runner);
     } finally {
       runner.terminate();
-      this.preparedAuthority.releaseRunner?.(runner);
+      this.preparedAuthority.releaseRunner(runner);
     }
   }
 

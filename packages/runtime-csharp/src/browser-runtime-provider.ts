@@ -78,15 +78,19 @@ export function createCSharpBrowserRuntimeProvider(
       // in the C# spike. Preserve the prewarm needed for sub-second Judge runs,
       // but let unused prepared capacity retire sooner there. Explicit caller
       // settings always win.
-      const preparedIdleTimeoutMs =
-        options.workerIdleTimeoutMs ??
-        (isFirefoxBrowser()
-          ? FIREFOX_PREPARED_WORKER_IDLE_TIMEOUT_MS
-          : undefined);
+      const firefoxPreparedIdleTimeoutMs = isFirefoxBrowser()
+        ? FIREFOX_PREPARED_WORKER_IDLE_TIMEOUT_MS
+        : undefined;
+      // The general worker's idle budget should not silently retire the much
+      // more expensive persistent compiler authority. Firefox retains its
+      // measured memory-specific policy unless the caller configures the
+      // compiler explicitly.
       const compilerIdleTimeoutMs =
-        options.compilerIdleTimeoutMs ?? preparedIdleTimeoutMs;
+        options.compilerIdleTimeoutMs ?? firefoxPreparedIdleTimeoutMs;
       const runnerIdleTimeoutMs =
-        options.runnerIdleTimeoutMs ?? preparedIdleTimeoutMs;
+        options.runnerIdleTimeoutMs ??
+        options.workerIdleTimeoutMs ??
+        firefoxPreparedIdleTimeoutMs;
       const dependencyUrls = (
         collection: 'dependencies' | 'compilerDependencies' | 'runnerDependencies'
       ): Readonly<Record<string, string>> | undefined => {
@@ -164,23 +168,43 @@ export function createCSharpBrowserRuntimeProvider(
         activeRunners.add(runner);
         return runner;
       };
-      let standbyRunner =
-        preparedAuthorityEnabled ? createRunnerClient() : undefined;
-      const compilerWarmup =
-        compiler === worker
-          ? undefined
-          : compiler.warmup();
+      let standbyRunner: CSharpWorkerClient | undefined;
+      let warmingRunner: CSharpWorkerClient | undefined;
+      const publishWarmedRunner = (runner: CSharpWorkerClient): void => {
+        if (disposed || warmingRunner !== runner) return;
+        warmingRunner = undefined;
+        standbyRunner = runner;
+      };
+      const retireWarmingRunner = (runner: CSharpWorkerClient): void => {
+        if (warmingRunner === runner) warmingRunner = undefined;
+        activeRunners.delete(runner);
+        runner.terminate();
+      };
       const warmStandbyRunner = (runner: CSharpWorkerClient): void => {
         const runnerLoad = runner.warmup();
-        if (!compilerWarmup) {
-          void runnerLoad.catch(() => undefined);
+        if (compiler === worker) {
+          void runnerLoad
+            .then(() => publishWarmedRunner(runner))
+            .catch(() => retireWarmingRunner(runner));
           return;
         }
-        void Promise.all([compilerWarmup, runnerLoad])
-          .then(async ([compilerReady]) => {
-            // A leased runner is already owned by a submission. Never append
-            // background work after learner execution.
-            if (standbyRunner !== runner) return;
+        // Ask the compiler client for its current warmup promise for every
+        // replacement. CSharpWorkerClient clears a failed memo, so a transient
+        // compiler failure must not remain sticky for the whole provider.
+        const compilerLoad = compiler.warmup().then(
+          (ready) => ready,
+          () => undefined
+        );
+        void runnerLoad
+          .then(async () => {
+            const compilerReady = await compilerLoad;
+            if (!compilerReady) {
+              // Compiler priming is an optimization. A runtime-warm runner is
+              // still safe to lease; the next replacement retries the compiler.
+              publishWarmedRunner(runner);
+              return;
+            }
+            if (disposed || warmingRunner !== runner) return;
             const artifact = compilerReady.trustedPreparedArtifact;
             if (!artifact) {
               throw new Error(
@@ -193,19 +217,28 @@ export function createCSharpBrowserRuntimeProvider(
             if (result.kind !== 'completed' || result.output !== 3) {
               throw new Error('C# standby runner trusted prime failed.');
             }
+            publishWarmedRunner(runner);
           })
           .catch(() => {
-            if (disposed || standbyRunner !== runner) return;
-            activeRunners.delete(runner);
-            runner.terminate();
-            const replacement = createRunnerClient();
-            standbyRunner = replacement;
-            // Fail soft to runtime-only prewarm. The learner path still
-            // validates its own SHA-bound artifact before execution.
-            void replacement.warmup().catch(() => undefined);
+            // A runner that attempted and failed trusted priming is never
+            // learner-bearing. Retire it and fail soft to the next lease.
+            retireWarmingRunner(runner);
           });
       };
-      if (standbyRunner) warmStandbyRunner(standbyRunner);
+      const ensureStandbyRunner = (): void => {
+        if (
+          disposed ||
+          !preparedAuthorityEnabled ||
+          standbyRunner ||
+          warmingRunner
+        ) {
+          return;
+        }
+        const runner = createRunnerClient();
+        warmingRunner = runner;
+        warmStandbyRunner(runner);
+      };
+      ensureStandbyRunner();
       const preparedAuthority = preparedAuthorityEnabled
         ? {
             compiler,
@@ -214,15 +247,12 @@ export function createCSharpBrowserRuntimeProvider(
                 throw new Error('C# browser runtime provider has been disposed.');
               }
               const runner = standbyRunner ?? createRunnerClient();
-              standbyRunner = undefined;
+              if (runner === standbyRunner) standbyRunner = undefined;
               return runner;
             },
             releaseRunner(runner: CSharpWorkerClient): void {
               activeRunners.delete(runner);
-              if (!disposed && !standbyRunner) {
-                standbyRunner = createRunnerClient();
-                warmStandbyRunner(standbyRunner);
-              }
+              ensureStandbyRunner();
             },
           }
         : undefined;
@@ -242,6 +272,7 @@ export function createCSharpBrowserRuntimeProvider(
         // release/failure continuations cannot create replacement capacity.
         disposed = true;
         standbyRunner = undefined;
+        warmingRunner = undefined;
         worker.terminate();
         if (compiler !== worker) compiler.terminate();
         for (const runner of activeRunners) runner.terminate();

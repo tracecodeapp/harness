@@ -3430,7 +3430,7 @@ function createTraceCodePackedAssemblyLoader(assetBaseUrl) {
           4
         ).getUint32(0, true);
         const indexOffset = indexLengthOffset - indexLength;
-        if (indexLength <= 0 || indexOffset < 0) {
+        if (indexLength === 0 || indexOffset < 0) {
           throw new Error('TraceCode C# assembly pack index is out of bounds.');
         }
         let index;
