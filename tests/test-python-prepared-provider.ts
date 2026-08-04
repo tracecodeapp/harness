@@ -155,10 +155,12 @@ test('Python prepared provider compiles once and executes in owned fresh workers
     1,
     'Provider must compile exactly once'
   );
-  const compiler = calls.find((call) => call.method === 'prepare')?.worker;
+  const preparationWorker = calls.find(
+    (call) => call.method === 'prepare'
+  )?.worker;
   const executor = calls.find((call) => call.method === 'execute-code')?.worker;
   assert.equal(
-    compiler,
+    preparationWorker,
     executor,
     'Prepared execution must consume the same disposable interpreter that prepared its artifact'
   );
@@ -613,7 +615,7 @@ test('Python prepared provider cannot publish a program after termination races 
   const preparing = provider.prepareProgram(preparationCall());
   await waitUntil(
     () => compilationStarted,
-    'The Python compiler request never started'
+    'The Python preparation request never started'
   );
   provider.terminate();
   compilation.resolve();
@@ -666,14 +668,14 @@ test('Python prepared provider cannot publish a program after caller cancellatio
   });
   await waitUntil(
     () => compilationStarted,
-    'The cancellable Python compiler request never started'
+    'The cancellable Python preparation request never started'
   );
   controller.abort(new DOMException('cancelled compilation', 'AbortError'));
   await assert.rejects(preparing, { name: 'AbortError' });
   compilation.resolve();
   await waitUntil(
     () => terminatedWorkers === 1,
-    'The cancelled Python compiler worker was not retired'
+    'The cancelled Python preparation worker was not retired'
   );
   await waitUntil(
     () => createdWorkers === 2,
