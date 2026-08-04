@@ -96,7 +96,6 @@ function main(): void {
   const implementationNeutralSources = [
     'packages/runtime-java/src/index.ts',
     'packages/runtime-java/src/java-project.ts',
-    'packages/runtime-java/src/java-project-runtime.ts',
     'packages/runtime-java/src/project-browser.ts',
     'packages/runtime-java/src/java-worker-client.ts',
     'packages/runtime-java/src/java-prepared-provider.ts',
@@ -181,8 +180,7 @@ function main(): void {
   );
   const internalJavaSubpaths = Object.keys(javaPackageJson.exports ?? {});
   assertCondition(
-    internalJavaSubpaths.includes('./java-project') &&
-      internalJavaSubpaths.includes('./java-project-runtime'),
+    internalJavaSubpaths.includes('./java-project'),
     `Private Java runtime workspace is missing generic project subpaths: ${internalJavaSubpaths.join(', ')}`
   );
   assertCondition(

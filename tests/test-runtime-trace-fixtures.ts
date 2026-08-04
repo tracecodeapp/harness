@@ -45,10 +45,6 @@ import {
   createTraceJVMSemanticTraceRuntime,
   type TraceJVMSemanticTraceRuntime,
 } from './helpers/tracejvm-semantic-trace-runtime';
-import {
-  createCheerpJSemanticTraceRuntime,
-  type CheerpJSemanticTraceRuntime,
-} from './helpers/cheerpj-semantic-trace-runtime';
 
 const FIXTURES_DIR = join(process.cwd(), 'fixtures', 'runtime-parity');
 const PYTHON_RUNTIME_CORE_PATH = join(process.cwd(), 'workers', 'python', 'runtime-core.js');
@@ -208,7 +204,6 @@ const TRACE_FIXTURE_PROGRESS = process.env.TRACECODE_RUNTIME_TRACE_PROGRESS === 
 const JAVA_TRACE_PROVIDER = process.env.TRACECODE_JAVA_TRACE_PROVIDER ?? 'native';
 const JAVA_TRACE_REPORT_PATH = process.env.TRACECODE_JAVA_TRACE_REPORT;
 let traceJVMSemanticTraceRuntime: TraceJVMSemanticTraceRuntime | null = null;
-let cheerpJSemanticTraceRuntime: CheerpJSemanticTraceRuntime | null = null;
 const javaTraceReport = new Map<string, {
   rawEvents: string[];
   trace: RuntimeTrace;
@@ -222,14 +217,8 @@ const javaTraceReport = new Map<string, {
 }>();
 
 function usesTraceJVMJavaProvider(): boolean {
-  if (JAVA_TRACE_PROVIDER === 'native' || JAVA_TRACE_PROVIDER === 'cheerpj') return false;
+  if (JAVA_TRACE_PROVIDER === 'native') return false;
   if (JAVA_TRACE_PROVIDER === 'tracejvm') return true;
-  throw new Error(`Unsupported TRACECODE_JAVA_TRACE_PROVIDER: ${JAVA_TRACE_PROVIDER}`);
-}
-
-function usesCheerpJJavaProvider(): boolean {
-  if (JAVA_TRACE_PROVIDER === 'native' || JAVA_TRACE_PROVIDER === 'tracejvm') return false;
-  if (JAVA_TRACE_PROVIDER === 'cheerpj') return true;
   throw new Error(`Unsupported TRACECODE_JAVA_TRACE_PROVIDER: ${JAVA_TRACE_PROVIDER}`);
 }
 
@@ -727,25 +716,6 @@ async function executeCSharpTrace(code: string, fixture: FixtureCase): Promise<F
 }
 
 function createLocalJavaWorkerClient(): JavaWorkerClient {
-  if (usesCheerpJJavaProvider()) {
-    if (!cheerpJSemanticTraceRuntime) {
-      throw new Error('CheerpJ semantic trace runtime was not initialized.');
-    }
-    return {
-      executeWithTracing: async (call: RuntimeTraceCall) =>
-        cheerpJSemanticTraceRuntime!.executeWithTracing({
-          code: call.code,
-          functionName: call.functionName ?? '',
-          inputs: call.inputs,
-          traceOptions: call.traceOptions,
-          executionStyle: call.executionStyle ?? 'function',
-        }),
-      executeCode: async () => {
-        throw new Error('executeCode is not used by runtime trace fixtures');
-      },
-      terminate: () => {},
-    } as unknown as JavaWorkerClient;
-  }
   const stringFiles = new Map<string, string>();
   const rootPromise = mkdtemp(join(tmpdir(), 'tracecode-runtime-trace-java-'));
 
@@ -1918,13 +1888,6 @@ async function main(): Promise<void> {
     traceJVMSemanticTraceRuntime = await createTraceJVMSemanticTraceRuntime();
     logFixtureProgress('TraceJVM semantic trace runtime init:done');
   }
-  if (languages.includes('java') && usesCheerpJJavaProvider()) {
-    logFixtureProgress(
-      `CheerpJ semantic trace runtime init:start browser=${process.env.TRACECODE_CHEERPJ_BROWSER ?? 'chromium'}`
-    );
-    cheerpJSemanticTraceRuntime = await createCheerpJSemanticTraceRuntime();
-    logFixtureProgress('CheerpJ semantic trace runtime init:done');
-  }
   let cppHarness: CppWorkerHarness | undefined;
   if (languages.includes('cpp')) {
     logFixtureProgress('cpp harness init:start');
@@ -1968,8 +1931,6 @@ async function main(): Promise<void> {
   } finally {
     await traceJVMSemanticTraceRuntime?.close();
     traceJVMSemanticTraceRuntime = null;
-    await cheerpJSemanticTraceRuntime?.close();
-    cheerpJSemanticTraceRuntime = null;
   }
 }
 

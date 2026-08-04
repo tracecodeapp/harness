@@ -24,11 +24,6 @@ export {
   type BrowserJavaProjectRunnerOptions,
 } from './project-browser';
 export {
-  invalidateJavaProjectWarmup,
-  warmJavaProjectClient,
-  type JavaProjectWarmupResult,
-} from './java-project-runtime';
-export {
   createNativeJavaProjectRunner,
   type JavaProjectCommandRequest,
   type JavaProjectCommandResult,

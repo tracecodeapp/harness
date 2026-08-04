@@ -22,7 +22,6 @@ import {
 import { TRACECODE_HARNESS_VERSION } from '../packages/runtime-contracts/src/harness-version';
 import { assertRuntimeRequestSupported } from '../packages/runtime-browser/src/runtime-capability-guards';
 import { executeRuntimeRequest } from '../packages/runtime-browser/src/runtime-execute';
-import { runJavaSafeStorageExclusive } from '../packages/runtime-java/src/java-storage-isolation';
 import { ExecutionTimeoutError } from '../packages/runtime-browser/src/worker-errors';
 import {
   WORKER_REQUEST_MESSAGES,
@@ -1362,35 +1361,6 @@ function assertWorkerProtocolDeclarations(): void {
   }
 }
 
-async function assertJavaStorageIsolationContract(): Promise<void> {
-  const events: string[] = [];
-  let releaseFirst: (() => void) | undefined;
-  const first = runJavaSafeStorageExclusive(async () => {
-    events.push('first-start');
-    await new Promise<void>((resolve) => {
-      releaseFirst = resolve;
-    });
-    events.push('first-finish');
-  });
-  const second = runJavaSafeStorageExclusive(async () => {
-    events.push('second-start');
-    events.push('second-finish');
-  });
-  await Promise.resolve();
-  await Promise.resolve();
-  assertCondition(
-    events.join(',') === 'first-start',
-    `Java persistent storage operations must be exclusive: ${events.join(',')}`
-  );
-  releaseFirst?.();
-  await Promise.all([first, second]);
-  assertCondition(
-    events.join(',') === 'first-start,first-finish,second-start,second-finish',
-    `Java persistent storage lock must release in request order: ${events.join(',')}`
-  );
-  console.log('PASS: Java persistent storage safe-execution lock');
-}
-
 async function assertExecutionLimitsDispatchContract(): Promise<void> {
   const receivedLimits: Array<RuntimeExecutionLimits | undefined> = [];
   const baseHandlers = {
@@ -1708,7 +1678,6 @@ async function main(): Promise<void> {
   await testJavaSerializedResultNormalization();
 
   await assertExecutionLimitsDispatchContract();
-  await assertJavaStorageIsolationContract();
   console.log('PASS: execution limits dispatch contract');
 
   assertWorkerProtocolDeclarations();

@@ -154,9 +154,6 @@ const PACKAGE_CHECKS: PackageCheck[] = [
       'dist/java-project.js',
       'dist/java-project.cjs',
       'dist/java-project.d.ts',
-      'dist/java-project-runtime.js',
-      'dist/java-project-runtime.cjs',
-      'dist/java-project-runtime.d.ts',
       'workers/java-worker.js',
       'workers/java-runtime-worker.js',
       'workers/java-source-augmentations.js',
@@ -750,7 +747,6 @@ async function runWithTempRoot(tempRoot: string): Promise<void> {
         'dist/index.d.ts',
         'dist/project-browser.d.ts',
         'dist/java-project.d.ts',
-        'dist/java-project-runtime.d.ts',
       ] as const;
       const declarationLeaks: string[] = [];
       for (const declarationPath of declarationPaths) {
@@ -769,7 +765,6 @@ async function runWithTempRoot(tempRoot: string): Promise<void> {
       const javaSubpaths = Object.keys(javaPackageJson.exports ?? {});
       assertCondition(
         javaSubpaths.includes('./java-project') &&
-          javaSubpaths.includes('./java-project-runtime') &&
           javaSubpaths.every((subpath) => !/(?:tracejvm|cheerpj)/iu.test(subpath)),
         `@tracecode/runtime-java public subpaths must be implementation-neutral: ${javaSubpaths.join(', ')}`
       );
@@ -1598,10 +1593,6 @@ async function runWithTempRoot(tempRoot: string): Promise<void> {
       const javaProject = await import('@tracecode/runtime-java/java-project');
       if (typeof javaProject.createJavaProjectRunner !== 'function') {
         throw new Error('@tracecode/runtime-java/java-project missing createJavaProjectRunner');
-      }
-      const javaProjectRuntime = await import('@tracecode/runtime-java/java-project-runtime');
-      if (typeof javaProjectRuntime.warmJavaProjectClient !== 'function') {
-        throw new Error('@tracecode/runtime-java/java-project-runtime missing warmJavaProjectClient');
       }
       const cppProjectNode = await import('@tracecode/runtime-cpp/project-node');
       if (typeof cppProjectNode.createNativeCppProjectRunner !== 'function') {

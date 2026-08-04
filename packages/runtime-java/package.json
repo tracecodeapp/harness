@@ -46,12 +46,6 @@
       "require": "./dist/java-project.cjs",
       "default": "./dist/java-project.js"
     },
-    "./java-project-runtime": {
-      "types": "./dist/java-project-runtime.d.ts",
-      "import": "./dist/java-project-runtime.js",
-      "require": "./dist/java-project-runtime.cjs",
-      "default": "./dist/java-project-runtime.js"
-    },
     "./workers/*": "./workers/*",
     "./package.json": "./package.json"
   },
