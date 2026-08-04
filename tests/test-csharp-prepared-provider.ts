@@ -255,4 +255,9 @@ test('C# host prepared entry point cannot fall through to the compiling executio
     /return Execute\(requestJson\);/,
     'invalid prepared requests must not regain access to Roslyn through Execute'
   );
+  assert.match(
+    preparedEntryPoint,
+    /finally\s*\{\s*\/\/ This is the lifecycle boundary[\s\S]*?JudgeRuntimeContext\.Reset\(\);\s*Console\.SetOut\(originalOut\);/,
+    'prepared inputs and trace state must reset even when execution fails before assembly loading'
+  );
 });

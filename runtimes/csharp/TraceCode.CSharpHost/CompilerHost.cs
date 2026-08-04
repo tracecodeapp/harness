@@ -438,7 +438,6 @@ public static partial class CompilerHost
             finally
             {
                 loadContext.Unload();
-                JudgeRuntimeContext.Reset();
             }
         }
         catch (Exception error)
@@ -476,6 +475,9 @@ public static partial class CompilerHost
         }
         finally
         {
+            // This is the lifecycle boundary for all prepared attempts, not
+            // only attempts that reached the collectible load context.
+            JudgeRuntimeContext.Reset();
             Console.SetOut(originalOut);
         }
     }
@@ -668,6 +670,7 @@ public static partial class CompilerHost
         }
         finally
         {
+            JudgeRuntimeContext.Reset();
             Console.SetOut(originalOut);
         }
     }

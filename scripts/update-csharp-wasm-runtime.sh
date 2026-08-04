@@ -162,8 +162,20 @@ for role_vendor in "$tmp_vendor" "$tmp_compiler_vendor" "$tmp_runner_vendor"; do
     perl -0pi -e 's/\n+\z/\n/' "$role_vendor/main.mjs"
   fi
   if [[ -f "$role_vendor/_framework/dotnet.native.js" ]]; then
+    TRACECODE_BUILD_DOTNET_ROOT="$dotnet_install_dir" \
+      TRACECODE_BUILD_SOURCE_ROOT="$ROOT_DIR" \
+      perl -0pi -e '
+        s/\Q$ENV{TRACECODE_BUILD_DOTNET_ROOT}\E/\/tracecode\/dotnet/g;
+        s/\Q$ENV{TRACECODE_BUILD_SOURCE_ROOT}\E/\/tracecode\/source/g;
+      ' "$role_vendor/_framework/dotnet.native.js"
     perl -pi -e 's/[ \t]+$//' "$role_vendor/_framework/dotnet.native.js"
   fi
+  for build_root in "$dotnet_install_dir" "$ROOT_DIR"; do
+    if rg -a -l -F -- "$build_root" "$role_vendor" >/dev/null; then
+      echo "C# browser runtime assets retain build-local path $build_root" >&2
+      exit 1
+    fi
+  done
   pnpm exec tsx "$ROOT_DIR/scripts/prune-csharp-wasm-runtime-assets.ts" "$role_vendor"
 done
 pnpm exec tsx "$ROOT_DIR/scripts/pack-csharp-managed-assemblies.ts" \

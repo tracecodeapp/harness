@@ -194,6 +194,34 @@ test('tracked C# role artifacts are reproducible from their materialized trees',
       )
     ).match(/<TraceCodeDotnetSdkVersion>([^<]+)</)?.[1]
   );
+  const buildProps = await readFile(
+    join(root, 'runtimes/csharp/Directory.Build.props'),
+    'utf8'
+  );
+  equal(
+    buildProps.includes(
+      '&quot;-ffile-prefix-map=$(DOTNET_ROOT)=/tracecode/dotnet&quot;'
+    ),
+    true,
+    'native Wasm debug paths must not depend on the SDK installation root'
+  );
+  for (const role of ['csharp', 'csharp-compiler', 'csharp-runner']) {
+    for (const name of ['dotnet.native.js', 'dotnet.native.wasm']) {
+      const bytes = await readFile(
+        join(root, 'workers/vendor', role, '_framework', name)
+      );
+      equal(
+        bytes.includes(Buffer.from(root)),
+        false,
+        `${role}/${name} must not retain the checkout path`
+      );
+      equal(
+        bytes.includes(Buffer.from('/tracecode/dotnet')),
+        true,
+        `${role}/${name} must use the canonical SDK path map`
+      );
+    }
+  }
 
   const regenerated = await mkdtemp(
     join(tmpdir(), 'tracecode-csharp-role-artifacts-regenerated-')
