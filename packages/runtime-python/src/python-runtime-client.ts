@@ -700,6 +700,9 @@ class PreparedPythonProgramLifetime {
   }
 
   private retireWorker(client: PythonWorkerClient): void {
+    // Deletion is the ownership gate and makes retirement idempotent. An
+    // abort can retire a warming worker before warmup settles; that settlement
+    // deliberately reaches this method again without terminating twice.
     if (!this.ownedWorkers.delete(client)) return;
     client.terminate();
   }
