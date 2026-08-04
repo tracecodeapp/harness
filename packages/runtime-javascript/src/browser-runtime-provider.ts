@@ -20,20 +20,18 @@ export function createJavaScriptBrowserRuntimeProvider(): BrowserRuntimeProvider
       const workerFactory =
         context.workerFactoryFor('javascript') ??
         context.workerFactoryFor('typescript');
+      const javascriptLibrariesUrl =
+        context.manifestAsset('javascript', 'libraries')?.url;
       const worker = new JavaScriptWorkerClient({
         workerUrl: context.assets.javascriptWorker,
         ...(workerFactory ? { workerFactory } : {}),
         debug: context.debug,
         assetPreflight: context.preflight('javascript', ['worker']),
         runtimeAssetPreflight: context.preflight('javascript', ['libraries']),
-        ...(context.manifestAsset('javascript', 'libraries')?.url
-          ? {
-              javascriptLibrariesUrl:
-                context.manifestAsset('javascript', 'libraries')?.url,
-            }
-          : {}),
+        ...(javascriptLibrariesUrl ? { javascriptLibrariesUrl } : {}),
         typescriptCompilerUrl: context.assets.typescriptCompiler,
         typescriptCompilerPreflight: context.preflight('typescript', ['compiler']),
+        prewarmAfterUse: context.prewarmAfterUse,
       });
       const javascript =
         createJavaScriptPreparedExecutionProvider('javascript', worker);
@@ -46,19 +44,11 @@ export function createJavaScriptBrowserRuntimeProvider(): BrowserRuntimeProvider
         ['javascript', javascript],
         ['typescript', typescript],
       ]);
-      const resetSharedRuntime = (): void => {
-        // JavaScript and TypeScript share one coordinator/executor pool.
-        // JavaScriptWorkerClient termination retires the current connections
-        // and clears warm state, but deliberately remains restartable. A
-        // language-scoped disposal must therefore reset the whole shared
-        // runtime so its sibling can acquire fresh workers on its next call.
-        worker.terminate();
-      };
-
       return {
         preparedProviders,
-        disposeLanguage: resetSharedRuntime,
-        dispose: resetSharedRuntime,
+        // JavaScript and TypeScript share one coordinator/executor generation.
+        disposeLanguage: () => worker.reset(),
+        dispose: () => worker.terminate(),
       };
     },
   };

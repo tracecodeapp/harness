@@ -122,7 +122,6 @@ class TraceTransportWorker {
           payload: {
             preparedExecution: {
               schema: 'tracecode.javascript.prepared.v1',
-              sourceCode: 'function solve() { return 42; }',
               executableCode: 'function solve() { return 42; }',
               materializers: {},
               inputArguments: [],

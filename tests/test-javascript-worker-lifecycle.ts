@@ -64,6 +64,7 @@ class VmJavaScriptWorker {
   readonly role: string;
   readonly postedTypes: string[] = [];
   terminated = false;
+  terminateCalls = 0;
   private readonly workerSelf: WorkerSelf;
   private readonly context: vm.Context;
 
@@ -135,6 +136,7 @@ class VmJavaScriptWorker {
   }
 
   terminate(): void {
+    this.terminateCalls += 1;
     this.terminated = true;
   }
 
@@ -238,6 +240,11 @@ async function exercisePreparedProvider(
       prepared.program.capabilities.caseIsolation === 'fresh-case-state' &&
         prepared.program.capabilities.maxConcurrency === 1,
       `${language} prepared program reported unsafe isolation capabilities`
+    );
+    assert.equal(
+      typeof prepared.program.executeBatchIsolated,
+      'function',
+      `${language} should expose the fresh-worker batch path`
     );
     assertCondition(
       typeof prepared.timings?.totalMs === 'number' &&
@@ -490,11 +497,14 @@ async function exercisePreparedDisposalOwner(): Promise<void> {
   const program = createJavaScriptPreparedProgram({
     mode: 'code',
     executeCode: (
-      _call: RuntimePreparedCodeCall,
-      signal: AbortSignal
+      call: RuntimePreparedCodeCall
     ): Promise<CodeExecutionResult> =>
-      new Promise((resolve) => {
-        signal.addEventListener(
+      new Promise((resolve, reject) => {
+        if (!call.signal) {
+          reject(new Error('Prepared execution did not receive a lifecycle signal.'));
+          return;
+        }
+        call.signal.addEventListener(
           'abort',
           () => {
             observedLifecycleAbort = true;
@@ -575,6 +585,21 @@ async function exerciseSharedProviderLanguageDisposal(): Promise<void> {
 
   try {
     await executeHostProgram(host, 'javascript', 1);
+    const staleProvider = getBrowserRuntimeHostPreparedProvider(
+      host,
+      'javascript'
+    );
+    const stalePreparation = await staleProvider.prepareProgram({
+      mode: 'code',
+      code: 'function stale(value) { return value; }',
+      functionName: 'stale',
+      executionStyle: 'function',
+    });
+    assertCondition(
+      stalePreparation.kind === 'prepared' &&
+        stalePreparation.program.mode === 'code',
+      'JavaScript stale-generation fixture did not prepare'
+    );
     const firstGeneration = [...VmJavaScriptWorker.instances];
     assertCondition(
       firstGeneration.some((worker) => !worker.terminated),
@@ -582,6 +607,12 @@ async function exerciseSharedProviderLanguageDisposal(): Promise<void> {
     );
 
     host.disposeLanguage('javascript');
+    await assert.rejects(
+      stalePreparation.program.executeIsolated({ inputs: { value: 1 } }),
+      (error: unknown) =>
+        error instanceof Error && error.name === 'AbortError',
+      'Language reset must invalidate prepared artifacts from the retired generation'
+    );
     assertCondition(
       firstGeneration.every((worker) => worker.terminated),
       'Disposing JavaScript must retire every worker in its shared JavaScript/TypeScript generation'
@@ -620,6 +651,131 @@ async function exerciseSharedProviderLanguageDisposal(): Promise<void> {
     );
   } finally {
     host.dispose();
+    resetVmWorkers();
+  }
+}
+
+async function exerciseRetireOnlyPolicy(): Promise<void> {
+  resetVmWorkers();
+  const client = new JavaScriptWorkerClient({
+    workerUrl: '/workers/javascript/javascript-worker.js',
+    debug: false,
+    prewarmAfterUse: false,
+  });
+  try {
+    await client.init();
+    const first = await client.executeCode({
+      code: 'function identity(value) { return value; }',
+      functionName: 'identity',
+      inputs: { value: 1 },
+      executionStyle: 'function',
+      language: 'javascript',
+    });
+    assertCondition(
+      first.kind === 'completed' && first.output === 1,
+      `Retire-only JavaScript execution failed: ${JSON.stringify(first)}`
+    );
+    assertCondition(
+      VmJavaScriptWorker.instances
+        .filter((worker) => worker.role === 'executor')
+        .every((worker) => worker.terminated),
+      'Retire-only must not replenish a clean standby after execution'
+    );
+
+    const countAfterFirst = VmJavaScriptWorker.instances.length;
+    const second = await client.executeCode({
+      code: 'function identity(value) { return value; }',
+      functionName: 'identity',
+      inputs: { value: 2 },
+      executionStyle: 'function',
+      language: 'javascript',
+    });
+    assertCondition(
+      second.kind === 'completed' &&
+        second.output === 2 &&
+        VmJavaScriptWorker.instances.length > countAfterFirst,
+      'Retire-only must construct a fresh executor lazily for the next command'
+    );
+  } finally {
+    client.terminate();
+    resetVmWorkers();
+  }
+}
+
+async function exerciseResetDuringQueuedExecution(): Promise<void> {
+  resetVmWorkers();
+  let releaseCompilerPreflight!: () => void;
+  const compilerPreflightGate = new Promise<void>((resolve) => {
+    releaseCompilerPreflight = resolve;
+  });
+  let markCompilerPreflightStarted!: () => void;
+  const compilerPreflightStarted = new Promise<void>((resolve) => {
+    markCompilerPreflightStarted = resolve;
+  });
+  const client = new JavaScriptWorkerClient({
+    workerUrl: '/workers/javascript/javascript-worker.js',
+    debug: false,
+    prewarmAfterUse: false,
+    typescriptCompilerPreflight: async () => {
+      markCompilerPreflightStarted();
+      await compilerPreflightGate;
+    },
+  });
+
+  try {
+    const first = client.executeCode({
+      code: 'function identity(value: number): number { return value; }',
+      functionName: 'identity',
+      inputs: { value: 1 },
+      executionStyle: 'function',
+      language: 'typescript',
+    });
+    await compilerPreflightStarted;
+    const queued = client.executeCode({
+      code: 'function identity(value: number): number { return value; }',
+      functionName: 'identity',
+      inputs: { value: 2 },
+      executionStyle: 'function',
+      language: 'typescript',
+    });
+
+    client.reset();
+    const workerCountAfterReset = VmJavaScriptWorker.instances.length;
+    releaseCompilerPreflight();
+
+    const settled = await Promise.race([
+      Promise.allSettled([first, queued]),
+      new Promise<never>((_, reject) => {
+        setTimeout(
+          () => reject(new Error('Queued JavaScript executions did not settle after reset')),
+          250
+        );
+      }),
+    ]);
+    assertCondition(
+      settled.every((result) => result.status === 'rejected'),
+      `Reset should reject active and queued executions: ${JSON.stringify(settled)}`
+    );
+    assert.equal(
+      VmJavaScriptWorker.instances.length,
+      workerCountAfterReset,
+      'A stale TypeScript execution recreated workers in the replacement generation'
+    );
+
+    const recovered = await client.executeCode({
+      code: 'function identity(value) { return value; }',
+      functionName: 'identity',
+      inputs: { value: 3 },
+      executionStyle: 'function',
+      language: 'javascript',
+    });
+    assertCondition(
+      recovered.kind === 'completed' && recovered.output === 3,
+      `JavaScript client did not recover after generation reset: ${JSON.stringify(recovered)}`
+    );
+  } finally {
+    releaseCompilerPreflight();
+    client.terminate();
     resetVmWorkers();
   }
 }
@@ -704,8 +860,11 @@ async function main(): Promise<void> {
     );
     assertCondition(coordinatorWorkers.length === 1, 'Repeated TypeScript runs should reuse one trusted coordinator worker');
     assertCondition(
-      usedExecutorWorkers.length === 2 && usedExecutorWorkers.every((worker) => worker.terminated),
-      'Each TypeScript run should receive a fresh execution worker that is terminated after use'
+      usedExecutorWorkers.length === 2 &&
+        usedExecutorWorkers.every(
+          (worker) => worker.terminated && worker.terminateCalls === 1
+        ),
+      'Each TypeScript run should receive a fresh execution worker retired exactly once'
     );
     assertCondition(
       standbyExecutorWorkers.length === 1 &&
@@ -751,6 +910,65 @@ async function main(): Promise<void> {
         JSON.stringify(batchResult.results.map((result) => (result.kind === 'completed' ? result.output : undefined))) === JSON.stringify([4, 10]),
       `Prepared TypeScript batch execution failed: ${JSON.stringify(batchResult)}`
     );
+    const limitedBatch = await client.executeCodeBatch({
+      code: `async function maybeWait(wait: boolean): Promise<number> {
+  if (wait) await new Promise<void>(() => {});
+  return 42;
+}`,
+      functionName: 'maybeWait',
+      inputBatch: [{ wait: true }, { wait: false }],
+      executionStyle: 'function',
+      language: 'typescript',
+      limits: { wallClockMs: 5 },
+      batchWallClockMs: 100,
+    });
+    assertCondition(
+      limitedBatch.results[0]?.kind === 'limit' &&
+        limitedBatch.results[0].reason === 'client-timeout' &&
+        limitedBatch.results[1]?.kind === 'completed' &&
+        limitedBatch.results[1].output === 42,
+      `JavaScript batch did not apply limits independently per case: ${JSON.stringify(limitedBatch)}`
+    );
+    await assert.rejects(
+      client.executeCodeBatch({
+        code: `async function waitForever(): Promise<void> {
+  await new Promise<void>(() => {});
+}`,
+        functionName: 'waitForever',
+        inputBatch: [{}],
+        executionStyle: 'function',
+        language: 'typescript',
+        batchWallClockMs: 5,
+      }),
+      /JavaScript batch execution timed out/,
+      'JavaScript direct batch did not preserve its aggregate deadline'
+    );
+    for (const language of ['javascript', 'typescript'] as const) {
+      const intrinsicBatch = await client.executeCodeBatch({
+        code:
+          language === 'typescript'
+            ? `function poison(caseNumber: number): number | null {
+  const previous = (Array.prototype as any).__tracecodeBatchPoison ?? null;
+  (Array.prototype as any).__tracecodeBatchPoison = caseNumber;
+  return previous;
+}`
+            : `function poison(caseNumber) {
+  const previous = Array.prototype.__tracecodeBatchPoison ?? null;
+  Array.prototype.__tracecodeBatchPoison = caseNumber;
+  return previous;
+}`,
+        functionName: 'poison',
+        inputBatch: [{ caseNumber: 1 }, { caseNumber: 2 }],
+        executionStyle: 'function',
+        language,
+      });
+      assertCondition(
+        intrinsicBatch.results.every(
+          (result) => result.kind === 'completed' && result.output === null
+        ),
+        `${language} batch leaked realm intrinsics between cases: ${JSON.stringify(intrinsicBatch)}`
+      );
+    }
 
     const traceResult = await client.executeWithTracing({ code: `function increment(value) {
   return value + 1;
@@ -777,10 +995,29 @@ async function main(): Promise<void> {
       standbyExecutorWorkers[0].terminated,
       'Explicit client termination should stop the clean standby executor'
     );
+    const workerCountAfterTermination = VmJavaScriptWorker.instances.length;
+    await assert.rejects(
+      client.executeCode({
+        code: 'function shouldNotRun() { return 1; }',
+        functionName: 'shouldNotRun',
+        inputs: {},
+        executionStyle: 'function',
+        language: 'javascript',
+      }),
+      /terminated/,
+      'Terminal client disposal must not restart a worker generation'
+    );
+    assert.equal(
+      VmJavaScriptWorker.instances.length,
+      workerCountAfterTermination,
+      'Terminal client disposal allocated a new worker'
+    );
     await exercisePreparedProvider('javascript');
     await exercisePreparedProvider('typescript');
     await exercisePreparedDisposalOwner();
     await exerciseSharedProviderLanguageDisposal();
+    await exerciseRetireOnlyPolicy();
+    await exerciseResetDuringQueuedExecution();
     console.log('PASS: JavaScript/TypeScript coordinator and disposable execution lifecycle');
   } finally {
     if (originalWorker === undefined) {

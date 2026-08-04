@@ -22,6 +22,7 @@ import type {
   RuntimeExecutionTimings,
   RuntimePreparedCodeBatchCall,
   RuntimePreparedCodeCall,
+  RuntimePreparedProgram,
   RuntimePreparedTraceBatchCall,
   RuntimePreparedTraceCall,
   RuntimeProgramPreparationCall,
@@ -31,17 +32,15 @@ import type {
 } from '@tracecode/runtime-contracts';
 import {
   createEmptyRuntimeTrace,
-  liftCodeBatchOutcome,
   liftCodeOutcome,
   liftTraceOutcome,
-  type RawExecutionBatchPayload,
   type RawExecutionPayload,
 } from '@tracecode/runtime-contracts';
 
 /** Raw wire payload from the tracing command; lifted into the outcome union here. */
 type JavaScriptRawTraceResult = RawExecutionPayload & { trace?: RuntimeTrace };
 import { appendWorkerUrlQueryParameter, isDevEnvironment } from '@tracecode/runtime-browser/internal';
-import type { BrowserWorkerFactory, BrowserWorkerLike } from '@tracecode/runtime-browser/internal';
+import type { BrowserWorkerFactory } from '@tracecode/runtime-browser/internal';
 import { restoreTransferredTraceEvents, traceEventTransferRequest } from '@tracecode/runtime-browser/internal';
 import {
   ExecutionTimeoutError,
@@ -63,6 +62,19 @@ export interface JavaScriptWorkerClientOptions {
   javascriptLibrariesUrl?: string;
   typescriptCompilerUrl?: string;
   typescriptCompilerPreflight?: () => Promise<void>;
+  prewarmAfterUse?: boolean;
+}
+
+export interface JavaScriptWorkerBatchCall extends RuntimeBatchCall {
+  readonly language?: JavaScriptWorkerLanguage;
+  /** Applied independently to each case in the batch. */
+  readonly limits?: RuntimePreparedCodeBatchCall['limits'];
+  /**
+   * Aggregate safety deadline for the complete batch. Per-case limits remain
+   * in `limits`; this separate clock preserves the historical direct-batch
+   * budget without changing Judge's per-case semantics.
+   */
+  readonly batchWallClockMs?: number;
 }
 
 interface InitResult {
@@ -86,6 +98,9 @@ const INIT_TIMEOUT_MS = 10000;
 const TYPESCRIPT_WARMUP_TIMEOUT_MS = 30000;
 const MESSAGE_TIMEOUT_MS = 12000;
 const WORKER_READY_TIMEOUT_MS = 10000;
+// Eight is the measured browser frontier: larger waves save little startup
+// time while materially increasing transient renderer memory.
+const BATCH_PREWARM_LIMIT = 8;
 
 type JavaScriptWorkerRole = 'coordinator' | 'executor';
 
@@ -174,12 +189,16 @@ class JavaScriptWorkerConnection {
 
 export class JavaScriptWorkerClient {
   private coordinator: JavaScriptWorkerConnection | null = null;
-  private activeExecutionWorker: JavaScriptWorkerConnection | null = null;
   private standbyExecutionWorker: JavaScriptWorkerConnection | null = null;
   private standbyExecutionPromise: Promise<void> | null = null;
   private initPromise: Promise<InitResult> | null = null;
   private warmupPromises = new Map<JavaScriptWorkerLanguage, Promise<WarmupResult>>();
   private executionTail: Promise<void> = Promise.resolve();
+  private readonly preparedPrograms = new Set<RuntimePreparedProgram>();
+  private readonly leasedExecutionWorkers =
+    new Set<JavaScriptWorkerConnection>();
+  private generation = 1;
+  private terminated = false;
   private readonly debug: boolean;
 
   constructor(private readonly options: JavaScriptWorkerClientOptions) {
@@ -190,7 +209,19 @@ export class JavaScriptWorkerClient {
     return this.options.workerFactory !== undefined || typeof Worker !== 'undefined';
   }
 
-  private getCoordinator(): JavaScriptWorkerConnection {
+  private assertActive(expectedGeneration: number = this.generation): void {
+    if (this.terminated) {
+      throw new Error('JavaScript worker client has been terminated.');
+    }
+    if (expectedGeneration !== this.generation) {
+      throw new Error('JavaScript worker client generation was reset.');
+    }
+  }
+
+  private getCoordinator(
+    expectedGeneration: number = this.generation
+  ): JavaScriptWorkerConnection {
+    this.assertActive(expectedGeneration);
     if (!this.isSupported()) {
       throw new Error('Web Workers are not supported in this environment');
     }
@@ -216,11 +247,6 @@ export class JavaScriptWorkerClient {
     );
   }
 
-  private terminateExecution(reason: Error = new Error('Execution worker was terminated')): void {
-    this.activeExecutionWorker?.terminate(reason);
-    this.activeExecutionWorker = null;
-  }
-
   private terminateStandbyExecution(reason: Error = new Error('Standby execution worker was terminated')): void {
     this.standbyExecutionWorker?.terminate(reason);
     this.standbyExecutionWorker = null;
@@ -233,7 +259,10 @@ export class JavaScriptWorkerClient {
       : undefined;
   }
 
-  private ensureStandbyExecutionWorker(): Promise<void> {
+  private ensureStandbyExecutionWorker(
+    expectedGeneration: number = this.generation
+  ): Promise<void> {
+    this.assertActive(expectedGeneration);
     if (
       this.standbyExecutionWorker &&
       !this.standbyExecutionWorker.isDisposed &&
@@ -244,20 +273,28 @@ export class JavaScriptWorkerClient {
 
     const worker = this.createExecutionWorker();
     this.standbyExecutionWorker = worker;
-    const prewarmPromise = worker.prewarm(this.executionRuntimeAssetsPayload()).catch((error) => {
-      if (this.standbyExecutionWorker === worker) {
-        worker.terminate(error instanceof Error ? error : new Error(String(error)));
-        this.standbyExecutionWorker = null;
-        this.standbyExecutionPromise = null;
-      }
-      throw error;
-    });
+    const prewarmPromise = worker
+      .prewarm(this.executionRuntimeAssetsPayload())
+      .then(() => this.assertActive(expectedGeneration))
+      .catch((error) => {
+        if (this.standbyExecutionWorker === worker) {
+          worker.terminate(
+            error instanceof Error ? error : new Error(String(error))
+          );
+          this.standbyExecutionWorker = null;
+          this.standbyExecutionPromise = null;
+        }
+        throw error;
+      });
     this.standbyExecutionPromise = prewarmPromise;
     return prewarmPromise;
   }
 
-  private async takeStandbyExecutionWorker(): Promise<JavaScriptWorkerConnection> {
-    await this.ensureStandbyExecutionWorker();
+  private async takeStandbyExecutionWorker(
+    expectedGeneration: number = this.generation
+  ): Promise<JavaScriptWorkerConnection> {
+    await this.ensureStandbyExecutionWorker(expectedGeneration);
+    this.assertActive(expectedGeneration);
     const worker = this.standbyExecutionWorker;
     if (!worker || worker.isDisposed) {
       throw new Error('JavaScript standby execution worker was terminated before use');
@@ -267,13 +304,26 @@ export class JavaScriptWorkerClient {
     return worker;
   }
 
-  private terminateAll(reason: Error = new WorkerTerminatedError()): void {
-    this.terminateExecution(reason);
+  private terminateGeneration(
+    reason: Error = new WorkerTerminatedError()
+  ): void {
     this.terminateStandbyExecution(reason);
     this.coordinator?.terminate(reason);
     this.coordinator = null;
+    for (const worker of this.leasedExecutionWorkers) {
+      worker.terminate(reason);
+    }
+    this.leasedExecutionWorkers.clear();
     this.initPromise = null;
     this.warmupPromises.clear();
+  }
+
+  private disposePreparedPrograms(): void {
+    const programs = [...this.preparedPrograms];
+    this.preparedPrograms.clear();
+    for (const program of programs) {
+      void program.dispose().catch(() => undefined);
+    }
   }
 
   /**
@@ -284,9 +334,10 @@ export class JavaScriptWorkerClient {
    */
   private dispatchExecutionEffect<T>(
     worker: JavaScriptWorkerConnection,
-    operation: 'execute-code' | 'execute-code-batch' | 'execute-with-tracing',
+    operation: 'execute-code' | 'execute-with-tracing',
     payload: Record<string, unknown>,
-    language: JavaScriptWorkerLanguage
+    language: JavaScriptWorkerLanguage,
+    expectedGeneration: number
   ): Effect.Effect<T, Error> {
     return Effect.gen(this, function* () {
       yield* Effect.tryPromise({
@@ -302,11 +353,11 @@ export class JavaScriptWorkerClient {
         yield* Effect.tryPromise({
           try: async () => {
             await this.options.typescriptCompilerPreflight?.();
-            await this.init();
+            await this.init(expectedGeneration);
           },
           catch: (error) => (error instanceof Error ? error : new Error(String(error))),
         });
-        const prepared = yield* this.getCoordinator().sendMessageEffect<{ preparedExecution: unknown }>(
+        const prepared = yield* this.getCoordinator(expectedGeneration).sendMessageEffect<{ preparedExecution: unknown }>(
           'prepare-execution',
           { operation, request: payload },
           null
@@ -333,11 +384,7 @@ export class JavaScriptWorkerClient {
    */
   private dispatchPreparedExecutionEffect<T>(
     worker: JavaScriptWorkerConnection,
-    operation:
-      | 'execute-code'
-      | 'execute-code-batch'
-      | 'execute-with-tracing'
-      | 'execute-trace-batch',
+    operation: 'execute-code' | 'execute-with-tracing',
     payload: Record<string, unknown>
   ): Effect.Effect<T, Error> {
     return Effect.gen(this, function* () {
@@ -364,8 +411,10 @@ export class JavaScriptWorkerClient {
   }
 
   private async runIsolatedExecution<T>(
-    executor: (worker: JavaScriptWorkerConnection) => Promise<T>
+    executor: (worker: JavaScriptWorkerConnection) => Promise<T>,
+    expectedGeneration: number
   ): Promise<T> {
+    this.assertActive(expectedGeneration);
     const previous = this.executionTail;
     let release!: () => void;
     this.executionTail = new Promise<void>((resolve) => {
@@ -374,16 +423,110 @@ export class JavaScriptWorkerClient {
     await previous.catch(() => undefined);
     let worker: JavaScriptWorkerConnection | null = null;
     try {
-      worker = await this.takeStandbyExecutionWorker();
-      this.activeExecutionWorker = worker;
+      this.assertActive(expectedGeneration);
+      worker = await this.takeStandbyExecutionWorker(expectedGeneration);
+      this.leasedExecutionWorkers.add(worker);
       // Keep one clean executor ready while the current command runs. The
       // standby never receives user code, so every command still gets a fresh
       // authority boundary without paying worker bootstrap on its critical path.
-      void this.ensureStandbyExecutionWorker().catch(() => undefined);
+      if (this.options.prewarmAfterUse ?? true) {
+        void this.ensureStandbyExecutionWorker(expectedGeneration).catch(
+          () => undefined
+        );
+      }
       return await executor(worker);
     } finally {
+      if (worker) this.leasedExecutionWorkers.delete(worker);
       worker?.terminate();
-      if (this.activeExecutionWorker === worker) this.activeExecutionWorker = null;
+      release();
+    }
+  }
+
+  /**
+   * Prewarm bounded clean capacity for a prepared batch, then run learner
+   * cases sequentially. Every case owns one never-before-used Worker and that
+   * Worker is retired immediately afterward; only construction is parallel.
+   */
+  private async runIsolatedBatch<T>(
+    caseCount: number,
+    executor: (
+      worker: JavaScriptWorkerConnection,
+      index: number
+    ) => Promise<T>,
+    expectedGeneration: number
+  ): Promise<T[]> {
+    this.assertActive(expectedGeneration);
+    const previous = this.executionTail;
+    let release!: () => void;
+    this.executionTail = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    await previous.catch(() => undefined);
+
+    const results = new Array<T>(caseCount);
+    try {
+      this.assertActive(expectedGeneration);
+      const initialStandby =
+        caseCount > 0
+          ? await this.takeStandbyExecutionWorker(expectedGeneration)
+          : null;
+      if (initialStandby) {
+        this.leasedExecutionWorkers.add(initialStandby);
+      }
+      if (this.options.prewarmAfterUse ?? true) {
+        void this.ensureStandbyExecutionWorker(expectedGeneration).catch(
+          () => undefined
+        );
+      }
+      for (
+        let offset = 0;
+        offset < caseCount;
+        offset += BATCH_PREWARM_LIMIT
+      ) {
+        const waveSize = Math.min(
+          BATCH_PREWARM_LIMIT,
+          caseCount - offset
+        );
+        const workers = Array.from(
+          { length: waveSize },
+          (_, index) => {
+            if (offset === 0 && index === 0 && initialStandby) {
+              return initialStandby;
+            }
+            const worker = this.createExecutionWorker();
+            this.leasedExecutionWorkers.add(worker);
+            return worker;
+          }
+        );
+        const cleanupWorkers = new Set(workers);
+        try {
+          await Promise.all(
+            workers.map((worker, index) =>
+              offset === 0 && index === 0 && initialStandby
+                ? Promise.resolve()
+                : worker.prewarm(this.executionRuntimeAssetsPayload())
+            )
+          );
+          this.assertActive(expectedGeneration);
+          for (let index = 0; index < workers.length; index += 1) {
+            const worker = workers[index]!;
+            results[offset + index] = await executor(
+              worker,
+              offset + index
+            );
+            this.leasedExecutionWorkers.delete(worker);
+            worker.terminate();
+            cleanupWorkers.delete(worker);
+          }
+        } finally {
+          for (const worker of cleanupWorkers) {
+            this.leasedExecutionWorkers.delete(worker);
+            worker.terminate();
+          }
+        }
+      }
+      return results;
+    } finally {
       release();
     }
   }
@@ -398,7 +541,46 @@ export class JavaScriptWorkerClient {
     return worker.core.runClientEffect(worker.core.withExecutionDeadline(program, wallClockMs), signal);
   }
 
-  async init(): Promise<InitResult> {
+  private async runBatchWithDeadline<T>(
+    operation: (signal: AbortSignal) => Promise<T>,
+    timeoutMs: number,
+    signal?: AbortSignal
+  ): Promise<T> {
+    const controller = new AbortController();
+    let deadlineExpired = false;
+    const abortFromCaller = (): void => {
+      if (!controller.signal.aborted) controller.abort();
+    };
+    if (signal?.aborted) {
+      abortFromCaller();
+    } else {
+      signal?.addEventListener('abort', abortFromCaller, { once: true });
+    }
+    const timeout = setTimeout(() => {
+      if (controller.signal.aborted) return;
+      deadlineExpired = true;
+      controller.abort();
+    }, timeoutMs);
+
+    try {
+      return await operation(controller.signal);
+    } catch (error) {
+      if (deadlineExpired) {
+        throw new ExecutionTimeoutError({
+          timeoutMs,
+          runtimeLabel: 'JavaScript batch',
+        });
+      }
+      throw error;
+    } finally {
+      clearTimeout(timeout);
+      signal?.removeEventListener('abort', abortFromCaller);
+    }
+  }
+
+  async init(expectedGeneration: number = this.generation): Promise<InitResult> {
+    this.assertActive(expectedGeneration);
+    const generation = expectedGeneration;
     if (this.coordinator?.isDisposed) {
       this.coordinator = null;
       this.initPromise = null;
@@ -407,10 +589,11 @@ export class JavaScriptWorkerClient {
     if (this.initPromise) return this.initPromise;
 
     const promise = (async () => {
-      const standbyPromise = this.ensureStandbyExecutionWorker();
+      const standbyPromise = this.ensureStandbyExecutionWorker(generation);
       try {
         await this.options.runtimeAssetPreflight?.();
-        const result = await this.getCoordinator().sendMessage<InitResult>(
+        this.assertActive(generation);
+        const result = await this.getCoordinator(generation).sendMessage<InitResult>(
           'init',
           this.options.typescriptCompilerUrl || this.options.javascriptLibrariesUrl
             ? {
@@ -425,6 +608,7 @@ export class JavaScriptWorkerClient {
           INIT_TIMEOUT_MS
         );
         await standbyPromise;
+        this.assertActive(generation);
         return result;
       } catch (error) {
         await standbyPromise.catch(() => undefined);
@@ -442,13 +626,16 @@ export class JavaScriptWorkerClient {
   }
 
   async warmup(language: JavaScriptWorkerLanguage = 'javascript'): Promise<WarmupResult> {
+    this.assertActive();
+    const generation = this.generation;
     const existing = this.warmupPromises.get(language);
     if (existing) return existing;
 
     const warmupPromise = (async () => {
       if (language === 'typescript') await this.options.typescriptCompilerPreflight?.();
-      await this.init();
-      return this.getCoordinator().sendMessage<WarmupResult>(
+      await this.init(generation);
+      this.assertActive(generation);
+      return this.getCoordinator(generation).sendMessage<WarmupResult>(
         'warmup',
         { language },
         language === 'typescript' ? TYPESCRIPT_WARMUP_TIMEOUT_MS : INIT_TIMEOUT_MS
@@ -473,6 +660,8 @@ export class JavaScriptWorkerClient {
     call: RuntimeProgramPreparationCall,
     language: JavaScriptWorkerLanguage = 'javascript'
   ): Promise<RuntimeProgramPreparationResult> {
+    this.assertActive();
+    const generation = this.generation;
     const startedAt = performanceNow();
     const preparation = Object.freeze({
       mode: call.mode,
@@ -493,7 +682,8 @@ export class JavaScriptWorkerClient {
       if (language === 'typescript' || call.mode === 'trace') {
         await this.options.typescriptCompilerPreflight?.();
       }
-      await this.init();
+      await this.init(generation);
+      this.assertActive(generation);
       if (call.signal?.aborted) {
         const error = new Error('Prepared JavaScript execution aborted.');
         error.name = 'AbortError';
@@ -502,7 +692,7 @@ export class JavaScriptWorkerClient {
 
       const operation =
         call.mode === 'trace' ? 'execute-with-tracing' : 'execute-code';
-      const coordinator = this.getCoordinator();
+      const coordinator = this.getCoordinator(generation);
       const reply = await coordinator.core.runClientEffect(
         coordinator.sendMessageEffect<PreparedExecutionReply>(
           'prepare-execution',
@@ -544,7 +734,8 @@ export class JavaScriptWorkerClient {
         return preparedExecution;
       };
 
-      const program = createJavaScriptPreparedProgram({
+      let program: RuntimePreparedProgram;
+      program = createJavaScriptPreparedProgram({
         mode: preparation.mode,
         executeCode:
           preparation.mode === 'code'
@@ -553,7 +744,8 @@ export class JavaScriptWorkerClient {
                   language,
                   preparation,
                   requirePreparedExecution(),
-                  caseCall
+                  caseCall,
+                  generation
                 )
             : undefined,
         executeCodeBatch:
@@ -563,7 +755,8 @@ export class JavaScriptWorkerClient {
                   language,
                   preparation,
                   requirePreparedExecution(),
-                  batchCall
+                  batchCall,
+                  generation
                 )
             : undefined,
         executeTrace:
@@ -573,7 +766,8 @@ export class JavaScriptWorkerClient {
                   language,
                   preparation,
                   requirePreparedExecution(),
-                  caseCall
+                  caseCall,
+                  generation
                 )
             : undefined,
         executeTraceBatch:
@@ -583,13 +777,17 @@ export class JavaScriptWorkerClient {
                   language,
                   preparation,
                   requirePreparedExecution(),
-                  batchCall
+                  batchCall,
+                  generation
                 )
             : undefined,
         dispose: () => {
           preparedExecution = undefined;
+          this.preparedPrograms.delete(program);
         },
       });
+      this.assertActive(generation);
+      this.preparedPrograms.add(program);
       const totalMs = performanceNow() - startedAt;
       return {
         kind: 'prepared',
@@ -630,28 +828,51 @@ export class JavaScriptWorkerClient {
       readonly executionStyle: JavaScriptExecutionStyle;
     },
     preparedExecution: unknown,
+    call: RuntimePreparedCodeCall,
+    expectedGeneration: number
+  ): Promise<CodeExecutionResult> {
+    return this.runIsolatedExecution(
+      (worker) =>
+        this.executePreparedCodeOnWorker(
+          worker,
+          language,
+          preparation,
+          preparedExecution,
+          call
+        ),
+      expectedGeneration
+    );
+  }
+
+  private async executePreparedCodeOnWorker(
+    worker: JavaScriptWorkerConnection,
+    language: JavaScriptWorkerLanguage,
+    preparation: {
+      readonly code: string;
+      readonly functionName: string | null;
+      readonly executionStyle: JavaScriptExecutionStyle;
+    },
+    preparedExecution: unknown,
     call: RuntimePreparedCodeCall
   ): Promise<CodeExecutionResult> {
     const wallClockMs = call.limits?.wallClockMs ?? EXECUTION_TIMEOUT_MS;
     try {
-      const result = await this.runIsolatedExecution((worker) =>
-        this.runExecution(
+      const result = await this.runExecution(
+        worker,
+        this.dispatchPreparedExecutionEffect<RawExecutionPayload>(
           worker,
-          this.dispatchPreparedExecutionEffect<RawExecutionPayload>(
-            worker,
-            'execute-code',
-            {
-              code: preparation.code,
-              functionName: preparation.functionName ?? '',
-              inputs: call.inputs,
-              executionStyle: preparation.executionStyle,
-              language,
-              preparedExecution,
-            }
-          ),
-          wallClockMs,
-          call.signal
-        )
+          'execute-code',
+          {
+            code: preparation.code,
+            functionName: preparation.functionName ?? '',
+            inputs: call.inputs,
+            executionStyle: preparation.executionStyle,
+            language,
+            preparedExecution,
+          }
+        ),
+        wallClockMs,
+        call.signal
       );
       return liftCodeOutcome(result, 'JavaScript execution failed');
     } catch (error) {
@@ -684,30 +905,54 @@ export class JavaScriptWorkerClient {
       readonly traceOptions?: RuntimeTraceCall['traceOptions'];
     },
     preparedExecution: unknown,
+    call: RuntimePreparedTraceCall,
+    expectedGeneration: number
+  ): Promise<ExecutionResult> {
+    return this.runIsolatedExecution(
+      (worker) =>
+        this.executePreparedTraceOnWorker(
+          worker,
+          language,
+          preparation,
+          preparedExecution,
+          call
+        ),
+      expectedGeneration
+    );
+  }
+
+  private async executePreparedTraceOnWorker(
+    worker: JavaScriptWorkerConnection,
+    language: JavaScriptWorkerLanguage,
+    preparation: {
+      readonly code: string;
+      readonly functionName: string | null;
+      readonly executionStyle: JavaScriptExecutionStyle;
+      readonly traceOptions?: RuntimeTraceCall['traceOptions'];
+    },
+    preparedExecution: unknown,
     call: RuntimePreparedTraceCall
   ): Promise<ExecutionResult> {
     const wallClockMs = call.limits?.wallClockMs ?? TRACING_TIMEOUT_MS;
     try {
-      const result = await this.runIsolatedExecution((worker) =>
-        this.runExecution(
+      const result = await this.runExecution(
+        worker,
+        this.dispatchPreparedExecutionEffect<JavaScriptRawTraceResult>(
           worker,
-          this.dispatchPreparedExecutionEffect<JavaScriptRawTraceResult>(
-            worker,
-            'execute-with-tracing',
-            {
-              code: preparation.code,
-              functionName: preparation.functionName,
-              inputs: call.inputs,
-              options: preparation.traceOptions,
-              executionStyle: preparation.executionStyle,
-              language,
-              preparedExecution,
-              traceEventTransport: traceEventTransferRequest(),
-            }
-          ),
-          wallClockMs,
-          call.signal
-        )
+          'execute-with-tracing',
+          {
+            code: preparation.code,
+            functionName: preparation.functionName,
+            inputs: call.inputs,
+            options: preparation.traceOptions,
+            executionStyle: preparation.executionStyle,
+            language,
+            preparedExecution,
+            traceEventTransport: traceEventTransferRequest(),
+          }
+        ),
+        wallClockMs,
+        call.signal
       );
       return liftTraceOutcome(
         result,
@@ -738,7 +983,7 @@ export class JavaScriptWorkerClient {
     }
   }
 
-  private async executePreparedCodeBatch(
+  private executePreparedCodeBatch(
     language: JavaScriptWorkerLanguage,
     preparation: {
       readonly code: string;
@@ -746,55 +991,28 @@ export class JavaScriptWorkerClient {
       readonly executionStyle: JavaScriptExecutionStyle;
     },
     preparedExecution: unknown,
-    call: RuntimePreparedCodeBatchCall
+    call: RuntimePreparedCodeBatchCall,
+    expectedGeneration: number
   ): Promise<readonly CodeExecutionResult[]> {
-    const wallClockMs = call.limits?.wallClockMs ?? EXECUTION_TIMEOUT_MS;
-    try {
-      const result = await this.runIsolatedExecution((worker) =>
-        this.runExecution(
+    return this.runIsolatedBatch(
+      call.inputBatch.length,
+      (worker, index) =>
+        this.executePreparedCodeOnWorker(
           worker,
-          this.dispatchPreparedExecutionEffect<RawExecutionBatchPayload>(
-            worker,
-            'execute-code-batch',
-            {
-              code: preparation.code,
-              functionName: preparation.functionName ?? '',
-              inputBatch: [...call.inputBatch],
-              executionStyle: preparation.executionStyle,
-              language,
-              preparedExecution,
-            }
-          ),
-          wallClockMs * call.inputBatch.length,
-          call.signal
-        )
-      );
-      return liftCodeBatchOutcome(
-        result,
-        'JavaScript batch execution failed'
-      ).results;
-    } catch (error) {
-      if (
-        call.limits?.wallClockMs !== undefined &&
-        error instanceof ExecutionTimeoutError
-      ) {
-        return call.inputBatch.map(() => ({
-          kind: 'limit' as const,
-          reason: 'client-timeout' as const,
-          error: error.message,
-          consoleOutput: [],
-          timings: {
-            totalMs: call.limits!.wallClockMs!,
-            runMs: call.limits!.wallClockMs!,
-            artifactCacheHit: true,
-          },
-        }));
-      }
-      throw error;
-    }
+          language,
+          preparation,
+          preparedExecution,
+          {
+            inputs: call.inputBatch[index]!,
+            signal: call.signal,
+            limits: call.limits,
+          }
+        ),
+      expectedGeneration
+    );
   }
 
-  private async executePreparedTraceBatch(
+  private executePreparedTraceBatch(
     language: JavaScriptWorkerLanguage,
     preparation: {
       readonly code: string;
@@ -803,72 +1021,29 @@ export class JavaScriptWorkerClient {
       readonly traceOptions?: RuntimeTraceCall['traceOptions'];
     },
     preparedExecution: unknown,
-    call: RuntimePreparedTraceBatchCall
+    call: RuntimePreparedTraceBatchCall,
+    expectedGeneration: number
   ): Promise<readonly ExecutionResult[]> {
-    const wallClockMs = call.limits?.wallClockMs ?? TRACING_TIMEOUT_MS;
-    try {
-      const result = await this.runIsolatedExecution((worker) =>
-        this.runExecution(
+    return this.runIsolatedBatch(
+      call.inputBatch.length,
+      (worker, index) =>
+        this.executePreparedTraceOnWorker(
           worker,
-          this.dispatchPreparedExecutionEffect<{
-            results?: JavaScriptRawTraceResult[];
-            error?: string;
-          }>(
-            worker,
-            'execute-trace-batch',
-            {
-              code: preparation.code,
-              functionName: preparation.functionName,
-              inputBatch: [...call.inputBatch],
-              options: preparation.traceOptions,
-              executionStyle: preparation.executionStyle,
-              language,
-              preparedExecution,
-            }
-          ),
-          wallClockMs * call.inputBatch.length,
-          call.signal
-        )
-      );
-      if (!Array.isArray(result.results)) {
-        throw new Error(
-          result.error ?? 'JavaScript trace batch returned no results.'
-        );
-      }
-      return result.results.map((entry) =>
-        liftTraceOutcome(
-          entry,
-          entry.trace ??
-            createEmptyRuntimeTrace(language, {
-              runId: `${language}:run`,
-            }),
-          'JavaScript tracing failed'
-        )
-      );
-    } catch (error) {
-      if (
-        call.limits?.wallClockMs !== undefined &&
-        error instanceof ExecutionTimeoutError
-      ) {
-        return call.inputBatch.map(() => ({
-          kind: 'limit' as const,
-          reason: 'client-timeout' as const,
-          error: error.message,
-          trace: createEmptyRuntimeTrace(language),
-          executionTimeMs: call.limits!.wallClockMs!,
-          consoleOutput: [],
-          timings: {
-            totalMs: call.limits!.wallClockMs!,
-            runMs: call.limits!.wallClockMs!,
-            artifactCacheHit: true,
-          },
-        }));
-      }
-      throw error;
-    }
+          language,
+          preparation,
+          preparedExecution,
+          {
+            inputs: call.inputBatch[index]!,
+            signal: call.signal,
+            limits: call.limits,
+          }
+        ),
+      expectedGeneration
+    );
   }
 
   async executeWithTracing(call: RuntimeTraceCall & { language?: JavaScriptWorkerLanguage }): Promise<ExecutionResult> {
+    const expectedGeneration = this.generation;
     const { code, functionName, inputs, traceOptions, executionStyle = 'function', language = 'javascript', signal } = call;
     const result = await this.runIsolatedExecution((worker) =>
       this.runExecution(
@@ -885,11 +1060,13 @@ export class JavaScriptWorkerClient {
             language,
             traceEventTransport: traceEventTransferRequest(),
           },
-          language
+          language,
+          expectedGeneration
         ),
         TRACING_TIMEOUT_MS,
         signal
-      )
+      ),
+      expectedGeneration
     );
     return liftTraceOutcome(
       result,
@@ -899,6 +1076,7 @@ export class JavaScriptWorkerClient {
   }
 
   async executeCode(call: RuntimeCodeCall & { language?: JavaScriptWorkerLanguage }): Promise<CodeExecutionResult> {
+    const expectedGeneration = this.generation;
     const { code, functionName, inputs, executionStyle = 'function', language = 'javascript', signal, limits } = call;
     const wallClockMs = limits?.wallClockMs ?? EXECUTION_TIMEOUT_MS;
     const result = await this.runIsolatedExecution((worker) =>
@@ -914,44 +1092,131 @@ export class JavaScriptWorkerClient {
             executionStyle,
             language,
           },
-          language
+          language,
+          expectedGeneration
         ),
         wallClockMs,
         signal
-      )
+      ),
+      expectedGeneration
     );
     return liftCodeOutcome(result, 'JavaScript execution failed');
   }
 
-  async executeCodeBatch(call: RuntimeBatchCall & { language?: JavaScriptWorkerLanguage }): Promise<CodeExecutionBatchResult> {
-    const { code, functionName, inputBatch, executionStyle = 'function', language = 'javascript', signal } = call;
-    const result = await this.runIsolatedExecution((worker) =>
-      this.runExecution(
-        worker,
-        this.dispatchExecutionEffect<RawExecutionBatchPayload>(
-          worker,
-          'execute-code-batch',
-          {
-            code,
-            functionName,
-            inputBatch,
-            executionStyle,
-            language,
-          },
-          language
-        ),
-        EXECUTION_TIMEOUT_MS,
-        signal
-      )
+  async executeCodeBatch(call: JavaScriptWorkerBatchCall): Promise<CodeExecutionBatchResult> {
+    const startedAt = performanceNow();
+    const {
+      code,
+      functionName,
+      inputBatch,
+      executionStyle = 'function',
+      language = 'javascript',
+      signal,
+      limits,
+      batchWallClockMs = EXECUTION_TIMEOUT_MS,
+    } = call;
+    const preparation = await this.prepareProgram(
+      {
+        mode: 'code',
+        code,
+        functionName,
+        executionStyle,
+        signal,
+      },
+      language
     );
-    return liftCodeBatchOutcome(result, 'JavaScript execution failed');
+    if (preparation.kind !== 'prepared') {
+      const results = inputBatch.map<CodeExecutionResult>(() =>
+        preparation.kind === 'failed'
+          ? {
+              kind: 'failed',
+              error: preparation.error,
+              ...(preparation.errorLine !== undefined
+                ? { errorLine: preparation.errorLine }
+                : {}),
+              diagnosticStage: preparation.diagnosticStage ?? 'compile',
+              ...(preparation.diagnostic !== undefined
+                ? { diagnostic: preparation.diagnostic }
+                : {}),
+              consoleOutput: [...preparation.consoleOutput],
+              ...(preparation.timings ? { timings: preparation.timings } : {}),
+            }
+          : {
+              kind: 'limit',
+              reason: preparation.reason,
+              error: preparation.error,
+              ...(preparation.diagnostic !== undefined
+                ? { diagnostic: preparation.diagnostic }
+                : {}),
+              consoleOutput: [...preparation.consoleOutput],
+              ...(preparation.timings ? { timings: preparation.timings } : {}),
+            }
+      );
+      return {
+        results,
+        error: preparation.error,
+        consoleOutput: results.flatMap((result) => result.consoleOutput),
+        executionTimeMs: performanceNow() - startedAt,
+        timings: {
+          ...(preparation.timings ?? {}),
+          totalMs: performanceNow() - startedAt,
+        },
+      };
+    }
+    if (preparation.program.mode !== 'code') {
+      await preparation.program.dispose();
+      throw new Error('JavaScript code batch prepared a tracing program.');
+    }
+    try {
+      const executeBatch = preparation.program.executeBatchIsolated;
+      if (!executeBatch) {
+        throw new Error(
+          'Prepared JavaScript code program did not expose isolated batching.'
+        );
+      }
+      const results = [
+        ...(await this.runBatchWithDeadline(
+          (batchSignal) =>
+            executeBatch({ inputBatch, signal: batchSignal, limits }),
+          batchWallClockMs,
+          signal
+        )),
+      ];
+      const totalMs = performanceNow() - startedAt;
+      return {
+        results,
+        consoleOutput: results.flatMap((result) => result.consoleOutput),
+        executionTimeMs: totalMs,
+        timings: {
+          totalMs,
+          runMs: results.reduce(
+            (total, result) => total + (result.timings?.runMs ?? 0),
+            0
+          ),
+          artifactCacheHit: true,
+        },
+      };
+    } finally {
+      await preparation.program.dispose();
+    }
+  }
+
+  reset(): void {
+    if (this.terminated) return;
+    this.generation += 1;
+    this.disposePreparedPrograms();
+    this.terminateGeneration(
+      new WorkerTerminatedError('JavaScript worker generation was reset.')
+    );
+    this.executionTail = Promise.resolve();
   }
 
   terminate(): void {
-    this.terminateAll();
+    if (this.terminated) return;
+    this.terminated = true;
+    this.generation += 1;
+    this.disposePreparedPrograms();
+    this.terminateGeneration();
+    this.executionTail = Promise.resolve();
   }
-}
-
-export function isJavaScriptWorkerSupported(): boolean {
-  return typeof Worker !== 'undefined';
 }

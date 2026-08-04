@@ -59,20 +59,16 @@ function linkAbortSignals(
 export interface JavaScriptPreparedProgramOperations {
   readonly mode: RuntimePreparedProgramMode;
   executeCode?(
-    call: RuntimePreparedCodeCall,
-    signal: AbortSignal
+    call: RuntimePreparedCodeCall
   ): Promise<CodeExecutionResult>;
   executeCodeBatch?(
-    call: RuntimePreparedCodeBatchCall,
-    signal: AbortSignal
+    call: RuntimePreparedCodeBatchCall
   ): Promise<readonly CodeExecutionResult[]>;
   executeTrace?(
-    call: RuntimePreparedTraceCall,
-    signal: AbortSignal
+    call: RuntimePreparedTraceCall
   ): Promise<ExecutionResult>;
   executeTraceBatch?(
-    call: RuntimePreparedTraceBatchCall,
-    signal: AbortSignal
+    call: RuntimePreparedTraceBatchCall
   ): Promise<readonly ExecutionResult[]>;
   dispose?(): void | Promise<void>;
 }
@@ -147,13 +143,13 @@ export function createJavaScriptPreparedProgram(
       }),
       executeIsolated: (call: RuntimePreparedCodeCall) =>
         run(call.signal, (signal) =>
-          operations.executeCode!({ ...call, signal }, signal)
+          operations.executeCode!({ ...call, signal })
         ),
       ...(operations.executeCodeBatch
         ? {
             executeBatchIsolated: (call: RuntimePreparedCodeBatchCall) =>
               run(call.signal, (signal) =>
-                operations.executeCodeBatch!({ ...call, signal }, signal)
+                operations.executeCodeBatch!({ ...call, signal })
               ),
           }
         : {}),
@@ -174,13 +170,13 @@ export function createJavaScriptPreparedProgram(
     }),
     executeIsolated: (call: RuntimePreparedTraceCall) =>
       run(call.signal, (signal) =>
-        operations.executeTrace!({ ...call, signal }, signal)
+        operations.executeTrace!({ ...call, signal })
       ),
     ...(operations.executeTraceBatch
       ? {
           executeBatchIsolated: (call: RuntimePreparedTraceBatchCall) =>
             run(call.signal, (signal) =>
-              operations.executeTraceBatch!({ ...call, signal }, signal)
+              operations.executeTraceBatch!({ ...call, signal })
             ),
         }
       : {}),
