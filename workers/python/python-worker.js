@@ -62,12 +62,15 @@ const SHARED_KERNEL_POLICY_MODULE_PATHS = [
 ];
 const DEFAULT_PYTHON_COMPILE_CACHE_LIMIT = 4;
 const MAX_PYTHON_COMPILE_CACHE_LIMIT = 16;
+const PYTHON_RUNTIME_IMAGE_PROTOCOL_VERSION = 'tracecode-python-runtime-image-v1';
 
 let configuredPythonRuntimeAssets = null;
 let configuredPythonRuntimeAssetsSignature = null;
+let configuredPythonRuntimeImage = null;
 let configuredPythonSnippetsLoaded = false;
 let pythonModuleBootstrapPromise = null;
 let moduleLoadPyodide = null;
+let moduleRuntimeImageProtocolVersion = null;
 let trustedPythonUserAuthorityLockdown = null;
 let pythonCompileCacheLimit = DEFAULT_PYTHON_COMPILE_CACHE_LIMIT;
 
@@ -80,6 +83,68 @@ function configurePythonWorkerOptions(payload) {
     );
   }
   pythonCompileCacheLimit = value;
+}
+
+function configurePythonRuntimeImage(value) {
+  if (value === undefined || value === null) {
+    configuredPythonRuntimeImage = null;
+    return;
+  }
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    throw new Error('Python worker runtimeImage must be an object.');
+  }
+  if (value.protocolVersion !== PYTHON_RUNTIME_IMAGE_PROTOCOL_VERSION) {
+    throw new Error(
+      `Python worker runtimeImage protocol must be "${PYTHON_RUNTIME_IMAGE_PROTOCOL_VERSION}".`
+    );
+  }
+  if (
+    typeof WebAssembly !== 'object' ||
+    typeof WebAssembly.Module !== 'function' ||
+    !(value.compiledModule instanceof WebAssembly.Module)
+  ) {
+    throw new Error('Python worker runtimeImage.compiledModule must be a WebAssembly.Module.');
+  }
+  const snapshot = value.snapshot instanceof Uint8Array
+    ? value.snapshot
+    : value.snapshot instanceof ArrayBuffer
+      ? new Uint8Array(value.snapshot)
+      : null;
+  if (!snapshot || snapshot.byteLength === 0) {
+    throw new Error('Python worker runtimeImage.snapshot must contain bytes.');
+  }
+  if (
+    typeof value.pythonHashSeed !== 'string' ||
+    value.pythonHashSeed.trim() === ''
+  ) {
+    throw new Error('Python worker runtimeImage.pythonHashSeed must be a non-empty string.');
+  }
+  configuredPythonRuntimeImage = {
+    protocolVersion: PYTHON_RUNTIME_IMAGE_PROTOCOL_VERSION,
+    compiledModule: value.compiledModule,
+    snapshot,
+    pythonHashSeed: value.pythonHashSeed,
+  };
+}
+
+function pyodideInitializationOptions(indexURL) {
+  if (!configuredPythonRuntimeImage) return { indexURL };
+  const advertisedProtocol = DECLARED_PYTHON_WORKER_FORMAT === 'module'
+    ? moduleRuntimeImageProtocolVersion
+    : self.__TRACECODE_PYTHON_RUNTIME_IMAGE_PROTOCOL__;
+  if (advertisedProtocol !== PYTHON_RUNTIME_IMAGE_PROTOCOL_VERSION) {
+    throw new Error(
+      `Python runtime loader does not implement ${PYTHON_RUNTIME_IMAGE_PROTOCOL_VERSION}.`
+    );
+  }
+  return {
+    indexURL,
+    env: {
+      PYTHONHASHSEED: configuredPythonRuntimeImage.pythonHashSeed,
+    },
+    _compiledWasmModule: configuredPythonRuntimeImage.compiledModule,
+    _loadSnapshot: configuredPythonRuntimeImage.snapshot,
+  };
 }
 
 function configurePythonRuntimeAssets(value) {
@@ -995,6 +1060,10 @@ async function ensurePythonModuleBootstrap() {
     }
 
     moduleLoadPyodide = loadPyodideExport;
+    moduleRuntimeImageProtocolVersion =
+      loaderModule?.tracecodePythonRuntimeImageProtocolVersion ??
+      loaderModule?.default?.tracecodePythonRuntimeImageProtocolVersion ??
+      null;
     configuredPythonSnippetsLoaded = true;
     emitRuntimeDiagnostic('info', 'module-bootstrap-loaded', 'Loaded Python module-worker bootstrap graph.', {
       loaderUrl,
@@ -1030,7 +1099,9 @@ async function loadPyodideInstance() {
           throw new Error('Python module runtime loader is unavailable after bootstrap.');
         }
         const indexURL = configuredPythonRuntimeAssets.indexUrl;
-        pyodide = await moduleLoadPyodide({ indexURL });
+        pyodide = await moduleLoadPyodide(
+          pyodideInitializationOptions(indexURL)
+        );
         await ensurePythonLibraryPackages(pyodide);
         emitRuntimeDiagnostic('info', 'runtime-initialized', 'Initialized Python module runtime.', { indexURL });
         return pyodide;
@@ -1069,7 +1140,9 @@ async function loadPyodideInstance() {
       const initErrors = [];
       for (const { indexURL } of runtimeCandidates) {
         try {
-          pyodide = await self.loadPyodide({ indexURL });
+          pyodide = await self.loadPyodide(
+            pyodideInitializationOptions(indexURL)
+          );
           await ensurePythonLibraryPackages(pyodide);
           emitRuntimeDiagnostic('info', 'runtime-initialized', 'Initialized Python runtime.', { indexURL });
           return pyodide;
@@ -9039,6 +9112,7 @@ async function processMessage(data) {
         const startTime = performance.now();
         configurePythonWorkerOptions(payload);
         configurePythonRuntimeAssets(payload?.runtimeAssets);
+        configurePythonRuntimeImage(payload?.runtimeImage);
         await ensurePythonModuleBootstrap();
         const loadTimeMs = performance.now() - startTime;
         trustedPythonWorkerPostMessage({ id, type: 'init-result', payload: { success: true, loadTimeMs }, protocolToken });

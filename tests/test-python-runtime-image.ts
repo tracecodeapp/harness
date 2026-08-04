@@ -1,0 +1,156 @@
+import { createHash } from 'node:crypto';
+import { readFile } from 'node:fs/promises';
+import {
+  createPythonRuntimeImageFactory,
+} from '../packages/runtime-python/src/python-runtime-image';
+import {
+  resolveBuiltInPythonRuntimeAssets,
+} from '../packages/runtime-python/src/python-runtime-assets';
+
+function assertCondition(condition: unknown, message: string): asserts condition {
+  if (!condition) throw new Error(message);
+}
+
+const wasmBytes = new Uint8Array([
+  0x00, 0x61, 0x73, 0x6d,
+  0x01, 0x00, 0x00, 0x00,
+]);
+const snapshotBytes = new Uint8Array([1, 2, 3, 4, 5, 6]);
+const requests: string[] = [];
+const immutable = {
+  mutability: 'immutable',
+  address: 'content',
+} as const;
+const factory = createPythonRuntimeImageFactory({
+  descriptor: {
+    protocolVersion: 'tracecode-python-runtime-image-v1',
+    engine: 'chromium',
+    pythonHashSeed: '0',
+    wasm: {
+      url: 'https://runtime.test/python.wasm',
+      integrity: 'sha256-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=',
+      mediaType: 'application/wasm',
+      size: wasmBytes.byteLength,
+      delivery: immutable,
+    },
+    snapshot: {
+      url: 'https://runtime.test/python.snapshot',
+      integrity: 'sha256-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=',
+      mediaType: 'application/octet-stream',
+      size: snapshotBytes.byteLength,
+      delivery: immutable,
+    },
+  },
+  fetch: async (input) => {
+    const url = String(input);
+    requests.push(url);
+    const bytes = url.endsWith('.wasm') ? wasmBytes : snapshotBytes;
+    return new Response(bytes, {
+      status: 200,
+      headers: {
+        'content-length': String(bytes.byteLength),
+        'content-type': url.endsWith('.wasm')
+          ? 'application/wasm'
+          : 'application/octet-stream',
+      },
+    });
+  },
+});
+
+const [first, second] = await Promise.all([
+  factory.acquire(),
+  factory.acquire(),
+]);
+assertCondition(first === second, 'Concurrent runtime-image acquisition must share one immutable image.');
+assertCondition(
+  requests.filter((url) => url.endsWith('.wasm')).length === 1 &&
+    requests.filter((url) => url.endsWith('.snapshot')).length === 1,
+  `Runtime-image factory must fetch each artifact once: ${JSON.stringify(requests)}`
+);
+assertCondition(
+  first.compiledModule instanceof WebAssembly.Module,
+  'Runtime-image factory must retain a compiled WebAssembly.Module.'
+);
+assertCondition(
+  first.snapshot === second.snapshot &&
+    first.snapshot.byteLength === snapshotBytes.byteLength,
+  'Runtime-image factory must retain one clean snapshot backing array.'
+);
+assertCondition(
+  factory.metrics()?.snapshotBytes === snapshotBytes.byteLength,
+  'Runtime-image factory must expose its retained snapshot footprint.'
+);
+
+factory.dispose();
+await factory.acquire().then(
+  () => {
+    throw new Error('Disposed runtime-image factory unexpectedly acquired an image.');
+  },
+  (error) => {
+    assertCondition(
+      String(error).includes('disposed'),
+      `Disposed runtime-image factory must fail clearly: ${String(error)}`
+    );
+  }
+);
+
+const expectedSnapshots = {
+  chromium:
+    'f6e5a59006c18656d10b591681fe6bd009b7d1385ec395a3b0080d333bbb8151',
+  firefox:
+    'a334a4720d75dbc92c2062f41eb7cab2a1cd98192748ad09f43fd1ba5cce3ba9',
+  webkit:
+    'ebf430bc0a7a2408af4c736103fba70711058e0f9e60a890d50ed2e1d7076efb',
+} as const;
+for (const [engine, expectedHash] of Object.entries(expectedSnapshots)) {
+  const builtIn = resolveBuiltInPythonRuntimeAssets(
+    {
+      pythonWorker: '/workers/python-worker.js',
+    } as never,
+    engine as keyof typeof expectedSnapshots
+  );
+  assertCondition(
+    builtIn.loaderUrl === '/workers/python/pyodide-0.29.3/pyodide.js' &&
+      builtIn.indexUrl === '/workers/python/pyodide-0.29.3/',
+    `Built-in ${engine} runtime URLs must follow the synced Harness asset layout.`
+  );
+  assertCondition(
+    builtIn.image.snapshot.url ===
+      `/workers/python/pyodide-0.29.3/snapshots/${engine}.bin`,
+    `Built-in ${engine} snapshot URL must be engine-specific.`
+  );
+  const bytes = await readFile(
+    `workers/python/pyodide-0.29.3/snapshots/${engine}.bin`
+  );
+  assertCondition(
+    bytes.byteLength === builtIn.image.snapshot.size &&
+      createHash('sha256').update(bytes).digest('hex') === expectedHash,
+    `Shipped ${engine} snapshot must match its immutable descriptor.`
+  );
+}
+
+const shippedWasm = await readFile(
+  'workers/python/pyodide-0.29.3/pyodide.asm.wasm'
+);
+assertCondition(
+  shippedWasm.byteLength === 8_647_684 &&
+    createHash('sha256').update(shippedWasm).digest('hex') ===
+      'e2f4ee75b325e35eb31bfb8c613d4dd5098f5502c156a97847686875b5025480',
+  'Shipped Pyodide Wasm must match the immutable runtime-image descriptor.'
+);
+
+let unknownEngineError = '';
+try {
+  resolveBuiltInPythonRuntimeAssets(
+    { pythonWorker: '/workers/python-worker.js' } as never,
+    'unknown'
+  );
+} catch (error) {
+  unknownEngineError = error instanceof Error ? error.message : String(error);
+}
+assertCondition(
+  unknownEngineError.includes('requires a recognized'),
+  `Unknown browser engines must fail closed: ${unknownEngineError}`
+);
+
+console.log('PASS: Python immutable runtime-image factory');

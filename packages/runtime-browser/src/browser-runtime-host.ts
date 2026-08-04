@@ -113,6 +113,10 @@ function assertLeaseShape(
     );
   }
   if (
+    (
+      lease.preflightLanguage !== undefined &&
+      typeof lease.preflightLanguage !== 'function'
+    ) ||
     typeof lease.disposeLanguage !== 'function' ||
     typeof lease.dispose !== 'function'
   ) {
@@ -330,22 +334,60 @@ class BrowserRuntimeHostImplementation implements BrowserRuntimeHost {
     return this.supportedLanguages.includes(language);
   }
 
-  preflightLanguage(language: Language): Promise<BrowserRuntimeReadiness> {
-    this.#assertActive();
-    return Promise.all([
-      this.environment.preflight(language),
-      this.#executionHostProviders.has(language)
-        ? this.#executionHostSlot.host?.ready() ?? Promise.resolve()
-        : Promise.resolve(),
-    ]).then(([readiness]) => readiness);
+  async #applyProviderReadiness(
+    readiness: BrowserRuntimeReadiness,
+    executionHostReady: Promise<void>
+  ): Promise<BrowserRuntimeReadiness> {
+    try {
+      await Promise.all([
+        executionHostReady,
+        this.#leaseByLanguage
+          .get(readiness.language)
+          ?.preflightLanguage?.(readiness.language) ?? Promise.resolve(),
+      ]);
+      return readiness;
+    } catch (error) {
+      return Object.freeze({
+        ...readiness,
+        status: 'unavailable' as const,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
   }
 
-  preflight(): Promise<BrowserRuntimeEnvironmentReport> {
+  async preflightLanguage(
+    language: Language
+  ): Promise<BrowserRuntimeReadiness> {
     this.#assertActive();
-    return Promise.all([
-      this.environment.preflightAll(),
-      this.#executionHostSlot.host?.ready() ?? Promise.resolve(),
-    ]).then(([report]) => report);
+    const readiness = await this.environment.preflight(language);
+    return this.#applyProviderReadiness(
+      readiness,
+      this.#executionHostProviders.has(language)
+        ? this.#executionHostSlot.host?.ready() ?? Promise.resolve()
+        : Promise.resolve()
+    );
+  }
+
+  async preflight(): Promise<BrowserRuntimeEnvironmentReport> {
+    this.#assertActive();
+    const report = await this.environment.preflightAll();
+    const executionHostReady =
+      this.#executionHostSlot.host?.ready() ?? Promise.resolve();
+    const runtimes = await Promise.all(
+      report.runtimes.map((readiness) => {
+        if (!readiness.selected) return readiness;
+        return this.#applyProviderReadiness(
+          readiness,
+          this.#executionHostProviders.has(readiness.language)
+            ? executionHostReady
+            : Promise.resolve()
+        );
+      })
+    );
+    return Object.freeze({
+      ...report,
+      runtimes: Object.freeze(runtimes),
+    });
   }
 
   warmLanguage(

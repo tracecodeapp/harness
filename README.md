@@ -30,6 +30,12 @@ Copy the browser assets into the application's public directory:
 pnpm exec tracecode-harness sync-assets public/workers
 ```
 
+Version 0.15 includes the Python runtime image in that asset tree. The Judge
+provider automatically selects the Chromium, Firefox, or WebKit snapshot and
+does not require a Python-specific application API. Keep the copied
+`python/pyodide-0.29.3` directory intact and serve `.wasm` files as
+`application/wasm`.
+
 Limit the copied assets when an application uses only some languages:
 
 ```bash
@@ -204,6 +210,15 @@ asset URLs. For untrusted execution, route workers through a dedicated,
 credential-free execution origin. See
 [Browser execution host](./docs/browser-execution-host.md) and
 [Isolation boundaries](./docs/isolation-boundaries.md).
+
+The default Python Judge deployment is self-contained under `/workers` after
+`sync-assets`. It retains immutable CPython startup state at provider scope,
+leases one clean Worker to a submission for preparation plus its case batch,
+and then terminates that Worker. A custom Python runtime manifest must include
+an engine-matched `runtimeImage`; missing or cross-engine images fail closed.
+Project Python processes continue to use the general TraceKernel process path
+because their modules, filesystem, stdin, servers, and lifetime are
+user-controlled.
 
 Java uses TraceJVM. Publish its engine module, WebAssembly binary, and runtime
 profile as one immutable directory:

@@ -35,7 +35,7 @@ interface BatchLanguageResult {
   readonly traceWorkerUrls: readonly string[];
 }
 
-const LANGUAGES: readonly BatchLanguage[] = [
+const ALL_LANGUAGES: readonly BatchLanguage[] = [
   'python',
   'javascript',
   'typescript',
@@ -43,6 +43,19 @@ const LANGUAGES: readonly BatchLanguage[] = [
   'csharp',
   'cpp',
 ] as const;
+const requestedLanguages =
+  process.env.TRACECODE_ALGORITHM_BATCH_LANGUAGES?.split(',')
+    .map((language) => language.trim())
+    .filter(Boolean);
+const LANGUAGES: readonly BatchLanguage[] = requestedLanguages?.length
+  ? requestedLanguages.map((language) => {
+      assertCondition(
+        ALL_LANGUAGES.includes(language as BatchLanguage),
+        `Unknown browser algorithm batch language ${JSON.stringify(language)}.`
+      );
+      return language as BatchLanguage;
+    })
+  : ALL_LANGUAGES;
 
 function assertCondition(condition: unknown, message: string): asserts condition {
   if (!condition) throw new Error(message);
@@ -226,11 +239,11 @@ async function main(): Promise<void> {
         console.error(`[browser pageerror] ${error.stack ?? error.message}`);
       });
       await page.goto(`${server.origin}/index.html`, { waitUntil: 'load' });
-      const result = await page.evaluate(async () => {
+      const result = await page.evaluate(async (languages) => {
         const moduleUrl: string = '/algorithm-batch.mjs';
         const module = await import(moduleUrl);
-        return module.runBrowserAlgorithmBatch('/workers');
-      }) as Record<BatchLanguage, BatchLanguageResult>;
+        return module.runBrowserAlgorithmBatch('/workers', languages);
+      }, LANGUAGES) as Record<BatchLanguage, BatchLanguageResult>;
 
       for (const language of LANGUAGES) {
         const languageResult = result[language];

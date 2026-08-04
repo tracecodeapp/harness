@@ -1127,6 +1127,7 @@ const LANGUAGE_CONFORMANCE_COVERAGE: Record<Language, readonly string[]> = {
     'project.filesystem.providerLiveInterception',
     'tracing.batching',
     'tracing.events.stdout',
+    'tracing.controls.maxTraceBytes',
     'diagnostics.mappedErrorLines',
   ],
   javascript: [
@@ -1536,6 +1537,7 @@ function createUnsupportedProfile(
           maxLineEvents: false,
           maxSingleLineHits: false,
           maxStoredEvents: false,
+          maxTraceBytes: false,
           minimalTrace: false,
         },
         fidelity: {
@@ -1816,7 +1818,7 @@ async function main(): Promise<void> {
       typescriptInfo.description.includes('TraceKernel') &&
       javaInfo.description.includes('javac') &&
       javaInfo.description.includes('TraceKernel') &&
-      javaInfo.description.includes('TraceJVM or CheerpJ') &&
+      javaInfo.description.includes('Java runtime') &&
       csharpInfo.description.includes(csharpInfo.standard ?? 'C#') &&
       csharpInfo.description.includes('TraceKernel') &&
       cppInfo.description.includes(cppInfo.standard ?? 'C++') &&

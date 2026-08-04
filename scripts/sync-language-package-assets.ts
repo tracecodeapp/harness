@@ -103,6 +103,10 @@ const PACKAGE_ASSET_PLANS: PackageAssetPlan[] = [
         target: ['workers', 'python', 'runtime-core.js'],
       },
       {
+        source: ['workers', 'python', 'pyodide-0.29.3'],
+        target: ['workers', 'python', 'pyodide-0.29.3'],
+      },
+      {
         source: ['workers', 'shared', 'runtime-kernel-policy-classic.js'],
         target: ['workers', 'shared', 'runtime-kernel-policy-classic.js'],
       },

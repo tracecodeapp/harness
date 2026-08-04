@@ -115,6 +115,7 @@ export interface RuntimeCapabilities {
       maxLineEvents: boolean;
       maxSingleLineHits: boolean;
       maxStoredEvents: boolean;
+      maxTraceBytes: boolean;
       minimalTrace: boolean;
     };
     fidelity: {
@@ -173,6 +174,11 @@ export interface TraceBudget {
   maxLineEvents?: number;
   maxSingleLineHits?: number;
   maxStoredEvents?: number;
+  /**
+   * Maximum UTF-8 bytes retained for normalized trace events. Runtimes may
+   * clamp caller values to a lower hard safety ceiling.
+   */
+  maxTraceBytes?: number;
   maxPathDepth?: number;
 }
 

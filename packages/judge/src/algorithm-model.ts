@@ -25,6 +25,11 @@ export interface JudgeAlgorithmExecution {
     readonly maxLineEvents?: number;
     readonly maxSingleLineHits?: number;
     readonly maxStoredEvents?: number;
+    /**
+     * Maximum UTF-8 bytes retained for normalized trace events. Runtime hard
+     * ceilings still apply when a portable bundle requests a larger value.
+     */
+    readonly maxTraceBytes?: number;
   };
   readonly limits?: {
     readonly wallClockMs?: number;

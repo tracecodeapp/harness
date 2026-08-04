@@ -43,6 +43,7 @@ export {
 
 export {
   BROWSER_RUNTIME_ASSET_PROTOCOL_VERSION,
+  PYTHON_RUNTIME_IMAGE_PROTOCOL_VERSION,
   BROWSER_RUNTIME_IDS,
   resolveBrowserRuntimeAssets,
   resolveBrowserRuntimeAssetManifests,
@@ -61,6 +62,7 @@ export {
   type BrowserRuntimeWorkerFormat,
   type CppCompilerIntegrityEntry,
   type CppCompilerIntegrityManifest,
+  type PythonRuntimeImageAssetDescriptor,
 } from '../packages/runtime-browser/src/runtime-assets';
 
 export {

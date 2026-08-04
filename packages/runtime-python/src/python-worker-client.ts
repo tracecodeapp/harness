@@ -61,6 +61,10 @@ import {
   WorkerTerminatedError,
 } from '@tracecode/runtime-browser/internal';
 import { WorkerSessionCore } from '@tracecode/runtime-browser/internal';
+import type {
+  PythonRuntimeImage,
+  PythonRuntimeImageFactory,
+} from './python-runtime-image';
 
 export type ExecutionStyle = 'function' | 'solution-method' | 'ops-class';
 
@@ -74,6 +78,8 @@ export interface PythonWorkerClientOptions {
   debug?: boolean;
   assetPreflight?: () => Promise<void>;
   runtimeAssetPreflight?: () => Promise<void>;
+  /** Immutable page-lifetime image factory used only by disposable prepared runners. */
+  runtimeImageFactory?: PythonRuntimeImageFactory;
   /** Permanent mode is only safe when this worker is retired after its project command. */
   projectUserAuthorityMode?: 'temporary' | 'permanent';
   runtimeAssets?: {
@@ -196,6 +202,7 @@ export class PythonWorkerClient {
   private readonly workerFormat: 'classic' | 'module';
   private readonly loaderFormat: 'classic-script' | 'module';
   private readonly core: WorkerSessionCore;
+  private terminated = false;
 
   constructor(private readonly options: PythonWorkerClientOptions) {
     if (
@@ -302,6 +309,7 @@ export class PythonWorkerClient {
 
   /** Runtime-load failures that warrant a worker reset + one retry. Every error this can see is tagged. */
   private shouldResetRuntimeLoadError(error: unknown): boolean {
+    if (this.terminated) return false;
     if (error instanceof WorkerRequestTimeoutError) {
       return error.messageType === 'init' || error.messageType === 'warmup';
     }
@@ -318,7 +326,22 @@ export class PythonWorkerClient {
    * immutable value is what makes "run it again" a one-liner.
    */
   private initEffect(): Effect.Effect<InitResult, Error> {
-    const attempt = this.core.sendMessageEffect<InitResult>('init', this.runtimeAssetsPayload(), INIT_TIMEOUT_MS);
+    const attempt = Effect.suspend(() =>
+      Effect.tryPromise({
+        try: async () => {
+          if (this.options.runtimeImageFactory) {
+            await this.options.runtimeAssetPreflight?.();
+          }
+          return this.core.sendMessage<InitResult>(
+            'init',
+            await this.runtimeAssetsPayload(),
+            INIT_TIMEOUT_MS
+          );
+        },
+        catch: (error) =>
+          error instanceof Error ? error : new Error(String(error)),
+      })
+    );
     return attempt.pipe(
       Effect.catchIf(
         (error): error is Error => this.shouldResetRuntimeLoadError(error),
@@ -342,6 +365,9 @@ export class PythonWorkerClient {
    * Initialize the Python worker. Runtime loading is lazy unless warmup() is called.
    */
   async init(): Promise<InitResult> {
+    if (this.terminated) {
+      throw new Error('Python worker client has been terminated.');
+    }
     if (this.initPromise) {
       return this.initPromise;
     }
@@ -357,15 +383,20 @@ export class PythonWorkerClient {
     }
   }
 
-  private runtimeAssetsPayload(): {
+  private async runtimeAssetsPayload(): Promise<{
     compileCacheLimit?: number;
     runtimeAssets?: PythonWorkerClientOptions['runtimeAssets'];
-  } {
+    runtimeImage?: PythonRuntimeImage;
+  }> {
+    const runtimeImage = this.options.runtimeImageFactory
+      ? await this.options.runtimeImageFactory.acquire()
+      : undefined;
     return {
       ...(this.options.compileCacheLimit === undefined
         ? {}
         : { compileCacheLimit: this.options.compileCacheLimit }),
       ...(this.options.runtimeAssets ? { runtimeAssets: this.options.runtimeAssets } : {}),
+      ...(runtimeImage ? { runtimeImage } : {}),
     };
   }
 
@@ -735,6 +766,7 @@ export class PythonWorkerClient {
    * Terminate the worker and clean up resources
    */
   terminate(): void {
+    this.terminated = true;
     this.core.closeSession();
   }
 }

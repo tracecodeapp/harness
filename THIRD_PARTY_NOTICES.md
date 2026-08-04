@@ -16,16 +16,18 @@ notices, source references, and package metadata alongside the assets.
 ### Pyodide
 
 - Use: Python runtime loaded by `workers/python/python-worker.js`.
-- Version: the compatibility fallback currently loads Pyodide `0.29.0`, and
-  the workspace package resolves `pyodide` `0.29.3`. Consumer-owned runtime
-  manifests can instead select a module-worker distribution; the adapter is
-  verified against Pyodide `314.0.2`.
+- Version: the Python 0.15 Judge provider ships an owned Pyodide `0.29.3`
+  distribution and engine-specific clean CPython startup images. Project
+  processes may use a consumer-owned runtime manifest; the module-worker
+  adapter is also verified against Pyodide `314.0.2`.
 - License: MPL-2.0.
 - Source: https://github.com/pyodide/pyodide
+- Bundled license: `workers/python/pyodide-0.29.3/LICENSE.pyodide.txt`.
 - Deployment docs: https://pyodide.org/en/stable/usage/downloading-and-deploying.html
-- Redistribution note: a full Pyodide distribution contains CPython and Python
-  packages with their own licenses. Preserve the release's package metadata,
-  license texts, and notices when mirroring those artifacts on a consumer CDN.
+- Redistribution note: the vendored distribution contains CPython and Python
+  standard-library components under their upstream licenses. The package
+  preserves this notice, and deployments mirroring the assets must preserve
+  the upstream package metadata and license texts too.
 
 ### CPython and Python Standard Library
 
@@ -33,6 +35,7 @@ notices, source references, and package metadata alongside the assets.
 - License: Python Software Foundation License Agreement and historical Python
   license stack.
 - Source: https://github.com/python/cpython
+- Bundled license: `workers/python/pyodide-0.29.3/LICENSE.cpython.txt`.
 - License summary: https://www.python.org/psf/summary/
 
 ## JavaScript and TypeScript Runtime

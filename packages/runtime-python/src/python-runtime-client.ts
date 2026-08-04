@@ -54,6 +54,7 @@ const PYTHON_TRACE_EVENT_KINDS = new Set<RuntimeTraceEventKind>([
 ]);
 const PYTHON_TIMEOUT_REASONS = new Set<ExecutionLimitReason>([
   'trace-limit',
+  'trace-byte-limit',
   'line-limit',
   'single-line-limit',
   'recursion-limit',
@@ -62,6 +63,7 @@ const PYTHON_TIMEOUT_REASONS = new Set<ExecutionLimitReason>([
 ]);
 const PYTHON_TRACE_TIMEOUT_REASONS = new Set([
   'trace-limit',
+  'trace-byte-limit',
   'line-limit',
   'single-line-limit',
   'recursion-limit',
@@ -143,6 +145,8 @@ function normalizeExecutionTimings(value: unknown): RuntimeExecutionTimings | un
   const timings: RuntimeExecutionTimings = {};
   for (const key of [
     'totalMs',
+    'traceBytes',
+    'traceByteBudget',
     'initMs',
     'warmupMs',
     'compilerLoadMs',
@@ -536,9 +540,19 @@ class PreparedPythonProgramLifetime {
   constructor(
     private readonly handle: PythonPreparedProgramHandle,
     private readonly options: PythonPreparedExecutionProviderOptions,
-    private readonly onDisposed: (lifetime: PreparedPythonProgramLifetime) => void
+    private readonly onDisposed: (lifetime: PreparedPythonProgramLifetime) => void,
+    initialClient?: PythonWorkerClient
   ) {
-    this.startStandby();
+    if (initialClient) {
+      this.ownedWorkers.add(initialClient);
+      this.standby = {
+        client: initialClient,
+        ready: Promise.resolve({
+          client: initialClient,
+          warmup: { success: true, loadTimeMs: 0 },
+        }),
+      };
+    }
   }
 
   executeCode(
@@ -643,16 +657,11 @@ class PreparedPythonProgramLifetime {
         }
         return await operation(client, controller.signal);
       } finally {
-        // Every case gets a hard interpreter boundary. The marshaled code
-        // artifact survives; the Pyodide worker, heap, modules, cwd, RNG, and
-        // filesystem do not.
+        // Every prepared execution call gets a hard interpreter boundary.
+        // Batch calls retain the runtime's existing per-case reset semantics
+        // inside one disposable worker. The marshaled code artifact survives;
+        // the Pyodide worker, heap, modules, cwd, RNG, and filesystem do not.
         if (client) this.retireWorker(client);
-        if (
-          this.phase === 'active' &&
-          (this.options.prewarmAfterUse ?? true)
-        ) {
-          this.startStandby();
-        }
       }
     });
     this.operationTail = underlying.then(
@@ -748,6 +757,7 @@ class PythonPreparedExecutionProvider
   private compilerStandby: PythonWorkerSlot | null = null;
   private generation = 1;
   private terminated = false;
+  private releasing = false;
   private readonly compilerWorkers = new Set<PythonWorkerClient>();
   private readonly programs = new Set<PreparedPythonProgramLifetime>();
   private readonly preparationControllers = new Set<AbortController>();
@@ -815,18 +825,23 @@ class PythonPreparedExecutionProvider
   }
 
   private releaseResources(reason: unknown): void {
-    this.generation += 1;
-    this.compilerStandby = null;
-    this.preparationTail = Promise.resolve();
-    const controllers = [...this.preparationControllers];
-    this.preparationControllers.clear();
-    for (const controller of controllers) {
-      if (!controller.signal.aborted) controller.abort(reason);
+    this.releasing = true;
+    try {
+      this.generation += 1;
+      this.compilerStandby = null;
+      this.preparationTail = Promise.resolve();
+      const controllers = [...this.preparationControllers];
+      this.preparationControllers.clear();
+      for (const controller of controllers) {
+        if (!controller.signal.aborted) controller.abort(reason);
+      }
+      for (const client of this.compilerWorkers) client.terminate();
+      this.compilerWorkers.clear();
+      for (const program of [...this.programs]) program.forceTerminate(reason);
+      this.programs.clear();
+    } finally {
+      this.releasing = false;
     }
-    for (const client of this.compilerWorkers) client.terminate();
-    this.compilerWorkers.clear();
-    for (const program of [...this.programs]) program.forceTerminate(reason);
-    this.programs.clear();
   }
 
   private async prepareSerial(
@@ -835,22 +850,35 @@ class PythonPreparedExecutionProvider
     signal: AbortSignal
   ): Promise<RuntimeProgramPreparationResult> {
     this.assertGeneration(generation);
-    const { client } = await this.takeCompilerStandby(signal);
+    let client: PythonWorkerClient | undefined;
     let result;
     try {
+      ({ client } = await this.takeCompilerStandby(signal));
       result = await client.prepareProgram({ ...call, signal });
-    } finally {
-      this.retireCompiler(client);
+    } catch (error) {
+      if (client) this.retireCompiler(client);
+      this.replenishCompilerStandby();
+      throw error;
     }
     // A provider shutdown can race an in-flight compiler request. The worker
     // may still settle its request after termination, reset, or caller
     // cancellation has retired it, but that result must never publish a new
     // program lifetime beyond the abandoned request boundary.
     if (signal.aborted) {
+      this.retireCompiler(client);
+      this.replenishCompilerStandby();
       throw abortReason(signal, 'Prepared Python compilation was aborted.');
     }
-    this.assertGeneration(generation);
+    try {
+      this.assertGeneration(generation);
+    } catch (error) {
+      this.retireCompiler(client);
+      this.replenishCompilerStandby();
+      throw error;
+    }
     if (!result.success) {
+      this.retireCompiler(client);
+      this.replenishCompilerStandby();
       return {
         kind: 'failed',
         error: result.error,
@@ -862,10 +890,15 @@ class PythonPreparedExecutionProvider
     }
 
     const handle: PythonPreparedProgramHandle = result;
+    this.compilerWorkers.delete(client);
     const lifetime = new PreparedPythonProgramLifetime(
       handle,
       this.options,
-      (program) => this.programs.delete(program)
+      (program) => {
+        this.programs.delete(program);
+        this.replenishCompilerStandby();
+      },
+      client
     );
     this.programs.add(lifetime);
 
@@ -949,6 +982,17 @@ class PythonPreparedExecutionProvider
   private retireCompiler(client: PythonWorkerClient): void {
     if (!this.compilerWorkers.delete(client)) return;
     client.terminate();
+  }
+
+  private replenishCompilerStandby(): void {
+    if (
+      (this.options.prewarmAfterUse ?? true) &&
+      !this.terminated &&
+      !this.releasing &&
+      !this.compilerStandby
+    ) {
+      this.startCompilerStandby();
+    }
   }
 
   private assertActive(): void {

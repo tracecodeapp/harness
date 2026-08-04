@@ -31,6 +31,8 @@ except Exception:
 
 const DEFAULT_TRACE_MAX_PATH_DEPTH = 3;
 const MAX_TRACE_MAX_PATH_DEPTH = 8;
+const DEFAULT_TRACE_MAX_BYTES = 4 * 1024 * 1024;
+const MAX_TRACE_MAX_BYTES = 8 * 1024 * 1024;
 const isolatedPythonExecutionGuards = new WeakMap();
 const isolatedPythonFilesystemManagers = new WeakMap();
 
@@ -587,6 +589,13 @@ function getTraceMaxPathDepth(value) {
   return Math.min(MAX_TRACE_MAX_PATH_DEPTH, Math.max(1, Math.floor(value)));
 }
 
+function getTraceMaxBytes(value) {
+  if (typeof value !== 'number' || !Number.isFinite(value) || value <= 0) {
+    return DEFAULT_TRACE_MAX_BYTES;
+  }
+  return Math.min(MAX_TRACE_MAX_BYTES, Math.max(1024, Math.floor(value)));
+}
+
 function generateTracingCode(
   deps,
   userCode,
@@ -625,6 +634,7 @@ for _tracecode_input_name, _tracecode_input_value in _tracecode_raw_inputs.items
   const maxSingleLineHits = options.maxSingleLineHits || 500;
   const minimalTrace = options.minimalTrace === true;
   const maxPathDepth = getTraceMaxPathDepth(options.maxPathDepth);
+  const maxTraceBytes = getTraceMaxBytes(options.maxTraceBytes);
   // Keep stdout capture deterministic for the app UI; worker-console mirroring
   // can cause recursive print chains across mixed runs in dev.
   const mirrorPrintToConsole = false;
@@ -702,9 +712,9 @@ _internal_locals = {
     '_tracecode_builtin_id', '_tracecode_operator', '_tracecode_typing',
     '_TRACECODE_TYPING_GLOBALS',
     '_call_stack', '_pending_accesses', '_last_trace_index_by_frame', '_tracecode_tracemalloc', '_tracecode_tracemalloc_started', '_TRACE_MUTATING_METHODS', '_tracecode_user_class_names', '_tracecode_explicit_return_function_names', '_internal_funcs', '_internal_locals', '_max_trace_steps',
-    '_trace_limit_exceeded', '_timeout_reason', '_total_line_events', '_max_line_events', '_max_stored_events',
+    '_trace_limit_exceeded', '_timeout_reason', '_total_line_events', '_max_line_events', '_max_stored_events', '_max_trace_bytes', '_max_trace_event_bytes', '_trace_stored_bytes',
     '_line_hit_count', '_max_single_line_hits', '_max_call_depth', '_max_memory_bytes', '_memory_check_every', '_infinite_loop_line',
-    '_MAX_SERIALIZE_DEPTH', '_trace_failed', '_inplace',
+    '_MAX_SERIALIZE_DEPTH', '_MAX_SERIALIZED_ITEMS', '_MAX_OBJECT_FIELDS', '_MAX_SERIALIZED_STRING_CHARS', '_serialize_string', '_trace_failed', '_inplace',
     '_custom_print', '_tracer', '_serialize', '_serialize_output', '_tracecode_ref_id', '_dict_to_tree', '_dict_to_list', '_tracecode_materialize_input',
     '_tracecode_materialize_custom_input', '_tracecode_materialize_named_inputs', '_tracecode_hydrate_for_annotation',
     '_tracecode_resolve_target_callable', '_tracecode_hydrate_annotated_inputs', '_tracecode_resolve_entry_callable', '_tracecode_invoke_entry',
@@ -731,6 +741,9 @@ _internal_locals = {
 }
 _max_trace_steps = ${effectiveMaxTraceSteps}
 _max_stored_events = ${maxStoredEvents}
+_max_trace_bytes = ${maxTraceBytes}
+_max_trace_event_bytes = min(256 * 1024, _max_trace_bytes)
+_trace_stored_bytes = 256
 _trace_limit_exceeded = False
 _timeout_reason = None
 _total_line_events = 0
@@ -1162,14 +1175,32 @@ def __tracecode_access_value(step, access):
     return __tracecode_value_at_path(root, access.get('indices'))
 
 def __tracecode_append_runtime_event(event):
-    global _trace_limit_exceeded, _timeout_reason
+    global _trace_limit_exceeded, _timeout_reason, _trace_stored_bytes
     if len(_trace_events) >= _max_stored_events:
         if not _trace_limit_exceeded:
             _trace_limit_exceeded = True
             _timeout_reason = 'trace-limit'
         _pending_accesses.clear()
         return False
+    try:
+        event_bytes = len(json.dumps(
+            event,
+            ensure_ascii=False,
+            separators=(',', ':'),
+        ).encode('utf-8')) + (1 if len(_trace_events) > 0 else 0)
+    except Exception:
+        event_bytes = _max_trace_bytes + 1
+    if (
+        event_bytes > _max_trace_event_bytes or
+        event_bytes > (_max_trace_bytes - _trace_stored_bytes)
+    ):
+        if not _trace_limit_exceeded:
+            _trace_limit_exceeded = True
+            _timeout_reason = 'trace-byte-limit'
+        _pending_accesses.clear()
+        return False
     _trace_events.append(event)
+    _trace_stored_bytes += event_bytes
     return True
 
 def __tracecode_append_trace_events_for_step(step):
@@ -3569,7 +3600,7 @@ def _tracer(frame, event, arg,
             sys.settrace(None)
         return None
 
-    if _trace_limit_exceeded and _timeout_reason == 'trace-limit':
+    if _trace_limit_exceeded and _timeout_reason in ('trace-limit', 'trace-byte-limit'):
         _pending_accesses.clear()
         sys.settrace(None)
         return None
@@ -4013,6 +4044,9 @@ if _max_memory_bytes > 0 and _tracecode_tracemalloc is not None:
     except Exception:
         _tracecode_tracemalloc_started = False
 
+# Source augmentation can record setup accesses before user execution begins.
+# They are not learner events and must not leak into the first traced line.
+_pending_accesses.clear()
 sys.settrace(_tracer)
 _trace_failed = False
 
@@ -4064,8 +4098,37 @@ if _tracecode_tracemalloc is not None and _tracecode_tracemalloc_started:
 _builtins.print = _original_print
 print = _original_print
 
+def __tracecode_last_step(kind=None):
+    for step in reversed(_trace_data):
+        if not isinstance(step, _builtins.dict):
+            continue
+        if kind is None or step.get('event') == kind:
+            return step
+    return None
+
+def __tracecode_compact_step(step):
+    if not isinstance(step, _builtins.dict):
+        return None
+    compact = {
+        'event': step.get('event'),
+        'line': step.get('line'),
+    }
+    variables = step.get('variables')
+    if isinstance(variables, _builtins.dict):
+        selected = {}
+        for key in ('timeoutReason', 'error', 'errorType', 'errorLine'):
+            if key in variables:
+                selected[key] = variables.get(key)
+        if selected:
+            compact['variables'] = selected
+    return compact
+
 __tracecode_execution_result_json = json.dumps({
-    'trace': _trace_data,
+    'traceSummary': {
+        'errorStep': __tracecode_compact_step(__tracecode_last_step('exception')),
+        'timeoutStep': __tracecode_compact_step(__tracecode_last_step('timeout')),
+        'lastStep': __tracecode_compact_step(__tracecode_last_step()),
+    },
     'runtimeTrace': {
         'schemaVersion': 'runtime-trace-2026-04-28',
         'language': 'python',
@@ -4074,6 +4137,8 @@ __tracecode_execution_result_json = json.dumps({
         'lineEventCount': len([event for event in _trace_events if event.get('kind') == 'line']),
         'traceStepCount': len(_trace_events)
     },
+    'traceBytes': _trace_stored_bytes,
+    'maxTraceBytes': _max_trace_bytes,
     'result': _serialize_output(_result),
     'console': _console_output,
     'userCodeStartLine': ${userCodeStartLine},
@@ -4365,40 +4430,39 @@ async function executeWithTracing(
 
     const executionTimeMs = deps.performanceNow() - startTime;
 
-    const errorStep = result.trace.find(step => step.event === 'exception');
-    const timeoutStep = result.trace.find(step => step.event === 'timeout');
+    const adjustLegacyStep = (step) =>
+      step && typeof step === 'object'
+        ? {
+            ...step,
+            line: step.line > 0
+              ? step.line - userCodeStartLine + 1
+              : step.line,
+          }
+        : undefined;
+    const errorStep = adjustLegacyStep(result.traceSummary?.errorStep);
+    const timeoutStep = adjustLegacyStep(result.traceSummary?.timeoutStep);
+    const lastStep = adjustLegacyStep(result.traceSummary?.lastStep);
     const timeoutReason =
       result.timeoutReason ||
       timeoutStep?.variables?.timeoutReason ||
       undefined;
-
-    const adjustedTrace = result.trace.map(step => ({
-      ...step,
-      line: step.line > 0 ? step.line - userCodeStartLine + 1 : step.line,
-    }));
-    const filteredTrace = adjustedTrace.filter((step) => {
-      if (!step || typeof step !== 'object') return false;
-      const line = typeof step.line === 'number' ? step.line : Number(step.line);
-      if (!Number.isFinite(line)) return false;
-      // Keep only user-code line numbers; drop harness setup/teardown noise
-      // such as module bootstrap locals and _resolve_inplace_result frames.
-      return line >= 1 && line <= userCodeLineCount;
-    });
 
     let errorMessage;
     let errorLine;
     
     const isTraceBudgetExceeded =
       timeoutReason === 'trace-limit' ||
+      timeoutReason === 'trace-byte-limit' ||
       timeoutReason === 'line-limit' ||
       timeoutReason === 'single-line-limit' ||
       (result.traceLimitExceeded && timeoutReason !== 'client-timeout');
 
-    const traceOnlyBudgetExceeded = timeoutReason === 'trace-limit';
+    const traceOnlyBudgetExceeded =
+      timeoutReason === 'trace-limit' ||
+      timeoutReason === 'trace-byte-limit';
 
     // Handle tracing guard stops and execution timeouts
     if (result.traceLimitExceeded || timeoutStep) {
-      const lastStep = adjustedTrace[adjustedTrace.length - 1];
       errorLine = lastStep?.line;
       const lineSuffix = errorLine && errorLine > 0 ? ` on line ${errorLine}` : '';
 
@@ -4454,7 +4518,14 @@ async function executeWithTracing(
       timeoutReason,
       lineEventCount: result.lineEventCount,
       traceStepCount: result.traceStepCount,
-      timings: { totalMs: executionTimeMs, runMs: executionTimeMs },
+      traceBytes: result.traceBytes,
+      maxTraceBytes: result.maxTraceBytes,
+      timings: {
+        totalMs: executionTimeMs,
+        runMs: executionTimeMs,
+        ...(Number.isFinite(result.traceBytes) ? { traceBytes: result.traceBytes } : {}),
+        ...(Number.isFinite(result.maxTraceBytes) ? { traceByteBudget: result.maxTraceBytes } : {}),
+      },
     };
   } catch (error) {
     const executionTimeMs = deps.performanceNow() - startTime;

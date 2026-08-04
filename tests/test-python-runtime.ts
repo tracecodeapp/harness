@@ -2715,6 +2715,68 @@ print(json.dumps({
   console.log('PASS: Python runtime trace capture limit preserves output');
 }
 
+async function assertTraceByteLimitPreservesOutput(): Promise<void> {
+  const runtime = await loadRuntimeCore();
+  const source = `def build_values(n):
+    values = []
+    payload = "x" * 2048
+    for i in range(n):
+        values.append(payload + str(i))
+    return len(values)
+`;
+
+  const deps: RuntimeDeps = {
+    PYTHON_CLASS_DEFINITIONS_SNIPPET: PYTHON_CLASS_DEFINITIONS,
+    PYTHON_CONVERSION_HELPERS_SNIPPET: PYTHON_CONVERSION_HELPERS,
+    PYTHON_TRACE_SERIALIZE_FUNCTION_SNIPPET: PYTHON_TRACE_SERIALIZE_FUNCTION,
+    PYTHON_EXECUTE_SERIALIZE_FUNCTION_SNIPPET: PYTHON_EXECUTE_SERIALIZE_FUNCTION,
+    toPythonLiteral,
+  };
+
+  const tracingPayload = runtime.generateTracingCode(
+    deps,
+    source,
+    'build_values',
+    { n: 20 },
+    'function',
+    {
+      maxTraceSteps: 5000,
+      maxStoredEvents: 20000,
+      maxLineEvents: 10000,
+      maxSingleLineHits: 10000,
+      maxTraceBytes: 4096,
+    }
+  );
+
+  const stdout = await runPythonScript(`${tracingPayload.code}
+print(json.dumps({
+    'runtimeTrace': {'events': _trace_events},
+    'result': _serialize_output(_result),
+    'traceLimitExceeded': _trace_limit_exceeded,
+    'timeoutReason': _timeout_reason,
+    'traceBytes': _trace_stored_bytes,
+    'maxTraceBytes': _max_trace_bytes
+}))
+`);
+  const parsed = JSON.parse(stdout) as {
+    runtimeTrace: { events: unknown[] };
+    result: unknown;
+    traceLimitExceeded?: boolean;
+    timeoutReason?: string;
+    traceBytes: number;
+    maxTraceBytes: number;
+  };
+
+  assertCondition(parsed.result === 20, 'Trace byte limit should preserve Python output');
+  assertCondition(parsed.traceLimitExceeded === true, 'Trace byte limit should mark the trace truncated');
+  assertCondition(parsed.timeoutReason === 'trace-byte-limit', 'Trace byte limit should report trace-byte-limit');
+  assertCondition(parsed.maxTraceBytes === 4096, 'Trace byte limit should preserve the configured budget');
+  assertCondition(parsed.traceBytes <= parsed.maxTraceBytes, 'Trace bytes must remain within the configured budget');
+  assertCondition(parsed.runtimeTrace.events.length > 0, 'Trace byte limit should preserve the ordered trace prefix');
+
+  console.log('PASS: Python runtime trace byte limit preserves output and ordered prefix');
+}
+
 async function assertDefaultStoredRuntimeEventBudgetAllowsScriptReturns(): Promise<void> {
   const runtime = await loadRuntimeCore();
   const source = `def find_order(num_courses, prerequisites):
@@ -2803,11 +2865,14 @@ ${PYTHON_TRACE_SERIALIZE_FUNCTION}
 values = list(range(70))
 mapping = {str(value): value for value in values}
 visited = set(values)
+large_string = 'x' * 20000
 print(json.dumps({
     'values': _serialize(values),
     'outputValues': _serialize_output(values),
     'mapping': _serialize(mapping),
     'visited': _serialize(visited),
+    'largeString': _serialize(large_string),
+    'outputLargeString': _serialize_output(large_string),
 }))
 `);
   const parsed = JSON.parse(stdout) as {
@@ -2815,6 +2880,8 @@ print(json.dumps({
     outputValues: unknown[];
     mapping: Record<string, unknown>;
     visited: { values?: unknown[]; __truncated__?: unknown; remaining?: unknown };
+    largeString: string;
+    outputLargeString: string;
   };
 
   assertCondition(
@@ -2837,6 +2904,16 @@ print(json.dumps({
       parsed.visited.__truncated__ === true &&
       parsed.visited.remaining === 6,
     'Python large sets should serialize first 64 values plus truncation fields'
+  );
+  assertCondition(
+    parsed.largeString.length < 17_000 &&
+      parsed.largeString.startsWith('x'.repeat(16_384)) &&
+      parsed.largeString.endsWith('…<truncated 3616 chars>'),
+    'Python trace snapshots should cap individual strings at 16384 characters'
+  );
+  assertCondition(
+    parsed.outputLargeString.length === 20_000,
+    'Python final output serializer should preserve strings beyond the trace snapshot cap'
   );
 
   console.log('PASS: Python runtime value serialization cap');
@@ -4006,6 +4083,7 @@ async function main(): Promise<void> {
   await assertNestedAttributeReadsAndWritesAreRecorded();
   await assertUntraceableNestedMutationIndexDoesNotEmitRootRead();
   await assertTraceCaptureLimitPreservesOutput();
+  await assertTraceByteLimitPreservesOutput();
   await assertDefaultStoredRuntimeEventBudgetAllowsScriptReturns();
   await assertRuntimeValueSerializationCap();
   await assertDefaultPreludeImportsAreAvailable();

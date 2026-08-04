@@ -35,6 +35,7 @@ import {
 } from '../packages/runtime-browser/src/browser-runtime-host';
 import {
   BROWSER_RUNTIME_ASSET_PROTOCOL_VERSION,
+  PYTHON_RUNTIME_IMAGE_PROTOCOL_VERSION,
   BROWSER_RUNTIME_IDS,
   resolveBrowserRuntimeAssetManifests,
   type AnyBrowserRuntimeAssetManifest,
@@ -52,6 +53,7 @@ import {
   type BrowserRuntimeWorkerFormat,
   type CppCompilerIntegrityEntry,
   type CppCompilerIntegrityManifest,
+  type PythonRuntimeImageAssetDescriptor,
 } from '../packages/runtime-browser/src/runtime-assets';
 import {
   createBrowserRuntimeAssetPreflight,
@@ -153,6 +155,7 @@ export type {
   BrowserWorkerLike,
   CppCompilerIntegrityEntry,
   CppCompilerIntegrityManifest,
+  PythonRuntimeImageAssetDescriptor,
   InstallBrowserExecutionWorkerHostOptions,
   InstalledBrowserExecutionWorkerHost,
   Language,
@@ -183,6 +186,7 @@ export {
   BROWSER_WORKER_LIFECYCLE_POLICIES,
   NODE_RUNTIME_COMPAT_VERSION,
   BROWSER_RUNTIME_ASSET_PROTOCOL_VERSION,
+  PYTHON_RUNTIME_IMAGE_PROTOCOL_VERSION,
   BROWSER_RUNTIME_IDS,
   LANGUAGE_RUNTIME_INFOS,
   LANGUAGE_RUNTIME_PROFILES,
