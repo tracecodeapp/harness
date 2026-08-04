@@ -27,8 +27,8 @@ const trustedPythonWorkerPostMessage = self.postMessage.bind(self);
 
 // Pyodide index URLs in fallback order
 const PYODIDE_INDEX_URLS = [
-  'https://cdn.jsdelivr.net/pyodide/v0.29.0/full/',
-  'https://unpkg.com/pyodide@0.29.0/',
+  'https://cdn.jsdelivr.net/pyodide/v0.29.3/full/',
+  'https://unpkg.com/pyodide@0.29.3/',
 ];
 const DECLARED_PYTHON_WORKER_FORMAT = (() => {
   try {
@@ -1130,6 +1130,14 @@ async function loadPyodideInstance() {
 
       const configuredLoaderUrl = configuredPythonRuntimeAssets?.loaderUrl;
       const configuredIndexUrl = configuredPythonRuntimeAssets?.indexUrl;
+      if (
+        configuredPythonRuntimeImage &&
+        (!configuredLoaderUrl || !configuredIndexUrl)
+      ) {
+        throw new Error(
+          'Python runtime images require their matching TraceCode-patched loader and index assets.'
+        );
+      }
       const runtimeCandidates = configuredLoaderUrl && configuredIndexUrl
         ? [{ loaderUrl: configuredLoaderUrl, indexURL: configuredIndexUrl }]
         : PYODIDE_INDEX_URLS.map((indexURL) => ({ loaderUrl: `${indexURL}pyodide.js`, indexURL }));

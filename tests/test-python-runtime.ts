@@ -2848,6 +2848,7 @@ values = list(range(70))
 mapping = {str(value): value for value in values}
 visited = set(values)
 large_string = 'x' * 20000
+large_bytes = b'x' * 20000
 print(json.dumps({
     'values': _serialize(values),
     'outputValues': _serialize_output(values),
@@ -2855,6 +2856,8 @@ print(json.dumps({
     'visited': _serialize(visited),
     'largeString': _serialize(large_string),
     'outputLargeString': _serialize_output(large_string),
+    'largeBytes': _serialize(large_bytes),
+    'outputLargeBytes': _serialize_output(large_bytes),
 }))
 `);
   const parsed = JSON.parse(stdout) as {
@@ -2864,6 +2867,8 @@ print(json.dumps({
     visited: { values?: unknown[]; __truncated__?: unknown; remaining?: unknown };
     largeString: string;
     outputLargeString: string;
+    largeBytes: string;
+    outputLargeBytes: string;
   };
 
   assertCondition(
@@ -2896,6 +2901,15 @@ print(json.dumps({
   assertCondition(
     parsed.outputLargeString.length === 20_000,
     'Python final output serializer should preserve strings beyond the trace snapshot cap'
+  );
+  assertCondition(
+    parsed.largeBytes.length < 17_000 &&
+      parsed.largeBytes.endsWith('…<truncated 3619 chars>'),
+    'Python trace snapshots should cap large built-in repr values'
+  );
+  assertCondition(
+    parsed.outputLargeBytes === `b'${'x'.repeat(20_000)}'`,
+    'Python final output serializer should preserve complete built-in repr values'
   );
 
   console.log('PASS: Python runtime value serialization cap');

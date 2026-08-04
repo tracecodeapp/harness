@@ -5,6 +5,8 @@ import { readFile, writeFile } from 'node:fs/promises';
 import { resolve } from 'node:path';
 
 const protocolVersion = 'tracecode-python-runtime-image-v1';
+const expectedInputSha256 =
+  '718d40f1c015dd25ec724cc8fc4e2325d6a45a92ae225121ff6953f224a16f72';
 const [inputArgument, outputArgument] = process.argv.slice(2);
 
 if (!inputArgument || !outputArgument) {
@@ -16,6 +18,12 @@ if (!inputArgument || !outputArgument) {
 const inputPath = resolve(inputArgument);
 const outputPath = resolve(outputArgument);
 const loader = await readFile(inputPath, 'utf8');
+const inputSha256 = createHash('sha256').update(loader).digest('hex');
+if (inputSha256 !== expectedInputSha256) {
+  throw new Error(
+    `Pinned Pyodide 0.29.3 loader hash ${inputSha256} did not match ${expectedInputSha256}.`
+  );
+}
 const settingsMarker = 'instantiateWasm:xe(e.indexURL)';
 const fetchMarker =
   'let{binary:t,response:n}=A(e+"pyodide.asm.wasm"),i=Z();';
@@ -53,7 +61,7 @@ console.log(JSON.stringify({
   schema: 'tracecode.python-runtime-image-loader-build.v1',
   protocolVersion,
   inputPath,
-  inputSha256: createHash('sha256').update(loader).digest('hex'),
+  inputSha256,
   outputPath,
   outputBytes: Buffer.byteLength(output),
   outputSha256: createHash('sha256').update(output).digest('hex'),

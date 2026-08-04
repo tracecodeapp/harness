@@ -73,6 +73,11 @@ export function resolveBuiltInPythonRuntimeAssets(
     image: Object.freeze({
       protocolVersion: PYTHON_RUNTIME_IMAGE_PROTOCOL_VERSION,
       engine,
+      // CPython's hash secret is captured inside the restored memory image.
+      // Seed 0 matches the release snapshots; changing it here cannot re-key
+      // an existing image and would make restored interpreter state invalid.
+      // Guest execution limits remain the denial-of-service boundary until a
+      // future CPython/Wasm snapshot format can safely re-key after restore.
       pythonHashSeed: '0',
       wasm: Object.freeze({
         url: `${runtimeBase}pyodide.asm.wasm`,

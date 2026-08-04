@@ -18,16 +18,19 @@ export interface PythonRuntimeImageFactory {
 interface PythonRuntimeImageFactoryOptions {
   readonly descriptor: PythonRuntimeImageAssetDescriptor;
   readonly fetch?: typeof globalThis.fetch;
+  readonly timeoutMs?: number;
 }
 
 function fetchOptions(
-  descriptor: PythonRuntimeImageAssetDescriptor['wasm']
+  descriptor: PythonRuntimeImageAssetDescriptor['wasm'],
+  signal: AbortSignal
 ): RequestInit {
   return {
     cache: 'force-cache',
     credentials: 'omit',
     redirect: 'error',
     integrity: descriptor.integrity,
+    signal,
   };
 }
 
@@ -46,20 +49,17 @@ function assertDeclaredLength(
 async function fetchImageAsset(
   fetchImplementation: typeof globalThis.fetch,
   name: string,
-  descriptor: PythonRuntimeImageAssetDescriptor['wasm']
+  descriptor: PythonRuntimeImageAssetDescriptor['wasm'],
+  signal: AbortSignal
 ): Promise<Response> {
   const response = await fetchImplementation(
     descriptor.url,
-    fetchOptions(descriptor)
+    fetchOptions(descriptor, signal)
   );
   if (!response.ok || response.type === 'opaque') {
     throw new Error(
       `Python runtime image ${name} request returned HTTP ${response.status}.`
     );
-  }
-  const declaredLength = Number(response.headers.get('content-length'));
-  if (Number.isFinite(declaredLength) && declaredLength > 0) {
-    assertDeclaredLength(name, descriptor, declaredLength);
   }
   return response;
 }
@@ -78,23 +78,49 @@ export function createPythonRuntimeImageFactory(
   if (typeof fetchImplementation !== 'function') {
     throw new Error('Python runtime image factory requires fetch().');
   }
+  const timeoutMs = options.timeoutMs ?? 120_000;
+  if (!Number.isFinite(timeoutMs) || timeoutMs <= 0) {
+    throw new TypeError('Python runtime image timeoutMs must be positive.');
+  }
   let disposed = false;
   let imagePromise: Promise<PythonRuntimeImage> | null = null;
+  let activeBuildController: AbortController | null = null;
 
   const build = async (): Promise<PythonRuntimeImage> => {
     if (disposed) throw new Error('Python runtime image factory is disposed.');
+    const controller = new AbortController();
+    activeBuildController = controller;
+    let timeoutId: ReturnType<typeof setTimeout> | undefined;
+    const timeout = new Promise<never>((_, reject) => {
+      timeoutId = globalThis.setTimeout(() => {
+        reject(
+          new Error(
+            `Python runtime image acquisition timed out after ${timeoutMs}ms.`
+          )
+        );
+        controller.abort();
+      }, timeoutMs);
+    });
     const compileWasm = async () => {
       const response = await fetchImageAsset(
         fetchImplementation,
         'Wasm',
-        options.descriptor.wasm
+        options.descriptor.wasm,
+        controller.signal
       );
       const declaredContentLength = Number(
         response.headers.get('content-length')
       );
+      const contentEncoding = response.headers.get('content-encoding');
+      // SRI is the authoritative streaming-path byte identity check. Only
+      // stream an unencoded response whose wire length matches the decoded
+      // release descriptor; every other response is buffered and measured.
+      // Cloning and reading a successful stream solely to recount it would
+      // retain a second Wasm buffer during the memory-sensitive cold path.
       const hasUsableContentLength =
+        !contentEncoding &&
         Number.isFinite(declaredContentLength) &&
-        declaredContentLength > 0;
+        declaredContentLength === options.descriptor.wasm.size;
       const compileBuffered = async (
         bufferedResponse: Response
       ): Promise<WebAssembly.Module> => {
@@ -145,7 +171,8 @@ export function createPythonRuntimeImageFactory(
       const response = await fetchImageAsset(
         fetchImplementation,
         'snapshot',
-        options.descriptor.snapshot
+        options.descriptor.snapshot,
+        controller.signal
       );
       const snapshot = new Uint8Array(await response.arrayBuffer());
       assertDeclaredLength(
@@ -155,17 +182,28 @@ export function createPythonRuntimeImageFactory(
       );
       return snapshot;
     };
-    const [compiledModule, snapshot] = await Promise.all([
-      compileWasm(),
-      loadSnapshot(),
-    ]);
-    if (disposed) throw new Error('Python runtime image factory was disposed while loading.');
-    return Object.freeze({
-      protocolVersion: PYTHON_RUNTIME_IMAGE_PROTOCOL_VERSION,
-      compiledModule,
-      snapshot,
-      pythonHashSeed: options.descriptor.pythonHashSeed,
-    });
+    try {
+      const [compiledModule, snapshot] = await Promise.race([
+        Promise.all([compileWasm(), loadSnapshot()]),
+        timeout,
+      ]);
+      if (disposed) {
+        throw new Error(
+          'Python runtime image factory was disposed while loading.'
+        );
+      }
+      return Object.freeze({
+        protocolVersion: PYTHON_RUNTIME_IMAGE_PROTOCOL_VERSION,
+        compiledModule,
+        snapshot,
+        pythonHashSeed: options.descriptor.pythonHashSeed,
+      });
+    } finally {
+      if (timeoutId !== undefined) globalThis.clearTimeout(timeoutId);
+      if (activeBuildController === controller) {
+        activeBuildController = null;
+      }
+    }
   };
 
   return Object.freeze({
@@ -181,6 +219,8 @@ export function createPythonRuntimeImageFactory(
     },
     dispose(): void {
       disposed = true;
+      activeBuildController?.abort();
+      activeBuildController = null;
       imagePromise = null;
     },
   });

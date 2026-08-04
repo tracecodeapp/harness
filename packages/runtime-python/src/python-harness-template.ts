@@ -186,7 +186,7 @@ def _tracecode_ref_id(obj_ref, node_refs):
 def _truncation_marker(total, emitted):
     return {"__truncated__": True, "remaining": max(0, total - emitted)}
 
-def _serialize_repr_fallback(obj, node_refs=None):
+def _serialize_repr_fallback(obj, node_refs=None, truncate_string=True):
     obj_type = getattr(obj, '__class__', None)
     class_name = getattr(obj_type, '__name__', 'object')
     if getattr(obj_type, '__module__', '') == 'builtins':
@@ -196,7 +196,7 @@ def _serialize_repr_fallback(obj, node_refs=None):
             return _SKIP_SENTINEL
         if repr_str.startswith('<') and repr_str.endswith('>'):
             return _SKIP_SENTINEL
-        return _serialize_string(repr_str)
+        return _serialize_string(repr_str) if truncate_string else repr_str
     if node_refs is None:
         return {"__type__": class_name, "__class__": class_name}
     obj_ref = _builtins.id(obj)
@@ -393,7 +393,7 @@ def _serialize_output(obj, depth=0, node_refs=None):
                 result[key_str] = _serialize_output(value, depth + 1, node_refs)
         return result
     else:
-        return _serialize_repr_fallback(obj, node_refs)
+        return _serialize_repr_fallback(obj, node_refs, False)
 `;
 
 /**

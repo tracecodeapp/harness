@@ -123,6 +123,87 @@ try {
   }
 }
 
+let compressedStreamingAttempts = 0;
+Object.defineProperty(WebAssembly, 'compileStreaming', {
+  configurable: true,
+  writable: true,
+  value: async () => {
+    compressedStreamingAttempts += 1;
+    throw new Error('Encoded responses must use decoded buffered bytes.');
+  },
+});
+try {
+  const compressedFactory = createPythonRuntimeImageFactory({
+    descriptor: runtimeImageDescriptor('compressed'),
+    fetch: async (input) => {
+      const response = runtimeImageResponse(input);
+      const headers = new Headers(response.headers);
+      headers.set('content-encoding', 'br');
+      headers.set('content-length', '1');
+      return new Response(await response.arrayBuffer(), {
+        status: response.status,
+        headers,
+      });
+    },
+  });
+  const compressedImage = await compressedFactory.acquire();
+  assertCondition(
+    compressedStreamingAttempts === 0 &&
+      compressedImage.compiledModule instanceof WebAssembly.Module,
+    'Encoded runtime-image responses must validate decoded buffered bytes.'
+  );
+} finally {
+  if (compileStreamingDescriptor) {
+    Object.defineProperty(
+      WebAssembly,
+      'compileStreaming',
+      compileStreamingDescriptor
+    );
+  } else {
+    delete (WebAssembly as { compileStreaming?: unknown }).compileStreaming;
+  }
+}
+
+let timedOutFetches = 0;
+let abortedFetches = 0;
+const timeoutFactory = createPythonRuntimeImageFactory({
+  descriptor: runtimeImageDescriptor('timeout'),
+  timeoutMs: 10,
+  fetch: async (_input, init) => {
+    timedOutFetches += 1;
+    return new Promise<Response>((_resolve, reject) => {
+      const signal = init?.signal;
+      signal?.addEventListener(
+        'abort',
+        () => {
+          abortedFetches += 1;
+          reject(new DOMException('aborted', 'AbortError'));
+        },
+        { once: true }
+      );
+    });
+  },
+});
+const timeoutErrors: string[] = [];
+for (let attempt = 0; attempt < 2; attempt += 1) {
+  try {
+    await timeoutFactory.acquire();
+  } catch (error) {
+    timeoutErrors.push(error instanceof Error ? error.message : String(error));
+  }
+}
+assertCondition(
+  timedOutFetches === 4 &&
+    abortedFetches === 4 &&
+    timeoutErrors.length === 2 &&
+    timeoutErrors.every((message) => message.includes('timed out')),
+  `Runtime-image acquisition must abort stalled fetches: ${JSON.stringify({
+    timedOutFetches,
+    abortedFetches,
+    timeoutErrors,
+  })}`
+);
+
 factory.dispose();
 await factory.acquire().then(
   () => {
