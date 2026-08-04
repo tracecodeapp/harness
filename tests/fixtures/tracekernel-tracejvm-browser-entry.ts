@@ -4,9 +4,6 @@ import {
 import {
   createJavaProjectClientFactory,
 } from '../../packages/runtime-java/src/java-project-client';
-import {
-  createRuntimeCommandStdinPipeFromText,
-} from '../../packages/runtime-contracts/src/index';
 import { createBrowserProjectWorkspace } from '../../packages/runtime-browser/src/project';
 import type {
   TraceKernelTraceJVMResult,
@@ -387,8 +384,27 @@ globalThis.runTraceKernelTraceJVMTest = async (): Promise<TraceKernelTraceJVMRes
     },
   });
 
+  const terminalOwner = workspace.kernel.createProcess({
+    name: 'project-client',
+    actor: {
+      id: 'learner',
+      kind: 'runtime',
+      capabilities: {
+        execute: true,
+        http: {
+          listen: true,
+          dispatch: true,
+          readDiagnostics: true,
+        },
+      },
+    },
+    signalPolicy: 'system-only',
+  });
+  const terminal = terminalOwner.createTerminalSession();
+  terminal.resize(144, 55);
+
   try {
-    const compile = await workspace.runCommand(
+    const compile = await terminal.run(
       'javac -d build Main.java Child.java Sleeper.java GroupChild.java SessionChild.java'
     );
     if (compile.exitCode !== 0) {
@@ -398,46 +414,44 @@ globalThis.runTraceKernelTraceJVMTest = async (): Promise<TraceKernelTraceJVMRes
       'build/Main.class',
       'base64'
     );
-    const firstRun = await workspace.runCommand(
+    const firstRun = await terminal.run(
       'java -cp build -Dmode=first Main first'
     );
-    const secondRun = await workspace.runCommand(
+    const secondRun = await terminal.run(
       'java -cp build Main second'
     );
     await workspace.writeFile('shared.txt', 'js-before-java');
-    const filesystemRun = await workspace.runCommand(
+    const filesystemRun = await terminal.run(
       'java -cp build Main filesystem'
     );
     const sharedFile = await workspace.readFile('shared.txt');
     const randomFile = await workspace.readFile('random.bin');
     await workspace.deleteFile('random-link.bin');
-    const stdinRun = await workspace.runCommand(
-      'java -cp build Main stdin',
-      {
-        stdinPipe: createRuntimeCommandStdinPipeFromText('hello'),
-      }
-    );
-    const socketRun = await workspace.runCommand(
+    const pendingStdinRun = terminal.run('java -cp build Main stdin');
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    if (!terminal.writeStdin('hello') || !terminal.endStdin()) {
+      throw new Error('TraceJVM terminal did not accept process-owned stdin.');
+    }
+    const stdinRun = await pendingStdinRun;
+    const socketRun = await terminal.run(
       'java -cp build Main socket'
     );
-    const selectorRun = await workspace.runCommand(
+    const selectorRun = await terminal.run(
       'java -cp build Main selector'
     );
-    const watchRun = await workspace.runCommand(
+    const watchRun = await terminal.run(
       'java -cp build Main watch'
     );
-    const processRun = await workspace.runCommand(
+    const processRun = await terminal.run(
       'java -cp build Main process'
     );
-    const controlsRun = await workspace.runCommand(
+    const controlsRun = await terminal.run(
       'java -cp build Main controls'
     );
-    const terminalSession = workspace.createTerminalSession();
-    terminalSession.resize(144, 55);
-    const terminalControlsRun = await terminalSession.run(
+    const terminalControlsRun = await terminal.run(
       'java -cp build Main terminal-controls'
     );
-    const watchdogExpiry = await workspace.runCommand(
+    const watchdogExpiry = await terminal.run(
       'java -cp build Main watchdog-expire'
     );
     const childFile = await workspace.readFile('process-child.txt')
@@ -457,7 +471,7 @@ globalThis.runTraceKernelTraceJVMTest = async (): Promise<TraceKernelTraceJVMRes
         resolveReady();
       }
     });
-    const interruptedOperation = workspace.runCommand(
+    const interruptedOperation = terminal.run(
       'java -cp build Main loop',
       { signal: controller.signal }
     );
@@ -479,7 +493,7 @@ globalThis.runTraceKernelTraceJVMTest = async (): Promise<TraceKernelTraceJVMRes
     const interrupted = await interruptedOperation;
     stopWatching();
 
-    const restarted = await workspace.runCommand(
+    const restarted = await terminal.run(
       'java -cp build Main restarted'
     );
     return {
@@ -507,6 +521,8 @@ globalThis.runTraceKernelTraceJVMTest = async (): Promise<TraceKernelTraceJVMRes
       reports,
     };
   } finally {
+    terminal.close();
+    terminalOwner.dispose();
     await workspace.destroy();
     managedJavaFactory.terminate();
   }

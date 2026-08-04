@@ -143,7 +143,9 @@ async function main(): Promise<void> {
         const workspace = await createBrowserProjectWorkspace({
           assetBaseUrl: '/workers',
           providers: ['python', 'javascript'],
-          projectWorkerIsolation: 'per-command',
+          projectWorkerPrewarm: {
+            python: 1,
+          },
           pythonProjectTimeoutMs: 120_000,
           files: [
             {
@@ -681,29 +683,53 @@ async function main(): Promise<void> {
             },
           ],
         });
+        const terminalOwner = workspace.kernel.createProcess({
+          name: 'project-client',
+          actor: {
+            id: 'learner',
+            kind: 'runtime',
+            capabilities: {
+              execute: true,
+              http: {
+                listen: true,
+                dispatch: true,
+                readDiagnostics: true,
+              },
+            },
+          },
+          signalPolicy: 'system-only',
+        });
+        const terminal = terminalOwner.createTerminalSession();
+        terminal.resize(144, 55);
         try {
-          const fsControl = await workspace.runCommand('python kernel-fs.py');
-          const nativeFsControl = await workspace.runCommand(
+          const firstTerminalInline = await terminal.run(
+            'python -c "print(\'python-first-terminal\')"'
+          );
+          const fsControl = await terminal.run('python kernel-fs.py');
+          const nativeFsControl = await terminal.run(
             'python kernel-native-fs.py'
           );
-          const spawnControl = await workspace.runCommand(
+          const spawnControl = await terminal.run(
             'python spawn-parent.py'
           );
-          const processGroupControl = await workspace.runCommand(
+          const processGroupControl = await terminal.run(
             'python group-parent.py'
           );
-          const socketControl = await workspace.runCommand(
+          const socketControl = await terminal.run(
             'python socket-parent.py'
           );
-          const descriptorInheritance = await workspace.runCommand(
+          const descriptorInheritance = await terminal.run(
             'python python-fd-parent.py'
           );
-          const terminal = workspace.createTerminalSession();
-          terminal.resize(144, 55);
+          const terminalInline = await terminal.run(
+            'python -c "print(\'python-inline-terminal\')"'
+          );
           const pendingTerminalControl = terminal.run(
             'python terminal-control.py'
           );
-          await new Promise((resolvePromise) => setTimeout(resolvePromise, 0));
+          await new Promise((resolvePromise) =>
+            setTimeout(resolvePromise, 0)
+          );
           if (
             !terminal.writeStdin('kernel-stdin\n') ||
             !terminal.endStdin()
@@ -712,8 +738,11 @@ async function main(): Promise<void> {
               'Python terminal did not accept kernel-owned fd 0 input.'
             );
           }
-          const terminalControl = await pendingTerminalControl;
-          const orphanParent = await workspace.runCommand(
+          const terminalControl = {
+            inline: terminalInline,
+            file: await pendingTerminalControl,
+          };
+          const orphanParent = await terminal.run(
             'python orphan-parent.py'
           );
           let orphanPythonParent: string | null = null;
@@ -739,6 +768,7 @@ async function main(): Promise<void> {
             }
           }
           return {
+            firstTerminalInline,
             fsControl,
             nativeFsControl,
             nativeFsResult: nativeFsControl.exitCode === 0
@@ -767,10 +797,12 @@ async function main(): Promise<void> {
                   'base64'
                 )
               : null,
-            control: await workspace.runCommand('python watchdog-control.py'),
-            expiry: await workspace.runCommand('python watchdog-expire.py'),
+            control: await terminal.run('python watchdog-control.py'),
+            expiry: await terminal.run('python watchdog-expire.py'),
           };
         } finally {
+          terminal.close();
+          terminalOwner.dispose();
           workspace.dispose();
         }
       });
@@ -799,10 +831,22 @@ async function main(): Promise<void> {
         )}`
       );
       assertCondition(
-        result.terminalControl.exitCode === 0 &&
-          result.terminalControl.stdout ===
+        result.firstTerminalInline.exitCode === 0 &&
+          result.firstTerminalInline.stdout === 'python-first-terminal\n' &&
+          result.firstTerminalInline.stderr === '',
+        `Python first terminal command did not preserve stdout: ${JSON.stringify(
+          result.firstTerminalInline
+        )}`
+      );
+      assertCondition(
+        result.terminalControl.inline.exitCode === 0 &&
+          result.terminalControl.inline.stdout ===
+            'python-inline-terminal\n' &&
+          result.terminalControl.inline.stderr === '' &&
+          result.terminalControl.file.exitCode === 0 &&
+          result.terminalControl.file.stdout ===
             'terminal:true:kernel-stdin\n' &&
-          result.terminalControl.stderr === 'kernel-stderr\n',
+          result.terminalControl.file.stderr === 'kernel-stderr\n',
         `Python terminal controls did not use kernel-owned terminal state: ${JSON.stringify(
           result.terminalControl
         )}`

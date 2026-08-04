@@ -96,3 +96,19 @@ Suspended jobs, CPU-bound asynchronous signal injection for compiled runtimes,
 positive socket deadlines, UDP, Unix-domain sockets, broader DNS/address-family
 behavior, additional termios modes, arbitrary external TCP, in-kernel TLS, and
 HTTP/2 are not compatibility claims.
+
+## Conformance boundary
+
+Runtime-provider conformance may call a provider directly to prove that its
+compiler, runner, and protocol work in isolation. TraceKernel browser
+conformance has a different responsibility: its primary language compile/run
+flows must launch from a process-owned `RuntimeProjectTerminalSession`, using
+the same command text, controlling terminal, stdin handoff, worker assets, and
+lifecycle that an interactive product terminal uses.
+
+Direct `workspace.runCommand(...)` coverage remains appropriate for deliberately
+detached jobs, concurrent server/client probes, grading, and low-level kernel
+mechanics. It does not substitute for terminal-path language conformance. A
+consumer application should also keep one browser smoke matrix at its public
+terminal boundary so cross-origin isolation and packaged worker/toolchain
+assets are tested together rather than inferred from provider tests.
