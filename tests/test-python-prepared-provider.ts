@@ -155,12 +155,14 @@ test('Python prepared provider compiles once and executes in owned fresh workers
     1,
     'Provider must compile exactly once'
   );
-  const compiler = calls.find((call) => call.method === 'prepare')?.worker;
+  const preparationWorker = calls.find(
+    (call) => call.method === 'prepare'
+  )?.worker;
   const executor = calls.find((call) => call.method === 'execute-code')?.worker;
-  assert.notEqual(
-    compiler,
+  assert.equal(
+    preparationWorker,
     executor,
-    'Prepared execution reused the compiler interpreter'
+    'Prepared execution must consume the same disposable interpreter that prepared its artifact'
   );
   assert.equal(
     calls.filter((call) => call.method === 'execute-code').length,
@@ -400,6 +402,9 @@ test('Python prepared provider aborts a case while its worker is still warming',
   ) return;
 
   const controller = new AbortController();
+  await preparation.program.executeIsolated({
+    inputs: { value: 0 },
+  });
   const cancelled = preparation.program.executeIsolated({
     inputs: { value: 1 },
     signal: controller.signal,
@@ -414,13 +419,18 @@ test('Python prepared provider aborts a case while its worker is still warming',
     terminated.includes(1),
     'Cancellation did not retire the warming execution worker'
   );
-  assert.equal(executeCalls, 0);
+  assert.equal(executeCalls, 1);
 
-  await waitUntil(
-    () => nextWorker === 3,
-    'Cancellation did not replenish the clean standby worker'
+  assert.equal(
+    nextWorker,
+    2,
+    'A program-scoped cancellation must not create a stranded standby'
   );
   await preparation.program.dispose();
+  await waitUntil(
+    () => nextWorker === 3,
+    'Program disposal did not replenish the provider-owned standby'
+  );
   provider.terminate();
   assert.deepEqual(
     terminated.sort((left, right) => left - right),
@@ -448,6 +458,13 @@ test('Python prepared program disposal does not wait for standby warmup', async 
             consoleOutput: [],
           };
         },
+        async executePreparedCode() {
+          return {
+            kind: 'completed' as const,
+            output: 42,
+            consoleOutput: [],
+          };
+        },
         terminate() {
           terminated.push(worker);
         },
@@ -456,10 +473,12 @@ test('Python prepared program disposal does not wait for standby warmup', async 
   });
   const preparation = await provider.prepareProgram(preparationCall());
   assert.equal(preparation.kind, 'prepared');
-  if (preparation.kind !== 'prepared') return;
+  if (preparation.kind !== 'prepared' || preparation.program.mode !== 'code') return;
+  await preparation.program.executeIsolated({ inputs: { value: 1 } });
+  await preparation.program.dispose();
   await waitUntil(
     () => nextWorker === 2,
-    'The prepared Python standby worker never started warming'
+    'The provider-owned replacement standby never started warming'
   );
 
   await Promise.race([
@@ -596,7 +615,7 @@ test('Python prepared provider cannot publish a program after termination races 
   const preparing = provider.prepareProgram(preparationCall());
   await waitUntil(
     () => compilationStarted,
-    'The Python compiler request never started'
+    'The Python preparation request never started'
   );
   provider.terminate();
   compilation.resolve();
@@ -649,23 +668,27 @@ test('Python prepared provider cannot publish a program after caller cancellatio
   });
   await waitUntil(
     () => compilationStarted,
-    'The cancellable Python compiler request never started'
+    'The cancellable Python preparation request never started'
   );
   controller.abort(new DOMException('cancelled compilation', 'AbortError'));
   await assert.rejects(preparing, { name: 'AbortError' });
   compilation.resolve();
   await waitUntil(
     () => terminatedWorkers === 1,
-    'The cancelled Python compiler worker was not retired'
+    'The cancelled Python preparation worker was not retired'
   );
-  await Promise.resolve();
+  await waitUntil(
+    () => createdWorkers === 2,
+    'Caller cancellation did not replenish the provider-owned standby'
+  );
 
   assert.equal(
     createdWorkers,
-    1,
-    'Caller cancellation published a prepared program and execution standby'
+    2,
+    'Caller cancellation must create exactly one replacement standby'
   );
   provider.terminate();
+  assert.equal(terminatedWorkers, 2);
 });
 
 test('Python prepared provider reset releases resources and permits later reuse', async () => {
@@ -691,7 +714,7 @@ test('Python prepared provider reset releases resources and permits later reuse'
         _handle: unknown,
         call: { signal?: AbortSignal }
       ) {
-        if (worker === 1) {
+        if (worker === 0) {
           firstExecutionStarted = true;
           return new Promise<CodeExecutionResult>((_resolve, reject) => {
             call.signal?.addEventListener(
@@ -735,11 +758,7 @@ test('Python prepared provider reset releases resources and permits later reuse'
     message: 'Prepared Python execution provider was reset.',
   });
   await Promise.resolve();
-  assert.equal(
-    nextWorker,
-    2,
-    'Reset allowed an aborted program to replenish a standby worker'
-  );
+  assert.equal(nextWorker, 1, 'Reset allowed an aborted program to replenish a standby worker');
   await assert.rejects(
     first.program.executeIsolated({ inputs: { value: 1 } }),
     /disposed/
@@ -754,20 +773,18 @@ test('Python prepared provider reset releases resources and permits later reuse'
   });
   assert.equal(result.kind, 'completed');
   if (result.kind !== 'completed') return;
-  assert.equal(result.output, 3);
+  assert.equal(result.output, 1);
   await second.program.dispose();
   provider.terminate();
 
-  assert.deepEqual(executions, [3]);
-  assert.equal(nextWorker, 5);
+  assert.deepEqual(executions, [1]);
+  assert.equal(nextWorker, 3);
   assert.deepEqual(
     [...terminations.entries()].sort(([left], [right]) => left - right),
     [
       [0, 1],
       [1, 1],
       [2, 1],
-      [3, 1],
-      [4, 1],
     ],
     'Reset/reuse did not retire every owned worker exactly once'
   );

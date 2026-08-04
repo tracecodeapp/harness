@@ -79,6 +79,29 @@ function consumerManifests(): BrowserRuntimeAssetManifests {
         snippets: descriptor('snippets.js'),
         runtimeLoader: descriptor('pyodide.js'),
         runtimeIndex: descriptor('./'),
+        runtimeImage: {
+          protocolVersion: 'tracecode-python-runtime-image-v1',
+          engine: 'chromium',
+          pythonHashSeed: '0',
+          wasm: {
+            url: 'data:application/wasm;base64,AGFzbQEAAAA=',
+            integrity:
+              'sha256-k6RLu5bHUSGOTADUeeTBQ1gSKjiazKFiBbHk0NxflHY=',
+            mediaType: 'application/wasm',
+            size: 8,
+            originPolicy: { mode: 'any' },
+            delivery: { mutability: 'immutable', address: 'content' },
+          },
+          snapshot: {
+            url: 'data:application/octet-stream;base64,AA==',
+            integrity:
+              'sha256-bjQLnP+zepicpUTmu3gKLHiQHT+zNzh2hRGjBhevoB0=',
+            mediaType: 'application/octet-stream',
+            size: 1,
+            originPolicy: { mode: 'any' },
+            delivery: { mutability: 'immutable', address: 'content' },
+          },
+        },
         packages: { sortedcontainers: descriptor('sortedcontainers.whl') },
       },
     },
@@ -136,6 +159,50 @@ function consumerManifests(): BrowserRuntimeAssetManifests {
   };
 }
 
+function testPythonRuntimeImageRejectsEngineMismatch(): void {
+  const manifests = consumerManifests();
+  manifests.python = {
+    ...manifests.python!,
+    assets: {
+      ...manifests.python!.assets,
+      runtimeImage: {
+        protocolVersion: 'tracecode-python-runtime-image-v1',
+        engine: 'chromium',
+        pythonHashSeed: '0',
+        wasm: {
+          url: 'runtime-image/python.wasm',
+          integrity: 'sha256-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=',
+          mediaType: 'application/wasm',
+          size: 8,
+          delivery: { mutability: 'immutable', address: 'content' },
+        },
+        snapshot: {
+          url: 'runtime-image/chromium.snapshot',
+          integrity: 'sha256-AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE=',
+          mediaType: 'application/octet-stream',
+          size: 16,
+          delivery: { mutability: 'immutable', address: 'content' },
+        },
+      },
+    },
+  };
+  let message = '';
+  try {
+    createBrowserRuntimeHost({
+      providers: ['python'],
+      engine: 'firefox',
+      assets: { runtimeManifests: manifests },
+    });
+  } catch (error) {
+    message = error instanceof Error ? error.message : String(error);
+  }
+  assertCondition(
+    message.includes('targets "chromium"') &&
+      message.includes('selected browser engine is "firefox"'),
+    `Python runtime images must fail closed across browser engines: ${message}`
+  );
+}
+
 function findWorker(fragment: string): CapturingWorker {
   const worker = CapturingWorker.instances.find((entry) => String(entry.url).includes(fragment));
   assertCondition(worker, `Expected a worker URL containing ${JSON.stringify(fragment)}`);
@@ -159,6 +226,7 @@ function findInitializedWorker(fragment: string): CapturingWorker {
 async function testManifestAssetsReachWorkerInitialization(): Promise<void> {
   CapturingWorker.instances = [];
   const host = createBrowserRuntimeHost({
+    engine: 'chromium',
     assets: { runtimeManifests: consumerManifests() },
   });
   await host.warmLanguage('python');
@@ -260,6 +328,7 @@ async function testMetadataMismatchStopsBeforeWorkerConstruction(): Promise<void
   });
   try {
     const host = createBrowserRuntimeHost({
+      engine: 'chromium',
       assets: { runtimeManifests: manifests },
       providers: ['typescript'],
     });
@@ -598,6 +667,7 @@ async function testCSharpRoleBundlesAreIncludedInReadiness(): Promise<void> {
 const originalWorker = Object.getOwnPropertyDescriptor(globalThis, 'Worker');
 Object.defineProperty(globalThis, 'Worker', { configurable: true, writable: true, value: CapturingWorker });
 try {
+  testPythonRuntimeImageRejectsEngineMismatch();
   await testManifestAssetsReachWorkerInitialization();
   await testMetadataMismatchStopsBeforeWorkerConstruction();
   await testIntegrityAndMediaTypeVerification();

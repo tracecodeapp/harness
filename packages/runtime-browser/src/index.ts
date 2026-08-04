@@ -8,6 +8,7 @@ export * from './worker-lifecycle-policy';
 export * from '../../runtime-contracts/src/runtime-language-info';
 export {
   BROWSER_RUNTIME_ASSET_PROTOCOL_VERSION,
+  PYTHON_RUNTIME_IMAGE_PROTOCOL_VERSION,
   BROWSER_RUNTIME_IDS,
   DEFAULT_BROWSER_RUNTIME_ASSET_RELATIVE_PATHS,
   resolveBrowserRuntimeAssets,
@@ -27,6 +28,7 @@ export {
   type BrowserRuntimeAssets,
   type CppCompilerIntegrityEntry,
   type CppCompilerIntegrityManifest,
+  type PythonRuntimeImageAssetDescriptor,
 } from './runtime-assets';
 export {
   createBrowserRuntimeAssetPreflight,

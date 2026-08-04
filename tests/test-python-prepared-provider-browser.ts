@@ -16,7 +16,7 @@ interface BrowserResult {
   legacyTrace: Record<string, unknown>;
   limitedRun: Record<string, unknown>;
   traceLimitedRun: Record<string, unknown>;
-  compiler: Record<string, unknown>;
+  preparationWorker: Record<string, unknown>;
   executions: Array<Record<string, unknown>>;
 }
 
@@ -140,7 +140,7 @@ async function main(): Promise<void> {
         };
       };
 
-      const compiler = await createClient('compiler');
+      const preparationWorker = await createClient('preparation');
       const isolationCode = [
         'import builtins',
         'import math',
@@ -207,7 +207,7 @@ async function main(): Promise<void> {
         '        "itemCount": len(items),',
         '    }',
       ].join('\\n');
-      const code = await compiler.request('prepare-program', {
+      const code = await preparationWorker.request('prepare-program', {
         mode: 'code',
         code: isolationCode,
         functionName: 'solve',
@@ -219,20 +219,20 @@ async function main(): Promise<void> {
         '    history.append(value)',
         '    return len(history)',
       ].join('\\n');
-      const trace = await compiler.request('prepare-program', {
+      const trace = await preparationWorker.request('prepare-program', {
         mode: 'trace',
         code: traceCode,
         functionName: 'solve',
         executionStyle: 'function',
         traceOptions: { maxTraceSteps: 1000 },
       });
-      const batch = await compiler.request('prepare-program', {
+      const batch = await preparationWorker.request('prepare-program', {
         mode: 'code',
         code: isolationCode,
         functionName: 'solve',
         executionStyle: 'function',
       });
-      const limited = await compiler.request('prepare-program', {
+      const limited = await preparationWorker.request('prepare-program', {
         mode: 'code',
         code: [
           'def spin(value):',
@@ -242,7 +242,7 @@ async function main(): Promise<void> {
         functionName: 'spin',
         executionStyle: 'function',
       });
-      const traceLimited = await compiler.request('prepare-program', {
+      const traceLimited = await preparationWorker.request('prepare-program', {
         mode: 'trace',
         code: [
           'def recurse(n):',
@@ -254,14 +254,14 @@ async function main(): Promise<void> {
         executionStyle: 'function',
         traceOptions: { maxTraceSteps: 10000 },
       });
-      const invalid = await compiler.request('prepare-program', {
+      const invalid = await preparationWorker.request('prepare-program', {
         mode: 'code',
         code: 'def broken(:\\n    pass',
         functionName: 'broken',
         executionStyle: 'function',
       });
-      const compilerMetrics = compiler.metrics();
-      compiler.terminate();
+      const preparationMetrics = preparationWorker.metrics();
+      preparationWorker.terminate();
 
       const sharedInput = [7];
       const nodeInputs = {
@@ -412,7 +412,7 @@ async function main(): Promise<void> {
         legacyTrace,
         limitedRun,
         traceLimitedRun,
-        compiler: compilerMetrics,
+        preparationWorker: preparationMetrics,
         executions,
       };
     })()`);
@@ -437,8 +437,8 @@ async function main(): Promise<void> {
       `Invalid Python prepared successfully: ${JSON.stringify(result.preparations.invalid)}`
     );
     assertCondition(
-      result.compiler.prepareRequests === 6,
-      `Compiler worker received ${String(result.compiler.prepareRequests)} preparations instead of six`
+      result.preparationWorker.prepareRequests === 6,
+      `Preparation worker received ${String(result.preparationWorker.prepareRequests)} preparations instead of six`
     );
     const batchResults = result.batchRun.results as Array<Record<string, unknown>>;
     const batchOutputs = batchResults.map(
@@ -585,7 +585,7 @@ async function main(): Promise<void> {
     );
     console.log(
       `PASS: Python marshaled artifacts cross fresh browser workers ${JSON.stringify({
-        compilerReadyMs: result.compiler.readyMs,
+        preparationReadyMs: result.preparationWorker.readyMs,
         executionReadyMs: result.executions.map((execution) => execution.readyMs),
         executionMs: result.executions.map((execution) => execution.executionMs),
       })}`

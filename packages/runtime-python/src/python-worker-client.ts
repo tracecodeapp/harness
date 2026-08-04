@@ -31,7 +31,6 @@ export type PythonRawTraceBatchResult = {
   timings?: RuntimeExecutionTimings;
 };
 import type {
-  RuntimeBatchCall,
   RuntimeCodeCall,
   RuntimeCommandEventHandler,
   RuntimeCommandResult,
@@ -61,6 +60,10 @@ import {
   WorkerTerminatedError,
 } from '@tracecode/runtime-browser/internal';
 import { WorkerSessionCore } from '@tracecode/runtime-browser/internal';
+import type {
+  PythonRuntimeImage,
+  PythonRuntimeImageFactory,
+} from './python-runtime-image';
 
 export type ExecutionStyle = 'function' | 'solution-method' | 'ops-class';
 
@@ -84,6 +87,11 @@ export interface PythonWorkerClientOptions {
     snippetsUrl?: string;
     packageUrls?: Readonly<Record<string, string>>;
   };
+}
+
+interface PythonWorkerClientInternalOptions extends PythonWorkerClientOptions {
+  /** Immutable page-lifetime image factory used only by disposable prepared runners. */
+  runtimeImageFactory?: PythonRuntimeImageFactory;
 }
 
 /** Guest-enforced limits forwarded to the worker; wallClockMs stays client-side. */
@@ -196,8 +204,9 @@ export class PythonWorkerClient {
   private readonly workerFormat: 'classic' | 'module';
   private readonly loaderFormat: 'classic-script' | 'module';
   private readonly core: WorkerSessionCore;
+  private terminated = false;
 
-  constructor(private readonly options: PythonWorkerClientOptions) {
+  constructor(private readonly options: PythonWorkerClientInternalOptions) {
     if (
       options.compileCacheLimit !== undefined &&
       (!Number.isInteger(options.compileCacheLimit) || options.compileCacheLimit < 0 || options.compileCacheLimit > 16)
@@ -271,6 +280,14 @@ export class PythonWorkerClient {
     return this.options.workerFactory !== undefined || typeof Worker !== 'undefined';
   }
 
+  private assertActive(): void {
+    if (this.terminated) {
+      throw new WorkerTerminatedError(
+        'Python worker client has been terminated.'
+      );
+    }
+  }
+
   private createWorker(): BrowserWorkerLike {
     let workerUrl = this.options.workerUrl;
     if (this.debug) {
@@ -302,6 +319,7 @@ export class PythonWorkerClient {
 
   /** Runtime-load failures that warrant a worker reset + one retry. Every error this can see is tagged. */
   private shouldResetRuntimeLoadError(error: unknown): boolean {
+    if (this.terminated) return false;
     if (error instanceof WorkerRequestTimeoutError) {
       return error.messageType === 'init' || error.messageType === 'warmup';
     }
@@ -318,7 +336,28 @@ export class PythonWorkerClient {
    * immutable value is what makes "run it again" a one-liner.
    */
   private initEffect(): Effect.Effect<InitResult, Error> {
-    const attempt = this.core.sendMessageEffect<InitResult>('init', this.runtimeAssetsPayload(), INIT_TIMEOUT_MS);
+    const attempt = Effect.suspend(() =>
+      Effect.tryPromise({
+        try: async () => {
+          if (this.options.runtimeImageFactory) {
+            await this.options.runtimeAssetPreflight?.();
+            this.assertActive();
+          }
+          const payload = await this.runtimeAssetsPayload();
+          this.assertActive();
+          return this.core.sendMessage<InitResult>(
+            'init',
+            payload,
+            INIT_TIMEOUT_MS,
+            undefined,
+            undefined,
+            () => this.assertActive()
+          );
+        },
+        catch: (error) =>
+          error instanceof Error ? error : new Error(String(error)),
+      })
+    );
     return attempt.pipe(
       Effect.catchIf(
         (error): error is Error => this.shouldResetRuntimeLoadError(error),
@@ -342,6 +381,7 @@ export class PythonWorkerClient {
    * Initialize the Python worker. Runtime loading is lazy unless warmup() is called.
    */
   async init(): Promise<InitResult> {
+    this.assertActive();
     if (this.initPromise) {
       return this.initPromise;
     }
@@ -357,25 +397,40 @@ export class PythonWorkerClient {
     }
   }
 
-  private runtimeAssetsPayload(): {
+  private async runtimeAssetsPayload(): Promise<{
     compileCacheLimit?: number;
     runtimeAssets?: PythonWorkerClientOptions['runtimeAssets'];
-  } {
+    runtimeImage?: PythonRuntimeImage;
+  }> {
+    const runtimeImage = this.options.runtimeImageFactory
+      ? await this.options.runtimeImageFactory.acquire()
+      : undefined;
+    this.assertActive();
     return {
       ...(this.options.compileCacheLimit === undefined
         ? {}
         : { compileCacheLimit: this.options.compileCacheLimit }),
       ...(this.options.runtimeAssets ? { runtimeAssets: this.options.runtimeAssets } : {}),
+      ...(runtimeImage ? { runtimeImage } : {}),
     };
   }
 
   async warmup(): Promise<WarmupResult> {
+    this.assertActive();
     if (this.warmupPromise) return this.warmupPromise;
 
     this.warmupPromise = (async () => {
       try {
         await this.init();
-        return await this.core.sendMessage<WarmupResult>('warmup', undefined, INIT_TIMEOUT_MS);
+        this.assertActive();
+        return await this.core.sendMessage<WarmupResult>(
+          'warmup',
+          undefined,
+          INIT_TIMEOUT_MS,
+          undefined,
+          undefined,
+          () => this.assertActive()
+        );
       } catch (error) {
         const warmupError = error instanceof Error ? error : new Error(String(error));
         this.warmupPromise = null;
@@ -453,26 +508,6 @@ export class PythonWorkerClient {
 
     const result = await this.core.runClientEffect(program, signal);
     return liftCodeOutcome(result, 'Python execution failed');
-  }
-
-  async executeCodeBatch(call: RuntimeBatchCall): Promise<CodeExecutionBatchResult> {
-    const { code, functionName, inputBatch, executionStyle = 'function', signal } = call;
-    const program = this.warmupEffect().pipe(
-      Effect.andThen(
-        this.core.withExecutionDeadline(
-          this.core.sendMessageEffect<RawExecutionBatchPayload>('execute-code-batch', {
-            code,
-            functionName,
-            inputBatch,
-            executionStyle,
-          }, null),
-          EXECUTION_TIMEOUT_MS
-        )
-      )
-    );
-
-    const result = await this.core.runClientEffect(program, signal);
-    return liftCodeBatchOutcome(result, 'Python execution failed');
   }
 
   async prepareProgram(
@@ -641,6 +676,7 @@ export class PythonWorkerClient {
           mode: 'trace',
           inputBatch: call.inputBatch,
           ...(guestLimits ? { limits: guestLimits } : {}),
+          traceEventTransport: traceEventTransferRequest(),
         },
         null
       ),
@@ -735,6 +771,7 @@ export class PythonWorkerClient {
    * Terminate the worker and clean up resources
    */
   terminate(): void {
+    this.terminated = true;
     this.core.closeSession();
   }
 }

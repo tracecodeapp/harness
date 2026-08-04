@@ -296,6 +296,7 @@ export function createBrowserRuntimeProviderContext(
 ): BrowserRuntimeProviderContext {
   return Object.freeze({
     assets: context.assets,
+    engine: context.environment.engine,
     debug: context.options.debug ?? false,
     workerLifecyclePolicy: context.workerLifecyclePolicy,
     prewarmAfterUse:

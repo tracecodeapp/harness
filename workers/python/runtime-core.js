@@ -31,6 +31,8 @@ except Exception:
 
 const DEFAULT_TRACE_MAX_PATH_DEPTH = 3;
 const MAX_TRACE_MAX_PATH_DEPTH = 8;
+const DEFAULT_TRACE_MAX_BYTES = 4 * 1024 * 1024;
+const MAX_TRACE_MAX_BYTES = 8 * 1024 * 1024;
 const isolatedPythonExecutionGuards = new WeakMap();
 const isolatedPythonFilesystemManagers = new WeakMap();
 
@@ -587,6 +589,13 @@ function getTraceMaxPathDepth(value) {
   return Math.min(MAX_TRACE_MAX_PATH_DEPTH, Math.max(1, Math.floor(value)));
 }
 
+function getTraceMaxBytes(value) {
+  if (typeof value !== 'number' || !Number.isFinite(value) || value <= 0) {
+    return DEFAULT_TRACE_MAX_BYTES;
+  }
+  return Math.min(MAX_TRACE_MAX_BYTES, Math.max(1024, Math.floor(value)));
+}
+
 function generateTracingCode(
   deps,
   userCode,
@@ -625,6 +634,7 @@ for _tracecode_input_name, _tracecode_input_value in _tracecode_raw_inputs.items
   const maxSingleLineHits = options.maxSingleLineHits || 500;
   const minimalTrace = options.minimalTrace === true;
   const maxPathDepth = getTraceMaxPathDepth(options.maxPathDepth);
+  const maxTraceBytes = getTraceMaxBytes(options.maxTraceBytes);
   // Keep stdout capture deterministic for the app UI; worker-console mirroring
   // can cause recursive print chains across mixed runs in dev.
   const mirrorPrintToConsole = false;
@@ -702,9 +712,9 @@ _internal_locals = {
     '_tracecode_builtin_id', '_tracecode_operator', '_tracecode_typing',
     '_TRACECODE_TYPING_GLOBALS',
     '_call_stack', '_pending_accesses', '_last_trace_index_by_frame', '_tracecode_tracemalloc', '_tracecode_tracemalloc_started', '_TRACE_MUTATING_METHODS', '_tracecode_user_class_names', '_tracecode_explicit_return_function_names', '_internal_funcs', '_internal_locals', '_max_trace_steps',
-    '_trace_limit_exceeded', '_timeout_reason', '_total_line_events', '_max_line_events', '_max_stored_events',
+    '_trace_limit_exceeded', '_timeout_reason', '_total_line_events', '_max_line_events', '_max_stored_events', '_max_trace_bytes', '_max_trace_event_bytes', '_trace_stored_bytes',
     '_line_hit_count', '_max_single_line_hits', '_max_call_depth', '_max_memory_bytes', '_memory_check_every', '_infinite_loop_line',
-    '_MAX_SERIALIZE_DEPTH', '_trace_failed', '_inplace',
+    '_MAX_SERIALIZE_DEPTH', '_MAX_SERIALIZED_ITEMS', '_MAX_OBJECT_FIELDS', '_MAX_SERIALIZED_STRING_CHARS', '_serialize_string', '_trace_failed', '_inplace',
     '_custom_print', '_tracer', '_serialize', '_serialize_output', '_tracecode_ref_id', '_dict_to_tree', '_dict_to_list', '_tracecode_materialize_input',
     '_tracecode_materialize_custom_input', '_tracecode_materialize_named_inputs', '_tracecode_hydrate_for_annotation',
     '_tracecode_resolve_target_callable', '_tracecode_hydrate_annotated_inputs', '_tracecode_resolve_entry_callable', '_tracecode_invoke_entry',
@@ -731,6 +741,9 @@ _internal_locals = {
 }
 _max_trace_steps = ${effectiveMaxTraceSteps}
 _max_stored_events = ${maxStoredEvents}
+_max_trace_bytes = ${maxTraceBytes}
+_max_trace_event_bytes = min(256 * 1024, _max_trace_bytes)
+_trace_stored_bytes = 256
 _trace_limit_exceeded = False
 _timeout_reason = None
 _total_line_events = 0
@@ -1162,14 +1175,32 @@ def __tracecode_access_value(step, access):
     return __tracecode_value_at_path(root, access.get('indices'))
 
 def __tracecode_append_runtime_event(event):
-    global _trace_limit_exceeded, _timeout_reason
+    global _trace_limit_exceeded, _timeout_reason, _trace_stored_bytes
     if len(_trace_events) >= _max_stored_events:
         if not _trace_limit_exceeded:
             _trace_limit_exceeded = True
             _timeout_reason = 'trace-limit'
         _pending_accesses.clear()
         return False
+    try:
+        event_bytes = len(json.dumps(
+            event,
+            ensure_ascii=False,
+            separators=(',', ':'),
+        ).encode('utf-8')) + (1 if len(_trace_events) > 0 else 0)
+    except Exception:
+        event_bytes = _max_trace_bytes + 1
+    if (
+        event_bytes > _max_trace_event_bytes or
+        event_bytes > (_max_trace_bytes - _trace_stored_bytes)
+    ):
+        if not _trace_limit_exceeded:
+            _trace_limit_exceeded = True
+            _timeout_reason = 'trace-byte-limit'
+        _pending_accesses.clear()
+        return False
     _trace_events.append(event)
+    _trace_stored_bytes += event_bytes
     return True
 
 def __tracecode_append_trace_events_for_step(step):
@@ -3569,7 +3600,7 @@ def _tracer(frame, event, arg,
             sys.settrace(None)
         return None
 
-    if _trace_limit_exceeded and _timeout_reason == 'trace-limit':
+    if _trace_limit_exceeded and _timeout_reason in ('trace-limit', 'trace-byte-limit'):
         _pending_accesses.clear()
         sys.settrace(None)
         return None
@@ -4013,6 +4044,9 @@ if _max_memory_bytes > 0 and _tracecode_tracemalloc is not None:
     except Exception:
         _tracecode_tracemalloc_started = False
 
+# Source augmentation can record setup accesses before user execution begins.
+# They are not learner events and must not leak into the first traced line.
+_pending_accesses.clear()
 sys.settrace(_tracer)
 _trace_failed = False
 
@@ -4064,8 +4098,33 @@ if _tracecode_tracemalloc is not None and _tracecode_tracemalloc_started:
 _builtins.print = _original_print
 print = _original_print
 
+def __tracecode_compact_last_step(kind=None):
+    for step in reversed(_trace_data):
+        if not isinstance(step, _builtins.dict):
+            continue
+        if kind is not None and step.get('event') != kind:
+            continue
+        compact = {
+            'event': step.get('event'),
+            'line': step.get('line'),
+        }
+        variables = step.get('variables')
+        if isinstance(variables, _builtins.dict):
+            selected = {}
+            for key in ('timeoutReason', 'error', 'errorType', 'errorLine'):
+                if key in variables:
+                    selected[key] = variables.get(key)
+            if selected:
+                compact['variables'] = selected
+        return compact
+    return None
+
 __tracecode_execution_result_json = json.dumps({
-    'trace': _trace_data,
+    'traceSummary': {
+        'errorStep': __tracecode_compact_last_step('exception'),
+        'timeoutStep': __tracecode_compact_last_step('timeout'),
+        'lastStep': __tracecode_compact_last_step(),
+    },
     'runtimeTrace': {
         'schemaVersion': 'runtime-trace-2026-04-28',
         'language': 'python',
@@ -4365,40 +4424,39 @@ async function executeWithTracing(
 
     const executionTimeMs = deps.performanceNow() - startTime;
 
-    const errorStep = result.trace.find(step => step.event === 'exception');
-    const timeoutStep = result.trace.find(step => step.event === 'timeout');
+    const adjustLegacyStep = (step) =>
+      step && typeof step === 'object'
+        ? {
+            ...step,
+            line: step.line > 0
+              ? step.line - userCodeStartLine + 1
+              : step.line,
+          }
+        : undefined;
+    const errorStep = adjustLegacyStep(result.traceSummary?.errorStep);
+    const timeoutStep = adjustLegacyStep(result.traceSummary?.timeoutStep);
+    const lastStep = adjustLegacyStep(result.traceSummary?.lastStep);
     const timeoutReason =
       result.timeoutReason ||
       timeoutStep?.variables?.timeoutReason ||
       undefined;
-
-    const adjustedTrace = result.trace.map(step => ({
-      ...step,
-      line: step.line > 0 ? step.line - userCodeStartLine + 1 : step.line,
-    }));
-    const filteredTrace = adjustedTrace.filter((step) => {
-      if (!step || typeof step !== 'object') return false;
-      const line = typeof step.line === 'number' ? step.line : Number(step.line);
-      if (!Number.isFinite(line)) return false;
-      // Keep only user-code line numbers; drop harness setup/teardown noise
-      // such as module bootstrap locals and _resolve_inplace_result frames.
-      return line >= 1 && line <= userCodeLineCount;
-    });
 
     let errorMessage;
     let errorLine;
     
     const isTraceBudgetExceeded =
       timeoutReason === 'trace-limit' ||
+      timeoutReason === 'trace-byte-limit' ||
       timeoutReason === 'line-limit' ||
       timeoutReason === 'single-line-limit' ||
       (result.traceLimitExceeded && timeoutReason !== 'client-timeout');
 
-    const traceOnlyBudgetExceeded = timeoutReason === 'trace-limit';
+    const traceOnlyBudgetExceeded =
+      timeoutReason === 'trace-limit' ||
+      timeoutReason === 'trace-byte-limit';
 
     // Handle tracing guard stops and execution timeouts
     if (result.traceLimitExceeded || timeoutStep) {
-      const lastStep = adjustedTrace[adjustedTrace.length - 1];
       errorLine = lastStep?.line;
       const lineSuffix = errorLine && errorLine > 0 ? ` on line ${errorLine}` : '';
 
@@ -4454,7 +4512,10 @@ async function executeWithTracing(
       timeoutReason,
       lineEventCount: result.lineEventCount,
       traceStepCount: result.traceStepCount,
-      timings: { totalMs: executionTimeMs, runMs: executionTimeMs },
+      timings: {
+        totalMs: executionTimeMs,
+        runMs: executionTimeMs,
+      },
     };
   } catch (error) {
     const executionTimeMs = deps.performanceNow() - startTime;
@@ -5301,337 +5362,6 @@ _json_out
   }
 }
 
-async function executeCodeBatch(deps, code, functionName, inputBatch, executionStyle = 'function') {
-  const startedAt = deps.performanceNow();
-  const userCodeLineCount = code.split('\n').length;
-  const cases = Array.isArray(inputBatch)
-    ? inputBatch.map((inputs) => (inputs && typeof inputs === 'object' && !Array.isArray(inputs) ? inputs : {}))
-    : [];
-
-  if (cases.length === 0) {
-    return {
-      success: false,
-      results: [],
-      error: 'Python batch execution requires a non-empty inputBatch array.',
-      consoleOutput: [],
-      timings: { totalMs: deps.performanceNow() - startedAt },
-    };
-  }
-
-  try {
-    await deps.loadPyodideInstance();
-
-    const functionNameLiteral = deps.toPythonLiteral(functionName);
-    const executionStyleLiteral = deps.toPythonLiteral(executionStyle);
-    const batchCode = `
-import copy as _copy
-import json
-import math
-import sys
-import builtins as _builtins
-${deps.PYTHON_CLASS_DEFINITIONS_SNIPPET}
-${PYTHON_DEFAULT_IMPORT_PRELUDE}
-pow = _builtins.pow
-
-${deps.PYTHON_EXECUTE_SERIALIZE_FUNCTION_SNIPPET}
-${deps.PYTHON_CONVERSION_HELPERS_SNIPPET}
-
-_USER_CODE = ${JSON.stringify(code)}
-_FUNCTION_NAME = ${functionNameLiteral}
-_EXECUTION_STYLE = ${executionStyleLiteral}
-_INPUT_BATCH = ${deps.toPythonLiteral(cases)}
-_USER_CODE_OBJECT = compile(_USER_CODE, "solution.py", "exec")
-_INPLACE_RESULT_NAMES = ('nums1', 'nums', 'arr', 'array', 'matrix', 'board', 'grid')
-
-def _tracecode_materialize_custom_input(obj, _env):
-    if isinstance(obj, _builtins.list):
-        return [_tracecode_materialize_custom_input(item, _env) for item in obj]
-    if isinstance(obj, _builtins.tuple):
-        return tuple(_tracecode_materialize_custom_input(item, _env) for item in obj)
-    if isinstance(obj, _builtins.dict):
-        if obj.get('__type__') == 'TreeNode' or 'left' in obj or 'right' in obj:
-            return _dict_to_tree(obj)
-        if obj.get('__type__') == 'ListNode' or 'next' in obj:
-            return _dict_to_list(obj)
-        _type_name = obj.get('__type__') if isinstance(obj.get('__type__'), _builtins.str) else obj.get('__class__')
-        _fields = {key: _tracecode_materialize_custom_input(value, _env) for key, value in obj.items() if key not in ('__type__', '__class__', '__id__')}
-        if isinstance(_type_name, _builtins.str):
-            _fields = {'__type__': _type_name, **_fields}
-        _constructor_fields = {key: value for key, value in _fields.items() if key not in ('__type__', '__class__')}
-        _cls = _env.get(_type_name) if isinstance(_type_name, _builtins.str) else None
-        if isinstance(_cls, _builtins.type):
-            try:
-                return _cls(**_constructor_fields)
-            except Exception:
-                pass
-            try:
-                return _cls(*_builtins.list(_constructor_fields.values()))
-            except Exception:
-                pass
-            try:
-                _instance = _cls.__new__(_cls)
-                for _key, _value in _constructor_fields.items():
-                    setattr(_instance, _key, _value)
-                return _instance
-            except Exception:
-                pass
-        return _fields
-    return obj
-
-def _tracecode_hydrate_for_annotation(_obj, _annotation, _env):
-    try:
-        import typing as _tracecode_typing
-        import collections.abc as _tracecode_collections_abc
-    except Exception:
-        return _obj
-    if _annotation is None:
-        return _obj
-    if isinstance(_annotation, _builtins.str):
-        _annotation = _env.get(_annotation, _annotation)
-    if _annotation in (_builtins.object, getattr(_tracecode_typing, 'Any', None)):
-        return _obj
-    _origin = _tracecode_typing.get_origin(_annotation)
-    _args = _tracecode_typing.get_args(_annotation)
-    if _origin is _tracecode_typing.Union:
-        _non_none = [_arg for _arg in _args if _arg is not type(None)]
-        return _tracecode_hydrate_for_annotation(_obj, _non_none[0], _env) if len(_non_none) == 1 else _obj
-    if _origin in (_builtins.list, _builtins.tuple, _builtins.set, _builtins.frozenset):
-        _item_annotation = _args[0] if _args else None
-        if isinstance(_obj, _builtins.list):
-            _items = [_tracecode_hydrate_for_annotation(_item, _item_annotation, _env) for _item in _obj]
-            if _origin is _builtins.tuple:
-                return tuple(_items)
-            if _origin is _builtins.set:
-                return _builtins.set(_items)
-            if _origin is _builtins.frozenset:
-                return _builtins.frozenset(_items)
-            return _items
-        return _obj
-    if _origin in (_builtins.dict, _tracecode_collections_abc.Mapping, _tracecode_collections_abc.MutableMapping) and isinstance(_obj, _builtins.dict):
-        _key_annotation = _args[0] if len(_args) > 0 else None
-        _value_annotation = _args[1] if len(_args) > 1 else None
-        return {
-            _tracecode_hydrate_for_annotation(_key, _key_annotation, _env): _tracecode_hydrate_for_annotation(_value, _value_annotation, _env)
-            for _key, _value in _obj.items()
-        }
-    if isinstance(_annotation, _builtins.type) and isinstance(_obj, _builtins.dict):
-        if _annotation.__name__ in ('TreeNode', 'ListNode'):
-            return _obj
-        _fields = {key: value for key, value in _obj.items() if key not in ('__type__', '__class__', '__id__')}
-        try:
-            _ctor_hints = _tracecode_typing.get_type_hints(getattr(_annotation, '__init__'), _env, _env)
-        except Exception:
-            _ctor_hints = {}
-        _hydrated_fields = {
-            key: _tracecode_hydrate_for_annotation(value, _ctor_hints.get(key), _env)
-            for key, value in _fields.items()
-        }
-        try:
-            return _annotation(**_hydrated_fields)
-        except Exception:
-            pass
-        try:
-            return _annotation(*_builtins.list(_hydrated_fields.values()))
-        except Exception:
-            pass
-        try:
-            _instance = _annotation.__new__(_annotation)
-            for _key, _value in _hydrated_fields.items():
-                setattr(_instance, _key, _value)
-            return _instance
-        except Exception:
-            return _obj
-    return _obj
-
-def _tracecode_resolve_target_callable(_env):
-    if _EXECUTION_STYLE == 'solution-method' and 'Solution' in _env and hasattr(_env['Solution'], _FUNCTION_NAME):
-        return getattr(_env['Solution'], _FUNCTION_NAME)
-    if _FUNCTION_NAME in _env and callable(_env[_FUNCTION_NAME]):
-        return _env[_FUNCTION_NAME]
-    if 'Solution' in _env and hasattr(_env['Solution'], _FUNCTION_NAME):
-        return getattr(_env['Solution'], _FUNCTION_NAME)
-    return None
-
-def _tracecode_hydrate_annotated_inputs(_env, _input_names):
-    try:
-        import typing as _tracecode_typing
-        _callable = _tracecode_resolve_target_callable(_env)
-        if _callable is None:
-            return
-        try:
-            _annotations = _tracecode_typing.get_type_hints(_callable, _env, _env)
-        except Exception:
-            _annotations = getattr(_callable, '__annotations__', {}) or {}
-        for _name in _input_names:
-            if _name in _env and _name in _annotations:
-                _env[_name] = _tracecode_hydrate_for_annotation(_env[_name], _annotations[_name], _env)
-    except Exception:
-        return
-
-def _tracecode_resolve_entry_callable(_env):
-    if _EXECUTION_STYLE == 'solution-method' and 'Solution' in _env and hasattr(_env['Solution'], _FUNCTION_NAME):
-        return getattr(_env['Solution'](), _FUNCTION_NAME)
-    if _FUNCTION_NAME in _env and callable(_env[_FUNCTION_NAME]):
-        return _env[_FUNCTION_NAME]
-    if 'Solution' in _env and hasattr(_env['Solution'], _FUNCTION_NAME):
-        return getattr(_env['Solution'](), _FUNCTION_NAME)
-    return None
-
-def _tracecode_invoke_entry(_env, _input_names):
-    import inspect as _tracecode_inspect
-    _callable = _tracecode_resolve_entry_callable(_env)
-    if _callable is None:
-        raise NameError(f"Implement {_FUNCTION_NAME}(...) or Solution.{_FUNCTION_NAME}(...)")
-    _values = {_name: _env[_name] for _name in _input_names if _name in _env}
-    try:
-        _signature = _tracecode_inspect.signature(_callable)
-    except Exception:
-        return _callable(**_values)
-    _args = []
-    _kwargs = {}
-    _has_varargs = any(
-        _parameter.kind is _tracecode_inspect.Parameter.VAR_POSITIONAL
-        for _parameter in _signature.parameters.values()
-    )
-    for _parameter in _signature.parameters.values():
-        if _parameter.name in ('self', 'cls'):
-            continue
-        _kind = _parameter.kind
-        if _kind is _tracecode_inspect.Parameter.VAR_POSITIONAL:
-            if _parameter.name in _values:
-                _raw = _values[_parameter.name]
-                if isinstance(_raw, (_builtins.list, _builtins.tuple)):
-                    _args.extend(_raw)
-                else:
-                    _args.append(_raw)
-            continue
-        if _kind is _tracecode_inspect.Parameter.VAR_KEYWORD:
-            if _parameter.name in _values and isinstance(_values[_parameter.name], _builtins.dict):
-                _kwargs.update(_values[_parameter.name])
-            continue
-        if _parameter.name not in _values:
-            continue
-        if _kind is _tracecode_inspect.Parameter.POSITIONAL_ONLY:
-            _args.append(_values[_parameter.name])
-        elif _kind is _tracecode_inspect.Parameter.POSITIONAL_OR_KEYWORD and _has_varargs:
-            _args.append(_values[_parameter.name])
-        else:
-            _kwargs[_parameter.name] = _values[_parameter.name]
-    return _callable(*_args, **_kwargs)
-
-def _tracecode_run_ops_class(_env):
-    _ops = _env.get('operations', _env.get('ops'))
-    _args = _env.get('arguments', _env.get('args'))
-    if _ops is None or _args is None:
-        raise ValueError("ops-class execution requires inputs.operations and inputs.arguments (or ops/args)")
-    if len(_ops) != len(_args):
-        raise ValueError("operations and arguments must have the same length")
-    _cls = _env[_FUNCTION_NAME]
-    _instance = None
-    _out = []
-    for _i, _op in enumerate(_ops):
-        _call_args = _args[_i] if _i < len(_args) else []
-        if _call_args is None:
-            _call_args = []
-        if not isinstance(_call_args, (_builtins.list, _builtins.tuple)):
-            _call_args = [_call_args]
-        if _i == 0:
-            _instance = _cls(*_call_args)
-            _out.append(None)
-        else:
-            if not hasattr(_instance, _op):
-                raise AttributeError(f"Required method '{_op}' is not implemented on {_cls.__name__}")
-            _method = getattr(_instance, _op)
-            _out.append(_method(*_call_args))
-    return _out
-
-_TRACE_CODE_CASE_BASE_NAMES = tuple(
-    name for name in globals()
-    if name not in ('_USER_CODE', '_FUNCTION_NAME', '_EXECUTION_STYLE', '_INPUT_BATCH', '_USER_CODE_OBJECT')
-)
-
-def _tracecode_base_env():
-    _env = {name: globals()[name] for name in _TRACE_CODE_CASE_BASE_NAMES if name in globals()}
-    _env['__builtins__'] = _builtins
-    _env['__name__'] = '__main__'
-    _env['print'] = None
-    return _env
-
-def _tracecode_run_case(_raw_inputs):
-    _console_output = []
-    def _custom_print(*args, **kwargs):
-        _console_output.append(" ".join(str(arg) for arg in args))
-    _env = _tracecode_base_env()
-    _env['print'] = _custom_print
-    try:
-        _raw_input_items = _raw_inputs.items() if isinstance(_raw_inputs, _builtins.dict) else []
-        if not isinstance(_FUNCTION_NAME, _builtins.str) or not _FUNCTION_NAME:
-            _inputs = {
-                str(_key): _tracecode_materialize_custom_input(_copy.deepcopy(_value), _env)
-                for _key, _value in _raw_input_items
-            }
-            _env.update(_inputs)
-            exec(_USER_CODE_OBJECT, _env)
-        else:
-            exec(_USER_CODE_OBJECT, _env)
-            _inputs = {
-                str(_key): _tracecode_materialize_custom_input(_copy.deepcopy(_value), _env)
-                for _key, _value in _raw_input_items
-            }
-            _env.update(_inputs)
-        _input_names = list(_inputs.keys())
-        _tracecode_hydrate_annotated_inputs(_env, _input_names)
-        if not isinstance(_FUNCTION_NAME, _builtins.str) or not _FUNCTION_NAME:
-            _result = _env.get('result')
-        elif _EXECUTION_STYLE == 'ops-class':
-            _result = _tracecode_run_ops_class(_env)
-        else:
-            _result = _tracecode_invoke_entry(_env, _input_names)
-            if _result is None:
-                for _name in _INPLACE_RESULT_NAMES:
-                    if _name in _env:
-                        _result = _env[_name]
-                        break
-        return {'success': True, 'output': _serialize(_result), 'consoleOutput': _console_output}
-    except Exception as _error:
-        return {'success': False, 'output': None, 'error': str(_error), 'consoleOutput': _console_output}
-
-_results = [_tracecode_run_case(_case) for _case in _INPUT_BATCH]
-_json_out = json.dumps({
-    'success': all(_result.get('success') is True for _result in _results),
-    'results': _results,
-    'consoleOutput': [line for _result in _results for line in _result.get('consoleOutput', [])],
-})
-_json_out
-`;
-
-    const resultJson = await runPythonInFreshExecutionScope(deps, batchCode, '_json_out');
-    const parsed = JSON.parse(resultJson);
-    return {
-      success: parsed.success === true,
-      results: Array.isArray(parsed.results) ? parsed.results : [],
-      consoleOutput: Array.isArray(parsed.consoleOutput) ? parsed.consoleOutput : [],
-      timings: { totalMs: deps.performanceNow() - startedAt },
-    };
-  } catch (error) {
-    const rawError = error instanceof Error ? error.message : String(error);
-    const { message, line } = parsePythonError(rawError, 1, userCodeLineCount);
-    return {
-      success: false,
-      results: cases.map(() => ({
-        success: false,
-        output: null,
-        error: message,
-        errorLine: line,
-        consoleOutput: [],
-      })),
-      error: message,
-      consoleOutput: [],
-      timings: { totalMs: deps.performanceNow() - startedAt },
-    };
-  }
-}
-
 async function prepareProgram(
   deps,
   {
@@ -5911,7 +5641,6 @@ async function executePreparedProgramBatch(
     parsePythonError,
     executeWithTracing,
     executeCode,
-    executeCodeBatch,
     prepareProgram,
     executePreparedProgram,
     executePreparedProgramBatch,

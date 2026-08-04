@@ -49,14 +49,19 @@ const ALL_LANGUAGES: readonly BatchLanguage[] = [
   'csharp',
   'cpp',
 ] as const;
-const requestedLanguages = process.env.TRACECODE_BROWSER_BATCH_LANGUAGES
-  ?.split(',')
-  .map((language) => language.trim())
-  .filter(Boolean) as BatchLanguage[] | undefined;
-const LANGUAGES: readonly BatchLanguage[] =
-  requestedLanguages && requestedLanguages.length > 0
-    ? requestedLanguages
-    : ALL_LANGUAGES;
+const requestedLanguages =
+  process.env.TRACECODE_ALGORITHM_BATCH_LANGUAGES?.split(',')
+    .map((language) => language.trim())
+    .filter(Boolean);
+const LANGUAGES: readonly BatchLanguage[] = requestedLanguages?.length
+  ? requestedLanguages.map((language) => {
+      assertCondition(
+        ALL_LANGUAGES.includes(language as BatchLanguage),
+        `Unknown browser algorithm batch language ${JSON.stringify(language)}.`
+      );
+      return language as BatchLanguage;
+    })
+  : ALL_LANGUAGES;
 const csharpBatchConcurrency = Number.parseInt(
   process.env.TRACECODE_CSHARP_BATCH_CONCURRENCY ?? '4',
   10

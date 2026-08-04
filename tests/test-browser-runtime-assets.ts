@@ -259,6 +259,76 @@ function testProviderResolution(): void {
   assertCondition(Object.keys(resolved).length === 1, 'Providers must not synthesize manifests for omitted runtimes');
 }
 
+function testPythonRuntimeImageManifest(): void {
+  const immutable = {
+    mutability: 'immutable',
+    address: 'content',
+  } as const;
+  const runtimeImage = {
+    protocolVersion: 'tracecode-python-runtime-image-v1',
+    engine: 'chromium',
+    pythonHashSeed: '0',
+    wasm: {
+      url: 'runtime-image/pyodide.asm.wasm',
+      integrity: 'sha256-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=',
+      mediaType: 'application/wasm',
+      size: 8_647_684,
+      delivery: immutable,
+    },
+    snapshot: {
+      url: 'runtime-image/clean.bin',
+      integrity: 'sha256-AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE=',
+      mediaType: 'application/octet-stream',
+      size: 20_971_936,
+      delivery: immutable,
+    },
+  } as const;
+  const resolved = resolveBrowserRuntimeAssetManifests({
+    manifests: {
+      python: {
+        ...consumerManifests.python,
+        assets: {
+          ...consumerManifests.python.assets,
+          runtimeImage,
+        },
+      },
+    },
+  });
+  assertCondition(
+    resolved.python?.assets.runtimeImage?.wasm.url ===
+      'https://assets.consumer.example/python/314.0.2/runtime-image/pyodide.asm.wasm',
+    'Python runtime-image Wasm must resolve through the manifest asset base'
+  );
+  assertCondition(
+    resolved.python?.assets.runtimeImage?.snapshot.size === 20_971_936 &&
+      resolved.python.assets.runtimeImage.engine === 'chromium' &&
+      resolved.python.assets.runtimeImage.pythonHashSeed === '0',
+    'Python runtime-image snapshot metadata must survive normalization'
+  );
+
+  assertThrowsMessage(
+    () =>
+      resolveBrowserRuntimeAssetManifests({
+        manifests: {
+          python: {
+            ...consumerManifests.python,
+            assets: {
+              ...consumerManifests.python.assets,
+              runtimeImage: {
+                ...runtimeImage,
+                snapshot: {
+                  ...runtimeImage.snapshot,
+                  delivery: undefined,
+                },
+              },
+            },
+          } as unknown as BrowserRuntimeAssetManifests['python'],
+        },
+      }),
+    'must declare immutable delivery, integrity, and size'
+  );
+}
+
 function testManifestAlternativesAndRelativeBases(): void {
   const assets = resolveBrowserRuntimeAssets({
     assetBaseUrl: '/consumer-assets',
@@ -540,6 +610,7 @@ function testInvalidManifestsFailClearly(): void {
 testLegacyCompatibility();
 testConsumerCdnManifests();
 testProviderResolution();
+testPythonRuntimeImageManifest();
 testManifestAlternativesAndRelativeBases();
 testInvalidManifestsFailClearly();
 console.log('PASS: browser runtime asset manifests');

@@ -160,8 +160,15 @@ _SKIP_SENTINEL = "__TRACECODE_SKIP__"
 _MAX_SERIALIZE_DEPTH = 48
 _MAX_SERIALIZED_ITEMS = 64
 _MAX_OBJECT_FIELDS = 32
+_MAX_SERIALIZED_STRING_CHARS = 16384
 _tracecode_global_object_refs = {}
 _tracecode_next_object_ref_id = 0
+
+def _serialize_string(value):
+    if len(value) <= _MAX_SERIALIZED_STRING_CHARS:
+        return value
+    remaining = len(value) - _MAX_SERIALIZED_STRING_CHARS
+    return value[:_MAX_SERIALIZED_STRING_CHARS] + f"…<truncated {remaining} chars>"
 
 def _tracecode_ref_id(obj_ref, node_refs):
     global _tracecode_next_object_ref_id
@@ -179,7 +186,7 @@ def _tracecode_ref_id(obj_ref, node_refs):
 def _truncation_marker(total, emitted):
     return {"__truncated__": True, "remaining": max(0, total - emitted)}
 
-def _serialize_repr_fallback(obj, node_refs=None):
+def _serialize_repr_fallback(obj, node_refs=None, truncate_string=True):
     obj_type = getattr(obj, '__class__', None)
     class_name = getattr(obj_type, '__name__', 'object')
     if getattr(obj_type, '__module__', '') == 'builtins':
@@ -189,7 +196,7 @@ def _serialize_repr_fallback(obj, node_refs=None):
             return _SKIP_SENTINEL
         if repr_str.startswith('<') and repr_str.endswith('>'):
             return _SKIP_SENTINEL
-        return repr_str
+        return _serialize_string(repr_str) if truncate_string else repr_str
     if node_refs is None:
         return {"__type__": class_name, "__class__": class_name}
     obj_ref = _builtins.id(obj)
@@ -209,8 +216,10 @@ def _serialize_sequence(values, depth, node_refs):
 def _serialize(obj, depth=0, node_refs=None):
     if node_refs is None:
         node_refs = {}
-    if isinstance(obj, (bool, int, str, type(None))):
+    if isinstance(obj, (bool, int, type(None))):
         return obj
+    elif isinstance(obj, str):
+        return _serialize_string(obj)
     elif isinstance(obj, float):
         if not math.isfinite(obj):
             if math.isnan(obj):
@@ -226,7 +235,7 @@ def _serialize(obj, depth=0, node_refs=None):
     elif isinstance(obj, _builtins.dict):
         items = _builtins.list(obj.items())
         emitted = min(len(items), _MAX_SERIALIZED_ITEMS)
-        result = {str(k): _serialize(v, depth + 1, node_refs) for k, v in items[:emitted]}
+        result = {_serialize_string(str(k)): _serialize(v, depth + 1, node_refs) for k, v in items[:emitted]}
         if emitted < len(items):
             result["__truncated__"] = True
             result["remaining"] = len(items) - emitted
@@ -292,7 +301,7 @@ def _serialize(obj, depth=0, node_refs=None):
         if isinstance(raw_fields, _builtins.dict):
             fields = []
             for key, value in raw_fields.items():
-                key_str = str(key)
+                key_str = _serialize_string(str(key))
                 if key_str.startswith('_'):
                     continue
                 if callable(value):
@@ -384,7 +393,7 @@ def _serialize_output(obj, depth=0, node_refs=None):
                 result[key_str] = _serialize_output(value, depth + 1, node_refs)
         return result
     else:
-        return _serialize_repr_fallback(obj, node_refs)
+        return _serialize_repr_fallback(obj, node_refs, False)
 `;
 
 /**

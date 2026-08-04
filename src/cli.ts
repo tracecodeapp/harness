@@ -31,6 +31,11 @@ const ASSET_COPY_PLAN = [
     languages: ['python'],
   },
   {
+    source: ['workers', 'python', 'pyodide-0.29.3'],
+    target: ['python', 'pyodide-0.29.3'],
+    languages: ['python'],
+  },
+  {
     source: ['workers', 'shared', 'runtime-kernel-policy-classic.js'],
     target: ['shared', 'runtime-kernel-policy-classic.js'],
     languages: ['python'],

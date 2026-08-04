@@ -8,6 +8,8 @@ const DEFAULT_ASSET_BASE_URL = '/workers';
  * can reject manifests that use a newer contract it does not understand.
  */
 export const BROWSER_RUNTIME_ASSET_PROTOCOL_VERSION = 'browser-runtime-assets-v1';
+export const PYTHON_RUNTIME_IMAGE_PROTOCOL_VERSION =
+  'tracecode-python-runtime-image-v1';
 
 export const BROWSER_RUNTIME_IDS = Object.freeze([
   'python',
@@ -71,6 +73,18 @@ export interface BrowserRuntimeAssetDescriptor {
   delivery?: BrowserRuntimeAssetDelivery;
 }
 
+export interface PythonRuntimeImageAssetDescriptor {
+  protocolVersion: typeof PYTHON_RUNTIME_IMAGE_PROTOCOL_VERSION;
+  /** Browser engine whose Wasm snapshot format and startup state this image targets. */
+  engine: 'chromium' | 'firefox' | 'webkit';
+  /** Exact Pyodide/CPython WebAssembly module used to create the snapshot. */
+  wasm: BrowserRuntimeAssetDescriptor;
+  /** Clean, preinitialized Emscripten linear-memory image. */
+  snapshot: BrowserRuntimeAssetDescriptor;
+  /** Startup hash seed used while creating and restoring this image. */
+  pythonHashSeed: string;
+}
+
 export interface BrowserRuntimeAssetsByRuntime {
   python: {
     worker: BrowserRuntimeAssetDescriptor;
@@ -87,6 +101,14 @@ export interface BrowserRuntimeAssetsByRuntime {
     distribution?: Readonly<Record<string, BrowserRuntimeAssetDescriptor>>;
     /** Optional package artifacts keyed by the package name passed to the Python runtime. */
     packages?: Readonly<Record<string, BrowserRuntimeAssetDescriptor>>;
+    /**
+     * Optional immutable startup image for disposable Judge runners.
+     *
+     * The runtime loader declared by this manifest must implement the matching
+     * TraceCode runtime-image protocol. Project processes do not consume this
+     * image because their lifecycle and long-lived state are user-controlled.
+     */
+    runtimeImage?: PythonRuntimeImageAssetDescriptor;
   };
   javascript: {
     worker: BrowserRuntimeAssetDescriptor;
@@ -215,7 +237,16 @@ export const DEFAULT_BROWSER_RUNTIME_ASSET_RELATIVE_PATHS: Readonly<BrowserRunti
 });
 
 const RUNTIME_ASSET_NAMES = Object.freeze({
-  python: ['worker', 'runtimeCore', 'snippets', 'runtimeLoader', 'runtimeIndex', 'distribution', 'packages'],
+  python: [
+    'worker',
+    'runtimeCore',
+    'snippets',
+    'runtimeLoader',
+    'runtimeIndex',
+    'distribution',
+    'packages',
+    'runtimeImage',
+  ],
   javascript: ['worker', 'projectWorker', 'libraries'],
   typescript: ['compiler'],
   java: ['worker'],
@@ -551,6 +582,99 @@ function normalizeAssetDescriptorCollection(
     );
   }
   return Object.freeze(normalized);
+}
+
+function normalizePythonRuntimeImage(
+  value: unknown,
+  baseUrl: string,
+  manifestOriginPolicy: BrowserRuntimeAssetOriginPolicy | undefined
+): Readonly<PythonRuntimeImageAssetDescriptor> {
+  if (!isRecord(value)) {
+    throw manifestError('python', 'asset "runtimeImage" must be an object.');
+  }
+  const allowedFields = new Set([
+    'protocolVersion',
+    'engine',
+    'wasm',
+    'snapshot',
+    'pythonHashSeed',
+  ]);
+  const unknownField = Object.keys(value).find((field) => !allowedFields.has(field));
+  if (unknownField) {
+    throw manifestError(
+      'python',
+      `asset "runtimeImage" contains unknown field "${unknownField}".`
+    );
+  }
+  if (value.protocolVersion !== PYTHON_RUNTIME_IMAGE_PROTOCOL_VERSION) {
+    throw manifestError(
+      'python',
+      `asset "runtimeImage" protocolVersion must be "${PYTHON_RUNTIME_IMAGE_PROTOCOL_VERSION}".`
+    );
+  }
+  if (
+    value.engine !== 'chromium' &&
+    value.engine !== 'firefox' &&
+    value.engine !== 'webkit'
+  ) {
+    throw manifestError(
+      'python',
+      'asset "runtimeImage" engine must be "chromium", "firefox", or "webkit".'
+    );
+  }
+  if (
+    typeof value.pythonHashSeed !== 'string' ||
+    value.pythonHashSeed.trim() === '' ||
+    value.pythonHashSeed !== value.pythonHashSeed.trim() ||
+    /[\u0000-\u001f\u007f]/u.test(value.pythonHashSeed)
+  ) {
+    throw manifestError(
+      'python',
+      'asset "runtimeImage" pythonHashSeed must be a non-empty string without surrounding whitespace or control characters.'
+    );
+  }
+  const wasm = normalizeAssetDescriptor(
+    'python',
+    'runtimeImage.wasm',
+    value.wasm,
+    baseUrl,
+    manifestOriginPolicy
+  );
+  const snapshot = normalizeAssetDescriptor(
+    'python',
+    'runtimeImage.snapshot',
+    value.snapshot,
+    baseUrl,
+    manifestOriginPolicy
+  );
+  for (const [name, descriptor] of [
+    ['wasm', wasm],
+    ['snapshot', snapshot],
+  ] as const) {
+    if (
+      descriptor.delivery?.mutability !== 'immutable' ||
+      descriptor.integrity === undefined ||
+      descriptor.size === undefined
+    ) {
+      throw manifestError(
+        'python',
+        `asset "runtimeImage.${name}" must declare immutable delivery, integrity, and size.`
+      );
+    }
+  }
+  if (wasm.mediaType !== 'application/wasm') {
+    throw manifestError(
+      'python',
+      'asset "runtimeImage.wasm" mediaType must be "application/wasm".'
+    );
+  }
+  return Object.freeze({
+    protocolVersion: PYTHON_RUNTIME_IMAGE_PROTOCOL_VERSION,
+    engine: value.engine,
+    wasm,
+    snapshot,
+    pythonHashSeed: value.pythonHashSeed,
+  });
 }
 
 function assertPythonDistributionManifestCompatibility(
@@ -891,7 +1015,13 @@ function normalizeManifest<Runtime extends BrowserRuntimeId>(
   for (const assetName of RUNTIME_ASSET_NAMES[expectedRuntime]) {
     const descriptor = (value.assets as Record<string, unknown>)[assetName];
     if (descriptor !== undefined) {
-      assets[assetName] = assetCollectionNames.has(assetName)
+      assets[assetName] = expectedRuntime === 'python' && assetName === 'runtimeImage'
+        ? normalizePythonRuntimeImage(
+            descriptor,
+            assetBaseUrl,
+            originPolicy
+          )
+        : assetCollectionNames.has(assetName)
         ? normalizeAssetDescriptorCollection(
             expectedRuntime,
             assetName,
