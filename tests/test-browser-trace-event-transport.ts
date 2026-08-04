@@ -133,10 +133,45 @@ class TraceTransportWorker {
         });
         return;
       }
-      if (type !== 'execute-with-tracing' && type !== 'execute-trace-batch') return;
+      if (
+        type !== 'execute-with-tracing' &&
+        type !== 'execute-trace-batch' &&
+        type !== 'execute-prepared-program-batch'
+      ) return;
 
       const request = (payload as { traceEventTransport?: TraceEventTransportRequest })?.traceEventTransport ?? {};
       TraceTransportWorker.requests.push({ runtime: this.runtime, request });
+      if (this.runtime === 'python' && type === 'execute-prepared-program-batch') {
+        const makeEvents = (caseIndex: number) => Array.from({ length: 500 }, (_, index) => ({
+          kind: 'line',
+          runId: `python:run:${caseIndex}`,
+          file: 'solution.py',
+          line: index + 1,
+          frameId: `solve:${index}`,
+          function: 'solve',
+          sourceSpan: { startLine: index + 1, endLine: index + 1 },
+        }));
+        const eventArrays = [makeEvents(0), makeEvents(1)];
+        this.emit({
+          id,
+          type: 'execute-result',
+          protocolToken,
+          payload: transferableResult(
+            {
+              results: eventArrays.map((events, index) => ({
+                success: true,
+                output: index + 1,
+                trace: runtimeTrace('python', events.length),
+                executionTimeMs: 1,
+                consoleOutput: [],
+              })),
+            },
+            'results[].trace.events',
+            eventArrays
+          ),
+        });
+        return;
+      }
       if (this.runtime === 'csharp') {
         const events = Array.from({ length: 900 }, (_, index) => ({
           kind: 'line',
@@ -298,6 +333,42 @@ async function testClientsRestorePublicResults(): Promise<void> {
     assertCondition((pythonResult.trace as { events: unknown[] }).events.length === 900, 'Python client lost transferred trace events');
     assertCondition(!('__traceEventTransport' in pythonResult), 'Python leaked its transport envelope publicly');
     assertNegotiatedRequest('python');
+
+    const pythonBatch = await python.executePreparedTraceBatch(
+      {
+        artifact: {
+          schemaVersion: 'tracecode.python.prepared-program.v1',
+          fingerprint: { cacheTag: 'test', magicNumber: 'test', marshalVersion: 4 },
+          mode: 'trace',
+          code: 'def solve(value):\n    return value',
+          functionName: 'solve',
+          executionStyle: 'function',
+          traceOptions: {},
+          userCode: '',
+          executorCode: '',
+        },
+        mode: 'trace',
+        consoleOutput: [],
+      },
+      { inputBatch: [{ value: 1 }, { value: 2 }] }
+    );
+    assertCondition(
+      pythonBatch.results?.length === 2 &&
+        pythonBatch.results.every((entry) =>
+          (entry.trace as { events: unknown[] }).events.length === 500
+        ),
+      'Python client lost transferred per-case trace event batches'
+    );
+    const pythonRequests = TraceTransportWorker.requests.filter(
+      (entry) => entry.runtime === 'python'
+    );
+    assertCondition(
+      pythonRequests.length === 2 &&
+        pythonRequests.every(
+          (entry) => entry.request.schema === 'tracecode.trace-events.transfer.v1'
+        ),
+      'Python prepared trace batch did not negotiate trace transfer'
+    );
     python.terminate();
 
     const javascript = new JavaScriptWorkerClient({
@@ -435,6 +506,73 @@ function testWorkerBatchingIsBoundedAndCompatible(): void {
     assertCondition(summary.smallTraceBypass, `${workerPath} serialized a trace too small to benefit`);
   }
   console.log('PASS: worker trace batches are ordered, bounded, negotiated, and bypass small traces');
+}
+
+function testPythonWorkerPreparedBatching(): void {
+  const source = readFileSync(join(process.cwd(), 'workers/python/python-worker.js'), 'utf8');
+  const start = source.indexOf("const TRACE_EVENT_TRANSFER_SCHEMA = 'tracecode.trace-events.transfer.v1';");
+  const end = source.indexOf('function projectUtf8Bytes', start);
+  assertCondition(start >= 0 && end > start, 'Unable to extract Python trace transfer helper');
+  const context = vm.createContext({ TextEncoder });
+  vm.runInContext(source.slice(start, end), context, { filename: 'python-worker.js' });
+  const summary = vm.runInContext(
+    `(() => {
+      const makeEvents = (caseIndex) => Array.from({ length: 700 }, (_, index) => ({
+        kind: 'snapshot', runId: 'python:run:' + caseIndex, line: index + 1,
+        target: { variable: 'values', path: [index % 20] },
+        value: { label: 'event-' + index, payload: 'x'.repeat(180) },
+      }));
+      const eventArrays = [makeEvents(0), makeEvents(1)];
+      const result = {
+        results: eventArrays.map((events, index) => ({
+          success: true, output: index + 1, trace: { events },
+        })),
+      };
+      const request = {
+        schema: 'tracecode.trace-events.transfer.v1', encoding: 'json-utf8',
+        maxChunkBytes: 64 * 1024, minTransferBytes: 64 * 1024, minEventCount: 128,
+      };
+      const prepared = prepareTraceEventTransfer(
+        result,
+        request,
+        'results[].trace.events'
+      );
+      return {
+        chunks: prepared.transfer.map((chunk) => chunk.byteLength),
+        eventCount: prepared.payload.__traceEventTransport.eventCount,
+        eventCounts: prepared.payload.__traceEventTransport.eventCounts,
+        placeholders: prepared.payload.results.map((entry) => entry.trace.events.length),
+        legacy: prepareTraceEventTransfer(
+          result,
+          undefined,
+          'results[].trace.events'
+        ) === null,
+      };
+    })()`,
+    context
+  ) as {
+    chunks: number[];
+    eventCount: number;
+    eventCounts: number[];
+    placeholders: number[];
+    legacy: boolean;
+  };
+  assertCondition(summary.eventCount === 1400, 'Python batch transfer changed the total event count');
+  assertCondition(
+    JSON.stringify(summary.eventCounts) === '[700,700]',
+    'Python batch transfer changed per-result event counts'
+  );
+  assertCondition(
+    summary.chunks.length > 1 &&
+      summary.chunks.every((size) => size > 0 && size <= 64 * 1024),
+    'Python batch transfer emitted an oversized trace chunk'
+  );
+  assertCondition(
+    summary.placeholders.every((count) => count === 0),
+    'Python batch transfer duplicated events in its structured payload'
+  );
+  assertCondition(summary.legacy, 'Python batch transfer broke legacy-client response compatibility');
+  console.log('PASS: Python prepared trace batches use bounded transferable event chunks');
 }
 
 function testCSharpAndCppWorkerBatching(): void {
@@ -641,6 +779,7 @@ async function testPythonOptionalPackagesAreManifestDriven(): Promise<void> {
 
 async function main(): Promise<void> {
   testWorkerBatchingIsBoundedAndCompatible();
+  testPythonWorkerPreparedBatching();
   testCSharpAndCppWorkerBatching();
   testMalformedTransferFailsClosed();
   testMalformedBatchTransferFailsClosed();

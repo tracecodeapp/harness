@@ -265,7 +265,6 @@ async function testPythonRuntimeClientNormalizesTraceResponse(): Promise<void> {
       },
     }),
     executeCode: async () => ({ success: true, output: null, consoleOutput: [] }),
-    executeCodeBatch: async () => ({ success: true, results: [] }),
     executeProjectPython: async () => ({ stdout: '', stderr: '', exitCode: 0 }),
   } as unknown as PythonWorkerClient;
   const client = createPythonRuntimeClient(fakeWorker);

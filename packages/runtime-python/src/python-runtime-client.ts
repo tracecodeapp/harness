@@ -35,7 +35,6 @@ import {
 import { assertRuntimeRequestSupported } from '@tracecode/runtime-browser/internal';
 import { getLanguageRuntimeProfile } from '@tracecode/runtime-browser/internal';
 import {
-  batchCodeResultToExecuteResult,
   executeRuntimeRequest,
   isRuntimeProjectExecuteRequest,
 } from '@tracecode/runtime-browser/internal';
@@ -54,6 +53,7 @@ const PYTHON_TRACE_EVENT_KINDS = new Set<RuntimeTraceEventKind>([
 ]);
 const PYTHON_TIMEOUT_REASONS = new Set<ExecutionLimitReason>([
   'trace-limit',
+  'trace-byte-limit',
   'line-limit',
   'single-line-limit',
   'recursion-limit',
@@ -62,6 +62,7 @@ const PYTHON_TIMEOUT_REASONS = new Set<ExecutionLimitReason>([
 ]);
 const PYTHON_TRACE_TIMEOUT_REASONS = new Set([
   'trace-limit',
+  'trace-byte-limit',
   'line-limit',
   'single-line-limit',
   'recursion-limit',
@@ -389,7 +390,10 @@ export interface PythonPreparedExecutionProviderController
   extends RuntimePreparedExecutionProvider {
   /** Release current programs and workers while keeping the provider reusable. */
   reset(): void;
-  /** Force-retire compiler, standby, and active case workers owned by this provider. */
+  /**
+   * Force-retire preparation standby and active execution workers owned by
+   * this provider.
+   */
   terminate(): void;
 }
 
@@ -413,25 +417,7 @@ class PythonRuntimeClient implements RuntimeClient {
       });
     }
 
-    const codeRequest = request as RuntimeExecuteCodeRequest;
-    const executionStyle = codeRequest.executionStyle ?? 'function';
-    if (!codeRequest.trace && !codeRequest.limits && codeRequest.cases.length > 1) {
-      assertRuntimeRequestSupported(getLanguageRuntimeProfile('python'), {
-        request: 'execute',
-        executionStyle,
-        functionName: codeRequest.functionName ?? '',
-      });
-      const result = await this.workerClient.executeCodeBatch({
-        code: codeRequest.code,
-        functionName: codeRequest.functionName ?? '',
-        inputBatch: codeRequest.cases.map((testCase) => testCase.inputs),
-        executionStyle,
-        signal: codeRequest.signal,
-      });
-      return batchCodeResultToExecuteResult(codeRequest, result);
-    }
-
-    return executeRuntimeRequest(codeRequest, {
+    return executeRuntimeRequest(request as RuntimeExecuteCodeRequest, {
       defaultExecutionStyle: 'function',
       executeCode: this.executeCode.bind(this),
       executeWithTracing: this.executeWithTracing.bind(this),
@@ -527,7 +513,7 @@ class PreparedPythonProgramLifetime {
   private phase: 'active' | 'disposing' | 'disposed' = 'active';
   private operationTail: Promise<void> = Promise.resolve();
   private disposal: Promise<void> | undefined;
-  private standby: PythonWorkerSlot | null = null;
+  private initialWorker: WarmedPythonWorker | null;
   private generation = 1;
   private disposedNotificationSent = false;
   private readonly ownedWorkers = new Set<PythonWorkerClient>();
@@ -535,10 +521,15 @@ class PreparedPythonProgramLifetime {
 
   constructor(
     private readonly handle: PythonPreparedProgramHandle,
-    private readonly options: PythonPreparedExecutionProviderOptions,
-    private readonly onDisposed: (lifetime: PreparedPythonProgramLifetime) => void
+    private readonly createWorkerClient: () => PythonWorkerClient,
+    private readonly onDisposed: (
+      lifetime: PreparedPythonProgramLifetime,
+      replenishPreparationStandby: boolean
+    ) => void,
+    initialWorker: WarmedPythonWorker
   ) {
-    this.startStandby();
+    this.initialWorker = initialWorker;
+    this.ownedWorkers.add(initialWorker.client);
   }
 
   executeCode(
@@ -593,7 +584,7 @@ class PreparedPythonProgramLifetime {
       new DOMException('Prepared Python program has been disposed.', 'AbortError')
     );
     this.disposal = this.operationTail.then(() => {
-      this.finishDisposed();
+      this.finishDisposed(true);
     });
     this.operationTail = this.disposal.then(
       () => undefined,
@@ -611,7 +602,7 @@ class PreparedPythonProgramLifetime {
     if (this.phase === 'disposed') return;
     this.phase = 'disposing';
     this.abortAndRetire(reason);
-    this.finishDisposed();
+    this.finishDisposed(false);
   }
 
   private executeSerial<T>(
@@ -637,22 +628,17 @@ class PreparedPythonProgramLifetime {
             'Prepared Python execution was aborted.'
           );
         }
-        ({ client } = await this.takeStandby(controller.signal));
+        ({ client } = await this.takeWorker(controller.signal));
         if (this.phase !== 'active') {
           throw new Error('Prepared Python program has been disposed.');
         }
         return await operation(client, controller.signal);
       } finally {
-        // Every case gets a hard interpreter boundary. The marshaled code
-        // artifact survives; the Pyodide worker, heap, modules, cwd, RNG, and
-        // filesystem do not.
+        // Every prepared execution call gets a hard interpreter boundary.
+        // Batch calls retain the runtime's existing per-case reset semantics
+        // inside one disposable worker. The marshaled code artifact survives;
+        // the Pyodide worker, heap, modules, cwd, RNG, and filesystem do not.
         if (client) this.retireWorker(client);
-        if (
-          this.phase === 'active' &&
-          (this.options.prewarmAfterUse ?? true)
-        ) {
-          this.startStandby();
-        }
       }
     });
     this.operationTail = underlying.then(
@@ -674,13 +660,23 @@ class PreparedPythonProgramLifetime {
     return raceWithAbort(underlying, controller.signal);
   }
 
-  private startStandby(): PythonWorkerSlot {
-    if (this.standby) return this.standby;
+  private takeWorker(signal: AbortSignal): Promise<WarmedPythonWorker> {
     if (this.phase !== 'active') {
-      throw new Error('Prepared Python program has been disposed.');
+      return Promise.reject(
+        new Error('Prepared Python program has been disposed.')
+      );
+    }
+    if (this.initialWorker) {
+      const worker = this.initialWorker;
+      this.initialWorker = null;
+      return raceWithAbort(
+        Promise.resolve(worker),
+        signal,
+        () => this.retireWorker(worker.client)
+      );
     }
     const generation = this.generation;
-    const client = this.options.createWorkerClient();
+    const client = this.createWorkerClient();
     this.ownedWorkers.add(client);
     const ready = client.warmup().then(
       (warmup) => {
@@ -699,21 +695,14 @@ class PreparedPythonProgramLifetime {
         throw error;
       }
     );
-    const standby = { client, ready };
-    this.standby = standby;
     void ready.catch(() => undefined);
-    return standby;
-  }
-
-  private takeStandby(signal: AbortSignal): Promise<WarmedPythonWorker> {
-    const standby = this.standby ?? this.startStandby();
-    this.standby = null;
-    return raceWithAbort(standby.ready, signal, () =>
-      this.retireWorker(standby.client)
-    );
+    return raceWithAbort(ready, signal, () => this.retireWorker(client));
   }
 
   private retireWorker(client: PythonWorkerClient): void {
+    // Deletion is the ownership gate and makes retirement idempotent. An
+    // abort can retire a warming worker before warmup settles; that settlement
+    // deliberately reaches this method again without terminating twice.
     if (!this.ownedWorkers.delete(client)) return;
     client.terminate();
   }
@@ -725,7 +714,7 @@ class PreparedPythonProgramLifetime {
 
   private abortAndRetire(reason: unknown): void {
     this.generation += 1;
-    this.standby = null;
+    this.initialWorker = null;
     const controllers = [...this.operationControllers];
     this.operationControllers.clear();
     for (const controller of controllers) {
@@ -734,21 +723,24 @@ class PreparedPythonProgramLifetime {
     this.terminateOwnedWorkers();
   }
 
-  private finishDisposed(): void {
+  private finishDisposed(replenishPreparationStandby: boolean): void {
     this.phase = 'disposed';
     if (this.disposedNotificationSent) return;
     this.disposedNotificationSent = true;
-    this.onDisposed(this);
+    this.onDisposed(this, replenishPreparationStandby);
   }
 }
 
 class PythonPreparedExecutionProvider
   implements PythonPreparedExecutionProviderController {
   private preparationTail: Promise<void> = Promise.resolve();
-  private compilerStandby: PythonWorkerSlot | null = null;
+  // The shared runtime-image factory lives outside these disposable workers.
+  // This standby restores that image ahead of preparation, then becomes the
+  // first isolated execution worker so its interpreter bootstrap is not lost.
+  private preparationStandby: PythonWorkerSlot | null = null;
   private generation = 1;
   private terminated = false;
-  private readonly compilerWorkers = new Set<PythonWorkerClient>();
+  private readonly preparationWorkers = new Set<PythonWorkerClient>();
   private readonly programs = new Set<PreparedPythonProgramLifetime>();
   private readonly preparationControllers = new Set<AbortController>();
 
@@ -756,7 +748,7 @@ class PythonPreparedExecutionProvider
 
   async init(): Promise<{ success: boolean; loadTimeMs: number }> {
     this.assertActive();
-    return (await this.startCompilerStandby().ready).warmup;
+    return (await this.startPreparationStandby().ready).warmup;
   }
 
   prepareProgram(
@@ -816,15 +808,15 @@ class PythonPreparedExecutionProvider
 
   private releaseResources(reason: unknown): void {
     this.generation += 1;
-    this.compilerStandby = null;
+    this.preparationStandby = null;
     this.preparationTail = Promise.resolve();
     const controllers = [...this.preparationControllers];
     this.preparationControllers.clear();
     for (const controller of controllers) {
       if (!controller.signal.aborted) controller.abort(reason);
     }
-    for (const client of this.compilerWorkers) client.terminate();
-    this.compilerWorkers.clear();
+    for (const client of this.preparationWorkers) client.terminate();
+    this.preparationWorkers.clear();
     for (const program of [...this.programs]) program.forceTerminate(reason);
     this.programs.clear();
   }
@@ -835,22 +827,40 @@ class PythonPreparedExecutionProvider
     signal: AbortSignal
   ): Promise<RuntimeProgramPreparationResult> {
     this.assertGeneration(generation);
-    const { client } = await this.takeCompilerStandby(signal);
+    let preparationWorker: WarmedPythonWorker | undefined;
     let result;
     try {
-      result = await client.prepareProgram({ ...call, signal });
-    } finally {
-      this.retireCompiler(client);
+      preparationWorker = await this.takePreparationStandby(signal);
+      result = await preparationWorker.client.prepareProgram({
+        ...call,
+        signal,
+      });
+    } catch (error) {
+      if (preparationWorker) {
+        this.retirePreparationWorker(preparationWorker.client);
+      }
+      this.replenishPreparationStandby();
+      throw error;
     }
-    // A provider shutdown can race an in-flight compiler request. The worker
+    // A provider shutdown can race an in-flight preparation request. The worker
     // may still settle its request after termination, reset, or caller
     // cancellation has retired it, but that result must never publish a new
     // program lifetime beyond the abandoned request boundary.
     if (signal.aborted) {
+      this.retirePreparationWorker(preparationWorker.client);
+      this.replenishPreparationStandby();
       throw abortReason(signal, 'Prepared Python compilation was aborted.');
     }
-    this.assertGeneration(generation);
+    try {
+      this.assertGeneration(generation);
+    } catch (error) {
+      this.retirePreparationWorker(preparationWorker.client);
+      this.replenishPreparationStandby();
+      throw error;
+    }
     if (!result.success) {
+      this.retirePreparationWorker(preparationWorker.client);
+      this.replenishPreparationStandby();
       return {
         kind: 'failed',
         error: result.error,
@@ -862,10 +872,17 @@ class PythonPreparedExecutionProvider
     }
 
     const handle: PythonPreparedProgramHandle = result;
+    this.preparationWorkers.delete(preparationWorker.client);
     const lifetime = new PreparedPythonProgramLifetime(
       handle,
-      this.options,
-      (program) => this.programs.delete(program)
+      this.options.createWorkerClient,
+      (program, replenishPreparationStandby) => {
+        this.programs.delete(program);
+        if (replenishPreparationStandby) {
+          this.replenishPreparationStandby();
+        }
+      },
+      preparationWorker
     );
     this.programs.add(lifetime);
 
@@ -908,47 +925,62 @@ class PythonPreparedExecutionProvider
     };
   }
 
-  private startCompilerStandby(): PythonWorkerSlot {
-    if (this.compilerStandby) return this.compilerStandby;
+  private startPreparationStandby(): PythonWorkerSlot {
+    if (this.preparationStandby) return this.preparationStandby;
     this.assertActive();
     const generation = this.generation;
     const client = this.options.createWorkerClient();
-    this.compilerWorkers.add(client);
+    this.preparationWorkers.add(client);
     const ready = client.warmup().then(
       (warmup) => {
         if (
           generation !== this.generation ||
           this.terminated ||
-          !this.compilerWorkers.has(client)
+          !this.preparationWorkers.has(client)
         ) {
-          this.retireCompiler(client);
-          throw new Error('Prepared Python compiler warmup was superseded.');
+          this.retirePreparationWorker(client);
+          throw new Error(
+            'Prepared Python preparation worker warmup was superseded.'
+          );
         }
         return { client, warmup };
       },
       (error: unknown) => {
-        if (generation === this.generation) this.compilerStandby = null;
-        this.retireCompiler(client);
+        if (generation === this.generation) this.preparationStandby = null;
+        this.retirePreparationWorker(client);
         throw error;
       }
     );
     const standby = { client, ready };
-    this.compilerStandby = standby;
+    this.preparationStandby = standby;
     void ready.catch(() => undefined);
     return standby;
   }
 
-  private takeCompilerStandby(signal: AbortSignal): Promise<WarmedPythonWorker> {
-    const standby = this.compilerStandby ?? this.startCompilerStandby();
-    this.compilerStandby = null;
+  private takePreparationStandby(
+    signal: AbortSignal
+  ): Promise<WarmedPythonWorker> {
+    const standby =
+      this.preparationStandby ?? this.startPreparationStandby();
+    this.preparationStandby = null;
     return raceWithAbort(standby.ready, signal, () =>
-      this.retireCompiler(standby.client)
+      this.retirePreparationWorker(standby.client)
     );
   }
 
-  private retireCompiler(client: PythonWorkerClient): void {
-    if (!this.compilerWorkers.delete(client)) return;
+  private retirePreparationWorker(client: PythonWorkerClient): void {
+    if (!this.preparationWorkers.delete(client)) return;
     client.terminate();
+  }
+
+  private replenishPreparationStandby(): void {
+    if (
+      (this.options.prewarmAfterUse ?? true) &&
+      !this.terminated &&
+      !this.preparationStandby
+    ) {
+      this.startPreparationStandby();
+    }
   }
 
   private assertActive(): void {

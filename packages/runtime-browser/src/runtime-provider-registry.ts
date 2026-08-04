@@ -11,9 +11,11 @@ import type { BrowserWorkerFactory } from './execution-host';
 import type {
   BrowserWorkerLifecyclePolicy,
 } from './worker-lifecycle-policy';
+import type { BrowserRuntimeEngine } from './runtime-environment';
 
 export interface BrowserRuntimeProviderContext {
   readonly assets: BrowserRuntimeAssets;
+  readonly engine: BrowserRuntimeEngine;
   readonly debug: boolean;
   readonly workerLifecyclePolicy: BrowserWorkerLifecyclePolicy;
   /** @deprecated Read `workerLifecyclePolicy` for new provider code. */
@@ -45,6 +47,11 @@ export interface BrowserRuntimeProviderLease {
     Language,
     RuntimePreparedExecutionProvider
   >;
+  /**
+   * Provider-owned readiness checks for assets selected after browser-engine
+   * detection, such as Python's engine-matched immutable runtime image.
+   */
+  readonly preflightLanguage?: (language: Language) => Promise<void>;
   disposeLanguage(language: Language): void;
   dispose(): void;
 }

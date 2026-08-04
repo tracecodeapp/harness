@@ -27,8 +27,8 @@ const trustedPythonWorkerPostMessage = self.postMessage.bind(self);
 
 // Pyodide index URLs in fallback order
 const PYODIDE_INDEX_URLS = [
-  'https://cdn.jsdelivr.net/pyodide/v0.29.0/full/',
-  'https://unpkg.com/pyodide@0.29.0/',
+  'https://cdn.jsdelivr.net/pyodide/v0.29.3/full/',
+  'https://unpkg.com/pyodide@0.29.3/',
 ];
 const DECLARED_PYTHON_WORKER_FORMAT = (() => {
   try {
@@ -62,12 +62,15 @@ const SHARED_KERNEL_POLICY_MODULE_PATHS = [
 ];
 const DEFAULT_PYTHON_COMPILE_CACHE_LIMIT = 4;
 const MAX_PYTHON_COMPILE_CACHE_LIMIT = 16;
+const PYTHON_RUNTIME_IMAGE_PROTOCOL_VERSION = 'tracecode-python-runtime-image-v1';
 
 let configuredPythonRuntimeAssets = null;
 let configuredPythonRuntimeAssetsSignature = null;
+let configuredPythonRuntimeImage = null;
 let configuredPythonSnippetsLoaded = false;
 let pythonModuleBootstrapPromise = null;
 let moduleLoadPyodide = null;
+let moduleRuntimeImageProtocolVersion = null;
 let trustedPythonUserAuthorityLockdown = null;
 let pythonCompileCacheLimit = DEFAULT_PYTHON_COMPILE_CACHE_LIMIT;
 
@@ -80,6 +83,68 @@ function configurePythonWorkerOptions(payload) {
     );
   }
   pythonCompileCacheLimit = value;
+}
+
+function configurePythonRuntimeImage(value) {
+  if (value === undefined || value === null) {
+    configuredPythonRuntimeImage = null;
+    return;
+  }
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    throw new Error('Python worker runtimeImage must be an object.');
+  }
+  if (value.protocolVersion !== PYTHON_RUNTIME_IMAGE_PROTOCOL_VERSION) {
+    throw new Error(
+      `Python worker runtimeImage protocol must be "${PYTHON_RUNTIME_IMAGE_PROTOCOL_VERSION}".`
+    );
+  }
+  if (
+    typeof WebAssembly !== 'object' ||
+    typeof WebAssembly.Module !== 'function' ||
+    !(value.compiledModule instanceof WebAssembly.Module)
+  ) {
+    throw new Error('Python worker runtimeImage.compiledModule must be a WebAssembly.Module.');
+  }
+  const snapshot = value.snapshot instanceof Uint8Array
+    ? value.snapshot
+    : value.snapshot instanceof ArrayBuffer
+      ? new Uint8Array(value.snapshot)
+      : null;
+  if (!snapshot || snapshot.byteLength === 0) {
+    throw new Error('Python worker runtimeImage.snapshot must contain bytes.');
+  }
+  if (
+    typeof value.pythonHashSeed !== 'string' ||
+    value.pythonHashSeed.trim() === ''
+  ) {
+    throw new Error('Python worker runtimeImage.pythonHashSeed must be a non-empty string.');
+  }
+  configuredPythonRuntimeImage = {
+    protocolVersion: PYTHON_RUNTIME_IMAGE_PROTOCOL_VERSION,
+    compiledModule: value.compiledModule,
+    snapshot,
+    pythonHashSeed: value.pythonHashSeed,
+  };
+}
+
+function pyodideInitializationOptions(indexURL) {
+  if (!configuredPythonRuntimeImage) return { indexURL };
+  const advertisedProtocol = DECLARED_PYTHON_WORKER_FORMAT === 'module'
+    ? moduleRuntimeImageProtocolVersion
+    : self.__TRACECODE_PYTHON_RUNTIME_IMAGE_PROTOCOL__;
+  if (advertisedProtocol !== PYTHON_RUNTIME_IMAGE_PROTOCOL_VERSION) {
+    throw new Error(
+      `Python runtime loader does not implement ${PYTHON_RUNTIME_IMAGE_PROTOCOL_VERSION}.`
+    );
+  }
+  return {
+    indexURL,
+    env: {
+      PYTHONHASHSEED: configuredPythonRuntimeImage.pythonHashSeed,
+    },
+    _compiledWasmModule: configuredPythonRuntimeImage.compiledModule,
+    _loadSnapshot: configuredPythonRuntimeImage.snapshot,
+  };
 }
 
 function configurePythonRuntimeAssets(value) {
@@ -201,16 +266,26 @@ function prepareTraceEventTransfer(result, request, path) {
   ) {
     return null;
   }
-  const events = path === 'trace.events' ? result?.trace?.events : result?.events;
+  const batch = path === 'results[].trace.events';
+  const eventArrays = batch
+    ? Array.isArray(result?.results)
+      ? result.results.map((entry) => entry?.trace?.events)
+      : []
+    : [path === 'trace.events' ? result?.trace?.events : result?.events];
+  if (eventArrays.length === 0 || eventArrays.some((events) => !Array.isArray(events))) {
+    return null;
+  }
+  const eventCounts = eventArrays.map((events) => events.length);
+  const eventCount = eventCounts.reduce((sum, count) => sum + count, 0);
   const requestedMinEvents = Number(request.minEventCount);
   const minEventCount = Number.isSafeInteger(requestedMinEvents)
     ? Math.max(TRACE_EVENT_TRANSFER_MIN_EVENTS, requestedMinEvents)
     : TRACE_EVENT_TRANSFER_MIN_EVENTS;
-  if (!Array.isArray(events) || events.length < minEventCount) return null;
+  if (eventCount < minEventCount) return null;
 
   let encoded;
   try {
-    encoded = new TextEncoder().encode(JSON.stringify(events));
+    encoded = new TextEncoder().encode(JSON.stringify(batch ? eventArrays : eventArrays[0]));
   } catch {
     return null;
   }
@@ -230,14 +305,23 @@ function prepareTraceEventTransfer(result, request, path) {
   for (let offset = 0; offset < encoded.byteLength; offset += chunkBytes) {
     chunks.push(encoded.slice(offset, Math.min(encoded.byteLength, offset + chunkBytes)).buffer);
   }
-  const payload = path === 'trace.events'
-    ? { ...result, trace: { ...result.trace, events: [] } }
-    : { ...result, events: [] };
+  const payload = batch
+    ? {
+        ...result,
+        results: result.results.map((entry) => ({
+          ...entry,
+          trace: { ...entry.trace, events: [] },
+        })),
+      }
+    : path === 'trace.events'
+      ? { ...result, trace: { ...result.trace, events: [] } }
+      : { ...result, events: [] };
   payload.__traceEventTransport = {
     schema: TRACE_EVENT_TRANSFER_SCHEMA,
     encoding: 'json-utf8',
     path,
-    eventCount: events.length,
+    eventCount,
+    ...(batch ? { eventCounts } : {}),
     byteLength: encoded.byteLength,
     chunks,
   };
@@ -995,6 +1079,10 @@ async function ensurePythonModuleBootstrap() {
     }
 
     moduleLoadPyodide = loadPyodideExport;
+    moduleRuntimeImageProtocolVersion =
+      loaderModule?.tracecodePythonRuntimeImageProtocolVersion ??
+      loaderModule?.default?.tracecodePythonRuntimeImageProtocolVersion ??
+      null;
     configuredPythonSnippetsLoaded = true;
     emitRuntimeDiagnostic('info', 'module-bootstrap-loaded', 'Loaded Python module-worker bootstrap graph.', {
       loaderUrl,
@@ -1030,7 +1118,9 @@ async function loadPyodideInstance() {
           throw new Error('Python module runtime loader is unavailable after bootstrap.');
         }
         const indexURL = configuredPythonRuntimeAssets.indexUrl;
-        pyodide = await moduleLoadPyodide({ indexURL });
+        pyodide = await moduleLoadPyodide(
+          pyodideInitializationOptions(indexURL)
+        );
         await ensurePythonLibraryPackages(pyodide);
         emitRuntimeDiagnostic('info', 'runtime-initialized', 'Initialized Python module runtime.', { indexURL });
         return pyodide;
@@ -1040,6 +1130,14 @@ async function loadPyodideInstance() {
 
       const configuredLoaderUrl = configuredPythonRuntimeAssets?.loaderUrl;
       const configuredIndexUrl = configuredPythonRuntimeAssets?.indexUrl;
+      if (
+        configuredPythonRuntimeImage &&
+        (!configuredLoaderUrl || !configuredIndexUrl)
+      ) {
+        throw new Error(
+          'Python runtime images require their matching TraceCode-patched loader and index assets.'
+        );
+      }
       const runtimeCandidates = configuredLoaderUrl && configuredIndexUrl
         ? [{ loaderUrl: configuredLoaderUrl, indexURL: configuredIndexUrl }]
         : PYODIDE_INDEX_URLS.map((indexURL) => ({ loaderUrl: `${indexURL}pyodide.js`, indexURL }));
@@ -1069,7 +1167,9 @@ async function loadPyodideInstance() {
       const initErrors = [];
       for (const { indexURL } of runtimeCandidates) {
         try {
-          pyodide = await self.loadPyodide({ indexURL });
+          pyodide = await self.loadPyodide(
+            pyodideInitializationOptions(indexURL)
+          );
           await ensurePythonLibraryPackages(pyodide);
           emitRuntimeDiagnostic('info', 'runtime-initialized', 'Initialized Python runtime.', { indexURL });
           return pyodide;
@@ -8973,20 +9073,6 @@ async function executeProjectPython(
   );
 }
 
-async function executeCodeBatch(code, functionName, inputBatch, executionStyle = 'function') {
-  await loadPyodideInstance();
-  const runtimeCore = loadPyodideRuntimeCore();
-  return withPythonUserAuthorityLockdown(() =>
-    runtimeCore.executeCodeBatch(
-      buildRuntimeDeps(),
-      code,
-      functionName,
-      inputBatch,
-      executionStyle
-    )
-  );
-}
-
 async function preparePythonProgram(request) {
   await loadPyodideInstance();
   const runtimeCore = loadPyodideRuntimeCore();
@@ -9039,6 +9125,7 @@ async function processMessage(data) {
         const startTime = performance.now();
         configurePythonWorkerOptions(payload);
         configurePythonRuntimeAssets(payload?.runtimeAssets);
+        configurePythonRuntimeImage(payload?.runtimeImage);
         await ensurePythonModuleBootstrap();
         const loadTimeMs = performance.now() - startTime;
         trustedPythonWorkerPostMessage({ id, type: 'init-result', payload: { success: true, loadTimeMs }, protocolToken });
@@ -9077,14 +9164,6 @@ async function processMessage(data) {
           executionStyle ?? 'function',
           guestGuardOptionsFromLimits(payload.limits)
         );
-        analyzerInitialized = false;
-        trustedPythonWorkerPostMessage({ id, type: 'execute-result', payload: result, protocolToken });
-        break;
-      }
-
-      case 'execute-code-batch': {
-        const { code, functionName, inputBatch, executionStyle } = payload;
-        const result = await executeCodeBatch(code, functionName, inputBatch, executionStyle ?? 'function');
         analyzerInitialized = false;
         trustedPythonWorkerPostMessage({ id, type: 'execute-result', payload: result, protocolToken });
         break;
@@ -9135,12 +9214,22 @@ async function processMessage(data) {
           payload?.limits
         );
         analyzerInitialized = false;
-        trustedPythonWorkerPostMessage({
-          id,
-          type: 'execute-result',
-          payload: result,
-          protocolToken,
-        });
+        if (payload?.mode === 'trace') {
+          postTraceResultMessage(
+            id,
+            protocolToken,
+            result,
+            payload?.traceEventTransport,
+            'results[].trace.events'
+          );
+        } else {
+          trustedPythonWorkerPostMessage({
+            id,
+            type: 'execute-result',
+            payload: result,
+            protocolToken,
+          });
+        }
         break;
       }
 

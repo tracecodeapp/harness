@@ -88,6 +88,51 @@ async function main(): Promise<void> {
     rejectedEmpty = error instanceof Error && error.message.includes('at least one provider');
   }
   assertCondition(rejectedEmpty, 'runtime environments should reject empty provider selections');
+
+  const navigatorDescriptor = Object.getOwnPropertyDescriptor(
+    globalThis,
+    'navigator'
+  );
+  try {
+    const engineCases = [
+      {
+        expected: 'webkit',
+        label: 'Chrome on iOS',
+        userAgent:
+          'Mozilla/5.0 (iPhone; CPU iPhone OS 17_4 like Mac OS X) ' +
+          'AppleWebKit/605.1.15 (KHTML, like Gecko) CriOS/123.0.6312.52 ' +
+          'Mobile/15E148 Safari/604.1',
+      },
+      {
+        expected: 'chromium',
+        label: 'desktop Chrome',
+        userAgent:
+          'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) ' +
+          'AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36',
+      },
+    ] as const;
+    for (const engineCase of engineCases) {
+      Object.defineProperty(globalThis, 'navigator', {
+        configurable: true,
+        value: { userAgent: engineCase.userAgent },
+      });
+      const detected = createBrowserRuntimeEnvironment({
+        providers: ['python'],
+        featureOverrides: readyFeatures,
+      });
+      assertCondition(
+        detected.engine === engineCase.expected,
+        `${engineCase.label} should select ${engineCase.expected}, received ${detected.engine}`
+      );
+    }
+  } finally {
+    if (navigatorDescriptor) {
+      Object.defineProperty(globalThis, 'navigator', navigatorDescriptor);
+    } else {
+      delete (globalThis as { navigator?: unknown }).navigator;
+    }
+  }
+
   console.log('PASS: browser runtime environment reports configured, engine-aware provider readiness');
 }
 

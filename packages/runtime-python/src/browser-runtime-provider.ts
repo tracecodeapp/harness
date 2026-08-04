@@ -12,8 +12,9 @@ import {
 } from './python-runtime-client';
 import {
   PythonWorkerClient,
-  type PythonWorkerClientOptions,
 } from './python-worker-client';
+import { createPythonRuntimeImageFactory } from './python-runtime-image';
+import { resolveBuiltInPythonRuntimeAssets } from './python-runtime-assets';
 
 export interface PythonBrowserRuntimeProviderOptions {
   compileCacheLimit?: number;
@@ -29,7 +30,42 @@ export function createPythonBrowserRuntimeProvider(
       const workerFactory = context.workerFactoryFor('python');
       const pythonPackageDescriptors = context.manifestAssetCollection('python', 'packages');
       const pythonManifest = context.assets.runtimeManifests?.python;
-      const workerOptions: PythonWorkerClientOptions = {
+      const builtInRuntime = pythonManifest
+        ? undefined
+        : resolveBuiltInPythonRuntimeAssets(context.assets, context.engine);
+      const runtimeImageDescriptor =
+        pythonManifest?.assets.runtimeImage ?? builtInRuntime?.image;
+      if (!runtimeImageDescriptor) {
+        throw new Error(
+          'TraceCode Python 0.16 requires runtimeImage in a custom Python runtime manifest. ' +
+            'Remove the custom manifest to use the image assets shipped by the Harness, or ' +
+            'publish an engine-matched immutable image with the custom runtime.'
+        );
+      }
+      if (runtimeImageDescriptor.engine !== context.engine) {
+        throw new Error(
+          `Python runtime image targets ${JSON.stringify(runtimeImageDescriptor.engine)}, ` +
+            `but the selected browser engine is ${JSON.stringify(context.engine)}.`
+        );
+      }
+      const loaderUrl =
+        context.manifestAsset('python', 'runtimeLoader')?.url ??
+        builtInRuntime?.loaderUrl;
+      const indexUrl =
+        context.manifestAsset('python', 'runtimeIndex')?.url ??
+        builtInRuntime?.indexUrl;
+      if (!loaderUrl || !indexUrl) {
+        throw new Error(
+          'TraceCode Python requires runtimeLoader and runtimeIndex in a custom ' +
+            'Python runtime manifest.'
+        );
+      }
+      const createRuntimeImageFactory = () =>
+        createPythonRuntimeImageFactory({
+          descriptor: runtimeImageDescriptor,
+        });
+      let runtimeImageFactory = createRuntimeImageFactory();
+      const workerOptions = () => ({
         workerUrl: context.assets.pythonWorker,
         ...(workerFactory ? { workerFactory } : {}),
         compileCacheLimit: options.compileCacheLimit,
@@ -45,17 +81,16 @@ export function createPythonBrowserRuntimeProvider(
           'distribution',
           'packages',
         ]),
+        runtimeImageFactory,
         runtimeAssets: {
           runtimeCoreUrl: context.assets.pythonRuntimeCore,
           snippetsUrl: context.assets.pythonSnippets,
-          ...(context.manifestAsset('python', 'runtimeLoader')?.url
-            ? { loaderUrl: context.manifestAsset('python', 'runtimeLoader')?.url }
-            : {}),
-          ...(context.manifestAsset('python', 'runtimeIndex')?.url
-            ? { indexUrl: context.manifestAsset('python', 'runtimeIndex')?.url }
-            : {}),
+          loaderUrl,
+          indexUrl,
           ...(pythonManifest?.loaderFormat
             ? { loaderFormat: pythonManifest.loaderFormat }
+            : builtInRuntime
+              ? { loaderFormat: 'classic-script' as const }
             : {}),
           ...(pythonPackageDescriptors
             ? {
@@ -68,8 +103,8 @@ export function createPythonBrowserRuntimeProvider(
               }
             : {}),
         },
-      };
-      const createWorkerClient = () => new PythonWorkerClient(workerOptions);
+      });
+      const createWorkerClient = () => new PythonWorkerClient(workerOptions());
       const preparedProvider = createPythonPreparedExecutionProvider({
         createWorkerClient,
         prewarmAfterUse: context.prewarmAfterUse,
@@ -86,8 +121,18 @@ export function createPythonBrowserRuntimeProvider(
         >;
       } = {
         preparedProviders,
-        disposeLanguage: () => preparedProvider.reset(),
-        dispose: () => preparedProvider.terminate(),
+        preflightLanguage: async () => {
+          await runtimeImageFactory.acquire();
+        },
+        disposeLanguage: () => {
+          preparedProvider.reset();
+          runtimeImageFactory.dispose();
+          runtimeImageFactory = createRuntimeImageFactory();
+        },
+        dispose: () => {
+          preparedProvider.terminate();
+          runtimeImageFactory.dispose();
+        },
       };
       return lease;
     },

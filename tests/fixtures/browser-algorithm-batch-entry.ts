@@ -139,7 +139,10 @@ function receiptSummary(receipt: Awaited<ReturnType<ReturnType<
 }
 
 export async function runBrowserAlgorithmBatch(
-  assetBaseUrl: string
+  assetBaseUrl: string,
+  selectedLanguages: readonly string[] = BATCH_FIXTURES.map(
+    (fixture) => fixture.language
+  )
 ): Promise<unknown> {
   const NativeWorker = globalThis.Worker;
   const workerUrls: string[] = [];
@@ -154,6 +157,7 @@ export async function runBrowserAlgorithmBatch(
   const results: Record<string, unknown> = {};
   try {
     for (const fixture of BATCH_FIXTURES) {
+      if (!selectedLanguages.includes(fixture.language)) continue;
       const host = createBrowserJudgeHost({
         assetBaseUrl,
         providers: [fixture.language],

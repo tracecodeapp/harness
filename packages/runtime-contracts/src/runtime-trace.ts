@@ -68,7 +68,7 @@ export type RuntimeTraceEvent =
   | (RuntimeTraceBaseEvent & {
       kind: 'timeout';
       message: string;
-      reason?: 'trace-limit' | 'line-limit' | 'single-line-limit' | 'client-timeout';
+      reason?: import('./runtime-execution').ExecutionLimitReason;
     });
 
 export interface RuntimeTrace {

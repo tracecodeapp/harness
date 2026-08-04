@@ -38,6 +38,7 @@ export interface RuntimeExecutionTimings {
 /** Why an execution (or its trace recording) was stopped by a limit. */
 export type ExecutionLimitReason =
   | 'trace-limit'
+  | 'trace-byte-limit'
   | 'line-limit'
   | 'single-line-limit'
   | 'recursion-limit'

@@ -26,7 +26,6 @@ export const WORKER_REQUEST_MESSAGES: Readonly<Record<BrowserWorkerProtocolLangu
     'execute-prepared-program',
     'execute-prepared-program-batch',
     'execute-code',
-    'execute-code-batch',
     'execute-with-tracing',
     'execute-project-python',
   ],
