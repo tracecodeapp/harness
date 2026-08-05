@@ -11,17 +11,46 @@ public final class TraceHooks {
   private static final int MAX_OBJECT_FIELDS = 32;
   private static final Object STATE_LOCK = new Object();
   private static final List<String> EVENTS = new ArrayList<>();
-  private static final ThreadLocal<java.util.List<TraceFrame>> CALL_STACK = ThreadLocal.withInitial(java.util.ArrayList::new);
-  private static final ThreadLocal<String> CALL_STACK_JSON = new ThreadLocal<>();
-  private static final ThreadLocal<int[]> CALL_STACK_JSON_ID =
-      ThreadLocal.withInitial(() -> new int[1]);
-  private static final ThreadLocal<String> LAST_INDEX_SOURCE = new ThreadLocal<>();
-  private static final ThreadLocal<java.util.IdentityHashMap<Object, String>> SERIALIZE_SEEN =
-      ThreadLocal.withInitial(() -> new java.util.IdentityHashMap<Object, String>());
-  private static final ThreadLocal<StringBuilder> EVENT_STRING_BUILDER =
-      ThreadLocal.withInitial(() -> new StringBuilder(256));
-  private static final ThreadLocal<boolean[]> EVENT_BUILDER_IN_USE =
-      ThreadLocal.withInitial(() -> new boolean[1]);
+  /**
+   * Per-thread tracing state. TraceJVM interprets {@code ThreadLocal} map
+   * lookups, and the hooks used to perform around eight of them per stored
+   * event; consolidating every per-thread slot into one holder behind an
+   * owner-checked one-slot cache makes the common single-threaded learner pay
+   * a single reference compare instead.
+   */
+  private static final class ThreadState {
+    final Thread owner = Thread.currentThread();
+    final java.util.List<TraceFrame> callStack = new java.util.ArrayList<>();
+    /** Serialized call stack, or null when invalidated by a call/return. */
+    String callStackJson;
+    int callStackJsonId;
+    /** Prebuilt {@code ,"callStackRef":N} suffix for the current stack state. */
+    String callStackRefSuffix;
+    String lastIndexSource;
+    /** Cached copy of {@link #RUN_TOKEN}; both are updated together. */
+    Integer runToken = RUN_TOKEN.get();
+    final java.util.IdentityHashMap<Object, String> serializeSeen =
+        new java.util.IdentityHashMap<>();
+    final StringBuilder eventBuilder = new StringBuilder(256);
+    boolean eventBuilderInUse;
+  }
+
+  private static final ThreadLocal<ThreadState> THREAD_STATE =
+      ThreadLocal.withInitial(ThreadState::new);
+  /**
+   * One-slot cache for {@link #state()}. Racy publication is safe: every field
+   * read through the cache is final or owner-thread-confined, and a wrong-owner
+   * hit falls back to the ThreadLocal map.
+   */
+  private static ThreadState hotThreadState;
+
+  private static ThreadState state() {
+    ThreadState cached = hotThreadState;
+    if (cached != null && cached.owner == Thread.currentThread()) return cached;
+    ThreadState state = THREAD_STATE.get();
+    hotThreadState = state;
+    return state;
+  }
 
   /**
    * Serializing a value can execute instrumented learner code (a learner
@@ -30,21 +59,49 @@ public final class TraceHooks {
    * callers a fresh builder so the shared one is never clobbered.
    */
   private static StringBuilder acquireEventBuilder() {
-    boolean[] inUse = EVENT_BUILDER_IN_USE.get();
-    if (inUse[0]) {
+    ThreadState state = state();
+    if (state.eventBuilderInUse) {
       return new StringBuilder(128);
     }
-    inUse[0] = true;
-    StringBuilder out = EVENT_STRING_BUILDER.get();
+    state.eventBuilderInUse = true;
+    StringBuilder out = state.eventBuilder;
     out.setLength(0);
     return out;
   }
 
   private static void releaseEventBuilder(StringBuilder builder) {
-    if (builder == EVENT_STRING_BUILDER.get()) {
-      EVENT_BUILDER_IN_USE.get()[0] = false;
+    ThreadState state = state();
+    if (builder == state.eventBuilder) {
+      state.eventBuilderInUse = false;
     }
   }
+  /**
+   * TraceJVM registers C implementations for these (bjvm
+   * {@code natives/share/tracecode/user/TraceHooks.c}); on a stock JVM the
+   * first call throws {@link UnsatisfiedLinkError} and the probe below pins
+   * every caller to the pure-Java paths. Each native returns {@code null} for
+   * any input it will not handle byte-identically, and callers must fall back.
+   */
+  private static native String jsonIntArray0(int[] values, int emitted, int total);
+
+  private static native String jsonLongArray0(long[] values, int emitted, int total);
+
+  private static native String serializeScalar0(Object value);
+
+  private static native String jsonEscape0(String value);
+
+  private static native byte[] encodeLinesUtf8(String[] lines, int count);
+
+  private static final boolean NATIVE_JSON_AVAILABLE = probeNativeJson();
+
+  private static boolean probeNativeJson() {
+    try {
+      return "[]".equals(jsonIntArray0(new int[0], 0, 0));
+    } catch (Throwable error) {
+      return false;
+    }
+  }
+
   private static final InheritableThreadLocal<Integer> RUN_TOKEN = new InheritableThreadLocal<>();
   private static final java.util.IdentityHashMap<Object, String> TRACE_REFERENCE_IDS = new java.util.IdentityHashMap<>();
   private static int maxEvents = DEFAULT_MAX_EVENTS;
@@ -214,20 +271,22 @@ public final class TraceHooks {
    * of events, so this removes most of the event payload.
    */
   private static void appendCallStackProperty(StringBuilder out) {
-    java.util.List<TraceFrame> stack = CALL_STACK.get();
+    ThreadState state = state();
+    java.util.List<TraceFrame> stack = state.callStack;
     if (stack.isEmpty()) return;
-    String serializedStack = CALL_STACK_JSON.get();
+    String serializedStack = state.callStackJson;
     if (serializedStack != null) {
-      out.append(",\"callStackRef\":").append(CALL_STACK_JSON_ID.get()[0]);
+      out.append(state.callStackRefSuffix);
       return;
     }
     serializedStack = serializeCallStack(stack);
-    CALL_STACK_JSON.set(serializedStack);
+    state.callStackJson = serializedStack;
     int id;
     synchronized (STATE_LOCK) {
       id = ++nextCallStackId;
     }
-    CALL_STACK_JSON_ID.get()[0] = id;
+    state.callStackJsonId = id;
+    state.callStackRefSuffix = ",\"callStackRef\":" + id;
     out.append(",\"callStack\":").append(serializedStack);
     out.append(",\"callStackId\":").append(id);
   }
@@ -262,7 +321,7 @@ public final class TraceHooks {
 
   private static boolean dropIfStorageExhausted() {
     if (!traceLimitExceeded) return false;
-    Integer token = RUN_TOKEN.get();
+    Integer token = state().runToken;
     if (token == null || token.intValue() != activeRunToken || activeRunToken == 0) {
       return false;
     }
@@ -287,6 +346,7 @@ public final class TraceHooks {
           resetStateLocked(nextMaxEvents);
         } else {
           RUN_TOKEN.remove();
+          state().runToken = null;
         }
       }
       return;
@@ -328,6 +388,7 @@ public final class TraceHooks {
       }
     }
     RUN_TOKEN.set(token);
+    state().runToken = token;
     return token;
   }
 
@@ -338,17 +399,20 @@ public final class TraceHooks {
         resetStateLocked(DEFAULT_MAX_EVENTS);
       }
     }
-    CALL_STACK.remove();
-    CALL_STACK_JSON.remove();
-    LAST_INDEX_SOURCE.remove();
+    ThreadState state = state();
+    state.callStack.clear();
+    state.callStackJson = null;
+    state.lastIndexSource = null;
     RUN_TOKEN.remove();
+    state.runToken = null;
   }
 
   private static void resetStateLocked(int nextMaxEvents) {
     EVENTS.clear();
-    CALL_STACK.get().clear();
-    CALL_STACK_JSON.remove();
-    LAST_INDEX_SOURCE.remove();
+    ThreadState state = state();
+    state.callStack.clear();
+    state.callStackJson = null;
+    state.lastIndexSource = null;
     TRACE_REFERENCE_IDS.clear();
     maxEvents = Math.max(1, nextMaxEvents);
     traceLimitExceeded = false;
@@ -361,7 +425,7 @@ public final class TraceHooks {
   }
 
   private static boolean runActiveForCurrentThread() {
-    Integer token = RUN_TOKEN.get();
+    Integer token = state().runToken;
     return token != null && token.intValue() == activeRunToken && activeRunToken != 0;
   }
 
@@ -397,6 +461,43 @@ public final class TraceHooks {
     }
   }
 
+  /** Result of {@link #drainEventsUtf8()}: event count plus the encoded block. */
+  public static final class DrainedEvents {
+    public final int count;
+    public final byte[] utf8;
+
+    DrainedEvents(int count, byte[] utf8) {
+      this.count = count;
+      this.utf8 = utf8;
+    }
+  }
+
+  private static final byte[] EMPTY_BYTES = new byte[0];
+
+  /**
+   * Drain stored events as one UTF-8 NDJSON byte block. On TraceJVM the
+   * join + encode runs in C ({@code encodeLinesUtf8}); elsewhere — or when any
+   * event holds non-latin1 text — it falls back to the StringBuilder path.
+   */
+  public static DrainedEvents drainEventsUtf8() {
+    synchronized (STATE_LOCK) {
+      int count = EVENTS.size();
+      if (count == 0) return new DrainedEvents(0, EMPTY_BYTES);
+      if (NATIVE_JSON_AVAILABLE) {
+        String[] lines = EVENTS.toArray(new String[0]);
+        byte[] block = encodeLinesUtf8(lines, count);
+        if (block != null) {
+          EVENTS.clear();
+          return new DrainedEvents(count, block);
+        }
+      }
+      StringBuilder out = new StringBuilder(256);
+      drainEventsNdjson(out);
+      return new DrainedEvents(
+          count, out.toString().getBytes(java.nio.charset.StandardCharsets.UTF_8));
+    }
+  }
+
   public static boolean traceLimitExceeded() {
     // Volatile field read. Prefer {@link #limitExceeded} at rewritten call sites
     // so TraceJVM does not pay for an invokestatic on every access.
@@ -422,7 +523,7 @@ public final class TraceHooks {
     } else if (value instanceof long[]) {
       json = serializeLongArrayRoot((long[]) value, true);
     } else {
-      java.util.IdentityHashMap<Object, String> seen = SERIALIZE_SEEN.get();
+      java.util.IdentityHashMap<Object, String> seen = state().serializeSeen;
       seen.clear();
       json = serializeResult(value, seen, 0, true);
     }
@@ -432,7 +533,7 @@ public final class TraceHooks {
   }
 
   public static String serializeOutputResult(Object value) {
-    java.util.IdentityHashMap<Object, String> seen = SERIALIZE_SEEN.get();
+    java.util.IdentityHashMap<Object, String> seen = state().serializeSeen;
     seen.clear();
     return serializeResult(value, seen, 0, false);
   }
@@ -442,7 +543,7 @@ public final class TraceHooks {
     if (dropIfStorageExhausted()) return;
     StringBuilder out = acquireEventBuilder();
     out.append("trace:{\"kind\":\"line\",\"line\":").append(line);
-    java.util.List<TraceFrame> stack = CALL_STACK.get();
+    java.util.List<TraceFrame> stack = state().callStack;
     if (!stack.isEmpty()) {
       out.append(",\"function\":").append(jsonString(stack.get(stack.size() - 1).functionName));
     }
@@ -461,17 +562,18 @@ public final class TraceHooks {
   }
 
   public static void emitCallAtLine(int line, String functionName, String argsJson) {
+    ThreadState state = state();
     if (dropIfStorageExhausted()) {
-      CALL_STACK.get().add(new TraceFrame(functionName == null ? "" : functionName, line, null));
-      CALL_STACK_JSON.remove();
+      state.callStack.add(new TraceFrame(functionName == null ? "" : functionName, line, null));
+      state.callStackJson = null;
       return;
     }
     StringBuilder out = new StringBuilder("trace:{\"kind\":\"call\",\"line\":");
     out.append(line).append(",\"function\":").append(jsonString(functionName == null ? "" : functionName));
     String argsPayload = argsJsonPayload(argsJson);
     if (argsPayload != null) out.append(",\"args\":").append(argsPayload);
-    CALL_STACK.get().add(new TraceFrame(functionName == null ? "" : functionName, line, argsPayload));
-    CALL_STACK_JSON.remove();
+    state.callStack.add(new TraceFrame(functionName == null ? "" : functionName, line, argsPayload));
+    state.callStackJson = null;
     out.append("}");
     emit(out.toString());
     emitSnapshotsFromFragment(line, argsJson);
@@ -785,6 +887,12 @@ public final class TraceHooks {
   private static String serializeResult(Object value, java.util.IdentityHashMap<Object, String> seen, int depth, boolean capValues) {
     if (depth > MAX_SERIALIZE_DEPTH) return "\"<max depth>\"";
     if (value == null) return "null";
+    if (NATIVE_JSON_AVAILABLE) {
+      // One native call replaces the whole interpreted instanceof cascade for
+      // the final scalar box classes; anything else comes back null.
+      String fast = serializeScalar0(value);
+      if (fast != null) return fast;
+    }
     if (value instanceof int[]) {
       return serializePrimitiveIntArray((int[]) value, seen, capValues);
     }
@@ -914,6 +1022,10 @@ public final class TraceHooks {
 
   private static String serializeIntArrayRoot(int[] values, boolean capValues) {
     int emitted = capValues ? Math.min(values.length, MAX_SERIALIZED_ITEMS) : values.length;
+    if (NATIVE_JSON_AVAILABLE) {
+      String json = jsonIntArray0(values, emitted, values.length);
+      if (json != null) return json;
+    }
     StringBuilder out = new StringBuilder(32 + emitted * 3);
     out.append('[');
     for (int index = 0; index < emitted; index++) {
@@ -933,6 +1045,10 @@ public final class TraceHooks {
 
   private static String serializeLongArrayRoot(long[] values, boolean capValues) {
     int emitted = capValues ? Math.min(values.length, MAX_SERIALIZED_ITEMS) : values.length;
+    if (NATIVE_JSON_AVAILABLE) {
+      String json = jsonLongArray0(values, emitted, values.length);
+      if (json != null) return json;
+    }
     StringBuilder out = new StringBuilder(32 + emitted * 3);
     out.append('[');
     for (int index = 0; index < emitted; index++) {
@@ -1095,7 +1211,7 @@ public final class TraceHooks {
   }
 
   private static String withCallStack(String event) {
-    java.util.List<TraceFrame> stack = CALL_STACK.get();
+    java.util.List<TraceFrame> stack = state().callStack;
     if (stack.isEmpty() || !event.endsWith("}")) return event;
     StringBuilder out = acquireEventBuilder();
     try {
@@ -1122,19 +1238,20 @@ public final class TraceHooks {
   }
 
   private static void popCallFrame(String functionName) {
-    java.util.List<TraceFrame> stack = CALL_STACK.get();
+    ThreadState state = state();
+    java.util.List<TraceFrame> stack = state.callStack;
     if (stack.isEmpty()) return;
     String normalized = functionName == null ? "" : functionName;
     int last = stack.size() - 1;
     if (stack.get(last).functionName.equals(normalized)) {
       stack.remove(last);
-      CALL_STACK_JSON.remove();
+      state.callStackJson = null;
       return;
     }
     for (int index = last; index >= 0; index--) {
       if (stack.get(index).functionName.equals(normalized)) {
         stack.subList(index, stack.size()).clear();
-        CALL_STACK_JSON.remove();
+        state.callStackJson = null;
         return;
       }
     }
@@ -2074,7 +2191,7 @@ public final class TraceHooks {
 
   public static char readStringCharAtLine(int line, String name, CharSequence value, int index, String indexSource) {
     char result = value.charAt(index);
-    if (indexSource != null) LAST_INDEX_SOURCE.set(indexSource);
+    if (indexSource != null) state().lastIndexSource = indexSource;
     emitTraceRead(line, name, "[" + serializeResult(index) + "]", String.valueOf(result), indexSourcesJson(indexSource));
     return result;
   }
@@ -2092,13 +2209,18 @@ public final class TraceHooks {
   }
 
   private static String consumeLastIndexSource() {
-    String source = LAST_INDEX_SOURCE.get();
-    LAST_INDEX_SOURCE.remove();
+    ThreadState state = state();
+    String source = state.lastIndexSource;
+    state.lastIndexSource = null;
     return source;
   }
 
   public static String jsonString(String value) {
     if (value == null) return "null";
+    if (NATIVE_JSON_AVAILABLE) {
+      String fast = jsonEscape0(value);
+      if (fast != null) return fast;
+    }
     // Hot path: variable names and simple index sources never need escaping.
     boolean simple = true;
     for (int index = 0; index < value.length(); index++) {
