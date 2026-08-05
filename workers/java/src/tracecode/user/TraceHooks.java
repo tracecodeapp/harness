@@ -79,51 +79,13 @@ public final class TraceHooks {
       state.eventBuilderInUse = false;
     }
   }
-  /**
-   * TraceJVM registers C implementations for these (bjvm
-   * {@code natives/share/tracecode/user/TraceHooks.c}); on a stock JVM the
-   * first call throws {@link UnsatisfiedLinkError} and the probe below pins
-   * every caller to the pure-Java paths. Each native returns {@code null} for
-   * any input it will not handle byte-identically, and callers must fall back.
-   */
-  private static native String jsonIntArray0(int[] values, int emitted, int total);
+  /** TraceJVM-accelerated text assembly; see {@link TextOps}. */
+  private static final boolean NATIVE_JSON_AVAILABLE = TextOps.AVAILABLE;
 
-  private static native String jsonLongArray0(long[] values, int emitted, int total);
-
-  private static native String serializeScalar0(Object value);
-
-  private static native String jsonEscape0(String value);
-
-  private static native String buildIndexedEvent0(
-      String kind,
-      int line,
-      String name,
-      int index,
-      String indexSourcesJson,
-      String valueJson,
-      String stackSuffix);
-
-  private static native String buildEvent0(
-      String kind,
-      int line,
-      String name,
-      String pathJson,
-      String indexSourcesJson,
-      String valueJson,
-      String functionName,
-      String stackSuffix);
-
-  private static native byte[] encodeLinesUtf8(String[] lines, int count);
-
-  private static final boolean NATIVE_JSON_AVAILABLE = probeNativeJson();
-
-  private static boolean probeNativeJson() {
-    try {
-      return "[]".equals(jsonIntArray0(new int[0], 0, 0));
-    } catch (Throwable error) {
-      return false;
-    }
-  }
+  private static final String EVENT_HEADER_SNAPSHOT = "trace:{\"kind\":\"snapshot\"";
+  private static final String EVENT_HEADER_WRITE = "trace:{\"kind\":\"write\"";
+  private static final String EVENT_HEADER_READ = "trace:{\"kind\":\"read\"";
+  private static final String EVENT_HEADER_LINE = "trace:{\"kind\":\"line\"";
 
   private static final InheritableThreadLocal<Integer> RUN_TOKEN = new InheritableThreadLocal<>();
   private static final java.util.IdentityHashMap<Object, String> TRACE_REFERENCE_IDS = new java.util.IdentityHashMap<>();
@@ -271,7 +233,7 @@ public final class TraceHooks {
    * call-stack state, which carries the full serialized stack.
    */
   private static boolean emitFast(
-      String kind,
+      String header,
       int line,
       String name,
       String pathJson,
@@ -289,7 +251,7 @@ public final class TraceHooks {
     if (dropIfStorageExhausted()) return true;
     long started = profileEnabled ? System.nanoTime() : 0L;
     String event =
-        buildEvent0(kind, line, name, pathJson, indexSourcesJson, valueJson, functionName, stackSuffix);
+        TextOps.buildRecord0(header, line, name, pathJson, indexSourcesJson, valueJson, functionName, stackSuffix);
     if (event == null) return false;
     if (event.indexOf("NaN") >= 0 || event.indexOf("Infinity") >= 0) {
       event = sanitizeJsonNonFiniteNumbers(event);
@@ -302,7 +264,7 @@ public final class TraceHooks {
 
   /** {@link #emitFast} variant for single-int-index array accesses. */
   private static boolean emitFastIndexed(
-      String kind, int line, String name, int index, String indexSourcesJson, String valueJson) {
+      String header, int line, String name, int index, String indexSourcesJson, String valueJson) {
     if (!NATIVE_JSON_AVAILABLE) return false;
     ThreadState state = state();
     String stackSuffix = "";
@@ -313,7 +275,7 @@ public final class TraceHooks {
     if (!runActiveForCurrentThread()) return true;
     if (dropIfStorageExhausted()) return true;
     long started = profileEnabled ? System.nanoTime() : 0L;
-    String event = buildIndexedEvent0(kind, line, name, index, indexSourcesJson, valueJson, stackSuffix);
+    String event = TextOps.buildIndexedRecord0(header, line, name, index, indexSourcesJson, valueJson, stackSuffix);
     if (event == null) return false;
     if (event.indexOf("NaN") >= 0 || event.indexOf("Infinity") >= 0) {
       event = sanitizeJsonNonFiniteNumbers(event);
@@ -579,7 +541,7 @@ public final class TraceHooks {
       if (count == 0) return new DrainedEvents(0, EMPTY_BYTES);
       if (NATIVE_JSON_AVAILABLE) {
         String[] lines = EVENTS.toArray(new String[0]);
-        byte[] block = encodeLinesUtf8(lines, count);
+        byte[] block = TextOps.encodeLinesUtf8(lines, count);
         if (block != null) {
           EVENTS.clear();
           return new DrainedEvents(count, block);
@@ -637,7 +599,7 @@ public final class TraceHooks {
     if (dropIfStorageExhausted()) return;
     java.util.List<TraceFrame> stack = state().callStack;
     String functionName = stack.isEmpty() ? null : stack.get(stack.size() - 1).functionName;
-    if (emitFast("line", line, null, null, null, null, functionName)) return;
+    if (emitFast(EVENT_HEADER_LINE, line, null, null, null, null, functionName)) return;
     StringBuilder out = acquireEventBuilder();
     out.append("trace:{\"kind\":\"line\",\"line\":").append(line);
     if (functionName != null) {
@@ -749,7 +711,7 @@ public final class TraceHooks {
           ? INDEX_SOURCES_SINGLE_NULL
           : indexSourcesJsonSingle(indexSource);
       String valueJson = serializeResult(value);
-      if (emitFastIndexed("write", line, name, index, sourcesJson, valueJson)) return;
+      if (emitFastIndexed(EVENT_HEADER_WRITE, line, name, index, sourcesJson, valueJson)) return;
       emitTraceWriteSerialized(line, name, "[" + index + "]", valueJson, sourcesJson);
       return;
     }
@@ -995,7 +957,7 @@ public final class TraceHooks {
     if (NATIVE_JSON_AVAILABLE) {
       // One native call replaces the whole interpreted instanceof cascade for
       // the final scalar box classes; anything else comes back null.
-      String fast = serializeScalar0(value);
+      String fast = TextOps.jsonScalar0(value);
       if (fast != null) return fast;
     }
     if (value instanceof int[]) {
@@ -1128,7 +1090,7 @@ public final class TraceHooks {
   private static String serializeIntArrayRoot(int[] values, boolean capValues) {
     int emitted = capValues ? Math.min(values.length, MAX_SERIALIZED_ITEMS) : values.length;
     if (NATIVE_JSON_AVAILABLE) {
-      String json = jsonIntArray0(values, emitted, values.length);
+      String json = TextOps.jsonIntArray0(values, emitted, values.length);
       if (json != null) return json;
     }
     StringBuilder out = new StringBuilder(32 + emitted * 3);
@@ -1151,7 +1113,7 @@ public final class TraceHooks {
   private static String serializeLongArrayRoot(long[] values, boolean capValues) {
     int emitted = capValues ? Math.min(values.length, MAX_SERIALIZED_ITEMS) : values.length;
     if (NATIVE_JSON_AVAILABLE) {
-      String json = jsonLongArray0(values, emitted, values.length);
+      String json = TextOps.jsonLongArray0(values, emitted, values.length);
       if (json != null) return json;
     }
     StringBuilder out = new StringBuilder(32 + emitted * 3);
@@ -1500,7 +1462,7 @@ public final class TraceHooks {
 
   private static void emitSnapshot(int line, String name, String serializedValue) {
     if (dropIfStorageExhausted()) return;
-    if (emitFast("snapshot", line, name, null, null, serializedValue, null)) return;
+    if (emitFast(EVENT_HEADER_SNAPSHOT, line, name, null, null, serializedValue, null)) return;
     StringBuilder out = acquireEventBuilder();
     out.append("trace:{\"kind\":\"snapshot\",\"line\":").append(line);
     out.append(",\"target\":{\"variable\":").append(jsonString(name)).append("},\"value\":").append(serializedValue);
@@ -2326,7 +2288,7 @@ public final class TraceHooks {
   public static String jsonString(String value) {
     if (value == null) return "null";
     if (NATIVE_JSON_AVAILABLE) {
-      String fast = jsonEscape0(value);
+      String fast = TextOps.jsonEscape0(value);
       if (fast != null) return fast;
     }
     // Hot path: variable names and simple index sources never need escaping.
@@ -2482,7 +2444,7 @@ public final class TraceHooks {
   private static void emitTraceRead(int line, String name, String pathJson, Object value, String indexSourcesJson) {
     if (dropIfStorageExhausted()) return;
     String valueJson = serializeResult(value);
-    if (emitFast("read", line, name, pathJson, indexSourcesJson, valueJson, null)) return;
+    if (emitFast(EVENT_HEADER_READ, line, name, pathJson, indexSourcesJson, valueJson, null)) return;
     StringBuilder out = acquireEventBuilder();
     out.append("trace:{\"kind\":\"read\",\"line\":").append(line);
     out.append(",\"target\":{\"variable\":").append(jsonString(name)).append(",\"path\":").append(pathJson);
@@ -2518,7 +2480,7 @@ public final class TraceHooks {
     profileScalarWriteCalls += 1;
     if (dropIfStorageExhausted()) return;
     String valueJson = serializeResult(value);
-    if (emitFast("write", line, name, null, null, valueJson, null)) return;
+    if (emitFast(EVENT_HEADER_WRITE, line, name, null, null, valueJson, null)) return;
     StringBuilder out = acquireEventBuilder();
     out.append("trace:{\"kind\":\"write\",\"line\":").append(line);
     out.append(",\"target\":{\"variable\":").append(jsonString(name)).append("},\"value\":");
@@ -2532,7 +2494,7 @@ public final class TraceHooks {
   }
 
   private static void emitTraceWriteSerialized(int line, String name, String pathJson, String valueJson, String indexSourcesJson) {
-    if (emitFast("write", line, name, pathJson, indexSourcesJson, valueJson, null)) return;
+    if (emitFast(EVENT_HEADER_WRITE, line, name, pathJson, indexSourcesJson, valueJson, null)) return;
     StringBuilder out = acquireEventBuilder();
     out.append("trace:{\"kind\":\"write\",\"line\":").append(line);
     out.append(",\"target\":{\"variable\":").append(jsonString(name)).append(",\"path\":").append(pathJson);
