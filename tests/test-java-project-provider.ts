@@ -10,6 +10,9 @@ import {
   createJavaProjectRunner,
   type JavaProjectClient,
 } from '../packages/runtime-java/src/java-project';
+import {
+  createJavaProjectClientFactory,
+} from '../packages/runtime-java/src/java-project-client';
 import { createBrowserProjectWorkspace } from '../packages/runtime-browser/src/project';
 
 function assertCondition(condition: boolean, message: string): void {
@@ -91,6 +94,24 @@ function request(
       ],
     },
   };
+}
+
+function testProjectFactoryRejectsUnknownRuntimeProfiles(): void {
+  let profileError: unknown;
+  try {
+    createJavaProjectClientFactory({
+      runtimeProfile: 'desktop' as never,
+    });
+  } catch (error) {
+    profileError = error;
+  }
+  assertCondition(
+    profileError instanceof TypeError &&
+      profileError.message.includes(
+        'Unsupported TraceJVM runtime profile: desktop'
+      ),
+    `Unknown TraceJVM runtime profiles must fail before allocating workers: ${String(profileError)}`
+  );
 }
 
 async function testKernelLeaseUsesFreshWorkers(): Promise<void> {
@@ -604,6 +625,8 @@ async function testBrowserWorkspaceRequiresExplicitJavaProvider(): Promise<void>
 
 await testKernelLeaseUsesFreshWorkers();
 console.log('PASS: Java project adapter binds one kernel coordinator and fresh process clients per invocation');
+testProjectFactoryRejectsUnknownRuntimeProfiles();
+console.log('PASS: Java project factory rejects unknown runtime profiles');
 await testCancellationHardRetiresWorker();
 console.log('PASS: Java project adapter maps signals to hard Worker retirement');
 await testUnsupportedBoundaryIsExplicit();

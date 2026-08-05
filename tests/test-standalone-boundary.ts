@@ -104,7 +104,6 @@ async function main(): Promise<void> {
     ['csharp-runtime-client.ts', 'csharp-runtime-client.ts', 'runtime-csharp'],
     ['csharp-worker-client.ts', 'csharp-worker-client.ts', 'runtime-csharp'],
     ['java-runtime-client.ts', 'java-runtime-client.ts', 'runtime-java'],
-    ['java-storage-isolation.ts', 'java-storage-isolation.ts', 'runtime-java'],
     ['java-worker-client.ts', 'java-worker-client.ts', 'runtime-java'],
     ['javascript-runtime-client.ts', 'javascript-runtime-client.ts', 'runtime-javascript'],
     ['javascript-worker-client.ts', 'javascript-worker-client.ts', 'runtime-javascript'],

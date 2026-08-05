@@ -54,7 +54,6 @@ export default defineConfig([
       'project-node': 'packages/runtime-java/src/project-node.ts',
       'project-browser': 'packages/runtime-java/src/project-browser.ts',
       'java-project': 'packages/runtime-java/src/java-project.ts',
-      'java-project-runtime': 'packages/runtime-java/src/java-project-runtime.ts',
     },
     outDir: 'packages/runtime-java/dist',
   },
