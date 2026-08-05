@@ -102,6 +102,8 @@ async function testFixedReactorContract(): Promise<void> {
   const preflightedShards: string[] = [];
   const coordinator = new TraceCCCompilerService(
     options({
+      workerUrl:
+        '/workers/cpp-worker.js?traceccRole=runner&cache=immutable#worker',
       assetPreflight: async (shard) => {
         preflightedShards.push(shard);
       },
@@ -125,7 +127,8 @@ async function testFixedReactorContract(): Promise<void> {
     );
     const worker = TraceCCCompilerWorkerDouble.instances[0];
     assertCondition(
-      worker.url === '/workers/cpp-worker.js?traceccRole=compiler',
+      worker.url ===
+        '/workers/cpp-worker.js?traceccRole=compiler&cache=immutable#worker',
       `The trusted compiler must use the compiler-only worker role: ${worker.url}`
     );
     assertCondition(
@@ -177,6 +180,16 @@ async function testFixedReactorContract(): Promise<void> {
       preflightedShards.at(-1) === 'broad' &&
         !preflightedShards.includes('map'),
       `A broad compile must not preflight the unused map shard: ${preflightedShards}`
+    );
+    const runtimeInclude = '#include "tracecode_runtime.hpp"\n';
+    await coordinator.compileTrusted({
+      driverSource:
+        runtimeInclude +
+        ' '.repeat(50_000 - new TextEncoder().encode(runtimeInclude).byteLength),
+    });
+    assertCondition(
+      preflightedShards.at(-1) === 'narrow',
+      `Shard sizing must use the stripped source sent to Clang: ${preflightedShards}`
     );
   } finally {
     coordinator.terminate();

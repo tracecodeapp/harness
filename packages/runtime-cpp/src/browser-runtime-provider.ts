@@ -105,6 +105,12 @@ export function createTraceCCBrowserCompilerService(
   ] as const;
   const commonAssetPreflight = () =>
     context.preflight(commonCompilerAssetNames);
+  const compilerIntegrity = context.assets.cppCompilerIntegrity;
+  if (!compilerIntegrity) {
+    throw new Error(
+      'TraceCC requires exact compiler integrity entries from a C++ runtime manifest.'
+    );
+  }
   const shardAssetPreflight = (
     shard: 'narrow' | 'broad' | 'map'
   ) => {
@@ -121,11 +127,7 @@ export function createTraceCCBrowserCompilerService(
     compilerUrl: context.assets.cppCompilerWasm,
     resourcesUrl: context.assets.cppSysroot,
     runtimeHeaderUrl: context.assets.cppRuntimeHeader,
-    compilerIntegrity: context.assets.cppCompilerIntegrity ?? (() => {
-      throw new Error(
-        'TraceCC requires exact compiler integrity entries from a C++ runtime manifest.'
-      );
-    })(),
+    compilerIntegrity,
     commonAssetPreflight,
     assetPreflight: shardAssetPreflight,
     shards: {

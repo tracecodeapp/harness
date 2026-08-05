@@ -62,7 +62,13 @@ function compilerWorkerUrl(workerUrl: string): string {
     fragmentIndex === -1 ? workerUrl : workerUrl.slice(0, fragmentIndex);
   const fragment =
     fragmentIndex === -1 ? '' : workerUrl.slice(fragmentIndex);
-  return `${base}${base.includes('?') ? '&' : '?'}traceccRole=compiler${fragment}`;
+  const queryIndex = base.indexOf('?');
+  const path = queryIndex === -1 ? base : base.slice(0, queryIndex);
+  const params = new URLSearchParams(
+    queryIndex === -1 ? '' : base.slice(queryIndex + 1)
+  );
+  params.set('traceccRole', 'compiler');
+  return `${path}?${params.toString()}${fragment}`;
 }
 
 function traceccShardForDriver(driverSource: string): TraceCCCompilerShard {
@@ -243,7 +249,11 @@ implements CppTrustedCompilerService {
         const artifactKey = await this.artifactKey(driverSource);
         const cached = this.cachedArtifact(artifactKey);
         if (cached) return cached;
-        const shard = traceccShardForDriver(driverSource);
+        const strippedSource = driverSource.replace(
+          /^#include\s+["<]\/?tracecode_runtime\.hpp[">]\s*\r?\n/,
+          ''
+        );
+        const shard = traceccShardForDriver(strippedSource);
         await this.options.assetPreflight?.(shard);
         if (signal?.aborted || generation !== this.generation) {
           throw Object.assign(
@@ -276,10 +286,7 @@ implements CppTrustedCompilerService {
             files: [
               {
                 path: '/workspace/TraceCodeDriver.cpp',
-                contents: driverSource.replace(
-                  /^#include\s+["<]\/?tracecode_runtime\.hpp[">]\s*\r?\n/,
-                  ''
-                ),
+                contents: strippedSource,
               },
             ],
           },
