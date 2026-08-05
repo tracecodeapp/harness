@@ -205,6 +205,8 @@ async function main() {
       page.on('console', (message) => {
         if (message.type() === 'error') {
           console.error(`[browser console] ${message.text()}`);
+        } else if (message.text().includes('__TRACECODE_HOSTPROF__')) {
+          console.log(message.text());
         }
       });
       await page.goto(`${server.origin}/index.html`, { waitUntil: 'load' });

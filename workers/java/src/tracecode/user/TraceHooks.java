@@ -27,6 +27,10 @@ public final class TraceHooks {
     /** Prebuilt {@code ,"callStackRef":N} suffix for the current stack state. */
     String callStackRefSuffix;
     String lastIndexSource;
+    /** Identity-keyed memo for single-source indexSources JSON (rewriter
+     * passes the same constant-pool string on every hit of a call site). */
+    String memoIndexSource;
+    String memoIndexSourcesJson;
     /** Cached copy of {@link #RUN_TOKEN}; both are updated together. */
     Integer runToken = RUN_TOKEN.get();
     final java.util.IdentityHashMap<Object, String> serializeSeen =
@@ -89,6 +93,15 @@ public final class TraceHooks {
   private static native String serializeScalar0(Object value);
 
   private static native String jsonEscape0(String value);
+
+  private static native String buildIndexedEvent0(
+      String kind,
+      int line,
+      String name,
+      int index,
+      String indexSourcesJson,
+      String valueJson,
+      String stackSuffix);
 
   private static native String buildEvent0(
       String kind,
@@ -285,6 +298,39 @@ public final class TraceHooks {
     profileEmitBuildCalls += 1;
     storeEvent(event);
     return true;
+  }
+
+  /** {@link #emitFast} variant for single-int-index array accesses. */
+  private static boolean emitFastIndexed(
+      String kind, int line, String name, int index, String indexSourcesJson, String valueJson) {
+    if (!NATIVE_JSON_AVAILABLE) return false;
+    ThreadState state = state();
+    String stackSuffix = "";
+    if (!state.callStack.isEmpty()) {
+      if (state.callStackJson == null) return false;
+      stackSuffix = state.callStackRefSuffix;
+    }
+    if (!runActiveForCurrentThread()) return true;
+    if (dropIfStorageExhausted()) return true;
+    long started = profileEnabled ? System.nanoTime() : 0L;
+    String event = buildIndexedEvent0(kind, line, name, index, indexSourcesJson, valueJson, stackSuffix);
+    if (event == null) return false;
+    if (event.indexOf("NaN") >= 0 || event.indexOf("Infinity") >= 0) {
+      event = sanitizeJsonNonFiniteNumbers(event);
+    }
+    if (profileEnabled) profileEmitBuildNs += System.nanoTime() - started;
+    profileEmitBuildCalls += 1;
+    storeEvent(event);
+    return true;
+  }
+
+  private static String indexSourcesJsonSingle(String source) {
+    ThreadState state = state();
+    if (source == state.memoIndexSource) return state.memoIndexSourcesJson;
+    String json = "[" + jsonString(source) + "]";
+    state.memoIndexSource = source;
+    state.memoIndexSourcesJson = json;
+    return json;
   }
 
   private static void emitEventBody(StringBuilder body) {
@@ -698,6 +744,15 @@ public final class TraceHooks {
   public static void emitArrayWriteAtLine(int line, String name, int index, Object value, String indexSource) {
     profileWriteArrayCalls += 1;
     if (dropIfStorageExhausted()) return;
+    if (NATIVE_JSON_AVAILABLE) {
+      String sourcesJson = indexSource == null || indexSource.isEmpty()
+          ? INDEX_SOURCES_SINGLE_NULL
+          : indexSourcesJsonSingle(indexSource);
+      String valueJson = serializeResult(value);
+      if (emitFastIndexed("write", line, name, index, sourcesJson, valueJson)) return;
+      emitTraceWriteSerialized(line, name, "[" + index + "]", valueJson, sourcesJson);
+      return;
+    }
     emitTraceWrite(line, name, "[" + index + "]", value, indexSourcesJson(indexSource));
   }
 
@@ -1690,11 +1745,13 @@ public final class TraceHooks {
     throw new IllegalArgumentException("Enhanced-for trace target is not iterable");
   }
 
+  private static final String ARRAY_LENGTH_PATH = "[\"length\"]";
+
   public static int readArrayLengthAtLine(int line, String name, Object value) {
     profileLengthCalls += 1;
     int length = value == null ? 0 : java.lang.reflect.Array.getLength(value);
     if (traceLimitExceeded) return length;
-    emitTraceRead(line, name, "[" + jsonString("length") + "]", length);
+    emitTraceRead(line, name, ARRAY_LENGTH_PATH, length);
     emitRuntimeSnapshotAtLine(line, name, value);
     return length;
   }
@@ -2471,7 +2528,10 @@ public final class TraceHooks {
 
   private static void emitTraceWrite(int line, String name, String pathJson, Object value, String indexSourcesJson) {
     if (dropIfStorageExhausted()) return;
-    String valueJson = serializeResult(value);
+    emitTraceWriteSerialized(line, name, pathJson, serializeResult(value), indexSourcesJson);
+  }
+
+  private static void emitTraceWriteSerialized(int line, String name, String pathJson, String valueJson, String indexSourcesJson) {
     if (emitFast("write", line, name, pathJson, indexSourcesJson, valueJson, null)) return;
     StringBuilder out = acquireEventBuilder();
     out.append("trace:{\"kind\":\"write\",\"line\":").append(line);
