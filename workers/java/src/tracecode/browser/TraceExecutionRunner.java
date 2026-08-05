@@ -143,7 +143,17 @@ public final class TraceExecutionRunner {
       int eventCount = TraceHooks.drainEventsNdjson(eventBlock);
       System.out.println(EVENTS_BEGIN_MARKER + eventCount);
       if (eventCount > 0) {
-        System.out.print(eventBlock);
+        // One bulk UTF-8 encode + one raw write. PrintStream.print would
+        // route the multi-megabyte block through its per-char encoder loop,
+        // which dominates export time on an interpreted JVM.
+        try {
+          System.out.flush();
+          System.out.write(
+              eventBlock.toString().getBytes(StandardCharsets.UTF_8));
+          System.out.flush();
+        } catch (java.io.IOException error) {
+          System.out.print(eventBlock);
+        }
       }
       System.out.println(EVENTS_END_MARKER);
       double exportMs = Math.round((System.nanoTime() - exportStarted) / 1e4) / 1e2;
