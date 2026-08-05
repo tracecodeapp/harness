@@ -30,6 +30,10 @@ import {
 import {
   registerBrowserRuntimeHostPreparedProviderResolver,
 } from './browser-runtime-host-internal';
+import {
+  withPreparedProgramReuse,
+  type ReusablePreparedProvider,
+} from './prepared-program-reuse';
 import type {
   BrowserSafeExecutionOptions,
 } from './worker-lifecycle-policy';
@@ -220,7 +224,7 @@ class BrowserRuntimeHostImplementation implements BrowserRuntimeHost {
 
   readonly #preparedProviders = new Map<
     Language,
-    RuntimePreparedExecutionProvider
+    ReusablePreparedProvider
   >();
   readonly #leases: BrowserRuntimeProviderLease[] = [];
   readonly #leaseByLanguage = new Map<
@@ -277,10 +281,12 @@ class BrowserRuntimeHostImplementation implements BrowserRuntimeHost {
           );
           this.#preparedProviders.set(
             language,
-            safePreparedProvider(
-              language,
-              preparedProvider,
-              () => this.#assertActive()
+            withPreparedProgramReuse(
+              safePreparedProvider(
+                language,
+                preparedProvider,
+                () => this.#assertActive()
+              )
             )
           );
           this.#leaseByLanguage.set(language, lease);
@@ -408,12 +414,16 @@ class BrowserRuntimeHostImplementation implements BrowserRuntimeHost {
 
   disposeLanguage(language: Language): void {
     if (this.#disposed || !this.supportedLanguages.includes(language)) return;
+    this.#preparedProviders.get(language)?.flushPreparedProgramCache();
     this.#leaseByLanguage.get(language)?.disposeLanguage(language);
   }
 
   dispose(): void {
     if (this.#disposed) return;
     this.#disposed = true;
+    for (const provider of this.#preparedProviders.values()) {
+      provider.flushPreparedProgramCache();
+    }
     disposeBrowserRuntimeProviderLeases(
       this.#leases,
       this.#executionHostSlot.host,

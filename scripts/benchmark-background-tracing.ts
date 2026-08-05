@@ -275,6 +275,7 @@ function report(results: readonly BenchmarkLanguageResult[]): void {
         'heavy code'.padStart(11),
         'heavy trace'.padStart(12),
         'trace x'.padStart(8),
+        'verdicts'.padStart(9),
       ].join(' ')
     );
     for (const result of list) {
@@ -307,6 +308,11 @@ function report(results: readonly BenchmarkLanguageResult[]): void {
           formatMs(heavyCode).padStart(11),
           formatMs(heavyTrace).padStart(12),
           traceMultiple.padStart(8),
+          // Timing numbers are meaningless if traced runs stopped passing.
+          (result.perCaseVerdicts.every((verdict) => verdict === 'passed')
+            ? 'passed'
+            : `BAD:${result.perCaseVerdicts.filter((verdict) => verdict !== 'passed').length}`
+          ).padStart(9),
         ].join(' ')
       );
     }
