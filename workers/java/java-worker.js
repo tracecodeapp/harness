@@ -224,9 +224,26 @@ function prepareTraceEventTransfer(result, request, path) {
     : TRACE_EVENT_TRANSFER_MIN_EVENTS;
   if (!Array.isArray(events) || events.length < minEventCount) return null;
 
+  // NDJSON skips JSON.stringify here and JSON.parse client-side. Only flat
+  // string events qualify; embedded newlines (never produced by the trace
+  // hooks, which escape control characters) would corrupt the framing, so
+  // any hit falls back to the JSON encoding.
+  const ndjsonEligible =
+    Array.isArray(request.acceptEncodings) &&
+    request.acceptEncodings.includes('ndjson-utf8') &&
+    path !== 'results[].trace.events' &&
+    events.every(
+      (event) => typeof event === 'string' && !event.includes('\n')
+    );
+  let encoding = 'json-utf8';
   let encoded;
   try {
-    encoded = new TextEncoder().encode(JSON.stringify(events));
+    if (ndjsonEligible) {
+      encoding = 'ndjson-utf8';
+      encoded = new TextEncoder().encode(events.join('\n'));
+    } else {
+      encoded = new TextEncoder().encode(JSON.stringify(events));
+    }
   } catch {
     return null;
   }
@@ -251,7 +268,7 @@ function prepareTraceEventTransfer(result, request, path) {
     : { ...result, events: [] };
   payload.__traceEventTransport = {
     schema: TRACE_EVENT_TRANSFER_SCHEMA,
-    encoding: 'json-utf8',
+    encoding,
     path,
     eventCount: events.length,
     byteLength: encoded.byteLength,

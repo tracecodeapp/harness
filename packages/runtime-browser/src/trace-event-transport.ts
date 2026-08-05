@@ -11,6 +11,14 @@ const TRACE_EVENT_TRANSFER_MAX_EVENTS = 1_000_000;
 export interface TraceEventTransferRequest {
   schema: typeof TRACE_EVENT_TRANSFER_SCHEMA;
   encoding: 'json-utf8';
+  /**
+   * Encodings this client can decode, most preferred first. Workers unaware
+   * of this field keep using `encoding`; newer workers may pick
+   * `ndjson-utf8` for flat string-event payloads, which skips both the
+   * worker-side JSON.stringify and the client-side JSON.parse of the whole
+   * event array (events are newline-free JSON lines by construction).
+   */
+  acceptEncodings: readonly ['ndjson-utf8', 'json-utf8'];
   maxChunkBytes: number;
   minTransferBytes: number;
   minEventCount: number;
@@ -18,7 +26,7 @@ export interface TraceEventTransferRequest {
 
 interface TraceEventTransferDescriptor {
   schema: typeof TRACE_EVENT_TRANSFER_SCHEMA;
-  encoding: 'json-utf8';
+  encoding: 'json-utf8' | 'ndjson-utf8';
   path: 'trace.events' | 'events' | 'results[].trace.events';
   eventCount: number;
   eventCounts?: number[];
@@ -39,6 +47,7 @@ export function traceEventTransferRequest(): TraceEventTransferRequest {
   return {
     schema: TRACE_EVENT_TRANSFER_SCHEMA,
     encoding: 'json-utf8',
+    acceptEncodings: ['ndjson-utf8', 'json-utf8'],
     maxChunkBytes: TRACE_EVENT_TRANSFER_CHUNK_BYTES,
     minTransferBytes: TRACE_EVENT_TRANSFER_MIN_BYTES,
     minEventCount: TRACE_EVENT_TRANSFER_MIN_EVENTS,
@@ -58,11 +67,17 @@ function parseNonNegativeInteger(value: unknown, label: string, maximum: number)
 
 function parseDescriptor(value: unknown): TraceEventTransferDescriptor {
   if (!isRecord(value)) throw new Error('Invalid trace event transfer descriptor.');
-  if (value.schema !== TRACE_EVENT_TRANSFER_SCHEMA || value.encoding !== 'json-utf8') {
+  if (
+    value.schema !== TRACE_EVENT_TRANSFER_SCHEMA ||
+    (value.encoding !== 'json-utf8' && value.encoding !== 'ndjson-utf8')
+  ) {
     throw new Error('Unsupported trace event transfer schema.');
   }
   if (value.path !== 'trace.events' && value.path !== 'events' && value.path !== 'results[].trace.events') {
     throw new Error('Invalid trace event transfer path.');
+  }
+  if (value.encoding === 'ndjson-utf8' && value.path === 'results[].trace.events') {
+    throw new Error('NDJSON trace event transfer does not support batched results.');
   }
   const eventCount = parseNonNegativeInteger(
     value.eventCount,
@@ -112,7 +127,7 @@ function parseDescriptor(value: unknown): TraceEventTransferDescriptor {
   }
   return {
     schema: TRACE_EVENT_TRANSFER_SCHEMA,
-    encoding: 'json-utf8',
+    encoding: value.encoding,
     path: value.path,
     eventCount,
     ...(eventCounts ? { eventCounts } : {}),
@@ -130,7 +145,10 @@ function decodeEvents(descriptor: TraceEventTransferDescriptor): unknown[] {
   }
   let decoded: unknown;
   try {
-    decoded = JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(bytes));
+    const text = new TextDecoder('utf-8', { fatal: true }).decode(bytes);
+    decoded = descriptor.encoding === 'ndjson-utf8'
+      ? (text.length === 0 ? [] : text.split('\n'))
+      : JSON.parse(text);
   } catch (error) {
     throw new Error(
       `Trace event transfer could not be decoded: ${error instanceof Error ? error.message : String(error)}`
