@@ -227,6 +227,7 @@ async function testManifestAssetsReachWorkerInitialization(): Promise<void> {
   CapturingWorker.instances = [];
   const host = createBrowserRuntimeHost({
     engine: 'chromium',
+    providers: ['python', 'typescript', 'java', 'csharp'],
     assets: { runtimeManifests: consumerManifests() },
   });
   await host.warmLanguage('python');
@@ -329,8 +330,8 @@ async function testMetadataMismatchStopsBeforeWorkerConstruction(): Promise<void
   try {
     const host = createBrowserRuntimeHost({
       engine: 'chromium',
-      assets: { runtimeManifests: manifests },
       providers: ['typescript'],
+      assets: { runtimeManifests: manifests },
     });
     let message = '';
     try {
@@ -468,6 +469,54 @@ async function testPreflightRetriesFailuresAndSharesConcurrentWork(): Promise<vo
   await mutableVerifier.preflight('typescript', ['compiler']);
   await mutableVerifier.preflight('typescript', ['compiler']);
   assertCondition(mutableFetchCount === 2, 'Mutable/unattested assets must be reverified on later preflights');
+}
+
+async function testPreflightSharesIdenticalAssetRoles(): Promise<void> {
+  const body = 'shared-reactor';
+  const shared = {
+    url: 'shared-reactor.wasm',
+    integrity: await sha256Integrity(body),
+    mediaType: 'application/wasm',
+    size: new TextEncoder().encode(body).byteLength,
+    delivery: {
+      mutability: 'immutable' as const,
+      address: 'content' as const,
+    },
+  };
+  const manifests = consumerManifests();
+  manifests.cpp = {
+    runtime: 'cpp',
+    runtimeVersion: 'shared-reactor',
+    protocolVersion: BROWSER_RUNTIME_ASSET_PROTOCOL_VERSION,
+    workerFormat: 'module',
+    assetBaseUrl: 'https://cdn.consumer.example/cpp/',
+    originPolicy,
+    assets: {
+      worker: descriptor('worker.js'),
+      runtimeHeader: descriptor('tracecode_runtime.hpp'),
+      compilerWasm: shared,
+      linkerWasm: shared,
+      sysroot: descriptor('sysroot.tar'),
+    },
+  };
+  let fetchCount = 0;
+  const verifier = createBrowserRuntimeAssetPreflight(
+    resolveBrowserRuntimeAssetManifests({ manifests }),
+    {
+      fetch: async () => {
+        fetchCount += 1;
+        return new Response(body, {
+          status: 200,
+          headers: { 'content-type': 'application/wasm' },
+        });
+      },
+    }
+  );
+  await verifier.preflight('cpp', ['compilerWasm', 'linkerWasm']);
+  assertCondition(
+    fetchCount === 1,
+    `Identical immutable compiler/linker roles must share one verification fetch, observed ${fetchCount}`
+  );
 }
 
 async function testProjectManifestAssetBinding(): Promise<void> {
@@ -672,6 +721,7 @@ try {
   await testMetadataMismatchStopsBeforeWorkerConstruction();
   await testIntegrityAndMediaTypeVerification();
   await testPreflightRetriesFailuresAndSharesConcurrentWork();
+  await testPreflightSharesIdenticalAssetRoles();
   await testProjectManifestAssetBinding();
   await testProjectManifestAssetsArePreflightedAndForwarded();
   await testCSharpRoleBundlesAreIncludedInReadiness();

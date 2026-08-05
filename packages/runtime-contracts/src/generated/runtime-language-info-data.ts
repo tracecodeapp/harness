@@ -333,7 +333,10 @@ export const LANGUAGE_RUNTIME_INFOS = Object.freeze(
       "<typeinfo>",
       "<valarray>",
       "<variant>",
-      "<version>"
+      "<version>",
+      "<tracecode_socket.h>",
+      "<tracecode_process.h>",
+      "<tracecode_ioctl.h>"
     ],
     "libraries": [
       {
@@ -353,6 +356,6 @@ export const LANGUAGE_RUNTIME_INFOS = Object.freeze(
 export const RUNTIME_COMMAND_VERSIONS = Object.freeze(
   Object.assign(Object.create(null), {
   "dotnet": "10.0.10",
-  "clang++": "22.0.0-git20542-10"
+  "clang++": "22.0.0"
 })
 ) as Record<RuntimeCommandName, string>;

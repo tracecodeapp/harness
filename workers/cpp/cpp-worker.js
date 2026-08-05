@@ -1519,6 +1519,13 @@ function postSuccess(id, type, payload, traceEventTransport) {
   const transported = mode
     ? prepareCppTraceEventTransfer(payload, traceEventTransport, mode)
     : null;
+  const outputTransfer =
+    !transported &&
+    payload?.outputBytes instanceof Uint8Array &&
+    payload.outputBytes.byteOffset === 0 &&
+    payload.outputBytes.byteLength === payload.outputBytes.buffer.byteLength
+      ? [payload.outputBytes.buffer]
+      : [];
   trustedCppWorkerPostMessage(
     {
       id,
@@ -1526,7 +1533,7 @@ function postSuccess(id, type, payload, traceEventTransport) {
       payload: transported?.payload ?? payload,
       ...(activeRequestProtocolToken ? { protocolToken: activeRequestProtocolToken } : {}),
     },
-    transported?.transfer ?? []
+    transported?.transfer ?? outputTransfer
   );
 }
 
@@ -1740,8 +1747,9 @@ function readTarOctal(bytes, offset, length) {
   return value ? parseInt(value, 8) : 0;
 }
 
-function parseTarEntries(buffer) {
+function parseTarEntries(buffer, options = {}) {
   const bytes = new Uint8Array(buffer);
+  const copyFileBytes = options.copyFileBytes !== false;
   const entries = [];
   let offset = 0;
 
@@ -1759,7 +1767,12 @@ function parseTarEntries(buffer) {
     if (type === '5') {
       entries.push({ type: 'dir', path: filename });
     } else if (type === '0' || type === '') {
-      entries.push({ type: 'file', path: filename, contents: cloneBytes(bytes.subarray(offset, offset + size)) });
+      const contents = bytes.subarray(offset, offset + size);
+      entries.push({
+        type: 'file',
+        path: filename,
+        contents: copyFileBytes ? cloneBytes(contents) : contents,
+      });
     }
 
     offset += Math.ceil(size / 512) * 512;
@@ -1775,6 +1788,9 @@ class InMemoryFileSystem {
     this.symlinks = new Map();
     this.metadata = new Map();
     this.readOnlyFiles = new Set();
+    this.immutableReadlinkCache = new Map();
+    this.immutableResolvedPathCache = new Map();
+    this.readFilePaths = new Set();
     this.fileChangeObserver = null;
     this.workspaceRoots = Array.isArray(options.workspaceRoots)
       ? options.workspaceRoots.map(normalizeProjectRoot).filter(Boolean)
@@ -1792,6 +1808,9 @@ class InMemoryFileSystem {
     next.symlinks = new Map(this.symlinks);
     next.metadata = new Map([...this.metadata.entries()].map(([key, value]) => [key, { ...value }]));
     next.readOnlyFiles = new Set(this.readOnlyFiles);
+    next.immutableReadlinkCache = new Map(this.immutableReadlinkCache);
+    next.immutableResolvedPathCache = new Map(this.immutableResolvedPathCache);
+    next.readFilePaths = new Set(this.readFilePaths);
     return next;
   }
 
@@ -1863,7 +1882,13 @@ class InMemoryFileSystem {
   }
 
   resolvePath(pathname, followFinal = true) {
-    let normalized = normalizePath(pathname);
+    const rawPath = String(pathname || '/');
+    if (followFinal) {
+      const cached = this.immutableResolvedPathCache.get(rawPath);
+      if (cached) return cached;
+    }
+    const lexicalPath = normalizePath(pathname);
+    let normalized = lexicalPath;
     let followed = 0;
     while (true) {
       const parts = normalized.split('/').filter(Boolean);
@@ -1882,7 +1907,21 @@ class InMemoryFileSystem {
         changed = true;
         break;
       }
-      if (!changed) return normalized;
+      if (!changed) {
+        if (followFinal) {
+          for (const root of this.readOnlyFiles) {
+            if (
+              this.dirs.has(root) &&
+              (lexicalPath === root ||
+                lexicalPath.startsWith(`${root}/`))
+            ) {
+              this.immutableResolvedPathCache.set(rawPath, normalized);
+              break;
+            }
+          }
+        }
+        return normalized;
+      }
     }
   }
 
@@ -1943,6 +1982,29 @@ class InMemoryFileSystem {
     this.readOnlyFiles.add(normalized);
   }
 
+  addImmutableFileView(pathname, contents) {
+    const normalized = this.resolvePath(pathname);
+    this.addDirectory(dirname(normalized));
+    const existed = this.files.has(normalized);
+    this.symlinks.delete(normalized);
+    this.files.set(
+      normalized,
+      contents instanceof Uint8Array
+        ? contents
+        : encodeUtf8(String(contents))
+    );
+    if (!existed) {
+      const nowMs = Date.now();
+      this.metadata.set(normalized, {
+        mode: 0o444,
+        atimeMs: nowMs,
+        mtimeMs: nowMs,
+      });
+      this.touchParentDirectory(normalized);
+    }
+    this.readOnlyFiles.add(normalized);
+  }
+
   isReadOnly(pathname) {
     const normalized = this.resolvePath(pathname);
     return this.readOnlyFiles.has(normalized) || isRuntimeProcPath(normalized);
@@ -1976,12 +2038,58 @@ class InMemoryFileSystem {
   }
 
   readlink(pathname) {
+    const result = this.readlinkResult(pathname);
+    if (result.code) {
+      throw Object.assign(
+        new Error(`Invalid argument: ${result.path}`),
+        { code: result.code }
+      );
+    }
+    return result.target;
+  }
+
+  readlinkResult(pathname) {
+    const rawPath = String(pathname || '/');
+    const fastCached = this.immutableReadlinkCache.get(rawPath);
+    if (fastCached) return fastCached;
+    const lexicalPath = normalizePath(pathname);
+    let immutableNamespace = false;
+    for (const root of this.readOnlyFiles) {
+      if (
+        this.dirs.has(root) &&
+        (lexicalPath === root || lexicalPath.startsWith(`${root}/`))
+      ) {
+        immutableNamespace = true;
+        break;
+      }
+    }
+    if (immutableNamespace) {
+      const cached = this.immutableReadlinkCache.get(lexicalPath);
+      if (cached) return cached;
+    }
     const normalized = this.lpath(pathname);
     if (!this.symlinks.has(normalized)) {
       const code = this.files.has(normalized) || this.dirs.has(normalized) ? 'EINVAL' : 'ENOENT';
-      throw Object.assign(new Error(`Invalid argument: ${normalized}`), { code });
+      const result = { path: normalized, code };
+      if (immutableNamespace) {
+        this.immutableReadlinkCache.set(lexicalPath, result);
+        if (rawPath !== lexicalPath) {
+          this.immutableReadlinkCache.set(rawPath, result);
+        }
+      }
+      return result;
     }
-    return this.symlinks.get(normalized);
+    const result = {
+      path: normalized,
+      target: this.symlinks.get(normalized),
+    };
+    if (immutableNamespace) {
+      this.immutableReadlinkCache.set(lexicalPath, result);
+      if (rawPath !== lexicalPath) {
+        this.immutableReadlinkCache.set(rawPath, result);
+      }
+    }
+    return result;
   }
 
   setMetadata(pathname, values, followFinal = true) {
@@ -2011,6 +2119,7 @@ class InMemoryFileSystem {
     const normalized = this.resolvePath(pathname);
     const file = this.files.get(normalized);
     if (!file) throw new Error(`File not found: ${normalized}`);
+    this.readFilePaths.add(normalized);
     return file;
   }
 
@@ -2659,6 +2768,14 @@ class WasiProcess {
     this.inputDeviceOffsets = new Map();
     this.stdoutChunks = [];
     this.stderrChunks = [];
+    this.collectWasiMetrics = options.collectWasiMetrics === true;
+    this.bufferedFileWrites = options.bufferedFileWrites === true;
+    this.nonSeekableOutputPaths = new Set(
+      Array.isArray(options.nonSeekableOutputPaths)
+        ? options.nonSeekableOutputPaths.map(normalizePath)
+        : []
+    );
+    this.wasiMetrics = {};
     this.onOutput = options.onOutput;
     this.kernelHttp = options.kernelHttp || null;
     this.kernelClient = options.kernelClient || null;
@@ -4152,6 +4269,41 @@ class WasiProcess {
       }
       this.mem.writeU32(nwrittenOut, writtenTotal);
       return ESUCCESS;
+    } else if (entry.kind === 'file' && this.bufferedFileWrites) {
+      const current = entry.traceccWriteBuffer
+        ? null
+        : this.fs.exists(entry.path)
+          ? this.fs.readFile(entry.path)
+          : new Uint8Array();
+      const offset = entry.append
+        ? entry.traceccWriteSize ?? current.length
+        : entry.offset;
+      const requiredSize = offset + total;
+      if (!entry.traceccWriteBuffer) {
+        let capacity = 4096;
+        while (capacity < Math.max(current.length, requiredSize)) {
+          capacity *= 2;
+        }
+        entry.traceccWriteBuffer = new Uint8Array(capacity);
+        entry.traceccWriteBuffer.set(current);
+        entry.traceccWriteSize = current.length;
+      } else if (requiredSize > entry.traceccWriteBuffer.length) {
+        let capacity = entry.traceccWriteBuffer.length;
+        while (capacity < requiredSize) capacity *= 2;
+        const grown = new Uint8Array(capacity);
+        grown.set(entry.traceccWriteBuffer);
+        entry.traceccWriteBuffer = grown;
+      }
+      let writeOffset = offset;
+      for (const chunk of chunks) {
+        entry.traceccWriteBuffer.set(chunk, writeOffset);
+        writeOffset += chunk.length;
+      }
+      entry.offset = writeOffset;
+      entry.traceccWriteSize = Math.max(
+        entry.traceccWriteSize,
+        writeOffset
+      );
     } else if (entry.kind === 'file') {
       const current = this.fs.exists(entry.path) ? this.fs.readFile(entry.path) : new Uint8Array();
       const offset = entry.append ? current.length : entry.offset;
@@ -4395,14 +4547,27 @@ class WasiProcess {
     const entry = this.fds.get(fd);
     if (!entry) return EBADF;
     if (entry.kind === 'socket' || entry.kind === 'pipe') return ESPIPE;
+    if (
+      entry.kind === 'file' &&
+      entry.writable &&
+      [...this.nonSeekableOutputPaths].some(
+        (path) =>
+          entry.path === path ||
+          entry.path.startsWith(`${path}/`)
+      )
+    ) {
+      return ESPIPE;
+    }
     let fileSize = 0;
     if (entry.kind === 'file') {
       try {
         fileSize = entry.kernelFd !== undefined && this.kernelClient
           ? this.kernelClient.call({ op: 'fstat', fd: entry.kernelFd }).stat.size
-          : this.fs.exists(entry.path)
-            ? this.fs.readFile(entry.path).length
-            : 0;
+          : entry.traceccWriteBuffer
+            ? entry.traceccWriteSize
+            : this.fs.exists(entry.path)
+              ? this.fs.readFile(entry.path).length
+              : 0;
       } catch (error) {
         return cppTraceKernelErrno(error);
       }
@@ -4440,6 +4605,18 @@ class WasiProcess {
       return ESUCCESS;
     }
     if (entry.kind === 'socket') this.closeSocket(entry);
+    if (
+      entry.kind === 'file' &&
+      entry.traceccWriteBuffer &&
+      entry.kernelFd === undefined
+    ) {
+      this.fs.writeFile(
+        entry.path,
+        entry.traceccWriteBuffer.subarray(0, entry.traceccWriteSize)
+      );
+      entry.traceccWriteBuffer = null;
+      entry.traceccWriteSize = 0;
+    }
     if (
       entry.kind !== 'socket' &&
       entry.kernelFd !== undefined &&
@@ -4704,7 +4881,19 @@ class WasiProcess {
     const pathname = this.resolveFdPath(dirfd, pathPtr, pathLen);
     if (!pathname) return EBADF;
     try {
-      const targetBytes = encodeUtf8(this.fs.readlink(pathname));
+      const readlinkResult =
+        typeof this.fs.readlinkResult === 'function'
+          ? this.fs.readlinkResult(pathname)
+          : { target: this.fs.readlink(pathname) };
+      if (readlinkResult.code) {
+        if (bufUsedOut) this.mem.writeU32(bufUsedOut, 0);
+        return readlinkResult.code === 'ELOOP'
+          ? ELOOP
+          : readlinkResult.code === 'ENOENT'
+            ? ENOENT
+            : EINVAL;
+      }
+      const targetBytes = encodeUtf8(readlinkResult.target);
       const written = Math.min(bufLen, targetBytes.length);
       if (written > 0) this.mem.writeBytes(bufPtr, targetBytes.subarray(0, written));
       if (bufUsedOut) this.mem.writeU32(bufUsedOut, written);
@@ -5251,7 +5440,7 @@ function dottedQuadFromU32(value) {
   ].join('.');
 }
 
-async function instantiateWasi(module, process) {
+async function instantiateWasi(module, process, options = {}) {
   const imports = {};
   const wasiNames = [
     'args_get',
@@ -5295,10 +5484,50 @@ async function instantiateWasi(module, process) {
     'sock_send',
     'sock_shutdown',
   ];
-  const wasi = Object.fromEntries(wasiNames.map((name) => [name, process.bind(name)]));
+  const wasi = Object.fromEntries(
+    wasiNames.map((name) => {
+      const implementation = process.bind(name);
+      if (!process.collectWasiMetrics) return [name, implementation];
+      return [
+        name,
+        (...args) => {
+          const startedAt = performance.now();
+          try {
+            return implementation(...args);
+          } finally {
+            const metric =
+              process.wasiMetrics[name] ||
+              (process.wasiMetrics[name] = {
+                calls: 0,
+                elapsedMs: 0,
+              });
+            metric.calls += 1;
+            metric.elapsedMs += performance.now() - startedAt;
+          }
+        },
+      ];
+    })
+  );
 
   const tracecodeKernelImports = process.tracecodeKernelImports();
-  for (const item of WebAssembly.Module.imports(module)) {
+  const moduleImports = WebAssembly.Module.imports(module);
+  const memoryImports = moduleImports.filter(
+    (item) => item.kind === 'memory'
+  );
+  if (memoryImports.length > 0) {
+    if (
+      memoryImports.length !== 1 ||
+      !(options.memory instanceof WebAssembly.Memory)
+    ) {
+      throw new Error(
+        'WASI module memory imports require one reusable WebAssembly.Memory.'
+      );
+    }
+    const imported = memoryImports[0];
+    imports[imported.module] ??= {};
+    imports[imported.module][imported.name] = options.memory;
+  }
+  for (const item of moduleImports) {
     if (item.kind !== 'function') continue;
     if (item.module === 'wasi_snapshot_preview1' || item.module === 'wasi_unstable') {
       imports[item.module] ??= {};
@@ -5320,6 +5549,17 @@ async function instantiateWasi(module, process) {
     }
   }
 
+  if (
+    options.memory instanceof WebAssembly.Memory &&
+    Number.isFinite(options.memoryResetBytes) &&
+    options.memoryResetBytes > 0
+  ) {
+    // A fresh command instance expects every page it can observe to have the
+    // zero-filled semantics of a newly allocated Wasm memory. Resetting only
+    // the module's original minimum leaves allocator metadata in pages grown
+    // by a prior Clang invocation and eventually corrupts WASI arguments.
+    new Uint8Array(options.memory.buffer).fill(0);
+  }
   const instance = await WebAssembly.instantiate(module, imports);
   const memory = instance.exports.memory;
   if (!memory) {
@@ -5347,8 +5587,11 @@ async function runWasi(module, args, fs, options = {}) {
     filestatSizeOffset: options.filestatSizeOffset,
     outputBudget: options.outputBudget,
     onOutput: options.onOutput,
+    collectWasiMetrics: options.collectWasiMetrics,
+    bufferedFileWrites: options.bufferedFileWrites,
+    nonSeekableOutputPaths: options.nonSeekableOutputPaths,
   });
-  const instance = await instantiateWasi(module, process);
+  const instance = await instantiateWasi(module, process, options);
   const start = instance.exports._start || instance.exports.__main_argc_argv || instance.exports.main;
   if (typeof start !== 'function') {
     throw new Error('WASI module does not export _start or main.');
@@ -5369,6 +5612,154 @@ async function runWasi(module, args, fs, options = {}) {
     exitCode,
     stdout: process.stdout,
     stderr: process.stderr,
+    linearMemoryBytes:
+      instance.exports.memory instanceof WebAssembly.Memory
+        ? instance.exports.memory.buffer.byteLength
+        : 0,
+    ...(process.collectWasiMetrics
+      ? { wasiMetrics: process.wasiMetrics }
+      : {}),
+  };
+}
+
+class WasiReactorProcessRouter {
+  constructor(process) {
+    this.process = process;
+    this.memory = null;
+    this.collectWasiMetrics = false;
+  }
+
+  bind(name) {
+    return (...args) => {
+      const implementation = this.process?.[name];
+      return typeof implementation === 'function'
+        ? implementation.apply(this.process, args)
+        : ENOTSUP;
+    };
+  }
+
+  tracecodeKernelImports() {
+    return {};
+  }
+
+  setMemory(memory) {
+    this.memory = memory;
+    this.process?.setMemory(memory);
+  }
+
+  setProcess(process) {
+    this.process = process;
+    if (this.memory) process.setMemory(this.memory);
+  }
+}
+
+async function instantiateWasiReactor(module, options = {}) {
+  const initializationProcess = new WasiProcess({
+    args: [],
+    fs: options.fs,
+    cwd: options.cwd || '/',
+    env: options.env || { USER: 'tracecode' },
+  });
+  const router = new WasiReactorProcessRouter(initializationProcess);
+  const instance = await instantiateWasi(module, router, options);
+  const initialize = instance.exports._initialize;
+  const run = instance.exports.tracecc_run;
+  const alloc = instance.exports.tracecc_alloc;
+  const free = instance.exports.tracecc_free;
+  const canRunAgain = instance.exports.tracecc_can_run_again;
+  if (
+    typeof initialize !== 'function' ||
+    typeof run !== 'function' ||
+    typeof alloc !== 'function' ||
+    typeof free !== 'function' ||
+    typeof canRunAgain !== 'function'
+  ) {
+    throw new Error('TraceCC reactor exports are incomplete.');
+  }
+  initialize();
+  return {
+    instance,
+    router,
+    run,
+    alloc,
+    free,
+    canRunAgain,
+    reusable: true,
+  };
+}
+
+async function runWasiReactor(reactor, args, fs, options = {}) {
+  if (!reactor?.reusable) {
+    throw new Error('TraceCC reactor cannot safely accept another command.');
+  }
+  const process = new WasiProcess({
+    args,
+    fs,
+    cwd: options.cwd || '/',
+    env: options.env || { USER: 'tracecode' },
+    collectWasiMetrics: options.collectWasiMetrics,
+    bufferedFileWrites: options.bufferedFileWrites,
+    nonSeekableOutputPaths: options.nonSeekableOutputPaths,
+  });
+  reactor.router.setProcess(process);
+
+  const encodedArgs = args.map((value) =>
+    encodeUtf8(`${String(value)}\0`)
+  );
+  const pointerBytes = (encodedArgs.length + 1) * 4;
+  const stringBytes = encodedArgs.reduce(
+    (total, bytes) => total + bytes.byteLength,
+    0
+  );
+  const allocation = reactor.alloc(pointerBytes + stringBytes) >>> 0;
+  if (allocation === 0) {
+    reactor.reusable = false;
+    throw new Error('TraceCC reactor could not allocate argv storage.');
+  }
+
+  let exitCode = 0;
+  try {
+    const memory = reactor.instance.exports.memory;
+    const view = new DataView(memory.buffer);
+    const bytes = new Uint8Array(memory.buffer);
+    let cursor = allocation + pointerBytes;
+    for (let index = 0; index < encodedArgs.length; index += 1) {
+      view.setUint32(allocation + index * 4, cursor, true);
+      bytes.set(encodedArgs[index], cursor);
+      cursor += encodedArgs[index].byteLength;
+    }
+    view.setUint32(
+      allocation + encodedArgs.length * 4,
+      0,
+      true
+    );
+    try {
+      exitCode = reactor.run(encodedArgs.length, allocation);
+    } catch (error) {
+      reactor.reusable = false;
+      if (error instanceof ProcExit) {
+        exitCode = error.code;
+      } else {
+        throw error;
+      }
+    }
+    if (reactor.canRunAgain() !== 1) reactor.reusable = false;
+  } finally {
+    if (reactor.reusable) reactor.free(allocation);
+  }
+
+  return {
+    exitCode,
+    stdout: process.stdout,
+    stderr: process.stderr,
+    linearMemoryBytes:
+      reactor.instance.exports.memory instanceof WebAssembly.Memory
+        ? reactor.instance.exports.memory.buffer.byteLength
+        : 0,
+    reactorReusable: reactor.reusable,
+    ...(process.collectWasiMetrics
+      ? { wasiMetrics: process.wasiMetrics }
+      : {}),
   };
 }
 
@@ -5486,8 +5877,7 @@ function cppExceptionMessageForThrowExpression(expression) {
 }
 
 function cppExceptionTraceInstrumentation(lineNumber, message) {
-  const eventJson = `{"kind":"exception","line":${lineNumber},"message":${jsonStringLiteral(message)}}`;
-  return `tracecode::write_trace_event_json(std::string(${cppStringLiteral(eventJson)}), ${lineNumber});`;
+  return `tracecode::emit_serialized_exception_event(${lineNumber}, ${cppStringLiteral(message)});`;
 }
 
 function cppThrowReplacementForReturnType(returnType, options = {}) {
@@ -7631,7 +8021,7 @@ function buildSnapshotInstrumentation(lineNumber, variables, currentDepth) {
 }
 
 function buildScalarWriteInstrumentation(name, lineNumber, indent = '') {
-  return `${indent}tracecode::write_trace_event_json(std::string(${cppStringLiteral(`{"kind":"write","line":${lineNumber},"target":{"variable":${jsonStringLiteral(name)}},"value":`)}) + tracecode::to_json(${name}) + "}", ${lineNumber});`;
+  return `${indent}tracecode::emit_serialized_value_event("write", ${lineNumber}, tracecode::target_json(${cppStringLiteral(name)}), tracecode::to_json(${name}));`;
 }
 
 function buildDeclarationWriteInstrumentation(lineNumber, variables, currentDepth, indent = '') {
@@ -7643,7 +8033,7 @@ function buildDeclarationWriteInstrumentation(lineNumber, variables, currentDept
 
 function buildOpaqueObjectSnapshotInstrumentation(name, lineNumber, indent = '') {
   if (name === 'this') return '';
-  return `${indent}tracecode::write_trace_event_json(std::string(${cppStringLiteral(`{"kind":"snapshot","line":${lineNumber},"target":{"variable":${jsonStringLiteral(name)}},"value":`)}) + tracecode::to_json(${name}) + "}", ${lineNumber});`;
+  return `${indent}tracecode::emit_serialized_value_event("snapshot", ${lineNumber}, tracecode::target_json(${cppStringLiteral(name)}), tracecode::to_json(${name}));`;
 }
 
 function cppStringExpression(parts) {
@@ -7733,7 +8123,7 @@ function buildFieldReadInstrumentation(expression, valueExpression, lineNumber, 
   if (!access) return '';
   const targetExpression = buildFieldPathTargetJsonExpression(access.objectName, access.pathParts);
   return [
-    `${indent}tracecode::write_trace_event_json(std::string(${cppStringLiteral(`{"kind":"read","line":${lineNumber},"target":`)}) + ${targetExpression} + ",\\\"value\\\":" + tracecode::to_json(${valueExpression}) + "}", ${lineNumber});`,
+    `${indent}tracecode::emit_serialized_value_event("read", ${lineNumber}, ${targetExpression}, tracecode::to_json(${valueExpression}));`,
     buildOpaqueObjectSnapshotInstrumentation(access.objectName, lineNumber, indent),
   ].join('\n');
 }
@@ -7759,7 +8149,7 @@ function rewriteFieldWriteInstrumentation(line, lineNumber) {
   const valueExpression = lhsExpression.trim();
   return [
     line,
-    `${indent}tracecode::write_trace_event_json(std::string(${cppStringLiteral(`{"kind":"write","line":${lineNumber},"target":`)}) + ${targetExpression} + ",\\\"value\\\":" + tracecode::to_json(${valueExpression}) + "}", ${lineNumber});`,
+    `${indent}tracecode::emit_serialized_value_event("write", ${lineNumber}, ${targetExpression}, tracecode::to_json(${valueExpression}));`,
     buildOpaqueObjectSnapshotInstrumentation(access.objectName, lineNumber, indent),
   ].join('\n');
 }
@@ -7951,7 +8341,7 @@ function rewriteBareMemberAssignmentWriteInstrumentation(
   const targetExpression = `std::string(${cppStringLiteral(`{"variable":"this","path":[${jsonStringLiteral(name)}]}`)})`;
   return [
     line,
-    `${indent}tracecode::write_trace_event_json(std::string(${cppStringLiteral(`{"kind":"write","line":${lineNumber},"target":`)}) + ${targetExpression} + ",\\\"value\\\":" + tracecode::to_json(${name}) + "}", ${lineNumber});`,
+    `${indent}tracecode::emit_serialized_value_event("write", ${lineNumber}, ${targetExpression}, tracecode::to_json(${name}));`,
   ].join('\n');
 }
 
@@ -7971,7 +8361,7 @@ function rewriteBareMemberReadInstrumentation(
   if (assigneeName === memberName || !memberVariables.has(memberName) || localVariables.has(memberName)) return line;
   const targetExpression = `std::string(${cppStringLiteral(`{"variable":"this","path":[${jsonStringLiteral(memberName)}]}`)})`;
   return [
-    `${indent}tracecode::write_trace_event_json(std::string(${cppStringLiteral(`{"kind":"read","line":${lineNumber},"target":`)}) + ${targetExpression} + ",\\\"value\\\":" + tracecode::to_json(${memberName}) + "}", ${lineNumber});`,
+    `${indent}tracecode::emit_serialized_value_event("read", ${lineNumber}, ${targetExpression}, tracecode::to_json(${memberName}));`,
     line,
   ].join('\n');
 }
@@ -7980,14 +8370,12 @@ function buildCallInstrumentation(lineNumber, signature, aliases = new Map()) {
   const callLine = signature.callLine ?? lineNumber;
   const callLineName = `__tc_call_line_${lineNumber}`;
   const callLineExpression = signature.dynamicCallLine ? 'tracecode::trace_event_line()' : String(callLine);
-  const callEventPrefix = `{"kind":"call","line":`;
-  const callEventSuffix = `,"function":${jsonStringLiteral(signature.name)},"args":`;
   const entryLine = signature.entryLine ?? callLine;
   const argsExpression = buildTraceArgsJsonExpression(signature, (parameter) => parameter.name, aliases);
   return [
     `int ${callLineName} = ${callLineExpression};`,
     `std::string __tc_args_json_${lineNumber} = std::string("{") + ${argsExpression} + "}";`,
-    `tracecode::write_trace_event_json(std::string(${cppStringLiteral(callEventPrefix)}) + tracecode::to_json(${callLineName}) + ${cppStringLiteral(callEventSuffix)} + __tc_args_json_${lineNumber} + "}", ${callLineName});`,
+    `tracecode::emit_serialized_call_event(${callLineName}, ${cppStringLiteral(signature.name)}, __tc_args_json_${lineNumber});`,
     ...(signature.name === CPP_SCRIPT_FUNCTION_NAME ? [] : [`tracecode::emit_line(${entryLine}, ${cppStringLiteral(signature.name)});`]),
   ].join('\n');
 }
@@ -8008,8 +8396,7 @@ function buildScopedTraceNameInstrumentation(lineNumber, signature, aliases = ne
 }
 
 function buildReturnInstrumentation(lineNumber, signature) {
-  const returnEventPrefix = `{"kind":"return","line":${lineNumber},"function":${jsonStringLiteral(signature.name)}`;
-  return `tracecode::write_trace_event_json(std::string(${cppStringLiteral(`${returnEventPrefix}}`)}), ${lineNumber});`;
+  return `tracecode::emit_serialized_return_event(${lineNumber}, ${cppStringLiteral(signature.name)});`;
 }
 
 function splitTopLevelTernaryExpression(expression) {
@@ -8182,7 +8569,6 @@ function startsCppLocalLambdaBodyLine(line) {
 }
 
 function buildValueReturnInstrumentation(expression, lineNumber, signature, indent = '', postLineInstrumentation = '') {
-  const returnEventPrefix = `{"kind":"return","line":${lineNumber},"function":${jsonStringLiteral(signature.name)},"value":`;
   const returnStorageType = signature.returnType && signature.returnType.trim() !== 'auto'
     ? localCppType(signature.returnType)
     : 'auto';
@@ -8201,7 +8587,7 @@ function buildValueReturnInstrumentation(expression, lineNumber, signature, inde
     `${indent}${returnDeclaration}`,
     buildFieldReadInstrumentation(trimmedExpression, `__tc_return_${lineNumber}`, lineNumber, indent),
     postLineInstrumentation,
-    `${indent}tracecode::write_trace_event_json(std::string(${cppStringLiteral(returnEventPrefix)}) + ${signature.customJsonReturn ? `toJson(__tc_return_${lineNumber})` : `tracecode::to_json(__tc_return_${lineNumber})`} + "}", ${lineNumber});`,
+    `${indent}tracecode::emit_serialized_return_event(${lineNumber}, ${cppStringLiteral(signature.name)}, ${signature.customJsonReturn ? `toJson(__tc_return_${lineNumber})` : `tracecode::to_json(__tc_return_${lineNumber})`});`,
     `${indent}return __tc_return_${lineNumber};`,
   ].filter(Boolean).join('\n');
 }
@@ -8387,7 +8773,7 @@ function rewriteSingleLineControlBody(line, lineNumber, functionName, postLineIn
   const rewrittenStatement = rewriteInlineControlStatementInstrumentation(statement.trim(), lineNumber, variables, accessVariables, aliases, source);
   const scalarWrite = buildInlineScalarWriteInstrumentation(rewrittenStatement, lineNumber, variables);
   const statementSource = inlineControlStatementSource(
-    scalarWrite && !rewrittenStatement.includes('write_trace_event_json')
+    scalarWrite && !rewrittenStatement.includes('emit_serialized_value_event')
       ? `${rewrittenStatement}\n${scalarWrite}`
       : rewrittenStatement
   );
@@ -8424,7 +8810,7 @@ function rewriteBracedSingleLineControlBody(line, lineNumber, postLineInstrument
   const rewrittenStatement = rewriteInlineControlStatementInstrumentation(statement.trim(), lineNumber, variables, accessVariables, aliases, source);
   const scalarWrite = buildInlineScalarWriteInstrumentation(rewrittenStatement, lineNumber, variables);
   const statementSource = inlineControlStatementSource(
-    scalarWrite && !rewrittenStatement.includes('write_trace_event_json')
+    scalarWrite && !rewrittenStatement.includes('emit_serialized_value_event')
       ? `${rewrittenStatement}\n${scalarWrite}`
       : rewrittenStatement
   );
@@ -9905,9 +10291,8 @@ function buildOpsClassDriverSource(userCode, className, inputs, options = {}) {
       argNames.push(localName);
     });
     if (options.tracing === true) {
-      const callEventPrefix = `{"kind":"call","line":${signature.line},"function":${jsonStringLiteral(operation)},"args":`;
       lines.push(`  std::string __tc_args_json_${index} = std::string("{") + ${buildTraceArgsJsonExpression(signature, (_parameter, argIndex) => `__tc_op_${index}_arg_${argIndex}`, aliases)} + "}";`);
-      lines.push(`  tracecode::write_trace_event_json(std::string(${cppStringLiteral(callEventPrefix)}) + __tc_args_json_${index} + "}", ${signature.line});`);
+      lines.push(`  tracecode::emit_serialized_call_event(${signature.line}, ${cppStringLiteral(operation)}, __tc_args_json_${index});`);
     }
     if (normalizeCppType(signature.returnType, aliases) === 'void' || isNullCppReturnType(signature.returnType, aliases)) {
       lines.push(`  __tc_instance.${signatureOperation}(${argNames.join(', ')});`);
@@ -10630,8 +11015,6 @@ function buildDriverSource(userCode, functionName, inputs, options = {}) {
     argumentNames.push(localName);
   });
 
-  const callEventPrefix = `{"kind":"call","line":${signature.line},"function":${jsonStringLiteral(functionName)},"args":`;
-  const returnEventPrefix = `{"kind":"return","line":${signature.line},"function":${jsonStringLiteral(functionName)},"value":`;
   const returnsNull = isNullCppReturnType(driverSignature.returnType, aliases);
   const returnsVoid = normalizeCppType(localCppType(driverSignature.returnType), aliases) === 'void';
   const noStoredResult = returnsVoid || returnsNull;
@@ -10644,18 +11027,18 @@ function buildDriverSource(userCode, functionName, inputs, options = {}) {
   const traceCall = traced && hasSingleLineFunctionBody
     ? [
         `  std::string __tc_args_json = std::string("{") + ${buildTraceArgsJsonExpression(driverSignature, (_parameter, index) => `__tc_arg_${index}`, aliases)} + "}";`,
-        `  tracecode::write_trace_event_json(std::string(${cppStringLiteral(callEventPrefix)}) + __tc_args_json + "}", ${signature.line});`,
+        `  tracecode::emit_serialized_call_event(${signature.line}, ${cppStringLiteral(functionName)}, __tc_args_json);`,
         `  tracecode::emit_line(${signature.line}, ${cppStringLiteral(functionName)});`,
       ].join('\n')
     : '';
   const traceReturn = traced && hasSingleLineFunctionBody
     ? noStoredResult
       ? returnsNull
-        ? `  tracecode::write_trace_event_json(std::string(${cppStringLiteral(`${returnEventPrefix}null}`)}), ${signature.line});`
+        ? `  tracecode::emit_serialized_return_event(${signature.line}, ${cppStringLiteral(functionName)}, "null");`
         : voidOutputParameter
-        ? `  tracecode::write_trace_event_json(std::string(${cppStringLiteral(returnEventPrefix)}) + ${cppJsonExpressionForValue('__tc_arg_0', voidOutputParameter.type, userCode)} + "}", ${signature.line});`
-        : `  tracecode::write_trace_event_json(std::string(${cppStringLiteral(`${returnEventPrefix}null}`)}), ${signature.line});`
-      : `  tracecode::write_trace_event_json(std::string(${cppStringLiteral(returnEventPrefix)}) + ${cppJsonExpressionForValue('__tc_result', driverSignature.returnType, userCode)} + "}", ${signature.line});`
+        ? `  tracecode::emit_serialized_return_event(${signature.line}, ${cppStringLiteral(functionName)}, ${cppJsonExpressionForValue('__tc_arg_0', voidOutputParameter.type, userCode)});`
+        : `  tracecode::emit_serialized_return_event(${signature.line}, ${cppStringLiteral(functionName)}, "null");`
+      : `  tracecode::emit_serialized_return_event(${signature.line}, ${cppStringLiteral(functionName)}, ${cppJsonExpressionForValue('__tc_result', driverSignature.returnType, userCode)});`
     : '';
   const resultJsonExpression = noStoredResult
     ? returnsNull
@@ -10738,7 +11121,7 @@ function buildBatchDriverSource(userCode, functionName, inputBatch, options = {}
   const callExpression = `${usesSolutionClass ? `solution.${functionName}` : functionName}(${argumentNames.join(', ')})`;
   const invokeAndStore = noStoredResult ? `    ${callExpression};` : `    auto __tc_result = ${callExpression};`;
   const traceCaseSetup = traced
-    ? `    ${configureTraceBudgetCall(options)}\n    tracecode::write_trace_event_json(std::string(${cppStringLiteral(`{"kind":"call","line":1,"function":"${CPP_BATCH_TRACE_CASE_MARKER_FUNCTION}","args":{"index":`)}) + std::to_string(__tc_case_index) + "}}", 1);`
+    ? `    ${configureTraceBudgetCall(options)}\n    tracecode::emit_serialized_call_event(1, ${cppStringLiteral(CPP_BATCH_TRACE_CASE_MARKER_FUNCTION)}, std::string("{\\\"index\\\":") + std::to_string(__tc_case_index) + "}");`
     : '';
 
 return `${buildGeneratedIncludes(userCode, driverSignature)}
@@ -11033,10 +11416,9 @@ function buildPreparedOpsClassDriverSource(userCode, className, options = {}) {
       lines.push(`    ${keyword} (__tc_ctor_args.array_values.size() == ${signature.parameters.length}) {`);
       lines.push(...argLines.map((line) => `      ${line}`));
       if (options.tracing === true) {
-        const callEventPrefix = `{"kind":"call","line":${signature.line},"function":${jsonStringLiteral(signature.name)},"args":`;
         const argsExpression = buildTraceArgsJsonExpression(signature, (_parameter, argIndex) => argNames[argIndex], aliases);
         lines.push(`      std::string __tc_ctor_args_json_${signature.line}_${signature.bodyLine} = std::string("{") + ${argsExpression} + "}";`);
-        lines.push(`      tracecode::write_trace_event_json(std::string(${cppStringLiteral(callEventPrefix)}) + __tc_ctor_args_json_${signature.line}_${signature.bodyLine} + "}", ${signature.line});`);
+        lines.push(`      tracecode::emit_serialized_call_event(${signature.line}, ${cppStringLiteral(signature.name)}, __tc_ctor_args_json_${signature.line}_${signature.bodyLine});`);
       }
       const ctorCall = argNames.length > 0
         ? `std::make_unique<${className}>(${argNames.join(', ')})`
@@ -11071,10 +11453,9 @@ function buildPreparedOpsClassDriverSource(userCode, className, options = {}) {
       lines.push(`    ${keyword} (__tc_op_args.array_values.size() == ${signature.parameters.length}) {`);
       lines.push(...argLines.map((line) => `      ${line}`));
       if (options.tracing === true) {
-        const callEventPrefix = `{"kind":"call","line":${signature.line},"function":${jsonStringLiteral(signature.name)},"args":`;
         const argsExpression = buildTraceArgsJsonExpression(signature, (_parameter, argIndex) => argNames[argIndex], aliases);
         lines.push(`      std::string __tc_args_json_${signature.line}_${signature.bodyLine} = std::string("{") + ${argsExpression} + "}";`);
-        lines.push(`      tracecode::write_trace_event_json(std::string(${cppStringLiteral(callEventPrefix)}) + __tc_args_json_${signature.line}_${signature.bodyLine} + "}", ${signature.line});`);
+        lines.push(`      tracecode::emit_serialized_call_event(${signature.line}, ${cppStringLiteral(signature.name)}, __tc_args_json_${signature.line}_${signature.bodyLine});`);
       }
       if (returnIsVoid) {
         lines.push(`      __tc_instance->${signature.name}(${argNames.join(', ')});`);
@@ -11110,7 +11491,7 @@ function buildPreparedOpsClassDriverSource(userCode, className, options = {}) {
   lines.push('    }');
   lines.push('    if (__tc_case_index > 0) __tc_results += ",";');
   if (options.tracing === true) {
-    lines.push(`    tracecode::write_trace_event_json(std::string(${cppStringLiteral(`{"kind":"call","line":1,"function":"${CPP_BATCH_TRACE_CASE_MARKER_FUNCTION}","args":{"index":`)}) + std::to_string(__tc_case_index) + "}}", 1);`);
+    lines.push(`    tracecode::emit_serialized_call_event(1, ${cppStringLiteral(CPP_BATCH_TRACE_CASE_MARKER_FUNCTION)}, std::string("{\\\"index\\\":") + std::to_string(__tc_case_index) + "}");`);
   }
   lines.push('    std::vector<std::string> __tc_case_outputs;');
   lines.push(`    std::unique_ptr<${className}> __tc_instance;`);
@@ -11217,11 +11598,11 @@ function buildScriptDriverSource(userCode, options = {}) {
   const traceCall = options.tracing === true
     ? [
         `  ${configureTraceBudgetCall(options)}`,
-        `  tracecode::write_trace_event_json(std::string(${cppStringLiteral('{"kind":"call","line":1,"function":"<script>","args":{}}')}), 1);`,
+        `  tracecode::emit_serialized_call_event(1, ${cppStringLiteral('<script>')}, "{}");`,
       ].join('\n')
     : '';
   const traceReturn = options.tracing === true
-    ? `  tracecode::write_trace_event_json(std::string(${cppStringLiteral('{"kind":"return","line":1,"function":"<script>","value":')}) + tracecode::to_json(__tc_result) + "}", 1);`
+    ? `  tracecode::emit_serialized_return_event(1, ${cppStringLiteral('<script>')}, tracecode::to_json(__tc_result));`
     : '';
 
 return `${buildGeneratedIncludes(userCode, { parameters: [] })}
@@ -12060,6 +12441,68 @@ const CPP_KERNEL_WAIT_HEADER_FILENAME = 'sys/wait.h';
 const CPP_KERNEL_CONTROL_HEADER_FILENAME = 'tracekernel.h';
 const CPP_KERNEL_CONTROL_SHIM_FILENAME = 'tracekernel.c';
 
+const TRACEKERNEL_STATVFS_SOURCE = String.raw`
+#include <errno.h>
+#include <string.h>
+#include <sys/stat.h>
+#include <sys/statvfs.h>
+
+#ifdef __cplusplus
+extern "C" {
+#endif
+
+static void tracecode_fill_statvfs(struct statvfs *out) {
+  memset(out, 0, sizeof(*out));
+  out->f_bsize = 4096;
+  out->f_frsize = 4096;
+  out->f_blocks = 1048576;
+  out->f_bfree = 1048000;
+  out->f_bavail = 1048000;
+  out->f_files = 1000000;
+  out->f_ffree = 999000;
+  out->f_favail = 999000;
+  out->f_fsid = 0x74726365UL;
+  out->f_namemax = 255;
+  out->f_type = 0x74726365U;
+}
+
+#ifdef __cplusplus
+extern "C"
+#endif
+int __wrap_statvfs(const char *path, struct statvfs *out) {
+  struct stat st;
+  if (!path || !out) {
+    errno = EINVAL;
+    return -1;
+  }
+  if (stat(path, &st) != 0) {
+    return -1;
+  }
+  tracecode_fill_statvfs(out);
+  return 0;
+}
+
+#ifdef __cplusplus
+extern "C"
+#endif
+int __wrap_fstatvfs(int fd, struct statvfs *out) {
+  struct stat st;
+  if (!out) {
+    errno = EINVAL;
+    return -1;
+  }
+  if (fstat(fd, &st) != 0) {
+    return -1;
+  }
+  tracecode_fill_statvfs(out);
+  return 0;
+}
+
+#ifdef __cplusplus
+}
+#endif
+`;
+
 // Declarations wasi-libc's <sys/socket.h> is missing; force-included into
 // every project TU so standard POSIX code compiles unchanged.
 const CPP_KERNEL_SOCKET_HEADER_SOURCE = String.raw`#ifndef TRACECODE_SOCKET_DECLARATIONS
@@ -12330,11 +12773,11 @@ const CPP_KERNEL_SPAWN_HEADER_SOURCE = String.raw`#ifndef _SPAWN_H
 #include <fcntl.h>
 #include <sys/types.h>
 
-#if !defined(O_CLOEXEC) || O_CLOEXEC == 0
+#ifndef O_CLOEXEC
 #undef O_CLOEXEC
 #define O_CLOEXEC 0x80000
 #endif
-#if !defined(O_NONBLOCK) || O_NONBLOCK == 0
+#ifndef O_NONBLOCK
 #undef O_NONBLOCK
 #define O_NONBLOCK 0x800
 #endif
@@ -13183,114 +13626,15 @@ int tracekernel_watchdog_get_status(struct tracekernel_watchdog_status* status) 
 }
 `;
 
-function cppProjectHasFileNamed(files, filename) {
-  return files.some((file) => {
-    const path = String(file?.path || '').replace(/\\/g, '/');
-    return path === filename || path.endsWith(`/${filename}`);
-  });
-}
-
-function projectWithCppKernelShims(project) {
-  const files = Array.isArray(project?.files) ? project.files : [];
-  const additions = [];
-  if (!cppProjectHasFileNamed(files, CPP_KERNEL_SOCKET_HEADER_FILENAME)) {
-    additions.push({ path: CPP_KERNEL_SOCKET_HEADER_FILENAME, contents: CPP_KERNEL_SOCKET_HEADER_SOURCE });
-  }
-  if (!cppProjectHasFileNamed(files, CPP_KERNEL_SOCKET_SHIM_FILENAME)) {
-    additions.push({ path: CPP_KERNEL_SOCKET_SHIM_FILENAME, contents: CPP_KERNEL_SOCKET_SHIM_SOURCE });
-  }
-  if (!cppProjectHasFileNamed(files, CPP_KERNEL_NETDB_HEADER_FILENAME)) {
-    additions.push({ path: CPP_KERNEL_NETDB_HEADER_FILENAME, contents: CPP_KERNEL_NETDB_HEADER_SOURCE });
-  }
-  if (!cppProjectHasFileNamed(files, CPP_KERNEL_PROCESS_SHIM_FILENAME)) {
-    additions.push({ path: CPP_KERNEL_PROCESS_SHIM_FILENAME, contents: CPP_KERNEL_PROCESS_SHIM_SOURCE });
-  }
-  if (!cppProjectHasFileNamed(files, CPP_KERNEL_PROCESS_HEADER_FILENAME)) {
-    additions.push({ path: CPP_KERNEL_PROCESS_HEADER_FILENAME, contents: CPP_KERNEL_PROCESS_HEADER_SOURCE });
-  }
-  if (!cppProjectHasFileNamed(files, CPP_KERNEL_POLL_HEADER_FILENAME)) {
-    additions.push({ path: CPP_KERNEL_POLL_HEADER_FILENAME, contents: CPP_KERNEL_POLL_HEADER_SOURCE });
-  }
-  if (!cppProjectHasFileNamed(files, CPP_KERNEL_SELECT_HEADER_FILENAME)) {
-    additions.push({ path: CPP_KERNEL_SELECT_HEADER_FILENAME, contents: CPP_KERNEL_SELECT_HEADER_SOURCE });
-  }
-  if (!cppProjectHasFileNamed(files, CPP_KERNEL_IOCTL_HEADER_FILENAME)) {
-    additions.push({ path: CPP_KERNEL_IOCTL_HEADER_FILENAME, contents: CPP_KERNEL_IOCTL_HEADER_SOURCE });
-  }
-  if (!cppProjectHasFileNamed(files, CPP_KERNEL_SPAWN_HEADER_FILENAME)) {
-    additions.push({ path: CPP_KERNEL_SPAWN_HEADER_FILENAME, contents: CPP_KERNEL_SPAWN_HEADER_SOURCE });
-  }
-  if (!cppProjectHasFileNamed(files, CPP_KERNEL_WAIT_HEADER_FILENAME)) {
-    additions.push({ path: CPP_KERNEL_WAIT_HEADER_FILENAME, contents: CPP_KERNEL_WAIT_HEADER_SOURCE });
-  }
-  if (!cppProjectHasFileNamed(files, CPP_KERNEL_CONTROL_HEADER_FILENAME)) {
-    additions.push({ path: CPP_KERNEL_CONTROL_HEADER_FILENAME, contents: CPP_KERNEL_CONTROL_HEADER_SOURCE });
-  }
-  if (!cppProjectHasFileNamed(files, CPP_KERNEL_CONTROL_SHIM_FILENAME)) {
-    additions.push({ path: CPP_KERNEL_CONTROL_SHIM_FILENAME, contents: CPP_KERNEL_CONTROL_SHIM_SOURCE });
-  }
-  if (additions.length === 0) return project;
-  return {
-    ...(project && typeof project === 'object' ? project : {}),
-    files: [...files, ...additions],
-  };
-}
-
-function cppProjectArgsWithKernelShims(args, project) {
-  const files = Array.isArray(project?.files) ? project.files : [];
-  const injected = [];
-  if (!cppProjectHasFileNamed(files, CPP_KERNEL_SOCKET_HEADER_FILENAME)) {
-    injected.push('-include', CPP_KERNEL_SOCKET_HEADER_FILENAME);
-  }
-  if (!cppProjectHasFileNamed(files, CPP_KERNEL_PROCESS_HEADER_FILENAME)) {
-    injected.push('-include', CPP_KERNEL_PROCESS_HEADER_FILENAME);
-  }
-  if (!cppProjectHasFileNamed(files, CPP_KERNEL_IOCTL_HEADER_FILENAME)) {
-    injected.push('-include', CPP_KERNEL_IOCTL_HEADER_FILENAME);
-  }
-  injected.push('-idirafter', '.');
-  const linking = !args.some((arg) => arg === '-c' || arg === '-S' || arg === '-E');
-  if (linking && !cppProjectHasFileNamed(files, CPP_KERNEL_SOCKET_SHIM_FILENAME)) {
-    injected.push(CPP_KERNEL_SOCKET_SHIM_FILENAME);
-  }
-  if (linking && !cppProjectHasFileNamed(files, CPP_KERNEL_PROCESS_SHIM_FILENAME)) {
-    injected.push(CPP_KERNEL_PROCESS_SHIM_FILENAME);
-  }
-  if (linking && !cppProjectHasFileNamed(files, CPP_KERNEL_CONTROL_SHIM_FILENAME)) {
-    injected.push(CPP_KERNEL_CONTROL_SHIM_FILENAME);
-  }
-  return [...injected, ...args];
-}
-
-function compileProjectOutsideMainWorker(request) {
-  const payload = {
-    assets: configuredAssets,
-    project: projectWithCppKernelShims(request.project),
-    cwd: requestCwdRelative(request),
-    args: cppProjectArgsWithKernelShims(projectCompileArgs(request), request.project),
-    compilerCommand: projectCompilerCommand(request),
-    sourceInput: request?.code || '',
-    includePaths: projectCompileIncludePaths(request),
-    workspaceOutputPath: projectCompileWorkspaceOutputPath(request),
-    standard: CPP_STANDARD,
-    stackSize: CPP_PROGRAM_STACK_SIZE,
-  };
-  if (canUseExternalCompilerHost()) {
-    return requestExternalCompilePayload(payload).then((result) => (
-      result?.success === true && !result.outputPath
-        ? { ...result, outputPath: payload.workspaceOutputPath }
-        : result
-    ));
-  }
-  return runCompilerWorkerPayload(payload);
-}
-
 function projectCompilerCommand(request) {
   const command = String(request?.options?.compilerCommand || 'clang++');
   return command === 'clang' || command === 'gcc' || command === 'cc' ? 'clang' : 'clang++';
 }
 
 function projectPathBytes(file) {
+  if (file?.contents instanceof Uint8Array) {
+    return file.contents;
+  }
   return file?.encoding === 'base64'
     ? decodeBase64(String(file.contents || ''))
     : encodeUtf8(String(file?.contents || ''));
@@ -13450,52 +13794,6 @@ function projectPathRelativeToWorkspace(request, value) {
   return relativeProjectOperandPath(cwd ? `${cwd}/${text}` : text, request);
 }
 
-function projectCompilerPathArg(request, value) {
-  const text = String(value || '');
-  const path = projectPathRelativeToWorkspace(request, text);
-  const cwd = requestCwdRelative(request);
-  if (cwd && (path === cwd || path.startsWith(`${cwd}/`))) {
-    return path === cwd ? '.' : path.slice(cwd.length + 1);
-  }
-  return path;
-}
-
-function projectCompilerIncludePathArg(request, value) {
-  const text = String(value || '');
-  if (!text) return text;
-  projectPathRelativeToWorkspace(request, text);
-  return '.';
-}
-
-function projectCompilerLibraryPathArg(request, value) {
-  const text = String(value || '');
-  if (!text) return text;
-  projectPathRelativeToWorkspace(request, text);
-  return '.';
-}
-
-function projectCompilerSourcePathArg(request, value) {
-  const text = String(value || '');
-  if (text && !text.startsWith('/')) {
-    projectPathRelativeToWorkspace(request, text);
-    if (text.includes('../')) return basename(text);
-    return text;
-  }
-  return projectCompilerPathArg(request, text);
-}
-
-function projectCompilerOutputPathArg(request, value) {
-  const mapped = projectCompilerPathArg(request, value);
-  const index = mapped.lastIndexOf('/');
-  return index >= 0 ? mapped.slice(index + 1) || 'a.out' : mapped || 'a.out';
-}
-
-function projectCompilerLinkerArtifactPathArg(request, value) {
-  const mapped = projectCompilerPathArg(request, value);
-  const index = mapped.lastIndexOf('/');
-  return index >= 0 ? mapped.slice(index + 1) || mapped : mapped;
-}
-
 function projectEnvPathList(request, name) {
   const raw = request?.env && typeof request.env[name] === 'string' ? request.env[name] : '';
   return raw
@@ -13518,136 +13816,6 @@ function projectCompileEnvIncludePaths(request) {
 
 function projectCompileEnvLibraryPaths(request) {
   return projectEnvPathList(request, 'LIBRARY_PATH');
-}
-
-function projectCompileIncludePaths(request) {
-  const args = Array.isArray(request?.args) && request.args.length > 0
-    ? request.args.map(String)
-    : [request?.scriptPath || 'main.cpp'];
-  const includePaths = projectCompileEnvIncludePaths(request).map((path) => resolveProjectRequestPath(request, path, path));
-  for (let index = 0; index < args.length; index += 1) {
-    const arg = args[index];
-    if (arg === '-I' || arg === '-isystem') {
-      const value = args[index + 1];
-      if (typeof value === 'string') {
-        includePaths.push(resolveProjectRequestPath(request, value, value));
-        index += 1;
-      }
-      continue;
-    }
-    if (arg.startsWith('-I') && arg.length > 2 && !arg.startsWith('-include')) {
-      includePaths.push(resolveProjectRequestPath(request, arg.slice(2), arg.slice(2)));
-      continue;
-    }
-    if (arg.startsWith('-isystem') && arg.length > '-isystem'.length) {
-      includePaths.push(resolveProjectRequestPath(request, arg.slice('-isystem'.length), arg.slice('-isystem'.length)));
-    }
-  }
-  return [...new Set(includePaths.filter(Boolean))];
-}
-
-function projectCompileWorkspaceOutputPath(request) {
-  const args = Array.isArray(request?.args) && request.args.length > 0
-    ? request.args.map(String)
-    : [request?.scriptPath || 'main.cpp'];
-  const outputIndex = args.indexOf('-o');
-  const cwd = requestCwdRelative(request);
-  if (outputIndex < 0) {
-    const inlineOutputArg = args.find((arg) => arg.startsWith('-o') && arg.length > 2);
-    if (inlineOutputArg) {
-      const inlineValue = inlineOutputArg.slice(2);
-      if (inlineValue.startsWith('/')) {
-        const stripped = stripProjectWorkspaceRoot(request, inlineValue);
-        if (stripped === null) throw new Error(`Project path escapes workspace: ${inlineValue}`);
-        return relativeProjectPath(stripped, request);
-      }
-      return relativeProjectOperandPath(cwd ? `${cwd}/${inlineValue}` : inlineValue, request);
-    }
-    return relativeProjectOperandPath(cwd ? `${cwd}/a.out` : 'a.out', request);
-  }
-  const value = args[outputIndex + 1] || 'a.out';
-  if (value.startsWith('/')) {
-    const stripped = stripProjectWorkspaceRoot(request, value);
-    if (stripped === null) throw new Error(`Project path escapes workspace: ${value}`);
-    return relativeProjectPath(stripped, request);
-  }
-  return relativeProjectOperandPath(cwd ? `${cwd}/${value}` : value, request);
-}
-
-function projectCompileArgs(request) {
-  const args = Array.isArray(request?.args) && request.args.length > 0
-    ? request.args.map(String)
-    : [request?.scriptPath || 'main.cpp'];
-  const cwd = requestCwdRelative(request);
-  const mapped = [];
-  for (const path of projectCompileEnvIncludePaths(request)) {
-    mapped.push('-I', projectCompilerIncludePathArg(request, path));
-  }
-  for (const path of projectCompileEnvLibraryPaths(request)) {
-    mapped.push('-L', projectCompilerLibraryPathArg(request, path));
-  }
-  for (let index = 0; index < args.length; index += 1) {
-    const arg = args[index];
-    if (arg === '-o') {
-      mapped.push(arg);
-      const value = args[index + 1];
-      if (typeof value === 'string') {
-        mapped.push(projectCompilerOutputPathArg(request, value));
-        index += 1;
-      }
-      continue;
-    }
-    if (arg === '-I' || arg === '-isystem') {
-      mapped.push(arg);
-      const value = args[index + 1];
-      if (typeof value === 'string') {
-        mapped.push(projectCompilerIncludePathArg(request, value));
-        index += 1;
-      }
-      continue;
-    }
-    if (arg === '-L') {
-      mapped.push(arg);
-      const value = args[index + 1];
-      if (typeof value === 'string') {
-        mapped.push(projectCompilerLibraryPathArg(request, value));
-        index += 1;
-      }
-      continue;
-    }
-    if (arg.startsWith('-I') && arg.length > 2 && !arg.startsWith('-include')) {
-      mapped.push('-I.');
-      projectPathRelativeToWorkspace(request, arg.slice(2));
-      continue;
-    }
-    if (arg.startsWith('-L') && arg.length > 2) {
-      mapped.push('-L.');
-      projectPathRelativeToWorkspace(request, arg.slice(2));
-      continue;
-    }
-    if (arg.startsWith('-isystem') && arg.length > '-isystem'.length) {
-      mapped.push('-isystem.');
-      projectPathRelativeToWorkspace(request, arg.slice('-isystem'.length));
-      continue;
-    }
-    if (arg.startsWith('-o') && arg.length > 2) {
-      mapped.push('-o', projectCompilerOutputPathArg(request, arg.slice(2)));
-      continue;
-    }
-    if (/^(?:[^-].*\.(?:c|cc|cpp|cxx|h|hpp|hh))$/i.test(arg)) {
-      mapped.push(projectCompilerSourcePathArg(request, arg));
-      continue;
-    }
-    if (/^\/.*\.(?:a|lib|o|obj)$/i.test(arg) && stripProjectWorkspaceRoot(request, arg) !== null) {
-      mapped.push(projectCompilerLinkerArtifactPathArg(request, arg));
-      continue;
-    }
-    mapped.push(arg);
-  }
-  if (!mapped.includes('-o')) {
-    mapped.push('-o', relativeProjectOperandPath(cwd ? `${cwd}/a.out` : 'a.out'));
-  }
-  return mapped;
 }
 
 function createProjectRuntimeFs(project) {
@@ -13864,6 +14032,417 @@ function emitProjectResultOutputEvents(events, result) {
   events.applyResultOutputBudget?.(result);
 }
 
+let traceccCompilerPromise = null;
+const traceccCompilerAssetPromises = new Map();
+
+async function fetchPinnedTraceccAssetResponse(name, url) {
+  const { integrity } = assertTrustedCppAsset(name, url);
+  if (!integrity) {
+    throw new Error(
+      `${name} requires an exact SHA-256 entry in the TraceCC toolchain manifest.`
+    );
+  }
+  return fetchTrustedCppAssetResponse(name, url);
+}
+
+async function loadTraceccCompiler(request) {
+  if (traceccCompilerPromise) return traceccCompilerPromise;
+  traceccCompilerPromise = (async () => {
+    const [
+      compilerResponse,
+      resourceResponse,
+    ] = await Promise.all([
+      fetchPinnedTraceccAssetResponse(
+        'TraceCC compiler',
+        String(request?.traceccCompilerUrl || '')
+      ),
+      fetchPinnedTraceccAssetResponse(
+        'TraceCC resources',
+        String(request?.traceccResourcesUrl || '')
+      ),
+    ]);
+    if (!compilerResponse.ok) {
+      throw new Error(
+        `TraceCC compiler fetch failed (${compilerResponse.status} ${compilerResponse.statusText})`
+      );
+    }
+    if (!resourceResponse.ok) {
+      throw new Error(
+        `TraceCC resource fetch failed (${resourceResponse.status} ${resourceResponse.statusText})`
+      );
+    }
+    const compilerBytes =
+      Number(compilerResponse.headers.get('content-length')) || 0;
+    const compilerContentType = String(
+      compilerResponse.headers.get('content-type') || ''
+    )
+      .split(';', 1)[0]
+      .trim()
+      .toLowerCase();
+    const modulePromise =
+      request?.compileStreaming !== false &&
+      typeof WebAssembly.compileStreaming === 'function' &&
+      compilerContentType === 'application/wasm'
+        ? WebAssembly.compileStreaming(compilerResponse)
+        : compilerResponse
+            .arrayBuffer()
+            .then((buffer) => WebAssembly.compile(buffer));
+    const [
+      module,
+      resourceBuffer,
+    ] = await Promise.all([
+      modulePromise,
+      resourceResponse.arrayBuffer(),
+    ]);
+    const memoryImports = WebAssembly.Module.imports(module).filter(
+      (item) => item.kind === 'memory'
+    );
+    if (memoryImports.length !== 0) {
+      throw new Error(
+        'The TraceCC reactor must own its linear memory.'
+      );
+    }
+    const fs = new InMemoryFileSystem({
+      workspaceRoots: ['/workspace'],
+    });
+    fs.addDirectory('/usr');
+    fs.addDirectory('/tmp');
+    fs.addDirectory('/workspace');
+    for (const entry of parseTarEntries(resourceBuffer, {
+      copyFileBytes: false,
+    })) {
+      const path = normalizePath(`/usr${entry.path}`);
+      if (entry.type === 'dir') {
+        fs.addDirectory(path);
+      } else if (entry.type === 'file') {
+        fs.addImmutableFileView(path, entry.contents);
+      }
+    }
+    // The entire immutable sysroot is one trusted compiler capability.
+    fs.readOnlyFiles = new Set(['/usr']);
+    return {
+      module,
+      linkerModule: module,
+      fsTemplate: fs,
+      compilerBytes,
+      linkerBytes: compilerBytes,
+      resourceBytes: resourceBuffer.byteLength,
+      reactorPromise: null,
+    };
+  })();
+  traceccCompilerPromise.catch(() => {
+    traceccCompilerPromise = null;
+  });
+  return traceccCompilerPromise;
+}
+
+function loadTraceccCompilerAsset(url, label) {
+  const href = String(url || '');
+  if (!href) return Promise.resolve(null);
+  let pending = traceccCompilerAssetPromises.get(href);
+  if (!pending) {
+    pending = fetchPinnedTraceccAssetResponse(
+      `TraceCC ${label}`,
+      href
+    ).then(async (response) => {
+      if (!response.ok) {
+        throw new Error(
+          `TraceCC ${label} fetch failed (${response.status} ${response.statusText})`
+        );
+      }
+      return new Uint8Array(await response.arrayBuffer());
+    });
+    traceccCompilerAssetPromises.set(href, pending);
+    pending.catch(() => {
+      if (traceccCompilerAssetPromises.get(href) === pending) {
+        traceccCompilerAssetPromises.delete(href);
+      }
+    });
+  }
+  return pending;
+}
+
+async function loadTraceccCompilationAssets(request) {
+  const definitions = [
+    {
+      key: 'pch',
+      label: 'PCH',
+      url: request?.traceccPchUrl,
+      path:
+        request?.traceccPchPath ||
+        '/tracecc-assets/tracecode_pch.hpp.pch',
+    },
+    {
+      key: 'runtimeObject',
+      label: 'runtime object',
+      url: request?.traceccRuntimeObjectUrl,
+      path:
+        request?.traceccRuntimeObjectPath ||
+        '/tracecc-assets/tracecode_pch.o',
+    },
+    {
+      key: 'pchSource',
+      label: 'PCH source',
+      url: request?.traceccPchSourceUrl,
+      path: request?.traceccPchSourcePath || '/tracecode_pch.hpp',
+    },
+    {
+      key: 'runtimeHeader',
+      label: 'runtime header',
+      url: request?.traceccRuntimeHeaderUrl,
+      path:
+        request?.traceccRuntimeHeaderPath ||
+        '/tracecode_runtime.hpp',
+    },
+  ];
+  const entries = await Promise.all(
+    definitions.map(async (definition) => ({
+      ...definition,
+      path: normalizePath(definition.path),
+      bytes: await loadTraceccCompilerAsset(
+        definition.url,
+        definition.label
+      ),
+    }))
+  );
+  return Object.fromEntries(
+    entries.map((entry) => [entry.key, entry])
+  );
+}
+
+function mountTraceccCompilationAssets(fs, assets) {
+  const mountedRoots = new Set(fs.readOnlyFiles);
+  for (const asset of Object.values(assets)) {
+    if (!(asset?.bytes instanceof Uint8Array)) continue;
+    fs.addImmutableFileView(asset.path, asset.bytes);
+    mountedRoots.add(
+      asset.path.startsWith('/tracecc-assets/')
+        ? '/tracecc-assets'
+        : asset.path
+    );
+  }
+  fs.readOnlyFiles = mountedRoots;
+}
+
+function forkTraceccCompilerFileSystem(template) {
+  const fs = new InMemoryFileSystem({
+    workspaceRoots: template.workspaceRoots,
+  });
+  // The toolchain image, PCH, and runtime object are immutable trusted
+  // capabilities. A shallow map copy gives each compilation a clean namespace
+  // without duplicating their backing buffers.
+  fs.files = new Map(template.files);
+  fs.dirs = new Set(template.dirs);
+  fs.symlinks = new Map(template.symlinks);
+  fs.metadata = new Map(template.metadata);
+  fs.readOnlyFiles = new Set(template.readOnlyFiles);
+  // These caches admit only paths below immutable roots. Sharing them preserves
+  // warm path resolution without allowing a prior mutable workspace to affect
+  // the next compilation.
+  fs.immutableReadlinkCache = template.immutableReadlinkCache;
+  fs.immutableResolvedPathCache =
+    template.immutableResolvedPathCache;
+  return fs;
+}
+
+function loadTraceccReactor(toolchain, request) {
+  if (toolchain.reactorPromise) return toolchain.reactorPromise;
+  const initializationFs = forkTraceccCompilerFileSystem(
+    toolchain.fsTemplate
+  );
+  const module = toolchain.module;
+  toolchain.reactorPromise = instantiateWasiReactor(module, {
+    fs: initializationFs,
+    cwd: '/',
+    env: request?.env || { USER: 'tracecode' },
+  }).then((reactor) => {
+    toolchain.module = null;
+    toolchain.linkerModule = null;
+    return reactor;
+  });
+  toolchain.reactorPromise.catch(() => {
+    toolchain.reactorPromise = null;
+  });
+  return toolchain.reactorPromise;
+}
+
+async function handleTraceccCompile(request) {
+  const loadStartedAt = now();
+  const toolchain = await loadTraceccCompiler(request);
+  const loadMs = elapsedMs(loadStartedAt);
+  const fs = forkTraceccCompilerFileSystem(toolchain.fsTemplate);
+  const assetLoadStartedAt = now();
+  const compilationAssets = await loadTraceccCompilationAssets(request);
+  mountTraceccCompilationAssets(fs, compilationAssets);
+  const assetLoadMs = elapsedMs(assetLoadStartedAt);
+  const pchBytes = compilationAssets.pch?.bytes?.byteLength || 0;
+  const runtimeObjectBytes =
+    compilationAssets.runtimeObject?.bytes?.byteLength || 0;
+  if (request?.loadOnly === true) {
+    await loadTraceccReactor(toolchain, request);
+    return {
+      success: true,
+      compilerBytes: toolchain.compilerBytes,
+      linkerBytes: toolchain.linkerBytes,
+      resourceBytes: toolchain.resourceBytes,
+      pchBytes,
+      runtimeObjectBytes,
+      timings: {
+        loadMs,
+        assetLoadMs,
+        totalMs: loadMs + assetLoadMs,
+      },
+    };
+  }
+  const projectFiles = request?.project?.files || [];
+  for (const file of request?.trustedFiles || []) {
+    const path = normalizePath(String(file?.path || ''));
+    if (!path.startsWith('/')) {
+      throw new Error('TraceCC trusted compiler files require absolute paths.');
+    }
+    fs.addImmutableFileView(path, projectPathBytes(file));
+  }
+  for (const file of projectFiles) {
+    const path = normalizePath(
+      file.path?.startsWith('/') ? file.path : `/workspace/${file.path || ''}`
+    );
+    fs.addFile(path, projectPathBytes(file), file);
+  }
+  const requestedOutputPath = normalizePath(
+    request?.outputPath || '/workspace/a.out'
+  );
+  const requestedOutputDirectory = dirname(requestedOutputPath);
+  if (requestedOutputDirectory && requestedOutputDirectory !== '/') {
+    fs.addDirectory(requestedOutputDirectory);
+  }
+  if (Array.isArray(request?.directCommands)) {
+    for (const command of request.directCommands) {
+      if (!Array.isArray(command) || command.length < 3) continue;
+      const commandName = String(command[0] || '');
+      if (commandName !== 'tracecc-c' && commandName !== 'tracecc-cxx') {
+        continue;
+      }
+      fs.addDirectory(dirname(normalizePath(String(command[2]))));
+    }
+  }
+  const requestedArgs = Array.isArray(request?.args)
+    ? request.args.map(String)
+    : [];
+  if (requestedArgs.length === 0) {
+    throw new Error('TraceCC compilation requires a compiler command.');
+  }
+
+  const runToolCommand = async (args) => {
+    const startedAt = now();
+    const wasiOptions = {
+      cwd: normalizePath(request?.traceccCwd || '/'),
+      env: request?.env || { USER: 'tracecode' },
+      collectWasiMetrics: request?.collectWasiMetrics === true,
+      bufferedFileWrites: request?.bufferedFileWrites === true,
+      nonSeekableOutputPaths:
+        Array.isArray(request?.nonSeekableOutputPaths)
+          ? request.nonSeekableOutputPaths
+          : [],
+    };
+    const reactor = await loadTraceccReactor(toolchain, request);
+    const result = await runWasiReactor(reactor, args, fs, wasiOptions);
+    if (!result.reactorReusable) toolchain.reactorPromise = null;
+    return {
+      ...result,
+      elapsedMs: elapsedMs(startedAt),
+    };
+  };
+
+  const planMs = 0;
+  let plan;
+  if (Array.isArray(request?.directCommands)) {
+    plan = request.directCommands.map((command) => {
+      if (!Array.isArray(command) || command.length === 0) {
+        throw new Error('TraceCC direct commands must be non-empty argv arrays.');
+      }
+      return command.map(String);
+    });
+  } else if (request?.directCommand === true) {
+    plan = [requestedArgs];
+  } else {
+    throw new Error('TraceCC requires a normalized direct compiler plan.');
+  }
+  const commands = [];
+  for (const planned of plan) {
+    const command = [...planned];
+    if (command[0] === '') command.shift();
+    const result = await runToolCommand(command);
+    commands.push({
+      phase: command.includes('-cc1')
+        ? 'cc1'
+        : basename(command[0]).includes('wasm-ld')
+          ? 'link'
+          : 'tool',
+      args: command,
+      ...result,
+    });
+    if (result.exitCode !== 0) break;
+  }
+  const linkerArgs = Array.isArray(request?.linkerArgs)
+    ? request.linkerArgs.map(String)
+    : [];
+  if (
+    commands.length > 0 &&
+    commands.every((command) => command.exitCode === 0) &&
+    linkerArgs.length > 0
+  ) {
+    const result = await runToolCommand(linkerArgs);
+    commands.push({
+      phase: 'link',
+      args: linkerArgs,
+      ...result,
+    });
+  }
+
+  const outputPath = requestedOutputPath;
+  const commandsSucceeded =
+    commands.length > 0 &&
+    commands.every((command) => command.exitCode === 0);
+  const outputBytes = commandsSucceeded && fs.isFile(outputPath)
+    ? cloneBytes(fs.readFile(outputPath))
+    : null;
+  const totalMs =
+    loadMs +
+    assetLoadMs +
+    planMs +
+    commands.reduce((total, command) => total + command.elapsedMs, 0);
+  return {
+    success:
+      commandsSucceeded &&
+      outputBytes instanceof Uint8Array,
+    outputPath,
+    ...(request?.returnOutputBytes === false ? {} : { outputBytes }),
+    outputByteLength: outputBytes?.byteLength || 0,
+    compilerBytes: toolchain.compilerBytes,
+    linkerBytes: toolchain.linkerBytes,
+    resourceBytes: toolchain.resourceBytes,
+    pchBytes,
+    runtimeObjectBytes,
+    timings: {
+      loadMs,
+      assetLoadMs,
+      planMs,
+      commands: commands.map((command) => ({
+        phase: command.phase,
+        elapsedMs: command.elapsedMs,
+        exitCode: command.exitCode,
+        linearMemoryBytes: command.linearMemoryBytes,
+        ...(command.wasiMetrics
+          ? { wasiMetrics: command.wasiMetrics }
+          : {}),
+      })),
+      totalMs,
+    },
+    stdout: commands.map((command) => command.stdout).join(''),
+    stderr: commands.map((command) => command.stderr).join(''),
+  };
+}
+
 async function handleProjectCpp(
   request,
   messageId,
@@ -13873,36 +14452,12 @@ async function handleProjectCpp(
   const events = createProjectEventBridge(messageId, (stream, data) =>
     stream === 'stderr' ? sanitizeCppProjectDiagnostics(data, request) : data
   );
-  if (request?.source === 'compile') {
-    const startedAt = now();
-    const compileResult = await compileProjectOutsideMainWorker(request);
-    if (!compileResult.success) {
-      const stderr = sanitizeCppProjectDiagnostics(
-        [compileResult.stderr, compileResult.error].filter(Boolean).join('\n').trim(),
-        request
-      );
-      const failureResult = {
-        stdout: compileResult.stdout || '',
-        stderr: stderr ? `${stderr}\n` : 'C++ compilation failed.\n',
-        exitCode: 1,
-      };
-      emitProjectResultOutputEvents(events, failureResult);
-      return failureResult;
-    }
-    const outputPath = relativeProjectPath(compileResult.outputPath || 'a.out', request) || 'a.out';
-    const programBytes = new Uint8Array(compileResult.programBuffer);
-    const result = {
-      stdout: compileResult.stdout || '',
-      stderr: sanitizeCppProjectDiagnostics(compileResult.stderr || '', request),
-      exitCode: 0,
-      files: [encodeProjectFileChange(outputPath, programBytes)],
-      timings: {
-        compileMs: compileResult.compileMs,
-        totalMs: elapsedMs(startedAt),
-      },
+  if (request?.source !== 'run') {
+    return {
+      stdout: '',
+      stderr: 'C++ Project compilation must use the trusted TraceCC compiler service.\n',
+      exitCode: 2,
     };
-    emitProjectResultOutputEvents(events, result);
-    return result;
   }
 
   const snapshotFs = createProjectRuntimeFs(request?.project);
@@ -13992,6 +14547,425 @@ async function handleProjectCpp(
   return result;
 }
 
+function buildTraceccProjectCompilePlan(projectRequest) {
+  const compilerCommand = projectCompilerCommand(projectRequest);
+  const cwd = requestCwdRelative(projectRequest);
+  const rawArgs =
+    Array.isArray(projectRequest.args) && projectRequest.args.length > 0
+      ? projectRequest.args.map(String)
+      : [projectRequest.scriptPath || (compilerCommand === 'clang' ? 'main.c' : 'main.cpp')];
+  const sources = [];
+  const linkerInputs = [];
+  const includePaths = [
+    ...projectCompileEnvIncludePaths(projectRequest),
+  ];
+  const libraryPaths = [
+    ...projectCompileEnvLibraryPaths(projectRequest),
+  ];
+  const libraries = [];
+  const linkerOptions = [];
+  const definitions = [];
+  const undefinitions = [];
+  const forcedIncludes = [];
+  let outputOperand = '';
+  let compileOnly = false;
+  let forcedLanguage = '';
+
+  const takeValue = (index, option) => {
+    const value = rawArgs[index + 1];
+    if (typeof value !== 'string' || value.length === 0) {
+      throw new Error(`TraceCC Project option ${option} requires a value.`);
+    }
+    return value;
+  };
+
+  for (let index = 0; index < rawArgs.length; index += 1) {
+    const arg = rawArgs[index];
+    if (arg === '-c') {
+      compileOnly = true;
+      continue;
+    }
+    if (arg === '-o') {
+      outputOperand = takeValue(index, arg);
+      index += 1;
+      continue;
+    }
+    if (arg.startsWith('-o') && arg.length > 2) {
+      outputOperand = arg.slice(2);
+      continue;
+    }
+    if (arg === '-I' || arg === '-isystem' || arg === '-idirafter') {
+      includePaths.push(takeValue(index, arg));
+      index += 1;
+      continue;
+    }
+    if (arg.startsWith('-I') && arg.length > 2) {
+      includePaths.push(arg.slice(2));
+      continue;
+    }
+    if (arg === '-L') {
+      libraryPaths.push(takeValue(index, arg));
+      index += 1;
+      continue;
+    }
+    if (arg.startsWith('-L') && arg.length > 2) {
+      libraryPaths.push(arg.slice(2));
+      continue;
+    }
+    if (arg === '-include') {
+      forcedIncludes.push(takeValue(index, arg));
+      index += 1;
+      continue;
+    }
+    if (arg === '-D' || arg === '-U') {
+      const value = takeValue(index, arg);
+      (arg === '-D' ? definitions : undefinitions).push(value);
+      index += 1;
+      continue;
+    }
+    if (arg.startsWith('-D') && arg.length > 2) {
+      definitions.push(arg.slice(2));
+      continue;
+    }
+    if (arg.startsWith('-U') && arg.length > 2) {
+      undefinitions.push(arg.slice(2));
+      continue;
+    }
+    if (arg === '-x') {
+      forcedLanguage = takeValue(index, arg);
+      index += 1;
+      continue;
+    }
+    if (arg.startsWith('-l') && arg.length > 2) {
+      libraries.push(arg);
+      continue;
+    }
+    if (arg.startsWith('-Wl,')) {
+      linkerOptions.push(
+        ...arg.slice(4).split(',').filter(Boolean)
+      );
+      continue;
+    }
+    if (
+      arg === '-v' ||
+      arg === '-fno-exceptions' ||
+      arg === '-fexceptions' ||
+      arg === '-pthread' ||
+      /^-std=(?:c(?:89|90|99|11|17|23)|gnu(?:89|90|99|11|17|23)|c\+\+(?:11|14|17|20|23|2a|2b)|gnu\+\+(?:11|14|17|20|23|2a|2b))$/u.test(arg) ||
+      /^-O[0-3sgz]?$/u.test(arg)
+    ) {
+      continue;
+    }
+    if (arg === '-') {
+      const stdinName =
+        compilerCommand === 'clang' && forcedLanguage !== 'c++'
+          ? '.tracecc-stdin.c'
+          : '.tracecc-stdin.cpp';
+      const stdinPath = cwd ? `${cwd}/${stdinName}` : stdinName;
+      sources.push({
+        workspacePath: stdinPath,
+        language:
+          forcedLanguage === 'c' || stdinName.endsWith('.c') ? 'c' : 'c++',
+        contents: String(projectRequest.code || ''),
+      });
+      continue;
+    }
+    if (/\.(?:c|cc|cpp|cxx|m|mm)$/iu.test(arg)) {
+      const workspacePath = projectPathRelativeToWorkspace(
+        projectRequest,
+        arg
+      );
+      sources.push({
+        workspacePath,
+        language:
+          forcedLanguage === 'c' ||
+          (
+            !forcedLanguage &&
+            compilerCommand === 'clang' &&
+            /\.(?:c|m)$/iu.test(arg)
+          )
+            ? 'c'
+            : 'c++',
+      });
+      continue;
+    }
+    if (/\.(?:a|lib|o|obj)$/iu.test(arg)) {
+      linkerInputs.push(
+        `/workspace/${projectPathRelativeToWorkspace(projectRequest, arg)}`
+      );
+      continue;
+    }
+    if (arg.startsWith('-')) {
+      throw new Error(
+        `TraceCC Project compilation does not support compiler option ${arg}.`
+      );
+    }
+    throw new Error(`TraceCC Project input is not compilable: ${arg}`);
+  }
+
+  if (sources.length === 0 && linkerInputs.length === 0) {
+    throw new Error('TraceCC Project compilation requires a source or object input.');
+  }
+  if (compileOnly && sources.length !== 1) {
+    throw new Error(
+      'TraceCC Project compile-only mode currently requires exactly one source.'
+    );
+  }
+
+  const outputWorkspacePath = outputOperand
+    ? projectPathRelativeToWorkspace(projectRequest, outputOperand)
+    : compileOnly
+      ? (() => {
+          const source = sources[0].workspacePath;
+          const filename = basename(source).replace(/\.[^.]+$/u, '.o');
+          return cwd ? `${cwd}/${filename}` : filename;
+        })()
+      : cwd
+        ? `${cwd}/a.out`
+        : 'a.out';
+  const userFiles = Array.isArray(projectRequest.project?.files)
+    ? projectRequest.project.files
+    : [];
+  const projectFileByPath = new Map(
+    userFiles.map((file) => [
+      relativeProjectPath(file.path, projectRequest),
+      file,
+    ])
+  );
+  const projectFiles = [...userFiles];
+  for (const source of sources) {
+    if (source.contents !== undefined) {
+      projectFiles.push({
+        path: source.workspacePath,
+        contents: source.contents,
+      });
+    } else if (!projectFileByPath.has(source.workspacePath)) {
+      throw new Error(
+        `TraceCC Project source does not exist: ${source.workspacePath}`
+      );
+    }
+  }
+
+  const trustedFiles = [
+    {
+      path: `/usr/include/${CPP_KERNEL_SOCKET_HEADER_FILENAME}`,
+      contents: CPP_KERNEL_SOCKET_HEADER_SOURCE,
+    },
+    {
+      path: `/usr/include/${CPP_KERNEL_NETDB_HEADER_FILENAME}`,
+      contents: CPP_KERNEL_NETDB_HEADER_SOURCE,
+    },
+    {
+      path: `/usr/include/${CPP_KERNEL_PROCESS_HEADER_FILENAME}`,
+      contents: CPP_KERNEL_PROCESS_HEADER_SOURCE,
+    },
+    {
+      path: `/usr/include/${CPP_KERNEL_POLL_HEADER_FILENAME}`,
+      contents: CPP_KERNEL_POLL_HEADER_SOURCE,
+    },
+    {
+      path: `/usr/include/${CPP_KERNEL_SELECT_HEADER_FILENAME}`,
+      contents: CPP_KERNEL_SELECT_HEADER_SOURCE,
+    },
+    {
+      path: `/usr/include/${CPP_KERNEL_IOCTL_HEADER_FILENAME}`,
+      contents: CPP_KERNEL_IOCTL_HEADER_SOURCE,
+    },
+    {
+      path: `/usr/include/${CPP_KERNEL_SPAWN_HEADER_FILENAME}`,
+      contents: CPP_KERNEL_SPAWN_HEADER_SOURCE,
+    },
+    {
+      path: `/usr/include/${CPP_KERNEL_WAIT_HEADER_FILENAME}`,
+      contents: CPP_KERNEL_WAIT_HEADER_SOURCE,
+    },
+    {
+      path: `/usr/include/${CPP_KERNEL_CONTROL_HEADER_FILENAME}`,
+      contents: CPP_KERNEL_CONTROL_HEADER_SOURCE,
+    },
+  ];
+  const normalizedIncludePaths = includePaths.map((path) =>
+    projectPathRelativeToWorkspace(projectRequest, path)
+  );
+  for (const includePath of normalizedIncludePaths) {
+    for (const [path, file] of projectFileByPath) {
+      const relative =
+        path.startsWith(`${includePath}/`)
+          ? path.slice(includePath.length + 1)
+          : '';
+      if (!relative) continue;
+      trustedFiles.push({
+        path: `/usr/include/${relative}`,
+        contents: projectPathBytes(file),
+      });
+    }
+  }
+
+  const forcedIncludeLines = forcedIncludes.map((path) => {
+    const workspacePath = projectPathRelativeToWorkspace(
+      projectRequest,
+      path
+    );
+    return `#include ${JSON.stringify(`/workspace/${workspacePath}`)}`;
+  });
+  const definitionLines = definitions.map((definition) => {
+    const separator = definition.indexOf('=');
+    return separator < 0
+      ? `#define ${definition} 1`
+      : `#define ${definition.slice(0, separator)} ${definition.slice(separator + 1)}`;
+  });
+  const undefinitionLines = undefinitions.map(
+    (definition) => `#undef ${definition}`
+  );
+  const wrapperPrefix = [
+    '#define _WASI_EMULATED_SIGNAL 1',
+    '#include <tracecode_socket.h>',
+    '#include <tracecode_process.h>',
+    '#include <tracecode_ioctl.h>',
+    ...definitionLines,
+    ...undefinitionLines,
+    ...forcedIncludeLines,
+  ];
+  const commands = [];
+  const objects = [];
+  const addCompileCommand = (sourcePath, language, objectPath, prefix = wrapperPrefix) => {
+    const index = commands.length;
+    const wrapperPath =
+      `/usr/share/tracecc/project/source-${index}.${language === 'c' ? 'c' : 'cpp'}`;
+    trustedFiles.push({
+      path: wrapperPath,
+      contents: [
+        ...prefix,
+        `#include ${JSON.stringify(sourcePath)}`,
+        '',
+      ].join('\n'),
+    });
+    commands.push([
+      language === 'c' ? 'tracecc-c' : 'tracecc-cxx',
+      wrapperPath,
+      objectPath,
+      '/usr',
+    ]);
+    objects.push(objectPath);
+  };
+
+  for (const source of sources) {
+    const objectPath =
+      compileOnly
+        ? `/workspace/${outputWorkspacePath}`
+        : `/workspace/.tracecc-build/user-${objects.length}.o`;
+    addCompileCommand(
+      `/workspace/${source.workspacePath}`,
+      source.language,
+      objectPath
+    );
+  }
+
+  if (!compileOnly) {
+    const kernelSources = [
+      ['tracecode_socket.c', CPP_KERNEL_SOCKET_SHIM_SOURCE],
+      ['tracecode_process.c', CPP_KERNEL_PROCESS_SHIM_SOURCE],
+      ['tracekernel.c', CPP_KERNEL_CONTROL_SHIM_SOURCE],
+      ['tracecode_statvfs.c', TRACEKERNEL_STATVFS_SOURCE],
+    ];
+    for (const [name, contents] of kernelSources) {
+      const sourcePath = `/usr/share/tracecc/kernel/${name}`;
+      trustedFiles.push({ path: sourcePath, contents });
+      addCompileCommand(
+        sourcePath,
+        'c',
+        `/workspace/.tracecc-build/${name}.o`
+      );
+    }
+  }
+
+  const linkerArgs = compileOnly
+    ? []
+    : [
+        'wasm-ld',
+        '-m',
+        'wasm32',
+        '-L/usr/lib/wasm32-unknown-wasip1',
+        '-L/usr/lib/wasm32-wasip1',
+        ...libraryPaths.map(
+          (path) =>
+            `-L/workspace/${projectPathRelativeToWorkspace(projectRequest, path)}`
+        ),
+        '/usr/lib/wasm32-wasip1/crt1-command.o',
+        ...objects,
+        ...linkerInputs,
+        '-z',
+        `stack-size=${CPP_PROGRAM_STACK_SIZE}`,
+        '--wrap=statvfs',
+        '--wrap=fstatvfs',
+        ...linkerOptions,
+        ...libraries,
+        '-lc++',
+        '-lc++abi',
+        '-lc',
+        '/usr/lib/wasm32-unknown-wasip1/libclang_rt.builtins.a',
+        '-o',
+        `/workspace/${outputWorkspacePath}`,
+      ];
+
+  return {
+    projectFiles,
+    trustedFiles,
+    commands,
+    linkerArgs,
+    outputWorkspacePath,
+    cwd,
+  };
+}
+
+async function handleTrustedTraceccCompile(request) {
+  if (request?.source === 'tracecc-project-compile-v1') {
+    const projectRequest = request?.projectRequest;
+    if (
+      !projectRequest ||
+      typeof projectRequest !== 'object' ||
+      projectRequest.source !== 'compile'
+    ) {
+      throw new Error(
+        'The trusted TraceCC Project lane only accepts compile requests.'
+      );
+    }
+    const plan = buildTraceccProjectCompilePlan(projectRequest);
+    const result = await handleTraceccCompile({
+      ...request,
+      source: 'tracecc-compile-v1',
+      args: plan.commands[0],
+      directCommands: plan.commands,
+      linkerArgs: plan.linkerArgs,
+      project: {
+        ...(projectRequest.project &&
+        typeof projectRequest.project === 'object'
+          ? projectRequest.project
+          : {}),
+        files: plan.projectFiles,
+      },
+      trustedFiles: plan.trustedFiles,
+      traceccCwd: '/',
+      outputPath: `/workspace/${plan.outputWorkspacePath}`,
+      nonSeekableOutputPaths: ['/workspace'],
+    });
+    return {
+      ...result,
+      outputPath: plan.outputWorkspacePath,
+      stderr: sanitizeCppProjectDiagnostics(
+        String(result.stderr || ''),
+        projectRequest
+      ),
+    };
+  }
+  if (request?.source !== 'tracecc-compile-v1') {
+    throw new Error(
+      'The trusted TraceCC compiler lane only accepts the fixed TraceCC compile protocol.'
+    );
+  }
+  return handleTraceccCompile(request);
+}
+
 function preparedArtifactResult(programModule, source, functionName, signature, scriptRequest, options, timings, startedAt) {
   const totalMs = elapsedMs(startedAt);
   return {
@@ -14016,21 +14990,21 @@ function preparedArtifactResult(programModule, source, functionName, signature, 
 async function compileAndRun(source, functionName, inputs, options = {}) {
   const start = now();
   emitRequestProgress('compile-and-run:start', { tracing: Boolean(options.tracing) });
-  if (canUseEphemeralCompilerWorker()) {
-    try {
-      return await compileAndRunWithExternalCompiler(source, functionName, inputs, start, {
-        ...options,
-        timings: {
-          ...(options.timings && typeof options.timings === 'object' ? options.timings : {}),
-          compilerLoadMs: 0,
-        },
-      });
-    } catch {
-      // Fall through to the in-worker compiler path when nested workers are not
-      // available or an older deployment is missing the compiler worker asset.
-    }
+  if (!canUseExternalCompilerHost()) {
+    throw new Error(
+      'C++ compilation requires the trusted TraceCC compiler service.'
+    );
   }
+  return compileAndRunWithExternalCompiler(source, functionName, inputs, start, {
+    ...options,
+    timings: {
+      ...(options.timings && typeof options.timings === 'object' ? options.timings : {}),
+      compilerLoadMs: 0,
+    },
+  });
 
+  /* Legacy in-worker compiler implementation retained temporarily for
+   * non-browser corpus tooling; production execution cannot enter this path. */
   const toolchainStartedAt = now();
   emitRequestProgress('toolchain-load:start', { tracing: Boolean(options.tracing) });
   const toolchain = await loadToolchain();
@@ -15009,12 +15983,12 @@ async function handleWarmup(payload) {
     configuredAssets = payload.assets;
   }
   const start = now();
-  let compilerLoadMs = 0;
-  if (!canUseEphemeralCompilerWorker()) {
-    const toolchainStartedAt = now();
-    await loadToolchain();
-    compilerLoadMs = elapsedMs(toolchainStartedAt);
+  if (!canUseExternalCompilerHost()) {
+    throw new Error(
+      'C++ warmup requires the trusted TraceCC compiler service.'
+    );
   }
+  const compilerLoadMs = 0;
   const warmupStartedAt = now();
   const warmupTimings = await warmToolchain();
   const warmupMs = elapsedMs(warmupStartedAt);
@@ -15506,6 +16480,11 @@ async function handleExecuteWithTracing(payload) {
 }
 
 
+const traceccCompilerWorker =
+  new URL(self.location?.href || 'https://tracecode.invalid/').searchParams.get(
+    'traceccRole'
+  ) === 'compiler';
+
 self.onmessage = (event) => {
   const {
     id,
@@ -15536,6 +16515,24 @@ self.onmessage = (event) => {
       id,
       type: 'error',
       payload: { error: 'Missing C++ worker protocol token.' },
+    });
+    return;
+  }
+  if (
+    (traceccCompilerWorker &&
+      type !== 'init' &&
+      type !== 'compile-trusted-tracecc') ||
+    (!traceccCompilerWorker && type === 'compile-trusted-tracecc')
+  ) {
+    trustedCppWorkerPostMessage({
+      id,
+      protocolToken,
+      type: 'error',
+      payload: {
+        error: traceccCompilerWorker
+          ? `The TraceCC compiler Worker at ${String(self.location?.href || '')} rejected "${String(type)}"; it accepts only initialization and trusted compile requests.`
+          : 'Trusted TraceCC compilation is unavailable in a learner runner.',
+      },
     });
     return;
   }
@@ -15573,6 +16570,9 @@ self.onmessage = (event) => {
             break;
           case 'compile-run-batch':
             result = await handleCompileRunBatch(payload);
+            break;
+          case 'compile-trusted-tracecc':
+            result = await handleTrustedTraceccCompile(payload);
             break;
           case 'execute-project-cpp':
             result = await withRuntimeUserAuthorityLockdown(

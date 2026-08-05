@@ -212,7 +212,7 @@ function main(): void {
   const cppInfo = getLanguageRuntimeInfo('cpp');
   assertCondition(
     cppInfo.versionLabel === 'C++23' &&
-      cppInfo.compiler?.name === 'C++ browser compiler' &&
+      cppInfo.compiler?.name === 'C++ compiler' &&
       cppInfo.compiler?.version === 'C++23',
     `C++ runtime metadata must describe the C++23 contract: ${JSON.stringify(cppInfo)}`
   );
@@ -221,23 +221,17 @@ function main(): void {
       !FORBIDDEN_PUBLIC_COMPILER_NAME.test(generatedLanguageMetadataSlice()),
     `Generated C++ runtime metadata must be implementation-neutral: ${JSON.stringify(cppInfo)}`
   );
-  const shippedCompilerPackage = JSON.parse(
-    readFileSync(
-      resolve(ROOT, 'node_modules/@yowasp/clang/package.json'),
-      'utf8'
-    )
-  ) as { version?: string };
   assertCondition(
-    getRuntimeCommandVersion('clang++') === shippedCompilerPackage.version,
-    'clang++ CLI identity must be generated from the shipped compiler package'
+    getRuntimeCommandVersion('clang++') === '22.0.0',
+    'clang++ CLI identity must match the pinned TraceCC compiler release'
   );
 
   const defaultAssets = resolveBrowserRuntimeAssets();
   assertCondition(
-    DEFAULT_BROWSER_RUNTIME_ASSET_RELATIVE_PATHS.cppCompilerBundle ===
-      'cpp/compiler/bundle.js' &&
-      defaultAssets.cppCompilerBundle === '/workers/cpp/compiler/bundle.js',
-    `C++ defaults must use the canonical compiler path: ${JSON.stringify(defaultAssets)}`
+    defaultAssets.cppCompilerWasm === '' &&
+      defaultAssets.cppLinkerWasm === '' &&
+      defaultAssets.cppSysroot === '',
+    `C++ compiler assets must be supplied by the pinned runtime manifest: ${JSON.stringify(defaultAssets)}`
   );
   assertCondition(
     !FORBIDDEN_PUBLIC_COMPILER_NAME.test(
@@ -253,9 +247,10 @@ function main(): void {
   const cliSource = readFileSync(resolve(ROOT, 'src/cli.ts'), 'utf8');
   for (const source of [syncSource, cliSource]) {
     assertCondition(
-      source.includes("'cpp', 'compiler', 'bundle.js'") &&
-        !source.includes("'vendor', 'cpp', 'yowasp'"),
-      'C++ asset publication must map private dependency inputs to canonical compiler paths'
+      source.includes("'cpp', 'tracecode_runtime.hpp'") &&
+        !source.includes('@yowasp/clang') &&
+        !source.includes("'cpp', 'compiler'"),
+      'C++ package sync must publish only the runner adapter; TraceCC releases are external immutable assets'
     );
   }
 

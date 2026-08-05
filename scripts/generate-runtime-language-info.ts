@@ -518,7 +518,7 @@ async function buildRuntimeCommandVersions(): Promise<Record<RuntimeCommandName,
   }
   return {
     dotnet: dotnetVersion,
-    'clang++': await packageVersion('@yowasp/clang', rootPackage),
+    'clang++': '22.0.0',
   };
 }
 

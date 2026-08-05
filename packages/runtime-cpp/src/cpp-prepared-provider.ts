@@ -11,6 +11,11 @@ import { CppWorkerClient } from './cpp-worker-client';
 
 export interface CppPreparedExecutionProviderOptions {
   createWorkerClient(): CppWorkerClient;
+  /**
+   * Perform one trusted toolchain warmup while establishing
+   * the provider standby. The warmup runner is retired immediately.
+   */
+  warmCompilerOnInit?: boolean;
 }
 
 export interface CppPreparedExecutionProviderController
@@ -76,6 +81,18 @@ export function createCppPreparedExecutionProvider(
       const expectedGeneration = generation;
       const client = standbyClient ?? createClient();
       try {
+        if (options.warmCompilerOnInit) {
+          const result = await client.warmup();
+          assertGeneration(expectedGeneration);
+          // Warming currently needs the execution worker to generate the
+          // trusted driver request. Do not retain that temporary runner: only
+          // the separately owned compiler service may survive init.
+          retireClient(client);
+          return {
+            success: result.success,
+            loadTimeMs: result.loadTimeMs,
+          };
+        }
         const result = await client.init();
         assertGeneration(expectedGeneration);
         standbyClient = client;

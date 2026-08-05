@@ -120,6 +120,52 @@ async function main(): Promise<void> {
       const invalid = await execute('class Solution { public: int add(int a, int b) { return a + ; } };');
       const recovered = await execute('class Solution { public: int add(int a, int b) { return a * b; } };');
 
+      const sharedCompilerCoordinator = new CppWorkerClient(workerOptions);
+      const sharedCompilerProvider = createCppPreparedExecutionProvider({
+        createWorkerClient: () => new CppWorkerClient({
+          ...workerOptions,
+          trustedCompilerService: sharedCompilerCoordinator,
+        }),
+        warmCompilerOnInit: true,
+      });
+      const sharedWarmStartedAt = performance.now();
+      await sharedCompilerProvider.init();
+      const sharedWarmMs = performance.now() - sharedWarmStartedAt;
+      const sharedSource =
+        'class Solution { public: int add(int a, int b) { return a + b + 7; } };';
+      const prepareShared = async () => {
+        const startedAt = performance.now();
+        const preparation = await sharedCompilerProvider.prepareProgram({
+          mode: 'code',
+          code: sharedSource,
+          functionName: 'add',
+          executionStyle: 'solution-method',
+        });
+        if (preparation.kind !== 'prepared' || preparation.program.mode !== 'code') {
+          throw new Error('Shared-compiler C++ preparation failed: ' + JSON.stringify(preparation));
+        }
+        const result = await preparation.program.executeIsolated({
+          inputs: { a: 2, b: 3 },
+        });
+        await preparation.program.dispose();
+        return {
+          durationMs: performance.now() - startedAt,
+          timings: preparation.timings,
+          result,
+          framesAfterRunnerDisposal: document.querySelectorAll('iframe').length,
+        };
+      };
+      const sharedFirst = await prepareShared();
+      const sharedExact = await prepareShared();
+      const sharedFramesBeforeCompilerRetirement =
+        document.querySelectorAll('iframe').length;
+      sharedCompilerProvider.terminate();
+      const sharedFramesAfterRunnerProviderRetirement =
+        document.querySelectorAll('iframe').length;
+      sharedCompilerCoordinator.terminate();
+      const sharedFramesAfterCompilerRetirement =
+        document.querySelectorAll('iframe').length;
+
       const preparedProvider = createCppPreparedExecutionProvider({
         createWorkerClient: () => new CppWorkerClient(workerOptions),
       });
@@ -339,6 +385,17 @@ async function main(): Promise<void> {
         exact,
         invalid,
         recovered,
+        sharedCompiler: {
+          warmMs: sharedWarmMs,
+          first: sharedFirst,
+          exact: sharedExact,
+          framesBeforeCompilerRetirement:
+            sharedFramesBeforeCompilerRetirement,
+          framesAfterRunnerProviderRetirement:
+            sharedFramesAfterRunnerProviderRetirement,
+          framesAfterCompilerRetirement:
+            sharedFramesAfterCompilerRetirement,
+        },
         prepared: {
           preparationTimings: prepared.timings,
           capabilities: prepared.program.capabilities,
@@ -378,6 +435,24 @@ async function main(): Promise<void> {
       exact: { durationMs: number; success: boolean; output?: unknown; error?: string; timings?: Record<string, unknown> };
       invalid: { durationMs: number; success: boolean; output?: unknown; error?: string; timings?: Record<string, unknown> };
       recovered: { durationMs: number; success: boolean; output?: unknown; error?: string; timings?: Record<string, unknown> };
+      sharedCompiler: {
+        warmMs: number;
+        first: {
+          durationMs: number;
+          timings?: Record<string, unknown>;
+          result: { kind: string; output?: unknown };
+          framesAfterRunnerDisposal: number;
+        };
+        exact: {
+          durationMs: number;
+          timings?: Record<string, unknown>;
+          result: { kind: string; output?: unknown };
+          framesAfterRunnerDisposal: number;
+        };
+        framesBeforeCompilerRetirement: number;
+        framesAfterRunnerProviderRetirement: number;
+        framesAfterCompilerRetirement: number;
+      };
       prepared: {
         preparationTimings?: Record<string, unknown>;
         capabilities: { caseIsolation: string; maxConcurrency: number };
@@ -419,6 +494,27 @@ async function main(): Promise<void> {
     assertCondition(
       result.recovered.success && result.recovered.output === 6,
       `compiler diagnostics must not poison the next fresh compiler instance: ${JSON.stringify(result)}`
+    );
+    assertCondition(
+      result.sharedCompiler.first.result.kind === 'completed' &&
+        result.sharedCompiler.first.result.output === 12 &&
+        result.sharedCompiler.exact.result.kind === 'completed' &&
+        result.sharedCompiler.exact.result.output === 12,
+      `shared compiler artifacts must execute in both disposable runners: ${JSON.stringify(result.sharedCompiler)}`
+    );
+    assertCondition(
+      result.sharedCompiler.first.timings?.artifactCacheHit === false &&
+        result.sharedCompiler.exact.timings?.artifactCacheHit === true &&
+        result.sharedCompiler.exact.timings?.compileCacheHit === true,
+      `the second disposable runner must reuse the provider-owned compiler artifact cache: ${JSON.stringify(result.sharedCompiler)}`
+    );
+    assertCondition(
+      result.sharedCompiler.first.framesAfterRunnerDisposal === 2 &&
+        result.sharedCompiler.exact.framesAfterRunnerDisposal === 2 &&
+        result.sharedCompiler.framesBeforeCompilerRetirement === 2 &&
+        result.sharedCompiler.framesAfterRunnerProviderRetirement === 2 &&
+        result.sharedCompiler.framesAfterCompilerRetirement === 1,
+      `runner retirement must leave the shared compiler frame alive until explicit compiler retirement: ${JSON.stringify(result.sharedCompiler)}`
     );
     assertCondition(
       result.prepared.capabilities.caseIsolation === 'fresh-case-state' &&

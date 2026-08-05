@@ -74,7 +74,7 @@ export const TEST_PHASES: TestPhase[] = [
       // the two heavyweight slots removes almost seven minutes of idle wall
       // time without sharing a VM, worker, filesystem, or browser.
       task('test:runtime-trace', 2),
-      task('test:cpp-runtime', 2),
+      task('test:tracecc', 2),
       task('test:java-runtime', 2),
       task('test:csharp-runtime', 2),
       task('test:csharp-worker-browser', 2),
@@ -88,7 +88,6 @@ export const TEST_PHASES: TestPhase[] = [
       task('test:python-browser-worker'),
       task('test:python-worker-client-http'),
       task('test:cpp-rewriter'),
-      task('test:cpp-script-lambda-trace'),
       task('test:trace-adapters'),
       task('test:sql-trace'),
       task('test:sql-trace-fixtures'),

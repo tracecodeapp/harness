@@ -276,7 +276,17 @@ export function createBrowserRuntimeAssetPreflight(
         !selectedNames || selectedNames.has(name) || selectedNames.has(name.split('.', 1)[0] ?? name)
       ));
       await Promise.all(entries.map(({ name, descriptor }) => {
-        const cacheKey = `${runtime}\u0000${name}`;
+        // Multiple manifest roles may intentionally resolve to one immutable
+        // artifact (TraceCC v9r1 uses one reactor for compiler and linker).
+        // Cache verification by exact response identity rather than role name
+        // so the same large body is not downloaded and hashed twice.
+        const cacheKey = [
+          runtime,
+          descriptor.url,
+          descriptor.integrity ?? '',
+          descriptor.size ?? '',
+          descriptor.mediaType ?? '',
+        ].join('\u0000');
         let promise = verificationPromises.get(cacheKey);
         if (!promise) {
           let trackedPromise: Promise<void>;

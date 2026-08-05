@@ -4,14 +4,12 @@
  * Session lifecycle, request/response, and the Promise boundary live in the
  * shared WorkerSessionCore; this file owns C++-specific concerns: the
  * one-command-per-worker retire/prewarm cycle with generation fencing, the
- * compiler coordinator (hidden compiler iframe or external compiler URL) with
- * its byte-bounded artifact cache, progress-aware execution deadlines, sync
+ * trusted compiler-service bridge, progress-aware execution deadlines, sync
  * kernel-HTTP wiring, and structured timeout results.
  *
  * Lifecycle vocabulary: a *retire* closes the current session but preserves
- * the compiler coordinator (frames, artifact cache, warmup memo); a *reset*
- * tears everything down and bumps the generation counters that fence queued
- * work from stale sessions.
+ * the compiler service; a *reset* tears everything down and bumps the
+ * generation counters that fence queued work from stale sessions.
  */
 
 import * as Duration from 'effect/Duration';
@@ -72,6 +70,17 @@ import { createWorkerProtocolToken } from '@tracecode/runtime-browser/internal';
 
 const CPP_KERNEL_HTTP_RUNTIME_LABEL = 'C++';
 
+function encodeProjectBinary(bytes: Uint8Array): string {
+  const chunkSize = 32 * 1024;
+  let binary = '';
+  for (let offset = 0; offset < bytes.byteLength; offset += chunkSize) {
+    binary += String.fromCharCode(
+      ...bytes.subarray(offset, Math.min(bytes.byteLength, offset + chunkSize))
+    );
+  }
+  return btoa(binary);
+}
+
 export type CppExecutionStyle = 'function' | 'solution-method' | 'ops-class';
 export type CppProjectCommandRequest = RuntimeProjectCommandRequest<'compile' | 'run'>;
 export type CppProjectCommandResult = RuntimeCommandResult;
@@ -81,10 +90,17 @@ export interface CppWorkerAssets {
   linkerWasmUrl: string;
   sysrootUrl: string;
   runtimeHeaderUrl: string;
-  compilerBundleUrl: string;
+  compilerBundleUrl?: string;
   compilerFrameUrl?: string;
   compilerWorkerUrl?: string;
   compilerIntegrity?: CppCompilerIntegrityManifest;
+}
+
+export interface CppTrustedCompilerService {
+  compileTrusted(
+    payload: unknown,
+    signal?: AbortSignal
+  ): Promise<Record<string, unknown>>;
 }
 
 export interface CppWorkerClientOptions extends CppWorkerAssets {
@@ -102,6 +118,8 @@ export interface CppWorkerClientOptions extends CppWorkerAssets {
   programCacheLimit?: number;
   usePrecompiledHeader?: boolean;
   externalCompilerUrl?: string;
+  /** Trusted compiler authority retained independently of disposable runners. */
+  trustedCompilerService?: CppTrustedCompilerService;
 }
 
 interface PendingCompilerFrameRequest {
@@ -256,6 +274,7 @@ export class CppWorkerClient {
   private readonly externalCompilerUrl?: string;
   private lastRuntimeProgress: CppRuntimeProgress | null = null;
   private readonly activeExternalCompileControllers = new Set<AbortController>();
+  private readonly activeCompilerRequestControllers = new Set<AbortController>();
   private readonly activeCompilerFrames = new Set<HTMLIFrameElement>();
   private compilerFrame: HTMLIFrameElement | null = null;
   private compilerFrameReadyPromise: Promise<void> | null = null;
@@ -267,6 +286,10 @@ export class CppWorkerClient {
   private compilerFrameMessageHandler: ((event: MessageEvent) => void) | null = null;
   private pendingCompilerFrameRequests = new Map<string, PendingCompilerFrameRequest>();
   private executionQueue: Promise<void> = Promise.resolve();
+  // Match TraceJVM 0.3's compiler contract: one trusted compiler authority
+  // admits one compile at a time. This prevents concurrent LLVM instances from
+  // multiplying the browser's transient linear-memory peak.
+  private compilerOperation: Promise<void> = Promise.resolve();
   private readonly disposedPreparedPrograms = new Set<string>();
   private compilerArtifactCache = new Map<string, CppCompilerArtifactCacheEntry>();
   private compilerArtifactCacheBytes = 0;
@@ -521,6 +544,10 @@ export class CppWorkerClient {
       controller.abort();
     }
     this.activeExternalCompileControllers.clear();
+    for (const controller of this.activeCompilerRequestControllers) {
+      controller.abort();
+    }
+    this.activeCompilerRequestControllers.clear();
     if (!preserveCompilerCoordinator || this.pendingCompilerFrameRequests.size > 0) {
       this.clearCompilerFrames(reason);
     }
@@ -660,7 +687,11 @@ export class CppWorkerClient {
             sysrootUrl: this.options.sysrootUrl,
             runtimeHeaderUrl: this.options.runtimeHeaderUrl,
             compilerBundleUrl: this.options.compilerBundleUrl,
-            compilerFrameEnabled: Boolean(this.externalCompilerUrl || (this.compilerFrameUrl && typeof document !== 'undefined')),
+            compilerFrameEnabled: Boolean(
+              this.options.trustedCompilerService ||
+              this.externalCompilerUrl ||
+              (this.compilerFrameUrl && typeof document !== 'undefined')
+            ),
             compilerFrameUrl: this.compilerFrameUrl,
             compilerWorkerUrl: this.options.compilerWorkerUrl,
             toolchainIntegrity: this.options.compilerIntegrity,
@@ -874,44 +905,94 @@ export class CppWorkerClient {
   private async handleCompileRequest(message: WorkerSessionMessage, worker: BrowserWorkerLike): Promise<void> {
     if (!message.requestId) return;
     const coordinatorGeneration = this.compilerCoordinatorGeneration;
-
-    const cacheKey = await this.compilerArtifactCacheKey(message.payload);
-    // Hashing is asynchronous. The caller may cancel and retire this client
-    // while Web Crypto is still producing the cache key. Never let that stale
-    // continuation create a new compiler iframe after terminate() has already
-    // removed the client's owned resources.
-    if (
-      coordinatorGeneration !== this.compilerCoordinatorGeneration ||
-      worker !== this.core.currentSession?.worker
-    ) {
-      return;
+    const controller = new AbortController();
+    this.activeCompilerRequestControllers.add(controller);
+    try {
+      const result = await (
+        this.options.trustedCompilerService ?? this
+      ).compileTrusted(message.payload, controller.signal);
+      if (
+        controller.signal.aborted ||
+        coordinatorGeneration !== this.compilerCoordinatorGeneration ||
+        worker !== this.core.currentSession?.worker
+      ) {
+        return;
+      }
+      const transfer = result?.programBuffer instanceof ArrayBuffer ? [result.programBuffer] : [];
+      worker.postMessage(
+        {
+          type: 'compile-response',
+          requestId: message.requestId,
+          protocolToken: message.protocolToken,
+          payload: result,
+        },
+        transfer
+      );
+    } finally {
+      this.activeCompilerRequestControllers.delete(controller);
     }
-    const cached = cacheKey ? this.cachedCompilerArtifact(cacheKey) : null;
-    const compiled = cached ?? (this.externalCompilerUrl
-      ? await this.compileWithExternalUrl(message.payload)
-      : await this.compileInFrame(message.payload));
-    if (
-      coordinatorGeneration !== this.compilerCoordinatorGeneration ||
-      worker !== this.core.currentSession?.worker
-    ) {
-      return;
-    }
-    const result = !cached && cacheKey
-      ? this.storeCompilerArtifact(cacheKey, message.payload, compiled)
-      : compiled;
-    const transfer = result?.programBuffer instanceof ArrayBuffer ? [result.programBuffer] : [];
-    worker.postMessage(
-      {
-        type: 'compile-response',
-        requestId: message.requestId,
-        protocolToken: message.protocolToken,
-        payload: result,
-      },
-      transfer
-    );
   }
 
-  private async compileWithExternalUrl(payload: unknown): Promise<Record<string, unknown>> {
+  async compileTrusted(
+    payload: unknown,
+    signal?: AbortSignal
+  ): Promise<Record<string, unknown>> {
+    const prior = this.compilerOperation;
+    let release!: () => void;
+    this.compilerOperation = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    await prior;
+    try {
+      return await this.compileTrustedNow(payload, signal);
+    } finally {
+      release();
+    }
+  }
+
+  private async compileTrustedNow(
+    payload: unknown,
+    signal?: AbortSignal
+  ): Promise<Record<string, unknown>> {
+    if (signal?.aborted) {
+      throw Object.assign(new Error('C++ compilation was cancelled.'), {
+        name: 'AbortError',
+      });
+    }
+    await this.options.runtimeAssetPreflight?.();
+    const coordinatorGeneration = this.compilerCoordinatorGeneration;
+    const cacheKey = await this.compilerArtifactCacheKey(payload);
+    if (
+      signal?.aborted ||
+      coordinatorGeneration !== this.compilerCoordinatorGeneration
+    ) {
+      throw Object.assign(new Error('C++ compilation was cancelled.'), {
+        name: 'AbortError',
+      });
+    }
+    const cached = cacheKey ? this.cachedCompilerArtifact(cacheKey) : null;
+    if (cached) return cached;
+
+    const compiled = this.externalCompilerUrl
+      ? await this.compileWithExternalUrl(payload, signal)
+      : await this.compileInFrame(payload, signal);
+    if (
+      signal?.aborted ||
+      coordinatorGeneration !== this.compilerCoordinatorGeneration
+    ) {
+      throw Object.assign(new Error('C++ compilation was cancelled.'), {
+        name: 'AbortError',
+      });
+    }
+    return cacheKey
+      ? this.storeCompilerArtifact(cacheKey, payload, compiled)
+      : compiled;
+  }
+
+  private async compileWithExternalUrl(
+    payload: unknown,
+    signal?: AbortSignal
+  ): Promise<Record<string, unknown>> {
     if (!this.externalCompilerUrl) {
       return { success: false, error: 'C++ external compiler URL is not configured.' };
     }
@@ -927,7 +1008,9 @@ export class CppWorkerClient {
           accept: 'application/wasm, application/json',
         },
         body: JSON.stringify(payload ?? {}),
-        signal: controller.signal,
+        signal: signal
+          ? AbortSignal.any([controller.signal, signal])
+          : controller.signal,
       });
     } catch (error) {
       return { success: false, error: error instanceof Error ? error.message : String(error) };
@@ -1074,7 +1157,10 @@ export class CppWorkerClient {
     return this.compilerFrameReadyPromise;
   }
 
-  private async compileInFrame(payload: unknown): Promise<Record<string, unknown>> {
+  private async compileInFrame(
+    payload: unknown,
+    signal?: AbortSignal
+  ): Promise<Record<string, unknown>> {
     try {
       await this.ensureCompilerFrame();
     } catch (error) {
@@ -1086,15 +1172,35 @@ export class CppWorkerClient {
       return { success: false, error: 'C++ compiler frame is not available.' };
     }
 
-    return new Promise((resolve) => {
+    return new Promise((resolve, reject) => {
       const requestId = `compile-${++this.compilerFrameRequestId}`;
       const protocolToken = createWorkerProtocolToken();
+      const abort = () => {
+        globalThis.clearTimeout(timeoutId);
+        this.pendingCompilerFrameRequests.delete(requestId);
+        reject(Object.assign(new Error('C++ compilation was cancelled.'), {
+          name: 'AbortError',
+        }));
+      };
       const timeoutId = globalThis.setTimeout(() => {
+        signal?.removeEventListener('abort', abort);
         this.pendingCompilerFrameRequests.delete(requestId);
         resolve({ success: false, error: 'C++ compiler frame request timed out.' });
         this.clearCompilerFrames(new Error('C++ compiler frame request timed out.'));
       }, this.initTimeoutMs);
-      this.pendingCompilerFrameRequests.set(requestId, { protocolToken, resolve, timeoutId });
+      this.pendingCompilerFrameRequests.set(requestId, {
+        protocolToken,
+        resolve: (value) => {
+          signal?.removeEventListener('abort', abort);
+          resolve(value);
+        },
+        timeoutId,
+      });
+      signal?.addEventListener('abort', abort, { once: true });
+      if (signal?.aborted) {
+        abort();
+        return;
+      }
       frameWindow.postMessage(
         {
           id: requestId,
@@ -1488,6 +1594,91 @@ export class CppWorkerClient {
     // compiler coordinator is trusted host infrastructure, not process state,
     // so TraceKernel observes a destroy-only engine lease here.
     engineLease?.attach({ release: () => undefined });
+    if (
+      request.source === 'compile' &&
+      this.options.trustedCompilerService
+    ) {
+      const {
+        signal: _signal,
+        onEvent: _requestOnEvent,
+        engineLease: _engineLease,
+        kernelHttp: _kernelHttp,
+        kernelSyscalls: _kernelSyscalls,
+        kernelSignals: _kernelSignals,
+        stdinPipe: _stdinPipe,
+        terminal: _terminal,
+        process: _process,
+        ...projectRequest
+      } = request;
+      let compiled: Record<string, unknown>;
+      try {
+        compiled =
+          await this.options.trustedCompilerService.compileTrusted(
+            { projectRequest },
+            signal
+          );
+      } catch (error) {
+        const message =
+          error instanceof Error
+            ? error.message
+            : String(error);
+        return {
+          stdout: '',
+          stderr: `${message}\n`,
+          exitCode: 1,
+        };
+      }
+      const stdout =
+        typeof compiled.stdout === 'string' ? compiled.stdout : '';
+      const stderr =
+        typeof compiled.stderr === 'string' ? compiled.stderr : '';
+      if (stdout) {
+        onEvent?.({
+          type: 'output',
+          stream: 'stdout',
+          device: '/dev/stdout',
+          data: stdout,
+        });
+      }
+      if (stderr) {
+        onEvent?.({
+          type: 'output',
+          stream: 'stderr',
+          device: '/dev/stderr',
+          data: stderr,
+        });
+      }
+      if (
+        compiled.success !== true ||
+        !(compiled.programBuffer instanceof ArrayBuffer)
+      ) {
+        const message =
+          typeof compiled.error === 'string'
+            ? compiled.error
+            : 'TraceCC Project compilation failed.';
+        return {
+          stdout,
+          stderr: stderr || `${message}\n`,
+          exitCode: 1,
+        };
+      }
+      const outputPath =
+        typeof compiled.outputPath === 'string' &&
+        compiled.outputPath.length > 0
+          ? compiled.outputPath
+          : 'a.out';
+      const programBytes = new Uint8Array(compiled.programBuffer);
+      return {
+        stdout,
+        stderr,
+        exitCode: 0,
+        files: [{
+          path: outputPath,
+          contents: encodeProjectBinary(programBytes),
+          encoding: 'base64',
+        }],
+      };
+    }
     return this.runInDisposableExecutionWorker(async (lifecycleGeneration) => {
       const {
         signal: _signal,

@@ -182,10 +182,10 @@ async function cppManifest(): Promise<{
         originPolicy: { mode: 'same-origin' },
         assets: {
           worker: await asset('/cpp/cpp-worker.js'),
-          compilerFrame: await asset('/cpp/compiler-frame.html'),
-          compilerWorker: await asset('/cpp/compiler-worker.js'),
           runtimeHeader: await asset('/cpp/tracecode_runtime.hpp'),
-          compilerBundle: await asset('/cpp/compiler-bundle.js'),
+          compilerWasm: await asset('/cpp/llvm.core.wasm'),
+          linkerWasm: await asset('/cpp/llvm.core.wasm'),
+          sysroot: await asset('/cpp/llvm-resources.tar'),
           compilerResources: {
             'llvm.core.wasm': await asset('/cpp/llvm.core.wasm'),
             'llvm-resources.tar': await asset('/cpp/llvm-resources.tar'),

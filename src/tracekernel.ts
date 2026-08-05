@@ -70,6 +70,11 @@ export {
 } from '../packages/runtime-browser/src/runtime-capability-guards';
 
 export {
+  createTraceCCRuntimeManifest,
+  TRACECC_RUNTIME_CONTENT_HASH,
+} from '../packages/runtime-cpp/src/tracecc-runtime-assets';
+
+export {
   createPythonAnalysisClient,
   type CreatePythonAnalysisClientOptions,
   type PythonAnalysisClient,

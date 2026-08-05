@@ -137,14 +137,10 @@ export interface BrowserRuntimeAssetsByRuntime {
   };
   cpp: {
     worker: BrowserRuntimeAssetDescriptor;
-    compilerFrame: BrowserRuntimeAssetDescriptor;
-    compilerWorker: BrowserRuntimeAssetDescriptor;
     runtimeHeader: BrowserRuntimeAssetDescriptor;
-    /** The bundled compiler is optional when all three direct compiler assets are supplied. */
-    compilerBundle?: BrowserRuntimeAssetDescriptor;
-    compilerWasm?: BrowserRuntimeAssetDescriptor;
-    linkerWasm?: BrowserRuntimeAssetDescriptor;
-    sysroot?: BrowserRuntimeAssetDescriptor;
+    compilerWasm: BrowserRuntimeAssetDescriptor;
+    linkerWasm: BrowserRuntimeAssetDescriptor;
+    sysroot: BrowserRuntimeAssetDescriptor;
     /** Additional lazy compiler resources keyed by a consumer-defined stable name. */
     compilerResources?: Readonly<Record<string, BrowserRuntimeAssetDescriptor>>;
   };
@@ -193,13 +189,10 @@ export interface BrowserRuntimeAssets {
   csharpRunnerAssetBaseUrl: string;
   typescriptCompiler: string;
   cppWorker: string;
-  cppCompilerFrame: string;
-  cppCompilerWorker: string;
   cppCompilerWasm: string;
   cppLinkerWasm: string;
   cppSysroot: string;
   cppRuntimeHeader: string;
-  cppCompilerBundle: string;
   cppCompilerIntegrity?: CppCompilerIntegrityManifest;
   /** Validated, URL-resolved manifests supplied by the consumer. */
   runtimeManifests?: BrowserRuntimeAssetManifests;
@@ -227,13 +220,10 @@ export const DEFAULT_BROWSER_RUNTIME_ASSET_RELATIVE_PATHS: Readonly<BrowserRunti
   csharpRunnerAssetBaseUrl: 'vendor/csharp-runner',
   typescriptCompiler: 'vendor/typescript.js',
   cppWorker: 'cpp-worker.js',
-  cppCompilerFrame: 'cpp-compiler-frame.html',
-  cppCompilerWorker: 'cpp-compiler-worker.js',
   cppCompilerWasm: '',
   cppLinkerWasm: '',
   cppSysroot: '',
   cppRuntimeHeader: 'cpp/tracecode_runtime.hpp',
-  cppCompilerBundle: 'cpp/compiler/bundle.js',
 });
 
 const RUNTIME_ASSET_NAMES = Object.freeze({
@@ -261,10 +251,7 @@ const RUNTIME_ASSET_NAMES = Object.freeze({
   ],
   cpp: [
     'worker',
-    'compilerFrame',
-    'compilerWorker',
     'runtimeHeader',
-    'compilerBundle',
     'compilerWasm',
     'linkerWasm',
     'sysroot',
@@ -300,7 +287,13 @@ const REQUIRED_RUNTIME_ASSET_NAMES = Object.freeze({
   typescript: ['compiler'],
   java: ['worker'],
   csharp: ['worker', 'assetBaseUrl'],
-  cpp: ['worker', 'compilerFrame', 'compilerWorker', 'runtimeHeader'],
+  cpp: [
+    'worker',
+    'runtimeHeader',
+    'compilerWasm',
+    'linkerWasm',
+    'sysroot',
+  ],
 } satisfies Record<BrowserRuntimeId, readonly string[]>);
 
 const RUNTIME_LEGACY_ASSET_KEYS = Object.freeze({
@@ -316,13 +309,10 @@ const RUNTIME_LEGACY_ASSET_KEYS = Object.freeze({
   ],
   cpp: [
     'cppWorker',
-    'cppCompilerFrame',
-    'cppCompilerWorker',
     'cppCompilerWasm',
     'cppLinkerWasm',
     'cppSysroot',
     'cppRuntimeHeader',
-    'cppCompilerBundle',
   ],
 } satisfies Record<BrowserRuntimeId, readonly (keyof LegacyBrowserRuntimeAssetOverrides)[]>);
 
@@ -717,7 +707,6 @@ function assertPythonDistributionManifestCompatibility(
 
 const CPP_DIRECT_COMPILER_ASSET_NAMES = Object.freeze([
   'runtimeHeader',
-  'compilerBundle',
   'compilerWasm',
   'linkerWasm',
   'sysroot',
@@ -790,10 +779,7 @@ function cppCompilerDescriptors(
 function assertCppCompilerManifestCompatibility(
   assets: BrowserRuntimeAssetsByRuntime['cpp']
 ): void {
-  const compilerOrigin = assetOriginKey(assets.compilerWorker.url);
-  if (assetOriginKey(assets.compilerFrame.url) !== compilerOrigin) {
-    throw manifestError('cpp', 'assets.compilerFrame and assets.compilerWorker must share an origin.');
-  }
+  const compilerOrigin = assetOriginKey(assets.worker.url);
   for (const { name, descriptor } of cppCompilerDescriptors(assets)) {
     const sha256 = descriptorSha256(name, descriptor);
     if (assetOriginKey(descriptor.url) !== compilerOrigin && !sha256) {
@@ -810,17 +796,36 @@ function derivedCppCompilerIntegrity(
 ): CppCompilerIntegrityManifest | undefined {
   const manifest = manifests.cpp;
   if (!manifest) return undefined;
-  const entries = cppCompilerDescriptors(manifest.assets).flatMap(({ name, descriptor }) => {
+  const entries = new Map<
+    string,
+    CppCompilerIntegrityManifest['assets'][number]
+  >();
+  for (const { name, descriptor } of cppCompilerDescriptors(manifest.assets)) {
     const sha256 = descriptorSha256(name, descriptor);
-    return sha256
-      ? [{
-          url: descriptor.url,
-          sha256,
-          ...(descriptor.size === undefined ? {} : { size: descriptor.size }),
-        }]
-      : [];
-  });
-  return entries.length > 0 ? Object.freeze({ assets: Object.freeze(entries) }) : undefined;
+    if (!sha256) continue;
+    const existing = entries.get(descriptor.url);
+    if (
+      existing &&
+      (existing.sha256.toLowerCase() !== sha256.toLowerCase() ||
+        (existing.size !== undefined &&
+          descriptor.size !== undefined &&
+          existing.size !== descriptor.size))
+    ) {
+      throw manifestError(
+        'cpp',
+        `conflicting exact integrity pins were derived for ${JSON.stringify(descriptor.url)}.`
+      );
+    }
+    entries.set(descriptor.url, {
+      ...existing,
+      url: descriptor.url,
+      sha256,
+      ...(descriptor.size === undefined ? {} : { size: descriptor.size }),
+    });
+  }
+  return entries.size > 0
+    ? Object.freeze({ assets: Object.freeze(Array.from(entries.values())) })
+    : undefined;
 }
 
 function mergeCppCompilerIntegrity(
@@ -972,17 +977,7 @@ function normalizeManifest<Runtime extends BrowserRuntimeId>(
   }
   if (expectedRuntime === 'cpp') {
     const cppAssets = value.assets as unknown as BrowserRuntimeAssetsByRuntime['cpp'];
-    const hasCompilerBundle = cppAssets.compilerBundle !== undefined;
-    const hasCompleteDirectCompiler =
-      cppAssets.compilerWasm !== undefined &&
-      cppAssets.linkerWasm !== undefined &&
-      cppAssets.sysroot !== undefined;
-    if (!hasCompilerBundle && !hasCompleteDirectCompiler) {
-      throw manifestError(
-        expectedRuntime,
-        'assets must provide compilerBundle or the complete compilerWasm/linkerWasm/sysroot compiler set.'
-      );
-    }
+    void cppAssets;
   }
   if (expectedRuntime === 'csharp') {
     const csharpAssets =
@@ -1196,16 +1191,6 @@ export function resolveBrowserRuntimeAssets(options: {
       DEFAULT_BROWSER_RUNTIME_ASSET_RELATIVE_PATHS.cppWorker,
       manifestAssetUrl(runtimeManifests, 'cpp', 'worker')
     ),
-    cppCompilerFrame: resolve(
-      assets.cppCompilerFrame,
-      DEFAULT_BROWSER_RUNTIME_ASSET_RELATIVE_PATHS.cppCompilerFrame,
-      manifestAssetUrl(runtimeManifests, 'cpp', 'compilerFrame')
-    ),
-    cppCompilerWorker: resolve(
-      assets.cppCompilerWorker,
-      DEFAULT_BROWSER_RUNTIME_ASSET_RELATIVE_PATHS.cppCompilerWorker,
-      manifestAssetUrl(runtimeManifests, 'cpp', 'compilerWorker')
-    ),
     cppCompilerWasm: resolve(
       assets.cppCompilerWasm,
       DEFAULT_BROWSER_RUNTIME_ASSET_RELATIVE_PATHS.cppCompilerWasm,
@@ -1225,11 +1210,6 @@ export function resolveBrowserRuntimeAssets(options: {
       assets.cppRuntimeHeader,
       DEFAULT_BROWSER_RUNTIME_ASSET_RELATIVE_PATHS.cppRuntimeHeader,
       manifestAssetUrl(runtimeManifests, 'cpp', 'runtimeHeader')
-    ),
-    cppCompilerBundle: resolve(
-      assets.cppCompilerBundle,
-      DEFAULT_BROWSER_RUNTIME_ASSET_RELATIVE_PATHS.cppCompilerBundle,
-      optionalManifestAssetUrl(runtimeManifests, 'cpp', 'compilerBundle')
     ),
     ...(cppCompilerIntegrity ? { cppCompilerIntegrity } : {}),
     ...(Object.keys(runtimeManifests).length > 0 ? { runtimeManifests } : {}),

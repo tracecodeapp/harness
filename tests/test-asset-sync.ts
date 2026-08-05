@@ -60,8 +60,6 @@ async function main(t: TestContext): Promise<void> {
     'shared/tracekernel-local-java-host.js',
     'cpp-worker.js',
     'shared/runtime-kernel-policy.js',
-    'cpp-compiler-frame.html',
-    'cpp-compiler-worker.js',
     'cpp/tracecode_runtime.hpp',
     'java-source-augmentations.js',
     'csharp-worker.js',
@@ -77,12 +75,6 @@ async function main(t: TestContext): Promise<void> {
     'vendor/csharp-runner/_framework/assemblies-01.pack',
     'vendor/csharp-runner/_framework/assemblies-02.pack',
     'vendor/csharp-runner/_framework/assemblies-03.pack',
-    'cpp/compiler/bundle.js',
-    'cpp/compiler/llvm-resources.tar',
-    'cpp/compiler/llvm.core.wasm',
-    'cpp/compiler/llvm.core2.wasm',
-    'cpp/compiler/llvm.core3.wasm',
-    'cpp/compiler/llvm.core4.wasm',
   ];
 
   for (const relativePath of requiredFiles) {
@@ -119,6 +111,19 @@ async function main(t: TestContext): Promise<void> {
     !removedBrandedCppPathExists,
     'Asset sync must not republish C++ compiler assets under an implementation-branded path'
   );
+  const removedBundledCppCompilerExists = await stat(
+    join(targetDir, 'cpp/compiler')
+  ).then(
+    () => true,
+    (error: NodeJS.ErrnoException) => {
+      if (error.code === 'ENOENT') return false;
+      throw error;
+    }
+  );
+  assertCondition(
+    !removedBundledCppCompilerExists,
+    'Asset sync must not bundle external TraceCC release artifacts'
+  );
 
   const rootEntries = await readdir(targetDir);
   assertCondition(rootEntries.includes('python-worker.js'), 'Asset sync should flatten the Python worker into the target root');
@@ -138,8 +143,11 @@ async function main(t: TestContext): Promise<void> {
   );
   assertCondition(rootEntries.includes('csharp-worker.js'), 'Asset sync should flatten the C# worker into the target root');
   assertCondition(rootEntries.includes('cpp-worker.js'), 'Asset sync should flatten the C++ worker into the target root');
-  assertCondition(rootEntries.includes('cpp-compiler-frame.html'), 'Asset sync should flatten the C++ compiler frame into the target root');
-  assertCondition(rootEntries.includes('cpp-compiler-worker.js'), 'Asset sync should flatten the C++ compiler worker into the target root');
+  assertCondition(
+    !rootEntries.includes('cpp-compiler-frame.html') &&
+      !rootEntries.includes('cpp-compiler-worker.js'),
+    'Asset sync must not republish retired YoWASP compiler workers'
+  );
   assertCondition(
     rootEntries.includes('java-source-augmentations.js'),
     'Asset sync should flatten the Java augmentation helper into the target root'
@@ -182,7 +190,7 @@ async function main(t: TestContext): Promise<void> {
     'Asset sync must not publish build-time C# role archives to browsers'
   );
 
-  for (const relativePath of ['cpp-worker.js', 'cpp-compiler-worker.js']) {
+  for (const relativePath of ['cpp-worker.js']) {
     const source = await readFile(join(targetDir, relativePath), 'utf8');
     assertCondition(
       source.includes('toolchainIntegrity'),

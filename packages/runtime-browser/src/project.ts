@@ -769,14 +769,39 @@ function createPerCommandCppWorkerClient(
   const pool = createOneShotPrewarmedWorkerPool('C++', prewarmDepth, createClient, {
     retainClientForKernelLease: true,
   });
+  const activeCompileClients = new Set<CppWorkerClient>();
   return {
     async executeProjectCpp(request, timeoutMs, onEvent, signal, engineLease) {
+      // A trusted TraceCC compile is service-owned and must not pay for an
+      // execution worker. With no requested prewarm depth, a fresh client also
+      // already supplies C++'s one-command disposable runner boundary, so a
+      // separate generic pool warmup would only duplicate startup work.
+      if (request.source === 'compile' || prewarmDepth === 0) {
+        const client = createClient();
+        activeCompileClients.add(client);
+        try {
+          return await client.executeProjectCpp(
+            request,
+            timeoutMs,
+            onEvent,
+            signal,
+            engineLease
+          );
+        } finally {
+          activeCompileClients.delete(client);
+          client.terminate();
+        }
+      }
       return pool.run(signal, engineLease, (client) =>
         client.executeProjectCpp(request, timeoutMs, onEvent, signal)
       );
     },
     terminate() {
       pool.terminate();
+      for (const client of activeCompileClients) {
+        client.terminate();
+      }
+      activeCompileClients.clear();
     },
   };
 }
@@ -949,6 +974,7 @@ export async function createBrowserProjectWorkspace(
       ? Promise.all([
           import('../../runtime-cpp/src/project-browser'),
           import('../../runtime-cpp/src/cpp-worker-client'),
+          import('../../runtime-cpp/src/browser-runtime-provider'),
         ])
       : undefined,
   ]);
@@ -1242,30 +1268,45 @@ export async function createBrowserProjectWorkspace(
           }
         : {}),
     };
-    const cppWorkerOptions: CppWorkerClientOptions = {
-      workerUrl: assets.cppWorker,
-      ...(executionHost && isExecutionHosted('cpp') ? { workerFactory: executionHost.workerFactory } : {}),
-      assetPreflight: () => runtimeAssetPreflight.preflight('cpp', ['worker']),
-      runtimeAssetPreflight: () => runtimeAssetPreflight.preflight('cpp', [
-        'compilerFrame',
-        'compilerWorker',
+    const cppCompilerWorkerFactory =
+      executionHost && isExecutionHosted('cpp')
+        ? executionHost.workerFactory
+        : undefined;
+    const cppRuntimeAssetPreflight =
+      () => runtimeAssetPreflight.preflight('cpp', [
         'runtimeHeader',
-        'compilerBundle',
         'compilerWasm',
         'linkerWasm',
         'sysroot',
-        'compilerResources',
-      ]),
-      compilerFrameUrl: assets.cppCompilerFrame,
-      compilerWorkerUrl: assets.cppCompilerWorker,
+      ]);
+    const traceccCompilerService =
+      cppProvider && !injectedCppProvider
+      ? cppProvider[2].createTraceCCBrowserCompilerService({}, {
+          assets,
+          ...(cppCompilerWorkerFactory
+            ? { workerFactory: cppCompilerWorkerFactory }
+            : {}),
+          preflight: (assetNames) =>
+            runtimeAssetPreflight.preflight('cpp', assetNames),
+        })
+      : undefined;
+    const cppWorkerOptions: CppWorkerClientOptions = {
+      workerUrl: assets.cppWorker,
+      ...(cppCompilerWorkerFactory
+        ? { workerFactory: cppCompilerWorkerFactory }
+        : {}),
+      assetPreflight: () => runtimeAssetPreflight.preflight('cpp', ['worker']),
+      runtimeAssetPreflight: cppRuntimeAssetPreflight,
       compilerWasmUrl: assets.cppCompilerWasm,
       linkerWasmUrl: assets.cppLinkerWasm,
       sysrootUrl: assets.cppSysroot,
       runtimeHeaderUrl: assets.cppRuntimeHeader,
-      compilerBundleUrl: assets.cppCompilerBundle,
       compilerIntegrity: assets.cppCompilerIntegrity,
       debug,
       workerIdleTimeoutMs: cppWorkerIdleTimeoutMs,
+      ...(traceccCompilerService
+        ? { trustedCompilerService: traceccCompilerService }
+        : {}),
     };
     const PythonWorkerClientConstructor = pythonProvider?.[1].PythonWorkerClient;
     const pythonWorkerClient = hasProvider('python')
@@ -1308,6 +1349,9 @@ export async function createBrowserProjectWorkspace(
       : undefined;
     if (cppWorkerClient && !injectedCppProvider) {
       ownedWorkers.push(cppWorkerClient);
+    }
+    if (traceccCompilerService) {
+      ownedWorkers.push(traceccCompilerService);
     }
 
     if (executionHost) ownedWorkers.push({ terminate: () => executionHost?.dispose() });
