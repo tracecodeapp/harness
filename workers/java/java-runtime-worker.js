@@ -194,6 +194,7 @@ async function createTraceJVMClient() {
     },
     runtimeProfile: 'core',
     retirementAfterExecutions: 1,
+    experiments: { hotAot: true },
   });
   const initialization = Promise.all([
     compiler.initialize(),
