@@ -1,5 +1,5 @@
 import {
-  TraceJVMRuntimeHostWorkerClient,
+  TraceJVMCompilerWorkerClient,
   TraceJVMWorkerClient,
   type TraceJVMHostRequest,
   type TraceJVMWorkerHost,
@@ -61,7 +61,7 @@ class TraceJVMProjectClient implements JavaProjectClient {
   private runner: TraceJVMWorkerClient | undefined;
 
   constructor(
-    private readonly compilerHost: TraceJVMRuntimeHostWorkerClient,
+    private readonly compilerHost: TraceJVMCompilerWorkerClient,
     private readonly createRunner: () => TraceJVMWorkerClient
   ) {}
 
@@ -122,23 +122,27 @@ export function createJavaProjectClientFactory(
     (options.createWorker?.(workerUrl, role) as
       | TraceJVMWorkerLike
       | undefined) ?? createWorker(workerUrl, role);
-  const compilerHost = new TraceJVMRuntimeHostWorkerClient({
-    runtimeHost: {
+  const runtimeProfile = options.runtimeProfile ?? 'spring-server';
+  const runtimeProfileBaseUrls = {
+    core: `${runtimeAssetBaseUrl}/profiles/core`,
+    server: `${runtimeAssetBaseUrl}/profiles/server`,
+    'spring-server': `${runtimeAssetBaseUrl}/profiles/spring-server`,
+  } as const;
+  if (!(runtimeProfile in runtimeProfileBaseUrls)) {
+    throw new TypeError(
+      `Unsupported TraceJVM runtime profile: ${String(runtimeProfile)}`
+    );
+  }
+  const compilerHost = new TraceJVMCompilerWorkerClient({
+    compiler: {
       assets: {
-        runtimeProfileBaseUrls: {
-          core: `${runtimeAssetBaseUrl}/profiles/core`,
-          server: `${runtimeAssetBaseUrl}/profiles/server`,
-          'spring-server': `${runtimeAssetBaseUrl}/profiles/spring-server`,
-        },
-        wasmUrl: `${runtimeAssetBaseUrl}/bjvm_main.wasm`,
+        baseUrl: `${runtimeAssetBaseUrl}/compiler`,
       },
-      compiler: {
-        assets: {
-          baseUrl: `${runtimeAssetBaseUrl}/compiler`,
-        },
-      },
-      runtimeProfile: options.runtimeProfile ?? 'spring-server',
-      retirementAfterExecutions: 1,
+      platformArchiveUrl: `${runtimeProfileBaseUrls[runtimeProfile]}/jdk23.jar`,
+      platformClasspath: [{
+        path: 'tracekernel-api.jar',
+        url: `${runtimeProfileBaseUrls[runtimeProfile]}/tracekernel-api.jar`,
+      }],
     },
     createWorker: () => workerFor('compiler'),
   });
@@ -151,17 +155,12 @@ export function createJavaProjectClientFactory(
           new TraceJVMWorkerClient({
             engine: {
               assets: {
-                runtimeProfileBaseUrls: {
-                  core: `${runtimeAssetBaseUrl}/profiles/core`,
-                  server: `${runtimeAssetBaseUrl}/profiles/server`,
-                  'spring-server':
-                    `${runtimeAssetBaseUrl}/profiles/spring-server`,
-                },
+                runtimeProfileBaseUrls,
                 wasmUrl: `${runtimeAssetBaseUrl}/bjvm_main.wasm`,
               },
               workingDirectory: context.cwd,
               hostStandardDescriptors: context.hostStandardDescriptors,
-              runtimeProfile: options.runtimeProfile ?? 'spring-server',
+              runtimeProfile,
               retirementAfterExecutions: 1,
             },
             createWorker: () => workerFor('runner'),

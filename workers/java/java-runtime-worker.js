@@ -50,6 +50,7 @@ const traceJVMStringFiles = new Map();
 let traceJVMModulePromise;
 let traceKernelLocalJavaHostModulePromise;
 let traceJVMClientPromise;
+let traceJVMClient;
 let traceJVMHelperJarPromise;
 let traceJVMRewriteProgramPromise;
 const traceJVMCompileCache = new Map();
@@ -164,35 +165,89 @@ async function loadTraceJVMHelperJar() {
 }
 
 async function createTraceJVMClient() {
-  const { TraceJVMRuntimeHost } = await loadTraceJVMModule();
-  return new TraceJVMRuntimeHost({
+  const {
+    TraceJVMCompiler,
+    TraceJVMRunnerHost,
+  } = await loadTraceJVMModule();
+  const runtimeProfileBaseUrl =
+    TRACEJVM_CORE_PROFILE_URL.href.replace(/\/+$/, '');
+  const compiler = new TraceJVMCompiler({
+    assets: {
+      baseUrl: TRACEJVM_COMPILER_URL.href.replace(/\/+$/, ''),
+    },
+    platformArchiveUrl: `${runtimeProfileBaseUrl}/jdk23.jar`,
+    platformClasspath: [{
+      path: 'tracekernel-api.jar',
+      url: `${runtimeProfileBaseUrl}/tracekernel-api.jar`,
+    }],
+  });
+  const runnerHost = new TraceJVMRunnerHost({
     assets: {
       runtimeProfileBaseUrls: {
-        core: TRACEJVM_CORE_PROFILE_URL.href.replace(/\/+$/, ''),
+        core: runtimeProfileBaseUrl,
       },
       wasmUrl: TRACEJVM_WASM_URL.href,
-    },
-    compiler: {
-      assets: {
-        baseUrl: TRACEJVM_COMPILER_URL.href.replace(/\/+$/, ''),
-      },
     },
     runtimeProfile: 'core',
     retirementAfterExecutions: 1,
   });
+  const initialization = Promise.all([
+    compiler.initialize(),
+    runnerHost.initialize(),
+  ]).then(([compilerInitialization]) => compilerInitialization);
+  await initialization;
+
+  return {
+    initialize() {
+      return initialization;
+    },
+    compile(request) {
+      return compiler.compile(request);
+    },
+    async createProcess(options = {}) {
+      return runnerHost.createProcess(options);
+    },
+    dispose() {
+      runnerHost.dispose();
+      compiler.dispose();
+    },
+  };
 }
 
-async function getTraceJVMClient() {
-  traceJVMClientPromise ??= createTraceJVMClient();
+function getTraceJVMClient() {
+  if (!traceJVMClientPromise) {
+    const clientPromise = createTraceJVMClient().then(
+      (client) => {
+        if (traceJVMClientPromise === clientPromise) {
+          traceJVMClient = client;
+        }
+        return client;
+      },
+      (error) => {
+        if (traceJVMClientPromise === clientPromise) {
+          traceJVMClientPromise = undefined;
+        }
+        throw error;
+      }
+    );
+    traceJVMClientPromise = clientPromise;
+  }
   return traceJVMClientPromise;
 }
 
 function invalidateTraceJVMClient() {
-  void traceJVMClientPromise
-    ?.then((client) => client.dispose())
-    .catch(() => undefined);
+  const resolvedClient = traceJVMClient;
+  const pendingClient = traceJVMClientPromise;
+  traceJVMClient = undefined;
   traceJVMClientPromise = undefined;
   traceJVMRewriteProgramPromise = undefined;
+  if (resolvedClient) {
+    resolvedClient.dispose();
+    return;
+  }
+  void pendingClient
+    ?.then((client) => client.dispose())
+    .catch(() => undefined);
 }
 
 function unwrapTraceKernelResult(operation, result) {
