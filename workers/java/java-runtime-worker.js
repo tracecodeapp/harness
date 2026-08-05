@@ -241,6 +241,9 @@ function getTraceJVMClient() {
 }
 
 function invalidateTraceJVMClient() {
+  for (const key of [...traceJVMPreparedProcessLeases.keys()]) {
+    disposeTraceJVMPreparedProcessLease(key);
+  }
   const resolvedClient = traceJVMClient;
   const pendingClient = traceJVMClientPromise;
   traceJVMClient = undefined;
@@ -451,6 +454,107 @@ async function runInFreshTraceJVMProcess(client, request, programId) {
     process.dispose();
     host.close?.();
   }
+}
+
+const traceJVMPreparedProcessLeases = new Map();
+const TRACE_JVM_LEASE_MAX_EXECUTIONS = 64;
+
+function disposeTraceJVMPreparedProcessLease(programId) {
+  const lease = traceJVMPreparedProcessLeases.get(String(programId));
+  if (!lease) return false;
+  traceJVMPreparedProcessLeases.delete(String(programId));
+  lease.process?.dispose();
+  lease.host?.close?.();
+  return true;
+}
+
+async function stageTraceJVMKernelFiles(host, processFiles) {
+  for (const file of processFiles ?? []) {
+    const normalizedPath = `/${String(file.path).replace(/^\/+/, '')}`;
+    const parentPath = normalizedPath.slice(
+      0,
+      Math.max(1, normalizedPath.lastIndexOf('/'))
+    );
+    await host.dispatch({
+      service: 'posix',
+      operation: 'mkdir',
+      payload: { path: parentPath, options: { recursive: true } },
+    });
+    const opened = await host.dispatch({
+      service: 'posix',
+      operation: 'open',
+      payload: {
+        path: normalizedPath,
+        options: { access: 'write', create: true, truncate: true },
+      },
+    });
+    try {
+      await host.dispatch({
+        service: 'posix',
+        operation: 'write',
+        payload: { fd: opened.fd, bytes: file.content },
+      });
+    } finally {
+      await host.dispatch({
+        service: 'posix',
+        operation: 'close',
+        payload: { fd: opened.fd },
+      });
+    }
+  }
+}
+
+/**
+ * Run a prepared case in a warm per-program TraceJVM process. The engine
+ * restores run-scoped files/properties between executions and reports an
+ * isolation verdict per run; the lease survives only clean, non-retiring
+ * runs, so semantics match the fresh-process path while skipping VM spin-up
+ * (~700ms per traced case) for the common clean sequence.
+ */
+async function runInLeasedTraceJVMPreparedProcess(client, request, programId) {
+  const key = String(programId);
+  const processFiles = request.processFiles;
+  let lease = traceJVMPreparedProcessLeases.get(key);
+  if (!lease) {
+    const host = traceJVMProcessHost(programId);
+    const kernelBound = host.kernelBound;
+    const process = await client.createProcess({
+      workingDirectory: '/workspace',
+      retirementAfterExecutions: TRACE_JVM_LEASE_MAX_EXECUTIONS,
+      ...(kernelBound ? { host } : {}),
+    });
+    try {
+      if (kernelBound && processFiles?.length) {
+        await stageTraceJVMKernelFiles(host, processFiles);
+      }
+    } catch (error) {
+      process.dispose();
+      host.close?.();
+      throw error;
+    }
+    lease = { process, host, kernelBound };
+    traceJVMPreparedProcessLeases.set(key, lease);
+  }
+  let result;
+  try {
+    result = await lease.process.run({
+      ...request,
+      ...(lease.kernelBound && request.processFiles
+        ? { processFiles: undefined }
+        : {}),
+    });
+  } catch (error) {
+    disposeTraceJVMPreparedProcessLease(key);
+    throw error;
+  }
+  if (
+    result.isolation?.status !== 'clean' ||
+    result.retirementRecommended === true ||
+    lease.process.retirementRecommended === true
+  ) {
+    disposeTraceJVMPreparedProcessLease(key);
+  }
+  return result;
 }
 
 async function runInLeasedTraceJVMBatchProcess(
@@ -1100,7 +1204,7 @@ async function traceJVMRunPreparedRuntimeProgram(
       'TraceJVM prepared inputs must be string system properties.'
     );
   }
-  const run = await runInFreshTraceJVMProcess(client, {
+  const run = await runInLeasedTraceJVMPreparedProcess(client, {
     program: prepared.program,
     classpath: [helperJar],
     systemProperties,
@@ -1172,6 +1276,7 @@ async function traceJVMRunPreparedRuntimeProgramBatch(
       'TraceJVM prepared batch inputs must be a non-empty array of string system-property maps.'
     );
   }
+  disposeTraceJVMPreparedProcessLease(normalizedProgramId);
   let localAuthority;
   if (!traceJVMProcessHost(normalizedProgramId).kernelBound) {
     localAuthority = await createLocalTraceKernelAuthority();
@@ -1225,6 +1330,7 @@ async function traceJVMRunPreparedRuntimeProgramBatch(
 }
 
 function traceJVMDisposeRuntimeProgram(programId) {
+  disposeTraceJVMPreparedProcessLease(programId);
   return traceJVMPreparedPrograms.delete(String(programId));
 }
 
