@@ -13,6 +13,8 @@ public final class TraceHooks {
   private static final List<String> EVENTS = new ArrayList<>();
   private static final ThreadLocal<java.util.List<TraceFrame>> CALL_STACK = ThreadLocal.withInitial(java.util.ArrayList::new);
   private static final ThreadLocal<String> CALL_STACK_JSON = new ThreadLocal<>();
+  private static final ThreadLocal<int[]> CALL_STACK_JSON_ID =
+      ThreadLocal.withInitial(() -> new int[1]);
   private static final ThreadLocal<String> LAST_INDEX_SOURCE = new ThreadLocal<>();
   private static final ThreadLocal<java.util.IdentityHashMap<Object, String>> SERIALIZE_SEEN =
       ThreadLocal.withInitial(() -> new java.util.IdentityHashMap<Object, String>());
@@ -58,6 +60,7 @@ public final class TraceHooks {
   // are captured only when a run is started with profiling enabled.
   private static boolean profileEnabled = false;
   private static boolean budgetAbortArmed = false;
+  private static int nextCallStackId = 0;
   private static long profileRunStartNs = 0L;
   private static long profileBudgetTripNs = 0L;
   private static long profileSerializeNs = 0L;
@@ -188,15 +191,7 @@ public final class TraceHooks {
     long started = profileEnabled ? System.nanoTime() : 0L;
     String event;
     try {
-      java.util.List<TraceFrame> stack = CALL_STACK.get();
-      if (!stack.isEmpty()) {
-        String serializedStack = CALL_STACK_JSON.get();
-        if (serializedStack == null) {
-          serializedStack = serializeCallStack(stack);
-          CALL_STACK_JSON.set(serializedStack);
-        }
-        body.append(",\"callStack\":").append(serializedStack);
-      }
+      appendCallStackProperty(body);
       body.append('}');
       event = body.toString();
     } finally {
@@ -208,6 +203,33 @@ public final class TraceHooks {
     if (profileEnabled) profileEmitBuildNs += System.nanoTime() - started;
     profileEmitBuildCalls += 1;
     storeEvent(event);
+  }
+
+  /**
+   * Append the current call stack to an event body. The serialized stack only
+   * changes on call/return, so each distinct stack state is emitted in full
+   * exactly once ({@code callStackId}); every later event in the same state
+   * carries a {@code callStackRef} that the host trace adapter resolves and
+   * strips. Loop-heavy learner code repeats one stack state across thousands
+   * of events, so this removes most of the event payload.
+   */
+  private static void appendCallStackProperty(StringBuilder out) {
+    java.util.List<TraceFrame> stack = CALL_STACK.get();
+    if (stack.isEmpty()) return;
+    String serializedStack = CALL_STACK_JSON.get();
+    if (serializedStack != null) {
+      out.append(",\"callStackRef\":").append(CALL_STACK_JSON_ID.get()[0]);
+      return;
+    }
+    serializedStack = serializeCallStack(stack);
+    CALL_STACK_JSON.set(serializedStack);
+    int id;
+    synchronized (STATE_LOCK) {
+      id = ++nextCallStackId;
+    }
+    CALL_STACK_JSON_ID.get()[0] = id;
+    out.append(",\"callStack\":").append(serializedStack);
+    out.append(",\"callStackId\":").append(id);
   }
 
   private static void storeEvent(String sanitizedEvent) {
@@ -333,6 +355,7 @@ public final class TraceHooks {
     limitExceeded = false;
     droppedEventCount = 0;
     nextTraceReferenceId = 0;
+    nextCallStackId = 0;
     budgetAbortArmed = false;
     resetProfileLocked();
   }
@@ -1074,16 +1097,10 @@ public final class TraceHooks {
   private static String withCallStack(String event) {
     java.util.List<TraceFrame> stack = CALL_STACK.get();
     if (stack.isEmpty() || !event.endsWith("}")) return event;
-    String serializedStack = CALL_STACK_JSON.get();
-    if (serializedStack == null) {
-      serializedStack = serializeCallStack(stack);
-      CALL_STACK_JSON.set(serializedStack);
-    }
     StringBuilder out = acquireEventBuilder();
     try {
       out.append(event, 0, event.length() - 1);
-      out.append(",\"callStack\":");
-      out.append(serializedStack);
+      appendCallStackProperty(out);
       out.append('}');
       return out.toString();
     } finally {

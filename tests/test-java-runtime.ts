@@ -54,6 +54,23 @@ function parseNativeJavaEvent(event: string): Record<string, unknown> | null {
   }
 }
 
+function resolveNativeJavaCallStackRefs(
+  events: Array<Record<string, unknown>>
+): Array<Record<string, unknown>> {
+  const defs = new Map<number, string>();
+  for (const event of events) {
+    if (typeof event.callStackId === 'number') {
+      if (event.callStack) defs.set(event.callStackId, JSON.stringify(event.callStack));
+      delete event.callStackId;
+    } else if (typeof event.callStackRef === 'number') {
+      const def = defs.get(event.callStackRef);
+      if (def !== undefined) event.callStack = JSON.parse(def) as unknown;
+      delete event.callStackRef;
+    }
+  }
+  return events;
+}
+
 function nativeEventMatches(event: string, expected: Record<string, unknown>): boolean {
   const parsed = parseNativeJavaEvent(event);
   if (!parsed) return false;
@@ -1251,7 +1268,9 @@ public class Main {
       ['-cp', [classesPath, join(process.cwd(), 'workers', 'vendor', 'java-browser-helper.jar')].join(':'), 'Main'],
       { cwd: process.cwd(), encoding: 'utf8', stdio: 'pipe' }
     );
-    const parsed = output.trim().split('\n').map(parseNativeJavaEvent).filter((event): event is Record<string, unknown> => Boolean(event));
+    const parsed = resolveNativeJavaCallStackRefs(
+      output.trim().split('\n').map(parseNativeJavaEvent).filter((event): event is Record<string, unknown> => Boolean(event))
+    );
     const lineFiveEvents = parsed.filter((event) => event.kind === 'line' && event.line === 5);
     assertCondition(lineFiveEvents.length === 2, 'Java recursive trace should emit both same-source-line dfs frames');
     assertCondition(
