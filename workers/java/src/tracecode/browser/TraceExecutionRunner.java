@@ -6,6 +6,7 @@ import java.lang.reflect.InvocationTargetException;
 import java.lang.reflect.Method;
 import java.nio.charset.StandardCharsets;
 import java.util.Base64;
+import tracecode.user.TraceBudgetExceededError;
 import tracecode.user.TraceHooks;
 
 /**
@@ -16,8 +17,12 @@ import tracecode.user.TraceHooks;
 public final class TraceExecutionRunner {
   public static final String OUTPUT_MARKER = "__TRACECODE_TRACE_OUTPUT__:";
   public static final String EVENT_MARKER = "__TRACECODE_TRACE_EVENT__:";
+  public static final String EVENTS_BEGIN_MARKER = "__TRACECODE_TRACE_EVENTS_BEGIN__:";
+  public static final String EVENTS_END_MARKER = "__TRACECODE_TRACE_EVENTS_END__";
+  public static final String EXPORT_MARKER = "__TRACECODE_TRACE_EXPORT_MS__:";
   public static final String LIMIT_MARKER = "__TRACECODE_TRACE_LIMIT__:";
   public static final String DROPPED_MARKER = "__TRACECODE_TRACE_DROPPED__:";
+  public static final String PROFILE_MARKER = "__TRACECODE_TRACE_PROFILE__:";
   public static final String ERROR_MARKER = "__TRACECODE_TRACE_ERROR__:";
 
   private TraceExecutionRunner() {}
@@ -99,18 +104,33 @@ public final class TraceExecutionRunner {
       run.setAccessible(true);
       output = run.invoke(null);
     } catch (InvocationTargetException error) {
-      failure = error.getCause() == null ? error : error.getCause();
+      Throwable cause = error.getCause() == null ? error : error.getCause();
+      if (!(cause instanceof TraceBudgetExceededError)) {
+        failure = cause;
+      }
     } catch (Throwable error) {
-      failure = error;
+      if (!(error instanceof TraceBudgetExceededError)) {
+        failure = error;
+      }
     } finally {
+      // Snapshot before event export so TraceHooks totals exclude transport.
+      String profileJson = TraceHooks.profileReportJson();
       if (output != null) {
         System.out.println(OUTPUT_MARKER + encode(String.valueOf(output)));
       }
-      for (String event : TraceHooks.drainEvents()) {
-        System.out.println(EVENT_MARKER + encode(event));
+      long exportStarted = System.nanoTime();
+      StringBuilder eventBlock = new StringBuilder(256);
+      int eventCount = TraceHooks.drainEventsNdjson(eventBlock);
+      System.out.println(EVENTS_BEGIN_MARKER + eventCount);
+      if (eventCount > 0) {
+        System.out.print(eventBlock);
       }
+      System.out.println(EVENTS_END_MARKER);
+      double exportMs = Math.round((System.nanoTime() - exportStarted) / 1e4) / 1e2;
+      System.out.println(EXPORT_MARKER + exportMs);
       System.out.println(LIMIT_MARKER + TraceHooks.traceLimitExceeded());
       System.out.println(DROPPED_MARKER + TraceHooks.droppedEventCount());
+      System.out.println(PROFILE_MARKER + encode(profileJson));
       if (failure != null) {
         System.out.println(
             ERROR_MARKER + encode(learnerFailure(failure, learnerFrame)));

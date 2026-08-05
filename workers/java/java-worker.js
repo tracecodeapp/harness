@@ -3146,8 +3146,335 @@ function appendJavaLocalSnapshotsAfterMutations(line, scopeStack) {
 function guardJavaLineEmit(line) {
   return line.replace(
     /^(\s*)TraceHooks\.emitLineAtLine\((.+)\);\s*$/,
-    (_match, indent, argsSource) => `${indent}if (!TraceHooks.traceLimitExceeded()) TraceHooks.emitLineAtLine(${argsSource});`
+    (_match, indent, argsSource) => `${indent}if (!TraceHooks.limitExceeded) TraceHooks.emitLineAtLine(${argsSource});`
   );
+}
+
+/**
+ * After the stored-event budget trips, TraceJVM still pays for every instrumented
+ * TraceHooks call even when the hook immediately returns. Rewrite call sites so
+ * post-budget paths use plain Java (reads) or skip emit-only statements entirely.
+ * Event shape up to the budget is unchanged.
+ */
+const TRACE_ARRAY_READ_HELPERS = new Set([
+  'readIntArrayAtLine',
+  'readLongArrayAtLine',
+  'readBooleanArrayAtLine',
+  'readDoubleArrayAtLine',
+  'readFloatArrayAtLine',
+  'readCharArrayAtLine',
+  'readByteArrayAtLine',
+  'readShortArrayAtLine',
+  'readObjectArrayAtLine',
+]);
+
+const TRACE_MATRIX_READ_HELPERS = new Set([
+  'readIntMatrixAtLine',
+  'readLongMatrixAtLine',
+  'readBooleanMatrixAtLine',
+  'readDoubleMatrixAtLine',
+  'readFloatMatrixAtLine',
+  'readCharMatrixAtLine',
+  'readByteMatrixAtLine',
+  'readShortMatrixAtLine',
+  'readObjectMatrixAtLine',
+]);
+
+const TRACE_EMIT_ONLY_HELPERS = new Set([
+  'emit',
+  'emitLineAtLine',
+  'emitCallAtLine',
+  'emitReturnAtLine',
+  'emitSerializedReturnAtLine',
+  'emitScalarWriteAtLine',
+  'emitRuntimeSnapshotAtLine',
+  'emitArrayWriteAtLine',
+  'emitFieldWriteAtLine',
+  'emitFieldPathWriteAtLine',
+  'emitIndexedWriteAtLine',
+  'emitMutatingCallAtLine',
+  'emitThrowAtLine',
+  'emitStdoutAtLine',
+]);
+
+function findMatchingJavaParen(source, openIndex) {
+  let depth = 0;
+  let inString = false;
+  let inChar = false;
+  let escaped = false;
+  for (let index = openIndex; index < source.length; index += 1) {
+    const ch = source[index];
+    if (escaped) {
+      escaped = false;
+      continue;
+    }
+    if (ch === '\\' && (inString || inChar)) {
+      escaped = true;
+      continue;
+    }
+    if (inString) {
+      if (ch === '"') inString = false;
+      continue;
+    }
+    if (inChar) {
+      if (ch === "'") inChar = false;
+      continue;
+    }
+    if (ch === '"') {
+      inString = true;
+      continue;
+    }
+    if (ch === "'") {
+      inChar = true;
+      continue;
+    }
+    if (ch === '(') {
+      depth += 1;
+    } else if (ch === ')') {
+      depth -= 1;
+      if (depth === 0) return index;
+    }
+  }
+  return -1;
+}
+
+function splitJavaTopLevelArgs(argsSource) {
+  const args = [];
+  let start = 0;
+  let depthParen = 0;
+  let depthBracket = 0;
+  let depthBrace = 0;
+  let depthAngle = 0;
+  let inString = false;
+  let inChar = false;
+  let escaped = false;
+  for (let index = 0; index < argsSource.length; index += 1) {
+    const ch = argsSource[index];
+    if (escaped) {
+      escaped = false;
+      continue;
+    }
+    if (ch === '\\' && (inString || inChar)) {
+      escaped = true;
+      continue;
+    }
+    if (inString) {
+      if (ch === '"') inString = false;
+      continue;
+    }
+    if (inChar) {
+      if (ch === "'") inChar = false;
+      continue;
+    }
+    if (ch === '"') {
+      inString = true;
+      continue;
+    }
+    if (ch === "'") {
+      inChar = true;
+      continue;
+    }
+    if (ch === '(') depthParen += 1;
+    else if (ch === ')') depthParen -= 1;
+    else if (ch === '[') depthBracket += 1;
+    else if (ch === ']') depthBracket -= 1;
+    else if (ch === '{') depthBrace += 1;
+    else if (ch === '}') depthBrace -= 1;
+    else if (ch === '<') depthAngle += 1;
+    else if (ch === '>') depthAngle -= 1;
+    else if (
+      ch === ',' &&
+      depthParen === 0 &&
+      depthBracket === 0 &&
+      depthBrace === 0 &&
+      depthAngle === 0
+    ) {
+      args.push(argsSource.slice(start, index).trim());
+      start = index + 1;
+    }
+  }
+  const tail = argsSource.slice(start).trim();
+  if (tail || args.length > 0) args.push(tail);
+  return args;
+}
+
+function skipJavaWhitespaceAndCommentsBackward(source, index) {
+  let cursor = index;
+  while (cursor >= 0) {
+    const ch = source[cursor];
+    if (/\s/.test(ch)) {
+      cursor -= 1;
+      continue;
+    }
+    if (ch === '/' && cursor > 0 && source[cursor - 1] === '*') {
+      cursor -= 2;
+      while (cursor >= 1) {
+        if (source[cursor - 1] === '/' && source[cursor] === '*') {
+          cursor -= 2;
+          break;
+        }
+        cursor -= 1;
+      }
+      continue;
+    }
+    break;
+  }
+  return cursor;
+}
+
+function isAlreadyBudgetGuardedTraceCall(source, callStart) {
+  const before = skipJavaWhitespaceAndCommentsBackward(source, callStart - 1);
+  if (before < 0) return false;
+  const guards = [
+    'if (!TraceHooks.limitExceeded)',
+    'if (!TraceHooks.traceLimitExceeded())',
+  ];
+  for (const guard of guards) {
+    if (before + 1 >= guard.length) {
+      const slice = source.slice(before - guard.length + 1, before + 1);
+      if (slice === guard) return true;
+    }
+  }
+  // Already rewritten as `(TraceHooks.limitExceeded ? plain : TraceHooks.…)`
+  if (source[before] === ':') {
+    const window = source.slice(Math.max(0, before - 80), before + 1);
+    if (window.includes('limitExceeded') || window.includes('traceLimitExceeded()')) {
+      return true;
+    }
+  }
+  return false;
+}
+
+function collectTraceHooksCalls(source) {
+  const calls = [];
+  let index = 0;
+  let inString = false;
+  let inChar = false;
+  let escaped = false;
+  while (index < source.length) {
+    const ch = source[index];
+    if (escaped) {
+      escaped = false;
+      index += 1;
+      continue;
+    }
+    if (ch === '\\' && (inString || inChar)) {
+      escaped = true;
+      index += 1;
+      continue;
+    }
+    if (inString) {
+      if (ch === '"') inString = false;
+      index += 1;
+      continue;
+    }
+    if (inChar) {
+      if (ch === "'") inChar = false;
+      index += 1;
+      continue;
+    }
+    if (ch === '"') {
+      inString = true;
+      index += 1;
+      continue;
+    }
+    if (ch === "'") {
+      inChar = true;
+      index += 1;
+      continue;
+    }
+    if (source.startsWith('TraceHooks.', index)) {
+      const nameStart = index + 'TraceHooks.'.length;
+      let nameEnd = nameStart;
+      while (nameEnd < source.length && /[A-Za-z0-9_]/.test(source[nameEnd])) {
+        nameEnd += 1;
+      }
+      const name = source.slice(nameStart, nameEnd);
+      let open = nameEnd;
+      while (open < source.length && /\s/.test(source[open])) open += 1;
+      if (source[open] === '(') {
+        const close = findMatchingJavaParen(source, open);
+        if (close >= 0) {
+          calls.push({
+            start: index,
+            end: close + 1,
+            name,
+            argsSource: source.slice(open + 1, close),
+          });
+          index = close + 1;
+          continue;
+        }
+      }
+      index = nameEnd;
+      continue;
+    }
+    index += 1;
+  }
+  return calls;
+}
+
+function plainExprForTraceReadCall(call) {
+  const args = splitJavaTopLevelArgs(call.argsSource);
+  if (TRACE_ARRAY_READ_HELPERS.has(call.name)) {
+    if (args.length < 4) return null;
+    return `${args[2]}[${args[3]}]`;
+  }
+  if (TRACE_MATRIX_READ_HELPERS.has(call.name)) {
+    if (args.length < 5) return null;
+    return `${args[2]}[${args[3]}][${args[4]}]`;
+  }
+  if (call.name === 'readArrayLengthAtLine') {
+    if (args.length < 3) return null;
+    // 3-arg: length of the array/collection expression itself.
+    // 5-arg nested form still lengths args[2].
+    return `${args[2]}.length`;
+  }
+  if (call.name === 'readObjectFieldAtLine' || call.name === 'readFieldPathAtLine') {
+    if (args.length < 4) return null;
+    return args[3];
+  }
+  return null;
+}
+
+function isStatementLevelTraceCall(source, call) {
+  let after = call.end;
+  while (after < source.length && /\s/.test(source[after])) after += 1;
+  if (source[after] !== ';') return false;
+  const before = skipJavaWhitespaceAndCommentsBackward(source, call.start - 1);
+  if (before < 0) return true;
+  const ch = source[before];
+  // Statement boundary, or already inside `{ …; TraceHooks…; }` / line start.
+  return ch === ';' || ch === '{' || ch === '}' || ch === '\n';
+}
+
+function elideTraceHooksAfterBudget(source) {
+  const calls = collectTraceHooksCalls(source);
+  let next = source;
+  for (let index = calls.length - 1; index >= 0; index -= 1) {
+    const call = calls[index];
+    if (isAlreadyBudgetGuardedTraceCall(next, call.start)) continue;
+
+    const plain = plainExprForTraceReadCall(call);
+    if (plain) {
+      const hooked = next.slice(call.start, call.end);
+      const replacement = `(TraceHooks.limitExceeded ? ${plain} : ${hooked})`;
+      next = next.slice(0, call.start) + replacement + next.slice(call.end);
+      continue;
+    }
+
+    if (
+      TRACE_EMIT_ONLY_HELPERS.has(call.name) &&
+      isStatementLevelTraceCall(next, call)
+    ) {
+      let end = call.end;
+      while (end < next.length && /\s/.test(next[end])) end += 1;
+      if (next[end] === ';') end += 1;
+      const hookedStmt = next.slice(call.start, end);
+      const replacement = `if (!TraceHooks.limitExceeded) ${hookedStmt}`;
+      next = next.slice(0, call.start) + replacement + next.slice(end);
+    }
+  }
+  return next;
 }
 
 function appendJavaScalarDeclarationWrites(line, lineNumber) {
@@ -6562,6 +6889,7 @@ async function buildJavaTraceRunnableSource(
   applyRewriteStage('throw events', augmentJavaThrowEvents);
   applyRewriteStage('local snapshots', augmentJavaLocalSnapshots);
   applyRewriteStage('return value snapshots', augmentTraceReturnValueSnapshots);
+  applyRewriteStage('budget call-site elision', elideTraceHooksAfterBudget);
   return rewrittenSource;
 }
 
@@ -7625,9 +7953,16 @@ function preparedJavaResultFromReport(
   executionTimeMs,
   hostCallMs
 ) {
-  const consoleOutput = javaReportConsoleOutput(report, {
-    includeSuccessfulDiagnostics: false,
-  });
+  const consoleOutput = [
+    ...javaReportConsoleOutput(report, {
+      includeSuccessfulDiagnostics: false,
+    }),
+    ...(report.traceProfile
+      ? [
+          `__TRACECODE_TRACE_PROFILE_JSON__:${JSON.stringify(report.traceProfile)}`,
+        ]
+      : []),
+  ];
   const timings = {
     compileMs: 0,
     classLoadMs: report.classLoadTimeMs ?? 0,
@@ -7666,6 +8001,7 @@ function preparedJavaResultFromReport(
             droppedEventCount: report.droppedEventCount ?? 0,
           }
         : {}),
+      ...(report.traceProfile ? { traceProfile: report.traceProfile } : {}),
       ...(report.bytecodeProfile
         ? { bytecodeProfile: report.bytecodeProfile }
         : {}),

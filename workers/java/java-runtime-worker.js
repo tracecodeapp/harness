@@ -65,8 +65,12 @@ let traceJVMExecutionScopeResetSequence = 0;
 
 const TRACE_OUTPUT_MARKER = '__TRACECODE_TRACE_OUTPUT__:';
 const TRACE_EVENT_MARKER = '__TRACECODE_TRACE_EVENT__:';
+const TRACE_EVENTS_BEGIN_MARKER = '__TRACECODE_TRACE_EVENTS_BEGIN__:';
+const TRACE_EVENTS_END_MARKER = '__TRACECODE_TRACE_EVENTS_END__';
+const TRACE_EXPORT_MARKER = '__TRACECODE_TRACE_EXPORT_MS__:';
 const TRACE_LIMIT_MARKER = '__TRACECODE_TRACE_LIMIT__:';
 const TRACE_DROPPED_MARKER = '__TRACECODE_TRACE_DROPPED__:';
+const TRACE_PROFILE_MARKER = '__TRACECODE_TRACE_PROFILE__:';
 const TRACE_ERROR_MARKER = '__TRACECODE_TRACE_ERROR__:';
 
 const REWRITE_BRIDGE_SOURCE = `
@@ -728,18 +732,49 @@ function compileFailureReport(compile, compilerDebugProfile) {
   };
 }
 
+function parseTraceEventsFromStdout(lines) {
+  const beginIndex = lines.findIndex((line) =>
+    line.startsWith(TRACE_EVENTS_BEGIN_MARKER)
+  );
+  if (beginIndex >= 0) {
+    const declaredCount = Number.parseInt(
+      lines[beginIndex].slice(TRACE_EVENTS_BEGIN_MARKER.length),
+      10
+    );
+    const endIndex = lines.findIndex(
+      (line, index) =>
+        index > beginIndex && line.startsWith(TRACE_EVENTS_END_MARKER)
+    );
+    if (endIndex > beginIndex) {
+      const events = lines.slice(beginIndex + 1, endIndex);
+      if (
+        Number.isFinite(declaredCount) &&
+        declaredCount >= 0 &&
+        events.length !== declaredCount
+      ) {
+        // Prefer the framed body; count mismatch is diagnostic only.
+      }
+      return events;
+    }
+  }
+  // Legacy per-event Base64 lines (older helper jars / runners).
+  return lines
+    .filter((line) => line.startsWith(TRACE_EVENT_MARKER))
+    .map((line) => decodeText(line.slice(TRACE_EVENT_MARKER.length)));
+}
+
 function executionReport(
   run,
   compile,
   compilerDebugProfile,
   compileCacheHit = false
 ) {
+  const parseStarted = performance.now();
   const lines = run.stdout.split(/\r?\n/u);
   const encodedOutput = markerValue(lines, TRACE_OUTPUT_MARKER);
   const encodedError = markerValue(lines, TRACE_ERROR_MARKER);
-  const events = lines
-    .filter((line) => line.startsWith(TRACE_EVENT_MARKER))
-    .map((line) => decodeText(line.slice(TRACE_EVENT_MARKER.length)));
+  const events = parseTraceEventsFromStdout(lines);
+  const hostParseMs = performance.now() - parseStarted;
   const runtimeError = encodedError
     ? decodeText(encodedError)
     : run.status !== 'completed' || run.exitCode !== 0
@@ -753,6 +788,33 @@ function executionReport(
     markerValue(lines, TRACE_DROPPED_MARKER) ?? '0',
     10
   );
+  const exportMsRaw = Number.parseFloat(
+    markerValue(lines, TRACE_EXPORT_MARKER) ?? ''
+  );
+  const encodedProfile = markerValue(lines, TRACE_PROFILE_MARKER);
+  let traceProfile;
+  if (encodedProfile) {
+    try {
+      traceProfile = JSON.parse(decodeText(encodedProfile));
+    } catch {
+      traceProfile = { parseError: true, raw: encodedProfile };
+    }
+  }
+  if (traceProfile && typeof traceProfile === 'object') {
+    traceProfile = {
+      ...traceProfile,
+      ...(Number.isFinite(exportMsRaw) ? { exportMs: exportMsRaw } : {}),
+      hostParseMs: Math.round(hostParseMs * 100) / 100,
+      eventCount: events.length,
+      stdoutChars: run.stdout.length,
+    };
+  }
+  if (traceProfile) {
+    // Surfaced for measurement scripts via page/worker console capture.
+    console.log(
+      '__TRACECODE_TRACE_PROFILE_JSON__:' + JSON.stringify(traceProfile)
+    );
+  }
 
   return {
     success: runtimeError === undefined,
@@ -770,6 +832,7 @@ function executionReport(
     droppedEventCount: Number.isFinite(droppedEventCount)
       ? droppedEventCount
       : 0,
+    ...(traceProfile ? { traceProfile } : {}),
     ...(run.diagnostics?.bytecodeProfile
       ? { bytecodeProfile: run.diagnostics.bytecodeProfile }
       : {}),
