@@ -3244,7 +3244,6 @@ function splitJavaTopLevelArgs(argsSource) {
   let depthParen = 0;
   let depthBracket = 0;
   let depthBrace = 0;
-  let depthAngle = 0;
   let inString = false;
   let inChar = false;
   let escaped = false;
@@ -3280,14 +3279,14 @@ function splitJavaTopLevelArgs(argsSource) {
     else if (ch === ']') depthBracket -= 1;
     else if (ch === '{') depthBrace += 1;
     else if (ch === '}') depthBrace -= 1;
-    else if (ch === '<') depthAngle += 1;
-    else if (ch === '>') depthAngle -= 1;
+    // No angle-bracket tracking: generated hook args never carry type
+    // arguments, but learner index expressions can contain bare `<`/`>`
+    // comparisons, which would desync a depth counter.
     else if (
       ch === ',' &&
       depthParen === 0 &&
       depthBracket === 0 &&
-      depthBrace === 0 &&
-      depthAngle === 0
+      depthBrace === 0
     ) {
       args.push(argsSource.slice(start, index).trim());
       start = index + 1;
@@ -3451,7 +3450,26 @@ function elideTraceHooksAfterBudget(source) {
   const calls = collectTraceHooksCalls(source);
   let next = source;
   for (let index = calls.length - 1; index >= 0; index -= 1) {
-    const call = calls[index];
+    // Rewriting proceeds by descending start offset, so a call's start never
+    // moves — but its interior can: a nested hook call inside this call's
+    // arguments may already have been rewritten, shifting the closing paren.
+    // Recompute the span and argument text against the current string instead
+    // of trusting offsets collected from the original source.
+    const start = calls[index].start;
+    const name = calls[index].name;
+    const token = `TraceHooks.${name}`;
+    if (!next.startsWith(token, start)) continue;
+    let open = start + token.length;
+    while (open < next.length && /\s/.test(next[open])) open += 1;
+    if (next[open] !== '(') continue;
+    const close = findMatchingJavaParen(next, open);
+    if (close < 0) continue;
+    const call = {
+      start,
+      end: close + 1,
+      name,
+      argsSource: next.slice(open + 1, close),
+    };
     if (isAlreadyBudgetGuardedTraceCall(next, call.start)) continue;
 
     const plain = plainExprForTraceReadCall(call);
@@ -8097,7 +8115,8 @@ async function executePreparedJavaRuntimeProgram(payload) {
           : 1
       ),
       JSON.stringify(preparedInputProperties),
-      program.learnerFrame
+      program.learnerFrame,
+      String(program.mode === 'trace' && program.traceOptions?.traceProfile === true)
     );
     report = JSON.parse(reportText);
   } catch (error) {
@@ -8196,7 +8215,8 @@ async function executePreparedJavaRuntimeProgramBatch(payload) {
             ? Math.max(1, Math.floor(payload.perCaseWallClockMs))
             : 0
         ),
-        program.learnerFrame
+        program.learnerFrame,
+        String(program.mode === 'trace' && program.traceOptions?.traceProfile === true)
       );
     report = JSON.parse(reportText);
   } catch (error) {

@@ -182,6 +182,8 @@ export interface JavaTraceExecutionOptions {
   maxStoredEvents?: number;
   maxPathDepth?: number;
   minimalTrace?: boolean;
+  /** Opt-in TraceHooks hot-path profile (nanoTime spans + PROFILE marker). */
+  traceProfile?: boolean;
 }
 
 const EXECUTION_TIMEOUT_MS = 20_000;

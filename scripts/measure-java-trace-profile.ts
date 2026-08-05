@@ -15,6 +15,7 @@ const PRODUCT_TRACE_BUDGET = {
   maxLineEvents: 20000,
   maxSingleLineHits: 4000,
   maxStoredEvents: 16000,
+  traceProfile: true,
 };
 
 function option(name: string): string | undefined {

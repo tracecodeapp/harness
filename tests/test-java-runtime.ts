@@ -3087,7 +3087,7 @@ function createWorkerHarness(workerSource: string, augmentationSource: string) {
                   ],
                 });
               }
-              if (latestSource.includes('values.add(n); TraceHooks.emit("trace:{\\"kind\\":\\"mutate\\"')) {
+              if (latestSource.includes('values.add(n); if (!TraceHooks.limitExceeded) TraceHooks.emit("trace:{\\"kind\\":\\"mutate\\"')) {
                 return JSON.stringify({
                   success: true,
                   output: JSON.stringify(1),
@@ -7029,7 +7029,9 @@ Object result = lowerBound(new int[] {1, 3, 3, 5, 8}, 4);`;
       'Java rewritten call hook should serialize all live method arguments like JS/Python trace call snapshots'
     );
     assertCondition(
-      lowerBoundSource.includes('int right = TraceHooks.readArrayLengthAtLine(5, "nums", nums);'),
+      lowerBoundSource.includes(
+        'int right = (TraceHooks.limitExceeded ? nums.length : TraceHooks.readArrayLengthAtLine(5, "nums", nums));'
+      ),
       'Java rewritten array length reads should emit runtime indexed-state context'
     );
     const nestedArrayLengthSource = augmentRewrittenJavaForTest(`class Solution {

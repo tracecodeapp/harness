@@ -166,14 +166,12 @@ public final class JavaRewriteLibrary {
                 braceDelta(line),
                 fields,
                 signature.parametersSource,
-                declaredClassNames,
-                signature.indent,
-                pendingMethodHeader.startLine - 1);
+                declaredClassNames);
             methods.push(frame);
             if (signature.constructor) {
               frame.pendingEntrySourceLine = pendingMethodHeader.startLine;
             } else {
-              appendMethodEntry(out, signature.indent + "  ", pendingMethodHeader.startLine, frame);
+              appendMethodEntry(out, signature.indent + "  ", pendingMethodHeader.startLine, signature.name);
             }
           }
           pendingMethodHeader = null;
@@ -185,32 +183,17 @@ public final class JavaRewriteLibrary {
       if (method.matches()) {
         out.append(line).append('\n');
         String name = method.group(2);
-        MethodFrame frame = new MethodFrame(
-            name,
-            extractReturnType(line, name),
-            braceDelta(line),
-            fields,
-            method.group(3),
-            declaredClassNames,
-            method.group(1),
-            index);
-        methods.push(frame);
-        appendMethodEntry(out, method.group(1) + "  ", sourceLine, frame);
+        methods.push(new MethodFrame(name, extractReturnType(line, name), braceDelta(line), fields, method.group(3), declaredClassNames));
+        out.append(method.group(1)).append("  TraceHooks.emitCallAtLine(")
+            .append(sourceLine).append(", ").append(quote(name)).append(", \"\");\n");
+        out.append(method.group(1)).append("  TraceHooks.emitLineAtLine(").append(sourceLine).append(");\n");
         continue;
       }
       Matcher constructor = CONSTRUCTOR_START.matcher(line);
       if (constructor.matches() && declaredClassNames.contains(constructor.group(2))) {
         out.append(line).append('\n');
         String name = constructor.group(2);
-        MethodFrame frame = new MethodFrame(
-            name,
-            "void",
-            braceDelta(line),
-            fields,
-            constructor.group(3),
-            declaredClassNames,
-            constructor.group(1),
-            index);
+        MethodFrame frame = new MethodFrame(name, "void", braceDelta(line), fields, constructor.group(3), declaredClassNames);
         frame.pendingEntrySourceLine = sourceLine;
         methods.push(frame);
         continue;
@@ -235,7 +218,7 @@ public final class JavaRewriteLibrary {
             0,
             current.constructorDelegationParenDepth + parenDelta(line));
         if (current.constructorDelegationParenDepth == 0 && trimmed.endsWith(";")) {
-          appendMethodEntry(out, indentOf(line), current.pendingEntrySourceLine, current);
+          appendMethodEntry(out, indentOf(line), current.pendingEntrySourceLine, current.name);
           current.pendingEntrySourceLine = 0;
         }
         current.depth += braceDelta(line);
@@ -251,13 +234,13 @@ public final class JavaRewriteLibrary {
           out.append(line).append('\n');
           current.constructorDelegationParenDepth = Math.max(0, parenDelta(line));
           if (current.constructorDelegationParenDepth == 0 && trimmed.endsWith(";")) {
-            appendMethodEntry(out, indentOf(line), current.pendingEntrySourceLine, current);
+            appendMethodEntry(out, indentOf(line), current.pendingEntrySourceLine, current.name);
             current.pendingEntrySourceLine = 0;
           }
           current.depth += braceDelta(line);
           continue;
         }
-        appendMethodEntry(out, indentOf(line), current.pendingEntrySourceLine, current);
+        appendMethodEntry(out, indentOf(line), current.pendingEntrySourceLine, current.name);
         current.pendingEntrySourceLine = 0;
       }
       if (trimmed.startsWith("@")) {
@@ -320,15 +303,7 @@ public final class JavaRewriteLibrary {
         out.append(indentOf(line)).append("TraceHooks.emitReturnAtLine(")
             .append(sourceLine).append(", ").append(quote(current.name)).append(");\n");
       }
-      boolean closingMethod =
-          current.budgetTryOpen &&
-          current.depth + braceDelta(rewrittenLine) <= 0 &&
-          "}".equals(trimmed);
-      if (closingMethod) {
-        appendBudgetCatchAndUntraced(out, current, lines, index);
-      } else {
-        out.append(rewrittenLine).append('\n');
-      }
+      out.append(rewrittenLine).append('\n');
       current.pendingAnnotation = false;
       if (startsMultilineControlHeader(trimmed)) {
         current.headerParenDepth = Math.max(0, parenDelta(line));
@@ -2331,83 +2306,14 @@ public final class JavaRewriteLibrary {
     return conditionAndUpdateClause.substring(delimiter + 1).trim().isEmpty();
   }
 
-  private static String parameterCallList(String parametersSource) {
-    if (parametersSource == null || parametersSource.trim().isEmpty()) return "";
-    StringBuilder out = new StringBuilder();
-    for (String parameter : splitTopLevel(parametersSource)) {
-      String cleaned = parameter.replaceAll("@\\w+(?:\\([^)]*\\))?", "").replaceAll("\\bfinal\\b", "").trim();
-      Matcher name = Pattern.compile("([A-Za-z_][A-Za-z0-9_]*)\\s*(?:\\.\\.\\.)?$").matcher(cleaned);
-      if (!name.find()) continue;
-      if (out.length() > 0) out.append(", ");
-      out.append(name.group(1));
-    }
-    return out.toString();
-  }
-
   private static String quote(String value) {
     return "\"" + value.replace("\\", "\\\\").replace("\"", "\\\"") + "\"";
   }
 
-  private static void appendMethodEntry(StringBuilder out, String indent, int sourceLine, MethodFrame frame) {
+  private static void appendMethodEntry(StringBuilder out, String indent, int sourceLine, String name) {
     out.append(indent).append("TraceHooks.emitCallAtLine(")
-        .append(sourceLine).append(", ").append(quote(frame.name)).append(", \"\");\n");
+        .append(sourceLine).append(", ").append(quote(name)).append(", \"\");\n");
     out.append(indent).append("TraceHooks.emitLineAtLine(").append(sourceLine).append(");\n");
-    // Constructors keep pendingEntrySourceLine flow and skip budget fallback.
-    if (frame.pendingEntrySourceLine > 0) return;
-    out.append(indent).append("try {\n");
-    frame.budgetTryOpen = true;
-  }
-
-  private static void appendBudgetCatchAndUntraced(
-      StringBuilder out,
-      MethodFrame frame,
-      String[] originalLines,
-      int closingLineIndex
-  ) {
-    String bodyIndent = frame.methodIndent + "  ";
-    out.append(bodyIndent)
-        .append("} catch (tracecode.user.TraceBudgetExceededError __tracecodeBudgetExceeded) {\n");
-    out.append(bodyIndent).append("  TraceHooks.markBudgetAbortFallback();\n");
-    if ("void".equals(frame.returnType)) {
-      out.append(bodyIndent)
-          .append("  ")
-          .append(frame.name)
-          .append("$untraced(")
-          .append(frame.parameterCallList)
-          .append(");\n");
-    } else {
-      out.append(bodyIndent)
-          .append("  return ")
-          .append(frame.name)
-          .append("$untraced(")
-          .append(frame.parameterCallList)
-          .append(");\n");
-    }
-    out.append(bodyIndent).append("}\n");
-    out.append(frame.methodIndent).append("}\n");
-    emitUntracedMethodCopy(out, frame, originalLines, closingLineIndex);
-    frame.budgetTryOpen = false;
-  }
-
-  private static void emitUntracedMethodCopy(
-      StringBuilder out,
-      MethodFrame frame,
-      String[] originalLines,
-      int closingLineIndex
-  ) {
-    if (frame.signatureLineIndex < 0 || frame.signatureLineIndex >= originalLines.length) return;
-    if (closingLineIndex < frame.signatureLineIndex || closingLineIndex >= originalLines.length) return;
-    String signature = originalLines[frame.signatureLineIndex];
-    String renamed = signature.replaceFirst(
-        "(\\b" + Pattern.quote(frame.name) + "\\s*\\()",
-        Matcher.quoteReplacement(frame.name + "$untraced(")
-    );
-    // Keep the untraced copy package-private helper-ish by stripping public.
-    renamed = renamed.replaceFirst("^(\\s*)public\\s+", "$1");
-    out.append(renamed).append('\n');
-    for (int index = frame.signatureLineIndex + 1; index <= closingLineIndex; index++) {
-      out.append(originalLines[index]).append('\n');
-    }
   }
 
   private static String stringArrayLiteral(java.util.List<String> values) {
@@ -2771,11 +2677,6 @@ public final class JavaRewriteLibrary {
   private static final class MethodFrame {
     final String name;
     final String returnType;
-    final String parametersSource;
-    final String parameterCallList;
-    final String methodIndent;
-    final int signatureLineIndex;
-    boolean budgetTryOpen;
     int depth;
     int initializerDepth;
     int headerParenDepth;
@@ -2790,23 +2691,9 @@ public final class JavaRewriteLibrary {
     final java.util.Set<String> declaredClassNames;
     final Map<String, String> variables;
 
-    MethodFrame(
-        String name,
-        String returnType,
-        int depth,
-        Map<String, String> fields,
-        String parametersSource,
-        Set<String> declaredClassNames,
-        String methodIndent,
-        int signatureLineIndex
-    ) {
+    MethodFrame(String name, String returnType, int depth, Map<String, String> fields, String parametersSource, Set<String> declaredClassNames) {
       this.name = name;
       this.returnType = returnType == null || returnType.isBlank() ? "var" : returnType;
-      this.parametersSource = parametersSource == null ? "" : parametersSource;
-      this.parameterCallList = parameterCallList(this.parametersSource);
-      this.methodIndent = methodIndent == null ? "" : methodIndent;
-      this.signatureLineIndex = signatureLineIndex;
-      this.budgetTryOpen = false;
       this.depth = depth;
       this.initializerDepth = 0;
       this.headerParenDepth = 0;

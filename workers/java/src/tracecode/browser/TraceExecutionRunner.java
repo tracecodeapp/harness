@@ -94,7 +94,8 @@ public final class TraceExecutionRunner {
     String entryClass = args[0];
     int maxStoredEvents = Integer.parseInt(args[1]);
     String learnerFrame = args.length >= 3 ? args[2] : "";
-    int token = TraceHooks.beginRun(maxStoredEvents);
+    boolean profile = args.length >= 4 && "profile".equals(args[3]);
+    int token = TraceHooks.beginRun(maxStoredEvents, profile, true);
     Object output = null;
     Throwable failure = null;
     try {
@@ -102,19 +103,38 @@ public final class TraceExecutionRunner {
       Class<?> entry = Class.forName(entryClass, true, loader);
       Method run = entry.getMethod("run");
       run.setAccessible(true);
-      output = run.invoke(null);
-    } catch (InvocationTargetException error) {
-      Throwable cause = error.getCause() == null ? error : error.getCause();
-      if (!(cause instanceof TraceBudgetExceededError)) {
-        failure = cause;
+      boolean budgetAborted = false;
+      try {
+        output = run.invoke(null);
+      } catch (InvocationTargetException error) {
+        Throwable cause = error.getCause() == null ? error : error.getCause();
+        if (cause instanceof TraceBudgetExceededError) {
+          budgetAborted = true;
+        } else {
+          failure = cause;
+        }
+      }
+      if (budgetAborted) {
+        // The budget tripped mid-run, so learner state (input arrays, fields)
+        // may be half-mutated; a partial replay of any single method would
+        // double its side effects. Re-run the whole case instead: run()
+        // rebuilds its inputs from scratch, and with the budget flag set the
+        // hooks are dead, so the rerun executes near-plain and stores nothing.
+        // The recorded trace stays truncated at the budget. Learner *static*
+        // state is not reset (classes stay loaded); non-idempotent statics are
+        // a known limitation of the rerun.
+        TraceHooks.markBudgetAbortFallback();
+        try {
+          output = run.invoke(null);
+        } catch (InvocationTargetException error) {
+          failure = error.getCause() == null ? error : error.getCause();
+        }
       }
     } catch (Throwable error) {
-      if (!(error instanceof TraceBudgetExceededError)) {
-        failure = error;
-      }
+      failure = error;
     } finally {
       // Snapshot before event export so TraceHooks totals exclude transport.
-      String profileJson = TraceHooks.profileReportJson();
+      String profileJson = profile ? TraceHooks.profileReportJson() : null;
       if (output != null) {
         System.out.println(OUTPUT_MARKER + encode(String.valueOf(output)));
       }
@@ -130,7 +150,9 @@ public final class TraceExecutionRunner {
       System.out.println(EXPORT_MARKER + exportMs);
       System.out.println(LIMIT_MARKER + TraceHooks.traceLimitExceeded());
       System.out.println(DROPPED_MARKER + TraceHooks.droppedEventCount());
-      System.out.println(PROFILE_MARKER + encode(profileJson));
+      if (profileJson != null) {
+        System.out.println(PROFILE_MARKER + encode(profileJson));
+      }
       if (failure != null) {
         System.out.println(
             ERROR_MARKER + encode(learnerFailure(failure, learnerFrame)));

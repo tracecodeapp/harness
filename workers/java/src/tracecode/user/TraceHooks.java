@@ -18,6 +18,31 @@ public final class TraceHooks {
       ThreadLocal.withInitial(() -> new java.util.IdentityHashMap<Object, String>());
   private static final ThreadLocal<StringBuilder> EVENT_STRING_BUILDER =
       ThreadLocal.withInitial(() -> new StringBuilder(256));
+  private static final ThreadLocal<boolean[]> EVENT_BUILDER_IN_USE =
+      ThreadLocal.withInitial(() -> new boolean[1]);
+
+  /**
+   * Serializing a value can execute instrumented learner code (a learner
+   * {@code Iterable} being walked, a learner {@code toString()} on a map key),
+   * which re-enters these hooks while an event is mid-build. Hand re-entrant
+   * callers a fresh builder so the shared one is never clobbered.
+   */
+  private static StringBuilder acquireEventBuilder() {
+    boolean[] inUse = EVENT_BUILDER_IN_USE.get();
+    if (inUse[0]) {
+      return new StringBuilder(128);
+    }
+    inUse[0] = true;
+    StringBuilder out = EVENT_STRING_BUILDER.get();
+    out.setLength(0);
+    return out;
+  }
+
+  private static void releaseEventBuilder(StringBuilder builder) {
+    if (builder == EVENT_STRING_BUILDER.get()) {
+      EVENT_BUILDER_IN_USE.get()[0] = false;
+    }
+  }
   private static final InheritableThreadLocal<Integer> RUN_TOKEN = new InheritableThreadLocal<>();
   private static final java.util.IdentityHashMap<Object, String> TRACE_REFERENCE_IDS = new java.util.IdentityHashMap<>();
   private static int maxEvents = DEFAULT_MAX_EVENTS;
@@ -28,20 +53,15 @@ public final class TraceHooks {
   private static int nextTraceReferenceId = 0;
   private static int nextRunToken = 0;
   private static volatile int activeRunToken = 0;
-  /**
-   * Same-output cache for root {@link #serializeResult(Object)} calls. Hot DP
-   * loops often re-snapshot the same array between mutations (length reads +
-   * line locals). Invalidated on any traced mutation.
-   */
-  private static Object serializeCacheTarget = null;
-  private static String serializeCacheJson = null;
-
   // Optional hot-path profile for TraceJVM / native measurement runs.
+  // Counters are always maintained (they are close to free); nanoTime spans
+  // are captured only when a run is started with profiling enabled.
+  private static boolean profileEnabled = false;
+  private static boolean budgetAbortArmed = false;
   private static long profileRunStartNs = 0L;
   private static long profileBudgetTripNs = 0L;
   private static long profileSerializeNs = 0L;
   private static long profileSerializeCalls = 0L;
-  private static long profileSerializeCacheHits = 0L;
   private static long profileSerializeChars = 0L;
   private static long profileEmitBuildNs = 0L;
   private static long profileEmitBuildCalls = 0L;
@@ -57,8 +77,6 @@ public final class TraceHooks {
   private static long profileLengthCalls = 0L;
   private static long profileLineCalls = 0L;
   private static long profileScalarWriteCalls = 0L;
-  private static long profileHookEntryNs = 0L;
-  private static long profileHookEntries = 0L;
   private static long profileBudgetAbortFallbackNs = 0L;
   private static long profileBudgetAbortFallbacks = 0L;
 
@@ -69,7 +87,6 @@ public final class TraceHooks {
     profileBudgetTripNs = 0L;
     profileSerializeNs = 0L;
     profileSerializeCalls = 0L;
-    profileSerializeCacheHits = 0L;
     profileSerializeChars = 0L;
     profileEmitBuildNs = 0L;
     profileEmitBuildCalls = 0L;
@@ -85,13 +102,11 @@ public final class TraceHooks {
     profileLengthCalls = 0L;
     profileLineCalls = 0L;
     profileScalarWriteCalls = 0L;
-    profileHookEntryNs = 0L;
-    profileHookEntries = 0L;
     profileBudgetAbortFallbackNs = 0L;
     profileBudgetAbortFallbacks = 0L;
   }
 
-  /** Called from rewritten catch blocks before running the untraced method copy. */
+  /** Called by TraceExecutionRunner before re-running the whole case untraced. */
   public static void markBudgetAbortFallback() {
     if (profileBudgetAbortFallbackNs == 0L) {
       profileBudgetAbortFallbackNs = System.nanoTime();
@@ -117,7 +132,6 @@ public final class TraceHooks {
     out.append(",\"budgetTripped\":").append(profileBudgetTripNs > 0L || traceLimitExceeded);
     out.append(",\"serializeMs\":").append(nsToMs(profileSerializeNs));
     out.append(",\"serializeCalls\":").append(profileSerializeCalls);
-    out.append(",\"serializeCacheHits\":").append(profileSerializeCacheHits);
     out.append(",\"serializeChars\":").append(profileSerializeChars);
     out.append(",\"emitBuildMs\":").append(nsToMs(profileEmitBuildNs));
     out.append(",\"emitBuildCalls\":").append(profileEmitBuildCalls);
@@ -133,7 +147,6 @@ public final class TraceHooks {
     out.append(",\"lengthCalls\":").append(profileLengthCalls);
     out.append(",\"lineCalls\":").append(profileLineCalls);
     out.append(",\"scalarWriteCalls\":").append(profileScalarWriteCalls);
-    out.append(",\"hookEntries\":").append(profileHookEntries);
     out.append(",\"budgetAbortFallbacks\":").append(profileBudgetAbortFallbacks);
     out.append(",\"budgetAbortFallbackMs\":").append(
         profileBudgetAbortFallbackNs > 0L
@@ -168,29 +181,37 @@ public final class TraceHooks {
    */
   private static void emitEventBody(StringBuilder body) {
     if (!runActiveForCurrentThread()) return;
-    if (dropIfStorageExhausted()) return;
-    long started = System.nanoTime();
-    java.util.List<TraceFrame> stack = CALL_STACK.get();
-    if (!stack.isEmpty()) {
-      String serializedStack = CALL_STACK_JSON.get();
-      if (serializedStack == null) {
-        serializedStack = serializeCallStack(stack);
-        CALL_STACK_JSON.set(serializedStack);
-      }
-      body.append(",\"callStack\":").append(serializedStack);
+    if (dropIfStorageExhausted()) {
+      releaseEventBuilder(body);
+      return;
     }
-    body.append('}');
-    String event = body.toString();
+    long started = profileEnabled ? System.nanoTime() : 0L;
+    String event;
+    try {
+      java.util.List<TraceFrame> stack = CALL_STACK.get();
+      if (!stack.isEmpty()) {
+        String serializedStack = CALL_STACK_JSON.get();
+        if (serializedStack == null) {
+          serializedStack = serializeCallStack(stack);
+          CALL_STACK_JSON.set(serializedStack);
+        }
+        body.append(",\"callStack\":").append(serializedStack);
+      }
+      body.append('}');
+      event = body.toString();
+    } finally {
+      releaseEventBuilder(body);
+    }
     if (event.indexOf("NaN") >= 0 || event.indexOf("Infinity") >= 0) {
       event = sanitizeJsonNonFiniteNumbers(event);
     }
-    profileEmitBuildNs += System.nanoTime() - started;
+    if (profileEnabled) profileEmitBuildNs += System.nanoTime() - started;
     profileEmitBuildCalls += 1;
     storeEvent(event);
   }
 
   private static void storeEvent(String sanitizedEvent) {
-    long started = System.nanoTime();
+    long started = profileEnabled ? System.nanoTime() : 0L;
     boolean throwBudgetExceeded = false;
     synchronized (STATE_LOCK) {
       if (!runActiveForCurrentThread()) return;
@@ -210,9 +231,9 @@ public final class TraceHooks {
         profileStoredChars += sanitizedEvent.length();
       }
     }
-    profileStoreNs += System.nanoTime() - started;
+    if (profileEnabled) profileStoreNs += System.nanoTime() - started;
     profileStoreCalls += 1;
-    if (throwBudgetExceeded) {
+    if (throwBudgetExceeded && budgetAbortArmed) {
       throw new TraceBudgetExceededError();
     }
   }
@@ -256,13 +277,30 @@ public final class TraceHooks {
   }
 
   public static int beginRun(int nextMaxEvents) {
+    return beginRun(nextMaxEvents, false, false);
+  }
+
+  public static int beginRun(int nextMaxEvents, boolean enableProfile) {
+    return beginRun(nextMaxEvents, enableProfile, false);
+  }
+
+  /**
+   * {@code abortOnBudget} makes the first budget trip throw
+   * {@link TraceBudgetExceededError} to end the traced run immediately. Only
+   * arm it from an entry point that catches the error and re-runs the case
+   * (TraceExecutionRunner); direct TraceHooks users and the project bootstrap
+   * keep the drop-silently behaviour.
+   */
+  public static int beginRun(int nextMaxEvents, boolean enableProfile, boolean abortOnBudget) {
     int token;
+    profileEnabled = enableProfile;
     synchronized (STATE_LOCK) {
       token = nextRunToken + 1;
       if (token <= 0) token = 1;
       nextRunToken = token;
       activeRunToken = token;
       resetStateLocked(nextMaxEvents);
+      budgetAbortArmed = abortOnBudget;
       if (EVENTS instanceof ArrayList<?>) {
         ((ArrayList<String>) EVENTS).ensureCapacity(maxEvents);
       }
@@ -290,12 +328,12 @@ public final class TraceHooks {
     CALL_STACK_JSON.remove();
     LAST_INDEX_SOURCE.remove();
     TRACE_REFERENCE_IDS.clear();
-    invalidateSerializeCache();
     maxEvents = Math.max(1, nextMaxEvents);
     traceLimitExceeded = false;
     limitExceeded = false;
     droppedEventCount = 0;
     nextTraceReferenceId = 0;
+    budgetAbortArmed = false;
     resetProfileLocked();
   }
 
@@ -353,33 +391,20 @@ public final class TraceHooks {
     // this value. Avoid repeatedly walking growing learner collections just
     // to construct an event that emit() will discard.
     if (traceLimitExceeded && runActiveForCurrentThread()) return "null";
-    long started = System.nanoTime();
+    long started = profileEnabled ? System.nanoTime() : 0L;
     profileSerializeCalls += 1;
-    if (value != null && value == serializeCacheTarget && serializeCacheJson != null) {
-      profileSerializeCacheHits += 1;
-      profileSerializeNs += System.nanoTime() - started;
-      return serializeCacheJson;
-    }
     String json;
     if (value instanceof int[]) {
       json = serializeIntArrayRoot((int[]) value, true);
-      serializeCacheTarget = value;
-      serializeCacheJson = json;
     } else if (value instanceof long[]) {
       json = serializeLongArrayRoot((long[]) value, true);
-      serializeCacheTarget = value;
-      serializeCacheJson = json;
     } else {
       java.util.IdentityHashMap<Object, String> seen = SERIALIZE_SEEN.get();
       seen.clear();
       json = serializeResult(value, seen, 0, true);
-      if (value != null && (value.getClass().isArray() || value instanceof java.util.Collection<?> || value instanceof java.util.Map<?, ?>)) {
-        serializeCacheTarget = value;
-        serializeCacheJson = json;
-      }
     }
     profileSerializeChars += json.length();
-    profileSerializeNs += System.nanoTime() - started;
+    if (profileEnabled) profileSerializeNs += System.nanoTime() - started;
     return json;
   }
 
@@ -389,16 +414,10 @@ public final class TraceHooks {
     return serializeResult(value, seen, 0, false);
   }
 
-  private static void invalidateSerializeCache() {
-    serializeCacheTarget = null;
-    serializeCacheJson = null;
-  }
-
   public static void emitLineAtLine(int line) {
     profileLineCalls += 1;
     if (dropIfStorageExhausted()) return;
-    StringBuilder out = EVENT_STRING_BUILDER.get();
-    out.setLength(0);
+    StringBuilder out = acquireEventBuilder();
     out.append("trace:{\"kind\":\"line\",\"line\":").append(line);
     java.util.List<TraceFrame> stack = CALL_STACK.get();
     if (!stack.isEmpty()) {
@@ -498,32 +517,27 @@ public final class TraceHooks {
 
   public static void emitArrayWriteAtLine(int line, String name, int index, Object value) {
     if (dropIfStorageExhausted()) return;
-    invalidateSerializeCache();
     emitTraceWrite(line, name, "[" + index + "]", value);
   }
 
   public static void emitArrayWriteAtLine(int line, String name, int index, Object value, String indexSource) {
     profileWriteArrayCalls += 1;
     if (dropIfStorageExhausted()) return;
-    invalidateSerializeCache();
     emitTraceWrite(line, name, "[" + index + "]", value, indexSourcesJson(indexSource));
   }
 
   public static void emitArrayWriteAtLine(int line, String name, int row, int col, Object value) {
     if (dropIfStorageExhausted()) return;
-    invalidateSerializeCache();
     emitTraceWrite(line, name, "[" + row + "," + col + "]", value);
   }
 
   public static void emitArrayWriteAtLine(int line, String name, int row, int col, Object value, String rowSource, String colSource) {
     if (dropIfStorageExhausted()) return;
-    invalidateSerializeCache();
     emitTraceWrite(line, name, "[" + row + "," + col + "]", value, indexSourcesJson(rowSource, colSource));
   }
 
   public static void emitIndexedWriteAtLine(int line, String name, Object[] path, Object value, String... indexSources) {
     if (dropIfStorageExhausted()) return;
-    invalidateSerializeCache();
     StringBuilder pathJson = new StringBuilder("[");
     for (int index = 0; index < path.length; index++) {
       if (index > 0) pathJson.append(",");
@@ -1065,13 +1079,16 @@ public final class TraceHooks {
       serializedStack = serializeCallStack(stack);
       CALL_STACK_JSON.set(serializedStack);
     }
-    StringBuilder out = EVENT_STRING_BUILDER.get();
-    out.setLength(0);
-    out.append(event, 0, event.length() - 1);
-    out.append(",\"callStack\":");
-    out.append(serializedStack);
-    out.append('}');
-    return out.toString();
+    StringBuilder out = acquireEventBuilder();
+    try {
+      out.append(event, 0, event.length() - 1);
+      out.append(",\"callStack\":");
+      out.append(serializedStack);
+      out.append('}');
+      return out.toString();
+    } finally {
+      releaseEventBuilder(out);
+    }
   }
 
   private static String serializeCallStack(java.util.List<TraceFrame> stack) {
@@ -1244,8 +1261,7 @@ public final class TraceHooks {
 
   private static void emitSnapshot(int line, String name, String serializedValue) {
     if (dropIfStorageExhausted()) return;
-    StringBuilder out = EVENT_STRING_BUILDER.get();
-    out.setLength(0);
+    StringBuilder out = acquireEventBuilder();
     out.append("trace:{\"kind\":\"snapshot\",\"line\":").append(line);
     out.append(",\"target\":{\"variable\":").append(jsonString(name)).append("},\"value\":").append(serializedValue);
     emitEventBody(out);
@@ -2218,8 +2234,7 @@ public final class TraceHooks {
 
   private static void emitTraceRead(int line, String name, String pathJson, Object value, String indexSourcesJson) {
     if (dropIfStorageExhausted()) return;
-    StringBuilder out = EVENT_STRING_BUILDER.get();
-    out.setLength(0);
+    StringBuilder out = acquireEventBuilder();
     out.append("trace:{\"kind\":\"read\",\"line\":").append(line);
     out.append(",\"target\":{\"variable\":").append(jsonString(name)).append(",\"path\":").append(pathJson);
     if (indexSourcesJson != null) out.append(",\"indexSources\":").append(indexSourcesJson);
@@ -2253,8 +2268,7 @@ public final class TraceHooks {
   public static void emitScalarWriteAtLine(int line, String name, Object value) {
     profileScalarWriteCalls += 1;
     if (dropIfStorageExhausted()) return;
-    StringBuilder out = EVENT_STRING_BUILDER.get();
-    out.setLength(0);
+    StringBuilder out = acquireEventBuilder();
     out.append("trace:{\"kind\":\"write\",\"line\":").append(line);
     out.append(",\"target\":{\"variable\":").append(jsonString(name)).append("},\"value\":");
     out.append(serializeResult(value));
@@ -2263,9 +2277,7 @@ public final class TraceHooks {
 
   private static void emitTraceWrite(int line, String name, String pathJson, Object value, String indexSourcesJson) {
     if (dropIfStorageExhausted()) return;
-    invalidateSerializeCache();
-    StringBuilder out = EVENT_STRING_BUILDER.get();
-    out.setLength(0);
+    StringBuilder out = acquireEventBuilder();
     out.append("trace:{\"kind\":\"write\",\"line\":").append(line);
     out.append(",\"target\":{\"variable\":").append(jsonString(name)).append(",\"path\":").append(pathJson);
     if (indexSourcesJson != null) out.append(",\"indexSources\":").append(indexSourcesJson);
@@ -2341,9 +2353,7 @@ public final class TraceHooks {
 
   private static void emitTraceMutate(int line, String name, String pathJson, String method, String indexSourcesJson, String argsJson) {
     if (dropIfStorageExhausted()) return;
-    invalidateSerializeCache();
-    StringBuilder out = EVENT_STRING_BUILDER.get();
-    out.setLength(0);
+    StringBuilder out = acquireEventBuilder();
     out.append("trace:{\"kind\":\"mutate\",\"line\":").append(line);
     out.append(",\"target\":{\"variable\":").append(jsonString(name));
     if (pathJson != null) out.append(",\"path\":").append(pathJson);
