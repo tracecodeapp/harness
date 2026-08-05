@@ -1,12 +1,8 @@
 #!/usr/bin/env node
 
 import { copyFile, cp, mkdir, stat } from 'node:fs/promises';
-import { createRequire } from 'node:module';
 import { dirname, join, resolve } from 'node:path';
-import { pathToFileURL } from 'node:url';
 import { materializeCSharpRoleAssets } from '../scripts/csharp-role-artifacts.js';
-
-const require = createRequire(pathToFileURL(process.argv[1] ?? join(process.cwd(), 'tracecode-harness.js')));
 
 type AssetLanguage = 'python' | 'javascript' | 'java' | 'csharp' | 'cpp';
 
@@ -116,54 +112,8 @@ const ASSET_COPY_PLAN = [
     languages: ['cpp'],
   },
   {
-    source: ['workers', 'cpp', 'cpp-compiler-frame.html'],
-    target: ['cpp-compiler-frame.html'],
-    languages: ['cpp'],
-  },
-  {
-    source: ['workers', 'cpp', 'cpp-compiler-worker.js'],
-    target: ['cpp-compiler-worker.js'],
-    languages: ['cpp'],
-  },
-  {
     source: ['workers', 'cpp', 'tracecode_runtime.hpp'],
     target: ['cpp', 'tracecode_runtime.hpp'],
-    languages: ['cpp'],
-  },
-  {
-    packageName: '@yowasp/clang',
-    source: ['gen', 'bundle.js'],
-    target: ['cpp', 'compiler', 'bundle.js'],
-    languages: ['cpp'],
-  },
-  {
-    packageName: '@yowasp/clang',
-    source: ['gen', 'llvm-resources.tar'],
-    target: ['cpp', 'compiler', 'llvm-resources.tar'],
-    languages: ['cpp'],
-  },
-  {
-    packageName: '@yowasp/clang',
-    source: ['gen', 'llvm.core.wasm'],
-    target: ['cpp', 'compiler', 'llvm.core.wasm'],
-    languages: ['cpp'],
-  },
-  {
-    packageName: '@yowasp/clang',
-    source: ['gen', 'llvm.core2.wasm'],
-    target: ['cpp', 'compiler', 'llvm.core2.wasm'],
-    languages: ['cpp'],
-  },
-  {
-    packageName: '@yowasp/clang',
-    source: ['gen', 'llvm.core3.wasm'],
-    target: ['cpp', 'compiler', 'llvm.core3.wasm'],
-    languages: ['cpp'],
-  },
-  {
-    packageName: '@yowasp/clang',
-    source: ['gen', 'llvm.core4.wasm'],
-    target: ['cpp', 'compiler', 'llvm.core4.wasm'],
     languages: ['cpp'],
   },
   {
@@ -223,10 +173,6 @@ function getPackageRoot(): string {
 }
 
 function resolveAssetSourcePath(packageRoot: string, asset: typeof ASSET_COPY_PLAN[number]): string {
-  if ('packageName' in asset) {
-    const packageEntrypoint = require.resolve(asset.packageName);
-    return join(dirname(dirname(packageEntrypoint)), ...asset.source);
-  }
   return join(packageRoot, ...asset.source);
 }
 

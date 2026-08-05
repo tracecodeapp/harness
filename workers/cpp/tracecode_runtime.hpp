@@ -1333,6 +1333,99 @@ inline void write_trace_event_json_raw(const std::string& event_json);
 inline bool check_trace_budget(int line);
 inline void emit_line(int line, const char* function_name);
 
+inline __attribute__((noinline)) void emit_serialized_value_event(
+    const char* kind,
+    int line,
+    const std::string& target,
+    const std::string& value,
+    const char* iteration_binding = nullptr,
+    bool prechecked_and_counted = false) {
+  std::string event =
+    std::string("{\"kind\":\"") + kind +
+    "\",\"line\":" + std::to_string(line) +
+    ",\"target\":" + target +
+    ",\"value\":" + value;
+  if (iteration_binding) {
+    event +=
+      std::string(",\"binding\":{\"kind\":\"iteration\",\"variable\":") +
+      to_json(iteration_binding) + "}";
+  }
+  event += "}";
+  if (prechecked_and_counted) {
+    write_trace_event_json_raw(event);
+  } else {
+    write_trace_event_json(event, line);
+  }
+}
+
+inline __attribute__((noinline)) void emit_serialized_mutation_event(
+    int line,
+    const std::string& target,
+    const char* method,
+    const std::string& args_json = "",
+    bool default_no_arg_payload = true) {
+  std::string event =
+    std::string("{\"kind\":\"mutate\",\"line\":") +
+    std::to_string(line) +
+    ",\"target\":" + target +
+    ",\"method\":" + to_json(method);
+  if (!args_json.empty()) {
+    event += ",\"args\":" + args_json;
+  } else if (default_no_arg_payload) {
+    event += no_arg_mutation_args_json(method);
+  }
+  event += "}";
+  write_trace_event_json(event, line);
+}
+
+inline __attribute__((noinline)) void emit_serialized_call_event(
+    int line,
+    const char* function_name,
+    const std::string& args_json) {
+  write_trace_event_json(
+    std::string("{\"kind\":\"call\",\"line\":") +
+      std::to_string(line) +
+      ",\"function\":" + to_json(function_name) +
+      ",\"args\":" + args_json + "}",
+    line
+  );
+}
+
+inline __attribute__((noinline)) void emit_serialized_return_event(
+    int line,
+    const char* function_name) {
+  write_trace_event_json(
+    std::string("{\"kind\":\"return\",\"line\":") +
+      std::to_string(line) +
+      ",\"function\":" + to_json(function_name) + "}",
+    line
+  );
+}
+
+inline __attribute__((noinline)) void emit_serialized_return_event(
+    int line,
+    const char* function_name,
+    const std::string& value_json) {
+  write_trace_event_json(
+    std::string("{\"kind\":\"return\",\"line\":") +
+      std::to_string(line) +
+      ",\"function\":" + to_json(function_name) +
+      ",\"value\":" + value_json + "}",
+    line
+  );
+}
+
+inline __attribute__((noinline)) void emit_serialized_exception_event(
+    int line,
+    const char* message) {
+  write_trace_event_json(
+    std::string("{\"kind\":\"exception\",\"line\":") +
+      std::to_string(line) +
+      ",\"message\":" + to_json(message) + "}",
+    line
+  );
+}
+
 inline std::string target_json(const std::string& name) {
   return std::string("{\"variable\":") + to_json(name) + "}";
 }
@@ -1346,10 +1439,13 @@ inline void emit_snapshot_value(const std::string& name, const T& value, int lin
   if (minimal_trace_enabled()) return;
   if (!check_trace_budget(line)) return;
   trace_event_count() += 1;
-  write_trace_event_json_raw(
-    std::string("{\"kind\":\"snapshot\",\"line\":") + std::to_string(line) +
-    ",\"target\":" + target_json(name) +
-    ",\"value\":" + to_json(value) + "}"
+  emit_serialized_value_event(
+    "snapshot",
+    line,
+    target_json(name),
+    to_json(value),
+    nullptr,
+    true
   );
 }
 
@@ -5215,23 +5311,23 @@ class UnorderedMap : public std::unordered_map<K, V> {
 
   void emit_read(const K& key, int line, const std::string& value_json, const char* source) const {
     if (!trace_) return;
-    write_trace_event_json(
-      std::string("{\"kind\":\"read\",\"line\":") + std::to_string(line) +
-      ",\"target\":" + target_json_key(key, source) +
-      ",\"value\":" + value_json + "}",
-      line
+    emit_serialized_value_event(
+      "read",
+      line,
+      target_json_key(key, source),
+      value_json
     );
     if (!path_prefix_json_.empty()) emit_snapshot(line);
   }
 
   void emit_iteration_bind_read(const K& key, const std::string& value_json, int line, const char* binding_name) const {
     if (!trace_) return;
-    write_trace_event_json(
-      std::string("{\"kind\":\"read\",\"line\":") + std::to_string(line) +
-      ",\"target\":" + target_json_key(key) +
-      ",\"value\":" + value_json +
-      ",\"binding\":{\"kind\":\"iteration\",\"variable\":" + to_json(binding_name) + "}}",
-      line
+    emit_serialized_value_event(
+      "read",
+      line,
+      target_json_key(key),
+      value_json,
+      binding_name
     );
     if (!path_prefix_json_.empty()) emit_snapshot(line);
   }
@@ -5242,11 +5338,11 @@ class UnorderedMap : public std::unordered_map<K, V> {
 
   void emit_write(const K& key, const V& value, int line, const char* source) {
     if (!trace_) return;
-    write_trace_event_json(
-      std::string("{\"kind\":\"write\",\"line\":") + std::to_string(line) +
-      ",\"target\":" + target_json_key(key, source) +
-      ",\"value\":" + to_json(value) + "}",
-      line
+    emit_serialized_value_event(
+      "write",
+      line,
+      target_json_key(key, source),
+      to_json(value)
     );
     emit_snapshot(line);
   }
@@ -5266,23 +5362,19 @@ class UnorderedMap : public std::unordered_map<K, V> {
         ((inner_source && *inner_source) ? to_json(std::string(inner_source)) : "null") +
         "]";
     }
-    write_trace_event_json(
-      std::string("{\"kind\":\"write\",\"line\":") + std::to_string(line) +
-      ",\"target\":{\"variable\":" + to_json(name_) + ",\"path\":[" + path + "]" + source_segment + "}" +
-      ",\"value\":" + to_json(value) + "}",
-      line
+    emit_serialized_value_event(
+      "write",
+      line,
+      std::string("{\"variable\":") + to_json(name_) +
+        ",\"path\":[" + path + "]" + source_segment + "}",
+      to_json(value)
     );
     emit_snapshot(line);
   }
 
   void emit_mutate(const char* method, int line) {
     if (!trace_) return;
-    write_trace_event_json(
-      std::string("{\"kind\":\"mutate\",\"line\":") + std::to_string(line) +
-      ",\"target\":" + target_json() +
-      ",\"method\":" + to_json(method) + no_arg_mutation_args_json(method) + "}",
-      line
-    );
+    emit_serialized_mutation_event(line, target_json(), method);
   }
 
   void emit_keyed_mutate(const K& key, const char* method, int line) {
@@ -5295,22 +5387,22 @@ class UnorderedMap : public std::unordered_map<K, V> {
 
   void emit_keyed_mutate(const K& key, const char* method, int line, const std::string& args_json, const char* source) {
     if (!trace_) return;
-    write_trace_event_json(
-      std::string("{\"kind\":\"mutate\",\"line\":") + std::to_string(line) +
-      ",\"target\":" + target_json_key(key, source) +
-      ",\"method\":" + to_json(method) +
-      (args_json.empty() ? "" : ",\"args\":" + args_json) + "}",
-      line
+    emit_serialized_mutation_event(
+      line,
+      target_json_key(key, source),
+      method,
+      args_json,
+      false
     );
   }
 
   void emit_snapshot(int line) const {
     if (!trace_) return;
-    write_trace_event_json(
-      std::string("{\"kind\":\"snapshot\",\"line\":") + std::to_string(line) +
-      ",\"target\":" + target_json() +
-      ",\"value\":" + to_json(values_) + "}",
-      line
+    emit_serialized_value_event(
+      "snapshot",
+      line,
+      target_json(),
+      to_json(values_)
     );
   }
 
@@ -5340,11 +5432,11 @@ class UnorderedMap : public std::unordered_map<K, V> {
 
   void emit_write_field(int line) {
     if (!trace_ || path_prefix_json_.empty()) return;
-    write_trace_event_json(
-      std::string("{\"kind\":\"write\",\"line\":") + std::to_string(line) +
-      ",\"target\":" + target_json() +
-      ",\"value\":" + to_json(values_) + "}",
-      line
+    emit_serialized_value_event(
+      "write",
+      line,
+      target_json(),
+      to_json(values_)
     );
   }
 
@@ -5859,23 +5951,23 @@ class Map : public std::map<K, V> {
 
   void emit_read(const K& key, int line, const std::string& value_json, const char* source) const {
     if (!trace_) return;
-    write_trace_event_json(
-      std::string("{\"kind\":\"read\",\"line\":") + std::to_string(line) +
-      ",\"target\":" + target_json_key(key, source) +
-      ",\"value\":" + value_json + "}",
-      line
+    emit_serialized_value_event(
+      "read",
+      line,
+      target_json_key(key, source),
+      value_json
     );
     if (!path_prefix_json_.empty()) emit_snapshot(line);
   }
 
   void emit_iteration_bind_read(const K& key, const std::string& value_json, int line, const char* binding_name) const {
     if (!trace_) return;
-    write_trace_event_json(
-      std::string("{\"kind\":\"read\",\"line\":") + std::to_string(line) +
-      ",\"target\":" + target_json_key(key) +
-      ",\"value\":" + value_json +
-      ",\"binding\":{\"kind\":\"iteration\",\"variable\":" + to_json(binding_name) + "}}",
-      line
+    emit_serialized_value_event(
+      "read",
+      line,
+      target_json_key(key),
+      value_json,
+      binding_name
     );
     if (!path_prefix_json_.empty()) emit_snapshot(line);
   }
@@ -5886,11 +5978,11 @@ class Map : public std::map<K, V> {
 
   void emit_write(const K& key, const V& value, int line, const char* source) {
     if (!trace_) return;
-    write_trace_event_json(
-      std::string("{\"kind\":\"write\",\"line\":") + std::to_string(line) +
-      ",\"target\":" + target_json_key(key, source) +
-      ",\"value\":" + to_json(value) + "}",
-      line
+    emit_serialized_value_event(
+      "write",
+      line,
+      target_json_key(key, source),
+      to_json(value)
     );
     emit_snapshot(line);
   }
@@ -5910,23 +6002,19 @@ class Map : public std::map<K, V> {
         ((inner_source && *inner_source) ? to_json(std::string(inner_source)) : "null") +
         "]";
     }
-    write_trace_event_json(
-      std::string("{\"kind\":\"write\",\"line\":") + std::to_string(line) +
-      ",\"target\":{\"variable\":" + to_json(name_) + ",\"path\":[" + path + "]" + source_segment + "}" +
-      ",\"value\":" + to_json(value) + "}",
-      line
+    emit_serialized_value_event(
+      "write",
+      line,
+      std::string("{\"variable\":") + to_json(name_) +
+        ",\"path\":[" + path + "]" + source_segment + "}",
+      to_json(value)
     );
     emit_snapshot(line);
   }
 
   void emit_mutate(const char* method, int line) {
     if (!trace_) return;
-    write_trace_event_json(
-      std::string("{\"kind\":\"mutate\",\"line\":") + std::to_string(line) +
-      ",\"target\":" + target_json() +
-      ",\"method\":" + to_json(method) + no_arg_mutation_args_json(method) + "}",
-      line
-    );
+    emit_serialized_mutation_event(line, target_json(), method);
   }
 
   void emit_keyed_mutate(const K& key, const char* method, int line) {
@@ -5939,22 +6027,22 @@ class Map : public std::map<K, V> {
 
   void emit_keyed_mutate(const K& key, const char* method, int line, const std::string& args_json, const char* source) {
     if (!trace_) return;
-    write_trace_event_json(
-      std::string("{\"kind\":\"mutate\",\"line\":") + std::to_string(line) +
-      ",\"target\":" + target_json_key(key, source) +
-      ",\"method\":" + to_json(method) +
-      (args_json.empty() ? "" : ",\"args\":" + args_json) + "}",
-      line
+    emit_serialized_mutation_event(
+      line,
+      target_json_key(key, source),
+      method,
+      args_json,
+      false
     );
   }
 
   void emit_snapshot(int line) const {
     if (!trace_) return;
-    write_trace_event_json(
-      std::string("{\"kind\":\"snapshot\",\"line\":") + std::to_string(line) +
-      ",\"target\":" + target_json() +
-      ",\"value\":" + to_json(values_) + "}",
-      line
+    emit_serialized_value_event(
+      "snapshot",
+      line,
+      target_json(),
+      to_json(values_)
     );
   }
 
@@ -5984,11 +6072,11 @@ class Map : public std::map<K, V> {
 
   void emit_write_field(int line) {
     if (!trace_ || path_prefix_json_.empty()) return;
-    write_trace_event_json(
-      std::string("{\"kind\":\"write\",\"line\":") + std::to_string(line) +
-      ",\"target\":" + target_json() +
-      ",\"value\":" + to_json(values_) + "}",
-      line
+    emit_serialized_value_event(
+      "write",
+      line,
+      target_json(),
+      to_json(values_)
     );
   }
 
@@ -6440,67 +6528,55 @@ class Set : public std::set<T> {
 
   void emit_read(const T& value, bool present, int line) const {
     if (!trace_) return;
-    write_trace_event_json(
-      std::string("{\"kind\":\"read\",\"line\":") + std::to_string(line) +
-      ",\"target\":" + target_json_key(value) +
-      ",\"value\":" + to_json(present) + "}",
-      line
+    emit_serialized_value_event(
+      "read",
+      line,
+      target_json_key(value),
+      to_json(present)
     );
     if (!path_prefix_json_.empty()) emit_snapshot(line);
   }
 
   void emit_iteration_bind_read(const T& value, int line, const char* binding_name) const {
     if (!trace_) return;
-    write_trace_event_json(
-      std::string("{\"kind\":\"read\",\"line\":") + std::to_string(line) +
-      ",\"target\":" + target_json_key(value) +
-      ",\"value\":" + to_json(value) +
-      ",\"binding\":{\"kind\":\"iteration\",\"variable\":" + to_json(binding_name ? binding_name : "") + "}}",
-      line
+    emit_serialized_value_event(
+      "read",
+      line,
+      target_json_key(value),
+      to_json(value),
+      binding_name ? binding_name : ""
     );
     if (!path_prefix_json_.empty()) emit_snapshot(line);
   }
 
   void emit_write(const T& value, int line) {
     if (!trace_) return;
-    write_trace_event_json(
-      std::string("{\"kind\":\"write\",\"line\":") + std::to_string(line) +
-      ",\"target\":" + target_json_key(value) +
-      ",\"value\":true}",
-      line
+    emit_serialized_value_event(
+      "write",
+      line,
+      target_json_key(value),
+      "true"
     );
     emit_snapshot(line);
   }
 
   void emit_mutate(const char* method, int line, const std::string& args_json = "") {
     if (!trace_) return;
-    write_trace_event_json(
-      std::string("{\"kind\":\"mutate\",\"line\":") + std::to_string(line) +
-      ",\"target\":" + target_json() +
-      ",\"method\":" + to_json(method) +
-      (args_json.empty() ? no_arg_mutation_args_json(method) : std::string(",\"args\":") + args_json) + "}",
-      line
-    );
+    emit_serialized_mutation_event(line, target_json(), method, args_json);
   }
 
   void emit_mutate_key(const T& value, const char* method, int line, const std::string& args_json = "") {
     if (!trace_) return;
-    write_trace_event_json(
-      std::string("{\"kind\":\"mutate\",\"line\":") + std::to_string(line) +
-      ",\"target\":" + target_json_key(value) +
-      ",\"method\":" + to_json(method) +
-      (args_json.empty() ? no_arg_mutation_args_json(method) : std::string(",\"args\":") + args_json) + "}",
-      line
-    );
+    emit_serialized_mutation_event(line, target_json_key(value), method, args_json);
   }
 
   void emit_snapshot(int line) const {
     if (!trace_) return;
-    write_trace_event_json(
-      std::string("{\"kind\":\"snapshot\",\"line\":") + std::to_string(line) +
-      ",\"target\":" + target_json() +
-      ",\"value\":" + to_json(values_) + "}",
-      line
+    emit_serialized_value_event(
+      "snapshot",
+      line,
+      target_json(),
+      to_json(values_)
     );
   }
 
@@ -6522,11 +6598,11 @@ class Set : public std::set<T> {
 
   void emit_write_field(int line) {
     if (!trace_ || path_prefix_json_.empty()) return;
-    write_trace_event_json(
-      std::string("{\"kind\":\"write\",\"line\":") + std::to_string(line) +
-      ",\"target\":" + target_json() +
-      ",\"value\":" + to_json(values_) + "}",
-      line
+    emit_serialized_value_event(
+      "write",
+      line,
+      target_json(),
+      to_json(values_)
     );
   }
 };
@@ -6716,67 +6792,55 @@ class UnorderedSet : public std::unordered_set<T> {
 
   void emit_read(const T& value, bool present, int line) const {
     if (!trace_) return;
-    write_trace_event_json(
-      std::string("{\"kind\":\"read\",\"line\":") + std::to_string(line) +
-      ",\"target\":" + target_json_key(value) +
-      ",\"value\":" + to_json(present) + "}",
-      line
+    emit_serialized_value_event(
+      "read",
+      line,
+      target_json_key(value),
+      to_json(present)
     );
     if (!path_prefix_json_.empty()) emit_snapshot(line);
   }
 
   void emit_iteration_bind_read(const T& value, int line, const char* binding_name) const {
     if (!trace_) return;
-    write_trace_event_json(
-      std::string("{\"kind\":\"read\",\"line\":") + std::to_string(line) +
-      ",\"target\":" + target_json_key(value) +
-      ",\"value\":" + to_json(value) +
-      ",\"binding\":{\"kind\":\"iteration\",\"variable\":" + to_json(binding_name ? binding_name : "") + "}}",
-      line
+    emit_serialized_value_event(
+      "read",
+      line,
+      target_json_key(value),
+      to_json(value),
+      binding_name ? binding_name : ""
     );
     if (!path_prefix_json_.empty()) emit_snapshot(line);
   }
 
   void emit_write(const T& value, int line) {
     if (!trace_) return;
-    write_trace_event_json(
-      std::string("{\"kind\":\"write\",\"line\":") + std::to_string(line) +
-      ",\"target\":" + target_json_key(value) +
-      ",\"value\":true}",
-      line
+    emit_serialized_value_event(
+      "write",
+      line,
+      target_json_key(value),
+      "true"
     );
     emit_snapshot(line);
   }
 
   void emit_mutate(const char* method, int line, const std::string& args_json = "") {
     if (!trace_) return;
-    write_trace_event_json(
-      std::string("{\"kind\":\"mutate\",\"line\":") + std::to_string(line) +
-      ",\"target\":" + target_json() +
-      ",\"method\":" + to_json(method) +
-      (args_json.empty() ? no_arg_mutation_args_json(method) : std::string(",\"args\":") + args_json) + "}",
-      line
-    );
+    emit_serialized_mutation_event(line, target_json(), method, args_json);
   }
 
   void emit_mutate_key(const T& value, const char* method, int line, const std::string& args_json = "") {
     if (!trace_) return;
-    write_trace_event_json(
-      std::string("{\"kind\":\"mutate\",\"line\":") + std::to_string(line) +
-      ",\"target\":" + target_json_key(value) +
-      ",\"method\":" + to_json(method) +
-      (args_json.empty() ? no_arg_mutation_args_json(method) : std::string(",\"args\":") + args_json) + "}",
-      line
-    );
+    emit_serialized_mutation_event(line, target_json_key(value), method, args_json);
   }
 
   void emit_snapshot(int line) const {
     if (!trace_) return;
-    write_trace_event_json(
-      std::string("{\"kind\":\"snapshot\",\"line\":") + std::to_string(line) +
-      ",\"target\":" + target_json() +
-      ",\"value\":" + to_json(values_) + "}",
-      line
+    emit_serialized_value_event(
+      "snapshot",
+      line,
+      target_json(),
+      to_json(values_)
     );
   }
 
@@ -6798,11 +6862,11 @@ class UnorderedSet : public std::unordered_set<T> {
 
   void emit_write_field(int line) {
     if (!trace_ || path_prefix_json_.empty()) return;
-    write_trace_event_json(
-      std::string("{\"kind\":\"write\",\"line\":") + std::to_string(line) +
-      ",\"target\":" + target_json() +
-      ",\"value\":" + to_json(values_) + "}",
-      line
+    emit_serialized_value_event(
+      "write",
+      line,
+      target_json(),
+      to_json(values_)
     );
   }
 };

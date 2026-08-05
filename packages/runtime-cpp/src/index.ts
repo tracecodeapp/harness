@@ -6,9 +6,16 @@ export {
   type CppCompilerIntegrityEntry,
   type CppCompilerIntegrityManifest,
   type CppExecutionStyle,
+  type CppTrustedCompilerService,
   type CppWorkerAssets,
   type CppWorkerClientOptions,
 } from './cpp-worker-client';
+export {
+  TraceCCCompilerService,
+  type TraceCCCompilerShard,
+  type TraceCCCompilerShardAssets,
+  type TraceCCCompilerServiceOptions,
+} from './tracecc-compiler-service';
 export {
   createCppPreparedExecutionProvider,
   type CppPreparedExecutionProviderController,
@@ -16,8 +23,14 @@ export {
 } from './cpp-prepared-provider';
 export {
   createCppBrowserRuntimeProvider,
+  createTraceCCBrowserCompilerService,
   type CppBrowserRuntimeProviderOptions,
+  type TraceCCCompilerOptions,
 } from './browser-runtime-provider';
+export {
+  createTraceCCRuntimeManifest,
+  TRACECC_RUNTIME_CONTENT_HASH,
+} from './tracecc-runtime-assets';
 export {
   createBrowserCppProjectRunner,
   type BrowserCppProjectCommandRunner,

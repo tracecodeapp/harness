@@ -98,10 +98,7 @@ function preflightAssets(
     case 'cpp':
       return [
         'worker',
-        'compilerFrame',
-        'compilerWorker',
         'runtimeHeader',
-        'compilerBundle',
         'compilerWasm',
         'linkerWasm',
         'sysroot',

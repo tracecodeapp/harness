@@ -216,46 +216,8 @@ const PACKAGE_ASSET_PLANS: PackageAssetPlan[] = [
         target: ['workers', 'shared', 'runtime-kernel-policy.js'],
       },
       {
-        source: ['workers', 'cpp', 'cpp-compiler-frame.html'],
-        target: ['workers', 'cpp-compiler-frame.html'],
-      },
-      {
-        source: ['workers', 'cpp', 'cpp-compiler-worker.js'],
-        target: ['workers', 'cpp-compiler-worker.js'],
-      },
-      {
         source: ['workers', 'cpp', 'tracecode_runtime.hpp'],
         target: ['workers', 'cpp', 'tracecode_runtime.hpp'],
-      },
-      {
-        packageName: '@yowasp/clang',
-        source: ['gen', 'bundle.js'],
-        target: ['workers', 'cpp', 'compiler', 'bundle.js'],
-      },
-      {
-        packageName: '@yowasp/clang',
-        source: ['gen', 'llvm-resources.tar'],
-        target: ['workers', 'cpp', 'compiler', 'llvm-resources.tar'],
-      },
-      {
-        packageName: '@yowasp/clang',
-        source: ['gen', 'llvm.core.wasm'],
-        target: ['workers', 'cpp', 'compiler', 'llvm.core.wasm'],
-      },
-      {
-        packageName: '@yowasp/clang',
-        source: ['gen', 'llvm.core2.wasm'],
-        target: ['workers', 'cpp', 'compiler', 'llvm.core2.wasm'],
-      },
-      {
-        packageName: '@yowasp/clang',
-        source: ['gen', 'llvm.core3.wasm'],
-        target: ['workers', 'cpp', 'compiler', 'llvm.core3.wasm'],
-      },
-      {
-        packageName: '@yowasp/clang',
-        source: ['gen', 'llvm.core4.wasm'],
-        target: ['workers', 'cpp', 'compiler', 'llvm.core4.wasm'],
       },
     ],
   },

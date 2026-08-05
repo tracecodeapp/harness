@@ -1785,6 +1785,9 @@ var package_default = {
     "test:java-public-surface": "pnpm exec tsx --tsconfig tsconfig.base.json tests/test-java-public-surface.ts",
     "test:csharp-public-surface": "pnpm exec tsx --tsconfig tsconfig.base.json tests/test-csharp-public-surface.ts",
     "test:cpp-public-surface": "pnpm exec tsx --tsconfig tsconfig.base.json tests/test-cpp-public-surface.ts",
+    "test:tracecc": "pnpm exec tsx --tsconfig tsconfig.base.json tests/test-tracecc-runtime-assets.ts && pnpm exec tsx --tsconfig tsconfig.base.json tests/test-tracecc-compiler-service.ts",
+    "test:tracecc-browser": "pnpm exec tsx --tsconfig tsconfig.base.json tests/test-tracecc-browser-runtime.ts",
+    "prepare:tracecc-assets": "node --import tsx scripts/prepare-tracecc-runtime-assets.mts",
     "test:native-harness": "pnpm exec tsx --tsconfig tsconfig.base.json tests/test-native-harness.ts",
     "test:runtime-info-sync": "pnpm exec tsx --tsconfig tsconfig.base.json scripts/generate-runtime-language-info.ts --check",
     "test:runtime-trace-parity": "pnpm exec tsx --tsconfig tsconfig.base.json tests/test-runtime-trace-parity.ts",
@@ -1848,8 +1851,7 @@ var package_default = {
     "@datastructures-js/set": "4.2.2",
     "@datastructures-js/stack": "3.1.6",
     "@datastructures-js/trie": "4.2.3",
-    "@tracecode/tracejvm": "0.3.0",
-    "@yowasp/clang": "22.0.0-git20542-10",
+    "@tracecode/tracejvm": "0.4.0",
     effect: "3.22.0",
     fflate: "0.8.3",
     lodash: "4.17.21",
@@ -2227,7 +2229,10 @@ The compiled output runs on the same TraceKernel execution lane as JavaScript su
         "<typeinfo>",
         "<valarray>",
         "<variant>",
-        "<version>"
+        "<version>",
+        "<tracecode_socket.h>",
+        "<tracecode_process.h>",
+        "<tracecode_ioctl.h>"
       ],
       "libraries": [
         {
@@ -2241,7 +2246,7 @@ The compiled output runs on the same TraceKernel execution lane as JavaScript su
 var RUNTIME_COMMAND_VERSIONS = Object.freeze(
   Object.assign(/* @__PURE__ */ Object.create(null), {
     "dotnet": "10.0.10",
-    "clang++": "22.0.0-git20542-10"
+    "clang++": "22.0.0"
   })
 );
 

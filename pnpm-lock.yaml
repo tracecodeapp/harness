@@ -51,9 +51,6 @@ importers:
       '@tracecode/tracejvm':
         specifier: 0.3.0
         version: 0.3.0
-      '@yowasp/clang':
-        specifier: 22.0.0-git20542-10
-        version: 22.0.0-git20542-10
       effect:
         specifier: 3.22.0
         version: 3.22.0
@@ -756,9 +753,6 @@ packages:
 
   '@types/trusted-types@2.0.7':
     resolution: {integrity: sha512-ScaPdn1dQczgbl0QFTeTOmVHFULt394XJgOQNoyVhZ6r2vLnMLJfBPd53SB52T/3G36VI1/g2MZaX0cwDuXsfw==}
-
-  '@yowasp/clang@22.0.0-git20542-10':
-    resolution: {integrity: sha512-V31/z9GrJECKeACTDUyvg2llbEUiFi3bxtL5HSg7H/6sydSxdI/AoVAD9F5ozrfLjotWl0B9rghR87m+DUM/zg==}
 
   acorn@8.16.0:
     resolution: {integrity: sha512-UVJyE9MttOsBQIDKw1skb9nAwQuR5wuGD3+82K6JgJlm/Y+KI92oNsMNGZCYdDsVtRHSak0pcV5Dno5+4jh9sw==}
@@ -1572,8 +1566,6 @@ snapshots:
 
   '@types/trusted-types@2.0.7':
     optional: true
-
-  '@yowasp/clang@22.0.0-git20542-10': {}
 
   acorn@8.16.0: {}
 

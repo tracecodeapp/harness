@@ -208,6 +208,11 @@ export {
   resolveBrowserRuntimeAssetManifests,
 };
 
+export {
+  createTraceCCRuntimeManifest,
+  TRACECC_RUNTIME_CONTENT_HASH,
+} from '../packages/runtime-cpp/src/tracecc-runtime-assets';
+
 /**
  * Language-specific tuning for the default providers installed behind the
  * browser runtime host. Provider objects and registries are intentionally not

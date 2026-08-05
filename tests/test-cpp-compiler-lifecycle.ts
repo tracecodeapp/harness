@@ -560,6 +560,125 @@ async function testPreparedProviderProtocolLifecycle(): Promise<void> {
   }
 }
 
+async function testPreparedRunnerRetirementPreservesSharedCompiler(): Promise<void> {
+  const originalWorker = globalThis.Worker;
+  PreparedProtocolWorker.instances = [];
+  PreparedProtocolWorker.compileRequests = 0;
+  PreparedProtocolWorker.executions = 0;
+  PreparedProtocolWorker.disposals = 0;
+  const compilerPayloads: unknown[] = [];
+  const compilerCoordinator = {
+    async compileTrusted(payload: unknown, signal?: AbortSignal) {
+      assertCondition(!signal?.aborted, 'shared compiler request should begin active');
+      compilerPayloads.push(payload);
+      return {
+        success: true,
+        programBuffer: MINIMAL_WASM.slice().buffer,
+        stdout: '',
+        stderr: '',
+        timings: {
+          compileCacheHit: false,
+          artifactCacheHit: false,
+        },
+      };
+    },
+  };
+  // @ts-expect-error focused Worker test double
+  globalThis.Worker = PreparedProtocolWorker;
+
+  const provider = createCppPreparedExecutionProvider({
+    createWorkerClient: () => createClient({
+      trustedCompilerService: compilerCoordinator,
+    }),
+  });
+  try {
+    await provider.init();
+    for (const [index, code] of ['source-one', 'source-two'].entries()) {
+      const preparation = await provider.prepareProgram({
+        mode: 'code',
+        code,
+        functionName: 'identity',
+        executionStyle: 'solution-method',
+      });
+      assertCondition(
+        preparation.kind === 'prepared',
+        `shared compiler preparation ${index + 1} should succeed`
+      );
+      const result = await preparation.program.executeIsolated({
+        inputs: { value: index + 1 },
+      });
+      assertCondition(
+        result.kind === 'completed' && result.output === index + 1,
+        `shared compiler runner ${index + 1} should execute`
+      );
+      await preparation.program.dispose();
+      assertCondition(
+        PreparedProtocolWorker.instances[index]?.terminated,
+        `prepared runner ${index + 1} must be physically retired`
+      );
+    }
+    assertCondition(
+      compilerPayloads.length === 2,
+      `one shared compiler coordinator should serve both disposable runners: ${compilerPayloads.length}`
+    );
+    assertCondition(
+      PreparedProtocolWorker.instances.length === 2 &&
+        PreparedProtocolWorker.instances.every((worker) => worker.terminated),
+      'every learner runner should retire while the provider-owned compiler remains available'
+    );
+  } finally {
+    provider.terminate();
+    globalThis.Worker = originalWorker;
+  }
+}
+
+async function testTrustedCompilerSerializesConcurrentRequests(): Promise<void> {
+  const originalFetch = globalThis.fetch;
+  let activeFetches = 0;
+  let peakActiveFetches = 0;
+  let fetchCalls = 0;
+  let releaseFirstFetch!: () => void;
+  const firstFetchGate = new Promise<void>((resolve) => {
+    releaseFirstFetch = resolve;
+  });
+  globalThis.fetch = async () => {
+    fetchCalls += 1;
+    activeFetches += 1;
+    peakActiveFetches = Math.max(peakActiveFetches, activeFetches);
+    if (fetchCalls === 1) await firstFetchGate;
+    activeFetches -= 1;
+    return new Response(MINIMAL_WASM.slice(), {
+      status: 200,
+      headers: { 'content-type': 'application/wasm' },
+    });
+  };
+  const compiler = createClient();
+  try {
+    const first = compiler.compileTrusted({ driverSource: 'first' });
+    const second = compiler.compileTrusted({ driverSource: 'second' });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    const queuedFetchCalls = fetchCalls;
+    const queuedPeakActiveFetches = peakActiveFetches;
+    assertCondition(
+      queuedFetchCalls === 1 && queuedPeakActiveFetches === 1,
+      `the second trusted compile must wait behind the first: calls=${queuedFetchCalls}, peak=${queuedPeakActiveFetches}`
+    );
+    releaseFirstFetch();
+    const [firstResult, secondResult] = await Promise.all([first, second]);
+    assertCondition(
+      firstResult.success === true &&
+        secondResult.success === true &&
+        fetchCalls === 2 &&
+        peakActiveFetches === 1,
+      `trusted compiler requests must complete serially: ${JSON.stringify({ fetchCalls, peakActiveFetches })}`
+    );
+  } finally {
+    releaseFirstFetch();
+    compiler.terminate();
+    globalThis.fetch = originalFetch;
+  }
+}
+
 async function testContentAddressedArtifactsAndDisposableExecution(): Promise<void> {
   const originalWorker = globalThis.Worker;
   const originalFetch = globalThis.fetch;
@@ -1001,6 +1120,8 @@ async function testCompilerFrameKeepsOnlyTrustedCompilerWarm(): Promise<void> {
 async function main(): Promise<void> {
   await testBrowserProviderPreparedLeaseExposure();
   await testPreparedProviderProtocolLifecycle();
+  await testPreparedRunnerRetirementPreservesSharedCompiler();
+  await testTrustedCompilerSerializesConcurrentRequests();
   await testContentAddressedArtifactsAndDisposableExecution();
   await testInvalidArtifactsFailClosedAndAreNotCached();
   await testTerminationDuringAssetPreflightCannotRecreateWorkerAndClientRecovers();

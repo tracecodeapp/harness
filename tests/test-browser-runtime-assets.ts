@@ -122,14 +122,7 @@ const consumerManifests = {
     originPolicy: consumerOriginPolicy,
     assets: {
       worker: { url: 'cpp-worker.js' },
-      compilerFrame: { url: 'compiler-frame.html' },
-      compilerWorker: { url: 'compiler-worker.js' },
       runtimeHeader: { url: 'tracecode_runtime.hpp' },
-      compilerBundle: {
-        url: 'compiler-bundle.js',
-        integrity: 'sha256-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=',
-        size: 123,
-      },
       compilerWasm: { url: 'compiler.wasm' },
       linkerWasm: { url: 'linker.wasm' },
       sysroot: { url: 'sysroot.tar' },
@@ -193,10 +186,7 @@ function testConsumerCdnManifests(): void {
     csharpWorker: 'https://assets.consumer.example/csharp/csharp-browser-1/csharp-worker.js',
     csharpAssetBaseUrl: 'https://assets.consumer.example/csharp/csharp-browser-1/runtime',
     cppWorker: 'https://assets.consumer.example/cpp/cpp23-browser-1/cpp-worker.js',
-    cppCompilerFrame: 'https://assets.consumer.example/cpp/cpp23-browser-1/compiler-frame.html',
-    cppCompilerWorker: 'https://assets.consumer.example/cpp/cpp23-browser-1/compiler-worker.js',
     cppRuntimeHeader: 'https://assets.consumer.example/cpp/cpp23-browser-1/tracecode_runtime.hpp',
-    cppCompilerBundle: 'https://assets.consumer.example/cpp/cpp23-browser-1/compiler-bundle.js',
     cppCompilerWasm: 'https://assets.consumer.example/cpp/cpp23-browser-1/compiler.wasm',
     cppLinkerWasm: 'https://assets.consumer.example/cpp/cpp23-browser-1/linker.wasm',
     cppSysroot: 'https://assets.consumer.example/cpp/cpp23-browser-1/sysroot.tar',
@@ -233,11 +223,6 @@ function testConsumerCdnManifests(): void {
   );
   assertCondition(
     JSON.stringify(assets.cppCompilerIntegrity?.assets) === JSON.stringify([
-      {
-        url: 'https://assets.consumer.example/cpp/cpp23-browser-1/compiler-bundle.js',
-        sha256: '0'.repeat(64),
-        size: 123,
-      },
       {
         url: 'https://assets.consumer.example/cpp/cpp23-browser-1/llvm.core.wasm',
         sha256: '01'.repeat(32),
@@ -350,8 +335,6 @@ function testManifestAlternativesAndRelativeBases(): void {
           originPolicy: { mode: 'same-origin' },
           assets: {
             worker: { url: 'worker.js' },
-            compilerFrame: { url: 'frame.html' },
-            compilerWorker: { url: 'compiler-worker.js' },
             runtimeHeader: { url: 'runtime.hpp' },
             compilerWasm: { url: 'compiler.wasm' },
             linkerWasm: { url: 'linker.wasm' },
@@ -365,7 +348,6 @@ function testManifestAlternativesAndRelativeBases(): void {
     assets.javaWorker === '/consumer-assets/java/relative-build/worker.js',
     'Relative manifest bases must resolve against the consumer assetBaseUrl'
   );
-  assertCondition(assets.cppCompilerBundle === '', 'A direct C++ compiler manifest must not re-enable the default bundle');
   assertCondition(assets.cppCompilerWasm === '/raw-cpp/compiler.wasm', 'Direct C++ compiler assets must flatten normally');
 }
 
@@ -519,32 +501,12 @@ function testInvalidManifestsFailClearly(): void {
             },
             assets: {
               ...consumerManifests.cpp.assets,
-              compilerBundle: { url: 'https://other.example/compiler-bundle.js' },
+              compilerWasm: { url: 'https://other.example/compiler.wasm' },
             },
           },
         },
       }),
     'must include an exact sha256 SRI token for compiler pinning'
-  );
-
-  assertThrowsMessage(
-    () =>
-      resolveBrowserRuntimeAssetManifests({
-        manifests: {
-          cpp: {
-            ...consumerManifests.cpp,
-            originPolicy: {
-              mode: 'allow-list',
-              origins: ['https://assets.consumer.example', 'https://other.example'],
-            },
-            assets: {
-              ...consumerManifests.cpp.assets,
-              compilerFrame: { url: 'https://other.example/compiler-frame.html' },
-            },
-          },
-        },
-      }),
-    'compilerFrame and assets.compilerWorker must share an origin'
   );
 
   assertThrowsMessage(
