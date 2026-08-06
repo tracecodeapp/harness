@@ -870,8 +870,8 @@ print(json.dumps({
         'schemaVersion': 'runtime-trace-2026-04-28',
         'language': 'python',
         'runId': 'python:run',
-        'events': _trace_events,
-        'lineEventCount': len([event for event in _trace_events if event.get('kind') == 'line']),
+        'events': [json.loads(event) for event in _trace_events],
+        'lineEventCount': _trace_line_event_count,
         'traceStepCount': len(_trace_events)
     },
     'result': _serialize_output(_result),

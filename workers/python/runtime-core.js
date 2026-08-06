@@ -656,6 +656,7 @@ _TRACECODE_TYPING_GLOBALS = _builtins.set(getattr(_tracecode_typing, '__all__', 
 
 _trace_data = []
 _trace_events = []
+_trace_line_event_count = 0
 _console_output = []
 _original_print = _builtins.print
 _tracecode_builtin_id = _builtins.id
@@ -705,7 +706,7 @@ _tracecode_user_class_names = _builtins.set()
 _tracecode_explicit_return_function_names = _builtins.set()
 _internal_funcs = {'_serialize', '_serialize_output', '_tracecode_ref_id', '_tracer', '_custom_print', '_dict_to_tree', '_dict_to_list', '_tracecode_materialize_input', '_tracecode_materialize_custom_input', '_tracecode_materialize_named_inputs', '_tracecode_hydrate_for_annotation', '_tracecode_resolve_target_callable', '_tracecode_hydrate_annotated_inputs', '_tracecode_resolve_entry_callable', '_tracecode_invoke_entry', '_is_structural_constructor_frame', '_snapshot_call_stack', '_snapshot_locals', '_stable_token', '_looks_like_adjacency_list', '_looks_like_indexed_adjacency_list', '_resolve_inplace_result', 'TraceHooks', '_TracecodeTraceHooks', 'flush_completed_line', 'flush_callsite_line', '_resolve_previous_step', '_append_step_runtime_events', '__tracecode_pending_access_budget', '__tracecode_record_access', '__tracecode_flush_accesses', '__tracecode_append_trace_step', '__tracecode_append_trace_events_for_step', '__tracecode_append_runtime_event', '__tracecode_frame_id_for_step', '__tracecode_access_target', '__tracecode_access_binding', '__tracecode_access_kind', '__tracecode_value_at_path', '__tracecode_access_value', '__tracecode_attach_accesses_to_previous_step', '__tracecode_normalize_index_component', '__tracecode_normalize_index_sources', '__tracecode_normalize_indices', '__tracecode_serialize_call_arg', '__tracecode_serialize_call_args', '__tracecode_make_callsite_frame_id', '__tracecode_make_access_event', '__tracecode_make_iteration_access_event', '__tracecode_record_destructured_iteration_accesses', '__tracecode_is_indexable_sequence', '__tracecode_is_mutable_container', '__tracecode_read_value', '__tracecode_write_value', '__tracecode_delete_value', '__tracecode_apply_augmented_value', '__tracecode_apply_inplace_augmented_value', '_tracecode_user_call', '_tracecode_sum', '_tracecode_read_index', '_tracecode_write_index', '_tracecode_record_index_write', '_tracecode_write_scalar', '_tracecode_delete_index', '_tracecode_augassign_scalar', '_tracecode_augassign_index', '_tracecode_mutating_call', '_tracecode_mutating_index_call', '_tracecode_heapq_mutation', '_tracecode_record_attr_write', '_tracecode_contains_key_indexed', '_tracecode_dict_get', '_tracecode_dict_get_indexed', '_tracecode_len', '_tracecode_enumerate', '_tracecode_iter_bind', '_tracecode_iter_bind_literal', '_tracecode_iter_bind_expr', '_tracecode_iter_bind_indexed', '_tracecode_iter_bind_slice', '_tracecode_range_bind', '_tracecode_for_target_binding_name', '_tracecode_scalar_target_names', '_tracecode_assignment_write_targets', '_tracecode_source_string_node', '_tracecode_collect_user_function_names', '_tracecode_collect_user_method_names', '_tracecode_collect_user_class_names', '_tracecode_collect_explicit_return_function_names', '_tracecode_is_pure_literal_scaffold', '_tracecode_collect_collapsed_literal_lines', '__tracecode_attach_parents', '_tracecode_extract_named_subscript', '_tracecode_extract_mutable_container_target', '_tracecode_is_internal_name', '__TracecodeAccessTransformer', '__tracecode_compile_user_code', '<listcomp>', '<dictcomp>', '<setcomp>', '<genexpr>'}
 _internal_locals = {
-    '_trace_data', '_trace_events', '_console_output', '_original_print', '_target_function',
+    '_trace_data', '_trace_events', '_trace_line_event_count', '_console_output', '_original_print', '_target_function',
     '_MIRROR_PRINT_TO_WORKER_CONSOLE', '_MINIMAL_TRACE', '_SKIP_SENTINEL',
     '_TRACE_MAX_BULK_ACCESSES',
     '_SCRIPT_MODE', '_TRACE_INPUT_NAMES', '_SCRIPT_PRE_USER_GLOBALS',
@@ -1175,7 +1176,11 @@ def __tracecode_access_value(step, access):
     return __tracecode_value_at_path(root, access.get('indices'))
 
 def __tracecode_append_runtime_event(event):
-    global _trace_limit_exceeded, _timeout_reason, _trace_stored_bytes
+    # Single-writer: this serialization IS the stored representation. The
+    # event dict is not retained, so later frame mutation cannot leak into
+    # already-recorded events and the final export embeds these strings
+    # without re-serializing the whole trace.
+    global _trace_limit_exceeded, _timeout_reason, _trace_stored_bytes, _trace_line_event_count
     if len(_trace_events) >= _max_stored_events:
         if not _trace_limit_exceeded:
             _trace_limit_exceeded = True
@@ -1183,14 +1188,17 @@ def __tracecode_append_runtime_event(event):
         _pending_accesses.clear()
         return False
     try:
-        event_bytes = len(json.dumps(
+        event_json = json.dumps(
             event,
             ensure_ascii=False,
             separators=(',', ':'),
-        ).encode('utf-8')) + (1 if len(_trace_events) > 0 else 0)
+        )
+        event_bytes = len(event_json.encode('utf-8')) + (1 if len(_trace_events) > 0 else 0)
     except Exception:
+        event_json = None
         event_bytes = _max_trace_bytes + 1
     if (
+        event_json is None or
         event_bytes > _max_trace_event_bytes or
         event_bytes > (_max_trace_bytes - _trace_stored_bytes)
     ):
@@ -1199,7 +1207,9 @@ def __tracecode_append_runtime_event(event):
             _timeout_reason = 'trace-byte-limit'
         _pending_accesses.clear()
         return False
-    _trace_events.append(event)
+    _trace_events.append(event_json)
+    if event.get('kind') == 'line':
+        _trace_line_event_count += 1
     _trace_stored_bytes += event_bytes
     return True
 
@@ -1218,7 +1228,9 @@ def __tracecode_append_trace_events_for_step(step):
         'frameId': __tracecode_frame_id_for_step(step)
     }
     if len(stack) > 0:
-        base['callStack'] = [f.copy() for f in stack]
+        # No copy: the event serializes immediately on append, which freezes
+        # the current frame state without cloning it per event.
+        base['callStack'] = stack
     if event_kind == 'line':
         __tracecode_append_runtime_event({**base, 'kind': 'line', 'function': function_name})
     elif event_kind == 'call':
@@ -4119,28 +4131,24 @@ def __tracecode_compact_last_step(kind=None):
         return compact
     return None
 
-__tracecode_execution_result_json = json.dumps({
-    'traceSummary': {
+__tracecode_execution_result_json = (
+    '{"traceSummary":' + json.dumps({
         'errorStep': __tracecode_compact_last_step('exception'),
         'timeoutStep': __tracecode_compact_last_step('timeout'),
         'lastStep': __tracecode_compact_last_step(),
-    },
-    'runtimeTrace': {
-        'schemaVersion': 'runtime-trace-2026-04-28',
-        'language': 'python',
-        'runId': 'python:run',
-        'events': _trace_events,
-        'lineEventCount': len([event for event in _trace_events if event.get('kind') == 'line']),
-        'traceStepCount': len(_trace_events)
-    },
-    'result': _serialize_output(_result),
-    'console': _console_output,
-    'userCodeStartLine': ${userCodeStartLine},
-    'traceLimitExceeded': _trace_limit_exceeded,
-    'timeoutReason': _timeout_reason,
-    'lineEventCount': _total_line_events,
-    'traceStepCount': len(_trace_data)
-})
+    })
+    + ',"runtimeTrace":{"schemaVersion":"runtime-trace-2026-04-28","language":"python","runId":"python:run","events":['
+    + ','.join(_trace_events)
+    + '],"lineEventCount":' + str(_trace_line_event_count)
+    + ',"traceStepCount":' + str(len(_trace_events)) + '}'
+    + ',"result":' + json.dumps(_serialize_output(_result))
+    + ',"console":' + json.dumps(_console_output)
+    + ',"userCodeStartLine":' + json.dumps(${userCodeStartLine})
+    + ',"traceLimitExceeded":' + json.dumps(_trace_limit_exceeded)
+    + ',"timeoutReason":' + json.dumps(_timeout_reason)
+    + ',"lineEventCount":' + json.dumps(_total_line_events)
+    + ',"traceStepCount":' + json.dumps(len(_trace_data)) + '}'
+)
 __tracecode_execution_result_json
 `;
 
