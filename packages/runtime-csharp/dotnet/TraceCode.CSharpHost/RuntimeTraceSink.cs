@@ -8,6 +8,9 @@ public static class RuntimeTraceSink
     private const int MaxObjectFields = 32;
     private static readonly List<RuntimeTraceEvent> Events = new();
     private static readonly List<RuntimeTraceCallFrame> CallStack = new();
+    private static readonly List<int> CallStackStateIds = new();
+    private static readonly HashSet<int> EmittedCallStackStates = new();
+    private static int nextCallStackStateId;
     private static readonly HashSet<string> SnapshottedVariablesInCurrentLine = new(StringComparer.Ordinal);
     private static readonly Dictionary<int, int> LineHitCounts = new();
     private static readonly Stack<Dictionary<string, string>> VariableAliasScopes = new();
@@ -30,6 +33,9 @@ public static class RuntimeTraceSink
     {
         Events.Clear();
         CallStack.Clear();
+        CallStackStateIds.Clear();
+        EmittedCallStackStates.Clear();
+        nextCallStackStateId = 0;
         SnapshottedVariablesInCurrentLine.Clear();
         LineHitCounts.Clear();
         VariableAliasScopes.Clear();
@@ -118,7 +124,7 @@ public static class RuntimeTraceSink
             return;
         }
 
-        CallStack.Add(new RuntimeTraceCallFrame
+        PushCallFrame(new RuntimeTraceCallFrame
         {
             Function = function,
             Line = line,
@@ -140,7 +146,7 @@ public static class RuntimeTraceSink
             return;
         }
 
-        CallStack.Add(new RuntimeTraceCallFrame
+        PushCallFrame(new RuntimeTraceCallFrame
         {
             Function = function,
             Line = line,
@@ -169,7 +175,7 @@ public static class RuntimeTraceSink
             entry => entry.Value,
             StringComparer.Ordinal
         );
-        CallStack.Add(new RuntimeTraceCallFrame
+        PushCallFrame(new RuntimeTraceCallFrame
         {
             Function = function,
             Line = line,
@@ -211,6 +217,7 @@ public static class RuntimeTraceSink
         if (string.IsNullOrWhiteSpace(function) || CallStack[topIndex].Function == function)
         {
             CallStack.RemoveAt(topIndex);
+            CallStackStateIds.RemoveAt(topIndex);
             return;
         }
 
@@ -219,6 +226,7 @@ public static class RuntimeTraceSink
             if (CallStack[index].Function == function)
             {
                 CallStack.RemoveRange(index, CallStack.Count - index);
+                CallStackStateIds.RemoveRange(index, CallStackStateIds.Count - index);
                 return;
             }
         }
@@ -1107,6 +1115,17 @@ public static class RuntimeTraceSink
         return normalized.Any(source => source is not null) ? normalized : null;
     }
 
+    private static void PushCallFrame(RuntimeTraceCallFrame frame)
+    {
+        CallStack.Add(frame);
+        CallStackStateIds.Add(nextCallStackStateId++);
+    }
+
+    // Each distinct call-stack state is serialized in full once (callStackId) and
+    // referenced by later events (callStackRef); the worker resolves and strips
+    // both keys so RuntimeTrace events keep their historical shape. A state is
+    // immutable between call/leave transitions, so the first event that carries
+    // it (the call event pushed alongside it) snapshots frame args at call time.
     private static void AttachCallStack(RuntimeTraceEvent traceEvent)
     {
         if (CallStack.Count == 0 || traceEvent.CallStack is not null)
@@ -1114,6 +1133,14 @@ public static class RuntimeTraceSink
             return;
         }
 
+        int stateId = CallStackStateIds[^1];
+        if (!EmittedCallStackStates.Add(stateId))
+        {
+            traceEvent.CallStackRef = stateId;
+            return;
+        }
+
+        traceEvent.CallStackId = stateId;
         traceEvent.CallStack = CallStack
             .Select(frame => new RuntimeTraceCallFrame
             {

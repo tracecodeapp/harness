@@ -3762,6 +3762,33 @@ function csharpRuntimeTraceSourceOwnership(event, statementSourceMap) {
   };
 }
 
+// The dotnet runtime serializes each distinct call-stack state once (callStackId)
+// and references it from later events (callStackRef); resolve and strip the
+// wire-only keys so downstream consumers keep the historical per-event shape.
+function resolveCSharpCallStackRefs(events) {
+  if (!Array.isArray(events)) return events;
+  const callStackDefs = new Map();
+  return events.map((event) => {
+    if (!event || typeof event !== 'object') return event;
+    if (typeof event.callStackId === 'number') {
+      if (event.callStack) {
+        callStackDefs.set(event.callStackId, JSON.stringify(event.callStack));
+      }
+      const { callStackId, ...rest } = event;
+      return rest;
+    }
+    if (typeof event.callStackRef === 'number') {
+      const definition = callStackDefs.get(event.callStackRef);
+      if (definition === undefined) {
+        throw new Error(`C# trace event references undefined callStackRef ${event.callStackRef}`);
+      }
+      const { callStackRef, ...rest } = event;
+      return { ...rest, callStack: JSON.parse(definition) };
+    }
+    return event;
+  });
+}
+
 function normalizeCSharpTraceEvent(event, maxPathDepth, statementSourceMap) {
   const normalizedFile = normalizeCSharpFile(event.file);
   const next = {
@@ -3791,13 +3818,17 @@ function normalizeCSharpResult(result, options = {}) {
     ? buildRuntimeStatementSourceMap(options.source)
     : new Map();
   const normalizedEvents = Array.isArray(result.events)
-    ? result.events.map((event) => normalizeCSharpTraceEvent(event, maxPathDepth, statementSourceMap))
+    ? resolveCSharpCallStackRefs(result.events).map((event) =>
+        normalizeCSharpTraceEvent(event, maxPathDepth, statementSourceMap)
+      )
     : null;
   const normalizedTrace =
     result.trace && typeof result.trace === 'object' && Array.isArray(result.trace.events)
       ? {
           ...result.trace,
-          events: result.trace.events.map((event) => normalizeCSharpTraceEvent(event, maxPathDepth, statementSourceMap)),
+          events: resolveCSharpCallStackRefs(result.trace.events).map((event) =>
+            normalizeCSharpTraceEvent(event, maxPathDepth, statementSourceMap)
+          ),
         }
       : normalizedEvents
         ? {

@@ -686,6 +686,16 @@ public static partial class PreparedExecutionHost
         else writer.WriteString("message", traceEvent.Message);
         if (traceEvent.Text is not null) writer.WriteString("text", traceEvent.Text);
         if (traceEvent.Reason is not null) writer.WriteString("reason", traceEvent.Reason);
+        if (traceEvent.CallStackId is int callStackId)
+        {
+            writer.WriteNumber("callStackId", callStackId);
+        }
+
+        if (traceEvent.CallStackRef is int callStackRef)
+        {
+            writer.WriteNumber("callStackRef", callStackRef);
+        }
+
         if (traceEvent.CallStack is not null)
         {
             writer.WriteStartArray("callStack");
