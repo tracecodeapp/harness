@@ -660,11 +660,75 @@ _trace_events = []
 _trace_line_event_count = 0
 _TRACE_PROFILE = ${traceProfile ? 'True' : 'False'}
 from time import perf_counter as _tc_perf
+_tp_import_at = _tc_perf()
 _tp_tracer = 0.0
 _tp_snapshot = 0.0
 _tp_stack = 0.0
 _tp_step = 0.0
 _tp_convert = 0.0
+
+# PEP 669 tracing: sys.monitoring keeps the specializing interpreter, which
+# sys.settrace disables for every traced frame (~8x on tight loops). The
+# settrace path remains as the fallback for interpreters without monitoring.
+_TC_MONITORING = getattr(sys, 'monitoring', None)
+_TC_MONITORING_TOOL = 4
+_TC_MONITORING_ACTIVE = False
+_TC_MONITORING_ERROR = None if _TC_MONITORING is not None else 'sys.monitoring unavailable'
+_TC_MONITORING_WAS_ARMED = False
+
+def _tc_monitoring_on_line(code, line_number):
+    if code.co_filename != 'solution.py':
+        return _TC_MONITORING.DISABLE
+    _tracer(sys._getframe(1), 'line', None)
+
+def _tc_monitoring_on_start(code, offset):
+    if code.co_filename != 'solution.py':
+        return _TC_MONITORING.DISABLE
+    _tracer(sys._getframe(1), 'call', None)
+
+def _tc_monitoring_on_return(code, offset, retval):
+    if code.co_filename != 'solution.py':
+        return _TC_MONITORING.DISABLE
+    _tracer(sys._getframe(1), 'return', retval)
+
+def _tc_monitoring_on_raise(code, offset, exc):
+    if code.co_filename != 'solution.py':
+        return
+    _tracer(sys._getframe(1), 'exception', (type(exc), exc, getattr(exc, '__traceback__', None)))
+
+def _tracecode_arm_tracing():
+    global _TC_MONITORING_ACTIVE
+    if _TC_MONITORING is not None:
+        try:
+            _TC_MONITORING.use_tool_id(_TC_MONITORING_TOOL, 'tracecode')
+            _events = _TC_MONITORING.events
+            _TC_MONITORING.register_callback(_TC_MONITORING_TOOL, _events.LINE, _tc_monitoring_on_line)
+            _TC_MONITORING.register_callback(_TC_MONITORING_TOOL, _events.PY_START, _tc_monitoring_on_start)
+            _TC_MONITORING.register_callback(_TC_MONITORING_TOOL, _events.PY_RETURN, _tc_monitoring_on_return)
+            _TC_MONITORING.register_callback(_TC_MONITORING_TOOL, _events.RAISE, _tc_monitoring_on_raise)
+            _TC_MONITORING.set_events(
+                _TC_MONITORING_TOOL,
+                _events.LINE | _events.PY_START | _events.PY_RETURN | _events.RAISE,
+            )
+            _TC_MONITORING_ACTIVE = True
+            globals()['_TC_MONITORING_WAS_ARMED'] = True
+            return
+        except Exception as _tc_monitoring_exc:
+            global _TC_MONITORING_ERROR
+            _TC_MONITORING_ERROR = repr(_tc_monitoring_exc)
+            _TC_MONITORING_ACTIVE = False
+    sys.settrace(_tracer)
+
+def _tracecode_stop_tracing():
+    global _TC_MONITORING_ACTIVE
+    sys.settrace(None)
+    if _TC_MONITORING is not None and _TC_MONITORING_ACTIVE:
+        _TC_MONITORING_ACTIVE = False
+        try:
+            _TC_MONITORING.set_events(_TC_MONITORING_TOOL, 0)
+            _TC_MONITORING.free_tool_id(_TC_MONITORING_TOOL)
+        except Exception:
+            pass
 _console_output = []
 _original_print = _builtins.print
 _tracecode_builtin_id = _builtins.id
@@ -3544,7 +3608,7 @@ def _tracer(frame, event, arg,
                         'stdoutLineCount': len(_console_output),
                         'accesses': [],
                     })
-                    sys.settrace(None)
+                    _tracecode_stop_tracing()
                     raise _InfiniteLoopDetected(f"Exceeded {_max_memory_bytes} bytes")
 
         # Check total line events before duplicate-line suppression so
@@ -3563,7 +3627,7 @@ def _tracer(frame, event, arg,
                     'stdoutLineCount': len(_console_output),
                     'accesses': [],
                 })
-                sys.settrace(None)
+                _tracecode_stop_tracing()
                 raise _InfiniteLoopDetected(f"Exceeded {_max_line_events} line events")
 
         # Simple per-line counter (catches any line hit too many times)
@@ -3586,7 +3650,7 @@ def _tracer(frame, event, arg,
                     'stdoutLineCount': len(_console_output),
                     'accesses': []
                 })
-                sys.settrace(None)
+                _tracecode_stop_tracing()
                 raise _InfiniteLoopDetected(f"Line {frame.f_lineno} executed {_max_single_line_hits} times")
 
         previous_step = _tracecode_resolve_previous_step(frame)
@@ -3617,12 +3681,12 @@ def _tracer(frame, event, arg,
                 'accesses': [],
             })
             _pending_accesses.clear()
-            sys.settrace(None)
+            _tracecode_stop_tracing()
         return None
 
     if _trace_limit_exceeded and _timeout_reason in ('trace-limit', 'trace-byte-limit'):
         _pending_accesses.clear()
-        sys.settrace(None)
+        _tracecode_stop_tracing()
         return None
 
     if event == 'call':
@@ -3640,7 +3704,7 @@ def _tracer(frame, event, arg,
                     'stdoutLineCount': len(_console_output),
                     'accesses': [],
                 })
-                sys.settrace(None)
+                _tracecode_stop_tracing()
                 raise _InfiniteLoopDetected(f"Exceeded {_max_call_depth} calls")
         local_vars, local_sources = _snapshot_locals(frame, with_sources=True)
         if func_name != '<module>':
@@ -4114,7 +4178,8 @@ if _TRACE_PROFILE:
             _tp_tracer += _tc_perf() - _t0
         return _tracer if _tc_result is _tc_orig_tracer else _tc_result
 
-sys.settrace(_tracer)
+_tp_arm_at = _tc_perf()
+_tracecode_arm_tracing()
 _trace_failed = False
 
 try:
@@ -4126,7 +4191,7 @@ except _InfiniteLoopDetected as e:
 except Exception as e:
     _trace_failed = True
     # Stop tracing immediately so error-handling internals are never traced.
-    sys.settrace(None)
+    _tracecode_stop_tracing()
     _result = None
     _exc_type = type(e).__name__
     _exc_msg = str(e)
@@ -4155,7 +4220,8 @@ if (not _trace_failed) and _result is None:
     if _inplace is not None:
         _result = _inplace
 
-sys.settrace(None)
+_tracecode_stop_tracing()
+_tp_stop_at = _tc_perf()
 if _tracecode_tracemalloc is not None and _tracecode_tracemalloc_started:
     try:
         _tracecode_tracemalloc.stop()
@@ -4189,6 +4255,12 @@ def __tracecode_compact_last_step(kind=None):
 if _TRACE_PROFILE:
     _console_output.append('__TRACECODE_TRACE_PROFILE_JSON__:' + json.dumps({
         'language': 'python',
+        'monitoring': _TC_MONITORING_ACTIVE,
+        'monitoringError': _TC_MONITORING_ERROR,
+        'monitoringArmed': _TC_MONITORING_WAS_ARMED,
+        'setupMs': round((_tp_arm_at - _tp_import_at) * 1000, 1),
+        'runPhaseMs': round((_tp_stop_at - _tp_arm_at) * 1000, 1),
+        'exportPhaseMs': round((_tc_perf() - _tp_stop_at) * 1000, 1),
         'tracerMs': round(_tp_tracer * 1000, 1),
         'snapshotMs': round(_tp_snapshot * 1000, 1),
         'callStackMs': round(_tp_stack * 1000, 1),
