@@ -192,7 +192,7 @@ async function main(): Promise<void> {
 
   const manifest = {
     runtime: 'cpp',
-    runtimeVersion: `tracecc-v9r1-${consumerHash.slice(0, 12)}`,
+    runtimeVersion: `tracecc-${consumerHash.slice(0, 12)}`,
     protocolVersion: 'browser-runtime-assets-v1',
     assetBaseUrl: `${publicBaseRoot}/${consumerHash}/`,
     workerFormat: 'module',
