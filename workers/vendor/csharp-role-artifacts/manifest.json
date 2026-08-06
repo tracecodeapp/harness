@@ -31,12 +31,12 @@
       "uncompressedBytes": 50238397
     },
     "runner": {
-      "artifact": "csharp-bundle.07546a8e2ada10385630543c4cafaab826f4f990ddad08113775eb743784854e.zip",
-      "artifactBytes": 4672879,
-      "artifactSha256": "07546a8e2ada10385630543c4cafaab826f4f990ddad08113775eb743784854e",
+      "artifact": "csharp-bundle.97e71606a7d8f09c8cb38447a964c9c026d1f6eb2c878950115a238127678edb.zip",
+      "artifactBytes": 4680086,
+      "artifactSha256": "97e71606a7d8f09c8cb38447a964c9c026d1f6eb2c878950115a238127678edb",
       "fileCount": 12,
-      "treeSha256": "3d3dc51d140297ca987d01010460706377af8f51bc79ff9c0fc952dabdd50bd1",
-      "uncompressedBytes": 12816153
+      "treeSha256": "254f75ea1af22387dc0087a9513ba4e6ea7b5c8074278a9a48915ba2dcedc77d",
+      "uncompressedBytes": 12840824
     }
   }
 }
