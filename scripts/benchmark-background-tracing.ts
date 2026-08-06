@@ -371,6 +371,9 @@ async function main(): Promise<void> {
           maxLineEvents: PRODUCT_TRACE_BUDGET.maxLineEvents * 16,
           maxSingleLineHits: PRODUCT_TRACE_BUDGET.maxSingleLineHits * 16,
           maxStoredEvents: PRODUCT_TRACE_BUDGET.maxStoredEvents * 16,
+          // Python retains events under a byte budget; without scaling it the
+          // uncapped mode silently stops at the 4MB default.
+          maxTraceBytes: 64 * 1024 * 1024,
         }
       : {}),
     ...(maxTraceStepsRaw ? { maxTraceSteps: Number(maxTraceStepsRaw) } : {}),

@@ -32,7 +32,9 @@ except Exception:
 const DEFAULT_TRACE_MAX_PATH_DEPTH = 3;
 const MAX_TRACE_MAX_PATH_DEPTH = 8;
 const DEFAULT_TRACE_MAX_BYTES = 4 * 1024 * 1024;
-const MAX_TRACE_MAX_BYTES = 8 * 1024 * 1024;
+// Ceiling for explicitly requested budgets (equal-output benchmarking needs
+// room to emit complete traces); the default above still guards the product.
+const MAX_TRACE_MAX_BYTES = 64 * 1024 * 1024;
 const isolatedPythonExecutionGuards = new WeakMap();
 const isolatedPythonFilesystemManagers = new WeakMap();
 
