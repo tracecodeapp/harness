@@ -1770,6 +1770,10 @@ def __tracecode_apply_inplace_augmented_value(current, op_name, rhs):
     return rhs
 
 def _tracecode_read_index(var_name, container, indices, index_sources=None):
+    # Post-budget fast path: recording would be discarded, so only the
+    # semantic read remains (mirrors the C++ admissibility pre-checks).
+    if _trace_limit_exceeded:
+        return __tracecode_read_value(container, list(indices))
     result = __tracecode_read_value(container, list(indices))
     normalized = __tracecode_normalize_indices(indices)
     if normalized is not None:
@@ -1786,6 +1790,8 @@ def _tracecode_read_index(var_name, container, indices, index_sources=None):
     return result
 
 def _tracecode_write_index(var_name, container, indices, index_sources, value):
+    if _trace_limit_exceeded:
+        return __tracecode_write_value(container, list(indices), value)
     effective_indices = list(indices)
     parent_value = None
     parent_indices = effective_indices[:-1]
@@ -1886,6 +1892,12 @@ def _tracecode_delete_index(var_name, container, indices, index_sources=None):
     return None
 
 def _tracecode_augassign_index(var_name, container, indices, index_sources, op_name, rhs):
+    if _trace_limit_exceeded:
+        _fast_indices = list(indices)
+        _fast_next = __tracecode_apply_augmented_value(
+            __tracecode_read_value(container, _fast_indices), op_name, rhs)
+        __tracecode_write_value(container, _fast_indices, _fast_next)
+        return _fast_next
     effective_indices = list(indices)
     current = __tracecode_read_value(container, effective_indices)
     normalized = __tracecode_normalize_indices(effective_indices)
@@ -4132,6 +4144,50 @@ if _max_memory_bytes > 0 and _tracecode_tracemalloc is not None:
 # They are not learner events and must not leak into the first traced line.
 _pending_accesses.clear()
 
+_tp_hooks = 0.0
+_tp_serialize_all = 0.0
+_tp_hook_calls = 0
+_tp_depth = 0
+
+if _TRACE_PROFILE:
+    _internal_funcs.add('_tc_hook_wrapper')
+    def _tc_wrap_hook(_tc_fn):
+        def _tc_hook_wrapper(*_tc_a, **_tc_k):
+            global _tp_hooks, _tp_depth, _tp_hook_calls
+            if _tp_depth > 0:
+                return _tc_fn(*_tc_a, **_tc_k)
+            _tp_depth = 1
+            _tp_hook_calls += 1
+            _tc_t0 = _tc_perf()
+            try:
+                return _tc_fn(*_tc_a, **_tc_k)
+            finally:
+                _tp_hooks += _tc_perf() - _tc_t0
+                _tp_depth = 0
+        return _tc_hook_wrapper
+    for _tc_hook_name in (
+        '_tracecode_read_index', '_tracecode_write_index', '_tracecode_augassign_index',
+        '_tracecode_augassign_scalar', '_tracecode_write_scalar', '_tracecode_len',
+        '_tracecode_enumerate', '_tracecode_iter_bind', '_tracecode_iter_bind_indexed',
+        '_tracecode_range_bind', '_tracecode_user_call', '_tracecode_dict_get',
+        '_tracecode_mutating_call', '_tracecode_mutating_index_call', '_tracecode_sum',
+        '_tracecode_contains_key_indexed', '_tracecode_record_index_write',
+        '_tracecode_delete_index', '_tracecode_record_attr_write',
+    ):
+        if _tc_hook_name in globals():
+            globals()[_tc_hook_name] = _tc_wrap_hook(globals()[_tc_hook_name])
+    _internal_funcs.add('_tc_serialize_wrapper')
+    _tc_orig_serialize_fn = _serialize
+    def _tc_serialize_wrapper(obj, depth=0, node_refs=None):
+        global _tp_serialize_all
+        _tc_t0 = _tc_perf()
+        try:
+            return _tc_orig_serialize_fn(obj, depth, node_refs)
+        finally:
+            if depth == 0:
+                _tp_serialize_all += _tc_perf() - _tc_t0
+    _serialize = _tc_serialize_wrapper
+
 if _TRACE_PROFILE:
     # Measurement-only accumulators. Buckets nest (snapshots run inside the
     # tracer and inside step appends), so interpret them as raw inclusive
@@ -4259,6 +4315,9 @@ if _TRACE_PROFILE:
         'monitoringError': _TC_MONITORING_ERROR,
         'monitoringArmed': _TC_MONITORING_WAS_ARMED,
         'setupMs': round((_tp_arm_at - _tp_import_at) * 1000, 1),
+        'hookMs': round(_tp_hooks * 1000, 1),
+        'hookCalls': _tp_hook_calls,
+        'serializeAllMs': round(_tp_serialize_all * 1000, 1),
         'runPhaseMs': round((_tp_stop_at - _tp_arm_at) * 1000, 1),
         'exportPhaseMs': round((_tc_perf() - _tp_stop_at) * 1000, 1),
         'tracerMs': round(_tp_tracer * 1000, 1),
