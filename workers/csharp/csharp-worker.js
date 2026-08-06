@@ -3961,10 +3961,27 @@ async function executePreparedCSharpProgram(message) {
   const runtimeResult = await loadRuntime(payload.assetBaseUrl);
   const initMs = elapsedMs(runtimeStartedAt) || runtimeResult.timings?.initMs || 0;
   const hostCallStartedAt = now();
-  const result = await withCSharpUserAuthorityLockdown(() =>
-    normalizeCSharpResult(JSON.parse(executePreparedExport(JSON.stringify(request))), request)
-  );
+  const result = await withCSharpUserAuthorityLockdown(() => {
+    const exportedJson = executePreparedExport(JSON.stringify(request));
+    const jsParseStartedAt = now();
+    const parsedResult = JSON.parse(exportedJson);
+    globalThis.__tracecodeCsLastParse = {
+      jsParseMs: Math.round(elapsedMs(jsParseStartedAt) * 10) / 10,
+      responseChars: exportedJson.length,
+    };
+    return normalizeCSharpResult(parsedResult, request);
+  });
   const hostCallMs = elapsedMs(hostCallStartedAt);
+  if ((result?.trace?.events?.length ?? 0) >= 5000) {
+    // Heavy-trace phase split for the tracing-latency investigation.
+    console.log('__TRACECODE_CSPROF__:' + JSON.stringify({
+      initMs: Math.round(initMs * 10) / 10,
+      hostCallMs: Math.round(hostCallMs * 10) / 10,
+      events: result.trace.events.length,
+      ...(globalThis.__tracecodeCsLastParse ?? {}),
+      dotnetTimings: result?.timings ?? null,
+    }));
+  }
   return {
     ...result,
     timings: {
@@ -4063,6 +4080,16 @@ async function executeCSharpCodePayload(payload, messageType = 'execute-code', c
     delete result.compiledArtifactSha256;
   }
   const hostCallMs = elapsedMs(hostCallStartedAt);
+  if ((result?.trace?.events?.length ?? 0) >= 5000) {
+    // Heavy-trace phase split for the tracing-latency investigation.
+    console.log('__TRACECODE_CSPROF__:' + JSON.stringify({
+      initMs: Math.round(initMs * 10) / 10,
+      hostCallMs: Math.round(hostCallMs * 10) / 10,
+      events: result.trace.events.length,
+      ...(globalThis.__tracecodeCsLastParse ?? {}),
+      dotnetTimings: result?.timings ?? null,
+    }));
+  }
   return {
     ...result,
     timings: {

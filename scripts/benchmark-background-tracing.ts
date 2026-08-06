@@ -466,7 +466,7 @@ async function main(): Promise<void> {
         console.error(`[browser pageerror] ${error.stack ?? error.message}`);
       });
       page.on('console', (message) => {
-        if (message.type() === 'error' || message.text().includes('__TRACECODE_BENCH_FAILURE__') || message.text().includes('__TRACECODE_PYPROF__') || process.env.TRACECODE_BENCH_CONSOLE === '1') {
+        if (message.type() === 'error' || message.text().includes('__TRACECODE_BENCH_FAILURE__') || message.text().includes('__TRACECODE_PYPROF__') || message.text().includes('__TRACECODE_CSPROF__') || process.env.TRACECODE_BENCH_CONSOLE === '1') {
           console.error(`[browser console] ${message.text()}`);
         }
       });
