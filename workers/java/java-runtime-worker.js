@@ -838,30 +838,27 @@ function compileFailureReport(compile, compilerDebugProfile) {
 }
 
 function parseTraceEventsFromStdout(lines) {
-  const beginIndex = lines.findIndex((line) =>
-    line.startsWith(TRACE_EVENTS_BEGIN_MARKER)
-  );
-  if (beginIndex >= 0) {
-    const declaredCount = Number.parseInt(
-      lines[beginIndex].slice(TRACE_EVENTS_BEGIN_MARKER.length),
-      10
+  // Large trace budgets drain events in multiple framed blocks so the JVM
+  // never holds the whole trace in memory; accumulate every block in order.
+  const events = [];
+  let sawBlock = false;
+  let cursor = 0;
+  for (;;) {
+    const beginIndex = lines.findIndex(
+      (line, index) => index >= cursor && line.startsWith(TRACE_EVENTS_BEGIN_MARKER)
     );
+    if (beginIndex < 0) break;
     const endIndex = lines.findIndex(
-      (line, index) =>
-        index > beginIndex && line.startsWith(TRACE_EVENTS_END_MARKER)
+      (line, index) => index > beginIndex && line.startsWith(TRACE_EVENTS_END_MARKER)
     );
-    if (endIndex > beginIndex) {
-      const events = lines.slice(beginIndex + 1, endIndex);
-      if (
-        Number.isFinite(declaredCount) &&
-        declaredCount >= 0 &&
-        events.length !== declaredCount
-      ) {
-        // Prefer the framed body; count mismatch is diagnostic only.
-      }
-      return events;
+    if (endIndex < 0) break;
+    sawBlock = true;
+    for (let index = beginIndex + 1; index < endIndex; index += 1) {
+      events.push(lines[index]);
     }
+    cursor = endIndex + 1;
   }
+  if (sawBlock) return events;
   // Legacy per-event Base64 lines (older helper jars / runners).
   return lines
     .filter((line) => line.startsWith(TRACE_EVENT_MARKER))

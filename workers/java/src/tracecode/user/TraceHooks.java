@@ -94,6 +94,16 @@ public final class TraceHooks {
   /** Public hot-path flag for rewritten call-site elision (field read, not a method call). */
   public static volatile boolean limitExceeded = false;
   private static int droppedEventCount = 0;
+  /** Events stored this run across every drained slab. */
+  private static int totalStoredEvents = 0;
+  /**
+   * Above this many buffered events, storage drains mid-run as a framed
+   * marker block (same framing the runner emits) so large trace budgets
+   * never hold the whole trace in JVM memory. Zero disables slab drains;
+   * budgets at or below the slab size behave exactly as before.
+   */
+  private static int slabDrainThreshold = 0;
+  private static final int SLAB_DRAIN_EVENTS = 32768;
   private static int nextTraceReferenceId = 0;
   private static int nextRunToken = 0;
   private static volatile int activeRunToken = 0;
@@ -356,7 +366,7 @@ public final class TraceHooks {
         droppedEventCount += 1;
         return;
       }
-      if (EVENTS.size() >= maxEvents) {
+      if (totalStoredEvents >= maxEvents) {
         traceLimitExceeded = true;
         limitExceeded = true;
         if (profileBudgetTripNs == 0L) profileBudgetTripNs = System.nanoTime();
@@ -364,8 +374,12 @@ public final class TraceHooks {
         throwBudgetExceeded = true;
       } else {
         EVENTS.add(sanitizedEvent);
+        totalStoredEvents += 1;
         profileStoredEvents += 1;
         profileStoredChars += sanitizedEvent.length();
+        if (slabDrainThreshold > 0 && EVENTS.size() >= slabDrainThreshold) {
+          drainSlabLocked();
+        }
       }
     }
     if (profileEnabled) profileStoreNs += System.nanoTime() - started;
@@ -440,7 +454,8 @@ public final class TraceHooks {
       resetStateLocked(nextMaxEvents);
       budgetAbortArmed = abortOnBudget;
       if (EVENTS instanceof ArrayList<?>) {
-        ((ArrayList<String>) EVENTS).ensureCapacity(maxEvents);
+        ((ArrayList<String>) EVENTS).ensureCapacity(
+            slabDrainThreshold > 0 ? slabDrainThreshold : maxEvents);
       }
     }
     RUN_TOKEN.set(token);
@@ -471,6 +486,8 @@ public final class TraceHooks {
     state.lastIndexSource = null;
     TRACE_REFERENCE_IDS.clear();
     maxEvents = Math.max(1, nextMaxEvents);
+    totalStoredEvents = 0;
+    slabDrainThreshold = maxEvents > SLAB_DRAIN_EVENTS ? SLAB_DRAIN_EVENTS : 0;
     traceLimitExceeded = false;
     limitExceeded = false;
     droppedEventCount = 0;
@@ -515,6 +532,37 @@ public final class TraceHooks {
       EVENTS.clear();
       return count;
     }
+  }
+
+  /**
+   * Drain the buffered events mid-run as one framed marker block, exactly as
+   * {@code TraceExecutionRunner} frames its final export; the worker
+   * concatenates every block in order. Caller holds {@code STATE_LOCK}.
+   */
+  private static void drainSlabLocked() {
+    int count = EVENTS.size();
+    if (count == 0) return;
+    byte[] block = null;
+    if (NATIVE_JSON_AVAILABLE) {
+      block = TextOps.encodeLinesUtf8(EVENTS.toArray(new String[0]), count);
+    }
+    if (block == null) {
+      StringBuilder out = new StringBuilder(256);
+      for (int index = 0; index < count; index++) {
+        out.append(EVENTS.get(index)).append('\n');
+      }
+      block = out.toString().getBytes(java.nio.charset.StandardCharsets.UTF_8);
+    }
+    EVENTS.clear();
+    System.out.println("__TRACECODE_TRACE_EVENTS_BEGIN__:" + count);
+    try {
+      System.out.flush();
+      System.out.write(block);
+      System.out.flush();
+    } catch (java.io.IOException error) {
+      System.out.print(new String(block, java.nio.charset.StandardCharsets.UTF_8));
+    }
+    System.out.println("__TRACECODE_TRACE_EVENTS_END__");
   }
 
   /** Result of {@link #drainEventsUtf8()}: event count plus the encoded block. */
