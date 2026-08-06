@@ -635,8 +635,11 @@ export class CppWorkerClient {
     expectedMode?: 'code' | 'trace'
   ): void {
     if (handle.lifecycleGeneration !== this.executionLifecycleGeneration) {
+      const reason = this.executionResetReason?.message;
       throw new Error(
-        `C++ prepared program "${handle.programId}" is unavailable because its worker session was reset.`
+        `C++ prepared program "${handle.programId}" is unavailable because its worker session was reset` +
+          (reason ? ` (${reason})` : '') +
+          '.'
       );
     }
     if (this.disposedPreparedPrograms.has(this.preparedProgramHandleKey(handle))) {
