@@ -11670,10 +11670,25 @@ function parseProgramStdout(stdout, options = {}) {
   let traceStatus = null;
   let cursor = 0;
 
+  // Marker searches are memoized: re-running indexOf for every marker on
+  // every loop iteration is quadratic when a marker only appears at the end
+  // of a multi-megabyte trace stdout (each of ~16k iterations rescanned the
+  // remaining megabytes). Each position is refreshed only once the cursor
+  // moves past it.
+  let resultIndex = stdout.indexOf(RESULT_MARKER);
+  let traceIndex = options.tracing ? stdout.indexOf(TRACE_EVENT_MARKER) : -1;
+  let statusIndex = stdout.indexOf(TRACE_STATUS_MARKER);
+
   while (cursor < stdout.length) {
-    const resultIndex = stdout.indexOf(RESULT_MARKER, cursor);
-    const traceIndex = options.tracing ? stdout.indexOf(TRACE_EVENT_MARKER, cursor) : -1;
-    const statusIndex = stdout.indexOf(TRACE_STATUS_MARKER, cursor);
+    if (resultIndex >= 0 && resultIndex < cursor) {
+      resultIndex = stdout.indexOf(RESULT_MARKER, cursor);
+    }
+    if (traceIndex >= 0 && traceIndex < cursor) {
+      traceIndex = stdout.indexOf(TRACE_EVENT_MARKER, cursor);
+    }
+    if (statusIndex >= 0 && statusIndex < cursor) {
+      statusIndex = stdout.indexOf(TRACE_STATUS_MARKER, cursor);
+    }
     const markerIndex = [resultIndex, traceIndex, statusIndex]
       .filter((index) => index >= 0)
       .sort((left, right) => left - right)[0] ?? -1;
