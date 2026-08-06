@@ -633,6 +633,7 @@ for _tracecode_input_name, _tracecode_input_value in _tracecode_raw_inputs.items
   const maxLineEvents = options.maxLineEvents || 10000;
   const maxSingleLineHits = options.maxSingleLineHits || 500;
   const minimalTrace = options.minimalTrace === true;
+  const traceProfile = options.traceProfile === true;
   const maxPathDepth = getTraceMaxPathDepth(options.maxPathDepth);
   const maxTraceBytes = getTraceMaxBytes(options.maxTraceBytes);
   // Keep stdout capture deterministic for the app UI; worker-console mirroring
@@ -657,6 +658,13 @@ _TRACECODE_TYPING_GLOBALS = _builtins.set(getattr(_tracecode_typing, '__all__', 
 _trace_data = []
 _trace_events = []
 _trace_line_event_count = 0
+_TRACE_PROFILE = ${traceProfile ? 'True' : 'False'}
+from time import perf_counter as _tc_perf
+_tp_tracer = 0.0
+_tp_snapshot = 0.0
+_tp_stack = 0.0
+_tp_step = 0.0
+_tp_convert = 0.0
 _console_output = []
 _original_print = _builtins.print
 _tracecode_builtin_id = _builtins.id
@@ -4059,6 +4067,53 @@ if _max_memory_bytes > 0 and _tracecode_tracemalloc is not None:
 # Source augmentation can record setup accesses before user execution begins.
 # They are not learner events and must not leak into the first traced line.
 _pending_accesses.clear()
+
+if _TRACE_PROFILE:
+    # Measurement-only accumulators. Buckets nest (snapshots run inside the
+    # tracer and inside step appends), so interpret them as raw inclusive
+    # totals rather than a partition.
+    _tc_orig_snapshot_locals = _snapshot_locals
+    def _snapshot_locals(frame, with_sources=False):
+        global _tp_snapshot
+        _t0 = _tc_perf()
+        try:
+            return _tc_orig_snapshot_locals(frame, with_sources)
+        finally:
+            _tp_snapshot += _tc_perf() - _t0
+    _tc_orig_snapshot_call_stack = _snapshot_call_stack
+    def _snapshot_call_stack():
+        global _tp_stack
+        _t0 = _tc_perf()
+        try:
+            return _tc_orig_snapshot_call_stack()
+        finally:
+            _tp_stack += _tc_perf() - _t0
+    _tc_orig_append_trace_step = __tracecode_append_trace_step
+    def __tracecode_append_trace_step(frame, step):
+        global _tp_step
+        _t0 = _tc_perf()
+        try:
+            return _tc_orig_append_trace_step(frame, step)
+        finally:
+            _tp_step += _tc_perf() - _t0
+    _tc_orig_append_events_for_step = __tracecode_append_trace_events_for_step
+    def __tracecode_append_trace_events_for_step(step):
+        global _tp_convert
+        _t0 = _tc_perf()
+        try:
+            return _tc_orig_append_events_for_step(step)
+        finally:
+            _tp_convert += _tc_perf() - _t0
+    _tc_orig_tracer = _tracer
+    def _tracer(frame, event, arg):
+        global _tp_tracer
+        _t0 = _tc_perf()
+        try:
+            _tc_result = _tc_orig_tracer(frame, event, arg)
+        finally:
+            _tp_tracer += _tc_perf() - _t0
+        return _tracer if _tc_result is _tc_orig_tracer else _tc_result
+
 sys.settrace(_tracer)
 _trace_failed = False
 
@@ -4130,6 +4185,19 @@ def __tracecode_compact_last_step(kind=None):
                 compact['variables'] = selected
         return compact
     return None
+
+if _TRACE_PROFILE:
+    _console_output.append('__TRACECODE_TRACE_PROFILE_JSON__:' + json.dumps({
+        'language': 'python',
+        'tracerMs': round(_tp_tracer * 1000, 1),
+        'snapshotMs': round(_tp_snapshot * 1000, 1),
+        'callStackMs': round(_tp_stack * 1000, 1),
+        'stepAppendMs': round(_tp_step * 1000, 1),
+        'eventConvertMs': round(_tp_convert * 1000, 1),
+        'events': len(_trace_events),
+        'steps': len(_trace_data),
+        'lineEvents': _total_line_events,
+    }))
 
 __tracecode_execution_result_json = (
     '{"traceSummary":' + json.dumps({
@@ -4412,6 +4480,7 @@ async function executeWithTracing(
       };
     }
 
+    const pyRunStartedAt = deps.performanceNow();
     const resultJson = prepared
       ? await runCompiledPythonInFreshExecutionScope(
           deps,
@@ -4428,7 +4497,20 @@ async function executeWithTracing(
           tracingCode,
           '__tracecode_execution_result_json'
         );
+    const pyRunMs = deps.performanceNow() - pyRunStartedAt;
+    const jsonParseStartedAt = deps.performanceNow();
     const result = JSON.parse(resultJson);
+    const jsonParseMs = deps.performanceNow() - jsonParseStartedAt;
+    if (options.traceProfile === true) {
+      // Worker-side phase split for the tracing-latency investigation.
+      console.log('__TRACECODE_PYPROF__:' + JSON.stringify({
+        generateMs: Math.round((pyRunStartedAt - startTime) * 10) / 10,
+        pyRunMs: Math.round(pyRunMs * 10) / 10,
+        jsonParseMs: Math.round(jsonParseMs * 10) / 10,
+        resultChars: resultJson?.length ?? -1,
+        prepared: Boolean(prepared),
+      }));
+    }
 
     const executionTimeMs = deps.performanceNow() - startTime;
 

@@ -301,6 +301,11 @@ function report(results: readonly BenchmarkLanguageResult[]): void {
         heavyCode !== undefined && heavyCode > 0 && heavyTrace !== undefined
           ? `${(heavyTrace / heavyCode).toFixed(1)}x`
           : '—';
+      const heavyProfile = (result as { perCaseProfiles?: Array<Record<string, unknown> | null> })
+        .perCaseProfiles?.[heavyIndex];
+      if (heavyProfile) {
+        console.log(`  [${result.language} heavy-case profile] ${JSON.stringify(heavyProfile)}`);
+      }
       console.log(
         [
           result.language.padEnd(11),
@@ -458,7 +463,7 @@ async function main(): Promise<void> {
         console.error(`[browser pageerror] ${error.stack ?? error.message}`);
       });
       page.on('console', (message) => {
-        if (message.type() === 'error' || message.text().includes('__TRACECODE_BENCH_FAILURE__') || process.env.TRACECODE_BENCH_CONSOLE === '1') {
+        if (message.type() === 'error' || message.text().includes('__TRACECODE_BENCH_FAILURE__') || message.text().includes('__TRACECODE_PYPROF__') || process.env.TRACECODE_BENCH_CONSOLE === '1') {
           console.error(`[browser console] ${message.text()}`);
         }
       });
