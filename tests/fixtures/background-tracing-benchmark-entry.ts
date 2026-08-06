@@ -76,6 +76,8 @@ export interface BenchmarkLanguageResult {
    */
   readonly perCaseTraceMs: readonly number[];
   readonly perCaseVerdicts: readonly string[];
+  /** Retained trace event count per case (-1 when the case had no trace). */
+  readonly perCaseEventCounts: readonly number[];
   /** Optional TraceHooks profiles parsed from case stdout (Java measurement). */
   readonly perCaseProfiles?: ReadonlyArray<Record<string, unknown> | null>;
   readonly error?: string;
@@ -224,6 +226,7 @@ export async function runBackgroundTracingBenchmark(
       // Phase 2 - background-tracing simulation: one traced case at a time.
       const perCaseTraceMs: number[] = [];
       const perCaseVerdicts: string[] = [];
+      const perCaseEventCounts: number[] = [];
       const perCaseProfiles: Array<Record<string, unknown> | null> = [];
       const profileMarker = '__TRACECODE_TRACE_PROFILE_JSON__:';
       for (const testCase of fixture.cases) {
@@ -245,6 +248,12 @@ export async function runBackgroundTracingBenchmark(
         const startedAt = performance.now();
         const receipt = await host.evaluateAlgorithm({ bundle: caseBundle });
         perCaseTraceMs.push(performance.now() - startedAt);
+        {
+          const caseTrace = (receipt.evaluation.status === 'completed'
+            ? (receipt.evaluation.cases[0] as { trace?: { events?: unknown[] } } | undefined)?.trace
+            : undefined);
+          perCaseEventCounts.push(Array.isArray(caseTrace?.events) ? caseTrace.events.length : -1);
+        }
         perCaseVerdicts.push(
           receipt.evaluation.status === 'completed'
             ? (receipt.evaluation.cases[0]?.verdict.kind ?? 'missing')
@@ -301,6 +310,7 @@ export async function runBackgroundTracingBenchmark(
         perCaseCodeVerdicts,
         perCaseTraceMs,
         perCaseVerdicts,
+        perCaseEventCounts,
         perCaseProfiles,
       });
     } catch (error) {
@@ -319,6 +329,7 @@ export async function runBackgroundTracingBenchmark(
         perCaseCodeMs: [],
         perCaseCodeVerdicts: [],
         perCaseTraceMs: [],
+        perCaseEventCounts: [],
         perCaseVerdicts: [],
         perCaseProfiles: [],
         error: error instanceof Error ? (error.stack ?? error.message) : String(error),

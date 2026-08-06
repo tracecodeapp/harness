@@ -53,6 +53,9 @@ const SOLUTION_EXTENSIONS: Record<Exclude<BenchmarkLanguage, 'python'>, string> 
  * fall back to a 500 single-line-hit ceiling, which aborts large traces and
  * would measure failed work instead of real tracing.
  */
+/** Set from the resolved trace options so the reporter can flag capped cases. */
+let activeMaxStoredEvents = 16000;
+
 const PRODUCT_TRACE_BUDGET = {
   maxTraceSteps: 4000,
   maxLineEvents: 20000,
@@ -97,6 +100,7 @@ interface BenchmarkLanguageResult {
   perCaseCodeVerdicts: string[];
   perCaseTraceMs: number[];
   perCaseVerdicts: string[];
+  perCaseEventCounts?: number[];
   error?: string;
 }
 
@@ -275,6 +279,8 @@ function report(results: readonly BenchmarkLanguageResult[]): void {
         'heavy code'.padStart(11),
         'heavy trace'.padStart(12),
         'trace x'.padStart(8),
+        'hvy events'.padStart(11),
+        'capped'.padStart(7),
         'verdicts'.padStart(9),
       ].join(' ')
     );
@@ -308,6 +314,15 @@ function report(results: readonly BenchmarkLanguageResult[]): void {
           formatMs(heavyCode).padStart(11),
           formatMs(heavyTrace).padStart(12),
           traceMultiple.padStart(8),
+          String(result.perCaseEventCounts?.[heavyIndex] ?? '—').padStart(11),
+          String(
+            // >= 99% of the stored-event budget: runtimes stop within a few
+            // events of the cap (some strictly below it), and a case that
+            // close to the ceiling did not finish emitting its full trace.
+            (result.perCaseEventCounts ?? []).filter(
+              (count) => count >= activeMaxStoredEvents * 0.99
+            ).length
+          ).padStart(7),
           // Timing numbers are meaningless if traced runs stopped passing.
           (result.perCaseVerdicts.every((verdict) => verdict === 'passed')
             ? 'passed'
@@ -339,11 +354,24 @@ async function main(): Promise<void> {
   // almost entirely. If neither moves the clock, the cost is in the
   // instrumentation scaffolding rather than in emitting events.
   const maxTraceStepsRaw = option('max-trace-steps');
+  // --trace-limits=uncapped raises every budget x16 so no runtime stops
+  // tracing early; a fast time under product limits can just mean "hit the
+  // cap soonest", so cross-runtime comparisons need this equal-output mode.
+  const uncapped = option('trace-limits') === 'uncapped';
   const traceOptions = {
     ...PRODUCT_TRACE_BUDGET,
+    ...(uncapped
+      ? {
+          maxTraceSteps: PRODUCT_TRACE_BUDGET.maxTraceSteps * 16,
+          maxLineEvents: PRODUCT_TRACE_BUDGET.maxLineEvents * 16,
+          maxSingleLineHits: PRODUCT_TRACE_BUDGET.maxSingleLineHits * 16,
+          maxStoredEvents: PRODUCT_TRACE_BUDGET.maxStoredEvents * 16,
+        }
+      : {}),
     ...(maxTraceStepsRaw ? { maxTraceSteps: Number(maxTraceStepsRaw) } : {}),
     ...(process.argv.includes('--minimal-trace') ? { minimalTrace: true } : {}),
   };
+  activeMaxStoredEvents = traceOptions.maxStoredEvents;
 
   const fixtures = await loadFixtures(productRoot, problems, languages, maxCases);
   console.log(
