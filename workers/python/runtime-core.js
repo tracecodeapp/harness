@@ -791,7 +791,8 @@ _internal_locals = {
     '_call_stack', '_pending_accesses', '_last_trace_index_by_frame', '_tracecode_tracemalloc', '_tracecode_tracemalloc_started', '_TRACE_MUTATING_METHODS', '_tracecode_user_class_names', '_tracecode_explicit_return_function_names', '_internal_funcs', '_internal_locals', '_max_trace_steps',
     '_trace_limit_exceeded', '_timeout_reason', '_total_line_events', '_max_line_events', '_max_stored_events', '_max_trace_bytes', '_max_trace_event_bytes', '_trace_stored_bytes',
     '_line_hit_count', '_max_single_line_hits', '_max_call_depth', '_max_memory_bytes', '_memory_check_every', '_infinite_loop_line',
-    '_MAX_SERIALIZE_DEPTH', '_MAX_SERIALIZED_ITEMS', '_MAX_OBJECT_FIELDS', '_MAX_SERIALIZED_STRING_CHARS', '_serialize_string', '_trace_failed', '_inplace',
+    '_hard_line_ceiling', '_hard_line_deadline', '_hard_line_grace_seconds',
+    '_MAX_SERIALIZE_DEPTH', '_MAX_SERIALIZED_ITEMS', '_MAX_OBJECT_FIELDS', '_MAX_SERIALIZED_STRING_CHARS', '_serialize_string', '_trace_failed', '_execution_aborted', '_inplace',
     '_custom_print', '_tracer', '_serialize', '_serialize_output', '_tracecode_ref_id', '_dict_to_tree', '_dict_to_list', '_tracecode_materialize_input',
     '_tracecode_materialize_custom_input', '_tracecode_materialize_named_inputs', '_tracecode_hydrate_for_annotation',
     '_tracecode_resolve_target_callable', '_tracecode_hydrate_annotated_inputs', '_tracecode_resolve_entry_callable', '_tracecode_invoke_entry',
@@ -846,6 +847,16 @@ _max_memory_bytes = ${
       : 0
   }
 _memory_check_every = 10
+# Trace-budget exhaustion is NOT an execution error: once the budget trips the
+# tracer stops recording but the program keeps running so the verdict is still
+# produced (C++/Java/C# already behave this way). These separate, much larger
+# ceilings remain fatal so a genuine infinite loop is still caught.
+_hard_line_ceiling = max(_max_line_events, _max_single_line_hits) * 50
+# Armed lazily on the first budget trip, not here: this preamble can run well
+# before (and once for many cases of) the traced execution, so an absolute
+# deadline set now could already be expired by the time user code trips.
+_hard_line_deadline = 0.0
+_hard_line_grace_seconds = 10.0
 _infinite_loop_line = -1
 
 try:
@@ -3916,7 +3927,33 @@ def _tracer(frame, event, arg,
     _tracecode_flush_completed_line=__tracecode_flush_completed_line,
 ):
     global _trace_limit_exceeded, _timeout_reason, _total_line_events, _line_hit_count, _infinite_loop_line
-    global _call_stack_generation
+    global _call_stack_generation, _hard_line_deadline
+
+    # Degraded fast path. Once a trace budget trips we record nothing more, so
+    # skip the whole classification preamble (filename, internal-func set, the
+    # structural-constructor call) and keep only the runaway guards. Sampling
+    # them every 1024 events keeps perf_counter() off the per-event path; the
+    # ceiling is 50x the normal budget, so the coarse granularity is harmless.
+    if _trace_limit_exceeded:
+        _total_line_events += 1
+        if (_total_line_events & 1023) == 0:
+            if _hard_line_deadline == 0.0:
+                _hard_line_deadline = _tc_perf() + _hard_line_grace_seconds
+            if _total_line_events >= _hard_line_ceiling or _tc_perf() > _hard_line_deadline:
+                _tracecode_stop_tracing()
+                raise _InfiniteLoopDetected(
+                    f"Execution guard tripped after {_total_line_events} line events"
+                )
+            if _max_memory_bytes > 0 and _tracecode_tracemalloc is not None:
+                try:
+                    _degraded_memory, _degraded_peak = _tracecode_tracemalloc.get_traced_memory()
+                except Exception:
+                    _degraded_memory, _degraded_peak = (0, 0)
+                if _degraded_memory >= _max_memory_bytes or _degraded_peak >= _max_memory_bytes:
+                    _tracecode_stop_tracing()
+                    raise _InfiniteLoopDetected(f"Exceeded {_max_memory_bytes} bytes")
+        return _tracer
+
     func_name = frame.f_code.co_name
 
     if frame.f_code.co_filename != 'solution.py':
@@ -3977,8 +4014,9 @@ def _tracer(frame, event, arg,
                     'stdoutLineCount': len(_console_output),
                     'accesses': [],
                 })
-                _tracecode_stop_tracing()
-                raise _InfiniteLoopDetected(f"Exceeded {_max_line_events} line events")
+                # Degrade: stop recording, keep executing. Every later event
+                # takes the degraded fast path at the top of _tracer.
+                return _tracer
 
         # Simple per-line counter (catches any line hit too many times)
         line_key = (func_name, frame.f_lineno)
@@ -4000,8 +4038,8 @@ def _tracer(frame, event, arg,
                     'stdoutLineCount': len(_console_output),
                     'accesses': []
                 })
-                _tracecode_stop_tracing()
-                raise _InfiniteLoopDetected(f"Line {frame.f_lineno} executed {_max_single_line_hits} times")
+                # Degrade: stop recording, keep executing (see _hard_line_ceiling).
+                return _tracer
 
         previous_step = _tracecode_resolve_previous_step(frame)
         if (
@@ -4592,11 +4630,16 @@ except Exception:
 _tp_arm_at = _tc_perf()
 _tracecode_arm_tracing()
 _trace_failed = False
+# True only when a guard aborted the program mid-flight (runaway loop, memory
+# ceiling). A trace-budget trip alone degrades to "stop recording, keep running"
+# and leaves this False, so the host can still trust _result.
+_execution_aborted = False
 
 try:
 ${executionCode}
 except _InfiniteLoopDetected as e:
     _trace_failed = True
+    _execution_aborted = True
     _result = None
     # Infinite loop was detected - trace data already has the timeout event
 except Exception as e:
@@ -4703,6 +4746,7 @@ __tracecode_execution_result_json = (
     + ',"console":' + json.dumps(_console_output)
     + ',"userCodeStartLine":' + json.dumps(${userCodeStartLine})
     + ',"traceLimitExceeded":' + json.dumps(_trace_limit_exceeded)
+    + ',"executionAborted":' + json.dumps(_execution_aborted)
     + ',"timeoutReason":' + json.dumps(_timeout_reason)
     + ',"lineEventCount":' + json.dumps(_total_line_events)
     + ',"traceStepCount":' + json.dumps(len(_trace_data)) + '}'
@@ -5031,9 +5075,16 @@ async function executeWithTracing(
       timeoutReason === 'single-line-limit' ||
       (result.traceLimitExceeded && timeoutReason !== 'client-timeout');
 
+    // Every trace budget now degrades to "stop recording, keep executing", so a
+    // budget trip alone no longer invalidates the result — the program still ran
+    // to completion and `output` is real. Only an aborting guard (runaway loop,
+    // memory ceiling) sets executionAborted, and that still fails the case.
     const traceOnlyBudgetExceeded =
-      timeoutReason === 'trace-limit' ||
-      timeoutReason === 'trace-byte-limit';
+      !result.executionAborted &&
+      (timeoutReason === 'trace-limit' ||
+        timeoutReason === 'trace-byte-limit' ||
+        timeoutReason === 'line-limit' ||
+        timeoutReason === 'single-line-limit');
 
     // Handle tracing guard stops and execution timeouts
     if (result.traceLimitExceeded || timeoutStep) {
@@ -5073,6 +5124,7 @@ async function executeWithTracing(
     return {
       success:
         !errorStep &&
+        !result.executionAborted &&
         (!result.traceLimitExceeded || traceOnlyBudgetExceeded) &&
         (!timeoutStep || traceOnlyBudgetExceeded),
       output: result.result,
