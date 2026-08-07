@@ -4008,11 +4008,15 @@ async function executePreparedCSharpProgram(message) {
     }
     const jsParseStartedAt = now();
     const parsedResult = JSON.parse(exportedJson);
+    const jsParseMs = elapsedMs(jsParseStartedAt);
+    const normalizeStartedAt = now();
+    const normalized = normalizeCSharpResult(parsedResult, request);
     globalThis.__tracecodeCsLastParse = {
-      jsParseMs: Math.round(elapsedMs(jsParseStartedAt) * 10) / 10,
+      jsParseMs: Math.round(jsParseMs * 10) / 10,
+      jsNormalizeMs: Math.round(elapsedMs(normalizeStartedAt) * 10) / 10,
       responseChars: exportedJson.length,
     };
-    return normalizeCSharpResult(parsedResult, request);
+    return normalized;
   });
   const hostCallMs = elapsedMs(hostCallStartedAt);
   if ((result?.trace?.events?.length ?? 0) >= 5000) {
