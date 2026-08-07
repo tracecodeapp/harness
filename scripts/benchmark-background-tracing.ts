@@ -378,6 +378,11 @@ async function main(): Promise<void> {
       : {}),
     ...(maxTraceStepsRaw ? { maxTraceSteps: Number(maxTraceStepsRaw) } : {}),
     ...(process.argv.includes('--minimal-trace') ? { minimalTrace: true } : {}),
+    // Profiling instruments the runtime's own hot path (python wraps ~19 hook
+    // functions), which inflates every timing here. It stays on by default so
+    // recorded numbers stay comparable across this sprint; pass
+    // --no-trace-profile for true production-mode timings.
+    ...(process.argv.includes('--no-trace-profile') ? { traceProfile: false } : {}),
   };
   activeMaxStoredEvents = traceOptions.maxStoredEvents;
 
@@ -403,7 +408,7 @@ async function main(): Promise<void> {
           join(
             '.cache',
             'tracecc-runtime-assets',
-            'e9457f3a87621f0f6a034c3a18b7e6374c838c226a42215236136d162858807f'
+            '1f50b24524b84b65663aa2fde85c97661a095f438596ffc916c000a6bfe450ca'
           )
       );
       if (!existsSync(traceccSource)) {
