@@ -11665,6 +11665,7 @@ function parseProgramStdout(stdout, options = {}) {
   const consoleOutput = [];
   const traceEvents = options.tracing ? [] : null;
   const pendingStdoutEvents = options.tracing ? [] : null;
+  const lastSnapshotValueJsonByVariable = new Map();
   let output = null;
   let foundResult = false;
   let traceStatus = null;
@@ -11714,6 +11715,30 @@ function parseProgramStdout(stdout, options = {}) {
       if (traceEvents && marker.payload) {
         try {
           const event = JSON.parse(marker.payload);
+          // The runtime emits "valueRef":"prev" when a snapshot's value is
+          // provably identical to this variable's previous snapshot; resolve
+          // it here so downstream events keep their historical shape. Each
+          // reference re-parses the stored value json, so no value object is
+          // shared between events.
+          if (event.kind === 'snapshot') {
+            const variable = event.target?.variable;
+            if (event.valueRef === 'probe') {
+              globalThis.__tracecodeCppProbeCount = (globalThis.__tracecodeCppProbeCount ?? 0) + 1;
+              cursor = marker.nextIndex;
+              continue;
+            }
+            if (event.valueRef === 'prev') {
+              globalThis.__tracecodeCppRefCount = (globalThis.__tracecodeCppRefCount ?? 0) + 1;
+              const storedValueJson = lastSnapshotValueJsonByVariable.get(variable);
+              if (storedValueJson === undefined) {
+                throw new Error(`C++ snapshot valueRef with no prior snapshot for ${String(variable)}`);
+              }
+              delete event.valueRef;
+              event.value = JSON.parse(storedValueJson);
+            } else if (typeof variable === 'string') {
+              lastSnapshotValueJsonByVariable.set(variable, JSON.stringify(event.value));
+            }
+          }
           anchorPendingStdoutEvents(pendingStdoutEvents, event);
           traceEvents.push(event);
         } catch (error) {
@@ -11726,6 +11751,13 @@ function parseProgramStdout(stdout, options = {}) {
 
   if (!foundResult && !options.allowMissingResult) {
     throw new Error('C++ program did not emit a TraceCode result.');
+  }
+  if ((traceEvents?.length ?? 0) >= 100_000) {
+    console.log('__TRACECODE_CPPREF__:' + JSON.stringify({
+      events: traceEvents.length,
+      refsResolved: globalThis.__tracecodeCppRefCount ?? 0,
+      probes: globalThis.__tracecodeCppProbeCount ?? 0,
+    }));
   }
   return { output, consoleOutput, events: traceEvents ?? [], traceStatus };
 }
