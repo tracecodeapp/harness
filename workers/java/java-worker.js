@@ -1669,6 +1669,19 @@ function buildDynamicInputHelperMethods() {
     }
   }
 
+  private static Object defaultJsonArgument(Class<?> parameterType) {
+    if (!parameterType.isPrimitive()) return null;
+    if (parameterType == boolean.class) return Boolean.FALSE;
+    if (parameterType == char.class) return Character.valueOf('\\0');
+    if (parameterType == byte.class) return Byte.valueOf((byte) 0);
+    if (parameterType == short.class) return Short.valueOf((short) 0);
+    if (parameterType == int.class) return Integer.valueOf(0);
+    if (parameterType == long.class) return Long.valueOf(0L);
+    if (parameterType == float.class) return Float.valueOf(0f);
+    if (parameterType == double.class) return Double.valueOf(0d);
+    return null;
+  }
+
   private static Object materializePreparedJsonObject(
       java.util.Map<?, ?> fields,
       Class<?> targetType
@@ -1701,9 +1714,30 @@ function buildDynamicInputHelperMethods() {
       Object instance = constructor.newInstance();
       assignPreparedJsonFields(targetType, instance, fields);
       return instance;
-    } catch (ReflectiveOperationException error) {
-      throw new RuntimeException("Unable to materialize prepared Java input " + targetType.getName(), error);
+    } catch (ReflectiveOperationException ignored) {
     }
+    // Learner types often declare a single convenience constructor (the classic
+    // TreeNode(int val)) and no no-arg constructor, so an interior node that
+    // serializes as {val,left,right} matches no constructor arity. Construct
+    // with type-default arguments and let the by-name field assignment below
+    // populate the real values.
+    java.lang.reflect.Constructor<?>[] declared = targetType.getDeclaredConstructors();
+    java.util.Arrays.sort(declared, java.util.Comparator.comparingInt(java.lang.reflect.Constructor::getParameterCount));
+    for (java.lang.reflect.Constructor<?> constructor : declared) {
+      try {
+        Class<?>[] parameterTypes = constructor.getParameterTypes();
+        Object[] arguments = new Object[parameterTypes.length];
+        for (int index = 0; index < parameterTypes.length; index += 1) {
+          arguments[index] = defaultJsonArgument(parameterTypes[index]);
+        }
+        constructor.setAccessible(true);
+        Object instance = constructor.newInstance(arguments);
+        assignPreparedJsonFields(targetType, instance, fields);
+        return instance;
+      } catch (ReflectiveOperationException | IllegalArgumentException ignored) {
+      }
+    }
+    throw new RuntimeException("Unable to materialize prepared Java input " + targetType.getName());
   }
 
   private static Object preparedLinkedNodes(
