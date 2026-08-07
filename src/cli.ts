@@ -32,6 +32,13 @@ const ASSET_COPY_PLAN = [
     languages: ['python'],
   },
   {
+    // Native tracing hot path; the worker resolves it next to its own script
+    // and falls back to the python tracer when absent.
+    source: ['workers', 'python', 'tracecode_native-0.1.0-cp313-cp313-pyemscripten_2025_0_wasm32.whl'],
+    target: ['tracecode_native-0.1.0-cp313-cp313-pyemscripten_2025_0_wasm32.whl'],
+    languages: ['python'],
+  },
+  {
     source: ['workers', 'shared', 'runtime-kernel-policy-classic.js'],
     target: ['shared', 'runtime-kernel-policy-classic.js'],
     languages: ['python'],

@@ -131,7 +131,20 @@ Core design decisions:
       Node loader gotcha: pyodide.js is a classic script; indirect-eval it
       with globalThis.require and globalThis.__dirname set, indexURL needs a
       trailing slash.
-- [ ] M2 native emission + parity harness.
+- [x] M2 native emission + parity harness. The C module owns the event buffer
+      (comma-joined; exact budget accounting INCLUDING the 256-byte initial
+      reserve that _trace_stored_bytes seeds — missing it admitted one extra
+      tail event on byte-limited cases); flush stages a frozen locals dict and
+      convert calls emit_snapshot_events(locals, base_prefix) which filters,
+      serializes, appends, and returns the reps dict for the step machinery;
+      python line/access events route through append_event_json; export
+      splices take_buffer(). Worker loads the wheel best-effort (fallback to
+      python tracer), wheel added to the CLI ASSET_COPY_PLAN (it was silently
+      missing from the benchmark's synced assets at first — timings unchanged
+      = wheel didn't load). Parity: dual-run event-stream hashes identical on
+      every coin-change case incl. three byte-limited ones; suites green.
+      Numbers so far: heavy uncapped snapshot 1906→879ms, tracer 3236→2065ms,
+      runPhase 4435→3231ms, heavy trace ~8.3→7.5s.
 - [ ] M3 budgets/cache native.
 - [ ] M4 default flip + benchmarks.
 

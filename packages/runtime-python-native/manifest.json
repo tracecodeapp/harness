@@ -20,9 +20,10 @@
     "output": "dist/tracecode_native-<version>-cp313-cp313-pyemscripten_2025_0_wasm32.whl",
     "verify": "load in the vendored pyodide (workers/python/pyodide-0.29.3) via loadPackage(file url), then `import _tracecode_native; _tracecode_native.ping()` == 1"
   },
-  "m0Wheel": {
-    "sha256": "d79e75644ed42881af9d47c776fc904d6bb37e2064b99241bfb7ab290c1e61a7",
-    "note": "M0 toolchain-proof wheel (ping only); not vendored — the real wheel ships at M4 under workers/vendor/python-native/"
+  "vendoredWheel": {
+    "path": "workers/python/tracecode_native-0.1.0-cp313-cp313-pyemscripten_2025_0_wasm32.whl",
+    "sha256": "74c26c7d1523b4f7c1289226a683f7e745cf9bc57bd4ca70d81ab88d55689ad1",
+    "note": "M2 wheel: native event buffer + budgets + parity serializer + snapshot emitter. The worker loads it best-effort next to its own script (see ensureTracecodeNativeWheel) and falls back to the python tracer when absent."
   },
   "plan": "docs/python-native-tracer-plan.md"
 }

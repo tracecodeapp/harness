@@ -401,13 +401,16 @@ static PyObject* begin_run(PyObject* self, PyObject* args) {
   long long max_events_arg = 0;
   long long max_bytes_arg = 0;
   long long max_event_bytes_arg = 0;
-  if (!PyArg_ParseTuple(args, "LLL", &max_events_arg, &max_bytes_arg, &max_event_bytes_arg)) {
+  long long initial_stored_bytes = 0;
+  if (!PyArg_ParseTuple(args, "LLL|L", &max_events_arg, &max_bytes_arg,
+                        &max_event_bytes_arg, &initial_stored_bytes)) {
     return NULL;
   }
   tc_buf_clear(&event_buffer);
   event_count = 0;
   line_event_count = 0;
-  stored_bytes = 0;
+  // The python counter seeds a small envelope reserve; mirror it exactly.
+  stored_bytes = initial_stored_bytes;
   limit_exceeded = 0;
   timeout_reason = NULL;
   max_stored_events = max_events_arg;
@@ -519,6 +522,12 @@ static PyObject* take_buffer(PyObject* self, PyObject* args) {
   return PyUnicode_DecodeUTF8(event_buffer.data ? event_buffer.data : "", (Py_ssize_t)event_buffer.len, "strict");
 }
 
+static PyObject* stored_event_count(PyObject* self, PyObject* args) {
+  (void)self;
+  (void)args;
+  return PyLong_FromLongLong(event_count);
+}
+
 static PyObject* counters(PyObject* self, PyObject* args) {
   (void)self;
   (void)args;
@@ -580,6 +589,7 @@ static PyMethodDef TracecodeNativeMethods[] = {
   {"emit_snapshot_events", (PyCFunction)(void (*)(void))emit_snapshot_events, METH_FASTCALL,
    "emit_snapshot_events(locals_dict, base_prefix) -> reps dict."},
   {"take_buffer", take_buffer, METH_NOARGS, "Comma-joined event json array body."},
+  {"stored_event_count", stored_event_count, METH_NOARGS, "Stored event count."},
   {"counters", counters, METH_NOARGS, "Run counters."},
   {"mark_limit_exceeded", mark_limit_exceeded, METH_VARARGS, "Set the budget flag."},
   {"line_probe", (PyCFunction)(void (*)(void))line_probe, METH_FASTCALL,

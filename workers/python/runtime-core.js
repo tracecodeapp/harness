@@ -659,6 +659,8 @@ _TRACECODE_TYPING_GLOBALS = _builtins.set(getattr(_tracecode_typing, '__all__', 
 
 _trace_data = []
 _trace_events = []
+# Native tracer module (loaded late, see the arm site); None = python paths.
+_TC_NATIVE = None
 _trace_line_event_count = 0
 _TRACE_PROFILE = ${traceProfile ? 'True' : 'False'}
 from time import perf_counter as _tc_perf
@@ -1398,12 +1400,32 @@ def __tracecode_access_value(step, access):
     root = variables.get(access.get('variable')) if isinstance(variables, _builtins.dict) else None
     return __tracecode_value_at_path(root, access.get('indices'))
 
+def _tc_native_sync_limit():
+    # Mirror a native-side budget trip onto the python flags.
+    global _trace_limit_exceeded, _timeout_reason
+    if not _trace_limit_exceeded:
+        _trace_limit_exceeded = True
+        reason = _TC_NATIVE.counters().get('timeoutReason') if _TC_NATIVE is not None else ''
+        _timeout_reason = reason or 'trace-limit'
+    _pending_accesses.clear()
+
 def __tracecode_append_runtime_event(event):
     # Single-writer: this serialization IS the stored representation. The
     # event dict is not retained, so later frame mutation cannot leak into
     # already-recorded events and the final export embeds these strings
     # without re-serializing the whole trace.
     global _trace_limit_exceeded, _timeout_reason, _trace_stored_bytes, _trace_line_event_count
+    if _TC_NATIVE is not None:
+        try:
+            event_json = _TC_JSON_ENCODER.encode(event)
+        except Exception:
+            _TC_NATIVE.mark_limit_exceeded('trace-byte-limit')
+            _tc_native_sync_limit()
+            return False
+        if _TC_NATIVE.append_event_json(event_json, event.get('kind') == 'line'):
+            return True
+        _tc_native_sync_limit()
+        return False
     if len(_trace_events) >= _max_stored_events:
         if not _trace_limit_exceeded:
             _trace_limit_exceeded = True
@@ -1440,6 +1462,11 @@ def __tracecode_append_runtime_event_json(event_json):
     # Raw-string twin of __tracecode_append_runtime_event for callers that
     # assemble the json by fragment splicing (never 'line' events).
     global _trace_limit_exceeded, _timeout_reason, _trace_stored_bytes
+    if _TC_NATIVE is not None:
+        if _TC_NATIVE.append_event_json(event_json, False):
+            return True
+        _tc_native_sync_limit()
+        return False
     if len(_trace_events) >= _max_stored_events:
         if not _trace_limit_exceeded:
             _trace_limit_exceeded = True
@@ -1507,8 +1534,35 @@ def __tracecode_append_trace_events_for_step(step):
     except Exception:
         base_prefix = None
 
+    native_locals = step.pop('__native_frame_locals', None)
+    if native_locals is not None and event_kind != '__access_only__':
+        if _TC_NATIVE is not None and base_prefix is not None:
+            reps = _TC_NATIVE.emit_snapshot_events(native_locals, base_prefix)
+            step['variables'] = reps
+            step['variableSources'] = {name: 'user' for name in reps}
+            if _TC_NATIVE.counters()['limitExceeded'] and not _trace_limit_exceeded:
+                _tc_native_sync_limit()
+                return
+        else:
+            # Rare fallback (encode error or native lost mid-run): rebuild the
+            # reps in python from the staged locals so step consumers and the
+            # event stream stay correct.
+            _node_refs = {}
+            reps = {}
+            for k, v in native_locals.items():
+                if _tracecode_is_internal_name(k):
+                    continue
+                rep = _tc_serialize_local(v, _node_refs)
+                if rep != _SKIP_SENTINEL:
+                    reps[k] = rep
+            step['variables'] = reps
+            step['variableSources'] = {name: 'user' for name in reps}
+            for variable, value in reps.items():
+                if not __tracecode_append_runtime_event({**base, 'kind': 'snapshot', 'target': {'variable': variable}, 'value': value}):
+                    return
+
     variables = step.get('variables')
-    if event_kind != '__access_only__' and isinstance(variables, _builtins.dict):
+    if native_locals is None and event_kind != '__access_only__' and isinstance(variables, _builtins.dict):
         for variable, value in variables.items():
             if base_prefix is not None:
                 try:
@@ -1584,6 +1638,20 @@ def __tracecode_append_step_runtime_events(step):
     step['__runtime_flushed'] = True
     globals()['__tracecode_append_trace_events_for_step'](step)
 
+def _tc_native_stage_snapshot(step, frame):
+    # Defer the locals walk + serialization to the native emitter at convert
+    # time (which has the base-prefix). The locals dict must be materialized
+    # HERE: convert runs synchronously within this flush, but the dict pin
+    # freezes the binding set at flush time exactly like the python walk did.
+    if _TC_NATIVE is None or _MINIMAL_TRACE:
+        return False
+    if _SCRIPT_MODE and frame.f_code.co_name == '<module>':
+        return False
+    step['__native_frame_locals'] = dict(frame.f_locals)
+    step['variables'] = {}
+    step['variableSources'] = {}
+    return True
+
 def __tracecode_flush_completed_line(frame,
     _resolve_previous_step=__tracecode_resolve_previous_step,
     _append_step_runtime_events=__tracecode_append_step_runtime_events,
@@ -1597,10 +1665,11 @@ def __tracecode_flush_completed_line(frame,
     if previous_step.get('__runtime_flushed'):
         globals()['__tracecode_attach_accesses_to_previous_step'](frame)
         return
-    local_vars, local_sources = _snapshot_locals(frame, with_sources=True)
+    if not _tc_native_stage_snapshot(previous_step, frame):
+        local_vars, local_sources = _snapshot_locals(frame, with_sources=True)
+        previous_step['variables'] = local_vars
+        previous_step['variableSources'] = local_sources
     accesses = globals()['__tracecode_flush_accesses'](frame)
-    previous_step['variables'] = local_vars
-    previous_step['variableSources'] = local_sources
     previous_step['accesses'] = accesses
     previous_step['callStack'] = _snapshot_call_stack()
     previous_step['stdoutLineCount'] = len(_console_output)
@@ -1617,24 +1686,29 @@ def __tracecode_flush_callsite_line(frame, line_number,
         return
     if previous_step.get('line') != line_number:
         return
-    local_vars, local_sources = _snapshot_locals(frame, with_sources=True)
     accesses = globals()['__tracecode_flush_accesses'](frame)
     if previous_step.get('__runtime_flushed'):
         callsite_step = {
             'line': line_number,
             'event': 'line',
-            'variables': local_vars,
-            'variableSources': local_sources,
+            'variables': {},
+            'variableSources': {},
             'function': frame.f_code.co_name,
             'callStack': _snapshot_call_stack(),
             'stdoutLineCount': len(_console_output),
             'accesses': accesses,
         }
+        if not _tc_native_stage_snapshot(callsite_step, frame):
+            local_vars, local_sources = _snapshot_locals(frame, with_sources=True)
+            callsite_step['variables'] = local_vars
+            callsite_step['variableSources'] = local_sources
         globals()['__tracecode_append_trace_step'](frame, callsite_step)
         _append_step_runtime_events(callsite_step)
         return
-    previous_step['variables'] = local_vars
-    previous_step['variableSources'] = local_sources
+    if not _tc_native_stage_snapshot(previous_step, frame):
+        local_vars, local_sources = _snapshot_locals(frame, with_sources=True)
+        previous_step['variables'] = local_vars
+        previous_step['variableSources'] = local_sources
     previous_step['accesses'] = accesses
     previous_step['callStack'] = _snapshot_call_stack()
     previous_step['stdoutLineCount'] = len(_console_output)
@@ -1683,7 +1757,8 @@ def __tracecode_pending_access_budget(frame, reserve=0):
     try:
         frame_key = _tracecode_builtin_id(frame)
         pending_count = len(_pending_accesses.get(frame_key, []))
-        remaining_events = _max_stored_events - len(_trace_events) - pending_count - int(reserve)
+        stored_events = _TC_NATIVE.stored_event_count() if _TC_NATIVE is not None else len(_trace_events)
+        remaining_events = _max_stored_events - stored_events - pending_count - int(reserve)
         return max(0, min(_TRACE_MAX_BULK_ACCESSES, remaining_events))
     except Exception:
         return 0
@@ -4462,6 +4537,21 @@ if _TRACE_PROFILE:
             _tp_tracer += _tc_perf() - _t0
         return _tracer if _tc_result is _tc_orig_tracer else _tc_result
 
+# Native tracer hot path: configured late so every rebind (profiling wrappers
+# included) has settled. Missing module → python paths, zero-risk fallback.
+try:
+    import _tracecode_native as _tc_native_module
+    _tc_native_module.configure(
+        frozenset(_internal_locals),
+        _serialize,
+        _TC_JSON_ENCODER.encode,
+        _SKIP_SENTINEL,
+    )
+    _tc_native_module.begin_run(_max_stored_events, _max_trace_bytes, _max_trace_event_bytes, _trace_stored_bytes)
+    _TC_NATIVE = _tc_native_module
+except Exception:
+    _TC_NATIVE = None
+
 _tp_arm_at = _tc_perf()
 _tracecode_arm_tracing()
 _trace_failed = False
@@ -4553,7 +4643,7 @@ if _TRACE_PROFILE:
         'callStackMs': round(_tp_stack * 1000, 1),
         'stepAppendMs': round(_tp_step * 1000, 1),
         'eventConvertMs': round(_tp_convert * 1000, 1),
-        'events': len(_trace_events),
+        'events': _TC_NATIVE.stored_event_count() if _TC_NATIVE is not None else len(_trace_events),
         'steps': len(_trace_data),
         'lineEvents': _total_line_events,
     }))
@@ -4565,9 +4655,13 @@ __tracecode_execution_result_json = (
         'lastStep': __tracecode_compact_last_step(),
     })
     + ',"runtimeTrace":{"schemaVersion":"runtime-trace-2026-04-28","language":"python","runId":"python:run","events":['
-    + ','.join(_trace_events)
-    + '],"lineEventCount":' + str(_trace_line_event_count)
-    + ',"traceStepCount":' + str(len(_trace_events)) + '}'
+    + (_TC_NATIVE.take_buffer() if _TC_NATIVE is not None else ','.join(_trace_events))
+    + '],"lineEventCount":' + str(
+        _TC_NATIVE.counters()['lineEvents'] if _TC_NATIVE is not None else _trace_line_event_count
+    )
+    + ',"traceStepCount":' + str(
+        _TC_NATIVE.stored_event_count() if _TC_NATIVE is not None else len(_trace_events)
+    ) + '}'
     + ',"result":' + json.dumps(_serialize_output(_result))
     + ',"console":' + json.dumps(_console_output)
     + ',"userCodeStartLine":' + json.dumps(${userCodeStartLine})

@@ -431,8 +431,32 @@ function createProjectEventBudget() {
   };
 }
 
+const TRACECODE_NATIVE_WHEEL = 'tracecode_native-0.1.0-cp313-cp313-pyemscripten_2025_0_wasm32.whl';
+let tracecodeNativeWheelPromise = null;
+
+// Best-effort: the native tracing hot path. A missing or failing wheel is not
+// an error — the python tracer is the automatic fallback.
+async function ensureTracecodeNativeWheel(runtime) {
+  if (!runtime || typeof runtime.loadPackage !== 'function') return;
+  if (!tracecodeNativeWheelPromise) {
+    tracecodeNativeWheelPromise = (async () => {
+      try {
+        await runtime.loadPackage(resolvePythonWorkerAssetUrl(TRACECODE_NATIVE_WHEEL), {
+          errorCallback: () => {},
+        });
+      } catch (error) {
+        emitRuntimeDiagnostic('warning', 'native-tracer-unavailable', 'TraceCode native tracer wheel failed to load; using the python tracer.', {
+          message: error instanceof Error ? error.message : String(error),
+        });
+      }
+    })();
+  }
+  return tracecodeNativeWheelPromise;
+}
+
 async function ensurePythonLibraryPackages(runtime) {
   if (!runtime || typeof runtime.loadPackage !== 'function') return;
+  await ensureTracecodeNativeWheel(runtime);
   if (!pythonPackageLoadPromise) {
     const configuredPackages = configuredPythonRuntimeAssets?.packageUrls
       ? Object.values(configuredPythonRuntimeAssets.packageUrls)

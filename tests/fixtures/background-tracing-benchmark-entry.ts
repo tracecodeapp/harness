@@ -253,6 +253,37 @@ export async function runBackgroundTracingBenchmark(
             ? (receipt.evaluation.cases[0] as { trace?: { events?: unknown[] } } | undefined)?.trace
             : undefined);
           perCaseEventCounts.push(Array.isArray(caseTrace?.events) ? caseTrace.events.length : -1);
+          if (Array.isArray(caseTrace?.events) && caseTrace.events.length >= 2_000) {
+            let hash = 0x811c9dc5;
+            const text = JSON.stringify(caseTrace.events);
+            for (let i = 0; i < text.length; i++) {
+              hash = ((hash ^ text.charCodeAt(i)) * 0x01000193) >>> 0;
+            }
+            console.log('__TRACECODE_CASEHASH__:' + JSON.stringify({
+              caseIndex: perCaseEventCounts.length - 1,
+              events: caseTrace.events.length,
+              chars: text.length,
+              hash: hash.toString(16),
+              last: JSON.stringify(caseTrace.events[caseTrace.events.length - 1])?.slice(0, 160),
+            }));
+          }
+          if (Array.isArray(caseTrace?.events) && caseTrace.events.length >= 100_000) {
+            const kinds: Record<string, number> = {};
+            let sample: unknown = null;
+            let sampleLength = 0;
+            for (const event of caseTrace.events) {
+              const kind = String((event as { kind?: unknown })?.kind ?? '?');
+              kinds[kind] = (kinds[kind] ?? 0) + 1;
+              if (kind === 'snapshot') {
+                const size = JSON.stringify(event)?.length ?? 0;
+                if (size > sampleLength) {
+                  sampleLength = size;
+                  sample = event;
+                }
+              }
+            }
+            console.log('__TRACECODE_KINDS__:' + JSON.stringify({ kinds, sample: JSON.stringify(sample)?.slice(0, 400) }));
+          }
         }
         perCaseVerdicts.push(
           receipt.evaluation.status === 'completed'
