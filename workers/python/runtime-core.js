@@ -883,10 +883,25 @@ def _is_structural_constructor_frame(frame):
     except Exception:
         return False
 
+# Call-stack frames are frozen at call time (function/args/line never mutate)
+# and the stack only changes at call/return transitions, so both the copied
+# list and its encoded json are cacheable per generation.
+_call_stack_generation = 0
+_tc_stack_cache_generation = -1
+_tc_stack_cache_copy = []
+_tc_stack_cache_json = None
+_tc_stack_cache_frame_id_json = None
+
 def _snapshot_call_stack():
+    global _tc_stack_cache_generation, _tc_stack_cache_copy, _tc_stack_cache_json, _tc_stack_cache_frame_id_json
     if _MINIMAL_TRACE:
         return []
-    return [f.copy() for f in _call_stack]
+    if _tc_stack_cache_generation != _call_stack_generation:
+        _tc_stack_cache_copy = [f.copy() for f in _call_stack]
+        _tc_stack_cache_json = None
+        _tc_stack_cache_frame_id_json = None
+        _tc_stack_cache_generation = _call_stack_generation
+    return _tc_stack_cache_copy
 
 def _is_serialized_ref(value):
     return isinstance(value, _builtins.dict) and len(value) == 1 and isinstance(value.get('__ref__'), _builtins.str)
@@ -1528,9 +1543,28 @@ def __tracecode_append_trace_events_for_step(step):
     # (including the call stack, the bulk of the bytes); encode them once and
     # append per-event suffixes. Composition is byte-identical to encoding the
     # merged dict because dict merge preserves insertion order.
+    #
+    # The call-stack fragment is the bulk of those bytes and only changes at
+    # call/return transitions, so it is cached per stack-snapshot object (the
+    # generation cache hands out the SAME list object until the stack moves —
+    # an identity check is therefore exact, never stale).
     base_prefix = None
     try:
-        base_prefix = _TC_JSON_ENCODER.encode(base)[:-1]
+        if len(stack) > 0:
+            global _tc_stack_cache_json
+            if stack is _tc_stack_cache_copy and _tc_stack_cache_json is not None:
+                stack_json = _tc_stack_cache_json
+            else:
+                stack_json = _TC_JSON_ENCODER.encode(stack)
+                if stack is _tc_stack_cache_copy:
+                    _tc_stack_cache_json = stack_json
+            base_prefix = (
+                '{"runId":"python:run","line":' + _TC_JSON_ENCODER.encode(line)
+                + ',"frameId":' + _TC_JSON_ENCODER.encode(base['frameId'])
+                + ',"callStack":' + stack_json
+            )
+        else:
+            base_prefix = _TC_JSON_ENCODER.encode(base)[:-1]
     except Exception:
         base_prefix = None
 
@@ -3882,6 +3916,7 @@ def _tracer(frame, event, arg,
     _tracecode_flush_completed_line=__tracecode_flush_completed_line,
 ):
     global _trace_limit_exceeded, _timeout_reason, _total_line_events, _line_hit_count, _infinite_loop_line
+    global _call_stack_generation
     func_name = frame.f_code.co_name
 
     if frame.f_code.co_filename != 'solution.py':
@@ -4023,6 +4058,7 @@ def _tracer(frame, event, arg,
                 raise _InfiniteLoopDetected(f"Exceeded {_max_call_depth} calls")
         local_vars, local_sources = _snapshot_locals(frame, with_sources=True)
         if func_name != '<module>':
+            _call_stack_generation += 1
             _call_stack.append({
                 'function': func_name,
                 'args': local_vars.copy() if not _MINIMAL_TRACE else {},
@@ -4078,6 +4114,7 @@ def _tracer(frame, event, arg,
         _pending_accesses.pop(_tracecode_builtin_id(frame), None)
         _last_trace_index_by_frame.pop(_tracecode_builtin_id(frame), None)
         if _call_stack and _call_stack[-1]['function'] == func_name:
+            _call_stack_generation += 1
             _call_stack.pop()
 
     return _tracer
