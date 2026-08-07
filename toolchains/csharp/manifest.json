@@ -1,0 +1,33 @@
+{
+  "schemaVersion": "tracecode-csharp-toolchain-manifest-v2",
+  "toolchain": "dotnet-sdk",
+  "sdkVersion": "10.0.110",
+  "workloads": ["wasm-tools"],
+  "workloadSetVersion": "10.0.100-manifests.1641d827",
+  "rollbackFile": "workload-rollback.json",
+  "installer": {
+    "script": "dotnet-install.sh",
+    "sha256": "082f7685e156738a1b2e2ed8381a621870d4ce8e8c59278034556f05c186eb2e",
+    "source": "https://dot.net/v1/dotnet-install.sh"
+  },
+  "expectedPacks": {
+    "Microsoft.NETCore.App.Runtime.Mono.browser-wasm": "10.0.10",
+    "Microsoft.NETCore.App.Runtime.AOT.osx-arm64.Cross.browser-wasm": "10.0.10",
+    "Microsoft.NET.Runtime.WebAssembly.Sdk": "10.0.10",
+    "Microsoft.NET.Runtime.MonoAOTCompiler.Task": "10.0.10",
+    "Microsoft.NET.Runtime.MonoTargets.Sdk": "10.0.10",
+    "Microsoft.NET.Runtime.Emscripten.3.1.56.Sdk.osx-arm64": "10.0.10",
+    "Microsoft.NET.Runtime.Emscripten.3.1.56.Cache.osx-arm64": "10.0.10",
+    "Microsoft.NET.Runtime.Emscripten.3.1.56.Node.osx-arm64": "10.0.10",
+    "Microsoft.NET.Runtime.Emscripten.3.1.56.Python.osx-arm64": "10.0.10"
+  },
+  "provenance": {
+    "recordedFrom": "~/.dotnet-10.0.110 (installed 2026-08-03, recipe recorded 2026-08-06)",
+    "note": "Nothing here is built by us: the SDK comes from Microsoft's CDN via the pinned installer and the workload packs from nuget.org, all by exact version. The rollback file pins the workload manifest versions so 'dotnet workload install wasm-tools' cannot drift to newer Emscripten packs. Emscripten packs are host-specific (osx-arm64 pack ids recorded above); other hosts resolve their own equivalents from the same rollback."
+  },
+  "notes": [
+    "This is the pinned SDK required by packages/runtime-csharp/dotnet/Directory.Build.props (TraceCodeDotnetSdkVersion 10.0.110). Role-artifact creation rejects bundles built with any other runtime version.",
+    "Run scripts/restore-csharp-toolchain.sh [dest] to install (default ~/.dotnet-10.0.110). It verifies the SDK version and the expected pack versions afterwards.",
+    "Regardless of install path, emcc embeds the SDK root into AppBundle/_framework/dotnet.native.js during native relink (-p:WasmBuildNative=true). Canonicalize those embedded paths to /tracecode/dotnet (and the repo dotnet source dir to /tracecode/source/) before packing role artifacts, or the reproducibility test in tests/test-csharp-role-artifacts.ts fails."
+  ]
+}
