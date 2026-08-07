@@ -1123,10 +1123,29 @@ def _normalize_top_level_linked_list_locals(local_vars):
 
 _SCRIPT_PRE_USER_GLOBALS = _builtins.set()
 
-def _tracecode_is_internal_name(name):
-    if name in _internal_locals or name == '_' or name.startswith('__'):
-        return True
-    return isinstance(name, _builtins.str) and name.startswith('_') and ('__tracecode' in name or '__Tracecode' in name)
+def _tracecode_is_internal_name(name, _cache={}):
+    # Pure function of an (interned) name, called twice per local per line;
+    # memoized because the startswith/contains chain dominates at volume.
+    cached = _cache.get(name)
+    if cached is None:
+        cached = _builtins.bool(
+            name in _internal_locals
+            or name == '_'
+            or name.startswith('__')
+            or (
+                isinstance(name, _builtins.str)
+                and name.startswith('_')
+                and ('__tracecode' in name or '__Tracecode' in name)
+            )
+        )
+        if len(_cache) < 4096:
+            _cache[name] = cached
+    return cached
+
+# Reusable encoder: json.dumps with non-default separators builds a fresh C
+# encoder on every call, which is measurable at hundreds of thousands of
+# events per trace.
+_TC_JSON_ENCODER = json.JSONEncoder(ensure_ascii=False, separators=(',', ':'))
 
 # --- per-object snapshot representation cache (flat builtin lists only) ---
 # Line snapshots re-serialize every local on every line; for the hot pattern
@@ -1235,17 +1254,22 @@ def _snapshot_local_sources(frame):
         return {}
     try:
         func_name = frame.f_code.co_name
+        if not (_SCRIPT_MODE and func_name == '<module>'):
+            # Everything is 'user' outside script-mode module frames; skip the
+            # per-name branching on the hot path.
+            return {
+                name: 'user'
+                for name in frame.f_locals.keys()
+                if not _tracecode_is_internal_name(name)
+            }
         sources = {}
         for name in frame.f_locals.keys():
             if _tracecode_is_internal_name(name):
                 continue
-            if _SCRIPT_MODE and func_name == '<module>':
-                if name in _TRACE_INPUT_NAMES:
-                    sources[name] = 'user-input'
-                elif name in _SCRIPT_PRE_USER_GLOBALS:
-                    sources[name] = 'harness-prelude'
-                else:
-                    sources[name] = 'user'
+            if name in _TRACE_INPUT_NAMES:
+                sources[name] = 'user-input'
+            elif name in _SCRIPT_PRE_USER_GLOBALS:
+                sources[name] = 'harness-prelude'
             else:
                 sources[name] = 'user'
         return sources
@@ -1257,20 +1281,43 @@ def _snapshot_locals(frame, with_sources=False):
         return ({}, {}) if with_sources else {}
     try:
         _node_refs = {}
-        _sources = _snapshot_local_sources(frame)
-        local_vars = {
-            k: v
-            for k, v in (
-                (k, _tc_serialize_local(v, _node_refs))
-                for k, v in frame.f_locals.items()
-                if not _tracecode_is_internal_name(k) and _sources.get(k) != 'harness-prelude'
-            )
-            if v != _SKIP_SENTINEL
-        }
+        # frame.f_locals materializes a fresh dict on every access; take it
+        # once and classify names inline instead of via a sources pre-pass.
+        f_locals = frame.f_locals
+        script_module = _SCRIPT_MODE and frame.f_code.co_name == '<module>'
+        local_vars = {}
+        for k, v in f_locals.items():
+            if _tracecode_is_internal_name(k):
+                continue
+            if script_module and k in _SCRIPT_PRE_USER_GLOBALS and k not in _TRACE_INPUT_NAMES:
+                continue
+            tv = type(v)
+            # Inline scalar fast path: most locals are small ints/strs and the
+            # full serializer dispatch dominates at per-line volume.
+            if tv is _builtins.int or tv is _builtins.bool or v is None:
+                local_vars[k] = v
+                continue
+            if tv is _builtins.str:
+                local_vars[k] = v if len(v) <= _MAX_SERIALIZED_STRING_CHARS else _serialize_string(v)
+                continue
+            if tv is _builtins.float and math.isfinite(v):
+                local_vars[k] = v
+                continue
+            rep = _tc_serialize_local(v, _node_refs)
+            if rep != _SKIP_SENTINEL:
+                local_vars[k] = rep
         local_vars = _normalize_top_level_linked_list_locals(local_vars)
         local_vars = _materialize_top_level_custom_object_aliases(local_vars)
-        local_sources = {name: _sources.get(name, 'user') for name in local_vars.keys()}
-        return (local_vars, local_sources) if with_sources else local_vars
+        if not with_sources:
+            return local_vars
+        if script_module:
+            local_sources = {
+                name: 'user-input' if name in _TRACE_INPUT_NAMES else 'user'
+                for name in local_vars.keys()
+            }
+        else:
+            local_sources = {name: 'user' for name in local_vars.keys()}
+        return (local_vars, local_sources)
     except Exception:
         return ({}, {}) if with_sources else {}
 
@@ -1364,12 +1411,12 @@ def __tracecode_append_runtime_event(event):
         _pending_accesses.clear()
         return False
     try:
-        event_json = json.dumps(
-            event,
-            ensure_ascii=False,
-            separators=(',', ':'),
-        )
-        event_bytes = len(event_json.encode('utf-8')) + (1 if len(_trace_events) > 0 else 0)
+        event_json = _TC_JSON_ENCODER.encode(event)
+        # ASCII json needs no encode pass to know its byte length; non-ASCII
+        # payloads (rare) fall back to a real utf-8 encode.
+        event_bytes = (
+            len(event_json) if event_json.isascii() else len(event_json.encode('utf-8'))
+        ) + (1 if len(_trace_events) > 0 else 0)
     except Exception:
         event_json = None
         event_bytes = _max_trace_bytes + 1
@@ -1386,6 +1433,29 @@ def __tracecode_append_runtime_event(event):
     _trace_events.append(event_json)
     if event.get('kind') == 'line':
         _trace_line_event_count += 1
+    _trace_stored_bytes += event_bytes
+    return True
+
+def __tracecode_append_runtime_event_json(event_json):
+    # Raw-string twin of __tracecode_append_runtime_event for callers that
+    # assemble the json by fragment splicing (never 'line' events).
+    global _trace_limit_exceeded, _timeout_reason, _trace_stored_bytes
+    if len(_trace_events) >= _max_stored_events:
+        if not _trace_limit_exceeded:
+            _trace_limit_exceeded = True
+            _timeout_reason = 'trace-limit'
+        _pending_accesses.clear()
+        return False
+    event_bytes = (
+        len(event_json) if event_json.isascii() else len(event_json.encode('utf-8'))
+    ) + (1 if len(_trace_events) > 0 else 0)
+    if event_bytes > _max_trace_event_bytes or event_bytes > (_max_trace_bytes - _trace_stored_bytes):
+        if not _trace_limit_exceeded:
+            _trace_limit_exceeded = True
+            _timeout_reason = 'trace-byte-limit'
+        _pending_accesses.clear()
+        return False
+    _trace_events.append(event_json)
     _trace_stored_bytes += event_bytes
     return True
 
@@ -1427,10 +1497,34 @@ def __tracecode_append_trace_events_for_step(step):
         variables = step.get('variables') if isinstance(step.get('variables'), _builtins.dict) else {}
         __tracecode_append_runtime_event({**base, 'kind': 'stdout', 'text': str(step.get('returnValue') or variables.get('output') or '')})
 
+    # Fragment splicing: every event of this step shares the base fields
+    # (including the call stack, the bulk of the bytes); encode them once and
+    # append per-event suffixes. Composition is byte-identical to encoding the
+    # merged dict because dict merge preserves insertion order.
+    base_prefix = None
+    try:
+        base_prefix = _TC_JSON_ENCODER.encode(base)[:-1]
+    except Exception:
+        base_prefix = None
+
     variables = step.get('variables')
     if event_kind != '__access_only__' and isinstance(variables, _builtins.dict):
         for variable, value in variables.items():
-            if not __tracecode_append_runtime_event({**base, 'kind': 'snapshot', 'target': {'variable': variable}, 'value': value}):
+            if base_prefix is not None:
+                try:
+                    appended = __tracecode_append_runtime_event_json(
+                        base_prefix
+                        + ',"kind":"snapshot","target":{"variable":'
+                        + _TC_JSON_ENCODER.encode(variable)
+                        + '},"value":'
+                        + _TC_JSON_ENCODER.encode(value)
+                        + '}'
+                    )
+                except Exception:
+                    appended = __tracecode_append_runtime_event({**base, 'kind': 'snapshot', 'target': {'variable': variable}, 'value': value})
+            else:
+                appended = __tracecode_append_runtime_event({**base, 'kind': 'snapshot', 'target': {'variable': variable}, 'value': value})
+            if not appended:
                 return
 
     accesses = step.get('accesses')
@@ -1450,11 +1544,29 @@ def __tracecode_append_trace_events_for_step(step):
                 if not __tracecode_append_runtime_event(event):
                     return
             else:
-                event = {**base, 'kind': kind, 'target': target, 'value': __tracecode_access_value(step, access)}
+                value = __tracecode_access_value(step, access)
                 binding = __tracecode_access_binding(access)
-                if binding is not None:
-                    event['binding'] = binding
-                if not __tracecode_append_runtime_event(event):
+                appended = False
+                if base_prefix is not None and binding is None:
+                    try:
+                        appended = __tracecode_append_runtime_event_json(
+                            base_prefix
+                            + ',"kind":"'
+                            + kind
+                            + '","target":'
+                            + _TC_JSON_ENCODER.encode(target)
+                            + ',"value":'
+                            + _TC_JSON_ENCODER.encode(value)
+                            + '}'
+                        )
+                    except Exception:
+                        appended = __tracecode_append_runtime_event({**base, 'kind': kind, 'target': target, 'value': value})
+                else:
+                    event = {**base, 'kind': kind, 'target': target, 'value': value}
+                    if binding is not None:
+                        event['binding'] = binding
+                    appended = __tracecode_append_runtime_event(event)
+                if not appended:
                     return
 
 def __tracecode_resolve_previous_step(frame):
