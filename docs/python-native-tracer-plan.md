@@ -116,7 +116,11 @@ Core design decisions:
 ## Status
 
 - [x] Plan written; ABI identified (cp313, pyodide_2025_0, wasm32).
-- [ ] M0 toolchain proof.
+- [x] M0 toolchain proof — wheel builds (pyodide-build 0.39.0, xbuildenv
+      0.29.3, emscripten 4.0.9) and `_tracecode_native.ping()` returns 1
+      inside the vendored pyodide loaded via node (classic script: indirect
+      eval of pyodide.js, then `loadPyodide` + `loadPackage(file-url wheel)`).
+      Pins + steps in packages/runtime-python-native/manifest.json.
 - [ ] M1 floor measurement.
 - [ ] M2 native emission + parity harness.
 - [ ] M3 budgets/cache native.
