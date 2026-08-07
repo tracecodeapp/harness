@@ -4,6 +4,7 @@ let warmupPromise = null;
 let executeExport = null;
 let prepareExport = null;
 let executePreparedExport = null;
+let executePreparedUtf8Export = null;
 let disposePreparedArtifactExport = null;
 let executeProjectExport = null;
 let getCompiledArtifactKeyExport = null;
@@ -3593,6 +3594,10 @@ async function loadRuntime(assetBaseUrl) {
         configuredRuntimeRole === 'runner'
           ? preparedExecutionHost?.ExecutePrepared
           : exports?.TraceCode?.CSharpHost?.CompilerHost?.ExecutePrepared;
+      executePreparedUtf8Export =
+        configuredRuntimeRole === 'runner'
+          ? preparedExecutionHost?.ExecutePreparedUtf8
+          : null;
       disposePreparedArtifactExport =
         configuredRuntimeRole === 'runner'
           ? preparedExecutionHost?.DisposePreparedArtifact
@@ -3614,6 +3619,7 @@ async function loadRuntime(assetBaseUrl) {
       executeExport = null;
       prepareExport = null;
       executePreparedExport = null;
+      executePreparedUtf8Export = null;
       disposePreparedArtifactExport = null;
       executeProjectExport = null;
       getCompiledArtifactKeyExport = null;
@@ -3993,7 +3999,13 @@ async function executePreparedCSharpProgram(message) {
   const initMs = elapsedMs(runtimeStartedAt) || runtimeResult.timings?.initMs || 0;
   const hostCallStartedAt = now();
   const result = await withCSharpUserAuthorityLockdown(() => {
-    const exportedJson = executePreparedExport(JSON.stringify(request));
+    const requestJson = JSON.stringify(request);
+    let exportedJson;
+    if (executePreparedUtf8Export) {
+      exportedJson = new TextDecoder().decode(executePreparedUtf8Export(requestJson));
+    } else {
+      exportedJson = executePreparedExport(requestJson);
+    }
     const jsParseStartedAt = now();
     const parsedResult = JSON.parse(exportedJson);
     globalThis.__tracecodeCsLastParse = {

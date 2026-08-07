@@ -7385,7 +7385,52 @@ public class TreeNode
 
     private static string Serialize(CSharpExecuteResponse response)
     {
-        return JsonSerializer.Serialize(response, JsonOptions);
+        // See TraceResponseJson: reflection STJ runs interpreted under wasm and
+        // dominates heavy traced responses; write the known shape directly.
+        using System.IO.MemoryStream stream = new();
+        using (System.Text.Json.Utf8JsonWriter writer = new(stream))
+        {
+            writer.WriteStartObject();
+            writer.WriteBoolean("success", response.Success);
+            writer.WritePropertyName("output");
+            TraceResponseJson.WriteNormalizedValue(writer, response.Output, JsonOptions);
+            if (response.Error is null) writer.WriteNull("error");
+            else writer.WriteString("error", response.Error);
+            writer.WritePropertyName("diagnostics");
+            JsonSerializer.Serialize(writer, response.Diagnostics, JsonOptions);
+            writer.WriteStartArray("consoleOutput");
+            foreach (string line in response.ConsoleOutput)
+            {
+                writer.WriteStringValue(line);
+            }
+            writer.WriteEndArray();
+            writer.WriteStartArray("events");
+            foreach (RuntimeTraceEvent traceEvent in response.Events)
+            {
+                TraceResponseJson.WriteTraceEvent(writer, traceEvent, JsonOptions);
+            }
+            writer.WriteEndArray();
+            writer.WriteNumber("executionTimeMs", response.ExecutionTimeMs);
+            writer.WriteBoolean("traceLimitExceeded", response.TraceLimitExceeded);
+            if (response.TimeoutReason is null) writer.WriteNull("timeoutReason");
+            else writer.WriteString("timeoutReason", response.TimeoutReason);
+            writer.WritePropertyName("timings");
+            JsonSerializer.Serialize(writer, response.Timings, JsonOptions);
+            if (response.CompiledArtifactBase64 is not null)
+            {
+                writer.WriteString("compiledArtifactBase64", response.CompiledArtifactBase64);
+            }
+            if (response.CompiledArtifactKey is not null)
+            {
+                writer.WriteString("compiledArtifactKey", response.CompiledArtifactKey);
+            }
+            if (response.CompiledArtifactSha256 is not null)
+            {
+                writer.WriteString("compiledArtifactSha256", response.CompiledArtifactSha256);
+            }
+            writer.WriteEndObject();
+        }
+        return System.Text.Encoding.UTF8.GetString(stream.ToArray());
     }
 
     private static string SerializeProject(CSharpProjectCommandResponse response)
