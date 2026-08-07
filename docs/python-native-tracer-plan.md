@@ -121,7 +121,16 @@ Core design decisions:
       inside the vendored pyodide loaded via node (classic script: indirect
       eval of pyodide.js, then `loadPyodide` + `loadPackage(file-url wheel)`).
       Pins + steps in packages/runtime-python-native/manifest.json.
-- [ ] M1 floor measurement.
+- [x] M1 floor measurement (packages/runtime-python-native/m1-floor-bench.cjs,
+      800k LINE events in the vendored pyodide): untraced 32ms, python no-op
+      callback 80ms (~60ns/line), native C callback 61ms (~36ns/line).
+      KEY FINDING: monitoring DISPATCH is nearly free — the cost is the WORK
+      the real callback does (~120µs/line inclusive in the harness). So M2's
+      native recording path is the whole ballgame and the ceiling is high:
+      ~1-3µs/line total is realistic → heavy-case tracer work ~100-300ms.
+      Node loader gotcha: pyodide.js is a classic script; indirect-eval it
+      with globalThis.require and globalThis.__dirname set, indexURL needs a
+      trailing slash.
 - [ ] M2 native emission + parity harness.
 - [ ] M3 budgets/cache native.
 - [ ] M4 default flip + benchmarks.
