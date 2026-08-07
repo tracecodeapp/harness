@@ -1128,6 +1128,108 @@ def _tracecode_is_internal_name(name):
         return True
     return isinstance(name, _builtins.str) and name.startswith('_') and ('__tracecode' in name or '__Tracecode' in name)
 
+# --- per-object snapshot representation cache (flat builtin lists only) ---
+# Line snapshots re-serialize every local on every line; for the hot pattern
+# (a large flat list mutated one cell per line) that walk is redundant. The
+# mutation hooks below keep cached representations in sync copy-on-write, so
+# reuse is byte-exact. Safety: exact-type builtin list, scalar-only emitted
+# elements, length match, an O(1) first-element spot check on every reuse, a
+# full re-serialize comparison every 64th reuse, and conservative invalidation
+# of any object passed to an untraced call. Any mismatch permanently disables
+# the cache for the run. Entries hold strong references, so a cached id cannot
+# be recycled by the allocator while the entry is alive.
+_TC_REP_SCALARS = (_builtins.int, _builtins.float, _builtins.str, _builtins.type(None))
+_TC_REP_CACHE_MAX = 2048
+_tc_rep_cache = {}
+_tc_rep_cache_enabled = True
+_tc_rep_reuse_count = 0
+
+def _tc_rep_invalidate(obj):
+    if _tc_rep_cache:
+        _tc_rep_cache.pop(_tracecode_builtin_id(obj), None)
+
+def _tc_rep_invalidate_args(args, kwargs=None):
+    if not _tc_rep_cache:
+        return
+    for value in args:
+        _tc_rep_cache.pop(_tracecode_builtin_id(value), None)
+    if kwargs:
+        for value in kwargs.values():
+            _tc_rep_cache.pop(_tracecode_builtin_id(value), None)
+
+def _tc_rep_scalar_rep(value):
+    if isinstance(value, _builtins.str):
+        return _serialize_string(value)
+    if isinstance(value, _builtins.float) and not math.isfinite(value):
+        if math.isnan(value):
+            return "NaN"
+        return "Infinity" if value > 0 else "-Infinity"
+    return value
+
+def _tc_rep_patch_write(container, indices, value):
+    # The element write has already been applied to the container; mirror it
+    # onto the cached representation when provably equivalent, else drop it.
+    entry = _tc_rep_cache.get(_tracecode_builtin_id(container))
+    if entry is None:
+        return
+    if (
+        len(indices) == 1
+        and isinstance(indices[0], _builtins.int)
+        and not isinstance(indices[0], _builtins.bool)
+        and isinstance(value, _TC_REP_SCALARS + (_builtins.bool,))
+        and entry[0] is container
+        and entry[2] == len(container)
+    ):
+        index = indices[0]
+        if index < 0:
+            index += entry[2]
+        if 0 <= index < entry[1]:
+            patched = _builtins.list(entry[3])
+            patched[index] = _tc_rep_scalar_rep(value)
+            entry[3] = patched
+            return
+        if entry[1] <= index < entry[2]:
+            # Beyond the emitted window: the truncation marker's remaining
+            # count depends only on total length, which did not change.
+            return
+    _tc_rep_cache.pop(_tracecode_builtin_id(container), None)
+
+def _tc_serialize_local(value, node_refs):
+    global _tc_rep_cache_enabled, _tc_rep_reuse_count
+    if not _tc_rep_cache_enabled or type(value) is not _builtins.list:
+        return _serialize(value, 0, node_refs)
+    vid = _tracecode_builtin_id(value)
+    entry = _tc_rep_cache.get(vid)
+    if entry is not None and entry[0] is value and entry[2] == len(value):
+        rep = entry[3]
+        fresh_first = _tc_rep_scalar_rep(value[0]) if entry[1] > 0 else None
+        first_ok = entry[1] == 0 or (
+            isinstance(value[0], _TC_REP_SCALARS + (_builtins.bool,)) and rep[0] == fresh_first
+        )
+        _tc_rep_reuse_count += 1
+        if first_ok and (_tc_rep_reuse_count & 63) != 0:
+            return rep
+        fresh = _serialize(value, 0, {})
+        if first_ok and fresh == rep:
+            return rep
+        _tc_rep_cache_enabled = False
+        _tc_rep_cache.clear()
+        return fresh
+    rep = _serialize(value, 0, node_refs)
+    if (
+        type(rep) is _builtins.list
+        and len(_tc_rep_cache) < _TC_REP_CACHE_MAX
+    ):
+        emitted = min(len(value), _MAX_SERIALIZED_ITEMS)
+        flat = True
+        for item in rep[:emitted]:
+            if not isinstance(item, _TC_REP_SCALARS + (_builtins.bool,)):
+                flat = False
+                break
+        if flat:
+            _tc_rep_cache[vid] = [value, emitted, len(value), rep]
+    return rep
+
 def _snapshot_local_sources(frame):
     if _MINIMAL_TRACE:
         return {}
@@ -1159,7 +1261,7 @@ def _snapshot_locals(frame, with_sources=False):
         local_vars = {
             k: v
             for k, v in (
-                (k, _serialize(v, 0, _node_refs))
+                (k, _tc_serialize_local(v, _node_refs))
                 for k, v in frame.f_locals.items()
                 if not _tracecode_is_internal_name(k) and _sources.get(k) != 'harness-prelude'
             )
@@ -1575,6 +1677,9 @@ def __tracecode_make_callsite_frame_id(frame, line_number):
 
 def _tracecode_user_call(line_number, function_name, func, *args, _tracecode_flush_callsite_line=__tracecode_flush_callsite_line, **kwargs):
     _tracecode_flush_callsite_line(sys._getframe(1), line_number)
+    # The callee may mutate argument containers through paths the rewriter
+    # does not instrument (builtins like random.shuffle); drop their reps.
+    _tc_rep_invalidate_args(args, kwargs)
     return func(*args, **kwargs)
 
 def __tracecode_normalize_index_sources(index_sources, path_length):
@@ -1681,6 +1786,7 @@ def __tracecode_write_value(container, indices, value):
             container[indices[0]] = value
         else:
             setattr(container, indices[0], value)
+        _tc_rep_patch_write(container, indices, value)
         return value
     parent = container
     for index in indices[:-1]:
@@ -1692,9 +1798,12 @@ def __tracecode_write_value(container, indices, value):
         parent[indices[-1]] = value
     else:
         setattr(parent, indices[-1], value)
+    _tc_rep_invalidate(container)
+    _tc_rep_invalidate(parent)
     return value
 
 def __tracecode_delete_value(container, indices):
+    _tc_rep_invalidate(container)
     if len(indices) == 1:
         if isinstance(container, _builtins.dict) or isinstance(container, _builtins.list):
             del container[indices[0]]
@@ -1868,6 +1977,7 @@ def _tracecode_write_scalar(var_name, value):
     return value
 
 def _tracecode_augassign_scalar(var_name, current, op_name, rhs):
+    _tc_rep_invalidate(current)
     next_value = __tracecode_apply_inplace_augmented_value(current, op_name, rhs)
     __tracecode_record_access(
         sys._getframe(1),
@@ -1943,6 +2053,7 @@ def _tracecode_augassign_index(var_name, container, indices, index_sources, op_n
 
 def _tracecode_mutating_call(var_name, container, method_name, *args, **kwargs):
     frame = sys._getframe(1)
+    _tc_rep_invalidate(container)
     index_sources = kwargs.pop('__tracecode_index_sources', None)
     before_len = None
     try:
@@ -2017,8 +2128,10 @@ def _tracecode_mutating_call(var_name, container, method_name, *args, **kwargs):
 
 def _tracecode_mutating_index_call(var_name, container, indices, index_sources, method_name, *args, **kwargs):
     frame = sys._getframe(1)
+    _tc_rep_invalidate(container)
     effective_indices = list(indices)
     target = __tracecode_read_value(container, effective_indices)
+    _tc_rep_invalidate(target)
     before_len = None
     try:
         if method_name in {'append', 'appendleft', 'extend', 'extendleft', 'insert'}:
@@ -2077,6 +2190,7 @@ def _tracecode_mutating_index_call(var_name, container, indices, index_sources, 
 
 def _tracecode_heapq_mutation(heapq_func, var_name, target, indices, method_name, *args, **kwargs):
     frame = sys._getframe(1)
+    _tc_rep_invalidate(target)
     effective_indices = list(indices or [])
     normalized = __tracecode_normalize_indices(effective_indices)
     invalid_nested_path = len(effective_indices) > 0 and normalized is None
