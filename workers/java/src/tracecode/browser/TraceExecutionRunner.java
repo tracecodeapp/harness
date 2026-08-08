@@ -95,9 +95,8 @@ public final class TraceExecutionRunner {
     int maxStoredEvents = Integer.parseInt(args[1]);
     String learnerFrame = args.length >= 3 ? args[2] : "";
     boolean profile = args.length >= 4 && "profile".equals(args[3]);
-    // On-demand tracing: run the instrumented program with recording off so a
-    // verdict-only case pays the guarded-hook cost instead of a second compile.
     boolean enableTracing = !(args.length >= 5 && "notrace".equals(args[4]));
+    String cleanFallbackEntryClass = args.length >= 6 ? args[5] : "";
     int token = TraceHooks.beginRun(maxStoredEvents, profile, true, enableTracing);
     Object output = null;
     Throwable failure = null;
@@ -122,13 +121,22 @@ public final class TraceExecutionRunner {
         // may be half-mutated; a partial replay of any single method would
         // double its side effects. Re-run the whole case instead: run()
         // rebuilds its inputs from scratch, and with the budget flag set the
-        // hooks are dead, so the rerun executes near-plain and stores nothing.
-        // The recorded trace stays truncated at the budget. Learner *static*
-        // state is not reset (classes stay loaded); non-idempotent statics are
-        // a known limitation of the rerun.
+        // The recorded trace stays truncated at the budget. Prepared trace
+        // artifacts may contain a clean companion entry point; select it once
+        // here so the fallback pays no per-hook disabled branches. Older
+        // artifacts without a companion retain the guarded-hook fallback.
+        // Learner *static* state is not reset (classes stay loaded);
+        // non-idempotent statics are a known limitation of the rerun.
         TraceHooks.markBudgetAbortFallback();
         try {
-          output = run.invoke(null);
+          Method fallbackRun = run;
+          if (!cleanFallbackEntryClass.isEmpty()) {
+            Class<?> cleanEntry =
+                Class.forName(cleanFallbackEntryClass, true, loader);
+            fallbackRun = cleanEntry.getMethod("run");
+            fallbackRun.setAccessible(true);
+          }
+          output = fallbackRun.invoke(null);
         } catch (InvocationTargetException error) {
           failure = error.getCause() == null ? error : error.getCause();
         }

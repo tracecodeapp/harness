@@ -886,8 +886,29 @@ export class JavaWorkerClient {
   async executePreparedTraceBatch(
     programId: string,
     call: RuntimePreparedTraceBatchCall,
-    traceOptions?: JavaTraceExecutionOptions
+    traceOptions?: JavaTraceExecutionOptions,
+    /**
+     * Experiment-only language boundary for measuring one instrumented Java
+     * artifact with tracing selected per case. Judge and the portable runtime
+     * contracts intentionally do not expose this yet.
+     */
+    experiment?: {
+      readonly traceEnabledBatch: readonly boolean[];
+    }
   ): Promise<readonly JavaWorkerPreparedTraceResult[]> {
+    if (
+      experiment &&
+      (
+        experiment.traceEnabledBatch.length !== call.inputBatch.length ||
+        experiment.traceEnabledBatch.some(
+          (enabled) => typeof enabled !== 'boolean'
+        )
+      )
+    ) {
+      throw new TypeError(
+        'Java experimental trace selection must contain one boolean per batch case.'
+      );
+    }
     if (call.inputBatch.length === 0) return [];
     const kernelProcess = await createJavaKernelProcess();
     const perCaseWallClockMs =
@@ -912,6 +933,9 @@ export class JavaWorkerClient {
               inputBatch: call.inputBatch,
               perCaseWallClockMs,
               traceEventTransport: traceEventTransferRequest(),
+              ...(experiment
+                ? { traceEnabledBatch: experiment.traceEnabledBatch }
+                : {}),
             },
             null,
             undefined,

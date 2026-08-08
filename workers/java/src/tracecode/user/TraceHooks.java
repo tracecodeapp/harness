@@ -35,6 +35,9 @@ public final class TraceHooks {
     Integer runToken = RUN_TOKEN.get();
     final java.util.IdentityHashMap<Object, String> serializeSeen =
         new java.util.IdentityHashMap<>();
+    /** Run-local metadata so helper state never pins learner class loaders. */
+    final java.util.IdentityHashMap<Class<?>, java.lang.reflect.Field[]>
+        serializableFields = new java.util.IdentityHashMap<>();
     final StringBuilder eventBuilder = new StringBuilder(256);
     boolean eventBuilderInUse;
   }
@@ -504,6 +507,7 @@ public final class TraceHooks {
     state.callStack.clear();
     state.callStackJson = null;
     state.lastIndexSource = null;
+    state.serializableFields.clear();
     RUN_TOKEN.remove();
     state.runToken = null;
   }
@@ -514,6 +518,7 @@ public final class TraceHooks {
     state.callStack.clear();
     state.callStackJson = null;
     state.lastIndexSource = null;
+    state.serializableFields.clear();
     TRACE_REFERENCE_IDS.clear();
     maxEvents = Math.max(1, nextMaxEvents);
     totalStoredEvents = 0;
@@ -1003,6 +1008,50 @@ public final class TraceHooks {
     emitRuntimeSnapshotAtLine(line, snapshotName, snapshotValue);
   }
 
+  // Keep primitive field reads primitive. A generic <T> return loses the
+  // invocation context needed by overloaded callers such as String.valueOf:
+  // after boxing, javac can consider both valueOf(Object) and valueOf(int).
+  // These overloads also avoid boxing on a very common trace hot path.
+  public static boolean readObjectFieldAtLine(int line, String name, String field, boolean value) {
+    emitTraceRead(line, name, "[" + jsonString(field) + "]", value);
+    return value;
+  }
+
+  public static byte readObjectFieldAtLine(int line, String name, String field, byte value) {
+    emitTraceRead(line, name, "[" + jsonString(field) + "]", value);
+    return value;
+  }
+
+  public static short readObjectFieldAtLine(int line, String name, String field, short value) {
+    emitTraceRead(line, name, "[" + jsonString(field) + "]", value);
+    return value;
+  }
+
+  public static int readObjectFieldAtLine(int line, String name, String field, int value) {
+    emitTraceRead(line, name, "[" + jsonString(field) + "]", value);
+    return value;
+  }
+
+  public static long readObjectFieldAtLine(int line, String name, String field, long value) {
+    emitTraceRead(line, name, "[" + jsonString(field) + "]", value);
+    return value;
+  }
+
+  public static float readObjectFieldAtLine(int line, String name, String field, float value) {
+    emitTraceRead(line, name, "[" + jsonString(field) + "]", value);
+    return value;
+  }
+
+  public static double readObjectFieldAtLine(int line, String name, String field, double value) {
+    emitTraceRead(line, name, "[" + jsonString(field) + "]", value);
+    return value;
+  }
+
+  public static char readObjectFieldAtLine(int line, String name, String field, char value) {
+    emitTraceRead(line, name, "[" + jsonString(field) + "]", value);
+    return value;
+  }
+
   public static <T> T readObjectFieldAtLine(int line, String name, String field, T value) {
     emitTraceRead(line, name, "[" + jsonString(field) + "]", value);
     return value;
@@ -1318,27 +1367,46 @@ public final class TraceHooks {
     out.append("\"__type__\":").append(jsonString(value.getClass().getSimpleName()));
     out.append(",\"__class__\":").append(jsonString(value.getClass().getSimpleName()));
     out.append(",\"__id__\":").append(jsonString(nodeId));
-    java.lang.reflect.Field[] fields = value.getClass().getDeclaredFields();
-    java.util.Arrays.sort(fields, java.util.Comparator.comparing(java.lang.reflect.Field::getName));
+    java.lang.reflect.Field[] fields = serializableFields(value.getClass());
     int emitted = 0;
-    int eligible = 0;
     for (java.lang.reflect.Field field : fields) {
-      if (java.lang.reflect.Modifier.isStatic(field.getModifiers())) continue;
-      eligible++;
       if (capValues && emitted >= MAX_OBJECT_FIELDS) continue;
       try {
-        field.setAccessible(true);
         out.append(",").append(jsonString(field.getName())).append(":").append(serializeResult(field.get(value), seen, depth + 1, capValues));
         emitted++;
       } catch (Exception ignored) {
       }
     }
-    if (capValues && eligible > emitted) {
+    if (capValues && fields.length > emitted) {
       out.append(",");
-      appendObjectTruncationFields(out, eligible - emitted);
+      appendObjectTruncationFields(out, fields.length - emitted);
     }
     out.append("}");
     return out.toString();
+  }
+
+  private static java.lang.reflect.Field[] serializableFields(Class<?> type) {
+    java.util.IdentityHashMap<Class<?>, java.lang.reflect.Field[]> cache =
+        state().serializableFields;
+    java.lang.reflect.Field[] cached = cache.get(type);
+    if (cached != null) return cached;
+    java.lang.reflect.Field[] declared = type.getDeclaredFields();
+    java.util.List<java.lang.reflect.Field> eligible = new java.util.ArrayList<>();
+    for (java.lang.reflect.Field field : declared) {
+      if (java.lang.reflect.Modifier.isStatic(field.getModifiers())) continue;
+      try {
+        field.setAccessible(true);
+      } catch (Exception ignored) {
+      }
+      eligible.add(field);
+    }
+    java.lang.reflect.Field[] fields =
+        eligible.toArray(new java.lang.reflect.Field[0]);
+    java.util.Arrays.sort(
+        fields,
+        java.util.Comparator.comparing(java.lang.reflect.Field::getName));
+    cache.put(type, fields);
+    return fields;
   }
 
   private static String stableTraceReferenceId(Object value, String typeName) {

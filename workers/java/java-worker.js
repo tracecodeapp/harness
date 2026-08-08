@@ -1012,14 +1012,13 @@ function isScriptRequest(payload) {
 
 function resolveMaxStoredEvents(options = {}) {
   const fromStored = Number(options.maxStoredEvents);
-  if (Number.isFinite(fromStored) && fromStored > 0) {
-    return Math.floor(fromStored);
-  }
   const fromTraceSteps = Number(options.maxTraceSteps);
-  if (Number.isFinite(fromTraceSteps) && fromTraceSteps > 0) {
-    return Math.floor(fromTraceSteps);
-  }
-  return DEFAULT_MAX_STORED_EVENTS;
+  const limits = [fromStored, fromTraceSteps]
+    .filter((value) => Number.isFinite(value) && value > 0)
+    .map((value) => Math.floor(value));
+  return limits.length > 0
+    ? Math.min(...limits)
+    : DEFAULT_MAX_STORED_EVENTS;
 }
 
 function isRecord(value) {
@@ -7780,8 +7779,10 @@ async function prepareJavaRuntimeProgram(payload, requestId) {
 
   let normalizedPayload;
   let dynamicInputs;
-  let source;
+  let preparedSources;
   let stableCompileId;
+  let entryClass;
+  let cleanEntryClass;
   let rewriteMs = 0;
   try {
     normalizedPayload = normalizeJavaExecutionPayload({
@@ -7797,22 +7798,55 @@ async function prepareJavaRuntimeProgram(payload, requestId) {
       scriptMode: normalizedPayload.scriptMode === true,
       options: mode === 'trace' ? normalizedPayload.options ?? {} : {},
     });
-    dynamicInputs = preparedDynamicInputEntriesForPayload(
+    const traceDynamicInputs = preparedDynamicInputEntriesForPayload(
       normalizedPayload,
       stableCompileId
     );
     const sourceStart = performance.now();
-    source = mode === 'trace'
-      ? await buildJavaTraceRunnableSource(
+    if (mode === 'trace') {
+      const cleanCompileId = stableHash({
+        compileMode: 'prepared-trace-clean-companion',
+        stableCompileId,
+      });
+      const traceExportsClassName = buildExportsClassName(stableCompileId);
+      const cleanExportsClassName = buildExportsClassName(cleanCompileId);
+      entryClass = `${buildPackageName(stableCompileId)}.${traceExportsClassName}`;
+      cleanEntryClass = `${buildPackageName(cleanCompileId)}.${cleanExportsClassName}`;
+      preparedSources = [
+        {
+          path: `/str/${traceExportsClassName}.java`,
+          source: await buildJavaTraceRunnableSource(
+            normalizedPayload,
+            stableCompileId,
+            traceDynamicInputs
+          ),
+        },
+        {
+          path: `/str/${cleanExportsClassName}.java`,
+          source: buildPlainRunnableSource(
+            normalizedPayload,
+            cleanCompileId,
+            // Both entry points read the same prepared input properties. The
+            // clean package identity is independent of the property names, so
+            // there is no reason to serialize every case input twice.
+            traceDynamicInputs
+          ),
+        },
+      ];
+      dynamicInputs = traceDynamicInputs;
+    } else {
+      const exportsClassName = buildExportsClassName(stableCompileId);
+      entryClass = `${buildPackageName(stableCompileId)}.${exportsClassName}`;
+      preparedSources = [{
+        path: `/str/${exportsClassName}.java`,
+        source: buildPlainRunnableSource(
           normalizedPayload,
           stableCompileId,
-          dynamicInputs
-        )
-      : buildPlainRunnableSource(
-          normalizedPayload,
-          stableCompileId,
-          dynamicInputs
-        );
+          traceDynamicInputs
+        ),
+      }];
+      dynamicInputs = traceDynamicInputs;
+    }
     rewriteMs = performance.now() - sourceStart;
   } catch (error) {
     return {
@@ -7827,13 +7861,14 @@ async function prepareJavaRuntimeProgram(payload, requestId) {
   }
 
   const programId = isolateJavaCompileId(stableCompileId, requestId);
-  const exportsClassName = buildExportsClassName(stableCompileId);
-  const packageName = buildPackageName(stableCompileId);
-  const sourcePath = `/str/${exportsClassName}.java`;
-  const entryClass = `${packageName}.${exportsClassName}`;
 
   try {
-    await self.cheerpOSAddStringFile(sourcePath, source);
+    for (const preparedSource of preparedSources) {
+      await self.cheerpOSAddStringFile(
+        preparedSource.path,
+        preparedSource.source
+      );
+    }
   } catch (error) {
     return {
       success: false,
@@ -7871,7 +7906,9 @@ async function prepareJavaRuntimeProgram(payload, requestId) {
   try {
     const reportText = await compileLibraryClass.prepareRuntimeProgram(
       programId,
-      sourcePath,
+      preparedSources.length === 1
+        ? preparedSources[0].path
+        : JSON.stringify(preparedSources.map((source) => source.path)),
       mode === 'trace'
         ? DEFAULT_COMPILER_DEBUG_PROFILE
         : DEFAULT_EXECUTE_COMPILER_DEBUG_PROFILE
@@ -7919,6 +7956,7 @@ async function prepareJavaRuntimeProgram(payload, requestId) {
   const preparedState = {
     mode,
     entryClass,
+    ...(cleanEntryClass ? { cleanEntryClass } : {}),
     learnerFrame:
       normalizedPayload.executionStyle === 'solution-method' &&
       typeof normalizedPayload.functionName === 'string' &&
@@ -7958,6 +7996,9 @@ function assertPreparedJavaRuntimeSnapshot(snapshot) {
     (snapshot.mode !== 'code' && snapshot.mode !== 'trace') ||
     typeof snapshot.entryClass !== 'string' ||
     !snapshot.entryClass ||
+    (snapshot.cleanEntryClass !== undefined &&
+      (typeof snapshot.cleanEntryClass !== 'string' ||
+        !snapshot.cleanEntryClass)) ||
     (snapshot.learnerFrame !== undefined &&
       typeof snapshot.learnerFrame !== 'string') ||
     !Array.isArray(snapshot.dynamicInputs) ||
@@ -7995,6 +8036,9 @@ async function restorePreparedJavaRuntimeProgram(payload) {
   preparedJavaRuntimePrograms.set(snapshot.programId, {
     mode: snapshot.mode,
     entryClass: snapshot.entryClass,
+    ...(snapshot.cleanEntryClass
+      ? { cleanEntryClass: snapshot.cleanEntryClass }
+      : {}),
     learnerFrame:
       typeof snapshot.learnerFrame === 'string'
         ? snapshot.learnerFrame
@@ -8192,9 +8236,11 @@ async function executePreparedJavaRuntimeProgram(payload) {
       program.learnerFrame,
       String(program.mode === 'trace' && program.traceOptions?.traceProfile === true),
       // On-demand tracing: a trace-mode program may still run a case with
-      // recording off, so the caller gets a verdict without paying for events
-      // and without needing a second, uninstrumented compile.
-      String(program.mode !== 'trace' || payload?.traceEnabled !== false)
+      // recording off. Trace preparations contain a clean companion entry
+      // point in the same compiled artifact, selected once before learner code
+      // runs rather than branching at every rewritten hook site.
+      String(program.mode !== 'trace' || payload?.traceEnabled !== false),
+      program.cleanEntryClass ?? ''
     );
     report = JSON.parse(reportText);
   } catch (error) {
@@ -8294,7 +8340,13 @@ async function executePreparedJavaRuntimeProgramBatch(payload) {
             : 0
         ),
         program.learnerFrame,
-        String(program.mode === 'trace' && program.traceOptions?.traceProfile === true)
+        String(program.mode === 'trace' && program.traceOptions?.traceProfile === true),
+        JSON.stringify(
+          Array.isArray(payload?.traceEnabledBatch)
+            ? payload.traceEnabledBatch
+            : []
+        ),
+        program.cleanEntryClass ?? ''
       );
     report = JSON.parse(reportText);
   } catch (error) {

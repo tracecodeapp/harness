@@ -36,6 +36,10 @@ interface PreparedBrowserResult {
   traceBatchOutputs: unknown[];
   traceBatchRunnerProcessCount: number;
   traceBatchHasEvents: boolean;
+  traceResolvedMaxEvents: number;
+  mixedTraceOutputs: unknown[];
+  mixedTraceEventCounts: number[];
+  mixedTraceRunnerProcessCount: number;
   traceKinds: string[];
   traceParity: boolean;
   executionCompileMs: number[];
@@ -194,6 +198,27 @@ function assertPreparedResult(
     result.traceBatchHasEvents,
     true,
     `${engine}: trace-event transport must preserve every batch case`
+  );
+  assert.equal(
+    result.traceResolvedMaxEvents,
+    1_000,
+    `${engine}: Java tracing must honor the stricter maxTraceSteps ceiling when maxStoredEvents is larger`
+  );
+  assert.deepEqual(
+    result.mixedTraceOutputs,
+    [6, 9, 6],
+    `${engine}: traced and clean companion entry points must preserve ordered outputs`
+  );
+  assert.ok(
+    result.mixedTraceEventCounts[0] > 0 &&
+      result.mixedTraceEventCounts[1] === 0 &&
+      result.mixedTraceEventCounts[2] > 0,
+    `${engine}: one prepared artifact must trace only the selected cases`
+  );
+  assert.equal(
+    result.mixedTraceRunnerProcessCount,
+    1,
+    `${engine}: mixed traced and clean cases must share one runner process`
   );
   assert.ok(
     result.traceKinds.includes('line') &&

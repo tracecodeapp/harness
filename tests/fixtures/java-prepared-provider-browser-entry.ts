@@ -27,6 +27,10 @@ interface PreparedBrowserResult {
   traceBatchOutputs: unknown[];
   traceBatchRunnerProcessCount: number;
   traceBatchHasEvents: boolean;
+  traceResolvedMaxEvents: number;
+  mixedTraceOutputs: unknown[];
+  mixedTraceEventCounts: number[];
+  mixedTraceRunnerProcessCount: number;
   traceKinds: string[];
   traceParity: boolean;
   executionCompileMs: number[];
@@ -88,6 +92,17 @@ function completedOutput(
 ): unknown {
   if (result.kind !== 'completed') {
     throw new Error(result.error ?? `Expected completed result, got ${result.kind}`);
+  }
+  return result.output;
+}
+
+function completedWorkerOutput(result: {
+  success: boolean;
+  output?: unknown;
+  error?: string;
+}): unknown {
+  if (!result.success) {
+    throw new Error(result.error ?? 'Expected successful Java worker result.');
   }
   return result.output;
 }
@@ -365,11 +380,15 @@ globalThis.runJavaPreparedProviderBrowserTest =
     await opsPreparation.program.dispose();
 
     const traceSource = [
+      'class Box { int value; }',
       'class Solution {',
       '  public int sum(int[] values) {',
       '    int total = 0;',
       '    for (int value : values) total += value;',
       '    return total;',
+      '  }',
+      '  public String stringify(Box box) {',
+      '    return String.valueOf(box.value);',
       '  }',
       '}',
     ].join('\n');
@@ -378,7 +397,11 @@ globalThis.runJavaPreparedProviderBrowserTest =
       code: traceSource,
       functionName: 'sum',
       executionStyle: 'solution-method',
-      traceOptions: { maxStoredEvents: 2_000 },
+      traceOptions: {
+        maxTraceSteps: 1_000,
+        maxStoredEvents: 2_000,
+        traceProfile: true,
+      },
     });
     if (
       tracePreparation.kind !== 'prepared' ||
@@ -402,6 +425,15 @@ globalThis.runJavaPreparedProviderBrowserTest =
       throw new Error('Prepared Java trace did not complete.');
     }
     const traceKinds = traceResult.trace.events.map((event) => event.kind);
+    const traceProfilePrefix = '__TRACECODE_TRACE_PROFILE_JSON__:';
+    const traceProfileLine = traceResult.consoleOutput?.find((line) =>
+      line.startsWith(traceProfilePrefix)
+    );
+    const traceResolvedMaxEvents = Number(
+      traceProfileLine
+        ? JSON.parse(traceProfileLine.slice(traceProfilePrefix.length)).maxEvents
+        : Number.NaN
+    );
     const preparedTraceShape = traceResult.trace.events.map(traceEventShape);
     const traceBatchResults =
       await traceProgram.executeBatchIsolated?.({
@@ -433,6 +465,51 @@ globalThis.runJavaPreparedProviderBrowserTest =
       )
     );
     await traceProgram.dispose();
+
+    // Exercise the on-demand product shape directly: one trace preparation,
+    // one compiled artifact, one runner, and per-case entry-point selection.
+    const mixedTraceClient = createClient();
+    await mixedTraceClient.warmup();
+    const mixedTracePreparation = await mixedTraceClient.prepareRuntimeProgram({
+      mode: 'trace',
+      code: traceSource,
+      functionName: 'sum',
+      executionStyle: 'solution-method',
+      traceOptions: { maxStoredEvents: 2_000 },
+    });
+    if (!mixedTracePreparation.success || !mixedTracePreparation.programId) {
+      throw new Error(
+        mixedTracePreparation.error ??
+          'Mixed Java trace preparation did not return a program id.'
+      );
+    }
+    const mixedTraceResults = await mixedTraceClient.executePreparedTraceBatch(
+      mixedTracePreparation.programId,
+      {
+        inputBatch: [
+          { values: [1, 2, 3] },
+          { values: [4, 5] },
+          { values: [6] },
+        ],
+      },
+      { maxStoredEvents: 2_000 },
+      { traceEnabledBatch: [true, false, true] }
+    );
+    const mixedTraceOutputs = mixedTraceResults.map(completedWorkerOutput);
+    const mixedTraceEventCounts = mixedTraceResults.map(
+      (result) => result.trace.events.length
+    );
+    const mixedTraceRunnerProcessCount = Number(
+      (
+        mixedTraceResults[0]?.timings as
+          | ({ runnerProcessCount?: number })
+          | undefined
+      )?.runnerProcessCount ?? -1
+    );
+    await mixedTraceClient.disposePreparedRuntimeProgram(
+      mixedTracePreparation.programId
+    );
+    mixedTraceClient.terminate();
 
     const legacyTraceClient = createClient();
     const legacyTrace = await legacyTraceClient.executeWithTracing({
@@ -507,6 +584,10 @@ globalThis.runJavaPreparedProviderBrowserTest =
       traceBatchOutputs,
       traceBatchRunnerProcessCount,
       traceBatchHasEvents,
+      traceResolvedMaxEvents,
+      mixedTraceOutputs,
+      mixedTraceEventCounts,
+      mixedTraceRunnerProcessCount,
       traceKinds,
       traceParity,
       executionCompileMs,
