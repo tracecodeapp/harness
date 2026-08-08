@@ -93,6 +93,17 @@ public final class TraceHooks {
   private static volatile boolean traceLimitExceeded = false;
   /** Public hot-path flag for rewritten call-site elision (field read, not a method call). */
   public static volatile boolean limitExceeded = false;
+  /**
+   * On-demand tracing: false runs an instrumented program with recording off.
+   *
+   * Deliberately distinct from {@link #traceLimitExceeded}. Both make the hooks
+   * inert, but a budget trip is a *result* the host reports (truncated trace,
+   * timeoutReason) while tracing-off is a *request* that must report nothing at
+   * all. Reusing the budget flag would make every untraced case look like it
+   * blew its budget. Call sites still read {@link #limitExceeded}, which is set
+   * alongside this, so the hot path stays a single volatile field read.
+   */
+  private static volatile boolean tracingEnabled = true;
   private static int droppedEventCount = 0;
   /** Events stored this run across every drained slab. */
   private static int totalStoredEvents = 0;
@@ -362,6 +373,8 @@ public final class TraceHooks {
     boolean throwBudgetExceeded = false;
     synchronized (STATE_LOCK) {
       if (!runActiveForCurrentThread()) return;
+      // Tracing off: nothing was requested, so this is not a dropped event.
+      if (!tracingEnabled) return;
       if (traceLimitExceeded) {
         droppedEventCount += 1;
         return;
@@ -444,6 +457,20 @@ public final class TraceHooks {
    * keep the drop-silently behaviour.
    */
   public static int beginRun(int nextMaxEvents, boolean enableProfile, boolean abortOnBudget) {
+    return beginRun(nextMaxEvents, enableProfile, abortOnBudget, true);
+  }
+
+  /**
+   * Starts a run with tracing on or off.
+   *
+   * With {@code enableTracing} false the program still carries its hooks, but
+   * every rewritten call site short-circuits on {@link #limitExceeded} and
+   * anything reaching the sink is dropped before it is stored. The run reports
+   * no events and no budget trip, and budget abort is never armed -- there is
+   * no budget to trip.
+   */
+  public static int beginRun(
+      int nextMaxEvents, boolean enableProfile, boolean abortOnBudget, boolean enableTracing) {
     int token;
     profileEnabled = enableProfile;
     synchronized (STATE_LOCK) {
@@ -452,7 +479,10 @@ public final class TraceHooks {
       nextRunToken = token;
       activeRunToken = token;
       resetStateLocked(nextMaxEvents);
-      budgetAbortArmed = abortOnBudget;
+      // resetStateLocked clears limitExceeded, so latch the off state after it.
+      tracingEnabled = enableTracing;
+      if (!enableTracing) limitExceeded = true;
+      budgetAbortArmed = abortOnBudget && enableTracing;
       if (EVENTS instanceof ArrayList<?>) {
         ((ArrayList<String>) EVENTS).ensureCapacity(
             slabDrainThreshold > 0 ? slabDrainThreshold : maxEvents);
@@ -490,6 +520,10 @@ public final class TraceHooks {
     slabDrainThreshold = maxEvents > SLAB_DRAIN_EVENTS ? SLAB_DRAIN_EVENTS : 0;
     traceLimitExceeded = false;
     limitExceeded = false;
+    // Default on; beginRun latches it off again when a run opts out. Without
+    // this, one untraced case would silently disable tracing for every
+    // subsequent run on the same warm VM.
+    tracingEnabled = true;
     droppedEventCount = 0;
     nextTraceReferenceId = 0;
     nextCallStackId = 0;

@@ -95,7 +95,10 @@ public final class TraceExecutionRunner {
     int maxStoredEvents = Integer.parseInt(args[1]);
     String learnerFrame = args.length >= 3 ? args[2] : "";
     boolean profile = args.length >= 4 && "profile".equals(args[3]);
-    int token = TraceHooks.beginRun(maxStoredEvents, profile, true);
+    // On-demand tracing: run the instrumented program with recording off so a
+    // verdict-only case pays the guarded-hook cost instead of a second compile.
+    boolean enableTracing = !(args.length >= 5 && "notrace".equals(args[4]));
+    int token = TraceHooks.beginRun(maxStoredEvents, profile, true, enableTracing);
     Object output = null;
     Throwable failure = null;
     try {

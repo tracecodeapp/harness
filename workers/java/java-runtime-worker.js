@@ -1173,7 +1173,12 @@ async function traceJVMRunPreparedRuntimeProgram(
   maxStoredEvents = '1',
   preparedInputProperties = '{}',
   learnerFrame = '',
-  traceProfile = ''
+  traceProfile = '',
+  // On-demand tracing. 'false' runs the instrumented program with recording
+  // off: the rewritten call sites short-circuit and the sink stores nothing,
+  // so a verdict-only case costs one near-plain run instead of a second
+  // compile. Anything other than the string 'false' keeps tracing on.
+  traceEnabled = 'true'
 ) {
   const normalizedProgramId = String(programId);
   const prepared = traceJVMPreparedPrograms.get(normalizedProgramId);
@@ -1210,7 +1215,10 @@ async function traceJVMRunPreparedRuntimeProgram(
       String(entryClass),
       String(Number.parseInt(String(maxStoredEvents), 10) || 1),
       String(learnerFrame),
-      ...(String(traceProfile) === 'true' ? ['profile'] : []),
+      // The runner reads argv positionally, so the profile slot must be filled
+      // before 'notrace' can occupy the one after it.
+      String(traceProfile) === 'true' ? 'profile' : '',
+      ...(String(traceEnabled) === 'false' ? ['notrace'] : []),
     ],
   }, normalizedProgramId);
   prepared.executions += 1;

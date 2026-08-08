@@ -8190,7 +8190,11 @@ async function executePreparedJavaRuntimeProgram(payload) {
       ),
       JSON.stringify(preparedInputProperties),
       program.learnerFrame,
-      String(program.mode === 'trace' && program.traceOptions?.traceProfile === true)
+      String(program.mode === 'trace' && program.traceOptions?.traceProfile === true),
+      // On-demand tracing: a trace-mode program may still run a case with
+      // recording off, so the caller gets a verdict without paying for events
+      // and without needing a second, uninstrumented compile.
+      String(program.mode !== 'trace' || payload?.traceEnabled !== false)
     );
     report = JSON.parse(reportText);
   } catch (error) {
