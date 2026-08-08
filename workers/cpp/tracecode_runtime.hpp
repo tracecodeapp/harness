@@ -496,6 +496,40 @@ template <typename... Values>
 struct json_is_std_tuple<std::tuple<Values...>> : std::true_type {};
 
 template <typename T>
+struct json_is_std_variant : std::false_type {};
+template <typename... Values>
+struct json_is_std_variant<std::variant<Values...>> : std::true_type {};
+
+/**
+ * True when `T` is the alternative a JSON value of this kind should decode to.
+ *
+ * A variant alternative is chosen by matching the JSON kind rather than by
+ * position, so `variant<std::string, int>` and `variant<int, std::string>`
+ * both decode `"a"` to the string alternative. Without this, every variant
+ * fell through json_to's default branch and silently default-constructed to
+ * its FIRST alternative -- an empty string for `variant<std::string, int>` --
+ * so correct learner code produced empty results with no diagnostic.
+ */
+template <typename T>
+inline bool json_alternative_matches(const JsonValue& value) {
+  using D = std::decay_t<T>;
+  switch (value.kind) {
+    case JsonValue::Kind::String:
+      return std::is_same_v<D, std::string>;
+    case JsonValue::Kind::Number:
+      return std::is_arithmetic_v<D> && !std::is_same_v<D, bool>;
+    case JsonValue::Kind::Bool:
+      return std::is_same_v<D, bool>;
+    case JsonValue::Kind::Array:
+      return json_is_std_vector<D>::value || json_is_std_deque<D>::value;
+    case JsonValue::Kind::Object:
+      return json_is_std_map<D>::value || json_is_std_unordered_map<D>::value;
+    default:
+      return false;
+  }
+}
+
+template <typename T>
 T json_to(const JsonValue& value);
 
 template <typename Node>
@@ -653,6 +687,21 @@ T json_to(const JsonValue& value) {
     return D{json_to<typename D::first_type>(value.array_values[0]), json_to<typename D::second_type>(value.array_values[1])};
   } else if constexpr (json_is_std_tuple<D>::value) {
     return json_to_tuple<D>(value, std::make_index_sequence<std::tuple_size_v<D>>{});
+  } else if constexpr (json_is_std_variant<D>::value) {
+    // Pick the first alternative whose type matches the JSON kind; fall back to
+    // the first alternative so the result is always a valid variant.
+    D out{};
+    bool decoded = false;
+    [&]<typename... Alternatives>(std::variant<Alternatives...>*) {
+      (void)((!decoded && json_alternative_matches<Alternatives>(value)
+                ? (out = json_to<Alternatives>(value), decoded = true, true)
+                : false) || ...);
+    }(static_cast<D*>(nullptr));
+    if (!decoded) {
+      using First = std::variant_alternative_t<0, D>;
+      out = json_to<First>(value);
+    }
+    return out;
   } else if constexpr (JsonObjectAdapter<D>::available) {
     return JsonObjectAdapter<D>::from(value);
   } else {

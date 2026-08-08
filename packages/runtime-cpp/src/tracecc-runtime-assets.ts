@@ -4,7 +4,7 @@ import type {
 } from '../../runtime-browser/src/runtime-assets';
 
 export const TRACECC_RUNTIME_CONTENT_HASH =
-  '1f50b24524b84b65663aa2fde85c97661a095f438596ffc916c000a6bfe450ca';
+  'd281ef0cfebe48f7ea9fb7543443839b9967e2b51da8dc5c8b750126a1c405fd';
 
 interface TraceCCAssetIdentity {
   readonly fileName: string;
@@ -16,9 +16,9 @@ interface TraceCCAssetIdentity {
 const TRACECC_RUNTIME_ASSETS = {
   runtimeHeader: {
     fileName: 'tracecode_runtime.hpp',
-    integrity: 'sha256-TeNf7Pwat/nfdgTgoacXj6yjVLIlf6x/cpe0kQCLfCU=',
+    integrity: 'sha256-GJgPOU8w+OamwzFHDckuMqwR+4tUM147R2bo7/7+G4k=',
     mediaType: 'text/plain',
-    size: 260_396,
+    size: 262_424,
   },
   compilerWasm: {
     fileName: 'tracecc-reactor.wasm',
@@ -34,9 +34,9 @@ const TRACECC_RUNTIME_ASSETS = {
   },
   narrowPch: {
     fileName: 'narrow.pch',
-    integrity: 'sha256-/EMxTWLaq7IR1rXgSuhgPkd3ORMYdn9EJWqF631lDk0=',
+    integrity: 'sha256-aJIvoFLpA0bw3tLuEIh7oBe9WinVvZSPgEyTPCJh1YQ=',
     mediaType: 'application/octet-stream',
-    size: 21_315_532,
+    size: 21_320_088,
   },
   narrowPchSource: {
     fileName: 'narrow.source.hpp',
@@ -52,9 +52,9 @@ const TRACECC_RUNTIME_ASSETS = {
   },
   broadPch: {
     fileName: 'broad.pch',
-    integrity: 'sha256-tL6cukAxxZiBWTbpDrTcg3xcQ52Ay3+BynyfUwVx/h4=',
+    integrity: 'sha256-NxT61GlGOV9baF2Otz4VSry/U+4ZV62lwNbBr6rGNyc=',
     mediaType: 'application/octet-stream',
-    size: 24_536_976,
+    size: 24_541_412,
   },
   broadPchSource: {
     fileName: 'broad.source.hpp',
@@ -70,9 +70,9 @@ const TRACECC_RUNTIME_ASSETS = {
   },
   mapPch: {
     fileName: 'map.pch',
-    integrity: 'sha256-ylUEb41yHjigdKgzJLGIm/HBQ/tzMB9UPgX0F1XkhNk=',
+    integrity: 'sha256-TCOBNvfZOWtO5mg0OuzP/eXgLegJORSg+g7VPuLdGQo=',
     mediaType: 'application/octet-stream',
-    size: 29_915_372,
+    size: 29_948_616,
   },
   mapPchSource: {
     fileName: 'map.source.hpp',
@@ -82,9 +82,9 @@ const TRACECC_RUNTIME_ASSETS = {
   },
   mapRuntimeObject: {
     fileName: 'map.o',
-    integrity: 'sha256-DnvgcziANh5qdGPKUPZ1+McTQLyjFbXZrGRoCcxM5TY=',
+    integrity: 'sha256-ToS0m1JL9HeJdEhXohXo66kviZiVDYAE34RyKQzqFaM=',
     mediaType: 'application/wasm',
-    size: 3_366_043,
+    size: 3_371_878,
   },
 } as const satisfies Readonly<Record<string, TraceCCAssetIdentity>>;
 
