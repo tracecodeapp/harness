@@ -68,6 +68,17 @@ interface BenchmarkCase {
   id: string;
   input: Record<string, unknown>;
   expected: unknown;
+  /**
+   * Comparison policy declared by the problem. Without it every case falls back
+   * to strict equality, which fails any problem whose answer is order
+   * insensitive or has multiple valid solutions -- in every language, not just
+   * the one under test.
+   */
+  comparator?: {
+    schema: 'tracecode.judge.comparator.v1';
+    mode?: 'exact' | 'unordered-array' | 'unordered-nested-array';
+    customValidator?: string;
+  };
 }
 
 interface BenchmarkFixture {
@@ -202,14 +213,35 @@ async function loadFixtures(
       functionName: string;
       executionStyle?: 'function' | 'solution-method';
       solutionCode: string;
-      testCases: Array<{ id: string; input: Record<string, unknown>; expected: unknown }>;
+      compareMode?: 'exact' | 'unordered-array' | 'unordered-nested-array';
+      customValidator?: string;
+      testCases: Array<{
+        id: string;
+        input: Record<string, unknown>;
+        expected: unknown;
+        customValidator?: string;
+      }>;
     };
     const cases = (maxCases === undefined ? raw.testCases : raw.testCases.slice(0, maxCases)).map(
-      (testCase) => ({
-        id: testCase.id,
-        input: testCase.input,
-        expected: testCase.expected,
-      })
+      (testCase) => {
+        const customValidator = testCase.customValidator ?? raw.customValidator;
+        const mode = raw.compareMode ?? 'exact';
+        return {
+          id: testCase.id,
+          input: testCase.input,
+          expected: testCase.expected,
+          // Always attach the comparator, including plain 'exact'. Omitting it
+          // does not mean "exact" -- it means no judge comparator runs at all,
+          // so the metadata keys (__id__/__type__) that every runtime attaches
+          // to reference-typed results are compared literally and every
+          // ListNode/TreeNode problem fails in every language.
+          comparator: {
+            schema: 'tracecode.judge.comparator.v1' as const,
+            mode,
+            ...(customValidator ? { customValidator } : {}),
+          },
+        };
+      }
     );
     for (const language of languages) {
       const code =
@@ -359,6 +391,7 @@ async function main(): Promise<void> {
   // almost entirely. If neither moves the clock, the cost is in the
   // instrumentation scaffolding rather than in emitting events.
   const maxTraceStepsRaw = option('max-trace-steps');
+  const maxStoredEventsRaw = option('max-stored-events');
   // --trace-limits=uncapped raises every budget x16 so no runtime stops
   // tracing early; a fast time under product limits can just mean "hit the
   // cap soonest", so cross-runtime comparisons need this equal-output mode.
@@ -377,6 +410,13 @@ async function main(): Promise<void> {
         }
       : {}),
     ...(maxTraceStepsRaw ? { maxTraceSteps: Number(maxTraceStepsRaw) } : {}),
+    // maxStoredEvents outranks maxTraceSteps in every runtime's budget
+    // resolution, so --max-trace-steps alone cannot shrink emission while the
+    // product budget sets this. Setting it to 1 models "instrumented binary,
+    // recording off": the hooks still run, the sink rejects every event.
+    ...(maxStoredEventsRaw
+      ? { maxStoredEvents: Number(maxStoredEventsRaw) }
+      : {}),
     ...(process.argv.includes('--minimal-trace') ? { minimalTrace: true } : {}),
     // Profiling instruments the runtime's own hot path (python wraps ~19 hook
     // functions), which inflates every timing here. It stays on by default so

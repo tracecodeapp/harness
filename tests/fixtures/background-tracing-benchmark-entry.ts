@@ -16,6 +16,12 @@ export interface BenchmarkCase {
   readonly id: string;
   readonly input: Record<string, unknown>;
   readonly expected: unknown;
+  /** Comparison policy from the problem definition; omitted means exact. */
+  readonly comparator?: {
+    readonly schema: 'tracecode.judge.comparator.v1';
+    readonly mode?: 'exact' | 'unordered-array' | 'unordered-nested-array';
+    readonly customValidator?: string;
+  };
 }
 
 export interface BenchmarkFixture {
@@ -52,6 +58,19 @@ export interface PhaseSummary {
   readonly casesTotal: number;
   readonly compileMs?: number;
   readonly diagnostics: readonly string[];
+  /**
+   * Actual vs expected for the first few failing cases. Verdicts alone cannot
+   * distinguish "produced the wrong value" from "failed to materialize the
+   * input at all", which is the difference between a comparator bug and a
+   * runtime bug.
+   */
+  readonly failures?: readonly {
+    readonly caseId: string;
+    readonly status: string;
+    readonly verdict: string;
+    readonly got: string;
+    readonly expected: string;
+  }[];
 }
 
 export interface BenchmarkLanguageResult {
@@ -124,6 +143,25 @@ function summarize(
       .flatMap((testCase) => testCase.diagnostics)
       .map((diagnostic) => String((diagnostic as { message?: unknown }).message ?? diagnostic))
       .slice(0, 5),
+    failures: cases
+      .filter((testCase) => testCase.verdict.kind !== 'passed')
+      .slice(0, 3)
+      .map((testCase) => {
+        const clip = (value: unknown) => {
+          try {
+            return JSON.stringify(value ?? null).slice(0, 220);
+          } catch {
+            return String(value).slice(0, 220);
+          }
+        };
+        return {
+          caseId: testCase.caseId,
+          status: testCase.status,
+          verdict: testCase.verdict.kind,
+          got: clip((testCase as { value?: unknown }).value),
+          expected: clip((testCase as { expected?: unknown }).expected),
+        };
+      }),
   };
 }
 
@@ -185,6 +223,7 @@ export async function runBackgroundTracingBenchmark(
           id: testCase.id,
           input: testCase.input,
           expected: testCase.expected,
+          ...(testCase.comparator ? { comparator: testCase.comparator } : {}),
         })),
       });
       const correctnessStartedAt = performance.now();
@@ -210,6 +249,7 @@ export async function runBackgroundTracingBenchmark(
               id: testCase.id,
               input: testCase.input,
               expected: testCase.expected,
+              ...(testCase.comparator ? { comparator: testCase.comparator } : {}),
             },
           ],
         });
@@ -238,6 +278,7 @@ export async function runBackgroundTracingBenchmark(
               id: testCase.id,
               input: testCase.input,
               expected: testCase.expected,
+              ...(testCase.comparator ? { comparator: testCase.comparator } : {}),
             },
           ],
           trace: true,
