@@ -8020,8 +8020,36 @@ function buildSnapshotInstrumentation(lineNumber, variables, currentDepth) {
     .join('\n');
 }
 
+/**
+ * Emits a value event behind an admissibility guard.
+ *
+ * The target and value expressions are call arguments, so C++ evaluates them
+ * before entering the sink -- `to_json` on a container walks the whole
+ * container. Unguarded, a run whose budget is exhausted (or whose tracing is
+ * off) still pays full serialization for every event it then discards, which
+ * is most of the cost of an instrumented-but-not-recording run.
+ *
+ * `trace_event_admissible` mirrors `write_trace_event_json`'s own checks,
+ * including its dropped-event counting, so the recorded stream and every
+ * counter stay identical to the unguarded form. Value events are all
+ * minimal-trace suppressible kinds, hence the `true` first argument.
+ */
+function guardedValueEvent(kind, lineNumber, targetExpression, valueExpression, indent = '') {
+  return [
+    `${indent}if (tracecode::trace_event_admissible(true, ${lineNumber})) {`,
+    `${indent}  tracecode::emit_serialized_value_event(${JSON.stringify(kind)}, ${lineNumber}, ${targetExpression}, ${valueExpression});`,
+    `${indent}}`,
+  ].join('\n');
+}
+
 function buildScalarWriteInstrumentation(name, lineNumber, indent = '') {
-  return `${indent}tracecode::emit_serialized_value_event("write", ${lineNumber}, tracecode::target_json(${cppStringLiteral(name)}), tracecode::to_json(${name}));`;
+  return guardedValueEvent(
+    'write',
+    lineNumber,
+    `tracecode::target_json(${cppStringLiteral(name)})`,
+    `tracecode::to_json(${name})`,
+    indent
+  );
 }
 
 function buildDeclarationWriteInstrumentation(lineNumber, variables, currentDepth, indent = '') {
@@ -8033,7 +8061,13 @@ function buildDeclarationWriteInstrumentation(lineNumber, variables, currentDept
 
 function buildOpaqueObjectSnapshotInstrumentation(name, lineNumber, indent = '') {
   if (name === 'this') return '';
-  return `${indent}tracecode::emit_serialized_value_event("snapshot", ${lineNumber}, tracecode::target_json(${cppStringLiteral(name)}), tracecode::to_json(${name}));`;
+  return guardedValueEvent(
+    'snapshot',
+    lineNumber,
+    `tracecode::target_json(${cppStringLiteral(name)})`,
+    `tracecode::to_json(${name})`,
+    indent
+  );
 }
 
 function cppStringExpression(parts) {
@@ -8123,7 +8157,7 @@ function buildFieldReadInstrumentation(expression, valueExpression, lineNumber, 
   if (!access) return '';
   const targetExpression = buildFieldPathTargetJsonExpression(access.objectName, access.pathParts);
   return [
-    `${indent}tracecode::emit_serialized_value_event("read", ${lineNumber}, ${targetExpression}, tracecode::to_json(${valueExpression}));`,
+    guardedValueEvent('read', lineNumber, targetExpression, `tracecode::to_json(${valueExpression})`, indent),
     buildOpaqueObjectSnapshotInstrumentation(access.objectName, lineNumber, indent),
   ].join('\n');
 }
@@ -8149,7 +8183,7 @@ function rewriteFieldWriteInstrumentation(line, lineNumber) {
   const valueExpression = lhsExpression.trim();
   return [
     line,
-    `${indent}tracecode::emit_serialized_value_event("write", ${lineNumber}, ${targetExpression}, tracecode::to_json(${valueExpression}));`,
+    guardedValueEvent('write', lineNumber, targetExpression, `tracecode::to_json(${valueExpression})`, indent),
     buildOpaqueObjectSnapshotInstrumentation(access.objectName, lineNumber, indent),
   ].join('\n');
 }
@@ -8341,7 +8375,7 @@ function rewriteBareMemberAssignmentWriteInstrumentation(
   const targetExpression = `std::string(${cppStringLiteral(`{"variable":"this","path":[${jsonStringLiteral(name)}]}`)})`;
   return [
     line,
-    `${indent}tracecode::emit_serialized_value_event("write", ${lineNumber}, ${targetExpression}, tracecode::to_json(${name}));`,
+    guardedValueEvent('write', lineNumber, targetExpression, `tracecode::to_json(${name})`, indent),
   ].join('\n');
 }
 
@@ -8361,7 +8395,7 @@ function rewriteBareMemberReadInstrumentation(
   if (assigneeName === memberName || !memberVariables.has(memberName) || localVariables.has(memberName)) return line;
   const targetExpression = `std::string(${cppStringLiteral(`{"variable":"this","path":[${jsonStringLiteral(memberName)}]}`)})`;
   return [
-    `${indent}tracecode::emit_serialized_value_event("read", ${lineNumber}, ${targetExpression}, tracecode::to_json(${memberName}));`,
+    guardedValueEvent('read', lineNumber, targetExpression, `tracecode::to_json(${memberName})`, indent),
     line,
   ].join('\n');
 }
@@ -8374,8 +8408,13 @@ function buildCallInstrumentation(lineNumber, signature, aliases = new Map()) {
   const argsExpression = buildTraceArgsJsonExpression(signature, (parameter) => parameter.name, aliases);
   return [
     `int ${callLineName} = ${callLineExpression};`,
-    `std::string __tc_args_json_${lineNumber} = std::string("{") + ${argsExpression} + "}";`,
-    `tracecode::emit_serialized_call_event(${callLineName}, ${cppStringLiteral(signature.name)}, __tc_args_json_${lineNumber});`,
+    // Argument serialization walks whole containers; skip it entirely when the
+    // sink would discard the event. 'call' is not a minimal-trace suppressible
+    // kind, so the first argument is false.
+    `if (tracecode::trace_event_admissible(false, ${callLineName})) {`,
+    `  std::string __tc_args_json_${lineNumber} = std::string("{") + ${argsExpression} + "}";`,
+    `  tracecode::emit_serialized_call_event(${callLineName}, ${cppStringLiteral(signature.name)}, __tc_args_json_${lineNumber});`,
+    `}`,
     ...(signature.name === CPP_SCRIPT_FUNCTION_NAME ? [] : [`tracecode::emit_line(${entryLine}, ${cppStringLiteral(signature.name)});`]),
   ].join('\n');
 }
@@ -11295,7 +11334,9 @@ ${lines.join('\n')}
 function findCppClassBodyRange(source, className) {
   const cleaned = stripComments(source);
   const escaped = escapeRegExp(className);
-  const match = cleaned.match(new RegExp(`\\b(?:class|struct)\\s+${escaped}\\b[^\\{;]*\\{`));
+  // Capturing, not (?:...): `kind` drives the default access specifier, and a
+  // non-capturing group left it permanently 'class' (private) even for structs.
+  const match = cleaned.match(new RegExp(`\\b(class|struct)\\s+${escaped}\\b[^\\{;]*\\{`));
   if (!match) return null;
   const openBraceIndex = cleaned.indexOf('{', match.index);
   if (openBraceIndex < 0) return null;
@@ -11309,6 +11350,35 @@ function findCppClassBodyRange(source, className) {
     startLine: cleaned.slice(0, openBraceIndex).split(/\r?\n/).length,
     endLine: cleaned.slice(0, closeBraceIndex).split(/\r?\n/).length,
   };
+}
+
+/**
+ * Access specifier in effect on each line of a class body.
+ *
+ * The ops-class driver dispatches operations by calling members from `main`,
+ * so private helpers must not be treated as callable operations -- emitting
+ * `__tc_instance->dfs(...)` for a private `dfs` fails to compile. Only labels
+ * at the class's own brace depth apply; nested types keep their own access.
+ */
+function cppAccessByLine(classRange) {
+  const accessByLine = new Map();
+  if (!classRange) return accessByLine;
+  let access = classRange.kind === 'struct' ? 'public' : 'private';
+  let depth = 1; // body starts just inside the opening brace
+  const bodyLines = String(classRange.body).split(/\r?\n/);
+  for (let index = 0; index < bodyLines.length; index++) {
+    const text = bodyLines[index];
+    if (depth === 1) {
+      const label = text.match(/^\s*(public|private|protected)\s*:/);
+      if (label) access = label[1];
+    }
+    accessByLine.set(classRange.startLine + index, access);
+    for (const character of text) {
+      if (character === '{') depth++;
+      else if (character === '}') depth--;
+    }
+  }
+  return accessByLine;
 }
 
 function collectPreparedOpsClassSignatures(source, className) {
@@ -11328,7 +11398,15 @@ function collectPreparedOpsClassSignatures(source, className) {
     if (classRange && signature.line >= classRange.startLine && signature.line <= classRange.endLine) return true;
     return false;
   });
-  return [...constructorSignatures, ...signatures].sort((left, right) =>
+  // Tag in-class members with their access. Out-of-class definitions
+  // (ClassName::method) get no tag and stay eligible, which preserves the
+  // previous behaviour wherever the body cannot be scanned confidently.
+  const accessByLine = cppAccessByLine(classRange);
+  const tagged = signatures.map((signature) => {
+    const access = accessByLine.get(signature.line);
+    return access ? { ...signature, access } : signature;
+  });
+  return [...constructorSignatures, ...tagged].sort((left, right) =>
     left.line - right.line ||
     (left.bodyLine || left.line) - (right.bodyLine || right.line)
   );
@@ -11339,7 +11417,14 @@ function buildPreparedOpsClassDriverSource(userCode, className, options = {}) {
   const aliases = collectCppTypeAliases(userCode);
   const signatures = collectPreparedOpsClassSignatures(userCode, className);
   const constructorSignatures = signatures.filter((signature) => signature.name === className);
-  const methodSignatures = signatures.filter((signature) => signature.name !== className);
+  // Only public members are dispatchable operations; a private helper called
+  // from main scope does not compile.
+  const methodSignatures = signatures.filter(
+    (signature) =>
+      signature.name !== className &&
+      signature.access !== 'private' &&
+      signature.access !== 'protected'
+  );
   const traceMethodName = methodSignatures[0]?.name || constructorSignatures[0]?.name || null;
   let sourceForDriver = userCode;
   if (options.tracing === true && traceMethodName) {
@@ -11359,7 +11444,15 @@ function buildPreparedOpsClassDriverSource(userCode, className, options = {}) {
     signature.parameters.forEach((parameter, index) => {
       const localName = `${prefix}_${index}`;
       const type = materializedCppType(parameter.type, aliases);
-      lines.push(`const ${type} ${localName} = tracecode::json_to<${type}>(__tc_ops_arg_at(${argsExpr}, ${index}));`);
+      // A parameter declared as a non-const reference or pointer cannot bind to
+      // a const local: `StreamChecker(vector<string>& words)` and
+      // `dfs(TrieNode* node)` both fail against `const` decoded arguments.
+      // By-value and const-reference parameters keep the const local.
+      const declaredType = String(parameter.type || '');
+      const bindsMutably = /[&*]/.test(declaredType) && !/\bconst\b/.test(declaredType);
+      lines.push(
+        `${bindsMutably ? '' : 'const '}${type} ${localName} = tracecode::json_to<${type}>(__tc_ops_arg_at(${argsExpr}, ${index}));`
+      );
       argNames.push(localName);
     });
     return { lines, argNames };
@@ -11554,10 +11647,16 @@ function buildPreparedOpsClassDriverSource(userCode, className, options = {}) {
   return `${buildGeneratedIncludes(userCode, { parameters: [] })}
 using namespace std;
 ${buildTracecodeFallbackAliases(userCode)}
-${buildCppJsonObjectAdapters(typeContext, aliases)}
 
 #line 1 "${CPP_USER_SOURCE_FILE}"
 ${sourceForDriver}
+${/* Adapters specialize JsonObjectAdapter<T> for user-defined types, so they
+      must follow the user source. Emitted before it, a helper type such as
+      TrieNode is undeclared at the specialization, and clang resolves the name
+      to the runtime's built-in tracecode::TreeNode -- turning a clean
+      "unknown type name" into a cascade of "no member named 'children'".
+      The three other driver templates already order it this way. */ ''}
+${buildCppJsonObjectAdapters(typeContext, aliases)}
 
 #line 1 "TraceCodeDriver.cpp"
 int main() {
