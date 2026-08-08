@@ -328,7 +328,28 @@ export async function runBackgroundTracingBenchmark(
         }
         perCaseVerdicts.push(
           receipt.evaluation.status === 'completed'
-            ? (receipt.evaluation.cases[0]?.verdict.kind ?? 'missing')
+            ? (() => {
+                const only = receipt.evaluation.cases[0];
+                if (!only) return 'missing';
+                const kind = only.verdict.kind;
+                // 'not-evaluated' alone is ambiguous: a missing expected value
+                // and a case that never completed look identical. Carry the
+                // reason and the case status so the two can be told apart.
+                if (kind !== 'not-evaluated') return kind;
+                const reason = String(
+                  (only.verdict as { reason?: unknown }).reason ?? '?'
+                );
+                const why = [
+                  ...(only.diagnostics ?? []).map((d) =>
+                    String((d as { message?: unknown }).message ?? d)
+                  ),
+                  String(only.stderr ?? ''),
+                ]
+                  .filter(Boolean)
+                  .join(' | ')
+                  .slice(0, 300);
+                return `not-evaluated:${reason}:${only.status} :: ${why}`;
+              })()
             : `evaluation:${receipt.evaluation.status}`
         );
         let profile: Record<string, unknown> | null = null;

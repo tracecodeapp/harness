@@ -1654,6 +1654,26 @@ function buildDynamicInputHelperMethods() {
     return null;
   }
 
+  /**
+   * Rethrows a trace-budget abort that reflection wrapped.
+   *
+   * Constructor.newInstance wraps anything the constructor throws in an
+   * InvocationTargetException, which is a ReflectiveOperationException. In
+   * trace mode the learner's own types are instrumented, so a budget trip
+   * inside a constructor arrives here looking exactly like "wrong constructor"
+   * and gets discarded by the candidate loops -- every candidate then fails and
+   * materialization reports "Unable to materialize prepared Java input" instead
+   * of letting TraceExecutionRunner catch the abort and re-run the case.
+   */
+  private static void rethrowBudgetAbort(Throwable error) {
+    for (Throwable current = error; current != null; current = current.getCause()) {
+      if (current instanceof tracecode.user.TraceBudgetExceededError) {
+        throw (tracecode.user.TraceBudgetExceededError) current;
+      }
+      if (current.getCause() == current) break;
+    }
+  }
+
   private static void assignPreparedJsonFields(
       Class<?> targetType,
       Object instance,
@@ -1705,7 +1725,8 @@ function buildDynamicInputHelperMethods() {
         Object instance = constructor.newInstance(arguments);
         assignPreparedJsonFields(targetType, instance, fields);
         return instance;
-      } catch (ReflectiveOperationException | IllegalArgumentException ignored) {
+      } catch (ReflectiveOperationException | IllegalArgumentException candidateFailure) {
+        rethrowBudgetAbort(candidateFailure);
       }
     }
     try {
@@ -1714,7 +1735,8 @@ function buildDynamicInputHelperMethods() {
       Object instance = constructor.newInstance();
       assignPreparedJsonFields(targetType, instance, fields);
       return instance;
-    } catch (ReflectiveOperationException ignored) {
+    } catch (ReflectiveOperationException candidateFailure) {
+      rethrowBudgetAbort(candidateFailure);
     }
     // Learner types often declare a single convenience constructor (the classic
     // TreeNode(int val)) and no no-arg constructor, so an interior node that
@@ -1734,7 +1756,8 @@ function buildDynamicInputHelperMethods() {
         Object instance = constructor.newInstance(arguments);
         assignPreparedJsonFields(targetType, instance, fields);
         return instance;
-      } catch (ReflectiveOperationException | IllegalArgumentException ignored) {
+      } catch (ReflectiveOperationException | IllegalArgumentException candidateFailure) {
+        rethrowBudgetAbort(candidateFailure);
       }
     }
     throw new RuntimeException("Unable to materialize prepared Java input " + targetType.getName());
