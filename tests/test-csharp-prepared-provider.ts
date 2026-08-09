@@ -5,9 +5,12 @@ import { readFileSync } from 'node:fs';
 import { test } from 'node:test';
 import type {
   CodeExecutionResult,
+  ExecutionResult,
   RuntimePreparedCodeCall,
+  RuntimePreparedTraceCall,
   RuntimeProgramPreparationCall,
 } from '../packages/runtime-contracts/src/index';
+import { createEmptyRuntimeTrace } from '../packages/runtime-contracts/src/index';
 import {
   createCSharpRuntimeClient,
   type CSharpPreparedWorkerAuthority,
@@ -23,6 +26,11 @@ class FakePreparedCSharpWorker {
   executeCalls: Array<{
     prepared: CSharpPreparedProgramArtifact;
     call: RuntimePreparedCodeCall;
+  }> = [];
+  traceExecuteCalls: Array<{
+    prepared: CSharpPreparedProgramArtifact;
+    call: RuntimePreparedTraceCall;
+    tracingEnabled: boolean;
   }> = [];
   disposeCalls: string[] = [];
   failPreparation = false;
@@ -86,6 +94,34 @@ class FakePreparedCSharpWorker {
       output: call.inputs.value ?? null,
       consoleOutput: [],
       timings: { compileMs: 0, compileCacheHit: true, artifactCacheHit: true },
+    };
+  }
+
+  async executePreparedTrace(
+    prepared: CSharpPreparedProgramArtifact,
+    call: RuntimePreparedTraceCall,
+    experiment?: { readonly tracingEnabled: boolean }
+  ): Promise<ExecutionResult> {
+    const tracingEnabled = experiment?.tracingEnabled ?? true;
+    this.traceExecuteCalls.push({ prepared, call, tracingEnabled });
+    const trace = createEmptyRuntimeTrace('csharp');
+    if (tracingEnabled) {
+      trace.events.push({
+        runId: trace.runId,
+        kind: 'return',
+        line: 1,
+        file: 'solution.cs',
+        value: call.inputs.value,
+      });
+      trace.traceStepCount = 1;
+    }
+    return {
+      kind: 'completed',
+      output: call.inputs.value ?? null,
+      trace,
+      executionTimeMs: 1,
+      consoleOutput: [],
+      timings: { compileCacheHit: true, artifactCacheHit: true },
     };
   }
 
@@ -304,6 +340,81 @@ test('C# prepared batches lease one disposable outer runner per case', async () 
   await prepared.program.dispose();
 });
 
+test('C# experimental trace selection records only selected cases from one assembly', async () => {
+  const compiler = new FakePreparedCSharpWorker();
+  const runners: FakePreparedCSharpWorker[] = [];
+  const authority: CSharpPreparedWorkerAuthority = {
+    compiler: compiler as unknown as CSharpWorkerClient,
+    batchConcurrency: 3,
+    warmup: () => compiler.init(),
+    createRunner() {
+      const runner = new FakePreparedCSharpWorker();
+      runners.push(runner);
+      return runner as unknown as CSharpWorkerClient;
+    },
+    releaseRunner() {},
+  };
+  const provider = createCSharpRuntimeClient(
+    compiler as unknown as CSharpWorkerClient,
+    authority
+  );
+  const prepared = await provider.prepareProgram({
+    mode: 'trace',
+    code: 'public class Solution { public int Echo(int value) => value; }',
+    functionName: 'Echo',
+    executionStyle: 'solution-method',
+  });
+  assert.equal(prepared.kind, 'prepared');
+  if (prepared.kind !== 'prepared' || prepared.program.mode !== 'trace') return;
+
+  const results = await provider.executePreparedTraceBatch(
+    prepared.program,
+    { inputBatch: [{ value: 3 }, { value: 5 }, { value: 7 }] },
+    { traceEnabledBatch: [true, false, true] }
+  );
+  assert.deepEqual(
+    results.map((result) => result.kind === 'completed' ? result.output : null),
+    [3, 5, 7]
+  );
+  assert.deepEqual(
+    results.map((result) => result.trace.events.length),
+    [1, 0, 1]
+  );
+  assert.deepEqual(
+    runners.map((runner) => runner.traceExecuteCalls[0]?.tracingEnabled),
+    [true, false, true]
+  );
+  assert.ok(
+    runners.every(
+      (runner) =>
+        runner.traceExecuteCalls[0]?.prepared.compiledArtifactKey ===
+        'artifact-key'
+    ),
+    'every selected case must retain the same trace-capable assembly identity'
+  );
+  await assert.rejects(
+    Promise.resolve().then(() =>
+      provider.executePreparedTraceBatch(
+        prepared.program,
+        { inputBatch: [{ value: 1 }] },
+        { traceEnabledBatch: [true, false] }
+      )
+    ),
+    /one boolean per batch case/
+  );
+  await prepared.program.dispose();
+  await assert.rejects(
+    Promise.resolve().then(() =>
+      provider.executePreparedTraceBatch(
+        prepared.program,
+        { inputBatch: [{ value: 1 }] },
+        { traceEnabledBatch: [false] }
+      )
+    ),
+    /live trace program/
+  );
+});
+
 test('C# prepared batch failure drains every active runner before rejection', async () => {
   const compiler = new FakePreparedCSharpWorker();
   const failedRunner = new FakePreparedCSharpWorker();
@@ -419,5 +530,36 @@ test('C# host prepared entry point cannot fall through to the compiling executio
     preparedEntryPoint,
     /finally\s*\{\s*\/\/ This is the lifecycle boundary[\s\S]*?RuntimeTraceSink\.Reset\(\);\s*Console\.SetOut\(originalOut\);/,
     'prepared trace state must reset even when execution fails before assembly loading'
+  );
+});
+
+test('C# tracing-disabled execution branches above rewritten learner bodies', () => {
+  const rewriterSource = readFileSync(
+    'packages/runtime-csharp/dotnet/TraceCode.CSharpHost/TraceRewriter.cs',
+    'utf8'
+  );
+  const executionModeBody = rewriterSource.slice(
+    rewriterSource.indexOf('private BlockSyntax CreateExecutionModeBody('),
+    rewriterSource.indexOf('private sealed class DisabledPathCompatibilityRewriter')
+  );
+
+  assert.match(
+    executionModeBody,
+    /SyntaxKind\.LogicalNotExpression[\s\S]*"TraceCode\.CSharpHost\.RuntimeTraceSink\.RecordingEnabled"/
+  );
+  assert.match(
+    executionModeBody,
+    /compatibleOriginalBody[\s\S]*SyntaxFactory\.ElseClause\([\s\S]*instrumentedBody/,
+    'the off branch must select the original learner body before tracing helpers execute'
+  );
+
+  const runtimeSource = readFileSync(
+    'packages/runtime-csharp/dotnet/TraceCode.CSharpJudgeRuntime/JudgeRuntimeSupport.cs',
+    'utf8'
+  );
+  assert.match(
+    runtimeSource,
+    /base\.Add\(item\);\s*if \(!TraceCode\.CSharpHost\.RuntimeTraceSink\.RecordingEnabled\) return;/,
+    'trace-aware member collections must stop before mutation argument allocation when tracing is off'
   );
 });

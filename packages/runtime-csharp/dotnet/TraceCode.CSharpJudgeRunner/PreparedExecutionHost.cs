@@ -137,13 +137,15 @@ public static partial class PreparedExecutionHost
                 JsonOptions
             );
             RuntimeTraceSink.Reset();
+            bool recordTrace = request.RecordTrace ?? request.Trace;
             RuntimeTraceSink.Configure(
                 request.TimeoutMs,
-                request.Trace ? request.MaxTraceSteps : null,
-                request.Trace ? request.MaxLineEvents : null,
-                request.Trace ? request.MaxSingleLineHits : null,
-                request.Trace ? request.MaxStoredEvents : null,
-                request.Trace && request.MinimalTrace
+                recordTrace ? request.MaxTraceSteps : null,
+                recordTrace ? request.MaxLineEvents : null,
+                recordTrace ? request.MaxSingleLineHits : null,
+                recordTrace ? request.MaxStoredEvents : null,
+                recordTrace && request.MinimalTrace,
+                recordTrace
             );
 
             double runStartedAt = stopwatch.Elapsed.TotalMilliseconds;
@@ -165,7 +167,7 @@ public static partial class PreparedExecutionHost
                 TraceEventBackfill.Apply(
                     request.Source,
                     events,
-                    request.Trace && request.MinimalTrace
+                    recordTrace && request.MinimalTrace
                 );
                 return Serialize(new PreparedResponse
                 {
@@ -877,6 +879,9 @@ public static partial class PreparedExecutionHost
 
         [JsonPropertyName("trace")]
         public bool Trace { get; set; }
+
+        [JsonPropertyName("recordTrace")]
+        public bool? RecordTrace { get; set; }
 
         [JsonPropertyName("timeoutMs")]
         public int TimeoutMs { get; set; } = 19_000;

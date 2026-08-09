@@ -626,8 +626,23 @@ export class CSharpWorkerClient {
 
   async executePreparedTrace(
     prepared: CSharpPreparedProgramArtifact,
-    call: RuntimePreparedTraceCall
+    call: RuntimePreparedTraceCall,
+    /**
+     * Experiment-only language boundary. `prepared.mode` remains the immutable
+     * assembly capability; this bit selects recording for one execution.
+     */
+    experiment?: {
+      readonly tracingEnabled: boolean;
+    }
   ): Promise<ExecutionResult> {
+    if (
+      experiment !== undefined &&
+      typeof experiment.tracingEnabled !== 'boolean'
+    ) {
+      throw new TypeError(
+        'C# experimental trace selection requires a boolean tracingEnabled value.'
+      );
+    }
     return this.runPreparedExecutionGeneration(call.signal, async () => {
       const wallClockMs = call.limits?.wallClockMs
         ?? this.resolveTracingTimeoutMs(prepared.functionName, prepared.executionStyle);
@@ -638,6 +653,9 @@ export class CSharpWorkerClient {
             this.sendCommandEffect<CSharpWorkerExecuteResult>('execute-prepared-trace', {
               prepared,
               inputs: call.inputs,
+              ...(experiment
+                ? { tracingEnabled: experiment.tracingEnabled }
+                : {}),
               assetBaseUrl: this.options.assetBaseUrl,
               timeoutMs: Math.max(100, wallClockMs - 1_000),
               traceEventTransport: traceEventTransferRequest(),

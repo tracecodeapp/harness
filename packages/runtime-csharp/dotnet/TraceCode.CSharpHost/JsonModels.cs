@@ -22,6 +22,9 @@ public sealed class CSharpExecuteRequest
     [JsonPropertyName("trace")]
     public bool Trace { get; set; }
 
+    [JsonPropertyName("recordTrace")]
+    public bool? RecordTrace { get; set; }
+
     [JsonPropertyName("timeoutMs")]
     public int TimeoutMs { get; set; } = 19_000;
 

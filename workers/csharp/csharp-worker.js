@@ -3982,6 +3982,8 @@ async function executePreparedCSharpProgram(message) {
     inputs,
     executionStyle: prepared.executionStyle ?? 'solution-method',
     trace: prepared.mode === 'trace',
+    recordTrace:
+      prepared.mode === 'trace' && payload.tracingEnabled !== false,
     timeoutMs: payload.timeoutMs,
     maxTraceSteps: prepared.traceOptions?.maxTraceSteps,
     maxLineEvents: prepared.traceOptions?.maxLineEvents,

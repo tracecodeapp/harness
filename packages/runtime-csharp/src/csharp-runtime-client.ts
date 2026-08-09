@@ -38,7 +38,17 @@ export interface CSharpPreparedWorkerAuthority {
   releaseRunner(runner: CSharpWorkerClient): void;
 }
 
-class CSharpRuntimeClient implements RuntimeClient, RuntimePreparedExecutionProvider {
+interface CSharpPreparedTraceContext {
+  executeBatch(
+    call: RuntimePreparedTraceBatchCall,
+    traceEnabledBatch: readonly boolean[]
+  ): Promise<readonly ExecutionResult[]>;
+}
+
+export class CSharpRuntimeClient implements RuntimeClient, RuntimePreparedExecutionProvider {
+  private readonly preparedTraceContexts =
+    new WeakMap<RuntimePreparedProgram, CSharpPreparedTraceContext>();
+
   constructor(
     private readonly workerClient: CSharpWorkerClient,
     private readonly preparedAuthority?: CSharpPreparedWorkerAuthority
@@ -65,7 +75,8 @@ class CSharpRuntimeClient implements RuntimeClient, RuntimePreparedExecutionProv
     inputBatch: readonly Record<string, unknown>[],
     execute: (
       runner: CSharpWorkerClient,
-      inputs: Record<string, unknown>
+      inputs: Record<string, unknown>,
+      index: number
     ) => Promise<TResult>,
     signal?: AbortSignal
   ): Promise<readonly TResult[]> {
@@ -95,7 +106,7 @@ class CSharpRuntimeClient implements RuntimeClient, RuntimePreparedExecutionProv
           const inputs = inputBatch[index]!;
           try {
             results[index] = await this.withPreparedRunner((runner) =>
-              execute(runner, inputs)
+              execute(runner, inputs, index)
             );
           } catch (reason) {
             terminalFailure ??= { reason };
@@ -294,6 +305,7 @@ class CSharpRuntimeClient implements RuntimeClient, RuntimePreparedExecutionProv
     const dispose = (): Promise<void> => {
       if (disposePromise) return disposePromise;
       disposed = true;
+      if (program) this.preparedTraceContexts.delete(program);
       const ownedArtifact = artifact;
       const executionsToDrain = [...activeExecutions];
       disposePromise = (async () => {
@@ -317,7 +329,8 @@ class CSharpRuntimeClient implements RuntimeClient, RuntimePreparedExecutionProv
       return disposePromise;
     };
 
-    const program: RuntimePreparedProgram = call.mode === 'trace'
+    let program: RuntimePreparedProgram;
+    program = call.mode === 'trace'
       ? {
           mode: 'trace',
           capabilities,
@@ -371,6 +384,28 @@ class CSharpRuntimeClient implements RuntimeClient, RuntimePreparedExecutionProv
           dispose,
         };
 
+    if (program.mode === 'trace') {
+      this.preparedTraceContexts.set(program, {
+        executeBatch: (preparedCall, traceEnabledBatch) =>
+          executeOwned(preparedCall, (preparedArtifact, forwardedCall) =>
+            this.withFreshPreparedRunners(
+              forwardedCall.inputBatch,
+              (runner, inputs, index) =>
+                runner.executePreparedTrace(
+                  preparedArtifact,
+                  {
+                    inputs,
+                    signal: forwardedCall.signal,
+                    limits: forwardedCall.limits,
+                  },
+                  { tracingEnabled: traceEnabledBatch[index] ?? true }
+                ),
+              forwardedCall.signal
+            )
+          ),
+      });
+    }
+
     return {
       kind: 'prepared',
       program: Object.freeze(program),
@@ -379,11 +414,41 @@ class CSharpRuntimeClient implements RuntimeClient, RuntimePreparedExecutionProv
     };
   }
 
+  /**
+   * Experiment-only language boundary for selecting recording independently
+   * for each case in one prepared trace-capable C# assembly.
+   */
+  executePreparedTraceBatch(
+    program: RuntimePreparedProgram,
+    call: RuntimePreparedTraceBatchCall,
+    experiment: {
+      readonly traceEnabledBatch: readonly boolean[];
+    }
+  ): Promise<readonly ExecutionResult[]> {
+    if (
+      experiment.traceEnabledBatch.length !== call.inputBatch.length ||
+      experiment.traceEnabledBatch.some(
+        (enabled) => typeof enabled !== 'boolean'
+      )
+    ) {
+      throw new TypeError(
+        'C# experimental trace selection must contain one boolean per batch case.'
+      );
+    }
+    const context = this.preparedTraceContexts.get(program);
+    if (!context || program.mode !== 'trace') {
+      throw new TypeError(
+        'C# experimental trace selection requires a live trace program prepared by this client.'
+      );
+    }
+    return context.executeBatch(call, experiment.traceEnabledBatch);
+  }
+
 }
 
 export function createCSharpRuntimeClient(
   workerClient: CSharpWorkerClient,
   preparedAuthority?: CSharpPreparedWorkerAuthority
-): RuntimeClient & RuntimePreparedExecutionProvider {
+): CSharpRuntimeClient {
   return new CSharpRuntimeClient(workerClient, preparedAuthority);
 }
