@@ -43,12 +43,12 @@ to choose the artifact strategy.
 
 ## Boundary and lifecycle
 
-`JavaScriptWorkerClient.executePreparedTraceBatch` is the experiment-only
-entry point. It accepts a live trace program created by that exact client and
-one boolean per input. The client keeps the trusted prepared payload private in
-a `WeakMap`; the public program never exposes source artifacts or executable
-objects. Foreign, disposed, clean-mode, or length-mismatched programs are
-rejected.
+The selected vector now travels through the portable
+`RuntimePreparedTraceBatchCall.traceEnabledBatch` contract. The client keeps
+the trusted prepared payload private; the public program never exposes source
+artifacts or executable objects. Foreign, disposed, clean-mode, or
+length-mismatched programs are rejected. The concrete client method remains
+only as a compatibility entry point for the direct benchmark.
 
 Each input still runs in a fresh executor Worker. The long-lived coordinator
 only prepares immutable artifacts and never observes executor mutations.

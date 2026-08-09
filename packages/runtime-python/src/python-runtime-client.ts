@@ -14,6 +14,7 @@ import type {
   RuntimeExecutionTimings,
   RuntimePreparedExecutionProvider,
   RuntimePreparedCodeBatchCall,
+  RuntimePreparedTraceCall,
   RuntimePreparedTraceBatchCall,
   RuntimeProgramPreparationCall,
   RuntimeProgramPreparationResult,
@@ -541,7 +542,7 @@ class PreparedPythonProgramLifetime {
   }
 
   executeTrace(
-    call: Pick<RuntimeTraceCall, 'inputs' | 'signal' | 'limits'>
+    call: RuntimePreparedTraceCall
   ): Promise<ExecutionResult> {
     return this.executeSerial(call.signal, async (client, signal) =>
       normalizePythonExecutionResult(

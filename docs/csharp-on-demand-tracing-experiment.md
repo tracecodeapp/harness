@@ -10,10 +10,11 @@ boolean:
 - `recordTrace` selects whether one execution of a trace-capable assembly
   records events. It is not part of the artifact key.
 
-The public runtime contract is intentionally unchanged while this remains a
-language-level experiment. `CSharpRuntimeClient.executePreparedTraceBatch`
-accepts an experiment-only boolean vector with exactly one entry per case. The
-normal prepared trace methods continue to trace every case.
+The experiment has now graduated into the portable prepared-runtime contract.
+`RuntimePreparedTraceCall.recordTrace` selects one case and
+`RuntimePreparedTraceBatchCall.traceEnabledBatch` supplies exactly one boolean
+per batch case. Omitting either selector preserves the legacy trace-all
+behavior for existing runtime callers.
 
 This is the boundary needed by an application-managed drain: prepare once,
 trace the selected case, then execute later cases from the same durable

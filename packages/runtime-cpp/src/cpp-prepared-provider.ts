@@ -199,6 +199,12 @@ export function createCppPreparedExecutionProvider(
                       `C++ prepared program "${preparation.handle.programId}" was already disposed.`
                     );
                   }
+                  if (execution.traceEnabledBatch) {
+                    return client.executePreparedTraceBatch(
+                      preparation.handle,
+                      execution
+                    );
+                  }
                   const results: ExecutionResult[] = [];
                   for (const inputs of execution.inputBatch) {
                     results.push(await client.executePreparedTrace(

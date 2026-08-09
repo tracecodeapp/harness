@@ -627,10 +627,9 @@ export class CSharpWorkerClient {
   async executePreparedTrace(
     prepared: CSharpPreparedProgramArtifact,
     call: RuntimePreparedTraceCall,
-    /**
-     * Experiment-only language boundary. `prepared.mode` remains the immutable
-     * assembly capability; this bit selects recording for one execution.
-     */
+    /** Compatibility override for direct worker callers. `prepared.mode`
+     * remains the immutable assembly capability; this bit selects recording
+     * for one execution. */
     experiment?: {
       readonly tracingEnabled: boolean;
     }

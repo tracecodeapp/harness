@@ -855,7 +855,7 @@ test('browser prepared construction requires an explicit worker and has no legac
   );
 });
 
-test('experimental Java batch trace selection requires one boolean per case', async () => {
+test('Java batch trace selection requires one boolean per case', async () => {
   const client = new JavaWorkerClient({
     workerUrl: '/workers/java-worker.js',
     debug: false,
@@ -864,27 +864,24 @@ test('experimental Java batch trace selection requires one boolean per case', as
     await assert.rejects(
       client.executePreparedTraceBatch(
         'prepared-java-1',
-        { inputBatch: [{ value: 1 }] },
-        undefined,
-        { traceEnabledBatch: [] }
+        { inputBatch: [{ value: 1 }], traceEnabledBatch: [] }
       ),
       /one boolean per batch case/
     );
     await assert.rejects(
       client.executePreparedTraceBatch(
         'prepared-java-1',
-        { inputBatch: [{ value: 1 }] },
-        undefined,
-        { traceEnabledBatch: ['yes'] as unknown as readonly boolean[] }
+        {
+          inputBatch: [{ value: 1 }],
+          traceEnabledBatch: ['yes'] as unknown as readonly boolean[],
+        }
       ),
       /one boolean per batch case/
     );
     assert.deepEqual(
       await client.executePreparedTraceBatch(
         'prepared-java-1',
-        { inputBatch: [] },
-        undefined,
-        { traceEnabledBatch: [] }
+        { inputBatch: [], traceEnabledBatch: [] }
       ),
       []
     );

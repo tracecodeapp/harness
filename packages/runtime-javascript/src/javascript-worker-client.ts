@@ -781,7 +781,8 @@ export class JavaScriptWorkerClient {
                   preparation,
                   requirePreparedExecution(),
                   caseCall,
-                  generation
+                  generation,
+                  caseCall.recordTrace ?? true
                 )
             : undefined,
         executeTraceBatch:
@@ -792,7 +793,10 @@ export class JavaScriptWorkerClient {
                   preparation,
                   requirePreparedExecution(),
                   batchCall,
-                  generation
+                  generation,
+                  batchCall.traceEnabledBatch
+                    ? { traceEnabledBatch: batchCall.traceEnabledBatch }
+                    : undefined
                 )
             : undefined,
         dispose: () => {
@@ -929,7 +933,8 @@ export class JavaScriptWorkerClient {
     },
     preparedExecution: unknown,
     call: RuntimePreparedTraceCall,
-    expectedGeneration: number
+    expectedGeneration: number,
+    tracingEnabled: boolean = true
   ): Promise<ExecutionResult> {
     return this.runIsolatedExecution(
       (worker) =>
@@ -938,7 +943,8 @@ export class JavaScriptWorkerClient {
           language,
           preparation,
           preparedExecution,
-          call
+          call,
+          tracingEnabled
         ),
       expectedGeneration
     );
@@ -1037,11 +1043,7 @@ export class JavaScriptWorkerClient {
     );
   }
 
-  /**
-   * Experiment-only language boundary for choosing which cases trace from one
-   * prepared JavaScript/TypeScript artifact. Judge and the portable runtime
-   * contracts intentionally remain unchanged until the experiment lands.
-   */
+  /** Compatibility entry point retained for direct language benchmarks. */
   executePreparedTraceBatch(
     program: RuntimePreparedProgram,
     call: RuntimePreparedTraceBatchCall,
@@ -1090,6 +1092,19 @@ export class JavaScriptWorkerClient {
       readonly traceEnabledBatch: readonly boolean[];
     }
   ): Promise<readonly ExecutionResult[]> {
+    if (
+      experiment !== undefined &&
+      (
+        experiment.traceEnabledBatch.length !== call.inputBatch.length ||
+        experiment.traceEnabledBatch.some(
+          (enabled) => typeof enabled !== 'boolean'
+        )
+      )
+    ) {
+      return Promise.reject(new TypeError(
+        'JavaScript trace selection must contain one boolean per batch case.'
+      ));
+    }
     return this.runIsolatedBatch(
       call.inputBatch.length,
       (worker, index) =>

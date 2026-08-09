@@ -844,6 +844,9 @@ export class JavaWorkerClient {
             {
               programId,
               inputs: call.inputs,
+              ...(call.recordTrace === undefined
+                ? {}
+                : { traceEnabled: call.recordTrace }),
               traceEventTransport: traceEventTransferRequest(),
             },
             null,
@@ -887,20 +890,18 @@ export class JavaWorkerClient {
     programId: string,
     call: RuntimePreparedTraceBatchCall,
     traceOptions?: JavaTraceExecutionOptions,
-    /**
-     * Experiment-only language boundary for measuring one instrumented Java
-     * artifact with tracing selected per case. Judge and the portable runtime
-     * contracts intentionally do not expose this yet.
-     */
+    /** Compatibility override retained for direct language benchmarks. */
     experiment?: {
       readonly traceEnabledBatch: readonly boolean[];
     }
   ): Promise<readonly JavaWorkerPreparedTraceResult[]> {
+    const traceEnabledBatch =
+      experiment?.traceEnabledBatch ?? call.traceEnabledBatch;
     if (
-      experiment &&
+      traceEnabledBatch !== undefined &&
       (
-        experiment.traceEnabledBatch.length !== call.inputBatch.length ||
-        experiment.traceEnabledBatch.some(
+        traceEnabledBatch.length !== call.inputBatch.length ||
+        traceEnabledBatch.some(
           (enabled) => typeof enabled !== 'boolean'
         )
       )
@@ -933,8 +934,8 @@ export class JavaWorkerClient {
               inputBatch: call.inputBatch,
               perCaseWallClockMs,
               traceEventTransport: traceEventTransferRequest(),
-              ...(experiment
-                ? { traceEnabledBatch: experiment.traceEnabledBatch }
+              ...(traceEnabledBatch
+                ? { traceEnabledBatch }
                 : {}),
             },
             null,

@@ -340,7 +340,7 @@ test('C# prepared batches lease one disposable outer runner per case', async () 
   await prepared.program.dispose();
 });
 
-test('C# experimental trace selection records only selected cases from one assembly', async () => {
+test('C# portable trace selection records only selected cases from one assembly', async () => {
   const compiler = new FakePreparedCSharpWorker();
   const runners: FakePreparedCSharpWorker[] = [];
   const authority: CSharpPreparedWorkerAuthority = {
@@ -367,11 +367,10 @@ test('C# experimental trace selection records only selected cases from one assem
   assert.equal(prepared.kind, 'prepared');
   if (prepared.kind !== 'prepared' || prepared.program.mode !== 'trace') return;
 
-  const results = await provider.executePreparedTraceBatch(
-    prepared.program,
-    { inputBatch: [{ value: 3 }, { value: 5 }, { value: 7 }] },
-    { traceEnabledBatch: [true, false, true] }
-  );
+  const results = await prepared.program.executeBatchIsolated!({
+    inputBatch: [{ value: 3 }, { value: 5 }, { value: 7 }],
+    traceEnabledBatch: [true, false, true],
+  });
   assert.deepEqual(
     results.map((result) => result.kind === 'completed' ? result.output : null),
     [3, 5, 7]
@@ -394,24 +393,22 @@ test('C# experimental trace selection records only selected cases from one assem
   );
   await assert.rejects(
     Promise.resolve().then(() =>
-      provider.executePreparedTraceBatch(
-        prepared.program,
-        { inputBatch: [{ value: 1 }] },
-        { traceEnabledBatch: [true, false] }
-      )
+      prepared.program.executeBatchIsolated!({
+        inputBatch: [{ value: 1 }],
+        traceEnabledBatch: [true, false],
+      })
     ),
     /one boolean per batch case/
   );
   await prepared.program.dispose();
   await assert.rejects(
     Promise.resolve().then(() =>
-      provider.executePreparedTraceBatch(
-        prepared.program,
-        { inputBatch: [{ value: 1 }] },
-        { traceEnabledBatch: [false] }
-      )
+      prepared.program.executeBatchIsolated!({
+        inputBatch: [{ value: 1 }],
+        traceEnabledBatch: [false],
+      })
     ),
-    /live trace program/
+    /disposed/
   );
 });
 

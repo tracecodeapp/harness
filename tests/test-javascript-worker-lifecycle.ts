@@ -390,17 +390,14 @@ async function exercisePreparedProvider(
       `${language} prepared trace should add exactly one preparation`
     );
 
-    const selectedTraceBatch = await workerClient.executePreparedTraceBatch(
-      tracePrepared.program,
-      {
+    const selectedTraceBatch = await tracePrepared.program.executeBatchIsolated!({
         inputBatch: [
           { value: 12 },
           { value: 16 },
           { value: 20 },
         ],
-      },
-      { traceEnabledBatch: [true, false, true] }
-    );
+        traceEnabledBatch: [true, false, true],
+      });
     assertCondition(
       selectedTraceBatch.length === 3 &&
         selectedTraceBatch.every(
@@ -423,11 +420,10 @@ async function exercisePreparedProvider(
     );
     await assert.rejects(
       Promise.resolve().then(() =>
-        workerClient.executePreparedTraceBatch(
-          tracePrepared.program,
-          { inputBatch: [{ value: 1 }] },
-          { traceEnabledBatch: [true, false] }
-        )
+        tracePrepared.program.executeBatchIsolated!({
+          inputBatch: [{ value: 1 }],
+          traceEnabledBatch: [true, false],
+        })
       ),
       TypeError,
       `${language} selected trace batch accepted a mismatched selector`

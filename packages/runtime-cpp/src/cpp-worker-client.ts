@@ -1369,6 +1369,9 @@ export class CppWorkerClient {
               programId: handle.programId,
               mode: 'trace',
               inputs: call.inputs,
+              ...(call.recordTrace === undefined
+                ? {}
+                : { traceEnabled: call.recordTrace }),
               traceEventTransport: traceEventTransferRequest(),
             },
             null,
@@ -1403,18 +1406,17 @@ export class CppWorkerClient {
   async executePreparedTraceBatch(
     handle: CppPreparedProgramHandle,
     call: RuntimePreparedTraceBatchCall,
-    /**
-     * Experiment-only language boundary for measuring one instrumented C++
-     * artifact with recording selected per case. Judge and the portable
-     * runtime contracts intentionally do not expose this yet.
-     */
-    experiment: {
+    /** Compatibility override retained for direct language benchmarks. */
+    experiment?: {
       readonly traceEnabledBatch: readonly boolean[];
     }
   ): Promise<readonly ExecutionResult[]> {
+    const traceEnabledBatch =
+      experiment?.traceEnabledBatch ?? call.traceEnabledBatch;
     if (
-      experiment.traceEnabledBatch.length !== call.inputBatch.length ||
-      experiment.traceEnabledBatch.some(
+      traceEnabledBatch === undefined ||
+      traceEnabledBatch.length !== call.inputBatch.length ||
+      traceEnabledBatch.some(
         (enabled) => typeof enabled !== 'boolean'
       )
     ) {
@@ -1442,7 +1444,7 @@ export class CppWorkerClient {
               programId: handle.programId,
               mode: 'trace',
               inputBatch: call.inputBatch,
-              traceEnabledBatch: experiment.traceEnabledBatch,
+              traceEnabledBatch,
               traceEventTransport: traceEventTransferRequest(),
             },
             null,

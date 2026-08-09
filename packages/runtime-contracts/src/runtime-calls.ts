@@ -84,6 +84,11 @@ export interface RuntimePreparedCodeBatchCall {
 /** One isolated tracing execution against a prepared program. */
 export interface RuntimePreparedTraceCall {
   readonly inputs: Record<string, unknown>;
+  /**
+   * Select recording for this case from the prepared trace-capable artifact.
+   * Omit to preserve the traced-execution default.
+   */
+  readonly recordTrace?: boolean;
   readonly signal?: AbortSignal;
   readonly limits?: RuntimeExecutionLimits;
 }
@@ -96,6 +101,8 @@ export interface RuntimePreparedTraceCall {
  */
 export interface RuntimePreparedTraceBatchCall {
   readonly inputBatch: readonly Record<string, unknown>[];
+  /** One recording selector per case. Omit to trace every case. */
+  readonly traceEnabledBatch?: readonly boolean[];
   readonly signal?: AbortSignal;
   /** Applied independently to each case in the batch. */
   readonly limits?: RuntimeExecutionLimits;

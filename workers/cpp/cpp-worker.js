@@ -16266,6 +16266,25 @@ async function handleExecutePreparedRuntimeProgram(payload) {
       `C++ prepared program "${String(payload?.programId || '')}" was prepared for ${preparedProgram.mode}, not ${String(payload?.mode || 'unknown')}.`
     );
   }
+  if (preparedProgram.tracing && payload?.traceEnabled === false) {
+    const batch = await runPreparedTraceRuntimeProgramBatch(
+      preparedProgram,
+      [payload?.inputs || {}],
+      [false]
+    );
+    return batch.results?.[0] ?? {
+      success: false,
+      output: null,
+      error: batch.error || 'C++ trace-disabled execution returned no case.',
+      trace: finalizeRuntimeTrace([], {
+        ...(preparedProgram.traceOptions || {}),
+        sourceCode: preparedProgram.source,
+      }).trace,
+      consoleOutput: batch.consoleOutput || [],
+      executionTimeMs: batch.timings?.totalMs || 0,
+      timings: batch.timings,
+    };
+  }
   return runPreparedRuntimeProgram(preparedProgram, payload?.inputs || {});
 }
 

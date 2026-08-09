@@ -39,6 +39,7 @@ import type {
   RuntimeProjectCommandRequest,
   RuntimeProjectEngineLeaseController,
   RuntimeProjectSnapshot,
+  RuntimePreparedTraceCall,
   RuntimePreparedTraceBatchCall,
   RuntimeProgramPreparationCall,
   RuntimeExecutionTimings,
@@ -618,7 +619,7 @@ export class PythonWorkerClient {
 
   async executePreparedTrace(
     handle: PythonPreparedProgramHandle,
-    call: Pick<RuntimeTraceCall, 'inputs' | 'signal' | 'limits'>
+    call: RuntimePreparedTraceCall
   ): Promise<PythonRawTraceResult> {
     const wallClockMs = call.limits?.wallClockMs ?? TRACING_TIMEOUT_MS;
     const guestLimits = pickGuestLimits(call.limits);
@@ -629,6 +630,9 @@ export class PythonWorkerClient {
           artifact: handle.artifact,
           mode: 'trace',
           inputs: call.inputs,
+          ...(call.recordTrace === undefined
+            ? {}
+            : { tracingEnabled: call.recordTrace }),
           ...(guestLimits ? { limits: guestLimits } : {}),
           traceEventTransport: traceEventTransferRequest(),
         },
@@ -659,20 +663,19 @@ export class PythonWorkerClient {
   async executePreparedTraceBatch(
     handle: PythonPreparedProgramHandle,
     call: RuntimePreparedTraceBatchCall,
-    /**
-     * Experiment-only language boundary for choosing which cases record from
-     * one prepared Python trace artifact. The portable runtime contract and
-     * Judge API intentionally remain unchanged until the experiment lands.
-     */
+    /** Compatibility override for direct language benchmarks. Portable
+     * callers use `call.traceEnabledBatch` instead. */
     experiment?: {
       readonly traceEnabledBatch: readonly boolean[];
     }
   ): Promise<PythonRawTraceBatchResult> {
+    const traceEnabledBatch =
+      experiment?.traceEnabledBatch ?? call.traceEnabledBatch;
     if (
-      experiment !== undefined &&
+      traceEnabledBatch !== undefined &&
       (
-        experiment.traceEnabledBatch.length !== call.inputBatch.length ||
-        experiment.traceEnabledBatch.some(
+        traceEnabledBatch.length !== call.inputBatch.length ||
+        traceEnabledBatch.some(
           (enabled) => typeof enabled !== 'boolean'
         )
       )
@@ -694,8 +697,8 @@ export class PythonWorkerClient {
           artifact: handle.artifact,
           mode: 'trace',
           inputBatch: call.inputBatch,
-          ...(experiment
-            ? { traceEnabledBatch: experiment.traceEnabledBatch }
+          ...(traceEnabledBatch
+            ? { traceEnabledBatch }
             : {}),
           ...(guestLimits ? { limits: guestLimits } : {}),
           traceEventTransport: traceEventTransferRequest(),

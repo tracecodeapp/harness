@@ -9105,13 +9105,22 @@ async function preparePythonProgram(request) {
   );
 }
 
-async function executePreparedPythonProgram(artifact, inputs, limits) {
+async function executePreparedPythonProgram(
+  artifact,
+  inputs,
+  limits,
+  tracingEnabled
+) {
   await loadPyodideInstance();
   const runtimeCore = loadPyodideRuntimeCore();
   return withPythonUserAuthorityLockdown(() =>
-    runtimeCore.executePreparedProgram(buildRuntimeDeps(), artifact, inputs, {
-      guest: guestGuardOptionsFromLimits(limits),
-    })
+    runtimeCore.executePreparedProgram(
+      buildRuntimeDeps(),
+      artifact,
+      inputs,
+      { guest: guestGuardOptionsFromLimits(limits) },
+      tracingEnabled
+    )
   );
 }
 
@@ -9215,7 +9224,8 @@ async function processMessage(data) {
         const result = await executePreparedPythonProgram(
           payload?.artifact,
           payload?.inputs ?? {},
-          payload?.limits
+          payload?.limits,
+          payload?.tracingEnabled
         );
         analyzerInitialized = false;
         if (payload?.mode === 'trace') {

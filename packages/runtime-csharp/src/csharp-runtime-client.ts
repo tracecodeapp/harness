@@ -337,24 +337,50 @@ export class CSharpRuntimeClient implements RuntimeClient, RuntimePreparedExecut
           executeIsolated: (preparedCall) =>
             executeOwned(preparedCall, (preparedArtifact, forwardedCall) =>
               this.withPreparedRunner((runner) =>
-                runner.executePreparedTrace(preparedArtifact, forwardedCall)
+                runner.executePreparedTrace(
+                  preparedArtifact,
+                  forwardedCall,
+                  { tracingEnabled: forwardedCall.recordTrace ?? true }
+                )
               )
             ),
           executeBatchIsolated: (
             preparedCall: RuntimePreparedTraceBatchCall
-          ) =>
-            executeOwned(preparedCall, (preparedArtifact, forwardedCall) =>
+          ) => {
+            if (
+              preparedCall.traceEnabledBatch !== undefined &&
+              (
+                preparedCall.traceEnabledBatch.length !==
+                  preparedCall.inputBatch.length ||
+                preparedCall.traceEnabledBatch.some(
+                  (enabled) => typeof enabled !== 'boolean'
+                )
+              )
+            ) {
+              return Promise.reject(new TypeError(
+                'C# trace selection must contain one boolean per batch case.'
+              ));
+            }
+            return executeOwned(preparedCall, (preparedArtifact, forwardedCall) =>
               this.withFreshPreparedRunners(
                 forwardedCall.inputBatch,
-                (runner, inputs) =>
-                  runner.executePreparedTrace(preparedArtifact, {
-                    inputs,
-                    signal: forwardedCall.signal,
-                    limits: forwardedCall.limits,
-                  }),
+                (runner, inputs, index) =>
+                  runner.executePreparedTrace(
+                    preparedArtifact,
+                    {
+                      inputs,
+                      signal: forwardedCall.signal,
+                      limits: forwardedCall.limits,
+                    },
+                    {
+                      tracingEnabled:
+                        forwardedCall.traceEnabledBatch?.[index] ?? true,
+                    }
+                  ),
                 forwardedCall.signal
               )
-            ),
+            );
+          },
           dispose,
         }
       : {
@@ -414,10 +440,7 @@ export class CSharpRuntimeClient implements RuntimeClient, RuntimePreparedExecut
     };
   }
 
-  /**
-   * Experiment-only language boundary for selecting recording independently
-   * for each case in one prepared trace-capable C# assembly.
-   */
+  /** Compatibility entry point retained for direct language benchmarks. */
   executePreparedTraceBatch(
     program: RuntimePreparedProgram,
     call: RuntimePreparedTraceBatchCall,

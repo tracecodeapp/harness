@@ -255,14 +255,13 @@ async function main(): Promise<void> {
             { a: 3, b: 4 },
             { a: 5, b: 6 },
           ],
-        },
-        { traceEnabledBatch: [true, false, true] }
+          traceEnabledBatch: [true, false, true],
+        }
       );
       const invalidMixedTraceSelection = await mixedTraceClient
         .executePreparedTraceBatch(
           mixedTracePreparation.handle,
-          { inputBatch: [{ a: 1, b: 2 }] },
-          { traceEnabledBatch: [] }
+          { inputBatch: [{ a: 1, b: 2 }], traceEnabledBatch: [] }
         )
         .then(
           () => '',
