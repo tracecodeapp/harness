@@ -110,9 +110,9 @@ const INIT_TIMEOUT_MS = 10000;
 const TYPESCRIPT_WARMUP_TIMEOUT_MS = 30000;
 const MESSAGE_TIMEOUT_MS = 12000;
 const WORKER_READY_TIMEOUT_MS = 10000;
-// Eight is the measured browser frontier: larger waves save little startup
-// time while materially increasing transient renderer memory.
-const BATCH_PREWARM_LIMIT = 8;
+// Four keeps the renderer's transient CPU/memory burst bounded while still
+// overlapping the per-worker startup that dominates multi-case drains.
+const BATCH_PREWARM_LIMIT = 4;
 
 type JavaScriptWorkerRole = 'coordinator' | 'executor';
 
@@ -457,9 +457,10 @@ export class JavaScriptWorkerClient {
   }
 
   /**
-   * Prewarm bounded clean capacity for a prepared batch, then run learner
-   * cases sequentially. Every case owns one never-before-used Worker and that
-   * Worker is retired immediately afterward; only construction is parallel.
+   * Prewarm bounded clean capacity for a prepared batch, then run each wave's
+   * learner cases concurrently. Every case owns one never-before-used Worker
+   * and that Worker is retired immediately afterward; waves remain bounded to
+   * cap transient renderer CPU and memory.
    */
   private async runIsolatedBatch<T>(
     caseCount: number,
@@ -522,16 +523,26 @@ export class JavaScriptWorkerClient {
             )
           );
           this.assertActive(expectedGeneration);
-          for (let index = 0; index < workers.length; index += 1) {
-            const worker = workers[index]!;
-            results[offset + index] = await executor(
-              worker,
-              offset + index
-            );
-            this.leasedExecutionWorkers.delete(worker);
-            worker.terminate();
-            cleanupWorkers.delete(worker);
-          }
+          // Every worker in this wave has its own disposable realm and has
+          // already completed prewarm. Run the cases concurrently so the
+          // execution phase overlaps the per-worker message/VM startup that
+          // otherwise dominates the trace-all drain. Results are written by
+          // index, preserving the caller's case ordering; each worker is
+          // still retired as soon as its one case settles.
+          await Promise.all(
+            workers.map(async (worker, index) => {
+              try {
+                results[offset + index] = await executor(
+                  worker,
+                  offset + index
+                );
+              } finally {
+                this.leasedExecutionWorkers.delete(worker);
+                worker.terminate();
+                cleanupWorkers.delete(worker);
+              }
+            })
+          );
         } finally {
           for (const worker of cleanupWorkers) {
             this.leasedExecutionWorkers.delete(worker);
