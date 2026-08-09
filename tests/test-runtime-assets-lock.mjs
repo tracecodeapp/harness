@@ -12,6 +12,32 @@ assert.match(lock.harness.releaseId, /^@tracecode\/harness@0\.16\.0\+sha256\.[0-
 assert.equal(lock.external.tracecc.consumerHash, lock.external.tracecc.provenance.consumerHash);
 assert.equal(lock.external.tracejvm.package.version, '0.4.0');
 assert.equal(lock.compatibility.python.runtimeDirectory, 'pyodide-0.29.3');
+assert.equal(lock.compatibility.csharp.deployment.compilerSharesGeneralAssets, true);
+assert.deepEqual(lock.compatibility.csharp.deployment.browserAssets, {
+  general: {
+    packagePath: 'workers/vendor/csharp',
+    targetPath: 'vendor/csharp',
+  },
+  compiler: {
+    packagePath: 'workers/vendor/csharp',
+    targetPath: 'vendor/csharp',
+  },
+  runner: {
+    packagePath: 'workers/vendor/csharp-runner',
+    targetPath: 'vendor/csharp-runner',
+  },
+});
+assert.equal(
+  lock.compatibility.csharp.roles.general.treeSha256,
+  lock.compatibility.csharp.roles.compiler.treeSha256
+);
+assert.equal(
+  lock.components.csharp.files.some((file) =>
+    file.path.startsWith('workers/vendor/csharp-compiler/')
+  ),
+  false,
+  'the release lock must not publish the compiler alias as a second tree'
+);
 
 for (const [component, release] of Object.entries(lock.components)) {
   assert.match(release.releaseId, new RegExp(`^${component}\\+sha256\\.[0-9a-f]{64}$`, 'u'));

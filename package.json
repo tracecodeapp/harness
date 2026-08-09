@@ -23,6 +23,8 @@
     "!workers/java/src/**",
     "!workers/javascript/javascript-libraries-entry.js",
     "!workers/vendor/csharp/.stamp",
+    "!workers/vendor/csharp-compiler",
+    "!workers/vendor/csharp-compiler/**",
     "!workers/vendor/csharp-role-artifacts",
     "!workers/vendor/csharp-role-artifacts/**",
     "!workers/vendor/java-rewriter.jar",

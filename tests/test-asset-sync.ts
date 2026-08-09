@@ -26,6 +26,11 @@ async function main(t: TestContext): Promise<void> {
   const tempRoot = await mkdtemp(join(tmpdir(), 'tracecode-harness-assets-'));
   t.after(() => rm(tempRoot, { recursive: true, force: true }));
   const targetDir = join(tempRoot, 'public', 'workers');
+  await mkdir(join(targetDir, 'vendor/csharp-compiler'), { recursive: true });
+  await writeFile(
+    join(targetDir, 'vendor/csharp-compiler/stale.txt'),
+    'stale compiler tree'
+  );
 
   const run = spawnSync('node', ['dist/cli.js', 'sync-assets', targetDir], {
     cwd: resolve(process.cwd()),
@@ -70,7 +75,6 @@ async function main(t: TestContext): Promise<void> {
     'vendor/csharp/_framework/dotnet.native.wasm',
     'vendor/csharp/_framework/dotnet.runtime.js',
     'vendor/csharp/_framework/dotnet.boot.js',
-    'vendor/csharp-compiler/_framework/dotnet.boot.js',
     'vendor/csharp-runner/_framework/dotnet.boot.js',
     'vendor/csharp-runner/_framework/assemblies-01.pack',
     'vendor/csharp-runner/_framework/assemblies-02.pack',
@@ -97,6 +101,20 @@ async function main(t: TestContext): Promise<void> {
     );
     assertCondition(!exists, `Retired Java build artifact must not be synced at ${relativePath}`);
   }
+
+  const duplicatedCompilerTreeExists = await stat(
+    join(targetDir, 'vendor/csharp-compiler')
+  ).then(
+    () => true,
+    (error: NodeJS.ErrnoException) => {
+      if (error.code === 'ENOENT') return false;
+      throw error;
+    }
+  );
+  assertCondition(
+    !duplicatedCompilerTreeExists,
+    'Asset sync must alias the C# compiler role to vendor/csharp instead of publishing duplicate bytes'
+  );
 
   const removedBrandedCppPathExists = await stat(
     join(targetDir, 'vendor/cpp/yowasp/bundle.js')
@@ -308,12 +326,12 @@ async function main(t: TestContext): Promise<void> {
     [
       generalSource,
       'TraceCode.CSharpHost.runtimeconfig.json',
-      '_framework/general.wasm',
+      '_framework/host.wasm',
     ],
     [
       compilerSource,
       'TraceCode.CSharpHost.runtimeconfig.json',
-      '_framework/compiler.wasm',
+      '_framework/host.wasm',
     ],
     [
       runnerSource,
@@ -369,8 +387,7 @@ async function main(t: TestContext): Promise<void> {
     );
   }
   for (const relativePath of [
-    'vendor/csharp/_framework/general.wasm',
-    'vendor/csharp-compiler/_framework/compiler.wasm',
+    'vendor/csharp/_framework/host.wasm',
     'vendor/csharp-runner/_framework/assemblies-01.pack',
   ]) {
     assertCondition(
@@ -378,6 +395,16 @@ async function main(t: TestContext): Promise<void> {
       `Clean-checkout sync should materialize ${relativePath}`
     );
   }
+  assertCondition(
+    !(await stat(join(cleanTarget, 'vendor/csharp-compiler')).then(
+      () => true,
+      (error: NodeJS.ErrnoException) => {
+        if (error.code === 'ENOENT') return false;
+        throw error;
+      }
+    )),
+    'Clean-checkout sync must not materialize the compiler alias into its browser output'
+  );
 
   console.log('PASS: asset sync CLI copies canonical and language-filtered worker assets');
 }

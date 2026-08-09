@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 
-import { copyFile, cp, mkdir, stat } from 'node:fs/promises';
+import { copyFile, cp, mkdir, rm, stat } from 'node:fs/promises';
 import { dirname, join, resolve } from 'node:path';
 import { materializeCSharpRoleAssets } from '../scripts/csharp-role-artifacts.js';
 
@@ -144,11 +144,6 @@ const ASSET_COPY_PLAN = [
     languages: ['csharp'],
   },
   {
-    source: ['workers', 'vendor', 'csharp-compiler'],
-    target: ['vendor', 'csharp-compiler'],
-    languages: ['csharp'],
-  },
-  {
     source: ['workers', 'vendor', 'csharp-runner'],
     target: ['vendor', 'csharp-runner'],
     languages: ['csharp'],
@@ -236,6 +231,10 @@ async function syncAssets(targetDir: string, selectedLanguages: ReadonlySet<Asse
   const packageRoot = getPackageRoot();
   const resolvedTargetDir = resolve(process.cwd(), targetDir);
   if (!selectedLanguages || selectedLanguages.has('csharp')) {
+    await rm(join(resolvedTargetDir, 'vendor/csharp-compiler'), {
+      recursive: true,
+      force: true,
+    });
     const roleArtifactManifest = join(
       packageRoot,
       'workers/vendor/csharp-role-artifacts/manifest.json'

@@ -189,8 +189,13 @@ const PACKAGE_CHECKS: PackageCheck[] = [
       'workers/vendor/csharp/_framework/dotnet.native.wasm',
       'workers/vendor/csharp/_framework/dotnet.runtime.js',
       'workers/vendor/csharp/_framework/dotnet.boot.js',
+      'workers/vendor/csharp-runner/_framework/dotnet.boot.js',
+      'workers/vendor/csharp-runner/_framework/assemblies-01.pack',
       'LICENSE',
       'THIRD_PARTY_NOTICES.md',
+    ],
+    forbiddenFiles: [
+      'workers/vendor/csharp-compiler/_framework/dotnet.boot.js',
     ],
   },
   {

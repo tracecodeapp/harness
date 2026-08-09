@@ -27,18 +27,20 @@ and Judge contracts. Browser project consumers use
 `@tracecode/harness/tracekernel`; neither path exposes C# runtime clients
 directly.
 
-Runtime assets are shipped at `workers/csharp-worker.js` and in three role
-trees:
+Runtime assets are shipped at `workers/csharp-worker.js` and in two physical
+trees serving three logical roles:
 
 - `workers/vendor/csharp/` is the general Project, terminal, filesystem,
   process, network, and server-capable host.
-- `workers/vendor/csharp-compiler/` is the persistent trusted C# compiler
-  authority used by Judge preparation.
+- the persistent trusted C# compiler authority used by Judge preparation
+  reuses `workers/vendor/csharp/`. It runs in an independent Worker with the
+  compiler role; only the immutable bytes and browser cache entry are shared.
 - `workers/vendor/csharp-runner/` is the compiler-free disposable Judge
   runner.
 
-The compiler and runner trees are generated build outputs, not canonical
-source-control inputs. Git tracks their deterministic, content-addressed ZIPs
+The compiler verification tree and runner tree are generated build outputs,
+not canonical source-control inputs. Git tracks their deterministic,
+content-addressed ZIPs
 and manifest under `workers/vendor/csharp-role-artifacts/`.
 `pnpm materialize:csharp-role-assets` verifies the ZIP SHA-256, inventory
 limits, every extracted path, and the complete tree digest before atomically
@@ -56,6 +58,11 @@ linker/reference profiles, byte sizes, archive hashes, and expanded-tree
 hashes. The expanded compiler and runner directories are ignored and may be
 deleted at any time; materialization recreates them exactly without
 downloading a toolchain.
+
+The role manifest fails closed unless the general and compiler artifacts are
+byte-identical. The release lock therefore publishes one trusted host tree and
+aliases both logical roles to it. If those artifacts ever diverge, the release
+must introduce a distinct compiler asset path before it can be packaged.
 
 The compiler may retain only trusted toolchain state and immutable compiled
 artifacts. Every runner that receives a learner assembly is terminated after

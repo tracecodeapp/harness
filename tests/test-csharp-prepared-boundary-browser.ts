@@ -39,7 +39,7 @@ async function main(): Promise<void> {
   );
   const compilerBoot = join(
     ROOT,
-    'workers/vendor/csharp-compiler/_framework/dotnet.boot.js'
+    'workers/vendor/csharp/_framework/dotnet.boot.js'
   );
   const runnerBoot = join(
     ROOT,
@@ -301,7 +301,7 @@ public class Solution
         return left + right;
     }
 }`;
-      const compilerBaseUrl = `${origin}/workers/vendor/csharp-compiler`;
+      const compilerBaseUrl = `${origin}/workers/vendor/csharp`;
       const runnerBaseUrl = `${origin}/${runnerAssetPath}`;
       const compiler = await createHarness('compiler', compilerBaseUrl);
       const compilerWarmup = await compiler.send('warmup', {

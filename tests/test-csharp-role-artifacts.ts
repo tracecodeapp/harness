@@ -148,6 +148,23 @@ test('C# role artifacts are deterministic and materialize exact trees', async (t
     first.roles.compiler.artifact,
     'identical general and compiler trees must share one content-addressed archive'
   );
+  deepStrictEqual(first.deployment, {
+    browserAssets: {
+      general: {
+        packagePath: 'workers/vendor/csharp',
+        targetPath: 'vendor/csharp',
+      },
+      compiler: {
+        packagePath: 'workers/vendor/csharp',
+        targetPath: 'vendor/csharp',
+      },
+      runner: {
+        packagePath: 'workers/vendor/csharp-runner',
+        targetPath: 'vendor/csharp-runner',
+      },
+    },
+    compilerSharesGeneralAssets: true,
+  });
 
   const materialized = await materializeCSharpRoleAssets(fixture.root);
   deepStrictEqual(materialized.changed, ['general', 'compiler', 'runner']);
@@ -198,6 +215,16 @@ test('C# role artifact integrity and inventory fail closed', async (t) => {
     () => readCSharpRoleArtifactsManifest(fixture.artifactDirectory),
     /missing or stale files/
   );
+
+  await rm(fixture.artifactDirectory, { recursive: true, force: true });
+  await writeFile(
+    join(fixture.compilerSource, '_framework/compiler.wasm'),
+    'divergent-compiler-bytes'
+  );
+  await rejects(
+    () => createCSharpRoleArtifacts(creationOptions(fixture)),
+    /compiler asset alias requires byte-identical general and compiler roles/
+  );
 });
 
 test('tracked C# role artifacts are reproducible from their materialized trees', async (t) => {
@@ -210,6 +237,16 @@ test('tracked C# role artifacts are reproducible from their materialized trees',
     packageJson.files?.includes('!workers/vendor/csharp-role-artifacts/**'),
     true,
     'npm publication must not duplicate canonical role ZIPs'
+  );
+  equal(
+    packageJson.files?.includes('!workers/vendor/csharp-compiler/**'),
+    true,
+    'npm publication must omit the compiler tree aliased to the general role'
+  );
+  equal(
+    manifest.roles.general.treeSha256,
+    manifest.roles.compiler.treeSha256,
+    'the published compiler alias requires byte-identical expanded trees'
   );
   equal(
     manifest.recipe.dotnetSdk,

@@ -13,6 +13,23 @@
     "framework": "Microsoft.NETCore.App",
     "version": "10.0.10"
   },
+  "deployment": {
+    "browserAssets": {
+      "general": {
+        "packagePath": "workers/vendor/csharp",
+        "targetPath": "vendor/csharp"
+      },
+      "compiler": {
+        "packagePath": "workers/vendor/csharp",
+        "targetPath": "vendor/csharp"
+      },
+      "runner": {
+        "packagePath": "workers/vendor/csharp-runner",
+        "targetPath": "vendor/csharp-runner"
+      }
+    },
+    "compilerSharesGeneralAssets": true
+  },
   "roles": {
     "general": {
       "artifact": "csharp-bundle.ccb3b907ca9ac499fcbb5bfcd69e9b15b2e91c4795b3447dae45bbce2101a39b.zip",

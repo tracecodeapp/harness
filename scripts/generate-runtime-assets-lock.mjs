@@ -27,6 +27,7 @@ const TREE_ALGORITHM = 'sha256-path-nul-bytes-nul-v1';
 const ROOT_PACKAGE_EXCLUDES = [
   /^workers\/java\/(?:\.build|src)(?:\/|$)/u,
   /^workers\/javascript\/javascript-libraries-entry\.js$/u,
+  /^workers\/vendor\/csharp-compiler(?:\/|$)/u,
   /^workers\/vendor\/csharp-role-artifacts(?:\/|$)/u,
   /^workers\/vendor\/(?:java-rewriter|javaparser-core-3\.25\.10|jdk\.compiler-17)\.jar$/u,
   /(?:^|\/)\.stamp$/u,
@@ -489,6 +490,32 @@ async function buildLock() {
   const pythonNative = await assertPythonNativeManifest(python);
   const tracecc = await buildTraceCC(existingLock, packaged.components.cpp);
   const tracejvm = await buildTraceJVM(existingLock);
+  const csharp = await readJson(join(ROOT, 'workers/vendor/csharp-role-artifacts/manifest.json'));
+  const general = csharp.roles?.general;
+  const compiler = csharp.roles?.compiler;
+  const aliasedFields = [
+    'artifact',
+    'artifactBytes',
+    'artifactSha256',
+    'fileCount',
+    'treeSha256',
+    'uncompressedBytes',
+  ];
+  if (
+    csharp.deployment?.compilerSharesGeneralAssets !== true ||
+    csharp.deployment?.browserAssets?.general?.packagePath !== 'workers/vendor/csharp' ||
+    csharp.deployment?.browserAssets?.general?.targetPath !== 'vendor/csharp' ||
+    csharp.deployment?.browserAssets?.compiler?.packagePath !== 'workers/vendor/csharp' ||
+    csharp.deployment?.browserAssets?.compiler?.targetPath !== 'vendor/csharp' ||
+    csharp.deployment?.browserAssets?.runner?.packagePath !== 'workers/vendor/csharp-runner' ||
+    csharp.deployment?.browserAssets?.runner?.targetPath !== 'vendor/csharp-runner' ||
+    aliasedFields.some((field) => general?.[field] !== compiler?.[field])
+  ) {
+    throw new Error(
+      'C# compiler asset alias is invalid: general and compiler must be byte-identical and map to vendor/csharp. ' +
+        'Publish a distinct compiler asset path before allowing the role trees to diverge.'
+    );
+  }
   const lock = {
     schema: LOCK_SCHEMA,
     harness: {
@@ -505,7 +532,7 @@ async function buildLock() {
         runtimeDirectory: python.runtimeDirectory,
         native: pythonNative,
       },
-      csharp: await readJson(join(ROOT, 'workers/vendor/csharp-role-artifacts/manifest.json')),
+      csharp,
     },
     external: { tracecc, tracejvm },
   };

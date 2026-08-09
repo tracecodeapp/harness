@@ -90,7 +90,7 @@ function createWorkerClient(role: 'compiler' | 'runner'): CSharpWorkerClient {
     workerFactory: (url, options) => trackedWorker(role, url, options),
     assetBaseUrl:
       role === 'compiler'
-        ? '/workers/vendor/csharp-compiler'
+        ? '/workers/vendor/csharp'
         : '/workers/vendor/csharp-runner',
     runtimeRole: role,
     debug: false,
