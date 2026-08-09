@@ -17,6 +17,7 @@ const sandbox: Record<string, unknown> = {
   console,
   TextEncoder,
   TextDecoder,
+  URL,
   WebAssembly,
   Date,
   performance,
@@ -45,8 +46,10 @@ const isRuntimeDeviceNamespacePath = isRuntimeKernelDeviceNamespacePath;
 const isRuntimeProcPath = isRuntimeKernelProcPath;
 ${workerSource}
 globalThis.__tracecodeCppRewriter = {
+  buildBatchDriverSource,
   buildDriverSource,
   buildOpsClassDriverSource,
+  buildPreparedOpsClassDriverSource,
   instrumentCppSourceForTracing,
   parseCppFunctionSignatures,
 };`,
@@ -55,6 +58,12 @@ globalThis.__tracecodeCppRewriter = {
 );
 
 const rewriter = sandbox.__tracecodeCppRewriter as {
+  buildBatchDriverSource: (
+    source: string,
+    functionName: string,
+    inputBatch: readonly Record<string, unknown>[],
+    options?: Record<string, unknown>
+  ) => string;
   buildDriverSource: (
     source: string,
     functionName: string,
@@ -65,6 +74,11 @@ const rewriter = sandbox.__tracecodeCppRewriter as {
     source: string,
     functionName: string,
     inputs: Record<string, unknown>,
+    options?: Record<string, unknown>
+  ) => string;
+  buildPreparedOpsClassDriverSource: (
+    source: string,
+    className: string,
     options?: Record<string, unknown>
   ) => string;
   instrumentCppSourceForTracing: (source: string, functionName: string) => string;
@@ -100,7 +114,7 @@ assertCondition(
   'rewriter should trace-wrap vector helper parameters'
 );
 assertCondition(
-  instrumented.includes('\\"function\\":\\"dfs\\"') && instrumented.includes('\\"kind\\":\\"call\\"'),
+  instrumented.includes('tracecode::emit_serialized_call_event(__tc_call_line_2, "dfs"'),
   'rewriter should emit helper call instrumentation'
 );
 assertCondition(
@@ -109,8 +123,31 @@ assertCondition(
   'rewriter should use TraceHooks current-line and post-line frame instrumentation'
 );
 assertCondition(
-  instrumented.includes('__tc_return_3') && instrumented.includes('\\"kind\\":\\"return\\"'),
+  instrumented.includes('__tc_return_3') && instrumented.includes('tracecode::emit_serialized_return_event(3, "dfs"'),
   'rewriter should instrument one-line conditional helper returns'
+);
+
+const selectedTraceBatchDriver = rewriter.buildBatchDriverSource(
+  source,
+  'reachable',
+  [{ graph: [[1], [0]] }, { graph: [[]] }],
+  { tracing: true }
+);
+assertCondition(
+  selectedTraceBatchDriver.includes('int main(int argc, char** argv)') &&
+    selectedTraceBatchDriver.includes('tracecode::parse_json(argv[1])'),
+  'tracing batch driver should accept one runtime trace-selection vector'
+);
+assertCondition(
+  selectedTraceBatchDriver.includes(
+    'tracecode::set_tracing_enabled(__tc_trace_enabled_for_case(__tc_case_index))'
+  ),
+  'tracing batch driver should switch recording per case without recompiling'
+);
+assertCondition(
+  selectedTraceBatchDriver.includes('tracecode::configure_trace_budget(') &&
+    selectedTraceBatchDriver.includes(', true);'),
+  'tracing batch driver should reset each case budget with recording enabled for its marker'
 );
 assertCondition(
   !instrumented.includes('RawTraceStep') && !instrumented.includes('visualization'),
@@ -195,6 +232,27 @@ const opsLambdaMapDriver = rewriter.buildOpsClassDriverSource(
   },
   { tracing: true }
 );
+const preparedOpsLambdaMapDriver = rewriter.buildPreparedOpsClassDriverSource(
+  opsLambdaMapSource,
+  'Tracker',
+  { tracing: true }
+);
+assertCondition(
+  preparedOpsLambdaMapDriver.includes('int main(int argc, char** argv)') &&
+    preparedOpsLambdaMapDriver.includes(
+      'tracecode::set_tracing_enabled(__tc_trace_enabled_for_case(__tc_case_index))'
+    ),
+  'prepared ops-class tracing should select recording independently per case'
+);
+assertCondition(
+  preparedOpsLambdaMapDriver.includes(
+    'if (tracecode::trace_event_admissible(false, 4)) {'
+  ) &&
+    preparedOpsLambdaMapDriver.includes(
+      'if (tracecode::trace_event_admissible(false, 5)) {'
+    ),
+  'prepared ops-class call argument serialization should be skipped when recording is disabled'
+);
 assertCondition(
   opsLambdaMapDriver.includes('function<void(tracecode::Vector<int>&)> helper'),
   'ops-class std::function declarations should preserve reference-wrapped container arguments'
@@ -240,7 +298,8 @@ const lambdaBodyEnd = multilineNoCaptureLambdaDriver.indexOf('auto [first, rest]
 const lambdaBodyInstrumentation = multilineNoCaptureLambdaDriver.slice(lambdaBodyStart, lambdaBodyEnd);
 assertCondition(lambdaBodyStart >= 0 && lambdaBodyEnd > lambdaBodyStart, 'multiline no-capture lambda body should remain in rewritten driver');
 assertCondition(
-  multilineNoCaptureLambdaDriver.includes('\\"function\\":\\"reverseK\\"'),
+  multilineNoCaptureLambdaDriver.includes('tracecode::emit_serialized_call_event(') &&
+    multilineNoCaptureLambdaDriver.includes('"reverseK"'),
   'multiline no-capture lambda should be traced as its own lambda frame'
 );
 assertCondition(
@@ -283,9 +342,9 @@ const exceptionSource = [
 ].join('\n');
 const exceptionDriver = rewriter.buildDriverSource(exceptionSource, 'safe', { value: -1 }, { tracing: true });
 const nonTracingExceptionDriver = rewriter.buildDriverSource(exceptionSource, 'safe', { value: -1 });
-assertCondition(exceptionDriver.includes('\\"kind\\":\\"exception\\"'), 'lowered throw should emit native exception events when tracing');
-assertCondition(exceptionDriver.includes('\\"message\\":\\"negative\\"'), 'lowered throw should preserve common literal exception messages');
-assertCondition(!nonTracingExceptionDriver.includes('\\"kind\\":\\"exception\\"'), 'non-tracing lowered throws should not emit trace markers');
+assertCondition(exceptionDriver.includes('tracecode::emit_serialized_exception_event('), 'lowered throw should emit native exception events when tracing');
+assertCondition(exceptionDriver.includes('"negative"'), 'lowered throw should preserve common literal exception messages');
+assertCondition(!nonTracingExceptionDriver.includes('tracecode::emit_serialized_exception_event('), 'non-tracing lowered throws should not emit trace markers');
 
 const fieldSource = [
   'struct Node { unordered_map<string, int> children; };',
@@ -299,8 +358,8 @@ const fieldSource = [
   '};',
 ].join('\n');
 const fieldDriver = rewriter.buildDriverSource(fieldSource, 'solve', { key: 'a' }, { tracing: true });
-assertCondition(fieldDriver.includes('\\"kind\\":\\"write\\"'), 'field assignment should emit a native write event');
-assertCondition(fieldDriver.includes('\\"kind\\":\\"read\\"'), 'field return should emit a native read event');
+assertCondition(fieldDriver.includes('tracecode::emit_serialized_value_event("write"'), 'field assignment should emit a native write event');
+assertCondition(fieldDriver.includes('tracecode::emit_serialized_value_event("read"'), 'field return should emit a native read event');
 assertCondition(
   fieldDriver.includes(String.raw`"{\"variable\":\"node\",\"path\":[`) &&
     fieldDriver.includes(String.raw`+ "\"children\"" +`),

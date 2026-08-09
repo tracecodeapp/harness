@@ -1513,6 +1513,8 @@ function postSuccess(id, type, payload, traceEventTransport) {
     ? 'single'
     : type === 'execute-trace-batch'
       ? 'batch'
+      : type === 'execute-prepared-runtime-program-batch'
+        ? 'batch'
       : type === 'execute-prepared-runtime-program' && payload?.trace
         ? 'single'
         : null;
@@ -7303,8 +7305,32 @@ function traceLineBudgetHardStopForOptions(options = {}) {
   );
 }
 
-function configureTraceBudgetCall(options = {}) {
-  return `tracecode::configure_trace_budget(${traceBudgetForOptions(options)}, ${traceBudgetHardStopForOptions(options) ? 'true' : 'false'}, ${traceLineBudgetForOptions(options)}, ${traceSingleLineHitBudgetForOptions(options)}, ${minimalTraceForOptions(options) ? 'true' : 'false'}, ${traceLineBudgetHardStopForOptions(options) ? 'true' : 'false'});`;
+function configureTraceBudgetCall(options = {}, tracingEnabledExpression = 'true') {
+  return `tracecode::configure_trace_budget(${traceBudgetForOptions(options)}, ${traceBudgetHardStopForOptions(options) ? 'true' : 'false'}, ${traceLineBudgetForOptions(options)}, ${traceSingleLineHitBudgetForOptions(options)}, ${minimalTraceForOptions(options) ? 'true' : 'false'}, ${traceLineBudgetHardStopForOptions(options) ? 'true' : 'false'}, ${tracingEnabledExpression});`;
+}
+
+function cppBatchTraceSelectionSetup(indent = '  ') {
+  return [
+    `${indent}tracecode::JsonValue __tc_trace_selection;`,
+    `${indent}if (argc > 1) __tc_trace_selection = tracecode::parse_json(argv[1]);`,
+    `${indent}auto __tc_trace_enabled_for_case = [&__tc_trace_selection](std::size_t index) -> bool {`,
+    `${indent}  if (__tc_trace_selection.kind != tracecode::JsonValue::Kind::Array) return true;`,
+    `${indent}  if (index >= __tc_trace_selection.array_values.size()) return true;`,
+    `${indent}  const tracecode::JsonValue& selected = __tc_trace_selection.array_values[index];`,
+    `${indent}  return selected.kind != tracecode::JsonValue::Kind::Bool || selected.bool_value;`,
+    `${indent}};`,
+  ].join('\n');
+}
+
+function cppBatchTraceCaseSetup(options = {}, indent = '    ') {
+  return [
+    // Keep the internal case marker even when this case is verdict-only. The
+    // worker removes it while splitting the event stream, so callers still see
+    // an empty trace for disabled cases and later traced cases remain aligned.
+    `${indent}${configureTraceBudgetCall(options, 'true')}`,
+    `${indent}tracecode::emit_serialized_call_event(1, ${cppStringLiteral(CPP_BATCH_TRACE_CASE_MARKER_FUNCTION)}, std::string("{\\\"index\\\":") + std::to_string(__tc_case_index) + "}");`,
+    `${indent}tracecode::set_tracing_enabled(__tc_trace_enabled_for_case(__tc_case_index));`,
+  ].join('\n');
 }
 
 function isRecord(value) {
@@ -11159,9 +11185,7 @@ function buildBatchDriverSource(userCode, functionName, inputBatch, options = {}
     : cppJsonExpressionForValue('__tc_result', driverSignature.returnType, userCode);
   const callExpression = `${usesSolutionClass ? `solution.${functionName}` : functionName}(${argumentNames.join(', ')})`;
   const invokeAndStore = noStoredResult ? `    ${callExpression};` : `    auto __tc_result = ${callExpression};`;
-  const traceCaseSetup = traced
-    ? `    ${configureTraceBudgetCall(options)}\n    tracecode::emit_serialized_call_event(1, ${cppStringLiteral(CPP_BATCH_TRACE_CASE_MARKER_FUNCTION)}, std::string("{\\\"index\\\":") + std::to_string(__tc_case_index) + "}");`
-    : '';
+  const traceCaseSetup = traced ? cppBatchTraceCaseSetup(options) : '';
 
 return `${buildGeneratedIncludes(userCode, driverSignature)}
 using namespace std;
@@ -11172,7 +11196,8 @@ ${sourceForDriver}
 ${buildCppJsonObjectAdapters(typeContext, aliases)}
 
 #line 1 "TraceCodeDriver.cpp"
-int main() {
+int main(${traced ? 'int argc, char** argv' : ''}) {
+${traced ? cppBatchTraceSelectionSetup() : ''}
   tracecode::JsonValue __tc_cases = tracecode::parse_json(tracecode::read_stdin_all());
   if (__tc_cases.kind != tracecode::JsonValue::Kind::Array) {
     std::fputs("C++ batch input must be a JSON array.\\n", stderr);
@@ -11459,7 +11484,9 @@ function buildPreparedOpsClassDriverSource(userCode, className, options = {}) {
   };
 
   const lines = [];
-  lines.push(`  ${configureTraceBudgetCall(options)}`);
+  if (options.tracing === true) {
+    lines.push(cppBatchTraceSelectionSetup('  '));
+  }
   lines.push('  std::string __tc_results = "[";');
   lines.push('  const tracecode::JsonValue __tc_null_value;');
   lines.push('  auto __tc_ops_item_at = [&__tc_null_value](const tracecode::JsonValue& values, std::size_t index) -> const tracecode::JsonValue& {');
@@ -11510,8 +11537,10 @@ function buildPreparedOpsClassDriverSource(userCode, className, options = {}) {
       lines.push(...argLines.map((line) => `      ${line}`));
       if (options.tracing === true) {
         const argsExpression = buildTraceArgsJsonExpression(signature, (_parameter, argIndex) => argNames[argIndex], aliases);
-        lines.push(`      std::string __tc_ctor_args_json_${signature.line}_${signature.bodyLine} = std::string("{") + ${argsExpression} + "}";`);
-        lines.push(`      tracecode::emit_serialized_call_event(${signature.line}, ${cppStringLiteral(signature.name)}, __tc_ctor_args_json_${signature.line}_${signature.bodyLine});`);
+        lines.push(`      if (tracecode::trace_event_admissible(false, ${signature.line})) {`);
+        lines.push(`        std::string __tc_ctor_args_json_${signature.line}_${signature.bodyLine} = std::string("{") + ${argsExpression} + "}";`);
+        lines.push(`        tracecode::emit_serialized_call_event(${signature.line}, ${cppStringLiteral(signature.name)}, __tc_ctor_args_json_${signature.line}_${signature.bodyLine});`);
+        lines.push('      }');
       }
       const ctorCall = argNames.length > 0
         ? `std::make_unique<${className}>(${argNames.join(', ')})`
@@ -11547,8 +11576,10 @@ function buildPreparedOpsClassDriverSource(userCode, className, options = {}) {
       lines.push(...argLines.map((line) => `      ${line}`));
       if (options.tracing === true) {
         const argsExpression = buildTraceArgsJsonExpression(signature, (_parameter, argIndex) => argNames[argIndex], aliases);
-        lines.push(`      std::string __tc_args_json_${signature.line}_${signature.bodyLine} = std::string("{") + ${argsExpression} + "}";`);
-        lines.push(`      tracecode::emit_serialized_call_event(${signature.line}, ${cppStringLiteral(signature.name)}, __tc_args_json_${signature.line}_${signature.bodyLine});`);
+        lines.push(`      if (tracecode::trace_event_admissible(false, ${signature.line})) {`);
+        lines.push(`        std::string __tc_args_json_${signature.line}_${signature.bodyLine} = std::string("{") + ${argsExpression} + "}";`);
+        lines.push(`        tracecode::emit_serialized_call_event(${signature.line}, ${cppStringLiteral(signature.name)}, __tc_args_json_${signature.line}_${signature.bodyLine});`);
+        lines.push('      }');
       }
       if (returnIsVoid) {
         lines.push(`      __tc_instance->${signature.name}(${argNames.join(', ')});`);
@@ -11584,7 +11615,7 @@ function buildPreparedOpsClassDriverSource(userCode, className, options = {}) {
   lines.push('    }');
   lines.push('    if (__tc_case_index > 0) __tc_results += ",";');
   if (options.tracing === true) {
-    lines.push(`    tracecode::emit_serialized_call_event(1, ${cppStringLiteral(CPP_BATCH_TRACE_CASE_MARKER_FUNCTION)}, std::string("{\\\"index\\\":") + std::to_string(__tc_case_index) + "}");`);
+    lines.push(cppBatchTraceCaseSetup(options, '    '));
   }
   lines.push('    std::vector<std::string> __tc_case_outputs;');
   lines.push(`    std::unique_ptr<${className}> __tc_instance;`);
@@ -11659,7 +11690,7 @@ ${/* Adapters specialize JsonObjectAdapter<T> for user-defined types, so they
 ${buildCppJsonObjectAdapters(typeContext, aliases)}
 
 #line 1 "TraceCodeDriver.cpp"
-int main() {
+int main(${options.tracing === true ? 'int argc, char** argv' : ''}) {
 ${lines.join('\n')}
   return 0;
 }
@@ -16103,6 +16134,131 @@ async function runPreparedRuntimeProgram(preparedProgram, inputs) {
   }
 }
 
+async function runPreparedTraceRuntimeProgramBatch(
+  preparedProgram,
+  inputBatch,
+  traceEnabledBatch
+) {
+  const startedAt = now();
+  if (!preparedProgram.tracing || preparedProgram.inputMode !== 'named-batch') {
+    throw preparedProgramProtocolError(
+      'C++ mixed prepared tracing requires a named-batch trace artifact.'
+    );
+  }
+  const normalizedInputBatch = Array.isArray(inputBatch)
+    ? inputBatch.map((inputs) =>
+        inputs && typeof inputs === 'object' && !Array.isArray(inputs)
+          ? inputs
+          : {}
+      )
+    : [];
+  const normalizedTraceEnabledBatch = Array.isArray(traceEnabledBatch)
+    ? traceEnabledBatch
+    : [];
+  if (normalizedInputBatch.length === 0) {
+    throw preparedProgramProtocolError(
+      'C++ mixed prepared tracing requires a non-empty input batch.'
+    );
+  }
+  if (
+    normalizedTraceEnabledBatch.length !== normalizedInputBatch.length ||
+    normalizedTraceEnabledBatch.some((enabled) => typeof enabled !== 'boolean')
+  ) {
+    throw preparedProgramProtocolError(
+      'C++ mixed prepared trace selection must contain one boolean per batch case.'
+    );
+  }
+
+  try {
+    const runStartedAt = now();
+    const program = await runWasi(
+      preparedProgram.programModule,
+      ['program.wasm', JSON.stringify(normalizedTraceEnabledBatch)],
+      new InMemoryFileSystem(),
+      {
+        stdinBytes: staticStdinBytesFromText(
+          JSON.stringify(normalizedInputBatch)
+        ),
+      }
+    );
+    const runMs = elapsedMs(runStartedAt);
+    const timings = preparedExecutionTimings(
+      runMs,
+      elapsedMs(startedAt)
+    );
+    const parsed = parseProgramStdout(program.stdout, {
+      tracing: true,
+      defaultLine: preparedProgram.signatureLine,
+      allowMissingResult: true,
+    });
+    const batchResult = cppBatchTraceResultsFromParsedOutput(
+      parsed,
+      preparedProgram.source,
+      normalizedInputBatch,
+      timings,
+      startedAt,
+      { traceOptions: preparedProgram.traceOptions }
+    );
+    const consoleOutput = [
+      ...(batchResult.consoleOutput ?? []),
+      ...program.stderr.split(/\r?\n/).filter(Boolean),
+    ];
+    if (program.exitCode !== 0) {
+      const error = program.exitCode === 124
+        ? 'C++ trace budget exceeded.'
+        : (program.stderr || `C++ program exited with code ${program.exitCode}`);
+      return {
+        ...batchResult,
+        success: false,
+        error,
+        consoleOutput,
+        results: (batchResult.results ?? []).map((result) => ({
+          ...result,
+          success: false,
+          error,
+          consoleOutput,
+        })),
+        timings,
+      };
+    }
+    return {
+      ...batchResult,
+      consoleOutput,
+      timings,
+    };
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    const trace = finalizeRuntimeTrace(
+      [{
+        kind: 'exception',
+        line: preparedProgram.signatureLine,
+        message,
+      }],
+      {
+        ...(preparedProgram.traceOptions || {}),
+        sourceCode: preparedProgram.source,
+      }
+    ).trace;
+    return {
+      success: false,
+      results: normalizedInputBatch.map(() => ({
+        success: false,
+        output: null,
+        error: message,
+        trace,
+        consoleOutput: [],
+        executionTimeMs: elapsedMs(startedAt),
+        lineEventCount: trace.lineEventCount,
+        traceStepCount: trace.traceStepCount,
+        timings: preparedExecutionTimings(0, elapsedMs(startedAt)),
+      })),
+      error: message,
+      consoleOutput: [],
+      timings: preparedExecutionTimings(0, elapsedMs(startedAt)),
+    };
+  }
+}
+
 async function handleExecutePreparedRuntimeProgram(payload) {
   const preparedProgram = preparedProgramById(payload?.programId);
   if (payload?.mode !== preparedProgram.mode) {
@@ -16111,6 +16267,20 @@ async function handleExecutePreparedRuntimeProgram(payload) {
     );
   }
   return runPreparedRuntimeProgram(preparedProgram, payload?.inputs || {});
+}
+
+async function handleExecutePreparedRuntimeProgramBatch(payload) {
+  const preparedProgram = preparedProgramById(payload?.programId);
+  if (payload?.mode !== preparedProgram.mode) {
+    throw preparedProgramProtocolError(
+      `C++ prepared program "${String(payload?.programId || '')}" was prepared for ${preparedProgram.mode}, not ${String(payload?.mode || 'unknown')}.`
+    );
+  }
+  return runPreparedTraceRuntimeProgramBatch(
+    preparedProgram,
+    payload?.inputBatch,
+    payload?.traceEnabledBatch
+  );
 }
 
 async function handleDisposePreparedRuntimeProgram(payload) {
@@ -16707,6 +16877,9 @@ self.onmessage = (event) => {
             break;
           case 'execute-prepared-runtime-program':
             result = await handleExecutePreparedRuntimeProgram(payload);
+            break;
+          case 'execute-prepared-runtime-program-batch':
+            result = await handleExecutePreparedRuntimeProgramBatch(payload);
             break;
           case 'dispose-prepared-runtime-program':
             result = await handleDisposePreparedRuntimeProgram(payload);

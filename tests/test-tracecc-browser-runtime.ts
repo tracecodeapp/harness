@@ -224,6 +224,54 @@ async function main(): Promise<void> {
         'class Solution { public: int add(int a, int b) { return a + b + 1; } };',
         { a: 20, b: 22 }
       );
+      const mixedTraceClient = new CppWorkerClient(workerOptions);
+      await mixedTraceClient.init();
+      const mixedTracePreparation = await mixedTraceClient.prepareRuntimeProgram({
+        mode: 'trace',
+        code: [
+          'class Solution {',
+          'public:',
+          '  int add(int a, int b) {',
+          '    int sum = a + b;',
+          '    return sum;',
+          '  }',
+          '};',
+        ].join('\\n'),
+        functionName: 'add',
+        executionStyle: 'solution-method',
+        traceOptions: { maxTraceSteps: 1000 },
+      });
+      if (!mixedTracePreparation.success) {
+        throw new Error(
+          'TraceCC mixed trace preparation failed: ' +
+            JSON.stringify(mixedTracePreparation)
+        );
+      }
+      const mixedTraceResults = await mixedTraceClient.executePreparedTraceBatch(
+        mixedTracePreparation.handle,
+        {
+          inputBatch: [
+            { a: 1, b: 2 },
+            { a: 3, b: 4 },
+            { a: 5, b: 6 },
+          ],
+        },
+        { traceEnabledBatch: [true, false, true] }
+      );
+      const invalidMixedTraceSelection = await mixedTraceClient
+        .executePreparedTraceBatch(
+          mixedTracePreparation.handle,
+          { inputBatch: [{ a: 1, b: 2 }] },
+          { traceEnabledBatch: [] }
+        )
+        .then(
+          () => '',
+          (error) => error instanceof Error ? error.message : String(error)
+        );
+      await mixedTraceClient.disposePreparedProgram(
+        mixedTracePreparation.handle
+      );
+      mixedTraceClient.terminate();
       const projectClient = new CppWorkerClient(workerOptions);
       const projectFiles = [
         {
@@ -396,6 +444,8 @@ async function main(): Promise<void> {
         warmMs,
         first,
         edited,
+        mixedTraceResults,
+        invalidMixedTraceSelection,
         projectCompile: {
           ...projectCompile,
           files: projectCompile.files?.map((file) => ({
@@ -446,6 +496,12 @@ async function main(): Promise<void> {
         elapsedMs: number;
         timings?: Record<string, unknown>;
       };
+      mixedTraceResults: Array<{
+        kind: string;
+        output?: unknown;
+        trace?: { events?: unknown[] };
+      }>;
+      invalidMixedTraceSelection: string;
       projectCompile: {
         stdout: string;
         stderr: string;
@@ -493,6 +549,19 @@ async function main(): Promise<void> {
     assertCondition(
       result.edited.kind === 'completed' && result.edited.output === 43,
       `TraceCC edited execution failed: ${JSON.stringify(result)}`
+    );
+    assertCondition(
+      result.mixedTraceResults.length === 3 &&
+        result.mixedTraceResults.every(
+          (entry, index) =>
+            entry.kind === 'completed' && entry.output === 3 + index * 4
+        ) &&
+        (result.mixedTraceResults[0]?.trace?.events?.length ?? 0) > 0 &&
+        result.mixedTraceResults[1]?.trace?.events?.length === 0 &&
+        (result.mixedTraceResults[2]?.trace?.events?.length ?? 0) > 0 &&
+        result.invalidMixedTraceSelection ===
+          'C++ experimental trace selection must contain one boolean per batch case.',
+      `TraceCC mixed batch did not select recording per case from one module: ${JSON.stringify(result)}`
     );
     assertCondition(
       result.projectCompile.exitCode === 0 &&

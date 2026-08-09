@@ -101,6 +101,19 @@ inline bool& trace_budget_exceeded() {
   return value;
 }
 
+// Requested recording state is distinct from budget exhaustion. An
+// instrumented interactive artifact may execute verdict-only cases with
+// recording disabled; those cases must not mutate budgets or dropped-event
+// counters and may be followed by a traced case in the same process.
+inline bool& tracing_enabled() {
+  static bool value = true;
+  return value;
+}
+
+inline void set_tracing_enabled(bool enabled) {
+  tracing_enabled() = enabled;
+}
+
 inline std::string& trace_budget_timeout_reason() {
   static std::string value = "";
   return value;
@@ -122,7 +135,7 @@ inline bool& hard_stop_on_trace_line_budget() {
 }
 
 inline std::size_t trace_bulk_index_write_limit(std::size_t requested) {
-  if (requested == 0 || trace_budget_exceeded()) return 0;
+  if (requested == 0 || !tracing_enabled() || trace_budget_exceeded()) return 0;
   const int remaining = trace_event_budget() - trace_event_count();
   if (remaining <= 0) return 0;
   const std::size_t event_remaining = static_cast<std::size_t>(remaining);
@@ -1442,6 +1455,7 @@ inline void emit_line(int line, const char* function_name);
 // suppression rejects without touching counters, and budget rejection
 // increments the dropped counter exactly once per attempted event.
 inline bool trace_event_admissible(bool minimal_trace_suppressed_kind, int line) {
+  if (!tracing_enabled()) return false;
   if (minimal_trace_suppressed_kind && minimal_trace_enabled()) return false;
   return check_trace_budget(line);
 }
@@ -7177,7 +7191,8 @@ inline void configure_trace_budget(
   int max_line_events = 0,
   int max_single_line_hits = 0,
   bool minimal_trace = false,
-  bool line_hard_stop = false
+  bool line_hard_stop = false,
+  bool enable_tracing = true
 ) {
   trace_event_count() = 0;
   trace_line_event_count() = 0;
@@ -7192,6 +7207,7 @@ inline void configure_trace_budget(
   trace_line_event_budget() = max_line_events > 0 ? max_line_events : 0;
   trace_single_line_hit_budget() = max_single_line_hits > 0 ? max_single_line_hits : 0;
   minimal_trace_enabled() = minimal_trace;
+  tracing_enabled() = enable_tracing;
 }
 
 inline void stop_for_trace_budget(
@@ -7218,6 +7234,7 @@ inline void stop_for_trace_budget(
 }
 
 inline bool check_trace_budget(int line) {
+  if (!tracing_enabled()) return false;
   if (trace_budget_exceeded()) {
     dropped_trace_event_count() += 1;
     return false;
@@ -7230,6 +7247,7 @@ inline bool check_trace_budget(int line) {
 }
 
 inline bool check_line_trace_budget(int line) {
+  if (!tracing_enabled()) return false;
   if (trace_budget_exceeded()) {
     dropped_trace_event_count() += 1;
     return false;

@@ -4,7 +4,7 @@ import type {
 } from '../../runtime-browser/src/runtime-assets';
 
 export const TRACECC_RUNTIME_CONTENT_HASH =
-  'd281ef0cfebe48f7ea9fb7543443839b9967e2b51da8dc5c8b750126a1c405fd';
+  'fb4b6f41f9e9b7db89b6c8425bb2c6218979219a4150f96619b6461b4b78d294';
 
 interface TraceCCAssetIdentity {
   readonly fileName: string;
@@ -16,9 +16,9 @@ interface TraceCCAssetIdentity {
 const TRACECC_RUNTIME_ASSETS = {
   runtimeHeader: {
     fileName: 'tracecode_runtime.hpp',
-    integrity: 'sha256-GJgPOU8w+OamwzFHDckuMqwR+4tUM147R2bo7/7+G4k=',
+    integrity: 'sha256-WEbB8mLN8cwKIWPf25UL7yoTSM9nCqWs8MkE0B14EtE=',
     mediaType: 'text/plain',
-    size: 262_424,
+    size: 263_083,
   },
   compilerWasm: {
     fileName: 'tracecc-reactor.wasm',
@@ -34,9 +34,9 @@ const TRACECC_RUNTIME_ASSETS = {
   },
   narrowPch: {
     fileName: 'narrow.pch',
-    integrity: 'sha256-aJIvoFLpA0bw3tLuEIh7oBe9WinVvZSPgEyTPCJh1YQ=',
+    integrity: 'sha256-rbuVm7YeO+HwDpSJPAqGGNrrPKeJveazS/juUWXs5/A=',
     mediaType: 'application/octet-stream',
-    size: 21_320_088,
+    size: 21_322_216,
   },
   narrowPchSource: {
     fileName: 'narrow.source.hpp',
@@ -46,15 +46,15 @@ const TRACECC_RUNTIME_ASSETS = {
   },
   narrowRuntimeObject: {
     fileName: 'narrow.o',
-    integrity: 'sha256-9WUqAzMQSnFENUfzy2B9fXZ87CLx6PR9vWAQHphBRuA=',
+    integrity: 'sha256-il/wX66FvAU9SJSiDepMuEZ00CipED4EEEfqcdxEg8c=',
     mediaType: 'application/wasm',
-    size: 1_041_990,
+    size: 1_042_570,
   },
   broadPch: {
     fileName: 'broad.pch',
-    integrity: 'sha256-NxT61GlGOV9baF2Otz4VSry/U+4ZV62lwNbBr6rGNyc=',
+    integrity: 'sha256-ktKxBSglo50GPM9GJJwBpqyYDcFHkKGjoyEtsUmLMrI=',
     mediaType: 'application/octet-stream',
-    size: 24_541_412,
+    size: 24_543_552,
   },
   broadPchSource: {
     fileName: 'broad.source.hpp',
@@ -64,15 +64,15 @@ const TRACECC_RUNTIME_ASSETS = {
   },
   broadRuntimeObject: {
     fileName: 'broad.o',
-    integrity: 'sha256-MXZ0vPguPFcIIpZp+btq3IF/PebB3I18jIEUFHMeACw=',
+    integrity: 'sha256-f69Oe7kRn9JEIUEPgM1cuYbf50oph4IxEnVP7VIZGp4=',
     mediaType: 'application/wasm',
-    size: 1_892_299,
+    size: 1_892_879,
   },
   mapPch: {
     fileName: 'map.pch',
-    integrity: 'sha256-TCOBNvfZOWtO5mg0OuzP/eXgLegJORSg+g7VPuLdGQo=',
+    integrity: 'sha256-fX7zTmJXnRJ2acbDiJ4Wu7/xf1G510SB2fLzkTgr2Uc=',
     mediaType: 'application/octet-stream',
-    size: 29_948_616,
+    size: 29_951_380,
   },
   mapPchSource: {
     fileName: 'map.source.hpp',
@@ -82,9 +82,9 @@ const TRACECC_RUNTIME_ASSETS = {
   },
   mapRuntimeObject: {
     fileName: 'map.o',
-    integrity: 'sha256-ToS0m1JL9HeJdEhXohXo66kviZiVDYAE34RyKQzqFaM=',
+    integrity: 'sha256-02ktvX6uqV05it5kdBEm/ncOszBeO43wX93Yk079E4U=',
     mediaType: 'application/wasm',
-    size: 3_371_878,
+    size: 3_372_458,
   },
 } as const satisfies Readonly<Record<string, TraceCCAssetIdentity>>;
 
