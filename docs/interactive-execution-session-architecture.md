@@ -8,33 +8,49 @@ Trace is a capability of execution, not a separate program or top-level
 operation. Drain is product scheduling over a durable execution context, not a
 worker lifecycle mode.
 
-The public surface remains one `execute` command with two forms:
+The browser-facing surface is one `execute` command with two forms:
 
 ```ts
-execute({
-  intent: 'interactive',
-  code,
-  language,
-  cases,
+const initial = await judgeHost.execute({
+  bundle,
+  interactive: true,
   tracing: { caseIds: [selectedCaseId] },
 });
 
-execute({
-  executionId,
+await judgeHost.execute({
+  executionId: initial.executionId,
   tracing: { caseIds: nextDrainCaseIds },
 });
+
+await judgeHost.disposeExecution(initial.executionId);
 ```
 
-The initial call retains the immutable code revision, case manifest and inputs,
-language options, comparator metadata, prepared artifact, verdicts, and traces.
-It returns an opaque `executionId`. Continuation calls address retained cases by
-ID, so callers do not resend code or inputs and the runtime does not reacquire a
-Worker, assets, or compiler merely to trace another case.
+`execute({ bundle })` is deliberately conservative: it prepares a clean
+artifact, records no traces, retains no session, and disposes the evaluation
+before returning. `tracing` is never inferred. `interactive: true` is never
+inferred. Either explicit option makes the initial preparation trace-capable;
+an omitted `tracing` selection still records no cases.
+
+The interactive initial call retains the immutable code revision, case manifest
+and inputs, language options, comparator metadata, prepared artifact, and
+comparison policy. It returns an opaque `executionId`; verdicts and traces are
+returned tranche by tranche to the caller. Continuation calls address retained
+cases by ID, so callers do not resend code or inputs and the runtime does not
+reacquire a Worker, assets, or compiler merely to trace another case.
 
 `executionId` is a lifecycle capability, not a content hash. An internal
 artifact key may be content-addressed by source, language, compiler/runtime
 version, instrumentation mode, and relevant options, but cache identity must
 not be confused with ownership of a live execution.
+
+Disposal invalidates the capability immediately and releases its prepared
+program lease exactly once. A host-level content cache may keep an immutable,
+unreferenced artifact warm under its ordinary bounded TTL; it does not retain
+the execution id, case authority, mutable runtime state, or a usable session.
+
+The lower-level scoped `RuntimeJudge` exposes the same initial/continuation
+forms over a `JudgeEvaluationPlan`. Closing its Effect scope disposes every
+retained execution even if a caller forgot the explicit disposal call.
 
 ## TraceKernel ownership
 

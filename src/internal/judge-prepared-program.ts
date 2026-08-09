@@ -270,14 +270,30 @@ export class RuntimePreparedProgramRegistry {
         new Error('Code-only prepared program cannot execute a tracing batch.')
       );
     }
+    if (
+      call.traceEnabledBatch !== undefined &&
+      (
+        call.traceEnabledBatch.length !== call.inputBatch.length ||
+        call.traceEnabledBatch.some((enabled) => typeof enabled !== 'boolean')
+      )
+    ) {
+      return Promise.reject(
+        new TypeError(
+          'Prepared trace selection must contain one boolean per batch case.'
+        )
+      );
+    }
     if (program.executeBatchIsolated) {
       return gate.run(call.signal, () => program.executeBatchIsolated!(call));
     }
     return Promise.all(
-      call.inputBatch.map((inputs) =>
+      call.inputBatch.map((inputs, index) =>
         gate.run(call.signal, () =>
           program.executeIsolated({
             inputs,
+            ...(call.traceEnabledBatch === undefined
+              ? {}
+              : { recordTrace: call.traceEnabledBatch[index] }),
             signal: call.signal,
             limits: call.limits,
           })

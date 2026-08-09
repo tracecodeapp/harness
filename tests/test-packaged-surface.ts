@@ -72,6 +72,8 @@ test('published package has only TraceKernel and Judge code entrypoints', async 
   assert.doesNotMatch(traceKernelTypes, /createBrowserRuntimeHost/u);
   assert.match(judgeTypes, /createBrowserJudgeHost/u);
   assert.match(judgeTypes, /createJudge/u);
+  assert.match(judgeTypes, /BrowserJudgeExecuteRequest/u);
+  assert.match(judgeTypes, /disposeExecution/u);
   assert.doesNotMatch(judgeTypes, /createBrowserRuntimeJudge/u);
 });
 
@@ -180,6 +182,7 @@ test('public TypeScript declarations are consumable without internal imports', a
         } from '@tracecode/harness/tracekernel';
         import {
           createBrowserJudgeHost,
+          type BrowserJudgeExecuteRequest,
           type CreateBrowserJudgeOptions,
         } from '@tracecode/harness/judge';
 
@@ -188,8 +191,10 @@ test('public TypeScript declarations are consumable without internal imports', a
         void createBrowserJudgeHost;
         const workspaceOptions: CreateBrowserWorkspaceOptions = {};
         const judgeOptions = null as CreateBrowserJudgeOptions | null;
+        const executeRequest = null as BrowserJudgeExecuteRequest | null;
         void workspaceOptions;
         void judgeOptions;
+        void executeRequest;
       `,
       'utf8'
     );

@@ -93,6 +93,14 @@ export interface JudgeEvaluationOptions<
    * not receive this comparator.
    */
   readonly comparator?: JudgeComparator<Input, Expected, Result>;
+  /**
+   * Explicit per-case trace recording selection. An empty list means record
+   * no cases from a trace-capable execution; omission preserves the binding's
+   * ordinary behavior.
+   */
+  readonly tracing?: {
+    readonly caseIds: readonly string[];
+  };
 }
 
 export type JudgeTermination =

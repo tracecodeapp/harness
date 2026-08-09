@@ -1,9 +1,8 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import * as Cause from 'effect/Cause';
 import * as Effect from 'effect/Effect';
+import * as Exit from 'effect/Exit';
 import * as Fiber from 'effect/Fiber';
-import * as Option from 'effect/Option';
 import {
   createAlgorithmJudgeBundle,
   type JudgeEvaluationPlan,
@@ -12,6 +11,7 @@ import {
 import {
   createBrowserRuntimeJudge,
 } from '../src/internal/browser-judge';
+import { RuntimePreparedProgramRegistry } from '../src/internal/judge-prepared-program';
 import {
   createBrowserRuntimeHost,
   createBrowserRuntimeProviderRegistry,
@@ -372,13 +372,15 @@ function preparedProvider(
           schemaVersion: RUNTIME_TRACE_SCHEMA_VERSION,
           language: 'javascript',
           runId: `prepared:${input.label}`,
-          events: [{
-            kind: 'line',
-            runId: `prepared:${input.label}`,
-            line: 2,
-          }],
-          lineEventCount: 1,
-          traceStepCount: 1,
+          events: call.recordTrace === false
+            ? []
+            : [{
+                kind: 'line',
+                runId: `prepared:${input.label}`,
+                line: 2,
+              }],
+          lineEventCount: call.recordTrace === false ? 0 : 1,
+          traceStepCount: call.recordTrace === false ? 0 : 1,
         },
         executionTimeMs: input.delayMs ?? 0,
         consoleOutput: consoleOutput(input),
@@ -633,6 +635,142 @@ test('composes a genuine browser runtime host into Judge without direct executio
   assert.equal(state.prepareCalls.length, 1);
   assert.equal(state.codeCalls.length, 1);
   assert.equal(state.disposals, 1);
+});
+
+test('execute defaults to one clean ephemeral evaluation', async () => {
+  const state = makePreparedState();
+  const result = await Effect.runPromise(Effect.scoped(
+    Effect.gen(function* () {
+      const judge = yield* createTestRuntimeJudge(
+        preparedProvider(state),
+        codeBinding()
+      );
+      return yield* judge.execute<FakeInput>({
+        plan: makePlan([{
+          id: 'clean-default',
+          input: { label: 'clean-default', output: 11 },
+          expected: 11,
+        }]),
+      });
+    })
+  ));
+
+  assert.equal(result.executionId, undefined);
+  assert.equal(result.evaluation.status, 'completed');
+  assert.equal(result.evaluation.cases[0]?.verdict.kind, 'passed');
+  assert.deepEqual(state.prepareCalls.map((call) => call.mode), ['code']);
+  assert.equal(state.codeCalls.length, 1);
+  assert.equal(state.traceCalls.length, 0);
+  assert.equal(state.disposals, 1);
+});
+
+test('interactive execute retains one trace-capable artifact and traces explicit case tranches', async () => {
+  const state = makePreparedState();
+
+  await Effect.runPromise(Effect.scoped(
+    Effect.gen(function* () {
+      const judge = yield* createTestRuntimeJudge(
+        preparedProvider(state),
+        codeBinding({ trace: true })
+      );
+      const initial = yield* judge.execute<FakeInput>({
+        plan: makePlan([
+          { id: 'selected', input: { label: 'selected' } },
+          { id: 'drain-a', input: { label: 'drain-a' } },
+          { id: 'drain-b', input: { label: 'drain-b' } },
+        ]),
+        interactive: true,
+        tracing: { caseIds: ['selected'] },
+      });
+
+      assert.ok(initial.executionId);
+      assert.equal(initial.evaluation.status, 'completed');
+      assert.deepEqual(
+        initial.evaluation.status === 'completed'
+          ? initial.evaluation.cases.map((result) =>
+              (result.trace as RuntimeTrace | undefined)?.events.length ?? -1
+            )
+          : [],
+        [1, 0, 0]
+      );
+      assert.equal(state.prepareCalls.length, 1);
+      assert.deepEqual(
+        state.traceCalls.map((call) => call.recordTrace),
+        [true, false, false]
+      );
+      assert.equal(state.disposals, 0);
+
+      const continuation = yield* judge.execute<FakeInput>({
+        executionId: initial.executionId!,
+        tracing: { caseIds: ['drain-b'] },
+      });
+      assert.equal(continuation.executionId, initial.executionId);
+      assert.equal(continuation.evaluation.status, 'completed');
+      assert.deepEqual(
+        continuation.evaluation.status === 'completed'
+          ? continuation.evaluation.cases.map((result) => result.caseId)
+          : [],
+        ['drain-b']
+      );
+      assert.equal(state.prepareCalls.length, 1);
+      assert.equal(state.traceCalls.at(-1)?.recordTrace, true);
+      assert.equal(state.disposals, 0);
+
+      yield* judge.disposeExecution(initial.executionId!);
+      yield* judge.disposeExecution(initial.executionId!);
+      assert.equal(
+        state.disposals,
+        0,
+        'explicit disposal releases the execution facade; the host may retain the immutable artifact cache'
+      );
+
+      const exit = yield* Effect.exit(judge.execute<FakeInput>({
+        executionId: initial.executionId!,
+        tracing: { caseIds: ['drain-a'] },
+      }));
+      assert.equal(Exit.isFailure(exit), true);
+    })
+  ));
+
+  assert.equal(state.disposals, 1);
+});
+
+test('execute treats tracing and interactivity as independent explicit opt-ins', async () => {
+  const traceOnlyState = makePreparedState();
+  const interactiveOnlyState = makePreparedState();
+
+  await Effect.runPromise(Effect.scoped(
+    Effect.gen(function* () {
+      const traceOnlyJudge = yield* createTestRuntimeJudge(
+        preparedProvider(traceOnlyState),
+        codeBinding({ trace: true })
+      );
+      const traced = yield* traceOnlyJudge.execute<FakeInput>({
+        plan: makePlan([{
+          id: 'trace-now',
+          input: { label: 'trace-now' },
+        }]),
+        tracing: { caseIds: ['trace-now'] },
+      });
+      assert.equal(traced.executionId, undefined);
+      assert.equal(traceOnlyState.traceCalls[0]?.recordTrace, true);
+
+      const interactiveOnlyJudge = yield* createTestRuntimeJudge(
+        preparedProvider(interactiveOnlyState),
+        codeBinding({ trace: true })
+      );
+      const retained = yield* interactiveOnlyJudge.execute<FakeInput>({
+        plan: makePlan([{
+          id: 'clean-now-trace-later',
+          input: { label: 'clean-now-trace-later' },
+        }]),
+        interactive: true,
+      });
+      assert.ok(retained.executionId);
+      assert.equal(interactiveOnlyState.traceCalls[0]?.recordTrace, false);
+      yield* interactiveOnlyJudge.disposeExecution(retained.executionId!);
+    })
+  ));
 });
 
 test('rejects provider injection through a structurally compatible fake host', () => {
@@ -1038,10 +1176,12 @@ test('algorithm evaluation prepares once and executes all cases through one isol
         ...result,
         program: {
           ...result.program,
-          async executeBatchIsolated(batchCall) {
+          async executeBatchIsolated(
+            batchCall: RuntimePreparedCodeBatchCall
+          ) {
             state.codeBatchCalls.push(batchCall);
             await new Promise<void>((resolve) => setTimeout(resolve, 40));
-            return batchCall.inputBatch.map((inputs) => ({
+            return batchCall.inputBatch.map((inputs: Record<string, unknown>) => ({
               kind: 'completed' as const,
               output: completedOutput(inputs as FakeInput),
               consoleOutput: consoleOutput(inputs as FakeInput),
@@ -1415,13 +1555,18 @@ test('disposes a prepared artifact that arrives after its evaluation was interru
       yield* Effect.promise(
         () => new Promise<void>((resolve) => setTimeout(resolve, 35))
       );
-      assert.equal(state.disposals, 1);
+      assert.equal(
+        state.disposals,
+        0,
+        'the browser host keeps an unreferenced immutable artifact warm until cache eviction or host disposal'
+      );
       assert.deepEqual(judge.activeSessionIds(), []);
     })
   ));
+  assert.equal(state.disposals, 1);
 });
 
-test('uses unique preparation scopes when one judge evaluates the same semantic plan twice', async () => {
+test('uses unique evaluation scopes while reusing the same immutable preparation', async () => {
   const state = makePreparedState();
 
   await Effect.runPromise(Effect.scoped(
@@ -1448,56 +1593,31 @@ test('uses unique preparation scopes when one judge evaluates the same semantic 
 
       assert.equal(first.status, 'completed');
       assert.equal(second.status, 'completed');
-      assert.equal(state.prepareCalls.length, 2);
+      assert.equal(state.prepareCalls.length, 1);
       assert.equal(state.codeCalls.length, 2);
-      assert.equal(state.disposals, 2);
+      assert.equal(state.disposals, 0);
       assert.deepEqual(judge.activeSessionIds(), []);
     })
   ));
+  assert.equal(state.disposals, 1);
 });
 
 test('surfaces prepared program teardown failure as Judge infrastructure failure', async () => {
   const state = makePreparedState({
     failDisposal: true,
   });
-  let judgeSessions = (): readonly string[] => ['not-evaluated'];
-
-  const exit = await Effect.runPromiseExit(Effect.scoped(
-    Effect.gen(function* () {
-      const judge = yield* createTestRuntimeJudge(
-        preparedProvider(state),
-        codeBinding()
-      );
-      judgeSessions = () => judge.activeSessionIds();
-      return yield* judge.evaluate(
-        makePlan([{
-          id: 'completed-before-teardown',
-          input: {
-            label: 'completed-before-teardown',
-          },
-        }])
-      );
-    })
-  ));
-  assert.equal(exit._tag, 'Failure');
-  if (exit._tag === 'Failure') {
-    const failure = Cause.failureOption(exit.cause);
-    assert.equal(Option.isSome(failure), true);
-    if (Option.isSome(failure)) {
-      assert.equal(
-        (failure.value as { readonly _tag?: string })._tag,
-        'JudgeInfrastructureError'
-      );
-      assert.equal(
-        (failure.value as { readonly operation?: string }).operation,
-        'dispose prepared runtime program'
-      );
-      assert.match(
-        (failure.value as { readonly message?: string }).message ?? '',
-        /teardown exploded/
-      );
-    }
-  }
+  const registry = new RuntimePreparedProgramRegistry(preparedProvider(state));
+  registry.begin('teardown-failure');
+  const prepared = await registry.prepare('teardown-failure', {
+    mode: 'code',
+    code: SOURCE,
+    functionName: 'solve',
+    executionStyle: 'function',
+  });
+  assert.equal(prepared.kind, 'prepared');
+  await assert.rejects(
+    registry.dispose('teardown-failure'),
+    /teardown exploded/
+  );
   assert.equal(state.disposals, 1);
-  assert.deepEqual(judgeSessions(), []);
 });
