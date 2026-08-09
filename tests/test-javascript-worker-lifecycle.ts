@@ -390,6 +390,49 @@ async function exercisePreparedProvider(
       `${language} prepared trace should add exactly one preparation`
     );
 
+    const selectedTraceBatch = await workerClient.executePreparedTraceBatch(
+      tracePrepared.program,
+      {
+        inputBatch: [
+          { value: 12 },
+          { value: 16 },
+          { value: 20 },
+        ],
+      },
+      { traceEnabledBatch: [true, false, true] }
+    );
+    assertCondition(
+      selectedTraceBatch.length === 3 &&
+        selectedTraceBatch.every(
+          (result, index) =>
+            result.kind === 'completed' &&
+            result.output === [13, 17, 21][index] &&
+            result.timings?.artifactCacheHit === true
+        ) &&
+        selectedTraceBatch[0]?.trace.events.length > 0 &&
+        selectedTraceBatch[1]?.trace.events.length === 0 &&
+        selectedTraceBatch[1]?.trace.lineEventCount === 0 &&
+        selectedTraceBatch[1]?.trace.traceStepCount === 0 &&
+        selectedTraceBatch[2]?.trace.events.length > 0,
+      `${language} selected trace batch failed: ${JSON.stringify(selectedTraceBatch)}`
+    );
+    assertCondition(
+      coordinator.postedTypes.filter((type) => type === 'prepare-execution')
+        .length === 2,
+      `${language} selected trace batch must reuse its one prepared artifact`
+    );
+    await assert.rejects(
+      Promise.resolve().then(() =>
+        workerClient.executePreparedTraceBatch(
+          tracePrepared.program,
+          { inputBatch: [{ value: 1 }] },
+          { traceEnabledBatch: [true, false] }
+        )
+      ),
+      TypeError,
+      `${language} selected trace batch accepted a mismatched selector`
+    );
+
     const cancellable = await runtime.prepareProgram({
       mode: 'code',
       code:
@@ -467,6 +510,17 @@ async function exercisePreparedProvider(
       `${language} disposed prepared program allocated a worker`
     );
     await tracePrepared.program.dispose();
+    await assert.rejects(
+      Promise.resolve().then(() =>
+        workerClient.executePreparedTraceBatch(
+          tracePrepared.program,
+          { inputBatch: [{ value: 1 }] },
+          { traceEnabledBatch: [false] }
+        )
+      ),
+      TypeError,
+      `${language} disposed trace program retained experimental artifact access`
+    );
     await prepared.program.dispose();
 
     if (language === 'typescript') {
