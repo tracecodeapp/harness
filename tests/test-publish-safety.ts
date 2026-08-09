@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { spawnSync, type SpawnSyncReturns } from 'node:child_process';
-import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises';
+import { access, mkdir, mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { test } from 'node:test';
@@ -104,7 +104,13 @@ async function repositoryManifestInventory(): Promise<Array<{
     const entries = await readdir(join(ROOT, workspaceRoot), { withFileTypes: true });
     for (const entry of entries) {
       if (entry.isDirectory()) {
-        manifestPaths.push(join(workspaceRoot, entry.name, 'package.json'));
+        const manifestPath = join(workspaceRoot, entry.name, 'package.json');
+        try {
+          await access(join(ROOT, manifestPath));
+          manifestPaths.push(manifestPath);
+        } catch (error) {
+          if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+        }
       }
     }
   }
