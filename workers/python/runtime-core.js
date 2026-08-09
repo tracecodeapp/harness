@@ -29,6 +29,44 @@ except Exception:
     pass
 `;
 
+const PYTHON_LITERAL_SHAPE_ANNOTATION_HELPER = `
+def _tracecode_annotation_preserves_literal_shape(_annotation):
+    try:
+        import typing as _tracecode_shape_typing
+        import collections.abc as _tracecode_shape_collections_abc
+    except Exception:
+        return False
+    if _annotation in (
+        _builtins.object,
+        _builtins.bool,
+        _builtins.int,
+        _builtins.float,
+        _builtins.str,
+        _builtins.bytes,
+        _builtins.list,
+        _builtins.dict,
+        getattr(_tracecode_shape_typing, 'Any', None),
+    ):
+        return True
+    _origin = _tracecode_shape_typing.get_origin(_annotation)
+    _args = _tracecode_shape_typing.get_args(_annotation)
+    if _origin is _builtins.list:
+        return not _args or _tracecode_annotation_preserves_literal_shape(_args[0])
+    if _origin in (
+        _builtins.dict,
+        _tracecode_shape_collections_abc.Mapping,
+        _tracecode_shape_collections_abc.MutableMapping,
+    ):
+        return not _args or all(
+            _tracecode_annotation_preserves_literal_shape(_arg)
+            for _arg in _args[:2]
+        )
+    if _origin is _tracecode_shape_typing.Union:
+        _non_none = [_arg for _arg in _args if _arg is not type(None)]
+        return len(_non_none) == 1 and _tracecode_annotation_preserves_literal_shape(_non_none[0])
+    return False
+`;
+
 const DEFAULT_TRACE_MAX_PATH_DEPTH = 3;
 const MAX_TRACE_MAX_PATH_DEPTH = 8;
 const DEFAULT_TRACE_MAX_BYTES = 4 * 1024 * 1024;
@@ -512,6 +550,44 @@ function setPythonNamespaceBindings(namespace, bindings) {
   }
 }
 
+function preparedPythonLiteral(deps, value, scopeTimings) {
+  const startedAt = deps.performanceNow();
+  const literal = deps.toPythonLiteral(value);
+  if (scopeTimings) {
+    scopeTimings.inputLiteralMs += deps.performanceNow() - startedAt;
+  }
+  return literal;
+}
+
+function pythonInputsRequireCustomMaterialization(value, seen = new Set()) {
+  if (!value || typeof value !== 'object') return false;
+  if (seen.has(value)) return true;
+  seen.add(value);
+  try {
+    if (Array.isArray(value)) {
+      return value.some((entry) =>
+        pythonInputsRequireCustomMaterialization(entry, seen)
+      );
+    }
+    if (
+      Object.prototype.hasOwnProperty.call(value, '__type__') ||
+      Object.prototype.hasOwnProperty.call(value, '__class__') ||
+      Object.prototype.hasOwnProperty.call(value, '__id__') ||
+      Object.prototype.hasOwnProperty.call(value, '__ref__') ||
+      Object.prototype.hasOwnProperty.call(value, 'left') ||
+      Object.prototype.hasOwnProperty.call(value, 'right') ||
+      Object.prototype.hasOwnProperty.call(value, 'next')
+    ) {
+      return true;
+    }
+    return Object.values(value).some((entry) =>
+      pythonInputsRequireCustomMaterialization(entry, seen)
+    );
+  } finally {
+    seen.delete(value);
+  }
+}
+
 async function compilePythonProgram(deps, source, filename) {
   const pyodide = deps.getPyodide();
   if (
@@ -559,7 +635,8 @@ async function runCompiledPythonInFreshExecutionScope(
   deps,
   code,
   resultName,
-  bindings
+  bindings,
+  scopeTimings = undefined
 ) {
   const pyodide = deps.getPyodide();
   if (
@@ -570,16 +647,43 @@ async function runCompiledPythonInFreshExecutionScope(
     throw new Error('Prepared Python programs require the full browser Python runtime.');
   }
   const guard = getIsolatedPythonExecutionGuard(pyodide);
+  const namespaceStartedAt = deps.performanceNow();
   const namespace = pyodide.toPy({ __name__: '__main__' });
+  if (scopeTimings) {
+    scopeTimings.namespaceCreateMs += deps.performanceNow() - namespaceStartedAt;
+  }
+  const guardBeginStartedAt = deps.performanceNow();
   guard.begin();
+  if (scopeTimings) {
+    scopeTimings.guardBeginMs += deps.performanceNow() - guardBeginStartedAt;
+  }
   try {
+    const bindingStartedAt = deps.performanceNow();
     setPythonNamespaceBindings(namespace, bindings);
-    return guard.run_compiled(code, namespace, resultName);
+    if (scopeTimings) {
+      scopeTimings.bindingMs += deps.performanceNow() - bindingStartedAt;
+    }
+    const compiledExecutionStartedAt = deps.performanceNow();
+    const result = guard.run_compiled(code, namespace, resultName);
+    if (scopeTimings) {
+      scopeTimings.compiledExecutionMs +=
+        deps.performanceNow() - compiledExecutionStartedAt;
+    }
+    return result;
   } finally {
     try {
+      const guardRestoreStartedAt = deps.performanceNow();
       guard.restore();
+      if (scopeTimings) {
+        scopeTimings.guardRestoreMs += deps.performanceNow() - guardRestoreStartedAt;
+      }
     } finally {
+      const namespaceDestroyStartedAt = deps.performanceNow();
       namespace?.destroy?.();
+      if (scopeTimings) {
+        scopeTimings.namespaceDestroyMs +=
+          deps.performanceNow() - namespaceDestroyStartedAt;
+      }
     }
   }
 }
@@ -655,7 +759,6 @@ function generateTracingCode(
   const preparedInputPrelude = usesPreparedBindings
     ? `
 import ast as _tracecode_input_ast
-import copy as _tracecode_input_copy
 _tracecode_raw_inputs = _tracecode_input_ast.literal_eval(__tracecode_inputs_literal)
 _tracecode_case_limits = _tracecode_input_ast.literal_eval(__tracecode_limits_literal)
 `
@@ -663,7 +766,7 @@ _tracecode_case_limits = _tracecode_input_ast.literal_eval(__tracecode_limits_li
   const inputSetup = usesPreparedBindings
     ? `
 for _tracecode_input_name, _tracecode_input_value in _tracecode_raw_inputs.items():
-    globals()[str(_tracecode_input_name)] = _tracecode_input_copy.deepcopy(_tracecode_input_value)
+    globals()[str(_tracecode_input_name)] = _tracecode_input_value
 `
     : Object.entries(inputs)
         .map(([key, value]) => `${key} = ${deps.toPythonLiteral(value)}`)
@@ -824,7 +927,7 @@ _tracecode_tracemalloc_started = False
 _TRACE_MUTATING_METHODS = {'append', 'appendleft', 'pop', 'popleft', 'extend', 'insert', 'add', 'remove', 'discard', 'clear', 'sort', 'reverse'}
 _tracecode_user_class_names = _builtins.set()
 _tracecode_explicit_return_function_names = _builtins.set()
-_internal_funcs = {'_serialize', '_serialize_output', '_tracecode_ref_id', '_tracer', '_custom_print', '_dict_to_tree', '_dict_to_list', '_tracecode_materialize_input', '_tracecode_materialize_custom_input', '_tracecode_materialize_named_inputs', '_tracecode_hydrate_for_annotation', '_tracecode_resolve_target_callable', '_tracecode_hydrate_annotated_inputs', '_tracecode_resolve_entry_callable', '_tracecode_invoke_entry', '_is_structural_constructor_frame', '_snapshot_call_stack', '_snapshot_locals', '_stable_token', '_looks_like_adjacency_list', '_looks_like_indexed_adjacency_list', '_resolve_inplace_result', 'TraceHooks', '_TracecodeTraceHooks', 'flush_completed_line', 'flush_callsite_line', '_resolve_previous_step', '_append_step_runtime_events', '__tracecode_pending_access_budget', '__tracecode_record_access', '__tracecode_flush_accesses', '__tracecode_append_trace_step', '__tracecode_append_trace_events_for_step', '__tracecode_append_runtime_event', '__tracecode_frame_id_for_step', '__tracecode_access_target', '__tracecode_access_binding', '__tracecode_access_kind', '__tracecode_value_at_path', '__tracecode_access_value', '__tracecode_attach_accesses_to_previous_step', '__tracecode_normalize_index_component', '__tracecode_normalize_index_sources', '__tracecode_normalize_indices', '__tracecode_serialize_call_arg', '__tracecode_serialize_call_args', '__tracecode_make_callsite_frame_id', '__tracecode_make_access_event', '__tracecode_make_iteration_access_event', '__tracecode_record_destructured_iteration_accesses', '__tracecode_is_indexable_sequence', '__tracecode_is_mutable_container', '__tracecode_read_value', '__tracecode_write_value', '__tracecode_delete_value', '__tracecode_apply_augmented_value', '__tracecode_apply_inplace_augmented_value', '_tracecode_user_call', '_tracecode_sum', '_tracecode_read_index', '_tracecode_write_index', '_tracecode_record_index_write', '_tracecode_write_scalar', '_tracecode_delete_index', '_tracecode_augassign_scalar', '_tracecode_augassign_index', '_tracecode_mutating_call', '_tracecode_mutating_index_call', '_tracecode_heapq_mutation', '_tracecode_record_attr_write', '_tracecode_contains_key_indexed', '_tracecode_dict_get', '_tracecode_dict_get_indexed', '_tracecode_len', '_tracecode_enumerate', '_tracecode_iter_bind', '_tracecode_iter_bind_literal', '_tracecode_iter_bind_expr', '_tracecode_iter_bind_indexed', '_tracecode_iter_bind_slice', '_tracecode_range_bind', '_tracecode_for_target_binding_name', '_tracecode_scalar_target_names', '_tracecode_assignment_write_targets', '_tracecode_source_string_node', '_tracecode_collect_user_function_names', '_tracecode_collect_user_method_names', '_tracecode_collect_user_class_names', '_tracecode_collect_explicit_return_function_names', '_tracecode_is_pure_literal_scaffold', '_tracecode_collect_collapsed_literal_lines', '__tracecode_attach_parents', '_tracecode_extract_named_subscript', '_tracecode_extract_mutable_container_target', '_tracecode_is_internal_name', '__TracecodeAccessTransformer', '__tracecode_compile_user_code', '<listcomp>', '<dictcomp>', '<setcomp>', '<genexpr>'}
+_internal_funcs = {'_serialize', '_serialize_output', '_tracecode_ref_id', '_tracer', '_custom_print', '_dict_to_tree', '_dict_to_list', '_tracecode_materialize_input', '_tracecode_materialize_custom_input', '_tracecode_materialize_named_inputs', '_tracecode_annotation_preserves_literal_shape', '_tracecode_hydrate_for_annotation', '_tracecode_resolve_target_callable', '_tracecode_hydrate_annotated_inputs', '_tracecode_resolve_entry_callable', '_tracecode_invoke_entry', '_is_structural_constructor_frame', '_snapshot_call_stack', '_snapshot_locals', '_stable_token', '_looks_like_adjacency_list', '_looks_like_indexed_adjacency_list', '_resolve_inplace_result', 'TraceHooks', '_TracecodeTraceHooks', 'flush_completed_line', 'flush_callsite_line', '_resolve_previous_step', '_append_step_runtime_events', '__tracecode_pending_access_budget', '__tracecode_record_access', '__tracecode_flush_accesses', '__tracecode_append_trace_step', '__tracecode_append_trace_events_for_step', '__tracecode_append_runtime_event', '__tracecode_frame_id_for_step', '__tracecode_access_target', '__tracecode_access_binding', '__tracecode_access_kind', '__tracecode_value_at_path', '__tracecode_access_value', '__tracecode_attach_accesses_to_previous_step', '__tracecode_normalize_index_component', '__tracecode_normalize_index_sources', '__tracecode_normalize_indices', '__tracecode_serialize_call_arg', '__tracecode_serialize_call_args', '__tracecode_make_callsite_frame_id', '__tracecode_make_access_event', '__tracecode_make_iteration_access_event', '__tracecode_record_destructured_iteration_accesses', '__tracecode_is_indexable_sequence', '__tracecode_is_mutable_container', '__tracecode_read_value', '__tracecode_write_value', '__tracecode_delete_value', '__tracecode_apply_augmented_value', '__tracecode_apply_inplace_augmented_value', '_tracecode_user_call', '_tracecode_sum', '_tracecode_read_index', '_tracecode_write_index', '_tracecode_record_index_write', '_tracecode_write_scalar', '_tracecode_delete_index', '_tracecode_augassign_scalar', '_tracecode_augassign_index', '_tracecode_mutating_call', '_tracecode_mutating_index_call', '_tracecode_heapq_mutation', '_tracecode_record_attr_write', '_tracecode_contains_key_indexed', '_tracecode_dict_get', '_tracecode_dict_get_indexed', '_tracecode_len', '_tracecode_enumerate', '_tracecode_iter_bind', '_tracecode_iter_bind_literal', '_tracecode_iter_bind_expr', '_tracecode_iter_bind_indexed', '_tracecode_iter_bind_slice', '_tracecode_range_bind', '_tracecode_for_target_binding_name', '_tracecode_scalar_target_names', '_tracecode_assignment_write_targets', '_tracecode_source_string_node', '_tracecode_collect_user_function_names', '_tracecode_collect_user_method_names', '_tracecode_collect_user_class_names', '_tracecode_collect_explicit_return_function_names', '_tracecode_is_pure_literal_scaffold', '_tracecode_collect_collapsed_literal_lines', '__tracecode_attach_parents', '_tracecode_extract_named_subscript', '_tracecode_extract_mutable_container_target', '_tracecode_is_internal_name', '__TracecodeAccessTransformer', '__tracecode_compile_user_code', '<listcomp>', '<dictcomp>', '<setcomp>', '<genexpr>'}
 _internal_locals = {
     '_trace_data', '_trace_events', '_trace_line_event_count', '_console_output', '_original_print', '_target_function',
     '_MIRROR_PRINT_TO_WORKER_CONSOLE', '_MINIMAL_TRACE', '_SKIP_SENTINEL',
@@ -838,7 +941,7 @@ _internal_locals = {
     '_hard_line_ceiling', '_hard_line_deadline', '_hard_line_grace_seconds',
     '_MAX_SERIALIZE_DEPTH', '_MAX_SERIALIZED_ITEMS', '_MAX_OBJECT_FIELDS', '_MAX_SERIALIZED_STRING_CHARS', '_serialize_string', '_trace_failed', '_execution_aborted', '_inplace',
     '_custom_print', '_tracer', '_serialize', '_serialize_output', '_tracecode_ref_id', '_dict_to_tree', '_dict_to_list', '_tracecode_materialize_input',
-    '_tracecode_materialize_custom_input', '_tracecode_materialize_named_inputs', '_tracecode_hydrate_for_annotation',
+    '_tracecode_materialize_custom_input', '_tracecode_materialize_named_inputs', '_tracecode_annotation_preserves_literal_shape', '_tracecode_hydrate_for_annotation',
     '_tracecode_resolve_target_callable', '_tracecode_hydrate_annotated_inputs', '_tracecode_resolve_entry_callable', '_tracecode_invoke_entry',
     '_is_structural_constructor_frame', '_snapshot_call_stack', '_snapshot_locals', '_stable_token',
     '_looks_like_adjacency_list', '_looks_like_indexed_adjacency_list', '_resolve_inplace_result',
@@ -4427,6 +4530,8 @@ def _tracecode_materialize_named_inputs(_names):
 def _tracecode_materialize_input(obj):
     return _tracecode_materialize_custom_input(obj)
 
+${PYTHON_LITERAL_SHAPE_ANNOTATION_HELPER}
+
 def _tracecode_hydrate_for_annotation(_obj, _annotation):
     try:
         import typing as _tracecode_typing
@@ -4513,7 +4618,9 @@ def _tracecode_hydrate_annotated_inputs(_names, _function_name, _execution_style
             _annotations = getattr(_callable, '__annotations__', {}) or {}
         for _name in _names:
             if _name in globals() and _name in _annotations:
-                globals()[_name] = _tracecode_hydrate_for_annotation(globals()[_name], _annotations[_name])
+                _annotation = _annotations[_name]
+                if not _tracecode_annotation_preserves_literal_shape(_annotation):
+                    globals()[_name] = _tracecode_hydrate_for_annotation(globals()[_name], _annotation)
     except Exception:
         return
 
@@ -4594,7 +4701,8 @@ ${treeConversions}
 ${listConversions}
 
 ${preloadUserDefinitions}
-_tracecode_materialize_named_inputs(${traceInputNamesLiteral})
+if ${usesPreparedBindings ? '__tracecode_inputs_need_materialization' : 'True'}:
+    _tracecode_materialize_named_inputs(${traceInputNamesLiteral})
 _tracecode_hydrate_annotated_inputs(${traceInputNamesLiteral}, ${functionNameLiteral}, ${executionStyleLiteral})
 
 if _SCRIPT_MODE:
@@ -5112,10 +5220,21 @@ async function executeWithTracing(
           '__tracecode_execution_result_json',
           {
             __tracecode_prepared_user_code: prepared.userCodeObject,
-            __tracecode_inputs_literal: deps.toPythonLiteral(inputs),
-            __tracecode_limits_literal: deps.toPythonLiteral(prepared.limits?.guest ?? {}),
+            __tracecode_inputs_literal: preparedPythonLiteral(
+              deps,
+              inputs,
+              prepared.scopeTimings
+            ),
+            __tracecode_limits_literal: preparedPythonLiteral(
+              deps,
+              prepared.limits?.guest ?? {},
+              prepared.scopeTimings
+            ),
             __tracecode_tracing_enabled: prepared.tracingEnabled !== false,
-          }
+            __tracecode_inputs_need_materialization:
+              pythonInputsRequireCustomMaterialization(inputs),
+          },
+          prepared.scopeTimings
         )
       : await runPythonInFreshExecutionScope(
           deps,
@@ -5126,6 +5245,9 @@ async function executeWithTracing(
     const jsonParseStartedAt = deps.performanceNow();
     const result = JSON.parse(resultJson);
     const jsonParseMs = deps.performanceNow() - jsonParseStartedAt;
+    if (prepared?.scopeTimings) {
+      prepared.scopeTimings.resultParseMs += jsonParseMs;
+    }
     if (options.traceProfile === true) {
       // Worker-side phase split for the tracing-latency investigation.
       console.log('__TRACECODE_PYPROF__:' + JSON.stringify({
@@ -5299,11 +5421,10 @@ async function executeCode(
     const preparedInputPrelude = usesPreparedBindings
       ? `
 import ast as _tracecode_input_ast
-import copy as _tracecode_input_copy
 _tracecode_raw_inputs = _tracecode_input_ast.literal_eval(__tracecode_inputs_literal)
 _tracecode_case_limits = _tracecode_input_ast.literal_eval(__tracecode_limits_literal)
 for _tracecode_input_name, _tracecode_input_value in _tracecode_raw_inputs.items():
-    globals()[str(_tracecode_input_name)] = _tracecode_input_copy.deepcopy(_tracecode_input_value)
+    globals()[str(_tracecode_input_name)] = _tracecode_input_value
 `
       : '';
     const inputSetup = usesPreparedBindings
@@ -5581,6 +5702,8 @@ def _tracecode_materialize_named_inputs(_names):
         if _name in globals():
             globals()[_name] = _tracecode_materialize_custom_input(globals()[_name])
 
+${PYTHON_LITERAL_SHAPE_ANNOTATION_HELPER}
+
 def _tracecode_hydrate_for_annotation(_obj, _annotation):
     try:
         import typing as _tracecode_typing
@@ -5667,7 +5790,9 @@ def _tracecode_hydrate_annotated_inputs(_names, _function_name, _execution_style
             _annotations = getattr(_callable, '__annotations__', {}) or {}
         for _name in _names:
             if _name in globals() and _name in _annotations:
-                globals()[_name] = _tracecode_hydrate_for_annotation(globals()[_name], _annotations[_name])
+                _annotation = _annotations[_name]
+                if not _tracecode_annotation_preserves_literal_shape(_annotation):
+                    globals()[_name] = _tracecode_hydrate_for_annotation(globals()[_name], _annotation)
     except Exception:
         return
 
@@ -5747,7 +5872,8 @@ ${treeConversions}
 
 ${listConversions}
 
-_tracecode_materialize_named_inputs(${traceInputNamesLiteral})
+if ${usesPreparedBindings ? '__tracecode_inputs_need_materialization' : 'True'}:
+    _tracecode_materialize_named_inputs(${traceInputNamesLiteral})
 _tracecode_hydrate_annotated_inputs(${traceInputNamesLiteral}, ${functionNameLiteral}, ${executionStyleLiteral})
 
 _result = None
@@ -5831,6 +5957,8 @@ def _tracecode_materialize_named_inputs(_names):
         if _name in globals():
             globals()[_name] = _tracecode_materialize_custom_input(globals()[_name])
 
+${PYTHON_LITERAL_SHAPE_ANNOTATION_HELPER}
+
 def _tracecode_hydrate_for_annotation(_obj, _annotation):
     try:
         import typing as _tracecode_typing
@@ -5917,7 +6045,9 @@ def _tracecode_hydrate_annotated_inputs(_names, _function_name, _execution_style
             _annotations = getattr(_callable, '__annotations__', {}) or {}
         for _name in _names:
             if _name in globals() and _name in _annotations:
-                globals()[_name] = _tracecode_hydrate_for_annotation(globals()[_name], _annotations[_name])
+                _annotation = _annotations[_name]
+                if not _tracecode_annotation_preserves_literal_shape(_annotation):
+                    globals()[_name] = _tracecode_hydrate_for_annotation(globals()[_name], _annotation)
     except Exception:
         return
 
@@ -5997,7 +6127,8 @@ ${treeConversions}
 
 ${listConversions}
 
-_tracecode_materialize_named_inputs(${traceInputNamesLiteral})
+if ${usesPreparedBindings ? '__tracecode_inputs_need_materialization' : 'True'}:
+    _tracecode_materialize_named_inputs(${traceInputNamesLiteral})
 _tracecode_hydrate_annotated_inputs(${traceInputNamesLiteral}, ${functionNameLiteral}, ${executionStyleLiteral})
 
 try:
@@ -6042,13 +6173,29 @@ _json_out
           '_json_out',
           {
             __tracecode_prepared_user_code: prepared.userCodeObject,
-            __tracecode_inputs_literal: deps.toPythonLiteral(inputs),
-            __tracecode_limits_literal: deps.toPythonLiteral(options),
+            __tracecode_inputs_literal: preparedPythonLiteral(
+              deps,
+              inputs,
+              prepared.scopeTimings
+            ),
+            __tracecode_limits_literal: preparedPythonLiteral(
+              deps,
+              options,
+              prepared.scopeTimings
+            ),
             __tracecode_tracing_enabled: prepared.tracingEnabled === true,
-          }
+            __tracecode_inputs_need_materialization:
+              pythonInputsRequireCustomMaterialization(inputs),
+          },
+          prepared.scopeTimings
         )
       : await runPythonInFreshExecutionScope(deps, execCode, '_json_out');
+    const resultParseStartedAt = deps.performanceNow();
     const result = JSON.parse(resultJson);
+    if (prepared?.scopeTimings) {
+      prepared.scopeTimings.resultParseMs +=
+        deps.performanceNow() - resultParseStartedAt;
+    }
 
     if (result.guardTriggered) {
       const structuredReasons = ['line-limit', 'single-line-limit', 'recursion-limit', 'memory-limit'];
@@ -6391,12 +6538,28 @@ async function executePreparedProgramBatch(
     const filesystem = isolatedPythonFilesystemManager(deps.getPyodide());
     for (let caseIndex = 0; caseIndex < cases.length; caseIndex += 1) {
       const inputs = cases[caseIndex];
+      const scopeTimings = {
+        inputLiteralMs: 0,
+        namespaceCreateMs: 0,
+        guardBeginMs: 0,
+        bindingMs: 0,
+        compiledExecutionMs: 0,
+        guardRestoreMs: 0,
+        namespaceDestroyMs: 0,
+        resultParseMs: 0,
+        filesystemBeginMs: 0,
+        filesystemRestoreMs: 0,
+      };
       const tracingEnabled = artifact.mode === 'trace'
         ? (traceEnabledBatch?.[caseIndex] ?? true)
         : false;
+      const filesystemBeginStartedAt = deps.performanceNow();
       filesystem.begin();
+      scopeTimings.filesystemBeginMs +=
+        deps.performanceNow() - filesystemBeginStartedAt;
+      let result;
       try {
-        const result = artifact.mode === 'trace' && tracingEnabled
+        result = artifact.mode === 'trace' && tracingEnabled
           ? await executeWithTracing(
               deps,
               artifact.code,
@@ -6404,7 +6567,13 @@ async function executePreparedProgramBatch(
               inputs,
               artifact.executionStyle ?? 'function',
               artifact.traceOptions ?? {},
-              { executorCode, userCodeObject, limits, tracingEnabled: true }
+              {
+                executorCode,
+                userCodeObject,
+                limits,
+                tracingEnabled: true,
+                scopeTimings,
+              }
             )
           : await executeCode(
               deps,
@@ -6413,16 +6582,31 @@ async function executePreparedProgramBatch(
               inputs,
               artifact.executionStyle ?? 'function',
               limits?.guest ?? {},
-              { executorCode, userCodeObject, tracingEnabled: false }
+              {
+                executorCode,
+                userCodeObject,
+                tracingEnabled: false,
+                scopeTimings,
+              }
             );
-        results.push(
-          artifact.mode === 'trace' && !tracingEnabled
-            ? pythonCodeResultAsEmptyTraceResult(result)
-            : result
-        );
       } finally {
+        const filesystemRestoreStartedAt = deps.performanceNow();
         filesystem.restore();
+        scopeTimings.filesystemRestoreMs +=
+          deps.performanceNow() - filesystemRestoreStartedAt;
       }
+      const timedResult = {
+        ...result,
+        timings: {
+          ...(result?.timings ?? {}),
+          ...scopeTimings,
+        },
+      };
+      results.push(
+        artifact.mode === 'trace' && !tracingEnabled
+          ? pythonCodeResultAsEmptyTraceResult(timedResult)
+          : timedResult
+      );
     }
     const runMs = deps.performanceNow() - startedAt;
     return {

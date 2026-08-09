@@ -263,8 +263,9 @@ async function main(): Promise<void> {
         executionStyle: 'function',
       });
       const benchmarkCode = [
-        'def burn(n):',
-        '    return sum(range(n))',
+        'def burn(values: list[int]):',
+        '    values.append(101)',
+        '    return [sum(values), len(values)]',
       ].join('\\n');
       const tracePrepareStartedAt = performance.now();
       const benchmarkTrace = await preparationWorker.request('prepare-program', {
@@ -434,9 +435,14 @@ async function main(): Promise<void> {
       }
 
       const benchmarkClient = await createClient('on-demand-benchmark');
-      const benchmarkInputs = [500000, 600000, 700000].map((n) => ({ n }));
+      const benchmarkInputs = [20000, 30000, 40000].map((length) => ({
+        values: Array.from({ length }, (_, index) => index % 97),
+      }));
+      const benchmarkInputLengths = benchmarkInputs.map(({ values }) => values.length);
       const allDisabledMs = [];
+      const allDisabledPhaseMs = [];
       const cleanMs = [];
+      const cleanPhaseMs = [];
       const mixedOneArtifactMs = [];
       const mixedDualArtifactMs = [];
       let benchmarkOutputsMatch = true;
@@ -444,7 +450,33 @@ async function main(): Promise<void> {
       const requestTimed = async (type, payload) => {
         const startedAt = performance.now();
         const response = await benchmarkClient.request(type, payload);
-        return { response, ms: performance.now() - startedAt };
+        const results = response.results || [];
+        const phaseNames = [
+          'inputLiteralMs',
+          'namespaceCreateMs',
+          'guardBeginMs',
+          'bindingMs',
+          'compiledExecutionMs',
+          'guardRestoreMs',
+          'namespaceDestroyMs',
+          'resultParseMs',
+          'filesystemBeginMs',
+          'filesystemRestoreMs',
+        ];
+        const phaseMs = Object.fromEntries(
+          phaseNames.map((name) => [
+            name,
+            results.reduce(
+              (total, entry) => total + (entry.timings?.[name] || 0),
+              0
+            ),
+          ])
+        );
+        return {
+          response,
+          ms: performance.now() - startedAt,
+          phaseMs,
+        };
       };
       const runAllDisabled = () => requestTimed('execute-prepared-program-batch', {
         artifact: benchmarkTrace.artifact,
@@ -495,7 +527,9 @@ async function main(): Promise<void> {
             : [await runClean(), await runAllDisabled()].reverse();
           const [disabled, clean] = disabledPair;
           allDisabledMs.push(disabled.ms);
+          allDisabledPhaseMs.push(disabled.phaseMs);
           cleanMs.push(clean.ms);
+          cleanPhaseMs.push(clean.phaseMs);
           const disabledResults = disabled.response.results || [];
           const cleanResults = clean.response.results || [];
           benchmarkOutputsMatch = benchmarkOutputsMatch &&
@@ -523,11 +557,16 @@ async function main(): Promise<void> {
         tracePrepareMs,
         codePrepareMs,
         allDisabledMs,
+        allDisabledPhaseMs,
         cleanMs,
+        cleanPhaseMs,
         mixedOneArtifactMs,
         mixedDualArtifactMs,
         outputsMatch: benchmarkOutputsMatch,
         disabledEventsEmpty,
+        callerInputsUnchanged: benchmarkInputs.every(
+          ({ values }, index) => values.length === benchmarkInputLengths[index]
+        ),
       };
 
       return {
@@ -677,7 +716,6 @@ async function main(): Promise<void> {
         `Prepared code run ${index + 1} did not report artifact reuse: ${JSON.stringify(run)}`
       );
     }
-
     for (const [index, run] of result.traceRuns.entries()) {
       const trace = run.trace as { events?: unknown[] } | undefined;
       assertCondition(
@@ -689,6 +727,16 @@ async function main(): Promise<void> {
       );
     }
     const mixedTraceResults = result.mixedTraceBatch.results as Array<Record<string, unknown>>;
+    for (const [index, run] of mixedTraceResults.entries()) {
+      const timings = run.timings as Record<string, unknown> | undefined;
+      assertCondition(
+        typeof timings?.guardBeginMs === 'number' &&
+          timings.guardBeginMs >= 0 &&
+          typeof timings.guardRestoreMs === 'number' &&
+          timings.guardRestoreMs >= 0,
+        `Prepared Python batch case ${index + 1} did not report execution-guard timings: ${JSON.stringify(run)}`
+      );
+    }
     assertCondition(
       result.mixedTraceBatch.success === true &&
         mixedTraceResults.length === 3 &&
@@ -734,17 +782,23 @@ async function main(): Promise<void> {
       tracePrepareMs: number;
       codePrepareMs: number;
       allDisabledMs: number[];
+      allDisabledPhaseMs: Array<Record<string, number>>;
       cleanMs: number[];
+      cleanPhaseMs: Array<Record<string, number>>;
       mixedOneArtifactMs: number[];
       mixedDualArtifactMs: number[];
       outputsMatch: boolean;
       disabledEventsEmpty: boolean;
+      callerInputsUnchanged: boolean;
     };
     assertCondition(
       benchmark.outputsMatch === true &&
         benchmark.disabledEventsEmpty === true &&
+        benchmark.callerInputsUnchanged === true &&
         benchmark.allDisabledMs.length === 6 &&
+        benchmark.allDisabledPhaseMs.length === 6 &&
         benchmark.cleanMs.length === 6 &&
+        benchmark.cleanPhaseMs.length === 6 &&
         benchmark.mixedOneArtifactMs.length === 6 &&
         benchmark.mixedDualArtifactMs.length === 6,
       `Python direct-runner benchmark invariants failed: ${JSON.stringify(benchmark)}`
@@ -756,6 +810,13 @@ async function main(): Promise<void> {
         ? (sorted[middle - 1]! + sorted[middle]!) / 2
         : sorted[middle]!;
     };
+    const medianPhases = (values: Array<Record<string, number>>) =>
+      Object.fromEntries(
+        Object.keys(values[0] ?? {}).map((name) => [
+          name,
+          median(values.map((entry) => entry[name] ?? 0)),
+        ])
+      );
     console.log(
       `PASS: Python marshaled artifacts cross fresh browser workers ${JSON.stringify({
         preparationReadyMs: result.preparationWorker.readyMs,
@@ -765,7 +826,9 @@ async function main(): Promise<void> {
           tracePrepareMs: benchmark.tracePrepareMs,
           additionalCleanPrepareMs: benchmark.codePrepareMs,
           disabledFromTraceArtifactMedianMs: median(benchmark.allDisabledMs),
+          disabledPhaseMedianMs: medianPhases(benchmark.allDisabledPhaseMs),
           cleanArtifactMedianMs: median(benchmark.cleanMs),
+          cleanPhaseMedianMs: medianPhases(benchmark.cleanPhaseMs),
           mixedOneArtifactMedianMs: median(benchmark.mixedOneArtifactMs),
           mixedDualArtifactMedianMs: median(benchmark.mixedDualArtifactMs),
         },
