@@ -410,10 +410,10 @@ async function main(): Promise<void> {
         }
       : {}),
     ...(maxTraceStepsRaw ? { maxTraceSteps: Number(maxTraceStepsRaw) } : {}),
-    // maxStoredEvents outranks maxTraceSteps in every runtime's budget
-    // resolution, so --max-trace-steps alone cannot shrink emission while the
-    // product budget sets this. Setting it to 1 models "instrumented binary,
-    // recording off": the hooks still run, the sink rejects every event.
+    // Override the raw storage ceiling independently of the semantic trace-step
+    // ceiling. Runtimes honor the stricter positive limit; setting storage to
+    // 1 therefore models "instrumented binary, recording off": hooks still
+    // run, but the sink rejects every event after the first.
     ...(maxStoredEventsRaw
       ? { maxStoredEvents: Number(maxStoredEventsRaw) }
       : {}),
