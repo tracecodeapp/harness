@@ -71,7 +71,10 @@ export {
 
 export {
   createTraceCCRuntimeManifest,
+  resolveBuiltInTraceCCRuntimeManifest,
+  TRACECC_RUNTIME_ASSET_RELATIVE_PATH,
   TRACECC_RUNTIME_CONTENT_HASH,
+  TRACECC_RUNTIME_MANIFEST,
 } from '../packages/runtime-cpp/src/tracecc-runtime-assets';
 
 export {

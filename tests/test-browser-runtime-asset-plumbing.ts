@@ -7,6 +7,9 @@ import {
   type BrowserRuntimeAssetManifests,
 } from '../src/browser';
 import { createBrowserProjectWorkspace } from '../packages/runtime-browser/src/project';
+import { readFileSync } from 'node:fs';
+import { join, resolve } from 'node:path';
+import { loadEngineRuntimePackages } from '../scripts/runtime-package-assets.mjs';
 
 function assertCondition(condition: unknown, message: string): asserts condition {
   if (!condition) throw new Error(message);
@@ -225,6 +228,22 @@ function findInitializedWorker(fragment: string): CapturingWorker {
 
 async function testManifestAssetsReachWorkerInitialization(): Promise<void> {
   CapturingWorker.instances = [];
+  const engines = await loadEngineRuntimePackages(resolve('.'));
+  const releaseBytes = readFileSync(
+    join(engines.tracejvm.sourceRoot, 'release.json')
+  );
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async (input) => {
+    const url = input instanceof Request ? input.url : String(input);
+    if (url.endsWith('/release.json')) {
+      return new Response(releaseBytes, {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      });
+    }
+    return originalFetch(input);
+  };
+  try {
   const host = createBrowserRuntimeHost({
     engine: 'chromium',
     providers: ['python', 'typescript', 'java', 'csharp'],
@@ -295,18 +314,21 @@ async function testManifestAssetsReachWorkerInitialization(): Promise<void> {
     providers: ['java'],
     java: {
       runtimeAssetBaseUrl:
-        'https://runtime.example/java engine/?release=17&channel=stable#wasm',
+        'https://runtime.example/java-engine',
     },
   });
   await runtimeAssetHost.warmLanguage('java');
   const runtimeAssetWorker = findWorker('/direct-java-loader/java-worker.js');
   assertCondition(
     String(runtimeAssetWorker.url).includes(
-      'tracejvmBaseUrl=https%3A%2F%2Fruntime.example%2Fjava%20engine%2F%3Frelease%3D17%26channel%3Dstable%23wasm'
+      'tracejvmBaseUrl=https%3A%2F%2Fruntime.example%2Fjava-engine'
     ),
     `Java runtimeAssetBaseUrl must be URL-encoded onto the bridge worker URL: ${String(runtimeAssetWorker.url)}`
   );
   runtimeAssetHost.dispose();
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
 }
 
 async function testMetadataMismatchStopsBeforeWorkerConstruction(): Promise<void> {

@@ -273,8 +273,8 @@ async function main(): Promise<void> {
   host.dispose();
   assertCondition(
     selectionEvents.join(',') ===
-      'create:python-provider,init,prepare:code,execute,dispose-program,' +
-        'init,dispose-language:python,dispose:python-provider',
+      'create:python-provider,init,prepare:code,execute,init,' +
+        'dispose-program,dispose-language:python,dispose:python-provider',
     `Host lifecycle must be provider-owned and exactly disposed: ${selectionEvents.join(',')}`
   );
   const disposedError = errorMessage(() =>
@@ -284,6 +284,47 @@ async function main(): Promise<void> {
     disposedError.includes('has been disposed'),
     `Disposed hosts must reject provider acquisition: ${disposedError}`
   );
+
+  const unavailableEvents: string[] = [];
+  const unavailableHost = createBrowserRuntimeHost({
+    providerRegistry: createBrowserRuntimeProviderRegistry([
+      recordingProvider('unavailable-python', ['python'], unavailableEvents),
+    ]),
+    providers: ['python'],
+    featureOverrides: { ...browserFeatures, worker: false },
+  });
+  let warmUnavailableError = '';
+  try {
+    await unavailableHost.warmLanguage('python');
+  } catch (error) {
+    warmUnavailableError = error instanceof Error ? error.message : String(error);
+  }
+  assertCondition(
+    warmUnavailableError.includes('is unavailable') &&
+      warmUnavailableError.includes('worker') &&
+      !unavailableEvents.includes('init'),
+    `Warmup must fail before provider initialization when readiness fails: ${warmUnavailableError}`
+  );
+  let prepareUnavailableError = '';
+  try {
+    await getBrowserRuntimeHostPreparedProvider(
+      unavailableHost,
+      'python'
+    ).prepareProgram({
+      mode: 'code',
+      code: 'pass',
+      functionName: 'solve',
+    });
+  } catch (error) {
+    prepareUnavailableError =
+      error instanceof Error ? error.message : String(error);
+  }
+  assertCondition(
+    prepareUnavailableError.includes('is unavailable') &&
+      !unavailableEvents.some((event) => event.startsWith('prepare:')),
+    `Lazy preparation must enforce the same readiness boundary: ${prepareUnavailableError}`
+  );
+  unavailableHost.dispose();
 
   const missingEvents: string[] = [];
   const missingPreparedRegistry = createBrowserRuntimeProviderRegistry([

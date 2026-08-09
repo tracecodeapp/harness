@@ -9,8 +9,32 @@ const lock = JSON.parse(readFileSync(resolve(root, 'runtime-assets.lock.json'), 
 
 assert.equal(lock.schema, 'tracecode.runtime-assets-lock.v1');
 assert.match(lock.harness.releaseId, /^@tracecode\/harness@0\.16\.0\+sha256\.[0-9a-f]{64}$/u);
-assert.equal(lock.external.tracecc.consumerHash, lock.external.tracecc.provenance.consumerHash);
-assert.equal(lock.external.tracejvm.package.version, '0.4.0');
+assert.equal(
+  lock.engineDependencies.tracecc.consumerHash,
+  lock.engineDependencies.tracecc.provenance.consumerHash
+);
+assert.deepEqual(lock.engineDependencies.tracecc.package, {
+  name: '@tracecode/tracecc',
+  version: '0.1.0',
+});
+assert.deepEqual(lock.engineDependencies.tracejvm.package, {
+  name: '@tracecode/tracejvm',
+  version: '0.4.1',
+});
+assert.equal(
+  lock.components.cpp.files.some((file) =>
+    file.path.startsWith('workers/cpp/tracecc/')
+  ),
+  false,
+  'the Harness package must not duplicate the TraceCC dependency tree'
+);
+assert.equal(
+  lock.components.java.files.some((file) =>
+    file.path.startsWith('workers/java/tracejvm/0.4.1/')
+  ),
+  false,
+  'the Harness package must not duplicate the TraceJVM dependency tree'
+);
 assert.equal(lock.compatibility.python.runtimeDirectory, 'pyodide-0.29.3');
 assert.equal(lock.compatibility.csharp.deployment.compilerSharesGeneralAssets, true);
 assert.deepEqual(lock.compatibility.csharp.deployment.browserAssets, {

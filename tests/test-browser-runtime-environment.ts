@@ -58,7 +58,11 @@ async function main(): Promise<void> {
     'host should reject lifecycle operations outside the deployment selection'
   );
   const hostCpp = await host.preflightLanguage('cpp');
-  assertCondition(hostCpp.status === 'degraded', 'host should expose engine-aware readiness');
+  assertCondition(
+    hostCpp.status === 'unavailable' &&
+      hostCpp.error?.includes('Browser runtime asset preflight failed for cpp.'),
+    'the default host must preflight its built-in TraceCC release before declaring C++ ready'
+  );
   host.dispose();
 
   const projectJava = createBrowserRuntimeEnvironment({

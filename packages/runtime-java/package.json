@@ -54,7 +54,7 @@
     "@tracecode/runtime-browser": "workspace:*",
     "@tracecode/runtime-contracts": "workspace:*",
     "@tracecode/tracekernel": "workspace:*",
-    "@tracecode/tracejvm": "0.4.0",
+    "@tracecode/tracejvm": "0.4.1",
     "effect": "^3.22.0"
   }
 }

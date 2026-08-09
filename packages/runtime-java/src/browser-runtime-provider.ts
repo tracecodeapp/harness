@@ -13,6 +13,10 @@ import {
 import {
   type JavaWorkerClientOptions,
 } from './java-worker-client';
+import {
+  preflightBuiltInTraceJVMRuntimeAssets,
+  resolveBuiltInTraceJVMRuntimeAssetBaseUrl,
+} from './tracejvm-runtime-assets';
 
 export interface JavaBrowserRuntimeProviderOptions {
   workerIdleTimeoutMs?: number;
@@ -33,6 +37,11 @@ function configureJavaRuntimeAssetBaseUrl(
   if (!runtimeAssetBaseUrl.trim()) {
     throw new TypeError('Java runtimeAssetBaseUrl must not be empty.');
   }
+  if (/[?#]/u.test(runtimeAssetBaseUrl)) {
+    throw new TypeError(
+      'Java runtimeAssetBaseUrl must be a directory URL without a query or fragment.'
+    );
+  }
 
   const hashIndex = workerUrl.indexOf('#');
   const beforeHash =
@@ -51,6 +60,13 @@ function configureJavaRuntimeAssetBaseUrl(
   );
 }
 
+function workerAssetRoot(workerUrl: string): string {
+  const withoutFragment = workerUrl.split('#', 1)[0]!;
+  const withoutQuery = withoutFragment.split('?', 1)[0]!;
+  const separator = withoutQuery.lastIndexOf('/');
+  return separator < 0 ? '.' : withoutQuery.slice(0, separator);
+}
+
 export function createJavaBrowserRuntimeProvider(
   options: JavaBrowserRuntimeProviderOptions = {}
 ): BrowserRuntimeProvider {
@@ -59,10 +75,15 @@ export function createJavaBrowserRuntimeProvider(
     languages: ['java'],
     create(context: BrowserRuntimeProviderContext): BrowserRuntimeProviderLease {
       const workerFactory = context.workerFactoryFor('java');
+      const runtimeAssetBaseUrl =
+        options.runtimeAssetBaseUrl ??
+        resolveBuiltInTraceJVMRuntimeAssetBaseUrl(
+          workerAssetRoot(context.assets.javaWorker)
+        );
       const workerOptions: JavaWorkerClientOptions = {
         workerUrl: configureJavaRuntimeAssetBaseUrl(
           context.assets.javaWorker,
-          options.runtimeAssetBaseUrl
+          runtimeAssetBaseUrl
         ),
         ...(workerFactory
           ? { workerFactory, isolatedRuntimeStorage: true }
@@ -81,6 +102,8 @@ export function createJavaBrowserRuntimeProvider(
 
       return {
         preparedProviders,
+        preflightLanguage: () =>
+          preflightBuiltInTraceJVMRuntimeAssets(runtimeAssetBaseUrl),
         disposeLanguage: () => preparedProvider.releaseStandby(),
         dispose: () => preparedProvider.dispose(),
       };

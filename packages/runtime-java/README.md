@@ -15,9 +15,6 @@ import { createBrowserJudgeHost } from '@tracecode/harness/judge';
 const host = createBrowserJudgeHost({
   providers: ['java'],
   assetBaseUrl: '/workers',
-  java: {
-    runtimeAssetBaseUrl: 'https://assets.example.com/java/2026-07-30/',
-  },
 });
 
 try {
@@ -47,20 +44,21 @@ TraceKernel lifecycle. Runtime clients and prepared providers remain private.
 
 ## Runtime assets
 
-The root package supplies the Harness Java bridge worker and Harness-owned
-helper assets. The bridge uses TraceJVM internally. The TraceJVM engine module,
-WebAssembly binary, and runtime profile are not bundled into the npm package;
-the consumer serves them as one versioned, immutable tree and configures its
-directory through `java.runtimeAssetBaseUrl`.
+The root package supplies the Java bridge and helper assets, and pins the exact
+TraceJVM package owned by this Harness version. `tracecode-harness sync-assets`
+copies TraceJVM's content-addressed release beneath `/workers/java/tracejvm/`.
+The consumer serves the copied tree; it does not install, version, or publish
+TraceJVM separately.
 
 Harness normalizes that value as a directory, so a trailing slash is optional.
 The bridge resolves all engine assets relative to the normalized directory.
 One runtime release must not combine a mutable file, a profile from another
 release, or assets from unrelated roots.
 
-The provider option is intentionally expressed as a runtime asset directory.
-Individual engine, compiler, helper, or loader URLs are not public
-configuration roles.
+`java.runtimeAssetBaseUrl` remains an advanced location override. It must serve
+the same pinned release descriptor and bytes; it cannot select a different
+TraceJVM version. Individual engine, compiler, helper, or loader URLs are not
+public configuration roles.
 
 ## Prepared evaluation
 
@@ -110,8 +108,8 @@ const workspace = await createBrowserWorkspace({
 });
 ```
 
-The application owns that factory's Worker origin and external runtime assets.
-It must return a fresh disposable client for every admitted `javac` or `java`
+The application owns that factory's Worker origin when it replaces the built-in
+factory. It must return a fresh disposable client for every admitted `javac` or `java`
 invocation. The project adapter maps the client to TraceKernel process,
 filesystem, descriptor, pipe, socket, selector, and watch-service contracts.
 Compilation artifacts are committed to the TraceKernel filesystem so later

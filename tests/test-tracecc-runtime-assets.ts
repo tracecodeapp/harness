@@ -2,7 +2,10 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import {
   createTraceCCRuntimeManifest,
+  resolveBuiltInTraceCCRuntimeManifest,
+  TRACECC_RUNTIME_ASSET_RELATIVE_PATH,
   TRACECC_RUNTIME_CONTENT_HASH,
+  TRACECC_RUNTIME_MANIFEST,
 } from '../packages/runtime-cpp/src/tracecc-runtime-assets';
 import {
   resolveBrowserRuntimeAssets,
@@ -11,6 +14,14 @@ import {
 const baseUrl =
   `/runtime-assets/cpp/tracecc/${TRACECC_RUNTIME_CONTENT_HASH}`;
 const manifest = createTraceCCRuntimeManifest(baseUrl);
+const builtInManifest = resolveBuiltInTraceCCRuntimeManifest();
+const builtInConstant = TRACECC_RUNTIME_MANIFEST;
+const builtInResolved = resolveBrowserRuntimeAssets({
+  assetBaseUrl: '/workers',
+  assets: {
+    runtimeManifests: { cpp: builtInManifest },
+  },
+});
 const resolved = resolveBrowserRuntimeAssets({
   assetBaseUrl: '/workers',
   assets: {
@@ -23,6 +34,27 @@ assert.equal(
   `tracecc-${TRACECC_RUNTIME_CONTENT_HASH.slice(0, 12)}`
 );
 assert.equal(manifest.assetBaseUrl, `${baseUrl}/`);
+assert.equal(
+  TRACECC_RUNTIME_ASSET_RELATIVE_PATH,
+  `cpp/tracecc/${TRACECC_RUNTIME_CONTENT_HASH}`
+);
+assert.equal(
+  builtInManifest.assetBaseUrl,
+  `/workers/${TRACECC_RUNTIME_ASSET_RELATIVE_PATH}/`
+);
+assert.deepEqual(
+  builtInConstant,
+  builtInManifest,
+  'the exported built-in manifest must be the standard /workers manifest'
+);
+assert.equal(
+  resolveBuiltInTraceCCRuntimeManifest('/cdn/workers/').assetBaseUrl,
+  `/cdn/workers/${TRACECC_RUNTIME_ASSET_RELATIVE_PATH}/`
+);
+assert.equal(
+  builtInResolved.cppCompilerWasm,
+  `/workers/${TRACECC_RUNTIME_ASSET_RELATIVE_PATH}/tracecc-reactor.wasm`
+);
 assert.equal(
   resolved.cppCompilerWasm,
   `${baseUrl}/tracecc-reactor.wasm`

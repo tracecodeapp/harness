@@ -3,11 +3,11 @@
   "harness": {
     "name": "@tracecode/harness",
     "version": "0.16.0",
-    "releaseId": "@tracecode/harness@0.16.0+sha256.795a24f4988fd68f91552d7b074825d8b063edddbad68f49f1ed30190fa22fbc"
+    "releaseId": "@tracecode/harness@0.16.0+sha256.dd1e92ff5c875625aa27e3f455ec672814333650a81f4de23127682fdd478751"
   },
   "treeSha256Algorithm": "sha256-path-nul-bytes-nul-v1",
-  "packageTreeSha256": "795a24f4988fd68f91552d7b074825d8b063edddbad68f49f1ed30190fa22fbc",
-  "totalPackagedRuntimeBytes": 151625291,
+  "packageTreeSha256": "dd1e92ff5c875625aa27e3f455ec672814333650a81f4de23127682fdd478751",
+  "totalPackagedRuntimeBytes": 151625326,
   "components": {
     "cpp": {
       "releaseId": "cpp+sha256.7961c3b16f23e095376ae3af735aabe2683c77a7730d0530d32a3ee3abf08dde",
@@ -1837,15 +1837,15 @@
       ]
     },
     "javascript": {
-      "releaseId": "javascript+sha256.69673b07a079b65fdbea2acc416227396f383209ffd6448f7203de0817917c6d",
-      "treeSha256": "69673b07a079b65fdbea2acc416227396f383209ffd6448f7203de0817917c6d",
-      "totalBytes": 1202423,
+      "releaseId": "javascript+sha256.7403ff16437c2f7595f7814d2efc1263461ff56b1267331638951f89706317a4",
+      "treeSha256": "7403ff16437c2f7595f7814d2efc1263461ff56b1267331638951f89706317a4",
+      "totalBytes": 1202458,
       "files": [
         {
           "path": "workers/javascript/javascript-project-worker.js",
-          "size": 560625,
-          "sha256": "db95008ebe975fb9f4aa72c964eaeaca45d24beb86d7ab8055c7f03fa5600074",
-          "integrity": "sha256-25UAjr6XX7n0qnLJZOrqykXSS+uG16uAVcfwP6VgAHQ=",
+          "size": 560660,
+          "sha256": "32941dddd6a1cd843bdf8e72d029d7695d1b1caf3d063bb822216f1d7b526ffb",
+          "integrity": "sha256-MpQd3dahzYQ7345y0CnXaV0bHK89Bju4IiFvHXtSb/s=",
           "mediaType": "text/javascript"
         },
         {
@@ -2102,9 +2102,95 @@
       }
     }
   },
-  "external": {
+  "engineDependencies": {
     "tracecc": {
-      "releaseId": "tracecc+sha256.fb4b6f41f9e9b7db89b6c8425bb2c6218979219a4150f96619b6461b4b78d294",
+      "releaseId": "tracecc@0.1.0+sha256.fb4b6f41f9e9b7db89b6c8425bb2c6218979219a4150f96619b6461b4b78d294",
+      "package": {
+        "name": "@tracecode/tracecc",
+        "version": "0.1.0"
+      },
+      "packageManifest": {
+        "schema": "tracecc-package-runtime-v1",
+        "package": {
+          "name": "@tracecode/tracecc",
+          "version": "0.1.0"
+        },
+        "releaseId": "tracecc@0.1.0+sha256.fb4b6f41f9e9b7db89b6c8425bb2c6218979219a4150f96619b6461b4b78d294",
+        "consumerHash": "fb4b6f41f9e9b7db89b6c8425bb2c6218979219a4150f96619b6461b4b78d294",
+        "targetPath": "cpp/tracecc/fb4b6f41f9e9b7db89b6c8425bb2c6218979219a4150f96619b6461b4b78d294",
+        "files": [
+          {
+            "path": "broad.o",
+            "size": 1892879,
+            "sha256": "7faf4e7bb9119fd24421410f80cd5cb986dfe74a2987823112754fed52191a9e"
+          },
+          {
+            "path": "broad.pch",
+            "size": 24543552,
+            "sha256": "92d2b1052825a39d063ccf46249c01a6ac980dc14790a1a3a3212db1498b32b2"
+          },
+          {
+            "path": "broad.source.hpp",
+            "size": 7095,
+            "sha256": "30e6b2c9c5a5e4a61a2d2f2f3f6328261e246b3b03860d241fd062e9dbeccb4b"
+          },
+          {
+            "path": "cpp-runtime-manifest.json",
+            "size": 4366,
+            "sha256": "3de33d6b0e766e3e3d3dc4775b911d59e2f874dafb11a7c01207b9d5d1433d11"
+          },
+          {
+            "path": "llvm-resources.tar",
+            "size": 29112320,
+            "sha256": "d95d2a2bc8408a16c0744996ac47c91bb3c63bb71b94315c9796089b6dda8555"
+          },
+          {
+            "path": "map.o",
+            "size": 3372458,
+            "sha256": "d3692dbd7eaea95d398ade64741126fe770eb3305e3b8df05fddd8934efd1385"
+          },
+          {
+            "path": "map.pch",
+            "size": 29951380,
+            "sha256": "7d7ef34e62579d127669c6c3889e16bbbff17f51b9d74481d9f2f391382bd947"
+          },
+          {
+            "path": "map.source.hpp",
+            "size": 10708,
+            "sha256": "58768ca71de71bf875ae8e82a6906c7a80c8920a9a85b6271714a11cb193f7f7"
+          },
+          {
+            "path": "narrow.o",
+            "size": 1042570,
+            "sha256": "8a5ff05fae85bc053d4894a20dea4cb84674d028a9103e041047ea71dc4483c7"
+          },
+          {
+            "path": "narrow.pch",
+            "size": 21322216,
+            "sha256": "adbb959bb61e3be1f00e94893c0a8618daeb3ca789bde6b34bf8ee5165ece7f0"
+          },
+          {
+            "path": "narrow.source.hpp",
+            "size": 815,
+            "sha256": "48cab141f70c05250751c033fbb0a9e2f916c8eb60bfb98d074f4913570e1005"
+          },
+          {
+            "path": "tracecc-consumer-lock.json",
+            "size": 4175,
+            "sha256": "bddd94d14ecdc9326725a29b0031aa7d0a57c07c01c1adf97915f5da9ba5a345"
+          },
+          {
+            "path": "tracecc-reactor.wasm",
+            "size": 33478188,
+            "sha256": "02de34842538466bf29e9d6cf14cd0d5e5ff519c9ba390561ccb158105d44d41"
+          },
+          {
+            "path": "tracecode_runtime.hpp",
+            "size": 263083,
+            "sha256": "5846c1f262cdf1cc0a2163dfdb950bef2a1348cf670aa5acf0c904d01d7812d1"
+          }
+        ]
+      },
       "consumerHash": "fb4b6f41f9e9b7db89b6c8425bb2c6218979219a4150f96619b6461b4b78d294",
       "treeSha256Algorithm": "tracecc-consumer-sha256-v1",
       "manifest": {
@@ -2463,18 +2549,469 @@
       }
     },
     "tracejvm": {
-      "releaseId": "tracejvm@0.4.0+sha256.819054b4e36a4ecd73e826461bf0e4a53bc0ecb07d330494d0a886f159b7ab87",
+      "releaseId": "tracejvm@0.4.1+sha256.a954d0ad32ff8c62e765847a65081a39a7ad33da0b9617cb8ddbd46082d6247a",
       "package": {
         "name": "@tracecode/tracejvm",
-        "version": "0.4.0"
+        "version": "0.4.1"
       },
-      "contentHash": "819054b4e36a4ecd73e826461bf0e4a53bc0ecb07d330494d0a886f159b7ab87",
-      "relativePrefix": "tracejvm/0.4.0/819054b4e36a4ecd73e826461bf0e4a53bc0ecb07d330494d0a886f159b7ab87",
+      "packageManifest": {
+        "schema": "tracejvm-package-runtime-v1",
+        "package": {
+          "name": "@tracecode/tracejvm",
+          "version": "0.4.1"
+        },
+        "releaseId": "tracejvm@0.4.1+sha256.a954d0ad32ff8c62e765847a65081a39a7ad33da0b9617cb8ddbd46082d6247a",
+        "contentHash": "a954d0ad32ff8c62e765847a65081a39a7ad33da0b9617cb8ddbd46082d6247a",
+        "relativePrefix": "tracejvm/0.4.1/a954d0ad32ff8c62e765847a65081a39a7ad33da0b9617cb8ddbd46082d6247a",
+        "targetPath": "java/tracejvm/0.4.1/a954d0ad32ff8c62e765847a65081a39a7ad33da0b9617cb8ddbd46082d6247a",
+        "descriptor": {
+          "path": "0.4.1/a954d0ad32ff8c62e765847a65081a39a7ad33da0b9617cb8ddbd46082d6247a/release.json",
+          "size": 121712,
+          "sha256": "f71e2fe6d6f01e4a0c1be8b087fb9f58dd42d0f290a4d1073afb80cdbe5b9816"
+        },
+        "files": [
+          {
+            "path": "bjvm_main.wasm",
+            "size": 803951,
+            "sha256": "9940d0e7b934c99cef419111f4f9033258466b3897e0d2826bcc98e6e56ea242",
+            "integrity": "sha256-mUDQ57k0yZzvQZER9PkDMlhGaziX4NKCa8yY5uVuokI=",
+            "contentType": "application/wasm",
+            "cacheControl": "public, max-age=31536000, immutable"
+          },
+          {
+            "path": "browser-client.js",
+            "size": 629256,
+            "sha256": "7bc0db3d5efbf3a9cf482c0a33ede9e6043c21e8000d75b11ec1b3312db0b35f",
+            "integrity": "sha256-e8DbPV7786nPSCwKM+3p5gQ8IegADXWxHsGzMS2ws18=",
+            "contentType": "application/javascript; charset=utf-8",
+            "cacheControl": "public, max-age=31536000, immutable"
+          },
+          {
+            "path": "browser-worker.js",
+            "size": 592007,
+            "sha256": "285cf9460e75486077674709b540b94e8a87fd236c89adc3f02e593a9a438329",
+            "integrity": "sha256-KFz5Rg51SGB3Z0cJtUC5ToqH/SNsia3D8C5ZOppDgyk=",
+            "contentType": "application/javascript; charset=utf-8",
+            "cacheControl": "public, max-age=31536000, immutable"
+          },
+          {
+            "path": "compiler/compile-classlib-teavm.bin",
+            "size": 200626,
+            "sha256": "aafd93cb8ee95584399583d773ac03e7097253836a6f245257402be29695014d",
+            "integrity": "sha256-qv2Ty47pVYQ5lYPXc6wD5wlyU4NqbyRSV0Ar4paVAU0=",
+            "contentType": "application/octet-stream",
+            "cacheControl": "public, max-age=31536000, immutable"
+          },
+          {
+            "path": "compiler/compiler.wasm",
+            "size": 4281714,
+            "sha256": "4d9d1d72703d8219be63f803c8cf7738516d3a33b8dddfe2462ced306304e621",
+            "integrity": "sha256-TZ0dcnA9ghm+Y/gDyM93OFFtOjO43d/iRiztMGME5iE=",
+            "contentType": "application/wasm",
+            "cacheControl": "public, max-age=31536000, immutable"
+          },
+          {
+            "path": "compiler/compiler.wasm-deobfuscator.wasm",
+            "size": 36608,
+            "sha256": "0e8f5d502437a114c6b61b10e199ad40c947eaebcface06d84e09c608fdff44c",
+            "integrity": "sha256-Do9dUCQ3oRTGthsQ4ZmtQMlH6uvPrOBthOCcYI/f9Ew=",
+            "contentType": "application/wasm",
+            "cacheControl": "public, max-age=31536000, immutable"
+          },
+          {
+            "path": "compiler/compiler.wasm-runtime.js",
+            "size": 13936,
+            "sha256": "bd103f277be99fd2f3ffc0248b3558e6c2c85a44902bfeef042c6bedcf0b2c63",
+            "integrity": "sha256-vRA/J3vpn9Lz/8AkizVY5sLIWkSQK/7vBCxr7c8LLGM=",
+            "contentType": "application/javascript; charset=utf-8",
+            "cacheControl": "public, max-age=31536000, immutable"
+          },
+          {
+            "path": "compiler/compiler.wasm.teadbg",
+            "size": 1095018,
+            "sha256": "f2f07ce22723bf168adef5723d8ee5616a4aab43a1d335f52c907a82355ed96e",
+            "integrity": "sha256-8vB84icjvxaK3vVyPY7lYWpKq0Oh0zX1LJB6gjVe2W4=",
+            "contentType": "application/octet-stream",
+            "cacheControl": "public, max-age=31536000, immutable"
+          },
+          {
+            "path": "compiler/manifest.json",
+            "size": 1154,
+            "sha256": "2f5e32f1b11b811887f73cc22f0e1a19adcfce262e281b848cfb2663ca69b23a",
+            "integrity": "sha256-L14y8bEbgRiH9zzCLw4aGa3PziYuKBuEjPsmY8ppsjo=",
+            "contentType": "application/json; charset=utf-8",
+            "cacheControl": "public, max-age=31536000, immutable"
+          },
+          {
+            "path": "profiles/core/jdk23.jar",
+            "size": 12821814,
+            "sha256": "0bf6850b6b0c3693303a33ba03e50f10064e26b499bb65a741f82c5218d8c82f",
+            "integrity": "sha256-C/aFC2sMNpMwOjO6A+UPEAZOJrSZu2WnQfgsUhjYyC8=",
+            "contentType": "application/java-archive",
+            "cacheControl": "public, max-age=31536000, immutable"
+          },
+          {
+            "path": "profiles/core/jdk23/conf/security/java.policy",
+            "size": 2294,
+            "sha256": "d51bcab7ed301caeff3779a5e777e6019864cecee5e2abc102ef991b0de77af2",
+            "integrity": "sha256-1RvKt+0wHK7/N3ml53fmAZhkzs7l4qvBAu+ZGw3nevI=",
+            "contentType": "text/plain; charset=utf-8",
+            "cacheControl": "public, max-age=31536000, immutable"
+          },
+          {
+            "path": "profiles/core/jdk23/conf/security/java.security",
+            "size": 65222,
+            "sha256": "94498002151496c9a315fe2ba28da42bd0cc1a7400d5bcb8cc477844504538b9",
+            "integrity": "sha256-lEmAAhUUlsmjFf4roo2kK9DMGnQA1by4zEd4RFBFOLk=",
+            "contentType": "text/plain; charset=utf-8",
+            "cacheControl": "public, max-age=31536000, immutable"
+          },
+          {
+            "path": "profiles/core/jdk23/lib/module-packages.map",
+            "size": 6344,
+            "sha256": "e52e2ebabcc27dd8ac02e8b05c8848f7661a5c82f3ecd7f63edcf834cf8e923a",
+            "integrity": "sha256-5S4uurzCfdisAuiwXIhI92YaXILz7Nf2Ptz4NM+Okjo=",
+            "contentType": "text/plain; charset=utf-8",
+            "cacheControl": "public, max-age=31536000, immutable"
+          },
+          {
+            "path": "profiles/core/jdk23/lib/modules",
+            "size": 12077450,
+            "sha256": "4aa01d2eb056b9307b61c4230a7173db84f1fc2283bdae976a7bbb8ca0278964",
+            "integrity": "sha256-SqAdLrBWuTB7YcQjCnFz24Tx/CKDva6Xanu7jKAniWQ=",
+            "contentType": "application/octet-stream",
+            "cacheControl": "public, max-age=31536000, immutable"
+          },
+          {
+            "path": "profiles/core/jdk23/lib/security/default.policy",
+            "size": 9271,
+            "sha256": "feb816214fec0c13d57cd3d6202b84679f7f0fa19c8e9f71581de419a4695fa0",
+            "integrity": "sha256-/rgWIU/sDBPVfNPWICuEZ59/D6Gcjp9xWB3kGaRpX6A=",
+            "contentType": "text/plain; charset=utf-8",
+            "cacheControl": "public, max-age=31536000, immutable"
+          },
+          {
+            "path": "profiles/core/jdk23/lib/tzdb.dat",
+            "size": 101731,
+            "sha256": "87022eb5ae9465d75762de6fb2a668c60d411c1394e500c24651895681228148",
+            "integrity": "sha256-hwIuta6UZddXYt5vsqZoxg1BHBOU5QDCRlGJVoEigUg=",
+            "contentType": "application/octet-stream",
+            "cacheControl": "public, max-age=31536000, immutable"
+          },
+          {
+            "path": "profiles/core/tracekernel-api.jar",
+            "size": 7886,
+            "sha256": "46212b0ce3afd232eb8cdbc2850762fbc5dc800df2ee8b740a2c96d71baaff69",
+            "integrity": "sha256-RiErDOOv0jLrjNvChQdi+8XcgA3y7ot0CiyW1xuq/2k=",
+            "contentType": "application/java-archive",
+            "cacheControl": "public, max-age=31536000, immutable"
+          },
+          {
+            "path": "profiles/core/tracekernel-api/io/tracecode/tracekernel/TraceKernel.class",
+            "size": 5678,
+            "sha256": "497261b1589a30b58f0c37f09a5ba0924e0d7f16241e6c42b16343d0fe61dd93",
+            "integrity": "sha256-SXJhsViaMLWPDDfwmlugkk4NfxYkHmxCsWND0P5h3ZM=",
+            "contentType": "application/java-vm",
+            "cacheControl": "public, max-age=31536000, immutable"
+          },
+          {
+            "path": "profiles/core/tracekernel-api/io/tracecode/tracekernel/TraceKernel$ProcessIdentity.class",
+            "size": 1670,
+            "sha256": "3add4918498cec12b3e04798c722147b20c87b1b049b1b10aa3441e50d47f746",
+            "integrity": "sha256-Ot1JGEmM7BKz4EeYxyIUeyDIexsEmxsQqjRB5Q1H90Y=",
+            "contentType": "application/java-vm",
+            "cacheControl": "public, max-age=31536000, immutable"
+          },
+          {
+            "path": "profiles/core/tracekernel-api/io/tracecode/tracekernel/TraceKernel$SessionIdentity.class",
+            "size": 1470,
+            "sha256": "fe29175a07ea3d9c05ce0bd74aad083a049aa719f992516814aa083695c9e8e2",
+            "integrity": "sha256-/ikXWgfqPZwFzgvXSq0IOgSapxn5klFoFKoINpXJ6OI=",
+            "contentType": "application/java-vm",
+            "cacheControl": "public, max-age=31536000, immutable"
+          },
+          {
+            "path": "profiles/core/tracekernel-api/io/tracecode/tracekernel/TraceKernel$TerminalWindowSize.class",
+            "size": 1461,
+            "sha256": "9cac21153e3986c4e684e77726ae23aab0c9e6801216109f2798853e03ed40a3",
+            "integrity": "sha256-nKwhFT45hsTmhOd3Jq4jqrDJ5oASFhCfJ5iFPgPtQKM=",
+            "contentType": "application/java-vm",
+            "cacheControl": "public, max-age=31536000, immutable"
+          },
+          {
+            "path": "profiles/core/tracekernel-api/io/tracecode/tracekernel/TraceKernel$WatchdogSignal.class",
+            "size": 1336,
+            "sha256": "0c75bcf7797c266eb34944ace0105baccc4e9ddc337fc3e9ed9a7d3a50b6f3bd",
+            "integrity": "sha256-DHW893l8Jm6zSUSs4BBbrMxOndwzf8Pp7Zp9OlC2870=",
+            "contentType": "application/java-vm",
+            "cacheControl": "public, max-age=31536000, immutable"
+          },
+          {
+            "path": "profiles/core/tracekernel-api/io/tracecode/tracekernel/TraceKernel$WatchdogStatus.class",
+            "size": 1929,
+            "sha256": "6df280d9191e6efeaaaa42e0147dcf1c18b79c2cdc47a3d64b9c524adaff1718",
+            "integrity": "sha256-bfKA2Rkebv6qqkLgFH3PHBi3nCzcR6PWS5xSStr/Fxg=",
+            "contentType": "application/java-vm",
+            "cacheControl": "public, max-age=31536000, immutable"
+          },
+          {
+            "path": "profiles/server/jdk23.jar",
+            "size": 19524298,
+            "sha256": "7894355a7dc12e5b888a53aefd985b4e2ba6c879380206afeeaf4ecb24a1f35c",
+            "integrity": "sha256-eJQ1Wn3BLluIilOu/ZhbTiumyHk4Agav7q9OyySh81w=",
+            "contentType": "application/java-archive",
+            "cacheControl": "public, max-age=31536000, immutable"
+          },
+          {
+            "path": "profiles/server/jdk23/conf/logging.properties",
+            "size": 2740,
+            "sha256": "8590633e1e8a7d88ffe74cc04189c5c61b1ed4703180cbc851dcd5575efcce74",
+            "integrity": "sha256-hZBjPh6KfYj/50zAQYnFxhse1HAxgMvIUdzVV178znQ=",
+            "contentType": "text/plain; charset=utf-8",
+            "cacheControl": "public, max-age=31536000, immutable"
+          },
+          {
+            "path": "profiles/server/jdk23/conf/security/java.policy",
+            "size": 2294,
+            "sha256": "d51bcab7ed301caeff3779a5e777e6019864cecee5e2abc102ef991b0de77af2",
+            "integrity": "sha256-1RvKt+0wHK7/N3ml53fmAZhkzs7l4qvBAu+ZGw3nevI=",
+            "contentType": "text/plain; charset=utf-8",
+            "cacheControl": "public, max-age=31536000, immutable"
+          },
+          {
+            "path": "profiles/server/jdk23/conf/security/java.security",
+            "size": 65222,
+            "sha256": "94498002151496c9a315fe2ba28da42bd0cc1a7400d5bcb8cc477844504538b9",
+            "integrity": "sha256-lEmAAhUUlsmjFf4roo2kK9DMGnQA1by4zEd4RFBFOLk=",
+            "contentType": "text/plain; charset=utf-8",
+            "cacheControl": "public, max-age=31536000, immutable"
+          },
+          {
+            "path": "profiles/server/jdk23/lib/module-packages.map",
+            "size": 13596,
+            "sha256": "6dec39461b252f1e97ef0d97a9092685ecaebcde430cdb8de76bc4374ead8b5d",
+            "integrity": "sha256-bew5RhslLx6X7w2XqQkmheyuvN5DDNuN52vEN06ti10=",
+            "contentType": "text/plain; charset=utf-8",
+            "cacheControl": "public, max-age=31536000, immutable"
+          },
+          {
+            "path": "profiles/server/jdk23/lib/modules",
+            "size": 18334327,
+            "sha256": "b0cc85df91d401e00824c429e2e04374c4c4320292032b2b8c3e3ea5abe00c35",
+            "integrity": "sha256-sMyF35HUAeAIJMQp4uBDdMTEMgKSAysrjD4+pavgDDU=",
+            "contentType": "application/octet-stream",
+            "cacheControl": "public, max-age=31536000, immutable"
+          },
+          {
+            "path": "profiles/server/jdk23/lib/security/default.policy",
+            "size": 9271,
+            "sha256": "feb816214fec0c13d57cd3d6202b84679f7f0fa19c8e9f71581de419a4695fa0",
+            "integrity": "sha256-/rgWIU/sDBPVfNPWICuEZ59/D6Gcjp9xWB3kGaRpX6A=",
+            "contentType": "text/plain; charset=utf-8",
+            "cacheControl": "public, max-age=31536000, immutable"
+          },
+          {
+            "path": "profiles/server/jdk23/lib/tzdb.dat",
+            "size": 101731,
+            "sha256": "87022eb5ae9465d75762de6fb2a668c60d411c1394e500c24651895681228148",
+            "integrity": "sha256-hwIuta6UZddXYt5vsqZoxg1BHBOU5QDCRlGJVoEigUg=",
+            "contentType": "application/octet-stream",
+            "cacheControl": "public, max-age=31536000, immutable"
+          },
+          {
+            "path": "profiles/server/tracekernel-api.jar",
+            "size": 7886,
+            "sha256": "46212b0ce3afd232eb8cdbc2850762fbc5dc800df2ee8b740a2c96d71baaff69",
+            "integrity": "sha256-RiErDOOv0jLrjNvChQdi+8XcgA3y7ot0CiyW1xuq/2k=",
+            "contentType": "application/java-archive",
+            "cacheControl": "public, max-age=31536000, immutable"
+          },
+          {
+            "path": "profiles/server/tracekernel-api/io/tracecode/tracekernel/TraceKernel.class",
+            "size": 5678,
+            "sha256": "497261b1589a30b58f0c37f09a5ba0924e0d7f16241e6c42b16343d0fe61dd93",
+            "integrity": "sha256-SXJhsViaMLWPDDfwmlugkk4NfxYkHmxCsWND0P5h3ZM=",
+            "contentType": "application/java-vm",
+            "cacheControl": "public, max-age=31536000, immutable"
+          },
+          {
+            "path": "profiles/server/tracekernel-api/io/tracecode/tracekernel/TraceKernel$ProcessIdentity.class",
+            "size": 1670,
+            "sha256": "3add4918498cec12b3e04798c722147b20c87b1b049b1b10aa3441e50d47f746",
+            "integrity": "sha256-Ot1JGEmM7BKz4EeYxyIUeyDIexsEmxsQqjRB5Q1H90Y=",
+            "contentType": "application/java-vm",
+            "cacheControl": "public, max-age=31536000, immutable"
+          },
+          {
+            "path": "profiles/server/tracekernel-api/io/tracecode/tracekernel/TraceKernel$SessionIdentity.class",
+            "size": 1470,
+            "sha256": "fe29175a07ea3d9c05ce0bd74aad083a049aa719f992516814aa083695c9e8e2",
+            "integrity": "sha256-/ikXWgfqPZwFzgvXSq0IOgSapxn5klFoFKoINpXJ6OI=",
+            "contentType": "application/java-vm",
+            "cacheControl": "public, max-age=31536000, immutable"
+          },
+          {
+            "path": "profiles/server/tracekernel-api/io/tracecode/tracekernel/TraceKernel$TerminalWindowSize.class",
+            "size": 1461,
+            "sha256": "9cac21153e3986c4e684e77726ae23aab0c9e6801216109f2798853e03ed40a3",
+            "integrity": "sha256-nKwhFT45hsTmhOd3Jq4jqrDJ5oASFhCfJ5iFPgPtQKM=",
+            "contentType": "application/java-vm",
+            "cacheControl": "public, max-age=31536000, immutable"
+          },
+          {
+            "path": "profiles/server/tracekernel-api/io/tracecode/tracekernel/TraceKernel$WatchdogSignal.class",
+            "size": 1336,
+            "sha256": "0c75bcf7797c266eb34944ace0105baccc4e9ddc337fc3e9ed9a7d3a50b6f3bd",
+            "integrity": "sha256-DHW893l8Jm6zSUSs4BBbrMxOndwzf8Pp7Zp9OlC2870=",
+            "contentType": "application/java-vm",
+            "cacheControl": "public, max-age=31536000, immutable"
+          },
+          {
+            "path": "profiles/server/tracekernel-api/io/tracecode/tracekernel/TraceKernel$WatchdogStatus.class",
+            "size": 1929,
+            "sha256": "6df280d9191e6efeaaaa42e0147dcf1c18b79c2cdc47a3d64b9c524adaff1718",
+            "integrity": "sha256-bfKA2Rkebv6qqkLgFH3PHBi3nCzcR6PWS5xSStr/Fxg=",
+            "contentType": "application/java-vm",
+            "cacheControl": "public, max-age=31536000, immutable"
+          },
+          {
+            "path": "profiles/spring-server/jdk23.jar",
+            "size": 29082169,
+            "sha256": "267c8968dbe88a7866c88c7ddbf2987da6f67b547e7e28406626edd738876659",
+            "integrity": "sha256-JnyJaNvoinhmyIx92/KYfab2e1R+fihAZibt1ziHZlk=",
+            "contentType": "application/java-archive",
+            "cacheControl": "public, max-age=31536000, immutable"
+          },
+          {
+            "path": "profiles/spring-server/jdk23/conf/logging.properties",
+            "size": 2740,
+            "sha256": "8590633e1e8a7d88ffe74cc04189c5c61b1ed4703180cbc851dcd5575efcce74",
+            "integrity": "sha256-hZBjPh6KfYj/50zAQYnFxhse1HAxgMvIUdzVV178znQ=",
+            "contentType": "text/plain; charset=utf-8",
+            "cacheControl": "public, max-age=31536000, immutable"
+          },
+          {
+            "path": "profiles/spring-server/jdk23/conf/security/java.policy",
+            "size": 2294,
+            "sha256": "d51bcab7ed301caeff3779a5e777e6019864cecee5e2abc102ef991b0de77af2",
+            "integrity": "sha256-1RvKt+0wHK7/N3ml53fmAZhkzs7l4qvBAu+ZGw3nevI=",
+            "contentType": "text/plain; charset=utf-8",
+            "cacheControl": "public, max-age=31536000, immutable"
+          },
+          {
+            "path": "profiles/spring-server/jdk23/conf/security/java.security",
+            "size": 65222,
+            "sha256": "94498002151496c9a315fe2ba28da42bd0cc1a7400d5bcb8cc477844504538b9",
+            "integrity": "sha256-lEmAAhUUlsmjFf4roo2kK9DMGnQA1by4zEd4RFBFOLk=",
+            "contentType": "text/plain; charset=utf-8",
+            "cacheControl": "public, max-age=31536000, immutable"
+          },
+          {
+            "path": "profiles/spring-server/jdk23/lib/module-packages.map",
+            "size": 17516,
+            "sha256": "5bc78653e2489580ed76b0bf6e4fe80b5a1edd547f35d718ce10f8287463e3e0",
+            "integrity": "sha256-W8eGU+JIlYDtdrC/bk/oC1oe3VR/NdcYzhD4KHRj4+A=",
+            "contentType": "text/plain; charset=utf-8",
+            "cacheControl": "public, max-age=31536000, immutable"
+          },
+          {
+            "path": "profiles/spring-server/jdk23/lib/modules",
+            "size": 27359960,
+            "sha256": "4dd58a354c93a8bf8c17e5ab4a512cea1f7fcab58a27d19b83b5a42f15c9cd86",
+            "integrity": "sha256-TdWKNUyTqL+MF+WrSlEs6h9/yrWKJ9Gbg7WkLxXJzYY=",
+            "contentType": "application/octet-stream",
+            "cacheControl": "public, max-age=31536000, immutable"
+          },
+          {
+            "path": "profiles/spring-server/jdk23/lib/security/default.policy",
+            "size": 9271,
+            "sha256": "feb816214fec0c13d57cd3d6202b84679f7f0fa19c8e9f71581de419a4695fa0",
+            "integrity": "sha256-/rgWIU/sDBPVfNPWICuEZ59/D6Gcjp9xWB3kGaRpX6A=",
+            "contentType": "text/plain; charset=utf-8",
+            "cacheControl": "public, max-age=31536000, immutable"
+          },
+          {
+            "path": "profiles/spring-server/jdk23/lib/tzdb.dat",
+            "size": 101731,
+            "sha256": "87022eb5ae9465d75762de6fb2a668c60d411c1394e500c24651895681228148",
+            "integrity": "sha256-hwIuta6UZddXYt5vsqZoxg1BHBOU5QDCRlGJVoEigUg=",
+            "contentType": "application/octet-stream",
+            "cacheControl": "public, max-age=31536000, immutable"
+          },
+          {
+            "path": "profiles/spring-server/tracekernel-api.jar",
+            "size": 7886,
+            "sha256": "46212b0ce3afd232eb8cdbc2850762fbc5dc800df2ee8b740a2c96d71baaff69",
+            "integrity": "sha256-RiErDOOv0jLrjNvChQdi+8XcgA3y7ot0CiyW1xuq/2k=",
+            "contentType": "application/java-archive",
+            "cacheControl": "public, max-age=31536000, immutable"
+          },
+          {
+            "path": "profiles/spring-server/tracekernel-api/io/tracecode/tracekernel/TraceKernel.class",
+            "size": 5678,
+            "sha256": "497261b1589a30b58f0c37f09a5ba0924e0d7f16241e6c42b16343d0fe61dd93",
+            "integrity": "sha256-SXJhsViaMLWPDDfwmlugkk4NfxYkHmxCsWND0P5h3ZM=",
+            "contentType": "application/java-vm",
+            "cacheControl": "public, max-age=31536000, immutable"
+          },
+          {
+            "path": "profiles/spring-server/tracekernel-api/io/tracecode/tracekernel/TraceKernel$ProcessIdentity.class",
+            "size": 1670,
+            "sha256": "3add4918498cec12b3e04798c722147b20c87b1b049b1b10aa3441e50d47f746",
+            "integrity": "sha256-Ot1JGEmM7BKz4EeYxyIUeyDIexsEmxsQqjRB5Q1H90Y=",
+            "contentType": "application/java-vm",
+            "cacheControl": "public, max-age=31536000, immutable"
+          },
+          {
+            "path": "profiles/spring-server/tracekernel-api/io/tracecode/tracekernel/TraceKernel$SessionIdentity.class",
+            "size": 1470,
+            "sha256": "fe29175a07ea3d9c05ce0bd74aad083a049aa719f992516814aa083695c9e8e2",
+            "integrity": "sha256-/ikXWgfqPZwFzgvXSq0IOgSapxn5klFoFKoINpXJ6OI=",
+            "contentType": "application/java-vm",
+            "cacheControl": "public, max-age=31536000, immutable"
+          },
+          {
+            "path": "profiles/spring-server/tracekernel-api/io/tracecode/tracekernel/TraceKernel$TerminalWindowSize.class",
+            "size": 1461,
+            "sha256": "9cac21153e3986c4e684e77726ae23aab0c9e6801216109f2798853e03ed40a3",
+            "integrity": "sha256-nKwhFT45hsTmhOd3Jq4jqrDJ5oASFhCfJ5iFPgPtQKM=",
+            "contentType": "application/java-vm",
+            "cacheControl": "public, max-age=31536000, immutable"
+          },
+          {
+            "path": "profiles/spring-server/tracekernel-api/io/tracecode/tracekernel/TraceKernel$WatchdogSignal.class",
+            "size": 1336,
+            "sha256": "0c75bcf7797c266eb34944ace0105baccc4e9ddc337fc3e9ed9a7d3a50b6f3bd",
+            "integrity": "sha256-DHW893l8Jm6zSUSs4BBbrMxOndwzf8Pp7Zp9OlC2870=",
+            "contentType": "application/java-vm",
+            "cacheControl": "public, max-age=31536000, immutable"
+          },
+          {
+            "path": "profiles/spring-server/tracekernel-api/io/tracecode/tracekernel/TraceKernel$WatchdogStatus.class",
+            "size": 1929,
+            "sha256": "6df280d9191e6efeaaaa42e0147dcf1c18b79c2cdc47a3d64b9c524adaff1718",
+            "integrity": "sha256-bfKA2Rkebv6qqkLgFH3PHBi3nCzcR6PWS5xSStr/Fxg=",
+            "contentType": "application/java-vm",
+            "cacheControl": "public, max-age=31536000, immutable"
+          },
+          {
+            "path": "release.json",
+            "size": 121712,
+            "sha256": "f71e2fe6d6f01e4a0c1be8b087fb9f58dd42d0f290a4d1073afb80cdbe5b9816",
+            "integrity": "sha256-9x4v5tbwHkoMG+iwh/ufWN1C0PKQpNEHOvuAzb5bmBY=",
+            "contentType": "application/json; charset=utf-8"
+          }
+        ]
+      },
+      "contentHash": "a954d0ad32ff8c62e765847a65081a39a7ad33da0b9617cb8ddbd46082d6247a",
+      "relativePrefix": "tracejvm/0.4.1/a954d0ad32ff8c62e765847a65081a39a7ad33da0b9617cb8ddbd46082d6247a",
+      "descriptorSha256": "f71e2fe6d6f01e4a0c1be8b087fb9f58dd42d0f290a4d1073afb80cdbe5b9816",
+      "descriptorSize": 121712,
       "descriptor": {
         "schema": "tracejvm-runtime-release-v2",
         "package": {
           "name": "@tracecode/tracejvm",
-          "version": "0.4.0"
+          "version": "0.4.1"
         },
         "runtime": {
           "javaVersion": "23.0.2+7",
@@ -2530,8 +3067,8 @@
             ]
           }
         },
-        "contentHash": "819054b4e36a4ecd73e826461bf0e4a53bc0ecb07d330494d0a886f159b7ab87",
-        "relativePrefix": "tracejvm/0.4.0/819054b4e36a4ecd73e826461bf0e4a53bc0ecb07d330494d0a886f159b7ab87",
+        "contentHash": "a954d0ad32ff8c62e765847a65081a39a7ad33da0b9617cb8ddbd46082d6247a",
+        "relativePrefix": "tracejvm/0.4.1/a954d0ad32ff8c62e765847a65081a39a7ad33da0b9617cb8ddbd46082d6247a",
         "responsePolicy": {
           "accessControlAllowOrigin": "*",
           "crossOriginResourcePolicy": "cross-origin",
@@ -2555,25 +3092,25 @@
         "files": [
           {
             "path": "bjvm_main.wasm",
-            "size": 796359,
-            "sha256": "72a46a162da7ca83548ea7280866126503aec0e4618b93ad0cd0bc9f017f7cb8",
-            "integrity": "sha256-cqRqFi2nyoNUjqcoCGYSZQOuwORhi5OtDNC8nwF/fLg=",
+            "size": 803951,
+            "sha256": "9940d0e7b934c99cef419111f4f9033258466b3897e0d2826bcc98e6e56ea242",
+            "integrity": "sha256-mUDQ57k0yZzvQZER9PkDMlhGaziX4NKCa8yY5uVuokI=",
             "contentType": "application/wasm",
             "cacheControl": "public, max-age=31536000, immutable"
           },
           {
             "path": "browser-client.js",
-            "size": 627660,
-            "sha256": "c09efa76169f542bff520be62b8fac10848e7f2175a1a5f01b22da0e211dd470",
-            "integrity": "sha256-wJ76dhafVCv/UgvmK4+sEISOfyF1oaXwGyLaDiEd1HA=",
+            "size": 629256,
+            "sha256": "7bc0db3d5efbf3a9cf482c0a33ede9e6043c21e8000d75b11ec1b3312db0b35f",
+            "integrity": "sha256-e8DbPV7786nPSCwKM+3p5gQ8IegADXWxHsGzMS2ws18=",
             "contentType": "application/javascript; charset=utf-8",
             "cacheControl": "public, max-age=31536000, immutable"
           },
           {
             "path": "browser-worker.js",
-            "size": 590411,
-            "sha256": "46130ed8cd28b5248ed3fb4f3a57af7e4a41ea382a97062058d9fdaca6657506",
-            "integrity": "sha256-RhMO2M0otSSO0/tPOlevfkpB6jgqlwYgWNn9rKZldQY=",
+            "size": 592007,
+            "sha256": "285cf9460e75486077674709b540b94e8a87fd236c89adc3f02e593a9a438329",
+            "integrity": "sha256-KFz5Rg51SGB3Z0cJtUC5ToqH/SNsia3D8C5ZOppDgyk=",
             "contentType": "application/javascript; charset=utf-8",
             "cacheControl": "public, max-age=31536000, immutable"
           },
@@ -4659,9 +5196,9 @@
           },
           {
             "path": "profiles/core/jdk23.jar",
-            "size": 12818903,
-            "sha256": "f5f5ce3d6f1d96abee38dc314c81f8c8ecbf594e1a20483b89c6bf2a4fb7b68b",
-            "integrity": "sha256-9fXOPW8dlqvuONwxTIH4yOy/WU4aIEg7ica/Kk+3tos=",
+            "size": 12821814,
+            "sha256": "0bf6850b6b0c3693303a33ba03e50f10064e26b499bb65a741f82c5218d8c82f",
+            "integrity": "sha256-C/aFC2sMNpMwOjO6A+UPEAZOJrSZu2WnQfgsUhjYyC8=",
             "contentType": "application/java-archive",
             "cacheControl": "public, max-age=31536000, immutable"
           },
@@ -4771,9 +5308,9 @@
           },
           {
             "path": "profiles/server/jdk23.jar",
-            "size": 19521387,
-            "sha256": "f3185dc2f356b778c45d43d612405bcfbc9895418429421870c32875e8b492ac",
-            "integrity": "sha256-8xhdwvNWt3jEXUPWEkBbz7yYlUGEKUIYcMModei0kqw=",
+            "size": 19524298,
+            "sha256": "7894355a7dc12e5b888a53aefd985b4e2ba6c879380206afeeaf4ecb24a1f35c",
+            "integrity": "sha256-eJQ1Wn3BLluIilOu/ZhbTiumyHk4Agav7q9OyySh81w=",
             "contentType": "application/java-archive",
             "cacheControl": "public, max-age=31536000, immutable"
           },
@@ -4891,9 +5428,9 @@
           },
           {
             "path": "profiles/spring-server/jdk23.jar",
-            "size": 29079258,
-            "sha256": "7fef4040d6d2e61f9248a8ac00acef3c46c1a2a8319343e1ab5eca0fc3f9f024",
-            "integrity": "sha256-f+9AQNbS5h+SSKisAKzvPEbBoqgxk0Phq17KD8P58CQ=",
+            "size": 29082169,
+            "sha256": "267c8968dbe88a7866c88c7ddbf2987da6f67b547e7e28406626edd738876659",
+            "integrity": "sha256-JnyJaNvoinhmyIx92/KYfab2e1R+fihAZibt1ziHZlk=",
             "contentType": "application/java-archive",
             "cacheControl": "public, max-age=31536000, immutable"
           },
@@ -5083,9 +5620,9 @@
           },
           {
             "path": "source/tracejvm/runtime/bridge/jdk/internal/tracecode/TraceJVMRunner.java",
-            "size": 2649,
-            "sha256": "3305a469aa243e837c935a50fdb7afd364f7e02cb8799a346101621a30524adb",
-            "integrity": "sha256-MwWkaaokPoN8k1pQ/bev02T34Cy4eZo0YQFiGjBSSts=",
+            "size": 6592,
+            "sha256": "8a09e28d1f3a7514cd81f4e3ac3d3b6fba25ec21648fbea13482018c8e0ef442",
+            "integrity": "sha256-ignijR86dRTNgfTjrD07b7ol7CFkj76hNIIBjI4O9EI=",
             "contentType": "application/octet-stream",
             "cacheControl": "public, max-age=31536000, immutable"
           },
@@ -5123,7 +5660,7 @@
           }
         ]
       },
-      "totalBytes": 444174319
+      "totalBytes": 127497068
     }
   }
 }

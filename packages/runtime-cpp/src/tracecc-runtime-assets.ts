@@ -9,6 +9,17 @@ import {
 
 export { TRACECC_RUNTIME_CONTENT_HASH } from './tracecc-runtime-assets.generated';
 
+/**
+ * Relative path beneath the deployment's generic browser-worker asset root.
+ *
+ * TraceCC artifacts are published under this content-addressed directory. It
+ * deliberately includes the consumer hash rather than the upstream toolchain
+ * version: the directory also contains the Harness-owned runtime header and
+ * PCH/object shards.
+ */
+export const TRACECC_RUNTIME_ASSET_RELATIVE_PATH =
+  `cpp/tracecc/${TRACECC_RUNTIME_CONTENT_HASH}`;
+
 interface TraceCCAssetIdentity {
   readonly fileName: string;
   readonly integrity: `sha256-${string}`;
@@ -101,3 +112,28 @@ export function createTraceCCRuntimeManifest(
     },
   };
 }
+
+/**
+ * Resolves the built-in TraceCC manifest from the generic browser asset root.
+ *
+ * The normal deployment serves all browser assets beneath `/workers`; the
+ * immutable TraceCC release is then addressed at
+ * `/workers/cpp/tracecc/<consumer-hash>/`. Consumers that publish the release
+ * elsewhere can pass their own generic root. For callers that need to provide
+ * a fully custom manifest, `createTraceCCRuntimeManifest` remains available.
+ */
+export function resolveBuiltInTraceCCRuntimeManifest(
+  assetBaseUrl = '/workers'
+): BrowserRuntimeAssetManifest<'cpp'> {
+  const normalizedAssetBaseUrl = stripTrailingSlash(assetBaseUrl.trim());
+  if (!normalizedAssetBaseUrl) {
+    throw new TypeError('TraceCC requires a non-empty asset base URL.');
+  }
+  return createTraceCCRuntimeManifest(
+    `${normalizedAssetBaseUrl}/${TRACECC_RUNTIME_ASSET_RELATIVE_PATH}`
+  );
+}
+
+/** The pinned fb4 TraceCC manifest for the standard `/workers` deployment. */
+export const TRACECC_RUNTIME_MANIFEST =
+  resolveBuiltInTraceCCRuntimeManifest();

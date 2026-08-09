@@ -1,8 +1,13 @@
 #!/usr/bin/env node
 
 import { copyFile, cp, mkdir, rm, stat } from 'node:fs/promises';
+import { realpathSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { materializeCSharpRoleAssets } from '../scripts/csharp-role-artifacts.js';
+import {
+  installEngineRuntimePackage,
+  loadEngineRuntimePackages,
+} from '../scripts/runtime-package-assets.mjs';
 
 type AssetLanguage = 'python' | 'javascript' | 'java' | 'csharp' | 'cpp';
 
@@ -170,8 +175,7 @@ function getPackageRoot(): string {
   if (!cliEntrypoint) {
     throw new Error('Unable to resolve tracecode-harness CLI entrypoint');
   }
-
-  return resolve(dirname(cliEntrypoint), '..');
+  return resolve(dirname(realpathSync(cliEntrypoint)), '..');
 }
 
 function resolveAssetSourcePath(packageRoot: string, asset: typeof ASSET_COPY_PLAN[number]): string {
@@ -230,6 +234,25 @@ function shouldCopyAsset(
 async function syncAssets(targetDir: string, selectedLanguages: ReadonlySet<AssetLanguage> | null): Promise<void> {
   const packageRoot = getPackageRoot();
   const resolvedTargetDir = resolve(process.cwd(), targetDir);
+  const wantsJava = !selectedLanguages || selectedLanguages.has('java');
+  const wantsCpp = !selectedLanguages || selectedLanguages.has('cpp');
+  if (wantsJava || wantsCpp) {
+    const engines = await loadEngineRuntimePackages(packageRoot);
+    if (wantsJava) {
+      await rm(join(resolvedTargetDir, 'java/tracejvm'), {
+        recursive: true,
+        force: true,
+      });
+      await installEngineRuntimePackage(engines.tracejvm, resolvedTargetDir);
+    }
+    if (wantsCpp) {
+      await rm(join(resolvedTargetDir, 'cpp/tracecc'), {
+        recursive: true,
+        force: true,
+      });
+      await installEngineRuntimePackage(engines.tracecc, resolvedTargetDir);
+    }
+  }
   if (!selectedLanguages || selectedLanguages.has('csharp')) {
     await rm(join(resolvedTargetDir, 'vendor/csharp-compiler'), {
       recursive: true,

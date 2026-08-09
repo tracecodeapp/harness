@@ -9,6 +9,7 @@ import {
 } from 'node:fs/promises';
 import { basename, dirname, join, relative, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { loadEngineRuntimePackages } from './runtime-package-assets.mjs';
 
 const SCRIPT_ROOT = dirname(fileURLToPath(import.meta.url));
 const ROOT = resolve(SCRIPT_ROOT, '..');
@@ -20,6 +21,10 @@ const PYTHON_GENERATED_PATH = join(
 const TRACECC_GENERATED_PATH = join(
   ROOT,
   'packages/runtime-cpp/src/tracecc-runtime-assets.generated.ts'
+);
+const TRACEJVM_GENERATED_PATH = join(
+  ROOT,
+  'packages/runtime-java/src/tracejvm-runtime-assets.generated.ts'
 );
 const LOCK_SCHEMA = 'tracecode.runtime-assets-lock.v1';
 const TREE_ALGORITHM = 'sha256-path-nul-bytes-nul-v1';
@@ -244,58 +249,15 @@ function traceccDescriptors(manifest) {
   });
 }
 
-async function findTraceCCManifest(existingLock) {
+async function findTraceCCManifest(traceccPackage) {
   const configured = process.env.TRACECC_ASSET_MANIFEST;
   if (configured) return resolve(configured);
-  const expectedHash = existingLock?.external?.tracecc?.consumerHash;
-  if (expectedHash) {
-    const candidate = join(ROOT, '.cache/tracecc-runtime-assets', expectedHash, 'cpp-runtime-manifest.json');
-    try {
-      await lstat(candidate);
-      return candidate;
-    } catch {}
-  }
-  const source = await readFile(
-    join(ROOT, 'packages/runtime-cpp/src/tracecc-runtime-assets.ts'),
-    'utf8'
-  );
-  const generated = await readFile(TRACECC_GENERATED_PATH, 'utf8').catch(() => '');
-  const match = /TRACECC_RUNTIME_CONTENT_HASH\s*=\s*['"]([0-9a-f]{64})['"]/u.exec(`${source}\n${generated}`);
-  if (match) {
-    const candidate = join(ROOT, '.cache/tracecc-runtime-assets', match[1], 'cpp-runtime-manifest.json');
-    try {
-      await lstat(candidate);
-      return candidate;
-    } catch {}
-  }
-  const cacheRoot = join(ROOT, '.cache/tracecc-runtime-assets');
-  const packagedHeader = await readFile(join(ROOT, 'workers/cpp/tracecode_runtime.hpp'));
-  const packagedHeaderSha256 = sha256(packagedHeader);
-  try {
-    const candidates = (await readdir(cacheRoot, { withFileTypes: true }))
-      .filter((entry) => entry.isDirectory() && /^[0-9a-f]{64}$/u.test(entry.name))
-      .map((entry) => join(cacheRoot, entry.name, 'cpp-runtime-manifest.json'))
-      .sort(compareText);
-    for (const candidate of candidates) {
-      const manifest = await readJson(candidate).catch(() => undefined);
-      const header = manifest?.assets?.runtimeHeader;
-      if (header?.integrity && sha256FromIntegrity(header.integrity) === packagedHeaderSha256) {
-        return candidate;
-      }
-    }
-  } catch {}
-  return undefined;
+  return join(traceccPackage.sourceRoot, 'cpp-runtime-manifest.json');
 }
 
-async function buildTraceCC(existingLock, cppComponent) {
-  const manifestPath = await findTraceCCManifest(existingLock);
-  const previous = existingLock?.external?.tracecc;
-  const manifest = manifestPath ? await readJson(manifestPath) : previous?.manifest;
-  if (!manifest) {
-    throw new Error(
-      'TraceCC release identity is unavailable. Set TRACECC_ASSET_MANIFEST to a prepared cpp-runtime-manifest.json.'
-    );
-  }
+async function buildTraceCC(traceccPackage, cppComponent) {
+  const manifestPath = await findTraceCCManifest(traceccPackage);
+  const manifest = await readJson(manifestPath);
   const match = /\/([0-9a-f]{64})\/$/u.exec(manifest.assetBaseUrl ?? '');
   if (!match) throw new Error('TraceCC manifest assetBaseUrl must end in its 64-character consumer hash.');
   const consumerHash = match[1];
@@ -310,28 +272,20 @@ async function buildTraceCC(existingLock, cppComponent) {
         'Rebuild the TraceCC PCH/object shards and run prepare:tracecc-assets before generating the release lock.'
     );
   }
-  if (manifestPath) {
-    const assetRoot = dirname(manifestPath);
-    for (const file of files) {
-      const bytes = await readFile(join(assetRoot, file.path));
-      const actual = sha256(bytes);
-      if (bytes.byteLength !== file.size || actual !== file.sha256) {
-        throw new Error(
-          `TraceCC prepared asset mismatch for ${file.path}: expected ${file.size} bytes/${file.sha256}, ` +
-            `received ${bytes.byteLength} bytes/${actual}.`
-        );
-      }
+  const assetRoot = dirname(manifestPath);
+  for (const file of files) {
+    const bytes = await readFile(join(assetRoot, file.path));
+    const actual = sha256(bytes);
+    if (bytes.byteLength !== file.size || actual !== file.sha256) {
+      throw new Error(
+        `TraceCC package asset mismatch for ${file.path}: expected ${file.size} bytes/${file.sha256}, ` +
+          `received ${bytes.byteLength} bytes/${actual}.`
+      );
     }
   }
-  let provenance = previous?.provenance;
-  if (manifestPath) {
-    const provenancePath = join(dirname(manifestPath), 'tracecc-consumer-lock.json');
-    try {
-      provenance = await readJson(provenancePath);
-    } catch (error) {
-      if (error?.code !== 'ENOENT') throw error;
-    }
-  }
+  const provenance = await readJson(
+    join(dirname(manifestPath), 'tracecc-consumer-lock.json')
+  );
   if (provenance) {
     if (
       provenance.schema !== 'tracecode.tracecc-consumer-lock.v1' ||
@@ -356,7 +310,9 @@ async function buildTraceCC(existingLock, cppComponent) {
     }
   }
   return {
-    releaseId: `tracecc+sha256.${consumerHash}`,
+    releaseId: traceccPackage.releaseId,
+    package: traceccPackage.package,
+    packageManifest: traceccPackage.manifest,
     consumerHash,
     treeSha256Algorithm: 'tracecc-consumer-sha256-v1',
     manifest,
@@ -366,65 +322,51 @@ async function buildTraceCC(existingLock, cppComponent) {
   };
 }
 
-async function findTraceJVMRelease(version, existingLock) {
+async function findTraceJVMRelease(tracejvmPackage) {
   const configured = process.env.TRACECODE_TRACEJVM_RELEASE;
   if (configured) return resolve(configured);
-  const contentHash = existingLock?.external?.tracejvm?.contentHash;
-  const roots = [
-    resolve(ROOT, '../tracejvm/.cache/runtime-release'),
-    resolve(ROOT, '../../tracejvm/.cache/runtime-release'),
-  ];
-  for (const root of roots) {
-    if (contentHash) {
-      const candidate = join(root, version, contentHash, 'release.json');
-      try {
-        await lstat(candidate);
-        return candidate;
-      } catch {}
-    }
-    try {
-      const candidates = (await readdir(join(root, version), { withFileTypes: true }))
-        .filter((entry) => entry.isDirectory() && /^[0-9a-f]{64}$/u.test(entry.name))
-        .map((entry) => join(root, version, entry.name, 'release.json'))
-        .sort(compareText);
-      if (candidates.length === 1) return candidates[0];
-    } catch {}
-  }
-  return undefined;
+  return join(tracejvmPackage.sourceRoot, 'release.json');
 }
 
-async function buildTraceJVM(existingLock) {
+async function buildTraceJVM(tracejvmPackage) {
   const runtimeJavaPackage = await readJson(join(ROOT, 'packages/runtime-java/package.json'));
-  const version = runtimeJavaPackage.dependencies?.['@tracecode/tracejvm'];
-  if (!/^\d+\.\d+\.\d+$/u.test(version ?? '')) {
+  const clientVersion = runtimeJavaPackage.dependencies?.['@tracecode/tracejvm'];
+  if (!/^\d+\.\d+\.\d+$/u.test(clientVersion ?? '')) {
     throw new Error('@tracecode/runtime-java must pin an exact @tracecode/tracejvm version.');
   }
-  const releasePath = await findTraceJVMRelease(version, existingLock);
-  const release = releasePath ? await readJson(releasePath) : existingLock?.external?.tracejvm?.descriptor;
-  if (!release) {
+  if (clientVersion !== tracejvmPackage.package.version) {
     throw new Error(
-      `TraceJVM ${version} release descriptor is unavailable. Set TRACECODE_TRACEJVM_RELEASE to release.json.`
+      `@tracecode/runtime-java requires TraceJVM ${clientVersion}, but Harness resolved ${tracejvmPackage.package.version}.`
     );
   }
+  const releasePath = await findTraceJVMRelease(tracejvmPackage);
+  const releaseBytes = await readFile(releasePath);
+  const release = JSON.parse(releaseBytes.toString('utf8'));
+  const version = release.package?.version;
   if (
     release.schema !== 'tracejvm-runtime-release-v2' ||
     release.package?.name !== '@tracecode/tracejvm' ||
-    release.package.version !== version ||
+    !/^\d+\.\d+\.\d+$/u.test(version ?? '') ||
     !/^[0-9a-f]{64}$/u.test(release.contentHash ?? '') ||
     release.relativePrefix !== `tracejvm/${version}/${release.contentHash}`
   ) {
     throw new Error(
-      `TraceJVM release identity mismatch: @tracecode/runtime-java requires ${version}, descriptor reports ` +
+      `TraceJVM release identity mismatch: @tracecode/runtime-java requires ${clientVersion}, descriptor reports ` +
         `${String(release.package?.version)} at ${String(release.relativePrefix)}.`
     );
   }
   return {
-    releaseId: `tracejvm@${version}+sha256.${release.contentHash}`,
-    package: { name: '@tracecode/tracejvm', version },
+    releaseId: tracejvmPackage.releaseId,
+    package: tracejvmPackage.package,
+    packageManifest: tracejvmPackage.manifest,
     contentHash: release.contentHash,
     relativePrefix: release.relativePrefix,
+    descriptorSha256: sha256(releaseBytes),
+    descriptorSize: releaseBytes.byteLength,
     descriptor: release,
-    totalBytes: release.files.reduce((total, file) => total + file.size, 0),
+    totalBytes: release.files
+      .filter((file) => !file.path.startsWith('legal/') && !file.path.startsWith('source/'))
+      .reduce((total, file) => total + file.size, 0),
   };
 }
 
@@ -481,15 +423,26 @@ function renderTraceCCGenerated(tracecc) {
     `export const TRACECC_RUNTIME_ASSETS = Object.freeze(${JSON.stringify(assets, null, 2)} as const);\n`;
 }
 
+function renderTraceJVMGenerated(tracejvm) {
+  return `// Generated by scripts/generate-runtime-assets-lock.mjs. Do not edit.\n` +
+    `export const TRACEJVM_RUNTIME_VERSION = ${JSON.stringify(tracejvm.package.version)};\n` +
+    `export const TRACEJVM_RUNTIME_CONTENT_HASH = ${JSON.stringify(tracejvm.contentHash)};\n` +
+    `export const TRACEJVM_RUNTIME_ASSET_RELATIVE_PATH = ${JSON.stringify(`java/${tracejvm.relativePrefix}`)};\n` +
+    `export const TRACEJVM_RUNTIME_RELEASE_DESCRIPTOR = Object.freeze(${JSON.stringify({
+      integrity: integrityForSha256(tracejvm.descriptorSha256),
+      size: tracejvm.descriptorSize,
+    }, null, 2)} as const);\n`;
+}
+
 async function buildLock() {
   const packageJson = await readJson(join(ROOT, 'package.json'));
-  const existingLock = await readExistingLock();
+  const engines = await loadEngineRuntimePackages(ROOT);
   const packaged = await buildPackagedComponents();
   const packageTreeSha256 = treeSha256(packaged.files);
   const python = findPythonRuntime(packaged.components);
   const pythonNative = await assertPythonNativeManifest(python);
-  const tracecc = await buildTraceCC(existingLock, packaged.components.cpp);
-  const tracejvm = await buildTraceJVM(existingLock);
+  const tracecc = await buildTraceCC(engines.tracecc, packaged.components.cpp);
+  const tracejvm = await buildTraceJVM(engines.tracejvm);
   const csharp = await readJson(join(ROOT, 'workers/vendor/csharp-role-artifacts/manifest.json'));
   const general = csharp.roles?.general;
   const compiler = csharp.roles?.compiler;
@@ -534,13 +487,14 @@ async function buildLock() {
       },
       csharp,
     },
-    external: { tracecc, tracejvm },
+    engineDependencies: { tracecc, tracejvm },
   };
   return {
     lock,
     rendered: `${JSON.stringify(lock, null, 2)}\n`,
     pythonGenerated: renderPythonGenerated(python),
     traceccGenerated: renderTraceCCGenerated(tracecc),
+    tracejvmGenerated: renderTraceJVMGenerated(tracejvm),
   };
 }
 
@@ -571,6 +525,7 @@ async function main() {
     await assertCurrent(LOCK_PATH, output.rendered, 'Runtime asset lock');
     await assertCurrent(PYTHON_GENERATED_PATH, output.pythonGenerated, 'Python runtime metadata');
     await assertCurrent(TRACECC_GENERATED_PATH, output.traceccGenerated, 'TraceCC runtime metadata');
+    await assertCurrent(TRACEJVM_GENERATED_PATH, output.tracejvmGenerated, 'TraceJVM runtime metadata');
     console.log(
       `PASS: ${output.lock.harness.releaseId} locks ${output.lock.totalPackagedRuntimeBytes} packaged runtime bytes.`
     );
@@ -579,6 +534,7 @@ async function main() {
   await writeFile(LOCK_PATH, output.rendered);
   await writeFile(PYTHON_GENERATED_PATH, output.pythonGenerated);
   await writeFile(TRACECC_GENERATED_PATH, output.traceccGenerated);
+  await writeFile(TRACEJVM_GENERATED_PATH, output.tracejvmGenerated);
   console.log(
     `Generated ${output.lock.harness.releaseId} with ${output.lock.totalPackagedRuntimeBytes} packaged runtime bytes.`
   );

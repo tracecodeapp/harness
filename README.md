@@ -30,11 +30,10 @@ Copy the browser assets into the application's public directory:
 pnpm exec tracecode-harness sync-assets public/workers
 ```
 
-Version 0.16 includes the Python runtime image in that asset tree. The Judge
-provider automatically selects the Chromium, Firefox, or WebKit snapshot and
-does not require a Python-specific application API. Keep the copied
-`python/pyodide-0.29.3` directory intact and serve `.wasm` files as
-`application/wasm`.
+Version 0.16 installs exact TraceJVM and TraceCC dependencies and copies their
+owned runtime releases into that asset tree. The application does not install,
+version, publish, or configure those engines independently. Keep the copied
+tree intact and serve `.wasm` files as `application/wasm`.
 
 Limit the copied assets when an application uses only some languages:
 
@@ -126,7 +125,6 @@ const host = createBrowserJudgeHost({
 });
 
 try {
-  await host.preflightLanguage('python');
   await host.warmLanguage('python');
 
   const receipt = await host.evaluateAlgorithm({ bundle });
@@ -205,8 +203,23 @@ Judge.
 
 ## Runtime assets
 
-Browser consumers may use versioned runtime manifests or override individual
-asset URLs. For untrusted execution, route workers through a dedicated,
+`assetBaseUrl` locates one Harness-owned release tree. It defaults to
+`/workers`, matching the output of `sync-assets`. Changing it moves the whole
+tree—for example to a credential-free static origin—but does not make the
+application responsible for TraceJVM, TraceCC, Pyodide, or .NET versions.
+Those dependency identities and every file digest are generated into
+`runtime-assets.lock.json` by the Harness release.
+
+`warmLanguage(language)` is the readiness boundary. It verifies required
+browser features and immutable runtime assets, then initializes the provider;
+the first execution performs the same check if warmup was skipped. A missing,
+stale, or mixed runtime therefore fails before learner compilation.
+`preflightLanguage` remains useful for diagnostics, but applications do not
+need to orchestrate it.
+
+Advanced deployments may provide runtime manifests or per-language base
+overrides, but those locations must serve the exact release pinned by the
+installed Harness. For untrusted execution, route workers through a dedicated,
 credential-free execution origin. See
 [Browser execution host](./docs/browser-execution-host.md) and
 [Isolation boundaries](./docs/isolation-boundaries.md).

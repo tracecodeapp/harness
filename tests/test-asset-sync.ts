@@ -15,6 +15,10 @@ import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { createCSharpRoleArtifacts } from '../scripts/csharp-role-artifacts.js';
+import { TRACECC_RUNTIME_CONTENT_HASH } from '../packages/runtime-cpp/src/tracecc-runtime-assets.js';
+import {
+  TRACEJVM_RUNTIME_ASSET_RELATIVE_PATH,
+} from '../packages/runtime-java/src/tracejvm-runtime-assets.js';
 
 function assertCondition(condition: unknown, message: string): asserts condition {
   if (!condition) {
@@ -31,9 +35,20 @@ async function main(t: TestContext): Promise<void> {
     join(targetDir, 'vendor/csharp-compiler/stale.txt'),
     'stale compiler tree'
   );
+  await mkdir(join(targetDir, 'java/tracejvm/stale'), { recursive: true });
+  await writeFile(join(targetDir, 'java/tracejvm/stale/old.txt'), 'stale JVM');
+  await mkdir(join(targetDir, 'cpp/tracecc/stale'), { recursive: true });
+  await writeFile(join(targetDir, 'cpp/tracecc/stale/old.txt'), 'stale compiler');
 
   const run = spawnSync('node', ['dist/cli.js', 'sync-assets', targetDir], {
     cwd: resolve(process.cwd()),
+    env: {
+      ...process.env,
+      TRACECODE_TRACEJVM_PACKAGE_ROOT:
+        process.env.TRACECODE_TRACEJVM_PACKAGE_ROOT,
+      TRACECODE_TRACECC_PACKAGE_ROOT:
+        process.env.TRACECODE_TRACECC_PACKAGE_ROOT,
+    },
     encoding: 'utf8',
   });
 
@@ -66,6 +81,12 @@ async function main(t: TestContext): Promise<void> {
     'cpp-worker.js',
     'shared/runtime-kernel-policy.js',
     'cpp/tracecode_runtime.hpp',
+    `cpp/tracecc/${TRACECC_RUNTIME_CONTENT_HASH}/cpp-runtime-manifest.json`,
+    `cpp/tracecc/${TRACECC_RUNTIME_CONTENT_HASH}/tracecc-reactor.wasm`,
+    `${TRACEJVM_RUNTIME_ASSET_RELATIVE_PATH}/release.json`,
+    `${TRACEJVM_RUNTIME_ASSET_RELATIVE_PATH}/browser-worker.js`,
+    `${TRACEJVM_RUNTIME_ASSET_RELATIVE_PATH}/compiler/compiler.wasm`,
+    `${TRACEJVM_RUNTIME_ASSET_RELATIVE_PATH}/profiles/core/jdk23.jar`,
     'java-source-augmentations.js',
     'csharp-worker.js',
     'vendor/typescript.js',
@@ -129,7 +150,7 @@ async function main(t: TestContext): Promise<void> {
     !removedBrandedCppPathExists,
     'Asset sync must not republish C++ compiler assets under an implementation-branded path'
   );
-  const removedBundledCppCompilerExists = await stat(
+  const retiredBundledCppCompilerExists = await stat(
     join(targetDir, 'cpp/compiler')
   ).then(
     () => true,
@@ -139,9 +160,32 @@ async function main(t: TestContext): Promise<void> {
     }
   );
   assertCondition(
-    !removedBundledCppCompilerExists,
-    'Asset sync must not bundle external TraceCC release artifacts'
+    !retiredBundledCppCompilerExists,
+    'Asset sync must not publish the retired pre-TraceCC compiler layout'
   );
+  const bundledTraceCCExists = await stat(
+    join(
+      targetDir,
+      `cpp/tracecc/${TRACECC_RUNTIME_CONTENT_HASH}/tracecc-reactor.wasm`
+    )
+  );
+  assertCondition(
+    bundledTraceCCExists.isFile(),
+    'Asset sync must publish the TraceCC package release'
+  );
+  for (const stalePath of [
+    'java/tracejvm/stale/old.txt',
+    'cpp/tracecc/stale/old.txt',
+  ]) {
+    const exists = await stat(join(targetDir, stalePath)).then(
+      () => true,
+      (error: NodeJS.ErrnoException) => {
+        if (error.code === 'ENOENT') return false;
+        throw error;
+      }
+    );
+    assertCondition(!exists, `Asset sync must remove stale engine release ${stalePath}`);
+  }
 
   const rootEntries = await readdir(targetDir);
   assertCondition(rootEntries.includes('python-worker.js'), 'Asset sync should flatten the Python worker into the target root');
@@ -207,7 +251,6 @@ async function main(t: TestContext): Promise<void> {
     !sourceControlArtifactsExist,
     'Asset sync must not publish build-time C# role archives to browsers'
   );
-
   for (const relativePath of ['cpp-worker.js']) {
     const source = await readFile(join(targetDir, relativePath), 'utf8');
     assertCondition(
