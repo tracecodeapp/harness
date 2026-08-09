@@ -9,6 +9,8 @@ import {
   type RuntimeJudgeBinding,
 } from '../src/judge';
 import {
+  DEFAULT_INTERACTIVE_EXECUTION_IDLE_TIMEOUT_MS,
+  createBrowserJudgeHostFromRuntimeHost,
   createBrowserRuntimeJudge,
 } from '../src/internal/browser-judge';
 import { RuntimePreparedProgramRegistry } from '../src/internal/judge-prepared-program';
@@ -733,6 +735,118 @@ test('interactive execute retains one trace-capable artifact and traces explicit
   ));
 
   assert.equal(state.disposals, 1);
+});
+
+test('browser interactive executions expire through the ordinary disposal path', async () => {
+  const state = makePreparedState();
+  const runtimeHost = browserHostFor(preparedProvider(state));
+  const judgeHost = createBrowserJudgeHostFromRuntimeHost(runtimeHost, {
+    interactiveExecutionIdleTimeoutMs: 25,
+  });
+  try {
+    const bundle = await createAlgorithmJudgeBundle({
+      id: 'idle-expiry',
+      language: 'javascript',
+      code: SOURCE,
+      functionName: 'solve',
+      trace: true,
+      cases: [
+        { id: 'selected', input: { label: 'selected' }, expected: 'selected' },
+        { id: 'drain', input: { label: 'drain' }, expected: 'drain' },
+      ],
+    });
+    const initial = await judgeHost.execute({
+      bundle,
+      interactive: true,
+      tracing: { caseIds: ['selected'] },
+    });
+    assert.ok(initial.executionId);
+
+    await new Promise<void>((resolve) => setTimeout(resolve, 75));
+
+    await assert.rejects(
+      judgeHost.execute({
+        executionId: initial.executionId!,
+        tracing: { caseIds: ['drain'] },
+      }),
+      /Unknown or disposed interactive execution/u
+    );
+  } finally {
+    judgeHost.dispose();
+  }
+});
+
+test('interactive activity pauses and renews the idle lease', async () => {
+  const state = makePreparedState();
+  const runtimeHost = browserHostFor(preparedProvider(state));
+  const judgeHost = createBrowserJudgeHostFromRuntimeHost(runtimeHost, {
+    interactiveExecutionIdleTimeoutMs: 25,
+  });
+  try {
+    const bundle = await createAlgorithmJudgeBundle({
+      id: 'idle-renewal',
+      language: 'javascript',
+      code: SOURCE,
+      functionName: 'solve',
+      trace: true,
+      cases: [
+        {
+          id: 'slow-drain',
+          input: { label: 'slow-drain', delayMs: 70 },
+          expected: 'slow-drain',
+        },
+        {
+          id: 'renewal-probe',
+          input: { label: 'renewal-probe' },
+          expected: 'renewal-probe',
+        },
+      ],
+    });
+    const initial = await judgeHost.execute({
+      bundle,
+      interactive: true,
+    });
+    assert.ok(initial.executionId);
+
+    const continuation = await judgeHost.execute({
+      executionId: initial.executionId!,
+      tracing: { caseIds: ['slow-drain'] },
+    });
+    assert.equal(continuation.executionId, initial.executionId);
+    assert.equal(continuation.evaluation.status, 'completed');
+
+    const renewed = await judgeHost.execute({
+      executionId: initial.executionId!,
+      tracing: { caseIds: ['renewal-probe'] },
+    });
+    assert.equal(renewed.executionId, initial.executionId);
+
+    await new Promise<void>((resolve) => setTimeout(resolve, 75));
+    await assert.rejects(
+      judgeHost.execute({
+        executionId: initial.executionId!,
+        tracing: { caseIds: ['slow-drain'] },
+      }),
+      /Unknown or disposed interactive execution/u
+    );
+  } finally {
+    judgeHost.dispose();
+  }
+});
+
+test('interactive idle timeout has a safe default and rejects invalid configuration', () => {
+  assert.equal(DEFAULT_INTERACTIVE_EXECUTION_IDLE_TIMEOUT_MS, 300_000);
+  const runtimeHost = browserHostFor(preparedProvider(makePreparedState()));
+  try {
+    assert.throws(
+      () => createBrowserJudgeHostFromRuntimeHost(runtimeHost, {
+        interactiveExecutionIdleTimeoutMs: 0,
+      }),
+      /must be a positive integer/u
+    );
+  } finally {
+    runtimeHost.dispose();
+  }
 });
 
 test('execute treats tracing and interactivity as independent explicit opt-ins', async () => {

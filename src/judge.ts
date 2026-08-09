@@ -7,6 +7,7 @@
  */
 export {
   BROWSER_WORKER_LIFECYCLE_POLICIES,
+  DEFAULT_INTERACTIVE_EXECUTION_IDLE_TIMEOUT_MS,
   createBrowserProjectJudge,
   createBrowserJudgeHost,
   evaluateJudgePlan,

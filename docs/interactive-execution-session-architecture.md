@@ -25,6 +25,23 @@ await judgeHost.execute({
 await judgeHost.disposeExecution(initial.executionId);
 ```
 
+Retained executions also carry a Judge-owned idle lease. The browser host
+defaults that lease to five minutes and lets the application configure it once
+for the authority:
+
+```ts
+const judgeHost = createBrowserJudgeHost({
+  interactiveExecutionIdleTimeoutMs: 5 * 60_000,
+});
+```
+
+An addressed continuation pauses the lease while its tranche is active and renews
+the full lease when it finishes, including when that tranche is interrupted or
+fails. The lease never expires an active tranche. Idle expiry uses the same
+idempotent disposal path as `disposeExecution`, invalidates the execution ID,
+and closes its Judge scope. A later continuation receives the ordinary unknown
+or disposed execution error and may start a new interactive execution.
+
 `execute({ bundle })` is deliberately conservative: it prepares a clean
 artifact, records no traces, retains no session, and disposes the evaluation
 before returning. `tracing` is never inferred. `interactive: true` is never
@@ -47,6 +64,13 @@ Disposal invalidates the capability immediately and releases its prepared
 program lease exactly once. A host-level content cache may keep an immutable,
 unreferenced artifact warm under its ordinary bounded TTL; it does not retain
 the execution id, case authority, mutable runtime state, or a usable session.
+
+The product should still dispose immediately when code is replaced, the editor
+route unmounts, or its generation loses authority. A full page refresh normally
+destroys the browser realm and Workers, but idle expiry is the backstop for a
+missed component cleanup or a long-lived application host. The harness does not
+listen to navigation events itself because route ownership belongs to the
+application.
 
 The lower-level scoped `RuntimeJudge` exposes the same initial/continuation
 forms over a `JudgeEvaluationPlan`. Closing its Effect scope disposes every

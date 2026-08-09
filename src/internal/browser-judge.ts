@@ -120,6 +120,8 @@ export type {
 
 const PROVIDER_ERROR_CODE = 'runtime-provider-error';
 const INTERNAL_PREPARE_COMMAND = 'runtime-provider-prepare';
+export const DEFAULT_INTERACTIVE_EXECUTION_IDLE_TIMEOUT_MS = 5 * 60_000;
+const MAX_TIMER_DELAY_MS = 2_147_483_647;
 
 interface RuntimeJudgeBindingBase {
   /**
@@ -255,6 +257,12 @@ export interface CreateBrowserJudgeHostOptions {
   readonly java?: BrowserJudgeJavaOptions;
   readonly csharp?: BrowserJudgeCSharpOptions;
   readonly cpp?: BrowserJudgeCppOptions;
+  /**
+   * Idle lease for retained interactive executions. Continuation work
+   * pauses the lease, and completing that work renews it. Defaults to five
+   * minutes. Explicit disposal remains the preferred lifecycle path.
+   */
+  readonly interactiveExecutionIdleTimeoutMs?: number;
   /**
    * Browser TraceKernel configuration used by project evaluations.
    *
@@ -1575,22 +1583,80 @@ export function createBrowserRuntimeJudge(
 export function createBrowserJudgeHost(
   options: CreateBrowserJudgeHostOptions = {}
 ): BrowserJudgeHost {
+  const interactiveExecutionIdleTimeoutMs =
+    resolveInteractiveExecutionIdleTimeoutMs(
+      options.interactiveExecutionIdleTimeoutMs
+    );
   const host = createBrowserRuntimeHost(options);
-  const retainedExecutions = new Map<string, {
-    readonly judge: RuntimeJudge;
-    readonly scope: Scope.CloseableScope;
-  }>();
+  return createBrowserJudgeHostFromRuntimeHost(host, {
+    interactiveExecutionIdleTimeoutMs,
+    project: options.project,
+  });
+}
 
-  const disposeExecution = async (executionId: string): Promise<void> => {
+interface RetainedBrowserJudgeExecution {
+  readonly judge: RuntimeJudge;
+  readonly scope: Scope.CloseableScope;
+  activeContinuations: number;
+  idleTimer?: ReturnType<typeof globalThis.setTimeout>;
+}
+
+/** @internal Browser-host seam used by lifecycle conformance tests. */
+export function createBrowserJudgeHostFromRuntimeHost(
+  host: BrowserRuntimeHost,
+  options: Pick<
+    CreateBrowserJudgeHostOptions,
+    'interactiveExecutionIdleTimeoutMs' | 'project'
+  > = {}
+): BrowserJudgeHost {
+  const interactiveExecutionIdleTimeoutMs =
+    resolveInteractiveExecutionIdleTimeoutMs(
+      options.interactiveExecutionIdleTimeoutMs
+    );
+  const retainedExecutions = new Map<string, RetainedBrowserJudgeExecution>();
+
+  const clearIdleTimer = (retained: RetainedBrowserJudgeExecution): void => {
+    if (retained.idleTimer === undefined) return;
+    globalThis.clearTimeout(retained.idleTimer);
+    retained.idleTimer = undefined;
+  };
+
+  const armIdleTimer = (
+    executionId: string,
+    retained: RetainedBrowserJudgeExecution
+  ): void => {
+    clearIdleTimer(retained);
+    if (
+      retained.activeContinuations > 0 ||
+      retainedExecutions.get(executionId) !== retained
+    ) {
+      return;
+    }
+    const timer = globalThis.setTimeout(() => {
+      retained.idleTimer = undefined;
+      if (
+        retained.activeContinuations > 0 ||
+        retainedExecutions.get(executionId) !== retained
+      ) {
+        return;
+      }
+      void disposeExecution(executionId).catch(() => undefined);
+    }, interactiveExecutionIdleTimeoutMs);
+    retained.idleTimer = timer;
+    (timer as unknown as { unref?: () => void }).unref?.();
+  };
+
+  async function disposeExecution(executionId: string): Promise<void> {
     const retained = retainedExecutions.get(executionId);
     if (!retained) return;
     retainedExecutions.delete(executionId);
+    clearIdleTimer(retained);
     try {
       await Effect.runPromise(retained.judge.disposeExecution(executionId));
     } finally {
       await Effect.runPromise(Scope.close(retained.scope, Exit.void));
     }
-  };
+  }
 
   const execute = async <
     Input extends Record<string, unknown> = Record<string, unknown>,
@@ -1607,13 +1673,20 @@ export function createBrowserJudgeHost(
             `Unknown or disposed interactive execution ${JSON.stringify(request.executionId)}.`,
         });
       }
-      return Effect.runPromise(
-        retained.judge.execute<Input, Result, Expected>({
-          executionId: request.executionId,
-          tracing: request.tracing,
-        }),
-        request.signal ? { signal: request.signal } : undefined
-      );
+      clearIdleTimer(retained);
+      retained.activeContinuations += 1;
+      try {
+        return await Effect.runPromise(
+          retained.judge.execute<Input, Result, Expected>({
+            executionId: request.executionId,
+            tracing: request.tracing,
+          }),
+          request.signal ? { signal: request.signal } : undefined
+        );
+      } finally {
+        retained.activeContinuations -= 1;
+        armIdleTimer(request.executionId, retained);
+      }
     }
 
     const { bundle } = request;
@@ -1649,7 +1722,13 @@ export function createBrowserJudgeHost(
         request.signal ? { signal: request.signal } : undefined
       );
       if (result.executionId) {
-        retainedExecutions.set(result.executionId, { judge, scope });
+        const retained: RetainedBrowserJudgeExecution = {
+          judge,
+          scope,
+          activeContinuations: 0,
+        };
+        retainedExecutions.set(result.executionId, retained);
+        armIdleTimer(result.executionId, retained);
       } else {
         await Effect.runPromise(Scope.close(scope, Exit.void));
       }
@@ -1726,6 +1805,23 @@ export function createBrowserJudgeHost(
       host.dispose();
     },
   });
+}
+
+function resolveInteractiveExecutionIdleTimeoutMs(
+  configured: number | undefined
+): number {
+  const timeoutMs =
+    configured ?? DEFAULT_INTERACTIVE_EXECUTION_IDLE_TIMEOUT_MS;
+  if (
+    !Number.isSafeInteger(timeoutMs) ||
+    timeoutMs <= 0 ||
+    timeoutMs > MAX_TIMER_DELAY_MS
+  ) {
+    throw new RangeError(
+      'interactiveExecutionIdleTimeoutMs must be a positive integer no greater than 2147483647.'
+    );
+  }
+  return timeoutMs;
 }
 
 export {

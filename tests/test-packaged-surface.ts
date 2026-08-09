@@ -74,7 +74,10 @@ test('published package has only TraceKernel and Judge code entrypoints', async 
   assert.match(judgeTypes, /createJudge/u);
   assert.match(judgeTypes, /BrowserJudgeExecuteRequest/u);
   assert.match(judgeTypes, /disposeExecution/u);
+  assert.match(judgeTypes, /interactiveExecutionIdleTimeoutMs/u);
+  assert.match(judgeTypes, /DEFAULT_INTERACTIVE_EXECUTION_IDLE_TIMEOUT_MS/u);
   assert.doesNotMatch(judgeTypes, /createBrowserRuntimeJudge/u);
+  assert.doesNotMatch(judgeTypes, /createBrowserJudgeHostFromRuntimeHost/u);
 });
 
 test('built ESM surfaces execute through their owning authority', async () => {
@@ -181,6 +184,7 @@ test('public TypeScript declarations are consumable without internal imports', a
           type CreateBrowserWorkspaceOptions,
         } from '@tracecode/harness/tracekernel';
         import {
+          DEFAULT_INTERACTIVE_EXECUTION_IDLE_TIMEOUT_MS,
           createBrowserJudgeHost,
           type BrowserJudgeExecuteRequest,
           type CreateBrowserJudgeOptions,
@@ -189,6 +193,7 @@ test('public TypeScript declarations are consumable without internal imports', a
         void createBrowserWorkspace;
         void createRuntimeWorkspace;
         void createBrowserJudgeHost;
+        void DEFAULT_INTERACTIVE_EXECUTION_IDLE_TIMEOUT_MS;
         const workspaceOptions: CreateBrowserWorkspaceOptions = {};
         const judgeOptions = null as CreateBrowserJudgeOptions | null;
         const executeRequest = null as BrowserJudgeExecuteRequest | null;
