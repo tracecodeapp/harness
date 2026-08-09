@@ -13,7 +13,7 @@ import { CSharpWorkerClient } from './csharp-worker-client';
 export interface CSharpBrowserRuntimeProviderOptions {
   /** Idle timeout for the general Project/terminal/server-capable worker. */
   workerIdleTimeoutMs?: number;
-  /** Idle timeout for the trusted Roslyn authority. */
+  /** Idle timeout for the trusted compiler authority. */
   compilerIdleTimeoutMs?: number;
   /** Idle timeout for a prewarmed, unused disposable Judge runner. */
   runnerIdleTimeoutMs?: number;

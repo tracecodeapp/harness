@@ -209,17 +209,15 @@ const PACKAGE_CHECKS: PackageCheck[] = [
       'dist/project-browser.d.ts',
       'workers/cpp-worker.js',
       'workers/shared/runtime-kernel-policy.js',
-      'workers/cpp-compiler-frame.html',
-      'workers/cpp-compiler-worker.js',
       'workers/cpp/tracecode_runtime.hpp',
-      'workers/cpp/compiler/bundle.js',
-      'workers/cpp/compiler/llvm-resources.tar',
-      'workers/cpp/compiler/llvm.core.wasm',
-      'workers/cpp/compiler/llvm.core2.wasm',
-      'workers/cpp/compiler/llvm.core3.wasm',
-      'workers/cpp/compiler/llvm.core4.wasm',
       'LICENSE',
       'THIRD_PARTY_NOTICES.md',
+    ],
+    forbiddenFiles: [
+      'workers/cpp-compiler-frame.html',
+      'workers/cpp-compiler-worker.js',
+      'workers/cpp/compiler/bundle.js',
+      'workers/cpp/compiler/llvm-resources.tar',
     ],
   },
   {
@@ -993,7 +991,7 @@ async function runWithTempRoot(tempRoot: string): Promise<void> {
         '@tracecode/runtime-csharp worker should stream returned compiler/build output events'
       );
       const csharpSupportFilesDir = join(packageDir, 'workers/vendor/csharp/_framework/supportFiles');
-      const csharpHostDllName = (await readdir(csharpSupportFilesDir)).find((entry) => entry.endsWith('_TraceCode.CSharpHost.dll'));
+      const csharpHostDllName = (await readdir(csharpSupportFilesDir)).find((entry) => entry.endsWith('TraceCode.CSharpHost.dll'));
       assertCondition(Boolean(csharpHostDllName), '@tracecode/runtime-csharp should ship TraceCode.CSharpHost support file');
       const csharpHostDll = await readFile(join(csharpSupportFilesDir, csharpHostDllName!));
       const csharpHostApi = `${csharpHostDll.toString('utf8')}\n${csharpHostDll.toString('utf16le')}`;

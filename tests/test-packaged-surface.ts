@@ -42,6 +42,7 @@ test('published package has only TraceKernel and Judge code entrypoints', async 
     await readFile(join(ROOT, 'package.json'), 'utf8')
   ) as {
     exports?: Record<string, unknown>;
+    files?: unknown;
     main?: unknown;
     module?: unknown;
     types?: unknown;
@@ -55,6 +56,10 @@ test('published package has only TraceKernel and Judge code entrypoints', async 
   assert.equal(manifest.main, undefined);
   assert.equal(manifest.module, undefined);
   assert.equal(manifest.types, undefined);
+  assert.ok(
+    Array.isArray(manifest.files) && manifest.files.includes('!dist/**/*.map'),
+    'the release tarball must not republish generated dist source maps'
+  );
   for (const retired of RETIRED_EXPORTS) {
     assert.equal(
       manifest.exports?.[retired],

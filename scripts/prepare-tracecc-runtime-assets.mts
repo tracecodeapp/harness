@@ -1,14 +1,14 @@
 import { createHash } from 'node:crypto';
+import { execFile } from 'node:child_process';
 import { cp, mkdir, readFile, writeFile } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
+import { promisify } from 'node:util';
 import {
   resolveBrowserRuntimeAssetManifests,
   type BrowserRuntimeAssetManifest,
 } from '../packages/runtime-browser/src/runtime-assets';
-import {
-  createTraceCCRuntimeManifest,
-  TRACECC_RUNTIME_CONTENT_HASH,
-} from '../packages/runtime-cpp/src/tracecc-runtime-assets';
+
+const execFileAsync = promisify(execFile);
 
 interface FileIdentity {
   readonly source: string;
@@ -218,19 +218,6 @@ async function main(): Promise<void> {
       },
     },
   };
-  if (consumerHash !== TRACECC_RUNTIME_CONTENT_HASH) {
-    throw new Error(
-      `TraceCC consumer hash drifted: expected ${TRACECC_RUNTIME_CONTENT_HASH}, received ${consumerHash}.`
-    );
-  }
-  const frozenManifest = createTraceCCRuntimeManifest(
-    manifest.assetBaseUrl
-  );
-  if (JSON.stringify(frozenManifest) !== JSON.stringify(manifest)) {
-    throw new Error(
-      'TraceCC v9r1 generated assets no longer match the harness-owned browser manifest.'
-    );
-  }
   resolveBrowserRuntimeAssetManifests({
     assetBaseUrl: '/',
     manifests: {
@@ -239,10 +226,47 @@ async function main(): Promise<void> {
   });
   const manifestPath = join(outputDirectory, 'cpp-runtime-manifest.json');
   await writeFile(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`);
+  const consumerLockPath = join(outputDirectory, 'tracecc-consumer-lock.json');
+  await writeFile(
+    consumerLockPath,
+    `${JSON.stringify(
+      {
+        schema: 'tracecode.tracecc-consumer-lock.v1',
+        consumerHash,
+        consumerHashAlgorithm:
+          'sha256-toolchain-content-hash-plus-ordered-file-sha256-v1',
+        toolchain: {
+          protocolVersion: release.protocolVersion,
+          contentHash: release.contentHash,
+          artifacts: release.artifacts,
+        },
+        files: Object.values(files).map((file) => ({
+          path: file.name,
+          size: file.bytes,
+          sha256: file.sha256,
+          integrity: file.integrity,
+          mediaType: file.mediaType,
+        })),
+      },
+      null,
+      2
+    )}\n`
+  );
+
+  const generated = await execFileAsync(
+    process.execPath,
+    [resolve('scripts/generate-runtime-assets-lock.mjs')],
+    {
+      cwd: resolve('.'),
+      env: { ...process.env, TRACECC_ASSET_MANIFEST: manifestPath },
+    }
+  );
+  if (generated.stdout.trim()) console.log(generated.stdout.trim());
 
   console.log(JSON.stringify({
     outputDirectory,
     manifestPath,
+    consumerLockPath,
     publicBaseUrl: manifest.assetBaseUrl,
     contentHash: consumerHash,
     rawBytes: Object.values(files).reduce(

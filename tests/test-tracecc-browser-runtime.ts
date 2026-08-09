@@ -604,7 +604,7 @@ async function main(): Promise<void> {
     );
     assertCondition(
       requestedUrls.every((url) => !url.includes('/yowasp/')),
-      `TraceCC requested a YoWASP asset: ${JSON.stringify(
+      `TraceCC requested a retired compiler asset: ${JSON.stringify(
         requestedUrls.filter((url) => url.includes('/yowasp/'))
       )}`
     );

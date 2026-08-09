@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
 import {
   createTraceCCRuntimeManifest,
   TRACECC_RUNTIME_CONTENT_HASH,
@@ -53,5 +54,17 @@ assert.throws(
   () => createTraceCCRuntimeManifest(''),
   /non-empty asset base URL/
 );
+
+const workerSource = readFileSync(
+  new URL('../workers/cpp/cpp-worker.js', import.meta.url),
+  'utf8'
+);
+assert.doesNotMatch(
+  workerSource,
+  /yowasp/iu,
+  'the shipped C++ worker must not retain the retired compiler/download path or branding'
+);
+assert.match(workerSource, /tracecc-compile:start/u);
+assert.doesNotMatch(workerSource, /external-compile:start/u);
 
 console.log('TraceCC runtime asset manifest tests passed');

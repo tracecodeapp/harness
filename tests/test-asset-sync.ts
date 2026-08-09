@@ -146,7 +146,7 @@ async function main(t: TestContext): Promise<void> {
   assertCondition(
     !rootEntries.includes('cpp-compiler-frame.html') &&
       !rootEntries.includes('cpp-compiler-worker.js'),
-    'Asset sync must not republish retired YoWASP compiler workers'
+    'Asset sync must not republish retired pre-TraceCC compiler workers'
   );
   assertCondition(
     rootEntries.includes('java-source-augmentations.js'),

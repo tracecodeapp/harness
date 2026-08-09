@@ -17,8 +17,10 @@ const RETIRED_INTERNAL_PACKAGE_NAMES = new Set([
   '@tracecode/harness-python',
 ]);
 const RELEASE_CHECK_SCRIPT = 'node scripts/check-publish-safety.mjs';
-const ROOT_RELEASE_SCRIPT = 'pnpm release:check && pnpm publish . --access public';
-const PREPUBLISH_SCRIPT = 'pnpm release:check && pnpm build && pnpm release:check';
+const ROOT_RELEASE_SCRIPT =
+  'pnpm release:check && pnpm test:runtime-assets-lock && pnpm publish . --access public';
+const PREPUBLISH_SCRIPT =
+  'pnpm release:check && pnpm test:runtime-assets-lock && pnpm build && pnpm release:check && pnpm test:runtime-assets-lock';
 const WORKSPACE_SCOPE_ENVIRONMENT_KEYS = [
   'npm_config_filter',
   'npm_config_recursive',

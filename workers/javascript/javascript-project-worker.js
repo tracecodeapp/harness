@@ -1636,6 +1636,7 @@ var package_default = {
   files: [
     "dist",
     "workers",
+    "runtime-assets.lock.json",
     "!workers/java/.build",
     "!workers/java/.build/**",
     "!workers/java/src",
@@ -1675,22 +1676,23 @@ var package_default = {
     "./package.json": "./package.json"
   },
   scripts: {
-    prepublishOnly: "pnpm release:check && pnpm build && pnpm release:check",
+    prepublishOnly: "pnpm release:check && pnpm test:runtime-assets-lock && pnpm build && pnpm release:check && pnpm test:runtime-assets-lock",
     "release:check": "node scripts/check-publish-safety.mjs",
-    "release:root": "pnpm release:check && pnpm publish . --access public",
+    "release:root": "pnpm release:check && pnpm test:runtime-assets-lock && pnpm publish . --access public",
     "version:sync": "node scripts/sync-workspace-versions.mjs",
     "version:check": "node scripts/sync-workspace-versions.mjs --check",
-    build: "pnpm generate:runtime-info && pnpm generate:python-harness && pnpm verify:python-runtime-assets && pnpm generate:kernel-policy && pnpm generate:typescript-project-libs && pnpm generate:javascript-project-worker && pnpm generate:tracekernel-syscall-client && pnpm generate:tracekernel-local-java-host && pnpm generate:java-helper && pnpm sync:package-assets && pnpm build:tracekernel && pnpm exec tsup --config tsup.runtime-contracts.config.ts && pnpm build:browser-host && pnpm exec tsup && pnpm rewrite:root-declarations && pnpm --dir packages/judge build",
+    build: "pnpm generate:runtime-info && pnpm generate:python-harness && pnpm generate:kernel-policy && pnpm generate:typescript-project-libs && pnpm generate:javascript-project-worker && pnpm generate:tracekernel-syscall-client && pnpm generate:tracekernel-local-java-host && pnpm generate:java-helper && pnpm sync:package-assets && pnpm generate:runtime-assets-lock && pnpm verify:python-runtime-assets && pnpm build:tracekernel && pnpm exec tsup --config tsup.runtime-contracts.config.ts && pnpm build:browser-host && pnpm exec tsup && pnpm rewrite:root-declarations && pnpm --dir packages/judge build",
     "rewrite:root-declarations": "node scripts/rewrite-root-declaration-imports.mjs",
     "build:browser-host": "pnpm exec tsup --config tsup.browser-host.config.ts",
     "build:tracekernel": "pnpm exec tsup --config tsup.tracekernel.config.ts",
     "generate:runtime-info": "pnpm exec tsx --tsconfig tsconfig.base.json scripts/generate-runtime-language-info.ts",
     "generate:python-harness": "pnpm exec tsx --tsconfig tsconfig.base.json scripts/generate-python-harness-artifacts.ts",
-    "verify:python-runtime-assets": "pnpm exec tsx --tsconfig tsconfig.base.json scripts/verify-python-runtime-assets.ts",
+    "generate:runtime-assets-lock": "node scripts/generate-runtime-assets-lock.mjs",
+    "verify:python-runtime-assets": "node scripts/generate-runtime-assets-lock.mjs --check",
     "generate:typescript-project-libs": "pnpm exec tsx --tsconfig tsconfig.base.json scripts/generate-typescript-project-libs.ts",
-    "generate:javascript-project-worker": "pnpm exec esbuild packages/runtime-javascript/src/project-browser-worker.ts --bundle --format=esm --platform=browser --target=es2022 --outfile=workers/javascript/javascript-project-worker.js",
-    "generate:tracekernel-syscall-client": "pnpm exec esbuild packages/runtime-java/src/tracekernel-syscall-client-worker.ts --bundle --format=iife --platform=browser --target=es2022 --outfile=workers/shared/tracekernel-syscall-client.js",
-    "generate:tracekernel-local-java-host": "pnpm exec esbuild packages/runtime-java/src/tracekernel-local-java-host.ts --bundle --format=esm --platform=browser --target=es2022 --outfile=workers/shared/tracekernel-local-java-host.js",
+    "generate:javascript-project-worker": "pnpm exec esbuild packages/runtime-javascript/src/project-browser-worker.ts --bundle --format=esm --platform=browser --target=es2022 --outfile=workers/javascript/javascript-project-worker.js && node scripts/normalize-generated-worker-paths.mjs workers/javascript/javascript-project-worker.js",
+    "generate:tracekernel-syscall-client": "pnpm exec esbuild packages/runtime-java/src/tracekernel-syscall-client-worker.ts --bundle --format=iife --platform=browser --target=es2022 --outfile=workers/shared/tracekernel-syscall-client.js && node scripts/normalize-generated-worker-paths.mjs workers/shared/tracekernel-syscall-client.js",
+    "generate:tracekernel-local-java-host": "pnpm exec esbuild packages/runtime-java/src/tracekernel-local-java-host.ts --bundle --format=esm --platform=browser --target=es2022 --outfile=workers/shared/tracekernel-local-java-host.js && node scripts/normalize-generated-worker-paths.mjs workers/shared/tracekernel-local-java-host.js",
     "generate:java-helper": "node scripts/build-java-browser-helper.mjs",
     "generate:kernel-policy": "pnpm exec tsx --tsconfig tsconfig.base.json scripts/generate-runtime-kernel-policy-classic.ts",
     "sync:package-assets": "pnpm exec tsx --tsconfig tsconfig.base.json scripts/sync-language-package-assets.ts",
@@ -1743,7 +1745,7 @@ var package_default = {
     "test:typescript-project-libs-sync": "pnpm exec tsx --tsconfig tsconfig.base.json scripts/generate-typescript-project-libs.ts --check",
     "test:java-sync": "pnpm generate:java-helper --check && pnpm exec tsx --tsconfig tsconfig.base.json tests/test-java-harness-sync.ts",
     "test:python-runtime": "pnpm exec tsx --tsconfig tsconfig.base.json tests/test-python-runtime.ts",
-    "test:python-prepared-provider": "pnpm exec tsx --tsconfig tsconfig.base.json tests/test-python-runtime-image.ts && pnpm exec tsx --tsconfig tsconfig.base.json tests/test-python-prepared-provider.ts && pnpm exec tsx --tsconfig tsconfig.base.json tests/test-python-prepared-provider-browser.ts",
+    "test:python-prepared-provider": "pnpm exec tsx --tsconfig tsconfig.base.json tests/test-python-runtime-image.ts && pnpm exec tsx --tsconfig tsconfig.base.json tests/test-python-prepared-provider.ts && pnpm exec tsx --tsconfig tsconfig.base.json tests/test-python-on-demand-tracing.ts && pnpm exec tsx --tsconfig tsconfig.base.json tests/test-python-prepared-provider-browser.ts",
     "test:java-runtime": "pnpm exec tsx --tsconfig tsconfig.base.json tests/test-java-runtime.ts && pnpm exec tsx --tsconfig tsconfig.base.json tests/test-java-project-filesystem.ts && node --import tsx --test tests/test-java-jar-manifest.ts && pnpm exec tsx --tsconfig tsconfig.base.json tests/test-java-project-provider.ts && TSX_TSCONFIG_PATH=tsconfig.base.json node --import tsx --test tests/test-java-prepared-provider.ts",
     "test:java-prepared-provider": "TSX_TSCONFIG_PATH=tsconfig.base.json node --import tsx --test tests/test-java-prepared-provider.ts && pnpm exec tsx --tsconfig tsconfig.base.json tests/test-java-prepared-provider-browser.ts",
     "test:tracejvm-semantic-trace": "node --import tsx tests/test-tracejvm-semantic-trace-matrix.ts",
@@ -1788,6 +1790,7 @@ var package_default = {
     "prepare:tracecc-assets": "node --import tsx scripts/prepare-tracecc-runtime-assets.mts",
     "test:native-harness": "pnpm exec tsx --tsconfig tsconfig.base.json tests/test-native-harness.ts",
     "test:runtime-info-sync": "pnpm exec tsx --tsconfig tsconfig.base.json scripts/generate-runtime-language-info.ts --check",
+    "test:runtime-assets-lock": "node scripts/generate-runtime-assets-lock.mjs --check && node tests/test-runtime-assets-lock.mjs",
     "test:runtime-trace-parity": "pnpm exec tsx --tsconfig tsconfig.base.json tests/test-runtime-trace-parity.ts",
     "test:runtime-trace-fixtures": "pnpm exec tsx --tsconfig tsconfig.base.json tests/test-runtime-trace-fixtures.ts",
     "report:runtime-trace-known-gaps": "pnpm exec tsx --tsconfig tsconfig.base.json tests/report-runtime-trace-known-gaps.ts",
@@ -3684,7 +3687,7 @@ function workspaceCwdPath(request) {
   throw new Error(`Project cwd must stay inside the workspace: ${request.cwd}`);
 }
 
-// node_modules/.pnpm/fflate@0.8.3/node_modules/fflate/esm/browser.js
+// node_modules/fflate/esm/browser.js
 var browser_exports = {};
 __export(browser_exports, {
   AsyncCompress: () => AsyncGzip,

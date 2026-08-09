@@ -2,9 +2,12 @@ import type {
   BrowserRuntimeAssetDescriptor,
   BrowserRuntimeAssetManifest,
 } from '../../runtime-browser/src/runtime-assets';
+import {
+  TRACECC_RUNTIME_ASSETS,
+  TRACECC_RUNTIME_CONTENT_HASH,
+} from './tracecc-runtime-assets.generated';
 
-export const TRACECC_RUNTIME_CONTENT_HASH =
-  'fb4b6f41f9e9b7db89b6c8425bb2c6218979219a4150f96619b6461b4b78d294';
+export { TRACECC_RUNTIME_CONTENT_HASH } from './tracecc-runtime-assets.generated';
 
 interface TraceCCAssetIdentity {
   readonly fileName: string;
@@ -13,80 +16,9 @@ interface TraceCCAssetIdentity {
   readonly size: number;
 }
 
-const TRACECC_RUNTIME_ASSETS = {
-  runtimeHeader: {
-    fileName: 'tracecode_runtime.hpp',
-    integrity: 'sha256-WEbB8mLN8cwKIWPf25UL7yoTSM9nCqWs8MkE0B14EtE=',
-    mediaType: 'text/plain',
-    size: 263_083,
-  },
-  compilerWasm: {
-    fileName: 'tracecc-reactor.wasm',
-    integrity: 'sha256-At40hCU4Rmvynp1s8UzQ1eX/UZybo5BWHMsVgQXUTUE=',
-    mediaType: 'application/wasm',
-    size: 33_478_188,
-  },
-  sysroot: {
-    fileName: 'llvm-resources.tar',
-    integrity: 'sha256-2V0qK8hAihbAdEmWrEfJG7PGO7cblDFcl5YIm23ahVU=',
-    mediaType: 'application/x-tar',
-    size: 29_112_320,
-  },
-  narrowPch: {
-    fileName: 'narrow.pch',
-    integrity: 'sha256-rbuVm7YeO+HwDpSJPAqGGNrrPKeJveazS/juUWXs5/A=',
-    mediaType: 'application/octet-stream',
-    size: 21_322_216,
-  },
-  narrowPchSource: {
-    fileName: 'narrow.source.hpp',
-    integrity: 'sha256-SMqxQfcMBSUHUcAz+7Cp4vkWyOtgv7mNB09JE1cOEAU=',
-    mediaType: 'text/plain',
-    size: 815,
-  },
-  narrowRuntimeObject: {
-    fileName: 'narrow.o',
-    integrity: 'sha256-il/wX66FvAU9SJSiDepMuEZ00CipED4EEEfqcdxEg8c=',
-    mediaType: 'application/wasm',
-    size: 1_042_570,
-  },
-  broadPch: {
-    fileName: 'broad.pch',
-    integrity: 'sha256-ktKxBSglo50GPM9GJJwBpqyYDcFHkKGjoyEtsUmLMrI=',
-    mediaType: 'application/octet-stream',
-    size: 24_543_552,
-  },
-  broadPchSource: {
-    fileName: 'broad.source.hpp',
-    integrity: 'sha256-MOayycWl5KYaLS8vP2MoJh4kazsDhg0kH9Bi6dvsy0s=',
-    mediaType: 'text/plain',
-    size: 7095,
-  },
-  broadRuntimeObject: {
-    fileName: 'broad.o',
-    integrity: 'sha256-f69Oe7kRn9JEIUEPgM1cuYbf50oph4IxEnVP7VIZGp4=',
-    mediaType: 'application/wasm',
-    size: 1_892_879,
-  },
-  mapPch: {
-    fileName: 'map.pch',
-    integrity: 'sha256-fX7zTmJXnRJ2acbDiJ4Wu7/xf1G510SB2fLzkTgr2Uc=',
-    mediaType: 'application/octet-stream',
-    size: 29_951_380,
-  },
-  mapPchSource: {
-    fileName: 'map.source.hpp',
-    integrity: 'sha256-WHaMpx3nG/h1ro6CppBseoDIkgqahbYnFxShHLGT9/c=',
-    mediaType: 'text/plain',
-    size: 10_708,
-  },
-  mapRuntimeObject: {
-    fileName: 'map.o',
-    integrity: 'sha256-02ktvX6uqV05it5kdBEm/ncOszBeO43wX93Yk079E4U=',
-    mediaType: 'application/wasm',
-    size: 3_372_458,
-  },
-} as const satisfies Readonly<Record<string, TraceCCAssetIdentity>>;
+const typedTraceCCRuntimeAssets = TRACECC_RUNTIME_ASSETS satisfies Readonly<
+  Record<string, TraceCCAssetIdentity>
+>;
 
 function stripTrailingSlash(value: string): string {
   return value.replace(/\/+$/, '');
@@ -119,10 +51,10 @@ export function createTraceCCRuntimeManifest(
 ): BrowserRuntimeAssetManifest<'cpp'> {
   const normalizedAssetBaseUrl = stripTrailingSlash(assetBaseUrl.trim());
   if (!normalizedAssetBaseUrl) {
-    throw new TypeError('TraceCC v9r1 requires a non-empty asset base URL.');
+    throw new TypeError('TraceCC requires a non-empty asset base URL.');
   }
   const compilerWasm = descriptor(
-    TRACECC_RUNTIME_ASSETS.compilerWasm
+    typedTraceCCRuntimeAssets.compilerWasm
   );
   return {
     runtime: 'cpp',
@@ -133,37 +65,37 @@ export function createTraceCCRuntimeManifest(
     workerFormat: 'module',
     assets: {
       worker: { url: '/workers/cpp-worker.js' },
-      runtimeHeader: descriptor(TRACECC_RUNTIME_ASSETS.runtimeHeader),
+      runtimeHeader: descriptor(typedTraceCCRuntimeAssets.runtimeHeader),
       compilerWasm,
       linkerWasm: compilerWasm,
-      sysroot: descriptor(TRACECC_RUNTIME_ASSETS.sysroot),
+      sysroot: descriptor(typedTraceCCRuntimeAssets.sysroot),
       compilerResources: {
         'tracecc-narrow-pch': descriptor(
-          TRACECC_RUNTIME_ASSETS.narrowPch
+          typedTraceCCRuntimeAssets.narrowPch
         ),
         'tracecc-narrow-pch-source': descriptor(
-          TRACECC_RUNTIME_ASSETS.narrowPchSource
+          typedTraceCCRuntimeAssets.narrowPchSource
         ),
         'tracecc-narrow-runtime-object': descriptor(
-          TRACECC_RUNTIME_ASSETS.narrowRuntimeObject
+          typedTraceCCRuntimeAssets.narrowRuntimeObject
         ),
         'tracecc-broad-pch': descriptor(
-          TRACECC_RUNTIME_ASSETS.broadPch
+          typedTraceCCRuntimeAssets.broadPch
         ),
         'tracecc-broad-pch-source': descriptor(
-          TRACECC_RUNTIME_ASSETS.broadPchSource
+          typedTraceCCRuntimeAssets.broadPchSource
         ),
         'tracecc-broad-runtime-object': descriptor(
-          TRACECC_RUNTIME_ASSETS.broadRuntimeObject
+          typedTraceCCRuntimeAssets.broadRuntimeObject
         ),
         'tracecc-map-pch': descriptor(
-          TRACECC_RUNTIME_ASSETS.mapPch
+          typedTraceCCRuntimeAssets.mapPch
         ),
         'tracecc-map-pch-source': descriptor(
-          TRACECC_RUNTIME_ASSETS.mapPchSource
+          typedTraceCCRuntimeAssets.mapPchSource
         ),
         'tracecc-map-runtime-object': descriptor(
-          TRACECC_RUNTIME_ASSETS.mapRuntimeObject
+          typedTraceCCRuntimeAssets.mapRuntimeObject
         ),
       },
     },

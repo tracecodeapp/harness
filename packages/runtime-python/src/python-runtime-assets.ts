@@ -3,30 +3,16 @@ import {
   type BrowserRuntimeEngine,
   type BrowserRuntimeAssets,
 } from '@tracecode/runtime-browser';
+import {
+  PYTHON_RUNTIME_DIRECTORY,
+  PYTHON_RUNTIME_SNAPSHOTS,
+  PYTHON_RUNTIME_WASM,
+} from './python-runtime-assets.generated';
 
-const RUNTIME_DIRECTORY = 'python/pyodide-0.29.3';
 const IMMUTABLE_VERSIONED_DELIVERY = Object.freeze({
   mutability: 'immutable',
   address: 'versioned',
 } as const);
-
-const SNAPSHOTS = Object.freeze({
-  chromium: Object.freeze({
-    integrity:
-      'sha256-9uWlkAbBhlbRC1kWgf5r0Am30Thew5WjsAgNMzu7gVE=',
-    size: 20_971_936,
-  }),
-  firefox: Object.freeze({
-    integrity:
-      'sha256-ozSkcg1128ksIGL0HrfKsqHNmBknSK0J9D/RulzOO6k=',
-    size: 20_971_936,
-  }),
-  webkit: Object.freeze({
-    integrity:
-      'sha256-6/QwvAp6JAivTHNhA/unBxEFjg+eYKiQ1Q7S4dcHbvs=',
-    size: 20_971_936,
-  }),
-});
 
 function siblingAssetUrl(workerUrl: string, relativePath: string): string {
   const withoutFragment = workerUrl.split('#', 1)[0]!;
@@ -40,7 +26,7 @@ function siblingAssetUrl(workerUrl: string, relativePath: string): string {
 
 function assertImageEngine(
   engine: BrowserRuntimeEngine
-): asserts engine is keyof typeof SNAPSHOTS {
+): asserts engine is keyof typeof PYTHON_RUNTIME_SNAPSHOTS {
   if (engine === 'unknown') {
     throw new Error(
       'TraceCode Python 0.16 requires a recognized Chromium, Firefox, or WebKit engine ' +
@@ -64,9 +50,9 @@ export function resolveBuiltInPythonRuntimeAssets(
   assertImageEngine(engine);
   const runtimeBase = siblingAssetUrl(
     assets.pythonWorker,
-    `${RUNTIME_DIRECTORY}/`
+    `${PYTHON_RUNTIME_DIRECTORY}/`
   );
-  const snapshot = SNAPSHOTS[engine];
+  const snapshot = PYTHON_RUNTIME_SNAPSHOTS[engine];
   return Object.freeze({
     loaderUrl: `${runtimeBase}pyodide.js`,
     indexUrl: runtimeBase,
@@ -81,10 +67,9 @@ export function resolveBuiltInPythonRuntimeAssets(
       pythonHashSeed: '0',
       wasm: Object.freeze({
         url: `${runtimeBase}pyodide.asm.wasm`,
-        integrity:
-          'sha256-4vTudbMl416zG/uMYT1N1QmPVQLBVql4R2hodbUCVIA=',
+        integrity: PYTHON_RUNTIME_WASM.integrity,
         mediaType: 'application/wasm',
-        size: 8_647_684,
+        size: PYTHON_RUNTIME_WASM.size,
         delivery: IMMUTABLE_VERSIONED_DELIVERY,
       }),
       snapshot: Object.freeze({
