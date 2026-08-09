@@ -598,6 +598,50 @@ function getTraceMaxBytes(value) {
   return Math.min(MAX_TRACE_MAX_BYTES, Math.max(1024, Math.floor(value)));
 }
 
+function buildOnDemandPythonExecutorCompilerSource(
+  deps,
+  traceSource,
+  codeSource
+) {
+  const traceSourceLiteral = deps.toPythonLiteral(String(traceSource ?? ''));
+  const codeSourceLiteral = deps.toPythonLiteral(String(codeSource ?? ''));
+  return `
+import ast as _tracecode_executor_ast
+
+_tracecode_trace_executor_tree = _tracecode_executor_ast.parse(
+    ${traceSourceLiteral},
+    filename='<tracecode-prepared-trace-enabled>',
+    mode='exec',
+)
+_tracecode_code_executor_tree = _tracecode_executor_ast.parse(
+    ${codeSourceLiteral},
+    filename='<tracecode-prepared-trace-disabled>',
+    mode='exec',
+)
+_tracecode_executor_selector = _tracecode_executor_ast.If(
+    test=_tracecode_executor_ast.Name(
+        id='__tracecode_tracing_enabled',
+        ctx=_tracecode_executor_ast.Load(),
+    ),
+    body=_tracecode_trace_executor_tree.body or [_tracecode_executor_ast.Pass()],
+    orelse=_tracecode_code_executor_tree.body or [_tracecode_executor_ast.Pass()],
+)
+_tracecode_on_demand_executor_tree = _tracecode_executor_ast.Module(
+    body=[_tracecode_executor_selector],
+    type_ignores=[],
+)
+_tracecode_executor_ast.fix_missing_locations(
+    _tracecode_on_demand_executor_tree
+)
+__tracecode_prepared_executor_result = compile(
+    _tracecode_on_demand_executor_tree,
+    '<tracecode-prepared-trace>',
+    'exec',
+)
+__tracecode_prepared_executor_result
+`;
+}
+
 function generateTracingCode(
   deps,
   userCode,
@@ -3819,15 +3863,61 @@ class __TracecodeAccessTransformer(ast.NodeTransformer):
         )
         return ast.copy_location(call, node)
 
-def __tracecode_compile_user_code(source):
-    tree = ast.parse(source, filename='solution.py', mode='exec')
-    __tracecode_attach_parents(tree)
-    tree = __TracecodeAccessTransformer(
-        _tracecode_collect_user_function_names(tree),
-        _tracecode_collect_user_class_names(tree),
-    ).visit(tree)
-    ast.fix_missing_locations(tree)
-    return compile(tree, 'solution.py', 'exec')
+def __tracecode_compile_user_code(source, on_demand=False):
+    raw_tree = ast.parse(source, filename='solution.py', mode='exec')
+    traced_tree = ast.parse(source, filename='solution.py', mode='exec')
+    __tracecode_attach_parents(traced_tree)
+    traced_tree = __TracecodeAccessTransformer(
+        _tracecode_collect_user_function_names(traced_tree),
+        _tracecode_collect_user_class_names(traced_tree),
+    ).visit(traced_tree)
+    if not on_demand:
+        ast.fix_missing_locations(traced_tree)
+        return compile(traced_tree, 'solution.py', 'exec')
+
+    # One code object carries both implementations. The branch runs once when
+    # the module is loaded for a case, so verdict-only execution pays neither
+    # injected hook calls nor a branch at every access. Module docstrings and
+    # future imports must remain outside the conditional to retain Python's
+    # compilation semantics.
+    prefix_count = 0
+    if (
+        len(raw_tree.body) > 0 and
+        isinstance(raw_tree.body[0], ast.Expr) and
+        isinstance(raw_tree.body[0].value, ast.Constant) and
+        isinstance(raw_tree.body[0].value.value, str)
+    ):
+        prefix_count = 1
+    while (
+        prefix_count < len(raw_tree.body) and
+        isinstance(raw_tree.body[prefix_count], ast.ImportFrom) and
+        raw_tree.body[prefix_count].module == '__future__'
+    ):
+        prefix_count += 1
+    raw_body = raw_tree.body[prefix_count:]
+    traced_body = traced_tree.body[prefix_count:]
+    selector_anchor = (
+        raw_body[0]
+        if len(raw_body) > 0
+        else (raw_tree.body[0] if len(raw_tree.body) > 0 else None)
+    )
+    if len(raw_body) == 0:
+        raw_body = [ast.Pass()]
+    if len(traced_body) == 0:
+        traced_body = [ast.Pass()]
+    selector = ast.If(
+        test=ast.Name(id='__tracecode_tracing_enabled', ctx=ast.Load()),
+        body=traced_body,
+        orelse=raw_body,
+    )
+    if selector_anchor is not None:
+        selector = ast.copy_location(selector, selector_anchor)
+    combined_tree = ast.Module(
+        body=raw_tree.body[:prefix_count] + [selector],
+        type_ignores=raw_tree.type_ignores,
+    )
+    ast.fix_missing_locations(combined_tree)
+    return compile(combined_tree, 'solution.py', 'exec')
 
 def _tracecode_is_pure_literal_scaffold(node):
     if isinstance(node, (ast.Constant, ast.Name)):
@@ -4278,7 +4368,7 @@ pow = _builtins.pow
       `_tracecode_user_class_names = _tracecode_collect_user_class_names(ast.parse(_user_code_str, filename='solution.py', mode='exec'))`,
       `_tracecode_explicit_return_function_names = _tracecode_collect_explicit_return_function_names(ast.parse(_user_code_str, filename='solution.py', mode='exec'))`,
       `_tracecode_collapsed_literal_lines = _tracecode_collect_collapsed_literal_lines(_user_code_str)`,
-      `__tracecode_prepared_user_code_result = __tracecode_compile_user_code(_user_code_str)`,
+      `__tracecode_prepared_user_code_result = __tracecode_compile_user_code(_user_code_str, ${prepared?.onDemand === true ? 'True' : 'False'})`,
       `__tracecode_prepared_user_code_result`,
     ].join('\n');
     return {
@@ -5024,6 +5114,7 @@ async function executeWithTracing(
             __tracecode_prepared_user_code: prepared.userCodeObject,
             __tracecode_inputs_literal: deps.toPythonLiteral(inputs),
             __tracecode_limits_literal: deps.toPythonLiteral(prepared.limits?.guest ?? {}),
+            __tracecode_tracing_enabled: prepared.tracingEnabled !== false,
           }
         )
       : await runPythonInFreshExecutionScope(
@@ -5953,6 +6044,7 @@ _json_out
             __tracecode_prepared_user_code: prepared.userCodeObject,
             __tracecode_inputs_literal: deps.toPythonLiteral(inputs),
             __tracecode_limits_literal: deps.toPythonLiteral(options),
+            __tracecode_tracing_enabled: prepared.tracingEnabled === true,
           }
         )
       : await runPythonInFreshExecutionScope(deps, execCode, '_json_out');
@@ -6019,7 +6111,7 @@ async function prepareProgram(
         {},
         executionStyle,
         traceOptions,
-        { compileUserOnly: true }
+        { compileUserOnly: true, onDemand: true }
       );
       const compileDriver = await compilePythonProgram(
         deps,
@@ -6045,11 +6137,33 @@ async function prepareProgram(
         traceOptions,
         { compileOnly: true }
       );
-      executorCode = await compilePythonProgram(
+      const codeExecutionPayload = await executeCode(
         deps,
-        executionPayload.__preparedSource,
-        '<tracecode-prepared-trace>'
+        code,
+        functionName ?? '',
+        {},
+        executionStyle,
+        {},
+        { compileOnly: true }
       );
+      const executorCompiler = await compilePythonProgram(
+        deps,
+        buildOnDemandPythonExecutorCompilerSource(
+          deps,
+          executionPayload.__preparedSource,
+          codeExecutionPayload.__preparedSource
+        ),
+        '<tracecode-prepared-trace-compiler>'
+      );
+      try {
+        executorCode = await runCompiledPythonInFreshExecutionScope(
+          deps,
+          executorCompiler,
+          '__tracecode_prepared_executor_result'
+        );
+      } finally {
+        executorCompiler?.destroy?.();
+      }
     } else if (mode === 'code') {
       userCodeObject = await compilePythonProgram(deps, code, 'solution.py');
       const executionPayload = await executeCode(
@@ -6079,6 +6193,7 @@ async function prepareProgram(
       functionName: functionName ?? null,
       executionStyle,
       traceOptions,
+      onDemandTracing: mode === 'trace',
       userCode: serializePythonCodeArtifact(deps, userCodeObject),
       executorCode: serializePythonCodeArtifact(deps, executorCode),
     };
@@ -6143,7 +6258,30 @@ function assertPythonPreparedArtifact(deps, artifact) {
   }
 }
 
-async function executePreparedProgram(deps, artifact, inputs, limits) {
+function pythonCodeResultAsEmptyTraceResult(result) {
+  return {
+    ...result,
+    trace: {
+      schemaVersion: RUNTIME_TRACE_SCHEMA_VERSION,
+      language: 'python',
+      runId: 'python:run',
+      events: [],
+      lineEventCount: 0,
+      traceStepCount: 0,
+    },
+    executionTimeMs: result?.timings?.totalMs ?? 0,
+    lineEventCount: 0,
+    traceStepCount: 0,
+  };
+}
+
+async function executePreparedProgram(
+  deps,
+  artifact,
+  inputs,
+  limits,
+  tracingEnabled = artifact?.mode === 'trace'
+) {
   const startedAt = deps.performanceNow();
   await deps.loadPyodideInstance();
   assertPythonPreparedArtifact(deps, artifact);
@@ -6152,7 +6290,16 @@ async function executePreparedProgram(deps, artifact, inputs, limits) {
   try {
     userCodeObject = deserializePythonCodeArtifact(deps, artifact.userCode);
     executorCode = deserializePythonCodeArtifact(deps, artifact.executorCode);
-    const result = artifact.mode === 'trace'
+    if (
+      artifact.mode === 'trace' &&
+      tracingEnabled === false &&
+      artifact.onDemandTracing !== true
+    ) {
+      throw new Error(
+        'Prepared Python artifact does not support on-demand trace selection.'
+      );
+    }
+    const result = artifact.mode === 'trace' && tracingEnabled !== false
       ? await executeWithTracing(
           deps,
           artifact.code,
@@ -6160,7 +6307,7 @@ async function executePreparedProgram(deps, artifact, inputs, limits) {
           inputs,
           artifact.executionStyle ?? 'function',
           artifact.traceOptions ?? {},
-          { executorCode, userCodeObject, limits }
+          { executorCode, userCodeObject, limits, tracingEnabled: true }
         )
       : await executeCode(
           deps,
@@ -6169,13 +6316,16 @@ async function executePreparedProgram(deps, artifact, inputs, limits) {
           inputs,
           artifact.executionStyle ?? 'function',
           limits?.guest ?? {},
-          { executorCode, userCodeObject }
+          { executorCode, userCodeObject, tracingEnabled: false }
         );
     const runMs = deps.performanceNow() - startedAt;
+    const normalizedResult = artifact.mode === 'trace' && tracingEnabled === false
+      ? pythonCodeResultAsEmptyTraceResult(result)
+      : result;
     return {
-      ...result,
+      ...normalizedResult,
       timings: {
-        ...(result.timings ?? {}),
+        ...(normalizedResult.timings ?? {}),
         totalMs: runMs,
         runMs,
         compileCacheHit: true,
@@ -6192,7 +6342,8 @@ async function executePreparedProgramBatch(
   deps,
   artifact,
   inputBatch,
-  limits
+  limits,
+  traceEnabledBatch = undefined
 ) {
   const startedAt = deps.performanceNow();
   await deps.loadPyodideInstance();
@@ -6213,6 +6364,20 @@ async function executePreparedProgramBatch(
       timings: { totalMs: deps.performanceNow() - startedAt },
     };
   }
+  if (
+    traceEnabledBatch !== undefined &&
+    (
+      artifact.mode !== 'trace' ||
+      artifact.onDemandTracing !== true ||
+      !Array.isArray(traceEnabledBatch) ||
+      traceEnabledBatch.length !== cases.length ||
+      traceEnabledBatch.some((enabled) => typeof enabled !== 'boolean')
+    )
+  ) {
+    throw new Error(
+      'Prepared Python trace selection must contain one boolean per batch case.'
+    );
+  }
 
   let userCodeObject;
   let executorCode;
@@ -6224,10 +6389,14 @@ async function executePreparedProgramBatch(
     executorCode = deserializePythonCodeArtifact(deps, artifact.executorCode);
     const results = [];
     const filesystem = isolatedPythonFilesystemManager(deps.getPyodide());
-    for (const inputs of cases) {
+    for (let caseIndex = 0; caseIndex < cases.length; caseIndex += 1) {
+      const inputs = cases[caseIndex];
+      const tracingEnabled = artifact.mode === 'trace'
+        ? (traceEnabledBatch?.[caseIndex] ?? true)
+        : false;
       filesystem.begin();
       try {
-        results.push(artifact.mode === 'trace'
+        const result = artifact.mode === 'trace' && tracingEnabled
           ? await executeWithTracing(
               deps,
               artifact.code,
@@ -6235,7 +6404,7 @@ async function executePreparedProgramBatch(
               inputs,
               artifact.executionStyle ?? 'function',
               artifact.traceOptions ?? {},
-              { executorCode, userCodeObject, limits }
+              { executorCode, userCodeObject, limits, tracingEnabled: true }
             )
           : await executeCode(
               deps,
@@ -6244,8 +6413,13 @@ async function executePreparedProgramBatch(
               inputs,
               artifact.executionStyle ?? 'function',
               limits?.guest ?? {},
-              { executorCode, userCodeObject }
-            ));
+              { executorCode, userCodeObject, tracingEnabled: false }
+            );
+        results.push(
+          artifact.mode === 'trace' && !tracingEnabled
+            ? pythonCodeResultAsEmptyTraceResult(result)
+            : result
+        );
       } finally {
         filesystem.restore();
       }
@@ -6269,6 +6443,7 @@ async function executePreparedProgramBatch(
 }
 
   globalScope.__TRACECODE_PYODIDE_RUNTIME__ = {
+    buildOnDemandPythonExecutorCompilerSource,
     generateTracingCode,
     parsePythonError,
     executeWithTracing,

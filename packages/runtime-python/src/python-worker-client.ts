@@ -39,6 +39,7 @@ import type {
   RuntimeProjectCommandRequest,
   RuntimeProjectEngineLeaseController,
   RuntimeProjectSnapshot,
+  RuntimePreparedTraceBatchCall,
   RuntimeProgramPreparationCall,
   RuntimeExecutionTimings,
   RuntimeTraceCall,
@@ -135,6 +136,7 @@ export interface PythonPreparedProgramArtifact {
   readonly functionName: string | null;
   readonly executionStyle: RuntimeProgramPreparationCall['executionStyle'];
   readonly traceOptions: RuntimeProgramPreparationCall['traceOptions'];
+  readonly onDemandTracing?: boolean;
   readonly userCode: string;
   readonly executorCode: string;
 }
@@ -656,12 +658,29 @@ export class PythonWorkerClient {
 
   async executePreparedTraceBatch(
     handle: PythonPreparedProgramHandle,
-    call: {
-      readonly inputBatch: readonly Record<string, unknown>[];
-      readonly signal?: AbortSignal;
-      readonly limits?: RuntimeExecutionLimits;
+    call: RuntimePreparedTraceBatchCall,
+    /**
+     * Experiment-only language boundary for choosing which cases record from
+     * one prepared Python trace artifact. The portable runtime contract and
+     * Judge API intentionally remain unchanged until the experiment lands.
+     */
+    experiment?: {
+      readonly traceEnabledBatch: readonly boolean[];
     }
   ): Promise<PythonRawTraceBatchResult> {
+    if (
+      experiment !== undefined &&
+      (
+        experiment.traceEnabledBatch.length !== call.inputBatch.length ||
+        experiment.traceEnabledBatch.some(
+          (enabled) => typeof enabled !== 'boolean'
+        )
+      )
+    ) {
+      throw new TypeError(
+        'Python experimental trace selection must contain one boolean per batch case.'
+      );
+    }
     const perCaseWallClockMs = call.limits?.wallClockMs ?? TRACING_TIMEOUT_MS;
     const wallClockMs = Math.min(
       2_147_483_647,
@@ -675,6 +694,9 @@ export class PythonWorkerClient {
           artifact: handle.artifact,
           mode: 'trace',
           inputBatch: call.inputBatch,
+          ...(experiment
+            ? { traceEnabledBatch: experiment.traceEnabledBatch }
+            : {}),
           ...(guestLimits ? { limits: guestLimits } : {}),
           traceEventTransport: traceEventTransferRequest(),
         },
