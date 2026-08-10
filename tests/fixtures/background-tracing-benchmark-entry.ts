@@ -1,6 +1,7 @@
 import {
   createAlgorithmJudgeBundle,
   createBrowserJudgeHost,
+  type JudgeComparatorStrategy,
 } from '../../src/judge';
 import { createTraceCCRuntimeManifest } from '../../packages/runtime-cpp/src/tracecc-runtime-assets';
 
@@ -17,11 +18,7 @@ export interface BenchmarkCase {
   readonly input: Record<string, unknown>;
   readonly expected: unknown;
   /** Comparison policy from the problem definition; omitted means exact. */
-  readonly comparator?: {
-    readonly schema: 'tracecode.judge.comparator.v1';
-    readonly mode?: 'exact' | 'unordered-array' | 'unordered-nested-array';
-    readonly customValidator?: string;
-  };
+  readonly comparator?: JudgeComparatorStrategy;
 }
 
 export interface BenchmarkFixture {

@@ -18,7 +18,7 @@ class InitWorker {
     queueMicrotask(() => {
       this.messageHandler?.({
         data: { type: 'worker-ready' },
-      } as MessageEvent<WorkerMessage>);
+      } as unknown as MessageEvent<WorkerMessage>);
     });
   }
 
@@ -37,7 +37,7 @@ class InitWorker {
           protocolToken: message.protocolToken,
           payload: { success: true, loadTimeMs: 0 },
         },
-      } as MessageEvent<WorkerMessage>);
+      } as unknown as MessageEvent<WorkerMessage>);
     });
   }
 

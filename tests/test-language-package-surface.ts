@@ -1067,8 +1067,12 @@ async function runWithTempRoot(tempRoot: string): Promise<void> {
       dependencies?: Record<string, string>;
     };
     if (packageCheck.name === '@tracecode/runtime-browser') {
+      const sourcePackageJson = JSON.parse(
+        await readFile(join(process.cwd(), packageCheck.dir, 'package.json'), 'utf8')
+      ) as { dependencies?: Record<string, string> };
       assertCondition(
-        packedPackageJson.dependencies?.['@tracecode/tracejvm'] === '0.4.0',
+        packedPackageJson.dependencies?.['@tracecode/tracejvm'] ===
+          sourcePackageJson.dependencies?.['@tracecode/tracejvm'],
         '@tracecode/runtime-browser should declare the TraceJVM dependency imported by its project bundle'
       );
       assertCondition(

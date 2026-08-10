@@ -1,5 +1,6 @@
 import {
   JavaWorkerClient,
+  type JavaTraceExecutionOptions,
 } from '../../packages/runtime-java/src/java-worker-client';
 import {
   createJavaPreparedExecutionProvider,
@@ -392,16 +393,17 @@ globalThis.runJavaPreparedProviderBrowserTest =
       '  }',
       '}',
     ].join('\n');
+    const traceOptions: JavaTraceExecutionOptions = {
+      maxTraceSteps: 1_000,
+      maxStoredEvents: 2_000,
+      traceProfile: true,
+    };
     const tracePreparation = await provider.prepareProgram({
       mode: 'trace',
       code: traceSource,
       functionName: 'sum',
       executionStyle: 'solution-method',
-      traceOptions: {
-        maxTraceSteps: 1_000,
-        maxStoredEvents: 2_000,
-        traceProfile: true,
-      },
+      traceOptions,
     });
     if (
       tracePreparation.kind !== 'prepared' ||

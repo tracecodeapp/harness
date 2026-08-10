@@ -216,7 +216,8 @@ async function main() {
       );
       const [result] = (await page.evaluate(
         async ({ fixture: pageFixture, traceOptions }) => {
-          const module = await import('/background-tracing.mjs');
+          const benchmarkModuleUrl = '/background-tracing.mjs';
+          const module = await import(benchmarkModuleUrl);
           return module.runBackgroundTracingBenchmark(
             '/workers',
             [pageFixture],

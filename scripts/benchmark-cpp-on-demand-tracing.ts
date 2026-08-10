@@ -507,7 +507,8 @@ async function main(): Promise<void> {
       });
       await page.goto(`${server.origin}/index.html`, { waitUntil: 'load' });
       warmMs = await page.evaluate(async ({ integrity: browserIntegrity }) => {
-        await import('/cpp-on-demand-tracing.mjs');
+        const benchmarkModuleUrl = '/cpp-on-demand-tracing.mjs';
+        await import(benchmarkModuleUrl);
         if (!globalThis.initializeCppOnDemandTracing) {
           throw new Error('C++ benchmark initializer was not installed.');
         }
