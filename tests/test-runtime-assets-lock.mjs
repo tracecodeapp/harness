@@ -122,7 +122,7 @@ try {
   );
   const staleRun = spawnSync(
     process.execPath,
-    ['scripts/generate-runtime-assets-lock.mjs', '--check'],
+    ['--import', 'tsx', 'scripts/generate-runtime-assets-lock.mjs', '--check'],
     {
       cwd: root,
       env: { ...process.env, TRACECC_ASSET_MANIFEST: staleManifestPath },

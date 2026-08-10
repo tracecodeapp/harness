@@ -9,6 +9,7 @@ import {
 } from 'node:fs/promises';
 import { basename, dirname, join, relative, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { materializeCSharpRoleAssets } from './csharp-role-artifacts.ts';
 import { loadEngineRuntimePackages } from './runtime-package-assets.mjs';
 
 const SCRIPT_ROOT = dirname(fileURLToPath(import.meta.url));
@@ -430,6 +431,10 @@ function renderTraceJVMGenerated(tracejvm) {
 }
 
 async function buildLock() {
+  // The canonical C# release artifacts are compressed, tracked inputs. Always
+  // expand and verify them here so a clean checkout cannot produce (or accept)
+  // a lock that silently omits the C# runtime trees.
+  await materializeCSharpRoleAssets(ROOT);
   const packageJson = await readJson(join(ROOT, 'package.json'));
   const engines = await loadEngineRuntimePackages(ROOT);
   const packaged = await buildPackagedComponents();
