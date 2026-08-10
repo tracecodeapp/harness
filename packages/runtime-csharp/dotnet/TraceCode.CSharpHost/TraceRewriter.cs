@@ -255,7 +255,13 @@ public sealed class TraceRewriter : CSharpSyntaxRewriter
                 .Add(CreateLeaveStatement(node.Identifier.ValueText));
         }
 
-        return rewritten.WithBody(rewritten.Body.WithStatements(statements));
+        return rewritten.WithBody(CreateExecutionModeBody(
+            methodNode.Body!,
+            rewritten.Body.WithStatements(statements),
+            methodNode.ParameterList.Parameters.Select(
+                parameter => parameter.Identifier.ValueText
+            )
+        ));
     }
 
     public override SyntaxNode? VisitConstructorDeclaration(ConstructorDeclarationSyntax node)
@@ -323,7 +329,13 @@ public sealed class TraceRewriter : CSharpSyntaxRewriter
             .Insert(1, lineStatement)
             .Add(CreateImplicitReturnStatement(node.Identifier.ValueText, line))
             .Add(CreateLeaveStatement(node.Identifier.ValueText));
-        return rewritten.WithBody(rewritten.Body.WithStatements(statements));
+        return rewritten.WithBody(CreateExecutionModeBody(
+            node.Body,
+            rewritten.Body.WithStatements(statements),
+            node.ParameterList.Parameters.Select(
+                parameter => parameter.Identifier.ValueText
+            )
+        ));
     }
 
     public override SyntaxNode? VisitLocalFunctionStatement(LocalFunctionStatementSyntax node)
@@ -399,7 +411,205 @@ public sealed class TraceRewriter : CSharpSyntaxRewriter
                 .Add(CreateLeaveStatement(localFunctionNode.Identifier.ValueText));
         }
 
-        return rewritten.WithBody(rewritten.Body.WithStatements(statements));
+        return rewritten.WithBody(CreateExecutionModeBody(
+            localFunctionNode.Body!,
+            rewritten.Body.WithStatements(statements),
+            localFunctionNode.ParameterList.Parameters.Select(
+                parameter => parameter.Identifier.ValueText
+            )
+        ));
+    }
+
+    private BlockSyntax CreateExecutionModeBody(
+        BlockSyntax originalBody,
+        BlockSyntax instrumentedBody,
+        IEnumerable<string> parameterNames
+    )
+    {
+        // This is the highest safe runtime switch inside a single C# assembly.
+        // The disabled branch retains the learner's original syntax, so it
+        // bypasses statement hooks, captured delegates, local collection
+        // wrappers, snapshots, and sink calls with one check per invoked
+        // learner method. Trace-aware member storage remains type-compatible
+        // and has its own early off switch. Keeping both bodies on the same
+        // declared type preserves type identity and reflection behavior.
+        ExpressionSyntax recordingDisabled = SyntaxFactory.PrefixUnaryExpression(
+            SyntaxKind.LogicalNotExpression,
+            SyntaxFactory.ParseExpression(
+                "TraceCode.CSharpHost.RuntimeTraceSink.RecordingEnabled"
+            )
+        );
+        BlockSyntax compatibleOriginalBody =
+            (BlockSyntax)new DisabledPathCompatibilityRewriter(
+                memberCollectionVariableTypes,
+                GetDisabledPathShadowedNames(originalBody, parameterNames)
+            ).Visit(originalBody)!;
+        IfStatementSyntax executionMode = SyntaxFactory.IfStatement(
+            recordingDisabled,
+            compatibleOriginalBody.WithoutLeadingTrivia().WithoutTrailingTrivia(),
+            SyntaxFactory.ElseClause(
+                instrumentedBody.WithoutLeadingTrivia().WithoutTrailingTrivia()
+            )
+        );
+        return SyntaxFactory.Block(executionMode);
+    }
+
+    private static HashSet<string> GetDisabledPathShadowedNames(
+        BlockSyntax body,
+        IEnumerable<string> parameterNames
+    )
+    {
+        HashSet<string> names = parameterNames.ToHashSet(StringComparer.Ordinal);
+        foreach (ParameterSyntax parameter in
+            body.DescendantNodes().OfType<ParameterSyntax>())
+        {
+            names.Add(parameter.Identifier.ValueText);
+        }
+        foreach (VariableDeclaratorSyntax variable in
+            body.DescendantNodes().OfType<VariableDeclaratorSyntax>())
+        {
+            names.Add(variable.Identifier.ValueText);
+        }
+        foreach (SingleVariableDesignationSyntax variable in
+            body.DescendantNodes().OfType<SingleVariableDesignationSyntax>())
+        {
+            names.Add(variable.Identifier.ValueText);
+        }
+        foreach (ForEachStatementSyntax loop in
+            body.DescendantNodes().OfType<ForEachStatementSyntax>())
+        {
+            names.Add(loop.Identifier.ValueText);
+        }
+        foreach (CatchDeclarationSyntax declaration in
+            body.DescendantNodes().OfType<CatchDeclarationSyntax>())
+        {
+            names.Add(declaration.Identifier.ValueText);
+        }
+        foreach (FromClauseSyntax clause in
+            body.DescendantNodes().OfType<FromClauseSyntax>())
+        {
+            names.Add(clause.Identifier.ValueText);
+        }
+        foreach (JoinClauseSyntax clause in
+            body.DescendantNodes().OfType<JoinClauseSyntax>())
+        {
+            names.Add(clause.Identifier.ValueText);
+        }
+        foreach (LetClauseSyntax clause in
+            body.DescendantNodes().OfType<LetClauseSyntax>())
+        {
+            names.Add(clause.Identifier.ValueText);
+        }
+        return names;
+    }
+
+    private sealed class DisabledPathCompatibilityRewriter : CSharpSyntaxRewriter
+    {
+        private readonly IReadOnlyDictionary<string, (string TypeName, string TypeArguments)>
+            memberCollectionTypes;
+        private readonly IReadOnlySet<string> shadowedNames;
+
+        public DisabledPathCompatibilityRewriter(
+            IReadOnlyDictionary<string, (string TypeName, string TypeArguments)>
+                memberCollectionTypes,
+            IReadOnlySet<string> shadowedNames
+        )
+        {
+            this.memberCollectionTypes = memberCollectionTypes;
+            this.shadowedNames = shadowedNames;
+        }
+
+        public override SyntaxNode? VisitAssignmentExpression(
+            AssignmentExpressionSyntax node
+        )
+        {
+            AssignmentExpressionSyntax rewritten =
+                (AssignmentExpressionSyntax)base.VisitAssignmentExpression(node)!;
+            if (!rewritten.IsKind(SyntaxKind.SimpleAssignmentExpression)
+                || !TryGetMemberName(
+                    rewritten.Left,
+                    shadowedNames,
+                    out string memberName
+                )
+                || !memberCollectionTypes.TryGetValue(
+                    memberName,
+                    out (string TypeName, string TypeArguments) memberType
+                )
+                || GetTraceCollectionTypeName(memberType.TypeName)
+                    is not string wrapperType
+                || rewritten.Right.IsKind(SyntaxKind.NullLiteralExpression)
+                || rewritten.Right.IsKind(SyntaxKind.DefaultLiteralExpression)
+                || rewritten.Right is DefaultExpressionSyntax)
+            {
+                return rewritten;
+            }
+
+            // Trace-capable assemblies replace selected collection fields with
+            // trace-aware subclasses so helper-method mutations remain visible.
+            // The clean body must retain that storage type, but nothing below
+            // the wrapper is allowed to record while the execution switch is
+            // off. All supported field initializers have matching wrapper
+            // constructors; non-construction assignments use the collection
+            // copy constructor when one exists.
+            string constructorArguments;
+            string initializer = string.Empty;
+            if (rewritten.Right is ObjectCreationExpressionSyntax creation)
+            {
+                constructorArguments = JoinArguments(creation.ArgumentList?.Arguments);
+                initializer = creation.Initializer?.ToString() ?? string.Empty;
+            }
+            else if (rewritten.Right is ImplicitObjectCreationExpressionSyntax implicitCreation)
+            {
+                constructorArguments = JoinArguments(implicitCreation.ArgumentList.Arguments);
+                initializer = implicitCreation.Initializer?.ToString() ?? string.Empty;
+            }
+            else
+            {
+                constructorArguments = ", " + rewritten.Right;
+            }
+
+            ExpressionSyntax compatibleValue = SyntaxFactory.ParseExpression(
+                $"new TraceCode.Internal.{wrapperType}<{memberType.TypeArguments}>"
+                + $"({Literal(memberName)}, 0{constructorArguments}) {initializer}"
+            );
+            return rewritten.WithRight(compatibleValue);
+        }
+
+        private static string JoinArguments(
+            SeparatedSyntaxList<ArgumentSyntax>? arguments
+        )
+        {
+            return arguments is not { Count: > 0 }
+                ? string.Empty
+                : ", " + string.Join(", ", arguments.Value.Select(argument => argument.ToString()));
+        }
+
+        private static bool TryGetMemberName(
+            ExpressionSyntax target,
+            IReadOnlySet<string> shadowedNames,
+            out string memberName
+        )
+        {
+            if (target is IdentifierNameSyntax identifier
+                && !shadowedNames.Contains(identifier.Identifier.ValueText))
+            {
+                memberName = identifier.Identifier.ValueText;
+                return true;
+            }
+
+            if (target is MemberAccessExpressionSyntax
+                {
+                    Expression: ThisExpressionSyntax,
+                    Name: SimpleNameSyntax name,
+                })
+            {
+                memberName = name.Identifier.ValueText;
+                return true;
+            }
+
+            memberName = string.Empty;
+            return false;
+        }
     }
 
     public override SyntaxNode? VisitParenthesizedLambdaExpression(ParenthesizedLambdaExpressionSyntax node)
@@ -2255,7 +2465,9 @@ public sealed class TraceRewriter : CSharpSyntaxRewriter
             if (rewritten.Condition is not null)
             {
                 var scopedCondition = SyntaxFactory.ParseExpression(
-                    $"TraceCode.Internal.TraceCodeTrace.LoopCondition({line}, {Literal(methodNames.Peek())}, () => {rewritten.Condition}, {CreateSnapshotActionExpression(line)})"
+                    $"TraceCode.CSharpHost.RuntimeTraceSink.RecordingEnabled ? " +
+                    $"TraceCode.Internal.TraceCodeTrace.LoopCondition({line}, {Literal(methodNames.Peek())}, () => {rewritten.Condition}, {CreateSnapshotActionExpression(line)}) : " +
+                    $"({node.Condition})"
                 );
                 rewritten = rewritten.WithCondition(scopedCondition);
             }
@@ -2342,6 +2554,9 @@ public sealed class TraceRewriter : CSharpSyntaxRewriter
                     $"TraceCode.CSharpHost.RuntimeTraceSink.IterationBind(TraceCode.Internal.TraceCodeTrace.EnumerableSource({line}, {Literal(methodNames.Peek())}, () => {rewritten.Expression}, {snapshotAction}), {Literal(sourceName)}, {Literal(iterationName)}, {line}, {Literal(methodNames.Peek())}, false, {snapshotAction})"
                 );
             }
+            scopedExpression = SyntaxFactory.ParseExpression(
+                $"TraceCode.CSharpHost.RuntimeTraceSink.RecordingEnabled ? ({scopedExpression}) : ({node.Expression})"
+            );
             rewritten = rewritten.WithExpression(scopedExpression);
             return rewritten.WithStatement(AddLoopHeaderTrace(ExpandEmbeddedLoopStatement(rewritten.Statement, node.Statement, line), line, methodNames.Peek(), emitLine: false));
         }
@@ -2405,6 +2620,9 @@ public sealed class TraceRewriter : CSharpSyntaxRewriter
                     $"TraceCode.CSharpHost.RuntimeTraceSink.TupleIterationBind(TraceCode.Internal.TraceCodeTrace.EnumerableSource({line}, {Literal(methodNames.Peek())}, () => {rewritten.Expression}, {snapshotAction}), {Literal(sourceName)}, {bindingVariablesExpression}, {line}, {Literal(methodNames.Peek())}, false, {snapshotAction})"
                 );
             }
+            scopedExpression = SyntaxFactory.ParseExpression(
+                $"TraceCode.CSharpHost.RuntimeTraceSink.RecordingEnabled ? ({scopedExpression}) : ({node.Expression})"
+            );
             return rewritten
                 .WithExpression(scopedExpression)
                 .WithStatement(AddLoopHeaderTrace(ExpandEmbeddedLoopStatement(rewritten.Statement, node.Statement, line), line, methodNames.Peek(), emitLine: false));
@@ -2438,7 +2656,9 @@ public sealed class TraceRewriter : CSharpSyntaxRewriter
 
         int line = GetLine(node);
         var scopedCondition = SyntaxFactory.ParseExpression(
-            $"TraceCode.Internal.TraceCodeTrace.LoopCondition({line}, {Literal(methodNames.Peek())}, () => {rewritten.Condition}, {CreateSnapshotActionExpression(line)})"
+            $"TraceCode.CSharpHost.RuntimeTraceSink.RecordingEnabled ? " +
+            $"TraceCode.Internal.TraceCodeTrace.LoopCondition({line}, {Literal(methodNames.Peek())}, () => {rewritten.Condition}, {CreateSnapshotActionExpression(line)}) : " +
+            $"({node.Condition})"
         );
         return rewritten
             .WithCondition(scopedCondition)
@@ -2455,7 +2675,9 @@ public sealed class TraceRewriter : CSharpSyntaxRewriter
 
         int line = GetLine(node);
         var scopedCondition = SyntaxFactory.ParseExpression(
-            $"TraceCode.Internal.TraceCodeTrace.LoopCondition({line}, {Literal(methodNames.Peek())}, () => {rewritten.Condition}, {CreateSnapshotActionExpression(line)})"
+            $"TraceCode.CSharpHost.RuntimeTraceSink.RecordingEnabled ? " +
+            $"TraceCode.Internal.TraceCodeTrace.LoopCondition({line}, {Literal(methodNames.Peek())}, () => {rewritten.Condition}, {CreateSnapshotActionExpression(line)}) : " +
+            $"({node.Condition})"
         );
         return rewritten
             .WithCondition(scopedCondition)

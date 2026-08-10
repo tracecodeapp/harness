@@ -18,7 +18,7 @@ import {
 } from '@tracecode/runtime-contracts';
 import { getLanguageRuntimeProfile } from '@tracecode/runtime-browser/internal';
 import { assertRuntimeRequestSupported } from '@tracecode/runtime-browser/internal';
-import { ExecutionTimeoutError } from '@tracecode/runtime-browser/internal';
+import { isExecutionTimeoutError } from '@tracecode/runtime-browser/internal';
 import {
   JavaWorkerClient,
   type JavaWorkerClientOptions,
@@ -207,7 +207,7 @@ class JavaPreparedCodeProgramImpl
       .catch((error: unknown) => {
         if (
           call.limits?.wallClockMs !== undefined &&
-          error instanceof ExecutionTimeoutError
+          isExecutionTimeoutError(error)
         ) {
           return {
             kind: 'limit' as const,
@@ -265,7 +265,7 @@ class JavaPreparedTraceProgramImpl
     } catch (error) {
       if (
         call.limits?.wallClockMs !== undefined &&
-        error instanceof ExecutionTimeoutError
+        isExecutionTimeoutError(error)
       ) {
         return {
           kind: 'limit',

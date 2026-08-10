@@ -20,6 +20,7 @@ import type {
   ExecutionResult,
   RuntimePreparedCodeCall,
   RuntimePreparedTraceCall,
+  RuntimePreparedTraceBatchCall,
   RuntimeExecutionTimings,
   RuntimeProgramPreparationCall,
 } from '@tracecode/runtime-contracts';
@@ -635,8 +636,11 @@ export class CppWorkerClient {
     expectedMode?: 'code' | 'trace'
   ): void {
     if (handle.lifecycleGeneration !== this.executionLifecycleGeneration) {
+      const reason = this.executionResetReason?.message;
       throw new Error(
-        `C++ prepared program "${handle.programId}" is unavailable because its worker session was reset.`
+        `C++ prepared program "${handle.programId}" is unavailable because its worker session was reset` +
+          (reason ? ` (${reason})` : '') +
+          '.'
       );
     }
     if (this.disposedPreparedPrograms.has(this.preparedProgramHandleKey(handle))) {
@@ -686,12 +690,7 @@ export class CppWorkerClient {
             lldWasmUrl: this.options.linkerWasmUrl,
             sysrootUrl: this.options.sysrootUrl,
             runtimeHeaderUrl: this.options.runtimeHeaderUrl,
-            compilerBundleUrl: this.options.compilerBundleUrl,
-            compilerFrameEnabled: Boolean(
-              this.options.trustedCompilerService ||
-              this.externalCompilerUrl ||
-              (this.compilerFrameUrl && typeof document !== 'undefined')
-            ),
+            traceccCompilerEnabled: Boolean(this.options.trustedCompilerService),
             compilerFrameUrl: this.compilerFrameUrl,
             compilerWorkerUrl: this.options.compilerWorkerUrl,
             toolchainIntegrity: this.options.compilerIntegrity,
@@ -1365,6 +1364,9 @@ export class CppWorkerClient {
               programId: handle.programId,
               mode: 'trace',
               inputs: call.inputs,
+              ...(call.recordTrace === undefined
+                ? {}
+                : { traceEnabled: call.recordTrace }),
               traceEventTransport: traceEventTransferRequest(),
             },
             null,
@@ -1394,6 +1396,34 @@ export class CppWorkerClient {
         throw error;
       }
     });
+  }
+
+  async executePreparedTraceBatch(
+    handle: CppPreparedProgramHandle,
+    call: RuntimePreparedTraceBatchCall
+  ): Promise<readonly ExecutionResult[]> {
+    const traceEnabledBatch =
+      call.traceEnabledBatch ?? call.inputBatch.map(() => true);
+    if (
+      traceEnabledBatch.length !== call.inputBatch.length ||
+      traceEnabledBatch.some(
+        (enabled) => typeof enabled !== 'boolean'
+      )
+    ) {
+      throw new TypeError(
+        'C++ trace selection must contain one boolean per batch case.'
+      );
+    }
+    const results: ExecutionResult[] = [];
+    for (let index = 0; index < call.inputBatch.length; index += 1) {
+      results.push(await this.executePreparedTrace(handle, {
+        inputs: call.inputBatch[index],
+        recordTrace: traceEnabledBatch[index],
+        signal: call.signal,
+        limits: call.limits,
+      }));
+    }
+    return results;
   }
 
   async disposePreparedProgram(handle: CppPreparedProgramHandle): Promise<void> {

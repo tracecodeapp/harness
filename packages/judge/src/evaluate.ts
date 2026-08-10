@@ -7,7 +7,7 @@ import {
 } from './comparison';
 import {
   JudgeInfrastructureError,
-  type JudgePlanError,
+  JudgePlanError,
 } from './errors';
 import type {
   JudgeCaseResult,
@@ -26,6 +26,7 @@ import type {
   JudgeRuntimeInvocationInput,
 } from './port';
 import { validateJudgePlan } from './validate';
+import { validateTraceSelection } from './internal/trace-selection';
 
 function infrastructureError(
   operation: string,
@@ -192,7 +193,7 @@ function caseResult<Input, Expected, Result>(
   });
 }
 
-interface BuildWorkspaceResult<Snapshot> {
+export interface JudgePreparedWorkspace<Snapshot> {
   readonly snapshot?: Snapshot;
   readonly compile?: JudgeCompileResult;
 }
@@ -200,7 +201,7 @@ interface BuildWorkspaceResult<Snapshot> {
 function buildWorkspace<Snapshot>(
   port: JudgeKernelPort<Snapshot>,
   plan: JudgeEvaluationPlan
-): Effect.Effect<BuildWorkspaceResult<Snapshot>, JudgeInfrastructureError> {
+): Effect.Effect<JudgePreparedWorkspace<Snapshot>, JudgeInfrastructureError> {
   return Effect.scoped(
     Effect.gen(function* () {
       const session = yield* port.openSession({
@@ -248,7 +249,8 @@ function runCase<Snapshot, Input, Expected, Result>(
   plan: JudgeEvaluationPlan<Input, Expected>,
   snapshot: Snapshot,
   testCase: JudgeEvaluationPlan<Input, Expected>['cases'][number],
-  comparator: JudgeComparator<Input, Expected, Result>
+  comparator: JudgeComparator<Input, Expected, Result>,
+  recordTrace?: boolean
 ): Effect.Effect<JudgeCaseResult<Result, Expected>, JudgeInfrastructureError> {
   return Effect.scoped(
     Effect.gen(function* () {
@@ -275,6 +277,7 @@ function runCase<Snapshot, Input, Expected, Result>(
           planId: plan.id,
           caseId: testCase.id,
           value: testCase.input,
+          ...(recordTrace === undefined ? {} : { recordTrace }),
         }
       );
       return caseResult<Input, Expected, Result>(
@@ -292,7 +295,8 @@ function runBatch<Snapshot, Input, Expected, Result>(
   port: JudgeKernelPort<Snapshot>,
   plan: JudgeEvaluationPlan<Input, Expected>,
   snapshot: Snapshot,
-  comparator: JudgeComparator<Input, Expected, Result>
+  comparator: JudgeComparator<Input, Expected, Result>,
+  traceCaseIds?: ReadonlySet<string>
 ): Effect.Effect<
   readonly JudgeCaseResult<Result, Expected>[],
   JudgeInfrastructureError
@@ -318,6 +322,9 @@ function runBatch<Snapshot, Input, Expected, Result>(
             plan.cases.map((testCase) => Object.freeze({
               caseId: testCase.id,
               value: testCase.input,
+              ...(traceCaseIds === undefined
+                ? {}
+                : { recordTrace: traceCaseIds.has(testCase.id) }),
             }))
           ),
         }
@@ -392,8 +399,42 @@ export function evaluateJudgePlan<
   JudgePlanError | JudgeInfrastructureError
 > {
   return Effect.gen(function* () {
+    yield* validateTraceSelection(plan, options.tracing);
+    const build = yield* prepareJudgePlan(port, plan);
+    return yield* evaluatePreparedJudgePlan(port, plan, build, options);
+  });
+}
+
+/** Compile and snapshot a Judge plan without executing any cases. */
+export function prepareJudgePlan<Snapshot>(
+  port: JudgeKernelPort<Snapshot>,
+  plan: JudgeEvaluationPlan
+): Effect.Effect<
+  JudgePreparedWorkspace<Snapshot>,
+  JudgePlanError | JudgeInfrastructureError
+> {
+  return validateJudgePlan(plan).pipe(
+    Effect.andThen(buildWorkspace(port, plan))
+  );
+}
+
+/** Execute cases from an already compiled Judge workspace. */
+export function evaluatePreparedJudgePlan<
+  Snapshot,
+  Input = unknown,
+  Result = unknown,
+  Expected = unknown,
+>(
+  port: JudgeKernelPort<Snapshot>,
+  plan: JudgeEvaluationPlan<Input, Expected>,
+  build: JudgePreparedWorkspace<Snapshot>,
+  options: JudgeEvaluationOptions<Input, Expected, Result> = {}
+): Effect.Effect<
+  JudgeEvaluationResult<Result, Expected>,
+  JudgePlanError | JudgeInfrastructureError
+> {
+  return Effect.gen(function* () {
     yield* validateJudgePlan(plan);
-    const build = yield* buildWorkspace(port, plan);
     if (build.compile && build.compile.status !== 'compiled') {
       return Object.freeze({
         planId: plan.id,
@@ -412,12 +453,14 @@ export function evaluateJudgePlan<
     const comparator =
       options.comparator ??
       structuralJsonComparator as JudgeComparator<Input, Expected, Result>;
+    const traceCaseIds = yield* validateTraceSelection(plan, options.tracing);
     const cases = plan.isolation?.mode === 'provider-isolated-batch'
       ? yield* runBatch<Snapshot, Input, Expected, Result>(
           port,
           plan,
           build.snapshot,
-          comparator
+          comparator,
+          traceCaseIds
         )
       : yield* Effect.forEach(
           plan.cases,
@@ -427,7 +470,8 @@ export function evaluateJudgePlan<
               plan,
               build.snapshot!,
               testCase,
-              comparator
+              comparator,
+              traceCaseIds?.has(testCase.id)
             ),
           {
             concurrency: plan.isolation?.maxConcurrency ?? 1,

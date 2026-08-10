@@ -38,7 +38,7 @@ export interface CSharpPreparedWorkerAuthority {
   releaseRunner(runner: CSharpWorkerClient): void;
 }
 
-class CSharpRuntimeClient implements RuntimeClient, RuntimePreparedExecutionProvider {
+export class CSharpRuntimeClient implements RuntimeClient, RuntimePreparedExecutionProvider {
   constructor(
     private readonly workerClient: CSharpWorkerClient,
     private readonly preparedAuthority?: CSharpPreparedWorkerAuthority
@@ -65,7 +65,8 @@ class CSharpRuntimeClient implements RuntimeClient, RuntimePreparedExecutionProv
     inputBatch: readonly Record<string, unknown>[],
     execute: (
       runner: CSharpWorkerClient,
-      inputs: Record<string, unknown>
+      inputs: Record<string, unknown>,
+      index: number
     ) => Promise<TResult>,
     signal?: AbortSignal
   ): Promise<readonly TResult[]> {
@@ -95,7 +96,7 @@ class CSharpRuntimeClient implements RuntimeClient, RuntimePreparedExecutionProv
           const inputs = inputBatch[index]!;
           try {
             results[index] = await this.withPreparedRunner((runner) =>
-              execute(runner, inputs)
+              execute(runner, inputs, index)
             );
           } catch (reason) {
             terminalFailure ??= { reason };
@@ -317,31 +318,59 @@ class CSharpRuntimeClient implements RuntimeClient, RuntimePreparedExecutionProv
       return disposePromise;
     };
 
-    const program: RuntimePreparedProgram = call.mode === 'trace'
+    let program: RuntimePreparedProgram;
+    program = call.mode === 'trace'
       ? {
           mode: 'trace',
           capabilities,
           executeIsolated: (preparedCall) =>
             executeOwned(preparedCall, (preparedArtifact, forwardedCall) =>
               this.withPreparedRunner((runner) =>
-                runner.executePreparedTrace(preparedArtifact, forwardedCall)
+                runner.executePreparedTrace(
+                  preparedArtifact,
+                  forwardedCall
+                )
               )
             ),
           executeBatchIsolated: (
             preparedCall: RuntimePreparedTraceBatchCall
-          ) =>
-            executeOwned(preparedCall, (preparedArtifact, forwardedCall) =>
+          ) => {
+            if (
+              preparedCall.traceEnabledBatch !== undefined &&
+              (
+                preparedCall.traceEnabledBatch.length !==
+                  preparedCall.inputBatch.length ||
+                preparedCall.traceEnabledBatch.some(
+                  (enabled) => typeof enabled !== 'boolean'
+                )
+              )
+            ) {
+              return Promise.reject(new TypeError(
+                'C# trace selection must contain one boolean per batch case.'
+              ));
+            }
+            return executeOwned(preparedCall, (preparedArtifact, forwardedCall) =>
               this.withFreshPreparedRunners(
                 forwardedCall.inputBatch,
-                (runner, inputs) =>
-                  runner.executePreparedTrace(preparedArtifact, {
-                    inputs,
-                    signal: forwardedCall.signal,
-                    limits: forwardedCall.limits,
-                  }),
+                (runner, inputs, index) =>
+                  runner.executePreparedTrace(
+                    preparedArtifact,
+                    {
+                      inputs,
+                      ...(forwardedCall.traceEnabledBatch === undefined
+                        ? {}
+                        : {
+                            recordTrace:
+                              forwardedCall.traceEnabledBatch[index],
+                          }),
+                      signal: forwardedCall.signal,
+                      limits: forwardedCall.limits,
+                    }
+                  ),
                 forwardedCall.signal
               )
-            ),
+            );
+          },
           dispose,
         }
       : {
@@ -384,6 +413,6 @@ class CSharpRuntimeClient implements RuntimeClient, RuntimePreparedExecutionProv
 export function createCSharpRuntimeClient(
   workerClient: CSharpWorkerClient,
   preparedAuthority?: CSharpPreparedWorkerAuthority
-): RuntimeClient & RuntimePreparedExecutionProvider {
+): CSharpRuntimeClient {
   return new CSharpRuntimeClient(workerClient, preparedAuthority);
 }

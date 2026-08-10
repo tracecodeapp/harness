@@ -108,6 +108,7 @@ const PACKAGE_CHECKS: PackageCheck[] = [
       'dist/project-browser.cjs',
       'dist/project-browser.d.ts',
       'workers/python-worker.js',
+      'workers/tracecode_native-0.1.0-cp313-cp313-pyemscripten_2025_0_wasm32.whl',
       'workers/generated-python-harness-snippets.js',
       'workers/python/runtime-core.js',
       'workers/shared/runtime-kernel-policy-classic.js',
@@ -189,8 +190,13 @@ const PACKAGE_CHECKS: PackageCheck[] = [
       'workers/vendor/csharp/_framework/dotnet.native.wasm',
       'workers/vendor/csharp/_framework/dotnet.runtime.js',
       'workers/vendor/csharp/_framework/dotnet.boot.js',
+      'workers/vendor/csharp-runner/_framework/dotnet.boot.js',
+      'workers/vendor/csharp-runner/_framework/assemblies-01.pack',
       'LICENSE',
       'THIRD_PARTY_NOTICES.md',
+    ],
+    forbiddenFiles: [
+      'workers/vendor/csharp-compiler/_framework/dotnet.boot.js',
     ],
   },
   {
@@ -209,17 +215,15 @@ const PACKAGE_CHECKS: PackageCheck[] = [
       'dist/project-browser.d.ts',
       'workers/cpp-worker.js',
       'workers/shared/runtime-kernel-policy.js',
-      'workers/cpp-compiler-frame.html',
-      'workers/cpp-compiler-worker.js',
       'workers/cpp/tracecode_runtime.hpp',
-      'workers/cpp/compiler/bundle.js',
-      'workers/cpp/compiler/llvm-resources.tar',
-      'workers/cpp/compiler/llvm.core.wasm',
-      'workers/cpp/compiler/llvm.core2.wasm',
-      'workers/cpp/compiler/llvm.core3.wasm',
-      'workers/cpp/compiler/llvm.core4.wasm',
       'LICENSE',
       'THIRD_PARTY_NOTICES.md',
+    ],
+    forbiddenFiles: [
+      'workers/cpp-compiler-frame.html',
+      'workers/cpp-compiler-worker.js',
+      'workers/cpp/compiler/bundle.js',
+      'workers/cpp/compiler/llvm-resources.tar',
     ],
   },
   {
@@ -993,7 +997,7 @@ async function runWithTempRoot(tempRoot: string): Promise<void> {
         '@tracecode/runtime-csharp worker should stream returned compiler/build output events'
       );
       const csharpSupportFilesDir = join(packageDir, 'workers/vendor/csharp/_framework/supportFiles');
-      const csharpHostDllName = (await readdir(csharpSupportFilesDir)).find((entry) => entry.endsWith('_TraceCode.CSharpHost.dll'));
+      const csharpHostDllName = (await readdir(csharpSupportFilesDir)).find((entry) => entry.endsWith('TraceCode.CSharpHost.dll'));
       assertCondition(Boolean(csharpHostDllName), '@tracecode/runtime-csharp should ship TraceCode.CSharpHost support file');
       const csharpHostDll = await readFile(join(csharpSupportFilesDir, csharpHostDllName!));
       const csharpHostApi = `${csharpHostDll.toString('utf8')}\n${csharpHostDll.toString('utf16le')}`;
@@ -1064,8 +1068,12 @@ async function runWithTempRoot(tempRoot: string): Promise<void> {
       dependencies?: Record<string, string>;
     };
     if (packageCheck.name === '@tracecode/runtime-browser') {
+      const sourcePackageJson = JSON.parse(
+        await readFile(join(process.cwd(), packageCheck.dir, 'package.json'), 'utf8')
+      ) as { dependencies?: Record<string, string> };
       assertCondition(
-        packedPackageJson.dependencies?.['@tracecode/tracejvm'] === '0.4.0',
+        packedPackageJson.dependencies?.['@tracecode/tracejvm'] ===
+          sourcePackageJson.dependencies?.['@tracecode/tracejvm'],
         '@tracecode/runtime-browser should declare the TraceJVM dependency imported by its project bundle'
       );
       assertCondition(

@@ -8,6 +8,9 @@ public static class RuntimeTraceSink
     private const int MaxObjectFields = 32;
     private static readonly List<RuntimeTraceEvent> Events = new();
     private static readonly List<RuntimeTraceCallFrame> CallStack = new();
+    private static readonly List<int> CallStackStateIds = new();
+    private static readonly HashSet<int> EmittedCallStackStates = new();
+    private static int nextCallStackStateId;
     private static readonly HashSet<string> SnapshottedVariablesInCurrentLine = new(StringComparer.Ordinal);
     private static readonly Dictionary<int, int> LineHitCounts = new();
     private static readonly Stack<Dictionary<string, string>> VariableAliasScopes = new();
@@ -24,12 +27,16 @@ public static class RuntimeTraceSink
     private static string? timeoutReason;
     private static bool minimalTrace;
     private static bool traceLimitExceeded;
+    private static bool recordingEnabled;
     private static int nextTraceReferenceId;
 
     public static void Reset()
     {
         Events.Clear();
         CallStack.Clear();
+        CallStackStateIds.Clear();
+        EmittedCallStackStates.Clear();
+        nextCallStackStateId = 0;
         SnapshottedVariablesInCurrentLine.Clear();
         LineHitCounts.Clear();
         VariableAliasScopes.Clear();
@@ -46,6 +53,7 @@ public static class RuntimeTraceSink
         timeoutReason = null;
         minimalTrace = false;
         traceLimitExceeded = false;
+        recordingEnabled = true;
         nextTraceReferenceId = 0;
     }
 
@@ -55,7 +63,8 @@ public static class RuntimeTraceSink
         int? lineEventLimit = null,
         int? singleLineHitLimit = null,
         int? storedEventLimit = null,
-        bool minimalTraceEnabled = false
+        bool minimalTraceEnabled = false,
+        bool traceRecordingEnabled = true
     )
     {
         int clampedTimeoutMs = Math.Clamp(timeoutMs, 100, 20_000);
@@ -65,6 +74,7 @@ public static class RuntimeTraceSink
         maxSingleLineHits = PositiveBudget(singleLineHitLimit);
         maxStoredEvents = PositiveBudget(storedEventLimit);
         minimalTrace = minimalTraceEnabled;
+        recordingEnabled = traceRecordingEnabled;
         lineEventCount = 0;
         timeoutReason = null;
         LineHitCounts.Clear();
@@ -79,6 +89,8 @@ public static class RuntimeTraceSink
 
     public static bool TraceLimitExceeded => traceLimitExceeded;
 
+    public static bool RecordingEnabled => recordingEnabled;
+
     public static string? TimeoutReason => timeoutReason;
 
     public static string? CurrentFunction => CallStack.Count == 0 ? null : CallStack[^1].Function;
@@ -87,6 +99,7 @@ public static class RuntimeTraceSink
 
     public static void Line(int line, string? function)
     {
+        if (!recordingEnabled) return;
         CheckTimeout();
 
         if (traceLimitExceeded)
@@ -111,6 +124,7 @@ public static class RuntimeTraceSink
 
     public static void Call(string function, int line)
     {
+        if (!recordingEnabled) return;
         CheckTimeout();
 
         if (traceLimitExceeded)
@@ -118,7 +132,7 @@ public static class RuntimeTraceSink
             return;
         }
 
-        CallStack.Add(new RuntimeTraceCallFrame
+        PushCallFrame(new RuntimeTraceCallFrame
         {
             Function = function,
             Line = line,
@@ -133,6 +147,7 @@ public static class RuntimeTraceSink
 
     public static void Call(string function, int line, IReadOnlyList<object?> args)
     {
+        if (!recordingEnabled) return;
         CheckTimeout();
 
         if (traceLimitExceeded)
@@ -140,7 +155,7 @@ public static class RuntimeTraceSink
             return;
         }
 
-        CallStack.Add(new RuntimeTraceCallFrame
+        PushCallFrame(new RuntimeTraceCallFrame
         {
             Function = function,
             Line = line,
@@ -157,6 +172,7 @@ public static class RuntimeTraceSink
 
     public static void Call(string function, int line, IReadOnlyDictionary<string, object?> args)
     {
+        if (!recordingEnabled) return;
         CheckTimeout();
 
         if (traceLimitExceeded)
@@ -169,7 +185,7 @@ public static class RuntimeTraceSink
             entry => entry.Value,
             StringComparer.Ordinal
         );
-        CallStack.Add(new RuntimeTraceCallFrame
+        PushCallFrame(new RuntimeTraceCallFrame
         {
             Function = function,
             Line = line,
@@ -186,6 +202,7 @@ public static class RuntimeTraceSink
 
     public static void Return(string function, int line, object? value = null)
     {
+        if (!recordingEnabled) return;
         if (traceLimitExceeded)
         {
             return;
@@ -202,6 +219,7 @@ public static class RuntimeTraceSink
 
     public static void Leave(string function)
     {
+        if (!recordingEnabled) return;
         if (CallStack.Count == 0)
         {
             return;
@@ -211,6 +229,7 @@ public static class RuntimeTraceSink
         if (string.IsNullOrWhiteSpace(function) || CallStack[topIndex].Function == function)
         {
             CallStack.RemoveAt(topIndex);
+            CallStackStateIds.RemoveAt(topIndex);
             return;
         }
 
@@ -219,6 +238,7 @@ public static class RuntimeTraceSink
             if (CallStack[index].Function == function)
             {
                 CallStack.RemoveRange(index, CallStack.Count - index);
+                CallStackStateIds.RemoveRange(index, CallStackStateIds.Count - index);
                 return;
             }
         }
@@ -226,6 +246,7 @@ public static class RuntimeTraceSink
 
     public static void Exception(int line, string? message)
     {
+        if (!recordingEnabled) return;
         if (traceLimitExceeded)
         {
             return;
@@ -241,6 +262,7 @@ public static class RuntimeTraceSink
 
     public static void Stdout(string text)
     {
+        if (!recordingEnabled) return;
         if (traceLimitExceeded)
         {
             return;
@@ -256,6 +278,7 @@ public static class RuntimeTraceSink
 
     public static void Write(string variable, object? value, int line)
     {
+        if (!recordingEnabled) return;
         if (traceLimitExceeded)
         {
             return;
@@ -272,6 +295,7 @@ public static class RuntimeTraceSink
 
     public static void Read(string variable, object? value, int line)
     {
+        if (!recordingEnabled) return;
         if (traceLimitExceeded)
         {
             return;
@@ -308,6 +332,7 @@ public static class RuntimeTraceSink
 
     public static void IndexedRead(string variable, IReadOnlyList<object?> path, object? value, int line, string? bindingVariable, IReadOnlyList<string?>? indexSources)
     {
+        if (!recordingEnabled) return;
         if (traceLimitExceeded)
         {
             return;
@@ -346,6 +371,11 @@ public static class RuntimeTraceSink
         Action? snapshot = null
     )
     {
+        if (!recordingEnabled)
+        {
+            foreach (T value in values) yield return value;
+            yield break;
+        }
         int index = 0;
         using IEnumerator<T> enumerator = values.GetEnumerator();
         if (!enumerator.MoveNext())
@@ -392,6 +422,11 @@ public static class RuntimeTraceSink
         Action? snapshot = null
     )
     {
+        if (!recordingEnabled)
+        {
+            foreach (T value in values) yield return value;
+            yield break;
+        }
         int index = 0;
         using IEnumerator<T> enumerator = values.GetEnumerator();
         if (!enumerator.MoveNext())
@@ -442,6 +477,11 @@ public static class RuntimeTraceSink
         Action? snapshot = null
     )
     {
+        if (!recordingEnabled)
+        {
+            foreach (T value in values) yield return value;
+            yield break;
+        }
         int index = 0;
         using IEnumerator<T> enumerator = values.GetEnumerator();
         if (!enumerator.MoveNext())
@@ -480,6 +520,11 @@ public static class RuntimeTraceSink
         Action? snapshot = null
     )
     {
+        if (!recordingEnabled)
+        {
+            foreach (T value in values) yield return value;
+            yield break;
+        }
         int index = 0;
         using IEnumerator<T> enumerator = values.GetEnumerator();
         if (!enumerator.MoveNext())
@@ -576,6 +621,7 @@ public static class RuntimeTraceSink
 
     public static void IndexedWrite(string variable, IReadOnlyList<object?> path, object? value, int line, IReadOnlyList<string?>? indexSources)
     {
+        if (!recordingEnabled) return;
         if (traceLimitExceeded)
         {
             return;
@@ -609,6 +655,7 @@ public static class RuntimeTraceSink
         IReadOnlyList<string?>? indexSources
     )
     {
+        if (!recordingEnabled) return;
         if (receiver is not System.Collections.IList list || list.Count <= 0)
         {
             return;
@@ -623,6 +670,7 @@ public static class RuntimeTraceSink
 
     public static void IndexedBulkWrite(string variable, object? receiver, int line)
     {
+        if (!recordingEnabled) return;
         if (receiver is Array array)
         {
             int limit = BulkIndexedWriteLimit(array.Length);
@@ -645,6 +693,7 @@ public static class RuntimeTraceSink
 
     public static void IndexedPriorityQueueWrites(string variable, object? receiver, int line)
     {
+        if (!recordingEnabled) return;
         object? normalized = NormalizeTraceValue(receiver, 0, new ReferenceTracker());
         if (normalized is not System.Collections.IList values)
         {
@@ -660,7 +709,7 @@ public static class RuntimeTraceSink
 
     public static int BulkIndexedWriteLimit(int requested)
     {
-        if (requested <= 0 || traceLimitExceeded)
+        if (!recordingEnabled || requested <= 0 || traceLimitExceeded)
         {
             return 0;
         }
@@ -681,6 +730,7 @@ public static class RuntimeTraceSink
 
     public static void FieldRead(string variable, IReadOnlyList<object?> path, object? value, int line, IReadOnlyList<string?>? indexSources)
     {
+        if (!recordingEnabled) return;
         if (traceLimitExceeded)
         {
             return;
@@ -712,6 +762,7 @@ public static class RuntimeTraceSink
 
     public static void FieldWrite(string variable, IReadOnlyList<object?> path, object? value, int line, IReadOnlyList<string?>? indexSources)
     {
+        if (!recordingEnabled) return;
         if (traceLimitExceeded)
         {
             return;
@@ -753,6 +804,7 @@ public static class RuntimeTraceSink
 
     public static void Mutate(string variable, IReadOnlyList<object?>? path, string method, IReadOnlyList<object?> args, int line, IReadOnlyList<string?>? indexSources)
     {
+        if (!recordingEnabled) return;
         if (traceLimitExceeded)
         {
             return;
@@ -775,6 +827,7 @@ public static class RuntimeTraceSink
 
     public static bool HasMutationSince(int startIndex, string variable, string method, int line)
     {
+        if (!recordingEnabled) return false;
         string resolvedVariable = ResolveVariableAlias(variable);
         int boundedStartIndex = Math.Clamp(startIndex, 0, Events.Count);
         for (int index = boundedStartIndex; index < Events.Count; index++)
@@ -794,6 +847,7 @@ public static class RuntimeTraceSink
 
     public static bool HasMutationSince(int startIndex, string variable, IReadOnlyList<object?> path, string method, int line)
     {
+        if (!recordingEnabled) return false;
         string resolvedVariable = ResolveVariableAlias(variable);
         string dottedVariable = path.Count == 0
             ? resolvedVariable
@@ -831,6 +885,7 @@ public static class RuntimeTraceSink
 
     public static void Snapshot(string variable, object? value)
     {
+        if (!recordingEnabled) return;
         if (traceLimitExceeded)
         {
             return;
@@ -853,6 +908,7 @@ public static class RuntimeTraceSink
 
     public static void Snapshot(string variable, object? value, int line)
     {
+        if (!recordingEnabled) return;
         if (traceLimitExceeded)
         {
             return;
@@ -880,6 +936,11 @@ public static class RuntimeTraceSink
 
     public static void WithVariableAlias(string actualVariable, string sourceVariable, Action action)
     {
+        if (!recordingEnabled)
+        {
+            action();
+            return;
+        }
         VariableAliasScopes.Push(new Dictionary<string, string>(StringComparer.Ordinal)
         {
             [actualVariable] = sourceVariable,
@@ -896,6 +957,7 @@ public static class RuntimeTraceSink
 
     public static T WithVariableAlias<T>(string actualVariable, string sourceVariable, Func<T> action)
     {
+        if (!recordingEnabled) return action();
         VariableAliasScopes.Push(new Dictionary<string, string>(StringComparer.Ordinal)
         {
             [actualVariable] = sourceVariable,
@@ -912,6 +974,7 @@ public static class RuntimeTraceSink
 
     public static T WithIndexSources<T>(IReadOnlyList<string?>? indexSources, Func<T> action)
     {
+        if (!recordingEnabled) return action();
         ScopedIndexSources.Push(indexSources);
         try
         {
@@ -925,6 +988,11 @@ public static class RuntimeTraceSink
 
     public static void WithIndexSources(IReadOnlyList<string?>? indexSources, Action action)
     {
+        if (!recordingEnabled)
+        {
+            action();
+            return;
+        }
         ScopedIndexSources.Push(indexSources);
         try
         {
@@ -958,6 +1026,7 @@ public static class RuntimeTraceSink
 
     public static void SetCurrentLine(int line)
     {
+        if (!recordingEnabled) return;
         if (line > 0)
         {
             currentLine = line;
@@ -968,11 +1037,13 @@ public static class RuntimeTraceSink
 
     public static void SetScopedSourceLine(int line)
     {
+        if (!recordingEnabled) return;
         scopedSourceLine = Math.Max(0, line);
     }
 
     public static void CheckTimeout()
     {
+        if (!recordingEnabled) return;
         if (DateTime.UtcNow <= deadlineUtc)
         {
             return;
@@ -988,6 +1059,7 @@ public static class RuntimeTraceSink
 
     private static void Add(RuntimeTraceEvent traceEvent, bool enforceTraceBudget = true)
     {
+        if (!recordingEnabled) return;
         if (ShouldSuppressForMinimalTrace(traceEvent))
         {
             return;
@@ -1107,6 +1179,17 @@ public static class RuntimeTraceSink
         return normalized.Any(source => source is not null) ? normalized : null;
     }
 
+    private static void PushCallFrame(RuntimeTraceCallFrame frame)
+    {
+        CallStack.Add(frame);
+        CallStackStateIds.Add(nextCallStackStateId++);
+    }
+
+    // Each distinct call-stack state is serialized in full once (callStackId) and
+    // referenced by later events (callStackRef); the worker resolves and strips
+    // both keys so RuntimeTrace events keep their historical shape. A state is
+    // immutable between call/leave transitions, so the first event that carries
+    // it (the call event pushed alongside it) snapshots frame args at call time.
     private static void AttachCallStack(RuntimeTraceEvent traceEvent)
     {
         if (CallStack.Count == 0 || traceEvent.CallStack is not null)
@@ -1114,6 +1197,14 @@ public static class RuntimeTraceSink
             return;
         }
 
+        int stateId = CallStackStateIds[^1];
+        if (!EmittedCallStackStates.Add(stateId))
+        {
+            traceEvent.CallStackRef = stateId;
+            return;
+        }
+
+        traceEvent.CallStackId = stateId;
         traceEvent.CallStack = CallStack
             .Select(frame => new RuntimeTraceCallFrame
             {

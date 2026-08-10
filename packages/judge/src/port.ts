@@ -21,9 +21,11 @@ export interface JudgeRuntimeInvocationInput<Input = unknown> {
   readonly evaluationId?: string;
   readonly caseId?: string;
   readonly value?: Input;
+  readonly recordTrace?: boolean;
   readonly cases?: readonly {
     readonly caseId: string;
     readonly value: Input;
+    readonly recordTrace?: boolean;
   }[];
 }
 

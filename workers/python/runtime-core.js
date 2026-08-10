@@ -29,10 +29,50 @@ except Exception:
     pass
 `;
 
+const PYTHON_LITERAL_SHAPE_ANNOTATION_HELPER = `
+def _tracecode_annotation_preserves_literal_shape(_annotation):
+    try:
+        import typing as _tracecode_shape_typing
+        import collections.abc as _tracecode_shape_collections_abc
+    except Exception:
+        return False
+    if _annotation in (
+        _builtins.object,
+        _builtins.bool,
+        _builtins.int,
+        _builtins.float,
+        _builtins.str,
+        _builtins.bytes,
+        _builtins.list,
+        _builtins.dict,
+        getattr(_tracecode_shape_typing, 'Any', None),
+    ):
+        return True
+    _origin = _tracecode_shape_typing.get_origin(_annotation)
+    _args = _tracecode_shape_typing.get_args(_annotation)
+    if _origin is _builtins.list:
+        return not _args or _tracecode_annotation_preserves_literal_shape(_args[0])
+    if _origin in (
+        _builtins.dict,
+        _tracecode_shape_collections_abc.Mapping,
+        _tracecode_shape_collections_abc.MutableMapping,
+    ):
+        return not _args or all(
+            _tracecode_annotation_preserves_literal_shape(_arg)
+            for _arg in _args[:2]
+        )
+    if _origin is _tracecode_shape_typing.Union:
+        _non_none = [_arg for _arg in _args if _arg is not type(None)]
+        return len(_non_none) == 1 and _tracecode_annotation_preserves_literal_shape(_non_none[0])
+    return False
+`;
+
 const DEFAULT_TRACE_MAX_PATH_DEPTH = 3;
 const MAX_TRACE_MAX_PATH_DEPTH = 8;
 const DEFAULT_TRACE_MAX_BYTES = 4 * 1024 * 1024;
-const MAX_TRACE_MAX_BYTES = 8 * 1024 * 1024;
+// Ceiling for explicitly requested budgets (equal-output benchmarking needs
+// room to emit complete traces); the default above still guards the product.
+const MAX_TRACE_MAX_BYTES = 64 * 1024 * 1024;
 const isolatedPythonExecutionGuards = new WeakMap();
 const isolatedPythonFilesystemManagers = new WeakMap();
 
@@ -510,6 +550,44 @@ function setPythonNamespaceBindings(namespace, bindings) {
   }
 }
 
+function preparedPythonLiteral(deps, value, scopeTimings) {
+  const startedAt = deps.performanceNow();
+  const literal = deps.toPythonLiteral(value);
+  if (scopeTimings) {
+    scopeTimings.inputLiteralMs += deps.performanceNow() - startedAt;
+  }
+  return literal;
+}
+
+function pythonInputsRequireCustomMaterialization(value, seen = new Set()) {
+  if (!value || typeof value !== 'object') return false;
+  if (seen.has(value)) return true;
+  seen.add(value);
+  try {
+    if (Array.isArray(value)) {
+      return value.some((entry) =>
+        pythonInputsRequireCustomMaterialization(entry, seen)
+      );
+    }
+    if (
+      Object.prototype.hasOwnProperty.call(value, '__type__') ||
+      Object.prototype.hasOwnProperty.call(value, '__class__') ||
+      Object.prototype.hasOwnProperty.call(value, '__id__') ||
+      Object.prototype.hasOwnProperty.call(value, '__ref__') ||
+      Object.prototype.hasOwnProperty.call(value, 'left') ||
+      Object.prototype.hasOwnProperty.call(value, 'right') ||
+      Object.prototype.hasOwnProperty.call(value, 'next')
+    ) {
+      return true;
+    }
+    return Object.values(value).some((entry) =>
+      pythonInputsRequireCustomMaterialization(entry, seen)
+    );
+  } finally {
+    seen.delete(value);
+  }
+}
+
 async function compilePythonProgram(deps, source, filename) {
   const pyodide = deps.getPyodide();
   if (
@@ -557,7 +635,8 @@ async function runCompiledPythonInFreshExecutionScope(
   deps,
   code,
   resultName,
-  bindings
+  bindings,
+  scopeTimings = undefined
 ) {
   const pyodide = deps.getPyodide();
   if (
@@ -568,16 +647,43 @@ async function runCompiledPythonInFreshExecutionScope(
     throw new Error('Prepared Python programs require the full browser Python runtime.');
   }
   const guard = getIsolatedPythonExecutionGuard(pyodide);
+  const namespaceStartedAt = deps.performanceNow();
   const namespace = pyodide.toPy({ __name__: '__main__' });
+  if (scopeTimings) {
+    scopeTimings.namespaceCreateMs += deps.performanceNow() - namespaceStartedAt;
+  }
+  const guardBeginStartedAt = deps.performanceNow();
   guard.begin();
+  if (scopeTimings) {
+    scopeTimings.guardBeginMs += deps.performanceNow() - guardBeginStartedAt;
+  }
   try {
+    const bindingStartedAt = deps.performanceNow();
     setPythonNamespaceBindings(namespace, bindings);
-    return guard.run_compiled(code, namespace, resultName);
+    if (scopeTimings) {
+      scopeTimings.bindingMs += deps.performanceNow() - bindingStartedAt;
+    }
+    const compiledExecutionStartedAt = deps.performanceNow();
+    const result = guard.run_compiled(code, namespace, resultName);
+    if (scopeTimings) {
+      scopeTimings.compiledExecutionMs +=
+        deps.performanceNow() - compiledExecutionStartedAt;
+    }
+    return result;
   } finally {
     try {
+      const guardRestoreStartedAt = deps.performanceNow();
       guard.restore();
+      if (scopeTimings) {
+        scopeTimings.guardRestoreMs += deps.performanceNow() - guardRestoreStartedAt;
+      }
     } finally {
+      const namespaceDestroyStartedAt = deps.performanceNow();
       namespace?.destroy?.();
+      if (scopeTimings) {
+        scopeTimings.namespaceDestroyMs +=
+          deps.performanceNow() - namespaceDestroyStartedAt;
+      }
     }
   }
 }
@@ -596,6 +702,50 @@ function getTraceMaxBytes(value) {
   return Math.min(MAX_TRACE_MAX_BYTES, Math.max(1024, Math.floor(value)));
 }
 
+function buildOnDemandPythonExecutorCompilerSource(
+  deps,
+  traceSource,
+  codeSource
+) {
+  const traceSourceLiteral = deps.toPythonLiteral(String(traceSource ?? ''));
+  const codeSourceLiteral = deps.toPythonLiteral(String(codeSource ?? ''));
+  return `
+import ast as _tracecode_executor_ast
+
+_tracecode_trace_executor_tree = _tracecode_executor_ast.parse(
+    ${traceSourceLiteral},
+    filename='<tracecode-prepared-trace-enabled>',
+    mode='exec',
+)
+_tracecode_code_executor_tree = _tracecode_executor_ast.parse(
+    ${codeSourceLiteral},
+    filename='<tracecode-prepared-trace-disabled>',
+    mode='exec',
+)
+_tracecode_executor_selector = _tracecode_executor_ast.If(
+    test=_tracecode_executor_ast.Name(
+        id='__tracecode_tracing_enabled',
+        ctx=_tracecode_executor_ast.Load(),
+    ),
+    body=_tracecode_trace_executor_tree.body or [_tracecode_executor_ast.Pass()],
+    orelse=_tracecode_code_executor_tree.body or [_tracecode_executor_ast.Pass()],
+)
+_tracecode_on_demand_executor_tree = _tracecode_executor_ast.Module(
+    body=[_tracecode_executor_selector],
+    type_ignores=[],
+)
+_tracecode_executor_ast.fix_missing_locations(
+    _tracecode_on_demand_executor_tree
+)
+__tracecode_prepared_executor_result = compile(
+    _tracecode_on_demand_executor_tree,
+    '<tracecode-prepared-trace>',
+    'exec',
+)
+__tracecode_prepared_executor_result
+`;
+}
+
 function generateTracingCode(
   deps,
   userCode,
@@ -609,7 +759,6 @@ function generateTracingCode(
   const preparedInputPrelude = usesPreparedBindings
     ? `
 import ast as _tracecode_input_ast
-import copy as _tracecode_input_copy
 _tracecode_raw_inputs = _tracecode_input_ast.literal_eval(__tracecode_inputs_literal)
 _tracecode_case_limits = _tracecode_input_ast.literal_eval(__tracecode_limits_literal)
 `
@@ -617,7 +766,7 @@ _tracecode_case_limits = _tracecode_input_ast.literal_eval(__tracecode_limits_li
   const inputSetup = usesPreparedBindings
     ? `
 for _tracecode_input_name, _tracecode_input_value in _tracecode_raw_inputs.items():
-    globals()[str(_tracecode_input_name)] = _tracecode_input_copy.deepcopy(_tracecode_input_value)
+    globals()[str(_tracecode_input_name)] = _tracecode_input_value
 `
     : Object.entries(inputs)
         .map(([key, value]) => `${key} = ${deps.toPythonLiteral(value)}`)
@@ -633,6 +782,7 @@ for _tracecode_input_name, _tracecode_input_value in _tracecode_raw_inputs.items
   const maxLineEvents = options.maxLineEvents || 10000;
   const maxSingleLineHits = options.maxSingleLineHits || 500;
   const minimalTrace = options.minimalTrace === true;
+  const traceProfile = options.traceProfile === true;
   const maxPathDepth = getTraceMaxPathDepth(options.maxPathDepth);
   const maxTraceBytes = getTraceMaxBytes(options.maxTraceBytes);
   // Keep stdout capture deterministic for the app UI; worker-console mirroring
@@ -656,6 +806,80 @@ _TRACECODE_TYPING_GLOBALS = _builtins.set(getattr(_tracecode_typing, '__all__', 
 
 _trace_data = []
 _trace_events = []
+# Native tracer module (loaded late, see the arm site); None = python paths.
+_TC_NATIVE = None
+_trace_line_event_count = 0
+_TRACE_PROFILE = ${traceProfile ? 'True' : 'False'}
+from time import perf_counter as _tc_perf
+_tp_import_at = _tc_perf()
+_tp_tracer = 0.0
+_tp_snapshot = 0.0
+_tp_stack = 0.0
+_tp_step = 0.0
+_tp_convert = 0.0
+
+# PEP 669 tracing: sys.monitoring keeps the specializing interpreter, which
+# sys.settrace disables for every traced frame (~8x on tight loops). The
+# settrace path remains as the fallback for interpreters without monitoring.
+_TC_MONITORING = getattr(sys, 'monitoring', None)
+_TC_MONITORING_TOOL = 4
+_TC_MONITORING_ACTIVE = False
+_TC_MONITORING_ERROR = None if _TC_MONITORING is not None else 'sys.monitoring unavailable'
+_TC_MONITORING_WAS_ARMED = False
+
+def _tc_monitoring_on_line(code, line_number):
+    if code.co_filename != 'solution.py':
+        return _TC_MONITORING.DISABLE
+    _tracer(sys._getframe(1), 'line', None)
+
+def _tc_monitoring_on_start(code, offset):
+    if code.co_filename != 'solution.py':
+        return _TC_MONITORING.DISABLE
+    _tracer(sys._getframe(1), 'call', None)
+
+def _tc_monitoring_on_return(code, offset, retval):
+    if code.co_filename != 'solution.py':
+        return _TC_MONITORING.DISABLE
+    _tracer(sys._getframe(1), 'return', retval)
+
+def _tc_monitoring_on_raise(code, offset, exc):
+    if code.co_filename != 'solution.py':
+        return
+    _tracer(sys._getframe(1), 'exception', (type(exc), exc, getattr(exc, '__traceback__', None)))
+
+def _tracecode_arm_tracing():
+    global _TC_MONITORING_ACTIVE
+    if _TC_MONITORING is not None:
+        try:
+            _TC_MONITORING.use_tool_id(_TC_MONITORING_TOOL, 'tracecode')
+            _events = _TC_MONITORING.events
+            _TC_MONITORING.register_callback(_TC_MONITORING_TOOL, _events.LINE, _tc_monitoring_on_line)
+            _TC_MONITORING.register_callback(_TC_MONITORING_TOOL, _events.PY_START, _tc_monitoring_on_start)
+            _TC_MONITORING.register_callback(_TC_MONITORING_TOOL, _events.PY_RETURN, _tc_monitoring_on_return)
+            _TC_MONITORING.register_callback(_TC_MONITORING_TOOL, _events.RAISE, _tc_monitoring_on_raise)
+            _TC_MONITORING.set_events(
+                _TC_MONITORING_TOOL,
+                _events.LINE | _events.PY_START | _events.PY_RETURN | _events.RAISE,
+            )
+            _TC_MONITORING_ACTIVE = True
+            globals()['_TC_MONITORING_WAS_ARMED'] = True
+            return
+        except Exception as _tc_monitoring_exc:
+            global _TC_MONITORING_ERROR
+            _TC_MONITORING_ERROR = repr(_tc_monitoring_exc)
+            _TC_MONITORING_ACTIVE = False
+    sys.settrace(_tracer)
+
+def _tracecode_stop_tracing():
+    global _TC_MONITORING_ACTIVE
+    sys.settrace(None)
+    if _TC_MONITORING is not None and _TC_MONITORING_ACTIVE:
+        _TC_MONITORING_ACTIVE = False
+        try:
+            _TC_MONITORING.set_events(_TC_MONITORING_TOOL, 0)
+            _TC_MONITORING.free_tool_id(_TC_MONITORING_TOOL)
+        except Exception:
+            pass
 _console_output = []
 _original_print = _builtins.print
 _tracecode_builtin_id = _builtins.id
@@ -703,9 +927,9 @@ _tracecode_tracemalloc_started = False
 _TRACE_MUTATING_METHODS = {'append', 'appendleft', 'pop', 'popleft', 'extend', 'insert', 'add', 'remove', 'discard', 'clear', 'sort', 'reverse'}
 _tracecode_user_class_names = _builtins.set()
 _tracecode_explicit_return_function_names = _builtins.set()
-_internal_funcs = {'_serialize', '_serialize_output', '_tracecode_ref_id', '_tracer', '_custom_print', '_dict_to_tree', '_dict_to_list', '_tracecode_materialize_input', '_tracecode_materialize_custom_input', '_tracecode_materialize_named_inputs', '_tracecode_hydrate_for_annotation', '_tracecode_resolve_target_callable', '_tracecode_hydrate_annotated_inputs', '_tracecode_resolve_entry_callable', '_tracecode_invoke_entry', '_is_structural_constructor_frame', '_snapshot_call_stack', '_snapshot_locals', '_stable_token', '_looks_like_adjacency_list', '_looks_like_indexed_adjacency_list', '_resolve_inplace_result', 'TraceHooks', '_TracecodeTraceHooks', 'flush_completed_line', 'flush_callsite_line', '_resolve_previous_step', '_append_step_runtime_events', '__tracecode_pending_access_budget', '__tracecode_record_access', '__tracecode_flush_accesses', '__tracecode_append_trace_step', '__tracecode_append_trace_events_for_step', '__tracecode_append_runtime_event', '__tracecode_frame_id_for_step', '__tracecode_access_target', '__tracecode_access_binding', '__tracecode_access_kind', '__tracecode_value_at_path', '__tracecode_access_value', '__tracecode_attach_accesses_to_previous_step', '__tracecode_normalize_index_component', '__tracecode_normalize_index_sources', '__tracecode_normalize_indices', '__tracecode_serialize_call_arg', '__tracecode_serialize_call_args', '__tracecode_make_callsite_frame_id', '__tracecode_make_access_event', '__tracecode_make_iteration_access_event', '__tracecode_record_destructured_iteration_accesses', '__tracecode_is_indexable_sequence', '__tracecode_is_mutable_container', '__tracecode_read_value', '__tracecode_write_value', '__tracecode_delete_value', '__tracecode_apply_augmented_value', '__tracecode_apply_inplace_augmented_value', '_tracecode_user_call', '_tracecode_sum', '_tracecode_read_index', '_tracecode_write_index', '_tracecode_record_index_write', '_tracecode_write_scalar', '_tracecode_delete_index', '_tracecode_augassign_scalar', '_tracecode_augassign_index', '_tracecode_mutating_call', '_tracecode_mutating_index_call', '_tracecode_heapq_mutation', '_tracecode_record_attr_write', '_tracecode_contains_key_indexed', '_tracecode_dict_get', '_tracecode_dict_get_indexed', '_tracecode_len', '_tracecode_enumerate', '_tracecode_iter_bind', '_tracecode_iter_bind_literal', '_tracecode_iter_bind_expr', '_tracecode_iter_bind_indexed', '_tracecode_iter_bind_slice', '_tracecode_range_bind', '_tracecode_for_target_binding_name', '_tracecode_scalar_target_names', '_tracecode_assignment_write_targets', '_tracecode_source_string_node', '_tracecode_collect_user_function_names', '_tracecode_collect_user_method_names', '_tracecode_collect_user_class_names', '_tracecode_collect_explicit_return_function_names', '_tracecode_is_pure_literal_scaffold', '_tracecode_collect_collapsed_literal_lines', '__tracecode_attach_parents', '_tracecode_extract_named_subscript', '_tracecode_extract_mutable_container_target', '_tracecode_is_internal_name', '__TracecodeAccessTransformer', '__tracecode_compile_user_code', '<listcomp>', '<dictcomp>', '<setcomp>', '<genexpr>'}
+_internal_funcs = {'_serialize', '_serialize_output', '_tracecode_ref_id', '_tracer', '_custom_print', '_dict_to_tree', '_dict_to_list', '_tracecode_materialize_input', '_tracecode_materialize_custom_input', '_tracecode_materialize_named_inputs', '_tracecode_annotation_preserves_literal_shape', '_tracecode_hydrate_for_annotation', '_tracecode_resolve_target_callable', '_tracecode_hydrate_annotated_inputs', '_tracecode_resolve_entry_callable', '_tracecode_invoke_entry', '_is_structural_constructor_frame', '_snapshot_call_stack', '_snapshot_locals', '_stable_token', '_looks_like_adjacency_list', '_looks_like_indexed_adjacency_list', '_resolve_inplace_result', 'TraceHooks', '_TracecodeTraceHooks', 'flush_completed_line', 'flush_callsite_line', '_resolve_previous_step', '_append_step_runtime_events', '__tracecode_pending_access_budget', '__tracecode_record_access', '__tracecode_flush_accesses', '__tracecode_append_trace_step', '__tracecode_append_trace_events_for_step', '__tracecode_append_runtime_event', '__tracecode_frame_id_for_step', '__tracecode_access_target', '__tracecode_access_binding', '__tracecode_access_kind', '__tracecode_value_at_path', '__tracecode_access_value', '__tracecode_attach_accesses_to_previous_step', '__tracecode_normalize_index_component', '__tracecode_normalize_index_sources', '__tracecode_normalize_indices', '__tracecode_serialize_call_arg', '__tracecode_serialize_call_args', '__tracecode_make_callsite_frame_id', '__tracecode_make_access_event', '__tracecode_make_iteration_access_event', '__tracecode_record_destructured_iteration_accesses', '__tracecode_is_indexable_sequence', '__tracecode_is_mutable_container', '__tracecode_read_value', '__tracecode_write_value', '__tracecode_delete_value', '__tracecode_apply_augmented_value', '__tracecode_apply_inplace_augmented_value', '_tracecode_user_call', '_tracecode_sum', '_tracecode_read_index', '_tracecode_write_index', '_tracecode_record_index_write', '_tracecode_write_scalar', '_tracecode_delete_index', '_tracecode_augassign_scalar', '_tracecode_augassign_index', '_tracecode_mutating_call', '_tracecode_mutating_index_call', '_tracecode_heapq_mutation', '_tracecode_record_attr_write', '_tracecode_contains_key_indexed', '_tracecode_dict_get', '_tracecode_dict_get_indexed', '_tracecode_len', '_tracecode_enumerate', '_tracecode_iter_bind', '_tracecode_iter_bind_literal', '_tracecode_iter_bind_expr', '_tracecode_iter_bind_indexed', '_tracecode_iter_bind_slice', '_tracecode_range_bind', '_tracecode_for_target_binding_name', '_tracecode_scalar_target_names', '_tracecode_assignment_write_targets', '_tracecode_source_string_node', '_tracecode_collect_user_function_names', '_tracecode_collect_user_method_names', '_tracecode_collect_user_class_names', '_tracecode_collect_explicit_return_function_names', '_tracecode_is_pure_literal_scaffold', '_tracecode_collect_collapsed_literal_lines', '__tracecode_attach_parents', '_tracecode_extract_named_subscript', '_tracecode_extract_mutable_container_target', '_tracecode_is_internal_name', '__TracecodeAccessTransformer', '__tracecode_compile_user_code', '<listcomp>', '<dictcomp>', '<setcomp>', '<genexpr>'}
 _internal_locals = {
-    '_trace_data', '_trace_events', '_console_output', '_original_print', '_target_function',
+    '_trace_data', '_trace_events', '_trace_line_event_count', '_console_output', '_original_print', '_target_function',
     '_MIRROR_PRINT_TO_WORKER_CONSOLE', '_MINIMAL_TRACE', '_SKIP_SENTINEL',
     '_TRACE_MAX_BULK_ACCESSES',
     '_SCRIPT_MODE', '_TRACE_INPUT_NAMES', '_SCRIPT_PRE_USER_GLOBALS',
@@ -714,9 +938,10 @@ _internal_locals = {
     '_call_stack', '_pending_accesses', '_last_trace_index_by_frame', '_tracecode_tracemalloc', '_tracecode_tracemalloc_started', '_TRACE_MUTATING_METHODS', '_tracecode_user_class_names', '_tracecode_explicit_return_function_names', '_internal_funcs', '_internal_locals', '_max_trace_steps',
     '_trace_limit_exceeded', '_timeout_reason', '_total_line_events', '_max_line_events', '_max_stored_events', '_max_trace_bytes', '_max_trace_event_bytes', '_trace_stored_bytes',
     '_line_hit_count', '_max_single_line_hits', '_max_call_depth', '_max_memory_bytes', '_memory_check_every', '_infinite_loop_line',
-    '_MAX_SERIALIZE_DEPTH', '_MAX_SERIALIZED_ITEMS', '_MAX_OBJECT_FIELDS', '_MAX_SERIALIZED_STRING_CHARS', '_serialize_string', '_trace_failed', '_inplace',
+    '_hard_line_ceiling', '_hard_line_deadline', '_hard_line_grace_seconds',
+    '_MAX_SERIALIZE_DEPTH', '_MAX_SERIALIZED_ITEMS', '_MAX_OBJECT_FIELDS', '_MAX_SERIALIZED_STRING_CHARS', '_serialize_string', '_trace_failed', '_execution_aborted', '_inplace',
     '_custom_print', '_tracer', '_serialize', '_serialize_output', '_tracecode_ref_id', '_dict_to_tree', '_dict_to_list', '_tracecode_materialize_input',
-    '_tracecode_materialize_custom_input', '_tracecode_materialize_named_inputs', '_tracecode_hydrate_for_annotation',
+    '_tracecode_materialize_custom_input', '_tracecode_materialize_named_inputs', '_tracecode_annotation_preserves_literal_shape', '_tracecode_hydrate_for_annotation',
     '_tracecode_resolve_target_callable', '_tracecode_hydrate_annotated_inputs', '_tracecode_resolve_entry_callable', '_tracecode_invoke_entry',
     '_is_structural_constructor_frame', '_snapshot_call_stack', '_snapshot_locals', '_stable_token',
     '_looks_like_adjacency_list', '_looks_like_indexed_adjacency_list', '_resolve_inplace_result',
@@ -769,6 +994,16 @@ _max_memory_bytes = ${
       : 0
   }
 _memory_check_every = 10
+# Trace-budget exhaustion is NOT an execution error: once the budget trips the
+# tracer stops recording but the program keeps running so the verdict is still
+# produced (C++/Java/C# already behave this way). These separate, much larger
+# ceilings remain fatal so a genuine infinite loop is still caught.
+_hard_line_ceiling = max(_max_line_events, _max_single_line_hits) * 50
+# Armed lazily on the first budget trip, not here: this preamble can run well
+# before (and once for many cases of) the traced execution, so an absolute
+# deadline set now could already be expired by the time user code trips.
+_hard_line_deadline = 0.0
+_hard_line_grace_seconds = 10.0
 _infinite_loop_line = -1
 
 try:
@@ -806,10 +1041,25 @@ def _is_structural_constructor_frame(frame):
     except Exception:
         return False
 
+# Call-stack frames are frozen at call time (function/args/line never mutate)
+# and the stack only changes at call/return transitions, so both the copied
+# list and its encoded json are cacheable per generation.
+_call_stack_generation = 0
+_tc_stack_cache_generation = -1
+_tc_stack_cache_copy = []
+_tc_stack_cache_json = None
+_tc_stack_cache_frame_id_json = None
+
 def _snapshot_call_stack():
+    global _tc_stack_cache_generation, _tc_stack_cache_copy, _tc_stack_cache_json, _tc_stack_cache_frame_id_json
     if _MINIMAL_TRACE:
         return []
-    return [f.copy() for f in _call_stack]
+    if _tc_stack_cache_generation != _call_stack_generation:
+        _tc_stack_cache_copy = [f.copy() for f in _call_stack]
+        _tc_stack_cache_json = None
+        _tc_stack_cache_frame_id_json = None
+        _tc_stack_cache_generation = _call_stack_generation
+    return _tc_stack_cache_copy
 
 def _is_serialized_ref(value):
     return isinstance(value, _builtins.dict) and len(value) == 1 and isinstance(value.get('__ref__'), _builtins.str)
@@ -1048,27 +1298,153 @@ def _normalize_top_level_linked_list_locals(local_vars):
 
 _SCRIPT_PRE_USER_GLOBALS = _builtins.set()
 
-def _tracecode_is_internal_name(name):
-    if name in _internal_locals or name == '_' or name.startswith('__'):
-        return True
-    return isinstance(name, _builtins.str) and name.startswith('_') and ('__tracecode' in name or '__Tracecode' in name)
+def _tracecode_is_internal_name(name, _cache={}):
+    # Pure function of an (interned) name, called twice per local per line;
+    # memoized because the startswith/contains chain dominates at volume.
+    cached = _cache.get(name)
+    if cached is None:
+        cached = _builtins.bool(
+            name in _internal_locals
+            or name == '_'
+            or name.startswith('__')
+            or (
+                isinstance(name, _builtins.str)
+                and name.startswith('_')
+                and ('__tracecode' in name or '__Tracecode' in name)
+            )
+        )
+        if len(_cache) < 4096:
+            _cache[name] = cached
+    return cached
+
+# Reusable encoder: json.dumps with non-default separators builds a fresh C
+# encoder on every call, which is measurable at hundreds of thousands of
+# events per trace.
+_TC_JSON_ENCODER = json.JSONEncoder(ensure_ascii=False, separators=(',', ':'))
+
+# --- per-object snapshot representation cache (flat builtin lists only) ---
+# Line snapshots re-serialize every local on every line; for the hot pattern
+# (a large flat list mutated one cell per line) that walk is redundant. The
+# mutation hooks below keep cached representations in sync copy-on-write, so
+# reuse is byte-exact. Safety: exact-type builtin list, scalar-only emitted
+# elements, length match, an O(1) first-element spot check on every reuse, a
+# full re-serialize comparison every 64th reuse, and conservative invalidation
+# of any object passed to an untraced call. Any mismatch permanently disables
+# the cache for the run. Entries hold strong references, so a cached id cannot
+# be recycled by the allocator while the entry is alive.
+_TC_REP_SCALARS = (_builtins.int, _builtins.float, _builtins.str, _builtins.type(None))
+_TC_REP_CACHE_MAX = 2048
+_tc_rep_cache = {}
+_tc_rep_cache_enabled = True
+_tc_rep_reuse_count = 0
+
+def _tc_rep_invalidate(obj):
+    if _tc_rep_cache:
+        _tc_rep_cache.pop(_tracecode_builtin_id(obj), None)
+
+def _tc_rep_invalidate_args(args, kwargs=None):
+    if not _tc_rep_cache:
+        return
+    for value in args:
+        _tc_rep_cache.pop(_tracecode_builtin_id(value), None)
+    if kwargs:
+        for value in kwargs.values():
+            _tc_rep_cache.pop(_tracecode_builtin_id(value), None)
+
+def _tc_rep_scalar_rep(value):
+    if isinstance(value, _builtins.str):
+        return _serialize_string(value)
+    if isinstance(value, _builtins.float) and not math.isfinite(value):
+        if math.isnan(value):
+            return "NaN"
+        return "Infinity" if value > 0 else "-Infinity"
+    return value
+
+def _tc_rep_patch_write(container, indices, value):
+    # The element write has already been applied to the container; mirror it
+    # onto the cached representation when provably equivalent, else drop it.
+    entry = _tc_rep_cache.get(_tracecode_builtin_id(container))
+    if entry is None:
+        return
+    if (
+        len(indices) == 1
+        and isinstance(indices[0], _builtins.int)
+        and not isinstance(indices[0], _builtins.bool)
+        and isinstance(value, _TC_REP_SCALARS + (_builtins.bool,))
+        and entry[0] is container
+        and entry[2] == len(container)
+    ):
+        index = indices[0]
+        if index < 0:
+            index += entry[2]
+        if 0 <= index < entry[1]:
+            patched = _builtins.list(entry[3])
+            patched[index] = _tc_rep_scalar_rep(value)
+            entry[3] = patched
+            return
+        if entry[1] <= index < entry[2]:
+            # Beyond the emitted window: the truncation marker's remaining
+            # count depends only on total length, which did not change.
+            return
+    _tc_rep_cache.pop(_tracecode_builtin_id(container), None)
+
+def _tc_serialize_local(value, node_refs):
+    global _tc_rep_cache_enabled, _tc_rep_reuse_count
+    if not _tc_rep_cache_enabled or type(value) is not _builtins.list:
+        return _serialize(value, 0, node_refs)
+    vid = _tracecode_builtin_id(value)
+    entry = _tc_rep_cache.get(vid)
+    if entry is not None and entry[0] is value and entry[2] == len(value):
+        rep = entry[3]
+        fresh_first = _tc_rep_scalar_rep(value[0]) if entry[1] > 0 else None
+        first_ok = entry[1] == 0 or (
+            isinstance(value[0], _TC_REP_SCALARS + (_builtins.bool,)) and rep[0] == fresh_first
+        )
+        _tc_rep_reuse_count += 1
+        if first_ok and (_tc_rep_reuse_count & 63) != 0:
+            return rep
+        fresh = _serialize(value, 0, {})
+        if first_ok and fresh == rep:
+            return rep
+        _tc_rep_cache_enabled = False
+        _tc_rep_cache.clear()
+        return fresh
+    rep = _serialize(value, 0, node_refs)
+    if (
+        type(rep) is _builtins.list
+        and len(_tc_rep_cache) < _TC_REP_CACHE_MAX
+    ):
+        emitted = min(len(value), _MAX_SERIALIZED_ITEMS)
+        flat = True
+        for item in rep[:emitted]:
+            if not isinstance(item, _TC_REP_SCALARS + (_builtins.bool,)):
+                flat = False
+                break
+        if flat:
+            _tc_rep_cache[vid] = [value, emitted, len(value), rep]
+    return rep
 
 def _snapshot_local_sources(frame):
     if _MINIMAL_TRACE:
         return {}
     try:
         func_name = frame.f_code.co_name
+        if not (_SCRIPT_MODE and func_name == '<module>'):
+            # Everything is 'user' outside script-mode module frames; skip the
+            # per-name branching on the hot path.
+            return {
+                name: 'user'
+                for name in frame.f_locals.keys()
+                if not _tracecode_is_internal_name(name)
+            }
         sources = {}
         for name in frame.f_locals.keys():
             if _tracecode_is_internal_name(name):
                 continue
-            if _SCRIPT_MODE and func_name == '<module>':
-                if name in _TRACE_INPUT_NAMES:
-                    sources[name] = 'user-input'
-                elif name in _SCRIPT_PRE_USER_GLOBALS:
-                    sources[name] = 'harness-prelude'
-                else:
-                    sources[name] = 'user'
+            if name in _TRACE_INPUT_NAMES:
+                sources[name] = 'user-input'
+            elif name in _SCRIPT_PRE_USER_GLOBALS:
+                sources[name] = 'harness-prelude'
             else:
                 sources[name] = 'user'
         return sources
@@ -1080,20 +1456,43 @@ def _snapshot_locals(frame, with_sources=False):
         return ({}, {}) if with_sources else {}
     try:
         _node_refs = {}
-        _sources = _snapshot_local_sources(frame)
-        local_vars = {
-            k: v
-            for k, v in (
-                (k, _serialize(v, 0, _node_refs))
-                for k, v in frame.f_locals.items()
-                if not _tracecode_is_internal_name(k) and _sources.get(k) != 'harness-prelude'
-            )
-            if v != _SKIP_SENTINEL
-        }
+        # frame.f_locals materializes a fresh dict on every access; take it
+        # once and classify names inline instead of via a sources pre-pass.
+        f_locals = frame.f_locals
+        script_module = _SCRIPT_MODE and frame.f_code.co_name == '<module>'
+        local_vars = {}
+        for k, v in f_locals.items():
+            if _tracecode_is_internal_name(k):
+                continue
+            if script_module and k in _SCRIPT_PRE_USER_GLOBALS and k not in _TRACE_INPUT_NAMES:
+                continue
+            tv = type(v)
+            # Inline scalar fast path: most locals are small ints/strs and the
+            # full serializer dispatch dominates at per-line volume.
+            if tv is _builtins.int or tv is _builtins.bool or v is None:
+                local_vars[k] = v
+                continue
+            if tv is _builtins.str:
+                local_vars[k] = v if len(v) <= _MAX_SERIALIZED_STRING_CHARS else _serialize_string(v)
+                continue
+            if tv is _builtins.float and math.isfinite(v):
+                local_vars[k] = v
+                continue
+            rep = _tc_serialize_local(v, _node_refs)
+            if rep != _SKIP_SENTINEL:
+                local_vars[k] = rep
         local_vars = _normalize_top_level_linked_list_locals(local_vars)
         local_vars = _materialize_top_level_custom_object_aliases(local_vars)
-        local_sources = {name: _sources.get(name, 'user') for name in local_vars.keys()}
-        return (local_vars, local_sources) if with_sources else local_vars
+        if not with_sources:
+            return local_vars
+        if script_module:
+            local_sources = {
+                name: 'user-input' if name in _TRACE_INPUT_NAMES else 'user'
+                for name in local_vars.keys()
+            }
+        else:
+            local_sources = {name: 'user' for name in local_vars.keys()}
+        return (local_vars, local_sources)
     except Exception:
         return ({}, {}) if with_sources else {}
 
@@ -1174,8 +1573,32 @@ def __tracecode_access_value(step, access):
     root = variables.get(access.get('variable')) if isinstance(variables, _builtins.dict) else None
     return __tracecode_value_at_path(root, access.get('indices'))
 
+def _tc_native_sync_limit():
+    # Mirror a native-side budget trip onto the python flags.
+    global _trace_limit_exceeded, _timeout_reason
+    if not _trace_limit_exceeded:
+        _trace_limit_exceeded = True
+        reason = _TC_NATIVE.counters().get('timeoutReason') if _TC_NATIVE is not None else ''
+        _timeout_reason = reason or 'trace-limit'
+    _pending_accesses.clear()
+
 def __tracecode_append_runtime_event(event):
-    global _trace_limit_exceeded, _timeout_reason, _trace_stored_bytes
+    # Single-writer: this serialization IS the stored representation. The
+    # event dict is not retained, so later frame mutation cannot leak into
+    # already-recorded events and the final export embeds these strings
+    # without re-serializing the whole trace.
+    global _trace_limit_exceeded, _timeout_reason, _trace_stored_bytes, _trace_line_event_count
+    if _TC_NATIVE is not None:
+        try:
+            event_json = _TC_JSON_ENCODER.encode(event)
+        except Exception:
+            _TC_NATIVE.mark_limit_exceeded('trace-byte-limit')
+            _tc_native_sync_limit()
+            return False
+        if _TC_NATIVE.append_event_json(event_json, event.get('kind') == 'line'):
+            return True
+        _tc_native_sync_limit()
+        return False
     if len(_trace_events) >= _max_stored_events:
         if not _trace_limit_exceeded:
             _trace_limit_exceeded = True
@@ -1183,14 +1606,17 @@ def __tracecode_append_runtime_event(event):
         _pending_accesses.clear()
         return False
     try:
-        event_bytes = len(json.dumps(
-            event,
-            ensure_ascii=False,
-            separators=(',', ':'),
-        ).encode('utf-8')) + (1 if len(_trace_events) > 0 else 0)
+        event_json = _TC_JSON_ENCODER.encode(event)
+        # ASCII json needs no encode pass to know its byte length; non-ASCII
+        # payloads (rare) fall back to a real utf-8 encode.
+        event_bytes = (
+            len(event_json) if event_json.isascii() else len(event_json.encode('utf-8'))
+        ) + (1 if len(_trace_events) > 0 else 0)
     except Exception:
+        event_json = None
         event_bytes = _max_trace_bytes + 1
     if (
+        event_json is None or
         event_bytes > _max_trace_event_bytes or
         event_bytes > (_max_trace_bytes - _trace_stored_bytes)
     ):
@@ -1199,7 +1625,37 @@ def __tracecode_append_runtime_event(event):
             _timeout_reason = 'trace-byte-limit'
         _pending_accesses.clear()
         return False
-    _trace_events.append(event)
+    _trace_events.append(event_json)
+    if event.get('kind') == 'line':
+        _trace_line_event_count += 1
+    _trace_stored_bytes += event_bytes
+    return True
+
+def __tracecode_append_runtime_event_json(event_json):
+    # Raw-string twin of __tracecode_append_runtime_event for callers that
+    # assemble the json by fragment splicing (never 'line' events).
+    global _trace_limit_exceeded, _timeout_reason, _trace_stored_bytes
+    if _TC_NATIVE is not None:
+        if _TC_NATIVE.append_event_json(event_json, False):
+            return True
+        _tc_native_sync_limit()
+        return False
+    if len(_trace_events) >= _max_stored_events:
+        if not _trace_limit_exceeded:
+            _trace_limit_exceeded = True
+            _timeout_reason = 'trace-limit'
+        _pending_accesses.clear()
+        return False
+    event_bytes = (
+        len(event_json) if event_json.isascii() else len(event_json.encode('utf-8'))
+    ) + (1 if len(_trace_events) > 0 else 0)
+    if event_bytes > _max_trace_event_bytes or event_bytes > (_max_trace_bytes - _trace_stored_bytes):
+        if not _trace_limit_exceeded:
+            _trace_limit_exceeded = True
+            _timeout_reason = 'trace-byte-limit'
+        _pending_accesses.clear()
+        return False
+    _trace_events.append(event_json)
     _trace_stored_bytes += event_bytes
     return True
 
@@ -1218,7 +1674,9 @@ def __tracecode_append_trace_events_for_step(step):
         'frameId': __tracecode_frame_id_for_step(step)
     }
     if len(stack) > 0:
-        base['callStack'] = [f.copy() for f in stack]
+        # No copy: the event serializes immediately on append, which freezes
+        # the current frame state without cloning it per event.
+        base['callStack'] = stack
     if event_kind == 'line':
         __tracecode_append_runtime_event({**base, 'kind': 'line', 'function': function_name})
     elif event_kind == 'call':
@@ -1239,10 +1697,80 @@ def __tracecode_append_trace_events_for_step(step):
         variables = step.get('variables') if isinstance(step.get('variables'), _builtins.dict) else {}
         __tracecode_append_runtime_event({**base, 'kind': 'stdout', 'text': str(step.get('returnValue') or variables.get('output') or '')})
 
+    # Fragment splicing: every event of this step shares the base fields
+    # (including the call stack, the bulk of the bytes); encode them once and
+    # append per-event suffixes. Composition is byte-identical to encoding the
+    # merged dict because dict merge preserves insertion order.
+    #
+    # The call-stack fragment is the bulk of those bytes and only changes at
+    # call/return transitions, so it is cached per stack-snapshot object (the
+    # generation cache hands out the SAME list object until the stack moves —
+    # an identity check is therefore exact, never stale).
+    base_prefix = None
+    try:
+        if len(stack) > 0:
+            global _tc_stack_cache_json
+            if stack is _tc_stack_cache_copy and _tc_stack_cache_json is not None:
+                stack_json = _tc_stack_cache_json
+            else:
+                stack_json = _TC_JSON_ENCODER.encode(stack)
+                if stack is _tc_stack_cache_copy:
+                    _tc_stack_cache_json = stack_json
+            base_prefix = (
+                '{"runId":"python:run","line":' + _TC_JSON_ENCODER.encode(line)
+                + ',"frameId":' + _TC_JSON_ENCODER.encode(base['frameId'])
+                + ',"callStack":' + stack_json
+            )
+        else:
+            base_prefix = _TC_JSON_ENCODER.encode(base)[:-1]
+    except Exception:
+        base_prefix = None
+
+    native_locals = step.pop('__native_frame_locals', None)
+    if native_locals is not None and event_kind != '__access_only__':
+        if _TC_NATIVE is not None and base_prefix is not None:
+            reps = _TC_NATIVE.emit_snapshot_events(native_locals, base_prefix)
+            step['variables'] = reps
+            step['variableSources'] = {name: 'user' for name in reps}
+            if _TC_NATIVE.counters()['limitExceeded'] and not _trace_limit_exceeded:
+                _tc_native_sync_limit()
+                return
+        else:
+            # Rare fallback (encode error or native lost mid-run): rebuild the
+            # reps in python from the staged locals so step consumers and the
+            # event stream stay correct.
+            _node_refs = {}
+            reps = {}
+            for k, v in native_locals.items():
+                if _tracecode_is_internal_name(k):
+                    continue
+                rep = _tc_serialize_local(v, _node_refs)
+                if rep != _SKIP_SENTINEL:
+                    reps[k] = rep
+            step['variables'] = reps
+            step['variableSources'] = {name: 'user' for name in reps}
+            for variable, value in reps.items():
+                if not __tracecode_append_runtime_event({**base, 'kind': 'snapshot', 'target': {'variable': variable}, 'value': value}):
+                    return
+
     variables = step.get('variables')
-    if event_kind != '__access_only__' and isinstance(variables, _builtins.dict):
+    if native_locals is None and event_kind != '__access_only__' and isinstance(variables, _builtins.dict):
         for variable, value in variables.items():
-            if not __tracecode_append_runtime_event({**base, 'kind': 'snapshot', 'target': {'variable': variable}, 'value': value}):
+            if base_prefix is not None:
+                try:
+                    appended = __tracecode_append_runtime_event_json(
+                        base_prefix
+                        + ',"kind":"snapshot","target":{"variable":'
+                        + _TC_JSON_ENCODER.encode(variable)
+                        + '},"value":'
+                        + _TC_JSON_ENCODER.encode(value)
+                        + '}'
+                    )
+                except Exception:
+                    appended = __tracecode_append_runtime_event({**base, 'kind': 'snapshot', 'target': {'variable': variable}, 'value': value})
+            else:
+                appended = __tracecode_append_runtime_event({**base, 'kind': 'snapshot', 'target': {'variable': variable}, 'value': value})
+            if not appended:
                 return
 
     accesses = step.get('accesses')
@@ -1262,11 +1790,29 @@ def __tracecode_append_trace_events_for_step(step):
                 if not __tracecode_append_runtime_event(event):
                     return
             else:
-                event = {**base, 'kind': kind, 'target': target, 'value': __tracecode_access_value(step, access)}
+                value = __tracecode_access_value(step, access)
                 binding = __tracecode_access_binding(access)
-                if binding is not None:
-                    event['binding'] = binding
-                if not __tracecode_append_runtime_event(event):
+                appended = False
+                if base_prefix is not None and binding is None:
+                    try:
+                        appended = __tracecode_append_runtime_event_json(
+                            base_prefix
+                            + ',"kind":"'
+                            + kind
+                            + '","target":'
+                            + _TC_JSON_ENCODER.encode(target)
+                            + ',"value":'
+                            + _TC_JSON_ENCODER.encode(value)
+                            + '}'
+                        )
+                    except Exception:
+                        appended = __tracecode_append_runtime_event({**base, 'kind': kind, 'target': target, 'value': value})
+                else:
+                    event = {**base, 'kind': kind, 'target': target, 'value': value}
+                    if binding is not None:
+                        event['binding'] = binding
+                    appended = __tracecode_append_runtime_event(event)
+                if not appended:
                     return
 
 def __tracecode_resolve_previous_step(frame):
@@ -1284,6 +1830,20 @@ def __tracecode_append_step_runtime_events(step):
     step['__runtime_flushed'] = True
     globals()['__tracecode_append_trace_events_for_step'](step)
 
+def _tc_native_stage_snapshot(step, frame):
+    # Defer the locals walk + serialization to the native emitter at convert
+    # time (which has the base-prefix). The locals dict must be materialized
+    # HERE: convert runs synchronously within this flush, but the dict pin
+    # freezes the binding set at flush time exactly like the python walk did.
+    if _TC_NATIVE is None or _MINIMAL_TRACE:
+        return False
+    if _SCRIPT_MODE and frame.f_code.co_name == '<module>':
+        return False
+    step['__native_frame_locals'] = dict(frame.f_locals)
+    step['variables'] = {}
+    step['variableSources'] = {}
+    return True
+
 def __tracecode_flush_completed_line(frame,
     _resolve_previous_step=__tracecode_resolve_previous_step,
     _append_step_runtime_events=__tracecode_append_step_runtime_events,
@@ -1297,10 +1857,11 @@ def __tracecode_flush_completed_line(frame,
     if previous_step.get('__runtime_flushed'):
         globals()['__tracecode_attach_accesses_to_previous_step'](frame)
         return
-    local_vars, local_sources = _snapshot_locals(frame, with_sources=True)
+    if not _tc_native_stage_snapshot(previous_step, frame):
+        local_vars, local_sources = _snapshot_locals(frame, with_sources=True)
+        previous_step['variables'] = local_vars
+        previous_step['variableSources'] = local_sources
     accesses = globals()['__tracecode_flush_accesses'](frame)
-    previous_step['variables'] = local_vars
-    previous_step['variableSources'] = local_sources
     previous_step['accesses'] = accesses
     previous_step['callStack'] = _snapshot_call_stack()
     previous_step['stdoutLineCount'] = len(_console_output)
@@ -1317,24 +1878,29 @@ def __tracecode_flush_callsite_line(frame, line_number,
         return
     if previous_step.get('line') != line_number:
         return
-    local_vars, local_sources = _snapshot_locals(frame, with_sources=True)
     accesses = globals()['__tracecode_flush_accesses'](frame)
     if previous_step.get('__runtime_flushed'):
         callsite_step = {
             'line': line_number,
             'event': 'line',
-            'variables': local_vars,
-            'variableSources': local_sources,
+            'variables': {},
+            'variableSources': {},
             'function': frame.f_code.co_name,
             'callStack': _snapshot_call_stack(),
             'stdoutLineCount': len(_console_output),
             'accesses': accesses,
         }
+        if not _tc_native_stage_snapshot(callsite_step, frame):
+            local_vars, local_sources = _snapshot_locals(frame, with_sources=True)
+            callsite_step['variables'] = local_vars
+            callsite_step['variableSources'] = local_sources
         globals()['__tracecode_append_trace_step'](frame, callsite_step)
         _append_step_runtime_events(callsite_step)
         return
-    previous_step['variables'] = local_vars
-    previous_step['variableSources'] = local_sources
+    if not _tc_native_stage_snapshot(previous_step, frame):
+        local_vars, local_sources = _snapshot_locals(frame, with_sources=True)
+        previous_step['variables'] = local_vars
+        previous_step['variableSources'] = local_sources
     previous_step['accesses'] = accesses
     previous_step['callStack'] = _snapshot_call_stack()
     previous_step['stdoutLineCount'] = len(_console_output)
@@ -1383,7 +1949,8 @@ def __tracecode_pending_access_budget(frame, reserve=0):
     try:
         frame_key = _tracecode_builtin_id(frame)
         pending_count = len(_pending_accesses.get(frame_key, []))
-        remaining_events = _max_stored_events - len(_trace_events) - pending_count - int(reserve)
+        stored_events = _TC_NATIVE.stored_event_count() if _TC_NATIVE is not None else len(_trace_events)
+        remaining_events = _max_stored_events - stored_events - pending_count - int(reserve)
         return max(0, min(_TRACE_MAX_BULK_ACCESSES, remaining_events))
     except Exception:
         return 0
@@ -1489,6 +2056,9 @@ def __tracecode_make_callsite_frame_id(frame, line_number):
 
 def _tracecode_user_call(line_number, function_name, func, *args, _tracecode_flush_callsite_line=__tracecode_flush_callsite_line, **kwargs):
     _tracecode_flush_callsite_line(sys._getframe(1), line_number)
+    # The callee may mutate argument containers through paths the rewriter
+    # does not instrument (builtins like random.shuffle); drop their reps.
+    _tc_rep_invalidate_args(args, kwargs)
     return func(*args, **kwargs)
 
 def __tracecode_normalize_index_sources(index_sources, path_length):
@@ -1595,6 +2165,7 @@ def __tracecode_write_value(container, indices, value):
             container[indices[0]] = value
         else:
             setattr(container, indices[0], value)
+        _tc_rep_patch_write(container, indices, value)
         return value
     parent = container
     for index in indices[:-1]:
@@ -1606,9 +2177,12 @@ def __tracecode_write_value(container, indices, value):
         parent[indices[-1]] = value
     else:
         setattr(parent, indices[-1], value)
+    _tc_rep_invalidate(container)
+    _tc_rep_invalidate(parent)
     return value
 
 def __tracecode_delete_value(container, indices):
+    _tc_rep_invalidate(container)
     if len(indices) == 1:
         if isinstance(container, _builtins.dict) or isinstance(container, _builtins.list):
             del container[indices[0]]
@@ -1686,6 +2260,10 @@ def __tracecode_apply_inplace_augmented_value(current, op_name, rhs):
     return rhs
 
 def _tracecode_read_index(var_name, container, indices, index_sources=None):
+    # Post-budget fast path: recording would be discarded, so only the
+    # semantic read remains (mirrors the C++ admissibility pre-checks).
+    if _trace_limit_exceeded:
+        return __tracecode_read_value(container, list(indices))
     result = __tracecode_read_value(container, list(indices))
     normalized = __tracecode_normalize_indices(indices)
     if normalized is not None:
@@ -1702,6 +2280,8 @@ def _tracecode_read_index(var_name, container, indices, index_sources=None):
     return result
 
 def _tracecode_write_index(var_name, container, indices, index_sources, value):
+    if _trace_limit_exceeded:
+        return __tracecode_write_value(container, list(indices), value)
     effective_indices = list(indices)
     parent_value = None
     parent_indices = effective_indices[:-1]
@@ -1776,6 +2356,7 @@ def _tracecode_write_scalar(var_name, value):
     return value
 
 def _tracecode_augassign_scalar(var_name, current, op_name, rhs):
+    _tc_rep_invalidate(current)
     next_value = __tracecode_apply_inplace_augmented_value(current, op_name, rhs)
     __tracecode_record_access(
         sys._getframe(1),
@@ -1802,6 +2383,12 @@ def _tracecode_delete_index(var_name, container, indices, index_sources=None):
     return None
 
 def _tracecode_augassign_index(var_name, container, indices, index_sources, op_name, rhs):
+    if _trace_limit_exceeded:
+        _fast_indices = list(indices)
+        _fast_next = __tracecode_apply_augmented_value(
+            __tracecode_read_value(container, _fast_indices), op_name, rhs)
+        __tracecode_write_value(container, _fast_indices, _fast_next)
+        return _fast_next
     effective_indices = list(indices)
     current = __tracecode_read_value(container, effective_indices)
     normalized = __tracecode_normalize_indices(effective_indices)
@@ -1845,6 +2432,7 @@ def _tracecode_augassign_index(var_name, container, indices, index_sources, op_n
 
 def _tracecode_mutating_call(var_name, container, method_name, *args, **kwargs):
     frame = sys._getframe(1)
+    _tc_rep_invalidate(container)
     index_sources = kwargs.pop('__tracecode_index_sources', None)
     before_len = None
     try:
@@ -1919,8 +2507,10 @@ def _tracecode_mutating_call(var_name, container, method_name, *args, **kwargs):
 
 def _tracecode_mutating_index_call(var_name, container, indices, index_sources, method_name, *args, **kwargs):
     frame = sys._getframe(1)
+    _tc_rep_invalidate(container)
     effective_indices = list(indices)
     target = __tracecode_read_value(container, effective_indices)
+    _tc_rep_invalidate(target)
     before_len = None
     try:
         if method_name in {'append', 'appendleft', 'extend', 'extendleft', 'insert'}:
@@ -1979,6 +2569,7 @@ def _tracecode_mutating_index_call(var_name, container, indices, index_sources, 
 
 def _tracecode_heapq_mutation(heapq_func, var_name, target, indices, method_name, *args, **kwargs):
     frame = sys._getframe(1)
+    _tc_rep_invalidate(target)
     effective_indices = list(indices or [])
     normalized = __tracecode_normalize_indices(effective_indices)
     invalid_nested_path = len(effective_indices) > 0 and normalized is None
@@ -3375,15 +3966,61 @@ class __TracecodeAccessTransformer(ast.NodeTransformer):
         )
         return ast.copy_location(call, node)
 
-def __tracecode_compile_user_code(source):
-    tree = ast.parse(source, filename='solution.py', mode='exec')
-    __tracecode_attach_parents(tree)
-    tree = __TracecodeAccessTransformer(
-        _tracecode_collect_user_function_names(tree),
-        _tracecode_collect_user_class_names(tree),
-    ).visit(tree)
-    ast.fix_missing_locations(tree)
-    return compile(tree, 'solution.py', 'exec')
+def __tracecode_compile_user_code(source, on_demand=False):
+    raw_tree = ast.parse(source, filename='solution.py', mode='exec')
+    traced_tree = ast.parse(source, filename='solution.py', mode='exec')
+    __tracecode_attach_parents(traced_tree)
+    traced_tree = __TracecodeAccessTransformer(
+        _tracecode_collect_user_function_names(traced_tree),
+        _tracecode_collect_user_class_names(traced_tree),
+    ).visit(traced_tree)
+    if not on_demand:
+        ast.fix_missing_locations(traced_tree)
+        return compile(traced_tree, 'solution.py', 'exec')
+
+    # One code object carries both implementations. The branch runs once when
+    # the module is loaded for a case, so verdict-only execution pays neither
+    # injected hook calls nor a branch at every access. Module docstrings and
+    # future imports must remain outside the conditional to retain Python's
+    # compilation semantics.
+    prefix_count = 0
+    if (
+        len(raw_tree.body) > 0 and
+        isinstance(raw_tree.body[0], ast.Expr) and
+        isinstance(raw_tree.body[0].value, ast.Constant) and
+        isinstance(raw_tree.body[0].value.value, str)
+    ):
+        prefix_count = 1
+    while (
+        prefix_count < len(raw_tree.body) and
+        isinstance(raw_tree.body[prefix_count], ast.ImportFrom) and
+        raw_tree.body[prefix_count].module == '__future__'
+    ):
+        prefix_count += 1
+    raw_body = raw_tree.body[prefix_count:]
+    traced_body = traced_tree.body[prefix_count:]
+    selector_anchor = (
+        raw_body[0]
+        if len(raw_body) > 0
+        else (raw_tree.body[0] if len(raw_tree.body) > 0 else None)
+    )
+    if len(raw_body) == 0:
+        raw_body = [ast.Pass()]
+    if len(traced_body) == 0:
+        traced_body = [ast.Pass()]
+    selector = ast.If(
+        test=ast.Name(id='__tracecode_tracing_enabled', ctx=ast.Load()),
+        body=traced_body,
+        orelse=raw_body,
+    )
+    if selector_anchor is not None:
+        selector = ast.copy_location(selector, selector_anchor)
+    combined_tree = ast.Module(
+        body=raw_tree.body[:prefix_count] + [selector],
+        type_ignores=raw_tree.type_ignores,
+    )
+    ast.fix_missing_locations(combined_tree)
+    return compile(combined_tree, 'solution.py', 'exec')
 
 def _tracecode_is_pure_literal_scaffold(node):
     if isinstance(node, (ast.Constant, ast.Name)):
@@ -3483,6 +4120,35 @@ def _tracer(frame, event, arg,
     _tracecode_flush_completed_line=__tracecode_flush_completed_line,
 ):
     global _trace_limit_exceeded, _timeout_reason, _total_line_events, _line_hit_count, _infinite_loop_line
+    global _call_stack_generation, _hard_line_deadline
+
+    # Degraded fast path. Once a trace budget trips we record nothing more, so
+    # skip the whole classification preamble (filename, internal-func set, the
+    # structural-constructor call) and keep only the runaway guards. Sampling
+    # them every 1024 events keeps perf_counter() off the per-event path; the
+    # ceiling is 50x the normal budget, so the coarse granularity is harmless.
+    if _trace_limit_exceeded:
+        if event != 'line':
+            return _tracer
+        _total_line_events += 1
+        if (_total_line_events & 1023) == 0:
+            if _hard_line_deadline == 0.0:
+                _hard_line_deadline = _tc_perf() + _hard_line_grace_seconds
+            if _total_line_events >= _hard_line_ceiling or _tc_perf() > _hard_line_deadline:
+                _tracecode_stop_tracing()
+                raise _InfiniteLoopDetected(
+                    f"Execution guard tripped after {_total_line_events} line events"
+                )
+            if _max_memory_bytes > 0 and _tracecode_tracemalloc is not None:
+                try:
+                    _degraded_memory, _degraded_peak = _tracecode_tracemalloc.get_traced_memory()
+                except Exception:
+                    _degraded_memory, _degraded_peak = (0, 0)
+                if _degraded_memory >= _max_memory_bytes or _degraded_peak >= _max_memory_bytes:
+                    _tracecode_stop_tracing()
+                    raise _InfiniteLoopDetected(f"Exceeded {_max_memory_bytes} bytes")
+        return _tracer
+
     func_name = frame.f_code.co_name
 
     if frame.f_code.co_filename != 'solution.py':
@@ -3524,7 +4190,7 @@ def _tracer(frame, event, arg,
                         'stdoutLineCount': len(_console_output),
                         'accesses': [],
                     })
-                    sys.settrace(None)
+                    _tracecode_stop_tracing()
                     raise _InfiniteLoopDetected(f"Exceeded {_max_memory_bytes} bytes")
 
         # Check total line events before duplicate-line suppression so
@@ -3543,8 +4209,9 @@ def _tracer(frame, event, arg,
                     'stdoutLineCount': len(_console_output),
                     'accesses': [],
                 })
-                sys.settrace(None)
-                raise _InfiniteLoopDetected(f"Exceeded {_max_line_events} line events")
+                # Degrade: stop recording, keep executing. Every later event
+                # takes the degraded fast path at the top of _tracer.
+                return _tracer
 
         # Simple per-line counter (catches any line hit too many times)
         line_key = (func_name, frame.f_lineno)
@@ -3566,8 +4233,8 @@ def _tracer(frame, event, arg,
                     'stdoutLineCount': len(_console_output),
                     'accesses': []
                 })
-                sys.settrace(None)
-                raise _InfiniteLoopDetected(f"Line {frame.f_lineno} executed {_max_single_line_hits} times")
+                # Degrade: stop recording, keep executing (see _hard_line_ceiling).
+                return _tracer
 
         previous_step = _tracecode_resolve_previous_step(frame)
         if (
@@ -3597,12 +4264,12 @@ def _tracer(frame, event, arg,
                 'accesses': [],
             })
             _pending_accesses.clear()
-            sys.settrace(None)
+            _tracecode_stop_tracing()
         return None
 
     if _trace_limit_exceeded and _timeout_reason in ('trace-limit', 'trace-byte-limit'):
         _pending_accesses.clear()
-        sys.settrace(None)
+        _tracecode_stop_tracing()
         return None
 
     if event == 'call':
@@ -3620,10 +4287,11 @@ def _tracer(frame, event, arg,
                     'stdoutLineCount': len(_console_output),
                     'accesses': [],
                 })
-                sys.settrace(None)
+                _tracecode_stop_tracing()
                 raise _InfiniteLoopDetected(f"Exceeded {_max_call_depth} calls")
         local_vars, local_sources = _snapshot_locals(frame, with_sources=True)
         if func_name != '<module>':
+            _call_stack_generation += 1
             _call_stack.append({
                 'function': func_name,
                 'args': local_vars.copy() if not _MINIMAL_TRACE else {},
@@ -3679,6 +4347,7 @@ def _tracer(frame, event, arg,
         _pending_accesses.pop(_tracecode_builtin_id(frame), None)
         _last_trace_index_by_frame.pop(_tracecode_builtin_id(frame), None)
         if _call_stack and _call_stack[-1]['function'] == func_name:
+            _call_stack_generation += 1
             _call_stack.pop()
 
     return _tracer
@@ -3804,7 +4473,7 @@ pow = _builtins.pow
       `_tracecode_user_class_names = _tracecode_collect_user_class_names(ast.parse(_user_code_str, filename='solution.py', mode='exec'))`,
       `_tracecode_explicit_return_function_names = _tracecode_collect_explicit_return_function_names(ast.parse(_user_code_str, filename='solution.py', mode='exec'))`,
       `_tracecode_collapsed_literal_lines = _tracecode_collect_collapsed_literal_lines(_user_code_str)`,
-      `__tracecode_prepared_user_code_result = __tracecode_compile_user_code(_user_code_str)`,
+      `__tracecode_prepared_user_code_result = __tracecode_compile_user_code(_user_code_str, ${prepared?.onDemand === true ? 'True' : 'False'})`,
       `__tracecode_prepared_user_code_result`,
     ].join('\n');
     return {
@@ -3862,6 +4531,8 @@ def _tracecode_materialize_named_inputs(_names):
 
 def _tracecode_materialize_input(obj):
     return _tracecode_materialize_custom_input(obj)
+
+${PYTHON_LITERAL_SHAPE_ANNOTATION_HELPER}
 
 def _tracecode_hydrate_for_annotation(_obj, _annotation):
     try:
@@ -3949,7 +4620,9 @@ def _tracecode_hydrate_annotated_inputs(_names, _function_name, _execution_style
             _annotations = getattr(_callable, '__annotations__', {}) or {}
         for _name in _names:
             if _name in globals() and _name in _annotations:
-                globals()[_name] = _tracecode_hydrate_for_annotation(globals()[_name], _annotations[_name])
+                _annotation = _annotations[_name]
+                if not _tracecode_annotation_preserves_literal_shape(_annotation):
+                    globals()[_name] = _tracecode_hydrate_for_annotation(globals()[_name], _annotation)
     except Exception:
         return
 
@@ -4030,7 +4703,8 @@ ${treeConversions}
 ${listConversions}
 
 ${preloadUserDefinitions}
-_tracecode_materialize_named_inputs(${traceInputNamesLiteral})
+if ${usesPreparedBindings ? '__tracecode_inputs_need_materialization' : 'True'}:
+    _tracecode_materialize_named_inputs(${traceInputNamesLiteral})
 _tracecode_hydrate_annotated_inputs(${traceInputNamesLiteral}, ${functionNameLiteral}, ${executionStyleLiteral})
 
 if _SCRIPT_MODE:
@@ -4047,19 +4721,131 @@ if _max_memory_bytes > 0 and _tracecode_tracemalloc is not None:
 # Source augmentation can record setup accesses before user execution begins.
 # They are not learner events and must not leak into the first traced line.
 _pending_accesses.clear()
-sys.settrace(_tracer)
+
+_tp_hooks = 0.0
+_tp_serialize_all = 0.0
+_tp_hook_calls = 0
+_tp_depth = 0
+
+if _TRACE_PROFILE:
+    _internal_funcs.add('_tc_hook_wrapper')
+    def _tc_wrap_hook(_tc_fn):
+        def _tc_hook_wrapper(*_tc_a, **_tc_k):
+            global _tp_hooks, _tp_depth, _tp_hook_calls
+            if _tp_depth > 0:
+                return _tc_fn(*_tc_a, **_tc_k)
+            _tp_depth = 1
+            _tp_hook_calls += 1
+            _tc_t0 = _tc_perf()
+            try:
+                return _tc_fn(*_tc_a, **_tc_k)
+            finally:
+                _tp_hooks += _tc_perf() - _tc_t0
+                _tp_depth = 0
+        return _tc_hook_wrapper
+    for _tc_hook_name in (
+        '_tracecode_read_index', '_tracecode_write_index', '_tracecode_augassign_index',
+        '_tracecode_augassign_scalar', '_tracecode_write_scalar', '_tracecode_len',
+        '_tracecode_enumerate', '_tracecode_iter_bind', '_tracecode_iter_bind_indexed',
+        '_tracecode_range_bind', '_tracecode_user_call', '_tracecode_dict_get',
+        '_tracecode_mutating_call', '_tracecode_mutating_index_call', '_tracecode_sum',
+        '_tracecode_contains_key_indexed', '_tracecode_record_index_write',
+        '_tracecode_delete_index', '_tracecode_record_attr_write',
+    ):
+        if _tc_hook_name in globals():
+            globals()[_tc_hook_name] = _tc_wrap_hook(globals()[_tc_hook_name])
+    _internal_funcs.add('_tc_serialize_wrapper')
+    _tc_orig_serialize_fn = _serialize
+    def _tc_serialize_wrapper(obj, depth=0, node_refs=None):
+        global _tp_serialize_all
+        _tc_t0 = _tc_perf()
+        try:
+            return _tc_orig_serialize_fn(obj, depth, node_refs)
+        finally:
+            if depth == 0:
+                _tp_serialize_all += _tc_perf() - _tc_t0
+    _serialize = _tc_serialize_wrapper
+
+if _TRACE_PROFILE:
+    # Measurement-only accumulators. Buckets nest (snapshots run inside the
+    # tracer and inside step appends), so interpret them as raw inclusive
+    # totals rather than a partition.
+    _tc_orig_snapshot_locals = _snapshot_locals
+    def _snapshot_locals(frame, with_sources=False):
+        global _tp_snapshot
+        _t0 = _tc_perf()
+        try:
+            return _tc_orig_snapshot_locals(frame, with_sources)
+        finally:
+            _tp_snapshot += _tc_perf() - _t0
+    _tc_orig_snapshot_call_stack = _snapshot_call_stack
+    def _snapshot_call_stack():
+        global _tp_stack
+        _t0 = _tc_perf()
+        try:
+            return _tc_orig_snapshot_call_stack()
+        finally:
+            _tp_stack += _tc_perf() - _t0
+    _tc_orig_append_trace_step = __tracecode_append_trace_step
+    def __tracecode_append_trace_step(frame, step):
+        global _tp_step
+        _t0 = _tc_perf()
+        try:
+            return _tc_orig_append_trace_step(frame, step)
+        finally:
+            _tp_step += _tc_perf() - _t0
+    _tc_orig_append_events_for_step = __tracecode_append_trace_events_for_step
+    def __tracecode_append_trace_events_for_step(step):
+        global _tp_convert
+        _t0 = _tc_perf()
+        try:
+            return _tc_orig_append_events_for_step(step)
+        finally:
+            _tp_convert += _tc_perf() - _t0
+    _tc_orig_tracer = _tracer
+    def _tracer(frame, event, arg):
+        global _tp_tracer
+        _t0 = _tc_perf()
+        try:
+            _tc_result = _tc_orig_tracer(frame, event, arg)
+        finally:
+            _tp_tracer += _tc_perf() - _t0
+        return _tracer if _tc_result is _tc_orig_tracer else _tc_result
+
+# Native tracer hot path: configured late so every rebind (profiling wrappers
+# included) has settled. Missing module → python paths, zero-risk fallback.
+try:
+    import _tracecode_native as _tc_native_module
+    _tc_native_module.configure(
+        frozenset(_internal_locals),
+        _serialize,
+        _TC_JSON_ENCODER.encode,
+        _SKIP_SENTINEL,
+    )
+    _tc_native_module.begin_run(_max_stored_events, _max_trace_bytes, _max_trace_event_bytes, _trace_stored_bytes)
+    _TC_NATIVE = _tc_native_module
+except Exception:
+    _TC_NATIVE = None
+
+_tp_arm_at = _tc_perf()
+_tracecode_arm_tracing()
 _trace_failed = False
+# True only when a guard aborted the program mid-flight (runaway loop, memory
+# ceiling). A trace-budget trip alone degrades to "stop recording, keep running"
+# and leaves this False, so the host can still trust _result.
+_execution_aborted = False
 
 try:
 ${executionCode}
 except _InfiniteLoopDetected as e:
     _trace_failed = True
+    _execution_aborted = True
     _result = None
     # Infinite loop was detected - trace data already has the timeout event
 except Exception as e:
     _trace_failed = True
     # Stop tracing immediately so error-handling internals are never traced.
-    sys.settrace(None)
+    _tracecode_stop_tracing()
     _result = None
     _exc_type = type(e).__name__
     _exc_msg = str(e)
@@ -4088,7 +4874,8 @@ if (not _trace_failed) and _result is None:
     if _inplace is not None:
         _result = _inplace
 
-sys.settrace(None)
+_tracecode_stop_tracing()
+_tp_stop_at = _tc_perf()
 if _tracecode_tracemalloc is not None and _tracecode_tracemalloc_started:
     try:
         _tracecode_tracemalloc.stop()
@@ -4119,28 +4906,51 @@ def __tracecode_compact_last_step(kind=None):
         return compact
     return None
 
-__tracecode_execution_result_json = json.dumps({
-    'traceSummary': {
+if _TRACE_PROFILE:
+    _console_output.append('__TRACECODE_TRACE_PROFILE_JSON__:' + json.dumps({
+        'language': 'python',
+        'monitoring': _TC_MONITORING_ACTIVE,
+        'monitoringError': _TC_MONITORING_ERROR,
+        'monitoringArmed': _TC_MONITORING_WAS_ARMED,
+        'setupMs': round((_tp_arm_at - _tp_import_at) * 1000, 1),
+        'hookMs': round(_tp_hooks * 1000, 1),
+        'hookCalls': _tp_hook_calls,
+        'serializeAllMs': round(_tp_serialize_all * 1000, 1),
+        'runPhaseMs': round((_tp_stop_at - _tp_arm_at) * 1000, 1),
+        'exportPhaseMs': round((_tc_perf() - _tp_stop_at) * 1000, 1),
+        'tracerMs': round(_tp_tracer * 1000, 1),
+        'snapshotMs': round(_tp_snapshot * 1000, 1),
+        'callStackMs': round(_tp_stack * 1000, 1),
+        'stepAppendMs': round(_tp_step * 1000, 1),
+        'eventConvertMs': round(_tp_convert * 1000, 1),
+        'events': _TC_NATIVE.stored_event_count() if _TC_NATIVE is not None else len(_trace_events),
+        'steps': len(_trace_data),
+        'lineEvents': _total_line_events,
+    }))
+
+__tracecode_execution_result_json = (
+    '{"traceSummary":' + json.dumps({
         'errorStep': __tracecode_compact_last_step('exception'),
         'timeoutStep': __tracecode_compact_last_step('timeout'),
         'lastStep': __tracecode_compact_last_step(),
-    },
-    'runtimeTrace': {
-        'schemaVersion': 'runtime-trace-2026-04-28',
-        'language': 'python',
-        'runId': 'python:run',
-        'events': _trace_events,
-        'lineEventCount': len([event for event in _trace_events if event.get('kind') == 'line']),
-        'traceStepCount': len(_trace_events)
-    },
-    'result': _serialize_output(_result),
-    'console': _console_output,
-    'userCodeStartLine': ${userCodeStartLine},
-    'traceLimitExceeded': _trace_limit_exceeded,
-    'timeoutReason': _timeout_reason,
-    'lineEventCount': _total_line_events,
-    'traceStepCount': len(_trace_data)
-})
+    })
+    + ',"runtimeTrace":{"schemaVersion":"runtime-trace-2026-04-28","language":"python","runId":"python:run","events":['
+    + (_TC_NATIVE.take_buffer() if _TC_NATIVE is not None else ','.join(_trace_events))
+    + '],"lineEventCount":' + str(
+        _TC_NATIVE.counters()['lineEvents'] if _TC_NATIVE is not None else _trace_line_event_count
+    )
+    + ',"traceStepCount":' + str(
+        _TC_NATIVE.stored_event_count() if _TC_NATIVE is not None else len(_trace_events)
+    ) + '}'
+    + ',"result":' + json.dumps(_serialize_output(_result))
+    + ',"console":' + json.dumps(_console_output)
+    + ',"userCodeStartLine":' + json.dumps(${userCodeStartLine})
+    + ',"traceLimitExceeded":' + json.dumps(_trace_limit_exceeded)
+    + ',"executionAborted":' + json.dumps(_execution_aborted)
+    + ',"timeoutReason":' + json.dumps(_timeout_reason)
+    + ',"lineEventCount":' + json.dumps(_total_line_events)
+    + ',"traceStepCount":' + json.dumps(len(_trace_data)) + '}'
+)
 __tracecode_execution_result_json
 `;
 
@@ -4404,6 +5214,7 @@ async function executeWithTracing(
       };
     }
 
+    const pyRunStartedAt = deps.performanceNow();
     const resultJson = prepared
       ? await runCompiledPythonInFreshExecutionScope(
           deps,
@@ -4411,16 +5222,44 @@ async function executeWithTracing(
           '__tracecode_execution_result_json',
           {
             __tracecode_prepared_user_code: prepared.userCodeObject,
-            __tracecode_inputs_literal: deps.toPythonLiteral(inputs),
-            __tracecode_limits_literal: deps.toPythonLiteral(prepared.limits?.guest ?? {}),
-          }
+            __tracecode_inputs_literal: preparedPythonLiteral(
+              deps,
+              inputs,
+              prepared.scopeTimings
+            ),
+            __tracecode_limits_literal: preparedPythonLiteral(
+              deps,
+              prepared.limits?.guest ?? {},
+              prepared.scopeTimings
+            ),
+            __tracecode_tracing_enabled: prepared.tracingEnabled !== false,
+            __tracecode_inputs_need_materialization:
+              pythonInputsRequireCustomMaterialization(inputs),
+          },
+          prepared.scopeTimings
         )
       : await runPythonInFreshExecutionScope(
           deps,
           tracingCode,
           '__tracecode_execution_result_json'
         );
+    const pyRunMs = deps.performanceNow() - pyRunStartedAt;
+    const jsonParseStartedAt = deps.performanceNow();
     const result = JSON.parse(resultJson);
+    const jsonParseMs = deps.performanceNow() - jsonParseStartedAt;
+    if (prepared?.scopeTimings) {
+      prepared.scopeTimings.resultParseMs += jsonParseMs;
+    }
+    if (options.traceProfile === true) {
+      // Worker-side phase split for the tracing-latency investigation.
+      console.log('__TRACECODE_PYPROF__:' + JSON.stringify({
+        generateMs: Math.round((pyRunStartedAt - startTime) * 10) / 10,
+        pyRunMs: Math.round(pyRunMs * 10) / 10,
+        jsonParseMs: Math.round(jsonParseMs * 10) / 10,
+        resultChars: resultJson?.length ?? -1,
+        prepared: Boolean(prepared),
+      }));
+    }
 
     const executionTimeMs = deps.performanceNow() - startTime;
 
@@ -4451,9 +5290,16 @@ async function executeWithTracing(
       timeoutReason === 'single-line-limit' ||
       (result.traceLimitExceeded && timeoutReason !== 'client-timeout');
 
+    // Every trace budget now degrades to "stop recording, keep executing", so a
+    // budget trip alone no longer invalidates the result — the program still ran
+    // to completion and `output` is real. Only an aborting guard (runaway loop,
+    // memory ceiling) sets executionAborted, and that still fails the case.
     const traceOnlyBudgetExceeded =
-      timeoutReason === 'trace-limit' ||
-      timeoutReason === 'trace-byte-limit';
+      !result.executionAborted &&
+      (timeoutReason === 'trace-limit' ||
+        timeoutReason === 'trace-byte-limit' ||
+        timeoutReason === 'line-limit' ||
+        timeoutReason === 'single-line-limit');
 
     // Handle tracing guard stops and execution timeouts
     if (result.traceLimitExceeded || timeoutStep) {
@@ -4493,6 +5339,7 @@ async function executeWithTracing(
     return {
       success:
         !errorStep &&
+        !result.executionAborted &&
         (!result.traceLimitExceeded || traceOnlyBudgetExceeded) &&
         (!timeoutStep || traceOnlyBudgetExceeded),
       output: result.result,
@@ -4576,11 +5423,10 @@ async function executeCode(
     const preparedInputPrelude = usesPreparedBindings
       ? `
 import ast as _tracecode_input_ast
-import copy as _tracecode_input_copy
 _tracecode_raw_inputs = _tracecode_input_ast.literal_eval(__tracecode_inputs_literal)
 _tracecode_case_limits = _tracecode_input_ast.literal_eval(__tracecode_limits_literal)
 for _tracecode_input_name, _tracecode_input_value in _tracecode_raw_inputs.items():
-    globals()[str(_tracecode_input_name)] = _tracecode_input_copy.deepcopy(_tracecode_input_value)
+    globals()[str(_tracecode_input_name)] = _tracecode_input_value
 `
       : '';
     const inputSetup = usesPreparedBindings
@@ -4858,6 +5704,8 @@ def _tracecode_materialize_named_inputs(_names):
         if _name in globals():
             globals()[_name] = _tracecode_materialize_custom_input(globals()[_name])
 
+${PYTHON_LITERAL_SHAPE_ANNOTATION_HELPER}
+
 def _tracecode_hydrate_for_annotation(_obj, _annotation):
     try:
         import typing as _tracecode_typing
@@ -4944,7 +5792,9 @@ def _tracecode_hydrate_annotated_inputs(_names, _function_name, _execution_style
             _annotations = getattr(_callable, '__annotations__', {}) or {}
         for _name in _names:
             if _name in globals() and _name in _annotations:
-                globals()[_name] = _tracecode_hydrate_for_annotation(globals()[_name], _annotations[_name])
+                _annotation = _annotations[_name]
+                if not _tracecode_annotation_preserves_literal_shape(_annotation):
+                    globals()[_name] = _tracecode_hydrate_for_annotation(globals()[_name], _annotation)
     except Exception:
         return
 
@@ -5024,7 +5874,8 @@ ${treeConversions}
 
 ${listConversions}
 
-_tracecode_materialize_named_inputs(${traceInputNamesLiteral})
+if ${usesPreparedBindings ? '__tracecode_inputs_need_materialization' : 'True'}:
+    _tracecode_materialize_named_inputs(${traceInputNamesLiteral})
 _tracecode_hydrate_annotated_inputs(${traceInputNamesLiteral}, ${functionNameLiteral}, ${executionStyleLiteral})
 
 _result = None
@@ -5108,6 +5959,8 @@ def _tracecode_materialize_named_inputs(_names):
         if _name in globals():
             globals()[_name] = _tracecode_materialize_custom_input(globals()[_name])
 
+${PYTHON_LITERAL_SHAPE_ANNOTATION_HELPER}
+
 def _tracecode_hydrate_for_annotation(_obj, _annotation):
     try:
         import typing as _tracecode_typing
@@ -5194,7 +6047,9 @@ def _tracecode_hydrate_annotated_inputs(_names, _function_name, _execution_style
             _annotations = getattr(_callable, '__annotations__', {}) or {}
         for _name in _names:
             if _name in globals() and _name in _annotations:
-                globals()[_name] = _tracecode_hydrate_for_annotation(globals()[_name], _annotations[_name])
+                _annotation = _annotations[_name]
+                if not _tracecode_annotation_preserves_literal_shape(_annotation):
+                    globals()[_name] = _tracecode_hydrate_for_annotation(globals()[_name], _annotation)
     except Exception:
         return
 
@@ -5274,7 +6129,8 @@ ${treeConversions}
 
 ${listConversions}
 
-_tracecode_materialize_named_inputs(${traceInputNamesLiteral})
+if ${usesPreparedBindings ? '__tracecode_inputs_need_materialization' : 'True'}:
+    _tracecode_materialize_named_inputs(${traceInputNamesLiteral})
 _tracecode_hydrate_annotated_inputs(${traceInputNamesLiteral}, ${functionNameLiteral}, ${executionStyleLiteral})
 
 try:
@@ -5319,12 +6175,29 @@ _json_out
           '_json_out',
           {
             __tracecode_prepared_user_code: prepared.userCodeObject,
-            __tracecode_inputs_literal: deps.toPythonLiteral(inputs),
-            __tracecode_limits_literal: deps.toPythonLiteral(options),
-          }
+            __tracecode_inputs_literal: preparedPythonLiteral(
+              deps,
+              inputs,
+              prepared.scopeTimings
+            ),
+            __tracecode_limits_literal: preparedPythonLiteral(
+              deps,
+              options,
+              prepared.scopeTimings
+            ),
+            __tracecode_tracing_enabled: prepared.tracingEnabled === true,
+            __tracecode_inputs_need_materialization:
+              pythonInputsRequireCustomMaterialization(inputs),
+          },
+          prepared.scopeTimings
         )
       : await runPythonInFreshExecutionScope(deps, execCode, '_json_out');
+    const resultParseStartedAt = deps.performanceNow();
     const result = JSON.parse(resultJson);
+    if (prepared?.scopeTimings) {
+      prepared.scopeTimings.resultParseMs +=
+        deps.performanceNow() - resultParseStartedAt;
+    }
 
     if (result.guardTriggered) {
       const structuredReasons = ['line-limit', 'single-line-limit', 'recursion-limit', 'memory-limit'];
@@ -5387,7 +6260,7 @@ async function prepareProgram(
         {},
         executionStyle,
         traceOptions,
-        { compileUserOnly: true }
+        { compileUserOnly: true, onDemand: true }
       );
       const compileDriver = await compilePythonProgram(
         deps,
@@ -5413,11 +6286,33 @@ async function prepareProgram(
         traceOptions,
         { compileOnly: true }
       );
-      executorCode = await compilePythonProgram(
+      const codeExecutionPayload = await executeCode(
         deps,
-        executionPayload.__preparedSource,
-        '<tracecode-prepared-trace>'
+        code,
+        functionName ?? '',
+        {},
+        executionStyle,
+        {},
+        { compileOnly: true }
       );
+      const executorCompiler = await compilePythonProgram(
+        deps,
+        buildOnDemandPythonExecutorCompilerSource(
+          deps,
+          executionPayload.__preparedSource,
+          codeExecutionPayload.__preparedSource
+        ),
+        '<tracecode-prepared-trace-compiler>'
+      );
+      try {
+        executorCode = await runCompiledPythonInFreshExecutionScope(
+          deps,
+          executorCompiler,
+          '__tracecode_prepared_executor_result'
+        );
+      } finally {
+        executorCompiler?.destroy?.();
+      }
     } else if (mode === 'code') {
       userCodeObject = await compilePythonProgram(deps, code, 'solution.py');
       const executionPayload = await executeCode(
@@ -5447,6 +6342,7 @@ async function prepareProgram(
       functionName: functionName ?? null,
       executionStyle,
       traceOptions,
+      onDemandTracing: mode === 'trace',
       userCode: serializePythonCodeArtifact(deps, userCodeObject),
       executorCode: serializePythonCodeArtifact(deps, executorCode),
     };
@@ -5511,7 +6407,30 @@ function assertPythonPreparedArtifact(deps, artifact) {
   }
 }
 
-async function executePreparedProgram(deps, artifact, inputs, limits) {
+function pythonCodeResultAsEmptyTraceResult(result) {
+  return {
+    ...result,
+    trace: {
+      schemaVersion: RUNTIME_TRACE_SCHEMA_VERSION,
+      language: 'python',
+      runId: 'python:run',
+      events: [],
+      lineEventCount: 0,
+      traceStepCount: 0,
+    },
+    executionTimeMs: result?.timings?.totalMs ?? 0,
+    lineEventCount: 0,
+    traceStepCount: 0,
+  };
+}
+
+async function executePreparedProgram(
+  deps,
+  artifact,
+  inputs,
+  limits,
+  tracingEnabled = artifact?.mode === 'trace'
+) {
   const startedAt = deps.performanceNow();
   await deps.loadPyodideInstance();
   assertPythonPreparedArtifact(deps, artifact);
@@ -5520,7 +6439,16 @@ async function executePreparedProgram(deps, artifact, inputs, limits) {
   try {
     userCodeObject = deserializePythonCodeArtifact(deps, artifact.userCode);
     executorCode = deserializePythonCodeArtifact(deps, artifact.executorCode);
-    const result = artifact.mode === 'trace'
+    if (
+      artifact.mode === 'trace' &&
+      tracingEnabled === false &&
+      artifact.onDemandTracing !== true
+    ) {
+      throw new Error(
+        'Prepared Python artifact does not support on-demand trace selection.'
+      );
+    }
+    const result = artifact.mode === 'trace' && tracingEnabled !== false
       ? await executeWithTracing(
           deps,
           artifact.code,
@@ -5528,7 +6456,7 @@ async function executePreparedProgram(deps, artifact, inputs, limits) {
           inputs,
           artifact.executionStyle ?? 'function',
           artifact.traceOptions ?? {},
-          { executorCode, userCodeObject, limits }
+          { executorCode, userCodeObject, limits, tracingEnabled: true }
         )
       : await executeCode(
           deps,
@@ -5537,13 +6465,16 @@ async function executePreparedProgram(deps, artifact, inputs, limits) {
           inputs,
           artifact.executionStyle ?? 'function',
           limits?.guest ?? {},
-          { executorCode, userCodeObject }
+          { executorCode, userCodeObject, tracingEnabled: false }
         );
     const runMs = deps.performanceNow() - startedAt;
+    const normalizedResult = artifact.mode === 'trace' && tracingEnabled === false
+      ? pythonCodeResultAsEmptyTraceResult(result)
+      : result;
     return {
-      ...result,
+      ...normalizedResult,
       timings: {
-        ...(result.timings ?? {}),
+        ...(normalizedResult.timings ?? {}),
         totalMs: runMs,
         runMs,
         compileCacheHit: true,
@@ -5560,7 +6491,8 @@ async function executePreparedProgramBatch(
   deps,
   artifact,
   inputBatch,
-  limits
+  limits,
+  traceEnabledBatch = undefined
 ) {
   const startedAt = deps.performanceNow();
   await deps.loadPyodideInstance();
@@ -5581,6 +6513,20 @@ async function executePreparedProgramBatch(
       timings: { totalMs: deps.performanceNow() - startedAt },
     };
   }
+  if (
+    traceEnabledBatch !== undefined &&
+    (
+      artifact.mode !== 'trace' ||
+      artifact.onDemandTracing !== true ||
+      !Array.isArray(traceEnabledBatch) ||
+      traceEnabledBatch.length !== cases.length ||
+      traceEnabledBatch.some((enabled) => typeof enabled !== 'boolean')
+    )
+  ) {
+    throw new Error(
+      'Prepared Python trace selection must contain one boolean per batch case.'
+    );
+  }
 
   let userCodeObject;
   let executorCode;
@@ -5592,10 +6538,30 @@ async function executePreparedProgramBatch(
     executorCode = deserializePythonCodeArtifact(deps, artifact.executorCode);
     const results = [];
     const filesystem = isolatedPythonFilesystemManager(deps.getPyodide());
-    for (const inputs of cases) {
+    for (let caseIndex = 0; caseIndex < cases.length; caseIndex += 1) {
+      const inputs = cases[caseIndex];
+      const scopeTimings = {
+        inputLiteralMs: 0,
+        namespaceCreateMs: 0,
+        guardBeginMs: 0,
+        bindingMs: 0,
+        compiledExecutionMs: 0,
+        guardRestoreMs: 0,
+        namespaceDestroyMs: 0,
+        resultParseMs: 0,
+        filesystemBeginMs: 0,
+        filesystemRestoreMs: 0,
+      };
+      const tracingEnabled = artifact.mode === 'trace'
+        ? (traceEnabledBatch?.[caseIndex] ?? true)
+        : false;
+      const filesystemBeginStartedAt = deps.performanceNow();
       filesystem.begin();
+      scopeTimings.filesystemBeginMs +=
+        deps.performanceNow() - filesystemBeginStartedAt;
+      let result;
       try {
-        results.push(artifact.mode === 'trace'
+        result = artifact.mode === 'trace' && tracingEnabled
           ? await executeWithTracing(
               deps,
               artifact.code,
@@ -5603,7 +6569,13 @@ async function executePreparedProgramBatch(
               inputs,
               artifact.executionStyle ?? 'function',
               artifact.traceOptions ?? {},
-              { executorCode, userCodeObject, limits }
+              {
+                executorCode,
+                userCodeObject,
+                limits,
+                tracingEnabled: true,
+                scopeTimings,
+              }
             )
           : await executeCode(
               deps,
@@ -5612,11 +6584,31 @@ async function executePreparedProgramBatch(
               inputs,
               artifact.executionStyle ?? 'function',
               limits?.guest ?? {},
-              { executorCode, userCodeObject }
-            ));
+              {
+                executorCode,
+                userCodeObject,
+                tracingEnabled: false,
+                scopeTimings,
+              }
+            );
       } finally {
+        const filesystemRestoreStartedAt = deps.performanceNow();
         filesystem.restore();
+        scopeTimings.filesystemRestoreMs +=
+          deps.performanceNow() - filesystemRestoreStartedAt;
       }
+      const timedResult = {
+        ...result,
+        timings: {
+          ...(result?.timings ?? {}),
+          ...scopeTimings,
+        },
+      };
+      results.push(
+        artifact.mode === 'trace' && !tracingEnabled
+          ? pythonCodeResultAsEmptyTraceResult(timedResult)
+          : timedResult
+      );
     }
     const runMs = deps.performanceNow() - startedAt;
     return {
@@ -5637,6 +6629,7 @@ async function executePreparedProgramBatch(
 }
 
   globalScope.__TRACECODE_PYODIDE_RUNTIME__ = {
+    buildOnDemandPythonExecutorCompilerSource,
     generateTracingCode,
     parsePythonError,
     executeWithTracing,

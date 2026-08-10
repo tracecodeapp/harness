@@ -15,6 +15,13 @@ import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { createCSharpRoleArtifacts } from '../scripts/csharp-role-artifacts.js';
+import { TRACECC_RUNTIME_CONTENT_HASH } from '../packages/runtime-cpp/src/tracecc-runtime-assets.js';
+import {
+  TRACEJVM_RUNTIME_ASSET_RELATIVE_PATH,
+} from '../packages/runtime-java/src/tracejvm-runtime-assets.js';
+import {
+  getSupportedLanguageRuntimeOpenSourceInfos,
+} from '../packages/runtime-contracts/src/runtime-open-source-info.js';
 
 function assertCondition(condition: unknown, message: string): asserts condition {
   if (!condition) {
@@ -26,9 +33,25 @@ async function main(t: TestContext): Promise<void> {
   const tempRoot = await mkdtemp(join(tmpdir(), 'tracecode-harness-assets-'));
   t.after(() => rm(tempRoot, { recursive: true, force: true }));
   const targetDir = join(tempRoot, 'public', 'workers');
+  await mkdir(join(targetDir, 'vendor/csharp-compiler'), { recursive: true });
+  await writeFile(
+    join(targetDir, 'vendor/csharp-compiler/stale.txt'),
+    'stale compiler tree'
+  );
+  await mkdir(join(targetDir, 'java/tracejvm/stale'), { recursive: true });
+  await writeFile(join(targetDir, 'java/tracejvm/stale/old.txt'), 'stale JVM');
+  await mkdir(join(targetDir, 'cpp/tracecc/stale'), { recursive: true });
+  await writeFile(join(targetDir, 'cpp/tracecc/stale/old.txt'), 'stale compiler');
 
   const run = spawnSync('node', ['dist/cli.js', 'sync-assets', targetDir], {
     cwd: resolve(process.cwd()),
+    env: {
+      ...process.env,
+      TRACECODE_TRACEJVM_PACKAGE_ROOT:
+        process.env.TRACECODE_TRACEJVM_PACKAGE_ROOT,
+      TRACECODE_TRACECC_PACKAGE_ROOT:
+        process.env.TRACECODE_TRACECC_PACKAGE_ROOT,
+    },
     encoding: 'utf8',
   });
 
@@ -39,6 +62,7 @@ async function main(t: TestContext): Promise<void> {
   const requiredFiles = [
     'THIRD_PARTY_NOTICES.md',
     'python-worker.js',
+    'tracecode_native-0.1.0-cp313-cp313-pyemscripten_2025_0_wasm32.whl',
     'generated-python-harness-snippets.js',
     'python/runtime-core.js',
     'python/pyodide-0.29.3/LICENSE.pyodide.txt',
@@ -61,6 +85,12 @@ async function main(t: TestContext): Promise<void> {
     'cpp-worker.js',
     'shared/runtime-kernel-policy.js',
     'cpp/tracecode_runtime.hpp',
+    `cpp/tracecc/${TRACECC_RUNTIME_CONTENT_HASH}/cpp-runtime-manifest.json`,
+    `cpp/tracecc/${TRACECC_RUNTIME_CONTENT_HASH}/tracecc-reactor.wasm`,
+    `${TRACEJVM_RUNTIME_ASSET_RELATIVE_PATH}/release.json`,
+    `${TRACEJVM_RUNTIME_ASSET_RELATIVE_PATH}/browser-worker.js`,
+    `${TRACEJVM_RUNTIME_ASSET_RELATIVE_PATH}/compiler/compiler.wasm`,
+    `${TRACEJVM_RUNTIME_ASSET_RELATIVE_PATH}/profiles/core/jdk23.jar`,
     'java-source-augmentations.js',
     'csharp-worker.js',
     'vendor/typescript.js',
@@ -70,7 +100,6 @@ async function main(t: TestContext): Promise<void> {
     'vendor/csharp/_framework/dotnet.native.wasm',
     'vendor/csharp/_framework/dotnet.runtime.js',
     'vendor/csharp/_framework/dotnet.boot.js',
-    'vendor/csharp-compiler/_framework/dotnet.boot.js',
     'vendor/csharp-runner/_framework/dotnet.boot.js',
     'vendor/csharp-runner/_framework/assemblies-01.pack',
     'vendor/csharp-runner/_framework/assemblies-02.pack',
@@ -81,6 +110,20 @@ async function main(t: TestContext): Promise<void> {
     const filePath = join(targetDir, relativePath);
     const fileStat = await stat(filePath);
     assertCondition(fileStat.isFile(), `Expected synced asset at ${relativePath}`);
+  }
+
+  for (const info of getSupportedLanguageRuntimeOpenSourceInfos()) {
+    for (const component of info.components) {
+      for (const resource of component.resources) {
+        if (!resource.href.startsWith('/workers/')) continue;
+        const relativePath = resource.href.slice('/workers/'.length);
+        const fileStat = await stat(join(targetDir, relativePath));
+        assertCondition(
+          fileStat.isFile(),
+          `${info.language} ${component.name} legal resource must be installed by sync-assets: ${relativePath}`
+        );
+      }
+    }
   }
 
   for (const relativePath of [
@@ -98,6 +141,20 @@ async function main(t: TestContext): Promise<void> {
     assertCondition(!exists, `Retired Java build artifact must not be synced at ${relativePath}`);
   }
 
+  const duplicatedCompilerTreeExists = await stat(
+    join(targetDir, 'vendor/csharp-compiler')
+  ).then(
+    () => true,
+    (error: NodeJS.ErrnoException) => {
+      if (error.code === 'ENOENT') return false;
+      throw error;
+    }
+  );
+  assertCondition(
+    !duplicatedCompilerTreeExists,
+    'Asset sync must alias the C# compiler role to vendor/csharp instead of publishing duplicate bytes'
+  );
+
   const removedBrandedCppPathExists = await stat(
     join(targetDir, 'vendor/cpp/yowasp/bundle.js')
   ).then(
@@ -111,7 +168,7 @@ async function main(t: TestContext): Promise<void> {
     !removedBrandedCppPathExists,
     'Asset sync must not republish C++ compiler assets under an implementation-branded path'
   );
-  const removedBundledCppCompilerExists = await stat(
+  const retiredBundledCppCompilerExists = await stat(
     join(targetDir, 'cpp/compiler')
   ).then(
     () => true,
@@ -121,9 +178,32 @@ async function main(t: TestContext): Promise<void> {
     }
   );
   assertCondition(
-    !removedBundledCppCompilerExists,
-    'Asset sync must not bundle external TraceCC release artifacts'
+    !retiredBundledCppCompilerExists,
+    'Asset sync must not publish the retired pre-TraceCC compiler layout'
   );
+  const bundledTraceCCExists = await stat(
+    join(
+      targetDir,
+      `cpp/tracecc/${TRACECC_RUNTIME_CONTENT_HASH}/tracecc-reactor.wasm`
+    )
+  );
+  assertCondition(
+    bundledTraceCCExists.isFile(),
+    'Asset sync must publish the TraceCC package release'
+  );
+  for (const stalePath of [
+    'java/tracejvm/stale/old.txt',
+    'cpp/tracecc/stale/old.txt',
+  ]) {
+    const exists = await stat(join(targetDir, stalePath)).then(
+      () => true,
+      (error: NodeJS.ErrnoException) => {
+        if (error.code === 'ENOENT') return false;
+        throw error;
+      }
+    );
+    assertCondition(!exists, `Asset sync must remove stale engine release ${stalePath}`);
+  }
 
   const rootEntries = await readdir(targetDir);
   assertCondition(rootEntries.includes('python-worker.js'), 'Asset sync should flatten the Python worker into the target root');
@@ -146,7 +226,7 @@ async function main(t: TestContext): Promise<void> {
   assertCondition(
     !rootEntries.includes('cpp-compiler-frame.html') &&
       !rootEntries.includes('cpp-compiler-worker.js'),
-    'Asset sync must not republish retired YoWASP compiler workers'
+    'Asset sync must not republish retired pre-TraceCC compiler workers'
   );
   assertCondition(
     rootEntries.includes('java-source-augmentations.js'),
@@ -189,7 +269,6 @@ async function main(t: TestContext): Promise<void> {
     !sourceControlArtifactsExist,
     'Asset sync must not publish build-time C# role archives to browsers'
   );
-
   for (const relativePath of ['cpp-worker.js']) {
     const source = await readFile(join(targetDir, relativePath), 'utf8');
     assertCondition(
@@ -308,12 +387,12 @@ async function main(t: TestContext): Promise<void> {
     [
       generalSource,
       'TraceCode.CSharpHost.runtimeconfig.json',
-      '_framework/general.wasm',
+      '_framework/host.wasm',
     ],
     [
       compilerSource,
       'TraceCode.CSharpHost.runtimeconfig.json',
-      '_framework/compiler.wasm',
+      '_framework/host.wasm',
     ],
     [
       runnerSource,
@@ -369,8 +448,7 @@ async function main(t: TestContext): Promise<void> {
     );
   }
   for (const relativePath of [
-    'vendor/csharp/_framework/general.wasm',
-    'vendor/csharp-compiler/_framework/compiler.wasm',
+    'vendor/csharp/_framework/host.wasm',
     'vendor/csharp-runner/_framework/assemblies-01.pack',
   ]) {
     assertCondition(
@@ -378,6 +456,16 @@ async function main(t: TestContext): Promise<void> {
       `Clean-checkout sync should materialize ${relativePath}`
     );
   }
+  assertCondition(
+    !(await stat(join(cleanTarget, 'vendor/csharp-compiler')).then(
+      () => true,
+      (error: NodeJS.ErrnoException) => {
+        if (error.code === 'ENOENT') return false;
+        throw error;
+      }
+    )),
+    'Clean-checkout sync must not materialize the compiler alias into its browser output'
+  );
 
   console.log('PASS: asset sync CLI copies canonical and language-filtered worker assets');
 }

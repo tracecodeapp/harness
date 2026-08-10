@@ -1204,7 +1204,11 @@ export async function createBrowserProjectWorkspace(
       builtInJavaAvailable &&
       javaProvider
         ? javaProvider[2].createJavaProjectClientFactory({
-            runtimeAssetBaseUrl: javaRuntimeAssetBaseUrl,
+            runtimeAssetBaseUrl:
+              javaRuntimeAssetBaseUrl ??
+              javaProvider[2].resolveBuiltInTraceJVMRuntimeAssetBaseUrl(
+                options.assetBaseUrl ?? '/workers'
+              ),
           })
         : undefined;
     if (builtInJavaFactory) ownedWorkers.push(builtInJavaFactory);

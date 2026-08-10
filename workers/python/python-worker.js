@@ -431,8 +431,32 @@ function createProjectEventBudget() {
   };
 }
 
+const TRACECODE_NATIVE_WHEEL = 'tracecode_native-0.1.0-cp313-cp313-pyemscripten_2025_0_wasm32.whl';
+let tracecodeNativeWheelPromise = null;
+
+// Best-effort: the native tracing hot path. A missing or failing wheel is not
+// an error — the python tracer is the automatic fallback.
+async function ensureTracecodeNativeWheel(runtime) {
+  if (!runtime || typeof runtime.loadPackage !== 'function') return;
+  if (!tracecodeNativeWheelPromise) {
+    tracecodeNativeWheelPromise = (async () => {
+      try {
+        await runtime.loadPackage(resolvePythonWorkerAssetUrl(TRACECODE_NATIVE_WHEEL), {
+          errorCallback: () => {},
+        });
+      } catch (error) {
+        emitRuntimeDiagnostic('warning', 'native-tracer-unavailable', 'TraceCode native tracer wheel failed to load; using the python tracer.', {
+          message: error instanceof Error ? error.message : String(error),
+        });
+      }
+    })();
+  }
+  return tracecodeNativeWheelPromise;
+}
+
 async function ensurePythonLibraryPackages(runtime) {
   if (!runtime || typeof runtime.loadPackage !== 'function') return;
+  await ensureTracecodeNativeWheel(runtime);
   if (!pythonPackageLoadPromise) {
     const configuredPackages = configuredPythonRuntimeAssets?.packageUrls
       ? Object.values(configuredPythonRuntimeAssets.packageUrls)
@@ -9081,17 +9105,31 @@ async function preparePythonProgram(request) {
   );
 }
 
-async function executePreparedPythonProgram(artifact, inputs, limits) {
+async function executePreparedPythonProgram(
+  artifact,
+  inputs,
+  limits,
+  tracingEnabled
+) {
   await loadPyodideInstance();
   const runtimeCore = loadPyodideRuntimeCore();
   return withPythonUserAuthorityLockdown(() =>
-    runtimeCore.executePreparedProgram(buildRuntimeDeps(), artifact, inputs, {
-      guest: guestGuardOptionsFromLimits(limits),
-    })
+    runtimeCore.executePreparedProgram(
+      buildRuntimeDeps(),
+      artifact,
+      inputs,
+      { guest: guestGuardOptionsFromLimits(limits) },
+      tracingEnabled
+    )
   );
 }
 
-async function executePreparedPythonProgramBatch(artifact, inputBatch, limits) {
+async function executePreparedPythonProgramBatch(
+  artifact,
+  inputBatch,
+  limits,
+  traceEnabledBatch
+) {
   await loadPyodideInstance();
   const runtimeCore = loadPyodideRuntimeCore();
   return withPythonUserAuthorityLockdown(() =>
@@ -9101,7 +9139,8 @@ async function executePreparedPythonProgramBatch(artifact, inputBatch, limits) {
       inputBatch,
       {
         guest: guestGuardOptionsFromLimits(limits),
-      }
+      },
+      traceEnabledBatch
     )
   );
 }
@@ -9185,7 +9224,8 @@ async function processMessage(data) {
         const result = await executePreparedPythonProgram(
           payload?.artifact,
           payload?.inputs ?? {},
-          payload?.limits
+          payload?.limits,
+          payload?.tracingEnabled
         );
         analyzerInitialized = false;
         if (payload?.mode === 'trace') {
@@ -9211,7 +9251,8 @@ async function processMessage(data) {
         const result = await executePreparedPythonProgramBatch(
           payload?.artifact,
           payload?.inputBatch ?? [],
-          payload?.limits
+          payload?.limits,
+          payload?.traceEnabledBatch
         );
         analyzerInitialized = false;
         if (payload?.mode === 'trace') {

@@ -42,6 +42,7 @@ test('published package has only TraceKernel and Judge code entrypoints', async 
     await readFile(join(ROOT, 'package.json'), 'utf8')
   ) as {
     exports?: Record<string, unknown>;
+    files?: unknown;
     main?: unknown;
     module?: unknown;
     types?: unknown;
@@ -55,6 +56,10 @@ test('published package has only TraceKernel and Judge code entrypoints', async 
   assert.equal(manifest.main, undefined);
   assert.equal(manifest.module, undefined);
   assert.equal(manifest.types, undefined);
+  assert.ok(
+    Array.isArray(manifest.files) && manifest.files.includes('!dist/**/*.map'),
+    'the release tarball must not republish generated dist source maps'
+  );
   for (const retired of RETIRED_EXPORTS) {
     assert.equal(
       manifest.exports?.[retired],
@@ -72,7 +77,12 @@ test('published package has only TraceKernel and Judge code entrypoints', async 
   assert.doesNotMatch(traceKernelTypes, /createBrowserRuntimeHost/u);
   assert.match(judgeTypes, /createBrowserJudgeHost/u);
   assert.match(judgeTypes, /createJudge/u);
+  assert.match(judgeTypes, /BrowserJudgeExecuteRequest/u);
+  assert.match(judgeTypes, /disposeExecution/u);
+  assert.match(judgeTypes, /interactiveExecutionIdleTimeoutMs/u);
+  assert.match(judgeTypes, /DEFAULT_INTERACTIVE_EXECUTION_IDLE_TIMEOUT_MS/u);
   assert.doesNotMatch(judgeTypes, /createBrowserRuntimeJudge/u);
+  assert.doesNotMatch(judgeTypes, /createBrowserJudgeHostFromRuntimeHost/u);
 });
 
 test('built ESM surfaces execute through their owning authority', async () => {
@@ -179,17 +189,22 @@ test('public TypeScript declarations are consumable without internal imports', a
           type CreateBrowserWorkspaceOptions,
         } from '@tracecode/harness/tracekernel';
         import {
+          DEFAULT_INTERACTIVE_EXECUTION_IDLE_TIMEOUT_MS,
           createBrowserJudgeHost,
+          type BrowserJudgeExecuteRequest,
           type CreateBrowserJudgeOptions,
         } from '@tracecode/harness/judge';
 
         void createBrowserWorkspace;
         void createRuntimeWorkspace;
         void createBrowserJudgeHost;
+        void DEFAULT_INTERACTIVE_EXECUTION_IDLE_TIMEOUT_MS;
         const workspaceOptions: CreateBrowserWorkspaceOptions = {};
         const judgeOptions = null as CreateBrowserJudgeOptions | null;
+        const executeRequest = null as BrowserJudgeExecuteRequest | null;
         void workspaceOptions;
         void judgeOptions;
+        void executeRequest;
       `,
       'utf8'
     );

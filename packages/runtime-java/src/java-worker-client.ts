@@ -182,6 +182,8 @@ export interface JavaTraceExecutionOptions {
   maxStoredEvents?: number;
   maxPathDepth?: number;
   minimalTrace?: boolean;
+  /** Opt-in TraceHooks hot-path profile (nanoTime spans + PROFILE marker). */
+  traceProfile?: boolean;
 }
 
 const EXECUTION_TIMEOUT_MS = 20_000;
@@ -842,6 +844,9 @@ export class JavaWorkerClient {
             {
               programId,
               inputs: call.inputs,
+              ...(call.recordTrace === undefined
+                ? {}
+                : { traceEnabled: call.recordTrace }),
               traceEventTransport: traceEventTransferRequest(),
             },
             null,
@@ -886,6 +891,20 @@ export class JavaWorkerClient {
     call: RuntimePreparedTraceBatchCall,
     traceOptions?: JavaTraceExecutionOptions
   ): Promise<readonly JavaWorkerPreparedTraceResult[]> {
+    const traceEnabledBatch = call.traceEnabledBatch;
+    if (
+      traceEnabledBatch !== undefined &&
+      (
+        traceEnabledBatch.length !== call.inputBatch.length ||
+        traceEnabledBatch.some(
+          (enabled) => typeof enabled !== 'boolean'
+        )
+      )
+    ) {
+      throw new TypeError(
+        'Java trace selection must contain one boolean per batch case.'
+      );
+    }
     if (call.inputBatch.length === 0) return [];
     const kernelProcess = await createJavaKernelProcess();
     const perCaseWallClockMs =
@@ -910,6 +929,9 @@ export class JavaWorkerClient {
               inputBatch: call.inputBatch,
               perCaseWallClockMs,
               traceEventTransport: traceEventTransferRequest(),
+              ...(traceEnabledBatch
+                ? { traceEnabledBatch }
+                : {}),
             },
             null,
             undefined,

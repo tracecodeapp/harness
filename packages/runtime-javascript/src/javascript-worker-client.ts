@@ -44,6 +44,7 @@ import type { BrowserWorkerFactory } from '@tracecode/runtime-browser/internal';
 import { restoreTransferredTraceEvents, traceEventTransferRequest } from '@tracecode/runtime-browser/internal';
 import {
   ExecutionTimeoutError,
+  isExecutionTimeoutError,
   WorkerReportedError,
   WorkerTerminatedError,
 } from '@tracecode/runtime-browser/internal';
@@ -98,9 +99,9 @@ const INIT_TIMEOUT_MS = 10000;
 const TYPESCRIPT_WARMUP_TIMEOUT_MS = 30000;
 const MESSAGE_TIMEOUT_MS = 12000;
 const WORKER_READY_TIMEOUT_MS = 10000;
-// Eight is the measured browser frontier: larger waves save little startup
-// time while materially increasing transient renderer memory.
-const BATCH_PREWARM_LIMIT = 8;
+// Four keeps the renderer's transient CPU/memory burst bounded while still
+// overlapping the per-worker startup that dominates multi-case drains.
+const BATCH_PREWARM_LIMIT = 4;
 
 type JavaScriptWorkerRole = 'coordinator' | 'executor';
 
@@ -443,9 +444,10 @@ export class JavaScriptWorkerClient {
   }
 
   /**
-   * Prewarm bounded clean capacity for a prepared batch, then run learner
-   * cases sequentially. Every case owns one never-before-used Worker and that
-   * Worker is retired immediately afterward; only construction is parallel.
+   * Prewarm bounded clean capacity for a prepared batch, then run each wave's
+   * learner cases concurrently. Every case owns one never-before-used Worker
+   * and that Worker is retired immediately afterward; waves remain bounded to
+   * cap transient renderer CPU and memory.
    */
   private async runIsolatedBatch<T>(
     caseCount: number,
@@ -508,16 +510,26 @@ export class JavaScriptWorkerClient {
             )
           );
           this.assertActive(expectedGeneration);
-          for (let index = 0; index < workers.length; index += 1) {
-            const worker = workers[index]!;
-            results[offset + index] = await executor(
-              worker,
-              offset + index
-            );
-            this.leasedExecutionWorkers.delete(worker);
-            worker.terminate();
-            cleanupWorkers.delete(worker);
-          }
+          // Every worker in this wave has its own disposable realm and has
+          // already completed prewarm. Run the cases concurrently so the
+          // execution phase overlaps the per-worker message/VM startup that
+          // otherwise dominates the trace-all drain. Results are written by
+          // index, preserving the caller's case ordering; each worker is
+          // still retired as soon as its one case settles.
+          await Promise.all(
+            workers.map(async (worker, index) => {
+              try {
+                results[offset + index] = await executor(
+                  worker,
+                  offset + index
+                );
+              } finally {
+                this.leasedExecutionWorkers.delete(worker);
+                worker.terminate();
+                cleanupWorkers.delete(worker);
+              }
+            })
+          );
         } finally {
           for (const worker of cleanupWorkers) {
             this.leasedExecutionWorkers.delete(worker);
@@ -767,13 +779,14 @@ export class JavaScriptWorkerClient {
                   preparation,
                   requirePreparedExecution(),
                   caseCall,
-                  generation
+                  generation,
+                  caseCall.recordTrace ?? true
                 )
             : undefined,
         executeTraceBatch:
           preparation.mode === 'trace'
             ? (batchCall) =>
-                this.executePreparedTraceBatch(
+                this.executePreparedTraceBatchInternal(
                   language,
                   preparation,
                   requirePreparedExecution(),
@@ -878,7 +891,7 @@ export class JavaScriptWorkerClient {
     } catch (error) {
       if (
         call.limits?.wallClockMs !== undefined &&
-        error instanceof ExecutionTimeoutError
+        isExecutionTimeoutError(error)
       ) {
         return {
           kind: 'limit',
@@ -906,7 +919,8 @@ export class JavaScriptWorkerClient {
     },
     preparedExecution: unknown,
     call: RuntimePreparedTraceCall,
-    expectedGeneration: number
+    expectedGeneration: number,
+    tracingEnabled: boolean = true
   ): Promise<ExecutionResult> {
     return this.runIsolatedExecution(
       (worker) =>
@@ -915,7 +929,8 @@ export class JavaScriptWorkerClient {
           language,
           preparation,
           preparedExecution,
-          call
+          call,
+          tracingEnabled
         ),
       expectedGeneration
     );
@@ -931,7 +946,8 @@ export class JavaScriptWorkerClient {
       readonly traceOptions?: RuntimeTraceCall['traceOptions'];
     },
     preparedExecution: unknown,
-    call: RuntimePreparedTraceCall
+    call: RuntimePreparedTraceCall,
+    tracingEnabled: boolean = true
   ): Promise<ExecutionResult> {
     const wallClockMs = call.limits?.wallClockMs ?? TRACING_TIMEOUT_MS;
     try {
@@ -948,6 +964,7 @@ export class JavaScriptWorkerClient {
             executionStyle: preparation.executionStyle,
             language,
             preparedExecution,
+            tracingEnabled,
             traceEventTransport: traceEventTransferRequest(),
           }
         ),
@@ -963,7 +980,7 @@ export class JavaScriptWorkerClient {
     } catch (error) {
       if (
         call.limits?.wallClockMs !== undefined &&
-        error instanceof ExecutionTimeoutError
+        isExecutionTimeoutError(error)
       ) {
         return {
           kind: 'limit',
@@ -1012,7 +1029,7 @@ export class JavaScriptWorkerClient {
     );
   }
 
-  private executePreparedTraceBatch(
+  private executePreparedTraceBatchInternal(
     language: JavaScriptWorkerLanguage,
     preparation: {
       readonly code: string;
@@ -1024,6 +1041,21 @@ export class JavaScriptWorkerClient {
     call: RuntimePreparedTraceBatchCall,
     expectedGeneration: number
   ): Promise<readonly ExecutionResult[]> {
+    if (
+      (
+        call.traceEnabledBatch !== undefined &&
+        (
+          call.traceEnabledBatch.length !== call.inputBatch.length ||
+          call.traceEnabledBatch.some(
+            (enabled) => typeof enabled !== 'boolean'
+          )
+        )
+      )
+    ) {
+      return Promise.reject(new TypeError(
+        'JavaScript trace selection must contain one boolean per batch case.'
+      ));
+    }
     return this.runIsolatedBatch(
       call.inputBatch.length,
       (worker, index) =>
@@ -1036,7 +1068,8 @@ export class JavaScriptWorkerClient {
             inputs: call.inputBatch[index]!,
             signal: call.signal,
             limits: call.limits,
-          }
+          },
+          call.traceEnabledBatch?.[index] ?? true
         ),
       expectedGeneration
     );

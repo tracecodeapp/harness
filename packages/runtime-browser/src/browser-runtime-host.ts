@@ -30,6 +30,10 @@ import {
 import {
   registerBrowserRuntimeHostPreparedProviderResolver,
 } from './browser-runtime-host-internal';
+import {
+  withPreparedProgramReuse,
+  type ReusablePreparedProvider,
+} from './prepared-program-reuse';
 import type {
   BrowserSafeExecutionOptions,
 } from './worker-lifecycle-policy';
@@ -188,17 +192,26 @@ async function rejectUnsafePreparedProgram(
 function safePreparedProvider(
   language: Language,
   delegate: RuntimePreparedExecutionProvider,
-  assertActive: () => void
+  assertActive: () => void,
+  ensureReady: () => Promise<void>
 ): RuntimePreparedExecutionProvider {
   return Object.freeze({
     async init(): Promise<{ success: boolean; loadTimeMs: number }> {
       assertActive();
-      return delegate.init();
+      await ensureReady();
+      const result = await delegate.init();
+      if (!result.success) {
+        throw new Error(
+          `Browser runtime for ${JSON.stringify(language)} failed to initialize.`
+        );
+      }
+      return result;
     },
     async prepareProgram(
       call: RuntimeProgramPreparationCall
     ): Promise<RuntimeProgramPreparationResult> {
       assertActive();
+      await ensureReady();
       const result = await delegate.prepareProgram(call);
       const checked = await rejectUnsafePreparedProgram(language, result);
       if (checked.kind === 'prepared' && checked.program.mode !== call.mode) {
@@ -220,13 +233,14 @@ class BrowserRuntimeHostImplementation implements BrowserRuntimeHost {
 
   readonly #preparedProviders = new Map<
     Language,
-    RuntimePreparedExecutionProvider
+    ReusablePreparedProvider
   >();
   readonly #leases: BrowserRuntimeProviderLease[] = [];
   readonly #leaseByLanguage = new Map<
     Language,
     BrowserRuntimeProviderLease
   >();
+  readonly #readinessByLanguage = new Map<Language, Promise<void>>();
   readonly #executionHostSlot: BrowserRuntimeExecutionHostSlot;
   readonly #executionHostProviders: ReadonlySet<Language>;
   #disposed = false;
@@ -277,10 +291,13 @@ class BrowserRuntimeHostImplementation implements BrowserRuntimeHost {
           );
           this.#preparedProviders.set(
             language,
-            safePreparedProvider(
-              language,
-              preparedProvider,
-              () => this.#assertActive()
+            withPreparedProgramReuse(
+              safePreparedProvider(
+                language,
+                preparedProvider,
+                () => this.#assertActive(),
+                () => this.#ensureLanguageReady(language)
+              )
             )
           );
           this.#leaseByLanguage.set(language, lease);
@@ -357,6 +374,36 @@ class BrowserRuntimeHostImplementation implements BrowserRuntimeHost {
     }
   }
 
+  #ensureLanguageReady(language: Language): Promise<void> {
+    const existing = this.#readinessByLanguage.get(language);
+    if (existing) return existing;
+
+    const readiness = (async () => {
+      const result = await this.preflightLanguage(language);
+      if (result.status === 'unavailable') {
+        const reasons = [
+          result.error,
+          result.missingFeatures.length > 0
+            ? `missing browser features: ${result.missingFeatures.join(', ')}`
+            : undefined,
+        ].filter((reason): reason is string => Boolean(reason));
+        throw new Error(
+          `Browser runtime for ${JSON.stringify(language)} is unavailable` +
+            `${reasons.length > 0 ? `: ${reasons.join('; ')}` : '.'}`
+        );
+      }
+    })();
+    this.#readinessByLanguage.set(language, readiness);
+    void readiness.catch(() => {
+      // Failed readiness is retryable after the deployment or browser
+      // environment is repaired. Successful immutable checks stay cached.
+      if (this.#readinessByLanguage.get(language) === readiness) {
+        this.#readinessByLanguage.delete(language);
+      }
+    });
+    return readiness;
+  }
+
   async preflightLanguage(
     language: Language
   ): Promise<BrowserRuntimeReadiness> {
@@ -408,12 +455,17 @@ class BrowserRuntimeHostImplementation implements BrowserRuntimeHost {
 
   disposeLanguage(language: Language): void {
     if (this.#disposed || !this.supportedLanguages.includes(language)) return;
+    this.#preparedProviders.get(language)?.flushPreparedProgramCache();
     this.#leaseByLanguage.get(language)?.disposeLanguage(language);
   }
 
   dispose(): void {
     if (this.#disposed) return;
     this.#disposed = true;
+    this.#readinessByLanguage.clear();
+    for (const provider of this.#preparedProviders.values()) {
+      provider.flushPreparedProgramCache();
+    }
     disposeBrowserRuntimeProviderLeases(
       this.#leases,
       this.#executionHostSlot.host,

@@ -10,6 +10,7 @@ import type {
   RuntimeProgramPreparationCall,
   RuntimeProgramPreparationResult,
 } from '../../packages/runtime-contracts/src/index';
+import { RuntimeProgramConcurrencyGate } from '../../packages/runtime-browser/src/program-concurrency-gate';
 
 export function isPreparedExecutionProvider(
   provider: object
@@ -18,90 +19,6 @@ export function isPreparedExecutionProvider(
     'prepareProgram' in provider &&
     typeof provider.prepareProgram === 'function'
   );
-}
-
-function abortError(signal: AbortSignal | undefined): Error {
-  if (signal?.reason instanceof Error) return signal.reason;
-  return new Error('Prepared runtime execution was aborted.');
-}
-
-interface ConcurrencyWaiter {
-  readonly signal?: AbortSignal;
-  readonly resolve: (release: () => void) => void;
-  readonly reject: (error: Error) => void;
-  readonly onAbort?: () => void;
-}
-
-class RuntimeProgramConcurrencyGate {
-  private active = 0;
-  private readonly waiting: ConcurrencyWaiter[] = [];
-
-  constructor(private readonly maximum: number) {}
-
-  async run<Result>(
-    signal: AbortSignal | undefined,
-    use: () => Promise<Result>
-  ): Promise<Result> {
-    const release = await this.acquire(signal);
-    try {
-      return await use();
-    } finally {
-      release();
-    }
-  }
-
-  private acquire(signal: AbortSignal | undefined): Promise<() => void> {
-    if (signal?.aborted) return Promise.reject(abortError(signal));
-    if (this.active < this.maximum) {
-      this.active += 1;
-      return Promise.resolve(this.releasePermit());
-    }
-    return new Promise<() => void>((resolve, reject) => {
-      const waiter: ConcurrencyWaiter = {
-        signal,
-        resolve,
-        reject,
-        ...(signal
-          ? {
-              onAbort: () => {
-                const index = this.waiting.indexOf(waiter);
-                if (index >= 0) this.waiting.splice(index, 1);
-                reject(abortError(signal));
-              },
-            }
-          : {}),
-      };
-      if (signal && waiter.onAbort) {
-        signal.addEventListener('abort', waiter.onAbort, { once: true });
-      }
-      this.waiting.push(waiter);
-    });
-  }
-
-  private releasePermit(): () => void {
-    let released = false;
-    return () => {
-      if (released) return;
-      released = true;
-      this.active -= 1;
-      this.resumeNext();
-    };
-  }
-
-  private resumeNext(): void {
-    while (this.active < this.maximum && this.waiting.length > 0) {
-      const waiter = this.waiting.shift()!;
-      if (waiter.signal?.aborted) {
-        waiter.reject(abortError(waiter.signal));
-        continue;
-      }
-      if (waiter.signal && waiter.onAbort) {
-        waiter.signal.removeEventListener('abort', waiter.onAbort);
-      }
-      this.active += 1;
-      waiter.resolve(this.releasePermit());
-    }
-  }
 }
 
 interface PreparedEvaluationState {
@@ -270,14 +187,30 @@ export class RuntimePreparedProgramRegistry {
         new Error('Code-only prepared program cannot execute a tracing batch.')
       );
     }
+    if (
+      call.traceEnabledBatch !== undefined &&
+      (
+        call.traceEnabledBatch.length !== call.inputBatch.length ||
+        call.traceEnabledBatch.some((enabled) => typeof enabled !== 'boolean')
+      )
+    ) {
+      return Promise.reject(
+        new TypeError(
+          'Prepared trace selection must contain one boolean per batch case.'
+        )
+      );
+    }
     if (program.executeBatchIsolated) {
       return gate.run(call.signal, () => program.executeBatchIsolated!(call));
     }
     return Promise.all(
-      call.inputBatch.map((inputs) =>
+      call.inputBatch.map((inputs, index) =>
         gate.run(call.signal, () =>
           program.executeIsolated({
             inputs,
+            ...(call.traceEnabledBatch === undefined
+              ? {}
+              : { recordTrace: call.traceEnabledBatch[index] }),
             signal: call.signal,
             limits: call.limits,
           })

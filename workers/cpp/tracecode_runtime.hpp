@@ -101,6 +101,19 @@ inline bool& trace_budget_exceeded() {
   return value;
 }
 
+// Requested recording state is distinct from budget exhaustion. An
+// instrumented interactive artifact may execute verdict-only cases with
+// recording disabled; those cases must not mutate budgets or dropped-event
+// counters and may be followed by a traced case in the same process.
+inline bool& tracing_enabled() {
+  static bool value = true;
+  return value;
+}
+
+inline void set_tracing_enabled(bool enabled) {
+  tracing_enabled() = enabled;
+}
+
 inline std::string& trace_budget_timeout_reason() {
   static std::string value = "";
   return value;
@@ -122,7 +135,7 @@ inline bool& hard_stop_on_trace_line_budget() {
 }
 
 inline std::size_t trace_bulk_index_write_limit(std::size_t requested) {
-  if (requested == 0 || trace_budget_exceeded()) return 0;
+  if (requested == 0 || !tracing_enabled() || trace_budget_exceeded()) return 0;
   const int remaining = trace_event_budget() - trace_event_count();
   if (remaining <= 0) return 0;
   const std::size_t event_remaining = static_cast<std::size_t>(remaining);
@@ -496,6 +509,40 @@ template <typename... Values>
 struct json_is_std_tuple<std::tuple<Values...>> : std::true_type {};
 
 template <typename T>
+struct json_is_std_variant : std::false_type {};
+template <typename... Values>
+struct json_is_std_variant<std::variant<Values...>> : std::true_type {};
+
+/**
+ * True when `T` is the alternative a JSON value of this kind should decode to.
+ *
+ * A variant alternative is chosen by matching the JSON kind rather than by
+ * position, so `variant<std::string, int>` and `variant<int, std::string>`
+ * both decode `"a"` to the string alternative. Without this, every variant
+ * fell through json_to's default branch and silently default-constructed to
+ * its FIRST alternative -- an empty string for `variant<std::string, int>` --
+ * so correct learner code produced empty results with no diagnostic.
+ */
+template <typename T>
+inline bool json_alternative_matches(const JsonValue& value) {
+  using D = std::decay_t<T>;
+  switch (value.kind) {
+    case JsonValue::Kind::String:
+      return std::is_same_v<D, std::string>;
+    case JsonValue::Kind::Number:
+      return std::is_arithmetic_v<D> && !std::is_same_v<D, bool>;
+    case JsonValue::Kind::Bool:
+      return std::is_same_v<D, bool>;
+    case JsonValue::Kind::Array:
+      return json_is_std_vector<D>::value || json_is_std_deque<D>::value;
+    case JsonValue::Kind::Object:
+      return json_is_std_map<D>::value || json_is_std_unordered_map<D>::value;
+    default:
+      return false;
+  }
+}
+
+template <typename T>
 T json_to(const JsonValue& value);
 
 template <typename Node>
@@ -653,6 +700,21 @@ T json_to(const JsonValue& value) {
     return D{json_to<typename D::first_type>(value.array_values[0]), json_to<typename D::second_type>(value.array_values[1])};
   } else if constexpr (json_is_std_tuple<D>::value) {
     return json_to_tuple<D>(value, std::make_index_sequence<std::tuple_size_v<D>>{});
+  } else if constexpr (json_is_std_variant<D>::value) {
+    // Pick the first alternative whose type matches the JSON kind; fall back to
+    // the first alternative so the result is always a valid variant.
+    D out{};
+    bool decoded = false;
+    [&]<typename... Alternatives>(std::variant<Alternatives...>*) {
+      (void)((!decoded && json_alternative_matches<Alternatives>(value)
+                ? (out = json_to<Alternatives>(value), decoded = true, true)
+                : false) || ...);
+    }(static_cast<D*>(nullptr));
+    if (!decoded) {
+      using First = std::variant_alternative_t<0, D>;
+      out = json_to<First>(value);
+    }
+    return out;
   } else if constexpr (JsonObjectAdapter<D>::available) {
     return JsonObjectAdapter<D>::from(value);
   } else {
@@ -1142,6 +1204,49 @@ std::string to_json_key(const T& value) {
   }
 }
 
+/**
+ * Trace-value serialization cap, mirroring the other language runtimes:
+ * trace events store at most 64 sequence elements plus a
+ * {"__truncated__":true,"remaining":N} marker. Result serialization stays
+ * uncapped (verdicts compare complete outputs), so the cap is armed for the
+ * traced run and explicitly suspended around result encoding.
+ */
+inline bool& trace_value_cap_active() {
+  static bool value = false;
+  return value;
+}
+
+constexpr std::size_t kTraceValueMaxItems = 64;
+
+struct TraceValueCapActivation {
+  bool previous;
+  TraceValueCapActivation() : previous(trace_value_cap_active()) {
+    trace_value_cap_active() = true;
+  }
+  ~TraceValueCapActivation() { trace_value_cap_active() = previous; }
+};
+
+struct TraceValueCapSuspension {
+  bool previous;
+  TraceValueCapSuspension() : previous(trace_value_cap_active()) {
+    trace_value_cap_active() = false;
+  }
+  ~TraceValueCapSuspension() { trace_value_cap_active() = previous; }
+};
+
+inline std::size_t trace_value_sequence_limit(std::size_t size) {
+  if (!trace_value_cap_active() || size <= kTraceValueMaxItems) return size;
+  return kTraceValueMaxItems;
+}
+
+inline void append_trace_value_truncation_marker(
+    std::string& json, std::size_t emitted, std::size_t total) {
+  if (emitted >= total) return;
+  if (emitted > 0) json += ",";
+  json += "{\"__truncated__\":true,\"remaining\":" +
+    std::to_string(total - emitted) + "}";
+}
+
 template <typename T>
 std::string to_json(const std::vector<T>& values);
 
@@ -1277,44 +1382,52 @@ std::string to_json(const std::deque<T>& values);
 
 template <typename T>
 std::string to_json(const std::vector<T>& values) {
+  const std::size_t limit = trace_value_sequence_limit(values.size());
   std::string json = "[";
-  for (std::size_t index = 0; index < values.size(); ++index) {
+  for (std::size_t index = 0; index < limit; ++index) {
     if (index > 0) json += ",";
     json += to_json(values[index]);
   }
+  append_trace_value_truncation_marker(json, limit, values.size());
   json += "]";
   return json;
 }
 
 template <typename T, std::size_t Size>
 std::string to_json(const std::array<T, Size>& values) {
+  const std::size_t limit = trace_value_sequence_limit(values.size());
   std::string json = "[";
-  for (std::size_t index = 0; index < values.size(); ++index) {
+  for (std::size_t index = 0; index < limit; ++index) {
     if (index > 0) json += ",";
     json += to_json(values[index]);
   }
+  append_trace_value_truncation_marker(json, limit, values.size());
   json += "]";
   return json;
 }
 
 template <typename T, std::size_t Size>
 std::string to_json(const T (&values)[Size]) {
+  const std::size_t limit = trace_value_sequence_limit(Size);
   std::string json = "[";
-  for (std::size_t index = 0; index < Size; ++index) {
+  for (std::size_t index = 0; index < limit; ++index) {
     if (index > 0) json += ",";
     json += to_json(values[index]);
   }
+  append_trace_value_truncation_marker(json, limit, Size);
   json += "]";
   return json;
 }
 
 template <typename T>
 std::string to_json(const std::deque<T>& values) {
+  const std::size_t limit = trace_value_sequence_limit(values.size());
   std::string json = "[";
-  for (std::size_t index = 0; index < values.size(); ++index) {
+  for (std::size_t index = 0; index < limit; ++index) {
     if (index > 0) json += ",";
     json += to_json(values[index]);
   }
+  append_trace_value_truncation_marker(json, limit, values.size());
   json += "]";
   return json;
 }
@@ -1330,8 +1443,22 @@ std::string to_json(const std::unordered_map<K, V, Hash, Equal, Allocator>& valu
 
 inline void write_trace_event_json(const std::string& event_json, int line = 1);
 inline void write_trace_event_json_raw(const std::string& event_json);
+inline void flush_trace_event_buffer();
 inline bool check_trace_budget(int line);
 inline void emit_line(int line, const char* function_name);
+
+// True when an event of this class would be retained by
+// write_trace_event_json. Mirrors its checks (minimal-trace suppression for
+// snapshot/read/write/mutate kinds, then the budget) so hot paths can skip
+// value serialization and target construction for events that would be
+// discarded anyway. Counting effects match write_trace_event_json exactly:
+// suppression rejects without touching counters, and budget rejection
+// increments the dropped counter exactly once per attempted event.
+inline bool trace_event_admissible(bool minimal_trace_suppressed_kind, int line) {
+  if (!tracing_enabled()) return false;
+  if (minimal_trace_suppressed_kind && minimal_trace_enabled()) return false;
+  return check_trace_budget(line);
+}
 
 inline __attribute__((noinline)) void emit_serialized_value_event(
     const char* kind,
@@ -1439,6 +1566,7 @@ inline void emit_snapshot_value(const std::string& name, const T& value, int lin
   if (minimal_trace_enabled()) return;
   if (!check_trace_budget(line)) return;
   trace_event_count() += 1;
+  TraceValueCapActivation __tc_value_cap;
   emit_serialized_value_event(
     "snapshot",
     line,
@@ -2723,6 +2851,8 @@ class Vector : public std::vector<T> {
 
   void emit_read(std::size_t index, int line, const char* source = nullptr) const {
     if (!trace_) return;
+    if (!trace_event_admissible(true, line)) return;
+    TraceValueCapActivation __tc_value_cap;
     write_trace_event_json(
       std::string("{\"kind\":\"read\",\"line\":") + std::to_string(line) +
       ",\"target\":" + (source && *source ? target_json_with_index_source(index, source) : target_json(index)) +
@@ -2733,6 +2863,8 @@ class Vector : public std::vector<T> {
 
   void emit_iteration_bind_read(std::size_t index, int line, const char* binding_name) const {
     if (!trace_) return;
+    if (!trace_event_admissible(true, line)) return;
+    TraceValueCapActivation __tc_value_cap;
     write_trace_event_json(
       std::string("{\"kind\":\"read\",\"line\":") + std::to_string(line) +
       ",\"target\":" + target_json_with_index_source(index, nullptr) +
@@ -2745,6 +2877,8 @@ class Vector : public std::vector<T> {
 
   void emit_iteration_component_bind_read(std::size_t index, std::size_t component, int line, const std::string& binding_name, const std::string& value_json) const {
     if (!trace_ || binding_name.empty()) return;
+    if (!trace_event_admissible(true, line)) return;
+    TraceValueCapActivation __tc_value_cap;
     write_trace_event_json(
       std::string("{\"kind\":\"read\",\"line\":") + std::to_string(line) +
       ",\"target\":" + target_json(index, component) +
@@ -2773,6 +2907,8 @@ class Vector : public std::vector<T> {
 
   void emit_receiver_read(int line) const {
     if (!trace_ || path_prefix_json_.empty()) return;
+    if (!trace_event_admissible(true, line)) return;
+    TraceValueCapActivation __tc_value_cap;
     write_trace_event_json(
       std::string("{\"kind\":\"read\",\"line\":") + std::to_string(line) +
       ",\"target\":" + target_json() +
@@ -2784,6 +2920,8 @@ class Vector : public std::vector<T> {
   template <typename Value>
   void emit_metadata_read(const char* field, const Value& value, int line) const {
     if (!trace_) return;
+    if (!trace_event_admissible(true, line)) return;
+    TraceValueCapActivation __tc_value_cap;
     write_trace_event_json(
       std::string("{\"kind\":\"read\",\"line\":") + std::to_string(line) +
       ",\"target\":" + target_json(field) +
@@ -2796,6 +2934,8 @@ class Vector : public std::vector<T> {
   std::enable_if_t<is_std_vector<U>::value, void>
   emit_nested_read(std::size_t outer, std::size_t inner, int line, const char* outer_source = nullptr, const char* inner_source = nullptr) const {
     if (!trace_) return;
+    if (!trace_event_admissible(true, line)) return;
+    TraceValueCapActivation __tc_value_cap;
     write_trace_event_json(
       std::string("{\"kind\":\"read\",\"line\":") + std::to_string(line) +
       ",\"target\":" + ((outer_source && *outer_source) || (inner_source && *inner_source)
@@ -2810,6 +2950,8 @@ class Vector : public std::vector<T> {
   std::enable_if_t<is_std_string<U>::value, void>
   emit_string_char_read(std::size_t outer, std::size_t inner, int line) const {
     if (!trace_) return;
+    if (!trace_event_admissible(true, line)) return;
+    TraceValueCapActivation __tc_value_cap;
     write_trace_event_json(
       std::string("{\"kind\":\"read\",\"line\":") + std::to_string(line) +
       ",\"target\":" + target_json(outer, inner) +
@@ -2820,6 +2962,8 @@ class Vector : public std::vector<T> {
 
   void emit_write(std::size_t index, const T& value, int line, const char* source = nullptr) {
     if (!trace_) return;
+    if (!trace_event_admissible(true, line)) return;
+    TraceValueCapActivation __tc_value_cap;
     write_trace_event_json(
       std::string("{\"kind\":\"write\",\"line\":") + std::to_string(line) +
       ",\"target\":" + (source && *source ? target_json_with_index_source(index, source) : target_json(index)) +
@@ -2833,6 +2977,8 @@ class Vector : public std::vector<T> {
   std::enable_if_t<is_std_vector<U>::value, void>
   emit_nested_write(std::size_t outer, std::size_t inner, const typename U::value_type& value, int line, const char* outer_source = nullptr, const char* inner_source = nullptr) {
     if (!trace_) return;
+    if (!trace_event_admissible(true, line)) return;
+    TraceValueCapActivation __tc_value_cap;
     write_trace_event_json(
       std::string("{\"kind\":\"write\",\"line\":") + std::to_string(line) +
       ",\"target\":" + ((outer_source && *outer_source) || (inner_source && *inner_source)
@@ -2859,6 +3005,8 @@ class Vector : public std::vector<T> {
   template <typename Key, typename Value>
   void emit_nested_key_write(std::size_t outer, const Key& key, const Value& value, int line) {
     if (!trace_) return;
+    if (!trace_event_admissible(true, line)) return;
+    TraceValueCapActivation __tc_value_cap;
     write_trace_event_json(
       std::string("{\"kind\":\"write\",\"line\":") + std::to_string(line) +
       ",\"target\":" + target_json(outer, key) +
@@ -2870,6 +3018,8 @@ class Vector : public std::vector<T> {
 
   void emit_indexed_mutate(std::size_t index, const char* method, int line, const char* source = nullptr, const std::string& args_json = "") {
     if (!trace_) return;
+    if (!trace_event_admissible(true, line)) return;
+    TraceValueCapActivation __tc_value_cap;
     write_trace_event_json(
       std::string("{\"kind\":\"mutate\",\"line\":") + std::to_string(line) +
       ",\"target\":" + (source && *source ? target_json_with_index_source(index, source) : target_json(index)) +
@@ -2886,6 +3036,8 @@ class Vector : public std::vector<T> {
 
   void emit_mutate(const char* method, int line, const std::string& args_json) {
     if (!trace_) return;
+    if (!trace_event_admissible(true, line)) return;
+    TraceValueCapActivation __tc_value_cap;
     write_trace_event_json(
       std::string("{\"kind\":\"mutate\",\"line\":") + std::to_string(line) +
       ",\"target\":" + target_json() +
@@ -2897,6 +3049,8 @@ class Vector : public std::vector<T> {
 
   void emit_snapshot(int line) const {
     if (!trace_) return;
+    if (!trace_event_admissible(true, line)) return;
+    TraceValueCapActivation __tc_value_cap;
     write_trace_event_json(
       std::string("{\"kind\":\"snapshot\",\"line\":") + std::to_string(line) +
       ",\"target\":" + target_json() +
@@ -2949,6 +3103,8 @@ class Vector : public std::vector<T> {
 
   void emit_write_field(int line) {
     if (!trace_ || path_prefix_json_.empty()) return;
+    if (!trace_event_admissible(true, line)) return;
+    TraceValueCapActivation __tc_value_cap;
     write_trace_event_json(
       std::string("{\"kind\":\"write\",\"line\":") + std::to_string(line) +
       ",\"target\":" + target_json() +
@@ -4349,6 +4505,8 @@ class Deque : public std::deque<T> {
 
   void emit_read(std::size_t index, int line) const {
     if (!trace_) return;
+    if (!trace_event_admissible(true, line)) return;
+    TraceValueCapActivation __tc_value_cap;
     write_trace_event_json(
       std::string("{\"kind\":\"read\",\"line\":") + std::to_string(line) +
       ",\"target\":" + target_json(index) +
@@ -4359,6 +4517,8 @@ class Deque : public std::deque<T> {
 
   void emit_write(std::size_t index, const T& value, int line) {
     if (!trace_) return;
+    if (!trace_event_admissible(true, line)) return;
+    TraceValueCapActivation __tc_value_cap;
     write_trace_event_json(
       std::string("{\"kind\":\"write\",\"line\":") + std::to_string(line) +
       ",\"target\":" + target_json(index) +
@@ -4374,6 +4534,8 @@ class Deque : public std::deque<T> {
 
   void emit_mutate(const char* method, int line, const std::string& args_json) {
     if (!trace_) return;
+    if (!trace_event_admissible(true, line)) return;
+    TraceValueCapActivation __tc_value_cap;
     write_trace_event_json(
       std::string("{\"kind\":\"mutate\",\"line\":") + std::to_string(line) +
       ",\"target\":" + target_json() +
@@ -4385,6 +4547,8 @@ class Deque : public std::deque<T> {
 
   void emit_snapshot(int line) const {
     if (!trace_) return;
+    if (!trace_event_admissible(true, line)) return;
+    TraceValueCapActivation __tc_value_cap;
     write_trace_event_json(
       std::string("{\"kind\":\"snapshot\",\"line\":") + std::to_string(line) +
       ",\"target\":" + target_json() +
@@ -4411,6 +4575,8 @@ class Deque : public std::deque<T> {
 
   void emit_write_field(int line) {
     if (!trace_ || path_prefix_json_.empty()) return;
+    if (!trace_event_admissible(true, line)) return;
+    TraceValueCapActivation __tc_value_cap;
     write_trace_event_json(
       std::string("{\"kind\":\"write\",\"line\":") + std::to_string(line) +
       ",\"target\":" + target_json() +
@@ -4557,6 +4723,8 @@ class Queue : public std::queue<T> {
 
   void emit_read(const char* slot, const T& value, int line) const {
     if (!trace_) return;
+    if (!trace_event_admissible(true, line)) return;
+    TraceValueCapActivation __tc_value_cap;
     write_trace_event_json(
       std::string("{\"kind\":\"read\",\"line\":") + std::to_string(line) +
       ",\"target\":" + target_json_slot(slot) +
@@ -4567,6 +4735,8 @@ class Queue : public std::queue<T> {
 
   void emit_write(std::size_t index, const T& value, int line) {
     if (!trace_) return;
+    if (!trace_event_admissible(true, line)) return;
+    TraceValueCapActivation __tc_value_cap;
     write_trace_event_json(
       std::string("{\"kind\":\"write\",\"line\":") + std::to_string(line) +
       ",\"target\":" + target_json(index) +
@@ -4582,6 +4752,8 @@ class Queue : public std::queue<T> {
 
   void emit_mutate(const char* method, int line, const std::string& args_json) {
     if (!trace_) return;
+    if (!trace_event_admissible(true, line)) return;
+    TraceValueCapActivation __tc_value_cap;
     write_trace_event_json(
       std::string("{\"kind\":\"mutate\",\"line\":") + std::to_string(line) +
       ",\"target\":" + target_json() +
@@ -4593,6 +4765,8 @@ class Queue : public std::queue<T> {
 
   void emit_snapshot(int line) const {
     if (!trace_) return;
+    if (!trace_event_admissible(true, line)) return;
+    TraceValueCapActivation __tc_value_cap;
     write_trace_event_json(
       std::string("{\"kind\":\"snapshot\",\"line\":") + std::to_string(line) +
       ",\"target\":" + target_json() +
@@ -4787,6 +4961,8 @@ class PriorityQueue : public std::priority_queue<T, Container, Compare> {
 
   void emit_read(const char* slot, const T& value, int line) const {
     if (!trace_) return;
+    if (!trace_event_admissible(true, line)) return;
+    TraceValueCapActivation __tc_value_cap;
     write_trace_event_json(
       std::string("{\"kind\":\"read\",\"line\":") + std::to_string(line) +
       ",\"target\":" + target_json_slot(slot) +
@@ -4801,6 +4977,8 @@ class PriorityQueue : public std::priority_queue<T, Container, Compare> {
 
   void emit_mutate(const char* method, int line, const std::string& args_json) {
     if (!trace_) return;
+    if (!trace_event_admissible(true, line)) return;
+    TraceValueCapActivation __tc_value_cap;
     write_trace_event_json(
       std::string("{\"kind\":\"mutate\",\"line\":") + std::to_string(line) +
       ",\"target\":" + target_json() +
@@ -4812,6 +4990,8 @@ class PriorityQueue : public std::priority_queue<T, Container, Compare> {
 
   void emit_snapshot(int line) const {
     if (!trace_) return;
+    if (!trace_event_admissible(true, line)) return;
+    TraceValueCapActivation __tc_value_cap;
     write_trace_event_json(
       std::string("{\"kind\":\"snapshot\",\"line\":") + std::to_string(line) +
       ",\"target\":" + target_json() +
@@ -4843,6 +5023,8 @@ class PriorityQueue : public std::priority_queue<T, Container, Compare> {
 
   void emit_index_write_json(std::size_t index, const std::string& value_json, int line) const {
     if (!trace_) return;
+      if (!trace_event_admissible(true, line)) return;
+      TraceValueCapActivation __tc_value_cap;
       write_trace_event_json(
         std::string("{\"kind\":\"write\",\"line\":") + std::to_string(line) +
         ",\"target\":" + target_json(index) +
@@ -4979,6 +5161,8 @@ class Stack : public std::stack<T> {
 
   void emit_read(const char* slot, const T& value, int line) const {
     if (!trace_) return;
+    if (!trace_event_admissible(true, line)) return;
+    TraceValueCapActivation __tc_value_cap;
     write_trace_event_json(
       std::string("{\"kind\":\"read\",\"line\":") + std::to_string(line) +
       ",\"target\":" + target_json_slot(slot) +
@@ -4989,6 +5173,8 @@ class Stack : public std::stack<T> {
 
   void emit_write(std::size_t index, const T& value, int line) {
     if (!trace_) return;
+    if (!trace_event_admissible(true, line)) return;
+    TraceValueCapActivation __tc_value_cap;
     write_trace_event_json(
       std::string("{\"kind\":\"write\",\"line\":") + std::to_string(line) +
       ",\"target\":" + target_json(index) +
@@ -5004,6 +5190,8 @@ class Stack : public std::stack<T> {
 
   void emit_mutate(const char* method, int line, const std::string& args_json) {
     if (!trace_) return;
+    if (!trace_event_admissible(true, line)) return;
+    TraceValueCapActivation __tc_value_cap;
     write_trace_event_json(
       std::string("{\"kind\":\"mutate\",\"line\":") + std::to_string(line) +
       ",\"target\":" + target_json() +
@@ -5015,6 +5203,8 @@ class Stack : public std::stack<T> {
 
   void emit_snapshot(int line) const {
     if (!trace_) return;
+    if (!trace_event_admissible(true, line)) return;
+    TraceValueCapActivation __tc_value_cap;
     write_trace_event_json(
       std::string("{\"kind\":\"snapshot\",\"line\":") + std::to_string(line) +
       ",\"target\":" + target_json() +
@@ -5311,6 +5501,8 @@ class UnorderedMap : public std::unordered_map<K, V> {
 
   void emit_read(const K& key, int line, const std::string& value_json, const char* source) const {
     if (!trace_) return;
+    if (!trace_event_admissible(true, line)) return;
+    TraceValueCapActivation __tc_value_cap;
     emit_serialized_value_event(
       "read",
       line,
@@ -5322,6 +5514,8 @@ class UnorderedMap : public std::unordered_map<K, V> {
 
   void emit_iteration_bind_read(const K& key, const std::string& value_json, int line, const char* binding_name) const {
     if (!trace_) return;
+    if (!trace_event_admissible(true, line)) return;
+    TraceValueCapActivation __tc_value_cap;
     emit_serialized_value_event(
       "read",
       line,
@@ -5338,6 +5532,8 @@ class UnorderedMap : public std::unordered_map<K, V> {
 
   void emit_write(const K& key, const V& value, int line, const char* source) {
     if (!trace_) return;
+    if (!trace_event_admissible(true, line)) return;
+    TraceValueCapActivation __tc_value_cap;
     emit_serialized_value_event(
       "write",
       line,
@@ -5350,6 +5546,8 @@ class UnorderedMap : public std::unordered_map<K, V> {
   template <typename InnerValue>
   void emit_nested_write(const K& key, std::size_t inner, const InnerValue& value, int line, const char* key_source = nullptr, const char* inner_source = nullptr) {
     if (!trace_) return;
+    if (!trace_event_admissible(true, line)) return;
+    TraceValueCapActivation __tc_value_cap;
     const std::string path = path_prefix_json_.empty()
       ? to_json(key) + "," + std::to_string(inner)
       : path_prefix_json_ + "," + to_json(key) + "," + std::to_string(inner);
@@ -5374,6 +5572,8 @@ class UnorderedMap : public std::unordered_map<K, V> {
 
   void emit_mutate(const char* method, int line) {
     if (!trace_) return;
+    if (!trace_event_admissible(true, line)) return;
+    TraceValueCapActivation __tc_value_cap;
     emit_serialized_mutation_event(line, target_json(), method);
   }
 
@@ -5387,6 +5587,8 @@ class UnorderedMap : public std::unordered_map<K, V> {
 
   void emit_keyed_mutate(const K& key, const char* method, int line, const std::string& args_json, const char* source) {
     if (!trace_) return;
+    if (!trace_event_admissible(true, line)) return;
+    TraceValueCapActivation __tc_value_cap;
     emit_serialized_mutation_event(
       line,
       target_json_key(key, source),
@@ -5398,6 +5600,8 @@ class UnorderedMap : public std::unordered_map<K, V> {
 
   void emit_snapshot(int line) const {
     if (!trace_) return;
+    if (!trace_event_admissible(true, line)) return;
+    TraceValueCapActivation __tc_value_cap;
     emit_serialized_value_event(
       "snapshot",
       line,
@@ -5951,6 +6155,8 @@ class Map : public std::map<K, V> {
 
   void emit_read(const K& key, int line, const std::string& value_json, const char* source) const {
     if (!trace_) return;
+    if (!trace_event_admissible(true, line)) return;
+    TraceValueCapActivation __tc_value_cap;
     emit_serialized_value_event(
       "read",
       line,
@@ -5962,6 +6168,8 @@ class Map : public std::map<K, V> {
 
   void emit_iteration_bind_read(const K& key, const std::string& value_json, int line, const char* binding_name) const {
     if (!trace_) return;
+    if (!trace_event_admissible(true, line)) return;
+    TraceValueCapActivation __tc_value_cap;
     emit_serialized_value_event(
       "read",
       line,
@@ -5978,6 +6186,8 @@ class Map : public std::map<K, V> {
 
   void emit_write(const K& key, const V& value, int line, const char* source) {
     if (!trace_) return;
+    if (!trace_event_admissible(true, line)) return;
+    TraceValueCapActivation __tc_value_cap;
     emit_serialized_value_event(
       "write",
       line,
@@ -5990,6 +6200,8 @@ class Map : public std::map<K, V> {
   template <typename InnerValue>
   void emit_nested_write(const K& key, std::size_t inner, const InnerValue& value, int line, const char* key_source = nullptr, const char* inner_source = nullptr) {
     if (!trace_) return;
+    if (!trace_event_admissible(true, line)) return;
+    TraceValueCapActivation __tc_value_cap;
     const std::string path = path_prefix_json_.empty()
       ? to_json(key) + "," + std::to_string(inner)
       : path_prefix_json_ + "," + to_json(key) + "," + std::to_string(inner);
@@ -6014,6 +6226,8 @@ class Map : public std::map<K, V> {
 
   void emit_mutate(const char* method, int line) {
     if (!trace_) return;
+    if (!trace_event_admissible(true, line)) return;
+    TraceValueCapActivation __tc_value_cap;
     emit_serialized_mutation_event(line, target_json(), method);
   }
 
@@ -6027,6 +6241,8 @@ class Map : public std::map<K, V> {
 
   void emit_keyed_mutate(const K& key, const char* method, int line, const std::string& args_json, const char* source) {
     if (!trace_) return;
+    if (!trace_event_admissible(true, line)) return;
+    TraceValueCapActivation __tc_value_cap;
     emit_serialized_mutation_event(
       line,
       target_json_key(key, source),
@@ -6038,6 +6254,8 @@ class Map : public std::map<K, V> {
 
   void emit_snapshot(int line) const {
     if (!trace_) return;
+    if (!trace_event_admissible(true, line)) return;
+    TraceValueCapActivation __tc_value_cap;
     emit_serialized_value_event(
       "snapshot",
       line,
@@ -6528,6 +6746,8 @@ class Set : public std::set<T> {
 
   void emit_read(const T& value, bool present, int line) const {
     if (!trace_) return;
+    if (!trace_event_admissible(true, line)) return;
+    TraceValueCapActivation __tc_value_cap;
     emit_serialized_value_event(
       "read",
       line,
@@ -6539,6 +6759,8 @@ class Set : public std::set<T> {
 
   void emit_iteration_bind_read(const T& value, int line, const char* binding_name) const {
     if (!trace_) return;
+    if (!trace_event_admissible(true, line)) return;
+    TraceValueCapActivation __tc_value_cap;
     emit_serialized_value_event(
       "read",
       line,
@@ -6551,6 +6773,8 @@ class Set : public std::set<T> {
 
   void emit_write(const T& value, int line) {
     if (!trace_) return;
+    if (!trace_event_admissible(true, line)) return;
+    TraceValueCapActivation __tc_value_cap;
     emit_serialized_value_event(
       "write",
       line,
@@ -6562,16 +6786,22 @@ class Set : public std::set<T> {
 
   void emit_mutate(const char* method, int line, const std::string& args_json = "") {
     if (!trace_) return;
+    if (!trace_event_admissible(true, line)) return;
+    TraceValueCapActivation __tc_value_cap;
     emit_serialized_mutation_event(line, target_json(), method, args_json);
   }
 
   void emit_mutate_key(const T& value, const char* method, int line, const std::string& args_json = "") {
     if (!trace_) return;
+    if (!trace_event_admissible(true, line)) return;
+    TraceValueCapActivation __tc_value_cap;
     emit_serialized_mutation_event(line, target_json_key(value), method, args_json);
   }
 
   void emit_snapshot(int line) const {
     if (!trace_) return;
+    if (!trace_event_admissible(true, line)) return;
+    TraceValueCapActivation __tc_value_cap;
     emit_serialized_value_event(
       "snapshot",
       line,
@@ -6792,6 +7022,8 @@ class UnorderedSet : public std::unordered_set<T> {
 
   void emit_read(const T& value, bool present, int line) const {
     if (!trace_) return;
+    if (!trace_event_admissible(true, line)) return;
+    TraceValueCapActivation __tc_value_cap;
     emit_serialized_value_event(
       "read",
       line,
@@ -6803,6 +7035,8 @@ class UnorderedSet : public std::unordered_set<T> {
 
   void emit_iteration_bind_read(const T& value, int line, const char* binding_name) const {
     if (!trace_) return;
+    if (!trace_event_admissible(true, line)) return;
+    TraceValueCapActivation __tc_value_cap;
     emit_serialized_value_event(
       "read",
       line,
@@ -6815,6 +7049,8 @@ class UnorderedSet : public std::unordered_set<T> {
 
   void emit_write(const T& value, int line) {
     if (!trace_) return;
+    if (!trace_event_admissible(true, line)) return;
+    TraceValueCapActivation __tc_value_cap;
     emit_serialized_value_event(
       "write",
       line,
@@ -6826,16 +7062,22 @@ class UnorderedSet : public std::unordered_set<T> {
 
   void emit_mutate(const char* method, int line, const std::string& args_json = "") {
     if (!trace_) return;
+    if (!trace_event_admissible(true, line)) return;
+    TraceValueCapActivation __tc_value_cap;
     emit_serialized_mutation_event(line, target_json(), method, args_json);
   }
 
   void emit_mutate_key(const T& value, const char* method, int line, const std::string& args_json = "") {
     if (!trace_) return;
+    if (!trace_event_admissible(true, line)) return;
+    TraceValueCapActivation __tc_value_cap;
     emit_serialized_mutation_event(line, target_json_key(value), method, args_json);
   }
 
   void emit_snapshot(int line) const {
     if (!trace_) return;
+    if (!trace_event_admissible(true, line)) return;
+    TraceValueCapActivation __tc_value_cap;
     emit_serialized_value_event(
       "snapshot",
       line,
@@ -6895,6 +7137,7 @@ inline SetRangeReadable<UnorderedSet<T>> set_range_readable(UnorderedSet<T>& con
 }
 
 inline void write_result_json_raw(const std::string& value_json) {
+  flush_trace_event_buffer();
   std::string status = std::string("__TRACECODE_TRACE_STATUS__{\"traceLimitExceeded\":") +
     (trace_budget_exceeded() ? "true" : "false") +
     ",\"droppedEventCount\":" + std::to_string(dropped_trace_event_count());
@@ -6909,12 +7152,37 @@ inline void write_result_json_raw(const std::string& value_json) {
 
 template <typename T>
 void write_result_json(const T& value) {
+  // Results are compared for verdicts and must never be truncated.
+  TraceValueCapSuspension uncapped;
   write_result_json_raw(to_json(value));
 }
 
+/**
+ * Trace events buffer in slabs and flush as one stdout write per slab plus
+ * the terminal flush points (result emission, hard budget stop). Each stdout
+ * write from this process can be a synchronous TraceKernel roundtrip, so a
+ * heavy trace paying that per event is the difference between milliseconds
+ * and tens of seconds. User program prints still write directly; their
+ * stdout-event anchoring can shift only across a slab boundary.
+ */
+inline std::string& trace_event_out_buffer() {
+  static std::string buffer;
+  return buffer;
+}
+
+inline void flush_trace_event_buffer() {
+  std::string& buffer = trace_event_out_buffer();
+  if (buffer.empty()) return;
+  std::fwrite(buffer.data(), 1, buffer.size(), stdout);
+  buffer.clear();
+}
+
 inline void write_trace_event_json_raw(const std::string& event_json) {
-  std::string json = std::string("__TRACECODE_EVENT__") + event_json + "\n";
-  std::fputs(json.c_str(), stdout);
+  std::string& buffer = trace_event_out_buffer();
+  buffer += "__TRACECODE_EVENT__";
+  buffer += event_json;
+  buffer += '\n';
+  if (buffer.size() >= 256 * 1024) flush_trace_event_buffer();
 }
 
 inline void configure_trace_budget(
@@ -6923,7 +7191,8 @@ inline void configure_trace_budget(
   int max_line_events = 0,
   int max_single_line_hits = 0,
   bool minimal_trace = false,
-  bool line_hard_stop = false
+  bool line_hard_stop = false,
+  bool enable_tracing = true
 ) {
   trace_event_count() = 0;
   trace_line_event_count() = 0;
@@ -6938,6 +7207,7 @@ inline void configure_trace_budget(
   trace_line_event_budget() = max_line_events > 0 ? max_line_events : 0;
   trace_single_line_hit_budget() = max_single_line_hits > 0 ? max_single_line_hits : 0;
   minimal_trace_enabled() = minimal_trace;
+  tracing_enabled() = enable_tracing;
 }
 
 inline void stop_for_trace_budget(
@@ -6957,12 +7227,14 @@ inline void stop_for_trace_budget(
       ",\"reason\":" + to_json(reason) +
       ",\"message\":" + to_json(message) + "}"
     );
+    flush_trace_event_buffer();
     std::fflush(stdout);
     std::exit(124);
   }
 }
 
 inline bool check_trace_budget(int line) {
+  if (!tracing_enabled()) return false;
   if (trace_budget_exceeded()) {
     dropped_trace_event_count() += 1;
     return false;
@@ -6975,6 +7247,7 @@ inline bool check_trace_budget(int line) {
 }
 
 inline bool check_line_trace_budget(int line) {
+  if (!tracing_enabled()) return false;
   if (trace_budget_exceeded()) {
     dropped_trace_event_count() += 1;
     return false;

@@ -1,0 +1,14 @@
+{
+  "name": "@tracecode/runtime-python-native",
+  "private": true,
+  "version": "0.16.0",
+  "type": "module",
+  "description": "Build recipe and compatibility manifest for the optional Pyodide native tracing wheel.",
+  "homepage": "https://tracecode.app",
+  "license": "AGPL-3.0-only",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/tracecodeapp/harness.git",
+    "directory": "packages/runtime-python-native"
+  }
+}

@@ -4,6 +4,7 @@ let warmupPromise = null;
 let executeExport = null;
 let prepareExport = null;
 let executePreparedExport = null;
+let executePreparedUtf8Export = null;
 let disposePreparedArtifactExport = null;
 let executeProjectExport = null;
 let getCompiledArtifactKeyExport = null;
@@ -3593,6 +3594,10 @@ async function loadRuntime(assetBaseUrl) {
         configuredRuntimeRole === 'runner'
           ? preparedExecutionHost?.ExecutePrepared
           : exports?.TraceCode?.CSharpHost?.CompilerHost?.ExecutePrepared;
+      executePreparedUtf8Export =
+        configuredRuntimeRole === 'runner'
+          ? preparedExecutionHost?.ExecutePreparedUtf8
+          : null;
       disposePreparedArtifactExport =
         configuredRuntimeRole === 'runner'
           ? preparedExecutionHost?.DisposePreparedArtifact
@@ -3614,6 +3619,7 @@ async function loadRuntime(assetBaseUrl) {
       executeExport = null;
       prepareExport = null;
       executePreparedExport = null;
+      executePreparedUtf8Export = null;
       disposePreparedArtifactExport = null;
       executeProjectExport = null;
       getCompiledArtifactKeyExport = null;
@@ -3762,6 +3768,33 @@ function csharpRuntimeTraceSourceOwnership(event, statementSourceMap) {
   };
 }
 
+// The dotnet runtime serializes each distinct call-stack state once (callStackId)
+// and references it from later events (callStackRef); resolve and strip the
+// wire-only keys so downstream consumers keep the historical per-event shape.
+function resolveCSharpCallStackRefs(events) {
+  if (!Array.isArray(events)) return events;
+  const callStackDefs = new Map();
+  return events.map((event) => {
+    if (!event || typeof event !== 'object') return event;
+    if (typeof event.callStackId === 'number') {
+      if (event.callStack) {
+        callStackDefs.set(event.callStackId, JSON.stringify(event.callStack));
+      }
+      const { callStackId, ...rest } = event;
+      return rest;
+    }
+    if (typeof event.callStackRef === 'number') {
+      const definition = callStackDefs.get(event.callStackRef);
+      if (definition === undefined) {
+        throw new Error(`C# trace event references undefined callStackRef ${event.callStackRef}`);
+      }
+      const { callStackRef, ...rest } = event;
+      return { ...rest, callStack: JSON.parse(definition) };
+    }
+    return event;
+  });
+}
+
 function normalizeCSharpTraceEvent(event, maxPathDepth, statementSourceMap) {
   const normalizedFile = normalizeCSharpFile(event.file);
   const next = {
@@ -3791,13 +3824,17 @@ function normalizeCSharpResult(result, options = {}) {
     ? buildRuntimeStatementSourceMap(options.source)
     : new Map();
   const normalizedEvents = Array.isArray(result.events)
-    ? result.events.map((event) => normalizeCSharpTraceEvent(event, maxPathDepth, statementSourceMap))
+    ? resolveCSharpCallStackRefs(result.events).map((event) =>
+        normalizeCSharpTraceEvent(event, maxPathDepth, statementSourceMap)
+      )
     : null;
   const normalizedTrace =
     result.trace && typeof result.trace === 'object' && Array.isArray(result.trace.events)
       ? {
           ...result.trace,
-          events: result.trace.events.map((event) => normalizeCSharpTraceEvent(event, maxPathDepth, statementSourceMap)),
+          events: resolveCSharpCallStackRefs(result.trace.events).map((event) =>
+            normalizeCSharpTraceEvent(event, maxPathDepth, statementSourceMap)
+          ),
         }
       : normalizedEvents
         ? {
@@ -3945,6 +3982,8 @@ async function executePreparedCSharpProgram(message) {
     inputs,
     executionStyle: prepared.executionStyle ?? 'solution-method',
     trace: prepared.mode === 'trace',
+    recordTrace:
+      prepared.mode === 'trace' && payload.tracingEnabled !== false,
     timeoutMs: payload.timeoutMs,
     maxTraceSteps: prepared.traceOptions?.maxTraceSteps,
     maxLineEvents: prepared.traceOptions?.maxLineEvents,
@@ -3961,10 +4000,37 @@ async function executePreparedCSharpProgram(message) {
   const runtimeResult = await loadRuntime(payload.assetBaseUrl);
   const initMs = elapsedMs(runtimeStartedAt) || runtimeResult.timings?.initMs || 0;
   const hostCallStartedAt = now();
-  const result = await withCSharpUserAuthorityLockdown(() =>
-    normalizeCSharpResult(JSON.parse(executePreparedExport(JSON.stringify(request))), request)
-  );
+  const result = await withCSharpUserAuthorityLockdown(() => {
+    const requestJson = JSON.stringify(request);
+    let exportedJson;
+    if (executePreparedUtf8Export) {
+      exportedJson = new TextDecoder().decode(executePreparedUtf8Export(requestJson));
+    } else {
+      exportedJson = executePreparedExport(requestJson);
+    }
+    const jsParseStartedAt = now();
+    const parsedResult = JSON.parse(exportedJson);
+    const jsParseMs = elapsedMs(jsParseStartedAt);
+    const normalizeStartedAt = now();
+    const normalized = normalizeCSharpResult(parsedResult, request);
+    globalThis.__tracecodeCsLastParse = {
+      jsParseMs: Math.round(jsParseMs * 10) / 10,
+      jsNormalizeMs: Math.round(elapsedMs(normalizeStartedAt) * 10) / 10,
+      responseChars: exportedJson.length,
+    };
+    return normalized;
+  });
   const hostCallMs = elapsedMs(hostCallStartedAt);
+  if ((result?.trace?.events?.length ?? 0) >= 5000) {
+    // Heavy-trace phase split for the tracing-latency investigation.
+    console.log('__TRACECODE_CSPROF__:' + JSON.stringify({
+      initMs: Math.round(initMs * 10) / 10,
+      hostCallMs: Math.round(hostCallMs * 10) / 10,
+      events: result.trace.events.length,
+      ...(globalThis.__tracecodeCsLastParse ?? {}),
+      dotnetTimings: result?.timings ?? null,
+    }));
+  }
   return {
     ...result,
     timings: {
@@ -4063,6 +4129,16 @@ async function executeCSharpCodePayload(payload, messageType = 'execute-code', c
     delete result.compiledArtifactSha256;
   }
   const hostCallMs = elapsedMs(hostCallStartedAt);
+  if ((result?.trace?.events?.length ?? 0) >= 5000) {
+    // Heavy-trace phase split for the tracing-latency investigation.
+    console.log('__TRACECODE_CSPROF__:' + JSON.stringify({
+      initMs: Math.round(initMs * 10) / 10,
+      hostCallMs: Math.round(hostCallMs * 10) / 10,
+      events: result.trace.events.length,
+      ...(globalThis.__tracecodeCsLastParse ?? {}),
+      dotnetTimings: result?.timings ?? null,
+    }));
+  }
   return {
     ...result,
     timings: {

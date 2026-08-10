@@ -137,13 +137,15 @@ public static partial class PreparedExecutionHost
                 JsonOptions
             );
             RuntimeTraceSink.Reset();
+            bool recordTrace = request.RecordTrace ?? request.Trace;
             RuntimeTraceSink.Configure(
                 request.TimeoutMs,
-                request.Trace ? request.MaxTraceSteps : null,
-                request.Trace ? request.MaxLineEvents : null,
-                request.Trace ? request.MaxSingleLineHits : null,
-                request.Trace ? request.MaxStoredEvents : null,
-                request.Trace && request.MinimalTrace
+                recordTrace ? request.MaxTraceSteps : null,
+                recordTrace ? request.MaxLineEvents : null,
+                recordTrace ? request.MaxSingleLineHits : null,
+                recordTrace ? request.MaxStoredEvents : null,
+                recordTrace && request.MinimalTrace,
+                recordTrace
             );
 
             double runStartedAt = stopwatch.Elapsed.TotalMilliseconds;
@@ -165,7 +167,7 @@ public static partial class PreparedExecutionHost
                 TraceEventBackfill.Apply(
                     request.Source,
                     events,
-                    request.Trace && request.MinimalTrace
+                    recordTrace && request.MinimalTrace
                 );
                 return Serialize(new PreparedResponse
                 {
@@ -231,6 +233,14 @@ public static partial class PreparedExecutionHost
     [JSExport]
     [SupportedOSPlatform("browser")]
     public static bool DisposePreparedArtifact(string artifactKey) => true;
+
+    // Marshaling a multi-megabyte response as a JS string forces a UTF-16
+    // conversion at the interop boundary; a byte[] crosses as a Uint8Array
+    // memcpy and the worker decodes it with TextDecoder instead.
+    [JSExport]
+    [SupportedOSPlatform("browser")]
+    public static byte[] ExecutePreparedUtf8(string requestJson) =>
+        Encoding.UTF8.GetBytes(ExecutePrepared(requestJson));
 
     private static string CompiledArtifactKey(PreparedRequest request)
     {
@@ -610,8 +620,50 @@ public static partial class PreparedExecutionHost
         return result;
     }
 
-    private static string Serialize(PreparedResponse response) =>
-        JsonSerializer.Serialize(response, JsonOptions);
+    private static string Serialize(PreparedResponse response)
+    {
+        // Reflection-based System.Text.Json cannot be AOT-compiled for these
+        // object-graph payloads and runs interpreted under wasm, costing
+        // ~40us per trace event on heavy responses. The known response and
+        // event shapes are written directly; only unrecognized leaf values
+        // fall back to the reflection serializer.
+        using MemoryStream stream = new();
+        using (Utf8JsonWriter writer = new(stream))
+        {
+            writer.WriteStartObject();
+            writer.WriteBoolean("success", response.Success);
+            writer.WritePropertyName("output");
+            TraceResponseJson.WriteNormalizedValue(writer, response.Output, JsonOptions);
+            if (response.Error is null) writer.WriteNull("error");
+            else writer.WriteString("error", response.Error);
+            writer.WritePropertyName("diagnostics");
+            JsonSerializer.Serialize(writer, response.Diagnostics, JsonOptions);
+            writer.WriteStartArray("consoleOutput");
+            foreach (string line in response.ConsoleOutput)
+            {
+                writer.WriteStringValue(line);
+            }
+            writer.WriteEndArray();
+            writer.WriteStartArray("events");
+            foreach (RuntimeTraceEvent traceEvent in response.Events)
+            {
+                TraceResponseJson.WriteTraceEvent(writer, traceEvent, JsonOptions);
+            }
+            writer.WriteEndArray();
+            writer.WriteNumber("executionTimeMs", response.ExecutionTimeMs);
+            writer.WriteBoolean("traceLimitExceeded", response.TraceLimitExceeded);
+            if (response.TimeoutReason is null) writer.WriteNull("timeoutReason");
+            else writer.WriteString("timeoutReason", response.TimeoutReason);
+            writer.WritePropertyName("timings");
+            JsonSerializer.Serialize(writer, response.Timings, JsonOptions);
+            if (response.CompiledArtifactKey is not null)
+            {
+                writer.WriteString("compiledArtifactKey", response.CompiledArtifactKey);
+            }
+            writer.WriteEndObject();
+        }
+        return Encoding.UTF8.GetString(stream.ToArray());
+    }
 
     private static List<string> SplitConsoleOutput(StringWriter capturedOut) =>
         capturedOut
@@ -827,6 +879,9 @@ public static partial class PreparedExecutionHost
 
         [JsonPropertyName("trace")]
         public bool Trace { get; set; }
+
+        [JsonPropertyName("recordTrace")]
+        public bool? RecordTrace { get; set; }
 
         [JsonPropertyName("timeoutMs")]
         public int TimeoutMs { get; set; } = 19_000;

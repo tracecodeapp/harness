@@ -1,7 +1,7 @@
 import * as Cause from 'effect/Cause';
 import * as Effect from 'effect/Effect';
 import * as Exit from 'effect/Exit';
-import type * as Scope from 'effect/Scope';
+import * as Scope from 'effect/Scope';
 import type {
   CodeExecutionResult,
   ExecutionResult,
@@ -63,6 +63,8 @@ import {
   createAlgorithmJudgeReceipt,
   createJudgeComparator,
   evaluateJudgePlan,
+  evaluatePreparedJudgePlan,
+  prepareJudgePlan,
   InMemoryJudgeRuntimeControl,
   structuralJsonComparator,
   type JudgeComparator,
@@ -70,10 +72,11 @@ import {
   type JudgeEvaluationOptions,
   type JudgeEvaluationPlan,
   type JudgeEvaluationResult,
+  type JudgePreparedWorkspace,
   type JudgeAlgorithmBundle,
   type JudgeAlgorithmReceipt,
   JudgeInfrastructureError,
-  type JudgePlanError,
+  JudgePlanError,
   type JudgeRuntimeControlPort,
   type JudgeRuntimeInvocationInput,
   type JudgeRuntimeInvocationOutput,
@@ -85,6 +88,7 @@ import {
   JUDGE_INVOCATION_ID_ENV,
   TraceKernelJudgePort,
 } from '../../packages/judge/src/tracekernel';
+import { validateTraceSelection } from '../../packages/judge/src/internal/trace-selection';
 import { RuntimePreparedProgramRegistry } from './judge-prepared-program';
 import {
   createBrowserProjectJudge,
@@ -117,6 +121,8 @@ export type {
 
 const PROVIDER_ERROR_CODE = 'runtime-provider-error';
 const INTERNAL_PREPARE_COMMAND = 'runtime-provider-prepare';
+export const DEFAULT_INTERACTIVE_EXECUTION_IDLE_TIMEOUT_MS = 5 * 60_000;
+const MAX_TIMER_DELAY_MS = 2_147_483_647;
 
 interface RuntimeJudgeBindingBase {
   /**
@@ -253,6 +259,12 @@ export interface CreateBrowserJudgeHostOptions {
   readonly csharp?: BrowserJudgeCSharpOptions;
   readonly cpp?: BrowserJudgeCppOptions;
   /**
+   * Idle lease for retained interactive executions. Continuation work
+   * pauses the lease, and completing that work renews it. Defaults to five
+   * minutes. Explicit disposal remains the preferred lifecycle path.
+   */
+  readonly interactiveExecutionIdleTimeoutMs?: number;
+  /**
    * Browser TraceKernel configuration used by project evaluations.
    *
    * The Judge owns evaluation policy; this object configures only the
@@ -282,6 +294,19 @@ export interface BrowserJudgeHost {
   createJudge(
     options: CreateBrowserJudgeOptions
   ): Effect.Effect<RuntimeJudge, never, Scope.Scope>;
+  /**
+   * Execute an algorithm bundle. Omitted `interactive` and `tracing` produce
+   * one clean, ephemeral evaluation. Supplying `executionId` continues a
+   * retained execution without resending code or cases.
+   */
+  execute<
+    Input extends Record<string, unknown> = Record<string, unknown>,
+    Result = unknown,
+    Expected = unknown,
+  >(
+    request: BrowserJudgeExecuteRequest<Input, Expected, Result>
+  ): Promise<RuntimeJudgeExecuteResult<Result, Expected>>;
+  disposeExecution(executionId: string): Promise<void>;
   evaluateAlgorithm<
     Input extends Record<string, unknown> = Record<string, unknown>,
     Result = unknown,
@@ -297,6 +322,31 @@ export interface BrowserJudgeHost {
   ): BrowserProjectJudge;
   dispose(): void;
 }
+
+export interface BrowserJudgeInitialExecuteRequest<
+  Input extends Record<string, unknown> = Record<string, unknown>,
+  Expected = unknown,
+  Result = unknown,
+> {
+  readonly bundle: JudgeAlgorithmBundle<Input, Expected, Result>;
+  readonly interactive?: boolean;
+  readonly tracing?: RuntimeJudgeTraceSelection;
+  readonly signal?: AbortSignal;
+}
+
+export interface BrowserJudgeContinueExecuteRequest {
+  readonly executionId: string;
+  readonly tracing: RuntimeJudgeTraceSelection;
+  readonly signal?: AbortSignal;
+}
+
+export type BrowserJudgeExecuteRequest<
+  Input extends Record<string, unknown> = Record<string, unknown>,
+  Expected = unknown,
+  Result = unknown,
+> =
+  | BrowserJudgeInitialExecuteRequest<Input, Expected, Result>
+  | BrowserJudgeContinueExecuteRequest;
 
 function errorFromUnknown(error: unknown): Error {
   return error instanceof Error ? error : new Error(String(error));
@@ -317,6 +367,27 @@ function isTraceBinding(
   binding: RuntimeJudgeBinding
 ): binding is RuntimeJudgeTraceBinding {
   return binding.trace === true;
+}
+
+function algorithmRuntimeBinding(
+  execution: JudgeAlgorithmBundle['execution'],
+  traceCapable: boolean
+): RuntimeJudgeBinding {
+  return traceCapable
+    ? {
+        sourcePath: execution.sourcePath,
+        trace: true,
+        functionName: execution.functionName,
+        executionStyle: execution.executionStyle,
+        traceOptions: execution.traceOptions,
+        limits: execution.limits,
+      }
+    : {
+        sourcePath: execution.sourcePath,
+        functionName: execution.functionName ?? undefined,
+        executionStyle: execution.executionStyle,
+        limits: execution.limits,
+      };
 }
 
 function runtimeInputs(
@@ -618,6 +689,9 @@ function executePreparedProviderCase(
         try: (signal) =>
           programs.executeTrace(evaluationId(invocation), {
             inputs,
+            ...(invocation.recordTrace === undefined
+              ? {}
+              : { recordTrace: invocation.recordTrace }),
             signal,
             limits: binding.limits,
           }),
@@ -643,6 +717,7 @@ function runtimeBatchCases(
 ): readonly {
   readonly caseId: string;
   readonly inputs: Record<string, unknown>;
+  readonly recordTrace?: boolean;
 }[] {
   if (!invocation.cases || invocation.cases.length === 0) {
     throw new TypeError(
@@ -652,6 +727,9 @@ function runtimeBatchCases(
   return invocation.cases.map((testCase) => ({
     caseId: testCase.caseId,
     inputs: runtimeInputs({ ...invocation, value: testCase.value }),
+    ...(testCase.recordTrace === undefined
+      ? {}
+      : { recordTrace: testCase.recordTrace }),
   }));
 }
 
@@ -700,6 +778,13 @@ function executePreparedProviderBatch(
         isTraceBinding(options.binding)
           ? programs.executeTraceBatch(evaluationId(invocation), {
               inputBatch: cases.map((testCase) => testCase.inputs),
+              ...(cases.some((testCase) => testCase.recordTrace !== undefined)
+                ? {
+                    traceEnabledBatch: cases.map(
+                      (testCase) => testCase.recordTrace ?? true
+                    ),
+                  }
+                : {}),
               signal,
               limits: options.binding.limits,
             })
@@ -981,13 +1066,11 @@ function preparedEvaluationPlan<Input, Expected>(
   useProviderBatch: boolean
 ): JudgeEvaluationPlan<Input, Expected> {
   const batched = useProviderBatch && plan.cases.length > 1;
-  const timeoutMs =
-    batched && plan.run.timeoutMs !== undefined
-      ? Math.min(
-          2_147_483_647,
-          plan.run.timeoutMs * plan.cases.length
-        )
-      : plan.run.timeoutMs;
+  const timeoutMs = preparedRunTimeoutMs(
+    plan.run.timeoutMs,
+    plan.cases.length,
+    batched
+  );
   return Object.freeze({
     ...plan,
     ...(plan.compile
@@ -1012,6 +1095,16 @@ function preparedEvaluationPlan<Input, Expected>(
   });
 }
 
+function preparedRunTimeoutMs(
+  perCaseTimeoutMs: number | undefined,
+  caseCount: number,
+  batched: boolean
+): number | undefined {
+  return batched && perCaseTimeoutMs !== undefined
+    ? Math.min(2_147_483_647, perCaseTimeoutMs * caseCount)
+    : perCaseTimeoutMs;
+}
+
 /**
  * Public runtime-judge facade for 0.14.
  *
@@ -1023,6 +1116,22 @@ export interface RuntimeJudge {
   readonly runtime: string;
   readonly runtimeControl: JudgeRuntimeControlPort;
   activeSessionIds(): readonly string[];
+
+  execute<
+    Input = Record<string, unknown>,
+    Result = unknown,
+    Expected = unknown,
+  >(
+    request: RuntimeJudgeExecuteRequest<Input, Expected, Result>
+  ): Effect.Effect<
+    RuntimeJudgeExecuteResult<Result, Expected>,
+    JudgePlanError | JudgeInfrastructureError
+  >;
+
+  /** Idempotently closes a retained interactive execution. */
+  disposeExecution(
+    executionId: string
+  ): Effect.Effect<void, JudgeInfrastructureError>;
 
   evaluate<
     Input = Record<string, unknown>,
@@ -1048,19 +1157,292 @@ export interface RuntimeJudge {
   >;
 }
 
+export interface RuntimeJudgeTraceSelection {
+  readonly caseIds: readonly string[];
+}
+
+export interface RuntimeJudgeInitialExecuteRequest<
+  Input = Record<string, unknown>,
+  Expected = unknown,
+  Result = unknown,
+> {
+  readonly plan: JudgeEvaluationPlan<Input, Expected>;
+  /** Omit for an ephemeral execution that is disposed before returning. */
+  readonly interactive?: boolean;
+  /** Omit for no recorded cases. */
+  readonly tracing?: RuntimeJudgeTraceSelection;
+  readonly comparator?: JudgeComparator<Input, Expected, Result>;
+}
+
+export interface RuntimeJudgeContinueExecuteRequest {
+  readonly executionId: string;
+  /** Continuations are explicit trace tranches over retained case ids. */
+  readonly tracing: RuntimeJudgeTraceSelection;
+}
+
+export type RuntimeJudgeExecuteRequest<
+  Input = Record<string, unknown>,
+  Expected = unknown,
+  Result = unknown,
+> =
+  | RuntimeJudgeInitialExecuteRequest<Input, Expected, Result>
+  | RuntimeJudgeContinueExecuteRequest;
+
+export interface RuntimeJudgeExecuteResult<Result = unknown, Expected = unknown> {
+  readonly executionId?: string;
+  readonly evaluation: JudgeEvaluationResult<Result, Expected>;
+}
+
+interface RetainedJudgeExecution {
+  readonly executionId: string;
+  readonly evaluationId: string;
+  readonly plan: JudgeEvaluationPlan;
+  readonly perCaseTimeoutMs: number | undefined;
+  readonly build: JudgePreparedWorkspace<TraceKernelFileSystemImage>;
+  readonly port: TraceKernelJudgePort;
+  readonly comparator?: JudgeComparator<unknown, unknown, unknown>;
+}
+
 class RuntimeJudgeComposition
   implements RuntimeJudge {
   private nextEvaluationId = 1;
+  private readonly executions = new Map<string, RetainedJudgeExecution>();
 
   constructor(
     readonly runtime: string,
     readonly runtimeControl: JudgeRuntimeControlPort,
     private readonly host: TraceKernelHost,
-    private readonly bridge: RuntimeJudgeProviderBridge
+    private readonly bridge: RuntimeJudgeProviderBridge,
+    private readonly traceCapable: boolean
   ) {}
 
   activeSessionIds(): readonly string[] {
     return this.host.sessionIds();
+  }
+
+  execute<
+    Input = Record<string, unknown>,
+    Result = unknown,
+    Expected = unknown,
+  >(
+    request: RuntimeJudgeExecuteRequest<Input, Expected, Result>
+  ): Effect.Effect<
+    RuntimeJudgeExecuteResult<Result, Expected>,
+    JudgePlanError | JudgeInfrastructureError
+  > {
+    return 'executionId' in request
+      ? this.continueExecution<Input, Result, Expected>(request)
+      : this.startExecution(request);
+  }
+
+  disposeExecution(
+    executionId: string
+  ): Effect.Effect<void, JudgeInfrastructureError> {
+    return Effect.suspend(() => {
+      const retained = this.executions.get(executionId);
+      if (!retained) return Effect.void;
+      this.executions.delete(executionId);
+      return this.disposeEvaluation(retained.evaluationId);
+    });
+  }
+
+  disposeRetainedExecutions(): Effect.Effect<void> {
+    return Effect.forEach(
+      [...this.executions.keys()],
+      (executionId) => this.disposeExecution(executionId).pipe(
+        Effect.catchAll(() => Effect.void)
+      ),
+      { concurrency: 1, discard: true }
+    );
+  }
+
+  private startExecution<
+    Input,
+    Result,
+    Expected,
+  >(
+    request: RuntimeJudgeInitialExecuteRequest<Input, Expected, Result>
+  ): Effect.Effect<
+    RuntimeJudgeExecuteResult<Result, Expected>,
+    JudgePlanError | JudgeInfrastructureError
+  > {
+    if (
+      !this.traceCapable &&
+      (request.interactive === true || request.tracing !== undefined)
+    ) {
+      return Effect.fail(new JudgePlanError({
+        message:
+          'Interactive or traced execute requires a trace-capable Judge binding.',
+      }));
+    }
+    return Effect.suspend(() => {
+      const evaluationId = this.nextOpaqueExecutionId('evaluation');
+      const executionId = this.nextOpaqueExecutionId('execution');
+      this.bridge.beginEvaluation(evaluationId);
+      const port = new TraceKernelJudgePort({
+        host: this.host,
+        runtimeControl: new EvaluationJudgeRuntimeControl(
+          this.runtimeControl,
+          evaluationId
+        ),
+      });
+      const plan = preparedEvaluationPlan(request.plan, true);
+      let retained = false;
+      const operation = Effect.gen(this, function* () {
+        yield* validateTraceSelection(plan, request.tracing);
+        const build = yield* prepareJudgePlan(port, plan);
+        const evaluation = yield* evaluatePreparedJudgePlan<
+          TraceKernelFileSystemImage,
+          Input,
+          Result,
+          Expected
+        >(port, plan, build, {
+          comparator: request.comparator,
+          ...(this.traceCapable
+            ? {
+                tracing: request.tracing ?? { caseIds: Object.freeze([]) },
+              }
+            : {}),
+        });
+        if (
+          request.interactive === true &&
+          evaluation.status === 'completed'
+        ) {
+          this.executions.set(executionId, {
+            executionId,
+            evaluationId,
+            plan: plan as JudgeEvaluationPlan,
+            perCaseTimeoutMs: request.plan.run.timeoutMs,
+            build,
+            port,
+            comparator: request.comparator as
+              | JudgeComparator<unknown, unknown, unknown>
+              | undefined,
+          });
+          retained = true;
+        }
+        return Object.freeze({
+          ...(retained ? { executionId } : {}),
+          evaluation,
+        });
+      });
+      return Effect.uninterruptibleMask((restore) =>
+        Effect.gen(this, function* () {
+          const executionExit = yield* Effect.exit(restore(operation));
+          if (!retained) {
+            const disposeExit = yield* Effect.exit(
+              this.disposeEvaluation(evaluationId)
+            );
+            if (Exit.isFailure(disposeExit)) {
+              return yield* Effect.failCause(disposeExit.cause);
+            }
+          }
+          if (Exit.isFailure(executionExit)) {
+            return yield* Effect.failCause(executionExit.cause);
+          }
+          return executionExit.value;
+        })
+      );
+    });
+  }
+
+  private continueExecution<Input, Result, Expected>(
+    request: RuntimeJudgeContinueExecuteRequest
+  ): Effect.Effect<
+    RuntimeJudgeExecuteResult<Result, Expected>,
+    JudgePlanError | JudgeInfrastructureError
+  > {
+    return Effect.suspend(() => {
+      const retained = this.executions.get(request.executionId);
+      if (!retained) {
+        return Effect.fail(new JudgePlanError({
+          message:
+            `Unknown or disposed interactive execution ${JSON.stringify(request.executionId)}.`,
+        }));
+      }
+      const selected = new Set<string>();
+      const casesById = new Map(
+        retained.plan.cases.map((testCase) => [testCase.id, testCase])
+      );
+      for (const caseId of request.tracing.caseIds) {
+        if (selected.has(caseId)) {
+          return Effect.fail(new JudgePlanError({
+            message:
+              `Interactive tracing contains duplicate case id ${JSON.stringify(caseId)}.`,
+          }));
+        }
+        if (!casesById.has(caseId)) {
+          return Effect.fail(new JudgePlanError({
+            message:
+              `Interactive tracing references unknown case id ${JSON.stringify(caseId)}.`,
+          }));
+        }
+        selected.add(caseId);
+      }
+      if (selected.size === 0) {
+        return Effect.fail(new JudgePlanError({
+          message: 'Interactive tracing requires at least one retained case id.',
+        }));
+      }
+      const plan = Object.freeze({
+        ...retained.plan,
+        run: Object.freeze({
+          ...retained.plan.run,
+          ...(retained.perCaseTimeoutMs === undefined
+            ? {}
+            : {
+                timeoutMs: preparedRunTimeoutMs(
+                  retained.perCaseTimeoutMs,
+                  selected.size,
+                  selected.size > 1
+                ),
+              }),
+        }),
+        cases: Object.freeze(
+          request.tracing.caseIds.map((caseId) => casesById.get(caseId)!)
+        ),
+      }) as JudgeEvaluationPlan<Input, Expected>;
+      return evaluatePreparedJudgePlan<
+        TraceKernelFileSystemImage,
+        Input,
+        Result,
+        Expected
+      >(
+        retained.port,
+        plan,
+        retained.build,
+        {
+          comparator: retained.comparator as
+            | JudgeComparator<Input, Expected, Result>
+            | undefined,
+          tracing: request.tracing,
+        }
+      ).pipe(
+        Effect.map((evaluation) => Object.freeze({
+          executionId: retained.executionId,
+          evaluation,
+        }))
+      );
+    });
+  }
+
+  private disposeEvaluation(
+    evaluationId: string
+  ): Effect.Effect<void, JudgeInfrastructureError> {
+    return this.bridge.disposeEvaluation(evaluationId).pipe(
+      Effect.mapError((error) => new JudgeInfrastructureError({
+        operation: 'dispose interactive prepared runtime program',
+        message: error.message,
+        cause: error,
+      }))
+    );
+  }
+
+  private nextOpaqueExecutionId(kind: 'evaluation' | 'execution'): string {
+    const uuid = globalThis.crypto?.randomUUID?.();
+    return uuid
+      ? `${this.runtime}-${kind}-${uuid}`
+      : `${this.runtime}-${kind}-${this.nextEvaluationId++}`;
   }
 
   evaluate<
@@ -1182,14 +1564,18 @@ function createRuntimeJudge(
   return makeTraceKernelHost({
     providers: [bridge.runtimeProvider],
   }).pipe(
-    Effect.map((host) =>
-      new RuntimeJudgeComposition(
+    Effect.flatMap((host) => {
+      const judge = new RuntimeJudgeComposition(
         options.runtime,
         runtimeControl,
         host,
-        bridge
-      )
-    )
+        bridge,
+        isTraceBinding(options.binding)
+      );
+      return Effect.addFinalizer(() =>
+        judge.disposeRetainedExecutions()
+      ).pipe(Effect.as(judge));
+    })
   );
 }
 
@@ -1221,7 +1607,164 @@ export function createBrowserRuntimeJudge(
 export function createBrowserJudgeHost(
   options: CreateBrowserJudgeHostOptions = {}
 ): BrowserJudgeHost {
+  const interactiveExecutionIdleTimeoutMs =
+    resolveInteractiveExecutionIdleTimeoutMs(
+      options.interactiveExecutionIdleTimeoutMs
+    );
   const host = createBrowserRuntimeHost(options);
+  return createBrowserJudgeHostFromRuntimeHost(host, {
+    interactiveExecutionIdleTimeoutMs,
+    project: options.project,
+  });
+}
+
+interface RetainedBrowserJudgeExecution {
+  readonly judge: RuntimeJudge;
+  readonly scope: Scope.CloseableScope;
+  activeContinuations: number;
+  idleTimer?: ReturnType<typeof globalThis.setTimeout>;
+}
+
+/** @internal Browser-host seam used by lifecycle conformance tests. */
+export function createBrowserJudgeHostFromRuntimeHost(
+  host: BrowserRuntimeHost,
+  options: Pick<
+    CreateBrowserJudgeHostOptions,
+    'interactiveExecutionIdleTimeoutMs' | 'project'
+  > = {}
+): BrowserJudgeHost {
+  const interactiveExecutionIdleTimeoutMs =
+    resolveInteractiveExecutionIdleTimeoutMs(
+      options.interactiveExecutionIdleTimeoutMs
+    );
+  const retainedExecutions = new Map<string, RetainedBrowserJudgeExecution>();
+
+  const clearIdleTimer = (retained: RetainedBrowserJudgeExecution): void => {
+    if (retained.idleTimer === undefined) return;
+    globalThis.clearTimeout(retained.idleTimer);
+    retained.idleTimer = undefined;
+  };
+
+  const armIdleTimer = (
+    executionId: string,
+    retained: RetainedBrowserJudgeExecution
+  ): void => {
+    clearIdleTimer(retained);
+    if (
+      retained.activeContinuations > 0 ||
+      retainedExecutions.get(executionId) !== retained
+    ) {
+      return;
+    }
+    const timer = globalThis.setTimeout(() => {
+      retained.idleTimer = undefined;
+      if (
+        retained.activeContinuations > 0 ||
+        retainedExecutions.get(executionId) !== retained
+      ) {
+        return;
+      }
+      void disposeExecution(executionId).catch(() => undefined);
+    }, interactiveExecutionIdleTimeoutMs);
+    retained.idleTimer = timer;
+    (timer as unknown as { unref?: () => void }).unref?.();
+  };
+
+  async function disposeExecution(executionId: string): Promise<void> {
+    const retained = retainedExecutions.get(executionId);
+    if (!retained) return;
+    retainedExecutions.delete(executionId);
+    clearIdleTimer(retained);
+    try {
+      await Effect.runPromise(retained.judge.disposeExecution(executionId));
+    } finally {
+      await Effect.runPromise(Scope.close(retained.scope, Exit.void));
+    }
+  }
+
+  const execute = async <
+    Input extends Record<string, unknown> = Record<string, unknown>,
+    Result = unknown,
+    Expected = unknown,
+  >(
+    request: BrowserJudgeExecuteRequest<Input, Expected, Result>
+  ): Promise<RuntimeJudgeExecuteResult<Result, Expected>> => {
+    if ('executionId' in request) {
+      const retained = retainedExecutions.get(request.executionId);
+      if (!retained) {
+        throw new JudgePlanError({
+          message:
+            `Unknown or disposed interactive execution ${JSON.stringify(request.executionId)}.`,
+        });
+      }
+      clearIdleTimer(retained);
+      retained.activeContinuations += 1;
+      try {
+        return await Effect.runPromise(
+          retained.judge.execute<Input, Result, Expected>({
+            executionId: request.executionId,
+            tracing: request.tracing,
+          }),
+          request.signal ? { signal: request.signal } : undefined
+        );
+      } finally {
+        retained.activeContinuations -= 1;
+        armIdleTimer(request.executionId, retained);
+      }
+    }
+
+    const { bundle } = request;
+    await Effect.runPromise(validateAlgorithmJudgeBundle(bundle));
+    const language = bundle.plan.runtime as Language;
+    if (!host.isLanguageSupported(language)) {
+      throw new Error(
+        `Judge runtime ${JSON.stringify(bundle.plan.runtime)} is not supported by this browser authority.`
+      );
+    }
+    const traceCapable =
+      request.interactive === true || request.tracing !== undefined;
+    const execution = bundle.execution;
+    const binding = algorithmRuntimeBinding(execution, traceCapable);
+    const scope = Effect.runSync(Scope.make());
+    let judge: RuntimeJudge | undefined;
+    try {
+      judge = await Effect.runPromise(
+        Scope.extend(
+          createBrowserRuntimeJudge({ host, language, binding }),
+          scope
+        )
+      );
+      const result = await Effect.runPromise(
+        judge.execute<Input, Result, Expected>({
+          plan: bundle.plan,
+          interactive: request.interactive,
+          tracing: request.tracing,
+          comparator: bundle.comparison
+            ? createJudgeComparator<Input>(bundle.comparison)
+            : undefined,
+        }),
+        request.signal ? { signal: request.signal } : undefined
+      );
+      if (result.executionId) {
+        const retained: RetainedBrowserJudgeExecution = {
+          judge,
+          scope,
+          activeContinuations: 0,
+        };
+        retainedExecutions.set(result.executionId, retained);
+        armIdleTimer(result.executionId, retained);
+      } else {
+        await Effect.runPromise(Scope.close(scope, Exit.void));
+      }
+      return result;
+    } catch (error) {
+      await Effect.runPromise(Scope.close(scope, Exit.fail(error))).catch(
+        () => undefined
+      );
+      throw error;
+    }
+  };
+
   return Object.freeze({
     assets: host.assets,
     environment: host.environment,
@@ -1236,6 +1779,8 @@ export function createBrowserJudgeHost(
         host,
         ...judgeOptions,
       }),
+    execute,
+    disposeExecution,
     evaluateAlgorithm: <
       Input extends Record<string, unknown> = Record<string, unknown>,
       Result = unknown,
@@ -1258,21 +1803,7 @@ export function createBrowserJudgeHost(
       const execution = bundle.execution;
       const createOptions: CreateBrowserJudgeOptions = {
         language,
-        binding: execution.trace
-          ? {
-              sourcePath: execution.sourcePath,
-              trace: true,
-              functionName: execution.functionName,
-              executionStyle: execution.executionStyle,
-              traceOptions: execution.traceOptions,
-              limits: execution.limits,
-            }
-          : {
-              sourcePath: execution.sourcePath,
-              functionName: execution.functionName ?? undefined,
-              executionStyle: execution.executionStyle,
-              limits: execution.limits,
-            },
+        binding: algorithmRuntimeBinding(execution, execution.trace === true),
       };
       return Effect.runPromise(
         Effect.scoped(
@@ -1291,8 +1822,30 @@ export function createBrowserJudgeHost(
         ...projectOptions,
         workspace: options.project,
       }),
-    dispose: host.dispose.bind(host),
+    dispose: () => {
+      for (const executionId of [...retainedExecutions.keys()]) {
+        void disposeExecution(executionId).catch(() => undefined);
+      }
+      host.dispose();
+    },
   });
+}
+
+function resolveInteractiveExecutionIdleTimeoutMs(
+  configured: number | undefined
+): number {
+  const timeoutMs =
+    configured ?? DEFAULT_INTERACTIVE_EXECUTION_IDLE_TIMEOUT_MS;
+  if (
+    !Number.isSafeInteger(timeoutMs) ||
+    timeoutMs <= 0 ||
+    timeoutMs > MAX_TIMER_DELAY_MS
+  ) {
+    throw new RangeError(
+      'interactiveExecutionIdleTimeoutMs must be a positive integer no greater than 2147483647.'
+    );
+  }
+  return timeoutMs;
 }
 
 export {

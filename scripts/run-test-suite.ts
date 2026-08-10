@@ -54,6 +54,7 @@ export const TEST_PHASES: TestPhase[] = [
     tasks: [
       task('test:test-suite-runner'),
       task('test:runtime-info-sync'),
+      task('test:runtime-assets-lock'),
       task('test:kernel-policy-sync'),
       task('test:typescript-project-libs-sync'),
       task('test:python-sync'),

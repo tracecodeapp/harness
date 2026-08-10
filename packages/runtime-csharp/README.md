@@ -7,8 +7,8 @@ is not published independently, and the root package has no `/csharp`
 subpath. It contains the C# worker plus its browser runtime and compiler
 assets.
 
-Repository-owned managed sources live under `dotnet/`, alongside this
-package's TypeScript client in `src/` and browser worker assets in `workers/`.
+Repository-owned managed sources live in this package's managed-source tree,
+alongside its TypeScript client and browser worker assets.
 The managed source tree contains the compiler host, shared Judge runtime,
 disposable Judge runner, and their pinned shared build properties. It is a
 build input and is excluded from the package publication allowlist.
@@ -27,18 +27,20 @@ and Judge contracts. Browser project consumers use
 `@tracecode/harness/tracekernel`; neither path exposes C# runtime clients
 directly.
 
-Runtime assets are shipped at `workers/csharp-worker.js` and in three role
-trees:
+Runtime assets are shipped at `workers/csharp-worker.js` and in two physical
+trees serving three logical roles:
 
 - `workers/vendor/csharp/` is the general Project, terminal, filesystem,
   process, network, and server-capable host.
-- `workers/vendor/csharp-compiler/` is the persistent trusted C# compiler
-  authority used by Judge preparation.
+- the persistent trusted C# compiler authority used by Judge preparation
+  reuses `workers/vendor/csharp/`. It runs in an independent Worker with the
+  compiler role; only the immutable bytes and browser cache entry are shared.
 - `workers/vendor/csharp-runner/` is the compiler-free disposable Judge
   runner.
 
-The compiler and runner trees are generated build outputs, not canonical
-source-control inputs. Git tracks their deterministic, content-addressed ZIPs
+The compiler verification tree and runner tree are generated build outputs,
+not canonical source-control inputs. Git tracks their deterministic,
+content-addressed ZIPs
 and manifest under `workers/vendor/csharp-role-artifacts/`.
 `pnpm materialize:csharp-role-assets` verifies the ZIP SHA-256, inventory
 limits, every extracted path, and the complete tree digest before atomically
@@ -47,8 +49,8 @@ commands run that materializer automatically, so a clean checkout does not
 depend on somebody's old local publish directory.
 
 `pnpm update:csharp-runtime` is the sole regeneration path. It publishes all
-three roles from source with the exact SDK in
-`packages/runtime-csharp/dotnet/Directory.Build.props`, skips mutable
+three roles from source with the exact SDK declared by the managed build,
+skips mutable
 workload-manifest updates, prunes and packs the outputs, validates the
 isolation-oriented role surfaces, then replaces the canonical archives. The
 manifest records the SDK, target framework, runtime framework,
@@ -57,10 +59,15 @@ hashes. The expanded compiler and runner directories are ignored and may be
 deleted at any time; materialization recreates them exactly without
 downloading a toolchain.
 
+The role manifest fails closed unless the general and compiler artifacts are
+byte-identical. The release lock therefore publishes one trusted host tree and
+aliases both logical roles to it. If those artifacts ever diverge, the release
+must introduce a distinct compiler asset path before it can be packaged.
+
 The compiler may retain only trusted toolchain state and immutable compiled
 artifacts. Every runner that receives a learner assembly is terminated after
 one case. Eager batches fan the same immutable PE out to distinct disposable
-runner leases; they never loop learner cases inside one .NET process. The
+runner leases; they never loop learner cases inside one managed process. The
 provider bounds simultaneous leases with `preparedBatchConcurrency` (default
 4, validated range 1--32), which makes the speed/physical-memory tradeoff an
 explicit deployment policy without weakening `fresh-case-state`. The runner
@@ -86,11 +93,12 @@ The role-split release script fails closed if asked for the broader
 runner and must never be paired with the Minimal runner accidentally.
 
 The disposable runner's managed Webcil assemblies are delivered in three
-deterministic, balanced packs. The .NET native runtime remains a standalone
+deterministic, balanced packs. The native runtime remains a standalone
 Wasm asset so browsers can compile it normally. A trusted boot-resource loader
 checks the manifest-to-pack SHA-256 binding, pack size, index bounds, complete
 assembly coverage, and per-entry metadata before returning assembly byte
-slices to .NET. It releases a pack buffer after .NET consumes its final member.
+slices to the managed runtime. It releases a pack buffer after that runtime
+consumes its final member.
 This changes immutable runtime delivery only: learner filesystem, process,
 network, Mux, TraceKernel, trace state, and user authority remain scoped to the
 disposable runner exactly as before.

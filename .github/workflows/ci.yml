@@ -22,7 +22,7 @@ concurrency:
 jobs:
   smoke:
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
       - uses: pnpm/action-setup@v4
@@ -32,7 +32,11 @@ jobs:
         with:
           node-version: 22
           cache: pnpm
-      - run: pnpm install --frozen-lockfile=false
+      # Harness consumes engine releases exactly like every other npm
+      # consumer. Candidate repository branches are intentionally not a CI
+      # dependency; publish TraceCC and TraceJVM before releasing Harness.
+      - name: Install published engine releases
+        run: pnpm install --frozen-lockfile
       - name: Check generated runtime metadata
         run: pnpm test:runtime-info-sync && pnpm test:kernel-policy-sync && pnpm test:typescript-project-libs-sync
       - name: Typecheck

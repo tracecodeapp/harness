@@ -2,9 +2,23 @@ import type {
   BrowserRuntimeAssetDescriptor,
   BrowserRuntimeAssetManifest,
 } from '../../runtime-browser/src/runtime-assets';
+import {
+  TRACECC_RUNTIME_ASSETS,
+  TRACECC_RUNTIME_CONTENT_HASH,
+} from './tracecc-runtime-assets.generated';
 
-export const TRACECC_RUNTIME_CONTENT_HASH =
-  'e9457f3a87621f0f6a034c3a18b7e6374c838c226a42215236136d162858807f';
+export { TRACECC_RUNTIME_CONTENT_HASH } from './tracecc-runtime-assets.generated';
+
+/**
+ * Relative path beneath the deployment's generic browser-worker asset root.
+ *
+ * TraceCC artifacts are published under this content-addressed directory. It
+ * deliberately includes the consumer hash rather than the upstream toolchain
+ * version: the directory also contains the Harness-owned runtime header and
+ * PCH/object shards.
+ */
+export const TRACECC_RUNTIME_ASSET_RELATIVE_PATH =
+  `cpp/tracecc/${TRACECC_RUNTIME_CONTENT_HASH}`;
 
 interface TraceCCAssetIdentity {
   readonly fileName: string;
@@ -13,83 +27,33 @@ interface TraceCCAssetIdentity {
   readonly size: number;
 }
 
-const TRACECC_RUNTIME_ASSETS = {
-  runtimeHeader: {
-    fileName: 'tracecode_runtime.hpp',
-    integrity: 'sha256-Oyj18yszTgnOVJbheZHMMC0Pz0zci3yC6gHDhbPIY68=',
-    mediaType: 'text/plain',
-    size: 251_172,
-  },
-  compilerWasm: {
-    fileName: 'tracecc-reactor.wasm',
-    integrity: 'sha256-At40hCU4Rmvynp1s8UzQ1eX/UZybo5BWHMsVgQXUTUE=',
-    mediaType: 'application/wasm',
-    size: 33_478_188,
-  },
-  sysroot: {
-    fileName: 'llvm-resources.tar',
-    integrity: 'sha256-2V0qK8hAihbAdEmWrEfJG7PGO7cblDFcl5YIm23ahVU=',
-    mediaType: 'application/x-tar',
-    size: 29_112_320,
-  },
-  narrowPch: {
-    fileName: 'narrow.pch',
-    integrity: 'sha256-V6ZNistXVJqfGtQB2Uku7p40i3f0SLiRH7oDx43DdmA=',
-    mediaType: 'application/octet-stream',
-    size: 21_296_076,
-  },
-  narrowPchSource: {
-    fileName: 'narrow.source.hpp',
-    integrity: 'sha256-SMqxQfcMBSUHUcAz+7Cp4vkWyOtgv7mNB09JE1cOEAU=',
-    mediaType: 'text/plain',
-    size: 815,
-  },
-  narrowRuntimeObject: {
-    fileName: 'narrow.o',
-    integrity: 'sha256-ny1X8gtLJY2zzWMw2c06gMIv/PDthGetYuXoQj39lQA=',
-    mediaType: 'application/wasm',
-    size: 1_036_744,
-  },
-  broadPch: {
-    fileName: 'broad.pch',
-    integrity: 'sha256-9zwv83WN6KIKXrirfmE82XkzfNkec/evQfs7MFQZHjs=',
-    mediaType: 'application/octet-stream',
-    size: 24_505_572,
-  },
-  broadPchSource: {
-    fileName: 'broad.source.hpp',
-    integrity: 'sha256-MOayycWl5KYaLS8vP2MoJh4kazsDhg0kH9Bi6dvsy0s=',
-    mediaType: 'text/plain',
-    size: 7_095,
-  },
-  broadRuntimeObject: {
-    fileName: 'broad.o',
-    integrity: 'sha256-RCPAYW8fu+bdgc0/mKgZsJZU/m9hVdlF5n5oReBXDCU=',
-    mediaType: 'application/wasm',
-    size: 1_879_251,
-  },
-  mapPch: {
-    fileName: 'map.pch',
-    integrity: 'sha256-8dt6HEfc65XhhXDunS5ytvNbYfcZNH/gKBfgTw7PSGQ=',
-    mediaType: 'application/octet-stream',
-    size: 29_874_016,
-  },
-  mapPchSource: {
-    fileName: 'map.source.hpp',
-    integrity: 'sha256-WHaMpx3nG/h1ro6CppBseoDIkgqahbYnFxShHLGT9/c=',
-    mediaType: 'text/plain',
-    size: 10_708,
-  },
-  mapRuntimeObject: {
-    fileName: 'map.o',
-    integrity: 'sha256-PLpBVFrMQu9DDydeKVtjv1X1wZ6rC2EopXSvrw3nAeE=',
-    mediaType: 'application/wasm',
-    size: 3_346_406,
-  },
-} as const satisfies Readonly<Record<string, TraceCCAssetIdentity>>;
+const typedTraceCCRuntimeAssets = TRACECC_RUNTIME_ASSETS satisfies Readonly<
+  Record<string, TraceCCAssetIdentity>
+>;
 
 function stripTrailingSlash(value: string): string {
   return value.replace(/\/+$/, '');
+}
+
+function normalizeAssetBaseUrl(value: string): string {
+  const normalized = stripTrailingSlash(value.trim());
+  if (!normalized) {
+    throw new TypeError('TraceCC requires a non-empty asset base URL.');
+  }
+  if (/[?#]/u.test(normalized)) {
+    throw new TypeError(
+      'TraceCC asset base URL must be a directory without a query or fragment.'
+    );
+  }
+  return normalized;
+}
+
+function normalizeWorkerUrl(value: string): string {
+  const normalized = value.trim();
+  if (!normalized) {
+    throw new TypeError('TraceCC worker URL must not be empty.');
+  }
+  return normalized;
 }
 
 function descriptor(
@@ -115,14 +79,15 @@ function descriptor(
  * and runtime objects that must match the generated drivers in this package.
  */
 export function createTraceCCRuntimeManifest(
-  assetBaseUrl: string
+  assetBaseUrl: string,
+  options: { readonly workerUrl?: string } = {}
 ): BrowserRuntimeAssetManifest<'cpp'> {
-  const normalizedAssetBaseUrl = stripTrailingSlash(assetBaseUrl.trim());
-  if (!normalizedAssetBaseUrl) {
-    throw new TypeError('TraceCC v9r1 requires a non-empty asset base URL.');
-  }
+  const normalizedAssetBaseUrl = normalizeAssetBaseUrl(assetBaseUrl);
+  const workerUrl = normalizeWorkerUrl(
+    options.workerUrl ?? '/workers/cpp-worker.js'
+  );
   const compilerWasm = descriptor(
-    TRACECC_RUNTIME_ASSETS.compilerWasm
+    typedTraceCCRuntimeAssets.compilerWasm
   );
   return {
     runtime: 'cpp',
@@ -132,40 +97,65 @@ export function createTraceCCRuntimeManifest(
     assetBaseUrl: `${normalizedAssetBaseUrl}/`,
     workerFormat: 'module',
     assets: {
-      worker: { url: '/workers/cpp-worker.js' },
-      runtimeHeader: descriptor(TRACECC_RUNTIME_ASSETS.runtimeHeader),
+      worker: { url: workerUrl },
+      runtimeHeader: descriptor(typedTraceCCRuntimeAssets.runtimeHeader),
       compilerWasm,
       linkerWasm: compilerWasm,
-      sysroot: descriptor(TRACECC_RUNTIME_ASSETS.sysroot),
+      sysroot: descriptor(typedTraceCCRuntimeAssets.sysroot),
       compilerResources: {
         'tracecc-narrow-pch': descriptor(
-          TRACECC_RUNTIME_ASSETS.narrowPch
+          typedTraceCCRuntimeAssets.narrowPch
         ),
         'tracecc-narrow-pch-source': descriptor(
-          TRACECC_RUNTIME_ASSETS.narrowPchSource
+          typedTraceCCRuntimeAssets.narrowPchSource
         ),
         'tracecc-narrow-runtime-object': descriptor(
-          TRACECC_RUNTIME_ASSETS.narrowRuntimeObject
+          typedTraceCCRuntimeAssets.narrowRuntimeObject
         ),
         'tracecc-broad-pch': descriptor(
-          TRACECC_RUNTIME_ASSETS.broadPch
+          typedTraceCCRuntimeAssets.broadPch
         ),
         'tracecc-broad-pch-source': descriptor(
-          TRACECC_RUNTIME_ASSETS.broadPchSource
+          typedTraceCCRuntimeAssets.broadPchSource
         ),
         'tracecc-broad-runtime-object': descriptor(
-          TRACECC_RUNTIME_ASSETS.broadRuntimeObject
+          typedTraceCCRuntimeAssets.broadRuntimeObject
         ),
         'tracecc-map-pch': descriptor(
-          TRACECC_RUNTIME_ASSETS.mapPch
+          typedTraceCCRuntimeAssets.mapPch
         ),
         'tracecc-map-pch-source': descriptor(
-          TRACECC_RUNTIME_ASSETS.mapPchSource
+          typedTraceCCRuntimeAssets.mapPchSource
         ),
         'tracecc-map-runtime-object': descriptor(
-          TRACECC_RUNTIME_ASSETS.mapRuntimeObject
+          typedTraceCCRuntimeAssets.mapRuntimeObject
         ),
       },
     },
   };
 }
+
+/**
+ * Resolves the built-in TraceCC manifest from the generic browser asset root.
+ *
+ * The normal deployment serves all browser assets beneath `/workers`; the
+ * immutable TraceCC release is then addressed at
+ * `/workers/cpp/tracecc/<consumer-hash>/`, while the C++ worker is served at
+ * `/workers/cpp-worker.js`. Consumers that publish the release elsewhere can
+ * pass their own generic root; both paths move together. For callers that need
+ * to provide a fully custom manifest, `createTraceCCRuntimeManifest` remains
+ * available with an explicit worker URL override.
+ */
+export function resolveBuiltInTraceCCRuntimeManifest(
+  assetBaseUrl = '/workers'
+): BrowserRuntimeAssetManifest<'cpp'> {
+  const normalizedAssetBaseUrl = normalizeAssetBaseUrl(assetBaseUrl);
+  return createTraceCCRuntimeManifest(
+    `${normalizedAssetBaseUrl}/${TRACECC_RUNTIME_ASSET_RELATIVE_PATH}`,
+    { workerUrl: `${normalizedAssetBaseUrl}/cpp-worker.js` }
+  );
+}
+
+/** The pinned fb4 TraceCC manifest for the standard `/workers` deployment. */
+export const TRACECC_RUNTIME_MANIFEST =
+  resolveBuiltInTraceCCRuntimeManifest();

@@ -772,6 +772,34 @@ test('rejects private driver files outside the reserved Judge namespace', async 
   }
 });
 
+test('rejects invalid trace selections before compiling the workspace', async () => {
+  const control = new InMemoryJudgeRuntimeControl();
+  const state = await Effect.runPromise(makeState());
+  const exit = await Effect.runPromiseExit(Effect.scoped(
+    Effect.gen(function* () {
+      const host = yield* makeTraceKernelHost({
+        providers: [fakeProvider(control, state)],
+      });
+      const port = new TraceKernelJudgePort({
+        host,
+        runtimeControl: control,
+      });
+      return yield* evaluateJudgePlan(
+        port,
+        makePlan([{ value: 1 }]),
+        { tracing: { caseIds: ['missing-case'] } }
+      );
+    })
+  ));
+
+  assert.equal(exit._tag, 'Failure');
+  if (exit._tag === 'Failure') {
+    assert.match(exit.cause.toString(), /unknown case id "missing-case"/);
+  }
+  assert.equal(state.invocations.length, 0, 'invalid tracing must not compile');
+  assert.equal(state.acquired.length, 0, 'invalid tracing must not acquire a runtime');
+});
+
 test('rejects non-canonical file aliases before duplicate and namespace checks', async () => {
   const control = new InMemoryJudgeRuntimeControl();
   const exit = await Effect.runPromiseExit(Effect.scoped(

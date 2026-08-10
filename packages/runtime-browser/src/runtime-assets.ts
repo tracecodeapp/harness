@@ -216,7 +216,7 @@ export const DEFAULT_BROWSER_RUNTIME_ASSET_RELATIVE_PATHS: Readonly<BrowserRunti
   javaWorker: 'java-runtime-worker.js',
   csharpWorker: 'csharp-worker.js',
   csharpAssetBaseUrl: 'vendor/csharp',
-  csharpCompilerAssetBaseUrl: 'vendor/csharp-compiler',
+  csharpCompilerAssetBaseUrl: 'vendor/csharp',
   csharpRunnerAssetBaseUrl: 'vendor/csharp-runner',
   typescriptCompiler: 'vendor/typescript.js',
   cppWorker: 'cpp-worker.js',

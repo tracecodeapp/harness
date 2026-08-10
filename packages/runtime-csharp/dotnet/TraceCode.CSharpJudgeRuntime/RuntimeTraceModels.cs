@@ -48,6 +48,14 @@ public sealed class RuntimeTraceEvent
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public string? Reason { get; set; }
 
+    [JsonPropertyName("callStackId")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public int? CallStackId { get; set; }
+
+    [JsonPropertyName("callStackRef")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public int? CallStackRef { get; set; }
+
     [JsonPropertyName("callStack")]
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public List<RuntimeTraceCallFrame>? CallStack { get; set; }

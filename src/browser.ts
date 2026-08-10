@@ -29,6 +29,22 @@ import {
   type RuntimeLibraryInfo,
 } from '../packages/runtime-contracts/src/runtime-language-info';
 import {
+  LANGUAGE_RUNTIME_OPEN_SOURCE_INFOS,
+  getLanguageRuntimeOpenSourceInfo,
+  getSupportedLanguageRuntimeOpenSourceInfos,
+  resolveRuntimeOpenSourceResourceHref,
+  type LanguageRuntimeOpenSourceInfo,
+  type ResolvedLanguageRuntimeOpenSourceInfo,
+  type ResolvedRuntimeOpenSourceComponentInfo,
+  type ResolvedRuntimeOpenSourceResource,
+  type RuntimeOpenSourceAssetResource,
+  type RuntimeOpenSourceComponentInfo,
+  type RuntimeOpenSourceInfoOptions,
+  type RuntimeOpenSourceResource,
+  type RuntimeOpenSourceResourceKind,
+  type RuntimeOpenSourceUrlResource,
+} from '../packages/runtime-contracts/src/runtime-open-source-info';
+import {
   createBrowserRuntimeHost as createProviderBrowserRuntimeHost,
   type BrowserRuntimeHost,
   type BrowserRuntimeHostExecutionHostOptions,
@@ -61,7 +77,7 @@ import {
   type BrowserRuntimeAssetPreflightOptions,
 } from '../packages/runtime-browser/src/runtime-asset-preflight';
 import {
-  createBrowserRuntimeEnvironment,
+  createBrowserRuntimeEnvironment as createProviderBrowserRuntimeEnvironment,
   BrowserRuntimeEngine,
   BrowserRuntimeEnvironment,
   BrowserRuntimeEnvironmentReport,
@@ -113,6 +129,9 @@ import {
   type JavaBrowserRuntimeProviderOptions,
 } from '../packages/runtime-java/src/browser-runtime-provider';
 import {
+  resolveBuiltInTraceJVMRuntimeAssetBaseUrl,
+} from '../packages/runtime-java/src/tracejvm-runtime-assets';
+import {
   createCSharpBrowserRuntimeProvider,
   type CSharpBrowserRuntimeProviderOptions,
 } from '../packages/runtime-csharp/src/browser-runtime-provider';
@@ -120,6 +139,9 @@ import {
   createCppBrowserRuntimeProvider,
   type CppBrowserRuntimeProviderOptions,
 } from '../packages/runtime-cpp/src/browser-runtime-provider';
+import {
+  resolveBuiltInTraceCCRuntimeManifest,
+} from '../packages/runtime-cpp/src/tracecc-runtime-assets';
 
 export type {
   AnyBrowserRuntimeAssetManifest,
@@ -160,7 +182,11 @@ export type {
   InstalledBrowserExecutionWorkerHost,
   Language,
   LanguageRuntimeInfo,
+  LanguageRuntimeOpenSourceInfo,
   LanguageRuntimeProfile,
+  ResolvedLanguageRuntimeOpenSourceInfo,
+  ResolvedRuntimeOpenSourceComponentInfo,
+  ResolvedRuntimeOpenSourceResource,
   RuntimeCapabilities,
   RuntimeCompileCost,
   RuntimeComponentInfo,
@@ -173,6 +199,12 @@ export type {
   RuntimeExecutionStyle,
   RuntimeLibraryInfo,
   RuntimeMaturity,
+  RuntimeOpenSourceAssetResource,
+  RuntimeOpenSourceComponentInfo,
+  RuntimeOpenSourceInfoOptions,
+  RuntimeOpenSourceResource,
+  RuntimeOpenSourceResourceKind,
+  RuntimeOpenSourceUrlResource,
   RuntimeProjectIoCapabilityRow,
   RuntimeProjectIoEnvironment,
   RuntimeProjectIoSupport,
@@ -189,28 +221,34 @@ export {
   PYTHON_RUNTIME_IMAGE_PROTOCOL_VERSION,
   BROWSER_RUNTIME_IDS,
   LANGUAGE_RUNTIME_INFOS,
+  LANGUAGE_RUNTIME_OPEN_SOURCE_INFOS,
   LANGUAGE_RUNTIME_PROFILES,
   SUPPORTED_LANGUAGES,
   SUPPORTED_LANGUAGE_RUNTIME_INFOS,
   assertRuntimeRequestSupported,
   createBrowserRuntimeAssetPreflight,
-  createBrowserRuntimeEnvironment,
   getLanguageRuntimeInfo,
+  getLanguageRuntimeOpenSourceInfo,
   getLanguageRuntimeProfile,
   getRuntimeProjectIoCapability,
   getRuntimeProjectIoCapabilityMatrix,
   getRuntimeProjectIoSupport,
   getSupportedLanguageProfiles,
   getSupportedLanguageRuntimeInfos,
+  getSupportedLanguageRuntimeOpenSourceInfos,
   installBrowserExecutionWorkerHost,
   isLanguageSupported,
   isRuntimeSafeForUntrustedReuse,
   resolveBrowserRuntimeAssetManifests,
+  resolveRuntimeOpenSourceResourceHref,
 };
 
 export {
   createTraceCCRuntimeManifest,
+  resolveBuiltInTraceCCRuntimeManifest,
+  TRACECC_RUNTIME_ASSET_RELATIVE_PATH,
   TRACECC_RUNTIME_CONTENT_HASH,
+  TRACECC_RUNTIME_MANIFEST,
 } from '../packages/runtime-cpp/src/tracecc-runtime-assets';
 
 /**
@@ -259,6 +297,53 @@ function createDefaultBrowserRuntimeProviderRegistry(
   ]);
 }
 
+const CPP_LEGACY_ASSET_KEYS = Object.freeze([
+  'cppWorker',
+  'cppCompilerWasm',
+  'cppLinkerWasm',
+  'cppSysroot',
+  'cppRuntimeHeader',
+  'cppCompilerIntegrity',
+] as const);
+
+function withBuiltInRuntimeAssets(
+  assetBaseUrl: string | undefined,
+  assets: BrowserRuntimeAssetOverrides | undefined
+): BrowserRuntimeAssetOverrides {
+  const configured = assets ?? {};
+  const hasLegacyCppOverride = CPP_LEGACY_ASSET_KEYS.some(
+    (key) => configured[key] !== undefined
+  );
+  if (configured.runtimeManifests?.cpp || hasLegacyCppOverride) {
+    return configured;
+  }
+  const provided = configured.runtimeAssetProvider;
+  return {
+    ...configured,
+    runtimeAssetProvider(runtime) {
+      return (
+        provided?.(runtime) ??
+        (runtime === 'cpp'
+          ? resolveBuiltInTraceCCRuntimeManifest(assetBaseUrl ?? '/workers')
+          : undefined)
+      );
+    },
+  };
+}
+
+/**
+ * Creates a reusable deployment environment with the same Harness-owned
+ * runtime defaults as {@link createBrowserRuntimeHost}.
+ */
+export function createBrowserRuntimeEnvironment(
+  options: BrowserRuntimeEnvironmentOptions = {}
+): BrowserRuntimeEnvironment {
+  return createProviderBrowserRuntimeEnvironment({
+    ...options,
+    assets: withBuiltInRuntimeAssets(options.assetBaseUrl, options.assets),
+  });
+}
+
 /**
  * Creates the browser-owned lifecycle used by Judge-backed execution.
  *
@@ -282,12 +367,29 @@ export function createBrowserRuntimeHost(
     csharpPreparedAuthority === undefined
       ? csharp
       : { ...csharp, preparedAuthority: csharpPreparedAuthority };
+  const effectiveJava =
+    java?.runtimeAssetBaseUrl !== undefined || hostOptions.environment
+      ? java
+      : {
+          ...java,
+          runtimeAssetBaseUrl: resolveBuiltInTraceJVMRuntimeAssetBaseUrl(
+            hostOptions.assetBaseUrl ?? '/workers'
+          ),
+        };
   return createProviderBrowserRuntimeHost({
     ...hostOptions,
+    ...(!hostOptions.environment
+      ? {
+          assets: withBuiltInRuntimeAssets(
+            hostOptions.assetBaseUrl,
+            hostOptions.assets
+          ),
+        }
+      : {}),
     csharpPreparedAuthority,
     providerRegistry: createDefaultBrowserRuntimeProviderRegistry({
       python,
-      java,
+      java: effectiveJava,
       csharp: effectiveCSharp,
       cpp,
     }),

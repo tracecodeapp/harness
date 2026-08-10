@@ -478,6 +478,22 @@ async function main(): Promise<void> {
         assetBaseUrl,
         timeoutMs: 10_000,
       });
+      const preparedTraceDisabled = await firstWorker.send('execute-prepared-trace', {
+        prepared: {
+          mode: 'trace',
+          code: source,
+          functionName: 'Touch',
+          executionStyle: 'solution-method',
+          traceOptions: { maxTraceSteps: 1_000, maxLineEvents: 1_000 },
+          compiledArtifactKey: tracePreparation.compiledArtifactKey,
+          compiledArtifactBase64: tracePreparation.compiledArtifactBase64,
+          compiledArtifactSha256: tracePreparation.compiledArtifactSha256,
+        },
+        inputs: { value: 19 },
+        tracingEnabled: false,
+        assetBaseUrl,
+        timeoutMs: 10_000,
+      });
 
       const disposed = await firstWorker.send<{ success: boolean; disposed: boolean }>(
         'dispose-prepared-program',
@@ -586,6 +602,7 @@ async function main(): Promise<void> {
         preparedFailure,
         tracePreparation,
         preparedTrace,
+        preparedTraceDisabled,
         disposed,
         cancellablePreparation,
         preparedAfterTimeout,
@@ -617,6 +634,7 @@ async function main(): Promise<void> {
       preparedFailure: ExecuteResult;
       tracePreparation: ExecuteResult;
       preparedTrace: ExecuteResult;
+      preparedTraceDisabled: ExecuteResult;
       disposed: { success: boolean; disposed: boolean };
       cancellablePreparation: ExecuteResult;
       preparedAfterTimeout: ExecuteResult;
@@ -790,6 +808,17 @@ async function main(): Promise<void> {
         metrics.preparedTrace.timings?.compileCacheHit === true &&
         metrics.preparedTrace.timings?.artifactCacheHit === true,
       `Prepared C# trace did not reuse its instrumented assembly: ${JSON.stringify(metrics.preparedTrace)}`
+    );
+    assertCondition(
+      metrics.preparedTraceDisabled.success &&
+        metrics.preparedTraceDisabled.output === metrics.preparedTrace.output &&
+        metrics.preparedTraceDisabled.events?.length === 0 &&
+        metrics.preparedTraceDisabled.timings?.compileCacheHit === true &&
+        metrics.preparedTraceDisabled.timings?.artifactCacheHit === true,
+      `Prepared C# trace-disabled execution did not reuse the same assembly without recording events: ${JSON.stringify({
+        traced: metrics.preparedTrace,
+        traceDisabled: metrics.preparedTraceDisabled,
+      })}`
     );
     assertCondition(
       metrics.disposed.success && metrics.disposed.disposed,

@@ -141,6 +141,7 @@ function requiredFeatures(
   if (language === 'python' || language === 'java' || language === 'csharp' || language === 'cpp') {
     required.push('webAssembly');
   }
+  if (language === 'java') required.push('webCrypto');
   if (language === 'java' && surface === 'project') {
     required.push('sharedArrayBuffer', 'crossOriginIsolated');
   }

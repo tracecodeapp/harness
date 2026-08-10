@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { spawnSync, type SpawnSyncReturns } from 'node:child_process';
-import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises';
+import { access, mkdir, mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { test } from 'node:test';
@@ -9,8 +9,10 @@ const ROOT = process.cwd();
 const CHECK_SCRIPT = resolve(ROOT, 'scripts/check-publish-safety.mjs');
 const VERSION_SYNC_SCRIPT = resolve(ROOT, 'scripts/sync-workspace-versions.mjs');
 const RELEASE_CHECK_SCRIPT = 'node scripts/check-publish-safety.mjs';
-const ROOT_RELEASE_SCRIPT = 'pnpm release:check && pnpm publish . --access public';
-const PREPUBLISH_SCRIPT = 'pnpm release:check && pnpm build && pnpm release:check';
+const ROOT_RELEASE_SCRIPT =
+  'pnpm release:check && pnpm publish . --access public';
+const PREPUBLISH_SCRIPT =
+  'pnpm release:check && pnpm test:runtime-assets-lock && pnpm build && pnpm release:check && pnpm test:runtime-assets-lock';
 
 interface FixtureOptions {
   internalName?: string;
@@ -102,7 +104,13 @@ async function repositoryManifestInventory(): Promise<Array<{
     const entries = await readdir(join(ROOT, workspaceRoot), { withFileTypes: true });
     for (const entry of entries) {
       if (entry.isDirectory()) {
-        manifestPaths.push(join(workspaceRoot, entry.name, 'package.json'));
+        const manifestPath = join(workspaceRoot, entry.name, 'package.json');
+        try {
+          await access(join(ROOT, manifestPath));
+          manifestPaths.push(manifestPath);
+        } catch (error) {
+          if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+        }
       }
     }
   }
@@ -132,7 +140,7 @@ async function main(): Promise<void> {
   );
   assert.match(
     repositoryAudit.stdout,
-    /@tracecode\/harness is the only publishable workspace manifest; 15 internal manifests are private/u
+    /@tracecode\/harness is the only publishable workspace manifest; 16 internal manifests are private/u
   );
 
   const inventory = await repositoryManifestInventory();

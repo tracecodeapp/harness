@@ -310,7 +310,11 @@ function main(): void {
   );
   assertCondition(
     DEFAULT_BROWSER_RUNTIME_ASSET_RELATIVE_PATHS.csharpWorker === 'csharp-worker.js' &&
-      DEFAULT_BROWSER_RUNTIME_ASSET_RELATIVE_PATHS.csharpAssetBaseUrl === 'vendor/csharp',
+      DEFAULT_BROWSER_RUNTIME_ASSET_RELATIVE_PATHS.csharpAssetBaseUrl === 'vendor/csharp' &&
+      DEFAULT_BROWSER_RUNTIME_ASSET_RELATIVE_PATHS.csharpCompilerAssetBaseUrl ===
+        'vendor/csharp' &&
+      DEFAULT_BROWSER_RUNTIME_ASSET_RELATIVE_PATHS.csharpRunnerAssetBaseUrl ===
+        'vendor/csharp-runner',
     'Default C# assets must use the canonical language worker and language-owned vendor root'
   );
   assertCondition(

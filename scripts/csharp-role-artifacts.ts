@@ -16,6 +16,20 @@ import { unzipSync, zipSync, type Zippable } from 'fflate';
 export const CSHARP_ROLE_ARTIFACTS_SCHEMA =
   'tracecode.csharp-role-artifacts.v2';
 const ROLE_NAMES = ['general', 'compiler', 'runner'] as const;
+const CSHARP_ROLE_BROWSER_ASSETS = Object.freeze({
+  general: Object.freeze({
+    packagePath: 'workers/vendor/csharp',
+    targetPath: 'vendor/csharp',
+  }),
+  compiler: Object.freeze({
+    packagePath: 'workers/vendor/csharp',
+    targetPath: 'vendor/csharp',
+  }),
+  runner: Object.freeze({
+    packagePath: 'workers/vendor/csharp-runner',
+    targetPath: 'vendor/csharp-runner',
+  }),
+});
 const ZIP_MTIME = new Date(1980, 0, 1);
 const MAX_ROLE_LIMITS = {
   general: {
@@ -62,6 +76,10 @@ export interface CSharpRoleArtifactsManifest {
     framework: 'Microsoft.NETCore.App';
     version: string;
   };
+  deployment: {
+    browserAssets: typeof CSHARP_ROLE_BROWSER_ASSETS;
+    compilerSharesGeneralAssets: true;
+  };
   roles: Record<CSharpArtifactRole, CSharpRoleArtifactMetadata>;
 }
 
@@ -78,6 +96,28 @@ export interface CreateCSharpRoleArtifactsOptions {
 
 function sha256(bytes: Uint8Array | string): string {
   return createHash('sha256').update(bytes).digest('hex');
+}
+
+function assertCompilerSharesGeneralArtifact(
+  roles: Record<CSharpArtifactRole, CSharpRoleArtifactMetadata>
+): void {
+  const general = roles.general;
+  const compiler = roles.compiler;
+  for (const field of [
+    'artifact',
+    'artifactBytes',
+    'artifactSha256',
+    'fileCount',
+    'treeSha256',
+    'uncompressedBytes',
+  ] as const) {
+    if (general[field] !== compiler[field]) {
+      throw new Error(
+        `C# compiler asset alias requires byte-identical general and compiler roles; ${field} differs. ` +
+          'Publish a distinct compiler asset path before allowing the role trees to diverge.'
+      );
+    }
+  }
 }
 
 function isSafeRelativePath(path: string): boolean {
@@ -292,6 +332,7 @@ export async function createCSharpRoleArtifacts(
         uncompressedBytes,
       };
     }
+    assertCompilerSharesGeneralArtifact(roles);
     const manifest: CSharpRoleArtifactsManifest = {
       schema: CSHARP_ROLE_ARTIFACTS_SCHEMA,
       format: 'zip',
@@ -306,6 +347,10 @@ export async function createCSharpRoleArtifacts(
       runtime: {
         framework: 'Microsoft.NETCore.App',
         version: versions[0]!,
+      },
+      deployment: {
+        browserAssets: CSHARP_ROLE_BROWSER_ASSETS,
+        compilerSharesGeneralAssets: true,
       },
       roles,
     };
@@ -357,6 +402,14 @@ function validateManifest(
     !('version' in candidate.runtime) ||
     typeof candidate.runtime.version !== 'string' ||
     !/^\d+\.\d+\.\d+$/.test(candidate.runtime.version) ||
+    !('deployment' in candidate) ||
+    !candidate.deployment ||
+    typeof candidate.deployment !== 'object' ||
+    !('compilerSharesGeneralAssets' in candidate.deployment) ||
+    candidate.deployment.compilerSharesGeneralAssets !== true ||
+    !('browserAssets' in candidate.deployment) ||
+    JSON.stringify(candidate.deployment.browserAssets) !==
+      JSON.stringify(CSHARP_ROLE_BROWSER_ASSETS) ||
     !('roles' in candidate) ||
     !candidate.roles ||
     typeof candidate.roles !== 'object'
@@ -401,7 +454,9 @@ function validateManifest(
       throw new Error(`Invalid C# ${role} role artifact metadata.`);
     }
   }
-  return candidate as CSharpRoleArtifactsManifest;
+  const manifest = candidate as CSharpRoleArtifactsManifest;
+  assertCompilerSharesGeneralArtifact(manifest.roles);
+  return manifest;
 }
 
 export async function readCSharpRoleArtifactsManifest(

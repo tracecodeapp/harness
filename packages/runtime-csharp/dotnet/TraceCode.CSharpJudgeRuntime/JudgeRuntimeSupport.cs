@@ -895,6 +895,11 @@ namespace TraceCode.Internal
 
         public static void WithSourceLine(int line, Action action)
         {
+            if (!TraceCode.CSharpHost.RuntimeTraceSink.RecordingEnabled)
+            {
+                action();
+                return;
+            }
             int previousLine = TraceCode.CSharpHost.RuntimeTraceSink.CurrentLine;
             int previousScopedLine = TraceCode.CSharpHost.RuntimeTraceSink.CurrentScopedSourceLine;
             TraceCode.CSharpHost.RuntimeTraceSink.Line(line, TraceCode.CSharpHost.RuntimeTraceSink.CurrentFunction);
@@ -913,6 +918,11 @@ namespace TraceCode.Internal
 
         public static void CollectionMutationCall(int line, string variable, string method, IReadOnlyList<object?> args, Action action)
         {
+            if (!TraceCode.CSharpHost.RuntimeTraceSink.RecordingEnabled)
+            {
+                action();
+                return;
+            }
             int startIndex = TraceCode.CSharpHost.RuntimeTraceSink.EventCount;
             WithSourceLine(line, action);
             if (!TraceCode.CSharpHost.RuntimeTraceSink.HasMutationSince(startIndex, variable, method, line))
@@ -923,6 +933,11 @@ namespace TraceCode.Internal
 
         public static void CollectionMutationCall(int line, string variable, string method, IReadOnlyList<object?> args, Action action, object? collection)
         {
+            if (!TraceCode.CSharpHost.RuntimeTraceSink.RecordingEnabled)
+            {
+                action();
+                return;
+            }
             int startIndex = TraceCode.CSharpHost.RuntimeTraceSink.EventCount;
             WithSourceLine(line, action);
             if (TraceCode.CSharpHost.RuntimeTraceSink.HasMutationSince(startIndex, variable, method, line))
@@ -937,6 +952,11 @@ namespace TraceCode.Internal
 
         public static void FieldCollectionMutationCall(int line, string variable, string[] path, string method, IReadOnlyList<object?> args, Action action, object? collection)
         {
+            if (!TraceCode.CSharpHost.RuntimeTraceSink.RecordingEnabled)
+            {
+                action();
+                return;
+            }
             int startIndex = TraceCode.CSharpHost.RuntimeTraceSink.EventCount;
             WithSourceLine(line, action);
             if (TraceCode.CSharpHost.RuntimeTraceSink.HasMutationSince(startIndex, variable, path, method, line))
@@ -950,7 +970,9 @@ namespace TraceCode.Internal
 
         private static void EmitFieldIndexedWrites(string variable, string[] path, object? collection, int line)
         {
-            if (collection is string || collection is not System.Collections.IEnumerable enumerable)
+            if (!TraceCode.CSharpHost.RuntimeTraceSink.RecordingEnabled
+                || collection is string
+                || collection is not System.Collections.IEnumerable enumerable)
             {
                 return;
             }
@@ -983,6 +1005,10 @@ namespace TraceCode.Internal
 
         public static bool LoopCondition(int line, string? function, Func<bool> action, Action snapshot)
         {
+            if (!TraceCode.CSharpHost.RuntimeTraceSink.RecordingEnabled)
+            {
+                return action();
+            }
             bool result = WithSourceLine(line, action);
             snapshot();
             return result;
@@ -995,6 +1021,10 @@ namespace TraceCode.Internal
 
         public static IEnumerable<T> EnumerableSource<T>(int line, string? function, Func<IEnumerable<T>> action, Action snapshot)
         {
+            if (!TraceCode.CSharpHost.RuntimeTraceSink.RecordingEnabled)
+            {
+                return action();
+            }
             IEnumerable<T> result = WithSourceLine(line, action);
             snapshot();
             return result;
@@ -1002,6 +1032,10 @@ namespace TraceCode.Internal
 
         public static T WithSourceLine<T>(int line, Func<T> action)
         {
+            if (!TraceCode.CSharpHost.RuntimeTraceSink.RecordingEnabled)
+            {
+                return action();
+            }
             int previousLine = TraceCode.CSharpHost.RuntimeTraceSink.CurrentLine;
             int previousScopedLine = TraceCode.CSharpHost.RuntimeTraceSink.CurrentScopedSourceLine;
             TraceCode.CSharpHost.RuntimeTraceSink.Line(line, TraceCode.CSharpHost.RuntimeTraceSink.CurrentFunction);
@@ -1621,12 +1655,14 @@ namespace TraceCode.Internal
             get
             {
                 T value = base[index];
+                if (!TraceCode.CSharpHost.RuntimeTraceSink.RecordingEnabled) return value;
                 TraceCode.CSharpHost.RuntimeTraceSink.IndexedRead(variable, index, value, TraceCode.CSharpHost.RuntimeTraceSink.CurrentLine, null, TraceCode.CSharpHost.RuntimeTraceSink.CurrentScopedIndexSources);
                 return value;
             }
             set
             {
                 base[index] = value;
+                if (!TraceCode.CSharpHost.RuntimeTraceSink.RecordingEnabled) return;
                 TraceCode.CSharpHost.RuntimeTraceSink.IndexedWrite(variable, index, value, TraceCode.CSharpHost.RuntimeTraceSink.CurrentLine, TraceCode.CSharpHost.RuntimeTraceSink.CurrentScopedIndexSources);
                 TraceCode.CSharpHost.RuntimeTraceSink.Snapshot(variable, this);
             }
@@ -1636,6 +1672,7 @@ namespace TraceCode.Internal
         {
             int index = Count;
             base.Add(item);
+            if (!TraceCode.CSharpHost.RuntimeTraceSink.RecordingEnabled) return;
             int line = TraceCode.CSharpHost.RuntimeTraceSink.ScopedSourceLine;
             TraceCode.CSharpHost.RuntimeTraceSink.Mutate(variable, "Add", new object?[] { item }, line);
             TraceCode.CSharpHost.RuntimeTraceSink.IndexedWrite(variable, index, item, line);
@@ -1645,6 +1682,7 @@ namespace TraceCode.Internal
         public new void RemoveAt(int index)
         {
             base.RemoveAt(index);
+            if (!TraceCode.CSharpHost.RuntimeTraceSink.RecordingEnabled) return;
             TraceCode.CSharpHost.RuntimeTraceSink.Mutate(variable, "RemoveAt", new object?[] { index }, TraceCode.CSharpHost.RuntimeTraceSink.ScopedSourceLine);
             TraceCode.CSharpHost.RuntimeTraceSink.Snapshot(variable, this);
         }
@@ -1652,6 +1690,7 @@ namespace TraceCode.Internal
         public new void Clear()
         {
             base.Clear();
+            if (!TraceCode.CSharpHost.RuntimeTraceSink.RecordingEnabled) return;
             TraceCode.CSharpHost.RuntimeTraceSink.Mutate(variable, "Clear", Array.Empty<object?>(), TraceCode.CSharpHost.RuntimeTraceSink.ScopedSourceLine);
             TraceCode.CSharpHost.RuntimeTraceSink.Snapshot(variable, this);
         }
@@ -1665,23 +1704,27 @@ namespace TraceCode.Internal
         public new void Sort(Comparison<T> comparison)
         {
             base.Sort(comparison);
+            if (!TraceCode.CSharpHost.RuntimeTraceSink.RecordingEnabled) return;
             EmitSortMutation(new object?[] { "<comparison>" });
         }
 
         public new void Sort(IComparer<T>? comparer)
         {
             base.Sort(comparer);
+            if (!TraceCode.CSharpHost.RuntimeTraceSink.RecordingEnabled) return;
             EmitSortMutation(new object?[] { "<comparer>" });
         }
 
         public new void Sort(int index, int count, IComparer<T>? comparer)
         {
             base.Sort(index, count, comparer);
+            if (!TraceCode.CSharpHost.RuntimeTraceSink.RecordingEnabled) return;
             EmitSortMutation(new object?[] { index, count, "<comparer>" });
         }
 
         private void EmitSortMutation(IReadOnlyList<object?> args)
         {
+            if (!TraceCode.CSharpHost.RuntimeTraceSink.RecordingEnabled) return;
             int line = TraceCode.CSharpHost.RuntimeTraceSink.ScopedSourceLine;
             TraceCode.CSharpHost.RuntimeTraceSink.Mutate(variable, "Sort", args, line);
             int limit = TraceCode.CSharpHost.RuntimeTraceSink.BulkIndexedWriteLimit(Count);
@@ -1762,12 +1805,14 @@ namespace TraceCode.Internal
             get
             {
                 TValue value = base[key];
+                if (!TraceCode.CSharpHost.RuntimeTraceSink.RecordingEnabled) return value;
                 TraceCode.CSharpHost.RuntimeTraceSink.IndexedRead(variable, key, value, TraceCode.CSharpHost.RuntimeTraceSink.CurrentLine, null, TraceCode.CSharpHost.RuntimeTraceSink.CurrentScopedIndexSources);
                 return value;
             }
             set
             {
                 base[key] = value;
+                if (!TraceCode.CSharpHost.RuntimeTraceSink.RecordingEnabled) return;
                 TraceCode.CSharpHost.RuntimeTraceSink.IndexedWrite(variable, key, value, TraceCode.CSharpHost.RuntimeTraceSink.CurrentLine, TraceCode.CSharpHost.RuntimeTraceSink.CurrentScopedIndexSources);
                 TraceCode.CSharpHost.RuntimeTraceSink.Snapshot(variable, this);
             }
@@ -1776,6 +1821,7 @@ namespace TraceCode.Internal
         public new void Add(TKey key, TValue value)
         {
             base.Add(key, value);
+            if (!TraceCode.CSharpHost.RuntimeTraceSink.RecordingEnabled) return;
             TraceCode.CSharpHost.RuntimeTraceSink.Mutate(variable, "Add", new object?[] { key, value }, TraceCode.CSharpHost.RuntimeTraceSink.ScopedSourceLine);
             TraceCode.CSharpHost.RuntimeTraceSink.Snapshot(variable, this);
         }
@@ -1783,6 +1829,7 @@ namespace TraceCode.Internal
         public new bool Remove(TKey key)
         {
             bool removed = base.Remove(key);
+            if (!TraceCode.CSharpHost.RuntimeTraceSink.RecordingEnabled) return removed;
             TraceCode.CSharpHost.RuntimeTraceSink.Mutate(
                 variable,
                 new object?[] { key },
@@ -1797,6 +1844,7 @@ namespace TraceCode.Internal
         public new void Clear()
         {
             base.Clear();
+            if (!TraceCode.CSharpHost.RuntimeTraceSink.RecordingEnabled) return;
             TraceCode.CSharpHost.RuntimeTraceSink.Mutate(variable, "Clear", Array.Empty<object?>(), TraceCode.CSharpHost.RuntimeTraceSink.ScopedSourceLine);
             TraceCode.CSharpHost.RuntimeTraceSink.Snapshot(variable, this);
         }
@@ -1814,6 +1862,7 @@ namespace TraceCode.Internal
         public bool TryGetValue(TKey key, out TValue value, int line, IReadOnlyList<string?>? indexSources)
         {
             bool found = base.TryGetValue(key, out value!);
+            if (!TraceCode.CSharpHost.RuntimeTraceSink.RecordingEnabled) return found;
             TraceCode.CSharpHost.RuntimeTraceSink.IndexedRead(variable, key, found ? value : default, line, null, indexSources);
             return found;
         }
@@ -1867,6 +1916,7 @@ namespace TraceCode.Internal
         public new bool Add(T item)
         {
             bool added = base.Add(item);
+            if (!TraceCode.CSharpHost.RuntimeTraceSink.RecordingEnabled) return added;
             TraceCode.CSharpHost.RuntimeTraceSink.Mutate(variable, "Add", new object?[] { item }, TraceCode.CSharpHost.RuntimeTraceSink.ScopedSourceLine);
             TraceCode.CSharpHost.RuntimeTraceSink.Snapshot(variable, this);
             return added;
@@ -1875,6 +1925,7 @@ namespace TraceCode.Internal
         public new bool Contains(T item)
         {
             bool contains = base.Contains(item);
+            if (!TraceCode.CSharpHost.RuntimeTraceSink.RecordingEnabled) return contains;
             TraceCode.CSharpHost.RuntimeTraceSink.IndexedRead(variable, item!, contains, TraceCode.CSharpHost.RuntimeTraceSink.CurrentLine);
             return contains;
         }
@@ -1882,6 +1933,7 @@ namespace TraceCode.Internal
         public new bool Remove(T item)
         {
             bool removed = base.Remove(item);
+            if (!TraceCode.CSharpHost.RuntimeTraceSink.RecordingEnabled) return removed;
             TraceCode.CSharpHost.RuntimeTraceSink.Mutate(
                 variable,
                 new object?[] { item },
@@ -1896,6 +1948,7 @@ namespace TraceCode.Internal
         public new void Clear()
         {
             base.Clear();
+            if (!TraceCode.CSharpHost.RuntimeTraceSink.RecordingEnabled) return;
             TraceCode.CSharpHost.RuntimeTraceSink.Mutate(variable, "Clear", Array.Empty<object?>(), TraceCode.CSharpHost.RuntimeTraceSink.ScopedSourceLine);
             TraceCode.CSharpHost.RuntimeTraceSink.Snapshot(variable, this);
         }
@@ -1928,6 +1981,7 @@ namespace TraceCode.Internal
         public new void Enqueue(T item)
         {
             base.Enqueue(item);
+            if (!TraceCode.CSharpHost.RuntimeTraceSink.RecordingEnabled) return;
             int line = TraceCode.CSharpHost.RuntimeTraceSink.ScopedSourceLine;
             TraceCode.CSharpHost.RuntimeTraceSink.Mutate(variable, "Enqueue", new object?[] { item }, line);
             TraceCode.CSharpHost.RuntimeTraceSink.IndexedWrite(variable, Count - 1, item, line);
@@ -1937,6 +1991,7 @@ namespace TraceCode.Internal
         public new T Dequeue()
         {
             T item = base.Dequeue();
+            if (!TraceCode.CSharpHost.RuntimeTraceSink.RecordingEnabled) return item;
             TraceCode.CSharpHost.RuntimeTraceSink.Mutate(variable, "Dequeue", Array.Empty<object?>(), TraceCode.CSharpHost.RuntimeTraceSink.ScopedSourceLine);
             TraceCode.CSharpHost.RuntimeTraceSink.Snapshot(variable, this);
             return item;
@@ -1945,6 +2000,7 @@ namespace TraceCode.Internal
         public new T Peek()
         {
             T item = base.Peek();
+            if (!TraceCode.CSharpHost.RuntimeTraceSink.RecordingEnabled) return item;
             TraceCode.CSharpHost.RuntimeTraceSink.IndexedRead(variable, 0, item, TraceCode.CSharpHost.RuntimeTraceSink.CurrentLine);
             return item;
         }
@@ -2002,6 +2058,7 @@ namespace TraceCode.Internal
         public new void Enqueue(TElement element, TPriority priority)
         {
             base.Enqueue(element, priority);
+            if (!TraceCode.CSharpHost.RuntimeTraceSink.RecordingEnabled) return;
             int line = TraceCode.CSharpHost.RuntimeTraceSink.ScopedSourceLine;
             TraceCode.CSharpHost.RuntimeTraceSink.Mutate(variable, "Enqueue", new object?[] { element }, line);
             TraceCode.CSharpHost.RuntimeTraceSink.IndexedPriorityQueueWrites(variable, this, line);
@@ -2011,6 +2068,7 @@ namespace TraceCode.Internal
         public new TElement Dequeue()
         {
             TElement item = base.Dequeue();
+            if (!TraceCode.CSharpHost.RuntimeTraceSink.RecordingEnabled) return item;
             int line = TraceCode.CSharpHost.RuntimeTraceSink.ScopedSourceLine;
             TraceCode.CSharpHost.RuntimeTraceSink.Mutate(variable, "Dequeue", Array.Empty<object?>(), line);
             TraceCode.CSharpHost.RuntimeTraceSink.IndexedPriorityQueueWrites(variable, this, line);
@@ -2021,6 +2079,7 @@ namespace TraceCode.Internal
         public new TElement Peek()
         {
             TElement item = base.Peek();
+            if (!TraceCode.CSharpHost.RuntimeTraceSink.RecordingEnabled) return item;
             TraceCode.CSharpHost.RuntimeTraceSink.IndexedRead(variable, 0, item, TraceCode.CSharpHost.RuntimeTraceSink.CurrentLine);
             return item;
         }
@@ -2046,6 +2105,7 @@ namespace TraceCode.Internal
         public new LinkedListNode<T> AddLast(T value)
         {
             LinkedListNode<T> node = base.AddLast(value);
+            if (!TraceCode.CSharpHost.RuntimeTraceSink.RecordingEnabled) return node;
             int line = TraceCode.CSharpHost.RuntimeTraceSink.ScopedSourceLine;
             TraceCode.CSharpHost.RuntimeTraceSink.Mutate(variable, "append", new object?[] { value }, line);
             TraceCode.CSharpHost.RuntimeTraceSink.IndexedWrite(variable, Count - 1, value, line);
@@ -2056,6 +2116,7 @@ namespace TraceCode.Internal
         public new LinkedListNode<T> AddFirst(T value)
         {
             LinkedListNode<T> node = base.AddFirst(value);
+            if (!TraceCode.CSharpHost.RuntimeTraceSink.RecordingEnabled) return node;
             int line = TraceCode.CSharpHost.RuntimeTraceSink.ScopedSourceLine;
             TraceCode.CSharpHost.RuntimeTraceSink.Mutate(variable, "appendleft", new object?[] { value }, line);
             TraceCode.CSharpHost.RuntimeTraceSink.IndexedWrite(variable, 0, value, line);
@@ -2066,6 +2127,7 @@ namespace TraceCode.Internal
         public new void RemoveFirst()
         {
             base.RemoveFirst();
+            if (!TraceCode.CSharpHost.RuntimeTraceSink.RecordingEnabled) return;
             TraceCode.CSharpHost.RuntimeTraceSink.Mutate(variable, "popleft", Array.Empty<object?>(), TraceCode.CSharpHost.RuntimeTraceSink.ScopedSourceLine);
             TraceCode.CSharpHost.RuntimeTraceSink.Snapshot(variable, this);
         }
@@ -2073,6 +2135,7 @@ namespace TraceCode.Internal
         public new void RemoveLast()
         {
             base.RemoveLast();
+            if (!TraceCode.CSharpHost.RuntimeTraceSink.RecordingEnabled) return;
             TraceCode.CSharpHost.RuntimeTraceSink.Mutate(variable, "pop", Array.Empty<object?>(), TraceCode.CSharpHost.RuntimeTraceSink.ScopedSourceLine);
             TraceCode.CSharpHost.RuntimeTraceSink.Snapshot(variable, this);
         }
@@ -2105,6 +2168,7 @@ namespace TraceCode.Internal
         public new void Push(T item)
         {
             base.Push(item);
+            if (!TraceCode.CSharpHost.RuntimeTraceSink.RecordingEnabled) return;
             TraceCode.CSharpHost.RuntimeTraceSink.Mutate(variable, "Push", new object?[] { item }, TraceCode.CSharpHost.RuntimeTraceSink.ScopedSourceLine);
             TraceCode.CSharpHost.RuntimeTraceSink.Snapshot(variable, this);
         }
@@ -2112,6 +2176,7 @@ namespace TraceCode.Internal
         public new T Pop()
         {
             T item = base.Pop();
+            if (!TraceCode.CSharpHost.RuntimeTraceSink.RecordingEnabled) return item;
             TraceCode.CSharpHost.RuntimeTraceSink.Mutate(variable, "Pop", Array.Empty<object?>(), TraceCode.CSharpHost.RuntimeTraceSink.ScopedSourceLine);
             TraceCode.CSharpHost.RuntimeTraceSink.Snapshot(variable, this);
             return item;
@@ -2120,6 +2185,7 @@ namespace TraceCode.Internal
         public new T Peek()
         {
             T item = base.Peek();
+            if (!TraceCode.CSharpHost.RuntimeTraceSink.RecordingEnabled) return item;
             TraceCode.CSharpHost.RuntimeTraceSink.IndexedRead(variable, 0, item, TraceCode.CSharpHost.RuntimeTraceSink.CurrentLine);
             return item;
         }

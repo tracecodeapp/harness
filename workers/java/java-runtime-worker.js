@@ -65,9 +65,14 @@ let traceJVMExecutionScopeResetSequence = 0;
 
 const TRACE_OUTPUT_MARKER = '__TRACECODE_TRACE_OUTPUT__:';
 const TRACE_EVENT_MARKER = '__TRACECODE_TRACE_EVENT__:';
+const TRACE_EVENTS_BEGIN_MARKER = '__TRACECODE_TRACE_EVENTS_BEGIN__:';
+const TRACE_EVENTS_END_MARKER = '__TRACECODE_TRACE_EVENTS_END__';
+const TRACE_EXPORT_MARKER = '__TRACECODE_TRACE_EXPORT_MS__:';
 const TRACE_LIMIT_MARKER = '__TRACECODE_TRACE_LIMIT__:';
 const TRACE_DROPPED_MARKER = '__TRACECODE_TRACE_DROPPED__:';
+const TRACE_PROFILE_MARKER = '__TRACECODE_TRACE_PROFILE__:';
 const TRACE_ERROR_MARKER = '__TRACECODE_TRACE_ERROR__:';
+const TRACE_FALLBACK_MARKER = '__TRACECODE_TRACE_FALLBACK_REQUIRED__:';
 
 const REWRITE_BRIDGE_SOURCE = `
 package tracecode.harness.bridge;
@@ -190,6 +195,7 @@ async function createTraceJVMClient() {
     },
     runtimeProfile: 'core',
     retirementAfterExecutions: 1,
+    experiments: { hotAot: true },
   });
   const initialization = Promise.all([
     compiler.initialize(),
@@ -236,6 +242,9 @@ function getTraceJVMClient() {
 }
 
 function invalidateTraceJVMClient() {
+  for (const key of [...traceJVMPreparedProcessLeases.keys()]) {
+    disposeTraceJVMPreparedProcessLease(key);
+  }
   const resolvedClient = traceJVMClient;
   const pendingClient = traceJVMClientPromise;
   traceJVMClient = undefined;
@@ -448,12 +457,114 @@ async function runInFreshTraceJVMProcess(client, request, programId) {
   }
 }
 
+const traceJVMPreparedProcessLeases = new Map();
+const TRACE_JVM_LEASE_MAX_EXECUTIONS = 64;
+
+function disposeTraceJVMPreparedProcessLease(programId) {
+  const lease = traceJVMPreparedProcessLeases.get(String(programId));
+  if (!lease) return false;
+  traceJVMPreparedProcessLeases.delete(String(programId));
+  lease.process?.dispose();
+  lease.host?.close?.();
+  return true;
+}
+
+async function stageTraceJVMKernelFiles(host, processFiles) {
+  for (const file of processFiles ?? []) {
+    const normalizedPath = `/${String(file.path).replace(/^\/+/, '')}`;
+    const parentPath = normalizedPath.slice(
+      0,
+      Math.max(1, normalizedPath.lastIndexOf('/'))
+    );
+    await host.dispatch({
+      service: 'posix',
+      operation: 'mkdir',
+      payload: { path: parentPath, options: { recursive: true } },
+    });
+    const opened = await host.dispatch({
+      service: 'posix',
+      operation: 'open',
+      payload: {
+        path: normalizedPath,
+        options: { access: 'write', create: true, truncate: true },
+      },
+    });
+    try {
+      await host.dispatch({
+        service: 'posix',
+        operation: 'write',
+        payload: { fd: opened.fd, bytes: file.content },
+      });
+    } finally {
+      await host.dispatch({
+        service: 'posix',
+        operation: 'close',
+        payload: { fd: opened.fd },
+      });
+    }
+  }
+}
+
+/**
+ * Run a prepared case in a warm per-program TraceJVM process. The engine
+ * restores run-scoped files/properties between executions and reports an
+ * isolation verdict per run; the lease survives only clean, non-retiring
+ * runs, so semantics match the fresh-process path while skipping VM spin-up
+ * (~700ms per traced case) for the common clean sequence.
+ */
+async function runInLeasedTraceJVMPreparedProcess(client, request, programId) {
+  const key = String(programId);
+  const processFiles = request.processFiles;
+  let lease = traceJVMPreparedProcessLeases.get(key);
+  if (!lease) {
+    const host = traceJVMProcessHost(programId);
+    const kernelBound = host.kernelBound;
+    const process = await client.createProcess({
+      workingDirectory: '/workspace',
+      retirementAfterExecutions: TRACE_JVM_LEASE_MAX_EXECUTIONS,
+      ...(kernelBound ? { host } : {}),
+    });
+    try {
+      if (kernelBound && processFiles?.length) {
+        await stageTraceJVMKernelFiles(host, processFiles);
+      }
+    } catch (error) {
+      process.dispose();
+      host.close?.();
+      throw error;
+    }
+    lease = { process, host, kernelBound };
+    traceJVMPreparedProcessLeases.set(key, lease);
+  }
+  let result;
+  try {
+    result = await lease.process.run({
+      ...request,
+      ...(lease.kernelBound && request.processFiles
+        ? { processFiles: undefined }
+        : {}),
+    });
+  } catch (error) {
+    disposeTraceJVMPreparedProcessLease(key);
+    throw error;
+  }
+  if (
+    result.isolation?.status !== 'clean' ||
+    result.retirementRecommended === true ||
+    lease.process.retirementRecommended === true
+  ) {
+    disposeTraceJVMPreparedProcessLease(key);
+  }
+  return result;
+}
+
 async function runInLeasedTraceJVMBatchProcess(
   client,
   request,
   systemPropertiesBatch,
   programId,
-  perCaseWallClockMs
+  perCaseWallClockMs,
+  argsBatch
 ) {
   const processFiles = request.processFiles;
   const results = [];
@@ -532,6 +643,9 @@ async function runInLeasedTraceJVMBatchProcess(
       let timeout;
       const run = process.run({
         ...request,
+        ...(Array.isArray(argsBatch?.[index])
+          ? { args: argsBatch[index] }
+          : {}),
         ...(kernelBound && request.processFiles
           ? { processFiles: undefined }
           : {}),
@@ -728,23 +842,53 @@ function compileFailureReport(compile, compilerDebugProfile) {
   };
 }
 
+function parseTraceEventsFromStdout(lines) {
+  // Large trace budgets drain events in multiple framed blocks so the JVM
+  // never holds the whole trace in memory; accumulate every block in order.
+  const events = [];
+  let sawBlock = false;
+  let cursor = 0;
+  for (;;) {
+    const beginIndex = lines.findIndex(
+      (line, index) => index >= cursor && line.startsWith(TRACE_EVENTS_BEGIN_MARKER)
+    );
+    if (beginIndex < 0) break;
+    const endIndex = lines.findIndex(
+      (line, index) => index > beginIndex && line.startsWith(TRACE_EVENTS_END_MARKER)
+    );
+    if (endIndex < 0) break;
+    sawBlock = true;
+    for (let index = beginIndex + 1; index < endIndex; index += 1) {
+      events.push(lines[index]);
+    }
+    cursor = endIndex + 1;
+  }
+  if (sawBlock) return events;
+  // Legacy per-event Base64 lines (older helper jars / runners).
+  return lines
+    .filter((line) => line.startsWith(TRACE_EVENT_MARKER))
+    .map((line) => decodeText(line.slice(TRACE_EVENT_MARKER.length)));
+}
+
 function executionReport(
   run,
   compile,
   compilerDebugProfile,
   compileCacheHit = false
 ) {
+  const parseStarted = performance.now();
   const lines = run.stdout.split(/\r?\n/u);
   const encodedOutput = markerValue(lines, TRACE_OUTPUT_MARKER);
   const encodedError = markerValue(lines, TRACE_ERROR_MARKER);
-  const events = lines
-    .filter((line) => line.startsWith(TRACE_EVENT_MARKER))
-    .map((line) => decodeText(line.slice(TRACE_EVENT_MARKER.length)));
+  const fallbackRequired =
+    markerValue(lines, TRACE_FALLBACK_MARKER) === 'true';
+  const events = parseTraceEventsFromStdout(lines);
+  const hostParseMs = performance.now() - parseStarted;
   const runtimeError = encodedError
     ? decodeText(encodedError)
     : run.status !== 'completed' || run.exitCode !== 0
       ? run.stderr || `TraceJVM execution ended with ${run.status}.`
-      : encodedOutput === undefined
+      : encodedOutput === undefined && !fallbackRequired
         ? 'TraceJVM execution completed without a Harness result marker.'
         : undefined;
   const traceLimitExceeded =
@@ -753,6 +897,33 @@ function executionReport(
     markerValue(lines, TRACE_DROPPED_MARKER) ?? '0',
     10
   );
+  const exportMsRaw = Number.parseFloat(
+    markerValue(lines, TRACE_EXPORT_MARKER) ?? ''
+  );
+  const encodedProfile = markerValue(lines, TRACE_PROFILE_MARKER);
+  let traceProfile;
+  if (encodedProfile) {
+    try {
+      traceProfile = JSON.parse(decodeText(encodedProfile));
+    } catch {
+      traceProfile = { parseError: true, raw: encodedProfile };
+    }
+  }
+  if (traceProfile && typeof traceProfile === 'object') {
+    traceProfile = {
+      ...traceProfile,
+      ...(Number.isFinite(exportMsRaw) ? { exportMs: exportMsRaw } : {}),
+      hostParseMs: Math.round(hostParseMs * 100) / 100,
+      eventCount: events.length,
+      stdoutChars: run.stdout.length,
+    };
+  }
+  if (traceProfile) {
+    // Surfaced for measurement scripts via page/worker console capture.
+    console.log(
+      '__TRACECODE_TRACE_PROFILE_JSON__:' + JSON.stringify(traceProfile)
+    );
+  }
 
   return {
     success: runtimeError === undefined,
@@ -770,6 +941,7 @@ function executionReport(
     droppedEventCount: Number.isFinite(droppedEventCount)
       ? droppedEventCount
       : 0,
+    ...(traceProfile ? { traceProfile } : {}),
     ...(run.diagnostics?.bytecodeProfile
       ? { bytecodeProfile: run.diagnostics.bytecodeProfile }
       : {}),
@@ -778,32 +950,112 @@ function executionReport(
       : {}),
     isolation: run.isolation,
     retirementRecommended: false,
+    fallbackRequired,
   };
 }
 
-async function compileSource(sourcePath, compilerDebugProfile) {
-  const source = traceJVMStringFiles.get(sourcePath);
-  if (source === undefined) {
-    throw new Error(`Missing TraceJVM source file: ${sourcePath}`);
+function mergeTraceFallbackReport(traceReport, cleanReport) {
+  return {
+    ...cleanReport,
+    events: traceReport.events,
+    traceLimitExceeded: traceReport.traceLimitExceeded,
+    droppedEventCount: traceReport.droppedEventCount,
+    ...(traceReport.traceProfile
+      ? { traceProfile: traceReport.traceProfile }
+      : {}),
+    runTimeMs:
+      (traceReport.runTimeMs ?? 0) + (cleanReport.runTimeMs ?? 0),
+    fallbackRequired: false,
+  };
+}
+
+function traceJVMRunnerArgs(
+  entryClass,
+  maxStoredEvents,
+  {
+    learnerFrame = '',
+    profile = false,
+    tracing = true,
+    fallbackEntryClass = '',
+  } = {}
+) {
+  return [
+    String(entryClass),
+    String(Number.parseInt(String(maxStoredEvents), 10) || 1),
+    String(learnerFrame),
+    profile ? 'profile' : '',
+    tracing ? '' : 'notrace',
+    String(fallbackEntryClass),
+  ];
+}
+
+async function completeTraceFallback(
+  traceReport,
+  runClean,
+  compile,
+  compilerDebugProfile,
+  compileCacheHit
+) {
+  if (!traceReport.fallbackRequired) return traceReport;
+  return mergeTraceFallbackReport(
+    traceReport,
+    executionReport(
+      await runClean(),
+      compile,
+      compilerDebugProfile,
+      compileCacheHit
+    )
+  );
+}
+
+function traceJVMCompileSourcePaths(sourcePathOrManifest) {
+  const raw = String(sourcePathOrManifest);
+  if (!raw.startsWith('[')) return [raw];
+  let parsed;
+  try {
+    parsed = JSON.parse(raw);
+  } catch (error) {
+    throw new TypeError(`Invalid TraceJVM source manifest: ${error}`);
   }
+  if (
+    !Array.isArray(parsed) ||
+    parsed.length === 0 ||
+    parsed.some((path) => typeof path !== 'string' || path.length === 0) ||
+    new Set(parsed).size !== parsed.length
+  ) {
+    throw new TypeError(
+      'TraceJVM source manifests must contain unique, non-empty paths.'
+    );
+  }
+  return parsed;
+}
+
+async function compileSource(sourcePathOrManifest, compilerDebugProfile) {
+  const sourcePaths = traceJVMCompileSourcePaths(sourcePathOrManifest);
+  const sources = sourcePaths.map((sourcePath) => {
+    const source = traceJVMStringFiles.get(sourcePath);
+    if (source === undefined) {
+      throw new Error(`Missing TraceJVM source file: ${sourcePath}`);
+    }
+    return {
+      path: sourcePathFromVirtualPath(sourcePath),
+      content: source,
+    };
+  });
   const [client, helperJar] = await Promise.all([
     getTraceJVMClient(),
     loadTraceJVMHelperJar(),
   ]);
-  const cacheKey = `${sourcePath}\0${source}`;
+  const cacheKey = sources
+    .map((source) => `${source.path}\0${source.content}`)
+    .join('\0\0');
   let compile = traceJVMCompileCache.get(cacheKey);
   const compileCacheHit = compile !== undefined;
   if (compile) {
     traceJVMCompileCache.delete(cacheKey);
     traceJVMCompileCache.set(cacheKey, compile);
   } else {
-    compile = await client.compile({
-      sources: [{
-        path: sourcePathFromVirtualPath(sourcePath),
-        content: source,
-      }],
-      classpath: [helperJar],
-    });
+    compile = await client.compile({ sources, classpath: [helperJar] });
     if (
       compile.status === 'completed' &&
       compile.exitCode === 0 &&
@@ -838,15 +1090,29 @@ async function compileAndExecute(
   ) {
     return compileFailureReport(context.compile, compilerDebugProfile);
   }
-  const run = await runInFreshTraceJVMProcess(context.client, {
+  const runRequest = {
     program: context.compile.program,
     classpath: [context.helperJar],
     processFiles: processFiles(),
     mainClass: 'tracecode.browser.TraceExecutionRunner',
-    args: [entryClass, String(maxStoredEvents)],
-  });
-  const report = executionReport(
+    args: traceJVMRunnerArgs(entryClass, maxStoredEvents),
+  };
+  const run = await runInFreshTraceJVMProcess(context.client, runRequest);
+  let report = executionReport(
     run,
+    context.compile,
+    compilerDebugProfile,
+    context.compileCacheHit
+  );
+  report = await completeTraceFallback(
+    report,
+    () => runInFreshTraceJVMProcess(context.client, {
+      ...runRequest,
+      args: traceJVMRunnerArgs(entryClass, maxStoredEvents, {
+        tracing: false,
+        fallbackEntryClass: entryClass,
+      }),
+    }),
     context.compile,
     compilerDebugProfile,
     context.compileCacheHit
@@ -910,15 +1176,29 @@ async function traceJVMCompileAndRunBatch(
     .filter(Boolean);
   const results = [];
   for (const entryClass of entryClasses) {
-    const run = await runInFreshTraceJVMProcess(context.client, {
+    const runRequest = {
       program: context.compile.program,
       classpath: [context.helperJar],
       processFiles: processFiles(),
       mainClass: 'tracecode.browser.TraceExecutionRunner',
-      args: [entryClass, '1'],
-    });
-    const report = executionReport(
+      args: traceJVMRunnerArgs(entryClass, 1),
+    };
+    const run = await runInFreshTraceJVMProcess(context.client, runRequest);
+    let report = executionReport(
       run,
+      context.compile,
+      compilerDebugProfile,
+      context.compileCacheHit
+    );
+    report = await completeTraceFallback(
+      report,
+      () => runInFreshTraceJVMProcess(context.client, {
+        ...runRequest,
+        args: traceJVMRunnerArgs(entryClass, 1, {
+          tracing: false,
+          fallbackEntryClass: entryClass,
+        }),
+      }),
       context.compile,
       compilerDebugProfile,
       context.compileCacheHit
@@ -1007,7 +1287,13 @@ async function traceJVMRunPreparedRuntimeProgram(
   entryClass,
   maxStoredEvents = '1',
   preparedInputProperties = '{}',
-  learnerFrame = ''
+  learnerFrame = '',
+  traceProfile = '',
+  // On-demand tracing. When a clean companion entry is present, 'false'
+  // selects it once before learner code runs. Restored legacy artifacts
+  // without a companion retain the guarded instrumented fallback.
+  traceEnabled = 'true',
+  cleanEntryClass = ''
 ) {
   const normalizedProgramId = String(programId);
   const prepared = traceJVMPreparedPrograms.get(normalizedProgramId);
@@ -1035,19 +1321,31 @@ async function traceJVMRunPreparedRuntimeProgram(
       'TraceJVM prepared inputs must be string system properties.'
     );
   }
-  const run = await runInFreshTraceJVMProcess(client, {
+  const tracingEnabled = String(traceEnabled) !== 'false';
+  const selectedEntryClass =
+    !tracingEnabled && String(cleanEntryClass)
+      ? String(cleanEntryClass)
+      : String(entryClass);
+  const fallbackEntryClass = String(cleanEntryClass);
+  const traceRequest = {
     program: prepared.program,
     classpath: [helperJar],
     systemProperties,
     mainClass: 'tracecode.browser.TraceExecutionRunner',
-    args: [
-      String(entryClass),
-      String(Number.parseInt(String(maxStoredEvents), 10) || 1),
-      String(learnerFrame),
-    ],
-  }, normalizedProgramId);
+    args: traceJVMRunnerArgs(selectedEntryClass, maxStoredEvents, {
+      learnerFrame,
+      profile: String(traceProfile) === 'true',
+      tracing: tracingEnabled,
+      fallbackEntryClass,
+    }),
+  };
+  const run = await runInLeasedTraceJVMPreparedProcess(
+    client,
+    traceRequest,
+    normalizedProgramId
+  );
   prepared.executions += 1;
-  const report = executionReport(
+  let report = executionReport(
     run,
     {
       stdout: prepared.compilerStdout,
@@ -1057,6 +1355,29 @@ async function traceJVMRunPreparedRuntimeProgram(
     prepared.compilerDebugProfile,
     true
   );
+  if (report.fallbackRequired) {
+    disposeTraceJVMPreparedProcessLease(normalizedProgramId);
+    const cleanFallbackClass = fallbackEntryClass || String(entryClass);
+    report = await completeTraceFallback(
+      report,
+      () => runInLeasedTraceJVMPreparedProcess(client, {
+        ...traceRequest,
+        args: traceJVMRunnerArgs(cleanFallbackClass, maxStoredEvents, {
+          learnerFrame,
+          profile: String(traceProfile) === 'true',
+          tracing: false,
+          fallbackEntryClass: cleanFallbackClass,
+        }),
+      }, normalizedProgramId),
+      {
+        stdout: prepared.compilerStdout,
+        stderr: prepared.compilerStderr,
+        timings: { totalMs: prepared.compileTimeMs },
+      },
+      prepared.compilerDebugProfile,
+      true
+    );
+  }
   return JSON.stringify({
     ...report,
     preparedExecutionCount: prepared.executions,
@@ -1070,7 +1391,10 @@ async function traceJVMRunPreparedRuntimeProgramBatch(
   maxStoredEvents = '1',
   preparedInputPropertiesBatch = '[]',
   perCaseWallClockMs = '0',
-  learnerFrame = ''
+  learnerFrame = '',
+  traceProfile = '',
+  traceEnabledBatch = '[]',
+  cleanEntryClass = ''
 ) {
   const normalizedProgramId = String(programId);
   const prepared = traceJVMPreparedPrograms.get(normalizedProgramId);
@@ -1090,6 +1414,7 @@ async function traceJVMRunPreparedRuntimeProgramBatch(
   const systemPropertiesBatch = JSON.parse(
     String(preparedInputPropertiesBatch)
   );
+  const parsedTraceEnabledBatch = JSON.parse(String(traceEnabledBatch));
   if (
     !Array.isArray(systemPropertiesBatch) ||
     systemPropertiesBatch.length === 0 ||
@@ -1105,29 +1430,92 @@ async function traceJVMRunPreparedRuntimeProgramBatch(
       'TraceJVM prepared batch inputs must be a non-empty array of string system-property maps.'
     );
   }
+  if (
+    !Array.isArray(parsedTraceEnabledBatch) ||
+    (
+      parsedTraceEnabledBatch.length !== 0 &&
+      (
+        parsedTraceEnabledBatch.length !== systemPropertiesBatch.length ||
+        parsedTraceEnabledBatch.some((value) => typeof value !== 'boolean')
+      )
+    )
+  ) {
+    throw new TypeError(
+      'TraceJVM prepared trace selection must be empty or contain one boolean per batch case.'
+    );
+  }
+  disposeTraceJVMPreparedProcessLease(normalizedProgramId);
   let localAuthority;
   if (!traceJVMProcessHost(normalizedProgramId).kernelBound) {
     localAuthority = await createLocalTraceKernelAuthority();
     traceJVMLocalKernelAuthorities.set(normalizedProgramId, localAuthority);
   }
   let batch;
+  let reports;
   try {
+    const cleanEntry = String(cleanEntryClass) || String(entryClass);
+    const traceArgs = traceJVMRunnerArgs(entryClass, maxStoredEvents, {
+      learnerFrame,
+      profile: String(traceProfile) === 'true',
+      fallbackEntryClass: cleanEntry,
+    });
+    const cleanArgs = traceJVMRunnerArgs(cleanEntry, maxStoredEvents, {
+      learnerFrame,
+      profile: String(traceProfile) === 'true',
+      tracing: false,
+      fallbackEntryClass: cleanEntry,
+    });
+    const argsBatch = parsedTraceEnabledBatch.length === 0
+      ? undefined
+      : parsedTraceEnabledBatch.map((enabled) =>
+          enabled ? traceArgs : cleanArgs
+        );
     batch = await runInLeasedTraceJVMBatchProcess(
       client,
       {
         program: prepared.program,
         classpath: [helperJar],
         mainClass: 'tracecode.browser.TraceExecutionRunner',
-        args: [
-          String(entryClass),
-          String(Number.parseInt(String(maxStoredEvents), 10) || 1),
-          String(learnerFrame),
-        ],
+        args: traceArgs,
       },
       systemPropertiesBatch,
       normalizedProgramId,
-      Number.parseInt(String(perCaseWallClockMs), 10) || 0
+      Number.parseInt(String(perCaseWallClockMs), 10) || 0,
+      argsBatch
     );
+    reports = batch.results.map((run) =>
+      executionReport(
+        run,
+        {
+          stdout: prepared.compilerStdout,
+          stderr: prepared.compilerStderr,
+          timings: { totalMs: prepared.compileTimeMs },
+        },
+        prepared.compilerDebugProfile,
+        true
+      )
+    );
+    for (let index = 0; index < reports.length; index += 1) {
+      if (!reports[index].fallbackRequired) continue;
+      reports[index] = await completeTraceFallback(
+        reports[index],
+        () => runInFreshTraceJVMProcess(client, {
+          program: prepared.program,
+          classpath: [helperJar],
+          systemProperties: systemPropertiesBatch[index],
+          mainClass: 'tracecode.browser.TraceExecutionRunner',
+          args: cleanArgs,
+        }, normalizedProgramId),
+        {
+          stdout: prepared.compilerStdout,
+          stderr: prepared.compilerStderr,
+          timings: { totalMs: prepared.compileTimeMs },
+        },
+        prepared.compilerDebugProfile,
+        true
+      );
+      batch.processCount += 1;
+    }
   } finally {
     if (localAuthority) {
       traceJVMLocalKernelAuthorities.delete(normalizedProgramId);
@@ -1135,18 +1523,6 @@ async function traceJVMRunPreparedRuntimeProgramBatch(
     }
   }
   prepared.executions += batch.results.length;
-  const reports = batch.results.map((run) =>
-    executionReport(
-      run,
-      {
-        stdout: prepared.compilerStdout,
-        stderr: prepared.compilerStderr,
-        timings: { totalMs: prepared.compileTimeMs },
-      },
-      prepared.compilerDebugProfile,
-      true
-    )
-  );
   return JSON.stringify({
     success: reports.every((report) => report.success),
     results: reports,
@@ -1157,6 +1533,7 @@ async function traceJVMRunPreparedRuntimeProgramBatch(
 }
 
 function traceJVMDisposeRuntimeProgram(programId) {
+  disposeTraceJVMPreparedProcessLease(programId);
   return traceJVMPreparedPrograms.delete(String(programId));
 }
 

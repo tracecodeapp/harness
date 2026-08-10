@@ -628,6 +628,14 @@ export class CSharpWorkerClient {
     prepared: CSharpPreparedProgramArtifact,
     call: RuntimePreparedTraceCall
   ): Promise<ExecutionResult> {
+    if (
+      call.recordTrace !== undefined &&
+      typeof call.recordTrace !== 'boolean'
+    ) {
+      throw new TypeError(
+        'C# trace selection requires a boolean recordTrace value.'
+      );
+    }
     return this.runPreparedExecutionGeneration(call.signal, async () => {
       const wallClockMs = call.limits?.wallClockMs
         ?? this.resolveTracingTimeoutMs(prepared.functionName, prepared.executionStyle);
@@ -638,6 +646,9 @@ export class CSharpWorkerClient {
             this.sendCommandEffect<CSharpWorkerExecuteResult>('execute-prepared-trace', {
               prepared,
               inputs: call.inputs,
+              ...(call.recordTrace === undefined
+                ? {}
+                : { tracingEnabled: call.recordTrace }),
               assetBaseUrl: this.options.assetBaseUrl,
               timeoutMs: Math.max(100, wallClockMs - 1_000),
               traceEventTransport: traceEventTransferRequest(),

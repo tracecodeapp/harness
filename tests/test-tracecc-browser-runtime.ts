@@ -224,6 +224,78 @@ async function main(): Promise<void> {
         'class Solution { public: int add(int a, int b) { return a + b + 1; } };',
         { a: 20, b: 22 }
       );
+      const mixedTraceClient = new CppWorkerClient(workerOptions);
+      await mixedTraceClient.init();
+      const mixedTracePreparation = await mixedTraceClient.prepareRuntimeProgram({
+        mode: 'trace',
+        code: [
+          'class Solution {',
+          'public:',
+          '  int add(int a, int b) {',
+          '    static int calls = 0;',
+          '    calls += 1;',
+          '    int sum = a + b;',
+          '    return calls * 100 + sum;',
+          '  }',
+          '};',
+        ].join('\\n'),
+        functionName: 'add',
+        executionStyle: 'solution-method',
+        traceOptions: { maxTraceSteps: 1000 },
+      });
+      if (!mixedTracePreparation.success) {
+        throw new Error(
+          'TraceCC mixed trace preparation failed: ' +
+            JSON.stringify(mixedTracePreparation)
+        );
+      }
+      const mixedTraceResults = await mixedTraceClient.executePreparedTraceBatch(
+        mixedTracePreparation.handle,
+        {
+          inputBatch: [
+            { a: 1, b: 2 },
+            { a: 3, b: 4 },
+            { a: 5, b: 6 },
+          ],
+          traceEnabledBatch: [true, false, true],
+        }
+      );
+      const invalidMixedTraceSelection = await mixedTraceClient
+        .executePreparedTraceBatch(
+          mixedTracePreparation.handle,
+          { inputBatch: [{ a: 1, b: 2 }], traceEnabledBatch: [] }
+        )
+        .then(
+          () => '',
+          (error) => error instanceof Error ? error.message : String(error)
+        );
+      const scriptTracePreparation = await mixedTraceClient.prepareRuntimeProgram({
+        mode: 'trace',
+        code: 'int result = 42;',
+        functionName: '',
+        executionStyle: 'function',
+        traceOptions: { maxTraceSteps: 1000 },
+      });
+      if (!scriptTracePreparation.success) {
+        throw new Error(
+          'TraceCC script trace preparation failed: ' +
+            JSON.stringify(scriptTracePreparation)
+        );
+      }
+      const scriptTraceResults = await mixedTraceClient.executePreparedTraceBatch(
+        scriptTracePreparation.handle,
+        {
+          inputBatch: [{}, {}],
+          traceEnabledBatch: [true, false],
+        }
+      );
+      await mixedTraceClient.disposePreparedProgram(
+        scriptTracePreparation.handle
+      );
+      await mixedTraceClient.disposePreparedProgram(
+        mixedTracePreparation.handle
+      );
+      mixedTraceClient.terminate();
       const projectClient = new CppWorkerClient(workerOptions);
       const projectFiles = [
         {
@@ -396,6 +468,9 @@ async function main(): Promise<void> {
         warmMs,
         first,
         edited,
+        mixedTraceResults,
+        scriptTraceResults,
+        invalidMixedTraceSelection,
         projectCompile: {
           ...projectCompile,
           files: projectCompile.files?.map((file) => ({
@@ -446,6 +521,17 @@ async function main(): Promise<void> {
         elapsedMs: number;
         timings?: Record<string, unknown>;
       };
+      mixedTraceResults: Array<{
+        kind: string;
+        output?: unknown;
+        trace?: { events?: unknown[] };
+      }>;
+      scriptTraceResults: Array<{
+        kind: string;
+        output?: unknown;
+        trace?: { events?: unknown[] };
+      }>;
+      invalidMixedTraceSelection: string;
       projectCompile: {
         stdout: string;
         stderr: string;
@@ -495,6 +581,28 @@ async function main(): Promise<void> {
       `TraceCC edited execution failed: ${JSON.stringify(result)}`
     );
     assertCondition(
+      result.mixedTraceResults.length === 3 &&
+        result.mixedTraceResults.every(
+          (entry, index) =>
+            entry.kind === 'completed' && entry.output === 103 + index * 4
+        ) &&
+        (result.mixedTraceResults[0]?.trace?.events?.length ?? 0) > 0 &&
+        result.mixedTraceResults[1]?.trace?.events?.length === 0 &&
+        (result.mixedTraceResults[2]?.trace?.events?.length ?? 0) > 0 &&
+        result.invalidMixedTraceSelection ===
+          'C++ trace selection must contain one boolean per batch case.',
+      `TraceCC mixed batch did not select recording while resetting module state per case: ${JSON.stringify(result)}`
+    );
+    assertCondition(
+      result.scriptTraceResults.length === 2 &&
+        result.scriptTraceResults.every(
+          (entry) => entry.kind === 'completed' && entry.output === 42
+        ) &&
+        (result.scriptTraceResults[0]?.trace?.events?.length ?? 0) > 0 &&
+        result.scriptTraceResults[1]?.trace?.events?.length === 0,
+      `TraceCC script batching did not honor per-case trace selection: ${JSON.stringify(result)}`
+    );
+    assertCondition(
       result.projectCompile.exitCode === 0 &&
       result.projectCompile.files?.some(
         (file) => file.path === 'project-app'
@@ -536,7 +644,7 @@ async function main(): Promise<void> {
     );
     assertCondition(
       requestedUrls.every((url) => !url.includes('/yowasp/')),
-      `TraceCC requested a YoWASP asset: ${JSON.stringify(
+      `TraceCC requested a retired compiler asset: ${JSON.stringify(
         requestedUrls.filter((url) => url.includes('/yowasp/'))
       )}`
     );

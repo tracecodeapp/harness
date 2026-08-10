@@ -13,9 +13,11 @@ interface BrowserResult {
   batchRun: Record<string, unknown>;
   batchBaselineAfter: Record<string, unknown>;
   traceRuns: Array<Record<string, unknown>>;
+  mixedTraceBatch: Record<string, unknown>;
   legacyTrace: Record<string, unknown>;
   limitedRun: Record<string, unknown>;
   traceLimitedRun: Record<string, unknown>;
+  onDemandBenchmark: Record<string, unknown>;
   preparationWorker: Record<string, unknown>;
   executions: Array<Record<string, unknown>>;
 }
@@ -260,6 +262,28 @@ async function main(): Promise<void> {
         functionName: 'broken',
         executionStyle: 'function',
       });
+      const benchmarkCode = [
+        'def burn(values: list[int]):',
+        '    values.append(101)',
+        '    return [sum(values), len(values)]',
+      ].join('\\n');
+      const tracePrepareStartedAt = performance.now();
+      const benchmarkTrace = await preparationWorker.request('prepare-program', {
+        mode: 'trace',
+        code: benchmarkCode,
+        functionName: 'burn',
+        executionStyle: 'function',
+        traceOptions: { maxTraceSteps: 1000 },
+      });
+      const tracePrepareMs = performance.now() - tracePrepareStartedAt;
+      const codePrepareStartedAt = performance.now();
+      const benchmarkCodeOnly = await preparationWorker.request('prepare-program', {
+        mode: 'code',
+        code: benchmarkCode,
+        functionName: 'burn',
+        executionStyle: 'function',
+      });
+      const codePrepareMs = performance.now() - codePrepareStartedAt;
       const preparationMetrics = preparationWorker.metrics();
       preparationWorker.terminate();
 
@@ -348,6 +372,7 @@ async function main(): Promise<void> {
       const traceRuns = [];
       let legacyTrace;
       let traceLimitedRun;
+      let mixedTraceBatch;
       for (const value of [1, 2]) {
         const client = await createClient('trace-' + value);
         const startedAt = performance.now();
@@ -358,6 +383,12 @@ async function main(): Promise<void> {
             inputs: { value },
           }));
           if (value === 2) {
+            mixedTraceBatch = await client.request('execute-prepared-program-batch', {
+              artifact: trace.artifact,
+              mode: 'trace',
+              inputBatch: [{ value: 1 }, { value: 2 }, { value: 3 }],
+              traceEnabledBatch: [true, false, true],
+            });
             legacyTrace = await client.request('execute-with-tracing', {
               code: traceCode,
               functionName: 'solve',
@@ -403,15 +434,152 @@ async function main(): Promise<void> {
         limitClient.terminate();
       }
 
+      const benchmarkClient = await createClient('on-demand-benchmark');
+      const benchmarkInputs = [20000, 30000, 40000].map((length) => ({
+        values: Array.from({ length }, (_, index) => index % 97),
+      }));
+      const benchmarkInputLengths = benchmarkInputs.map(({ values }) => values.length);
+      const allDisabledMs = [];
+      const allDisabledPhaseMs = [];
+      const cleanMs = [];
+      const cleanPhaseMs = [];
+      const mixedOneArtifactMs = [];
+      const mixedDualArtifactMs = [];
+      let benchmarkOutputsMatch = true;
+      let disabledEventsEmpty = true;
+      const requestTimed = async (type, payload) => {
+        const startedAt = performance.now();
+        const response = await benchmarkClient.request(type, payload);
+        const results = response.results || [];
+        const phaseNames = [
+          'inputLiteralMs',
+          'namespaceCreateMs',
+          'guardBeginMs',
+          'bindingMs',
+          'compiledExecutionMs',
+          'guardRestoreMs',
+          'namespaceDestroyMs',
+          'resultParseMs',
+          'filesystemBeginMs',
+          'filesystemRestoreMs',
+        ];
+        const phaseMs = Object.fromEntries(
+          phaseNames.map((name) => [
+            name,
+            results.reduce(
+              (total, entry) => total + (entry.timings?.[name] || 0),
+              0
+            ),
+          ])
+        );
+        return {
+          response,
+          ms: performance.now() - startedAt,
+          phaseMs,
+        };
+      };
+      const runAllDisabled = () => requestTimed('execute-prepared-program-batch', {
+        artifact: benchmarkTrace.artifact,
+        mode: 'trace',
+        inputBatch: benchmarkInputs,
+        traceEnabledBatch: [false, false, false],
+      });
+      const runClean = () => requestTimed('execute-prepared-program-batch', {
+        artifact: benchmarkCodeOnly.artifact,
+        mode: 'code',
+        inputBatch: benchmarkInputs,
+      });
+      const runMixedOneArtifact = () => requestTimed('execute-prepared-program-batch', {
+        artifact: benchmarkTrace.artifact,
+        mode: 'trace',
+        inputBatch: benchmarkInputs,
+        traceEnabledBatch: [true, false, false],
+      });
+      const runMixedDualArtifact = async () => {
+        const startedAt = performance.now();
+        const traced = await benchmarkClient.request('execute-prepared-program-batch', {
+          artifact: benchmarkTrace.artifact,
+          mode: 'trace',
+          inputBatch: benchmarkInputs.slice(0, 1),
+          traceEnabledBatch: [true],
+        });
+        const clean = await benchmarkClient.request('execute-prepared-program-batch', {
+          artifact: benchmarkCodeOnly.artifact,
+          mode: 'code',
+          inputBatch: benchmarkInputs.slice(1),
+        });
+        return {
+          response: {
+            success: traced.success && clean.success,
+            results: [...(traced.results || []), ...(clean.results || [])],
+          },
+          ms: performance.now() - startedAt,
+        };
+      };
+      try {
+        await runAllDisabled();
+        await runClean();
+        await runMixedOneArtifact();
+        await runMixedDualArtifact();
+        for (let iteration = 0; iteration < 6; iteration += 1) {
+          const disabledPair = iteration % 2 === 0
+            ? [await runAllDisabled(), await runClean()]
+            : [await runClean(), await runAllDisabled()].reverse();
+          const [disabled, clean] = disabledPair;
+          allDisabledMs.push(disabled.ms);
+          allDisabledPhaseMs.push(disabled.phaseMs);
+          cleanMs.push(clean.ms);
+          cleanPhaseMs.push(clean.phaseMs);
+          const disabledResults = disabled.response.results || [];
+          const cleanResults = clean.response.results || [];
+          benchmarkOutputsMatch = benchmarkOutputsMatch &&
+            JSON.stringify(disabledResults.map((entry) => entry.output)) ===
+              JSON.stringify(cleanResults.map((entry) => entry.output));
+          disabledEventsEmpty = disabledEventsEmpty && disabledResults.every(
+            (entry) => Array.isArray(entry.trace?.events) && entry.trace.events.length === 0
+          );
+
+          const mixedPair = iteration % 2 === 0
+            ? [await runMixedOneArtifact(), await runMixedDualArtifact()]
+            : [await runMixedDualArtifact(), await runMixedOneArtifact()].reverse();
+          const [oneArtifact, dualArtifact] = mixedPair;
+          mixedOneArtifactMs.push(oneArtifact.ms);
+          mixedDualArtifactMs.push(dualArtifact.ms);
+          benchmarkOutputsMatch = benchmarkOutputsMatch &&
+            JSON.stringify((oneArtifact.response.results || []).map((entry) => entry.output)) ===
+              JSON.stringify((dualArtifact.response.results || []).map((entry) => entry.output));
+        }
+      } finally {
+        executions.push(benchmarkClient.metrics());
+        benchmarkClient.terminate();
+      }
+      const onDemandBenchmark = {
+        tracePrepareMs,
+        codePrepareMs,
+        allDisabledMs,
+        allDisabledPhaseMs,
+        cleanMs,
+        cleanPhaseMs,
+        mixedOneArtifactMs,
+        mixedDualArtifactMs,
+        outputsMatch: benchmarkOutputsMatch,
+        disabledEventsEmpty,
+        callerInputsUnchanged: benchmarkInputs.every(
+          ({ values }, index) => values.length === benchmarkInputLengths[index]
+        ),
+      };
+
       return {
         preparations: { code, trace, batch, limited, traceLimited, invalid },
         codeRuns,
         batchRun,
         batchBaselineAfter,
         traceRuns,
+        mixedTraceBatch,
         legacyTrace,
         limitedRun,
         traceLimitedRun,
+        onDemandBenchmark,
         preparationWorker: preparationMetrics,
         executions,
       };
@@ -430,6 +598,12 @@ async function main(): Promise<void> {
           typeof artifact.executorCode === 'string',
         `${mode} preparation did not return a portable code artifact`
       );
+      if (mode === 'trace' || mode === 'traceLimited') {
+        assertCondition(
+          artifact.onDemandTracing === true,
+          `${mode} preparation did not produce an on-demand trace artifact`
+        );
+      }
     }
     assertCondition(
       result.preparations.invalid?.success === false &&
@@ -437,8 +611,8 @@ async function main(): Promise<void> {
       `Invalid Python prepared successfully: ${JSON.stringify(result.preparations.invalid)}`
     );
     assertCondition(
-      result.preparationWorker.prepareRequests === 6,
-      `Preparation worker received ${String(result.preparationWorker.prepareRequests)} preparations instead of six`
+      result.preparationWorker.prepareRequests === 8,
+      `Preparation worker received ${String(result.preparationWorker.prepareRequests)} preparations instead of eight`
     );
     const batchResults = result.batchRun.results as Array<Record<string, unknown>>;
     const batchOutputs = batchResults.map(
@@ -542,7 +716,6 @@ async function main(): Promise<void> {
         `Prepared code run ${index + 1} did not report artifact reuse: ${JSON.stringify(run)}`
       );
     }
-
     for (const [index, run] of result.traceRuns.entries()) {
       const trace = run.trace as { events?: unknown[] } | undefined;
       assertCondition(
@@ -553,6 +726,28 @@ async function main(): Promise<void> {
         `Prepared trace run ${index + 1} was not isolated or traced: ${JSON.stringify(run)}`
       );
     }
+    const mixedTraceResults = result.mixedTraceBatch.results as Array<Record<string, unknown>>;
+    for (const [index, run] of mixedTraceResults.entries()) {
+      const timings = run.timings as Record<string, unknown> | undefined;
+      assertCondition(
+        typeof timings?.guardBeginMs === 'number' &&
+          timings.guardBeginMs >= 0 &&
+          typeof timings.guardRestoreMs === 'number' &&
+          timings.guardRestoreMs >= 0,
+        `Prepared Python batch case ${index + 1} did not report execution-guard timings: ${JSON.stringify(run)}`
+      );
+    }
+    assertCondition(
+      result.mixedTraceBatch.success === true &&
+        mixedTraceResults.length === 3 &&
+        mixedTraceResults.every(
+          (entry) => entry.success === true && entry.output === 1
+        ) &&
+        (mixedTraceResults[0]?.trace as { events?: unknown[] })?.events?.length! > 0 &&
+        (mixedTraceResults[1]?.trace as { events?: unknown[] })?.events?.length === 0 &&
+        (mixedTraceResults[2]?.trace as { events?: unknown[] })?.events?.length! > 0,
+      `Prepared Python mixed trace batch did not select recording per case: ${JSON.stringify(result.mixedTraceBatch)}`
+    );
     const traceSignature = (run: Record<string, unknown>): string => {
       const trace = run.trace as { events?: Array<Record<string, unknown>> } | undefined;
       const controlKinds = new Set(['call', 'line', 'return', 'exception']);
@@ -583,11 +778,60 @@ async function main(): Promise<void> {
         result.traceLimitedRun.timeoutReason === 'recursion-limit',
       `Prepared trace execution ignored call-depth limits: ${JSON.stringify(result.traceLimitedRun)}`
     );
+    const benchmark = result.onDemandBenchmark as {
+      tracePrepareMs: number;
+      codePrepareMs: number;
+      allDisabledMs: number[];
+      allDisabledPhaseMs: Array<Record<string, number>>;
+      cleanMs: number[];
+      cleanPhaseMs: Array<Record<string, number>>;
+      mixedOneArtifactMs: number[];
+      mixedDualArtifactMs: number[];
+      outputsMatch: boolean;
+      disabledEventsEmpty: boolean;
+      callerInputsUnchanged: boolean;
+    };
+    assertCondition(
+      benchmark.outputsMatch === true &&
+        benchmark.disabledEventsEmpty === true &&
+        benchmark.callerInputsUnchanged === true &&
+        benchmark.allDisabledMs.length === 6 &&
+        benchmark.allDisabledPhaseMs.length === 6 &&
+        benchmark.cleanMs.length === 6 &&
+        benchmark.cleanPhaseMs.length === 6 &&
+        benchmark.mixedOneArtifactMs.length === 6 &&
+        benchmark.mixedDualArtifactMs.length === 6,
+      `Python direct-runner benchmark invariants failed: ${JSON.stringify(benchmark)}`
+    );
+    const median = (values: number[]) => {
+      const sorted = [...values].sort((left, right) => left - right);
+      const middle = Math.floor(sorted.length / 2);
+      return sorted.length % 2 === 0
+        ? (sorted[middle - 1]! + sorted[middle]!) / 2
+        : sorted[middle]!;
+    };
+    const medianPhases = (values: Array<Record<string, number>>) =>
+      Object.fromEntries(
+        Object.keys(values[0] ?? {}).map((name) => [
+          name,
+          median(values.map((entry) => entry[name] ?? 0)),
+        ])
+      );
     console.log(
       `PASS: Python marshaled artifacts cross fresh browser workers ${JSON.stringify({
         preparationReadyMs: result.preparationWorker.readyMs,
         executionReadyMs: result.executions.map((execution) => execution.readyMs),
         executionMs: result.executions.map((execution) => execution.executionMs),
+        onDemandBenchmark: {
+          tracePrepareMs: benchmark.tracePrepareMs,
+          additionalCleanPrepareMs: benchmark.codePrepareMs,
+          disabledFromTraceArtifactMedianMs: median(benchmark.allDisabledMs),
+          disabledPhaseMedianMs: medianPhases(benchmark.allDisabledPhaseMs),
+          cleanArtifactMedianMs: median(benchmark.cleanMs),
+          cleanPhaseMedianMs: medianPhases(benchmark.cleanPhaseMs),
+          mixedOneArtifactMedianMs: median(benchmark.mixedOneArtifactMs),
+          mixedDualArtifactMedianMs: median(benchmark.mixedDualArtifactMs),
+        },
       })}`
     );
   } finally {

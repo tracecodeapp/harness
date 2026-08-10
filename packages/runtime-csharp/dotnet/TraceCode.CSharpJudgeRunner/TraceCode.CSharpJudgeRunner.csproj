@@ -24,6 +24,7 @@
 
   <ItemGroup>
     <ProjectReference Include="../TraceCode.CSharpJudgeRuntime/TraceCode.CSharpJudgeRuntime.csproj" />
+    <Compile Include="../TraceCode.CSharpHost/TraceResponseJson.cs" Link="TraceResponseJson.cs" />
   </ItemGroup>
 
   <!--

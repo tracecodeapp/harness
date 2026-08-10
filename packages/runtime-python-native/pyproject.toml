@@ -1,0 +1,9 @@
+[build-system]
+requires = ["setuptools>=75"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "tracecode-native"
+version = "0.1.0"
+description = "TraceCode native tracing hot path for Pyodide"
+requires-python = "==3.13.*"

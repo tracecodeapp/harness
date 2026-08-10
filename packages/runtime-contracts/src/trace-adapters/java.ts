@@ -1,6 +1,7 @@
 import {
   RUNTIME_TRACE_SCHEMA_VERSION,
   withRuntimeTraceOptions,
+  type RuntimeTraceCallFrame,
   type RuntimeTraceEvent,
   type RuntimeTrace,
   type RuntimeTraceOptions,
@@ -333,6 +334,10 @@ function nativeJavaTraceEventsToTrace(
   options: RuntimeTraceOptions = {}
 ): RuntimeTrace {
   const runId = options.runId ?? 'java:run';
+  // TraceHooks emits each distinct call-stack state in full once (callStackId)
+  // and references it from later events (callStackRef); resolve and strip the
+  // wire-only keys here so RuntimeTrace events keep their historical shape.
+  const callStackDefs = new Map<number, string>();
   let parsedEvents: RuntimeTraceEvent[] = events.map((event) => {
     let parsed: RuntimeTraceEvent;
     try {
@@ -340,6 +345,25 @@ function nativeJavaTraceEventsToTrace(
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       throw new Error(`Invalid Java native runtime trace event: ${message}\n${event.slice(0, 500)}`);
+    }
+    const stackCarrier = parsed as RuntimeTraceEvent & {
+      callStackId?: number;
+      callStackRef?: number;
+    };
+    if (typeof stackCarrier.callStackId === 'number') {
+      if (stackCarrier.callStack) {
+        callStackDefs.set(stackCarrier.callStackId, JSON.stringify(stackCarrier.callStack));
+      }
+      delete stackCarrier.callStackId;
+    } else if (typeof stackCarrier.callStackRef === 'number') {
+      const definition = callStackDefs.get(stackCarrier.callStackRef);
+      if (definition === undefined) {
+        throw new Error(
+          `Java trace event references undefined callStackRef ${stackCarrier.callStackRef}\n${event.slice(0, 500)}`
+        );
+      }
+      stackCarrier.callStack = JSON.parse(definition) as RuntimeTraceCallFrame[];
+      delete stackCarrier.callStackRef;
     }
     if (parsed.kind === 'stdout' && !('text' in parsed)) {
       const value = (parsed as RuntimeTraceEvent & { value?: unknown }).value;

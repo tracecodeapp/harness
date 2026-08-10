@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 
-import { readFile, readdir, writeFile } from 'node:fs/promises';
+import { access, readFile, readdir, writeFile } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
 
 const ROOT = process.cwd();
@@ -28,10 +28,20 @@ function parseArguments(argv) {
 async function packageManifestPaths(root) {
   const packagesRoot = join(root, 'packages');
   const entries = await readdir(packagesRoot, { withFileTypes: true });
-  return entries
+  const candidates = entries
     .filter((entry) => entry.isDirectory())
     .map((entry) => join(packagesRoot, entry.name, 'package.json'))
     .sort();
+  const manifests = [];
+  for (const candidate of candidates) {
+    try {
+      await access(candidate);
+      manifests.push(candidate);
+    } catch (error) {
+      if (error?.code !== 'ENOENT') throw error;
+    }
+  }
+  return manifests;
 }
 
 async function main() {

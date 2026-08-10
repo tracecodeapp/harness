@@ -39,6 +39,8 @@ import type {
   RuntimeProjectCommandRequest,
   RuntimeProjectEngineLeaseController,
   RuntimeProjectSnapshot,
+  RuntimePreparedTraceCall,
+  RuntimePreparedTraceBatchCall,
   RuntimeProgramPreparationCall,
   RuntimeExecutionTimings,
   RuntimeTraceCall,
@@ -53,7 +55,7 @@ import { logRuntimeDiagnostic } from '@tracecode/runtime-browser/internal';
 import type { BrowserWorkerFactory, BrowserWorkerLike } from '@tracecode/runtime-browser/internal';
 import { restoreTransferredTraceEvents, traceEventTransferRequest } from '@tracecode/runtime-browser/internal';
 import {
-  ExecutionTimeoutError,
+  isExecutionTimeoutError,
   WorkerCrashedError,
   WorkerReadyTimeoutError,
   WorkerRequestTimeoutError,
@@ -135,6 +137,7 @@ export interface PythonPreparedProgramArtifact {
   readonly functionName: string | null;
   readonly executionStyle: RuntimeProgramPreparationCall['executionStyle'];
   readonly traceOptions: RuntimeProgramPreparationCall['traceOptions'];
+  readonly onDemandTracing?: boolean;
   readonly userCode: string;
   readonly executorCode: string;
 }
@@ -468,7 +471,7 @@ export class PythonWorkerClient {
     try {
       return await this.core.runClientEffect(program, signal);
     } catch (error) {
-      if (error instanceof ExecutionTimeoutError) {
+      if (isExecutionTimeoutError(error)) {
         return {
           success: false,
           error: error.message,
@@ -594,7 +597,7 @@ export class PythonWorkerClient {
     } catch (error) {
       if (
         call.limits?.wallClockMs !== undefined &&
-        error instanceof ExecutionTimeoutError
+        isExecutionTimeoutError(error)
       ) {
         return {
           results: call.inputBatch.map(() => ({
@@ -616,7 +619,7 @@ export class PythonWorkerClient {
 
   async executePreparedTrace(
     handle: PythonPreparedProgramHandle,
-    call: Pick<RuntimeTraceCall, 'inputs' | 'signal' | 'limits'>
+    call: RuntimePreparedTraceCall
   ): Promise<PythonRawTraceResult> {
     const wallClockMs = call.limits?.wallClockMs ?? TRACING_TIMEOUT_MS;
     const guestLimits = pickGuestLimits(call.limits);
@@ -627,6 +630,9 @@ export class PythonWorkerClient {
           artifact: handle.artifact,
           mode: 'trace',
           inputs: call.inputs,
+          ...(call.recordTrace === undefined
+            ? {}
+            : { tracingEnabled: call.recordTrace }),
           ...(guestLimits ? { limits: guestLimits } : {}),
           traceEventTransport: traceEventTransferRequest(),
         },
@@ -637,7 +643,7 @@ export class PythonWorkerClient {
     try {
       return await this.core.runClientEffect(program, call.signal);
     } catch (error) {
-      if (error instanceof ExecutionTimeoutError) {
+      if (isExecutionTimeoutError(error)) {
         return {
           success: false,
           error: error.message,
@@ -656,12 +662,22 @@ export class PythonWorkerClient {
 
   async executePreparedTraceBatch(
     handle: PythonPreparedProgramHandle,
-    call: {
-      readonly inputBatch: readonly Record<string, unknown>[];
-      readonly signal?: AbortSignal;
-      readonly limits?: RuntimeExecutionLimits;
-    }
+    call: RuntimePreparedTraceBatchCall
   ): Promise<PythonRawTraceBatchResult> {
+    const traceEnabledBatch = call.traceEnabledBatch;
+    if (
+      traceEnabledBatch !== undefined &&
+      (
+        traceEnabledBatch.length !== call.inputBatch.length ||
+        traceEnabledBatch.some(
+          (enabled) => typeof enabled !== 'boolean'
+        )
+      )
+    ) {
+      throw new TypeError(
+        'Python trace selection must contain one boolean per batch case.'
+      );
+    }
     const perCaseWallClockMs = call.limits?.wallClockMs ?? TRACING_TIMEOUT_MS;
     const wallClockMs = Math.min(
       2_147_483_647,
@@ -675,6 +691,9 @@ export class PythonWorkerClient {
           artifact: handle.artifact,
           mode: 'trace',
           inputBatch: call.inputBatch,
+          ...(traceEnabledBatch
+            ? { traceEnabledBatch }
+            : {}),
           ...(guestLimits ? { limits: guestLimits } : {}),
           traceEventTransport: traceEventTransferRequest(),
         },
@@ -685,7 +704,7 @@ export class PythonWorkerClient {
     try {
       return await this.core.runClientEffect(program, call.signal);
     } catch (error) {
-      if (error instanceof ExecutionTimeoutError) {
+      if (isExecutionTimeoutError(error)) {
         return {
           results: call.inputBatch.map(() => ({
             success: false,

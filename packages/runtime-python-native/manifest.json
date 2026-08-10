@@ -1,0 +1,29 @@
+{
+  "schemaVersion": "tracecode-python-native-manifest-v1",
+  "module": "_tracecode_native",
+  "target": {
+    "pyodide": "0.29.3",
+    "python": "3.13.2",
+    "abi": "pyodide_2025_0",
+    "arch": "wasm32",
+    "emscripten": "4.0.9"
+  },
+  "build": {
+    "hostPython": "3.13.7 (must match target minor)",
+    "pyodideBuild": "0.39.0",
+    "steps": [
+      "python3.13 -m venv .venv",
+      ".venv/bin/pip install pyodide-build==0.39.0",
+      ".venv/bin/pyodide xbuildenv install 0.29.3",
+      ".venv/bin/pyodide build"
+    ],
+    "output": "dist/tracecode_native-<version>-cp313-cp313-pyemscripten_2025_0_wasm32.whl",
+    "verify": "load in the vendored pyodide (workers/python/pyodide-0.29.3) via loadPackage(file url), then `import _tracecode_native; _tracecode_native.ping()` == 1"
+  },
+  "vendoredWheel": {
+    "path": "workers/python/tracecode_native-0.1.0-cp313-cp313-pyemscripten_2025_0_wasm32.whl",
+    "sha256": "d18ca1cb3d648a94b8dcb9afcfe012140d2801dfc81c64a7517c1550818bba9e",
+    "note": "M2 wheel: native event buffer + budgets + parity serializer + snapshot emitter. The worker loads it best-effort next to its own script (see ensureTracecodeNativeWheel) and falls back to the python tracer when absent."
+  },
+  "plan": "docs/python-native-tracer-plan.md"
+}

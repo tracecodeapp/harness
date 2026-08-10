@@ -7077,6 +7077,25 @@ async function executeCode(payload) {
 
 async function executeWithTracing(payload) {
   const startedAt = performanceNow();
+  if (payload?.tracingEnabled === false) {
+    const result = await executeCode(payload);
+    const language = payload?.language === 'typescript' ? 'typescript' : 'javascript';
+    const trace = createEmptyRuntimeTrace(language);
+    const executionTimeMs = performanceNow() - startedAt;
+    return {
+      ...result,
+      trace,
+      executionTimeMs,
+      lineEventCount: 0,
+      traceStepCount: 0,
+      traceLimitExceeded: false,
+      timings: {
+        ...(result.timings ?? {}),
+        totalMs: executionTimeMs,
+        runMs: executionTimeMs,
+      },
+    };
+  }
   const {
     code,
     functionName,

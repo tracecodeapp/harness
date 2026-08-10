@@ -54,6 +54,23 @@ function parseNativeJavaEvent(event: string): Record<string, unknown> | null {
   }
 }
 
+function resolveNativeJavaCallStackRefs(
+  events: Array<Record<string, unknown>>
+): Array<Record<string, unknown>> {
+  const defs = new Map<number, string>();
+  for (const event of events) {
+    if (typeof event.callStackId === 'number') {
+      if (event.callStack) defs.set(event.callStackId, JSON.stringify(event.callStack));
+      delete event.callStackId;
+    } else if (typeof event.callStackRef === 'number') {
+      const def = defs.get(event.callStackRef);
+      if (def !== undefined) event.callStack = JSON.parse(def) as unknown;
+      delete event.callStackRef;
+    }
+  }
+  return events;
+}
+
 function nativeEventMatches(event: string, expected: Record<string, unknown>): boolean {
   const parsed = parseNativeJavaEvent(event);
   if (!parsed) return false;
@@ -237,6 +254,74 @@ function testJavaHelperJarDoesNotExposeDeprecatedSpikePackages(): void {
     'Java helper jar should contain the precompiled harness trace runner'
   );
   console.log('PASS: java helper jar exposes the precompiled trace runner without deprecated spike packages');
+}
+
+function testTraceExecutionRunnerDefersBudgetFallbackToHost(): void {
+  const tmpRoot = mkdtempSync(join(tmpdir(), 'tracecode-java-budget-fallback-'));
+  try {
+    const sourcePath = join(tmpRoot, 'BudgetFallbackEntries.java');
+    const classesPath = join(tmpRoot, 'classes');
+    const helperJar = join(
+      process.cwd(),
+      'workers',
+      'vendor',
+      'java-browser-helper.jar'
+    );
+    writeFileSync(
+      sourcePath,
+      `import tracecode.user.TraceHooks;
+final class TraceAttempt {
+  public static Object run() {
+    System.out.println("trace-prefix");
+    TraceHooks.emitLineAtLine(1);
+    TraceHooks.emitLineAtLine(2);
+    return "trace-result";
+  }
+}
+final class CleanAttempt {
+  public static Object run() {
+    System.out.println("clean-output");
+    return "clean-result";
+  }
+}
+`,
+      'utf8'
+    );
+    execFileSync('mkdir', ['-p', classesPath]);
+    execFileSync(
+      'javac',
+      ['-cp', helperJar, '-d', classesPath, sourcePath],
+      { cwd: process.cwd(), stdio: 'pipe' }
+    );
+    const stdout = execFileSync(
+      'java',
+      [
+        '-cp',
+        [classesPath, helperJar].join(':'),
+        'tracecode.browser.TraceExecutionRunner',
+        'TraceAttempt',
+        '1',
+        '',
+        '',
+        '',
+        'CleanAttempt',
+      ],
+      { cwd: process.cwd(), encoding: 'utf8', stdio: 'pipe' }
+    );
+    assertCondition(
+      stdout.includes('__TRACECODE_TRACE_FALLBACK_REQUIRED__:true'),
+      `budget exhaustion must ask the host for a clean fallback: ${stdout}`
+    );
+    assertCondition(
+      stdout.match(/trace-prefix/g)?.length === 1 &&
+        !stdout.includes('clean-output') &&
+        !stdout.includes('__TRACECODE_TRACE_OUTPUT__:'),
+      `the traced JVM must not re-enter learner code before the host creates a fresh boundary: ${stdout}`
+    );
+    console.log('PASS: Java trace budget fallback is deferred to a fresh host execution');
+  } finally {
+    rmSync(tmpRoot, { recursive: true, force: true });
+  }
 }
 
 function loadSourceAugmentationsForTest(): {
@@ -1251,7 +1336,9 @@ public class Main {
       ['-cp', [classesPath, join(process.cwd(), 'workers', 'vendor', 'java-browser-helper.jar')].join(':'), 'Main'],
       { cwd: process.cwd(), encoding: 'utf8', stdio: 'pipe' }
     );
-    const parsed = output.trim().split('\n').map(parseNativeJavaEvent).filter((event): event is Record<string, unknown> => Boolean(event));
+    const parsed = resolveNativeJavaCallStackRefs(
+      output.trim().split('\n').map(parseNativeJavaEvent).filter((event): event is Record<string, unknown> => Boolean(event))
+    );
     const lineFiveEvents = parsed.filter((event) => event.kind === 'line' && event.line === 5);
     assertCondition(lineFiveEvents.length === 2, 'Java recursive trace should emit both same-source-line dfs frames');
     assertCondition(
@@ -3087,7 +3174,7 @@ function createWorkerHarness(workerSource: string, augmentationSource: string) {
                   ],
                 });
               }
-              if (latestSource.includes('values.add(n); TraceHooks.emit("trace:{\\"kind\\":\\"mutate\\"')) {
+              if (latestSource.includes('values.add(n); if (!TraceHooks.limitExceeded) TraceHooks.emit("trace:{\\"kind\\":\\"mutate\\"')) {
                 return JSON.stringify({
                   success: true,
                   output: JSON.stringify(1),
@@ -4397,6 +4484,7 @@ ${exportsSource.replace('public class Exports', `public class ${exportsClassName
 
 async function main(): Promise<void> {
   testJavaHelperJarDoesNotExposeDeprecatedSpikePackages();
+  testTraceExecutionRunnerDefersBudgetFallbackToHost();
   testNativeJavaRewriterRegressionGaps();
   testJavaRuntimeValueSerializationLimit();
   testJavaRuntimeSkipsSerializationAfterTraceLimit();
@@ -7029,7 +7117,9 @@ Object result = lowerBound(new int[] {1, 3, 3, 5, 8}, 4);`;
       'Java rewritten call hook should serialize all live method arguments like JS/Python trace call snapshots'
     );
     assertCondition(
-      lowerBoundSource.includes('int right = TraceHooks.readArrayLengthAtLine(5, "nums", nums);'),
+      lowerBoundSource.includes(
+        'int right = (TraceHooks.limitExceeded ? nums.length : TraceHooks.readArrayLengthAtLine(5, "nums", nums));'
+      ),
       'Java rewritten array length reads should emit runtime indexed-state context'
     );
     const nestedArrayLengthSource = augmentRewrittenJavaForTest(`class Solution {

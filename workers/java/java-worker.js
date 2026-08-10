@@ -224,9 +224,26 @@ function prepareTraceEventTransfer(result, request, path) {
     : TRACE_EVENT_TRANSFER_MIN_EVENTS;
   if (!Array.isArray(events) || events.length < minEventCount) return null;
 
+  // NDJSON skips JSON.stringify here and JSON.parse client-side. Only flat
+  // string events qualify; embedded newlines (never produced by the trace
+  // hooks, which escape control characters) would corrupt the framing, so
+  // any hit falls back to the JSON encoding.
+  const ndjsonEligible =
+    Array.isArray(request.acceptEncodings) &&
+    request.acceptEncodings.includes('ndjson-utf8') &&
+    path !== 'results[].trace.events' &&
+    events.every(
+      (event) => typeof event === 'string' && !event.includes('\n')
+    );
+  let encoding = 'json-utf8';
   let encoded;
   try {
-    encoded = new TextEncoder().encode(JSON.stringify(events));
+    if (ndjsonEligible) {
+      encoding = 'ndjson-utf8';
+      encoded = new TextEncoder().encode(events.join('\n'));
+    } else {
+      encoded = new TextEncoder().encode(JSON.stringify(events));
+    }
   } catch {
     return null;
   }
@@ -251,7 +268,7 @@ function prepareTraceEventTransfer(result, request, path) {
     : { ...result, events: [] };
   payload.__traceEventTransport = {
     schema: TRACE_EVENT_TRANSFER_SCHEMA,
-    encoding: 'json-utf8',
+    encoding,
     path,
     eventCount: events.length,
     byteLength: encoded.byteLength,
@@ -995,14 +1012,13 @@ function isScriptRequest(payload) {
 
 function resolveMaxStoredEvents(options = {}) {
   const fromStored = Number(options.maxStoredEvents);
-  if (Number.isFinite(fromStored) && fromStored > 0) {
-    return Math.floor(fromStored);
-  }
   const fromTraceSteps = Number(options.maxTraceSteps);
-  if (Number.isFinite(fromTraceSteps) && fromTraceSteps > 0) {
-    return Math.floor(fromTraceSteps);
-  }
-  return DEFAULT_MAX_STORED_EVENTS;
+  const limits = [fromStored, fromTraceSteps]
+    .filter((value) => Number.isFinite(value) && value > 0)
+    .map((value) => Math.floor(value));
+  return limits.length > 0
+    ? Math.min(...limits)
+    : DEFAULT_MAX_STORED_EVENTS;
 }
 
 function isRecord(value) {
@@ -1637,6 +1653,26 @@ function buildDynamicInputHelperMethods() {
     return null;
   }
 
+  /**
+   * Rethrows a trace-budget abort that reflection wrapped.
+   *
+   * Constructor.newInstance wraps anything the constructor throws in an
+   * InvocationTargetException, which is a ReflectiveOperationException. In
+   * trace mode the learner's own types are instrumented, so a budget trip
+   * inside a constructor arrives here looking exactly like "wrong constructor"
+   * and gets discarded by the candidate loops -- every candidate then fails and
+   * materialization reports "Unable to materialize prepared Java input" instead
+   * of letting TraceExecutionRunner catch the abort and re-run the case.
+   */
+  private static void rethrowBudgetAbort(Throwable error) {
+    for (Throwable current = error; current != null; current = current.getCause()) {
+      if (current instanceof tracecode.user.TraceBudgetExceededError) {
+        throw (tracecode.user.TraceBudgetExceededError) current;
+      }
+      if (current.getCause() == current) break;
+    }
+  }
+
   private static void assignPreparedJsonFields(
       Class<?> targetType,
       Object instance,
@@ -1650,6 +1686,19 @@ function buildDynamicInputHelperMethods() {
       field.setAccessible(true);
       field.set(instance, coerceJsonInput(entry.getValue(), field.getGenericType()));
     }
+  }
+
+  private static Object defaultJsonArgument(Class<?> parameterType) {
+    if (!parameterType.isPrimitive()) return null;
+    if (parameterType == boolean.class) return Boolean.FALSE;
+    if (parameterType == char.class) return Character.valueOf('\\0');
+    if (parameterType == byte.class) return Byte.valueOf((byte) 0);
+    if (parameterType == short.class) return Short.valueOf((short) 0);
+    if (parameterType == int.class) return Integer.valueOf(0);
+    if (parameterType == long.class) return Long.valueOf(0L);
+    if (parameterType == float.class) return Float.valueOf(0f);
+    if (parameterType == double.class) return Double.valueOf(0d);
+    return null;
   }
 
   private static Object materializePreparedJsonObject(
@@ -1675,7 +1724,8 @@ function buildDynamicInputHelperMethods() {
         Object instance = constructor.newInstance(arguments);
         assignPreparedJsonFields(targetType, instance, fields);
         return instance;
-      } catch (ReflectiveOperationException | IllegalArgumentException ignored) {
+      } catch (ReflectiveOperationException | IllegalArgumentException candidateFailure) {
+        rethrowBudgetAbort(candidateFailure);
       }
     }
     try {
@@ -1684,9 +1734,32 @@ function buildDynamicInputHelperMethods() {
       Object instance = constructor.newInstance();
       assignPreparedJsonFields(targetType, instance, fields);
       return instance;
-    } catch (ReflectiveOperationException error) {
-      throw new RuntimeException("Unable to materialize prepared Java input " + targetType.getName(), error);
+    } catch (ReflectiveOperationException candidateFailure) {
+      rethrowBudgetAbort(candidateFailure);
     }
+    // Learner types often declare a single convenience constructor (the classic
+    // TreeNode(int val)) and no no-arg constructor, so an interior node that
+    // serializes as {val,left,right} matches no constructor arity. Construct
+    // with type-default arguments and let the by-name field assignment below
+    // populate the real values.
+    java.lang.reflect.Constructor<?>[] declared = targetType.getDeclaredConstructors();
+    java.util.Arrays.sort(declared, java.util.Comparator.comparingInt(java.lang.reflect.Constructor::getParameterCount));
+    for (java.lang.reflect.Constructor<?> constructor : declared) {
+      try {
+        Class<?>[] parameterTypes = constructor.getParameterTypes();
+        Object[] arguments = new Object[parameterTypes.length];
+        for (int index = 0; index < parameterTypes.length; index += 1) {
+          arguments[index] = defaultJsonArgument(parameterTypes[index]);
+        }
+        constructor.setAccessible(true);
+        Object instance = constructor.newInstance(arguments);
+        assignPreparedJsonFields(targetType, instance, fields);
+        return instance;
+      } catch (ReflectiveOperationException | IllegalArgumentException candidateFailure) {
+        rethrowBudgetAbort(candidateFailure);
+      }
+    }
+    throw new RuntimeException("Unable to materialize prepared Java input " + targetType.getName());
   }
 
   private static Object preparedLinkedNodes(
@@ -3146,8 +3219,353 @@ function appendJavaLocalSnapshotsAfterMutations(line, scopeStack) {
 function guardJavaLineEmit(line) {
   return line.replace(
     /^(\s*)TraceHooks\.emitLineAtLine\((.+)\);\s*$/,
-    (_match, indent, argsSource) => `${indent}if (!TraceHooks.traceLimitExceeded()) TraceHooks.emitLineAtLine(${argsSource});`
+    (_match, indent, argsSource) => `${indent}if (!TraceHooks.limitExceeded) TraceHooks.emitLineAtLine(${argsSource});`
   );
+}
+
+/**
+ * After the stored-event budget trips, TraceJVM still pays for every instrumented
+ * TraceHooks call even when the hook immediately returns. Rewrite call sites so
+ * post-budget paths use plain Java (reads) or skip emit-only statements entirely.
+ * Event shape up to the budget is unchanged.
+ */
+const TRACE_ARRAY_READ_HELPERS = new Set([
+  'readIntArrayAtLine',
+  'readLongArrayAtLine',
+  'readBooleanArrayAtLine',
+  'readDoubleArrayAtLine',
+  'readFloatArrayAtLine',
+  'readCharArrayAtLine',
+  'readByteArrayAtLine',
+  'readShortArrayAtLine',
+  'readObjectArrayAtLine',
+]);
+
+const TRACE_MATRIX_READ_HELPERS = new Set([
+  'readIntMatrixAtLine',
+  'readLongMatrixAtLine',
+  'readBooleanMatrixAtLine',
+  'readDoubleMatrixAtLine',
+  'readFloatMatrixAtLine',
+  'readCharMatrixAtLine',
+  'readByteMatrixAtLine',
+  'readShortMatrixAtLine',
+  'readObjectMatrixAtLine',
+]);
+
+const TRACE_EMIT_ONLY_HELPERS = new Set([
+  'emit',
+  'emitLineAtLine',
+  'emitCallAtLine',
+  'emitReturnAtLine',
+  'emitSerializedReturnAtLine',
+  'emitScalarWriteAtLine',
+  'emitRuntimeSnapshotAtLine',
+  'emitArrayWriteAtLine',
+  'emitFieldWriteAtLine',
+  'emitFieldPathWriteAtLine',
+  'emitIndexedWriteAtLine',
+  'emitMutatingCallAtLine',
+  'emitThrowAtLine',
+  'emitStdoutAtLine',
+]);
+
+function findMatchingJavaParen(source, openIndex) {
+  let depth = 0;
+  let inString = false;
+  let inChar = false;
+  let escaped = false;
+  for (let index = openIndex; index < source.length; index += 1) {
+    const ch = source[index];
+    if (escaped) {
+      escaped = false;
+      continue;
+    }
+    if (ch === '\\' && (inString || inChar)) {
+      escaped = true;
+      continue;
+    }
+    if (inString) {
+      if (ch === '"') inString = false;
+      continue;
+    }
+    if (inChar) {
+      if (ch === "'") inChar = false;
+      continue;
+    }
+    if (ch === '"') {
+      inString = true;
+      continue;
+    }
+    if (ch === "'") {
+      inChar = true;
+      continue;
+    }
+    if (ch === '(') {
+      depth += 1;
+    } else if (ch === ')') {
+      depth -= 1;
+      if (depth === 0) return index;
+    }
+  }
+  return -1;
+}
+
+function splitJavaTopLevelArgs(argsSource) {
+  const args = [];
+  let start = 0;
+  let depthParen = 0;
+  let depthBracket = 0;
+  let depthBrace = 0;
+  let inString = false;
+  let inChar = false;
+  let escaped = false;
+  for (let index = 0; index < argsSource.length; index += 1) {
+    const ch = argsSource[index];
+    if (escaped) {
+      escaped = false;
+      continue;
+    }
+    if (ch === '\\' && (inString || inChar)) {
+      escaped = true;
+      continue;
+    }
+    if (inString) {
+      if (ch === '"') inString = false;
+      continue;
+    }
+    if (inChar) {
+      if (ch === "'") inChar = false;
+      continue;
+    }
+    if (ch === '"') {
+      inString = true;
+      continue;
+    }
+    if (ch === "'") {
+      inChar = true;
+      continue;
+    }
+    if (ch === '(') depthParen += 1;
+    else if (ch === ')') depthParen -= 1;
+    else if (ch === '[') depthBracket += 1;
+    else if (ch === ']') depthBracket -= 1;
+    else if (ch === '{') depthBrace += 1;
+    else if (ch === '}') depthBrace -= 1;
+    // No angle-bracket tracking: generated hook args never carry type
+    // arguments, but learner index expressions can contain bare `<`/`>`
+    // comparisons, which would desync a depth counter.
+    else if (
+      ch === ',' &&
+      depthParen === 0 &&
+      depthBracket === 0 &&
+      depthBrace === 0
+    ) {
+      args.push(argsSource.slice(start, index).trim());
+      start = index + 1;
+    }
+  }
+  const tail = argsSource.slice(start).trim();
+  if (tail || args.length > 0) args.push(tail);
+  return args;
+}
+
+function skipJavaWhitespaceAndCommentsBackward(source, index) {
+  let cursor = index;
+  while (cursor >= 0) {
+    const ch = source[cursor];
+    if (/\s/.test(ch)) {
+      cursor -= 1;
+      continue;
+    }
+    if (ch === '/' && cursor > 0 && source[cursor - 1] === '*') {
+      cursor -= 2;
+      while (cursor >= 1) {
+        if (source[cursor - 1] === '/' && source[cursor] === '*') {
+          cursor -= 2;
+          break;
+        }
+        cursor -= 1;
+      }
+      continue;
+    }
+    break;
+  }
+  return cursor;
+}
+
+function isAlreadyBudgetGuardedTraceCall(source, callStart) {
+  const before = skipJavaWhitespaceAndCommentsBackward(source, callStart - 1);
+  if (before < 0) return false;
+  const guards = [
+    'if (!TraceHooks.limitExceeded)',
+    'if (!TraceHooks.traceLimitExceeded())',
+  ];
+  for (const guard of guards) {
+    if (before + 1 >= guard.length) {
+      const slice = source.slice(before - guard.length + 1, before + 1);
+      if (slice === guard) return true;
+    }
+  }
+  // Already rewritten as `(TraceHooks.limitExceeded ? plain : TraceHooks.…)`
+  if (source[before] === ':') {
+    const window = source.slice(Math.max(0, before - 80), before + 1);
+    if (window.includes('limitExceeded') || window.includes('traceLimitExceeded()')) {
+      return true;
+    }
+  }
+  return false;
+}
+
+function collectTraceHooksCalls(source) {
+  const calls = [];
+  let index = 0;
+  let inString = false;
+  let inChar = false;
+  let escaped = false;
+  while (index < source.length) {
+    const ch = source[index];
+    if (escaped) {
+      escaped = false;
+      index += 1;
+      continue;
+    }
+    if (ch === '\\' && (inString || inChar)) {
+      escaped = true;
+      index += 1;
+      continue;
+    }
+    if (inString) {
+      if (ch === '"') inString = false;
+      index += 1;
+      continue;
+    }
+    if (inChar) {
+      if (ch === "'") inChar = false;
+      index += 1;
+      continue;
+    }
+    if (ch === '"') {
+      inString = true;
+      index += 1;
+      continue;
+    }
+    if (ch === "'") {
+      inChar = true;
+      index += 1;
+      continue;
+    }
+    if (source.startsWith('TraceHooks.', index)) {
+      const nameStart = index + 'TraceHooks.'.length;
+      let nameEnd = nameStart;
+      while (nameEnd < source.length && /[A-Za-z0-9_]/.test(source[nameEnd])) {
+        nameEnd += 1;
+      }
+      const name = source.slice(nameStart, nameEnd);
+      let open = nameEnd;
+      while (open < source.length && /\s/.test(source[open])) open += 1;
+      if (source[open] === '(') {
+        const close = findMatchingJavaParen(source, open);
+        if (close >= 0) {
+          calls.push({
+            start: index,
+            end: close + 1,
+            name,
+            argsSource: source.slice(open + 1, close),
+          });
+          index = close + 1;
+          continue;
+        }
+      }
+      index = nameEnd;
+      continue;
+    }
+    index += 1;
+  }
+  return calls;
+}
+
+function plainExprForTraceReadCall(call) {
+  const args = splitJavaTopLevelArgs(call.argsSource);
+  if (TRACE_ARRAY_READ_HELPERS.has(call.name)) {
+    if (args.length < 4) return null;
+    return `${args[2]}[${args[3]}]`;
+  }
+  if (TRACE_MATRIX_READ_HELPERS.has(call.name)) {
+    if (args.length < 5) return null;
+    return `${args[2]}[${args[3]}][${args[4]}]`;
+  }
+  if (call.name === 'readArrayLengthAtLine') {
+    if (args.length < 3) return null;
+    // 3-arg: length of the array/collection expression itself.
+    // 5-arg nested form still lengths args[2].
+    return `${args[2]}.length`;
+  }
+  if (call.name === 'readObjectFieldAtLine' || call.name === 'readFieldPathAtLine') {
+    if (args.length < 4) return null;
+    return args[3];
+  }
+  return null;
+}
+
+function isStatementLevelTraceCall(source, call) {
+  let after = call.end;
+  while (after < source.length && /\s/.test(source[after])) after += 1;
+  if (source[after] !== ';') return false;
+  const before = skipJavaWhitespaceAndCommentsBackward(source, call.start - 1);
+  if (before < 0) return true;
+  const ch = source[before];
+  // Statement boundary, or already inside `{ …; TraceHooks…; }` / line start.
+  return ch === ';' || ch === '{' || ch === '}' || ch === '\n';
+}
+
+function elideTraceHooksAfterBudget(source) {
+  const calls = collectTraceHooksCalls(source);
+  let next = source;
+  for (let index = calls.length - 1; index >= 0; index -= 1) {
+    // Rewriting proceeds by descending start offset, so a call's start never
+    // moves — but its interior can: a nested hook call inside this call's
+    // arguments may already have been rewritten, shifting the closing paren.
+    // Recompute the span and argument text against the current string instead
+    // of trusting offsets collected from the original source.
+    const start = calls[index].start;
+    const name = calls[index].name;
+    const token = `TraceHooks.${name}`;
+    if (!next.startsWith(token, start)) continue;
+    let open = start + token.length;
+    while (open < next.length && /\s/.test(next[open])) open += 1;
+    if (next[open] !== '(') continue;
+    const close = findMatchingJavaParen(next, open);
+    if (close < 0) continue;
+    const call = {
+      start,
+      end: close + 1,
+      name,
+      argsSource: next.slice(open + 1, close),
+    };
+    if (isAlreadyBudgetGuardedTraceCall(next, call.start)) continue;
+
+    const plain = plainExprForTraceReadCall(call);
+    if (plain) {
+      const hooked = next.slice(call.start, call.end);
+      const replacement = `(TraceHooks.limitExceeded ? ${plain} : ${hooked})`;
+      next = next.slice(0, call.start) + replacement + next.slice(call.end);
+      continue;
+    }
+
+    if (
+      TRACE_EMIT_ONLY_HELPERS.has(call.name) &&
+      isStatementLevelTraceCall(next, call)
+    ) {
+      let end = call.end;
+      while (end < next.length && /\s/.test(next[end])) end += 1;
+      if (next[end] === ';') end += 1;
+      const hookedStmt = next.slice(call.start, end);
+      const replacement = `if (!TraceHooks.limitExceeded) ${hookedStmt}`;
+      next = next.slice(0, call.start) + replacement + next.slice(end);
+    }
+  }
+  return next;
 }
 
 function appendJavaScalarDeclarationWrites(line, lineNumber) {
@@ -6562,6 +6980,7 @@ async function buildJavaTraceRunnableSource(
   applyRewriteStage('throw events', augmentJavaThrowEvents);
   applyRewriteStage('local snapshots', augmentJavaLocalSnapshots);
   applyRewriteStage('return value snapshots', augmentTraceReturnValueSnapshots);
+  applyRewriteStage('budget call-site elision', elideTraceHooksAfterBudget);
   return rewrittenSource;
 }
 
@@ -7360,8 +7779,10 @@ async function prepareJavaRuntimeProgram(payload, requestId) {
 
   let normalizedPayload;
   let dynamicInputs;
-  let source;
+  let preparedSources;
   let stableCompileId;
+  let entryClass;
+  let cleanEntryClass;
   let rewriteMs = 0;
   try {
     normalizedPayload = normalizeJavaExecutionPayload({
@@ -7377,22 +7798,55 @@ async function prepareJavaRuntimeProgram(payload, requestId) {
       scriptMode: normalizedPayload.scriptMode === true,
       options: mode === 'trace' ? normalizedPayload.options ?? {} : {},
     });
-    dynamicInputs = preparedDynamicInputEntriesForPayload(
+    const traceDynamicInputs = preparedDynamicInputEntriesForPayload(
       normalizedPayload,
       stableCompileId
     );
     const sourceStart = performance.now();
-    source = mode === 'trace'
-      ? await buildJavaTraceRunnableSource(
+    if (mode === 'trace') {
+      const cleanCompileId = stableHash({
+        compileMode: 'prepared-trace-clean-companion',
+        stableCompileId,
+      });
+      const traceExportsClassName = buildExportsClassName(stableCompileId);
+      const cleanExportsClassName = buildExportsClassName(cleanCompileId);
+      entryClass = `${buildPackageName(stableCompileId)}.${traceExportsClassName}`;
+      cleanEntryClass = `${buildPackageName(cleanCompileId)}.${cleanExportsClassName}`;
+      preparedSources = [
+        {
+          path: `/str/${traceExportsClassName}.java`,
+          source: await buildJavaTraceRunnableSource(
+            normalizedPayload,
+            stableCompileId,
+            traceDynamicInputs
+          ),
+        },
+        {
+          path: `/str/${cleanExportsClassName}.java`,
+          source: buildPlainRunnableSource(
+            normalizedPayload,
+            cleanCompileId,
+            // Both entry points read the same prepared input properties. The
+            // clean package identity is independent of the property names, so
+            // there is no reason to serialize every case input twice.
+            traceDynamicInputs
+          ),
+        },
+      ];
+      dynamicInputs = traceDynamicInputs;
+    } else {
+      const exportsClassName = buildExportsClassName(stableCompileId);
+      entryClass = `${buildPackageName(stableCompileId)}.${exportsClassName}`;
+      preparedSources = [{
+        path: `/str/${exportsClassName}.java`,
+        source: buildPlainRunnableSource(
           normalizedPayload,
           stableCompileId,
-          dynamicInputs
-        )
-      : buildPlainRunnableSource(
-          normalizedPayload,
-          stableCompileId,
-          dynamicInputs
-        );
+          traceDynamicInputs
+        ),
+      }];
+      dynamicInputs = traceDynamicInputs;
+    }
     rewriteMs = performance.now() - sourceStart;
   } catch (error) {
     return {
@@ -7407,13 +7861,14 @@ async function prepareJavaRuntimeProgram(payload, requestId) {
   }
 
   const programId = isolateJavaCompileId(stableCompileId, requestId);
-  const exportsClassName = buildExportsClassName(stableCompileId);
-  const packageName = buildPackageName(stableCompileId);
-  const sourcePath = `/str/${exportsClassName}.java`;
-  const entryClass = `${packageName}.${exportsClassName}`;
 
   try {
-    await self.cheerpOSAddStringFile(sourcePath, source);
+    for (const preparedSource of preparedSources) {
+      await self.cheerpOSAddStringFile(
+        preparedSource.path,
+        preparedSource.source
+      );
+    }
   } catch (error) {
     return {
       success: false,
@@ -7451,7 +7906,9 @@ async function prepareJavaRuntimeProgram(payload, requestId) {
   try {
     const reportText = await compileLibraryClass.prepareRuntimeProgram(
       programId,
-      sourcePath,
+      preparedSources.length === 1
+        ? preparedSources[0].path
+        : JSON.stringify(preparedSources.map((source) => source.path)),
       mode === 'trace'
         ? DEFAULT_COMPILER_DEBUG_PROFILE
         : DEFAULT_EXECUTE_COMPILER_DEBUG_PROFILE
@@ -7499,6 +7956,7 @@ async function prepareJavaRuntimeProgram(payload, requestId) {
   const preparedState = {
     mode,
     entryClass,
+    ...(cleanEntryClass ? { cleanEntryClass } : {}),
     learnerFrame:
       normalizedPayload.executionStyle === 'solution-method' &&
       typeof normalizedPayload.functionName === 'string' &&
@@ -7538,6 +7996,9 @@ function assertPreparedJavaRuntimeSnapshot(snapshot) {
     (snapshot.mode !== 'code' && snapshot.mode !== 'trace') ||
     typeof snapshot.entryClass !== 'string' ||
     !snapshot.entryClass ||
+    (snapshot.cleanEntryClass !== undefined &&
+      (typeof snapshot.cleanEntryClass !== 'string' ||
+        !snapshot.cleanEntryClass)) ||
     (snapshot.learnerFrame !== undefined &&
       typeof snapshot.learnerFrame !== 'string') ||
     !Array.isArray(snapshot.dynamicInputs) ||
@@ -7575,6 +8036,9 @@ async function restorePreparedJavaRuntimeProgram(payload) {
   preparedJavaRuntimePrograms.set(snapshot.programId, {
     mode: snapshot.mode,
     entryClass: snapshot.entryClass,
+    ...(snapshot.cleanEntryClass
+      ? { cleanEntryClass: snapshot.cleanEntryClass }
+      : {}),
     learnerFrame:
       typeof snapshot.learnerFrame === 'string'
         ? snapshot.learnerFrame
@@ -7625,9 +8089,16 @@ function preparedJavaResultFromReport(
   executionTimeMs,
   hostCallMs
 ) {
-  const consoleOutput = javaReportConsoleOutput(report, {
-    includeSuccessfulDiagnostics: false,
-  });
+  const consoleOutput = [
+    ...javaReportConsoleOutput(report, {
+      includeSuccessfulDiagnostics: false,
+    }),
+    ...(report.traceProfile
+      ? [
+          `__TRACECODE_TRACE_PROFILE_JSON__:${JSON.stringify(report.traceProfile)}`,
+        ]
+      : []),
+  ];
   const timings = {
     compileMs: 0,
     classLoadMs: report.classLoadTimeMs ?? 0,
@@ -7666,6 +8137,7 @@ function preparedJavaResultFromReport(
             droppedEventCount: report.droppedEventCount ?? 0,
           }
         : {}),
+      ...(report.traceProfile ? { traceProfile: report.traceProfile } : {}),
       ...(report.bytecodeProfile
         ? { bytecodeProfile: report.bytecodeProfile }
         : {}),
@@ -7761,7 +8233,14 @@ async function executePreparedJavaRuntimeProgram(payload) {
           : 1
       ),
       JSON.stringify(preparedInputProperties),
-      program.learnerFrame
+      program.learnerFrame,
+      String(program.mode === 'trace' && program.traceOptions?.traceProfile === true),
+      // On-demand tracing: a trace-mode program may still run a case with
+      // recording off. Trace preparations contain a clean companion entry
+      // point in the same compiled artifact, selected once before learner code
+      // runs rather than branching at every rewritten hook site.
+      String(program.mode !== 'trace' || payload?.traceEnabled !== false),
+      program.cleanEntryClass ?? ''
     );
     report = JSON.parse(reportText);
   } catch (error) {
@@ -7860,7 +8339,14 @@ async function executePreparedJavaRuntimeProgramBatch(payload) {
             ? Math.max(1, Math.floor(payload.perCaseWallClockMs))
             : 0
         ),
-        program.learnerFrame
+        program.learnerFrame,
+        String(program.mode === 'trace' && program.traceOptions?.traceProfile === true),
+        JSON.stringify(
+          Array.isArray(payload?.traceEnabledBatch)
+            ? payload.traceEnabledBatch
+            : []
+        ),
+        program.cleanEntryClass ?? ''
       );
     report = JSON.parse(reportText);
   } catch (error) {

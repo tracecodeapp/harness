@@ -782,7 +782,7 @@ def solve():
 print(json.dumps({
     'trace': _trace_data,
     'runtimeTrace': {
-        'events': _trace_events
+        'events': [json.loads(event) for event in _trace_events]
     },
     'result': _serialize_output(_result)
 }))
@@ -894,7 +894,7 @@ async function assertEnumerateLoopBindingIsRecorded(): Promise<void> {
 print(json.dumps({
     'trace': _trace_data,
     'runtimeTrace': {
-        'events': _trace_events
+        'events': [json.loads(event) for event in _trace_events]
     },
     'result': _serialize_output(_result)
 }))
@@ -974,7 +974,7 @@ async function assertEnumerateExpressionLoopBindingIsRecorded(): Promise<void> {
 print(json.dumps({
     'trace': _trace_data,
     'runtimeTrace': {
-        'events': _trace_events
+        'events': [json.loads(event) for event in _trace_events]
     },
     'result': _serialize_output(_result)
 }))
@@ -1047,7 +1047,7 @@ async function assertTupleForLoopBindingIsRecorded(): Promise<void> {
 print(json.dumps({
     'trace': _trace_data,
     'runtimeTrace': {
-        'events': _trace_events
+        'events': [json.loads(event) for event in _trace_events]
     },
     'result': _serialize_output(_result)
 }))
@@ -1138,7 +1138,7 @@ async function assertListForLoopBindingSourcesAreRecorded(): Promise<void> {
 print(json.dumps({
     'trace': _trace_data,
     'runtimeTrace': {
-        'events': _trace_events
+        'events': [json.loads(event) for event in _trace_events]
     },
     'result': _serialize_output(_result)
 }))
@@ -1212,7 +1212,7 @@ async function assertLiteralTupleUnpackingForLoopBindingIsRecorded(): Promise<vo
 print(json.dumps({
     'trace': _trace_data,
     'runtimeTrace': {
-        'events': _trace_events
+        'events': [json.loads(event) for event in _trace_events]
     },
     'result': _serialize_output(_result)
 }))
@@ -1284,7 +1284,7 @@ print(json.dumps({
         'schemaVersion': 'runtime-trace-2026-04-28',
         'language': 'python',
         'runId': 'python:run',
-        'events': _trace_events
+        'events': [json.loads(event) for event in _trace_events]
     },
     'result': _serialize_output(_result)
 }))
@@ -1362,7 +1362,7 @@ print(json.dumps({
         'schemaVersion': 'runtime-trace-2026-04-28',
         'language': 'python',
         'runId': 'python:run',
-        'events': _trace_events
+        'events': [json.loads(event) for event in _trace_events]
     },
     'result': _serialize_output(_result)
 }))
@@ -1433,7 +1433,7 @@ print(json.dumps({
         'schemaVersion': 'runtime-trace-2026-04-28',
         'language': 'python',
         'runId': 'python:run',
-        'events': _trace_events
+        'events': [json.loads(event) for event in _trace_events]
     },
     'result': _serialize_output(_result)
 }))
@@ -1501,7 +1501,7 @@ print(json.dumps({
         'schemaVersion': 'runtime-trace-2026-04-28',
         'language': 'python',
         'runId': 'python:run',
-        'events': _trace_events
+        'events': [json.loads(event) for event in _trace_events]
     },
     'result': _serialize_output(_result)
 }))
@@ -1617,7 +1617,7 @@ async function assertInPlaceSortMutationIsRecorded(): Promise<void> {
 print(json.dumps({
     'trace': _trace_data,
     'runtimeTrace': {
-        'events': _trace_events
+        'events': [json.loads(event) for event in _trace_events]
     },
     'result': _serialize_output(_result)
 }))
@@ -1737,7 +1737,7 @@ def inspect():
 print(json.dumps({
     'trace': _trace_data,
     'runtimeTrace': {
-        'events': _trace_events
+        'events': [json.loads(event) for event in _trace_events]
     },
     'result': _serialize_output(_result)
 }))
@@ -1910,7 +1910,7 @@ async function assertTupleKeyDictProvenanceIsRecorded(): Promise<void> {
 print(json.dumps({
     'trace': _trace_data,
     'runtimeTrace': {
-        'events': _trace_events
+        'events': [json.loads(event) for event in _trace_events]
     },
     'result': _serialize_output(_result)
 }))
@@ -2004,7 +2004,7 @@ def inspect(char):
 print(json.dumps({
     'trace': _trace_data,
     'runtimeTrace': {
-        'events': _trace_events
+        'events': [json.loads(event) for event in _trace_events]
     },
     'result': _serialize_output(_result)
 }))
@@ -2081,7 +2081,7 @@ def run():
 print(json.dumps({
     'trace': _trace_data,
     'runtimeTrace': {
-        'events': _trace_events
+        'events': [json.loads(event) for event in _trace_events]
     },
     'result': _serialize_output(_result)
 }))
@@ -2159,8 +2159,8 @@ print(json.dumps({
         'schemaVersion': 'runtime-trace-2026-04-28',
         'language': 'python',
         'runId': 'python:run',
-        'events': _trace_events,
-        'lineEventCount': len([event for event in _trace_events if event.get('kind') == 'line']),
+        'events': [json.loads(event) for event in _trace_events],
+        'lineEventCount': _trace_line_event_count,
         'traceStepCount': len(_trace_events)
     },
     'result': _serialize_output(_result)
@@ -2363,7 +2363,7 @@ print(json.dumps({
         'schemaVersion': 'runtime-trace-2026-04-28',
         'language': 'python',
         'runId': 'python:run',
-        'events': _trace_events
+        'events': [json.loads(event) for event in _trace_events]
     },
     'result': _serialize_output(_result)
 }))
@@ -2430,7 +2430,7 @@ print(json.dumps({
         'schemaVersion': 'runtime-trace-2026-04-28',
         'language': 'python',
         'runId': 'python:run',
-        'events': _trace_events
+        'events': [json.loads(event) for event in _trace_events]
     },
     'result': _serialize_output(_result)
 }))
@@ -2509,7 +2509,7 @@ def inspect():
 print(json.dumps({
     'trace': _trace_data,
     'runtimeTrace': {
-        'events': _trace_events
+        'events': [json.loads(event) for event in _trace_events]
     },
     'result': _serialize_output(_result)
 }))
@@ -2604,7 +2604,7 @@ def solve():
 print(json.dumps({
     'trace': _trace_data,
     'runtimeTrace': {
-        'events': _trace_events
+        'events': [json.loads(event) for event in _trace_events]
     },
     'result': _serialize_output(_result)
 }))
@@ -2671,8 +2671,8 @@ print(json.dumps({
         'schemaVersion': 'runtime-trace-2026-04-28',
         'language': 'python',
         'runId': 'python:run',
-        'events': _trace_events,
-        'lineEventCount': len([event for event in _trace_events if event.get('kind') == 'line']),
+        'events': [json.loads(event) for event in _trace_events],
+        'lineEventCount': _trace_line_event_count,
         'traceStepCount': len(_trace_events)
     },
     'result': _serialize_output(_result),
@@ -2732,7 +2732,7 @@ async function assertTraceByteLimitPreservesOutput(): Promise<void> {
 
   const stdout = await runPythonScript(`${tracingPayload.code}
 print(json.dumps({
-    'runtimeTrace': {'events': _trace_events},
+    'runtimeTrace': {'events': [json.loads(event) for event in _trace_events]},
     'result': _serialize_output(_result),
     'traceLimitExceeded': _trace_limit_exceeded,
     'timeoutReason': _timeout_reason,
@@ -2808,7 +2808,7 @@ result = find_order(4, [[1, 0], [2, 0], [3, 1], [3, 2]])
   const stdout = await runPythonScript(`${tracingPayload.code}
 print(json.dumps({
     'runtimeTrace': {
-        'events': _trace_events
+        'events': [json.loads(event) for event in _trace_events]
     },
     'result': _serialize_output(_result),
     'traceLimitExceeded': _trace_limit_exceeded,
@@ -3256,7 +3256,7 @@ async function assertRecursiveCallActivationRuntimeEventsAreRecorded(): Promise<
 print(json.dumps({
     'trace': _trace_data,
     'runtimeTrace': {
-        'events': _trace_events
+        'events': [json.loads(event) for event in _trace_events]
     },
     'result': _serialize_output(_result)
 }))
@@ -3391,7 +3391,7 @@ async function assertBuiltinSumRecordsConsumedCollectionReads(): Promise<void> {
 print(json.dumps({
     'trace': _trace_data,
     'runtimeTrace': {
-        'events': _trace_events
+        'events': [json.loads(event) for event in _trace_events]
     },
     'result': _serialize_output(_result)
 }))
@@ -3499,7 +3499,7 @@ def solve(values):
 print(json.dumps({
     'trace': _trace_data,
     'runtimeTrace': {
-        'events': _trace_events
+        'events': [json.loads(event) for event in _trace_events]
     },
     'result': _serialize_output(_result),
     'consoleOutput': _console_output
@@ -3555,7 +3555,7 @@ print(json.dumps({
     'traceFailed': _trace_failed,
     'trace': _trace_data,
     'runtimeTrace': {
-        'events': _trace_events
+        'events': [json.loads(event) for event in _trace_events]
     },
     'result': _serialize_output(_result)
 }))

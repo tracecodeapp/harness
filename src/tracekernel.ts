@@ -71,7 +71,10 @@ export {
 
 export {
   createTraceCCRuntimeManifest,
+  resolveBuiltInTraceCCRuntimeManifest,
+  TRACECC_RUNTIME_ASSET_RELATIVE_PATH,
   TRACECC_RUNTIME_CONTENT_HASH,
+  TRACECC_RUNTIME_MANIFEST,
 } from '../packages/runtime-cpp/src/tracecc-runtime-assets';
 
 export {
@@ -119,6 +122,23 @@ export {
   type RuntimeComponentInfo,
   type RuntimeLibraryInfo,
 } from '../packages/runtime-contracts/src/runtime-language-info';
+
+export {
+  LANGUAGE_RUNTIME_OPEN_SOURCE_INFOS,
+  getLanguageRuntimeOpenSourceInfo,
+  getSupportedLanguageRuntimeOpenSourceInfos,
+  resolveRuntimeOpenSourceResourceHref,
+  type LanguageRuntimeOpenSourceInfo,
+  type ResolvedLanguageRuntimeOpenSourceInfo,
+  type ResolvedRuntimeOpenSourceComponentInfo,
+  type ResolvedRuntimeOpenSourceResource,
+  type RuntimeOpenSourceAssetResource,
+  type RuntimeOpenSourceComponentInfo,
+  type RuntimeOpenSourceInfoOptions,
+  type RuntimeOpenSourceResource,
+  type RuntimeOpenSourceResourceKind,
+  type RuntimeOpenSourceUrlResource,
+} from '../packages/runtime-contracts/src/runtime-open-source-info';
 
 export type {
   CodeExecutionResult,
