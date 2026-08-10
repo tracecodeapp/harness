@@ -737,6 +737,43 @@ test('interactive execute retains one trace-capable artifact and traces explicit
   assert.equal(state.disposals, 1);
 });
 
+test('interactive continuation timeout scales to only the selected tranche', async () => {
+  const state = makePreparedState();
+  const slowInput = { label: 'slow', delayMs: 0 };
+
+  await Effect.runPromise(Effect.scoped(
+    Effect.gen(function* () {
+      const judge = yield* createTestRuntimeJudge(
+        preparedProvider(state),
+        codeBinding({ trace: true })
+      );
+      const initial = yield* judge.execute<FakeInput>({
+        plan: makePlan([
+          { id: 'slow', input: slowInput, expected: 'slow' },
+          { id: 'fast-a', input: { label: 'fast-a' }, expected: 'fast-a' },
+          { id: 'fast-b', input: { label: 'fast-b' }, expected: 'fast-b' },
+        ], {
+          run: {
+            command: 'runtime-provider-case',
+            timeoutMs: 25,
+          },
+        }),
+        interactive: true,
+      });
+      assert.ok(initial.executionId);
+
+      slowInput.delayMs = 40;
+      const continuationExit = yield* Effect.exit(judge.execute<FakeInput>({
+        executionId: initial.executionId!,
+        tracing: { caseIds: ['slow'] },
+      }));
+      assert.equal(Exit.isFailure(continuationExit), true);
+      assert.equal(state.aborts, 1);
+      yield* judge.disposeExecution(initial.executionId!);
+    })
+  ));
+});
+
 test('browser interactive executions expire through the ordinary disposal path', async () => {
   const state = makePreparedState();
   const runtimeHost = browserHostFor(preparedProvider(state));

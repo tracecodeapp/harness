@@ -1065,13 +1065,11 @@ function preparedEvaluationPlan<Input, Expected>(
   useProviderBatch: boolean
 ): JudgeEvaluationPlan<Input, Expected> {
   const batched = useProviderBatch && plan.cases.length > 1;
-  const timeoutMs =
-    batched && plan.run.timeoutMs !== undefined
-      ? Math.min(
-          2_147_483_647,
-          plan.run.timeoutMs * plan.cases.length
-        )
-      : plan.run.timeoutMs;
+  const timeoutMs = preparedRunTimeoutMs(
+    plan.run.timeoutMs,
+    plan.cases.length,
+    batched
+  );
   return Object.freeze({
     ...plan,
     ...(plan.compile
@@ -1094,6 +1092,16 @@ function preparedEvaluationPlan<Input, Expected>(
         }
       : {}),
   });
+}
+
+function preparedRunTimeoutMs(
+  perCaseTimeoutMs: number | undefined,
+  caseCount: number,
+  batched: boolean
+): number | undefined {
+  return batched && perCaseTimeoutMs !== undefined
+    ? Math.min(2_147_483_647, perCaseTimeoutMs * caseCount)
+    : perCaseTimeoutMs;
 }
 
 /**
@@ -1188,6 +1196,7 @@ interface RetainedJudgeExecution {
   readonly executionId: string;
   readonly evaluationId: string;
   readonly plan: JudgeEvaluationPlan;
+  readonly perCaseTimeoutMs: number | undefined;
   readonly build: JudgePreparedWorkspace<TraceKernelFileSystemImage>;
   readonly port: TraceKernelJudgePort;
   readonly comparator?: JudgeComparator<unknown, unknown, unknown>;
@@ -1301,6 +1310,7 @@ class RuntimeJudgeComposition
             executionId,
             evaluationId,
             plan: plan as JudgeEvaluationPlan,
+            perCaseTimeoutMs: request.plan.run.timeoutMs,
             build,
             port,
             comparator: request.comparator as
@@ -1374,6 +1384,18 @@ class RuntimeJudgeComposition
       }
       const plan = Object.freeze({
         ...retained.plan,
+        run: Object.freeze({
+          ...retained.plan.run,
+          ...(retained.perCaseTimeoutMs === undefined
+            ? {}
+            : {
+                timeoutMs: preparedRunTimeoutMs(
+                  retained.perCaseTimeoutMs,
+                  selected.size,
+                  selected.size > 1
+                ),
+              }),
+        }),
         cases: Object.freeze(
           request.tracing.caseIds.map((caseId) => casesById.get(caseId)!)
         ),
