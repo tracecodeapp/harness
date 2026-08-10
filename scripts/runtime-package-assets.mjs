@@ -165,7 +165,12 @@ async function loadComponent(harnessRoot, componentName, expectedVersion) {
   return Object.freeze({
     component: componentName,
     packageRoot,
-    package: Object.freeze({ name: packageJson.name, version: packageJson.version }),
+    package: Object.freeze({
+      name: packageJson.name,
+      version: packageJson.version,
+      license: packageJson.license,
+      ...(packageJson.repository ? { repository: packageJson.repository } : {}),
+    }),
     manifest: Object.freeze(manifest),
     releaseId: manifest.releaseId,
     sourceRoot,

@@ -13,14 +13,23 @@ assert.equal(
   lock.engineDependencies.tracecc.consumerHash,
   lock.engineDependencies.tracecc.provenance.consumerHash
 );
-assert.deepEqual(lock.engineDependencies.tracecc.package, {
-  name: '@tracecode/tracecc',
-  version: '0.1.0',
-});
-assert.deepEqual(lock.engineDependencies.tracejvm.package, {
-  name: '@tracecode/tracejvm',
-  version: '0.4.1',
-});
+assert.equal(lock.engineDependencies.tracecc.package.name, '@tracecode/tracecc');
+assert.equal(lock.engineDependencies.tracecc.package.version, '0.1.0');
+assert.equal(lock.engineDependencies.tracecc.package.license, 'AGPL-3.0-only');
+assert.match(
+  typeof lock.engineDependencies.tracecc.package.repository === 'string'
+    ? lock.engineDependencies.tracecc.package.repository
+    : lock.engineDependencies.tracecc.package.repository.url,
+  /github\.com\/tracecodeapp\/tracecc/u
+);
+assert.equal(lock.engineDependencies.tracejvm.package.name, '@tracecode/tracejvm');
+assert.equal(lock.engineDependencies.tracejvm.package.version, '0.4.1');
+assert.equal(lock.engineDependencies.tracejvm.package.license, 'AGPL-3.0-only');
+assert.equal(
+  lock.engineDependencies.tracecc.package.license,
+  lock.engineDependencies.tracejvm.package.license,
+  'TraceCC and TraceJVM must retain the same engine license policy'
+);
 assert.equal(
   lock.components.cpp.files.some((file) =>
     file.path.startsWith('workers/cpp/tracecc/')

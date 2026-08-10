@@ -3,11 +3,11 @@
   "harness": {
     "name": "@tracecode/harness",
     "version": "0.16.0",
-    "releaseId": "@tracecode/harness@0.16.0+sha256.dd1e92ff5c875625aa27e3f455ec672814333650a81f4de23127682fdd478751"
+    "releaseId": "@tracecode/harness@0.16.0+sha256.df9348da851157a70ee5d140a7d20cee4771d31bcfbcaabdfbb3f4a75624bd35"
   },
   "treeSha256Algorithm": "sha256-path-nul-bytes-nul-v1",
-  "packageTreeSha256": "dd1e92ff5c875625aa27e3f455ec672814333650a81f4de23127682fdd478751",
-  "totalPackagedRuntimeBytes": 151625326,
+  "packageTreeSha256": "df9348da851157a70ee5d140a7d20cee4771d31bcfbcaabdfbb3f4a75624bd35",
+  "totalPackagedRuntimeBytes": 151625762,
   "components": {
     "cpp": {
       "releaseId": "cpp+sha256.7961c3b16f23e095376ae3af735aabe2683c77a7730d0530d32a3ee3abf08dde",
@@ -1837,15 +1837,15 @@
       ]
     },
     "javascript": {
-      "releaseId": "javascript+sha256.7403ff16437c2f7595f7814d2efc1263461ff56b1267331638951f89706317a4",
-      "treeSha256": "7403ff16437c2f7595f7814d2efc1263461ff56b1267331638951f89706317a4",
-      "totalBytes": 1202458,
+      "releaseId": "javascript+sha256.3da4a69b065b83bd96eb9bd35aa28d88524142a1f5db26aff6ea1f3d27b89609",
+      "treeSha256": "3da4a69b065b83bd96eb9bd35aa28d88524142a1f5db26aff6ea1f3d27b89609",
+      "totalBytes": 1202894,
       "files": [
         {
           "path": "workers/javascript/javascript-project-worker.js",
-          "size": 560660,
-          "sha256": "32941dddd6a1cd843bdf8e72d029d7695d1b1caf3d063bb822216f1d7b526ffb",
-          "integrity": "sha256-MpQd3dahzYQ7345y0CnXaV0bHK89Bju4IiFvHXtSb/s=",
+          "size": 561096,
+          "sha256": "0fca66e490993357776af55b368b98e39333bda25b6e51761efe62e2472a3699",
+          "integrity": "sha256-D8pm5JCZM1d3avVbNouY45MzvaJbblF2Hv5i4kcqNpk=",
           "mediaType": "text/javascript"
         },
         {
@@ -2107,7 +2107,12 @@
       "releaseId": "tracecc@0.1.0+sha256.fb4b6f41f9e9b7db89b6c8425bb2c6218979219a4150f96619b6461b4b78d294",
       "package": {
         "name": "@tracecode/tracecc",
-        "version": "0.1.0"
+        "version": "0.1.0",
+        "license": "AGPL-3.0-only",
+        "repository": {
+          "type": "git",
+          "url": "git+https://github.com/tracecodeapp/tracecc.git"
+        }
       },
       "packageManifest": {
         "schema": "tracecc-package-runtime-v1",
@@ -2552,7 +2557,8 @@
       "releaseId": "tracejvm@0.4.1+sha256.a954d0ad32ff8c62e765847a65081a39a7ad33da0b9617cb8ddbd46082d6247a",
       "package": {
         "name": "@tracecode/tracejvm",
-        "version": "0.4.1"
+        "version": "0.4.1",
+        "license": "AGPL-3.0-only"
       },
       "packageManifest": {
         "schema": "tracejvm-package-runtime-v1",

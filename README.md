@@ -224,6 +224,27 @@ credential-free execution origin. See
 [Browser execution host](./docs/browser-execution-host.md) and
 [Isolation boundaries](./docs/isolation-boundaries.md).
 
+The same generated release metadata is available to client interfaces without
+making the application parse notices or know engine paths:
+
+```ts
+import {
+  getLanguageRuntimeOpenSourceInfo,
+} from '@tracecode/harness/tracekernel';
+
+const openSource = getLanguageRuntimeOpenSourceInfo('python', {
+  assetBaseUrl: '/workers',
+});
+```
+
+Each component includes its resolved version, SPDX license expression, and
+UI-ready links to license text, notices, source, modifications, or
+corresponding source when applicable. Package-owned links follow
+`assetBaseUrl`, so a custom asset origin requires no client-side TraceJVM,
+TraceCC, or Pyodide routing. The compact component list is intended for a
+collapsed runtime-information section; full transitive notices remain in the
+versioned engine release.
+
 The default Python Judge deployment is self-contained under `/workers` after
 `sync-assets`. It retains immutable CPython startup state at provider scope,
 leases one clean Worker to a submission for preparation plus its case batch,
@@ -233,8 +254,11 @@ Project Python processes continue to use the general TraceKernel process path
 because their modules, filesystem, stdin, servers, and lifetime are
 user-controlled.
 
-Java uses TraceJVM. Publish its engine module, WebAssembly binary, and runtime
-profile as one immutable directory:
+Java uses the TraceJVM release pinned by the Harness. `sync-assets` installs
+its executable engine module, WebAssembly binary, and runtime profiles under
+`/workers`; the generated open-source metadata links the matching license,
+notices, modifications, and corresponding source. An advanced deployment can
+move that exact executable release to another immutable origin:
 
 ```ts
 const workspace = await createBrowserWorkspace({

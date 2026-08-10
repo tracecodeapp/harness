@@ -1,7 +1,12 @@
 export interface EngineRuntimePackageComponent {
   readonly component: 'tracejvm' | 'tracecc';
   readonly packageRoot: string;
-  readonly package: Readonly<{ name: string; version: string }>;
+  readonly package: Readonly<{
+    name: string;
+    version: string;
+    license?: string;
+    repository?: string | Readonly<{ type?: string; url?: string }>;
+  }>;
   readonly manifest: Readonly<Record<string, unknown>>;
   readonly releaseId: string;
   readonly sourceRoot: string;

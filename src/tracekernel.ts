@@ -123,6 +123,23 @@ export {
   type RuntimeLibraryInfo,
 } from '../packages/runtime-contracts/src/runtime-language-info';
 
+export {
+  LANGUAGE_RUNTIME_OPEN_SOURCE_INFOS,
+  getLanguageRuntimeOpenSourceInfo,
+  getSupportedLanguageRuntimeOpenSourceInfos,
+  resolveRuntimeOpenSourceResourceHref,
+  type LanguageRuntimeOpenSourceInfo,
+  type ResolvedLanguageRuntimeOpenSourceInfo,
+  type ResolvedRuntimeOpenSourceComponentInfo,
+  type ResolvedRuntimeOpenSourceResource,
+  type RuntimeOpenSourceAssetResource,
+  type RuntimeOpenSourceComponentInfo,
+  type RuntimeOpenSourceInfoOptions,
+  type RuntimeOpenSourceResource,
+  type RuntimeOpenSourceResourceKind,
+  type RuntimeOpenSourceUrlResource,
+} from '../packages/runtime-contracts/src/runtime-open-source-info';
+
 export type {
   CodeExecutionResult,
   ExecutionDiagnosticStage,

@@ -19,6 +19,9 @@ import { TRACECC_RUNTIME_CONTENT_HASH } from '../packages/runtime-cpp/src/tracec
 import {
   TRACEJVM_RUNTIME_ASSET_RELATIVE_PATH,
 } from '../packages/runtime-java/src/tracejvm-runtime-assets.js';
+import {
+  getSupportedLanguageRuntimeOpenSourceInfos,
+} from '../packages/runtime-contracts/src/runtime-open-source-info.js';
 
 function assertCondition(condition: unknown, message: string): asserts condition {
   if (!condition) {
@@ -106,6 +109,20 @@ async function main(t: TestContext): Promise<void> {
     const filePath = join(targetDir, relativePath);
     const fileStat = await stat(filePath);
     assertCondition(fileStat.isFile(), `Expected synced asset at ${relativePath}`);
+  }
+
+  for (const info of getSupportedLanguageRuntimeOpenSourceInfos()) {
+    for (const component of info.components) {
+      for (const resource of component.resources) {
+        if (!resource.href.startsWith('/workers/')) continue;
+        const relativePath = resource.href.slice('/workers/'.length);
+        const fileStat = await stat(join(targetDir, relativePath));
+        assertCondition(
+          fileStat.isFile(),
+          `${info.language} ${component.name} legal resource must be installed by sync-assets: ${relativePath}`
+        );
+      }
+    }
   }
 
   for (const relativePath of [
