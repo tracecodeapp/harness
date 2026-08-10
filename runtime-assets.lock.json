@@ -2217,16 +2217,16 @@
       ]
     },
     "tracejvm": {
-      "releaseId": "tracejvm@0.4.1+sha256.8a8142393d439eaf28c09c66b4f47c411faf4b7b10c0cfe029e859129112654e",
+      "releaseId": "tracejvm@0.4.1+sha256.446bd4e38f2abcb497c8b52954e791ced91f694c21ecf992db990597e9b21dd8",
       "package": {
         "name": "@tracecode/tracejvm",
         "version": "0.4.1",
         "license": "AGPL-3.0-only"
       },
-      "contentHash": "8a8142393d439eaf28c09c66b4f47c411faf4b7b10c0cfe029e859129112654e",
-      "relativePrefix": "tracejvm/0.4.1/8a8142393d439eaf28c09c66b4f47c411faf4b7b10c0cfe029e859129112654e",
-      "descriptorSha256": "979ed2b713f2d9e5336ecd10801698eac30e8f64051a4da6b5cbfb83688efc30",
-      "descriptorSize": 121714,
+      "contentHash": "446bd4e38f2abcb497c8b52954e791ced91f694c21ecf992db990597e9b21dd8",
+      "relativePrefix": "tracejvm/0.4.1/446bd4e38f2abcb497c8b52954e791ced91f694c21ecf992db990597e9b21dd8",
+      "descriptorSha256": "f1c404260adaa2a32d243b111b3633963e2f9b12c3b84563cfdb9e3d563ea0db",
+      "descriptorSize": 189839,
       "totalBytes": 127489086
     }
   }

@@ -9,6 +9,7 @@ import {
   readdir,
   rename,
   rm,
+  stat,
 } from 'node:fs/promises';
 import { dirname, join, relative, resolve, sep } from 'node:path';
 import { pathToFileURL } from 'node:url';
@@ -57,6 +58,79 @@ const COMPONENTS = Object.freeze({
 
 function sha256(bytes) {
   return createHash('sha256').update(bytes).digest('hex');
+}
+
+async function materializeTraceJVMArchive(
+  harnessRoot,
+  packageRoot,
+  manifest
+) {
+  const archive = manifest.archive;
+  if (
+    archive?.format !== 'tar+zstd-v1' ||
+    !isSafeRelativePath(archive.path) ||
+    !Number.isSafeInteger(archive.size) ||
+    archive.size <= 0 ||
+    !/^[0-9a-f]{64}$/u.test(archive.sha256 ?? '') ||
+    archive.integrity !==
+      `sha256-${Buffer.from(archive.sha256 ?? '', 'hex').toString('base64')}`
+  ) {
+    throw new Error('@tracecode/tracejvm runtime package has an invalid archive descriptor.');
+  }
+  const archivePath = join(packageRoot, 'runtime-release', ...archive.path.split('/'));
+  const archiveBytes = await readFile(archivePath);
+  if (
+    archiveBytes.byteLength !== archive.size ||
+    sha256(archiveBytes) !== archive.sha256
+  ) {
+    throw new Error(
+      `@tracecode/tracejvm runtime archive mismatch: expected ` +
+        `${archive.size}/${archive.sha256}, received ` +
+        `${archiveBytes.byteLength}/${sha256(archiveBytes)}.`
+    );
+  }
+  const cacheRoot = join(
+    harnessRoot,
+    '.cache',
+    'runtime-package-assets',
+    'tracejvm',
+    manifest.contentHash
+  );
+  try {
+    if ((await stat(cacheRoot)).isDirectory()) return cacheRoot;
+  } catch (error) {
+    if (error?.code !== 'ENOENT') throw error;
+  }
+  await mkdir(dirname(cacheRoot), { recursive: true });
+  const staging = await mkdtemp(join(dirname(cacheRoot), '.staging-'));
+  try {
+    const runtimePackage = await import(
+      pathToFileURL(join(packageRoot, 'runtime-package-archive.mjs')).href
+    );
+    if (
+      runtimePackage.TRACEJVM_RUNTIME_ARCHIVE_FORMAT !== archive.format ||
+      typeof runtimePackage.extractTraceJVMRuntimeArchive !== 'function'
+    ) {
+      throw new Error(
+        '@tracecode/tracejvm runtime package does not provide the declared archive format.'
+      );
+    }
+    await runtimePackage.extractTraceJVMRuntimeArchive({
+      archivePath,
+      destination: staging,
+      files: manifest.files,
+    });
+    try {
+      await rename(staging, cacheRoot);
+    } catch (error) {
+      if (error?.code !== 'EEXIST' && error?.code !== 'ENOTEMPTY') throw error;
+      await rm(staging, { recursive: true, force: true });
+    }
+  } catch (error) {
+    await rm(staging, { recursive: true, force: true });
+    throw error;
+  }
+  return cacheRoot;
 }
 
 function compareText(left, right) {
@@ -136,7 +210,9 @@ async function loadComponent(harnessRoot, componentName, expectedVersion) {
         `resolved package ${String(packageJson.version)} with manifest ${String(manifest.package?.version)}.`
     );
   }
-  const sourceRoot = definition.sourceRoot(manifest, packageRoot);
+  const sourceRoot = componentName === 'tracejvm'
+    ? await materializeTraceJVMArchive(harnessRoot, packageRoot, manifest)
+    : definition.sourceRoot(manifest, packageRoot);
   const expected = new Map(manifest.files.map((file) => [file.path, file]));
   const files = [];
   for (const file of await listFiles(sourceRoot)) {
