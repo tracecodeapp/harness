@@ -30,13 +30,23 @@ async function main(): Promise<void> {
   const cpp = report.runtimes.find((runtime) => runtime.language === 'cpp');
   const java = report.runtimes.find((runtime) => runtime.language === 'java');
   assertCondition(typescript?.status === 'ready', 'selected TypeScript project provider should report ready');
-  assertCondition(cpp?.status === 'degraded', 'WebKit C++ should expose its measured compatibility caveat');
+  assertCondition(
+    cpp?.status === 'unavailable' && cpp.error?.includes('Browser runtime asset preflight failed for cpp.'),
+    'the shared environment must install and preflight the Harness-owned TraceCC release'
+  );
   assertCondition(
     cpp.knownIssues.some((issue) => issue.id === 'webkit-cpp-wasm-null-reference'),
     'WebKit C++ readiness should provide an actionable issue id'
   );
   assertCondition(java?.selected === false && java.status === 'unavailable', 'unselected providers should report unavailable');
   assertCondition(selected.providers.join(',') === 'typescript,cpp', 'provider selection should retain stable order');
+
+  const sharedCppHost = createBrowserRuntimeHost({ environment: selected });
+  assertCondition(
+    sharedCppHost.environment.assets.runtimeManifests.cpp?.assets.compilerWasm.integrity?.startsWith('sha256-'),
+    'a shared environment must retain the built-in TraceCC integrity manifest'
+  );
+  sharedCppHost.dispose();
 
   const host = createBrowserRuntimeHost({
     providers: ['typescript', 'cpp'],

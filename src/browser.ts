@@ -77,7 +77,7 @@ import {
   type BrowserRuntimeAssetPreflightOptions,
 } from '../packages/runtime-browser/src/runtime-asset-preflight';
 import {
-  createBrowserRuntimeEnvironment,
+  createBrowserRuntimeEnvironment as createProviderBrowserRuntimeEnvironment,
   BrowserRuntimeEngine,
   BrowserRuntimeEnvironment,
   BrowserRuntimeEnvironmentReport,
@@ -227,7 +227,6 @@ export {
   SUPPORTED_LANGUAGE_RUNTIME_INFOS,
   assertRuntimeRequestSupported,
   createBrowserRuntimeAssetPreflight,
-  createBrowserRuntimeEnvironment,
   getLanguageRuntimeInfo,
   getLanguageRuntimeOpenSourceInfo,
   getLanguageRuntimeProfile,
@@ -330,6 +329,19 @@ function withBuiltInRuntimeAssets(
       );
     },
   };
+}
+
+/**
+ * Creates a reusable deployment environment with the same Harness-owned
+ * runtime defaults as {@link createBrowserRuntimeHost}.
+ */
+export function createBrowserRuntimeEnvironment(
+  options: BrowserRuntimeEnvironmentOptions = {}
+): BrowserRuntimeEnvironment {
+  return createProviderBrowserRuntimeEnvironment({
+    ...options,
+    assets: withBuiltInRuntimeAssets(options.assetBaseUrl, options.assets),
+  });
 }
 
 /**
