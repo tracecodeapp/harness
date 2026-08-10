@@ -43,7 +43,7 @@ async function main(): Promise<void> {
 
   const sharedCppHost = createBrowserRuntimeHost({ environment: selected });
   assertCondition(
-    sharedCppHost.environment.assets.runtimeManifests.cpp?.assets.compilerWasm.integrity?.startsWith('sha256-'),
+    sharedCppHost.environment.assets.runtimeManifests?.cpp?.assets.compilerWasm.integrity?.startsWith('sha256-'),
     'a shared environment must retain the built-in TraceCC integrity manifest'
   );
   sharedCppHost.dispose();
