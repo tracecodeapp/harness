@@ -21,68 +21,8 @@ concurrency:
 
 jobs:
   smoke:
-    runs-on: ubuntu-latest
-    timeout-minutes: 15
-    steps:
-      - uses: actions/checkout@v4
-      # Release PRs must validate the engine candidates before those packages
-      # exist on npm. Each engine owns and verifies its tracked runtime tree;
-      # Harness consumes the resulting tarballs exactly as a registry install
-      # will after the three releases are approved.
-      - uses: actions/checkout@v4
-        with:
-          repository: tracecodeapp/tracecc
-          # Candidate branches move together with these prerelease PRs. The
-          # generated runtime lock below remains the fail-closed byte identity.
-          ref: codex/harness-owned-runtime-assets
-          path: .release-candidates/tracecc
-      - uses: actions/checkout@v4
-        with:
-          repository: tracecodeapp/tracejvm
-          ref: codex/harness-owned-runtime-assets
-          path: .release-candidates/tracejvm
-      - uses: pnpm/action-setup@v4
-        with:
-          version: 10.4.1
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 22
-          cache: pnpm
-      - name: Pack engine release candidates
-        run: |
-          mkdir -p "${RUNNER_TEMP}/tracecode-release-candidates/tracecc" \
-            "${RUNNER_TEMP}/tracecode-release-candidates/tracejvm"
-          pnpm --dir .release-candidates/tracecc install --frozen-lockfile
-          (
-            cd .release-candidates/tracecc
-            npm pack --pack-destination "${RUNNER_TEMP}/tracecode-release-candidates/tracecc"
-          )
-          pnpm --dir .release-candidates/tracejvm install --frozen-lockfile
-          (
-            cd .release-candidates/tracejvm
-            npm pack --pack-destination "${RUNNER_TEMP}/tracecode-release-candidates/tracejvm"
-          )
-          node - <<'NODE' >> "$GITHUB_ENV"
-          const fs = require('node:fs');
-          const path = require('node:path');
-          const temp = process.env.RUNNER_TEMP;
-          for (const [name, directory] of [
-            ['TRACECODE_TRACECC_CANDIDATE_PACKAGE', 'tracecc'],
-            ['TRACECODE_TRACEJVM_CANDIDATE_PACKAGE', 'tracejvm'],
-          ]) {
-            const root = path.join(temp, 'tracecode-release-candidates', directory);
-            const packed = fs.readdirSync(root).filter((file) => file.endsWith('.tgz'));
-            if (packed.length !== 1) throw new Error(`expected one ${name} tarball, found ${packed.length}`);
-            console.log(`${name}=file:${path.resolve(root, packed[0])}`);
-          }
-          NODE
-      - name: Install the three-repository release stack
-        run: pnpm install --lockfile=false
-      - name: Check generated runtime metadata
-        run: pnpm test:runtime-info-sync && pnpm test:kernel-policy-sync && pnpm test:typescript-project-libs-sync
-      - name: Typecheck
-        run: pnpm typecheck
-      - name: Build
-        run: pnpm build
-      - name: Test package surfaces and smoke
-        run: pnpm test:packaged-surface && pnpm test:smoke && pnpm test:asset-sync
+    uses: ./.github/workflows/release-stack.yml
+    with:
+      harness-ref: ${{ github.event.pull_request.head.sha || github.sha }}
+      tracecc-ref: codex/harness-owned-runtime-assets
+      tracejvm-ref: codex/harness-owned-runtime-assets
