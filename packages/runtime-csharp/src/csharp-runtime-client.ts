@@ -38,17 +38,7 @@ export interface CSharpPreparedWorkerAuthority {
   releaseRunner(runner: CSharpWorkerClient): void;
 }
 
-interface CSharpPreparedTraceContext {
-  executeBatch(
-    call: RuntimePreparedTraceBatchCall,
-    traceEnabledBatch: readonly boolean[]
-  ): Promise<readonly ExecutionResult[]>;
-}
-
 export class CSharpRuntimeClient implements RuntimeClient, RuntimePreparedExecutionProvider {
-  private readonly preparedTraceContexts =
-    new WeakMap<RuntimePreparedProgram, CSharpPreparedTraceContext>();
-
   constructor(
     private readonly workerClient: CSharpWorkerClient,
     private readonly preparedAuthority?: CSharpPreparedWorkerAuthority
@@ -305,7 +295,6 @@ export class CSharpRuntimeClient implements RuntimeClient, RuntimePreparedExecut
     const dispose = (): Promise<void> => {
       if (disposePromise) return disposePromise;
       disposed = true;
-      if (program) this.preparedTraceContexts.delete(program);
       const ownedArtifact = artifact;
       const executionsToDrain = [...activeExecutions];
       disposePromise = (async () => {
@@ -339,8 +328,7 @@ export class CSharpRuntimeClient implements RuntimeClient, RuntimePreparedExecut
               this.withPreparedRunner((runner) =>
                 runner.executePreparedTrace(
                   preparedArtifact,
-                  forwardedCall,
-                  { tracingEnabled: forwardedCall.recordTrace ?? true }
+                  forwardedCall
                 )
               )
             ),
@@ -369,12 +357,14 @@ export class CSharpRuntimeClient implements RuntimeClient, RuntimePreparedExecut
                     preparedArtifact,
                     {
                       inputs,
+                      ...(forwardedCall.traceEnabledBatch === undefined
+                        ? {}
+                        : {
+                            recordTrace:
+                              forwardedCall.traceEnabledBatch[index],
+                          }),
                       signal: forwardedCall.signal,
                       limits: forwardedCall.limits,
-                    },
-                    {
-                      tracingEnabled:
-                        forwardedCall.traceEnabledBatch?.[index] ?? true,
                     }
                   ),
                 forwardedCall.signal
@@ -410,61 +400,12 @@ export class CSharpRuntimeClient implements RuntimeClient, RuntimePreparedExecut
           dispose,
         };
 
-    if (program.mode === 'trace') {
-      this.preparedTraceContexts.set(program, {
-        executeBatch: (preparedCall, traceEnabledBatch) =>
-          executeOwned(preparedCall, (preparedArtifact, forwardedCall) =>
-            this.withFreshPreparedRunners(
-              forwardedCall.inputBatch,
-              (runner, inputs, index) =>
-                runner.executePreparedTrace(
-                  preparedArtifact,
-                  {
-                    inputs,
-                    signal: forwardedCall.signal,
-                    limits: forwardedCall.limits,
-                  },
-                  { tracingEnabled: traceEnabledBatch[index] ?? true }
-                ),
-              forwardedCall.signal
-            )
-          ),
-      });
-    }
-
     return {
       kind: 'prepared',
       program: Object.freeze(program),
       consoleOutput: result.consoleOutput ?? [],
       timings: result.timings,
     };
-  }
-
-  /** Compatibility entry point retained for direct language benchmarks. */
-  executePreparedTraceBatch(
-    program: RuntimePreparedProgram,
-    call: RuntimePreparedTraceBatchCall,
-    experiment: {
-      readonly traceEnabledBatch: readonly boolean[];
-    }
-  ): Promise<readonly ExecutionResult[]> {
-    if (
-      experiment.traceEnabledBatch.length !== call.inputBatch.length ||
-      experiment.traceEnabledBatch.some(
-        (enabled) => typeof enabled !== 'boolean'
-      )
-    ) {
-      throw new TypeError(
-        'C# experimental trace selection must contain one boolean per batch case.'
-      );
-    }
-    const context = this.preparedTraceContexts.get(program);
-    if (!context || program.mode !== 'trace') {
-      throw new TypeError(
-        'C# experimental trace selection requires a live trace program prepared by this client.'
-      );
-    }
-    return context.executeBatch(call, experiment.traceEnabledBatch);
   }
 
 }

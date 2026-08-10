@@ -47,8 +47,7 @@ The selected vector now travels through the portable
 `RuntimePreparedTraceBatchCall.traceEnabledBatch` contract. The client keeps
 the trusted prepared payload private; the public program never exposes source
 artifacts or executable objects. Foreign, disposed, clean-mode, or
-length-mismatched programs are rejected. The concrete client method remains
-only as a compatibility entry point for the direct benchmark.
+length-mismatched programs are rejected.
 
 Each input still runs in a fresh executor Worker. The long-lived coordinator
 only prepares immutable artifacts and never observes executor mutations.

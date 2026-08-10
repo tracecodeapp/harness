@@ -75,6 +75,30 @@ export class ExecutionTimeoutError extends Data.TaggedError('ExecutionTimeoutErr
   }
 }
 
+/**
+ * Recognize execution deadlines across package/module boundaries.
+ *
+ * The browser package can be loaded once from source and once from a bundled
+ * runtime (for example, by a worker entrypoint).  Those copies have distinct
+ * class constructors, so `instanceof ExecutionTimeoutError` is not stable at
+ * the API boundary.  The tagged-error discriminant is the shared contract.
+ */
+export function isExecutionTimeoutError(
+  error: unknown
+): error is ExecutionTimeoutError {
+  return (
+    typeof error === 'object' &&
+    error !== null &&
+    '_tag' in error &&
+    error._tag === 'ExecutionTimeoutError' &&
+    'timeoutMs' in error &&
+    typeof error.timeoutMs === 'number' &&
+    Number.isFinite(error.timeoutMs) &&
+    'message' in error &&
+    typeof error.message === 'string'
+  );
+}
+
 /** The caller's AbortSignal fired mid-execution. */
 export class ExecutionAbortedError extends Data.TaggedError('ExecutionAbortedError') {
   constructor() {

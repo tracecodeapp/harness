@@ -44,6 +44,7 @@ import type { BrowserWorkerFactory } from '@tracecode/runtime-browser/internal';
 import { restoreTransferredTraceEvents, traceEventTransferRequest } from '@tracecode/runtime-browser/internal';
 import {
   ExecutionTimeoutError,
+  isExecutionTimeoutError,
   WorkerReportedError,
   WorkerTerminatedError,
 } from '@tracecode/runtime-browser/internal';
@@ -90,18 +91,6 @@ interface WarmupResult {
 interface PreparedExecutionReply {
   preparedExecution: unknown;
   timings?: RuntimeExecutionTimings;
-}
-
-interface JavaScriptPreparedTraceContext {
-  readonly language: JavaScriptWorkerLanguage;
-  readonly preparation: {
-    readonly code: string;
-    readonly functionName: string | null;
-    readonly executionStyle: JavaScriptExecutionStyle;
-    readonly traceOptions?: RuntimeTraceCall['traceOptions'];
-  };
-  readonly requirePreparedExecution: () => unknown;
-  readonly generation: number;
 }
 
 const EXECUTION_TIMEOUT_MS = 20000;
@@ -207,8 +196,6 @@ export class JavaScriptWorkerClient {
   private warmupPromises = new Map<JavaScriptWorkerLanguage, Promise<WarmupResult>>();
   private executionTail: Promise<void> = Promise.resolve();
   private readonly preparedPrograms = new Set<RuntimePreparedProgram>();
-  private readonly preparedTraceContexts =
-    new WeakMap<RuntimePreparedProgram, JavaScriptPreparedTraceContext>();
   private readonly leasedExecutionWorkers =
     new Set<JavaScriptWorkerConnection>();
   private generation = 1;
@@ -804,28 +791,16 @@ export class JavaScriptWorkerClient {
                   preparation,
                   requirePreparedExecution(),
                   batchCall,
-                  generation,
-                  batchCall.traceEnabledBatch
-                    ? { traceEnabledBatch: batchCall.traceEnabledBatch }
-                    : undefined
+                  generation
                 )
             : undefined,
         dispose: () => {
           preparedExecution = undefined;
           this.preparedPrograms.delete(program);
-          this.preparedTraceContexts.delete(program);
         },
       });
       this.assertActive(generation);
       this.preparedPrograms.add(program);
-      if (preparation.mode === 'trace') {
-        this.preparedTraceContexts.set(program, {
-          language,
-          preparation,
-          requirePreparedExecution,
-          generation,
-        });
-      }
       const totalMs = performanceNow() - startedAt;
       return {
         kind: 'prepared',
@@ -916,7 +891,7 @@ export class JavaScriptWorkerClient {
     } catch (error) {
       if (
         call.limits?.wallClockMs !== undefined &&
-        error instanceof ExecutionTimeoutError
+        isExecutionTimeoutError(error)
       ) {
         return {
           kind: 'limit',
@@ -1005,7 +980,7 @@ export class JavaScriptWorkerClient {
     } catch (error) {
       if (
         call.limits?.wallClockMs !== undefined &&
-        error instanceof ExecutionTimeoutError
+        isExecutionTimeoutError(error)
       ) {
         return {
           kind: 'limit',
@@ -1054,40 +1029,6 @@ export class JavaScriptWorkerClient {
     );
   }
 
-  /** Compatibility entry point retained for direct language benchmarks. */
-  executePreparedTraceBatch(
-    program: RuntimePreparedProgram,
-    call: RuntimePreparedTraceBatchCall,
-    experiment: {
-      readonly traceEnabledBatch: readonly boolean[];
-    }
-  ): Promise<readonly ExecutionResult[]> {
-    if (
-      experiment.traceEnabledBatch.length !== call.inputBatch.length ||
-      experiment.traceEnabledBatch.some(
-        (enabled) => typeof enabled !== 'boolean'
-      )
-    ) {
-      throw new TypeError(
-        'JavaScript experimental trace selection must contain one boolean per batch case.'
-      );
-    }
-    const context = this.preparedTraceContexts.get(program);
-    if (!context || program.mode !== 'trace') {
-      throw new TypeError(
-        'JavaScript experimental trace selection requires a live trace program prepared by this client.'
-      );
-    }
-    return this.executePreparedTraceBatchInternal(
-      context.language,
-      context.preparation,
-      context.requirePreparedExecution(),
-      call,
-      context.generation,
-      experiment
-    );
-  }
-
   private executePreparedTraceBatchInternal(
     language: JavaScriptWorkerLanguage,
     preparation: {
@@ -1098,17 +1039,16 @@ export class JavaScriptWorkerClient {
     },
     preparedExecution: unknown,
     call: RuntimePreparedTraceBatchCall,
-    expectedGeneration: number,
-    experiment?: {
-      readonly traceEnabledBatch: readonly boolean[];
-    }
+    expectedGeneration: number
   ): Promise<readonly ExecutionResult[]> {
     if (
-      experiment !== undefined &&
       (
-        experiment.traceEnabledBatch.length !== call.inputBatch.length ||
-        experiment.traceEnabledBatch.some(
-          (enabled) => typeof enabled !== 'boolean'
+        call.traceEnabledBatch !== undefined &&
+        (
+          call.traceEnabledBatch.length !== call.inputBatch.length ||
+          call.traceEnabledBatch.some(
+            (enabled) => typeof enabled !== 'boolean'
+          )
         )
       )
     ) {
@@ -1129,7 +1069,7 @@ export class JavaScriptWorkerClient {
             signal: call.signal,
             limits: call.limits,
           },
-          experiment?.traceEnabledBatch[index] ?? true
+          call.traceEnabledBatch?.[index] ?? true
         ),
       expectedGeneration
     );

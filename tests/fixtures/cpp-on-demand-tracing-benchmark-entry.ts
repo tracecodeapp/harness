@@ -278,8 +278,6 @@ globalThis.runCppOnDemandTracingSample = async (
         {
           inputBatch: executionOrder.map((index) => fixture.cases[index]!.input),
           limits: { wallClockMs: 120_000 },
-        },
-        {
           traceEnabledBatch: executionOrder.map(
             (index) => index === selectedIndex
           ),

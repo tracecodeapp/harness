@@ -493,9 +493,9 @@ globalThis.runJavaPreparedProviderBrowserTest =
           { values: [4, 5] },
           { values: [6] },
         ],
+        traceEnabledBatch: [true, false, true],
       },
-      { maxStoredEvents: 2_000 },
-      { traceEnabledBatch: [true, false, true] }
+      { maxStoredEvents: 2_000 }
     );
     const mixedTraceOutputs = mixedTraceResults.map(completedWorkerOutput);
     const mixedTraceEventCounts = mixedTraceResults.map(

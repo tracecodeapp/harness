@@ -42,6 +42,7 @@ import { logRuntimeDiagnostic } from './runtime-diagnostics';
 import {
   ExecutionAbortedError,
   ExecutionTimeoutError,
+  isExecutionTimeoutError,
   WorkerCrashedError,
   WorkerReadyTimeoutError,
   WorkerReportedError,
@@ -609,7 +610,7 @@ export class WorkerSessionCore {
       }),
       Effect.tapError((error) =>
         Effect.sync(() => {
-          if (!(error instanceof ExecutionTimeoutError)) return;
+          if (!isExecutionTimeoutError(error)) return;
           logRuntimeDiagnostic('warn', {
             component: this.config.component,
             runtime: this.config.runtime,

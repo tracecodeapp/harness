@@ -889,14 +889,9 @@ export class JavaWorkerClient {
   async executePreparedTraceBatch(
     programId: string,
     call: RuntimePreparedTraceBatchCall,
-    traceOptions?: JavaTraceExecutionOptions,
-    /** Compatibility override retained for direct language benchmarks. */
-    experiment?: {
-      readonly traceEnabledBatch: readonly boolean[];
-    }
+    traceOptions?: JavaTraceExecutionOptions
   ): Promise<readonly JavaWorkerPreparedTraceResult[]> {
-    const traceEnabledBatch =
-      experiment?.traceEnabledBatch ?? call.traceEnabledBatch;
+    const traceEnabledBatch = call.traceEnabledBatch;
     if (
       traceEnabledBatch !== undefined &&
       (
@@ -907,7 +902,7 @@ export class JavaWorkerClient {
       )
     ) {
       throw new TypeError(
-        'Java experimental trace selection must contain one boolean per batch case.'
+        'Java trace selection must contain one boolean per batch case.'
       );
     }
     if (call.inputBatch.length === 0) return [];

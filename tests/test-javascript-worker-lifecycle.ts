@@ -508,14 +508,14 @@ async function exercisePreparedProvider(
     await tracePrepared.program.dispose();
     await assert.rejects(
       Promise.resolve().then(() =>
-        workerClient.executePreparedTraceBatch(
-          tracePrepared.program,
-          { inputBatch: [{ value: 1 }] },
-          { traceEnabledBatch: [false] }
-        )
+        tracePrepared.program.executeBatchIsolated!({
+          inputBatch: [{ value: 1 }],
+          traceEnabledBatch: [false],
+        })
       ),
-      TypeError,
-      `${language} disposed trace program retained experimental artifact access`
+      (error: unknown) =>
+        error instanceof Error && error.name === 'AbortError',
+      `${language} disposed trace program accepted another case`
     );
     await prepared.program.dispose();
 

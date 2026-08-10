@@ -10,7 +10,7 @@ import type {
 } from '@tracecode/runtime-contracts';
 import type { RuntimeCommandResult } from '@tracecode/runtime-contracts';
 import type { CodeExecutionBatchResult, CodeExecutionResult, ExecutionResult } from '@tracecode/runtime-contracts';
-import { ExecutionTimeoutError } from './worker-errors';
+import { isExecutionTimeoutError } from './worker-errors';
 
 type RuntimeExecuteHandlers = {
   defaultExecutionStyle: RuntimeExecutionStyle;
@@ -155,7 +155,7 @@ export async function executeRuntimeRequest(
         // the caller's own policy, not an infrastructure failure — report it as a
         // structured case result. Timeouts under the harness's default deadline
         // (no wallClockMs set) still reject like any other transport error.
-        if (codeRequest.limits?.wallClockMs !== undefined && error instanceof ExecutionTimeoutError) {
+        if (codeRequest.limits?.wallClockMs !== undefined && isExecutionTimeoutError(error)) {
           result = {
             kind: 'limit',
             reason: 'client-timeout',

@@ -2,7 +2,11 @@ import { strict as assert } from 'node:assert';
 import { test } from 'node:test';
 import * as Effect from 'effect/Effect';
 import { WorkerSessionCore } from '../packages/runtime-browser/src/worker-session-core';
-import { ExecutionAbortedError, WorkerTerminatedError } from '../packages/runtime-browser/src/worker-errors';
+import {
+  ExecutionAbortedError,
+  isExecutionTimeoutError,
+  WorkerTerminatedError,
+} from '../packages/runtime-browser/src/worker-errors';
 import type {
   RuntimeProjectEngineLeaseAttachment,
   RuntimeProjectEngineLeaseController,
@@ -39,6 +43,22 @@ test('caller AbortSignal interruption retains the AbortError contract', async ()
   await assert.rejects(
     execution,
     (error: unknown) => error instanceof ExecutionAbortedError && error.name === 'AbortError'
+  );
+});
+
+test('execution timeout recognition survives duplicated package constructors', () => {
+  assert.equal(
+    isExecutionTimeoutError({
+      _tag: 'ExecutionTimeoutError',
+      timeoutMs: 25,
+      message: 'Java execution timed out after 0 seconds.',
+    }),
+    true
+  );
+  assert.equal(
+    isExecutionTimeoutError({ _tag: 'ExecutionTimeoutError' }),
+    false,
+    'the tag alone must not classify an arbitrary learner error as a timeout'
   );
 });
 

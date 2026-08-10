@@ -99,10 +99,9 @@ class FakePreparedCSharpWorker {
 
   async executePreparedTrace(
     prepared: CSharpPreparedProgramArtifact,
-    call: RuntimePreparedTraceCall,
-    experiment?: { readonly tracingEnabled: boolean }
+    call: RuntimePreparedTraceCall
   ): Promise<ExecutionResult> {
-    const tracingEnabled = experiment?.tracingEnabled ?? true;
+    const tracingEnabled = call.recordTrace ?? true;
     this.traceExecuteCalls.push({ prepared, call, tracingEnabled });
     const trace = createEmptyRuntimeTrace('csharp');
     if (tracingEnabled) {

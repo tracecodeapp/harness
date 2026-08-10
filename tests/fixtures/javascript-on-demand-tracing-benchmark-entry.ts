@@ -150,11 +150,13 @@ globalThis.runJavaScriptOnDemandTracingSample = async (
     if (drainCases.length === 0) {
       drain = [];
     } else if (strategy === 'single-artifact') {
-      drain = await client.executePreparedTraceBatch(
-        traceProgram,
-        { inputBatch: drainCases.map((testCase) => testCase.input) },
-        { traceEnabledBatch: drainCases.map(() => false) }
-      );
+      if (!traceProgram.executeBatchIsolated) {
+        throw new Error('JavaScript trace program has no isolated batch path.');
+      }
+      drain = await traceProgram.executeBatchIsolated({
+        inputBatch: drainCases.map((testCase) => testCase.input),
+        traceEnabledBatch: drainCases.map(() => false),
+      });
     } else {
       if (!codeProgram || codeProgram.mode !== 'code') {
         throw new Error('Dual-artifact sample did not prepare clean code.');

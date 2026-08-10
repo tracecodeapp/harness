@@ -198,11 +198,9 @@ globalThis.calibrateJavaOnDemandTracing = async (
       {
         inputBatch: fixture.cases.map((testCase) => testCase.input),
         limits: { wallClockMs: 120_000 },
-      },
-      traceOptions,
-      {
         traceEnabledBatch: fixture.cases.map(() => false),
-      }
+      },
+      traceOptions
     );
     const runMs = results.map(resultRunMs);
     // The first case in every fresh TraceJVM runner pays class-loading startup.
@@ -281,13 +279,11 @@ globalThis.runJavaOnDemandTracingSample = async (
             (index) => fixture.cases[index]!.input
           ),
           limits: { wallClockMs: 120_000 },
-        },
-        traceOptions,
-        {
           traceEnabledBatch: executionOrder.map(
             (index) => index === selectedIndex
           ),
-        }
+        },
+        traceOptions
       );
       executionWallMs = performance.now() - executionStartedAt;
       runnerProcessCount = runnerProcesses(results);

@@ -185,11 +185,13 @@ globalThis.runCSharpOnDemandTracingSample = async (
     let drain: readonly (ExecutionResult | CodeExecutionResult)[] = [];
     if (drainCases.length > 0) {
       if (strategy === 'single-instrumented') {
-        drain = await client.executePreparedTraceBatch(
-          traceProgram,
-          { inputBatch: drainCases.map((testCase) => testCase.input) },
-          { traceEnabledBatch: drainCases.map(() => false) }
-        );
+        if (!traceProgram.executeBatchIsolated) {
+          throw new Error('C# trace program has no isolated batch path.');
+        }
+        drain = await traceProgram.executeBatchIsolated({
+          inputBatch: drainCases.map((testCase) => testCase.input),
+          traceEnabledBatch: drainCases.map(() => false),
+        });
       } else {
         if (!codeProgram || codeProgram.mode !== 'code' || !codeProgram.executeBatchIsolated) {
           throw new Error('C# dual-artifact sample has no clean batch program.');

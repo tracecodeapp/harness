@@ -55,7 +55,7 @@ import { logRuntimeDiagnostic } from '@tracecode/runtime-browser/internal';
 import type { BrowserWorkerFactory, BrowserWorkerLike } from '@tracecode/runtime-browser/internal';
 import { restoreTransferredTraceEvents, traceEventTransferRequest } from '@tracecode/runtime-browser/internal';
 import {
-  ExecutionTimeoutError,
+  isExecutionTimeoutError,
   WorkerCrashedError,
   WorkerReadyTimeoutError,
   WorkerRequestTimeoutError,
@@ -471,7 +471,7 @@ export class PythonWorkerClient {
     try {
       return await this.core.runClientEffect(program, signal);
     } catch (error) {
-      if (error instanceof ExecutionTimeoutError) {
+      if (isExecutionTimeoutError(error)) {
         return {
           success: false,
           error: error.message,
@@ -597,7 +597,7 @@ export class PythonWorkerClient {
     } catch (error) {
       if (
         call.limits?.wallClockMs !== undefined &&
-        error instanceof ExecutionTimeoutError
+        isExecutionTimeoutError(error)
       ) {
         return {
           results: call.inputBatch.map(() => ({
@@ -643,7 +643,7 @@ export class PythonWorkerClient {
     try {
       return await this.core.runClientEffect(program, call.signal);
     } catch (error) {
-      if (error instanceof ExecutionTimeoutError) {
+      if (isExecutionTimeoutError(error)) {
         return {
           success: false,
           error: error.message,
@@ -662,15 +662,9 @@ export class PythonWorkerClient {
 
   async executePreparedTraceBatch(
     handle: PythonPreparedProgramHandle,
-    call: RuntimePreparedTraceBatchCall,
-    /** Compatibility override for direct language benchmarks. Portable
-     * callers use `call.traceEnabledBatch` instead. */
-    experiment?: {
-      readonly traceEnabledBatch: readonly boolean[];
-    }
+    call: RuntimePreparedTraceBatchCall
   ): Promise<PythonRawTraceBatchResult> {
-    const traceEnabledBatch =
-      experiment?.traceEnabledBatch ?? call.traceEnabledBatch;
+    const traceEnabledBatch = call.traceEnabledBatch;
     if (
       traceEnabledBatch !== undefined &&
       (
@@ -681,7 +675,7 @@ export class PythonWorkerClient {
       )
     ) {
       throw new TypeError(
-        'Python experimental trace selection must contain one boolean per batch case.'
+        'Python trace selection must contain one boolean per batch case.'
       );
     }
     const perCaseWallClockMs = call.limits?.wallClockMs ?? TRACING_TIMEOUT_MS;
@@ -710,7 +704,7 @@ export class PythonWorkerClient {
     try {
       return await this.core.runClientEffect(program, call.signal);
     } catch (error) {
-      if (error instanceof ExecutionTimeoutError) {
+      if (isExecutionTimeoutError(error)) {
         return {
           results: call.inputBatch.map(() => ({
             success: false,

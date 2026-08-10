@@ -1400,23 +1400,18 @@ export class CppWorkerClient {
 
   async executePreparedTraceBatch(
     handle: CppPreparedProgramHandle,
-    call: RuntimePreparedTraceBatchCall,
-    /** Compatibility override retained for direct language benchmarks. */
-    experiment?: {
-      readonly traceEnabledBatch: readonly boolean[];
-    }
+    call: RuntimePreparedTraceBatchCall
   ): Promise<readonly ExecutionResult[]> {
     const traceEnabledBatch =
-      experiment?.traceEnabledBatch ?? call.traceEnabledBatch;
+      call.traceEnabledBatch ?? call.inputBatch.map(() => true);
     if (
-      traceEnabledBatch === undefined ||
       traceEnabledBatch.length !== call.inputBatch.length ||
       traceEnabledBatch.some(
         (enabled) => typeof enabled !== 'boolean'
       )
     ) {
       throw new TypeError(
-        'C++ experimental trace selection must contain one boolean per batch case.'
+        'C++ trace selection must contain one boolean per batch case.'
       );
     }
     if (call.inputBatch.length === 0) return [];
