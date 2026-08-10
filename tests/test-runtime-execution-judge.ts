@@ -737,6 +737,30 @@ test('interactive execute retains one trace-capable artifact and traces explicit
   assert.equal(state.disposals, 1);
 });
 
+test('interactive execute rejects invalid trace selections before preparing', async () => {
+  const state = makePreparedState();
+
+  await Effect.runPromise(Effect.scoped(
+    Effect.gen(function* () {
+      const judge = yield* createTestRuntimeJudge(
+        preparedProvider(state),
+        codeBinding({ trace: true })
+      );
+      const exit = yield* Effect.exit(judge.execute<FakeInput>({
+        plan: makePlan([{
+          id: 'known',
+          input: { label: 'known' },
+        }]),
+        interactive: true,
+        tracing: { caseIds: ['unknown'] },
+      }));
+
+      assert.equal(Exit.isFailure(exit), true);
+      assert.equal(state.prepareCalls.length, 0);
+    })
+  ));
+});
+
 test('interactive continuation timeout scales to only the selected tranche', async () => {
   const state = makePreparedState();
   const slowInput = { label: 'slow', delayMs: 0 };

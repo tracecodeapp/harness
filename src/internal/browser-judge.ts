@@ -88,6 +88,7 @@ import {
   JUDGE_INVOCATION_ID_ENV,
   TraceKernelJudgePort,
 } from '../../packages/judge/src/tracekernel';
+import { validateTraceSelection } from '../../packages/judge/src/internal/trace-selection';
 import { RuntimePreparedProgramRegistry } from './judge-prepared-program';
 import {
   createBrowserProjectJudge,
@@ -1288,6 +1289,7 @@ class RuntimeJudgeComposition
       const plan = preparedEvaluationPlan(request.plan, true);
       let retained = false;
       const operation = Effect.gen(this, function* () {
+        yield* validateTraceSelection(plan, request.tracing);
         const build = yield* prepareJudgePlan(port, plan);
         const evaluation = yield* evaluatePreparedJudgePlan<
           TraceKernelFileSystemImage,
