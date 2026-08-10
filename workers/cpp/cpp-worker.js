@@ -11568,9 +11568,11 @@ function buildScriptDriverSource(userCode, options = {}) {
         traceMemberClassName ? { traceMemberClassName } : {}
       )
     : wrappedSource;
+  const tracingEnabledExpression =
+    '(argc <= 1 || std::string(argv[1]) != "false")';
   const traceCall = options.tracing === true
     ? [
-        `  ${configureTraceBudgetCall(options)}`,
+        `  ${configureTraceBudgetCall(options, tracingEnabledExpression)}`,
         `  tracecode::emit_serialized_call_event(1, ${cppStringLiteral('<script>')}, "{}");`,
       ].join('\n')
     : '';
@@ -11586,7 +11588,7 @@ ${buildTracecodeFallbackAliases(userCode)}
 ${sourceForDriver}
 
 #line 1 "TraceCodeDriver.cpp"
-int main() {
+int main(${options.tracing === true ? 'int argc, char** argv' : ''}) {
 ${traceCall}
   auto __tc_result = ${CPP_SCRIPT_FUNCTION_NAME}();
 ${traceReturn}
@@ -15224,7 +15226,11 @@ function preparedExecutionTimings(runMs, totalMs) {
   };
 }
 
-async function runPreparedRuntimeProgram(preparedProgram, inputs) {
+async function runPreparedRuntimeProgram(
+  preparedProgram,
+  inputs,
+  tracingEnabled = true
+) {
   const startedAt = now();
   const normalizedInputs = inputs && typeof inputs === 'object' ? inputs : {};
   const stdinText = preparedProgram.inputMode === 'named-batch'
@@ -15235,7 +15241,9 @@ async function runPreparedRuntimeProgram(preparedProgram, inputs) {
     const runStartedAt = now();
     const program = await runWasi(
       preparedProgram.programModule,
-      ['program.wasm'],
+      preparedProgram.scriptRequest && preparedProgram.tracing
+        ? ['program.wasm', tracingEnabled ? 'true' : 'false']
+        : ['program.wasm'],
       new InMemoryFileSystem(),
       { stdinBytes: staticStdinBytesFromText(stdinText) }
     );
@@ -15539,7 +15547,11 @@ async function handleExecutePreparedRuntimeProgram(payload) {
       `C++ prepared program "${String(payload?.programId || '')}" was prepared for ${preparedProgram.mode}, not ${String(payload?.mode || 'unknown')}.`
     );
   }
-  if (preparedProgram.tracing && payload?.traceEnabled === false) {
+  if (
+    preparedProgram.tracing &&
+    preparedProgram.inputMode === 'named-batch' &&
+    payload?.traceEnabled === false
+  ) {
     const batch = await runPreparedTraceRuntimeProgramBatch(
       preparedProgram,
       [payload?.inputs || {}],
@@ -15558,7 +15570,11 @@ async function handleExecutePreparedRuntimeProgram(payload) {
       timings: batch.timings,
     };
   }
-  return runPreparedRuntimeProgram(preparedProgram, payload?.inputs || {});
+  return runPreparedRuntimeProgram(
+    preparedProgram,
+    payload?.inputs || {},
+    payload?.traceEnabled !== false
+  );
 }
 
 async function handleExecutePreparedRuntimeProgramBatch(payload) {

@@ -232,8 +232,10 @@ async function main(): Promise<void> {
           'class Solution {',
           'public:',
           '  int add(int a, int b) {',
+          '    static int calls = 0;',
+          '    calls += 1;',
           '    int sum = a + b;',
-          '    return sum;',
+          '    return calls * 100 + sum;',
           '  }',
           '};',
         ].join('\\n'),
@@ -267,6 +269,29 @@ async function main(): Promise<void> {
           () => '',
           (error) => error instanceof Error ? error.message : String(error)
         );
+      const scriptTracePreparation = await mixedTraceClient.prepareRuntimeProgram({
+        mode: 'trace',
+        code: 'int result = 42;',
+        functionName: '',
+        executionStyle: 'function',
+        traceOptions: { maxTraceSteps: 1000 },
+      });
+      if (!scriptTracePreparation.success) {
+        throw new Error(
+          'TraceCC script trace preparation failed: ' +
+            JSON.stringify(scriptTracePreparation)
+        );
+      }
+      const scriptTraceResults = await mixedTraceClient.executePreparedTraceBatch(
+        scriptTracePreparation.handle,
+        {
+          inputBatch: [{}, {}],
+          traceEnabledBatch: [true, false],
+        }
+      );
+      await mixedTraceClient.disposePreparedProgram(
+        scriptTracePreparation.handle
+      );
       await mixedTraceClient.disposePreparedProgram(
         mixedTracePreparation.handle
       );
@@ -444,6 +469,7 @@ async function main(): Promise<void> {
         first,
         edited,
         mixedTraceResults,
+        scriptTraceResults,
         invalidMixedTraceSelection,
         projectCompile: {
           ...projectCompile,
@@ -496,6 +522,11 @@ async function main(): Promise<void> {
         timings?: Record<string, unknown>;
       };
       mixedTraceResults: Array<{
+        kind: string;
+        output?: unknown;
+        trace?: { events?: unknown[] };
+      }>;
+      scriptTraceResults: Array<{
         kind: string;
         output?: unknown;
         trace?: { events?: unknown[] };
@@ -553,14 +584,23 @@ async function main(): Promise<void> {
       result.mixedTraceResults.length === 3 &&
         result.mixedTraceResults.every(
           (entry, index) =>
-            entry.kind === 'completed' && entry.output === 3 + index * 4
+            entry.kind === 'completed' && entry.output === 103 + index * 4
         ) &&
         (result.mixedTraceResults[0]?.trace?.events?.length ?? 0) > 0 &&
         result.mixedTraceResults[1]?.trace?.events?.length === 0 &&
         (result.mixedTraceResults[2]?.trace?.events?.length ?? 0) > 0 &&
         result.invalidMixedTraceSelection ===
-          'C++ experimental trace selection must contain one boolean per batch case.',
-      `TraceCC mixed batch did not select recording per case from one module: ${JSON.stringify(result)}`
+          'C++ trace selection must contain one boolean per batch case.',
+      `TraceCC mixed batch did not select recording while resetting module state per case: ${JSON.stringify(result)}`
+    );
+    assertCondition(
+      result.scriptTraceResults.length === 2 &&
+        result.scriptTraceResults.every(
+          (entry) => entry.kind === 'completed' && entry.output === 42
+        ) &&
+        (result.scriptTraceResults[0]?.trace?.events?.length ?? 0) > 0 &&
+        result.scriptTraceResults[1]?.trace?.events?.length === 0,
+      `TraceCC script batching did not honor per-case trace selection: ${JSON.stringify(result)}`
     );
     assertCondition(
       result.projectCompile.exitCode === 0 &&

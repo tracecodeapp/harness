@@ -1414,64 +1414,16 @@ export class CppWorkerClient {
         'C++ trace selection must contain one boolean per batch case.'
       );
     }
-    if (call.inputBatch.length === 0) return [];
-    const perCaseWallClockMs =
-      call.limits?.wallClockMs ?? this.tracingTimeoutMs;
-    const wallClockMs = Math.min(
-      2_147_483_647,
-      perCaseWallClockMs * call.inputBatch.length
-    );
-    return this.runInPreparedExecutionWorker(async (lifecycleGeneration) => {
-      this.assertPreparedProgramHandle(handle, 'trace');
-      try {
-        const result = await this.runExecution(
-          this.core.sendMessageEffect<{
-            results?: CppRawTraceResult[];
-            error?: string;
-          }>(
-            'execute-prepared-runtime-program-batch',
-            {
-              programId: handle.programId,
-              mode: 'trace',
-              inputBatch: call.inputBatch,
-              traceEnabledBatch,
-              traceEventTransport: traceEventTransferRequest(),
-            },
-            null,
-            undefined,
-            undefined,
-            () => {
-              this.assertLifecycleGeneration(lifecycleGeneration);
-              this.assertPreparedProgramHandle(handle, 'trace');
-            }
-          ),
-          wallClockMs,
-          'trace',
-          call.signal,
-          lifecycleGeneration
-        );
-        if (result.results?.length !== call.inputBatch.length) {
-          throw new Error(
-            result.error ??
-              `C++ prepared trace batch returned ${result.results?.length ?? 0} results for ${call.inputBatch.length} cases.`
-          );
-        }
-        return result.results.map((entry) =>
-          liftTraceOutcome(
-            entry,
-            entry.trace ?? createEmptyRuntimeTrace('cpp', {
-              runId: 'cpp:run',
-              file: CPP_DEFAULT_FILE,
-            }),
-            'C++ prepared tracing failed'
-          )
-        );
-      } catch (error) {
-        if (!this.isClientTimeout(error)) throw error;
-        const timeout = this.timeoutTraceResult(error);
-        return call.inputBatch.map(() => timeout);
-      }
-    });
+    const results: ExecutionResult[] = [];
+    for (let index = 0; index < call.inputBatch.length; index += 1) {
+      results.push(await this.executePreparedTrace(handle, {
+        inputs: call.inputBatch[index],
+        recordTrace: traceEnabledBatch[index],
+        signal: call.signal,
+        limits: call.limits,
+      }));
+    }
+    return results;
   }
 
   async disposePreparedProgram(handle: CppPreparedProgramHandle): Promise<void> {
