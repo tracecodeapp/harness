@@ -43,6 +43,8 @@ interface CacheEntry {
   readonly result: RuntimeProgramPreparationResult & { kind: 'prepared' };
   readonly gate: RuntimeProgramConcurrencyGate;
   references: number;
+  /** Callers already awaiting this preparation but not yet holding a facade. */
+  pendingClaims: number;
   poisoned: boolean;
   /** True once the entry left the cache map; dispose when references hit 0. */
   evicted: boolean;
@@ -53,6 +55,7 @@ interface CacheEntry {
 interface PendingPreparation {
   readonly promise: Promise<RuntimeProgramPreparationResult>;
   readonly controller: AbortController;
+  claimants: number;
 }
 
 function waitForCaller<Result>(
@@ -153,6 +156,7 @@ export function withPreparedProgramReuse(
     while (entries.size > maxEntries) {
       let oldest: CacheEntry | undefined;
       for (const entry of entries.values()) {
+        if (entry.references > 0 || entry.pendingClaims > 0) continue;
         if (!oldest || entry.lastUsedAt < oldest.lastUsedAt) oldest = entry;
       }
       if (!oldest) return;
@@ -172,7 +176,10 @@ export function withPreparedProgramReuse(
       if (released) return;
       released = true;
       entry.references -= 1;
-      if (entry.references === 0) scheduleIdleDisposal(entry);
+      if (entry.references === 0) {
+        evictLeastRecentlyUsedBeyondCap();
+        if (!entry.evicted) scheduleIdleDisposal(entry);
+      }
     };
     const guard = async <T>(operation: () => Promise<T>): Promise<T> => {
       try {
@@ -210,6 +217,36 @@ export function withPreparedProgramReuse(
     return facade as unknown as RuntimePreparedProgram;
   }
 
+  function claimEntry(entry: CacheEntry): RuntimePreparedProgram {
+    const facade = facadeFor(entry);
+    evictLeastRecentlyUsedBeyondCap();
+    return facade;
+  }
+
+  function claimPendingEntry(
+    entry: CacheEntry,
+    preparation: PendingPreparation
+  ): RuntimePreparedProgram {
+    preparation.claimants -= 1;
+    entry.pendingClaims -= 1;
+    return claimEntry(entry);
+  }
+
+  function abandonPendingClaim(
+    key: string,
+    preparation: PendingPreparation
+  ): void {
+    preparation.claimants -= 1;
+    const entry = entries.get(key);
+    if (!entry) return;
+    entry.pendingClaims -= 1;
+    queueMicrotask(() => {
+      if (entry.references !== 0 || entry.pendingClaims !== 0) return;
+      evictLeastRecentlyUsedBeyondCap();
+      if (!entry.evicted) scheduleIdleDisposal(entry);
+    });
+  }
+
   return {
     init: () => delegate.init(),
     async prepareProgram(
@@ -221,21 +258,30 @@ export function withPreparedProgramReuse(
       const key = preparationKey(call);
       const cached = entries.get(key);
       if (cached && !cached.poisoned) {
-        return { ...cached.result, program: facadeFor(cached) };
+        return { ...cached.result, program: claimEntry(cached) };
       }
       const inFlight = pending.get(key);
       if (inFlight) {
-        const settled = await waitForCaller(inFlight.promise, call.signal);
+        inFlight.claimants += 1;
+        let settled: RuntimeProgramPreparationResult;
+        try {
+          settled = await waitForCaller(inFlight.promise, call.signal);
+        } catch (error) {
+          abandonPendingClaim(key, inFlight);
+          throw error;
+        }
         const entry = entries.get(key);
         if (settled.kind === 'prepared' && entry && !entry.poisoned) {
-          return { ...entry.result, program: facadeFor(entry) };
+          return { ...entry.result, program: claimPendingEntry(entry, inFlight) };
         }
+        abandonPendingClaim(key, inFlight);
         if (settled.kind !== 'prepared') return settled;
         // Cap pressure evicted the concurrent result before this waiter could
         // claim it. Prepare a new artifact rather than returning disposed state.
       }
       const preparationGeneration = generation;
       const controller = new AbortController();
+      let pendingPreparation!: PendingPreparation;
       const preparation = (async () => {
         const result = await delegate.prepareProgram({
           ...call,
@@ -256,35 +302,54 @@ export function withPreparedProgramReuse(
             result.program.capabilities.maxConcurrency
           ),
           references: 0,
+          pendingClaims: pendingPreparation.claimants,
           poisoned: false,
           evicted: false,
           idleTimer: undefined,
           lastUsedAt: Date.now(),
         };
         entries.set(key, entry);
-        scheduleIdleDisposal(entry);
-        evictLeastRecentlyUsedBeyondCap();
         return result;
       })();
-      const pendingPreparation = { promise: preparation, controller };
+      pendingPreparation = { promise: preparation, controller, claimants: 1 };
       pending.set(key, pendingPreparation);
       void preparation.then(
         () => {
           if (pending.get(key) === pendingPreparation) pending.delete(key);
+          queueMicrotask(() => {
+            const entry = entries.get(key);
+            if (entry && entry.references === 0) {
+              evictLeastRecentlyUsedBeyondCap();
+              if (!entry.evicted) scheduleIdleDisposal(entry);
+            }
+          });
         },
         () => {
           if (pending.get(key) === pendingPreparation) pending.delete(key);
         }
       );
-      const result = await waitForCaller(preparation, call.signal);
-      if (result.kind !== 'prepared') return result;
+      let result: RuntimeProgramPreparationResult;
+      try {
+        result = await waitForCaller(preparation, call.signal);
+      } catch (error) {
+        abandonPendingClaim(key, pendingPreparation);
+        throw error;
+      }
+      if (result.kind !== 'prepared') {
+        abandonPendingClaim(key, pendingPreparation);
+        return result;
+      }
       const entry = entries.get(key);
       if (!entry || entry.poisoned) {
+        abandonPendingClaim(key, pendingPreparation);
         throw new Error(
           'Prepared program left the reuse cache before its first execution.'
         );
       }
-      return { ...entry.result, program: facadeFor(entry) };
+      return {
+        ...entry.result,
+        program: claimPendingEntry(entry, pendingPreparation),
+      };
     },
     flushPreparedProgramCache(): void {
       generation += 1;

@@ -5,6 +5,7 @@ import type {
   Language,
   RuntimePreparedExecutionProvider,
   RuntimePreparedProgramCapabilities,
+  RuntimeProgramPreparationResult,
 } from '../packages/runtime-contracts/src';
 import {
   createBrowserRuntimeEnvironment,
@@ -550,6 +551,59 @@ test('prepared program reuse isolates caller cancellation and flushes pending wo
   });
   await assertRejects(owner, /flushed while preparation was in flight/u);
   assertCondition(disposals === 1, 'a late preparation result must be disposed after flush');
+});
+
+test('prepared program reuse lets concurrent preparations claim entries before capacity eviction', async () => {
+  const resolvers = new Map<string, (result: RuntimeProgramPreparationResult) => void>();
+  let disposals = 0;
+  const provider: RuntimePreparedExecutionProvider = {
+    async init() {
+      return { success: true, loadTimeMs: 0 };
+    },
+    prepareProgram(call) {
+      return new Promise<RuntimeProgramPreparationResult>((resolve) => {
+        resolvers.set(call.code, resolve);
+      });
+    },
+  };
+  const reusable = withPreparedProgramReuse(provider, {
+    maxEntries: 2,
+    idleTtlMs: 10_000,
+  });
+  const calls = ['first', 'second', 'third'].map((code) =>
+    reusable.prepareProgram({ mode: 'code', code, functionName: 'solve' })
+  );
+  await Promise.resolve();
+  for (const code of ['first', 'second', 'third']) {
+    resolvers.get(code)?.({
+      kind: 'prepared',
+      consoleOutput: [],
+      program: {
+        mode: 'code',
+        capabilities: {
+          caseIsolation: 'fresh-case-state',
+          maxConcurrency: 1,
+        },
+        async executeIsolated({ inputs }) {
+          return { kind: 'completed', output: inputs, consoleOutput: [] };
+        },
+        async dispose() {
+          disposals += 1;
+        },
+      },
+    });
+  }
+  const prepared = await Promise.all(calls);
+  assertCondition(
+    prepared.every((result) => result.kind === 'prepared'),
+    'every concurrent preparation must claim its prepared entry before capacity eviction'
+  );
+  for (const result of prepared) {
+    if (result.kind === 'prepared') await result.program.dispose();
+  }
+  reusable.flushPreparedProgramCache();
+  await Promise.resolve();
+  assertCondition(disposals === 3, 'all concurrently claimed programs must dispose exactly once');
 });
 
 async function assertRejects(
