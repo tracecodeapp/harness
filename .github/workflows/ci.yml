@@ -32,12 +32,14 @@ jobs:
       - uses: actions/checkout@v4
         with:
           repository: tracecodeapp/tracecc
-          ref: 23a777d37999f0e6a5678933d96e0a084b5c427b
+          # Candidate branches move together with these prerelease PRs. The
+          # generated runtime lock below remains the fail-closed byte identity.
+          ref: codex/harness-owned-runtime-assets
           path: .release-candidates/tracecc
       - uses: actions/checkout@v4
         with:
           repository: tracecodeapp/tracejvm
-          ref: e40557f85a552ec157f752ee941ef41b44c86fbe
+          ref: codex/harness-owned-runtime-assets
           path: .release-candidates/tracejvm
       - uses: pnpm/action-setup@v4
         with:
