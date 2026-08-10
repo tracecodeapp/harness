@@ -20,6 +20,8 @@ _MAX_SERIALIZE_DEPTH = 48
 _MAX_SERIALIZED_ITEMS = 64
 _MAX_SERIALIZED_STRING_CHARS = 16384
 import builtins as _builtins
+_tracecode_global_object_refs = {}
+_tracecode_next_object_ref_id = 0
 
 def _serialize_string(value):
     if len(value) <= _MAX_SERIALIZED_STRING_CHARS:
@@ -30,7 +32,20 @@ def _serialize_string(value):
 def _truncation_marker(total, emitted):
     return {"__truncated__": True, "remaining": max(0, total - emitted)}
 
-def _serialize_repr_fallback(obj):
+def _tracecode_ref_id(obj_ref, node_refs):
+    global _tracecode_next_object_ref_id
+    if obj_ref in node_refs:
+        return node_refs[obj_ref]
+    if obj_ref in _tracecode_global_object_refs:
+        node_id = _tracecode_global_object_refs[obj_ref]
+    else:
+        node_id = f"ref-{_tracecode_next_object_ref_id}"
+        _tracecode_global_object_refs[obj_ref] = node_id
+        _tracecode_next_object_ref_id += 1
+    node_refs[obj_ref] = node_id
+    return node_id
+
+def _serialize_repr_fallback(obj, node_refs=None):
     obj_type = getattr(obj, '__class__', None)
     class_name = getattr(obj_type, '__name__', 'object')
     if getattr(obj_type, '__module__', '') == 'builtins':
@@ -41,9 +56,17 @@ def _serialize_repr_fallback(obj):
         if repr_str.startswith('<') and repr_str.endswith('>'):
             return _SKIP_SENTINEL
         return _serialize_string(repr_str)
-    return {"__type__": class_name, "__class__": class_name}
+    if node_refs is None:
+        return {"__type__": class_name, "__class__": class_name}
+    obj_ref = _builtins.id(obj)
+    if obj_ref in node_refs:
+        return {"__ref__": node_refs[obj_ref]}
+    node_id = _tracecode_ref_id(obj_ref, node_refs)
+    return {"__type__": class_name, "__class__": class_name, "__id__": node_id}
 
 def _serialize(obj, depth=0, node_refs=None):
+    if node_refs is None:
+        node_refs = {}
     if isinstance(obj, (bool, int, type(None))):
         return obj
     elif isinstance(obj, str):
@@ -74,7 +97,7 @@ def _serialize(obj, depth=0, node_refs=None):
     elif callable(obj):
         return _SKIP_SENTINEL
     else:
-        return _serialize_repr_fallback(obj)
+        return _serialize_repr_fallback(obj, node_refs)
 
 _ENC = json.JSONEncoder(ensure_ascii=False, separators=(',', ':'))
 
@@ -83,6 +106,8 @@ native.configure(frozenset(), _serialize, _ENC.encode, _SKIP_SENTINEL)
 class Weird:
     pass
 
+shared_weird = Weird()
+
 cases = {
     'ints': {'a': 0, 'b': -1, 'c': 2**80, 'd': True, 'e': False, 'f': None},
     'floats': {'a': 1.0, 'b': 0.1, 'c': -2.5e300, 'd': float('nan'), 'e': float('inf'), 'f': float('-inf'), 'g': 1e16, 'h': 5e-324},
@@ -90,6 +115,7 @@ cases = {
     'lists': {'a': [], 'b': [1, 2.5, 'x', None, True], 'c': list(range(100)), 'd': [[1, [2, [3]]]], 'e': (1, 2)},
     'depth': {'a': eval('[' * 60 + ']' * 60)},
     'exotic': {'a': {'k': 1, 2: 'v'}, 'b': Weird(), 'c': len, 'd': {1, 2, 3}, 'e': [len, 1]},
+    'aliases': {'first': shared_weird, 'second': shared_weird},
 }
 
 failures = []
@@ -100,8 +126,9 @@ for label, local_dict in cases.items():
     native_events = json.loads('[' + buffer + ']') if buffer else []
     expected_events = []
     expected_reps = {}
+    expected_node_refs = {}
     for name, value in local_dict.items():
-        rep = _serialize(value)
+        rep = _serialize(value, 0, expected_node_refs)
         if rep == _SKIP_SENTINEL:
             continue
         expected_reps[name] = rep
@@ -110,6 +137,10 @@ for label, local_dict in cases.items():
         failures.append((label, 'events', str(native_events)[:400], str(expected_events)[:400]))
     if reps != expected_reps:
         failures.append((label, 'reps', str(reps)[:400], str(expected_reps)[:400]))
+    if label == 'aliases':
+        first_id = expected_reps.get('first', {}).get('__id__')
+        if not first_id or expected_reps.get('second') != {'__ref__': first_id}:
+            failures.append((label, 'topology', str(expected_reps), 'second must reference first'))
     # byte-level check too: rebuild expected json text exactly
     expected_text = ','.join(
         '{"p":1' + ',"kind":"snapshot","target":{"variable":' + _ENC.encode(name) + '},"value":' + _ENC.encode(rep) + '}'

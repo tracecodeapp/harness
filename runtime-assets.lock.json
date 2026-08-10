@@ -3,11 +3,11 @@
   "harness": {
     "name": "@tracecode/harness",
     "version": "0.16.0",
-    "releaseId": "@tracecode/harness@0.16.0+sha256.203deaf97668dbbfe95b7c3b2ee357ae603cc50c1fe04f958395f29cece89b87"
+    "releaseId": "@tracecode/harness@0.16.0+sha256.03218165f9155d70709ceef87a486fd6fc4b323e9ac62043a9e299a30101fe73"
   },
   "treeSha256Algorithm": "sha256-path-nul-bytes-nul-v1",
-  "packageTreeSha256": "203deaf97668dbbfe95b7c3b2ee357ae603cc50c1fe04f958395f29cece89b87",
-  "totalPackagedRuntimeBytes": 151629786,
+  "packageTreeSha256": "03218165f9155d70709ceef87a486fd6fc4b323e9ac62043a9e299a30101fe73",
+  "totalPackagedRuntimeBytes": 151629867,
   "components": {
     "cpp": {
       "releaseId": "cpp+sha256.f7ec285e637629ebd2b8b9da47b5df04150d50cb4a9f00efe23f864b1e3e6957",
@@ -1865,9 +1865,9 @@
       ]
     },
     "python": {
-      "releaseId": "python+sha256.2ef43d30ac1ebbb6a3ba8d3de1a9c8bb851fb2410500be8a58ce805a17107b7e",
-      "treeSha256": "2ef43d30ac1ebbb6a3ba8d3de1a9c8bb851fb2410500be8a58ce805a17107b7e",
-      "totalBytes": 75901206,
+      "releaseId": "python+sha256.ed863ad996ef8a63adc9f083f1d98e52851e5b19d930c97db4b1463aa3a9fc71",
+      "treeSha256": "ed863ad996ef8a63adc9f083f1d98e52851e5b19d930c97db4b1463aa3a9fc71",
+      "totalBytes": 75901287,
       "files": [
         {
           "path": "workers/python/generated-python-harness-snippets.js",
@@ -1962,9 +1962,9 @@
         },
         {
           "path": "workers/python/tracecode_native-0.1.0-cp313-cp313-pyemscripten_2025_0_wasm32.whl",
-          "size": 5612,
-          "sha256": "74c26c7d1523b4f7c1289226a683f7e745cf9bc57bd4ca70d81ab88d55689ad1",
-          "integrity": "sha256-dMJsfRUjtPfBKJImpoP350XPm8V71Mpw2Bq4jVVomtE=",
+          "size": 5693,
+          "sha256": "d18ca1cb3d648a94b8dcb9afcfe012140d2801dfc81c64a7517c1550818bba9e",
+          "integrity": "sha256-0Yyhyz1kipS43Lmvz+ASFA0oAd/IHGSnUXwVUIGLup4=",
           "mediaType": "application/zip"
         }
       ]
@@ -2034,9 +2034,9 @@
         },
         "wheel": {
           "path": "workers/python/tracecode_native-0.1.0-cp313-cp313-pyemscripten_2025_0_wasm32.whl",
-          "size": 5612,
-          "sha256": "74c26c7d1523b4f7c1289226a683f7e745cf9bc57bd4ca70d81ab88d55689ad1",
-          "integrity": "sha256-dMJsfRUjtPfBKJImpoP350XPm8V71Mpw2Bq4jVVomtE=",
+          "size": 5693,
+          "sha256": "d18ca1cb3d648a94b8dcb9afcfe012140d2801dfc81c64a7517c1550818bba9e",
+          "integrity": "sha256-0Yyhyz1kipS43Lmvz+ASFA0oAd/IHGSnUXwVUIGLup4=",
           "mediaType": "application/zip"
         },
         "required": false

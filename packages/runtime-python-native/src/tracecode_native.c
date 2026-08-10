@@ -126,7 +126,13 @@ static int tc_append_json_string(TcBuf* buf, PyObject* text) {
 // Returns: 0 ok (rep set, json appended), 1 skip-sentinel (nothing appended),
 // -1 error. `rep_out` receives a NEW reference when returning 0.
 // ---------------------------------------------------------------------------
-static int tc_serialize_value(TcBuf* buf, PyObject* value, int depth, PyObject** rep_out);
+static int tc_serialize_value(
+  TcBuf* buf,
+  PyObject* value,
+  int depth,
+  PyObject* node_refs,
+  PyObject** rep_out
+);
 
 static int tc_serialize_str(TcBuf* buf, PyObject* value, PyObject** rep_out) {
   Py_ssize_t chars = PyUnicode_GET_LENGTH(value);
@@ -237,7 +243,13 @@ static int tc_append_truncation_marker(TcBuf* buf, Py_ssize_t emitted, Py_ssize_
   return 0;
 }
 
-static int tc_serialize_sequence(TcBuf* buf, PyObject* value, int depth, PyObject** rep_out) {
+static int tc_serialize_sequence(
+  TcBuf* buf,
+  PyObject* value,
+  int depth,
+  PyObject* node_refs,
+  PyObject** rep_out
+) {
   Py_ssize_t total = PySequence_Fast_GET_SIZE(value);
   Py_ssize_t emitted = total <= TC_MAX_ITEMS ? total : TC_MAX_ITEMS;
   PyObject* rep = PyList_New(0);
@@ -247,7 +259,7 @@ static int tc_serialize_sequence(TcBuf* buf, PyObject* value, int depth, PyObjec
     if (i > 0 && tc_buf_append_char(buf, ',') < 0) goto fail;
     PyObject* item = PySequence_Fast_GET_ITEM(value, i);
     PyObject* item_rep = NULL;
-    int rc = tc_serialize_value(buf, item, depth + 1, &item_rep);
+    int rc = tc_serialize_value(buf, item, depth + 1, node_refs, &item_rep);
     if (rc < 0) goto fail;
     if (rc == 1) {
       // _serialize never skips INSIDE sequences: nested callables fall through
@@ -271,13 +283,30 @@ fail:
   return -1;
 }
 
-// Python-serializer fallback: rep = _serialize(value), json = encoder(rep).
-static int tc_serialize_fallback(TcBuf* buf, PyObject* value, PyObject** rep_out) {
+// Python-serializer fallback: rep = _serialize(value, depth, node_refs),
+// json = encoder(rep). The reference table belongs to the whole snapshot so
+// aliases crossing local variables retain the same __id__/__ref__ topology.
+static int tc_serialize_fallback(
+  TcBuf* buf,
+  PyObject* value,
+  int depth,
+  PyObject* node_refs,
+  PyObject** rep_out
+) {
   if (!serialize_fallback || !encode_fallback) {
     PyErr_SetString(PyExc_RuntimeError, "tracecode native serializer not configured");
     return -1;
   }
-  PyObject* rep = PyObject_CallOneArg(serialize_fallback, value);
+  PyObject* depth_arg = PyLong_FromLong(depth);
+  if (!depth_arg) return -1;
+  PyObject* rep = PyObject_CallFunctionObjArgs(
+    serialize_fallback,
+    value,
+    depth_arg,
+    node_refs,
+    NULL
+  );
+  Py_DECREF(depth_arg);
   if (!rep) return -1;
   if (skip_sentinel) {
     int is_skip = PyObject_RichCompareBool(rep, skip_sentinel, Py_EQ);
@@ -307,7 +336,13 @@ static int tc_serialize_fallback(TcBuf* buf, PyObject* value, PyObject** rep_out
   return 0;
 }
 
-static int tc_serialize_value(TcBuf* buf, PyObject* value, int depth, PyObject** rep_out) {
+static int tc_serialize_value(
+  TcBuf* buf,
+  PyObject* value,
+  int depth,
+  PyObject* node_refs,
+  PyObject** rep_out
+) {
   if (value == Py_None) {
     if (tc_buf_append_cstr(buf, "null") < 0) return -1;
     Py_INCREF(Py_None);
@@ -332,14 +367,14 @@ static int tc_serialize_value(TcBuf* buf, PyObject* value, int depth, PyObject**
   }
   if (PyList_CheckExact(value) || PyTuple_CheckExact(value)) {
     size_t rollback = buf->len;
-    int rc = tc_serialize_sequence(buf, value, depth, rep_out);
+    int rc = tc_serialize_sequence(buf, value, depth, node_refs, rep_out);
     if (rc == 2) {
       buf->len = rollback;
-      return tc_serialize_fallback(buf, value, rep_out);
+      return tc_serialize_fallback(buf, value, depth, node_refs, rep_out);
     }
     return rc;
   }
-  return tc_serialize_fallback(buf, value, rep_out);
+  return tc_serialize_fallback(buf, value, depth, node_refs, rep_out);
 }
 
 // ---------------------------------------------------------------------------
@@ -452,6 +487,11 @@ static PyObject* emit_snapshot_events(PyObject* self, PyObject* const* args, Py_
 
   PyObject* reps = PyDict_New();
   if (!reps) return NULL;
+  PyObject* node_refs = PyDict_New();
+  if (!node_refs) {
+    Py_DECREF(reps);
+    return NULL;
+  }
 
   TcBuf scratch = {0};
   PyObject* name = NULL;
@@ -488,7 +528,7 @@ static PyObject* emit_snapshot_events(PyObject* self, PyObject* const* args, Py_
     if (tc_append_json_string(&scratch, name) < 0) goto fail;
     if (tc_buf_append_cstr(&scratch, "},\"value\":") < 0) goto fail;
     PyObject* rep = NULL;
-    int rc = tc_serialize_value(&scratch, value, 0, &rep);
+    int rc = tc_serialize_value(&scratch, value, 0, node_refs, &rep);
     if (rc < 0) goto fail;
     if (rc == 1) continue;  // skip sentinel — omit variable entirely
     if (tc_buf_append_char(&scratch, '}') < 0) {
@@ -509,9 +549,11 @@ static PyObject* emit_snapshot_events(PyObject* self, PyObject* const* args, Py_
     if (!appended) break;  // budget tripped: stop emitting, mirror python loop
   }
   tc_buf_free(&scratch);
+  Py_DECREF(node_refs);
   return reps;
 fail:
   tc_buf_free(&scratch);
+  Py_DECREF(node_refs);
   Py_DECREF(reps);
   return NULL;
 }
