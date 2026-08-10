@@ -177,6 +177,10 @@ export function withPreparedProgramReuse(
       released = true;
       entry.references -= 1;
       if (entry.references === 0) {
+        if (entry.evicted) {
+          disposeUnderlying(entry);
+          return;
+        }
         evictLeastRecentlyUsedBeyondCap();
         if (!entry.evicted) scheduleIdleDisposal(entry);
       }

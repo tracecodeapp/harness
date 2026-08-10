@@ -606,6 +606,53 @@ test('prepared program reuse lets concurrent preparations claim entries before c
   assertCondition(disposals === 3, 'all concurrently claimed programs must dispose exactly once');
 });
 
+test('prepared program reuse disposes an evicted entry after its final facade releases', async () => {
+  let disposals = 0;
+  const provider: RuntimePreparedExecutionProvider = {
+    async init() {
+      return { success: true, loadTimeMs: 0 };
+    },
+    async prepareProgram() {
+      return {
+        kind: 'prepared' as const,
+        consoleOutput: [],
+        program: {
+          mode: 'code' as const,
+          capabilities: {
+            caseIsolation: 'fresh-case-state' as const,
+            maxConcurrency: 1,
+          },
+          async executeIsolated() {
+            throw new Error('execution failed');
+          },
+          async dispose() {
+            disposals += 1;
+          },
+        },
+      };
+    },
+  };
+  const reusable = withPreparedProgramReuse(provider);
+  const prepared = await reusable.prepareProgram({
+    mode: 'code',
+    code: 'throw new Error()',
+    functionName: 'solve',
+  });
+  assertCondition(prepared.kind === 'prepared', 'test provider must prepare a program');
+  if (prepared.kind !== 'prepared') return;
+  await assertRejects(
+    prepared.program.executeIsolated({ inputs: {} }),
+    /execution failed/u
+  );
+  assertCondition(disposals === 0, 'an evicted referenced program must remain alive');
+  await prepared.program.dispose();
+  await Promise.resolve();
+  assertCondition(disposals === 1, 'the final facade must dispose its evicted program');
+  reusable.flushPreparedProgramCache();
+  await Promise.resolve();
+  assertCondition(disposals === 1, 'cache flush must not dispose the program twice');
+});
+
 async function assertRejects(
   promise: Promise<unknown>,
   expected: RegExp
