@@ -553,6 +553,53 @@ test('prepared program reuse isolates caller cancellation and flushes pending wo
   assertCondition(disposals === 1, 'a late preparation result must be disposed after flush');
 });
 
+test('prepared program reuse aborts preparation after its final claimant cancels', async () => {
+  let delegateSignal: AbortSignal | undefined;
+  const provider: RuntimePreparedExecutionProvider = {
+    async init() {
+      return { success: true, loadTimeMs: 0 };
+    },
+    prepareProgram(call) {
+      delegateSignal = call.signal;
+      return new Promise<RuntimeProgramPreparationResult>((_resolve, reject) => {
+        call.signal?.addEventListener(
+          'abort',
+          () => reject(call.signal?.reason),
+          { once: true }
+        );
+      });
+    },
+  };
+  const reusable = withPreparedProgramReuse(provider);
+  const call = {
+    mode: 'code' as const,
+    code: 'return input',
+    functionName: 'solve',
+  };
+  const ownerController = new AbortController();
+  const waiterController = new AbortController();
+  const owner = reusable.prepareProgram({
+    ...call,
+    signal: ownerController.signal,
+  });
+  const waiter = reusable.prepareProgram({
+    ...call,
+    signal: waiterController.signal,
+  });
+  waiterController.abort(new Error('waiter cancelled'));
+  await assertRejects(waiter, /waiter cancelled/u);
+  assertCondition(
+    delegateSignal?.aborted === false,
+    'one cancelled waiter must not abort preparation while an owner remains'
+  );
+  ownerController.abort(new Error('owner cancelled'));
+  await assertRejects(owner, /owner cancelled/u);
+  assertCondition(
+    delegateSignal?.aborted === true,
+    'the final cancelled claimant must abort the unowned preparation'
+  );
+});
+
 test('prepared program reuse lets concurrent preparations claim entries before capacity eviction', async () => {
   const resolvers = new Map<string, (result: RuntimeProgramPreparationResult) => void>();
   let disposals = 0;

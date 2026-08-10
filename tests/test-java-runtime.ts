@@ -256,6 +256,74 @@ function testJavaHelperJarDoesNotExposeDeprecatedSpikePackages(): void {
   console.log('PASS: java helper jar exposes the precompiled trace runner without deprecated spike packages');
 }
 
+function testTraceExecutionRunnerDefersBudgetFallbackToHost(): void {
+  const tmpRoot = mkdtempSync(join(tmpdir(), 'tracecode-java-budget-fallback-'));
+  try {
+    const sourcePath = join(tmpRoot, 'BudgetFallbackEntries.java');
+    const classesPath = join(tmpRoot, 'classes');
+    const helperJar = join(
+      process.cwd(),
+      'workers',
+      'vendor',
+      'java-browser-helper.jar'
+    );
+    writeFileSync(
+      sourcePath,
+      `import tracecode.user.TraceHooks;
+final class TraceAttempt {
+  public static Object run() {
+    System.out.println("trace-prefix");
+    TraceHooks.emitLineAtLine(1);
+    TraceHooks.emitLineAtLine(2);
+    return "trace-result";
+  }
+}
+final class CleanAttempt {
+  public static Object run() {
+    System.out.println("clean-output");
+    return "clean-result";
+  }
+}
+`,
+      'utf8'
+    );
+    execFileSync('mkdir', ['-p', classesPath]);
+    execFileSync(
+      'javac',
+      ['-cp', helperJar, '-d', classesPath, sourcePath],
+      { cwd: process.cwd(), stdio: 'pipe' }
+    );
+    const stdout = execFileSync(
+      'java',
+      [
+        '-cp',
+        [classesPath, helperJar].join(':'),
+        'tracecode.browser.TraceExecutionRunner',
+        'TraceAttempt',
+        '1',
+        '',
+        '',
+        '',
+        'CleanAttempt',
+      ],
+      { cwd: process.cwd(), encoding: 'utf8', stdio: 'pipe' }
+    );
+    assertCondition(
+      stdout.includes('__TRACECODE_TRACE_FALLBACK_REQUIRED__:true'),
+      `budget exhaustion must ask the host for a clean fallback: ${stdout}`
+    );
+    assertCondition(
+      stdout.match(/trace-prefix/g)?.length === 1 &&
+        !stdout.includes('clean-output') &&
+        !stdout.includes('__TRACECODE_TRACE_OUTPUT__:'),
+      `the traced JVM must not re-enter learner code before the host creates a fresh boundary: ${stdout}`
+    );
+    console.log('PASS: Java trace budget fallback is deferred to a fresh host execution');
+  } finally {
+    rmSync(tmpRoot, { recursive: true, force: true });
+  }
+}
+
 function loadSourceAugmentationsForTest(): {
   augmentJavaCollectionOperations: (source: string, sourceText?: string) => string;
   augmentJavaLocalSnapshots?: (source: string) => string;
@@ -4416,6 +4484,7 @@ ${exportsSource.replace('public class Exports', `public class ${exportsClassName
 
 async function main(): Promise<void> {
   testJavaHelperJarDoesNotExposeDeprecatedSpikePackages();
+  testTraceExecutionRunnerDefersBudgetFallbackToHost();
   testNativeJavaRewriterRegressionGaps();
   testJavaRuntimeValueSerializationLimit();
   testJavaRuntimeSkipsSerializationAfterTraceLimit();

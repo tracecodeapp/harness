@@ -3,11 +3,11 @@
   "harness": {
     "name": "@tracecode/harness",
     "version": "0.16.0",
-    "releaseId": "@tracecode/harness@0.16.0+sha256.fcb24afff89e0078bacaae8edfdc796741be68c2bdd441e08513fd7061595fa7"
+    "releaseId": "@tracecode/harness@0.16.0+sha256.203deaf97668dbbfe95b7c3b2ee357ae603cc50c1fe04f958395f29cece89b87"
   },
   "treeSha256Algorithm": "sha256-path-nul-bytes-nul-v1",
-  "packageTreeSha256": "fcb24afff89e0078bacaae8edfdc796741be68c2bdd441e08513fd7061595fa7",
-  "totalPackagedRuntimeBytes": 151626233,
+  "packageTreeSha256": "203deaf97668dbbfe95b7c3b2ee357ae603cc50c1fe04f958395f29cece89b87",
+  "totalPackagedRuntimeBytes": 151629786,
   "components": {
     "cpp": {
       "releaseId": "cpp+sha256.f7ec285e637629ebd2b8b9da47b5df04150d50cb4a9f00efe23f864b1e3e6957",
@@ -1802,15 +1802,15 @@
       ]
     },
     "java": {
-      "releaseId": "java+sha256.93fb13ef4d43374249e381fe720ed8f744f816c5d23e7e3340c0b9feb11602d2",
-      "treeSha256": "93fb13ef4d43374249e381fe720ed8f744f816c5d23e7e3340c0b9feb11602d2",
-      "totalBytes": 598888,
+      "releaseId": "java+sha256.1e0f657b97aa9c772e22115fa78f3ef667dc17ff7c62dd9ffacabfdba8bf0d0c",
+      "treeSha256": "1e0f657b97aa9c772e22115fa78f3ef667dc17ff7c62dd9ffacabfdba8bf0d0c",
+      "totalBytes": 602441,
       "files": [
         {
           "path": "workers/java/java-runtime-worker.js",
-          "size": 47063,
-          "sha256": "57fdc2cb9155975dad8f1da2dea4e43e54fa430cfb4135b29050c758cc60237f",
-          "integrity": "sha256-V/3Cy5FVl12tjx2i3qTkPlT6Qwz7QTWykFDHWMxgI38=",
+          "size": 50635,
+          "sha256": "397f6d07f04fe5dc88f75105c0b3e9fca899d13c7193eb82ee2945c7c6750f1f",
+          "integrity": "sha256-OX9tB/BP5dyI91EFwLPp/KiZ0Txxk+uC7ilFx8Z1Dx8=",
           "mediaType": "text/javascript"
         },
         {
@@ -1829,9 +1829,9 @@
         },
         {
           "path": "workers/vendor/java-browser-helper.jar",
-          "size": 180892,
-          "sha256": "df44c78c3f0e387ec2fc5569648dd0724d5d0beddc952ab46b23fa7f8a781025",
-          "integrity": "sha256-30THjD8OOH7C/FVpZI3Qck1dC+3clSq0ayP6f4p4ECU=",
+          "size": 180873,
+          "sha256": "0ef3fc3b37a13af14a9fe9bdfae5eb09e2205ac80cb8024018683a90b5eb5129",
+          "integrity": "sha256-DvP8OzehOvFKn+m9+uXrCeIgWsgMuAJAGGg6kLXrUSk=",
           "mediaType": "application/zip"
         }
       ]

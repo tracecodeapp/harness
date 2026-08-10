@@ -24,6 +24,7 @@ public final class TraceExecutionRunner {
   public static final String DROPPED_MARKER = "__TRACECODE_TRACE_DROPPED__:";
   public static final String PROFILE_MARKER = "__TRACECODE_TRACE_PROFILE__:";
   public static final String ERROR_MARKER = "__TRACECODE_TRACE_ERROR__:";
+  public static final String FALLBACK_MARKER = "__TRACECODE_TRACE_FALLBACK_REQUIRED__:";
 
   private TraceExecutionRunner() {}
 
@@ -96,10 +97,10 @@ public final class TraceExecutionRunner {
     String learnerFrame = args.length >= 3 ? args[2] : "";
     boolean profile = args.length >= 4 && "profile".equals(args[3]);
     boolean enableTracing = !(args.length >= 5 && "notrace".equals(args[4]));
-    String cleanFallbackEntryClass = args.length >= 6 ? args[5] : "";
     int token = TraceHooks.beginRun(maxStoredEvents, profile, true, enableTracing);
     Object output = null;
     Throwable failure = null;
+    boolean fallbackRequired = false;
     try {
       ClassLoader loader = Thread.currentThread().getContextClassLoader();
       Class<?> entry = Class.forName(entryClass, true, loader);
@@ -117,29 +118,13 @@ public final class TraceExecutionRunner {
         }
       }
       if (budgetAborted) {
-        // The budget tripped mid-run, so learner state (input arrays, fields)
-        // may be half-mutated; a partial replay of any single method would
-        // double its side effects. Re-run the whole case instead: run()
-        // rebuilds its inputs from scratch, and with the budget flag set the
-        // The recorded trace stays truncated at the budget. Prepared trace
-        // artifacts may contain a clean companion entry point; select it once
-        // here so the fallback pays no per-hook disabled branches. Older
-        // artifacts without a companion retain the guarded-hook fallback.
-        // Learner *static* state is not reset (classes stay loaded);
-        // non-idempotent statics are a known limitation of the rerun.
+        // The traced attempt may have mutated learner globals or emitted
+        // output. Ask the host to run the clean companion through a fresh
+        // process boundary, then merge this attempt's truncated trace with
+        // that clean result. Re-entering here would repeat externally visible
+        // side effects in the same JVM.
         TraceHooks.markBudgetAbortFallback();
-        try {
-          Method fallbackRun = run;
-          if (!cleanFallbackEntryClass.isEmpty()) {
-            Class<?> cleanEntry =
-                Class.forName(cleanFallbackEntryClass, true, loader);
-            fallbackRun = cleanEntry.getMethod("run");
-            fallbackRun.setAccessible(true);
-          }
-          output = fallbackRun.invoke(null);
-        } catch (InvocationTargetException error) {
-          failure = error.getCause() == null ? error : error.getCause();
-        }
+        fallbackRequired = true;
       }
     } catch (Throwable error) {
       failure = error;
@@ -169,6 +154,7 @@ public final class TraceExecutionRunner {
       System.out.println(EXPORT_MARKER + exportMs);
       System.out.println(LIMIT_MARKER + TraceHooks.traceLimitExceeded());
       System.out.println(DROPPED_MARKER + TraceHooks.droppedEventCount());
+      System.out.println(FALLBACK_MARKER + fallbackRequired);
       if (profileJson != null) {
         System.out.println(PROFILE_MARKER + encode(profileJson));
       }

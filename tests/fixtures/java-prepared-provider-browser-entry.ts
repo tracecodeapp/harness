@@ -468,6 +468,50 @@ globalThis.runJavaPreparedProviderBrowserTest =
     );
     await traceProgram.dispose();
 
+    const fallbackPreparation = await provider.prepareProgram({
+      mode: 'trace',
+      code: [
+        'class Solution {',
+        '  public int fallback(int[] values) {',
+        '    int previous = Integer.parseInt(System.getProperty("tracecode.fallback", "0"));',
+        '    System.setProperty("tracecode.fallback", String.valueOf(previous + 1));',
+        '    System.out.println("fallback-attempt");',
+        '    int total = 0;',
+        '    for (int value : values) total += value;',
+        '    return previous * 100 + total;',
+        '  }',
+        '}',
+      ].join('\n'),
+      functionName: 'fallback',
+      executionStyle: 'solution-method',
+      traceOptions: { maxStoredEvents: 1 },
+    });
+    if (
+      fallbackPreparation.kind !== 'prepared' ||
+      fallbackPreparation.program.mode !== 'trace'
+    ) {
+      throw new Error(
+        fallbackPreparation.kind === 'failed'
+          ? fallbackPreparation.error
+          : 'Java budget fallback preparation did not return a trace program.'
+      );
+    }
+    const fallbackResult = await executePreparedCase(() =>
+      fallbackPreparation.program.executeIsolated({
+        inputs: { values: [1, 2, 3] },
+      })
+    );
+    if (
+      fallbackResult.kind !== 'completed' ||
+      fallbackResult.output !== 6 ||
+      fallbackResult.traceTruncated !== 'trace-limit'
+    ) {
+      throw new Error(
+        `Java budget fallback must rerun in fresh state: ${JSON.stringify(fallbackResult)}`
+      );
+    }
+    await fallbackPreparation.program.dispose();
+
     // Exercise the on-demand product shape directly: one trace preparation,
     // one compiled artifact, one runner, and per-case entry-point selection.
     const mixedTraceClient = createClient();

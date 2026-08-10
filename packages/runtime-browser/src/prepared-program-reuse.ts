@@ -242,7 +242,18 @@ export function withPreparedProgramReuse(
   ): void {
     preparation.claimants -= 1;
     const entry = entries.get(key);
-    if (!entry) return;
+    if (!entry) {
+      if (
+        preparation.claimants === 0 &&
+        pending.get(key) === preparation &&
+        !preparation.controller.signal.aborted
+      ) {
+        preparation.controller.abort(
+          new Error('Prepared program preparation has no remaining claimants.')
+        );
+      }
+      return;
+    }
     entry.pendingClaims -= 1;
     queueMicrotask(() => {
       if (entry.references !== 0 || entry.pendingClaims !== 0) return;
