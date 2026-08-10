@@ -126,10 +126,9 @@ The npm package includes these TraceCode-authored Java integration assets:
 - `workers/vendor/java-browser-helper.jar`
 
 They are covered by the project AGPL-3.0-only license. The bridge loads a
-separately deployed, immutable TraceJVM runtime asset tree from the configured
-Java runtime base URL. The `@tracecode/harness` npm tarball does **not**
-redistribute the TraceJVM engine module, its WebAssembly engine, or OpenJDK
-runtime/compiler images.
+content-addressed TraceJVM runtime release supplied by the pinned
+`@tracecode/tracejvm` dependency. `tracecode-harness sync-assets` copies that
+release to the configured Java runtime asset base URL.
 
 ### Separately deployed TraceJVM assets
 
@@ -138,11 +137,12 @@ following provenance and licenses apply:
 
 - TraceJVM is licensed under AGPL-3.0-only. Source:
   https://github.com/tracecodeapp/tracejvm
+- Pinned dependency: `@tracecode/tracejvm` `0.4.1`.
 - TraceJVM contains a pinned b-jvm engine snapshot from commit
   `3fd56c74656602eb32efefca46f51f074bef6bca`, licensed under MIT,
   copyright 2025 bjvm Authors. Source:
   https://github.com/anematode/b-jvm
-- The TraceJVM 0.3 browser compiler is built from TeaVM-javac commit
+- The TraceJVM 0.4.1 browser compiler is built from TeaVM-javac commit
   `7e4a44cf521694a4e326e33850dd8aec165eb5c9`, licensed under Apache
   License 2.0. Source:
   https://github.com/konsoletyper/teavm-javac
@@ -188,33 +188,34 @@ runtime asset surface, not to the Harness npm tarball described above.
 
 ## C++ Runtime
 
-### YoWASP Clang
+### TraceCC
 
-- Use: browser C++ compiler bundle and LLVM resource bundle.
-- Published assets: `cpp/compiler/bundle.js`,
-  `cpp/compiler/llvm-resources.tar`, and `cpp/compiler/*.wasm`.
-- Version: `@yowasp/clang` `22.0.0-git20542-10`.
-- Local package metadata license: ISC.
-- Upstream README license statement: Apache-2.0, matching the base LLVM license.
-- Source: https://github.com/YoWASP/clang
-
-The local package metadata and README identify different license labels. Until
-that is clarified upstream, preserve both the package metadata notice and the
-README/source license reference when redistributing these assets.
+- Use: the content-addressed browser C++ compiler release and TraceCode PCH
+  and runtime assets.
+- Published assets: `cpp/tracecc/<consumer-hash>/` supplied by the pinned
+  `@tracecode/tracecc` dependency.
+- Version: `@tracecode/tracecc` `0.1.0`.
+- License: AGPL-3.0-only.
+- Source: https://github.com/tracecodeapp/tracecc
+- Upstream notices: preserve the `THIRD_PARTY_NOTICES.md` shipped by the
+  TraceCC package when mirroring its runtime release.
 
 ### LLVM / Clang / LLD
 
-- Use: underlying compiler and linker components inside the YoWASP bundle.
-- License: Apache-2.0 WITH LLVM-exception.
-- Source: https://github.com/llvm/llvm-project
-- License policy: https://llvm.org/docs/DeveloperPolicy.html#copyright-license-and-patents
+- Use: compiler and linker components inside the TraceCC release.
+- TraceCC's package-owned notice identifies the YoWASP LLVM fork as the source,
+  frozen at revision `97196c8eeb1d495fa43bb8af2fb26af5ef5b89fb`.
+- Source: https://github.com/YoWASP/llvm-project
+- License: Apache License 2.0 with LLVM Exceptions.
+- TraceCC is an independent project and is not affiliated with or endorsed by
+  the LLVM Project or YoWASP.
 
 ### WASI libc and Sysroot Materials
 
-- Use: libc/sysroot inputs included in the C++ compiler resources.
-- License: mixed permissive licenses, including Apache-2.0 WITH LLVM-exception,
-  Apache-2.0, MIT, BSD-2-Clause, and CC0-1.0.
-- Source: https://github.com/WebAssembly/wasi-libc
+- Use: the WASI reactor and `wasm32-wasip1` sysroot inputs described by the
+  TraceCC package README and included in its immutable compiler release.
+- The release's package-owned `THIRD_PARTY_NOTICES.md` and legal tree remain
+  authoritative for the exact sysroot notices and licenses.
 
 ## Project-Authored Runtime Helpers
 

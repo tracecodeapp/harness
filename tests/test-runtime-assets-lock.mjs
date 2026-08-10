@@ -9,10 +9,12 @@ const lock = JSON.parse(readFileSync(resolve(root, 'runtime-assets.lock.json'), 
 
 assert.equal(lock.schema, 'tracecode.runtime-assets-lock.v1');
 assert.match(lock.harness.releaseId, /^@tracecode\/harness@0\.16\.0\+sha256\.[0-9a-f]{64}$/u);
-assert.equal(
-  lock.engineDependencies.tracecc.consumerHash,
-  lock.engineDependencies.tracecc.provenance.consumerHash
-);
+assert.match(lock.engineDependencies.tracecc.consumerHash, /^[0-9a-f]{64}$/u);
+assert.equal('manifest' in lock.engineDependencies.tracecc, false);
+assert.equal('packageManifest' in lock.engineDependencies.tracecc, false);
+assert.equal('provenance' in lock.engineDependencies.tracecc, false);
+assert.equal('descriptor' in lock.engineDependencies.tracejvm, false);
+assert.equal('packageManifest' in lock.engineDependencies.tracejvm, false);
 assert.equal(lock.engineDependencies.tracecc.package.name, '@tracecode/tracecc');
 assert.equal(lock.engineDependencies.tracecc.package.version, '0.1.0');
 assert.equal(lock.engineDependencies.tracecc.package.license, 'AGPL-3.0-only');

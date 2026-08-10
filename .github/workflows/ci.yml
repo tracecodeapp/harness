@@ -32,12 +32,12 @@ jobs:
       - uses: actions/checkout@v4
         with:
           repository: tracecodeapp/tracecc
-          ref: codex/harness-owned-runtime-assets
+          ref: ebc6de2a86274d8b91066484575175d29f7e40fb
           path: .release-candidates/tracecc
       - uses: actions/checkout@v4
         with:
           repository: tracecodeapp/tracejvm
-          ref: codex/harness-owned-runtime-assets
+          ref: e1212e70e29889dca506911cb9bb94b21608fb75
           path: .release-candidates/tracejvm
       - uses: pnpm/action-setup@v4
         with:
@@ -48,17 +48,33 @@ jobs:
           cache: pnpm
       - name: Pack engine release candidates
         run: |
-          mkdir -p "${RUNNER_TEMP}/tracecode-release-candidates"
+          mkdir -p "${RUNNER_TEMP}/tracecode-release-candidates/tracecc" \
+            "${RUNNER_TEMP}/tracecode-release-candidates/tracejvm"
           pnpm --dir .release-candidates/tracecc install --frozen-lockfile
-          npm pack --prefix .release-candidates/tracecc \
-            --pack-destination "${RUNNER_TEMP}/tracecode-release-candidates"
+          (
+            cd .release-candidates/tracecc
+            npm pack --pack-destination "${RUNNER_TEMP}/tracecode-release-candidates/tracecc"
+          )
           pnpm --dir .release-candidates/tracejvm install --frozen-lockfile
-          npm pack --prefix .release-candidates/tracejvm \
-            --pack-destination "${RUNNER_TEMP}/tracecode-release-candidates"
+          (
+            cd .release-candidates/tracejvm
+            npm pack --pack-destination "${RUNNER_TEMP}/tracecode-release-candidates/tracejvm"
+          )
+          node - <<'NODE' >> "$GITHUB_ENV"
+          const fs = require('node:fs');
+          const path = require('node:path');
+          const temp = process.env.RUNNER_TEMP;
+          for (const [name, directory] of [
+            ['TRACECODE_TRACECC_CANDIDATE_PACKAGE', 'tracecc'],
+            ['TRACECODE_TRACEJVM_CANDIDATE_PACKAGE', 'tracejvm'],
+          ]) {
+            const root = path.join(temp, 'tracecode-release-candidates', directory);
+            const packed = fs.readdirSync(root).filter((file) => file.endsWith('.tgz'));
+            if (packed.length !== 1) throw new Error(`expected one ${name} tarball, found ${packed.length}`);
+            console.log(`${name}=file:${path.resolve(root, packed[0])}`);
+          }
+          NODE
       - name: Install the three-repository release stack
-        env:
-          TRACECODE_TRACECC_CANDIDATE_PACKAGE: file:${{ runner.temp }}/tracecode-release-candidates/tracecode-tracecc-0.1.0.tgz
-          TRACECODE_TRACEJVM_CANDIDATE_PACKAGE: file:${{ runner.temp }}/tracecode-release-candidates/tracecode-tracejvm-0.4.1.tgz
         run: pnpm install --lockfile=false
       - name: Check generated runtime metadata
         run: pnpm test:runtime-info-sync && pnpm test:kernel-policy-sync && pnpm test:typescript-project-libs-sync

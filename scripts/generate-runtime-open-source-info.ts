@@ -2,6 +2,7 @@
 
 import { mkdir, readFile, readdir, writeFile } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
+import { loadEngineRuntimePackages } from './runtime-package-assets.mjs';
 
 const CHECK_MODE = process.argv.includes('--check');
 const ROOT = process.cwd();
@@ -48,19 +49,13 @@ type RuntimeAssetLock = {
   engineDependencies: {
     tracecc: {
       package: { version: string; license?: string; repository?: Repository };
-      packageManifest: { targetPath: string };
     };
     tracejvm: {
       package: { version: string; license?: string };
-      packageManifest: { targetPath: string };
-      descriptor: {
-        runtime: {
-          javaVersion: string;
-          distribution: string;
-          source: { archiveUrl: string; revision: string };
-        };
-        files: Array<{ path: string }>;
-      };
+      contentHash: string;
+      relativePrefix: string;
+      descriptorSha256: string;
+      descriptorSize: number;
     };
   };
 };
@@ -89,6 +84,19 @@ function spdxLicenseUrl(license: string): string {
 async function readJson<T>(...parts: string[]): Promise<T> {
   return JSON.parse(await readFile(join(ROOT, ...parts), 'utf8')) as T;
 }
+
+type TraceJVMRelease = {
+  schema: string;
+  package: { name?: string; version?: string };
+  runtime: {
+    javaVersion: string;
+    distribution: string;
+    source: { archiveUrl: string; revision: string };
+  };
+  contentHash: string;
+  relativePrefix: string;
+  files: Array<{ path: string }>;
+};
 
 function parseImportedPackages(source: string): string[] {
   return [...new Set(
@@ -146,10 +154,11 @@ function requireAssetPath(paths: Set<string>, pattern: RegExp, label: string): s
 }
 
 async function buildOpenSourceInfo(): Promise<Record<string, { language: string; components: Component[] }>> {
-  const [rootPackage, lock, pyodidePackage, pyodideLock, javascriptEntry, csharpProject] =
+  const [rootPackage, lock, engines, pyodidePackage, pyodideLock, javascriptEntry, csharpProject] =
     await Promise.all([
       readJson<PackageJson>('package.json'),
       readJson<RuntimeAssetLock>('runtime-assets.lock.json'),
+      loadEngineRuntimePackages(ROOT),
       readJson<PackageJson>('node_modules', 'pyodide', 'package.json'),
       readJson<{ info?: { python?: string } }>('node_modules', 'pyodide', 'pyodide-lock.json'),
       readFile(join(ROOT, 'workers', 'javascript', 'javascript-libraries-entry.js'), 'utf8'),
@@ -189,10 +198,38 @@ async function buildOpenSourceInfo(): Promise<Record<string, { language: string;
   const typescriptComponent = await packageComponent('typescript');
 
   const tracejvm = lock.engineDependencies.tracejvm;
-  if (!tracejvm.package.license) {
+  const tracejvmPackage = engines.tracejvm.package;
+  const tracejvmDescriptor = engines.tracejvm.files.find((file) => file.path === 'release.json');
+  if (!tracejvmDescriptor) {
+    throw new Error('Unable to generate open-source runtime info: TraceJVM release descriptor is missing.');
+  }
+  const tracejvmRelease = JSON.parse(
+    await readFile(tracejvmDescriptor.absolute, 'utf8')
+  ) as TraceJVMRelease;
+  if (
+    tracejvmPackage.name !== '@tracecode/tracejvm' ||
+    tracejvmPackage.version !== tracejvm.package.version ||
+    tracejvmPackage.license !== tracejvm.package.license
+  ) {
+    throw new Error('Unable to generate open-source runtime info: TraceJVM package metadata does not match the lock.');
+  }
+  if (!tracejvmPackage.license) {
     throw new Error('Unable to generate open-source runtime info: TraceJVM package license is missing.');
   }
-  const tracejvmPaths = new Set(tracejvm.descriptor.files.map((file) => file.path));
+  if (
+    tracejvmRelease.schema !== 'tracejvm-runtime-release-v2' ||
+    tracejvmRelease.package.name !== '@tracecode/tracejvm' ||
+    tracejvmRelease.package.version !== tracejvm.package.version ||
+    tracejvmRelease.contentHash !== tracejvm.contentHash ||
+    tracejvmRelease.relativePrefix !== tracejvm.relativePrefix ||
+    tracejvmDescriptor.sha256 !== tracejvm.descriptorSha256 ||
+    tracejvmDescriptor.size !== tracejvm.descriptorSize ||
+    tracejvmRelease.relativePrefix !==
+      `tracejvm/${tracejvmRelease.package.version}/${tracejvmRelease.contentHash}`
+  ) {
+    throw new Error('Unable to generate open-source runtime info: TraceJVM release metadata is inconsistent.');
+  }
+  const tracejvmPaths = new Set(tracejvmRelease.files.map((file) => file.path));
   const teavmSourcePath = [...tracejvmPaths].find((path) =>
     /^source\/teavm-javac-[0-9a-f]{40}\.tar\.gz$/u.test(path)
   );
@@ -205,11 +242,20 @@ async function buildOpenSourceInfo(): Promise<Record<string, { language: string;
   }
 
   const tracecc = lock.engineDependencies.tracecc;
-  if (!tracecc.package.license) {
+  const traceccPackage = engines.tracecc.package;
+  if (
+    traceccPackage.name !== '@tracecode/tracecc' ||
+    traceccPackage.version !== tracecc.package.version ||
+    traceccPackage.license !== tracecc.package.license ||
+    normalizeRepository(traceccPackage.repository) !== normalizeRepository(tracecc.package.repository)
+  ) {
+    throw new Error('Unable to generate open-source runtime info: TraceCC package metadata does not match the lock.');
+  }
+  if (!traceccPackage.license) {
     throw new Error('Unable to generate open-source runtime info: TraceCC package license is missing.');
   }
   const traceccRepository =
-    normalizeRepository(tracecc.package.repository) ?? 'https://github.com/tracecodeapp/tracecc';
+    normalizeRepository(traceccPackage.repository) ?? 'https://github.com/tracecodeapp/tracecc';
 
   const roslynVersion = csharpProject.match(
     /PackageReference Include="Microsoft\.CodeAnalysis\.CSharp" Version="([^"]+)"/u
@@ -248,23 +294,23 @@ async function buildOpenSourceInfo(): Promise<Record<string, { language: string;
   const java: Component[] = [
     {
       name: 'TraceJVM',
-      version: tracejvm.package.version,
-      license: tracejvm.package.license,
+      version: tracejvmPackage.version,
+      license: tracejvmPackage.license,
       resources: [
-        url('license', 'License', `https://github.com/tracecodeapp/tracejvm/blob/v${tracejvm.package.version}/LICENSE`),
-        url('notices', 'Third-party notices', `https://github.com/tracecodeapp/tracejvm/blob/v${tracejvm.package.version}/THIRD_PARTY_NOTICES.md`),
-        url('source', 'Source', `https://github.com/tracecodeapp/tracejvm/tree/v${tracejvm.package.version}`),
+        url('license', 'License', `https://github.com/tracecodeapp/tracejvm/blob/v${tracejvmPackage.version}/LICENSE`),
+        url('notices', 'Third-party notices', `https://github.com/tracecodeapp/tracejvm/blob/v${tracejvmPackage.version}/THIRD_PARTY_NOTICES.md`),
+        url('source', 'Source', `https://github.com/tracecodeapp/tracejvm/tree/v${tracejvmPackage.version}`),
       ],
     },
     {
-      name: `${tracejvm.descriptor.runtime.distribution} OpenJDK`,
-      version: tracejvm.descriptor.runtime.javaVersion,
+      name: `${tracejvmRelease.runtime.distribution} OpenJDK`,
+      version: tracejvmRelease.runtime.javaVersion,
       license: 'GPL-2.0-only WITH Classpath-exception-2.0',
       detail: 'Runtime image; the distributed release also carries the Assembly Exception and module notices.',
       resources: [
         url('license', 'License', 'https://openjdk.org/legal/gplv2+ce.html'),
-        url('corresponding-source', 'Corresponding source', tracejvm.descriptor.runtime.source.archiveUrl),
-        url('modifications', 'Build and modifications', `https://github.com/tracecodeapp/tracejvm/tree/v${tracejvm.package.version}/runtime`),
+        url('corresponding-source', 'Corresponding source', tracejvmRelease.runtime.source.archiveUrl),
+        url('modifications', 'Build and modifications', `https://github.com/tracecodeapp/tracejvm/tree/v${tracejvmPackage.version}/runtime`),
       ],
     },
     {
@@ -272,8 +318,8 @@ async function buildOpenSourceInfo(): Promise<Record<string, { language: string;
       version: teavmRevision.slice(0, 12),
       license: 'Apache-2.0',
       resources: [
-        url('license', 'License', `https://github.com/tracecodeapp/tracejvm/blob/v${tracejvm.package.version}/compiler/teavm-javac/LICENSE`),
-        url('modifications', 'Notice and modifications', `https://github.com/tracecodeapp/tracejvm/tree/v${tracejvm.package.version}/compiler/teavm-javac`),
+        url('license', 'License', `https://github.com/tracecodeapp/tracejvm/blob/v${tracejvmPackage.version}/compiler/teavm-javac/LICENSE`),
+        url('modifications', 'Notice and modifications', `https://github.com/tracecodeapp/tracejvm/tree/v${tracejvmPackage.version}/compiler/teavm-javac`),
         url('corresponding-source', 'Corresponding source', `https://github.com/konsoletyper/teavm-javac/archive/${teavmRevision}.tar.gz`),
         url('source', 'Upstream source', `https://github.com/konsoletyper/teavm-javac/tree/${teavmRevision}`),
       ],
@@ -316,12 +362,12 @@ async function buildOpenSourceInfo(): Promise<Record<string, { language: string;
   const cpp: Component[] = [
     {
       name: 'TraceCC',
-      version: tracecc.package.version,
-      license: tracecc.package.license,
+      version: traceccPackage.version,
+      license: traceccPackage.license,
       resources: [
-        url('license', 'License', spdxLicenseUrl(tracecc.package.license)),
-        url('notices', 'Third-party notices', `${traceccRepository}/blob/v${tracecc.package.version}/THIRD_PARTY_NOTICES.md`),
-        url('source', 'Source', `${traceccRepository}/tree/v${tracecc.package.version}`),
+        url('license', 'License', spdxLicenseUrl(traceccPackage.license)),
+        url('notices', 'Third-party notices', `${traceccRepository}/blob/v${traceccPackage.version}/THIRD_PARTY_NOTICES.md`),
+        url('source', 'Source', `${traceccRepository}/tree/v${traceccPackage.version}`),
       ],
     },
     {
@@ -330,7 +376,7 @@ async function buildOpenSourceInfo(): Promise<Record<string, { language: string;
       detail: 'Compiler, linker, and C++ standard-library resources pinned by the TraceCC release.',
       resources: [
         url('license', 'License', 'https://llvm.org/LICENSE.txt'),
-        url('notices', 'TraceCC third-party notices', `${traceccRepository}/blob/v${tracecc.package.version}/THIRD_PARTY_NOTICES.md`),
+        url('notices', 'TraceCC third-party notices', `${traceccRepository}/blob/v${traceccPackage.version}/THIRD_PARTY_NOTICES.md`),
         url('source', 'Upstream source', 'https://github.com/llvm/llvm-project'),
       ],
     },
@@ -339,7 +385,7 @@ async function buildOpenSourceInfo(): Promise<Record<string, { language: string;
       license: 'Apache-2.0 AND MIT AND BSD-2-Clause AND CC0-1.0',
       detail: 'Mixed permissive licenses recorded by the TraceCC release notices.',
       resources: [
-        url('notices', 'TraceCC third-party notices', `${traceccRepository}/blob/v${tracecc.package.version}/THIRD_PARTY_NOTICES.md`),
+        url('notices', 'TraceCC third-party notices', `${traceccRepository}/blob/v${traceccPackage.version}/THIRD_PARTY_NOTICES.md`),
         url('source', 'Upstream source', 'https://github.com/WebAssembly/wasi-libc'),
       ],
     },

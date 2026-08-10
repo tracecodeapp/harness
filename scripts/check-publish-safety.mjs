@@ -18,7 +18,7 @@ const RETIRED_INTERNAL_PACKAGE_NAMES = new Set([
 ]);
 const RELEASE_CHECK_SCRIPT = 'node scripts/check-publish-safety.mjs';
 const ROOT_RELEASE_SCRIPT =
-  'pnpm release:check && pnpm test:runtime-assets-lock && pnpm publish . --access public';
+  'pnpm release:check && pnpm publish . --access public';
 const PREPUBLISH_SCRIPT =
   'pnpm release:check && pnpm test:runtime-assets-lock && pnpm build && pnpm release:check && pnpm test:runtime-assets-lock';
 const WORKSPACE_SCOPE_ENVIRONMENT_KEYS = [

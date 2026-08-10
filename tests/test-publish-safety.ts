@@ -10,7 +10,7 @@ const CHECK_SCRIPT = resolve(ROOT, 'scripts/check-publish-safety.mjs');
 const VERSION_SYNC_SCRIPT = resolve(ROOT, 'scripts/sync-workspace-versions.mjs');
 const RELEASE_CHECK_SCRIPT = 'node scripts/check-publish-safety.mjs';
 const ROOT_RELEASE_SCRIPT =
-  'pnpm release:check && pnpm test:runtime-assets-lock && pnpm publish . --access public';
+  'pnpm release:check && pnpm publish . --access public';
 const PREPUBLISH_SCRIPT =
   'pnpm release:check && pnpm test:runtime-assets-lock && pnpm build && pnpm release:check && pnpm test:runtime-assets-lock';
 

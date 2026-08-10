@@ -312,13 +312,10 @@ async function buildTraceCC(traceccPackage, cppComponent) {
   return {
     releaseId: traceccPackage.releaseId,
     package: traceccPackage.package,
-    packageManifest: traceccPackage.manifest,
     consumerHash,
     treeSha256Algorithm: 'tracecc-consumer-sha256-v1',
-    manifest,
     totalBytes: files.reduce((total, file) => total + file.size, 0),
     files,
-    ...(provenance ? { provenance } : {}),
   };
 }
 
@@ -358,12 +355,10 @@ async function buildTraceJVM(tracejvmPackage) {
   return {
     releaseId: tracejvmPackage.releaseId,
     package: tracejvmPackage.package,
-    packageManifest: tracejvmPackage.manifest,
     contentHash: release.contentHash,
     relativePrefix: release.relativePrefix,
     descriptorSha256: sha256(releaseBytes),
     descriptorSize: releaseBytes.byteLength,
-    descriptor: release,
     totalBytes: release.files
       .filter((file) => !file.path.startsWith('legal/') && !file.path.startsWith('source/'))
       .reduce((total, file) => total + file.size, 0),
