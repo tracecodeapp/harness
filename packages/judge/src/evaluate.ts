@@ -398,6 +398,7 @@ export function evaluateJudgePlan<
   JudgePlanError | JudgeInfrastructureError
 > {
   return Effect.gen(function* () {
+    yield* validateTraceSelection(plan, options.tracing);
     const build = yield* prepareJudgePlan(port, plan);
     return yield* evaluatePreparedJudgePlan(port, plan, build, options);
   });
