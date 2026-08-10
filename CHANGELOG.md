@@ -6,6 +6,17 @@ This repo uses Git tags as release boundaries. Version notes below summarize wha
 
 ## [Unreleased]
 
+## [0.16.2] - 2026-08-10
+
+### Fixed
+
+- Gave Project workspaces the same Harness-owned TraceCC runtime defaults as
+  Judge execution. C++ Project commands now select the isolated Project worker
+  while retaining the pinned, immutable TraceCC compiler tree.
+- Made `sync-assets` publish the isolated C++ Project worker alias from the
+  exact pinned C++ worker bytes, so consumers no longer need to construct or
+  copy TraceCC runtime assets themselves.
+
 ## [0.16.1] - 2026-08-10
 
 ### Fixed
