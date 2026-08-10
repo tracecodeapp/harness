@@ -37,7 +37,7 @@ jobs:
       - uses: actions/checkout@v4
         with:
           repository: tracecodeapp/tracejvm
-          ref: e1212e70e29889dca506911cb9bb94b21608fb75
+          ref: e40557f85a552ec157f752ee941ef41b44c86fbe
           path: .release-candidates/tracejvm
       - uses: pnpm/action-setup@v4
         with:
