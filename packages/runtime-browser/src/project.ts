@@ -329,6 +329,22 @@ const BROWSER_PROJECT_PREWARM_PROVIDERS = Object.freeze([
 const BROWSER_PROJECT_INJECTED_PROVIDERS: readonly BrowserProjectInjectedProvider[] =
   Object.freeze(['python', 'java', 'csharp', 'cpp']);
 
+const CPP_LEGACY_ASSET_KEYS = Object.freeze([
+  'cppWorker',
+  'cppCompilerWasm',
+  'cppLinkerWasm',
+  'cppSysroot',
+  'cppRuntimeHeader',
+  'cppCompilerIntegrity',
+] as const);
+
+function hasConfiguredCppRuntimeAssets(
+  assets: BrowserRuntimeAssetOverrides | undefined
+): boolean {
+  if (assets?.runtimeManifests?.cpp) return true;
+  return CPP_LEGACY_ASSET_KEYS.some((key) => assets?.[key] !== undefined);
+}
+
 function normalizeBrowserProjectProviders(
   providers: readonly BrowserProjectProvider[] | undefined
 ): readonly BrowserProjectProvider[] {
@@ -975,11 +991,34 @@ export async function createBrowserProjectWorkspace(
           import('../../runtime-cpp/src/project-browser'),
           import('../../runtime-cpp/src/cpp-worker-client'),
           import('../../runtime-cpp/src/browser-runtime-provider'),
+          import('../../runtime-cpp/src/tracecc-runtime-assets'),
         ])
       : undefined,
   ]);
   const { createRuntimeWorkspace } = await projectRuntimePromise;
-  const assets = resolveBrowserRuntimeAssets(options);
+  const configuredAssets = options.assets;
+  const assets = resolveBrowserRuntimeAssets({
+    ...options,
+    ...(cppProvider &&
+    runtimeProviders.cpp === undefined &&
+    !hasConfiguredCppRuntimeAssets(configuredAssets)
+      ? {
+          assets: {
+            ...configuredAssets,
+            runtimeAssetProvider(runtime) {
+              return (
+                configuredAssets?.runtimeAssetProvider?.(runtime) ??
+                (runtime === 'cpp'
+                  ? cppProvider[3].resolveBuiltInTraceCCProjectRuntimeManifest(
+                      options.assetBaseUrl ?? '/workers'
+                    )
+                  : undefined)
+              );
+            },
+          },
+        }
+      : {}),
+  });
   const runtimeAssetPreflight = createBrowserRuntimeAssetPreflight(assets.runtimeManifests);
   const pythonManifest = assets.runtimeManifests?.python;
   const pythonAsset = (name: string): BrowserRuntimeAssetDescriptor | undefined => {

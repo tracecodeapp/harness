@@ -579,6 +579,12 @@ async function testProjectManifestAssetBinding(): Promise<void> {
     typescriptProject: { compilerUrl: 'https://legacy.example/typescript.js' },
   });
   legacy.dispose();
+
+  const builtInCpp = await createBrowserProjectWorkspace({
+    providers: ['cpp'],
+    assetBaseUrl: '/cdn/workers',
+  });
+  builtInCpp.dispose();
 }
 
 async function testProjectManifestAssetsArePreflightedAndForwarded(): Promise<void> {

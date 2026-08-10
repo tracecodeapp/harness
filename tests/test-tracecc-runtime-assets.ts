@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import {
   createTraceCCRuntimeManifest,
+  resolveBuiltInTraceCCProjectRuntimeManifest,
   resolveBuiltInTraceCCRuntimeManifest,
   TRACECC_RUNTIME_ASSET_RELATIVE_PATH,
   TRACECC_RUNTIME_CONTENT_HASH,
@@ -18,6 +19,8 @@ const customWorkerManifest = createTraceCCRuntimeManifest(baseUrl, {
   workerUrl: 'https://workers.example.test/cpp-worker.js',
 });
 const builtInManifest = resolveBuiltInTraceCCRuntimeManifest();
+const builtInProjectManifest =
+  resolveBuiltInTraceCCProjectRuntimeManifest();
 const builtInConstant = TRACECC_RUNTIME_MANIFEST;
 const builtInResolved = resolveBrowserRuntimeAssets({
   assetBaseUrl: '/workers',
@@ -50,12 +53,22 @@ assert.equal(
   builtInManifest.assetBaseUrl,
   `/workers/${TRACECC_RUNTIME_ASSET_RELATIVE_PATH}/`
 );
+assert.equal(
+  builtInProjectManifest.assetBaseUrl,
+  `/workers/${TRACECC_RUNTIME_ASSET_RELATIVE_PATH}/`
+);
+assert.equal(
+  builtInProjectManifest.assets.worker.url,
+  '/workers/project-cpp-worker.js'
+);
 assert.deepEqual(
   builtInConstant,
   builtInManifest,
   'the exported built-in manifest must be the standard /workers manifest'
 );
 const customRootManifest = resolveBuiltInTraceCCRuntimeManifest('/cdn/workers/');
+const customProjectRootManifest =
+  resolveBuiltInTraceCCProjectRuntimeManifest('/cdn/workers/');
 assert.equal(
   customRootManifest.assetBaseUrl,
   `/cdn/workers/${TRACECC_RUNTIME_ASSET_RELATIVE_PATH}/`
@@ -63,6 +76,10 @@ assert.equal(
 assert.equal(
   customRootManifest.assets.worker.url,
   '/cdn/workers/cpp-worker.js'
+);
+assert.equal(
+  customProjectRootManifest.assets.worker.url,
+  '/cdn/workers/project-cpp-worker.js'
 );
 assert.equal(
   builtInResolved.cppCompilerWasm,

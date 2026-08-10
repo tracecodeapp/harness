@@ -214,6 +214,7 @@ const PACKAGE_CHECKS: PackageCheck[] = [
       'dist/project-browser.cjs',
       'dist/project-browser.d.ts',
       'workers/cpp-worker.js',
+      'workers/project-cpp-worker.js',
       'workers/shared/runtime-kernel-policy.js',
       'workers/cpp/tracecode_runtime.hpp',
       'LICENSE',
@@ -1018,7 +1019,15 @@ async function runWithTempRoot(tempRoot: string): Promise<void> {
     }
     if (packageCheck.name === '@tracecode/runtime-cpp') {
       const worker = await readFile(join(packageDir, 'workers/cpp-worker.js'), 'utf8');
+      const projectWorker = await readFile(
+        join(packageDir, 'workers/project-cpp-worker.js'),
+        'utf8'
+      );
       const declarations = await readDeclarationTree(join(packageDir, 'dist'));
+      assertCondition(
+        projectWorker === worker,
+        '@tracecode/runtime-cpp should publish the isolated Project worker alias from the pinned worker bytes'
+      );
       assertCondition(
         declarations.includes('CppCompilerIntegrityManifest') &&
           declarations.includes('compilerWasmUrl') &&

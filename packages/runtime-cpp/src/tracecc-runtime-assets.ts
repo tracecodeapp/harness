@@ -156,6 +156,24 @@ export function resolveBuiltInTraceCCRuntimeManifest(
   );
 }
 
+/**
+ * Resolves the built-in TraceCC tree for an isolated Project workspace.
+ *
+ * Project workers use a distinct entrypoint so deployments can attach the
+ * COOP/COEP headers required by the workspace without changing the shared
+ * Practice/Judge worker policy. The compiler tree remains the same immutable
+ * Harness release.
+ */
+export function resolveBuiltInTraceCCProjectRuntimeManifest(
+  assetBaseUrl = '/workers'
+): BrowserRuntimeAssetManifest<'cpp'> {
+  const normalizedAssetBaseUrl = normalizeAssetBaseUrl(assetBaseUrl);
+  return createTraceCCRuntimeManifest(
+    `${normalizedAssetBaseUrl}/${TRACECC_RUNTIME_ASSET_RELATIVE_PATH}`,
+    { workerUrl: `${normalizedAssetBaseUrl}/project-cpp-worker.js` }
+  );
+}
+
 /** The pinned fb4 TraceCC manifest for the standard `/workers` deployment. */
 export const TRACECC_RUNTIME_MANIFEST =
   resolveBuiltInTraceCCRuntimeManifest();
