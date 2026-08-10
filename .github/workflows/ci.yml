@@ -32,7 +32,7 @@ jobs:
       - uses: actions/checkout@v4
         with:
           repository: tracecodeapp/tracecc
-          ref: 8bbc694b3f01a3ca54076dac1d0d13ae87ad9785
+          ref: 23a777d37999f0e6a5678933d96e0a084b5c427b
           path: .release-candidates/tracecc
       - uses: actions/checkout@v4
         with:
