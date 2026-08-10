@@ -21,8 +21,27 @@ concurrency:
 
 jobs:
   smoke:
-    uses: ./.github/workflows/release-stack.yml
-    with:
-      harness-ref: ${{ github.event.pull_request.head.sha || github.sha }}
-      tracecc-ref: codex/harness-owned-runtime-assets
-      tracejvm-ref: codex/harness-owned-runtime-assets
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10.4.1
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      # Harness consumes engine releases exactly like every other npm
+      # consumer. Candidate repository branches are intentionally not a CI
+      # dependency; publish TraceCC and TraceJVM before releasing Harness.
+      - name: Install published engine releases
+        run: pnpm install --frozen-lockfile
+      - name: Check generated runtime metadata
+        run: pnpm test:runtime-info-sync && pnpm test:kernel-policy-sync && pnpm test:typescript-project-libs-sync
+      - name: Typecheck
+        run: pnpm typecheck
+      - name: Build
+        run: pnpm build
+      - name: Test package surfaces and smoke
+        run: pnpm test:packaged-surface && pnpm test:smoke && pnpm test:asset-sync
