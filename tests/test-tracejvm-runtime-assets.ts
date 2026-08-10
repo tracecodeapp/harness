@@ -5,6 +5,7 @@ import { readFile } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
 import { loadEngineRuntimePackages } from '../scripts/runtime-package-assets.mjs';
 import {
+  normalizeTraceJVMRuntimeAssetBaseUrl,
   preflightBuiltInTraceJVMRuntimeAssets,
   resolveBuiltInTraceJVMRuntimeAssetBaseUrl,
   TRACEJVM_RUNTIME_ASSET_RELATIVE_PATH,
@@ -19,6 +20,24 @@ assert.equal(
 assert.equal(
   resolveBuiltInTraceJVMRuntimeAssetBaseUrl('https://assets.example/workers/'),
   `https://assets.example/workers/${TRACEJVM_RUNTIME_ASSET_RELATIVE_PATH}`
+);
+assert.equal(
+  normalizeTraceJVMRuntimeAssetBaseUrl('https://assets.example/workers///'),
+  'https://assets.example/workers'
+);
+for (const invalid of ['', '   ', '/workers?version=1', '/workers#release']) {
+  assert.throws(
+    () => normalizeTraceJVMRuntimeAssetBaseUrl(invalid),
+    /must not be empty|without a query or fragment/
+  );
+}
+assert.throws(
+  () => resolveBuiltInTraceJVMRuntimeAssetBaseUrl('/workers?version=1'),
+  /without a query or fragment/
+);
+assert.throws(
+  () => preflightBuiltInTraceJVMRuntimeAssets('/workers#release'),
+  /without a query or fragment/
 );
 assert.equal(TRACEJVM_RUNTIME_VERSION, '0.4.1');
 assert.match(TRACEJVM_RUNTIME_CONTENT_HASH, /^[0-9a-f]{64}$/u);

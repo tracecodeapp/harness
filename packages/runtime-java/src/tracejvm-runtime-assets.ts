@@ -16,19 +16,29 @@ function stripTrailingSlash(value: string): string {
   return value.replace(/\/+$/u, '');
 }
 
+/**
+ * Normalizes an immutable TraceJVM runtime directory used by any browser
+ * client. Query strings and fragments are intentionally rejected because the
+ * bridge and project clients append fixed runtime-relative paths.
+ */
+export function normalizeTraceJVMRuntimeAssetBaseUrl(value: string): string {
+  const normalized = stripTrailingSlash(value.trim());
+  if (!normalized) {
+    throw new TypeError('TraceJVM runtime asset base URL must not be empty.');
+  }
+  if (/[?#]/u.test(normalized)) {
+    throw new TypeError(
+      'TraceJVM runtime asset base URL must be a directory without a query or fragment.'
+    );
+  }
+  return normalized;
+}
+
 /** Resolves the TraceJVM release owned by this Harness version. */
 export function resolveBuiltInTraceJVMRuntimeAssetBaseUrl(
   assetBaseUrl = '/workers'
 ): string {
-  const normalized = stripTrailingSlash(assetBaseUrl.trim());
-  if (!normalized) {
-    throw new TypeError('TraceJVM requires a non-empty asset base URL.');
-  }
-  if (/[?#]/u.test(normalized)) {
-    throw new TypeError(
-      'TraceJVM asset base URL must be a directory without a query or fragment.'
-    );
-  }
+  const normalized = normalizeTraceJVMRuntimeAssetBaseUrl(assetBaseUrl);
   return `${normalized}/${TRACEJVM_RUNTIME_ASSET_RELATIVE_PATH}`;
 }
 
@@ -47,7 +57,7 @@ function bytesToBase64(bytes: Uint8Array): string {
 export function preflightBuiltInTraceJVMRuntimeAssets(
   runtimeAssetBaseUrl: string
 ): Promise<void> {
-  const baseUrl = runtimeAssetBaseUrl.replace(/\/+$/u, '');
+  const baseUrl = normalizeTraceJVMRuntimeAssetBaseUrl(runtimeAssetBaseUrl);
   const releaseUrl = `${baseUrl}/release.json`;
   const cached = verifiedReleaseUrls.get(releaseUrl);
   if (cached) return cached;

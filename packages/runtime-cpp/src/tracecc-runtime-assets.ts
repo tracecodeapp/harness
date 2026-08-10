@@ -35,6 +35,27 @@ function stripTrailingSlash(value: string): string {
   return value.replace(/\/+$/, '');
 }
 
+function normalizeAssetBaseUrl(value: string): string {
+  const normalized = stripTrailingSlash(value.trim());
+  if (!normalized) {
+    throw new TypeError('TraceCC requires a non-empty asset base URL.');
+  }
+  if (/[?#]/u.test(normalized)) {
+    throw new TypeError(
+      'TraceCC asset base URL must be a directory without a query or fragment.'
+    );
+  }
+  return normalized;
+}
+
+function normalizeWorkerUrl(value: string): string {
+  const normalized = value.trim();
+  if (!normalized) {
+    throw new TypeError('TraceCC worker URL must not be empty.');
+  }
+  return normalized;
+}
+
 function descriptor(
   asset: TraceCCAssetIdentity
 ): BrowserRuntimeAssetDescriptor {
@@ -58,12 +79,13 @@ function descriptor(
  * and runtime objects that must match the generated drivers in this package.
  */
 export function createTraceCCRuntimeManifest(
-  assetBaseUrl: string
+  assetBaseUrl: string,
+  options: { readonly workerUrl?: string } = {}
 ): BrowserRuntimeAssetManifest<'cpp'> {
-  const normalizedAssetBaseUrl = stripTrailingSlash(assetBaseUrl.trim());
-  if (!normalizedAssetBaseUrl) {
-    throw new TypeError('TraceCC requires a non-empty asset base URL.');
-  }
+  const normalizedAssetBaseUrl = normalizeAssetBaseUrl(assetBaseUrl);
+  const workerUrl = normalizeWorkerUrl(
+    options.workerUrl ?? '/workers/cpp-worker.js'
+  );
   const compilerWasm = descriptor(
     typedTraceCCRuntimeAssets.compilerWasm
   );
@@ -75,7 +97,7 @@ export function createTraceCCRuntimeManifest(
     assetBaseUrl: `${normalizedAssetBaseUrl}/`,
     workerFormat: 'module',
     assets: {
-      worker: { url: '/workers/cpp-worker.js' },
+      worker: { url: workerUrl },
       runtimeHeader: descriptor(typedTraceCCRuntimeAssets.runtimeHeader),
       compilerWasm,
       linkerWasm: compilerWasm,
@@ -118,19 +140,19 @@ export function createTraceCCRuntimeManifest(
  *
  * The normal deployment serves all browser assets beneath `/workers`; the
  * immutable TraceCC release is then addressed at
- * `/workers/cpp/tracecc/<consumer-hash>/`. Consumers that publish the release
- * elsewhere can pass their own generic root. For callers that need to provide
- * a fully custom manifest, `createTraceCCRuntimeManifest` remains available.
+ * `/workers/cpp/tracecc/<consumer-hash>/`, while the C++ worker is served at
+ * `/workers/cpp-worker.js`. Consumers that publish the release elsewhere can
+ * pass their own generic root; both paths move together. For callers that need
+ * to provide a fully custom manifest, `createTraceCCRuntimeManifest` remains
+ * available with an explicit worker URL override.
  */
 export function resolveBuiltInTraceCCRuntimeManifest(
   assetBaseUrl = '/workers'
 ): BrowserRuntimeAssetManifest<'cpp'> {
-  const normalizedAssetBaseUrl = stripTrailingSlash(assetBaseUrl.trim());
-  if (!normalizedAssetBaseUrl) {
-    throw new TypeError('TraceCC requires a non-empty asset base URL.');
-  }
+  const normalizedAssetBaseUrl = normalizeAssetBaseUrl(assetBaseUrl);
   return createTraceCCRuntimeManifest(
-    `${normalizedAssetBaseUrl}/${TRACECC_RUNTIME_ASSET_RELATIVE_PATH}`
+    `${normalizedAssetBaseUrl}/${TRACECC_RUNTIME_ASSET_RELATIVE_PATH}`,
+    { workerUrl: `${normalizedAssetBaseUrl}/cpp-worker.js` }
   );
 }
 

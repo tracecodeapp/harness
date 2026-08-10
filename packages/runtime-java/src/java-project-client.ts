@@ -13,7 +13,10 @@ import type {
   ManagedJavaProjectClientFactory,
   JavaProjectRunRequest,
 } from './java-project';
-import { resolveBuiltInTraceJVMRuntimeAssetBaseUrl } from './tracejvm-runtime-assets';
+import {
+  normalizeTraceJVMRuntimeAssetBaseUrl,
+  resolveBuiltInTraceJVMRuntimeAssetBaseUrl,
+} from './tracejvm-runtime-assets';
 
 export { resolveBuiltInTraceJVMRuntimeAssetBaseUrl } from './tracejvm-runtime-assets';
 
@@ -35,8 +38,8 @@ export interface JavaProjectClientFactoryOptions {
 }
 
 function normalizeBaseUrl(value: string | undefined): string {
-  const baseUrl = value?.trim() || resolveBuiltInTraceJVMRuntimeAssetBaseUrl();
-  return baseUrl.replace(/\/+$/u, '');
+  const baseUrl = value ?? resolveBuiltInTraceJVMRuntimeAssetBaseUrl();
+  return normalizeTraceJVMRuntimeAssetBaseUrl(baseUrl);
 }
 
 function createWorker(

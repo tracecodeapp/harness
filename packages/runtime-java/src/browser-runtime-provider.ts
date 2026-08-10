@@ -14,6 +14,7 @@ import {
   type JavaWorkerClientOptions,
 } from './java-worker-client';
 import {
+  normalizeTraceJVMRuntimeAssetBaseUrl,
   preflightBuiltInTraceJVMRuntimeAssets,
   resolveBuiltInTraceJVMRuntimeAssetBaseUrl,
 } from './tracejvm-runtime-assets';
@@ -34,14 +35,8 @@ function configureJavaRuntimeAssetBaseUrl(
   runtimeAssetBaseUrl: string | undefined
 ): string {
   if (runtimeAssetBaseUrl === undefined) return workerUrl;
-  if (!runtimeAssetBaseUrl.trim()) {
-    throw new TypeError('Java runtimeAssetBaseUrl must not be empty.');
-  }
-  if (/[?#]/u.test(runtimeAssetBaseUrl)) {
-    throw new TypeError(
-      'Java runtimeAssetBaseUrl must be a directory URL without a query or fragment.'
-    );
-  }
+  const normalizedRuntimeAssetBaseUrl =
+    normalizeTraceJVMRuntimeAssetBaseUrl(runtimeAssetBaseUrl);
 
   const hashIndex = workerUrl.indexOf('#');
   const beforeHash =
@@ -56,7 +51,7 @@ function configureJavaRuntimeAssetBaseUrl(
   const separator = beforeHash.includes('?') ? '&' : '?';
   return (
     `${beforeHash}${separator}tracejvmBaseUrl=` +
-    `${encodeURIComponent(runtimeAssetBaseUrl)}${hash}`
+    `${encodeURIComponent(normalizedRuntimeAssetBaseUrl)}${hash}`
   );
 }
 
