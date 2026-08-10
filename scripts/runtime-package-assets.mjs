@@ -278,9 +278,10 @@ export async function loadEngineRuntimePackages(harnessRoot = resolve(process.cw
 export async function installEngineRuntimePackage(component, targetRoot) {
   const target = join(targetRoot, ...component.targetPath.split('/'));
   await mkdir(dirname(target), { recursive: true });
-  const staging = await mkdtemp(
+  const stagingRoot = await mkdtemp(
     join(dirname(target), `.${component.component}-runtime-staging-`)
   );
+  const staging = join(stagingRoot, 'tree');
   const backup = `${target}.backup-${process.pid}-${Date.now()}`;
   let movedPrevious = false;
   try {
@@ -297,9 +298,10 @@ export async function installEngineRuntimePackage(component, targetRoot) {
       if (error?.code !== 'ENOENT') throw error;
     }
     await rename(staging, target);
+    await rm(stagingRoot, { recursive: true, force: true });
     if (movedPrevious) await rm(backup, { recursive: true, force: true });
   } catch (error) {
-    await rm(staging, { recursive: true, force: true });
+    await rm(stagingRoot, { recursive: true, force: true });
     if (movedPrevious) await rename(backup, target).catch(() => undefined);
     throw error;
   }
