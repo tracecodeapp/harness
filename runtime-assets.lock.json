@@ -2554,7 +2554,7 @@
       }
     },
     "tracejvm": {
-      "releaseId": "tracejvm@0.4.1+sha256.a954d0ad32ff8c62e765847a65081a39a7ad33da0b9617cb8ddbd46082d6247a",
+      "releaseId": "tracejvm@0.4.1+sha256.6df6b3337ff1a042fcc1b1e8b1d738fdaf5cfd50f6a10b9143d923f5c0bafd64",
       "package": {
         "name": "@tracecode/tracejvm",
         "version": "0.4.1",
@@ -2566,21 +2566,21 @@
           "name": "@tracecode/tracejvm",
           "version": "0.4.1"
         },
-        "releaseId": "tracejvm@0.4.1+sha256.a954d0ad32ff8c62e765847a65081a39a7ad33da0b9617cb8ddbd46082d6247a",
-        "contentHash": "a954d0ad32ff8c62e765847a65081a39a7ad33da0b9617cb8ddbd46082d6247a",
-        "relativePrefix": "tracejvm/0.4.1/a954d0ad32ff8c62e765847a65081a39a7ad33da0b9617cb8ddbd46082d6247a",
-        "targetPath": "java/tracejvm/0.4.1/a954d0ad32ff8c62e765847a65081a39a7ad33da0b9617cb8ddbd46082d6247a",
+        "releaseId": "tracejvm@0.4.1+sha256.6df6b3337ff1a042fcc1b1e8b1d738fdaf5cfd50f6a10b9143d923f5c0bafd64",
+        "contentHash": "6df6b3337ff1a042fcc1b1e8b1d738fdaf5cfd50f6a10b9143d923f5c0bafd64",
+        "relativePrefix": "tracejvm/0.4.1/6df6b3337ff1a042fcc1b1e8b1d738fdaf5cfd50f6a10b9143d923f5c0bafd64",
+        "targetPath": "java/tracejvm/0.4.1/6df6b3337ff1a042fcc1b1e8b1d738fdaf5cfd50f6a10b9143d923f5c0bafd64",
         "descriptor": {
-          "path": "0.4.1/a954d0ad32ff8c62e765847a65081a39a7ad33da0b9617cb8ddbd46082d6247a/release.json",
+          "path": "0.4.1/6df6b3337ff1a042fcc1b1e8b1d738fdaf5cfd50f6a10b9143d923f5c0bafd64/release.json",
           "size": 121712,
-          "sha256": "f71e2fe6d6f01e4a0c1be8b087fb9f58dd42d0f290a4d1073afb80cdbe5b9816"
+          "sha256": "a8da4488c6c70ed49290edbd226c01dcc23dd3d30307e7f9a443ba0b0505dd77"
         },
         "files": [
           {
             "path": "bjvm_main.wasm",
-            "size": 803951,
-            "sha256": "9940d0e7b934c99cef419111f4f9033258466b3897e0d2826bcc98e6e56ea242",
-            "integrity": "sha256-mUDQ57k0yZzvQZER9PkDMlhGaziX4NKCa8yY5uVuokI=",
+            "size": 804771,
+            "sha256": "630cabdf3cd2a0a5faa5aba7a9f549046401c34477b66fa8ca76fd2b07504cae",
+            "integrity": "sha256-Ywyr3zzSoKX6paunqfVJBGQBw0R3tm+oynb9KwdQTK4=",
             "contentType": "application/wasm",
             "cacheControl": "public, max-age=31536000, immutable"
           },
@@ -2650,9 +2650,9 @@
           },
           {
             "path": "profiles/core/jdk23.jar",
-            "size": 12821814,
-            "sha256": "0bf6850b6b0c3693303a33ba03e50f10064e26b499bb65a741f82c5218d8c82f",
-            "integrity": "sha256-C/aFC2sMNpMwOjO6A+UPEAZOJrSZu2WnQfgsUhjYyC8=",
+            "size": 12818890,
+            "sha256": "5b6f739ef81202f463278a1d1cab3f65178b1201ad5a1e144f9ae8ce46df9134",
+            "integrity": "sha256-W29znvgSAvRjJ4odHKs/ZReLEgGtWh4UT5rozkbfkTQ=",
             "contentType": "application/java-archive",
             "cacheControl": "public, max-age=31536000, immutable"
           },
@@ -2762,9 +2762,9 @@
           },
           {
             "path": "profiles/server/jdk23.jar",
-            "size": 19524298,
-            "sha256": "7894355a7dc12e5b888a53aefd985b4e2ba6c879380206afeeaf4ecb24a1f35c",
-            "integrity": "sha256-eJQ1Wn3BLluIilOu/ZhbTiumyHk4Agav7q9OyySh81w=",
+            "size": 19521374,
+            "sha256": "b13391d0882be64845fb5bd902de2a4164052a6ce26e6f18c4fcb0b5f77c7308",
+            "integrity": "sha256-sTOR0Igr5khF+1vZAt4qQWQFKmzibm8YxPywtfd8cwg=",
             "contentType": "application/java-archive",
             "cacheControl": "public, max-age=31536000, immutable"
           },
@@ -2882,9 +2882,9 @@
           },
           {
             "path": "profiles/spring-server/jdk23.jar",
-            "size": 29082169,
-            "sha256": "267c8968dbe88a7866c88c7ddbf2987da6f67b547e7e28406626edd738876659",
-            "integrity": "sha256-JnyJaNvoinhmyIx92/KYfab2e1R+fihAZibt1ziHZlk=",
+            "size": 29079245,
+            "sha256": "6638788619664bdf4ba025060f885208fdd05e67cef3188f42f72744c3d4e548",
+            "integrity": "sha256-Zjh4hhlmS99LoCUGD4hSCP3QXmfO8xiPQvcnRMPU5Ug=",
             "contentType": "application/java-archive",
             "cacheControl": "public, max-age=31536000, immutable"
           },
@@ -3003,15 +3003,15 @@
           {
             "path": "release.json",
             "size": 121712,
-            "sha256": "f71e2fe6d6f01e4a0c1be8b087fb9f58dd42d0f290a4d1073afb80cdbe5b9816",
-            "integrity": "sha256-9x4v5tbwHkoMG+iwh/ufWN1C0PKQpNEHOvuAzb5bmBY=",
+            "sha256": "a8da4488c6c70ed49290edbd226c01dcc23dd3d30307e7f9a443ba0b0505dd77",
+            "integrity": "sha256-qNpEiMbHDtSSkO29ImwB3MI909MDB+f5pEO6CwUF3Xc=",
             "contentType": "application/json; charset=utf-8"
           }
         ]
       },
-      "contentHash": "a954d0ad32ff8c62e765847a65081a39a7ad33da0b9617cb8ddbd46082d6247a",
-      "relativePrefix": "tracejvm/0.4.1/a954d0ad32ff8c62e765847a65081a39a7ad33da0b9617cb8ddbd46082d6247a",
-      "descriptorSha256": "f71e2fe6d6f01e4a0c1be8b087fb9f58dd42d0f290a4d1073afb80cdbe5b9816",
+      "contentHash": "6df6b3337ff1a042fcc1b1e8b1d738fdaf5cfd50f6a10b9143d923f5c0bafd64",
+      "relativePrefix": "tracejvm/0.4.1/6df6b3337ff1a042fcc1b1e8b1d738fdaf5cfd50f6a10b9143d923f5c0bafd64",
+      "descriptorSha256": "a8da4488c6c70ed49290edbd226c01dcc23dd3d30307e7f9a443ba0b0505dd77",
       "descriptorSize": 121712,
       "descriptor": {
         "schema": "tracejvm-runtime-release-v2",
@@ -3073,8 +3073,8 @@
             ]
           }
         },
-        "contentHash": "a954d0ad32ff8c62e765847a65081a39a7ad33da0b9617cb8ddbd46082d6247a",
-        "relativePrefix": "tracejvm/0.4.1/a954d0ad32ff8c62e765847a65081a39a7ad33da0b9617cb8ddbd46082d6247a",
+        "contentHash": "6df6b3337ff1a042fcc1b1e8b1d738fdaf5cfd50f6a10b9143d923f5c0bafd64",
+        "relativePrefix": "tracejvm/0.4.1/6df6b3337ff1a042fcc1b1e8b1d738fdaf5cfd50f6a10b9143d923f5c0bafd64",
         "responsePolicy": {
           "accessControlAllowOrigin": "*",
           "crossOriginResourcePolicy": "cross-origin",
@@ -3098,9 +3098,9 @@
         "files": [
           {
             "path": "bjvm_main.wasm",
-            "size": 803951,
-            "sha256": "9940d0e7b934c99cef419111f4f9033258466b3897e0d2826bcc98e6e56ea242",
-            "integrity": "sha256-mUDQ57k0yZzvQZER9PkDMlhGaziX4NKCa8yY5uVuokI=",
+            "size": 804771,
+            "sha256": "630cabdf3cd2a0a5faa5aba7a9f549046401c34477b66fa8ca76fd2b07504cae",
+            "integrity": "sha256-Ywyr3zzSoKX6paunqfVJBGQBw0R3tm+oynb9KwdQTK4=",
             "contentType": "application/wasm",
             "cacheControl": "public, max-age=31536000, immutable"
           },
@@ -5202,9 +5202,9 @@
           },
           {
             "path": "profiles/core/jdk23.jar",
-            "size": 12821814,
-            "sha256": "0bf6850b6b0c3693303a33ba03e50f10064e26b499bb65a741f82c5218d8c82f",
-            "integrity": "sha256-C/aFC2sMNpMwOjO6A+UPEAZOJrSZu2WnQfgsUhjYyC8=",
+            "size": 12818890,
+            "sha256": "5b6f739ef81202f463278a1d1cab3f65178b1201ad5a1e144f9ae8ce46df9134",
+            "integrity": "sha256-W29znvgSAvRjJ4odHKs/ZReLEgGtWh4UT5rozkbfkTQ=",
             "contentType": "application/java-archive",
             "cacheControl": "public, max-age=31536000, immutable"
           },
@@ -5314,9 +5314,9 @@
           },
           {
             "path": "profiles/server/jdk23.jar",
-            "size": 19524298,
-            "sha256": "7894355a7dc12e5b888a53aefd985b4e2ba6c879380206afeeaf4ecb24a1f35c",
-            "integrity": "sha256-eJQ1Wn3BLluIilOu/ZhbTiumyHk4Agav7q9OyySh81w=",
+            "size": 19521374,
+            "sha256": "b13391d0882be64845fb5bd902de2a4164052a6ce26e6f18c4fcb0b5f77c7308",
+            "integrity": "sha256-sTOR0Igr5khF+1vZAt4qQWQFKmzibm8YxPywtfd8cwg=",
             "contentType": "application/java-archive",
             "cacheControl": "public, max-age=31536000, immutable"
           },
@@ -5434,9 +5434,9 @@
           },
           {
             "path": "profiles/spring-server/jdk23.jar",
-            "size": 29082169,
-            "sha256": "267c8968dbe88a7866c88c7ddbf2987da6f67b547e7e28406626edd738876659",
-            "integrity": "sha256-JnyJaNvoinhmyIx92/KYfab2e1R+fihAZibt1ziHZlk=",
+            "size": 29079245,
+            "sha256": "6638788619664bdf4ba025060f885208fdd05e67cef3188f42f72744c3d4e548",
+            "integrity": "sha256-Zjh4hhlmS99LoCUGD4hSCP3QXmfO8xiPQvcnRMPU5Ug=",
             "contentType": "application/java-archive",
             "cacheControl": "public, max-age=31536000, immutable"
           },
@@ -5626,9 +5626,9 @@
           },
           {
             "path": "source/tracejvm/runtime/bridge/jdk/internal/tracecode/TraceJVMRunner.java",
-            "size": 6592,
-            "sha256": "8a09e28d1f3a7514cd81f4e3ac3d3b6fba25ec21648fbea13482018c8e0ef442",
-            "integrity": "sha256-ignijR86dRTNgfTjrD07b7ol7CFkj76hNIIBjI4O9EI=",
+            "size": 2621,
+            "sha256": "ebdeed584fed2ff7bad589a6a556a40eb28c1b2ec42e2a2c75882f9434be8d64",
+            "integrity": "sha256-697tWE/tL/e61YmmpVakDrKMGy7ELiosdYgvlDS+jWQ=",
             "contentType": "application/octet-stream",
             "cacheControl": "public, max-age=31536000, immutable"
           },
@@ -5666,7 +5666,7 @@
           }
         ]
       },
-      "totalBytes": 127497068
+      "totalBytes": 127489116
     }
   }
 }
