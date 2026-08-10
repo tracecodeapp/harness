@@ -48,10 +48,26 @@ export function resolveBuiltInPythonRuntimeAssets(
   engine: BrowserRuntimeEngine
 ) {
   assertImageEngine(engine);
-  const runtimeBase = siblingAssetUrl(
-    assets.pythonWorker,
-    `${PYTHON_RUNTIME_DIRECTORY}/`
-  );
+  const runtimeDirectoryName = PYTHON_RUNTIME_DIRECTORY.split('/').at(-1);
+  if (!runtimeDirectoryName) {
+    throw new Error('TraceCode Python runtime directory is invalid.');
+  }
+  let runtimeBase: string;
+  try {
+    runtimeBase = siblingAssetUrl(
+      assets.pythonRuntimeCore,
+      `${runtimeDirectoryName}/`
+    );
+  } catch (error) {
+    if (!(error instanceof TypeError)) throw error;
+    // data: and blob: runtime-core overrides are valid self-contained assets,
+    // but they cannot be used as hierarchical URL bases. Preserve the legacy
+    // worker-relative image layout for those explicit override forms.
+    runtimeBase = siblingAssetUrl(
+      assets.pythonWorker,
+      `${PYTHON_RUNTIME_DIRECTORY}/`
+    );
+  }
   const snapshot = PYTHON_RUNTIME_SNAPSHOTS[engine];
   return Object.freeze({
     loaderUrl: `${runtimeBase}pyodide.js`,
