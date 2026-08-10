@@ -83,6 +83,7 @@ async function main(t: TestContext): Promise<void> {
     'shared/tracekernel-syscall-client.js',
     'shared/tracekernel-local-java-host.js',
     'cpp-worker.js',
+    'project-cpp-worker.js',
     'shared/runtime-kernel-policy.js',
     'cpp/tracecode_runtime.hpp',
     `cpp/tracecc/${TRACECC_RUNTIME_CONTENT_HASH}/cpp-runtime-manifest.json`,
@@ -224,6 +225,15 @@ async function main(t: TestContext): Promise<void> {
   assertCondition(rootEntries.includes('csharp-worker.js'), 'Asset sync should flatten the C# worker into the target root');
   assertCondition(rootEntries.includes('cpp-worker.js'), 'Asset sync should flatten the C++ worker into the target root');
   assertCondition(
+    rootEntries.includes('project-cpp-worker.js'),
+    'Asset sync should publish the isolated C++ Project worker alias'
+  );
+  assertCondition(
+    await readFile(join(targetDir, 'project-cpp-worker.js'), 'utf8') ===
+      await readFile(join(targetDir, 'cpp-worker.js'), 'utf8'),
+    'The isolated C++ Project worker alias must use the pinned C++ worker bytes'
+  );
+  assertCondition(
     !rootEntries.includes('cpp-compiler-frame.html') &&
       !rootEntries.includes('cpp-compiler-worker.js'),
     'Asset sync must not republish retired pre-TraceCC compiler workers'
@@ -269,7 +279,7 @@ async function main(t: TestContext): Promise<void> {
     !sourceControlArtifactsExist,
     'Asset sync must not publish build-time C# role archives to browsers'
   );
-  for (const relativePath of ['cpp-worker.js']) {
+  for (const relativePath of ['cpp-worker.js', 'project-cpp-worker.js']) {
     const source = await readFile(join(targetDir, relativePath), 'utf8');
     assertCondition(
       source.includes('toolchainIntegrity'),
@@ -285,6 +295,7 @@ async function main(t: TestContext): Promise<void> {
     'python-worker.js',
     'csharp-worker.js',
     'cpp-worker.js',
+    'project-cpp-worker.js',
   ]) {
     const source = await readFile(join(targetDir, relativePath), 'utf8');
     assertCondition(

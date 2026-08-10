@@ -29,6 +29,7 @@ export {
 } from './browser-runtime-provider';
 export {
   createTraceCCRuntimeManifest,
+  resolveBuiltInTraceCCProjectRuntimeManifest,
   resolveBuiltInTraceCCRuntimeManifest,
   TRACECC_RUNTIME_ASSET_RELATIVE_PATH,
   TRACECC_RUNTIME_CONTENT_HASH,
