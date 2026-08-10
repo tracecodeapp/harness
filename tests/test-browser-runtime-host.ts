@@ -18,6 +18,7 @@ import {
 import {
   getBrowserRuntimeHostPreparedProvider,
 } from '../packages/runtime-browser/src/browser-runtime-host-internal';
+import { withPreparedProgramReuse } from '../packages/runtime-browser/src/prepared-program-reuse';
 import {
   createBrowserRuntimeHost as createDefaultBrowserRuntimeHost,
 } from '../src/browser';
@@ -430,3 +431,137 @@ async function main(): Promise<void> {
 }
 
 test('browser runtime host', main);
+
+test('prepared program reuse shares concurrency across caller facades', async () => {
+  let active = 0;
+  let maximumActive = 0;
+  let starts = 0;
+  let releaseFirst!: () => void;
+  const firstExecution = new Promise<void>((resolve) => {
+    releaseFirst = resolve;
+  });
+  let disposals = 0;
+  const provider: RuntimePreparedExecutionProvider = {
+    async init() {
+      return { success: true, loadTimeMs: 0 };
+    },
+    async prepareProgram() {
+      return {
+        kind: 'prepared',
+        consoleOutput: [],
+        program: {
+          mode: 'code',
+          capabilities: {
+            caseIsolation: 'fresh-case-state',
+            maxConcurrency: 1,
+          },
+          async executeIsolated({ inputs }) {
+            starts += 1;
+            active += 1;
+            maximumActive = Math.max(maximumActive, active);
+            if (starts === 1) await firstExecution;
+            active -= 1;
+            return { kind: 'completed', output: inputs, consoleOutput: [] };
+          },
+          async dispose() {
+            disposals += 1;
+          },
+        },
+      };
+    },
+  };
+  const reusable = withPreparedProgramReuse(provider, { idleTtlMs: 10_000 });
+  const call = {
+    mode: 'code' as const,
+    code: 'return input',
+    functionName: 'solve',
+  };
+  const [left, right] = await Promise.all([
+    reusable.prepareProgram(call),
+    reusable.prepareProgram(call),
+  ]);
+  assertCondition(left.kind === 'prepared' && right.kind === 'prepared', 'shared preparation must succeed');
+  assertCondition(left.program.mode === 'code' && right.program.mode === 'code', 'shared preparation must retain code mode');
+  const leftExecution = left.program.executeIsolated({ inputs: { side: 'left' } });
+  await Promise.resolve();
+  const rightExecution = right.program.executeIsolated({ inputs: { side: 'right' } });
+  await Promise.resolve();
+  assertCondition(starts === 1, 'the second facade must wait on the shared execution gate');
+  releaseFirst();
+  await Promise.all([leftExecution, rightExecution]);
+  assertCondition(maximumActive === 1, 'reused facades must honor one shared maxConcurrency bound');
+  await left.program.dispose();
+  await right.program.dispose();
+  reusable.flushPreparedProgramCache();
+  await Promise.resolve();
+  assertCondition(disposals === 1, 'the shared program must be disposed exactly once');
+});
+
+test('prepared program reuse isolates caller cancellation and flushes pending work', async () => {
+  let resolvePreparation!: (
+    value: Awaited<ReturnType<RuntimePreparedExecutionProvider['prepareProgram']>>
+  ) => void;
+  let disposals = 0;
+  let preparations = 0;
+  const deferredPreparation = new Promise<
+    Awaited<ReturnType<RuntimePreparedExecutionProvider['prepareProgram']>>
+  >((resolve) => {
+    resolvePreparation = resolve;
+  });
+  const provider: RuntimePreparedExecutionProvider = {
+    async init() {
+      return { success: true, loadTimeMs: 0 };
+    },
+    async prepareProgram() {
+      preparations += 1;
+      return deferredPreparation;
+    },
+  };
+  const reusable = withPreparedProgramReuse(provider);
+  const call = {
+    mode: 'code' as const,
+    code: 'return input',
+    functionName: 'solve',
+  };
+  const owner = reusable.prepareProgram(call);
+  const controller = new AbortController();
+  const waiter = reusable.prepareProgram({ ...call, signal: controller.signal });
+  controller.abort(new Error('waiter cancelled'));
+  await assertRejects(waiter, /waiter cancelled/u);
+  assertCondition(preparations === 1, 'a cancelled waiter must not cancel or duplicate shared preparation');
+
+  reusable.flushPreparedProgramCache();
+  resolvePreparation({
+    kind: 'prepared',
+    consoleOutput: [],
+    program: {
+      mode: 'code',
+      capabilities: {
+        caseIsolation: 'fresh-case-state',
+        maxConcurrency: 1,
+      },
+      async executeIsolated({ inputs }) {
+        return { kind: 'completed', output: inputs, consoleOutput: [] };
+      },
+      async dispose() {
+        disposals += 1;
+      },
+    },
+  });
+  await assertRejects(owner, /flushed while preparation was in flight/u);
+  assertCondition(disposals === 1, 'a late preparation result must be disposed after flush');
+});
+
+async function assertRejects(
+  promise: Promise<unknown>,
+  expected: RegExp
+): Promise<void> {
+  try {
+    await promise;
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    assertCondition(expected.test(message), `Expected ${expected}, received ${message}`);
+    return;
+  }
+  throw new Error(`Expected rejection matching ${expected}.`);
+}

@@ -4,6 +4,10 @@ import type {
   RuntimeProgramPreparationCall,
   RuntimeProgramPreparationResult,
 } from '@tracecode/runtime-contracts';
+import {
+  preparedRuntimeAbortError,
+  RuntimeProgramConcurrencyGate,
+} from './program-concurrency-gate';
 
 /**
  * Content-keyed reuse for prepared programs.
@@ -37,12 +41,42 @@ interface CacheEntry {
   readonly key: string;
   readonly program: RuntimePreparedProgram;
   readonly result: RuntimeProgramPreparationResult & { kind: 'prepared' };
+  readonly gate: RuntimeProgramConcurrencyGate;
   references: number;
   poisoned: boolean;
   /** True once the entry left the cache map; dispose when references hit 0. */
   evicted: boolean;
   idleTimer: ReturnType<typeof setTimeout> | undefined;
   lastUsedAt: number;
+}
+
+interface PendingPreparation {
+  readonly promise: Promise<RuntimeProgramPreparationResult>;
+  readonly controller: AbortController;
+}
+
+function waitForCaller<Result>(
+  promise: Promise<Result>,
+  signal: AbortSignal | undefined
+): Promise<Result> {
+  if (!signal) return promise;
+  if (signal.aborted) {
+    return Promise.reject(preparedRuntimeAbortError(signal));
+  }
+  return new Promise<Result>((resolve, reject) => {
+    const onAbort = () => reject(preparedRuntimeAbortError(signal));
+    signal.addEventListener('abort', onAbort, { once: true });
+    void promise.then(
+      (value) => {
+        signal.removeEventListener('abort', onAbort);
+        resolve(value);
+      },
+      (error: unknown) => {
+        signal.removeEventListener('abort', onAbort);
+        reject(error);
+      }
+    );
+  });
 }
 
 function stableStringify(value: unknown): string {
@@ -82,7 +116,8 @@ export function withPreparedProgramReuse(
   const maxEntries = options.maxEntries ?? 2;
   const idleTtlMs = options.idleTtlMs ?? 30_000;
   const entries = new Map<string, CacheEntry>();
-  const pending = new Map<string, Promise<RuntimeProgramPreparationResult>>();
+  const pending = new Map<string, PendingPreparation>();
+  let generation = 0;
 
   function disposeUnderlying(entry: CacheEntry): void {
     void entry.program.dispose().catch(() => {
@@ -155,11 +190,17 @@ export function withPreparedProgramReuse(
       mode: program.mode,
       capabilities: program.capabilities,
       executeIsolated: (call: never) =>
-        guard(() => program.executeIsolated(call)),
+        entry.gate.run(
+          (call as { signal?: AbortSignal }).signal,
+          () => guard(() => program.executeIsolated(call))
+        ),
       ...(program.executeBatchIsolated
         ? {
             executeBatchIsolated: (call: never) =>
-              guard(() => program.executeBatchIsolated!(call)),
+              entry.gate.run(
+                (call as { signal?: AbortSignal }).signal,
+                () => guard(() => program.executeBatchIsolated!(call))
+              ),
           }
         : {}),
       dispose: async (): Promise<void> => {
@@ -174,6 +215,9 @@ export function withPreparedProgramReuse(
     async prepareProgram(
       call: RuntimeProgramPreparationCall
     ): Promise<RuntimeProgramPreparationResult> {
+      if (call.signal?.aborted) {
+        throw preparedRuntimeAbortError(call.signal);
+      }
       const key = preparationKey(call);
       const cached = entries.get(key);
       if (cached && !cached.poisoned) {
@@ -181,20 +225,36 @@ export function withPreparedProgramReuse(
       }
       const inFlight = pending.get(key);
       if (inFlight) {
-        const settled = await inFlight;
+        const settled = await waitForCaller(inFlight.promise, call.signal);
         const entry = entries.get(key);
         if (settled.kind === 'prepared' && entry && !entry.poisoned) {
           return { ...entry.result, program: facadeFor(entry) };
         }
-        // The concurrent preparation failed or was evicted; prepare afresh.
+        if (settled.kind !== 'prepared') return settled;
+        // Cap pressure evicted the concurrent result before this waiter could
+        // claim it. Prepare a new artifact rather than returning disposed state.
       }
+      const preparationGeneration = generation;
+      const controller = new AbortController();
       const preparation = (async () => {
-        const result = await delegate.prepareProgram(call);
+        const result = await delegate.prepareProgram({
+          ...call,
+          signal: controller.signal,
+        });
         if (result.kind !== 'prepared') return result;
+        if (generation !== preparationGeneration) {
+          await result.program.dispose();
+          throw new Error(
+            'Prepared program cache was flushed while preparation was in flight.'
+          );
+        }
         const entry: CacheEntry = {
           key,
           program: result.program,
           result,
+          gate: new RuntimeProgramConcurrencyGate(
+            result.program.capabilities.maxConcurrency
+          ),
           references: 0,
           poisoned: false,
           evicted: false,
@@ -202,25 +262,39 @@ export function withPreparedProgramReuse(
           lastUsedAt: Date.now(),
         };
         entries.set(key, entry);
+        scheduleIdleDisposal(entry);
         evictLeastRecentlyUsedBeyondCap();
         return result;
       })();
-      pending.set(key, preparation);
-      try {
-        const result = await preparation;
-        if (result.kind !== 'prepared') return result;
-        const entry = entries.get(key);
-        if (!entry || entry.poisoned) {
-          // Evicted before first use (cap pressure); hand the caller the
-          // underlying program directly with single-owner semantics.
-          return result;
+      const pendingPreparation = { promise: preparation, controller };
+      pending.set(key, pendingPreparation);
+      void preparation.then(
+        () => {
+          if (pending.get(key) === pendingPreparation) pending.delete(key);
+        },
+        () => {
+          if (pending.get(key) === pendingPreparation) pending.delete(key);
         }
-        return { ...entry.result, program: facadeFor(entry) };
-      } finally {
-        if (pending.get(key) === preparation) pending.delete(key);
+      );
+      const result = await waitForCaller(preparation, call.signal);
+      if (result.kind !== 'prepared') return result;
+      const entry = entries.get(key);
+      if (!entry || entry.poisoned) {
+        throw new Error(
+          'Prepared program left the reuse cache before its first execution.'
+        );
       }
+      return { ...entry.result, program: facadeFor(entry) };
     },
     flushPreparedProgramCache(): void {
+      generation += 1;
+      const reason = new Error(
+        'Prepared program cache was flushed while preparation was in flight.'
+      );
+      for (const preparation of pending.values()) {
+        preparation.controller.abort(reason);
+      }
+      pending.clear();
       for (const entry of [...entries.values()]) evict(entry);
     },
   };
