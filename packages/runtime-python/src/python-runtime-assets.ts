@@ -48,9 +48,13 @@ export function resolveBuiltInPythonRuntimeAssets(
   engine: BrowserRuntimeEngine
 ) {
   assertImageEngine(engine);
+  const runtimeDirectoryName = PYTHON_RUNTIME_DIRECTORY.split('/').at(-1);
+  if (!runtimeDirectoryName) {
+    throw new Error('TraceCode Python runtime directory is invalid.');
+  }
   const runtimeBase = siblingAssetUrl(
-    assets.pythonWorker,
-    `${PYTHON_RUNTIME_DIRECTORY}/`
+    assets.pythonRuntimeCore,
+    `${runtimeDirectoryName}/`
   );
   const snapshot = PYTHON_RUNTIME_SNAPSHOTS[engine];
   return Object.freeze({

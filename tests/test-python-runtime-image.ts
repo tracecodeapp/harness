@@ -222,6 +222,7 @@ for (const engine of engines) {
   const builtIn = resolveBuiltInPythonRuntimeAssets(
     {
       pythonWorker: '/workers/python-worker.js',
+      pythonRuntimeCore: '/workers/python/runtime-core.js',
     } as never,
     engine
   );
@@ -246,8 +247,27 @@ for (const engine of engines) {
   );
 }
 
+const splitOrigin = resolveBuiltInPythonRuntimeAssets(
+  {
+    pythonWorker: '/workers/python-worker.js',
+    pythonRuntimeCore:
+      'https://runtime-assets.example/harness/release/python/runtime-core.js',
+  } as never,
+  'chromium'
+);
+assertCondition(
+  splitOrigin.loaderUrl ===
+    'https://runtime-assets.example/harness/release/python/pyodide-0.29.3/pyodide.js' &&
+    splitOrigin.image.snapshot.url ===
+      'https://runtime-assets.example/harness/release/python/pyodide-0.29.3/snapshots/chromium.bin',
+  'Built-in Python payloads must follow the configured runtime asset root, not the same-origin Worker URL.'
+);
+
 const builtIn = resolveBuiltInPythonRuntimeAssets(
-  { pythonWorker: '/workers/python-worker.js' } as never,
+  {
+    pythonWorker: '/workers/python-worker.js',
+    pythonRuntimeCore: '/workers/python/runtime-core.js',
+  } as never,
   'chromium'
 );
 const shippedWasm = await readFile(
@@ -263,7 +283,10 @@ assertCondition(
 let unknownEngineError = '';
 try {
   resolveBuiltInPythonRuntimeAssets(
-    { pythonWorker: '/workers/python-worker.js' } as never,
+    {
+      pythonWorker: '/workers/python-worker.js',
+      pythonRuntimeCore: '/workers/python/runtime-core.js',
+    } as never,
     'unknown'
   );
 } catch (error) {

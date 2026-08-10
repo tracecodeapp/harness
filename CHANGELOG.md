@@ -6,6 +6,15 @@ This repo uses Git tags as release boundaries. Version notes below summarize wha
 
 ## [Unreleased]
 
+## [0.16.1] - 2026-08-10
+
+### Fixed
+
+- Made the built-in Python image follow the configured runtime asset root
+  independently of the same-origin Python Worker URL. Consumers can now keep
+  Worker construction under `/workers` while serving Pyodide and its
+  engine-specific snapshot from an immutable CDN release.
+
 ## [0.16.0] - 2026-08-04
 
 This release replaces the browser Python Judge implementation with an

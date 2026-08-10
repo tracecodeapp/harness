@@ -8,7 +8,7 @@ const root = process.cwd();
 const lock = JSON.parse(readFileSync(resolve(root, 'runtime-assets.lock.json'), 'utf8'));
 
 assert.equal(lock.schema, 'tracecode.runtime-assets-lock.v1');
-assert.match(lock.harness.releaseId, /^@tracecode\/harness@0\.16\.0\+sha256\.[0-9a-f]{64}$/u);
+assert.match(lock.harness.releaseId, /^@tracecode\/harness@0\.16\.1\+sha256\.[0-9a-f]{64}$/u);
 assert.match(lock.engineDependencies.tracecc.consumerHash, /^[0-9a-f]{64}$/u);
 assert.equal('manifest' in lock.engineDependencies.tracecc, false);
 assert.equal('packageManifest' in lock.engineDependencies.tracecc, false);
