@@ -496,8 +496,9 @@ globalThis.runJavaPreparedProviderBrowserTest =
           : 'Java budget fallback preparation did not return a trace program.'
       );
     }
+    const fallbackProgram = fallbackPreparation.program;
     const fallbackResult = await executePreparedCase(() =>
-      fallbackPreparation.program.executeIsolated({
+      fallbackProgram.executeIsolated({
         inputs: { values: [1, 2, 3] },
       })
     );
@@ -510,7 +511,7 @@ globalThis.runJavaPreparedProviderBrowserTest =
         `Java budget fallback must rerun in fresh state: ${JSON.stringify(fallbackResult)}`
       );
     }
-    await fallbackPreparation.program.dispose();
+    await fallbackProgram.dispose();
 
     // Exercise the on-demand product shape directly: one trace preparation,
     // one compiled artifact, one runner, and per-case entry-point selection.

@@ -571,6 +571,7 @@ test('prepared program reuse aborts preparation after its final claimant cancels
     },
   };
   const reusable = withPreparedProgramReuse(provider);
+  const isDelegateAborted = () => delegateSignal?.aborted === true;
   const call = {
     mode: 'code' as const,
     code: 'return input',
@@ -589,13 +590,13 @@ test('prepared program reuse aborts preparation after its final claimant cancels
   waiterController.abort(new Error('waiter cancelled'));
   await assertRejects(waiter, /waiter cancelled/u);
   assertCondition(
-    delegateSignal?.aborted === false,
+    !isDelegateAborted(),
     'one cancelled waiter must not abort preparation while an owner remains'
   );
   ownerController.abort(new Error('owner cancelled'));
   await assertRejects(owner, /owner cancelled/u);
   assertCondition(
-    delegateSignal?.aborted === true,
+    isDelegateAborted(),
     'the final cancelled claimant must abort the unowned preparation'
   );
 });
@@ -655,6 +656,7 @@ test('prepared program reuse lets concurrent preparations claim entries before c
 
 test('prepared program reuse disposes an evicted entry after its final facade releases', async () => {
   let disposals = 0;
+  const disposalCount = () => disposals;
   const provider: RuntimePreparedExecutionProvider = {
     async init() {
       return { success: true, loadTimeMs: 0 };
@@ -691,13 +693,13 @@ test('prepared program reuse disposes an evicted entry after its final facade re
     prepared.program.executeIsolated({ inputs: {} }),
     /execution failed/u
   );
-  assertCondition(disposals === 0, 'an evicted referenced program must remain alive');
+  assertCondition(disposalCount() === 0, 'an evicted referenced program must remain alive');
   await prepared.program.dispose();
   await Promise.resolve();
-  assertCondition(disposals === 1, 'the final facade must dispose its evicted program');
+  assertCondition(disposalCount() === 1, 'the final facade must dispose its evicted program');
   reusable.flushPreparedProgramCache();
   await Promise.resolve();
-  assertCondition(disposals === 1, 'cache flush must not dispose the program twice');
+  assertCondition(disposalCount() === 1, 'cache flush must not dispose the program twice');
 });
 
 async function assertRejects(
