@@ -4128,6 +4128,8 @@ def _tracer(frame, event, arg,
     # them every 1024 events keeps perf_counter() off the per-event path; the
     # ceiling is 50x the normal budget, so the coarse granularity is harmless.
     if _trace_limit_exceeded:
+        if event != 'line':
+            return _tracer
         _total_line_events += 1
         if (_total_line_events & 1023) == 0:
             if _hard_line_deadline == 0.0:

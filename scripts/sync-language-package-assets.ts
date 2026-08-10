@@ -108,6 +108,10 @@ const PACKAGE_ASSET_PLANS: PackageAssetPlan[] = [
         target: ['workers', 'python', 'pyodide-0.29.3'],
       },
       {
+        source: ['workers', 'python', 'tracecode_native-0.1.0-cp313-cp313-pyemscripten_2025_0_wasm32.whl'],
+        target: ['workers', 'tracecode_native-0.1.0-cp313-cp313-pyemscripten_2025_0_wasm32.whl'],
+      },
+      {
         source: ['workers', 'shared', 'runtime-kernel-policy-classic.js'],
         target: ['workers', 'shared', 'runtime-kernel-policy-classic.js'],
       },

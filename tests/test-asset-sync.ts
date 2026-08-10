@@ -62,6 +62,7 @@ async function main(t: TestContext): Promise<void> {
   const requiredFiles = [
     'THIRD_PARTY_NOTICES.md',
     'python-worker.js',
+    'tracecode_native-0.1.0-cp313-cp313-pyemscripten_2025_0_wasm32.whl',
     'generated-python-harness-snippets.js',
     'python/runtime-core.js',
     'python/pyodide-0.29.3/LICENSE.pyodide.txt',

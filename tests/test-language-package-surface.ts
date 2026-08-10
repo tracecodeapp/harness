@@ -108,6 +108,7 @@ const PACKAGE_CHECKS: PackageCheck[] = [
       'dist/project-browser.cjs',
       'dist/project-browser.d.ts',
       'workers/python-worker.js',
+      'workers/tracecode_native-0.1.0-cp313-cp313-pyemscripten_2025_0_wasm32.whl',
       'workers/generated-python-harness-snippets.js',
       'workers/python/runtime-core.js',
       'workers/shared/runtime-kernel-policy-classic.js',
