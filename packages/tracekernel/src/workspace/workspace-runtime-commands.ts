@@ -44,6 +44,7 @@ export interface WorkspaceRuntimeProcessBinding {
   readonly signal?: AbortSignal;
   readonly kernelSignals?: RuntimeKernelSignalBridge;
   readonly process?: WorkspaceRuntimeProcessRequest;
+  readonly replayStartupInput?: () => Promise<void>;
 }
 
 export interface WorkspaceRuntimeRunnerBridgeOptions {
@@ -52,7 +53,8 @@ export interface WorkspaceRuntimeRunnerBridgeOptions {
   ) => RuntimeCommandExecutionContext | undefined;
   readonly bindProcess: (
     context: RuntimeCommandExecutionContext,
-    descriptorStdio: boolean
+    descriptorStdio: boolean,
+    consumesLiveStdin: boolean
   ) => WorkspaceRuntimeProcessBinding;
   readonly startHostStandardInputPump: (
     context: RuntimeCommandExecutionContext
@@ -107,9 +109,15 @@ export function createWorkspaceRuntimeRunnerBridge(
         request.source !== 'compile' && request.source !== 'stdin'
           ? commandContext?.stdinPipe
           : undefined;
+      const consumesLiveStdin =
+        request.source !== 'compile' && request.source !== 'stdin';
       const stdinPipe = request.stdinPipe ?? activeStdinPipe;
       const processBinding = commandContext
-        ? bridge.bindProcess(commandContext, descriptorStdio)
+        ? bridge.bindProcess(
+            commandContext,
+            descriptorStdio,
+            consumesLiveStdin
+          )
         : {};
       const signal = processBinding.signal ?? request.signal;
       const runtimeIo = commandContext?.runtimeIo;
@@ -119,18 +127,22 @@ export function createWorkspaceRuntimeRunnerBridge(
         ? bridge.createKernelSyscallBridge(commandContext)
         : undefined;
 
-      if (descriptorStdio && commandContext) {
+      if (descriptorStdio && commandContext && consumesLiveStdin) {
         bridge.startHostStandardInputPump(commandContext);
       }
 
       try {
-        result = await runner({
-          ...(descriptorStdio ? requestWithoutLegacyStdin : request),
+        const execution = runner({
+          ...(
+            descriptorStdio || !consumesLiveStdin
+              ? requestWithoutLegacyStdin
+              : request
+          ),
           ...(processBinding.process
             ? { process: processBinding.process }
             : {}),
           ...(
-            stdinPipe && !descriptorStdio
+            stdinPipe && !descriptorStdio && consumesLiveStdin
               ? { stdinPipe: { buffer: stdinPipe.buffer } }
               : {}
           ),
@@ -151,6 +163,8 @@ export function createWorkspaceRuntimeRunnerBridge(
             bridge.handleRuntimeCommandEvent(event, commandContext);
           },
         } as Request);
+        await processBinding.replayStartupInput?.();
+        result = await execution;
       } finally {
         acceptingRunnerEvents = false;
         kernelSyscalls?.close();

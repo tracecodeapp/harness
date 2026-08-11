@@ -415,6 +415,7 @@ import { createRuntimeWorkspaceShellCommands } from './workspace-shell-commands'
 const PRINCIPAL_ACTOR: RuntimeWorkspaceActor = runtimeWorkspaceActorPreset('principal');
 const RUNTIME_ACTOR: RuntimeWorkspaceActor = runtimeWorkspaceActorPreset('runtime');
 const SYSTEM_ACTOR: RuntimeWorkspaceActor = runtimeWorkspaceActorPreset('system');
+const TERMINAL_STARTUP_INPUT_MAX_BYTES = 64 * 1024 - 1;
 const TRACEKERNEL_SYSCALL_ERROR_CODES: ReadonlySet<TraceKernelSyscallErrorCode> = new Set([
   'E2BIG',
   'EAGAIN',
@@ -565,7 +566,7 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
   private readonly terminalResourceIds = new Map<string, string>();
   private readonly pendingTerminalStartupInput = new Map<
     string,
-    { eof: boolean }
+    { chunks: string[]; byteLength: number; eof: boolean }
   >();
   private readonly processProjection: WorkspaceProcessProjection;
   // Temporary 0.13 introspection aliases. The process state module remains
@@ -780,22 +781,24 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
     const withEvents = createWorkspaceRuntimeRunnerBridge({
       resolveCommandContext: (context) =>
         this.resolveCommandContext(context),
-      bindProcess: (context, descriptorStdio) => {
+      bindProcess: (context, descriptorStdio, consumesLiveStdin) => {
         const executionHandle = this.processProjection.executionHandle(
           context.process
         );
         if (executionHandle) {
           executionHandle.descriptorStdio = descriptorStdio;
+          executionHandle.consumesLiveStdin = consumesLiveStdin;
         }
-        this.resolvePendingTerminalStartupInput(
-          context.process.pid,
-          descriptorStdio,
-          context.stdinPipe
-        );
         const processSnapshot = this.processProjection.authoritativeSnapshot(
           context.process
         );
         return {
+          replayStartupInput: () => this.resolvePendingTerminalStartupInput(
+            context.process.pid,
+            descriptorStdio,
+            context.stdinPipe,
+            consumesLiveStdin
+          ),
           ...(executionHandle?.abortController?.signal
             ? { signal: executionHandle.abortController.signal }
             : {}),
@@ -3924,7 +3927,8 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
       .some((process) =>
         process.sid === terminal.sessionId &&
         process.pgid === terminal.foregroundProcessGroupId &&
-        this.processState.executionHandles.get(process.pid)?.descriptorStdio === true
+        this.processState.executionHandles.get(process.pid)?.descriptorStdio === true &&
+        this.processState.executionHandles.get(process.pid)?.consumesLiveStdin === true
       ) === true;
     if (hasDescriptorConsumer) return 'kernel';
     const foregroundPid = this.processState.terminalForeground.get(
@@ -3935,9 +3939,9 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
     // command pipe receives a compatibility copy, and the eventual transport
     // binding either replays it to descriptor stdio or discards the duplicate.
     if (foregroundPid === undefined) return 'pending';
-    const descriptorStdio = this.processState.executionHandles.get(
-      foregroundPid
-    )?.descriptorStdio;
+    const executionHandle = this.processState.executionHandles.get(foregroundPid);
+    if (executionHandle?.consumesLiveStdin !== true) return 'pending';
+    const descriptorStdio = executionHandle.descriptorStdio;
     return descriptorStdio === undefined
       ? 'pending'
       : descriptorStdio
@@ -3947,27 +3951,67 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
 
   private queueTerminalStartupInput(
     terminalSessionId: string,
-    input: { eof?: boolean } = {}
-  ): void {
+    input: { data?: string; eof?: boolean } = {}
+  ): boolean {
     const pending = this.pendingTerminalStartupInput.get(terminalSessionId) ?? {
+      chunks: [],
+      byteLength: 0,
       eof: false,
     };
+    if (input.data) {
+      const byteLength = new TextEncoder().encode(input.data).byteLength;
+      if (
+        pending.byteLength + byteLength >
+        TERMINAL_STARTUP_INPUT_MAX_BYTES
+      ) {
+        return false;
+      }
+      pending.chunks.push(input.data);
+      pending.byteLength += byteLength;
+    }
     if (input.eof) pending.eof = true;
     this.pendingTerminalStartupInput.set(terminalSessionId, pending);
+    return true;
   }
 
-  private resolvePendingTerminalStartupInput(
+  private async resolvePendingTerminalStartupInput(
     foregroundPid: number,
     descriptorStdio: boolean,
-    stdinPipe: RuntimeCommandOptions['stdinPipe']
-  ): void {
+    stdinPipe: RuntimeCommandOptions['stdinPipe'],
+    consumesLiveStdin = true
+  ): Promise<void> {
+    const boundProcess = this.processProjection.find(foregroundPid);
+    const boundSnapshot = boundProcess
+      ? this.processProjection.authoritativeSnapshot(boundProcess)
+      : undefined;
     const terminalSessionId = [...this.processState.terminalForeground]
-      .find(([, pid]) => pid === foregroundPid)?.[0];
+      .find(([, pid]) => {
+        if (pid === foregroundPid) return true;
+        const terminalProcess = this.processProjection.find(pid);
+        const terminalSnapshot = terminalProcess
+          ? this.processProjection.authoritativeSnapshot(terminalProcess)
+          : undefined;
+        return Boolean(
+          boundSnapshot &&
+          terminalSnapshot &&
+          boundSnapshot.pgid === terminalSnapshot.pgid
+        );
+      })?.[0];
     if (!terminalSessionId) return;
     const pending = this.pendingTerminalStartupInput.get(terminalSessionId);
     if (!pending) return;
+    if (!consumesLiveStdin) return;
     this.pendingTerminalStartupInput.delete(terminalSessionId);
-    if (!descriptorStdio) return;
+    if (!descriptorStdio) {
+      if (!stdinPipe) return;
+      try {
+        for (const chunk of pending.chunks) stdinPipe.write(chunk);
+        if (pending.eof) stdinPipe.close();
+      } catch {
+        stdinPipe.close();
+      }
+      return;
+    }
 
     const authority = this.traceKernelAuthority;
     const terminalId = this.terminalResourceIds.get(terminalSessionId);
@@ -3977,18 +4021,13 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
           (candidate) => candidate.id === terminalId
         );
     if (!authority || !terminal || terminal.closed) return;
-    const bytes = stdinPipe
-      ? readRuntimeCommandStdinPipeBytes(stdinPipe)
-      : new Uint8Array();
-    const eof = pending.eof || Boolean(
-      stdinPipe && runtimeCommandStdinPipeClosed(stdinPipe)
-    );
-    Effect.runFork(
+    const bytes = new TextEncoder().encode(pending.chunks.join(''));
+    await Effect.runPromise(
       Effect.gen(function* () {
         if (bytes.byteLength > 0) {
           yield* authority.session.writeTerminalInput(terminal.id, bytes);
         }
-        if (eof) {
+        if (pending.eof) {
           yield* authority.session.sendTerminalInputEof(terminal.id);
         }
       }).pipe(Effect.catchAll(() => Effect.void))
@@ -4026,14 +4065,16 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
         );
     if (!authority || !terminal || terminal.closed) {
       if (signalByte !== undefined) return 'rejected';
-      this.queueTerminalStartupInput(terminalSessionId);
-      return 'pending';
+      return this.queueTerminalStartupInput(terminalSessionId, { data })
+        ? 'pending'
+        : 'rejected';
     }
     if (signalByte === undefined) {
       const route = this.kernelTerminalInputRoute(terminalSessionId, terminal);
       if (route === 'pending') {
-        this.queueTerminalStartupInput(terminalSessionId);
-        return 'pending';
+        return this.queueTerminalStartupInput(terminalSessionId, { data })
+          ? 'pending'
+          : 'rejected';
       }
       if (route === 'legacy') return 'legacy';
     }
@@ -6306,18 +6347,14 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
       this.cppRunner.capabilities?.descriptorStdio === true;
     if (executionHandle) {
       executionHandle.descriptorStdio = descriptorStdio;
+      executionHandle.consumesLiveStdin = true;
     }
-    this.resolvePendingTerminalStartupInput(
-      request.commandContext.process.pid,
-      descriptorStdio,
-      request.stdinPipe
-    );
     if (descriptorStdio) {
       this.startHostStandardInputPump(request.commandContext);
     }
     let result: RuntimeCommandResult;
     try {
-      result = await this.cppRunner({
+      const execution = this.cppRunner({
         code: '',
         source: 'run',
         scriptPath,
@@ -6350,6 +6387,12 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
           this.handleRuntimeCommandEvent(event, request.commandContext);
         },
       });
+      await this.resolvePendingTerminalStartupInput(
+        request.commandContext.process.pid,
+        descriptorStdio,
+        request.stdinPipe
+      );
+      result = await execution;
     } finally {
       kernelSyscalls?.close();
     }

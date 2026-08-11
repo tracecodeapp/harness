@@ -88,6 +88,7 @@ export interface RuntimeKernelExecutionHandle {
   readonly signalChannel?: RuntimeKernelProcessSignalChannel;
   readonly hostStandardIo?: TraceKernelHostStandardIo;
   descriptorStdio?: boolean;
+  consumesLiveStdin?: boolean;
   hostOutputContext?: RuntimeCommandExecutionContext;
   hostStdinPumpStarted?: boolean;
   stopHostStdinPump?: boolean;

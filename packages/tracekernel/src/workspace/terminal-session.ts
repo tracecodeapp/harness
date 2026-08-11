@@ -341,7 +341,7 @@ export class RuntimeProjectWorkspaceTerminalSession implements RuntimeProjectTer
     const route = routed === 'rejected' && this.activeStdinPipe !== null
       ? 'legacy'
       : routed ?? (this.activeStdinPipe !== null ? 'legacy' : 'rejected');
-    if (route === 'legacy' || route === 'pending') {
+    if (route === 'legacy') {
       if (!this.activeStdinPipe) return false;
       try {
         this.activeStdinPipe.write(data);
@@ -369,7 +369,7 @@ export class RuntimeProjectWorkspaceTerminalSession implements RuntimeProjectTer
       : routed ?? (this.activeStdinPipe !== null ? 'legacy' : 'rejected');
     if (route === 'rejected') return false;
     this.activeStdinEnded = true;
-    if (route === 'legacy' || route === 'pending') {
+    if (route === 'legacy') {
       this.activeStdinPipe?.close();
     }
     this.activeStdinPrompt = '';

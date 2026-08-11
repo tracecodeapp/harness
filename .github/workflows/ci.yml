@@ -44,6 +44,6 @@ jobs:
       - name: Build
         run: pnpm build
       - name: Test process and engine-lease regressions
-        run: node --import tsx tests/test-tracekernel-workspace-processes.ts && node --import tsx tests/test-cpp-project-engine-lease.ts
+        run: node --import tsx tests/test-browser-terminal-fidelity.ts && node --import tsx tests/test-tracekernel-workspace-processes.ts && node --import tsx tests/test-cpp-project-engine-lease.ts
       - name: Test package surfaces and smoke
         run: pnpm test:packaged-surface && pnpm test:smoke && pnpm test:asset-sync

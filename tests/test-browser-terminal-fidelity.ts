@@ -557,7 +557,7 @@ async function testInterruptedNpmStartTerminalTranscript(): Promise<void> {
 
 async function testInteractiveTerminalContract(): Promise<void> {
   const workspace = await createBrowserProjectWorkspace({
-    providers: ['javascript'],
+    providers: ['javascript', 'typescript'],
     nodeProject: {
       allowMainThreadExecution: true,
       trustedMainThreadExecution: true,
@@ -1446,9 +1446,11 @@ async function testRejectedCommandClearsTerminalStartupInput(): Promise<void> {
         exitCode: 11,
       }),
       terminalInputRouter: {
-        write: () => {
+        write: (data) => {
           startupInputPending = true;
-          return 'pending';
+          return new TextEncoder().encode(data).byteLength > 64 * 1024 - 1
+            ? 'rejected'
+            : 'pending';
         },
         end: () => {
           startupInputPending = true;
@@ -1491,6 +1493,44 @@ async function testRejectedCommandClearsTerminalStartupInput(): Promise<void> {
   );
 }
 
+async function testCompoundDescriptorStartupInput(): Promise<void> {
+  const workspace = await createBrowserProjectWorkspace({
+    providers: ['javascript', 'typescript'],
+    nodeProject: {
+      workerUrl: `${javascriptProjectWorkerUrl}?compound-stdin=${Date.now()}`,
+      workerFactory: (url) => new ThreadedModuleWorker(String(url)),
+    },
+    files: [{
+      path: 'compound-reader.ts',
+      contents: [
+        'const runtimeProcess: any = process',
+        'let body = ""',
+        'runtimeProcess.stdin.on("data", (chunk: unknown) => { body += chunk })',
+        'runtimeProcess.stdin.on("end", () => console.log("compound-eof:" + body))',
+        '',
+      ].join('\n'),
+    }],
+  });
+  try {
+    const terminal = workspace.createTerminalSession();
+    const run = terminal.run(
+      'tsc compound-reader.ts --target es2022 && node dist/compound-reader.js'
+    );
+    assertCondition(
+      terminal.writeStdin('after-compile\n') && terminal.endStdin(),
+      'compound compile-and-run commands should buffer stdin for the executable step'
+    );
+    const result = await run;
+    assertCondition(
+      result.exitCode === 0 &&
+        result.stdout === 'compound-eof:after-compile\n\n',
+      `compile-only bindings must preserve startup input for the following descriptor process: ${JSON.stringify(result)}`
+    );
+  } finally {
+    workspace.dispose();
+  }
+}
+
 await testNativeCommandIdentity();
 await testBrowserJavaScriptTerminalSurface();
 await testInterruptedNpmStartTerminalTranscript();
@@ -1499,5 +1539,6 @@ await testBrowserProcessAndNetworkInspection();
 await testBrowserWorkerFailureBoundary();
 await testPatchedJustBashCompatibility();
 await testRejectedCommandClearsTerminalStartupInput();
+await testCompoundDescriptorStartupInput();
 
 console.log('PASS: browser terminal errors preserve native CLI shape and hide runtime infrastructure');
