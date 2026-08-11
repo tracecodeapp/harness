@@ -1620,10 +1620,6 @@ export class CppWorkerClient {
     signal: AbortSignal | undefined = request.signal,
     engineLease?: RuntimeProjectEngineLeaseController
   ): Promise<CppProjectCommandResult> {
-    // C++ execution workers are already one-command resources. The retained
-    // compiler coordinator is trusted host infrastructure, not process state,
-    // so TraceKernel observes a destroy-only engine lease here.
-    engineLease?.attach({ release: () => undefined });
     if (
       request.source === 'compile' &&
       this.options.trustedCompilerService
@@ -1709,6 +1705,11 @@ export class CppWorkerClient {
         }],
       };
     }
+    // Trusted compilation is compiler-service infrastructure rather than the
+    // engine owned by this kernel process. Only an admitted execution Worker
+    // attaches the process lease, leaving `g++ ... && ./a.out` free to create
+    // a distinct lease for the executable that follows compilation.
+    engineLease?.attach({ release: () => undefined });
     return this.runInDisposableExecutionWorker(async (lifecycleGeneration) => {
       const {
         signal: _signal,

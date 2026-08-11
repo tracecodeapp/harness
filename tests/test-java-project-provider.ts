@@ -114,6 +114,44 @@ function testProjectFactoryRejectsUnknownRuntimeProfiles(): void {
   );
 }
 
+async function testProjectFactorySeparatesWorkerAndPayloadOrigins(): Promise<void> {
+  const workerUrls: string[] = [];
+  const expectedFailure = new Error('stop after resolving worker URL');
+  const factory = createJavaProjectClientFactory({
+    runtimeAssetBaseUrl: 'https://runtime-assets.example/java/tracejvm/release',
+    createWorker(workerUrl) {
+      workerUrls.push(workerUrl);
+      throw expectedFailure;
+    },
+  });
+  try {
+    const client = await factory({
+      cwd: '/workspace',
+      hostStandardDescriptors: false,
+    });
+    if (client.initialize === undefined) {
+      throw new Error(
+        'TraceJVM project clients must expose compiler initialization'
+      );
+    }
+    let failure: unknown;
+    try {
+      await client.initialize();
+    } catch (error) {
+      failure = error;
+    }
+    assertCondition(
+      failure === expectedFailure &&
+        workerUrls.length === 1 &&
+        workerUrls[0]!.startsWith('/workers/java/tracejvm/') &&
+        workerUrls[0]!.endsWith('/browser-worker.js'),
+      `TraceJVM payload overrides must preserve its same-origin Worker: ${JSON.stringify(workerUrls)}`
+    );
+  } finally {
+    factory.terminate();
+  }
+}
+
 async function testKernelLeaseUsesFreshWorkers(): Promise<void> {
   let attachment: RuntimeProjectEngineLeaseAttachment | undefined;
   let attachCount = 0;
@@ -627,6 +665,8 @@ await testKernelLeaseUsesFreshWorkers();
 console.log('PASS: Java project adapter binds one kernel coordinator and fresh process clients per invocation');
 testProjectFactoryRejectsUnknownRuntimeProfiles();
 console.log('PASS: Java project factory rejects unknown runtime profiles');
+await testProjectFactorySeparatesWorkerAndPayloadOrigins();
+console.log('PASS: Java project factory separates same-origin Workers from immutable payloads');
 await testCancellationHardRetiresWorker();
 console.log('PASS: Java project adapter maps signals to hard Worker retirement');
 await testUnsupportedBoundaryIsExplicit();
