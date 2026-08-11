@@ -1,7 +1,7 @@
 {
   "name": "@tracecode/tracekernel",
   "private": true,
-  "version": "0.16.2",
+  "version": "0.16.3",
   "description": "Browser-native process, resource, and syscall kernel for TraceCode.",
   "license": "AGPL-3.0-only",
   "homepage": "https://tracecode.app",

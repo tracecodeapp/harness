@@ -211,8 +211,9 @@ export class RuntimeProjectWorkspaceTerminalSession implements RuntimeProjectTer
       runCommand: (command: string, options?: RuntimeCommandOptions) => Promise<RuntimeCommandResult>;
       signalForeground?: (signal: 'SIGINT' | 'SIGQUIT') => boolean;
       terminalInputRouter?: {
-        write(data: string): 'kernel' | 'legacy' | 'rejected';
-        end(): 'kernel' | 'legacy' | 'rejected';
+        write(data: string): 'kernel' | 'legacy' | 'pending' | 'rejected';
+        end(): 'kernel' | 'legacy' | 'pending' | 'rejected';
+        reset(): void;
       };
       resizeTerminal?: (columns: number, rows: number) => void;
       closeTerminal?: () => void;
@@ -332,23 +333,40 @@ export class RuntimeProjectWorkspaceTerminalSession implements RuntimeProjectTer
         signalCharacter === '\x03' ? 'SIGINT' : 'SIGQUIT'
       );
     }
-    const route = this.options.terminalInputRouter?.write(data) ??
-      (this.activeStdinPipe !== null ? 'legacy' : 'rejected');
+    const routed = this.options.terminalInputRouter?.write(data);
+    // The terminal resource is published asynchronously when the first
+    // command starts. Preserve input submitted during that startup window in
+    // the command pipe; once the terminal exists, the router becomes the
+    // authoritative line discipline.
+    const route = routed === 'rejected' && this.activeStdinPipe !== null
+      ? 'legacy'
+      : routed ?? (this.activeStdinPipe !== null ? 'legacy' : 'rejected');
     if (route === 'legacy') {
-      this.activeStdinPipe?.write(data);
+      if (!this.activeStdinPipe) return false;
+      try {
+        this.activeStdinPipe.write(data);
+      } catch {
+        return false;
+      }
     }
     const accepted = route !== 'rejected';
     if (accepted && this.currentInputState.mode === 'stdin') {
       this.activeStdinPrompt = '';
-      this.setInputState('busy', 'stdin-submit');
+      // A foreground TTY keeps presenting an editable line after Enter. The
+      // line discipline may buffer that input until the child reads it, but
+      // the terminal itself must not disappear and look frozen in between
+      // reads.
+      this.setInputState('stdin', 'stdin-submit', '');
     }
     return accepted;
   }
 
   endStdin(): boolean {
     if (!this.activeRun || this.activeStdinEnded) return false;
-    const route = this.options.terminalInputRouter?.end() ??
-      (this.activeStdinPipe !== null ? 'legacy' : 'rejected');
+    const routed = this.options.terminalInputRouter?.end();
+    const route = routed === 'rejected' && this.activeStdinPipe !== null
+      ? 'legacy'
+      : routed ?? (this.activeStdinPipe !== null ? 'legacy' : 'rejected');
     if (route === 'rejected') return false;
     this.activeStdinEnded = true;
     if (route === 'legacy') {
@@ -398,6 +416,16 @@ export class RuntimeProjectWorkspaceTerminalSession implements RuntimeProjectTer
     this.currentInputState = this.createInputState(mode, label);
     this.emitTerminalEvent(reason);
     return this.currentInputState;
+  }
+
+  private showForegroundInputLine(): RuntimeProjectTerminalInputState {
+    const acceptsInput =
+      this.activeStdinPipe !== null || this.options.terminalInputRouter !== undefined;
+    return this.setInputState(
+      acceptsInput ? 'stdin' : 'busy',
+      'command-start',
+      acceptsInput ? '' : this.prompt.text
+    );
   }
 
   async run(command: string, options: RuntimeProjectTerminalRunOptions = {}): Promise<RuntimeCommandResult> {
@@ -467,7 +495,10 @@ export class RuntimeProjectWorkspaceTerminalSession implements RuntimeProjectTer
     this.activeTerminalEventHandler = options.onTerminalEvent;
     this.activeStdinPrompt = '';
     this.activeCommand = submittedCommand;
-    this.setInputState('busy', 'command-start');
+    // A foreground process owns the terminal immediately. Keep an empty TTY
+    // input line visible while it runs so input can be buffered before the
+    // child performs its first read.
+    this.showForegroundInputLine();
 
     try {
       let stdout = '';
@@ -497,6 +528,7 @@ export class RuntimeProjectWorkspaceTerminalSession implements RuntimeProjectTer
         ...(error ? { error } : {}),
       };
     } finally {
+      this.options.terminalInputRouter?.reset();
       ownedStdinPipe?.close();
       this.activeStdinPipe = previousStdinPipe;
       this.activeStdinEnded = previousStdinEnded;
@@ -544,7 +576,9 @@ export class RuntimeProjectWorkspaceTerminalSession implements RuntimeProjectTer
     this.activeStdinPrompt = '';
     this.activeCommand = trimmed;
     this.activeCommandAbortController = commandAbortController;
-    this.setInputState('busy', 'command-start');
+    // Match an interactive shell: Enter advances to a fresh terminal line,
+    // and that line remains available to the foreground process as stdin.
+    this.showForegroundInputLine();
 
     try {
       const result = await this.runForegroundTerminalCommand(
@@ -556,6 +590,7 @@ export class RuntimeProjectWorkspaceTerminalSession implements RuntimeProjectTer
       return result;
     } finally {
       options.signal?.removeEventListener('abort', forwardExternalAbort);
+      this.options.terminalInputRouter?.reset();
       ownedStdinPipe?.close();
       this.activeStdinPipe = previousStdinPipe;
       this.activeStdinEnded = previousStdinEnded;

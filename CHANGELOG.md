@@ -6,6 +6,19 @@ This repo uses Git tags as release boundaries. Version notes below summarize wha
 
 ## [Unreleased]
 
+## [0.16.3] - 2026-08-11
+
+### Fixed
+
+- Preserved the Project process engine lease across TraceCC compilation so a
+  compiled C or C++ executable can run normally, including programs that exit
+  successfully without writing output.
+- Kept TraceJVM's module worker on the consumer's same-origin worker tree when
+  runtime payloads are served from an external asset base URL.
+- Made foreground terminal processes expose a fresh editable stdin line as
+  soon as they start. Submitted input remains visible and buffered until the
+  process reads it, matching an interactive TTY instead of appearing frozen.
+
 ## [0.16.2] - 2026-08-10
 
 ### Fixed

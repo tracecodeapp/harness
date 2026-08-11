@@ -2,6 +2,7 @@
 
 import {
   createRuntimeWorkspace,
+  type CppProjectCommandRunner,
   type JavaScriptProjectCommandRunner,
 } from '../packages/tracekernel/src/workspace/index';
 import type {
@@ -24,7 +25,7 @@ function assertCondition(condition: unknown, message: string): asserts condition
 }
 
 function syscalls(
-  request: RuntimeProjectCommandRequest
+  request: RuntimeProjectCommandRequest<string>
 ): RuntimeKernelSyscallBridge {
   assertCondition(
     request.kernelSyscalls,
@@ -652,8 +653,40 @@ async function main(): Promise<void> {
     capabilities: Object.freeze({ descriptorStdio: true }),
   });
 
+  const cppRunner: CppProjectCommandRunner = async (request) => {
+    if (request.source === 'compile') {
+      return {
+        stdout: '',
+        stderr: '',
+        exitCode: 0,
+        files: [{
+          path: 'startup-input',
+          contents: Buffer.from('descriptor-cpp-fixture').toString('base64'),
+          encoding: 'base64',
+        }],
+      };
+    }
+    const kernel = syscalls(request);
+    const input = await dispatch(kernel, { op: 'read', fd: 0, maxBytes: 64 });
+    const eof = await dispatch(kernel, { op: 'read', fd: 0, maxBytes: 64 });
+    assertCondition(
+      input.ok &&
+        input.value.op === 'read' &&
+        new TextDecoder().decode(input.value.bytes) === 'cpp-startup\n' &&
+        eof.ok &&
+        eof.value.op === 'read' &&
+        eof.value.bytes.byteLength === 0,
+      `direct C++ startup input did not reach kernel fd 0 before EOF: ${JSON.stringify({ input, eof })}`
+    );
+    return { stdout: 'cpp-startup-eof\n', stderr: '', exitCode: 0 };
+  };
+  Object.assign(cppRunner, {
+    capabilities: Object.freeze({ descriptorStdio: true }),
+  });
+
   const workspace = await createRuntimeWorkspace({
     files: [
+      { path: 'main.cpp', contents: 'int main() { return 0; }\n' },
       { path: 'parent.js', contents: '// parent runtime fixture\n' },
       { path: 'child.js', contents: '// child runtime fixture\n' },
       {
@@ -690,6 +723,7 @@ async function main(): Promise<void> {
       },
     ],
     nodeRunner,
+    cppRunner,
   });
   authoritativeSession = (
     workspace as unknown as {
@@ -926,6 +960,24 @@ async function main(): Promise<void> {
       `terminal EOF incorrectly closed later input: ${JSON.stringify(
         reusableInputResult
       )}`
+    );
+    const cppCompile = await terminal.run(
+      'clang++ main.cpp -o startup-input'
+    );
+    assertCondition(
+      cppCompile.exitCode === 0,
+      `direct C++ startup-input fixture did not compile: ${JSON.stringify(cppCompile)}`
+    );
+    const cppStartupRun = terminal.run('./startup-input');
+    assertCondition(
+      terminal.writeStdin('cpp-startup\n') && terminal.endStdin(),
+      'direct C++ executables should accept input and EOF during descriptor startup'
+    );
+    const cppStartupResult = await cppStartupRun;
+    assertCondition(
+      cppStartupResult.exitCode === 0 &&
+        cppStartupResult.stdout === 'cpp-startup-eof\n',
+      `direct C++ startup input should drain before EOF: ${JSON.stringify(cppStartupResult)}`
     );
     assertCondition(
       terminalRuntimeCount === 10 && detachedRuntimeCount === 6,

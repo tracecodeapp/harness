@@ -13,6 +13,7 @@ import { createBrowserPythonProjectRunner } from '../packages/runtime-python/src
 import { createBrowserJavaProjectRunner } from '../packages/runtime-java/src/project-browser';
 import { createBrowserCSharpProjectRunner } from '../packages/runtime-csharp/src/project-browser';
 import { createBrowserCppProjectRunner } from '../packages/runtime-cpp/src/project-browser';
+import { RuntimeProjectWorkspaceTerminalSession } from '../packages/tracekernel/src/workspace/terminal-session';
 import packageJson from '../package.json' with { type: 'json' };
 
 const testDirectory = dirname(fileURLToPath(import.meta.url));
@@ -130,7 +131,7 @@ async function testNativeCommandIdentity(): Promise<void> {
       ],
       [
         'clang++ --version',
-        'clang version 22.0.0-git20542-10\nTarget: wasm32-unknown-wasi\nThread model: posix\n',
+        'clang version 22.0.0\nTarget: wasm32-unknown-wasi\nThread model: posix\n',
         '',
       ],
       ['dotnet --version', '10.0.10\n', ''],
@@ -556,7 +557,7 @@ async function testInterruptedNpmStartTerminalTranscript(): Promise<void> {
 
 async function testInteractiveTerminalContract(): Promise<void> {
   const workspace = await createBrowserProjectWorkspace({
-    providers: ['javascript'],
+    providers: ['javascript', 'typescript'],
     nodeProject: {
       allowMainThreadExecution: true,
       trustedMainThreadExecution: true,
@@ -839,9 +840,28 @@ async function testInteractiveTerminalContract(): Promise<void> {
     );
 
     const stdinRun = terminal.run('node ../read-stdin.js');
-    await new Promise((resolve) => setTimeout(resolve, 0));
-    assertCondition(terminal.writeStdin('hello\n'), 'a running process should accept stdin');
-    assertCondition(terminal.endStdin(), 'Ctrl+D should close the running process stdin');
+    assertCondition(
+      terminal.inputState.mode === 'stdin' &&
+        terminal.inputState.label === '' &&
+        !terminal.inputState.hidden &&
+        !terminal.inputState.disabled,
+      `a foreground process should immediately expose a fresh editable stdin line: ${JSON.stringify(terminal.inputState)}`
+    );
+    assertCondition(
+      terminal.writeStdin('hello\n'),
+      'a process should buffer stdin submitted before its descriptor transport is ready'
+    );
+    assertCondition(
+      terminal.inputState.mode === 'stdin' &&
+        terminal.inputState.label === '' &&
+        !terminal.inputState.hidden &&
+        !terminal.inputState.disabled,
+      `submitting stdin should preserve the next editable terminal line: ${JSON.stringify(terminal.inputState)}`
+    );
+    assertCondition(
+      terminal.endStdin(),
+      'Ctrl+D should be buffered until the running process descriptor transport is ready'
+    );
     assertCondition(!terminal.endStdin(), 'repeated Ctrl+D should not report a second EOF delivery');
     assertCondition(!terminal.writeStdin('late input\n'), 'stdin writes should be rejected after EOF');
     const stdinResult = await stdinRun;
@@ -1408,6 +1428,109 @@ async function testPatchedJustBashCompatibility(): Promise<void> {
   }
 }
 
+async function testRejectedCommandClearsTerminalStartupInput(): Promise<void> {
+  let startupInputPending = false;
+  let resetCount = 0;
+  const terminal = new RuntimeProjectWorkspaceTerminalSession(
+    {
+      workspaceRoot: '/workspace',
+      kernelInfo: {
+        user: { username: 'user' },
+        host: { hostname: 'tracevm' },
+        home: '/home/user',
+      } as never,
+      resolveCwd: async (_currentCwd, target) => target,
+      runCommand: async () => ({
+        stdout: '',
+        stderr: 'bash: fork: Resource temporarily unavailable\n',
+        exitCode: 11,
+      }),
+      terminalInputRouter: {
+        write: (data) => {
+          startupInputPending = true;
+          return new TextEncoder().encode(data).byteLength > 64 * 1024 - 1
+            ? 'rejected'
+            : 'pending';
+        },
+        end: () => {
+          startupInputPending = true;
+          return 'pending';
+        },
+        reset: () => {
+          startupInputPending = false;
+          resetCount += 1;
+        },
+      },
+      jobRecords: () => [],
+      isVerbose: () => false,
+    },
+    { cwd: '/workspace' }
+  );
+
+  const rejectedRun = terminal.run('node denied.js');
+  assertCondition(
+    terminal.writeStdin('must-not-leak\n') && terminal.endStdin(),
+    'a command awaiting admission should accept startup input and EOF'
+  );
+  const rejected = await rejectedRun;
+  assertCondition(
+    rejected.exitCode === 11 &&
+      !startupInputPending &&
+      resetCount === 1 &&
+      terminal.inputState.mode === 'command',
+    `pre-admission failure should clear startup input before the next command: ${JSON.stringify({ rejected, startupInputPending, resetCount, inputState: terminal.inputState })}`
+  );
+
+  const oversizedRun = terminal.run('node denied-again.js');
+  assertCondition(
+    !terminal.writeStdin('x'.repeat(70 * 1024)),
+    'startup input larger than the bounded command pipe should be rejected without throwing'
+  );
+  await oversizedRun;
+  assertCondition(
+    !startupInputPending && resetCount === 2,
+    `rejected oversized startup input should not contaminate the next command: ${JSON.stringify({ startupInputPending, resetCount })}`
+  );
+}
+
+async function testCompoundDescriptorStartupInput(): Promise<void> {
+  const workspace = await createBrowserProjectWorkspace({
+    providers: ['javascript', 'typescript'],
+    nodeProject: {
+      workerUrl: `${javascriptProjectWorkerUrl}?compound-stdin=${Date.now()}`,
+      workerFactory: (url) => new ThreadedModuleWorker(String(url)),
+    },
+    files: [{
+      path: 'compound-reader.ts',
+      contents: [
+        'const runtimeProcess: any = process',
+        'let body = ""',
+        'runtimeProcess.stdin.on("data", (chunk: unknown) => { body += chunk })',
+        'runtimeProcess.stdin.on("end", () => console.log("compound-eof:" + body))',
+        '',
+      ].join('\n'),
+    }],
+  });
+  try {
+    const terminal = workspace.createTerminalSession();
+    const run = terminal.run(
+      'tsc compound-reader.ts --target es2022 && node dist/compound-reader.js'
+    );
+    assertCondition(
+      terminal.writeStdin('after-compile\n') && terminal.endStdin(),
+      'compound compile-and-run commands should buffer stdin for the executable step'
+    );
+    const result = await run;
+    assertCondition(
+      result.exitCode === 0 &&
+        result.stdout === 'compound-eof:after-compile\n\n',
+      `compile-only bindings must preserve startup input for the following descriptor process: ${JSON.stringify(result)}`
+    );
+  } finally {
+    workspace.dispose();
+  }
+}
+
 await testNativeCommandIdentity();
 await testBrowserJavaScriptTerminalSurface();
 await testInterruptedNpmStartTerminalTranscript();
@@ -1415,5 +1538,7 @@ await testInteractiveTerminalContract();
 await testBrowserProcessAndNetworkInspection();
 await testBrowserWorkerFailureBoundary();
 await testPatchedJustBashCompatibility();
+await testRejectedCommandClearsTerminalStartupInput();
+await testCompoundDescriptorStartupInput();
 
 console.log('PASS: browser terminal errors preserve native CLI shape and hide runtime infrastructure');

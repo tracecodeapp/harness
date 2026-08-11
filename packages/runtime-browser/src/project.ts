@@ -932,6 +932,11 @@ export interface CreateBrowserProjectWorkspaceOptions
   java?: BrowserProjectJavaRuntimeOptions;
   /** Immutable Java runtime tree used by the built-in provider. */
   javaRuntimeAssetBaseUrl?: string;
+  /**
+   * Same-origin TraceJVM project Worker. Runtime payloads may live on a CDN,
+   * but browsers require the Worker constructor itself to use this origin.
+   */
+  javaProjectWorkerUrl?: string;
   /** Runs selected project workers on a dedicated, credential-free origin. */
   executionHost?: BrowserProjectExecutionHostOptions;
   nodeProject?: BrowserProjectNodeOptions;
@@ -1052,6 +1057,7 @@ export async function createBrowserProjectWorkspace(
     runtimeProviders: _runtimeProviders,
     java,
     javaRuntimeAssetBaseUrl,
+    javaProjectWorkerUrl,
     executionHost: executionHostOptions,
     nodeProject,
     typescriptProject,
@@ -1248,6 +1254,9 @@ export async function createBrowserProjectWorkspace(
               javaProvider[2].resolveBuiltInTraceJVMRuntimeAssetBaseUrl(
                 options.assetBaseUrl ?? '/workers'
               ),
+            workerUrl:
+              javaProjectWorkerUrl ??
+              `${javaProvider[2].resolveBuiltInTraceJVMRuntimeAssetBaseUrl()}/browser-worker.js`,
           })
         : undefined;
     if (builtInJavaFactory) ownedWorkers.push(builtInJavaFactory);

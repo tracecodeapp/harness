@@ -26,6 +26,12 @@ export interface JavaProjectClientFactoryOptions {
    * VM module, and supported runtime profiles expected by the Java engine.
    */
   readonly runtimeAssetBaseUrl?: string;
+  /**
+   * Same-origin TraceJVM Worker entrypoint. Runtime payloads may use a separate
+   * immutable CDN base, but browsers do not permit constructing a Worker from
+   * that cross-origin URL.
+   */
+  readonly workerUrl?: string;
   readonly runtimeProfile?: 'core' | 'server' | 'spring-server';
   /**
    * Worker construction seam for browser hosts and lifecycle conformance tests.
@@ -40,6 +46,14 @@ export interface JavaProjectClientFactoryOptions {
 function normalizeBaseUrl(value: string | undefined): string {
   const baseUrl = value ?? resolveBuiltInTraceJVMRuntimeAssetBaseUrl();
   return normalizeTraceJVMRuntimeAssetBaseUrl(baseUrl);
+}
+
+function normalizeWorkerUrl(value: string): string {
+  const workerUrl = value.trim();
+  if (!workerUrl) {
+    throw new TypeError('TraceJVM project Worker URL cannot be empty');
+  }
+  return workerUrl;
 }
 
 function createWorker(
@@ -123,7 +137,9 @@ export function createJavaProjectClientFactory(
   options: JavaProjectClientFactoryOptions = {}
 ): ManagedJavaProjectClientFactory {
   const runtimeAssetBaseUrl = normalizeBaseUrl(options.runtimeAssetBaseUrl);
-  const workerUrl = `${runtimeAssetBaseUrl}/browser-worker.js`;
+  const workerUrl = normalizeWorkerUrl(
+    options.workerUrl ?? `${runtimeAssetBaseUrl}/browser-worker.js`
+  );
   const workerFor = (role: 'compiler' | 'runner'): TraceJVMWorkerLike =>
     (options.createWorker?.(workerUrl, role) as
       | TraceJVMWorkerLike
