@@ -565,7 +565,7 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
   private readonly terminalResourceIds = new Map<string, string>();
   private readonly pendingTerminalStartupInput = new Map<
     string,
-    { chunks: string[]; eof: boolean }
+    { eof: boolean }
   >();
   private readonly processProjection: WorkspaceProcessProjection;
   // Temporary 0.13 introspection aliases. The process state module remains
@@ -789,7 +789,8 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
         }
         this.resolvePendingTerminalStartupInput(
           context.process.pid,
-          descriptorStdio
+          descriptorStdio,
+          context.stdinPipe
         );
         const processSnapshot = this.processProjection.authoritativeSnapshot(
           context.process
@@ -3946,20 +3947,19 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
 
   private queueTerminalStartupInput(
     terminalSessionId: string,
-    input: { data?: string; eof?: boolean }
+    input: { eof?: boolean } = {}
   ): void {
     const pending = this.pendingTerminalStartupInput.get(terminalSessionId) ?? {
-      chunks: [],
       eof: false,
     };
-    if (input.data) pending.chunks.push(input.data);
     if (input.eof) pending.eof = true;
     this.pendingTerminalStartupInput.set(terminalSessionId, pending);
   }
 
   private resolvePendingTerminalStartupInput(
     foregroundPid: number,
-    descriptorStdio: boolean
+    descriptorStdio: boolean,
+    stdinPipe: RuntimeCommandOptions['stdinPipe']
   ): void {
     const terminalSessionId = [...this.processState.terminalForeground]
       .find(([, pid]) => pid === foregroundPid)?.[0];
@@ -3977,13 +3977,18 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
           (candidate) => candidate.id === terminalId
         );
     if (!authority || !terminal || terminal.closed) return;
-    const bytes = new TextEncoder().encode(pending.chunks.join(''));
+    const bytes = stdinPipe
+      ? readRuntimeCommandStdinPipeBytes(stdinPipe)
+      : new Uint8Array();
+    const eof = pending.eof || Boolean(
+      stdinPipe && runtimeCommandStdinPipeClosed(stdinPipe)
+    );
     Effect.runFork(
       Effect.gen(function* () {
         if (bytes.byteLength > 0) {
           yield* authority.session.writeTerminalInput(terminal.id, bytes);
         }
-        if (pending.eof) {
+        if (eof) {
           yield* authority.session.sendTerminalInputEof(terminal.id);
         }
       }).pipe(Effect.catchAll(() => Effect.void))
@@ -3992,11 +3997,14 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
 
   private discardPendingTerminalStartupInput(
     terminalSessionId: string | undefined,
-    foregroundPid: number
+    foregroundPid?: number
   ): void {
     if (
       terminalSessionId &&
-      this.processState.terminalForeground.get(terminalSessionId) === foregroundPid
+      (
+        foregroundPid === undefined ||
+        this.processState.terminalForeground.get(terminalSessionId) === foregroundPid
+      )
     ) {
       this.pendingTerminalStartupInput.delete(terminalSessionId);
     }
@@ -4005,7 +4013,7 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
   private writeKernelTerminalInput(
     terminalSessionId: string,
     data: string
-  ): 'kernel' | 'legacy' | 'rejected' {
+  ): 'kernel' | 'legacy' | 'pending' | 'rejected' {
     const signalByte = new TextEncoder().encode(data).find(
       (byte) => byte === 0x03 || byte === 0x1c
     );
@@ -4018,14 +4026,14 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
         );
     if (!authority || !terminal || terminal.closed) {
       if (signalByte !== undefined) return 'rejected';
-      this.queueTerminalStartupInput(terminalSessionId, { data });
-      return 'legacy';
+      this.queueTerminalStartupInput(terminalSessionId);
+      return 'pending';
     }
     if (signalByte === undefined) {
       const route = this.kernelTerminalInputRoute(terminalSessionId, terminal);
       if (route === 'pending') {
-        this.queueTerminalStartupInput(terminalSessionId, { data });
-        return 'legacy';
+        this.queueTerminalStartupInput(terminalSessionId);
+        return 'pending';
       }
       if (route === 'legacy') return 'legacy';
     }
@@ -4056,7 +4064,7 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
 
   private endKernelTerminalInput(
     terminalSessionId: string
-  ): 'kernel' | 'legacy' | 'rejected' {
+  ): 'kernel' | 'legacy' | 'pending' | 'rejected' {
     const authority = this.traceKernelAuthority;
     const terminalId = this.terminalResourceIds.get(terminalSessionId);
     const terminal = terminalId === undefined
@@ -4066,12 +4074,12 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
         );
     if (!authority || !terminal || terminal.closed) {
       this.queueTerminalStartupInput(terminalSessionId, { eof: true });
-      return 'legacy';
+      return 'pending';
     }
     const route = this.kernelTerminalInputRoute(terminalSessionId, terminal);
     if (route === 'pending') {
       this.queueTerminalStartupInput(terminalSessionId, { eof: true });
-      return 'legacy';
+      return 'pending';
     }
     if (route === 'legacy') return 'legacy';
     Effect.runFork(
@@ -6155,6 +6163,7 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
         terminalInputRouter: {
           write: (data) => this.writeKernelTerminalInput(terminalSessionId, data),
           end: () => this.endKernelTerminalInput(terminalSessionId),
+          reset: () => this.discardPendingTerminalStartupInput(terminalSessionId),
         },
         resizeTerminal: (columns, rows) =>
           this.resizeKernelTerminal(terminalSessionId, columns, rows),
@@ -6300,7 +6309,8 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
     }
     this.resolvePendingTerminalStartupInput(
       request.commandContext.process.pid,
-      descriptorStdio
+      descriptorStdio,
+      request.stdinPipe
     );
     if (descriptorStdio) {
       this.startHostStandardInputPump(request.commandContext);

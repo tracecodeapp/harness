@@ -211,8 +211,9 @@ export class RuntimeProjectWorkspaceTerminalSession implements RuntimeProjectTer
       runCommand: (command: string, options?: RuntimeCommandOptions) => Promise<RuntimeCommandResult>;
       signalForeground?: (signal: 'SIGINT' | 'SIGQUIT') => boolean;
       terminalInputRouter?: {
-        write(data: string): 'kernel' | 'legacy' | 'rejected';
-        end(): 'kernel' | 'legacy' | 'rejected';
+        write(data: string): 'kernel' | 'legacy' | 'pending' | 'rejected';
+        end(): 'kernel' | 'legacy' | 'pending' | 'rejected';
+        reset(): void;
       };
       resizeTerminal?: (columns: number, rows: number) => void;
       closeTerminal?: () => void;
@@ -340,8 +341,13 @@ export class RuntimeProjectWorkspaceTerminalSession implements RuntimeProjectTer
     const route = routed === 'rejected' && this.activeStdinPipe !== null
       ? 'legacy'
       : routed ?? (this.activeStdinPipe !== null ? 'legacy' : 'rejected');
-    if (route === 'legacy') {
-      this.activeStdinPipe?.write(data);
+    if (route === 'legacy' || route === 'pending') {
+      if (!this.activeStdinPipe) return false;
+      try {
+        this.activeStdinPipe.write(data);
+      } catch {
+        return false;
+      }
     }
     const accepted = route !== 'rejected';
     if (accepted && this.currentInputState.mode === 'stdin') {
@@ -363,7 +369,7 @@ export class RuntimeProjectWorkspaceTerminalSession implements RuntimeProjectTer
       : routed ?? (this.activeStdinPipe !== null ? 'legacy' : 'rejected');
     if (route === 'rejected') return false;
     this.activeStdinEnded = true;
-    if (route === 'legacy') {
+    if (route === 'legacy' || route === 'pending') {
       this.activeStdinPipe?.close();
     }
     this.activeStdinPrompt = '';
@@ -522,6 +528,7 @@ export class RuntimeProjectWorkspaceTerminalSession implements RuntimeProjectTer
         ...(error ? { error } : {}),
       };
     } finally {
+      this.options.terminalInputRouter?.reset();
       ownedStdinPipe?.close();
       this.activeStdinPipe = previousStdinPipe;
       this.activeStdinEnded = previousStdinEnded;
@@ -583,6 +590,7 @@ export class RuntimeProjectWorkspaceTerminalSession implements RuntimeProjectTer
       return result;
     } finally {
       options.signal?.removeEventListener('abort', forwardExternalAbort);
+      this.options.terminalInputRouter?.reset();
       ownedStdinPipe?.close();
       this.activeStdinPipe = previousStdinPipe;
       this.activeStdinEnded = previousStdinEnded;

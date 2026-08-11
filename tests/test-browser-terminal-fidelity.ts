@@ -13,6 +13,7 @@ import { createBrowserPythonProjectRunner } from '../packages/runtime-python/src
 import { createBrowserJavaProjectRunner } from '../packages/runtime-java/src/project-browser';
 import { createBrowserCSharpProjectRunner } from '../packages/runtime-csharp/src/project-browser';
 import { createBrowserCppProjectRunner } from '../packages/runtime-cpp/src/project-browser';
+import { RuntimeProjectWorkspaceTerminalSession } from '../packages/tracekernel/src/workspace/terminal-session';
 import packageJson from '../package.json' with { type: 'json' };
 
 const testDirectory = dirname(fileURLToPath(import.meta.url));
@@ -1427,6 +1428,69 @@ async function testPatchedJustBashCompatibility(): Promise<void> {
   }
 }
 
+async function testRejectedCommandClearsTerminalStartupInput(): Promise<void> {
+  let startupInputPending = false;
+  let resetCount = 0;
+  const terminal = new RuntimeProjectWorkspaceTerminalSession(
+    {
+      workspaceRoot: '/workspace',
+      kernelInfo: {
+        user: { username: 'user' },
+        host: { hostname: 'tracevm' },
+        home: '/home/user',
+      } as never,
+      resolveCwd: async (_currentCwd, target) => target,
+      runCommand: async () => ({
+        stdout: '',
+        stderr: 'bash: fork: Resource temporarily unavailable\n',
+        exitCode: 11,
+      }),
+      terminalInputRouter: {
+        write: () => {
+          startupInputPending = true;
+          return 'pending';
+        },
+        end: () => {
+          startupInputPending = true;
+          return 'pending';
+        },
+        reset: () => {
+          startupInputPending = false;
+          resetCount += 1;
+        },
+      },
+      jobRecords: () => [],
+      isVerbose: () => false,
+    },
+    { cwd: '/workspace' }
+  );
+
+  const rejectedRun = terminal.run('node denied.js');
+  assertCondition(
+    terminal.writeStdin('must-not-leak\n') && terminal.endStdin(),
+    'a command awaiting admission should accept startup input and EOF'
+  );
+  const rejected = await rejectedRun;
+  assertCondition(
+    rejected.exitCode === 11 &&
+      !startupInputPending &&
+      resetCount === 1 &&
+      terminal.inputState.mode === 'command',
+    `pre-admission failure should clear startup input before the next command: ${JSON.stringify({ rejected, startupInputPending, resetCount, inputState: terminal.inputState })}`
+  );
+
+  const oversizedRun = terminal.run('node denied-again.js');
+  assertCondition(
+    !terminal.writeStdin('x'.repeat(70 * 1024)),
+    'startup input larger than the bounded command pipe should be rejected without throwing'
+  );
+  await oversizedRun;
+  assertCondition(
+    !startupInputPending && resetCount === 2,
+    `rejected oversized startup input should not contaminate the next command: ${JSON.stringify({ startupInputPending, resetCount })}`
+  );
+}
+
 await testNativeCommandIdentity();
 await testBrowserJavaScriptTerminalSurface();
 await testInterruptedNpmStartTerminalTranscript();
@@ -1434,5 +1498,6 @@ await testInteractiveTerminalContract();
 await testBrowserProcessAndNetworkInspection();
 await testBrowserWorkerFailureBoundary();
 await testPatchedJustBashCompatibility();
+await testRejectedCommandClearsTerminalStartupInput();
 
 console.log('PASS: browser terminal errors preserve native CLI shape and hide runtime infrastructure');
