@@ -839,7 +839,6 @@ async function testInteractiveTerminalContract(): Promise<void> {
     );
 
     const stdinRun = terminal.run('node ../read-stdin.js');
-    await new Promise((resolve) => setTimeout(resolve, 0));
     assertCondition(
       terminal.inputState.mode === 'stdin' &&
         terminal.inputState.label === '' &&
@@ -847,7 +846,10 @@ async function testInteractiveTerminalContract(): Promise<void> {
         !terminal.inputState.disabled,
       `a foreground process should immediately expose a fresh editable stdin line: ${JSON.stringify(terminal.inputState)}`
     );
-    assertCondition(terminal.writeStdin('hello\n'), 'a running process should accept stdin');
+    assertCondition(
+      terminal.writeStdin('hello\n'),
+      'a process should buffer stdin submitted before its descriptor transport is ready'
+    );
     assertCondition(
       terminal.inputState.mode === 'stdin' &&
         terminal.inputState.label === '' &&
@@ -855,7 +857,10 @@ async function testInteractiveTerminalContract(): Promise<void> {
         !terminal.inputState.disabled,
       `submitting stdin should preserve the next editable terminal line: ${JSON.stringify(terminal.inputState)}`
     );
-    assertCondition(terminal.endStdin(), 'Ctrl+D should close the running process stdin');
+    assertCondition(
+      terminal.endStdin(),
+      'Ctrl+D should be buffered until the running process descriptor transport is ready'
+    );
     assertCondition(!terminal.endStdin(), 'repeated Ctrl+D should not report a second EOF delivery');
     assertCondition(!terminal.writeStdin('late input\n'), 'stdin writes should be rejected after EOF');
     const stdinResult = await stdinRun;

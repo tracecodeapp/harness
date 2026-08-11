@@ -129,14 +129,15 @@ async function testProjectFactorySeparatesWorkerAndPayloadOrigins(): Promise<voi
       cwd: '/workspace',
       hostStandardDescriptors: false,
     });
-    if (client.initialize === undefined) {
+    const initialize = client.initialize;
+    if (initialize === undefined) {
       throw new Error(
         'TraceJVM project clients must expose compiler initialization'
       );
     }
     let failure: unknown;
     try {
-      await client.initialize();
+      await initialize.call(client);
     } catch (error) {
       failure = error;
     }
@@ -165,7 +166,13 @@ async function testProjectFactorySeparatesWorkerAndPayloadOrigins(): Promise<voi
       cwd: '/workspace',
       hostStandardDescriptors: false,
     });
-    await client.initialize().catch(() => undefined);
+    const initialize = client.initialize;
+    if (initialize === undefined) {
+      throw new Error(
+        'TraceJVM project clients must expose compiler initialization'
+      );
+    }
+    await initialize.call(client).catch(() => undefined);
     assertCondition(
       explicitWorkerUrls.length === 1 &&
         explicitWorkerUrls[0] === '/workers/java/tracejvm/browser-worker.js',

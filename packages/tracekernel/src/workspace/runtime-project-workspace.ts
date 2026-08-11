@@ -563,6 +563,10 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
     Promise<RuntimeKernelTerminalShell>
   >();
   private readonly terminalResourceIds = new Map<string, string>();
+  private readonly pendingTerminalStartupInput = new Map<
+    string,
+    { chunks: string[]; eof: boolean }
+  >();
   private readonly processProjection: WorkspaceProcessProjection;
   // Temporary 0.13 introspection aliases. The process state module remains
   // authoritative; these preserve existing hardening probes while 0.14 moves
@@ -783,6 +787,10 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
         if (executionHandle) {
           executionHandle.descriptorStdio = descriptorStdio;
         }
+        this.resolvePendingTerminalStartupInput(
+          context.process.pid,
+          descriptorStdio
+        );
         const processSnapshot = this.processProjection.authoritativeSnapshot(
           context.process
         );
@@ -3907,8 +3915,9 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
   }
 
   private kernelTerminalInputRoute(
+    terminalSessionId: string,
     terminal: TraceKernelTerminalSnapshot
-  ): 'kernel' | 'legacy' {
+  ): 'kernel' | 'legacy' | 'pending' {
     const hasDescriptorConsumer = this.traceKernelAuthority?.session
       .processSnapshots()
       .some((process) =>
@@ -3916,13 +3925,46 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
         process.pgid === terminal.foregroundProcessGroupId &&
         this.processState.executionHandles.get(process.pid)?.descriptorStdio === true
       ) === true;
-    return hasDescriptorConsumer ? 'kernel' : 'legacy';
+    if (hasDescriptorConsumer) return 'kernel';
+    const foregroundPid = this.processState.terminalForeground.get(
+      terminalSessionId
+    );
+    if (foregroundPid === undefined) return 'legacy';
+    const descriptorStdio = this.processState.executionHandles.get(
+      foregroundPid
+    )?.descriptorStdio;
+    return descriptorStdio === undefined
+      ? 'pending'
+      : descriptorStdio
+        ? 'kernel'
+        : 'legacy';
   }
 
-  private writeKernelTerminalInput(
+  private queueTerminalStartupInput(
     terminalSessionId: string,
-    data: string
-  ): 'kernel' | 'legacy' | 'rejected' {
+    input: { data?: string; eof?: boolean }
+  ): void {
+    const pending = this.pendingTerminalStartupInput.get(terminalSessionId) ?? {
+      chunks: [],
+      eof: false,
+    };
+    if (input.data) pending.chunks.push(input.data);
+    if (input.eof) pending.eof = true;
+    this.pendingTerminalStartupInput.set(terminalSessionId, pending);
+  }
+
+  private resolvePendingTerminalStartupInput(
+    foregroundPid: number,
+    descriptorStdio: boolean
+  ): void {
+    const terminalSessionId = [...this.processState.terminalForeground]
+      .find(([, pid]) => pid === foregroundPid)?.[0];
+    if (!terminalSessionId) return;
+    const pending = this.pendingTerminalStartupInput.get(terminalSessionId);
+    if (!pending) return;
+    this.pendingTerminalStartupInput.delete(terminalSessionId);
+    if (!descriptorStdio) return;
+
     const authority = this.traceKernelAuthority;
     const terminalId = this.terminalResourceIds.get(terminalSessionId);
     const terminal = terminalId === undefined
@@ -3930,12 +3972,58 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
       : authority?.session.terminalSnapshots().find(
           (candidate) => candidate.id === terminalId
         );
-    if (!authority || !terminal || terminal.closed) return 'rejected';
+    if (!authority || !terminal || terminal.closed) return;
+    const bytes = new TextEncoder().encode(pending.chunks.join(''));
+    Effect.runFork(
+      Effect.gen(function* () {
+        if (bytes.byteLength > 0) {
+          yield* authority.session.writeTerminalInput(terminal.id, bytes);
+        }
+        if (pending.eof) {
+          yield* authority.session.sendTerminalInputEof(terminal.id);
+        }
+      }).pipe(Effect.catchAll(() => Effect.void))
+    );
+  }
+
+  private discardPendingTerminalStartupInput(
+    terminalSessionId: string | undefined,
+    foregroundPid: number
+  ): void {
+    if (
+      terminalSessionId &&
+      this.processState.terminalForeground.get(terminalSessionId) === foregroundPid
+    ) {
+      this.pendingTerminalStartupInput.delete(terminalSessionId);
+    }
+  }
+
+  private writeKernelTerminalInput(
+    terminalSessionId: string,
+    data: string
+  ): 'kernel' | 'legacy' | 'rejected' {
     const signalByte = new TextEncoder().encode(data).find(
       (byte) => byte === 0x03 || byte === 0x1c
     );
-    if (signalByte === undefined && this.kernelTerminalInputRoute(terminal) === 'legacy') {
+    const authority = this.traceKernelAuthority;
+    const terminalId = this.terminalResourceIds.get(terminalSessionId);
+    const terminal = terminalId === undefined
+      ? undefined
+      : authority?.session.terminalSnapshots().find(
+          (candidate) => candidate.id === terminalId
+        );
+    if (!authority || !terminal || terminal.closed) {
+      if (signalByte !== undefined) return 'rejected';
+      this.queueTerminalStartupInput(terminalSessionId, { data });
       return 'legacy';
+    }
+    if (signalByte === undefined) {
+      const route = this.kernelTerminalInputRoute(terminalSessionId, terminal);
+      if (route === 'pending') {
+        this.queueTerminalStartupInput(terminalSessionId, { data });
+        return 'legacy';
+      }
+      if (route === 'legacy') return 'legacy';
     }
     if (signalByte !== undefined) {
       const signal = signalByte === 0x03 ? 'SIGINT' : 'SIGQUIT';
@@ -3972,8 +4060,16 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
       : authority?.session.terminalSnapshots().find(
           (candidate) => candidate.id === terminalId
         );
-    if (!authority || !terminal || terminal.closed) return 'rejected';
-    if (this.kernelTerminalInputRoute(terminal) === 'legacy') return 'legacy';
+    if (!authority || !terminal || terminal.closed) {
+      this.queueTerminalStartupInput(terminalSessionId, { eof: true });
+      return 'legacy';
+    }
+    const route = this.kernelTerminalInputRoute(terminalSessionId, terminal);
+    if (route === 'pending') {
+      this.queueTerminalStartupInput(terminalSessionId, { eof: true });
+      return 'legacy';
+    }
+    if (route === 'legacy') return 'legacy';
     Effect.runFork(
       authority.session.sendTerminalInputEof(terminal.id).pipe(
         Effect.catchAll(() => Effect.void)
@@ -5314,6 +5410,10 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
         options.terminalSessionId &&
         this.processState.terminalForeground.get(options.terminalSessionId) === process.pid
       ) {
+        this.discardPendingTerminalStartupInput(
+          options.terminalSessionId,
+          process.pid
+        );
         this.processState.terminalForeground.delete(options.terminalSessionId);
       }
       clearKernelSignalHandler();
@@ -5608,6 +5708,10 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
         options.terminalSessionId &&
         this.processState.terminalForeground.get(options.terminalSessionId) === process.pid
       ) {
+        this.discardPendingTerminalStartupInput(
+          options.terminalSessionId,
+          process.pid
+        );
         this.processState.terminalForeground.delete(options.terminalSessionId);
       }
       this.observeKernelReparentedChildren(process.pid);
@@ -5983,6 +6087,7 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
     const shellPromise = this.terminalShells.get(terminalSessionId);
     this.terminalShells.delete(terminalSessionId);
     this.terminalResourceIds.delete(terminalSessionId);
+    this.pendingTerminalStartupInput.delete(terminalSessionId);
     if (!shellPromise) return;
     const disposal = shellPromise.then(async (shell) => {
       const authority = this.traceKernelAuthority;
