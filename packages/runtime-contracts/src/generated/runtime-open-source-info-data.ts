@@ -49,7 +49,7 @@ export const LANGUAGE_RUNTIME_OPEN_SOURCE_INFOS = Object.freeze(
           {
             "kind": "modifications",
             "label": "Runtime modifications",
-            "url": "https://github.com/tracecodeapp/harness/tree/v0.16.2/workers/python/pyodide-0.29.3"
+            "url": "https://github.com/tracecodeapp/harness/tree/v0.16.3/workers/python/pyodide-0.29.3"
           }
         ]
       }
