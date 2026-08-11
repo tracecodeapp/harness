@@ -3929,7 +3929,11 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
     const foregroundPid = this.processState.terminalForeground.get(
       terminalSessionId
     );
-    if (foregroundPid === undefined) return 'legacy';
+    // An existing terminal can receive a new submission before the workspace
+    // has admitted its foreground process. Treat that gap as startup too: the
+    // command pipe receives a compatibility copy, and the eventual transport
+    // binding either replays it to descriptor stdio or discards the duplicate.
+    if (foregroundPid === undefined) return 'pending';
     const descriptorStdio = this.processState.executionHandles.get(
       foregroundPid
     )?.descriptorStdio;
@@ -6294,6 +6298,10 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
     if (executionHandle) {
       executionHandle.descriptorStdio = descriptorStdio;
     }
+    this.resolvePendingTerminalStartupInput(
+      request.commandContext.process.pid,
+      descriptorStdio
+    );
     if (descriptorStdio) {
       this.startHostStandardInputPump(request.commandContext);
     }
