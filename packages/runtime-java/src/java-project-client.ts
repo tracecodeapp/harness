@@ -48,6 +48,14 @@ function normalizeBaseUrl(value: string | undefined): string {
   return normalizeTraceJVMRuntimeAssetBaseUrl(baseUrl);
 }
 
+function normalizeWorkerUrl(value: string): string {
+  const workerUrl = value.trim();
+  if (!workerUrl) {
+    throw new TypeError('TraceJVM project Worker URL cannot be empty');
+  }
+  return workerUrl;
+}
+
 function createWorker(
   workerUrl: string,
   role: 'compiler' | 'runner'
@@ -129,7 +137,7 @@ export function createJavaProjectClientFactory(
   options: JavaProjectClientFactoryOptions = {}
 ): ManagedJavaProjectClientFactory {
   const runtimeAssetBaseUrl = normalizeBaseUrl(options.runtimeAssetBaseUrl);
-  const workerUrl = normalizeTraceJVMRuntimeAssetBaseUrl(
+  const workerUrl = normalizeWorkerUrl(
     options.workerUrl ?? `${runtimeAssetBaseUrl}/browser-worker.js`
   );
   const workerFor = (role: 'compiler' | 'runner'): TraceJVMWorkerLike =>

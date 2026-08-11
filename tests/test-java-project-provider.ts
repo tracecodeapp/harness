@@ -155,7 +155,7 @@ async function testProjectFactorySeparatesWorkerAndPayloadOrigins(): Promise<voi
   const explicitWorkerUrls: string[] = [];
   const explicitFactory = createJavaProjectClientFactory({
     runtimeAssetBaseUrl: 'https://runtime-assets.example/java/tracejvm/release',
-    workerUrl: '/workers/java/tracejvm/browser-worker.js',
+    workerUrl: '/workers/java/tracejvm/browser-worker.js?v=3#compiler',
     createWorker(workerUrl) {
       explicitWorkerUrls.push(workerUrl);
       throw expectedFailure;
@@ -175,7 +175,8 @@ async function testProjectFactorySeparatesWorkerAndPayloadOrigins(): Promise<voi
     await initialize.call(client).catch(() => undefined);
     assertCondition(
       explicitWorkerUrls.length === 1 &&
-        explicitWorkerUrls[0] === '/workers/java/tracejvm/browser-worker.js',
+        explicitWorkerUrls[0] ===
+          '/workers/java/tracejvm/browser-worker.js?v=3#compiler',
       `TraceJVM hosts must be able to separate a same-origin Worker from CDN payloads: ${JSON.stringify(explicitWorkerUrls)}`
     );
   } finally {
@@ -730,14 +731,16 @@ async function testBrowserWorkspaceKeepsTraceJVMWorkerSameOrigin(): Promise<void
     const customWorkspace = await createBrowserProjectWorkspace({
       providers: ['java'],
       assetBaseUrl: 'https://runtime-assets.example/harness/release',
-      javaProjectWorkerUrl: '/custom-workers/tracejvm/browser-worker.js',
+      javaProjectWorkerUrl:
+        '/custom-workers/tracejvm/browser-worker.js?v=3#project',
       files: [{ path: 'Main.java', contents: 'class Main {}\n' }],
     });
     try {
       await customWorkspace.runCommand('javac Main.java');
       assertCondition(
         workerUrls.length === 1 &&
-          workerUrls[0] === '/custom-workers/tracejvm/browser-worker.js',
+          workerUrls[0] ===
+            '/custom-workers/tracejvm/browser-worker.js?v=3#project',
         `custom hosts must be able to override the same-origin TraceJVM Worker: ${JSON.stringify(workerUrls)}`
       );
     } finally {
