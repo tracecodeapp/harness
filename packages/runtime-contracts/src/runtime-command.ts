@@ -61,8 +61,10 @@ export interface RuntimeCommandOptions {
   onEvent?: RuntimeCommandEventHandler;
   /**
    * Internal terminal handshake fired when the foreground process actually
-   * reads its controlling terminal. Terminal sessions use this explicit
-   * signal to enter stdin mode; stdout chunk boundaries are not prompts.
+   * reads its controlling terminal. Terminal sessions already expose their
+   * TTY input line while the process runs; this signal associates any
+   * pending stdout text with the child's explicit stdin prompt instead of
+   * guessing from output chunk boundaries.
    */
   onTerminalStdinRead?: () => void;
   /**

@@ -130,7 +130,7 @@ async function testNativeCommandIdentity(): Promise<void> {
       ],
       [
         'clang++ --version',
-        'clang version 22.0.0-git20542-10\nTarget: wasm32-unknown-wasi\nThread model: posix\n',
+        'clang version 22.0.0\nTarget: wasm32-unknown-wasi\nThread model: posix\n',
         '',
       ],
       ['dotnet --version', '10.0.10\n', ''],
@@ -840,7 +840,21 @@ async function testInteractiveTerminalContract(): Promise<void> {
 
     const stdinRun = terminal.run('node ../read-stdin.js');
     await new Promise((resolve) => setTimeout(resolve, 0));
+    assertCondition(
+      terminal.inputState.mode === 'stdin' &&
+        terminal.inputState.label === '' &&
+        !terminal.inputState.hidden &&
+        !terminal.inputState.disabled,
+      `a foreground process should immediately expose a fresh editable stdin line: ${JSON.stringify(terminal.inputState)}`
+    );
     assertCondition(terminal.writeStdin('hello\n'), 'a running process should accept stdin');
+    assertCondition(
+      terminal.inputState.mode === 'stdin' &&
+        terminal.inputState.label === '' &&
+        !terminal.inputState.hidden &&
+        !terminal.inputState.disabled,
+      `submitting stdin should preserve the next editable terminal line: ${JSON.stringify(terminal.inputState)}`
+    );
     assertCondition(terminal.endStdin(), 'Ctrl+D should close the running process stdin');
     assertCondition(!terminal.endStdin(), 'repeated Ctrl+D should not report a second EOF delivery');
     assertCondition(!terminal.writeStdin('late input\n'), 'stdin writes should be rejected after EOF');

@@ -12470,6 +12470,13 @@ async function testWorkspaceTerminalSessionCwd(): Promise<void> {
     `terminal sessions should publish formal input-state transitions: ${JSON.stringify(terminalEvents)}`
   );
   assertCondition(
+    terminalEvents
+      .filter((event): event is Extract<RuntimeProjectTerminalEvent, { type: 'input-state' }> => event.type === 'input-state')
+      .slice(0, 3)
+      .every((event) => event.state.mode === 'stdin' && !event.state.hidden && !event.state.disabled),
+    `foreground terminal input should stay visible from command start through stdin submission: ${JSON.stringify(terminalEvents)}`
+  );
+  assertCondition(
     stdinCommandEvents.some((event) => event.type === 'output' && event.terminal?.role === 'stdin-prompt'),
     `terminal stdin prompt output should carry terminal metadata: ${JSON.stringify(stdinCommandEvents)}`
   );
@@ -12494,9 +12501,29 @@ async function testWorkspaceTerminalSessionCwd(): Promise<void> {
       return { stdout: 'slow:done\n', stderr: '', exitCode: 0 };
     },
   });
-  const oneCommandSession = terminalConcurrencyWorkspace.createTerminalSession();
+  const concurrencyTerminalEvents: RuntimeProjectTerminalEvent[] = [];
+  const oneCommandSession = terminalConcurrencyWorkspace.createTerminalSession({
+    onTerminalEvent: (event) => concurrencyTerminalEvents.push(event),
+  });
   const firstTerminalRun = oneCommandSession.run('node slow-terminal.js');
   await terminalCommandStartedPromise;
+  assertCondition(
+    oneCommandSession.inputState.mode === 'stdin' &&
+      oneCommandSession.inputState.label === '' &&
+      !oneCommandSession.inputState.hidden &&
+      !oneCommandSession.inputState.disabled,
+    `foreground commands should immediately present a blank stdin line: ${JSON.stringify(oneCommandSession.inputState)}`
+  );
+  const bufferedBeforeRead = oneCommandSession.writeStdin('buffered-before-read\n');
+  assertCondition(
+    bufferedBeforeRead &&
+      oneCommandSession.inputState.mode === 'stdin' &&
+      oneCommandSession.inputState.label === '' &&
+      concurrencyTerminalEvents
+        .map((event) => (event as { reason?: string }).reason)
+        .join(',') === 'command-start,stdin-submit',
+    `terminal input should buffer before the child reads without hiding the next line: ${JSON.stringify({ bufferedBeforeRead, inputState: oneCommandSession.inputState, concurrencyTerminalEvents })}`
+  );
   const foregroundTerminalPid = await processPidForCommand(terminalConcurrencyWorkspace, 'node slow-terminal.js');
   const foregroundTerminalStatus = await terminalConcurrencyWorkspace.readFile(`/proc/${foregroundTerminalPid}/status`);
   assertCondition(
@@ -12508,8 +12535,9 @@ async function testWorkspaceTerminalSessionCwd(): Promise<void> {
   assertCondition(
     sameSessionSecondRun.exitCode === 16 &&
       sameSessionSecondRun.error?.code === 'EBUSY' &&
-      oneCommandSession.inputState.mode === 'busy',
-    `same terminal session should reject overlapping foreground commands and stay busy: ${JSON.stringify({ sameSessionSecondRun, inputState: oneCommandSession.inputState })}`
+      oneCommandSession.inputState.mode === 'stdin' &&
+      oneCommandSession.inputState.label === '',
+    `same terminal session should reject overlapping foreground commands while preserving its stdin line: ${JSON.stringify({ sameSessionSecondRun, inputState: oneCommandSession.inputState })}`
   );
   const parallelSession = terminalConcurrencyWorkspace.createTerminalSession();
   const parallelPwd = await parallelSession.run('pwd');
