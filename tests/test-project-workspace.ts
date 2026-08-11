@@ -12506,7 +12506,6 @@ async function testWorkspaceTerminalSessionCwd(): Promise<void> {
     onTerminalEvent: (event) => concurrencyTerminalEvents.push(event),
   });
   const firstTerminalRun = oneCommandSession.run('node slow-terminal.js');
-  await terminalCommandStartedPromise;
   assertCondition(
     oneCommandSession.inputState.mode === 'stdin' &&
       oneCommandSession.inputState.label === '' &&
@@ -12524,6 +12523,7 @@ async function testWorkspaceTerminalSessionCwd(): Promise<void> {
         .join(',') === 'command-start,stdin-submit',
     `terminal input should buffer before the child reads without hiding the next line: ${JSON.stringify({ bufferedBeforeRead, inputState: oneCommandSession.inputState, concurrencyTerminalEvents })}`
   );
+  await terminalCommandStartedPromise;
   const foregroundTerminalPid = await processPidForCommand(terminalConcurrencyWorkspace, 'node slow-terminal.js');
   const foregroundTerminalStatus = await terminalConcurrencyWorkspace.readFile(`/proc/${foregroundTerminalPid}/status`);
   assertCondition(

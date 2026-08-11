@@ -130,8 +130,7 @@ export function createJavaProjectClientFactory(
 ): ManagedJavaProjectClientFactory {
   const runtimeAssetBaseUrl = normalizeBaseUrl(options.runtimeAssetBaseUrl);
   const workerUrl = normalizeTraceJVMRuntimeAssetBaseUrl(
-    options.workerUrl ??
-      `${resolveBuiltInTraceJVMRuntimeAssetBaseUrl()}/browser-worker.js`
+    options.workerUrl ?? `${runtimeAssetBaseUrl}/browser-worker.js`
   );
   const workerFor = (role: 'compiler' | 'runner'): TraceJVMWorkerLike =>
     (options.createWorker?.(workerUrl, role) as

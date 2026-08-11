@@ -143,12 +143,36 @@ async function testProjectFactorySeparatesWorkerAndPayloadOrigins(): Promise<voi
     assertCondition(
       failure === expectedFailure &&
         workerUrls.length === 1 &&
-        workerUrls[0]!.startsWith('/workers/java/tracejvm/') &&
-        workerUrls[0]!.endsWith('/browser-worker.js'),
-      `TraceJVM payload overrides must preserve its same-origin Worker: ${JSON.stringify(workerUrls)}`
+        workerUrls[0] ===
+          'https://runtime-assets.example/java/tracejvm/release/browser-worker.js',
+      `TraceJVM runtime overrides must keep the Worker in the configured tree: ${JSON.stringify(workerUrls)}`
     );
   } finally {
     factory.terminate();
+  }
+
+  const explicitWorkerUrls: string[] = [];
+  const explicitFactory = createJavaProjectClientFactory({
+    runtimeAssetBaseUrl: 'https://runtime-assets.example/java/tracejvm/release',
+    workerUrl: '/workers/java/tracejvm/browser-worker.js',
+    createWorker(workerUrl) {
+      explicitWorkerUrls.push(workerUrl);
+      throw expectedFailure;
+    },
+  });
+  try {
+    const client = await explicitFactory({
+      cwd: '/workspace',
+      hostStandardDescriptors: false,
+    });
+    await client.initialize().catch(() => undefined);
+    assertCondition(
+      explicitWorkerUrls.length === 1 &&
+        explicitWorkerUrls[0] === '/workers/java/tracejvm/browser-worker.js',
+      `TraceJVM hosts must be able to separate a same-origin Worker from CDN payloads: ${JSON.stringify(explicitWorkerUrls)}`
+    );
+  } finally {
+    explicitFactory.terminate();
   }
 }
 

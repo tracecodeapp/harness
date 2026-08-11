@@ -332,8 +332,14 @@ export class RuntimeProjectWorkspaceTerminalSession implements RuntimeProjectTer
         signalCharacter === '\x03' ? 'SIGINT' : 'SIGQUIT'
       );
     }
-    const route = this.options.terminalInputRouter?.write(data) ??
-      (this.activeStdinPipe !== null ? 'legacy' : 'rejected');
+    const routed = this.options.terminalInputRouter?.write(data);
+    // The terminal resource is published asynchronously when the first
+    // command starts. Preserve input submitted during that startup window in
+    // the command pipe; once the terminal exists, the router becomes the
+    // authoritative line discipline.
+    const route = routed === 'rejected' && this.activeStdinPipe !== null
+      ? 'legacy'
+      : routed ?? (this.activeStdinPipe !== null ? 'legacy' : 'rejected');
     if (route === 'legacy') {
       this.activeStdinPipe?.write(data);
     }
@@ -351,8 +357,10 @@ export class RuntimeProjectWorkspaceTerminalSession implements RuntimeProjectTer
 
   endStdin(): boolean {
     if (!this.activeRun || this.activeStdinEnded) return false;
-    const route = this.options.terminalInputRouter?.end() ??
-      (this.activeStdinPipe !== null ? 'legacy' : 'rejected');
+    const routed = this.options.terminalInputRouter?.end();
+    const route = routed === 'rejected' && this.activeStdinPipe !== null
+      ? 'legacy'
+      : routed ?? (this.activeStdinPipe !== null ? 'legacy' : 'rejected');
     if (route === 'rejected') return false;
     this.activeStdinEnded = true;
     if (route === 'legacy') {
