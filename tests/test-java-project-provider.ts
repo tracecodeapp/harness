@@ -685,6 +685,66 @@ async function testBrowserWorkspaceRequiresExplicitJavaProvider(): Promise<void>
   );
 }
 
+async function testBrowserWorkspaceKeepsTraceJVMWorkerSameOrigin(): Promise<void> {
+  const previousWorker = Object.getOwnPropertyDescriptor(globalThis, 'Worker');
+  const workerUrls: string[] = [];
+  const expectedFailure = new Error('stop after resolving browser project worker');
+  class RecordingWorker {
+    constructor(url: string | URL) {
+      workerUrls.push(String(url));
+      throw expectedFailure;
+    }
+  }
+  Object.defineProperty(globalThis, 'Worker', {
+    configurable: true,
+    writable: true,
+    value: RecordingWorker,
+  });
+  try {
+    const workspace = await createBrowserProjectWorkspace({
+      providers: ['java'],
+      assetBaseUrl: 'https://runtime-assets.example/harness/release',
+      files: [{ path: 'Main.java', contents: 'class Main {}\n' }],
+    });
+    try {
+      const result = await workspace.runCommand('javac Main.java');
+      assertCondition(
+        result.exitCode !== 0 &&
+          workerUrls.length === 1 &&
+          workerUrls[0]!.startsWith('/workers/java/tracejvm/') &&
+          workerUrls[0]!.endsWith('/browser-worker.js'),
+        `a CDN payload base must retain the built-in same-origin TraceJVM Worker: ${JSON.stringify({ result, workerUrls })}`
+      );
+    } finally {
+      await workspace.destroy();
+    }
+
+    workerUrls.length = 0;
+    const customWorkspace = await createBrowserProjectWorkspace({
+      providers: ['java'],
+      assetBaseUrl: 'https://runtime-assets.example/harness/release',
+      javaProjectWorkerUrl: '/custom-workers/tracejvm/browser-worker.js',
+      files: [{ path: 'Main.java', contents: 'class Main {}\n' }],
+    });
+    try {
+      await customWorkspace.runCommand('javac Main.java');
+      assertCondition(
+        workerUrls.length === 1 &&
+          workerUrls[0] === '/custom-workers/tracejvm/browser-worker.js',
+        `custom hosts must be able to override the same-origin TraceJVM Worker: ${JSON.stringify(workerUrls)}`
+      );
+    } finally {
+      await customWorkspace.destroy();
+    }
+  } finally {
+    if (previousWorker) {
+      Object.defineProperty(globalThis, 'Worker', previousWorker);
+    } else {
+      Reflect.deleteProperty(globalThis, 'Worker');
+    }
+  }
+}
+
 await testKernelLeaseUsesFreshWorkers();
 console.log('PASS: Java project adapter binds one kernel coordinator and fresh process clients per invocation');
 testProjectFactoryRejectsUnknownRuntimeProfiles();
@@ -703,3 +763,5 @@ await testBrowserWorkspaceCommitsArtifactsToTKFS();
 console.log('PASS: browser Java javac/java chains exchange artifacts through TKFS');
 await testBrowserWorkspaceRequiresExplicitJavaProvider();
 console.log('PASS: browser Java derives omitted provider selection but honors explicit provider lists');
+await testBrowserWorkspaceKeepsTraceJVMWorkerSameOrigin();
+console.log('PASS: browser Java keeps TraceJVM Workers same-origin while payloads use a CDN');
