@@ -210,8 +210,15 @@ async function main(): Promise<void> {
         return { send, terminate: () => worker.terminate() };
       };
 
-      const source =
-        'public class Solution { public int Add(int left, int right) => left + right; }';
+      const source = `
+public class Solution
+{
+    public int Add(int left, int right)
+    {
+        var total = left + right;
+        return total;
+    }
+}`;
       const structuredSource = `
 using System.Collections.Generic;
 using System.Linq;
