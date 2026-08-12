@@ -86,6 +86,23 @@ for (const [wireType, value, expected] of [
   assert.doesNotThrow(() => JSON.stringify(decoded));
 }
 
+for (const [wireType, value] of [
+  ['int64', 10_000_000_000_000_000],
+  ['uint64', 18_000_000_000_000_000_000],
+] as const) {
+  const integerInputContract: TraceClrWireContractDescriptor = {
+    parameters: [{ name: 'value', type: { wireType } }],
+    returnType: { wireType: 'void' },
+  };
+  assert.deepEqual(
+    decodeTraceClrWireInputs(
+      integerInputContract,
+      encodeTraceClrWireInputs(integerInputContract, { value }),
+    ),
+    { value: BigInt(value) },
+  );
+}
+
 const setResultContract: TraceClrWireContractDescriptor = {
   parameters: [],
   returnType: { wireType: 'set<int64>' },

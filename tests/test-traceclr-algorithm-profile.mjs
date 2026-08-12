@@ -14,6 +14,10 @@ const props = readFileSync(
   'packages/runtime-csharp/dotnet/TraceClr.AlgorithmProfile.props',
   'utf8'
 );
+const hostProject = readFileSync(
+  'packages/runtime-csharp/dotnet/TraceCode.CSharpHost/TraceCode.CSharpHost.csproj',
+  'utf8'
+);
 
 function propsItems(name) {
   return [...props.matchAll(new RegExp(`<${name} Include="([^"]+)" \\/>`, 'gu'))]
@@ -72,6 +76,18 @@ test('TraceCLR generated MSBuild roots match the machine-readable profile', () =
     propsItems('TraceClrMinimalRunnerRootAssembly'),
     profile.algorithmRunnerRootAssemblies
   );
+});
+
+test('TraceCLR compiler optimization preserves the project BCL surface', () => {
+  for (const assembly of [
+    'System.Collections.Concurrent',
+    'System.Collections.Immutable',
+    'System.Linq.Expressions',
+    'System.Reflection.Metadata',
+  ]) {
+    assert.match(hostProject, new RegExp(`\\$\\(TargetDir\\)${assembly}\\.dll`, 'u'));
+  }
+  assert.match(hostProject, /@\(TraceClrAlgorithmCompilerAssembly/u);
 });
 
 test('TraceCLR wire boundary is explicit and its exceptions are reviewed', () => {

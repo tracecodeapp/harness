@@ -108,6 +108,10 @@ public static class TraceClrWireDriverGenerator
         foreach (IParameterSymbol parameter in method.Parameters)
         {
             if (parameter.RefKind != RefKind.None) unsupported.Add($"{parameter.RefKind.ToString().ToLowerInvariant()} parameter {parameter.Name}");
+            if (parameter.IsOptional || parameter.HasExplicitDefaultValue)
+            {
+                unsupported.Add($"optional parameter {parameter.Name} requires the compatibility runner");
+            }
         }
         TraceClrWireType[] parameters = method.Parameters.Select(parameter => DescribeWireType(parameter.Type)).ToArray();
         TraceClrWireType returnType = nullOnlyObjectReturn

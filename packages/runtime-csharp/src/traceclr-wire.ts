@@ -140,13 +140,13 @@ function integer(value: unknown, minimum: number, maximum: number, label: string
 function integer64(value: unknown, signed: boolean): bigint {
   const converted = typeof value === 'bigint'
     ? value
-    : typeof value === 'number' && Number.isSafeInteger(value)
+    : typeof value === 'number' && Number.isInteger(value)
       ? BigInt(value)
       : null;
   const minimum = signed ? -(1n << 63n) : 0n;
   const maximum = signed ? (1n << 63n) - 1n : (1n << 64n) - 1n;
   if (converted === null || converted < minimum || converted > maximum) {
-    throw new TypeError(`${signed ? 'int64' : 'uint64'} must be a bigint or safe integer in range.`);
+    throw new TypeError(`${signed ? 'int64' : 'uint64'} must be a bigint or integer number in range.`);
   }
   return converted;
 }
