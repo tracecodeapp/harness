@@ -18,6 +18,14 @@ const hostProject = readFileSync(
   'packages/runtime-csharp/dotnet/TraceCode.CSharpHost/TraceCode.CSharpHost.csproj',
   'utf8'
 );
+const compatibilitySurface = readFileSync(
+  'packages/runtime-csharp/dotnet/TraceCode.CSharpCompatibilitySurface.props',
+  'utf8'
+);
+const judgeRunnerProject = readFileSync(
+  'packages/runtime-csharp/dotnet/TraceCode.CSharpJudgeRunner/TraceCode.CSharpJudgeRunner.csproj',
+  'utf8'
+);
 
 function propsItems(name) {
   return [...props.matchAll(new RegExp(`<${name} Include="([^"]+)" \\/>`, 'gu'))]
@@ -82,12 +90,19 @@ test('TraceCLR compiler optimization preserves the project BCL surface', () => {
   for (const assembly of [
     'System.Collections.Concurrent',
     'System.Collections.Immutable',
+    'System.ComponentModel.Annotations',
     'System.Linq.Expressions',
     'System.Reflection.Metadata',
   ]) {
-    assert.match(hostProject, new RegExp(`\\$\\(TargetDir\\)${assembly}\\.dll`, 'u'));
+    assert.match(
+      compatibilitySurface,
+      new RegExp(`<TraceCodeCSharpCompatibilityAssembly Include="${assembly}"`, 'u')
+    );
   }
+  assert.match(hostProject, /@\(TraceCodeCSharpCompatibilityAssembly/u);
   assert.match(hostProject, /@\(TraceClrAlgorithmCompilerAssembly/u);
+  assert.match(judgeRunnerProject, /@\(TraceCodeCSharpCompatibilityAssembly/u);
+  assert.match(judgeRunnerProject, /@\(TraceClrAlgorithmRunnerRootAssembly/u);
 });
 
 test('TraceCLR wire boundary is explicit and its exceptions are reviewed', () => {

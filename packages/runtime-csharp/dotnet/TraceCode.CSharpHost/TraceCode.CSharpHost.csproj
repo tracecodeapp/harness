@@ -1,5 +1,6 @@
 <Project Sdk="Microsoft.NET.Sdk">
   <Import Project="../TraceClr.AlgorithmProfile.props" />
+  <Import Project="../TraceCode.CSharpCompatibilitySurface.props" />
 
   <PropertyGroup>
     <TargetFramework>net10.0</TargetFramework>
@@ -47,52 +48,7 @@
         Include="
           $(TargetDir)TraceCode.CSharpHost.dll;
           $(TargetDir)TraceCode.CSharpJudgeRuntime.dll;
-          $(TargetDir)Microsoft.CSharp.dll;
-          $(TargetDir)mscorlib.dll;
-          $(TargetDir)netstandard.dll;
-          $(TargetDir)System.dll;
-          $(TargetDir)System.Core.dll;
-          $(TargetDir)System.Private.CoreLib.dll;
-          $(TargetDir)System.Runtime.dll;
-          $(TargetDir)System.Runtime.Extensions.dll;
-          $(TargetDir)System.Runtime.CompilerServices.Unsafe.dll;
-          $(TargetDir)System.Runtime.Numerics.dll;
-          $(TargetDir)System.Runtime.Serialization.Primitives.dll;
-          $(TargetDir)System.AppContext.dll;
-          $(TargetDir)System.Buffers.dll;
-          $(TargetDir)System.Collections.dll;
-          $(TargetDir)System.Collections.Concurrent.dll;
-          $(TargetDir)System.Collections.Immutable.dll;
-          $(TargetDir)System.Collections.NonGeneric.dll;
-          $(TargetDir)System.Collections.Specialized.dll;
-          $(TargetDir)System.ComponentModel.dll;
-          $(TargetDir)System.ComponentModel.Annotations.dll;
-          $(TargetDir)System.ComponentModel.Primitives.dll;
-          $(TargetDir)System.ComponentModel.TypeConverter.dll;
-          $(TargetDir)System.Console.dll;
-          $(TargetDir)System.Dynamic.Runtime.dll;
-          $(TargetDir)System.Globalization.dll;
-          $(TargetDir)System.IO.dll;
-          $(TargetDir)System.IO.FileSystem.dll;
-          $(TargetDir)System.IO.FileSystem.Primitives.dll;
-          $(TargetDir)System.Linq.dll;
-          $(TargetDir)System.Linq.Expressions.dll;
-          $(TargetDir)System.Linq.Queryable.dll;
-          $(TargetDir)System.Memory.dll;
-          $(TargetDir)System.Numerics.dll;
-          $(TargetDir)System.Numerics.Vectors.dll;
-          $(TargetDir)System.ObjectModel.dll;
-          $(TargetDir)System.Reflection.dll;
-          $(TargetDir)System.Reflection.Extensions.dll;
-          $(TargetDir)System.Reflection.Metadata.dll;
-          $(TargetDir)System.Reflection.Primitives.dll;
-          $(TargetDir)System.Text.Encoding.Extensions.dll;
-          $(TargetDir)System.Text.Json.dll;
-          $(TargetDir)System.Text.RegularExpressions.dll;
-          $(TargetDir)System.Threading.dll;
-          $(TargetDir)System.Threading.Tasks.dll;
-          $(TargetDir)System.Threading.Tasks.Extensions.dll;
-          $(TargetDir)System.ValueTuple.dll;
+          @(TraceCodeCSharpCompatibilityAssembly->'$(TargetDir)%(Identity).dll');
           @(TraceClrAlgorithmCompilerAssembly->'$(TargetDir)%(Identity).dll')" />
       <TraceCodeCompilerReference Remove="$(TargetDir)System.Net*.dll" />
       <TraceCodeCompilerReference Remove="$(TargetDir)System.Reflection.Emit*.dll" />

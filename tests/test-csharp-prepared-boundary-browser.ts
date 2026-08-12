@@ -215,11 +215,16 @@ public class Solution
 {
     public int Add(int left, int right)
     {
+        if (left < 0)
+        {
+            throw new System.InvalidOperationException("learner boom");
+        }
         var total = left + right;
         return total;
     }
 }`;
       const structuredSource = `
+using System.ComponentModel.DataAnnotations;
 using System.Collections.Generic;
 using System.Linq;
 using System.Text.Json;
@@ -239,7 +244,8 @@ public class Solution
         var document = JsonDocument.Parse("{\\"ok\\":true}");
         var matched = Regex.IsMatch(payload.Name, "^[A-Z]");
         var totals = (Sum: payload.Values.Sum(), Weight: payload.Weights["x"]);
-        return $"{payload.Name}:{totals.Sum}:{totals.Weight}:{matched}:{document.RootElement.GetProperty("ok").GetBoolean()}";
+        var validation = new ValidationResult("valid");
+        return $"{payload.Name}:{totals.Sum}:{totals.Weight}:{matched}:{document.RootElement.GetProperty("ok").GetBoolean()}:{validation.ErrorMessage}";
     }
 }`;
       const reflectiveInputMutationSource = `
@@ -591,6 +597,22 @@ public class Solution
       );
       fastTraceHardLimitedRunner.terminate();
 
+      const fastTraceFailureRunner = await createHarness(
+        'runner',
+        runnerBaseUrl
+      );
+      const fastTraceFailure = await fastTraceFailureRunner.send(
+        'execute-prepared-trace',
+        {
+          prepared: descriptor(source, 'Add', 'trace', fastTracePrepared),
+          inputs: { left: -1, right: 23 },
+          inputBytes: encodeTwoInt32(-1, 23),
+          assetBaseUrl: runnerBaseUrl,
+          timeoutMs: 10_000,
+        }
+      );
+      fastTraceFailureRunner.terminate();
+
       const structuredInputs = {
         payload: {
           Name: 'Ada',
@@ -702,6 +724,7 @@ public class Solution
         },
         fastTraceLimited,
         fastTraceHardLimited,
+        fastTraceFailure,
         structured,
         structuredTrace,
         nonMutatingVoid,
@@ -761,6 +784,12 @@ public class Solution
           (event) => event.kind === 'timeout' && event.reason === 'line-limit'
         ) === true,
       `TraceCLR algorithm-fast tracing did not preserve thrown line-limit semantics: ${JSON.stringify(result.fastTraceHardLimited)}`
+    );
+    assertCondition(
+      !result.fastTraceFailure.success &&
+        result.fastTraceFailure.error?.includes('learner boom') === true &&
+        (result.fastTraceFailure.events?.length ?? 0) > 0,
+      `TraceCLR algorithm-fast tracing did not preserve partial traces for learner exceptions: ${JSON.stringify(result.fastTraceFailure)}`
     );
     assertCondition(
       result.valid.success &&
@@ -836,13 +865,13 @@ public class Solution
     );
     assertCondition(
       result.structured.success &&
-        result.structured.output === 'Ada:6:7:True:True' &&
+        result.structured.output === 'Ada:6:7:True:True:valid' &&
         result.structured.timings?.compileCacheHit === true,
       `Disposable C# runner lost dynamic object/BCL semantics: ${JSON.stringify(result.structured)}`
     );
     assertCondition(
       result.structuredTrace.success &&
-        result.structuredTrace.output === 'Ada:6:7:True:True' &&
+        result.structuredTrace.output === 'Ada:6:7:True:True:valid' &&
         (result.structuredTrace.events?.length ?? 0) > 0 &&
         result.structuredTrace.timings?.compileCacheHit === true,
       `Disposable C# runner lost structured tracing semantics: ${JSON.stringify(result.structuredTrace)}`

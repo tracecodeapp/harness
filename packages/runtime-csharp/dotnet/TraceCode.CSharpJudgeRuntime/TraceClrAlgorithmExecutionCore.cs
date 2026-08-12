@@ -87,10 +87,38 @@ public static class TraceClrAlgorithmExecutionCore
         {
             return LimitResult(source, recordTrace, minimalTrace, traceLimit.Message, traceLimit.TimeoutReason);
         }
+        catch (Exception error)
+        {
+            return FailureResult(
+                source,
+                recordTrace,
+                minimalTrace,
+                error.GetBaseException().Message
+            );
+        }
         finally
         {
             RuntimeTraceSink.Reset();
         }
+    }
+
+    private static TraceClrAlgorithmExecutionResult FailureResult(
+        string source,
+        bool recordTrace,
+        bool minimalTrace,
+        string error
+    )
+    {
+        List<RuntimeTraceEvent> events = RuntimeTraceSink.Snapshot();
+        TraceEventBackfill.Apply(source, events, recordTrace && minimalTrace);
+        return new TraceClrAlgorithmExecutionResult(
+            false,
+            null,
+            events,
+            RuntimeTraceSink.TraceLimitExceeded,
+            null,
+            error
+        );
     }
 
     private static TraceClrAlgorithmExecutionResult LimitResult(

@@ -1,5 +1,6 @@
 <Project Sdk="Microsoft.NET.Sdk">
   <Import Project="../TraceClr.AlgorithmProfile.props" />
+  <Import Project="../TraceCode.CSharpCompatibilitySurface.props" />
 
   <PropertyGroup>
     <TargetFramework>net10.0</TargetFramework>
@@ -33,11 +34,13 @@
   <!--
     Learner assemblies are compiled and loaded dynamically, so the linker
     cannot discover their BCL calls. Root every assembly exposed by the
-    compiler's Minimal Judge reference pack; assemblies outside that language
-    surface may still be removed as whole units. The general/project runtime
-    and compiler authority are intentionally published without this profile.
+    compiler's Minimal reference pack, plus corpus-discovered references;
+    assemblies outside that language surface may still be removed as whole
+    units. The general/project runtime and compiler authority are intentionally
+    published without this profile.
   -->
   <ItemGroup Condition="'$(TraceCodeRunnerTrimProfile)' == 'JudgeReferences'">
+    <TrimmerRootAssembly Include="@(TraceCodeCSharpCompatibilityAssembly)" />
     <TrimmerRootAssembly Include="@(TraceClrAlgorithmRunnerRootAssembly)" />
   </ItemGroup>
 </Project>
