@@ -22,6 +22,15 @@ support C and C++ translation units, headers, include paths, preprocessor
 definitions, object output and linking, explicit output paths, and nested
 working directories.
 
+The page thread normalizes the runtime manifest and enforces its asset-origin
+policy, but it never fetches, hashes, or materializes TraceCC toolchain bytes.
+The trusted compiler worker owns those expensive operations. Idle prewarm sends
+that worker a narrow-profile request so it can fetch and verify the compiler,
+sysroot, PCH, and runtime object into its cache without compiling or
+instantiating anything. A foreground compile promotes and reuses the same
+worker-side cache. This separation keeps toolchain initialization from blocking
+rendering, input, or animation on the page thread.
+
 Judge remains a TraceKernel consumer. TraceCC changes the compiler authority and
 lifecycle, not the execution or isolation boundary.
 

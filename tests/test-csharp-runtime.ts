@@ -954,9 +954,10 @@ async function testDisposedProviderDoesNotRecreateRunner(): Promise<void> {
     manifestAssetCollection: () => undefined,
   } as unknown as BrowserRuntimeProviderContext;
   const lease = createCSharpBrowserRuntimeProvider().create(context);
-  // Let compiler/standby warmup and its fail-soft replacement settle before
-  // measuring the execution/disposal race.
-  await new Promise<void>((resolve) => setTimeout(resolve, 10));
+  assertCondition(
+    MockCSharpWorker.instances.length === 0,
+    'Creating a C# provider must not warm compiler or runner capacity before host prewarm'
+  );
   const provider = lease.preparedProviders.get('csharp');
   assertCondition(provider, 'C# provider lease should expose prepared execution');
   MockCSharpWorker.responses.push({
@@ -1171,6 +1172,9 @@ async function testStandbyWarmFailureRetriesWithBackoff(): Promise<void> {
   } as unknown as BrowserRuntimeProviderContext;
   const lease = createCSharpBrowserRuntimeProvider().create(context);
   try {
+    const provider = lease.preparedProviders.get('csharp');
+    assertCondition(provider, 'C# provider lease should expose prepared execution');
+    await provider.init().catch(() => undefined);
     await new Promise<void>((resolve) => setTimeout(resolve, 325));
     assertCondition(
       MockCSharpWorker.received.filter((message) => message.type === 'warmup')
@@ -1215,7 +1219,9 @@ async function testLanguageDisposalCanReacquirePreparedCapacity(): Promise<void>
     manifestAssetCollection: () => undefined,
   } as unknown as BrowserRuntimeProviderContext;
   const lease = createCSharpBrowserRuntimeProvider().create(context);
-  await new Promise<void>((resolve) => setTimeout(resolve, 10));
+  const provider = lease.preparedProviders.get('csharp');
+  assertCondition(provider, 'C# lease should retain its prepared provider');
+  await provider.init();
   const retiredInstances = [...MockCSharpWorker.instances];
   lease.disposeLanguage('csharp');
   assertCondition(
@@ -1223,8 +1229,6 @@ async function testLanguageDisposalCanReacquirePreparedCapacity(): Promise<void>
     'C# language disposal should retire current compiler and runner capacity'
   );
 
-  const provider = lease.preparedProviders.get('csharp');
-  assertCondition(provider, 'C# lease should retain its prepared provider');
   MockCSharpWorker.responses.push({
     success: true,
     compiledArtifactKey: 'reacquired-artifact',

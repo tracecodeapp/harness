@@ -56,6 +56,10 @@ class TraceCCCompilerWorkerDouble {
       respond({ success: true });
       return;
     }
+    if (message.type === 'prewarm-trusted-tracecc-assets') {
+      respond({ success: true });
+      return;
+    }
     if (message.type === 'compile-trusted-tracecc') {
       respond({
         success: true,
@@ -105,14 +109,10 @@ function options(
 
 async function testFixedReactorContract(): Promise<void> {
   TraceCCCompilerWorkerDouble.instances = [];
-  const preflightedShards: string[] = [];
   const coordinator = new TraceCCCompilerService(
     options({
       workerUrl:
         '/workers/cpp-worker.js?traceccRole=runner&cache=immutable#worker',
-      assetPreflight: async (shard) => {
-        preflightedShards.push(shard);
-      },
     })
   );
   try {
@@ -174,18 +174,27 @@ async function testFixedReactorContract(): Promise<void> {
       source === 'int main() { return 0; }',
       'The generated runtime include should be supplied by the pinned PCH.'
     );
+    const prewarm = worker.requests.find((request) =>
+      request.type === 'prewarm-trusted-tracecc-assets'
+    );
     assertCondition(
-      preflightedShards.join(',') === 'narrow,narrow',
-      `Warmup and the first compile should preflight only the selected shard; exact cache hits should not preflight again: ${preflightedShards}`
+      prewarm?.payload?.traceccPchUrl === '/tracecc/narrow.pch',
+      `Worker-owned prewarm must select only the narrow shard: ${JSON.stringify(prewarm)}`
     );
     await coordinator.compileTrusted({
       driverSource:
         'std::vector<std::string> values; int main() { return values.size(); }',
     });
+    const broadCompile = worker.requests.find((request) =>
+      request.type === 'compile-trusted-tracecc' &&
+      request.payload?.traceccPchUrl === '/tracecc/broad.pch'
+    );
     assertCondition(
-      preflightedShards.at(-1) === 'broad' &&
-        !preflightedShards.includes('map'),
-      `A broad compile must not preflight the unused map shard: ${preflightedShards}`
+      broadCompile &&
+        !worker.requests.some((request) =>
+          request.payload?.traceccPchUrl === '/tracecc/map.pch'
+        ),
+      'A broad compile must select the broad shard without loading the unused map shard.'
     );
     const runtimeInclude = '#include "tracecode_runtime.hpp"\n';
     await coordinator.compileTrusted({
@@ -193,9 +202,38 @@ async function testFixedReactorContract(): Promise<void> {
         runtimeInclude +
         ' '.repeat(50_000 - new TextEncoder().encode(runtimeInclude).byteLength),
     });
+    const lastCompile = worker.requests.filter((request) =>
+      request.type === 'compile-trusted-tracecc' &&
+      request.payload?.loadOnly !== true
+    ).at(-1);
     assertCondition(
-      preflightedShards.at(-1) === 'narrow',
-      `Shard sizing must use the stripped source sent to Clang: ${preflightedShards}`
+      lastCompile?.payload?.traceccPchUrl === '/tracecc/narrow.pch',
+      'Shard sizing must use the stripped source sent to Clang.'
+    );
+  } finally {
+    coordinator.terminate();
+  }
+}
+
+async function testAssetPrewarmRunsInsideCompilerWorker(): Promise<void> {
+  TraceCCCompilerWorkerDouble.instances = [];
+  const coordinator = new TraceCCCompilerService(options());
+  try {
+    await coordinator.prewarmAssets();
+    const worker = TraceCCCompilerWorkerDouble.instances[0];
+    assertCondition(
+      worker &&
+        worker.requests.some((request) =>
+          request.type === 'prewarm-trusted-tracecc-assets' &&
+          request.payload?.traceccPchUrl === '/tracecc/narrow.pch'
+        ),
+      'asset prewarm must run inside the trusted compiler Worker with the narrow shard'
+    );
+    assertCondition(
+      !worker.requests.some((request) =>
+        request.type === 'compile-trusted-tracecc'
+      ),
+      'asset prewarm must not compile or instantiate TraceCC'
     );
   } finally {
     coordinator.terminate();
@@ -257,6 +295,7 @@ async function testIdleCompilerRetirementRecoversBeforeNextCompile(): Promise<vo
 }
 
 async function main(): Promise<void> {
+  await testAssetPrewarmRunsInsideCompilerWorker();
   await testFixedReactorContract();
   await testCompilerRetirementIsIndependent();
   await testIdleCompilerRetirementRecoversBeforeNextCompile();

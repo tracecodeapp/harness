@@ -24,10 +24,6 @@ export interface TraceCCCompilerServiceOptions {
   readonly compilerIntegrity: CppCompilerIntegrityManifest;
   readonly shards: Readonly<Record<TraceCCCompilerShard, TraceCCCompilerShardAssets>>;
   readonly workerFactory?: BrowserWorkerFactory;
-  /** Preflights the reactor, sysroot, and runtime header without a PCH shard. */
-  readonly commonAssetPreflight?: () => Promise<void>;
-  /** Preflights common assets plus only the selected immutable PCH shard. */
-  readonly assetPreflight?: (shard: TraceCCCompilerShard) => Promise<void>;
   readonly requestTimeoutMs?: number;
   /** Number of completed immutable learner modules retained by the service. */
   readonly artifactCacheEntries?: number;
@@ -165,8 +161,35 @@ implements CppTrustedCompilerService {
       options.requestTimeoutMs ?? DEFAULT_REQUEST_TIMEOUT_MS;
   }
 
+  /**
+   * Fetch and verify the immutable compiler inputs inside the trusted compiler
+   * Worker without compiling or instantiating TraceCC. A foreground compile
+   * joins the Worker's immutable byte cache.
+   */
+  async prewarmAssets(
+    shard: TraceCCCompilerShard = 'narrow'
+  ): Promise<void> {
+    await this.ensureWorker();
+    const selected = this.options.shards[shard];
+    const result = await this.send('prewarm-trusted-tracecc-assets', {
+      ...this.traceccAssets(
+        selected,
+        `/tracecc-assets/${shard}.pch`,
+        `/tracecc-assets/${shard}.o`
+      ),
+      source: 'tracecc-prewarm-assets-v1',
+    });
+    if (result.success !== true) {
+      throw new Error(
+        typeof result.error === 'string'
+          ? result.error
+          : 'TraceCC compiler asset prewarm failed.'
+      );
+    }
+  }
+
   async warmup(shard: TraceCCCompilerShard = 'narrow'): Promise<void> {
-    await this.options.assetPreflight?.(shard);
+    await this.prewarmAssets(shard);
     await this.ensureWorker();
     const selected = this.options.shards[shard];
     const pchPath = `/tracecc-assets/${shard}.pch`;
@@ -254,7 +277,6 @@ implements CppTrustedCompilerService {
           ''
         );
         const shard = traceccShardForDriver(strippedSource);
-        await this.options.assetPreflight?.(shard);
         if (signal?.aborted || generation !== this.generation) {
           throw Object.assign(
             new Error('TraceCC compilation was cancelled.'),
@@ -483,7 +505,6 @@ implements CppTrustedCompilerService {
         error: 'TraceCC trusted Project compilation only accepts compile requests.',
       };
     }
-    await this.options.commonAssetPreflight?.();
     if (signal?.aborted || generation !== this.generation) {
       throw Object.assign(
         new Error('TraceCC Project compilation was cancelled.'),

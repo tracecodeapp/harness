@@ -2,6 +2,12 @@ import {
   PYTHON_RUNTIME_IMAGE_PROTOCOL_VERSION,
   type PythonRuntimeImageAssetDescriptor,
 } from '@tracecode/runtime-browser';
+import {
+  appendWorkerUrlQueryParameter,
+  createWorkerProtocolToken,
+  type BrowserWorkerFactory,
+  type BrowserWorkerLike,
+} from '@tracecode/runtime-browser/internal';
 
 export interface PythonRuntimeImage {
   readonly protocolVersion: typeof PYTHON_RUNTIME_IMAGE_PROTOCOL_VERSION;
@@ -18,7 +24,24 @@ export interface PythonRuntimeImageFactory {
 interface PythonRuntimeImageFactoryOptions {
   readonly descriptor: PythonRuntimeImageAssetDescriptor;
   readonly fetch?: typeof globalThis.fetch;
+  /**
+   * When supplied, immutable image fetching and Wasm compilation run in a
+   * short-lived bootstrap Worker instead of the page realm.
+   */
+  readonly workerUrl?: string;
+  readonly workerFactory?: BrowserWorkerFactory;
+  readonly workerFormat?: 'classic' | 'module';
   readonly timeoutMs?: number;
+}
+
+interface PythonRuntimeImageWorkerReply {
+  readonly id?: string;
+  readonly type?: string;
+  readonly protocolToken?: string;
+  readonly payload?: {
+    readonly error?: string;
+    readonly runtimeImage?: PythonRuntimeImage;
+  };
 }
 
 function fetchOptions(
@@ -85,9 +108,130 @@ export function createPythonRuntimeImageFactory(
   let disposed = false;
   let imagePromise: Promise<PythonRuntimeImage> | null = null;
   let activeBuildController: AbortController | null = null;
+  let activeBootstrapWorker: BrowserWorkerLike | null = null;
+  let activeBootstrapCancellation: (() => void) | null = null;
+
+  const buildInWorker = (): Promise<PythonRuntimeImage> =>
+    new Promise((resolve, reject) => {
+      if (!options.workerUrl) {
+        reject(new Error('Python runtime-image bootstrap requires a worker URL.'));
+        return;
+      }
+      const workerFormat = options.workerFormat ?? 'classic';
+      let workerUrl = appendWorkerUrlQueryParameter(
+        options.workerUrl,
+        'tracecodePythonRole',
+        'runtime-image'
+      );
+      if (workerFormat === 'module') {
+        workerUrl = appendWorkerUrlQueryParameter(
+          workerUrl,
+          'tracecodePythonWorkerFormat',
+          'module'
+        );
+      }
+      const worker = options.workerFactory
+        ? options.workerFactory(
+            workerUrl,
+            workerFormat === 'module' ? { type: 'module' } : undefined
+          )
+        : new Worker(
+            workerUrl,
+            workerFormat === 'module' ? { type: 'module' } : undefined
+          );
+      activeBootstrapWorker = worker;
+      const id = 'python-runtime-image';
+      const protocolToken = createWorkerProtocolToken();
+      let requested = false;
+      let settled = false;
+      const finish = (operation: () => void) => {
+        if (settled) return;
+        settled = true;
+        globalThis.clearTimeout(timeoutId);
+        worker.terminate();
+        if (activeBootstrapWorker === worker) activeBootstrapWorker = null;
+        activeBootstrapCancellation = null;
+        operation();
+      };
+      const timeoutId = globalThis.setTimeout(() => {
+        finish(() => reject(
+          new Error(
+            `Python runtime image acquisition timed out after ${timeoutMs}ms.`
+          )
+        ));
+      }, timeoutMs);
+      activeBootstrapCancellation = () => {
+        finish(() => reject(
+          new Error('Python runtime image factory was disposed while loading.')
+        ));
+      };
+      worker.onerror = (event) => {
+        finish(() => reject(
+          new Error(
+            event.message || 'Python runtime-image bootstrap Worker crashed.'
+          )
+        ));
+      };
+      worker.onmessage = (event: MessageEvent<PythonRuntimeImageWorkerReply>) => {
+        const message = event.data;
+        if (message?.type === 'worker-ready' && !requested) {
+          requested = true;
+          worker.postMessage({
+            id,
+            type: 'build-runtime-image',
+            protocolToken,
+            payload: {
+              source: 'tracecode-python-runtime-image-v1',
+              descriptor: options.descriptor,
+            },
+          });
+          return;
+        }
+        if (
+          message?.id !== id ||
+          message.protocolToken !== protocolToken
+        ) {
+          return;
+        }
+        if (message.type === 'error') {
+          finish(() => reject(
+            new Error(
+              message.payload?.error ||
+                'Python runtime-image bootstrap failed.'
+            )
+          ));
+          return;
+        }
+        if (message.type !== 'runtime-image-result') return;
+        const image = message.payload?.runtimeImage;
+        if (
+          image?.protocolVersion !== PYTHON_RUNTIME_IMAGE_PROTOCOL_VERSION ||
+          !(image.compiledModule instanceof WebAssembly.Module) ||
+          !(image.snapshot instanceof Uint8Array) ||
+          image.snapshot.byteLength === 0 ||
+          typeof image.pythonHashSeed !== 'string' ||
+          image.pythonHashSeed.length === 0
+        ) {
+          finish(() => reject(
+            new Error('Python runtime-image bootstrap returned an invalid image.')
+          ));
+          return;
+        }
+        finish(() => resolve(Object.freeze(image)));
+      };
+    });
 
   const build = async (): Promise<PythonRuntimeImage> => {
     if (disposed) throw new Error('Python runtime image factory is disposed.');
+    if (options.workerUrl) {
+      const image = await buildInWorker();
+      if (disposed) {
+        throw new Error(
+          'Python runtime image factory was disposed while loading.'
+        );
+      }
+      return image;
+    }
     const controller = new AbortController();
     activeBuildController = controller;
     let timeoutId: ReturnType<typeof setTimeout> | undefined;
@@ -221,6 +365,10 @@ export function createPythonRuntimeImageFactory(
       disposed = true;
       activeBuildController?.abort();
       activeBuildController = null;
+      activeBootstrapCancellation?.();
+      activeBootstrapCancellation = null;
+      activeBootstrapWorker?.terminate();
+      activeBootstrapWorker = null;
       imagePromise = null;
     },
   });

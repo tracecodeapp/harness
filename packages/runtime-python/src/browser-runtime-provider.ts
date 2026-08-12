@@ -63,8 +63,16 @@ export function createPythonBrowserRuntimeProvider(
       const createRuntimeImageFactory = () =>
         createPythonRuntimeImageFactory({
           descriptor: runtimeImageDescriptor,
+          workerUrl: context.assets.pythonWorker,
+          ...(workerFactory ? { workerFactory } : {}),
+          ...(pythonManifest?.workerFormat
+            ? { workerFormat: pythonManifest.workerFormat }
+            : {}),
         });
       let runtimeImageFactory = createRuntimeImageFactory();
+      const runtimeImageWorkerPreflight = context.preflight('python', [
+        'worker',
+      ]);
       const workerOptions = () => ({
         workerUrl: context.assets.pythonWorker,
         ...(workerFactory ? { workerFactory } : {}),
@@ -122,6 +130,9 @@ export function createPythonBrowserRuntimeProvider(
       } = {
         preparedProviders,
         preflightLanguage: async () => {
+          // The page verifies only the small bootstrap program. Its Worker
+          // owns the CPython Wasm/snapshot fetch, integrity check, and compile.
+          await runtimeImageWorkerPreflight();
           await runtimeImageFactory.acquire();
         },
         disposeLanguage: () => {

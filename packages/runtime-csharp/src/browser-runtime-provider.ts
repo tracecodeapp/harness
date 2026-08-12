@@ -310,7 +310,6 @@ export function createCSharpBrowserRuntimeProvider(
         standbyWarmup = warmup;
         return warmup;
       };
-      void ensureStandbyRunner().catch(() => undefined);
       const preparedAuthority = preparedAuthorityEnabled
         ? {
             compiler,

@@ -37,6 +37,20 @@ import {
 import type {
   BrowserSafeExecutionOptions,
 } from './worker-lifecycle-policy';
+import {
+  createPromotableBrowserBackgroundTask,
+  type PromotableBrowserBackgroundTask,
+} from './background-work-scheduler';
+
+type BrowserRuntimeWarmResult = {
+  success: boolean;
+  loadTimeMs: number;
+};
+
+interface BrowserRuntimeWarmEntry {
+  readonly task: PromotableBrowserBackgroundTask;
+  readonly result: Promise<BrowserRuntimeWarmResult>;
+}
 
 export interface BrowserRuntimeHostExecutionHostOptions
   extends BrowserExecutionWorkerHostOptions {
@@ -79,9 +93,14 @@ export interface BrowserRuntimeHost {
   isLanguageSupported(language: Language): boolean;
   preflightLanguage(language: Language): Promise<BrowserRuntimeReadiness>;
   preflight(): Promise<BrowserRuntimeEnvironmentReport>;
+  /** Queue runtime initialization at browser-idle/background priority. */
+  prewarmLanguage(
+    language: Language
+  ): Promise<BrowserRuntimeWarmResult>;
+  /** Promote queued initialization immediately and await readiness. */
   warmLanguage(
     language: Language
-  ): Promise<{ success: boolean; loadTimeMs: number }>;
+  ): Promise<BrowserRuntimeWarmResult>;
   disposeLanguage(language: Language): void;
   dispose(): void;
 }
@@ -235,6 +254,11 @@ class BrowserRuntimeHostImplementation implements BrowserRuntimeHost {
     Language,
     ReusablePreparedProvider
   >();
+  readonly #providerInitializers = new Map<
+    Language,
+    () => Promise<BrowserRuntimeWarmResult>
+  >();
+  readonly #warmEntries = new Map<Language, BrowserRuntimeWarmEntry>();
   readonly #leases: BrowserRuntimeProviderLease[] = [];
   readonly #leaseByLanguage = new Map<
     Language,
@@ -289,16 +313,25 @@ class BrowserRuntimeHostImplementation implements BrowserRuntimeHost {
             language,
             preparedProvider
           );
+          const safeProvider = safePreparedProvider(
+            language,
+            preparedProvider,
+            () => this.#assertActive(),
+            () => this.#ensureLanguageReady(language)
+          );
+          this.#providerInitializers.set(
+            language,
+            () => safeProvider.init()
+          );
           this.#preparedProviders.set(
             language,
-            withPreparedProgramReuse(
-              safePreparedProvider(
-                language,
-                preparedProvider,
-                () => this.#assertActive(),
-                () => this.#ensureLanguageReady(language)
-              )
-            )
+            withPreparedProgramReuse({
+              init: () => this.#promoteLanguageWarm(language),
+              prepareProgram: async (call) => {
+                await this.#promoteLanguageWarm(language);
+                return safeProvider.prepareProgram(call);
+              },
+            })
           );
           this.#leaseByLanguage.set(language, lease);
         }
@@ -347,6 +380,45 @@ class BrowserRuntimeHostImplementation implements BrowserRuntimeHost {
     if (this.#disposed) {
       throw new Error('Browser runtime host has been disposed.');
     }
+  }
+
+  #warmEntry(language: Language): BrowserRuntimeWarmEntry {
+    const existing = this.#warmEntries.get(language);
+    if (existing) return existing;
+    const initialize = this.#providerInitializers.get(language);
+    if (!initialize) {
+      throw new Error(
+        `Prepared runtime for language "${language}" is not registered.`
+      );
+    }
+    let warmResult: BrowserRuntimeWarmResult | undefined;
+    const task = createPromotableBrowserBackgroundTask(async () => {
+      warmResult = await initialize();
+    });
+    const result = task.wait().then(() => {
+      if (!warmResult) {
+        throw new Error(
+          `Browser runtime for ${JSON.stringify(language)} completed warmup without a result.`
+        );
+      }
+      return warmResult;
+    });
+    const entry = { task, result };
+    this.#warmEntries.set(language, entry);
+    void result.catch(() => {
+      if (this.#warmEntries.get(language) === entry) {
+        this.#warmEntries.delete(language);
+      }
+    });
+    return entry;
+  }
+
+  async #promoteLanguageWarm(
+    language: Language
+  ): Promise<BrowserRuntimeWarmResult> {
+    const entry = this.#warmEntry(language);
+    await entry.task.promote();
+    return entry.result;
   }
 
   isLanguageSupported(language: Language): boolean {
@@ -439,9 +511,9 @@ class BrowserRuntimeHostImplementation implements BrowserRuntimeHost {
     });
   }
 
-  warmLanguage(
+  prewarmLanguage(
     language: Language
-  ): Promise<{ success: boolean; loadTimeMs: number }> {
+  ): Promise<BrowserRuntimeWarmResult> {
     this.#assertActive();
     if (!this.supportedLanguages.includes(language)) {
       return Promise.reject(
@@ -450,11 +522,27 @@ class BrowserRuntimeHostImplementation implements BrowserRuntimeHost {
         )
       );
     }
-    return this.#preparedProviders.get(language)!.init();
+    return this.#warmEntry(language).result;
+  }
+
+  warmLanguage(
+    language: Language
+  ): Promise<BrowserRuntimeWarmResult> {
+    this.#assertActive();
+    if (!this.supportedLanguages.includes(language)) {
+      return Promise.reject(
+        new Error(
+          `Runtime for language "${language}" is not selected in this browser environment.`
+        )
+      );
+    }
+    return this.#promoteLanguageWarm(language);
   }
 
   disposeLanguage(language: Language): void {
     if (this.#disposed || !this.supportedLanguages.includes(language)) return;
+    this.#warmEntries.get(language)?.task.cancel();
+    this.#warmEntries.delete(language);
     this.#preparedProviders.get(language)?.flushPreparedProgramCache();
     this.#leaseByLanguage.get(language)?.disposeLanguage(language);
   }
@@ -462,6 +550,8 @@ class BrowserRuntimeHostImplementation implements BrowserRuntimeHost {
   dispose(): void {
     if (this.#disposed) return;
     this.#disposed = true;
+    for (const entry of this.#warmEntries.values()) entry.task.cancel();
+    this.#warmEntries.clear();
     this.#readinessByLanguage.clear();
     for (const provider of this.#preparedProviders.values()) {
       provider.flushPreparedProgramCache();

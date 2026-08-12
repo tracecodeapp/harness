@@ -8,6 +8,7 @@ import vm from 'node:vm';
 import { createCppBrowserRuntimeProvider } from '../packages/runtime-cpp/src/browser-runtime-provider';
 import { CppWorkerClient } from '../packages/runtime-cpp/src/cpp-worker-client';
 import { createCppPreparedExecutionProvider } from '../packages/runtime-cpp/src/cpp-prepared-provider';
+import { createTraceCCRuntimeManifest } from '../packages/runtime-cpp/src/tracecc-runtime-assets';
 
 function assertCondition(condition: unknown, message: string): asserts condition {
   if (!condition) throw new Error(message);
@@ -122,6 +123,7 @@ class PreparedProtocolWorker {
 
   onmessage: ((event: MessageEvent<WorkerMessage>) => void) | null = null;
   onerror: ((event: ErrorEvent) => void) | null = null;
+  readonly messages: WorkerMessage[] = [];
   terminated = false;
   private pendingPreparation: WorkerMessage | null = null;
   private preparedMode: 'code' | 'trace' | null = null;
@@ -135,11 +137,16 @@ class PreparedProtocolWorker {
 
   postMessage(message: WorkerMessage): void {
     if (this.terminated) return;
+    this.messages.push(message);
     if (message.type === 'init') {
       queueMicrotask(() => this.reply(message, {
         success: true,
         loadTimeMs: 0,
       }));
+      return;
+    }
+    if (message.type === 'prewarm-trusted-tracecc-assets') {
+      queueMicrotask(() => this.reply(message, { success: true }));
       return;
     }
     if (message.type === 'prepare-runtime-program') {
@@ -298,6 +305,9 @@ async function testBrowserProviderPreparedLeaseExposure(): Promise<void> {
           sha256: 'a'.repeat(64),
         }],
       },
+      runtimeManifests: {
+        cpp: createTraceCCRuntimeManifest('/workers/cpp/tracecc'),
+      },
     } as never,
     debug: false,
     prewarmAfterUse: true,
@@ -317,6 +327,152 @@ async function testBrowserProviderPreparedLeaseExposure(): Promise<void> {
     );
   } finally {
     lease.dispose();
+  }
+}
+
+async function testBrowserProviderDefersCompilerWarmupUntilPreparation(): Promise<void> {
+  const originalWorker = globalThis.Worker;
+  const originalRequestIdleCallback = globalThis.requestIdleCallback;
+  const originalCancelIdleCallback = globalThis.cancelIdleCallback;
+  PreparedProtocolWorker.instances = [];
+  const executedPreflights: string[][] = [];
+  let idleCallback: IdleRequestCallback | null = null;
+  // @ts-expect-error focused Worker test double
+  globalThis.Worker = PreparedProtocolWorker;
+  globalThis.requestIdleCallback = (callback) => {
+    idleCallback = callback;
+    return 1;
+  };
+  globalThis.cancelIdleCallback = () => undefined;
+  const lease = createCppBrowserRuntimeProvider().create({
+    assets: {
+      cppWorker: '/workers/cpp-worker.js',
+      cppCompilerFrame: '/workers/cpp-compiler-frame.html',
+      cppCompilerWorker: '/workers/cpp-compiler-worker.js',
+      cppCompilerWasm: '/workers/cpp/tracecc/tracecc-reactor.wasm',
+      cppLinkerWasm: '/workers/cpp/tracecc/tracecc-reactor.wasm',
+      cppSysroot: '/workers/cpp/tracecc/llvm-resources.tar',
+      cppRuntimeHeader: '/workers/cpp/tracecc/tracecode_runtime.hpp',
+      cppCompilerBundle: '',
+      cppCompilerIntegrity: { assets: [] },
+      runtimeManifests: {
+        cpp: createTraceCCRuntimeManifest('/workers/cpp/tracecc'),
+      },
+    } as never,
+    debug: false,
+    prewarmAfterUse: false,
+    workerFactoryFor: () => undefined,
+    preflight: (_language: string, assetNames: readonly string[]) => async () => {
+      executedPreflights.push([...assetNames]);
+    },
+    manifestAsset: () => undefined,
+    manifestAssetCollection: () => undefined,
+  } as never);
+  try {
+    const provider = lease.preparedProviders?.get('cpp');
+    assertCondition(provider, 'C++ prepared provider should be registered');
+    const result = await provider.init();
+    assertCondition(result.success, `C++ standby initialization failed: ${JSON.stringify(result)}`);
+    assertCondition(idleCallback, 'entering a C++ surface should queue compiler warmup at browser idle');
+    assertCondition(
+      PreparedProtocolWorker.instances.length === 1 &&
+        !String(PreparedProtocolWorker.instances[0]?.url).includes('traceccRole=compiler'),
+      `entering a C++ surface must not start the compiler Worker: ${PreparedProtocolWorker.instances.map((worker) => worker.url)}`
+    );
+    assertCondition(
+      executedPreflights.length === 0,
+      `entering a C++ surface must not fetch runtime bytes in the page realm: ${JSON.stringify(executedPreflights)}`
+    );
+    const queuedIdleCallback = idleCallback as unknown as IdleRequestCallback;
+    queuedIdleCallback({
+      didTimeout: false,
+      timeRemaining: () => 50,
+    });
+    await new Promise<void>((resolve) => setTimeout(resolve, 0));
+    const compilerWorker = PreparedProtocolWorker.instances.find((worker) =>
+      String(worker.url).includes('traceccRole=compiler')
+    );
+    assertCondition(
+      compilerWorker,
+      `idle compiler asset prewarm must start the trusted compiler Worker: ${PreparedProtocolWorker.instances.map((worker) => worker.url)}`
+    );
+    assertCondition(
+      compilerWorker.messages?.some((message) =>
+        message.type === 'prewarm-trusted-tracecc-assets' &&
+        String(message.payload?.traceccPchUrl).includes('narrow')
+      ) === true,
+      'idle compiler asset prewarm must fetch and verify the narrow toolchain inside the Worker'
+    );
+  } finally {
+    lease.dispose();
+    globalThis.Worker = originalWorker;
+    globalThis.requestIdleCallback = originalRequestIdleCallback;
+    globalThis.cancelIdleCallback = originalCancelIdleCallback;
+  }
+}
+
+async function testCompilePromotesQueuedCompilerPrewarm(): Promise<void> {
+  const events: string[] = [];
+  let clientSequence = 0;
+  let queuedPrewarm: (() => Promise<void>) | null = null;
+  let promotedTask: Promise<void> | null = null;
+  const provider = createCppPreparedExecutionProvider({
+    createWorkerClient: () => {
+      const clientId = ++clientSequence;
+      return {
+        async init() {
+          events.push(`init:${clientId}`);
+          return { success: true, loadTimeMs: 0 };
+        },
+        async prepareRuntimeProgram() {
+          events.push(`prepare:${clientId}`);
+          return {
+            success: false,
+            error: 'focused promotion stop',
+            consoleOutput: [],
+          };
+        },
+        terminate() {
+          events.push(`terminate:${clientId}`);
+        },
+      } as never;
+    },
+    prewarmCompiler: async () => {
+      events.push('prewarm-assets');
+    },
+    scheduleCompilerPrewarm: (prewarm) => {
+      queuedPrewarm = prewarm;
+      return {
+        promote: () => {
+          promotedTask ??= prewarm();
+          return promotedTask;
+        },
+        wait: () => promotedTask ?? new Promise<void>(() => undefined),
+        cancel: () => undefined,
+      };
+    },
+  });
+  try {
+    await provider.init();
+    assertCondition(queuedPrewarm, 'provider init should queue a promotable compiler asset prewarm');
+    assertCondition(
+      !events.includes('prewarm-assets'),
+      `queued compiler asset prewarm must not run eagerly: ${events}`
+    );
+    await provider.prepareProgram({
+      mode: 'code',
+      code: 'int add(int a, int b) { return a + b; }',
+      functionName: 'add',
+      executionStyle: 'function',
+    });
+    const warmupIndex = events.indexOf('prewarm-assets');
+    const prepareIndex = events.findIndex((event) => event.startsWith('prepare:'));
+    assertCondition(
+      warmupIndex >= 0 && prepareIndex > warmupIndex,
+      `the first compile should promote and await queued compiler warmup: ${events}`
+    );
+  } finally {
+    provider.terminate();
   }
 }
 
@@ -1132,4 +1288,6 @@ async function main(): Promise<void> {
   console.log('C++ compiler lifecycle tests passed');
 }
 
+test('cpp browser provider prewarms assets inside TraceCC without page fetches', testBrowserProviderDefersCompilerWarmupUntilPreparation);
+test('cpp compile promotes queued compiler asset prewarm', testCompilePromotesQueuedCompilerPrewarm);
 test('cpp compiler lifecycle', main);

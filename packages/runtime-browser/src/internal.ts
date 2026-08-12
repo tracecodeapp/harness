@@ -1,4 +1,5 @@
 export * from './browser-client-env';
+export * from './background-work-scheduler';
 export * from './execution-host';
 export * from './host-artifact-cache';
 export * from './kernel-http-async';

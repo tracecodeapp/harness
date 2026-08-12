@@ -13927,51 +13927,27 @@ async function loadTraceccCompiler(request) {
   if (traceccCompilerPromise) return traceccCompilerPromise;
   traceccCompilerPromise = (async () => {
     const [
-      compilerResponse,
-      resourceResponse,
+      compilerAsset,
+      resourceAsset,
     ] = await Promise.all([
-      fetchPinnedTraceccAssetResponse(
-        'TraceCC compiler',
-        String(request?.traceccCompilerUrl || '')
+      loadTraceccCompilerAsset(
+        request?.traceccCompilerUrl,
+        'compiler'
       ),
-      fetchPinnedTraceccAssetResponse(
-        'TraceCC resources',
-        String(request?.traceccResourcesUrl || '')
+      loadTraceccCompilerAsset(
+        request?.traceccResourcesUrl,
+        'resources'
       ),
     ]);
-    if (!compilerResponse.ok) {
-      throw new Error(
-        `TraceCC compiler fetch failed (${compilerResponse.status} ${compilerResponse.statusText})`
-      );
+    if (!(compilerAsset instanceof Uint8Array)) {
+      throw new Error('TraceCC compiler bytes are unavailable.');
     }
-    if (!resourceResponse.ok) {
-      throw new Error(
-        `TraceCC resource fetch failed (${resourceResponse.status} ${resourceResponse.statusText})`
-      );
+    if (!(resourceAsset instanceof Uint8Array)) {
+      throw new Error('TraceCC resource bytes are unavailable.');
     }
-    const compilerBytes =
-      Number(compilerResponse.headers.get('content-length')) || 0;
-    const compilerContentType = String(
-      compilerResponse.headers.get('content-type') || ''
-    )
-      .split(';', 1)[0]
-      .trim()
-      .toLowerCase();
-    const modulePromise =
-      request?.compileStreaming !== false &&
-      typeof WebAssembly.compileStreaming === 'function' &&
-      compilerContentType === 'application/wasm'
-        ? WebAssembly.compileStreaming(compilerResponse)
-        : compilerResponse
-            .arrayBuffer()
-            .then((buffer) => WebAssembly.compile(buffer));
-    const [
-      module,
-      resourceBuffer,
-    ] = await Promise.all([
-      modulePromise,
-      resourceResponse.arrayBuffer(),
-    ]);
+    const compilerBytes = compilerAsset.byteLength;
+    const resourceBuffer = arrayBufferFromBytes(resourceAsset);
+    const module = await WebAssembly.compile(compilerAsset);
     const memoryImports = WebAssembly.Module.imports(module).filter(
       (item) => item.kind === 'memory'
     );
@@ -14004,7 +13980,7 @@ async function loadTraceccCompiler(request) {
       fsTemplate: fs,
       compilerBytes,
       linkerBytes: compilerBytes,
-      resourceBytes: resourceBuffer.byteLength,
+      resourceBytes: resourceAsset.byteLength,
       reactorPromise: null,
     };
   })();
@@ -14086,6 +14062,29 @@ async function loadTraceccCompilationAssets(request) {
   return Object.fromEntries(
     entries.map((entry) => [entry.key, entry])
   );
+}
+
+async function prewarmTraceccAssets(request) {
+  const assets = await Promise.all([
+    loadTraceccCompilerAsset(
+      request?.traceccCompilerUrl,
+      'compiler'
+    ),
+    loadTraceccCompilerAsset(
+      request?.traceccResourcesUrl,
+      'resources'
+    ),
+    loadTraceccCompilationAssets(request),
+  ]);
+  const [compiler, resources, compilationAssets] = assets;
+  return {
+    success: true,
+    compilerBytes: compiler?.byteLength || 0,
+    resourceBytes: resources?.byteLength || 0,
+    pchBytes: compilationAssets.pch?.bytes?.byteLength || 0,
+    runtimeObjectBytes:
+      compilationAssets.runtimeObject?.bytes?.byteLength || 0,
+  };
 }
 
 function mountTraceccCompilationAssets(fs, assets) {
@@ -16145,8 +16144,11 @@ self.onmessage = (event) => {
   if (
     (traceccCompilerWorker &&
       type !== 'init' &&
-      type !== 'compile-trusted-tracecc') ||
-    (!traceccCompilerWorker && type === 'compile-trusted-tracecc')
+      type !== 'compile-trusted-tracecc' &&
+      type !== 'prewarm-trusted-tracecc-assets') ||
+    (!traceccCompilerWorker &&
+      (type === 'compile-trusted-tracecc' ||
+        type === 'prewarm-trusted-tracecc-assets'))
   ) {
     trustedCppWorkerPostMessage({
       id,
@@ -16154,7 +16156,7 @@ self.onmessage = (event) => {
       type: 'error',
       payload: {
         error: traceccCompilerWorker
-          ? `The TraceCC compiler Worker at ${String(self.location?.href || '')} rejected "${String(type)}"; it accepts only initialization and trusted compile requests.`
+          ? `The TraceCC compiler Worker at ${String(self.location?.href || '')} rejected "${String(type)}"; it accepts only initialization, asset prewarm, and trusted compile requests.`
           : 'Trusted TraceCC compilation is unavailable in a learner runner.',
       },
     });
@@ -16200,6 +16202,14 @@ self.onmessage = (event) => {
             break;
           case 'compile-trusted-tracecc':
             result = await handleTrustedTraceccCompile(payload);
+            break;
+          case 'prewarm-trusted-tracecc-assets':
+            if (payload?.source !== 'tracecc-prewarm-assets-v1') {
+              throw new Error(
+                'The trusted TraceCC prewarm lane only accepts the fixed asset protocol.'
+              );
+            }
+            result = await prewarmTraceccAssets(payload);
             break;
           case 'execute-project-cpp':
             result = await withRuntimeUserAuthorityLockdown(

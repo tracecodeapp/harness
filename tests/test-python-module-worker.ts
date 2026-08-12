@@ -18,6 +18,10 @@ interface PostedMessage {
   protocolToken?: string;
 }
 
+const MINIMAL_WASM = new Uint8Array([
+  0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00,
+]);
+
 class CapturingWorker {
   static instances: CapturingWorker[] = [];
   static lifecycle: string[] = [];
@@ -34,6 +38,26 @@ class CapturingWorker {
 
   postMessage(message: PostedMessage): void {
     this.messages.push(message);
+    if (message.type === 'build-runtime-image') {
+      void WebAssembly.compile(MINIMAL_WASM).then((compiledModule) => {
+        this.onmessage?.({
+          data: {
+            id: message.id,
+            protocolToken: message.protocolToken,
+            type: 'runtime-image-result',
+            payload: {
+              runtimeImage: {
+                protocolVersion: 'tracecode-python-runtime-image-v1',
+                compiledModule,
+                snapshot: new Uint8Array([0]),
+                pythonHashSeed: '0',
+              },
+            },
+          },
+        } as MessageEvent);
+      });
+      return;
+    }
     let type = `${message.type}-result`;
     let payload: Record<string, unknown> = { success: true, loadTimeMs: 0 };
     if (message.type === 'init') type = 'init-result';
@@ -65,6 +89,29 @@ function modulePythonManifest(): BrowserRuntimeAssetManifest<'python'> {
       snippets: { url: 'generated-python-harness-snippets.js' },
       runtimeLoader: { url: 'pyodide.mjs' },
       runtimeIndex: { url: './' },
+      runtimeImage: {
+        protocolVersion: 'tracecode-python-runtime-image-v1',
+        engine: 'chromium',
+        pythonHashSeed: '0',
+        wasm: {
+          url: 'data:application/wasm;base64,AGFzbQEAAAA=',
+          integrity:
+            'sha256-k6RLu5bHUSGOTADUeeTBQ1gSKjiazKFiBbHk0NxflHY=',
+          mediaType: 'application/wasm',
+          size: 8,
+          originPolicy: { mode: 'any' },
+          delivery: { mutability: 'immutable', address: 'content' },
+        },
+        snapshot: {
+          url: 'data:application/octet-stream;base64,AA==',
+          integrity:
+            'sha256-bjQLnP+zepicpUTmu3gKLHiQHT+zNzh2hRGjBhevoB0=',
+          mediaType: 'application/octet-stream',
+          size: 1,
+          originPolicy: { mode: 'any' },
+          delivery: { mutability: 'immutable', address: 'content' },
+        },
+      },
     },
   };
 }
@@ -145,9 +192,12 @@ async function assertClientHostAndProjectPaths(): Promise<void> {
   const host = createBrowserRuntimeHost({
     assets: { runtimeManifests: { python: modulePythonManifest() } },
     providers: ['python'],
+    engine: 'chromium',
   });
   await host.warmLanguage('python');
-  const hostWorker = CapturingWorker.instances[0];
+  const hostWorker = CapturingWorker.instances.find((worker) =>
+    worker.messages.some((message) => message.type === 'init')
+  );
   assertCondition(
     hostWorker?.options?.type === 'module',
     'Browser runtime host did not honor the module Python manifest'
