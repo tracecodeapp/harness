@@ -40,6 +40,16 @@ const DECLARED_PYTHON_WORKER_FORMAT = (() => {
     return 'classic';
   }
 })();
+const DECLARED_PYTHON_WORKER_ROLE = (() => {
+  try {
+    const search = typeof self.location?.search === 'string' ? self.location.search : '';
+    return new URLSearchParams(search).get('tracecodePythonRole') === 'runtime-image'
+      ? 'runtime-image'
+      : 'execution';
+  } catch {
+    return 'execution';
+  }
+})();
 const CONFIGURED_PYTHON_SNIPPETS_BOOTSTRAP_URL = (() => {
   try {
     const search = typeof self.location?.search === 'string' ? self.location.search : '';
@@ -124,6 +134,79 @@ function configurePythonRuntimeImage(value) {
     compiledModule: value.compiledModule,
     snapshot,
     pythonHashSeed: value.pythonHashSeed,
+  };
+}
+
+function assertPythonRuntimeImageAssetDescriptor(name, value) {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    throw new Error(`Python runtime image ${name} descriptor is required.`);
+  }
+  if (typeof value.url !== 'string' || !value.url.trim()) {
+    throw new Error(`Python runtime image ${name} URL is required.`);
+  }
+  if (typeof value.integrity !== 'string' || !value.integrity.startsWith('sha256-')) {
+    throw new Error(`Python runtime image ${name} requires SHA-256 integrity.`);
+  }
+  if (!Number.isSafeInteger(value.size) || value.size <= 0) {
+    throw new Error(`Python runtime image ${name} requires a positive decoded size.`);
+  }
+  return value;
+}
+
+async function fetchPythonRuntimeImageBytes(name, descriptor) {
+  const response = await fetch(descriptor.url, {
+    cache: 'force-cache',
+    credentials: 'omit',
+    redirect: 'error',
+    integrity: descriptor.integrity,
+  });
+  if (!response.ok || response.type === 'opaque') {
+    throw new Error(
+      `Python runtime image ${name} request returned HTTP ${response.status}.`
+    );
+  }
+  const bytes = new Uint8Array(await response.arrayBuffer());
+  if (bytes.byteLength !== descriptor.size) {
+    throw new Error(
+      `Python runtime image ${name} decoded size ${bytes.byteLength} did not match declared size ${descriptor.size}.`
+    );
+  }
+  return bytes;
+}
+
+async function buildPythonRuntimeImageInWorker(payload) {
+  if (payload?.source !== 'tracecode-python-runtime-image-v1') {
+    throw new Error(
+      'Python runtime-image bootstrap only accepts the fixed image protocol.'
+    );
+  }
+  const descriptor = payload?.descriptor;
+  if (
+    !descriptor ||
+    descriptor.protocolVersion !== PYTHON_RUNTIME_IMAGE_PROTOCOL_VERSION ||
+    typeof descriptor.pythonHashSeed !== 'string' ||
+    !descriptor.pythonHashSeed.trim()
+  ) {
+    throw new Error('Python runtime-image bootstrap descriptor is invalid.');
+  }
+  const wasmDescriptor = assertPythonRuntimeImageAssetDescriptor(
+    'Wasm',
+    descriptor.wasm
+  );
+  const snapshotDescriptor = assertPythonRuntimeImageAssetDescriptor(
+    'snapshot',
+    descriptor.snapshot
+  );
+  const [wasmBytes, snapshot] = await Promise.all([
+    fetchPythonRuntimeImageBytes('Wasm', wasmDescriptor),
+    fetchPythonRuntimeImageBytes('snapshot', snapshotDescriptor),
+  ]);
+  const compiledModule = await WebAssembly.compile(wasmBytes);
+  return {
+    protocolVersion: PYTHON_RUNTIME_IMAGE_PROTOCOL_VERSION,
+    compiledModule,
+    snapshot,
+    pythonHashSeed: descriptor.pythonHashSeed,
   };
 }
 
@@ -510,7 +593,11 @@ async function ensurePythonLibraryPackages(runtime) {
 
 // Load generated shared harness snippets when available. Keep worker startup
 // resilient by falling back to embedded implementations if this import fails.
-if (DECLARED_PYTHON_WORKER_FORMAT === 'classic' && typeof importScripts === 'function') {
+if (
+  DECLARED_PYTHON_WORKER_ROLE === 'execution' &&
+  DECLARED_PYTHON_WORKER_FORMAT === 'classic' &&
+  typeof importScripts === 'function'
+) {
   for (const scriptPath of SHARED_KERNEL_POLICY_CLASSIC_PATHS) {
     try {
       importScripts(scriptPath);
@@ -9159,7 +9246,40 @@ async function processMessage(data) {
       trustedPythonWorkerPostMessage({ id, type: 'error', payload: { error: 'Missing Python worker protocol token.' } });
       return;
     }
+    if (
+      (DECLARED_PYTHON_WORKER_ROLE === 'runtime-image' &&
+        type !== 'build-runtime-image') ||
+      (DECLARED_PYTHON_WORKER_ROLE !== 'runtime-image' &&
+        type === 'build-runtime-image')
+    ) {
+      trustedPythonWorkerPostMessage({
+        id,
+        type: 'error',
+        protocolToken,
+        payload: {
+          error:
+            DECLARED_PYTHON_WORKER_ROLE === 'runtime-image'
+              ? 'The Python runtime-image Worker accepts only image bootstrap requests.'
+              : 'Python runtime-image bootstrap is unavailable in an execution Worker.',
+        },
+      });
+      return;
+    }
     switch (type) {
+      case 'build-runtime-image': {
+        const runtimeImage = await buildPythonRuntimeImageInWorker(payload);
+        trustedPythonWorkerPostMessage(
+          {
+            id,
+            type: 'runtime-image-result',
+            protocolToken,
+            payload: { runtimeImage },
+          },
+          [runtimeImage.snapshot.buffer]
+        );
+        break;
+      }
+
       case 'init': {
         const startTime = performance.now();
         configurePythonWorkerOptions(payload);

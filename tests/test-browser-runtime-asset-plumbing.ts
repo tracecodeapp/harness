@@ -22,6 +22,10 @@ interface PostedMessage {
   protocolToken?: string;
 }
 
+const MINIMAL_WASM = new Uint8Array([
+  0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00,
+]);
+
 class CapturingWorker {
   static instances: CapturingWorker[] = [];
   static fetches: string[] = [];
@@ -39,6 +43,26 @@ class CapturingWorker {
   postMessage(message: PostedMessage): void {
     this.messages.push(message);
     this.fetchesAtMessage.set(message.type, [...CapturingWorker.fetches]);
+    if (message.type === 'build-runtime-image') {
+      void WebAssembly.compile(MINIMAL_WASM).then((compiledModule) => {
+        this.onmessage?.({
+          data: {
+            id: message.id,
+            protocolToken: message.protocolToken,
+            type: 'runtime-image-result',
+            payload: {
+              runtimeImage: {
+                protocolVersion: 'tracecode-python-runtime-image-v1',
+                compiledModule,
+                snapshot: new Uint8Array([0]),
+                pythonHashSeed: '0',
+              },
+            },
+          },
+        } as MessageEvent);
+      });
+      return;
+    }
     const responseType = message.type === 'warmup' ? 'warmup-result' : `${message.type}-result`;
     const payload = message.type.startsWith('execute-project-')
       ? { stdout: '', stderr: '', exitCode: 0, files: [] }
@@ -254,7 +278,7 @@ async function testManifestAssetsReachWorkerInitialization(): Promise<void> {
   await host.warmLanguage('java');
   await host.warmLanguage('csharp');
 
-  const pythonWorker = findWorker('/python/worker.js');
+  const pythonWorker = findInitializedWorker('/python/worker.js');
   assertCondition(
     String(pythonWorker.url).includes(
       'tracecodePythonSnippets=https%3A%2F%2Fcdn.consumer.example%2Fpython%2Fsnippets.js'

@@ -60,6 +60,87 @@ function runtimeImageResponse(input: RequestInfo | URL): Response {
   });
 }
 
+class RuntimeImageBootstrapWorker {
+  static instances: RuntimeImageBootstrapWorker[] = [];
+
+  onmessage: ((event: MessageEvent) => void) | null = null;
+  onerror: ((event: ErrorEvent) => void) | null = null;
+  readonly messages: unknown[] = [];
+  terminated = false;
+
+  constructor(
+    readonly url: string | URL,
+    readonly options?: WorkerOptions
+  ) {
+    RuntimeImageBootstrapWorker.instances.push(this);
+    queueMicrotask(() => this.onmessage?.({
+      data: { type: 'worker-ready' },
+    } as MessageEvent));
+  }
+
+  postMessage(message: unknown): void {
+    this.messages.push(message);
+    const request = message as {
+      id?: string;
+      protocolToken?: string;
+      type?: string;
+      payload?: { descriptor?: ReturnType<typeof runtimeImageDescriptor> };
+    };
+    if (request.type !== 'build-runtime-image') return;
+    void WebAssembly.compile(wasmBytes).then((compiledModule) => {
+      this.onmessage?.({
+        data: {
+          id: request.id,
+          type: 'runtime-image-result',
+          protocolToken: request.protocolToken,
+          payload: {
+            runtimeImage: {
+              protocolVersion: 'tracecode-python-runtime-image-v1',
+              compiledModule,
+              snapshot: snapshotBytes.slice(),
+              pythonHashSeed:
+                request.payload?.descriptor?.pythonHashSeed ?? '0',
+            },
+          },
+        },
+      } as MessageEvent);
+    });
+  }
+
+  terminate(): void {
+    this.terminated = true;
+  }
+}
+
+let bootstrapPageFetches = 0;
+const bootstrapFactory = createPythonRuntimeImageFactory({
+  descriptor: runtimeImageDescriptor('bootstrap'),
+  workerUrl: '/workers/python-worker.js',
+  workerFactory: (url, options) =>
+    new RuntimeImageBootstrapWorker(url, options),
+  fetch: async (input) => {
+    bootstrapPageFetches += 1;
+    return runtimeImageResponse(input);
+  },
+});
+const bootstrapImage = await bootstrapFactory.acquire();
+const bootstrapWorker = RuntimeImageBootstrapWorker.instances[0];
+assertCondition(
+  bootstrapWorker &&
+    String(bootstrapWorker.url).includes('tracecodePythonRole=runtime-image') &&
+    bootstrapWorker.messages.some((message) =>
+      (message as { type?: string }).type === 'build-runtime-image'
+    ) &&
+    bootstrapWorker.terminated,
+  'Runtime-image acquisition must use and retire a dedicated bootstrap Worker.'
+);
+assertCondition(
+  bootstrapPageFetches === 0 &&
+    bootstrapImage.compiledModule instanceof WebAssembly.Module &&
+    bootstrapImage.snapshot.byteLength === snapshotBytes.byteLength,
+  'Runtime-image fetching and Wasm compilation must stay out of the page realm.'
+);
+
 const factory = createPythonRuntimeImageFactory({
   descriptor: runtimeImageDescriptor('python'),
   fetch: async (input) => {

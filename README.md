@@ -246,10 +246,12 @@ collapsed runtime-information section; full transitive notices remain in the
 versioned engine release.
 
 The default Python Judge deployment is self-contained under `/workers` after
-`sync-assets`. It retains immutable CPython startup state at provider scope,
-leases one clean Worker to a submission for preparation plus its case batch,
-and then terminates that Worker. A custom Python runtime manifest must include
-an engine-matched `runtimeImage`; missing or cross-engine images fail closed.
+`sync-assets`. A short-lived bootstrap Worker fetches and compiles the immutable
+CPython startup image, then transfers it to provider scope without performing
+runtime-image work on the page thread. The provider leases one clean Worker to
+a submission for preparation plus its case batch, and then terminates that
+Worker. A custom Python runtime manifest must include an engine-matched
+`runtimeImage`; missing or cross-engine images fail closed.
 Project Python processes continue to use the general TraceKernel process path
 because their modules, filesystem, stdin, servers, and lifetime are
 user-controlled.
