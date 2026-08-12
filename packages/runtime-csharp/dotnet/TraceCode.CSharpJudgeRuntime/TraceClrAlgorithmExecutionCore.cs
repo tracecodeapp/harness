@@ -30,7 +30,7 @@ public static class TraceClrAlgorithmExecutionCore
             artifactBase64,
             artifactSha256
         );
-        return InvokeDriver(assemblyBytes, inputBytes);
+        return InvokeDriver(assemblyBytes, inputBytes, static () => { });
     }
 
     public static TraceClrAlgorithmExecutionResult ExecutePreparedTrace(
@@ -63,7 +63,11 @@ public static class TraceClrAlgorithmExecutionCore
         );
         try
         {
-            byte[] outputBytes = InvokeDriver(assemblyBytes, inputBytes);
+            byte[] outputBytes = InvokeDriver(
+                assemblyBytes,
+                inputBytes,
+                RuntimeTraceSink.CheckTimeout
+            );
             List<RuntimeTraceEvent> events = RuntimeTraceSink.Snapshot();
             TraceEventBackfill.Apply(source, events, recordTrace && minimalTrace);
             return new TraceClrAlgorithmExecutionResult(
@@ -181,7 +185,8 @@ public static class TraceClrAlgorithmExecutionCore
 
     private static byte[] InvokeDriver(
         byte[] assemblyBytes,
-        byte[] inputBytes
+        byte[] inputBytes,
+        Action checkTimeout
     )
     {
         Assembly assembly = Assembly.Load(assemblyBytes);
@@ -193,13 +198,16 @@ public static class TraceClrAlgorithmExecutionCore
             "Run",
             BindingFlags.Public | BindingFlags.Static,
             binder: null,
-            types: new[] { typeof(byte[]) },
+            types: new[] { typeof(byte[]), typeof(Action) },
             modifiers: null
         ) ?? throw new MissingMethodException(
             "TraceCodeDriver",
-            "Run(byte[])"
+            "Run(byte[], Action)"
         );
-        return (byte[])(run.Invoke(null, new object?[] { inputBytes })
+        return (byte[])(run.Invoke(
+            null,
+            new object?[] { inputBytes, checkTimeout }
+        )
             ?? throw new InvalidOperationException(
                 "TraceCodeDriver.Run returned null."
             ));

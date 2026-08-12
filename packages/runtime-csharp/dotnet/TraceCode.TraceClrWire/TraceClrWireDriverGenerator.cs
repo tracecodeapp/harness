@@ -206,8 +206,9 @@ public static class TraceClrWireDriverGenerator
             source.AppendLine();
             source.AppendLine("public static class TraceCodeDriver");
             source.AppendLine("{");
-            source.AppendLine("    public static byte[] Run(byte[] inputBytes)");
+            source.AppendLine("    public static byte[] Run(byte[] inputBytes, Action checkTimeout)");
             source.AppendLine("    {");
+            source.AppendLine("        ArgumentNullException.ThrowIfNull(checkTimeout);");
             source.AppendLine("        var reader = new Reader(inputBytes);");
             source.AppendLine($"        reader.Begin({parameters.Length.ToString(CultureInfo.InvariantCulture)});");
             for (int index = 0; index < parameters.Length; index++)
@@ -220,7 +221,7 @@ public static class TraceClrWireDriverGenerator
                 : $"new {method.ContainingType.ToDisplayString(TypeFormat)}()";
             string arguments = string.Join(", ", Enumerable.Range(0, parameters.Length).Select(index => $"argument{index}"));
             source.AppendLine($"        {returnType.CSharpType} result = {target}.{EscapeIdentifier(method.Name)}({arguments});");
-            source.AppendLine("        var writer = new Writer();");
+            source.AppendLine("        var writer = new Writer(checkTimeout);");
             source.AppendLine("        writer.Begin();");
             source.AppendLine($"        {writer}(writer, result);");
             source.AppendLine("        return writer.Finish();");
@@ -419,7 +420,7 @@ public static class TraceClrWireDriverGenerator
         foreach (var item in value)
         {
             if (items.Count >= {{MaxCollectionItems}}) throw new InvalidOperationException("TraceCLR result collection is too large.");
-            if ((items.Count & 1023) == 0) global::TraceCode.Internal.TraceCodeTrace.CheckTimeout();
+            if ((items.Count & 1023) == 0) writer.CheckTimeout();
             items.Add(item);
         }
         writer.Length(items.Count);
@@ -440,7 +441,7 @@ public static class TraceClrWireDriverGenerator
         int index = 0;
         foreach (var item in value)
         {
-            if ((index++ & 1023) == 0) global::TraceCode.Internal.TraceCodeTrace.CheckTimeout();
+            if ((index++ & 1023) == 0) writer.CheckTimeout();
             {{elementWriter}}(writer, item);
         }
     }
@@ -538,8 +539,11 @@ public static class TraceClrWireDriverGenerator
 
     private sealed class Writer
     {
+        private readonly Action checkTimeout;
         private byte[] bytes = new byte[256];
         private int length;
+        public Writer(Action checkTimeout) { this.checkTimeout = checkTimeout; }
+        public void CheckTimeout() => checkTimeout();
         private void Reserve(int count) { if (count < 0 || length > {{MaxBytes}} - count) throw new InvalidOperationException("TraceCLR output is too large."); int needed = length + count; if (needed <= bytes.Length) return; int capacity = bytes.Length; while (capacity < needed) capacity = Math.Min({{MaxBytes}}, capacity * 2); Array.Resize(ref bytes, capacity); }
         public void Begin() => UInt32(0x31574354u);
         public byte[] Finish() { Array.Resize(ref bytes, length); return bytes; }

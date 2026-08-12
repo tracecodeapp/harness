@@ -22,10 +22,16 @@ public static partial class Program
             "Run",
             BindingFlags.Public | BindingFlags.Static,
             binder: null,
-            types: new[] { typeof(byte[]) },
+            types: new[] { typeof(byte[]), typeof(Action) },
             modifiers: null
-        ) ?? throw new MissingMethodException("TraceCodeDriver", "Run(byte[])");
-        return (byte[])(run.Invoke(null, new object?[] { inputBytes })
+        ) ?? throw new MissingMethodException(
+            "TraceCodeDriver",
+            "Run(byte[], Action)"
+        );
+        return (byte[])(run.Invoke(
+            null,
+            new object?[] { inputBytes, static () => { } }
+        )
             ?? throw new InvalidOperationException("TraceCodeDriver.Run returned null."));
     }
 
