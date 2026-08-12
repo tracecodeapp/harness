@@ -138,11 +138,16 @@ function integer(value: unknown, minimum: number, maximum: number, label: string
 }
 
 function integer64(value: unknown, signed: boolean): bigint {
-  const converted = typeof value === 'bigint'
-    ? value
-    : typeof value === 'number' && Number.isInteger(value)
-      ? BigInt(value)
-      : null;
+  let converted: bigint | null = null;
+  if (typeof value === 'bigint') {
+    converted = value;
+  } else if (typeof value === 'number' && Number.isInteger(value)) {
+    // Match the compatibility tier's JSON transport exactly. Converting the
+    // binary64 value directly with BigInt can produce a different integer
+    // than the shortest decimal that JSON.stringify sends to .NET.
+    const jsonDecimal = JSON.stringify(value);
+    if (jsonDecimal !== undefined) converted = BigInt(jsonDecimal);
+  }
   const minimum = signed ? -(1n << 63n) : 0n;
   const maximum = signed ? (1n << 63n) - 1n : (1n << 64n) - 1n;
   if (converted === null || converted < minimum || converted > maximum) {

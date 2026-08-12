@@ -99,9 +99,24 @@ for (const [wireType, value] of [
       integerInputContract,
       encodeTraceClrWireInputs(integerInputContract, { value }),
     ),
-    { value: BigInt(value) },
+    { value: BigInt(JSON.stringify(value)) },
   );
 }
+
+const roundedJsonInteger = 1_000_000_000_000_000_100;
+const roundedJsonIntegerContract: TraceClrWireContractDescriptor = {
+  parameters: [{ name: 'value', type: { wireType: 'int64' } }],
+  returnType: { wireType: 'int64' },
+};
+assert.deepEqual(
+  decodeTraceClrWireInputs(
+    roundedJsonIntegerContract,
+    encodeTraceClrWireInputs(roundedJsonIntegerContract, {
+      value: roundedJsonInteger,
+    }),
+  ),
+  { value: 1_000_000_000_000_000_100n },
+);
 
 const setResultContract: TraceClrWireContractDescriptor = {
   parameters: [],
