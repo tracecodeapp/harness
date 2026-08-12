@@ -3,11 +3,11 @@
   "harness": {
     "name": "@tracecode/harness",
     "version": "0.16.5",
-    "releaseId": "@tracecode/harness@0.16.5+sha256.3cd216cd23d85ad2b66c433d9d58e6cb2faae7a520552f4fa4f8c3ab7bf95a84"
+    "releaseId": "@tracecode/harness@0.16.5+sha256.adce92a14ebb88b73a562b24e47f80a53a8a310cb6a29ba3e742b16f3dc1737b"
   },
   "treeSha256Algorithm": "sha256-path-nul-bytes-nul-v1",
-  "packageTreeSha256": "3cd216cd23d85ad2b66c433d9d58e6cb2faae7a520552f4fa4f8c3ab7bf95a84",
-  "totalPackagedRuntimeBytes": 147647835,
+  "packageTreeSha256": "adce92a14ebb88b73a562b24e47f80a53a8a310cb6a29ba3e742b16f3dc1737b",
+  "totalPackagedRuntimeBytes": 150100730,
   "components": {
     "cpp": {
       "releaseId": "cpp+sha256.f7ec285e637629ebd2b8b9da47b5df04150d50cb4a9f00efe23f864b1e3e6957",
@@ -31,9 +31,9 @@
       ]
     },
     "csharp": {
-      "releaseId": "csharp+sha256.0c3cf441ed992d97d439721c75a33a5f68ce2e4ae573a7dc14691d4cc1020b33",
-      "treeSha256": "0c3cf441ed992d97d439721c75a33a5f68ce2e4ae573a7dc14691d4cc1020b33",
-      "totalBytes": 59269973,
+      "releaseId": "csharp+sha256.821a72297529a0900fe31ffa3432cea8a3251e36dd7aa3942496095e7b028043",
+      "treeSha256": "821a72297529a0900fe31ffa3432cea8a3251e36dd7aa3942496095e7b028043",
+      "totalBytes": 61722868,
       "files": [
         {
           "path": "workers/csharp/csharp-worker.js",
@@ -1200,8 +1200,8 @@
         {
           "path": "workers/vendor/csharp/_framework/TraceCode.TraceClrWire.wasm",
           "size": 41237,
-          "sha256": "418dccac03eb076c94f67254397d340a71425ca3033112c7a354c8ebd65dc527",
-          "integrity": "sha256-QY3MrAPrB2yU9nJUOX00CnFCXKMDMRLHo1TI69ZdxSc=",
+          "sha256": "9a39611c736a58b2d190a789efdb2e9ba3388e1d39a7410a84ecd8ffec137384",
+          "integrity": "sha256-mjlhHHNqWLLRkKeJ79sum6M4jh05p0EKhOzY/+wTc4Q=",
           "mediaType": "application/wasm"
         },
         {
@@ -1241,9 +1241,9 @@
         },
         {
           "path": "workers/vendor/csharp/_framework/dotnet.boot.js",
-          "size": 41757,
-          "sha256": "97ec9ec441ecbdcdf4e3e4fee03b907380c07e3ce3947e1217fd9e4c3e19890c",
-          "integrity": "sha256-l+yexEHsvc304+T+4DuQc4DAfjzjlH4SF/2eTD4ZiQw=",
+          "size": 48588,
+          "sha256": "771ebf4a4ab3a20ed291c585718183b520eb5dbeb4c539b06f007ca8402236ed",
+          "integrity": "sha256-dx6/Skqzog7SkcWFcYGDtSDrXb60xTmwbwB8qEAiNu0=",
           "mediaType": "text/javascript"
         },
         {
@@ -1422,10 +1422,80 @@
           "mediaType": "application/octet-stream"
         },
         {
+          "path": "workers/vendor/csharp/_framework/supportFiles/System.AppContext.dll",
+          "size": 15144,
+          "sha256": "6479714714167fb1d3a6c26b23444445a2f173f6949d4e0beb31c63aae07bb26",
+          "integrity": "sha256-ZHlxRxQWf7HTpsJrI0RERaLxc/aUnU4L6zHGOq4HuyY=",
+          "mediaType": "application/octet-stream"
+        },
+        {
+          "path": "workers/vendor/csharp/_framework/supportFiles/System.Buffers.dll",
+          "size": 15184,
+          "sha256": "0bc16c81b63c91b90c2f93533b6ee972c94b5d4a5358968d8b2bf107b869aab3",
+          "integrity": "sha256-C8FsgbY8kbkML5NTO27pcslLXUpTWJaNiyvxB7hpqrM=",
+          "mediaType": "application/octet-stream"
+        },
+        {
+          "path": "workers/vendor/csharp/_framework/supportFiles/System.Collections.Concurrent.dll",
+          "size": 88872,
+          "sha256": "7940d1f47a5bb0f3151d6b4fb7006cb42c52a0222ce335e8ebadeaf80c224ebb",
+          "integrity": "sha256-eUDR9HpbsPMVHWtPtwBstCxSoCIs4zXo663q+AwiTrs=",
+          "mediaType": "application/octet-stream"
+        },
+        {
+          "path": "workers/vendor/csharp/_framework/supportFiles/System.Collections.Immutable.dll",
+          "size": 251176,
+          "sha256": "9e60564b4e22dc768e1475d234e679db39daf6da9c21c3f7f445466e31945992",
+          "integrity": "sha256-nmBWS04i3HaOFHXSNOZ52zna9tqcIcP39EVGbjGUWZI=",
+          "mediaType": "application/octet-stream"
+        },
+        {
+          "path": "workers/vendor/csharp/_framework/supportFiles/System.Collections.NonGeneric.dll",
+          "size": 47912,
+          "sha256": "269820815b0fa6d8a0e3203298f2dbf8195eab8e907c72d94129d268bb4961e0",
+          "integrity": "sha256-JpgggVsPptig4yAymPLb+Bleq46QfHLZQSnSaLtJYeA=",
+          "mediaType": "application/octet-stream"
+        },
+        {
+          "path": "workers/vendor/csharp/_framework/supportFiles/System.Collections.Specialized.dll",
+          "size": 47912,
+          "sha256": "d850cbf15ae47b23a71cfa5189881d7511881fb1d17c2661d03f1942b549e34a",
+          "integrity": "sha256-2FDL8VrkeyOnHPpRiYgddRGIH7HRfCZh0D8ZQrVJ40o=",
+          "mediaType": "application/octet-stream"
+        },
+        {
           "path": "workers/vendor/csharp/_framework/supportFiles/System.Collections.dll",
           "size": 112936,
           "sha256": "061592a584cbc116f432b8ece433ef9a28c9d2468b690202bdc27cd0497d3ebf",
           "integrity": "sha256-BhWSpYTLwRb0Mrjs5DPvmijJ0kaLaQICvcJ80El9Pr8=",
+          "mediaType": "application/octet-stream"
+        },
+        {
+          "path": "workers/vendor/csharp/_framework/supportFiles/System.ComponentModel.Annotations.dll",
+          "size": 102696,
+          "sha256": "32929cfca7c87a86ca3ccf0f4b9db30718724d3b53e27224ce40c685e96b0896",
+          "integrity": "sha256-MpKc/KfIeobKPM8PS52zBxhyTTtT4nIkzkDGhelrCJY=",
+          "mediaType": "application/octet-stream"
+        },
+        {
+          "path": "workers/vendor/csharp/_framework/supportFiles/System.ComponentModel.Primitives.dll",
+          "size": 42280,
+          "sha256": "fc6fae7f3b1db836e29a6287c8ebf100971cac690fdb15ab9ec6729628489594",
+          "integrity": "sha256-/G+ufzsduDbimmKHyOvxAJccrGkP2xWrnsZylihIlZQ=",
+          "mediaType": "application/octet-stream"
+        },
+        {
+          "path": "workers/vendor/csharp/_framework/supportFiles/System.ComponentModel.TypeConverter.dll",
+          "size": 316712,
+          "sha256": "db8499811037c21ea455cf758a28c1048498b24e3cbdb327827da78326836759",
+          "integrity": "sha256-24SZgRA3wh6kVc91iijBBISYsk48vbMngn2ngyaDZ1k=",
+          "mediaType": "application/octet-stream"
+        },
+        {
+          "path": "workers/vendor/csharp/_framework/supportFiles/System.ComponentModel.dll",
+          "size": 16208,
+          "sha256": "32f4e21816fefdc1d3e74ca58234a7abbe7b04d8cedaf5332e9f45ca983e877d",
+          "integrity": "sha256-MvTiGBb+/cHT50ylgjSnq757BNjO2vUzLp9Fypg+h30=",
           "mediaType": "application/octet-stream"
         },
         {
@@ -1443,6 +1513,55 @@
           "mediaType": "application/octet-stream"
         },
         {
+          "path": "workers/vendor/csharp/_framework/supportFiles/System.Dynamic.Runtime.dll",
+          "size": 16168,
+          "sha256": "fd29e4c00a188477732615f7e151f8dbea7f1ff46354b65d25888d9bc4e70ed0",
+          "integrity": "sha256-/SnkwAoYhHdzJhX34VH42+p/H/RjVLZdJYiNm8TnDtA=",
+          "mediaType": "application/octet-stream"
+        },
+        {
+          "path": "workers/vendor/csharp/_framework/supportFiles/System.Globalization.dll",
+          "size": 15696,
+          "sha256": "b64be8825ea010f7af0dcad9999f759ef0ed8ffd44f6bd0e202c438057a2cf74",
+          "integrity": "sha256-tkvogl6gEPevDcrZmZ91nvDtj/1E9r0OICxDgFeiz3Q=",
+          "mediaType": "application/octet-stream"
+        },
+        {
+          "path": "workers/vendor/csharp/_framework/supportFiles/System.IO.FileSystem.Primitives.dll",
+          "size": 15144,
+          "sha256": "796d7af062eb29c2793b8b528bb1b9dc60dd6db8500f6e3db27fb1515b86215e",
+          "integrity": "sha256-eW168GLrKcJ5O4tSi7G53GDdbbhQD249sn+xUVuGIV4=",
+          "mediaType": "application/octet-stream"
+        },
+        {
+          "path": "workers/vendor/csharp/_framework/supportFiles/System.IO.FileSystem.dll",
+          "size": 15696,
+          "sha256": "842144be770f266c34bf048468de4d4f4abe046d1c3c2819f88d87008ae2b610",
+          "integrity": "sha256-hCFEvncPJmw0vwSEaN5NT0q+BG0cPCgZ+I2HAIrithA=",
+          "mediaType": "application/octet-stream"
+        },
+        {
+          "path": "workers/vendor/csharp/_framework/supportFiles/System.IO.dll",
+          "size": 15656,
+          "sha256": "f0752b9216443c3b65a11aaad7e83bf8df58187ec7e852880cabda63a07650a0",
+          "integrity": "sha256-8HUrkhZEPDtloRqq1+g7+N9YGH7H6FKIDKvaY6B2UKA=",
+          "mediaType": "application/octet-stream"
+        },
+        {
+          "path": "workers/vendor/csharp/_framework/supportFiles/System.Linq.Expressions.dll",
+          "size": 575272,
+          "sha256": "b5d8954ac3c662ef01d553202bdc0ffa5720b8c43cf9fd6b541980dd06de6ecd",
+          "integrity": "sha256-tdiVSsPGYu8B1VMgK9wP+lcguMQ8+f1rVBmA3Qbebs0=",
+          "mediaType": "application/octet-stream"
+        },
+        {
+          "path": "workers/vendor/csharp/_framework/supportFiles/System.Linq.Queryable.dll",
+          "size": 78632,
+          "sha256": "c241f0ee82d06550cb5882e35386d37443d8314ed486d6e0258600d22aa9a131",
+          "integrity": "sha256-wkHw7oLQZVDLWILjU4bTdEPYMU7UhtbgJYYA0iqpoTE=",
+          "mediaType": "application/octet-stream"
+        },
+        {
           "path": "workers/vendor/csharp/_framework/supportFiles/System.Linq.dll",
           "size": 201000,
           "sha256": "187d4fe80f2fa744ceca289cfee70c7310b9c16c77a72d707df4c7104886aed6",
@@ -1457,10 +1576,66 @@
           "mediaType": "application/octet-stream"
         },
         {
+          "path": "workers/vendor/csharp/_framework/supportFiles/System.Numerics.Vectors.dll",
+          "size": 15656,
+          "sha256": "ff2a0f5f7a413bc55cebb9aa78ea70e4c6b8e189a6f782ea39849d9ac12bab39",
+          "integrity": "sha256-/yoPX3pBO8Vc67mqeOpw5Ma44Ymm94LqOYSdmsErqzk=",
+          "mediaType": "application/octet-stream"
+        },
+        {
+          "path": "workers/vendor/csharp/_framework/supportFiles/System.Numerics.dll",
+          "size": 15144,
+          "sha256": "20028108f7a26d79d0d7ed06f56bdda4128457f1c33f772f5e7aed293a19120a",
+          "integrity": "sha256-IAKBCPeibXnQ1+0G9WvdpBKEV/HDP3cvXnrtKToZEgo=",
+          "mediaType": "application/octet-stream"
+        },
+        {
+          "path": "workers/vendor/csharp/_framework/supportFiles/System.ObjectModel.dll",
+          "size": 41296,
+          "sha256": "4cfa788d793f271fa8d3eec66e15aae05fdb01f871b29719ab01c0f5869bf3b0",
+          "integrity": "sha256-TPp4jXk/Jx+o0+7GbhWq4F/bAfhxspcZqwHA9Yab87A=",
+          "mediaType": "application/octet-stream"
+        },
+        {
           "path": "workers/vendor/csharp/_framework/supportFiles/System.Private.CoreLib.dll",
           "size": 4880168,
           "sha256": "b496b334b0a1f439f8299eb2bac8ce726da67016a5a10d79b98c35d524f63916",
           "integrity": "sha256-tJazNLCh9Dn4KZ6yusjOcm2mcBaloQ15uYw11ST2ORY=",
+          "mediaType": "application/octet-stream"
+        },
+        {
+          "path": "workers/vendor/csharp/_framework/supportFiles/System.Reflection.Extensions.dll",
+          "size": 15144,
+          "sha256": "3e8965e15b75641a5ad4cfea0dae8c099d3c625b3481aa78e88ffa0f132e38e8",
+          "integrity": "sha256-Poll4Vt1ZBpa1M/qDa6MCZ08Yls0gap46I/6DxMuOOg=",
+          "mediaType": "application/octet-stream"
+        },
+        {
+          "path": "workers/vendor/csharp/_framework/supportFiles/System.Reflection.Metadata.dll",
+          "size": 503592,
+          "sha256": "f63db3b12d1e53327137abfe3a2111a41c1cc209f66b1852198330d469926925",
+          "integrity": "sha256-9j2zsS0eUzJxN6v+OiERpBwcwgn2axhSGYMw1GmSaSU=",
+          "mediaType": "application/octet-stream"
+        },
+        {
+          "path": "workers/vendor/csharp/_framework/supportFiles/System.Reflection.Primitives.dll",
+          "size": 15656,
+          "sha256": "627d43b15eb813921fe1bc69085bf3bb02a2cefa7fb23e2eaa69c0df24ab1bdd",
+          "integrity": "sha256-Yn1DsV64E5If4bxpCFvzuwKizvp/sj4uqmnA3ySrG90=",
+          "mediaType": "application/octet-stream"
+        },
+        {
+          "path": "workers/vendor/csharp/_framework/supportFiles/System.Reflection.dll",
+          "size": 16168,
+          "sha256": "4ed56223c0d77fcc00f2b77840da8300dad96a50655fe4e29b77897e1cf853b5",
+          "integrity": "sha256-TtViI8DXf8wA8rd4QNqDANrZalBlX+Tim3eJfhz4U7U=",
+          "mediaType": "application/octet-stream"
+        },
+        {
+          "path": "workers/vendor/csharp/_framework/supportFiles/System.Runtime.CompilerServices.Unsafe.dll",
+          "size": 15184,
+          "sha256": "7bc89d2a69c9d3d6d2a3196219c8286140ca16108d48b4b58b5991ec7efcc3da",
+          "integrity": "sha256-e8idKmnJ09bSoxliGcgoYUDKFhCNSLS1i1mR7H78w9o=",
           "mediaType": "application/octet-stream"
         },
         {
@@ -1478,10 +1653,24 @@
           "mediaType": "application/octet-stream"
         },
         {
+          "path": "workers/vendor/csharp/_framework/supportFiles/System.Runtime.Serialization.Primitives.dll",
+          "size": 23336,
+          "sha256": "5bd1d1703c32a44dc5385f78bfdedab8dd8ab0c683a4fe8a17a5c823cce577fc",
+          "integrity": "sha256-W9HRcDwypE3FOF94v97auN2KsMaDpP6KF6XII8zld/w=",
+          "mediaType": "application/octet-stream"
+        },
+        {
           "path": "workers/vendor/csharp/_framework/supportFiles/System.Runtime.dll",
           "size": 44840,
           "sha256": "0d260f29f75a78485a36181cf0c9de891b20b2241b2d63bd22370b7014cef1a5",
           "integrity": "sha256-DSYPKfdaeEhaNhgc8MneiRsgsiQbLWO9IjcLcBTO8aU=",
+          "mediaType": "application/octet-stream"
+        },
+        {
+          "path": "workers/vendor/csharp/_framework/supportFiles/System.Text.Encoding.Extensions.dll",
+          "size": 15656,
+          "sha256": "a3d0d08f2274c51ff71646704a939b6d52a0e262387d61b66b89b2229b17a6b4",
+          "integrity": "sha256-o9DQjyJ0xR/3FkZwSpObbVKg4mI4fWG2a4myIpsXprQ=",
           "mediaType": "application/octet-stream"
         },
         {
@@ -1496,6 +1685,34 @@
           "size": 384808,
           "sha256": "31fb6e4a39f7c68381624e34c35e6a758acafde35e7d6df980bd15b7bfedf89d",
           "integrity": "sha256-MftuSjn3xoOBYk40w15qdYrK/eNefW35gL0Vt7/t+J0=",
+          "mediaType": "application/octet-stream"
+        },
+        {
+          "path": "workers/vendor/csharp/_framework/supportFiles/System.Threading.Tasks.Extensions.dll",
+          "size": 15656,
+          "sha256": "fcd40599bf7ac402bb333c8f0730bde749144c39c40a20f358418019af0292b4",
+          "integrity": "sha256-/NQFmb96xAK7MzyPBzC950kUTDnECiDzWEGAGa8CkrQ=",
+          "mediaType": "application/octet-stream"
+        },
+        {
+          "path": "workers/vendor/csharp/_framework/supportFiles/System.Threading.Tasks.dll",
+          "size": 16680,
+          "sha256": "9b97b153aa851afadd3565fafbe8d5018b430127aac8d61ff4e6d8fd82665180",
+          "integrity": "sha256-m5exU6qFGvrdNWX6++jVAYtDASeqyNYf9ObY/YJmUYA=",
+          "mediaType": "application/octet-stream"
+        },
+        {
+          "path": "workers/vendor/csharp/_framework/supportFiles/System.Threading.dll",
+          "size": 44840,
+          "sha256": "59d28afc10a60a9063486d893a3d1931f99d8ca56dab47a36a99521f9751e498",
+          "integrity": "sha256-WdKK/BCmCpBjSG2JOj0ZMfmdjKVtq0ejaplSH5dR5Jg=",
+          "mediaType": "application/octet-stream"
+        },
+        {
+          "path": "workers/vendor/csharp/_framework/supportFiles/System.ValueTuple.dll",
+          "size": 15696,
+          "sha256": "73088af3dbe2cc548a5eea24e2f92bb2a8a6d5bc7a583e65f4ca11cff5f2694d",
+          "integrity": "sha256-cwiK89vizFSKXuok4vkrsqim1bx6WD5l9MoRz/XyaU0=",
           "mediaType": "application/octet-stream"
         },
         {
@@ -1866,20 +2083,20 @@
       },
       "roles": {
         "general": {
-          "artifact": "csharp-bundle.4064772d179d462812733cfeb126fd7cb295c9f7c6b524370b6c1f69376e1a6f.zip",
-          "artifactBytes": 17021387,
-          "artifactSha256": "4064772d179d462812733cfeb126fd7cb295c9f7c6b524370b6c1f69376e1a6f",
-          "fileCount": 211,
-          "treeSha256": "2f1e68d7ec6f00c424f40083e99dffd9db5dbee8f8ed5dc69a9c121564bd3a5e",
-          "uncompressedBytes": 47891439
+          "artifact": "csharp-bundle.b0b31980a0e90b5c6eabddb20d6ea2cf7e3abc818c66e8c4a5fa77c9120cfc6d.zip",
+          "artifactBytes": 18114188,
+          "artifactSha256": "b0b31980a0e90b5c6eabddb20d6ea2cf7e3abc818c66e8c4a5fa77c9120cfc6d",
+          "fileCount": 242,
+          "treeSha256": "4d3005002f3687d099c36acea59a7680c542a6b0b3af863ece820084f3d5b6cf",
+          "uncompressedBytes": 50344334
         },
         "compiler": {
-          "artifact": "csharp-bundle.4064772d179d462812733cfeb126fd7cb295c9f7c6b524370b6c1f69376e1a6f.zip",
-          "artifactBytes": 17021387,
-          "artifactSha256": "4064772d179d462812733cfeb126fd7cb295c9f7c6b524370b6c1f69376e1a6f",
-          "fileCount": 211,
-          "treeSha256": "2f1e68d7ec6f00c424f40083e99dffd9db5dbee8f8ed5dc69a9c121564bd3a5e",
-          "uncompressedBytes": 47891439
+          "artifact": "csharp-bundle.b0b31980a0e90b5c6eabddb20d6ea2cf7e3abc818c66e8c4a5fa77c9120cfc6d.zip",
+          "artifactBytes": 18114188,
+          "artifactSha256": "b0b31980a0e90b5c6eabddb20d6ea2cf7e3abc818c66e8c4a5fa77c9120cfc6d",
+          "fileCount": 242,
+          "treeSha256": "4d3005002f3687d099c36acea59a7680c542a6b0b3af863ece820084f3d5b6cf",
+          "uncompressedBytes": 50344334
         },
         "runner": {
           "artifact": "csharp-bundle.d00caaf25f7967e06d36fc3d46265014c5005a419add62156fcf530fcdd718fe.zip",

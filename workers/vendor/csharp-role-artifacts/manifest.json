@@ -32,20 +32,20 @@
   },
   "roles": {
     "general": {
-      "artifact": "csharp-bundle.4064772d179d462812733cfeb126fd7cb295c9f7c6b524370b6c1f69376e1a6f.zip",
-      "artifactBytes": 17021387,
-      "artifactSha256": "4064772d179d462812733cfeb126fd7cb295c9f7c6b524370b6c1f69376e1a6f",
-      "fileCount": 211,
-      "treeSha256": "2f1e68d7ec6f00c424f40083e99dffd9db5dbee8f8ed5dc69a9c121564bd3a5e",
-      "uncompressedBytes": 47891439
+      "artifact": "csharp-bundle.b0b31980a0e90b5c6eabddb20d6ea2cf7e3abc818c66e8c4a5fa77c9120cfc6d.zip",
+      "artifactBytes": 18114188,
+      "artifactSha256": "b0b31980a0e90b5c6eabddb20d6ea2cf7e3abc818c66e8c4a5fa77c9120cfc6d",
+      "fileCount": 242,
+      "treeSha256": "4d3005002f3687d099c36acea59a7680c542a6b0b3af863ece820084f3d5b6cf",
+      "uncompressedBytes": 50344334
     },
     "compiler": {
-      "artifact": "csharp-bundle.4064772d179d462812733cfeb126fd7cb295c9f7c6b524370b6c1f69376e1a6f.zip",
-      "artifactBytes": 17021387,
-      "artifactSha256": "4064772d179d462812733cfeb126fd7cb295c9f7c6b524370b6c1f69376e1a6f",
-      "fileCount": 211,
-      "treeSha256": "2f1e68d7ec6f00c424f40083e99dffd9db5dbee8f8ed5dc69a9c121564bd3a5e",
-      "uncompressedBytes": 47891439
+      "artifact": "csharp-bundle.b0b31980a0e90b5c6eabddb20d6ea2cf7e3abc818c66e8c4a5fa77c9120cfc6d.zip",
+      "artifactBytes": 18114188,
+      "artifactSha256": "b0b31980a0e90b5c6eabddb20d6ea2cf7e3abc818c66e8c4a5fa77c9120cfc6d",
+      "fileCount": 242,
+      "treeSha256": "4d3005002f3687d099c36acea59a7680c542a6b0b3af863ece820084f3d5b6cf",
+      "uncompressedBytes": 50344334
     },
     "runner": {
       "artifact": "csharp-bundle.d00caaf25f7967e06d36fc3d46265014c5005a419add62156fcf530fcdd718fe.zip",
