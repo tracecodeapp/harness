@@ -1,7 +1,7 @@
 {
   "name": "@tracecode/runtime-native",
   "private": true,
-  "version": "0.16.3",
+  "version": "0.16.4",
   "type": "module",
   "description": "Native Node runtime clients and project runners for TraceCode harness batch execution.",
   "homepage": "https://tracecode.app",

@@ -6,6 +6,14 @@ This repo uses Git tags as release boundaries. Version notes below summarize wha
 
 ## [Unreleased]
 
+## [0.16.4] - 2026-08-11
+
+### Fixed
+
+- Reset the trusted TraceCC compiler authority when its Worker retires after
+  an idle period, so the first C++ compile after waiting or system suspension
+  creates a fresh compiler instead of timing out once.
+
 ## [0.16.3] - 2026-08-11
 
 ### Fixed
