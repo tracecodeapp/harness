@@ -574,6 +574,14 @@ implements CppTrustedCompilerService {
           protocolToken?: string;
           payload?: Record<string, unknown>;
         };
+        if (message.type === 'idle-timeout') {
+          if (generation === this.generation) {
+            this.reset(
+              new Error('TraceCC compiler Worker closed after idle timeout.')
+            );
+          }
+          return;
+        }
         if (message.type === 'worker-ready') {
           globalThis.clearTimeout(readyTimeout);
           resolve();
