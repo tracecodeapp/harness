@@ -202,6 +202,31 @@ async function testFixedReactorContract(): Promise<void> {
   }
 }
 
+async function testAssetPrewarmDoesNotStartCompilerWorker(): Promise<void> {
+  TraceCCCompilerWorkerDouble.instances = [];
+  const preflightedShards: string[] = [];
+  const coordinator = new TraceCCCompilerService(
+    options({
+      assetPreflight: async (shard) => {
+        preflightedShards.push(shard);
+      },
+    })
+  );
+  try {
+    await coordinator.prewarmAssets();
+    assertCondition(
+      preflightedShards.join(',') === 'narrow',
+      `asset prewarm should select only the narrow shard: ${preflightedShards}`
+    );
+    assertCondition(
+      TraceCCCompilerWorkerDouble.instances.length === 0,
+      'asset prewarm must not start or initialize the TraceCC compiler Worker'
+    );
+  } finally {
+    coordinator.terminate();
+  }
+}
+
 async function testCompilerRetirementIsIndependent(): Promise<void> {
   TraceCCCompilerWorkerDouble.instances = [];
   const coordinator = new TraceCCCompilerService(
@@ -257,6 +282,7 @@ async function testIdleCompilerRetirementRecoversBeforeNextCompile(): Promise<vo
 }
 
 async function main(): Promise<void> {
+  await testAssetPrewarmDoesNotStartCompilerWorker();
   await testFixedReactorContract();
   await testCompilerRetirementIsIndependent();
   await testIdleCompilerRetirementRecoversBeforeNextCompile();

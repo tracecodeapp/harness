@@ -7,6 +7,9 @@ import type {
   RuntimeProgramPreparationCall,
   RuntimeProgramPreparationResult,
 } from '@tracecode/runtime-contracts';
+import type {
+  PromotableBrowserBackgroundTask,
+} from '@tracecode/runtime-browser/internal';
 import { CppWorkerClient } from './cpp-worker-client';
 
 export interface CppPreparedExecutionProviderOptions {
@@ -16,6 +19,14 @@ export interface CppPreparedExecutionProviderOptions {
    * the provider standby. The warmup runner is retired immediately.
    */
   warmCompilerOnInit?: boolean;
+  /**
+   * Queue compiler asset prewarm behind a browser-idle boundary while
+   * retaining a foreground promotion path for the learner's first compile.
+   */
+  prewarmCompiler?: () => Promise<void>;
+  scheduleCompilerPrewarm?: (
+    prewarm: () => Promise<void>
+  ) => PromotableBrowserBackgroundTask;
 }
 
 export interface CppPreparedExecutionProviderController
@@ -42,6 +53,7 @@ export function createCppPreparedExecutionProvider(
   let terminated = false;
   const ownedClients = new Set<CppWorkerClient>();
   const activePrograms = new Set<() => void>();
+  let scheduledCompilerPrewarm: PromotableBrowserBackgroundTask | null = null;
 
   const createClient = (): CppWorkerClient => {
     const client = options.createWorkerClient();
@@ -75,6 +87,28 @@ export function createCppPreparedExecutionProvider(
     return client;
   };
 
+  const cancelScheduledCompilerPrewarm = (): void => {
+    scheduledCompilerPrewarm?.cancel();
+    scheduledCompilerPrewarm = null;
+  };
+
+  const scheduleCompilerPrewarm = (): void => {
+    if (
+      terminated ||
+      scheduledCompilerPrewarm ||
+      !options.prewarmCompiler ||
+      !options.scheduleCompilerPrewarm
+    ) {
+      return;
+    }
+    const expectedGeneration = generation;
+    scheduledCompilerPrewarm = options.scheduleCompilerPrewarm(async () => {
+      assertGeneration(expectedGeneration);
+      await options.prewarmCompiler?.();
+      assertGeneration(expectedGeneration);
+    });
+  };
+
   return {
     async init() {
       assertActive();
@@ -96,6 +130,7 @@ export function createCppPreparedExecutionProvider(
         const result = await client.init();
         assertGeneration(expectedGeneration);
         standbyClient = client;
+        scheduleCompilerPrewarm();
         return {
           success: result.success,
           loadTimeMs: result.loadTimeMs,
@@ -110,6 +145,14 @@ export function createCppPreparedExecutionProvider(
       call: RuntimeProgramPreparationCall
     ): Promise<RuntimeProgramPreparationResult> {
       const expectedGeneration = generation;
+      const compilerPrewarm = scheduledCompilerPrewarm;
+      scheduledCompilerPrewarm = null;
+      if (compilerPrewarm) {
+        // A click promotes queued background work. A failed speculative prewarm
+        // must not brick compilation; the normal prepare path retries it.
+        await compilerPrewarm.promote().catch(() => undefined);
+        assertGeneration(expectedGeneration);
+      }
       const client = acquireClient();
       try {
         await client.init();
@@ -265,6 +308,7 @@ export function createCppPreparedExecutionProvider(
 
     reset(): void {
       assertActive();
+      cancelScheduledCompilerPrewarm();
       generation += 1;
       for (const forceDispose of [...activePrograms]) forceDispose();
       for (const client of [...ownedClients]) retireClient(client);
@@ -273,6 +317,7 @@ export function createCppPreparedExecutionProvider(
 
     terminate(): void {
       if (terminated) return;
+      cancelScheduledCompilerPrewarm();
       generation += 1;
       terminated = true;
       for (const forceDispose of [...activePrograms]) forceDispose();

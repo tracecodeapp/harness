@@ -165,8 +165,19 @@ implements CppTrustedCompilerService {
       options.requestTimeoutMs ?? DEFAULT_REQUEST_TIMEOUT_MS;
   }
 
-  async warmup(shard: TraceCCCompilerShard = 'narrow'): Promise<void> {
+  /**
+   * Fetch and verify the immutable compiler inputs without starting TraceCC.
+   * Browser asset preflight memoizes immutable responses, so a foreground
+   * compile joins in-flight work or reuses the verified cache.
+   */
+  async prewarmAssets(
+    shard: TraceCCCompilerShard = 'narrow'
+  ): Promise<void> {
     await this.options.assetPreflight?.(shard);
+  }
+
+  async warmup(shard: TraceCCCompilerShard = 'narrow'): Promise<void> {
+    await this.prewarmAssets(shard);
     await this.ensureWorker();
     const selected = this.options.shards[shard];
     const pchPath = `/tracecc-assets/${shard}.pch`;

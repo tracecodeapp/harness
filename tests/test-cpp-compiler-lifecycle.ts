@@ -326,10 +326,18 @@ async function testBrowserProviderPreparedLeaseExposure(): Promise<void> {
 
 async function testBrowserProviderDefersCompilerWarmupUntilPreparation(): Promise<void> {
   const originalWorker = globalThis.Worker;
+  const originalRequestIdleCallback = globalThis.requestIdleCallback;
+  const originalCancelIdleCallback = globalThis.cancelIdleCallback;
   PreparedProtocolWorker.instances = [];
   const executedPreflights: string[][] = [];
+  let idleCallback: IdleRequestCallback | null = null;
   // @ts-expect-error focused Worker test double
   globalThis.Worker = PreparedProtocolWorker;
+  globalThis.requestIdleCallback = (callback) => {
+    idleCallback = callback;
+    return 1;
+  };
+  globalThis.cancelIdleCallback = () => undefined;
   const lease = createCppBrowserRuntimeProvider().create({
     assets: {
       cppWorker: '/workers/cpp-worker.js',
@@ -359,6 +367,7 @@ async function testBrowserProviderDefersCompilerWarmupUntilPreparation(): Promis
     assertCondition(provider, 'C++ prepared provider should be registered');
     const result = await provider.init();
     assertCondition(result.success, `C++ standby initialization failed: ${JSON.stringify(result)}`);
+    assertCondition(idleCallback, 'entering a C++ surface should queue compiler warmup at browser idle');
     assertCondition(
       PreparedProtocolWorker.instances.length === 1 &&
         !String(PreparedProtocolWorker.instances[0]?.url).includes('traceccRole=compiler'),
@@ -368,9 +377,92 @@ async function testBrowserProviderDefersCompilerWarmupUntilPreparation(): Promis
       executedPreflights.length === 1 && executedPreflights[0]?.length === 1 && executedPreflights[0][0] === 'worker',
       `entering a C++ surface must preflight only the execution Worker: ${JSON.stringify(executedPreflights)}`
     );
+    const queuedIdleCallback = idleCallback as unknown as IdleRequestCallback;
+    queuedIdleCallback({
+      didTimeout: false,
+      timeRemaining: () => 50,
+    });
+    await new Promise<void>((resolve) => queueMicrotask(resolve));
+    const preflightSnapshot = [...executedPreflights];
+    assertCondition(
+      PreparedProtocolWorker.instances.length === 1,
+      `idle compiler asset prewarm must not start TraceCC: ${PreparedProtocolWorker.instances.map((worker) => worker.url)}`
+    );
+    assertCondition(
+      preflightSnapshot.length === 2 &&
+        preflightSnapshot[1]?.includes('compilerWasm') === true &&
+        preflightSnapshot[1]?.some((name) => name.startsWith('compilerResources.')) === true,
+      `idle compiler asset prewarm should verify the immutable compiler inputs: ${JSON.stringify(executedPreflights)}`
+    );
   } finally {
     lease.dispose();
     globalThis.Worker = originalWorker;
+    globalThis.requestIdleCallback = originalRequestIdleCallback;
+    globalThis.cancelIdleCallback = originalCancelIdleCallback;
+  }
+}
+
+async function testCompilePromotesQueuedCompilerPrewarm(): Promise<void> {
+  const events: string[] = [];
+  let clientSequence = 0;
+  let queuedPrewarm: (() => Promise<void>) | null = null;
+  let promotedTask: Promise<void> | null = null;
+  const provider = createCppPreparedExecutionProvider({
+    createWorkerClient: () => {
+      const clientId = ++clientSequence;
+      return {
+        async init() {
+          events.push(`init:${clientId}`);
+          return { success: true, loadTimeMs: 0 };
+        },
+        async prepareRuntimeProgram() {
+          events.push(`prepare:${clientId}`);
+          return {
+            success: false,
+            error: 'focused promotion stop',
+            consoleOutput: [],
+          };
+        },
+        terminate() {
+          events.push(`terminate:${clientId}`);
+        },
+      } as never;
+    },
+    prewarmCompiler: async () => {
+      events.push('prewarm-assets');
+    },
+    scheduleCompilerPrewarm: (prewarm) => {
+      queuedPrewarm = prewarm;
+      return {
+        promote: () => {
+          promotedTask ??= prewarm();
+          return promotedTask;
+        },
+        cancel: () => undefined,
+      };
+    },
+  });
+  try {
+    await provider.init();
+    assertCondition(queuedPrewarm, 'provider init should queue a promotable compiler asset prewarm');
+    assertCondition(
+      !events.includes('prewarm-assets'),
+      `queued compiler asset prewarm must not run eagerly: ${events}`
+    );
+    await provider.prepareProgram({
+      mode: 'code',
+      code: 'int add(int a, int b) { return a + b; }',
+      functionName: 'add',
+      executionStyle: 'function',
+    });
+    const warmupIndex = events.indexOf('prewarm-assets');
+    const prepareIndex = events.findIndex((event) => event.startsWith('prepare:'));
+    assertCondition(
+      warmupIndex >= 0 && prepareIndex > warmupIndex,
+      `the first compile should promote and await queued compiler warmup: ${events}`
+    );
+  } finally {
+    provider.terminate();
   }
 }
 
@@ -1186,5 +1278,6 @@ async function main(): Promise<void> {
   console.log('C++ compiler lifecycle tests passed');
 }
 
-test('cpp browser provider defers compiler warmup until preparation', testBrowserProviderDefersCompilerWarmupUntilPreparation);
+test('cpp browser provider prewarms assets without starting TraceCC', testBrowserProviderDefersCompilerWarmupUntilPreparation);
+test('cpp compile promotes queued compiler asset prewarm', testCompilePromotesQueuedCompilerPrewarm);
 test('cpp compiler lifecycle', main);
