@@ -48,6 +48,33 @@ assert.deepEqual(
   [3, 1, 4],
 );
 
+for (const [wireType, value, expected] of [
+  ['int64', 9_007_199_254_740_993n, Number(9_007_199_254_740_993n)],
+  ['uint64', 18_446_744_073_709_551_615n, Number(18_446_744_073_709_551_615n)],
+] as const) {
+  const integerContract: TraceClrWireContractDescriptor = {
+    parameters: [],
+    returnType: { wireType },
+  };
+  const decoded = decodeTraceClrWireResult(
+    integerContract,
+    encodeTraceClrWireResult(integerContract, value),
+  );
+  assert.equal(decoded, expected);
+  assert.doesNotThrow(() => JSON.stringify(decoded));
+}
+
+const setResultContract: TraceClrWireContractDescriptor = {
+  parameters: [],
+  returnType: { wireType: 'set<int64>' },
+};
+const setResult = decodeTraceClrWireResult(
+  setResultContract,
+  encodeTraceClrWireResult(setResultContract, new Set([3n, 5n, 8n])),
+);
+assert.deepEqual(setResult, [3, 5, 8]);
+assert.equal(JSON.stringify(setResult), '[3,5,8]');
+
 const largeContract: TraceClrWireContractDescriptor = {
   parameters: [{ name: 'value', type: { wireType: 'string' } }],
   returnType: { wireType: 'string' },
@@ -66,6 +93,22 @@ assert.throws(
 assert.throws(
   () => decodeTraceClrWireInputs(contract, Uint8Array.from([0, 0, 0, 0])),
   /magic\/version mismatch/,
+);
+
+const charContract: TraceClrWireContractDescriptor = {
+  parameters: [{ name: 'value', type: { wireType: 'char' } }],
+  returnType: { wireType: 'char' },
+};
+assert.throws(
+  () => encodeTraceClrWireInputs(charContract, { value: '😀' }),
+  /one UTF-16 code unit/,
+);
+assert.deepEqual(
+  decodeTraceClrWireInputs(
+    charContract,
+    encodeTraceClrWireInputs(charContract, { value: 'é' }),
+  ),
+  { value: 'é' },
 );
 
 console.log('TraceCLR wire codec tests passed.');

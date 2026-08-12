@@ -35,22 +35,22 @@ provided with `TRACECODE_PRODUCT_ROOT` or `--product-root`.
 
 ```bash
 pnpm generate:traceclr-profile
-pnpm generate:traceclr-profile --check
 pnpm check:traceclr-profile
+pnpm check:traceclr-product-profile
 ```
 
-The first command regenerates the JSON inventory and MSBuild props. The second independently
-recompiles the product corpus into a temporary directory and byte-compares both generated files.
-The third is the public Harness gate: it validates the checked-in profile, recompiles every
+The first command regenerates the JSON inventory and MSBuild props. The second is the public
+Harness gate: it validates the checked-in profile, recompiles every
 claimed direct driver, verifies the TypeScript binary codec, exercises `HashSet<T>`, ref/generic/
 multidimensional negative signatures, and rejects syntax failures plus process, file, reflection,
 interop, thread, and network APIs. The API deny rules live in the generated profile config rather
 than being hidden in a test.
 
-The product integration gate must run `generate:traceclr-profile --check`, because only the
-product repository can prove that its private corpus still has the committed digest. The Harness
-gate proves the committed release is internally consistent; it does not pretend to see a corpus
-that is not present.
+The third command is the product integration gate. It independently recompiles the product corpus
+into a temporary directory, byte-compares both generated files, and then runs the public gate.
+Only the product repository can prove that its private corpus still has the committed digest. The
+Harness gate proves the committed release is internally consistent; it does not pretend to see a
+corpus that is not present.
 
 Larger external corpora can be audited without changing the release profile:
 

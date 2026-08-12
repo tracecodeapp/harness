@@ -222,7 +222,7 @@ function writeValue(writer: WireWriter, type: WireType, value: unknown, depth: n
     case 'null': if (value !== null) throw new TypeError('TraceCLR null result must be null.'); writer.uint8(0); return;
     case 'bool': if (typeof value !== 'boolean') throw new TypeError('bool must be boolean.'); writer.uint8(value ? 1 : 0); return;
     case 'char': {
-      if (typeof value !== 'string' || [...value].length !== 1 || value.charCodeAt(0) > 0xffff) throw new TypeError('char must be one UTF-16 code unit.');
+      if (typeof value !== 'string' || value.length !== 1) throw new TypeError('char must be one UTF-16 code unit.');
       writer.uint16(value.charCodeAt(0)); return;
     }
     case 'uint8': writer.uint8(integer(value, 0, 255, 'uint8')); return;
@@ -242,6 +242,38 @@ function writeValue(writer: WireWriter, type: WireType, value: unknown, depth: n
       writer.int32(bytes.byteLength); writer.bytes(bytes); return;
     }
   }
+}
+
+/**
+ * The wire decoder intentionally preserves CLR-shaped values for decoded
+ * inputs: sets remain Sets and 64-bit integers remain bigints. Judge outputs,
+ * however, cross the portable JSON-value boundary used by every runtime.
+ * Normalize only results so the fast tier has the same comparison semantics
+ * as the compatibility tier without weakening the typed input boundary.
+ */
+function normalizePortableResult(type: WireType, value: unknown): unknown {
+  if (value === null || value === undefined) return value;
+  if (type.kind === 'container') {
+    const values = type.name === 'set' && value instanceof Set ? [...value] : value;
+    if (!Array.isArray(values)) {
+      throw new TypeError(`TraceCLR ${type.name} result did not decode to a collection.`);
+    }
+    return values.map((item) => normalizePortableResult(type.element, item));
+  }
+  if (
+    type.kind === 'scalar'
+    && (type.name === 'int64' || type.name === 'uint64')
+  ) {
+    if (typeof value !== 'bigint') {
+      throw new TypeError(`TraceCLR ${type.name} result did not decode to a bigint.`);
+    }
+    // JSON.parse, used by the compatibility tier, exposes CLR Int64/UInt64
+    // results as JavaScript numbers. Matching that representation here keeps
+    // Judge comparisons consistent, including JSON's established precision
+    // behavior outside Number.MAX_SAFE_INTEGER.
+    return Number(value);
+  }
+  return value;
 }
 
 function readLength(reader: WireReader): number | null {
@@ -347,7 +379,8 @@ export function decodeTraceClrWireResult(
 ): unknown {
   const reader = new WireReader(bytes);
   verify(reader);
-  const value = readValue(reader, parseWireType(contract.returnType.wireType), 0);
+  const type = parseWireType(contract.returnType.wireType);
+  const value = readValue(reader, type, 0);
   reader.done();
-  return value;
+  return normalizePortableResult(type, value);
 }
