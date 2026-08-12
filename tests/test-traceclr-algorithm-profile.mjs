@@ -86,7 +86,7 @@ test('TraceCLR wire boundary is explicit and its exceptions are reviewed', () =>
   for (const contract of contracts.filter((candidate) => candidate.supported)) {
     assert.deepEqual(contract.unsupportedTypes, [], `${contract.source}: ${contract.signature}`);
   }
-  assert.equal(contracts.filter((contract) => contract.directDriverSupported).length, 257);
+  assert.equal(contracts.filter((contract) => contract.directDriverSupported).length, 230);
   for (const contract of contracts) {
     if (contract.directDriverSupported) {
       assert.equal(contract.kind, 'method', `${contract.source}: ${contract.signature}`);

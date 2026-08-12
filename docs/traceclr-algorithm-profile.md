@@ -72,9 +72,11 @@ directly references only `System.Collections`, `System.Linq`, `System.Memory`, a
 `System.Runtime`. All 24 design/operations-class sources now have constructor and method
 contracts; they are not treated as missing data.
 
-Of 343 callable contracts, 340 fit the typed wire vocabulary and 257 currently qualify for the
-single-method direct driver. Operations classes, void-mutation contracts, and ambiguous or
-unsupported overloads remain explicit broader-profile cases. The three wire exceptions are:
+Of 343 callable contracts, 340 fit the typed wire vocabulary and 230 currently qualify for the
+single-method direct driver. Reference-bearing `ListNode` and `TreeNode` contracts stay on the
+compatibility runner so object identity, cycles, and shared topology remain intact. Operations
+classes, void-mutation contracts, and ambiguous or unsupported overloads remain explicit
+broader-profile cases. The three wire exceptions are:
 
 - `accounts-merge.cs`, whose current signature uses nested `object` lists;
 - `currency-arbitrage-detector.cs`, whose rates use `object[][]`; and
