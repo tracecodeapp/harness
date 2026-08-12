@@ -117,6 +117,12 @@ public static class TraceClrWireDriverGenerator
         {
             unsupported.Add(value);
         }
+        if (parameters.Append(returnType).Any(type =>
+            type.WireType.Contains("list-node<", StringComparison.Ordinal)
+            || type.WireType.Contains("tree-node<", StringComparison.Ordinal)))
+        {
+            unsupported.Add("reference-bearing node topology requires the compatibility runner");
+        }
         if (returnType.WireType == "void") unsupported.Add("void mutation result");
         if (!method.IsStatic && method.ContainingType.InstanceConstructors.All(constructor =>
             constructor.Parameters.Length != 0 || constructor.DeclaredAccessibility == Accessibility.Private))

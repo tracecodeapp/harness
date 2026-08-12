@@ -55,6 +55,18 @@ public class Solution
     public T Echo<T>(T value) => value;
 }
 `);
+    fixture(directory, 'list-node', 'Head', `
+public class Solution
+{
+    public int Head(ListNode head) => head.val;
+}
+`);
+    fixture(directory, 'tree-node', 'Root', `
+public class Solution
+{
+    public int Root(TreeNode root) => root.val;
+}
+`);
     const { result, profile } = generate(directory, true);
     assert.equal(result.status, 0, result.stderr || result.stdout);
     const contracts = new Map(profile.sources.map((source) => [source.path, source.wireContracts[0]]));
@@ -66,6 +78,16 @@ public class Solution
     assert.match(contracts.get('multidimensional.cs').unsupportedTypes.join('\n'), /int\[,\]/);
     assert.equal(contracts.get('generic.cs').directDriverSupported, false);
     assert.match(contracts.get('generic.cs').directDriverUnsupportedReasons.join('\n'), /generic method/);
+    assert.equal(contracts.get('list-node.cs').directDriverSupported, false);
+    assert.match(
+      contracts.get('list-node.cs').directDriverUnsupportedReasons.join('\n'),
+      /reference-bearing node topology requires the compatibility runner/,
+    );
+    assert.equal(contracts.get('tree-node.cs').directDriverSupported, false);
+    assert.match(
+      contracts.get('tree-node.cs').directDriverUnsupportedReasons.join('\n'),
+      /reference-bearing node topology requires the compatibility runner/,
+    );
     const manifest = JSON.parse(readFileSync(join(directory, 'drivers', 'manifest.json'), 'utf8'));
     assert.deepEqual(manifest.artifacts.map((artifact) => artifact.sourcePath), ['hashset.cs']);
   } finally {

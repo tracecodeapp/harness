@@ -48,6 +48,28 @@ assert.deepEqual(
   [3, 1, 4],
 );
 
+const positionalContract: TraceClrWireContractDescriptor = {
+  parameters: [
+    { name: 'x', type: { wireType: 'int32' } },
+    { name: 'y', type: { wireType: 'int32' } },
+  ],
+  returnType: { wireType: 'int32' },
+};
+assert.deepEqual(
+  decodeTraceClrWireInputs(
+    positionalContract,
+    encodeTraceClrWireInputs(positionalContract, { a: 3, b: 5 }),
+  ),
+  { x: 3, y: 5 },
+);
+assert.deepEqual(
+  decodeTraceClrWireInputs(
+    positionalContract,
+    encodeTraceClrWireInputs(positionalContract, { first: 3, y: 8 }),
+  ),
+  { x: 3, y: 8 },
+);
+
 for (const [wireType, value, expected] of [
   ['int64', 9_007_199_254_740_993n, Number(9_007_199_254_740_993n)],
   ['uint64', 18_446_744_073_709_551_615n, Number(18_446_744_073_709_551_615n)],
@@ -83,6 +105,14 @@ const largeValue = '🐝'.repeat(2_000);
 assert.deepEqual(
   decodeTraceClrWireInputs(largeContract, encodeTraceClrWireInputs(largeContract, { value: largeValue })),
   { value: largeValue },
+);
+const largeResultValue = 'x'.repeat(1_000_001);
+assert.equal(
+  decodeTraceClrWireResult(
+    largeContract,
+    encodeTraceClrWireResult(largeContract, largeResultValue),
+  ),
+  largeResultValue,
 );
 
 assert.throws(() => encodeTraceClrWireInputs(contract, {}), /Missing TraceCLR input/);

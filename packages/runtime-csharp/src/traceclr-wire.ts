@@ -285,6 +285,15 @@ function readLength(reader: WireReader): number | null {
   return length;
 }
 
+function readByteLength(reader: WireReader): number | null {
+  const length = reader.int32();
+  if (length === -1) return null;
+  if (length < 0 || length > TRACECLR_WIRE_LIMITS.maxBytes) {
+    throw new RangeError(`Invalid TraceCLR byte length: ${length}.`);
+  }
+  return length;
+}
+
 function readValue(reader: WireReader, type: WireType, depth: number): unknown {
   if (depth > TRACECLR_WIRE_LIMITS.maxDepth) throw new RangeError('TraceCLR value is too deeply nested.');
   if (type.kind === 'container') {
@@ -320,7 +329,7 @@ function readValue(reader: WireReader, type: WireType, depth: number): unknown {
     case 'float32': return reader.float32();
     case 'float64': return reader.float64();
     case 'string': {
-      const length = readLength(reader);
+      const length = readByteLength(reader);
       return length === null ? null : new TextDecoder('utf-8', { fatal: true }).decode(reader.bytes(length));
     }
   }
@@ -338,11 +347,19 @@ export function encodeTraceClrWireInputs(
   const writer = new WireWriter();
   begin(writer);
   writer.uint16(contract.parameters.length);
-  for (const parameter of contract.parameters) {
-    if (!Object.prototype.hasOwnProperty.call(inputs, parameter.name)) {
+  const positionalInputs = Object.values(inputs);
+  for (const [index, parameter] of contract.parameters.entries()) {
+    const value = Object.prototype.hasOwnProperty.call(inputs, parameter.name)
+      ? inputs[parameter.name]
+      : positionalInputs[index];
+    if (
+      value === undefined
+      && !Object.prototype.hasOwnProperty.call(inputs, parameter.name)
+      && index >= positionalInputs.length
+    ) {
       throw new TypeError(`Missing TraceCLR input: ${parameter.name}`);
     }
-    writeValue(writer, parseWireType(parameter.type.wireType), inputs[parameter.name], 0);
+    writeValue(writer, parseWireType(parameter.type.wireType), value, 0);
   }
   return writer.finish();
 }
