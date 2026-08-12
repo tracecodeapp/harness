@@ -156,6 +156,14 @@ function integer64(value: unknown, signed: boolean): bigint {
   return converted;
 }
 
+function floatingPoint(value: unknown, label: 'float32' | 'float64'): number {
+  if (typeof value === 'number') return value;
+  if (value === 'NaN') return Number.NaN;
+  if (value === 'Infinity') return Number.POSITIVE_INFINITY;
+  if (value === '-Infinity') return Number.NEGATIVE_INFINITY;
+  throw new TypeError(`${label} must be numeric or a named floating-point literal.`);
+}
+
 function collection(value: unknown, set: boolean): readonly unknown[] {
   const items = set && value instanceof Set ? [...value] : value;
   if (!Array.isArray(items)) throw new TypeError('TraceCLR collection values must be arrays or Sets.');
@@ -238,8 +246,8 @@ function writeValue(writer: WireWriter, type: WireType, value: unknown, depth: n
     case 'uint32': writer.uint32(integer(value, 0, 4294967295, 'uint32')); return;
     case 'int64': writer.int64(integer64(value, true)); return;
     case 'uint64': writer.uint64(integer64(value, false)); return;
-    case 'float32': if (typeof value !== 'number') throw new TypeError('float32 must be numeric.'); writer.float32(value); return;
-    case 'float64': if (typeof value !== 'number') throw new TypeError('float64 must be numeric.'); writer.float64(value); return;
+    case 'float32': writer.float32(floatingPoint(value, 'float32')); return;
+    case 'float64': writer.float64(floatingPoint(value, 'float64')); return;
     case 'string': {
       if (value === null) { writer.int32(-1); return; }
       if (typeof value !== 'string') throw new TypeError('string must be a string or null.');

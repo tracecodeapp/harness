@@ -147,6 +147,24 @@ for (const [value, expected] of [
   );
 }
 
+const namedFloatInputContract: TraceClrWireContractDescriptor = {
+  parameters: [{ name: 'values', type: { wireType: 'array<array<float64>>' } }],
+  returnType: { wireType: 'void' },
+};
+assert.deepEqual(
+  decodeTraceClrWireInputs(
+    namedFloatInputContract,
+    encodeTraceClrWireInputs(namedFloatInputContract, {
+      values: [['NaN', 'Infinity', '-Infinity']],
+    }),
+  ),
+  { values: [[Number.NaN, Number.POSITIVE_INFINITY, Number.NEGATIVE_INFINITY]] },
+);
+assert.throws(
+  () => encodeTraceClrWireInputs(namedFloatInputContract, { values: [['not-a-number']] }),
+  /named floating-point literal/,
+);
+
 const largeContract: TraceClrWireContractDescriptor = {
   parameters: [{ name: 'value', type: { wireType: 'string' } }],
   returnType: { wireType: 'string' },
