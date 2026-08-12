@@ -70,6 +70,12 @@ class TraceCCCompilerWorkerDouble {
   terminate(): void {
     this.terminated = true;
   }
+
+  emitIdleTimeout(): void {
+    this.onmessage?.({
+      data: { type: 'idle-timeout' },
+    } as MessageEvent);
+  }
 }
 
 function options(
@@ -220,9 +226,40 @@ async function testCompilerRetirementIsIndependent(): Promise<void> {
   coordinator.terminate();
 }
 
+async function testIdleCompilerRetirementRecoversBeforeNextCompile(): Promise<void> {
+  TraceCCCompilerWorkerDouble.instances = [];
+  const coordinator = new TraceCCCompilerService(options());
+  try {
+    await coordinator.warmup();
+    const retiredWorker = TraceCCCompilerWorkerDouble.instances[0];
+    assertCondition(retiredWorker, 'Warmup should create one compiler Worker.');
+
+    retiredWorker.emitIdleTimeout();
+    assertCondition(
+      retiredWorker.terminated,
+      'The compiler service must retire a Worker that reports idle timeout.'
+    );
+
+    const result = await coordinator.compileTrusted({
+      driverSource: 'int main() { return 0; }',
+    });
+    assertCondition(
+      result.success === true,
+      'The first compile after idle retirement should recover without timing out.'
+    );
+    assertCondition(
+      TraceCCCompilerWorkerDouble.instances.length === 2,
+      'The first compile after idle retirement must create one fresh compiler Worker.'
+    );
+  } finally {
+    coordinator.terminate();
+  }
+}
+
 async function main(): Promise<void> {
   await testFixedReactorContract();
   await testCompilerRetirementIsIndependent();
+  await testIdleCompilerRetirementRecoversBeforeNextCompile();
   console.log('TraceCC compiler service tests passed');
 }
 
