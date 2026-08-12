@@ -127,6 +127,12 @@ public static class TraceClrWireDriverGenerator
         {
             unsupported.Add("reference-bearing node topology requires the compatibility runner");
         }
+        if (ContainsDeferredEnumerable(method.ReturnType))
+        {
+            unsupported.Add(
+                "deferred IEnumerable result requires the compatibility runner"
+            );
+        }
         if (returnType.WireType == "void") unsupported.Add("void mutation result");
         if (!method.IsStatic && method.ContainingType.InstanceConstructors.All(constructor =>
             constructor.Parameters.Length != 0 || constructor.DeclaredAccessibility == Accessibility.Private))
@@ -178,6 +184,21 @@ public static class TraceClrWireDriverGenerator
 
     private static TraceClrWireType Unsupported(string display) =>
         new("unsupported", display, new[] { display });
+
+    private static bool ContainsDeferredEnumerable(ITypeSymbol type)
+    {
+        if (type is IArrayTypeSymbol array)
+        {
+            return ContainsDeferredEnumerable(array.ElementType);
+        }
+        if (type is not INamedTypeSymbol named)
+        {
+            return false;
+        }
+        return named.OriginalDefinition.ToDisplayString()
+                == "System.Collections.Generic.IEnumerable<T>"
+            || named.TypeArguments.Any(ContainsDeferredEnumerable);
+    }
 
     private sealed class TraceClrWireSourceBuilder
     {
@@ -410,24 +431,6 @@ public static class TraceClrWireDriverGenerator
                 string definition = named.OriginalDefinition.ToDisplayString();
                 ITypeSymbol element = named.TypeArguments[0];
                 string elementWriter = WriterFor(element, DescribeWireType(element).WireType);
-                if (definition == "System.Collections.Generic.IEnumerable<T>")
-                {
-                    return $$"""
-    private static void {{name}}(Writer writer, {{display}} value)
-    {
-        if (value is null) { writer.Int32(-1); return; }
-        var items = new global::System.Collections.Generic.List<{{element.ToDisplayString(TypeFormat)}}>();
-        foreach (var item in value)
-        {
-            if (items.Count >= {{MaxCollectionItems}}) throw new InvalidOperationException("TraceCLR result collection is too large.");
-            if ((items.Count & 1023) == 0) writer.CheckTimeout();
-            items.Add(item);
-        }
-        writer.Length(items.Count);
-        foreach (var item in items) {{elementWriter}}(writer, item);
-    }
-""";
-                }
                 if (definition is "System.Collections.Generic.List<T>"
                     or "System.Collections.Generic.IList<T>"
                     or "System.Collections.Generic.IReadOnlyList<T>"

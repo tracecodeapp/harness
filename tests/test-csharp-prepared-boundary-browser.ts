@@ -513,14 +513,6 @@ public class Solution
         view.setInt32(10, right, true);
         return bytes;
       };
-      const encodeOneInt32 = (value: number): Uint8Array => {
-        const bytes = new Uint8Array(10);
-        const view = new DataView(bytes.buffer);
-        view.setUint32(0, 0x31574354, true);
-        view.setUint16(4, 1, true);
-        view.setInt32(6, value, true);
-        return bytes;
-      };
       const decodeInt32 = (bytes: Uint8Array | undefined): number | null => {
         if (!(bytes instanceof Uint8Array) || bytes.byteLength !== 8) return null;
         const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
@@ -647,8 +639,7 @@ public class Solution
             'code',
             enumerablePrepared
           ),
-          inputs: { count: 1_000_001 },
-          inputBytes: encodeOneInt32(1_000_001),
+          inputs: { count: 3 },
           assetBaseUrl: runnerBaseUrl,
           timeoutMs: 10_000,
         }
@@ -837,12 +828,10 @@ public class Solution
     );
     assertCondition(
       result.enumerablePrepared.success &&
-        result.enumerablePrepared.preparedRunnerTier === 'algorithm-fast' &&
-        !result.enumerableOverflow.success &&
-        result.enumerableOverflow.error?.includes(
-          'TraceCLR result collection is too large'
-        ) === true,
-      `TraceCLR algorithm-fast result enumeration did not enforce its item budget incrementally: ${JSON.stringify({
+        result.enumerablePrepared.preparedRunnerTier === 'compatibility' &&
+        result.enumerableOverflow.success &&
+        JSON.stringify(result.enumerableOverflow.output) === '[0,1,2]',
+      `TraceCLR deferred result enumeration did not fail closed to the compatibility runner: ${JSON.stringify({
         prepared: result.enumerablePrepared,
         execution: result.enumerableOverflow,
       })}`

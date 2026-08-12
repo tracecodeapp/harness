@@ -113,7 +113,7 @@ public static class TraceClrAlgorithmExecutionCore
             current is TargetInvocationException { InnerException: not null } target
         )
         {
-            current = target.InnerException;
+            current = target.InnerException!;
         }
         return current.GetBaseException();
     }

@@ -73,6 +73,12 @@ public class Solution
     public int Add(int value, int increment = 1) => value + increment;
 }
 `);
+    fixture(directory, 'deferred-enumerable', 'Expand', `
+public class Solution
+{
+    public IEnumerable<int> Expand(int count) => Enumerable.Range(0, count);
+}
+`);
     const { result, profile } = generate(directory, true);
     assert.equal(result.status, 0, result.stderr || result.stdout);
     const contracts = new Map(profile.sources.map((source) => [source.path, source.wireContracts[0]]));
@@ -98,6 +104,11 @@ public class Solution
     assert.match(
       contracts.get('optional-parameter.cs').directDriverUnsupportedReasons.join('\n'),
       /optional parameter increment requires the compatibility runner/,
+    );
+    assert.equal(contracts.get('deferred-enumerable.cs').directDriverSupported, false);
+    assert.match(
+      contracts.get('deferred-enumerable.cs').directDriverUnsupportedReasons.join('\n'),
+      /deferred IEnumerable result requires the compatibility runner/,
     );
     const manifest = JSON.parse(readFileSync(join(directory, 'drivers', 'manifest.json'), 'utf8'));
     assert.deepEqual(manifest.artifacts.map((artifact) => artifact.sourcePath), ['hashset.cs']);
