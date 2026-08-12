@@ -4,10 +4,12 @@ using System.Security.Cryptography;
 namespace TraceCode.CSharpHost;
 
 public sealed record TraceClrAlgorithmExecutionResult(
-    byte[] OutputBytes,
+    bool Success,
+    byte[]? OutputBytes,
     List<RuntimeTraceEvent> Events,
     bool TraceLimitExceeded,
-    string? TimeoutReason
+    string? TimeoutReason,
+    string? Error
 );
 
 /// <summary>
@@ -65,18 +67,50 @@ public static class TraceClrAlgorithmExecutionCore
             List<RuntimeTraceEvent> events = RuntimeTraceSink.Snapshot();
             TraceEventBackfill.Apply(source, events, recordTrace && minimalTrace);
             return new TraceClrAlgorithmExecutionResult(
+                true,
                 outputBytes,
                 events,
                 RuntimeTraceSink.TraceLimitExceeded,
                 RuntimeTraceSink.TraceLimitExceeded
                     ? RuntimeTraceSink.TimeoutReason
-                    : null
+                    : null,
+                null
             );
+        }
+        catch (Exception error)
+            when (error.GetBaseException() is TraceCodeTimeoutException timeout)
+        {
+            return LimitResult(source, recordTrace, minimalTrace, timeout.Message, "client-timeout");
+        }
+        catch (Exception error)
+            when (error.GetBaseException() is TraceLimitExceededException traceLimit)
+        {
+            return LimitResult(source, recordTrace, minimalTrace, traceLimit.Message, traceLimit.TimeoutReason);
         }
         finally
         {
             RuntimeTraceSink.Reset();
         }
+    }
+
+    private static TraceClrAlgorithmExecutionResult LimitResult(
+        string source,
+        bool recordTrace,
+        bool minimalTrace,
+        string error,
+        string timeoutReason
+    )
+    {
+        List<RuntimeTraceEvent> events = RuntimeTraceSink.Snapshot();
+        TraceEventBackfill.Apply(source, events, recordTrace && minimalTrace);
+        return new TraceClrAlgorithmExecutionResult(
+            false,
+            null,
+            events,
+            RuntimeTraceSink.TraceLimitExceeded,
+            timeoutReason,
+            error
+        );
     }
 
     private static byte[] DecodeAndValidateArtifact(

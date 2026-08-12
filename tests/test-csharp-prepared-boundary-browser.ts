@@ -560,6 +560,30 @@ public class Solution
       );
       fastTraceLimitedRunner.terminate();
 
+      const fastTraceHardLimitedRunner = await createHarness(
+        'runner',
+        runnerBaseUrl
+      );
+      const fastTraceHardLimited = await fastTraceHardLimitedRunner.send(
+        'execute-prepared-trace',
+        {
+          prepared: {
+            ...descriptor(source, 'Add', 'trace', fastTracePrepared),
+            traceOptions: {
+              maxTraceSteps: 10_000,
+              maxLineEvents: 1,
+              maxSingleLineHits: 10_000,
+              maxStoredEvents: 10_000,
+            },
+          },
+          inputs: { left: 19, right: 23 },
+          inputBytes: encodeTwoInt32(19, 23),
+          assetBaseUrl: runnerBaseUrl,
+          timeoutMs: 10_000,
+        }
+      );
+      fastTraceHardLimitedRunner.terminate();
+
       const structuredInputs = {
         payload: {
           Name: 'Ada',
@@ -670,6 +694,7 @@ public class Solution
           output: decodeInt32(fastTraceDisabled.outputBytes),
         },
         fastTraceLimited,
+        fastTraceHardLimited,
         structured,
         structuredTrace,
         nonMutatingVoid,
@@ -720,6 +745,15 @@ public class Solution
         result.fastTraceLimited.timeoutReason === 'trace-limit' &&
         (result.fastTraceLimited.events?.length ?? 0) === 1,
       `TraceCLR algorithm-fast tracing did not preserve trace-limit semantics: ${JSON.stringify(result.fastTraceLimited)}`
+    );
+    assertCondition(
+      !result.fastTraceHardLimited.success &&
+        result.fastTraceHardLimited.traceLimitExceeded === true &&
+        result.fastTraceHardLimited.timeoutReason === 'line-limit' &&
+        result.fastTraceHardLimited.events?.some(
+          (event) => event.kind === 'timeout' && event.reason === 'line-limit'
+        ) === true,
+      `TraceCLR algorithm-fast tracing did not preserve thrown line-limit semantics: ${JSON.stringify(result.fastTraceHardLimited)}`
     );
     assertCondition(
       result.valid.success &&

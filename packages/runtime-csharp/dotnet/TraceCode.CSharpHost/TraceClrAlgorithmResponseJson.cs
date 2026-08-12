@@ -19,8 +19,19 @@ public static class TraceClrAlgorithmResponseJson
         using (Utf8JsonWriter writer = new(buffer))
         {
             writer.WriteStartObject();
-            writer.WriteBoolean("success", true);
-            writer.WriteBase64String("outputBytes", result.OutputBytes);
+            writer.WriteBoolean("success", result.Success);
+            if (result.OutputBytes is not null)
+            {
+                writer.WriteBase64String("outputBytes", result.OutputBytes);
+            }
+            if (result.Error is null)
+            {
+                writer.WriteNull("error");
+            }
+            else
+            {
+                writer.WriteString("error", result.Error);
+            }
             writer.WriteStartArray("events");
             foreach (RuntimeTraceEvent traceEvent in result.Events)
             {
