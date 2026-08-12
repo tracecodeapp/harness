@@ -160,6 +160,12 @@ assert.deepEqual(
   ),
   { values: [[Number.NaN, Number.POSITIVE_INFINITY, Number.NEGATIVE_INFINITY]] },
 );
+const negativeZeroInput = decodeTraceClrWireInputs(
+  namedFloatInputContract,
+  encodeTraceClrWireInputs(namedFloatInputContract, { values: [[-0]] }),
+) as { values: number[][] };
+assert.equal(Object.is(negativeZeroInput.values[0]?.[0], 0), true);
+assert.equal(Object.is(negativeZeroInput.values[0]?.[0], -0), false);
 assert.throws(
   () => encodeTraceClrWireInputs(namedFloatInputContract, { values: [['not-a-number']] }),
   /named floating-point literal/,

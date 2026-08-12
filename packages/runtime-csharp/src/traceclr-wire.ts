@@ -157,7 +157,8 @@ function integer64(value: unknown, signed: boolean): bigint {
 }
 
 function floatingPoint(value: unknown, label: 'float32' | 'float64'): number {
-  if (typeof value === 'number') return value;
+  // Match the compatibility tier's JSON transport, which serializes -0 as 0.
+  if (typeof value === 'number') return Object.is(value, -0) ? 0 : value;
   if (value === 'NaN') return Number.NaN;
   if (value === 'Infinity') return Number.POSITIVE_INFINITY;
   if (value === '-Infinity') return Number.NEGATIVE_INFINITY;
