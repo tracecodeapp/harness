@@ -995,6 +995,28 @@ async function main(): Promise<void> {
         add.success && add.output === 5,
         `C# ${browserEngineName} asset smoke failed: ${add.error ?? JSON.stringify(add.output)}`
       );
+      const projectBcl = await runWorkerCase(
+        page,
+        [
+          'using System.Collections.Concurrent;',
+          'using System.Collections.Immutable;',
+          'public class Solution {',
+          '  public int Count(int value) {',
+          '    var values = ImmutableArray.Create(value, value + 1);',
+          '    var counts = new ConcurrentDictionary<int, int>();',
+          '    counts[value] = values.Length;',
+          '    return counts[value];',
+          '  }',
+          '}',
+        ].join('\n'),
+        'Count',
+        { value: 7 },
+        assetBaseUrl
+      );
+      assertCondition(
+        projectBcl.success && projectBcl.output === 2,
+        `C# ${browserEngineName} project BCL smoke failed: ${projectBcl.error ?? JSON.stringify(projectBcl.output)}`
+      );
       console.log(
         `PASS: C# ${browserEngineName} boots stable VFS assets and executes managed code`
       );
