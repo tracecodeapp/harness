@@ -127,6 +127,7 @@ test('cancelling browser background work prevents a queued start', async () => {
       runs += 1;
     });
     task.cancel();
+    await assert.rejects(task.wait(), { name: 'AbortError' });
     (idleCallback as unknown as IdleRequestCallback)({
       didTimeout: false,
       timeRemaining: () => 50,

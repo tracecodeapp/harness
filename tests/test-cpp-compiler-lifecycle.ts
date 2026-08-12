@@ -438,6 +438,7 @@ async function testCompilePromotesQueuedCompilerPrewarm(): Promise<void> {
           promotedTask ??= prewarm();
           return promotedTask;
         },
+        wait: () => promotedTask ?? new Promise<void>(() => undefined),
         cancel: () => undefined,
       };
     },

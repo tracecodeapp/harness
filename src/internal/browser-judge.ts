@@ -287,6 +287,9 @@ export interface BrowserJudgeHost {
   isLanguageSupported(language: Language): boolean;
   preflightLanguage(language: Language): Promise<BrowserRuntimeReadiness>;
   preflight(): Promise<BrowserRuntimeEnvironmentReport>;
+  prewarmLanguage(
+    language: Language
+  ): Promise<{ success: boolean; loadTimeMs: number }>;
   warmLanguage(
     language: Language
   ): Promise<{ success: boolean; loadTimeMs: number }>;
@@ -1772,6 +1775,7 @@ export function createBrowserJudgeHostFromRuntimeHost(
     isLanguageSupported: host.isLanguageSupported.bind(host),
     preflightLanguage: host.preflightLanguage.bind(host),
     preflight: host.preflight.bind(host),
+    prewarmLanguage: host.prewarmLanguage.bind(host),
     warmLanguage: host.warmLanguage.bind(host),
     disposeLanguage: host.disposeLanguage.bind(host),
     createJudge: (judgeOptions: CreateBrowserJudgeOptions) =>

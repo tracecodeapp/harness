@@ -1,6 +1,8 @@
 export interface PromotableBrowserBackgroundTask {
   /** Start immediately when still queued, then await the shared work. */
   promote(): Promise<void>;
+  /** Observe completion without changing the queued task's priority. */
+  wait(): Promise<void>;
   /** Cancel work that has not started. Running work needs owner teardown. */
   cancel(): void;
 }
@@ -27,11 +29,21 @@ export function createPromotableBrowserBackgroundTask(
   let task: Promise<void> | null = null;
   let idleHandle: number | null = null;
   let backgroundController: AbortController | null = null;
+  let resolveCompletion!: () => void;
+  let rejectCompletion!: (reason: unknown) => void;
+  const completion = new Promise<void>((resolve, reject) => {
+    resolveCompletion = resolve;
+    rejectCompletion = reject;
+  });
+  // A disposed owner may not retain a waiter. Keep cancellation from becoming
+  // an unhandled rejection while preserving it for explicit waiters.
+  void completion.catch(() => undefined);
 
   const start = (): Promise<void> => {
     if (permanentlyCancelled) return Promise.resolve();
     if (!task) {
       task = Promise.resolve().then(work);
+      task.then(resolveCompletion, rejectCompletion);
       void task.catch(() => undefined);
     }
     return task;
@@ -79,9 +91,16 @@ export function createPromotableBrowserBackgroundTask(
       cancelPendingCallback();
       return start();
     },
+    wait: () => completion,
     cancel: () => {
+      if (permanentlyCancelled) return;
       permanentlyCancelled = true;
       cancelPendingCallback();
+      if (!task) {
+        rejectCompletion(
+          new DOMException('Browser background work was cancelled.', 'AbortError')
+        );
+      }
     },
   };
 }

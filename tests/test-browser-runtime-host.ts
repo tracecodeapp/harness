@@ -275,7 +275,7 @@ async function main(): Promise<void> {
   host.dispose();
   assertCondition(
     selectionEvents.join(',') ===
-      'create:python-provider,init,prepare:code,execute,init,' +
+      'create:python-provider,init,prepare:code,execute,' +
         'dispose-program,dispose-language:python,dispose:python-provider',
     `Host lifecycle must be provider-owned and exactly disposed: ${selectionEvents.join(',')}`
   );
@@ -432,6 +432,59 @@ async function main(): Promise<void> {
 }
 
 test('browser runtime host', main);
+
+test('browser runtime prewarm stays idle and foreground warm promotes it', async () => {
+  const originalRequestIdleCallback = globalThis.requestIdleCallback;
+  const originalCancelIdleCallback = globalThis.cancelIdleCallback;
+  let idleCallback: IdleRequestCallback | null = null;
+  const events: string[] = [];
+  globalThis.requestIdleCallback = (callback) => {
+    idleCallback = callback;
+    return 41;
+  };
+  globalThis.cancelIdleCallback = () => undefined;
+  const host = createBrowserRuntimeHost({
+    providerRegistry: createBrowserRuntimeProviderRegistry([
+      recordingProvider('idle-javascript', ['javascript'], events),
+    ]),
+    providers: ['javascript'],
+    featureOverrides: browserFeatures,
+  });
+  try {
+    const background = host.prewarmLanguage('javascript');
+    await Promise.resolve();
+    assertCondition(
+      !events.includes('init'),
+      `background runtime prewarm must not initialize before browser idle: ${events}`
+    );
+    const foreground = host.warmLanguage('javascript');
+    const [backgroundResult, foregroundResult] = await Promise.all([
+      background,
+      foreground,
+    ]);
+    assertCondition(
+      backgroundResult.success && foregroundResult.success,
+      'background and promoted warm callers should observe one successful result'
+    );
+    assertCondition(
+      events.filter((event) => event === 'init').length === 1,
+      `foreground promotion must initialize the runtime exactly once: ${events}`
+    );
+    (idleCallback as unknown as IdleRequestCallback)({
+      didTimeout: false,
+      timeRemaining: () => 50,
+    });
+    await Promise.resolve();
+    assertCondition(
+      events.filter((event) => event === 'init').length === 1,
+      `a stale idle callback must not duplicate promoted initialization: ${events}`
+    );
+  } finally {
+    host.dispose();
+    globalThis.requestIdleCallback = originalRequestIdleCallback;
+    globalThis.cancelIdleCallback = originalCancelIdleCallback;
+  }
+});
 
 test('prepared program reuse shares concurrency across caller facades', async () => {
   let active = 0;
