@@ -28,6 +28,10 @@ interface WorkerMessage {
   kernelSyscallGenerationBuffer?: SharedArrayBuffer;
 }
 
+const MINIMAL_WASM = new Uint8Array([
+  0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00,
+]);
+
 class AssetWorker {
   static instances: AssetWorker[] = [];
   static fetches: string[] = [];
@@ -62,6 +66,16 @@ class AssetWorker {
     }
     const payload = message.type === 'init'
       ? { success: true, loadTimeMs: 0 }
+      : message.type === 'prewarm-trusted-tracecc-assets'
+        ? { success: true }
+        : message.type === 'compile-trusted-tracecc'
+          ? {
+              success: true,
+              outputBytes: MINIMAL_WASM.slice(),
+              outputPath: 'program.wasm',
+              stdout: '',
+              stderr: '',
+            }
       : message.type === 'warmup'
         ? { success: true, loadTimeMs: 0 }
         : message.type === 'execute-project-cpp'
@@ -168,6 +182,15 @@ async function cppManifest(): Promise<{
     ['/cpp/compiler-bundle.js', 'compiler-bundle'],
     ['/cpp/llvm.core.wasm', 'llvm-core'],
     ['/cpp/llvm-resources.tar', 'llvm-resources'],
+    ['/cpp/narrow.pch', 'narrow-pch'],
+    ['/cpp/narrow.hpp', 'narrow-source'],
+    ['/cpp/narrow.o', 'narrow-object'],
+    ['/cpp/broad.pch', 'broad-pch'],
+    ['/cpp/broad.hpp', 'broad-source'],
+    ['/cpp/broad.o', 'broad-object'],
+    ['/cpp/map.pch', 'map-pch'],
+    ['/cpp/map.hpp', 'map-source'],
+    ['/cpp/map.o', 'map-object'],
   ]);
   const asset = (url: string) => descriptor(url, bodies.get(url) ?? '');
   return {
@@ -187,8 +210,15 @@ async function cppManifest(): Promise<{
           linkerWasm: await asset('/cpp/llvm.core.wasm'),
           sysroot: await asset('/cpp/llvm-resources.tar'),
           compilerResources: {
-            'llvm.core.wasm': await asset('/cpp/llvm.core.wasm'),
-            'llvm-resources.tar': await asset('/cpp/llvm-resources.tar'),
+            'tracecc-narrow-pch': await asset('/cpp/narrow.pch'),
+            'tracecc-narrow-pch-source': await asset('/cpp/narrow.hpp'),
+            'tracecc-narrow-runtime-object': await asset('/cpp/narrow.o'),
+            'tracecc-broad-pch': await asset('/cpp/broad.pch'),
+            'tracecc-broad-pch-source': await asset('/cpp/broad.hpp'),
+            'tracecc-broad-runtime-object': await asset('/cpp/broad.o'),
+            'tracecc-map-pch': await asset('/cpp/map.pch'),
+            'tracecc-map-pch-source': await asset('/cpp/map.hpp'),
+            'tracecc-map-runtime-object': await asset('/cpp/map.o'),
           },
         },
       },
@@ -263,8 +293,8 @@ async function testClassicAndProjectManifestPlumbing(): Promise<void> {
   try {
     const resolvedAssets = resolveBrowserRuntimeAssets({ assets: { runtimeManifests: manifests } });
     assertCondition(
-      resolvedAssets.cppCompilerIntegrity?.assets.length === 4,
-      `C++ manifest should derive four exact pins before client construction: ${JSON.stringify(resolvedAssets.cppCompilerIntegrity)}`
+      resolvedAssets.cppCompilerIntegrity?.assets.length === 12,
+      `C++ manifest should derive exact common and shard pins before client construction: ${JSON.stringify(resolvedAssets.cppCompilerIntegrity)}`
     );
     const host = createBrowserRuntimeHost({
       assets: { runtimeManifests: manifests },
@@ -277,12 +307,12 @@ async function testClassicAndProjectManifestPlumbing(): Promise<void> {
     const pins = (classicInit?.payload?.assets as { toolchainIntegrity?: { assets?: unknown[] } } | undefined)
       ?.toolchainIntegrity?.assets;
     assertCondition(
-      Array.isArray(pins) && pins.length === 4,
+      Array.isArray(pins) && pins.length === 12,
       `Classic C++ init should receive derived exact compiler pins: ${JSON.stringify(classicInit)}`
     );
     assertCondition(
-      AssetWorker.fetches.length === 1 && AssetWorker.fetches[0] === '/cpp/cpp-worker.js',
-      `Classic init should preflight only its execution worker: ${JSON.stringify(AssetWorker.fetches)}`
+      AssetWorker.fetches.length === 0,
+      `Classic init must not fetch C++ runtime bytes in the page realm: ${JSON.stringify(AssetWorker.fetches)}`
     );
     host.dispose();
 
@@ -295,21 +325,15 @@ async function testClassicAndProjectManifestPlumbing(): Promise<void> {
     try {
       const result = await workspace.runCommand('clang++ main.cpp -o program.wasm');
       assertCondition(result.exitCode === 0, `project C++ manifest compile should complete: ${JSON.stringify(result)}`);
-      const projectWorker = AssetWorker.instances.find((worker) =>
-        worker.messages.some((message) => message.type === 'execute-project-cpp')
+      const compilerWorker = AssetWorker.instances.find((worker) =>
+        String(worker.url).includes('traceccRole=compiler')
       );
-      assertCondition(projectWorker, 'Project C++ should construct a consumer-manifest worker');
-      const requiredRuntimeAssets = [
-        '/cpp/compiler-frame.html',
-        '/cpp/compiler-worker.js',
-        '/cpp/tracecode_runtime.hpp',
-        '/cpp/compiler-bundle.js',
-        '/cpp/llvm.core.wasm',
-        '/cpp/llvm-resources.tar',
-      ];
+      assertCondition(compilerWorker, 'Project C++ should construct the trusted compiler Worker');
       assertCondition(
-        requiredRuntimeAssets.every((url) => projectWorker.fetchesAtProjectExecution.includes(url)),
-        `project compile must finish compiler preflight before worker execution: ${JSON.stringify(projectWorker.fetchesAtProjectExecution)}`
+        compilerWorker.messages.some((message) =>
+          message.type === 'compile-trusted-tracecc'
+        ) && AssetWorker.fetches.length === 0,
+        `Project compilation must leave compiler byte loading to the trusted Worker: ${JSON.stringify(AssetWorker.fetches)}`
       );
     } finally {
       workspace.dispose();

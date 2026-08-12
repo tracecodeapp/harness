@@ -66,7 +66,6 @@ export interface TraceCCBrowserCompilerContext {
     | 'runtimeManifests'
   >;
   readonly workerFactory?: BrowserWorkerFactory;
-  readonly preflight: (assetNames: readonly string[]) => Promise<void>;
 }
 
 function traceccShardAssets(
@@ -100,39 +99,18 @@ export function createTraceCCBrowserCompilerService(
     ...DEFAULT_TRACECC_RESOURCE_NAMES,
     ...(compiler.resourceNames ?? {}),
   } as typeof DEFAULT_TRACECC_RESOURCE_NAMES;
-  const commonCompilerAssetNames = [
-    'runtimeHeader',
-    'compilerWasm',
-    'linkerWasm',
-    'sysroot',
-  ] as const;
-  const commonAssetPreflight = () =>
-    context.preflight(commonCompilerAssetNames);
   const compilerIntegrity = context.assets.cppCompilerIntegrity;
   if (!compilerIntegrity) {
     throw new Error(
       'TraceCC requires exact compiler integrity entries from a C++ runtime manifest.'
     );
   }
-  const shardAssetPreflight = (
-    shard: 'narrow' | 'broad' | 'map'
-  ) => {
-    const prefix = shard === 'map' ? 'map' : shard;
-    return context.preflight([
-      ...commonCompilerAssetNames,
-      `compilerResources.${resourceNames[`${prefix}Pch`]}`,
-      `compilerResources.${resourceNames[`${prefix}PchSource`]}`,
-      `compilerResources.${resourceNames[`${prefix}RuntimeObject`]}`,
-    ]);
-  };
   return new TraceCCCompilerService({
     workerUrl: context.assets.cppWorker,
     compilerUrl: context.assets.cppCompilerWasm,
     resourcesUrl: context.assets.cppSysroot,
     runtimeHeaderUrl: context.assets.cppRuntimeHeader,
     compilerIntegrity,
-    commonAssetPreflight,
-    assetPreflight: shardAssetPreflight,
     shards: {
       narrow: traceccShardAssets(
         traceccResources,
@@ -166,19 +144,9 @@ export function createCppBrowserRuntimeProvider(
     create(context: BrowserRuntimeProviderContext): BrowserRuntimeProviderLease {
       const workerFactory = context.workerFactoryFor('cpp');
       const compiler = options.compiler ?? {};
-      const commonCompilerAssetNames = [
-        'runtimeHeader',
-        'compilerWasm',
-        'linkerWasm',
-        'sysroot',
-      ] as const;
-      const runtimeAssetPreflight =
-        context.preflight('cpp', commonCompilerAssetNames);
       const workerOptions = {
         workerUrl: context.assets.cppWorker,
         ...(workerFactory ? { workerFactory } : {}),
-        assetPreflight: context.preflight('cpp', ['worker']),
-        runtimeAssetPreflight,
         compilerWasmUrl: context.assets.cppCompilerWasm,
         linkerWasmUrl: context.assets.cppLinkerWasm,
         sysrootUrl: context.assets.cppSysroot,
@@ -195,8 +163,6 @@ export function createCppBrowserRuntimeProvider(
       const compilerService = createTraceCCBrowserCompilerService(compiler, {
         assets: context.assets,
         ...(workerFactory ? { workerFactory } : {}),
-        preflight: (assetNames) =>
-          context.preflight('cpp', assetNames)(),
       });
       const createWorkerClient = () => new CppWorkerClient({
         ...workerOptions,

@@ -96,14 +96,11 @@ function preflightAssets(
         'runnerDependencies',
       ];
     case 'cpp':
-      return [
-        'worker',
-        'runtimeHeader',
-        'compilerWasm',
-        'linkerWasm',
-        'sysroot',
-        'compilerResources',
-      ];
+      // C++ toolchain bytes are owned by the trusted compiler Worker. The
+      // manifest resolver above already validates descriptor shape, origin
+      // policy, and exact cross-origin pins; fetching and hashing those bytes
+      // here would perform compiler data-plane work in the page realm.
+      return [];
   }
 }
 

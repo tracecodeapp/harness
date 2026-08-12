@@ -1324,13 +1324,6 @@ export async function createBrowserProjectWorkspace(
       executionHost && isExecutionHosted('cpp')
         ? executionHost.workerFactory
         : undefined;
-    const cppRuntimeAssetPreflight =
-      () => runtimeAssetPreflight.preflight('cpp', [
-        'runtimeHeader',
-        'compilerWasm',
-        'linkerWasm',
-        'sysroot',
-      ]);
     const traceccCompilerService =
       cppProvider && !injectedCppProvider
       ? cppProvider[2].createTraceCCBrowserCompilerService({}, {
@@ -1338,8 +1331,6 @@ export async function createBrowserProjectWorkspace(
           ...(cppCompilerWorkerFactory
             ? { workerFactory: cppCompilerWorkerFactory }
             : {}),
-          preflight: (assetNames) =>
-            runtimeAssetPreflight.preflight('cpp', assetNames),
         })
       : undefined;
     const cppWorkerOptions: CppWorkerClientOptions = {
@@ -1347,8 +1338,6 @@ export async function createBrowserProjectWorkspace(
       ...(cppCompilerWorkerFactory
         ? { workerFactory: cppCompilerWorkerFactory }
         : {}),
-      assetPreflight: () => runtimeAssetPreflight.preflight('cpp', ['worker']),
-      runtimeAssetPreflight: cppRuntimeAssetPreflight,
       compilerWasmUrl: assets.cppCompilerWasm,
       linkerWasmUrl: assets.cppLinkerWasm,
       sysrootUrl: assets.cppSysroot,

@@ -123,6 +123,7 @@ class PreparedProtocolWorker {
 
   onmessage: ((event: MessageEvent<WorkerMessage>) => void) | null = null;
   onerror: ((event: ErrorEvent) => void) | null = null;
+  readonly messages: WorkerMessage[] = [];
   terminated = false;
   private pendingPreparation: WorkerMessage | null = null;
   private preparedMode: 'code' | 'trace' | null = null;
@@ -136,11 +137,16 @@ class PreparedProtocolWorker {
 
   postMessage(message: WorkerMessage): void {
     if (this.terminated) return;
+    this.messages.push(message);
     if (message.type === 'init') {
       queueMicrotask(() => this.reply(message, {
         success: true,
         loadTimeMs: 0,
       }));
+      return;
+    }
+    if (message.type === 'prewarm-trusted-tracecc-assets') {
+      queueMicrotask(() => this.reply(message, { success: true }));
       return;
     }
     if (message.type === 'prepare-runtime-program') {
@@ -374,25 +380,28 @@ async function testBrowserProviderDefersCompilerWarmupUntilPreparation(): Promis
       `entering a C++ surface must not start the compiler Worker: ${PreparedProtocolWorker.instances.map((worker) => worker.url)}`
     );
     assertCondition(
-      executedPreflights.length === 1 && executedPreflights[0]?.length === 1 && executedPreflights[0][0] === 'worker',
-      `entering a C++ surface must preflight only the execution Worker: ${JSON.stringify(executedPreflights)}`
+      executedPreflights.length === 0,
+      `entering a C++ surface must not fetch runtime bytes in the page realm: ${JSON.stringify(executedPreflights)}`
     );
     const queuedIdleCallback = idleCallback as unknown as IdleRequestCallback;
     queuedIdleCallback({
       didTimeout: false,
       timeRemaining: () => 50,
     });
-    await new Promise<void>((resolve) => queueMicrotask(resolve));
-    const preflightSnapshot = [...executedPreflights];
-    assertCondition(
-      PreparedProtocolWorker.instances.length === 1,
-      `idle compiler asset prewarm must not start TraceCC: ${PreparedProtocolWorker.instances.map((worker) => worker.url)}`
+    await new Promise<void>((resolve) => setTimeout(resolve, 0));
+    const compilerWorker = PreparedProtocolWorker.instances.find((worker) =>
+      String(worker.url).includes('traceccRole=compiler')
     );
     assertCondition(
-      preflightSnapshot.length === 2 &&
-        preflightSnapshot[1]?.includes('compilerWasm') === true &&
-        preflightSnapshot[1]?.some((name) => name.startsWith('compilerResources.')) === true,
-      `idle compiler asset prewarm should verify the immutable compiler inputs: ${JSON.stringify(executedPreflights)}`
+      compilerWorker,
+      `idle compiler asset prewarm must start the trusted compiler Worker: ${PreparedProtocolWorker.instances.map((worker) => worker.url)}`
+    );
+    assertCondition(
+      compilerWorker.messages?.some((message) =>
+        message.type === 'prewarm-trusted-tracecc-assets' &&
+        String(message.payload?.traceccPchUrl).includes('narrow')
+      ) === true,
+      'idle compiler asset prewarm must fetch and verify the narrow toolchain inside the Worker'
     );
   } finally {
     lease.dispose();
@@ -1279,6 +1288,6 @@ async function main(): Promise<void> {
   console.log('C++ compiler lifecycle tests passed');
 }
 
-test('cpp browser provider prewarms assets without starting TraceCC', testBrowserProviderDefersCompilerWarmupUntilPreparation);
+test('cpp browser provider prewarms assets inside TraceCC without page fetches', testBrowserProviderDefersCompilerWarmupUntilPreparation);
 test('cpp compile promotes queued compiler asset prewarm', testCompilePromotesQueuedCompilerPrewarm);
 test('cpp compiler lifecycle', main);

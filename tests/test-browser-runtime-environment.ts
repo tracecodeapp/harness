@@ -19,6 +19,25 @@ async function main(): Promise<void> {
     sharedArrayBuffer: true,
     crossOriginIsolated: true,
   } as const;
+  const cppOriginalFetch = globalThis.fetch;
+  let cppPageFetches = 0;
+  globalThis.fetch = async (...args) => {
+    cppPageFetches += 1;
+    return cppOriginalFetch(...args);
+  };
+  try {
+    const cppReadiness = await createBrowserRuntimeEnvironment({
+      providers: ['cpp'],
+      engine: 'chromium',
+      featureOverrides: readyFeatures,
+    }).preflight('cpp');
+    assertCondition(
+      cppReadiness.status === 'ready' && cppPageFetches === 0,
+      'C++ page readiness must validate only metadata and browser features'
+    );
+  } finally {
+    globalThis.fetch = cppOriginalFetch;
+  }
   const selected = createBrowserRuntimeEnvironment({
     providers: ['typescript', 'cpp'],
     engine: 'webkit',
@@ -31,8 +50,8 @@ async function main(): Promise<void> {
   const java = report.runtimes.find((runtime) => runtime.language === 'java');
   assertCondition(typescript?.status === 'ready', 'selected TypeScript project provider should report ready');
   assertCondition(
-    cpp?.status === 'unavailable' && cpp.error?.includes('Browser runtime asset preflight failed for cpp.'),
-    'the shared environment must install and preflight the Harness-owned TraceCC release'
+    cpp?.status === 'degraded',
+    'C++ readiness must validate metadata without fetching compiler bytes in the page realm'
   );
   assertCondition(
     cpp.knownIssues.some((issue) => issue.id === 'webkit-cpp-wasm-null-reference'),
@@ -69,9 +88,8 @@ async function main(): Promise<void> {
   );
   const hostCpp = await host.preflightLanguage('cpp');
   assertCondition(
-    hostCpp.status === 'unavailable' &&
-      hostCpp.error?.includes('Browser runtime asset preflight failed for cpp.'),
-    'the default host must preflight its built-in TraceCC release before declaring C++ ready'
+    hostCpp.status === 'degraded',
+    'the default host must leave C++ byte readiness to the trusted compiler Worker'
   );
   host.dispose();
 
