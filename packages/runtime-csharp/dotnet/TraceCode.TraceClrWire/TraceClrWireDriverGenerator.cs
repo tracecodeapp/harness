@@ -422,7 +422,12 @@ public static class TraceClrWireDriverGenerator
     {
         if (value is null) { writer.Int32(-1); return; }
         writer.Length(value.Length);
-        foreach (var item in value) {{elementWriter}}(writer, item);
+        int index = 0;
+        foreach (var item in value)
+        {
+            if ((index++ & 1023) == 0) writer.CheckTimeout();
+            {{elementWriter}}(writer, item);
+        }
     }
 """;
             }
