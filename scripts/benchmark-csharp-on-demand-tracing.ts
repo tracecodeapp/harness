@@ -355,7 +355,8 @@ async function main(): Promise<void> {
               console.log(
                 `[${problemIndex + 1}/${problems.length}] ${problem} ${strategy}: ` +
                 `prepare ${(sample.tracePrepareMs + sample.codePrepareMs).toFixed(1)}ms, ` +
-                `selected ${sample.selectedLatencyMs.toFixed(1)}ms, drain ${sample.drainMs.toFixed(1)}ms`
+                `selected ${sample.selectedLatencyMs.toFixed(1)}ms, drain ${sample.drainMs.toFixed(1)}ms, ` +
+                `tiers ${sample.runnerTiers.join(',')}`
               );
             }
             const one = pair.find((sample) => sample.strategy === 'single-instrumented');

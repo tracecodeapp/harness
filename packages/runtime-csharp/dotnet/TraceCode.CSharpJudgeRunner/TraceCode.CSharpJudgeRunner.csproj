@@ -1,4 +1,6 @@
 <Project Sdk="Microsoft.NET.Sdk">
+  <Import Project="../TraceClr.AlgorithmProfile.props" />
+
   <PropertyGroup>
     <TargetFramework>net10.0</TargetFramework>
     <RuntimeIdentifier>browser-wasm</RuntimeIdentifier>
@@ -25,6 +27,7 @@
   <ItemGroup>
     <ProjectReference Include="../TraceCode.CSharpJudgeRuntime/TraceCode.CSharpJudgeRuntime.csproj" />
     <Compile Include="../TraceCode.CSharpHost/TraceResponseJson.cs" Link="TraceResponseJson.cs" />
+    <Compile Include="../TraceCode.CSharpHost/TraceClrAlgorithmResponseJson.cs" Link="TraceClrAlgorithmResponseJson.cs" />
   </ItemGroup>
 
   <!--
@@ -35,54 +38,6 @@
     and compiler authority are intentionally published without this profile.
   -->
   <ItemGroup Condition="'$(TraceCodeRunnerTrimProfile)' == 'JudgeReferences'">
-    <TrimmerRootAssembly Include="
-      TraceCode.CSharpJudgeRunner;
-      TraceCode.CSharpJudgeRuntime;
-      Microsoft.CSharp;
-      mscorlib;
-      netstandard;
-      System;
-      System.Core;
-      System.Private.CoreLib;
-      System.Runtime;
-      System.Runtime.Extensions;
-      System.Runtime.CompilerServices.Unsafe;
-      System.Runtime.Numerics;
-      System.Runtime.Serialization.Primitives;
-      System.AppContext;
-      System.Buffers;
-      System.Collections;
-      System.Collections.Concurrent;
-      System.Collections.Immutable;
-      System.Collections.NonGeneric;
-      System.Collections.Specialized;
-      System.ComponentModel;
-      System.ComponentModel.Annotations;
-      System.ComponentModel.Primitives;
-      System.ComponentModel.TypeConverter;
-      System.Console;
-      System.Dynamic.Runtime;
-      System.Globalization;
-      System.IO;
-      System.IO.FileSystem;
-      System.IO.FileSystem.Primitives;
-      System.Linq;
-      System.Linq.Expressions;
-      System.Linq.Queryable;
-      System.Memory;
-      System.Numerics;
-      System.Numerics.Vectors;
-      System.ObjectModel;
-      System.Reflection;
-      System.Reflection.Extensions;
-      System.Reflection.Metadata;
-      System.Reflection.Primitives;
-      System.Text.Encoding.Extensions;
-      System.Text.Json;
-      System.Text.RegularExpressions;
-      System.Threading;
-      System.Threading.Tasks;
-      System.Threading.Tasks.Extensions;
-      System.ValueTuple" />
+    <TrimmerRootAssembly Include="@(TraceClrAlgorithmRunnerRootAssembly)" />
   </ItemGroup>
 </Project>

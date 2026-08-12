@@ -38,56 +38,34 @@ const GENERAL_MAX_RAW_BYTES = 55 * 1024 * 1024;
 const COMPILER_MAX_RAW_BYTES = 55 * 1024 * 1024;
 const RUNNER_MAX_RAW_BYTES = 16 * 1024 * 1024;
 const RUNNER_MAX_BROTLI_BYTES = 6 * 1024 * 1024;
-const RUNNER_REQUIRED_JUDGE_ASSEMBLIES = [
-  'TraceCode.CSharpJudgeRunner',
-  'TraceCode.CSharpJudgeRuntime',
-  'Microsoft.CSharp',
-  'mscorlib',
-  'netstandard',
-  'System',
-  'System.Core',
-  'System.Private.CoreLib',
-  'System.Runtime',
-  'System.Runtime.Extensions',
-  'System.Runtime.CompilerServices.Unsafe',
-  'System.Runtime.Numerics',
-  'System.Runtime.Serialization.Primitives',
-  'System.AppContext',
-  'System.Buffers',
-  'System.Collections',
-  'System.Collections.Concurrent',
-  'System.Collections.Immutable',
-  'System.Collections.NonGeneric',
-  'System.Collections.Specialized',
-  'System.ComponentModel',
-  'System.ComponentModel.Annotations',
-  'System.ComponentModel.Primitives',
-  'System.ComponentModel.TypeConverter',
-  'System.Console',
-  'System.Dynamic.Runtime',
-  'System.Globalization',
-  'System.IO',
-  'System.IO.FileSystem',
-  'System.IO.FileSystem.Primitives',
-  'System.Linq',
-  'System.Linq.Expressions',
-  'System.Linq.Queryable',
-  'System.Memory',
-  'System.Numerics',
-  'System.Numerics.Vectors',
-  'System.ObjectModel',
-  'System.Reflection',
-  'System.Reflection.Extensions',
-  'System.Reflection.Metadata',
-  'System.Reflection.Primitives',
-  'System.Text.Encoding.Extensions',
-  'System.Text.Json',
-  'System.Text.RegularExpressions',
-  'System.Threading',
-  'System.Threading.Tasks',
-  'System.Threading.Tasks.Extensions',
-  'System.ValueTuple',
-] as const;
+
+interface TraceClrAlgorithmProfile {
+  schema?: unknown;
+  runnerRootAssemblies?: unknown;
+}
+
+async function readRunnerRequiredJudgeAssemblies(): Promise<string[]> {
+  const profilePath = resolve(
+    'packages/runtime-csharp/traceclr-algorithm-profile.json'
+  );
+  const profile = JSON.parse(
+    await readFile(profilePath, 'utf8')
+  ) as TraceClrAlgorithmProfile;
+  if (
+    profile.schema !== 'tracecode.traceclr-algorithm-profile.v1' ||
+    !Array.isArray(profile.runnerRootAssemblies) ||
+    profile.runnerRootAssemblies.length === 0 ||
+    !profile.runnerRootAssemblies.every(
+      (assembly): assembly is string =>
+        typeof assembly === 'string' && assembly.length > 0
+    )
+  ) {
+    throw new Error(
+      `Invalid generated TraceCLR algorithm profile at ${profilePath}.`
+    );
+  }
+  return profile.runnerRootAssemblies;
+}
 
 function sha256Base64(bytes: Buffer | string): string {
   return createHash('sha256').update(bytes).digest('base64');
@@ -484,7 +462,7 @@ async function main(): Promise<void> {
     /TraceCode\.CSharpJudgeRuntime\.wasm$/i,
     'runner Judge runtime'
   );
-  for (const assembly of RUNNER_REQUIRED_JUDGE_ASSEMBLIES) {
+  for (const assembly of await readRunnerRequiredJudgeAssemblies()) {
     requireAssembly(runner.names, assembly);
   }
   rejectAsset(

@@ -32,28 +32,28 @@
   },
   "roles": {
     "general": {
-      "artifact": "csharp-bundle.ccb3b907ca9ac499fcbb5bfcd69e9b15b2e91c4795b3447dae45bbce2101a39b.zip",
-      "artifactBytes": 18090801,
-      "artifactSha256": "ccb3b907ca9ac499fcbb5bfcd69e9b15b2e91c4795b3447dae45bbce2101a39b",
-      "fileCount": 241,
-      "treeSha256": "048b8965cf9da12e855984e4b9c123f0efd609ca3509e3610005e8ab03775732",
-      "uncompressedBytes": 50278333
+      "artifact": "csharp-bundle.32220b21da0b317c49e46586fb1278561c1bb774b082a2b47e2011d9b582176f.zip",
+      "artifactBytes": 17021197,
+      "artifactSha256": "32220b21da0b317c49e46586fb1278561c1bb774b082a2b47e2011d9b582176f",
+      "fileCount": 211,
+      "treeSha256": "31c46b1fa2bcc06bc104a1ebae1c3a64b797b7f475af1c31b28d92a5bb76d760",
+      "uncompressedBytes": 47890927
     },
     "compiler": {
-      "artifact": "csharp-bundle.ccb3b907ca9ac499fcbb5bfcd69e9b15b2e91c4795b3447dae45bbce2101a39b.zip",
-      "artifactBytes": 18090801,
-      "artifactSha256": "ccb3b907ca9ac499fcbb5bfcd69e9b15b2e91c4795b3447dae45bbce2101a39b",
-      "fileCount": 241,
-      "treeSha256": "048b8965cf9da12e855984e4b9c123f0efd609ca3509e3610005e8ab03775732",
-      "uncompressedBytes": 50278333
+      "artifact": "csharp-bundle.32220b21da0b317c49e46586fb1278561c1bb774b082a2b47e2011d9b582176f.zip",
+      "artifactBytes": 17021197,
+      "artifactSha256": "32220b21da0b317c49e46586fb1278561c1bb774b082a2b47e2011d9b582176f",
+      "fileCount": 211,
+      "treeSha256": "31c46b1fa2bcc06bc104a1ebae1c3a64b797b7f475af1c31b28d92a5bb76d760",
+      "uncompressedBytes": 47890927
     },
     "runner": {
-      "artifact": "csharp-bundle.544a1a0d3cea836a8e973ee09b2cc480ebbf87440baa197f984928fb31780ac7.zip",
-      "artifactBytes": 4677741,
-      "artifactSha256": "544a1a0d3cea836a8e973ee09b2cc480ebbf87440baa197f984928fb31780ac7",
+      "artifact": "csharp-bundle.d00caaf25f7967e06d36fc3d46265014c5005a419add62156fcf530fcdd718fe.zip",
+      "artifactBytes": 4081410,
+      "artifactSha256": "d00caaf25f7967e06d36fc3d46265014c5005a419add62156fcf530fcdd718fe",
       "fileCount": 12,
-      "treeSha256": "84428c9bfc1d4dd085a314b3199e809ad9201dc87f0eb7cda8bdb5bf10295654",
-      "uncompressedBytes": 12824853
+      "treeSha256": "40e103660c4b491a6047b616255d7441c976abec07c72cd02a0e7b8e27729f03",
+      "uncompressedBytes": 11222761
     }
   }
 }

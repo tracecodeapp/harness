@@ -8,7 +8,10 @@ import type {
   BrowserRuntimeProviderLease,
 } from '@tracecode/runtime-browser';
 import { createCSharpRuntimeClient } from './csharp-runtime-client';
-import { CSharpWorkerClient } from './csharp-worker-client';
+import {
+  CSharpWorkerClient,
+  type CSharpPreparedRunnerTier,
+} from './csharp-worker-client';
 
 export interface CSharpBrowserRuntimeProviderOptions {
   /** Idle timeout for the general Project/terminal/server-capable worker. */
@@ -326,7 +329,7 @@ export function createCSharpBrowserRuntimeProvider(
                 loadTimeMs: performance.now() - startedAt,
               };
             },
-            createRunner(): CSharpWorkerClient {
+            createRunner(_tier: CSharpPreparedRunnerTier): CSharpWorkerClient {
               if (disposed) {
                 throw new Error('C# browser runtime provider has been disposed.');
               }

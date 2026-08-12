@@ -55,6 +55,12 @@ public sealed class CSharpExecuteRequest
     [JsonPropertyName("preparedProgram")]
     public bool PreparedProgram { get; set; }
 
+    [JsonPropertyName("preparedRunnerTier")]
+    public string PreparedRunnerTier { get; set; } = "compatibility";
+
+    [JsonPropertyName("allowAlgorithmFast")]
+    public bool AllowAlgorithmFast { get; set; }
+
     [JsonPropertyName("requirePreparedArtifact")]
     public bool RequirePreparedArtifact { get; set; }
 }
@@ -230,6 +236,42 @@ public sealed class CSharpExecuteResponse
     [JsonPropertyName("compiledArtifactSha256")]
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public string? CompiledArtifactSha256 { get; set; }
+
+    [JsonPropertyName("preparedRunnerTier")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? PreparedRunnerTier { get; set; }
+
+    [JsonPropertyName("preparedRunnerReason")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? PreparedRunnerReason { get; set; }
+
+    [JsonPropertyName("traceClrWireContract")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public TraceClrWireContractDescriptor? TraceClrWireContract { get; set; }
+}
+
+public sealed class TraceClrWireContractDescriptor
+{
+    [JsonPropertyName("parameters")]
+    public List<TraceClrWireParameterDescriptor> Parameters { get; set; } = new();
+
+    [JsonPropertyName("returnType")]
+    public TraceClrWireTypeDescriptor ReturnType { get; set; } = new();
+}
+
+public sealed class TraceClrWireParameterDescriptor
+{
+    [JsonPropertyName("name")]
+    public string Name { get; set; } = string.Empty;
+
+    [JsonPropertyName("type")]
+    public TraceClrWireTypeDescriptor Type { get; set; } = new();
+}
+
+public sealed class TraceClrWireTypeDescriptor
+{
+    [JsonPropertyName("wireType")]
+    public string WireType { get; set; } = string.Empty;
 }
 
 public sealed class CSharpDiagnostic

@@ -6,6 +6,23 @@ This repo uses Git tags as release boundaries. Version notes below summarize wha
 
 ## [Unreleased]
 
+## [0.16.5] - 2026-08-11
+
+### Added
+
+- Added the in-repo TraceCLR algorithm profile, derived from the product C#
+  corpus, with deterministic compatibility checks, an explicit binary wire
+  boundary, and a trace-capable minimal runner used as evidence for the
+  optimized execution tier.
+
+### Changed
+
+- C# prepared execution now selects either the optimized algorithm runner or
+  the broad compatibility runner before learner code starts. The selected
+  tier never falls through to the other runner after a learner failure, and
+  both tiers preserve the same output, tracing, limits, and isolation
+  contracts.
+
 ## [0.16.4] - 2026-08-11
 
 ### Fixed

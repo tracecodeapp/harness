@@ -1,7 +1,7 @@
 {
   "name": "@tracecode/runtime-sql",
   "private": true,
-  "version": "0.16.4",
+  "version": "0.16.5",
   "description": "Browser-first SQL runtime trace contract and client wrappers for TraceCode.",
   "license": "AGPL-3.0-only",
   "homepage": "https://tracecode.app",

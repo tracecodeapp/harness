@@ -21,6 +21,7 @@ import { getLanguageRuntimeProfile } from '@tracecode/runtime-browser/internal';
 import type {
   CSharpExecutionStyle,
   CSharpPreparedProgramArtifact,
+  CSharpPreparedRunnerTier,
   CSharpProjectCommandRequest,
   CSharpWorkerClient,
 } from './csharp-worker-client';
@@ -34,7 +35,7 @@ export interface CSharpPreparedWorkerAuthority {
   readonly compiler: CSharpWorkerClient;
   readonly batchConcurrency: number;
   warmup(): Promise<{ success: boolean; loadTimeMs: number }>;
-  createRunner(): CSharpWorkerClient;
+  createRunner(tier: CSharpPreparedRunnerTier): CSharpWorkerClient;
   releaseRunner(runner: CSharpWorkerClient): void;
 }
 
@@ -49,10 +50,11 @@ export class CSharpRuntimeClient implements RuntimeClient, RuntimePreparedExecut
   }
 
   private async withPreparedRunner<TResult>(
+    tier: CSharpPreparedRunnerTier,
     execute: (runner: CSharpWorkerClient) => Promise<TResult>
   ): Promise<TResult> {
     if (!this.preparedAuthority) return execute(this.workerClient);
-    const runner = this.preparedAuthority.createRunner();
+    const runner = this.preparedAuthority.createRunner(tier);
     try {
       return await execute(runner);
     } finally {
@@ -62,6 +64,7 @@ export class CSharpRuntimeClient implements RuntimeClient, RuntimePreparedExecut
   }
 
   private async withFreshPreparedRunners<TResult>(
+    tier: CSharpPreparedRunnerTier,
     inputBatch: readonly Record<string, unknown>[],
     execute: (
       runner: CSharpWorkerClient,
@@ -95,7 +98,7 @@ export class CSharpRuntimeClient implements RuntimeClient, RuntimePreparedExecut
           nextIndex += 1;
           const inputs = inputBatch[index]!;
           try {
-            results[index] = await this.withPreparedRunner((runner) =>
+            results[index] = await this.withPreparedRunner(tier, (runner) =>
               execute(runner, inputs, index)
             );
           } catch (reason) {
@@ -223,6 +226,25 @@ export class CSharpRuntimeClient implements RuntimeClient, RuntimePreparedExecut
       };
     }
 
+    const preparedRunnerTier = result.preparedRunnerTier;
+    const preparedRunnerReason = result.preparedRunnerReason;
+    if (
+      (preparedRunnerTier !== 'algorithm-fast' &&
+        preparedRunnerTier !== 'compatibility') ||
+      typeof preparedRunnerReason !== 'string' ||
+      !preparedRunnerReason ||
+      (preparedRunnerTier === 'algorithm-fast' &&
+        !result.traceClrWireContract)
+    ) {
+      return {
+        kind: 'failed',
+        error: 'C# preparation completed without a valid runner-tier descriptor.',
+        diagnosticStage: 'compile',
+        consoleOutput: result.consoleOutput ?? [],
+        timings: result.timings,
+      };
+    }
+
     let artifact: CSharpPreparedProgramArtifact | undefined = Object.freeze({
       mode: call.mode,
       code: call.code,
@@ -234,6 +256,25 @@ export class CSharpRuntimeClient implements RuntimeClient, RuntimePreparedExecut
       compiledArtifactKey: result.compiledArtifactKey,
       compiledArtifactBase64: result.compiledArtifactBase64,
       compiledArtifactSha256: result.compiledArtifactSha256,
+      preparedRunnerTier,
+      preparedRunnerReason,
+      ...(result.traceClrWireContract
+        ? {
+            traceClrWireContract: Object.freeze({
+              parameters: Object.freeze(
+                result.traceClrWireContract.parameters.map((parameter) =>
+                  Object.freeze({
+                    name: parameter.name,
+                    type: Object.freeze({ ...parameter.type }),
+                  })
+                )
+              ),
+              returnType: Object.freeze({
+                ...result.traceClrWireContract.returnType,
+              }),
+            }),
+          }
+        : {}),
     });
     let disposed = false;
     let disposePromise: Promise<void> | undefined;
@@ -325,7 +366,7 @@ export class CSharpRuntimeClient implements RuntimeClient, RuntimePreparedExecut
           capabilities,
           executeIsolated: (preparedCall) =>
             executeOwned(preparedCall, (preparedArtifact, forwardedCall) =>
-              this.withPreparedRunner((runner) =>
+              this.withPreparedRunner(preparedArtifact.preparedRunnerTier, (runner) =>
                 runner.executePreparedTrace(
                   preparedArtifact,
                   forwardedCall
@@ -351,6 +392,7 @@ export class CSharpRuntimeClient implements RuntimeClient, RuntimePreparedExecut
             }
             return executeOwned(preparedCall, (preparedArtifact, forwardedCall) =>
               this.withFreshPreparedRunners(
+                preparedArtifact.preparedRunnerTier,
                 forwardedCall.inputBatch,
                 (runner, inputs, index) =>
                   runner.executePreparedTrace(
@@ -378,7 +420,7 @@ export class CSharpRuntimeClient implements RuntimeClient, RuntimePreparedExecut
           capabilities,
           executeIsolated: (preparedCall) =>
             executeOwned(preparedCall, (preparedArtifact, forwardedCall) =>
-              this.withPreparedRunner((runner) =>
+              this.withPreparedRunner(preparedArtifact.preparedRunnerTier, (runner) =>
                 runner.executePreparedCode(preparedArtifact, forwardedCall)
               )
             ),
@@ -387,6 +429,7 @@ export class CSharpRuntimeClient implements RuntimeClient, RuntimePreparedExecut
           ) =>
             executeOwned(preparedCall, (preparedArtifact, forwardedCall) =>
               this.withFreshPreparedRunners(
+                preparedArtifact.preparedRunnerTier,
                 forwardedCall.inputBatch,
                 (runner, inputs) =>
                   runner.executePreparedCode(preparedArtifact, {

@@ -250,7 +250,8 @@ public static partial class PreparedExecutionHost
         AppendCacheKeyPart(key, request.FunctionName);
         AppendCacheKeyPart(key, request.ExecutionStyle);
         key.Append(request.Trace ? "trace\n" : "plain\n");
-        key.Append("prepared-driver-v1\n");
+        key.Append("prepared-driver-v2\n");
+        AppendCacheKeyPart(key, request.PreparedRunnerTier);
         return Convert.ToHexString(
             SHA256.HashData(Encoding.UTF8.GetBytes(key.ToString()))
         ).ToLowerInvariant();
@@ -909,6 +910,9 @@ public static partial class PreparedExecutionHost
 
         [JsonPropertyName("compiledArtifactSha256")]
         public string? CompiledArtifactSha256 { get; set; }
+
+        [JsonPropertyName("preparedRunnerTier")]
+        public string PreparedRunnerTier { get; set; } = "compatibility";
     }
 
     private sealed class PreparedResponse

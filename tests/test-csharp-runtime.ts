@@ -8,6 +8,7 @@ import {
   CSharpWorkerClient,
   type CSharpDiagnostic,
   type CSharpExecutionStyle,
+  type CSharpPreparedRunnerTier,
 } from '../packages/runtime-csharp/src/csharp-worker-client';
 import type { BrowserRuntimeProviderContext } from '../packages/runtime-browser/src/runtime-provider-registry';
 import { getLanguageRuntimeProfile } from '../packages/runtime-browser/src/runtime-profiles';
@@ -62,6 +63,8 @@ interface MockCSharpWorkerRawResult {
   compiledArtifactKey?: string;
   compiledArtifactBase64?: string;
   compiledArtifactSha256?: string;
+  preparedRunnerTier?: CSharpPreparedRunnerTier;
+  preparedRunnerReason?: string;
 }
 
 class MockCSharpWorker {
@@ -128,6 +131,8 @@ class MockCSharpWorker {
                       compiledArtifactBase64: 'TVqQAAMAAAAEAAAA',
                       compiledArtifactSha256:
                         'abababababababababababababababababababababababababababababababab',
+                      preparedRunnerTier: 'compatibility',
+                      preparedRunnerReason: 'trusted compiler prime',
                     },
                   }
                 : {}),
@@ -744,6 +749,8 @@ async function testPreparedWorkerGenerationAuthority(): Promise<void> {
         compiledArtifactBase64: 'TVqQAAMAAAAEAAAA',
         compiledArtifactSha256:
           'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+        preparedRunnerTier: 'compatibility',
+        preparedRunnerReason: 'test compatibility artifact',
         consoleOutput: [],
       },
       {
@@ -752,6 +759,8 @@ async function testPreparedWorkerGenerationAuthority(): Promise<void> {
         compiledArtifactBase64: 'TVqQAAMAAAAEAAAB',
         compiledArtifactSha256:
           'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb',
+        preparedRunnerTier: 'compatibility',
+        preparedRunnerReason: 'test compatibility artifact',
         consoleOutput: [],
       }
     );
@@ -887,6 +896,8 @@ async function testCompilerAuthorityPrimesBeforePreparation(): Promise<void> {
       compiledArtifactBase64: 'TVqQAAMAAAAEAAAA',
       compiledArtifactSha256:
         'cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc',
+      preparedRunnerTier: 'compatibility',
+      preparedRunnerReason: 'test compatibility artifact',
       consoleOutput: [],
     });
     const prepared = await provider.prepareProgram({
@@ -954,6 +965,8 @@ async function testDisposedProviderDoesNotRecreateRunner(): Promise<void> {
     compiledArtifactBase64: 'TVqQAAMAAAAEAAAA',
     compiledArtifactSha256:
       'dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd',
+    preparedRunnerTier: 'compatibility',
+    preparedRunnerReason: 'test compatibility artifact',
     consoleOutput: [],
   });
   const prepared = await provider.prepareProgram({
@@ -1095,6 +1108,8 @@ async function testRetireOnlyDoesNotReplenishPreparedRunner(): Promise<void> {
     compiledArtifactBase64: 'TVqQAAMAAAAEAAAA',
     compiledArtifactSha256:
       'cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd',
+    preparedRunnerTier: 'compatibility',
+    preparedRunnerReason: 'test compatibility artifact',
     consoleOutput: [],
   });
   const prepared = await provider.prepareProgram({
@@ -1216,6 +1231,8 @@ async function testLanguageDisposalCanReacquirePreparedCapacity(): Promise<void>
     compiledArtifactBase64: 'TVqQAAMAAAAEAAAA',
     compiledArtifactSha256:
       'ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff',
+    preparedRunnerTier: 'compatibility',
+    preparedRunnerReason: 'test compatibility artifact',
     consoleOutput: [],
   });
   const prepared = await provider.prepareProgram({
@@ -1286,6 +1303,8 @@ async function testLegacyManifestUsesGeneralWorker(): Promise<void> {
     compiledArtifactBase64: 'TVqQAAMAAAAEAAAA',
     compiledArtifactSha256:
       'eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee',
+    preparedRunnerTier: 'compatibility',
+    preparedRunnerReason: 'test compatibility artifact',
     consoleOutput: [],
   });
   const provider = lease.preparedProviders.get('csharp');

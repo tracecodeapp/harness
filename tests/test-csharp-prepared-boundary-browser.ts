@@ -3,7 +3,7 @@
 import { createServer } from 'node:http';
 import { existsSync, readFileSync, statSync } from 'node:fs';
 import { extname, join, normalize, sep } from 'node:path';
-import { chromium } from 'playwright';
+import { chromium, firefox, webkit, type BrowserType } from 'playwright';
 
 const ROOT = process.cwd();
 
@@ -80,7 +80,15 @@ async function main(): Promise<void> {
   assertCondition(address && typeof address !== 'string', 'Expected server port.');
   const origin = `http://127.0.0.1:${address.port}`;
 
-  const browser = await chromium.launch();
+  const engineName = process.env.TRACECODE_CSHARP_BROWSER_ENGINE ?? 'chromium';
+  const browserTypes: Record<string, BrowserType> = {
+    chromium,
+    firefox,
+    webkit,
+  };
+  const browserType = browserTypes[engineName];
+  assertCondition(browserType, `Unsupported C# browser engine: ${engineName}`);
+  const browser = await browserType.launch();
   try {
     const page = await browser.newPage();
     await page.goto(`${origin}/tests/fixtures/csharp-worker/blank.html`);
@@ -91,9 +99,18 @@ async function main(): Promise<void> {
         output?: unknown;
         error?: string;
         events?: Array<Record<string, unknown>>;
+        traceLimitExceeded?: boolean;
+        timeoutReason?: string | null;
         compiledArtifactKey?: string;
         compiledArtifactBase64?: string;
         compiledArtifactSha256?: string;
+        preparedRunnerTier?: 'algorithm-fast' | 'compatibility';
+        preparedRunnerReason?: string;
+        traceClrWireContract?: {
+          parameters: Array<{ name: string; type: { wireType: string } }>;
+          returnType: { wireType: string };
+        };
+        outputBytes?: Uint8Array;
         trustedPreparedArtifact?: {
           mode: 'code' | 'trace';
           code: string;
@@ -102,6 +119,8 @@ async function main(): Promise<void> {
           compiledArtifactKey: string;
           compiledArtifactBase64: string;
           compiledArtifactSha256: string;
+          preparedRunnerTier: 'algorithm-fast' | 'compatibility';
+          preparedRunnerReason: string;
         };
         timings?: {
           compileCacheHit?: boolean;
@@ -316,6 +335,18 @@ public class Solution
         assetBaseUrl: compilerBaseUrl,
         timeoutMs: 10_000,
       });
+      const fastTracePrepared = await compiler.send('prepare-program', {
+        mode: 'trace',
+        code: source,
+        functionName: 'Add',
+        executionStyle: 'solution-method',
+        assetBaseUrl: compilerBaseUrl,
+        timeoutMs: 10_000,
+        traceOptions: {
+          maxTraceSteps: 10_000,
+          maxStoredEvents: 10_000,
+        },
+      });
       const structuredPrepared = await compiler.send('prepare-program', {
         mode: 'code',
         code: structuredSource,
@@ -428,22 +459,106 @@ public class Solution
         compiledArtifactKey: candidate.compiledArtifactKey,
         compiledArtifactBase64: candidate.compiledArtifactBase64,
         compiledArtifactSha256: candidate.compiledArtifactSha256,
+        preparedRunnerTier: candidate.preparedRunnerTier,
+        preparedRunnerReason: candidate.preparedRunnerReason,
+        ...(mode === 'trace'
+          ? {
+              traceOptions: {
+                maxTraceSteps: 10_000,
+                maxLineEvents: 10_000,
+                maxSingleLineHits: 10_000,
+                maxStoredEvents: 10_000,
+              },
+            }
+          : {}),
+        ...(candidate.traceClrWireContract
+          ? { traceClrWireContract: candidate.traceClrWireContract }
+          : {}),
       });
+      const encodeTwoInt32 = (left: number, right: number): Uint8Array => {
+        const bytes = new Uint8Array(14);
+        const view = new DataView(bytes.buffer);
+        view.setUint32(0, 0x31574354, true);
+        view.setUint16(4, 2, true);
+        view.setInt32(6, left, true);
+        view.setInt32(10, right, true);
+        return bytes;
+      };
+      const decodeInt32 = (bytes: Uint8Array | undefined): number | null => {
+        if (!(bytes instanceof Uint8Array) || bytes.byteLength !== 8) return null;
+        const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+        return view.getUint32(0, true) === 0x31574354
+          ? view.getInt32(4, true)
+          : null;
+      };
       const addDescriptor = descriptor(source, 'Add', 'code', prepared);
       const runner = await createHarness('runner', runnerBaseUrl);
       const runnerPrime = await runner.send('execute-prepared-code', {
         prepared: compilerWarmup.trustedPreparedArtifact,
         inputs: { a: 1, b: 2 },
+        inputBytes: encodeTwoInt32(1, 2),
         assetBaseUrl: runnerBaseUrl,
         timeoutMs: 10_000,
       });
       const valid = await runner.send('execute-prepared-code', {
         prepared: addDescriptor,
         inputs: { left: 19, right: 23 },
+        inputBytes: encodeTwoInt32(19, 23),
         assetBaseUrl: runnerBaseUrl,
         timeoutMs: 10_000,
       });
       runner.terminate();
+
+      const fastTraceRunner = await createHarness('runner', runnerBaseUrl);
+      const fastTrace = await fastTraceRunner.send('execute-prepared-trace', {
+        prepared: descriptor(source, 'Add', 'trace', fastTracePrepared),
+        inputs: { left: 19, right: 23 },
+        inputBytes: encodeTwoInt32(19, 23),
+        assetBaseUrl: runnerBaseUrl,
+        timeoutMs: 10_000,
+      });
+      fastTraceRunner.terminate();
+
+      const fastTraceDisabledRunner = await createHarness(
+        'runner',
+        runnerBaseUrl
+      );
+      const fastTraceDisabled = await fastTraceDisabledRunner.send(
+        'execute-prepared-trace',
+        {
+          prepared: descriptor(source, 'Add', 'trace', fastTracePrepared),
+          inputs: { left: 19, right: 23 },
+          inputBytes: encodeTwoInt32(19, 23),
+          tracingEnabled: false,
+          assetBaseUrl: runnerBaseUrl,
+          timeoutMs: 10_000,
+        }
+      );
+      fastTraceDisabledRunner.terminate();
+
+      const fastTraceLimitedRunner = await createHarness(
+        'runner',
+        runnerBaseUrl
+      );
+      const fastTraceLimited = await fastTraceLimitedRunner.send(
+        'execute-prepared-trace',
+        {
+          prepared: {
+            ...descriptor(source, 'Add', 'trace', fastTracePrepared),
+            traceOptions: {
+              maxTraceSteps: 1,
+              maxLineEvents: 10_000,
+              maxSingleLineHits: 10_000,
+              maxStoredEvents: 10_000,
+            },
+          },
+          inputs: { left: 19, right: 23 },
+          inputBytes: encodeTwoInt32(19, 23),
+          assetBaseUrl: runnerBaseUrl,
+          timeoutMs: 10_000,
+        }
+      );
+      fastTraceLimitedRunner.terminate();
 
       const structuredInputs = {
         payload: {
@@ -524,12 +639,14 @@ public class Solution
           compiledArtifactSha256: '0'.repeat(64),
         },
         inputs: { left: 19, right: 23 },
+        inputBytes: encodeTwoInt32(19, 23),
         assetBaseUrl: runnerBaseUrl,
         timeoutMs: 10_000,
       });
       tamperRunner.terminate();
       return {
         prepared,
+        fastTracePrepared,
         compilerWarmup,
         structuredPrepared,
         structuredTracePrepared,
@@ -540,7 +657,19 @@ public class Solution
         dynamicTraceSinkMutationPrepared,
         voidOutputPrepared,
         runnerPrime,
-        valid,
+        valid: {
+          ...valid,
+          output: decodeInt32(valid.outputBytes),
+        },
+        fastTrace: {
+          ...fastTrace,
+          output: decodeInt32(fastTrace.outputBytes),
+        },
+        fastTraceDisabled: {
+          ...fastTraceDisabled,
+          output: decodeInt32(fastTraceDisabled.outputBytes),
+        },
+        fastTraceLimited,
         structured,
         structuredTrace,
         nonMutatingVoid,
@@ -557,7 +686,9 @@ public class Solution
     assertCondition(
       result.prepared.success &&
         /^[0-9a-f]{64}$/u.test(result.prepared.compiledArtifactSha256 ?? '') &&
-        result.prepared.timings?.compileTrustedTemplateHit === true,
+        result.prepared.timings?.compileTrustedTemplateHit === true &&
+        result.prepared.preparedRunnerTier === 'algorithm-fast' &&
+        result.prepared.traceClrWireContract?.parameters.length === 2,
       `Trusted C# compiler did not emit a SHA-256-bound artifact: ${JSON.stringify(result.prepared)}`
     );
     assertCondition(
@@ -565,6 +696,30 @@ public class Solution
         result.runnerPrime.output === 3 &&
         result.runnerPrime.timings?.artifactCacheHit === true,
       `Disposable C# runner did not execute the fixed trusted prime artifact: ${JSON.stringify(result.runnerPrime)}`
+    );
+    assertCondition(
+      result.fastTracePrepared.success &&
+        result.fastTracePrepared.preparedRunnerTier === 'algorithm-fast' &&
+        result.fastTrace.success &&
+        result.fastTrace.output === 42 &&
+        (result.fastTrace.events?.length ?? 0) > 0,
+      `TraceCLR algorithm-fast tracing failed: ${JSON.stringify({
+        prepared: result.fastTracePrepared,
+        execution: result.fastTrace,
+      })}`
+    );
+    assertCondition(
+      result.fastTraceDisabled.success &&
+        result.fastTraceDisabled.output === 42 &&
+        (result.fastTraceDisabled.events?.length ?? 0) === 0,
+      `TraceCLR algorithm-fast trace selection did not bypass trace storage: ${JSON.stringify(result.fastTraceDisabled)}`
+    );
+    assertCondition(
+      result.fastTraceLimited.success &&
+        result.fastTraceLimited.traceLimitExceeded === true &&
+        result.fastTraceLimited.timeoutReason === 'trace-limit' &&
+        (result.fastTraceLimited.events?.length ?? 0) === 1,
+      `TraceCLR algorithm-fast tracing did not preserve trace-limit semantics: ${JSON.stringify(result.fastTraceLimited)}`
     );
     assertCondition(
       result.valid.success &&
@@ -575,7 +730,9 @@ public class Solution
     );
     assertCondition(
       result.structuredPrepared.success &&
-        result.structuredTracePrepared.success,
+        result.structuredTracePrepared.success &&
+        result.structuredPrepared.preparedRunnerTier === 'compatibility' &&
+        result.structuredTracePrepared.preparedRunnerTier === 'compatibility',
       `Trusted C# compiler did not prepare structured code and trace artifacts: ${JSON.stringify({
         code: result.structuredPrepared,
         trace: result.structuredTracePrepared,
@@ -618,6 +775,7 @@ public class Solution
     );
     assertCondition(
       result.voidOutputPrepared.success &&
+        result.voidOutputPrepared.preparedRunnerTier === 'compatibility' &&
         result.nonMutatingVoid.success &&
         result.nonMutatingVoid.output === null,
       `Prepared C# void methods must preserve null output when the first argument is not mutated: ${JSON.stringify({
@@ -663,6 +821,11 @@ public class Solution
         visibleCompileMs: result.prepared.timings?.compileMs,
         trustedRunnerPrimeOutput: result.runnerPrime.output,
         validOutput: result.valid.output,
+        fastTraceOutput: result.fastTrace.output,
+        fastTraceEvents: result.fastTrace.events?.length ?? 0,
+        fastTraceDisabledEvents:
+          result.fastTraceDisabled.events?.length ?? 0,
+        fastTraceLimitReason: result.fastTraceLimited.timeoutReason,
         structuredOutput: result.structured.output,
         structuredTraceEvents: result.structuredTrace.events?.length ?? 0,
         inputMutationRejected: true,
@@ -673,6 +836,7 @@ public class Solution
         voidOutputSemanticsPreserved: true,
         tamperedRejected: true,
         runnerAssetPath,
+        engine: engineName,
       })
     );
   } finally {
