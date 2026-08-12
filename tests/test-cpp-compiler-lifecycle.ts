@@ -8,6 +8,7 @@ import vm from 'node:vm';
 import { createCppBrowserRuntimeProvider } from '../packages/runtime-cpp/src/browser-runtime-provider';
 import { CppWorkerClient } from '../packages/runtime-cpp/src/cpp-worker-client';
 import { createCppPreparedExecutionProvider } from '../packages/runtime-cpp/src/cpp-prepared-provider';
+import { createTraceCCRuntimeManifest } from '../packages/runtime-cpp/src/tracecc-runtime-assets';
 
 function assertCondition(condition: unknown, message: string): asserts condition {
   if (!condition) throw new Error(message);
@@ -298,6 +299,9 @@ async function testBrowserProviderPreparedLeaseExposure(): Promise<void> {
           sha256: 'a'.repeat(64),
         }],
       },
+      runtimeManifests: {
+        cpp: createTraceCCRuntimeManifest('/workers/cpp/tracecc'),
+      },
     } as never,
     debug: false,
     prewarmAfterUse: true,
@@ -317,6 +321,56 @@ async function testBrowserProviderPreparedLeaseExposure(): Promise<void> {
     );
   } finally {
     lease.dispose();
+  }
+}
+
+async function testBrowserProviderDefersCompilerWarmupUntilPreparation(): Promise<void> {
+  const originalWorker = globalThis.Worker;
+  PreparedProtocolWorker.instances = [];
+  const executedPreflights: string[][] = [];
+  // @ts-expect-error focused Worker test double
+  globalThis.Worker = PreparedProtocolWorker;
+  const lease = createCppBrowserRuntimeProvider().create({
+    assets: {
+      cppWorker: '/workers/cpp-worker.js',
+      cppCompilerFrame: '/workers/cpp-compiler-frame.html',
+      cppCompilerWorker: '/workers/cpp-compiler-worker.js',
+      cppCompilerWasm: '/workers/cpp/tracecc/tracecc-reactor.wasm',
+      cppLinkerWasm: '/workers/cpp/tracecc/tracecc-reactor.wasm',
+      cppSysroot: '/workers/cpp/tracecc/llvm-resources.tar',
+      cppRuntimeHeader: '/workers/cpp/tracecc/tracecode_runtime.hpp',
+      cppCompilerBundle: '',
+      cppCompilerIntegrity: { assets: [] },
+      runtimeManifests: {
+        cpp: createTraceCCRuntimeManifest('/workers/cpp/tracecc'),
+      },
+    } as never,
+    debug: false,
+    prewarmAfterUse: false,
+    workerFactoryFor: () => undefined,
+    preflight: (_language: string, assetNames: readonly string[]) => async () => {
+      executedPreflights.push([...assetNames]);
+    },
+    manifestAsset: () => undefined,
+    manifestAssetCollection: () => undefined,
+  } as never);
+  try {
+    const provider = lease.preparedProviders?.get('cpp');
+    assertCondition(provider, 'C++ prepared provider should be registered');
+    const result = await provider.init();
+    assertCondition(result.success, `C++ standby initialization failed: ${JSON.stringify(result)}`);
+    assertCondition(
+      PreparedProtocolWorker.instances.length === 1 &&
+        !String(PreparedProtocolWorker.instances[0]?.url).includes('traceccRole=compiler'),
+      `entering a C++ surface must not start the compiler Worker: ${PreparedProtocolWorker.instances.map((worker) => worker.url)}`
+    );
+    assertCondition(
+      executedPreflights.length === 1 && executedPreflights[0]?.length === 1 && executedPreflights[0][0] === 'worker',
+      `entering a C++ surface must preflight only the execution Worker: ${JSON.stringify(executedPreflights)}`
+    );
+  } finally {
+    lease.dispose();
+    globalThis.Worker = originalWorker;
   }
 }
 
@@ -1132,4 +1186,5 @@ async function main(): Promise<void> {
   console.log('C++ compiler lifecycle tests passed');
 }
 
+test('cpp browser provider defers compiler warmup until preparation', testBrowserProviderDefersCompilerWarmupUntilPreparation);
 test('cpp compiler lifecycle', main);

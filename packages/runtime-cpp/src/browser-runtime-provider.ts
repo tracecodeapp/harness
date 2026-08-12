@@ -201,7 +201,13 @@ export function createCppBrowserRuntimeProvider(
       });
       const preparedProvider = createCppPreparedExecutionProvider({
         createWorkerClient,
-        warmCompilerOnInit: true,
+        // Route/runtime initialization may happen while the UI is mounting.
+        // Starting TraceCC here loads the compiler reactor, resources, and PCH
+        // before the learner asks to compile, which can contend with rendering
+        // even though compilation is correctly isolated in its own Worker.
+        // Keep only the lightweight execution worker standby; the compiler
+        // service remains fully lazy and warms on the first real preparation.
+        warmCompilerOnInit: false,
       });
       const preparedProviders = new Map<
         Language,
