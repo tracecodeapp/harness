@@ -5,6 +5,8 @@ let executeExport = null;
 let prepareExport = null;
 let executePreparedExport = null;
 let executePreparedUtf8Export = null;
+let executeAlgorithmPreparedExport = null;
+let executeAlgorithmPreparedTraceExport = null;
 let disposePreparedArtifactExport = null;
 let executeProjectExport = null;
 let getCompiledArtifactKeyExport = null;
@@ -3194,6 +3196,11 @@ function runCompilerPrime() {
       compiledArtifactKey: result.compiledArtifactKey,
       compiledArtifactBase64: result.compiledArtifactBase64,
       compiledArtifactSha256: result.compiledArtifactSha256,
+      preparedRunnerTier: result.preparedRunnerTier,
+      preparedRunnerReason: result.preparedRunnerReason,
+      ...(result.traceClrWireContract
+        ? { traceClrWireContract: result.traceClrWireContract }
+        : {}),
     },
   };
 }
@@ -3208,6 +3215,8 @@ function requiredExportsForRole() {
   if (configuredRuntimeRole === 'runner') {
     return [
       ['ExecutePrepared', executePreparedExport],
+      ['ExecuteAlgorithmPrepared', executeAlgorithmPreparedExport],
+      ['ExecuteAlgorithmPreparedTrace', executeAlgorithmPreparedTraceExport],
       ['DisposePreparedArtifact', disposePreparedArtifactExport],
     ];
   }
@@ -3590,6 +3599,8 @@ async function loadRuntime(assetBaseUrl) {
       prepareExport = exports?.TraceCode?.CSharpHost?.CompilerHost?.Prepare;
       const preparedExecutionHost =
         exports?.TraceCode?.CSharpHost?.PreparedExecutionHost;
+      const algorithmExecutionHost =
+        exports?.TraceCode?.CSharpHost?.AlgorithmExecutionHost;
       executePreparedExport =
         configuredRuntimeRole === 'runner'
           ? preparedExecutionHost?.ExecutePrepared
@@ -3597,6 +3608,14 @@ async function loadRuntime(assetBaseUrl) {
       executePreparedUtf8Export =
         configuredRuntimeRole === 'runner'
           ? preparedExecutionHost?.ExecutePreparedUtf8
+          : null;
+      executeAlgorithmPreparedExport =
+        configuredRuntimeRole === 'runner'
+          ? algorithmExecutionHost?.ExecutePrepared
+          : null;
+      executeAlgorithmPreparedTraceExport =
+        configuredRuntimeRole === 'runner'
+          ? algorithmExecutionHost?.ExecutePreparedTrace
           : null;
       disposePreparedArtifactExport =
         configuredRuntimeRole === 'runner'
@@ -3620,6 +3639,8 @@ async function loadRuntime(assetBaseUrl) {
       prepareExport = null;
       executePreparedExport = null;
       executePreparedUtf8Export = null;
+      executeAlgorithmPreparedExport = null;
+      executeAlgorithmPreparedTraceExport = null;
       disposePreparedArtifactExport = null;
       executeProjectExport = null;
       getCompiledArtifactKeyExport = null;
@@ -3912,6 +3933,7 @@ async function prepareCSharpProgram(message) {
     maxPathDepth: payload.traceOptions?.maxPathDepth,
     minimalTrace: payload.traceOptions?.minimalTrace,
     preparedProgram: true,
+    allowAlgorithmFast: configuredRuntimeRole === 'compiler',
   };
   const runtimeStartedAt = now();
   const runtimeResult = await loadRuntime(payload.assetBaseUrl);
@@ -3929,7 +3951,14 @@ async function prepareCSharpProgram(message) {
       typeof result.compiledArtifactBase64 !== 'string' ||
       !result.compiledArtifactBase64 ||
       typeof result.compiledArtifactSha256 !== 'string' ||
-      !/^[0-9a-f]{64}$/.test(result.compiledArtifactSha256)
+      !/^[0-9a-f]{64}$/.test(result.compiledArtifactSha256) ||
+      !['algorithm-fast', 'compatibility'].includes(
+        result.preparedRunnerTier
+      ) ||
+      typeof result.preparedRunnerReason !== 'string' ||
+      !result.preparedRunnerReason ||
+      (result.preparedRunnerTier === 'algorithm-fast' &&
+        !result.traceClrWireContract)
     )
   ) {
     return {
@@ -3995,10 +4024,130 @@ async function executePreparedCSharpProgram(message) {
     compiledArtifactKey: prepared.compiledArtifactKey,
     compiledArtifactBase64: prepared.compiledArtifactBase64,
     compiledArtifactSha256: prepared.compiledArtifactSha256,
+    preparedRunnerTier: prepared.preparedRunnerTier ?? 'compatibility',
   };
   const runtimeStartedAt = now();
   const runtimeResult = await loadRuntime(payload.assetBaseUrl);
   const initMs = elapsedMs(runtimeStartedAt) || runtimeResult.timings?.initMs || 0;
+  if (request.preparedRunnerTier === 'algorithm-fast') {
+    if (
+      configuredRuntimeRole !== 'runner' ||
+      typeof executeAlgorithmPreparedExport !== 'function'
+    ) {
+      return {
+        success: false,
+        error: 'The prepared C# program requires an algorithm-fast runner.',
+        consoleOutput: [],
+        timings: {
+          initMs,
+          totalMs: elapsedMs(startedAt),
+          preparedRunnerTier: 'algorithm-fast',
+        },
+      };
+    }
+    if (!(payload.inputBytes instanceof Uint8Array)) {
+      return {
+        success: false,
+        error: 'The algorithm-fast C# runner requires a binary input payload.',
+        consoleOutput: [],
+        timings: {
+          initMs,
+          totalMs: elapsedMs(startedAt),
+          preparedRunnerTier: 'algorithm-fast',
+        },
+      };
+    }
+    const hostCallStartedAt = now();
+    try {
+      if (request.trace) {
+        const exportedJson = await withCSharpUserAuthorityLockdown(() =>
+          executeAlgorithmPreparedTraceExport(
+            request.compiledArtifactBase64,
+            request.compiledArtifactSha256,
+            payload.inputBytes,
+            request.source,
+            request.timeoutMs ?? 5_000,
+            request.maxTraceSteps ?? 0,
+            request.maxLineEvents ?? 0,
+            request.maxSingleLineHits ?? 0,
+            request.maxStoredEvents ?? 0,
+            request.minimalTrace === true,
+            request.recordTrace === true
+          )
+        );
+        const parsed = JSON.parse(exportedJson);
+        const outputBytes = typeof parsed.outputBytes === 'string'
+          ? Uint8Array.from(
+              atob(parsed.outputBytes),
+              (character) => character.charCodeAt(0)
+            )
+          : undefined;
+        const result = normalizeCSharpResult(
+          { ...parsed, outputBytes },
+          request
+        );
+        return {
+          ...result,
+          consoleOutput: [],
+          timings: {
+            initMs,
+            hostCallMs: elapsedMs(hostCallStartedAt),
+            runMs: elapsedMs(hostCallStartedAt),
+            executionRealm: 'disposable-worker',
+            compileCacheHit: true,
+            artifactCacheHit: true,
+            preparedRunnerTier: 'algorithm-fast',
+            ...runtimeMemoryTimings(),
+            totalMs: elapsedMs(startedAt),
+          },
+        };
+      }
+      const outputBytes = await withCSharpUserAuthorityLockdown(() =>
+        executeAlgorithmPreparedExport(
+          request.compiledArtifactBase64,
+          request.compiledArtifactSha256,
+          payload.inputBytes
+        )
+      );
+      return {
+        success: true,
+        outputBytes,
+        consoleOutput: [],
+        timings: {
+          initMs,
+          hostCallMs: elapsedMs(hostCallStartedAt),
+          runMs: elapsedMs(hostCallStartedAt),
+          executionRealm: 'disposable-worker',
+          compileCacheHit: true,
+          artifactCacheHit: true,
+          preparedRunnerTier: 'algorithm-fast',
+          ...runtimeMemoryTimings(),
+          totalMs: elapsedMs(startedAt),
+        },
+      };
+    } catch (error) {
+      const message = formatCSharpWorkerError(error);
+      const invalidArtifact = message.includes('Prepared TraceCLR artifact');
+      return {
+        success: false,
+        error: invalidArtifact
+          ? 'Prepared C# artifact is unavailable or invalid.'
+          : message,
+        consoleOutput: [],
+        timings: {
+          initMs,
+          hostCallMs: elapsedMs(hostCallStartedAt),
+          runMs: elapsedMs(hostCallStartedAt),
+          executionRealm: 'disposable-worker',
+          compileCacheHit: !invalidArtifact,
+          artifactCacheHit: !invalidArtifact,
+          preparedRunnerTier: 'algorithm-fast',
+          ...runtimeMemoryTimings(),
+          totalMs: elapsedMs(startedAt),
+        },
+      };
+    }
+  }
   const hostCallStartedAt = now();
   const result = await withCSharpUserAuthorityLockdown(() => {
     const requestJson = JSON.stringify(request);

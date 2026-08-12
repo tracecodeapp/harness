@@ -2,12 +2,12 @@
   "schema": "tracecode.runtime-assets-lock.v1",
   "harness": {
     "name": "@tracecode/harness",
-    "version": "0.16.4",
-    "releaseId": "@tracecode/harness@0.16.4+sha256.af3783bba7880dfac3b84fe91f86eba8c9e9d99e710ae2533d475f4396cbe03d"
+    "version": "0.16.5",
+    "releaseId": "@tracecode/harness@0.16.5+sha256.73d3df3c96b40e2ff3ee4f2ad085cf9707476ed58736f3d35f546851af04eb02"
   },
   "treeSha256Algorithm": "sha256-path-nul-bytes-nul-v1",
-  "packageTreeSha256": "af3783bba7880dfac3b84fe91f86eba8c9e9d99e710ae2533d475f4396cbe03d",
-  "totalPackagedRuntimeBytes": 151629893,
+  "packageTreeSha256": "73d3df3c96b40e2ff3ee4f2ad085cf9707476ed58736f3d35f546851af04eb02",
+  "totalPackagedRuntimeBytes": 151716652,
   "components": {
     "cpp": {
       "releaseId": "cpp+sha256.f7ec285e637629ebd2b8b9da47b5df04150d50cb4a9f00efe23f864b1e3e6957",
@@ -31,15 +31,15 @@
       ]
     },
     "csharp": {
-      "releaseId": "csharp+sha256.c5668959d8778cff140d31d9607959cd6813801ac70d6b7d08a151ca666cf9ab",
-      "treeSha256": "c5668959d8778cff140d31d9607959cd6813801ac70d6b7d08a151ca666cf9ab",
-      "totalBytes": 63253709,
+      "releaseId": "csharp+sha256.25b83301cc80d13079573f9232daa26689f548d654d84ee974abb8c3e6781ee5",
+      "treeSha256": "25b83301cc80d13079573f9232daa26689f548d654d84ee974abb8c3e6781ee5",
+      "totalBytes": 63338790,
       "files": [
         {
           "path": "workers/csharp/csharp-worker.js",
-          "size": 150523,
-          "sha256": "c30fefcbd233168ff00369b6103206abb4c87ea7d554fbe129335a77aa7c22cc",
-          "integrity": "sha256-ww/vy9IzFo/wA2m2EDIGq7TIfqfVVPvhKTNad6p8Isw=",
+          "size": 155773,
+          "sha256": "706e07281beade272d5c5111f4930b46c387a1140b27428d5b843b822a396f1c",
+          "integrity": "sha256-cG4HKBvq3ictXFER9JMLRsOHoRQLJ0KNW4Q7gio5bxw=",
           "mediaType": "text/javascript"
         },
         {
@@ -58,23 +58,23 @@
         },
         {
           "path": "workers/vendor/csharp-runner/_framework/assemblies-02.pack",
-          "size": 2392677,
-          "sha256": "816cf9063e9a4bf32007fb15cedcd68617658a6184727b3ba2f67019d25732d9",
-          "integrity": "sha256-gWz5Bj6aS/MgB/sVztzWhhdlimGEcns7ovZwGdJXMtk=",
+          "size": 2394266,
+          "sha256": "c3538c279f756dacdcfe7b91ab2a017778e45d37c4625519e7e9d5c716dd3a57",
+          "integrity": "sha256-w1OMJ591bazc/nuRqyoBd3jkXTfEYlUZ5+nVxxbdOlc=",
           "mediaType": "application/octet-stream"
         },
         {
           "path": "workers/vendor/csharp-runner/_framework/assemblies-03.pack",
-          "size": 2389068,
-          "sha256": "236655690bbc9d6c02c00c64f9ee48460b3951a531601debf60e735064caa658",
-          "integrity": "sha256-I2ZVaQu8nWwCwAxk+e5IRgs5UaUxYB3r9g5zUGTKplg=",
+          "size": 2397213,
+          "sha256": "857eebf21f91e987d5ec8f2f21a922eb688f256555d455777b6dfdf169d7fb48",
+          "integrity": "sha256-hX7r8h+R6YfV7I8vIaki62iPJWVV1FV3e2398WnX+0g=",
           "mediaType": "application/octet-stream"
         },
         {
           "path": "workers/vendor/csharp-runner/_framework/dotnet.boot.js",
           "size": 23688,
-          "sha256": "e5e55ca994af04e2d3250efafb2b7f0c264f02b5838ef6c30be2f060b2e7abce",
-          "integrity": "sha256-5eVcqZSvBOLTJQ76+yt/DCZPArWDjvbDC+LwYLLnq84=",
+          "sha256": "1c6493928c05985df26c87bbe7a42d96922674968f165f7fdee18bfe4538138e",
+          "integrity": "sha256-HGSTkowFmF3ybIe756QtlpImdJaPFl9/3uGL/kU4E44=",
           "mediaType": "text/javascript"
         },
         {
@@ -1185,16 +1185,23 @@
         },
         {
           "path": "workers/vendor/csharp/_framework/TraceCode.CSharpHost.wasm",
-          "size": 600341,
-          "sha256": "d67f1437f52f504154844b16041752912b57760d43b0f009a6328b91e6500cff",
-          "integrity": "sha256-1n8UN/UvUEFUhEsWBBdSkStXdg1DsPAJpjKLkeZQDP8=",
+          "size": 609045,
+          "sha256": "26f9d49b079d8eec55a2bf58d3eb79181b9ddcb0939b2e88900e69d95bfe1343",
+          "integrity": "sha256-JvnUmwedjuxVor9Y0+t5GBud3LCTmy6IkA5p2Vv+E0M=",
           "mediaType": "application/wasm"
         },
         {
           "path": "workers/vendor/csharp/_framework/TraceCode.CSharpJudgeRuntime.wasm",
-          "size": 88853,
-          "sha256": "05e590971bbf1750170091a366c25edcb3bb43f888835aeb307983bdbc293731",
-          "integrity": "sha256-BeWQlxu/F1AXAJGjZsJe3LO7Q/iIg1rrMHmDvbwpNzE=",
+          "size": 93973,
+          "sha256": "fa90eda3aad42debb9d4d73f4463cd47b7dd1477058c4e3f9d392e1e7b1bc227",
+          "integrity": "sha256-+pDto6rULeu51Nc/RGPNR7fdFHcFjE4/nTkuHnsbwic=",
+          "mediaType": "application/wasm"
+        },
+        {
+          "path": "workers/vendor/csharp/_framework/TraceCode.TraceClrWire.wasm",
+          "size": 42261,
+          "sha256": "bc3cdf1f6939098b0733baf6c8cb02d4e39efaf8c0935ddd4657e251147867a1",
+          "integrity": "sha256-vDzfH2k5CYsHM7r2yMsC1OOe+vjAk13dRlfiURR4Z6E=",
           "mediaType": "application/wasm"
         },
         {
@@ -1234,9 +1241,9 @@
         },
         {
           "path": "workers/vendor/csharp/_framework/dotnet.boot.js",
-          "size": 48400,
-          "sha256": "f446c287a3fbc9c2c1c652f06cbcbe2e9119c866d2cf1a22ac8d427e49031736",
-          "integrity": "sha256-9EbCh6P7ycLBxlLwbLy+LpEZyGbSzxoirI1CfkkDFzY=",
+          "size": 48588,
+          "sha256": "c5fb7a2dbbbefb240e4c9404ae202aedbd2f73824c71fefb9a69dcca72f2a683",
+          "integrity": "sha256-xft6Lbu++yQOTJQEriAq7b0vc4JMcf77mmncynLypoM=",
           "mediaType": "text/javascript"
         },
         {
@@ -1263,8 +1270,8 @@
         {
           "path": "workers/vendor/csharp/_framework/dotnet.native.wasm",
           "size": 3005101,
-          "sha256": "dfb056c4aa63210d3999b3239df8ff1de0d5a798d6a7d25ecc7e1ba99fe9092a",
-          "integrity": "sha256-37BWxKpjIQ05mbMjnfj/HeDVp5jWp9JezH4bqZ/pCSo=",
+          "sha256": "c5c8cb73a90392e70fd1c303f85ca70468b7fb940c1f2f80a5d4c6a4a95c8184",
+          "integrity": "sha256-xcjLc6kDkucP0cMD+FynBGi3+5QMHy+ApdTGpKlcgYQ=",
           "mediaType": "application/wasm"
         },
         {
@@ -1717,16 +1724,16 @@
         },
         {
           "path": "workers/vendor/csharp/_framework/supportFiles/TraceCode.CSharpHost.dll",
-          "size": 600576,
-          "sha256": "b557073b2b448560c0742fe9d1303690b35303730e1cc7221acdab31358f3e4d",
-          "integrity": "sha256-tVcHOytEhWDAdC/p0TA2kLNTA3MOHMciGs2rMTWPPk0=",
+          "size": 609280,
+          "sha256": "0d4e134c0888b852a01951badfa08f507e28b5b64f29d9f16168e188548033fa",
+          "integrity": "sha256-DU4TTAiIuFKgGVG636CPUH4otbZPKdnxYWjhiFSAM/o=",
           "mediaType": "application/octet-stream"
         },
         {
           "path": "workers/vendor/csharp/_framework/supportFiles/TraceCode.CSharpJudgeRuntime.dll",
-          "size": 89088,
-          "sha256": "76c31619c874bdce7d33530037be9b9cfd6352ff152b20457742f608bf0d3397",
-          "integrity": "sha256-dsMWGch0vc59M1MAN76bnP1jUv8VKyBFd0L2CL8NM5c=",
+          "size": 94208,
+          "sha256": "a659062910ef9f9b2e7a41d16223908aa5ec8f63981597cfa97c4e8f9eda54c4",
+          "integrity": "sha256-plkGKRDvn5suekHRYiOQiqXsj2OYFZfPqXxOj57aVMQ=",
           "mediaType": "application/octet-stream"
         },
         {
@@ -1837,15 +1844,15 @@
       ]
     },
     "javascript": {
-      "releaseId": "javascript+sha256.b8a0cb68bfd698c61e76b60c2846f65153482c7e0034a0cfe77b83ae906d77ff",
-      "treeSha256": "b8a0cb68bfd698c61e76b60c2846f65153482c7e0034a0cfe77b83ae906d77ff",
-      "totalBytes": 1202891,
+      "releaseId": "javascript+sha256.6fb50d48194799a2f66b59a9ec92ba64b210abaf3278765bde5bfd682cdfca0e",
+      "treeSha256": "6fb50d48194799a2f66b59a9ec92ba64b210abaf3278765bde5bfd682cdfca0e",
+      "totalBytes": 1204569,
       "files": [
         {
           "path": "workers/javascript/javascript-project-worker.js",
-          "size": 561093,
-          "sha256": "019715545f0a552ee538a34525f38b98c967e75a07b8737ad536d8c37de78e52",
-          "integrity": "sha256-AZcVVF8KVS7lOKNFJfOLmMln51oHuHN61TbYw33njlI=",
+          "size": 562771,
+          "sha256": "e3e1635d322831f1e217b3f095ad437c16c8092c05bb600d4e5295c6da8119fe",
+          "integrity": "sha256-4+FjXTIoMfHiF7Pwla1DfBbICSwFu2ANTlKVxtqBGf4=",
           "mediaType": "text/javascript"
         },
         {
@@ -2076,28 +2083,28 @@
       },
       "roles": {
         "general": {
-          "artifact": "csharp-bundle.ccb3b907ca9ac499fcbb5bfcd69e9b15b2e91c4795b3447dae45bbce2101a39b.zip",
-          "artifactBytes": 18090801,
-          "artifactSha256": "ccb3b907ca9ac499fcbb5bfcd69e9b15b2e91c4795b3447dae45bbce2101a39b",
-          "fileCount": 241,
-          "treeSha256": "048b8965cf9da12e855984e4b9c123f0efd609ca3509e3610005e8ab03775732",
-          "uncompressedBytes": 50278333
+          "artifact": "csharp-bundle.fec59d84ca62d184052542d144d3f2a2104f3508ce5ddff6f6eefa9ea2575b6e.zip",
+          "artifactBytes": 18115878,
+          "artifactSha256": "fec59d84ca62d184052542d144d3f2a2104f3508ce5ddff6f6eefa9ea2575b6e",
+          "fileCount": 242,
+          "treeSha256": "99c0887631de223b8929ec032067004bb4536be746bc687952ef4c6c4f633a42",
+          "uncompressedBytes": 50348430
         },
         "compiler": {
-          "artifact": "csharp-bundle.ccb3b907ca9ac499fcbb5bfcd69e9b15b2e91c4795b3447dae45bbce2101a39b.zip",
-          "artifactBytes": 18090801,
-          "artifactSha256": "ccb3b907ca9ac499fcbb5bfcd69e9b15b2e91c4795b3447dae45bbce2101a39b",
-          "fileCount": 241,
-          "treeSha256": "048b8965cf9da12e855984e4b9c123f0efd609ca3509e3610005e8ab03775732",
-          "uncompressedBytes": 50278333
+          "artifact": "csharp-bundle.fec59d84ca62d184052542d144d3f2a2104f3508ce5ddff6f6eefa9ea2575b6e.zip",
+          "artifactBytes": 18115878,
+          "artifactSha256": "fec59d84ca62d184052542d144d3f2a2104f3508ce5ddff6f6eefa9ea2575b6e",
+          "fileCount": 242,
+          "treeSha256": "99c0887631de223b8929ec032067004bb4536be746bc687952ef4c6c4f633a42",
+          "uncompressedBytes": 50348430
         },
         "runner": {
-          "artifact": "csharp-bundle.544a1a0d3cea836a8e973ee09b2cc480ebbf87440baa197f984928fb31780ac7.zip",
-          "artifactBytes": 4677741,
-          "artifactSha256": "544a1a0d3cea836a8e973ee09b2cc480ebbf87440baa197f984928fb31780ac7",
+          "artifact": "csharp-bundle.ed7edfe55366ff19659e9e67849e4bbe331226f8425898359ada3be0c72dbda9.zip",
+          "artifactBytes": 4678859,
+          "artifactSha256": "ed7edfe55366ff19659e9e67849e4bbe331226f8425898359ada3be0c72dbda9",
           "fileCount": 12,
-          "treeSha256": "84428c9bfc1d4dd085a314b3199e809ad9201dc87f0eb7cda8bdb5bf10295654",
-          "uncompressedBytes": 12824853
+          "treeSha256": "c1fd0d46132ba3a202e8eb71311a04521ca315a138f261add36fb6e11cfc61a2",
+          "uncompressedBytes": 12834587
         }
       }
     }

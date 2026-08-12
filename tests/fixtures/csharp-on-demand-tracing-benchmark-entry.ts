@@ -29,6 +29,7 @@ export interface CSharpOnDemandSample {
   readonly decisionMs: number;
   readonly createdCompilerWorkers: number;
   readonly createdRunnerWorkers: number;
+  readonly runnerTiers: readonly ('algorithm-fast' | 'compatibility')[];
   readonly eventCounts: readonly number[];
   readonly runMs: readonly (number | null)[];
   readonly outputs: readonly string[];
@@ -46,6 +47,7 @@ declare global {
 
 let createdCompilerWorkers = 0;
 let createdRunnerWorkers = 0;
+const runnerTiers: Array<'algorithm-fast' | 'compatibility'> = [];
 let sharedHarness:
   | {
       readonly compiler: CSharpWorkerClient;
@@ -108,7 +110,8 @@ function getSharedHarness(): NonNullable<typeof sharedHarness> {
     compiler,
     batchConcurrency: 1,
     warmup: () => compiler.warmup(),
-    createRunner: () => {
+    createRunner: (tier) => {
+      runnerTiers.push(tier);
       const runner = createWorkerClient('runner');
       activeRunners.add(runner);
       return runner;
@@ -157,6 +160,7 @@ globalThis.runCSharpOnDemandTracingSample = async (
 ): Promise<CSharpOnDemandSample> => {
   const compilerWorkersBefore = createdCompilerWorkers;
   const runnerWorkersBefore = createdRunnerWorkers;
+  const runnerTiersBefore = runnerTiers.length;
   const { client } = getSharedHarness();
   let traceProgram: RuntimePreparedProgram | undefined;
   let codeProgram: RuntimePreparedProgram | undefined;
@@ -212,6 +216,7 @@ globalThis.runCSharpOnDemandTracingSample = async (
       decisionMs: trace.wallMs + codePrepareMs + selectedLatencyMs + drainMs,
       createdCompilerWorkers: createdCompilerWorkers - compilerWorkersBefore,
       createdRunnerWorkers: createdRunnerWorkers - runnerWorkersBefore,
+      runnerTiers: runnerTiers.slice(runnerTiersBefore),
       eventCounts: [
         selected.trace.events.length,
         ...drain.map((result) =>

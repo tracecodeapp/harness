@@ -34,6 +34,7 @@ class FakePreparedCSharpWorker {
   }> = [];
   disposeCalls: string[] = [];
   failPreparation = false;
+  preparedRunnerTier: 'algorithm-fast' | 'compatibility' = 'compatibility';
   executionResult: CodeExecutionResult | undefined;
   terminated = false;
 
@@ -66,6 +67,18 @@ class FakePreparedCSharpWorker {
       compiledArtifactBase64: 'TVqQAAMAAAAEAAAA',
       compiledArtifactSha256:
         'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+      preparedRunnerTier: this.preparedRunnerTier,
+      preparedRunnerReason: this.preparedRunnerTier === 'algorithm-fast'
+        ? 'direct wire driver'
+        : 'compatibility driver',
+      ...(this.preparedRunnerTier === 'algorithm-fast'
+        ? {
+            traceClrWireContract: {
+              parameters: [{ name: 'value', type: { wireType: 'int32' } }],
+              returnType: { wireType: 'int32' },
+            },
+          }
+        : {}),
       consoleOutput: ['compiled once'],
       timings: { compileMs: 7, compileCacheHit: false },
     };
@@ -339,14 +352,58 @@ test('C# prepared batches lease one disposable outer runner per case', async () 
   await prepared.program.dispose();
 });
 
+test('C# prepared runner tier is selected before execution and never degrades after learner failure', async () => {
+  const compiler = new FakePreparedCSharpWorker();
+  compiler.preparedRunnerTier = 'algorithm-fast';
+  const selectedTiers: Array<'algorithm-fast' | 'compatibility'> = [];
+  const runner = new FakePreparedCSharpWorker();
+  runner.executionResult = {
+    kind: 'failed',
+    error: 'synthetic learner failure',
+    diagnosticStage: 'runtime',
+    consoleOutput: [],
+  };
+  const authority: CSharpPreparedWorkerAuthority = {
+    compiler: compiler as unknown as CSharpWorkerClient,
+    batchConcurrency: 1,
+    warmup: () => compiler.init(),
+    createRunner(tier) {
+      selectedTiers.push(tier);
+      return runner as unknown as CSharpWorkerClient;
+    },
+    releaseRunner() {},
+  };
+  const provider = createCSharpRuntimeClient(
+    compiler as unknown as CSharpWorkerClient,
+    authority
+  );
+  const prepared = await provider.prepareProgram({
+    mode: 'code',
+    code: 'public class Solution { public int Echo(int value) => value; }',
+    functionName: 'Echo',
+    executionStyle: 'solution-method',
+  });
+  assert.equal(prepared.kind, 'prepared');
+  if (prepared.kind !== 'prepared' || prepared.program.mode !== 'code') return;
+
+  const result = await prepared.program.executeIsolated({ inputs: { value: 3 } });
+  assert.equal(result.kind, 'failed');
+  assert.deepEqual(selectedTiers, ['algorithm-fast']);
+  assert.equal(runner.executeCalls.length, 1);
+  await prepared.program.dispose();
+});
+
 test('C# portable trace selection records only selected cases from one assembly', async () => {
   const compiler = new FakePreparedCSharpWorker();
+  compiler.preparedRunnerTier = 'algorithm-fast';
   const runners: FakePreparedCSharpWorker[] = [];
+  const selectedTiers: Array<'algorithm-fast' | 'compatibility'> = [];
   const authority: CSharpPreparedWorkerAuthority = {
     compiler: compiler as unknown as CSharpWorkerClient,
     batchConcurrency: 3,
     warmup: () => compiler.init(),
-    createRunner() {
+    createRunner(tier) {
+      selectedTiers.push(tier);
       const runner = new FakePreparedCSharpWorker();
       runners.push(runner);
       return runner as unknown as CSharpWorkerClient;
@@ -381,6 +438,11 @@ test('C# portable trace selection records only selected cases from one assembly'
   assert.deepEqual(
     runners.map((runner) => runner.traceExecuteCalls[0]?.tracingEnabled),
     [true, false, true]
+  );
+  assert.deepEqual(
+    selectedTiers,
+    ['algorithm-fast', 'algorithm-fast', 'algorithm-fast'],
+    'trace selection must retain the compiler-selected fast tier for every isolated case'
   );
   assert.ok(
     runners.every(

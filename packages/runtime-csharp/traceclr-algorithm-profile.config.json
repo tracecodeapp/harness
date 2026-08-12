@@ -1,0 +1,60 @@
+{
+  "schema": "tracecode.traceclr-algorithm-profile-config.v1",
+  "targetFramework": "net10.0",
+  "globalUsings": [
+    "System",
+    "System.Collections",
+    "System.Collections.Generic",
+    "System.IO",
+    "System.Linq",
+    "System.Numerics",
+    "System.Text",
+    "System.Text.RegularExpressions"
+  ],
+  "algorithmSurfaceAssemblies": [
+    "Microsoft.CSharp",
+    "mscorlib",
+    "netstandard",
+    "System",
+    "System.Core",
+    "System.Private.CoreLib",
+    "System.Runtime",
+    "System.Runtime.Extensions",
+    "System.Runtime.Numerics",
+    "System.Console",
+    "System.Text.RegularExpressions"
+  ],
+  "compilerHostAssemblies": [
+    "TraceCode.CSharpHost",
+    "TraceCode.CSharpJudgeRuntime",
+    "System.Text.Json"
+  ],
+  "runnerHostAssemblies": [
+    "TraceCode.CSharpJudgeRuntime",
+    "TraceCode.CSharpJudgeRunner",
+    "System.Text.Json"
+  ],
+  "algorithmRunnerHostAssemblies": [
+    "TraceCode.CSharpAlgorithmRunner"
+  ],
+  "deniedAssemblyPrefixes": [
+    "System.Net",
+    "System.Reflection.Emit",
+    "System.Runtime.InteropServices.JavaScript"
+  ],
+  "deniedTypePrefixes": [
+    "System.Diagnostics.Process",
+    "System.IO.Directory",
+    "System.IO.File",
+    "System.Reflection.",
+    "System.Runtime.InteropServices",
+    "System.Threading.Thread",
+    "System.Threading.Timer",
+    "System.Timers.Timer"
+  ],
+  "deniedMemberPrefixes": [
+    "System.Environment::Exit",
+    "System.Environment::FailFast",
+    "System.GC::Collect"
+  ]
+}

@@ -1,0 +1,56 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Project>
+  <!--
+    Stable BCL surface exposed by the Minimal compiler reference pack.
+    Compatibility runners load learner assemblies after publishing, so every
+    assembly exposed here must also be rooted in that runner's linked output.
+  -->
+  <ItemGroup>
+    <TraceCodeCSharpCompatibilityAssembly Include="Microsoft.CSharp" />
+    <TraceCodeCSharpCompatibilityAssembly Include="mscorlib" />
+    <TraceCodeCSharpCompatibilityAssembly Include="netstandard" />
+    <TraceCodeCSharpCompatibilityAssembly Include="System" />
+    <TraceCodeCSharpCompatibilityAssembly Include="System.Core" />
+    <TraceCodeCSharpCompatibilityAssembly Include="System.Private.CoreLib" />
+    <TraceCodeCSharpCompatibilityAssembly Include="System.Runtime" />
+    <TraceCodeCSharpCompatibilityAssembly Include="System.Runtime.Extensions" />
+    <TraceCodeCSharpCompatibilityAssembly Include="System.Runtime.CompilerServices.Unsafe" />
+    <TraceCodeCSharpCompatibilityAssembly Include="System.Runtime.Numerics" />
+    <TraceCodeCSharpCompatibilityAssembly Include="System.Runtime.Serialization.Primitives" />
+    <TraceCodeCSharpCompatibilityAssembly Include="System.AppContext" />
+    <TraceCodeCSharpCompatibilityAssembly Include="System.Buffers" />
+    <TraceCodeCSharpCompatibilityAssembly Include="System.Collections" />
+    <TraceCodeCSharpCompatibilityAssembly Include="System.Collections.Concurrent" />
+    <TraceCodeCSharpCompatibilityAssembly Include="System.Collections.Immutable" />
+    <TraceCodeCSharpCompatibilityAssembly Include="System.Collections.NonGeneric" />
+    <TraceCodeCSharpCompatibilityAssembly Include="System.Collections.Specialized" />
+    <TraceCodeCSharpCompatibilityAssembly Include="System.ComponentModel" />
+    <TraceCodeCSharpCompatibilityAssembly Include="System.ComponentModel.Annotations" />
+    <TraceCodeCSharpCompatibilityAssembly Include="System.ComponentModel.Primitives" />
+    <TraceCodeCSharpCompatibilityAssembly Include="System.ComponentModel.TypeConverter" />
+    <TraceCodeCSharpCompatibilityAssembly Include="System.Console" />
+    <TraceCodeCSharpCompatibilityAssembly Include="System.Dynamic.Runtime" />
+    <TraceCodeCSharpCompatibilityAssembly Include="System.Globalization" />
+    <TraceCodeCSharpCompatibilityAssembly Include="System.IO" />
+    <TraceCodeCSharpCompatibilityAssembly Include="System.IO.FileSystem" />
+    <TraceCodeCSharpCompatibilityAssembly Include="System.IO.FileSystem.Primitives" />
+    <TraceCodeCSharpCompatibilityAssembly Include="System.Linq" />
+    <TraceCodeCSharpCompatibilityAssembly Include="System.Linq.Expressions" />
+    <TraceCodeCSharpCompatibilityAssembly Include="System.Linq.Queryable" />
+    <TraceCodeCSharpCompatibilityAssembly Include="System.Memory" />
+    <TraceCodeCSharpCompatibilityAssembly Include="System.Numerics" />
+    <TraceCodeCSharpCompatibilityAssembly Include="System.Numerics.Vectors" />
+    <TraceCodeCSharpCompatibilityAssembly Include="System.ObjectModel" />
+    <TraceCodeCSharpCompatibilityAssembly Include="System.Reflection" />
+    <TraceCodeCSharpCompatibilityAssembly Include="System.Reflection.Extensions" />
+    <TraceCodeCSharpCompatibilityAssembly Include="System.Reflection.Metadata" />
+    <TraceCodeCSharpCompatibilityAssembly Include="System.Reflection.Primitives" />
+    <TraceCodeCSharpCompatibilityAssembly Include="System.Text.Encoding.Extensions" />
+    <TraceCodeCSharpCompatibilityAssembly Include="System.Text.Json" />
+    <TraceCodeCSharpCompatibilityAssembly Include="System.Text.RegularExpressions" />
+    <TraceCodeCSharpCompatibilityAssembly Include="System.Threading" />
+    <TraceCodeCSharpCompatibilityAssembly Include="System.Threading.Tasks" />
+    <TraceCodeCSharpCompatibilityAssembly Include="System.Threading.Tasks.Extensions" />
+    <TraceCodeCSharpCompatibilityAssembly Include="System.ValueTuple" />
+  </ItemGroup>
+</Project>

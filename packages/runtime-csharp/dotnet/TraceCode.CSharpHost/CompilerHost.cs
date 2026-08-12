@@ -15,6 +15,7 @@ using Microsoft.CodeAnalysis.CSharp;
 using Microsoft.CodeAnalysis.CSharp.Syntax;
 using Microsoft.CodeAnalysis.Emit;
 using Microsoft.CodeAnalysis.Text;
+using TraceCode.TraceClrWire;
 
 namespace TraceCode.CSharpHost;
 
@@ -97,6 +98,13 @@ public static partial class CompilerHost
         public required byte[] PeBytes { get; init; }
         public required LinkedListNode<string> RecencyNode { get; init; }
     }
+
+    private sealed record PreparedCompilationPlan(
+        CSharpCompilation Compilation,
+        string RunnerTier,
+        string RunnerReason,
+        TraceClrWireContractDescriptor? WireContract
+    );
 
     private sealed class ProjectWorkspaceSnapshot
     {
@@ -182,6 +190,11 @@ public static partial class CompilerHost
             request.PreparedProgram = true;
             request.RequirePreparedArtifact = false;
             request.Inputs = new Dictionary<string, JsonElement>(StringComparer.Ordinal);
+            PreparedCompilationPlan compilationPlan = CreatePreparedCompilationPlan(
+                request,
+                timings
+            );
+            request.PreparedRunnerTier = compilationPlan.RunnerTier;
             string artifactKey = CompiledArtifactKey(request);
             timings["compileArtifactKeyMs"] = phaseStopwatch.Elapsed.TotalMilliseconds;
 
@@ -193,10 +206,9 @@ public static partial class CompilerHost
 
             if (peBytes is null)
             {
-                CSharpCompilation compilation = CreateCompilation(request, timings);
                 using MemoryStream peStream = new();
                 phaseStopwatch.Restart();
-                EmitResult emitResult = compilation.Emit(peStream);
+                EmitResult emitResult = compilationPlan.Compilation.Emit(peStream);
                 timings["compileEmitMs"] = phaseStopwatch.Elapsed.TotalMilliseconds;
                 timings["compileMs"] = stopwatch.Elapsed.TotalMilliseconds - compileStartedAt;
                 if (!emitResult.Success)
@@ -250,6 +262,9 @@ public static partial class CompilerHost
                 CompiledArtifactKey = artifactKey,
                 CompiledArtifactBase64 = compiledArtifactBase64,
                 CompiledArtifactSha256 = compiledArtifactSha256,
+                PreparedRunnerTier = compilationPlan.RunnerTier,
+                PreparedRunnerReason = compilationPlan.RunnerReason,
+                TraceClrWireContract = compilationPlan.WireContract,
             });
         }
         catch (Exception error)
@@ -995,7 +1010,8 @@ public static partial class CompilerHost
         key.Append(request.Trace ? "trace\n" : "plain\n");
         if (request.PreparedProgram)
         {
-            key.Append("prepared-driver-v1\n");
+            key.Append("prepared-driver-v2\n");
+            AppendCacheKeyPart(key, request.PreparedRunnerTier);
         }
         else
         {
@@ -1124,6 +1140,28 @@ public static partial class CompilerHost
         IDictionary<string, object>? timings = null
     )
     {
+        return CreateCompilationPlan(request, timings).Compilation;
+    }
+
+    private static PreparedCompilationPlan CreatePreparedCompilationPlan(
+        CSharpExecuteRequest request,
+        IDictionary<string, object>? timings = null
+    )
+    {
+        if (!request.PreparedProgram)
+        {
+            throw new ArgumentException(
+                "Prepared compilation planning requires preparedProgram=true."
+            );
+        }
+        return CreateCompilationPlan(request, timings);
+    }
+
+    private static PreparedCompilationPlan CreateCompilationPlan(
+        CSharpExecuteRequest request,
+        IDictionary<string, object>? timings = null
+    )
+    {
         Stopwatch phaseStopwatch = Stopwatch.StartNew();
         SyntaxTree originalUserTree = CSharpSyntaxTree.ParseText(
             request.Source,
@@ -1180,13 +1218,42 @@ public static partial class CompilerHost
         }
 
         phaseStopwatch.Restart();
-        string driverSource = request.PreparedProgram
-            ? GeneratePreparedDriverSource(
-                originalUserTree,
+        string runnerTier = "compatibility";
+        string runnerReason = request.PreparedProgram
+            ? "The prepared program requires the compatibility driver."
+            : "The request is not a prepared program.";
+        TraceClrWireContractDescriptor? wireContract = null;
+        string driverSource;
+        if (
+            request.PreparedProgram
+            && TryCreateAlgorithmFastDriver(
                 request,
-                preparedPolicyCompilation!
+                originalUserTree,
+                preparedPolicyCompilation!,
+                out TraceClrWireDriver? fastDriver,
+                out wireContract,
+                out runnerReason
             )
-            : GenerateDriverSource(originalUserTree, request);
+        )
+        {
+            runnerTier = "algorithm-fast";
+            driverSource = fastDriver!.Source;
+        }
+        else
+        {
+            driverSource = request.PreparedProgram
+                ? GeneratePreparedDriverSource(
+                    originalUserTree,
+                    request,
+                    preparedPolicyCompilation!
+                )
+                : GenerateDriverSource(originalUserTree, request);
+        }
+        if (timings is not null && request.PreparedProgram)
+        {
+            timings["preparedRunnerTier"] = runnerTier;
+            timings["preparedRunnerReason"] = runnerReason;
+        }
         RecordCompilePhase(timings, "compileGenerateDriverMs", phaseStopwatch);
         phaseStopwatch.Restart();
         SyntaxTree driverTree = CSharpSyntaxTree.ParseText(
@@ -1208,7 +1275,142 @@ public static partial class CompilerHost
             "compileSemanticPolicyValidationMs",
             phaseStopwatch
         );
-        return compilation;
+        return new PreparedCompilationPlan(
+            compilation,
+            runnerTier,
+            runnerReason,
+            wireContract
+        );
+    }
+
+    private static bool TryCreateAlgorithmFastDriver(
+        CSharpExecuteRequest request,
+        SyntaxTree originalUserTree,
+        CSharpCompilation policyCompilation,
+        out TraceClrWireDriver? driver,
+        out TraceClrWireContractDescriptor? contract,
+        out string reason
+    )
+    {
+        driver = null;
+        contract = null;
+        if (!request.AllowAlgorithmFast)
+        {
+            reason = "The deployment does not publish an algorithm-fast runner.";
+            return false;
+        }
+        if (!string.Equals(
+            request.ExecutionStyle,
+            "solution-method",
+            StringComparison.Ordinal
+        ))
+        {
+            reason = $"Execution style {request.ExecutionStyle} requires the compatibility runner.";
+            return false;
+        }
+        if (string.IsNullOrWhiteSpace(request.FunctionName))
+        {
+            reason = "A solution method name is required for the algorithm-fast runner.";
+            return false;
+        }
+
+        SemanticModel model = policyCompilation.GetSemanticModel(originalUserTree);
+        IMethodSymbol[] candidates = originalUserTree
+            .GetRoot()
+            .DescendantNodes()
+            .OfType<ClassDeclarationSyntax>()
+            .Where(type => string.Equals(
+                type.Identifier.ValueText,
+                "Solution",
+                StringComparison.Ordinal
+            ))
+            .SelectMany(type => type.Members.OfType<MethodDeclarationSyntax>())
+            .Select(method => model.GetDeclaredSymbol(method))
+            .OfType<IMethodSymbol>()
+            .Where(method => string.Equals(
+                method.Name,
+                request.FunctionName,
+                StringComparison.OrdinalIgnoreCase
+            ))
+            .ToArray();
+        IMethodSymbol[] exactCandidates = candidates
+            .Where(method => string.Equals(
+                method.Name,
+                request.FunctionName,
+                StringComparison.Ordinal
+            ))
+            .ToArray();
+        if (exactCandidates.Length == 1)
+        {
+            candidates = exactCandidates;
+        }
+        if (candidates.Length != 1)
+        {
+            reason = candidates.Length == 0
+                ? $"Solution method {request.FunctionName} was not found."
+                : $"Solution method {request.FunctionName} is overloaded or ambiguous.";
+            return false;
+        }
+        if (UsesConsole(originalUserTree, model))
+        {
+            reason = "Console I/O requires the compatibility runner.";
+            return false;
+        }
+
+        IMethodSymbol method = candidates[0];
+        bool nullOnlyObjectReturn =
+            TraceClrWireDriverGenerator.IsNullOnlyObjectReturn(method);
+        if (!TraceClrWireDriverGenerator.TryGenerate(
+            method,
+            nullOnlyObjectReturn,
+            out driver,
+            out string[] unsupportedReasons
+        ))
+        {
+            reason = "The solution contract requires the compatibility runner: "
+                + string.Join("; ", unsupportedReasons);
+            return false;
+        }
+
+        contract = new TraceClrWireContractDescriptor
+        {
+            Parameters = method.Parameters
+                .Zip(
+                    driver!.Parameters,
+                    (parameter, type) => new TraceClrWireParameterDescriptor
+                    {
+                        Name = parameter.Name,
+                        Type = new TraceClrWireTypeDescriptor
+                        {
+                            WireType = type.WireType,
+                        },
+                    }
+                )
+                .ToList(),
+            ReturnType = new TraceClrWireTypeDescriptor
+            {
+                WireType = driver.ReturnType.WireType,
+            },
+        };
+        reason = "The solution contract is supported by the direct TraceCLR wire driver.";
+        return true;
+    }
+
+    private static bool UsesConsole(SyntaxTree userTree, SemanticModel model)
+    {
+        foreach (SyntaxNode node in userTree.GetRoot().DescendantNodes())
+        {
+            ISymbol? symbol = model.GetSymbolInfo(node).Symbol;
+            if (string.Equals(
+                symbol?.ContainingType?.ToDisplayString(),
+                "System.Console",
+                StringComparison.Ordinal
+            ))
+            {
+                return true;
+            }
+        }
+        return false;
     }
 
     private static CSharpCompilation GetTrustedCompilationTemplate(
@@ -7495,6 +7697,23 @@ public class TreeNode
             if (response.CompiledArtifactSha256 is not null)
             {
                 writer.WriteString("compiledArtifactSha256", response.CompiledArtifactSha256);
+            }
+            if (response.PreparedRunnerTier is not null)
+            {
+                writer.WriteString("preparedRunnerTier", response.PreparedRunnerTier);
+            }
+            if (response.PreparedRunnerReason is not null)
+            {
+                writer.WriteString("preparedRunnerReason", response.PreparedRunnerReason);
+            }
+            if (response.TraceClrWireContract is not null)
+            {
+                writer.WritePropertyName("traceClrWireContract");
+                JsonSerializer.Serialize(
+                    writer,
+                    response.TraceClrWireContract,
+                    JsonOptions
+                );
             }
             writer.WriteEndObject();
         }

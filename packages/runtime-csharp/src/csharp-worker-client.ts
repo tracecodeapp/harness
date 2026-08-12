@@ -61,8 +61,14 @@ import {
 import { WorkerSessionCore } from '@tracecode/runtime-browser/internal';
 import type { WorkerSessionMessage } from '@tracecode/runtime-browser/internal';
 import { handleHostArtifactCacheRequest, HostArtifactCache } from '@tracecode/runtime-browser/internal';
+import {
+  decodeTraceClrWireResult,
+  encodeTraceClrWireInputs,
+  type TraceClrWireContractDescriptor,
+} from './traceclr-wire';
 
 export type CSharpExecutionStyle = 'function' | 'solution-method' | 'ops-class';
+export type CSharpPreparedRunnerTier = 'algorithm-fast' | 'compatibility';
 
 export interface CSharpWorkerClientOptions {
   workerUrl: string;
@@ -139,12 +145,16 @@ interface CSharpWorkerExecuteResult {
   traceLimitExceeded?: boolean;
   timeoutReason?: ExecutionLimitReason;
   timings?: RuntimeExecutionTimings;
+  outputBytes?: Uint8Array;
 }
 
 export interface CSharpWorkerPrepareResult extends CSharpWorkerExecuteResult {
   compiledArtifactKey?: string;
   compiledArtifactBase64?: string;
   compiledArtifactSha256?: string;
+  preparedRunnerTier?: CSharpPreparedRunnerTier;
+  preparedRunnerReason?: string;
+  traceClrWireContract?: TraceClrWireContractDescriptor;
 }
 
 export interface CSharpPreparedProgramArtifact {
@@ -156,6 +166,9 @@ export interface CSharpPreparedProgramArtifact {
   readonly compiledArtifactKey: string;
   readonly compiledArtifactBase64: string;
   readonly compiledArtifactSha256: string;
+  readonly preparedRunnerTier: CSharpPreparedRunnerTier;
+  readonly preparedRunnerReason: string;
+  readonly traceClrWireContract?: TraceClrWireContractDescriptor;
 }
 
 function isCSharpUserFile(file: string | undefined): boolean {
@@ -605,12 +618,19 @@ export class CSharpWorkerClient {
   ): Promise<CodeExecutionResult> {
     return this.runPreparedExecutionGeneration(call.signal, async () => {
       const wallClockMs = call.limits?.wallClockMs ?? this.executionTimeoutMs;
+      const inputBytes = prepared.preparedRunnerTier === 'algorithm-fast'
+        ? encodeTraceClrWireInputs(
+            prepared.traceClrWireContract!,
+            call.inputs
+          )
+        : undefined;
       const program = this.preparedReadyEffect().pipe(
         Effect.andThen(
           this.core.withExecutionDeadline(
             this.sendCommandEffect<CSharpWorkerExecuteResult>('execute-prepared-code', {
               prepared,
               inputs: call.inputs,
+              ...(inputBytes ? { inputBytes } : {}),
               assetBaseUrl: this.options.assetBaseUrl,
               timeoutMs: Math.max(100, wallClockMs - 1_000),
               ...this.workerOptionsPayload(),
@@ -620,6 +640,17 @@ export class CSharpWorkerClient {
         )
       );
       const result = await this.core.runClientEffect(program, call.signal);
+      if (prepared.preparedRunnerTier === 'algorithm-fast' && result.success) {
+        if (!(result.outputBytes instanceof Uint8Array)) {
+          throw new TypeError(
+            'The algorithm-fast C# runner returned no binary output payload.'
+          );
+        }
+        result.output = decodeTraceClrWireResult(
+          prepared.traceClrWireContract!,
+          result.outputBytes
+        );
+      }
       return this.toCodeExecutionResult(result);
     });
   }
@@ -639,6 +670,12 @@ export class CSharpWorkerClient {
     return this.runPreparedExecutionGeneration(call.signal, async () => {
       const wallClockMs = call.limits?.wallClockMs
         ?? this.resolveTracingTimeoutMs(prepared.functionName, prepared.executionStyle);
+      const inputBytes = prepared.preparedRunnerTier === 'algorithm-fast'
+        ? encodeTraceClrWireInputs(
+            prepared.traceClrWireContract!,
+            call.inputs
+          )
+        : undefined;
       let result: CSharpWorkerExecuteResult;
       const program = this.preparedReadyEffect().pipe(
         Effect.andThen(
@@ -646,6 +683,7 @@ export class CSharpWorkerClient {
             this.sendCommandEffect<CSharpWorkerExecuteResult>('execute-prepared-trace', {
               prepared,
               inputs: call.inputs,
+              ...(inputBytes ? { inputBytes } : {}),
               ...(call.recordTrace === undefined
                 ? {}
                 : { tracingEnabled: call.recordTrace }),
@@ -663,6 +701,18 @@ export class CSharpWorkerClient {
         result = await this.core.runClientEffect(program, call.signal);
       } catch (error) {
         return this.traceClientFailure(error, wallClockMs);
+      }
+
+      if (prepared.preparedRunnerTier === 'algorithm-fast' && result.success) {
+        if (!(result.outputBytes instanceof Uint8Array)) {
+          throw new TypeError(
+            'The algorithm-fast C# trace runner returned no binary output payload.'
+          );
+        }
+        result.output = decodeTraceClrWireResult(
+          prepared.traceClrWireContract!,
+          result.outputBytes
+        );
       }
 
       return this.toTraceExecutionResult(
