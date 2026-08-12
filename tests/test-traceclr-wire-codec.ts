@@ -114,6 +114,24 @@ const setResult = decodeTraceClrWireResult(
 assert.deepEqual(setResult, [3, 5, 8]);
 assert.equal(JSON.stringify(setResult), '[3,5,8]');
 
+for (const [value, expected] of [
+  [Number.NaN, 'NaN'],
+  [Number.POSITIVE_INFINITY, 'Infinity'],
+  [Number.NEGATIVE_INFINITY, '-Infinity'],
+] as const) {
+  const floatingPointContract: TraceClrWireContractDescriptor = {
+    parameters: [],
+    returnType: { wireType: 'array<float64>' },
+  };
+  assert.deepEqual(
+    decodeTraceClrWireResult(
+      floatingPointContract,
+      encodeTraceClrWireResult(floatingPointContract, [value]),
+    ),
+    [expected],
+  );
+}
+
 const largeContract: TraceClrWireContractDescriptor = {
   parameters: [{ name: 'value', type: { wireType: 'string' } }],
   returnType: { wireType: 'string' },

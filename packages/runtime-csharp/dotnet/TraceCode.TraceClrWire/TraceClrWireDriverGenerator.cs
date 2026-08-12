@@ -409,20 +409,40 @@ public static class TraceClrWireDriverGenerator
                 string definition = named.OriginalDefinition.ToDisplayString();
                 ITypeSymbol element = named.TypeArguments[0];
                 string elementWriter = WriterFor(element, DescribeWireType(element).WireType);
-                if (definition is "System.Collections.Generic.List<T>"
-                    or "System.Collections.Generic.IList<T>"
-                    or "System.Collections.Generic.IReadOnlyList<T>"
-                    or "System.Collections.Generic.IEnumerable<T>"
-                    or "System.Collections.Generic.HashSet<T>")
+                if (definition == "System.Collections.Generic.IEnumerable<T>")
                 {
                     return $$"""
     private static void {{name}}(Writer writer, {{display}} value)
     {
         if (value is null) { writer.Int32(-1); return; }
         var items = new global::System.Collections.Generic.List<{{element.ToDisplayString(TypeFormat)}}>();
-        foreach (var item in value) items.Add(item);
+        foreach (var item in value)
+        {
+            if (items.Count >= {{MaxCollectionItems}}) throw new InvalidOperationException("TraceCLR result collection is too large.");
+            if ((items.Count & 1023) == 0) global::TraceCode.Internal.TraceCodeTrace.CheckTimeout();
+            items.Add(item);
+        }
         writer.Length(items.Count);
         foreach (var item in items) {{elementWriter}}(writer, item);
+    }
+""";
+                }
+                if (definition is "System.Collections.Generic.List<T>"
+                    or "System.Collections.Generic.IList<T>"
+                    or "System.Collections.Generic.IReadOnlyList<T>"
+                    or "System.Collections.Generic.HashSet<T>")
+                {
+                    return $$"""
+    private static void {{name}}(Writer writer, {{display}} value)
+    {
+        if (value is null) { writer.Int32(-1); return; }
+        writer.Length(value.Count);
+        int index = 0;
+        foreach (var item in value)
+        {
+            if ((index++ & 1023) == 0) global::TraceCode.Internal.TraceCodeTrace.CheckTimeout();
+            {{elementWriter}}(writer, item);
+        }
     }
 """;
                 }

@@ -273,6 +273,17 @@ function normalizePortableResult(type: WireType, value: unknown): unknown {
     // behavior outside Number.MAX_SAFE_INTEGER.
     return Number(value);
   }
+  if (
+    type.kind === 'scalar'
+    && (type.name === 'float32' || type.name === 'float64')
+  ) {
+    if (typeof value !== 'number') {
+      throw new TypeError(`TraceCLR ${type.name} result did not decode to a number.`);
+    }
+    if (Number.isNaN(value)) return 'NaN';
+    if (value === Number.POSITIVE_INFINITY) return 'Infinity';
+    if (value === Number.NEGATIVE_INFINITY) return '-Infinity';
+  }
   return value;
 }
 

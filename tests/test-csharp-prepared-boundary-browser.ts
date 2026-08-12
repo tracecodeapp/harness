@@ -223,6 +223,14 @@ public class Solution
         return total;
     }
 }`;
+      const enumerableSource = `
+using System.Collections.Generic;
+using System.Linq;
+
+public class Solution
+{
+    public IEnumerable<int> Expand(int count) => Enumerable.Range(0, count);
+}`;
       const structuredSource = `
 using System.ComponentModel.DataAnnotations;
 using System.Collections.Generic;
@@ -359,6 +367,14 @@ public class Solution
           maxTraceSteps: 10_000,
           maxStoredEvents: 10_000,
         },
+      });
+      const enumerablePrepared = await compiler.send('prepare-program', {
+        mode: 'code',
+        code: enumerableSource,
+        functionName: 'Expand',
+        executionStyle: 'solution-method',
+        assetBaseUrl: compilerBaseUrl,
+        timeoutMs: 10_000,
       });
       const structuredPrepared = await compiler.send('prepare-program', {
         mode: 'code',
@@ -613,6 +629,23 @@ public class Solution
       );
       fastTraceFailureRunner.terminate();
 
+      const enumerableRunner = await createHarness('runner', runnerBaseUrl);
+      const enumerableOverflow = await enumerableRunner.send(
+        'execute-prepared-code',
+        {
+          prepared: descriptor(
+            enumerableSource,
+            'Expand',
+            'code',
+            enumerablePrepared
+          ),
+          inputs: { count: 1_000_001 },
+          assetBaseUrl: runnerBaseUrl,
+          timeoutMs: 10_000,
+        }
+      );
+      enumerableRunner.terminate();
+
       const structuredInputs = {
         payload: {
           Name: 'Ada',
@@ -700,6 +733,7 @@ public class Solution
       return {
         prepared,
         fastTracePrepared,
+        enumerablePrepared,
         compilerWarmup,
         structuredPrepared,
         structuredTracePrepared,
@@ -725,6 +759,7 @@ public class Solution
         fastTraceLimited,
         fastTraceHardLimited,
         fastTraceFailure,
+        enumerableOverflow,
         structured,
         structuredTrace,
         nonMutatingVoid,
@@ -790,6 +825,18 @@ public class Solution
         result.fastTraceFailure.error?.includes('learner boom') === true &&
         (result.fastTraceFailure.events?.length ?? 0) > 0,
       `TraceCLR algorithm-fast tracing did not preserve partial traces for learner exceptions: ${JSON.stringify(result.fastTraceFailure)}`
+    );
+    assertCondition(
+      result.enumerablePrepared.success &&
+        result.enumerablePrepared.preparedRunnerTier === 'algorithm-fast' &&
+        !result.enumerableOverflow.success &&
+        result.enumerableOverflow.error?.includes(
+          'TraceCLR result collection is too large'
+        ) === true,
+      `TraceCLR algorithm-fast result enumeration did not enforce its item budget incrementally: ${JSON.stringify({
+        prepared: result.enumerablePrepared,
+        execution: result.enumerableOverflow,
+      })}`
     );
     assertCondition(
       result.valid.success &&
