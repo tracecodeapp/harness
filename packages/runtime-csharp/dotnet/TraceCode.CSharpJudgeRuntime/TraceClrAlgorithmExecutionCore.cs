@@ -82,12 +82,12 @@ public static class TraceClrAlgorithmExecutionCore
             );
         }
         catch (Exception error)
-            when (error.GetBaseException() is TraceCodeTimeoutException timeout)
+            when (UnwrapDriverException(error) is TraceCodeTimeoutException timeout)
         {
             return LimitResult(source, recordTrace, minimalTrace, timeout.Message, "client-timeout");
         }
         catch (Exception error)
-            when (error.GetBaseException() is TraceLimitExceededException traceLimit)
+            when (UnwrapDriverException(error) is TraceLimitExceededException traceLimit)
         {
             return LimitResult(source, recordTrace, minimalTrace, traceLimit.Message, traceLimit.TimeoutReason);
         }
@@ -97,13 +97,25 @@ public static class TraceClrAlgorithmExecutionCore
                 source,
                 recordTrace,
                 minimalTrace,
-                error.GetBaseException().Message
+                UnwrapDriverException(error).Message
             );
         }
         finally
         {
             RuntimeTraceSink.Reset();
         }
+    }
+
+    private static Exception UnwrapDriverException(Exception error)
+    {
+        Exception current = error;
+        while (
+            current is TargetInvocationException { InnerException: not null } target
+        )
+        {
+            current = target.InnerException;
+        }
+        return current.GetBaseException();
     }
 
     private static TraceClrAlgorithmExecutionResult FailureResult(
