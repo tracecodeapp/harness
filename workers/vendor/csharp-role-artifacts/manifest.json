@@ -32,20 +32,20 @@
   },
   "roles": {
     "general": {
-      "artifact": "csharp-bundle.32220b21da0b317c49e46586fb1278561c1bb774b082a2b47e2011d9b582176f.zip",
-      "artifactBytes": 17021197,
-      "artifactSha256": "32220b21da0b317c49e46586fb1278561c1bb774b082a2b47e2011d9b582176f",
+      "artifact": "csharp-bundle.4064772d179d462812733cfeb126fd7cb295c9f7c6b524370b6c1f69376e1a6f.zip",
+      "artifactBytes": 17021387,
+      "artifactSha256": "4064772d179d462812733cfeb126fd7cb295c9f7c6b524370b6c1f69376e1a6f",
       "fileCount": 211,
-      "treeSha256": "31c46b1fa2bcc06bc104a1ebae1c3a64b797b7f475af1c31b28d92a5bb76d760",
-      "uncompressedBytes": 47890927
+      "treeSha256": "2f1e68d7ec6f00c424f40083e99dffd9db5dbee8f8ed5dc69a9c121564bd3a5e",
+      "uncompressedBytes": 47891439
     },
     "compiler": {
-      "artifact": "csharp-bundle.32220b21da0b317c49e46586fb1278561c1bb774b082a2b47e2011d9b582176f.zip",
-      "artifactBytes": 17021197,
-      "artifactSha256": "32220b21da0b317c49e46586fb1278561c1bb774b082a2b47e2011d9b582176f",
+      "artifact": "csharp-bundle.4064772d179d462812733cfeb126fd7cb295c9f7c6b524370b6c1f69376e1a6f.zip",
+      "artifactBytes": 17021387,
+      "artifactSha256": "4064772d179d462812733cfeb126fd7cb295c9f7c6b524370b6c1f69376e1a6f",
       "fileCount": 211,
-      "treeSha256": "31c46b1fa2bcc06bc104a1ebae1c3a64b797b7f475af1c31b28d92a5bb76d760",
-      "uncompressedBytes": 47890927
+      "treeSha256": "2f1e68d7ec6f00c424f40083e99dffd9db5dbee8f8ed5dc69a9c121564bd3a5e",
+      "uncompressedBytes": 47891439
     },
     "runner": {
       "artifact": "csharp-bundle.d00caaf25f7967e06d36fc3d46265014c5005a419add62156fcf530fcdd718fe.zip",

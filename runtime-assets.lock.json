@@ -3,11 +3,11 @@
   "harness": {
     "name": "@tracecode/harness",
     "version": "0.16.5",
-    "releaseId": "@tracecode/harness@0.16.5+sha256.1f746c922dd49c669c70b336a2239ae1f693e94c7f31c1a98e58e2c68f28ee91"
+    "releaseId": "@tracecode/harness@0.16.5+sha256.3cd216cd23d85ad2b66c433d9d58e6cb2faae7a520552f4fa4f8c3ab7bf95a84"
   },
   "treeSha256Algorithm": "sha256-path-nul-bytes-nul-v1",
-  "packageTreeSha256": "1f746c922dd49c669c70b336a2239ae1f693e94c7f31c1a98e58e2c68f28ee91",
-  "totalPackagedRuntimeBytes": 147647323,
+  "packageTreeSha256": "3cd216cd23d85ad2b66c433d9d58e6cb2faae7a520552f4fa4f8c3ab7bf95a84",
+  "totalPackagedRuntimeBytes": 147647835,
   "components": {
     "cpp": {
       "releaseId": "cpp+sha256.f7ec285e637629ebd2b8b9da47b5df04150d50cb4a9f00efe23f864b1e3e6957",
@@ -31,9 +31,9 @@
       ]
     },
     "csharp": {
-      "releaseId": "csharp+sha256.684a22a9b45715365f06b83d81309fb11631155a836d522fbe114f787263caec",
-      "treeSha256": "684a22a9b45715365f06b83d81309fb11631155a836d522fbe114f787263caec",
-      "totalBytes": 59269461,
+      "releaseId": "csharp+sha256.0c3cf441ed992d97d439721c75a33a5f68ce2e4ae573a7dc14691d4cc1020b33",
+      "treeSha256": "0c3cf441ed992d97d439721c75a33a5f68ce2e4ae573a7dc14691d4cc1020b33",
+      "totalBytes": 59269973,
       "files": [
         {
           "path": "workers/csharp/csharp-worker.js",
@@ -1199,9 +1199,9 @@
         },
         {
           "path": "workers/vendor/csharp/_framework/TraceCode.TraceClrWire.wasm",
-          "size": 40725,
-          "sha256": "9995fde94993c9b84ec3dda16aa4f761e18558e29c2de6e8e33909bc79814d51",
-          "integrity": "sha256-mZX96UmTybhOw92haqT3YeGFWOKcLebo4zkJvHmBTVE=",
+          "size": 41237,
+          "sha256": "418dccac03eb076c94f67254397d340a71425ca3033112c7a354c8ebd65dc527",
+          "integrity": "sha256-QY3MrAPrB2yU9nJUOX00CnFCXKMDMRLHo1TI69ZdxSc=",
           "mediaType": "application/wasm"
         },
         {
@@ -1242,8 +1242,8 @@
         {
           "path": "workers/vendor/csharp/_framework/dotnet.boot.js",
           "size": 41757,
-          "sha256": "2aac477bd2de4bdf2ff8241669813c2a951f8f405b55326463394ce27f638824",
-          "integrity": "sha256-KqxHe9LeS98v+CQWaYE8KpUfj0BbVTJkYzlM4n9jiCQ=",
+          "sha256": "97ec9ec441ecbdcdf4e3e4fee03b907380c07e3ce3947e1217fd9e4c3e19890c",
+          "integrity": "sha256-l+yexEHsvc304+T+4DuQc4DAfjzjlH4SF/2eTD4ZiQw=",
           "mediaType": "text/javascript"
         },
         {
@@ -1866,20 +1866,20 @@
       },
       "roles": {
         "general": {
-          "artifact": "csharp-bundle.32220b21da0b317c49e46586fb1278561c1bb774b082a2b47e2011d9b582176f.zip",
-          "artifactBytes": 17021197,
-          "artifactSha256": "32220b21da0b317c49e46586fb1278561c1bb774b082a2b47e2011d9b582176f",
+          "artifact": "csharp-bundle.4064772d179d462812733cfeb126fd7cb295c9f7c6b524370b6c1f69376e1a6f.zip",
+          "artifactBytes": 17021387,
+          "artifactSha256": "4064772d179d462812733cfeb126fd7cb295c9f7c6b524370b6c1f69376e1a6f",
           "fileCount": 211,
-          "treeSha256": "31c46b1fa2bcc06bc104a1ebae1c3a64b797b7f475af1c31b28d92a5bb76d760",
-          "uncompressedBytes": 47890927
+          "treeSha256": "2f1e68d7ec6f00c424f40083e99dffd9db5dbee8f8ed5dc69a9c121564bd3a5e",
+          "uncompressedBytes": 47891439
         },
         "compiler": {
-          "artifact": "csharp-bundle.32220b21da0b317c49e46586fb1278561c1bb774b082a2b47e2011d9b582176f.zip",
-          "artifactBytes": 17021197,
-          "artifactSha256": "32220b21da0b317c49e46586fb1278561c1bb774b082a2b47e2011d9b582176f",
+          "artifact": "csharp-bundle.4064772d179d462812733cfeb126fd7cb295c9f7c6b524370b6c1f69376e1a6f.zip",
+          "artifactBytes": 17021387,
+          "artifactSha256": "4064772d179d462812733cfeb126fd7cb295c9f7c6b524370b6c1f69376e1a6f",
           "fileCount": 211,
-          "treeSha256": "31c46b1fa2bcc06bc104a1ebae1c3a64b797b7f475af1c31b28d92a5bb76d760",
-          "uncompressedBytes": 47890927
+          "treeSha256": "2f1e68d7ec6f00c424f40083e99dffd9db5dbee8f8ed5dc69a9c121564bd3a5e",
+          "uncompressedBytes": 47891439
         },
         "runner": {
           "artifact": "csharp-bundle.d00caaf25f7967e06d36fc3d46265014c5005a419add62156fcf530fcdd718fe.zip",

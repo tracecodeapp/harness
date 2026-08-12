@@ -989,8 +989,10 @@
             "unsupportedTypes": []
           },
           "unsupportedTypes": [],
-          "directDriverSupported": true,
-          "directDriverUnsupportedReasons": []
+          "directDriverSupported": false,
+          "directDriverUnsupportedReasons": [
+            "reference-bearing node topology requires the compatibility runner"
+          ]
         }
       ],
       "typeReferenceCount": 8,
@@ -1263,8 +1265,10 @@
             "unsupportedTypes": []
           },
           "unsupportedTypes": [],
-          "directDriverSupported": true,
-          "directDriverUnsupportedReasons": []
+          "directDriverSupported": false,
+          "directDriverUnsupportedReasons": [
+            "reference-bearing node topology requires the compatibility runner"
+          ]
         }
       ],
       "typeReferenceCount": 10,
@@ -1492,6 +1496,7 @@
           "directDriverUnsupportedReasons": [
             "declaring type is not Solution",
             "only ordinary solution methods use the direct driver",
+            "reference-bearing node topology requires the compatibility runner",
             "solution type has no accessible parameterless constructor",
             "void mutation result"
           ]
@@ -1622,8 +1627,10 @@
             "unsupportedTypes": []
           },
           "unsupportedTypes": [],
-          "directDriverSupported": true,
-          "directDriverUnsupportedReasons": []
+          "directDriverSupported": false,
+          "directDriverUnsupportedReasons": [
+            "reference-bearing node topology requires the compatibility runner"
+          ]
         }
       ],
       "typeReferenceCount": 10,
@@ -1660,8 +1667,10 @@
             "unsupportedTypes": []
           },
           "unsupportedTypes": [],
-          "directDriverSupported": true,
-          "directDriverUnsupportedReasons": []
+          "directDriverSupported": false,
+          "directDriverUnsupportedReasons": [
+            "reference-bearing node topology requires the compatibility runner"
+          ]
         }
       ],
       "typeReferenceCount": 10,
@@ -1697,8 +1706,10 @@
             "unsupportedTypes": []
           },
           "unsupportedTypes": [],
-          "directDriverSupported": true,
-          "directDriverUnsupportedReasons": []
+          "directDriverSupported": false,
+          "directDriverUnsupportedReasons": [
+            "reference-bearing node topology requires the compatibility runner"
+          ]
         }
       ],
       "typeReferenceCount": 9,
@@ -1735,8 +1746,10 @@
             "unsupportedTypes": []
           },
           "unsupportedTypes": [],
-          "directDriverSupported": true,
-          "directDriverUnsupportedReasons": []
+          "directDriverSupported": false,
+          "directDriverUnsupportedReasons": [
+            "reference-bearing node topology requires the compatibility runner"
+          ]
         }
       ],
       "typeReferenceCount": 10,
@@ -4094,8 +4107,10 @@
             "unsupportedTypes": []
           },
           "unsupportedTypes": [],
-          "directDriverSupported": true,
-          "directDriverUnsupportedReasons": []
+          "directDriverSupported": false,
+          "directDriverUnsupportedReasons": [
+            "reference-bearing node topology requires the compatibility runner"
+          ]
         }
       ],
       "typeReferenceCount": 9,
@@ -4690,8 +4705,10 @@
             "unsupportedTypes": []
           },
           "unsupportedTypes": [],
-          "directDriverSupported": true,
-          "directDriverUnsupportedReasons": []
+          "directDriverSupported": false,
+          "directDriverUnsupportedReasons": [
+            "reference-bearing node topology requires the compatibility runner"
+          ]
         }
       ],
       "typeReferenceCount": 11,
@@ -5900,8 +5917,10 @@
             "unsupportedTypes": []
           },
           "unsupportedTypes": [],
-          "directDriverSupported": true,
-          "directDriverUnsupportedReasons": []
+          "directDriverSupported": false,
+          "directDriverUnsupportedReasons": [
+            "reference-bearing node topology requires the compatibility runner"
+          ]
         }
       ],
       "typeReferenceCount": 8,
@@ -6578,8 +6597,10 @@
             "unsupportedTypes": []
           },
           "unsupportedTypes": [],
-          "directDriverSupported": true,
-          "directDriverUnsupportedReasons": []
+          "directDriverSupported": false,
+          "directDriverUnsupportedReasons": [
+            "reference-bearing node topology requires the compatibility runner"
+          ]
         }
       ],
       "typeReferenceCount": 11,
@@ -6615,8 +6636,10 @@
             "unsupportedTypes": []
           },
           "unsupportedTypes": [],
-          "directDriverSupported": true,
-          "directDriverUnsupportedReasons": []
+          "directDriverSupported": false,
+          "directDriverUnsupportedReasons": [
+            "reference-bearing node topology requires the compatibility runner"
+          ]
         }
       ],
       "typeReferenceCount": 8,
@@ -7578,8 +7601,10 @@
             "unsupportedTypes": []
           },
           "unsupportedTypes": [],
-          "directDriverSupported": true,
-          "directDriverUnsupportedReasons": []
+          "directDriverSupported": false,
+          "directDriverUnsupportedReasons": [
+            "reference-bearing node topology requires the compatibility runner"
+          ]
         }
       ],
       "typeReferenceCount": 9,
@@ -7956,8 +7981,10 @@
             "unsupportedTypes": []
           },
           "unsupportedTypes": [],
-          "directDriverSupported": true,
-          "directDriverUnsupportedReasons": []
+          "directDriverSupported": false,
+          "directDriverUnsupportedReasons": [
+            "reference-bearing node topology requires the compatibility runner"
+          ]
         }
       ],
       "typeReferenceCount": 9,
@@ -8360,8 +8387,10 @@
             "unsupportedTypes": []
           },
           "unsupportedTypes": [],
-          "directDriverSupported": true,
-          "directDriverUnsupportedReasons": []
+          "directDriverSupported": false,
+          "directDriverUnsupportedReasons": [
+            "reference-bearing node topology requires the compatibility runner"
+          ]
         }
       ],
       "typeReferenceCount": 9,
@@ -8468,8 +8497,10 @@
             "unsupportedTypes": []
           },
           "unsupportedTypes": [],
-          "directDriverSupported": true,
-          "directDriverUnsupportedReasons": []
+          "directDriverSupported": false,
+          "directDriverUnsupportedReasons": [
+            "reference-bearing node topology requires the compatibility runner"
+          ]
         }
       ],
       "typeReferenceCount": 8,
@@ -8860,8 +8891,10 @@
             "unsupportedTypes": []
           },
           "unsupportedTypes": [],
-          "directDriverSupported": true,
-          "directDriverUnsupportedReasons": []
+          "directDriverSupported": false,
+          "directDriverUnsupportedReasons": [
+            "reference-bearing node topology requires the compatibility runner"
+          ]
         }
       ],
       "typeReferenceCount": 9,
@@ -10632,8 +10665,10 @@
             "unsupportedTypes": []
           },
           "unsupportedTypes": [],
-          "directDriverSupported": true,
-          "directDriverUnsupportedReasons": []
+          "directDriverSupported": false,
+          "directDriverUnsupportedReasons": [
+            "reference-bearing node topology requires the compatibility runner"
+          ]
         }
       ],
       "typeReferenceCount": 11,
@@ -10678,8 +10713,10 @@
             "unsupportedTypes": []
           },
           "unsupportedTypes": [],
-          "directDriverSupported": true,
-          "directDriverUnsupportedReasons": []
+          "directDriverSupported": false,
+          "directDriverUnsupportedReasons": [
+            "reference-bearing node topology requires the compatibility runner"
+          ]
         }
       ],
       "typeReferenceCount": 12,
@@ -11032,8 +11069,10 @@
             "unsupportedTypes": []
           },
           "unsupportedTypes": [],
-          "directDriverSupported": true,
-          "directDriverUnsupportedReasons": []
+          "directDriverSupported": false,
+          "directDriverUnsupportedReasons": [
+            "reference-bearing node topology requires the compatibility runner"
+          ]
         }
       ],
       "typeReferenceCount": 11,
@@ -11639,8 +11678,10 @@
             "unsupportedTypes": []
           },
           "unsupportedTypes": [],
-          "directDriverSupported": true,
-          "directDriverUnsupportedReasons": []
+          "directDriverSupported": false,
+          "directDriverUnsupportedReasons": [
+            "reference-bearing node topology requires the compatibility runner"
+          ]
         }
       ],
       "typeReferenceCount": 8,
@@ -11676,8 +11717,10 @@
             "unsupportedTypes": []
           },
           "unsupportedTypes": [],
-          "directDriverSupported": true,
-          "directDriverUnsupportedReasons": []
+          "directDriverSupported": false,
+          "directDriverUnsupportedReasons": [
+            "reference-bearing node topology requires the compatibility runner"
+          ]
         }
       ],
       "typeReferenceCount": 8,
@@ -11787,8 +11830,10 @@
             "unsupportedTypes": []
           },
           "unsupportedTypes": [],
-          "directDriverSupported": true,
-          "directDriverUnsupportedReasons": []
+          "directDriverSupported": false,
+          "directDriverUnsupportedReasons": [
+            "reference-bearing node topology requires the compatibility runner"
+          ]
         }
       ],
       "typeReferenceCount": 8,
@@ -11832,8 +11877,10 @@
             "unsupportedTypes": []
           },
           "unsupportedTypes": [],
-          "directDriverSupported": true,
-          "directDriverUnsupportedReasons": []
+          "directDriverSupported": false,
+          "directDriverUnsupportedReasons": [
+            "reference-bearing node topology requires the compatibility runner"
+          ]
         }
       ],
       "typeReferenceCount": 11,
@@ -11982,8 +12029,10 @@
             "unsupportedTypes": []
           },
           "unsupportedTypes": [],
-          "directDriverSupported": true,
-          "directDriverUnsupportedReasons": []
+          "directDriverSupported": false,
+          "directDriverUnsupportedReasons": [
+            "reference-bearing node topology requires the compatibility runner"
+          ]
         }
       ],
       "typeReferenceCount": 11,
@@ -12138,8 +12187,10 @@
             "unsupportedTypes": []
           },
           "unsupportedTypes": [],
-          "directDriverSupported": true,
-          "directDriverUnsupportedReasons": []
+          "directDriverSupported": false,
+          "directDriverUnsupportedReasons": [
+            "reference-bearing node topology requires the compatibility runner"
+          ]
         }
       ],
       "typeReferenceCount": 8,
@@ -12364,8 +12415,10 @@
             "unsupportedTypes": []
           },
           "unsupportedTypes": [],
-          "directDriverSupported": true,
-          "directDriverUnsupportedReasons": []
+          "directDriverSupported": false,
+          "directDriverUnsupportedReasons": [
+            "reference-bearing node topology requires the compatibility runner"
+          ]
         }
       ],
       "typeReferenceCount": 14,
@@ -13945,8 +13998,10 @@
             "unsupportedTypes": []
           },
           "unsupportedTypes": [],
-          "directDriverSupported": true,
-          "directDriverUnsupportedReasons": []
+          "directDriverSupported": false,
+          "directDriverUnsupportedReasons": [
+            "reference-bearing node topology requires the compatibility runner"
+          ]
         }
       ],
       "typeReferenceCount": 8,
