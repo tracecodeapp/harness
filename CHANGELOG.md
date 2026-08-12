@@ -6,7 +6,7 @@ This repo uses Git tags as release boundaries. Version notes below summarize wha
 
 ## [Unreleased]
 
-## [0.16.5] - 2026-08-11
+## [0.16.5] - 2026-08-12
 
 ### Added
 
@@ -22,6 +22,17 @@ This repo uses Git tags as release boundaries. Version notes below summarize wha
   tier never falls through to the other runner after a learner failure, and
   both tiers preserve the same output, tracing, limits, and isolation
   contracts.
+- Browser runtime prewarming now begins as promotable idle work. A foreground
+  compile promotes the same pending work instead of starting a second warmup.
+- C++ toolchain asset loading, integrity validation, PCH registration, and
+  compiler initialization now stay inside the compiler Worker. Python runtime
+  image fetching and Wasm compilation likewise run in a short-lived bootstrap
+  Worker before the immutable image is retained at provider scope.
+
+### Fixed
+
+- Prevented Python and C++ preflight from blocking the browser page thread
+  during Practice loading while preserving fast warmed first execution.
 
 ## [0.16.4] - 2026-08-11
 
