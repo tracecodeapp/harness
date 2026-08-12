@@ -140,6 +140,14 @@ async function main(): Promise<void> {
     await page.goto(origin);
     await page.evaluate('globalThis.__name = (fn) => fn');
     const result = await page.evaluate(`(async () => {
+      const NativeWorker = globalThis.Worker;
+      const workerUrls = [];
+      globalThis.Worker = class ObservedWorker extends NativeWorker {
+        constructor(url, options) {
+          workerUrls.push(String(url));
+          super(url, options);
+        }
+      };
       const { CppWorkerClient } = await import('/cpp-worker-client.js');
       const { createCppPreparedExecutionProvider } =
         await import('/cpp-prepared-provider.js');
@@ -184,6 +192,27 @@ async function main(): Promise<void> {
         createWorkerClient: () => new CppWorkerClient(workerOptions),
         warmCompilerOnInit: true,
       });
+      const measureMainThreadHeartbeat = async (run) => {
+        const sampleMs = 16;
+        let ticks = 0;
+        let maxGapMs = 0;
+        let lastTickAt = performance.now();
+        const timer = setInterval(() => {
+          const now = performance.now();
+          maxGapMs = Math.max(maxGapMs, now - lastTickAt);
+          lastTickAt = now;
+          ticks += 1;
+        }, sampleMs);
+        try {
+          const value = await run();
+          // Let a queued heartbeat observe any synchronous deserialization or
+          // result adaptation performed immediately before the Promise settled.
+          await new Promise((resolve) => setTimeout(resolve, 0));
+          return { value, ticks, maxGapMs: Math.round(maxGapMs) };
+        } finally {
+          clearInterval(timer);
+        }
+      };
       const warmStartedAt = performance.now();
       await provider.init();
       const warmMs = performance.now() - warmStartedAt;
@@ -216,10 +245,11 @@ async function main(): Promise<void> {
           elapsedMs: performance.now() - startedAt,
         };
       };
-      const first = await compileAndRun(
+      const firstHeartbeat = await measureMainThreadHeartbeat(() => compileAndRun(
         'class Solution { public: int add(int a, int b) { return a + b; } };',
         { a: 20, b: 22 }
-      );
+      ));
+      const first = firstHeartbeat.value;
       const edited = await compileAndRun(
         'class Solution { public: int add(int a, int b) { return a + b + 1; } };',
         { a: 20, b: 22 }
@@ -465,8 +495,13 @@ async function main(): Promise<void> {
         workspace.dispose();
       }
       return {
+        workerUrls,
         warmMs,
         first,
+        firstHeartbeat: {
+          ticks: firstHeartbeat.ticks,
+          maxGapMs: firstHeartbeat.maxGapMs,
+        },
         edited,
         mixedTraceResults,
         scriptTraceResults,
@@ -506,6 +541,7 @@ async function main(): Promise<void> {
         workspaceRun,
       };
     })()`) as {
+      workerUrls: string[];
       warmMs: number;
       first: {
         kind: string;
@@ -514,6 +550,7 @@ async function main(): Promise<void> {
         elapsedMs: number;
         timings?: Record<string, unknown>;
       };
+      firstHeartbeat: { ticks: number; maxGapMs: number };
       edited: {
         kind: string;
         output?: unknown;
@@ -575,6 +612,15 @@ async function main(): Promise<void> {
     assertCondition(
       result.first.kind === 'completed' && result.first.output === 42,
       `TraceCC first execution failed: ${JSON.stringify(result)}`
+    );
+    assertCondition(
+      result.workerUrls.some((url) => url.includes('traceccRole=compiler')) &&
+        result.workerUrls.some((url) => !url.includes('traceccRole=compiler')),
+      `TraceCC compilation and execution must use distinct browser workers: ${JSON.stringify(result.workerUrls)}`
+    );
+    assertCondition(
+      result.firstHeartbeat.ticks >= 2 && result.firstHeartbeat.maxGapMs <= 250,
+      `TraceCC cold compilation blocked the browser main thread: ${JSON.stringify(result.firstHeartbeat)}`
     );
     assertCondition(
       result.edited.kind === 'completed' && result.edited.output === 43,
