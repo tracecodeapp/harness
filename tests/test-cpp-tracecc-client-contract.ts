@@ -75,7 +75,6 @@ async function main(): Promise<void> {
     compilerBundleUrl: '/workers/vendor/cpp/retired/bundle.js',
     compilerFrameUrl: '/workers/cpp-compiler-frame.html',
     compilerWorkerUrl: '/workers/cpp-compiler-worker.js',
-    externalCompilerUrl: 'https://compiler.example.invalid/compile',
   });
   try {
     await legacyClient.init();
@@ -88,6 +87,20 @@ async function main(): Promise<void> {
     }
   } finally {
     legacyClient.terminate();
+  }
+
+  const externalWorker = new InitWorker();
+  const externalClient = createClient(externalWorker, {
+    externalCompilerUrl: 'https://compiler.example.invalid/compile',
+  });
+  try {
+    await externalClient.init();
+    const assets = initAssets(externalWorker);
+    if (assets.traceccCompilerEnabled !== true) {
+      throw new Error('A trusted host-configured compiler endpoint must enable C++ compile requests.');
+    }
+  } finally {
+    externalClient.terminate();
   }
 
   const traceCCWorker = new InitWorker();
@@ -106,7 +119,7 @@ async function main(): Promise<void> {
     traceCCClient.terminate();
   }
 
-  console.log('PASS: C++ browser worker accepts only the trusted TraceCC compiler authority');
+  console.log('PASS: C++ browser worker accepts only host-configured compiler authorities');
 }
 
 void main();
