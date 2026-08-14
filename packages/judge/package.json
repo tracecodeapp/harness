@@ -1,7 +1,7 @@
 {
   "name": "@tracecode/judge",
   "private": true,
-  "version": "0.16.5",
+  "version": "0.16.6",
   "description": "TraceKernel-native evaluation planning and execution for TraceCode runtimes.",
   "license": "AGPL-3.0-only",
   "homepage": "https://tracecode.app",

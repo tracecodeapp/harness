@@ -272,6 +272,10 @@ async function testManifestAssetsReachWorkerInitialization(): Promise<void> {
     engine: 'chromium',
     providers: ['python', 'typescript', 'java', 'csharp'],
     assets: { runtimeManifests: consumerManifests() },
+    java: {
+      externalCompilerUrl:
+        'https://compiler.consumer.example/java/compile',
+    },
   });
   await host.warmLanguage('python');
   await host.warmLanguage('typescript');
@@ -312,6 +316,10 @@ async function testManifestAssetsReachWorkerInitialization(): Promise<void> {
   assertCondition(
     javaPayload?.runtimeAssets === undefined,
     'The Java bridge worker must own its engine asset tree instead of receiving retired manifest roles'
+  );
+  assertCondition(
+    javaPayload?.externalCompilerEnabled === true,
+    'The Java provider must pass the public external compiler option to the bridge worker'
   );
 
   const csharpWorker = CapturingWorker.instances.find((entry) => {

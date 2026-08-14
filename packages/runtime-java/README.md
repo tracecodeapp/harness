@@ -42,6 +42,12 @@ try {
 program preparation, case execution, comparison policy, and the scoped
 TraceKernel lifecycle. Runtime clients and prepared providers remain private.
 
+Server-hosted browser authorities may set `java.externalCompilerUrl` to a
+same-origin trusted compilation endpoint. That endpoint replaces only the
+compiler: the host keeps the compiler authority warm, while each learner
+program continues to execute in a fresh disposable Java runner. Browser-only
+consumers should leave the option unset and use the built-in compiler.
+
 ## Runtime assets
 
 The root package supplies the Java bridge and helper assets, and pins the exact

@@ -23,6 +23,12 @@ export interface JavaBrowserRuntimeProviderOptions {
   workerIdleTimeoutMs?: number;
   compileCacheLimit?: number;
   /**
+   * Same-origin Java compilation endpoint used instead of the browser
+   * compiler. The trusted compiler may remain warm while each learner
+   * program still executes in a fresh disposable runner.
+   */
+  externalCompilerUrl?: string;
+  /**
    * Base URL of the immutable Java runtime asset tree used by the bridge
    * worker. The tree contains the engine module, WebAssembly binary, and
    * runtime profile.
@@ -86,6 +92,7 @@ export function createJavaBrowserRuntimeProvider(
         debug: context.debug,
         workerIdleTimeoutMs: options.workerIdleTimeoutMs,
         compileCacheLimit: options.compileCacheLimit,
+        externalCompilerUrl: options.externalCompilerUrl,
         assetPreflight: context.preflight('java', ['worker']),
       };
       const preparedProvider =
