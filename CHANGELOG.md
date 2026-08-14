@@ -6,6 +6,14 @@ This repo uses Git tags as release boundaries. Version notes below summarize wha
 
 ## [Unreleased]
 
+## [0.16.6] - 2026-08-14
+
+### Fixed
+
+- Exposed the Java external-compiler endpoint through the public browser Judge
+  options, preserving a warm trusted compiler alongside disposable learner
+  runners in server-hosted browser authorities.
+
 ## [0.16.5] - 2026-08-12
 
 ### Added

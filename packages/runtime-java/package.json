@@ -1,7 +1,7 @@
 {
   "name": "@tracecode/runtime-java",
   "private": true,
-  "version": "0.16.5",
+  "version": "0.16.6",
   "description": "Java runtime client and browser worker assets for TraceCode harness.",
   "license": "AGPL-3.0-only",
   "homepage": "https://tracecode.app",

@@ -211,6 +211,8 @@ export interface BrowserJudgePythonOptions {
 export interface BrowserJudgeJavaOptions {
   readonly workerIdleTimeoutMs?: number;
   readonly compileCacheLimit?: number;
+  /** Same-origin trusted Java compiler endpoint. */
+  readonly externalCompilerUrl?: string;
   /** Immutable TraceJVM asset tree used by the Java worker. */
   readonly runtimeAssetBaseUrl?: string;
 }
