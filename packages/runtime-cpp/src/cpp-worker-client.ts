@@ -690,7 +690,9 @@ export class CppWorkerClient {
             lldWasmUrl: this.options.linkerWasmUrl,
             sysrootUrl: this.options.sysrootUrl,
             runtimeHeaderUrl: this.options.runtimeHeaderUrl,
-            traceccCompilerEnabled: Boolean(this.options.trustedCompilerService),
+            traceccCompilerEnabled: Boolean(
+              this.options.trustedCompilerService || this.externalCompilerUrl
+            ),
             compilerFrameUrl: this.compilerFrameUrl,
             compilerWorkerUrl: this.options.compilerWorkerUrl,
             toolchainIntegrity: this.options.compilerIntegrity,

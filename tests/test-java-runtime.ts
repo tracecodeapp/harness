@@ -3312,6 +3312,12 @@ function createWorkerHarness(workerSource: string, augmentationSource: string) {
                 compilerDebugProfile: compilerProfile,
               });
             },
+            traceCompiledClassManifest: async () => {
+              throw new Error('Unexpected external trace compile in execute-only test.');
+            },
+            runCompiledClassManifestBatch: async () => {
+              throw new Error('Unexpected external batch compile in execute-only test.');
+            },
             compileAndRunProjectSources: async (
               sourceManifest: string,
               _sourceRoot: string,
@@ -4569,6 +4575,16 @@ async function main(): Promise<void> {
     );
     console.log('PASS: java execute-code uses dedicated non-trace worker path');
 
+    const externalInit = await harness.sendMessage<{
+      success: boolean;
+      externalCompilerEnabled?: boolean;
+    }>('init', {
+      externalCompilerEnabled: true,
+    });
+    assertCondition(
+      externalInit.success === true && externalInit.externalCompilerEnabled === true,
+      'Java worker should accept external compiler authority during trusted initialization'
+    );
     const externalRequestCountBeforeExecute = harness.externalCompileRequests.length;
     const externalRunCountBeforeExecute = harness.externalCompiledRunCalls.length;
     const externalCompileExecute = await harness.sendMessage<{
@@ -4579,13 +4595,12 @@ async function main(): Promise<void> {
     }>('execute-code', {
       code: `class Solution {
   int add(int a, int b) {
-    return a + b;
+    return a + b + 0;
   }
 }`,
       functionName: 'add',
       inputs: { a: 19, b: 23 },
       executionStyle: 'function',
-      externalCompilerEnabled: true,
     });
     assertCondition(externalCompileExecute.success === true, 'Java external-compile execute-code should succeed');
     assertCondition(externalCompileExecute.output === 42, `Java external-compile execute should run compiled artifact output: ${JSON.stringify(externalCompileExecute)}`);
@@ -4620,6 +4635,7 @@ async function main(): Promise<void> {
       `Java external compile timings should be preserved: ${JSON.stringify(externalCompileExecute.timings)}`
     );
     console.log('PASS: java worker executes external compiler class artifacts in-browser');
+    await harness.sendMessage('init', { externalCompilerEnabled: false });
 
     const uncheckedNoteExecute = await harness.sendMessage<{
       success: boolean;

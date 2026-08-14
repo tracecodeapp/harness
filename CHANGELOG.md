@@ -6,6 +6,19 @@ This repo uses Git tags as release boundaries. Version notes below summarize wha
 
 ## [Unreleased]
 
+## [0.16.7] - 2026-08-14
+
+### Fixed
+
+- Made Java's trusted init-time external-compiler authority control compile
+  requests instead of requiring an untrusted per-execution flag, and separated
+  browser/external artifact-cache identities.
+- Forwarded the public C++ external-compiler endpoint into the prepared browser
+  provider without warming the unused in-browser TraceCC compiler.
+- Failed Java external-compiler initialization closed when the runtime bridge
+  cannot install compiled class manifests, preventing silent browser-compiler
+  fallback.
+
 ## [0.16.6] - 2026-08-14
 
 ### Fixed

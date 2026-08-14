@@ -40,6 +40,8 @@ export interface CppBrowserRuntimeProviderOptions {
   workerIdleTimeoutMs?: number;
   programCacheLimit?: number;
   usePrecompiledHeader?: boolean;
+  /** Same-origin trusted C++ compiler endpoint. */
+  externalCompilerUrl?: string;
   compiler?: TraceCCCompilerOptions;
 }
 
@@ -159,19 +161,22 @@ export function createCppBrowserRuntimeProvider(
         workerIdleTimeoutMs: options.workerIdleTimeoutMs,
         programCacheLimit: options.programCacheLimit,
         usePrecompiledHeader: options.usePrecompiledHeader,
+        externalCompilerUrl: options.externalCompilerUrl,
       };
-      const compilerService = createTraceCCBrowserCompilerService(compiler, {
-        assets: context.assets,
-        ...(workerFactory ? { workerFactory } : {}),
-      });
+      const compilerService = options.externalCompilerUrl
+        ? undefined
+        : createTraceCCBrowserCompilerService(compiler, {
+            assets: context.assets,
+            ...(workerFactory ? { workerFactory } : {}),
+          });
       const createWorkerClient = () => new CppWorkerClient({
         ...workerOptions,
-        trustedCompilerService: compilerService,
+        ...(compilerService ? { trustedCompilerService: compilerService } : {}),
       });
       const preparedProvider = createCppPreparedExecutionProvider({
         createWorkerClient,
         warmCompilerOnInit: false,
-        prewarmCompiler: () => compilerService.prewarmAssets(),
+        prewarmCompiler: () => compilerService?.prewarmAssets() ?? Promise.resolve(),
         scheduleCompilerPrewarm: createPromotableBrowserBackgroundTask,
       });
       const preparedProviders = new Map<
@@ -179,7 +184,7 @@ export function createCppBrowserRuntimeProvider(
         RuntimePreparedExecutionProvider
       >([['cpp', preparedProvider]]);
       const terminateCompiler = () => {
-        compilerService.terminate();
+        compilerService?.terminate();
       };
       return {
         preparedProviders,

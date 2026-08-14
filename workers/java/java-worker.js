@@ -175,6 +175,7 @@ let activeJavaProjectIo = null;
 let javaCompileIsolationCounter = 0;
 let javaProjectBridgeRunCounter = 0;
 let javaCompileCacheLimit = DEFAULT_JAVA_COMPILE_CACHE_LIMIT;
+let externalJavaCompilerConfigured = false;
 const javaCompileCache = new Map();
 const preparedJavaRuntimePrograms = new Map();
 const activeProtocolTokens = new Map();
@@ -930,7 +931,10 @@ function resetIdleTimer() {
   }, idleTimeoutMs);
 }
 
-function applyWorkerOptions(payload) {
+function applyWorkerOptions(payload, allowCompilerAuthorityChange = false) {
+  if (allowCompilerAuthorityChange) {
+    externalJavaCompilerConfigured = payload?.externalCompilerEnabled === true;
+  }
   const nextIdleTimeoutMs = Number(payload?.idleTimeoutMs);
   if (Number.isFinite(nextIdleTimeoutMs) && nextIdleTimeoutMs > 0) {
     idleTimeoutMs = Math.max(1_000, Math.floor(nextIdleTimeoutMs));
@@ -4779,6 +4783,7 @@ function classicJavaCompileCacheKey(mode, stableCompileId) {
   return stableHash({
     version: JAVA_COMPILE_CACHE_VERSION,
     mode,
+    compilerAuthority: externalJavaCompilerEnabled() ? 'external' : 'browser',
     stableCompileId,
     helperJar: HELPER_JAR_PATH,
     compilerJar: JDK17_COMPILER_JAR_PATH,
@@ -5497,12 +5502,12 @@ function javaReportConsoleOutput(report, options = {}) {
   );
 }
 
-function externalJavaCompilerEnabled(payload) {
-  return payload?.externalCompilerEnabled === true;
+function externalJavaCompilerEnabled() {
+  return externalJavaCompilerConfigured;
 }
 
-function externalJavaCompilerAvailable(payload, compileLibraryClass, methodName) {
-  return externalJavaCompilerEnabled(payload) && typeof compileLibraryClass?.[methodName] === 'function';
+function externalJavaCompilerAvailable(compileLibraryClass, methodName) {
+  return externalJavaCompilerEnabled() && typeof compileLibraryClass?.[methodName] === 'function';
 }
 
 function normalizeExternalJavaCompileResult(value) {
@@ -7090,7 +7095,7 @@ async function runJavaTraceRequest(payload, requestId) {
         'true',
         String(resolveMaxStoredEvents(payload.options))
       );
-    } else if (externalJavaCompilerAvailable(payload, compileLibraryClass, 'traceCompiledClassManifest')) {
+    } else if (externalJavaCompilerAvailable(compileLibraryClass, 'traceCompiledClassManifest')) {
       const externalCompile = await compileJavaOutsideBrowser({
         schema: 'tracecode.java.external-compile.v1',
         mode: 'trace',
@@ -7277,7 +7282,7 @@ async function runJavaCodeRequest(payload, requestId) {
         '',
         'true'
       );
-    } else if (externalJavaCompilerAvailable(payload, compileLibraryClass, 'runCompiledClassManifest')) {
+    } else if (externalJavaCompilerAvailable(compileLibraryClass, 'runCompiledClassManifest')) {
       const externalCompile = await compileJavaOutsideBrowser({
         schema: 'tracecode.java.external-compile.v1',
         mode: 'execute',
@@ -7650,7 +7655,7 @@ async function runJavaCodeBatchRequest(payload, requestId) {
         '',
         'true'
       );
-    } else if (externalJavaCompilerAvailable(payload, compileLibraryClass, 'runCompiledClassManifestBatch')) {
+    } else if (externalJavaCompilerAvailable(compileLibraryClass, 'runCompiledClassManifestBatch')) {
       const externalCompile = await compileJavaOutsideBrowser({
         schema: 'tracecode.java.external-compile.v1',
         mode: 'execute-batch',
@@ -8475,9 +8480,24 @@ self.onmessage = (event) => {
   if (message.type === 'init') {
     queue = queue.then(async () => {
       try {
-        applyWorkerOptions(message.payload);
+        applyWorkerOptions(message.payload, true);
         const startedAt = performance.now();
         await ensureReady();
+        if (externalJavaCompilerEnabled()) {
+          const compileLibraryClass = await getCompileLibraryClass();
+          const missingMethods = [
+            'runCompiledClassManifest',
+            'traceCompiledClassManifest',
+            'runCompiledClassManifestBatch',
+          ].filter((methodName) =>
+            typeof compileLibraryClass?.[methodName] !== 'function'
+          );
+          if (missingMethods.length > 0) {
+            throw new Error(
+              `Java external compiler bridge is missing: ${missingMethods.join(', ')}`
+            );
+          }
+        }
         const totalMs = performance.now() - startedAt;
         postMessageResponse({
           id: message.id,
@@ -8485,6 +8505,7 @@ self.onmessage = (event) => {
           payload: {
             success: true,
             loadTimeMs: Math.round(totalMs),
+            externalCompilerEnabled: externalJavaCompilerEnabled(),
             timings: {
               totalMs,
               initMs: initLoadTimeMs ?? 0,
