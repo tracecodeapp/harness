@@ -3,11 +3,11 @@
   "harness": {
     "name": "@tracecode/harness",
     "version": "0.16.8",
-    "releaseId": "@tracecode/harness@0.16.8+sha256.b478d78e09c604747b8098b45ee2aa24bfcd3d3a93308988ea8d93bec9eb367b"
+    "releaseId": "@tracecode/harness@0.16.8+sha256.5518f812f3b25e113220bf558b891c516a03bf63dd2186fa24789f783944b224"
   },
   "treeSha256Algorithm": "sha256-path-nul-bytes-nul-v1",
-  "packageTreeSha256": "b478d78e09c604747b8098b45ee2aa24bfcd3d3a93308988ea8d93bec9eb367b",
-  "totalPackagedRuntimeBytes": 151721948,
+  "packageTreeSha256": "5518f812f3b25e113220bf558b891c516a03bf63dd2186fa24789f783944b224",
+  "totalPackagedRuntimeBytes": 151722487,
   "components": {
     "cpp": {
       "releaseId": "cpp+sha256.9340d58c47a65abceff7fa7a783b57d01550d697013c2b50782aec77e6b19816",
@@ -1872,9 +1872,9 @@
       ]
     },
     "python": {
-      "releaseId": "python+sha256.c0baf76e8edb401e0c0c789660282e4e92705c3960b16e97f5f808de958d67a1",
-      "treeSha256": "c0baf76e8edb401e0c0c789660282e4e92705c3960b16e97f5f808de958d67a1",
-      "totalBytes": 75905209,
+      "releaseId": "python+sha256.0e9c41fc8f467d0f2e0dd29f905e03a336deb3a8f54fa2762c16c63715fb474c",
+      "treeSha256": "0e9c41fc8f467d0f2e0dd29f905e03a336deb3a8f54fa2762c16c63715fb474c",
+      "totalBytes": 75905748,
       "files": [
         {
           "path": "workers/python/generated-python-harness-snippets.js",
@@ -1947,10 +1947,17 @@
           "mediaType": "application/octet-stream"
         },
         {
+          "path": "workers/python/pyodide-0.29.3/snapshots/provenance.json",
+          "size": 539,
+          "sha256": "b8e6939655b64ffc5fb50f0e867912e5534f9655b875dfbc96e23c4df4e641e4",
+          "integrity": "sha256-uOaTllW2T/xftQ8OhnkS5VNPllW4dd+8luI8TfTmQeQ=",
+          "mediaType": "application/json"
+        },
+        {
           "path": "workers/python/pyodide-0.29.3/snapshots/webkit.bin",
           "size": 20971936,
-          "sha256": "749763bffffadac4c0a9889534ae9b16f32bbd274a50b965cc868b882e9a3d5b",
-          "integrity": "sha256-dJdjv//62sTAqYiVNK6bFvMrvSdKULllzIaLiC6aPVs=",
+          "sha256": "0a061909c2f6e2a3c8c1e46a2e8a071ec5d8bfb4606c47c99b9532758368a917",
+          "integrity": "sha256-CgYZCcL24qPIweRqLooHHsXYv7RgbEfJm5UydYNoqRc=",
           "mediaType": "application/octet-stream"
         },
         {

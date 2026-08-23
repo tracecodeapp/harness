@@ -4,12 +4,12 @@ Harness restores each disposable browser Python runner from a clean Pyodide
 memory snapshot. The snapshot is part of the pinned runtime tree and must be
 built in the browser engine that consumes it.
 
-Build and validate an image with Playwright:
+Validate the existing Chromium and Firefox images with Playwright. Validation
+is the default and never replaces an image:
 
 ```bash
 pnpm build:python-runtime-snapshot -- --engine=chromium
 pnpm build:python-runtime-snapshot -- --engine=firefox
-pnpm build:python-runtime-snapshot -- --engine=webkit
 ```
 
 For the release WebKit image, use Mobile Safari in a booted iOS simulator. The
@@ -22,12 +22,15 @@ xcrun simctl boot "iPhone 17 Pro"
 pnpm build:python-runtime-snapshot -- \
   --engine=webkit \
   --runner=ios-simulator \
-  --device=booted
+  --device=booted \
+  --replace
 ```
 
-Use `--check` to restore the existing image without replacing it. After any
-image changes, regenerate the runtime asset identities and run the browser
-batch in the matching engine:
+Use `--check` when an explicit validation flag is clearer. The release WebKit
+filename can only be replaced by the iOS simulator runner, and every
+replacement records its runner, user agent, hash seed, size, and SHA-256 in
+`snapshots/provenance.json`. After any image changes, regenerate the runtime
+asset identities and run the browser batch in the matching engine:
 
 ```bash
 pnpm generate:runtime-assets-lock
@@ -36,7 +39,9 @@ TRACECODE_ALGORITHM_BATCH_LANGUAGES=python \
 node --import tsx tests/test-browser-algorithm-batch.ts
 ```
 
-The builder always uses `PYTHONHASHSEED=0`, imports the release bootstrap
-modules before snapshotting, validates a clean restore without downloading the
-standard library again, stages the candidate outside the published tree, and
-replaces the target atomically only after the restore succeeds.
+The builder uses the same `PYTHONHASHSEED=0` contract as the runtime asset
+resolver and asserts the restored hash probe. Before snapshotting it imports
+`sys`, `json`, `math`, `os`, `ast`, `collections`, and `typing`. It then
+validates a clean restore without downloading the standard library again,
+stages the candidate outside the published tree, and replaces the target only
+after the restore succeeds.

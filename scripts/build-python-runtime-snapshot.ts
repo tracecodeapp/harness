@@ -18,6 +18,10 @@ import { tmpdir } from 'node:os';
 import { dirname, extname, join, normalize, resolve, sep } from 'node:path';
 import { promisify } from 'node:util';
 import { chromium, firefox, webkit, type BrowserType } from 'playwright';
+import {
+  PYTHON_RUNTIME_IMAGE_HASH_PROBE,
+  PYTHON_RUNTIME_IMAGE_HASH_SEED,
+} from '../packages/runtime-python/src/python-runtime-image-contract.js';
 
 type Engine = 'chromium' | 'firefox' | 'webkit';
 type Runner = 'playwright' | 'ios-simulator';
@@ -27,6 +31,8 @@ interface Options {
   readonly device: string;
   readonly engine: Engine;
   readonly outputPath: string;
+  readonly provenancePath: string;
+  readonly replace: boolean;
   readonly runner: Runner;
   readonly timeoutMs: number;
 }
@@ -42,6 +48,20 @@ interface BrowserResult {
   readonly userAgent?: string;
 }
 
+interface SnapshotProvenance {
+  readonly schema: 'tracecode.python-runtime-snapshot-provenance.v1';
+  readonly pyodideVersion: string;
+  readonly snapshots: Partial<Record<Engine, {
+    readonly builtAt: string;
+    readonly bytes: number;
+    readonly engine: Engine;
+    readonly pythonHashSeed: string;
+    readonly runner: Runner;
+    readonly sha256: string;
+    readonly userAgent: string;
+  }>>;
+}
+
 const ROOT = resolve(process.cwd());
 const PYODIDE_VERSION = '0.29.3';
 const RUNTIME_ROOT = join(
@@ -51,6 +71,7 @@ const RUNTIME_ROOT = join(
   `pyodide-${PYODIDE_VERSION}`
 );
 const SNAPSHOT_ROOT = join(RUNTIME_ROOT, 'snapshots');
+const PROVENANCE_PATH = join(SNAPSHOT_ROOT, 'provenance.json');
 const MAX_SNAPSHOT_BYTES = 64 * 1024 * 1024;
 const MIN_SNAPSHOT_BYTES = 16 * 1024 * 1024;
 const execFileAsync = promisify(execFile);
@@ -63,7 +84,7 @@ async function buildSnapshot() {
   pyodide = await self.loadPyodide({
     indexURL: self.location.origin + '/runtime/',
     _makeSnapshot: true,
-    env: { PYTHONHASHSEED: '0' },
+    env: { PYTHONHASHSEED: ${JSON.stringify(PYTHON_RUNTIME_IMAGE_HASH_SEED)} },
   });
   await pyodide.runPythonAsync(
     'import sys, json, math, os, ast, collections, typing'
@@ -90,7 +111,7 @@ async function restoreSnapshot() {
     indexURL: self.location.origin + '/runtime/',
     _loadSnapshot: snapshot,
     stdLibURL: '/empty-stdlib.zip',
-    env: { PYTHONHASHSEED: '0' },
+    env: { PYTHONHASHSEED: ${JSON.stringify(PYTHON_RUNTIME_IMAGE_HASH_SEED)} },
   });
   const value = await pyodide.runPythonAsync([
     'import ast, collections, json, math, os, typing',
@@ -99,7 +120,7 @@ async function restoreSnapshot() {
     'exec(compile(source, "solution.py", "exec"), namespace, namespace)',
     'json.dumps({',
     '    "value": namespace["solve"](41),',
-    '    "hash": hash("tracecode"),',
+    '    "hash": hash(${JSON.stringify(PYTHON_RUNTIME_IMAGE_HASH_PROBE.source)}),',
     '    "cwd": os.getcwd(),',
     '}, sort_keys=True)',
   ].join('\n'));
@@ -134,14 +155,17 @@ const status = document.querySelector('#status');
 const parameters = new URL(location.href).searchParams;
 const check = parameters.get('check') === '1';
 const nonce = parameters.get('nonce') || String(Date.now());
+const totalTimeoutMs = Number(parameters.get('timeoutMs'));
+const phaseCount = check ? 1 : 2;
+const phaseTimeoutMs = Math.max(1000, Math.floor((totalTimeoutMs - 1000) / phaseCount));
 
 function runWorker(command) {
   return new Promise((resolve, reject) => {
     const worker = new Worker('/snapshot-worker.js?phase=' + command + '&nonce=' + nonce);
     const timeout = setTimeout(() => {
       worker.terminate();
-      reject(new Error(command + ' timed out after 180000ms.'));
-    }, 180000);
+      reject(new Error(command + ' timed out after ' + phaseTimeoutMs + 'ms.'));
+    }, phaseTimeoutMs);
     worker.onmessage = (event) => {
       clearTimeout(timeout);
       worker.terminate();
@@ -190,11 +214,17 @@ function argumentValue(name: string): string | undefined {
 function parseOptions(): Options {
   const engine = (argumentValue('engine') ?? 'webkit') as Engine;
   const runner = (argumentValue('runner') ?? 'playwright') as Runner;
-  const outputPath = resolve(
-    argumentValue('output') ?? join(SNAPSHOT_ROOT, `${engine}.bin`)
-  );
+  const outputPath = join(SNAPSHOT_ROOT, `${engine}.bin`);
   const timeoutMs = Number(argumentValue('timeout-ms') ?? 240_000);
   const device = argumentValue('device') ?? 'booted';
+  const checkRequested = process.argv.includes('--check');
+  const replace = process.argv.includes('--replace');
+  if (argumentValue('output') !== undefined) {
+    throw new Error('--output is not supported; each engine is bound to its release filename.');
+  }
+  if (checkRequested && replace) {
+    throw new Error('Choose either --check or --replace, not both.');
+  }
   if (!['chromium', 'firefox', 'webkit'].includes(engine)) {
     throw new Error(`Unsupported --engine=${JSON.stringify(engine)}.`);
   }
@@ -204,20 +234,21 @@ function parseOptions(): Options {
   if (runner === 'ios-simulator' && engine !== 'webkit') {
     throw new Error('The iOS simulator runner can only build the WebKit image.');
   }
+  if (replace && engine === 'webkit' && runner !== 'ios-simulator') {
+    throw new Error(
+      'Replacing the WebKit release image requires --runner=ios-simulator.'
+    );
+  }
   if (!Number.isSafeInteger(timeoutMs) || timeoutMs < 1_000) {
     throw new Error('--timeout-ms must be an integer of at least 1000.');
   }
-  if (
-    outputPath !== SNAPSHOT_ROOT &&
-    !outputPath.startsWith(SNAPSHOT_ROOT + sep)
-  ) {
-    throw new Error(`Snapshot output must stay inside ${SNAPSHOT_ROOT}.`);
-  }
   return {
-    check: process.argv.includes('--check'),
+    check: !replace,
     device,
     engine,
     outputPath,
+    provenancePath: PROVENANCE_PATH,
+    replace,
     runner,
     timeoutMs,
   };
@@ -237,6 +268,26 @@ function contentType(pathname: string): string {
       return 'application/zip';
     default:
       return 'application/octet-stream';
+  }
+}
+
+async function readSnapshotProvenance(
+  path: string
+): Promise<SnapshotProvenance | undefined> {
+  try {
+    const provenance = JSON.parse(
+      await readFile(path, 'utf8')
+    ) as SnapshotProvenance;
+    if (
+      provenance.schema !== 'tracecode.python-runtime-snapshot-provenance.v1' ||
+      provenance.pyodideVersion !== PYODIDE_VERSION
+    ) {
+      throw new Error('Existing Python snapshot provenance is incompatible.');
+    }
+    return provenance;
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return undefined;
+    throw error;
   }
 }
 
@@ -314,6 +365,7 @@ async function main(): Promise<void> {
   );
   const candidatePath = join(temporaryRoot, 'candidate.bin');
   const pendingOutputPath = `${options.outputPath}.${process.pid}.tmp`;
+  const pendingProvenancePath = `${options.provenancePath}.${process.pid}.tmp`;
   if (options.check) await copyFile(options.outputPath, candidatePath);
 
   let resolveCompletion!: (value: BrowserResult) => void;
@@ -322,6 +374,7 @@ async function main(): Promise<void> {
     resolveCompletion = resolvePromise;
     rejectCompletion = rejectPromise;
   });
+  void completion.catch(() => undefined);
 
   const server = createServer(async (request, response) => {
     try {
@@ -418,6 +471,7 @@ async function main(): Promise<void> {
     }
     const pageUrl =
       `http://127.0.0.1:${address.port}/?nonce=${randomUUID()}` +
+      `&timeoutMs=${options.timeoutMs}` +
       (options.check ? '&check=1' : '');
 
     if (options.runner === 'ios-simulator') {
@@ -448,11 +502,13 @@ async function main(): Promise<void> {
     const restoredValue = JSON.parse(result.restore.value ?? 'null') as {
       value?: unknown;
       cwd?: unknown;
+      hash?: unknown;
     } | null;
     if (
       restoredValue?.value !== 42 ||
       typeof restoredValue.cwd !== 'string' ||
-      restoredValue.cwd.length === 0
+      restoredValue.cwd.length === 0 ||
+      restoredValue.hash !== PYTHON_RUNTIME_IMAGE_HASH_PROBE.value
     ) {
       throw new Error(
         `Snapshot restore sanity check failed: ${JSON.stringify(restoredValue)}.`
@@ -464,14 +520,63 @@ async function main(): Promise<void> {
     const previousSha256 = previous
       ? createHash('sha256').update(previous).digest('hex')
       : undefined;
-    if (!options.check) {
+    const existingProvenance = await readSnapshotProvenance(
+      options.provenancePath
+    );
+    const existingRecord = existingProvenance?.snapshots[options.engine];
+    if (
+      options.check &&
+      (existingRecord !== undefined || options.engine === 'webkit') &&
+      (
+        existingRecord?.bytes !== candidate.byteLength ||
+        existingRecord.engine !== options.engine ||
+        existingRecord.pythonHashSeed !== PYTHON_RUNTIME_IMAGE_HASH_SEED ||
+        existingRecord.sha256 !== sha256 ||
+        (options.engine === 'webkit' && existingRecord.runner !== 'ios-simulator')
+      )
+    ) {
+      throw new Error(
+        `Snapshot provenance did not match ${options.engine}.bin.`
+      );
+    }
+    if (options.replace) {
+      if (typeof result.userAgent !== 'string' || result.userAgent.length === 0) {
+        throw new Error('Snapshot replacement requires browser provenance.');
+      }
+      const provenance = existingProvenance ?? {
+          schema: 'tracecode.python-runtime-snapshot-provenance.v1',
+          pyodideVersion: PYODIDE_VERSION,
+          snapshots: {},
+        } satisfies SnapshotProvenance;
+      const updatedProvenance: SnapshotProvenance = {
+        ...provenance,
+        snapshots: {
+          ...provenance.snapshots,
+          [options.engine]: {
+            builtAt: new Date().toISOString(),
+            bytes: candidate.byteLength,
+            engine: options.engine,
+            pythonHashSeed: PYTHON_RUNTIME_IMAGE_HASH_SEED,
+            runner: options.runner,
+            sha256,
+            userAgent: result.userAgent,
+          },
+        },
+      };
       await mkdir(dirname(options.outputPath), { recursive: true });
       await copyFile(candidatePath, pendingOutputPath);
+      await writeFile(
+        pendingProvenancePath,
+        `${JSON.stringify(updatedProvenance, null, 2)}\n`,
+        'utf8'
+      );
       await rename(pendingOutputPath, options.outputPath);
+      await rename(pendingProvenancePath, options.provenancePath);
     }
     console.log(JSON.stringify({
       schema: 'tracecode.python-runtime-snapshot-build.v1',
       checked: options.check,
+      replaced: options.replace,
       engine: options.engine,
       runner: options.runner,
       device: options.runner === 'ios-simulator' ? options.device : undefined,
@@ -491,6 +596,7 @@ async function main(): Promise<void> {
       server.closeAllConnections?.();
     });
     await rm(pendingOutputPath, { force: true });
+    await rm(pendingProvenancePath, { force: true });
     await rm(temporaryRoot, { recursive: true, force: true });
   }
 }

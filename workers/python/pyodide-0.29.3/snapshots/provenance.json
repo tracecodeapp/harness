@@ -1,0 +1,15 @@
+{
+  "schema": "tracecode.python-runtime-snapshot-provenance.v1",
+  "pyodideVersion": "0.29.3",
+  "snapshots": {
+    "webkit": {
+      "builtAt": "2026-08-23T17:27:32.236Z",
+      "bytes": 20971936,
+      "engine": "webkit",
+      "pythonHashSeed": "0",
+      "runner": "ios-simulator",
+      "sha256": "0a061909c2f6e2a3c8c1e46a2e8a071ec5d8bfb4606c47c99b9532758368a917",
+      "userAgent": "Mozilla/5.0 (iPhone; CPU iPhone OS 18_7 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/26.5 Mobile/15E148 Safari/604.1"
+    }
+  }
+}
