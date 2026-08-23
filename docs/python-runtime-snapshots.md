@@ -33,6 +33,7 @@ replacement records its runner, user agent, hash seed, size, and SHA-256 in
 `snapshots/provenance.json`. An exclusive release lock prevents overlapping
 replacement runs. On macOS, `lockf` holds the advisory lock for the full child
 process and the operating system releases it if that process exits or crashes.
+The worker rejects direct replacement invocations outside that locked CLI.
 The builder stages the image and provenance together, verifies both after
 replacement, and rolls both files back if the release write fails. A recovery
 journal preserves the previous pair until verification finishes. The builder

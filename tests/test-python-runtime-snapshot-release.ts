@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import type { ChildProcess } from 'node:child_process';
+import { spawnSync, type ChildProcess } from 'node:child_process';
 import { once } from 'node:events';
 import { access, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -12,6 +12,8 @@ import {
   snapshotReleasePaths,
 } from '../scripts/python-runtime-snapshot-release.js';
 import {
+  assertSnapshotReleaseWorkerLock,
+  createSnapshotReleaseLockTokenArgument,
   runSnapshotReleaseLockCommand,
   SnapshotReleaseLockUnavailableError,
   spawnSnapshotReleaseLockCommand,
@@ -207,6 +209,36 @@ test(
   }
 );
 
+test('replacement worker requires a lock-owned invocation token', () => {
+  assert.throws(
+    () => assertSnapshotReleaseWorkerLock(['--replace'], true),
+    /must run through build-python-runtime-snapshot\.ts/u
+  );
+  assert.doesNotThrow(() =>
+    assertSnapshotReleaseWorkerLock(
+      [createSnapshotReleaseLockTokenArgument(), '--replace'],
+      true
+    )
+  );
+  const direct = spawnSync(
+    process.execPath,
+    [
+      '--import',
+      'tsx',
+      join(process.cwd(), 'scripts/build-python-runtime-snapshot-worker.ts'),
+      '--replace',
+      '--engine=webkit',
+      '--runner=ios-simulator',
+    ],
+    { encoding: 'utf8' }
+  );
+  assert.notEqual(direct.status, 0);
+  assert.match(
+    direct.stderr,
+    /must run through build-python-runtime-snapshot\.ts/u
+  );
+});
+
 test('replace entry point cannot run its worker outside the release lock', async () => {
   const root = await mkdtemp(join(tmpdir(), 'tracecode-snapshot-entry-lock-'));
   const lockPath = join(root, '.python-runtime-snapshot-release.lock');
@@ -216,7 +248,7 @@ test('replace entry point cannot run its worker outside the release lock', async
     workerPath,
     [
       "import { writeFile } from 'node:fs/promises';",
-      "await writeFile(process.argv[3], 'ran');",
+      "await writeFile(process.argv.at(-1), 'ran');",
     ].join('\n')
   );
   const holder = spawnSnapshotReleaseLockCommand({

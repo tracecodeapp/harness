@@ -24,6 +24,7 @@ import {
   recoverSnapshotRelease,
   snapshotReleasePaths,
 } from './python-runtime-snapshot-release.js';
+import { assertSnapshotReleaseWorkerLock } from './python-runtime-snapshot-lock.js';
 
 type Engine = 'chromium' | 'firefox' | 'webkit';
 type Runner = 'playwright' | 'ios-simulator';
@@ -691,6 +692,7 @@ async function runSnapshot(options: Options): Promise<void> {
 
 async function main(): Promise<void> {
   const options = parseOptions();
+  assertSnapshotReleaseWorkerLock(process.argv.slice(2), options.replace);
   await stat(join(RUNTIME_ROOT, 'pyodide.js'));
   await stat(join(RUNTIME_ROOT, 'pyodide.asm.wasm'));
   await stat(options.outputPath);

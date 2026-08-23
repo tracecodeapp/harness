@@ -3,7 +3,10 @@
 import { spawn, type SpawnOptions } from 'node:child_process';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { dirname, join, resolve } from 'node:path';
-import { runSnapshotReleaseLockCommand } from './python-runtime-snapshot-lock.js';
+import {
+  createSnapshotReleaseLockTokenArgument,
+  runSnapshotReleaseLockCommand,
+} from './python-runtime-snapshot-lock.js';
 
 interface SnapshotBuilderInvocation {
   readonly args?: readonly string[];
@@ -57,6 +60,7 @@ export async function runPythonRuntimeSnapshotBuilder(
       '--import',
       'tsx',
       workerPath,
+      createSnapshotReleaseLockTokenArgument(),
       ...args,
     ],
     command: process.execPath,

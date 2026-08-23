@@ -3,6 +3,10 @@ import {
   type ChildProcess,
   type SpawnOptions,
 } from 'node:child_process';
+import { randomUUID } from 'node:crypto';
+
+const RELEASE_LOCK_TOKEN_PREFIX =
+  '--python-runtime-snapshot-release-lock-token=';
 
 export class SnapshotReleaseLockUnavailableError extends Error {
   constructor(readonly lockPath: string) {
@@ -18,6 +22,30 @@ export interface SnapshotReleaseLockCommand {
   readonly lockPath: string;
   readonly platform?: NodeJS.Platform;
   readonly stdio?: SpawnOptions['stdio'];
+}
+
+export function createSnapshotReleaseLockTokenArgument(): string {
+  return `${RELEASE_LOCK_TOKEN_PREFIX}${randomUUID()}`;
+}
+
+export function assertSnapshotReleaseWorkerLock(
+  args: readonly string[],
+  replace: boolean
+): void {
+  if (!replace) return;
+  const tokens = args.filter((argument) =>
+    argument.startsWith(RELEASE_LOCK_TOKEN_PREFIX)
+  );
+  if (
+    tokens.length !== 1 ||
+    !/^--python-runtime-snapshot-release-lock-token=[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/u.test(
+      tokens[0] ?? ''
+    )
+  ) {
+    throw new Error(
+      'Python runtime snapshot replacement must run through build-python-runtime-snapshot.ts.'
+    );
+  }
 }
 
 function lockInvocation(options: SnapshotReleaseLockCommand): {
@@ -45,6 +73,7 @@ function lockInvocation(options: SnapshotReleaseLockCommand): {
         '-E',
         '75',
         '-n',
+        '-o',
         options.lockPath,
         options.command,
         ...options.args,
