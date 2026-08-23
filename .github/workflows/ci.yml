@@ -43,6 +43,8 @@ jobs:
         run: pnpm typecheck
       - name: Check runtime asset identities and snapshot provenance
         run: pnpm test:runtime-assets-lock
+      - name: Test Python runtime snapshot release recovery
+        run: node --import tsx --test tests/test-python-runtime-snapshot-release.ts
       - name: Build
         run: pnpm build
       - name: Test process and engine-lease regressions

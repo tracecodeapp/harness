@@ -14,7 +14,7 @@ export const PYTHON_RUNTIME_SNAPSHOTS = Object.freeze({
     "size": 20971936
   },
   "webkit": {
-    "integrity": "sha256-CgYZCcL24qPIweRqLooHHsXYv7RgbEfJm5UydYNoqRc=",
+    "integrity": "sha256-X1nEztIYVKa7kt10+5WkTRZeNxFlo34Zs//cIpveIgc=",
     "size": 20971936
   }
 } as const);

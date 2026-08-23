@@ -31,12 +31,14 @@ Use `--check` when an explicit validation flag is clearer. The release WebKit
 filename can only be replaced by the iOS simulator runner, and every
 replacement records its runner, user agent, hash seed, size, and SHA-256 in
 `snapshots/provenance.json`. An exclusive release lock prevents overlapping
-replacement runs. The builder removes its lock on normal exit and reclaims a
-lock whose recorded process no longer exists. It stages the image and
-provenance together, verifies both after replacement, and rolls both files back
-if the release write fails. A recovery journal preserves the
-previous pair until verification finishes. If the process or machine stops
-between writes, the next replacement restores that pair before rebuilding.
+replacement runs. On macOS, `lockf` holds the advisory lock for the full child
+process and the operating system releases it if that process exits or crashes.
+The builder stages the image and provenance together, verifies both after
+replacement, and rolls both files back if the release write fails. A recovery
+journal preserves the previous pair until verification finishes. The builder
+flushes each backup, journal, target file, and directory entry before moving to
+the next release step. If the process or machine stops between writes, the next
+replacement restores the previous pair before rebuilding.
 After any image changes, regenerate the runtime asset identities and run the
 browser batch in the matching engine:
 

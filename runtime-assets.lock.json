@@ -3,10 +3,10 @@
   "harness": {
     "name": "@tracecode/harness",
     "version": "0.16.8",
-    "releaseId": "@tracecode/harness@0.16.8+sha256.ee95964162ad64bdcf359bb7ca4a751b7fa3f7533fe43986843438a14ef49ad7"
+    "releaseId": "@tracecode/harness@0.16.8+sha256.be3fadf5cfad3876034dea92d63582389e489360c820386d9d593533ab9ad622"
   },
   "treeSha256Algorithm": "sha256-path-nul-bytes-nul-v1",
-  "packageTreeSha256": "ee95964162ad64bdcf359bb7ca4a751b7fa3f7533fe43986843438a14ef49ad7",
+  "packageTreeSha256": "be3fadf5cfad3876034dea92d63582389e489360c820386d9d593533ab9ad622",
   "totalPackagedRuntimeBytes": 151723159,
   "components": {
     "cpp": {
@@ -1872,8 +1872,8 @@
       ]
     },
     "python": {
-      "releaseId": "python+sha256.c4cee184ac72a7c4862fedbae7615f959386f4bb2d25914278974bd6b42e2493",
-      "treeSha256": "c4cee184ac72a7c4862fedbae7615f959386f4bb2d25914278974bd6b42e2493",
+      "releaseId": "python+sha256.328174da2f8bc4de31176c735e064bb334391a2f906caad86b8d56f386ece09b",
+      "treeSha256": "328174da2f8bc4de31176c735e064bb334391a2f906caad86b8d56f386ece09b",
       "totalBytes": 75906420,
       "files": [
         {
@@ -1949,15 +1949,15 @@
         {
           "path": "workers/python/pyodide-0.29.3/snapshots/provenance.json",
           "size": 1211,
-          "sha256": "c177ed21303d1f1a01a394528207d6fd105acd029e7a52dc1b6eb69e808e3f7c",
-          "integrity": "sha256-wXftITA9HxoBo5RSggfW/RBazQKeelLcG262noCOP3w=",
+          "sha256": "279f8756280cfb00fba7db7eb16ab1c89b32c5bdb8db96822ea9fc69f978d9db",
+          "integrity": "sha256-J5+HVigM+wD7p9t+sWqxyJsyxb2425aCLqn8afl42ds=",
           "mediaType": "application/json"
         },
         {
           "path": "workers/python/pyodide-0.29.3/snapshots/webkit.bin",
           "size": 20971936,
-          "sha256": "0a061909c2f6e2a3c8c1e46a2e8a071ec5d8bfb4606c47c99b9532758368a917",
-          "integrity": "sha256-CgYZCcL24qPIweRqLooHHsXYv7RgbEfJm5UydYNoqRc=",
+          "sha256": "5f59c4ced21854a6bb92dd74fb95a44d165e371165a37e19b3ffdc229bde2207",
+          "integrity": "sha256-X1nEztIYVKa7kt10+5WkTRZeNxFlo34Zs//cIpveIgc=",
           "mediaType": "application/octet-stream"
         },
         {
