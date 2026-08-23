@@ -2,12 +2,12 @@
   "schema": "tracecode.runtime-assets-lock.v1",
   "harness": {
     "name": "@tracecode/harness",
-    "version": "0.16.7",
-    "releaseId": "@tracecode/harness@0.16.7+sha256.cebbba0bbcd7b57102dcc49d825e507cd3153271308303a659551ad0b596ccc7"
+    "version": "0.16.8",
+    "releaseId": "@tracecode/harness@0.16.8+sha256.b478d78e09c604747b8098b45ee2aa24bfcd3d3a93308988ea8d93bec9eb367b"
   },
   "treeSha256Algorithm": "sha256-path-nul-bytes-nul-v1",
-  "packageTreeSha256": "cebbba0bbcd7b57102dcc49d825e507cd3153271308303a659551ad0b596ccc7",
-  "totalPackagedRuntimeBytes": 151721849,
+  "packageTreeSha256": "b478d78e09c604747b8098b45ee2aa24bfcd3d3a93308988ea8d93bec9eb367b",
+  "totalPackagedRuntimeBytes": 151721948,
   "components": {
     "cpp": {
       "releaseId": "cpp+sha256.9340d58c47a65abceff7fa7a783b57d01550d697013c2b50782aec77e6b19816",
@@ -1844,15 +1844,15 @@
       ]
     },
     "javascript": {
-      "releaseId": "javascript+sha256.fe615a05e50b54db86c546edefde77975ad4c52a5e17c91c31bc81cd2707e252",
-      "treeSha256": "fe615a05e50b54db86c546edefde77975ad4c52a5e17c91c31bc81cd2707e252",
-      "totalBytes": 1204569,
+      "releaseId": "javascript+sha256.bbf6072a16c06b76610193c6c51f8235ab0ed9b09ce5db4d8569108f2c11b4a3",
+      "treeSha256": "bbf6072a16c06b76610193c6c51f8235ab0ed9b09ce5db4d8569108f2c11b4a3",
+      "totalBytes": 1204668,
       "files": [
         {
           "path": "workers/javascript/javascript-project-worker.js",
-          "size": 562771,
-          "sha256": "e0fde62145bbd56ff925b53570222fe5799bf51e4d21631e2dfb881537d5250c",
-          "integrity": "sha256-4P3mIUW71W/5JbU1cCIv5Xmb9R5NIWMeLfuIFTfVJQw=",
+          "size": 562870,
+          "sha256": "85581feb6e5728ca33b6d106b7df699b604c79c54825ed54b0d81f67a255e758",
+          "integrity": "sha256-hVgf625XKMozttEGt99pm2BMecVIJe1UsNgfZ6JV51g=",
           "mediaType": "text/javascript"
         },
         {
@@ -1872,8 +1872,8 @@
       ]
     },
     "python": {
-      "releaseId": "python+sha256.03ea58bb2847423becc2062888653e6a3175a2903915c95fb0b7b82444a9678f",
-      "treeSha256": "03ea58bb2847423becc2062888653e6a3175a2903915c95fb0b7b82444a9678f",
+      "releaseId": "python+sha256.c0baf76e8edb401e0c0c789660282e4e92705c3960b16e97f5f808de958d67a1",
+      "treeSha256": "c0baf76e8edb401e0c0c789660282e4e92705c3960b16e97f5f808de958d67a1",
       "totalBytes": 75905209,
       "files": [
         {
@@ -1949,8 +1949,8 @@
         {
           "path": "workers/python/pyodide-0.29.3/snapshots/webkit.bin",
           "size": 20971936,
-          "sha256": "ebf430bc0a7a2408af4c736103fba70711058e0f9e60a890d50ed2e1d7076efb",
-          "integrity": "sha256-6/QwvAp6JAivTHNhA/unBxEFjg+eYKiQ1Q7S4dcHbvs=",
+          "sha256": "749763bffffadac4c0a9889534ae9b16f32bbd274a50b965cc868b882e9a3d5b",
+          "integrity": "sha256-dJdjv//62sTAqYiVNK6bFvMrvSdKULllzIaLiC6aPVs=",
           "mediaType": "application/octet-stream"
         },
         {

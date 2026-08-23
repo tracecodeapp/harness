@@ -1,6 +1,6 @@
 {
   "name": "@tracecode/harness",
-  "version": "0.16.7",
+  "version": "0.16.8",
   "license": "AGPL-3.0-only",
   "homepage": "https://tracecode.app",
   "repository": {
@@ -79,6 +79,7 @@
     "bench:traceclr-tiers:matrix": "pnpm build:traceclr-wire-probe && pnpm materialize:csharp-role-assets && for engine in chromium firefox webkit; do TRACECODE_TRACECLR_BROWSER_ENGINE=$engine node --import tsx scripts/benchmark-traceclr-runtime-tiers.ts || exit; done",
     "generate:runtime-open-source-info": "pnpm exec tsx --tsconfig tsconfig.base.json scripts/generate-runtime-open-source-info.ts",
     "generate:python-harness": "pnpm exec tsx --tsconfig tsconfig.base.json scripts/generate-python-harness-artifacts.ts",
+    "build:python-runtime-snapshot": "node --import tsx scripts/build-python-runtime-snapshot.ts",
     "generate:runtime-assets-lock": "node --import tsx scripts/generate-runtime-assets-lock.mjs",
     "generate:typescript-project-libs": "pnpm exec tsx --tsconfig tsconfig.base.json scripts/generate-typescript-project-libs.ts",
     "generate:javascript-project-worker": "pnpm exec esbuild packages/runtime-javascript/src/project-browser-worker.ts --bundle --format=esm --platform=browser --target=es2022 --outfile=workers/javascript/javascript-project-worker.js && node scripts/normalize-generated-worker-paths.mjs workers/javascript/javascript-project-worker.js",
