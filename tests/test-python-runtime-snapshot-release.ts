@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { spawn, spawnSync } from 'node:child_process';
+import type { ChildProcess } from 'node:child_process';
 import { once } from 'node:events';
 import { access, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -11,6 +11,12 @@ import {
   recoverSnapshotRelease,
   snapshotReleasePaths,
 } from '../scripts/python-runtime-snapshot-release.js';
+import {
+  runSnapshotReleaseLockCommand,
+  SnapshotReleaseLockUnavailableError,
+  spawnSnapshotReleaseLockCommand,
+} from '../scripts/python-runtime-snapshot-lock.js';
+import { runPythonRuntimeSnapshotBuilder } from '../scripts/build-python-runtime-snapshot.js';
 
 async function fixture(): Promise<{
   readonly imagePath: string;
@@ -29,6 +35,40 @@ async function fixture(): Promise<{
     root,
     paths: snapshotReleasePaths(root, imagePath, provenancePath),
   };
+}
+
+async function waitForLockHolder(holder: ChildProcess): Promise<void> {
+  const stdout = holder.stdout;
+  assert.ok(stdout);
+  await new Promise<void>((resolvePromise, rejectPromise) => {
+    const removeListeners = (): void => {
+      stdout.off('data', onData);
+      holder.off('error', onError);
+      holder.off('exit', onExit);
+    };
+    const onData = (): void => {
+      removeListeners();
+      resolvePromise();
+    };
+    const onError = (error: Error): void => {
+      removeListeners();
+      rejectPromise(error);
+    };
+    const onExit = (
+      code: number | null,
+      signal: NodeJS.Signals | null
+    ): void => {
+      removeListeners();
+      rejectPromise(
+        new Error(
+          `Lock holder exited before acquisition: ${String(code ?? signal)}.`
+        )
+      );
+    };
+    stdout.once('data', onData);
+    holder.once('error', onError);
+    holder.once('exit', onExit);
+  });
 }
 
 test('publishes and verifies an image and provenance pair', async () => {
@@ -124,57 +164,39 @@ test('names an invalid recovery journal instead of silently deleting it', async 
 });
 
 test(
-  'macOS advisory lock rejects overlap and releases when the holder exits',
-  { skip: process.platform !== 'darwin' },
+  'advisory lock rejects overlap and releases when the holder exits',
   async () => {
     const root = await mkdtemp(join(tmpdir(), 'tracecode-snapshot-lock-'));
     const lockPath = join(root, 'release.lock');
-    const holder = spawn(
-      '/usr/bin/lockf',
-      [
-        '-k',
-        lockPath,
-        process.execPath,
+    const holder = spawnSnapshotReleaseLockCommand({
+      args: [
         '-e',
         "process.stdout.write('locked\\n'); process.stdin.resume();",
       ],
-      { stdio: ['pipe', 'pipe', 'pipe'] }
-    );
+      command: process.execPath,
+      lockPath,
+      stdio: ['pipe', 'pipe', 'pipe'],
+    });
     try {
-      await new Promise<void>((resolvePromise, rejectPromise) => {
-        const onData = (): void => {
-          holder.off('exit', onExit);
-          resolvePromise();
-        };
-        const onExit = (
-          code: number | null,
-          signal: NodeJS.Signals | null
-        ): void => {
-          holder.stdout.off('data', onData);
-          rejectPromise(
-            new Error(
-              `Lock holder exited before acquisition: ${String(code ?? signal)}.`
-            )
-          );
-        };
-        holder.stdout.once('data', onData);
-        holder.once('exit', onExit);
-      });
-      const contender = spawnSync(
-        '/usr/bin/lockf',
-        ['-t', '0', '-k', lockPath, process.execPath, '-e', ''],
-        { encoding: 'utf8' }
+      await waitForLockHolder(holder);
+      await assert.rejects(
+        runSnapshotReleaseLockCommand({
+          args: ['-e', ''],
+          command: process.execPath,
+          lockPath,
+          stdio: 'pipe',
+        }),
+        SnapshotReleaseLockUnavailableError
       );
-      assert.equal(contender.status, 75);
 
       holder.kill('SIGTERM');
       await once(holder, 'exit');
-      const successor = spawnSync(
-        '/usr/bin/lockf',
-        ['-t', '0', '-k', lockPath, process.execPath, '-e', ''],
-        { encoding: 'utf8' }
-      );
-      assert.equal(successor.status, 0, successor.stderr);
+      await runSnapshotReleaseLockCommand({
+        args: ['-e', ''],
+        command: process.execPath,
+        lockPath,
+        stdio: 'pipe',
+      });
     } finally {
       if (holder.exitCode === null && holder.signalCode === null) {
         holder.kill('SIGKILL');
@@ -184,3 +206,55 @@ test(
     }
   }
 );
+
+test('replace entry point cannot run its worker outside the release lock', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'tracecode-snapshot-entry-lock-'));
+  const lockPath = join(root, '.python-runtime-snapshot-release.lock');
+  const markerPath = join(root, 'worker-ran');
+  const workerPath = join(root, 'probe-worker.mjs');
+  await writeFile(
+    workerPath,
+    [
+      "import { writeFile } from 'node:fs/promises';",
+      "await writeFile(process.argv[3], 'ran');",
+    ].join('\n')
+  );
+  const holder = spawnSnapshotReleaseLockCommand({
+    args: [
+      '-e',
+      "process.stdout.write('locked\\n'); process.stdin.resume();",
+    ],
+    command: process.execPath,
+    lockPath,
+    stdio: ['pipe', 'pipe', 'pipe'],
+  });
+  try {
+    await waitForLockHolder(holder);
+    await assert.rejects(
+      runPythonRuntimeSnapshotBuilder({
+        args: ['--replace', markerPath],
+        repositoryRoot: root,
+        stdio: 'pipe',
+        workerPath,
+      }),
+      SnapshotReleaseLockUnavailableError
+    );
+    await assert.rejects(access(markerPath), { code: 'ENOENT' });
+
+    holder.kill('SIGTERM');
+    await once(holder, 'exit');
+    await runPythonRuntimeSnapshotBuilder({
+      args: ['--replace', markerPath],
+      repositoryRoot: root,
+      stdio: 'pipe',
+      workerPath,
+    });
+    assert.equal(await readFile(markerPath, 'utf8'), 'ran');
+  } finally {
+    if (holder.exitCode === null && holder.signalCode === null) {
+      holder.kill('SIGKILL');
+      await once(holder, 'exit');
+    }
+    await rm(root, { recursive: true, force: true });
+  }
+});
