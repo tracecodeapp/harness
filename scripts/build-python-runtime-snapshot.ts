@@ -95,6 +95,14 @@ const PYTHON_DEFAULT_IMPORT_PRELUDE = runtimeCoreSource.slice(
   preludeStart + preludeMarker.length,
   preludeEnd
 );
+if (
+  PYTHON_DEFAULT_IMPORT_PRELUDE.includes('\\') ||
+  PYTHON_DEFAULT_IMPORT_PRELUDE.includes('${')
+) {
+  throw new Error(
+    'PYTHON_DEFAULT_IMPORT_PRELUDE must remain interpolation-free plain text.'
+  );
+}
 
 const SNAPSHOT_WORKER = String.raw`
 let pyodide;
@@ -124,7 +132,7 @@ async function buildSnapshot() {
 }
 
 async function restoreSnapshot() {
-  const response = await fetch('/candidate.bin', { cache: 'no-store' });
+  const response = await fetch(sessionUrl('/candidate.bin'), { cache: 'no-store' });
   if (!response.ok) {
     throw new Error('Snapshot download returned HTTP ' + response.status + '.');
   }
@@ -480,6 +488,10 @@ async function runSnapshot(options: Options): Promise<void> {
         return;
       }
       if (url.pathname === '/candidate.bin') {
+        if (!hasSessionNonce(url, sessionNonce)) {
+          response.writeHead(403, commonHeaders()).end('Forbidden');
+          return;
+        }
         await serveFile(response, candidatePath);
         return;
       }
