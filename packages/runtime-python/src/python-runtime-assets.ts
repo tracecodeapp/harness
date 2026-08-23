@@ -8,6 +8,7 @@ import {
   PYTHON_RUNTIME_SNAPSHOTS,
   PYTHON_RUNTIME_WASM,
 } from './python-runtime-assets.generated';
+import { PYTHON_RUNTIME_IMAGE_HASH_SEED } from './python-runtime-image-contract';
 
 const IMMUTABLE_VERSIONED_DELIVERY = Object.freeze({
   mutability: 'immutable',
@@ -80,7 +81,7 @@ export function resolveBuiltInPythonRuntimeAssets(
       // an existing image and would make restored interpreter state invalid.
       // Guest execution limits remain the denial-of-service boundary until a
       // future CPython/Wasm snapshot format can safely re-key after restore.
-      pythonHashSeed: '0',
+      pythonHashSeed: PYTHON_RUNTIME_IMAGE_HASH_SEED,
       wasm: Object.freeze({
         url: `${runtimeBase}pyodide.asm.wasm`,
         integrity: PYTHON_RUNTIME_WASM.integrity,

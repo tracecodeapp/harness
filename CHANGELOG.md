@@ -6,6 +6,19 @@ This repo uses Git tags as release boundaries. Version notes below summarize wha
 
 ## [Unreleased]
 
+## [0.16.8] - 2026-08-23
+
+### Added
+
+- Added a reproducible Python runtime snapshot builder that stages each image,
+  restores it in a fresh Worker, and can build the WebKit release image inside
+  Mobile Safari on an iOS simulator.
+
+### Fixed
+
+- Rebuilt the WebKit Python runtime image in Mobile Safari so disposable
+  Python runners restore on iOS instead of crashing before returning results.
+
 ## [0.16.7] - 2026-08-14
 
 ### Fixed
