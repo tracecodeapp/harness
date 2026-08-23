@@ -13,6 +13,7 @@ import {
 } from 'node:fs/promises';
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
 import { extname, join, normalize, resolve, sep } from 'node:path';
+import { pathToFileURL } from 'node:url';
 import { promisify } from 'node:util';
 import { chromium, firefox, webkit, type BrowserType } from 'playwright';
 import {
@@ -24,7 +25,10 @@ import {
   recoverSnapshotRelease,
   snapshotReleasePaths,
 } from './python-runtime-snapshot-release.js';
-import { assertSnapshotReleaseWorkerLock } from './python-runtime-snapshot-lock.js';
+import {
+  assertSnapshotReleaseLockHeld,
+  type SnapshotReleaseLock,
+} from './python-runtime-snapshot-file-lock.js';
 
 type Engine = 'chromium' | 'firefox' | 'webkit';
 type Runner = 'playwright' | 'ios-simulator';
@@ -240,20 +244,23 @@ function runWorker(command) {
 </script>
 `;
 
-function argumentValue(name: string): string | undefined {
+function argumentValue(
+  args: readonly string[],
+  name: string
+): string | undefined {
   const prefix = `--${name}=`;
-  return process.argv.slice(2).find((argument) => argument.startsWith(prefix))?.slice(prefix.length);
+  return args.find((argument) => argument.startsWith(prefix))?.slice(prefix.length);
 }
 
-function parseOptions(): Options {
-  const engine = (argumentValue('engine') ?? 'webkit') as Engine;
-  const runner = (argumentValue('runner') ?? 'playwright') as Runner;
+function parseOptions(args: readonly string[]): Options {
+  const engine = (argumentValue(args, 'engine') ?? 'webkit') as Engine;
+  const runner = (argumentValue(args, 'runner') ?? 'playwright') as Runner;
   const outputPath = join(SNAPSHOT_ROOT, `${engine}.bin`);
-  const timeoutMs = Number(argumentValue('timeout-ms') ?? 240_000);
-  const device = argumentValue('device') ?? 'booted';
-  const checkRequested = process.argv.includes('--check');
-  const replace = process.argv.includes('--replace');
-  if (argumentValue('output') !== undefined) {
+  const timeoutMs = Number(argumentValue(args, 'timeout-ms') ?? 240_000);
+  const device = argumentValue(args, 'device') ?? 'booted';
+  const checkRequested = args.includes('--check');
+  const replace = args.includes('--replace');
+  if (argumentValue(args, 'output') !== undefined) {
     throw new Error('--output is not supported; each engine is bound to its release filename.');
   }
   if (checkRequested && replace) {
@@ -690,9 +697,17 @@ async function runSnapshot(options: Options): Promise<void> {
   }
 }
 
-async function main(): Promise<void> {
-  const options = parseOptions();
-  assertSnapshotReleaseWorkerLock(process.argv.slice(2), options.replace);
+export async function runPythonRuntimeSnapshotWorker(
+  args: readonly string[] = process.argv.slice(2),
+  releaseLock?: SnapshotReleaseLock
+): Promise<void> {
+  const options = parseOptions(args);
+  if (options.replace) {
+    assertSnapshotReleaseLockHeld(
+      releaseLock,
+      join(ROOT, '.python-runtime-snapshot-release.lock')
+    );
+  }
   await stat(join(RUNTIME_ROOT, 'pyodide.js'));
   await stat(join(RUNTIME_ROOT, 'pyodide.asm.wasm'));
   await stat(options.outputPath);
@@ -706,7 +721,11 @@ async function main(): Promise<void> {
   await runSnapshot(options);
 }
 
-main().catch((error) => {
-  console.error(error instanceof Error ? error.stack ?? error.message : String(error));
+const isMain = process.argv[1] !== undefined &&
+  pathToFileURL(resolve(process.argv[1])).href === import.meta.url;
+if (isMain) {
+  console.error(
+    'Python runtime snapshot worker must run through build-python-runtime-snapshot.ts.'
+  );
   process.exitCode = 1;
-});
+}

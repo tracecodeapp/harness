@@ -31,9 +31,11 @@ Use `--check` when an explicit validation flag is clearer. The release WebKit
 filename can only be replaced by the iOS simulator runner, and every
 replacement records its runner, user agent, hash seed, size, and SHA-256 in
 `snapshots/provenance.json`. An exclusive release lock prevents overlapping
-replacement runs. On macOS, `lockf` holds the advisory lock for the full child
-process and the operating system releases it if that process exits or crashes.
-The worker rejects direct replacement invocations outside that locked CLI.
+replacement runs. The CLI acquires the advisory lock on a file descriptor
+owned by its Node process and retains that descriptor through recovery, build,
+and publication. The operating system releases the lock if the process exits
+or crashes. The worker is import-only, rejects direct execution, and requires
+the live lock object created by the CLI before it can replace an image.
 The builder stages the image and provenance together, verifies both after
 replacement, and rolls both files back if the release write fails. A recovery
 journal preserves the previous pair until verification finishes. The builder

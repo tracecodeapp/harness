@@ -1,10 +1,11 @@
 import assert from 'node:assert/strict';
-import { spawnSync, type ChildProcess } from 'node:child_process';
+import { spawn, spawnSync, type ChildProcess } from 'node:child_process';
 import { once } from 'node:events';
 import { access, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
+import { pathToFileURL } from 'node:url';
 import {
   beginSnapshotRelease,
   publishSnapshotRelease,
@@ -12,13 +13,12 @@ import {
   snapshotReleasePaths,
 } from '../scripts/python-runtime-snapshot-release.js';
 import {
-  assertSnapshotReleaseWorkerLock,
-  createSnapshotReleaseLockTokenArgument,
-  runSnapshotReleaseLockCommand,
+  acquireSnapshotReleaseLock,
+  assertSnapshotReleaseLockHeld,
   SnapshotReleaseLockUnavailableError,
-  spawnSnapshotReleaseLockCommand,
-} from '../scripts/python-runtime-snapshot-lock.js';
+} from '../scripts/python-runtime-snapshot-file-lock.js';
 import { runPythonRuntimeSnapshotBuilder } from '../scripts/build-python-runtime-snapshot.js';
+import { runPythonRuntimeSnapshotWorker } from '../scripts/build-python-runtime-snapshot-worker.js';
 
 async function fixture(): Promise<{
   readonly imagePath: string;
@@ -71,6 +71,29 @@ async function waitForLockHolder(holder: ChildProcess): Promise<void> {
     holder.once('error', onError);
     holder.once('exit', onExit);
   });
+}
+
+function spawnLockHolder(lockPath: string): ChildProcess {
+  const lockModuleUrl = pathToFileURL(
+    join(process.cwd(), 'scripts/python-runtime-snapshot-file-lock.ts')
+  ).href;
+  const script = [
+    `import { acquireSnapshotReleaseLock } from ${JSON.stringify(lockModuleUrl)};`,
+    'await acquireSnapshotReleaseLock(process.env.TRACECODE_TEST_LOCK_PATH);',
+    "process.stdout.write('locked\\n');",
+    'process.stdin.resume();',
+  ].join('\n');
+  return spawn(
+    process.execPath,
+    ['--import', 'tsx', '--input-type=module', '--eval', script],
+    {
+      env: {
+        ...process.env,
+        TRACECODE_TEST_LOCK_PATH: lockPath,
+      },
+      stdio: ['pipe', 'pipe', 'pipe'],
+    }
+  );
 }
 
 test('publishes and verifies an image and provenance pair', async () => {
@@ -170,35 +193,18 @@ test(
   async () => {
     const root = await mkdtemp(join(tmpdir(), 'tracecode-snapshot-lock-'));
     const lockPath = join(root, 'release.lock');
-    const holder = spawnSnapshotReleaseLockCommand({
-      args: [
-        '-e',
-        "process.stdout.write('locked\\n'); process.stdin.resume();",
-      ],
-      command: process.execPath,
-      lockPath,
-      stdio: ['pipe', 'pipe', 'pipe'],
-    });
+    const holder = spawnLockHolder(lockPath);
     try {
       await waitForLockHolder(holder);
       await assert.rejects(
-        runSnapshotReleaseLockCommand({
-          args: ['-e', ''],
-          command: process.execPath,
-          lockPath,
-          stdio: 'pipe',
-        }),
+        acquireSnapshotReleaseLock(lockPath),
         SnapshotReleaseLockUnavailableError
       );
 
       holder.kill('SIGTERM');
       await once(holder, 'exit');
-      await runSnapshotReleaseLockCommand({
-        args: ['-e', ''],
-        command: process.execPath,
-        lockPath,
-        stdio: 'pipe',
-      });
+      const successor = await acquireSnapshotReleaseLock(lockPath);
+      await successor.release();
     } finally {
       if (holder.exitCode === null && holder.signalCode === null) {
         holder.kill('SIGKILL');
@@ -209,17 +215,7 @@ test(
   }
 );
 
-test('replacement worker requires a lock-owned invocation token', () => {
-  assert.throws(
-    () => assertSnapshotReleaseWorkerLock(['--replace'], true),
-    /must run through build-python-runtime-snapshot\.ts/u
-  );
-  assert.doesNotThrow(() =>
-    assertSnapshotReleaseWorkerLock(
-      [createSnapshotReleaseLockTokenArgument(), '--replace'],
-      true
-    )
-  );
+test('replacement worker rejects direct execution', () => {
   const direct = spawnSync(
     process.execPath,
     [
@@ -239,54 +235,69 @@ test('replacement worker requires a lock-owned invocation token', () => {
   );
 });
 
+test('replacement worker requires the live lock owned by its entry point', async () => {
+  await assert.rejects(
+    runPythonRuntimeSnapshotWorker([
+      '--replace',
+      '--engine=webkit',
+      '--runner=ios-simulator',
+    ]),
+    /with its release lock held/u
+  );
+});
+
 test('replace entry point cannot run its worker outside the release lock', async () => {
   const root = await mkdtemp(join(tmpdir(), 'tracecode-snapshot-entry-lock-'));
   const lockPath = join(root, '.python-runtime-snapshot-release.lock');
-  const markerPath = join(root, 'worker-ran');
-  const workerPath = join(root, 'probe-worker.mjs');
-  await writeFile(
-    workerPath,
-    [
-      "import { writeFile } from 'node:fs/promises';",
-      "await writeFile(process.argv.at(-1), 'ran');",
-    ].join('\n')
-  );
-  const holder = spawnSnapshotReleaseLockCommand({
-    args: [
-      '-e',
-      "process.stdout.write('locked\\n'); process.stdin.resume();",
-    ],
-    command: process.execPath,
-    lockPath,
-    stdio: ['pipe', 'pipe', 'pipe'],
-  });
+  const holder = await acquireSnapshotReleaseLock(lockPath);
+  let workerRan = false;
   try {
-    await waitForLockHolder(holder);
     await assert.rejects(
       runPythonRuntimeSnapshotBuilder({
-        args: ['--replace', markerPath],
+        args: ['--replace'],
         repositoryRoot: root,
-        stdio: 'pipe',
-        workerPath,
+        worker: async (_args, releaseLock) => {
+          assertSnapshotReleaseLockHeld(releaseLock, lockPath);
+          workerRan = true;
+        },
       }),
       SnapshotReleaseLockUnavailableError
     );
-    await assert.rejects(access(markerPath), { code: 'ENOENT' });
+    assert.equal(workerRan, false);
 
-    holder.kill('SIGTERM');
-    await once(holder, 'exit');
+    await holder.release();
     await runPythonRuntimeSnapshotBuilder({
-      args: ['--replace', markerPath],
+      args: ['--replace'],
       repositoryRoot: root,
-      stdio: 'pipe',
-      workerPath,
+      worker: async (_args, releaseLock) => {
+        assertSnapshotReleaseLockHeld(releaseLock, lockPath);
+        workerRan = true;
+      },
     });
-    assert.equal(await readFile(markerPath, 'utf8'), 'ran');
+    assert.equal(workerRan, true);
   } finally {
-    if (holder.exitCode === null && holder.signalCode === null) {
-      holder.kill('SIGKILL');
-      await once(holder, 'exit');
-    }
+    await holder.release();
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test('replace entry point releases its lock when the worker fails', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'tracecode-snapshot-entry-failure-'));
+  const lockPath = join(root, '.python-runtime-snapshot-release.lock');
+  try {
+    await assert.rejects(
+      runPythonRuntimeSnapshotBuilder({
+        args: ['--replace'],
+        repositoryRoot: root,
+        worker: async () => {
+          throw new Error('injected worker failure');
+        },
+      }),
+      /injected worker failure/u
+    );
+    const successor = await acquireSnapshotReleaseLock(lockPath);
+    await successor.release();
+  } finally {
     await rm(root, { recursive: true, force: true });
   }
 });

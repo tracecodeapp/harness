@@ -1,43 +1,20 @@
 #!/usr/bin/env npx tsx
 
-import { spawn, type SpawnOptions } from 'node:child_process';
-import { fileURLToPath, pathToFileURL } from 'node:url';
-import { dirname, join, resolve } from 'node:path';
+import { join, resolve } from 'node:path';
+import { pathToFileURL } from 'node:url';
+import { runPythonRuntimeSnapshotWorker } from './build-python-runtime-snapshot-worker.js';
 import {
-  createSnapshotReleaseLockTokenArgument,
-  runSnapshotReleaseLockCommand,
-} from './python-runtime-snapshot-lock.js';
+  acquireSnapshotReleaseLock,
+  type SnapshotReleaseLock,
+} from './python-runtime-snapshot-file-lock.js';
 
 interface SnapshotBuilderInvocation {
   readonly args?: readonly string[];
   readonly repositoryRoot?: string;
-  readonly stdio?: SpawnOptions['stdio'];
-  readonly workerPath?: string;
-}
-
-async function runUnlockedWorker(
-  workerPath: string,
-  args: readonly string[],
-  stdio: SpawnOptions['stdio']
-): Promise<void> {
-  const child = spawn(
-    process.execPath,
-    ['--import', 'tsx', workerPath, ...args],
-    { env: process.env, stdio }
-  );
-  const result = await new Promise<{
-    readonly code: number | null;
-    readonly signal: NodeJS.Signals | null;
-  }>((resolvePromise, rejectPromise) => {
-    child.once('error', rejectPromise);
-    child.once('exit', (code, signal) => resolvePromise({ code, signal }));
-  });
-  if (result.code === 0) return;
-  throw new Error(
-    `Python runtime snapshot worker failed with ${
-      result.signal ?? `exit code ${String(result.code)}`
-    }.`
-  );
+  readonly worker?: (
+    args: readonly string[],
+    releaseLock?: SnapshotReleaseLock
+  ) => Promise<void>;
 }
 
 export async function runPythonRuntimeSnapshotBuilder(
@@ -45,28 +22,19 @@ export async function runPythonRuntimeSnapshotBuilder(
 ): Promise<void> {
   const repositoryRoot = invocation.repositoryRoot ?? resolve(process.cwd());
   const args = invocation.args ?? process.argv.slice(2);
-  const stdio = invocation.stdio ?? 'inherit';
-  const workerPath = invocation.workerPath ?? join(
-    dirname(fileURLToPath(import.meta.url)),
-    'build-python-runtime-snapshot-worker.ts'
-  );
-  const replace = args.includes('--replace');
-  if (!replace) {
-    await runUnlockedWorker(workerPath, args, stdio);
+  const worker = invocation.worker ?? runPythonRuntimeSnapshotWorker;
+  if (!args.includes('--replace')) {
+    await worker(args);
     return;
   }
-  await runSnapshotReleaseLockCommand({
-    args: [
-      '--import',
-      'tsx',
-      workerPath,
-      createSnapshotReleaseLockTokenArgument(),
-      ...args,
-    ],
-    command: process.execPath,
-    lockPath: join(repositoryRoot, '.python-runtime-snapshot-release.lock'),
-    stdio,
-  });
+  const lock = await acquireSnapshotReleaseLock(
+    join(repositoryRoot, '.python-runtime-snapshot-release.lock')
+  );
+  try {
+    await worker(args, lock);
+  } finally {
+    await lock.release();
+  }
 }
 
 const isMain = process.argv[1] !== undefined &&
