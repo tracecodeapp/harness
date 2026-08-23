@@ -11,6 +11,7 @@ import { basename, dirname, join, relative, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { materializeCSharpRoleAssets } from './csharp-role-artifacts.ts';
 import { loadEngineRuntimePackages } from './runtime-package-assets.mjs';
+import { PYTHON_RUNTIME_IMAGE_HASH_SEED } from '../packages/runtime-python/src/python-runtime-image-contract.ts';
 
 const SCRIPT_ROOT = dirname(fileURLToPath(import.meta.url));
 const ROOT = resolve(SCRIPT_ROOT, '..');
@@ -216,8 +217,13 @@ async function assertPythonSnapshotProvenance(python) {
   if (entries.length === 0) {
     throw new Error('Python runtime snapshot provenance must record at least one image.');
   }
-  if (!provenance.snapshots?.webkit) {
-    throw new Error('Python runtime snapshot provenance must record the WebKit image.');
+  const requiredEngines = ['chromium', 'firefox', 'webkit'];
+  for (const engine of requiredEngines) {
+    if (!provenance.snapshots?.[engine]) {
+      throw new Error(
+        `Python runtime snapshot provenance must record the ${engine} image.`
+      );
+    }
   }
   for (const [engine, record] of entries) {
     if (!['chromium', 'firefox', 'webkit'].includes(engine)) {
@@ -231,8 +237,10 @@ async function assertPythonSnapshotProvenance(python) {
       record?.engine !== engine ||
       record?.bytes !== image.size ||
       record?.sha256 !== image.sha256 ||
-      record?.pythonHashSeed !== '0' ||
+      record?.pythonHashSeed !== PYTHON_RUNTIME_IMAGE_HASH_SEED ||
+      !['built-and-verified', 'legacy-unrecorded'].includes(record?.provenance) ||
       (engine === 'webkit' && (
+        record?.provenance !== 'built-and-verified' ||
         record?.runner !== 'ios-simulator' ||
         !/Mobile\/\S+ Safari\//u.test(record?.userAgent ?? '')
       ))
@@ -527,6 +535,7 @@ async function buildLock() {
     compatibility: {
       python: {
         runtimeDirectory: python.runtimeDirectory,
+        hashSeed: PYTHON_RUNTIME_IMAGE_HASH_SEED,
         native: pythonNative,
       },
       csharp,

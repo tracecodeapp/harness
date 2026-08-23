@@ -3,11 +3,11 @@
   "harness": {
     "name": "@tracecode/harness",
     "version": "0.16.8",
-    "releaseId": "@tracecode/harness@0.16.8+sha256.5518f812f3b25e113220bf558b891c516a03bf63dd2186fa24789f783944b224"
+    "releaseId": "@tracecode/harness@0.16.8+sha256.ee95964162ad64bdcf359bb7ca4a751b7fa3f7533fe43986843438a14ef49ad7"
   },
   "treeSha256Algorithm": "sha256-path-nul-bytes-nul-v1",
-  "packageTreeSha256": "5518f812f3b25e113220bf558b891c516a03bf63dd2186fa24789f783944b224",
-  "totalPackagedRuntimeBytes": 151722487,
+  "packageTreeSha256": "ee95964162ad64bdcf359bb7ca4a751b7fa3f7533fe43986843438a14ef49ad7",
+  "totalPackagedRuntimeBytes": 151723159,
   "components": {
     "cpp": {
       "releaseId": "cpp+sha256.9340d58c47a65abceff7fa7a783b57d01550d697013c2b50782aec77e6b19816",
@@ -1872,9 +1872,9 @@
       ]
     },
     "python": {
-      "releaseId": "python+sha256.0e9c41fc8f467d0f2e0dd29f905e03a336deb3a8f54fa2762c16c63715fb474c",
-      "treeSha256": "0e9c41fc8f467d0f2e0dd29f905e03a336deb3a8f54fa2762c16c63715fb474c",
-      "totalBytes": 75905748,
+      "releaseId": "python+sha256.c4cee184ac72a7c4862fedbae7615f959386f4bb2d25914278974bd6b42e2493",
+      "treeSha256": "c4cee184ac72a7c4862fedbae7615f959386f4bb2d25914278974bd6b42e2493",
+      "totalBytes": 75906420,
       "files": [
         {
           "path": "workers/python/generated-python-harness-snippets.js",
@@ -1948,9 +1948,9 @@
         },
         {
           "path": "workers/python/pyodide-0.29.3/snapshots/provenance.json",
-          "size": 539,
-          "sha256": "b8e6939655b64ffc5fb50f0e867912e5534f9655b875dfbc96e23c4df4e641e4",
-          "integrity": "sha256-uOaTllW2T/xftQ8OhnkS5VNPllW4dd+8luI8TfTmQeQ=",
+          "size": 1211,
+          "sha256": "c177ed21303d1f1a01a394528207d6fd105acd029e7a52dc1b6eb69e808e3f7c",
+          "integrity": "sha256-wXftITA9HxoBo5RSggfW/RBazQKeelLcG262noCOP3w=",
           "mediaType": "application/json"
         },
         {
@@ -2036,6 +2036,7 @@
   "compatibility": {
     "python": {
       "runtimeDirectory": "pyodide-0.29.3",
+      "hashSeed": "0",
       "native": {
         "schema": "tracecode-python-native-manifest-v1",
         "module": "_tracecode_native",

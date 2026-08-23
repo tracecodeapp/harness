@@ -52,14 +52,28 @@ interface SnapshotProvenance {
   readonly schema: 'tracecode.python-runtime-snapshot-provenance.v1';
   readonly pyodideVersion: string;
   readonly snapshots: Partial<Record<Engine, {
-    readonly builtAt: string;
+    readonly builtAt: string | null;
     readonly bytes: number;
     readonly engine: Engine;
+    readonly provenance: 'built-and-verified' | 'legacy-unrecorded';
     readonly pythonHashSeed: string;
-    readonly runner: Runner;
+    readonly runner: Runner | 'legacy-unrecorded';
     readonly sha256: string;
-    readonly userAgent: string;
+    readonly userAgent: string | null;
   }>>;
+}
+
+interface ReleaseTransaction {
+  readonly schema: 'tracecode.python-runtime-snapshot-release.v1';
+  readonly engine: Engine;
+  readonly previousImage: {
+    readonly bytes: number | null;
+    readonly sha256: string | null;
+  };
+  readonly previousProvenance: {
+    readonly bytes: number | null;
+    readonly sha256: string | null;
+  };
 }
 
 const ROOT = resolve(process.cwd());
@@ -73,6 +87,26 @@ const RUNTIME_ROOT = join(
 const SNAPSHOT_ROOT = join(RUNTIME_ROOT, 'snapshots');
 const PROVENANCE_PATH = join(SNAPSHOT_ROOT, 'provenance.json');
 const RELEASE_LOCK_PATH = join(ROOT, '.python-runtime-snapshot-release.lock');
+const RELEASE_TRANSACTION_PATH = join(
+  ROOT,
+  '.python-runtime-snapshot-release.transaction.json'
+);
+const RELEASE_PREVIOUS_IMAGE_PATH = join(
+  ROOT,
+  '.python-runtime-snapshot-release.previous.bin'
+);
+const RELEASE_PREVIOUS_PROVENANCE_PATH = join(
+  ROOT,
+  '.python-runtime-snapshot-release.previous-provenance.json'
+);
+const RELEASE_RECOVERY_IMAGE_PATH = join(
+  ROOT,
+  '.python-runtime-snapshot-release.recovering.bin'
+);
+const RELEASE_RECOVERY_PROVENANCE_PATH = join(
+  ROOT,
+  '.python-runtime-snapshot-release.recovering-provenance.json'
+);
 const MAX_SNAPSHOT_BYTES = 64 * 1024 * 1024;
 const MIN_SNAPSHOT_BYTES = 16 * 1024 * 1024;
 const execFileAsync = promisify(execFile);
@@ -327,6 +361,171 @@ async function readSnapshotProvenance(
   }
 }
 
+async function readOptionalFile(path: string): Promise<Buffer | undefined> {
+  try {
+    return await readFile(path);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return undefined;
+    throw error;
+  }
+}
+
+function fileIdentity(bytes: Buffer | undefined): {
+  readonly bytes: number | null;
+  readonly sha256: string | null;
+} {
+  return bytes === undefined
+    ? { bytes: null, sha256: null }
+    : {
+        bytes: bytes.byteLength,
+        sha256: createHash('sha256').update(bytes).digest('hex'),
+      };
+}
+
+async function clearReleaseTransaction(): Promise<void> {
+  await rm(RELEASE_TRANSACTION_PATH, { force: true });
+  await Promise.all([
+    rm(RELEASE_PREVIOUS_IMAGE_PATH, { force: true }),
+    rm(RELEASE_PREVIOUS_PROVENANCE_PATH, { force: true }),
+    rm(RELEASE_RECOVERY_IMAGE_PATH, { force: true }),
+    rm(RELEASE_RECOVERY_PROVENANCE_PATH, { force: true }),
+  ]);
+}
+
+async function beginReleaseTransaction(
+  engine: Engine,
+  previousImage: Buffer | undefined,
+  previousProvenance: Buffer | undefined
+): Promise<void> {
+  await clearReleaseTransaction();
+  try {
+    if (previousImage !== undefined) {
+      await writeFile(RELEASE_PREVIOUS_IMAGE_PATH, previousImage);
+    }
+    if (previousProvenance !== undefined) {
+      await writeFile(RELEASE_PREVIOUS_PROVENANCE_PATH, previousProvenance);
+    }
+    const transaction: ReleaseTransaction = {
+      schema: 'tracecode.python-runtime-snapshot-release.v1',
+      engine,
+      previousImage: fileIdentity(previousImage),
+      previousProvenance: fileIdentity(previousProvenance),
+    };
+    await writeFile(
+      RELEASE_TRANSACTION_PATH,
+      `${JSON.stringify(transaction, null, 2)}\n`,
+      'utf8'
+    );
+  } catch (error) {
+    await clearReleaseTransaction().catch(() => undefined);
+    throw error;
+  }
+}
+
+async function restoreTransactionFile(
+  identity: ReleaseTransaction['previousImage'],
+  backupPath: string,
+  recoveryPath: string,
+  targetPath: string
+): Promise<void> {
+  if (identity.bytes === null && identity.sha256 === null) {
+    await rm(targetPath, { force: true });
+    return;
+  }
+  if (identity.bytes === null || identity.sha256 === null) {
+    throw new Error('Python runtime snapshot recovery identity is incomplete.');
+  }
+  const backup = await readFile(backupPath);
+  if (
+    backup.byteLength !== identity.bytes ||
+    createHash('sha256').update(backup).digest('hex') !== identity.sha256
+  ) {
+    throw new Error(`Python runtime snapshot recovery backup is invalid: ${backupPath}.`);
+  }
+  await writeFile(recoveryPath, backup);
+  await rename(recoveryPath, targetPath);
+  const restored = await readFile(targetPath);
+  if (
+    restored.byteLength !== identity.bytes ||
+    createHash('sha256').update(restored).digest('hex') !== identity.sha256
+  ) {
+    throw new Error(`Python runtime snapshot recovery failed: ${targetPath}.`);
+  }
+}
+
+async function recoverInterruptedRelease(options: Options): Promise<void> {
+  const transactionBytes = await readOptionalFile(RELEASE_TRANSACTION_PATH);
+  if (transactionBytes === undefined) {
+    await clearReleaseTransaction();
+    return;
+  }
+  const transaction = JSON.parse(
+    transactionBytes.toString('utf8')
+  ) as ReleaseTransaction;
+  if (
+    transaction.schema !== 'tracecode.python-runtime-snapshot-release.v1' ||
+    transaction.engine !== options.engine
+  ) {
+    throw new Error('Python runtime snapshot release recovery journal is incompatible.');
+  }
+  await restoreTransactionFile(
+    transaction.previousImage,
+    RELEASE_PREVIOUS_IMAGE_PATH,
+    RELEASE_RECOVERY_IMAGE_PATH,
+    options.outputPath
+  );
+  await restoreTransactionFile(
+    transaction.previousProvenance,
+    RELEASE_PREVIOUS_PROVENANCE_PATH,
+    RELEASE_RECOVERY_PROVENANCE_PATH,
+    options.provenancePath
+  );
+  await clearReleaseTransaction();
+}
+
+async function processIsAlive(pid: number): Promise<boolean> {
+  if (!Number.isSafeInteger(pid) || pid <= 0) return false;
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (error) {
+    const code = (error as NodeJS.ErrnoException).code;
+    if (code === 'ESRCH') return false;
+    if (code === 'EPERM') return true;
+    throw error;
+  }
+}
+
+async function acquireReleaseLock(): Promise<Awaited<ReturnType<typeof open>>> {
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    let releaseLock: Awaited<ReturnType<typeof open>> | undefined;
+    try {
+      releaseLock = await open(RELEASE_LOCK_PATH, 'wx');
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error;
+      const ownerBytes = await readOptionalFile(RELEASE_LOCK_PATH);
+      if (ownerBytes === undefined) continue;
+      const ownerPid = Number(ownerBytes.toString('utf8').trim());
+      if (await processIsAlive(ownerPid)) {
+        throw new Error(
+          `Python runtime snapshot replacement is already running as PID ${ownerPid}.`
+        );
+      }
+      await rm(RELEASE_LOCK_PATH, { force: true });
+      continue;
+    }
+    try {
+      await releaseLock.writeFile(`${process.pid}\n`, 'utf8');
+      return releaseLock;
+    } catch (error) {
+      await releaseLock.close().catch(() => undefined);
+      await rm(RELEASE_LOCK_PATH, { force: true });
+      throw error;
+    }
+  }
+  throw new Error(`Unable to acquire ${RELEASE_LOCK_PATH}.`);
+}
+
 async function readRequestBody(
   request: IncomingMessage,
   maximumBytes: number
@@ -572,7 +771,8 @@ async function runSnapshot(options: Options): Promise<void> {
       );
     }
 
-    const previous = await readFile(options.outputPath).catch(() => undefined);
+    const previous = await readOptionalFile(options.outputPath);
+    const previousProvenance = await readOptionalFile(options.provenancePath);
     const sha256 = createHash('sha256').update(candidate).digest('hex');
     const previousSha256 = previous
       ? createHash('sha256').update(previous).digest('hex')
@@ -588,9 +788,16 @@ async function runSnapshot(options: Options): Promise<void> {
       (
         existingRecord?.bytes !== candidate.byteLength ||
         existingRecord.engine !== options.engine ||
+        !['built-and-verified', 'legacy-unrecorded'].includes(
+          existingRecord.provenance
+        ) ||
         existingRecord.pythonHashSeed !== PYTHON_RUNTIME_IMAGE_HASH_SEED ||
         existingRecord.sha256 !== sha256 ||
-        (options.engine === 'webkit' && existingRecord.runner !== 'ios-simulator')
+        (options.engine === 'webkit' && (
+          existingRecord.provenance !== 'built-and-verified' ||
+          existingRecord.runner !== 'ios-simulator' ||
+          !/Mobile\/\S+ Safari\//u.test(existingRecord.userAgent ?? '')
+        ))
       )
     ) {
       throw new Error(
@@ -614,6 +821,7 @@ async function runSnapshot(options: Options): Promise<void> {
             builtAt: new Date().toISOString(),
             bytes: candidate.byteLength,
             engine: options.engine,
+            provenance: 'built-and-verified',
             pythonHashSeed: PYTHON_RUNTIME_IMAGE_HASH_SEED,
             runner: options.runner,
             sha256,
@@ -628,8 +836,62 @@ async function runSnapshot(options: Options): Promise<void> {
         `${JSON.stringify(updatedProvenance, null, 2)}\n`,
         'utf8'
       );
-      await rename(pendingOutputPath, options.outputPath);
-      await rename(pendingProvenancePath, options.provenancePath);
+      await beginReleaseTransaction(
+        options.engine,
+        previous,
+        previousProvenance
+      );
+      try {
+        await rename(pendingOutputPath, options.outputPath);
+        await rename(pendingProvenancePath, options.provenancePath);
+
+        const published = await readFile(options.outputPath);
+        const publishedProvenance = await readSnapshotProvenance(
+          options.provenancePath
+        );
+        const publishedRecord = publishedProvenance?.snapshots[options.engine];
+        if (
+          published.byteLength !== candidate.byteLength ||
+          createHash('sha256').update(published).digest('hex') !== sha256 ||
+          publishedRecord?.bytes !== candidate.byteLength ||
+          publishedRecord.sha256 !== sha256 ||
+          publishedRecord.provenance !== 'built-and-verified' ||
+          publishedRecord.runner !== options.runner
+        ) {
+          throw new Error('Published snapshot and provenance failed verification.');
+        }
+        await clearReleaseTransaction();
+      } catch (releaseError) {
+        const rollbackErrors: unknown[] = [];
+        try {
+          if (previous === undefined) {
+            await rm(options.outputPath, { force: true });
+          } else {
+            await writeFile(pendingOutputPath, previous);
+            await rename(pendingOutputPath, options.outputPath);
+          }
+        } catch (rollbackError) {
+          rollbackErrors.push(rollbackError);
+        }
+        try {
+          if (previousProvenance === undefined) {
+            await rm(options.provenancePath, { force: true });
+          } else {
+            await writeFile(pendingProvenancePath, previousProvenance);
+            await rename(pendingProvenancePath, options.provenancePath);
+          }
+        } catch (rollbackError) {
+          rollbackErrors.push(rollbackError);
+        }
+        if (rollbackErrors.length > 0) {
+          throw new AggregateError(
+            [releaseError, ...rollbackErrors],
+            'Snapshot release failed and rollback was incomplete.'
+          );
+        }
+        await clearReleaseTransaction();
+        throw releaseError;
+      }
     }
     console.log(JSON.stringify({
       schema: 'tracecode.python-runtime-snapshot-build.v1',
@@ -669,23 +931,17 @@ async function main(): Promise<void> {
   let releaseLock: Awaited<ReturnType<typeof open>> | undefined;
   try {
     if (options.replace) {
-      try {
-        releaseLock = await open(RELEASE_LOCK_PATH, 'wx');
-      } catch (error) {
-        if ((error as NodeJS.ErrnoException).code === 'EEXIST') {
-          throw new Error(
-            `Another Python runtime snapshot replacement holds ${RELEASE_LOCK_PATH}.`
-          );
-        }
-        throw error;
-      }
-      await releaseLock.writeFile(`${process.pid}\n`, 'utf8');
+      releaseLock = await acquireReleaseLock();
+      await recoverInterruptedRelease(options);
     }
     await runSnapshot(options);
   } finally {
     if (releaseLock) {
       await releaseLock.close().catch(() => undefined);
-      await rm(RELEASE_LOCK_PATH, { force: true });
+      const ownerBytes = await readOptionalFile(RELEASE_LOCK_PATH);
+      if (ownerBytes?.toString('utf8').trim() === String(process.pid)) {
+        await rm(RELEASE_LOCK_PATH, { force: true });
+      }
     }
   }
 }

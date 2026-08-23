@@ -60,12 +60,17 @@ assert.equal(
   'the Harness package must not duplicate the TraceJVM dependency tree'
 );
 assert.equal(lock.compatibility.python.runtimeDirectory, 'pyodide-0.29.3');
+assert.equal(typeof lock.compatibility.python.hashSeed, 'string');
+assert.notEqual(lock.compatibility.python.hashSeed.length, 0);
 assert.equal(
   pythonSnapshotProvenance.schema,
   'tracecode.python-runtime-snapshot-provenance.v1'
 );
 assert.equal(pythonSnapshotProvenance.pyodideVersion, '0.29.3');
-assert.ok(pythonSnapshotProvenance.snapshots.webkit);
+assert.deepEqual(
+  Object.keys(pythonSnapshotProvenance.snapshots).sort(),
+  ['chromium', 'firefox', 'webkit']
+);
 for (const [engine, record] of Object.entries(
   pythonSnapshotProvenance.snapshots
 )) {
@@ -78,8 +83,10 @@ for (const [engine, record] of Object.entries(
   assert.equal(record.engine, engine);
   assert.equal(record.bytes, image.size);
   assert.equal(record.sha256, image.sha256);
-  assert.equal(record.pythonHashSeed, '0');
+  assert.equal(record.pythonHashSeed, lock.compatibility.python.hashSeed);
+  assert.match(record.provenance, /^(?:built-and-verified|legacy-unrecorded)$/u);
   if (engine === 'webkit') {
+    assert.equal(record.provenance, 'built-and-verified');
     assert.equal(record.runner, 'ios-simulator');
     assert.match(record.userAgent, /Mobile\/\S+ Safari\//u);
   }

@@ -31,8 +31,14 @@ Use `--check` when an explicit validation flag is clearer. The release WebKit
 filename can only be replaced by the iOS simulator runner, and every
 replacement records its runner, user agent, hash seed, size, and SHA-256 in
 `snapshots/provenance.json`. An exclusive release lock prevents overlapping
-replacement runs. After any image changes, regenerate the runtime asset
-identities and run the browser batch in the matching engine:
+replacement runs. The builder removes its lock on normal exit and reclaims a
+lock whose recorded process no longer exists. It stages the image and
+provenance together, verifies both after replacement, and rolls both files back
+if the release write fails. A recovery journal preserves the
+previous pair until verification finishes. If the process or machine stops
+between writes, the next replacement restores that pair before rebuilding.
+After any image changes, regenerate the runtime asset identities and run the
+browser batch in the matching engine:
 
 ```bash
 pnpm generate:runtime-assets-lock
@@ -41,7 +47,7 @@ TRACECODE_ALGORITHM_BATCH_LANGUAGES=python \
 node --import tsx tests/test-browser-algorithm-batch.ts
 ```
 
-The builder uses the same `PYTHONHASHSEED=0` contract as the runtime asset
+The builder imports the same `PYTHONHASHSEED` contract as the runtime asset
 resolver and asserts the restored hash probe. Before snapshotting it imports
 `sys`, `json`, `math`, `os`, `ast`, `collections`, and `typing`. It then
 validates a clean restore through the shipped standard-library ZIP and runs the

@@ -2,10 +2,31 @@
   "schema": "tracecode.python-runtime-snapshot-provenance.v1",
   "pyodideVersion": "0.29.3",
   "snapshots": {
+    "chromium": {
+      "builtAt": null,
+      "bytes": 20971936,
+      "engine": "chromium",
+      "provenance": "legacy-unrecorded",
+      "pythonHashSeed": "0",
+      "runner": "legacy-unrecorded",
+      "sha256": "f6e5a59006c18656d10b591681fe6bd009b7d1385ec395a3b0080d333bbb8151",
+      "userAgent": null
+    },
+    "firefox": {
+      "builtAt": null,
+      "bytes": 20971936,
+      "engine": "firefox",
+      "provenance": "legacy-unrecorded",
+      "pythonHashSeed": "0",
+      "runner": "legacy-unrecorded",
+      "sha256": "a334a4720d75dbc92c2062f41eb7cab2a1cd98192748ad09f43fd1ba5cce3ba9",
+      "userAgent": null
+    },
     "webkit": {
       "builtAt": "2026-08-23T17:27:32.236Z",
       "bytes": 20971936,
       "engine": "webkit",
+      "provenance": "built-and-verified",
       "pythonHashSeed": "0",
       "runner": "ios-simulator",
       "sha256": "0a061909c2f6e2a3c8c1e46a2e8a071ec5d8bfb4606c47c99b9532758368a917",
