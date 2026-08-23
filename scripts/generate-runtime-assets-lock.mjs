@@ -191,6 +191,7 @@ function findPythonRuntime(components) {
     'python_stdlib.zip',
     'snapshots/chromium.bin',
     'snapshots/firefox.bin',
+    'snapshots/provenance.json',
     'snapshots/webkit.bin',
   ];
   const byPath = new Map(python.files.map((file) => [file.path, file]));
@@ -199,6 +200,48 @@ function findPythonRuntime(components) {
     if (!byPath.has(path)) throw new Error(`Python runtime lock is missing required asset ${path}.`);
   }
   return { runtimeDirectory, byPath };
+}
+
+async function assertPythonSnapshotProvenance(python) {
+  const provenancePath =
+    `workers/python/${python.runtimeDirectory}/snapshots/provenance.json`;
+  const provenance = await readJson(join(ROOT, provenancePath));
+  if (
+    provenance.schema !== 'tracecode.python-runtime-snapshot-provenance.v1' ||
+    provenance.pyodideVersion !== python.runtimeDirectory.slice('pyodide-'.length)
+  ) {
+    throw new Error('Python runtime snapshot provenance is incompatible.');
+  }
+  const entries = Object.entries(provenance.snapshots ?? {});
+  if (entries.length === 0) {
+    throw new Error('Python runtime snapshot provenance must record at least one image.');
+  }
+  if (!provenance.snapshots?.webkit) {
+    throw new Error('Python runtime snapshot provenance must record the WebKit image.');
+  }
+  for (const [engine, record] of entries) {
+    if (!['chromium', 'firefox', 'webkit'].includes(engine)) {
+      throw new Error(`Python runtime snapshot provenance has unknown engine ${engine}.`);
+    }
+    const imagePath =
+      `workers/python/${python.runtimeDirectory}/snapshots/${engine}.bin`;
+    const image = python.byPath.get(imagePath);
+    if (
+      !image ||
+      record?.engine !== engine ||
+      record?.bytes !== image.size ||
+      record?.sha256 !== image.sha256 ||
+      record?.pythonHashSeed !== '0' ||
+      (engine === 'webkit' && (
+        record?.runner !== 'ios-simulator' ||
+        !/Mobile\/\S+ Safari\//u.test(record?.userAgent ?? '')
+      ))
+    ) {
+      throw new Error(
+        `Python runtime snapshot provenance does not match ${imagePath}.`
+      );
+    }
+  }
 }
 
 async function assertPythonNativeManifest(python) {
@@ -440,6 +483,7 @@ async function buildLock() {
   const packaged = await buildPackagedComponents();
   const packageTreeSha256 = treeSha256(packaged.files);
   const python = findPythonRuntime(packaged.components);
+  await assertPythonSnapshotProvenance(python);
   const pythonNative = await assertPythonNativeManifest(python);
   const tracecc = await buildTraceCC(engines.tracecc, packaged.components.cpp);
   const tracejvm = await buildTraceJVM(engines.tracejvm);

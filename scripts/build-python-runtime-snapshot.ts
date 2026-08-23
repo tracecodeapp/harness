@@ -1,12 +1,13 @@
 #!/usr/bin/env npx tsx
 
 import { execFile } from 'node:child_process';
-import { createHash, randomUUID } from 'node:crypto';
+import { createHash, randomUUID, timingSafeEqual } from 'node:crypto';
 import { createReadStream } from 'node:fs';
 import {
   copyFile,
   mkdir,
   mkdtemp,
+  open,
   readFile,
   rename,
   rm,
@@ -14,7 +15,6 @@ import {
   writeFile,
 } from 'node:fs/promises';
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
-import { tmpdir } from 'node:os';
 import { dirname, extname, join, normalize, resolve, sep } from 'node:path';
 import { promisify } from 'node:util';
 import { chromium, firefox, webkit, type BrowserType } from 'playwright';
@@ -72,12 +72,37 @@ const RUNTIME_ROOT = join(
 );
 const SNAPSHOT_ROOT = join(RUNTIME_ROOT, 'snapshots');
 const PROVENANCE_PATH = join(SNAPSHOT_ROOT, 'provenance.json');
+const RELEASE_LOCK_PATH = join(ROOT, '.python-runtime-snapshot-release.lock');
 const MAX_SNAPSHOT_BYTES = 64 * 1024 * 1024;
 const MIN_SNAPSHOT_BYTES = 16 * 1024 * 1024;
 const execFileAsync = promisify(execFile);
+const SNAPSHOT_PREIMPORT_SOURCE =
+  'import sys, json, math, os, ast, collections, typing';
+const runtimeCoreSource = await readFile(
+  join(ROOT, 'workers', 'python', 'runtime-core.js'),
+  'utf8'
+);
+const preludeMarker = 'const PYTHON_DEFAULT_IMPORT_PRELUDE = `';
+const preludeStart = runtimeCoreSource.indexOf(preludeMarker);
+const preludeEnd = runtimeCoreSource.indexOf(
+  '`;',
+  preludeStart + preludeMarker.length
+);
+if (preludeStart < 0 || preludeEnd < 0) {
+  throw new Error('Unable to read PYTHON_DEFAULT_IMPORT_PRELUDE from runtime-core.js.');
+}
+const PYTHON_DEFAULT_IMPORT_PRELUDE = runtimeCoreSource.slice(
+  preludeStart + preludeMarker.length,
+  preludeEnd
+);
 
 const SNAPSHOT_WORKER = String.raw`
 let pyodide;
+const sessionNonce = new URL(self.location.href).searchParams.get('nonce');
+
+function sessionUrl(path) {
+  return path + '?nonce=' + encodeURIComponent(sessionNonce || '');
+}
 
 async function buildSnapshot() {
   importScripts('/runtime/pyodide.js');
@@ -86,11 +111,9 @@ async function buildSnapshot() {
     _makeSnapshot: true,
     env: { PYTHONHASHSEED: ${JSON.stringify(PYTHON_RUNTIME_IMAGE_HASH_SEED)} },
   });
-  await pyodide.runPythonAsync(
-    'import sys, json, math, os, ast, collections, typing'
-  );
+  await pyodide.runPythonAsync(${JSON.stringify(SNAPSHOT_PREIMPORT_SOURCE)});
   const snapshot = pyodide.makeMemorySnapshot();
-  const response = await fetch('/candidate.bin', {
+  const response = await fetch(sessionUrl('/candidate.bin'), {
     method: 'PUT',
     body: snapshot,
   });
@@ -110,11 +133,11 @@ async function restoreSnapshot() {
   pyodide = await self.loadPyodide({
     indexURL: self.location.origin + '/runtime/',
     _loadSnapshot: snapshot,
-    stdLibURL: '/empty-stdlib.zip',
     env: { PYTHONHASHSEED: ${JSON.stringify(PYTHON_RUNTIME_IMAGE_HASH_SEED)} },
   });
+  await pyodide.runPythonAsync(${JSON.stringify(PYTHON_DEFAULT_IMPORT_PRELUDE)});
   const value = await pyodide.runPythonAsync([
-    'import ast, collections, json, math, os, typing',
+    'import ast, collections, json, math, os, typing, heapq, itertools, re, string',
     'source = "def solve(value):\\n    return value + 1\\n"',
     'namespace = {}',
     'exec(compile(source, "solution.py", "exec"), namespace, namespace)',
@@ -187,7 +210,7 @@ function runWorker(command) {
     status.textContent = 'Validating clean restore...';
     const restore = await runWorker('restore');
     const result = { build, restore, userAgent: navigator.userAgent };
-    const response = await fetch('/complete', {
+    const response = await fetch('/complete?nonce=' + encodeURIComponent(nonce), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(result),
@@ -196,7 +219,7 @@ function runWorker(command) {
     status.textContent = 'PASS: Python runtime snapshot built and restored.';
   } catch (error) {
     status.textContent = 'FAIL: ' + String(error && (error.stack || error.message) || error);
-    await fetch('/failed', {
+    await fetch('/failed?nonce=' + encodeURIComponent(nonce), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ error: status.textContent, userAgent: navigator.userAgent }),
@@ -233,6 +256,11 @@ function parseOptions(): Options {
   }
   if (runner === 'ios-simulator' && engine !== 'webkit') {
     throw new Error('The iOS simulator runner can only build the WebKit image.');
+  }
+  if (replace && engine !== 'webkit') {
+    throw new Error(
+      'Only the WebKit release image currently supports replacement.'
+    );
   }
   if (replace && engine === 'webkit' && runner !== 'ios-simulator') {
     throw new Error(
@@ -322,12 +350,29 @@ async function serveFile(
   path: string
 ): Promise<void> {
   const file = await stat(path);
+  if (!file.isFile()) {
+    response.writeHead(404, commonHeaders()).end('Not found');
+    return;
+  }
   response.writeHead(200, {
     ...commonHeaders(),
     'Content-Length': String(file.size),
     'Content-Type': contentType(path),
   });
-  createReadStream(path).pipe(response);
+  const stream = createReadStream(path);
+  stream.on('error', (error) => response.destroy(error));
+  stream.pipe(response);
+}
+
+function hasSessionNonce(url: URL, sessionNonce: string): boolean {
+  const received = url.searchParams.get('nonce');
+  if (received === null) return false;
+  const expectedBytes = Buffer.from(sessionNonce, 'utf8');
+  const receivedBytes = Buffer.from(received, 'utf8');
+  return (
+    expectedBytes.byteLength === receivedBytes.byteLength &&
+    timingSafeEqual(expectedBytes, receivedBytes)
+  );
 }
 
 function browserType(engine: Engine): BrowserType {
@@ -354,19 +399,15 @@ async function withTimeout<T>(
   }
 }
 
-async function main(): Promise<void> {
-  const options = parseOptions();
-  await stat(join(RUNTIME_ROOT, 'pyodide.js'));
-  await stat(join(RUNTIME_ROOT, 'pyodide.asm.wasm'));
-  if (options.check) await stat(options.outputPath);
-
+async function runSnapshot(options: Options): Promise<void> {
   const temporaryRoot = await mkdtemp(
-    join(tmpdir(), 'tracecode-python-runtime-snapshot-')
+    join(ROOT, '.python-runtime-snapshot-')
   );
   const candidatePath = join(temporaryRoot, 'candidate.bin');
-  const pendingOutputPath = `${options.outputPath}.${process.pid}.tmp`;
-  const pendingProvenancePath = `${options.provenancePath}.${process.pid}.tmp`;
+  const pendingOutputPath = join(temporaryRoot, `${options.engine}.bin`);
+  const pendingProvenancePath = join(temporaryRoot, 'provenance.json');
   if (options.check) await copyFile(options.outputPath, candidatePath);
+  const sessionNonce = randomUUID();
 
   let resolveCompletion!: (value: BrowserResult) => void;
   let rejectCompletion!: (error: Error) => void;
@@ -380,6 +421,10 @@ async function main(): Promise<void> {
     try {
       const url = new URL(request.url ?? '/', 'http://127.0.0.1');
       if (request.method === 'PUT' && url.pathname === '/candidate.bin') {
+        if (!hasSessionNonce(url, sessionNonce)) {
+          response.writeHead(403, commonHeaders()).end('Forbidden');
+          return;
+        }
         const bytes = await readRequestBody(request, MAX_SNAPSHOT_BYTES);
         if (bytes.byteLength < MIN_SNAPSHOT_BYTES) {
           throw new Error(`Snapshot was unexpectedly small: ${bytes.byteLength} bytes.`);
@@ -389,6 +434,10 @@ async function main(): Promise<void> {
         return;
       }
       if (request.method === 'POST' && url.pathname === '/complete') {
+        if (!hasSessionNonce(url, sessionNonce)) {
+          response.writeHead(403, commonHeaders()).end('Forbidden');
+          return;
+        }
         const result = JSON.parse(
           (await readRequestBody(request, 1024 * 1024)).toString('utf8')
         ) as BrowserResult;
@@ -397,6 +446,10 @@ async function main(): Promise<void> {
         return;
       }
       if (request.method === 'POST' && url.pathname === '/failed') {
+        if (!hasSessionNonce(url, sessionNonce)) {
+          response.writeHead(403, commonHeaders()).end('Forbidden');
+          return;
+        }
         const failure = JSON.parse(
           (await readRequestBody(request, 1024 * 1024)).toString('utf8')
         ) as { error?: string };
@@ -424,14 +477,6 @@ async function main(): Promise<void> {
           'Content-Length': String(bytes.byteLength),
           'Content-Type': 'text/javascript; charset=utf-8',
         }).end(bytes);
-        return;
-      }
-      if (url.pathname === '/empty-stdlib.zip') {
-        response.writeHead(200, {
-          ...commonHeaders(),
-          'Content-Length': '0',
-          'Content-Type': 'application/zip',
-        }).end();
         return;
       }
       if (url.pathname === '/candidate.bin') {
@@ -470,7 +515,7 @@ async function main(): Promise<void> {
       throw new Error('Snapshot server did not expose a TCP address.');
     }
     const pageUrl =
-      `http://127.0.0.1:${address.port}/?nonce=${randomUUID()}` +
+      `http://127.0.0.1:${address.port}/?nonce=${sessionNonce}` +
       `&timeoutMs=${options.timeoutMs}` +
       (options.check ? '&check=1' : '');
 
@@ -524,6 +569,7 @@ async function main(): Promise<void> {
       options.provenancePath
     );
     const existingRecord = existingProvenance?.snapshots[options.engine];
+    const provenanceChecked = existingRecord !== undefined;
     if (
       options.check &&
       (existingRecord !== undefined || options.engine === 'webkit') &&
@@ -585,6 +631,7 @@ async function main(): Promise<void> {
       sha256,
       previousSha256,
       changed: previousSha256 !== sha256,
+      provenanceChecked,
       userAgent: result.userAgent,
       restore: restoredValue,
     }, null, 2));
@@ -598,6 +645,36 @@ async function main(): Promise<void> {
     await rm(pendingOutputPath, { force: true });
     await rm(pendingProvenancePath, { force: true });
     await rm(temporaryRoot, { recursive: true, force: true });
+  }
+}
+
+async function main(): Promise<void> {
+  const options = parseOptions();
+  await stat(join(RUNTIME_ROOT, 'pyodide.js'));
+  await stat(join(RUNTIME_ROOT, 'pyodide.asm.wasm'));
+  if (options.check) await stat(options.outputPath);
+
+  let releaseLock: Awaited<ReturnType<typeof open>> | undefined;
+  try {
+    if (options.replace) {
+      try {
+        releaseLock = await open(RELEASE_LOCK_PATH, 'wx');
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code === 'EEXIST') {
+          throw new Error(
+            `Another Python runtime snapshot replacement holds ${RELEASE_LOCK_PATH}.`
+          );
+        }
+        throw error;
+      }
+      await releaseLock.writeFile(`${process.pid}\n`, 'utf8');
+    }
+    await runSnapshot(options);
+  } finally {
+    if (releaseLock) {
+      await releaseLock.close().catch(() => undefined);
+      await rm(RELEASE_LOCK_PATH, { force: true });
+    }
   }
 }
 

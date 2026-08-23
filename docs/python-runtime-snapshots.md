@@ -5,7 +5,8 @@ memory snapshot. The snapshot is part of the pinned runtime tree and must be
 built in the browser engine that consumes it.
 
 Validate the existing Chromium and Firefox images with Playwright. Validation
-is the default and never replaces an image:
+is the default and never replaces an image. Their replacement flow is not yet
+exposed by this release tool:
 
 ```bash
 pnpm build:python-runtime-snapshot -- --engine=chromium
@@ -29,8 +30,9 @@ pnpm build:python-runtime-snapshot -- \
 Use `--check` when an explicit validation flag is clearer. The release WebKit
 filename can only be replaced by the iOS simulator runner, and every
 replacement records its runner, user agent, hash seed, size, and SHA-256 in
-`snapshots/provenance.json`. After any image changes, regenerate the runtime
-asset identities and run the browser batch in the matching engine:
+`snapshots/provenance.json`. An exclusive release lock prevents overlapping
+replacement runs. After any image changes, regenerate the runtime asset
+identities and run the browser batch in the matching engine:
 
 ```bash
 pnpm generate:runtime-assets-lock
@@ -42,6 +44,6 @@ node --import tsx tests/test-browser-algorithm-batch.ts
 The builder uses the same `PYTHONHASHSEED=0` contract as the runtime asset
 resolver and asserts the restored hash probe. Before snapshotting it imports
 `sys`, `json`, `math`, `os`, `ast`, `collections`, and `typing`. It then
-validates a clean restore without downloading the standard library again,
-stages the candidate outside the published tree, and replaces the target only
-after the restore succeeds.
+validates a clean restore through the shipped standard-library ZIP and runs the
+same default import prelude as production. The candidate stays outside the
+published worker tree, and the target changes only after the restore succeeds.

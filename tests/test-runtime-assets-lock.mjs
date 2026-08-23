@@ -7,6 +7,15 @@ import { join, resolve } from 'node:path';
 const root = process.cwd();
 const packageManifest = JSON.parse(readFileSync(resolve(root, 'package.json'), 'utf8'));
 const lock = JSON.parse(readFileSync(resolve(root, 'runtime-assets.lock.json'), 'utf8'));
+const pythonSnapshotProvenance = JSON.parse(
+  readFileSync(
+    resolve(
+      root,
+      'workers/python/pyodide-0.29.3/snapshots/provenance.json'
+    ),
+    'utf8'
+  )
+);
 
 assert.equal(lock.schema, 'tracecode.runtime-assets-lock.v1');
 assert.equal(
@@ -51,6 +60,30 @@ assert.equal(
   'the Harness package must not duplicate the TraceJVM dependency tree'
 );
 assert.equal(lock.compatibility.python.runtimeDirectory, 'pyodide-0.29.3');
+assert.equal(
+  pythonSnapshotProvenance.schema,
+  'tracecode.python-runtime-snapshot-provenance.v1'
+);
+assert.equal(pythonSnapshotProvenance.pyodideVersion, '0.29.3');
+assert.ok(pythonSnapshotProvenance.snapshots.webkit);
+for (const [engine, record] of Object.entries(
+  pythonSnapshotProvenance.snapshots
+)) {
+  const imagePath =
+    `workers/python/pyodide-0.29.3/snapshots/${engine}.bin`;
+  const image = lock.components.python.files.find(
+    (file) => file.path === imagePath
+  );
+  assert.ok(image, `${imagePath} must be locked`);
+  assert.equal(record.engine, engine);
+  assert.equal(record.bytes, image.size);
+  assert.equal(record.sha256, image.sha256);
+  assert.equal(record.pythonHashSeed, '0');
+  if (engine === 'webkit') {
+    assert.equal(record.runner, 'ios-simulator');
+    assert.match(record.userAgent, /Mobile\/\S+ Safari\//u);
+  }
+}
 assert.equal(lock.compatibility.csharp.deployment.compilerSharesGeneralAssets, true);
 assert.deepEqual(lock.compatibility.csharp.deployment.browserAssets, {
   general: {

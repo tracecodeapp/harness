@@ -29,3 +29,8 @@ tests/conformance/generated/
 packages/*/LICENSE
 packages/*/THIRD_PARTY_NOTICES.md
 packages/*/workers
+
+# Browser-generated Python runtime image candidates are staged outside the
+# published workers tree and removed after validation.
+/.python-runtime-snapshot-*
+/.python-runtime-snapshot-release.lock
