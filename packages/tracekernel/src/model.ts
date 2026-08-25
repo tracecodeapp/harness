@@ -45,6 +45,27 @@ export interface TraceKernelWatchdogSnapshot {
   readonly deadlineAt: number;
 }
 
+/**
+ * Runtime-visible syscall authority attached to one process.
+ *
+ * Host/kernel control APIs are deliberately outside this policy: a caller may
+ * still supervise, signal, and watchdog a restricted process without giving
+ * the runtime those capabilities. Omission preserves the general-purpose
+ * TraceKernel process contract.
+ */
+export type TraceKernelRuntimeSyscallPolicy =
+  | {
+      readonly profile: 'unrestricted';
+    }
+  | {
+      /**
+       * Algorithm execution exposes no OS-like subsystem. The only admitted
+       * operation is an atomic readFile for one of these exact TKFS paths.
+       */
+      readonly profile: 'algorithm';
+      readonly readableFiles: readonly string[];
+    };
+
 export type TraceKernelPrincipalKind = 'user' | 'agent' | 'grader' | 'system';
 
 export interface TraceKernelPrincipal {
@@ -90,6 +111,7 @@ export interface TraceKernelProcessSnapshot {
   readonly owner: TraceKernelPrincipal;
   readonly protected: boolean;
   readonly visible: boolean;
+  readonly runtimeSyscalls: TraceKernelRuntimeSyscallPolicy;
   readonly startedAt?: number;
   readonly endedAt?: number;
   readonly pendingSignal?: TraceKernelTerminatingSignal;
@@ -149,6 +171,8 @@ export interface TraceKernelProcessSpec {
   readonly owner?: TraceKernelPrincipal;
   readonly protected?: boolean;
   readonly visible?: boolean;
+  /** Runtime-visible authority; defaults to the general unrestricted profile. */
+  readonly runtimeSyscalls?: TraceKernelRuntimeSyscallPolicy;
 }
 
 export interface TraceKernelRuntimeProcessContext {
@@ -162,6 +186,12 @@ export interface TraceKernelRuntimeProcessContext {
   readonly args: readonly string[];
   readonly cwd: string;
   readonly env: Readonly<Record<string, string>>;
+  /**
+   * Immutable description of the syscall authority behind `syscalls`.
+   * Providers may use this to select a smaller runtime implementation, but
+   * enforcement remains in TraceKernel rather than trusting that selection.
+   */
+  readonly runtimeSyscalls: TraceKernelRuntimeSyscallPolicy;
   /**
    * Process-bound kernel authority. Runtime providers may bridge this port to
    * an in-realm adapter, Worker, or Wasm guest, but they cannot dispatch a

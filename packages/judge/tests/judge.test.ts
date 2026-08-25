@@ -311,6 +311,27 @@ test('runs compile and cases as protected TraceKernel processes with ordered iso
         'Cases must not reuse the mutable compile session.'
       );
       assert.equal(state.acquired.length, 4);
+      assert.ok(
+        state.acquired.every(
+          (context) => context.runtimeSyscalls.profile === 'algorithm'
+        ),
+        'Every Judge runtime lease must be told that it has algorithm-only authority.'
+      );
+      const deniedRuntimeProcessList = yield* state.acquired[0]!.syscalls.dispatch({
+        op: 'processList',
+      });
+      assert.deepEqual(
+        deniedRuntimeProcessList,
+        {
+          ok: false,
+          error: {
+            code: 'EOPNOTSUPP',
+            message:
+              'EOPNOTSUPP: TraceKernel algorithm profile does not expose the processList syscall',
+          },
+        },
+        'Judge must supervise through host APIs without giving the runtime process authority.'
+      );
       assert.equal(state.releases.length, 4);
       assert.ok(
         state.releases.every((release) =>

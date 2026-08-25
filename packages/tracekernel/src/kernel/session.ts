@@ -229,7 +229,7 @@ export class TraceKernelSession {
     parent: TraceKernelProcess,
     spec: Omit<
       TraceKernelProcessSpec,
-      'parentPid' | 'owner' | 'protected' | 'visible'
+      'parentPid' | 'owner' | 'protected' | 'visible' | 'runtimeSyscalls'
     >
   ): Effect.Effect<
     TraceKernelProcess,
@@ -248,6 +248,7 @@ export class TraceKernelSession {
         owner: parentSnapshot.owner,
         protected: parentSnapshot.protected,
         visible: parentSnapshot.visible,
+        runtimeSyscalls: parentSnapshot.runtimeSyscalls,
         cwd: spec.cwd ?? parentSnapshot.cwd,
         env: Object.freeze({
           ...parentSnapshot.env,
@@ -261,7 +262,7 @@ export class TraceKernelSession {
     parent: TraceKernelProcess,
     spec: Omit<
       TraceKernelProcessSpec,
-      'parentPid' | 'owner' | 'protected' | 'visible'
+      'parentPid' | 'owner' | 'protected' | 'visible' | 'runtimeSyscalls'
     >,
     stdio: TraceKernelSpawnStdio
   ): Effect.Effect<
@@ -296,6 +297,7 @@ export class TraceKernelSession {
         owner: parentSnapshot.owner,
         protected: parentSnapshot.protected,
         visible: parentSnapshot.visible,
+        runtimeSyscalls: parentSnapshot.runtimeSyscalls,
         cwd: spec.cwd ?? parentSnapshot.cwd,
         env: Object.freeze({
           ...parentSnapshot.env,

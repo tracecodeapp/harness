@@ -11,6 +11,7 @@ import {
   TraceKernelProcessLimitError,
   TraceKernelProcessPermissionError,
   TraceKernelProcessStateError,
+  TraceKernelRuntimeCapabilityError,
   TraceKernelTerminalError,
   TraceKernelWouldBlockError,
 } from './errors';
@@ -506,6 +507,9 @@ function syscallWireError(error: unknown): TraceKernelSyscallWireError {
   if (error instanceof TraceKernelProcessPermissionError) {
     return Object.freeze({ code: error.code, message: error.message });
   }
+  if (error instanceof TraceKernelRuntimeCapabilityError) {
+    return Object.freeze({ code: error.code, message: error.message });
+  }
   if (error instanceof TraceKernelProcessStateError) {
     return Object.freeze({ code: 'ESRCH', message: error.message });
   }
@@ -547,6 +551,14 @@ export class TraceKernelSyscallDispatcher {
   }
 
   private dispatchValue(
+    request: TraceKernelSyscallRequest
+  ): Effect.Effect<TraceKernelSyscallValue, Error> {
+    return this.authorizeRuntimeSyscall(request).pipe(
+      Effect.zipRight(this.dispatchAuthorizedValue(request))
+    );
+  }
+
+  private dispatchAuthorizedValue(
     request: TraceKernelSyscallRequest
   ): Effect.Effect<TraceKernelSyscallValue, Error> {
     switch (request.op) {
@@ -1068,6 +1080,46 @@ export class TraceKernelSyscallDispatcher {
           Effect.as({ op: 'writeFile' as const })
         );
     }
+  }
+
+  private authorizeRuntimeSyscall(
+    request: TraceKernelSyscallRequest
+  ): Effect.Effect<void, Error> {
+    const snapshot = this.process.snapshot();
+    const policy = snapshot.runtimeSyscalls;
+    if (policy.profile === 'unrestricted') return Effect.void;
+    if (request.op !== 'readFile') {
+      return this.unsupportedRuntimeSyscall(request.op);
+    }
+    return Effect.all([
+      this.session.fileSystem.resolve(request.path, snapshot.cwd),
+      Effect.forEach(
+        policy.readableFiles,
+        (path) => this.session.fileSystem.resolve(path, snapshot.cwd)
+      ),
+    ]).pipe(
+      Effect.flatMap(([requestedPath, readableFiles]) =>
+        readableFiles.includes(requestedPath)
+          ? Effect.void
+          : this.unsupportedRuntimeSyscall(request.op)
+      ),
+      Effect.catchAll(() => this.unsupportedRuntimeSyscall(request.op))
+    );
+  }
+
+  private unsupportedRuntimeSyscall(
+    operation: TraceKernelSyscallRequest['op']
+  ): Effect.Effect<never, TraceKernelRuntimeCapabilityError> {
+    const snapshot = this.process.snapshot();
+    return Effect.fail(new TraceKernelRuntimeCapabilityError({
+      code: 'EOPNOTSUPP',
+      pid: snapshot.pid,
+      profile: 'algorithm',
+      operation,
+      message:
+        `EOPNOTSUPP: TraceKernel ${snapshot.runtimeSyscalls.profile} profile ` +
+        `does not expose the ${operation} syscall`,
+    }));
   }
 
   private authorizeFileSystem(

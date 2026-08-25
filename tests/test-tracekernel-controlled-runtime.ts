@@ -5,10 +5,23 @@ import {
   makeTraceKernelHost,
   TraceKernelControlledRuntime,
   type TraceKernelRuntimeLeaseReleaseDisposition,
+  type TraceKernelSyscallResult,
 } from '@tracecode/tracekernel';
 
 function assertCondition(condition: boolean, message: string): void {
   if (!condition) throw new Error(message);
+}
+
+function assertUnsupported(
+  result: TraceKernelSyscallResult,
+  operation: string
+): void {
+  assertCondition(
+    !result.ok &&
+      result.error.code === 'EOPNOTSUPP' &&
+      result.error.message.includes(operation),
+    `Algorithm profile unexpectedly admitted ${operation}: ${JSON.stringify(result)}`
+  );
 }
 
 async function main(): Promise<void> {
@@ -130,6 +143,95 @@ async function main(): Promise<void> {
           releaseDispositions,
         })}`
       );
+
+      yield* session.mkdir('/workspace', { recursive: true });
+      yield* session.writeFile(
+        '/workspace/solution.py',
+        new TextEncoder().encode('from collections import deque\n')
+      );
+      yield* session.writeFile(
+        '/workspace/secret.txt',
+        new TextEncoder().encode('kernel-private')
+      );
+      const algorithmProcess = yield* session.spawn({
+        runtime: controlled.runtime,
+        command: 'algorithm-judge-runner',
+        cwd: '/workspace',
+        runtimeSyscalls: {
+          profile: 'algorithm',
+          readableFiles: ['./solution.py'],
+        },
+      });
+      yield* algorithmProcess.awaitStarted();
+      const algorithmContext = yield* controlled.awaitAttached(
+        algorithmProcess.pid
+      );
+      const allowedSourceRead = yield* algorithmContext.syscalls.dispatch({
+        op: 'readFile',
+        path: '/workspace/./solution.py',
+      });
+      assertCondition(
+        allowedSourceRead.ok &&
+          allowedSourceRead.value.op === 'readFile' &&
+          new TextDecoder().decode(allowedSourceRead.value.bytes) ===
+            'from collections import deque\n',
+        `Algorithm profile could not read its exact submission: ${JSON.stringify(allowedSourceRead)}`
+      );
+      assertUnsupported(
+        yield* algorithmContext.syscalls.dispatch({
+          op: 'readFile',
+          path: '/workspace/secret.txt',
+        }),
+        'readFile'
+      );
+      assertUnsupported(
+        yield* algorithmContext.syscalls.dispatch({
+          op: 'writeFile',
+          path: '/workspace/output.txt',
+          bytes: new TextEncoder().encode('cross-case state'),
+        }),
+        'writeFile'
+      );
+      assertUnsupported(
+        yield* algorithmContext.syscalls.dispatch({
+          op: 'spawn',
+          runtime: controlled.runtime,
+          command: 'escaped-child',
+        }),
+        'spawn'
+      );
+      assertUnsupported(
+        yield* algorithmContext.syscalls.dispatch({ op: 'socket' }),
+        'socket'
+      );
+      assertUnsupported(
+        yield* algorithmContext.syscalls.dispatch({ op: 'processList' }),
+        'processList'
+      );
+      assertUnsupported(
+        yield* algorithmContext.syscalls.dispatch({
+          op: 'watchdog',
+          action: 'arm',
+          timeoutMs: 1,
+        }),
+        'watchdog'
+      );
+      const outputExists = yield* session.fileSystem.stat(
+        '/workspace/output.txt'
+      ).pipe(
+        Effect.as(true),
+        Effect.catchAll(() => Effect.succeed(false))
+      );
+      assertCondition(
+        !outputExists &&
+          session.processSnapshots().every(
+            (entry) => entry.command !== 'escaped-child'
+          ) &&
+          algorithmProcess.snapshot().watchdog === undefined,
+        'A denied algorithm syscall mutated kernel state.'
+      );
+      yield* controlled.complete(algorithmProcess.pid, { exitCode: 0 });
+      yield* algorithmProcess.wait();
     })
   ));
 
@@ -141,6 +243,8 @@ async function main(): Promise<void> {
     signalDelivery: true,
     leaseCleanup: true,
     engineLeaseDisposition: true,
+    algorithmCapabilityProfile: true,
+    deniedSyscallsHaveNoSideEffects: true,
   }, null, 2));
 }
 

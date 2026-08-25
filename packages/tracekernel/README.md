@@ -4,7 +4,7 @@ TraceKernel is the browser-native machine boundary for TraceCode. It owns
 sessions, processes, descriptors, shared resources, runtime leases, and their
 lifecycles.
 
-This workspace is private in the 0.14 release line and is bundled behind the
+This workspace is private in the 0.17 release line and is bundled behind the
 published `@tracecode/harness` surfaces; it is not released independently.
 
 The package is under active architectural development. Its Effect-native
@@ -33,6 +33,14 @@ Every acquired runtime context includes the authoritative session identity and
 a process-bound syscall port. Providers may bridge that port to an in-realm
 adapter, Worker, or Wasm guest, but they do not receive session internals and
 cannot issue a syscall as a different process.
+
+Processes may also carry a runtime syscall policy. The default unrestricted
+profile preserves the general Project and terminal machine contract. The
+algorithm profile used by Judge exposes only atomic reads of exact TKFS source
+paths; other requests fail with `EOPNOTSUPP` before filesystem, process,
+network, terminal, descriptor, watch, or watchdog state is touched. Host-side
+kernel supervision remains available, so restricting the runtime does not
+prevent the Judge from spawning, timing out, or terminating its grader.
 TraceKernel brackets every mutable lease itself and passes its exactly-once
 release a kernel-classified disposition. A normally completed lease is still
 destroyed unless it implements `revalidate()` and that reset check succeeds;

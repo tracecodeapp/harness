@@ -1,7 +1,7 @@
 {
   "name": "@tracecode/runtime-contracts",
   "private": true,
-  "version": "0.16.8",
+  "version": "0.17.0",
   "description": "Shared TraceCode harness runtime contracts and trace helpers.",
   "license": "AGPL-3.0-only",
   "homepage": "https://tracecode.app",

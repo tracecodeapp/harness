@@ -156,6 +156,14 @@ export class TraceKernelProcessTable {
       owner: spec.owner ?? SYSTEM_PRINCIPAL,
       protected: spec.protected ?? false,
       visible: spec.visible ?? true,
+      runtimeSyscalls: spec.runtimeSyscalls?.profile === 'algorithm'
+        ? Object.freeze({
+            profile: 'algorithm' as const,
+            readableFiles: Object.freeze([
+              ...new Set(spec.runtimeSyscalls.readableFiles),
+            ]),
+          })
+        : Object.freeze({ profile: 'unrestricted' as const }),
       stdout: '',
       stderr: '',
     };

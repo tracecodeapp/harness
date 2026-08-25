@@ -25,6 +25,7 @@ import type {
   TraceKernelProcessTermination,
   TraceKernelRuntimeLease,
   TraceKernelRuntimeName,
+  TraceKernelRuntimeSyscallPolicy,
   TraceKernelRuntimeProcessContext,
   TraceKernelSignal,
   TraceKernelTerminatingSignal,
@@ -74,6 +75,7 @@ export interface MutableProcessRecord {
   owner: TraceKernelPrincipal;
   protected: boolean;
   visible: boolean;
+  runtimeSyscalls: TraceKernelRuntimeSyscallPolicy;
   startedAt?: number;
   endedAt?: number;
   termination?: TraceKernelProcessTermination;
@@ -109,6 +111,12 @@ function immutableSnapshot(record: MutableProcessRecord): TraceKernelProcessSnap
     owner: record.owner,
     protected: record.protected,
     visible: record.visible,
+    runtimeSyscalls: record.runtimeSyscalls.profile === 'algorithm'
+      ? Object.freeze({
+          profile: 'algorithm' as const,
+          readableFiles: Object.freeze([...record.runtimeSyscalls.readableFiles]),
+        })
+      : Object.freeze({ profile: 'unrestricted' as const }),
     ...(record.startedAt === undefined ? {} : { startedAt: record.startedAt }),
     ...(record.endedAt === undefined ? {} : { endedAt: record.endedAt }),
     ...(record.termination === undefined ? {} : { termination: record.termination }),

@@ -1,7 +1,7 @@
 {
   "name": "@tracecode/runtime-cpp",
   "private": true,
-  "version": "0.16.8",
+  "version": "0.17.0",
   "description": "C++ runtime client and browser worker assets for TraceCode harness.",
   "license": "AGPL-3.0-only",
   "homepage": "https://tracecode.app",

@@ -6,6 +6,28 @@ This repo uses Git tags as release boundaries. Version notes below summarize wha
 
 ## [Unreleased]
 
+## [0.17.0] - 2026-08-25
+
+This release establishes the capability boundary for algorithm Judge
+execution before language-specific runner optimization.
+
+### Added
+
+- Added immutable per-process runtime syscall policies to TraceKernel. Runtime
+  providers receive the policy in their process context so they can select a
+  smaller implementation without becoming the enforcement authority.
+- Added the `algorithm` syscall profile, which permits only atomic reads of
+  explicitly named TKFS submission files. Other filesystem, process,
+  descriptor, terminal, watch, watchdog, and network syscalls fail with
+  `EOPNOTSUPP` before touching those subsystems.
+
+### Changed
+
+- Judge-created grader processes now always use the algorithm profile, while
+  session creation, process startup, timeouts, signals, waits, and teardown
+  remain kernel-owned host operations. General Project and terminal processes
+  retain the existing unrestricted runtime contract.
+
 ## [0.16.8] - 2026-08-23
 
 ### Added
