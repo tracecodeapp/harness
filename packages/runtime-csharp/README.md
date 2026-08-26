@@ -65,14 +65,20 @@ aliases both logical roles to it. If those artifacts ever diverge, the release
 must introduce a distinct compiler asset path before it can be packaged.
 
 The compiler may retain only trusted toolchain state and immutable compiled
-artifacts. Every runner that receives a learner assembly is terminated after
-one case. Eager batches fan the same immutable PE out to distinct disposable
-runner leases; they never loop learner cases inside one managed process. The
-provider bounds simultaneous leases with `preparedBatchConcurrency` (default
-4, validated range 1--32), which makes the speed/physical-memory tradeoff an
-explicit deployment policy without weakening `fresh-case-state`. The runner
-validates both the source-derived artifact key and SHA-256 of the exact PE
-bytes before assembly load.
+artifacts. It selects a runner tier before learner code starts. Programs that
+can reach ambient framework state use a distinct disposable runner lease for
+every case. For compiler-admitted algorithm code, an eager batch retains one
+outer runner but creates a fresh collectible `AssemblyLoadContext`, learner
+assembly, driver, inputs, output buffer, and trace state for every case. Those
+cases run sequentially inside the retained lease, and the lease is still
+terminated after the batch, cancellation, timeout, or failure.
+
+Compatibility batches bound simultaneous disposable leases with
+`preparedBatchConcurrency` (default 4, validated range 1--32), making their
+speed/physical-memory tradeoff explicit without changing `fresh-case-state`.
+The runner validates both the source-derived artifact key and SHA-256 of the
+exact PE bytes before assembly load, and revalidates the compiler-selected
+tier from assembly metadata before invoking the driver.
 
 Judge startup performs one fixed trusted traced compilation in the serialized
 compiler authority while loading a clean standby runner in parallel. The

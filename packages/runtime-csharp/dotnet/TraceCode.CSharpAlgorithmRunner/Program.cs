@@ -38,10 +38,12 @@ public static partial class Program
     [JSExport]
     [SupportedOSPlatform("browser")]
     public static byte[] ExecutePrepared(
+        string artifactKey,
         string artifactBase64,
         string artifactSha256,
         byte[] inputBytes
     ) => TraceClrAlgorithmExecutionCore.ExecutePrepared(
+        artifactKey,
         artifactBase64,
         artifactSha256,
         inputBytes
@@ -50,6 +52,7 @@ public static partial class Program
     [JSExport]
     [SupportedOSPlatform("browser")]
     public static string ExecutePreparedTrace(
+        string artifactKey,
         string artifactBase64,
         string artifactSha256,
         byte[] inputBytes,
@@ -65,6 +68,7 @@ public static partial class Program
     {
         TraceClrAlgorithmExecutionResult result =
             TraceClrAlgorithmExecutionCore.ExecutePreparedTrace(
+                artifactKey,
                 artifactBase64,
                 artifactSha256,
                 inputBytes,

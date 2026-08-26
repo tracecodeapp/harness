@@ -43,6 +43,7 @@ self.onmessage = (event) => {
     if (event.data.mode === 'trace') {
       const response = JSON.parse(
         exports.TraceCode.CSharpAlgorithmRunner.Program.ExecutePreparedTrace(
+          event.data.artifactKey,
           event.data.artifactBase64,
           event.data.artifactSha256,
           input,

@@ -2,7 +2,7 @@ using System;
 
 public static class TraceCodeDriver
 {
-    public static byte[] Run(byte[] input)
+    public static byte[] Run(byte[] input, Action onIteration)
     {
         if (input.Length != 1) throw new ArgumentException("Expected one control byte.", nameof(input));
         switch (input[0])
@@ -14,6 +14,7 @@ public static class TraceCodeDriver
             case 2:
                 while (true)
                 {
+                    onIteration();
                 }
             default:
                 throw new ArgumentOutOfRangeException(nameof(input));

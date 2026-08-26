@@ -215,8 +215,9 @@ public static class TraceClrAlgorithmExecutionCore
         Action checkTimeout
     )
     {
-        var loadContext = new UserExecutionLoadContext(
-            "TraceCode.AlgorithmCase." + Guid.NewGuid().ToString("N")
+        var loadContext = new AssemblyLoadContext(
+            "TraceCode.AlgorithmCase",
+            isCollectible: true
         );
         try
         {
@@ -259,53 +260,59 @@ public static class TraceClrAlgorithmExecutionCore
         string artifactKey
     )
     {
-        if (
-            artifactKey.Length != 64
-            || artifactKey.Any(character =>
-                character is not (>= '0' and <= '9')
-                    and not (>= 'a' and <= 'f')
-            )
-        )
+        bool validArtifactKey = artifactKey.Length == 64;
+        foreach (char character in artifactKey)
+        {
+            if (character is not (>= '0' and <= '9')
+                and not (>= 'a' and <= 'f'))
+            {
+                validArtifactKey = false;
+                break;
+            }
+        }
+        if (!validArtifactKey)
         {
             throw new ArgumentException(
                 "Prepared TraceCLR artifact identity is invalid."
             );
         }
 
-        IReadOnlyDictionary<string, string> metadata = assembly
-            .GetCustomAttributes<AssemblyMetadataAttribute>()
-            .GroupBy(attribute => attribute.Key, StringComparer.Ordinal)
-            .ToDictionary(
-                group => group.Key,
-                group => group.Count() == 1
-                    ? group.Single().Value ?? string.Empty
-                    : throw new ArgumentException(
-                        "Prepared TraceCLR artifact identity is invalid."
-                    ),
-                StringComparer.Ordinal
-            );
+        string? schema = null;
+        string? embeddedArtifactKey = null;
+        string? runnerTier = null;
+        bool duplicateMetadata = false;
+        foreach (
+            AssemblyMetadataAttribute attribute in assembly
+                .GetCustomAttributes<AssemblyMetadataAttribute>()
+        )
+        {
+            switch (attribute.Key)
+            {
+                case "TraceCode.PreparedArtifactSchema":
+                    duplicateMetadata |= schema is not null;
+                    schema = attribute.Value ?? string.Empty;
+                    break;
+                case "TraceCode.PreparedArtifactKey":
+                    duplicateMetadata |= embeddedArtifactKey is not null;
+                    embeddedArtifactKey = attribute.Value ?? string.Empty;
+                    break;
+                case "TraceCode.PreparedRunnerTier":
+                    duplicateMetadata |= runnerTier is not null;
+                    runnerTier = attribute.Value ?? string.Empty;
+                    break;
+            }
+        }
         if (
-            !metadata.TryGetValue(
-                "TraceCode.PreparedArtifactSchema",
-                out string? schema
-            )
+            duplicateMetadata
             || !string.Equals(
                 schema,
                 PreparedArtifactMetadataSchema,
                 StringComparison.Ordinal
             )
-            || !metadata.TryGetValue(
-                "TraceCode.PreparedArtifactKey",
-                out string? embeddedArtifactKey
-            )
             || !string.Equals(
                 embeddedArtifactKey,
                 artifactKey,
                 StringComparison.Ordinal
-            )
-            || !metadata.TryGetValue(
-                "TraceCode.PreparedRunnerTier",
-                out string? runnerTier
             )
             || !string.Equals(
                 runnerTier,
@@ -320,17 +327,4 @@ public static class TraceClrAlgorithmExecutionCore
         }
     }
 
-    private sealed class UserExecutionLoadContext : AssemblyLoadContext
-    {
-        public UserExecutionLoadContext(string name)
-            : base(name, isCollectible: true) { }
-
-        protected override Assembly? Load(AssemblyName assemblyName) =>
-            AssemblyLoadContext.Default.Assemblies.FirstOrDefault(candidate =>
-                AssemblyName.ReferenceMatchesDefinition(
-                    candidate.GetName(),
-                    assemblyName
-                )
-            );
-    }
 }

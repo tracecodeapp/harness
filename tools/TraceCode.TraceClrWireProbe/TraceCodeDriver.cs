@@ -26,7 +26,7 @@ public static class TraceCodeDriver
     // Prototype for the generated TraceCLR wire boundary. Production code
     // generates this adapter from the Roslyn method symbol and records the
     // exact parameter/result contract beside the PE artifact.
-    public static byte[] Run(byte[] input)
+    public static byte[] Run(byte[] input, Action onIteration)
     {
         int offset = 0;
         int length = ReadInt32(input, ref offset);
@@ -37,6 +37,7 @@ public static class TraceCodeDriver
         var nums = new int[length];
         for (int index = 0; index < nums.Length; index++)
         {
+            onIteration();
             nums[index] = ReadInt32(input, ref offset);
         }
         int target = ReadInt32(input, ref offset);

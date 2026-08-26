@@ -22,6 +22,11 @@ runner resolves framework and host dependencies only from assemblies already
 owned by the default runtime context; learner assemblies cannot add a new
 dependency surface.
 
+That isolation roots the trimmed `System.Runtime.Loader` module. The browser
+wire gate therefore carries an explicit 8 KiB allowance above its original
+4 MiB ceiling; the measured runner is 4,200,620 bytes, 7,631 bytes above the
+pre-change 4,192,989-byte baseline and still 1,876 bytes below the ratchet.
+
 ## Compiler-owned admission
 
 The compiler's Roslyn semantic model is the source of truth for admission. It
