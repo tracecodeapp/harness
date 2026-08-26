@@ -195,6 +195,23 @@ const BATCH_DRIVER_BASE_HEADROOM_MS = 5_000;
 const BATCH_DRIVER_PER_CASE_HEADROOM_MS = 100;
 const BATCH_DRIVER_MAX_HEADROOM_MS = 30_000;
 
+export function calculatePythonCodeBatchDeadlineMs(
+  caseCount: number,
+  perCaseWallClockMs = EXECUTION_TIMEOUT_MS
+): number {
+  const normalizedCaseCount = Math.max(1, Math.floor(caseCount));
+  const normalizedPerCaseMs = Math.max(1, perCaseWallClockMs);
+  const driverHeadroomMs = Math.min(
+    BATCH_DRIVER_MAX_HEADROOM_MS,
+    BATCH_DRIVER_BASE_HEADROOM_MS +
+      BATCH_DRIVER_PER_CASE_HEADROOM_MS * normalizedCaseCount
+  );
+  return Math.min(
+    MAX_WORKER_DEADLINE_MS,
+    normalizedPerCaseMs * normalizedCaseCount + driverHeadroomMs
+  );
+}
+
 // Tracing timeout - longer because Python heuristic detection handles infinite loops
 // This is just a safety net for truly stuck executions
 const TRACING_TIMEOUT_MS = 30000;
@@ -593,18 +610,10 @@ export class PythonWorkerClient {
       readonly limits?: RuntimeExecutionLimits;
     }
   ): Promise<CodeExecutionBatchResult> {
-    const caseCount = Math.max(1, call.inputBatch.length);
-    const driverHeadroomMs = Math.min(
-      BATCH_DRIVER_MAX_HEADROOM_MS,
-      BATCH_DRIVER_BASE_HEADROOM_MS +
-        BATCH_DRIVER_PER_CASE_HEADROOM_MS * caseCount
+    const wallClockMs = calculatePythonCodeBatchDeadlineMs(
+      call.inputBatch.length,
+      call.limits?.wallClockMs
     );
-    const wallClockMs = call.limits?.wallClockMs === undefined
-      ? EXECUTION_TIMEOUT_MS
-      : Math.min(
-          MAX_WORKER_DEADLINE_MS,
-          call.limits.wallClockMs * caseCount + driverHeadroomMs
-        );
     const guestLimits = pickGuestLimits(call.limits);
     const program = this.core.withExecutionDeadline(
       this.core.sendMessageEffect<PythonRawCodeBatchResult>(
@@ -619,24 +628,25 @@ export class PythonWorkerClient {
       ),
       wallClockMs
     );
-    try {
-      const result = await this.core.runClientEffect(program, call.signal);
-      if (result.algorithmFastBatchUnavailable === true) {
-        throw new PythonAlgorithmFastBatchUnavailableError();
-      }
-      return liftCodeBatchOutcome(
-        result,
-        'Prepared Python batch execution failed'
-      );
-    } catch (error) {
-      if (isExecutionTimeoutError(error)) {
-        // A batch watchdog cannot identify which case was running. Retire this
-        // worker and let the prepared lifetime retry each case through the
-        // compatibility path, where each outer worker has its own deadline.
-        throw new PythonAlgorithmFastBatchUnavailableError();
-      }
-      throw error;
+    const result = await this.core.runClientEffect(program, call.signal);
+    if (result.algorithmFastBatchUnavailable === true) {
+      logRuntimeDiagnostic('warn', {
+        component: 'PythonWorkerClient',
+        runtime: 'python',
+        phase: 'algorithm-fast-batch-fallback',
+        message:
+          'Python algorithm-fast batch driver requested compatibility isolation.',
+        detail: { caseCount: call.inputBatch.length },
+      }, { enabled: this.debug });
+      throw new PythonAlgorithmFastBatchUnavailableError();
     }
+    // The aggregate watchdog is the batch's caller-visible deadline, not an
+    // isolation-admission failure. Let it surface instead of silently granting
+    // a second full budget to the compatibility path.
+    return liftCodeBatchOutcome(
+      result,
+      'Prepared Python batch execution failed'
+    );
   }
 
   async executePreparedTrace(

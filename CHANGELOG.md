@@ -6,6 +6,24 @@ This repo uses Git tags as release boundaries. Version notes below summarize wha
 
 ## [Unreleased]
 
+### Added
+
+- Added the `algorithmBatchBoundary` runtime capability and
+  `algorithmFastBatch` execution timing so Judge consumers can identify the
+  Python reduced-capability batch path without treating the runner as the
+  enforcement authority.
+- Added the exported `PythonAlgorithmFastBatchUnavailableError` signal used to
+  retire an unavailable fast worker before compatibility retry.
+
+### Changed
+
+- Python prepared artifacts now use schema v3 and carry an immutable isolation
+  profile. Cached artifacts from older harness releases must be prepared again.
+- Admitted Python algorithm code batches execute in one reduced-capability
+  worker with per-case state reset and one aggregate deadline. Non-admitted or
+  unavailable batches use a fresh outer Pyodide worker per case, preserving
+  case isolation at higher latency and worker cost.
+
 ## [0.17.0] - 2026-08-25
 
 This release establishes the capability boundary for algorithm Judge

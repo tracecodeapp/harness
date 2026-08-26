@@ -1851,14 +1851,6 @@ _tracecode_batch_user_code = _tracecode_batch_builtins.compile(
     'solution.py',
     'exec',
 )
-_tracecode_batch_internal_functions = {
-    '_tracecode_case_tracer', '_tracecode_isolated_print',
-    '_tracecode_batch_append_result',
-    '_tracecode_batch_hydrate_for_annotation',
-    '_tracecode_batch_hydrate_inputs', '_tracecode_batch_prepare_call',
-    '_tracecode_annotation_preserves_literal_shape',
-}
-
 def _tracecode_batch_append_result(entry):
     try:
         _tracecode_batch_encode_results([entry])
@@ -8189,6 +8181,12 @@ async function executePreparedProgramBatch(
         // provider to retire this worker and retry each case in its own full
         // compatibility scope instead of exposing an internal driver error.
         const runMs = deps.performanceNow() - startedAt;
+        deps.emitRuntimeDiagnostic?.(
+          'warn',
+          'algorithm-fast-batch-fallback',
+          'Python algorithm-fast batch driver failed; requesting compatibility isolation.',
+          { caseCount: cases.length, runMs }
+        );
         return {
           success: false,
           results: [],

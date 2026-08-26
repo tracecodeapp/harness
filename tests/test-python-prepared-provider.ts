@@ -6,6 +6,9 @@ import {
   type PythonPreparedProgramArtifact,
   type PythonWorkerClient,
 } from '../packages/runtime-python/src/index';
+import {
+  calculatePythonCodeBatchDeadlineMs,
+} from '../packages/runtime-python/src/python-worker-client';
 import { ExecutionTimeoutError } from '../packages/runtime-browser/src/internal';
 import type {
   CodeExecutionBatchResult,
@@ -62,6 +65,11 @@ function deferred(): {
   });
   return { promise, resolve };
 }
+
+test('Python code-batch deadlines scale from the per-case budget', () => {
+  assert.equal(calculatePythonCodeBatchDeadlineMs(100), 3_015_000);
+  assert.equal(calculatePythonCodeBatchDeadlineMs(4, 25), 5_500);
+});
 
 async function waitUntil(predicate: () => boolean, message: string): Promise<void> {
   for (let attempt = 0; attempt < 100; attempt += 1) {
@@ -570,6 +578,92 @@ test('Python compatibility batches preserve per-case client timeout outcomes and
   const executions = calls.filter((call) => call.method === 'execute-code');
   assert.equal(executions.length, 3);
   assert.equal(new Set(executions.map((call) => call.worker)).size, 3);
+  await preparation.program.dispose();
+  provider.terminate();
+});
+
+test('Python fast fallback shares the original aggregate deadline', async (context) => {
+  context.mock.timers.enable({ apis: ['setTimeout'] });
+  const calls: Array<{ worker: number; method: string }> = [];
+  const fastPathElapsedMs = 3_000;
+  let nextWorker = 0;
+  const createWorkerClient = (): PythonWorkerClient => {
+    const worker = nextWorker++;
+    return {
+      async warmup() {
+        calls.push({ worker, method: 'warmup' });
+        return { success: true, loadTimeMs: 1 };
+      },
+      async prepareProgram(call: RuntimeProgramPreparationCall) {
+        calls.push({ worker, method: 'prepare' });
+        return {
+          success: true as const,
+          artifact: artifact(call.mode, 'algorithm-fast'),
+          mode: call.mode,
+          consoleOutput: [],
+        };
+      },
+      async executePreparedCodeBatch(): Promise<CodeExecutionBatchResult> {
+        calls.push({ worker, method: 'execute-batch' });
+        context.mock.timers.tick(fastPathElapsedMs);
+        throw new PythonAlgorithmFastBatchUnavailableError();
+      },
+      async executePreparedCode(
+        _handle: unknown,
+        call: { signal?: AbortSignal }
+      ): Promise<CodeExecutionResult> {
+        calls.push({ worker, method: 'execute-code' });
+        return new Promise<CodeExecutionResult>((_resolve, reject) => {
+          const rejectFromAbort = () =>
+            reject(
+              call.signal?.reason ?? new DOMException('Aborted', 'AbortError')
+            );
+          if (call.signal?.aborted) {
+            rejectFromAbort();
+            return;
+          }
+          call.signal?.addEventListener('abort', rejectFromAbort, {
+            once: true,
+          });
+        });
+      },
+      terminate() {
+        calls.push({ worker, method: 'terminate' });
+      },
+    } as unknown as PythonWorkerClient;
+  };
+  const provider = createPythonPreparedExecutionProvider({ createWorkerClient });
+  const preparation = await provider.prepareProgram(preparationCall());
+  assert.equal(preparation.kind, 'prepared');
+  if (
+    preparation.kind !== 'prepared' ||
+    preparation.program.mode !== 'code' ||
+    !preparation.program.executeBatchIsolated
+  ) {
+    return;
+  }
+
+  const execution = preparation.program.executeBatchIsolated({
+    inputBatch: [{ value: 1 }, { value: 2 }],
+    limits: { wallClockMs: 1 },
+  });
+  await waitUntil(
+    () => calls.some((call) => call.method === 'execute-code'),
+    'Compatibility execution did not start'
+  );
+  context.mock.timers.tick(
+    calculatePythonCodeBatchDeadlineMs(2, 1) - fastPathElapsedMs
+  );
+  await assert.rejects(execution, /Python batch execution timed out/);
+  assert.equal(
+    calls.filter((call) => call.method === 'execute-batch').length,
+    1
+  );
+  assert.equal(
+    calls.filter((call) => call.method === 'execute-code').length,
+    1,
+    'The aggregate deadline must prevent later compatibility cases from starting'
+  );
   await preparation.program.dispose();
   provider.terminate();
 });

@@ -3,7 +3,10 @@ import type {
   PythonProjectCommandRequest,
   PythonWorkerClient,
 } from './python-worker-client';
-import { PythonAlgorithmFastBatchUnavailableError } from './python-worker-client';
+import {
+  calculatePythonCodeBatchDeadlineMs,
+  PythonAlgorithmFastBatchUnavailableError,
+} from './python-worker-client';
 import type {
   RuntimeClient,
   RuntimeCodeCall,
@@ -36,6 +39,7 @@ import {
 } from '@tracecode/runtime-contracts';
 import {
   assertRuntimeRequestSupported,
+  ExecutionTimeoutError,
   executeRuntimeRequest,
   getLanguageRuntimeProfile,
   isExecutionTimeoutError,
@@ -556,25 +560,58 @@ class PreparedPythonProgramLifetime {
   async executeCodeBatch(
     call: RuntimePreparedCodeBatchCall
   ): Promise<readonly CodeExecutionResult[]> {
-    if (
-      this.handle.artifact.mode !== 'code' ||
-      this.handle.artifact.isolationProfile.tier !== 'algorithm-fast'
-    ) {
-      return this.executeCompatibilityCodeBatch(call);
-    }
+    const aggregateTimeoutMs = calculatePythonCodeBatchDeadlineMs(
+      call.inputBatch.length,
+      call.limits?.wallClockMs
+    );
+    return this.runCodeBatchWithDeadline(
+      async (signal) => {
+        const scopedCall = { ...call, signal };
+        if (
+          this.handle.artifact.mode !== 'code' ||
+          this.handle.artifact.isolationProfile.tier !== 'algorithm-fast'
+        ) {
+          return this.executeCompatibilityCodeBatch(scopedCall);
+        }
+        try {
+          return await this.executeSerial(signal, async (client, caseSignal) => {
+            const result = await client.executePreparedCodeBatch(this.handle, {
+              ...scopedCall,
+              signal: caseSignal,
+            });
+            return result.results;
+          });
+        } catch (error) {
+          if (!(error instanceof PythonAlgorithmFastBatchUnavailableError)) {
+            throw error;
+          }
+          return this.executeCompatibilityCodeBatch(scopedCall);
+        }
+      },
+      aggregateTimeoutMs,
+      call.signal
+    );
+  }
+
+  private async runCodeBatchWithDeadline<T>(
+    operation: (signal: AbortSignal) => Promise<T>,
+    timeoutMs: number,
+    signal?: AbortSignal
+  ): Promise<T> {
+    const controller = new AbortController();
+    const unlink = linkAbortSignal(signal, controller);
+    const timeoutError = new ExecutionTimeoutError({
+      timeoutMs,
+      runtimeLabel: 'Python batch',
+    });
+    const timeout = globalThis.setTimeout(() => {
+      if (!controller.signal.aborted) controller.abort(timeoutError);
+    }, timeoutMs);
     try {
-      return await this.executeSerial(call.signal, async (client, signal) => {
-        const result = await client.executePreparedCodeBatch(this.handle, {
-          ...call,
-          signal,
-        });
-        return result.results;
-      });
-    } catch (error) {
-      if (!(error instanceof PythonAlgorithmFastBatchUnavailableError)) {
-        throw error;
-      }
-      return this.executeCompatibilityCodeBatch(call);
+      return await operation(controller.signal);
+    } finally {
+      globalThis.clearTimeout(timeout);
+      unlink();
     }
   }
 
@@ -614,6 +651,12 @@ class PreparedPythonProgramLifetime {
           limits: call.limits,
         }));
       } catch (error) {
+        if (call.signal?.aborted) {
+          throw abortReason(
+            call.signal,
+            'Prepared Python batch execution was aborted.'
+          );
+        }
         if (!isExecutionTimeoutError(error)) throw error;
         results.push({
           kind: 'limit',

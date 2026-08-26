@@ -1399,6 +1399,7 @@ function buildRuntimeDeps() {
     loadPyodideInstance,
     getPyodide: () => pyodide,
     performanceNow: () => performance.now(),
+    emitRuntimeDiagnostic,
   };
 }
 
