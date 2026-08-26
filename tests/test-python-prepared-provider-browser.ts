@@ -1239,6 +1239,15 @@ async function main(): Promise<void> {
             limits: { wallClockMs: 250 },
           }
         );
+        fastParityRuns.serializationDagCompatibility = await batchClient.request(
+          'execute-prepared-program-batch',
+          {
+            artifact: compatibilityArtifact(hostileSerialization.artifact),
+            mode: 'code',
+            inputBatch: [{ value: -1 }, { value: 1 }],
+            limits: { wallClockMs: 250 },
+          }
+        );
         fastParityRuns.wallClockModule = await batchClient.request(
           'execute-prepared-program-batch',
           {
@@ -1860,18 +1869,34 @@ async function main(): Promise<void> {
       .results as Array<{
         success?: boolean;
         output?: unknown;
+        timeoutReason?: string;
         timings?: { algorithmFastBatch?: boolean };
       }>;
     assertCondition(
       serializationDagResults.length === 2 &&
-        serializationDagResults[0]?.success === true &&
-        JSON.stringify(serializationDagResults[0]?.output).length < 500_000 &&
+        serializationDagResults[0]?.success === false &&
+        serializationDagResults[0]?.timeoutReason === 'serialization-limit' &&
         serializationDagResults[1]?.success === true &&
         serializationDagResults[1]?.output === 1 &&
         serializationDagResults.every(
           (entry) => entry.timings?.algorithmFastBatch === true
         ),
       `Learner-shaped shared output escaped the fast-batch serialization budget: ${JSON.stringify(result.fastParityRuns.serializationDag)}`
+    );
+    const serializationDagCompatibilityResults = result.fastParityRuns
+      .serializationDagCompatibility.results as Array<{
+        success?: boolean;
+        output?: unknown;
+        timeoutReason?: string;
+      }>;
+    assertCondition(
+      serializationDagCompatibilityResults.length === 2 &&
+        serializationDagCompatibilityResults[0]?.success === false &&
+        serializationDagCompatibilityResults[0]?.timeoutReason ===
+          'serialization-limit' &&
+        serializationDagCompatibilityResults[1]?.success === true &&
+        serializationDagCompatibilityResults[1]?.output === 1,
+      `Compatibility execution must report output budgets explicitly without corrupting later cases: ${JSON.stringify(result.fastParityRuns.serializationDagCompatibility)}`
     );
     const assertCaseLocalWallClock = (name: string) => {
       const run = result.fastParityRuns[name];

@@ -65,6 +65,7 @@ const PYTHON_TIMEOUT_REASONS = new Set<ExecutionLimitReason>([
   'single-line-limit',
   'recursion-limit',
   'memory-limit',
+  'serialization-limit',
   'client-timeout',
 ]);
 const PYTHON_TRACE_TIMEOUT_REASONS = new Set([

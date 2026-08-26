@@ -405,16 +405,15 @@ _MAX_SERIALIZE_DEPTH = 48
 _MAX_SERIALIZED_ITEMS = 10000
 _MAX_SERIALIZED_NODES = 10000
 
+class _TracecodeSerializationLimit(BaseException):
+    pass
+
 def _serialize_checkpoint(state):
     state["nodes"] += 1
     if state["nodes"] > _MAX_SERIALIZED_NODES:
-        return False
+        raise _TracecodeSerializationLimit()
     if state["nodes"] % 64 == 0 and state["checkpoint"] is not None:
         state["checkpoint"]()
-    return True
-
-def _serialize_truncation(total, emitted):
-    return {"__truncated__": True, "remaining": max(0, total - emitted)}
 
 def _serialize_type_metadata(obj):
     try:
@@ -444,6 +443,7 @@ def _serialize_repr_fallback(obj):
 def _serialize(obj, depth=0, state=None, checkpoint=None):
     if state is None:
         state = {"nodes": 0, "checkpoint": checkpoint}
+    _serialize_checkpoint(state)
     if isinstance(obj, (bool, int, str, type(None))):
         return obj
     elif isinstance(obj, float):
@@ -454,49 +454,30 @@ def _serialize(obj, depth=0, state=None, checkpoint=None):
         return obj
     if depth > _MAX_SERIALIZE_DEPTH:
         return "<max depth>"
-    if not _serialize_checkpoint(state):
-        return "<max nodes>"
-    elif isinstance(obj, (_builtins.list, _builtins.tuple)):
-        emitted = min(len(obj), _MAX_SERIALIZED_ITEMS)
-        result = [_serialize(obj[index], depth + 1, state) for index in range(emitted)]
-        if emitted < len(obj):
-            result.append(_serialize_truncation(len(obj), emitted))
-        return result
+    if isinstance(obj, (_builtins.list, _builtins.tuple)):
+        if len(obj) > _MAX_SERIALIZED_ITEMS:
+            raise _TracecodeSerializationLimit()
+        return [_serialize(value, depth + 1, state) for value in obj]
     elif _serialize_type_metadata(obj)[0] == 'deque':
-        total = len(obj)
-        result = []
-        for index, value in enumerate(obj):
-            if index >= _MAX_SERIALIZED_ITEMS:
-                break
-            result.append(_serialize(value, depth + 1, state))
-        if len(result) < total:
-            result.append(_serialize_truncation(total, len(result)))
-        return result
+        if len(obj) > _MAX_SERIALIZED_ITEMS:
+            raise _TracecodeSerializationLimit()
+        return [_serialize(value, depth + 1, state) for value in obj]
     elif isinstance(obj, _builtins.dict):
-        result = {}
-        for index, (key, value) in enumerate(obj.items()):
-            if index >= _MAX_SERIALIZED_ITEMS:
-                break
-            result[str(key)] = _serialize(value, depth + 1, state)
-        if len(result) < len(obj):
-            result["__truncated__"] = True
-            result["remaining"] = len(obj) - len(result)
-        return result
+        if len(obj) > _MAX_SERIALIZED_ITEMS:
+            raise _TracecodeSerializationLimit()
+        return {
+            str(key): _serialize(value, depth + 1, state)
+            for key, value in obj.items()
+        }
     elif isinstance(obj, set):
-        values = []
-        for index, value in enumerate(obj):
-            if index >= _MAX_SERIALIZED_ITEMS:
-                break
-            values.append(_serialize(value, depth + 1, state))
+        if len(obj) > _MAX_SERIALIZED_ITEMS:
+            raise _TracecodeSerializationLimit()
+        values = [_serialize(value, depth + 1, state) for value in obj]
         try:
             values = sorted(values)
         except TypeError:
             pass
-        result = {"__type__": "set", "values": values}
-        if len(values) < len(obj):
-            result["__truncated__"] = True
-            result["remaining"] = len(obj) - len(values)
-        return result
+        return {"__type__": "set", "values": values}
     elif isinstance(obj, TreeNode):
         result = {"__type__": "TreeNode", "val": _serialize(getattr(obj, 'val', getattr(obj, 'value', None)), depth + 1, state)}
         if hasattr(obj, 'left'):
@@ -518,15 +499,15 @@ def _serialize(obj, depth=0, state=None, checkpoint=None):
         except Exception:
             raw_fields = None
         if isinstance(raw_fields, _builtins.dict):
-            for index, (key, value) in enumerate(raw_fields.items()):
-                if index >= _MAX_SERIALIZED_ITEMS:
-                    result["__truncated__"] = True
-                    result["remaining"] = len(raw_fields) - index
-                    break
+            emitted = 0
+            for key, value in raw_fields.items():
                 key_str = str(key)
                 if key_str.startswith('_') or callable(value):
                     continue
+                if emitted >= _MAX_SERIALIZED_ITEMS:
+                    raise _TracecodeSerializationLimit()
                 result[key_str] = _serialize(value, depth + 1, state)
+                emitted += 1
         return result
     else:
         return _serialize_repr_fallback(obj)

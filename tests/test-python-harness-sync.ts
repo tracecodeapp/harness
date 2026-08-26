@@ -59,6 +59,42 @@ function countOccurrences(source: string, pattern: string): number {
   return source.split(pattern).length - 1;
 }
 
+function extractInlineSnippetFallback(
+  source: string,
+  constantName: string
+): string {
+  const declaration =
+    `const ${constantName}_SNIPPET = resolveSharedPythonSnippet(`;
+  const declarationStart = source.indexOf(declaration);
+  assertCondition(
+    declarationStart >= 0,
+    `Worker fallback declaration is missing: ${constantName}`
+  );
+  const contentStartMarker = source.indexOf('  `', declarationStart);
+  assertCondition(
+    contentStartMarker >= 0,
+    `Worker fallback template start is missing: ${constantName}`
+  );
+  const contentEndMarker = source.indexOf('\n`\n);', contentStartMarker + 3);
+  assertCondition(
+    contentEndMarker >= 0,
+    `Worker fallback template end is missing: ${constantName}`
+  );
+  return source.slice(contentStartMarker + 3, contentEndMarker + 1);
+}
+
+function assertInlineSnippetFallback(
+  source: string,
+  constantName: string,
+  expected: string
+): void {
+  const actual = extractInlineSnippetFallback(source, constantName);
+  assertCondition(
+    actual === expected,
+    `Worker fallback drift detected in ${constantName}`
+  );
+}
+
 function createWorkerContext(source: string): vm.Context {
   const selfObject: Record<string, unknown> = {
     location: { search: '' },
@@ -492,13 +528,27 @@ async function main(): Promise<void> {
   assertLineSubsequenceInSource(workerSource, PYTHON_CONVERSION_HELPERS, 'PYTHON_CONVERSION_HELPERS');
   console.log('PASS: conversion helpers synced');
 
-  const traceSerializeContractBlock = selectTraceSerializeContractLines(PYTHON_TRACE_SERIALIZE_FUNCTION);
-  assertLineSubsequenceInSource(workerSource, traceSerializeContractBlock, 'PYTHON_TRACE_SERIALIZE_FUNCTION core contract');
-  const executeSerializeContractBlock = selectExecuteSerializeContractLines(PYTHON_EXECUTE_SERIALIZE_FUNCTION);
-  assertLineSubsequenceInSource(workerSource, executeSerializeContractBlock, 'PYTHON_EXECUTE_SERIALIZE_FUNCTION core contract');
+  const inlineTraceFallback = extractInlineSnippetFallback(
+    workerSource,
+    'PYTHON_TRACE_SERIALIZE_FUNCTION'
+  );
+  assertLineSubsequenceInSource(
+    inlineTraceFallback,
+    selectTraceSerializeContractLines(PYTHON_TRACE_SERIALIZE_FUNCTION),
+    'PYTHON_TRACE_SERIALIZE_FUNCTION inline fallback'
+  );
+  assertInlineSnippetFallback(
+    workerSource,
+    'PYTHON_EXECUTE_SERIALIZE_FUNCTION',
+    PYTHON_EXECUTE_SERIALIZE_FUNCTION
+  );
   const compatSerializeContractBlock = selectExecuteSerializeContractLines(PYTHON_SERIALIZE_FUNCTION);
-  assertLineSubsequenceInSource(workerSource, compatSerializeContractBlock, 'PYTHON_SERIALIZE_FUNCTION compatibility contract');
-  console.log('PASS: serialize contracts synced');
+  assertCondition(
+    compatSerializeContractBlock ===
+      selectExecuteSerializeContractLines(PYTHON_EXECUTE_SERIALIZE_FUNCTION),
+    'Compatibility serializer must share the execute serializer contract'
+  );
+  console.log('PASS: inline serialize fallbacks synced');
 
   await assertWorkerInitWarmupContract(workerSource, runtimeCoreSource, sharedPolicySource);
   await assertToPythonLiteralParity(workerSource);

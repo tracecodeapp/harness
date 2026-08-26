@@ -67,7 +67,7 @@ function deferred(): {
 }
 
 test('Python code-batch deadlines scale from the per-case budget', () => {
-  assert.equal(calculatePythonCodeBatchDeadlineMs(100), 3_015_000);
+  assert.equal(calculatePythonCodeBatchDeadlineMs(100), 30_000);
   assert.equal(calculatePythonCodeBatchDeadlineMs(4, 25), 5_500);
 });
 

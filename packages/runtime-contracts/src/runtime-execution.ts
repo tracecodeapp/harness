@@ -44,6 +44,7 @@ export type ExecutionLimitReason =
   | 'single-line-limit'
   | 'recursion-limit'
   | 'memory-limit'
+  | 'serialization-limit'
   | 'client-timeout';
 
 /** Which pipeline stage produced a failure diagnostic. */

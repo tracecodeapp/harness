@@ -2086,6 +2086,20 @@ for _tracecode_batch_inputs in _tracecode_batch_cases:
                 'algorithmFastBatch': True,
             },
         }
+    except _TracecodeSerializationLimit:
+        _tracecode_case_result = {
+            'success': False,
+            'output': None,
+            'error': 'Execution stopped: resource limit exceeded (serialization-limit).',
+            'timeoutReason': 'serialization-limit',
+            'consoleOutput': _tracecode_case_console,
+            'timings': {
+                'runMs': (
+                    _tracecode_batch_time.perf_counter() - _tracecode_case_started
+                ) * 1000,
+                'algorithmFastBatch': True,
+            },
+        }
     except BaseException as error:
         error_line = None
         try:
@@ -7385,11 +7399,19 @@ else:
         _inplace = _resolve_inplace_result()
         if _inplace is not None:
             _result = _inplace
-    _json_out = json.dumps({
-        "guardTriggered": False,
-        "output": _serialize(_result),
-        "console": _console_output,
-    })
+    try:
+        _serialized_result = _serialize(_result)
+    except _TracecodeSerializationLimit:
+        _json_out = json.dumps({
+            "serializationLimit": True,
+            "console": _console_output,
+        })
+    else:
+        _json_out = json.dumps({
+            "guardTriggered": False,
+            "output": _serialized_result,
+            "console": _console_output,
+        })
 
 _json_out
 `
@@ -7713,6 +7735,17 @@ _json_out
           ? { errorLine: result.executionError.line }
           : {}),
         consoleOutput: [],
+        timings: { totalMs: deps.performanceNow() - startedAt },
+      };
+    }
+
+    if (result.serializationLimit === true) {
+      return {
+        success: false,
+        output: null,
+        error: 'Execution stopped: resource limit exceeded (serialization-limit).',
+        timeoutReason: 'serialization-limit',
+        consoleOutput: Array.isArray(result.console) ? result.console : [],
         timings: { totalMs: deps.performanceNow() - startedAt },
       };
     }

@@ -198,8 +198,9 @@ const BATCH_DRIVER_MAX_HEADROOM_MS = 30_000;
 
 export function calculatePythonCodeBatchDeadlineMs(
   caseCount: number,
-  perCaseWallClockMs = EXECUTION_TIMEOUT_MS
+  perCaseWallClockMs?: number
 ): number {
+  if (perCaseWallClockMs === undefined) return EXECUTION_TIMEOUT_MS;
   const normalizedCaseCount = Math.max(1, Math.floor(caseCount));
   const normalizedPerCaseMs = Math.max(1, perCaseWallClockMs);
   const driverHeadroomMs = Math.min(
@@ -611,11 +612,16 @@ export class PythonWorkerClient {
       readonly limits?: RuntimeExecutionLimits;
     }
   ): Promise<CodeExecutionBatchResult> {
+    const perCaseWallClockMs =
+      call.limits?.wallClockMs ?? EXECUTION_TIMEOUT_MS;
     const wallClockMs = calculatePythonCodeBatchDeadlineMs(
       call.inputBatch.length,
       call.limits?.wallClockMs
     );
-    const guestLimits = pickGuestLimits(call.limits);
+    const guestLimits = pickGuestLimits({
+      ...call.limits,
+      wallClockMs: perCaseWallClockMs,
+    });
     const program = this.core.withExecutionDeadline(
       this.core.sendMessageEffect<PythonRawCodeBatchResult>(
         'execute-prepared-program-batch',
