@@ -78,6 +78,13 @@ const PYTHON_ALGORITHM_REFLECTIVE_ATTRIBUTE_PREFIXES = [
   'gi_', 'cr_', 'ag_', 'tb_', 'co_',
 ];
 
+// Shared stdlib objects may expose registration APIs whose state outlives a
+// learner namespace. Calls rooted in an imported/default-import binding must
+// not reach these APIs on the retained interpreter.
+const PYTHON_ALGORITHM_SHARED_STATE_CALL_NAMES = [
+  'clear_overloads', 'get_overloads', 'overload', 'register',
+];
+
 const PYTHON_LITERAL_SHAPE_ANNOTATION_HELPER = `
 def _tracecode_annotation_preserves_literal_shape(_annotation):
     try:
@@ -358,6 +365,7 @@ class __TracecodeExecutionGuard:
         algorithm_reflective_functools_names,
         algorithm_reflective_attribute_names,
         algorithm_reflective_attribute_prefixes,
+        algorithm_shared_state_call_names,
     ):
         self._ast = ast_module
         self._base64 = base64_module
@@ -385,6 +393,9 @@ class __TracecodeExecutionGuard:
         ) | self._algorithm_reflective_functools_names
         self._algorithm_reflective_attribute_prefixes = tuple(
             algorithm_reflective_attribute_prefixes
+        )
+        self._algorithm_shared_state_call_names = set(
+            algorithm_shared_state_call_names
         )
         algorithm_defaults = {'__builtins__': dict(self._builtins_dict)}
         exec(
@@ -551,6 +562,8 @@ class __TracecodeExecutionGuard:
                         and alias.name in self._algorithm_reflective_functools_names
                     ):
                         reasons.append('evaluating-import:functools.' + alias.name)
+                    if alias.name in self._algorithm_shared_state_call_names:
+                        reasons.append('shared-state-call:' + alias.name)
                 if node.level or root in denied_modules or root not in allowed_modules:
                     reasons.append('denied-import:' + (node.module or '<relative>'))
             elif isinstance(node, ast.Name) and node.id in denied_names:
@@ -780,6 +793,15 @@ class __TracecodeExecutionGuard:
                 ):
                     reasons.append('shared-state-write')
 
+            if (
+                isinstance(node, ast.Attribute)
+                and (attribute_root := root_name_node(node)) is not None
+                and attribute_root.id in shared_names
+                and not is_locally_shadowed(attribute_root)
+                and node.attr in self._algorithm_shared_state_call_names
+                and shared_attribute_is_directly_invoked(node)
+            ):
+                reasons.append('shared-state-call:' + node.attr)
             if (
                 isinstance(node, ast.Attribute)
                 and (attribute_root := root_name_node(node)) is not None
@@ -1037,6 +1059,7 @@ __tracecode_execution_guard = __TracecodeExecutionGuard(
     ${JSON.stringify(PYTHON_ALGORITHM_REFLECTIVE_FUNCTOOLS_NAMES)},
     ${JSON.stringify(PYTHON_ALGORITHM_REFLECTIVE_ATTRIBUTE_NAMES)},
     ${JSON.stringify(PYTHON_ALGORITHM_REFLECTIVE_ATTRIBUTE_PREFIXES)},
+    ${JSON.stringify(PYTHON_ALGORITHM_SHARED_STATE_CALL_NAMES)},
 )
 __tracecode_execution_guard
 `);
@@ -1372,6 +1395,7 @@ import inspect as _tracecode_batch_inspect
 import json as _tracecode_batch_json
 import math as _tracecode_batch_math
 import random as _tracecode_batch_random
+import re as _tracecode_batch_re
 import sys as _tracecode_batch_sys
 import time as _tracecode_batch_time
 import traceback as _tracecode_batch_traceback
@@ -1835,7 +1859,20 @@ _tracecode_batch_internal_functions = {
 }
 
 for _tracecode_batch_inputs in _tracecode_batch_cases:
+    # re's compiled-pattern cache is interpreter-global. It is not exposed by
+    # the capability facade, but clearing it at every case boundary also
+    # removes the timing/residency channel between retained-batch cases.
+    _tracecode_batch_re.purge()
     _tracecode_case_started = _tracecode_batch_time.perf_counter()
+    _tracecode_wall_clock_ms = _tracecode_batch_limits.get(
+        'wallClockMs',
+        None,
+    )
+    _tracecode_case_deadline = (
+        _tracecode_case_started + max(1.0, float(_tracecode_wall_clock_ms)) / 1000.0
+        if _tracecode_wall_clock_ms is not None
+        else None
+    )
     _tracecode_case_console = []
     _tracecode_case_globals = dict(_tracecode_batch_base)
     _tracecode_case_builtins = dict(_tracecode_batch_safe_builtins)
@@ -1876,8 +1913,12 @@ for _tracecode_batch_inputs in _tracecode_batch_cases:
     _tracecode_call_depth = 0
     _tracecode_memory_started = False
     _tracecode_tracemalloc = None
-    _tracecode_limits_enabled = bool(
+    _tracecode_interview_limits_enabled = bool(
         _tracecode_batch_limits.get('interviewGuard', False)
+    )
+    _tracecode_limits_enabled = (
+        _tracecode_interview_limits_enabled
+        or _tracecode_case_deadline is not None
     )
     _tracecode_max_line_events = max(
         10000,
@@ -1910,14 +1951,19 @@ for _tracecode_batch_inputs in _tracecode_batch_cases:
             and frame.f_code.co_name in _tracecode_batch_internal_functions
         ):
             return _tracecode_case_tracer
-        if event == 'call':
+        if (
+            _tracecode_case_deadline is not None
+            and _tracecode_batch_time.perf_counter() >= _tracecode_case_deadline
+        ):
+            raise _TracecodeAlgorithmLimit('client-timeout')
+        if event == 'call' and _tracecode_interview_limits_enabled:
             _tracecode_call_depth += 1
             if _tracecode_call_depth > _tracecode_max_call_depth:
                 raise _TracecodeAlgorithmLimit('recursion-limit')
-        elif event == 'return':
+        elif event == 'return' and _tracecode_interview_limits_enabled:
             if _tracecode_call_depth > 0:
                 _tracecode_call_depth -= 1
-        elif event == 'line':
+        elif event == 'line' and _tracecode_interview_limits_enabled:
             _tracecode_line_events += 1
             if _tracecode_line_events >= _tracecode_max_line_events:
                 raise _TracecodeAlgorithmLimit('line-limit')
@@ -1973,12 +2019,13 @@ for _tracecode_batch_inputs in _tracecode_batch_cases:
         ) = _tracecode_batch_prepare_call(target, _tracecode_case_inputs)
         if _tracecode_limits_enabled:
             try:
-                import tracemalloc as _tracecode_tracemalloc
-                if not _tracecode_tracemalloc.is_tracing():
-                    _tracecode_tracemalloc.start()
-                    _tracecode_memory_started = True
-                else:
-                    _tracecode_tracemalloc.reset_peak()
+                if _tracecode_interview_limits_enabled:
+                    import tracemalloc as _tracecode_tracemalloc
+                    if not _tracecode_tracemalloc.is_tracing():
+                        _tracecode_tracemalloc.start()
+                        _tracecode_memory_started = True
+                    else:
+                        _tracecode_tracemalloc.reset_peak()
             except Exception:
                 _tracecode_tracemalloc = None
             _tracecode_batch_sys.settrace(_tracecode_case_tracer)
@@ -2032,17 +2079,36 @@ for _tracecode_batch_inputs in _tracecode_batch_cases:
         })
     except BaseException as error:
         _tracecode_batch_sys.settrace(None)
-        frames = _tracecode_batch_traceback.extract_tb(error.__traceback__)
-        user_frames = [frame for frame in frames if frame.filename == 'solution.py']
-        error_line = user_frames[-1].lineno if user_frames else None
-        error_message = str(error).strip().split('\\n')[0]
-        error_prefix = type(error).__name__
+        error_line = None
+        try:
+            frames = _tracecode_batch_traceback.extract_tb(error.__traceback__)
+            user_frames = [
+                frame for frame in frames if frame.filename == 'solution.py'
+            ]
+            error_line = user_frames[-1].lineno if user_frames else None
+        except BaseException:
+            error_line = None
+        try:
+            error_type = _tracecode_batch_builtins.BaseException.__getattribute__(
+                error,
+                '__class__',
+            )
+            error_prefix = _tracecode_batch_builtins.type.__getattribute__(
+                error_type,
+                '__name__',
+            )
+        except BaseException:
+            error_prefix = 'ExecutionError'
+        try:
+            error_detail = str(error).strip().split('\\n')[0]
+        except BaseException:
+            error_detail = 'Execution failed'
         if error_line is not None:
             error_prefix += ' on line ' + str(error_line)
         entry = {
             'success': False,
             'output': None,
-            'error': error_prefix + ': ' + error_message,
+            'error': error_prefix + ': ' + error_detail,
             'consoleOutput': [],
             'timings': {
                 'runMs': (
@@ -2055,7 +2121,24 @@ for _tracecode_batch_inputs in _tracecode_batch_cases:
             entry['errorLine'] = error_line
         _tracecode_batch_results.append(entry)
 
-_json_out = _tracecode_batch_encode_results(_tracecode_batch_results)
+_tracecode_batch_re.purge()
+try:
+    _json_out = _tracecode_batch_encode_results(_tracecode_batch_results)
+except BaseException:
+    _tracecode_batch_results = [
+        {
+            'success': False,
+            'output': None,
+            'error': 'Execution failed',
+            'consoleOutput': [],
+            'timings': {
+                'runMs': 0,
+                'algorithmFastBatch': True,
+            },
+        }
+        for _tracecode_unused_case in _tracecode_batch_cases
+    ]
+    _json_out = _tracecode_batch_encode_results(_tracecode_batch_results)
 _json_out
 `;
 }
@@ -8049,58 +8132,80 @@ async function executePreparedProgramBatch(
       };
     }
     if (useAlgorithmFastBatch) {
-      algorithmFastBatchCode = deserializePythonCodeArtifact(
-        deps,
-        artifact.algorithmFastBatchCode
-      );
-      const resultJson = await runCompiledPythonInFreshExecutionScope(
-        deps,
-        algorithmFastBatchCode,
-        '_json_out',
-        {
-          __tracecode_prepared_user_source: artifact.code,
-          __tracecode_input_batch_literal: preparedPythonLiteral(deps, cases),
-          __tracecode_limits_literal: preparedPythonLiteral(
-            deps,
-            limits?.guest ?? {}
+      try {
+        algorithmFastBatchCode = deserializePythonCodeArtifact(
+          deps,
+          artifact.algorithmFastBatchCode
+        );
+        const resultJson = await runCompiledPythonInFreshExecutionScope(
+          deps,
+          algorithmFastBatchCode,
+          '_json_out',
+          {
+            __tracecode_prepared_user_source: artifact.code,
+            __tracecode_input_batch_literal: preparedPythonLiteral(deps, cases),
+            __tracecode_limits_literal: preparedPythonLiteral(
+              deps,
+              limits?.guest ?? {}
+            ),
+          },
+          undefined,
+          'algorithm-fast'
+        );
+        const results = JSON.parse(resultJson);
+        const resultsHaveTrustedShape =
+          Array.isArray(results) &&
+          results.length === cases.length &&
+          results.every((result) =>
+            result !== null &&
+            typeof result === 'object' &&
+            !Array.isArray(result) &&
+            typeof result.success === 'boolean' &&
+            Object.hasOwn(result, 'output') &&
+            Array.isArray(result.consoleOutput) &&
+            result.timings !== null &&
+            typeof result.timings === 'object' &&
+            result.timings.algorithmFastBatch === true
+          );
+        if (!resultsHaveTrustedShape) {
+          throw new Error(
+            'Prepared Python algorithm-fast batch returned an invalid result envelope.'
+          );
+        }
+        const runMs = deps.performanceNow() - startedAt;
+        return {
+          success: results.every((result) => result?.success === true),
+          results,
+          consoleOutput: results.flatMap(
+            (result) => result?.consoleOutput ?? []
           ),
-        },
-        undefined,
-        'algorithm-fast'
-      );
-      const results = JSON.parse(resultJson);
-      const resultsHaveTrustedShape =
-        Array.isArray(results) &&
-        results.length === cases.length &&
-        results.every((result) =>
-          result !== null &&
-          typeof result === 'object' &&
-          !Array.isArray(result) &&
-          typeof result.success === 'boolean' &&
-          Object.hasOwn(result, 'output') &&
-          Array.isArray(result.consoleOutput) &&
-          result.timings !== null &&
-          typeof result.timings === 'object' &&
-          result.timings.algorithmFastBatch === true
-        );
-      if (!resultsHaveTrustedShape) {
-        throw new Error(
-          'Prepared Python algorithm-fast batch returned an invalid result envelope.'
-        );
+          timings: {
+            totalMs: runMs,
+            runMs,
+            compileCacheHit: true,
+            artifactCacheHit: true,
+            algorithmFastBatch: true,
+          },
+        };
+      } catch {
+        // No partial batch result has crossed the worker boundary. Ask the
+        // provider to retire this worker and retry each case in its own full
+        // compatibility scope instead of exposing an internal driver error.
+        const runMs = deps.performanceNow() - startedAt;
+        return {
+          success: false,
+          results: [],
+          error: 'Prepared Python algorithm-fast batch requires compatibility isolation.',
+          consoleOutput: [],
+          algorithmFastBatchUnavailable: true,
+          timings: {
+            totalMs: runMs,
+            runMs,
+            compileCacheHit: true,
+            artifactCacheHit: true,
+          },
+        };
       }
-      const runMs = deps.performanceNow() - startedAt;
-      return {
-        success: results.every((result) => result?.success === true),
-        results,
-        consoleOutput: results.flatMap((result) => result?.consoleOutput ?? []),
-        timings: {
-          totalMs: runMs,
-          runMs,
-          compileCacheHit: true,
-          artifactCacheHit: true,
-          algorithmFastBatch: true,
-        },
-      };
     }
     userCodeObject = deserializePythonCodeArtifact(deps, artifact.userCode);
     executorCode = deserializePythonCodeArtifact(deps, artifact.executorCode);

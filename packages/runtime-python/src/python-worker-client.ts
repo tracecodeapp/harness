@@ -107,12 +107,17 @@ interface PythonWorkerClientInternalOptions extends PythonWorkerClientOptions {
   runtimeImageFactory?: PythonRuntimeImageFactory;
 }
 
-/** Guest-enforced limits forwarded to the worker; wallClockMs stays client-side. */
+/**
+ * Guest-enforced limits forwarded to the worker. wallClockMs remains guarded
+ * by the client deadline too, but retained fast batches also need the value to
+ * enforce the deadline independently for each case.
+ */
 function pickGuestLimits(
   limits: RuntimeExecutionLimits | undefined
-): Pick<RuntimeExecutionLimits, 'maxLineEvents' | 'maxSingleLineHits' | 'maxCallDepth' | 'maxMemoryBytes'> | undefined {
+): Pick<RuntimeExecutionLimits, 'wallClockMs' | 'maxLineEvents' | 'maxSingleLineHits' | 'maxCallDepth' | 'maxMemoryBytes'> | undefined {
   if (!limits) return undefined;
   const guest = {
+    ...(limits.wallClockMs !== undefined ? { wallClockMs: limits.wallClockMs } : {}),
     ...(limits.maxLineEvents !== undefined ? { maxLineEvents: limits.maxLineEvents } : {}),
     ...(limits.maxSingleLineHits !== undefined ? { maxSingleLineHits: limits.maxSingleLineHits } : {}),
     ...(limits.maxCallDepth !== undefined ? { maxCallDepth: limits.maxCallDepth } : {}),
@@ -614,23 +619,11 @@ export class PythonWorkerClient {
         'Prepared Python batch execution failed'
       );
     } catch (error) {
-      if (
-        call.limits?.wallClockMs !== undefined &&
-        isExecutionTimeoutError(error)
-      ) {
-        return {
-          results: call.inputBatch.map(() => ({
-            kind: 'limit',
-            reason: 'client-timeout',
-            error: error.message,
-            consoleOutput: [],
-            timings: {
-              totalMs: call.limits!.wallClockMs,
-              runMs: call.limits!.wallClockMs,
-              artifactCacheHit: true,
-            },
-          })),
-        };
+      if (isExecutionTimeoutError(error)) {
+        // A batch watchdog cannot identify which case was running. Retire this
+        // worker and let the prepared lifetime retry each case through the
+        // compatibility path, where each outer worker has its own deadline.
+        throw new PythonAlgorithmFastBatchUnavailableError();
       }
       throw error;
     }

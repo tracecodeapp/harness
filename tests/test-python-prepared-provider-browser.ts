@@ -30,6 +30,7 @@ interface BrowserResult {
     updateWrapperEscape: { tier?: string; reasons: string[] };
     sharedAttributeEscape: { tier?: string; reasons: string[] };
     sharedDefaultCapture: { tier?: string; reasons: string[] };
+    sharedStateRegistration: { tier?: string; reasons: string[] };
     mathModuleMutation: { tier?: string; reasons: string[] };
     unknownImport: { tier?: string; reasons: string[] };
     unsupportedBuiltin: { tier?: string; reasons: string[] };
@@ -46,6 +47,8 @@ interface BrowserResult {
     moduleLookup: { tier?: string; reasons: string[] };
     localCount: { tier?: string; reasons: string[] };
     raising: { tier?: string; reasons: string[] };
+    hostileException: { tier?: string; reasons: string[] };
+    wallClockBatch: { tier?: string; reasons: string[] };
     parity: { tier?: string; reasons: string[] };
     inplace: { tier?: string; reasons: string[] };
     serialized: { tier?: string; reasons: string[] };
@@ -742,6 +745,46 @@ async function main(): Promise<void> {
         functionName: 'solve',
         executionStyle: 'function',
       });
+      const hostileException = await preparationWorker.request('prepare-program', {
+        mode: 'code',
+        code: [
+          'class Boom(Exception):',
+          '    def __str__(self):',
+          '        raise RuntimeError("hostile formatter")',
+          'def solve(value):',
+          '    if value == 0:',
+          '        raise Boom()',
+          '    return value',
+        ].join('\\n'),
+        functionName: 'solve',
+        executionStyle: 'function',
+      });
+      const wallClockBatch = await preparationWorker.request('prepare-program', {
+        mode: 'code',
+        code: [
+          'def solve(value):',
+          '    if value == 0:',
+          '        while True:',
+          '            value += 1',
+          '    return value',
+        ].join('\\n'),
+        functionName: 'solve',
+        executionStyle: 'function',
+      });
+      const sharedStateRegistration = await preparationWorker.request(
+        'prepare-program',
+        {
+          mode: 'code',
+          code: [
+            'import collections.abc',
+            'def solve(value):',
+            '    collections.abc.Iterable.register(int)',
+            '    return value',
+          ].join('\\n'),
+          functionName: 'solve',
+          executionStyle: 'function',
+        }
+      );
       for (const [name, prepared] of Object.entries({
         unsupportedBuiltin,
         transitiveTraversal,
@@ -756,6 +799,9 @@ async function main(): Promise<void> {
         moduleLookup,
         localCount,
         raising,
+        hostileException,
+        wallClockBatch,
+        sharedStateRegistration,
       })) {
         if (!prepared?.success || !prepared?.artifact) {
           throw new Error(
@@ -1133,6 +1179,23 @@ async function main(): Promise<void> {
             }],
           }
         );
+        fastParityRuns.hostileException = await batchClient.request(
+          'execute-prepared-program-batch',
+          {
+            artifact: hostileException.artifact,
+            mode: 'code',
+            inputBatch: [{ value: 0 }, { value: 1 }],
+          }
+        );
+        fastParityRuns.wallClockBatch = await batchClient.request(
+          'execute-prepared-program-batch',
+          {
+            artifact: wallClockBatch.artifact,
+            mode: 'code',
+            inputBatch: [{ value: 0 }, { value: 1 }],
+            limits: { wallClockMs: 25 },
+          }
+        );
         fastParityRuns.transitiveTraversal = await batchClient.request(
           'execute-prepared-program-batch',
           {
@@ -1385,6 +1448,7 @@ async function main(): Promise<void> {
           updateWrapperEscape,
           sharedAttributeEscape,
           sharedDefaultCapture,
+          sharedStateRegistration,
           mathModuleMutation,
           unknownImport,
           unsupportedBuiltin,
@@ -1406,6 +1470,8 @@ async function main(): Promise<void> {
           moduleLookup,
           localCount,
           raising,
+          hostileException,
+          wallClockBatch,
         },
         isolationProfiles: {
           code: code.artifact?.isolationProfile,
@@ -1434,6 +1500,8 @@ async function main(): Promise<void> {
             sharedAttributeEscape.artifact?.isolationProfile,
           sharedDefaultCapture:
             sharedDefaultCapture.artifact?.isolationProfile,
+          sharedStateRegistration:
+            sharedStateRegistration.artifact?.isolationProfile,
           mathModuleMutation:
             mathModuleMutation.artifact?.isolationProfile,
           unknownImport: unknownImport.artifact?.isolationProfile,
@@ -1454,6 +1522,8 @@ async function main(): Promise<void> {
           moduleLookup: moduleLookup.artifact?.isolationProfile,
           localCount: localCount.artifact?.isolationProfile,
           raising: raising.artifact?.isolationProfile,
+          hostileException: hostileException.artifact?.isolationProfile,
+          wallClockBatch: wallClockBatch.artifact?.isolationProfile,
           benchmarkCode: benchmarkCodeOnly.artifact?.isolationProfile,
           benchmarkHasFastBatch:
             typeof benchmarkCodeOnly.artifact?.algorithmFastBatchCode === 'string',
@@ -1562,6 +1632,8 @@ async function main(): Promise<void> {
         result.isolationProfiles.moduleLookup?.tier === 'algorithm-fast' &&
         result.isolationProfiles.localCount?.tier === 'algorithm-fast' &&
         result.isolationProfiles.raising?.tier === 'algorithm-fast' &&
+        result.isolationProfiles.hostileException?.tier === 'algorithm-fast' &&
+        result.isolationProfiles.wallClockBatch?.tier === 'algorithm-fast' &&
         result.isolationProfiles.cachedDecorator?.tier === 'algorithm-fast' &&
         result.isolationProfiles.benchmarkHasFastBatch === true,
       `Python algorithm code and deque imports must select an explicit fast artifact: ${JSON.stringify(result.isolationProfiles)}`
@@ -1629,6 +1701,11 @@ async function main(): Promise<void> {
         result.isolationProfiles.sharedDefaultCapture.reasons.includes(
           'shared-binding-escape:Counter'
         ) &&
+        result.isolationProfiles.sharedStateRegistration?.tier ===
+          'compatibility' &&
+        result.isolationProfiles.sharedStateRegistration.reasons.includes(
+          'shared-state-call:register'
+        ) &&
         result.isolationProfiles.mathModuleMutation?.tier ===
           'compatibility' &&
         result.isolationProfiles.mathModuleMutation.reasons.includes(
@@ -1646,8 +1723,8 @@ async function main(): Promise<void> {
       `Python fast-path admission must reject module mutation, reflective access, and unreviewed imports: ${JSON.stringify(result.isolationProfiles)}`
     );
     assertCondition(
-      result.preparationWorker.prepareRequests === 39,
-      `Preparation worker received ${String(result.preparationWorker.prepareRequests)} preparations instead of thirty-eight`
+      result.preparationWorker.prepareRequests === 42,
+      `Preparation worker received ${String(result.preparationWorker.prepareRequests)} preparations instead of forty-two`
     );
     const algorithmBatchResults = result.algorithmBatchRun.results as Array<{
       success?: boolean;
@@ -1668,6 +1745,43 @@ async function main(): Promise<void> {
           (entry) => entry.timings?.algorithmFastBatch === true
         ),
       `Python algorithm-fast batches must enforce limits, continue safely, and reset RNG state: ${JSON.stringify(result.algorithmBatchRun)}`
+    );
+    const hostileExceptionResults = result.fastParityRuns.hostileException
+      .results as Array<{
+        success?: boolean;
+        output?: unknown;
+        error?: string;
+        timings?: { algorithmFastBatch?: boolean };
+      }>;
+    assertCondition(
+      hostileExceptionResults.length === 2 &&
+        hostileExceptionResults[0]?.success === false &&
+        String(hostileExceptionResults[0]?.error).includes(
+          'Execution failed'
+        ) &&
+        hostileExceptionResults[1]?.success === true &&
+        hostileExceptionResults[1]?.output === 1 &&
+        hostileExceptionResults.every(
+          (entry) => entry.timings?.algorithmFastBatch === true
+        ),
+      `A hostile exception formatter escaped the per-case fast-batch envelope: ${JSON.stringify(result.fastParityRuns.hostileException)}`
+    );
+    const wallClockResults = result.fastParityRuns.wallClockBatch.results as Array<{
+      success?: boolean;
+      output?: unknown;
+      timeoutReason?: string;
+      timings?: { algorithmFastBatch?: boolean };
+    }>;
+    assertCondition(
+      wallClockResults.length === 2 &&
+        wallClockResults[0]?.success === false &&
+        wallClockResults[0]?.timeoutReason === 'client-timeout' &&
+        wallClockResults[1]?.success === true &&
+        wallClockResults[1]?.output === 1 &&
+        wallClockResults.every(
+          (entry) => entry.timings?.algorithmFastBatch === true
+        ),
+      `A fast-batch wall-clock trip did not remain case-local: ${JSON.stringify(result.fastParityRuns.wallClockBatch)}`
     );
     const parityResult = (result.fastParityRuns.parity.results as Array<{
       output?: unknown;

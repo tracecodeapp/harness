@@ -1453,12 +1453,28 @@ async function executeWithTracing(code, functionName, inputs, executionStyle = '
 function guestGuardOptionsFromLimits(limits) {
   if (!limits || typeof limits !== 'object') return undefined;
   const guard = {};
-  if (Number.isFinite(limits.maxLineEvents)) guard.maxLineEvents = limits.maxLineEvents;
-  if (Number.isFinite(limits.maxSingleLineHits)) guard.maxSingleLineHits = limits.maxSingleLineHits;
-  if (Number.isFinite(limits.maxCallDepth)) guard.maxCallDepth = limits.maxCallDepth;
-  if (Number.isFinite(limits.maxMemoryBytes)) guard.maxMemoryBytes = limits.maxMemoryBytes;
+  let interviewGuard = false;
+  if (Number.isFinite(limits.wallClockMs) && limits.wallClockMs > 0) {
+    guard.wallClockMs = limits.wallClockMs;
+  }
+  if (Number.isFinite(limits.maxLineEvents)) {
+    guard.maxLineEvents = limits.maxLineEvents;
+    interviewGuard = true;
+  }
+  if (Number.isFinite(limits.maxSingleLineHits)) {
+    guard.maxSingleLineHits = limits.maxSingleLineHits;
+    interviewGuard = true;
+  }
+  if (Number.isFinite(limits.maxCallDepth)) {
+    guard.maxCallDepth = limits.maxCallDepth;
+    interviewGuard = true;
+  }
+  if (Number.isFinite(limits.maxMemoryBytes)) {
+    guard.maxMemoryBytes = limits.maxMemoryBytes;
+    interviewGuard = true;
+  }
   if (Object.keys(guard).length === 0) return undefined;
-  guard.interviewGuard = true;
+  if (interviewGuard) guard.interviewGuard = true;
   return guard;
 }
 
