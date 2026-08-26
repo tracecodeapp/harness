@@ -220,6 +220,17 @@ function assertBoundedWorkers(
     return;
   }
   const maximumWorkers = 3;
+  if (language === 'python' && scope === 'trace batch') {
+    assertCondition(
+      languageWorkers.length === 10 &&
+        maximumActiveWorkers <= maximumWorkers,
+      `${language} ${scope} must retire one outer worker per selected case while bounding active capacity: ${JSON.stringify({
+        workerCount: languageWorkers.length,
+        maximumActiveWorkers,
+      })}`
+    );
+    return;
+  }
   assertCondition(
     (!requireWorker || languageWorkers.length > 0) &&
       languageWorkers.length <= maximumWorkers,
