@@ -13,6 +13,7 @@ export type RuntimeExecutionIsolationPolicy = 'safe' | 'unsafe-reuse';
 export type RuntimeExecutionIsolationBoundary =
   | 'fresh-worker'
   | 'fresh-program-instance'
+  | 'guarded-fresh-namespace'
   | 'interpreter-cleanup'
   | 'fresh-class-loader'
   | 'fresh-assembly-load-context';
@@ -28,6 +29,8 @@ export interface RuntimeExecutionIsolationSupport {
   boundary: RuntimeExecutionIsolationBoundary;
   /** The weaker boundary exposed only through an explicit unsafe-reuse policy. */
   unsafeReuseBoundary?: RuntimeExecutionIsolationBoundary;
+  /** The safe boundary used between cases inside an admitted algorithm batch. */
+  algorithmBatchBoundary?: RuntimeExecutionIsolationBoundary;
 }
 
 export type RuntimeProjectIoTier = 'unsupported' | 'final-diff' | 'bridged-live' | 'native-live';

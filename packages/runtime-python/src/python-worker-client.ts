@@ -30,6 +30,17 @@ export type PythonRawTraceBatchResult = {
   consoleOutput?: string[];
   timings?: RuntimeExecutionTimings;
 };
+
+type PythonRawCodeBatchResult = RawExecutionBatchPayload & {
+  algorithmFastBatchUnavailable?: boolean;
+};
+
+export class PythonAlgorithmFastBatchUnavailableError extends Error {
+  constructor() {
+    super('Prepared Python algorithm-fast batch requires compatibility isolation.');
+    this.name = 'PythonAlgorithmFastBatchUnavailableError';
+  }
+}
 import type {
   RuntimeCodeCall,
   RuntimeCommandEventHandler,
@@ -126,7 +137,7 @@ interface StatusResult {
 }
 
 export interface PythonPreparedProgramArtifact {
-  readonly schemaVersion: 'tracecode.python.prepared-program.v1';
+  readonly schemaVersion: 'tracecode.python.prepared-program.v3';
   readonly fingerprint: {
     readonly cacheTag: string;
     readonly magicNumber: string;
@@ -138,6 +149,11 @@ export interface PythonPreparedProgramArtifact {
   readonly executionStyle: RuntimeProgramPreparationCall['executionStyle'];
   readonly traceOptions: RuntimeProgramPreparationCall['traceOptions'];
   readonly onDemandTracing?: boolean;
+  readonly isolationProfile: {
+    readonly tier: 'algorithm-fast' | 'compatibility';
+    readonly reasons: readonly string[];
+  };
+  readonly algorithmFastBatchCode?: string;
   readonly userCode: string;
   readonly executorCode: string;
 }
@@ -576,7 +592,7 @@ export class PythonWorkerClient {
         );
     const guestLimits = pickGuestLimits(call.limits);
     const program = this.core.withExecutionDeadline(
-      this.core.sendMessageEffect<RawExecutionBatchPayload>(
+      this.core.sendMessageEffect<PythonRawCodeBatchResult>(
         'execute-prepared-program-batch',
         {
           artifact: handle.artifact,
@@ -590,6 +606,9 @@ export class PythonWorkerClient {
     );
     try {
       const result = await this.core.runClientEffect(program, call.signal);
+      if (result.algorithmFastBatchUnavailable === true) {
+        throw new PythonAlgorithmFastBatchUnavailableError();
+      }
       return liftCodeBatchOutcome(
         result,
         'Prepared Python batch execution failed'

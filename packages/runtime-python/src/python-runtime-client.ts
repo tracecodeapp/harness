@@ -3,6 +3,7 @@ import type {
   PythonProjectCommandRequest,
   PythonWorkerClient,
 } from './python-worker-client';
+import { PythonAlgorithmFastBatchUnavailableError } from './python-worker-client';
 import type {
   RuntimeClient,
   RuntimeCodeCall,
@@ -33,10 +34,11 @@ import {
   type RuntimeTraceSourceSpan,
   type RuntimeTraceTarget,
 } from '@tracecode/runtime-contracts';
-import { assertRuntimeRequestSupported } from '@tracecode/runtime-browser/internal';
-import { getLanguageRuntimeProfile } from '@tracecode/runtime-browser/internal';
 import {
+  assertRuntimeRequestSupported,
   executeRuntimeRequest,
+  getLanguageRuntimeProfile,
+  isExecutionTimeoutError,
   isRuntimeProjectExecuteRequest,
 } from '@tracecode/runtime-browser/internal';
 
@@ -551,30 +553,97 @@ class PreparedPythonProgramLifetime {
     );
   }
 
-  executeCodeBatch(
+  async executeCodeBatch(
     call: RuntimePreparedCodeBatchCall
   ): Promise<readonly CodeExecutionResult[]> {
-    return this.executeSerial(call.signal, async (client, signal) => {
-      const result = await client.executePreparedCodeBatch(this.handle, {
-        ...call,
-        signal,
+    if (
+      this.handle.artifact.mode !== 'code' ||
+      this.handle.artifact.isolationProfile.tier !== 'algorithm-fast'
+    ) {
+      return this.executeCompatibilityCodeBatch(call);
+    }
+    try {
+      return await this.executeSerial(call.signal, async (client, signal) => {
+        const result = await client.executePreparedCodeBatch(this.handle, {
+          ...call,
+          signal,
+        });
+        return result.results;
       });
-      return result.results;
-    });
+    } catch (error) {
+      if (!(error instanceof PythonAlgorithmFastBatchUnavailableError)) {
+        throw error;
+      }
+      return this.executeCompatibilityCodeBatch(call);
+    }
   }
 
   executeTraceBatch(
     call: RuntimePreparedTraceBatchCall
   ): Promise<readonly ExecutionResult[]> {
-    return this.executeSerial(call.signal, async (client, signal) => {
-      const result = await client.executePreparedTraceBatch(this.handle, {
-        ...call,
-        signal,
-      });
-      return (result.results ?? []).map((entry) =>
-        normalizePythonExecutionResult(entry)
+    if (
+      call.traceEnabledBatch !== undefined &&
+      (
+        call.traceEnabledBatch.length !== call.inputBatch.length ||
+        call.traceEnabledBatch.some(
+          (enabled) => typeof enabled !== 'boolean'
+        )
+      )
+    ) {
+      return Promise.reject(
+        new TypeError(
+          'Python trace selection must contain one boolean per batch case.'
+        )
       );
-    });
+    }
+    // Python tracing has no reduced algorithm-fast driver. Every traced case
+    // therefore gets a fresh outer Pyodide worker, regardless of the source's
+    // code-batch admission result.
+    return this.executeCompatibilityTraceBatch(call);
+  }
+
+  private async executeCompatibilityCodeBatch(
+    call: RuntimePreparedCodeBatchCall
+  ): Promise<readonly CodeExecutionResult[]> {
+    const results: CodeExecutionResult[] = [];
+    for (const inputs of call.inputBatch) {
+      try {
+        results.push(await this.executeCode({
+          inputs,
+          signal: call.signal,
+          limits: call.limits,
+        }));
+      } catch (error) {
+        if (!isExecutionTimeoutError(error)) throw error;
+        results.push({
+          kind: 'limit',
+          reason: 'client-timeout',
+          error: error.message,
+          consoleOutput: [],
+          timings: {
+            totalMs: error.timeoutMs,
+            runMs: error.timeoutMs,
+            artifactCacheHit: true,
+          },
+        });
+      }
+    }
+    return results;
+  }
+
+  private async executeCompatibilityTraceBatch(
+    call: RuntimePreparedTraceBatchCall
+  ): Promise<readonly ExecutionResult[]> {
+    const results: ExecutionResult[] = [];
+    for (let index = 0; index < call.inputBatch.length; index += 1) {
+      results.push(await this.executeTrace({
+        inputs: call.inputBatch[index]!,
+        signal: call.signal,
+        limits: call.limits,
+        recordTrace: call.traceEnabledBatch?.[index] ?? true,
+      }));
+    }
+    return results;
   }
 
   dispose = (): Promise<void> => {

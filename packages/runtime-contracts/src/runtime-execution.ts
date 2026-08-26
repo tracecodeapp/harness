@@ -33,6 +33,7 @@ export interface RuntimeExecutionTimings {
   hostCallMs?: number;
   compileCacheHit?: boolean;
   artifactCacheHit?: boolean;
+  algorithmFastBatch?: boolean;
 }
 
 /** Why an execution (or its trace recording) was stopped by a limit. */

@@ -1823,8 +1823,10 @@ async function main(): Promise<void> {
   assertCondition(
     pythonProfile.capabilities.execution.isolation.safeForUntrustedReuse &&
       pythonProfile.capabilities.execution.isolation.boundary === 'fresh-worker' &&
-      pythonProfile.capabilities.execution.isolation.unsafeReuseBoundary === 'interpreter-cleanup',
-    'Python should default to a fresh worker and expose interpreter cleanup only as unsafe reuse'
+      pythonProfile.capabilities.execution.isolation.unsafeReuseBoundary === 'interpreter-cleanup' &&
+      pythonProfile.capabilities.execution.isolation.algorithmBatchBoundary ===
+        'guarded-fresh-namespace',
+    'Python should expose fresh-worker execution plus guarded fresh namespaces for admitted batches'
   );
   assertCondition(
     !pythonProfile.capabilities.execution.compilation.required &&

@@ -8,6 +8,7 @@ export {
   type PythonPreparedExecutionProviderOptions,
 } from './python-runtime-client';
 export {
+  PythonAlgorithmFastBatchUnavailableError,
   PythonWorkerClient,
   type ExecutionStyle,
   type PythonPreparedProgramArtifact,

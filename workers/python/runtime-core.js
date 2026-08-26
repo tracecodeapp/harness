@@ -29,6 +29,55 @@ except Exception:
     pass
 `;
 
+// This list is the single source of truth for both preparation-time admission
+// and the algorithm-batch runtime. A real builtin that is not listed here must
+// route to the compatibility tier instead of becoming a fast-tier NameError.
+const PYTHON_ALGORITHM_SAFE_BUILTIN_NAMES = [
+  '__build_class__', 'abs', 'all', 'any', 'ascii', 'bin', 'bool',
+  'bytearray', 'bytes', 'callable', 'chr', 'classmethod', 'complex', 'dict',
+  'divmod', 'enumerate', 'filter', 'float', 'format', 'frozenset', 'hash',
+  'hex', 'int', 'isinstance', 'issubclass', 'iter', 'len', 'list', 'map',
+  'max', 'memoryview', 'min', 'next', 'object', 'oct', 'ord', 'pow', 'id',
+  'print', 'property', 'range', 'repr', 'reversed', 'round', 'set', 'slice',
+  'sorted', 'staticmethod', 'str', 'sum', 'super', 'tuple', 'zip',
+  'NotImplemented', 'Ellipsis',
+  'BaseException', 'Exception', 'BaseExceptionGroup', 'ExceptionGroup',
+  'ArithmeticError', 'AssertionError', 'AttributeError', 'BufferError',
+  'EOFError', 'EnvironmentError', 'FileExistsError', 'FileNotFoundError',
+  'FloatingPointError', 'GeneratorExit', 'ImportError', 'ImportWarning',
+  'IndentationError', 'IndexError', 'InterruptedError', 'IOError', 'KeyError',
+  'KeyboardInterrupt', 'LookupError', 'MemoryError', 'ModuleNotFoundError',
+  'NameError', 'NotImplementedError', 'OSError', 'OverflowError',
+  'PermissionError', 'ProcessLookupError', 'RecursionError', 'ReferenceError',
+  'RuntimeError', 'RuntimeWarning', 'StopAsyncIteration', 'StopIteration',
+  'SyntaxError', 'SyntaxWarning', 'SystemError', 'SystemExit', 'TabError',
+  'TimeoutError', 'TypeError', 'UnboundLocalError', 'UnicodeError',
+  'UnicodeDecodeError', 'UnicodeEncodeError', 'UnicodeTranslateError',
+  'UnicodeWarning', 'UserWarning', 'ValueError', 'Warning',
+  'ZeroDivisionError', 'BytesWarning', 'DeprecationWarning',
+  'EncodingWarning', 'FutureWarning', 'PendingDeprecationWarning',
+  'ResourceWarning',
+];
+
+const PYTHON_ALGORITHM_REFLECTIVE_FUNCTOOLS_NAMES = [
+  'singledispatch',
+  'singledispatchmethod',
+  'update_wrapper',
+  'wraps',
+];
+
+const PYTHON_ALGORITHM_REFLECTIVE_ATTRIBUTE_NAMES = [
+  'attrgetter', 'methodcaller', 'itemgetter', 'setitem', 'delitem',
+  'format', 'format_map', 'get_field', 'get_value', 'vformat', 'Formatter',
+  'ForwardRef', 'get_type_hints', 'evaluate_forward_ref',
+  'f_back', 'f_builtins', 'f_code', 'f_globals', 'f_lasti', 'f_lineno',
+  'f_locals', 'f_trace', 'f_trace_lines', 'f_trace_opcodes',
+];
+
+const PYTHON_ALGORITHM_REFLECTIVE_ATTRIBUTE_PREFIXES = [
+  'gi_', 'cr_', 'ag_', 'tb_', 'co_',
+];
+
 const PYTHON_LITERAL_SHAPE_ANNOTATION_HELPER = `
 def _tracecode_annotation_preserves_literal_shape(_annotation):
     try:
@@ -286,15 +335,17 @@ function createIsolatedPythonExecutionGuard(pyodide) {
 import builtins as __tracecode_guard_builtins
 import base64 as __tracecode_guard_base64
 import copy as _tracecode_guard_copy
+import ast as _tracecode_guard_ast
 import importlib.util as __tracecode_guard_importlib_util
 import marshal as __tracecode_guard_marshal
-import os as __tracecode_guard_os
+import os as _tracecode_guard_os
 import random as __tracecode_guard_random
 import sys as __tracecode_guard_sys
 
 class __TracecodeExecutionGuard:
     def __init__(
         self,
+        ast_module,
         base64_module,
         builtins_module,
         importlib_util_module,
@@ -302,7 +353,13 @@ class __TracecodeExecutionGuard:
         os_module,
         random_module,
         sys_module,
+        default_import_prelude,
+        algorithm_safe_builtin_names,
+        algorithm_reflective_functools_names,
+        algorithm_reflective_attribute_names,
+        algorithm_reflective_attribute_prefixes,
     ):
+        self._ast = ast_module
         self._base64 = base64_module
         self._builtins_dict = builtins_module.__dict__
         self._importlib_util = importlib_util_module
@@ -315,20 +372,489 @@ class __TracecodeExecutionGuard:
         self._setrecursionlimit = sys_module.setrecursionlimit
         self._getcwd = os_module.getcwd
         self._chdir = os_module.chdir
+        self._environ = os_module.environ
         self._random_getstate = random_module.getstate
         self._random_setstate = random_module.setstate
+        self._algorithm_safe_builtin_names = set(algorithm_safe_builtin_names)
+        self._algorithm_builtin_names = set(self._builtins_dict.keys())
+        self._algorithm_reflective_functools_names = set(
+            algorithm_reflective_functools_names
+        )
+        self._algorithm_reflective_attribute_names = set(
+            algorithm_reflective_attribute_names
+        ) | self._algorithm_reflective_functools_names
+        self._algorithm_reflective_attribute_prefixes = tuple(
+            algorithm_reflective_attribute_prefixes
+        )
+        algorithm_defaults = {'__builtins__': dict(self._builtins_dict)}
+        exec(
+            'import json\\nimport math\\nimport sys\\n' + str(default_import_prelude),
+            algorithm_defaults,
+        )
+        self._algorithm_default_shared_names = {
+            name for name in algorithm_defaults.keys()
+            if not name.startswith('__')
+        }
+        self._algorithm_default_module_names = {
+            name for name, value in algorithm_defaults.items()
+            if isinstance(value, type(sys_module))
+        }
         self._guard_globals = globals()
         self._deepcopy = _tracecode_guard_copy.deepcopy
         self._builtins_snapshot = None
         self._modules_snapshot = None
         self._module_dict_snapshots = None
         self._module_mutable_snapshots = None
+        self._algorithm_environ_snapshot = None
+        self._algorithm_path_snapshot = None
+        self._algorithm_importer_cache_snapshot = None
         self._trace_snapshot = None
         self._recursion_limit_snapshot = None
         self._cwd_snapshot = None
         self._random_state_snapshot = None
         self._compiled = {}
         self._compiled_limit = 4
+
+    def classify_algorithm_source(self, source, function_name, execution_style):
+        reasons = []
+        try:
+            tree = self._ast.parse(str(source), filename='solution.py')
+        except SyntaxError as error:
+            return {
+                'tier': 'compatibility',
+                'reasons': ['syntax-error:' + str(error)],
+            }
+
+        denied_modules = {
+            'asyncio', 'builtins', 'ctypes', 'importlib', 'inspect', 'io', 'js',
+            'multiprocessing', 'os', 'pathlib', 'pickle', 'pyodide', 'resource',
+            'signal', 'socket', 'subprocess', 'sys', 'tempfile', 'threading',
+            'time', 'traceback', 'types', 'webbrowser',
+        }
+        allowed_modules = {
+            'array', 'bisect', 'collections', 'functools', 'heapq',
+            'itertools', 'math', 'operator', 'random', 're', 'statistics',
+            'string', 'sortedcontainers', 'typing',
+        }
+        denied_names = {
+            '__builtins__', '__import__', 'breakpoint', 'compile', 'delattr',
+            'dir', 'eval', 'exec', 'exit', 'getattr', 'globals', 'hasattr',
+            'help', 'input', 'locals', 'open', 'quit', 'setattr', 'type',
+            'vars', '_builtins', 'attrgetter', 'methodcaller', 'itemgetter',
+            'setitem', 'delitem', 'ForwardRef', 'get_type_hints',
+            'evaluate_forward_ref',
+        } | self._algorithm_reflective_functools_names
+        imported_modules = set(self._algorithm_default_module_names)
+        imported_values = set(self._algorithm_default_shared_names)
+
+        for node in tree.body:
+            local_names = []
+            if isinstance(node, (self._ast.FunctionDef, self._ast.AsyncFunctionDef, self._ast.ClassDef)):
+                local_names = [node.name]
+            elif isinstance(node, (self._ast.Assign, self._ast.AnnAssign, self._ast.NamedExpr)):
+                targets = node.targets if isinstance(node, self._ast.Assign) else [node.target]
+                local_names = [
+                    target.id for target in targets
+                    if isinstance(target, self._ast.Name)
+                ]
+            for name in local_names:
+                if name in imported_modules or name in imported_values:
+                    reasons.append('rebound-default-binding:' + name)
+
+        target = None
+        if execution_style == 'solution-method':
+            solution_classes = [
+                node for node in tree.body
+                if isinstance(node, self._ast.ClassDef) and node.name == 'Solution'
+            ]
+            if solution_classes:
+                methods = [
+                    node for node in solution_classes[-1].body
+                    if isinstance(node, (self._ast.FunctionDef, self._ast.AsyncFunctionDef))
+                    and node.name == function_name
+                ]
+                if methods:
+                    target = methods[-1]
+        elif execution_style == 'function':
+            functions = [
+                node for node in tree.body
+                if isinstance(node, (self._ast.FunctionDef, self._ast.AsyncFunctionDef))
+                and node.name == function_name
+            ]
+            if functions:
+                target = functions[-1]
+        else:
+            reasons.append('unsupported-execution-style:' + str(execution_style))
+
+        if target is None:
+            reasons.append('missing-fast-target:' + str(function_name))
+        else:
+            if isinstance(target, self._ast.AsyncFunctionDef):
+                reasons.append('async-fast-target')
+            if target.args.posonlyargs or target.args.vararg or target.args.kwarg:
+                reasons.append('unsupported-fast-signature')
+
+        ast = self._ast
+        def annotation_contains_string(annotation):
+            return annotation is not None and any(
+                isinstance(item, ast.Constant) and isinstance(item.value, str)
+                for item in ast.walk(annotation)
+            )
+
+        call_argument_node_ids = set()
+        for call in ast.walk(tree):
+            if not isinstance(call, ast.Call):
+                continue
+            arguments = list(call.args) + [
+                keyword.value for keyword in call.keywords
+            ]
+            for argument in arguments:
+                call_argument_node_ids.update(
+                    id(item) for item in ast.walk(argument)
+                )
+
+        for node in ast.walk(tree):
+            if isinstance(node, (ast.arg, ast.AnnAssign)):
+                annotation = getattr(node, 'annotation', None)
+                if annotation_contains_string(annotation):
+                    reasons.append('string-annotation')
+            elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                if annotation_contains_string(node.returns):
+                    reasons.append('string-annotation')
+            elif hasattr(ast, 'TypeAlias') and isinstance(node, ast.TypeAlias):
+                reasons.append('type-alias')
+            if isinstance(node, ast.Import):
+                for alias in node.names:
+                    root = alias.name.split('.')[0]
+                    imported_modules.add(alias.asname or root)
+                    if root in denied_modules or root not in allowed_modules:
+                        reasons.append('denied-import:' + alias.name)
+            elif isinstance(node, ast.ImportFrom):
+                root = (node.module or '').split('.')[0]
+                for alias in node.names:
+                    imported_values.add(alias.asname or alias.name)
+                    if alias.name == '*':
+                        reasons.append('wildcard-import:' + (node.module or '<relative>'))
+                    if alias.name.startswith('_'):
+                        reasons.append('private-import:' + alias.name)
+                    if root == 'operator' and alias.name in {
+                        'attrgetter', 'methodcaller', 'itemgetter', 'setitem',
+                        'delitem',
+                    }:
+                        reasons.append('reflective-import:operator.' + alias.name)
+                    if root == 'typing' and alias.name in {
+                        'ForwardRef', 'get_type_hints', 'evaluate_forward_ref',
+                    }:
+                        reasons.append('evaluating-import:typing.' + alias.name)
+                    if (
+                        root == 'functools'
+                        and alias.name in self._algorithm_reflective_functools_names
+                    ):
+                        reasons.append('evaluating-import:functools.' + alias.name)
+                if node.level or root in denied_modules or root not in allowed_modules:
+                    reasons.append('denied-import:' + (node.module or '<relative>'))
+            elif isinstance(node, ast.Name) and node.id in denied_names:
+                reasons.append('denied-name:' + node.id)
+            elif (
+                isinstance(node, ast.Constant)
+                and id(node) in call_argument_node_ids
+                and isinstance(node.value, str)
+                and node.value.startswith('__')
+            ):
+                reasons.append('reflective-string-argument:' + node.value)
+            elif (
+                isinstance(node, ast.Name)
+                and isinstance(node.ctx, ast.Load)
+                and node.id in self._algorithm_builtin_names
+                and node.id not in self._algorithm_safe_builtin_names
+            ):
+                reasons.append('unsupported-builtin:' + node.id)
+            elif isinstance(node, ast.Attribute) and (
+                node.attr.startswith('__')
+                or node.attr in self._algorithm_reflective_attribute_names
+                or node.attr.startswith(
+                    self._algorithm_reflective_attribute_prefixes
+                )
+            ):
+                reasons.append('reflective-attribute:' + node.attr)
+            elif isinstance(node, (ast.With, ast.AsyncWith)):
+                reasons.append('context-manager')
+            elif isinstance(
+                node,
+                (ast.Await, ast.Yield, ast.YieldFrom, ast.GeneratorExp),
+            ):
+                reasons.append('suspending-control-flow')
+
+        shared_names = imported_modules | imported_values
+
+        def root_name(node):
+            current = node
+            while isinstance(current, (ast.Attribute, ast.Subscript)):
+                current = current.value
+            return current.id if isinstance(current, ast.Name) else None
+
+        alias_edges = {}
+        for node in ast.walk(tree):
+            if not isinstance(node, (ast.Assign, ast.AnnAssign, ast.NamedExpr)):
+                continue
+            value = getattr(node, 'value', None)
+            value_root = root_name(value)
+            if value_root is None:
+                continue
+            targets = node.targets if isinstance(node, ast.Assign) else [node.target]
+            for target_node in targets:
+                if isinstance(target_node, ast.Name):
+                    alias_edges.setdefault(value_root, set()).add(target_node.id)
+        proven_shared_aliases = set()
+        alias_queue = list(shared_names)
+        while alias_queue:
+            source_name = alias_queue.pop()
+            for target_name in alias_edges.get(source_name, ()):
+                if target_name in shared_names:
+                    continue
+                shared_names.add(target_name)
+                proven_shared_aliases.add(target_name)
+                alias_queue.append(target_name)
+
+        parent_by_id = {
+            id(child): parent
+            for parent in ast.walk(tree)
+            for child in ast.iter_child_nodes(parent)
+        }
+        annotation_node_ids = set()
+        for annotation_owner in ast.walk(tree):
+            annotations = []
+            if isinstance(annotation_owner, ast.arg):
+                annotations = [annotation_owner.annotation]
+            elif isinstance(annotation_owner, ast.AnnAssign):
+                annotations = [annotation_owner.annotation]
+            elif isinstance(
+                annotation_owner,
+                (ast.FunctionDef, ast.AsyncFunctionDef),
+            ):
+                annotations = [annotation_owner.returns]
+            for annotation in annotations:
+                if annotation is not None:
+                    annotation_node_ids.update(
+                        id(item) for item in ast.walk(annotation)
+                    )
+
+        function_scope_bindings = {}
+        function_scope_types = (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda)
+
+        def collect_function_locals(function):
+            names = {
+                argument.arg
+                for argument in (
+                    list(function.args.posonlyargs)
+                    + list(function.args.args)
+                    + list(function.args.kwonlyargs)
+                )
+            }
+            if function.args.vararg is not None:
+                names.add(function.args.vararg.arg)
+            if function.args.kwarg is not None:
+                names.add(function.args.kwarg.arg)
+            global_names = set()
+            nonlocal_names = set()
+
+            def visit(current):
+                if current is not function and isinstance(
+                    current,
+                    function_scope_types + (ast.ClassDef,),
+                ):
+                    if hasattr(current, 'name'):
+                        names.add(current.name)
+                    return
+                if current is not function and isinstance(
+                    current,
+                    (ast.ListComp, ast.SetComp, ast.DictComp, ast.GeneratorExp),
+                ):
+                    return
+                if isinstance(current, ast.Global):
+                    global_names.update(current.names)
+                elif isinstance(current, ast.Nonlocal):
+                    nonlocal_names.update(current.names)
+                elif isinstance(current, ast.Name) and isinstance(current.ctx, ast.Store):
+                    names.add(current.id)
+                elif isinstance(current, ast.ExceptHandler) and current.name:
+                    names.add(str(current.name))
+                for child in ast.iter_child_nodes(current):
+                    visit(child)
+
+            statements = function.body if isinstance(function.body, list) else [function.body]
+            for statement in statements:
+                visit(statement)
+            names.difference_update(global_names)
+            names.difference_update(nonlocal_names)
+            return names, global_names
+
+        for scope in ast.walk(tree):
+            if isinstance(scope, function_scope_types):
+                local_names, global_names = collect_function_locals(scope)
+                function_scope_bindings[id(scope)] = {
+                    'locals': local_names,
+                    'globals': global_names,
+                }
+
+        def node_is_in_function_body(node, function):
+            direct_child = node
+            parent = parent_by_id.get(id(direct_child))
+            while parent is not None and parent is not function:
+                direct_child = parent
+                parent = parent_by_id.get(id(direct_child))
+            if parent is not function:
+                return False
+            body = function.body
+            return (
+                direct_child in body
+                if isinstance(body, list)
+                else direct_child is body
+            )
+
+        def is_locally_shadowed(name_node):
+            if name_node.id in proven_shared_aliases:
+                return False
+            current = parent_by_id.get(id(name_node))
+            while current is not None:
+                if isinstance(current, function_scope_types):
+                    if node_is_in_function_body(name_node, current):
+                        bindings = function_scope_bindings.get(id(current), {})
+                        if name_node.id in bindings.get('globals', set()):
+                            return False
+                        if name_node.id in bindings.get('locals', set()):
+                            return True
+                current = parent_by_id.get(id(current))
+            return False
+
+        def root_name_node(node):
+            current = node
+            while isinstance(current, (ast.Attribute, ast.Subscript)):
+                current = current.value
+            return current if isinstance(current, ast.Name) else None
+
+        safe_shared_constants = {
+            'math': {
+                'e', 'inf', 'nan', 'pi', 'tau',
+            },
+            're': {
+                'A', 'ASCII', 'DEBUG', 'DOTALL', 'I', 'IGNORECASE',
+                'L', 'LOCALE', 'M', 'MULTILINE', 'NOFLAG', 'S',
+                'T', 'TEMPLATE', 'U', 'UNICODE', 'VERBOSE', 'X',
+            },
+            'string': {
+                'ascii_letters', 'ascii_lowercase', 'ascii_uppercase',
+                'digits', 'hexdigits', 'octdigits', 'printable',
+                'punctuation', 'whitespace',
+            },
+            'sys': {'maxsize'},
+        }
+
+        def shared_attribute_is_directly_invoked(attribute_node):
+            current = attribute_node
+            parent = parent_by_id.get(id(current))
+            while isinstance(parent, ast.Attribute) and parent.value is current:
+                current = parent
+                parent = parent_by_id.get(id(current))
+            if isinstance(parent, ast.Call) and parent.func is current:
+                return True
+            if isinstance(parent, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+                return current in parent.decorator_list
+            return False
+
+        for node in ast.walk(tree):
+            targets = []
+            if isinstance(node, (ast.Assign, ast.AnnAssign, ast.NamedExpr)):
+                targets = node.targets if isinstance(node, ast.Assign) else [node.target]
+            elif isinstance(node, ast.AugAssign):
+                targets = [node.target]
+            elif isinstance(node, ast.Delete):
+                targets = node.targets
+            for target in targets:
+                root_node = root_name_node(target)
+                if (
+                    root_node is not None
+                    and root_node.id in shared_names
+                    and not is_locally_shadowed(root_node)
+                    and not isinstance(target, ast.Name)
+                ):
+                    reasons.append('shared-state-write')
+
+            if (
+                isinstance(node, ast.Attribute)
+                and (attribute_root := root_name_node(node)) is not None
+                and attribute_root.id in shared_names
+                and not is_locally_shadowed(attribute_root)
+                and node.attr.startswith('_')
+            ):
+                reasons.append('private-shared-state-access:' + node.attr)
+            if (
+                isinstance(node, ast.Attribute)
+                and (shared_root := root_name_node(node)) is not None
+                and shared_root.id in shared_names
+                and not is_locally_shadowed(shared_root)
+                and not (
+                    isinstance(parent_by_id.get(id(node)), ast.Attribute)
+                    and parent_by_id[id(node)].value is node
+                )
+                and id(node) not in annotation_node_ids
+                and node.attr not in safe_shared_constants.get(
+                    shared_root.id,
+                    set(),
+                )
+                and not shared_attribute_is_directly_invoked(node)
+            ):
+                reasons.append('shared-binding-escape:' + shared_root.id)
+            if (
+                isinstance(node, ast.Attribute)
+                and (sys_root := root_name_node(node)) is not None
+                and sys_root.id == 'sys'
+                and not is_locally_shadowed(sys_root)
+                and node.attr != 'maxsize'
+            ):
+                reasons.append('unsupported-sys-attribute:' + node.attr)
+
+            if (
+                not isinstance(node, ast.Name)
+                or node.id not in shared_names
+                or is_locally_shadowed(node)
+            ):
+                continue
+            parent = parent_by_id.get(id(node))
+            allowed = (
+                isinstance(parent, ast.Attribute) and parent.value is node
+            ) or (
+                isinstance(parent, ast.Call) and parent.func is node
+            ) or (
+                isinstance(parent, ast.Subscript)
+                and id(node) in annotation_node_ids
+            ) or (
+                isinstance(parent, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef))
+                and node in parent.decorator_list
+            ) or isinstance(parent, (ast.Import, ast.ImportFrom))
+            if not allowed and not isinstance(node.ctx, ast.Store):
+                reasons.append('shared-binding-escape:' + node.id)
+
+        unique_reasons = list(dict.fromkeys(reasons))
+        return {
+            'tier': 'algorithm-fast' if not unique_reasons else 'compatibility',
+            'reasons': unique_reasons,
+        }
+
+    def begin_algorithm(self):
+        if self._builtins_snapshot is not None:
+            raise RuntimeError('Nested TraceCode Python execution scope')
+        self._builtins_snapshot = dict(self._builtins_dict)
+        self._modules_snapshot = dict(self._modules)
+        self._module_dict_snapshots = []
+        self._module_mutable_snapshots = []
+        self._algorithm_environ_snapshot = dict(self._environ)
+        self._algorithm_path_snapshot = list(self._sys.path)
+        self._algorithm_importer_cache_snapshot = dict(self._sys.path_importer_cache)
+        self._trace_snapshot = self._gettrace()
+        self._recursion_limit_snapshot = self._getrecursionlimit()
+        self._cwd_snapshot = self._getcwd()
+        self._random_state_snapshot = self._random_getstate()
 
     def begin(self):
         if self._builtins_snapshot is not None:
@@ -385,6 +911,9 @@ class __TracecodeExecutionGuard:
         recursion_limit_snapshot = self._recursion_limit_snapshot
         cwd_snapshot = self._cwd_snapshot
         random_state_snapshot = self._random_state_snapshot
+        algorithm_environ_snapshot = self._algorithm_environ_snapshot
+        algorithm_path_snapshot = self._algorithm_path_snapshot
+        algorithm_importer_cache_snapshot = self._algorithm_importer_cache_snapshot
         self._builtins_snapshot = None
         self._modules_snapshot = None
         self._module_dict_snapshots = None
@@ -393,6 +922,9 @@ class __TracecodeExecutionGuard:
         self._recursion_limit_snapshot = None
         self._cwd_snapshot = None
         self._random_state_snapshot = None
+        self._algorithm_environ_snapshot = None
+        self._algorithm_path_snapshot = None
+        self._algorithm_importer_cache_snapshot = None
         if builtins_snapshot is None or modules_snapshot is None:
             raise RuntimeError('TraceCode Python execution scope was not active')
         self._settrace(None)
@@ -421,6 +953,14 @@ class __TracecodeExecutionGuard:
         self._builtins_dict.update(builtins_snapshot)
         self._modules.clear()
         self._modules.update(modules_snapshot)
+        if algorithm_environ_snapshot is not None:
+            self._environ.clear()
+            self._environ.update(algorithm_environ_snapshot)
+        if algorithm_path_snapshot is not None:
+            self._sys.path[:] = algorithm_path_snapshot
+        if algorithm_importer_cache_snapshot is not None:
+            self._sys.path_importer_cache.clear()
+            self._sys.path_importer_cache.update(algorithm_importer_cache_snapshot)
         restore_errors = []
         try:
             self._setrecursionlimit(recursion_limit_snapshot)
@@ -484,27 +1024,65 @@ class __TracecodeExecutionGuard:
             del self._compiled[next(iter(self._compiled))]
 
 __tracecode_execution_guard = __TracecodeExecutionGuard(
+    _tracecode_guard_ast,
     __tracecode_guard_base64,
     __tracecode_guard_builtins,
     __tracecode_guard_importlib_util,
     __tracecode_guard_marshal,
-    __tracecode_guard_os,
+    _tracecode_guard_os,
     __tracecode_guard_random,
     __tracecode_guard_sys,
+    ${JSON.stringify(PYTHON_DEFAULT_IMPORT_PRELUDE)},
+    ${JSON.stringify(PYTHON_ALGORITHM_SAFE_BUILTIN_NAMES)},
+    ${JSON.stringify(PYTHON_ALGORITHM_REFLECTIVE_FUNCTOOLS_NAMES)},
+    ${JSON.stringify(PYTHON_ALGORITHM_REFLECTIVE_ATTRIBUTE_NAMES)},
+    ${JSON.stringify(PYTHON_ALGORITHM_REFLECTIVE_ATTRIBUTE_PREFIXES)},
 )
 __tracecode_execution_guard
 `);
   pyodide.globals.delete('__tracecode_execution_guard');
   pyodide.globals.delete('__TracecodeExecutionGuard');
   pyodide.globals.delete('__tracecode_guard_base64');
+  pyodide.globals.delete('_tracecode_guard_ast');
   pyodide.globals.delete('__tracecode_guard_builtins');
   pyodide.globals.delete('_tracecode_guard_copy');
   pyodide.globals.delete('__tracecode_guard_importlib_util');
   pyodide.globals.delete('__tracecode_guard_marshal');
-  pyodide.globals.delete('__tracecode_guard_os');
+  pyodide.globals.delete('_tracecode_guard_os');
   pyodide.globals.delete('__tracecode_guard_random');
   pyodide.globals.delete('__tracecode_guard_sys');
   return guard;
+}
+
+function pythonAlgorithmIsolationProfile(
+  deps,
+  source,
+  functionName,
+  executionStyle
+) {
+  const pyodide = deps.getPyodide();
+  const profileProxy = getIsolatedPythonExecutionGuard(
+    pyodide
+  ).classify_algorithm_source(
+    source,
+    functionName ?? '',
+    executionStyle ?? 'function'
+  );
+  try {
+    const profile = profileProxy.toJs({
+      dict_converter: Object.fromEntries,
+    });
+    return {
+      tier: profile.tier === 'algorithm-fast'
+        ? 'algorithm-fast'
+        : 'compatibility',
+      reasons: Array.isArray(profile.reasons)
+        ? profile.reasons.map(String)
+        : [],
+    };
+  } finally {
+    profileProxy?.destroy?.();
+  }
 }
 
 function getIsolatedPythonExecutionGuard(pyodide) {
@@ -636,7 +1214,8 @@ async function runCompiledPythonInFreshExecutionScope(
   code,
   resultName,
   bindings,
-  scopeTimings = undefined
+  scopeTimings = undefined,
+  isolationTier = 'compatibility'
 ) {
   const pyodide = deps.getPyodide();
   if (
@@ -653,7 +1232,11 @@ async function runCompiledPythonInFreshExecutionScope(
     scopeTimings.namespaceCreateMs += deps.performanceNow() - namespaceStartedAt;
   }
   const guardBeginStartedAt = deps.performanceNow();
-  guard.begin();
+  if (isolationTier === 'algorithm-fast') {
+    guard.begin_algorithm();
+  } else {
+    guard.begin();
+  }
   if (scopeTimings) {
     scopeTimings.guardBeginMs += deps.performanceNow() - guardBeginStartedAt;
   }
@@ -743,6 +1326,737 @@ __tracecode_prepared_executor_result = compile(
     'exec',
 )
 __tracecode_prepared_executor_result
+`;
+}
+
+function buildPythonAlgorithmFastBatchSource(
+  deps,
+  functionName,
+  executionStyle
+) {
+  const functionNameLiteral = deps.toPythonLiteral(functionName ?? '');
+  const executionStyleLiteral = deps.toPythonLiteral(
+    executionStyle ?? 'function'
+  );
+  const defaultImportPreludeLiteral = deps.toPythonLiteral(
+    PYTHON_DEFAULT_IMPORT_PRELUDE
+  );
+  const classDefinitionsLiteral = deps.toPythonLiteral(
+    `
+def getattr(obj, name, default=None):
+    if name == "val":
+        try:
+            return obj.val
+        except AttributeError:
+            try:
+                return obj.value
+            except AttributeError:
+                return default
+    if name == "value":
+        try:
+            return obj.value
+        except AttributeError:
+            try:
+                return obj.val
+            except AttributeError:
+                return default
+    return default
+${deps.PYTHON_CLASS_DEFINITIONS_SNIPPET}`
+  );
+  const defaults = deps.INTERVIEW_GUARD_DEFAULTS;
+  return `
+import ast as _tracecode_batch_ast
+import builtins as _tracecode_batch_builtins
+import collections.abc as _tracecode_batch_collections_abc
+import inspect as _tracecode_batch_inspect
+import json as _tracecode_batch_json
+import math as _tracecode_batch_math
+import random as _tracecode_batch_random
+import sys as _tracecode_batch_sys
+import time as _tracecode_batch_time
+import traceback as _tracecode_batch_traceback
+import types as _tracecode_batch_types
+import typing as _tracecode_batch_typing
+
+_tracecode_batch_host_import = _tracecode_batch_builtins.__import__
+_tracecode_batch_importable_module_roots = {
+    'array', 'bisect', 'collections', 'functools', 'heapq', 'itertools',
+    'math', 'operator', 'random', 're', 'statistics', 'string',
+    'sortedcontainers', 'typing',
+}
+_tracecode_batch_facade_module_roots = (
+    _tracecode_batch_importable_module_roots | {'json', 'sys'}
+)
+_tracecode_batch_allowed_value_owner_roots = {
+    'array': {'array'},
+    'bisect': {'bisect', '_bisect'},
+    'collections': {'collections', '_collections', '_collections_abc'},
+    'functools': {'functools', '_functools'},
+    'heapq': {'heapq', '_heapq'},
+    'itertools': {'itertools'},
+    'json': {'json'},
+    'math': {'math'},
+    'operator': {'operator', '_operator'},
+    'random': {'random'},
+    're': {'re', '_sre'},
+    'statistics': {'statistics'},
+    'string': {'string'},
+    'sortedcontainers': {'sortedcontainers'},
+    'sys': {'sys'},
+    'typing': {'typing'},
+}
+_tracecode_batch_reflective_operator_names = {
+    'attrgetter', 'methodcaller', 'itemgetter', 'setitem', 'delitem',
+}
+_tracecode_batch_reflective_functools_names = set(
+    ${JSON.stringify(PYTHON_ALGORITHM_REFLECTIVE_FUNCTOOLS_NAMES)}
+)
+_tracecode_batch_reflective_attribute_names = set(
+    ${JSON.stringify(PYTHON_ALGORITHM_REFLECTIVE_ATTRIBUTE_NAMES)}
+) | _tracecode_batch_reflective_functools_names
+_tracecode_batch_reflective_attribute_prefixes = tuple(
+    ${JSON.stringify(PYTHON_ALGORITHM_REFLECTIVE_ATTRIBUTE_PREFIXES)}
+)
+_tracecode_batch_module_proxies = {}
+
+class _TracecodeReadOnlyModule:
+    __slots__ = (
+        '_tracecode_name',
+        '_tracecode_module',
+        '_tracecode_authorized_names',
+    )
+
+    def __init__(self, name):
+        module_name = str(name)
+        object.__setattr__(self, '_tracecode_name', module_name)
+        object.__setattr__(self, '_tracecode_module', None)
+        object.__setattr__(self, '_tracecode_authorized_names', {})
+
+    def __getattribute__(self, name):
+        if str(name).startswith('_'):
+            raise AttributeError('Private module attributes are unavailable')
+        return object.__getattribute__(self, name)
+
+    def __getattr__(self, name):
+        module_name = object.__getattribute__(self, '_tracecode_name')
+        module = object.__getattribute__(self, '_tracecode_module')
+        if module is None:
+            module = _tracecode_batch_host_import(
+                module_name,
+                {},
+                {},
+                ('*',),
+                0,
+            )
+            object.__setattr__(self, '_tracecode_module', module)
+        authorized_names = object.__getattribute__(
+            self,
+            '_tracecode_authorized_names',
+        )
+        root = module_name.split('.')[0]
+        if str(name).startswith('_'):
+            raise AttributeError('Private module attributes are unavailable')
+        if root == 'operator' and name in _tracecode_batch_reflective_operator_names:
+            raise AttributeError('Reflective operator helpers are unavailable')
+        if root == 'functools' and name in _tracecode_batch_reflective_functools_names:
+            raise AttributeError('Annotation-evaluating helpers are unavailable')
+        if root == 'typing' and name in {
+            'ForwardRef', 'get_type_hints', 'evaluate_forward_ref',
+        }:
+            raise AttributeError('Evaluating annotations is unavailable')
+        if root == 'string' and name == 'Formatter':
+            raise AttributeError('Reflective string formatting is unavailable')
+        if root == 'sys' and name != 'maxsize':
+            raise AttributeError('Only sys.maxsize is available')
+        authorization = authorized_names.get(name)
+        if authorization is not None:
+            if authorization[0] == 'module':
+                return _tracecode_batch_readonly_module(authorization[1])
+            return authorization[1]
+        value = getattr(module, name)
+        if isinstance(value, _tracecode_batch_types.ModuleType):
+            resolved_name = str(value.__name__)
+            resolved_root = resolved_name.split('.')[0]
+            if resolved_root not in _tracecode_batch_facade_module_roots:
+                raise AttributeError(
+                    'Transitive module is unavailable in algorithm execution'
+                )
+            authorized_names[name] = ('module', resolved_name)
+            return _tracecode_batch_readonly_module(resolved_name)
+        owner_name = str(getattr(value, '__module__', '') or '')
+        if owner_name:
+            owner_root = owner_name.split('.')[0]
+            allowed_owners = _tracecode_batch_allowed_value_owner_roots.get(
+                root,
+                {root},
+            )
+            if owner_root not in allowed_owners:
+                raise AttributeError(
+                    'Transitive module value is unavailable in algorithm execution'
+                )
+        authorized_names[name] = ('value', value)
+        return value
+
+    def __setattr__(self, name, value):
+        raise AttributeError('Imported modules are read-only in algorithm execution')
+
+    def __delattr__(self, name):
+        raise AttributeError('Imported modules are read-only in algorithm execution')
+
+def _tracecode_batch_readonly_module(name):
+    key = str(name)
+    proxy = _tracecode_batch_module_proxies.get(key)
+    if proxy is None:
+        proxy = _TracecodeReadOnlyModule(key)
+        _tracecode_batch_module_proxies[key] = proxy
+    return proxy
+
+def _tracecode_batch_safe_import(name, globals=None, locals=None, fromlist=(), level=0):
+    module_name = str(name)
+    root = module_name.split('.')[0]
+    if level != 0 or root not in _tracecode_batch_importable_module_roots:
+        raise ImportError('Module is unavailable in algorithm execution: ' + module_name)
+    requested = tuple(str(item) for item in (fromlist or ()))
+    if '*' in requested:
+        raise ImportError('Wildcard imports are unavailable in algorithm execution')
+    if root == 'operator' and any(
+        item in _tracecode_batch_reflective_operator_names for item in requested
+    ):
+        raise ImportError('Reflective operator helpers are unavailable')
+    if root == 'functools' and any(
+        item in _tracecode_batch_reflective_functools_names
+        for item in requested
+    ):
+        raise ImportError('Annotation-evaluating helpers are unavailable')
+    if root == 'typing' and any(
+        item in {'ForwardRef', 'get_type_hints', 'evaluate_forward_ref'}
+        for item in requested
+    ):
+        raise ImportError('Evaluating annotations is unavailable')
+    imported = _tracecode_batch_host_import(
+        module_name,
+        globals or {},
+        locals or {},
+        requested,
+        0,
+    )
+    resolved_name = module_name if requested else root
+    if requested and isinstance(imported, _tracecode_batch_types.ModuleType):
+        resolved_name = imported.__name__
+    return _tracecode_batch_readonly_module(resolved_name)
+
+_tracecode_batch_safe_builtin_names = set(
+    ${JSON.stringify(PYTHON_ALGORITHM_SAFE_BUILTIN_NAMES)}
+)
+_tracecode_batch_safe_builtins = {
+    name: getattr(_tracecode_batch_builtins, name)
+    for name in _tracecode_batch_safe_builtin_names
+}
+_tracecode_batch_safe_builtins['__import__'] = _tracecode_batch_safe_import
+
+_tracecode_batch_prelude = {
+    '__builtins__': dict(vars(_tracecode_batch_builtins)),
+}
+exec(${defaultImportPreludeLiteral}, _tracecode_batch_prelude)
+
+${deps.PYTHON_CLASS_DEFINITIONS_SNIPPET}
+_builtins = _tracecode_batch_builtins
+math = _tracecode_batch_math
+${deps.PYTHON_EXECUTE_SERIALIZE_FUNCTION_SNIPPET}
+
+_tracecode_batch_base = {
+    '__name__': '__main__',
+    '__builtins__': _tracecode_batch_safe_builtins,
+    'TreeNode': TreeNode,
+    'ListNode': ListNode,
+    'math': _tracecode_batch_readonly_module('math'),
+    'json': _tracecode_batch_readonly_module('json'),
+    'sys': _tracecode_batch_readonly_module('sys'),
+    'pow': _tracecode_batch_builtins.pow,
+}
+for _tracecode_name, _tracecode_value in _tracecode_batch_prelude.items():
+    if _tracecode_name.startswith('__'):
+        continue
+    if _tracecode_name in _tracecode_batch_reflective_operator_names:
+        continue
+    if _tracecode_name in _tracecode_batch_reflective_functools_names:
+        continue
+    if isinstance(_tracecode_value, _tracecode_batch_types.ModuleType):
+        _tracecode_value = _tracecode_batch_readonly_module(
+            _tracecode_value.__name__
+        )
+    _tracecode_batch_base[_tracecode_name] = _tracecode_value
+_tracecode_batch_base['pow'] = _tracecode_batch_builtins.pow
+
+# Capture the trusted result encoder before learner code runs. Even if a future
+# admission bug exposes a mutable stdlib class, batch verdict serialization no
+# longer performs a fresh learner-reachable json.JSONEncoder lookup.
+_tracecode_batch_encode_results = _tracecode_batch_json.JSONEncoder(
+    separators=(',', ':'),
+).encode
+
+_tracecode_batch_cases = _tracecode_batch_ast.literal_eval(
+    __tracecode_input_batch_literal
+)
+_tracecode_batch_limits = _tracecode_batch_ast.literal_eval(
+    __tracecode_limits_literal
+)
+_tracecode_batch_function_name = ${functionNameLiteral}
+_tracecode_batch_execution_style = ${executionStyleLiteral}
+_tracecode_batch_random_state = _tracecode_batch_random.getstate()
+_tracecode_batch_results = []
+_tracecode_batch_print_code = compile(
+    'def _tracecode_isolated_print(*args, **kwargs):\\n'
+    '    _tracecode_console.append(" ".join(str(arg) for arg in args))\\n',
+    '<tracecode-algorithm-print>',
+    'exec',
+)
+_tracecode_batch_class_code = compile(
+    ${classDefinitionsLiteral},
+    '<tracecode-algorithm-classes>',
+    'exec',
+)
+
+class _TracecodeAlgorithmLimit(BaseException):
+    def __init__(self, reason):
+        self.reason = reason
+        super().__init__(reason)
+
+${PYTHON_LITERAL_SHAPE_ANNOTATION_HELPER}
+
+def _tracecode_batch_hydrate_for_annotation(value, annotation):
+    if annotation is None:
+        return value
+    if (
+        isinstance(annotation, type)
+        and annotation.__name__ in ('TreeNode', 'ListNode')
+    ):
+        return value
+    origin = _tracecode_batch_typing.get_origin(annotation)
+    args = _tracecode_batch_typing.get_args(annotation)
+    if origin in (_tracecode_batch_typing.Union, _tracecode_batch_types.UnionType):
+        candidates = [item for item in args if item is not type(None)]
+        return (
+            _tracecode_batch_hydrate_for_annotation(value, candidates[0])
+            if len(candidates) == 1
+            else value
+        )
+    if origin in (list, tuple, set, frozenset) and isinstance(value, (list, tuple)):
+        if origin is tuple and len(args) > 1 and args[-1] is not Ellipsis:
+            items = [
+                _tracecode_batch_hydrate_for_annotation(
+                    item,
+                    args[index] if index < len(args) else None,
+                )
+                for index, item in enumerate(value)
+            ]
+        else:
+            item_annotation = args[0] if args else None
+            items = [
+                _tracecode_batch_hydrate_for_annotation(item, item_annotation)
+                for item in value
+            ]
+        if origin is tuple:
+            return tuple(items)
+        if origin is set:
+            return set(items)
+        if origin is frozenset:
+            return frozenset(items)
+        return items
+    if (
+        origin in (
+            dict,
+            _tracecode_batch_collections_abc.Mapping,
+            _tracecode_batch_collections_abc.MutableMapping,
+        )
+        and isinstance(value, dict)
+    ):
+        key_annotation = args[0] if len(args) > 0 else None
+        value_annotation = args[1] if len(args) > 1 else None
+        return {
+            _tracecode_batch_hydrate_for_annotation(key, key_annotation):
+                _tracecode_batch_hydrate_for_annotation(item, value_annotation)
+            for key, item in value.items()
+        }
+    if isinstance(annotation, type) and isinstance(value, dict):
+        fields = {
+            key: item
+            for key, item in value.items()
+            if key not in ('__type__', '__class__', '__id__')
+        }
+        constructor = getattr(annotation, '__init__', None)
+        constructor_annotations = (
+            getattr(constructor, '__annotations__', {}) or {}
+        )
+        hydrated_fields = {
+            key: _tracecode_batch_hydrate_for_annotation(
+                item,
+                constructor_annotations.get(key),
+            )
+            for key, item in fields.items()
+        }
+        try:
+            return annotation(**hydrated_fields)
+        except Exception:
+            pass
+        try:
+            return annotation(*list(hydrated_fields.values()))
+        except Exception:
+            pass
+        try:
+            instance = annotation.__new__(annotation)
+            for key, item in hydrated_fields.items():
+                setattr(instance, key, item)
+            return instance
+        except Exception:
+            return value
+    return value
+
+def _tracecode_batch_hydrate_inputs(target, values, case_globals):
+    annotations = getattr(target, '__annotations__', {}) or {}
+    for name in list(values.keys()):
+        if name not in annotations:
+            continue
+        annotation = annotations[name]
+        if not _tracecode_annotation_preserves_literal_shape(annotation):
+            values[name] = _tracecode_batch_hydrate_for_annotation(
+                values[name],
+                annotation,
+            )
+            case_globals[name] = values[name]
+
+def _tracecode_batch_prepare_call(target, values):
+    try:
+        signature = _tracecode_batch_inspect.signature(target)
+    except Exception:
+        return target, [], dict(values)
+    args = []
+    kwargs = {}
+    has_varargs = any(
+        parameter.kind is _tracecode_batch_inspect.Parameter.VAR_POSITIONAL
+        for parameter in signature.parameters.values()
+    )
+    for parameter in signature.parameters.values():
+        if parameter.name in ('self', 'cls'):
+            continue
+        kind = parameter.kind
+        if kind is _tracecode_batch_inspect.Parameter.VAR_POSITIONAL:
+            if parameter.name in values:
+                raw = values[parameter.name]
+                args.extend(raw if isinstance(raw, (list, tuple)) else [raw])
+            continue
+        if kind is _tracecode_batch_inspect.Parameter.VAR_KEYWORD:
+            if parameter.name in values and isinstance(values[parameter.name], dict):
+                kwargs.update(values[parameter.name])
+            continue
+        if parameter.name not in values:
+            continue
+        if kind is _tracecode_batch_inspect.Parameter.POSITIONAL_ONLY:
+            args.append(values[parameter.name])
+        elif kind is _tracecode_batch_inspect.Parameter.POSITIONAL_OR_KEYWORD and has_varargs:
+            args.append(values[parameter.name])
+        else:
+            kwargs[parameter.name] = values[parameter.name]
+    return target, args, kwargs
+
+_tracecode_batch_user_tree = _tracecode_batch_ast.parse(
+    __tracecode_prepared_user_source,
+    filename='solution.py',
+    mode='exec',
+)
+for _tracecode_batch_user_node in _tracecode_batch_ast.walk(
+    _tracecode_batch_user_tree
+):
+    if isinstance(_tracecode_batch_user_node, _tracecode_batch_ast.Attribute):
+        _tracecode_batch_attribute_name = str(
+            _tracecode_batch_user_node.attr
+        )
+        if (
+            _tracecode_batch_attribute_name.startswith('__')
+            or _tracecode_batch_attribute_name
+                in _tracecode_batch_reflective_attribute_names
+            or _tracecode_batch_attribute_name.startswith(
+                _tracecode_batch_reflective_attribute_prefixes
+            )
+        ):
+            raise RuntimeError(
+                'Prepared algorithm artifact contains reflective attribute: '
+                + _tracecode_batch_attribute_name
+            )
+    if isinstance(
+        _tracecode_batch_user_node,
+        _tracecode_batch_ast.GeneratorExp,
+    ):
+        raise RuntimeError(
+            'Prepared algorithm artifact contains suspending control flow'
+        )
+_tracecode_batch_call_argument_node_ids = set()
+for _tracecode_batch_call_node in _tracecode_batch_ast.walk(
+    _tracecode_batch_user_tree
+):
+    if not isinstance(_tracecode_batch_call_node, _tracecode_batch_ast.Call):
+        continue
+    _tracecode_batch_call_arguments = list(
+        _tracecode_batch_call_node.args
+    ) + [
+        _tracecode_batch_keyword.value
+        for _tracecode_batch_keyword in _tracecode_batch_call_node.keywords
+    ]
+    for _tracecode_batch_call_argument in _tracecode_batch_call_arguments:
+        _tracecode_batch_call_argument_node_ids.update(
+            id(_tracecode_batch_call_argument_item)
+            for _tracecode_batch_call_argument_item
+            in _tracecode_batch_ast.walk(_tracecode_batch_call_argument)
+        )
+for _tracecode_batch_user_node in _tracecode_batch_ast.walk(
+    _tracecode_batch_user_tree
+):
+    if (
+        isinstance(_tracecode_batch_user_node, _tracecode_batch_ast.Constant)
+        and id(_tracecode_batch_user_node)
+            in _tracecode_batch_call_argument_node_ids
+        and isinstance(_tracecode_batch_user_node.value, str)
+        and _tracecode_batch_user_node.value.startswith('__')
+    ):
+        raise RuntimeError(
+            'Prepared algorithm artifact contains reflective string argument: '
+            + _tracecode_batch_user_node.value
+        )
+_tracecode_batch_user_code = _tracecode_batch_builtins.compile(
+    __tracecode_prepared_user_source,
+    'solution.py',
+    'exec',
+)
+_tracecode_batch_internal_functions = {
+    '_tracecode_case_tracer', '_tracecode_isolated_print',
+    '_tracecode_batch_hydrate_for_annotation',
+    '_tracecode_batch_hydrate_inputs', '_tracecode_batch_prepare_call',
+    '_tracecode_annotation_preserves_literal_shape',
+}
+
+for _tracecode_batch_inputs in _tracecode_batch_cases:
+    _tracecode_case_started = _tracecode_batch_time.perf_counter()
+    _tracecode_case_console = []
+    _tracecode_case_globals = dict(_tracecode_batch_base)
+    _tracecode_case_builtins = dict(_tracecode_batch_safe_builtins)
+    _tracecode_print_namespace = {
+        '__builtins__': {'str': str},
+        '_tracecode_console': _tracecode_case_console,
+    }
+    exec(_tracecode_batch_print_code, _tracecode_print_namespace)
+    _tracecode_case_builtins['print'] = _tracecode_print_namespace[
+        '_tracecode_isolated_print'
+    ]
+    _tracecode_case_globals['__builtins__'] = _tracecode_case_builtins
+    _tracecode_case_class_globals = {
+        '__name__': '__main__',
+        '__builtins__': {
+            '__build_class__': _tracecode_batch_builtins.__build_class__,
+            'AttributeError': _tracecode_batch_builtins.AttributeError,
+            'KeyError': _tracecode_batch_builtins.KeyError,
+        },
+    }
+    exec(_tracecode_batch_class_code, _tracecode_case_class_globals)
+    TreeNode = _tracecode_case_class_globals['TreeNode']
+    ListNode = _tracecode_case_class_globals['ListNode']
+    _tracecode_case_globals['TreeNode'] = TreeNode
+    _tracecode_case_globals['ListNode'] = ListNode
+    _tracecode_case_input_names = tuple(
+        str(name) for name in _tracecode_batch_inputs.keys()
+    )
+    for _tracecode_input_name, _tracecode_input_value in (
+        _tracecode_batch_inputs.items()
+    ):
+        _tracecode_case_globals[str(_tracecode_input_name)] = (
+            _tracecode_input_value
+        )
+    _tracecode_batch_random.setstate(_tracecode_batch_random_state)
+    _tracecode_line_events = 0
+    _tracecode_line_hits = {}
+    _tracecode_call_depth = 0
+    _tracecode_memory_started = False
+    _tracecode_tracemalloc = None
+    _tracecode_limits_enabled = bool(
+        _tracecode_batch_limits.get('interviewGuard', False)
+    )
+    _tracecode_max_line_events = max(
+        10000,
+        int(_tracecode_batch_limits.get('maxLineEvents', ${Number(defaults.maxLineEvents)})),
+    )
+    _tracecode_max_single_line_hits = max(
+        1000,
+        int(_tracecode_batch_limits.get('maxSingleLineHits', ${Number(defaults.maxSingleLineHits)})),
+    )
+    _tracecode_max_call_depth = max(
+        100,
+        int(_tracecode_batch_limits.get('maxCallDepth', ${Number(defaults.maxCallDepth)})),
+    )
+    _tracecode_max_memory_bytes = max(
+        8 * 1024 * 1024,
+        int(_tracecode_batch_limits.get('maxMemoryBytes', ${Number(defaults.maxMemoryBytes)})),
+    )
+    _tracecode_memory_check_every = max(
+        10,
+        int(_tracecode_batch_limits.get('memoryCheckEvery', ${Number(defaults.memoryCheckEvery)})),
+    )
+
+    def _tracecode_case_tracer(frame, event, arg):
+        global _tracecode_line_events, _tracecode_call_depth
+        if (
+            frame.f_code.co_filename in (
+                '<tracecode-algorithm-fast-batch>',
+                '<tracecode-algorithm-print>',
+            )
+            and frame.f_code.co_name in _tracecode_batch_internal_functions
+        ):
+            return _tracecode_case_tracer
+        if event == 'call':
+            _tracecode_call_depth += 1
+            if _tracecode_call_depth > _tracecode_max_call_depth:
+                raise _TracecodeAlgorithmLimit('recursion-limit')
+        elif event == 'return':
+            if _tracecode_call_depth > 0:
+                _tracecode_call_depth -= 1
+        elif event == 'line':
+            _tracecode_line_events += 1
+            if _tracecode_line_events >= _tracecode_max_line_events:
+                raise _TracecodeAlgorithmLimit('line-limit')
+            key = (frame.f_code.co_name, frame.f_lineno)
+            count = _tracecode_line_hits.get(key, 0) + 1
+            _tracecode_line_hits[key] = count
+            if count >= _tracecode_max_single_line_hits:
+                raise _TracecodeAlgorithmLimit('single-line-limit')
+            if (
+                _tracecode_tracemalloc is not None
+                and _tracecode_memory_check_every > 0
+                and _tracecode_line_events % _tracecode_memory_check_every == 0
+            ):
+                current, peak = _tracecode_tracemalloc.get_traced_memory()
+                if max(current, peak) >= _tracecode_max_memory_bytes:
+                    raise _TracecodeAlgorithmLimit('memory-limit')
+        return _tracecode_case_tracer
+
+    try:
+        exec(_tracecode_batch_user_code, _tracecode_case_globals)
+        if _tracecode_batch_execution_style == 'solution-method':
+            solution_type = _tracecode_case_globals.get('Solution')
+            if solution_type is None:
+                raise NameError('Implement class Solution')
+            target = getattr(solution_type(), _tracecode_batch_function_name)
+        else:
+            target = _tracecode_case_globals.get(_tracecode_batch_function_name)
+            if not callable(target):
+                solution_type = _tracecode_case_globals.get('Solution')
+                target = (
+                    getattr(solution_type(), _tracecode_batch_function_name)
+                    if solution_type is not None
+                    else None
+                )
+            if not callable(target):
+                raise NameError(
+                    'Implement ' + _tracecode_batch_function_name + '(...)'
+                )
+        _tracecode_case_inputs = {
+            name: _tracecode_case_globals[name]
+            for name in _tracecode_case_input_names
+            if name in _tracecode_case_globals
+        }
+        _tracecode_batch_hydrate_inputs(
+            target,
+            _tracecode_case_inputs,
+            _tracecode_case_globals,
+        )
+        (
+            _tracecode_call_target,
+            _tracecode_call_args,
+            _tracecode_call_kwargs,
+        ) = _tracecode_batch_prepare_call(target, _tracecode_case_inputs)
+        if _tracecode_limits_enabled:
+            try:
+                import tracemalloc as _tracecode_tracemalloc
+                if not _tracecode_tracemalloc.is_tracing():
+                    _tracecode_tracemalloc.start()
+                    _tracecode_memory_started = True
+                else:
+                    _tracecode_tracemalloc.reset_peak()
+            except Exception:
+                _tracecode_tracemalloc = None
+            _tracecode_batch_sys.settrace(_tracecode_case_tracer)
+        try:
+            output = _tracecode_call_target(
+                *_tracecode_call_args,
+                **_tracecode_call_kwargs,
+            )
+        finally:
+            _tracecode_batch_sys.settrace(None)
+            if _tracecode_tracemalloc is not None and _tracecode_memory_started:
+                try:
+                    _tracecode_tracemalloc.stop()
+                except Exception:
+                    pass
+        if output is None:
+            for _tracecode_inplace_name in (
+                'nums1', 'nums', 'arr', 'array', 'matrix', 'board', 'grid'
+            ):
+                if (
+                    _tracecode_inplace_name in _tracecode_case_input_names
+                    and _tracecode_inplace_name in _tracecode_case_globals
+                ):
+                    output = _tracecode_case_globals[_tracecode_inplace_name]
+                    break
+        _tracecode_batch_results.append({
+            'success': True,
+            'output': _serialize(output),
+            'consoleOutput': _tracecode_case_console,
+            'timings': {
+                'runMs': (
+                    _tracecode_batch_time.perf_counter() - _tracecode_case_started
+                ) * 1000,
+                'algorithmFastBatch': True,
+            },
+        })
+    except _TracecodeAlgorithmLimit as error:
+        _tracecode_batch_sys.settrace(None)
+        _tracecode_batch_results.append({
+            'success': False,
+            'output': None,
+            'error': 'Execution stopped: resource limit exceeded (' + error.reason + ').',
+            'timeoutReason': error.reason,
+            'consoleOutput': _tracecode_case_console,
+            'timings': {
+                'runMs': (
+                    _tracecode_batch_time.perf_counter() - _tracecode_case_started
+                ) * 1000,
+                'algorithmFastBatch': True,
+            },
+        })
+    except BaseException as error:
+        _tracecode_batch_sys.settrace(None)
+        frames = _tracecode_batch_traceback.extract_tb(error.__traceback__)
+        user_frames = [frame for frame in frames if frame.filename == 'solution.py']
+        error_line = user_frames[-1].lineno if user_frames else None
+        error_message = str(error).strip().split('\\n')[0]
+        error_prefix = type(error).__name__
+        if error_line is not None:
+            error_prefix += ' on line ' + str(error_line)
+        entry = {
+            'success': False,
+            'output': None,
+            'error': error_prefix + ': ' + error_message,
+            'consoleOutput': [],
+            'timings': {
+                'runMs': (
+                    _tracecode_batch_time.perf_counter() - _tracecode_case_started
+                ) * 1000,
+                'algorithmFastBatch': True,
+            },
+        }
+        if error_line is not None:
+            entry['errorLine'] = error_line
+        _tracecode_batch_results.append(entry)
+
+_json_out = _tracecode_batch_encode_results(_tracecode_batch_results)
+_json_out
 `;
 }
 
@@ -4552,9 +5866,21 @@ def _tracecode_hydrate_for_annotation(_obj, _annotation):
         _non_none = [_arg for _arg in _args if _arg is not type(None)]
         return _tracecode_hydrate_for_annotation(_obj, _non_none[0]) if len(_non_none) == 1 else _obj
     if _origin in (_builtins.list, _builtins.tuple, _builtins.set, _builtins.frozenset):
-        _item_annotation = _args[0] if _args else None
         if isinstance(_obj, _builtins.list):
-            _items = [_tracecode_hydrate_for_annotation(_item, _item_annotation) for _item in _obj]
+            if _origin is _builtins.tuple and len(_args) > 1 and _args[-1] is not Ellipsis:
+                _items = [
+                    _tracecode_hydrate_for_annotation(
+                        _item,
+                        _args[_index] if _index < len(_args) else None,
+                    )
+                    for _index, _item in enumerate(_obj)
+                ]
+            else:
+                _item_annotation = _args[0] if _args else None
+                _items = [
+                    _tracecode_hydrate_for_annotation(_item, _item_annotation)
+                    for _item in _obj
+                ]
             if _origin is _builtins.tuple:
                 return tuple(_items)
             if _origin is _builtins.set:
@@ -5061,6 +6387,20 @@ function parsePythonError(rawError, userCodeStartLine, userCodeLineCount) {
   };
 }
 
+function pythonErrorText(error) {
+  if (error && typeof error === 'object') {
+    const stack = typeof error.stack === 'string' ? error.stack : '';
+    if (stack.includes('Traceback (most recent call last)')) return stack;
+    if (typeof error.message === 'string' && error.message) {
+      return error.message;
+    }
+    if (typeof error.type === 'string' || typeof error.value === 'string') {
+      return [error.type, error.value].filter(Boolean).join(': ');
+    }
+  }
+  return error instanceof Error ? error.message : String(error);
+}
+
 const RUNTIME_TRACE_SCHEMA_VERSION = 'runtime-trace-2026-04-28';
 
 function traceLineParenDelta(line) {
@@ -5236,7 +6576,8 @@ async function executeWithTracing(
             __tracecode_inputs_need_materialization:
               pythonInputsRequireCustomMaterialization(inputs),
           },
-          prepared.scopeTimings
+          prepared.scopeTimings,
+          prepared.isolationTier
         )
       : await runPythonInFreshExecutionScope(
           deps,
@@ -5366,7 +6707,7 @@ async function executeWithTracing(
     };
   } catch (error) {
     const executionTimeMs = deps.performanceNow() - startTime;
-    const rawError = error instanceof Error ? error.message : String(error);
+    const rawError = pythonErrorText(error);
     
     const { message, line } = parsePythonError(rawError, userCodeStartLine, code.split('\n').length);
     const isClientTimeout = rawError.includes('timed out');
@@ -5519,6 +6860,7 @@ _result = _out`
 import json
 import math
 import sys
+import traceback as _tracecode_execution_traceback
 import builtins as _builtins
 ${deps.PYTHON_CLASS_DEFINITIONS_SNIPPET}
 ${PYTHON_DEFAULT_IMPORT_PRELUDE}
@@ -5724,9 +7066,21 @@ def _tracecode_hydrate_for_annotation(_obj, _annotation):
         _non_none = [_arg for _arg in _args if _arg is not type(None)]
         return _tracecode_hydrate_for_annotation(_obj, _non_none[0]) if len(_non_none) == 1 else _obj
     if _origin in (_builtins.list, _builtins.tuple, _builtins.set, _builtins.frozenset):
-        _item_annotation = _args[0] if _args else None
         if isinstance(_obj, _builtins.list):
-            _items = [_tracecode_hydrate_for_annotation(_item, _item_annotation) for _item in _obj]
+            if _origin is _builtins.tuple and len(_args) > 1 and _args[-1] is not Ellipsis:
+                _items = [
+                    _tracecode_hydrate_for_annotation(
+                        _item,
+                        _args[_index] if _index < len(_args) else None,
+                    )
+                    for _index, _item in enumerate(_obj)
+                ]
+            else:
+                _item_annotation = _args[0] if _args else None
+                _items = [
+                    _tracecode_hydrate_for_annotation(_item, _item_annotation)
+                    for _item in _obj
+                ]
             if _origin is _builtins.tuple:
                 return tuple(_items)
             if _origin is _builtins.set:
@@ -5881,12 +7235,48 @@ _tracecode_hydrate_annotated_inputs(${traceInputNamesLiteral}, ${functionNameLit
 _result = None
 _interview_guard_triggered = False
 _interview_guard_reason = None
+_tracecode_execution_failure = None
 
 try:
     if _INTERVIEW_GUARD_ENABLED:
         _interview_guard_start()
     try:
 ${executionCallInNestedTry}
+    except _InterviewGuardTriggered:
+        raise
+    except BaseException as _tracecode_execution_error:
+        if not ${usesPreparedBindings ? 'True' : 'False'}:
+            raise
+        _tracecode_execution_frames = _tracecode_execution_traceback.extract_tb(
+            _tracecode_execution_error.__traceback__
+        )
+        _tracecode_execution_user_frames = [
+            _frame
+            for _frame in _tracecode_execution_frames
+            if _frame.filename == 'solution.py'
+        ]
+        _tracecode_execution_line = (
+            _tracecode_execution_user_frames[-1].lineno
+            if _tracecode_execution_user_frames
+            else None
+        )
+        _tracecode_execution_message = str(
+            _tracecode_execution_error
+        ).strip().split('\\n')[0]
+        _tracecode_execution_prefix = type(
+            _tracecode_execution_error
+        ).__name__
+        if _tracecode_execution_line is not None:
+            _tracecode_execution_prefix += (
+                ' on line ' + str(_tracecode_execution_line)
+            )
+        _tracecode_execution_failure = {
+            'message': (
+                _tracecode_execution_prefix + ': ' +
+                _tracecode_execution_message
+            ),
+            'line': _tracecode_execution_line,
+        }
     finally:
         if _INTERVIEW_GUARD_ENABLED:
             _interview_guard_stop()
@@ -5902,6 +7292,11 @@ if _interview_guard_triggered:
         "guardTriggered": True,
         "timeoutReason": _interview_guard_reason,
         "console": _console_output,
+    })
+elif _tracecode_execution_failure is not None:
+    _json_out = json.dumps({
+        "executionError": _tracecode_execution_failure,
+        "console": [],
     })
 else:
     if _result is None:
@@ -5979,9 +7374,21 @@ def _tracecode_hydrate_for_annotation(_obj, _annotation):
         _non_none = [_arg for _arg in _args if _arg is not type(None)]
         return _tracecode_hydrate_for_annotation(_obj, _non_none[0]) if len(_non_none) == 1 else _obj
     if _origin in (_builtins.list, _builtins.tuple, _builtins.set, _builtins.frozenset):
-        _item_annotation = _args[0] if _args else None
         if isinstance(_obj, _builtins.list):
-            _items = [_tracecode_hydrate_for_annotation(_item, _item_annotation) for _item in _obj]
+            if _origin is _builtins.tuple and len(_args) > 1 and _args[-1] is not Ellipsis:
+                _items = [
+                    _tracecode_hydrate_for_annotation(
+                        _item,
+                        _args[_index] if _index < len(_args) else None,
+                    )
+                    for _index, _item in enumerate(_obj)
+                ]
+            else:
+                _item_annotation = _args[0] if _args else None
+                _items = [
+                    _tracecode_hydrate_for_annotation(_item, _item_annotation)
+                    for _item in _obj
+                ]
             if _origin is _builtins.tuple:
                 return tuple(_items)
             if _origin is _builtins.set:
@@ -6189,7 +7596,8 @@ _json_out
             __tracecode_inputs_need_materialization:
               pythonInputsRequireCustomMaterialization(inputs),
           },
-          prepared.scopeTimings
+          prepared.scopeTimings,
+          prepared.isolationTier
         )
       : await runPythonInFreshExecutionScope(deps, execCode, '_json_out');
     const resultParseStartedAt = deps.performanceNow();
@@ -6214,6 +7622,19 @@ _json_out
       };
     }
 
+    if (result.executionError) {
+      return {
+        success: false,
+        output: null,
+        error: String(result.executionError.message ?? 'Python execution failed.'),
+        ...(Number.isInteger(result.executionError.line)
+          ? { errorLine: result.executionError.line }
+          : {}),
+        consoleOutput: [],
+        timings: { totalMs: deps.performanceNow() - startedAt },
+      };
+    }
+
     return {
       success: true,
       output: result.output,
@@ -6221,7 +7642,7 @@ _json_out
       timings: { totalMs: deps.performanceNow() - startedAt },
     };
   } catch (error) {
-    const rawError = error instanceof Error ? error.message : String(error);
+    const rawError = pythonErrorText(error);
     const { message, line } = parsePythonError(rawError, userCodeStartLine, userCodeLineCount);
 
     return {
@@ -6248,9 +7669,16 @@ async function prepareProgram(
   const startedAt = deps.performanceNow();
   let userCodeObject;
   let executorCode;
+  let algorithmFastBatchCode;
 
   try {
     await deps.loadPyodideInstance();
+    const isolationProfile = pythonAlgorithmIsolationProfile(
+      deps,
+      code,
+      functionName,
+      executionStyle
+    );
 
     if (mode === 'trace') {
       const compilePayload = generateTracingCode(
@@ -6333,9 +7761,21 @@ async function prepareProgram(
       throw new Error(`Unsupported prepared Python mode: ${String(mode)}`);
     }
 
+    if (mode === 'code' && isolationProfile.tier === 'algorithm-fast') {
+      algorithmFastBatchCode = await compilePythonProgram(
+        deps,
+        buildPythonAlgorithmFastBatchSource(
+          deps,
+          functionName ?? '',
+          executionStyle
+        ),
+        '<tracecode-algorithm-fast-batch>'
+      );
+    }
+
     const fingerprint = pythonPreparedArtifactFingerprint(deps);
     const artifact = {
-      schemaVersion: 'tracecode.python.prepared-program.v1',
+      schemaVersion: 'tracecode.python.prepared-program.v3',
       fingerprint,
       mode,
       code,
@@ -6343,6 +7783,15 @@ async function prepareProgram(
       executionStyle,
       traceOptions,
       onDemandTracing: mode === 'trace',
+      isolationProfile,
+      ...(algorithmFastBatchCode
+        ? {
+            algorithmFastBatchCode: serializePythonCodeArtifact(
+              deps,
+              algorithmFastBatchCode
+            ),
+          }
+        : {}),
       userCode: serializePythonCodeArtifact(deps, userCodeObject),
       executorCode: serializePythonCodeArtifact(deps, executorCode),
     };
@@ -6360,7 +7809,7 @@ async function prepareProgram(
       },
     };
   } catch (error) {
-    const rawError = error instanceof Error ? error.message : String(error);
+    const rawError = pythonErrorText(error);
     const parsed = parsePythonError(rawError, 1, code.split('\n').length);
     const preparationMs = deps.performanceNow() - startedAt;
     return {
@@ -6376,6 +7825,7 @@ async function prepareProgram(
       },
     };
   } finally {
+    algorithmFastBatchCode?.destroy?.();
     executorCode?.destroy?.();
     userCodeObject?.destroy?.();
   }
@@ -6385,13 +7835,29 @@ function assertPythonPreparedArtifact(deps, artifact) {
   if (
     !artifact ||
     typeof artifact !== 'object' ||
-    artifact.schemaVersion !== 'tracecode.python.prepared-program.v1' ||
+    artifact.schemaVersion !== 'tracecode.python.prepared-program.v3' ||
     (artifact.mode !== 'code' && artifact.mode !== 'trace') ||
     typeof artifact.code !== 'string' ||
     typeof artifact.userCode !== 'string' ||
-    typeof artifact.executorCode !== 'string'
+    typeof artifact.executorCode !== 'string' ||
+    !artifact.isolationProfile ||
+    (artifact.isolationProfile.tier !== 'algorithm-fast' &&
+      artifact.isolationProfile.tier !== 'compatibility') ||
+    !Array.isArray(artifact.isolationProfile.reasons) ||
+    (artifact.mode === 'code' &&
+      artifact.isolationProfile.tier === 'algorithm-fast' &&
+      typeof artifact.algorithmFastBatchCode !== 'string')
   ) {
-    throw new Error('Invalid prepared Python artifact.');
+    throw new Error(
+      'Invalid prepared Python artifact: ' + JSON.stringify({
+        schemaVersion: artifact?.schemaVersion,
+        mode: artifact?.mode,
+        hasCode: typeof artifact?.code === 'string',
+        hasUserCode: typeof artifact?.userCode === 'string',
+        hasExecutorCode: typeof artifact?.executorCode === 'string',
+        isolationProfile: artifact?.isolationProfile,
+      })
+    );
   }
   const current = pythonPreparedArtifactFingerprint(deps);
   const expected = artifact.fingerprint;
@@ -6456,7 +7922,13 @@ async function executePreparedProgram(
           inputs,
           artifact.executionStyle ?? 'function',
           artifact.traceOptions ?? {},
-          { executorCode, userCodeObject, limits, tracingEnabled: true }
+          {
+            executorCode,
+            userCodeObject,
+            limits,
+            tracingEnabled: true,
+            isolationTier: 'compatibility',
+          }
         )
       : await executeCode(
           deps,
@@ -6465,7 +7937,12 @@ async function executePreparedProgram(
           inputs,
           artifact.executionStyle ?? 'function',
           limits?.guest ?? {},
-          { executorCode, userCodeObject, tracingEnabled: false }
+          {
+            executorCode,
+            userCodeObject,
+            tracingEnabled: false,
+            isolationTier: 'compatibility',
+          }
         );
     const runMs = deps.performanceNow() - startedAt;
     const normalizedResult = artifact.mode === 'trace' && tracingEnabled === false
@@ -6530,13 +8007,107 @@ async function executePreparedProgramBatch(
 
   let userCodeObject;
   let executorCode;
+  let algorithmFastBatchCode;
   try {
-    // Deserialize the immutable compiler artifacts once. Each executor enters
-    // a fresh guarded namespace, so interpreter state is restored between
-    // cases without paying for another Pyodide worker or compilation.
+    // Deserialize only the immutable artifacts used by the selected path.
+    // The fast batch has its own driver and does not pay to hydrate the
+    // compatibility executor or the separately marshaled learner code.
+    const isAlgorithmFastArtifact =
+      artifact.mode === 'code' &&
+      artifact.isolationProfile.tier === 'algorithm-fast' &&
+      typeof artifact.algorithmFastBatchCode === 'string';
+    const currentIsolationProfile = isAlgorithmFastArtifact
+      ? pythonAlgorithmIsolationProfile(
+          deps,
+          artifact.code,
+          artifact.functionName ?? '',
+          artifact.executionStyle ?? 'function'
+        )
+      : null;
+    const useAlgorithmFastBatch =
+      isAlgorithmFastArtifact &&
+      currentIsolationProfile?.tier === 'algorithm-fast' &&
+      cases.every((inputs) => !pythonInputsRequireCustomMaterialization(inputs));
+    if (
+      artifact.mode === 'code' &&
+      artifact.isolationProfile.tier === 'algorithm-fast' &&
+      !useAlgorithmFastBatch
+    ) {
+      const runMs = deps.performanceNow() - startedAt;
+      return {
+        success: false,
+        results: [],
+        error: 'Prepared Python algorithm-fast batch requires compatibility isolation.',
+        consoleOutput: [],
+        algorithmFastBatchUnavailable: true,
+        timings: {
+          totalMs: runMs,
+          runMs,
+          compileCacheHit: true,
+          artifactCacheHit: true,
+        },
+      };
+    }
+    if (useAlgorithmFastBatch) {
+      algorithmFastBatchCode = deserializePythonCodeArtifact(
+        deps,
+        artifact.algorithmFastBatchCode
+      );
+      const resultJson = await runCompiledPythonInFreshExecutionScope(
+        deps,
+        algorithmFastBatchCode,
+        '_json_out',
+        {
+          __tracecode_prepared_user_source: artifact.code,
+          __tracecode_input_batch_literal: preparedPythonLiteral(deps, cases),
+          __tracecode_limits_literal: preparedPythonLiteral(
+            deps,
+            limits?.guest ?? {}
+          ),
+        },
+        undefined,
+        'algorithm-fast'
+      );
+      const results = JSON.parse(resultJson);
+      const resultsHaveTrustedShape =
+        Array.isArray(results) &&
+        results.length === cases.length &&
+        results.every((result) =>
+          result !== null &&
+          typeof result === 'object' &&
+          !Array.isArray(result) &&
+          typeof result.success === 'boolean' &&
+          Object.hasOwn(result, 'output') &&
+          Array.isArray(result.consoleOutput) &&
+          result.timings !== null &&
+          typeof result.timings === 'object' &&
+          result.timings.algorithmFastBatch === true
+        );
+      if (!resultsHaveTrustedShape) {
+        throw new Error(
+          'Prepared Python algorithm-fast batch returned an invalid result envelope.'
+        );
+      }
+      const runMs = deps.performanceNow() - startedAt;
+      return {
+        success: results.every((result) => result?.success === true),
+        results,
+        consoleOutput: results.flatMap((result) => result?.consoleOutput ?? []),
+        timings: {
+          totalMs: runMs,
+          runMs,
+          compileCacheHit: true,
+          artifactCacheHit: true,
+          algorithmFastBatch: true,
+        },
+      };
+    }
     userCodeObject = deserializePythonCodeArtifact(deps, artifact.userCode);
     executorCode = deserializePythonCodeArtifact(deps, artifact.executorCode);
     const results = [];
+    // Trace execution and node/custom-input fallbacks still use the generic
+    // executor, so they retain the full compatibility guard and filesystem
+    // journal even when the source also qualified for code-batch admission.
     const filesystem = isolatedPythonFilesystemManager(deps.getPyodide());
     for (let caseIndex = 0; caseIndex < cases.length; caseIndex += 1) {
       const inputs = cases[caseIndex];
@@ -6556,7 +8127,7 @@ async function executePreparedProgramBatch(
         ? (traceEnabledBatch?.[caseIndex] ?? true)
         : false;
       const filesystemBeginStartedAt = deps.performanceNow();
-      filesystem.begin();
+      filesystem?.begin();
       scopeTimings.filesystemBeginMs +=
         deps.performanceNow() - filesystemBeginStartedAt;
       let result;
@@ -6575,6 +8146,7 @@ async function executePreparedProgramBatch(
                 limits,
                 tracingEnabled: true,
                 scopeTimings,
+                isolationTier: 'compatibility',
               }
             )
           : await executeCode(
@@ -6589,11 +8161,12 @@ async function executePreparedProgramBatch(
                 userCodeObject,
                 tracingEnabled: false,
                 scopeTimings,
+                isolationTier: 'compatibility',
               }
             );
       } finally {
         const filesystemRestoreStartedAt = deps.performanceNow();
-        filesystem.restore();
+        filesystem?.restore();
         scopeTimings.filesystemRestoreMs +=
           deps.performanceNow() - filesystemRestoreStartedAt;
       }
@@ -6623,6 +8196,7 @@ async function executePreparedProgramBatch(
       },
     };
   } finally {
+    algorithmFastBatchCode?.destroy?.();
     executorCode?.destroy?.();
     userCodeObject?.destroy?.();
   }

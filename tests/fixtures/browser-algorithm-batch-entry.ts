@@ -152,7 +152,8 @@ export async function runBrowserAlgorithmBatch(
   selectedLanguages: readonly BatchLanguage[] = BATCH_FIXTURES.map(
     (fixture) => fixture.language
   ),
-  csharpBatchConcurrency = 4
+  csharpBatchConcurrency = 4,
+  pythonCompatibilityCaseCount = 3
 ): Promise<unknown> {
   const NativeWorker = globalThis.Worker;
   const workerUrls: string[] = [];
@@ -315,6 +316,89 @@ export async function runBrowserAlgorithmBatch(
         const traceMaximumActiveWorkers = maximumActiveWorkers;
         const traceWorkerUrls = workerUrls.splice(0);
 
+        let compatibilityIsolation:
+          | ReturnType<typeof receiptSummary>
+          | undefined;
+        let compatibilityIsolationWorkerUrls: string[] | undefined;
+        let compatibilityIsolationMaximumActiveWorkers: number | undefined;
+        let compatibilityIsolationMs: number | undefined;
+        let fastFallbackIsolation:
+          | ReturnType<typeof receiptSummary>
+          | undefined;
+        let fastFallbackIsolationWorkerUrls: string[] | undefined;
+        let fastFallbackIsolationMaximumActiveWorkers: number | undefined;
+        if (fixture.language === 'python') {
+          const compatibilityBundle = await createAlgorithmJudgeBundle({
+            id: 'browser-python-compatibility-nested-state-isolation',
+            language: 'python',
+            code: [
+              'sink = json.JSONEncoder',
+              'def solve(value):',
+              '    try:',
+              '        before = sink.tracecode_case_leak',
+              '    except AttributeError:',
+              '        before = None',
+              '    sink.tracecode_case_leak = value',
+              '    return before',
+            ].join('\n'),
+            functionName: 'solve',
+            cases: Array.from(
+              { length: pythonCompatibilityCaseCount },
+              (_, index) => ({
+                id: `compatibility-case-${index + 1}`,
+                input: { value: index + 1 },
+                expected: null,
+              })
+            ),
+          });
+          maximumActiveWorkers = activeWorkers;
+          const compatibilityStartedAt = performance.now();
+          const compatibilityReceipt = await host.evaluateAlgorithm({
+            bundle: compatibilityBundle,
+          });
+          compatibilityIsolationMs =
+            performance.now() - compatibilityStartedAt;
+          compatibilityIsolation = receiptSummary(compatibilityReceipt);
+          compatibilityIsolationMaximumActiveWorkers = maximumActiveWorkers;
+          compatibilityIsolationWorkerUrls = workerUrls.splice(0);
+
+          const fastFallbackBundle = await createAlgorithmJudgeBundle({
+            id: 'browser-python-fast-artifact-custom-input-fallback-isolation',
+            language: 'python',
+            code: [
+              'def solve(value, root):',
+              '    scope = json.codecs.builtins.getattr(solve, "_" + "_" + "globals__")',
+              '    sink = scope["json"].JSONEncoder',
+              '    try:',
+              '        before = sink.tracecode_case_leak',
+              '    except AttributeError:',
+              '        before = None',
+              '    sink.tracecode_case_leak = value',
+              '    return before',
+            ].join('\n'),
+            functionName: 'solve',
+            cases: Array.from({ length: 3 }, (_, index) => ({
+              id: `fast-fallback-case-${index + 1}`,
+              input: {
+                value: index + 1,
+                root: {
+                  val: index + 1,
+                  left: null,
+                  right: null,
+                },
+              },
+              expected: null,
+            })),
+          });
+          maximumActiveWorkers = activeWorkers;
+          const fastFallbackReceipt = await host.evaluateAlgorithm({
+            bundle: fastFallbackBundle,
+          });
+          fastFallbackIsolation = receiptSummary(fastFallbackReceipt);
+          fastFallbackIsolationMaximumActiveWorkers = maximumActiveWorkers;
+          fastFallbackIsolationWorkerUrls = workerUrls.splice(0);
+        }
+
         results[fixture.language] = {
           plain: receiptSummary(plainReceipt),
           plainMs,
@@ -324,6 +408,17 @@ export async function runBrowserAlgorithmBatch(
           traceMs,
           traceMaximumActiveWorkers,
           traceWorkerUrls,
+          ...(compatibilityIsolation
+            ? {
+                compatibilityIsolation,
+                compatibilityIsolationWorkerUrls,
+                compatibilityIsolationMaximumActiveWorkers,
+                compatibilityIsolationMs,
+                fastFallbackIsolation,
+                fastFallbackIsolationWorkerUrls,
+                fastFallbackIsolationMaximumActiveWorkers,
+              }
+            : {}),
           ...(fixture.language === 'csharp'
             ? { csharpBatchConcurrency, trustedPrewarm }
             : {}),
