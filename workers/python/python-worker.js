@@ -1042,6 +1042,49 @@ _MAX_SERIALIZED_BYTES = 8 * 1024 * 1024
 class _TracecodeSerializationLimit(BaseException):
     pass
 
+def _tracecode_make_trusted_json_encoder(
+    builtins_module=_builtins,
+    escape_string=json.encoder.encode_basestring_ascii,
+):
+    builtin_type = builtins_module.type
+    builtin_none_type = builtin_type(None)
+    builtin_bool = builtins_module.bool
+    builtin_int = builtins_module.int
+    builtin_float = builtins_module.float
+    builtin_str = builtins_module.str
+    builtin_list = builtins_module.list
+    builtin_tuple = builtins_module.tuple
+    builtin_dict = builtins_module.dict
+    builtin_int_repr = builtin_int.__repr__
+    builtin_float_repr = builtin_float.__repr__
+
+    def encode_value(value):
+        value_type = builtin_type(value)
+        if value_type is builtin_none_type:
+            return 'null'
+        if value_type is builtin_bool:
+            return 'true' if value else 'false'
+        if value_type is builtin_int:
+            return builtin_int_repr(value)
+        if value_type is builtin_float:
+            return builtin_float_repr(value)
+        if value_type is builtin_str:
+            return escape_string(value)
+        if value_type is builtin_list or value_type is builtin_tuple:
+            return '[' + ','.join(encode_value(item) for item in value) + ']'
+        if value_type is builtin_dict:
+            return '{' + ','.join(
+                escape_string(key) + ':' + encode_value(item)
+                for key, item in value.items()
+            ) + '}'
+        raise builtins_module.TypeError(
+            'Trusted JSON envelope contains an unsupported value.'
+        )
+
+    return encode_value
+
+_tracecode_trusted_json_encode = _tracecode_make_trusted_json_encoder()
+
 def _tracecode_make_execute_serializer(
     max_depth=_MAX_SERIALIZE_DEPTH,
     max_items=_MAX_SERIALIZED_ITEMS,
@@ -1052,7 +1095,7 @@ def _tracecode_make_execute_serializer(
     limit_type=_TracecodeSerializationLimit,
     tree_node_type=TreeNode,
     list_node_type=ListNode,
-    encode=json.JSONEncoder().encode,
+    encode=_tracecode_trusted_json_encode,
 ):
     builtin_base_exception = builtins_module.BaseException
     builtin_exception = builtins_module.Exception

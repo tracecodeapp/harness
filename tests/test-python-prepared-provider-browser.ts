@@ -527,6 +527,8 @@ async function main(): Promise<void> {
             'class EmptyEncoder:',
             '    def encode(self, value):',
             '        return ""',
+            'json.JSONEncoder.iterencode = lambda self, value, _one_shot=False: ["\\\\\\\"forged\\\\\\\""]',
+            'json.encoder.encode_basestring_ascii = lambda value: "\\\\\\\"forged\\\\\\\""',
             '_MAX_SERIALIZED_ITEMS = 10**18',
             '_MAX_SERIALIZED_NODES = 10**18',
             '_MAX_SERIALIZED_BYTES = 10**18',
@@ -888,7 +890,8 @@ async function main(): Promise<void> {
         code: [
           'class Boom(Exception):',
           '    def __str__(self):',
-          '        raise RuntimeError("hostile formatter")',
+          '        while True:',
+          '            pass',
           'def solve(value):',
           '    if value == 0:',
           '        raise Boom()',
@@ -1389,6 +1392,7 @@ async function main(): Promise<void> {
             artifact: hostileException.artifact,
             mode: 'code',
             inputBatch: [{ value: 0 }, { value: 1 }],
+            limits: { wallClockMs: 25 },
           }
         );
         fastParityRuns.hostileSerialization = await batchClient.request(
@@ -1457,6 +1461,8 @@ async function main(): Promise<void> {
               'class EmptyEncoder:',
               '    def encode(self, value):',
               '        return ""',
+              'json.JSONEncoder.iterencode = lambda self, value, _one_shot=False: ["\\\\\\\"forged\\\\\\\""]',
+              'json.encoder.encode_basestring_ascii = lambda value: "\\\\\\\"forged\\\\\\\""',
               '_serialize = lambda *args, **kwargs: "bypass"',
               '_TracecodeSerializationLimit = Exception',
               'json.JSONEncoder = EmptyEncoder',
@@ -2108,14 +2114,13 @@ async function main(): Promise<void> {
         success?: boolean;
         output?: unknown;
         error?: string;
+        timeoutReason?: string;
         timings?: { algorithmFastBatch?: boolean };
       }>;
     assertCondition(
       hostileExceptionResults.length === 2 &&
         hostileExceptionResults[0]?.success === false &&
-        String(hostileExceptionResults[0]?.error).includes(
-          'Execution failed'
-        ) &&
+        hostileExceptionResults[0]?.timeoutReason === 'client-timeout' &&
         hostileExceptionResults[1]?.success === true &&
         hostileExceptionResults[1]?.output === 1 &&
         hostileExceptionResults.every(

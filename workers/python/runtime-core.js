@@ -1633,9 +1633,7 @@ _tracecode_batch_base['pow'] = _tracecode_batch_builtins.pow
 # Capture the trusted result encoder before learner code runs. Even if a future
 # admission bug exposes a mutable stdlib class, batch verdict serialization no
 # longer performs a fresh learner-reachable json.JSONEncoder lookup.
-_tracecode_batch_encode_results = _tracecode_batch_json.JSONEncoder(
-    separators=(',', ':'),
-).encode
+_tracecode_batch_encode_results = _tracecode_trusted_json_encode
 
 _tracecode_batch_cases = _tracecode_batch_ast.literal_eval(
     __tracecode_input_batch_literal
@@ -1920,6 +1918,84 @@ def _tracecode_batch_append_result(entry):
     _tracecode_batch_encoded_results.append(encoded)
     _tracecode_batch_encoded_bytes += separator_bytes + encoded_bytes
 
+def _tracecode_batch_format_error(error):
+    error_line = None
+    try:
+        frames = _tracecode_batch_traceback.extract_tb(error.__traceback__)
+        user_frames = [
+            frame for frame in frames if frame.filename == 'solution.py'
+        ]
+        error_line = user_frames[-1].lineno if user_frames else None
+    except _TracecodeAlgorithmLimit as formatting_limit:
+        return (
+            None,
+            'Execution stopped: resource limit exceeded ('
+            + formatting_limit.reason
+            + ').',
+            '',
+            formatting_limit.reason,
+        )
+    except _TracecodeSerializationLimit:
+        return (
+            None,
+            'Execution stopped: resource limit exceeded '
+            '(serialization-limit).',
+            '',
+            'serialization-limit',
+        )
+    except BaseException:
+        error_line = None
+    try:
+        error_type = _tracecode_batch_builtins.BaseException.__getattribute__(
+            error,
+            '__class__',
+        )
+        error_prefix = _tracecode_batch_builtins.type.__getattribute__(
+            error_type,
+            '__name__',
+        )
+    except _TracecodeAlgorithmLimit as formatting_limit:
+        return (
+            None,
+            'Execution stopped: resource limit exceeded ('
+            + formatting_limit.reason
+            + ').',
+            '',
+            formatting_limit.reason,
+        )
+    except _TracecodeSerializationLimit:
+        return (
+            None,
+            'Execution stopped: resource limit exceeded '
+            '(serialization-limit).',
+            '',
+            'serialization-limit',
+        )
+    except BaseException:
+        error_prefix = 'ExecutionError'
+    try:
+        error_detail = str(error).strip().splitlines()[0]
+    except _TracecodeAlgorithmLimit as formatting_limit:
+        return (
+            None,
+            'Execution stopped: resource limit exceeded ('
+            + formatting_limit.reason
+            + ').',
+            '',
+            formatting_limit.reason,
+        )
+    except _TracecodeSerializationLimit:
+        return (
+            None,
+            'Execution stopped: resource limit exceeded '
+            '(serialization-limit).',
+            '',
+            'serialization-limit',
+        )
+    except BaseException:
+        error_detail = 'Execution failed'
+    return error_line, error_prefix, error_detail, None
+
 for _tracecode_batch_inputs in _tracecode_batch_cases:
     # re's compiled-pattern cache is interpreter-global. It is not exposed by
     # the capability facade, but clearing it at every case boundary also
@@ -2159,36 +2235,22 @@ for _tracecode_batch_inputs in _tracecode_batch_cases:
             },
         }
     except BaseException as error:
-        error_line = None
-        try:
-            frames = _tracecode_batch_traceback.extract_tb(error.__traceback__)
-            user_frames = [
-                frame for frame in frames if frame.filename == 'solution.py'
-            ]
-            error_line = user_frames[-1].lineno if user_frames else None
-        except BaseException:
-            error_line = None
-        try:
-            error_type = _tracecode_batch_builtins.BaseException.__getattribute__(
-                error,
-                '__class__',
-            )
-            error_prefix = _tracecode_batch_builtins.type.__getattribute__(
-                error_type,
-                '__name__',
-            )
-        except BaseException:
-            error_prefix = 'ExecutionError'
-        try:
-            error_detail = str(error).strip().split('\\n')[0]
-        except BaseException:
-            error_detail = 'Execution failed'
+        (
+            error_line,
+            error_prefix,
+            error_detail,
+            formatting_limit_reason,
+        ) = _tracecode_batch_format_error(error)
         if error_line is not None:
             error_prefix += ' on line ' + str(error_line)
         _tracecode_case_result = {
             'success': False,
             'output': None,
-            'error': error_prefix + ': ' + error_detail,
+            'error': (
+                error_prefix
+                if formatting_limit_reason is not None
+                else error_prefix + ': ' + error_detail
+            ),
             'consoleOutput': [],
             'timings': {
                 'runMs': (
@@ -2199,6 +2261,9 @@ for _tracecode_batch_inputs in _tracecode_batch_cases:
         }
         if error_line is not None:
             _tracecode_case_result['errorLine'] = error_line
+        if formatting_limit_reason is not None:
+            _tracecode_case_result['timeoutReason'] = formatting_limit_reason
+            _tracecode_case_result['consoleOutput'] = _tracecode_case_console
     finally:
         _tracecode_batch_sys.settrace(None)
         if _tracecode_tracemalloc is not None and _tracecode_memory_started:
@@ -7768,9 +7833,7 @@ else:
             "console": _tracecode_raw_result.get("console", []),
         }
 
-_json_out = json.JSONEncoder(separators=(',', ':')).encode(
-    _tracecode_final_result
-)
+_json_out = _tracecode_trusted_json_encode(_tracecode_final_result)
 _json_out
 `;
 

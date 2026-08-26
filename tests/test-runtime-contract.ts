@@ -2184,6 +2184,8 @@ function compute(nums: number[], delta: number): number[] {
       'class EmptyEncoder:',
       '    def encode(self, value):',
       '        return ""',
+      'json.JSONEncoder.iterencode = lambda self, value, _one_shot=False: ["\\\"forged\\\""]',
+      'json.encoder.encode_basestring_ascii = lambda value: "\\\"forged\\\""',
       '_MAX_SERIALIZED_ITEMS = 10**18',
       '_MAX_SERIALIZED_NODES = 10**18',
       '_MAX_SERIALIZED_BYTES = 10**18',

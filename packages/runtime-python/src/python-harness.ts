@@ -140,7 +140,7 @@ def _tracecode_run_solution(
     function_name,
     _trusted_serialize=_serialize,
     _trusted_limit_type=_TracecodeSerializationLimit,
-    _trusted_encode=json.JSONEncoder().encode,
+    _trusted_encode=_tracecode_trusted_json_encode,
     _trusted_print=_builtins.print,
     _trusted_exception_type=_builtins.Exception,
     _trusted_type=_builtins.type,

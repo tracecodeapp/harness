@@ -590,7 +590,7 @@ _USER_CODE = ${JSON.stringify(code)}
 _FUNCTION_NAME = ${JSON.stringify(functionName)}
 _EXECUTION_STYLE = ${JSON.stringify(executionStyle)}
 _INPUT_BATCH = json.loads(${JSON.stringify(JSON.stringify(inputBatch))})
-_tracecode_encode_results = json.JSONEncoder(separators=(',', ':')).encode
+_tracecode_encode_results = _tracecode_trusted_json_encode
 _tracecode_print_results = _builtins.print
 
 def _tracecode_materialize_custom_input(obj):

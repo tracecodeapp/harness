@@ -18,6 +18,8 @@ async function main(): Promise<void> {
         'class EmptyEncoder:',
         '    def encode(self, value):',
         '        return ""',
+        'json.JSONEncoder.iterencode = lambda self, value, _one_shot=False: ["\\\"forged\\\""]',
+        'json.encoder.encode_basestring_ascii = lambda value: "\\\"forged\\\""',
         'json.JSONEncoder = EmptyEncoder',
         'json.dumps = lambda *args, **kwargs: ""',
         '_serialize = lambda *args, **kwargs: "bypass"',
