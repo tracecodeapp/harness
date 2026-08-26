@@ -3,22 +3,22 @@
   "harness": {
     "name": "@tracecode/harness",
     "version": "0.17.0",
-    "releaseId": "@tracecode/harness@0.17.0+sha256.ce9835ec60c275503709a0bf3c9c565b0a3a0218b79c9d94f5027dc23e866d5d"
+    "releaseId": "@tracecode/harness@0.17.0+sha256.69d53a19a45c591749737ba78d8c05f980664f491e3dab6bcba0b04d42f13947"
   },
   "treeSha256Algorithm": "sha256-path-nul-bytes-nul-v1",
-  "packageTreeSha256": "ce9835ec60c275503709a0bf3c9c565b0a3a0218b79c9d94f5027dc23e866d5d",
-  "totalPackagedRuntimeBytes": 151847147,
+  "packageTreeSha256": "69d53a19a45c591749737ba78d8c05f980664f491e3dab6bcba0b04d42f13947",
+  "totalPackagedRuntimeBytes": 151847676,
   "components": {
     "cpp": {
-      "releaseId": "cpp+sha256.276bbc3dd82e73e468ec3d9507857ae2afff3eda30d5adb75fb3fe2ca2792b34",
-      "treeSha256": "276bbc3dd82e73e468ec3d9507857ae2afff3eda30d5adb75fb3fe2ca2792b34",
-      "totalBytes": 880473,
+      "releaseId": "cpp+sha256.d076566949a8454e9a7a6cfc28497223dc1766fa6a23bec23c842ab059299d0a",
+      "treeSha256": "d076566949a8454e9a7a6cfc28497223dc1766fa6a23bec23c842ab059299d0a",
+      "totalBytes": 881002,
       "files": [
         {
           "path": "workers/cpp/cpp-worker.js",
-          "size": 617390,
-          "sha256": "db8839ca7b5bdc913e3a9df7b2fad59fac193a7d19b3787a58eb127ef277be3b",
-          "integrity": "sha256-24g5yntb3JE+Op33svrVn6wZOn0Zs3h6WOsSfvJ3vjs=",
+          "size": 617919,
+          "sha256": "b97bd6fe425e2e301aa0e815063ca7e632310bb96e310138664a036724522c19",
+          "integrity": "sha256-uXvW/kJeLjAaoOgVBjyn5jIxC7luMQE4ZkoDZyRSLBk=",
           "mediaType": "text/javascript"
         },
         {

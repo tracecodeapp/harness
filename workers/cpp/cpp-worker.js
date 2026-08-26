@@ -15570,11 +15570,22 @@ async function runPreparedCodeRuntimeProgramBatchIsolated(
   }
 
   const results = [];
-  for (const inputs of normalizedInputBatch) {
+  for (let caseIndex = 0; caseIndex < normalizedInputBatch.length; caseIndex += 1) {
+    const inputs = normalizedInputBatch[caseIndex];
     // The module is immutable and retained, but runPreparedRuntimeProgram
     // constructs a new InMemoryFileSystem, WasiProcess, WebAssembly.Instance,
     // linear memory, globals, constructors, and C/C++ runtime for every case.
-    results.push(await runPreparedRuntimeProgram(preparedProgram, inputs));
+    const result = await runPreparedRuntimeProgram(preparedProgram, inputs);
+    results.push(result);
+    // The host keeps the former per-case watchdog while this one logical batch
+    // request is in flight. Completed results are included so a later hung case
+    // cannot erase already-finished correctness evidence when the worker is
+    // retired at the deadline.
+    emitRequestProgress('prepared-code-case-complete', {
+      caseIndex,
+      caseCount: normalizedInputBatch.length,
+      result,
+    });
   }
   const success = results.every((result) => result.success === true);
   const totalMs = elapsedMs(startedAt);

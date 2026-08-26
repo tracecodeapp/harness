@@ -22,9 +22,9 @@ This repo uses Git tags as release boundaries. Version notes below summarize wha
 - C++ prepared correctness now sends the case vector through one Worker
   request while still creating a fresh filesystem, WASI process,
   `WebAssembly.Instance`, linear memory, globals, and C++ runtime for every
-  case. The default batch watchdog preserves the former cumulative per-case
-  allowance; explicit per-case wall-clock limits retain one Worker request per
-  case.
+  case. Completed-case progress rearms the default per-case watchdog and
+  preserves finished results if a later case hangs; explicit per-case
+  wall-clock limits retain one Worker request per case.
 - Python prepared artifacts now use schema v4 and carry an immutable isolation
   profile. Cached artifacts from older harness releases must be prepared again.
 - Python correctness batches now select one of three artifact-derived tiers:

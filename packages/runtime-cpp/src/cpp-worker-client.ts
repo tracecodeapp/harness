@@ -136,6 +136,13 @@ interface CppRuntimeProgress {
   stage?: string;
   elapsedMs?: number;
   tracing?: boolean;
+  detail?: unknown;
+}
+
+interface CppPreparedCodeBatchProgressDetail {
+  caseIndex?: number;
+  caseCount?: number;
+  result?: RawExecutionPayload;
 }
 
 class CppClientTimeoutError extends Error {
@@ -206,7 +213,6 @@ const EXECUTION_TIMEOUT_MS = 20_000;
 const TRACING_TIMEOUT_MS = 20_000;
 const MESSAGE_TIMEOUT_MS = 30_000;
 const WORKER_READY_TIMEOUT_MS = 10_000;
-const MAX_WORKER_DEADLINE_MS = 2_147_483_647;
 const CPP_DEFAULT_FILE = 'solution.cpp';
 const DEFAULT_CPP_COMPILER_ARTIFACT_CACHE_LIMIT = 32;
 const MAX_CPP_COMPILER_ARTIFACT_CACHE_LIMIT = 512;
@@ -218,25 +224,6 @@ const KERNEL_HTTP_SYNC_MESSAGE_TYPES = new Set([
   'kernel-http-listen-sync',
   'kernel-http-close',
 ]);
-
-/**
- * Preserve the cumulative allowance of the former one-request-per-case loop.
- *
- * The prepared code worker still creates one fresh learner program per case,
- * but an ordinary batch now crosses one Worker message. Its outer watchdog
- * therefore has to cover every case's default allowance rather than applying
- * one case's allowance to the complete vector.
- */
-export function calculateCppPreparedCodeBatchDeadlineMs(
-  caseCount: number,
-  perCaseWallClockMs: number
-): number {
-  const normalizedCaseCount = Math.max(1, Math.floor(caseCount));
-  return Math.min(
-    MAX_WORKER_DEADLINE_MS,
-    perCaseWallClockMs * normalizedCaseCount
-  );
-}
 
 interface CppCompilerArtifactCacheEntry {
   bytes: Uint8Array;
@@ -295,6 +282,7 @@ export class CppWorkerClient {
   private readonly compilerFrameUrl?: string;
   private readonly externalCompilerUrl?: string;
   private lastRuntimeProgress: CppRuntimeProgress | null = null;
+  private preparedCodeBatchProgressHandler: ((progress: CppRuntimeProgress) => void) | null = null;
   private readonly activeExternalCompileControllers = new Set<AbortController>();
   private readonly activeCompilerRequestControllers = new Set<AbortController>();
   private readonly activeCompilerFrames = new Set<HTMLIFrameElement>();
@@ -347,7 +335,21 @@ export class CppWorkerClient {
       },
       onCommandMessage: (commandId, type, payload, pending) => {
         if (type === 'runtime-progress') {
-          this.lastRuntimeProgress = payload && typeof payload === 'object' ? (payload as CppRuntimeProgress) : {};
+          const progress = payload && typeof payload === 'object'
+            ? (payload as CppRuntimeProgress)
+            : {};
+          const detail = progress.detail && typeof progress.detail === 'object'
+            ? progress.detail as Record<string, unknown>
+            : undefined;
+          this.lastRuntimeProgress = detail && 'result' in detail
+            ? {
+                ...progress,
+                detail: Object.fromEntries(
+                  Object.entries(detail).filter(([key]) => key !== 'result')
+                ),
+              }
+            : progress;
+          this.preparedCodeBatchProgressHandler?.(progress);
           return true;
         }
         if (type === 'kernel-syscall') {
@@ -1263,6 +1265,94 @@ export class CppWorkerClient {
     return this.core.runClientEffect(program, signal);
   }
 
+  /**
+   * Keep one Worker request for the case vector without weakening the former
+   * per-case client watchdog. The worker reports each completed case while it
+   * remains busy with the batch; every progress report rearms the host timer.
+   * A case that stops making progress therefore still retires the worker after
+   * one executionTimeoutMs interval, regardless of the vector length.
+   */
+  private async runPreparedCodeBatchExecution(
+    sendEffect: Effect.Effect<RawExecutionBatchPayload, Error>,
+    signal: AbortSignal | undefined,
+    expectedLifecycleGeneration: number,
+    expectedCaseCount: number,
+    onCaseCompleted: (caseIndex: number, result: RawExecutionPayload) => void
+  ): Promise<RawExecutionBatchPayload> {
+    // Match runExecution: worker initialization and asset loading are outside
+    // the learner execution budget. Only the prepared-program request itself
+    // consumes the per-case watchdog.
+    await this.core.runClientEffect(
+      this.initGateEffect(expectedLifecycleGeneration),
+      signal
+    );
+
+    let timeoutId: ReturnType<typeof setTimeout> | undefined;
+    let settled = false;
+    let rejectDeadline!: (error: Error) => void;
+    const deadline = new Promise<never>((_resolve, reject) => {
+      rejectDeadline = reject;
+    });
+    let nextExpectedCaseIndex = 0;
+
+    const clearDeadline = (): void => {
+      if (timeoutId !== undefined) clearTimeout(timeoutId);
+      timeoutId = undefined;
+    };
+    const armDeadline = (): void => {
+      clearDeadline();
+      timeoutId = setTimeout(() => {
+        if (settled) return;
+        const error = new CppClientTimeoutError(
+          `C++ prepared batch case timed out after ${Math.round(this.executionTimeoutMs / 1000)} seconds.`,
+          'compile-run',
+          this.executionTimeoutMs,
+          this.lastRuntimeProgress ?? undefined
+        );
+        this.terminateAndReset(error);
+        rejectDeadline(error);
+      }, this.executionTimeoutMs);
+    };
+
+    const progressHandler = (progress: CppRuntimeProgress): void => {
+      if (progress.stage !== 'prepared-code-case-complete') return;
+      const detail = progress.detail && typeof progress.detail === 'object'
+        ? progress.detail as CppPreparedCodeBatchProgressDetail
+        : undefined;
+      if (
+        detail &&
+        Number.isInteger(detail.caseIndex) &&
+        typeof detail.caseIndex === 'number' &&
+        detail.caseIndex === nextExpectedCaseIndex &&
+        detail.caseCount === expectedCaseCount &&
+        detail.result &&
+        typeof detail.result === 'object'
+      ) {
+        onCaseCompleted(detail.caseIndex, detail.result);
+        nextExpectedCaseIndex += 1;
+        armDeadline();
+      }
+    };
+
+    if (this.preparedCodeBatchProgressHandler) {
+      throw new Error('C++ prepared batch progress handler is already active.');
+    }
+    this.preparedCodeBatchProgressHandler = progressHandler;
+    this.lastRuntimeProgress = null;
+    armDeadline();
+
+    const execution = this.core.runClientEffect(sendEffect, signal);
+    try {
+      return await Promise.race([execution, deadline]);
+    } finally {
+      settled = true;
+      clearDeadline();
+      if (this.preparedCodeBatchProgressHandler === progressHandler) {
+        this.preparedCodeBatchProgressHandler = null;
+      }
+    }
+  }
+
   async prepareRuntimeProgram(
     call: RuntimeProgramPreparationCall
   ): Promise<CppPreparedProgramPreparationResult> {
@@ -1392,14 +1482,11 @@ export class CppWorkerClient {
       }
       return results;
     }
-    const aggregateWallClockMs = calculateCppPreparedCodeBatchDeadlineMs(
-      call.inputBatch.length,
-      this.executionTimeoutMs
-    );
     return this.runInPreparedExecutionWorker(async (lifecycleGeneration) => {
       this.assertPreparedProgramHandle(handle, 'code');
+      const completedResults = new Map<number, RawExecutionPayload>();
       try {
-        const result = await this.runExecution(
+        const result = await this.runPreparedCodeBatchExecution(
           this.core.sendMessageEffect<RawExecutionBatchPayload>(
             'execute-prepared-runtime-program-batch',
             {
@@ -1415,25 +1502,35 @@ export class CppWorkerClient {
               this.assertPreparedProgramHandle(handle, 'code');
             }
           ),
-          aggregateWallClockMs,
-          'compile-run',
           call.signal,
-          lifecycleGeneration
+          lifecycleGeneration,
+          call.inputBatch.length,
+          (caseIndex, caseResult) => {
+            if (caseIndex < call.inputBatch.length) {
+              completedResults.set(caseIndex, caseResult);
+            }
+          }
         );
         const lifted = liftCodeBatchOutcome(
           result,
           'C++ prepared batch execution failed'
         );
         if (lifted.results.length !== call.inputBatch.length) {
+          const arityError =
+            `C++ prepared batch returned ${lifted.results.length} results for ${call.inputBatch.length} cases.`;
           throw new Error(
-            result.error ??
-              `C++ prepared batch returned ${lifted.results.length} results for ${call.inputBatch.length} cases.`
+            result.error ? `${arityError} Worker reported: ${result.error}` : arityError
           );
         }
         return lifted.results;
       } catch (error) {
         if (!this.isClientTimeout(error)) throw error;
-        return call.inputBatch.map(() => this.timeoutCodeResult(error));
+        return call.inputBatch.map((_inputs, caseIndex) => {
+          const completed = completedResults.get(caseIndex);
+          return completed
+            ? liftCodeOutcome(completed, 'C++ prepared batch execution failed')
+            : this.timeoutCodeResult(error);
+        });
       }
     });
   }
