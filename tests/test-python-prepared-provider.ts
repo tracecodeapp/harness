@@ -345,7 +345,7 @@ test('Python judge-compatible provider retains one worker for the generic case b
   provider.terminate();
 });
 
-test('Python algorithm-fast batch fallback retries each case in a fresh outer worker', async () => {
+test('Python algorithm-fast driver failure retries each case in a hard-isolated worker', async () => {
   const calls: Array<{ worker: number; method: string }> = [];
   let nextWorker = 0;
   const createWorkerClient = (): PythonWorkerClient => {
@@ -721,7 +721,7 @@ test('Python judge-compatible batch contains worker crashes in the failing case'
   provider.terminate();
 });
 
-test('Python aggregate timeout never falls back to a second compatibility budget', async (context) => {
+test('Python aggregate timeout never falls back to a second hard-isolation budget', async (context) => {
   context.mock.timers.enable({ apis: ['setTimeout'] });
   const calls: Array<{ worker: number; method: string }> = [];
   let nextWorker = 0;
@@ -762,7 +762,7 @@ test('Python aggregate timeout never falls back to a second compatibility budget
       },
       async executePreparedCode(): Promise<CodeExecutionResult> {
         calls.push({ worker, method: 'execute-code' });
-        throw new Error('Compatibility execution must not start');
+        throw new Error('Hard-isolated execution must not start');
       },
       terminate() {
         calls.push({ worker, method: 'terminate' });

@@ -327,6 +327,7 @@ export async function runBrowserAlgorithmBatch(
           | undefined;
         let judgeFallbackIsolationWorkerUrls: string[] | undefined;
         let judgeFallbackIsolationMaximumActiveWorkers: number | undefined;
+        let judgeFallbackIsolationMs: number | undefined;
         if (fixture.language === 'python') {
           const compatibilityBundle = await createAlgorithmJudgeBundle({
             id: 'browser-python-compatibility-nested-state-isolation',
@@ -370,7 +371,9 @@ export async function runBrowserAlgorithmBatch(
               '    return value + root.val',
             ].join('\n'),
             functionName: 'solve',
-            cases: Array.from({ length: 3 }, (_, index) => ({
+            cases: Array.from(
+              { length: pythonCompatibilityCaseCount },
+              (_, index) => ({
               id: `judge-fallback-case-${index + 1}`,
               input: {
                 value: index + 1,
@@ -381,12 +384,16 @@ export async function runBrowserAlgorithmBatch(
                 },
               },
               expected: (index + 1) * 2,
-            })),
+              })
+            ),
           });
           maximumActiveWorkers = activeWorkers;
+          const judgeFallbackStartedAt = performance.now();
           const judgeFallbackReceipt = await host.evaluateAlgorithm({
             bundle: judgeFallbackBundle,
           });
+          judgeFallbackIsolationMs =
+            performance.now() - judgeFallbackStartedAt;
           judgeFallbackIsolation = receiptSummary(judgeFallbackReceipt);
           judgeFallbackIsolationMaximumActiveWorkers = maximumActiveWorkers;
           judgeFallbackIsolationWorkerUrls = workerUrls.splice(0);
@@ -410,6 +417,7 @@ export async function runBrowserAlgorithmBatch(
                 judgeFallbackIsolation,
                 judgeFallbackIsolationWorkerUrls,
                 judgeFallbackIsolationMaximumActiveWorkers,
+                judgeFallbackIsolationMs,
               }
             : {}),
           ...(fixture.language === 'csharp'

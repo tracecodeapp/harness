@@ -38,7 +38,7 @@ type PythonRawCodeBatchResult = RawExecutionBatchPayload & {
 
 export class PythonAlgorithmFastBatchUnavailableError extends Error {
   constructor() {
-    super('Prepared Python algorithm-fast batch requires compatibility isolation.');
+    super('Prepared Python algorithm-fast batch requires hard isolation.');
     this.name = 'PythonAlgorithmFastBatchUnavailableError';
   }
 }
@@ -644,8 +644,8 @@ export class PythonWorkerClient {
         runtime: 'python',
         phase: 'algorithm-fast-batch-fallback',
         message: unexpected
-          ? 'Python algorithm-fast batch driver failed; requesting compatibility isolation.'
-          : 'Python algorithm-fast batch requires compatibility isolation.',
+          ? 'Python algorithm-fast batch driver failed; requesting hard isolation.'
+          : 'Python algorithm-fast batch requires hard isolation.',
         detail: {
           caseCount: call.inputBatch.length,
           failureClass:
@@ -656,7 +656,7 @@ export class PythonWorkerClient {
     }
     // The aggregate watchdog is the batch's caller-visible deadline, not an
     // isolation-admission failure. Let it surface instead of silently granting
-    // a second full budget to the compatibility path.
+    // a second full budget to the hard-isolated path.
     return liftCodeBatchOutcome(
       result,
       'Prepared Python batch execution failed'
@@ -668,7 +668,10 @@ export class PythonWorkerClient {
     call: RuntimePreparedTraceCall
   ): Promise<PythonRawTraceResult> {
     const wallClockMs = call.limits?.wallClockMs ?? TRACING_TIMEOUT_MS;
-    const guestLimits = pickGuestLimits(call.limits);
+    const guestLimits = pickGuestLimits({
+      ...call.limits,
+      wallClockMs,
+    });
     const program = this.core.withExecutionDeadline(
       this.core.sendMessageEffect<PythonRawTraceResult>(
         'execute-prepared-program',
@@ -729,7 +732,10 @@ export class PythonWorkerClient {
       2_147_483_647,
       perCaseWallClockMs * Math.max(1, call.inputBatch.length)
     );
-    const guestLimits = pickGuestLimits(call.limits);
+    const guestLimits = pickGuestLimits({
+      ...call.limits,
+      wallClockMs: perCaseWallClockMs,
+    });
     const program = this.core.withExecutionDeadline(
       this.core.sendMessageEffect<PythonRawTraceBatchResult>(
         'execute-prepared-program-batch',

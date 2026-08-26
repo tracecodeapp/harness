@@ -8537,7 +8537,7 @@ async function executePreparedProgramBatch(
         deps.emitRuntimeDiagnostic?.(
           'error',
           'algorithm-fast-batch-fallback',
-          'Python algorithm-fast batch driver failed; requesting compatibility isolation.',
+          'Python algorithm-fast batch driver failed; requesting hard isolation.',
           {
             caseCount: cases.length,
             runMs,
@@ -8548,7 +8548,7 @@ async function executePreparedProgramBatch(
         return {
           success: false,
           results: [],
-          error: 'Prepared Python algorithm-fast batch requires compatibility isolation.',
+          error: 'Prepared Python algorithm-fast batch requires hard isolation.',
           consoleOutput: [],
           algorithmFastBatchUnavailable: true,
           algorithmFastBatchFailureClass: 'driver-failure',

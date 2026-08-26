@@ -2286,7 +2286,7 @@ async function main(): Promise<void> {
           'serialization-limit' &&
         serializationDagCompatibilityResults[1]?.success === true &&
         serializationDagCompatibilityResults[1]?.output === 1,
-      `Compatibility execution must report output budgets explicitly without corrupting later cases: ${JSON.stringify(result.fastParityRuns.serializationDagCompatibility)}`
+      `Hard-isolated execution must report output budgets explicitly without corrupting later cases: ${JSON.stringify(result.fastParityRuns.serializationDagCompatibility)}`
     );
     const aggregateOutputResults = result.fastParityRuns.aggregateOutput
       .results as Array<{

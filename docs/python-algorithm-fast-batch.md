@@ -6,9 +6,16 @@ Date: 2026-08-26
 
 Practice correctness evaluation prepares one immutable program, runs every case
 through the browser Judge and TraceKernel process boundary, and reports a result
-only after all cases settle. A code-only batch may reuse one initialized Pyodide
-interpreter when the preparation worker proves that the learner source fits the
-algorithm profile. Every case still receives:
+only after all cases settle. Python uses three explicit execution tiers:
+
+| Tier | Batch boundary | Intended use |
+| --- | --- | --- |
+| `algorithm-fast` | One retained Pyodide worker with the reduced capability driver | Ordinary admitted interview algorithms |
+| `judge-compatible` | One retained Pyodide worker with the full generic executor and rollback guard | Algorithm-scoped code that the reduced driver cannot represent |
+| `hard-isolated` | One fresh outer Pyodide worker per case | Known reflection, shared-runtime mutation, unreviewed imports, or ambient capabilities |
+
+The first two tiers reuse one initialized interpreter for the correctness
+batch. Every case still receives:
 
 - a fresh learner namespace and a fresh `Solution` instance;
 - a fresh input object graph;
@@ -17,23 +24,28 @@ algorithm profile. Every case still receives:
 - no file, process, thread, network, dynamic-import, or interpreter-introspection
   authority.
 
-The outer prepared execution still owns one disposable worker. Cancellation,
-client timeout, program disposal, or provider reset terminates that worker.
-Project, terminal, script, operations-class, dynamically reflective, and
-unreviewed-import programs remain on the compatibility path.
+The outer prepared execution owns only disposable workers. Cancellation,
+client timeout, program disposal, or provider reset terminates the active
+worker. Project and terminal execution are unchanged. Known ambient or
+interpreter-wide capabilities select `hard-isolated`; unsupported reduced
+driver constructs that remain algorithm-scoped select `judge-compatible`.
 
 ## Admission and fallback
 
 Preparation parses the learner source with Python's `ast` module and records an
-explicit `algorithm-fast` or `compatibility` decision in the marshaled artifact.
+explicit three-tier decision in the marshaled artifact.
 The fast batch driver is compiled only for an admitted code artifact and is
 required by artifact validation before execution. Execution re-derives the
 profile from the bound source before selecting the reduced guard, so a stored
 tier cannot promote source that the active policy rejects.
 
-The current profile admits synchronous `function` and `solution-method` targets
-whose parameters can be called by name. It admits a reviewed algorithm-library
-set, including `collections` and `deque`, while rejecting:
+The current fast profile admits synchronous `function` and `solution-method`
+targets whose parameters can be called by name. It admits a reviewed
+algorithm-library set, including `collections` and `deque`. Structural reduced
+driver limitations such as generator expressions, catch-all handlers,
+exception finalizers, and unsupported call signatures select
+`judge-compatible`. The following known capability and shared-state surfaces
+select `hard-isolated`:
 
 - filesystem, process, thread, network, browser, and dynamic-import modules;
 - `open`, `exec`, `eval`, `compile`, `__import__`, and reflective builtins;
@@ -47,27 +59,24 @@ set, including `collections` and `deque`, while rejecting:
 - writes to, deletion from, or escape of imported and default-import objects;
 - registration and overload APIs whose mutable registry belongs to the shared
   interpreter rather than the learner namespace;
-- rebinding of a default-import name at module scope;
 - relative and unreviewed imports; and
-- async, generator, positional-only, varargs, script, and operations-class
-  boundaries.
+- transitive traversal from an allowed module into hidden modules or builtins.
 
-Rejection is not a learner error. The same prepared source executes through the
-existing compatibility executor in a fresh outer Pyodide worker for every
-case. This hard boundary covers nested mutable stdlib objects that cannot be
-reliably restored by a shallow module dictionary journal.
+Tier selection is not a learner error. `judge-compatible` runs the same prepared
+source through the existing full generic executor inside one retained worker.
+It installs a fresh namespace and input graph per case and restores modules,
+builtins, environment, RNG, recursion state, cwd, and filesystem changes.
+`hard-isolated` adds a fresh interpreter boundary for nested or opaque runtime
+state that cannot be reliably journaled.
 
-The retained code-batch worker may also reject an otherwise fast artifact when
-the exact case inputs require the generic tree, list, or reference-graph
-materializer. It returns a trusted `algorithmFastBatchUnavailable` signal
-before learner code runs. The runtime client retires that worker and retries
-each case through a fresh compatibility worker. The worker never silently runs
-the compatibility executor for a whole batch. Trace artifacts have no reduced
-fast driver, so traced cases always use fresh outer workers as well.
+If exact inputs require the generic tree, list, or reference-graph materializer,
+an otherwise fast artifact moves sideways to the retained generic executor
+before learner code starts. Trace artifacts likewise use the retained generic
+executor unless their source profile is `hard-isolated`.
 
 An unexpected internal fast-driver failure is handled at the same outer
 boundary: no partial batch result is exposed, the retained worker is retired,
-and the provider re-evaluates every case in a fresh compatibility worker. This
+and the provider re-evaluates every case in a fresh hard-isolated worker. This
 is the only post-start cross-tier retry. The fast capability profile has no
 file, process, network, or host authority, so the abandoned attempt cannot
 commit an external learner side effect.
@@ -117,9 +126,9 @@ arbitrary objects in the result graph. Any later driver-level encoding failure
 uses the outer retire-and-retry boundary rather than rewriting completed cases.
 
 Trace execution and code batches requiring custom node materialization do not
-use the reduced guard. They retain the generic executor, full module rollback,
-and filesystem journal even if the source was otherwise eligible for the code
-batch fast path.
+use the reduced driver. They retain the generic executor, full module rollback,
+and filesystem journal in one batch worker unless static admission requires
+the hard tier.
 
 ## Why this is materially faster
 
@@ -151,24 +160,30 @@ measurements, not a cross-machine product claim.
 
 | Browser Judge path | 10 cases | 100 cases |
 | --- | ---: | ---: |
-| 0.16.8 compatibility baseline, one sample | 817 ms | 6,965 ms |
-| Current hard-isolated compatibility path, one sample | 2,879 ms | 28,503 ms |
+| 0.16.8 retained generic baseline, one sample | 817 ms | 6,965 ms |
+| Hard-isolated per-case path, one sample | 2,879 ms | 28,503 ms |
 | Deliberately unsafe one-call ceiling, one sample | 57 ms | 227 ms |
 | Capability-safe algorithm-fast candidate, three-sample p50 | 234 ms | 287 ms |
 | Capability-safe algorithm-fast candidate, three-sample p95 | 235 ms | 305 ms |
 
-The 0.16.8 row used one retained compatibility worker. The new hard-isolated
-compatibility path pays for one fresh Pyodide worker per case and is therefore
-substantially slower. The 10-case and 100-case current-path samples created
-exactly 10 and 100 Python workers, passed every case through the public Judge,
-and took 2,879 ms and 28,503 ms respectively. This cost applies only when code
-or exact inputs cannot use the reduced fast driver.
+The 0.16.8 row used the retained generic executor that now forms the
+`judge-compatible` tier. The hard-isolated path pays for one fresh Pyodide
+worker per case and is therefore substantially slower. These original
+same-workload measurements predate the three-tier routing change and remain its
+design baseline.
+
+An exact-head public-Judge routing check after the three-tier change used 100
+cases for each fallback and observed 9,663 ms with one retained
+`judge-compatible` worker versus 31,609 ms with 100 `hard-isolated` workers.
+The fixtures exercise different code and input shapes, so those figures prove
+routing and worker ownership; they are not a same-workload speedup claim. The
+release benchmark must rerun every tier against the same corpus.
 
 The 100-case candidate is about 24.3 times faster than the old retained-worker
 baseline and within 78 ms of the unsafe ceiling at p95. It is about 99 times
-faster than forcing the same workload through the new hard-isolated
-compatibility path, but that is a routing cost comparison, not a claim that
-rejected programs can safely take the fast tier. The 10-case candidate's first
+faster than forcing the same workload through the hard-isolated path, but that
+is a routing cost comparison, not a claim that hard-isolated programs can
+safely take a retained tier. The 10-case candidate's first
 sample was 100 ms; later alternating samples were about 234–235 ms, so the
 three-sample median is retained rather than promoting the warm minimum.
 
@@ -176,18 +191,18 @@ three-sample median is retained rather than promoting the warm minimum.
 
 The browser prepared-provider gate covers:
 
-- compatibility rollback for globals, builtins, modules, environment, RNG,
+- judge-compatible rollback for globals, builtins, modules, environment, RNG,
   recursion limit, cwd, caller inputs, and filesystem changes;
 - algorithm-fast admission for ordinary code and `deque` imports;
-- fallback for filesystem/interpreter access, implicit-module mutation, and
-  unreviewed imports;
+- hard isolation for filesystem/interpreter access, implicit-module mutation,
+  transitive module traversal, and unreviewed imports;
 - adversarial fallback for default-module self-rebinding, operator-based dunder
   reflection, format-string attribute reflection, generator/frame traversal,
   name-parameterized `functools` wrapper reflection, and shared imports captured
   through parameter defaults, including stdlib class/function aliases laundered
   through an intermediate binding;
-- runtime rejection of transitive `json.codecs`, `re.enum`, and
-  `typing.contextlib` traversal attempts without poisoning a later case;
+- hard-tier admission for transitive `json.codecs`, `re.enum`, and
+  `typing.contextlib` traversal attempts;
 - same-artifact differential parity between the fast driver and forced generic
   fallback for argument filtering, tuple hydration, modular `pow`, in-place
   results including `matrix`, stdout, node serialization and typed-node
@@ -196,20 +211,19 @@ The browser prepared-provider gate covers:
   with explicit tier assertions;
 - execution-time reclassification and an adversarial source/marshaled-code
   mismatch proving the fast path executes only the audited source;
-- public browser Judge proof that compatibility cases mutating a nested stdlib
+- public browser Judge proof that hard-isolated cases mutating a nested stdlib
   class receive distinct outer workers and cannot observe prior-case state;
-- public browser Judge proof that a fast artifact with tree-shaped input
-  rejects the retained batch before learner execution, retires that worker,
-  and retries through distinct outer workers;
-- traced batches receive one fresh outer worker per case because Python has no
-  reduced tracing driver;
-- compatibility code batches preserve a `client-timeout` result for the timed
+- public browser Judge proof that a fast artifact with tree-shaped input uses
+  one retained generic batch worker;
+- traced algorithm batches use one retained generic worker, while hard-tier
+  traces retain the per-case outer-worker boundary;
+- hard-isolated code batches preserve a `client-timeout` result for the timed
   out case and continue evaluating later cases in fresh workers;
 - algorithm-fast batches contain hostile exception formatting, enforce
   explicit wall-clock limits across module execution and result serialization,
   contain hostile result metadata per case, and continue evaluating later
   cases;
-- shared stdlib registration APIs select compatibility isolation, while the
+- shared stdlib registration APIs select hard isolation, while the
   private regular-expression cache is cleared at retained case boundaries;
 - direct prepared-provider trace calls reject missing or non-boolean per-case
   trace selections with the same contract as the other runtimes;

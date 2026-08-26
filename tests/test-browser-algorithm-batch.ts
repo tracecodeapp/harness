@@ -44,6 +44,7 @@ interface BatchLanguageResult {
   readonly judgeFallbackIsolation?: ReceiptSummary;
   readonly judgeFallbackIsolationWorkerUrls?: readonly string[];
   readonly judgeFallbackIsolationMaximumActiveWorkers?: number;
+  readonly judgeFallbackIsolationMs?: number;
   readonly csharpBatchConcurrency?: number;
   readonly trustedPrewarm?: boolean;
 }
@@ -414,7 +415,7 @@ async function main(): Promise<void> {
               ) &&
               compatibilityWorkers.length >= pythonCompatibilityCaseCount &&
               (languageResult.compatibilityIsolationMaximumActiveWorkers ?? 99) <= 3,
-            `Python compatibility cases did not receive fresh outer runtimes for nested stdlib state: ${JSON.stringify({
+            `Python hard-isolated cases did not receive fresh outer runtimes for nested stdlib state: ${JSON.stringify({
               receipt: compatibilityIsolation,
               workers: compatibilityWorkers,
               maximumActiveWorkers:
@@ -437,12 +438,18 @@ async function main(): Promise<void> {
           ).filter((url) => url.includes('python-worker.js'));
           assertCondition(
             judgeFallbackIsolation?.verdict === 'passed' &&
-              judgeFallbackIsolation.caseVerdicts.length === 3 &&
+              judgeFallbackIsolation.caseVerdicts.length ===
+                pythonCompatibilityCaseCount &&
               judgeFallbackIsolation.caseVerdicts.every(
                 (verdict) => verdict === 'passed'
               ) &&
               JSON.stringify(judgeFallbackIsolation.outputs) ===
-                JSON.stringify([2, 4, 6]) &&
+                JSON.stringify(
+                  Array.from(
+                    { length: pythonCompatibilityCaseCount },
+                    (_, index) => (index + 1) * 2
+                  )
+                ) &&
               judgeFallbackWorkers.length === 1 &&
               (languageResult.judgeFallbackIsolationMaximumActiveWorkers ?? 99) <= 1,
             `Python fast artifact did not use one retained generic worker for custom-input fallback: ${JSON.stringify({
@@ -451,6 +458,15 @@ async function main(): Promise<void> {
               maximumActiveWorkers:
                 languageResult.judgeFallbackIsolationMaximumActiveWorkers,
             })}`
+          );
+          console.log(
+            JSON.stringify({
+              pythonJudgeCompatibleCaseCount: pythonCompatibilityCaseCount,
+              pythonJudgeCompatibleMs:
+                languageResult.judgeFallbackIsolationMs,
+              pythonJudgeCompatibleWorkerCount:
+                judgeFallbackWorkers.length,
+            })
           );
         }
       }
