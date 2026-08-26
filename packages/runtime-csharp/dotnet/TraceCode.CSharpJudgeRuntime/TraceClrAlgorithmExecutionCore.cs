@@ -215,9 +215,8 @@ public static class TraceClrAlgorithmExecutionCore
         Action checkTimeout
     )
     {
-        var loadContext = new AssemblyLoadContext(
-            "TraceCode.AlgorithmCase",
-            isCollectible: true
+        var loadContext = new RestrictedUserExecutionLoadContext(
+            "TraceCode.AlgorithmCase"
         );
         try
         {

@@ -298,6 +298,45 @@ public class Solution
         return values.Take();
     }
 }`;
+      const directFrameworkStaticWriteSource = `
+using System.Text.RegularExpressions;
+public class Solution
+{
+    public int Set(int value)
+    {
+        Regex.CacheSize = value;
+        return Regex.CacheSize;
+    }
+}`;
+      const deconstructedFrameworkStaticWriteSource = `
+using System.Text.RegularExpressions;
+public class Solution
+{
+    public int Set(int value)
+    {
+        int local;
+        (Regex.CacheSize, local) = (value, value);
+        return local;
+    }
+}`;
+      const listNodeSource = `
+public class Solution
+{
+    public int Sum(ListNode? head)
+    {
+        int total = 0;
+        for (ListNode? node = head; node is not null; node = node.next)
+        {
+            total += node.val;
+        }
+        return total;
+    }
+}`;
+      const treeNodeSource = `
+public class Solution
+{
+    public int Root(TreeNode? root) => root?.val ?? 0;
+}`;
       const enumerableSource = `
 using System.Collections.Generic;
 using System.Linq;
@@ -624,6 +663,44 @@ public class Solution
         mode: 'code',
         code: concurrentBlockingSource,
         functionName: 'Read',
+        executionStyle: 'solution-method',
+        assetBaseUrl: compilerBaseUrl,
+        timeoutMs: 10_000,
+      });
+      const directFrameworkStaticWritePrepared = await compiler.send(
+        'prepare-program',
+        {
+          mode: 'code',
+          code: directFrameworkStaticWriteSource,
+          functionName: 'Set',
+          executionStyle: 'solution-method',
+          assetBaseUrl: compilerBaseUrl,
+          timeoutMs: 10_000,
+        }
+      );
+      const deconstructedFrameworkStaticWritePrepared = await compiler.send(
+        'prepare-program',
+        {
+          mode: 'code',
+          code: deconstructedFrameworkStaticWriteSource,
+          functionName: 'Set',
+          executionStyle: 'solution-method',
+          assetBaseUrl: compilerBaseUrl,
+          timeoutMs: 10_000,
+        }
+      );
+      const listNodePrepared = await compiler.send('prepare-program', {
+        mode: 'code',
+        code: listNodeSource,
+        functionName: 'Sum',
+        executionStyle: 'solution-method',
+        assetBaseUrl: compilerBaseUrl,
+        timeoutMs: 10_000,
+      });
+      const treeNodePrepared = await compiler.send('prepare-program', {
+        mode: 'code',
+        code: treeNodeSource,
+        functionName: 'Root',
         executionStyle: 'solution-method',
         assetBaseUrl: compilerBaseUrl,
         timeoutMs: 10_000,
@@ -974,6 +1051,10 @@ public class Solution
         dynamicReflectionPrepared,
         reflectionGatewayPrepared,
         concurrentBlockingPrepared,
+        directFrameworkStaticWritePrepared,
+        deconstructedFrameworkStaticWritePrepared,
+        listNodePrepared,
+        treeNodePrepared,
         voidOutputPrepared,
         runnerPrime,
         valid: {
@@ -1117,6 +1198,33 @@ public class Solution
         second: result.staticSecond,
       })}`
     );
+    for (const [label, prepared] of [
+      ['direct', result.directFrameworkStaticWritePrepared],
+      ['deconstructed', result.deconstructedFrameworkStaticWritePrepared],
+    ] as const) {
+      assertCondition(
+        prepared.success &&
+          prepared.preparedRunnerTier === 'compatibility' &&
+          prepared.preparedRunnerReason?.includes(
+            'Writes to shared framework state'
+          ) === true,
+        `C# ${label} framework-static writes must fail closed to compatibility: ${JSON.stringify(prepared)}`
+      );
+    }
+    for (const [label, prepared] of [
+      ['ListNode', result.listNodePrepared],
+      ['TreeNode', result.treeNodePrepared],
+    ] as const) {
+      assertCondition(
+        prepared.success &&
+          prepared.preparedRunnerTier === 'compatibility' &&
+          prepared.preparedRunnerReason?.includes(
+            'reference-bearing node topology'
+          ) === true &&
+          prepared.preparedRunnerReason?.includes('Ambient API') !== true,
+        `Trusted C# judge ${label} support must reach the explicit topology gate rather than ambient-API rejection: ${JSON.stringify(prepared)}`
+      );
+    }
     for (const [label, prepared] of [
       ['filesystem', result.filesystemPrepared],
       ['environment', result.environmentPrepared],

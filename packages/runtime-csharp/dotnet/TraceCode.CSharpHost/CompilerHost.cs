@@ -1587,23 +1587,37 @@ public static partial class CompilerHost
             RefExpressionSyntax reference => reference.Expression,
             _ => null,
         };
+        if (target is not null)
+        {
+            foreach (ExpressionSyntax flattened in FlattenAlgorithmFastWriteTarget(
+                target
+            ))
+            {
+                yield return flattened;
+            }
+        }
+    }
+
+    private static IEnumerable<ExpressionSyntax> FlattenAlgorithmFastWriteTarget(
+        ExpressionSyntax target
+    )
+    {
         if (target is TupleExpressionSyntax tuple)
         {
             foreach (ArgumentSyntax argument in tuple.Arguments)
             {
-                foreach (ExpressionSyntax nested in AlgorithmFastWriteTargets(
-                    argument
-                ))
+                foreach (
+                    ExpressionSyntax nested in FlattenAlgorithmFastWriteTarget(
+                        argument.Expression
+                    )
+                )
                 {
                     yield return nested;
                 }
             }
             yield break;
         }
-        if (target is not null)
-        {
-            yield return target;
-        }
+        yield return target;
     }
 
     private static string? DeniedAlgorithmFastApiForSymbol(
@@ -1630,6 +1644,11 @@ public static partial class CompilerHost
                 target.ContainingAssembly,
                 learnerAssembly
             ))
+        {
+            return null;
+        }
+        if (containingType is not null
+            && IsTrustedJudgeSupportType(containingType))
         {
             return null;
         }
@@ -1745,6 +1764,11 @@ public static partial class CompilerHost
 
         return null;
     }
+
+    private static bool IsTrustedJudgeSupportType(INamedTypeSymbol type) =>
+        type.ContainingNamespace.IsGlobalNamespace
+        && type.Name is "ListNode" or "TreeNode"
+        && type.ContainingAssembly?.Name == "TraceCode.CSharpJudgeRuntime";
 
     private static bool IsAllowedAlgorithmSystemType(INamedTypeSymbol type)
     {

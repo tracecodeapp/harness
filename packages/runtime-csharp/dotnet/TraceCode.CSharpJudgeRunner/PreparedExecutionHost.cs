@@ -149,7 +149,7 @@ public static partial class PreparedExecutionHost
             );
 
             double runStartedAt = stopwatch.Elapsed.TotalMilliseconds;
-            var loadContext = new UserExecutionLoadContext(
+            var loadContext = new RestrictedUserExecutionLoadContext(
                 "TraceCode.PreparedUserExecution." + Guid.NewGuid().ToString("N")
             );
             try
@@ -679,20 +679,6 @@ public static partial class PreparedExecutionHost
     {
         capturedOut.Flush();
         return RuntimeTraceSink.Snapshot();
-    }
-
-    private sealed class UserExecutionLoadContext : AssemblyLoadContext
-    {
-        public UserExecutionLoadContext(string name)
-            : base(name, isCollectible: true) { }
-
-        protected override Assembly? Load(AssemblyName assemblyName) =>
-            AssemblyLoadContext.Default.Assemblies.FirstOrDefault(candidate =>
-                AssemblyName.ReferenceMatchesDefinition(
-                    candidate.GetName(),
-                    assemblyName
-                )
-            );
     }
 
     private sealed class InputTraversalBudget

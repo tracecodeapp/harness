@@ -19,8 +19,8 @@ owned outer worker.
 A fresh load context makes learner-defined statics, generated driver statics,
 `Solution` instances, inputs, output buffers, and trace state case-local. The
 runner resolves framework and host dependencies only from assemblies already
-owned by the default runtime context; learner assemblies cannot add a new
-dependency surface.
+available to the default runtime context; learner assemblies cannot add a new
+probing path or dependency surface.
 
 That isolation roots the trimmed `System.Runtime.Loader` module. The browser
 wire gate therefore carries an explicit 8 KiB allowance above its original
@@ -53,6 +53,14 @@ arrays and spans, tuples, math and numerics, strings and builders, ordinary
 collections, synchronous LINQ, and regular expressions. Common collection
 imports and types remain supported. A valid program outside this subset is not
 rejected; it keeps the compatibility runner.
+
+The harness-owned global `ListNode` and `TreeNode` definitions are trusted
+judge support, not ambient framework APIs. Their contracts still use the
+compatibility tier because the current direct wire represents only flattened
+lists and level-order trees; it cannot preserve arbitrary cycles, aliases, or
+shared topology. The compiler gate names that topology limitation explicitly
+instead of misclassifying the support types. Moving these contracts to
+`algorithm-fast` requires a graph-preserving wire codec first.
 
 The semantic profile is paired with the managed load-context boundary. Static
 analysis selects the optimization, while the fresh assembly context is what
@@ -122,6 +130,8 @@ The browser compiler/runner boundary gate proves:
 - filesystem, environment, threading, shared-pool, memory-pinning,
   host-runtime, runtime-type, and blocking-collection references fail closed to
   compatibility, while dynamic dispatch remains rejected before tier selection;
+- trusted `ListNode` and `TreeNode` contracts reach the explicit
+  reference-topology compatibility gate rather than ambient-API rejection;
 - ordinary algorithm and collection code remains algorithm-fast;
 - compiler artifacts execute in the compiler-free runner;
 - reflective/tampered artifacts and compatibility-artifact relabeling remain
