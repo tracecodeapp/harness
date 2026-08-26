@@ -1689,6 +1689,7 @@ function guestGuardOptionsFromLimits(limits) {
   let interviewGuard = false;
   if (Number.isFinite(limits.wallClockMs) && limits.wallClockMs > 0) {
     guard.wallClockMs = limits.wallClockMs;
+    interviewGuard = true;
   }
   if (Number.isFinite(limits.maxLineEvents)) {
     guard.maxLineEvents = limits.maxLineEvents;

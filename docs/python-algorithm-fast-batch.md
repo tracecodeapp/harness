@@ -42,10 +42,9 @@ tier cannot promote source that the active policy rejects.
 The current fast profile admits synchronous `function` and `solution-method`
 targets whose parameters can be called by name. It admits a reviewed
 algorithm-library set, including `collections` and `deque`. Structural reduced
-driver limitations such as generator expressions, catch-all handlers,
-exception finalizers, and unsupported call signatures select
-`judge-compatible`. The following known capability and shared-state surfaces
-select `hard-isolated`:
+driver limitations such as generator expressions, exception finalizers, and
+unsupported call signatures select `judge-compatible`. The following known
+capability and shared-state surfaces select `hard-isolated`:
 
 - filesystem, process, thread, network, browser, and dynamic-import modules;
 - `open`, `exec`, `eval`, `compile`, `__import__`, and reflective builtins;
@@ -59,6 +58,9 @@ select `hard-isolated`:
 - writes to, deletion from, or escape of imported and default-import objects;
 - registration and overload APIs whose mutable registry belongs to the shared
   interpreter rather than the learner namespace;
+- bare catch-all or explicit `BaseException` handling that could suppress the
+  retained executor's per-case limit signal, plus bindings that collide with
+  reserved runtime guard names;
 - relative and unreviewed imports; and
 - transitive traversal from an allowed module into hidden modules or builtins.
 
@@ -103,12 +105,15 @@ resource counters, and RNG state are installed for every case. Before any case
 executes, the batch driver reparses the bound learner source, repeats the
 reflection audit, and compiles that audited source itself. The separately
 marshaled compatibility code object is never executed by the fast path.
-An explicit `wallClockMs` limit is also forwarded into the retained driver: its
-trace hook remains armed from learner module execution through input hydration,
-the target call, and output serialization. It applies a separate deadline to
-each case and reports only that case as `client-timeout`. Trusted driver frames
-are excluded from the hook, while learner object protocols invoked by hydration
-or serialization remain covered. The client retains a batch-wide watchdog for
+An explicit `wallClockMs` limit is forwarded into both retained executors. The
+reduced driver keeps its trace hook armed from learner module execution through
+input hydration, the target call, and output serialization. The generic
+executor keeps a `BaseException`-derived guard armed from learner module
+execution through input hydration and the target call; catch-all code cannot
+enter that tier. Each retained path applies a separate deadline to every case
+and reports only that case as `client-timeout`. Trusted driver frames are
+excluded from the hook, while the generic finalizer retains its separate
+serialization-size budget. The client also keeps a batch-wide watchdog for
 native calls that cannot be interrupted by Python line tracing. That watchdog
 adds bounded headroom for input conversion, namespace setup, and final result
 encoding beyond the sum of per-case budgets. It measures active runtime calls,
@@ -219,6 +224,8 @@ The browser prepared-provider gate covers:
   traces retain the per-case outer-worker boundary;
 - hard-isolated code batches preserve a `client-timeout` result for the timed
   out case and continue evaluating later cases in fresh workers;
+- judge-compatible code batches enforce `wallClockMs` from module execution
+  through the target call and continue with later cases in the retained worker;
 - algorithm-fast batches contain hostile exception formatting, enforce
   explicit wall-clock limits across module execution and result serialization,
   contain hostile result metadata per case, and continue evaluating later

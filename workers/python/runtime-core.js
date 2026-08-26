@@ -525,7 +525,35 @@ class __TracecodeExecutionGuard:
                     id(item) for item in ast.walk(argument)
                 )
 
+        reserved_runtime_prefixes = (
+            '_tracecode_', '__tracecode_', '_interview_',
+            '_INTERVIEW_', '_InterviewGuard',
+        )
+        reserved_runtime_exact_bindings = {'sys', '_builtins'}
+
+        def record_reserved_runtime_name(name, is_binding=False):
+            if (
+                isinstance(name, str)
+                and (
+                    name.startswith(reserved_runtime_prefixes)
+                    or (is_binding and name in reserved_runtime_exact_bindings)
+                )
+            ):
+                reasons.append('reserved-runtime-binding:' + name)
+
         for node in ast.walk(tree):
+            if isinstance(node, ast.Name):
+                record_reserved_runtime_name(
+                    node.id,
+                    not isinstance(node.ctx, ast.Load),
+                )
+            elif isinstance(node, ast.arg):
+                record_reserved_runtime_name(node.arg, True)
+            elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+                record_reserved_runtime_name(node.name, True)
+            elif isinstance(node, (ast.Global, ast.Nonlocal)):
+                for name in node.names:
+                    record_reserved_runtime_name(name, True)
             if isinstance(node, (ast.arg, ast.AnnAssign)):
                 annotation = getattr(node, 'annotation', None)
                 if annotation_contains_string(annotation):
@@ -895,11 +923,13 @@ class __TracecodeExecutionGuard:
             'shared-binding-escape:',
             'unsupported-sys-attribute:',
             'transitive-shared-access:',
+            'reserved-runtime-binding:',
         )
         hard_isolation_reasons = [
             reason for reason in unique_reasons
             if reason == 'string-annotation'
             or reason == 'type-alias'
+            or reason == 'catch-all-exception-handler'
             or reason.startswith(hard_isolation_prefixes)
         ]
         return {
@@ -7177,6 +7207,7 @@ _result = _out`
 import json
 import math
 import sys
+import time as _interview_time
 import traceback as _tracecode_execution_traceback
 import builtins as _builtins
 ${deps.PYTHON_CLASS_DEFINITIONS_SNIPPET}
@@ -7200,10 +7231,11 @@ ${deps.PYTHON_EXECUTE_SERIALIZE_FUNCTION_SNIPPET}
 
 ${interviewGuardEnabled
   ? `
-class _InterviewGuardTriggered(Exception):
+class _InterviewGuardTriggered(BaseException):
     pass
 
 _interview_timeout_reason = None
+_interview_case_deadline = None
 _interview_line_events = 0
 _interview_line_hits = {}
 _interview_call_depth = 0
@@ -7211,7 +7243,8 @@ _interview_tracemalloc_started = False
 
 _INTERVIEW_GUARD_INTERNAL_FUNCS = {
     '_custom_print', '_serialize', '_dict_to_tree', '_dict_to_list',
-    '_interview_guard_tracer', '_interview_check_memory',
+    '_interview_guard_tracer', '_interview_check_deadline',
+    '_interview_check_memory',
     '_interview_guard_start', '_interview_guard_stop'
 }
 
@@ -7224,6 +7257,11 @@ _INTERVIEW_GUARD_MAX_LINE_EVENTS = ${
   usesPreparedBindings
     ? `_builtins.max(10000, _builtins.int(_tracecode_case_limits.get('maxLineEvents', ${interviewGuardConfig.maxLineEvents})))`
     : interviewGuardConfig.maxLineEvents
+}
+_INTERVIEW_GUARD_WALL_CLOCK_MS = ${
+  usesPreparedBindings
+    ? `_builtins.max(1.0, float(_tracecode_case_limits.get('wallClockMs', 0))) if _tracecode_case_limits.get('wallClockMs') is not None else 0.0`
+    : Math.max(0, options.wallClockMs ?? 0)
 }
 _INTERVIEW_GUARD_MAX_SINGLE_LINE_HITS = ${
   usesPreparedBindings
@@ -7251,6 +7289,15 @@ try:
 except Exception:
     _interview_tracemalloc = None
 
+def _interview_check_deadline():
+    global _interview_timeout_reason
+    if (
+        _interview_case_deadline is not None
+        and _interview_time.monotonic() >= _interview_case_deadline
+    ):
+        _interview_timeout_reason = 'client-timeout'
+        raise _InterviewGuardTriggered('INTERVIEW_GUARD_TRIGGERED:client-timeout')
+
 def _interview_check_memory():
     global _interview_timeout_reason
     if _interview_tracemalloc is None or _INTERVIEW_GUARD_MAX_MEMORY_BYTES <= 0:
@@ -7265,6 +7312,7 @@ def _interview_check_memory():
 
 def _interview_guard_tracer(frame, event, arg):
     global _interview_timeout_reason, _interview_line_events, _interview_line_hits, _interview_call_depth
+    _interview_check_deadline()
     _func_name = frame.f_code.co_name
 
     if _func_name in _INTERVIEW_GUARD_INTERNAL_FUNCS:
@@ -7297,7 +7345,12 @@ def _interview_guard_tracer(frame, event, arg):
     return _interview_guard_tracer
 
 def _interview_guard_start():
-    global _interview_tracemalloc_started
+    global _interview_tracemalloc_started, _interview_case_deadline
+    _interview_case_deadline = (
+        _interview_time.monotonic() + (_INTERVIEW_GUARD_WALL_CLOCK_MS / 1000.0)
+        if _INTERVIEW_GUARD_WALL_CLOCK_MS > 0
+        else None
+    )
     if _interview_tracemalloc is not None:
         try:
             if not _interview_tracemalloc.is_tracing():
@@ -7309,7 +7362,9 @@ def _interview_guard_start():
     sys.settrace(_interview_guard_tracer)
 
 def _interview_guard_stop():
+    global _interview_case_deadline
     sys.settrace(None)
+    _interview_case_deadline = None
     if _interview_tracemalloc is not None and _interview_tracemalloc_started:
         try:
             _interview_tracemalloc.stop()
@@ -7319,6 +7374,22 @@ def _interview_guard_stop():
   : ''}
 `;
     userCodeStartLine = execPrefix.split('\n').length;
+    const guardedCaseSetup = [
+      usesPreparedBindings
+        ? 'exec(__tracecode_prepared_user_code, globals())'
+        : '',
+      inputSetup,
+      treeConversions,
+      listConversions,
+      `if ${usesPreparedBindings ? '__tracecode_inputs_need_materialization' : 'True'}:\n    _tracecode_materialize_named_inputs(${traceInputNamesLiteral})`,
+      `_tracecode_hydrate_annotated_inputs(${traceInputNamesLiteral}, ${functionNameLiteral}, ${executionStyleLiteral})`,
+    ]
+      .filter((source) => source.length > 0)
+      .join('\n');
+    const guardedCaseSetupInNestedTry = guardedCaseSetup
+      .split('\n')
+      .map((line) => (line ? `        ${line}` : line))
+      .join('\n');
     const execSuffix = interviewGuardEnabled
       ? `
 ${deps.PYTHON_CONVERSION_HELPERS_SNIPPET}
@@ -7539,16 +7610,6 @@ def _resolve_inplace_result():
             return globals().get(_name)
     return None
 
-${inputSetup}
-
-${treeConversions}
-
-${listConversions}
-
-if ${usesPreparedBindings ? '__tracecode_inputs_need_materialization' : 'True'}:
-    _tracecode_materialize_named_inputs(${traceInputNamesLiteral})
-_tracecode_hydrate_annotated_inputs(${traceInputNamesLiteral}, ${functionNameLiteral}, ${executionStyleLiteral})
-
 _result = None
 _interview_guard_triggered = False
 _interview_guard_reason = None
@@ -7558,6 +7619,7 @@ try:
     if _INTERVIEW_GUARD_ENABLED:
         _interview_guard_start()
     try:
+${guardedCaseSetupInNestedTry}
 ${executionCallInNestedTry}
     except _InterviewGuardTriggered:
         raise
@@ -7883,7 +7945,7 @@ _tracecode_raw_result
     const execCode =
       execPrefix +
       (usesPreparedBindings
-        ? 'exec(__tracecode_prepared_user_code, globals())'
+        ? ''
         : code) +
       execSuffix;
 
@@ -8007,7 +8069,7 @@ _json_out
     }
 
     if (result.guardTriggered) {
-      const structuredReasons = ['line-limit', 'single-line-limit', 'recursion-limit', 'memory-limit'];
+      const structuredReasons = ['client-timeout', 'line-limit', 'single-line-limit', 'recursion-limit', 'memory-limit'];
       const reason = structuredReasons.includes(result.timeoutReason) ? result.timeoutReason : undefined;
       return {
         success: false,

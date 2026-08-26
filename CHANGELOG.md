@@ -34,6 +34,9 @@ This repo uses Git tags as release boundaries. Version notes below summarize wha
   deadline; retained batches keep compact encoded envelopes under a 32 MiB
   aggregate ceiling. Fast-path admission routes code that can suppress the
   hard per-case limit signal through the fresh-worker hard-isolated path.
+  The retained generic tier now enforces the same case-local wall-clock signal
+  from learner module execution through the target call; catch-all handlers
+  and reserved guard-name collisions select hard isolation before execution.
 
 ## [0.17.0] - 2026-08-25
 

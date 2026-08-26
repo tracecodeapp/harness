@@ -55,6 +55,8 @@ interface BrowserResult {
     hostileException: { tier?: string; reasons: string[] };
     hostileSerialization: { tier?: string; reasons: string[] };
     wallClockBatch: { tier?: string; reasons: string[] };
+    judgeCompatibleWallClock: { tier?: string; reasons: string[] };
+    reservedGuardCollision: { tier?: string; reasons: string[] };
     parity: { tier?: string; reasons: string[] };
     inplace: { tier?: string; reasons: string[] };
     serialized: { tier?: string; reasons: string[] };
@@ -939,6 +941,36 @@ async function main(): Promise<void> {
         functionName: 'solve',
         executionStyle: 'function',
       });
+      const judgeCompatibleWallClock = await preparationWorker.request(
+        'prepare-program',
+        {
+          mode: 'code',
+          code: [
+            'def solve(value):',
+            '    items = (item for item in [value])',
+            '    if value == 0:',
+            '        while True:',
+            '            pass',
+            '    return list(items)[0]',
+          ].join('\\n'),
+          functionName: 'solve',
+          executionStyle: 'function',
+        }
+      );
+      const reservedGuardCollision = await preparationWorker.request(
+        'prepare-program',
+        {
+          mode: 'code',
+          code: [
+            'def _interview_guard_start():',
+            '    return None',
+            'def solve(value):',
+            '    return value',
+          ].join('\\n'),
+          functionName: 'solve',
+          executionStyle: 'function',
+        }
+      );
       const hostileSerialization = await preparationWorker.request(
         'prepare-program',
         {
@@ -1001,6 +1033,8 @@ async function main(): Promise<void> {
         hostileException,
         hostileSerialization,
         wallClockBatch,
+        judgeCompatibleWallClock,
+        reservedGuardCollision,
         sharedStateRegistration,
       })) {
         if (!prepared?.success || !prepared?.artifact) {
@@ -1550,6 +1584,15 @@ async function main(): Promise<void> {
             limits: { wallClockMs: 25 },
           }
         );
+        fastParityRuns.judgeCompatibleWallClock = await batchClient.request(
+          'execute-prepared-program-batch',
+          {
+            artifact: judgeCompatibleWallClock.artifact,
+            mode: 'code',
+            inputBatch: [{ value: 0 }, { value: 1 }],
+            limits: { wallClockMs: 25 },
+          }
+        );
         fastParityRuns.treeNodeFreshness = await batchClient.request(
           'execute-prepared-program-batch',
           {
@@ -1816,6 +1859,8 @@ async function main(): Promise<void> {
           hostileException,
           hostileSerialization,
           wallClockBatch,
+          judgeCompatibleWallClock,
+          reservedGuardCollision,
         },
         isolationProfiles: {
           code: code.artifact?.isolationProfile,
@@ -1882,6 +1927,10 @@ async function main(): Promise<void> {
           hostileSerialization:
             hostileSerialization.artifact?.isolationProfile,
           wallClockBatch: wallClockBatch.artifact?.isolationProfile,
+          judgeCompatibleWallClock:
+            judgeCompatibleWallClock.artifact?.isolationProfile,
+          reservedGuardCollision:
+            reservedGuardCollision.artifact?.isolationProfile,
           benchmarkCode: benchmarkCodeOnly.artifact?.isolationProfile,
           benchmarkHasFastBatch:
             typeof benchmarkCodeOnly.artifact?.algorithmFastBatchCode === 'string',
@@ -2115,7 +2164,7 @@ async function main(): Promise<void> {
     );
     assertCondition(
       result.isolationProfiles.catchAllException?.tier ===
-        'judge-compatible' &&
+        'hard-isolated' &&
         result.isolationProfiles.catchAllException.reasons.includes(
           'catch-all-exception-handler'
         ) &&
@@ -2133,6 +2182,11 @@ async function main(): Promise<void> {
         result.isolationProfiles.exceptionFinalizer.reasons.includes(
           'exception-finalizer'
         ) &&
+        result.isolationProfiles.reservedGuardCollision?.tier ===
+          'hard-isolated' &&
+        result.isolationProfiles.reservedGuardCollision.reasons.includes(
+          'reserved-runtime-binding:_interview_guard_start'
+        ) &&
         result.isolationProfiles.transitiveTraversal?.tier ===
           'hard-isolated' &&
         result.isolationProfiles.transitiveTraversal.reasons.some(
@@ -2147,8 +2201,8 @@ async function main(): Promise<void> {
       })}`
     );
     assertCondition(
-      result.preparationWorker.prepareRequests === 50,
-      `Preparation worker received ${String(result.preparationWorker.prepareRequests)} preparations instead of fifty`
+      result.preparationWorker.prepareRequests === 52,
+      `Preparation worker received ${String(result.preparationWorker.prepareRequests)} preparations instead of fifty-two`
     );
     const algorithmBatchResults = result.algorithmBatchRun.results as Array<{
       success?: boolean;
@@ -2358,6 +2412,32 @@ async function main(): Promise<void> {
     };
     assertCaseLocalWallClock('wallClockModule');
     assertCaseLocalWallClock('wallClockSerialization');
+    const judgeCompatibleWallClock = result.fastParityRuns
+      .judgeCompatibleWallClock;
+    const judgeCompatibleWallClockResults =
+      judgeCompatibleWallClock.results as Array<{
+        success?: boolean;
+        output?: unknown;
+        timeoutReason?: string;
+        timings?: { algorithmFastBatch?: boolean };
+      }>;
+    assertCondition(
+      result.isolationProfiles.judgeCompatibleWallClock?.tier ===
+        'judge-compatible' &&
+        result.isolationProfiles.judgeCompatibleWallClock.reasons.includes(
+          'suspending-control-flow'
+        ) &&
+        judgeCompatibleWallClockResults.length === 2 &&
+        judgeCompatibleWallClockResults[0]?.success === false &&
+        judgeCompatibleWallClockResults[0]?.timeoutReason ===
+          'client-timeout' &&
+        judgeCompatibleWallClockResults[1]?.success === true &&
+        judgeCompatibleWallClockResults[1]?.output === 1 &&
+        judgeCompatibleWallClockResults.every(
+          (entry) => entry.timings?.algorithmFastBatch !== true
+        ),
+      `A judge-compatible wall-clock trip did not remain case-local: ${JSON.stringify(judgeCompatibleWallClock)}`
+    );
     const parityResult = (result.fastParityRuns.parity.results as Array<{
       output?: unknown;
       consoleOutput?: unknown;
