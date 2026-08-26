@@ -7,19 +7,23 @@ namespace TraceCode.CSharpHost;
 /// Binary, compiler-free execution boundary for eligible algorithm methods.
 /// The compiler has already bound the learner method and generated the typed
 /// TraceCodeDriver; this host only validates the immutable assembly and invokes
-/// that driver. The outer worker remains the hard per-case isolation boundary.
+/// that driver. The execution core supplies a fresh collectible assembly-load
+/// context per case; compatibility callers may additionally retire the outer
+/// worker after each invocation.
 /// </summary>
 public static partial class AlgorithmExecutionHost
 {
     [JSExport]
     [SupportedOSPlatform("browser")]
     public static byte[] ExecutePrepared(
+        string artifactKey,
         string artifactBase64,
         string artifactSha256,
         byte[] inputBytes
     )
     {
         return TraceClrAlgorithmExecutionCore.ExecutePrepared(
+            artifactKey,
             artifactBase64,
             artifactSha256,
             inputBytes
@@ -29,6 +33,7 @@ public static partial class AlgorithmExecutionHost
     [JSExport]
     [SupportedOSPlatform("browser")]
     public static string ExecutePreparedTrace(
+        string artifactKey,
         string artifactBase64,
         string artifactSha256,
         byte[] inputBytes,
@@ -44,6 +49,7 @@ public static partial class AlgorithmExecutionHost
     {
         TraceClrAlgorithmExecutionResult result =
             TraceClrAlgorithmExecutionCore.ExecutePreparedTrace(
+                artifactKey,
                 artifactBase64,
                 artifactSha256,
                 inputBytes,

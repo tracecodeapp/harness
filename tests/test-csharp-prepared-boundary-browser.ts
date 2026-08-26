@@ -223,6 +223,81 @@ public class Solution
         return total;
     }
 }`;
+      const staticStateSource = `
+public class Solution
+{
+    private static int count;
+    public int Next() => ++count;
+}`;
+      const filesystemSource = `
+using System.IO;
+public class Solution
+{
+    public bool Exists(string path) => File.Exists(path);
+}`;
+      const environmentSource = `
+public class Solution
+{
+    public string? Read(string name) => System.Environment.GetEnvironmentVariable(name);
+}`;
+      const threadingSource = `
+using System.Threading;
+public class Solution
+{
+    private static int count;
+    public int Next() => Interlocked.Increment(ref count);
+}`;
+      const sharedPoolSource = `
+using System.Buffers;
+public class Solution
+{
+    public int Rent(int length)
+    {
+        var values = ArrayPool<int>.Shared.Rent(length);
+        try { return values.Length; }
+        finally { ArrayPool<int>.Shared.Return(values); }
+    }
+}`;
+      const pinnedMemorySource = `
+using System;
+public class Solution
+{
+    public int Pin(int[] values)
+    {
+        new Memory<int>(values).Pin();
+        return values.Length;
+    }
+}`;
+      const hostRuntimeSource = `
+public class Solution
+{
+    private TraceCode.CSharpHost.TraceClrAlgorithmExecutionResult? result;
+    public int Read() => result is null ? 0 : 1;
+}`;
+      const dynamicReflectionSource = `
+public class Solution
+{
+    public string Read(object value)
+    {
+        dynamic runtimeType = value.GetType();
+        return runtimeType.Assembly.FullName;
+    }
+}`;
+      const reflectionGatewaySource = `
+public class Solution
+{
+    public bool Read(object value) => value.GetType() is not null;
+}`;
+      const concurrentBlockingSource = `
+using System.Collections.Concurrent;
+public class Solution
+{
+    public int Read()
+    {
+        var values = new BlockingCollection<int>();
+        return values.Take();
+    }
+}`;
       const enumerableSource = `
 using System.Collections.Generic;
 using System.Linq;
@@ -473,6 +548,86 @@ public class Solution
           timeoutMs: 10_000,
         }
       );
+      const staticStatePrepared = await compiler.send('prepare-program', {
+        mode: 'code',
+        code: staticStateSource,
+        functionName: 'Next',
+        executionStyle: 'solution-method',
+        assetBaseUrl: compilerBaseUrl,
+        timeoutMs: 10_000,
+      });
+      const filesystemPrepared = await compiler.send('prepare-program', {
+        mode: 'code',
+        code: filesystemSource,
+        functionName: 'Exists',
+        executionStyle: 'solution-method',
+        assetBaseUrl: compilerBaseUrl,
+        timeoutMs: 10_000,
+      });
+      const environmentPrepared = await compiler.send('prepare-program', {
+        mode: 'code',
+        code: environmentSource,
+        functionName: 'Read',
+        executionStyle: 'solution-method',
+        assetBaseUrl: compilerBaseUrl,
+        timeoutMs: 10_000,
+      });
+      const threadingPrepared = await compiler.send('prepare-program', {
+        mode: 'code',
+        code: threadingSource,
+        functionName: 'Next',
+        executionStyle: 'solution-method',
+        assetBaseUrl: compilerBaseUrl,
+        timeoutMs: 10_000,
+      });
+      const sharedPoolPrepared = await compiler.send('prepare-program', {
+        mode: 'code',
+        code: sharedPoolSource,
+        functionName: 'Rent',
+        executionStyle: 'solution-method',
+        assetBaseUrl: compilerBaseUrl,
+        timeoutMs: 10_000,
+      });
+      const pinnedMemoryPrepared = await compiler.send('prepare-program', {
+        mode: 'code',
+        code: pinnedMemorySource,
+        functionName: 'Pin',
+        executionStyle: 'solution-method',
+        assetBaseUrl: compilerBaseUrl,
+        timeoutMs: 10_000,
+      });
+      const hostRuntimePrepared = await compiler.send('prepare-program', {
+        mode: 'code',
+        code: hostRuntimeSource,
+        functionName: 'Read',
+        executionStyle: 'solution-method',
+        assetBaseUrl: compilerBaseUrl,
+        timeoutMs: 10_000,
+      });
+      const dynamicReflectionPrepared = await compiler.send('prepare-program', {
+        mode: 'code',
+        code: dynamicReflectionSource,
+        functionName: 'Read',
+        executionStyle: 'solution-method',
+        assetBaseUrl: compilerBaseUrl,
+        timeoutMs: 10_000,
+      });
+      const reflectionGatewayPrepared = await compiler.send('prepare-program', {
+        mode: 'code',
+        code: reflectionGatewaySource,
+        functionName: 'Read',
+        executionStyle: 'solution-method',
+        assetBaseUrl: compilerBaseUrl,
+        timeoutMs: 10_000,
+      });
+      const concurrentBlockingPrepared = await compiler.send('prepare-program', {
+        mode: 'code',
+        code: concurrentBlockingSource,
+        functionName: 'Read',
+        executionStyle: 'solution-method',
+        assetBaseUrl: compilerBaseUrl,
+        timeoutMs: 10_000,
+      });
       compiler.terminate();
 
       const descriptor = (
@@ -513,6 +668,13 @@ public class Solution
         view.setInt32(10, right, true);
         return bytes;
       };
+      const encodeNoInputs = (): Uint8Array => {
+        const bytes = new Uint8Array(6);
+        const view = new DataView(bytes.buffer);
+        view.setUint32(0, 0x31574354, true);
+        view.setUint16(4, 0, true);
+        return bytes;
+      };
       const decodeInt32 = (bytes: Uint8Array | undefined): number | null => {
         if (!(bytes instanceof Uint8Array) || bytes.byteLength !== 8) return null;
         const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
@@ -533,6 +695,26 @@ public class Solution
         prepared: addDescriptor,
         inputs: { left: 19, right: 23 },
         inputBytes: encodeTwoInt32(19, 23),
+        assetBaseUrl: runnerBaseUrl,
+        timeoutMs: 10_000,
+      });
+      const staticDescriptor = descriptor(
+        staticStateSource,
+        'Next',
+        'code',
+        staticStatePrepared
+      );
+      const staticFirst = await runner.send('execute-prepared-code', {
+        prepared: staticDescriptor,
+        inputs: {},
+        inputBytes: encodeNoInputs(),
+        assetBaseUrl: runnerBaseUrl,
+        timeoutMs: 10_000,
+      });
+      const staticSecond = await runner.send('execute-prepared-code', {
+        prepared: staticDescriptor,
+        inputs: {},
+        inputBytes: encodeNoInputs(),
         assetBaseUrl: runnerBaseUrl,
         timeoutMs: 10_000,
       });
@@ -611,6 +793,16 @@ public class Solution
           timeoutMs: 10_000,
         }
       );
+      const fastTraceHardLimitedRecovery = await fastTraceHardLimitedRunner.send(
+        'execute-prepared-trace',
+        {
+          prepared: descriptor(source, 'Add', 'trace', fastTracePrepared),
+          inputs: { left: 19, right: 23 },
+          inputBytes: encodeTwoInt32(19, 23),
+          assetBaseUrl: runnerBaseUrl,
+          timeoutMs: 10_000,
+        }
+      );
       fastTraceHardLimitedRunner.terminate();
 
       const fastTraceFailureRunner = await createHarness(
@@ -623,6 +815,16 @@ public class Solution
           prepared: descriptor(source, 'Add', 'trace', fastTracePrepared),
           inputs: { left: -1, right: 23 },
           inputBytes: encodeTwoInt32(-1, 23),
+          assetBaseUrl: runnerBaseUrl,
+          timeoutMs: 10_000,
+        }
+      );
+      const fastTraceFailureRecovery = await fastTraceFailureRunner.send(
+        'execute-prepared-trace',
+        {
+          prepared: descriptor(source, 'Add', 'trace', fastTracePrepared),
+          inputs: { left: 19, right: 23 },
+          inputBytes: encodeTwoInt32(19, 23),
           assetBaseUrl: runnerBaseUrl,
           timeoutMs: 10_000,
         }
@@ -730,6 +932,26 @@ public class Solution
         timeoutMs: 10_000,
       });
       tamperRunner.terminate();
+      const forgedTierRunner = await createHarness('runner', runnerBaseUrl);
+      const forgedTier = await forgedTierRunner.send(
+        'execute-prepared-code',
+        {
+          prepared: {
+            ...descriptor(
+              filesystemSource,
+              'Exists',
+              'code',
+              filesystemPrepared
+            ),
+            preparedRunnerTier: 'algorithm-fast',
+          },
+          inputs: { path: '/tmp/shared-case-state' },
+          inputBytes: encodeNoInputs(),
+          assetBaseUrl: runnerBaseUrl,
+          timeoutMs: 10_000,
+        }
+      );
+      forgedTierRunner.terminate();
       return {
         prepared,
         fastTracePrepared,
@@ -742,11 +964,29 @@ public class Solution
         directTraceSinkMutationPrepared,
         directTraceWrapperMutationPrepared,
         dynamicTraceSinkMutationPrepared,
+        staticStatePrepared,
+        filesystemPrepared,
+        environmentPrepared,
+        threadingPrepared,
+        sharedPoolPrepared,
+        pinnedMemoryPrepared,
+        hostRuntimePrepared,
+        dynamicReflectionPrepared,
+        reflectionGatewayPrepared,
+        concurrentBlockingPrepared,
         voidOutputPrepared,
         runnerPrime,
         valid: {
           ...valid,
           output: decodeInt32(valid.outputBytes),
+        },
+        staticFirst: {
+          ...staticFirst,
+          output: decodeInt32(staticFirst.outputBytes),
+        },
+        staticSecond: {
+          ...staticSecond,
+          output: decodeInt32(staticSecond.outputBytes),
         },
         fastTrace: {
           ...fastTrace,
@@ -758,13 +998,22 @@ public class Solution
         },
         fastTraceLimited,
         fastTraceHardLimited,
+        fastTraceHardLimitedRecovery: {
+          ...fastTraceHardLimitedRecovery,
+          output: decodeInt32(fastTraceHardLimitedRecovery.outputBytes),
+        },
         fastTraceFailure,
+        fastTraceFailureRecovery: {
+          ...fastTraceFailureRecovery,
+          output: decodeInt32(fastTraceFailureRecovery.outputBytes),
+        },
         enumerableOverflow,
         structured,
         structuredTrace,
         nonMutatingVoid,
         mutatingVoid,
         tampered,
+        forgedTier,
       };
     }, { origin, runnerAssetPath });
 
@@ -821,10 +1070,22 @@ public class Solution
       `TraceCLR algorithm-fast tracing did not preserve thrown line-limit semantics: ${JSON.stringify(result.fastTraceHardLimited)}`
     );
     assertCondition(
+      result.fastTraceHardLimitedRecovery.success &&
+        result.fastTraceHardLimitedRecovery.output === 42 &&
+        result.fastTraceHardLimitedRecovery.traceLimitExceeded !== true,
+      `TraceCLR algorithm-fast line limits poisoned a later case in the same outer runner: ${JSON.stringify(result.fastTraceHardLimitedRecovery)}`
+    );
+    assertCondition(
       !result.fastTraceFailure.success &&
         result.fastTraceFailure.error?.includes('learner boom') === true &&
         (result.fastTraceFailure.events?.length ?? 0) > 0,
       `TraceCLR algorithm-fast tracing did not preserve partial traces for learner exceptions: ${JSON.stringify(result.fastTraceFailure)}`
+    );
+    assertCondition(
+      result.fastTraceFailureRecovery.success &&
+        result.fastTraceFailureRecovery.output === 42 &&
+        result.fastTraceFailureRecovery.traceLimitExceeded !== true,
+      `TraceCLR algorithm-fast learner failures poisoned a later case in the same outer runner: ${JSON.stringify(result.fastTraceFailureRecovery)}`
     );
     assertCondition(
       result.enumerablePrepared.success &&
@@ -842,6 +1103,41 @@ public class Solution
         result.valid.timings?.compileCacheHit === true &&
         result.valid.timings?.artifactCacheHit === true,
       `Disposable C# runner did not execute the compiler artifact: ${JSON.stringify(result.valid)}`
+    );
+    assertCondition(
+      result.staticStatePrepared.success &&
+        result.staticStatePrepared.preparedRunnerTier === 'algorithm-fast' &&
+        result.staticFirst.success &&
+        result.staticSecond.success &&
+        result.staticFirst.output === 1 &&
+        result.staticSecond.output === 1,
+      `C# algorithm-fast cases must receive fresh learner static state inside one outer runner: ${JSON.stringify({
+        prepared: result.staticStatePrepared,
+        first: result.staticFirst,
+        second: result.staticSecond,
+      })}`
+    );
+    for (const [label, prepared] of [
+      ['filesystem', result.filesystemPrepared],
+      ['environment', result.environmentPrepared],
+      ['threading', result.threadingPrepared],
+      ['shared pool', result.sharedPoolPrepared],
+      ['pinned memory', result.pinnedMemoryPrepared],
+      ['host runtime', result.hostRuntimePrepared],
+      ['reflection gateway', result.reflectionGatewayPrepared],
+      ['blocking collection', result.concurrentBlockingPrepared],
+    ] as const) {
+      assertCondition(
+        prepared.success && prepared.preparedRunnerTier === 'compatibility',
+        `C# ${label} code must fail closed to the disposable compatibility runner: ${JSON.stringify(prepared)}`
+      );
+    }
+    assertCondition(
+      result.dynamicReflectionPrepared.success === false &&
+        String(result.dynamicReflectionPrepared.error).includes(
+          'denied prepared Judge API: dynamic'
+        ),
+      `C# dynamic dispatch must remain rejected before runner selection: ${JSON.stringify(result.dynamicReflectionPrepared)}`
     );
     assertCondition(
       result.structuredPrepared.success &&
@@ -929,6 +1225,14 @@ public class Solution
         result.tampered.timings?.artifactCacheHit === false,
       `Disposable C# runner did not reject a tampered artifact: ${JSON.stringify(result.tampered)}`
     );
+    assertCondition(
+      result.forgedTier.success === false &&
+        result.forgedTier.error ===
+          'Prepared C# artifact is unavailable or invalid.' &&
+        result.forgedTier.timings?.compileCacheHit === false &&
+        result.forgedTier.timings?.artifactCacheHit === false,
+      `Retained C# runner accepted a compatibility artifact relabeled as algorithm-fast: ${JSON.stringify(result.forgedTier)}`
+    );
     console.log(
       JSON.stringify({
         compilerHash: result.prepared.compiledArtifactSha256,
@@ -950,6 +1254,7 @@ public class Solution
         dynamicReflectionRejected: true,
         voidOutputSemanticsPreserved: true,
         tamperedRejected: true,
+        forgedTierRejected: true,
         runnerAssetPath,
         engine: engineName,
       })

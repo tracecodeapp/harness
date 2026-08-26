@@ -27,7 +27,7 @@ public static partial class PreparedExecutionHost
     private const int MaxInputObjectProperties = 50_000;
     private const int MaxInputTraversalNodes = 750_000;
     private const long MaxArtifactBytes = 8L * 1024 * 1024;
-    private const string ArtifactCacheSchema = "tracecode-csharp-compile-v1";
+    private const string ArtifactCacheSchema = "tracecode-csharp-compile-v2";
     private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web)
     {
         PropertyNameCaseInsensitive = true,

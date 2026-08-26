@@ -111,6 +111,43 @@ export class CSharpRuntimeClient implements RuntimeClient, RuntimePreparedExecut
     return results;
   }
 
+  /**
+   * Algorithm-fast programs have already passed the compiler-owned ambient
+   * state policy. Their runner can therefore remain alive for an eager batch
+   * while the managed host creates a fresh assembly-load context for every
+   * case. Compatibility programs retain one disposable outer worker per case.
+   */
+  private async withPreparedBatchRunners<TResult>(
+    tier: CSharpPreparedRunnerTier,
+    inputBatch: readonly Record<string, unknown>[],
+    execute: (
+      runner: CSharpWorkerClient,
+      inputs: Record<string, unknown>,
+      index: number
+    ) => Promise<TResult>,
+    signal?: AbortSignal
+  ): Promise<readonly TResult[]> {
+    if (tier !== 'algorithm-fast') {
+      return this.withFreshPreparedRunners(
+        tier,
+        inputBatch,
+        execute,
+        signal
+      );
+    }
+
+    return this.withPreparedRunner(tier, async (runner) => {
+      const results: TResult[] = [];
+      for (let index = 0; index < inputBatch.length; index += 1) {
+        if (signal?.aborted) {
+          throw signal.reason ?? new Error('Prepared C# batch was aborted.');
+        }
+        results.push(await execute(runner, inputBatch[index]!, index));
+      }
+      return results;
+    });
+  }
+
   async init(): Promise<{ success: boolean; loadTimeMs: number }> {
     return this.preparedAuthority?.warmup() ?? this.workerClient.init();
   }
@@ -391,7 +428,7 @@ export class CSharpRuntimeClient implements RuntimeClient, RuntimePreparedExecut
               ));
             }
             return executeOwned(preparedCall, (preparedArtifact, forwardedCall) =>
-              this.withFreshPreparedRunners(
+              this.withPreparedBatchRunners(
                 preparedArtifact.preparedRunnerTier,
                 forwardedCall.inputBatch,
                 (runner, inputs, index) =>
@@ -428,7 +465,7 @@ export class CSharpRuntimeClient implements RuntimeClient, RuntimePreparedExecut
             preparedCall: RuntimePreparedCodeBatchCall
           ) =>
             executeOwned(preparedCall, (preparedArtifact, forwardedCall) =>
-              this.withFreshPreparedRunners(
+              this.withPreparedBatchRunners(
                 preparedArtifact.preparedRunnerTier,
                 forwardedCall.inputBatch,
                 (runner, inputs) =>

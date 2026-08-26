@@ -352,6 +352,60 @@ test('C# prepared batches lease one disposable outer runner per case', async () 
   await prepared.program.dispose();
 });
 
+test('C# algorithm-fast batches retain one outer runner with managed per-case isolation', async () => {
+  const compiler = new FakePreparedCSharpWorker();
+  compiler.preparedRunnerTier = 'algorithm-fast';
+  const runners: FakePreparedCSharpWorker[] = [];
+  const released: FakePreparedCSharpWorker[] = [];
+  const authority: CSharpPreparedWorkerAuthority = {
+    compiler: compiler as unknown as CSharpWorkerClient,
+    batchConcurrency: 4,
+    warmup: () => compiler.init(),
+    createRunner() {
+      const runner = new FakePreparedCSharpWorker();
+      runners.push(runner);
+      return runner as unknown as CSharpWorkerClient;
+    },
+    releaseRunner(runner) {
+      released.push(runner as unknown as FakePreparedCSharpWorker);
+    },
+  };
+  const provider = createCSharpRuntimeClient(
+    compiler as unknown as CSharpWorkerClient,
+    authority
+  );
+  const prepared = await provider.prepareProgram({
+    mode: 'code',
+    code: 'public class Solution { public int Echo(int value) => value; }',
+    functionName: 'Echo',
+  });
+  assert.equal(prepared.kind, 'prepared');
+  if (
+    prepared.kind !== 'prepared' ||
+    prepared.program.mode !== 'code' ||
+    !prepared.program.executeBatchIsolated
+  ) {
+    return;
+  }
+
+  const results = await prepared.program.executeBatchIsolated({
+    inputBatch: [{ value: 3 }, { value: 5 }, { value: 7 }],
+    limits: { wallClockMs: 2_000 },
+  });
+  assert.deepEqual(
+    results.map((result) => result.kind === 'completed' ? result.output : null),
+    [3, 5, 7]
+  );
+  assert.equal(runners.length, 1);
+  assert.equal(released.length, 1);
+  assert.equal(runners[0]?.executeCalls.length, 3);
+  assert.equal(runners[0]?.terminated, true);
+  assert.ok(runners[0]?.executeCalls.every(
+    (call) => call.call.limits?.wallClockMs === 2_000
+  ));
+  await prepared.program.dispose();
+});
+
 test('C# prepared runner tier is selected before execution and never degrades after learner failure', async () => {
   const compiler = new FakePreparedCSharpWorker();
   compiler.preparedRunnerTier = 'algorithm-fast';
@@ -436,18 +490,18 @@ test('C# portable trace selection records only selected cases from one assembly'
     [1, 0, 1]
   );
   assert.deepEqual(
-    runners.map((runner) => runner.traceExecuteCalls[0]?.tracingEnabled),
+    runners[0]?.traceExecuteCalls.map((call) => call.tracingEnabled),
     [true, false, true]
   );
   assert.deepEqual(
     selectedTiers,
-    ['algorithm-fast', 'algorithm-fast', 'algorithm-fast'],
-    'trace selection must retain the compiler-selected fast tier for every isolated case'
+    ['algorithm-fast'],
+    'trace selection must retain one compiler-selected fast runner for the guarded batch'
   );
   assert.ok(
-    runners.every(
-      (runner) =>
-        runner.traceExecuteCalls[0]?.prepared.compiledArtifactKey ===
+    runners[0]?.traceExecuteCalls.every(
+      (call) =>
+        call.prepared.compiledArtifactKey ===
         'artifact-key'
     ),
     'every selected case must retain the same trace-capable assembly identity'

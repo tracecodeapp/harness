@@ -4062,6 +4062,7 @@ async function executePreparedCSharpProgram(message) {
       if (request.trace) {
         const exportedJson = await withCSharpUserAuthorityLockdown(() =>
           executeAlgorithmPreparedTraceExport(
+            request.compiledArtifactKey,
             request.compiledArtifactBase64,
             request.compiledArtifactSha256,
             payload.inputBytes,
@@ -4104,6 +4105,7 @@ async function executePreparedCSharpProgram(message) {
       }
       const outputBytes = await withCSharpUserAuthorityLockdown(() =>
         executeAlgorithmPreparedExport(
+          request.compiledArtifactKey,
           request.compiledArtifactBase64,
           request.compiledArtifactSha256,
           payload.inputBytes
