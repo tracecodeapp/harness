@@ -1,0 +1,133 @@
+{
+  "measuredAt": "2026-08-26T08:26:01.111Z",
+  "browserVersion": "145.0.7632.6",
+  "machine": "Apple M1 Pro Mac",
+  "samples": 5,
+  "preparedBoundary": {
+    "description": "real-browser TraceCC prepared execution; Judge comparison excluded",
+    "summaries": [
+      {
+        "cases": 10,
+        "freshInstanceMs": [
+          19.37999999523163,
+          6.725000023841858,
+          6.7799999713897705,
+          6.125,
+          5.340000033378601
+        ],
+        "unsafeSharedCaseMs": [
+          10.074999928474426,
+          2.3700000047683716,
+          2.465000033378601,
+          2.59499990940094,
+          2.134999990463257
+        ],
+        "p50FreshInstanceMs": 6.725000023841858,
+        "p95FreshInstanceMs": 19.37999999523163,
+        "p50UnsafeSharedCaseMs": 2.465000033378601,
+        "p95UnsafeSharedCaseMs": 10.074999928474426,
+        "p50CeilingRatio": 2.728194698895958
+      },
+      {
+        "cases": 100,
+        "freshInstanceMs": [
+          100.01999998092651,
+          79.10500001907349,
+          75.04500007629395,
+          70.85000002384186,
+          68.23000001907349
+        ],
+        "unsafeSharedCaseMs": [
+          37.00499999523163,
+          29.399999976158142,
+          26.6599999666214,
+          26.584999918937683,
+          25.34500002861023
+        ],
+        "p50FreshInstanceMs": 75.04500007629395,
+        "p95FreshInstanceMs": 100.01999998092651,
+        "p50UnsafeSharedCaseMs": 26.6599999666214,
+        "p95UnsafeSharedCaseMs": 37.00499999523163,
+        "p50CeilingRatio": 2.8148912291917134
+      }
+    ]
+  },
+  "judgeBoundary": {
+    "description": "real browser Judge, compile plus all-case correctness receipt",
+    "warmMs": 20.125,
+    "warmResult": {
+      "success": true,
+      "loadTimeMs": 0
+    },
+    "summaries": [
+      {
+        "cases": 10,
+        "records": [
+          {
+            "bundleMs": 0.6399999856948853,
+            "evaluateMs": 1602.0599999427795,
+            "bundleToReceiptMs": 1602.6999999284744
+          },
+          {
+            "bundleMs": 0.0849999189376831,
+            "evaluateMs": 307.6750000715256,
+            "bundleToReceiptMs": 307.75999999046326
+          },
+          {
+            "bundleMs": 0.059999942779541016,
+            "evaluateMs": 304.70500004291534,
+            "bundleToReceiptMs": 304.7649999856949
+          },
+          {
+            "bundleMs": 0.0700000524520874,
+            "evaluateMs": 321.9800000190735,
+            "bundleToReceiptMs": 322.0500000715256
+          },
+          {
+            "bundleMs": 0.07999992370605469,
+            "evaluateMs": 300.1100000143051,
+            "bundleToReceiptMs": 300.18999993801117
+          }
+        ],
+        "p50BundleToReceiptMs": 307.75999999046326,
+        "p95BundleToReceiptMs": 1602.6999999284744,
+        "p50EvaluateMs": 307.6750000715256,
+        "p95EvaluateMs": 1602.0599999427795
+      },
+      {
+        "cases": 100,
+        "records": [
+          {
+            "bundleMs": 0.11000001430511475,
+            "evaluateMs": 440.585000038147,
+            "bundleToReceiptMs": 440.6950000524521
+          },
+          {
+            "bundleMs": 0.07500004768371582,
+            "evaluateMs": 404.11500000953674,
+            "bundleToReceiptMs": 404.19000005722046
+          },
+          {
+            "bundleMs": 0.07499992847442627,
+            "evaluateMs": 374.6400001049042,
+            "bundleToReceiptMs": 374.7150000333786
+          },
+          {
+            "bundleMs": 0.07499992847442627,
+            "evaluateMs": 367,
+            "bundleToReceiptMs": 367.0749999284744
+          },
+          {
+            "bundleMs": 0.12999999523162842,
+            "evaluateMs": 370.8899999856949,
+            "bundleToReceiptMs": 371.0199999809265
+          }
+        ],
+        "p50BundleToReceiptMs": 374.7150000333786,
+        "p95BundleToReceiptMs": 440.6950000524521,
+        "p50EvaluateMs": 374.6400001049042,
+        "p95EvaluateMs": 440.585000038147
+      }
+    ]
+  }
+}
