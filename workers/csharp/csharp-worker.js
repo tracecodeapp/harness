@@ -7,6 +7,7 @@ let executePreparedExport = null;
 let executePreparedUtf8Export = null;
 let executeAlgorithmPreparedExport = null;
 let executeAlgorithmPreparedTraceExport = null;
+let getAlgorithmManagedHeapBytesExport = null;
 let disposePreparedArtifactExport = null;
 let executeProjectExport = null;
 let getCompiledArtifactKeyExport = null;
@@ -3217,6 +3218,7 @@ function requiredExportsForRole() {
       ['ExecutePrepared', executePreparedExport],
       ['ExecuteAlgorithmPrepared', executeAlgorithmPreparedExport],
       ['ExecuteAlgorithmPreparedTrace', executeAlgorithmPreparedTraceExport],
+      ['GetAlgorithmManagedHeapBytes', getAlgorithmManagedHeapBytesExport],
       ['DisposePreparedArtifact', disposePreparedArtifactExport],
     ];
   }
@@ -3267,6 +3269,10 @@ function runtimeMemoryTimings() {
     workerJsHeapTotalBytes:
       performanceMemory && Number.isFinite(performanceMemory.totalJSHeapSize)
         ? performanceMemory.totalJSHeapSize
+        : 0,
+    managedHeapBytes:
+      typeof getAlgorithmManagedHeapBytesExport === 'function'
+        ? Number(getAlgorithmManagedHeapBytesExport())
         : 0,
   };
 }
@@ -3617,6 +3623,10 @@ async function loadRuntime(assetBaseUrl) {
         configuredRuntimeRole === 'runner'
           ? algorithmExecutionHost?.ExecutePreparedTrace
           : null;
+      getAlgorithmManagedHeapBytesExport =
+        configuredRuntimeRole === 'runner'
+          ? algorithmExecutionHost?.GetManagedHeapBytes
+          : null;
       disposePreparedArtifactExport =
         configuredRuntimeRole === 'runner'
           ? preparedExecutionHost?.DisposePreparedArtifact
@@ -3641,6 +3651,7 @@ async function loadRuntime(assetBaseUrl) {
       executePreparedUtf8Export = null;
       executeAlgorithmPreparedExport = null;
       executeAlgorithmPreparedTraceExport = null;
+      getAlgorithmManagedHeapBytesExport = null;
       disposePreparedArtifactExport = null;
       executeProjectExport = null;
       getCompiledArtifactKeyExport = null;
@@ -4094,7 +4105,7 @@ async function executePreparedCSharpProgram(message) {
             initMs,
             hostCallMs: elapsedMs(hostCallStartedAt),
             runMs: elapsedMs(hostCallStartedAt),
-            executionRealm: 'disposable-worker',
+            executionRealm: 'retained-worker-collectible-context',
             compileCacheHit: true,
             artifactCacheHit: true,
             preparedRunnerTier: 'algorithm-fast',
@@ -4119,7 +4130,7 @@ async function executePreparedCSharpProgram(message) {
           initMs,
           hostCallMs: elapsedMs(hostCallStartedAt),
           runMs: elapsedMs(hostCallStartedAt),
-          executionRealm: 'disposable-worker',
+          executionRealm: 'retained-worker-collectible-context',
           compileCacheHit: true,
           artifactCacheHit: true,
           preparedRunnerTier: 'algorithm-fast',
@@ -4140,7 +4151,7 @@ async function executePreparedCSharpProgram(message) {
           initMs,
           hostCallMs: elapsedMs(hostCallStartedAt),
           runMs: elapsedMs(hostCallStartedAt),
-          executionRealm: 'disposable-worker',
+          executionRealm: 'retained-worker-collectible-context',
           compileCacheHit: !invalidArtifact,
           artifactCacheHit: !invalidArtifact,
           preparedRunnerTier: 'algorithm-fast',

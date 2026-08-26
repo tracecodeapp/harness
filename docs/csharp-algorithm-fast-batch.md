@@ -8,13 +8,15 @@ A browser Judge correctness run compiles the learner source once, then executes
 the full case batch before returning a verdict. The compiler selects one runner
 tier before any learner code executes:
 
-- `algorithm-fast`: one disposable outer runner for the batch, with a fresh
-  collectible `AssemblyLoadContext` and fresh learner assembly for every case;
+- `algorithm-fast`: a bounded sequence of disposable outer runners, with a
+  fresh collectible `AssemblyLoadContext` and learner assembly for every case;
 - `compatibility`: the existing disposable outer runner per case.
 
 There is no retry or tier change after learner execution begins. Cancellation,
 a client deadline, program disposal, or provider reset still terminates the
-owned outer worker.
+owned outer worker. A retained lease ends after 64 cases or once its reported
+managed heap reaches 64 MiB, whichever happens first; the next case continues
+transparently in a fresh runner.
 
 A fresh load context makes learner-defined statics, generated driver statics,
 `Solution` instances, inputs, output buffers, and trace state case-local. The
@@ -43,7 +45,12 @@ fails closed to compatibility for code that uses:
 - runtime type gateways (`typeof`, `object.GetType`, delegate/exception
   reflection), string interning, delegate dynamic invocation, blocking
   concurrent collections, PLINQ, or async LINQ; or
-- any external non-`System` API not owned by the learner assembly.
+- any external non-`System` API not declared in the original learner source.
+
+Source provenance, rather than assembly identity, is the ownership boundary.
+Generated judge helpers can share the emitted learner assembly for compatibility
+contracts, but that does not make them learner-owned or admissible in the fast
+tier.
 
 Dynamic dispatch remains rejected by the existing prepared-Judge compiler
 policy before runner selection; it never reaches either execution tier.
@@ -73,15 +80,20 @@ merely because its caller relabeled the descriptor as `algorithm-fast`.
 
 ## Lifecycle
 
-The TypeScript runtime client retains one outer runner only for a
-compiler-admitted algorithm batch and invokes it sequentially. The managed
-execution core then:
+The TypeScript runtime client retains outer runners only for a
+compiler-admitted algorithm batch and invokes each lease sequentially. Mono/Wasm
+does not promptly reclaim unloaded collectible contexts, so the client rotates
+the lease after 64 cases or 64 MiB of reported managed heap. The managed
+execution core still gives every case the same semantic boundary:
 
 1. creates a named collectible load context;
 2. loads the immutable learner assembly from a byte stream;
 3. resolves and invokes the generated driver;
 4. returns only serialized output bytes; and
 5. unloads the context in a `finally` block.
+
+The outer-worker cap is the physical reclamation boundary; collectible contexts
+remain the per-case state boundary.
 
 Compatibility batches continue through the existing bounded fresh-worker pool.
 Project and terminal execution are unchanged.
@@ -97,27 +109,28 @@ bundle-to-receipt interval.
 
 | Browser Judge path | 10 cases | 100 cases |
 | --- | ---: | ---: |
-| Fresh-worker compatibility, three-sample p50 | 1,514 ms | 10,970 ms |
-| Fresh-worker compatibility, three-sample p95 | 1,568 ms | 11,755 ms |
-| Capability-safe algorithm-fast, three-sample p50 | 491 ms | 656 ms |
-| Capability-safe algorithm-fast, three-sample p95 | 520 ms | 694 ms |
+| Fresh-worker compatibility, three-sample p50 | 1,549 ms | 9,198 ms |
+| Fresh-worker compatibility, three-sample p95 | 1,589 ms | 9,416 ms |
+| Capability-safe algorithm-fast, three-sample p50 | 480 ms | 867 ms |
+| Capability-safe algorithm-fast, three-sample p95 | 505 ms | 889 ms |
 
-The capability-safe 100-case path is about 16.7 times faster at the median and
+The capability-safe 100-case path is about 10.6 times faster at the median and
 remains below one second at p95. Both paths compile once through the same
 public Judge boundary. Compatibility reuses the warmed standby for its first
 case and then creates 99 fresh outer workers, with at most three simultaneously
 active after the compiler and standby capacities are excluded. Algorithm-fast
-reuses the warmed standby as one retained outer runner and creates a fresh
-collectible load context for all 100 cases.
+uses bounded retained-runner chunks and creates a fresh collectible load
+context for all 100 cases.
 
 A separate benchmark-only unsafe prototype cached the learner assembly and
 method, sharing learner statics across cases. It measured 640 ms at the
-100-case median, only 16 ms below the safe path in this final run's median
-(and 62 ms below the earlier paired safe sample). Omitting only
-`AssemblyLoadContext.Unload()` produced no measurable improvement. The large
-gain therefore comes from removing repeated outer runtime, filesystem, and
-environment initialization; fresh learner load contexts are not a worthwhile
-isolation boundary to remove.
+100-case median before the physical-memory bound was added. The current safe
+path pays roughly 227 ms more at the median to replace the outer worker once;
+that replacement is what reclaims Mono/Wasm contexts that `Unload()` alone does
+not promptly collect. The large gain over compatibility still comes from
+removing repeated outer runtime, filesystem, and environment initialization;
+fresh learner load contexts remain the semantic boundary inside each bounded
+lease.
 
 ## Required evidence
 
@@ -125,6 +138,8 @@ The browser compiler/runner boundary gate proves:
 
 - two calls in one outer runner each observe learner static state at its initial
   value;
+- a 100-case allocation stress run rotates the outer worker before either 64
+  cases or 64 MiB of managed heap can accumulate on one lease;
 - a thrown line limit and an ordinary learner exception each leave the same
   outer runner clean for a successful later case;
 - filesystem, environment, threading, shared-pool, memory-pinning,
@@ -132,6 +147,8 @@ The browser compiler/runner boundary gate proves:
   compatibility, while dynamic dispatch remains rejected before tier selection;
 - trusted `ListNode` and `TreeNode` contracts reach the explicit
   reference-topology compatibility gate rather than ambient-API rejection;
+- compiler-injected compatibility helpers do not inherit learner-source
+  provenance even when they share the emitted assembly;
 - ordinary algorithm and collection code remains algorithm-fast;
 - compiler artifacts execute in the compiler-free runner;
 - reflective/tampered artifacts and compatibility-artifact relabeling remain
@@ -139,6 +156,7 @@ The browser compiler/runner boundary gate proves:
 - code, trace selection, limits, structured inputs, and void-output semantics
   retain their existing behavior.
 
-The prepared-provider tests separately prove one outer runner for an admitted
-batch, sequential case order, exact release, cancellation checks, and unchanged
-fresh-worker ownership for compatibility programs.
+The prepared-provider tests separately prove one outer runner for a small
+admitted batch, exact rotation at 64 cases, sequential case order, exact
+release, cancellation checks, and unchanged fresh-worker ownership for
+compatibility programs.

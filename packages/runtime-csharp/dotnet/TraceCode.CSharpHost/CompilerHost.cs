@@ -1514,20 +1514,11 @@ public static partial class CompilerHost
             bool writesExternalStatic = writtenSymbol switch
             {
                 IFieldSymbol field => field.IsStatic
-                    && !SymbolEqualityComparer.Default.Equals(
-                        field.ContainingAssembly,
-                        model.Compilation.Assembly
-                    ),
+                    && !IsDeclaredInLearnerSource(field, userTree),
                 IPropertySymbol property => property.IsStatic
-                    && !SymbolEqualityComparer.Default.Equals(
-                        property.ContainingAssembly,
-                        model.Compilation.Assembly
-                    ),
+                    && !IsDeclaredInLearnerSource(property, userTree),
                 IEventSymbol eventSymbol => eventSymbol.IsStatic
-                    && !SymbolEqualityComparer.Default.Equals(
-                        eventSymbol.ContainingAssembly,
-                        model.Compilation.Assembly
-                    ),
+                    && !IsDeclaredInLearnerSource(eventSymbol, userTree),
                 _ => false,
             };
             if (writesExternalStatic)
@@ -1550,7 +1541,7 @@ public static partial class CompilerHost
             string? deniedApi = symbols
                 .Select(symbol => DeniedAlgorithmFastApiForSymbol(
                     symbol,
-                    model.Compilation.Assembly
+                    userTree
                 ))
                 .FirstOrDefault(api => api is not null);
             if (deniedApi is null)
@@ -1622,7 +1613,7 @@ public static partial class CompilerHost
 
     private static string? DeniedAlgorithmFastApiForSymbol(
         ISymbol symbol,
-        IAssemblySymbol learnerAssembly
+        SyntaxTree learnerSourceTree
     )
     {
         ISymbol target = symbol is IAliasSymbol alias ? alias.Target : symbol;
@@ -1639,11 +1630,7 @@ public static partial class CompilerHost
             target as INamespaceSymbol ?? target.ContainingNamespace
         )?.ToDisplayString() ?? string.Empty;
 
-        if (target.ContainingAssembly is not null
-            && SymbolEqualityComparer.Default.Equals(
-                target.ContainingAssembly,
-                learnerAssembly
-            ))
+        if (IsDeclaredInLearnerSource(target, learnerSourceTree))
         {
             return null;
         }
@@ -1764,6 +1751,12 @@ public static partial class CompilerHost
 
         return null;
     }
+
+    private static bool IsDeclaredInLearnerSource(
+        ISymbol symbol,
+        SyntaxTree learnerSourceTree
+    ) => symbol.DeclaringSyntaxReferences.Any(reference =>
+        ReferenceEquals(reference.SyntaxTree, learnerSourceTree));
 
     private static bool IsTrustedJudgeSupportType(INamedTypeSymbol type) =>
         type.ContainingNamespace.IsGlobalNamespace

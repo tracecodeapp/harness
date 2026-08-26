@@ -15,6 +15,10 @@ public static partial class AlgorithmExecutionHost
 {
     [JSExport]
     [SupportedOSPlatform("browser")]
+    public static double GetManagedHeapBytes() => GC.GetTotalMemory(false);
+
+    [JSExport]
+    [SupportedOSPlatform("browser")]
     public static byte[] ExecutePrepared(
         string artifactKey,
         string artifactBase64,

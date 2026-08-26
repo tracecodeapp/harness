@@ -9,6 +9,7 @@ import type {
   RuntimePreparedCodeCall,
   RuntimePreparedTraceCall,
   RuntimeProgramPreparationCall,
+  RuntimeExecutionTimings,
 } from '../packages/runtime-contracts/src/index';
 import { createEmptyRuntimeTrace } from '../packages/runtime-contracts/src/index';
 import {
@@ -36,6 +37,7 @@ class FakePreparedCSharpWorker {
   failPreparation = false;
   preparedRunnerTier: 'algorithm-fast' | 'compatibility' = 'compatibility';
   executionResult: CodeExecutionResult | undefined;
+  managedHeapBytes = 0;
   terminated = false;
 
   async init(): Promise<{ success: boolean; loadTimeMs: number }> {
@@ -106,7 +108,14 @@ class FakePreparedCSharpWorker {
       kind: 'completed',
       output: call.inputs.value ?? null,
       consoleOutput: [],
-      timings: { compileMs: 0, compileCacheHit: true, artifactCacheHit: true },
+      timings: {
+        compileMs: 0,
+        compileCacheHit: true,
+        artifactCacheHit: true,
+        ...(this.managedHeapBytes > 0
+          ? { managedHeapBytes: this.managedHeapBytes }
+          : {}),
+      } as RuntimeExecutionTimings,
     };
   }
 
@@ -402,6 +411,106 @@ test('C# algorithm-fast batches retain one outer runner with managed per-case is
   assert.equal(runners[0]?.terminated, true);
   assert.ok(runners[0]?.executeCalls.every(
     (call) => call.call.limits?.wallClockMs === 2_000
+  ));
+  await prepared.program.dispose();
+});
+
+test('C# algorithm-fast batches rotate retained runners at the context bound', async () => {
+  const compiler = new FakePreparedCSharpWorker();
+  compiler.preparedRunnerTier = 'algorithm-fast';
+  const runners: FakePreparedCSharpWorker[] = [];
+  const released: FakePreparedCSharpWorker[] = [];
+  const authority: CSharpPreparedWorkerAuthority = {
+    compiler: compiler as unknown as CSharpWorkerClient,
+    batchConcurrency: 4,
+    warmup: () => compiler.init(),
+    createRunner() {
+      const runner = new FakePreparedCSharpWorker();
+      runners.push(runner);
+      return runner as unknown as CSharpWorkerClient;
+    },
+    releaseRunner(runner) {
+      released.push(runner as unknown as FakePreparedCSharpWorker);
+    },
+  };
+  const provider = createCSharpRuntimeClient(
+    compiler as unknown as CSharpWorkerClient,
+    authority
+  );
+  const prepared = await provider.prepareProgram({
+    mode: 'code',
+    code: 'public class Solution { public int Echo(int value) => value; }',
+    functionName: 'Echo',
+  });
+  assert.equal(prepared.kind, 'prepared');
+  if (
+    prepared.kind !== 'prepared' ||
+    prepared.program.mode !== 'code' ||
+    !prepared.program.executeBatchIsolated
+  ) {
+    return;
+  }
+
+  const inputBatch = Array.from({ length: 65 }, (_, value) => ({ value }));
+  const results = await prepared.program.executeBatchIsolated({ inputBatch });
+  assert.deepEqual(
+    results.map((result) => result.kind === 'completed' ? result.output : null),
+    inputBatch.map(({ value }) => value)
+  );
+  assert.equal(runners.length, 2);
+  assert.equal(released.length, 2);
+  assert.deepEqual(
+    runners.map((runner) => runner.executeCalls.length),
+    [64, 1]
+  );
+  assert.ok(runners.every((runner) => runner.terminated));
+  await prepared.program.dispose();
+});
+
+test('C# algorithm-fast batches rotate retained runners at the managed-heap bound', async () => {
+  const compiler = new FakePreparedCSharpWorker();
+  compiler.preparedRunnerTier = 'algorithm-fast';
+  const runners: FakePreparedCSharpWorker[] = [];
+  const authority: CSharpPreparedWorkerAuthority = {
+    compiler: compiler as unknown as CSharpWorkerClient,
+    batchConcurrency: 4,
+    warmup: () => compiler.init(),
+    createRunner() {
+      const runner = new FakePreparedCSharpWorker();
+      runner.managedHeapBytes = 64 * 1024 * 1024;
+      runners.push(runner);
+      return runner as unknown as CSharpWorkerClient;
+    },
+    releaseRunner() {},
+  };
+  const provider = createCSharpRuntimeClient(
+    compiler as unknown as CSharpWorkerClient,
+    authority
+  );
+  const prepared = await provider.prepareProgram({
+    mode: 'code',
+    code: 'public class Solution { public int Echo(int value) => value; }',
+    functionName: 'Echo',
+  });
+  assert.equal(prepared.kind, 'prepared');
+  if (
+    prepared.kind !== 'prepared' ||
+    prepared.program.mode !== 'code' ||
+    !prepared.program.executeBatchIsolated
+  ) {
+    return;
+  }
+
+  const results = await prepared.program.executeBatchIsolated({
+    inputBatch: [{ value: 3 }, { value: 5 }, { value: 7 }],
+  });
+  assert.deepEqual(
+    results.map((result) => result.kind === 'completed' ? result.output : null),
+    [3, 5, 7]
+  );
+  assert.equal(runners.length, 3);
+  assert.ok(runners.every(
+    (runner) => runner.executeCalls.length === 1 && runner.terminated
   ));
   await prepared.program.dispose();
 });

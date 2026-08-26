@@ -4,6 +4,10 @@ import { createServer } from 'node:http';
 import { existsSync, readFileSync, statSync } from 'node:fs';
 import { extname, join, normalize, sep } from 'node:path';
 import { chromium, firefox, webkit, type BrowserType } from 'playwright';
+import {
+  CSHARP_ALGORITHM_FAST_MAX_CASES_PER_RUNNER,
+  CSHARP_ALGORITHM_FAST_MAX_MANAGED_HEAP_BYTES,
+} from '../packages/runtime-csharp/src/csharp-fast-runner-policy';
 
 const ROOT = process.cwd();
 
@@ -93,7 +97,12 @@ async function main(): Promise<void> {
     const page = await browser.newPage();
     await page.goto(`${origin}/tests/fixtures/csharp-worker/blank.html`);
     await page.evaluate('globalThis.__name = (fn) => fn');
-    const result = await page.evaluate(async ({ origin, runnerAssetPath }) => {
+    const result = await page.evaluate(async ({
+      origin,
+      runnerAssetPath,
+      maxFastCasesPerRunner,
+      maxFastManagedHeapBytes,
+    }) => {
       type Reply = {
         success?: boolean;
         output?: unknown;
@@ -128,6 +137,9 @@ async function main(): Promise<void> {
           warmupMs?: number;
           compileMs?: number;
           compileTrustedTemplateHit?: boolean;
+          executionRealm?: string;
+          wasmLinearMemoryBytes?: number;
+          managedHeapBytes?: number;
         };
       };
 
@@ -336,6 +348,42 @@ public class Solution
 public class Solution
 {
     public int Root(TreeNode? root) => root?.val ?? 0;
+}`;
+      const injectedRuntimeHelperSource = `
+public class TreeNode
+{
+    public int val;
+    public TreeNode? left;
+    public TreeNode? right;
+
+    public TreeNode(int val = 0, TreeNode? left = null, TreeNode? right = null)
+    {
+        this.val = val;
+        this.left = left;
+        this.right = right;
+    }
+}
+
+public class Solution
+{
+    public int Read(int[] values) => values.Length +
+        (TraceCode.Internal.TraceCodeJsonInput.Read<int[]>(
+            "{\\"value\\":[1]}",
+            "value",
+            0
+        )?.Length ?? 0);
+}`;
+      const retainedHeapProbeSource = `
+public class Solution
+{
+    private static byte[]? retained;
+
+    public int Allocate(int size)
+    {
+        retained = new byte[size];
+        retained[^1] = 1;
+        return retained.Length;
+    }
 }`;
       const enumerableSource = `
 using System.Collections.Generic;
@@ -705,6 +753,25 @@ public class Solution
         assetBaseUrl: compilerBaseUrl,
         timeoutMs: 10_000,
       });
+      const injectedRuntimeHelperPrepared = await compiler.send(
+        'prepare-program',
+        {
+          mode: 'code',
+          code: injectedRuntimeHelperSource,
+          functionName: 'Read',
+          executionStyle: 'solution-method',
+          assetBaseUrl: compilerBaseUrl,
+          timeoutMs: 10_000,
+        }
+      );
+      const retainedHeapProbePrepared = await compiler.send('prepare-program', {
+        mode: 'code',
+        code: retainedHeapProbeSource,
+        functionName: 'Allocate',
+        executionStyle: 'solution-method',
+        assetBaseUrl: compilerBaseUrl,
+        timeoutMs: 10_000,
+      });
       compiler.terminate();
 
       const descriptor = (
@@ -752,6 +819,14 @@ public class Solution
         view.setUint16(4, 0, true);
         return bytes;
       };
+      const encodeOneInt32 = (value: number): Uint8Array => {
+        const bytes = new Uint8Array(10);
+        const view = new DataView(bytes.buffer);
+        view.setUint32(0, 0x31574354, true);
+        view.setUint16(4, 1, true);
+        view.setInt32(6, value, true);
+        return bytes;
+      };
       const decodeInt32 = (bytes: Uint8Array | undefined): number | null => {
         if (!(bytes instanceof Uint8Array) || bytes.byteLength !== 8) return null;
         const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
@@ -796,6 +871,60 @@ public class Solution
         timeoutMs: 10_000,
       });
       runner.terminate();
+      const heapProbeDescriptor = descriptor(
+        retainedHeapProbeSource,
+        'Allocate',
+        'code',
+        retainedHeapProbePrepared
+      );
+      const retainedBatchHeapSamples: number[] = [];
+      const retainedBatchManagedHeapSamples: number[] = [];
+      const retainedBatchCasesPerRunner: number[] = [];
+      let retainedBatchAllPassed = true;
+      let retainedBatchRealmsAccurate = true;
+      let retainedBatchRunner = await createHarness('runner', runnerBaseUrl);
+      let casesOnRunner = 0;
+      let lastManagedHeapBytes = 0;
+      for (let index = 0; index < 100; index += 1) {
+        if (
+          casesOnRunner >= maxFastCasesPerRunner ||
+          lastManagedHeapBytes >= maxFastManagedHeapBytes
+        ) {
+          retainedBatchCasesPerRunner.push(casesOnRunner);
+          retainedBatchRunner.terminate();
+          retainedBatchRunner = await createHarness('runner', runnerBaseUrl);
+          casesOnRunner = 0;
+          lastManagedHeapBytes = 0;
+        }
+        const heapProbe = await retainedBatchRunner.send(
+          'execute-prepared-code',
+          {
+          prepared: heapProbeDescriptor,
+          inputs: { size: 1_048_576 },
+          inputBytes: encodeOneInt32(1_048_576),
+          assetBaseUrl: runnerBaseUrl,
+          timeoutMs: 10_000,
+          }
+        );
+        casesOnRunner += 1;
+        retainedBatchAllPassed =
+          retainedBatchAllPassed &&
+          heapProbe.success === true &&
+          decodeInt32(heapProbe.outputBytes) === 1_048_576;
+        retainedBatchRealmsAccurate =
+          retainedBatchRealmsAccurate &&
+          heapProbe.timings?.executionRealm ===
+            'retained-worker-collectible-context';
+        retainedBatchHeapSamples.push(
+          heapProbe.timings?.wasmLinearMemoryBytes ?? 0
+        );
+        retainedBatchManagedHeapSamples.push(
+          heapProbe.timings?.managedHeapBytes ?? 0
+        );
+        lastManagedHeapBytes = heapProbe.timings?.managedHeapBytes ?? 0;
+      }
+      retainedBatchCasesPerRunner.push(casesOnRunner);
+      retainedBatchRunner.terminate();
 
       const fastTraceRunner = await createHarness('runner', runnerBaseUrl);
       const fastTrace = await fastTraceRunner.send('execute-prepared-trace', {
@@ -1055,6 +1184,8 @@ public class Solution
         deconstructedFrameworkStaticWritePrepared,
         listNodePrepared,
         treeNodePrepared,
+        injectedRuntimeHelperPrepared,
+        retainedHeapProbePrepared,
         voidOutputPrepared,
         runnerPrime,
         valid: {
@@ -1068,6 +1199,18 @@ public class Solution
         staticSecond: {
           ...staticSecond,
           output: decodeInt32(staticSecond.outputBytes),
+        },
+        retainedBatch: {
+          allPassed: retainedBatchAllPassed,
+          realmsAccurate: retainedBatchRealmsAccurate,
+          peakHeapBytes: Math.max(...retainedBatchHeapSamples),
+          finalHeapBytes: retainedBatchHeapSamples.at(-1) ?? 0,
+          peakManagedHeapBytes: Math.max(...retainedBatchManagedHeapSamples),
+          finalManagedHeapBytes:
+            retainedBatchManagedHeapSamples.at(-1) ?? 0,
+          caseCount: retainedBatchHeapSamples.length,
+          casesPerRunner: retainedBatchCasesPerRunner,
+          runnerCount: retainedBatchCasesPerRunner.length,
         },
         fastTrace: {
           ...fastTrace,
@@ -1096,7 +1239,14 @@ public class Solution
         tampered,
         forgedTier,
       };
-    }, { origin, runnerAssetPath });
+    }, {
+      origin,
+      runnerAssetPath,
+      maxFastCasesPerRunner:
+        CSHARP_ALGORITHM_FAST_MAX_CASES_PER_RUNNER,
+      maxFastManagedHeapBytes:
+        CSHARP_ALGORITHM_FAST_MAX_MANAGED_HEAP_BYTES,
+    });
 
     assertCondition(
       result.compilerWarmup.success &&
@@ -1198,6 +1348,34 @@ public class Solution
         second: result.staticSecond,
       })}`
     );
+    assertCondition(
+      result.staticFirst.timings?.executionRealm ===
+        'retained-worker-collectible-context' &&
+        result.staticSecond.timings?.executionRealm ===
+          'retained-worker-collectible-context',
+      `C# algorithm-fast diagnostics must identify the retained worker and collectible per-case context: ${JSON.stringify({
+        first: result.staticFirst.timings,
+        second: result.staticSecond.timings,
+      })}`
+    );
+    assertCondition(
+      result.retainedHeapProbePrepared.success &&
+        result.retainedHeapProbePrepared.preparedRunnerTier ===
+          'algorithm-fast' &&
+      result.retainedBatch.allPassed &&
+        result.retainedBatch.realmsAccurate &&
+        result.retainedBatch.caseCount === 100 &&
+        result.retainedBatch.runnerCount >= 2 &&
+        result.retainedBatch.runnerCount <= 3 &&
+        Math.max(...result.retainedBatch.casesPerRunner) <=
+          CSHARP_ALGORITHM_FAST_MAX_CASES_PER_RUNNER &&
+        result.retainedBatch.peakHeapBytes <= 128 * 1024 * 1024 &&
+        result.retainedBatch.peakManagedHeapBytes <= 80 * 1024 * 1024,
+      `C# retained runner chunks must bound non-reclaimed per-case contexts: ${JSON.stringify({
+        prepared: result.retainedHeapProbePrepared,
+        batch: result.retainedBatch,
+      })}`
+    );
     for (const [label, prepared] of [
       ['direct', result.directFrameworkStaticWritePrepared],
       ['deconstructed', result.deconstructedFrameworkStaticWritePrepared],
@@ -1211,6 +1389,15 @@ public class Solution
         `C# ${label} framework-static writes must fail closed to compatibility: ${JSON.stringify(prepared)}`
       );
     }
+    assertCondition(
+      result.injectedRuntimeHelperPrepared.success &&
+        result.injectedRuntimeHelperPrepared.preparedRunnerTier ===
+          'compatibility' &&
+        result.injectedRuntimeHelperPrepared.preparedRunnerReason?.includes(
+          'Ambient API TraceCode.Internal.TraceCodeJsonInput'
+        ) === true,
+      `Compiler-injected C# runtime helpers must not inherit learner-source provenance: ${JSON.stringify(result.injectedRuntimeHelperPrepared)}`
+    );
     for (const [label, prepared] of [
       ['ListNode', result.listNodePrepared],
       ['TreeNode', result.treeNodePrepared],
@@ -1361,6 +1548,7 @@ public class Solution
         directTraceWrapperAccessRejected: true,
         dynamicReflectionRejected: true,
         voidOutputSemanticsPreserved: true,
+        retainedBatch: result.retainedBatch,
         tamperedRejected: true,
         forgedTierRejected: true,
         runnerAssetPath,
