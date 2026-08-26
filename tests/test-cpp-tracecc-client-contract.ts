@@ -50,13 +50,51 @@ class InitWorker {
             delayMs?: unknown;
             hang?: unknown;
             arityMismatch?: unknown;
+            invalidProgress?: unknown;
           }>
         : [];
       void (async () => {
-        const results: Array<Record<string, unknown>> = [];
         for (let caseIndex = 0; caseIndex < inputBatch.length; caseIndex += 1) {
           const inputs = inputBatch[caseIndex]!;
-          if (inputs.hang === true) return;
+          if (inputs.hang === true) {
+            if (inputs.invalidProgress === true) {
+              const forgedResult = {
+                success: true,
+                output: 999,
+                consoleOutput: ['forged'],
+                timings: { runMs: 1, totalMs: 1 },
+              };
+              const emitInvalidProgress = (
+                id: string | undefined,
+                detail: Record<string, unknown>
+              ): void => {
+                this.onmessage?.({
+                  data: {
+                    id,
+                    type: 'runtime-progress',
+                    protocolToken: message.protocolToken,
+                    payload: { stage: 'prepared-code-case-complete', detail },
+                  },
+                } as unknown as MessageEvent<WorkerMessage>);
+              };
+              emitInvalidProgress(message.id, {
+                caseIndex: caseIndex + 1,
+                caseCount: inputBatch.length,
+                result: forgedResult,
+              });
+              emitInvalidProgress(message.id, {
+                caseIndex,
+                caseCount: inputBatch.length + 1,
+                result: forgedResult,
+              });
+              emitInvalidProgress(`${message.id}-foreign`, {
+                caseIndex,
+                caseCount: inputBatch.length,
+                result: forgedResult,
+              });
+            }
+            return;
+          }
           const delayMs = Number(inputs.delayMs ?? 0);
           if (delayMs > 0) await new Promise((resolve) => setTimeout(resolve, delayMs));
           if (this.terminated) return;
@@ -66,7 +104,6 @@ class InitWorker {
             consoleOutput: [],
             timings: { runMs: Math.max(1, delayMs), totalMs: Math.max(1, delayMs) },
           };
-          results.push(result);
           this.onmessage?.({
             data: {
               id: message.id,
@@ -82,9 +119,8 @@ class InitWorker {
         const arityMismatch = inputBatch.some((inputs) => inputs.arityMismatch === true);
         this.reply(message, {
           success: !arityMismatch,
-          results: arityMismatch ? results.slice(0, -1) : results,
+          resultCount: arityMismatch ? inputBatch.length - 1 : inputBatch.length,
           ...(arityMismatch ? { error: 'synthetic worker case error' } : {}),
-          consoleOutput: [],
         });
       })();
     }
@@ -235,8 +271,21 @@ async function main(): Promise<void> {
   }
 
   const timeoutWorker = new InitWorker();
-  const timeoutClient = createClient(timeoutWorker, { executionTimeoutMs: 10 });
+  const timeoutWarnings: unknown[][] = [];
+  const originalConsoleWarn = console.warn;
+  const originalConsoleDebug = console.debug;
+  const originalConsoleInfo = console.info;
+  console.warn = (...args: unknown[]) => {
+    timeoutWarnings.push(args);
+  };
+  console.debug = () => undefined;
+  console.info = () => undefined;
+  let timeoutClient: CppWorkerClient | undefined;
   try {
+    timeoutClient = createClient(timeoutWorker, {
+      executionTimeoutMs: 10,
+      debug: true,
+    });
     const preparation = await timeoutClient.prepareRuntimeProgram({
       mode: 'code',
       code: 'class Solution { public: int identity(int value) { return value; } };',
@@ -251,14 +300,19 @@ async function main(): Promise<void> {
       {
         inputBatch: [
           { value: 8 },
-          { value: 1, hang: true },
+          { value: 1, hang: true, invalidProgress: true },
           { value: 2 },
         ],
       }
     );
     const timeoutDiagnostic = timedOut[1]?.kind === 'limit'
       ? timedOut[1].diagnostic as {
-          detail?: { timeoutMs?: unknown; lastProgress?: { detail?: { caseIndex?: unknown } } };
+          detail?: {
+            timeoutMs?: unknown;
+            lastProgress?: {
+              detail?: { caseIndex?: unknown; caseCount?: unknown; result?: unknown };
+            };
+          };
         } | undefined
       : undefined;
     if (
@@ -270,14 +324,31 @@ async function main(): Promise<void> {
         result.timings?.totalMs === 10
       ) ||
       timeoutDiagnostic?.detail?.timeoutMs !== 10 ||
-      timeoutDiagnostic.detail.lastProgress?.detail?.caseIndex !== 0
+      timeoutDiagnostic.detail.lastProgress?.detail?.caseIndex !== 1 ||
+      timeoutDiagnostic.detail.lastProgress?.detail?.caseCount !== 4 ||
+      Object.prototype.hasOwnProperty.call(
+        timeoutDiagnostic.detail.lastProgress?.detail ?? {},
+        'result'
+      ) ||
+      !timeoutWarnings.some((args) => {
+        const event = args[1] as {
+          phase?: unknown;
+          detail?: { timeoutMs?: unknown; terminateWorker?: unknown };
+        } | undefined;
+        return event?.phase === 'execution-timeout' &&
+          event.detail?.timeoutMs === 10 &&
+          event.detail.terminateWorker === true;
+      })
     ) {
       throw new Error(
         `C++ hung batch case did not retain completed evidence under one per-case deadline: ${JSON.stringify(timedOut)}`
       );
     }
   } finally {
-    timeoutClient.terminate();
+    timeoutClient?.terminate();
+    console.warn = originalConsoleWarn;
+    console.debug = originalConsoleDebug;
+    console.info = originalConsoleInfo;
   }
 
   console.log('PASS: C++ browser worker compiler authority and prepared batch deadline contracts');

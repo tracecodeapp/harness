@@ -15559,8 +15559,7 @@ async function runPreparedCodeRuntimeProgramBatchIsolated(
   if (normalizedInputBatch.length === 0) {
     return {
       success: true,
-      results: [],
-      consoleOutput: [],
+      resultCount: 0,
       timings: {
         ...preparedExecutionTimings(0, elapsedMs(startedAt)),
         batchMode: 'fresh-instance-per-case',
@@ -15569,14 +15568,20 @@ async function runPreparedCodeRuntimeProgramBatchIsolated(
     };
   }
 
-  const results = [];
+  let success = true;
+  let firstError;
+  let totalRunMs = 0;
   for (let caseIndex = 0; caseIndex < normalizedInputBatch.length; caseIndex += 1) {
     const inputs = normalizedInputBatch[caseIndex];
     // The module is immutable and retained, but runPreparedRuntimeProgram
     // constructs a new InMemoryFileSystem, WasiProcess, WebAssembly.Instance,
     // linear memory, globals, constructors, and C/C++ runtime for every case.
     const result = await runPreparedRuntimeProgram(preparedProgram, inputs);
-    results.push(result);
+    success = success && result.success === true;
+    if (firstError === undefined && result.success !== true) {
+      firstError = result.error || 'C++ isolated prepared batch execution failed.';
+    }
+    totalRunMs += Number(result.timings?.runMs) || 0;
     // The host keeps the former per-case watchdog while this one logical batch
     // request is in flight. Completed results are included so a later hung case
     // cannot erase already-finished correctness evidence when the worker is
@@ -15587,25 +15592,14 @@ async function runPreparedCodeRuntimeProgramBatchIsolated(
       result,
     });
   }
-  const success = results.every((result) => result.success === true);
   const totalMs = elapsedMs(startedAt);
   return {
     success,
-    results,
-    consoleOutput: results.flatMap((result) => result.consoleOutput || []),
-    ...(success
-      ? {}
-      : {
-          error:
-            results.find((result) => result.success !== true)?.error ||
-            'C++ isolated prepared batch execution failed.',
-        }),
+    resultCount: normalizedInputBatch.length,
+    ...(success ? {} : { error: firstError }),
     timings: {
       ...preparedExecutionTimings(
-        results.reduce(
-          (total, result) => total + (Number(result.timings?.runMs) || 0),
-          0
-        ),
+        totalRunMs,
         totalMs
       ),
       batchMode: 'fresh-instance-per-case',

@@ -258,24 +258,40 @@ class PreparedProtocolWorker {
       const inputBatch = Array.isArray(message.payload?.inputBatch)
         ? message.payload.inputBatch as Array<{ value?: unknown; hang?: unknown }>
         : [];
-      if (inputBatch.some((inputs) => inputs.hang === true)) return;
-      queueMicrotask(() => this.reply(message, {
-        success: true,
-        results: inputBatch.map((inputs) => ({
+      queueMicrotask(() => {
+        for (let caseIndex = 0; caseIndex < inputBatch.length; caseIndex += 1) {
+          const inputs = inputBatch[caseIndex]!;
+          if (inputs.hang === true) return;
+          const result = {
+            success: true,
+            output: Number(inputs.value ?? 0),
+            executionTimeMs: 1,
+            consoleOutput: [],
+            timings: {
+              compileMs: 0,
+              wasmCompileMs: 0,
+              runMs: 1,
+              artifactCacheHit: true,
+              compileCacheHit: true,
+            },
+          };
+          this.onmessage?.({
+            data: {
+              id: message.id,
+              type: 'runtime-progress',
+              protocolToken: message.protocolToken,
+              payload: {
+                stage: 'prepared-code-case-complete',
+                detail: { caseIndex, caseCount: inputBatch.length, result },
+              },
+            },
+          } as unknown as MessageEvent<WorkerMessage>);
+        }
+        this.reply(message, {
           success: true,
-          output: Number(inputs.value ?? 0),
-          executionTimeMs: 1,
-          consoleOutput: [],
-          timings: {
-            compileMs: 0,
-            wasmCompileMs: 0,
-            runMs: 1,
-            artifactCacheHit: true,
-            compileCacheHit: true,
-          },
-        })),
-        consoleOutput: [],
-      }));
+          resultCount: inputBatch.length,
+        });
+      });
       return;
     }
     if (message.type === 'dispose-prepared-runtime-program') {

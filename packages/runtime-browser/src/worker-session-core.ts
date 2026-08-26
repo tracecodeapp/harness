@@ -448,7 +448,9 @@ export class WorkerSessionCore {
     kernelHttp?: RuntimeKernelHttpBridge,
     validateLifecycle?: () => void,
     kernelSyscalls?: RuntimeKernelSyscallBridge,
-    kernelSignals?: RuntimeKernelSignalBridge
+    kernelSignals?: RuntimeKernelSignalBridge,
+    /** Observe the exact command id after registration and before postMessage. */
+    onRequestRegistered?: (commandId: string) => void
   ): Effect.Effect<T, Error> {
     return Effect.gen(this, function* () {
       yield* Effect.try({
@@ -482,7 +484,8 @@ export class WorkerSessionCore {
         onEvent,
         kernelHttp,
         kernelSyscalls,
-        kernelSignals
+        kernelSignals,
+        onRequestRegistered
       );
       if (timeoutMs === null) {
         return yield* reply;
@@ -515,7 +518,8 @@ export class WorkerSessionCore {
     onEvent?: RuntimeCommandEventHandler,
     kernelHttp?: RuntimeKernelHttpBridge,
     kernelSyscalls?: RuntimeKernelSyscallBridge,
-    kernelSignals?: RuntimeKernelSignalBridge
+    kernelSignals?: RuntimeKernelSignalBridge,
+    onRequestRegistered?: (commandId: string) => void
   ): Effect.Effect<T, Error> {
     return Effect.async<T, Error>((resume) => {
       const id = String(++this.messageId);
@@ -543,6 +547,7 @@ export class WorkerSessionCore {
       }, { enabled: this.config.debug });
 
       try {
+        onRequestRegistered?.(id);
         worker.postMessage({
           id,
           type,
