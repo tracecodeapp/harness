@@ -24,6 +24,9 @@ The browser Judge path keeps these guarantees:
 - one TraceKernel Judge process and one retained C++ learner Worker;
 - one Worker protocol request for an ordinary correctness case vector;
 - fresh learner Wasm state and input hydration for every correctness case;
+- the ordinary batch watchdog scales the configured default execution budget
+  by case count, preserving the cumulative allowance of the former sequential
+  Worker requests;
 - an explicit per-case wall-clock limit retains the one-request-per-case path,
   because synchronous Wasm cannot be interrupted between cases from inside
   one Worker message;

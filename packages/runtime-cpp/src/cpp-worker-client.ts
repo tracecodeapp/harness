@@ -206,6 +206,7 @@ const EXECUTION_TIMEOUT_MS = 20_000;
 const TRACING_TIMEOUT_MS = 20_000;
 const MESSAGE_TIMEOUT_MS = 30_000;
 const WORKER_READY_TIMEOUT_MS = 10_000;
+const MAX_WORKER_DEADLINE_MS = 2_147_483_647;
 const CPP_DEFAULT_FILE = 'solution.cpp';
 const DEFAULT_CPP_COMPILER_ARTIFACT_CACHE_LIMIT = 32;
 const MAX_CPP_COMPILER_ARTIFACT_CACHE_LIMIT = 512;
@@ -217,6 +218,25 @@ const KERNEL_HTTP_SYNC_MESSAGE_TYPES = new Set([
   'kernel-http-listen-sync',
   'kernel-http-close',
 ]);
+
+/**
+ * Preserve the cumulative allowance of the former one-request-per-case loop.
+ *
+ * The prepared code worker still creates one fresh learner program per case,
+ * but an ordinary batch now crosses one Worker message. Its outer watchdog
+ * therefore has to cover every case's default allowance rather than applying
+ * one case's allowance to the complete vector.
+ */
+export function calculateCppPreparedCodeBatchDeadlineMs(
+  caseCount: number,
+  perCaseWallClockMs: number
+): number {
+  const normalizedCaseCount = Math.max(1, Math.floor(caseCount));
+  return Math.min(
+    MAX_WORKER_DEADLINE_MS,
+    perCaseWallClockMs * normalizedCaseCount
+  );
+}
 
 interface CppCompilerArtifactCacheEntry {
   bytes: Uint8Array;
@@ -1372,7 +1392,10 @@ export class CppWorkerClient {
       }
       return results;
     }
-    const aggregateWallClockMs = this.executionTimeoutMs;
+    const aggregateWallClockMs = calculateCppPreparedCodeBatchDeadlineMs(
+      call.inputBatch.length,
+      this.executionTimeoutMs
+    );
     return this.runInPreparedExecutionWorker(async (lifecycleGeneration) => {
       this.assertPreparedProgramHandle(handle, 'code');
       try {

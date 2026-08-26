@@ -23,6 +23,7 @@ import { TRACECODE_HARNESS_VERSION } from '../packages/runtime-contracts/src/har
 import { assertRuntimeRequestSupported } from '../packages/runtime-browser/src/runtime-capability-guards';
 import { executeRuntimeRequest } from '../packages/runtime-browser/src/runtime-execute';
 import { ExecutionTimeoutError } from '../packages/runtime-browser/src/worker-errors';
+import { calculateCppPreparedCodeBatchDeadlineMs } from '../packages/runtime-cpp/src/cpp-worker-client';
 import {
   WORKER_REQUEST_MESSAGES,
   type BrowserWorkerProtocolLanguage,
@@ -1437,6 +1438,25 @@ async function assertExecutionLimitsDispatchContract(): Promise<void> {
   }
 }
 
+function assertCppPreparedBatchDeadlineContract(): void {
+  const perCaseWallClockMs = 20_000;
+  for (const caseCount of [1, 2, 10, 100]) {
+    const formerSequentialBudget = Array.from(
+      { length: caseCount },
+      () => perCaseWallClockMs
+    ).reduce((total, allowance) => total + allowance, 0);
+    assertCondition(
+      calculateCppPreparedCodeBatchDeadlineMs(caseCount, perCaseWallClockMs) ===
+        formerSequentialBudget,
+      `${caseCount} C++ prepared cases must not share one case's default watchdog`
+    );
+  }
+  assertCondition(
+    calculateCppPreparedCodeBatchDeadlineMs(1_000_000, perCaseWallClockMs) === 2_147_483_647,
+    'C++ prepared batch deadline must stay within the browser timer ceiling'
+  );
+}
+
 function createUnsupportedProfile(
   overrides: Partial<LanguageRuntimeProfile['capabilities']> = {}
 ): LanguageRuntimeProfile {
@@ -1679,6 +1699,9 @@ async function main(): Promise<void> {
 
   await assertExecutionLimitsDispatchContract();
   console.log('PASS: execution limits dispatch contract');
+
+  assertCppPreparedBatchDeadlineContract();
+  console.log('PASS: C++ prepared batch deadline contract');
 
   assertWorkerProtocolDeclarations();
   console.log('PASS: worker protocol declarations match client sends and worker handlers');
