@@ -17,6 +17,7 @@ import {
   webkit,
   type BrowserType,
 } from 'playwright';
+import { loadEngineRuntimePackages } from '../scripts/runtime-package-assets.mjs';
 
 type BrowserEngine = 'chromium' | 'firefox' | 'webkit';
 
@@ -26,13 +27,71 @@ interface PreparedBrowserResult {
   isolationOutputs: unknown[];
   batchIsolationOutputs: unknown[];
   batchRunnerProcessCount: number;
+  batchIsolationProfile?: {
+    tier?: string;
+    reasons?: readonly string[];
+  };
   failureBatchElapsedMs: number;
   failureBatchRunnerProcessCount: number;
+  failureBatchIsolationProfile?: {
+    tier?: string;
+    reasons?: readonly string[];
+  };
   failureBatchRecovered: boolean;
   failureDiagnostic?: unknown;
+  algorithmLibraryOutputs: unknown[];
+  algorithmLibraryRunnerProcessCount: number;
+  algorithmLibraryProfile?: {
+    schema?: string;
+    tier?: string;
+    boundary?: string;
+    reasons?: readonly string[];
+    scannedClasses?: number;
+  };
+  leaseCeilingCorrect: boolean;
+  leaseCeilingRunnerProcessCount: number;
+  printingOutputs: unknown[];
+  printingRunnerProcessCount: number;
+  printingProfile?: {
+    tier?: string;
+    reasons?: readonly string[];
+  };
+  internOutputs: unknown[];
+  internRunnerProcessCount: number;
+  internProfile?: {
+    tier?: string;
+    reasons?: readonly string[];
+  };
+  compatibilityStateOutputs: unknown[];
+  compatibilityStateRunnerProcessCount: number;
+  compatibilityStateProfile?: {
+    tier?: string;
+    reasons?: readonly string[];
+  };
+  ambientCapabilityProfile?: {
+    tier?: string;
+    reasons?: readonly string[];
+  };
+  relabeledArtifactProfile?: {
+    tier?: string;
+    reasons?: readonly string[];
+  };
+  relabeledArtifactRunnerProcessCount: number;
+  relabeledArtifactOutputs: unknown[];
+  forgedArtifactProfile?: {
+    tier?: string;
+    reasons?: readonly string[];
+  };
+  generatedIdentityDistinct: boolean;
+  generatedLookalikeProfile?: {
+    tier?: string;
+    reasons?: readonly string[];
+  };
   listOutput: unknown;
   opsOutput: unknown;
   traceOutput: unknown;
+  sequentialTraceOutputs: unknown[];
+  sequentialTraceRunnerProcessCounts: number[];
   traceBatchOutputs: unknown[];
   traceBatchRunnerProcessCount: number;
   traceBatchHasEvents: boolean;
@@ -44,7 +103,10 @@ interface PreparedBrowserResult {
   traceParity: boolean;
   executionCompileMs: number[];
   executionWorkerDeltas: number[];
+  timeoutBatchRunnerProcessCount: number;
   timeoutBatchRecovered: boolean;
+  timeoutBatchKinds: string[];
+  timeoutBatchLimitReason?: string;
   aborted: boolean;
 }
 
@@ -135,13 +197,23 @@ function assertPreparedResult(
   );
   assert.equal(
     result.batchRunnerProcessCount,
-    1,
-    `${engine}: a clean Java batch must use exactly one inner runner process`
+    2,
+    `${engine}: ambient-capability Java must use a fresh inner runner process per case`
+  );
+  assert.equal(
+    result.batchIsolationProfile?.tier,
+    'compatibility',
+    `${engine}: ambient process state must not enter the algorithm fast tier: ${JSON.stringify(result.batchIsolationProfile)}`
   );
   assert.equal(
     result.failureBatchRunnerProcessCount,
     1,
     `${engine}: ordinary learner exceptions must not replace the leased Java runner`
+  );
+  assert.equal(
+    result.failureBatchIsolationProfile?.tier,
+    'algorithm-fast',
+    `${engine}: ordinary Java algorithm bytecode should retain one VM: ${JSON.stringify(result.failureBatchIsolationProfile)}`
   );
   assert.equal(
     result.failureBatchRecovered,
@@ -164,6 +236,179 @@ function assertPreparedResult(
     },
     `${engine}: learner exceptions must expose a stable diagnostic without generated package identities`
   );
+  assert.deepEqual(
+    result.algorithmLibraryOutputs,
+    [107, 108],
+    `${engine}: ordinary imports, collections, and learner statics must preserve output while resetting per case`
+  );
+  assert.equal(
+    result.algorithmLibraryRunnerProcessCount,
+    1,
+    `${engine}: ordinary algorithm libraries must retain one inner JVM`
+  );
+  assert.ok(
+    result.algorithmLibraryProfile?.schema ===
+      'tracecode.java.algorithm-isolation-profile.v1' &&
+      result.algorithmLibraryProfile.tier === 'algorithm-fast' &&
+      result.algorithmLibraryProfile.boundary ===
+        'fresh-application-class-loader' &&
+      result.algorithmLibraryProfile.reasons?.length === 0 &&
+      Number(result.algorithmLibraryProfile.scannedClasses) >= 1,
+    `${engine}: ordinary imports must remain eligible for the Java algorithm tier`
+  );
+  assert.equal(
+    result.leaseCeilingCorrect,
+    true,
+    `${engine}: retained Java execution must stay correct across the 64-execution lease boundary`
+  );
+  assert.equal(
+    result.leaseCeilingRunnerProcessCount,
+    2,
+    `${engine}: a 65-case batch must retire the inner JVM at the 64-execution lease ceiling`
+  );
+  assert.deepEqual(
+    result.printingOutputs,
+    [7, 8],
+    `${engine}: scoped stdout and stderr printing must preserve learner results`
+  );
+  assert.equal(
+    result.printingRunnerProcessCount,
+    1,
+    `${engine}: scoped PrintStream output must not force one JVM per case: ${JSON.stringify(result.printingProfile)}`
+  );
+  assert.ok(
+    result.printingProfile?.tier === 'algorithm-fast' &&
+      result.printingProfile.reasons?.length === 0,
+    `${engine}: scoped System.out/System.err printing must remain in the algorithm fast tier: ${JSON.stringify(result.printingProfile)}`
+  );
+  assert.deepEqual(
+    result.internOutputs,
+    [true, true],
+    `${engine}: fresh compatibility JVMs must prevent String.intern state from crossing cases`
+  );
+  assert.equal(
+    result.internRunnerProcessCount,
+    2,
+    `${engine}: String.intern must receive a fresh inner JVM per case`
+  );
+  assert.ok(
+    result.internProfile?.tier === 'compatibility' &&
+      result.internProfile.reasons?.some((reason) =>
+        reason.startsWith('ambient-method:java/lang/String.intern')
+      ),
+    `${engine}: VM-global String.intern must select compatibility: ${JSON.stringify(result.internProfile)}`
+  );
+  assert.deepEqual(
+    result.compatibilityStateOutputs,
+    [0, 0],
+    `${engine}: statics, system properties, background threads, modules, classloaders, and files must not leak between compatibility cases`
+  );
+  assert.equal(
+    result.compatibilityStateRunnerProcessCount,
+    2,
+    `${engine}: ambient compatibility probes must receive one inner JVM per case`
+  );
+  assert.equal(
+    result.compatibilityStateProfile?.tier,
+    'compatibility',
+    `${engine}: ambient state APIs must not enter the retained-process tier: ${JSON.stringify(result.compatibilityStateProfile)}`
+  );
+  assert.equal(
+    result.ambientCapabilityProfile?.tier,
+    'compatibility',
+    `${engine}: ambient JVM capabilities must fall back: ${JSON.stringify(result.ambientCapabilityProfile)}`
+  );
+  const ambientReasons = result.ambientCapabilityProfile?.reasons ?? [];
+  for (const expectedReasonPrefix of [
+    'ambient-owner:java/io/',
+    'ambient-owner:java/io/PrintStream',
+    'ambient-owner:java/lang/ref/Cleaner',
+    'ambient-owner:java/lang/ProcessBuilder',
+    'ambient-owner:java/lang/Thread',
+    'ambient-owner:java/lang/StackWalker',
+    'ambient-owner:java/lang/System$LoggerFinder',
+    'ambient-owner:java/net/',
+    'ambient-owner:java/nio/file/',
+    'ambient-owner:java/util/concurrent/',
+    'ambient-owner:java/util/Calendar$Builder',
+    'ambient-owner:java/util/random/RandomGenerator',
+    'ambient-owner:java/util/stream/StreamSupport',
+    'ambient-owner:java/util/zip/ZipFile',
+    'ambient-descriptor:java/io/InputStream',
+    'ambient-file-constructor:java/util/Formatter.<init>(Ljava/lang/String;)V',
+    'ambient-method:java/lang/AutoCloseable.close()V',
+    'ambient-method:java/lang/Boolean.getBoolean',
+    'ambient-method:java/lang/Integer.getInteger',
+    'ambient-method:java/lang/Long.getLong',
+    'ambient-method:java/lang/String.intern',
+    'ambient-method:java/util/Formatter.close()V',
+    'ambient-method:java/lang/System.getProperty',
+    'ambient-method:java/lang/System.getenv',
+    'native-method:',
+    'nondeterministic-rng:',
+    'nondeterministic-time:java/time/Clock.tickSeconds',
+    'nondeterministic-time:java/time/InstantSource.system',
+    'nondeterministic-time:java/time/chrono/IsoChronology.dateNow',
+    'nondeterministic-time:java/util/GregorianCalendar.<init>()V',
+    'nondeterministic-time:java/util/GregorianCalendar.<init>(Ljava/util/TimeZone;)V',
+    'nondeterministic-time:',
+    'parallel-execution:harness/user/job',
+    'reflective-method:java/lang/Class.forName',
+  ]) {
+    assert.ok(
+      ambientReasons.some((reason) =>
+        reason.startsWith(expectedReasonPrefix)
+      ),
+      `${engine}: missing Java compatibility reason ${expectedReasonPrefix}: ${JSON.stringify(ambientReasons)}`
+    );
+  }
+  assert.equal(
+    result.relabeledArtifactProfile?.tier,
+    'compatibility',
+    `${engine}: restore must ignore a caller-relabeled tier and retain the untrusted-artifact boundary`
+  );
+  assert.ok(
+    result.relabeledArtifactProfile?.reasons?.includes(
+      'restored-artifact-untrusted'
+    ),
+    `${engine}: restored artifacts must carry an explicit untrusted provenance reason`
+  );
+  assert.equal(
+    result.relabeledArtifactRunnerProcessCount,
+    2,
+    `${engine}: a compatibility artifact relabeled fast must still use fresh inner JVMs`
+  );
+  assert.deepEqual(
+    result.relabeledArtifactOutputs,
+    [7, 8],
+    `${engine}: compatibility fallback must preserve learner outputs`
+  );
+  assert.equal(
+    result.forgedArtifactProfile?.tier,
+    'compatibility',
+    `${engine}: caller-forged entry identities must not admit restored bytes to the fast tier`
+  );
+  assert.ok(
+    result.forgedArtifactProfile?.reasons?.includes(
+      'restored-artifact-untrusted'
+    ) &&
+      result.forgedArtifactProfile.reasons.some((reason) =>
+        reason.startsWith('native-method:')
+      ),
+    `${engine}: restored artifacts must scan every caller-supplied class and retain the untrusted-artifact reason: ${JSON.stringify(result.forgedArtifactProfile)}`
+  );
+  assert.equal(
+    result.generatedIdentityDistinct,
+    true,
+    `${engine}: identical preparations must receive unpredictable generated-shell identities`
+  );
+  assert.ok(
+    result.generatedLookalikeProfile?.tier === 'compatibility' &&
+      result.generatedLookalikeProfile.reasons?.some((reason) =>
+        reason.startsWith('ambient-method:java/lang/System.getProperty')
+      ),
+    `${engine}: learner classes shaped like nested generated shells must still be scanned: ${JSON.stringify(result.generatedLookalikeProfile)}`
+  );
   assert.equal(
     result.listOutput,
     70,
@@ -179,6 +424,18 @@ function assertPreparedResult(
     6,
     `${engine}: prepared tracing must preserve the legacy result`
   );
+  assert.deepEqual(
+    result.sequentialTraceOutputs,
+    [6, 9],
+    `${engine}: consecutive single-case trace requests must preserve outputs across request-channel rebinding`
+  );
+  assert.deepEqual(
+    result.sequentialTraceRunnerProcessCounts,
+    isolated ? [1, 1] : [1, -1],
+    isolated
+      ? `${engine}: consecutive fast trace requests must reuse one clean inner JVM while rebinding the outer kernel request`
+      : `${engine}: ordinary-document fallback must restore into compatibility after outer-worker retirement`
+  );
   assert.equal(
     result.traceParity,
     true,
@@ -191,8 +448,10 @@ function assertPreparedResult(
   );
   assert.equal(
     result.traceBatchRunnerProcessCount,
-    1,
-    `${engine}: one kernel-bound runner must own the complete trace batch`
+    isolated ? 1 : 2,
+    isolated
+      ? `${engine}: one kernel-bound runner must own the complete trace batch`
+      : `${engine}: caller-carried restore must retain the fresh-process compatibility boundary`
   );
   assert.equal(
     result.traceBatchHasEvents,
@@ -246,6 +505,21 @@ function assertPreparedResult(
     true,
     `${engine}: a per-case timeout must retire the tainted runner and allow the next batch case to run`
   );
+  assert.deepEqual(
+    result.timeoutBatchKinds,
+    ['limit', 'completed'],
+    `${engine}: public prepared Judge results must classify a case wall-clock timeout as a limit`
+  );
+  assert.equal(
+    result.timeoutBatchLimitReason,
+    'client-timeout',
+    `${engine}: public prepared Judge results must preserve the client-timeout reason`
+  );
+  assert.equal(
+    result.timeoutBatchRunnerProcessCount,
+    2,
+    `${engine}: a timed-out fast-tier case must use a replacement JVM for the later case`
+  );
   assert.equal(
     result.aborted,
     true,
@@ -258,8 +532,11 @@ function assertPreparedResult(
   );
 }
 
-const traceJVMRoot = resolve(
-  process.env.TRACECODE_TRACEJVM_ROOT ?? '../tracejvm'
+const traceJVMRoot = process.env.TRACECODE_TRACEJVM_ROOT
+  ? resolve(process.env.TRACECODE_TRACEJVM_ROOT)
+  : (await loadEngineRuntimePackages(resolve('.'))).tracejvm.sourceRoot;
+const traceJVMUsesSourceLayout = Boolean(
+  safeFile(traceJVMRoot, 'dist/browser-client.js')
 );
 const temporaryDirectory = mkdtempSync(
   join(tmpdir(), 'java-prepared-provider-browser-')
@@ -328,14 +605,15 @@ try {
 
     if (url.pathname.startsWith('/tracejvm/')) {
       const requested = url.pathname.slice('/tracejvm/'.length);
-      const relative =
-        requested === 'browser-client.js'
+      const relative = traceJVMUsesSourceLayout
+        ? requested === 'browser-client.js'
           ? 'dist/browser-client.js'
           : requested === 'browser-worker.js'
             ? 'dist/browser-worker.js'
             : requested.startsWith('compiler/')
               ? `.cache/teavm-javac/artifacts/${requested.slice('compiler/'.length)}`
-            : `runtime/assets/${requested}`;
+              : `runtime/assets/${requested}`
+        : requested;
       const path = safeFile(traceJVMRoot, relative);
       if (!path) {
         response.statusCode = 404;

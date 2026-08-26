@@ -15,6 +15,7 @@ import type {
   RuntimeBatchCall,
   RuntimeCodeCall,
   RuntimeExecutionTimings,
+  ExecutionLimitReason,
   RuntimePreparedCodeBatchCall,
   RuntimePreparedCodeCall,
   RuntimePreparedTraceBatchCall,
@@ -104,7 +105,7 @@ export interface JavaWorkerRawTraceResult {
   diagnostic?: unknown;
   consoleOutput: string[];
   traceLimitExceeded?: boolean;
-  timeoutReason?: 'trace-limit';
+  timeoutReason?: ExecutionLimitReason;
   droppedEventCount?: number;
   timings?: RuntimeExecutionTimings;
   retirementRecommended?: boolean;
@@ -112,6 +113,7 @@ export interface JavaWorkerRawTraceResult {
   /** Default-off VM diagnostics used by compatibility/performance campaigns. */
   bytecodeProfile?: unknown;
   diagnosticError?: string;
+  algorithmIsolationProfile?: JavaAlgorithmIsolationProfile;
 }
 
 export interface JavaWorkerTraceResult extends JavaWorkerRawTraceResult {
@@ -127,9 +129,11 @@ interface JavaWorkerCodeResult {
   diagnosticStage?: 'runtime';
   diagnostic?: unknown;
   consoleOutput?: string[];
+  timeoutReason?: ExecutionLimitReason;
   timings?: RuntimeExecutionTimings;
   retirementRecommended?: boolean;
   runtimeIsolation?: unknown;
+  algorithmIsolationProfile?: JavaAlgorithmIsolationProfile;
 }
 
 interface JavaWorkerPreparedBatchResult<Result> {
@@ -148,7 +152,18 @@ interface JavaWorkerRawPreparedTraceBatchItem
 export interface JavaWorkerPreparedProgramSnapshot {
   readonly schema: 'tracecode.java.prepared-program-snapshot.v1';
   readonly programId: string;
+  readonly algorithmIsolationProfile?: JavaAlgorithmIsolationProfile;
   readonly [key: string]: unknown;
+}
+
+export interface JavaAlgorithmIsolationProfile {
+  readonly schema: 'tracecode.java.algorithm-isolation-profile.v1';
+  readonly tier: 'algorithm-fast' | 'compatibility';
+  readonly boundary:
+    | 'fresh-application-class-loader'
+    | 'fresh-runtime-process';
+  readonly reasons: readonly string[];
+  readonly scannedClasses: number;
 }
 
 export interface JavaWorkerPreparedProgramResult {
@@ -159,11 +174,13 @@ export interface JavaWorkerPreparedProgramResult {
   errorLine?: number;
   consoleOutput?: string[];
   timings?: RuntimeExecutionTimings;
+  algorithmIsolationProfile?: JavaAlgorithmIsolationProfile;
 }
 
 export interface JavaWorkerPreparedExecutionMetadata {
   readonly retirementRecommended: boolean;
   readonly runtimeIsolation?: unknown;
+  readonly algorithmIsolationProfile?: JavaAlgorithmIsolationProfile;
 }
 
 export type JavaWorkerPreparedCodeResult =
@@ -754,6 +771,12 @@ export class JavaWorkerClient {
       return {
         ...liftCodeOutcome(result, 'Java prepared execution failed'),
         retirementRecommended: result.retirementRecommended === true,
+        ...(result.algorithmIsolationProfile === undefined
+          ? {}
+          : {
+              algorithmIsolationProfile:
+                result.algorithmIsolationProfile,
+            }),
         ...(result.runtimeIsolation === undefined
           ? {}
           : { runtimeIsolation: result.runtimeIsolation }),
@@ -813,6 +836,12 @@ export class JavaWorkerClient {
         ...liftCodeOutcome(entry, 'Java prepared execution failed'),
         retirementRecommended:
           entry.retirementRecommended === true,
+        ...(entry.algorithmIsolationProfile === undefined
+          ? {}
+          : {
+              algorithmIsolationProfile:
+                entry.algorithmIsolationProfile,
+            }),
         ...(entry.runtimeIsolation === undefined
           ? {}
           : { runtimeIsolation: entry.runtimeIsolation }),
@@ -876,6 +905,12 @@ export class JavaWorkerClient {
               file: JAVA_DEFAULT_FILE,
             }),
         retirementRecommended: result.retirementRecommended === true,
+        ...(result.algorithmIsolationProfile === undefined
+          ? {}
+          : {
+              algorithmIsolationProfile:
+                result.algorithmIsolationProfile,
+            }),
         ...(result.runtimeIsolation === undefined
           ? {}
           : { runtimeIsolation: result.runtimeIsolation }),
@@ -979,6 +1014,12 @@ export class JavaWorkerClient {
               }),
           retirementRecommended:
             entry.retirementRecommended === true,
+          ...(entry.algorithmIsolationProfile === undefined
+            ? {}
+            : {
+                algorithmIsolationProfile:
+                  entry.algorithmIsolationProfile,
+              }),
           ...(entry.runtimeIsolation === undefined
             ? {}
             : { runtimeIsolation: entry.runtimeIsolation }),

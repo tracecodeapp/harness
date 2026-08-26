@@ -1,6 +1,7 @@
 import {
   JavaWorkerClient,
   type JavaTraceExecutionOptions,
+  type JavaWorkerPreparedProgramSnapshot,
 } from '../../packages/runtime-java/src/java-worker-client';
 import {
   createJavaPreparedExecutionProvider,
@@ -12,19 +13,52 @@ import type {
   RuntimeTraceEvent,
 } from '../../packages/runtime-contracts/src/runtime-trace';
 
+interface JavaAlgorithmProfileShape {
+  schema?: string;
+  tier?: string;
+  boundary?: string;
+  reasons?: readonly string[];
+  scannedClasses?: number;
+}
+
 interface PreparedBrowserResult {
   createdWorkers: number;
   terminatedWorkers: number;
   isolationOutputs: unknown[];
   batchIsolationOutputs: unknown[];
   batchRunnerProcessCount: number;
+  batchIsolationProfile?: JavaAlgorithmProfileShape;
   failureBatchElapsedMs: number;
   failureBatchRunnerProcessCount: number;
+  failureBatchIsolationProfile?: JavaAlgorithmProfileShape;
   failureBatchRecovered: boolean;
   failureDiagnostic?: unknown;
+  algorithmLibraryOutputs: unknown[];
+  algorithmLibraryRunnerProcessCount: number;
+  algorithmLibraryProfile?: JavaAlgorithmProfileShape;
+  leaseCeilingCorrect: boolean;
+  leaseCeilingRunnerProcessCount: number;
+  printingOutputs: unknown[];
+  printingRunnerProcessCount: number;
+  printingProfile?: JavaAlgorithmProfileShape;
+  internOutputs: unknown[];
+  internRunnerProcessCount: number;
+  internProfile?: JavaAlgorithmProfileShape;
+  compatibilityStateOutputs: unknown[];
+  compatibilityStateRunnerProcessCount: number;
+  compatibilityStateProfile?: JavaAlgorithmProfileShape;
+  ambientCapabilityProfile?: JavaAlgorithmProfileShape;
+  relabeledArtifactProfile?: JavaAlgorithmProfileShape;
+  relabeledArtifactRunnerProcessCount: number;
+  relabeledArtifactOutputs: unknown[];
+  forgedArtifactProfile?: JavaAlgorithmProfileShape;
+  generatedIdentityDistinct: boolean;
+  generatedLookalikeProfile?: JavaAlgorithmProfileShape;
   listOutput: unknown;
   opsOutput: unknown;
   traceOutput: unknown;
+  sequentialTraceOutputs: unknown[];
+  sequentialTraceRunnerProcessCounts: number[];
   traceBatchOutputs: unknown[];
   traceBatchRunnerProcessCount: number;
   traceBatchHasEvents: boolean;
@@ -36,7 +70,10 @@ interface PreparedBrowserResult {
   traceParity: boolean;
   executionCompileMs: number[];
   executionWorkerDeltas: number[];
+  timeoutBatchRunnerProcessCount: number;
   timeoutBatchRecovered: boolean;
+  timeoutBatchKinds: string[];
+  timeoutBatchLimitReason?: string;
   aborted: boolean;
 }
 
@@ -262,6 +299,11 @@ globalThis.runJavaPreparedProviderBrowserTest =
           | undefined
       )?.runnerProcessCount ?? -1
     );
+    const batchIsolationProfile = (
+      batchIsolationResults[0] as typeof batchIsolationResults[number] & {
+        algorithmIsolationProfile?: JavaAlgorithmProfileShape;
+      }
+    ).algorithmIsolationProfile;
     executionCompileMs.push(
       ...batchIsolationResults.map(
         (result) => result.timings?.compileMs ?? -1
@@ -298,6 +340,11 @@ globalThis.runJavaPreparedProviderBrowserTest =
           | undefined
       )?.runnerProcessCount ?? -1
     );
+    const failureBatchIsolationProfile = (
+      failureBatchResults[0] as typeof failureBatchResults[number] & {
+        algorithmIsolationProfile?: JavaAlgorithmProfileShape;
+      }
+    ).algorithmIsolationProfile;
     const failureDiagnostic =
       failureBatchResults[0]?.kind === 'failed'
         ? failureBatchResults[0].diagnostic
@@ -309,6 +356,410 @@ globalThis.runJavaPreparedProviderBrowserTest =
       failureBatchResults[2]?.kind === 'completed' &&
       failureBatchResults[2].output === 3;
     await failurePreparation.program.dispose();
+
+    const algorithmLibraryPreparation = await preparedCode(
+      provider,
+      [
+        'import java.util.*;',
+        'class Solution {',
+        '  private static int calls = 0;',
+        '  public int inspect(int[] values) {',
+        '    if (values.length == 0) throw new RuntimeException("empty");',
+        '    int[] copy = values.clone();',
+        '    int[][] grid = new int[][] { copy }.clone();',
+        '    String[] labels = new String[] { "value" }.clone();',
+        '    if (grid.length + labels.length != 2) throw new RuntimeException("clone");',
+        '    Deque<Integer> queue = new ArrayDeque<>();',
+        '    for (int value : copy) queue.addLast(value);',
+        '    calls += 1;',
+        '    return calls * 100 + queue.removeFirst();',
+        '  }',
+        '}',
+      ].join('\n'),
+      'inspect'
+    );
+    const algorithmLibraryResults =
+      await algorithmLibraryPreparation.program.executeBatchIsolated?.({
+        inputBatch: [{ values: [7] }, { values: [8] }],
+      });
+    if (!algorithmLibraryResults) {
+      throw new Error('Prepared Java library batch was unavailable.');
+    }
+    const algorithmLibraryOutputs =
+      algorithmLibraryResults.map(completedOutput);
+    const algorithmLibraryRunnerProcessCount = Number(
+      (
+        algorithmLibraryResults[0]?.timings as
+          | ({ runnerProcessCount?: number })
+          | undefined
+      )?.runnerProcessCount ?? -1
+    );
+    const algorithmLibraryProfile = (
+      algorithmLibraryResults[0] as typeof algorithmLibraryResults[number] & {
+        algorithmIsolationProfile?: JavaAlgorithmProfileShape;
+      }
+    ).algorithmIsolationProfile;
+    const leaseCeilingInputs = Array.from({ length: 65 }, (_, index) => ({
+      values: [index + 1],
+    }));
+    const leaseCeilingResults =
+      await algorithmLibraryPreparation.program.executeBatchIsolated?.({
+        inputBatch: leaseCeilingInputs,
+      });
+    if (!leaseCeilingResults) {
+      throw new Error('Prepared Java lease-ceiling batch was unavailable.');
+    }
+    const leaseCeilingCorrect = leaseCeilingResults.every(
+      (result, index) => completedOutput(result) === 101 + index
+    );
+    const leaseCeilingRunnerProcessCount = Number(
+      (
+        leaseCeilingResults[0]?.timings as
+          | ({ runnerProcessCount?: number })
+          | undefined
+      )?.runnerProcessCount ?? -1
+    );
+    await algorithmLibraryPreparation.program.dispose();
+
+    const printingPreparation = await preparedCode(
+      provider,
+      [
+        'class Solution {',
+        '  public int inspect(int value) {',
+        '    System.out.println("debug-" + value);',
+        '    System.err.printf("error-%d%n", value);',
+        '    return value;',
+        '  }',
+        '}',
+      ].join('\n'),
+      'inspect'
+    );
+    const printingResults =
+      await printingPreparation.program.executeBatchIsolated?.({
+        inputBatch: [{ value: 7 }, { value: 8 }],
+      });
+    if (!printingResults) {
+      throw new Error('Prepared Java printing batch was unavailable.');
+    }
+    const printingOutputs = printingResults.map(completedOutput);
+    const printingRunnerProcessCount = Number(
+      (
+        printingResults[0]?.timings as
+          | ({ runnerProcessCount?: number })
+          | undefined
+      )?.runnerProcessCount ?? -1
+    );
+    const printingProfile = (
+      printingResults[0] as typeof printingResults[number] & {
+        algorithmIsolationProfile?: JavaAlgorithmProfileShape;
+      }
+    ).algorithmIsolationProfile;
+    await printingPreparation.program.dispose();
+
+    const internPreparation = await preparedCode(
+      provider,
+      [
+        'class Solution {',
+        '  public boolean inspect(String value) {',
+        '    String fresh = new String(value);',
+        '    return fresh.intern() == fresh;',
+        '  }',
+        '}',
+      ].join('\n'),
+      'inspect'
+    );
+    const internResults =
+      await internPreparation.program.executeBatchIsolated?.({
+        inputBatch: [
+          { value: 'tracecode-intern-cross-case-7f94d1' },
+          { value: 'tracecode-intern-cross-case-7f94d1' },
+        ],
+      });
+    if (!internResults) {
+      throw new Error('Prepared Java intern batch was unavailable.');
+    }
+    const internOutputs = internResults.map(completedOutput);
+    const internRunnerProcessCount = Number(
+      (
+        internResults[0]?.timings as
+          | ({ runnerProcessCount?: number })
+          | undefined
+      )?.runnerProcessCount ?? -1
+    );
+    const internProfile = (
+      internResults[0] as typeof internResults[number] & {
+        algorithmIsolationProfile?: JavaAlgorithmProfileShape;
+      }
+    ).algorithmIsolationProfile;
+    await internPreparation.program.dispose();
+
+    const compatibilityStatePreparation = await preparedCode(
+      provider,
+      [
+        'import java.nio.file.*;',
+        'class Solution {',
+        '  private static int calls = 0;',
+        '  public int inspect(int value) {',
+        '    int leaked = calls++ == 0 ? 0 : 1;',
+        '    if (System.getProperty("tracecode.java.case-probe") != null) leaked |= 2;',
+        '    Path path = Path.of("/tmp/tracecode-java-case-probe");',
+        '    if (Files.exists(path)) leaked |= 4;',
+        '    if (value == 1) {',
+        '      System.setProperty("tracecode.java.case-probe", "set");',
+        '      try { Files.writeString(path, "set"); } catch (Exception ignored) {}',
+        '      Thread thread = new Thread(() -> {',
+        '        try { Thread.sleep(20); } catch (InterruptedException ignored) {}',
+        '        System.setProperty("tracecode.java.thread-probe", "set");',
+        '      });',
+        '      thread.setDaemon(true);',
+        '      thread.start();',
+        '    } else {',
+        '      try { Thread.sleep(60); } catch (InterruptedException ignored) {}',
+        '      if (System.getProperty("tracecode.java.thread-probe") != null) leaked |= 8;',
+        '    }',
+        '    if (Solution.class.getModule().isNamed()) leaked |= 16;',
+        '    if (Solution.class.getClassLoader() == null) leaked |= 32;',
+        '    return leaked;',
+        '  }',
+        '}',
+      ].join('\n'),
+      'inspect'
+    );
+    const compatibilityStateResults =
+      await compatibilityStatePreparation.program.executeBatchIsolated?.({
+        inputBatch: [{ value: 1 }, { value: 2 }],
+      });
+    if (!compatibilityStateResults) {
+      throw new Error(
+        'Prepared Java compatibility-state batch was unavailable.'
+      );
+    }
+    const compatibilityStateOutputs =
+      compatibilityStateResults.map(completedOutput);
+    const compatibilityStateRunnerProcessCount = Number(
+      (
+        compatibilityStateResults[0]?.timings as
+          | ({ runnerProcessCount?: number })
+          | undefined
+      )?.runnerProcessCount ?? -1
+    );
+    const compatibilityStateProfile = (
+      compatibilityStateResults[0] as
+        typeof compatibilityStateResults[number] & {
+          algorithmIsolationProfile?: JavaAlgorithmProfileShape;
+        }
+    ).algorithmIsolationProfile;
+    await compatibilityStatePreparation.program.dispose();
+
+    const ambientCapabilitySource = [
+      'import java.io.*;',
+      'import java.lang.ref.*;',
+      'import java.net.*;',
+      'import java.nio.file.*;',
+      'import java.time.*;',
+      'import java.time.chrono.*;',
+      'import java.util.*;',
+      'import java.util.concurrent.*;',
+      'import java.util.random.*;',
+      'import java.util.stream.*;',
+      'import java.util.zip.*;',
+      'class ParallelList extends ArrayList<Integer> {}',
+      'class Solution {',
+      '  private native int nativeProbe();',
+      '  public int inspect(int value) {',
+      '    if (value < 0) {',
+      '      try {',
+      '        Files.exists(Path.of("/tmp/tracecode-java-fast"));',
+      '        new File("/tmp/tracecode-java-fast").exists();',
+      '        new PrintStream("/tmp/tracecode-java-fast-output").println("unsafe");',
+      '        System.getenv("TRACECODE_JAVA_FAST");',
+      '        System.getProperty("tracecode.java.fast");',
+      '        Boolean.getBoolean("tracecode.java.fast");',
+      '        Integer.getInteger("tracecode.java.fast");',
+      '        Long.getLong("tracecode.java.fast");',
+      '        new String("tracecode.java.fast").intern();',
+      '        new Thread(() -> {}).start();',
+      '        Cleaner.create().register(this, () -> {});',
+      '        Executors.newSingleThreadExecutor();',
+      '        StreamSupport.stream(List.of(1).spliterator(), true).count();',
+      '        Class.forName("java.lang.String");',
+      '        new ProcessBuilder("true").start();',
+      '        new Socket("127.0.0.1", 1);',
+      '        Math.random();',
+      '        RandomGenerator.getDefault().nextInt();',
+      '        System.nanoTime();',
+      '        Clock.tickSeconds(ZoneId.systemDefault()).instant();',
+      '        InstantSource.system().instant();',
+      '        IsoChronology.INSTANCE.dateNow();',
+      '        new GregorianCalendar();',
+      '        new GregorianCalendar(TimeZone.getDefault());',
+      '        new Calendar.Builder().build();',
+      '        StackWalker.getInstance();',
+      '        System.LoggerFinder.getLoggerFinder();',
+      '        new Scanner(System.in).hasNext();',
+      '        ((AutoCloseable) System.out).close();',
+      '        try (Formatter formatter = new Formatter(System.out)) {',
+      '          formatter.format("%d", value);',
+      '        }',
+      '        new Formatter("/tmp/tracecode-java-formatter").close();',
+      '        new ZipFile("/tmp/tracecode-java-zip").close();',
+      '        new ParallelList().parallelStream().count();',
+      '      } catch (Exception ignored) {}',
+      '      return nativeProbe();',
+      '    }',
+      '    return value;',
+      '  }',
+      '}',
+    ].join('\n');
+    const ambientClient = createClient();
+    await ambientClient.warmup();
+    const ambientPreparation = await ambientClient.prepareRuntimeProgram({
+      mode: 'code',
+      code: ambientCapabilitySource,
+      functionName: 'inspect',
+      executionStyle: 'solution-method',
+    });
+    if (
+      !ambientPreparation.success ||
+      !ambientPreparation.programId ||
+      !ambientPreparation.snapshot
+    ) {
+      throw new Error(
+        ambientPreparation.error ??
+          'Ambient-capability Java preparation failed.'
+      );
+    }
+    const ambientCapabilityProfile =
+      ambientPreparation.algorithmIsolationProfile;
+    const generatedLookalikeSource = [
+      'class ExportsLearnerPredictable$Evil {',
+      '  static String readAmbientState() {',
+      '    return System.getProperty("tracecode.java.generated-lookalike");',
+      '  }',
+      '}',
+      'class Solution {',
+      '  public int inspect(int value) { return value; }',
+      '}',
+    ].join('\n');
+    const generatedLookalikeFirst =
+      await ambientClient.prepareRuntimeProgram({
+        mode: 'code',
+        code: generatedLookalikeSource,
+        functionName: 'inspect',
+        executionStyle: 'solution-method',
+      });
+    const generatedLookalikeSecond =
+      await ambientClient.prepareRuntimeProgram({
+        mode: 'code',
+        code: generatedLookalikeSource,
+        functionName: 'inspect',
+        executionStyle: 'solution-method',
+      });
+    if (
+      !generatedLookalikeFirst.success ||
+      !generatedLookalikeFirst.programId ||
+      !generatedLookalikeFirst.snapshot ||
+      !generatedLookalikeSecond.success ||
+      !generatedLookalikeSecond.programId ||
+      !generatedLookalikeSecond.snapshot
+    ) {
+      throw new Error(
+        generatedLookalikeFirst.error ??
+          generatedLookalikeSecond.error ??
+          'Generated-shell lookalike preparation failed.'
+      );
+    }
+    const generatedIdentityDistinct =
+      String(generatedLookalikeFirst.snapshot.entryClass ?? '') !==
+      String(generatedLookalikeSecond.snapshot.entryClass ?? '');
+    const generatedLookalikeProfile =
+      generatedLookalikeFirst.algorithmIsolationProfile;
+    await ambientClient.disposePreparedRuntimeProgram(
+      generatedLookalikeFirst.programId
+    );
+    await ambientClient.disposePreparedRuntimeProgram(
+      generatedLookalikeSecond.programId
+    );
+    const relabeledSnapshot = {
+      ...structuredClone(ambientPreparation.snapshot),
+      algorithmIsolationProfile: {
+        schema: 'tracecode.java.algorithm-isolation-profile.v1',
+        tier: 'algorithm-fast',
+        boundary: 'fresh-application-class-loader',
+        reasons: [],
+        scannedClasses: 1,
+      },
+    } as JavaWorkerPreparedProgramSnapshot;
+    const restoredAmbientClient = createClient();
+    await restoredAmbientClient.warmup();
+    const restoredAmbient =
+      await restoredAmbientClient.restorePreparedRuntimeProgram(
+        relabeledSnapshot
+      );
+    if (!restoredAmbient.success || !restoredAmbient.programId) {
+      throw new Error(
+        restoredAmbient.error ??
+          'Relabeled ambient Java artifact failed to restore.'
+      );
+    }
+    const relabeledArtifactProfile =
+      restoredAmbient.algorithmIsolationProfile;
+    const relabeledArtifactResults =
+      await restoredAmbientClient.executePreparedCodeBatch(
+        restoredAmbient.programId,
+        { inputBatch: [{ value: 7 }, { value: 8 }] }
+      );
+    const relabeledArtifactOutputs =
+      relabeledArtifactResults.map(completedOutput);
+    const relabeledArtifactRunnerProcessCount = Number(
+      (
+        relabeledArtifactResults[0]?.timings as
+          | ({ runnerProcessCount?: number })
+          | undefined
+      )?.runnerProcessCount ?? -1
+    );
+    await restoredAmbientClient.disposePreparedRuntimeProgram(
+      restoredAmbient.programId
+    );
+    restoredAmbientClient.terminate();
+    const forgedSnapshotSource = structuredClone(
+      ambientPreparation.snapshot
+    );
+    const originalEntryClass = String(forgedSnapshotSource.entryClass ?? '');
+    const packageSeparator = originalEntryClass.lastIndexOf('.');
+    if (packageSeparator < 0) {
+      throw new Error('Prepared Java snapshot did not contain a package.');
+    }
+    const forgedSnapshot = {
+      ...forgedSnapshotSource,
+      entryClass: `${originalEntryClass.slice(0, packageSeparator)}.Solution`,
+      cleanEntryClass: originalEntryClass,
+      algorithmIsolationProfile: {
+        schema: 'tracecode.java.algorithm-isolation-profile.v1',
+        tier: 'algorithm-fast',
+        boundary: 'fresh-application-class-loader',
+        reasons: [],
+        scannedClasses: 1,
+      },
+    } as JavaWorkerPreparedProgramSnapshot;
+    const forgedAmbientClient = createClient();
+    await forgedAmbientClient.warmup();
+    const forgedAmbient =
+      await forgedAmbientClient.restorePreparedRuntimeProgram(forgedSnapshot);
+    if (!forgedAmbient.success || !forgedAmbient.programId) {
+      throw new Error(
+        forgedAmbient.error ?? 'Forged ambient Java artifact failed to restore.'
+      );
+    }
+    const forgedArtifactProfile = forgedAmbient.algorithmIsolationProfile;
+    await forgedAmbientClient.disposePreparedRuntimeProgram(
+      forgedAmbient.programId
+    );
+    forgedAmbientClient.terminate();
+    await ambientClient.disposePreparedRuntimeProgram(
+      ambientPreparation.programId
+    );
+    ambientClient.terminate();
 
     const listPreparation = await preparedCode(
       provider,
@@ -426,6 +877,33 @@ globalThis.runJavaPreparedProviderBrowserTest =
     if (traceResult.kind !== 'completed') {
       throw new Error('Prepared Java trace did not complete.');
     }
+    const sequentialTraceSecondResult = await executePreparedCase(() =>
+      traceProgram.executeIsolated({
+        inputs: { values: [4, 5] },
+      })
+    );
+    if (sequentialTraceSecondResult.kind !== 'completed') {
+      throw new Error('Second prepared Java trace did not complete.');
+    }
+    const sequentialTraceOutputs = [
+      completedOutput(traceResult),
+      completedOutput(sequentialTraceSecondResult),
+    ];
+    const sequentialTraceRunnerProcessCounts = [
+      traceResult,
+      sequentialTraceSecondResult,
+    ].map((result) =>
+      Number(
+        (
+          result.timings as
+            | ({ runnerProcessCount?: number })
+            | undefined
+        )?.runnerProcessCount ?? -1
+      )
+    );
+    executionCompileMs.push(
+      sequentialTraceSecondResult.timings?.compileMs ?? -1
+    );
     const traceKinds = traceResult.trace.events.map((event) => event.kind);
     const traceProfilePrefix = '__TRACECODE_TRACE_PROFILE_JSON__:';
     const traceProfileLine = traceResult.consoleOutput?.find((line) =>
@@ -595,6 +1073,19 @@ globalThis.runJavaPreparedProviderBrowserTest =
       timeoutBatchResults[0]?.kind !== 'completed' &&
       timeoutBatchResults[1]?.kind === 'completed' &&
       timeoutBatchResults[1].output === 1;
+    const timeoutBatchKinds =
+      timeoutBatchResults?.map((result) => result.kind) ?? [];
+    const timeoutBatchLimitReason =
+      timeoutBatchResults?.[0]?.kind === 'limit'
+        ? timeoutBatchResults[0].reason
+        : undefined;
+    const timeoutBatchRunnerProcessCount = Number(
+      (
+        timeoutBatchResults?.[0]?.timings as
+          | ({ runnerProcessCount?: number })
+          | undefined
+      )?.runnerProcessCount ?? -1
+    );
     const abortController = new AbortController();
     const pendingHang = executePreparedCase(() =>
       hangingPreparation.program.executeIsolated({
@@ -621,13 +1112,38 @@ globalThis.runJavaPreparedProviderBrowserTest =
       isolationOutputs,
       batchIsolationOutputs,
       batchRunnerProcessCount,
+      batchIsolationProfile,
       failureBatchElapsedMs,
       failureBatchRunnerProcessCount,
+      failureBatchIsolationProfile,
       failureBatchRecovered,
       failureDiagnostic,
+      algorithmLibraryOutputs,
+      algorithmLibraryRunnerProcessCount,
+      algorithmLibraryProfile,
+      leaseCeilingCorrect,
+      leaseCeilingRunnerProcessCount,
+      printingOutputs,
+      printingRunnerProcessCount,
+      printingProfile,
+      internOutputs,
+      internRunnerProcessCount,
+      internProfile,
+      compatibilityStateOutputs,
+      compatibilityStateRunnerProcessCount,
+      compatibilityStateProfile,
+      ambientCapabilityProfile,
+      relabeledArtifactProfile,
+      relabeledArtifactRunnerProcessCount,
+      relabeledArtifactOutputs,
+      forgedArtifactProfile,
+      generatedIdentityDistinct,
+      generatedLookalikeProfile,
       listOutput,
       opsOutput,
       traceOutput,
+      sequentialTraceOutputs,
+      sequentialTraceRunnerProcessCounts,
       traceBatchOutputs,
       traceBatchRunnerProcessCount,
       traceBatchHasEvents,
@@ -639,7 +1155,10 @@ globalThis.runJavaPreparedProviderBrowserTest =
       traceParity,
       executionCompileMs,
       executionWorkerDeltas,
+      timeoutBatchRunnerProcessCount,
       timeoutBatchRecovered,
+      timeoutBatchKinds,
+      timeoutBatchLimitReason,
       aborted,
     };
   };

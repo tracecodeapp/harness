@@ -70,11 +70,17 @@ public configuration roles.
 
 The private Java provider keeps one outer Worker and TraceJVM compiler warm for
 the lifetime of a prepared program. Compilation produces an immutable class
-snapshot. Each Judge case leases a fresh inner JVM bound to a fresh TraceKernel
-process and TKFS, executes once, then destroys only that inner JVM and process.
-Static fields, class initialization, system properties, locale and time-zone
-defaults, runtime filesystem writes, thread state, and shutdown hooks therefore
-cannot cross the case boundary without paying compiler startup again.
+snapshot. During trusted preparation, its artifact-derived isolation profile
+selects one of two inner boundaries. Algorithm-scoped correctness cases retain
+one TraceJVM process but receive a fresh application class loader and reset
+execution scope; ambient or unverifiable bytecode receives a fresh inner JVM.
+Every case still receives a fresh TraceKernel process scope and TKFS. Static
+fields, class initialization, system properties, locale and time-zone defaults,
+runtime filesystem writes, thread state, VM-global interned strings, and
+shutdown hooks cannot cross the case boundary. APIs whose state is not reset by
+the application class-loader boundary select compatibility. The full admission
+and reset contract is documented in
+[Java Algorithm Isolation Profile](../../docs/java-algorithm-isolation-profile.md).
 
 Prepared input JSON travels as process-scoped Java properties rather than
 provider-owned files. Learner filesystem calls still use the process-bound
@@ -91,8 +97,12 @@ warmup can restart it; disposing the host is final.
 
 Preparation fails closed when the bridge or external runtime tree is
 incompatible. A crashed or cancelled outer Worker is restored from the
-immutable snapshot on its replacement generation; ordinary successful
-kernel-bound cases do not restore or recompile.
+immutable snapshot on its replacement generation, but restored snapshots use
+the fresh-JVM compatibility tier because the current caller-carried snapshot
+has no independently trusted provenance binding. Ordinary successful
+kernel-bound cases do not restore or recompile, and a retained JVM rebinds its
+syscall host to the current outer request rather than retaining a released
+channel client.
 
 ## Browser project workspaces
 

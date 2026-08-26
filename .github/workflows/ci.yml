@@ -53,6 +53,8 @@ jobs:
         run: pnpm test:python-sync && pnpm test:runtime-contract && pnpm test:python-prepared-provider && pnpm test:native-python-serialization-limit
       - name: Test Python runtime snapshot release recovery
         run: node --import tsx --test tests/test-python-runtime-snapshot-release.ts
+      - name: Test Java admission and prepared-runtime isolation
+        run: TRACECODE_JAVA_PREPARED_ENGINES=chromium pnpm test:java-prepared-provider
       - name: Build
         run: pnpm build
       - name: Test Python public browser Judge boundary

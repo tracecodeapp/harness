@@ -933,7 +933,7 @@ export interface CreateBrowserProjectWorkspaceOptions
   /** Immutable Java runtime tree used by the built-in provider. */
   javaRuntimeAssetBaseUrl?: string;
   /**
-   * Same-origin TraceJVM project Worker. Runtime payloads may live on a CDN,
+   * Same-origin Java project Worker. Runtime payloads may live on a CDN,
    * but browsers require the Worker constructor itself to use this origin.
    */
   javaProjectWorkerUrl?: string;

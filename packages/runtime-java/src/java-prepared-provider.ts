@@ -385,8 +385,9 @@ class JavaPreparedExecutionProviderImpl
       };
     }
     // Transfer the warm compiler Worker to the prepared program. TraceJVM
-    // creates and disposes a fresh runner JVM for every execution while this
-    // outer Worker and compiler survive until the program returns the lease.
+    // derives whether a correctness case can reuse a reset runner JVM or needs
+    // a fresh one; this outer Worker and compiler survive either boundary until
+    // the program returns the lease.
     this.activePreparationClients.delete(standby.client);
     const returnClient = (client: JavaWorkerClient) =>
       this.returnWarmClient(client);

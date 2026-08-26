@@ -16,6 +16,10 @@ This repo uses Git tags as release boundaries. Version notes below summarize wha
   retire an unavailable fast worker before hard-isolated retry.
 - Added `serialization-limit` to `ExecutionLimitReason` so oversized Judge
   outputs fail explicitly instead of being silently truncated.
+- Added artifact-derived Java isolation profiles. Algorithm-scoped correctness
+  batches retain one TraceJVM process with a fresh application class loader and
+  execution scope per case, while ambient or unverifiable bytecode keeps the
+  fresh-process compatibility boundary.
 
 ### Changed
 
@@ -46,6 +50,17 @@ This repo uses Git tags as release boundaries. Version notes below summarize wha
   The retained generic tier now enforces the same case-local wall-clock signal
   from learner module execution through the target call; catch-all handlers
   and reserved guard-name collisions select hard isolation before execution.
+- Java prepared code and trace results now preserve `client-timeout` as the
+  execution limit reason. A timed-out retained JVM is retired before any later
+  correctness case runs.
+- Java fast-tier admission now excludes only worker-generated entry identities
+  during trusted preparation. Caller-carried restored artifacts always use the
+  fresh-JVM compatibility tier until snapshots have an independent provenance
+  binding, and retained JVM leases are capped at 64 executions.
+- Java generated entry shells now receive unpredictable per-preparation
+  identities, VM-global interning and implicit-time builders select
+  compatibility, and retained single-case JVMs rebind to the current
+  TraceKernel request instead of holding a released prior channel.
 
 ## [0.17.0] - 2026-08-25
 
