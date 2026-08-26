@@ -141,6 +141,7 @@ def _tracecode_run_solution(
     _trusted_serialize=_serialize,
     _trusted_limit_type=_TracecodeSerializationLimit,
     _trusted_encode=_tracecode_trusted_json_encode,
+    _trusted_max_bytes=_MAX_SERIALIZED_BYTES,
     _trusted_print=_builtins.print,
     _trusted_exception_type=_builtins.Exception,
     _trusted_type=_builtins.type,
@@ -160,7 +161,19 @@ def _tracecode_run_solution(
             "success": False,
             "error": f"{_trusted_type(error).__name__}: {str(error)}",
         }
-    _trusted_print(_trusted_encode(_payload))
+    try:
+        _encoded_payload = _trusted_encode(
+            _payload,
+            max_bytes=_trusted_max_bytes,
+            limit_type=_trusted_limit_type,
+        )
+    except _trusted_limit_type:
+        _encoded_payload = _trusted_encode({
+            "success": False,
+            "error": "Execution stopped: resource limit exceeded (serialization-limit).",
+            "timeoutReason": "serialization-limit",
+        })
+    _trusted_print(_encoded_payload)
 
 _tracecode_run_solution(
     ${toPythonLiteral(solutionCode)},

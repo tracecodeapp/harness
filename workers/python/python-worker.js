@@ -1055,33 +1055,105 @@ def _tracecode_make_trusted_json_encoder(
     builtin_list = builtins_module.list
     builtin_tuple = builtins_module.tuple
     builtin_dict = builtins_module.dict
+    builtin_isinstance = builtins_module.isinstance
+    builtin_len = builtins_module.len
+    builtin_ord = builtins_module.ord
+    builtin_enumerate = builtins_module.enumerate
     builtin_int_repr = builtin_int.__repr__
     builtin_float_repr = builtin_float.__repr__
 
-    def encode_value(value):
+    def consume_bytes(state, count):
+        next_count = state["bytes"] + count
+        if state["max_bytes"] is not None and next_count > state["max_bytes"]:
+            raise state["limit_type"]()
+        state["bytes"] = next_count
+
+    def encode_string(value, state):
+        if state["max_bytes"] is None:
+            return escape_string(value)
+        # encode_basestring_ascii always emits ASCII. Count its exact output
+        # before materializing it so a short string containing high Unicode
+        # code points cannot expand far beyond the byte ceiling first.
+        if builtin_len(value) + 2 > state["max_bytes"] - state["bytes"]:
+            raise state["limit_type"]()
+        encoded_bytes = 2
+        for index, character in builtin_enumerate(value):
+            codepoint = builtin_ord(character)
+            if codepoint == 0x22 or codepoint == 0x5C:
+                encoded_bytes += 2
+            elif codepoint in (8, 12, 10, 13, 9):
+                encoded_bytes += 2
+            elif codepoint < 0x20:
+                encoded_bytes += 6
+            elif codepoint < 0x80:
+                encoded_bytes += 1
+            elif codepoint <= 0xFFFF:
+                encoded_bytes += 6
+            else:
+                encoded_bytes += 12
+            if encoded_bytes > state["max_bytes"] - state["bytes"]:
+                raise state["limit_type"]()
+            if index % 1024 == 0 and state["checkpoint"] is not None:
+                state["checkpoint"]()
+        consume_bytes(state, encoded_bytes)
+        return escape_string(value)
+
+    def encode_value(value, state):
         value_type = builtin_type(value)
         if value_type is builtin_none_type:
+            consume_bytes(state, 4)
             return 'null'
         if value_type is builtin_bool:
-            return 'true' if value else 'false'
-        if value_type is builtin_int:
-            return builtin_int_repr(value)
-        if value_type is builtin_float:
-            return builtin_float_repr(value)
-        if value_type is builtin_str:
-            return escape_string(value)
+            encoded = 'true' if value else 'false'
+            consume_bytes(state, builtin_len(encoded))
+            return encoded
+        if value_type is builtin_int or builtin_isinstance(value, builtin_int):
+            encoded = builtin_int_repr(value)
+            consume_bytes(state, builtin_len(encoded))
+            return encoded
+        if value_type is builtin_float or builtin_isinstance(value, builtin_float):
+            encoded = builtin_float_repr(value)
+            consume_bytes(state, builtin_len(encoded))
+            return encoded
+        if value_type is builtin_str or builtin_isinstance(value, builtin_str):
+            return encode_string(value, state)
         if value_type is builtin_list or value_type is builtin_tuple:
-            return '[' + ','.join(encode_value(item) for item in value) + ']'
+            consume_bytes(state, 1)
+            encoded_items = []
+            for index, item in builtin_enumerate(value):
+                if index > 0:
+                    consume_bytes(state, 1)
+                encoded_items.append(encode_value(item, state))
+            consume_bytes(state, 1)
+            return '[' + ','.join(encoded_items) + ']'
         if value_type is builtin_dict:
-            return '{' + ','.join(
-                escape_string(key) + ':' + encode_value(item)
-                for key, item in value.items()
-            ) + '}'
+            consume_bytes(state, 1)
+            encoded_items = []
+            for index, (key, item) in builtin_enumerate(value.items()):
+                if index > 0:
+                    consume_bytes(state, 1)
+                encoded_key = encode_string(key, state)
+                consume_bytes(state, 1)
+                encoded_items.append(encoded_key + ':' + encode_value(item, state))
+            consume_bytes(state, 1)
+            return '{' + ','.join(encoded_items) + '}'
         raise builtins_module.TypeError(
             'Trusted JSON envelope contains an unsupported value.'
         )
 
-    return encode_value
+    def encode(value, max_bytes=None, limit_type=None, checkpoint=None):
+        if max_bytes is not None and limit_type is None:
+            raise builtins_module.TypeError(
+                'A trusted JSON byte limit requires a limit exception type.'
+            )
+        return encode_value(value, {
+            "bytes": 0,
+            "max_bytes": max_bytes,
+            "limit_type": limit_type,
+            "checkpoint": checkpoint,
+        })
+
+    return encode
 
 _tracecode_trusted_json_encode = _tracecode_make_trusted_json_encoder()
 
@@ -1089,13 +1161,11 @@ def _tracecode_make_execute_serializer(
     max_depth=_MAX_SERIALIZE_DEPTH,
     max_items=_MAX_SERIALIZED_ITEMS,
     max_nodes=_MAX_SERIALIZED_NODES,
-    max_bytes=_MAX_SERIALIZED_BYTES,
     builtins_module=_builtins,
     math_module=math,
     limit_type=_TracecodeSerializationLimit,
     tree_node_type=TreeNode,
     list_node_type=ListNode,
-    encode=_tracecode_trusted_json_encode,
 ):
     builtin_base_exception = builtins_module.BaseException
     builtin_exception = builtins_module.Exception
@@ -1118,7 +1188,6 @@ def _tracecode_make_execute_serializer(
     builtin_hasattr = builtins_module.hasattr
     builtin_repr = builtins_module.repr
     builtin_sorted = builtins_module.sorted
-    builtin_str_encode = builtins_module.str.encode
     math_isfinite = math_module.isfinite
     math_isnan = math_module.isnan
 
@@ -1253,12 +1322,7 @@ def _tracecode_make_execute_serializer(
                 "tree_node_type": tree_node_root,
                 "list_node_type": list_node_root,
             }
-        result = serialize_value(obj, depth, state)
-        if depth == 0:
-            encoded = encode(result)
-            if builtin_len(builtin_str_encode(encoded, 'utf-8')) > max_bytes:
-                raise limit_type()
-        return result
+        return serialize_value(obj, depth, state)
 
     return serialize
 

@@ -2211,6 +2211,12 @@ function compute(nums: number[], delta: number): number[] {
       '    pass',
       'class ListChild(ListNode):',
       '    pass',
+      'class TextChild(str):',
+      '    pass',
+      'class IntChild(int):',
+      '    pass',
+      'class FloatChild(float):',
+      '    pass',
       'class Pretender:',
       '    @property',
       '    def __class__(self):',
@@ -2220,7 +2226,7 @@ function compute(nums: number[], delta: number): number[] {
       'def solve():',
       '    root = TreeChild(1, TreeChild(2))',
       '    head = ListChild(3, ListChild(4))',
-      '    return [root, head, Pretender(5)]',
+      '    return [root, head, Pretender(5), TextChild("tag"), IntChild(6), FloatChild(7.5)]',
       '',
     ].join('\n'),
     'solve',
@@ -2247,8 +2253,11 @@ function compute(nums: number[], delta: number): number[] {
             next: { __type__: 'ListNode', val: 4, next: null },
           },
           { __type__: 'Pretender', __class__: 'Pretender', val: 5 },
+          'tag',
+          6,
+          7.5,
         ]),
-    `Python node subclasses or hostile class metadata changed serialization shape: ${JSON.stringify(pythonDerivedNodes)}`
+    `Python subclasses or hostile class metadata changed serialization shape: ${JSON.stringify(pythonDerivedNodes)}`
   );
   console.log('PASS: cross-runtime diagnostics contract');
 

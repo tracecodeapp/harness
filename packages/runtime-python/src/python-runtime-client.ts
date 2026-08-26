@@ -77,6 +77,12 @@ const PYTHON_TRACE_TIMEOUT_REASONS = new Set([
   'memory-limit',
   'client-timeout',
 ]);
+const PYTHON_WORKER_CASE_FAILURE_TAGS = new Set([
+  'WorkerCrashedError',
+  'WorkerReadyTimeoutError',
+  'WorkerRequestTimeoutError',
+  'WorkerTerminatedError',
+]);
 const MAX_NORMALIZED_TRACE_EVENTS = 500000;
 const MAX_NORMALIZED_ARRAY_ITEMS = 256;
 const MAX_NORMALIZED_OBJECT_FIELDS = 128;
@@ -144,6 +150,18 @@ function normalizeStringArray(value: unknown): string[] {
   return value
     .filter((item): item is string => typeof item === 'string')
     .map((item) => normalizedString(item) ?? '');
+}
+
+function isPythonWorkerCaseFailure(error: unknown): error is Error {
+  return (
+    typeof error === 'object' &&
+    error !== null &&
+    '_tag' in error &&
+    typeof error._tag === 'string' &&
+    PYTHON_WORKER_CASE_FAILURE_TAGS.has(error._tag) &&
+    'message' in error &&
+    typeof error.message === 'string'
+  );
 }
 
 function normalizeExecutionTimings(value: unknown): RuntimeExecutionTimings | undefined {
@@ -686,17 +704,27 @@ class PreparedPythonProgramLifetime {
             'Prepared Python batch execution was aborted.'
           );
         }
-        if (!isExecutionTimeoutError(error)) throw error;
+        if (this.phase !== 'active') throw error;
+        if (isExecutionTimeoutError(error)) {
+          results.push({
+            kind: 'limit',
+            reason: 'client-timeout',
+            error: error.message,
+            consoleOutput: [],
+            timings: {
+              totalMs: error.timeoutMs,
+              runMs: error.timeoutMs,
+              artifactCacheHit: true,
+            },
+          });
+          continue;
+        }
+        if (!isPythonWorkerCaseFailure(error)) throw error;
         results.push({
-          kind: 'limit',
-          reason: 'client-timeout',
-          error: error.message,
+          kind: 'failed',
+          error: `Python worker failed while executing this case: ${error.message}`,
           consoleOutput: [],
-          timings: {
-            totalMs: error.timeoutMs,
-            runMs: error.timeoutMs,
-            artifactCacheHit: true,
-          },
+          timings: { artifactCacheHit: true },
         });
       }
     }

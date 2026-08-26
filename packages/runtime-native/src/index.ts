@@ -705,7 +705,17 @@ def _tracecode_run_case(raw_inputs):
                     if name in env:
                         result = env[name]
                         break
-        return {'success': True, 'output': _serialize(result), 'consoleOutput': console_output}
+        case_result = {
+            'success': True,
+            'output': _serialize(result),
+            'consoleOutput': console_output,
+        }
+        _tracecode_encode_results(
+            case_result,
+            max_bytes=_MAX_SERIALIZED_BYTES,
+            limit_type=_TracecodeSerializationLimit,
+        )
+        return case_result
     except _TracecodeSerializationLimit:
         return {
             'success': False,

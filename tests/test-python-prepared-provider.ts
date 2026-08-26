@@ -9,7 +9,10 @@ import {
 import {
   calculatePythonCodeBatchDeadlineMs,
 } from '../packages/runtime-python/src/python-worker-client';
-import { ExecutionTimeoutError } from '../packages/runtime-browser/src/internal';
+import {
+  ExecutionTimeoutError,
+  WorkerCrashedError,
+} from '../packages/runtime-browser/src/internal';
 import type {
   CodeExecutionBatchResult,
   CodeExecutionResult,
@@ -578,6 +581,73 @@ test('Python compatibility batches preserve per-case client timeout outcomes and
   const executions = calls.filter((call) => call.method === 'execute-code');
   assert.equal(executions.length, 3);
   assert.equal(new Set(executions.map((call) => call.worker)).size, 3);
+  await preparation.program.dispose();
+  provider.terminate();
+});
+
+test('Python compatibility batch contains worker crashes to the failing case', async () => {
+  const calls: Array<{ worker: number; value: unknown }> = [];
+  let nextWorker = 0;
+  const createWorkerClient = (): PythonWorkerClient => {
+    const worker = nextWorker++;
+    return {
+      async warmup() {
+        return { success: true, loadTimeMs: 1 };
+      },
+      async prepareProgram(call: RuntimeProgramPreparationCall) {
+        return {
+          success: true as const,
+          artifact: artifact(call.mode, 'compatibility'),
+          mode: call.mode,
+          consoleOutput: [],
+        };
+      },
+      async executePreparedCode(
+        _handle: unknown,
+        call: { inputs: Record<string, unknown> }
+      ): Promise<CodeExecutionResult> {
+        calls.push({ worker, value: call.inputs.value });
+        if (call.inputs.value === 1) {
+          throw new WorkerCrashedError({
+            workerMessage: 'synthetic worker crash',
+            filename: 'python-worker.js',
+            lineno: 1,
+            colno: 1,
+          });
+        }
+        return {
+          kind: 'completed',
+          output: call.inputs.value,
+          consoleOutput: [],
+        };
+      },
+      terminate() {},
+    } as unknown as PythonWorkerClient;
+  };
+  const provider = createPythonPreparedExecutionProvider({ createWorkerClient });
+  const preparation = await provider.prepareProgram(preparationCall());
+  assert.equal(preparation.kind, 'prepared');
+  if (
+    preparation.kind !== 'prepared' ||
+    preparation.program.mode !== 'code' ||
+    !preparation.program.executeBatchIsolated
+  ) return;
+
+  const results = await preparation.program.executeBatchIsolated({
+    inputBatch: [{ value: 1 }, { value: 2 }],
+  });
+  assert.deepEqual(results, [
+    {
+      kind: 'failed',
+      error:
+        'Python worker failed while executing this case: synthetic worker crash',
+      consoleOutput: [],
+      timings: { artifactCacheHit: true },
+    },
+    { kind: 'completed', output: 2, consoleOutput: [] },
+  ]);
+  assert.deepEqual(calls.map((call) => call.value), [1, 2]);
+  assert.equal(new Set(calls.map((call) => call.worker)).size, 2);
   await preparation.program.dispose();
   provider.terminate();
 });

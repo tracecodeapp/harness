@@ -1647,10 +1647,14 @@ _tracecode_batch_random_state = _tracecode_batch_random.getstate()
 _tracecode_batch_encoded_results = []
 _tracecode_batch_encoded_bytes = 2
 _tracecode_batch_max_encoded_bytes = 32 * 1024 * 1024
-_tracecode_batch_payload_limit = max(
-    0,
-    _tracecode_batch_max_encoded_bytes - len(_tracecode_batch_cases) * 512,
-)
+_tracecode_batch_result_reserve_bytes = 512
+if (
+    len(_tracecode_batch_cases) * _tracecode_batch_result_reserve_bytes
+    >= _tracecode_batch_max_encoded_bytes
+):
+    raise RuntimeError(
+        'Prepared Python algorithm-fast batch is too large for its result envelope.'
+    )
 _tracecode_batch_print_code = compile(
     'def _tracecode_isolated_print(*args, **kwargs):\\n'
     '    _tracecode_console.append(" ".join(str(arg) for arg in args))\\n',
@@ -1883,6 +1887,37 @@ _tracecode_batch_user_code = _tracecode_batch_builtins.compile(
 def _tracecode_batch_append_result(entry):
     global _tracecode_batch_encoded_bytes
     try:
+        encoded = _tracecode_batch_encode_results(
+            entry,
+            max_bytes=_MAX_SERIALIZED_BYTES,
+            limit_type=_TracecodeSerializationLimit,
+            checkpoint=_tracecode_execute_serialize_checkpoint,
+        )
+    except _TracecodeSerializationLimit:
+        entry = {
+            'success': False,
+            'output': None,
+            'error': 'Execution stopped: resource limit exceeded (serialization-limit).',
+            'timeoutReason': 'serialization-limit',
+            'consoleOutput': [],
+            'timings': entry.get('timings', {
+                'runMs': 0,
+                'algorithmFastBatch': True,
+            }),
+        }
+        encoded = _tracecode_batch_encode_results(entry)
+    except _TracecodeAlgorithmLimit as error:
+        entry = {
+            'success': False,
+            'output': None,
+            'error': 'Execution stopped: resource limit exceeded (' + error.reason + ').',
+            'timeoutReason': error.reason,
+            'consoleOutput': [],
+            'timings': entry.get('timings', {
+                'runMs': 0,
+                'algorithmFastBatch': True,
+            }),
+        }
         encoded = _tracecode_batch_encode_results(entry)
     except BaseException:
         entry = {
@@ -1897,10 +1932,19 @@ def _tracecode_batch_append_result(entry):
         }
         encoded = _tracecode_batch_encode_results(entry)
     separator_bytes = 1 if _tracecode_batch_encoded_results else 0
-    encoded_bytes = len(encoded.encode('utf-8'))
+    encoded_bytes = len(encoded)
+    remaining_case_count = (
+        len(_tracecode_batch_cases)
+        - len(_tracecode_batch_encoded_results)
+        - 1
+    )
+    remaining_reserve_bytes = (
+        remaining_case_count * _tracecode_batch_result_reserve_bytes
+    )
     if (
         _tracecode_batch_encoded_bytes + separator_bytes + encoded_bytes
-        > _tracecode_batch_payload_limit
+        + remaining_reserve_bytes
+        > _tracecode_batch_max_encoded_bytes
     ):
         entry = {
             'success': False,
@@ -1914,7 +1958,15 @@ def _tracecode_batch_append_result(entry):
             }),
         }
         encoded = _tracecode_batch_encode_results(entry)
-        encoded_bytes = len(encoded.encode('utf-8'))
+        encoded_bytes = len(encoded)
+    if (
+        _tracecode_batch_encoded_bytes + separator_bytes + encoded_bytes
+        + remaining_reserve_bytes
+        > _tracecode_batch_max_encoded_bytes
+    ):
+        raise RuntimeError(
+            'Prepared Python algorithm-fast batch exhausted its result reserve.'
+        )
     _tracecode_batch_encoded_results.append(encoded)
     _tracecode_batch_encoded_bytes += separator_bytes + encoded_bytes
 
@@ -7833,7 +7885,17 @@ else:
             "console": _tracecode_raw_result.get("console", []),
         }
 
-_json_out = _tracecode_trusted_json_encode(_tracecode_final_result)
+try:
+    _json_out = _tracecode_trusted_json_encode(
+        _tracecode_final_result,
+        max_bytes=_MAX_SERIALIZED_BYTES,
+        limit_type=_TracecodeSerializationLimit,
+    )
+except _TracecodeSerializationLimit:
+    _json_out = _tracecode_trusted_json_encode({
+        "serializationLimit": True,
+        "console": [],
+    })
 _json_out
 `;
 
