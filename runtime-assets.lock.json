@@ -3,11 +3,11 @@
   "harness": {
     "name": "@tracecode/harness",
     "version": "0.17.0",
-    "releaseId": "@tracecode/harness@0.17.0+sha256.5812587b6ee63105e8e5d08028768b236783622cfb73344218353a61a516f195"
+    "releaseId": "@tracecode/harness@0.17.0+sha256.b21ed04a7a7991615d5e295920008be7170089107b9716c9bb4cee915cc7441d"
   },
   "treeSha256Algorithm": "sha256-path-nul-bytes-nul-v1",
-  "packageTreeSha256": "5812587b6ee63105e8e5d08028768b236783622cfb73344218353a61a516f195",
-  "totalPackagedRuntimeBytes": 151726682,
+  "packageTreeSha256": "b21ed04a7a7991615d5e295920008be7170089107b9716c9bb4cee915cc7441d",
+  "totalPackagedRuntimeBytes": 151726710,
   "components": {
     "cpp": {
       "releaseId": "cpp+sha256.9340d58c47a65abceff7fa7a783b57d01550d697013c2b50782aec77e6b19816",
@@ -1844,15 +1844,15 @@
       ]
     },
     "javascript": {
-      "releaseId": "javascript+sha256.f7b1894ebd7b9bf7a9c0e917e29e93df2b8d8713703e9dd2860b2f54b52c1326",
-      "treeSha256": "f7b1894ebd7b9bf7a9c0e917e29e93df2b8d8713703e9dd2860b2f54b52c1326",
-      "totalBytes": 1204743,
+      "releaseId": "javascript+sha256.a472216418c4a80de913919dccc2e19e599b7d186d4774b7d428be2b9a2beb29",
+      "treeSha256": "a472216418c4a80de913919dccc2e19e599b7d186d4774b7d428be2b9a2beb29",
+      "totalBytes": 1204525,
       "files": [
         {
           "path": "workers/javascript/javascript-project-worker.js",
-          "size": 562945,
-          "sha256": "0186b5c0e3e03a249ae3ecfec885338fa24c7914b543bcf427200b9dee277649",
-          "integrity": "sha256-AYa1wOPgOiSa4+z+yIUzj6JMeRS1Q7z0JyALne4ndkk=",
+          "size": 562727,
+          "sha256": "86d82b665012fab63f57ece968cd7b7b659ac90578b919a5f9d12d22273c78a9",
+          "integrity": "sha256-htgrZlAS+rY/V+zpaM17e2WayQV4uRml+dEtIic8eKk=",
           "mediaType": "text/javascript"
         },
         {
@@ -1984,9 +1984,9 @@
       ]
     },
     "shared": {
-      "releaseId": "shared+sha256.549660ceae57a9af82bdf79d3175065df62ec22ef789443d624768d5c1068bcd",
-      "treeSha256": "549660ceae57a9af82bdf79d3175065df62ec22ef789443d624768d5c1068bcd",
-      "totalBytes": 682452,
+      "releaseId": "shared+sha256.031fa4b20c6e2c098c09431b75e15e91204462687f12f43dcd92d99221f82a62",
+      "treeSha256": "031fa4b20c6e2c098c09431b75e15e91204462687f12f43dcd92d99221f82a62",
+      "totalBytes": 682698,
       "files": [
         {
           "path": "workers/shared/runtime-kernel-policy-classic.js",
@@ -2004,9 +2004,9 @@
         },
         {
           "path": "workers/shared/tracekernel-local-java-host.js",
-          "size": 606498,
-          "sha256": "0c6fc84eec8c4ea3be025be93150a17b27da0f5b393b47b6c68708c1ed593c53",
-          "integrity": "sha256-DG/ITuyMTqO+AlvpMVCheyfaD1s5O0e2xocIwe1ZPFM=",
+          "size": 606744,
+          "sha256": "83ba8380ff6ac4d05806c4a91753993393ce836e649a5ed7ea8ee22447976d7e",
+          "integrity": "sha256-g7qDgP9qxNBYBsSpF1OZM5POg25kml7X6o7iJEeXbX4=",
           "mediaType": "text/javascript"
         },
         {

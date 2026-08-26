@@ -16209,16 +16209,20 @@ var TraceKernelSyscallDispatcher = class {
     ]).pipe(
       map11(([lexicalPath, realPath]) => ({ lexicalPath, realPath }))
     );
+    const canonicalizeAllowedReadPath = (path) => canonicalizeReadPath(path).pipe(
+      map11((readablePath) => ({ resolved: true, readablePath })),
+      catchAll2(() => succeed5({ resolved: false }))
+    );
     return all3([
       canonicalizeReadPath(request.path),
       forEach7(
         policy.readableFiles,
-        canonicalizeReadPath
+        canonicalizeAllowedReadPath
       )
     ]).pipe(
       flatMap9(
         ([requestedPath, readableFiles]) => requestedPath.lexicalPath === requestedPath.realPath && readableFiles.some(
-          (readableFile) => readableFile.lexicalPath === requestedPath.lexicalPath && readableFile.realPath === readableFile.lexicalPath
+          (entry) => entry.resolved && entry.readablePath.lexicalPath === requestedPath.lexicalPath && entry.readablePath.realPath === entry.readablePath.lexicalPath
         ) ? _void : denyRead()
       ),
       catchAll2(denyRead)

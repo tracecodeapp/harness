@@ -190,7 +190,7 @@ async function main(): Promise<void> {
         cwd: '/workspace',
         runtimeSyscalls: {
           profile: 'algorithm',
-          readableFiles: ['./solution.py'],
+          readableFiles: ['./solution.py', './not-yet-materialized.py'],
         },
       });
       yield* algorithmProcess.awaitStarted();
@@ -306,6 +306,7 @@ async function main(): Promise<void> {
     engineLeaseDisposition: true,
     invalidRuntimePolicyRejected: true,
     algorithmCapabilityProfile: true,
+    unresolvedReadableFileIsolated: true,
     symlinkedReadableFileRejected: true,
     deniedSyscallsHaveNoSideEffects: true,
   }, null, 2));

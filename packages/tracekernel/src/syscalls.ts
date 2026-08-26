@@ -1109,19 +1109,25 @@ export class TraceKernelSyscallDispatcher {
     ]).pipe(
       Effect.map(([lexicalPath, realPath]) => ({ lexicalPath, realPath }))
     );
+    const canonicalizeAllowedReadPath = (path: string) =>
+      canonicalizeReadPath(path).pipe(
+        Effect.map((readablePath) => ({ resolved: true as const, readablePath })),
+        Effect.catchAll(() => Effect.succeed({ resolved: false as const }))
+      );
     return Effect.all([
       canonicalizeReadPath(request.path),
       Effect.forEach(
         policy.readableFiles,
-        canonicalizeReadPath
+        canonicalizeAllowedReadPath
       ),
     ]).pipe(
       Effect.flatMap(([requestedPath, readableFiles]) =>
         requestedPath.lexicalPath === requestedPath.realPath &&
         readableFiles.some(
-          (readableFile) =>
-            readableFile.lexicalPath === requestedPath.lexicalPath &&
-            readableFile.realPath === readableFile.lexicalPath
+          (entry) =>
+            entry.resolved &&
+            entry.readablePath.lexicalPath === requestedPath.lexicalPath &&
+            entry.readablePath.realPath === entry.readablePath.lexicalPath
         )
           ? Effect.void
           : denyRead()
