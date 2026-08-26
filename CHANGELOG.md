@@ -29,8 +29,9 @@ This repo uses Git tags as release boundaries. Version notes below summarize wha
   acquisition, while aggregate expiry still returns no partial results and
   never starts a second compatibility budget. Execute-result serialization is
   byte-bounded with separate expansion guards and polls the active per-case
-  deadline. Fast-path admission routes code that can suppress the hard
-  per-case limit signal through the fresh-worker compatibility path.
+  deadline; retained batches keep compact encoded envelopes under a 32 MiB
+  aggregate ceiling. Fast-path admission routes code that can suppress the
+  hard per-case limit signal through the fresh-worker compatibility path.
 
 ## [0.17.0] - 2026-08-25
 

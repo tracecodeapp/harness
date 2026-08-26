@@ -857,6 +857,8 @@ async function main(): Promise<void> {
             '    def __getattribute__(self, name):',
             '        return Holder()',
             'def solve(value):',
+            '    if value < -1:',
+            '        return "x" * (-value)',
             '    if value == -1:',
             '        return "x" * (9 * 1024 * 1024)',
             '    if value == 0:',
@@ -1314,6 +1316,31 @@ async function main(): Promise<void> {
             limits: { wallClockMs: 250 },
           }
         );
+        const aggregateOutput = await batchClient.request(
+          'execute-prepared-program-batch',
+          {
+            artifact: hostileSerialization.artifact,
+            mode: 'code',
+            inputBatch: [
+              { value: -(6 * 1024 * 1024) },
+              { value: -(6 * 1024 * 1024) },
+              { value: -(6 * 1024 * 1024) },
+              { value: -(6 * 1024 * 1024) },
+              { value: -(6 * 1024 * 1024) },
+              { value: -(6 * 1024 * 1024) },
+              { value: 1 },
+            ],
+          }
+        );
+        fastParityRuns.aggregateOutput = {
+          ...aggregateOutput,
+          results: (aggregateOutput.results || []).map((entry) => ({
+            ...entry,
+            outputLength:
+              typeof entry.output === 'string' ? entry.output.length : undefined,
+            output: typeof entry.output === 'string' ? undefined : entry.output,
+          })),
+        };
         fastParityRuns.oneOffSerializationLimit = await batchClient.request(
           'execute-code',
           {
@@ -2016,6 +2043,30 @@ async function main(): Promise<void> {
         serializationDagCompatibilityResults[1]?.success === true &&
         serializationDagCompatibilityResults[1]?.output === 1,
       `Compatibility execution must report output budgets explicitly without corrupting later cases: ${JSON.stringify(result.fastParityRuns.serializationDagCompatibility)}`
+    );
+    const aggregateOutputResults = result.fastParityRuns.aggregateOutput
+      .results as Array<{
+        success?: boolean;
+        output?: unknown;
+        outputLength?: number;
+        timeoutReason?: string;
+        timings?: { algorithmFastBatch?: boolean };
+      }>;
+    assertCondition(
+      aggregateOutputResults.length === 7 &&
+        aggregateOutputResults.slice(0, 5).every(
+          (entry) =>
+            entry.success === true &&
+            entry.outputLength === 6 * 1024 * 1024
+        ) &&
+        aggregateOutputResults[5]?.success === false &&
+        aggregateOutputResults[5]?.timeoutReason === 'serialization-limit' &&
+        aggregateOutputResults[6]?.success === true &&
+        aggregateOutputResults[6]?.output === 1 &&
+        aggregateOutputResults.every(
+          (entry) => entry.timings?.algorithmFastBatch === true
+        ),
+      `Python fast-batch aggregate output budget was not case-local: ${JSON.stringify(aggregateOutputResults)}`
     );
     const oneOffSerializationLimit = result.fastParityRuns
       .oneOffSerializationLimit as {

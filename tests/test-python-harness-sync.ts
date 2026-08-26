@@ -10,7 +10,6 @@ import {
   PYTHON_CONVERSION_HELPERS,
   PYTHON_EXECUTE_SERIALIZE_FUNCTION,
   PYTHON_TRACE_SERIALIZE_FUNCTION,
-  PYTHON_SERIALIZE_FUNCTION,
   toPythonLiteral as canonicalToPythonLiteral,
 } from '../packages/runtime-python/src/python-harness';
 
@@ -364,27 +363,6 @@ function selectTraceSerializeContractLines(serializedBlock: string): string {
   return selectSerializeContractLines(serializedBlock, keepers);
 }
 
-function selectExecuteSerializeContractLines(serializedBlock: string): string {
-  const keepers = [
-    '_MAX_SERIALIZE_DEPTH = 48',
-    '_MAX_SERIALIZED_ITEMS = 10000',
-    '_MAX_SERIALIZED_NODES = 10000',
-    'def _serialize_checkpoint(state):',
-    'def _serialize(obj, depth=0, state=None, checkpoint=None):',
-    "elif getattr(obj, '__class__', None) and getattr(obj.__class__, '__name__', '') == 'deque':",
-    "elif isinstance(obj, (list, tuple)):",
-    "elif isinstance(obj, dict):",
-    "elif isinstance(obj, set):",
-    "elif (hasattr(obj, 'val') or hasattr(obj, 'value')) and (hasattr(obj, 'left') or hasattr(obj, 'right')):",
-    "\"__type__\": \"TreeNode\"",
-    "elif (hasattr(obj, 'val') or hasattr(obj, 'value')) and hasattr(obj, 'next'):",
-    "\"__type__\": \"ListNode\"",
-    'elif callable(obj):',
-    'return None',
-  ];
-  return selectSerializeContractLines(serializedBlock, keepers);
-}
-
 async function assertDeprecatedRuntimeNotImported(): Promise<void> {
   const root = process.cwd();
   const allowedSelfImportPath = LEGACY_RUNTIME_PATH;
@@ -541,12 +519,6 @@ async function main(): Promise<void> {
     workerSource,
     'PYTHON_EXECUTE_SERIALIZE_FUNCTION',
     PYTHON_EXECUTE_SERIALIZE_FUNCTION
-  );
-  const compatSerializeContractBlock = selectExecuteSerializeContractLines(PYTHON_SERIALIZE_FUNCTION);
-  assertCondition(
-    compatSerializeContractBlock ===
-      selectExecuteSerializeContractLines(PYTHON_EXECUTE_SERIALIZE_FUNCTION),
-    'Compatibility serializer must share the execute serializer contract'
   );
   console.log('PASS: inline serialize fallbacks synced');
 

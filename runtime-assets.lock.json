@@ -3,11 +3,11 @@
   "harness": {
     "name": "@tracecode/harness",
     "version": "0.17.0",
-    "releaseId": "@tracecode/harness@0.17.0+sha256.35736325f9e301d010ba74677a6fef148c2b3cd558eefe01d3c8f1fba8054ad6"
+    "releaseId": "@tracecode/harness@0.17.0+sha256.eebeb186937d1de43314fc07ce2dade4c8a523dccd5c35a060a505049fa35494"
   },
   "treeSha256Algorithm": "sha256-path-nul-bytes-nul-v1",
-  "packageTreeSha256": "35736325f9e301d010ba74677a6fef148c2b3cd558eefe01d3c8f1fba8054ad6",
-  "totalPackagedRuntimeBytes": 151803286,
+  "packageTreeSha256": "eebeb186937d1de43314fc07ce2dade4c8a523dccd5c35a060a505049fa35494",
+  "totalPackagedRuntimeBytes": 151804441,
   "components": {
     "cpp": {
       "releaseId": "cpp+sha256.9340d58c47a65abceff7fa7a783b57d01550d697013c2b50782aec77e6b19816",
@@ -1872,9 +1872,9 @@
       ]
     },
     "python": {
-      "releaseId": "python+sha256.5f00bced6e7815c36da4dae0e0efd38fd5c1c6fe94c010bb357d135d4645ebb5",
-      "treeSha256": "5f00bced6e7815c36da4dae0e0efd38fd5c1c6fe94c010bb357d135d4645ebb5",
-      "totalBytes": 75982908,
+      "releaseId": "python+sha256.0f9a4de24c845c2d60d374414d4f1ce6b1e56bb031093a5317ee4d6bef6d642c",
+      "treeSha256": "0f9a4de24c845c2d60d374414d4f1ce6b1e56bb031093a5317ee4d6bef6d642c",
+      "totalBytes": 75984063,
       "files": [
         {
           "path": "workers/python/generated-python-harness-snippets.js",
@@ -1969,9 +1969,9 @@
         },
         {
           "path": "workers/python/runtime-core.js",
-          "size": 342542,
-          "sha256": "a2259e6b3595cc3d0b3a1f100deee1e1d4a563ecbb6959625bcded44757e63a5",
-          "integrity": "sha256-oiWeazWVzD0LOh8QDe7h4dSlY+y7aVliW83tRHV+Y6U=",
+          "size": 343697,
+          "sha256": "169b11242d03fb3208fbf847142d809776c0252d146039e26b51374df22eddfa",
+          "integrity": "sha256-FpsRJC0D+zII+/hHFC2Al3bAJS0UYDnia1E3TfIu3fo=",
           "mediaType": "text/javascript"
         },
         {

@@ -1640,7 +1640,13 @@ _tracecode_batch_limits = _tracecode_batch_ast.literal_eval(
 _tracecode_batch_function_name = ${functionNameLiteral}
 _tracecode_batch_execution_style = ${executionStyleLiteral}
 _tracecode_batch_random_state = _tracecode_batch_random.getstate()
-_tracecode_batch_results = []
+_tracecode_batch_encoded_results = []
+_tracecode_batch_encoded_bytes = 2
+_tracecode_batch_max_encoded_bytes = 32 * 1024 * 1024
+_tracecode_batch_payload_limit = max(
+    0,
+    _tracecode_batch_max_encoded_bytes - len(_tracecode_batch_cases) * 512,
+)
 _tracecode_batch_print_code = compile(
     'def _tracecode_isolated_print(*args, **kwargs):\\n'
     '    _tracecode_console.append(" ".join(str(arg) for arg in args))\\n',
@@ -1871,8 +1877,9 @@ _tracecode_batch_user_code = _tracecode_batch_builtins.compile(
     'exec',
 )
 def _tracecode_batch_append_result(entry):
+    global _tracecode_batch_encoded_bytes
     try:
-        _tracecode_batch_encode_results([entry])
+        encoded = _tracecode_batch_encode_results(entry)
     except BaseException:
         entry = {
             'success': False,
@@ -1884,7 +1891,28 @@ def _tracecode_batch_append_result(entry):
                 'algorithmFastBatch': True,
             },
         }
-    _tracecode_batch_results.append(entry)
+        encoded = _tracecode_batch_encode_results(entry)
+    separator_bytes = 1 if _tracecode_batch_encoded_results else 0
+    encoded_bytes = len(encoded.encode('utf-8'))
+    if (
+        _tracecode_batch_encoded_bytes + separator_bytes + encoded_bytes
+        > _tracecode_batch_payload_limit
+    ):
+        entry = {
+            'success': False,
+            'output': None,
+            'error': 'Execution stopped: resource limit exceeded (serialization-limit).',
+            'timeoutReason': 'serialization-limit',
+            'consoleOutput': [],
+            'timings': entry.get('timings', {
+                'runMs': 0,
+                'algorithmFastBatch': True,
+            }),
+        }
+        encoded = _tracecode_batch_encode_results(entry)
+        encoded_bytes = len(encoded.encode('utf-8'))
+    _tracecode_batch_encoded_results.append(encoded)
+    _tracecode_batch_encoded_bytes += separator_bytes + encoded_bytes
 
 for _tracecode_batch_inputs in _tracecode_batch_cases:
     # re's compiled-pattern cache is interpreter-global. It is not exposed by
@@ -2163,7 +2191,7 @@ for _tracecode_batch_inputs in _tracecode_batch_cases:
     _tracecode_batch_append_result(_tracecode_case_result)
 
 _tracecode_batch_re.purge()
-_json_out = _tracecode_batch_encode_results(_tracecode_batch_results)
+_json_out = '[' + ','.join(_tracecode_batch_encoded_results) + ']'
 _json_out
 `;
 }
