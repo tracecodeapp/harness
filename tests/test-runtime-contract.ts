@@ -2179,6 +2179,27 @@ function compute(nums: number[], delta: number): number[] {
       pythonLargeMatrix.output[0].length === 100,
     `Legitimate nested Python output should remain executable: ${JSON.stringify(pythonLargeMatrix)}`
   );
+  const pythonSerializationOverride = runPythonCase(
+    [
+      'class EmptyEncoder:',
+      '    def encode(self, value):',
+      '        return ""',
+      '_MAX_SERIALIZED_ITEMS = 10**18',
+      '_MAX_SERIALIZED_NODES = 10**18',
+      '_MAX_SERIALIZED_BYTES = 10**18',
+      'json.JSONEncoder = EmptyEncoder',
+      'def solve():',
+      '    return "x" * (9 * 1024 * 1024)',
+      '',
+    ].join('\n'),
+    'solve',
+    {}
+  );
+  assertCondition(
+    pythonSerializationOverride.success === false &&
+      pythonSerializationOverride.error?.includes('serialization-limit') === true,
+    `Python serialization limits must survive learner global overrides: ${JSON.stringify(pythonSerializationOverride)}`
+  );
   console.log('PASS: cross-runtime diagnostics contract');
 
   const opsClassCode = `

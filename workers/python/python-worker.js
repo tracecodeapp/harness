@@ -1042,117 +1042,159 @@ _MAX_SERIALIZED_BYTES = 8 * 1024 * 1024
 class _TracecodeSerializationLimit(BaseException):
     pass
 
-def _serialize_checkpoint(state):
-    state["nodes"] += 1
-    if state["nodes"] > _MAX_SERIALIZED_NODES:
-        raise _TracecodeSerializationLimit()
-    if state["nodes"] % 64 == 0 and state["checkpoint"] is not None:
-        state["checkpoint"]()
+def _tracecode_make_execute_serializer(
+    max_depth=_MAX_SERIALIZE_DEPTH,
+    max_items=_MAX_SERIALIZED_ITEMS,
+    max_nodes=_MAX_SERIALIZED_NODES,
+    max_bytes=_MAX_SERIALIZED_BYTES,
+    builtins_module=_builtins,
+    math_module=math,
+    limit_type=_TracecodeSerializationLimit,
+    encode=json.JSONEncoder().encode,
+):
+    builtin_base_exception = builtins_module.BaseException
+    builtin_exception = builtins_module.Exception
+    builtin_type_error = builtins_module.TypeError
+    builtin_bool = builtins_module.bool
+    builtin_int = builtins_module.int
+    builtin_float = builtins_module.float
+    builtin_str = builtins_module.str
+    builtin_none_type = builtins_module.type(None)
+    builtin_list = builtins_module.list
+    builtin_tuple = builtins_module.tuple
+    builtin_dict = builtins_module.dict
+    builtin_set = builtins_module.set
+    builtin_object_getattribute = builtins_module.object.__getattribute__
+    builtin_type_getattribute = builtins_module.type.__getattribute__
+    builtin_isinstance = builtins_module.isinstance
+    builtin_len = builtins_module.len
+    builtin_callable = builtins_module.callable
+    builtin_getattr = builtins_module.getattr
+    builtin_hasattr = builtins_module.hasattr
+    builtin_repr = builtins_module.repr
+    builtin_sorted = builtins_module.sorted
+    builtin_str_encode = builtins_module.str.encode
+    math_isfinite = math_module.isfinite
+    math_isnan = math_module.isnan
 
-def _serialize_type_metadata(obj):
-    try:
-        obj_type = _builtins.object.__getattribute__(obj, '__class__')
-        class_name = _builtins.type.__getattribute__(obj_type, '__name__')
-        module_name = _builtins.type.__getattribute__(obj_type, '__module__')
-    except BaseException:
-        return 'object', ''
-    if not isinstance(class_name, _builtins.str):
-        class_name = 'object'
-    if not isinstance(module_name, _builtins.str):
-        module_name = ''
-    return class_name, module_name
+    def serialize_checkpoint(state):
+        state["nodes"] += 1
+        if state["nodes"] > max_nodes:
+            raise limit_type()
+        if state["nodes"] % 64 == 0 and state["checkpoint"] is not None:
+            state["checkpoint"]()
 
-def _serialize_repr_fallback(obj):
-    class_name, module_name = _serialize_type_metadata(obj)
-    if module_name == 'builtins':
+    def serialize_type_metadata(obj):
         try:
-            repr_str = repr(obj)
-        except Exception:
+            obj_type = builtin_object_getattribute(obj, '__class__')
+            class_name = builtin_type_getattribute(obj_type, '__name__')
+            module_name = builtin_type_getattribute(obj_type, '__module__')
+        except builtin_base_exception:
+            return 'object', ''
+        if not builtin_isinstance(class_name, builtin_str):
+            class_name = 'object'
+        if not builtin_isinstance(module_name, builtin_str):
+            module_name = ''
+        return class_name, module_name
+
+    def serialize_repr_fallback(obj):
+        class_name, module_name = serialize_type_metadata(obj)
+        if module_name == 'builtins':
+            try:
+                repr_str = builtin_repr(obj)
+            except builtin_exception:
+                return None
+            if repr_str.startswith('<') and repr_str.endswith('>'):
+                return None
+            return repr_str
+        return {"__type__": class_name, "__class__": class_name}
+
+    def serialize_value(obj, depth, state):
+        serialize_checkpoint(state)
+        if builtin_isinstance(
+            obj,
+            (builtin_bool, builtin_int, builtin_str, builtin_none_type),
+        ):
+            return obj
+        elif builtin_isinstance(obj, builtin_float):
+            if not math_isfinite(obj):
+                if math_isnan(obj):
+                    return "NaN"
+                return "Infinity" if obj > 0 else "-Infinity"
+            return obj
+        if depth > max_depth:
+            return "<max depth>"
+        if builtin_isinstance(obj, (builtin_list, builtin_tuple)):
+            if builtin_len(obj) > max_items:
+                raise limit_type()
+            return [serialize_value(value, depth + 1, state) for value in obj]
+        elif serialize_type_metadata(obj)[0] == 'deque':
+            if builtin_len(obj) > max_items:
+                raise limit_type()
+            return [serialize_value(value, depth + 1, state) for value in obj]
+        elif builtin_isinstance(obj, builtin_dict):
+            if builtin_len(obj) > max_items:
+                raise limit_type()
+            return {
+                builtin_str(key): serialize_value(value, depth + 1, state)
+                for key, value in obj.items()
+            }
+        elif builtin_isinstance(obj, builtin_set):
+            if builtin_len(obj) > max_items:
+                raise limit_type()
+            values = [serialize_value(value, depth + 1, state) for value in obj]
+            try:
+                values = builtin_sorted(values)
+            except builtin_type_error:
+                pass
+            return {"__type__": "set", "values": values}
+        elif serialize_type_metadata(obj)[0] == 'TreeNode':
+            result = {"__type__": "TreeNode", "val": serialize_value(builtin_getattr(obj, 'val', builtin_getattr(obj, 'value', None)), depth + 1, state)}
+            if builtin_hasattr(obj, 'left'):
+                result["left"] = serialize_value(obj.left, depth + 1, state)
+            if builtin_hasattr(obj, 'right'):
+                result["right"] = serialize_value(obj.right, depth + 1, state)
+            return result
+        elif serialize_type_metadata(obj)[0] == 'ListNode':
+            result = {"__type__": "ListNode", "val": serialize_value(builtin_getattr(obj, 'val', builtin_getattr(obj, 'value', None)), depth + 1, state)}
+            result["next"] = serialize_value(obj.next, depth + 1, state)
+            return result
+        elif builtin_callable(obj):
             return None
-        if repr_str.startswith('<') and repr_str.endswith('>'):
-            return None
-        return repr_str
-    return {"__type__": class_name, "__class__": class_name}
+        elif builtin_hasattr(obj, '__dict__'):
+            class_name, _module_name = serialize_type_metadata(obj)
+            result = {"__type__": class_name, "__class__": class_name}
+            try:
+                raw_fields = builtin_getattr(obj, '__dict__', None)
+            except builtin_exception:
+                raw_fields = None
+            if builtin_isinstance(raw_fields, builtin_dict):
+                emitted = 0
+                for key, value in raw_fields.items():
+                    key_str = builtin_str(key)
+                    if key_str.startswith('_') or builtin_callable(value):
+                        continue
+                    if emitted >= max_items:
+                        raise limit_type()
+                    result[key_str] = serialize_value(value, depth + 1, state)
+                    emitted += 1
+            return result
+        else:
+            return serialize_repr_fallback(obj)
 
-def _serialize_value(obj, depth, state):
-    _serialize_checkpoint(state)
-    if isinstance(obj, (bool, int, str, type(None))):
-        return obj
-    elif isinstance(obj, float):
-        if not math.isfinite(obj):
-            if math.isnan(obj):
-                return "NaN"
-            return "Infinity" if obj > 0 else "-Infinity"
-        return obj
-    if depth > _MAX_SERIALIZE_DEPTH:
-        return "<max depth>"
-    if isinstance(obj, (_builtins.list, _builtins.tuple)):
-        if len(obj) > _MAX_SERIALIZED_ITEMS:
-            raise _TracecodeSerializationLimit()
-        return [_serialize_value(value, depth + 1, state) for value in obj]
-    elif _serialize_type_metadata(obj)[0] == 'deque':
-        if len(obj) > _MAX_SERIALIZED_ITEMS:
-            raise _TracecodeSerializationLimit()
-        return [_serialize_value(value, depth + 1, state) for value in obj]
-    elif isinstance(obj, _builtins.dict):
-        if len(obj) > _MAX_SERIALIZED_ITEMS:
-            raise _TracecodeSerializationLimit()
-        return {
-            str(key): _serialize_value(value, depth + 1, state)
-            for key, value in obj.items()
-        }
-    elif isinstance(obj, set):
-        if len(obj) > _MAX_SERIALIZED_ITEMS:
-            raise _TracecodeSerializationLimit()
-        values = [_serialize_value(value, depth + 1, state) for value in obj]
-        try:
-            values = sorted(values)
-        except TypeError:
-            pass
-        return {"__type__": "set", "values": values}
-    elif isinstance(obj, TreeNode):
-        result = {"__type__": "TreeNode", "val": _serialize_value(getattr(obj, 'val', getattr(obj, 'value', None)), depth + 1, state)}
-        if hasattr(obj, 'left'):
-            result["left"] = _serialize_value(obj.left, depth + 1, state)
-        if hasattr(obj, 'right'):
-            result["right"] = _serialize_value(obj.right, depth + 1, state)
+    def serialize(obj, depth=0, state=None, checkpoint=None):
+        if state is None:
+            state = {"nodes": 0, "checkpoint": checkpoint}
+        result = serialize_value(obj, depth, state)
+        if depth == 0:
+            encoded = encode(result)
+            if builtin_len(builtin_str_encode(encoded, 'utf-8')) > max_bytes:
+                raise limit_type()
         return result
-    elif isinstance(obj, ListNode):
-        result = {"__type__": "ListNode", "val": _serialize_value(getattr(obj, 'val', getattr(obj, 'value', None)), depth + 1, state)}
-        result["next"] = _serialize_value(obj.next, depth + 1, state)
-        return result
-    elif callable(obj):
-        return None
-    elif hasattr(obj, '__dict__'):
-        class_name, _module_name = _serialize_type_metadata(obj)
-        result = {"__type__": class_name, "__class__": class_name}
-        try:
-            raw_fields = getattr(obj, '__dict__', None)
-        except Exception:
-            raw_fields = None
-        if isinstance(raw_fields, _builtins.dict):
-            emitted = 0
-            for key, value in raw_fields.items():
-                key_str = str(key)
-                if key_str.startswith('_') or callable(value):
-                    continue
-                if emitted >= _MAX_SERIALIZED_ITEMS:
-                    raise _TracecodeSerializationLimit()
-                result[key_str] = _serialize_value(value, depth + 1, state)
-                emitted += 1
-        return result
-    else:
-        return _serialize_repr_fallback(obj)
 
-def _serialize(obj, depth=0, state=None, checkpoint=None):
-    if state is None:
-        state = {"nodes": 0, "checkpoint": checkpoint}
-    result = _serialize_value(obj, depth, state)
-    if depth == 0:
-        encoded = json.JSONEncoder().encode(result)
-        if len(encoded.encode('utf-8')) > _MAX_SERIALIZED_BYTES:
-            raise _TracecodeSerializationLimit()
-    return result
+    return serialize
+
+_serialize = _tracecode_make_execute_serializer()
 `
 );
 

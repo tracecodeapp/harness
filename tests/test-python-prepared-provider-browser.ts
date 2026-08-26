@@ -34,6 +34,7 @@ interface BrowserResult {
     mathModuleMutation: { tier?: string; reasons: string[] };
     unknownImport: { tier?: string; reasons: string[] };
     unsupportedBuiltin: { tier?: string; reasons: string[] };
+    serializationOverride: { tier?: string; reasons: string[] };
     catchAllException: { tier?: string; reasons: string[] };
     baseExceptionCatch: { tier?: string; reasons: string[] };
     exceptionHierarchyCatch: { tier?: string; reasons: string[] };
@@ -516,6 +517,27 @@ async function main(): Promise<void> {
           executionStyle: 'function',
         }
       );
+      const serializationOverride = await preparationWorker.request(
+        'prepare-program',
+        {
+          mode: 'code',
+          code: [
+            'class EmptyEncoder:',
+            '    def encode(self, value):',
+            '        return ""',
+            '_MAX_SERIALIZED_ITEMS = 10**18',
+            '_MAX_SERIALIZED_NODES = 10**18',
+            '_MAX_SERIALIZED_BYTES = 10**18',
+            'json.JSONEncoder = EmptyEncoder',
+            'def solve(value):',
+            '    if value == 0:',
+            '        return "x" * (9 * 1024 * 1024)',
+            '    return value',
+          ].join('\\n'),
+          functionName: 'solve',
+          executionStyle: 'function',
+        }
+      );
       const catchAllException = await preparationWorker.request(
         'prepare-program',
         {
@@ -885,6 +907,7 @@ async function main(): Promise<void> {
       );
       for (const [name, prepared] of Object.entries({
         unsupportedBuiltin,
+        serializationOverride,
         catchAllException,
         baseExceptionCatch,
         exceptionHierarchyCatch,
@@ -1298,6 +1321,14 @@ async function main(): Promise<void> {
             inputBatch: [{ value: 0 }, { value: 1 }],
           }
         );
+        fastParityRuns.serializationOverride = await batchClient.request(
+          'execute-prepared-program-batch',
+          {
+            artifact: serializationOverride.artifact,
+            mode: 'code',
+            inputBatch: [{ value: 0 }, { value: 1 }],
+          }
+        );
         fastParityRuns.serializationDag = await batchClient.request(
           'execute-prepared-program-batch',
           {
@@ -1645,6 +1676,7 @@ async function main(): Promise<void> {
           mathModuleMutation,
           unknownImport,
           unsupportedBuiltin,
+          serializationOverride,
           catchAllException,
           baseExceptionCatch,
           exceptionHierarchyCatch,
@@ -1704,6 +1736,8 @@ async function main(): Promise<void> {
             mathModuleMutation.artifact?.isolationProfile,
           unknownImport: unknownImport.artifact?.isolationProfile,
           unsupportedBuiltin: unsupportedBuiltin.artifact?.isolationProfile,
+          serializationOverride:
+            serializationOverride.artifact?.isolationProfile,
           catchAllException: catchAllException.artifact?.isolationProfile,
           baseExceptionCatch: baseExceptionCatch.artifact?.isolationProfile,
           exceptionHierarchyCatch:
@@ -1927,6 +1961,11 @@ async function main(): Promise<void> {
         result.isolationProfiles.unsupportedBuiltin.reasons.includes(
           'unsupported-builtin:aiter'
         ) &&
+        result.isolationProfiles.serializationOverride?.tier ===
+          'compatibility' &&
+        result.isolationProfiles.serializationOverride.reasons.includes(
+          'shared-state-write'
+        ) &&
         result.isolationProfiles.catchAllException?.tier ===
           'compatibility' &&
         result.isolationProfiles.catchAllException.reasons.includes(
@@ -1950,8 +1989,8 @@ async function main(): Promise<void> {
       `Python fast-path admission must reject module mutation, reflective access, and unreviewed imports: ${JSON.stringify(result.isolationProfiles)}`
     );
     assertCondition(
-      result.preparationWorker.prepareRequests === 47,
-      `Preparation worker received ${String(result.preparationWorker.prepareRequests)} preparations instead of forty-seven`
+      result.preparationWorker.prepareRequests === 48,
+      `Preparation worker received ${String(result.preparationWorker.prepareRequests)} preparations instead of forty-eight`
     );
     const algorithmBatchResults = result.algorithmBatchRun.results as Array<{
       success?: boolean;
@@ -2010,6 +2049,21 @@ async function main(): Promise<void> {
           (entry) => entry.timings?.algorithmFastBatch === true
         ),
       `Hostile class metadata poisoned fast-batch serialization: ${JSON.stringify(result.fastParityRuns.hostileSerialization)}`
+    );
+    const serializationOverrideResults = result.fastParityRuns
+      .serializationOverride.results as Array<{
+        success?: boolean;
+        output?: unknown;
+        timeoutReason?: string;
+      }>;
+    assertCondition(
+      serializationOverrideResults.length === 2 &&
+        serializationOverrideResults[0]?.success === false &&
+        serializationOverrideResults[0]?.timeoutReason ===
+          'serialization-limit' &&
+        serializationOverrideResults[1]?.success === true &&
+        serializationOverrideResults[1]?.output === 1,
+      `Compatibility learner globals bypassed the trusted serializer closure: ${JSON.stringify(serializationOverrideResults)}`
     );
     const serializationDagResults = result.fastParityRuns.serializationDag
       .results as Array<{
