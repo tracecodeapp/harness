@@ -5,8 +5,10 @@
 C# has two different product contracts and should not force them through one browser image:
 
 - Project and terminal execution keep the broad .NET/Mono runtime.
-- Practice and Judge execution use a generated algorithm profile and a fresh, compiler-free
-  worker for every isolated case.
+- Practice and Judge execution use a generated algorithm profile in a
+  compiler-free runner. Compatibility creates a fresh outer worker per case;
+  compiler-admitted algorithm-fast batches retain one outer worker and create
+  a fresh collectible assembly context per case.
 
 The compiler remains a long-lived trusted authority. It emits ordinary Roslyn PE/CIL plus a
 generated typed driver. The disposable runner loads that assembly and calls the driver's binary
