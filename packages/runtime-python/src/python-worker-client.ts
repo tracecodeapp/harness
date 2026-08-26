@@ -190,6 +190,10 @@ export type PythonProjectCommandResult = RuntimeCommandResult;
 
 const EXECUTION_TIMEOUT_MS = 30000;
 const PROJECT_EXECUTION_TIMEOUT_MS = 30000;
+const MAX_WORKER_DEADLINE_MS = 2_147_483_647;
+const BATCH_DRIVER_BASE_HEADROOM_MS = 5_000;
+const BATCH_DRIVER_PER_CASE_HEADROOM_MS = 100;
+const BATCH_DRIVER_MAX_HEADROOM_MS = 30_000;
 
 // Tracing timeout - longer because Python heuristic detection handles infinite loops
 // This is just a safety net for truly stuck executions
@@ -589,11 +593,17 @@ export class PythonWorkerClient {
       readonly limits?: RuntimeExecutionLimits;
     }
   ): Promise<CodeExecutionBatchResult> {
+    const caseCount = Math.max(1, call.inputBatch.length);
+    const driverHeadroomMs = Math.min(
+      BATCH_DRIVER_MAX_HEADROOM_MS,
+      BATCH_DRIVER_BASE_HEADROOM_MS +
+        BATCH_DRIVER_PER_CASE_HEADROOM_MS * caseCount
+    );
     const wallClockMs = call.limits?.wallClockMs === undefined
       ? EXECUTION_TIMEOUT_MS
       : Math.min(
-          2_147_483_647,
-          call.limits.wallClockMs * Math.max(1, call.inputBatch.length)
+          MAX_WORKER_DEADLINE_MS,
+          call.limits.wallClockMs * caseCount + driverHeadroomMs
         );
     const guestLimits = pickGuestLimits(call.limits);
     const program = this.core.withExecutionDeadline(

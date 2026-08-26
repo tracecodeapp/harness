@@ -403,10 +403,22 @@ def _serialize_output(obj, depth=0, node_refs=None):
 export const TEMPLATE_PYTHON_EXECUTE_SERIALIZE_FUNCTION = `
 _MAX_SERIALIZE_DEPTH = 48
 
+def _serialize_type_metadata(obj):
+    try:
+        obj_type = _builtins.object.__getattribute__(obj, '__class__')
+        class_name = _builtins.type.__getattribute__(obj_type, '__name__')
+        module_name = _builtins.type.__getattribute__(obj_type, '__module__')
+    except BaseException:
+        return 'object', ''
+    if not isinstance(class_name, _builtins.str):
+        class_name = 'object'
+    if not isinstance(module_name, _builtins.str):
+        module_name = ''
+    return class_name, module_name
+
 def _serialize_repr_fallback(obj):
-    obj_type = getattr(obj, '__class__', None)
-    class_name = getattr(obj_type, '__name__', 'object')
-    if getattr(obj_type, '__module__', '') == 'builtins':
+    class_name, module_name = _serialize_type_metadata(obj)
+    if module_name == 'builtins':
         try:
             repr_str = repr(obj)
         except Exception:
@@ -429,7 +441,7 @@ def _serialize(obj, depth=0):
         return "<max depth>"
     elif isinstance(obj, (_builtins.list, _builtins.tuple)):
         return [_serialize(x, depth + 1) for x in obj]
-    elif getattr(obj, '__class__', None) and getattr(obj.__class__, '__name__', '') == 'deque':
+    elif _serialize_type_metadata(obj)[0] == 'deque':
         return [_serialize(x, depth + 1) for x in obj]
     elif isinstance(obj, _builtins.dict):
         return {str(k): _serialize(v, depth + 1) for k, v in obj.items()}
@@ -452,7 +464,7 @@ def _serialize(obj, depth=0):
     elif callable(obj):
         return None
     elif hasattr(obj, '__dict__'):
-        class_name = getattr(getattr(obj, '__class__', None), '__name__', 'object')
+        class_name, _module_name = _serialize_type_metadata(obj)
         result = {"__type__": class_name, "__class__": class_name}
         try:
             raw_fields = getattr(obj, '__dict__', None)

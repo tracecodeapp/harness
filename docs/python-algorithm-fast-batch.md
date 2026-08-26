@@ -95,11 +95,23 @@ executes, the batch driver reparses the bound learner source, repeats the
 reflection audit, and compiles that audited source itself. The separately
 marshaled compatibility code object is never executed by the fast path.
 An explicit `wallClockMs` limit is also forwarded into the retained driver: its
-trace hook applies a separate deadline to each case and reports only that case
-as `client-timeout`. The client retains a batch-wide watchdog for native calls
-that cannot be interrupted by Python line tracing; if that watchdog trips, the
-worker is retired and cases are retried through independently timed
-compatibility workers instead of marking the whole batch as timed out.
+trace hook remains armed from learner module execution through input hydration,
+the target call, and output serialization. It applies a separate deadline to
+each case and reports only that case as `client-timeout`. Trusted driver frames
+are excluded from the hook, while learner object protocols invoked by hydration
+or serialization remain covered. The client retains a batch-wide watchdog for
+native calls that cannot be interrupted by Python line tracing. That watchdog
+adds bounded headroom for input conversion, namespace setup, and final result
+encoding beyond the sum of per-case budgets; if it still trips, the worker is
+retired and cases are retried through independently timed compatibility workers
+instead of marking the whole batch as timed out.
+
+Before the final batch encode, each result envelope is encoded independently.
+An unencodable learner result is replaced only for that case with a trusted
+failure envelope. Class metadata is read through trusted base descriptors and
+coerced to strings, so learner `__getattribute__` implementations cannot place
+arbitrary objects in the result graph. Any later driver-level encoding failure
+uses the outer retire-and-retry boundary rather than rewriting completed cases.
 
 Trace execution and code batches requiring custom node materialization do not
 use the reduced guard. They retain the generic executor, full module rollback,
@@ -191,7 +203,9 @@ The browser prepared-provider gate covers:
 - compatibility code batches preserve a `client-timeout` result for the timed
   out case and continue evaluating later cases in fresh workers;
 - algorithm-fast batches contain hostile exception formatting, enforce
-  explicit wall-clock limits per case, and continue evaluating later cases;
+  explicit wall-clock limits across module execution and result serialization,
+  contain hostile result metadata per case, and continue evaluating later
+  cases;
 - shared stdlib registration APIs select compatibility isolation, while the
   private regular-expression cache is cleared at retained case boundaries;
 - direct prepared-provider trace calls reject missing or non-boolean per-case

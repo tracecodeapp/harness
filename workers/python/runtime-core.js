@@ -1853,10 +1853,27 @@ _tracecode_batch_user_code = _tracecode_batch_builtins.compile(
 )
 _tracecode_batch_internal_functions = {
     '_tracecode_case_tracer', '_tracecode_isolated_print',
+    '_tracecode_batch_append_result',
     '_tracecode_batch_hydrate_for_annotation',
     '_tracecode_batch_hydrate_inputs', '_tracecode_batch_prepare_call',
     '_tracecode_annotation_preserves_literal_shape',
 }
+
+def _tracecode_batch_append_result(entry):
+    try:
+        _tracecode_batch_encode_results([entry])
+    except BaseException:
+        entry = {
+            'success': False,
+            'output': None,
+            'error': 'Execution failed',
+            'consoleOutput': [],
+            'timings': {
+                'runMs': 0,
+                'algorithmFastBatch': True,
+            },
+        }
+    _tracecode_batch_results.append(entry)
 
 for _tracecode_batch_inputs in _tracecode_batch_cases:
     # re's compiled-pattern cache is interpreter-global. It is not exposed by
@@ -1943,12 +1960,9 @@ for _tracecode_batch_inputs in _tracecode_batch_cases:
 
     def _tracecode_case_tracer(frame, event, arg):
         global _tracecode_line_events, _tracecode_call_depth
-        if (
-            frame.f_code.co_filename in (
-                '<tracecode-algorithm-fast-batch>',
-                '<tracecode-algorithm-print>',
-            )
-            and frame.f_code.co_name in _tracecode_batch_internal_functions
+        if frame.f_code.co_filename in (
+            '<tracecode-algorithm-fast-batch>',
+            '<tracecode-algorithm-print>',
         ):
             return _tracecode_case_tracer
         if (
@@ -1982,6 +1996,20 @@ for _tracecode_batch_inputs in _tracecode_batch_cases:
                     raise _TracecodeAlgorithmLimit('memory-limit')
         return _tracecode_case_tracer
 
+    if _tracecode_limits_enabled:
+        try:
+            if _tracecode_interview_limits_enabled:
+                import tracemalloc as _tracecode_tracemalloc
+                if not _tracecode_tracemalloc.is_tracing():
+                    _tracecode_tracemalloc.start()
+                    _tracecode_memory_started = True
+                else:
+                    _tracecode_tracemalloc.reset_peak()
+        except Exception:
+            _tracecode_tracemalloc = None
+        _tracecode_batch_sys.settrace(_tracecode_case_tracer)
+
+    _tracecode_case_result = None
     try:
         exec(_tracecode_batch_user_code, _tracecode_case_globals)
         if _tracecode_batch_execution_style == 'solution-method':
@@ -2017,30 +2045,10 @@ for _tracecode_batch_inputs in _tracecode_batch_cases:
             _tracecode_call_args,
             _tracecode_call_kwargs,
         ) = _tracecode_batch_prepare_call(target, _tracecode_case_inputs)
-        if _tracecode_limits_enabled:
-            try:
-                if _tracecode_interview_limits_enabled:
-                    import tracemalloc as _tracecode_tracemalloc
-                    if not _tracecode_tracemalloc.is_tracing():
-                        _tracecode_tracemalloc.start()
-                        _tracecode_memory_started = True
-                    else:
-                        _tracecode_tracemalloc.reset_peak()
-            except Exception:
-                _tracecode_tracemalloc = None
-            _tracecode_batch_sys.settrace(_tracecode_case_tracer)
-        try:
-            output = _tracecode_call_target(
-                *_tracecode_call_args,
-                **_tracecode_call_kwargs,
-            )
-        finally:
-            _tracecode_batch_sys.settrace(None)
-            if _tracecode_tracemalloc is not None and _tracecode_memory_started:
-                try:
-                    _tracecode_tracemalloc.stop()
-                except Exception:
-                    pass
+        output = _tracecode_call_target(
+            *_tracecode_call_args,
+            **_tracecode_call_kwargs,
+        )
         if output is None:
             for _tracecode_inplace_name in (
                 'nums1', 'nums', 'arr', 'array', 'matrix', 'board', 'grid'
@@ -2051,7 +2059,7 @@ for _tracecode_batch_inputs in _tracecode_batch_cases:
                 ):
                     output = _tracecode_case_globals[_tracecode_inplace_name]
                     break
-        _tracecode_batch_results.append({
+        _tracecode_case_result = {
             'success': True,
             'output': _serialize(output),
             'consoleOutput': _tracecode_case_console,
@@ -2061,10 +2069,9 @@ for _tracecode_batch_inputs in _tracecode_batch_cases:
                 ) * 1000,
                 'algorithmFastBatch': True,
             },
-        })
+        }
     except _TracecodeAlgorithmLimit as error:
-        _tracecode_batch_sys.settrace(None)
-        _tracecode_batch_results.append({
+        _tracecode_case_result = {
             'success': False,
             'output': None,
             'error': 'Execution stopped: resource limit exceeded (' + error.reason + ').',
@@ -2076,9 +2083,8 @@ for _tracecode_batch_inputs in _tracecode_batch_cases:
                 ) * 1000,
                 'algorithmFastBatch': True,
             },
-        })
+        }
     except BaseException as error:
-        _tracecode_batch_sys.settrace(None)
         error_line = None
         try:
             frames = _tracecode_batch_traceback.extract_tb(error.__traceback__)
@@ -2105,7 +2111,7 @@ for _tracecode_batch_inputs in _tracecode_batch_cases:
             error_detail = 'Execution failed'
         if error_line is not None:
             error_prefix += ' on line ' + str(error_line)
-        entry = {
+        _tracecode_case_result = {
             'success': False,
             'output': None,
             'error': error_prefix + ': ' + error_detail,
@@ -2118,27 +2124,18 @@ for _tracecode_batch_inputs in _tracecode_batch_cases:
             },
         }
         if error_line is not None:
-            entry['errorLine'] = error_line
-        _tracecode_batch_results.append(entry)
+            _tracecode_case_result['errorLine'] = error_line
+    finally:
+        _tracecode_batch_sys.settrace(None)
+        if _tracecode_tracemalloc is not None and _tracecode_memory_started:
+            try:
+                _tracecode_tracemalloc.stop()
+            except Exception:
+                pass
+    _tracecode_batch_append_result(_tracecode_case_result)
 
 _tracecode_batch_re.purge()
-try:
-    _json_out = _tracecode_batch_encode_results(_tracecode_batch_results)
-except BaseException:
-    _tracecode_batch_results = [
-        {
-            'success': False,
-            'output': None,
-            'error': 'Execution failed',
-            'consoleOutput': [],
-            'timings': {
-                'runMs': 0,
-                'algorithmFastBatch': True,
-            },
-        }
-        for _tracecode_unused_case in _tracecode_batch_cases
-    ]
-    _json_out = _tracecode_batch_encode_results(_tracecode_batch_results)
+_json_out = _tracecode_batch_encode_results(_tracecode_batch_results)
 _json_out
 `;
 }

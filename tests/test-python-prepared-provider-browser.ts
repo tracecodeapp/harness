@@ -48,6 +48,7 @@ interface BrowserResult {
     localCount: { tier?: string; reasons: string[] };
     raising: { tier?: string; reasons: string[] };
     hostileException: { tier?: string; reasons: string[] };
+    hostileSerialization: { tier?: string; reasons: string[] };
     wallClockBatch: { tier?: string; reasons: string[] };
     parity: { tier?: string; reasons: string[] };
     inplace: { tier?: string; reasons: string[] };
@@ -762,15 +763,43 @@ async function main(): Promise<void> {
       const wallClockBatch = await preparationWorker.request('prepare-program', {
         mode: 'code',
         code: [
-          'def solve(value):',
-          '    if value == 0:',
+          'class Slow:',
+          '    def __getattribute__(self, name):',
           '        while True:',
-          '            value += 1',
+          '            pass',
+          'if phase == "module" and value == 0:',
+          '    while True:',
+          '        pass',
+          'def solve(value, phase):',
+          '    if phase == "serialize" and value == 0:',
+          '        return Slow()',
           '    return value',
         ].join('\\n'),
         functionName: 'solve',
         executionStyle: 'function',
       });
+      const hostileSerialization = await preparationWorker.request(
+        'prepare-program',
+        {
+          mode: 'code',
+          code: [
+            'class Blob:',
+            '    pass',
+            'class Holder:',
+            '    def __getattr__(self, name):',
+            '        return Blob()',
+            'class Weird:',
+            '    def __getattribute__(self, name):',
+            '        return Holder()',
+            'def solve(value):',
+            '    if value == 0:',
+            '        return Weird()',
+            '    return value',
+          ].join('\\n'),
+          functionName: 'solve',
+          executionStyle: 'function',
+        }
+      );
       const sharedStateRegistration = await preparationWorker.request(
         'prepare-program',
         {
@@ -800,6 +829,7 @@ async function main(): Promise<void> {
         localCount,
         raising,
         hostileException,
+        hostileSerialization,
         wallClockBatch,
         sharedStateRegistration,
       })) {
@@ -1187,12 +1217,35 @@ async function main(): Promise<void> {
             inputBatch: [{ value: 0 }, { value: 1 }],
           }
         );
-        fastParityRuns.wallClockBatch = await batchClient.request(
+        fastParityRuns.hostileSerialization = await batchClient.request(
+          'execute-prepared-program-batch',
+          {
+            artifact: hostileSerialization.artifact,
+            mode: 'code',
+            inputBatch: [{ value: 0 }, { value: 1 }],
+          }
+        );
+        fastParityRuns.wallClockModule = await batchClient.request(
           'execute-prepared-program-batch',
           {
             artifact: wallClockBatch.artifact,
             mode: 'code',
-            inputBatch: [{ value: 0 }, { value: 1 }],
+            inputBatch: [
+              { value: 0, phase: 'module' },
+              { value: 1, phase: 'module' },
+            ],
+            limits: { wallClockMs: 25 },
+          }
+        );
+        fastParityRuns.wallClockSerialization = await batchClient.request(
+          'execute-prepared-program-batch',
+          {
+            artifact: wallClockBatch.artifact,
+            mode: 'code',
+            inputBatch: [
+              { value: 0, phase: 'serialize' },
+              { value: 1, phase: 'serialize' },
+            ],
             limits: { wallClockMs: 25 },
           }
         );
@@ -1471,6 +1524,7 @@ async function main(): Promise<void> {
           localCount,
           raising,
           hostileException,
+          hostileSerialization,
           wallClockBatch,
         },
         isolationProfiles: {
@@ -1523,6 +1577,8 @@ async function main(): Promise<void> {
           localCount: localCount.artifact?.isolationProfile,
           raising: raising.artifact?.isolationProfile,
           hostileException: hostileException.artifact?.isolationProfile,
+          hostileSerialization:
+            hostileSerialization.artifact?.isolationProfile,
           wallClockBatch: wallClockBatch.artifact?.isolationProfile,
           benchmarkCode: benchmarkCodeOnly.artifact?.isolationProfile,
           benchmarkHasFastBatch:
@@ -1633,6 +1689,8 @@ async function main(): Promise<void> {
         result.isolationProfiles.localCount?.tier === 'algorithm-fast' &&
         result.isolationProfiles.raising?.tier === 'algorithm-fast' &&
         result.isolationProfiles.hostileException?.tier === 'algorithm-fast' &&
+        result.isolationProfiles.hostileSerialization?.tier ===
+          'algorithm-fast' &&
         result.isolationProfiles.wallClockBatch?.tier === 'algorithm-fast' &&
         result.isolationProfiles.cachedDecorator?.tier === 'algorithm-fast' &&
         result.isolationProfiles.benchmarkHasFastBatch === true,
@@ -1723,8 +1781,8 @@ async function main(): Promise<void> {
       `Python fast-path admission must reject module mutation, reflective access, and unreviewed imports: ${JSON.stringify(result.isolationProfiles)}`
     );
     assertCondition(
-      result.preparationWorker.prepareRequests === 42,
-      `Preparation worker received ${String(result.preparationWorker.prepareRequests)} preparations instead of forty-two`
+      result.preparationWorker.prepareRequests === 43,
+      `Preparation worker received ${String(result.preparationWorker.prepareRequests)} preparations instead of forty-three`
     );
     const algorithmBatchResults = result.algorithmBatchRun.results as Array<{
       success?: boolean;
@@ -1766,23 +1824,46 @@ async function main(): Promise<void> {
         ),
       `A hostile exception formatter escaped the per-case fast-batch envelope: ${JSON.stringify(result.fastParityRuns.hostileException)}`
     );
-    const wallClockResults = result.fastParityRuns.wallClockBatch.results as Array<{
-      success?: boolean;
-      output?: unknown;
-      timeoutReason?: string;
-      timings?: { algorithmFastBatch?: boolean };
-    }>;
+    const hostileSerializationResults = result.fastParityRuns
+      .hostileSerialization.results as Array<{
+        success?: boolean;
+        output?: unknown;
+        timings?: { algorithmFastBatch?: boolean };
+      }>;
     assertCondition(
-      wallClockResults.length === 2 &&
-        wallClockResults[0]?.success === false &&
-        wallClockResults[0]?.timeoutReason === 'client-timeout' &&
-        wallClockResults[1]?.success === true &&
-        wallClockResults[1]?.output === 1 &&
-        wallClockResults.every(
+      hostileSerializationResults.length === 2 &&
+        hostileSerializationResults[0]?.success === true &&
+        (hostileSerializationResults[0]?.output as { __type__?: string })
+          ?.__type__ === 'Weird' &&
+        hostileSerializationResults[1]?.success === true &&
+        hostileSerializationResults[1]?.output === 1 &&
+        hostileSerializationResults.every(
           (entry) => entry.timings?.algorithmFastBatch === true
         ),
-      `A fast-batch wall-clock trip did not remain case-local: ${JSON.stringify(result.fastParityRuns.wallClockBatch)}`
+      `Hostile class metadata poisoned fast-batch serialization: ${JSON.stringify(result.fastParityRuns.hostileSerialization)}`
     );
+    const assertCaseLocalWallClock = (name: string) => {
+      const run = result.fastParityRuns[name];
+      const entries = run.results as Array<{
+        success?: boolean;
+        output?: unknown;
+        timeoutReason?: string;
+        timings?: { algorithmFastBatch?: boolean };
+      }>;
+      assertCondition(
+        entries.length === 2 &&
+          entries[0]?.success === false &&
+          entries[0]?.timeoutReason === 'client-timeout' &&
+          entries[1]?.success === true &&
+          entries[1]?.output === 1 &&
+          entries.every(
+            (entry) => entry.timings?.algorithmFastBatch === true
+          ),
+        `A ${name} wall-clock trip did not remain case-local: ${JSON.stringify(run)}`
+      );
+    };
+    assertCaseLocalWallClock('wallClockModule');
+    assertCaseLocalWallClock('wallClockSerialization');
     const parityResult = (result.fastParityRuns.parity.results as Array<{
       output?: unknown;
       consoleOutput?: unknown;
