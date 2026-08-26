@@ -21,12 +21,32 @@ function assertCondition(
   if (!condition) throw new Error(message);
 }
 
-async function main(): Promise<void> {
-  const assetDirectory = process.env.TRACECC_RUNTIME_ASSET_DIR;
-  if (!assetDirectory) {
-    throw new Error('TRACECC_RUNTIME_ASSET_DIR is required.');
+async function resolveTraceCCAssetDirectory(root: string): Promise<string> {
+  if (process.env.TRACECC_RUNTIME_ASSET_DIR) {
+    return resolve(process.env.TRACECC_RUNTIME_ASSET_DIR);
   }
+  const releaseRoot = join(
+    root,
+    'node_modules',
+    '@tracecode',
+    'tracecc',
+    'runtime-release'
+  );
+  const manifest = JSON.parse(
+    await readFile(join(releaseRoot, 'manifest.json'), 'utf8')
+  ) as { schema?: unknown; consumerHash?: unknown };
+  assertCondition(
+    manifest.schema === 'tracecc-package-runtime-v1' &&
+      typeof manifest.consumerHash === 'string' &&
+      /^[0-9a-f]{64}$/u.test(manifest.consumerHash),
+    '@tracecode/tracecc has an invalid runtime-release manifest.'
+  );
+  return join(releaseRoot, manifest.consumerHash);
+}
+
+async function main(): Promise<void> {
   const root = resolve(process.cwd());
+  const assetDirectory = await resolveTraceCCAssetDirectory(root);
   const tempRoot = await mkdtemp(join(tmpdir(), 'tracecc-browser-runtime-'));
   const workersRoot = join(tempRoot, 'workers');
   const port = 5600 + Math.floor(Math.random() * 200);
@@ -48,7 +68,7 @@ async function main(): Promise<void> {
   const compilerIntegrity = {
     assets: await Promise.all(
       traceccAssetNames.map(async (name) => {
-        const bytes = await readFile(join(resolve(assetDirectory), name));
+        const bytes = await readFile(join(assetDirectory, name));
         return {
           url: `${origin}/tracecc/${name}`,
           size: bytes.byteLength,
@@ -71,7 +91,7 @@ async function main(): Promise<void> {
     ],
     root
   );
-  await symlink(resolve(assetDirectory), join(tempRoot, 'tracecc'), 'dir');
+  await symlink(assetDirectory, join(tempRoot, 'tracecc'), 'dir');
   for (const [entry, output] of [
     [
       'packages/runtime-cpp/src/cpp-worker-client.ts',

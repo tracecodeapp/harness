@@ -1387,7 +1387,6 @@ async function testCompilerFrameKeepsOnlyTrustedCompilerWarm(): Promise<void> {
 
 async function main(): Promise<void> {
   await testBrowserProviderPreparedLeaseExposure();
-  await testPreparedProviderProtocolLifecycle();
   await testPreparedRunnerRetirementPreservesSharedCompiler();
   await testTrustedCompilerSerializesConcurrentRequests();
   await testContentAddressedArtifactsAndDisposableExecution();
@@ -1402,4 +1401,5 @@ async function main(): Promise<void> {
 
 test('cpp browser provider prewarms assets inside TraceCC without page fetches', testBrowserProviderDefersCompilerWarmupUntilPreparation);
 test('cpp compile promotes queued compiler asset prewarm', testCompilePromotesQueuedCompilerPrewarm);
+test('cpp prepared provider protocol lifecycle', testPreparedProviderProtocolLifecycle);
 test('cpp compiler lifecycle', main);
