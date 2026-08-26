@@ -57,6 +57,8 @@ interface BrowserResult {
     wallClockBatch: { tier?: string; reasons: string[] };
     judgeCompatibleWallClock: { tier?: string; reasons: string[] };
     reservedGuardCollision: { tier?: string; reasons: string[] };
+    reservedGuardAlias: { tier?: string; reasons: string[] };
+    internalNameWallClock: { tier?: string; reasons: string[] };
     parity: { tier?: string; reasons: string[] };
     inplace: { tier?: string; reasons: string[] };
     serialized: { tier?: string; reasons: string[] };
@@ -971,6 +973,40 @@ async function main(): Promise<void> {
           executionStyle: 'function',
         }
       );
+      const reservedGuardAlias = await preparationWorker.request(
+        'prepare-program',
+        {
+          mode: 'code',
+          code: [
+            'from math import inf as _interview_case_deadline',
+            'match 1:',
+            '    case _interview_match_capture:',
+            '        pass',
+            'def solve(value):',
+            '    return value',
+          ].join('\\n'),
+          functionName: 'solve',
+          executionStyle: 'function',
+        }
+      );
+      const internalNameWallClock = await preparationWorker.request(
+        'prepare-program',
+        {
+          mode: 'code',
+          code: [
+            'def _serialize(value):',
+            '    if value == 0:',
+            '        while True:',
+            '            pass',
+            '    return value',
+            'def solve(value):',
+            '    items = (item for item in [value])',
+            '    return _serialize(list(items)[0])',
+          ].join('\\n'),
+          functionName: 'solve',
+          executionStyle: 'function',
+        }
+      );
       const hostileSerialization = await preparationWorker.request(
         'prepare-program',
         {
@@ -1593,6 +1629,15 @@ async function main(): Promise<void> {
             limits: { wallClockMs: 25 },
           }
         );
+        fastParityRuns.internalNameWallClock = await batchClient.request(
+          'execute-prepared-program-batch',
+          {
+            artifact: internalNameWallClock.artifact,
+            mode: 'code',
+            inputBatch: [{ value: 0 }, { value: 1 }],
+            limits: { wallClockMs: 25 },
+          }
+        );
         fastParityRuns.treeNodeFreshness = await batchClient.request(
           'execute-prepared-program-batch',
           {
@@ -1861,6 +1906,8 @@ async function main(): Promise<void> {
           wallClockBatch,
           judgeCompatibleWallClock,
           reservedGuardCollision,
+          reservedGuardAlias,
+          internalNameWallClock,
         },
         isolationProfiles: {
           code: code.artifact?.isolationProfile,
@@ -1931,6 +1978,10 @@ async function main(): Promise<void> {
             judgeCompatibleWallClock.artifact?.isolationProfile,
           reservedGuardCollision:
             reservedGuardCollision.artifact?.isolationProfile,
+          reservedGuardAlias:
+            reservedGuardAlias.artifact?.isolationProfile,
+          internalNameWallClock:
+            internalNameWallClock.artifact?.isolationProfile,
           benchmarkCode: benchmarkCodeOnly.artifact?.isolationProfile,
           benchmarkHasFastBatch:
             typeof benchmarkCodeOnly.artifact?.algorithmFastBatchCode === 'string',
@@ -2187,6 +2238,14 @@ async function main(): Promise<void> {
         result.isolationProfiles.reservedGuardCollision.reasons.includes(
           'reserved-runtime-binding:_interview_guard_start'
         ) &&
+        result.isolationProfiles.reservedGuardAlias?.tier ===
+          'hard-isolated' &&
+        result.isolationProfiles.reservedGuardAlias.reasons.includes(
+          'reserved-runtime-binding:_interview_case_deadline'
+        ) &&
+        result.isolationProfiles.reservedGuardAlias.reasons.includes(
+          'reserved-runtime-binding:_interview_match_capture'
+        ) &&
         result.isolationProfiles.transitiveTraversal?.tier ===
           'hard-isolated' &&
         result.isolationProfiles.transitiveTraversal.reasons.some(
@@ -2201,8 +2260,8 @@ async function main(): Promise<void> {
       })}`
     );
     assertCondition(
-      result.preparationWorker.prepareRequests === 52,
-      `Preparation worker received ${String(result.preparationWorker.prepareRequests)} preparations instead of fifty-two`
+      result.preparationWorker.prepareRequests === 54,
+      `Preparation worker received ${String(result.preparationWorker.prepareRequests)} preparations instead of fifty-four`
     );
     const algorithmBatchResults = result.algorithmBatchRun.results as Array<{
       success?: boolean;
@@ -2437,6 +2496,25 @@ async function main(): Promise<void> {
           (entry) => entry.timings?.algorithmFastBatch !== true
         ),
       `A judge-compatible wall-clock trip did not remain case-local: ${JSON.stringify(judgeCompatibleWallClock)}`
+    );
+    const internalNameWallClock = result.fastParityRuns
+      .internalNameWallClock;
+    const internalNameWallClockResults = internalNameWallClock.results as Array<{
+      success?: boolean;
+      output?: unknown;
+      timeoutReason?: string;
+      timings?: { algorithmFastBatch?: boolean };
+    }>;
+    assertCondition(
+      result.isolationProfiles.internalNameWallClock?.tier ===
+        'judge-compatible' &&
+        internalNameWallClockResults.length === 2 &&
+        internalNameWallClockResults[0]?.success === false &&
+        internalNameWallClockResults[0]?.timeoutReason ===
+          'client-timeout' &&
+        internalNameWallClockResults[1]?.success === true &&
+        internalNameWallClockResults[1]?.output === 1,
+      `A learner helper matching an internal function name bypassed the guard: ${JSON.stringify(internalNameWallClock)}`
     );
     const parityResult = (result.fastParityRuns.parity.results as Array<{
       output?: unknown;

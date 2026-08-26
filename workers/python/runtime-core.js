@@ -549,6 +549,21 @@ class __TracecodeExecutionGuard:
                 )
             elif isinstance(node, ast.arg):
                 record_reserved_runtime_name(node.arg, True)
+            elif isinstance(node, ast.alias):
+                record_reserved_runtime_name(node.asname, True)
+            elif isinstance(node, ast.ExceptHandler):
+                record_reserved_runtime_name(node.name, True)
+            elif hasattr(ast, 'MatchAs') and isinstance(node, ast.MatchAs):
+                record_reserved_runtime_name(node.name, True)
+            elif hasattr(ast, 'MatchStar') and isinstance(node, ast.MatchStar):
+                record_reserved_runtime_name(node.name, True)
+            elif hasattr(ast, 'MatchMapping') and isinstance(node, ast.MatchMapping):
+                record_reserved_runtime_name(node.rest, True)
+            elif (
+                hasattr(ast, 'TypeVar')
+                and isinstance(node, (ast.TypeVar, ast.ParamSpec, ast.TypeVarTuple))
+            ):
+                record_reserved_runtime_name(node.name, True)
             elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
                 record_reserved_runtime_name(node.name, True)
             elif isinstance(node, (ast.Global, ast.Nonlocal)):
@@ -7113,8 +7128,6 @@ async function executeCode(
 import ast as _tracecode_input_ast
 _tracecode_raw_inputs = _tracecode_input_ast.literal_eval(__tracecode_inputs_literal)
 _tracecode_case_limits = _tracecode_input_ast.literal_eval(__tracecode_limits_literal)
-for _tracecode_input_name, _tracecode_input_value in _tracecode_raw_inputs.items():
-    globals()[str(_tracecode_input_name)] = _tracecode_input_value
 `
       : '';
     const inputSetup = usesPreparedBindings
@@ -7163,16 +7176,20 @@ for _tracecode_input_name, _tracecode_input_value in _tracecode_raw_inputs.items
       : JSON.stringify(Object.keys(inputs));
     const functionNameLiteral = deps.toPythonLiteral(functionName);
     const executionStyleLiteral = deps.toPythonLiteral(executionStyle);
+    const caseNamespaceExpression = usesPreparedBindings
+      ? '_tracecode_user_namespace'
+      : 'globals()';
     const executionCall = executionStyle === 'solution-method'
       ? `_result = _tracecode_invoke_entry(${JSON.stringify(functionName)}, ${JSON.stringify(executionStyle)}, ${traceInputNamesLiteral})`
       : executionStyle === 'ops-class'
-        ? `_ops = operations if 'operations' in locals() else (ops if 'ops' in locals() else None)
-_args = arguments if 'arguments' in locals() else (args if 'args' in locals() else None)
+        ? `_tracecode_case_namespace = ${caseNamespaceExpression}
+_ops = _tracecode_case_namespace.get('operations', _tracecode_case_namespace.get('ops'))
+_args = _tracecode_case_namespace.get('arguments', _tracecode_case_namespace.get('args'))
 if _ops is None or _args is None:
     raise ValueError("ops-class execution requires inputs.operations and inputs.arguments (or ops/args)")
 if len(_ops) != len(_args):
     raise ValueError("operations and arguments must have the same length")
-_cls = ${functionName}
+_cls = _tracecode_case_namespace[${functionNameLiteral}]
 _instance = None
 _out = []
 for _i, _op in enumerate(_ops):
@@ -7227,6 +7244,21 @@ def _custom_print(*args, **kwargs):
 
 print = _custom_print
 
+${usesPreparedBindings
+  ? `_tracecode_user_namespace = {
+    _name: _value
+    for _name, _value in globals().items()
+    if not _name.startswith('_')
+}
+_tracecode_user_namespace['__builtins__'] = _builtins
+_tracecode_user_namespace['__name__'] = '__main__'
+_tracecode_user_namespace['print'] = _custom_print
+_tracecode_user_namespace['pow'] = _builtins.pow
+_tracecode_user_namespace['__tracecode_tracing_enabled'] = __tracecode_tracing_enabled
+for _tracecode_input_name, _tracecode_input_value in _tracecode_raw_inputs.items():
+    _tracecode_user_namespace[str(_tracecode_input_name)] = _tracecode_input_value`
+  : ''}
+
 ${deps.PYTHON_EXECUTE_SERIALIZE_FUNCTION_SNIPPET}
 
 ${interviewGuardEnabled
@@ -7240,13 +7272,6 @@ _interview_line_events = 0
 _interview_line_hits = {}
 _interview_call_depth = 0
 _interview_tracemalloc_started = False
-
-_INTERVIEW_GUARD_INTERNAL_FUNCS = {
-    '_custom_print', '_serialize', '_dict_to_tree', '_dict_to_list',
-    '_interview_guard_tracer', '_interview_check_deadline',
-    '_interview_check_memory',
-    '_interview_guard_start', '_interview_guard_stop'
-}
 
 _INTERVIEW_GUARD_ENABLED = ${
   usesPreparedBindings
@@ -7314,8 +7339,18 @@ def _interview_guard_tracer(frame, event, arg):
     global _interview_timeout_reason, _interview_line_events, _interview_line_hits, _interview_call_depth
     _interview_check_deadline()
     _func_name = frame.f_code.co_name
-
-    if _func_name in _INTERVIEW_GUARD_INTERNAL_FUNCS:
+    _is_user_frame = (
+        frame.f_code.co_filename == 'solution.py'
+        if ${usesPreparedBindings ? 'True' : 'False'}
+        else (
+            __TRACECODE_USER_CODE_START_LINE__ <= frame.f_code.co_firstlineno <= __TRACECODE_USER_CODE_END_LINE__
+            or (
+                _func_name == '<module>'
+                and __TRACECODE_USER_CODE_START_LINE__ <= frame.f_lineno <= __TRACECODE_USER_CODE_END_LINE__
+            )
+        )
+    )
+    if not _is_user_frame:
         return _interview_guard_tracer
 
     if event == 'call':
@@ -7376,7 +7411,7 @@ def _interview_guard_stop():
     userCodeStartLine = execPrefix.split('\n').length;
     const guardedCaseSetup = [
       usesPreparedBindings
-        ? 'exec(__tracecode_prepared_user_code, globals())'
+        ? 'exec(__tracecode_prepared_user_code, _tracecode_user_namespace)'
         : '',
       inputSetup,
       treeConversions,
@@ -7409,7 +7444,7 @@ def _tracecode_materialize_custom_input(obj):
         if isinstance(_type_name, _builtins.str):
             _fields = {'__type__': _type_name, **_fields}
         _constructor_fields = {key: value for key, value in _fields.items() if key not in ('__type__', '__class__')}
-        _cls = globals().get(_type_name) if isinstance(_type_name, _builtins.str) else None
+        _cls = ${caseNamespaceExpression}.get(_type_name) if isinstance(_type_name, _builtins.str) else None
         if isinstance(_cls, _builtins.type):
             try:
                 return _cls(**_constructor_fields)
@@ -7431,8 +7466,8 @@ def _tracecode_materialize_custom_input(obj):
 
 def _tracecode_materialize_named_inputs(_names):
     for _name in _names:
-        if _name in globals():
-            globals()[_name] = _tracecode_materialize_custom_input(globals()[_name])
+        if _name in ${caseNamespaceExpression}:
+            ${caseNamespaceExpression}[_name] = _tracecode_materialize_custom_input(${caseNamespaceExpression}[_name])
 
 ${PYTHON_LITERAL_SHAPE_ANNOTATION_HELPER}
 
@@ -7445,7 +7480,7 @@ def _tracecode_hydrate_for_annotation(_obj, _annotation):
     if _annotation is None:
         return _obj
     if isinstance(_annotation, _builtins.str):
-        _annotation = globals().get(_annotation, _annotation)
+        _annotation = ${caseNamespaceExpression}.get(_annotation, _annotation)
     if _annotation in (_builtins.object, getattr(_tracecode_typing, 'Any', None)):
         return _obj
     _origin = _tracecode_typing.get_origin(_annotation)
@@ -7489,7 +7524,7 @@ def _tracecode_hydrate_for_annotation(_obj, _annotation):
             return _obj
         _fields = {key: value for key, value in _obj.items() if key not in ('__type__', '__class__', '__id__')}
         try:
-            _ctor_hints = _tracecode_typing.get_type_hints(getattr(_annotation, '__init__'), globals(), locals())
+            _ctor_hints = _tracecode_typing.get_type_hints(getattr(_annotation, '__init__'), ${caseNamespaceExpression}, ${caseNamespaceExpression})
         except Exception:
             _ctor_hints = {}
         _hydrated_fields = {
@@ -7514,12 +7549,14 @@ def _tracecode_hydrate_for_annotation(_obj, _annotation):
     return _obj
 
 def _tracecode_resolve_target_callable(_function_name, _execution_style):
-    if _execution_style == 'solution-method' and 'Solution' in globals() and hasattr(Solution, _function_name):
-        return getattr(Solution, _function_name)
-    if _function_name in globals() and callable(globals()[_function_name]):
-        return globals()[_function_name]
-    if 'Solution' in globals() and hasattr(Solution, _function_name):
-        return getattr(Solution, _function_name)
+    _namespace = ${caseNamespaceExpression}
+    _solution = _namespace.get('Solution')
+    if _execution_style == 'solution-method' and _solution is not None and hasattr(_solution, _function_name):
+        return getattr(_solution, _function_name)
+    if _function_name in _namespace and callable(_namespace[_function_name]):
+        return _namespace[_function_name]
+    if _solution is not None and hasattr(_solution, _function_name):
+        return getattr(_solution, _function_name)
     return None
 
 def _tracecode_hydrate_annotated_inputs(_names, _function_name, _execution_style):
@@ -7529,25 +7566,27 @@ def _tracecode_hydrate_annotated_inputs(_names, _function_name, _execution_style
         if _callable is None:
             return
         try:
-            _annotations = _tracecode_typing.get_type_hints(_callable, globals(), locals())
+            _annotations = _tracecode_typing.get_type_hints(_callable, ${caseNamespaceExpression}, ${caseNamespaceExpression})
         except Exception:
             _annotations = getattr(_callable, '__annotations__', {}) or {}
         for _name in _names:
-            if _name in globals() and _name in _annotations:
+            if _name in ${caseNamespaceExpression} and _name in _annotations:
                 _annotation = _annotations[_name]
                 if not _tracecode_annotation_preserves_literal_shape(_annotation):
-                    globals()[_name] = _tracecode_hydrate_for_annotation(globals()[_name], _annotation)
+                    ${caseNamespaceExpression}[_name] = _tracecode_hydrate_for_annotation(${caseNamespaceExpression}[_name], _annotation)
     except Exception:
         return
 
 def _tracecode_resolve_entry_callable(_function_name, _execution_style):
-    if _execution_style == 'solution-method' and 'Solution' in globals() and hasattr(Solution, _function_name):
-        _solver = Solution()
+    _namespace = ${caseNamespaceExpression}
+    _solution = _namespace.get('Solution')
+    if _execution_style == 'solution-method' and _solution is not None and hasattr(_solution, _function_name):
+        _solver = _solution()
         return getattr(_solver, _function_name)
-    if _function_name in globals() and callable(globals()[_function_name]):
-        return globals()[_function_name]
-    if 'Solution' in globals() and hasattr(Solution, _function_name):
-        _solver = Solution()
+    if _function_name in _namespace and callable(_namespace[_function_name]):
+        return _namespace[_function_name]
+    if _solution is not None and hasattr(_solution, _function_name):
+        _solver = _solution()
         return getattr(_solver, _function_name)
     return None
 
@@ -7556,7 +7595,8 @@ def _tracecode_invoke_entry(_function_name, _execution_style, _input_names):
     _callable = _tracecode_resolve_entry_callable(_function_name, _execution_style)
     if _callable is None:
         raise NameError(f"Implement {_function_name}(...) or Solution.{_function_name}(...)")
-    _values = {_name: globals()[_name] for _name in _input_names if _name in globals()}
+    _namespace = ${caseNamespaceExpression}
+    _values = {_name: _namespace[_name] for _name in _input_names if _name in _namespace}
     _tracecode_previous_tracer = sys.gettrace()
     sys.settrace(None)
     _fallback_kwargs = None
@@ -7606,8 +7646,8 @@ def _tracecode_invoke_entry(_function_name, _execution_style, _input_names):
 
 def _resolve_inplace_result():
     for _name in ${inplaceCandidatesLiteral}:
-        if _name in globals():
-            return globals().get(_name)
+        if _name in ${caseNamespaceExpression}:
+            return ${caseNamespaceExpression}.get(_name)
     return None
 
 _result = None
@@ -7687,8 +7727,8 @@ else:
         "kind": "success",
         "output": _result,
         "console": _console_output,
-        "treeNodeType": TreeNode,
-        "listNodeType": ListNode,
+        "treeNodeType": ${caseNamespaceExpression}.get('TreeNode', TreeNode),
+        "listNodeType": ${caseNamespaceExpression}.get('ListNode', ListNode),
     }
 
 _tracecode_raw_result
@@ -7942,12 +7982,21 @@ _tracecode_raw_result = {
 }
 _tracecode_raw_result
 `;
-    const execCode =
+    let execCode =
       execPrefix +
       (usesPreparedBindings
         ? ''
         : code) +
       execSuffix;
+    execCode = execCode
+      .replaceAll(
+        '__TRACECODE_USER_CODE_START_LINE__',
+        String(userCodeStartLine)
+      )
+      .replaceAll(
+        '__TRACECODE_USER_CODE_END_LINE__',
+        String(userCodeStartLine + userCodeLineCount - 1)
+      );
 
     const executeFinalizerSource = `
 import json
