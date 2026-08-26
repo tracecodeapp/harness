@@ -112,6 +112,7 @@ const PYTHON_RUNTIME_PROFILE: LanguageRuntimeProfile = {
         safeForUntrustedReuse: true,
         boundary: 'fresh-worker',
         unsafeReuseBoundary: 'interpreter-cleanup',
+        algorithmBatchBoundary: 'guarded-fresh-namespace',
       },
     },
     project: LIVE_PROJECT_IO_CAPABILITIES,

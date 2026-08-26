@@ -30,6 +30,18 @@ export type PythonRawTraceBatchResult = {
   consoleOutput?: string[];
   timings?: RuntimeExecutionTimings;
 };
+
+type PythonRawCodeBatchResult = RawExecutionBatchPayload & {
+  algorithmFastBatchUnavailable?: boolean;
+  algorithmFastBatchFailureClass?: 'capability-fallback' | 'driver-failure';
+};
+
+export class PythonAlgorithmFastBatchUnavailableError extends Error {
+  constructor() {
+    super('Prepared Python algorithm-fast batch requires hard isolation.');
+    this.name = 'PythonAlgorithmFastBatchUnavailableError';
+  }
+}
 import type {
   RuntimeCodeCall,
   RuntimeCommandEventHandler,
@@ -96,12 +108,17 @@ interface PythonWorkerClientInternalOptions extends PythonWorkerClientOptions {
   runtimeImageFactory?: PythonRuntimeImageFactory;
 }
 
-/** Guest-enforced limits forwarded to the worker; wallClockMs stays client-side. */
+/**
+ * Guest-enforced limits forwarded to the worker. wallClockMs remains guarded
+ * by the client deadline too, but retained fast batches also need the value to
+ * enforce the deadline independently for each case.
+ */
 function pickGuestLimits(
   limits: RuntimeExecutionLimits | undefined
-): Pick<RuntimeExecutionLimits, 'maxLineEvents' | 'maxSingleLineHits' | 'maxCallDepth' | 'maxMemoryBytes'> | undefined {
+): Pick<RuntimeExecutionLimits, 'wallClockMs' | 'maxLineEvents' | 'maxSingleLineHits' | 'maxCallDepth' | 'maxMemoryBytes'> | undefined {
   if (!limits) return undefined;
   const guest = {
+    ...(limits.wallClockMs !== undefined ? { wallClockMs: limits.wallClockMs } : {}),
     ...(limits.maxLineEvents !== undefined ? { maxLineEvents: limits.maxLineEvents } : {}),
     ...(limits.maxSingleLineHits !== undefined ? { maxSingleLineHits: limits.maxSingleLineHits } : {}),
     ...(limits.maxCallDepth !== undefined ? { maxCallDepth: limits.maxCallDepth } : {}),
@@ -126,7 +143,7 @@ interface StatusResult {
 }
 
 export interface PythonPreparedProgramArtifact {
-  readonly schemaVersion: 'tracecode.python.prepared-program.v1';
+  readonly schemaVersion: 'tracecode.python.prepared-program.v4';
   readonly fingerprint: {
     readonly cacheTag: string;
     readonly magicNumber: string;
@@ -138,6 +155,11 @@ export interface PythonPreparedProgramArtifact {
   readonly executionStyle: RuntimeProgramPreparationCall['executionStyle'];
   readonly traceOptions: RuntimeProgramPreparationCall['traceOptions'];
   readonly onDemandTracing?: boolean;
+  readonly isolationProfile: {
+    readonly tier: 'algorithm-fast' | 'judge-compatible' | 'hard-isolated';
+    readonly reasons: readonly string[];
+  };
+  readonly algorithmFastBatchCode?: string;
   readonly userCode: string;
   readonly executorCode: string;
 }
@@ -169,6 +191,28 @@ export type PythonProjectCommandResult = RuntimeCommandResult;
 
 const EXECUTION_TIMEOUT_MS = 30000;
 const PROJECT_EXECUTION_TIMEOUT_MS = 30000;
+const MAX_WORKER_DEADLINE_MS = 2_147_483_647;
+const BATCH_DRIVER_BASE_HEADROOM_MS = 5_000;
+const BATCH_DRIVER_PER_CASE_HEADROOM_MS = 100;
+const BATCH_DRIVER_MAX_HEADROOM_MS = 30_000;
+
+export function calculatePythonCodeBatchDeadlineMs(
+  caseCount: number,
+  perCaseWallClockMs?: number
+): number {
+  if (perCaseWallClockMs === undefined) return EXECUTION_TIMEOUT_MS;
+  const normalizedCaseCount = Math.max(1, Math.floor(caseCount));
+  const normalizedPerCaseMs = Math.max(1, perCaseWallClockMs);
+  const driverHeadroomMs = Math.min(
+    BATCH_DRIVER_MAX_HEADROOM_MS,
+    BATCH_DRIVER_BASE_HEADROOM_MS +
+      BATCH_DRIVER_PER_CASE_HEADROOM_MS * normalizedCaseCount
+  );
+  return Math.min(
+    MAX_WORKER_DEADLINE_MS,
+    normalizedPerCaseMs * normalizedCaseCount + driverHeadroomMs
+  );
+}
 
 // Tracing timeout - longer because Python heuristic detection handles infinite loops
 // This is just a safety net for truly stuck executions
@@ -568,15 +612,18 @@ export class PythonWorkerClient {
       readonly limits?: RuntimeExecutionLimits;
     }
   ): Promise<CodeExecutionBatchResult> {
-    const wallClockMs = call.limits?.wallClockMs === undefined
-      ? EXECUTION_TIMEOUT_MS
-      : Math.min(
-          2_147_483_647,
-          call.limits.wallClockMs * Math.max(1, call.inputBatch.length)
-        );
-    const guestLimits = pickGuestLimits(call.limits);
+    const perCaseWallClockMs =
+      call.limits?.wallClockMs ?? EXECUTION_TIMEOUT_MS;
+    const wallClockMs = calculatePythonCodeBatchDeadlineMs(
+      call.inputBatch.length,
+      call.limits?.wallClockMs
+    );
+    const guestLimits = pickGuestLimits({
+      ...call.limits,
+      wallClockMs: perCaseWallClockMs,
+    });
     const program = this.core.withExecutionDeadline(
-      this.core.sendMessageEffect<RawExecutionBatchPayload>(
+      this.core.sendMessageEffect<PythonRawCodeBatchResult>(
         'execute-prepared-program-batch',
         {
           artifact: handle.artifact,
@@ -588,33 +635,32 @@ export class PythonWorkerClient {
       ),
       wallClockMs
     );
-    try {
-      const result = await this.core.runClientEffect(program, call.signal);
-      return liftCodeBatchOutcome(
-        result,
-        'Prepared Python batch execution failed'
-      );
-    } catch (error) {
-      if (
-        call.limits?.wallClockMs !== undefined &&
-        isExecutionTimeoutError(error)
-      ) {
-        return {
-          results: call.inputBatch.map(() => ({
-            kind: 'limit',
-            reason: 'client-timeout',
-            error: error.message,
-            consoleOutput: [],
-            timings: {
-              totalMs: call.limits!.wallClockMs,
-              runMs: call.limits!.wallClockMs,
-              artifactCacheHit: true,
-            },
-          })),
-        };
-      }
-      throw error;
+    const result = await this.core.runClientEffect(program, call.signal);
+    if (result.algorithmFastBatchUnavailable === true) {
+      const unexpected =
+        result.algorithmFastBatchFailureClass !== 'capability-fallback';
+      logRuntimeDiagnostic(unexpected ? 'error' : 'debug', {
+        component: 'PythonWorkerClient',
+        runtime: 'python',
+        phase: 'algorithm-fast-batch-fallback',
+        message: unexpected
+          ? 'Python algorithm-fast batch driver failed; requesting hard isolation.'
+          : 'Python algorithm-fast batch requires hard isolation.',
+        detail: {
+          caseCount: call.inputBatch.length,
+          failureClass:
+            result.algorithmFastBatchFailureClass ?? 'driver-failure',
+        },
+      }, { enabled: unexpected || this.debug });
+      throw new PythonAlgorithmFastBatchUnavailableError();
     }
+    // The aggregate watchdog is the batch's caller-visible deadline, not an
+    // isolation-admission failure. Let it surface instead of silently granting
+    // a second full budget to the hard-isolated path.
+    return liftCodeBatchOutcome(
+      result,
+      'Prepared Python batch execution failed'
+    );
   }
 
   async executePreparedTrace(
@@ -622,7 +668,10 @@ export class PythonWorkerClient {
     call: RuntimePreparedTraceCall
   ): Promise<PythonRawTraceResult> {
     const wallClockMs = call.limits?.wallClockMs ?? TRACING_TIMEOUT_MS;
-    const guestLimits = pickGuestLimits(call.limits);
+    const guestLimits = pickGuestLimits({
+      ...call.limits,
+      wallClockMs,
+    });
     const program = this.core.withExecutionDeadline(
       this.core.sendMessageEffect<PythonRawTraceResult>(
         'execute-prepared-program',
@@ -683,7 +732,10 @@ export class PythonWorkerClient {
       2_147_483_647,
       perCaseWallClockMs * Math.max(1, call.inputBatch.length)
     );
-    const guestLimits = pickGuestLimits(call.limits);
+    const guestLimits = pickGuestLimits({
+      ...call.limits,
+      wallClockMs: perCaseWallClockMs,
+    });
     const program = this.core.withExecutionDeadline(
       this.core.sendMessageEffect<PythonRawTraceBatchResult>(
         'execute-prepared-program-batch',

@@ -10,7 +10,6 @@ import {
   PYTHON_CONVERSION_HELPERS,
   PYTHON_EXECUTE_SERIALIZE_FUNCTION,
   PYTHON_TRACE_SERIALIZE_FUNCTION,
-  PYTHON_SERIALIZE_FUNCTION,
   toPythonLiteral as canonicalToPythonLiteral,
 } from '../packages/runtime-python/src/python-harness';
 
@@ -57,6 +56,42 @@ function assertLineSubsequenceInSource(source: string, block: string, label: str
 function countOccurrences(source: string, pattern: string): number {
   if (!pattern) return 0;
   return source.split(pattern).length - 1;
+}
+
+function extractInlineSnippetFallback(
+  source: string,
+  constantName: string
+): string {
+  const declaration =
+    `const ${constantName}_SNIPPET = resolveSharedPythonSnippet(`;
+  const declarationStart = source.indexOf(declaration);
+  assertCondition(
+    declarationStart >= 0,
+    `Worker fallback declaration is missing: ${constantName}`
+  );
+  const contentStartMarker = source.indexOf('  `', declarationStart);
+  assertCondition(
+    contentStartMarker >= 0,
+    `Worker fallback template start is missing: ${constantName}`
+  );
+  const contentEndMarker = source.indexOf('\n`\n);', contentStartMarker + 3);
+  assertCondition(
+    contentEndMarker >= 0,
+    `Worker fallback template end is missing: ${constantName}`
+  );
+  return source.slice(contentStartMarker + 3, contentEndMarker + 1);
+}
+
+function assertInlineSnippetFallback(
+  source: string,
+  constantName: string,
+  expected: string
+): void {
+  const actual = extractInlineSnippetFallback(source, constantName);
+  assertCondition(
+    actual === expected,
+    `Worker fallback drift detected in ${constantName}`
+  );
 }
 
 function createWorkerContext(source: string): vm.Context {
@@ -328,24 +363,6 @@ function selectTraceSerializeContractLines(serializedBlock: string): string {
   return selectSerializeContractLines(serializedBlock, keepers);
 }
 
-function selectExecuteSerializeContractLines(serializedBlock: string): string {
-  const keepers = [
-    '_MAX_SERIALIZE_DEPTH = 48',
-    'def _serialize(obj, depth=0):',
-    "elif getattr(obj, '__class__', None) and getattr(obj.__class__, '__name__', '') == 'deque':",
-    "elif isinstance(obj, (list, tuple)):",
-    "elif isinstance(obj, dict):",
-    "elif isinstance(obj, set):",
-    "elif (hasattr(obj, 'val') or hasattr(obj, 'value')) and (hasattr(obj, 'left') or hasattr(obj, 'right')):",
-    "\"__type__\": \"TreeNode\"",
-    "elif (hasattr(obj, 'val') or hasattr(obj, 'value')) and hasattr(obj, 'next'):",
-    "\"__type__\": \"ListNode\"",
-    'elif callable(obj):',
-    'return None',
-  ];
-  return selectSerializeContractLines(serializedBlock, keepers);
-}
-
 async function assertDeprecatedRuntimeNotImported(): Promise<void> {
   const root = process.cwd();
   const allowedSelfImportPath = LEGACY_RUNTIME_PATH;
@@ -489,13 +506,21 @@ async function main(): Promise<void> {
   assertLineSubsequenceInSource(workerSource, PYTHON_CONVERSION_HELPERS, 'PYTHON_CONVERSION_HELPERS');
   console.log('PASS: conversion helpers synced');
 
-  const traceSerializeContractBlock = selectTraceSerializeContractLines(PYTHON_TRACE_SERIALIZE_FUNCTION);
-  assertLineSubsequenceInSource(workerSource, traceSerializeContractBlock, 'PYTHON_TRACE_SERIALIZE_FUNCTION core contract');
-  const executeSerializeContractBlock = selectExecuteSerializeContractLines(PYTHON_EXECUTE_SERIALIZE_FUNCTION);
-  assertLineSubsequenceInSource(workerSource, executeSerializeContractBlock, 'PYTHON_EXECUTE_SERIALIZE_FUNCTION core contract');
-  const compatSerializeContractBlock = selectExecuteSerializeContractLines(PYTHON_SERIALIZE_FUNCTION);
-  assertLineSubsequenceInSource(workerSource, compatSerializeContractBlock, 'PYTHON_SERIALIZE_FUNCTION compatibility contract');
-  console.log('PASS: serialize contracts synced');
+  const inlineTraceFallback = extractInlineSnippetFallback(
+    workerSource,
+    'PYTHON_TRACE_SERIALIZE_FUNCTION'
+  );
+  assertLineSubsequenceInSource(
+    inlineTraceFallback,
+    selectTraceSerializeContractLines(PYTHON_TRACE_SERIALIZE_FUNCTION),
+    'PYTHON_TRACE_SERIALIZE_FUNCTION inline fallback'
+  );
+  assertInlineSnippetFallback(
+    workerSource,
+    'PYTHON_EXECUTE_SERIALIZE_FUNCTION',
+    PYTHON_EXECUTE_SERIALIZE_FUNCTION
+  );
+  console.log('PASS: inline serialize fallbacks synced');
 
   await assertWorkerInitWarmupContract(workerSource, runtimeCoreSource, sharedPolicySource);
   await assertToPythonLiteralParity(workerSource);

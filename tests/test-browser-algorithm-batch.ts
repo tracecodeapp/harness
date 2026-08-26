@@ -37,6 +37,14 @@ interface BatchLanguageResult {
   readonly traceMs: number;
   readonly traceMaximumActiveWorkers: number;
   readonly traceWorkerUrls: readonly string[];
+  readonly compatibilityIsolation?: ReceiptSummary;
+  readonly compatibilityIsolationWorkerUrls?: readonly string[];
+  readonly compatibilityIsolationMaximumActiveWorkers?: number;
+  readonly compatibilityIsolationMs?: number;
+  readonly judgeFallbackIsolation?: ReceiptSummary;
+  readonly judgeFallbackIsolationWorkerUrls?: readonly string[];
+  readonly judgeFallbackIsolationMaximumActiveWorkers?: number;
+  readonly judgeFallbackIsolationMs?: number;
   readonly csharpBatchConcurrency?: number;
   readonly trustedPrewarm?: boolean;
 }
@@ -65,6 +73,16 @@ const LANGUAGES: readonly BatchLanguage[] = requestedLanguages?.length
 const csharpBatchConcurrency = Number.parseInt(
   process.env.TRACECODE_CSHARP_BATCH_CONCURRENCY ?? '4',
   10
+);
+const pythonCompatibilityCaseCount = Number.parseInt(
+  process.env.TRACECODE_PYTHON_COMPATIBILITY_CASES ?? '3',
+  10
+);
+assertCondition(
+  Number.isInteger(pythonCompatibilityCaseCount) &&
+    pythonCompatibilityCaseCount > 0 &&
+    pythonCompatibilityCaseCount <= 100,
+  'TRACECODE_PYTHON_COMPATIBILITY_CASES must be an integer from 1 through 100.'
 );
 const browserEngine =
   process.env.TRACECODE_BROWSER_ENGINE ?? 'chromium';
@@ -202,6 +220,17 @@ function assertBoundedWorkers(
     return;
   }
   const maximumWorkers = 3;
+  if (language === 'python' && scope === 'trace batch') {
+    assertCondition(
+      languageWorkers.length === 10 &&
+        maximumActiveWorkers <= maximumWorkers,
+      `${language} ${scope} must retire one outer worker per selected case while bounding active capacity: ${JSON.stringify({
+        workerCount: languageWorkers.length,
+        maximumActiveWorkers,
+      })}`
+    );
+    return;
+  }
   assertCondition(
     (!requireWorker || languageWorkers.length > 0) &&
       languageWorkers.length <= maximumWorkers,
@@ -278,7 +307,9 @@ async function main(): Promise<void> {
     const browser = await browserLauncher.launch({ headless: true });
     try {
       const page = await browser.newPage();
-      page.setDefaultTimeout(180_000);
+      page.setDefaultTimeout(
+        Math.max(180_000, pythonCompatibilityCaseCount * 5_000)
+      );
       page.on('pageerror', (error) => {
         console.error(`[browser pageerror] ${error.stack ?? error.message}`);
       });
@@ -307,11 +338,13 @@ async function main(): Promise<void> {
         return module.runBrowserAlgorithmBatch(
           '/workers',
           languages.selected,
-          languages.csharpBatchConcurrency
+          languages.csharpBatchConcurrency,
+          languages.pythonCompatibilityCaseCount
         );
       }, {
         selected: LANGUAGES,
         csharpBatchConcurrency,
+        pythonCompatibilityCaseCount,
       }) as Record<BatchLanguage, BatchLanguageResult>;
 
       for (const language of LANGUAGES) {
@@ -371,6 +404,79 @@ async function main(): Promise<void> {
                 languageResult.plainMaximumActiveWorkers,
               traceMaximumActiveWorkers:
                 languageResult.traceMaximumActiveWorkers,
+            })
+          );
+        }
+        if (language === 'python') {
+          const compatibilityIsolation = languageResult.compatibilityIsolation;
+          const compatibilityWorkers = (
+            languageResult.compatibilityIsolationWorkerUrls ?? []
+          ).filter((url) => url.includes('python-worker.js'));
+          assertCondition(
+            compatibilityIsolation?.verdict === 'passed' &&
+              compatibilityIsolation.caseVerdicts.length ===
+                pythonCompatibilityCaseCount &&
+              compatibilityIsolation.caseVerdicts.every(
+                (verdict) => verdict === 'passed'
+              ) &&
+              compatibilityIsolation.outputs.length ===
+                pythonCompatibilityCaseCount &&
+              compatibilityIsolation.outputs.every(
+                (output) => output === null
+              ) &&
+              compatibilityWorkers.length >= pythonCompatibilityCaseCount &&
+              (languageResult.compatibilityIsolationMaximumActiveWorkers ?? 99) <= 3,
+            `Python hard-isolated cases did not receive fresh outer runtimes for nested stdlib state: ${JSON.stringify({
+              receipt: compatibilityIsolation,
+              workers: compatibilityWorkers,
+              maximumActiveWorkers:
+                languageResult.compatibilityIsolationMaximumActiveWorkers,
+            })}`
+          );
+          console.log(
+            JSON.stringify({
+              pythonCompatibilityCaseCount,
+              pythonCompatibilityMs:
+                languageResult.compatibilityIsolationMs,
+              pythonCompatibilityWorkerCount:
+                compatibilityWorkers.length,
+            })
+          );
+          const judgeFallbackIsolation =
+            languageResult.judgeFallbackIsolation;
+          const judgeFallbackWorkers = (
+            languageResult.judgeFallbackIsolationWorkerUrls ?? []
+          ).filter((url) => url.includes('python-worker.js'));
+          assertCondition(
+            judgeFallbackIsolation?.verdict === 'passed' &&
+              judgeFallbackIsolation.caseVerdicts.length ===
+                pythonCompatibilityCaseCount &&
+              judgeFallbackIsolation.caseVerdicts.every(
+                (verdict) => verdict === 'passed'
+              ) &&
+              JSON.stringify(judgeFallbackIsolation.outputs) ===
+                JSON.stringify(
+                  Array.from(
+                    { length: pythonCompatibilityCaseCount },
+                    (_, index) => (index + 1) * 2
+                  )
+                ) &&
+              judgeFallbackWorkers.length === 1 &&
+              (languageResult.judgeFallbackIsolationMaximumActiveWorkers ?? 99) <= 1,
+            `Python fast artifact did not use one retained generic worker for custom-input fallback: ${JSON.stringify({
+              receipt: judgeFallbackIsolation,
+              workers: judgeFallbackWorkers,
+              maximumActiveWorkers:
+                languageResult.judgeFallbackIsolationMaximumActiveWorkers,
+            })}`
+          );
+          console.log(
+            JSON.stringify({
+              pythonJudgeCompatibleCaseCount: pythonCompatibilityCaseCount,
+              pythonJudgeCompatibleMs:
+                languageResult.judgeFallbackIsolationMs,
+              pythonJudgeCompatibleWorkerCount:
+                judgeFallbackWorkers.length,
             })
           );
         }

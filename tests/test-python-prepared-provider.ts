@@ -2,9 +2,17 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import {
   createPythonPreparedExecutionProvider,
+  PythonAlgorithmFastBatchUnavailableError,
   type PythonPreparedProgramArtifact,
   type PythonWorkerClient,
 } from '../packages/runtime-python/src/index';
+import {
+  calculatePythonCodeBatchDeadlineMs,
+} from '../packages/runtime-python/src/python-worker-client';
+import {
+  ExecutionTimeoutError,
+  WorkerCrashedError,
+} from '../packages/runtime-browser/src/internal';
 import type {
   CodeExecutionBatchResult,
   CodeExecutionResult,
@@ -22,9 +30,12 @@ function preparationCall(
   };
 }
 
-function artifact(mode: 'code' | 'trace'): PythonPreparedProgramArtifact {
+function artifact(
+  mode: 'code' | 'trace',
+  tier: 'algorithm-fast' | 'judge-compatible' | 'hard-isolated' = 'hard-isolated'
+): PythonPreparedProgramArtifact {
   return {
-    schemaVersion: 'tracecode.python.prepared-program.v1',
+    schemaVersion: 'tracecode.python.prepared-program.v4',
     fingerprint: {
       cacheTag: 'cpython-test',
       magicNumber: 'test',
@@ -35,6 +46,13 @@ function artifact(mode: 'code' | 'trace'): PythonPreparedProgramArtifact {
     functionName: 'solve',
     executionStyle: 'function',
     traceOptions: {},
+    isolationProfile: {
+      tier,
+      reasons: tier === 'algorithm-fast' ? [] : ['test-fixture'],
+    },
+    ...(tier === 'algorithm-fast'
+      ? { algorithmFastBatchCode: 'algorithm-fast-artifact' }
+      : {}),
     userCode: 'user-artifact',
     executorCode: 'executor-artifact',
   };
@@ -50,6 +68,11 @@ function deferred(): {
   });
   return { promise, resolve };
 }
+
+test('Python code-batch deadlines scale from the per-case budget', () => {
+  assert.equal(calculatePythonCodeBatchDeadlineMs(100), 30_000);
+  assert.equal(calculatePythonCodeBatchDeadlineMs(4, 25), 5_500);
+});
 
 async function waitUntil(predicate: () => boolean, message: string): Promise<void> {
   for (let attempt = 0; attempt < 100; attempt += 1) {
@@ -175,7 +198,7 @@ test('Python prepared provider compiles once and executes in owned fresh workers
   );
 });
 
-test('Python prepared provider executes a case vector in one warmed worker', async () => {
+test('Python algorithm-fast provider executes a case vector in one warmed worker', async () => {
   const calls: Array<{ worker: number; method: string }> = [];
   let nextWorker = 0;
   const createWorkerClient = (): PythonWorkerClient => {
@@ -189,7 +212,7 @@ test('Python prepared provider executes a case vector in one warmed worker', asy
         calls.push({ worker, method: 'prepare' });
         return {
           success: true as const,
-          artifact: artifact(call.mode),
+          artifact: artifact(call.mode, 'algorithm-fast'),
           mode: call.mode,
           consoleOutput: [],
         };
@@ -250,6 +273,602 @@ test('Python prepared provider executes a case vector in one warmed worker', asy
         .map((call) => call.worker)
     ).size,
     1
+  );
+  await preparation.program.dispose();
+  provider.terminate();
+});
+
+test('Python judge-compatible provider retains one worker for the generic case batch', async () => {
+  const calls: Array<{ worker: number; method: string }> = [];
+  let nextWorker = 0;
+  const createWorkerClient = (): PythonWorkerClient => {
+    const worker = nextWorker++;
+    return {
+      async warmup() {
+        calls.push({ worker, method: 'warmup' });
+        return { success: true, loadTimeMs: 1 };
+      },
+      async prepareProgram(call: RuntimeProgramPreparationCall) {
+        calls.push({ worker, method: 'prepare' });
+        return {
+          success: true as const,
+          artifact: artifact(call.mode, 'judge-compatible'),
+          mode: call.mode,
+          consoleOutput: [],
+        };
+      },
+      async executePreparedCodeBatch(
+        _handle: unknown,
+        call: { inputBatch: readonly Record<string, unknown>[] }
+      ): Promise<CodeExecutionBatchResult> {
+        calls.push({ worker, method: 'execute-batch' });
+        return {
+          results: call.inputBatch.map((inputs) => ({
+            kind: 'completed' as const,
+            output: inputs.value,
+            consoleOutput: [],
+          })),
+        };
+      },
+      terminate() {
+        calls.push({ worker, method: 'terminate' });
+      },
+    } as unknown as PythonWorkerClient;
+  };
+  const provider = createPythonPreparedExecutionProvider({ createWorkerClient });
+  const preparation = await provider.prepareProgram(preparationCall());
+  assert.equal(preparation.kind, 'prepared');
+  if (
+    preparation.kind !== 'prepared' ||
+    preparation.program.mode !== 'code' ||
+    !preparation.program.executeBatchIsolated
+  ) {
+    return;
+  }
+
+  const results = await preparation.program.executeBatchIsolated({
+    inputBatch: [{ value: 1 }, { value: 2 }, { value: 3 }],
+  });
+  assert.deepEqual(
+    results.map((result) =>
+      result.kind === 'completed' ? result.output : undefined
+    ),
+    [1, 2, 3]
+  );
+  assert.equal(calls.filter((call) => call.method === 'execute-batch').length, 1);
+  assert.equal(calls.filter((call) => call.method === 'execute-code').length, 0);
+  assert.equal(
+    calls.find((call) => call.method === 'prepare')?.worker,
+    calls.find((call) => call.method === 'execute-batch')?.worker
+  );
+  await preparation.program.dispose();
+  provider.terminate();
+});
+
+test('Python algorithm-fast driver failure retries each case in a hard-isolated worker', async () => {
+  const calls: Array<{ worker: number; method: string }> = [];
+  let nextWorker = 0;
+  const createWorkerClient = (): PythonWorkerClient => {
+    const worker = nextWorker++;
+    return {
+      async warmup() {
+        calls.push({ worker, method: 'warmup' });
+        return { success: true, loadTimeMs: 1 };
+      },
+      async prepareProgram(call: RuntimeProgramPreparationCall) {
+        calls.push({ worker, method: 'prepare' });
+        return {
+          success: true as const,
+          artifact: artifact(call.mode, 'algorithm-fast'),
+          mode: call.mode,
+          consoleOutput: [],
+        };
+      },
+      async executePreparedCodeBatch() {
+        calls.push({ worker, method: 'execute-batch' });
+        throw new PythonAlgorithmFastBatchUnavailableError();
+      },
+      async executePreparedCode(
+        _handle: unknown,
+        call: { inputs: Record<string, unknown> }
+      ): Promise<CodeExecutionResult> {
+        calls.push({ worker, method: 'execute-code' });
+        return {
+          kind: 'completed',
+          output: call.inputs.value,
+          consoleOutput: [],
+        };
+      },
+      terminate() {
+        calls.push({ worker, method: 'terminate' });
+      },
+    } as unknown as PythonWorkerClient;
+  };
+  const provider = createPythonPreparedExecutionProvider({ createWorkerClient });
+  const preparation = await provider.prepareProgram(preparationCall());
+  assert.equal(preparation.kind, 'prepared');
+  if (
+    preparation.kind !== 'prepared' ||
+    preparation.program.mode !== 'code' ||
+    !preparation.program.executeBatchIsolated
+  ) {
+    return;
+  }
+
+  const results = await preparation.program.executeBatchIsolated({
+    inputBatch: [{ value: 1 }, { value: 2 }, { value: 3 }],
+  });
+  assert.deepEqual(
+    results.map((result) =>
+      result.kind === 'completed' ? result.output : undefined
+    ),
+    [1, 2, 3]
+  );
+  const batchExecutions = calls.filter(
+    (call) => call.method === 'execute-batch'
+  );
+  const compatibilityExecutions = calls.filter(
+    (call) => call.method === 'execute-code'
+  );
+  assert.equal(batchExecutions.length, 1);
+  assert.equal(compatibilityExecutions.length, 3);
+  assert.equal(
+    new Set([
+      ...batchExecutions.map((call) => call.worker),
+      ...compatibilityExecutions.map((call) => call.worker),
+    ]).size,
+    4
+  );
+  await preparation.program.dispose();
+  provider.terminate();
+});
+
+test('Python trace batches retire one outer worker per selected case', async () => {
+  const calls: Array<{ worker: number; method: string }> = [];
+  let nextWorker = 0;
+  const createWorkerClient = (): PythonWorkerClient => {
+    const worker = nextWorker++;
+    return {
+      async warmup() {
+        calls.push({ worker, method: 'warmup' });
+        return { success: true, loadTimeMs: 1 };
+      },
+      async prepareProgram(call: RuntimeProgramPreparationCall) {
+        calls.push({ worker, method: 'prepare' });
+        return {
+          success: true as const,
+          artifact: artifact(call.mode, 'algorithm-fast'),
+          mode: call.mode,
+          consoleOutput: [],
+        };
+      },
+      async executePreparedTrace(
+        _handle: unknown,
+        call: { inputs: Record<string, unknown> }
+      ) {
+        calls.push({ worker, method: 'execute-trace' });
+        return {
+          success: true,
+          output: call.inputs.value,
+          executionTimeMs: 1,
+          consoleOutput: [],
+        };
+      },
+      terminate() {
+        calls.push({ worker, method: 'terminate' });
+      },
+    } as unknown as PythonWorkerClient;
+  };
+  const provider = createPythonPreparedExecutionProvider({ createWorkerClient });
+  const preparation = await provider.prepareProgram(preparationCall('trace'));
+  assert.equal(preparation.kind, 'prepared');
+  if (
+    preparation.kind !== 'prepared' ||
+    preparation.program.mode !== 'trace' ||
+    !preparation.program.executeBatchIsolated
+  ) {
+    return;
+  }
+
+  const results = await preparation.program.executeBatchIsolated({
+    inputBatch: [{ value: 1 }, { value: 2 }, { value: 3 }],
+  });
+  assert.deepEqual(
+    results.map((result) =>
+      result.kind === 'completed' ? result.output : undefined
+    ),
+    [1, 2, 3]
+  );
+  const traceExecutions = calls.filter(
+    (call) => call.method === 'execute-trace'
+  );
+  assert.equal(traceExecutions.length, 3);
+  assert.equal(
+    calls.filter((call) => call.method === 'execute-trace-batch').length,
+    0
+  );
+  assert.equal(new Set(traceExecutions.map((call) => call.worker)).size, 3);
+  await assert.rejects(
+    preparation.program.executeBatchIsolated({
+      inputBatch: [{ value: 1 }, { value: 2 }, { value: 3 }],
+      traceEnabledBatch: [true],
+    }),
+    /one boolean per batch case/
+  );
+  await assert.rejects(
+    preparation.program.executeBatchIsolated({
+      inputBatch: [{ value: 1 }, { value: 2 }, { value: 3 }],
+      traceEnabledBatch: [true, 0, false] as unknown as boolean[],
+    }),
+    /one boolean per batch case/
+  );
+  await preparation.program.dispose();
+  provider.terminate();
+});
+
+test('Python hard-isolated batches retire one outer worker per case', async () => {
+  const calls: Array<{ worker: number; method: string }> = [];
+  let nextWorker = 0;
+  const createWorkerClient = (): PythonWorkerClient => {
+    const worker = nextWorker++;
+    return {
+      async warmup() {
+        calls.push({ worker, method: 'warmup' });
+        return { success: true, loadTimeMs: 1 };
+      },
+      async prepareProgram(call: RuntimeProgramPreparationCall) {
+        calls.push({ worker, method: 'prepare' });
+        return {
+          success: true as const,
+          artifact: artifact(call.mode),
+          mode: call.mode,
+          consoleOutput: [],
+        };
+      },
+      async executePreparedCode(
+        _handle: unknown,
+        call: { inputs: Record<string, unknown> }
+      ): Promise<CodeExecutionResult> {
+        calls.push({ worker, method: 'execute-code' });
+        return {
+          kind: 'completed',
+          output: call.inputs.value,
+          consoleOutput: [],
+        };
+      },
+      terminate() {
+        calls.push({ worker, method: 'terminate' });
+      },
+    } as unknown as PythonWorkerClient;
+  };
+  const provider = createPythonPreparedExecutionProvider({ createWorkerClient });
+  const preparation = await provider.prepareProgram(preparationCall());
+  assert.equal(preparation.kind, 'prepared');
+  if (
+    preparation.kind !== 'prepared' ||
+    preparation.program.mode !== 'code' ||
+    !preparation.program.executeBatchIsolated
+  ) {
+    return;
+  }
+
+  const results = await preparation.program.executeBatchIsolated({
+    inputBatch: [{ value: 1 }, { value: 2 }, { value: 3 }],
+  });
+  assert.deepEqual(
+    results.map((result) =>
+      result.kind === 'completed' ? result.output : undefined
+    ),
+    [1, 2, 3]
+  );
+  const executions = calls.filter((call) => call.method === 'execute-code');
+  assert.equal(executions.length, 3);
+  assert.equal(new Set(executions.map((call) => call.worker)).size, 3);
+  assert.equal(calls.filter((call) => call.method === 'execute-batch').length, 0);
+  await preparation.program.dispose();
+  provider.terminate();
+});
+
+test('Python hard-isolated batches preserve per-case client timeout outcomes and continue', async () => {
+  const calls: Array<{ worker: number; method: string }> = [];
+  let nextWorker = 0;
+  const createWorkerClient = (): PythonWorkerClient => {
+    const worker = nextWorker++;
+    return {
+      async warmup() {
+        calls.push({ worker, method: 'warmup' });
+        return { success: true, loadTimeMs: 1 };
+      },
+      async prepareProgram(call: RuntimeProgramPreparationCall) {
+        calls.push({ worker, method: 'prepare' });
+        return {
+          success: true as const,
+          artifact: artifact(call.mode),
+          mode: call.mode,
+          consoleOutput: [],
+        };
+      },
+      async executePreparedCode(
+        _handle: unknown,
+        call: { inputs: Record<string, unknown> }
+      ): Promise<CodeExecutionResult> {
+        calls.push({ worker, method: 'execute-code' });
+        if (call.inputs.value === 2) {
+          throw new ExecutionTimeoutError({
+            timeoutMs: 5,
+            runtimeLabel: 'Python',
+          });
+        }
+        return {
+          kind: 'completed',
+          output: call.inputs.value,
+          consoleOutput: [],
+        };
+      },
+      terminate() {
+        calls.push({ worker, method: 'terminate' });
+      },
+    } as unknown as PythonWorkerClient;
+  };
+  const provider = createPythonPreparedExecutionProvider({ createWorkerClient });
+  const preparation = await provider.prepareProgram(preparationCall());
+  assert.equal(preparation.kind, 'prepared');
+  if (
+    preparation.kind !== 'prepared' ||
+    preparation.program.mode !== 'code' ||
+    !preparation.program.executeBatchIsolated
+  ) {
+    return;
+  }
+
+  const results = await preparation.program.executeBatchIsolated({
+    inputBatch: [{ value: 1 }, { value: 2 }, { value: 3 }],
+    limits: { wallClockMs: 5 },
+  });
+  assert.equal(results.length, 3);
+  assert.deepEqual(results[0], {
+    kind: 'completed',
+    output: 1,
+    consoleOutput: [],
+  });
+  assert.deepEqual(results[1], {
+    kind: 'limit',
+    reason: 'client-timeout',
+    error: 'Python execution timed out after 0 seconds.',
+    consoleOutput: [],
+    timings: {
+      totalMs: 5,
+      runMs: 5,
+      artifactCacheHit: true,
+    },
+  });
+  assert.deepEqual(results[2], {
+    kind: 'completed',
+    output: 3,
+    consoleOutput: [],
+  });
+  const executions = calls.filter((call) => call.method === 'execute-code');
+  assert.equal(executions.length, 3);
+  assert.equal(new Set(executions.map((call) => call.worker)).size, 3);
+  await preparation.program.dispose();
+  provider.terminate();
+});
+
+test('Python judge-compatible batch contains worker crashes in the failing case', async () => {
+  const calls: Array<{ worker: number; value: unknown }> = [];
+  let nextWorker = 0;
+  const createWorkerClient = (): PythonWorkerClient => {
+    const worker = nextWorker++;
+    return {
+      async warmup() {
+        return { success: true, loadTimeMs: 1 };
+      },
+      async prepareProgram(call: RuntimeProgramPreparationCall) {
+        return {
+          success: true as const,
+          artifact: artifact(call.mode, 'judge-compatible'),
+          mode: call.mode,
+          consoleOutput: [],
+        };
+      },
+      async executePreparedCodeBatch(
+        _handle: unknown,
+        call: { inputBatch: readonly Record<string, unknown>[] }
+      ): Promise<CodeExecutionBatchResult> {
+        calls.push({ worker, value: call.inputBatch.map((inputs) => inputs.value) });
+        return {
+          results: call.inputBatch.map((inputs) =>
+            inputs.value === 1
+              ? {
+                  kind: 'failed' as const,
+                  error: 'Python worker failed while executing this case: synthetic worker crash',
+                  consoleOutput: [],
+                }
+              : {
+                  kind: 'completed' as const,
+                  output: inputs.value,
+                  consoleOutput: [],
+                }
+          ),
+        };
+      },
+      terminate() {},
+    } as unknown as PythonWorkerClient;
+  };
+  const provider = createPythonPreparedExecutionProvider({ createWorkerClient });
+  const preparation = await provider.prepareProgram(preparationCall());
+  assert.equal(preparation.kind, 'prepared');
+  if (
+    preparation.kind !== 'prepared' ||
+    preparation.program.mode !== 'code' ||
+    !preparation.program.executeBatchIsolated
+  ) return;
+
+  const results = await preparation.program.executeBatchIsolated({
+    inputBatch: [{ value: 1 }, { value: 2 }],
+  });
+  assert.deepEqual(results, [
+    {
+      kind: 'failed',
+      error:
+        'Python worker failed while executing this case: synthetic worker crash',
+      consoleOutput: [],
+    },
+    { kind: 'completed', output: 2, consoleOutput: [] },
+  ]);
+  assert.deepEqual(calls, [
+    { worker: 0, value: [1, 2] },
+  ]);
+  await preparation.program.dispose();
+  provider.terminate();
+});
+
+test('Python aggregate timeout never falls back to a second hard-isolation budget', async (context) => {
+  context.mock.timers.enable({ apis: ['setTimeout'] });
+  const calls: Array<{ worker: number; method: string }> = [];
+  let nextWorker = 0;
+  const createWorkerClient = (): PythonWorkerClient => {
+    const worker = nextWorker++;
+    return {
+      async warmup() {
+        calls.push({ worker, method: 'warmup' });
+        return { success: true, loadTimeMs: 1 };
+      },
+      async prepareProgram(call: RuntimeProgramPreparationCall) {
+        calls.push({ worker, method: 'prepare' });
+        return {
+          success: true as const,
+          artifact: artifact(call.mode, 'algorithm-fast'),
+          mode: call.mode,
+          consoleOutput: [],
+        };
+      },
+      async executePreparedCodeBatch(
+        _handle: unknown,
+        call: { signal?: AbortSignal }
+      ): Promise<CodeExecutionBatchResult> {
+        calls.push({ worker, method: 'execute-batch' });
+        return new Promise<CodeExecutionBatchResult>((_resolve, reject) => {
+          const rejectFromAbort = () =>
+            reject(
+              call.signal?.reason ?? new DOMException('Aborted', 'AbortError')
+            );
+          if (call.signal?.aborted) {
+            rejectFromAbort();
+            return;
+          }
+          call.signal?.addEventListener('abort', rejectFromAbort, {
+            once: true,
+          });
+        });
+      },
+      async executePreparedCode(): Promise<CodeExecutionResult> {
+        calls.push({ worker, method: 'execute-code' });
+        throw new Error('Hard-isolated execution must not start');
+      },
+      terminate() {
+        calls.push({ worker, method: 'terminate' });
+      },
+    } as unknown as PythonWorkerClient;
+  };
+  const provider = createPythonPreparedExecutionProvider({ createWorkerClient });
+  const preparation = await provider.prepareProgram(preparationCall());
+  assert.equal(preparation.kind, 'prepared');
+  if (
+    preparation.kind !== 'prepared' ||
+    preparation.program.mode !== 'code' ||
+    !preparation.program.executeBatchIsolated
+  ) {
+    return;
+  }
+
+  const execution = preparation.program.executeBatchIsolated({
+    inputBatch: [{ value: 1 }, { value: 2 }],
+    limits: { wallClockMs: 1 },
+  });
+  await waitUntil(
+    () => calls.some((call) => call.method === 'execute-batch'),
+    'Fast batch execution did not start'
+  );
+  context.mock.timers.tick(calculatePythonCodeBatchDeadlineMs(2, 1));
+  await assert.rejects(execution, /Python batch execution timed out/);
+  assert.equal(
+    calls.filter((call) => call.method === 'execute-batch').length,
+    1
+  );
+  assert.equal(
+    calls.filter((call) => call.method === 'execute-code').length,
+    0,
+    'An aggregate timeout must not trigger compatibility execution'
+  );
+  await preparation.program.dispose();
+  provider.terminate();
+});
+
+test('Python judge-compatible batch retains one worker across the aggregate budget', async () => {
+  const calls: Array<{ worker: number; method: string }> = [];
+  let nextWorker = 0;
+  const createWorkerClient = (): PythonWorkerClient => {
+    const worker = nextWorker++;
+    return {
+      async warmup() {
+        calls.push({ worker, method: 'warmup' });
+        return { success: true, loadTimeMs: 1 };
+      },
+      async prepareProgram(call: RuntimeProgramPreparationCall) {
+        calls.push({ worker, method: 'prepare' });
+        return {
+          success: true as const,
+          artifact: artifact(call.mode, 'judge-compatible'),
+          mode: call.mode,
+          consoleOutput: [],
+        };
+      },
+      async executePreparedCodeBatch(
+        _handle: unknown,
+        call: { inputBatch: readonly Record<string, unknown>[] }
+      ): Promise<CodeExecutionBatchResult> {
+        calls.push({ worker, method: 'execute-batch' });
+        return {
+          results: call.inputBatch.map((inputs) => ({
+            kind: 'completed' as const,
+            output: inputs.value,
+            consoleOutput: [],
+          })),
+        };
+      },
+      terminate() {
+        calls.push({ worker, method: 'terminate' });
+      },
+    } as unknown as PythonWorkerClient;
+  };
+  const provider = createPythonPreparedExecutionProvider({ createWorkerClient });
+  const preparation = await provider.prepareProgram(preparationCall());
+  assert.equal(preparation.kind, 'prepared');
+  if (
+    preparation.kind !== 'prepared' ||
+    preparation.program.mode !== 'code' ||
+    !preparation.program.executeBatchIsolated
+  ) {
+    return;
+  }
+
+  const execution = preparation.program.executeBatchIsolated({
+    inputBatch: [{ value: 1 }, { value: 2 }],
+    limits: { wallClockMs: 1 },
+  });
+  const results = await execution;
+  assert.deepEqual(
+    results.map((result) =>
+      result.kind === 'completed' ? result.output : undefined
+    ),
+    [1, 2]
+  );
+  assert.equal(calls.filter((call) => call.method === 'execute-batch').length, 1);
+  assert.equal(
+    calls.filter((call) => call.method === 'warmup').length,
+    1,
+    'Judge-compatible batches should retain one warm worker'
   );
   await preparation.program.dispose();
   provider.terminate();

@@ -6,6 +6,38 @@ This repo uses Git tags as release boundaries. Version notes below summarize wha
 
 ## [Unreleased]
 
+### Added
+
+- Added the `algorithmBatchBoundary` runtime capability and
+  `algorithmFastBatch` execution timing so Judge consumers can identify the
+  Python reduced-capability batch path without treating the runner as the
+  enforcement authority.
+- Added the exported `PythonAlgorithmFastBatchUnavailableError` signal used to
+  retire an unavailable fast worker before hard-isolated retry.
+- Added `serialization-limit` to `ExecutionLimitReason` so oversized Judge
+  outputs fail explicitly instead of being silently truncated.
+
+### Changed
+
+- Python prepared artifacts now use schema v4 and carry an immutable isolation
+  profile. Cached artifacts from older harness releases must be prepared again.
+- Python correctness batches now select one of three artifact-derived tiers:
+  admitted code uses one reduced-capability worker, generic algorithm-scoped
+  code and traced correctness use one retained worker with the full rollback
+  guard, and known ambient, reflective, or shared-runtime capabilities use a
+  fresh outer Pyodide worker per case. Custom node materialization moves from
+  the reduced driver to the retained generic tier before learner code starts.
+- Python batch deadlines now charge only active runtime calls, not fresh-worker
+  acquisition, while aggregate expiry still returns no partial results and
+  never starts a second hard-isolation budget. Execute-result serialization is
+  byte-bounded with separate expansion guards and polls the active per-case
+  deadline; retained batches keep compact encoded envelopes under a 32 MiB
+  aggregate ceiling. Fast-path admission routes code that can suppress the
+  hard per-case limit signal through the fresh-worker hard-isolated path.
+  The retained generic tier now enforces the same case-local wall-clock signal
+  from learner module execution through the target call; catch-all handlers
+  and reserved guard-name collisions select hard isolation before execution.
+
 ## [0.17.0] - 2026-08-25
 
 This release establishes the capability boundary for algorithm Judge

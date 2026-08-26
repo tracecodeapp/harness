@@ -152,7 +152,8 @@ export async function runBrowserAlgorithmBatch(
   selectedLanguages: readonly BatchLanguage[] = BATCH_FIXTURES.map(
     (fixture) => fixture.language
   ),
-  csharpBatchConcurrency = 4
+  csharpBatchConcurrency = 4,
+  pythonCompatibilityCaseCount = 3
 ): Promise<unknown> {
   const NativeWorker = globalThis.Worker;
   const workerUrls: string[] = [];
@@ -315,6 +316,89 @@ export async function runBrowserAlgorithmBatch(
         const traceMaximumActiveWorkers = maximumActiveWorkers;
         const traceWorkerUrls = workerUrls.splice(0);
 
+        let compatibilityIsolation:
+          | ReturnType<typeof receiptSummary>
+          | undefined;
+        let compatibilityIsolationWorkerUrls: string[] | undefined;
+        let compatibilityIsolationMaximumActiveWorkers: number | undefined;
+        let compatibilityIsolationMs: number | undefined;
+        let judgeFallbackIsolation:
+          | ReturnType<typeof receiptSummary>
+          | undefined;
+        let judgeFallbackIsolationWorkerUrls: string[] | undefined;
+        let judgeFallbackIsolationMaximumActiveWorkers: number | undefined;
+        let judgeFallbackIsolationMs: number | undefined;
+        if (fixture.language === 'python') {
+          const compatibilityBundle = await createAlgorithmJudgeBundle({
+            id: 'browser-python-compatibility-nested-state-isolation',
+            language: 'python',
+            code: [
+              'sink = json.JSONEncoder',
+              'def solve(value):',
+              '    try:',
+              '        before = sink.tracecode_case_leak',
+              '    except AttributeError:',
+              '        before = None',
+              '    sink.tracecode_case_leak = value',
+              '    return before',
+            ].join('\n'),
+            functionName: 'solve',
+            cases: Array.from(
+              { length: pythonCompatibilityCaseCount },
+              (_, index) => ({
+                id: `compatibility-case-${index + 1}`,
+                input: { value: index + 1 },
+                expected: null,
+              })
+            ),
+          });
+          maximumActiveWorkers = activeWorkers;
+          const compatibilityStartedAt = performance.now();
+          const compatibilityReceipt = await host.evaluateAlgorithm({
+            bundle: compatibilityBundle,
+          });
+          compatibilityIsolationMs =
+            performance.now() - compatibilityStartedAt;
+          compatibilityIsolation = receiptSummary(compatibilityReceipt);
+          compatibilityIsolationMaximumActiveWorkers = maximumActiveWorkers;
+          compatibilityIsolationWorkerUrls = workerUrls.splice(0);
+
+          const judgeFallbackBundle = await createAlgorithmJudgeBundle({
+            id: 'browser-python-fast-artifact-custom-input-judge-fallback',
+            language: 'python',
+            code: [
+              'def solve(value, root):',
+              '    return value + root.val',
+            ].join('\n'),
+            functionName: 'solve',
+            cases: Array.from(
+              { length: pythonCompatibilityCaseCount },
+              (_, index) => ({
+              id: `judge-fallback-case-${index + 1}`,
+              input: {
+                value: index + 1,
+                root: {
+                  val: index + 1,
+                  left: null,
+                  right: null,
+                },
+              },
+              expected: (index + 1) * 2,
+              })
+            ),
+          });
+          maximumActiveWorkers = activeWorkers;
+          const judgeFallbackStartedAt = performance.now();
+          const judgeFallbackReceipt = await host.evaluateAlgorithm({
+            bundle: judgeFallbackBundle,
+          });
+          judgeFallbackIsolationMs =
+            performance.now() - judgeFallbackStartedAt;
+          judgeFallbackIsolation = receiptSummary(judgeFallbackReceipt);
+          judgeFallbackIsolationMaximumActiveWorkers = maximumActiveWorkers;
+          judgeFallbackIsolationWorkerUrls = workerUrls.splice(0);
+        }
+
         results[fixture.language] = {
           plain: receiptSummary(plainReceipt),
           plainMs,
@@ -324,6 +408,18 @@ export async function runBrowserAlgorithmBatch(
           traceMs,
           traceMaximumActiveWorkers,
           traceWorkerUrls,
+          ...(compatibilityIsolation
+            ? {
+                compatibilityIsolation,
+                compatibilityIsolationWorkerUrls,
+                compatibilityIsolationMaximumActiveWorkers,
+                compatibilityIsolationMs,
+                judgeFallbackIsolation,
+                judgeFallbackIsolationWorkerUrls,
+                judgeFallbackIsolationMaximumActiveWorkers,
+                judgeFallbackIsolationMs,
+              }
+            : {}),
           ...(fixture.language === 'csharp'
             ? { csharpBatchConcurrency, trustedPrewarm }
             : {}),

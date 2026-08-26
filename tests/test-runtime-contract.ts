@@ -1823,8 +1823,10 @@ async function main(): Promise<void> {
   assertCondition(
     pythonProfile.capabilities.execution.isolation.safeForUntrustedReuse &&
       pythonProfile.capabilities.execution.isolation.boundary === 'fresh-worker' &&
-      pythonProfile.capabilities.execution.isolation.unsafeReuseBoundary === 'interpreter-cleanup',
-    'Python should default to a fresh worker and expose interpreter cleanup only as unsafe reuse'
+      pythonProfile.capabilities.execution.isolation.unsafeReuseBoundary === 'interpreter-cleanup' &&
+      pythonProfile.capabilities.execution.isolation.algorithmBatchBoundary ===
+        'guarded-fresh-namespace',
+    'Python should expose fresh-worker execution plus guarded fresh namespaces for admitted batches'
   );
   assertCondition(
     !pythonProfile.capabilities.execution.compilation.required &&
@@ -2153,6 +2155,109 @@ function compute(nums: number[], delta: number): number[] {
   assertCondition(
     typeof javascriptError.error === 'string' && javascriptError.error.length > 0,
     'JavaScript missing function case should include error'
+  );
+  const pythonSerializationLimit = runPythonCase(
+    'def solve():\n    return "x" * (9 * 1024 * 1024)\n',
+    'solve',
+    {}
+  );
+  assertCondition(
+    pythonSerializationLimit.success === false &&
+      pythonSerializationLimit.error?.includes('serialization-limit') === true,
+    `Python subprocess execution should report serialization limits as JSON: ${JSON.stringify(pythonSerializationLimit)}`
+  );
+  const pythonLargeMatrix = runPythonCase(
+    'def solve():\n    return [[1] * 100 for _ in range(100)]\n',
+    'solve',
+    {}
+  );
+  assertCondition(
+    pythonLargeMatrix.success === true &&
+      Array.isArray(pythonLargeMatrix.output) &&
+      pythonLargeMatrix.output.length === 100 &&
+      Array.isArray(pythonLargeMatrix.output[0]) &&
+      pythonLargeMatrix.output[0].length === 100,
+    `Legitimate nested Python output should remain executable: ${JSON.stringify(pythonLargeMatrix)}`
+  );
+  const pythonSerializationOverride = runPythonCase(
+    [
+      'class EmptyEncoder:',
+      '    def encode(self, value):',
+      '        return ""',
+      'json.JSONEncoder.iterencode = lambda self, value, _one_shot=False: ["\\\"forged\\\""]',
+      'json.encoder.encode_basestring_ascii = lambda value: "\\\"forged\\\""',
+      '_MAX_SERIALIZED_ITEMS = 10**18',
+      '_MAX_SERIALIZED_NODES = 10**18',
+      '_MAX_SERIALIZED_BYTES = 10**18',
+      '_serialize = lambda *args, **kwargs: "bypass"',
+      '_TracecodeSerializationLimit = Exception',
+      'json.JSONEncoder = EmptyEncoder',
+      'json.dumps = lambda *args, **kwargs: ""',
+      'def solve():',
+      '    return "x" * (9 * 1024 * 1024)',
+      '',
+    ].join('\n'),
+    'solve',
+    {}
+  );
+  assertCondition(
+    pythonSerializationOverride.success === false &&
+      pythonSerializationOverride.error?.includes('serialization-limit') === true,
+    `Python serialization limits must survive learner global overrides: ${JSON.stringify(pythonSerializationOverride)}`
+  );
+  const pythonDerivedNodes = runPythonCase(
+    [
+      'class TreeChild(TreeNode):',
+      '    pass',
+      'class ListChild(ListNode):',
+      '    pass',
+      'class TextChild(str):',
+      '    pass',
+      'class IntChild(int):',
+      '    pass',
+      'class FloatChild(float):',
+      '    pass',
+      'class Pretender:',
+      '    @property',
+      '    def __class__(self):',
+      '        return TreeNode',
+      '    def __init__(self, value):',
+      '        self.val = value',
+      'def solve():',
+      '    root = TreeChild(1, TreeChild(2))',
+      '    head = ListChild(3, ListChild(4))',
+      '    return [root, head, Pretender(5), TextChild("tag"), IntChild(6), FloatChild(7.5)]',
+      '',
+    ].join('\n'),
+    'solve',
+    {}
+  );
+  assertCondition(
+    pythonDerivedNodes.success === true &&
+      JSON.stringify(pythonDerivedNodes.output) ===
+        JSON.stringify([
+          {
+            __type__: 'TreeNode',
+            val: 1,
+            left: {
+              __type__: 'TreeNode',
+              val: 2,
+              left: null,
+              right: null,
+            },
+            right: null,
+          },
+          {
+            __type__: 'ListNode',
+            val: 3,
+            next: { __type__: 'ListNode', val: 4, next: null },
+          },
+          { __type__: 'Pretender', __class__: 'Pretender', val: 5 },
+          'tag',
+          6,
+          7.5,
+        ]),
+    `Python subclasses or hostile class metadata changed serialization shape: ${JSON.stringify(pythonDerivedNodes)}`
   );
   console.log('PASS: cross-runtime diagnostics contract');
 

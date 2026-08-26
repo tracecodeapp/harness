@@ -35,9 +35,7 @@ export const WORKER_REQUEST_MESSAGES: Readonly<Record<BrowserWorkerProtocolLangu
     'prepare-execution',
     'prewarm-executor',
     'execute-code',
-    'execute-code-batch',
     'execute-with-tracing',
-    'execute-trace-batch',
   ],
   java: [
     'init',
@@ -62,7 +60,6 @@ export const WORKER_REQUEST_MESSAGES: Readonly<Record<BrowserWorkerProtocolLangu
     'prepare-program',
     'execute-prepared-code',
     'execute-prepared-trace',
-    'execute-prepared-batch',
     'dispose-prepared-program',
     'execute-project-csharp',
   ],

@@ -33,6 +33,7 @@ export interface RuntimeExecutionTimings {
   hostCallMs?: number;
   compileCacheHit?: boolean;
   artifactCacheHit?: boolean;
+  algorithmFastBatch?: boolean;
 }
 
 /** Why an execution (or its trace recording) was stopped by a limit. */
@@ -43,6 +44,7 @@ export type ExecutionLimitReason =
   | 'single-line-limit'
   | 'recursion-limit'
   | 'memory-limit'
+  | 'serialization-limit'
   | 'client-timeout';
 
 /** Which pipeline stage produced a failure diagnostic. */

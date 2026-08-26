@@ -1,6 +1,8 @@
 name: CI
 
 on:
+  schedule:
+    - cron: "17 7 * * *"
   push:
     branches:
       - main
@@ -22,7 +24,7 @@ concurrency:
 jobs:
   smoke:
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 25
     steps:
       - uses: actions/checkout@v4
       - uses: pnpm/action-setup@v4
@@ -37,6 +39,8 @@ jobs:
       # dependency; publish TraceCC and TraceJVM before releasing Harness.
       - name: Install published engine releases
         run: pnpm install --frozen-lockfile
+      - name: Install Chromium for runtime boundary tests
+        run: pnpm exec playwright install --with-deps chromium
       - name: Check generated runtime metadata
         run: pnpm test:runtime-info-sync && pnpm test:kernel-policy-sync && pnpm test:typescript-project-libs-sync
       - name: Typecheck
@@ -45,11 +49,35 @@ jobs:
         run: pnpm test:tracekernel-capabilities
       - name: Check runtime asset identities and snapshot provenance
         run: pnpm test:runtime-assets-lock
+      - name: Test Python admission and prepared-runtime isolation
+        run: pnpm test:python-sync && pnpm test:runtime-contract && pnpm test:python-prepared-provider && pnpm test:native-python-serialization-limit
       - name: Test Python runtime snapshot release recovery
         run: node --import tsx --test tests/test-python-runtime-snapshot-release.ts
       - name: Build
         run: pnpm build
+      - name: Test Python public browser Judge boundary
+        run: TRACECODE_ALGORITHM_BATCH_LANGUAGES=python TRACECODE_PYTHON_COMPATIBILITY_CASES=3 pnpm exec tsx --tsconfig tsconfig.base.json tests/test-browser-algorithm-batch.ts
       - name: Test process and engine-lease regressions
         run: node --import tsx tests/test-browser-terminal-fidelity.ts && node --import tsx tests/test-tracekernel-workspace-processes.ts && node --import tsx tests/test-cpp-project-engine-lease.ts
       - name: Test package surfaces and smoke
         run: pnpm test:packaged-surface && pnpm test:smoke && pnpm test:asset-sync
+
+  judge-browser-boundary:
+    if: github.event_name == 'schedule'
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10.4.1
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - name: Install published engine releases
+        run: pnpm install --frozen-lockfile
+      - name: Install Chromium
+        run: pnpm exec playwright install --with-deps chromium
+      - name: Test the public browser Judge boundary
+        run: pnpm test:judge:browser

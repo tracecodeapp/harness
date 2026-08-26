@@ -1035,71 +1035,303 @@ const PYTHON_EXECUTE_SERIALIZE_FUNCTION_SNIPPET = resolveSharedPythonSnippet(
   'PYTHON_EXECUTE_SERIALIZE_FUNCTION',
   `
 _MAX_SERIALIZE_DEPTH = 48
+_MAX_SERIALIZED_ITEMS = 250000
+_MAX_SERIALIZED_NODES = 1000000
+_MAX_SERIALIZED_BYTES = 8 * 1024 * 1024
 
-def _serialize_repr_fallback(obj):
-    obj_type = getattr(obj, '__class__', None)
-    class_name = getattr(obj_type, '__name__', 'object')
-    if getattr(obj_type, '__module__', '') == 'builtins':
-        try:
-            repr_str = repr(obj)
-        except Exception:
-            return None
-        if repr_str.startswith('<') and repr_str.endswith('>'):
-            return None
-        return repr_str
-    return {"__type__": class_name, "__class__": class_name}
+class _TracecodeSerializationLimit(BaseException):
+    pass
 
-def _serialize(obj, depth=0):
-    if isinstance(obj, (bool, int, str, type(None))):
-        return obj
-    elif isinstance(obj, float):
-        if not math.isfinite(obj):
-            if math.isnan(obj):
-                return "NaN"
-            return "Infinity" if obj > 0 else "-Infinity"
-        return obj
-    if depth > _MAX_SERIALIZE_DEPTH:
-        return "<max depth>"
-    elif isinstance(obj, (_builtins.list, _builtins.tuple)):
-        return [_serialize(x, depth + 1) for x in obj]
-    elif getattr(obj, '__class__', None) and getattr(obj.__class__, '__name__', '') == 'deque':
-        return [_serialize(x, depth + 1) for x in obj]
-    elif isinstance(obj, _builtins.dict):
-        return {str(k): _serialize(v, depth + 1) for k, v in obj.items()}
-    elif isinstance(obj, set):
+def _tracecode_make_trusted_json_encoder(
+    builtins_module=_builtins,
+    escape_string=json.encoder.encode_basestring_ascii,
+):
+    builtin_type = builtins_module.type
+    builtin_none_type = builtin_type(None)
+    builtin_bool = builtins_module.bool
+    builtin_int = builtins_module.int
+    builtin_float = builtins_module.float
+    builtin_str = builtins_module.str
+    builtin_list = builtins_module.list
+    builtin_tuple = builtins_module.tuple
+    builtin_dict = builtins_module.dict
+    builtin_isinstance = builtins_module.isinstance
+    builtin_len = builtins_module.len
+    builtin_ord = builtins_module.ord
+    builtin_enumerate = builtins_module.enumerate
+    builtin_int_repr = builtin_int.__repr__
+    builtin_float_repr = builtin_float.__repr__
+    builtin_str_value = builtin_str.__str__
+
+    def consume_bytes(state, count):
+        next_count = state["bytes"] + count
+        if state["max_bytes"] is not None and next_count > state["max_bytes"]:
+            raise state["limit_type"]()
+        state["bytes"] = next_count
+
+    def encode_string(value, state):
+        # Normalize subclasses through str's captured base slot. Learner
+        # overrides of __len__, __iter__, or __str__ must not make the byte
+        # counter inspect different contents from the trusted JSON escaper.
+        exact_value = builtin_str_value(value)
+        if state["max_bytes"] is None:
+            return escape_string(exact_value)
+        # encode_basestring_ascii always emits ASCII. Count its exact output
+        # before materializing it so a short string containing high Unicode
+        # code points cannot expand far beyond the byte ceiling first.
+        if builtin_len(exact_value) + 2 > state["max_bytes"] - state["bytes"]:
+            raise state["limit_type"]()
+        encoded_bytes = 2
+        for index, character in builtin_enumerate(exact_value):
+            codepoint = builtin_ord(character)
+            if codepoint == 0x22 or codepoint == 0x5C:
+                encoded_bytes += 2
+            elif codepoint in (8, 12, 10, 13, 9):
+                encoded_bytes += 2
+            elif codepoint < 0x20:
+                encoded_bytes += 6
+            elif codepoint < 0x80:
+                encoded_bytes += 1
+            elif codepoint <= 0xFFFF:
+                encoded_bytes += 6
+            else:
+                encoded_bytes += 12
+            if encoded_bytes > state["max_bytes"] - state["bytes"]:
+                raise state["limit_type"]()
+            if index % 1024 == 0 and state["checkpoint"] is not None:
+                state["checkpoint"]()
+        consume_bytes(state, encoded_bytes)
+        return escape_string(exact_value)
+
+    def encode_value(value, state):
+        value_type = builtin_type(value)
+        if value_type is builtin_none_type:
+            consume_bytes(state, 4)
+            return 'null'
+        if value_type is builtin_bool:
+            encoded = 'true' if value else 'false'
+            consume_bytes(state, builtin_len(encoded))
+            return encoded
+        if value_type is builtin_int or builtin_isinstance(value, builtin_int):
+            encoded = builtin_int_repr(value)
+            consume_bytes(state, builtin_len(encoded))
+            return encoded
+        if value_type is builtin_float or builtin_isinstance(value, builtin_float):
+            encoded = builtin_float_repr(value)
+            consume_bytes(state, builtin_len(encoded))
+            return encoded
+        if value_type is builtin_str or builtin_isinstance(value, builtin_str):
+            return encode_string(value, state)
+        if value_type is builtin_list or value_type is builtin_tuple:
+            consume_bytes(state, 1)
+            encoded_items = []
+            for index, item in builtin_enumerate(value):
+                if index > 0:
+                    consume_bytes(state, 1)
+                encoded_items.append(encode_value(item, state))
+            consume_bytes(state, 1)
+            return '[' + ','.join(encoded_items) + ']'
+        if value_type is builtin_dict:
+            consume_bytes(state, 1)
+            encoded_items = []
+            for index, (key, item) in builtin_enumerate(value.items()):
+                if index > 0:
+                    consume_bytes(state, 1)
+                encoded_key = encode_string(key, state)
+                consume_bytes(state, 1)
+                encoded_items.append(encoded_key + ':' + encode_value(item, state))
+            consume_bytes(state, 1)
+            return '{' + ','.join(encoded_items) + '}'
+        raise builtins_module.TypeError(
+            'Trusted JSON envelope contains an unsupported value.'
+        )
+
+    def encode(value, max_bytes=None, limit_type=None, checkpoint=None):
+        if max_bytes is not None and limit_type is None:
+            raise builtins_module.TypeError(
+                'A trusted JSON byte limit requires a limit exception type.'
+            )
+        return encode_value(value, {
+            "bytes": 0,
+            "max_bytes": max_bytes,
+            "limit_type": limit_type,
+            "checkpoint": checkpoint,
+        })
+
+    return encode
+
+_tracecode_trusted_json_encode = _tracecode_make_trusted_json_encoder()
+
+def _tracecode_make_execute_serializer(
+    max_depth=_MAX_SERIALIZE_DEPTH,
+    max_items=_MAX_SERIALIZED_ITEMS,
+    max_nodes=_MAX_SERIALIZED_NODES,
+    builtins_module=_builtins,
+    math_module=math,
+    limit_type=_TracecodeSerializationLimit,
+    tree_node_type=TreeNode,
+    list_node_type=ListNode,
+):
+    builtin_base_exception = builtins_module.BaseException
+    builtin_exception = builtins_module.Exception
+    builtin_type_error = builtins_module.TypeError
+    builtin_bool = builtins_module.bool
+    builtin_int = builtins_module.int
+    builtin_float = builtins_module.float
+    builtin_str = builtins_module.str
+    builtin_type = builtins_module.type
+    builtin_none_type = builtin_type(None)
+    builtin_list = builtins_module.list
+    builtin_tuple = builtins_module.tuple
+    builtin_dict = builtins_module.dict
+    builtin_set = builtins_module.set
+    builtin_type_getattribute = builtins_module.type.__getattribute__
+    builtin_isinstance = builtins_module.isinstance
+    builtin_len = builtins_module.len
+    builtin_callable = builtins_module.callable
+    builtin_getattr = builtins_module.getattr
+    builtin_hasattr = builtins_module.hasattr
+    builtin_repr = builtins_module.repr
+    builtin_sorted = builtins_module.sorted
+    math_isfinite = math_module.isfinite
+    math_isnan = math_module.isnan
+
+    def serialize_checkpoint(state):
+        state["nodes"] += 1
+        if state["nodes"] > max_nodes:
+            raise limit_type()
+        if state["nodes"] % 64 == 0 and state["checkpoint"] is not None:
+            state["checkpoint"]()
+
+    def serialize_type_metadata(obj):
         try:
-            return {"__type__": "set", "values": sorted([_serialize(x, depth + 1) for x in obj])}
-        except TypeError:
-            return {"__type__": "set", "values": [_serialize(x, depth + 1) for x in obj]}
-    elif isinstance(obj, TreeNode):
-        result = {"__type__": "TreeNode", "val": _serialize(getattr(obj, 'val', getattr(obj, 'value', None)), depth + 1)}
-        if hasattr(obj, 'left'):
-            result["left"] = _serialize(obj.left, depth + 1)
-        if hasattr(obj, 'right'):
-            result["right"] = _serialize(obj.right, depth + 1)
-        return result
-    elif isinstance(obj, ListNode):
-        result = {"__type__": "ListNode", "val": _serialize(getattr(obj, 'val', getattr(obj, 'value', None)), depth + 1)}
-        result["next"] = _serialize(obj.next, depth + 1)
-        return result
-    elif callable(obj):
-        return None
-    elif hasattr(obj, '__dict__'):
-        class_name = getattr(getattr(obj, '__class__', None), '__name__', 'object')
-        result = {"__type__": class_name, "__class__": class_name}
+            obj_type = builtin_type(obj)
+            class_name = builtin_type_getattribute(obj_type, '__name__')
+            module_name = builtin_type_getattribute(obj_type, '__module__')
+        except builtin_base_exception:
+            return 'object', ''
+        if not builtin_isinstance(class_name, builtin_str):
+            class_name = 'object'
+        if not builtin_isinstance(module_name, builtin_str):
+            module_name = ''
+        return class_name, module_name
+
+    def serialize_inherits_from(obj, root_type):
         try:
-            raw_fields = getattr(obj, '__dict__', None)
-        except Exception:
-            raw_fields = None
-        if isinstance(raw_fields, _builtins.dict):
-            for key, value in raw_fields.items():
-                key_str = str(key)
-                if key_str.startswith('_') or callable(value):
-                    continue
-                result[key_str] = _serialize(value, depth + 1)
-        return result
-    else:
-        return _serialize_repr_fallback(obj)
+            obj_type = builtin_type(obj)
+            type_mro = builtin_type_getattribute(obj_type, '__mro__')
+        except builtin_base_exception:
+            return False
+        for entry in type_mro:
+            if entry is root_type:
+                return True
+        return False
+
+    def serialize_repr_fallback(obj):
+        class_name, module_name = serialize_type_metadata(obj)
+        if module_name == 'builtins':
+            try:
+                repr_str = builtin_repr(obj)
+            except builtin_exception:
+                return None
+            if repr_str.startswith('<') and repr_str.endswith('>'):
+                return None
+            return repr_str
+        return {"__type__": class_name, "__class__": class_name}
+
+    def serialize_value(obj, depth, state):
+        serialize_checkpoint(state)
+        if builtin_isinstance(
+            obj,
+            (builtin_bool, builtin_int, builtin_str, builtin_none_type),
+        ):
+            return obj
+        elif builtin_isinstance(obj, builtin_float):
+            if not math_isfinite(obj):
+                if math_isnan(obj):
+                    return "NaN"
+                return "Infinity" if obj > 0 else "-Infinity"
+            return obj
+        if depth > max_depth:
+            return "<max depth>"
+        if builtin_isinstance(obj, (builtin_list, builtin_tuple)):
+            if builtin_len(obj) > max_items:
+                raise limit_type()
+            return [serialize_value(value, depth + 1, state) for value in obj]
+        elif serialize_type_metadata(obj)[0] == 'deque':
+            if builtin_len(obj) > max_items:
+                raise limit_type()
+            return [serialize_value(value, depth + 1, state) for value in obj]
+        elif builtin_isinstance(obj, builtin_dict):
+            if builtin_len(obj) > max_items:
+                raise limit_type()
+            return {
+                builtin_str(key): serialize_value(value, depth + 1, state)
+                for key, value in obj.items()
+            }
+        elif builtin_isinstance(obj, builtin_set):
+            if builtin_len(obj) > max_items:
+                raise limit_type()
+            values = [serialize_value(value, depth + 1, state) for value in obj]
+            try:
+                values = builtin_sorted(values)
+            except builtin_type_error:
+                pass
+            return {"__type__": "set", "values": values}
+        elif serialize_inherits_from(obj, state["tree_node_type"]):
+            result = {"__type__": "TreeNode", "val": serialize_value(builtin_getattr(obj, 'val', builtin_getattr(obj, 'value', None)), depth + 1, state)}
+            if builtin_hasattr(obj, 'left'):
+                result["left"] = serialize_value(obj.left, depth + 1, state)
+            if builtin_hasattr(obj, 'right'):
+                result["right"] = serialize_value(obj.right, depth + 1, state)
+            return result
+        elif serialize_inherits_from(obj, state["list_node_type"]):
+            result = {"__type__": "ListNode", "val": serialize_value(builtin_getattr(obj, 'val', builtin_getattr(obj, 'value', None)), depth + 1, state)}
+            result["next"] = serialize_value(obj.next, depth + 1, state)
+            return result
+        elif builtin_callable(obj):
+            return None
+        elif builtin_hasattr(obj, '__dict__'):
+            class_name, _module_name = serialize_type_metadata(obj)
+            result = {"__type__": class_name, "__class__": class_name}
+            try:
+                raw_fields = builtin_getattr(obj, '__dict__', None)
+            except builtin_exception:
+                raw_fields = None
+            if builtin_isinstance(raw_fields, builtin_dict):
+                emitted = 0
+                for key, value in raw_fields.items():
+                    key_str = builtin_str(key)
+                    if key_str.startswith('_') or builtin_callable(value):
+                        continue
+                    if emitted >= max_items:
+                        raise limit_type()
+                    result[key_str] = serialize_value(value, depth + 1, state)
+                    emitted += 1
+            return result
+        else:
+            return serialize_repr_fallback(obj)
+
+    def serialize(
+        obj,
+        depth=0,
+        state=None,
+        checkpoint=None,
+        tree_node_root=tree_node_type,
+        list_node_root=list_node_type,
+    ):
+        if state is None:
+            state = {
+                "nodes": 0,
+                "checkpoint": checkpoint,
+                "tree_node_type": tree_node_root,
+                "list_node_type": list_node_root,
+            }
+        return serialize_value(obj, depth, state)
+
+    return serialize
+
+_serialize = _tracecode_make_execute_serializer()
 `
 );
 
@@ -1399,6 +1631,7 @@ function buildRuntimeDeps() {
     loadPyodideInstance,
     getPyodide: () => pyodide,
     performanceNow: () => performance.now(),
+    emitRuntimeDiagnostic,
   };
 }
 
@@ -1453,12 +1686,29 @@ async function executeWithTracing(code, functionName, inputs, executionStyle = '
 function guestGuardOptionsFromLimits(limits) {
   if (!limits || typeof limits !== 'object') return undefined;
   const guard = {};
-  if (Number.isFinite(limits.maxLineEvents)) guard.maxLineEvents = limits.maxLineEvents;
-  if (Number.isFinite(limits.maxSingleLineHits)) guard.maxSingleLineHits = limits.maxSingleLineHits;
-  if (Number.isFinite(limits.maxCallDepth)) guard.maxCallDepth = limits.maxCallDepth;
-  if (Number.isFinite(limits.maxMemoryBytes)) guard.maxMemoryBytes = limits.maxMemoryBytes;
+  let interviewGuard = false;
+  if (Number.isFinite(limits.wallClockMs) && limits.wallClockMs > 0) {
+    guard.wallClockMs = limits.wallClockMs;
+    interviewGuard = true;
+  }
+  if (Number.isFinite(limits.maxLineEvents)) {
+    guard.maxLineEvents = limits.maxLineEvents;
+    interviewGuard = true;
+  }
+  if (Number.isFinite(limits.maxSingleLineHits)) {
+    guard.maxSingleLineHits = limits.maxSingleLineHits;
+    interviewGuard = true;
+  }
+  if (Number.isFinite(limits.maxCallDepth)) {
+    guard.maxCallDepth = limits.maxCallDepth;
+    interviewGuard = true;
+  }
+  if (Number.isFinite(limits.maxMemoryBytes)) {
+    guard.maxMemoryBytes = limits.maxMemoryBytes;
+    interviewGuard = true;
+  }
   if (Object.keys(guard).length === 0) return undefined;
-  guard.interviewGuard = true;
+  if (interviewGuard) guard.interviewGuard = true;
   return guard;
 }
 
@@ -9215,7 +9465,8 @@ async function executePreparedPythonProgramBatch(
   artifact,
   inputBatch,
   limits,
-  traceEnabledBatch
+  traceEnabledBatch,
+  forceJudgeCompatible
 ) {
   await loadPyodideInstance();
   const runtimeCore = loadPyodideRuntimeCore();
@@ -9227,7 +9478,8 @@ async function executePreparedPythonProgramBatch(
       {
         guest: guestGuardOptionsFromLimits(limits),
       },
-      traceEnabledBatch
+      traceEnabledBatch,
+      forceJudgeCompatible
     )
   );
 }
@@ -9372,7 +9624,8 @@ async function processMessage(data) {
           payload?.artifact,
           payload?.inputBatch ?? [],
           payload?.limits,
-          payload?.traceEnabledBatch
+          payload?.traceEnabledBatch,
+          payload?.forceJudgeCompatible
         );
         analyzerInitialized = false;
         if (payload?.mode === 'trace') {

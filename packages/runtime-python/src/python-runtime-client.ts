@@ -3,6 +3,10 @@ import type {
   PythonProjectCommandRequest,
   PythonWorkerClient,
 } from './python-worker-client';
+import {
+  calculatePythonCodeBatchDeadlineMs,
+  PythonAlgorithmFastBatchUnavailableError,
+} from './python-worker-client';
 import type {
   RuntimeClient,
   RuntimeCodeCall,
@@ -33,10 +37,12 @@ import {
   type RuntimeTraceSourceSpan,
   type RuntimeTraceTarget,
 } from '@tracecode/runtime-contracts';
-import { assertRuntimeRequestSupported } from '@tracecode/runtime-browser/internal';
-import { getLanguageRuntimeProfile } from '@tracecode/runtime-browser/internal';
 import {
+  assertRuntimeRequestSupported,
+  ExecutionTimeoutError,
   executeRuntimeRequest,
+  getLanguageRuntimeProfile,
+  isExecutionTimeoutError,
   isRuntimeProjectExecuteRequest,
 } from '@tracecode/runtime-browser/internal';
 
@@ -59,6 +65,7 @@ const PYTHON_TIMEOUT_REASONS = new Set<ExecutionLimitReason>([
   'single-line-limit',
   'recursion-limit',
   'memory-limit',
+  'serialization-limit',
   'client-timeout',
 ]);
 const PYTHON_TRACE_TIMEOUT_REASONS = new Set([
@@ -69,6 +76,12 @@ const PYTHON_TRACE_TIMEOUT_REASONS = new Set([
   'recursion-limit',
   'memory-limit',
   'client-timeout',
+]);
+const PYTHON_WORKER_CASE_FAILURE_TAGS = new Set([
+  'WorkerCrashedError',
+  'WorkerReadyTimeoutError',
+  'WorkerRequestTimeoutError',
+  'WorkerTerminatedError',
 ]);
 const MAX_NORMALIZED_TRACE_EVENTS = 500000;
 const MAX_NORMALIZED_ARRAY_ITEMS = 256;
@@ -137,6 +150,18 @@ function normalizeStringArray(value: unknown): string[] {
   return value
     .filter((item): item is string => typeof item === 'string')
     .map((item) => normalizedString(item) ?? '');
+}
+
+function isPythonWorkerCaseFailure(error: unknown): error is Error {
+  return (
+    typeof error === 'object' &&
+    error !== null &&
+    '_tag' in error &&
+    typeof error._tag === 'string' &&
+    PYTHON_WORKER_CASE_FAILURE_TAGS.has(error._tag) &&
+    'message' in error &&
+    typeof error.message === 'string'
+  );
 }
 
 function normalizeExecutionTimings(value: unknown): RuntimeExecutionTimings | undefined {
@@ -510,6 +535,49 @@ function raceWithAbort<T>(
   });
 }
 
+class PythonBatchExecutionBudget {
+  private remainingMs: number;
+  private readonly timeoutError: ExecutionTimeoutError;
+
+  constructor(timeoutMs: number) {
+    this.remainingMs = timeoutMs;
+    this.timeoutError = new ExecutionTimeoutError({
+      timeoutMs,
+      runtimeLabel: 'Python batch',
+    });
+  }
+
+  async run<T>(
+    operation: (signal: AbortSignal) => Promise<T>,
+    signal?: AbortSignal
+  ): Promise<T> {
+    if (this.remainingMs <= 0) throw this.timeoutError;
+    const controller = new AbortController();
+    const unlink = linkAbortSignal(signal, controller);
+    const startedAt = globalThis.performance.now();
+    const timeout = globalThis.setTimeout(() => {
+      if (!controller.signal.aborted) controller.abort(this.timeoutError);
+    }, Math.max(1, Math.ceil(this.remainingMs)));
+    try {
+      return await raceWithAbort(
+        Promise.resolve().then(() => operation(controller.signal)),
+        controller.signal
+      );
+    } finally {
+      this.remainingMs = Math.max(
+        0,
+        this.remainingMs - (globalThis.performance.now() - startedAt)
+      );
+      globalThis.clearTimeout(timeout);
+      unlink();
+    }
+  }
+
+  isTimeout(error: unknown): boolean {
+    return error === this.timeoutError;
+  }
+}
+
 class PreparedPythonProgramLifetime {
   private phase: 'active' | 'disposing' | 'disposed' = 'active';
   private operationTail: Promise<void> = Promise.resolve();
@@ -551,30 +619,141 @@ class PreparedPythonProgramLifetime {
     );
   }
 
-  executeCodeBatch(
+  async executeCodeBatch(
     call: RuntimePreparedCodeBatchCall
   ): Promise<readonly CodeExecutionResult[]> {
-    return this.executeSerial(call.signal, async (client, signal) => {
-      const result = await client.executePreparedCodeBatch(this.handle, {
-        ...call,
-        signal,
+    const budget = new PythonBatchExecutionBudget(
+      calculatePythonCodeBatchDeadlineMs(
+        call.inputBatch.length,
+        call.limits?.wallClockMs
+      )
+    );
+    if (this.handle.artifact.mode !== 'code') {
+      return this.executeCompatibilityCodeBatch(call, budget);
+    }
+    if (this.handle.artifact.isolationProfile.tier === 'hard-isolated') {
+      return this.executeCompatibilityCodeBatch(call, budget);
+    }
+    if (this.handle.artifact.isolationProfile.tier === 'judge-compatible') {
+      return this.executeSerial(call.signal, async (client, signal) => {
+        const result = await client.executePreparedCodeBatch(this.handle, {
+          ...call,
+          signal,
+        });
+        return result.results ?? [];
       });
-      return result.results;
-    });
+    }
+    try {
+      return await this.executeSerial(call.signal, (client, signal) =>
+        budget.run(async (budgetSignal) => {
+          const result = await client.executePreparedCodeBatch(this.handle, {
+            ...call,
+            signal: budgetSignal,
+          });
+          return result.results;
+        }, signal)
+      );
+    } catch (error) {
+      if (!(error instanceof PythonAlgorithmFastBatchUnavailableError)) {
+        throw error;
+      }
+      return this.executeCompatibilityCodeBatch(call, budget);
+    }
   }
 
   executeTraceBatch(
     call: RuntimePreparedTraceBatchCall
   ): Promise<readonly ExecutionResult[]> {
-    return this.executeSerial(call.signal, async (client, signal) => {
-      const result = await client.executePreparedTraceBatch(this.handle, {
-        ...call,
-        signal,
-      });
-      return (result.results ?? []).map((entry) =>
-        normalizePythonExecutionResult(entry)
+    if (
+      call.traceEnabledBatch !== undefined &&
+      (
+        call.traceEnabledBatch.length !== call.inputBatch.length ||
+        call.traceEnabledBatch.some(
+          (enabled) => typeof enabled !== 'boolean'
+        )
+      )
+    ) {
+      return Promise.reject(
+        new TypeError(
+          'Python trace selection must contain one boolean per batch case.'
+        )
       );
-    });
+    }
+    // Trace instrumentation is a wider capability surface than correctness
+    // execution. Keep every selected trace in a fresh outer interpreter until
+    // the trace driver has a resettable realm with the same proof as the code
+    // fast path. Unselected correctness cases should use executeCodeBatch.
+    return this.executeCompatibilityTraceBatch(call);
+  }
+
+  private async executeCompatibilityCodeBatch(
+    call: RuntimePreparedCodeBatchCall,
+    budget: PythonBatchExecutionBudget
+  ): Promise<readonly CodeExecutionResult[]> {
+    const results: CodeExecutionResult[] = [];
+    for (const inputs of call.inputBatch) {
+      try {
+        results.push(
+          await this.executeSerial(call.signal, (client, signal) =>
+            budget.run(
+              (budgetSignal) =>
+                client.executePreparedCode(this.handle, {
+                  inputs,
+                  signal: budgetSignal,
+                  limits: call.limits,
+                }),
+              signal
+            )
+          )
+        );
+      } catch (error) {
+        if (budget.isTimeout(error)) throw error;
+        if (call.signal?.aborted) {
+          throw abortReason(
+            call.signal,
+            'Prepared Python batch execution was aborted.'
+          );
+        }
+        if (this.phase !== 'active') throw error;
+        if (isExecutionTimeoutError(error)) {
+          results.push({
+            kind: 'limit',
+            reason: 'client-timeout',
+            error: error.message,
+            consoleOutput: [],
+            timings: {
+              totalMs: error.timeoutMs,
+              runMs: error.timeoutMs,
+              artifactCacheHit: true,
+            },
+          });
+          continue;
+        }
+        if (!isPythonWorkerCaseFailure(error)) throw error;
+        results.push({
+          kind: 'failed',
+          error: `Python worker failed while executing this case: ${error.message}`,
+          consoleOutput: [],
+          timings: { artifactCacheHit: true },
+        });
+      }
+    }
+    return results;
+  }
+
+  private async executeCompatibilityTraceBatch(
+    call: RuntimePreparedTraceBatchCall
+  ): Promise<readonly ExecutionResult[]> {
+    const results: ExecutionResult[] = [];
+    for (let index = 0; index < call.inputBatch.length; index += 1) {
+      results.push(await this.executeTrace({
+        inputs: call.inputBatch[index]!,
+        signal: call.signal,
+        limits: call.limits,
+        recordTrace: call.traceEnabledBatch?.[index] ?? true,
+      }));
+    }
+    return results;
   }
 
   dispose = (): Promise<void> => {
