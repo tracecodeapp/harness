@@ -536,6 +536,8 @@ class __TracecodeExecutionGuard:
         reserved_runtime_exact_bindings = {'sys', '_builtins'}
 
         def record_reserved_runtime_name(name, is_binding=False):
+            if is_binding and name == '__del__':
+                reasons.append('object-finalizer')
             if (
                 isinstance(name, str)
                 and (
@@ -951,6 +953,7 @@ class __TracecodeExecutionGuard:
             or reason == 'type-alias'
             or reason == 'context-manager'
             or reason == 'exception-finalizer'
+            or reason == 'object-finalizer'
             or reason == 'catch-all-exception-handler'
             or reason.startswith(hard_isolation_prefixes)
         ]
@@ -6364,49 +6367,44 @@ def _tracecode_invoke_entry(_function_name, _execution_style, _input_names):
     if _callable is None:
         raise NameError(f"Implement {_function_name}(...) or Solution.{_function_name}(...)")
     _values = {_name: _globals_dict[_name] for _name in _input_names if _name in _globals_dict}
-    _tracecode_previous_tracer = sys.gettrace()
-    sys.settrace(None)
     _fallback_kwargs = None
     try:
-        try:
-            _signature = _tracecode_inspect.signature(_callable)
-        except Exception:
-            _fallback_kwargs = _values
-            _args = []
-            _kwargs = {}
-        else:
-            _args = []
-            _kwargs = {}
-            _has_varargs = any(
-                _parameter.kind is _tracecode_inspect.Parameter.VAR_POSITIONAL
-                for _parameter in _signature.parameters.values()
-            )
-            for _parameter in _signature.parameters.values():
-                if _parameter.name in ('self', 'cls'):
-                    continue
-                _kind = _parameter.kind
-                if _kind is _tracecode_inspect.Parameter.VAR_POSITIONAL:
-                    if _parameter.name in _values:
-                        _raw = _values[_parameter.name]
-                        if isinstance(_raw, (_builtins.list, _builtins.tuple)):
-                            _args.extend(_raw)
-                        else:
-                            _args.append(_raw)
-                    continue
-                if _kind is _tracecode_inspect.Parameter.VAR_KEYWORD:
-                    if _parameter.name in _values and isinstance(_values[_parameter.name], _builtins.dict):
-                        _kwargs.update(_values[_parameter.name])
-                    continue
-                if _parameter.name not in _values:
-                    continue
-                if _kind is _tracecode_inspect.Parameter.POSITIONAL_ONLY:
-                    _args.append(_values[_parameter.name])
-                elif _kind is _tracecode_inspect.Parameter.POSITIONAL_OR_KEYWORD and _has_varargs:
-                    _args.append(_values[_parameter.name])
-                else:
-                    _kwargs[_parameter.name] = _values[_parameter.name]
-    finally:
-        sys.settrace(_tracecode_previous_tracer)
+        _signature = _tracecode_inspect.signature(_callable)
+    except Exception:
+        _fallback_kwargs = _values
+        _args = []
+        _kwargs = {}
+    else:
+        _args = []
+        _kwargs = {}
+        _has_varargs = any(
+            _parameter.kind is _tracecode_inspect.Parameter.VAR_POSITIONAL
+            for _parameter in _signature.parameters.values()
+        )
+        for _parameter in _signature.parameters.values():
+            if _parameter.name in ('self', 'cls'):
+                continue
+            _kind = _parameter.kind
+            if _kind is _tracecode_inspect.Parameter.VAR_POSITIONAL:
+                if _parameter.name in _values:
+                    _raw = _values[_parameter.name]
+                    if isinstance(_raw, (_builtins.list, _builtins.tuple)):
+                        _args.extend(_raw)
+                    else:
+                        _args.append(_raw)
+                continue
+            if _kind is _tracecode_inspect.Parameter.VAR_KEYWORD:
+                if _parameter.name in _values and isinstance(_values[_parameter.name], _builtins.dict):
+                    _kwargs.update(_values[_parameter.name])
+                continue
+            if _parameter.name not in _values:
+                continue
+            if _kind is _tracecode_inspect.Parameter.POSITIONAL_ONLY:
+                _args.append(_values[_parameter.name])
+            elif _kind is _tracecode_inspect.Parameter.POSITIONAL_OR_KEYWORD and _has_varargs:
+                _args.append(_values[_parameter.name])
+            else:
+                _kwargs[_parameter.name] = _values[_parameter.name]
     if _fallback_kwargs is not None:
         return _callable(**_fallback_kwargs)
     return _callable(*_args, **_kwargs)
@@ -7654,49 +7652,44 @@ def _tracecode_invoke_entry(_function_name, _execution_style, _input_names):
         raise NameError(f"Implement {_function_name}(...) or Solution.{_function_name}(...)")
     _namespace = ${caseNamespaceExpression}
     _values = {_name: _namespace[_name] for _name in _input_names if _name in _namespace}
-    _tracecode_previous_tracer = sys.gettrace()
-    sys.settrace(None)
     _fallback_kwargs = None
     try:
-        try:
-            _signature = _tracecode_inspect.signature(_callable)
-        except Exception:
-            _fallback_kwargs = _values
-            _args = []
-            _kwargs = {}
-        else:
-            _args = []
-            _kwargs = {}
-            _has_varargs = any(
-                _parameter.kind is _tracecode_inspect.Parameter.VAR_POSITIONAL
-                for _parameter in _signature.parameters.values()
-            )
-            for _parameter in _signature.parameters.values():
-                if _parameter.name in ('self', 'cls'):
-                    continue
-                _kind = _parameter.kind
-                if _kind is _tracecode_inspect.Parameter.VAR_POSITIONAL:
-                    if _parameter.name in _values:
-                        _raw = _values[_parameter.name]
-                        if isinstance(_raw, (_builtins.list, _builtins.tuple)):
-                            _args.extend(_raw)
-                        else:
-                            _args.append(_raw)
-                    continue
-                if _kind is _tracecode_inspect.Parameter.VAR_KEYWORD:
-                    if _parameter.name in _values and isinstance(_values[_parameter.name], _builtins.dict):
-                        _kwargs.update(_values[_parameter.name])
-                    continue
-                if _parameter.name not in _values:
-                    continue
-                if _kind is _tracecode_inspect.Parameter.POSITIONAL_ONLY:
-                    _args.append(_values[_parameter.name])
-                elif _kind is _tracecode_inspect.Parameter.POSITIONAL_OR_KEYWORD and _has_varargs:
-                    _args.append(_values[_parameter.name])
-                else:
-                    _kwargs[_parameter.name] = _values[_parameter.name]
-    finally:
-        sys.settrace(_tracecode_previous_tracer)
+        _signature = _tracecode_inspect.signature(_callable)
+    except Exception:
+        _fallback_kwargs = _values
+        _args = []
+        _kwargs = {}
+    else:
+        _args = []
+        _kwargs = {}
+        _has_varargs = any(
+            _parameter.kind is _tracecode_inspect.Parameter.VAR_POSITIONAL
+            for _parameter in _signature.parameters.values()
+        )
+        for _parameter in _signature.parameters.values():
+            if _parameter.name in ('self', 'cls'):
+                continue
+            _kind = _parameter.kind
+            if _kind is _tracecode_inspect.Parameter.VAR_POSITIONAL:
+                if _parameter.name in _values:
+                    _raw = _values[_parameter.name]
+                    if isinstance(_raw, (_builtins.list, _builtins.tuple)):
+                        _args.extend(_raw)
+                    else:
+                        _args.append(_raw)
+                continue
+            if _kind is _tracecode_inspect.Parameter.VAR_KEYWORD:
+                if _parameter.name in _values and isinstance(_values[_parameter.name], _builtins.dict):
+                    _kwargs.update(_values[_parameter.name])
+                continue
+            if _parameter.name not in _values:
+                continue
+            if _kind is _tracecode_inspect.Parameter.POSITIONAL_ONLY:
+                _args.append(_values[_parameter.name])
+            elif _kind is _tracecode_inspect.Parameter.POSITIONAL_OR_KEYWORD and _has_varargs:
+                _args.append(_values[_parameter.name])
+            else:
+                _kwargs[_parameter.name] = _values[_parameter.name]
     if _fallback_kwargs is not None:
         return _callable(**_fallback_kwargs)
     return _callable(*_args, **_kwargs)
@@ -7711,6 +7704,8 @@ _result = None
 _interview_guard_triggered = False
 _interview_guard_reason = None
 _tracecode_execution_failure = None
+_tracecode_serialization_limit = False
+_tracecode_serialized_output = None
 
 try:
     if _INTERVIEW_GUARD_ENABLED:
@@ -7718,10 +7713,21 @@ try:
     try:
 ${guardedCaseSetupInNestedTry}
 ${executionCallInNestedTry}
+        if _result is None:
+            _inplace = _resolve_inplace_result()
+            if _inplace is not None:
+                _result = _inplace
+        _tracecode_serialized_output = _serialize(
+            _result,
+            tree_node_root=${caseNamespaceExpression}.get('TreeNode', TreeNode),
+            list_node_root=${caseNamespaceExpression}.get('ListNode', ListNode),
+        )
         if _INTERVIEW_GUARD_ENABLED:
             _interview_assert_guard_clear()
     except _InterviewGuardTriggered:
         raise
+    except _TracecodeSerializationLimit:
+        _tracecode_serialization_limit = True
     except BaseException as _tracecode_execution_error:
         if not ${usesPreparedBindings ? 'True' : 'False'}:
             raise
@@ -7777,17 +7783,16 @@ elif _tracecode_execution_failure is not None:
         "executionError": _tracecode_execution_failure,
         "console": [],
     }
-else:
-    if _result is None:
-        _inplace = _resolve_inplace_result()
-        if _inplace is not None:
-            _result = _inplace
+elif _tracecode_serialization_limit:
     _tracecode_raw_result = {
-        "kind": "success",
-        "output": _result,
+        "kind": "serialization-limit",
         "console": _console_output,
-        "treeNodeType": ${caseNamespaceExpression}.get('TreeNode', TreeNode),
-        "listNodeType": ${caseNamespaceExpression}.get('ListNode', ListNode),
+    }
+else:
+    _tracecode_raw_result = {
+        "kind": "success-serialized",
+        "output": _tracecode_serialized_output,
+        "console": _console_output,
     }
 
 _tracecode_raw_result
@@ -7958,49 +7963,44 @@ def _tracecode_invoke_entry(_function_name, _execution_style, _input_names):
     if _callable is None:
         raise NameError(f"Implement {_function_name}(...) or Solution.{_function_name}(...)")
     _values = {_name: globals()[_name] for _name in _input_names if _name in globals()}
-    _tracecode_previous_tracer = sys.gettrace()
-    sys.settrace(None)
     _fallback_kwargs = None
     try:
-        try:
-            _signature = _tracecode_inspect.signature(_callable)
-        except Exception:
-            _fallback_kwargs = _values
-            _args = []
-            _kwargs = {}
-        else:
-            _args = []
-            _kwargs = {}
-            _has_varargs = any(
-                _parameter.kind is _tracecode_inspect.Parameter.VAR_POSITIONAL
-                for _parameter in _signature.parameters.values()
-            )
-            for _parameter in _signature.parameters.values():
-                if _parameter.name in ('self', 'cls'):
-                    continue
-                _kind = _parameter.kind
-                if _kind is _tracecode_inspect.Parameter.VAR_POSITIONAL:
-                    if _parameter.name in _values:
-                        _raw = _values[_parameter.name]
-                        if isinstance(_raw, (_builtins.list, _builtins.tuple)):
-                            _args.extend(_raw)
-                        else:
-                            _args.append(_raw)
-                    continue
-                if _kind is _tracecode_inspect.Parameter.VAR_KEYWORD:
-                    if _parameter.name in _values and isinstance(_values[_parameter.name], _builtins.dict):
-                        _kwargs.update(_values[_parameter.name])
-                    continue
-                if _parameter.name not in _values:
-                    continue
-                if _kind is _tracecode_inspect.Parameter.POSITIONAL_ONLY:
-                    _args.append(_values[_parameter.name])
-                elif _kind is _tracecode_inspect.Parameter.POSITIONAL_OR_KEYWORD and _has_varargs:
-                    _args.append(_values[_parameter.name])
-                else:
-                    _kwargs[_parameter.name] = _values[_parameter.name]
-    finally:
-        sys.settrace(_tracecode_previous_tracer)
+        _signature = _tracecode_inspect.signature(_callable)
+    except Exception:
+        _fallback_kwargs = _values
+        _args = []
+        _kwargs = {}
+    else:
+        _args = []
+        _kwargs = {}
+        _has_varargs = any(
+            _parameter.kind is _tracecode_inspect.Parameter.VAR_POSITIONAL
+            for _parameter in _signature.parameters.values()
+        )
+        for _parameter in _signature.parameters.values():
+            if _parameter.name in ('self', 'cls'):
+                continue
+            _kind = _parameter.kind
+            if _kind is _tracecode_inspect.Parameter.VAR_POSITIONAL:
+                if _parameter.name in _values:
+                    _raw = _values[_parameter.name]
+                    if isinstance(_raw, (_builtins.list, _builtins.tuple)):
+                        _args.extend(_raw)
+                    else:
+                        _args.append(_raw)
+                continue
+            if _kind is _tracecode_inspect.Parameter.VAR_KEYWORD:
+                if _parameter.name in _values and isinstance(_values[_parameter.name], _builtins.dict):
+                    _kwargs.update(_values[_parameter.name])
+                continue
+            if _parameter.name not in _values:
+                continue
+            if _kind is _tracecode_inspect.Parameter.POSITIONAL_ONLY:
+                _args.append(_values[_parameter.name])
+            elif _kind is _tracecode_inspect.Parameter.POSITIONAL_OR_KEYWORD and _has_varargs:
+                _args.append(_values[_parameter.name])
+            else:
+                _kwargs[_parameter.name] = _values[_parameter.name]
     if _fallback_kwargs is not None:
         return _callable(**_fallback_kwargs)
     return _callable(*_args, **_kwargs)
@@ -8076,6 +8076,17 @@ elif _tracecode_result_kind == "execution-error":
     _tracecode_final_result = {
         "executionError": _tracecode_raw_result.get("executionError"),
         "console": [],
+    }
+elif _tracecode_result_kind == "serialization-limit":
+    _tracecode_final_result = {
+        "serializationLimit": True,
+        "console": _tracecode_raw_result.get("console", []),
+    }
+elif _tracecode_result_kind == "success-serialized":
+    _tracecode_final_result = {
+        "guardTriggered": False,
+        "output": _tracecode_raw_result.get("output"),
+        "console": _tracecode_raw_result.get("console", []),
     }
 else:
     try:

@@ -813,7 +813,6 @@ test('Python judge-compatible batch retains one worker across the aggregate budg
     return {
       async warmup() {
         calls.push({ worker, method: 'warmup' });
-        if (worker > 0) await laterWorkerReady.promise;
         return { success: true, loadTimeMs: 1 };
       },
       async prepareProgram(call: RuntimeProgramPreparationCall) {

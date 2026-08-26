@@ -39,6 +39,7 @@ interface BrowserResult {
     baseExceptionCatch: { tier?: string; reasons: string[] };
     exceptionHierarchyCatch: { tier?: string; reasons: string[] };
     exceptionFinalizer: { tier?: string; reasons: string[] };
+    objectFinalizer: { tier?: string; reasons: string[] };
     cachedDecorator: { tier?: string; reasons: string[] };
     transitiveTraversal: { tier?: string; reasons: string[] };
     treeNodeFreshness: { tier?: string; reasons: string[] };
@@ -56,6 +57,8 @@ interface BrowserResult {
     hostileSerialization: { tier?: string; reasons: string[] };
     wallClockBatch: { tier?: string; reasons: string[] };
     judgeCompatibleWallClock: { tier?: string; reasons: string[] };
+    judgeCompatibleSerializationWallClock: { tier?: string; reasons: string[] };
+    judgeCompatibleSignatureWallClock: { tier?: string; reasons: string[] };
     reservedGuardCollision: { tier?: string; reasons: string[] };
     reservedGuardAlias: { tier?: string; reasons: string[] };
     internalNameWallClock: { tier?: string; reasons: string[] };
@@ -599,6 +602,21 @@ async function main(): Promise<void> {
           executionStyle: 'function',
         }
       );
+      const objectFinalizer = await preparationWorker.request(
+        'prepare-program',
+        {
+          mode: 'code',
+          code: [
+            'class Finalizer:',
+            '    def __del__(self):',
+            '        return None',
+            'def solve(value):',
+            '    return value',
+          ].join('\\n'),
+          functionName: 'solve',
+          executionStyle: 'function',
+        }
+      );
       const exceptionHierarchyCatch = await preparationWorker.request(
         'prepare-program',
         {
@@ -961,6 +979,49 @@ async function main(): Promise<void> {
           executionStyle: 'function',
         }
       );
+      const judgeCompatibleSerializationWallClock =
+        await preparationWorker.request('prepare-program', {
+          mode: 'code',
+          code: [
+            'class SlowDescriptor:',
+            '    def __get__(self, instance, owner):',
+            '        while True:',
+            '            pass',
+            '    def __set__(self, instance, value):',
+            '        return None',
+            'class SlowSerialization(TreeNode):',
+            '    left = SlowDescriptor()',
+            '    def __init__(self):',
+            '        self.val = 0',
+            '        self.right = None',
+            'def solve(value):',
+            '    items = (item for item in [value])',
+            '    if value == 0:',
+            '        return SlowSerialization()',
+            '    return list(items)[0]',
+          ].join('\\n'),
+          functionName: 'solve',
+          executionStyle: 'function',
+        });
+      const judgeCompatibleSignatureWallClock =
+        await preparationWorker.request('prepare-program', {
+          mode: 'code',
+          code: [
+            'class SignatureHook:',
+            '    def __get__(self, instance, owner):',
+            '        if value == 0:',
+            '            while True:',
+            '                pass',
+            '        raise AttributeError("missing")',
+            'class Solver:',
+            '    __signature__ = SignatureHook()',
+            '    def __call__(self, value):',
+            '        return value',
+            'solve = Solver()',
+          ].join('\\n'),
+          functionName: 'solve',
+          executionStyle: 'function',
+        });
       const reservedGuardCollision = await preparationWorker.request(
         'prepare-program',
         {
@@ -1099,6 +1160,7 @@ async function main(): Promise<void> {
         baseExceptionCatch,
         exceptionHierarchyCatch,
         exceptionFinalizer,
+        objectFinalizer,
         transitiveTraversal,
         treeNodeFreshness,
         dequeExecution,
@@ -1115,6 +1177,8 @@ async function main(): Promise<void> {
         hostileSerialization,
         wallClockBatch,
         judgeCompatibleWallClock,
+        judgeCompatibleSerializationWallClock,
+        judgeCompatibleSignatureWallClock,
         reservedGuardCollision,
         sharedStateRegistration,
       })) {
@@ -1674,6 +1738,20 @@ async function main(): Promise<void> {
             limits: { wallClockMs: 25 },
           }
         );
+        fastParityRuns.judgeCompatibleSerializationWallClock =
+          await batchClient.request('execute-prepared-program-batch', {
+            artifact: judgeCompatibleSerializationWallClock.artifact,
+            mode: 'code',
+            inputBatch: [{ value: 0 }, { value: 1 }],
+            limits: { wallClockMs: 25 },
+          });
+        fastParityRuns.judgeCompatibleSignatureWallClock =
+          await batchClient.request('execute-prepared-program-batch', {
+            artifact: judgeCompatibleSignatureWallClock.artifact,
+            mode: 'code',
+            inputBatch: [{ value: 0 }, { value: 1 }],
+            limits: { wallClockMs: 25 },
+          });
         fastParityRuns.treeNodeFreshness = await batchClient.request(
           'execute-prepared-program-batch',
           {
@@ -1917,6 +1995,7 @@ async function main(): Promise<void> {
           baseExceptionCatch,
           exceptionHierarchyCatch,
           exceptionFinalizer,
+          objectFinalizer,
           cachedDecorator,
           transitiveTraversal,
           treeNodeFreshness,
@@ -1941,6 +2020,8 @@ async function main(): Promise<void> {
           hostileSerialization,
           wallClockBatch,
           judgeCompatibleWallClock,
+          judgeCompatibleSerializationWallClock,
+          judgeCompatibleSignatureWallClock,
           reservedGuardCollision,
           reservedGuardAlias,
           internalNameWallClock,
@@ -1988,6 +2069,7 @@ async function main(): Promise<void> {
           exceptionHierarchyCatch:
             exceptionHierarchyCatch.artifact?.isolationProfile,
           exceptionFinalizer: exceptionFinalizer.artifact?.isolationProfile,
+          objectFinalizer: objectFinalizer.artifact?.isolationProfile,
           cachedDecorator: cachedDecorator.artifact?.isolationProfile,
           transitiveTraversal: transitiveTraversal.artifact?.isolationProfile,
           treeNodeFreshness: treeNodeFreshness.artifact?.isolationProfile,
@@ -2014,6 +2096,10 @@ async function main(): Promise<void> {
           wallClockBatch: wallClockBatch.artifact?.isolationProfile,
           judgeCompatibleWallClock:
             judgeCompatibleWallClock.artifact?.isolationProfile,
+          judgeCompatibleSerializationWallClock:
+            judgeCompatibleSerializationWallClock.artifact?.isolationProfile,
+          judgeCompatibleSignatureWallClock:
+            judgeCompatibleSignatureWallClock.artifact?.isolationProfile,
           reservedGuardCollision:
             reservedGuardCollision.artifact?.isolationProfile,
           reservedGuardAlias:
@@ -2274,6 +2360,10 @@ async function main(): Promise<void> {
         result.isolationProfiles.exceptionFinalizer.reasons.includes(
           'exception-finalizer'
         ) &&
+        result.isolationProfiles.objectFinalizer?.tier === 'hard-isolated' &&
+        result.isolationProfiles.objectFinalizer.reasons.includes(
+          'object-finalizer'
+        ) &&
         result.isolationProfiles.contextManager?.tier === 'hard-isolated' &&
         result.isolationProfiles.contextManager.reasons.includes(
           'context-manager'
@@ -2305,8 +2395,8 @@ async function main(): Promise<void> {
       })}`
     );
     assertCondition(
-      result.preparationWorker.prepareRequests === 56,
-      `Preparation worker received ${String(result.preparationWorker.prepareRequests)} preparations instead of fifty-six`
+      result.preparationWorker.prepareRequests === 59,
+      `Preparation worker received ${String(result.preparationWorker.prepareRequests)} preparations instead of fifty-nine`
     );
     const algorithmBatchResults = result.algorithmBatchRun.results as Array<{
       success?: boolean;
@@ -2542,6 +2632,38 @@ async function main(): Promise<void> {
         ),
       `A judge-compatible wall-clock trip did not remain case-local: ${JSON.stringify(judgeCompatibleWallClock)}`
     );
+    for (const { name, profile, run } of [
+      {
+        name: 'judgeCompatibleSerializationWallClock',
+        profile:
+          result.isolationProfiles.judgeCompatibleSerializationWallClock,
+        run: result.fastParityRuns.judgeCompatibleSerializationWallClock,
+      },
+      {
+        name: 'judgeCompatibleSignatureWallClock',
+        profile: result.isolationProfiles.judgeCompatibleSignatureWallClock,
+        run: result.fastParityRuns.judgeCompatibleSignatureWallClock,
+      },
+    ]) {
+      const entries = run.results as Array<{
+        success?: boolean;
+        output?: unknown;
+        timeoutReason?: string;
+        timings?: { algorithmFastBatch?: boolean };
+      }>;
+      assertCondition(
+        profile.tier === 'judge-compatible' &&
+          entries.length === 2 &&
+          entries[0]?.success === false &&
+          entries[0]?.timeoutReason === 'client-timeout' &&
+          entries[1]?.success === true &&
+          entries[1]?.output === 1 &&
+          entries.every(
+            (entry) => entry.timings?.algorithmFastBatch !== true
+          ),
+        `A ${name} hook escaped the case-local wall clock: ${JSON.stringify(run)}`
+      );
+    }
     assertCondition(
       result.isolationProfiles.internalNameWallClock?.tier ===
         'hard-isolated' &&

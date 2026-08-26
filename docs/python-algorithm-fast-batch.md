@@ -59,8 +59,9 @@ capability and shared-state surfaces select `hard-isolated`:
 - registration and overload APIs whose mutable registry belongs to the shared
   interpreter rather than the learner namespace;
 - bare catch-all or explicit `BaseException` handling that could suppress the
-  retained executor's per-case limit signal, plus bindings that collide with
-  reserved runtime guard names;
+  retained executor's per-case limit signal, context managers, exception or
+  object finalizers, plus bindings that collide with reserved runtime guard
+  names;
 - relative and unreviewed imports; and
 - transitive traversal from an allowed module into hidden modules or builtins.
 
@@ -73,8 +74,8 @@ state that cannot be reliably journaled.
 
 If exact inputs require the generic tree, list, or reference-graph materializer,
 an otherwise fast artifact moves sideways to the retained generic executor
-before learner code starts. Trace artifacts likewise use the retained generic
-executor unless their source profile is `hard-isolated`.
+before learner code starts. Every selected trace uses a fresh outer worker;
+only untraced correctness batches use retained execution.
 
 An unexpected internal fast-driver failure is handled at the same outer
 boundary: no partial batch result is exposed, the retained worker is retired,
@@ -108,9 +109,10 @@ marshaled compatibility code object is never executed by the fast path.
 An explicit `wallClockMs` limit is forwarded into both retained executors. The
 reduced driver keeps its trace hook armed from learner module execution through
 input hydration, the target call, and output serialization. The generic
-executor keeps a `BaseException`-derived guard armed from learner module
-execution through input hydration and the target call; catch-all code cannot
-enter that tier. Each retained path applies a separate deadline to every case
+executor likewise keeps a `BaseException`-derived guard armed through callable
+signature inspection and output serialization; code that can suppress the
+guard or run a finalizer outside this interval cannot enter that tier. Each
+retained path applies a separate deadline to every case
 and reports only that case as `client-timeout`. Trusted driver frames are
 excluded from the hook, while the generic finalizer retains its separate
 serialization-size budget. The client also keeps a batch-wide watchdog for
@@ -226,7 +228,8 @@ The browser prepared-provider gate covers:
 - hard-isolated code batches preserve a `client-timeout` result for the timed
   out case and continue evaluating later cases in fresh workers;
 - judge-compatible code batches enforce `wallClockMs` from module execution
-  through the target call and continue with later cases in the retained worker;
+  through signature inspection and result serialization, then continue with
+  later cases in the retained worker;
 - algorithm-fast batches contain hostile exception formatting, enforce
   explicit wall-clock limits across module execution and result serialization,
   contain hostile result metadata per case, and continue evaluating later
