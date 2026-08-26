@@ -119,6 +119,7 @@ class PreparedProtocolWorker {
   static instances: PreparedProtocolWorker[] = [];
   static compileRequests = 0;
   static executions = 0;
+  static batchExecutions = 0;
   static disposals = 0;
 
   onmessage: ((event: MessageEvent<WorkerMessage>) => void) | null = null;
@@ -250,6 +251,31 @@ class PreparedProtocolWorker {
               compileCacheHit: true,
             },
           }));
+      return;
+    }
+    if (message.type === 'execute-prepared-runtime-program-batch') {
+      PreparedProtocolWorker.batchExecutions += 1;
+      const inputBatch = Array.isArray(message.payload?.inputBatch)
+        ? message.payload.inputBatch as Array<{ value?: unknown; hang?: unknown }>
+        : [];
+      if (inputBatch.some((inputs) => inputs.hang === true)) return;
+      queueMicrotask(() => this.reply(message, {
+        success: true,
+        results: inputBatch.map((inputs) => ({
+          success: true,
+          output: Number(inputs.value ?? 0),
+          executionTimeMs: 1,
+          consoleOutput: [],
+          timings: {
+            compileMs: 0,
+            wasmCompileMs: 0,
+            runMs: 1,
+            artifactCacheHit: true,
+            compileCacheHit: true,
+          },
+        })),
+        consoleOutput: [],
+      }));
       return;
     }
     if (message.type === 'dispose-prepared-runtime-program') {
@@ -482,6 +508,7 @@ async function testPreparedProviderProtocolLifecycle(): Promise<void> {
   PreparedProtocolWorker.instances = [];
   PreparedProtocolWorker.compileRequests = 0;
   PreparedProtocolWorker.executions = 0;
+  PreparedProtocolWorker.batchExecutions = 0;
   PreparedProtocolWorker.disposals = 0;
   let compilerFetches = 0;
   // @ts-expect-error focused Worker test double
@@ -523,19 +550,50 @@ async function testPreparedProviderProtocolLifecycle(): Promise<void> {
     const second = await preparation.program.executeIsolated({
       inputs: { value: 2 },
     });
+    const batch = await preparation.program.executeBatchIsolated?.({
+      inputBatch: [{ value: 3 }, { value: 4 }, { value: 5 }],
+    });
     assertCondition(
       first.kind === 'completed' && first.output === 1 &&
         second.kind === 'completed' && second.output === 2,
       `prepared executions should reuse one program: ${JSON.stringify({ first, second })}`
     );
     assertCondition(
+      batch?.map((result) => result.kind === 'completed' ? result.output : null).join(',') ===
+        '3,4,5' &&
+        PreparedProtocolWorker.batchExecutions === 1,
+      `prepared code batches should cross one Worker request: ${JSON.stringify({
+        batch,
+        batchExecutions: PreparedProtocolWorker.batchExecutions,
+      })}`
+    );
+    const explicitlyLimitedBatch =
+      await preparation.program.executeBatchIsolated?.({
+        inputBatch: [{ value: 6 }, { value: 7 }],
+        limits: { wallClockMs: 25 },
+      });
+    assertCondition(
+      explicitlyLimitedBatch?.map((result) =>
+        result.kind === 'completed' ? result.output : null
+      ).join(',') === '6,7' &&
+        PreparedProtocolWorker.executions === 4 &&
+        PreparedProtocolWorker.batchExecutions === 1,
+      `explicit per-case deadlines must retain one Worker request per case: ${JSON.stringify({
+        explicitlyLimitedBatch,
+        executions: PreparedProtocolWorker.executions,
+        batchExecutions: PreparedProtocolWorker.batchExecutions,
+      })}`
+    );
+    assertCondition(
       PreparedProtocolWorker.compileRequests === 1 &&
         compilerFetches === 1 &&
-        PreparedProtocolWorker.executions === 2,
+        PreparedProtocolWorker.executions === 4 &&
+        PreparedProtocolWorker.batchExecutions === 1,
       `one preparation must compile exactly once regardless of case count: ${JSON.stringify({
         compileRequests: PreparedProtocolWorker.compileRequests,
         compilerFetches,
         executions: PreparedProtocolWorker.executions,
+        batchExecutions: PreparedProtocolWorker.batchExecutions,
       })}`
     );
     await preparation.program.dispose();
@@ -621,6 +679,44 @@ async function testPreparedProviderProtocolLifecycle(): Promise<void> {
         workerCountBeforeTimeoutDispose,
       'disposing a timed-out prepared program must not recreate its worker'
     );
+
+    const batchTimeoutProvider = createCppPreparedExecutionProvider({
+      createWorkerClient: () => createClient({ executionTimeoutMs: 5 }),
+    });
+    const batchTimeoutPreparation = await batchTimeoutProvider.prepareProgram({
+      mode: 'code',
+      code: 'class Solution { public: int hang(int value) { return value; } };',
+      functionName: 'hang',
+      executionStyle: 'solution-method',
+    });
+    assertCondition(
+      batchTimeoutPreparation.kind === 'prepared' &&
+        batchTimeoutPreparation.program.mode === 'code',
+      `batch timeout preparation should succeed: ${JSON.stringify(batchTimeoutPreparation)}`
+    );
+    const timedOutBatch =
+      await batchTimeoutPreparation.program.executeBatchIsolated?.({
+        inputBatch: [
+          { value: 0, hang: true },
+          { value: 1, hang: false },
+        ],
+      });
+    assertCondition(
+      timedOutBatch?.length === 2 &&
+        timedOutBatch.every((result) =>
+          result.kind === 'limit' && result.reason === 'client-timeout'
+        ),
+      `a stuck aggregate batch should return structured limits for every unresolved case: ${JSON.stringify(timedOutBatch)}`
+    );
+    const workerCountBeforeBatchTimeoutDispose =
+      PreparedProtocolWorker.instances.length;
+    await batchTimeoutPreparation.program.dispose();
+    assertCondition(
+      PreparedProtocolWorker.instances.length ===
+        workerCountBeforeBatchTimeoutDispose,
+      'disposing a timed-out prepared batch must not recreate its worker'
+    );
+    batchTimeoutProvider.terminate();
 
     const lifecycleProvider = createCppPreparedExecutionProvider({
       createWorkerClient: () => createClient(),

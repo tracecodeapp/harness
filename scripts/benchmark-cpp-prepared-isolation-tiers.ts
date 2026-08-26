@@ -436,7 +436,7 @@ export async function runJudgeBenchmark(options) {
           p95EvaluateMs: percentile(evaluations, 0.95),
         };
       });
-      console.log(JSON.stringify({
+      const report = {
         measuredAt: new Date().toISOString(),
         browserVersion: browser.version(),
         samples,
@@ -450,7 +450,15 @@ export async function runJudgeBenchmark(options) {
           warmResult: judge.warmResult,
           summaries: judgeSummaries,
         },
-      }, null, 2));
+      };
+      const serializedReport = JSON.stringify(report, null, 2);
+      if (process.env.TRACECODE_CPP_TIER_REPORT) {
+        await writeFile(
+          resolve(process.env.TRACECODE_CPP_TIER_REPORT),
+          `${serializedReport}\n`
+        );
+      }
+      console.log(serializedReport);
     } finally {
       await browser.close();
     }

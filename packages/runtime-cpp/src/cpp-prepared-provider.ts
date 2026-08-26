@@ -280,18 +280,10 @@ export function createCppPreparedExecutionProvider(
                       `C++ prepared program "${preparation.handle.programId}" was already disposed.`
                     );
                   }
-                  const results: CodeExecutionResult[] = [];
-                  for (const inputs of execution.inputBatch) {
-                    results.push(await client.executePreparedCode(
-                      preparation.handle,
-                      {
-                        inputs,
-                        signal: execution.signal,
-                        limits: execution.limits,
-                      }
-                    ));
-                  }
-                  return results;
+                  return client.executePreparedCodeBatch(
+                    preparation.handle,
+                    execution
+                  );
                 },
                 dispose,
               },

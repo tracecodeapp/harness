@@ -18,6 +18,7 @@ import type {
   CodeExecutionResult,
   CodeExecutionBatchResult,
   ExecutionResult,
+  RuntimePreparedCodeBatchCall,
   RuntimePreparedCodeCall,
   RuntimePreparedTraceCall,
   RuntimePreparedTraceBatchCall,
@@ -404,7 +405,11 @@ export class CppWorkerClient {
 
   private messageRequiresCompilerAssets(type: string): boolean {
     if (type === 'init' || type === 'status') return false;
-    if (type === 'execute-prepared-runtime-program' || type === 'dispose-prepared-runtime-program') {
+    if (
+      type === 'execute-prepared-runtime-program' ||
+      type === 'execute-prepared-runtime-program-batch' ||
+      type === 'dispose-prepared-runtime-program'
+    ) {
       return false;
     }
     if (this.externalCompilerUrl) return false;
@@ -1347,6 +1352,65 @@ export class CppWorkerClient {
       } catch (error) {
         if (this.isClientTimeout(error)) return this.timeoutCodeResult(error);
         throw error;
+      }
+    });
+  }
+
+  async executePreparedCodeBatch(
+    handle: CppPreparedProgramHandle,
+    call: RuntimePreparedCodeBatchCall
+  ): Promise<readonly CodeExecutionResult[]> {
+    if (call.inputBatch.length === 0) return [];
+    if (call.limits?.wallClockMs !== undefined) {
+      const results: CodeExecutionResult[] = [];
+      for (const inputs of call.inputBatch) {
+        results.push(await this.executePreparedCode(handle, {
+          inputs,
+          signal: call.signal,
+          limits: call.limits,
+        }));
+      }
+      return results;
+    }
+    const aggregateWallClockMs = this.executionTimeoutMs;
+    return this.runInPreparedExecutionWorker(async (lifecycleGeneration) => {
+      this.assertPreparedProgramHandle(handle, 'code');
+      try {
+        const result = await this.runExecution(
+          this.core.sendMessageEffect<RawExecutionBatchPayload>(
+            'execute-prepared-runtime-program-batch',
+            {
+              programId: handle.programId,
+              mode: 'code',
+              inputBatch: call.inputBatch,
+            },
+            null,
+            undefined,
+            undefined,
+            () => {
+              this.assertLifecycleGeneration(lifecycleGeneration);
+              this.assertPreparedProgramHandle(handle, 'code');
+            }
+          ),
+          aggregateWallClockMs,
+          'compile-run',
+          call.signal,
+          lifecycleGeneration
+        );
+        const lifted = liftCodeBatchOutcome(
+          result,
+          'C++ prepared batch execution failed'
+        );
+        if (lifted.results.length !== call.inputBatch.length) {
+          throw new Error(
+            result.error ??
+              `C++ prepared batch returned ${lifted.results.length} results for ${call.inputBatch.length} cases.`
+          );
+        }
+        return lifted.results;
+      } catch (error) {
+        if (!this.isClientTimeout(error)) throw error;
+        return call.inputBatch.map(() => this.timeoutCodeResult(error));
       }
     });
   }

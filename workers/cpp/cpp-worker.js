@@ -15539,6 +15539,70 @@ async function runPreparedTraceRuntimeProgramBatch(
   }
 }
 
+async function runPreparedCodeRuntimeProgramBatchIsolated(
+  preparedProgram,
+  inputBatch
+) {
+  const startedAt = now();
+  if (preparedProgram.tracing || preparedProgram.mode !== 'code') {
+    throw preparedProgramProtocolError(
+      'C++ isolated prepared code batching requires a code artifact.'
+    );
+  }
+  const normalizedInputBatch = Array.isArray(inputBatch)
+    ? inputBatch.map((inputs) =>
+        inputs && typeof inputs === 'object' && !Array.isArray(inputs)
+          ? inputs
+          : {}
+      )
+    : [];
+  if (normalizedInputBatch.length === 0) {
+    return {
+      success: true,
+      results: [],
+      consoleOutput: [],
+      timings: {
+        ...preparedExecutionTimings(0, elapsedMs(startedAt)),
+        batchMode: 'fresh-instance-per-case',
+        batchCaseCount: 0,
+      },
+    };
+  }
+
+  const results = [];
+  for (const inputs of normalizedInputBatch) {
+    // The module is immutable and retained, but runPreparedRuntimeProgram
+    // constructs a new InMemoryFileSystem, WasiProcess, WebAssembly.Instance,
+    // linear memory, globals, constructors, and C/C++ runtime for every case.
+    results.push(await runPreparedRuntimeProgram(preparedProgram, inputs));
+  }
+  const success = results.every((result) => result.success === true);
+  const totalMs = elapsedMs(startedAt);
+  return {
+    success,
+    results,
+    consoleOutput: results.flatMap((result) => result.consoleOutput || []),
+    ...(success
+      ? {}
+      : {
+          error:
+            results.find((result) => result.success !== true)?.error ||
+            'C++ isolated prepared batch execution failed.',
+        }),
+    timings: {
+      ...preparedExecutionTimings(
+        results.reduce(
+          (total, result) => total + (Number(result.timings?.runMs) || 0),
+          0
+        ),
+        totalMs
+      ),
+      batchMode: 'fresh-instance-per-case',
+      batchCaseCount: normalizedInputBatch.length,
+    },
+  };
+}
+
 async function handleExecutePreparedRuntimeProgram(payload) {
   const preparedProgram = preparedProgramById(payload?.programId);
   if (payload?.mode !== preparedProgram.mode) {
@@ -15583,11 +15647,16 @@ async function handleExecutePreparedRuntimeProgramBatch(payload) {
       `C++ prepared program "${String(payload?.programId || '')}" was prepared for ${preparedProgram.mode}, not ${String(payload?.mode || 'unknown')}.`
     );
   }
-  return runPreparedTraceRuntimeProgramBatch(
-    preparedProgram,
-    payload?.inputBatch,
-    payload?.traceEnabledBatch
-  );
+  return preparedProgram.mode === 'code'
+    ? runPreparedCodeRuntimeProgramBatchIsolated(
+        preparedProgram,
+        payload?.inputBatch
+      )
+    : runPreparedTraceRuntimeProgramBatch(
+        preparedProgram,
+        payload?.inputBatch,
+        payload?.traceEnabledBatch
+      );
 }
 
 async function handleDisposePreparedRuntimeProgram(payload) {

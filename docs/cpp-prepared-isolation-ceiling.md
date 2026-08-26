@@ -7,9 +7,9 @@ C++ should not add an `algorithm-fast` shared-instance tier.
 The existing prepared provider already applies the safe optimization that the
 other compiled-language lanes are adding: it keeps the trusted compiler
 service, learner Worker, and immutable compiled `WebAssembly.Module` alive for
-the evaluation, while constructing a fresh WASI process, `WebAssembly.Instance`,
-linear memory, Wasm globals, constructors, and in-memory filesystem for every
-case.
+the evaluation and sends the correctness vector through one Worker request,
+while constructing a fresh WASI process, `WebAssembly.Instance`, linear memory,
+Wasm globals, constructors, and in-memory filesystem for every case.
 
 This is the right C++ isolation boundary. Retaining the outer runner avoids
 compiler and Worker startup per case. Reusing the learner Wasm instance would
@@ -22,7 +22,11 @@ The browser Judge path keeps these guarantees:
 
 - one compilation and one immutable module per evaluation;
 - one TraceKernel Judge process and one retained C++ learner Worker;
+- one Worker protocol request for an ordinary correctness case vector;
 - fresh learner Wasm state and input hydration for every correctness case;
+- an explicit per-case wall-clock limit retains the one-request-per-case path,
+  because synchronous Wasm cannot be interrupted between cases from inside
+  one Worker message;
 - the selected trace case executes first, with all other correctness cases
   drained without recording;
 - a timeout, abort, or Worker failure retires the complete prepared session;
@@ -77,15 +81,15 @@ on 2026-08-26 produced:
 
 | Boundary | 10 cases p50 | 100 cases p50 | 100 cases p95 |
 |---|---:|---:|---:|
-| Prepared, fresh Wasm instance per case | 6.73 ms | 75.05 ms | 100.02 ms |
-| Unsafe, one shared Wasm invocation | 2.47 ms | 26.66 ms | 37.00 ms |
-| Full browser Judge, compile through receipt | 307.76 ms | 374.72 ms | 440.70 ms |
+| Prepared, fresh Wasm instance per case | 4.15 ms | 48.43 ms | 61.64 ms |
+| Unsafe, one shared Wasm invocation | 3.05 ms | 28.32 ms | 36.83 ms |
+| Full browser Judge, compile through receipt | 386.49 ms | 462.69 ms | 507.61 ms |
 
-The unsafe design saves about 48.4 ms at 100 cases. Even treating that direct
+The unsafe design saves about 20.1 ms at 100 cases. Even treating that direct
 prepared-boundary delta as fully additive to the separately measured Judge
-sample, the warm full-flow ceiling is only about 1.15x. Compilation and Judge
+sample, the warm full-flow ceiling is only about 1.05x. Compilation and Judge
 orchestration remain roughly 80% of the 100-case wall clock. The first cold
-10-case sample was 1.60 seconds because toolchain promotion dominated; sharing
+10-case sample was 1.99 seconds because toolchain promotion dominated; sharing
 learner state cannot improve that cold path.
 
 Absolute timings are machine-specific. The structural result is not: C++ has

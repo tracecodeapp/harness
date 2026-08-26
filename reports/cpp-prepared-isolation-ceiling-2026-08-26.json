@@ -1,7 +1,6 @@
 {
-  "measuredAt": "2026-08-26T08:26:01.111Z",
+  "measuredAt": "2026-08-26T20:32:16.404Z",
   "browserVersion": "145.0.7632.6",
-  "machine": "Apple M1 Pro Mac",
   "samples": 5,
   "preparedBoundary": {
     "description": "real-browser TraceCC prepared execution; Judge comparison excluded",
@@ -9,52 +8,52 @@
       {
         "cases": 10,
         "freshInstanceMs": [
-          19.37999999523163,
-          6.725000023841858,
-          6.7799999713897705,
-          6.125,
-          5.340000033378601
+          16.12999999523163,
+          4.1549999713897705,
+          6.0350000858306885,
+          3.7899999618530273,
+          4.014999985694885
         ],
         "unsafeSharedCaseMs": [
-          10.074999928474426,
-          2.3700000047683716,
-          2.465000033378601,
-          2.59499990940094,
-          2.134999990463257
+          9.480000019073486,
+          3.6999999284744263,
+          3.0549999475479126,
+          2.759999990463257,
+          2.6399999856948853
         ],
-        "p50FreshInstanceMs": 6.725000023841858,
-        "p95FreshInstanceMs": 19.37999999523163,
-        "p50UnsafeSharedCaseMs": 2.465000033378601,
-        "p95UnsafeSharedCaseMs": 10.074999928474426,
-        "p50CeilingRatio": 2.728194698895958
+        "p50FreshInstanceMs": 4.1549999713897705,
+        "p95FreshInstanceMs": 16.12999999523163,
+        "p50UnsafeSharedCaseMs": 3.0549999475479126,
+        "p95UnsafeSharedCaseMs": 9.480000019073486,
+        "p50CeilingRatio": 1.3600654804347116
       },
       {
         "cases": 100,
         "freshInstanceMs": [
-          100.01999998092651,
-          79.10500001907349,
-          75.04500007629395,
-          70.85000002384186,
-          68.23000001907349
+          61.639999985694885,
+          49.37000000476837,
+          48.43499994277954,
+          45.83500003814697,
+          42.4300000667572
         ],
         "unsafeSharedCaseMs": [
-          37.00499999523163,
-          29.399999976158142,
-          26.6599999666214,
-          26.584999918937683,
-          25.34500002861023
+          36.825000047683716,
+          29.820000052452087,
+          28.31500005722046,
+          27.430000066757202,
+          25.889999985694885
         ],
-        "p50FreshInstanceMs": 75.04500007629395,
-        "p95FreshInstanceMs": 100.01999998092651,
-        "p50UnsafeSharedCaseMs": 26.6599999666214,
-        "p95UnsafeSharedCaseMs": 37.00499999523163,
-        "p50CeilingRatio": 2.8148912291917134
+        "p50FreshInstanceMs": 48.43499994277954,
+        "p95FreshInstanceMs": 61.639999985694885,
+        "p50UnsafeSharedCaseMs": 28.31500005722046,
+        "p95UnsafeSharedCaseMs": 36.825000047683716,
+        "p50CeilingRatio": 1.710577426978616
       }
     ]
   },
   "judgeBoundary": {
     "description": "real browser Judge, compile plus all-case correctness receipt",
-    "warmMs": 20.125,
+    "warmMs": 29.90499997138977,
     "warmResult": {
       "success": true,
       "loadTimeMs": 0
@@ -64,69 +63,69 @@
         "cases": 10,
         "records": [
           {
-            "bundleMs": 0.6399999856948853,
-            "evaluateMs": 1602.0599999427795,
-            "bundleToReceiptMs": 1602.6999999284744
+            "bundleMs": 0.35500001907348633,
+            "evaluateMs": 1986.4449999332428,
+            "bundleToReceiptMs": 1986.7999999523163
           },
           {
-            "bundleMs": 0.0849999189376831,
-            "evaluateMs": 307.6750000715256,
-            "bundleToReceiptMs": 307.75999999046326
+            "bundleMs": 0.08500003814697266,
+            "evaluateMs": 390.14999997615814,
+            "bundleToReceiptMs": 390.2350000143051
           },
           {
-            "bundleMs": 0.059999942779541016,
-            "evaluateMs": 304.70500004291534,
-            "bundleToReceiptMs": 304.7649999856949
+            "bundleMs": 0.07499992847442627,
+            "evaluateMs": 386.4100000858307,
+            "bundleToReceiptMs": 386.4850000143051
           },
           {
-            "bundleMs": 0.0700000524520874,
-            "evaluateMs": 321.9800000190735,
-            "bundleToReceiptMs": 322.0500000715256
+            "bundleMs": 0.10499989986419678,
+            "evaluateMs": 378.81000006198883,
+            "bundleToReceiptMs": 378.914999961853
           },
           {
-            "bundleMs": 0.07999992370605469,
-            "evaluateMs": 300.1100000143051,
-            "bundleToReceiptMs": 300.18999993801117
+            "bundleMs": 0.09500002861022949,
+            "evaluateMs": 376.96999990940094,
+            "bundleToReceiptMs": 377.06499993801117
           }
         ],
-        "p50BundleToReceiptMs": 307.75999999046326,
-        "p95BundleToReceiptMs": 1602.6999999284744,
-        "p50EvaluateMs": 307.6750000715256,
-        "p95EvaluateMs": 1602.0599999427795
+        "p50BundleToReceiptMs": 386.4850000143051,
+        "p95BundleToReceiptMs": 1986.7999999523163,
+        "p50EvaluateMs": 386.4100000858307,
+        "p95EvaluateMs": 1986.4449999332428
       },
       {
         "cases": 100,
         "records": [
           {
-            "bundleMs": 0.11000001430511475,
-            "evaluateMs": 440.585000038147,
-            "bundleToReceiptMs": 440.6950000524521
+            "bundleMs": 0.10000002384185791,
+            "evaluateMs": 507.50999999046326,
+            "bundleToReceiptMs": 507.6100000143051
           },
           {
-            "bundleMs": 0.07500004768371582,
-            "evaluateMs": 404.11500000953674,
-            "bundleToReceiptMs": 404.19000005722046
+            "bundleMs": 0.08000004291534424,
+            "evaluateMs": 458.8700000047684,
+            "bundleToReceiptMs": 458.9500000476837
           },
           {
-            "bundleMs": 0.07499992847442627,
-            "evaluateMs": 374.6400001049042,
-            "bundleToReceiptMs": 374.7150000333786
+            "bundleMs": 0.10000002384185791,
+            "evaluateMs": 498.93499994277954,
+            "bundleToReceiptMs": 499.0349999666214
           },
           {
-            "bundleMs": 0.07499992847442627,
-            "evaluateMs": 367,
-            "bundleToReceiptMs": 367.0749999284744
+            "bundleMs": 0.11500000953674316,
+            "evaluateMs": 462.5750000476837,
+            "bundleToReceiptMs": 462.69000005722046
           },
           {
-            "bundleMs": 0.12999999523162842,
-            "evaluateMs": 370.8899999856949,
-            "bundleToReceiptMs": 371.0199999809265
+            "bundleMs": 0.1350001096725464,
+            "evaluateMs": 431.25999999046326,
+            "bundleToReceiptMs": 431.3950001001358
           }
         ],
-        "p50BundleToReceiptMs": 374.7150000333786,
-        "p95BundleToReceiptMs": 440.6950000524521,
-        "p50EvaluateMs": 374.6400001049042,
-        "p95EvaluateMs": 440.585000038147
+        "p50BundleToReceiptMs": 462.69000005722046,
+        "p95BundleToReceiptMs": 507.6100000143051,
+        "p50EvaluateMs": 462.5750000476837,
+        "p95EvaluateMs": 507.50999999046326
       }
     ]
   }
