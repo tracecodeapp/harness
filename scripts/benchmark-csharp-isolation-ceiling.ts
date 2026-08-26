@@ -107,7 +107,8 @@ async function main(): Promise<void> {
       page.setDefaultTimeout(300_000);
       await page.goto(`${server.origin}/index.html`);
       const results = await page.evaluate(async ({ rounds: browserRounds, strategies: browserStrategies }) => {
-        await import('/benchmark.mjs');
+        const moduleUrl: string = '/benchmark.mjs';
+        await import(moduleUrl);
         if (!globalThis.runCSharpIsolationCeilingBenchmark) {
           throw new Error('Benchmark entry point missing.');
         }
@@ -146,4 +147,3 @@ void main().catch((error) => {
   console.error(error);
   process.exitCode = 1;
 });
-
