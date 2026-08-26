@@ -75,23 +75,36 @@ Project and terminal execution are unchanged.
 
 ## Browser Judge measurements
 
-The benchmark uses the real `createBrowserJudgeHost` path, Chromium 145, the
-C# Contains Duplicate reference solution, all-cases-pass policy, and the same
-21,925 input integers used for the proposed 100-case corpus. Language warmup is
-excluded from the measured bundle-to-receipt interval.
+`pnpm bench:csharp-isolation-ceiling` uses the real
+`createBrowserJudgeHost` path, Chromium 145, the C# Contains Duplicate
+reference solution, all-cases-pass policy, and 21,950 input integers in the
+100-case corpus. It alternates unique and late-duplicate inputs so a constant
+answer cannot pass. Language warmup is excluded from the measured
+bundle-to-receipt interval.
 
 | Browser Judge path | 10 cases | 100 cases |
 | --- | ---: | ---: |
-| 0.16.8 compatibility baseline, one sample | 1,142 ms | 5,996 ms |
-| Deliberately unsafe one-call ceiling, one sample | 1,610 ms | 1,581 ms |
-| Capability-safe algorithm-fast candidate, three-sample p50 | 469 ms | 615 ms |
-| Capability-safe algorithm-fast candidate, three-sample p95 | 523 ms | 625 ms |
+| Fresh-worker compatibility, three-sample p50 | 1,514 ms | 10,970 ms |
+| Fresh-worker compatibility, three-sample p95 | 1,568 ms | 11,755 ms |
+| Capability-safe algorithm-fast, three-sample p50 | 491 ms | 656 ms |
+| Capability-safe algorithm-fast, three-sample p95 | 520 ms | 694 ms |
 
-The capability-safe 100-case path is about 9.8 times faster than the measured
-strict baseline and remains below one second at p95. The deliberately unsafe
-ceiling is slower here because that probe includes compilation inside the
-single evaluation call, while the product candidate uses the real
-prepare-once Judge boundary; it is not a comparable lower bound for C#.
+The capability-safe 100-case path is about 16.7 times faster at the median and
+remains below one second at p95. Both paths compile once through the same
+public Judge boundary. Compatibility reuses the warmed standby for its first
+case and then creates 99 fresh outer workers, with at most three simultaneously
+active after the compiler and standby capacities are excluded. Algorithm-fast
+reuses the warmed standby as one retained outer runner and creates a fresh
+collectible load context for all 100 cases.
+
+A separate benchmark-only unsafe prototype cached the learner assembly and
+method, sharing learner statics across cases. It measured 640 ms at the
+100-case median, only 16 ms below the safe path in this final run's median
+(and 62 ms below the earlier paired safe sample). Omitting only
+`AssemblyLoadContext.Unload()` produced no measurable improvement. The large
+gain therefore comes from removing repeated outer runtime, filesystem, and
+environment initialization; fresh learner load contexts are not a worthwhile
+isolation boundary to remove.
 
 ## Required evidence
 
