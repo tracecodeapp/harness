@@ -50,7 +50,7 @@ jobs:
       - name: Check runtime asset identities and snapshot provenance
         run: pnpm test:runtime-assets-lock
       - name: Test Python admission and prepared-runtime isolation
-        run: pnpm test:python-sync && pnpm test:runtime-contract && pnpm test:python-prepared-provider
+        run: pnpm test:python-sync && pnpm test:runtime-contract && pnpm test:python-prepared-provider && pnpm test:native-python-serialization-limit
       - name: Test Python runtime snapshot release recovery
         run: node --import tsx --test tests/test-python-runtime-snapshot-release.ts
       - name: Build

@@ -2187,7 +2187,10 @@ function compute(nums: number[], delta: number): number[] {
       '_MAX_SERIALIZED_ITEMS = 10**18',
       '_MAX_SERIALIZED_NODES = 10**18',
       '_MAX_SERIALIZED_BYTES = 10**18',
+      '_serialize = lambda *args, **kwargs: "bypass"',
+      '_TracecodeSerializationLimit = Exception',
       'json.JSONEncoder = EmptyEncoder',
+      'json.dumps = lambda *args, **kwargs: ""',
       'def solve():',
       '    return "x" * (9 * 1024 * 1024)',
       '',
@@ -2199,6 +2202,51 @@ function compute(nums: number[], delta: number): number[] {
     pythonSerializationOverride.success === false &&
       pythonSerializationOverride.error?.includes('serialization-limit') === true,
     `Python serialization limits must survive learner global overrides: ${JSON.stringify(pythonSerializationOverride)}`
+  );
+  const pythonDerivedNodes = runPythonCase(
+    [
+      'class TreeChild(TreeNode):',
+      '    pass',
+      'class ListChild(ListNode):',
+      '    pass',
+      'class Pretender:',
+      '    @property',
+      '    def __class__(self):',
+      '        return TreeNode',
+      '    def __init__(self, value):',
+      '        self.val = value',
+      'def solve():',
+      '    root = TreeChild(1, TreeChild(2))',
+      '    head = ListChild(3, ListChild(4))',
+      '    return [root, head, Pretender(5)]',
+      '',
+    ].join('\n'),
+    'solve',
+    {}
+  );
+  assertCondition(
+    pythonDerivedNodes.success === true &&
+      JSON.stringify(pythonDerivedNodes.output) ===
+        JSON.stringify([
+          {
+            __type__: 'TreeNode',
+            val: 1,
+            left: {
+              __type__: 'TreeNode',
+              val: 2,
+              left: null,
+              right: null,
+            },
+            right: null,
+          },
+          {
+            __type__: 'ListNode',
+            val: 3,
+            next: { __type__: 'ListNode', val: 4, next: null },
+          },
+          { __type__: 'Pretender', __class__: 'Pretender', val: 5 },
+        ]),
+    `Python node subclasses or hostile class metadata changed serialization shape: ${JSON.stringify(pythonDerivedNodes)}`
   );
   console.log('PASS: cross-runtime diagnostics contract');
 

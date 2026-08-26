@@ -1128,7 +1128,12 @@ function getIsolatedPythonExecutionGuard(pyodide) {
   return guard;
 }
 
-async function runPythonInFreshExecutionScope(deps, source, resultName) {
+async function runPythonInFreshExecutionScope(
+  deps,
+  source,
+  resultName,
+  bindings = undefined
+) {
   const pyodide = deps.getPyodide();
   // Dependency-injected source-generation tests intentionally provide only
   // runPythonAsync. Real Pyodide exposes all three APIs used for the isolated
@@ -1145,6 +1150,7 @@ async function runPythonInFreshExecutionScope(deps, source, resultName) {
   guard.set_compiled_limit(deps.pythonCompileCacheLimit ?? 4);
   guard.begin();
   try {
+    setPythonNamespaceBindings(namespace, bindings);
     return guard.run(source, namespace, resultName);
   } finally {
     try {
@@ -1967,6 +1973,7 @@ for _tracecode_batch_inputs in _tracecode_batch_cases:
     _tracecode_line_events = 0
     _tracecode_line_hits = {}
     _tracecode_call_depth = 0
+    _tracecode_trusted_prep_active = False
     _tracecode_memory_started = False
     _tracecode_tracemalloc = None
     _tracecode_interview_limits_enabled = bool(
@@ -2009,6 +2016,11 @@ for _tracecode_batch_inputs in _tracecode_batch_cases:
             and _tracecode_batch_time.perf_counter() >= _tracecode_case_deadline
         ):
             raise _TracecodeAlgorithmLimit('client-timeout')
+        if (
+            _tracecode_trusted_prep_active
+            and frame.f_code.co_filename != 'solution.py'
+        ):
+            return _tracecode_case_tracer
         if event == 'call' and _tracecode_interview_limits_enabled:
             _tracecode_call_depth += 1
             if _tracecode_call_depth > _tracecode_max_call_depth:
@@ -2074,16 +2086,20 @@ for _tracecode_batch_inputs in _tracecode_batch_cases:
             for name in _tracecode_case_input_names
             if name in _tracecode_case_globals
         }
-        _tracecode_batch_hydrate_inputs(
-            target,
-            _tracecode_case_inputs,
-            _tracecode_case_globals,
-        )
-        (
-            _tracecode_call_target,
-            _tracecode_call_args,
-            _tracecode_call_kwargs,
-        ) = _tracecode_batch_prepare_call(target, _tracecode_case_inputs)
+        _tracecode_trusted_prep_active = True
+        try:
+            _tracecode_batch_hydrate_inputs(
+                target,
+                _tracecode_case_inputs,
+                _tracecode_case_globals,
+            )
+            (
+                _tracecode_call_target,
+                _tracecode_call_args,
+                _tracecode_call_kwargs,
+            ) = _tracecode_batch_prepare_call(target, _tracecode_case_inputs)
+        finally:
+            _tracecode_trusted_prep_active = False
         output = _tracecode_call_target(
             *_tracecode_call_args,
             **_tracecode_call_kwargs,
@@ -2103,6 +2119,8 @@ for _tracecode_batch_inputs in _tracecode_batch_cases:
             'output': _serialize(
                 output,
                 checkpoint=_tracecode_execute_serialize_checkpoint,
+                tree_node_root=TreeNode,
+                list_node_root=ListNode,
             ),
             'consoleOutput': _tracecode_case_console,
             'timings': {
@@ -6678,7 +6696,7 @@ async function executeWithTracing(
 
   try {
     await deps.loadPyodideInstance();
-    
+
     if (prepared?.compileOnly === true) {
       return {
         success: true,
@@ -6896,6 +6914,11 @@ async function executeCode(
 
   try {
     await deps.loadPyodideInstance();
+    const executePyodide = deps.getPyodide();
+    const supportsTrustedExecuteFinalization =
+      typeof executePyodide?.runPython === 'function' &&
+      typeof executePyodide?.toPy === 'function' &&
+      typeof executePyodide?.globals?.delete === 'function';
 
     const preparedInputPrelude = usesPreparedBindings
       ? `
@@ -7424,36 +7447,31 @@ finally:
     print = _original_print
 
 if _interview_guard_triggered:
-    _json_out = json.dumps({
-        "guardTriggered": True,
+    _tracecode_raw_result = {
+        "kind": "guard",
         "timeoutReason": _interview_guard_reason,
         "console": _console_output,
-    })
+    }
 elif _tracecode_execution_failure is not None:
-    _json_out = json.dumps({
+    _tracecode_raw_result = {
+        "kind": "execution-error",
         "executionError": _tracecode_execution_failure,
         "console": [],
-    })
+    }
 else:
     if _result is None:
         _inplace = _resolve_inplace_result()
         if _inplace is not None:
             _result = _inplace
-    try:
-        _serialized_result = _serialize(_result)
-    except _TracecodeSerializationLimit:
-        _json_out = json.dumps({
-            "serializationLimit": True,
-            "console": _console_output,
-        })
-    else:
-        _json_out = json.dumps({
-            "guardTriggered": False,
-            "output": _serialized_result,
-            "console": _console_output,
-        })
+    _tracecode_raw_result = {
+        "kind": "success",
+        "output": _result,
+        "console": _console_output,
+        "treeNodeType": TreeNode,
+        "listNodeType": ListNode,
+    }
 
-_json_out
+_tracecode_raw_result
 `
       : `
 ${deps.PYTHON_CONVERSION_HELPERS_SNIPPET}
@@ -7695,19 +7713,14 @@ if _result is None:
     if _inplace is not None:
         _result = _inplace
 
-try:
-    _serialized_result = _serialize(_result)
-except _TracecodeSerializationLimit:
-    _json_out = json.dumps({
-        "serializationLimit": True,
-        "console": _console_output,
-    })
-else:
-    _json_out = json.dumps({
-        "output": _serialized_result,
-        "console": _console_output,
-    })
-_json_out
+_tracecode_raw_result = {
+    "kind": "success",
+    "output": _result,
+    "console": _console_output,
+    "treeNodeType": TreeNode,
+    "listNodeType": ListNode,
+}
+_tracecode_raw_result
 `;
     const execCode =
       execPrefix +
@@ -7715,6 +7728,51 @@ _json_out
         ? 'exec(__tracecode_prepared_user_code, globals())'
         : code) +
       execSuffix;
+
+    const executeFinalizerSource = `
+import json
+import math
+import builtins as _builtins
+${deps.PYTHON_CLASS_DEFINITIONS_SNIPPET}
+${deps.PYTHON_EXECUTE_SERIALIZE_FUNCTION_SNIPPET}
+
+_tracecode_raw_result = __tracecode_raw_result
+_tracecode_result_kind = _tracecode_raw_result.get("kind")
+if _tracecode_result_kind == "guard":
+    _tracecode_final_result = {
+        "guardTriggered": True,
+        "timeoutReason": _tracecode_raw_result.get("timeoutReason"),
+        "console": _tracecode_raw_result.get("console", []),
+    }
+elif _tracecode_result_kind == "execution-error":
+    _tracecode_final_result = {
+        "executionError": _tracecode_raw_result.get("executionError"),
+        "console": [],
+    }
+else:
+    try:
+        _tracecode_serialized_result = _serialize(
+            _tracecode_raw_result.get("output"),
+            tree_node_root=_tracecode_raw_result.get("treeNodeType", TreeNode),
+            list_node_root=_tracecode_raw_result.get("listNodeType", ListNode),
+        )
+    except _TracecodeSerializationLimit:
+        _tracecode_final_result = {
+            "serializationLimit": True,
+            "console": _tracecode_raw_result.get("console", []),
+        }
+    else:
+        _tracecode_final_result = {
+            "guardTriggered": False,
+            "output": _tracecode_serialized_result,
+            "console": _tracecode_raw_result.get("console", []),
+        }
+
+_json_out = json.JSONEncoder(separators=(',', ':')).encode(
+    _tracecode_final_result
+)
+_json_out
+`;
 
     if (prepared?.compileOnly === true) {
       return {
@@ -7727,11 +7785,19 @@ _json_out
     }
 
     if (usesPreparedBindings) userCodeStartLine = 1;
-    const resultJson = usesPreparedBindings
-      ? await runCompiledPythonInFreshExecutionScope(
+    let resultJson;
+    if (!supportsTrustedExecuteFinalization) {
+      resultJson = await runPythonInFreshExecutionScope(
+        deps,
+        `${execCode}\n__tracecode_raw_result = _tracecode_raw_result\n${executeFinalizerSource}`,
+        '_json_out'
+      );
+    } else {
+      const rawResult = usesPreparedBindings
+        ? await runCompiledPythonInFreshExecutionScope(
           deps,
           prepared.executorCode,
-          '_json_out',
+          '_tracecode_raw_result',
           {
             __tracecode_prepared_user_code: prepared.userCodeObject,
             __tracecode_inputs_literal: preparedPythonLiteral(
@@ -7751,7 +7817,22 @@ _json_out
           prepared.scopeTimings,
           prepared.isolationTier
         )
-      : await runPythonInFreshExecutionScope(deps, execCode, '_json_out');
+        : await runPythonInFreshExecutionScope(
+          deps,
+          execCode,
+          '_tracecode_raw_result'
+        );
+      try {
+        resultJson = await runPythonInFreshExecutionScope(
+          deps,
+          executeFinalizerSource,
+          '_json_out',
+          { __tracecode_raw_result: rawResult }
+        );
+      } finally {
+        rawResult?.destroy?.();
+      }
+    }
     const resultParseStartedAt = deps.performanceNow();
     const result = JSON.parse(resultJson);
     if (prepared?.scopeTimings) {

@@ -126,26 +126,45 @@ ${PYTHON_CONVERSION_HELPERS}
 
 ${PYTHON_SERIALIZE_FUNCTION}
 
-# Solution code
-${solutionCode}
-
 # Set up inputs
 ${inputSetup}
 
 # Convert tree/list inputs
 ${conversionCode}
 
-# Run the function
-try:
-    _result = ${functionName}(${paramList})
-    print(json.dumps({"success": True, "output": _serialize(_result)}))
-except _TracecodeSerializationLimit:
-    print(json.dumps({
-        "success": False,
-        "error": "Execution stopped: resource limit exceeded (serialization-limit).",
-        "timeoutReason": "serialization-limit",
-    }))
-except Exception as e:
-    print(json.dumps({"success": False, "error": f"{type(e).__name__}: {str(e)}"}))
+# Execute learner definitions while trusted finalization stays in this active
+# function frame. Learner globals may replace the public helper names, but they
+# cannot replace the already-bound serializer, limit type, encoder, or emitter.
+def _tracecode_run_solution(
+    source,
+    function_name,
+    _trusted_serialize=_serialize,
+    _trusted_limit_type=_TracecodeSerializationLimit,
+    _trusted_encode=json.JSONEncoder().encode,
+    _trusted_print=_builtins.print,
+    _trusted_exception_type=_builtins.Exception,
+    _trusted_type=_builtins.type,
+):
+    try:
+        exec(compile(source, 'solution.py', 'exec'), globals())
+        _result = globals()[function_name](${paramList})
+        _payload = {"success": True, "output": _trusted_serialize(_result)}
+    except _trusted_limit_type:
+        _payload = {
+            "success": False,
+            "error": "Execution stopped: resource limit exceeded (serialization-limit).",
+            "timeoutReason": "serialization-limit",
+        }
+    except _trusted_exception_type as error:
+        _payload = {
+            "success": False,
+            "error": f"{_trusted_type(error).__name__}: {str(error)}",
+        }
+    _trusted_print(_trusted_encode(_payload))
+
+_tracecode_run_solution(
+    ${toPythonLiteral(solutionCode)},
+    ${toPythonLiteral(functionName)},
+)
 `;
 }

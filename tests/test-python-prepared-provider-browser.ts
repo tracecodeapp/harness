@@ -58,6 +58,8 @@ interface BrowserResult {
     parity: { tier?: string; reasons: string[] };
     inplace: { tier?: string; reasons: string[] };
     serialized: { tier?: string; reasons: string[] };
+    trustedPreparationBudget: { tier?: string; reasons: string[] };
+    learnerHydrationBudget: { tier?: string; reasons: string[] };
     benchmarkCode: { tier?: string; reasons: string[] };
     benchmarkHasFastBatch: boolean;
   };
@@ -528,7 +530,10 @@ async function main(): Promise<void> {
             '_MAX_SERIALIZED_ITEMS = 10**18',
             '_MAX_SERIALIZED_NODES = 10**18',
             '_MAX_SERIALIZED_BYTES = 10**18',
+            '_serialize = lambda *args, **kwargs: "bypass"',
+            '_TracecodeSerializationLimit = Exception',
             'json.JSONEncoder = EmptyEncoder',
+            'json.dumps = lambda *args, **kwargs: ""',
             'def solve(value):',
             '    if value == 0:',
             '        return "x" * (9 * 1024 * 1024)',
@@ -714,12 +719,57 @@ async function main(): Promise<void> {
       const serialized = await preparationWorker.request('prepare-program', {
         mode: 'code',
         code: [
+          'class TreeChild(TreeNode):',
+          '    pass',
+          'class ListChild(ListNode):',
+          '    pass',
           'def solve(value):',
-          '    return [ListNode(value), solve]',
+          '    return [',
+          '        TreeChild(value, TreeChild(value + 1)),',
+          '        ListChild(value, ListChild(value + 1)),',
+          '        solve,',
+          '    ]',
         ].join('\\n'),
         functionName: 'solve',
         executionStyle: 'function',
       });
+      const trustedPreparationParameterNames = Array.from(
+        { length: 500 },
+        (_, index) => 'a' + String(index)
+      );
+      const trustedPreparationSignature = trustedPreparationParameterNames
+        .map((name) => name + ': list[int]')
+        .join(', ');
+      const trustedPreparationBudget = await preparationWorker.request(
+        'prepare-program',
+        {
+          mode: 'code',
+          code: [
+            'def solve(' + trustedPreparationSignature + '):',
+            '    return 1',
+          ].join('\\n'),
+          functionName: 'solve',
+          executionStyle: 'function',
+        }
+      );
+      const learnerHydrationBudget = await preparationWorker.request(
+        'prepare-program',
+        {
+          mode: 'code',
+          code: [
+            'class Box:',
+            '    def __init__(self, value):',
+            '        total = 0',
+            '        for index in range(6000):',
+            '            total += index',
+            '        self.value = value',
+            'def solve(item: Box):',
+            '    return item.value',
+          ].join('\\n'),
+          functionName: 'solve',
+          executionStyle: 'function',
+        }
+      );
       const dequeExecution = await preparationWorker.request('prepare-program', {
         mode: 'code',
         code: [
@@ -1086,6 +1136,34 @@ async function main(): Promise<void> {
             }],
           }
         );
+        fastParityRuns.trustedPreparationBudget = await batchClient.request(
+          'execute-prepared-program-batch',
+          {
+            artifact: trustedPreparationBudget.artifact,
+            mode: 'code',
+            inputBatch: [Object.fromEntries(
+              trustedPreparationParameterNames.map((name) => [name, [1]])
+            )],
+            limits: {
+              interviewGuard: true,
+              maxLineEvents: 10000,
+              maxSingleLineHits: 10000,
+            },
+          }
+        );
+        fastParityRuns.learnerHydrationBudget = await batchClient.request(
+          'execute-prepared-program-batch',
+          {
+            artifact: learnerHydrationBudget.artifact,
+            mode: 'code',
+            inputBatch: [{ item: { value: 0 } }],
+            limits: {
+              interviewGuard: true,
+              maxLineEvents: 10000,
+              maxSingleLineHits: 10000,
+            },
+          }
+        );
         fastParityRuns.dequeExecution = await batchClient.request(
           'execute-prepared-program-batch',
           {
@@ -1376,6 +1454,13 @@ async function main(): Promise<void> {
           'execute-code',
           {
             code: [
+              'class EmptyEncoder:',
+              '    def encode(self, value):',
+              '        return ""',
+              '_serialize = lambda *args, **kwargs: "bypass"',
+              '_TracecodeSerializationLimit = Exception',
+              'json.JSONEncoder = EmptyEncoder',
+              'json.dumps = lambda *args, **kwargs: ""',
               'def solve():',
               '    return "x" * (9 * 1024 * 1024)',
             ].join('\\n'),
@@ -1689,6 +1774,8 @@ async function main(): Promise<void> {
           parity,
           inplace,
           serialized,
+          trustedPreparationBudget,
+          learnerHydrationBudget,
           dequeExecution,
           customClassHydration,
           globalInput,
@@ -1749,6 +1836,10 @@ async function main(): Promise<void> {
           parity: parity.artifact?.isolationProfile,
           inplace: inplace.artifact?.isolationProfile,
           serialized: serialized.artifact?.isolationProfile,
+          trustedPreparationBudget:
+            trustedPreparationBudget.artifact?.isolationProfile,
+          learnerHydrationBudget:
+            learnerHydrationBudget.artifact?.isolationProfile,
           dequeExecution: dequeExecution.artifact?.isolationProfile,
           customClassHydration: customClassHydration.artifact?.isolationProfile,
           globalInput: globalInput.artifact?.isolationProfile,
@@ -1989,8 +2080,8 @@ async function main(): Promise<void> {
       `Python fast-path admission must reject module mutation, reflective access, and unreviewed imports: ${JSON.stringify(result.isolationProfiles)}`
     );
     assertCondition(
-      result.preparationWorker.prepareRequests === 48,
-      `Preparation worker received ${String(result.preparationWorker.prepareRequests)} preparations instead of forty-eight`
+      result.preparationWorker.prepareRequests === 50,
+      `Preparation worker received ${String(result.preparationWorker.prepareRequests)} preparations instead of fifty`
     );
     const algorithmBatchResults = result.algorithmBatchRun.results as Array<{
       success?: boolean;
@@ -2064,6 +2155,39 @@ async function main(): Promise<void> {
         serializationOverrideResults[1]?.success === true &&
         serializationOverrideResults[1]?.output === 1,
       `Compatibility learner globals bypassed the trusted serializer closure: ${JSON.stringify(serializationOverrideResults)}`
+    );
+    const trustedPreparationBudgetResults = result.fastParityRuns
+      .trustedPreparationBudget.results as Array<{
+        success?: boolean;
+        output?: unknown;
+        timeoutReason?: string;
+        timings?: { algorithmFastBatch?: boolean };
+      }>;
+    const learnerHydrationBudgetResults = result.fastParityRuns
+      .learnerHydrationBudget.results as Array<{
+        success?: boolean;
+        output?: unknown;
+        timeoutReason?: string;
+        timings?: { algorithmFastBatch?: boolean };
+      }>;
+    assertCondition(
+      result.isolationProfiles.trustedPreparationBudget?.tier ===
+        'algorithm-fast' &&
+        trustedPreparationBudgetResults.length === 1 &&
+        trustedPreparationBudgetResults[0]?.success === true &&
+        trustedPreparationBudgetResults[0]?.output === 1 &&
+        trustedPreparationBudgetResults[0]?.timings?.algorithmFastBatch ===
+          true,
+      `Trusted annotation/signature preparation consumed learner line budget: ${JSON.stringify({ profile: result.isolationProfiles.trustedPreparationBudget, results: trustedPreparationBudgetResults })}`
+    );
+    assertCondition(
+      result.isolationProfiles.learnerHydrationBudget?.tier ===
+        'algorithm-fast' &&
+        learnerHydrationBudgetResults.length === 1 &&
+        learnerHydrationBudgetResults[0]?.success === false &&
+        learnerHydrationBudgetResults[0]?.timeoutReason === 'line-limit' &&
+        learnerHydrationBudgetResults[0]?.timings?.algorithmFastBatch === true,
+      `Learner code invoked during trusted hydration escaped learner line budget: ${JSON.stringify({ profile: result.isolationProfiles.learnerHydrationBudget, results: learnerHydrationBudgetResults })}`
     );
     const serializationDagResults = result.fastParityRuns.serializationDag
       .results as Array<{
@@ -2229,10 +2353,26 @@ async function main(): Promise<void> {
           JSON.stringify(['hello']) &&
         JSON.stringify(inplaceResult?.output) ===
           JSON.stringify([1, 2, 3]) &&
-        JSON.stringify(serializedResult?.output) === JSON.stringify([
-          { __type__: 'ListNode', val: 7, next: null },
-          null,
-        ]) &&
+        JSON.stringify(serializedResult?.output) ===
+          JSON.stringify([
+            {
+              __type__: 'TreeNode',
+              val: 7,
+              left: {
+                __type__: 'TreeNode',
+                val: 8,
+                left: null,
+                right: null,
+              },
+              right: null,
+            },
+            {
+              __type__: 'ListNode',
+              val: 7,
+              next: { __type__: 'ListNode', val: 8, next: null },
+            },
+            null,
+          ]) &&
         JSON.stringify(fastParityProjection('globalInput').output) ===
           JSON.stringify([5, [1, 2, 9]]) &&
         JSON.stringify(fastParityProjection('globalRebinding').output) ===

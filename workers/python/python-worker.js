@@ -1050,6 +1050,8 @@ def _tracecode_make_execute_serializer(
     builtins_module=_builtins,
     math_module=math,
     limit_type=_TracecodeSerializationLimit,
+    tree_node_type=TreeNode,
+    list_node_type=ListNode,
     encode=json.JSONEncoder().encode,
 ):
     builtin_base_exception = builtins_module.BaseException
@@ -1059,12 +1061,12 @@ def _tracecode_make_execute_serializer(
     builtin_int = builtins_module.int
     builtin_float = builtins_module.float
     builtin_str = builtins_module.str
-    builtin_none_type = builtins_module.type(None)
+    builtin_type = builtins_module.type
+    builtin_none_type = builtin_type(None)
     builtin_list = builtins_module.list
     builtin_tuple = builtins_module.tuple
     builtin_dict = builtins_module.dict
     builtin_set = builtins_module.set
-    builtin_object_getattribute = builtins_module.object.__getattribute__
     builtin_type_getattribute = builtins_module.type.__getattribute__
     builtin_isinstance = builtins_module.isinstance
     builtin_len = builtins_module.len
@@ -1086,7 +1088,7 @@ def _tracecode_make_execute_serializer(
 
     def serialize_type_metadata(obj):
         try:
-            obj_type = builtin_object_getattribute(obj, '__class__')
+            obj_type = builtin_type(obj)
             class_name = builtin_type_getattribute(obj_type, '__name__')
             module_name = builtin_type_getattribute(obj_type, '__module__')
         except builtin_base_exception:
@@ -1096,6 +1098,17 @@ def _tracecode_make_execute_serializer(
         if not builtin_isinstance(module_name, builtin_str):
             module_name = ''
         return class_name, module_name
+
+    def serialize_inherits_from(obj, root_type):
+        try:
+            obj_type = builtin_type(obj)
+            type_mro = builtin_type_getattribute(obj_type, '__mro__')
+        except builtin_base_exception:
+            return False
+        for entry in type_mro:
+            if entry is root_type:
+                return True
+        return False
 
     def serialize_repr_fallback(obj):
         class_name, module_name = serialize_type_metadata(obj)
@@ -1148,14 +1161,14 @@ def _tracecode_make_execute_serializer(
             except builtin_type_error:
                 pass
             return {"__type__": "set", "values": values}
-        elif serialize_type_metadata(obj)[0] == 'TreeNode':
+        elif serialize_inherits_from(obj, state["tree_node_type"]):
             result = {"__type__": "TreeNode", "val": serialize_value(builtin_getattr(obj, 'val', builtin_getattr(obj, 'value', None)), depth + 1, state)}
             if builtin_hasattr(obj, 'left'):
                 result["left"] = serialize_value(obj.left, depth + 1, state)
             if builtin_hasattr(obj, 'right'):
                 result["right"] = serialize_value(obj.right, depth + 1, state)
             return result
-        elif serialize_type_metadata(obj)[0] == 'ListNode':
+        elif serialize_inherits_from(obj, state["list_node_type"]):
             result = {"__type__": "ListNode", "val": serialize_value(builtin_getattr(obj, 'val', builtin_getattr(obj, 'value', None)), depth + 1, state)}
             result["next"] = serialize_value(obj.next, depth + 1, state)
             return result
@@ -1182,9 +1195,21 @@ def _tracecode_make_execute_serializer(
         else:
             return serialize_repr_fallback(obj)
 
-    def serialize(obj, depth=0, state=None, checkpoint=None):
+    def serialize(
+        obj,
+        depth=0,
+        state=None,
+        checkpoint=None,
+        tree_node_root=tree_node_type,
+        list_node_root=list_node_type,
+    ):
         if state is None:
-            state = {"nodes": 0, "checkpoint": checkpoint}
+            state = {
+                "nodes": 0,
+                "checkpoint": checkpoint,
+                "tree_node_type": tree_node_root,
+                "list_node_type": list_node_root,
+            }
         result = serialize_value(obj, depth, state)
         if depth == 0:
             encoded = encode(result)

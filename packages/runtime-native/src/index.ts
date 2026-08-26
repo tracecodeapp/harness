@@ -590,6 +590,8 @@ _USER_CODE = ${JSON.stringify(code)}
 _FUNCTION_NAME = ${JSON.stringify(functionName)}
 _EXECUTION_STYLE = ${JSON.stringify(executionStyle)}
 _INPUT_BATCH = json.loads(${JSON.stringify(JSON.stringify(inputBatch))})
+_tracecode_encode_results = json.JSONEncoder(separators=(',', ':')).encode
+_tracecode_print_results = _builtins.print
 
 def _tracecode_materialize_custom_input(obj):
     if isinstance(obj, list):
@@ -704,12 +706,20 @@ def _tracecode_run_case(raw_inputs):
                         result = env[name]
                         break
         return {'success': True, 'output': _serialize(result), 'consoleOutput': console_output}
+    except _TracecodeSerializationLimit:
+        return {
+            'success': False,
+            'output': None,
+            'error': 'Execution stopped: resource limit exceeded (serialization-limit).',
+            'timeoutReason': 'serialization-limit',
+            'consoleOutput': console_output,
+        }
     except Exception as error:
         return {'success': False, 'output': None, 'error': str(error), 'consoleOutput': console_output}
 
 _started = None
 _results = [_tracecode_run_case(case if isinstance(case, dict) else {}) for case in _INPUT_BATCH]
-print(json.dumps({
+_tracecode_print_results(_tracecode_encode_results({
     'success': all(result.get('success') is True for result in _results),
     'results': _results,
     'consoleOutput': [line for result in _results for line in result.get('consoleOutput', [])],

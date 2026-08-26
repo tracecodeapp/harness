@@ -180,6 +180,7 @@
     "test:tracecc-browser": "pnpm exec tsx --tsconfig tsconfig.base.json tests/test-tracecc-browser-runtime.ts",
     "prepare:tracecc-assets": "node --import tsx scripts/prepare-tracecc-runtime-assets.mts",
     "test:native-harness": "pnpm exec tsx --tsconfig tsconfig.base.json tests/test-native-harness.ts",
+    "test:native-python-serialization-limit": "pnpm exec tsx --tsconfig tsconfig.base.json tests/test-native-python-serialization-limit.ts",
     "test:runtime-info-sync": "pnpm exec tsx --tsconfig tsconfig.base.json scripts/generate-runtime-language-info.ts --check && pnpm exec tsx --tsconfig tsconfig.base.json scripts/generate-runtime-open-source-info.ts --check && pnpm test:runtime-open-source-info && pnpm test:runtime-notices",
     "test:runtime-open-source-info": "pnpm exec tsx --tsconfig tsconfig.base.json tests/test-runtime-open-source-info.ts",
     "test:runtime-notices": "pnpm exec tsx --tsconfig tsconfig.base.json tests/test-runtime-notices.ts",
