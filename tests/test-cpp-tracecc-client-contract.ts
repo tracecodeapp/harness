@@ -52,6 +52,7 @@ class InitWorker {
             arityMismatch?: unknown;
             missingResultCount?: unknown;
             invalidProgress?: unknown;
+            overflowProgress?: unknown;
           }>
         : [];
       void (async () => {
@@ -116,6 +117,24 @@ class InitWorker {
               },
             },
           } as unknown as MessageEvent<WorkerMessage>);
+          if (inputs.overflowProgress === true) {
+            this.onmessage?.({
+              data: {
+                id: message.id,
+                type: 'runtime-progress',
+                protocolToken: message.protocolToken,
+                payload: {
+                  stage: 'prepared-code-case-complete',
+                  detail: {
+                    caseIndex: inputBatch.length,
+                    caseCount: inputBatch.length,
+                    result,
+                  },
+                },
+              },
+            } as unknown as MessageEvent<WorkerMessage>);
+            return;
+          }
         }
         const arityMismatch = inputBatch.some((inputs) => inputs.arityMismatch === true);
         const missingResultCount = inputBatch.some(
@@ -295,6 +314,72 @@ async function main(): Promise<void> {
     }
   } finally {
     progressClient.terminate();
+  }
+
+  const overflowWorker = new InitWorker();
+  const overflowClient = createClient(overflowWorker, { executionTimeoutMs: 43_210 });
+  const originalSetTimeout = globalThis.setTimeout;
+  const originalClearTimeout = globalThis.clearTimeout;
+  const controlledDeadlines = new Map<ReturnType<typeof setTimeout>, () => void>();
+  let nextDeadlineId = 1;
+  let deadlineScheduleCount = 0;
+  try {
+    const preparation = await overflowClient.prepareRuntimeProgram({
+      mode: 'code',
+      code: 'class Solution { public: int identity(int value) { return value; } };',
+      functionName: 'identity',
+      executionStyle: 'solution-method',
+    });
+    if (!preparation.success) {
+      throw new Error(`C++ overflow progress preparation failed: ${preparation.error}`);
+    }
+    const invokeSetTimeout = originalSetTimeout as unknown as (
+      ...args: unknown[]
+    ) => ReturnType<typeof setTimeout>;
+    const invokeClearTimeout = originalClearTimeout as unknown as (
+      handle?: ReturnType<typeof setTimeout>
+    ) => void;
+    globalThis.setTimeout = ((...args: unknown[]) => {
+      const [handler, timeout, ...callbackArgs] = args;
+      if (timeout === 43_210 && typeof handler === 'function') {
+        deadlineScheduleCount += 1;
+        const handle = Object.freeze({ deadlineId: nextDeadlineId++ }) as unknown as
+          ReturnType<typeof setTimeout>;
+        controlledDeadlines.set(handle, () => handler(...callbackArgs));
+        return handle;
+      }
+      return invokeSetTimeout(...args);
+    }) as typeof setTimeout;
+    globalThis.clearTimeout = ((handle?: ReturnType<typeof setTimeout>) => {
+      if (handle && controlledDeadlines.delete(handle)) return;
+      invokeClearTimeout(handle);
+    }) as typeof clearTimeout;
+
+    const execution = overflowClient.executePreparedCodeBatch(preparation.handle, {
+      inputBatch: [{ value: 6, overflowProgress: true }],
+    });
+    await new Promise<void>((resolve) => originalSetTimeout(resolve, 0));
+    const activeDeadline = [...controlledDeadlines.values()][0];
+    if (!activeDeadline) {
+      throw new Error('C++ overflow progress test did not capture the batch deadline.');
+    }
+    activeDeadline();
+    const result = await execution;
+    if (
+      deadlineScheduleCount !== 2 ||
+      result.length !== 1 ||
+      result[0]?.kind !== 'completed' ||
+      result[0].output !== 6
+    ) {
+      throw new Error(
+        'C++ out-of-range progress rearmed the per-case watchdog: ' +
+        JSON.stringify({ deadlineScheduleCount, result })
+      );
+    }
+  } finally {
+    globalThis.setTimeout = originalSetTimeout;
+    globalThis.clearTimeout = originalClearTimeout;
+    overflowClient.terminate();
   }
 
   const timeoutWorker = new InitWorker();

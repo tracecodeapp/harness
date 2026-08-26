@@ -1350,6 +1350,7 @@ export class CppWorkerClient {
         Number.isInteger(detail.caseIndex) &&
         typeof detail.caseIndex === 'number' &&
         detail.caseIndex === nextExpectedCaseIndex &&
+        detail.caseIndex < expectedCaseCount &&
         detail.caseCount === expectedCaseCount &&
         detail.result &&
         typeof detail.result === 'object'
