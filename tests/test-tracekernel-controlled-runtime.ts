@@ -219,6 +219,32 @@ async function main(): Promise<void> {
             'EOPNOTSUPP: TraceKernel algorithm profile does not permit readFile of "/workspace/secret.txt"',
         `Algorithm path denial was not reported precisely: ${JSON.stringify(deniedSecretRead)}`
       );
+      yield* session.symlink(
+        '/workspace/secret.txt',
+        '/workspace/linked-solution.py'
+      );
+      const symlinkProcess = yield* session.spawn({
+        runtime: controlled.runtime,
+        command: 'algorithm-symlink-runner',
+        cwd: '/workspace',
+        runtimeSyscalls: {
+          profile: 'algorithm',
+          readableFiles: ['./linked-solution.py'],
+        },
+      });
+      yield* symlinkProcess.awaitStarted();
+      const symlinkContext = yield* controlled.awaitAttached(
+        symlinkProcess.pid
+      );
+      assertUnsupported(
+        yield* symlinkContext.syscalls.dispatch({
+          op: 'readFile',
+          path: '/workspace/linked-solution.py',
+        }),
+        'readFile'
+      );
+      yield* controlled.complete(symlinkProcess.pid, { exitCode: 0 });
+      yield* symlinkProcess.wait();
       assertUnsupported(
         yield* algorithmContext.syscalls.dispatch({
           op: 'writeFile',
@@ -280,6 +306,7 @@ async function main(): Promise<void> {
     engineLeaseDisposition: true,
     invalidRuntimePolicyRejected: true,
     algorithmCapabilityProfile: true,
+    symlinkedReadableFileRejected: true,
     deniedSyscallsHaveNoSideEffects: true,
   }, null, 2));
 }

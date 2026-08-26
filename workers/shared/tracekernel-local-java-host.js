@@ -16203,15 +16203,23 @@ var TraceKernelSyscallDispatcher = class {
       request.op,
       request.path
     );
+    const canonicalizeReadPath = (path) => all3([
+      this.session.fileSystem.resolve(path, snapshot.cwd),
+      this.session.fileSystem.realpath(path, snapshot.cwd)
+    ]).pipe(
+      map11(([lexicalPath, realPath]) => ({ lexicalPath, realPath }))
+    );
     return all3([
-      this.session.fileSystem.resolve(request.path, snapshot.cwd),
+      canonicalizeReadPath(request.path),
       forEach7(
         policy.readableFiles,
-        (path) => this.session.fileSystem.resolve(path, snapshot.cwd)
+        canonicalizeReadPath
       )
     ]).pipe(
       flatMap9(
-        ([requestedPath, readableFiles]) => readableFiles.includes(requestedPath) ? _void : denyRead()
+        ([requestedPath, readableFiles]) => requestedPath.lexicalPath === requestedPath.realPath && readableFiles.some(
+          (readableFile) => readableFile.lexicalPath === requestedPath.lexicalPath && readableFile.realPath === readableFile.lexicalPath
+        ) ? _void : denyRead()
       ),
       catchAll2(denyRead)
     );

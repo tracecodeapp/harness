@@ -1103,15 +1103,26 @@ export class TraceKernelSyscallDispatcher {
       request.op,
       request.path
     );
+    const canonicalizeReadPath = (path: string) => Effect.all([
+      this.session.fileSystem.resolve(path, snapshot.cwd),
+      this.session.fileSystem.realpath(path, snapshot.cwd),
+    ]).pipe(
+      Effect.map(([lexicalPath, realPath]) => ({ lexicalPath, realPath }))
+    );
     return Effect.all([
-      this.session.fileSystem.resolve(request.path, snapshot.cwd),
+      canonicalizeReadPath(request.path),
       Effect.forEach(
         policy.readableFiles,
-        (path) => this.session.fileSystem.resolve(path, snapshot.cwd)
+        canonicalizeReadPath
       ),
     ]).pipe(
       Effect.flatMap(([requestedPath, readableFiles]) =>
-        readableFiles.includes(requestedPath)
+        requestedPath.lexicalPath === requestedPath.realPath &&
+        readableFiles.some(
+          (readableFile) =>
+            readableFile.lexicalPath === requestedPath.lexicalPath &&
+            readableFile.realPath === readableFile.lexicalPath
+        )
           ? Effect.void
           : denyRead()
       ),
