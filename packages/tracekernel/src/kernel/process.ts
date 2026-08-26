@@ -25,6 +25,7 @@ import type {
   TraceKernelProcessTermination,
   TraceKernelRuntimeLease,
   TraceKernelRuntimeName,
+  TraceKernelRuntimeSyscallPolicy,
   TraceKernelRuntimeProcessContext,
   TraceKernelSignal,
   TraceKernelTerminatingSignal,
@@ -74,6 +75,7 @@ export interface MutableProcessRecord {
   owner: TraceKernelPrincipal;
   protected: boolean;
   visible: boolean;
+  runtimeSyscalls: TraceKernelRuntimeSyscallPolicy;
   startedAt?: number;
   endedAt?: number;
   termination?: TraceKernelProcessTermination;
@@ -109,6 +111,7 @@ function immutableSnapshot(record: MutableProcessRecord): TraceKernelProcessSnap
     owner: record.owner,
     protected: record.protected,
     visible: record.visible,
+    runtimeSyscalls: record.runtimeSyscalls,
     ...(record.startedAt === undefined ? {} : { startedAt: record.startedAt }),
     ...(record.endedAt === undefined ? {} : { endedAt: record.endedAt }),
     ...(record.termination === undefined ? {} : { termination: record.termination }),
@@ -177,6 +180,10 @@ export class TraceKernelProcess {
 
   get pid(): number {
     return this.record.pid;
+  }
+
+  get runtimeSyscalls(): TraceKernelRuntimeSyscallPolicy {
+    return this.record.runtimeSyscalls;
   }
 
   setWatchdog(watchdog?: TraceKernelWatchdogSnapshot): void {

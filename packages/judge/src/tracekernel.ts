@@ -7,6 +7,7 @@ import type {
   TraceKernelSession,
   TraceKernelHost,
   TraceKernelSignal,
+  TraceKernelRuntimeSyscallPolicy,
 } from '@tracecode/tracekernel';
 import type {
   JudgeKernelPort,
@@ -127,7 +128,8 @@ class TraceKernelJudgeSession
   constructor(
     private readonly session: TraceKernelSession,
     private readonly runtimeControl: JudgeRuntimeControlPort,
-    private readonly grader: TraceKernelPrincipal
+    private readonly grader: TraceKernelPrincipal,
+    private readonly runtimeSyscalls: TraceKernelRuntimeSyscallPolicy
   ) {
     this.id = session.id;
   }
@@ -167,6 +169,7 @@ class TraceKernelJudgeSession
         owner: this.grader,
         protected: true,
         visible: false,
+        runtimeSyscalls: this.runtimeSyscalls,
       }).pipe(
         Effect.tapError(() => this.runtimeControl.discard(invocationId))
       );
@@ -198,6 +201,11 @@ export interface TraceKernelJudgePortOptions {
   readonly host: TraceKernelHost;
   readonly runtimeControl: JudgeRuntimeControlPort;
   readonly grader?: TraceKernelPrincipal;
+  /**
+   * Exact TKFS files the algorithm runtime adapter may read atomically.
+   * All other runtime-visible syscalls are disabled by TraceKernel.
+   */
+  readonly readableFiles?: readonly string[];
 }
 
 /**
@@ -213,11 +221,18 @@ export class TraceKernelJudgePort
   private readonly host: TraceKernelHost;
   private readonly runtimeControl: JudgeRuntimeControlPort;
   private readonly grader: TraceKernelPrincipal;
+  private readonly runtimeSyscalls: TraceKernelRuntimeSyscallPolicy;
 
   constructor(options: TraceKernelJudgePortOptions) {
     this.host = options.host;
     this.runtimeControl = options.runtimeControl;
     this.grader = options.grader ?? DEFAULT_GRADER;
+    this.runtimeSyscalls = Object.freeze({
+      profile: 'algorithm',
+      readableFiles: Object.freeze([
+        ...new Set(options.readableFiles ?? []),
+      ]),
+    });
   }
 
   openSession(options: {
@@ -232,7 +247,8 @@ export class TraceKernelJudgePort
         new TraceKernelJudgeSession(
           session,
           this.runtimeControl,
-          this.grader
+          this.grader,
+          this.runtimeSyscalls
         )
       )
     );

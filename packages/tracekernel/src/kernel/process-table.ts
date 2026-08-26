@@ -14,6 +14,7 @@ import type {
   TraceKernelProcessSchedulingState,
   TraceKernelProcessSnapshot,
   TraceKernelProcessSpec,
+  TraceKernelRuntimeSyscallPolicy,
   TraceKernelSignal,
 } from '../model';
 import type { TraceKernelProcessInfo } from '../syscalls';
@@ -32,6 +33,51 @@ interface TraceKernelProcessTableOptions {
   readonly maxProcesses: number;
   readonly signalGracePeriodMs: number;
   readonly controllingTerminalForSession: (sessionId: number) => string | undefined;
+}
+
+function invalidRuntimeSyscallPolicy(
+  argument: string
+): TraceKernelInvalidArgumentError {
+  return new TraceKernelInvalidArgumentError({
+    code: 'EINVAL',
+    argument,
+    message: `EINVAL: invalid ${argument}`,
+  });
+}
+
+function normalizeRuntimeSyscallPolicy(
+  policy: unknown
+): TraceKernelRuntimeSyscallPolicy {
+  if (policy === undefined) {
+    return Object.freeze({ profile: 'unrestricted' as const });
+  }
+  if (typeof policy !== 'object' || policy === null) {
+    throw invalidRuntimeSyscallPolicy('runtimeSyscalls');
+  }
+
+  const profile = (policy as { readonly profile?: unknown }).profile;
+  if (profile === 'unrestricted') {
+    return Object.freeze({ profile });
+  }
+  if (profile !== 'algorithm') {
+    throw invalidRuntimeSyscallPolicy('runtimeSyscalls.profile');
+  }
+
+  const readableFiles = (
+    policy as { readonly readableFiles?: unknown }
+  ).readableFiles;
+  if (
+    !Array.isArray(readableFiles) ||
+    !readableFiles.every((path) => typeof path === 'string')
+  ) {
+    throw invalidRuntimeSyscallPolicy(
+      'runtimeSyscalls.readableFiles'
+    );
+  }
+  return Object.freeze({
+    profile,
+    readableFiles: Object.freeze([...new Set(readableFiles)]),
+  });
 }
 
 /**
@@ -133,6 +179,9 @@ export class TraceKernelProcessTable {
         message: `EINVAL: process group ${pgid} does not exist in session ${sid}`,
       });
     }
+    const runtimeSyscalls = normalizeRuntimeSyscallPolicy(
+      spec.runtimeSyscalls
+    );
     this.nextPid += 1;
     const controllingTerminalId = !startsNewSession
       ? parentSnapshot?.controllingTerminalId ??
@@ -156,6 +205,7 @@ export class TraceKernelProcessTable {
       owner: spec.owner ?? SYSTEM_PRINCIPAL,
       protected: spec.protected ?? false,
       visible: spec.visible ?? true,
+      runtimeSyscalls,
       stdout: '',
       stderr: '',
     };

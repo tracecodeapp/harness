@@ -98,6 +98,29 @@ interactive learner session is integrated, its namespace policy must not grant
 learner processes access to the Judge-private subtree. The evaluation session
 must not be reused as the visible product workspace.
 
+## Runtime capability boundary
+
+Judge supervision and runtime authority are separate. `TraceKernelJudgePort`
+may open a session, mount files, start one protected grader process, arm its
+watchdog, wait for it, and signal it through host-side kernel APIs. None of
+those powers are placed on the runtime-visible syscall port.
+
+Every Judge process uses TraceKernel's `algorithm` syscall profile. That
+profile admits only an atomic `readFile` of explicitly named submission files.
+Process creation and inspection, writable filesystem operations, descriptor
+and terminal APIs, watches, watchdog control, and networking return
+`EOPNOTSUPP` before the corresponding subsystem is touched. Exact paths are
+resolved against the process cwd, so aliases cannot widen the allowlist.
+The immutable runtime context names the same profile, allowing a provider to
+select a smaller implementation without making provider cooperation the
+security boundary.
+
+Language imports such as Python's `collections.deque` remain a runtime concern:
+they resolve from the immutable language image rather than TKFS and do not
+require granting a filesystem syscall. Runtime workers must still isolate
+language-level global state between cases; the kernel profile removes OS-like
+capabilities but does not replace that runner proof.
+
 ## Structured result channel
 
 Case input and structured output do not travel through learner stdout.

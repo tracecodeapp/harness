@@ -1218,7 +1218,8 @@ class RuntimeJudgeComposition
     readonly runtimeControl: JudgeRuntimeControlPort,
     private readonly host: TraceKernelHost,
     private readonly bridge: RuntimeJudgeProviderBridge,
-    private readonly traceCapable: boolean
+    private readonly traceCapable: boolean,
+    private readonly sourcePath: string
   ) {}
 
   activeSessionIds(): readonly string[] {
@@ -1290,6 +1291,7 @@ class RuntimeJudgeComposition
           this.runtimeControl,
           evaluationId
         ),
+        readableFiles: [this.sourcePath],
       });
       const plan = preparedEvaluationPlan(request.plan, true);
       let retained = false;
@@ -1487,6 +1489,7 @@ class RuntimeJudgeComposition
       const port = new TraceKernelJudgePort({
         host: this.host,
         runtimeControl: evaluationControl,
+        readableFiles: [this.sourcePath],
       });
       const effectivePlan = preparedEvaluationPlan(
         plan,
@@ -1575,7 +1578,8 @@ function createRuntimeJudge(
         runtimeControl,
         host,
         bridge,
-        isTraceBinding(options.binding)
+        isTraceBinding(options.binding),
+        options.binding.sourcePath
       );
       return Effect.addFinalizer(() =>
         judge.disposeRetainedExecutions()

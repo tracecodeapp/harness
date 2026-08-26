@@ -44,6 +44,16 @@ export class TraceKernelProcessPermissionError extends Data.TaggedError(
   readonly message: string;
 }> {}
 
+export class TraceKernelRuntimeCapabilityError extends Data.TaggedError(
+  'TraceKernelRuntimeCapabilityError'
+)<{
+  readonly code: 'EOPNOTSUPP';
+  readonly pid: number;
+  readonly profile: 'algorithm';
+  readonly operation: string;
+  readonly message: string;
+}> {}
+
 export class TraceKernelChildProcessError extends Data.TaggedError(
   'TraceKernelChildProcessError'
 )<{
@@ -168,6 +178,7 @@ export type TraceKernelLifecycleError =
   | TraceKernelProcessStateError
   | TraceKernelProcessLimitError
   | TraceKernelProcessPermissionError
+  | TraceKernelRuntimeCapabilityError
   | TraceKernelChildProcessError
   | TraceKernelInvalidArgumentError
   | TraceKernelBadFileDescriptorError

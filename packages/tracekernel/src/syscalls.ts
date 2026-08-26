@@ -11,6 +11,7 @@ import {
   TraceKernelProcessLimitError,
   TraceKernelProcessPermissionError,
   TraceKernelProcessStateError,
+  TraceKernelRuntimeCapabilityError,
   TraceKernelTerminalError,
   TraceKernelWouldBlockError,
 } from './errors';
@@ -506,6 +507,9 @@ function syscallWireError(error: unknown): TraceKernelSyscallWireError {
   if (error instanceof TraceKernelProcessPermissionError) {
     return Object.freeze({ code: error.code, message: error.message });
   }
+  if (error instanceof TraceKernelRuntimeCapabilityError) {
+    return Object.freeze({ code: error.code, message: error.message });
+  }
   if (error instanceof TraceKernelProcessStateError) {
     return Object.freeze({ code: 'ESRCH', message: error.message });
   }
@@ -547,6 +551,16 @@ export class TraceKernelSyscallDispatcher {
   }
 
   private dispatchValue(
+    request: TraceKernelSyscallRequest
+  ): Effect.Effect<TraceKernelSyscallValue, Error> {
+    return this.authorizeRuntimeSyscall(request).pipe(
+      Effect.zipRight(
+        Effect.suspend(() => this.dispatchAuthorizedValue(request))
+      )
+    );
+  }
+
+  private dispatchAuthorizedValue(
     request: TraceKernelSyscallRequest
   ): Effect.Effect<TraceKernelSyscallValue, Error> {
     switch (request.op) {
@@ -1068,6 +1082,77 @@ export class TraceKernelSyscallDispatcher {
           Effect.as({ op: 'writeFile' as const })
         );
     }
+  }
+
+  private authorizeRuntimeSyscall(
+    request: TraceKernelSyscallRequest
+  ): Effect.Effect<void, Error> {
+    const policy = this.process.runtimeSyscalls;
+    if (policy.profile === 'unrestricted') {
+      return Effect.void;
+    }
+    const snapshot = this.process.snapshot();
+    if (request.op !== 'readFile') {
+      return this.unsupportedRuntimeSyscall(
+        snapshot.pid,
+        policy.profile,
+        request.op
+      );
+    }
+    const denyRead = () => this.unsupportedRuntimeSyscall(
+      snapshot.pid,
+      policy.profile,
+      request.op,
+      request.path
+    );
+    const canonicalizeReadPath = (path: string) => Effect.all([
+      this.session.fileSystem.resolve(path, snapshot.cwd),
+      this.session.fileSystem.realpath(path, snapshot.cwd),
+    ]).pipe(
+      Effect.map(([lexicalPath, realPath]) => ({ lexicalPath, realPath }))
+    );
+    const canonicalizeAllowedReadPath = (path: string) =>
+      canonicalizeReadPath(path).pipe(
+        Effect.map((readablePath) => ({ resolved: true as const, readablePath })),
+        Effect.catchAll(() => Effect.succeed({ resolved: false as const }))
+      );
+    return Effect.all([
+      canonicalizeReadPath(request.path),
+      Effect.forEach(
+        policy.readableFiles,
+        canonicalizeAllowedReadPath
+      ),
+    ]).pipe(
+      Effect.flatMap(([requestedPath, readableFiles]) =>
+        requestedPath.lexicalPath === requestedPath.realPath &&
+        readableFiles.some(
+          (entry) =>
+            entry.resolved &&
+            entry.readablePath.lexicalPath === requestedPath.lexicalPath &&
+            entry.readablePath.realPath === entry.readablePath.lexicalPath
+        )
+          ? Effect.void
+          : denyRead()
+      ),
+      Effect.catchAll(denyRead)
+    );
+  }
+
+  private unsupportedRuntimeSyscall(
+    pid: number,
+    profile: 'algorithm',
+    operation: TraceKernelSyscallRequest['op'],
+    deniedPath?: string
+  ): Effect.Effect<never, TraceKernelRuntimeCapabilityError> {
+    return Effect.fail(new TraceKernelRuntimeCapabilityError({
+      code: 'EOPNOTSUPP',
+      pid,
+      profile,
+      operation,
+      message: deniedPath === undefined
+        ? `EOPNOTSUPP: TraceKernel ${profile} profile does not expose the ${operation} syscall`
+        : `EOPNOTSUPP: TraceKernel ${profile} profile does not permit ${operation} of ${JSON.stringify(deniedPath)}`,
+    }));
   }
 
   private authorizeFileSystem(

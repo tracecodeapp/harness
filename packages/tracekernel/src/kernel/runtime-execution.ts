@@ -33,6 +33,7 @@ function runtimeContext(
     args: snapshot.args,
     cwd: snapshot.cwd,
     env: snapshot.env,
+    runtimeSyscalls: snapshot.runtimeSyscalls,
     syscalls,
   });
 }

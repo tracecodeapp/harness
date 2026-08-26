@@ -1,14 +1,30 @@
 #!/usr/bin/env npx tsx
 
 import * as Effect from 'effect/Effect';
+import * as Either from 'effect/Either';
 import {
   makeTraceKernelHost,
   TraceKernelControlledRuntime,
+  TraceKernelInvalidArgumentError,
+  type TraceKernelProcessSpec,
   type TraceKernelRuntimeLeaseReleaseDisposition,
+  type TraceKernelSyscallResult,
 } from '@tracecode/tracekernel';
 
 function assertCondition(condition: boolean, message: string): void {
   if (!condition) throw new Error(message);
+}
+
+function assertUnsupported(
+  result: TraceKernelSyscallResult,
+  operation: string
+): void {
+  assertCondition(
+    !result.ok &&
+      result.error.code === 'EOPNOTSUPP' &&
+      result.error.message.includes(operation),
+    `Algorithm profile unexpectedly admitted ${operation}: ${JSON.stringify(result)}`
+  );
 }
 
 async function main(): Promise<void> {
@@ -130,6 +146,187 @@ async function main(): Promise<void> {
           releaseDispositions,
         })}`
       );
+
+      yield* session.mkdir('/workspace', { recursive: true });
+      yield* session.writeFile(
+        '/workspace/solution.py',
+        new TextEncoder().encode('from collections import deque\n')
+      );
+      yield* session.writeFile(
+        '/workspace/secret.txt',
+        new TextEncoder().encode('kernel-private')
+      );
+      const explicitUnrestrictedProcess = yield* session.spawn({
+        runtime: controlled.runtime,
+        command: 'explicit-unrestricted-runner',
+        runtimeSyscalls: { profile: 'unrestricted' },
+      });
+      yield* explicitUnrestrictedProcess.awaitStarted();
+      const explicitUnrestrictedContext = yield* controlled.awaitAttached(
+        explicitUnrestrictedProcess.pid
+      );
+      const explicitUnrestrictedProcessList =
+        yield* explicitUnrestrictedContext.syscalls.dispatch({
+          op: 'processList',
+        });
+      assertCondition(
+        explicitUnrestrictedProcessList.ok &&
+          explicitUnrestrictedProcessList.value.op === 'processList',
+        `Explicit unrestricted profile changed the general syscall contract: ${JSON.stringify(explicitUnrestrictedProcessList)}`
+      );
+      yield* controlled.complete(explicitUnrestrictedProcess.pid, {
+        exitCode: 0,
+      });
+      yield* explicitUnrestrictedProcess.wait();
+      const invalidRuntimePolicy = yield* Effect.either(session.spawn({
+        runtime: controlled.runtime,
+        command: 'invalid-runtime-policy-shape',
+        runtimeSyscalls:
+          'algorithm' as unknown as TraceKernelProcessSpec['runtimeSyscalls'],
+      }));
+      assertCondition(
+        Either.isLeft(invalidRuntimePolicy) &&
+          invalidRuntimePolicy.left instanceof TraceKernelInvalidArgumentError &&
+          invalidRuntimePolicy.left.argument === 'runtimeSyscalls',
+        `TraceKernel did not reject a non-object runtime syscall policy: ${JSON.stringify(invalidRuntimePolicy)}`
+      );
+      const invalidProfile = yield* Effect.either(session.spawn({
+        runtime: controlled.runtime,
+        command: 'invalid-algorithm-profile',
+        runtimeSyscalls: {
+          profile: 'algoritm',
+          readableFiles: ['./solution.py'],
+        } as unknown as TraceKernelProcessSpec['runtimeSyscalls'],
+      }));
+      assertCondition(
+        Either.isLeft(invalidProfile) &&
+          invalidProfile.left instanceof TraceKernelInvalidArgumentError &&
+          invalidProfile.left.argument === 'runtimeSyscalls.profile',
+        `TraceKernel did not reject an unknown runtime syscall profile: ${JSON.stringify(invalidProfile)}`
+      );
+      const invalidReadableFiles = yield* Effect.either(session.spawn({
+        runtime: controlled.runtime,
+        command: 'invalid-algorithm-readable-files',
+        runtimeSyscalls: {
+          profile: 'algorithm',
+          readableFiles: './solution.py',
+        } as unknown as TraceKernelProcessSpec['runtimeSyscalls'],
+      }));
+      assertCondition(
+        Either.isLeft(invalidReadableFiles) &&
+          invalidReadableFiles.left instanceof TraceKernelInvalidArgumentError &&
+          invalidReadableFiles.left.argument === 'runtimeSyscalls.readableFiles',
+        `TraceKernel did not reject malformed readable files: ${JSON.stringify(invalidReadableFiles)}`
+      );
+      const algorithmProcess = yield* session.spawn({
+        runtime: controlled.runtime,
+        command: 'algorithm-judge-runner',
+        cwd: '/workspace',
+        runtimeSyscalls: {
+          profile: 'algorithm',
+          readableFiles: ['./solution.py', './not-yet-materialized.py'],
+        },
+      });
+      yield* algorithmProcess.awaitStarted();
+      const algorithmContext = yield* controlled.awaitAttached(
+        algorithmProcess.pid
+      );
+      const allowedSourceRead = yield* algorithmContext.syscalls.dispatch({
+        op: 'readFile',
+        path: '/workspace/./solution.py',
+      });
+      assertCondition(
+        allowedSourceRead.ok &&
+          allowedSourceRead.value.op === 'readFile' &&
+          new TextDecoder().decode(allowedSourceRead.value.bytes) ===
+            'from collections import deque\n',
+        `Algorithm profile could not read its exact submission: ${JSON.stringify(allowedSourceRead)}`
+      );
+      const deniedSecretRead = yield* algorithmContext.syscalls.dispatch({
+        op: 'readFile',
+        path: '/workspace/secret.txt',
+      });
+      assertUnsupported(deniedSecretRead, 'readFile');
+      assertCondition(
+        !deniedSecretRead.ok &&
+          deniedSecretRead.error.message ===
+            'EOPNOTSUPP: TraceKernel algorithm profile does not permit readFile of "/workspace/secret.txt"',
+        `Algorithm path denial was not reported precisely: ${JSON.stringify(deniedSecretRead)}`
+      );
+      yield* session.symlink(
+        '/workspace/secret.txt',
+        '/workspace/linked-solution.py'
+      );
+      const symlinkProcess = yield* session.spawn({
+        runtime: controlled.runtime,
+        command: 'algorithm-symlink-runner',
+        cwd: '/workspace',
+        runtimeSyscalls: {
+          profile: 'algorithm',
+          readableFiles: ['./linked-solution.py'],
+        },
+      });
+      yield* symlinkProcess.awaitStarted();
+      const symlinkContext = yield* controlled.awaitAttached(
+        symlinkProcess.pid
+      );
+      assertUnsupported(
+        yield* symlinkContext.syscalls.dispatch({
+          op: 'readFile',
+          path: '/workspace/linked-solution.py',
+        }),
+        'readFile'
+      );
+      yield* controlled.complete(symlinkProcess.pid, { exitCode: 0 });
+      yield* symlinkProcess.wait();
+      assertUnsupported(
+        yield* algorithmContext.syscalls.dispatch({
+          op: 'writeFile',
+          path: '/workspace/output.txt',
+          bytes: new TextEncoder().encode('cross-case state'),
+        }),
+        'writeFile'
+      );
+      assertUnsupported(
+        yield* algorithmContext.syscalls.dispatch({
+          op: 'spawn',
+          runtime: controlled.runtime,
+          command: 'escaped-child',
+        }),
+        'spawn'
+      );
+      assertUnsupported(
+        yield* algorithmContext.syscalls.dispatch({ op: 'socket' }),
+        'socket'
+      );
+      assertUnsupported(
+        yield* algorithmContext.syscalls.dispatch({ op: 'processList' }),
+        'processList'
+      );
+      assertUnsupported(
+        yield* algorithmContext.syscalls.dispatch({
+          op: 'watchdog',
+          action: 'arm',
+          timeoutMs: 1,
+        }),
+        'watchdog'
+      );
+      const outputExists = yield* session.fileSystem.stat(
+        '/workspace/output.txt'
+      ).pipe(
+        Effect.as(true),
+        Effect.catchAll(() => Effect.succeed(false))
+      );
+      assertCondition(
+        !outputExists &&
+          session.processSnapshots().every(
+            (entry) => entry.command !== 'escaped-child'
+          ) &&
+          algorithmProcess.snapshot().watchdog === undefined,
+        'A denied algorithm syscall mutated kernel state.'
+      );
+      yield* controlled.complete(algorithmProcess.pid, { exitCode: 0 });
+      yield* algorithmProcess.wait();
     })
   ));
 
@@ -141,6 +338,13 @@ async function main(): Promise<void> {
     signalDelivery: true,
     leaseCleanup: true,
     engineLeaseDisposition: true,
+    explicitUnrestrictedProfile: true,
+    nonObjectRuntimePolicyRejected: true,
+    invalidRuntimePolicyRejected: true,
+    algorithmCapabilityProfile: true,
+    unresolvedReadableFileIsolated: true,
+    symlinkedReadableFileRejected: true,
+    deniedSyscallsHaveNoSideEffects: true,
   }, null, 2));
 }
 
