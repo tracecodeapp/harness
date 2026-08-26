@@ -59,6 +59,8 @@ interface BrowserResult {
     reservedGuardCollision: { tier?: string; reasons: string[] };
     reservedGuardAlias: { tier?: string; reasons: string[] };
     internalNameWallClock: { tier?: string; reasons: string[] };
+    contextManager: { tier?: string; reasons: string[] };
+    traceExceptionWallClock: { tier?: string; reasons: string[] };
     parity: { tier?: string; reasons: string[] };
     inplace: { tier?: string; reasons: string[] };
     serialized: { tier?: string; reasons: string[] };
@@ -1007,6 +1009,49 @@ async function main(): Promise<void> {
           executionStyle: 'function',
         }
       );
+      const contextManager = await preparationWorker.request(
+        'prepare-program',
+        {
+          mode: 'code',
+          code: [
+            'class Scope:',
+            '    def __enter__(self):',
+            '        return self',
+            '    def __exit__(self, *args):',
+            '        return True',
+            'def solve(value):',
+            '    with Scope():',
+            '        return value',
+          ].join('\\n'),
+          functionName: 'solve',
+          executionStyle: 'function',
+        }
+      );
+      const traceExceptionWallClock = await preparationWorker.request(
+        'prepare-program',
+        {
+          mode: 'trace',
+          code: [
+            'try:',
+            '    if phase == "module" and value == 0:',
+            '        while True:',
+            '            pass',
+            'except Exception:',
+            '    pass',
+            'def solve(value, phase):',
+            '    try:',
+            '        if phase == "call" and value == 0:',
+            '            while True:',
+            '                pass',
+            '    except Exception:',
+            '        return -1',
+            '    return value',
+          ].join('\\n'),
+          functionName: 'solve',
+          executionStyle: 'function',
+          traceOptions: { maxTraceSteps: 1000 },
+        }
+      );
       const hostileSerialization = await preparationWorker.request(
         'prepare-program',
         {
@@ -1629,15 +1674,6 @@ async function main(): Promise<void> {
             limits: { wallClockMs: 25 },
           }
         );
-        fastParityRuns.internalNameWallClock = await batchClient.request(
-          'execute-prepared-program-batch',
-          {
-            artifact: internalNameWallClock.artifact,
-            mode: 'code',
-            inputBatch: [{ value: 0 }, { value: 1 }],
-            limits: { wallClockMs: 25 },
-          }
-        );
         fastParityRuns.treeNodeFreshness = await batchClient.request(
           'execute-prepared-program-batch',
           {
@@ -1908,6 +1944,8 @@ async function main(): Promise<void> {
           reservedGuardCollision,
           reservedGuardAlias,
           internalNameWallClock,
+          contextManager,
+          traceExceptionWallClock,
         },
         isolationProfiles: {
           code: code.artifact?.isolationProfile,
@@ -1982,6 +2020,9 @@ async function main(): Promise<void> {
             reservedGuardAlias.artifact?.isolationProfile,
           internalNameWallClock:
             internalNameWallClock.artifact?.isolationProfile,
+          contextManager: contextManager.artifact?.isolationProfile,
+          traceExceptionWallClock:
+            traceExceptionWallClock.artifact?.isolationProfile,
           benchmarkCode: benchmarkCodeOnly.artifact?.isolationProfile,
           benchmarkHasFastBatch:
             typeof benchmarkCodeOnly.artifact?.algorithmFastBatchCode === 'string',
@@ -2229,9 +2270,13 @@ async function main(): Promise<void> {
           'reflective-attribute:mro'
         ) &&
         result.isolationProfiles.exceptionFinalizer?.tier ===
-          'judge-compatible' &&
+          'hard-isolated' &&
         result.isolationProfiles.exceptionFinalizer.reasons.includes(
           'exception-finalizer'
+        ) &&
+        result.isolationProfiles.contextManager?.tier === 'hard-isolated' &&
+        result.isolationProfiles.contextManager.reasons.includes(
+          'context-manager'
         ) &&
         result.isolationProfiles.reservedGuardCollision?.tier ===
           'hard-isolated' &&
@@ -2260,8 +2305,8 @@ async function main(): Promise<void> {
       })}`
     );
     assertCondition(
-      result.preparationWorker.prepareRequests === 54,
-      `Preparation worker received ${String(result.preparationWorker.prepareRequests)} preparations instead of fifty-four`
+      result.preparationWorker.prepareRequests === 56,
+      `Preparation worker received ${String(result.preparationWorker.prepareRequests)} preparations instead of fifty-six`
     );
     const algorithmBatchResults = result.algorithmBatchRun.results as Array<{
       success?: boolean;
@@ -2497,24 +2542,13 @@ async function main(): Promise<void> {
         ),
       `A judge-compatible wall-clock trip did not remain case-local: ${JSON.stringify(judgeCompatibleWallClock)}`
     );
-    const internalNameWallClock = result.fastParityRuns
-      .internalNameWallClock;
-    const internalNameWallClockResults = internalNameWallClock.results as Array<{
-      success?: boolean;
-      output?: unknown;
-      timeoutReason?: string;
-      timings?: { algorithmFastBatch?: boolean };
-    }>;
     assertCondition(
       result.isolationProfiles.internalNameWallClock?.tier ===
-        'judge-compatible' &&
-        internalNameWallClockResults.length === 2 &&
-        internalNameWallClockResults[0]?.success === false &&
-        internalNameWallClockResults[0]?.timeoutReason ===
-          'client-timeout' &&
-        internalNameWallClockResults[1]?.success === true &&
-        internalNameWallClockResults[1]?.output === 1,
-      `A learner helper matching an internal function name bypassed the guard: ${JSON.stringify(internalNameWallClock)}`
+        'hard-isolated' &&
+        result.isolationProfiles.internalNameWallClock.reasons.includes(
+          'reserved-runtime-binding:_serialize'
+        ),
+      `A learner helper matching an internal function name bypassed admission: ${JSON.stringify(result.isolationProfiles.internalNameWallClock)}`
     );
     const parityResult = (result.fastParityRuns.parity.results as Array<{
       output?: unknown;
@@ -2819,6 +2853,11 @@ async function main(): Promise<void> {
         (mixedTraceResults[1]?.trace as { events?: unknown[] })?.events?.length === 0 &&
         (mixedTraceResults[2]?.trace as { events?: unknown[] })?.events?.length! > 0,
       `Prepared Python mixed trace batch did not select recording per case: ${JSON.stringify(result.mixedTraceBatch)}`
+    );
+    assertCondition(
+      result.isolationProfiles.traceExceptionWallClock?.tier ===
+        'algorithm-fast',
+      `Prepared trace timeout regression source did not remain algorithm scoped: ${JSON.stringify(result.isolationProfiles.traceExceptionWallClock)}`
     );
     const traceSignature = (run: Record<string, unknown>): string => {
       const trace = run.trace as { events?: Array<Record<string, unknown>> } | undefined;

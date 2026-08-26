@@ -527,8 +527,12 @@ class __TracecodeExecutionGuard:
 
         reserved_runtime_prefixes = (
             '_tracecode_', '__tracecode_', '_interview_',
-            '_INTERVIEW_', '_InterviewGuard',
+            '_INTERVIEW_', '_InterviewGuard', '_internal_',
+            '_globals_', '_TRACE_', '_TC_', '_InfiniteLoopDetected',
         )
+        reserved_runtime_exact_accesses = {
+            '_serialize', '_serialize_output', '_tracer', '_custom_print',
+        }
         reserved_runtime_exact_bindings = {'sys', '_builtins'}
 
         def record_reserved_runtime_name(name, is_binding=False):
@@ -536,6 +540,7 @@ class __TracecodeExecutionGuard:
                 isinstance(name, str)
                 and (
                     name.startswith(reserved_runtime_prefixes)
+                    or name in reserved_runtime_exact_accesses
                     or (is_binding and name in reserved_runtime_exact_bindings)
                 )
             ):
@@ -944,6 +949,8 @@ class __TracecodeExecutionGuard:
             reason for reason in unique_reasons
             if reason == 'string-annotation'
             or reason == 'type-alias'
+            or reason == 'context-manager'
+            or reason == 'exception-finalizer'
             or reason == 'catch-all-exception-handler'
             or reason.startswith(hard_isolation_prefixes)
         ]
@@ -2437,7 +2444,7 @@ _tracecode_case_limits = _tracecode_input_ast.literal_eval(__tracecode_limits_li
   const inputSetup = usesPreparedBindings
     ? `
 for _tracecode_input_name, _tracecode_input_value in _tracecode_raw_inputs.items():
-    globals()[str(_tracecode_input_name)] = _tracecode_input_value
+    _globals_dict[str(_tracecode_input_name)] = _tracecode_input_value
 `
     : Object.entries(inputs)
         .map(([key, value]) => `${key} = ${deps.toPythonLiteral(value)}`)
@@ -2520,7 +2527,11 @@ def _tc_monitoring_on_raise(code, offset, exc):
 
 def _tracecode_arm_tracing():
     global _TC_MONITORING_ACTIVE
-    if _TC_MONITORING is not None:
+    # PEP 669 callbacks are optimized for observation and may disable
+    # themselves after an exception. A per-case wall clock needs the stronger
+    # propagation contract of sys.settrace so the BaseException guard reaches
+    # the executor even from a tight learner loop.
+    if _TC_MONITORING is not None and _wall_clock_ms <= 0.0:
         try:
             _TC_MONITORING.use_tool_id(_TC_MONITORING_TOOL, 'tracecode')
             _events = _TC_MONITORING.events
@@ -2566,7 +2577,7 @@ _TRACE_INPUT_NAMES = ${
       : `_builtins.set(${JSON.stringify(Object.keys(inputs))})`
   }
 
-class _InfiniteLoopDetected(Exception):
+class _InfiniteLoopDetected(BaseException):
     pass
 
 def _custom_print(*args, **kwargs):
@@ -2642,6 +2653,12 @@ _max_trace_event_bytes = min(256 * 1024, _max_trace_bytes)
 _trace_stored_bytes = 256
 _trace_limit_exceeded = False
 _timeout_reason = None
+_wall_clock_ms = ${
+    usesPreparedBindings
+      ? `(max(1.0, float(_tracecode_case_limits.get('wallClockMs', 0))) if _tracecode_case_limits.get('wallClockMs') is not None else 0.0)`
+      : Math.max(0, options.wallClockMs ?? 0)
+  }
+_case_deadline = 0.0
 _total_line_events = 0
 _max_line_events = ${
     usesPreparedBindings
@@ -3100,8 +3117,8 @@ def _snapshot_local_sources(frame):
         return {}
     try:
         func_name = frame.f_code.co_name
-        if not (_SCRIPT_MODE and func_name == '<module>'):
-            # Everything is 'user' outside script-mode module frames; skip the
+        if func_name != '<module>':
+            # Everything is 'user' outside module frames; skip the
             # per-name branching on the hot path.
             return {
                 name: 'user'
@@ -3130,7 +3147,7 @@ def _snapshot_locals(frame, with_sources=False):
         # frame.f_locals materializes a fresh dict on every access; take it
         # once and classify names inline instead of via a sources pre-pass.
         f_locals = frame.f_locals
-        script_module = _SCRIPT_MODE and frame.f_code.co_name == '<module>'
+        script_module = frame.f_code.co_name == '<module>'
         local_vars = {}
         for k, v in f_locals.items():
             if _tracecode_is_internal_name(k):
@@ -4727,6 +4744,12 @@ def _tracecode_is_annotation_node(node):
         parent = getattr(current, '__trace_parent__', None)
     return False
 
+def _tracecode_check_deadline():
+    global _timeout_reason
+    if _case_deadline > 0.0 and _tc_perf() >= _case_deadline:
+        _timeout_reason = 'client-timeout'
+        raise _InfiniteLoopDetected('Execution exceeded the per-case wall-clock limit')
+
 def _tracecode_collect_user_function_names(tree):
     names = _builtins.set()
     for node in ast.walk(tree):
@@ -5792,6 +5815,7 @@ def _tracer(frame, event, arg,
 ):
     global _trace_limit_exceeded, _timeout_reason, _total_line_events, _line_hit_count, _infinite_loop_line
     global _call_stack_generation, _hard_line_deadline
+    _tracecode_check_deadline()
 
     # Degraded fast path. Once a trace budget trips we record nothing more, so
     # skip the whole classification preamble (filename, internal-func set, the
@@ -5823,9 +5847,6 @@ def _tracer(frame, event, arg,
     func_name = frame.f_code.co_name
 
     if frame.f_code.co_filename != 'solution.py':
-        return _tracer
-
-    if func_name in _internal_funcs:
         return _tracer
 
     # Skip visual noise from node constructors used only to build data structures.
@@ -6090,13 +6111,13 @@ pow = _builtins.pow
       ].join('\n')
       : executionStyle === 'ops-class'
         ? [
-          `    _ops = operations if 'operations' in locals() else (ops if 'ops' in locals() else None)`,
-          `    _args = arguments if 'arguments' in locals() else (args if 'args' in locals() else None)`,
+          `    _ops = _globals_dict.get('operations', _globals_dict.get('ops'))`,
+          `    _args = _globals_dict.get('arguments', _globals_dict.get('args'))`,
           `    if _ops is None or _args is None:`,
           `        raise ValueError(\"ops-class execution requires inputs.operations and inputs.arguments (or ops/args)\")`,
           `    if len(_ops) != len(_args):`,
           `        raise ValueError(\"operations and arguments must have the same length\")`,
-          `    _cls = ${functionName}`,
+          `    _cls = _globals_dict[${functionNameLiteral}]`,
           `    _instance = None`,
           `    _out = []`,
           `    for _i, _op in enumerate(_ops):`,
@@ -6154,6 +6175,21 @@ pow = _builtins.pow
   }
 
   const preloadUserDefinitions = functionName ? `exec(__tracecode_compiled, _globals_dict)\n` : '';
+  const traceCaseSetup = [
+    inputSetup,
+    treeConversions,
+    listConversions,
+    `_SCRIPT_PRE_USER_GLOBALS = _builtins.set(_globals_dict.keys()) - _TRACE_INPUT_NAMES`,
+    preloadUserDefinitions,
+    `if ${usesPreparedBindings ? '__tracecode_inputs_need_materialization' : 'True'}:\n    _tracecode_materialize_named_inputs(${traceInputNamesLiteral})`,
+    `_tracecode_hydrate_annotated_inputs(${traceInputNamesLiteral}, ${functionNameLiteral}, ${executionStyleLiteral})`,
+  ]
+    .filter((source) => source.length > 0)
+    .join('\n');
+  const traceCaseSetupInTry = traceCaseSetup
+    .split('\n')
+    .map((line) => (line ? `    ${line}` : line))
+    .join('\n');
 
   const harnessSuffix = `
 ${userCodeTraceSetup}
@@ -6175,7 +6211,7 @@ def _tracecode_materialize_custom_input(obj):
         if isinstance(_type_name, _builtins.str):
             _fields = {'__type__': _type_name, **_fields}
         _constructor_fields = {key: value for key, value in _fields.items() if key not in ('__type__', '__class__')}
-        _cls = globals().get(_type_name) if isinstance(_type_name, _builtins.str) else None
+        _cls = _globals_dict.get(_type_name) if isinstance(_type_name, _builtins.str) else None
         if isinstance(_cls, _builtins.type):
             try:
                 return _cls(**_constructor_fields)
@@ -6197,8 +6233,8 @@ def _tracecode_materialize_custom_input(obj):
 
 def _tracecode_materialize_named_inputs(_names):
     for _name in _names:
-        if _name in globals():
-            globals()[_name] = _tracecode_materialize_custom_input(globals()[_name])
+        if _name in _globals_dict:
+            _globals_dict[_name] = _tracecode_materialize_custom_input(_globals_dict[_name])
 
 def _tracecode_materialize_input(obj):
     return _tracecode_materialize_custom_input(obj)
@@ -6214,7 +6250,7 @@ def _tracecode_hydrate_for_annotation(_obj, _annotation):
     if _annotation is None:
         return _obj
     if isinstance(_annotation, _builtins.str):
-        _annotation = globals().get(_annotation, _annotation)
+        _annotation = _globals_dict.get(_annotation, _annotation)
     if _annotation in (_builtins.object, getattr(_tracecode_typing, 'Any', None)):
         return _obj
     _origin = _tracecode_typing.get_origin(_annotation)
@@ -6258,7 +6294,7 @@ def _tracecode_hydrate_for_annotation(_obj, _annotation):
             return _obj
         _fields = {key: value for key, value in _obj.items() if key not in ('__type__', '__class__', '__id__')}
         try:
-            _ctor_hints = _tracecode_typing.get_type_hints(getattr(_annotation, '__init__'), globals(), locals())
+            _ctor_hints = _tracecode_typing.get_type_hints(getattr(_annotation, '__init__'), _globals_dict, _globals_dict)
         except Exception:
             _ctor_hints = {}
         _hydrated_fields = {
@@ -6283,12 +6319,13 @@ def _tracecode_hydrate_for_annotation(_obj, _annotation):
     return _obj
 
 def _tracecode_resolve_target_callable(_function_name, _execution_style):
-    if _execution_style == 'solution-method' and 'Solution' in globals() and hasattr(Solution, _function_name):
-        return getattr(Solution, _function_name)
-    if _function_name in globals() and callable(globals()[_function_name]):
-        return globals()[_function_name]
-    if 'Solution' in globals() and hasattr(Solution, _function_name):
-        return getattr(Solution, _function_name)
+    _solution = _globals_dict.get('Solution')
+    if _execution_style == 'solution-method' and _solution is not None and hasattr(_solution, _function_name):
+        return getattr(_solution, _function_name)
+    if _function_name in _globals_dict and callable(_globals_dict[_function_name]):
+        return _globals_dict[_function_name]
+    if _solution is not None and hasattr(_solution, _function_name):
+        return getattr(_solution, _function_name)
     return None
 
 def _tracecode_hydrate_annotated_inputs(_names, _function_name, _execution_style):
@@ -6298,25 +6335,26 @@ def _tracecode_hydrate_annotated_inputs(_names, _function_name, _execution_style
         if _callable is None:
             return
         try:
-            _annotations = _tracecode_typing.get_type_hints(_callable, globals(), locals())
+            _annotations = _tracecode_typing.get_type_hints(_callable, _globals_dict, _globals_dict)
         except Exception:
             _annotations = getattr(_callable, '__annotations__', {}) or {}
         for _name in _names:
-            if _name in globals() and _name in _annotations:
+            if _name in _globals_dict and _name in _annotations:
                 _annotation = _annotations[_name]
                 if not _tracecode_annotation_preserves_literal_shape(_annotation):
-                    globals()[_name] = _tracecode_hydrate_for_annotation(globals()[_name], _annotation)
+                    _globals_dict[_name] = _tracecode_hydrate_for_annotation(_globals_dict[_name], _annotation)
     except Exception:
         return
 
 def _tracecode_resolve_entry_callable(_function_name, _execution_style):
-    if _execution_style == 'solution-method' and 'Solution' in globals() and hasattr(Solution, _function_name):
-        _solver = Solution()
+    _solution = _globals_dict.get('Solution')
+    if _execution_style == 'solution-method' and _solution is not None and hasattr(_solution, _function_name):
+        _solver = _solution()
         return getattr(_solver, _function_name)
-    if _function_name in globals() and callable(globals()[_function_name]):
-        return globals()[_function_name]
-    if 'Solution' in globals() and hasattr(Solution, _function_name):
-        _solver = Solution()
+    if _function_name in _globals_dict and callable(_globals_dict[_function_name]):
+        return _globals_dict[_function_name]
+    if _solution is not None and hasattr(_solution, _function_name):
+        _solver = _solution()
         return getattr(_solver, _function_name)
     return None
 
@@ -6325,7 +6363,7 @@ def _tracecode_invoke_entry(_function_name, _execution_style, _input_names):
     _callable = _tracecode_resolve_entry_callable(_function_name, _execution_style)
     if _callable is None:
         raise NameError(f"Implement {_function_name}(...) or Solution.{_function_name}(...)")
-    _values = {_name: globals()[_name] for _name in _input_names if _name in globals()}
+    _values = {_name: _globals_dict[_name] for _name in _input_names if _name in _globals_dict}
     _tracecode_previous_tracer = sys.gettrace()
     sys.settrace(None)
     _fallback_kwargs = None
@@ -6375,23 +6413,9 @@ def _tracecode_invoke_entry(_function_name, _execution_style, _input_names):
 
 def _resolve_inplace_result():
     for _name in ${inplaceCandidatesLiteral}:
-        if _name in globals():
-            return globals().get(_name)
+        if _name in _globals_dict:
+            return _globals_dict.get(_name)
     return None
-
-${inputSetup}
-
-${treeConversions}
-
-${listConversions}
-
-${preloadUserDefinitions}
-if ${usesPreparedBindings ? '__tracecode_inputs_need_materialization' : 'True'}:
-    _tracecode_materialize_named_inputs(${traceInputNamesLiteral})
-_tracecode_hydrate_annotated_inputs(${traceInputNamesLiteral}, ${functionNameLiteral}, ${executionStyleLiteral})
-
-if _SCRIPT_MODE:
-    _SCRIPT_PRE_USER_GLOBALS = _builtins.set(globals().keys()) - _TRACE_INPUT_NAMES
 
 if _max_memory_bytes > 0 and _tracecode_tracemalloc is not None:
     try:
@@ -6510,7 +6534,31 @@ try:
 except Exception:
     _TC_NATIVE = None
 
+${usesPreparedBindings
+  ? `_tracecode_executor_namespace = globals()
+_tracecode_user_namespace = {
+    _name: _value
+    for _name, _value in _builtins.list(_tracecode_executor_namespace.items())
+    if not _name.startswith('_')
+}
+for _name in _internal_funcs:
+    if _name in _tracecode_executor_namespace:
+        _tracecode_user_namespace[_name] = _tracecode_executor_namespace[_name]
+_tracecode_user_namespace['__builtins__'] = _builtins
+_tracecode_user_namespace['__name__'] = '__main__'
+_tracecode_user_namespace['print'] = _custom_print
+_tracecode_user_namespace['pow'] = _builtins.pow
+_tracecode_user_namespace['_builtins'] = _builtins
+_tracecode_user_namespace['__tracecode_tracing_enabled'] = __tracecode_tracing_enabled
+_globals_dict = _tracecode_user_namespace`
+  : ''}
+
 _tp_arm_at = _tc_perf()
+_case_deadline = (
+    _tp_arm_at + (_wall_clock_ms / 1000.0)
+    if _wall_clock_ms > 0.0
+    else 0.0
+)
 _tracecode_arm_tracing()
 _trace_failed = False
 # True only when a guard aborted the program mid-flight (runaway loop, memory
@@ -6519,7 +6567,9 @@ _trace_failed = False
 _execution_aborted = False
 
 try:
+${traceCaseSetupInTry}
 ${executionCode}
+    _tracecode_check_deadline()
 except _InfiniteLoopDetected as e:
     _trace_failed = True
     _execution_aborted = True
@@ -7335,6 +7385,13 @@ def _interview_check_memory():
         _interview_timeout_reason = 'memory-limit'
         raise _InterviewGuardTriggered('INTERVIEW_GUARD_TRIGGERED:memory-limit')
 
+def _interview_assert_guard_clear():
+    _interview_check_deadline()
+    if _interview_timeout_reason is not None:
+        raise _InterviewGuardTriggered(
+            'INTERVIEW_GUARD_TRIGGERED:' + _interview_timeout_reason
+        )
+
 def _interview_guard_tracer(frame, event, arg):
     global _interview_timeout_reason, _interview_line_events, _interview_line_hits, _interview_call_depth
     _interview_check_deadline()
@@ -7661,6 +7718,8 @@ try:
     try:
 ${guardedCaseSetupInNestedTry}
 ${executionCallInNestedTry}
+        if _INTERVIEW_GUARD_ENABLED:
+            _interview_assert_guard_clear()
     except _InterviewGuardTriggered:
         raise
     except BaseException as _tracecode_execution_error:

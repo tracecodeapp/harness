@@ -679,20 +679,11 @@ class PreparedPythonProgramLifetime {
         )
       );
     }
-    // Tracing has no reduced algorithm-fast driver, but algorithm-scoped and
-    // judge-compatible source can still use the retained generic executor.
-    // Only code whose capabilities require a hard interpreter boundary pays
-    // for one fresh outer Pyodide worker per case.
-    if (this.handle.artifact.isolationProfile.tier === 'hard-isolated') {
-      return this.executeCompatibilityTraceBatch(call);
-    }
-    return this.executeSerial(call.signal, async (client, signal) => {
-      const result = await client.executePreparedTraceBatch(this.handle, {
-        ...call,
-        signal,
-      });
-      return (result.results ?? []).map(normalizePythonExecutionResult);
-    });
+    // Trace instrumentation is a wider capability surface than correctness
+    // execution. Keep every selected trace in a fresh outer interpreter until
+    // the trace driver has a resettable realm with the same proof as the code
+    // fast path. Unselected correctness cases should use executeCodeBatch.
+    return this.executeCompatibilityTraceBatch(call);
   }
 
   private async executeCompatibilityCodeBatch(

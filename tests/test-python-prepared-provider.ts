@@ -423,7 +423,7 @@ test('Python algorithm-fast driver failure retries each case in a hard-isolated 
   provider.terminate();
 });
 
-test('Python fast-classified trace batches retain one generic batch worker', async () => {
+test('Python trace batches retire one outer worker per selected case', async () => {
   const calls: Array<{ worker: number; method: string }> = [];
   let nextWorker = 0;
   const createWorkerClient = (): PythonWorkerClient => {
@@ -442,18 +442,16 @@ test('Python fast-classified trace batches retain one generic batch worker', asy
           consoleOutput: [],
         };
       },
-      async executePreparedTraceBatch(
+      async executePreparedTrace(
         _handle: unknown,
-        call: { inputBatch: readonly Record<string, unknown>[] }
+        call: { inputs: Record<string, unknown> }
       ) {
-        calls.push({ worker, method: 'execute-trace-batch' });
+        calls.push({ worker, method: 'execute-trace' });
         return {
-          results: call.inputBatch.map((inputs) => ({
-            success: true,
-            output: inputs.value,
-            executionTimeMs: 1,
-            consoleOutput: [],
-          })),
+          success: true,
+          output: call.inputs.value,
+          executionTimeMs: 1,
+          consoleOutput: [],
         };
       },
       terminate() {
@@ -481,11 +479,15 @@ test('Python fast-classified trace batches retain one generic batch worker', asy
     ),
     [1, 2, 3]
   );
-  assert.equal(calls.filter((call) => call.method === 'execute-trace').length, 0);
+  const traceExecutions = calls.filter(
+    (call) => call.method === 'execute-trace'
+  );
+  assert.equal(traceExecutions.length, 3);
   assert.equal(
     calls.filter((call) => call.method === 'execute-trace-batch').length,
-    1
+    0
   );
+  assert.equal(new Set(traceExecutions.map((call) => call.worker)).size, 3);
   await assert.rejects(
     preparation.program.executeBatchIsolated({
       inputBatch: [{ value: 1 }, { value: 2 }, { value: 3 }],
