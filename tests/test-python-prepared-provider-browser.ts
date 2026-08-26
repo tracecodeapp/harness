@@ -40,6 +40,7 @@ interface BrowserResult {
     exceptionHierarchyCatch: { tier?: string; reasons: string[] };
     exceptionFinalizer: { tier?: string; reasons: string[] };
     objectFinalizer: { tier?: string; reasons: string[] };
+    generatorFinalizer: { tier?: string; reasons: string[] };
     cachedDecorator: { tier?: string; reasons: string[] };
     transitiveTraversal: { tier?: string; reasons: string[] };
     treeNodeFreshness: { tier?: string; reasons: string[] };
@@ -617,6 +618,25 @@ async function main(): Promise<void> {
           executionStyle: 'function',
         }
       );
+      const generatorFinalizer = await preparationWorker.request(
+        'prepare-program',
+        {
+          mode: 'code',
+          code: [
+            'exit_kind = GeneratorExit',
+            'def linger():',
+            '    try:',
+            '        yield 1',
+            '    except (Exception, exit_kind):',
+            '        while True:',
+            '            pass',
+            'def solve(value):',
+            '    return value',
+          ].join('\\n'),
+          functionName: 'solve',
+          executionStyle: 'function',
+        }
+      );
       const exceptionHierarchyCatch = await preparationWorker.request(
         'prepare-program',
         {
@@ -1161,6 +1181,7 @@ async function main(): Promise<void> {
         exceptionHierarchyCatch,
         exceptionFinalizer,
         objectFinalizer,
+        generatorFinalizer,
         transitiveTraversal,
         treeNodeFreshness,
         dequeExecution,
@@ -1996,6 +2017,7 @@ async function main(): Promise<void> {
           exceptionHierarchyCatch,
           exceptionFinalizer,
           objectFinalizer,
+          generatorFinalizer,
           cachedDecorator,
           transitiveTraversal,
           treeNodeFreshness,
@@ -2070,6 +2092,7 @@ async function main(): Promise<void> {
             exceptionHierarchyCatch.artifact?.isolationProfile,
           exceptionFinalizer: exceptionFinalizer.artifact?.isolationProfile,
           objectFinalizer: objectFinalizer.artifact?.isolationProfile,
+          generatorFinalizer: generatorFinalizer.artifact?.isolationProfile,
           cachedDecorator: cachedDecorator.artifact?.isolationProfile,
           transitiveTraversal: transitiveTraversal.artifact?.isolationProfile,
           treeNodeFreshness: treeNodeFreshness.artifact?.isolationProfile,
@@ -2364,6 +2387,11 @@ async function main(): Promise<void> {
         result.isolationProfiles.objectFinalizer.reasons.includes(
           'object-finalizer'
         ) &&
+        result.isolationProfiles.generatorFinalizer?.tier ===
+          'hard-isolated' &&
+        result.isolationProfiles.generatorFinalizer.reasons.includes(
+          'generator-finalizer'
+        ) &&
         result.isolationProfiles.contextManager?.tier === 'hard-isolated' &&
         result.isolationProfiles.contextManager.reasons.includes(
           'context-manager'
@@ -2395,8 +2423,8 @@ async function main(): Promise<void> {
       })}`
     );
     assertCondition(
-      result.preparationWorker.prepareRequests === 59,
-      `Preparation worker received ${String(result.preparationWorker.prepareRequests)} preparations instead of fifty-nine`
+      result.preparationWorker.prepareRequests === 60,
+      `Preparation worker received ${String(result.preparationWorker.prepareRequests)} preparations instead of sixty`
     );
     const algorithmBatchResults = result.algorithmBatchRun.results as Array<{
       success?: boolean;

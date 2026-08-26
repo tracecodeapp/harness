@@ -617,6 +617,12 @@ class __TracecodeExecutionGuard:
                         reasons.append('shared-state-call:' + alias.name)
                 if node.level or root in denied_modules or root not in allowed_modules:
                     reasons.append('denied-import:' + (node.module or '<relative>'))
+            elif isinstance(node, ast.Name) and node.id == 'GeneratorExit':
+                # Closing a started generator injects GeneratorExit during
+                # refcount-driven namespace teardown. That happens outside the
+                # retained case guard, so any direct or aliased reference to
+                # this sentinel requires the fresh outer-worker boundary.
+                reasons.append('generator-finalizer')
             elif isinstance(node, ast.Name) and node.id in denied_names:
                 reasons.append('denied-name:' + node.id)
             elif (
@@ -954,6 +960,7 @@ class __TracecodeExecutionGuard:
             or reason == 'context-manager'
             or reason == 'exception-finalizer'
             or reason == 'object-finalizer'
+            or reason == 'generator-finalizer'
             or reason == 'catch-all-exception-handler'
             or reason.startswith(hard_isolation_prefixes)
         ]

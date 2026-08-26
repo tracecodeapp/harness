@@ -60,8 +60,8 @@ capability and shared-state surfaces select `hard-isolated`:
   interpreter rather than the learner namespace;
 - bare catch-all or explicit `BaseException` handling that could suppress the
   retained executor's per-case limit signal, context managers, exception or
-  object finalizers, plus bindings that collide with reserved runtime guard
-  names;
+  object finalizers, or generator-close handlers, plus bindings that collide
+  with reserved runtime guard names;
 - relative and unreviewed imports; and
 - transitive traversal from an allowed module into hidden modules or builtins.
 
