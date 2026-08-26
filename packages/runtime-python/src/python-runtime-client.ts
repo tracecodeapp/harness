@@ -628,11 +628,20 @@ class PreparedPythonProgramLifetime {
         call.limits?.wallClockMs
       )
     );
-    if (
-      this.handle.artifact.mode !== 'code' ||
-      this.handle.artifact.isolationProfile.tier !== 'algorithm-fast'
-    ) {
+    if (this.handle.artifact.mode !== 'code') {
       return this.executeCompatibilityCodeBatch(call, budget);
+    }
+    if (this.handle.artifact.isolationProfile.tier === 'hard-isolated') {
+      return this.executeCompatibilityCodeBatch(call, budget);
+    }
+    if (this.handle.artifact.isolationProfile.tier === 'judge-compatible') {
+      return this.executeSerial(call.signal, async (client, signal) => {
+        const result = await client.executePreparedCodeBatch(this.handle, {
+          ...call,
+          signal,
+        });
+        return result.results ?? [];
+      });
     }
     try {
       return await this.executeSerial(call.signal, (client, signal) =>
@@ -670,10 +679,20 @@ class PreparedPythonProgramLifetime {
         )
       );
     }
-    // Python tracing has no reduced algorithm-fast driver. Every traced case
-    // therefore gets a fresh outer Pyodide worker, regardless of the source's
-    // code-batch admission result.
-    return this.executeCompatibilityTraceBatch(call);
+    // Tracing has no reduced algorithm-fast driver, but algorithm-scoped and
+    // judge-compatible source can still use the retained generic executor.
+    // Only code whose capabilities require a hard interpreter boundary pays
+    // for one fresh outer Pyodide worker per case.
+    if (this.handle.artifact.isolationProfile.tier === 'hard-isolated') {
+      return this.executeCompatibilityTraceBatch(call);
+    }
+    return this.executeSerial(call.signal, async (client, signal) => {
+      const result = await client.executePreparedTraceBatch(this.handle, {
+        ...call,
+        signal,
+      });
+      return (result.results ?? []).map(normalizePythonExecutionResult);
+    });
   }
 
   private async executeCompatibilityCodeBatch(

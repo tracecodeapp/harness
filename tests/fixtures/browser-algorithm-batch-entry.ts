@@ -322,11 +322,11 @@ export async function runBrowserAlgorithmBatch(
         let compatibilityIsolationWorkerUrls: string[] | undefined;
         let compatibilityIsolationMaximumActiveWorkers: number | undefined;
         let compatibilityIsolationMs: number | undefined;
-        let fastFallbackIsolation:
+        let judgeFallbackIsolation:
           | ReturnType<typeof receiptSummary>
           | undefined;
-        let fastFallbackIsolationWorkerUrls: string[] | undefined;
-        let fastFallbackIsolationMaximumActiveWorkers: number | undefined;
+        let judgeFallbackIsolationWorkerUrls: string[] | undefined;
+        let judgeFallbackIsolationMaximumActiveWorkers: number | undefined;
         if (fixture.language === 'python') {
           const compatibilityBundle = await createAlgorithmJudgeBundle({
             id: 'browser-python-compatibility-nested-state-isolation',
@@ -362,23 +362,16 @@ export async function runBrowserAlgorithmBatch(
           compatibilityIsolationMaximumActiveWorkers = maximumActiveWorkers;
           compatibilityIsolationWorkerUrls = workerUrls.splice(0);
 
-          const fastFallbackBundle = await createAlgorithmJudgeBundle({
-            id: 'browser-python-fast-artifact-custom-input-fallback-isolation',
+          const judgeFallbackBundle = await createAlgorithmJudgeBundle({
+            id: 'browser-python-fast-artifact-custom-input-judge-fallback',
             language: 'python',
             code: [
               'def solve(value, root):',
-              '    scope = json.codecs.builtins.getattr(solve, "_" + "_" + "globals__")',
-              '    sink = scope["json"].JSONEncoder',
-              '    try:',
-              '        before = sink.tracecode_case_leak',
-              '    except AttributeError:',
-              '        before = None',
-              '    sink.tracecode_case_leak = value',
-              '    return before',
+              '    return value + root.val',
             ].join('\n'),
             functionName: 'solve',
             cases: Array.from({ length: 3 }, (_, index) => ({
-              id: `fast-fallback-case-${index + 1}`,
+              id: `judge-fallback-case-${index + 1}`,
               input: {
                 value: index + 1,
                 root: {
@@ -387,16 +380,16 @@ export async function runBrowserAlgorithmBatch(
                   right: null,
                 },
               },
-              expected: null,
+              expected: (index + 1) * 2,
             })),
           });
           maximumActiveWorkers = activeWorkers;
-          const fastFallbackReceipt = await host.evaluateAlgorithm({
-            bundle: fastFallbackBundle,
+          const judgeFallbackReceipt = await host.evaluateAlgorithm({
+            bundle: judgeFallbackBundle,
           });
-          fastFallbackIsolation = receiptSummary(fastFallbackReceipt);
-          fastFallbackIsolationMaximumActiveWorkers = maximumActiveWorkers;
-          fastFallbackIsolationWorkerUrls = workerUrls.splice(0);
+          judgeFallbackIsolation = receiptSummary(judgeFallbackReceipt);
+          judgeFallbackIsolationMaximumActiveWorkers = maximumActiveWorkers;
+          judgeFallbackIsolationWorkerUrls = workerUrls.splice(0);
         }
 
         results[fixture.language] = {
@@ -414,9 +407,9 @@ export async function runBrowserAlgorithmBatch(
                 compatibilityIsolationWorkerUrls,
                 compatibilityIsolationMaximumActiveWorkers,
                 compatibilityIsolationMs,
-                fastFallbackIsolation,
-                fastFallbackIsolationWorkerUrls,
-                fastFallbackIsolationMaximumActiveWorkers,
+                judgeFallbackIsolation,
+                judgeFallbackIsolationWorkerUrls,
+                judgeFallbackIsolationMaximumActiveWorkers,
               }
             : {}),
           ...(fixture.language === 'csharp'

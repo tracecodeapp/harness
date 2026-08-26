@@ -336,7 +336,7 @@ async function testClientsRestorePublicResults(): Promise<void> {
     const pythonBatch = await python.executePreparedTraceBatch(
       {
         artifact: {
-          schemaVersion: 'tracecode.python.prepared-program.v3',
+          schemaVersion: 'tracecode.python.prepared-program.v4',
           fingerprint: { cacheTag: 'test', magicNumber: 'test', marshalVersion: 4 },
           mode: 'trace',
           code: 'def solve(value):\n    return value',
@@ -344,7 +344,7 @@ async function testClientsRestorePublicResults(): Promise<void> {
           executionStyle: 'function',
           traceOptions: {},
           isolationProfile: {
-            tier: 'compatibility',
+            tier: 'judge-compatible',
             reasons: ['test-fixture'],
           },
           userCode: '',

@@ -13,9 +13,9 @@ interface BrowserResult {
   batchRun: Record<string, unknown>;
   algorithmBatchRun: Record<string, unknown>;
   fastParityRuns: Record<string, Record<string, unknown>>;
-  batchBaselineAfter: Record<string, unknown>;
   isolationProfiles: {
     code: { tier?: string; reasons: string[] };
+    batch: { tier?: string; reasons: string[] };
     trace: { tier?: string; reasons: string[] };
     limited: { tier?: string; reasons: string[] };
     algorithmBatch: { tier?: string; reasons: string[] };
@@ -193,15 +193,6 @@ async function main(): Promise<void> {
         };
       };
 
-      const compatibilityArtifact = (artifact) => ({
-        ...artifact,
-        isolationProfile: {
-          tier: 'compatibility',
-          reasons: ['forced-browser-differential'],
-        },
-        algorithmFastBatchCode: undefined,
-      });
-
       const preparationWorker = await createClient('preparation');
       const isolationCode = [
         'import builtins',
@@ -295,9 +286,21 @@ async function main(): Promise<void> {
         executionStyle: 'function',
         traceOptions: { maxTraceSteps: 1000 },
       });
+      const judgeBatchCode = [
+        'history = []',
+        'class CaseState:',
+        '    value = 0',
+        'def solve(action, items):',
+        '    before = {"history": len(history), "counter": CaseState.value}',
+        '    sum(value for value in ())',
+        '    history.append(action)',
+        '    CaseState.value += 1',
+        '    items.append(99)',
+        '    return {"before": before, "itemCount": len(items)}',
+      ].join('\\n');
       const batch = await preparationWorker.request('prepare-program', {
         mode: 'code',
-        code: isolationCode,
+        code: judgeBatchCode,
         functionName: 'solve',
         executionStyle: 'function',
       });
@@ -1051,29 +1054,15 @@ async function main(): Promise<void> {
       const batchClient = await createClient('code-batch');
       const batchStartedAt = performance.now();
       let batchRun;
-      let batchBaselineAfter;
       let algorithmBatchRun;
       const fastParityRuns = {};
       try {
-        const setup = await batchClient.request('execute-code', {
-          code: [
-            'def setup():',
-            '    with open("/tmp/tracecode-prepared-baseline.txt", "w") as handle:',
-            '        handle.write("baseline")',
-            '    return True',
-          ].join('\\n'),
-          functionName: 'setup',
-          inputs: {},
-          executionStyle: 'function',
-        });
-        if (!setup.success) throw new Error('Could not create batch filesystem baseline.');
         batchRun = await batchClient.request('execute-prepared-program-batch', {
           artifact: batch.artifact,
           mode: 'code',
           inputBatch: ['create', 'inspect', 'modify', 'delete'].map((action) => ({
             action,
             items: sharedInput,
-            ...nodeInputs,
           })),
         });
         algorithmBatchRun = await batchClient.request(
@@ -1107,7 +1096,8 @@ async function main(): Promise<void> {
         fastParityRuns.parityCompatibility = await batchClient.request(
           'execute-prepared-program-batch',
           {
-            artifact: compatibilityArtifact(parity.artifact),
+            artifact: parity.artifact,
+            forceJudgeCompatible: true,
             mode: 'code',
             inputBatch: [{
               nums: [3, 1, 2],
@@ -1130,7 +1120,8 @@ async function main(): Promise<void> {
         fastParityRuns.inplaceCompatibility = await batchClient.request(
           'execute-prepared-program-batch',
           {
-            artifact: compatibilityArtifact(inplace.artifact),
+            artifact: inplace.artifact,
+            forceJudgeCompatible: true,
             mode: 'code',
             inputBatch: [{
               nums: [3, 1, 2],
@@ -1153,7 +1144,8 @@ async function main(): Promise<void> {
         fastParityRuns.serializedCompatibility = await batchClient.request(
           'execute-prepared-program-batch',
           {
-            artifact: compatibilityArtifact(serialized.artifact),
+            artifact: serialized.artifact,
+            forceJudgeCompatible: true,
             mode: 'code',
             inputBatch: [{
               value: 7,
@@ -1200,7 +1192,8 @@ async function main(): Promise<void> {
         fastParityRuns.dequeExecutionCompatibility = await batchClient.request(
           'execute-prepared-program-batch',
           {
-            artifact: compatibilityArtifact(dequeExecution.artifact),
+            artifact: dequeExecution.artifact,
+            forceJudgeCompatible: true,
             mode: 'code',
             inputBatch: [{
               values: [1, 2],
@@ -1219,7 +1212,8 @@ async function main(): Promise<void> {
         fastParityRuns.customClassHydrationCompatibility = await batchClient.request(
           'execute-prepared-program-batch',
           {
-            artifact: compatibilityArtifact(customClassHydration.artifact),
+            artifact: customClassHydration.artifact,
+            forceJudgeCompatible: true,
             mode: 'code',
             inputBatch: [{
               config: { limit: 4 },
@@ -1238,7 +1232,8 @@ async function main(): Promise<void> {
         fastParityRuns.globalInputCompatibility = await batchClient.request(
           'execute-prepared-program-batch',
           {
-            artifact: compatibilityArtifact(globalInput.artifact),
+            artifact: globalInput.artifact,
+            forceJudgeCompatible: true,
             mode: 'code',
             inputBatch: [{
               nums: [1, 2],
@@ -1257,7 +1252,8 @@ async function main(): Promise<void> {
         fastParityRuns.globalRebindingCompatibility = await batchClient.request(
           'execute-prepared-program-batch',
           {
-            artifact: compatibilityArtifact(globalRebinding.artifact),
+            artifact: globalRebinding.artifact,
+            forceJudgeCompatible: true,
             mode: 'code',
             inputBatch: [{
               nums: [3, 1, 2],
@@ -1276,7 +1272,8 @@ async function main(): Promise<void> {
         fastParityRuns.heterogeneousTupleCompatibility = await batchClient.request(
           'execute-prepared-program-batch',
           {
-            artifact: compatibilityArtifact(heterogeneousTuple.artifact),
+            artifact: heterogeneousTuple.artifact,
+            forceJudgeCompatible: true,
             mode: 'code',
             inputBatch: [{
               pair: [1, { limit: 4 }],
@@ -1295,7 +1292,8 @@ async function main(): Promise<void> {
         fastParityRuns.matrixInplaceCompatibility = await batchClient.request(
           'execute-prepared-program-batch',
           {
-            artifact: compatibilityArtifact(matrixInplace.artifact),
+            artifact: matrixInplace.artifact,
+            forceJudgeCompatible: true,
             mode: 'code',
             inputBatch: [{
               matrix: [[1, 2, 3], [4, 5, 6]],
@@ -1314,7 +1312,8 @@ async function main(): Promise<void> {
         fastParityRuns.nodeAnnotationParityCompatibility = await batchClient.request(
           'execute-prepared-program-batch',
           {
-            artifact: compatibilityArtifact(nodeAnnotationParity.artifact),
+            artifact: nodeAnnotationParity.artifact,
+            forceJudgeCompatible: true,
             mode: 'code',
             inputBatch: [{
               root: { val: 1 },
@@ -1333,7 +1332,8 @@ async function main(): Promise<void> {
         fastParityRuns.moduleLookupCompatibility = await batchClient.request(
           'execute-prepared-program-batch',
           {
-            artifact: compatibilityArtifact(moduleLookup.artifact),
+            artifact: moduleLookup.artifact,
+            forceJudgeCompatible: true,
             mode: 'code',
             inputBatch: [{
               count: 1000,
@@ -1381,7 +1381,8 @@ async function main(): Promise<void> {
         fastParityRuns.localCountCompatibility = await batchClient.request(
           'execute-prepared-program-batch',
           {
-            artifact: compatibilityArtifact(localCount.artifact),
+            artifact: localCount.artifact,
+            forceJudgeCompatible: true,
             mode: 'code',
             inputBatch: [{
               values: [1, 2, 3],
@@ -1400,7 +1401,8 @@ async function main(): Promise<void> {
         fastParityRuns.raisingCompatibility = await batchClient.request(
           'execute-prepared-program-batch',
           {
-            artifact: compatibilityArtifact(raising.artifact),
+            artifact: raising.artifact,
+            forceJudgeCompatible: true,
             mode: 'code',
             inputBatch: [{
               value: 1,
@@ -1425,14 +1427,28 @@ async function main(): Promise<void> {
             inputBatch: [{ value: 0 }, { value: 1 }],
           }
         );
-        fastParityRuns.serializationOverride = await batchClient.request(
-          'execute-prepared-program-batch',
-          {
-            artifact: serializationOverride.artifact,
-            mode: 'code',
-            inputBatch: [{ value: 0 }, { value: 1 }],
+        fastParityRuns.serializationOverride = { results: [] };
+        for (const value of [0, 1]) {
+          const hardClient = await createClient(
+            'serialization-override-' + value
+          );
+          const hardStartedAt = performance.now();
+          try {
+            fastParityRuns.serializationOverride.results.push(
+              await hardClient.request('execute-prepared-program', {
+                artifact: serializationOverride.artifact,
+                mode: 'code',
+                inputs: { value },
+              })
+            );
+          } finally {
+            executions.push({
+              ...hardClient.metrics(),
+              executionMs: performance.now() - hardStartedAt,
+            });
+            hardClient.terminate();
           }
-        );
+        }
         fastParityRuns.serializationDag = await batchClient.request(
           'execute-prepared-program-batch',
           {
@@ -1445,7 +1461,8 @@ async function main(): Promise<void> {
         fastParityRuns.serializationDagCompatibility = await batchClient.request(
           'execute-prepared-program-batch',
           {
-            artifact: compatibilityArtifact(hostileSerialization.artifact),
+            artifact: hostileSerialization.artifact,
+            forceJudgeCompatible: true,
             mode: 'code',
             inputBatch: [{ value: -1 }, { value: 1 }],
             limits: { wallClockMs: 250 },
@@ -1533,14 +1550,6 @@ async function main(): Promise<void> {
             limits: { wallClockMs: 25 },
           }
         );
-        fastParityRuns.transitiveTraversal = await batchClient.request(
-          'execute-prepared-program-batch',
-          {
-            artifact: transitiveTraversal.artifact,
-            mode: 'code',
-            inputBatch: ['json', 're', 'typing', 'clean'].map((vector) => ({ vector })),
-          }
-        );
         fastParityRuns.treeNodeFreshness = await batchClient.request(
           'execute-prepared-program-batch',
           {
@@ -1549,16 +1558,6 @@ async function main(): Promise<void> {
             inputBatch: [{ value: 1 }, { value: 2 }],
           }
         );
-        batchBaselineAfter = await batchClient.request('execute-code', {
-          code: [
-            'def inspect():',
-            '    with open("/tmp/tracecode-prepared-baseline.txt") as handle:',
-            '        return handle.read()',
-          ].join('\\n'),
-          functionName: 'inspect',
-          inputs: {},
-          executionStyle: 'function',
-        });
       } finally {
         executions.push({
           ...batchClient.metrics(),
@@ -1820,6 +1819,7 @@ async function main(): Promise<void> {
         },
         isolationProfiles: {
           code: code.artifact?.isolationProfile,
+          batch: batch.artifact?.isolationProfile,
           trace: trace.artifact?.isolationProfile,
           limited: limited.artifact?.isolationProfile,
           algorithmBatch: algorithmBatch.artifact?.isolationProfile,
@@ -1890,7 +1890,6 @@ async function main(): Promise<void> {
         batchRun,
         algorithmBatchRun,
         fastParityRuns,
-        batchBaselineAfter,
         traceRuns,
         mixedTraceBatch,
         legacyTrace,
@@ -1946,7 +1945,7 @@ async function main(): Promise<void> {
       const preparation = result.preparations[mode];
       const artifact = preparation?.artifact as Record<string, unknown> | undefined;
       assertCondition(
-        artifact?.schemaVersion === 'tracecode.python.prepared-program.v3' &&
+        artifact?.schemaVersion === 'tracecode.python.prepared-program.v4' &&
           typeof artifact.userCode === 'string' &&
           typeof artifact.executorCode === 'string',
         `${mode} preparation did not return a portable code artifact`
@@ -1964,77 +1963,85 @@ async function main(): Promise<void> {
       `Invalid Python prepared successfully: ${JSON.stringify(result.preparations.invalid)}`
     );
     assertCondition(
-      result.isolationProfiles.code?.tier === 'compatibility' &&
+      result.isolationProfiles.code?.tier === 'hard-isolated' &&
         result.isolationProfiles.code.reasons.some(
           (reason: string) => reason.startsWith('denied-import:')
         ),
-      `Python filesystem/interpreter-state code must select compatibility isolation: ${JSON.stringify(result.isolationProfiles.code)}`
+      `Python filesystem/interpreter-state code must select hard isolation: ${JSON.stringify(result.isolationProfiles.code)}`
     );
     assertCondition(
-        result.isolationProfiles.trace?.tier === 'algorithm-fast' &&
+      result.isolationProfiles.batch?.tier === 'judge-compatible' &&
+        result.isolationProfiles.batch.reasons.includes(
+          'suspending-control-flow'
+        ),
+      `Python generic algorithm code must select retained Judge compatibility: ${JSON.stringify(result.isolationProfiles.batch)}`
+    );
+    assertCondition(
+      result.isolationProfiles.trace?.tier === 'algorithm-fast' &&
         result.isolationProfiles.limited?.tier === 'algorithm-fast' &&
         result.isolationProfiles.algorithmBatch?.tier === 'algorithm-fast' &&
         result.isolationProfiles.benchmarkCode?.tier === 'algorithm-fast' &&
         result.isolationProfiles.parity?.tier === 'algorithm-fast' &&
         result.isolationProfiles.inplace?.tier === 'algorithm-fast' &&
         result.isolationProfiles.serialized?.tier === 'algorithm-fast' &&
-        result.isolationProfiles.transitiveTraversal?.tier === 'algorithm-fast' &&
-        result.isolationProfiles.treeNodeFreshness?.tier === 'algorithm-fast' &&
         result.isolationProfiles.dequeExecution?.tier === 'algorithm-fast' &&
         result.isolationProfiles.customClassHydration?.tier === 'algorithm-fast' &&
         result.isolationProfiles.globalInput?.tier === 'algorithm-fast' &&
         result.isolationProfiles.globalRebinding?.tier === 'algorithm-fast' &&
-        result.isolationProfiles.heterogeneousTuple?.tier === 'algorithm-fast' &&
-        result.isolationProfiles.matrixInplace?.tier === 'algorithm-fast' &&
-        result.isolationProfiles.nodeAnnotationParity?.tier === 'algorithm-fast' &&
-        result.isolationProfiles.moduleLookup?.tier === 'algorithm-fast' &&
-        result.isolationProfiles.localCount?.tier === 'algorithm-fast' &&
-        result.isolationProfiles.raising?.tier === 'algorithm-fast' &&
         result.isolationProfiles.hostileException?.tier === 'algorithm-fast' &&
-        result.isolationProfiles.hostileSerialization?.tier ===
-          'algorithm-fast' &&
+        result.isolationProfiles.hostileSerialization?.tier === 'algorithm-fast' &&
         result.isolationProfiles.wallClockBatch?.tier === 'algorithm-fast' &&
         result.isolationProfiles.cachedDecorator?.tier === 'algorithm-fast' &&
         result.isolationProfiles.benchmarkHasFastBatch === true,
-      `Python algorithm code and deque imports must select an explicit fast artifact: ${JSON.stringify(result.isolationProfiles)}`
+      `Python algorithm code and batch-adjacent imports must select an explicit fast artifact: ${JSON.stringify(result.isolationProfiles)}`
     );
     assertCondition(
       result.isolationProfiles.defaultModuleMutation?.tier ===
-        'compatibility' &&
+        'hard-isolated' &&
         result.isolationProfiles.defaultModuleMutation.reasons.includes(
           'shared-state-write'
         ) &&
         result.isolationProfiles.shadowedModuleMutation?.tier ===
-          'compatibility' &&
+          'hard-isolated' &&
         result.isolationProfiles.shadowedModuleMutation.reasons.includes(
           'rebound-default-binding:heapq'
-        ) &&
-        result.isolationProfiles.reflectiveOperator?.tier ===
-          'compatibility' &&
+        ),
+      `Python fast-path admission did not hard-isolate default module mutation cases: ${JSON.stringify({
+        defaultModuleMutation: result.isolationProfiles.defaultModuleMutation,
+        shadowedModuleMutation: result.isolationProfiles.shadowedModuleMutation,
+      })}`
+    );
+    assertCondition(
+      result.isolationProfiles.reflectiveOperator?.tier === 'hard-isolated' &&
         result.isolationProfiles.reflectiveOperator.reasons.includes(
           'reflective-attribute:attrgetter'
         ) &&
-        result.isolationProfiles.reflectiveFormat?.tier ===
-          'compatibility' &&
+        result.isolationProfiles.reflectiveFormat?.tier === 'hard-isolated' &&
         result.isolationProfiles.reflectiveFormat.reasons.includes(
           'reflective-attribute:format'
         ) &&
-        result.isolationProfiles.stringAnnotation?.tier ===
-          'compatibility' &&
+        result.isolationProfiles.stringAnnotation?.tier === 'hard-isolated' &&
         result.isolationProfiles.stringAnnotation.reasons.includes(
           'string-annotation'
         ) &&
         result.isolationProfiles.nestedStringAnnotation?.tier ===
-          'compatibility' &&
+          'hard-isolated' &&
         result.isolationProfiles.nestedStringAnnotation.reasons.includes(
           'string-annotation'
-        ) &&
-        result.isolationProfiles.singleDispatch?.tier === 'compatibility' &&
+        ),
+      `Python fast-path admission did not hard-isolate reflective string/annotation cases: ${JSON.stringify({
+        reflectiveOperator: result.isolationProfiles.reflectiveOperator,
+        reflectiveFormat: result.isolationProfiles.reflectiveFormat,
+        stringAnnotation: result.isolationProfiles.stringAnnotation,
+        nestedStringAnnotation: result.isolationProfiles.nestedStringAnnotation,
+      })}`
+    );
+    assertCondition(
+      result.isolationProfiles.singleDispatch?.tier === 'hard-isolated' &&
         result.isolationProfiles.singleDispatch.reasons.includes(
           'evaluating-import:functools.singledispatch'
         ) &&
-        result.isolationProfiles.frameIntrospection?.tier ===
-          'compatibility' &&
+        result.isolationProfiles.frameIntrospection?.tier === 'hard-isolated' &&
         result.isolationProfiles.frameIntrospection.reasons.some(
           (reason: string) =>
             reason === 'reflective-attribute:gi_frame' ||
@@ -2044,68 +2051,100 @@ async function main(): Promise<void> {
           'suspending-control-flow'
         ) &&
         result.isolationProfiles.updateWrapperEscape?.tier ===
-          'compatibility' &&
+          'hard-isolated' &&
         result.isolationProfiles.updateWrapperEscape.reasons.includes(
           'denied-name:update_wrapper'
         ) &&
         result.isolationProfiles.updateWrapperEscape.reasons.includes(
           'reflective-string-argument:__globals__'
-        ) &&
-        result.isolationProfiles.sharedAttributeEscape?.tier ===
-          'compatibility' &&
+        ),
+      `Python fast-path admission did not hard-isolate reflective helper escapes: ${JSON.stringify({
+        singleDispatch: result.isolationProfiles.singleDispatch,
+        frameIntrospection: result.isolationProfiles.frameIntrospection,
+        updateWrapperEscape: result.isolationProfiles.updateWrapperEscape,
+      })}`
+    );
+    assertCondition(
+      result.isolationProfiles.sharedAttributeEscape?.tier ===
+        'hard-isolated' &&
         result.isolationProfiles.sharedAttributeEscape.reasons.includes(
           'shared-binding-escape:json'
         ) &&
         result.isolationProfiles.sharedDefaultCapture?.tier ===
-          'compatibility' &&
+          'hard-isolated' &&
         result.isolationProfiles.sharedDefaultCapture.reasons.includes(
           'shared-binding-escape:Counter'
         ) &&
         result.isolationProfiles.sharedStateRegistration?.tier ===
-          'compatibility' &&
+          'hard-isolated' &&
         result.isolationProfiles.sharedStateRegistration.reasons.includes(
           'shared-state-call:register'
         ) &&
         result.isolationProfiles.mathModuleMutation?.tier ===
-          'compatibility' &&
+          'hard-isolated' &&
         result.isolationProfiles.mathModuleMutation.reasons.includes(
           'shared-state-write'
-        ) &&
-        result.isolationProfiles.unknownImport?.tier === 'compatibility' &&
+        ),
+      `Python fast-path admission did not hard-isolate shared-state mutation cases: ${JSON.stringify({
+        sharedAttributeEscape: result.isolationProfiles.sharedAttributeEscape,
+        sharedDefaultCapture: result.isolationProfiles.sharedDefaultCapture,
+        sharedStateRegistration: result.isolationProfiles.sharedStateRegistration,
+        mathModuleMutation: result.isolationProfiles.mathModuleMutation,
+      })}`
+    );
+    assertCondition(
+      result.isolationProfiles.unknownImport?.tier === 'hard-isolated' &&
         result.isolationProfiles.unknownImport.reasons.includes(
           'denied-import:numpy'
         ) &&
         result.isolationProfiles.unsupportedBuiltin?.tier ===
-          'compatibility' &&
+          'hard-isolated' &&
         result.isolationProfiles.unsupportedBuiltin.reasons.includes(
           'unsupported-builtin:aiter'
         ) &&
         result.isolationProfiles.serializationOverride?.tier ===
-          'compatibility' &&
+          'hard-isolated' &&
         result.isolationProfiles.serializationOverride.reasons.includes(
           'shared-state-write'
-        ) &&
-        result.isolationProfiles.catchAllException?.tier ===
-          'compatibility' &&
+        ),
+      `Python fast-path admission did not hard-isolate import and builtin escape cases: ${JSON.stringify({
+        unknownImport: result.isolationProfiles.unknownImport,
+        unsupportedBuiltin: result.isolationProfiles.unsupportedBuiltin,
+        serializationOverride: result.isolationProfiles.serializationOverride,
+      })}`
+    );
+    assertCondition(
+      result.isolationProfiles.catchAllException?.tier ===
+        'judge-compatible' &&
         result.isolationProfiles.catchAllException.reasons.includes(
           'catch-all-exception-handler'
         ) &&
-        result.isolationProfiles.baseExceptionCatch?.tier ===
-          'compatibility' &&
+        result.isolationProfiles.baseExceptionCatch?.tier === 'hard-isolated' &&
         result.isolationProfiles.baseExceptionCatch.reasons.includes(
           'unsupported-builtin:BaseException'
         ) &&
         result.isolationProfiles.exceptionHierarchyCatch?.tier ===
-          'compatibility' &&
+          'hard-isolated' &&
         result.isolationProfiles.exceptionHierarchyCatch.reasons.includes(
           'reflective-attribute:mro'
         ) &&
         result.isolationProfiles.exceptionFinalizer?.tier ===
-          'compatibility' &&
+          'judge-compatible' &&
         result.isolationProfiles.exceptionFinalizer.reasons.includes(
           'exception-finalizer'
+        ) &&
+        result.isolationProfiles.transitiveTraversal?.tier ===
+          'hard-isolated' &&
+        result.isolationProfiles.transitiveTraversal.reasons.some(
+          (reason: string) =>
+            reason.startsWith('transitive-shared-access:')
         ),
-      `Python fast-path admission must reject module mutation, reflective access, and unreviewed imports: ${JSON.stringify(result.isolationProfiles)}`
+      `Python fast-path admission did not classify exception-only cases correctly: ${JSON.stringify({
+        catchAllException: result.isolationProfiles.catchAllException,
+        baseExceptionCatch: result.isolationProfiles.baseExceptionCatch,
+        exceptionHierarchyCatch: result.isolationProfiles.exceptionHierarchyCatch,
+        exceptionFinalizer: result.isolationProfiles.exceptionFinalizer,
+      })}`
     );
     assertCondition(
       result.preparationWorker.prepareRequests === 50,
@@ -2483,26 +2522,6 @@ async function main(): Promise<void> {
         profileRecheck: result.fastParityRuns.profileRecheck,
       })}`
     );
-    const traversalResults = result.fastParityRuns.transitiveTraversal.results as Array<{
-      success?: boolean;
-      output?: unknown;
-      error?: string;
-      timings?: { algorithmFastBatch?: boolean };
-    }>;
-    assertCondition(
-      traversalResults.length === 4 &&
-        traversalResults.slice(0, 3).every(
-          (entry) =>
-            entry.success === false &&
-            String(entry.error).startsWith('AttributeError on line ')
-        ) &&
-        traversalResults[3]?.success === true &&
-        traversalResults[3]?.output === 7 &&
-        traversalResults.every(
-          (entry) => entry.timings?.algorithmFastBatch === true
-        ),
-      `Python module façade allowed transitive host-authority traversal or poisoned a later case: ${JSON.stringify(result.fastParityRuns.transitiveTraversal)}`
-    );
     const treeFreshnessResults = result.fastParityRuns.treeNodeFreshness.results as Array<{
       success?: boolean;
       output?: unknown;
@@ -2536,24 +2555,10 @@ async function main(): Promise<void> {
           return (
             before.history === 0 &&
             before.counter === 0 &&
-            before.builtinLeak === false &&
-            before.moduleLeak === false &&
-            before.existingModuleLeak === false &&
-            before.pathLeak === false &&
-            before.importerLeak === false &&
-            before.envLeak === null &&
-            before.rngLeak === false &&
-            before.fileExists === false &&
-            before.baseline === 'baseline' &&
-            before.cwd !== '/tmp'
+            output.itemCount === 2
           );
         }),
       `Prepared Python batch did not isolate mutable case state: ${JSON.stringify(result.batchRun)}`
-    );
-    assertCondition(
-      result.batchBaselineAfter.success === true &&
-        result.batchBaselineAfter.output === 'baseline',
-      `Prepared Python batch did not restore its pre-existing filesystem state: ${JSON.stringify(result.batchBaselineAfter)}`
     );
     assertCondition(
       result.executions.filter((entry) => entry.label === 'code-batch').length === 1,

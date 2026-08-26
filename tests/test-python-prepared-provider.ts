@@ -32,10 +32,10 @@ function preparationCall(
 
 function artifact(
   mode: 'code' | 'trace',
-  tier: 'algorithm-fast' | 'compatibility' = 'compatibility'
+  tier: 'algorithm-fast' | 'judge-compatible' | 'hard-isolated' = 'hard-isolated'
 ): PythonPreparedProgramArtifact {
   return {
-    schemaVersion: 'tracecode.python.prepared-program.v3',
+    schemaVersion: 'tracecode.python.prepared-program.v4',
     fingerprint: {
       cacheTag: 'cpython-test',
       magicNumber: 'test',
@@ -48,7 +48,7 @@ function artifact(
     traceOptions: {},
     isolationProfile: {
       tier,
-      reasons: tier === 'compatibility' ? ['test-fixture'] : [],
+      reasons: tier === 'algorithm-fast' ? [] : ['test-fixture'],
     },
     ...(tier === 'algorithm-fast'
       ? { algorithmFastBatchCode: 'algorithm-fast-artifact' }
@@ -278,6 +278,73 @@ test('Python algorithm-fast provider executes a case vector in one warmed worker
   provider.terminate();
 });
 
+test('Python judge-compatible provider retains one worker for the generic case batch', async () => {
+  const calls: Array<{ worker: number; method: string }> = [];
+  let nextWorker = 0;
+  const createWorkerClient = (): PythonWorkerClient => {
+    const worker = nextWorker++;
+    return {
+      async warmup() {
+        calls.push({ worker, method: 'warmup' });
+        return { success: true, loadTimeMs: 1 };
+      },
+      async prepareProgram(call: RuntimeProgramPreparationCall) {
+        calls.push({ worker, method: 'prepare' });
+        return {
+          success: true as const,
+          artifact: artifact(call.mode, 'judge-compatible'),
+          mode: call.mode,
+          consoleOutput: [],
+        };
+      },
+      async executePreparedCodeBatch(
+        _handle: unknown,
+        call: { inputBatch: readonly Record<string, unknown>[] }
+      ): Promise<CodeExecutionBatchResult> {
+        calls.push({ worker, method: 'execute-batch' });
+        return {
+          results: call.inputBatch.map((inputs) => ({
+            kind: 'completed' as const,
+            output: inputs.value,
+            consoleOutput: [],
+          })),
+        };
+      },
+      terminate() {
+        calls.push({ worker, method: 'terminate' });
+      },
+    } as unknown as PythonWorkerClient;
+  };
+  const provider = createPythonPreparedExecutionProvider({ createWorkerClient });
+  const preparation = await provider.prepareProgram(preparationCall());
+  assert.equal(preparation.kind, 'prepared');
+  if (
+    preparation.kind !== 'prepared' ||
+    preparation.program.mode !== 'code' ||
+    !preparation.program.executeBatchIsolated
+  ) {
+    return;
+  }
+
+  const results = await preparation.program.executeBatchIsolated({
+    inputBatch: [{ value: 1 }, { value: 2 }, { value: 3 }],
+  });
+  assert.deepEqual(
+    results.map((result) =>
+      result.kind === 'completed' ? result.output : undefined
+    ),
+    [1, 2, 3]
+  );
+  assert.equal(calls.filter((call) => call.method === 'execute-batch').length, 1);
+  assert.equal(calls.filter((call) => call.method === 'execute-code').length, 0);
+  assert.equal(
+    calls.find((call) => call.method === 'prepare')?.worker,
+    calls.find((call) => call.method === 'execute-batch')?.worker
+  );
+  await preparation.program.dispose();
+  provider.terminate();
+});
+
 test('Python algorithm-fast batch fallback retries each case in a fresh outer worker', async () => {
   const calls: Array<{ worker: number; method: string }> = [];
   let nextWorker = 0;
@@ -356,7 +423,7 @@ test('Python algorithm-fast batch fallback retries each case in a fresh outer wo
   provider.terminate();
 });
 
-test('Python trace batches retire one outer worker per case even for fast-classified source', async () => {
+test('Python fast-classified trace batches retain one generic batch worker', async () => {
   const calls: Array<{ worker: number; method: string }> = [];
   let nextWorker = 0;
   const createWorkerClient = (): PythonWorkerClient => {
@@ -375,16 +442,18 @@ test('Python trace batches retire one outer worker per case even for fast-classi
           consoleOutput: [],
         };
       },
-      async executePreparedTrace(
+      async executePreparedTraceBatch(
         _handle: unknown,
-        call: { inputs: Record<string, unknown> }
+        call: { inputBatch: readonly Record<string, unknown>[] }
       ) {
-        calls.push({ worker, method: 'execute-trace' });
+        calls.push({ worker, method: 'execute-trace-batch' });
         return {
-          success: true,
-          output: call.inputs.value,
-          executionTimeMs: 1,
-          consoleOutput: [],
+          results: call.inputBatch.map((inputs) => ({
+            success: true,
+            output: inputs.value,
+            executionTimeMs: 1,
+            consoleOutput: [],
+          })),
         };
       },
       terminate() {
@@ -412,12 +481,10 @@ test('Python trace batches retire one outer worker per case even for fast-classi
     ),
     [1, 2, 3]
   );
-  const executions = calls.filter((call) => call.method === 'execute-trace');
-  assert.equal(executions.length, 3);
-  assert.equal(new Set(executions.map((call) => call.worker)).size, 3);
+  assert.equal(calls.filter((call) => call.method === 'execute-trace').length, 0);
   assert.equal(
     calls.filter((call) => call.method === 'execute-trace-batch').length,
-    0
+    1
   );
   await assert.rejects(
     preparation.program.executeBatchIsolated({
@@ -437,7 +504,7 @@ test('Python trace batches retire one outer worker per case even for fast-classi
   provider.terminate();
 });
 
-test('Python compatibility batches retire one outer worker per case', async () => {
+test('Python hard-isolated batches retire one outer worker per case', async () => {
   const calls: Array<{ worker: number; method: string }> = [];
   let nextWorker = 0;
   const createWorkerClient = (): PythonWorkerClient => {
@@ -500,7 +567,7 @@ test('Python compatibility batches retire one outer worker per case', async () =
   provider.terminate();
 });
 
-test('Python compatibility batches preserve per-case client timeout outcomes and continue', async () => {
+test('Python hard-isolated batches preserve per-case client timeout outcomes and continue', async () => {
   const calls: Array<{ worker: number; method: string }> = [];
   let nextWorker = 0;
   const createWorkerClient = (): PythonWorkerClient => {
@@ -585,7 +652,7 @@ test('Python compatibility batches preserve per-case client timeout outcomes and
   provider.terminate();
 });
 
-test('Python compatibility batch contains worker crashes to the failing case', async () => {
+test('Python judge-compatible batch contains worker crashes in the failing case', async () => {
   const calls: Array<{ worker: number; value: unknown }> = [];
   let nextWorker = 0;
   const createWorkerClient = (): PythonWorkerClient => {
@@ -597,28 +664,30 @@ test('Python compatibility batch contains worker crashes to the failing case', a
       async prepareProgram(call: RuntimeProgramPreparationCall) {
         return {
           success: true as const,
-          artifact: artifact(call.mode, 'compatibility'),
+          artifact: artifact(call.mode, 'judge-compatible'),
           mode: call.mode,
           consoleOutput: [],
         };
       },
-      async executePreparedCode(
+      async executePreparedCodeBatch(
         _handle: unknown,
-        call: { inputs: Record<string, unknown> }
-      ): Promise<CodeExecutionResult> {
-        calls.push({ worker, value: call.inputs.value });
-        if (call.inputs.value === 1) {
-          throw new WorkerCrashedError({
-            workerMessage: 'synthetic worker crash',
-            filename: 'python-worker.js',
-            lineno: 1,
-            colno: 1,
-          });
-        }
+        call: { inputBatch: readonly Record<string, unknown>[] }
+      ): Promise<CodeExecutionBatchResult> {
+        calls.push({ worker, value: call.inputBatch.map((inputs) => inputs.value) });
         return {
-          kind: 'completed',
-          output: call.inputs.value,
-          consoleOutput: [],
+          results: call.inputBatch.map((inputs) =>
+            inputs.value === 1
+              ? {
+                  kind: 'failed' as const,
+                  error: 'Python worker failed while executing this case: synthetic worker crash',
+                  consoleOutput: [],
+                }
+              : {
+                  kind: 'completed' as const,
+                  output: inputs.value,
+                  consoleOutput: [],
+                }
+          ),
         };
       },
       terminate() {},
@@ -642,12 +711,12 @@ test('Python compatibility batch contains worker crashes to the failing case', a
       error:
         'Python worker failed while executing this case: synthetic worker crash',
       consoleOutput: [],
-      timings: { artifactCacheHit: true },
     },
     { kind: 'completed', output: 2, consoleOutput: [] },
   ]);
-  assert.deepEqual(calls.map((call) => call.value), [1, 2]);
-  assert.equal(new Set(calls.map((call) => call.worker)).size, 2);
+  assert.deepEqual(calls, [
+    { worker: 0, value: [1, 2] },
+  ]);
   await preparation.program.dispose();
   provider.terminate();
 });
@@ -734,10 +803,8 @@ test('Python aggregate timeout never falls back to a second compatibility budget
   provider.terminate();
 });
 
-test('Python compatibility batch excludes fresh-worker acquisition from the aggregate budget', async (context) => {
-  context.mock.timers.enable({ apis: ['setTimeout'] });
+test('Python judge-compatible batch retains one worker across the aggregate budget', async () => {
   const calls: Array<{ worker: number; method: string }> = [];
-  const laterWorkerReady = deferred();
   let nextWorker = 0;
   const createWorkerClient = (): PythonWorkerClient => {
     const worker = nextWorker++;
@@ -751,20 +818,22 @@ test('Python compatibility batch excludes fresh-worker acquisition from the aggr
         calls.push({ worker, method: 'prepare' });
         return {
           success: true as const,
-          artifact: artifact(call.mode, 'compatibility'),
+          artifact: artifact(call.mode, 'judge-compatible'),
           mode: call.mode,
           consoleOutput: [],
         };
       },
-      async executePreparedCode(
+      async executePreparedCodeBatch(
         _handle: unknown,
-        call: { inputs: Record<string, unknown> }
-      ): Promise<CodeExecutionResult> {
-        calls.push({ worker, method: 'execute-code' });
+        call: { inputBatch: readonly Record<string, unknown>[] }
+      ): Promise<CodeExecutionBatchResult> {
+        calls.push({ worker, method: 'execute-batch' });
         return {
-          kind: 'completed',
-          output: call.inputs.value,
-          consoleOutput: [],
+          results: call.inputBatch.map((inputs) => ({
+            kind: 'completed' as const,
+            output: inputs.value,
+            consoleOutput: [],
+          })),
         };
       },
       terminate() {
@@ -787,18 +856,18 @@ test('Python compatibility batch excludes fresh-worker acquisition from the aggr
     inputBatch: [{ value: 1 }, { value: 2 }],
     limits: { wallClockMs: 1 },
   });
-  await waitUntil(
-    () => calls.some((call) => call.worker === 1 && call.method === 'warmup'),
-    'Second compatibility worker did not begin warmup'
-  );
-  context.mock.timers.tick(calculatePythonCodeBatchDeadlineMs(2, 1) + 1);
-  laterWorkerReady.resolve();
   const results = await execution;
   assert.deepEqual(
     results.map((result) =>
       result.kind === 'completed' ? result.output : undefined
     ),
     [1, 2]
+  );
+  assert.equal(calls.filter((call) => call.method === 'execute-batch').length, 1);
+  assert.equal(
+    calls.filter((call) => call.method === 'warmup').length,
+    1,
+    'Judge-compatible batches should retain one warm worker'
   );
   await preparation.program.dispose();
   provider.terminate();

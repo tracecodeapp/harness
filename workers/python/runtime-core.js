@@ -433,7 +433,7 @@ class __TracecodeExecutionGuard:
             tree = self._ast.parse(str(source), filename='solution.py')
         except SyntaxError as error:
             return {
-                'tier': 'compatibility',
+                'tier': 'hard-isolated',
                 'reasons': ['syntax-error:' + str(error)],
             }
 
@@ -809,6 +809,16 @@ class __TracecodeExecutionGuard:
                 and (attribute_root := root_name_node(node)) is not None
                 and attribute_root.id in shared_names
                 and not is_locally_shadowed(attribute_root)
+                and isinstance(node.value, ast.Attribute)
+            ):
+                reasons.append(
+                    'transitive-shared-access:' + attribute_root.id
+                )
+            if (
+                isinstance(node, ast.Attribute)
+                and (attribute_root := root_name_node(node)) is not None
+                and attribute_root.id in shared_names
+                and not is_locally_shadowed(attribute_root)
                 and node.attr in self._algorithm_shared_state_call_names
                 and shared_attribute_is_directly_invoked(node)
             ):
@@ -869,8 +879,37 @@ class __TracecodeExecutionGuard:
                 reasons.append('shared-binding-escape:' + node.id)
 
         unique_reasons = list(dict.fromkeys(reasons))
+        hard_isolation_prefixes = (
+            'denied-import:',
+            'wildcard-import:',
+            'private-import:',
+            'reflective-import:',
+            'evaluating-import:',
+            'shared-state-call:',
+            'denied-name:',
+            'reflective-string-argument:',
+            'unsupported-builtin:',
+            'reflective-attribute:',
+            'shared-state-write',
+            'private-shared-state-access:',
+            'shared-binding-escape:',
+            'unsupported-sys-attribute:',
+            'transitive-shared-access:',
+        )
+        hard_isolation_reasons = [
+            reason for reason in unique_reasons
+            if reason == 'string-annotation'
+            or reason == 'type-alias'
+            or reason.startswith(hard_isolation_prefixes)
+        ]
         return {
-            'tier': 'algorithm-fast' if not unique_reasons else 'compatibility',
+            'tier': (
+                'algorithm-fast'
+                if not unique_reasons
+                else 'hard-isolated'
+                if hard_isolation_reasons
+                else 'judge-compatible'
+            ),
             'reasons': unique_reasons,
         }
 
@@ -1109,7 +1148,9 @@ function pythonAlgorithmIsolationProfile(
     return {
       tier: profile.tier === 'algorithm-fast'
         ? 'algorithm-fast'
-        : 'compatibility',
+        : profile.tier === 'judge-compatible'
+          ? 'judge-compatible'
+          : 'hard-isolated',
       reasons: Array.isArray(profile.reasons)
         ? profile.reasons.map(String)
         : [],
@@ -8144,7 +8185,7 @@ async function prepareProgram(
 
     const fingerprint = pythonPreparedArtifactFingerprint(deps);
     const artifact = {
-      schemaVersion: 'tracecode.python.prepared-program.v3',
+      schemaVersion: 'tracecode.python.prepared-program.v4',
       fingerprint,
       mode,
       code,
@@ -8204,14 +8245,15 @@ function assertPythonPreparedArtifact(deps, artifact) {
   if (
     !artifact ||
     typeof artifact !== 'object' ||
-    artifact.schemaVersion !== 'tracecode.python.prepared-program.v3' ||
+    artifact.schemaVersion !== 'tracecode.python.prepared-program.v4' ||
     (artifact.mode !== 'code' && artifact.mode !== 'trace') ||
     typeof artifact.code !== 'string' ||
     typeof artifact.userCode !== 'string' ||
     typeof artifact.executorCode !== 'string' ||
     !artifact.isolationProfile ||
     (artifact.isolationProfile.tier !== 'algorithm-fast' &&
-      artifact.isolationProfile.tier !== 'compatibility') ||
+      artifact.isolationProfile.tier !== 'judge-compatible' &&
+      artifact.isolationProfile.tier !== 'hard-isolated') ||
     !Array.isArray(artifact.isolationProfile.reasons) ||
     (artifact.mode === 'code' &&
       artifact.isolationProfile.tier === 'algorithm-fast' &&
@@ -8338,7 +8380,8 @@ async function executePreparedProgramBatch(
   artifact,
   inputBatch,
   limits,
-  traceEnabledBatch = undefined
+  traceEnabledBatch = undefined,
+  forceJudgeCompatible = false
 ) {
   const startedAt = deps.performanceNow();
   await deps.loadPyodideInstance();
@@ -8385,28 +8428,18 @@ async function executePreparedProgramBatch(
       artifact.mode === 'code' &&
       artifact.isolationProfile.tier === 'algorithm-fast' &&
       typeof artifact.algorithmFastBatchCode === 'string';
-    const currentIsolationProfile = isAlgorithmFastArtifact
-      ? pythonAlgorithmIsolationProfile(
-          deps,
-          artifact.code,
-          artifact.functionName ?? '',
-          artifact.executionStyle ?? 'function'
-        )
-      : null;
-    const useAlgorithmFastBatch =
-      isAlgorithmFastArtifact &&
-      currentIsolationProfile?.tier === 'algorithm-fast' &&
-      cases.every((inputs) => !pythonInputsRequireCustomMaterialization(inputs));
-    if (
-      artifact.mode === 'code' &&
-      artifact.isolationProfile.tier === 'algorithm-fast' &&
-      !useAlgorithmFastBatch
-    ) {
+    const currentIsolationProfile = pythonAlgorithmIsolationProfile(
+      deps,
+      artifact.code,
+      artifact.functionName ?? '',
+      artifact.executionStyle ?? 'function'
+    );
+    if (currentIsolationProfile.tier !== artifact.isolationProfile.tier) {
       const runMs = deps.performanceNow() - startedAt;
       return {
         success: false,
         results: [],
-        error: 'Prepared Python algorithm-fast batch requires compatibility isolation.',
+        error: 'Prepared Python artifact isolation profile does not match its source.',
         consoleOutput: [],
         algorithmFastBatchUnavailable: true,
         algorithmFastBatchFailureClass: 'capability-fallback',
@@ -8418,6 +8451,28 @@ async function executePreparedProgramBatch(
         },
       };
     }
+    if (currentIsolationProfile.tier === 'hard-isolated') {
+      const runMs = deps.performanceNow() - startedAt;
+      return {
+        success: false,
+        results: [],
+        error: 'Prepared Python hard-isolated programs require a fresh outer worker per case.',
+        consoleOutput: [],
+        algorithmFastBatchUnavailable: true,
+        algorithmFastBatchFailureClass: 'capability-fallback',
+        timings: {
+          totalMs: runMs,
+          runMs,
+          compileCacheHit: true,
+          artifactCacheHit: true,
+        },
+      };
+    }
+    const useAlgorithmFastBatch =
+      isAlgorithmFastArtifact &&
+      forceJudgeCompatible !== true &&
+      currentIsolationProfile.tier === 'algorithm-fast' &&
+      cases.every((inputs) => !pythonInputsRequireCustomMaterialization(inputs));
     if (useAlgorithmFastBatch) {
       try {
         algorithmFastBatchCode = deserializePythonCodeArtifact(

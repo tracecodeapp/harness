@@ -41,9 +41,9 @@ interface BatchLanguageResult {
   readonly compatibilityIsolationWorkerUrls?: readonly string[];
   readonly compatibilityIsolationMaximumActiveWorkers?: number;
   readonly compatibilityIsolationMs?: number;
-  readonly fastFallbackIsolation?: ReceiptSummary;
-  readonly fastFallbackIsolationWorkerUrls?: readonly string[];
-  readonly fastFallbackIsolationMaximumActiveWorkers?: number;
+  readonly judgeFallbackIsolation?: ReceiptSummary;
+  readonly judgeFallbackIsolationWorkerUrls?: readonly string[];
+  readonly judgeFallbackIsolationMaximumActiveWorkers?: number;
   readonly csharpBatchConcurrency?: number;
   readonly trustedPrewarm?: boolean;
 }
@@ -214,16 +214,6 @@ function assertBoundedWorkers(
         workerCount: languageWorkers.length,
         maximumActiveWorkers,
         concurrency,
-      })}`
-    );
-    return;
-  }
-  if (language === 'python' && scope === 'trace batch') {
-    assertCondition(
-      languageWorkers.length >= 10 && maximumActiveWorkers <= 3,
-      `Python ${scope} must use a fresh outer worker per traced case with bounded concurrency: ${JSON.stringify({
-        workerCount: languageWorkers.length,
-        maximumActiveWorkers,
       })}`
     );
     return;
@@ -440,28 +430,26 @@ async function main(): Promise<void> {
                 compatibilityWorkers.length,
             })
           );
-          const fastFallbackIsolation =
-            languageResult.fastFallbackIsolation;
-          const fastFallbackWorkers = (
-            languageResult.fastFallbackIsolationWorkerUrls ?? []
+          const judgeFallbackIsolation =
+            languageResult.judgeFallbackIsolation;
+          const judgeFallbackWorkers = (
+            languageResult.judgeFallbackIsolationWorkerUrls ?? []
           ).filter((url) => url.includes('python-worker.js'));
           assertCondition(
-            fastFallbackIsolation?.verdict === 'passed' &&
-              fastFallbackIsolation.caseVerdicts.length === 3 &&
-              fastFallbackIsolation.caseVerdicts.every(
+            judgeFallbackIsolation?.verdict === 'passed' &&
+              judgeFallbackIsolation.caseVerdicts.length === 3 &&
+              judgeFallbackIsolation.caseVerdicts.every(
                 (verdict) => verdict === 'passed'
               ) &&
-              fastFallbackIsolation.outputs.length === 3 &&
-              fastFallbackIsolation.outputs.every(
-                (output) => output === null
-              ) &&
-              fastFallbackWorkers.length >= 4 &&
-              (languageResult.fastFallbackIsolationMaximumActiveWorkers ?? 99) <= 3,
-            `Python fast artifact did not retire its unavailable batch worker before isolated custom-input fallback: ${JSON.stringify({
-              receipt: fastFallbackIsolation,
-              workers: fastFallbackWorkers,
+              JSON.stringify(judgeFallbackIsolation.outputs) ===
+                JSON.stringify([2, 4, 6]) &&
+              judgeFallbackWorkers.length === 1 &&
+              (languageResult.judgeFallbackIsolationMaximumActiveWorkers ?? 99) <= 1,
+            `Python fast artifact did not use one retained generic worker for custom-input fallback: ${JSON.stringify({
+              receipt: judgeFallbackIsolation,
+              workers: judgeFallbackWorkers,
               maximumActiveWorkers:
-                languageResult.fastFallbackIsolationMaximumActiveWorkers,
+                languageResult.judgeFallbackIsolationMaximumActiveWorkers,
             })}`
           );
         }

@@ -143,7 +143,7 @@ interface StatusResult {
 }
 
 export interface PythonPreparedProgramArtifact {
-  readonly schemaVersion: 'tracecode.python.prepared-program.v3';
+  readonly schemaVersion: 'tracecode.python.prepared-program.v4';
   readonly fingerprint: {
     readonly cacheTag: string;
     readonly magicNumber: string;
@@ -156,7 +156,7 @@ export interface PythonPreparedProgramArtifact {
   readonly traceOptions: RuntimeProgramPreparationCall['traceOptions'];
   readonly onDemandTracing?: boolean;
   readonly isolationProfile: {
-    readonly tier: 'algorithm-fast' | 'compatibility';
+    readonly tier: 'algorithm-fast' | 'judge-compatible' | 'hard-isolated';
     readonly reasons: readonly string[];
   };
   readonly algorithmFastBatchCode?: string;

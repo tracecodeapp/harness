@@ -9464,7 +9464,8 @@ async function executePreparedPythonProgramBatch(
   artifact,
   inputBatch,
   limits,
-  traceEnabledBatch
+  traceEnabledBatch,
+  forceJudgeCompatible
 ) {
   await loadPyodideInstance();
   const runtimeCore = loadPyodideRuntimeCore();
@@ -9476,7 +9477,8 @@ async function executePreparedPythonProgramBatch(
       {
         guest: guestGuardOptionsFromLimits(limits),
       },
-      traceEnabledBatch
+      traceEnabledBatch,
+      forceJudgeCompatible
     )
   );
 }
@@ -9621,7 +9623,8 @@ async function processMessage(data) {
           payload?.artifact,
           payload?.inputBatch ?? [],
           payload?.limits,
-          payload?.traceEnabledBatch
+          payload?.traceEnabledBatch,
+          payload?.forceJudgeCompatible
         );
         analyzerInitialized = false;
         if (payload?.mode === 'trace') {
