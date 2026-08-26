@@ -23,6 +23,10 @@ This repo uses Git tags as release boundaries. Version notes below summarize wha
   worker with per-case state reset and one aggregate deadline. Non-admitted or
   unavailable batches use a fresh outer Pyodide worker per case, preserving
   case isolation at higher latency and worker cost.
+- Python batch deadlines now charge only active runtime calls, not fresh-worker
+  acquisition, while aggregate expiry still returns no partial results and
+  never starts a second compatibility budget. Execute-result serialization is
+  node- and item-bounded and polls the active per-case deadline.
 
 ## [0.17.0] - 2026-08-25
 

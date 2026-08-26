@@ -102,9 +102,12 @@ are excluded from the hook, while learner object protocols invoked by hydration
 or serialization remain covered. The client retains a batch-wide watchdog for
 native calls that cannot be interrupted by Python line tracing. That watchdog
 adds bounded headroom for input conversion, namespace setup, and final result
-encoding beyond the sum of per-case budgets; if it still trips, the worker is
-retired and cases are retried through independently timed compatibility workers
-instead of marking the whole batch as timed out.
+encoding beyond the sum of per-case budgets. It measures active runtime calls,
+not fresh-worker acquisition or warmup. If it trips, the worker is retired and
+the caller receives a batch timeout with no partial results and no second
+compatibility budget. Retire-and-retry is reserved for the typed
+`algorithmFastBatchUnavailable` signal emitted before any partial result crosses
+the worker boundary.
 
 Before the final batch encode, each result envelope is encoded independently.
 An unencodable learner result is replaced only for that case with a trusted

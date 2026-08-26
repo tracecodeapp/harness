@@ -582,10 +582,9 @@ test('Python compatibility batches preserve per-case client timeout outcomes and
   provider.terminate();
 });
 
-test('Python fast fallback shares the original aggregate deadline', async (context) => {
+test('Python aggregate timeout never falls back to a second compatibility budget', async (context) => {
   context.mock.timers.enable({ apis: ['setTimeout'] });
   const calls: Array<{ worker: number; method: string }> = [];
-  const fastPathElapsedMs = 3_000;
   let nextWorker = 0;
   const createWorkerClient = (): PythonWorkerClient => {
     const worker = nextWorker++;
@@ -603,17 +602,12 @@ test('Python fast fallback shares the original aggregate deadline', async (conte
           consoleOutput: [],
         };
       },
-      async executePreparedCodeBatch(): Promise<CodeExecutionBatchResult> {
-        calls.push({ worker, method: 'execute-batch' });
-        context.mock.timers.tick(fastPathElapsedMs);
-        throw new PythonAlgorithmFastBatchUnavailableError();
-      },
-      async executePreparedCode(
+      async executePreparedCodeBatch(
         _handle: unknown,
         call: { signal?: AbortSignal }
-      ): Promise<CodeExecutionResult> {
-        calls.push({ worker, method: 'execute-code' });
-        return new Promise<CodeExecutionResult>((_resolve, reject) => {
+      ): Promise<CodeExecutionBatchResult> {
+        calls.push({ worker, method: 'execute-batch' });
+        return new Promise<CodeExecutionBatchResult>((_resolve, reject) => {
           const rejectFromAbort = () =>
             reject(
               call.signal?.reason ?? new DOMException('Aborted', 'AbortError')
@@ -626,6 +620,10 @@ test('Python fast fallback shares the original aggregate deadline', async (conte
             once: true,
           });
         });
+      },
+      async executePreparedCode(): Promise<CodeExecutionResult> {
+        calls.push({ worker, method: 'execute-code' });
+        throw new Error('Compatibility execution must not start');
       },
       terminate() {
         calls.push({ worker, method: 'terminate' });
@@ -648,12 +646,10 @@ test('Python fast fallback shares the original aggregate deadline', async (conte
     limits: { wallClockMs: 1 },
   });
   await waitUntil(
-    () => calls.some((call) => call.method === 'execute-code'),
-    'Compatibility execution did not start'
+    () => calls.some((call) => call.method === 'execute-batch'),
+    'Fast batch execution did not start'
   );
-  context.mock.timers.tick(
-    calculatePythonCodeBatchDeadlineMs(2, 1) - fastPathElapsedMs
-  );
+  context.mock.timers.tick(calculatePythonCodeBatchDeadlineMs(2, 1));
   await assert.rejects(execution, /Python batch execution timed out/);
   assert.equal(
     calls.filter((call) => call.method === 'execute-batch').length,
@@ -661,8 +657,78 @@ test('Python fast fallback shares the original aggregate deadline', async (conte
   );
   assert.equal(
     calls.filter((call) => call.method === 'execute-code').length,
-    1,
-    'The aggregate deadline must prevent later compatibility cases from starting'
+    0,
+    'An aggregate timeout must not trigger compatibility execution'
+  );
+  await preparation.program.dispose();
+  provider.terminate();
+});
+
+test('Python compatibility batch excludes fresh-worker acquisition from the aggregate budget', async (context) => {
+  context.mock.timers.enable({ apis: ['setTimeout'] });
+  const calls: Array<{ worker: number; method: string }> = [];
+  const laterWorkerReady = deferred();
+  let nextWorker = 0;
+  const createWorkerClient = (): PythonWorkerClient => {
+    const worker = nextWorker++;
+    return {
+      async warmup() {
+        calls.push({ worker, method: 'warmup' });
+        if (worker > 0) await laterWorkerReady.promise;
+        return { success: true, loadTimeMs: 1 };
+      },
+      async prepareProgram(call: RuntimeProgramPreparationCall) {
+        calls.push({ worker, method: 'prepare' });
+        return {
+          success: true as const,
+          artifact: artifact(call.mode, 'compatibility'),
+          mode: call.mode,
+          consoleOutput: [],
+        };
+      },
+      async executePreparedCode(
+        _handle: unknown,
+        call: { inputs: Record<string, unknown> }
+      ): Promise<CodeExecutionResult> {
+        calls.push({ worker, method: 'execute-code' });
+        return {
+          kind: 'completed',
+          output: call.inputs.value,
+          consoleOutput: [],
+        };
+      },
+      terminate() {
+        calls.push({ worker, method: 'terminate' });
+      },
+    } as unknown as PythonWorkerClient;
+  };
+  const provider = createPythonPreparedExecutionProvider({ createWorkerClient });
+  const preparation = await provider.prepareProgram(preparationCall());
+  assert.equal(preparation.kind, 'prepared');
+  if (
+    preparation.kind !== 'prepared' ||
+    preparation.program.mode !== 'code' ||
+    !preparation.program.executeBatchIsolated
+  ) {
+    return;
+  }
+
+  const execution = preparation.program.executeBatchIsolated({
+    inputBatch: [{ value: 1 }, { value: 2 }],
+    limits: { wallClockMs: 1 },
+  });
+  await waitUntil(
+    () => calls.some((call) => call.worker === 1 && call.method === 'warmup'),
+    'Second compatibility worker did not begin warmup'
+  );
+  context.mock.timers.tick(calculatePythonCodeBatchDeadlineMs(2, 1) + 1);
+  laterWorkerReady.resolve();
+  const results = await execution;
+  assert.deepEqual(
+    results.map((result) =>
+      result.kind === 'completed' ? result.output : undefined
+    ),
+    [1, 2]
   );
   await preparation.program.dispose();
   provider.terminate();

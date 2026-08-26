@@ -516,6 +516,49 @@ function raceWithAbort<T>(
   });
 }
 
+class PythonBatchExecutionBudget {
+  private remainingMs: number;
+  private readonly timeoutError: ExecutionTimeoutError;
+
+  constructor(timeoutMs: number) {
+    this.remainingMs = timeoutMs;
+    this.timeoutError = new ExecutionTimeoutError({
+      timeoutMs,
+      runtimeLabel: 'Python batch',
+    });
+  }
+
+  async run<T>(
+    operation: (signal: AbortSignal) => Promise<T>,
+    signal?: AbortSignal
+  ): Promise<T> {
+    if (this.remainingMs <= 0) throw this.timeoutError;
+    const controller = new AbortController();
+    const unlink = linkAbortSignal(signal, controller);
+    const startedAt = globalThis.performance.now();
+    const timeout = globalThis.setTimeout(() => {
+      if (!controller.signal.aborted) controller.abort(this.timeoutError);
+    }, Math.max(1, Math.ceil(this.remainingMs)));
+    try {
+      return await raceWithAbort(
+        Promise.resolve().then(() => operation(controller.signal)),
+        controller.signal
+      );
+    } finally {
+      this.remainingMs = Math.max(
+        0,
+        this.remainingMs - (globalThis.performance.now() - startedAt)
+      );
+      globalThis.clearTimeout(timeout);
+      unlink();
+    }
+  }
+
+  isTimeout(error: unknown): boolean {
+    return error === this.timeoutError;
+  }
+}
+
 class PreparedPythonProgramLifetime {
   private phase: 'active' | 'disposing' | 'disposed' = 'active';
   private operationTail: Promise<void> = Promise.resolve();
@@ -560,58 +603,33 @@ class PreparedPythonProgramLifetime {
   async executeCodeBatch(
     call: RuntimePreparedCodeBatchCall
   ): Promise<readonly CodeExecutionResult[]> {
-    const aggregateTimeoutMs = calculatePythonCodeBatchDeadlineMs(
-      call.inputBatch.length,
-      call.limits?.wallClockMs
+    const budget = new PythonBatchExecutionBudget(
+      calculatePythonCodeBatchDeadlineMs(
+        call.inputBatch.length,
+        call.limits?.wallClockMs
+      )
     );
-    return this.runCodeBatchWithDeadline(
-      async (signal) => {
-        const scopedCall = { ...call, signal };
-        if (
-          this.handle.artifact.mode !== 'code' ||
-          this.handle.artifact.isolationProfile.tier !== 'algorithm-fast'
-        ) {
-          return this.executeCompatibilityCodeBatch(scopedCall);
-        }
-        try {
-          return await this.executeSerial(signal, async (client, caseSignal) => {
-            const result = await client.executePreparedCodeBatch(this.handle, {
-              ...scopedCall,
-              signal: caseSignal,
-            });
-            return result.results;
-          });
-        } catch (error) {
-          if (!(error instanceof PythonAlgorithmFastBatchUnavailableError)) {
-            throw error;
-          }
-          return this.executeCompatibilityCodeBatch(scopedCall);
-        }
-      },
-      aggregateTimeoutMs,
-      call.signal
-    );
-  }
-
-  private async runCodeBatchWithDeadline<T>(
-    operation: (signal: AbortSignal) => Promise<T>,
-    timeoutMs: number,
-    signal?: AbortSignal
-  ): Promise<T> {
-    const controller = new AbortController();
-    const unlink = linkAbortSignal(signal, controller);
-    const timeoutError = new ExecutionTimeoutError({
-      timeoutMs,
-      runtimeLabel: 'Python batch',
-    });
-    const timeout = globalThis.setTimeout(() => {
-      if (!controller.signal.aborted) controller.abort(timeoutError);
-    }, timeoutMs);
+    if (
+      this.handle.artifact.mode !== 'code' ||
+      this.handle.artifact.isolationProfile.tier !== 'algorithm-fast'
+    ) {
+      return this.executeCompatibilityCodeBatch(call, budget);
+    }
     try {
-      return await operation(controller.signal);
-    } finally {
-      globalThis.clearTimeout(timeout);
-      unlink();
+      return await this.executeSerial(call.signal, (client, signal) =>
+        budget.run(async (budgetSignal) => {
+          const result = await client.executePreparedCodeBatch(this.handle, {
+            ...call,
+            signal: budgetSignal,
+          });
+          return result.results;
+        }, signal)
+      );
+    } catch (error) {
+      if (!(error instanceof PythonAlgorithmFastBatchUnavailableError)) {
+        throw error;
+      }
+      return this.executeCompatibilityCodeBatch(call, budget);
     }
   }
 
@@ -640,17 +658,27 @@ class PreparedPythonProgramLifetime {
   }
 
   private async executeCompatibilityCodeBatch(
-    call: RuntimePreparedCodeBatchCall
+    call: RuntimePreparedCodeBatchCall,
+    budget: PythonBatchExecutionBudget
   ): Promise<readonly CodeExecutionResult[]> {
     const results: CodeExecutionResult[] = [];
     for (const inputs of call.inputBatch) {
       try {
-        results.push(await this.executeCode({
-          inputs,
-          signal: call.signal,
-          limits: call.limits,
-        }));
+        results.push(
+          await this.executeSerial(call.signal, (client, signal) =>
+            budget.run(
+              (budgetSignal) =>
+                client.executePreparedCode(this.handle, {
+                  inputs,
+                  signal: budgetSignal,
+                  limits: call.limits,
+                }),
+              signal
+            )
+          )
+        );
       } catch (error) {
+        if (budget.isTimeout(error)) throw error;
         if (call.signal?.aborted) {
           throw abortReason(
             call.signal,

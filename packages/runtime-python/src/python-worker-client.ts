@@ -33,6 +33,7 @@ export type PythonRawTraceBatchResult = {
 
 type PythonRawCodeBatchResult = RawExecutionBatchPayload & {
   algorithmFastBatchUnavailable?: boolean;
+  algorithmFastBatchFailureClass?: 'capability-fallback' | 'driver-failure';
 };
 
 export class PythonAlgorithmFastBatchUnavailableError extends Error {
@@ -630,14 +631,21 @@ export class PythonWorkerClient {
     );
     const result = await this.core.runClientEffect(program, call.signal);
     if (result.algorithmFastBatchUnavailable === true) {
-      logRuntimeDiagnostic('warn', {
+      const unexpected =
+        result.algorithmFastBatchFailureClass !== 'capability-fallback';
+      logRuntimeDiagnostic(unexpected ? 'error' : 'debug', {
         component: 'PythonWorkerClient',
         runtime: 'python',
         phase: 'algorithm-fast-batch-fallback',
-        message:
-          'Python algorithm-fast batch driver requested compatibility isolation.',
-        detail: { caseCount: call.inputBatch.length },
-      }, { enabled: this.debug });
+        message: unexpected
+          ? 'Python algorithm-fast batch driver failed; requesting compatibility isolation.'
+          : 'Python algorithm-fast batch requires compatibility isolation.',
+        detail: {
+          caseCount: call.inputBatch.length,
+          failureClass:
+            result.algorithmFastBatchFailureClass ?? 'driver-failure',
+        },
+      }, { enabled: unexpected || this.debug });
       throw new PythonAlgorithmFastBatchUnavailableError();
     }
     // The aggregate watchdog is the batch's caller-visible deadline, not an

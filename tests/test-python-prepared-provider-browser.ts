@@ -792,6 +792,11 @@ async function main(): Promise<void> {
             '    def __getattribute__(self, name):',
             '        return Holder()',
             'def solve(value):',
+            '    if value == -1:',
+            '        shared = [0]',
+            '        for _ in range(30):',
+            '            shared = [shared, shared]',
+            '        return shared',
             '    if value == 0:',
             '        return Weird()',
             '    return value',
@@ -1223,6 +1228,15 @@ async function main(): Promise<void> {
             artifact: hostileSerialization.artifact,
             mode: 'code',
             inputBatch: [{ value: 0 }, { value: 1 }],
+          }
+        );
+        fastParityRuns.serializationDag = await batchClient.request(
+          'execute-prepared-program-batch',
+          {
+            artifact: hostileSerialization.artifact,
+            mode: 'code',
+            inputBatch: [{ value: -1 }, { value: 1 }],
+            limits: { wallClockMs: 250 },
           }
         );
         fastParityRuns.wallClockModule = await batchClient.request(
@@ -1841,6 +1855,23 @@ async function main(): Promise<void> {
           (entry) => entry.timings?.algorithmFastBatch === true
         ),
       `Hostile class metadata poisoned fast-batch serialization: ${JSON.stringify(result.fastParityRuns.hostileSerialization)}`
+    );
+    const serializationDagResults = result.fastParityRuns.serializationDag
+      .results as Array<{
+        success?: boolean;
+        output?: unknown;
+        timings?: { algorithmFastBatch?: boolean };
+      }>;
+    assertCondition(
+      serializationDagResults.length === 2 &&
+        serializationDagResults[0]?.success === true &&
+        JSON.stringify(serializationDagResults[0]?.output).length < 500_000 &&
+        serializationDagResults[1]?.success === true &&
+        serializationDagResults[1]?.output === 1 &&
+        serializationDagResults.every(
+          (entry) => entry.timings?.algorithmFastBatch === true
+        ),
+      `Learner-shaped shared output escaped the fast-batch serialization budget: ${JSON.stringify(result.fastParityRuns.serializationDag)}`
     );
     const assertCaseLocalWallClock = (name: string) => {
       const run = result.fastParityRuns[name];

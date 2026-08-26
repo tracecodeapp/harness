@@ -1646,6 +1646,13 @@ class _TracecodeAlgorithmLimit(BaseException):
         self.reason = reason
         super().__init__(reason)
 
+def _tracecode_execute_serialize_checkpoint():
+    if (
+        _tracecode_case_deadline is not None
+        and _tracecode_batch_time.perf_counter() >= _tracecode_case_deadline
+    ):
+        raise _TracecodeAlgorithmLimit('client-timeout')
+
 ${PYTHON_LITERAL_SHAPE_ANNOTATION_HELPER}
 
 def _tracecode_batch_hydrate_for_annotation(value, annotation):
@@ -2053,7 +2060,10 @@ for _tracecode_batch_inputs in _tracecode_batch_cases:
                     break
         _tracecode_case_result = {
             'success': True,
-            'output': _serialize(output),
+            'output': _serialize(
+                output,
+                checkpoint=_tracecode_execute_serialize_checkpoint,
+            ),
             'consoleOutput': _tracecode_case_console,
             'timings': {
                 'runMs': (
@@ -8112,6 +8122,7 @@ async function executePreparedProgramBatch(
         error: 'Prepared Python algorithm-fast batch requires compatibility isolation.',
         consoleOutput: [],
         algorithmFastBatchUnavailable: true,
+        algorithmFastBatchFailureClass: 'capability-fallback',
         timings: {
           totalMs: runMs,
           runMs,
@@ -8176,16 +8187,21 @@ async function executePreparedProgramBatch(
             algorithmFastBatch: true,
           },
         };
-      } catch {
+      } catch (error) {
         // No partial batch result has crossed the worker boundary. Ask the
         // provider to retire this worker and retry each case in its own full
         // compatibility scope instead of exposing an internal driver error.
         const runMs = deps.performanceNow() - startedAt;
         deps.emitRuntimeDiagnostic?.(
-          'warn',
+          'error',
           'algorithm-fast-batch-fallback',
           'Python algorithm-fast batch driver failed; requesting compatibility isolation.',
-          { caseCount: cases.length, runMs }
+          {
+            caseCount: cases.length,
+            runMs,
+            failureClass:
+              error instanceof Error ? 'runtime-error' : 'non-error',
+          }
         );
         return {
           success: false,
@@ -8193,6 +8209,7 @@ async function executePreparedProgramBatch(
           error: 'Prepared Python algorithm-fast batch requires compatibility isolation.',
           consoleOutput: [],
           algorithmFastBatchUnavailable: true,
+          algorithmFastBatchFailureClass: 'driver-failure',
           timings: {
             totalMs: runMs,
             runMs,

@@ -801,6 +801,19 @@ const PYTHON_TRACE_SERIALIZE_FUNCTION_SNIPPET = resolveSharedPythonSnippet(
 # Sentinel to mark skipped values (functions, etc.) - distinct from None
 _SKIP_SENTINEL = "__TRACECODE_SKIP__"
 _MAX_SERIALIZE_DEPTH = 48
+_MAX_SERIALIZED_ITEMS = 10000
+_MAX_SERIALIZED_NODES = 10000
+
+def _serialize_checkpoint(state):
+    state["nodes"] += 1
+    if state["nodes"] > _MAX_SERIALIZED_NODES:
+        return False
+    if state["nodes"] % 64 == 0 and state["checkpoint"] is not None:
+        state["checkpoint"]()
+    return True
+
+def _serialize_truncation(total, emitted):
+    return {"__truncated__": True, "remaining": max(0, total - emitted)}
 _MAX_SERIALIZED_ITEMS = 64
 _MAX_OBJECT_FIELDS = 32
 _tracecode_global_object_refs = {}
@@ -1049,7 +1062,9 @@ def _serialize_repr_fallback(obj):
         return repr_str
     return {"__type__": class_name, "__class__": class_name}
 
-def _serialize(obj, depth=0):
+def _serialize(obj, depth=0, state=None, checkpoint=None):
+    if state is None:
+        state = {"nodes": 0, "checkpoint": checkpoint}
     if isinstance(obj, (bool, int, str, type(None))):
         return obj
     elif isinstance(obj, float):
@@ -1060,27 +1075,59 @@ def _serialize(obj, depth=0):
         return obj
     if depth > _MAX_SERIALIZE_DEPTH:
         return "<max depth>"
+    if not _serialize_checkpoint(state):
+        return "<max nodes>"
     elif isinstance(obj, (_builtins.list, _builtins.tuple)):
-        return [_serialize(x, depth + 1) for x in obj]
+        emitted = min(len(obj), _MAX_SERIALIZED_ITEMS)
+        result = [_serialize(obj[index], depth + 1, state) for index in range(emitted)]
+        if emitted < len(obj):
+            result.append(_serialize_truncation(len(obj), emitted))
+        return result
     elif getattr(obj, '__class__', None) and getattr(obj.__class__, '__name__', '') == 'deque':
-        return [_serialize(x, depth + 1) for x in obj]
+        total = len(obj)
+        result = []
+        for index, value in enumerate(obj):
+            if index >= _MAX_SERIALIZED_ITEMS:
+                break
+            result.append(_serialize(value, depth + 1, state))
+        if len(result) < total:
+            result.append(_serialize_truncation(total, len(result)))
+        return result
     elif isinstance(obj, _builtins.dict):
-        return {str(k): _serialize(v, depth + 1) for k, v in obj.items()}
+        result = {}
+        for index, (key, value) in enumerate(obj.items()):
+            if index >= _MAX_SERIALIZED_ITEMS:
+                break
+            result[str(key)] = _serialize(value, depth + 1, state)
+        if len(result) < len(obj):
+            result["__truncated__"] = True
+            result["remaining"] = len(obj) - len(result)
+        return result
     elif isinstance(obj, set):
+        values = []
+        for index, value in enumerate(obj):
+            if index >= _MAX_SERIALIZED_ITEMS:
+                break
+            values.append(_serialize(value, depth + 1, state))
         try:
-            return {"__type__": "set", "values": sorted([_serialize(x, depth + 1) for x in obj])}
+            values = sorted(values)
         except TypeError:
-            return {"__type__": "set", "values": [_serialize(x, depth + 1) for x in obj]}
+            pass
+        result = {"__type__": "set", "values": values}
+        if len(values) < len(obj):
+            result["__truncated__"] = True
+            result["remaining"] = len(obj) - len(values)
+        return result
     elif isinstance(obj, TreeNode):
-        result = {"__type__": "TreeNode", "val": _serialize(getattr(obj, 'val', getattr(obj, 'value', None)), depth + 1)}
+        result = {"__type__": "TreeNode", "val": _serialize(getattr(obj, 'val', getattr(obj, 'value', None)), depth + 1, state)}
         if hasattr(obj, 'left'):
-            result["left"] = _serialize(obj.left, depth + 1)
+            result["left"] = _serialize(obj.left, depth + 1, state)
         if hasattr(obj, 'right'):
-            result["right"] = _serialize(obj.right, depth + 1)
+            result["right"] = _serialize(obj.right, depth + 1, state)
         return result
     elif isinstance(obj, ListNode):
-        result = {"__type__": "ListNode", "val": _serialize(getattr(obj, 'val', getattr(obj, 'value', None)), depth + 1)}
-        result["next"] = _serialize(obj.next, depth + 1)
+        result = {"__type__": "ListNode", "val": _serialize(getattr(obj, 'val', getattr(obj, 'value', None)), depth + 1, state)}
+        result["next"] = _serialize(obj.next, depth + 1, state)
         return result
     elif callable(obj):
         return None
@@ -1092,11 +1139,15 @@ def _serialize(obj, depth=0):
         except Exception:
             raw_fields = None
         if isinstance(raw_fields, _builtins.dict):
-            for key, value in raw_fields.items():
+            for index, (key, value) in enumerate(raw_fields.items()):
+                if index >= _MAX_SERIALIZED_ITEMS:
+                    result["__truncated__"] = True
+                    result["remaining"] = len(raw_fields) - index
+                    break
                 key_str = str(key)
                 if key_str.startswith('_') or callable(value):
                     continue
-                result[key_str] = _serialize(value, depth + 1)
+                result[key_str] = _serialize(value, depth + 1, state)
         return result
     else:
         return _serialize_repr_fallback(obj)

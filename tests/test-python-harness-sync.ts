@@ -331,7 +331,10 @@ function selectTraceSerializeContractLines(serializedBlock: string): string {
 function selectExecuteSerializeContractLines(serializedBlock: string): string {
   const keepers = [
     '_MAX_SERIALIZE_DEPTH = 48',
-    'def _serialize(obj, depth=0):',
+    '_MAX_SERIALIZED_ITEMS = 10000',
+    '_MAX_SERIALIZED_NODES = 10000',
+    'def _serialize_checkpoint(state):',
+    'def _serialize(obj, depth=0, state=None, checkpoint=None):',
     "elif getattr(obj, '__class__', None) and getattr(obj.__class__, '__name__', '') == 'deque':",
     "elif isinstance(obj, (list, tuple)):",
     "elif isinstance(obj, dict):",
