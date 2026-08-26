@@ -13380,10 +13380,7 @@ function immutableSnapshot(record) {
     owner: record.owner,
     protected: record.protected,
     visible: record.visible,
-    runtimeSyscalls: record.runtimeSyscalls.profile === "algorithm" ? Object.freeze({
-      profile: "algorithm",
-      readableFiles: Object.freeze([...record.runtimeSyscalls.readableFiles])
-    }) : Object.freeze({ profile: "unrestricted" }),
+    runtimeSyscalls: record.runtimeSyscalls,
     ...record.startedAt === void 0 ? {} : { startedAt: record.startedAt },
     ...record.endedAt === void 0 ? {} : { endedAt: record.endedAt },
     ...record.termination === void 0 ? {} : { termination: record.termination },
@@ -15681,7 +15678,9 @@ var TraceKernelSyscallDispatcher = class {
   }
   dispatchValue(request) {
     return this.authorizeRuntimeSyscall(request).pipe(
-      zipRight2(this.dispatchAuthorizedValue(request))
+      zipRight2(
+        suspend3(() => this.dispatchAuthorizedValue(request))
+      )
     );
   }
   dispatchAuthorizedValue(request) {
@@ -16192,8 +16191,18 @@ var TraceKernelSyscallDispatcher = class {
     const policy = snapshot.runtimeSyscalls;
     if (policy.profile === "unrestricted") return _void;
     if (request.op !== "readFile") {
-      return this.unsupportedRuntimeSyscall(request.op);
+      return this.unsupportedRuntimeSyscall(
+        snapshot.pid,
+        policy.profile,
+        request.op
+      );
     }
+    const denyRead = () => this.unsupportedRuntimeSyscall(
+      snapshot.pid,
+      policy.profile,
+      request.op,
+      request.path
+    );
     return all3([
       this.session.fileSystem.resolve(request.path, snapshot.cwd),
       forEach7(
@@ -16202,19 +16211,18 @@ var TraceKernelSyscallDispatcher = class {
       )
     ]).pipe(
       flatMap9(
-        ([requestedPath, readableFiles]) => readableFiles.includes(requestedPath) ? _void : this.unsupportedRuntimeSyscall(request.op)
+        ([requestedPath, readableFiles]) => readableFiles.includes(requestedPath) ? _void : denyRead()
       ),
-      catchAll2(() => this.unsupportedRuntimeSyscall(request.op))
+      catchAll2(denyRead)
     );
   }
-  unsupportedRuntimeSyscall(operation) {
-    const snapshot = this.process.snapshot();
+  unsupportedRuntimeSyscall(pid, profile, operation, deniedPath) {
     return fail6(new TraceKernelRuntimeCapabilityError({
       code: "EOPNOTSUPP",
-      pid: snapshot.pid,
-      profile: "algorithm",
+      pid,
+      profile,
       operation,
-      message: `EOPNOTSUPP: TraceKernel ${snapshot.runtimeSyscalls.profile} profile does not expose the ${operation} syscall`
+      message: deniedPath === void 0 ? `EOPNOTSUPP: TraceKernel ${profile} profile does not expose the ${operation} syscall` : `EOPNOTSUPP: TraceKernel ${profile} profile does not permit ${operation} of ${JSON.stringify(deniedPath)}`
     }));
   }
   authorizeFileSystem(accesses) {
@@ -16544,6 +16552,38 @@ var TraceKernelWatchRegistry = class {
 };
 
 // packages/tracekernel/src/kernel/process-table.ts
+function invalidRuntimeSyscallPolicy(argument) {
+  return new TraceKernelInvalidArgumentError({
+    code: "EINVAL",
+    argument,
+    message: `EINVAL: invalid ${argument}`
+  });
+}
+function normalizeRuntimeSyscallPolicy(policy) {
+  if (policy === void 0) {
+    return Object.freeze({ profile: "unrestricted" });
+  }
+  if (typeof policy !== "object" || policy === null) {
+    throw invalidRuntimeSyscallPolicy("runtimeSyscalls");
+  }
+  const profile = policy.profile;
+  if (profile === "unrestricted") {
+    return Object.freeze({ profile });
+  }
+  if (profile !== "algorithm") {
+    throw invalidRuntimeSyscallPolicy("runtimeSyscalls.profile");
+  }
+  const readableFiles = policy.readableFiles;
+  if (!Array.isArray(readableFiles) || !readableFiles.every((path) => typeof path === "string")) {
+    throw invalidRuntimeSyscallPolicy(
+      "runtimeSyscalls.readableFiles"
+    );
+  }
+  return Object.freeze({
+    profile,
+    readableFiles: Object.freeze([...new Set(readableFiles)])
+  });
+}
 var TraceKernelProcessTable = class {
   constructor(options) {
     this.options = options;
@@ -16612,6 +16652,9 @@ var TraceKernelProcessTable = class {
         message: `EINVAL: process group ${pgid} does not exist in session ${sid}`
       });
     }
+    const runtimeSyscalls = normalizeRuntimeSyscallPolicy(
+      spec.runtimeSyscalls
+    );
     this.nextPid += 1;
     const controllingTerminalId = !startsNewSession ? parentSnapshot?.controllingTerminalId ?? this.options.controllingTerminalForSession(sid) : void 0;
     const record = {
@@ -16630,12 +16673,7 @@ var TraceKernelProcessTable = class {
       owner: spec.owner ?? SYSTEM_PRINCIPAL,
       protected: spec.protected ?? false,
       visible: spec.visible ?? true,
-      runtimeSyscalls: spec.runtimeSyscalls?.profile === "algorithm" ? Object.freeze({
-        profile: "algorithm",
-        readableFiles: Object.freeze([
-          ...new Set(spec.runtimeSyscalls.readableFiles)
-        ])
-      }) : Object.freeze({ profile: "unrestricted" }),
+      runtimeSyscalls,
       stdout: "",
       stderr: ""
     };

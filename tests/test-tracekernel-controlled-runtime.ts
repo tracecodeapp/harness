@@ -1,9 +1,12 @@
 #!/usr/bin/env npx tsx
 
 import * as Effect from 'effect/Effect';
+import * as Either from 'effect/Either';
 import {
   makeTraceKernelHost,
   TraceKernelControlledRuntime,
+  TraceKernelInvalidArgumentError,
+  type TraceKernelProcessSpec,
   type TraceKernelRuntimeLeaseReleaseDisposition,
   type TraceKernelSyscallResult,
 } from '@tracecode/tracekernel';
@@ -153,6 +156,34 @@ async function main(): Promise<void> {
         '/workspace/secret.txt',
         new TextEncoder().encode('kernel-private')
       );
+      const invalidProfile = yield* Effect.either(session.spawn({
+        runtime: controlled.runtime,
+        command: 'invalid-algorithm-profile',
+        runtimeSyscalls: {
+          profile: 'algoritm',
+          readableFiles: ['./solution.py'],
+        } as unknown as TraceKernelProcessSpec['runtimeSyscalls'],
+      }));
+      assertCondition(
+        Either.isLeft(invalidProfile) &&
+          invalidProfile.left instanceof TraceKernelInvalidArgumentError &&
+          invalidProfile.left.argument === 'runtimeSyscalls.profile',
+        `TraceKernel did not reject an unknown runtime syscall profile: ${JSON.stringify(invalidProfile)}`
+      );
+      const invalidReadableFiles = yield* Effect.either(session.spawn({
+        runtime: controlled.runtime,
+        command: 'invalid-algorithm-readable-files',
+        runtimeSyscalls: {
+          profile: 'algorithm',
+          readableFiles: './solution.py',
+        } as unknown as TraceKernelProcessSpec['runtimeSyscalls'],
+      }));
+      assertCondition(
+        Either.isLeft(invalidReadableFiles) &&
+          invalidReadableFiles.left instanceof TraceKernelInvalidArgumentError &&
+          invalidReadableFiles.left.argument === 'runtimeSyscalls.readableFiles',
+        `TraceKernel did not reject malformed readable files: ${JSON.stringify(invalidReadableFiles)}`
+      );
       const algorithmProcess = yield* session.spawn({
         runtime: controlled.runtime,
         command: 'algorithm-judge-runner',
@@ -177,12 +208,16 @@ async function main(): Promise<void> {
             'from collections import deque\n',
         `Algorithm profile could not read its exact submission: ${JSON.stringify(allowedSourceRead)}`
       );
-      assertUnsupported(
-        yield* algorithmContext.syscalls.dispatch({
-          op: 'readFile',
-          path: '/workspace/secret.txt',
-        }),
-        'readFile'
+      const deniedSecretRead = yield* algorithmContext.syscalls.dispatch({
+        op: 'readFile',
+        path: '/workspace/secret.txt',
+      });
+      assertUnsupported(deniedSecretRead, 'readFile');
+      assertCondition(
+        !deniedSecretRead.ok &&
+          deniedSecretRead.error.message ===
+            'EOPNOTSUPP: TraceKernel algorithm profile does not permit readFile of "/workspace/secret.txt"',
+        `Algorithm path denial was not reported precisely: ${JSON.stringify(deniedSecretRead)}`
       );
       assertUnsupported(
         yield* algorithmContext.syscalls.dispatch({
@@ -243,6 +278,7 @@ async function main(): Promise<void> {
     signalDelivery: true,
     leaseCleanup: true,
     engineLeaseDisposition: true,
+    invalidRuntimePolicyRejected: true,
     algorithmCapabilityProfile: true,
     deniedSyscallsHaveNoSideEffects: true,
   }, null, 2));

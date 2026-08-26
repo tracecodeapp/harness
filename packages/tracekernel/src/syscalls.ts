@@ -554,7 +554,9 @@ export class TraceKernelSyscallDispatcher {
     request: TraceKernelSyscallRequest
   ): Effect.Effect<TraceKernelSyscallValue, Error> {
     return this.authorizeRuntimeSyscall(request).pipe(
-      Effect.zipRight(this.dispatchAuthorizedValue(request))
+      Effect.zipRight(
+        Effect.suspend(() => this.dispatchAuthorizedValue(request))
+      )
     );
   }
 
@@ -1089,8 +1091,18 @@ export class TraceKernelSyscallDispatcher {
     const policy = snapshot.runtimeSyscalls;
     if (policy.profile === 'unrestricted') return Effect.void;
     if (request.op !== 'readFile') {
-      return this.unsupportedRuntimeSyscall(request.op);
+      return this.unsupportedRuntimeSyscall(
+        snapshot.pid,
+        policy.profile,
+        request.op
+      );
     }
+    const denyRead = () => this.unsupportedRuntimeSyscall(
+      snapshot.pid,
+      policy.profile,
+      request.op,
+      request.path
+    );
     return Effect.all([
       this.session.fileSystem.resolve(request.path, snapshot.cwd),
       Effect.forEach(
@@ -1101,24 +1113,26 @@ export class TraceKernelSyscallDispatcher {
       Effect.flatMap(([requestedPath, readableFiles]) =>
         readableFiles.includes(requestedPath)
           ? Effect.void
-          : this.unsupportedRuntimeSyscall(request.op)
+          : denyRead()
       ),
-      Effect.catchAll(() => this.unsupportedRuntimeSyscall(request.op))
+      Effect.catchAll(denyRead)
     );
   }
 
   private unsupportedRuntimeSyscall(
-    operation: TraceKernelSyscallRequest['op']
+    pid: number,
+    profile: 'algorithm',
+    operation: TraceKernelSyscallRequest['op'],
+    deniedPath?: string
   ): Effect.Effect<never, TraceKernelRuntimeCapabilityError> {
-    const snapshot = this.process.snapshot();
     return Effect.fail(new TraceKernelRuntimeCapabilityError({
       code: 'EOPNOTSUPP',
-      pid: snapshot.pid,
-      profile: 'algorithm',
+      pid,
+      profile,
       operation,
-      message:
-        `EOPNOTSUPP: TraceKernel ${snapshot.runtimeSyscalls.profile} profile ` +
-        `does not expose the ${operation} syscall`,
+      message: deniedPath === undefined
+        ? `EOPNOTSUPP: TraceKernel ${profile} profile does not expose the ${operation} syscall`
+        : `EOPNOTSUPP: TraceKernel ${profile} profile does not permit ${operation} of ${JSON.stringify(deniedPath)}`,
     }));
   }
 

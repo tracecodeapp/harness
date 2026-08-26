@@ -95,6 +95,7 @@ export const TEST_PHASES: TestPhase[] = [
       task('test:sql-browser-example', 1, ['all']),
       task('test:runtime-contract'),
       task('test:judge'),
+      task('test:tracekernel-capabilities'),
       task('test:runtime-execution-judge'),
       task('test:prepared-provider-release-gate'),
       task('test:native-harness'),
