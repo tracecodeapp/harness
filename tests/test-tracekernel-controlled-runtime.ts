@@ -156,6 +156,40 @@ async function main(): Promise<void> {
         '/workspace/secret.txt',
         new TextEncoder().encode('kernel-private')
       );
+      const explicitUnrestrictedProcess = yield* session.spawn({
+        runtime: controlled.runtime,
+        command: 'explicit-unrestricted-runner',
+        runtimeSyscalls: { profile: 'unrestricted' },
+      });
+      yield* explicitUnrestrictedProcess.awaitStarted();
+      const explicitUnrestrictedContext = yield* controlled.awaitAttached(
+        explicitUnrestrictedProcess.pid
+      );
+      const explicitUnrestrictedProcessList =
+        yield* explicitUnrestrictedContext.syscalls.dispatch({
+          op: 'processList',
+        });
+      assertCondition(
+        explicitUnrestrictedProcessList.ok &&
+          explicitUnrestrictedProcessList.value.op === 'processList',
+        `Explicit unrestricted profile changed the general syscall contract: ${JSON.stringify(explicitUnrestrictedProcessList)}`
+      );
+      yield* controlled.complete(explicitUnrestrictedProcess.pid, {
+        exitCode: 0,
+      });
+      yield* explicitUnrestrictedProcess.wait();
+      const invalidRuntimePolicy = yield* Effect.either(session.spawn({
+        runtime: controlled.runtime,
+        command: 'invalid-runtime-policy-shape',
+        runtimeSyscalls:
+          'algorithm' as unknown as TraceKernelProcessSpec['runtimeSyscalls'],
+      }));
+      assertCondition(
+        Either.isLeft(invalidRuntimePolicy) &&
+          invalidRuntimePolicy.left instanceof TraceKernelInvalidArgumentError &&
+          invalidRuntimePolicy.left.argument === 'runtimeSyscalls',
+        `TraceKernel did not reject a non-object runtime syscall policy: ${JSON.stringify(invalidRuntimePolicy)}`
+      );
       const invalidProfile = yield* Effect.either(session.spawn({
         runtime: controlled.runtime,
         command: 'invalid-algorithm-profile',
@@ -304,6 +338,8 @@ async function main(): Promise<void> {
     signalDelivery: true,
     leaseCleanup: true,
     engineLeaseDisposition: true,
+    explicitUnrestrictedProfile: true,
+    nonObjectRuntimePolicyRejected: true,
     invalidRuntimePolicyRejected: true,
     algorithmCapabilityProfile: true,
     unresolvedReadableFileIsolated: true,

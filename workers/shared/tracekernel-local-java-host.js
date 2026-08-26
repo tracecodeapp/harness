@@ -13433,6 +13433,9 @@ var TraceKernelProcess = class {
   get pid() {
     return this.record.pid;
   }
+  get runtimeSyscalls() {
+    return this.record.runtimeSyscalls;
+  }
   setWatchdog(watchdog) {
     if (watchdog) this.record.watchdog = Object.freeze({ ...watchdog });
     else delete this.record.watchdog;
@@ -16187,9 +16190,11 @@ var TraceKernelSyscallDispatcher = class {
     }
   }
   authorizeRuntimeSyscall(request) {
+    const policy = this.process.runtimeSyscalls;
+    if (policy.profile === "unrestricted") {
+      return _void;
+    }
     const snapshot = this.process.snapshot();
-    const policy = snapshot.runtimeSyscalls;
-    if (policy.profile === "unrestricted") return _void;
     if (request.op !== "readFile") {
       return this.unsupportedRuntimeSyscall(
         snapshot.pid,

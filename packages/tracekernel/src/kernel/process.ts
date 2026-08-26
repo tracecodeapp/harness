@@ -182,6 +182,10 @@ export class TraceKernelProcess {
     return this.record.pid;
   }
 
+  get runtimeSyscalls(): TraceKernelRuntimeSyscallPolicy {
+    return this.record.runtimeSyscalls;
+  }
+
   setWatchdog(watchdog?: TraceKernelWatchdogSnapshot): void {
     if (watchdog) this.record.watchdog = Object.freeze({ ...watchdog });
     else delete this.record.watchdog;

@@ -1087,9 +1087,11 @@ export class TraceKernelSyscallDispatcher {
   private authorizeRuntimeSyscall(
     request: TraceKernelSyscallRequest
   ): Effect.Effect<void, Error> {
+    const policy = this.process.runtimeSyscalls;
+    if (policy.profile === 'unrestricted') {
+      return Effect.void;
+    }
     const snapshot = this.process.snapshot();
-    const policy = snapshot.runtimeSyscalls;
-    if (policy.profile === 'unrestricted') return Effect.void;
     if (request.op !== 'readFile') {
       return this.unsupportedRuntimeSyscall(
         snapshot.pid,
