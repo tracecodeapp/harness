@@ -727,11 +727,20 @@ async function main(): Promise<void> {
           '    pass',
           'class TextChild(str):',
           '    pass',
+          'class LyingText(str):',
+          '    def __len__(self):',
+          '        return 0',
+          '    def __iter__(self):',
+          '        return iter(())',
           'class IntChild(int):',
           '    pass',
           'class FloatChild(float):',
           '    pass',
           'def solve(value):',
+          '    if value < 0:',
+          '        return LyingText(chr(0x1F600) * -value)',
+          '    if value == 8:',
+          '        return "after-limit"',
           '    return [',
           '        TreeChild(value, TreeChild(value + 1)),',
           '        ListChild(value, ListChild(value + 1)),',
@@ -1134,7 +1143,11 @@ async function main(): Promise<void> {
           {
             artifact: serialized.artifact,
             mode: 'code',
-            inputBatch: [{ value: 7 }],
+            inputBatch: [
+              { value: 7 },
+              { value: -710000 },
+              { value: 8 },
+            ],
           }
         );
         fastParityRuns.serializedCompatibility = await batchClient.request(
@@ -2314,8 +2327,29 @@ async function main(): Promise<void> {
       output?: unknown;
     }>)[0];
     const serializedResult = (result.fastParityRuns.serialized.results as Array<{
+      success?: boolean;
       output?: unknown;
+      timeoutReason?: string;
+      timings?: { algorithmFastBatch?: boolean };
     }>)[0];
+    const serializedResults = result.fastParityRuns.serialized.results as Array<{
+      success?: boolean;
+      output?: unknown;
+      timeoutReason?: string;
+      timings?: { algorithmFastBatch?: boolean };
+    }>;
+    assertCondition(
+      serializedResults.length === 3 &&
+        serializedResults[0]?.success === true &&
+        serializedResults[1]?.success === false &&
+        serializedResults[1]?.timeoutReason === 'serialization-limit' &&
+        serializedResults[2]?.success === true &&
+        serializedResults[2]?.output === 'after-limit' &&
+        serializedResults.every(
+          (entry) => entry.timings?.algorithmFastBatch === true
+        ),
+      `A lying str subclass bypassed trusted byte accounting or stopped later cases: ${JSON.stringify(serializedResults)}`
+    );
     const fastParityProjection = (name: string) => {
       const run = result.fastParityRuns[name];
       const first = (run.results as Array<Record<string, unknown>>)[0];

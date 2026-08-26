@@ -3,11 +3,11 @@
   "harness": {
     "name": "@tracecode/harness",
     "version": "0.17.0",
-    "releaseId": "@tracecode/harness@0.17.0+sha256.8131a0e2c398098a8796ce7bf069dc457a2a843a89d6d7cbe724ac875ec063c5"
+    "releaseId": "@tracecode/harness@0.17.0+sha256.1dc71bcd7bd7eaf60bea9c33f0b1be3663715e75377884c24490a8965cc86673"
   },
   "treeSha256Algorithm": "sha256-path-nul-bytes-nul-v1",
-  "packageTreeSha256": "8131a0e2c398098a8796ce7bf069dc457a2a843a89d6d7cbe724ac875ec063c5",
-  "totalPackagedRuntimeBytes": 151833244,
+  "packageTreeSha256": "1dc71bcd7bd7eaf60bea9c33f0b1be3663715e75377884c24490a8965cc86673",
+  "totalPackagedRuntimeBytes": 151834274,
   "components": {
     "cpp": {
       "releaseId": "cpp+sha256.9340d58c47a65abceff7fa7a783b57d01550d697013c2b50782aec77e6b19816",
@@ -1872,15 +1872,15 @@
       ]
     },
     "python": {
-      "releaseId": "python+sha256.54a3964c9c9b052d731453fdf787a7490ea23b4b034edd60f93a0dd71d1daa55",
-      "treeSha256": "54a3964c9c9b052d731453fdf787a7490ea23b4b034edd60f93a0dd71d1daa55",
-      "totalBytes": 76012725,
+      "releaseId": "python+sha256.435f7ff697b38cb8e338cb1edd8c1a8a9aef497fe2957f94c2f6e2a16b5043ab",
+      "treeSha256": "435f7ff697b38cb8e338cb1edd8c1a8a9aef497fe2957f94c2f6e2a16b5043ab",
+      "totalBytes": 76013755,
       "files": [
         {
           "path": "workers/python/generated-python-harness-snippets.js",
-          "size": 39820,
-          "sha256": "94d227ef6e1624ef45b39e7fb554f980c89b1eed268675f3b2a0ac116bdaaf5a",
-          "integrity": "sha256-lNIn724WJO9Fs55/tVT5gMibHu0mhnXzsqCsEWvar1o=",
+          "size": 40510,
+          "sha256": "6fd2efa07143b77242da2eadae257836946a8d027dddf0500bf6cef671dc5b2a",
+          "integrity": "sha256-b9LvoHFDt3JC2i6triV4NpRqjQJ93fBQC/bO9nHcWyo=",
           "mediaType": "text/javascript"
         },
         {
@@ -1962,9 +1962,9 @@
         },
         {
           "path": "workers/python/python-worker.js",
-          "size": 384422,
-          "sha256": "4c320ef048b723fa0d6ec92f39fe3703e9deb578ac80befc31386e3348734b65",
-          "integrity": "sha256-TDIO8Ei3I/oNbskvOf43A+netXisgL78MThuM0hzS2U=",
+          "size": 384762,
+          "sha256": "d90d81b2a6da0092958abca3ea02cfa284a437d8de0b7e7ec0cdba973eae6c8e",
+          "integrity": "sha256-2Q2BsqbaAJKViryj6gLPooSkN9jeC35+wM26lz6ubI4=",
           "mediaType": "text/javascript"
         },
         {

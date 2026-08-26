@@ -428,6 +428,7 @@ def _tracecode_make_trusted_json_encoder(
     builtin_enumerate = builtins_module.enumerate
     builtin_int_repr = builtin_int.__repr__
     builtin_float_repr = builtin_float.__repr__
+    builtin_str_value = builtin_str.__str__
 
     def consume_bytes(state, count):
         next_count = state["bytes"] + count
@@ -436,15 +437,19 @@ def _tracecode_make_trusted_json_encoder(
         state["bytes"] = next_count
 
     def encode_string(value, state):
+        # Normalize subclasses through str's captured base slot. Learner
+        # overrides of __len__, __iter__, or __str__ must not make the byte
+        # counter inspect different contents from the trusted JSON escaper.
+        exact_value = builtin_str_value(value)
         if state["max_bytes"] is None:
-            return escape_string(value)
+            return escape_string(exact_value)
         # encode_basestring_ascii always emits ASCII. Count its exact output
         # before materializing it so a short string containing high Unicode
         # code points cannot expand far beyond the byte ceiling first.
-        if builtin_len(value) + 2 > state["max_bytes"] - state["bytes"]:
+        if builtin_len(exact_value) + 2 > state["max_bytes"] - state["bytes"]:
             raise state["limit_type"]()
         encoded_bytes = 2
-        for index, character in builtin_enumerate(value):
+        for index, character in builtin_enumerate(exact_value):
             codepoint = builtin_ord(character)
             if codepoint == 0x22 or codepoint == 0x5C:
                 encoded_bytes += 2
@@ -463,7 +468,7 @@ def _tracecode_make_trusted_json_encoder(
             if index % 1024 == 0 and state["checkpoint"] is not None:
                 state["checkpoint"]()
         consume_bytes(state, encoded_bytes)
-        return escape_string(value)
+        return escape_string(exact_value)
 
     def encode_value(value, state):
         value_type = builtin_type(value)
