@@ -27,7 +27,8 @@ The browser Judge path keeps these guarantees:
 - each completed ordinary-batch case reports progress to the host, which
   rearms the configured default per-case watchdog without adding another
   request; a hung case therefore cannot borrow the rest of the vector's time
-  allowance, and already-completed results survive its timeout;
+  allowance, already-completed results survive its timeout, and the losing
+  protocol request is interrupted independently of worker-termination policy;
 - every full case result crosses the Worker boundary once in that correlated
   progress stream; the final batch reply contains only count and timing
   metadata, avoiding duplicate structured-clone and console-output retention;
@@ -88,15 +89,15 @@ on 2026-08-26 produced:
 
 | Boundary | 10 cases p50 | 100 cases p50 | 100 cases p95 |
 |---|---:|---:|---:|
-| Prepared, fresh Wasm instance per case | 3.73 ms | 43.67 ms | 58.59 ms |
-| Unsafe, one shared Wasm invocation | 2.74 ms | 27.83 ms | 36.29 ms |
-| Full browser Judge, compile through receipt | 300.15 ms | 344.42 ms | 398.52 ms |
+| Prepared, fresh Wasm instance per case | 3.79 ms | 41.55 ms | 59.63 ms |
+| Unsafe, one shared Wasm invocation | 2.32 ms | 26.40 ms | 35.76 ms |
+| Full browser Judge, compile through receipt | 287.65 ms | 331.63 ms | 382.35 ms |
 
-The unsafe design saves about 15.8 ms at 100 cases. Even treating that direct
+The unsafe design saves about 15.1 ms at 100 cases. Even treating that direct
 prepared-boundary delta as fully additive to the separately measured Judge
 sample, the warm full-flow ceiling is only about 1.05x. Compilation and Judge
 orchestration remain roughly 87% of the 100-case wall clock. The first cold
-10-case sample was 1.53 seconds because toolchain promotion dominated; sharing
+10-case sample was 1.49 seconds because toolchain promotion dominated; sharing
 learner state cannot improve that cold path.
 
 Absolute timings are machine-specific. The structural result is not: C++ has

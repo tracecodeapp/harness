@@ -127,6 +127,18 @@ export interface WorkerSessionCoreConfig {
   closeSessionOnWorkerError?: boolean;
 }
 
+export interface WorkerSessionSendEffectOptions {
+  /** Per-message deadline; `null` when an enclosing execution deadline governs instead. */
+  readonly timeoutMs?: number | null;
+  readonly onEvent?: RuntimeCommandEventHandler;
+  readonly kernelHttp?: RuntimeKernelHttpBridge;
+  readonly validateLifecycle?: () => void;
+  readonly kernelSyscalls?: RuntimeKernelSyscallBridge;
+  readonly kernelSignals?: RuntimeKernelSignalBridge;
+  /** Observe the exact command id after registration and before postMessage. */
+  readonly onRequestRegistered?: (commandId: string) => void;
+}
+
 export class WorkerSessionCore {
   private session: WorkerSession | null = null;
   private engineLeaseTail: Promise<void> = Promise.resolve();
@@ -448,10 +460,35 @@ export class WorkerSessionCore {
     kernelHttp?: RuntimeKernelHttpBridge,
     validateLifecycle?: () => void,
     kernelSyscalls?: RuntimeKernelSyscallBridge,
-    kernelSignals?: RuntimeKernelSignalBridge,
-    /** Observe the exact command id after registration and before postMessage. */
-    onRequestRegistered?: (commandId: string) => void
+    kernelSignals?: RuntimeKernelSignalBridge
   ): Effect.Effect<T, Error> {
+    return this.sendMessageEffectWithOptions<T>(type, payload, {
+      timeoutMs,
+      ...(onEvent ? { onEvent } : {}),
+      ...(kernelHttp ? { kernelHttp } : {}),
+      ...(validateLifecycle ? { validateLifecycle } : {}),
+      ...(kernelSyscalls ? { kernelSyscalls } : {}),
+      ...(kernelSignals ? { kernelSignals } : {}),
+    });
+  }
+
+  /** Named-option variant for advanced protocol hooks without positional padding. */
+  sendMessageEffectWithOptions<T>(
+    type: string,
+    payload: unknown,
+    options: WorkerSessionSendEffectOptions = {}
+  ): Effect.Effect<T, Error> {
+    const timeoutMs = options.timeoutMs === undefined
+      ? this.config.defaultMessageTimeoutMs
+      : options.timeoutMs;
+    const {
+      onEvent,
+      kernelHttp,
+      validateLifecycle,
+      kernelSyscalls,
+      kernelSignals,
+      onRequestRegistered,
+    } = options;
     return Effect.gen(this, function* () {
       yield* Effect.try({
         try: () => validateLifecycle?.(),

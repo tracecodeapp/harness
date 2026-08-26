@@ -13,6 +13,7 @@
  */
 
 import * as Duration from 'effect/Duration';
+import * as Deferred from 'effect/Deferred';
 import * as Effect from 'effect/Effect';
 import type {
   CodeExecutionResult,
@@ -1308,10 +1309,7 @@ export class CppWorkerClient {
 
     let timeoutId: ReturnType<typeof setTimeout> | undefined;
     let settled = false;
-    let rejectDeadline!: (error: Error) => void;
-    const deadline = new Promise<never>((_resolve, reject) => {
-      rejectDeadline = reject;
-    });
+    let deadlineGate: Deferred.Deferred<never, Error> | undefined;
     let nextExpectedCaseIndex = 0;
     let expectedCommandId: string | undefined;
 
@@ -1330,7 +1328,9 @@ export class CppWorkerClient {
           this.lastRuntimeProgress ?? undefined
         );
         this.handleCppExecutionTimeout(error);
-        rejectDeadline(error);
+        if (deadlineGate) {
+          Effect.runSync(Deferred.fail(deadlineGate, error));
+        }
       }, this.executionTimeoutMs);
     };
 
@@ -1365,16 +1365,19 @@ export class CppWorkerClient {
     }
     this.preparedCodeBatchProgressHandler = progressHandler;
     this.lastRuntimeProgress = null;
-    armDeadline();
-
-    const execution = this.core.runClientEffect(
-      createSendEffect((commandId) => {
-        expectedCommandId = commandId;
-      }),
-      signal
+    const sendEffect = createSendEffect((commandId) => {
+      expectedCommandId = commandId;
+    });
+    const program = Effect.gen(function* () {
+      const gate = yield* Deferred.make<never, Error>();
+      deadlineGate = gate;
+      armDeadline();
+      return yield* Effect.raceFirst(sendEffect, Deferred.await(gate));
+    }).pipe(
+      Effect.ensuring(Effect.sync(clearDeadline))
     );
     try {
-      return await Promise.race([execution, deadline]);
+      return await this.core.runClientEffect(program, signal);
     } finally {
       settled = true;
       clearDeadline();
@@ -1519,23 +1522,21 @@ export class CppWorkerClient {
       try {
         const result = await this.runPreparedCodeBatchExecution(
           (onRequestRegistered) =>
-            this.core.sendMessageEffect<CppPreparedCodeBatchWorkerResult>(
+            this.core.sendMessageEffectWithOptions<CppPreparedCodeBatchWorkerResult>(
               'execute-prepared-runtime-program-batch',
               {
                 programId: handle.programId,
                 mode: 'code',
                 inputBatch: call.inputBatch,
               },
-              null,
-              undefined,
-              undefined,
-              () => {
-                this.assertLifecycleGeneration(lifecycleGeneration);
-                this.assertPreparedProgramHandle(handle, 'code');
+              {
+                timeoutMs: null,
+                validateLifecycle: () => {
+                  this.assertLifecycleGeneration(lifecycleGeneration);
+                  this.assertPreparedProgramHandle(handle, 'code');
+                },
+                onRequestRegistered,
               },
-              undefined,
-              undefined,
-              onRequestRegistered
             ),
           call.signal,
           lifecycleGeneration,
@@ -1556,9 +1557,11 @@ export class CppWorkerClient {
           reportedResultCount !== call.inputBatch.length ||
           completedResults.size !== call.inputBatch.length
         ) {
-          const arityError = reportedResultCount === call.inputBatch.length
-            ? `C++ prepared batch returned ${reportedResultCount} results for ${call.inputBatch.length} cases but delivered ${completedResults.size} completed result payloads.`
-            : `C++ prepared batch returned ${reportedResultCount ?? completedResults.size} results for ${call.inputBatch.length} cases.`;
+          const arityError = reportedResultCount === undefined
+            ? `C++ prepared batch returned missing or invalid resultCount metadata for ${call.inputBatch.length} cases after delivering ${completedResults.size} completed result payloads.`
+            : reportedResultCount === call.inputBatch.length
+              ? `C++ prepared batch returned ${reportedResultCount} results for ${call.inputBatch.length} cases but delivered ${completedResults.size} completed result payloads.`
+              : `C++ prepared batch returned ${reportedResultCount} results for ${call.inputBatch.length} cases.`;
           throw new Error(
             result.error ? `${arityError} Worker reported: ${result.error}` : arityError
           );
