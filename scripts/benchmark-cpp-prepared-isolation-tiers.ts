@@ -21,17 +21,10 @@ import { extname, join, normalize, resolve, sep } from 'node:path';
 
 import { build } from 'esbuild';
 import { chromium } from 'playwright';
+import { loadEngineRuntimePackages } from './runtime-package-assets.mjs';
 
 const root = resolve(process.cwd());
 const samples = Number.parseInt(process.env.TRACECODE_CPP_TIER_SAMPLES ?? '5', 10);
-const assetDirectory = resolve(
-  process.env.TRACECC_RUNTIME_ASSET_DIR ??
-    join(
-      root,
-      'node_modules/@tracecode/tracecc/runtime-release',
-      'fb4b6f41f9e9b7db89b6c8425bb2c6218979219a4150f96619b6461b4b78d294'
-    )
-);
 
 if (!Number.isSafeInteger(samples) || samples <= 0) {
   throw new Error('TRACECODE_CPP_TIER_SAMPLES must be a positive integer.');
@@ -127,6 +120,9 @@ function percentile(values: readonly number[], fraction: number): number {
 }
 
 async function main(): Promise<void> {
+  const assetDirectory = process.env.TRACECC_RUNTIME_ASSET_DIR
+    ? resolve(process.env.TRACECC_RUNTIME_ASSET_DIR)
+    : (await loadEngineRuntimePackages(root)).tracecc.sourceRoot;
   const tempRoot = await mkdtemp(join(tmpdir(), 'tracecode-cpp-isolation-tiers-'));
   let server: Awaited<ReturnType<typeof startServer>> | undefined;
   let compilerProcess: ReturnType<typeof spawn> | undefined;

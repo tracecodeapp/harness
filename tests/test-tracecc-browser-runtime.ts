@@ -12,6 +12,7 @@ import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { build } from 'esbuild';
 import { chromium } from 'playwright';
+import { loadEngineRuntimePackages } from '../scripts/runtime-package-assets.mjs';
 import { runCommand, waitForHttp } from './example-app-smoke';
 
 function assertCondition(
@@ -21,61 +22,59 @@ function assertCondition(
   if (!condition) throw new Error(message);
 }
 
-async function resolveTraceCCAssetDirectory(root: string): Promise<string> {
+const REQUIRED_TRACECC_ASSETS = [
+  'tracecc-reactor.wasm',
+  'llvm-resources.tar',
+  'tracecode_runtime.hpp',
+  'narrow.pch',
+  'narrow.source.hpp',
+  'narrow.o',
+  'broad.pch',
+  'broad.source.hpp',
+  'broad.o',
+  'map.pch',
+  'map.source.hpp',
+  'map.o',
+] as const;
+
+async function resolveTraceCCAssets(root: string): Promise<{
+  sourceRoot: string;
+  files: readonly { path: string; size: number; sha256: string }[];
+}> {
   if (process.env.TRACECC_RUNTIME_ASSET_DIR) {
-    return resolve(process.env.TRACECC_RUNTIME_ASSET_DIR);
+    const sourceRoot = resolve(process.env.TRACECC_RUNTIME_ASSET_DIR);
+    return {
+      sourceRoot,
+      files: await Promise.all(REQUIRED_TRACECC_ASSETS.map(async (path) => {
+        const bytes = await readFile(join(sourceRoot, path));
+        return {
+          path,
+          size: bytes.byteLength,
+          sha256: createHash('sha256').update(bytes).digest('hex'),
+        };
+      })),
+    };
   }
-  const releaseRoot = join(
-    root,
-    'node_modules',
-    '@tracecode',
-    'tracecc',
-    'runtime-release'
-  );
-  const manifest = JSON.parse(
-    await readFile(join(releaseRoot, 'manifest.json'), 'utf8')
-  ) as { schema?: unknown; consumerHash?: unknown };
-  assertCondition(
-    manifest.schema === 'tracecc-package-runtime-v1' &&
-      typeof manifest.consumerHash === 'string' &&
-      /^[0-9a-f]{64}$/u.test(manifest.consumerHash),
-    '@tracecode/tracecc has an invalid runtime-release manifest.'
-  );
-  return join(releaseRoot, manifest.consumerHash);
+  const { tracecc } = await loadEngineRuntimePackages(root);
+  return {
+    sourceRoot: tracecc.sourceRoot,
+    files: tracecc.files.map(({ path, size, sha256 }) => ({ path, size, sha256 })),
+  };
 }
 
 async function main(): Promise<void> {
   const root = resolve(process.cwd());
-  const assetDirectory = await resolveTraceCCAssetDirectory(root);
+  const traceccAssets = await resolveTraceCCAssets(root);
   const tempRoot = await mkdtemp(join(tmpdir(), 'tracecc-browser-runtime-'));
   const workersRoot = join(tempRoot, 'workers');
   const port = 5600 + Math.floor(Math.random() * 200);
   const origin = `http://127.0.0.1:${port}`;
-  const traceccAssetNames = [
-    'tracecc-reactor.wasm',
-    'llvm-resources.tar',
-    'tracecode_runtime.hpp',
-    'narrow.pch',
-    'narrow.source.hpp',
-    'narrow.o',
-    'broad.pch',
-    'broad.source.hpp',
-    'broad.o',
-    'map.pch',
-    'map.source.hpp',
-    'map.o',
-  ];
   const compilerIntegrity = {
-    assets: await Promise.all(
-      traceccAssetNames.map(async (name) => {
-        const bytes = await readFile(join(assetDirectory, name));
-        return {
-          url: `${origin}/tracecc/${name}`,
-          size: bytes.byteLength,
-          sha256: createHash('sha256').update(bytes).digest('hex'),
-        };
-      })
-    ),
+    assets: traceccAssets.files.map((file) => ({
+      url: `${origin}/tracecc/${file.path}`,
+      size: file.size,
+      sha256: file.sha256,
+    })),
   };
 
   await runCommand(
@@ -91,7 +90,7 @@ async function main(): Promise<void> {
     ],
     root
   );
-  await symlink(assetDirectory, join(tempRoot, 'tracecc'), 'dir');
+  await symlink(traceccAssets.sourceRoot, join(tempRoot, 'tracecc'), 'dir');
   for (const [entry, output] of [
     [
       'packages/runtime-cpp/src/cpp-worker-client.ts',

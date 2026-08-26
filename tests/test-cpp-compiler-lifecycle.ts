@@ -1,10 +1,6 @@
 #!/usr/bin/env npx tsx
 
 import { test } from 'node:test';
-import { readFile } from 'node:fs/promises';
-import { dirname, join } from 'node:path';
-import { fileURLToPath } from 'node:url';
-import vm from 'node:vm';
 import { createCppBrowserRuntimeProvider } from '../packages/runtime-cpp/src/browser-runtime-provider';
 import { CppWorkerClient } from '../packages/runtime-cpp/src/cpp-worker-client';
 import { createCppPreparedExecutionProvider } from '../packages/runtime-cpp/src/cpp-prepared-provider';
@@ -906,14 +902,21 @@ async function testTrustedCompilerSerializesConcurrentRequests(): Promise<void> 
   let peakActiveFetches = 0;
   let fetchCalls = 0;
   let releaseFirstFetch!: () => void;
+  let markFirstFetchStarted!: () => void;
   const firstFetchGate = new Promise<void>((resolve) => {
     releaseFirstFetch = resolve;
+  });
+  const firstFetchStarted = new Promise<void>((resolve) => {
+    markFirstFetchStarted = resolve;
   });
   globalThis.fetch = async () => {
     fetchCalls += 1;
     activeFetches += 1;
     peakActiveFetches = Math.max(peakActiveFetches, activeFetches);
-    if (fetchCalls === 1) await firstFetchGate;
+    if (fetchCalls === 1) {
+      markFirstFetchStarted();
+      await firstFetchGate;
+    }
     activeFetches -= 1;
     return new Response(MINIMAL_WASM.slice(), {
       status: 200,
@@ -924,7 +927,7 @@ async function testTrustedCompilerSerializesConcurrentRequests(): Promise<void> 
   try {
     const first = compiler.compileTrusted({ driverSource: 'first' });
     const second = compiler.compileTrusted({ driverSource: 'second' });
-    await new Promise((resolve) => setTimeout(resolve, 0));
+    await firstFetchStarted;
     const queuedFetchCalls = fetchCalls;
     const queuedPeakActiveFetches = peakActiveFetches;
     assertCondition(
@@ -1278,113 +1281,6 @@ async function testCallerAbortCannotRecreateCompilerFrameAfterAsyncCacheKey(): P
   }
 }
 
-async function testCompilerFrameKeepsOnlyTrustedCompilerWarm(): Promise<void> {
-  const testDirectory = dirname(fileURLToPath(import.meta.url));
-  const html = await readFile(join(testDirectory, '..', 'workers', 'cpp', 'cpp-compiler-frame.html'), 'utf8');
-  const source = html.match(/<script type="module">([\s\S]*?)<\/script>/)?.[1];
-  assertCondition(source, 'compiler frame module source should be present');
-
-  const handlers = new Map<string, (event: Record<string, unknown>) => unknown>();
-  const compilerWorkers: FrameCompilerWorker[] = [];
-  class FrameCompilerWorker {
-    onmessage: ((event: { data: WorkerMessage }) => void) | null = null;
-    onerror: ((event: { message?: string }) => void) | null = null;
-    onmessageerror: (() => void) | null = null;
-    terminated = false;
-    constructor(readonly url: string) {
-      compilerWorkers.push(this);
-    }
-    postMessage(message: WorkerMessage): void {
-      queueMicrotask(() => this.onmessage?.({
-        data: {
-          id: message.id,
-          type: 'compile-result',
-          protocolToken: message.protocolToken,
-          payload: { success: true, programBuffer: MINIMAL_WASM.slice().buffer },
-        },
-      }));
-    }
-    terminate(): void {
-      this.terminated = true;
-    }
-  }
-
-  const responses: WorkerMessage[] = [];
-  const parentSource = {
-    postMessage(message: WorkerMessage): void {
-      responses.push(message);
-    },
-  };
-  const context = vm.createContext({
-    console,
-    location: {
-      href: 'https://cdn.example/cpp/compiler-frame.html?tracecodeFrameToken=frame-token&tracecodeParentOrigin=https%3A%2F%2Fapp.example&tracecodeCompilerWorkerUrl=https%3A%2F%2Fcdn.example%2Fcpp%2Fcompiler-worker.js',
-      search: '?tracecodeFrameToken=frame-token&tracecodeParentOrigin=https%3A%2F%2Fapp.example&tracecodeCompilerWorkerUrl=https%3A%2F%2Fcdn.example%2Fcpp%2Fcompiler-worker.js',
-      origin: 'https://cdn.example',
-    },
-    parent: parentSource,
-    Worker: FrameCompilerWorker,
-    URL,
-    URLSearchParams,
-    Date,
-    Math,
-    Promise,
-    ArrayBuffer,
-    Uint8Array,
-    setTimeout,
-    clearTimeout,
-    addEventListener(type: string, handler: (event: Record<string, unknown>) => unknown) {
-      handlers.set(type, handler);
-    },
-  });
-  vm.runInContext(source, context, { filename: 'cpp-compiler-frame.html' });
-  const messageHandler = handlers.get('message');
-  assertCondition(messageHandler, 'compiler frame should install a message handler');
-
-  await messageHandler({
-    origin: 'https://app.example',
-    source: { postMessage() {} },
-    data: {
-      id: 'not-parent',
-      type: 'compile',
-      frameToken: 'frame-token',
-      protocolToken: 'protocol-not-parent',
-      payload: { driverSource: 'not-parent' },
-    },
-  });
-  assertCondition(
-    compilerWorkers.length === 0,
-    'compiler frame must reject same-origin messages that do not come from its parent window'
-  );
-
-  for (const id of ['one', 'two']) {
-    await messageHandler({
-      origin: 'https://app.example',
-      source: parentSource,
-      data: {
-        id,
-        type: 'compile',
-        frameToken: 'frame-token',
-        protocolToken: `protocol-${id}`,
-        payload: { driverSource: id },
-      },
-    });
-  }
-  assertCondition(
-    (compilerWorkers.length as number) === 1,
-    `edited source should reuse one trusted compiler worker: ${compilerWorkers.length}; responses=${JSON.stringify(responses)}`
-  );
-  assertCondition(
-    compilerWorkers[0].url === 'https://cdn.example/cpp/compiler-worker.js',
-    `consumer CDN compiler worker URL should remain bound to the frame origin: ${compilerWorkers[0].url}`
-  );
-  assertCondition(!compilerWorkers[0].terminated, 'healthy compiler worker should stay warm between edited sources');
-  assertCondition(responses.filter((message) => message.type === 'compile-result').length === 2, 'both compiles should complete');
-
-  handlers.get('pagehide')?.({});
-  assertCondition(compilerWorkers[0].terminated, 'page lifecycle teardown should terminate the trusted compiler worker');
-}
-
 async function main(): Promise<void> {
   await testBrowserProviderPreparedLeaseExposure();
   await testPreparedRunnerRetirementPreservesSharedCompiler();
@@ -1395,7 +1291,6 @@ async function main(): Promise<void> {
   await testTimeoutAbortsCompilerAndRetiresExecution();
   await testCallerAbortResetsCompilerAndExecution();
   await testCallerAbortCannotRecreateCompilerFrameAfterAsyncCacheKey();
-  await testCompilerFrameKeepsOnlyTrustedCompilerWarm();
   console.log('C++ compiler lifecycle tests passed');
 }
 

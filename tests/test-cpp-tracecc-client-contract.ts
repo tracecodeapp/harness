@@ -442,6 +442,7 @@ async function main(): Promise<void> {
         timeoutDiagnostic.detail.lastProgress?.detail ?? {},
         'result'
       ) ||
+      !timeoutWorker.terminated ||
       !timeoutWarnings.some((args) => {
         const event = args[1] as {
           phase?: unknown;
@@ -461,53 +462,6 @@ async function main(): Promise<void> {
     console.warn = originalConsoleWarn;
     console.debug = originalConsoleDebug;
     console.info = originalConsoleInfo;
-  }
-
-  const retainedWorker = new InitWorker();
-  const retainedClient = createClient(retainedWorker, { executionTimeoutMs: 5 });
-  try {
-    const retainedInternals = retainedClient as unknown as {
-      shouldTerminateWorkerForTimeout: () => boolean;
-      core: { pendingMessages: Map<string, unknown> };
-    };
-    retainedInternals.shouldTerminateWorkerForTimeout = () => false;
-    const preparation = await retainedClient.prepareRuntimeProgram({
-      mode: 'code',
-      code: 'class Solution { public: int identity(int value) { return value; } };',
-      functionName: 'identity',
-      executionStyle: 'solution-method',
-    });
-    if (!preparation.success) {
-      throw new Error(`C++ non-terminating timeout preparation failed: ${preparation.error}`);
-    }
-    const timedOut = await retainedClient.executePreparedCodeBatch(preparation.handle, {
-      inputBatch: [
-        { value: 4 },
-        { value: 5, hang: true },
-      ],
-    });
-    const recovery = await retainedClient.executePreparedCodeBatch(preparation.handle, {
-      inputBatch: [{ value: 7 }],
-    });
-    if (
-      timedOut[0]?.kind !== 'completed' || timedOut[0].output !== 4 ||
-      timedOut[1]?.kind !== 'limit' ||
-      retainedWorker.terminated ||
-      retainedInternals.core.pendingMessages.size !== 0 ||
-      recovery[0]?.kind !== 'completed' || recovery[0].output !== 7
-    ) {
-      throw new Error(
-        'C++ batch deadline did not interrupt and clean the pending request ' +
-        `independently of termination policy: ${JSON.stringify({
-          timedOut,
-          workerTerminated: retainedWorker.terminated,
-          pendingMessages: retainedInternals.core.pendingMessages.size,
-          recovery,
-        })}`
-      );
-    }
-  } finally {
-    retainedClient.terminate();
   }
 
   console.log('PASS: C++ browser worker compiler authority and prepared batch deadline contracts');

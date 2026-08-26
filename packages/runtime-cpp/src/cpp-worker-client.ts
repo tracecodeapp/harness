@@ -513,6 +513,9 @@ export class CppWorkerClient {
 
   private shouldTerminateWorkerForTimeout(progress: CppRuntimeProgress | null): boolean {
     void progress;
+    // Learner Wasm runs synchronously inside the Worker. Dropping the host-side
+    // request cannot stop a timed-out instance, so every execution timeout must
+    // retire that Worker before another command can be accepted safely.
     return true;
   }
 
