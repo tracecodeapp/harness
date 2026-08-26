@@ -139,6 +139,12 @@ ${conversionCode}
 try:
     _result = ${functionName}(${paramList})
     print(json.dumps({"success": True, "output": _serialize(_result)}))
+except _TracecodeSerializationLimit:
+    print(json.dumps({
+        "success": False,
+        "error": "Execution stopped: resource limit exceeded (serialization-limit).",
+        "timeoutReason": "serialization-limit",
+    }))
 except Exception as e:
     print(json.dumps({"success": False, "error": f"{type(e).__name__}: {str(e)}"}))
 `;

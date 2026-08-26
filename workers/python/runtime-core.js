@@ -7655,10 +7655,18 @@ if _result is None:
     if _inplace is not None:
         _result = _inplace
 
-_json_out = json.dumps({
-    "output": _serialize(_result),
-    "console": _console_output,
-})
+try:
+    _serialized_result = _serialize(_result)
+except _TracecodeSerializationLimit:
+    _json_out = json.dumps({
+        "serializationLimit": True,
+        "console": _console_output,
+    })
+else:
+    _json_out = json.dumps({
+        "output": _serialized_result,
+        "console": _console_output,
+    })
 _json_out
 `;
     const execCode =

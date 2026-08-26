@@ -1248,6 +1248,18 @@ async function main(): Promise<void> {
             limits: { wallClockMs: 250 },
           }
         );
+        fastParityRuns.oneOffSerializationLimit = await batchClient.request(
+          'execute-code',
+          {
+            code: [
+              'def solve():',
+              '    return list(range(20000))',
+            ].join('\\n'),
+            functionName: 'solve',
+            inputs: {},
+            executionStyle: 'function',
+          }
+        );
         fastParityRuns.wallClockModule = await batchClient.request(
           'execute-prepared-program-batch',
           {
@@ -1897,6 +1909,18 @@ async function main(): Promise<void> {
         serializationDagCompatibilityResults[1]?.success === true &&
         serializationDagCompatibilityResults[1]?.output === 1,
       `Compatibility execution must report output budgets explicitly without corrupting later cases: ${JSON.stringify(result.fastParityRuns.serializationDagCompatibility)}`
+    );
+    const oneOffSerializationLimit = result.fastParityRuns
+      .oneOffSerializationLimit as {
+        success?: boolean;
+        timeoutReason?: string;
+        error?: string;
+      };
+    assertCondition(
+      oneOffSerializationLimit.success === false &&
+        oneOffSerializationLimit.timeoutReason === 'serialization-limit' &&
+        String(oneOffSerializationLimit.error).includes('serialization-limit'),
+      `One-off Python execution must report its output budget as a typed limit: ${JSON.stringify(oneOffSerializationLimit)}`
     );
     const assertCaseLocalWallClock = (name: string) => {
       const run = result.fastParityRuns[name];

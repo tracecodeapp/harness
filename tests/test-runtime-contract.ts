@@ -2156,6 +2156,16 @@ function compute(nums: number[], delta: number): number[] {
     typeof javascriptError.error === 'string' && javascriptError.error.length > 0,
     'JavaScript missing function case should include error'
   );
+  const pythonSerializationLimit = runPythonCase(
+    'def solve():\n    return list(range(20000))\n',
+    'solve',
+    {}
+  );
+  assertCondition(
+    pythonSerializationLimit.success === false &&
+      pythonSerializationLimit.error?.includes('serialization-limit') === true,
+    `Python subprocess execution should report serialization limits as JSON: ${JSON.stringify(pythonSerializationLimit)}`
+  );
   console.log('PASS: cross-runtime diagnostics contract');
 
   const opsClassCode = `
