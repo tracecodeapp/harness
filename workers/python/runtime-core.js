@@ -41,7 +41,7 @@ const PYTHON_ALGORITHM_SAFE_BUILTIN_NAMES = [
   'print', 'property', 'range', 'repr', 'reversed', 'round', 'set', 'slice',
   'sorted', 'staticmethod', 'str', 'sum', 'super', 'tuple', 'zip',
   'NotImplemented', 'Ellipsis',
-  'BaseException', 'Exception', 'BaseExceptionGroup', 'ExceptionGroup',
+  'Exception', 'BaseExceptionGroup', 'ExceptionGroup',
   'ArithmeticError', 'AssertionError', 'AttributeError', 'BufferError',
   'EOFError', 'EnvironmentError', 'FileExistsError', 'FileNotFoundError',
   'FloatingPointError', 'GeneratorExit', 'ImportError', 'ImportWarning',
@@ -69,6 +69,7 @@ const PYTHON_ALGORITHM_REFLECTIVE_FUNCTOOLS_NAMES = [
 const PYTHON_ALGORITHM_REFLECTIVE_ATTRIBUTE_NAMES = [
   'attrgetter', 'methodcaller', 'itemgetter', 'setitem', 'delitem',
   'format', 'format_map', 'get_field', 'get_value', 'vformat', 'Formatter',
+  'mro',
   'ForwardRef', 'get_type_hints', 'evaluate_forward_ref',
   'f_back', 'f_builtins', 'f_code', 'f_globals', 'f_lasti', 'f_lineno',
   'f_locals', 'f_trace', 'f_trace_lines', 'f_trace_opcodes',
@@ -592,6 +593,16 @@ class __TracecodeExecutionGuard:
                 reasons.append('reflective-attribute:' + node.attr)
             elif isinstance(node, (ast.With, ast.AsyncWith)):
                 reasons.append('context-manager')
+            elif isinstance(node, ast.ExceptHandler) and node.type is None:
+                reasons.append('catch-all-exception-handler')
+            elif (
+                isinstance(node, ast.Try)
+                or (
+                    hasattr(ast, 'TryStar')
+                    and isinstance(node, ast.TryStar)
+                )
+            ) and node.finalbody:
+                reasons.append('exception-finalizer')
             elif isinstance(
                 node,
                 (ast.Await, ast.Yield, ast.YieldFrom, ast.GeneratorExp),
@@ -1585,6 +1596,7 @@ exec(${defaultImportPreludeLiteral}, _tracecode_batch_prelude)
 
 ${deps.PYTHON_CLASS_DEFINITIONS_SNIPPET}
 _builtins = _tracecode_batch_builtins
+json = _tracecode_batch_json
 math = _tracecode_batch_math
 ${deps.PYTHON_EXECUTE_SERIALIZE_FUNCTION_SNIPPET}
 

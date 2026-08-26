@@ -2157,7 +2157,7 @@ function compute(nums: number[], delta: number): number[] {
     'JavaScript missing function case should include error'
   );
   const pythonSerializationLimit = runPythonCase(
-    'def solve():\n    return list(range(20000))\n',
+    'def solve():\n    return "x" * (9 * 1024 * 1024)\n',
     'solve',
     {}
   );
@@ -2165,6 +2165,19 @@ function compute(nums: number[], delta: number): number[] {
     pythonSerializationLimit.success === false &&
       pythonSerializationLimit.error?.includes('serialization-limit') === true,
     `Python subprocess execution should report serialization limits as JSON: ${JSON.stringify(pythonSerializationLimit)}`
+  );
+  const pythonLargeMatrix = runPythonCase(
+    'def solve():\n    return [[1] * 100 for _ in range(100)]\n',
+    'solve',
+    {}
+  );
+  assertCondition(
+    pythonLargeMatrix.success === true &&
+      Array.isArray(pythonLargeMatrix.output) &&
+      pythonLargeMatrix.output.length === 100 &&
+      Array.isArray(pythonLargeMatrix.output[0]) &&
+      pythonLargeMatrix.output[0].length === 100,
+    `Legitimate nested Python output should remain executable: ${JSON.stringify(pythonLargeMatrix)}`
   );
   console.log('PASS: cross-runtime diagnostics contract');
 

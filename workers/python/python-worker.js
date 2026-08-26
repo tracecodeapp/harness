@@ -1035,8 +1035,9 @@ const PYTHON_EXECUTE_SERIALIZE_FUNCTION_SNIPPET = resolveSharedPythonSnippet(
   'PYTHON_EXECUTE_SERIALIZE_FUNCTION',
   `
 _MAX_SERIALIZE_DEPTH = 48
-_MAX_SERIALIZED_ITEMS = 10000
-_MAX_SERIALIZED_NODES = 10000
+_MAX_SERIALIZED_ITEMS = 250000
+_MAX_SERIALIZED_NODES = 1000000
+_MAX_SERIALIZED_BYTES = 8 * 1024 * 1024
 
 class _TracecodeSerializationLimit(BaseException):
     pass
@@ -1073,9 +1074,7 @@ def _serialize_repr_fallback(obj):
         return repr_str
     return {"__type__": class_name, "__class__": class_name}
 
-def _serialize(obj, depth=0, state=None, checkpoint=None):
-    if state is None:
-        state = {"nodes": 0, "checkpoint": checkpoint}
+def _serialize_value(obj, depth, state):
     _serialize_checkpoint(state)
     if isinstance(obj, (bool, int, str, type(None))):
         return obj
@@ -1090,37 +1089,37 @@ def _serialize(obj, depth=0, state=None, checkpoint=None):
     if isinstance(obj, (_builtins.list, _builtins.tuple)):
         if len(obj) > _MAX_SERIALIZED_ITEMS:
             raise _TracecodeSerializationLimit()
-        return [_serialize(value, depth + 1, state) for value in obj]
+        return [_serialize_value(value, depth + 1, state) for value in obj]
     elif _serialize_type_metadata(obj)[0] == 'deque':
         if len(obj) > _MAX_SERIALIZED_ITEMS:
             raise _TracecodeSerializationLimit()
-        return [_serialize(value, depth + 1, state) for value in obj]
+        return [_serialize_value(value, depth + 1, state) for value in obj]
     elif isinstance(obj, _builtins.dict):
         if len(obj) > _MAX_SERIALIZED_ITEMS:
             raise _TracecodeSerializationLimit()
         return {
-            str(key): _serialize(value, depth + 1, state)
+            str(key): _serialize_value(value, depth + 1, state)
             for key, value in obj.items()
         }
     elif isinstance(obj, set):
         if len(obj) > _MAX_SERIALIZED_ITEMS:
             raise _TracecodeSerializationLimit()
-        values = [_serialize(value, depth + 1, state) for value in obj]
+        values = [_serialize_value(value, depth + 1, state) for value in obj]
         try:
             values = sorted(values)
         except TypeError:
             pass
         return {"__type__": "set", "values": values}
     elif isinstance(obj, TreeNode):
-        result = {"__type__": "TreeNode", "val": _serialize(getattr(obj, 'val', getattr(obj, 'value', None)), depth + 1, state)}
+        result = {"__type__": "TreeNode", "val": _serialize_value(getattr(obj, 'val', getattr(obj, 'value', None)), depth + 1, state)}
         if hasattr(obj, 'left'):
-            result["left"] = _serialize(obj.left, depth + 1, state)
+            result["left"] = _serialize_value(obj.left, depth + 1, state)
         if hasattr(obj, 'right'):
-            result["right"] = _serialize(obj.right, depth + 1, state)
+            result["right"] = _serialize_value(obj.right, depth + 1, state)
         return result
     elif isinstance(obj, ListNode):
-        result = {"__type__": "ListNode", "val": _serialize(getattr(obj, 'val', getattr(obj, 'value', None)), depth + 1, state)}
-        result["next"] = _serialize(obj.next, depth + 1, state)
+        result = {"__type__": "ListNode", "val": _serialize_value(getattr(obj, 'val', getattr(obj, 'value', None)), depth + 1, state)}
+        result["next"] = _serialize_value(obj.next, depth + 1, state)
         return result
     elif callable(obj):
         return None
@@ -1139,11 +1138,21 @@ def _serialize(obj, depth=0, state=None, checkpoint=None):
                     continue
                 if emitted >= _MAX_SERIALIZED_ITEMS:
                     raise _TracecodeSerializationLimit()
-                result[key_str] = _serialize(value, depth + 1, state)
+                result[key_str] = _serialize_value(value, depth + 1, state)
                 emitted += 1
         return result
     else:
         return _serialize_repr_fallback(obj)
+
+def _serialize(obj, depth=0, state=None, checkpoint=None):
+    if state is None:
+        state = {"nodes": 0, "checkpoint": checkpoint}
+    result = _serialize_value(obj, depth, state)
+    if depth == 0:
+        encoded = json.JSONEncoder().encode(result)
+        if len(encoded.encode('utf-8')) > _MAX_SERIALIZED_BYTES:
+            raise _TracecodeSerializationLimit()
+    return result
 `
 );
 

@@ -34,6 +34,10 @@ interface BrowserResult {
     mathModuleMutation: { tier?: string; reasons: string[] };
     unknownImport: { tier?: string; reasons: string[] };
     unsupportedBuiltin: { tier?: string; reasons: string[] };
+    catchAllException: { tier?: string; reasons: string[] };
+    baseExceptionCatch: { tier?: string; reasons: string[] };
+    exceptionHierarchyCatch: { tier?: string; reasons: string[] };
+    exceptionFinalizer: { tier?: string; reasons: string[] };
     cachedDecorator: { tier?: string; reasons: string[] };
     transitiveTraversal: { tier?: string; reasons: string[] };
     treeNodeFreshness: { tier?: string; reasons: string[] };
@@ -512,6 +516,67 @@ async function main(): Promise<void> {
           executionStyle: 'function',
         }
       );
+      const catchAllException = await preparationWorker.request(
+        'prepare-program',
+        {
+          mode: 'code',
+          code: [
+            'def solve(value):',
+            '    try:',
+            '        return value',
+            '    except:',
+            '        return 0',
+          ].join('\\n'),
+          functionName: 'solve',
+          executionStyle: 'function',
+        }
+      );
+      const baseExceptionCatch = await preparationWorker.request(
+        'prepare-program',
+        {
+          mode: 'code',
+          code: [
+            'def solve(value):',
+            '    try:',
+            '        return value',
+            '    except BaseException:',
+            '        return 0',
+          ].join('\\n'),
+          functionName: 'solve',
+          executionStyle: 'function',
+        }
+      );
+      const exceptionFinalizer = await preparationWorker.request(
+        'prepare-program',
+        {
+          mode: 'code',
+          code: [
+            'def solve(value):',
+            '    try:',
+            '        return value',
+            '    finally:',
+            '        return value',
+          ].join('\\n'),
+          functionName: 'solve',
+          executionStyle: 'function',
+        }
+      );
+      const exceptionHierarchyCatch = await preparationWorker.request(
+        'prepare-program',
+        {
+          mode: 'code',
+          code: [
+            'def solve(value):',
+            '    catcher = Exception.mro()[1]',
+            '    try:',
+            '        return value',
+            '    except catcher:',
+            '        return 0',
+          ].join('\\n'),
+          functionName: 'solve',
+          executionStyle: 'function',
+        }
+      );
       const cachedDecorator = await preparationWorker.request(
         'prepare-program',
         {
@@ -793,10 +858,7 @@ async function main(): Promise<void> {
             '        return Holder()',
             'def solve(value):',
             '    if value == -1:',
-            '        shared = [0]',
-            '        for _ in range(30):',
-            '            shared = [shared, shared]',
-            '        return shared',
+            '        return "x" * (9 * 1024 * 1024)',
             '    if value == 0:',
             '        return Weird()',
             '    return value',
@@ -821,6 +883,10 @@ async function main(): Promise<void> {
       );
       for (const [name, prepared] of Object.entries({
         unsupportedBuiltin,
+        catchAllException,
+        baseExceptionCatch,
+        exceptionHierarchyCatch,
+        exceptionFinalizer,
         transitiveTraversal,
         treeNodeFreshness,
         dequeExecution,
@@ -1253,7 +1319,19 @@ async function main(): Promise<void> {
           {
             code: [
               'def solve():',
-              '    return list(range(20000))',
+              '    return "x" * (9 * 1024 * 1024)',
+            ].join('\\n'),
+            functionName: 'solve',
+            inputs: {},
+            executionStyle: 'function',
+          }
+        );
+        fastParityRuns.oneOffLargeMatrix = await batchClient.request(
+          'execute-code',
+          {
+            code: [
+              'def solve():',
+              '    return [[1] * 100 for _ in range(100)]',
             ].join('\\n'),
             functionName: 'solve',
             inputs: {},
@@ -1540,6 +1618,10 @@ async function main(): Promise<void> {
           mathModuleMutation,
           unknownImport,
           unsupportedBuiltin,
+          catchAllException,
+          baseExceptionCatch,
+          exceptionHierarchyCatch,
+          exceptionFinalizer,
           cachedDecorator,
           transitiveTraversal,
           treeNodeFreshness,
@@ -1595,6 +1677,11 @@ async function main(): Promise<void> {
             mathModuleMutation.artifact?.isolationProfile,
           unknownImport: unknownImport.artifact?.isolationProfile,
           unsupportedBuiltin: unsupportedBuiltin.artifact?.isolationProfile,
+          catchAllException: catchAllException.artifact?.isolationProfile,
+          baseExceptionCatch: baseExceptionCatch.artifact?.isolationProfile,
+          exceptionHierarchyCatch:
+            exceptionHierarchyCatch.artifact?.isolationProfile,
+          exceptionFinalizer: exceptionFinalizer.artifact?.isolationProfile,
           cachedDecorator: cachedDecorator.artifact?.isolationProfile,
           transitiveTraversal: transitiveTraversal.artifact?.isolationProfile,
           treeNodeFreshness: treeNodeFreshness.artifact?.isolationProfile,
@@ -1812,12 +1899,32 @@ async function main(): Promise<void> {
           'compatibility' &&
         result.isolationProfiles.unsupportedBuiltin.reasons.includes(
           'unsupported-builtin:aiter'
+        ) &&
+        result.isolationProfiles.catchAllException?.tier ===
+          'compatibility' &&
+        result.isolationProfiles.catchAllException.reasons.includes(
+          'catch-all-exception-handler'
+        ) &&
+        result.isolationProfiles.baseExceptionCatch?.tier ===
+          'compatibility' &&
+        result.isolationProfiles.baseExceptionCatch.reasons.includes(
+          'unsupported-builtin:BaseException'
+        ) &&
+        result.isolationProfiles.exceptionHierarchyCatch?.tier ===
+          'compatibility' &&
+        result.isolationProfiles.exceptionHierarchyCatch.reasons.includes(
+          'reflective-attribute:mro'
+        ) &&
+        result.isolationProfiles.exceptionFinalizer?.tier ===
+          'compatibility' &&
+        result.isolationProfiles.exceptionFinalizer.reasons.includes(
+          'exception-finalizer'
         ),
       `Python fast-path admission must reject module mutation, reflective access, and unreviewed imports: ${JSON.stringify(result.isolationProfiles)}`
     );
     assertCondition(
-      result.preparationWorker.prepareRequests === 43,
-      `Preparation worker received ${String(result.preparationWorker.prepareRequests)} preparations instead of forty-three`
+      result.preparationWorker.prepareRequests === 47,
+      `Preparation worker received ${String(result.preparationWorker.prepareRequests)} preparations instead of forty-seven`
     );
     const algorithmBatchResults = result.algorithmBatchRun.results as Array<{
       success?: boolean;
@@ -1921,6 +2028,18 @@ async function main(): Promise<void> {
         oneOffSerializationLimit.timeoutReason === 'serialization-limit' &&
         String(oneOffSerializationLimit.error).includes('serialization-limit'),
       `One-off Python execution must report its output budget as a typed limit: ${JSON.stringify(oneOffSerializationLimit)}`
+    );
+    const oneOffLargeMatrix = result.fastParityRuns.oneOffLargeMatrix as {
+      success?: boolean;
+      output?: unknown;
+    };
+    assertCondition(
+      oneOffLargeMatrix.success === true &&
+        Array.isArray(oneOffLargeMatrix.output) &&
+        oneOffLargeMatrix.output.length === 100 &&
+        Array.isArray(oneOffLargeMatrix.output[0]) &&
+        oneOffLargeMatrix.output[0].length === 100,
+      `Legitimate nested Python output tripped the serialization budget: ${JSON.stringify(oneOffLargeMatrix)}`
     );
     const assertCaseLocalWallClock = (name: string) => {
       const run = result.fastParityRuns[name];
