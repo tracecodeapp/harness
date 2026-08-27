@@ -77,7 +77,6 @@
     "test:traceclr-wire-browser": "pnpm build:traceclr-wire-probe && TRACECODE_TRACECLR_BROWSER_ENGINE=chromium node --import tsx tests/test-traceclr-wire-runner-browser.ts && TRACECODE_TRACECLR_BROWSER_ENGINE=firefox node --import tsx tests/test-traceclr-wire-runner-browser.ts && TRACECODE_TRACECLR_BROWSER_ENGINE=webkit node --import tsx tests/test-traceclr-wire-runner-browser.ts",
     "bench:traceclr-tiers": "pnpm build:traceclr-wire-probe && pnpm materialize:csharp-role-assets && node --import tsx scripts/benchmark-traceclr-runtime-tiers.ts",
     "bench:traceclr-tiers:matrix": "pnpm build:traceclr-wire-probe && pnpm materialize:csharp-role-assets && for engine in chromium firefox webkit; do TRACECODE_TRACECLR_BROWSER_ENGINE=$engine node --import tsx scripts/benchmark-traceclr-runtime-tiers.ts || exit; done",
-    "bench:csharp-isolation-ceiling": "pnpm exec tsx --tsconfig tsconfig.base.json scripts/benchmark-csharp-isolation-ceiling.ts",
     "generate:runtime-open-source-info": "pnpm exec tsx --tsconfig tsconfig.base.json scripts/generate-runtime-open-source-info.ts",
     "generate:python-harness": "pnpm exec tsx --tsconfig tsconfig.base.json scripts/generate-python-harness-artifacts.ts",
     "build:python-runtime-snapshot": "node --import tsx scripts/build-python-runtime-snapshot.ts",

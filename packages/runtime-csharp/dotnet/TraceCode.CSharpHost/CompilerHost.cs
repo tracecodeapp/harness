@@ -1258,9 +1258,8 @@ public static partial class CompilerHost
         }
         if (request.PreparedProgram)
         {
-            // The artifact key includes the compiler-owned tier decision. Embed
-            // that decision in the emitted assembly so a runner can reject a
-            // compatibility assembly that a caller merely relabels as fast.
+            // The artifact key includes the compiler-owned tier decision. Keep
+            // it in the request even though only the fast assembly embeds it.
             request.PreparedRunnerTier = runnerTier;
         }
         RecordCompilePhase(timings, "compileGenerateDriverMs", phaseStopwatch);
@@ -1274,6 +1273,7 @@ public static partial class CompilerHost
 
         phaseStopwatch.Restart();
         IEnumerable<SyntaxTree> executionTrees = request.PreparedProgram
+            && runnerTier == "algorithm-fast"
             ? new[]
             {
                 userTree,
@@ -1390,11 +1390,6 @@ public static partial class CompilerHost
                 : $"Solution method {request.FunctionName} is overloaded or ambiguous.";
             return false;
         }
-        if (UsesConsole(originalUserTree, model))
-        {
-            reason = "Console I/O requires the compatibility runner.";
-            return false;
-        }
         if (!TryValidateAlgorithmFastIsolationPolicy(
                 originalUserTree,
                 model,
@@ -1443,23 +1438,6 @@ public static partial class CompilerHost
         return true;
     }
 
-    private static bool UsesConsole(SyntaxTree userTree, SemanticModel model)
-    {
-        foreach (SyntaxNode node in userTree.GetRoot().DescendantNodes())
-        {
-            ISymbol? symbol = model.GetSymbolInfo(node).Symbol;
-            if (string.Equals(
-                symbol?.ContainingType?.ToDisplayString(),
-                "System.Console",
-                StringComparison.Ordinal
-            ))
-            {
-                return true;
-            }
-        }
-        return false;
-    }
-
     /// <summary>
     /// Prove that learner code stays inside the algorithm-scoped subset whose
     /// framework state cannot outlive a case. User-defined static state is
@@ -1497,15 +1475,6 @@ public static partial class CompilerHost
             reason = "Background, unmanaged, or process-scoped code requires the compatibility runner.";
             return false;
         }
-        if (root.DescendantNodesAndSelf()
-            .OfType<ExpressionSyntax>()
-            .Any(expression =>
-                model.GetTypeInfo(expression).Type?.TypeKind == TypeKind.Dynamic))
-        {
-            reason = "Dynamic dispatch requires the compatibility runner.";
-            return false;
-        }
-
         foreach (ExpressionSyntax targetExpression in root
             .DescendantNodesAndSelf()
             .SelectMany(AlgorithmFastWriteTargets))
@@ -1693,12 +1662,12 @@ public static partial class CompilerHost
             {
                 return "System." + containingType.Name + ".Pin";
             }
-            if (typeName == "global::System.Object"
+            if (containingType?.SpecialType == SpecialType.System_Object
                 && method.Name == "GetType")
             {
                 return "System.Object.GetType";
             }
-            if (typeName == "global::System.String"
+            if (containingType?.SpecialType == SpecialType.System_String
                 && method.Name is "Intern" or "IsInterned")
             {
                 return "System.String." + method.Name;
@@ -2247,13 +2216,7 @@ public static partial class CompilerHost
         }
 
         if (target is IMethodSymbol method
-            && string.Equals(
-                method.ContainingType?.ToDisplayString(
-                    SymbolDisplayFormat.FullyQualifiedFormat
-                ),
-                "global::System.Object",
-                StringComparison.Ordinal
-            )
+            && method.ContainingType?.SpecialType == SpecialType.System_Object
             && string.Equals(method.Name, "GetType", StringComparison.Ordinal))
         {
             return "System.Object.GetType";

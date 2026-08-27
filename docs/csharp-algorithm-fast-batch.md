@@ -73,10 +73,11 @@ The semantic profile is paired with the managed load-context boundary. Static
 analysis selects the optimization, while the fresh assembly context is what
 actually prevents learner state from crossing cases.
 
-The compiler also embeds the artifact key and selected runner tier into the
-emitted assembly. The managed runner verifies that exact binding before it
-invokes the driver, so a compatibility artifact cannot enter the retained path
-merely because its caller relabeled the descriptor as `algorithm-fast`.
+For algorithm-fast artifacts, the compiler also embeds the artifact key and
+selected runner tier into the emitted assembly. The managed runner verifies
+that exact binding before it invokes the driver, so a compatibility artifact
+cannot enter the retained path merely because its caller relabeled the
+descriptor as `algorithm-fast`.
 
 ## Lifecycle
 
@@ -97,40 +98,6 @@ remain the per-case state boundary.
 
 Compatibility batches continue through the existing bounded fresh-worker pool.
 Project and terminal execution are unchanged.
-
-## Browser Judge measurements
-
-`pnpm bench:csharp-isolation-ceiling` uses the real
-`createBrowserJudgeHost` path, Chromium 145, the C# Contains Duplicate
-reference solution, all-cases-pass policy, and 21,950 input integers in the
-100-case corpus. It alternates unique and late-duplicate inputs so a constant
-answer cannot pass. Language warmup is excluded from the measured
-bundle-to-receipt interval.
-
-| Browser Judge path | 10 cases | 100 cases |
-| --- | ---: | ---: |
-| Fresh-worker compatibility, three-sample p50 | 1,549 ms | 9,198 ms |
-| Fresh-worker compatibility, three-sample p95 | 1,589 ms | 9,416 ms |
-| Capability-safe algorithm-fast, three-sample p50 | 480 ms | 867 ms |
-| Capability-safe algorithm-fast, three-sample p95 | 505 ms | 889 ms |
-
-The capability-safe 100-case path is about 10.6 times faster at the median and
-remains below one second at p95. Both paths compile once through the same
-public Judge boundary. Compatibility reuses the warmed standby for its first
-case and then creates 99 fresh outer workers, with at most three simultaneously
-active after the compiler and standby capacities are excluded. Algorithm-fast
-uses bounded retained-runner chunks and creates a fresh collectible load
-context for all 100 cases.
-
-A separate benchmark-only unsafe prototype cached the learner assembly and
-method, sharing learner statics across cases. It measured 640 ms at the
-100-case median before the physical-memory bound was added. The current safe
-path pays roughly 227 ms more at the median to replace the outer worker once;
-that replacement is what reclaims Mono/Wasm contexts that `Unload()` alone does
-not promptly collect. The large gain over compatibility still comes from
-removing repeated outer runtime, filesystem, and environment initialization;
-fresh learner load contexts remain the semantic boundary inside each bounded
-lease.
 
 ## Required evidence
 

@@ -235,6 +235,27 @@ public class Solution
         return total;
     }
 }`;
+      const consoleSource = `
+public class Solution
+{
+    public int Add(int left, int right)
+    {
+        System.Console.WriteLine(left + right);
+        return left + right;
+    }
+}`;
+      const intGetTypeSource = `
+public class Solution
+{
+    public int Probe(int value) => value.GetType().GetHashCode();
+}`;
+      const stringInternSource = `
+public class Solution
+{
+    public bool Probe(string value, bool intern) => intern
+        ? string.Intern(value) == value
+        : string.IsInterned(value) is not null;
+}`;
       const staticStateSource = `
 public class Solution
 {
@@ -520,57 +541,59 @@ public class Solution
         assetBaseUrl: compilerBaseUrl,
         runtimeRole: 'compiler',
       });
-      const prepared = await compiler.send('prepare-program', {
-        mode: 'code',
-        code: source,
-        functionName: 'Add',
-        executionStyle: 'solution-method',
-        assetBaseUrl: compilerBaseUrl,
-        timeoutMs: 10_000,
+      const prepareProgram = (
+        mode: 'code' | 'trace',
+        code: string,
+        functionName: string,
+        traceOptions?: {
+          maxTraceSteps?: number;
+          maxLineEvents?: number;
+          maxSingleLineHits?: number;
+          maxStoredEvents?: number;
+        }
+      ): Promise<Reply> =>
+        compiler.send('prepare-program', {
+          mode,
+          code,
+          functionName,
+          executionStyle: 'solution-method',
+          assetBaseUrl: compilerBaseUrl,
+          timeoutMs: 10_000,
+          ...(traceOptions ? { traceOptions } : {}),
+        });
+      const prepared = await prepareProgram('code', source, 'Add');
+      const fastTracePrepared = await prepareProgram('trace', source, 'Add', {
+        maxTraceSteps: 10_000,
+        maxStoredEvents: 10_000,
       });
-      const fastTracePrepared = await compiler.send('prepare-program', {
-        mode: 'trace',
-        code: source,
-        functionName: 'Add',
-        executionStyle: 'solution-method',
-        assetBaseUrl: compilerBaseUrl,
-        timeoutMs: 10_000,
-        traceOptions: {
-          maxTraceSteps: 10_000,
-          maxStoredEvents: 10_000,
-        },
-      });
-      const enumerablePrepared = await compiler.send('prepare-program', {
-        mode: 'code',
-        code: enumerableSource,
-        functionName: 'Expand',
-        executionStyle: 'solution-method',
-        assetBaseUrl: compilerBaseUrl,
-        timeoutMs: 10_000,
-      });
-      const structuredPrepared = await compiler.send('prepare-program', {
-        mode: 'code',
-        code: structuredSource,
-        functionName: 'Inspect',
-        executionStyle: 'solution-method',
-        assetBaseUrl: compilerBaseUrl,
-        timeoutMs: 10_000,
-      });
-      const structuredTracePrepared = await compiler.send('prepare-program', {
-        mode: 'trace',
-        code: structuredSource,
-        functionName: 'Inspect',
-        executionStyle: 'solution-method',
-        assetBaseUrl: compilerBaseUrl,
-        timeoutMs: 10_000,
-        traceOptions: {
-          maxTraceSteps: 10_000,
-          maxStoredEvents: 10_000,
-        },
-      });
-      const inputMutationPrepared = await compiler.send('prepare-program', {
-        mode: 'code',
-        code: `
+      const enumerablePrepared = await prepareProgram(
+        'code',
+        enumerableSource,
+        'Expand'
+      );
+      const structuredPrepared = await prepareProgram(
+        'code',
+        structuredSource,
+        'Inspect'
+      );
+      const structuredTracePrepared = await prepareProgram(
+        'trace',
+        structuredSource,
+        'Inspect',
+        { maxTraceSteps: 10_000, maxStoredEvents: 10_000 }
+      );
+      const consolePrepared = await prepareProgram('code', consoleSource, 'Add');
+      const intGetTypePrepared = await prepareProgram(
+        'code',
+        intGetTypeSource,
+        'Probe'
+      );
+      const stringInternPrepared = await prepareProgram(
+        'code',
+        stringInternSource,
+        'Probe'
+      );
+      const inputMutationPrepared = await prepareProgram('code', `
 using System.Runtime.CompilerServices;
 
 public static class InputHijack
@@ -587,212 +610,105 @@ public static class InputHijack
 public class Solution
 {
     public int Add(int left, int right) => left + right;
-}`,
-        functionName: 'Add',
-        executionStyle: 'solution-method',
-        assetBaseUrl: compilerBaseUrl,
-        timeoutMs: 10_000,
-      });
-      const reflectiveInputMutationPrepared = await compiler.send(
-        'prepare-program',
-        {
-          mode: 'code',
-          code: reflectiveInputMutationSource,
-          functionName: 'Add',
-          executionStyle: 'solution-method',
-          assetBaseUrl: compilerBaseUrl,
-          timeoutMs: 10_000,
-        }
+}`);
+      const reflectiveInputMutationPrepared = await prepareProgram(
+        'code',
+        reflectiveInputMutationSource,
+        'Add'
       );
-      const directTraceSinkMutationPrepared = await compiler.send(
-        'prepare-program',
-        {
-          mode: 'trace',
-          code: directTraceSinkMutationSource,
-          functionName: 'Add',
-          executionStyle: 'solution-method',
-          assetBaseUrl: compilerBaseUrl,
-          timeoutMs: 10_000,
-        }
+      const directTraceSinkMutationPrepared = await prepareProgram(
+        'trace',
+        directTraceSinkMutationSource,
+        'Add'
       );
-      const voidOutputPrepared = await compiler.send('prepare-program', {
-        mode: 'code',
-        code: voidOutputSource,
-        functionName: 'Transform',
-        executionStyle: 'solution-method',
-        assetBaseUrl: compilerBaseUrl,
-        timeoutMs: 10_000,
-      });
-      const directTraceWrapperMutationPrepared = await compiler.send(
-        'prepare-program',
-        {
-          mode: 'trace',
-          code: directTraceWrapperMutationSource,
-          functionName: 'Add',
-          executionStyle: 'solution-method',
-          assetBaseUrl: compilerBaseUrl,
-          timeoutMs: 10_000,
-        }
+      const voidOutputPrepared = await prepareProgram(
+        'code',
+        voidOutputSource,
+        'Transform'
       );
-      const dynamicTraceSinkMutationPrepared = await compiler.send(
-        'prepare-program',
-        {
-          mode: 'trace',
-          code: dynamicTraceSinkMutationSource,
-          functionName: 'Add',
-          executionStyle: 'solution-method',
-          assetBaseUrl: compilerBaseUrl,
-          timeoutMs: 10_000,
-        }
+      const directTraceWrapperMutationPrepared = await prepareProgram(
+        'trace',
+        directTraceWrapperMutationSource,
+        'Add'
       );
-      const staticStatePrepared = await compiler.send('prepare-program', {
-        mode: 'code',
-        code: staticStateSource,
-        functionName: 'Next',
-        executionStyle: 'solution-method',
-        assetBaseUrl: compilerBaseUrl,
-        timeoutMs: 10_000,
-      });
-      const filesystemPrepared = await compiler.send('prepare-program', {
-        mode: 'code',
-        code: filesystemSource,
-        functionName: 'Exists',
-        executionStyle: 'solution-method',
-        assetBaseUrl: compilerBaseUrl,
-        timeoutMs: 10_000,
-      });
-      const environmentPrepared = await compiler.send('prepare-program', {
-        mode: 'code',
-        code: environmentSource,
-        functionName: 'Read',
-        executionStyle: 'solution-method',
-        assetBaseUrl: compilerBaseUrl,
-        timeoutMs: 10_000,
-      });
-      const threadingPrepared = await compiler.send('prepare-program', {
-        mode: 'code',
-        code: threadingSource,
-        functionName: 'Next',
-        executionStyle: 'solution-method',
-        assetBaseUrl: compilerBaseUrl,
-        timeoutMs: 10_000,
-      });
-      const sharedPoolPrepared = await compiler.send('prepare-program', {
-        mode: 'code',
-        code: sharedPoolSource,
-        functionName: 'Rent',
-        executionStyle: 'solution-method',
-        assetBaseUrl: compilerBaseUrl,
-        timeoutMs: 10_000,
-      });
-      const pinnedMemoryPrepared = await compiler.send('prepare-program', {
-        mode: 'code',
-        code: pinnedMemorySource,
-        functionName: 'Pin',
-        executionStyle: 'solution-method',
-        assetBaseUrl: compilerBaseUrl,
-        timeoutMs: 10_000,
-      });
-      const hostRuntimePrepared = await compiler.send('prepare-program', {
-        mode: 'code',
-        code: hostRuntimeSource,
-        functionName: 'Read',
-        executionStyle: 'solution-method',
-        assetBaseUrl: compilerBaseUrl,
-        timeoutMs: 10_000,
-      });
-      const dynamicReflectionPrepared = await compiler.send('prepare-program', {
-        mode: 'code',
-        code: dynamicReflectionSource,
-        functionName: 'Read',
-        executionStyle: 'solution-method',
-        assetBaseUrl: compilerBaseUrl,
-        timeoutMs: 10_000,
-      });
-      const reflectionGatewayPrepared = await compiler.send('prepare-program', {
-        mode: 'code',
-        code: reflectionGatewaySource,
-        functionName: 'Read',
-        executionStyle: 'solution-method',
-        assetBaseUrl: compilerBaseUrl,
-        timeoutMs: 10_000,
-      });
-      const concurrentBlockingPrepared = await compiler.send('prepare-program', {
-        mode: 'code',
-        code: concurrentBlockingSource,
-        functionName: 'Read',
-        executionStyle: 'solution-method',
-        assetBaseUrl: compilerBaseUrl,
-        timeoutMs: 10_000,
-      });
-      const directFrameworkStaticWritePrepared = await compiler.send(
-        'prepare-program',
-        {
-          mode: 'code',
-          code: directFrameworkStaticWriteSource,
-          functionName: 'Set',
-          executionStyle: 'solution-method',
-          assetBaseUrl: compilerBaseUrl,
-          timeoutMs: 10_000,
-        }
+      const dynamicTraceSinkMutationPrepared = await prepareProgram(
+        'trace',
+        dynamicTraceSinkMutationSource,
+        'Add'
       );
-      const deconstructedFrameworkStaticWritePrepared = await compiler.send(
-        'prepare-program',
-        {
-          mode: 'code',
-          code: deconstructedFrameworkStaticWriteSource,
-          functionName: 'Set',
-          executionStyle: 'solution-method',
-          assetBaseUrl: compilerBaseUrl,
-          timeoutMs: 10_000,
-        }
+      const staticStatePrepared = await prepareProgram(
+        'code',
+        staticStateSource,
+        'Next'
       );
-      const parenthesizedFrameworkStaticWritePrepared = await compiler.send(
-        'prepare-program',
-        {
-          mode: 'code',
-          code: parenthesizedFrameworkStaticWriteSource,
-          functionName: 'Set',
-          executionStyle: 'solution-method',
-          assetBaseUrl: compilerBaseUrl,
-          timeoutMs: 10_000,
-        }
+      const filesystemPrepared = await prepareProgram(
+        'code',
+        filesystemSource,
+        'Exists'
       );
-      const listNodePrepared = await compiler.send('prepare-program', {
-        mode: 'code',
-        code: listNodeSource,
-        functionName: 'Sum',
-        executionStyle: 'solution-method',
-        assetBaseUrl: compilerBaseUrl,
-        timeoutMs: 10_000,
-      });
-      const treeNodePrepared = await compiler.send('prepare-program', {
-        mode: 'code',
-        code: treeNodeSource,
-        functionName: 'Root',
-        executionStyle: 'solution-method',
-        assetBaseUrl: compilerBaseUrl,
-        timeoutMs: 10_000,
-      });
-      const injectedRuntimeHelperPrepared = await compiler.send(
-        'prepare-program',
-        {
-          mode: 'code',
-          code: injectedRuntimeHelperSource,
-          functionName: 'Read',
-          executionStyle: 'solution-method',
-          assetBaseUrl: compilerBaseUrl,
-          timeoutMs: 10_000,
-        }
+      const environmentPrepared = await prepareProgram(
+        'code',
+        environmentSource,
+        'Read'
       );
-      const retainedHeapProbePrepared = await compiler.send('prepare-program', {
-        mode: 'code',
-        code: retainedHeapProbeSource,
-        functionName: 'Allocate',
-        executionStyle: 'solution-method',
-        assetBaseUrl: compilerBaseUrl,
-        timeoutMs: 10_000,
-      });
+      const threadingPrepared = await prepareProgram('code', threadingSource, 'Next');
+      const sharedPoolPrepared = await prepareProgram(
+        'code',
+        sharedPoolSource,
+        'Rent'
+      );
+      const pinnedMemoryPrepared = await prepareProgram(
+        'code',
+        pinnedMemorySource,
+        'Pin'
+      );
+      const hostRuntimePrepared = await prepareProgram(
+        'code',
+        hostRuntimeSource,
+        'Read'
+      );
+      const dynamicReflectionPrepared = await prepareProgram(
+        'code',
+        dynamicReflectionSource,
+        'Read'
+      );
+      const reflectionGatewayPrepared = await prepareProgram(
+        'code',
+        reflectionGatewaySource,
+        'Read'
+      );
+      const concurrentBlockingPrepared = await prepareProgram(
+        'code',
+        concurrentBlockingSource,
+        'Read'
+      );
+      const directFrameworkStaticWritePrepared = await prepareProgram(
+        'code',
+        directFrameworkStaticWriteSource,
+        'Set'
+      );
+      const deconstructedFrameworkStaticWritePrepared = await prepareProgram(
+        'code',
+        deconstructedFrameworkStaticWriteSource,
+        'Set'
+      );
+      const parenthesizedFrameworkStaticWritePrepared = await prepareProgram(
+        'code',
+        parenthesizedFrameworkStaticWriteSource,
+        'Set'
+      );
+      const listNodePrepared = await prepareProgram('code', listNodeSource, 'Sum');
+      const treeNodePrepared = await prepareProgram('code', treeNodeSource, 'Root');
+      const injectedRuntimeHelperPrepared = await prepareProgram(
+        'code',
+        injectedRuntimeHelperSource,
+        'Read'
+      );
+      const retainedHeapProbePrepared = await prepareProgram(
+        'code',
+        retainedHeapProbeSource,
+        'Allocate'
+      );
       compiler.terminate();
 
       const descriptor = (
@@ -824,28 +740,12 @@ public class Solution
           ? { traceClrWireContract: candidate.traceClrWireContract }
           : {}),
       });
-      const encodeTwoInt32 = (left: number, right: number): Uint8Array => {
-        const bytes = new Uint8Array(14);
+      const encodeInt32s = (...values: number[]): Uint8Array => {
+        const bytes = new Uint8Array(6 + values.length * 4);
         const view = new DataView(bytes.buffer);
         view.setUint32(0, 0x31574354, true);
-        view.setUint16(4, 2, true);
-        view.setInt32(6, left, true);
-        view.setInt32(10, right, true);
-        return bytes;
-      };
-      const encodeNoInputs = (): Uint8Array => {
-        const bytes = new Uint8Array(6);
-        const view = new DataView(bytes.buffer);
-        view.setUint32(0, 0x31574354, true);
-        view.setUint16(4, 0, true);
-        return bytes;
-      };
-      const encodeOneInt32 = (value: number): Uint8Array => {
-        const bytes = new Uint8Array(10);
-        const view = new DataView(bytes.buffer);
-        view.setUint32(0, 0x31574354, true);
-        view.setUint16(4, 1, true);
-        view.setInt32(6, value, true);
+        view.setUint16(4, values.length, true);
+        values.forEach((value, index) => view.setInt32(6 + index * 4, value, true));
         return bytes;
       };
       const decodeInt32 = (bytes: Uint8Array | undefined): number | null => {
@@ -860,17 +760,57 @@ public class Solution
       const runnerPrime = await runner.send('execute-prepared-code', {
         prepared: compilerWarmup.trustedPreparedArtifact,
         inputs: { a: 1, b: 2 },
-        inputBytes: encodeTwoInt32(1, 2),
+        inputBytes: encodeInt32s(1, 2),
         assetBaseUrl: runnerBaseUrl,
         timeoutMs: 10_000,
       });
       const valid = await runner.send('execute-prepared-code', {
         prepared: addDescriptor,
         inputs: { left: 19, right: 23 },
-        inputBytes: encodeTwoInt32(19, 23),
+        inputBytes: encodeInt32s(19, 23),
         assetBaseUrl: runnerBaseUrl,
         timeoutMs: 10_000,
       });
+      const stringInternDescriptor = descriptor(
+        stringInternSource,
+        'Probe',
+        'code',
+        stringInternPrepared
+      );
+      const stringInternFirstRunner = await createHarness(
+        'runner',
+        runnerBaseUrl
+      );
+      const stringInternFirst = await stringInternFirstRunner.send(
+        'execute-prepared-code',
+        {
+          prepared: stringInternDescriptor,
+          inputs: {
+            value: 'tracecode-string-intern-probe-7f9e',
+            intern: true,
+          },
+          assetBaseUrl: runnerBaseUrl,
+          timeoutMs: 10_000,
+        }
+      );
+      stringInternFirstRunner.terminate();
+      const stringInternSecondRunner = await createHarness(
+        'runner',
+        runnerBaseUrl
+      );
+      const stringInternSecond = await stringInternSecondRunner.send(
+        'execute-prepared-code',
+        {
+          prepared: stringInternDescriptor,
+          inputs: {
+            value: 'tracecode-string-intern-probe-7f9e',
+            intern: false,
+          },
+          assetBaseUrl: runnerBaseUrl,
+          timeoutMs: 10_000,
+        }
+      );
+      stringInternSecondRunner.terminate();
       const staticDescriptor = descriptor(
         staticStateSource,
         'Next',
@@ -880,14 +820,14 @@ public class Solution
       const staticFirst = await runner.send('execute-prepared-code', {
         prepared: staticDescriptor,
         inputs: {},
-        inputBytes: encodeNoInputs(),
+        inputBytes: encodeInt32s(),
         assetBaseUrl: runnerBaseUrl,
         timeoutMs: 10_000,
       });
       const staticSecond = await runner.send('execute-prepared-code', {
         prepared: staticDescriptor,
         inputs: {},
-        inputBytes: encodeNoInputs(),
+        inputBytes: encodeInt32s(),
         assetBaseUrl: runnerBaseUrl,
         timeoutMs: 10_000,
       });
@@ -922,7 +862,7 @@ public class Solution
           {
           prepared: heapProbeDescriptor,
           inputs: { size: 1_048_576 },
-          inputBytes: encodeOneInt32(1_048_576),
+          inputBytes: encodeInt32s(1_048_576),
           assetBaseUrl: runnerBaseUrl,
           timeoutMs: 10_000,
           }
@@ -951,7 +891,7 @@ public class Solution
       const fastTrace = await fastTraceRunner.send('execute-prepared-trace', {
         prepared: descriptor(source, 'Add', 'trace', fastTracePrepared),
         inputs: { left: 19, right: 23 },
-        inputBytes: encodeTwoInt32(19, 23),
+        inputBytes: encodeInt32s(19, 23),
         assetBaseUrl: runnerBaseUrl,
         timeoutMs: 10_000,
       });
@@ -966,7 +906,7 @@ public class Solution
         {
           prepared: descriptor(source, 'Add', 'trace', fastTracePrepared),
           inputs: { left: 19, right: 23 },
-          inputBytes: encodeTwoInt32(19, 23),
+          inputBytes: encodeInt32s(19, 23),
           tracingEnabled: false,
           assetBaseUrl: runnerBaseUrl,
           timeoutMs: 10_000,
@@ -991,7 +931,7 @@ public class Solution
             },
           },
           inputs: { left: 19, right: 23 },
-          inputBytes: encodeTwoInt32(19, 23),
+          inputBytes: encodeInt32s(19, 23),
           assetBaseUrl: runnerBaseUrl,
           timeoutMs: 10_000,
         }
@@ -1015,7 +955,7 @@ public class Solution
             },
           },
           inputs: { left: 19, right: 23 },
-          inputBytes: encodeTwoInt32(19, 23),
+          inputBytes: encodeInt32s(19, 23),
           assetBaseUrl: runnerBaseUrl,
           timeoutMs: 10_000,
         }
@@ -1025,7 +965,7 @@ public class Solution
         {
           prepared: descriptor(source, 'Add', 'trace', fastTracePrepared),
           inputs: { left: 19, right: 23 },
-          inputBytes: encodeTwoInt32(19, 23),
+          inputBytes: encodeInt32s(19, 23),
           assetBaseUrl: runnerBaseUrl,
           timeoutMs: 10_000,
         }
@@ -1041,7 +981,7 @@ public class Solution
         {
           prepared: descriptor(source, 'Add', 'trace', fastTracePrepared),
           inputs: { left: -1, right: 23 },
-          inputBytes: encodeTwoInt32(-1, 23),
+          inputBytes: encodeInt32s(-1, 23),
           assetBaseUrl: runnerBaseUrl,
           timeoutMs: 10_000,
         }
@@ -1051,7 +991,7 @@ public class Solution
         {
           prepared: descriptor(source, 'Add', 'trace', fastTracePrepared),
           inputs: { left: 19, right: 23 },
-          inputBytes: encodeTwoInt32(19, 23),
+          inputBytes: encodeInt32s(19, 23),
           assetBaseUrl: runnerBaseUrl,
           timeoutMs: 10_000,
         }
@@ -1154,7 +1094,7 @@ public class Solution
           compiledArtifactSha256: '0'.repeat(64),
         },
         inputs: { left: 19, right: 23 },
-        inputBytes: encodeTwoInt32(19, 23),
+        inputBytes: encodeInt32s(19, 23),
         assetBaseUrl: runnerBaseUrl,
         timeoutMs: 10_000,
       });
@@ -1173,7 +1113,7 @@ public class Solution
             preparedRunnerTier: 'algorithm-fast',
           },
           inputs: { path: '/tmp/shared-case-state' },
-          inputBytes: encodeNoInputs(),
+          inputBytes: encodeInt32s(),
           assetBaseUrl: runnerBaseUrl,
           timeoutMs: 10_000,
         }
@@ -1186,6 +1126,9 @@ public class Solution
         compilerWarmup,
         structuredPrepared,
         structuredTracePrepared,
+        consolePrepared,
+        intGetTypePrepared,
+        stringInternPrepared,
         inputMutationPrepared,
         reflectiveInputMutationPrepared,
         directTraceSinkMutationPrepared,
@@ -1214,6 +1157,8 @@ public class Solution
           ...valid,
           output: decodeInt32(valid.outputBytes),
         },
+        stringInternFirst,
+        stringInternSecond,
         staticFirst: {
           ...staticFirst,
           output: decodeInt32(staticFirst.outputBytes),
@@ -1442,7 +1387,6 @@ public class Solution
       ['shared pool', result.sharedPoolPrepared],
       ['pinned memory', result.pinnedMemoryPrepared],
       ['host runtime', result.hostRuntimePrepared],
-      ['reflection gateway', result.reflectionGatewayPrepared],
       ['blocking collection', result.concurrentBlockingPrepared],
     ] as const) {
       assertCondition(
@@ -1456,6 +1400,44 @@ public class Solution
           'denied prepared Judge API: dynamic'
         ),
       `C# dynamic dispatch must remain rejected before runner selection: ${JSON.stringify(result.dynamicReflectionPrepared)}`
+    );
+    assertCondition(
+      result.consolePrepared.success &&
+        result.consolePrepared.preparedRunnerTier === 'compatibility' &&
+        result.consolePrepared.preparedRunnerReason?.includes(
+          'Ambient API System.Console'
+        ) === true,
+      `C# Console.WriteLine must be rejected semantically by the prepared policy: ${JSON.stringify(result.consolePrepared)}`
+    );
+    assertCondition(
+      result.intGetTypePrepared.success === false &&
+        result.intGetTypePrepared.error?.includes(
+          'denied prepared Judge API: System.Object.GetType'
+        ) === true,
+      `C# GetType on an int must be rejected before fast-tier selection: ${JSON.stringify(result.intGetTypePrepared)}`
+    );
+    assertCondition(
+      result.reflectionGatewayPrepared.success === false &&
+        result.reflectionGatewayPrepared.error?.includes(
+          'denied prepared Judge API: System.Object.GetType'
+        ) === true,
+      `C# object.GetType must remain rejected before fast-tier selection: ${JSON.stringify(result.reflectionGatewayPrepared)}`
+    );
+    assertCondition(
+      result.stringInternPrepared.success &&
+        result.stringInternPrepared.preparedRunnerTier === 'compatibility' &&
+        result.stringInternPrepared.preparedRunnerReason?.includes(
+          'Ambient API System.String.'
+        ) === true &&
+        result.stringInternFirst.success &&
+        result.stringInternFirst.output === true &&
+        result.stringInternSecond.success &&
+        result.stringInternSecond.output === false,
+      `C# String.Intern/IsInterned must stay out of retained runners and not observe a prior case: ${JSON.stringify({
+        prepared: result.stringInternPrepared,
+        first: result.stringInternFirst,
+        second: result.stringInternSecond,
+      })}`
     );
     assertCondition(
       result.structuredPrepared.success &&

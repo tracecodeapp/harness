@@ -32,20 +32,20 @@
   },
   "roles": {
     "general": {
-      "artifact": "csharp-bundle.b845b22be5352b29a498a622ab7d934c353846a44807f511b20307450169123f.zip",
-      "artifactBytes": 18125715,
-      "artifactSha256": "b845b22be5352b29a498a622ab7d934c353846a44807f511b20307450169123f",
+      "artifact": "csharp-bundle.4385763ad1edc944aa6855d7f48257c0fc9a0eb5d8e8bc1841ff5d55408aea31.zip",
+      "artifactBytes": 18125436,
+      "artifactSha256": "4385763ad1edc944aa6855d7f48257c0fc9a0eb5d8e8bc1841ff5d55408aea31",
       "fileCount": 242,
-      "treeSha256": "612b2481d5178e1db98bfa5a8f88e794d0d246fb1e0cf64252aa1783848b8519",
-      "uncompressedBytes": 50379150
+      "treeSha256": "5f1729dae286c707c3c62fc2c7364f01a3a6f76153ade31404be91476a304c0d",
+      "uncompressedBytes": 50377102
     },
     "compiler": {
-      "artifact": "csharp-bundle.b845b22be5352b29a498a622ab7d934c353846a44807f511b20307450169123f.zip",
-      "artifactBytes": 18125715,
-      "artifactSha256": "b845b22be5352b29a498a622ab7d934c353846a44807f511b20307450169123f",
+      "artifact": "csharp-bundle.4385763ad1edc944aa6855d7f48257c0fc9a0eb5d8e8bc1841ff5d55408aea31.zip",
+      "artifactBytes": 18125436,
+      "artifactSha256": "4385763ad1edc944aa6855d7f48257c0fc9a0eb5d8e8bc1841ff5d55408aea31",
       "fileCount": 242,
-      "treeSha256": "612b2481d5178e1db98bfa5a8f88e794d0d246fb1e0cf64252aa1783848b8519",
-      "uncompressedBytes": 50379150
+      "treeSha256": "5f1729dae286c707c3c62fc2c7364f01a3a6f76153ade31404be91476a304c0d",
+      "uncompressedBytes": 50377102
     },
     "runner": {
       "artifact": "csharp-bundle.d189b8c0ec2f31246c41c4c4839354f0583418bd5131a12c8bcb63c42ff76666.zip",
