@@ -1,4 +1,4 @@
-# C++ prepared isolation ceiling
+# C++ prepared isolation boundary
 
 ## Decision
 
@@ -72,42 +72,6 @@ deadline without also destroying the shared invocation.
 Fresh Wasm instances make those questions irrelevant: the attack surfaces may
 exist within one case, but their state cannot cross into the next case.
 
-## Browser measurement
-
-`scripts/benchmark-cpp-prepared-isolation-tiers.ts` runs two boundaries in real
-Chromium with the pinned TraceCC compiler and assets:
-
-1. the product `fresh-instance` prepared provider; and
-2. an intentionally unsafe ceiling program that changes the learner ABI so all
-   logical cases execute inside one Wasm invocation.
-
-It separately measures the full browser Judge path from algorithm-bundle
-creation through compile, all-case comparison, and receipt.
-
-On Chromium 145.0.7632.6 on the local M1 Pro Mac, five reversed-order samples
-on 2026-08-26 produced:
-
-| Boundary | 10 cases p50 | 100 cases p50 | 100 cases p95 |
-|---|---:|---:|---:|
-| Prepared, fresh Wasm instance per case | 3.79 ms | 41.55 ms | 59.63 ms |
-| Unsafe, one shared Wasm invocation | 2.32 ms | 26.40 ms | 35.76 ms |
-| Full browser Judge, compile through receipt | 287.65 ms | 331.63 ms | 382.35 ms |
-
-The unsafe design saves about 15.1 ms at 100 cases. Even treating that direct
-prepared-boundary delta as fully additive to the separately measured Judge
-sample, the warm full-flow ceiling is only about 1.05x. Compilation and Judge
-orchestration remain roughly 87% of the 100-case wall clock. The first cold
-10-case sample was 1.49 seconds because toolchain promotion dominated; sharing
-learner state cannot improve that cold path.
-
-Absolute timings are machine-specific. The structural result is not: C++ has
-already removed repeat compilation and repeat outer-runner construction from
-the case loop, and the remaining isolation floor is small relative to the full
-learner-visible flow.
-
-The checked-in raw samples are in
-`reports/cpp-prepared-isolation-ceiling-2026-08-26.json`.
-
 ## Correct next optimization
 
 Future C++ performance work should target the compilation/readiness path rather
@@ -122,21 +86,6 @@ than weaken case isolation:
 - investigate compiler/profile or generated-driver cost only with full Judge
   measurements and raw samples.
 
-Do not describe the unsafe ceiling as a product result. It deliberately changes
-the learner ABI and shares state that the Judge contract requires to be fresh.
-
-## Reproduction
-
-```bash
-TRACECODE_CPP_TIER_SAMPLES=5 \
-  node --import tsx scripts/benchmark-cpp-prepared-isolation-tiers.ts
-```
-
-The script prints raw samples, p50/p95 summaries, browser version, and the exact
-measurement boundaries. The ordinary browser batch gate remains:
-
-```bash
-TRACECODE_ALGORITHM_BATCH_LANGUAGES=cpp \
-  pnpm exec tsx --tsconfig tsconfig.base.json \
-  tests/test-browser-algorithm-batch.ts
-```
+Do not describe an unsafe shared-instance experiment as a product result. It
+changes the learner ABI and shares state that the Judge contract requires to be
+fresh.

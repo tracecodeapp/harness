@@ -15238,11 +15238,17 @@ async function runPreparedRuntimeProgram(
 
   try {
     const runStartedAt = now();
+    const runtimeArgs = preparedProgram.tracing
+      ? [
+          'program.wasm',
+          preparedProgram.inputMode === 'named-batch'
+            ? JSON.stringify([tracingEnabled])
+            : (tracingEnabled ? 'true' : 'false'),
+        ]
+      : ['program.wasm'];
     const program = await runWasi(
       preparedProgram.programModule,
-      preparedProgram.scriptRequest && preparedProgram.tracing
-        ? ['program.wasm', tracingEnabled ? 'true' : 'false']
-        : ['program.wasm'],
+      runtimeArgs,
       new InMemoryFileSystem(),
       { stdinBytes: staticStdinBytesFromText(stdinText) }
     );
@@ -15414,131 +15420,6 @@ async function runPreparedRuntimeProgram(
   }
 }
 
-async function runPreparedTraceRuntimeProgramBatch(
-  preparedProgram,
-  inputBatch,
-  traceEnabledBatch
-) {
-  const startedAt = now();
-  if (!preparedProgram.tracing || preparedProgram.inputMode !== 'named-batch') {
-    throw preparedProgramProtocolError(
-      'C++ mixed prepared tracing requires a named-batch trace artifact.'
-    );
-  }
-  const normalizedInputBatch = Array.isArray(inputBatch)
-    ? inputBatch.map((inputs) =>
-        inputs && typeof inputs === 'object' && !Array.isArray(inputs)
-          ? inputs
-          : {}
-      )
-    : [];
-  const normalizedTraceEnabledBatch = Array.isArray(traceEnabledBatch)
-    ? traceEnabledBatch
-    : [];
-  if (normalizedInputBatch.length === 0) {
-    throw preparedProgramProtocolError(
-      'C++ mixed prepared tracing requires a non-empty input batch.'
-    );
-  }
-  if (
-    normalizedTraceEnabledBatch.length !== normalizedInputBatch.length ||
-    normalizedTraceEnabledBatch.some((enabled) => typeof enabled !== 'boolean')
-  ) {
-    throw preparedProgramProtocolError(
-      'C++ mixed prepared trace selection must contain one boolean per batch case.'
-    );
-  }
-
-  try {
-    const runStartedAt = now();
-    const program = await runWasi(
-      preparedProgram.programModule,
-      ['program.wasm', JSON.stringify(normalizedTraceEnabledBatch)],
-      new InMemoryFileSystem(),
-      {
-        stdinBytes: staticStdinBytesFromText(
-          JSON.stringify(normalizedInputBatch)
-        ),
-      }
-    );
-    const runMs = elapsedMs(runStartedAt);
-    const timings = preparedExecutionTimings(
-      runMs,
-      elapsedMs(startedAt)
-    );
-    const parsed = parseProgramStdout(program.stdout, {
-      tracing: true,
-      defaultLine: preparedProgram.signatureLine,
-      allowMissingResult: true,
-    });
-    const batchResult = cppBatchTraceResultsFromParsedOutput(
-      parsed,
-      preparedProgram.source,
-      normalizedInputBatch,
-      timings,
-      startedAt,
-      { traceOptions: preparedProgram.traceOptions }
-    );
-    const consoleOutput = [
-      ...(batchResult.consoleOutput ?? []),
-      ...program.stderr.split(/\r?\n/).filter(Boolean),
-    ];
-    if (program.exitCode !== 0) {
-      const error = program.exitCode === 124
-        ? 'C++ trace budget exceeded.'
-        : (program.stderr || `C++ program exited with code ${program.exitCode}`);
-      return {
-        ...batchResult,
-        success: false,
-        error,
-        consoleOutput,
-        results: (batchResult.results ?? []).map((result) => ({
-          ...result,
-          success: false,
-          error,
-          consoleOutput,
-        })),
-        timings,
-      };
-    }
-    return {
-      ...batchResult,
-      consoleOutput,
-      timings,
-    };
-  } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
-    const trace = finalizeRuntimeTrace(
-      [{
-        kind: 'exception',
-        line: preparedProgram.signatureLine,
-        message,
-      }],
-      {
-        ...(preparedProgram.traceOptions || {}),
-        sourceCode: preparedProgram.source,
-      }
-    ).trace;
-    return {
-      success: false,
-      results: normalizedInputBatch.map(() => ({
-        success: false,
-        output: null,
-        error: message,
-        trace,
-        consoleOutput: [],
-        executionTimeMs: elapsedMs(startedAt),
-        lineEventCount: trace.lineEventCount,
-        traceStepCount: trace.traceStepCount,
-        timings: preparedExecutionTimings(0, elapsedMs(startedAt)),
-      })),
-      error: message,
-      consoleOutput: [],
-      timings: preparedExecutionTimings(0, elapsedMs(startedAt)),
-    };
-  }
-}
-
 async function runPreparedCodeRuntimeProgramBatchIsolated(
   preparedProgram,
   inputBatch
@@ -15615,29 +15496,6 @@ async function handleExecutePreparedRuntimeProgram(payload) {
       `C++ prepared program "${String(payload?.programId || '')}" was prepared for ${preparedProgram.mode}, not ${String(payload?.mode || 'unknown')}.`
     );
   }
-  if (
-    preparedProgram.tracing &&
-    preparedProgram.inputMode === 'named-batch' &&
-    payload?.traceEnabled === false
-  ) {
-    const batch = await runPreparedTraceRuntimeProgramBatch(
-      preparedProgram,
-      [payload?.inputs || {}],
-      [false]
-    );
-    return batch.results?.[0] ?? {
-      success: false,
-      output: null,
-      error: batch.error || 'C++ trace-disabled execution returned no case.',
-      trace: finalizeRuntimeTrace([], {
-        ...(preparedProgram.traceOptions || {}),
-        sourceCode: preparedProgram.source,
-      }).trace,
-      consoleOutput: batch.consoleOutput || [],
-      executionTimeMs: batch.timings?.totalMs || 0,
-      timings: batch.timings,
-    };
-  }
   return runPreparedRuntimeProgram(
     preparedProgram,
     payload?.inputs || {},
@@ -15652,16 +15510,10 @@ async function handleExecutePreparedRuntimeProgramBatch(payload) {
       `C++ prepared program "${String(payload?.programId || '')}" was prepared for ${preparedProgram.mode}, not ${String(payload?.mode || 'unknown')}.`
     );
   }
-  return preparedProgram.mode === 'code'
-    ? runPreparedCodeRuntimeProgramBatchIsolated(
-        preparedProgram,
-        payload?.inputBatch
-      )
-    : runPreparedTraceRuntimeProgramBatch(
-        preparedProgram,
-        payload?.inputBatch,
-        payload?.traceEnabledBatch
-      );
+  return runPreparedCodeRuntimeProgramBatchIsolated(
+    preparedProgram,
+    payload?.inputBatch
+  );
 }
 
 async function handleDisposePreparedRuntimeProgram(payload) {

@@ -10,6 +10,9 @@ triage logs should not live in this public docs tree.
   Defines the language-neutral runtime trace model emitted by every harness.
 - [Isolation Boundaries](./isolation-boundaries.md)
   Explains what browser and native execution isolate, and what they do not.
+- [C++ Prepared Isolation Boundary](./cpp-prepared-isolation-boundary.md)
+  Records why correctness batches retain the compiled module but create fresh
+  WASI and WebAssembly state for every case.
 - [Warm-and-Retire Worker Lifecycle Policy](./warm-and-retire-policy.md)
   Names the clean-standby, one-use retirement, replenishment, and ownership
   contract shared by browser runtime providers.
