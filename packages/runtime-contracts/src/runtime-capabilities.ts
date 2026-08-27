@@ -119,6 +119,8 @@ export interface RuntimeCapabilities {
       maxSingleLineHits: boolean;
       maxStoredEvents: boolean;
       maxTraceBytes: boolean;
+      /** Whether maxPathDepth is applied to emitted trace access targets. */
+      maxPathDepth?: boolean;
       minimalTrace: boolean;
     };
     fidelity: {

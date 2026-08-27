@@ -20,9 +20,16 @@ export interface JudgeAlgorithmExecution {
   readonly functionName?: string | null;
   readonly executionStyle?: 'function' | 'solution-method' | 'ops-class';
   readonly trace?: boolean;
+  /**
+   * Trace-program controls. These may be supplied without `trace: true` when
+   * Browser Judge `execute` will select traced cases on demand.
+   */
   readonly traceOptions?: {
+    /** Trace-capture budget. This does not interrupt ordinary execution. */
     readonly maxTraceSteps?: number;
+    /** Trace-capture budget. This does not act as an execution line limit. */
     readonly maxLineEvents?: number;
+    /** Trace-capture budget. This does not act as an execution hit limit. */
     readonly maxSingleLineHits?: number;
     readonly maxStoredEvents?: number;
     /**
@@ -33,10 +40,26 @@ export interface JudgeAlgorithmExecution {
   };
   readonly limits?: {
     readonly wallClockMs?: number;
-    readonly maxTraceSteps?: number;
+    /** Runtime interruption limit, distinct from traceOptions.maxLineEvents. */
     readonly maxLineEvents?: number;
+    /** Runtime interruption limit, distinct from traceOptions.maxSingleLineHits. */
     readonly maxSingleLineHits?: number;
+    readonly maxCallDepth?: number;
+    readonly maxMemoryBytes?: number;
+    /**
+     * @deprecated Never enforced here. Use traceOptions.maxTraceSteps.
+     * Bundles that set this legacy field are rejected instead of ignoring it.
+     */
+    readonly maxTraceSteps?: number;
+    /**
+     * @deprecated Never enforced here. Use traceOptions.maxStoredEvents.
+     * Bundles that set this legacy field are rejected instead of ignoring it.
+     */
     readonly maxStoredEvents?: number;
+    /**
+     * @deprecated Algorithm execution has no output-byte runtime limit.
+     * Bundles that set this legacy field are rejected instead of ignoring it.
+     */
     readonly maxOutputBytes?: number;
   };
 }

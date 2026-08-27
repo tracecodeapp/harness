@@ -2,6 +2,7 @@ import type {
   LanguageRuntimeProfile,
   RuntimeExecutionLimits,
   RuntimeExecutionStyle,
+  TraceExecutionOptions,
 } from '@tracecode/runtime-contracts';
 
 type RuntimeRequestKind = 'execute' | 'trace';
@@ -11,6 +12,7 @@ interface RuntimeRequestSupportOptions {
   executionStyle: RuntimeExecutionStyle;
   functionName?: string | null;
   limits?: RuntimeExecutionLimits;
+  traceOptions?: TraceExecutionOptions;
 }
 
 const LIMIT_SUPPORT_FIELDS: ReadonlyArray<{
@@ -22,6 +24,19 @@ const LIMIT_SUPPORT_FIELDS: ReadonlyArray<{
   { limit: 'maxSingleLineHits', support: 'singleLineHits' },
   { limit: 'maxCallDepth', support: 'callDepth' },
   { limit: 'maxMemoryBytes', support: 'memory' },
+];
+
+const TRACE_OPTION_SUPPORT_FIELDS: ReadonlyArray<{
+  option: keyof TraceExecutionOptions;
+  support: keyof LanguageRuntimeProfile['capabilities']['tracing']['controls'];
+}> = [
+  { option: 'maxTraceSteps', support: 'maxTraceSteps' },
+  { option: 'maxLineEvents', support: 'maxLineEvents' },
+  { option: 'maxSingleLineHits', support: 'maxSingleLineHits' },
+  { option: 'maxStoredEvents', support: 'maxStoredEvents' },
+  { option: 'maxTraceBytes', support: 'maxTraceBytes' },
+  { option: 'maxPathDepth', support: 'maxPathDepth' },
+  { option: 'minimalTrace', support: 'minimalTrace' },
 ];
 
 function isScriptRequest(functionName: string | null | undefined): boolean {
@@ -58,7 +73,34 @@ export function assertRuntimeRequestSupported(
     throw new Error(`Runtime "${profile.language}" does not support tracing.`);
   }
 
+  if (options.request === 'trace' && options.traceOptions) {
+    for (const option of Object.keys(options.traceOptions)) {
+      if (!TRACE_OPTION_SUPPORT_FIELDS.some((field) => field.option === option)) {
+        throw new Error(
+          `Runtime "${profile.language}" does not recognize the "${option}" tracing option.`
+        );
+      }
+    }
+    for (const { option, support } of TRACE_OPTION_SUPPORT_FIELDS) {
+      if (
+        options.traceOptions[option] !== undefined &&
+        !profile.capabilities.tracing.controls[support]
+      ) {
+        throw new Error(
+          `Runtime "${profile.language}" does not support the "${option}" tracing option.`
+        );
+      }
+    }
+  }
+
   if (options.limits) {
+    for (const limit of Object.keys(options.limits)) {
+      if (!LIMIT_SUPPORT_FIELDS.some((field) => field.limit === limit)) {
+        throw new Error(
+          `Runtime "${profile.language}" does not recognize the "${limit}" execution limit.`
+        );
+      }
+    }
     for (const { limit, support } of LIMIT_SUPPORT_FIELDS) {
       if (options.limits[limit] !== undefined && !profile.capabilities.execution.limits[support]) {
         throw new Error(`Runtime "${profile.language}" does not support the "${limit}" execution limit.`);

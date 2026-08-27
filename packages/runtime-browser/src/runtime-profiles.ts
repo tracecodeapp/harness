@@ -133,6 +133,7 @@ const PYTHON_RUNTIME_PROFILE: LanguageRuntimeProfile = {
         maxSingleLineHits: true,
         maxStoredEvents: true,
         maxTraceBytes: true,
+        maxPathDepth: true,
         minimalTrace: true,
       },
       fidelity: {
@@ -208,6 +209,7 @@ const JAVASCRIPT_RUNTIME_PROFILE: LanguageRuntimeProfile = {
         maxSingleLineHits: true,
         maxStoredEvents: true,
         maxTraceBytes: false,
+        maxPathDepth: true,
         minimalTrace: true,
       },
       fidelity: {
@@ -283,6 +285,7 @@ const TYPESCRIPT_RUNTIME_PROFILE: LanguageRuntimeProfile = {
         maxSingleLineHits: true,
         maxStoredEvents: true,
         maxTraceBytes: false,
+        maxPathDepth: true,
         minimalTrace: true,
       },
       fidelity: {
@@ -359,6 +362,7 @@ const JAVA_RUNTIME_PROFILE: LanguageRuntimeProfile = {
         maxSingleLineHits: false,
         maxStoredEvents: true,
         maxTraceBytes: false,
+        maxPathDepth: true,
         minimalTrace: false,
       },
       fidelity: {
@@ -441,6 +445,7 @@ const CSHARP_RUNTIME_PROFILE: LanguageRuntimeProfile = {
         maxSingleLineHits: true,
         maxStoredEvents: true,
         maxTraceBytes: false,
+        maxPathDepth: true,
         minimalTrace: true,
       },
       fidelity: {
@@ -527,6 +532,7 @@ const CPP_RUNTIME_PROFILE: LanguageRuntimeProfile = {
         maxSingleLineHits: true,
         maxStoredEvents: true,
         maxTraceBytes: false,
+        maxPathDepth: true,
         minimalTrace: true,
       },
       fidelity: {

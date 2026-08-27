@@ -19,6 +19,12 @@ function canonicalAbsolutePath(path: string): boolean {
     .join('/')}`;
 }
 
+const LEGACY_IGNORED_EXECUTION_LIMITS = [
+  'maxTraceSteps',
+  'maxStoredEvents',
+  'maxOutputBytes',
+] as const;
+
 /**
  * Validates the portable algorithm authority manifest before any runtime or
  * comparator is allocated. The full bundle stays plain serializable data, so
@@ -41,6 +47,15 @@ export function validateAlgorithmJudgeBundle(
     }
     if (!bundle.plan.runtime.trim()) {
       return yield* fail('Algorithm runtime must not be empty.');
+    }
+    for (const limit of LEGACY_IGNORED_EXECUTION_LIMITS) {
+      if (bundle.execution.limits?.[limit] === undefined) continue;
+      const replacement = limit === 'maxOutputBytes'
+        ? 'Algorithm execution does not support an output-byte runtime limit.'
+        : `Use execution.traceOptions.${limit} instead.`;
+      return yield* fail(
+        `Algorithm execution limit "${limit}" is not supported. ${replacement}`
+      );
     }
     try {
       assertJudgeVerdictPolicy(bundle.policy);

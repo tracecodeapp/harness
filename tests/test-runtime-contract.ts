@@ -37,6 +37,7 @@ import type {
   LanguageRuntimeProfile,
   RuntimeCapabilities,
   RuntimeExecutionLimits,
+  TraceExecutionOptions,
 } from '../packages/runtime-contracts/src/runtime-types';
 import {
   javaTraceHooksEventsToRuntimeTrace,
@@ -1086,6 +1087,7 @@ const COMMON_STABLE_COVERAGE = [
   'tracing.controls.maxLineEvents',
   'tracing.controls.maxSingleLineHits',
   'tracing.controls.maxStoredEvents',
+  'tracing.controls.maxPathDepth',
   'tracing.controls.minimalTrace',
   'tracing.fidelity.preciseLineMapping',
   'tracing.fidelity.stableFunctionNames',
@@ -1185,6 +1187,7 @@ const LANGUAGE_CONFORMANCE_COVERAGE: Record<Language, readonly string[]> = {
     'tracing.events.timeout',
     'tracing.controls.maxTraceSteps',
     'tracing.controls.maxStoredEvents',
+    'tracing.controls.maxPathDepth',
     'tracing.fidelity.preciseLineMapping',
     'tracing.fidelity.stableFunctionNames',
     'tracing.fidelity.callStack',
@@ -1230,6 +1233,7 @@ const LANGUAGE_CONFORMANCE_COVERAGE: Record<Language, readonly string[]> = {
     'tracing.controls.maxLineEvents',
     'tracing.controls.maxSingleLineHits',
     'tracing.controls.maxStoredEvents',
+    'tracing.controls.maxPathDepth',
     'tracing.controls.minimalTrace',
     'tracing.fidelity.preciseLineMapping',
     'tracing.fidelity.stableFunctionNames',
@@ -1277,6 +1281,7 @@ const LANGUAGE_CONFORMANCE_COVERAGE: Record<Language, readonly string[]> = {
     'tracing.controls.maxLineEvents',
     'tracing.controls.maxSingleLineHits',
     'tracing.controls.maxStoredEvents',
+    'tracing.controls.maxPathDepth',
     'tracing.controls.minimalTrace',
     'tracing.fidelity.preciseLineMapping',
     'tracing.fidelity.stableFunctionNames',
@@ -1508,6 +1513,7 @@ function createUnsupportedProfile(
           maxSingleLineHits: false,
           maxStoredEvents: false,
           maxTraceBytes: false,
+          maxPathDepth: false,
           minimalTrace: false,
         },
         fidelity: {
@@ -2063,6 +2069,28 @@ async function main(): Promise<void> {
       }),
     'does not support the "maxLineEvents" execution limit'
   );
+  expectThrows(
+    () =>
+      assertRuntimeRequestSupported(unsupportedProfile, {
+        request: 'execute',
+        executionStyle: 'function',
+        functionName: 'solve',
+        limits: { maxTraceSteps: 1 } as unknown as RuntimeExecutionLimits,
+      }),
+    'does not recognize the "maxTraceSteps" execution limit'
+  );
+  expectThrows(
+    () =>
+      assertRuntimeRequestSupported(getLanguageRuntimeProfile('python'), {
+        request: 'trace',
+        executionStyle: 'function',
+        functionName: 'solve',
+        traceOptions: {
+          softTraceBudget: true,
+        } as unknown as TraceExecutionOptions,
+      }),
+    'does not recognize the "softTraceBudget" tracing option'
+  );
   assertRuntimeRequestSupported(getLanguageRuntimeProfile('python'), {
     request: 'execute',
     executionStyle: 'function',
@@ -2075,6 +2103,57 @@ async function main(): Promise<void> {
       maxMemoryBytes: 32 * 1024 * 1024,
     },
   });
+
+  const executionLimitSupport = [
+    ['wallClockMs', 'wallClock'],
+    ['maxLineEvents', 'lineEvents'],
+    ['maxSingleLineHits', 'singleLineHits'],
+    ['maxCallDepth', 'callDepth'],
+    ['maxMemoryBytes', 'memory'],
+  ] as const;
+  const traceOptionSupport = [
+    ['maxTraceSteps', 'maxTraceSteps', 1],
+    ['maxLineEvents', 'maxLineEvents', 1],
+    ['maxSingleLineHits', 'maxSingleLineHits', 1],
+    ['maxStoredEvents', 'maxStoredEvents', 1],
+    ['maxTraceBytes', 'maxTraceBytes', 1],
+    ['maxPathDepth', 'maxPathDepth', 1],
+    ['minimalTrace', 'minimalTrace', true],
+  ] as const;
+  for (const profile of getSupportedLanguageProfiles()) {
+    for (const [limit, support] of executionLimitSupport) {
+      const request = {
+        request: 'execute' as const,
+        executionStyle: 'function' as const,
+        functionName: 'solve',
+        limits: { [limit]: 1 } as RuntimeExecutionLimits,
+      };
+      if (profile.capabilities.execution.limits[support]) {
+        assertRuntimeRequestSupported(profile, request);
+      } else {
+        expectThrows(
+          () => assertRuntimeRequestSupported(profile, request),
+          `does not support the "${limit}" execution limit`
+        );
+      }
+    }
+    for (const [option, support, value] of traceOptionSupport) {
+      const request = {
+        request: 'trace' as const,
+        executionStyle: 'function' as const,
+        functionName: 'solve',
+        traceOptions: { [option]: value } as TraceExecutionOptions,
+      };
+      if (profile.capabilities.tracing.controls[support]) {
+        assertRuntimeRequestSupported(profile, request);
+      } else {
+        expectThrows(
+          () => assertRuntimeRequestSupported(profile, request),
+          `does not support the "${option}" tracing option`
+        );
+      }
+    }
+  }
   console.log('PASS: unsupported capability guards');
 
   const functionCase = {
