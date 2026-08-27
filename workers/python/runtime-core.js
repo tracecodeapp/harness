@@ -975,28 +975,27 @@ class __TracecodeExecutionGuard:
             'reasons': unique_reasons,
         }
 
-    def begin_algorithm(self):
+    def _begin_common(self):
         if self._builtins_snapshot is not None:
             raise RuntimeError('Nested TraceCode Python execution scope')
         self._builtins_snapshot = dict(self._builtins_dict)
         self._modules_snapshot = dict(self._modules)
         self._module_dict_snapshots = []
         self._module_mutable_snapshots = []
-        self._algorithm_environ_snapshot = dict(self._environ)
-        self._algorithm_path_snapshot = list(self._sys.path)
-        self._algorithm_importer_cache_snapshot = dict(self._sys.path_importer_cache)
+
         self._trace_snapshot = self._gettrace()
         self._recursion_limit_snapshot = self._getrecursionlimit()
         self._cwd_snapshot = self._getcwd()
         self._random_state_snapshot = self._random_getstate()
 
+    def begin_algorithm(self):
+        self._begin_common()
+        self._algorithm_environ_snapshot = dict(self._environ)
+        self._algorithm_path_snapshot = list(self._sys.path)
+        self._algorithm_importer_cache_snapshot = dict(self._sys.path_importer_cache)
+
     def begin(self):
-        if self._builtins_snapshot is not None:
-            raise RuntimeError('Nested TraceCode Python execution scope')
-        self._builtins_snapshot = dict(self._builtins_dict)
-        self._modules_snapshot = dict(self._modules)
-        self._module_dict_snapshots = []
-        self._module_mutable_snapshots = []
+        self._begin_common()
         # sys.modules is interpreter-global in Pyodide. Preserve the
         # Python-visible module boundary explicitly: module attributes and the
         # built-in mutable containers reachable from them are restored after
@@ -1031,10 +1030,6 @@ class __TracecodeExecutionGuard:
                         )
                     except Exception:
                         pass
-        self._trace_snapshot = self._gettrace()
-        self._recursion_limit_snapshot = self._getrecursionlimit()
-        self._cwd_snapshot = self._getcwd()
-        self._random_state_snapshot = self._random_getstate()
 
     def restore(self):
         builtins_snapshot = self._builtins_snapshot
@@ -1717,7 +1712,6 @@ _tracecode_batch_base = {
     'math': _tracecode_batch_readonly_module('math'),
     'json': _tracecode_batch_readonly_module('json'),
     'sys': _tracecode_batch_readonly_module('sys'),
-    'pow': _tracecode_batch_builtins.pow,
 }
 for _tracecode_name, _tracecode_value in _tracecode_batch_prelude.items():
     if _tracecode_name.startswith('__'):
@@ -2431,6 +2425,243 @@ for _tracecode_batch_inputs in _tracecode_batch_cases:
 _tracecode_batch_re.purge()
 _json_out = '[' + ','.join(_tracecode_batch_encoded_results) + ']'
 _json_out
+`;
+}
+
+/**
+ * Shared input hydration and entry-call helpers for trace and Judge executors.
+ * The namespace expression is deliberately supplied by each caller because
+ * tracing uses its isolated globals mapping while Judge may use globals().
+ */
+function buildPythonExecutionHelpers({
+  namespaceExpression,
+  annotationLocalsExpression = namespaceExpression,
+  inplaceCandidatesLiteral,
+  includeMaterializeInput = false,
+}) {
+  const materializeInputHelper = includeMaterializeInput
+    ? `
+def _tracecode_materialize_input(obj):
+    return _tracecode_materialize_custom_input(obj)
+`
+    : '';
+  return `
+def _tracecode_materialize_custom_input(obj):
+    if isinstance(obj, _builtins.list):
+        return [_tracecode_materialize_custom_input(item) for item in obj]
+    if isinstance(obj, _builtins.tuple):
+        return tuple(_tracecode_materialize_custom_input(item) for item in obj)
+    if isinstance(obj, _builtins.dict):
+        if obj.get('__type__') == 'TreeNode' or 'left' in obj or 'right' in obj:
+            return _dict_to_tree(obj)
+        if obj.get('__type__') == 'ListNode' or 'next' in obj:
+            return _dict_to_list(obj)
+        _type_name = obj.get('__type__') if isinstance(obj.get('__type__'), _builtins.str) else obj.get('__class__')
+        _fields = {key: _tracecode_materialize_custom_input(value) for key, value in obj.items() if key not in ('__type__', '__class__', '__id__')}
+        if isinstance(_type_name, _builtins.str):
+            _fields = {'__type__': _type_name, **_fields}
+        _constructor_fields = {key: value for key, value in _fields.items() if key not in ('__type__', '__class__')}
+        _cls = ${namespaceExpression}.get(_type_name) if isinstance(_type_name, _builtins.str) else None
+        if isinstance(_cls, _builtins.type):
+            try:
+                return _cls(**_constructor_fields)
+            except Exception:
+                pass
+            try:
+                return _cls(*_builtins.list(_constructor_fields.values()))
+            except Exception:
+                pass
+            try:
+                _instance = _cls.__new__(_cls)
+                for _key, _value in _constructor_fields.items():
+                    setattr(_instance, _key, _value)
+                return _instance
+            except Exception:
+                pass
+        return _fields
+    return obj
+
+def _tracecode_materialize_named_inputs(_names):
+    for _name in _names:
+        if _name in ${namespaceExpression}:
+            ${namespaceExpression}[_name] = _tracecode_materialize_custom_input(${namespaceExpression}[_name])
+
+${materializeInputHelper}
+${PYTHON_LITERAL_SHAPE_ANNOTATION_HELPER}
+
+def _tracecode_hydrate_for_annotation(_obj, _annotation):
+    try:
+        import typing as _tracecode_typing
+        import collections.abc as _tracecode_collections_abc
+    except Exception:
+        return _obj
+    if _annotation is None:
+        return _obj
+    if isinstance(_annotation, _builtins.str):
+        _annotation = ${namespaceExpression}.get(_annotation, _annotation)
+    if _annotation in (_builtins.object, getattr(_tracecode_typing, 'Any', None)):
+        return _obj
+    _origin = _tracecode_typing.get_origin(_annotation)
+    _args = _tracecode_typing.get_args(_annotation)
+    if _origin is _tracecode_typing.Union:
+        _non_none = [_arg for _arg in _args if _arg is not type(None)]
+        return _tracecode_hydrate_for_annotation(_obj, _non_none[0]) if len(_non_none) == 1 else _obj
+    if _origin in (_builtins.list, _builtins.tuple, _builtins.set, _builtins.frozenset):
+        if isinstance(_obj, _builtins.list):
+            if _origin is _builtins.tuple and len(_args) > 1 and _args[-1] is not Ellipsis:
+                _items = [
+                    _tracecode_hydrate_for_annotation(
+                        _item,
+                        _args[_index] if _index < len(_args) else None,
+                    )
+                    for _index, _item in enumerate(_obj)
+                ]
+            else:
+                _item_annotation = _args[0] if _args else None
+                _items = [
+                    _tracecode_hydrate_for_annotation(_item, _item_annotation)
+                    for _item in _obj
+                ]
+            if _origin is _builtins.tuple:
+                return tuple(_items)
+            if _origin is _builtins.set:
+                return _builtins.set(_items)
+            if _origin is _builtins.frozenset:
+                return _builtins.frozenset(_items)
+            return _items
+        return _obj
+    if _origin in (_builtins.dict, _tracecode_collections_abc.Mapping, _tracecode_collections_abc.MutableMapping) and isinstance(_obj, _builtins.dict):
+        _key_annotation = _args[0] if len(_args) > 0 else None
+        _value_annotation = _args[1] if len(_args) > 1 else None
+        return {
+            _tracecode_hydrate_for_annotation(_key, _key_annotation): _tracecode_hydrate_for_annotation(_value, _value_annotation)
+            for _key, _value in _obj.items()
+        }
+    if isinstance(_annotation, _builtins.type) and isinstance(_obj, _builtins.dict):
+        if _annotation.__name__ in ('TreeNode', 'ListNode'):
+            return _obj
+        _fields = {key: value for key, value in _obj.items() if key not in ('__type__', '__class__', '__id__')}
+        try:
+            _ctor_hints = _tracecode_typing.get_type_hints(getattr(_annotation, '__init__'), ${namespaceExpression}, ${annotationLocalsExpression})
+        except Exception:
+            _ctor_hints = {}
+        _hydrated_fields = {
+            key: _tracecode_hydrate_for_annotation(value, _ctor_hints.get(key))
+            for key, value in _fields.items()
+        }
+        try:
+            return _annotation(**_hydrated_fields)
+        except Exception:
+            pass
+        try:
+            return _annotation(*_builtins.list(_hydrated_fields.values()))
+        except Exception:
+            pass
+        try:
+            _instance = _annotation.__new__(_annotation)
+            for _key, _value in _hydrated_fields.items():
+                setattr(_instance, _key, _value)
+            return _instance
+        except Exception:
+            return _obj
+    return _obj
+
+def _tracecode_resolve_target_callable(_function_name, _execution_style):
+    _namespace = ${namespaceExpression}
+    _solution = _namespace.get('Solution')
+    if _execution_style == 'solution-method' and _solution is not None and hasattr(_solution, _function_name):
+        return getattr(_solution, _function_name)
+    if _function_name in _namespace and callable(_namespace[_function_name]):
+        return _namespace[_function_name]
+    if _solution is not None and hasattr(_solution, _function_name):
+        return getattr(_solution, _function_name)
+    return None
+
+def _tracecode_hydrate_annotated_inputs(_names, _function_name, _execution_style):
+    try:
+        import typing as _tracecode_typing
+        _callable = _tracecode_resolve_target_callable(_function_name, _execution_style)
+        if _callable is None:
+            return
+        try:
+            _annotations = _tracecode_typing.get_type_hints(_callable, ${namespaceExpression}, ${annotationLocalsExpression})
+        except Exception:
+            _annotations = getattr(_callable, '__annotations__', {}) or {}
+        for _name in _names:
+            if _name in ${namespaceExpression} and _name in _annotations:
+                _annotation = _annotations[_name]
+                if not _tracecode_annotation_preserves_literal_shape(_annotation):
+                    ${namespaceExpression}[_name] = _tracecode_hydrate_for_annotation(${namespaceExpression}[_name], _annotation)
+    except Exception:
+        return
+
+def _tracecode_resolve_entry_callable(_function_name, _execution_style):
+    _namespace = ${namespaceExpression}
+    _solution = _namespace.get('Solution')
+    if _execution_style == 'solution-method' and _solution is not None and hasattr(_solution, _function_name):
+        _solver = _solution()
+        return getattr(_solver, _function_name)
+    if _function_name in _namespace and callable(_namespace[_function_name]):
+        return _namespace[_function_name]
+    if _solution is not None and hasattr(_solution, _function_name):
+        _solver = _solution()
+        return getattr(_solver, _function_name)
+    return None
+
+def _tracecode_invoke_entry(_function_name, _execution_style, _input_names):
+    import inspect as _tracecode_inspect
+    _callable = _tracecode_resolve_entry_callable(_function_name, _execution_style)
+    if _callable is None:
+        raise NameError(f"Implement {_function_name}(...) or Solution.{_function_name}(...)")
+    _namespace = ${namespaceExpression}
+    _values = {_name: _namespace[_name] for _name in _input_names if _name in _namespace}
+    _fallback_kwargs = None
+    try:
+        _signature = _tracecode_inspect.signature(_callable)
+    except Exception:
+        _fallback_kwargs = _values
+        _args = []
+        _kwargs = {}
+    else:
+        _args = []
+        _kwargs = {}
+        _has_varargs = any(
+            _parameter.kind is _tracecode_inspect.Parameter.VAR_POSITIONAL
+            for _parameter in _signature.parameters.values()
+        )
+        for _parameter in _signature.parameters.values():
+            if _parameter.name in ('self', 'cls'):
+                continue
+            _kind = _parameter.kind
+            if _kind is _tracecode_inspect.Parameter.VAR_POSITIONAL:
+                if _parameter.name in _values:
+                    _raw = _values[_parameter.name]
+                    if isinstance(_raw, (_builtins.list, _builtins.tuple)):
+                        _args.extend(_raw)
+                    else:
+                        _args.append(_raw)
+                continue
+            if _kind is _tracecode_inspect.Parameter.VAR_KEYWORD:
+                if _parameter.name in _values and isinstance(_values[_parameter.name], _builtins.dict):
+                    _kwargs.update(_values[_parameter.name])
+                continue
+            if _parameter.name not in _values:
+                continue
+            if _kind is _tracecode_inspect.Parameter.POSITIONAL_ONLY:
+                _args.append(_values[_parameter.name])
+            elif _kind is _tracecode_inspect.Parameter.POSITIONAL_OR_KEYWORD and _has_varargs:
+                _args.append(_values[_parameter.name])
+            else:
+                _kwargs[_parameter.name] = _values[_parameter.name]
+    if _fallback_kwargs is not None:
+        return _callable(**_fallback_kwargs)
+    return _callable(*_args, **_kwargs)
+
+def _resolve_inplace_result():
+    for _name in ${inplaceCandidatesLiteral}:
+        if _name in ${namespaceExpression}:
+            return ${namespaceExpression}.get(_name)
+    return None
 `;
 }
 
@@ -6101,9 +6332,6 @@ pow = _builtins.pow
     ? listInputKeys.map(key => `${key} = _dict_to_list(${key})`).join('\n')
     : '';
 
-  const argList = Object.keys(inputs)
-    .map((key) => `${key}=${key}`)
-    .join(', ');
   const inplaceCandidates = ['nums1', 'nums', 'arr', 'array', 'matrix', 'board', 'grid']
     .filter((key) => Object.prototype.hasOwnProperty.call(inputs, key));
   const inplaceCandidatesLiteral = usesPreparedBindings
@@ -6206,221 +6434,11 @@ ${userCodeTraceSetup}
 ${deps.PYTHON_CONVERSION_HELPERS_SNIPPET}
 
 
-def _tracecode_materialize_custom_input(obj):
-    if isinstance(obj, _builtins.list):
-        return [_tracecode_materialize_custom_input(item) for item in obj]
-    if isinstance(obj, _builtins.tuple):
-        return tuple(_tracecode_materialize_custom_input(item) for item in obj)
-    if isinstance(obj, _builtins.dict):
-        if obj.get('__type__') == 'TreeNode' or 'left' in obj or 'right' in obj:
-            return _dict_to_tree(obj)
-        if obj.get('__type__') == 'ListNode' or 'next' in obj:
-            return _dict_to_list(obj)
-        _type_name = obj.get('__type__') if isinstance(obj.get('__type__'), _builtins.str) else obj.get('__class__')
-        _fields = {key: _tracecode_materialize_custom_input(value) for key, value in obj.items() if key not in ('__type__', '__class__', '__id__')}
-        if isinstance(_type_name, _builtins.str):
-            _fields = {'__type__': _type_name, **_fields}
-        _constructor_fields = {key: value for key, value in _fields.items() if key not in ('__type__', '__class__')}
-        _cls = _globals_dict.get(_type_name) if isinstance(_type_name, _builtins.str) else None
-        if isinstance(_cls, _builtins.type):
-            try:
-                return _cls(**_constructor_fields)
-            except Exception:
-                pass
-            try:
-                return _cls(*_builtins.list(_constructor_fields.values()))
-            except Exception:
-                pass
-            try:
-                _instance = _cls.__new__(_cls)
-                for _key, _value in _constructor_fields.items():
-                    setattr(_instance, _key, _value)
-                return _instance
-            except Exception:
-                pass
-        return _fields
-    return obj
-
-def _tracecode_materialize_named_inputs(_names):
-    for _name in _names:
-        if _name in _globals_dict:
-            _globals_dict[_name] = _tracecode_materialize_custom_input(_globals_dict[_name])
-
-def _tracecode_materialize_input(obj):
-    return _tracecode_materialize_custom_input(obj)
-
-${PYTHON_LITERAL_SHAPE_ANNOTATION_HELPER}
-
-def _tracecode_hydrate_for_annotation(_obj, _annotation):
-    try:
-        import typing as _tracecode_typing
-        import collections.abc as _tracecode_collections_abc
-    except Exception:
-        return _obj
-    if _annotation is None:
-        return _obj
-    if isinstance(_annotation, _builtins.str):
-        _annotation = _globals_dict.get(_annotation, _annotation)
-    if _annotation in (_builtins.object, getattr(_tracecode_typing, 'Any', None)):
-        return _obj
-    _origin = _tracecode_typing.get_origin(_annotation)
-    _args = _tracecode_typing.get_args(_annotation)
-    if _origin is _tracecode_typing.Union:
-        _non_none = [_arg for _arg in _args if _arg is not type(None)]
-        return _tracecode_hydrate_for_annotation(_obj, _non_none[0]) if len(_non_none) == 1 else _obj
-    if _origin in (_builtins.list, _builtins.tuple, _builtins.set, _builtins.frozenset):
-        if isinstance(_obj, _builtins.list):
-            if _origin is _builtins.tuple and len(_args) > 1 and _args[-1] is not Ellipsis:
-                _items = [
-                    _tracecode_hydrate_for_annotation(
-                        _item,
-                        _args[_index] if _index < len(_args) else None,
-                    )
-                    for _index, _item in enumerate(_obj)
-                ]
-            else:
-                _item_annotation = _args[0] if _args else None
-                _items = [
-                    _tracecode_hydrate_for_annotation(_item, _item_annotation)
-                    for _item in _obj
-                ]
-            if _origin is _builtins.tuple:
-                return tuple(_items)
-            if _origin is _builtins.set:
-                return _builtins.set(_items)
-            if _origin is _builtins.frozenset:
-                return _builtins.frozenset(_items)
-            return _items
-        return _obj
-    if _origin in (_builtins.dict, _tracecode_collections_abc.Mapping, _tracecode_collections_abc.MutableMapping) and isinstance(_obj, _builtins.dict):
-        _key_annotation = _args[0] if len(_args) > 0 else None
-        _value_annotation = _args[1] if len(_args) > 1 else None
-        return {
-            _tracecode_hydrate_for_annotation(_key, _key_annotation): _tracecode_hydrate_for_annotation(_value, _value_annotation)
-            for _key, _value in _obj.items()
-        }
-    if isinstance(_annotation, _builtins.type) and isinstance(_obj, _builtins.dict):
-        if _annotation.__name__ in ('TreeNode', 'ListNode'):
-            return _obj
-        _fields = {key: value for key, value in _obj.items() if key not in ('__type__', '__class__', '__id__')}
-        try:
-            _ctor_hints = _tracecode_typing.get_type_hints(getattr(_annotation, '__init__'), _globals_dict, _globals_dict)
-        except Exception:
-            _ctor_hints = {}
-        _hydrated_fields = {
-            key: _tracecode_hydrate_for_annotation(value, _ctor_hints.get(key))
-            for key, value in _fields.items()
-        }
-        try:
-            return _annotation(**_hydrated_fields)
-        except Exception:
-            pass
-        try:
-            return _annotation(*_builtins.list(_hydrated_fields.values()))
-        except Exception:
-            pass
-        try:
-            _instance = _annotation.__new__(_annotation)
-            for _key, _value in _hydrated_fields.items():
-                setattr(_instance, _key, _value)
-            return _instance
-        except Exception:
-            return _obj
-    return _obj
-
-def _tracecode_resolve_target_callable(_function_name, _execution_style):
-    _solution = _globals_dict.get('Solution')
-    if _execution_style == 'solution-method' and _solution is not None and hasattr(_solution, _function_name):
-        return getattr(_solution, _function_name)
-    if _function_name in _globals_dict and callable(_globals_dict[_function_name]):
-        return _globals_dict[_function_name]
-    if _solution is not None and hasattr(_solution, _function_name):
-        return getattr(_solution, _function_name)
-    return None
-
-def _tracecode_hydrate_annotated_inputs(_names, _function_name, _execution_style):
-    try:
-        import typing as _tracecode_typing
-        _callable = _tracecode_resolve_target_callable(_function_name, _execution_style)
-        if _callable is None:
-            return
-        try:
-            _annotations = _tracecode_typing.get_type_hints(_callable, _globals_dict, _globals_dict)
-        except Exception:
-            _annotations = getattr(_callable, '__annotations__', {}) or {}
-        for _name in _names:
-            if _name in _globals_dict and _name in _annotations:
-                _annotation = _annotations[_name]
-                if not _tracecode_annotation_preserves_literal_shape(_annotation):
-                    _globals_dict[_name] = _tracecode_hydrate_for_annotation(_globals_dict[_name], _annotation)
-    except Exception:
-        return
-
-def _tracecode_resolve_entry_callable(_function_name, _execution_style):
-    _solution = _globals_dict.get('Solution')
-    if _execution_style == 'solution-method' and _solution is not None and hasattr(_solution, _function_name):
-        _solver = _solution()
-        return getattr(_solver, _function_name)
-    if _function_name in _globals_dict and callable(_globals_dict[_function_name]):
-        return _globals_dict[_function_name]
-    if _solution is not None and hasattr(_solution, _function_name):
-        _solver = _solution()
-        return getattr(_solver, _function_name)
-    return None
-
-def _tracecode_invoke_entry(_function_name, _execution_style, _input_names):
-    import inspect as _tracecode_inspect
-    _callable = _tracecode_resolve_entry_callable(_function_name, _execution_style)
-    if _callable is None:
-        raise NameError(f"Implement {_function_name}(...) or Solution.{_function_name}(...)")
-    _values = {_name: _globals_dict[_name] for _name in _input_names if _name in _globals_dict}
-    _fallback_kwargs = None
-    try:
-        _signature = _tracecode_inspect.signature(_callable)
-    except Exception:
-        _fallback_kwargs = _values
-        _args = []
-        _kwargs = {}
-    else:
-        _args = []
-        _kwargs = {}
-        _has_varargs = any(
-            _parameter.kind is _tracecode_inspect.Parameter.VAR_POSITIONAL
-            for _parameter in _signature.parameters.values()
-        )
-        for _parameter in _signature.parameters.values():
-            if _parameter.name in ('self', 'cls'):
-                continue
-            _kind = _parameter.kind
-            if _kind is _tracecode_inspect.Parameter.VAR_POSITIONAL:
-                if _parameter.name in _values:
-                    _raw = _values[_parameter.name]
-                    if isinstance(_raw, (_builtins.list, _builtins.tuple)):
-                        _args.extend(_raw)
-                    else:
-                        _args.append(_raw)
-                continue
-            if _kind is _tracecode_inspect.Parameter.VAR_KEYWORD:
-                if _parameter.name in _values and isinstance(_values[_parameter.name], _builtins.dict):
-                    _kwargs.update(_values[_parameter.name])
-                continue
-            if _parameter.name not in _values:
-                continue
-            if _kind is _tracecode_inspect.Parameter.POSITIONAL_ONLY:
-                _args.append(_values[_parameter.name])
-            elif _kind is _tracecode_inspect.Parameter.POSITIONAL_OR_KEYWORD and _has_varargs:
-                _args.append(_values[_parameter.name])
-            else:
-                _kwargs[_parameter.name] = _values[_parameter.name]
-    if _fallback_kwargs is not None:
-        return _callable(**_fallback_kwargs)
-    return _callable(*_args, **_kwargs)
-
-def _resolve_inplace_result():
-    for _name in ${inplaceCandidatesLiteral}:
-        if _name in _globals_dict:
-            return _globals_dict.get(_name)
-    return None
+${buildPythonExecutionHelpers({
+      namespaceExpression: "_globals_dict",
+      inplaceCandidatesLiteral,
+      includeMaterializeInput: true,
+    })}
 
 if _max_memory_bytes > 0 and _tracecode_tracemalloc is not None:
     try:
@@ -7218,9 +7236,6 @@ _tracecode_case_limits = _tracecode_input_ast.literal_eval(__tracecode_limits_li
       ? listInputKeys.map(key => `${key} = _dict_to_list(${key})`).join('\n')
       : '';
 
-    const inputArgs = Object.keys(inputs)
-      .map((key) => `${key}=${key}`)
-      .join(', ');
     const inplaceCandidates = ['nums1', 'nums', 'arr', 'array', 'matrix', 'board', 'grid']
       .filter((key) => Object.prototype.hasOwnProperty.call(inputs, key));
     const inplaceCandidatesLiteral = usesPreparedBindings
@@ -7491,221 +7506,10 @@ def _interview_guard_stop():
       ? `
 ${deps.PYTHON_CONVERSION_HELPERS_SNIPPET}
 
-def _tracecode_materialize_custom_input(obj):
-    if isinstance(obj, _builtins.list):
-        return [_tracecode_materialize_custom_input(item) for item in obj]
-    if isinstance(obj, _builtins.tuple):
-        return tuple(_tracecode_materialize_custom_input(item) for item in obj)
-    if isinstance(obj, _builtins.dict):
-        if obj.get('__type__') == 'TreeNode' or 'left' in obj or 'right' in obj:
-            return _dict_to_tree(obj)
-        if obj.get('__type__') == 'ListNode' or 'next' in obj:
-            return _dict_to_list(obj)
-        _type_name = obj.get('__type__') if isinstance(obj.get('__type__'), _builtins.str) else obj.get('__class__')
-        _fields = {key: _tracecode_materialize_custom_input(value) for key, value in obj.items() if key not in ('__type__', '__class__', '__id__')}
-        if isinstance(_type_name, _builtins.str):
-            _fields = {'__type__': _type_name, **_fields}
-        _constructor_fields = {key: value for key, value in _fields.items() if key not in ('__type__', '__class__')}
-        _cls = ${caseNamespaceExpression}.get(_type_name) if isinstance(_type_name, _builtins.str) else None
-        if isinstance(_cls, _builtins.type):
-            try:
-                return _cls(**_constructor_fields)
-            except Exception:
-                pass
-            try:
-                return _cls(*_builtins.list(_constructor_fields.values()))
-            except Exception:
-                pass
-            try:
-                _instance = _cls.__new__(_cls)
-                for _key, _value in _constructor_fields.items():
-                    setattr(_instance, _key, _value)
-                return _instance
-            except Exception:
-                pass
-        return _fields
-    return obj
-
-def _tracecode_materialize_named_inputs(_names):
-    for _name in _names:
-        if _name in ${caseNamespaceExpression}:
-            ${caseNamespaceExpression}[_name] = _tracecode_materialize_custom_input(${caseNamespaceExpression}[_name])
-
-${PYTHON_LITERAL_SHAPE_ANNOTATION_HELPER}
-
-def _tracecode_hydrate_for_annotation(_obj, _annotation):
-    try:
-        import typing as _tracecode_typing
-        import collections.abc as _tracecode_collections_abc
-    except Exception:
-        return _obj
-    if _annotation is None:
-        return _obj
-    if isinstance(_annotation, _builtins.str):
-        _annotation = ${caseNamespaceExpression}.get(_annotation, _annotation)
-    if _annotation in (_builtins.object, getattr(_tracecode_typing, 'Any', None)):
-        return _obj
-    _origin = _tracecode_typing.get_origin(_annotation)
-    _args = _tracecode_typing.get_args(_annotation)
-    if _origin is _tracecode_typing.Union:
-        _non_none = [_arg for _arg in _args if _arg is not type(None)]
-        return _tracecode_hydrate_for_annotation(_obj, _non_none[0]) if len(_non_none) == 1 else _obj
-    if _origin in (_builtins.list, _builtins.tuple, _builtins.set, _builtins.frozenset):
-        if isinstance(_obj, _builtins.list):
-            if _origin is _builtins.tuple and len(_args) > 1 and _args[-1] is not Ellipsis:
-                _items = [
-                    _tracecode_hydrate_for_annotation(
-                        _item,
-                        _args[_index] if _index < len(_args) else None,
-                    )
-                    for _index, _item in enumerate(_obj)
-                ]
-            else:
-                _item_annotation = _args[0] if _args else None
-                _items = [
-                    _tracecode_hydrate_for_annotation(_item, _item_annotation)
-                    for _item in _obj
-                ]
-            if _origin is _builtins.tuple:
-                return tuple(_items)
-            if _origin is _builtins.set:
-                return _builtins.set(_items)
-            if _origin is _builtins.frozenset:
-                return _builtins.frozenset(_items)
-            return _items
-        return _obj
-    if _origin in (_builtins.dict, _tracecode_collections_abc.Mapping, _tracecode_collections_abc.MutableMapping) and isinstance(_obj, _builtins.dict):
-        _key_annotation = _args[0] if len(_args) > 0 else None
-        _value_annotation = _args[1] if len(_args) > 1 else None
-        return {
-            _tracecode_hydrate_for_annotation(_key, _key_annotation): _tracecode_hydrate_for_annotation(_value, _value_annotation)
-            for _key, _value in _obj.items()
-        }
-    if isinstance(_annotation, _builtins.type) and isinstance(_obj, _builtins.dict):
-        if _annotation.__name__ in ('TreeNode', 'ListNode'):
-            return _obj
-        _fields = {key: value for key, value in _obj.items() if key not in ('__type__', '__class__', '__id__')}
-        try:
-            _ctor_hints = _tracecode_typing.get_type_hints(getattr(_annotation, '__init__'), ${caseNamespaceExpression}, ${caseNamespaceExpression})
-        except Exception:
-            _ctor_hints = {}
-        _hydrated_fields = {
-            key: _tracecode_hydrate_for_annotation(value, _ctor_hints.get(key))
-            for key, value in _fields.items()
-        }
-        try:
-            return _annotation(**_hydrated_fields)
-        except Exception:
-            pass
-        try:
-            return _annotation(*_builtins.list(_hydrated_fields.values()))
-        except Exception:
-            pass
-        try:
-            _instance = _annotation.__new__(_annotation)
-            for _key, _value in _hydrated_fields.items():
-                setattr(_instance, _key, _value)
-            return _instance
-        except Exception:
-            return _obj
-    return _obj
-
-def _tracecode_resolve_target_callable(_function_name, _execution_style):
-    _namespace = ${caseNamespaceExpression}
-    _solution = _namespace.get('Solution')
-    if _execution_style == 'solution-method' and _solution is not None and hasattr(_solution, _function_name):
-        return getattr(_solution, _function_name)
-    if _function_name in _namespace and callable(_namespace[_function_name]):
-        return _namespace[_function_name]
-    if _solution is not None and hasattr(_solution, _function_name):
-        return getattr(_solution, _function_name)
-    return None
-
-def _tracecode_hydrate_annotated_inputs(_names, _function_name, _execution_style):
-    try:
-        import typing as _tracecode_typing
-        _callable = _tracecode_resolve_target_callable(_function_name, _execution_style)
-        if _callable is None:
-            return
-        try:
-            _annotations = _tracecode_typing.get_type_hints(_callable, ${caseNamespaceExpression}, ${caseNamespaceExpression})
-        except Exception:
-            _annotations = getattr(_callable, '__annotations__', {}) or {}
-        for _name in _names:
-            if _name in ${caseNamespaceExpression} and _name in _annotations:
-                _annotation = _annotations[_name]
-                if not _tracecode_annotation_preserves_literal_shape(_annotation):
-                    ${caseNamespaceExpression}[_name] = _tracecode_hydrate_for_annotation(${caseNamespaceExpression}[_name], _annotation)
-    except Exception:
-        return
-
-def _tracecode_resolve_entry_callable(_function_name, _execution_style):
-    _namespace = ${caseNamespaceExpression}
-    _solution = _namespace.get('Solution')
-    if _execution_style == 'solution-method' and _solution is not None and hasattr(_solution, _function_name):
-        _solver = _solution()
-        return getattr(_solver, _function_name)
-    if _function_name in _namespace and callable(_namespace[_function_name]):
-        return _namespace[_function_name]
-    if _solution is not None and hasattr(_solution, _function_name):
-        _solver = _solution()
-        return getattr(_solver, _function_name)
-    return None
-
-def _tracecode_invoke_entry(_function_name, _execution_style, _input_names):
-    import inspect as _tracecode_inspect
-    _callable = _tracecode_resolve_entry_callable(_function_name, _execution_style)
-    if _callable is None:
-        raise NameError(f"Implement {_function_name}(...) or Solution.{_function_name}(...)")
-    _namespace = ${caseNamespaceExpression}
-    _values = {_name: _namespace[_name] for _name in _input_names if _name in _namespace}
-    _fallback_kwargs = None
-    try:
-        _signature = _tracecode_inspect.signature(_callable)
-    except Exception:
-        _fallback_kwargs = _values
-        _args = []
-        _kwargs = {}
-    else:
-        _args = []
-        _kwargs = {}
-        _has_varargs = any(
-            _parameter.kind is _tracecode_inspect.Parameter.VAR_POSITIONAL
-            for _parameter in _signature.parameters.values()
-        )
-        for _parameter in _signature.parameters.values():
-            if _parameter.name in ('self', 'cls'):
-                continue
-            _kind = _parameter.kind
-            if _kind is _tracecode_inspect.Parameter.VAR_POSITIONAL:
-                if _parameter.name in _values:
-                    _raw = _values[_parameter.name]
-                    if isinstance(_raw, (_builtins.list, _builtins.tuple)):
-                        _args.extend(_raw)
-                    else:
-                        _args.append(_raw)
-                continue
-            if _kind is _tracecode_inspect.Parameter.VAR_KEYWORD:
-                if _parameter.name in _values and isinstance(_values[_parameter.name], _builtins.dict):
-                    _kwargs.update(_values[_parameter.name])
-                continue
-            if _parameter.name not in _values:
-                continue
-            if _kind is _tracecode_inspect.Parameter.POSITIONAL_ONLY:
-                _args.append(_values[_parameter.name])
-            elif _kind is _tracecode_inspect.Parameter.POSITIONAL_OR_KEYWORD and _has_varargs:
-                _args.append(_values[_parameter.name])
-            else:
-                _kwargs[_parameter.name] = _values[_parameter.name]
-    if _fallback_kwargs is not None:
-        return _callable(**_fallback_kwargs)
-    return _callable(*_args, **_kwargs)
-
-def _resolve_inplace_result():
-    for _name in ${inplaceCandidatesLiteral}:
-        if _name in ${caseNamespaceExpression}:
-            return ${caseNamespaceExpression}.get(_name)
-    return None
+${buildPythonExecutionHelpers({
+      namespaceExpression: caseNamespaceExpression,
+      inplaceCandidatesLiteral,
+    })}
 
 _result = None
 _interview_guard_triggered = False
@@ -7807,216 +7611,11 @@ _tracecode_raw_result
       : `
 ${deps.PYTHON_CONVERSION_HELPERS_SNIPPET}
 
-def _tracecode_materialize_custom_input(obj):
-    if isinstance(obj, _builtins.list):
-        return [_tracecode_materialize_custom_input(item) for item in obj]
-    if isinstance(obj, _builtins.tuple):
-        return tuple(_tracecode_materialize_custom_input(item) for item in obj)
-    if isinstance(obj, _builtins.dict):
-        if obj.get('__type__') == 'TreeNode' or 'left' in obj or 'right' in obj:
-            return _dict_to_tree(obj)
-        if obj.get('__type__') == 'ListNode' or 'next' in obj:
-            return _dict_to_list(obj)
-        _type_name = obj.get('__type__') if isinstance(obj.get('__type__'), _builtins.str) else obj.get('__class__')
-        _fields = {key: _tracecode_materialize_custom_input(value) for key, value in obj.items() if key not in ('__type__', '__class__', '__id__')}
-        if isinstance(_type_name, _builtins.str):
-            _fields = {'__type__': _type_name, **_fields}
-        _constructor_fields = {key: value for key, value in _fields.items() if key not in ('__type__', '__class__')}
-        _cls = globals().get(_type_name) if isinstance(_type_name, _builtins.str) else None
-        if isinstance(_cls, _builtins.type):
-            try:
-                return _cls(**_constructor_fields)
-            except Exception:
-                pass
-            try:
-                return _cls(*_builtins.list(_constructor_fields.values()))
-            except Exception:
-                pass
-            try:
-                _instance = _cls.__new__(_cls)
-                for _key, _value in _constructor_fields.items():
-                    setattr(_instance, _key, _value)
-                return _instance
-            except Exception:
-                pass
-        return _fields
-    return obj
-
-def _tracecode_materialize_named_inputs(_names):
-    for _name in _names:
-        if _name in globals():
-            globals()[_name] = _tracecode_materialize_custom_input(globals()[_name])
-
-${PYTHON_LITERAL_SHAPE_ANNOTATION_HELPER}
-
-def _tracecode_hydrate_for_annotation(_obj, _annotation):
-    try:
-        import typing as _tracecode_typing
-        import collections.abc as _tracecode_collections_abc
-    except Exception:
-        return _obj
-    if _annotation is None:
-        return _obj
-    if isinstance(_annotation, _builtins.str):
-        _annotation = globals().get(_annotation, _annotation)
-    if _annotation in (_builtins.object, getattr(_tracecode_typing, 'Any', None)):
-        return _obj
-    _origin = _tracecode_typing.get_origin(_annotation)
-    _args = _tracecode_typing.get_args(_annotation)
-    if _origin is _tracecode_typing.Union:
-        _non_none = [_arg for _arg in _args if _arg is not type(None)]
-        return _tracecode_hydrate_for_annotation(_obj, _non_none[0]) if len(_non_none) == 1 else _obj
-    if _origin in (_builtins.list, _builtins.tuple, _builtins.set, _builtins.frozenset):
-        if isinstance(_obj, _builtins.list):
-            if _origin is _builtins.tuple and len(_args) > 1 and _args[-1] is not Ellipsis:
-                _items = [
-                    _tracecode_hydrate_for_annotation(
-                        _item,
-                        _args[_index] if _index < len(_args) else None,
-                    )
-                    for _index, _item in enumerate(_obj)
-                ]
-            else:
-                _item_annotation = _args[0] if _args else None
-                _items = [
-                    _tracecode_hydrate_for_annotation(_item, _item_annotation)
-                    for _item in _obj
-                ]
-            if _origin is _builtins.tuple:
-                return tuple(_items)
-            if _origin is _builtins.set:
-                return _builtins.set(_items)
-            if _origin is _builtins.frozenset:
-                return _builtins.frozenset(_items)
-            return _items
-        return _obj
-    if _origin in (_builtins.dict, _tracecode_collections_abc.Mapping, _tracecode_collections_abc.MutableMapping) and isinstance(_obj, _builtins.dict):
-        _key_annotation = _args[0] if len(_args) > 0 else None
-        _value_annotation = _args[1] if len(_args) > 1 else None
-        return {
-            _tracecode_hydrate_for_annotation(_key, _key_annotation): _tracecode_hydrate_for_annotation(_value, _value_annotation)
-            for _key, _value in _obj.items()
-        }
-    if isinstance(_annotation, _builtins.type) and isinstance(_obj, _builtins.dict):
-        if _annotation.__name__ in ('TreeNode', 'ListNode'):
-            return _obj
-        _fields = {key: value for key, value in _obj.items() if key not in ('__type__', '__class__', '__id__')}
-        try:
-            _ctor_hints = _tracecode_typing.get_type_hints(getattr(_annotation, '__init__'), globals(), locals())
-        except Exception:
-            _ctor_hints = {}
-        _hydrated_fields = {
-            key: _tracecode_hydrate_for_annotation(value, _ctor_hints.get(key))
-            for key, value in _fields.items()
-        }
-        try:
-            return _annotation(**_hydrated_fields)
-        except Exception:
-            pass
-        try:
-            return _annotation(*_builtins.list(_hydrated_fields.values()))
-        except Exception:
-            pass
-        try:
-            _instance = _annotation.__new__(_annotation)
-            for _key, _value in _hydrated_fields.items():
-                setattr(_instance, _key, _value)
-            return _instance
-        except Exception:
-            return _obj
-    return _obj
-
-def _tracecode_resolve_target_callable(_function_name, _execution_style):
-    if _execution_style == 'solution-method' and 'Solution' in globals() and hasattr(Solution, _function_name):
-        return getattr(Solution, _function_name)
-    if _function_name in globals() and callable(globals()[_function_name]):
-        return globals()[_function_name]
-    if 'Solution' in globals() and hasattr(Solution, _function_name):
-        return getattr(Solution, _function_name)
-    return None
-
-def _tracecode_hydrate_annotated_inputs(_names, _function_name, _execution_style):
-    try:
-        import typing as _tracecode_typing
-        _callable = _tracecode_resolve_target_callable(_function_name, _execution_style)
-        if _callable is None:
-            return
-        try:
-            _annotations = _tracecode_typing.get_type_hints(_callable, globals(), locals())
-        except Exception:
-            _annotations = getattr(_callable, '__annotations__', {}) or {}
-        for _name in _names:
-            if _name in globals() and _name in _annotations:
-                _annotation = _annotations[_name]
-                if not _tracecode_annotation_preserves_literal_shape(_annotation):
-                    globals()[_name] = _tracecode_hydrate_for_annotation(globals()[_name], _annotation)
-    except Exception:
-        return
-
-def _tracecode_resolve_entry_callable(_function_name, _execution_style):
-    if _execution_style == 'solution-method' and 'Solution' in globals() and hasattr(Solution, _function_name):
-        _solver = Solution()
-        return getattr(_solver, _function_name)
-    if _function_name in globals() and callable(globals()[_function_name]):
-        return globals()[_function_name]
-    if 'Solution' in globals() and hasattr(Solution, _function_name):
-        _solver = Solution()
-        return getattr(_solver, _function_name)
-    return None
-
-def _tracecode_invoke_entry(_function_name, _execution_style, _input_names):
-    import inspect as _tracecode_inspect
-    _callable = _tracecode_resolve_entry_callable(_function_name, _execution_style)
-    if _callable is None:
-        raise NameError(f"Implement {_function_name}(...) or Solution.{_function_name}(...)")
-    _values = {_name: globals()[_name] for _name in _input_names if _name in globals()}
-    _fallback_kwargs = None
-    try:
-        _signature = _tracecode_inspect.signature(_callable)
-    except Exception:
-        _fallback_kwargs = _values
-        _args = []
-        _kwargs = {}
-    else:
-        _args = []
-        _kwargs = {}
-        _has_varargs = any(
-            _parameter.kind is _tracecode_inspect.Parameter.VAR_POSITIONAL
-            for _parameter in _signature.parameters.values()
-        )
-        for _parameter in _signature.parameters.values():
-            if _parameter.name in ('self', 'cls'):
-                continue
-            _kind = _parameter.kind
-            if _kind is _tracecode_inspect.Parameter.VAR_POSITIONAL:
-                if _parameter.name in _values:
-                    _raw = _values[_parameter.name]
-                    if isinstance(_raw, (_builtins.list, _builtins.tuple)):
-                        _args.extend(_raw)
-                    else:
-                        _args.append(_raw)
-                continue
-            if _kind is _tracecode_inspect.Parameter.VAR_KEYWORD:
-                if _parameter.name in _values and isinstance(_values[_parameter.name], _builtins.dict):
-                    _kwargs.update(_values[_parameter.name])
-                continue
-            if _parameter.name not in _values:
-                continue
-            if _kind is _tracecode_inspect.Parameter.POSITIONAL_ONLY:
-                _args.append(_values[_parameter.name])
-            elif _kind is _tracecode_inspect.Parameter.POSITIONAL_OR_KEYWORD and _has_varargs:
-                _args.append(_values[_parameter.name])
-            else:
-                _kwargs[_parameter.name] = _values[_parameter.name]
-    if _fallback_kwargs is not None:
-        return _callable(**_fallback_kwargs)
-    return _callable(*_args, **_kwargs)
-
-def _resolve_inplace_result():
-    for _name in ${inplaceCandidatesLiteral}:
-        if _name in globals():
-            return globals().get(_name)
-    return None
+${buildPythonExecutionHelpers({
+      namespaceExpression: caseNamespaceExpression,
+      annotationLocalsExpression: 'locals()',
+      inplaceCandidatesLiteral,
+    })}
 
 ${inputSetup}
 

@@ -19,6 +19,9 @@ triage logs should not live in this public docs tree.
 - [Java Algorithm Isolation Profile](./java-algorithm-isolation-profile.md)
   Defines artifact-derived admission to retained-JVM correctness batches and
   the fresh-process compatibility boundary.
+- [Python Prepared-Execution Isolation Boundary](./python-prepared-isolation-boundary.md)
+  Defines the fresh-case and state-restoration contract for prepared Python
+  batches.
 - [Project Terminal Sessions](./project-terminal-session.md)
   Documents the terminal UI API for project workspaces.
 - [TraceKernel Workspaces](./tracekernel-workspaces.md)
