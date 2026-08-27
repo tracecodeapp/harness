@@ -15238,11 +15238,17 @@ async function runPreparedRuntimeProgram(
 
   try {
     const runStartedAt = now();
+    const runtimeArgs = preparedProgram.tracing
+      ? [
+          'program.wasm',
+          preparedProgram.inputMode === 'named-batch'
+            ? JSON.stringify([tracingEnabled])
+            : (tracingEnabled ? 'true' : 'false'),
+        ]
+      : ['program.wasm'];
     const program = await runWasi(
       preparedProgram.programModule,
-      preparedProgram.scriptRequest && preparedProgram.tracing
-        ? ['program.wasm', tracingEnabled ? 'true' : 'false']
-        : ['program.wasm'],
+      runtimeArgs,
       new InMemoryFileSystem(),
       { stdinBytes: staticStdinBytesFromText(stdinText) }
     );
@@ -15414,15 +15420,14 @@ async function runPreparedRuntimeProgram(
   }
 }
 
-async function runPreparedTraceRuntimeProgramBatch(
+async function runPreparedCodeRuntimeProgramBatchIsolated(
   preparedProgram,
-  inputBatch,
-  traceEnabledBatch
+  inputBatch
 ) {
   const startedAt = now();
-  if (!preparedProgram.tracing || preparedProgram.inputMode !== 'named-batch') {
+  if (preparedProgram.tracing || preparedProgram.mode !== 'code') {
     throw preparedProgramProtocolError(
-      'C++ mixed prepared tracing requires a named-batch trace artifact.'
+      'C++ isolated prepared code batching requires a code artifact.'
     );
   }
   const normalizedInputBatch = Array.isArray(inputBatch)
@@ -15432,111 +15437,56 @@ async function runPreparedTraceRuntimeProgramBatch(
           : {}
       )
     : [];
-  const normalizedTraceEnabledBatch = Array.isArray(traceEnabledBatch)
-    ? traceEnabledBatch
-    : [];
   if (normalizedInputBatch.length === 0) {
-    throw preparedProgramProtocolError(
-      'C++ mixed prepared tracing requires a non-empty input batch.'
-    );
-  }
-  if (
-    normalizedTraceEnabledBatch.length !== normalizedInputBatch.length ||
-    normalizedTraceEnabledBatch.some((enabled) => typeof enabled !== 'boolean')
-  ) {
-    throw preparedProgramProtocolError(
-      'C++ mixed prepared trace selection must contain one boolean per batch case.'
-    );
+    return {
+      success: true,
+      resultCount: 0,
+      timings: {
+        ...preparedExecutionTimings(0, elapsedMs(startedAt)),
+        batchMode: 'fresh-instance-per-case',
+        batchCaseCount: 0,
+      },
+    };
   }
 
-  try {
-    const runStartedAt = now();
-    const program = await runWasi(
-      preparedProgram.programModule,
-      ['program.wasm', JSON.stringify(normalizedTraceEnabledBatch)],
-      new InMemoryFileSystem(),
-      {
-        stdinBytes: staticStdinBytesFromText(
-          JSON.stringify(normalizedInputBatch)
-        ),
-      }
-    );
-    const runMs = elapsedMs(runStartedAt);
-    const timings = preparedExecutionTimings(
-      runMs,
-      elapsedMs(startedAt)
-    );
-    const parsed = parseProgramStdout(program.stdout, {
-      tracing: true,
-      defaultLine: preparedProgram.signatureLine,
-      allowMissingResult: true,
-    });
-    const batchResult = cppBatchTraceResultsFromParsedOutput(
-      parsed,
-      preparedProgram.source,
-      normalizedInputBatch,
-      timings,
-      startedAt,
-      { traceOptions: preparedProgram.traceOptions }
-    );
-    const consoleOutput = [
-      ...(batchResult.consoleOutput ?? []),
-      ...program.stderr.split(/\r?\n/).filter(Boolean),
-    ];
-    if (program.exitCode !== 0) {
-      const error = program.exitCode === 124
-        ? 'C++ trace budget exceeded.'
-        : (program.stderr || `C++ program exited with code ${program.exitCode}`);
-      return {
-        ...batchResult,
-        success: false,
-        error,
-        consoleOutput,
-        results: (batchResult.results ?? []).map((result) => ({
-          ...result,
-          success: false,
-          error,
-          consoleOutput,
-        })),
-        timings,
-      };
+  let success = true;
+  let firstError;
+  let totalRunMs = 0;
+  for (let caseIndex = 0; caseIndex < normalizedInputBatch.length; caseIndex += 1) {
+    const inputs = normalizedInputBatch[caseIndex];
+    // The module is immutable and retained, but runPreparedRuntimeProgram
+    // constructs a new InMemoryFileSystem, WasiProcess, WebAssembly.Instance,
+    // linear memory, globals, constructors, and C/C++ runtime for every case.
+    const result = await runPreparedRuntimeProgram(preparedProgram, inputs);
+    success = success && result.success === true;
+    if (firstError === undefined && result.success !== true) {
+      firstError = result.error || 'C++ isolated prepared batch execution failed.';
     }
-    return {
-      ...batchResult,
-      consoleOutput,
-      timings,
-    };
-  } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
-    const trace = finalizeRuntimeTrace(
-      [{
-        kind: 'exception',
-        line: preparedProgram.signatureLine,
-        message,
-      }],
-      {
-        ...(preparedProgram.traceOptions || {}),
-        sourceCode: preparedProgram.source,
-      }
-    ).trace;
-    return {
-      success: false,
-      results: normalizedInputBatch.map(() => ({
-        success: false,
-        output: null,
-        error: message,
-        trace,
-        consoleOutput: [],
-        executionTimeMs: elapsedMs(startedAt),
-        lineEventCount: trace.lineEventCount,
-        traceStepCount: trace.traceStepCount,
-        timings: preparedExecutionTimings(0, elapsedMs(startedAt)),
-      })),
-      error: message,
-      consoleOutput: [],
-      timings: preparedExecutionTimings(0, elapsedMs(startedAt)),
-    };
+    totalRunMs += Number(result.timings?.runMs) || 0;
+    // The host keeps the former per-case watchdog while this one logical batch
+    // request is in flight. Completed results are included so a later hung case
+    // cannot erase already-finished correctness evidence when the worker is
+    // retired at the deadline.
+    emitRequestProgress('prepared-code-case-complete', {
+      caseIndex,
+      caseCount: normalizedInputBatch.length,
+      result,
+    });
   }
+  const totalMs = elapsedMs(startedAt);
+  return {
+    success,
+    resultCount: normalizedInputBatch.length,
+    ...(success ? {} : { error: firstError }),
+    timings: {
+      ...preparedExecutionTimings(
+        totalRunMs,
+        totalMs
+      ),
+      batchMode: 'fresh-instance-per-case',
+      batchCaseCount: normalizedInputBatch.length,
+    },
+  };
 }
 
 async function handleExecutePreparedRuntimeProgram(payload) {
@@ -15545,29 +15495,6 @@ async function handleExecutePreparedRuntimeProgram(payload) {
     throw preparedProgramProtocolError(
       `C++ prepared program "${String(payload?.programId || '')}" was prepared for ${preparedProgram.mode}, not ${String(payload?.mode || 'unknown')}.`
     );
-  }
-  if (
-    preparedProgram.tracing &&
-    preparedProgram.inputMode === 'named-batch' &&
-    payload?.traceEnabled === false
-  ) {
-    const batch = await runPreparedTraceRuntimeProgramBatch(
-      preparedProgram,
-      [payload?.inputs || {}],
-      [false]
-    );
-    return batch.results?.[0] ?? {
-      success: false,
-      output: null,
-      error: batch.error || 'C++ trace-disabled execution returned no case.',
-      trace: finalizeRuntimeTrace([], {
-        ...(preparedProgram.traceOptions || {}),
-        sourceCode: preparedProgram.source,
-      }).trace,
-      consoleOutput: batch.consoleOutput || [],
-      executionTimeMs: batch.timings?.totalMs || 0,
-      timings: batch.timings,
-    };
   }
   return runPreparedRuntimeProgram(
     preparedProgram,
@@ -15583,10 +15510,9 @@ async function handleExecutePreparedRuntimeProgramBatch(payload) {
       `C++ prepared program "${String(payload?.programId || '')}" was prepared for ${preparedProgram.mode}, not ${String(payload?.mode || 'unknown')}.`
     );
   }
-  return runPreparedTraceRuntimeProgramBatch(
+  return runPreparedCodeRuntimeProgramBatchIsolated(
     preparedProgram,
-    payload?.inputBatch,
-    payload?.traceEnabledBatch
+    payload?.inputBatch
   );
 }
 

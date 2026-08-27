@@ -127,6 +127,18 @@ export interface WorkerSessionCoreConfig {
   closeSessionOnWorkerError?: boolean;
 }
 
+export interface WorkerSessionSendEffectOptions {
+  /** Per-message deadline; `null` when an enclosing execution deadline governs instead. */
+  readonly timeoutMs?: number | null;
+  readonly onEvent?: RuntimeCommandEventHandler;
+  readonly kernelHttp?: RuntimeKernelHttpBridge;
+  readonly validateLifecycle?: () => void;
+  readonly kernelSyscalls?: RuntimeKernelSyscallBridge;
+  readonly kernelSignals?: RuntimeKernelSignalBridge;
+  /** Observe the exact command id after registration and before postMessage. */
+  readonly onRequestRegistered?: (commandId: string) => void;
+}
+
 export class WorkerSessionCore {
   private session: WorkerSession | null = null;
   private engineLeaseTail: Promise<void> = Promise.resolve();
@@ -450,6 +462,33 @@ export class WorkerSessionCore {
     kernelSyscalls?: RuntimeKernelSyscallBridge,
     kernelSignals?: RuntimeKernelSignalBridge
   ): Effect.Effect<T, Error> {
+    return this.sendMessageEffectWithOptions<T>(type, payload, {
+      timeoutMs,
+      ...(onEvent ? { onEvent } : {}),
+      ...(kernelHttp ? { kernelHttp } : {}),
+      ...(validateLifecycle ? { validateLifecycle } : {}),
+      ...(kernelSyscalls ? { kernelSyscalls } : {}),
+      ...(kernelSignals ? { kernelSignals } : {}),
+    });
+  }
+
+  /** Named-option variant for advanced protocol hooks without positional padding. */
+  sendMessageEffectWithOptions<T>(
+    type: string,
+    payload: unknown,
+    options: WorkerSessionSendEffectOptions = {}
+  ): Effect.Effect<T, Error> {
+    const timeoutMs = options.timeoutMs === undefined
+      ? this.config.defaultMessageTimeoutMs
+      : options.timeoutMs;
+    const {
+      onEvent,
+      kernelHttp,
+      validateLifecycle,
+      kernelSyscalls,
+      kernelSignals,
+      onRequestRegistered,
+    } = options;
     return Effect.gen(this, function* () {
       yield* Effect.try({
         try: () => validateLifecycle?.(),
@@ -482,7 +521,8 @@ export class WorkerSessionCore {
         onEvent,
         kernelHttp,
         kernelSyscalls,
-        kernelSignals
+        kernelSignals,
+        onRequestRegistered
       );
       if (timeoutMs === null) {
         return yield* reply;
@@ -515,7 +555,8 @@ export class WorkerSessionCore {
     onEvent?: RuntimeCommandEventHandler,
     kernelHttp?: RuntimeKernelHttpBridge,
     kernelSyscalls?: RuntimeKernelSyscallBridge,
-    kernelSignals?: RuntimeKernelSignalBridge
+    kernelSignals?: RuntimeKernelSignalBridge,
+    onRequestRegistered?: (commandId: string) => void
   ): Effect.Effect<T, Error> {
     return Effect.async<T, Error>((resume) => {
       const id = String(++this.messageId);
@@ -543,6 +584,7 @@ export class WorkerSessionCore {
       }, { enabled: this.config.debug });
 
       try {
+        onRequestRegistered?.(id);
         worker.postMessage({
           id,
           type,

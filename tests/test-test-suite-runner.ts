@@ -47,6 +47,8 @@ const ORIGINAL_ALL_SCRIPTS = [
   'test:tracecc',
   'test:standalone-boundary',
   'build',
+  'test:cpp-prepared-lifecycle',
+  'test:tracecc-browser',
   'test:packaged-surface',
   'test:language-packages',
   'test:sql-package-surface',

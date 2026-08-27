@@ -70,6 +70,7 @@ export const WORKER_REQUEST_MESSAGES: Readonly<Record<BrowserWorkerProtocolLangu
     'compile-run-batch',
     'prepare-runtime-program',
     'execute-prepared-runtime-program',
+    'execute-prepared-runtime-program-batch',
     'dispose-prepared-runtime-program',
     'execute-with-tracing',
     'execute-trace-batch',

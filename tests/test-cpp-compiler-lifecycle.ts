@@ -1,10 +1,6 @@
 #!/usr/bin/env npx tsx
 
 import { test } from 'node:test';
-import { readFile } from 'node:fs/promises';
-import { dirname, join } from 'node:path';
-import { fileURLToPath } from 'node:url';
-import vm from 'node:vm';
 import { createCppBrowserRuntimeProvider } from '../packages/runtime-cpp/src/browser-runtime-provider';
 import { CppWorkerClient } from '../packages/runtime-cpp/src/cpp-worker-client';
 import { createCppPreparedExecutionProvider } from '../packages/runtime-cpp/src/cpp-prepared-provider';
@@ -119,6 +115,7 @@ class PreparedProtocolWorker {
   static instances: PreparedProtocolWorker[] = [];
   static compileRequests = 0;
   static executions = 0;
+  static batchExecutions = 0;
   static disposals = 0;
 
   onmessage: ((event: MessageEvent<WorkerMessage>) => void) | null = null;
@@ -250,6 +247,47 @@ class PreparedProtocolWorker {
               compileCacheHit: true,
             },
           }));
+      return;
+    }
+    if (message.type === 'execute-prepared-runtime-program-batch') {
+      PreparedProtocolWorker.batchExecutions += 1;
+      const inputBatch = Array.isArray(message.payload?.inputBatch)
+        ? message.payload.inputBatch as Array<{ value?: unknown; hang?: unknown }>
+        : [];
+      queueMicrotask(() => {
+        for (let caseIndex = 0; caseIndex < inputBatch.length; caseIndex += 1) {
+          const inputs = inputBatch[caseIndex]!;
+          if (inputs.hang === true) return;
+          const result = {
+            success: true,
+            output: Number(inputs.value ?? 0),
+            executionTimeMs: 1,
+            consoleOutput: [],
+            timings: {
+              compileMs: 0,
+              wasmCompileMs: 0,
+              runMs: 1,
+              artifactCacheHit: true,
+              compileCacheHit: true,
+            },
+          };
+          this.onmessage?.({
+            data: {
+              id: message.id,
+              type: 'runtime-progress',
+              protocolToken: message.protocolToken,
+              payload: {
+                stage: 'prepared-code-case-complete',
+                detail: { caseIndex, caseCount: inputBatch.length, result },
+              },
+            },
+          } as unknown as MessageEvent<WorkerMessage>);
+        }
+        this.reply(message, {
+          success: true,
+          resultCount: inputBatch.length,
+        });
+      });
       return;
     }
     if (message.type === 'dispose-prepared-runtime-program') {
@@ -482,6 +520,7 @@ async function testPreparedProviderProtocolLifecycle(): Promise<void> {
   PreparedProtocolWorker.instances = [];
   PreparedProtocolWorker.compileRequests = 0;
   PreparedProtocolWorker.executions = 0;
+  PreparedProtocolWorker.batchExecutions = 0;
   PreparedProtocolWorker.disposals = 0;
   let compilerFetches = 0;
   // @ts-expect-error focused Worker test double
@@ -523,19 +562,50 @@ async function testPreparedProviderProtocolLifecycle(): Promise<void> {
     const second = await preparation.program.executeIsolated({
       inputs: { value: 2 },
     });
+    const batch = await preparation.program.executeBatchIsolated?.({
+      inputBatch: [{ value: 3 }, { value: 4 }, { value: 5 }],
+    });
     assertCondition(
       first.kind === 'completed' && first.output === 1 &&
         second.kind === 'completed' && second.output === 2,
       `prepared executions should reuse one program: ${JSON.stringify({ first, second })}`
     );
     assertCondition(
+      batch?.map((result) => result.kind === 'completed' ? result.output : null).join(',') ===
+        '3,4,5' &&
+        PreparedProtocolWorker.batchExecutions === 1,
+      `prepared code batches should cross one Worker request: ${JSON.stringify({
+        batch,
+        batchExecutions: PreparedProtocolWorker.batchExecutions,
+      })}`
+    );
+    const explicitlyLimitedBatch =
+      await preparation.program.executeBatchIsolated?.({
+        inputBatch: [{ value: 6 }, { value: 7 }],
+        limits: { wallClockMs: 25 },
+      });
+    assertCondition(
+      explicitlyLimitedBatch?.map((result) =>
+        result.kind === 'completed' ? result.output : null
+      ).join(',') === '6,7' &&
+        PreparedProtocolWorker.executions === 4 &&
+        PreparedProtocolWorker.batchExecutions === 1,
+      `explicit per-case deadlines must retain one Worker request per case: ${JSON.stringify({
+        explicitlyLimitedBatch,
+        executions: PreparedProtocolWorker.executions,
+        batchExecutions: PreparedProtocolWorker.batchExecutions,
+      })}`
+    );
+    assertCondition(
       PreparedProtocolWorker.compileRequests === 1 &&
         compilerFetches === 1 &&
-        PreparedProtocolWorker.executions === 2,
+        PreparedProtocolWorker.executions === 4 &&
+        PreparedProtocolWorker.batchExecutions === 1,
       `one preparation must compile exactly once regardless of case count: ${JSON.stringify({
         compileRequests: PreparedProtocolWorker.compileRequests,
         compilerFetches,
         executions: PreparedProtocolWorker.executions,
+        batchExecutions: PreparedProtocolWorker.batchExecutions,
       })}`
     );
     await preparation.program.dispose();
@@ -621,6 +691,44 @@ async function testPreparedProviderProtocolLifecycle(): Promise<void> {
         workerCountBeforeTimeoutDispose,
       'disposing a timed-out prepared program must not recreate its worker'
     );
+
+    const batchTimeoutProvider = createCppPreparedExecutionProvider({
+      createWorkerClient: () => createClient({ executionTimeoutMs: 5 }),
+    });
+    const batchTimeoutPreparation = await batchTimeoutProvider.prepareProgram({
+      mode: 'code',
+      code: 'class Solution { public: int hang(int value) { return value; } };',
+      functionName: 'hang',
+      executionStyle: 'solution-method',
+    });
+    assertCondition(
+      batchTimeoutPreparation.kind === 'prepared' &&
+        batchTimeoutPreparation.program.mode === 'code',
+      `batch timeout preparation should succeed: ${JSON.stringify(batchTimeoutPreparation)}`
+    );
+    const timedOutBatch =
+      await batchTimeoutPreparation.program.executeBatchIsolated?.({
+        inputBatch: [
+          { value: 0, hang: true },
+          { value: 1, hang: false },
+        ],
+      });
+    assertCondition(
+      timedOutBatch?.length === 2 &&
+        timedOutBatch.every((result) =>
+          result.kind === 'limit' && result.reason === 'client-timeout'
+        ),
+      `a stuck aggregate batch should return structured limits for every unresolved case: ${JSON.stringify(timedOutBatch)}`
+    );
+    const workerCountBeforeBatchTimeoutDispose =
+      PreparedProtocolWorker.instances.length;
+    await batchTimeoutPreparation.program.dispose();
+    assertCondition(
+      PreparedProtocolWorker.instances.length ===
+        workerCountBeforeBatchTimeoutDispose,
+      'disposing a timed-out prepared batch must not recreate its worker'
+    );
+    batchTimeoutProvider.terminate();
 
     const lifecycleProvider = createCppPreparedExecutionProvider({
       createWorkerClient: () => createClient(),
@@ -794,14 +902,21 @@ async function testTrustedCompilerSerializesConcurrentRequests(): Promise<void> 
   let peakActiveFetches = 0;
   let fetchCalls = 0;
   let releaseFirstFetch!: () => void;
+  let markFirstFetchStarted!: () => void;
   const firstFetchGate = new Promise<void>((resolve) => {
     releaseFirstFetch = resolve;
+  });
+  const firstFetchStarted = new Promise<void>((resolve) => {
+    markFirstFetchStarted = resolve;
   });
   globalThis.fetch = async () => {
     fetchCalls += 1;
     activeFetches += 1;
     peakActiveFetches = Math.max(peakActiveFetches, activeFetches);
-    if (fetchCalls === 1) await firstFetchGate;
+    if (fetchCalls === 1) {
+      markFirstFetchStarted();
+      await firstFetchGate;
+    }
     activeFetches -= 1;
     return new Response(MINIMAL_WASM.slice(), {
       status: 200,
@@ -812,7 +927,7 @@ async function testTrustedCompilerSerializesConcurrentRequests(): Promise<void> 
   try {
     const first = compiler.compileTrusted({ driverSource: 'first' });
     const second = compiler.compileTrusted({ driverSource: 'second' });
-    await new Promise((resolve) => setTimeout(resolve, 0));
+    await firstFetchStarted;
     const queuedFetchCalls = fetchCalls;
     const queuedPeakActiveFetches = peakActiveFetches;
     assertCondition(
@@ -1166,116 +1281,8 @@ async function testCallerAbortCannotRecreateCompilerFrameAfterAsyncCacheKey(): P
   }
 }
 
-async function testCompilerFrameKeepsOnlyTrustedCompilerWarm(): Promise<void> {
-  const testDirectory = dirname(fileURLToPath(import.meta.url));
-  const html = await readFile(join(testDirectory, '..', 'workers', 'cpp', 'cpp-compiler-frame.html'), 'utf8');
-  const source = html.match(/<script type="module">([\s\S]*?)<\/script>/)?.[1];
-  assertCondition(source, 'compiler frame module source should be present');
-
-  const handlers = new Map<string, (event: Record<string, unknown>) => unknown>();
-  const compilerWorkers: FrameCompilerWorker[] = [];
-  class FrameCompilerWorker {
-    onmessage: ((event: { data: WorkerMessage }) => void) | null = null;
-    onerror: ((event: { message?: string }) => void) | null = null;
-    onmessageerror: (() => void) | null = null;
-    terminated = false;
-    constructor(readonly url: string) {
-      compilerWorkers.push(this);
-    }
-    postMessage(message: WorkerMessage): void {
-      queueMicrotask(() => this.onmessage?.({
-        data: {
-          id: message.id,
-          type: 'compile-result',
-          protocolToken: message.protocolToken,
-          payload: { success: true, programBuffer: MINIMAL_WASM.slice().buffer },
-        },
-      }));
-    }
-    terminate(): void {
-      this.terminated = true;
-    }
-  }
-
-  const responses: WorkerMessage[] = [];
-  const parentSource = {
-    postMessage(message: WorkerMessage): void {
-      responses.push(message);
-    },
-  };
-  const context = vm.createContext({
-    console,
-    location: {
-      href: 'https://cdn.example/cpp/compiler-frame.html?tracecodeFrameToken=frame-token&tracecodeParentOrigin=https%3A%2F%2Fapp.example&tracecodeCompilerWorkerUrl=https%3A%2F%2Fcdn.example%2Fcpp%2Fcompiler-worker.js',
-      search: '?tracecodeFrameToken=frame-token&tracecodeParentOrigin=https%3A%2F%2Fapp.example&tracecodeCompilerWorkerUrl=https%3A%2F%2Fcdn.example%2Fcpp%2Fcompiler-worker.js',
-      origin: 'https://cdn.example',
-    },
-    parent: parentSource,
-    Worker: FrameCompilerWorker,
-    URL,
-    URLSearchParams,
-    Date,
-    Math,
-    Promise,
-    ArrayBuffer,
-    Uint8Array,
-    setTimeout,
-    clearTimeout,
-    addEventListener(type: string, handler: (event: Record<string, unknown>) => unknown) {
-      handlers.set(type, handler);
-    },
-  });
-  vm.runInContext(source, context, { filename: 'cpp-compiler-frame.html' });
-  const messageHandler = handlers.get('message');
-  assertCondition(messageHandler, 'compiler frame should install a message handler');
-
-  await messageHandler({
-    origin: 'https://app.example',
-    source: { postMessage() {} },
-    data: {
-      id: 'not-parent',
-      type: 'compile',
-      frameToken: 'frame-token',
-      protocolToken: 'protocol-not-parent',
-      payload: { driverSource: 'not-parent' },
-    },
-  });
-  assertCondition(
-    compilerWorkers.length === 0,
-    'compiler frame must reject same-origin messages that do not come from its parent window'
-  );
-
-  for (const id of ['one', 'two']) {
-    await messageHandler({
-      origin: 'https://app.example',
-      source: parentSource,
-      data: {
-        id,
-        type: 'compile',
-        frameToken: 'frame-token',
-        protocolToken: `protocol-${id}`,
-        payload: { driverSource: id },
-      },
-    });
-  }
-  assertCondition(
-    (compilerWorkers.length as number) === 1,
-    `edited source should reuse one trusted compiler worker: ${compilerWorkers.length}; responses=${JSON.stringify(responses)}`
-  );
-  assertCondition(
-    compilerWorkers[0].url === 'https://cdn.example/cpp/compiler-worker.js',
-    `consumer CDN compiler worker URL should remain bound to the frame origin: ${compilerWorkers[0].url}`
-  );
-  assertCondition(!compilerWorkers[0].terminated, 'healthy compiler worker should stay warm between edited sources');
-  assertCondition(responses.filter((message) => message.type === 'compile-result').length === 2, 'both compiles should complete');
-
-  handlers.get('pagehide')?.({});
-  assertCondition(compilerWorkers[0].terminated, 'page lifecycle teardown should terminate the trusted compiler worker');
-}
-
 async function main(): Promise<void> {
   await testBrowserProviderPreparedLeaseExposure();
-  await testPreparedProviderProtocolLifecycle();
   await testPreparedRunnerRetirementPreservesSharedCompiler();
   await testTrustedCompilerSerializesConcurrentRequests();
   await testContentAddressedArtifactsAndDisposableExecution();
@@ -1284,10 +1291,10 @@ async function main(): Promise<void> {
   await testTimeoutAbortsCompilerAndRetiresExecution();
   await testCallerAbortResetsCompilerAndExecution();
   await testCallerAbortCannotRecreateCompilerFrameAfterAsyncCacheKey();
-  await testCompilerFrameKeepsOnlyTrustedCompilerWarm();
   console.log('C++ compiler lifecycle tests passed');
 }
 
 test('cpp browser provider prewarms assets inside TraceCC without page fetches', testBrowserProviderDefersCompilerWarmupUntilPreparation);
 test('cpp compile promotes queued compiler asset prewarm', testCompilePromotesQueuedCompilerPrewarm);
+test('cpp prepared provider protocol lifecycle', testPreparedProviderProtocolLifecycle);
 test('cpp compiler lifecycle', main);

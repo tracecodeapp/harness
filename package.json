@@ -148,6 +148,7 @@
     "test:csharp-worker-browser-matrix": "pnpm materialize:csharp-role-assets && for engine in chromium firefox webkit; do TSX_TSCONFIG_PATH=tsconfig.base.json TRACECODE_CSHARP_BROWSER_SMOKE=1 TRACECODE_CSHARP_BROWSER_ENGINE=$engine node --import tsx tests/test-csharp-worker-browser.ts && TSX_TSCONFIG_PATH=tsconfig.base.json TRACECODE_CSHARP_BROWSER_ENGINE=$engine node --import tsx tests/test-csharp-prepared-boundary-browser.ts || exit; done",
     "test:cpp-conformance": "pnpm exec tsx --tsconfig tsconfig.base.json tests/test-cpp-conformance.ts",
     "test:cpp-rewriter": "pnpm exec tsx --tsconfig tsconfig.base.json tests/test-cpp-rewriter.ts",
+    "test:cpp-prepared-lifecycle": "TSX_TSCONFIG_PATH=tsconfig.base.json node --import tsx --test tests/test-cpp-compiler-lifecycle.ts",
     "test:cpp-browser-worker": "pnpm run test:tracecc && pnpm run test:tracecc-browser",
     "test:js-runtime": "pnpm exec tsx --tsconfig tsconfig.base.json tests/test-javascript-runtime.ts && pnpm exec tsx --tsconfig tsconfig.base.json tests/test-javascript-worker-lifecycle.ts && pnpm exec tsx --tsconfig tsconfig.base.json tests/test-javascript-authority-browser.ts",
     "test:project": "pnpm exec tsx --tsconfig tsconfig.base.json tests/test-project-workspace.ts && pnpm exec tsx --tsconfig tsconfig.base.json tests/test-tracekernel-journal.ts && pnpm run test:tracekernel-hardening && pnpm run test:process-resource-limits && pnpm run test:external-http",

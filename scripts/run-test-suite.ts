@@ -110,6 +110,8 @@ export const TEST_PHASES: TestPhase[] = [
   {
     name: 'packaged and example tests',
     tasks: [
+      task('test:cpp-prepared-lifecycle', 2),
+      task('test:tracecc-browser', 2),
       task('test:browser-runtime-host', 2, ['all']),
       task('test:java-example-app-packaged', 2, ['all']),
       task('test:example-app-packaged', 2, ['all']),

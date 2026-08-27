@@ -13,11 +13,13 @@
  */
 
 import * as Duration from 'effect/Duration';
+import * as Deferred from 'effect/Deferred';
 import * as Effect from 'effect/Effect';
 import type {
   CodeExecutionResult,
   CodeExecutionBatchResult,
   ExecutionResult,
+  RuntimePreparedCodeBatchCall,
   RuntimePreparedCodeCall,
   RuntimePreparedTraceCall,
   RuntimePreparedTraceBatchCall,
@@ -135,6 +137,20 @@ interface CppRuntimeProgress {
   stage?: string;
   elapsedMs?: number;
   tracing?: boolean;
+  detail?: unknown;
+}
+
+interface CppPreparedCodeBatchProgressDetail {
+  caseIndex?: number;
+  caseCount?: number;
+  result?: RawExecutionPayload;
+}
+
+interface CppPreparedCodeBatchWorkerResult {
+  success?: boolean;
+  resultCount?: number;
+  error?: string;
+  timings?: RuntimeExecutionTimings;
 }
 
 class CppClientTimeoutError extends Error {
@@ -274,6 +290,8 @@ export class CppWorkerClient {
   private readonly compilerFrameUrl?: string;
   private readonly externalCompilerUrl?: string;
   private lastRuntimeProgress: CppRuntimeProgress | null = null;
+  private preparedCodeBatchProgressHandler:
+    ((commandId: string, progress: CppRuntimeProgress) => void) | null = null;
   private readonly activeExternalCompileControllers = new Set<AbortController>();
   private readonly activeCompilerRequestControllers = new Set<AbortController>();
   private readonly activeCompilerFrames = new Set<HTMLIFrameElement>();
@@ -326,7 +344,21 @@ export class CppWorkerClient {
       },
       onCommandMessage: (commandId, type, payload, pending) => {
         if (type === 'runtime-progress') {
-          this.lastRuntimeProgress = payload && typeof payload === 'object' ? (payload as CppRuntimeProgress) : {};
+          const progress = payload && typeof payload === 'object'
+            ? (payload as CppRuntimeProgress)
+            : {};
+          const detail = progress.detail && typeof progress.detail === 'object'
+            ? progress.detail as Record<string, unknown>
+            : undefined;
+          this.lastRuntimeProgress = detail && 'result' in detail
+            ? {
+                ...progress,
+                detail: Object.fromEntries(
+                  Object.entries(detail).filter(([key]) => key !== 'result')
+                ),
+              }
+            : progress;
+          this.preparedCodeBatchProgressHandler?.(commandId, progress);
           return true;
         }
         if (type === 'kernel-syscall') {
@@ -404,7 +436,11 @@ export class CppWorkerClient {
 
   private messageRequiresCompilerAssets(type: string): boolean {
     if (type === 'init' || type === 'status') return false;
-    if (type === 'execute-prepared-runtime-program' || type === 'dispose-prepared-runtime-program') {
+    if (
+      type === 'execute-prepared-runtime-program' ||
+      type === 'execute-prepared-runtime-program-batch' ||
+      type === 'dispose-prepared-runtime-program'
+    ) {
       return false;
     }
     if (this.externalCompilerUrl) return false;
@@ -446,20 +482,29 @@ export class CppWorkerClient {
       Effect.tapError((error) =>
         Effect.sync(() => {
           if (!(error instanceof CppClientTimeoutError)) return;
-          const shouldTerminate = this.shouldTerminateWorkerForTimeout(error.progress ?? null);
-          logRuntimeDiagnostic('warn', {
-            component: 'CppWorkerClient',
-            runtime: 'cpp',
-            phase: 'execution-timeout',
-            message: 'C++ execution timed out; terminating worker.',
-            detail: { timeoutMs, stage, terminateWorker: shouldTerminate, lastProgress: error.progress ?? undefined },
-          }, { enabled: this.debug });
-          if (shouldTerminate) {
-            this.terminateAndReset(error);
-          }
+          this.handleCppExecutionTimeout(error);
         })
       )
     );
+  }
+
+  private handleCppExecutionTimeout(error: CppClientTimeoutError): void {
+    const shouldTerminate = this.shouldTerminateWorkerForTimeout(error.progress ?? null);
+    logRuntimeDiagnostic('warn', {
+      component: 'CppWorkerClient',
+      runtime: 'cpp',
+      phase: 'execution-timeout',
+      message: 'C++ execution timed out; terminating worker.',
+      detail: {
+        timeoutMs: error.timeoutMs,
+        stage: error.stage,
+        terminateWorker: shouldTerminate,
+        lastProgress: error.progress ?? undefined,
+      },
+    }, { enabled: this.debug });
+    if (shouldTerminate) {
+      this.terminateAndReset(error);
+    }
   }
 
   private isClientTimeout(error: unknown): boolean {
@@ -468,6 +513,9 @@ export class CppWorkerClient {
 
   private shouldTerminateWorkerForTimeout(progress: CppRuntimeProgress | null): boolean {
     void progress;
+    // Learner Wasm runs synchronously inside the Worker. Dropping the host-side
+    // request cannot stop a timed-out instance, so every execution timeout must
+    // retire that Worker before another command can be accepted safely.
     return true;
   }
 
@@ -1238,6 +1286,111 @@ export class CppWorkerClient {
     return this.core.runClientEffect(program, signal);
   }
 
+  /**
+   * Keep one Worker request for the case vector without weakening the former
+   * per-case client watchdog. The worker reports each completed case while it
+   * remains busy with the batch; every progress report rearms the host timer.
+   * A case that stops making progress therefore still retires the worker after
+   * one executionTimeoutMs interval, regardless of the vector length.
+   */
+  private async runPreparedCodeBatchExecution(
+    createSendEffect: (
+      onRequestRegistered: (commandId: string) => void
+    ) => Effect.Effect<CppPreparedCodeBatchWorkerResult, Error>,
+    signal: AbortSignal | undefined,
+    expectedLifecycleGeneration: number,
+    expectedCaseCount: number,
+    onCaseCompleted: (caseIndex: number, result: RawExecutionPayload) => void
+  ): Promise<CppPreparedCodeBatchWorkerResult> {
+    // Match runExecution: worker initialization and asset loading are outside
+    // the learner execution budget. Only the prepared-program request itself
+    // consumes the per-case watchdog.
+    await this.core.runClientEffect(
+      this.initGateEffect(expectedLifecycleGeneration),
+      signal
+    );
+
+    let timeoutId: ReturnType<typeof setTimeout> | undefined;
+    let settled = false;
+    let deadlineGate: Deferred.Deferred<never, Error> | undefined;
+    let nextExpectedCaseIndex = 0;
+    let expectedCommandId: string | undefined;
+
+    const clearDeadline = (): void => {
+      if (timeoutId !== undefined) clearTimeout(timeoutId);
+      timeoutId = undefined;
+    };
+    const armDeadline = (): void => {
+      clearDeadline();
+      timeoutId = setTimeout(() => {
+        if (settled) return;
+        const error = new CppClientTimeoutError(
+          `C++ prepared batch case timed out after ${Math.round(this.executionTimeoutMs / 1000)} seconds.`,
+          'compile-run',
+          this.executionTimeoutMs,
+          this.lastRuntimeProgress ?? undefined
+        );
+        this.handleCppExecutionTimeout(error);
+        if (deadlineGate) {
+          Effect.runSync(Deferred.fail(deadlineGate, error));
+        }
+      }, this.executionTimeoutMs);
+    };
+
+    const progressHandler = (
+      commandId: string,
+      progress: CppRuntimeProgress
+    ): void => {
+      if (
+        commandId !== expectedCommandId ||
+        progress.stage !== 'prepared-code-case-complete'
+      ) return;
+      const detail = progress.detail && typeof progress.detail === 'object'
+        ? progress.detail as CppPreparedCodeBatchProgressDetail
+        : undefined;
+      if (
+        detail &&
+        Number.isInteger(detail.caseIndex) &&
+        typeof detail.caseIndex === 'number' &&
+        detail.caseIndex === nextExpectedCaseIndex &&
+        detail.caseIndex < expectedCaseCount &&
+        detail.caseCount === expectedCaseCount &&
+        detail.result &&
+        typeof detail.result === 'object'
+      ) {
+        onCaseCompleted(detail.caseIndex, detail.result);
+        nextExpectedCaseIndex += 1;
+        armDeadline();
+      }
+    };
+
+    if (this.preparedCodeBatchProgressHandler) {
+      throw new Error('C++ prepared batch progress handler is already active.');
+    }
+    this.preparedCodeBatchProgressHandler = progressHandler;
+    this.lastRuntimeProgress = null;
+    const sendEffect = createSendEffect((commandId) => {
+      expectedCommandId = commandId;
+    });
+    const program = Effect.gen(function* () {
+      const gate = yield* Deferred.make<never, Error>();
+      deadlineGate = gate;
+      armDeadline();
+      return yield* Effect.raceFirst(sendEffect, Deferred.await(gate));
+    }).pipe(
+      Effect.ensuring(Effect.sync(clearDeadline))
+    );
+    try {
+      return await this.core.runClientEffect(program, signal);
+    } finally {
+      settled = true;
+      clearDeadline();
+      if (this.preparedCodeBatchProgressHandler === progressHandler) {
+        this.preparedCodeBatchProgressHandler = null;
+      }
+    }
+  }
+
   async prepareRuntimeProgram(
     call: RuntimeProgramPreparationCall
   ): Promise<CppPreparedProgramPreparationResult> {
@@ -1347,6 +1500,90 @@ export class CppWorkerClient {
       } catch (error) {
         if (this.isClientTimeout(error)) return this.timeoutCodeResult(error);
         throw error;
+      }
+    });
+  }
+
+  async executePreparedCodeBatch(
+    handle: CppPreparedProgramHandle,
+    call: RuntimePreparedCodeBatchCall
+  ): Promise<readonly CodeExecutionResult[]> {
+    if (call.inputBatch.length === 0) return [];
+    if (call.limits?.wallClockMs !== undefined) {
+      const results: CodeExecutionResult[] = [];
+      for (const inputs of call.inputBatch) {
+        results.push(await this.executePreparedCode(handle, {
+          inputs,
+          signal: call.signal,
+          limits: call.limits,
+        }));
+      }
+      return results;
+    }
+    return this.runInPreparedExecutionWorker(async (lifecycleGeneration) => {
+      this.assertPreparedProgramHandle(handle, 'code');
+      const completedResults = new Map<number, RawExecutionPayload>();
+      try {
+        const result = await this.runPreparedCodeBatchExecution(
+          (onRequestRegistered) =>
+            this.core.sendMessageEffectWithOptions<CppPreparedCodeBatchWorkerResult>(
+              'execute-prepared-runtime-program-batch',
+              {
+                programId: handle.programId,
+                mode: 'code',
+                inputBatch: call.inputBatch,
+              },
+              {
+                timeoutMs: null,
+                validateLifecycle: () => {
+                  this.assertLifecycleGeneration(lifecycleGeneration);
+                  this.assertPreparedProgramHandle(handle, 'code');
+                },
+                onRequestRegistered,
+              },
+            ),
+          call.signal,
+          lifecycleGeneration,
+          call.inputBatch.length,
+          (caseIndex, caseResult) => {
+            if (caseIndex < call.inputBatch.length) {
+              completedResults.set(caseIndex, caseResult);
+            }
+          }
+        );
+        const reportedResultCount =
+          typeof result.resultCount === 'number' &&
+          Number.isInteger(result.resultCount) &&
+          result.resultCount >= 0
+            ? result.resultCount
+            : undefined;
+        if (
+          reportedResultCount !== call.inputBatch.length ||
+          completedResults.size !== call.inputBatch.length
+        ) {
+          const arityError = reportedResultCount === undefined
+            ? `C++ prepared batch returned missing or invalid resultCount metadata for ${call.inputBatch.length} cases after delivering ${completedResults.size} completed result payloads.`
+            : reportedResultCount === call.inputBatch.length
+              ? `C++ prepared batch returned ${reportedResultCount} results for ${call.inputBatch.length} cases but delivered ${completedResults.size} completed result payloads.`
+              : `C++ prepared batch returned ${reportedResultCount} results for ${call.inputBatch.length} cases.`;
+          throw new Error(
+            result.error ? `${arityError} Worker reported: ${result.error}` : arityError
+          );
+        }
+        return call.inputBatch.map((_inputs, caseIndex) =>
+          liftCodeOutcome(
+            completedResults.get(caseIndex)!,
+            'C++ prepared batch execution failed'
+          )
+        );
+      } catch (error) {
+        if (!this.isClientTimeout(error)) throw error;
+        return call.inputBatch.map((_inputs, caseIndex) => {
+          const completed = completedResults.get(caseIndex);
+          return completed
+            ? liftCodeOutcome(completed, 'C++ prepared batch execution failed')
+            : this.timeoutCodeResult(error);
+        });
       }
     });
   }

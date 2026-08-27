@@ -12,6 +12,7 @@ import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { build } from 'esbuild';
 import { chromium } from 'playwright';
+import { loadEngineRuntimePackages } from '../scripts/runtime-package-assets.mjs';
 import { runCommand, waitForHttp } from './example-app-smoke';
 
 function assertCondition(
@@ -21,41 +22,59 @@ function assertCondition(
   if (!condition) throw new Error(message);
 }
 
-async function main(): Promise<void> {
-  const assetDirectory = process.env.TRACECC_RUNTIME_ASSET_DIR;
-  if (!assetDirectory) {
-    throw new Error('TRACECC_RUNTIME_ASSET_DIR is required.');
+const REQUIRED_TRACECC_ASSETS = [
+  'tracecc-reactor.wasm',
+  'llvm-resources.tar',
+  'tracecode_runtime.hpp',
+  'narrow.pch',
+  'narrow.source.hpp',
+  'narrow.o',
+  'broad.pch',
+  'broad.source.hpp',
+  'broad.o',
+  'map.pch',
+  'map.source.hpp',
+  'map.o',
+] as const;
+
+async function resolveTraceCCAssets(root: string): Promise<{
+  sourceRoot: string;
+  files: readonly { path: string; size: number; sha256: string }[];
+}> {
+  if (process.env.TRACECC_RUNTIME_ASSET_DIR) {
+    const sourceRoot = resolve(process.env.TRACECC_RUNTIME_ASSET_DIR);
+    return {
+      sourceRoot,
+      files: await Promise.all(REQUIRED_TRACECC_ASSETS.map(async (path) => {
+        const bytes = await readFile(join(sourceRoot, path));
+        return {
+          path,
+          size: bytes.byteLength,
+          sha256: createHash('sha256').update(bytes).digest('hex'),
+        };
+      })),
+    };
   }
+  const { tracecc } = await loadEngineRuntimePackages(root);
+  return {
+    sourceRoot: tracecc.sourceRoot,
+    files: tracecc.files.map(({ path, size, sha256 }) => ({ path, size, sha256 })),
+  };
+}
+
+async function main(): Promise<void> {
   const root = resolve(process.cwd());
+  const traceccAssets = await resolveTraceCCAssets(root);
   const tempRoot = await mkdtemp(join(tmpdir(), 'tracecc-browser-runtime-'));
   const workersRoot = join(tempRoot, 'workers');
   const port = 5600 + Math.floor(Math.random() * 200);
   const origin = `http://127.0.0.1:${port}`;
-  const traceccAssetNames = [
-    'tracecc-reactor.wasm',
-    'llvm-resources.tar',
-    'tracecode_runtime.hpp',
-    'narrow.pch',
-    'narrow.source.hpp',
-    'narrow.o',
-    'broad.pch',
-    'broad.source.hpp',
-    'broad.o',
-    'map.pch',
-    'map.source.hpp',
-    'map.o',
-  ];
   const compilerIntegrity = {
-    assets: await Promise.all(
-      traceccAssetNames.map(async (name) => {
-        const bytes = await readFile(join(resolve(assetDirectory), name));
-        return {
-          url: `${origin}/tracecc/${name}`,
-          size: bytes.byteLength,
-          sha256: createHash('sha256').update(bytes).digest('hex'),
-        };
-      })
-    ),
+    assets: traceccAssets.files.map((file) => ({
+      url: `${origin}/tracecc/${file.path}`,
+      size: file.size,
+      sha256: file.sha256,
+    })),
   };
 
   await runCommand(
@@ -71,7 +90,7 @@ async function main(): Promise<void> {
     ],
     root
   );
-  await symlink(resolve(assetDirectory), join(tempRoot, 'tracecc'), 'dir');
+  await symlink(traceccAssets.sourceRoot, join(tempRoot, 'tracecc'), 'dir');
   for (const [entry, output] of [
     [
       'packages/runtime-cpp/src/cpp-worker-client.ts',
@@ -102,6 +121,10 @@ async function main(): Promise<void> {
       platform: 'browser',
       target: 'es2022',
       tsconfig: join(root, 'tsconfig.base.json'),
+      alias: {
+        zlib: join(root, 'packages/tracekernel/src/zlib-browser-shim.ts'),
+        'node:zlib': join(root, 'packages/tracekernel/src/zlib-browser-shim.ts'),
+      },
       define: { 'process.env.NODE_ENV': '"production"' },
     });
   }
@@ -254,6 +277,99 @@ async function main(): Promise<void> {
         'class Solution { public: int add(int a, int b) { return a + b + 1; } };',
         { a: 20, b: 22 }
       );
+      const isolatedBatchPreparation = await provider.prepareProgram({
+        mode: 'code',
+        code: [
+          '#include <cstdio>',
+          '#include <vector>',
+          'int tracecode_global_calls = 0;',
+          'class Solution {',
+          'public:',
+          '  int observe(std::vector<int>& nums, bool hang) {',
+          '    if (hang) { while (true) {} }',
+          '    static int calls = 0;',
+          '    static int* heap_calls = new int(0);',
+          '    calls += 1;',
+          '    *heap_calls += 1;',
+          '    tracecode_global_calls += 1;',
+          '    FILE* prior = std::fopen("/case-state.txt", "r");',
+          '    bool file_leaked = prior != nullptr;',
+          '    if (prior) std::fclose(prior);',
+          '    FILE* written = std::fopen("/case-state.txt", "w");',
+          '    if (written) { std::fputs("case", written); std::fclose(written); }',
+          '    nums.push_back(99);',
+          '    bool state_fresh = calls == 1 && *heap_calls == 1 && tracecode_global_calls == 1 && !file_leaked;',
+          '    return (state_fresh ? 100 : 900) + static_cast<int>(nums.size());',
+          '  }',
+          '};',
+        ].join('\\n'),
+        functionName: 'observe',
+        executionStyle: 'solution-method',
+      });
+      if (
+        isolatedBatchPreparation.kind !== 'prepared' ||
+        isolatedBatchPreparation.program.mode !== 'code' ||
+        typeof isolatedBatchPreparation.program.executeBatchIsolated !== 'function'
+      ) {
+        throw new Error(
+          'TraceCC isolated batch preparation failed: ' +
+            JSON.stringify(isolatedBatchPreparation)
+        );
+      }
+      const callerOwnedNums = [1, 2];
+      const isolatedBatchResults =
+        await isolatedBatchPreparation.program.executeBatchIsolated({
+          inputBatch: [
+            { nums: callerOwnedNums, hang: false },
+            { nums: callerOwnedNums, hang: false },
+            { nums: callerOwnedNums, hang: false },
+          ],
+        });
+      await isolatedBatchPreparation.program.dispose();
+
+      const abortBatchPreparation = await provider.prepareProgram({
+        mode: 'code',
+        code: [
+          'class Solution {',
+          'public:',
+          '  int maybeHang(int value, bool hang) {',
+          '    if (hang) { while (true) {} }',
+          '    return value;',
+          '  }',
+          '};',
+        ].join('\\n'),
+        functionName: 'maybeHang',
+        executionStyle: 'solution-method',
+      });
+      if (
+        abortBatchPreparation.kind !== 'prepared' ||
+        abortBatchPreparation.program.mode !== 'code' ||
+        typeof abortBatchPreparation.program.executeBatchIsolated !== 'function'
+      ) {
+        throw new Error(
+          'TraceCC abort batch preparation failed: ' +
+            JSON.stringify(abortBatchPreparation)
+        );
+      }
+      const abortController = new AbortController();
+      const abortedBatchPromise =
+        abortBatchPreparation.program.executeBatchIsolated({
+          inputBatch: [
+            { value: 1, hang: false },
+            { value: 2, hang: true },
+            { value: 3, hang: false },
+          ],
+          signal: abortController.signal,
+        }).then(
+          () => ({ resolved: true, name: '' }),
+          (error) => ({
+            resolved: false,
+            name: error instanceof Error ? error.name : '',
+          })
+        );
+      setTimeout(() => abortController.abort(), 25);
+      const abortedBatch = await abortedBatchPromise;
+      await abortBatchPreparation.program.dispose();
       const mixedTraceClient = new CppWorkerClient(workerOptions);
       await mixedTraceClient.init();
       const mixedTracePreparation = await mixedTraceClient.prepareRuntimeProgram({
@@ -503,6 +619,9 @@ async function main(): Promise<void> {
           maxGapMs: firstHeartbeat.maxGapMs,
         },
         edited,
+        isolatedBatchResults,
+        callerOwnedNums,
+        abortedBatch,
         mixedTraceResults,
         scriptTraceResults,
         invalidMixedTraceSelection,
@@ -558,6 +677,13 @@ async function main(): Promise<void> {
         elapsedMs: number;
         timings?: Record<string, unknown>;
       };
+      isolatedBatchResults: Array<{
+        kind: string;
+        output?: unknown;
+        timings?: Record<string, unknown>;
+      }>;
+      callerOwnedNums: number[];
+      abortedBatch: { resolved: boolean; name: string };
       mixedTraceResults: Array<{
         kind: string;
         output?: unknown;
@@ -625,6 +751,22 @@ async function main(): Promise<void> {
     assertCondition(
       result.edited.kind === 'completed' && result.edited.output === 43,
       `TraceCC edited execution failed: ${JSON.stringify(result)}`
+    );
+    assertCondition(
+      result.isolatedBatchResults.length === 3 &&
+        result.isolatedBatchResults.every((entry) =>
+          entry.kind === 'completed' &&
+          entry.output === 103 &&
+          entry.timings?.compileMs === 0 &&
+          entry.timings?.artifactCacheHit === true
+        ) &&
+        result.callerOwnedNums.length === 2,
+      `TraceCC code batching must retain fresh globals, heap, filesystem, module memory, and caller inputs: ${JSON.stringify(result)}`
+    );
+    assertCondition(
+      result.abortedBatch.resolved === false &&
+        result.abortedBatch.name === 'AbortError',
+      `TraceCC batch cancellation must retire the active Worker and preserve AbortError: ${JSON.stringify(result.abortedBatch)}`
     );
     assertCondition(
       result.mixedTraceResults.length === 3 &&
