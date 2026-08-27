@@ -331,6 +331,16 @@ public class Solution
         return local;
     }
 }`;
+      const parenthesizedFrameworkStaticWriteSource = `
+using System.Text.RegularExpressions;
+public class Solution
+{
+    public int Set(int value)
+    {
+        (Regex.CacheSize) = value;
+        return Regex.CacheSize;
+    }
+}`;
       const listNodeSource = `
 public class Solution
 {
@@ -731,6 +741,17 @@ public class Solution
         {
           mode: 'code',
           code: deconstructedFrameworkStaticWriteSource,
+          functionName: 'Set',
+          executionStyle: 'solution-method',
+          assetBaseUrl: compilerBaseUrl,
+          timeoutMs: 10_000,
+        }
+      );
+      const parenthesizedFrameworkStaticWritePrepared = await compiler.send(
+        'prepare-program',
+        {
+          mode: 'code',
+          code: parenthesizedFrameworkStaticWriteSource,
           functionName: 'Set',
           executionStyle: 'solution-method',
           assetBaseUrl: compilerBaseUrl,
@@ -1182,6 +1203,7 @@ public class Solution
         concurrentBlockingPrepared,
         directFrameworkStaticWritePrepared,
         deconstructedFrameworkStaticWritePrepared,
+        parenthesizedFrameworkStaticWritePrepared,
         listNodePrepared,
         treeNodePrepared,
         injectedRuntimeHelperPrepared,
@@ -1379,6 +1401,7 @@ public class Solution
     for (const [label, prepared] of [
       ['direct', result.directFrameworkStaticWritePrepared],
       ['deconstructed', result.deconstructedFrameworkStaticWritePrepared],
+      ['parenthesized', result.parenthesizedFrameworkStaticWritePrepared],
     ] as const) {
       assertCondition(
         prepared.success &&
