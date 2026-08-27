@@ -62,6 +62,80 @@ test('execution timeout recognition survives duplicated package constructors', (
   );
 });
 
+test('a retired worker error cannot reject or close the replacement generation', async () => {
+  type PostedRequest = { id: string; protocolToken: string };
+  let resolveReplacementRequest!: (request: PostedRequest) => void;
+  const replacementRequest = new Promise<PostedRequest>((resolve) => {
+    resolveReplacementRequest = resolve;
+  });
+  const workers: Array<{
+    onmessage: ((event: MessageEvent) => void) | null;
+    onerror: ((event: ErrorEvent) => void) | null;
+    posted: unknown[];
+    terminateCount: number;
+    postMessage(message: unknown): void;
+    terminate(): void;
+  }> = [];
+  const core = new WorkerSessionCore({
+    runtimeLabel: 'Test',
+    component: 'WorkerSessionCoreTest',
+    runtime: 'test',
+    debug: false,
+    readyTimeoutMs: 100,
+    defaultMessageTimeoutMs: 100,
+    isSupported: () => true,
+    closeSessionOnWorkerError: true,
+    createWorker: () => {
+      const generation = workers.length;
+      const worker = {
+        onmessage: null as ((event: MessageEvent) => void) | null,
+        onerror: null as ((event: ErrorEvent) => void) | null,
+        posted: [] as unknown[],
+        terminateCount: 0,
+        postMessage(message: unknown) {
+          this.posted.push(message);
+          if (generation === 1) resolveReplacementRequest(message as PostedRequest);
+        },
+        terminate() {
+          this.terminateCount += 1;
+        },
+      };
+      workers.push(worker);
+      return worker;
+    },
+  });
+
+  const retiredSession = core.getOrCreateSession();
+  const retiredWorker = workers[0]!;
+  retiredWorker.onmessage?.({ data: { type: 'worker-ready' } } as MessageEvent);
+  await retiredSession.ready.promise;
+  core.closeSession(new WorkerTerminatedError('reset'));
+
+  const replacementSession = core.getOrCreateSession();
+  const replacementWorker = workers[1]!;
+  replacementWorker.onmessage?.({ data: { type: 'worker-ready' } } as MessageEvent);
+  await replacementSession.ready.promise;
+
+  const replacementReply = core.sendMessage<{ generation: string }>('execute');
+  const request = await replacementRequest;
+
+  retiredWorker.onerror?.({ message: 'late retired crash' } as ErrorEvent);
+
+  assert.equal(core.currentSession, replacementSession, 'the late error must not close the replacement session');
+  assert.equal(replacementWorker.terminateCount, 0, 'the replacement worker must remain alive');
+  assert.equal(core.pendingMessages.size, 1, 'the replacement request must remain pending');
+
+  replacementWorker.onmessage?.({
+    data: {
+      id: request.id,
+      type: 'result',
+      protocolToken: request.protocolToken,
+      payload: { generation: 'replacement' },
+    },
+  } as MessageEvent);
+  assert.deepEqual(await replacementReply, { generation: 'replacement' });
+});
+
 test('reusable worker leases serialize until kernel release and destroy through the session scope', async () => {
   let terminateCount = 0;
   const core = new WorkerSessionCore({

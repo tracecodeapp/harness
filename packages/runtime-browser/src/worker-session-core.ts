@@ -252,6 +252,11 @@ export class WorkerSessionCore {
     };
 
     worker.onmessage = (event: MessageEvent<WorkerSessionMessage>) => {
+      // A terminated Worker may still deliver already-queued callbacks. Once
+      // its session is no longer current, none of those callbacks may observe
+      // or mutate the replacement generation's shared request registry.
+      if (this.session !== session) return;
+
       const { id, type, payload, protocolToken } = event.data;
 
       if (type === 'worker-ready') {
@@ -310,6 +315,11 @@ export class WorkerSessionCore {
     };
 
     worker.onerror = (error) => {
+      // `terminate()` does not retract callbacks that the browser already
+      // queued. Fence the handler by session identity so a late crash from a
+      // retired worker cannot reject requests or close a newer generation.
+      if (this.session !== session) return;
+
       logRuntimeDiagnostic('error', {
         component: this.config.component,
         runtime: this.config.runtime,
