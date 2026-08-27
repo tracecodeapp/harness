@@ -113,6 +113,28 @@ assert.equal(
   'asset-backed links must honor the consumer runtime asset root'
 );
 
+const javascript = getLanguageRuntimeOpenSourceInfo('javascript');
+assert.ok(
+  javascript.components.some((component) => component.name === 'ses'),
+  'JavaScript runtime metadata must include the SES package bundled by the worker'
+);
+assert.ok(
+  javascript.components.some((component) => component.name === 'acorn'),
+  'JavaScript runtime metadata must include the SES parser dependency'
+);
+assert.ok(
+  javascript.components.some((component) => component.name === '@endo/cache-map'),
+  'JavaScript runtime metadata must include SES bundled Endo dependencies'
+);
+assert.ok(
+  javascript.components.some((component) => component.name === '@endo/env-options'),
+  'JavaScript runtime metadata must include SES bundled Endo dependencies'
+);
+assert.ok(
+  javascript.components.some((component) => component.name === '@endo/immutable-arraybuffer'),
+  'JavaScript runtime metadata must include SES bundled Endo dependencies'
+);
+
 const rawPython = LANGUAGE_RUNTIME_OPEN_SOURCE_INFOS.python;
 const rawLicense = rawPython.components[0]?.resources.find((resource) => resource.kind === 'license');
 assert.ok(rawLicense && 'assetPath' in rawLicense, 'generated metadata must retain portable asset paths');

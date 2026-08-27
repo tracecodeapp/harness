@@ -131,6 +131,7 @@ const PACKAGE_CHECKS: PackageCheck[] = [
       'dist/project-browser.cjs',
       'dist/project-browser.d.ts',
       'workers/javascript-worker.js',
+      'workers/javascript-ses-algorithm-worker.js',
       'workers/javascript-project-worker.js',
       'workers/vendor/typescript.js',
       'workers/vendor/javascript-libraries.js',

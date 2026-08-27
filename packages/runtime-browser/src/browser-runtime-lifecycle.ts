@@ -266,21 +266,26 @@ export function createBrowserRuntimeExecutionHostSlot(
 
   const host = createBrowserExecutionWorkerHost(context.options.executionHost);
   try {
-    const workerUrls = new Map<Language, string>([
-      ['python', context.assets.pythonWorker],
-      ['javascript', context.assets.javascriptWorker],
-      ['typescript', context.assets.javascriptWorker],
-      ['java', context.assets.javaWorker],
-      ['csharp', context.assets.csharpWorker],
-      ['cpp', context.assets.cppWorker],
+    const workerUrls = new Map<Language, readonly string[]>([
+      ['python', [context.assets.pythonWorker]],
+      // Optional provider assets are validated by the execution host when the
+      // provider actually constructs them. Keeping the default-off SES Worker
+      // out of this eager list avoids rejecting deployments that do not ship it.
+      ['javascript', [context.assets.javascriptWorker]],
+      ['typescript', [context.assets.javascriptWorker]],
+      ['java', [context.assets.javaWorker]],
+      ['csharp', [context.assets.csharpWorker]],
+      ['cpp', [context.assets.cppWorker]],
     ]);
     for (const language of context.executionHostProviders) {
-      const workerUrl = new URL(workerUrls.get(language)!, `${host.origin}/`);
-      if (workerUrl.origin !== host.origin) {
-        throw new Error(
-          `${language} worker origin ${JSON.stringify(workerUrl.origin)} must match ` +
-            `executionHost origin ${JSON.stringify(host.origin)}.`
-        );
+      for (const candidate of workerUrls.get(language)!) {
+        const workerUrl = new URL(candidate, `${host.origin}/`);
+        if (workerUrl.origin !== host.origin) {
+          throw new Error(
+            `${language} worker origin ${JSON.stringify(workerUrl.origin)} must match ` +
+              `executionHost origin ${JSON.stringify(host.origin)}.`
+          );
+        }
       }
     }
     return {

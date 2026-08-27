@@ -112,6 +112,8 @@ export interface BrowserRuntimeAssetsByRuntime {
   };
   javascript: {
     worker: BrowserRuntimeAssetDescriptor;
+    /** Optional correctness-only retained SES module Worker. */
+    algorithmWorker?: BrowserRuntimeAssetDescriptor;
     projectWorker: BrowserRuntimeAssetDescriptor;
     libraries?: BrowserRuntimeAssetDescriptor;
   };
@@ -181,6 +183,7 @@ export interface BrowserRuntimeAssets {
   pythonRuntimeCore: string;
   pythonSnippets: string;
   javascriptWorker: string;
+  javascriptAlgorithmWorker: string;
   javascriptProjectWorker: string;
   javaWorker: string;
   csharpWorker: string;
@@ -210,6 +213,7 @@ export const DEFAULT_BROWSER_RUNTIME_ASSET_RELATIVE_PATHS: Readonly<BrowserRunti
   pythonRuntimeCore: 'python/runtime-core.js',
   pythonSnippets: 'generated-python-harness-snippets.js',
   javascriptWorker: 'javascript-worker.js',
+  javascriptAlgorithmWorker: 'javascript-ses-algorithm-worker.js',
   javascriptProjectWorker: 'javascript-project-worker.js',
   // The Java runtime bridge extends the canonical Classic protocol and imports
   // java-worker.js as its sibling, so deployments must continue shipping both.
@@ -237,7 +241,7 @@ const RUNTIME_ASSET_NAMES = Object.freeze({
     'packages',
     'runtimeImage',
   ],
-  javascript: ['worker', 'projectWorker', 'libraries'],
+  javascript: ['worker', 'algorithmWorker', 'projectWorker', 'libraries'],
   typescript: ['compiler'],
   java: ['worker'],
   csharp: [
@@ -298,7 +302,7 @@ const REQUIRED_RUNTIME_ASSET_NAMES = Object.freeze({
 
 const RUNTIME_LEGACY_ASSET_KEYS = Object.freeze({
   python: ['pythonWorker', 'pythonRuntimeCore', 'pythonSnippets'],
-  javascript: ['javascriptWorker', 'javascriptProjectWorker'],
+  javascript: ['javascriptWorker', 'javascriptAlgorithmWorker', 'javascriptProjectWorker'],
   typescript: ['typescriptCompiler'],
   java: ['javaWorker'],
   csharp: [
@@ -1150,6 +1154,11 @@ export function resolveBrowserRuntimeAssets(options: {
       assets.javascriptWorker,
       DEFAULT_BROWSER_RUNTIME_ASSET_RELATIVE_PATHS.javascriptWorker,
       manifestAssetUrl(runtimeManifests, 'javascript', 'worker')
+    ),
+    javascriptAlgorithmWorker: resolve(
+      assets.javascriptAlgorithmWorker,
+      DEFAULT_BROWSER_RUNTIME_ASSET_RELATIVE_PATHS.javascriptAlgorithmWorker,
+      manifestAssetUrl(runtimeManifests, 'javascript', 'algorithmWorker')
     ),
     javascriptProjectWorker: resolve(
       assets.javascriptProjectWorker,

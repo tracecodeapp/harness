@@ -77,6 +77,7 @@ async function main(t: TestContext): Promise<void> {
     'python/pyodide-0.29.3/snapshots/webkit.bin',
     'shared/runtime-kernel-policy-classic.js',
     'javascript-worker.js',
+    'javascript-ses-algorithm-worker.js',
     'javascript-project-worker.js',
     'java-worker.js',
     'java-runtime-worker.js',
@@ -209,6 +210,10 @@ async function main(t: TestContext): Promise<void> {
   const rootEntries = await readdir(targetDir);
   assertCondition(rootEntries.includes('python-worker.js'), 'Asset sync should flatten the Python worker into the target root');
   assertCondition(rootEntries.includes('javascript-worker.js'), 'Asset sync should flatten the JavaScript worker into the target root');
+  assertCondition(
+    rootEntries.includes('javascript-ses-algorithm-worker.js'),
+    'Asset sync should flatten the JavaScript SES algorithm worker into the target root'
+  );
   assertCondition(
     rootEntries.includes('javascript-project-worker.js'),
     'Asset sync should flatten the JavaScript project worker into the target root'
@@ -347,6 +352,10 @@ async function main(t: TestContext): Promise<void> {
   );
   assertCondition(!filteredEntries.includes('javascript-worker.js'), 'Filtered Python sync should not copy JavaScript assets');
   assertCondition(
+    !filteredEntries.includes('javascript-ses-algorithm-worker.js'),
+    'Filtered Python sync should not copy JavaScript SES algorithm assets'
+  );
+  assertCondition(
     !filteredEntries.includes('javascript-project-worker.js'),
     'Filtered Python sync should not copy JavaScript project assets'
   );
@@ -364,6 +373,7 @@ async function main(t: TestContext): Promise<void> {
   }
   for (const relativePath of [
     'javascript-worker.js',
+    'javascript-ses-algorithm-worker.js',
     'javascript-project-worker.js',
     'shared/runtime-kernel-policy-classic.js',
     'vendor/typescript.js',

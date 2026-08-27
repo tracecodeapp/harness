@@ -54,6 +54,7 @@ const SCANNED_FILES = [
   'packages/runtime-python/src/python-harness-template.ts',
   'packages/runtime-python/src/python-harness.ts',
   'workers/javascript/javascript-worker.js',
+  'workers/javascript/javascript-ses-algorithm-worker.js',
   'workers/java/java-worker.js',
   'workers/java/java-source-augmentations.js',
   'workers/csharp/csharp-worker.js',

@@ -290,12 +290,18 @@ importers:
       '@tracecode/tracekernel':
         specifier: workspace:*
         version: link:../tracekernel
+      acorn:
+        specifier: 8.16.0
+        version: 8.16.0
       effect:
         specifier: ^3.22.0
         version: 3.22.0
       lodash:
         specifier: 4.17.21
         version: 4.17.21
+      ses:
+        specifier: 2.3.0
+        version: 2.3.0
       typescript:
         specifier: ^5.0.0
         version: 5.9.3
@@ -413,6 +419,15 @@ packages:
 
   '@electric-sql/pglite@0.5.2':
     resolution: {integrity: sha512-y6ySdFE7FQB7BkVaSNaPINgY7mXCyvi+3GQB5ySX9WGwgrdh31WXMP5RM40oAyYff47lIr7xdcW8UbCW5NHDmw==}
+
+  '@endo/cache-map@1.1.0':
+    resolution: {integrity: sha512-owFGshs/97PDw9oguZqU/px8Lv1d0KjAUtDUiPwKHNXRVUE/jyettEbRoTbNJR1OaI8biMn6bHr9kVJsOh6dXw==}
+
+  '@endo/env-options@1.1.11':
+    resolution: {integrity: sha512-p9OnAPsdqoX4YJsE98e3NBVhIr2iW9gNZxHhAI2/Ul5TdRfoOViItzHzTqrgUVopw6XxA1u1uS6CykLMDUxarA==}
+
+  '@endo/immutable-arraybuffer@2.0.0':
+    resolution: {integrity: sha512-xvfJvo4CgETh6UjSKwhNsFLZrqrTf2k4ZFpcprEN2UtCQRSOk+CcLP70kFbrOesB2Z/c1z9MaUZDS1JY6IlnUg==}
 
   '@esbuild/aix-ppc64@0.27.3':
     resolution: {integrity: sha512-9fJMTNFTWZMh5qwrBItuziu834eOCUcEqymSH7pY+zoMVEZg3gcPuBNxH1EvfVYe9h0x/Ptw8KBzv7qxb7l8dg==}
@@ -1186,6 +1201,9 @@ packages:
     engines: {node: '>=10'}
     hasBin: true
 
+  ses@2.3.0:
+    resolution: {integrity: sha512-qd3iWzDqGKllI2FmExKsWLrJwt+6COWb8jUdzaCn8Cq5OTeoXdQ62Gn/xLy0GWLORC3du6yBAVe/V0B0dLVKew==}
+
   simple-concat@1.0.1:
     resolution: {integrity: sha512-cSFtAPtRhljv69IK0hTVZQ+OfE9nePi/rtJmw5UjHeVyVroEqJXP1sFztKUy1qU+xvz3u/sfYJLa947b7nAN2Q==}
 
@@ -1417,6 +1435,12 @@ snapshots:
   '@datastructures-js/trie@4.2.3': {}
 
   '@electric-sql/pglite@0.5.2': {}
+
+  '@endo/cache-map@1.1.0': {}
+
+  '@endo/env-options@1.1.11': {}
+
+  '@endo/immutable-arraybuffer@2.0.0': {}
 
   '@esbuild/aix-ppc64@0.27.3':
     optional: true
@@ -2110,6 +2134,12 @@ snapshots:
 
   semver@7.8.0:
     optional: true
+
+  ses@2.3.0:
+    dependencies:
+      '@endo/cache-map': 1.1.0
+      '@endo/env-options': 1.1.11
+      '@endo/immutable-arraybuffer': 2.0.0
 
   simple-concat@1.0.1:
     optional: true
