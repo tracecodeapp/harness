@@ -262,7 +262,7 @@ async function main(): Promise<void> {
       );
       const nodeReference = result.nodeReferenceParity?.values[0] as {
         __id__?: unknown;
-        next?: { __id__?: unknown };
+        next?: { __id__?: unknown; next?: unknown } | null;
         mirror?: { __ref__?: unknown };
       } | undefined;
       assertCondition(
