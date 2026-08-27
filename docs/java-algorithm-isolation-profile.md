@@ -99,33 +99,9 @@ and the next case starts in a new process. Learner exceptions, incorrect
 outputs, trace limits, and timeouts do not skip later correctness cases.
 Compatibility artifacts start with that hard process boundary on every case.
 
-## Benchmarking
+## Regression coverage
 
-The benchmark exercises `createBrowserJudgeHost` and the public Judge API in a
-real browser. It compares bytecode-equivalent 100-case workloads whose only
-material difference is an unreachable ambient system-property reference that
-forces the compatibility tier:
-
-```sh
-TRACECODE_TRACEJVM_ROOT=/path/to/pinned-tracejvm-layout \
-TRACECODE_JAVA_BENCHMARK_CASES=100 \
-TRACECODE_JAVA_BENCHMARK_ROUNDS=3 \
-node --import tsx scripts/benchmark-browser-java-algorithm-isolation.ts
-```
-
-This measures the learner-visible compile-and-correctness boundary, including
-runtime preparation and completion of all cases. It does not measure a local
-runner or call the prepared provider directly.
-
-On the development Mac used for the final branch, three alternating 10-case
-rounds produced a 1,528 ms fast-tier median and a 2,865 ms compatibility-tier
-median. Three alternating 100-case rounds produced a 2,834 ms fast-tier median
-and a 17,576 ms compatibility-tier median. Both tiers passed every case. The
-100-case result is a 6.20x boundary improvement, not a cross-machine or
-competitor claim; publishable numbers should be rerun on the named release
-artifact and target hardware.
-
-The browser regression suite also executes adversarial state probes. Learner
+The browser regression suite exercises adversarial state probes. Learner
 statics are reset by the fresh application class loader. Programs referencing
 system properties, background threads, modules, class loaders, or files are
 classified into the compatibility tier; two consecutive cases verify that none
@@ -137,9 +113,3 @@ bytecode. Real browser probes also cover `String.intern` non-leakage,
 unpredictable generated-shell identities, `$`-shaped learner lookalikes, and
 two sequential single-case trace requests through distinct outer kernel
 channels.
-
-A still faster design could invoke Java once for the whole batch. Harness does
-not use that shortcut: without engine-owned instruction budgets or safe
-per-invocation cancellation, one infinite learner case could prevent recovery
-and poison every later case. A single-invocation tier requires a corresponding
-TraceJVM engine contract, not a weaker Judge timeout.

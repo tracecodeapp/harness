@@ -416,49 +416,10 @@ async function runInFreshTraceJVMProcess(client, request, programId) {
     ...(host.kernelBound ? { host } : {}),
   });
   try {
-    for (const file of host.kernelBound ? processFiles ?? [] : []) {
-      const normalizedPath = `/${String(file.path).replace(/^\/+/, '')}`;
-      const parentPath = normalizedPath.slice(
-        0,
-        Math.max(1, normalizedPath.lastIndexOf('/'))
-      );
-      await host.dispatch({
-        service: 'posix',
-        operation: 'mkdir',
-        payload: {
-          path: parentPath,
-          options: { recursive: true },
-        },
-      });
-      const opened = await host.dispatch({
-        service: 'posix',
-        operation: 'open',
-        payload: {
-          path: normalizedPath,
-          options: {
-            access: 'write',
-            create: true,
-            truncate: true,
-          },
-        },
-      });
-      try {
-        await host.dispatch({
-          service: 'posix',
-          operation: 'write',
-          payload: {
-            fd: opened.fd,
-            bytes: file.content,
-          },
-        });
-      } finally {
-        await host.dispatch({
-          service: 'posix',
-          operation: 'close',
-          payload: { fd: opened.fd },
-        });
-      }
-    }
+    await stageTraceJVMKernelFiles(
+      host,
+      host.kernelBound ? processFiles : []
+    );
     return await process.run(request);
   } finally {
     process.dispose();
@@ -860,7 +821,7 @@ function parseTraceJVMClassFile(content) {
       descriptor: utf8(nameAndType.right),
     });
   }
-  const accessFlags = u2();
+  u2();
   const thisClass = u2();
   skip(2);
   const interfacesCount = u2();
@@ -887,7 +848,6 @@ function parseTraceJVMClassFile(content) {
   }
   skipAttributes();
   return {
-    accessFlags,
     className: className(thisClass),
     declaresNativeMethod,
     references,
@@ -898,41 +858,38 @@ function classifyTraceJVMAlgorithmProgram(
   program,
   generatedEntryClasses = []
 ) {
-  const parsedClasses = [];
   const reasons = new Set();
-  for (const file of program?.files ?? []) {
-    if (!String(file?.path ?? '').endsWith('.class')) continue;
-    try {
-      parsedClasses.push(parseTraceJVMClassFile(file.content));
-    } catch (error) {
-      reasons.add(
-        `classfile-unverifiable:${String(file?.path ?? '<unknown>')}:` +
-        `${error instanceof Error ? error.message : String(error)}`
-      );
-    }
-  }
   const generatedEntryRoots = new Set(
     generatedEntryClasses
       .map((entryClass) => String(entryClass ?? '').replaceAll('.', '/'))
       .filter(Boolean)
   );
   let scannedClasses = 0;
-  for (const entry of parsedClasses) {
-    const generated = [...generatedEntryRoots].some(
-      (root) => entry.className === root || entry.className.startsWith(`${root}$`)
-    );
-    if (generated) continue;
-    scannedClasses += 1;
-    if (entry.declaresNativeMethod) {
-      reasons.add(`native-method:${entry.className}`);
-    }
-    for (const reference of entry.references) {
-      const reason = javaAlgorithmForbiddenReference(
-        reference.owner,
-        reference.name,
-        reference.descriptor
+  for (const file of program?.files ?? []) {
+    if (!String(file?.path ?? '').endsWith('.class')) continue;
+    try {
+      const entry = parseTraceJVMClassFile(file.content);
+      const generated = [...generatedEntryRoots].some(
+        (root) => entry.className === root || entry.className.startsWith(`${root}$`)
       );
-      if (reason) reasons.add(reason);
+      if (generated) continue;
+      scannedClasses += 1;
+      if (entry.declaresNativeMethod) {
+        reasons.add(`native-method:${entry.className}`);
+      }
+      for (const reference of entry.references) {
+        const reason = javaAlgorithmForbiddenReference(
+          reference.owner,
+          reference.name,
+          reference.descriptor
+        );
+        if (reason) reasons.add(reason);
+      }
+    } catch (error) {
+      reasons.add(
+        `classfile-unverifiable:${String(file?.path ?? '<unknown>')}:` +
+        `${error instanceof Error ? error.message : String(error)}`
+      );
     }
   }
   if (scannedClasses === 0) reasons.add('no-learner-bytecode');
@@ -1100,49 +1057,10 @@ async function runInLeasedTraceJVMBatchProcess(
       retirementAfterExecutions: remainingExecutions,
       ...(kernelBound ? { host } : {}),
     });
-    for (const file of kernelBound ? processFiles ?? [] : []) {
-      const normalizedPath = `/${String(file.path).replace(/^\/+/, '')}`;
-      const parentPath = normalizedPath.slice(
-        0,
-        Math.max(1, normalizedPath.lastIndexOf('/'))
-      );
-      await host.dispatch({
-        service: 'posix',
-        operation: 'mkdir',
-        payload: {
-          path: parentPath,
-          options: { recursive: true },
-        },
-      });
-      const opened = await host.dispatch({
-        service: 'posix',
-        operation: 'open',
-        payload: {
-          path: normalizedPath,
-          options: {
-            access: 'write',
-            create: true,
-            truncate: true,
-          },
-        },
-      });
-      try {
-        await host.dispatch({
-          service: 'posix',
-          operation: 'write',
-          payload: {
-            fd: opened.fd,
-            bytes: file.content,
-          },
-        });
-      } finally {
-        await host.dispatch({
-          service: 'posix',
-          operation: 'close',
-          payload: { fd: opened.fd },
-        });
-      }
-    }
+    await stageTraceJVMKernelFiles(
+      host,
+      kernelBound ? processFiles : []
+    );
   };
 
   try {
@@ -1874,17 +1792,10 @@ async function traceJVMRunPreparedRuntimeProgram(
   };
   const algorithmFast =
     prepared.algorithmIsolationProfile?.tier === 'algorithm-fast';
-  const run = algorithmFast
-    ? await runInLeasedTraceJVMPreparedProcess(
-        client,
-        traceRequest,
-        normalizedProgramId
-      )
-    : await runInFreshTraceJVMProcess(
-        client,
-        traceRequest,
-        normalizedProgramId
-      );
+  const runPreparedCase = (request) => algorithmFast
+    ? runInLeasedTraceJVMPreparedProcess(client, request, normalizedProgramId)
+    : runInFreshTraceJVMProcess(client, request, normalizedProgramId);
+  const run = await runPreparedCase(traceRequest);
   prepared.executions += 1;
   let report = executionReport(
     run,
@@ -1911,17 +1822,7 @@ async function traceJVMRunPreparedRuntimeProgram(
             fallbackEntryClass: cleanFallbackClass,
           }),
         };
-        return algorithmFast
-          ? runInLeasedTraceJVMPreparedProcess(
-              client,
-              fallbackRequest,
-              normalizedProgramId
-            )
-          : runInFreshTraceJVMProcess(
-              client,
-              fallbackRequest,
-              normalizedProgramId
-            );
+        return runPreparedCase(fallbackRequest);
       },
       {
         stdout: prepared.compilerStdout,

@@ -145,6 +145,22 @@ function completedWorkerOutput(result: {
   return result.output;
 }
 
+function preparedResultInspection(result: unknown): {
+  runnerProcessCount: number;
+  algorithmIsolationProfile?: JavaAlgorithmProfileShape;
+} {
+  const prepared = result as {
+    timings?: { runnerProcessCount?: number };
+    algorithmIsolationProfile?: JavaAlgorithmProfileShape;
+  } | undefined;
+  return {
+    runnerProcessCount: Number(
+      prepared?.timings?.runnerProcessCount ?? -1
+    ),
+    algorithmIsolationProfile: prepared?.algorithmIsolationProfile,
+  };
+}
+
 function traceEventShape(event: RuntimeTraceEvent) {
   return {
     kind: event.kind,
@@ -292,24 +308,15 @@ globalThis.runJavaPreparedProviderBrowserTest =
     }
     const batchIsolationOutputs =
       batchIsolationResults.map(completedOutput);
-    const batchRunnerProcessCount = Number(
-      (
-        batchIsolationResults[0]?.timings as
-          | ({ runnerProcessCount?: number })
-          | undefined
-      )?.runnerProcessCount ?? -1
-    );
-    const batchIsolationProfile = (
-      batchIsolationResults[0] as typeof batchIsolationResults[number] & {
-        algorithmIsolationProfile?: JavaAlgorithmProfileShape;
-      }
-    ).algorithmIsolationProfile;
+    const {
+      runnerProcessCount: batchRunnerProcessCount,
+      algorithmIsolationProfile: batchIsolationProfile,
+    } = preparedResultInspection(batchIsolationResults[0]);
     executionCompileMs.push(
       ...batchIsolationResults.map(
         (result) => result.timings?.compileMs ?? -1
       )
     );
-    await isolationPreparation.program.dispose();
     await isolationPreparation.program.dispose();
 
     const failurePreparation = await preparedCode(
@@ -333,18 +340,10 @@ globalThis.runJavaPreparedProviderBrowserTest =
     if (!failureBatchResults) {
       throw new Error('Prepared Java code program did not expose failure batch execution.');
     }
-    const failureBatchRunnerProcessCount = Number(
-      (
-        failureBatchResults[0]?.timings as
-          | ({ runnerProcessCount?: number })
-          | undefined
-      )?.runnerProcessCount ?? -1
-    );
-    const failureBatchIsolationProfile = (
-      failureBatchResults[0] as typeof failureBatchResults[number] & {
-        algorithmIsolationProfile?: JavaAlgorithmProfileShape;
-      }
-    ).algorithmIsolationProfile;
+    const {
+      runnerProcessCount: failureBatchRunnerProcessCount,
+      algorithmIsolationProfile: failureBatchIsolationProfile,
+    } = preparedResultInspection(failureBatchResults[0]);
     const failureDiagnostic =
       failureBatchResults[0]?.kind === 'failed'
         ? failureBatchResults[0].diagnostic
@@ -387,18 +386,10 @@ globalThis.runJavaPreparedProviderBrowserTest =
     }
     const algorithmLibraryOutputs =
       algorithmLibraryResults.map(completedOutput);
-    const algorithmLibraryRunnerProcessCount = Number(
-      (
-        algorithmLibraryResults[0]?.timings as
-          | ({ runnerProcessCount?: number })
-          | undefined
-      )?.runnerProcessCount ?? -1
-    );
-    const algorithmLibraryProfile = (
-      algorithmLibraryResults[0] as typeof algorithmLibraryResults[number] & {
-        algorithmIsolationProfile?: JavaAlgorithmProfileShape;
-      }
-    ).algorithmIsolationProfile;
+    const {
+      runnerProcessCount: algorithmLibraryRunnerProcessCount,
+      algorithmIsolationProfile: algorithmLibraryProfile,
+    } = preparedResultInspection(algorithmLibraryResults[0]);
     const leaseCeilingInputs = Array.from({ length: 65 }, (_, index) => ({
       values: [index + 1],
     }));
@@ -412,13 +403,8 @@ globalThis.runJavaPreparedProviderBrowserTest =
     const leaseCeilingCorrect = leaseCeilingResults.every(
       (result, index) => completedOutput(result) === 101 + index
     );
-    const leaseCeilingRunnerProcessCount = Number(
-      (
-        leaseCeilingResults[0]?.timings as
-          | ({ runnerProcessCount?: number })
-          | undefined
-      )?.runnerProcessCount ?? -1
-    );
+    const { runnerProcessCount: leaseCeilingRunnerProcessCount } =
+      preparedResultInspection(leaseCeilingResults[0]);
     await algorithmLibraryPreparation.program.dispose();
 
     const printingPreparation = await preparedCode(
@@ -442,18 +428,10 @@ globalThis.runJavaPreparedProviderBrowserTest =
       throw new Error('Prepared Java printing batch was unavailable.');
     }
     const printingOutputs = printingResults.map(completedOutput);
-    const printingRunnerProcessCount = Number(
-      (
-        printingResults[0]?.timings as
-          | ({ runnerProcessCount?: number })
-          | undefined
-      )?.runnerProcessCount ?? -1
-    );
-    const printingProfile = (
-      printingResults[0] as typeof printingResults[number] & {
-        algorithmIsolationProfile?: JavaAlgorithmProfileShape;
-      }
-    ).algorithmIsolationProfile;
+    const {
+      runnerProcessCount: printingRunnerProcessCount,
+      algorithmIsolationProfile: printingProfile,
+    } = preparedResultInspection(printingResults[0]);
     await printingPreparation.program.dispose();
 
     const internPreparation = await preparedCode(
@@ -479,18 +457,10 @@ globalThis.runJavaPreparedProviderBrowserTest =
       throw new Error('Prepared Java intern batch was unavailable.');
     }
     const internOutputs = internResults.map(completedOutput);
-    const internRunnerProcessCount = Number(
-      (
-        internResults[0]?.timings as
-          | ({ runnerProcessCount?: number })
-          | undefined
-      )?.runnerProcessCount ?? -1
-    );
-    const internProfile = (
-      internResults[0] as typeof internResults[number] & {
-        algorithmIsolationProfile?: JavaAlgorithmProfileShape;
-      }
-    ).algorithmIsolationProfile;
+    const {
+      runnerProcessCount: internRunnerProcessCount,
+      algorithmIsolationProfile: internProfile,
+    } = preparedResultInspection(internResults[0]);
     await internPreparation.program.dispose();
 
     const compatibilityStatePreparation = await preparedCode(
@@ -536,19 +506,10 @@ globalThis.runJavaPreparedProviderBrowserTest =
     }
     const compatibilityStateOutputs =
       compatibilityStateResults.map(completedOutput);
-    const compatibilityStateRunnerProcessCount = Number(
-      (
-        compatibilityStateResults[0]?.timings as
-          | ({ runnerProcessCount?: number })
-          | undefined
-      )?.runnerProcessCount ?? -1
-    );
-    const compatibilityStateProfile = (
-      compatibilityStateResults[0] as
-        typeof compatibilityStateResults[number] & {
-          algorithmIsolationProfile?: JavaAlgorithmProfileShape;
-        }
-    ).algorithmIsolationProfile;
+    const {
+      runnerProcessCount: compatibilityStateRunnerProcessCount,
+      algorithmIsolationProfile: compatibilityStateProfile,
+    } = preparedResultInspection(compatibilityStateResults[0]);
     await compatibilityStatePreparation.program.dispose();
 
     const ambientCapabilitySource = [

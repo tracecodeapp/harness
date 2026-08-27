@@ -183,6 +183,25 @@ export interface JavaWorkerPreparedExecutionMetadata {
   readonly algorithmIsolationProfile?: JavaAlgorithmIsolationProfile;
 }
 
+type JavaPreparedMetadataSource = Pick<
+  JavaWorkerRawTraceResult,
+  'retirementRecommended' | 'runtimeIsolation' | 'algorithmIsolationProfile'
+>;
+
+function javaPreparedExecutionMetadata(
+  result: JavaPreparedMetadataSource
+): JavaWorkerPreparedExecutionMetadata {
+  return {
+    retirementRecommended: result.retirementRecommended === true,
+    ...(result.algorithmIsolationProfile === undefined
+      ? {}
+      : { algorithmIsolationProfile: result.algorithmIsolationProfile }),
+    ...(result.runtimeIsolation === undefined
+      ? {}
+      : { runtimeIsolation: result.runtimeIsolation }),
+  };
+}
+
 export type JavaWorkerPreparedCodeResult =
   CodeExecutionResult & JavaWorkerPreparedExecutionMetadata;
 
@@ -770,16 +789,7 @@ export class JavaWorkerClient {
       if (kernelProcess.retireWorkerAfterCompletion) this.core.closeSession();
       return {
         ...liftCodeOutcome(result, 'Java prepared execution failed'),
-        retirementRecommended: result.retirementRecommended === true,
-        ...(result.algorithmIsolationProfile === undefined
-          ? {}
-          : {
-              algorithmIsolationProfile:
-                result.algorithmIsolationProfile,
-            }),
-        ...(result.runtimeIsolation === undefined
-          ? {}
-          : { runtimeIsolation: result.runtimeIsolation }),
+        ...javaPreparedExecutionMetadata(result),
       };
     } catch (error) {
       await kernelProcess.fail(error);
@@ -834,17 +844,7 @@ export class JavaWorkerClient {
       }
       return result.results.map((entry) => ({
         ...liftCodeOutcome(entry, 'Java prepared execution failed'),
-        retirementRecommended:
-          entry.retirementRecommended === true,
-        ...(entry.algorithmIsolationProfile === undefined
-          ? {}
-          : {
-              algorithmIsolationProfile:
-                entry.algorithmIsolationProfile,
-            }),
-        ...(entry.runtimeIsolation === undefined
-          ? {}
-          : { runtimeIsolation: entry.runtimeIsolation }),
+        ...javaPreparedExecutionMetadata(entry),
       }));
     } catch (error) {
       await kernelProcess.fail(error);
@@ -904,16 +904,7 @@ export class JavaWorkerClient {
               runId: 'java:run',
               file: JAVA_DEFAULT_FILE,
             }),
-        retirementRecommended: result.retirementRecommended === true,
-        ...(result.algorithmIsolationProfile === undefined
-          ? {}
-          : {
-              algorithmIsolationProfile:
-                result.algorithmIsolationProfile,
-            }),
-        ...(result.runtimeIsolation === undefined
-          ? {}
-          : { runtimeIsolation: result.runtimeIsolation }),
+        ...javaPreparedExecutionMetadata(result),
       };
     } catch (error) {
       await kernelProcess.fail(error);
@@ -1012,17 +1003,7 @@ export class JavaWorkerClient {
                 runId: 'java:run',
                 file: JAVA_DEFAULT_FILE,
               }),
-          retirementRecommended:
-            entry.retirementRecommended === true,
-          ...(entry.algorithmIsolationProfile === undefined
-            ? {}
-            : {
-                algorithmIsolationProfile:
-                  entry.algorithmIsolationProfile,
-              }),
-          ...(entry.runtimeIsolation === undefined
-            ? {}
-            : { runtimeIsolation: entry.runtimeIsolation }),
+          ...javaPreparedExecutionMetadata(entry),
         };
       });
     } catch (error) {
