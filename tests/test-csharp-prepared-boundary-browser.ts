@@ -610,7 +610,7 @@ public static class InputHijack
 public class Solution
 {
     public int Add(int left, int right) => left + right;
-}`);
+}`, 'Add');
       const reflectiveInputMutationPrepared = await prepareProgram(
         'code',
         reflectiveInputMutationSource,
