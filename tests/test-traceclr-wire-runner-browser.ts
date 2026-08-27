@@ -18,6 +18,10 @@ const performanceBudgets = {
   firefox: { firstMs: 450, cachedP95Ms: 300 },
   webkit: { firstMs: 400, cachedP95Ms: 300 },
 } as const;
+// Per-case collectible AssemblyLoadContext isolation adds the trimmed
+// System.Runtime.Loader module. Keep the allowance explicit and tight instead
+// of silently replacing the original 4 MiB runner budget.
+const maxServedBytes = 4 * 1024 * 1024 + 8 * 1024;
 
 const root = process.cwd();
 const runnerDirectory = join(
@@ -233,8 +237,10 @@ async function main(): Promise<void> {
       );
     }
     const servedBytes = [...servedAssets.values()].reduce((total, bytes) => total + bytes, 0);
-    if (servedBytes > 4 * 1024 * 1024) {
-      throw new Error(`TraceCLR minimal runner exceeded 4 MiB uncompressed: ${servedBytes} bytes.`);
+    if (servedBytes > maxServedBytes) {
+      throw new Error(
+        `TraceCLR minimal runner exceeded 4 MiB + 8 KiB uncompressed: ${servedBytes} bytes.`
+      );
     }
     console.log(JSON.stringify({
       schema: 'tracecode.traceclr-wire-runner-result.v1',

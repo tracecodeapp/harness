@@ -33,7 +33,9 @@ public static partial class CompilerHost
     private const long ProjectMaxLiveFileChangeBytes = 4L * 1024 * 1024;
     private const int CompiledArtifactCacheMaxEntries = 24;
     private const long CompiledArtifactCacheMaxBytes = 8L * 1024 * 1024;
-    private const string CompiledArtifactCacheSchema = "tracecode-csharp-compile-v1";
+    private const string CompiledArtifactCacheSchema = "tracecode-csharp-compile-v2";
+    private const string PreparedArtifactMetadataSchema =
+        "tracecode-csharp-prepared-artifact-v1";
     private static readonly string[] DeniedUserApiText =
     {
         "System.Net",
@@ -1254,6 +1256,12 @@ public static partial class CompilerHost
             timings["preparedRunnerTier"] = runnerTier;
             timings["preparedRunnerReason"] = runnerReason;
         }
+        if (request.PreparedProgram)
+        {
+            // The artifact key includes the compiler-owned tier decision. Keep
+            // it in the request even though only the fast assembly embeds it.
+            request.PreparedRunnerTier = runnerTier;
+        }
         RecordCompilePhase(timings, "compileGenerateDriverMs", phaseStopwatch);
         phaseStopwatch.Restart();
         SyntaxTree driverTree = CSharpSyntaxTree.ParseText(
@@ -1264,8 +1272,24 @@ public static partial class CompilerHost
         RecordCompilePhase(timings, "compileParseDriverMs", phaseStopwatch);
 
         phaseStopwatch.Restart();
+        IEnumerable<SyntaxTree> executionTrees = request.PreparedProgram
+            && runnerTier == "algorithm-fast"
+            ? new[]
+            {
+                userTree,
+                driverTree,
+                CSharpSyntaxTree.ParseText(
+                    GeneratePreparedArtifactMetadataSource(
+                        CompiledArtifactKey(request),
+                        runnerTier
+                    ),
+                    CompilerAuthorityState.ParseOptions,
+                    path: "TraceCodePreparedArtifactMetadata.cs"
+                ),
+            }
+            : new[] { userTree, driverTree };
         CSharpCompilation compilation = trustedTemplate
-            .AddSyntaxTrees(userTree, driverTree)
+            .AddSyntaxTrees(executionTrees)
             .WithAssemblyName("TraceCode.UserCode." + Guid.NewGuid().ToString("N"));
         RecordCompilePhase(timings, "compileCreateCompilationMs", phaseStopwatch);
         phaseStopwatch.Restart();
@@ -1282,6 +1306,21 @@ public static partial class CompilerHost
             wireContract
         );
     }
+
+    private static string GeneratePreparedArtifactMetadataSource(
+        string artifactKey,
+        string runnerTier
+    ) => $$"""
+[assembly: global::System.Reflection.AssemblyMetadataAttribute(
+    "TraceCode.PreparedArtifactSchema",
+    "{{PreparedArtifactMetadataSchema}}")]
+[assembly: global::System.Reflection.AssemblyMetadataAttribute(
+    "TraceCode.PreparedArtifactKey",
+    "{{artifactKey}}")]
+[assembly: global::System.Reflection.AssemblyMetadataAttribute(
+    "TraceCode.PreparedRunnerTier",
+    "{{runnerTier}}")]
+""";
 
     private static bool TryCreateAlgorithmFastDriver(
         CSharpExecuteRequest request,
@@ -1351,9 +1390,12 @@ public static partial class CompilerHost
                 : $"Solution method {request.FunctionName} is overloaded or ambiguous.";
             return false;
         }
-        if (UsesConsole(originalUserTree, model))
+        if (!TryValidateAlgorithmFastIsolationPolicy(
+                originalUserTree,
+                model,
+                out reason
+            ))
         {
-            reason = "Console I/O requires the compatibility runner.";
             return false;
         }
 
@@ -1396,16 +1438,364 @@ public static partial class CompilerHost
         return true;
     }
 
-    private static bool UsesConsole(SyntaxTree userTree, SemanticModel model)
+    /// <summary>
+    /// Prove that learner code stays inside the algorithm-scoped subset whose
+    /// framework state cannot outlive a case. User-defined static state is
+    /// isolated by the fresh collectible load context in the runner; ambient
+    /// process, filesystem, scheduler, reflection, interop, and shared-pool
+    /// APIs fall back to the disposable compatibility runner.
+    /// </summary>
+    private static bool TryValidateAlgorithmFastIsolationPolicy(
+        SyntaxTree userTree,
+        SemanticModel model,
+        out string reason
+    )
     {
-        foreach (SyntaxNode node in userTree.GetRoot().DescendantNodes())
+        SyntaxNode root = userTree.GetRoot();
+        if (root.DescendantTokens().Any(token =>
+                token.IsKind(SyntaxKind.UnsafeKeyword)
+                || token.IsKind(SyntaxKind.ExternKeyword)
+                || token.IsKind(SyntaxKind.AsyncKeyword)))
         {
-            ISymbol? symbol = model.GetSymbolInfo(node).Symbol;
-            if (string.Equals(
-                symbol?.ContainingType?.ToDisplayString(),
-                "System.Console",
-                StringComparison.Ordinal
+            reason = "Unsafe, external, and asynchronous code requires the compatibility runner.";
+            return false;
+        }
+        if (root.DescendantNodesAndSelf().Any(node =>
+                node is AwaitExpressionSyntax
+                    or YieldStatementSyntax
+                    or LockStatementSyntax
+                    or FixedStatementSyntax
+                    or StackAllocArrayCreationExpressionSyntax
+                    or PointerTypeSyntax
+                    or FunctionPointerTypeSyntax
+                    or DestructorDeclarationSyntax
+                    or GlobalStatementSyntax
+                    or TypeOfExpressionSyntax))
+        {
+            reason = "Background, unmanaged, or process-scoped code requires the compatibility runner.";
+            return false;
+        }
+        foreach (ExpressionSyntax targetExpression in root
+            .DescendantNodesAndSelf()
+            .SelectMany(AlgorithmFastWriteTargets))
+        {
+            ISymbol? writtenSymbol = model.GetSymbolInfo(targetExpression).Symbol;
+            bool writesExternalStatic = writtenSymbol switch
+            {
+                IFieldSymbol field => field.IsStatic
+                    && !IsDeclaredInLearnerSource(field, userTree),
+                IPropertySymbol property => property.IsStatic
+                    && !IsDeclaredInLearnerSource(property, userTree),
+                IEventSymbol eventSymbol => eventSymbol.IsStatic
+                    && !IsDeclaredInLearnerSource(eventSymbol, userTree),
+                _ => false,
+            };
+            if (writesExternalStatic)
+            {
+                reason = "Writes to shared framework state require the compatibility runner.";
+                return false;
+            }
+        }
+
+        foreach (
+            SimpleNameSyntax name in root
+                .DescendantNodesAndSelf()
+                .OfType<SimpleNameSyntax>()
+        )
+        {
+            SymbolInfo symbolInfo = model.GetSymbolInfo(name);
+            IEnumerable<ISymbol> symbols = symbolInfo.Symbol is null
+                ? symbolInfo.CandidateSymbols
+                : new[] { symbolInfo.Symbol };
+            string? deniedApi = symbols
+                .Select(symbol => DeniedAlgorithmFastApiForSymbol(
+                    symbol,
+                    userTree
+                ))
+                .FirstOrDefault(api => api is not null);
+            if (deniedApi is null)
+            {
+                continue;
+            }
+            reason = $"Ambient API {deniedApi} requires the compatibility runner.";
+            return false;
+        }
+
+        reason = string.Empty;
+        return true;
+    }
+
+    private static IEnumerable<ExpressionSyntax> AlgorithmFastWriteTargets(
+        SyntaxNode node
+    )
+    {
+        ExpressionSyntax? target = node switch
+        {
+            AssignmentExpressionSyntax assignment => assignment.Left,
+            PrefixUnaryExpressionSyntax prefix
+                when prefix.IsKind(SyntaxKind.PreIncrementExpression)
+                    || prefix.IsKind(SyntaxKind.PreDecrementExpression) =>
+                prefix.Operand,
+            PostfixUnaryExpressionSyntax postfix
+                when postfix.IsKind(SyntaxKind.PostIncrementExpression)
+                    || postfix.IsKind(SyntaxKind.PostDecrementExpression) =>
+                postfix.Operand,
+            ArgumentSyntax argument
+                when argument.RefOrOutKeyword.IsKind(SyntaxKind.RefKeyword)
+                    || argument.RefOrOutKeyword.IsKind(SyntaxKind.OutKeyword) =>
+                argument.Expression,
+            RefExpressionSyntax reference => reference.Expression,
+            _ => null,
+        };
+        if (target is not null)
+        {
+            foreach (ExpressionSyntax flattened in FlattenAlgorithmFastWriteTarget(
+                target
             ))
+            {
+                yield return flattened;
+            }
+        }
+    }
+
+    private static IEnumerable<ExpressionSyntax> FlattenAlgorithmFastWriteTarget(
+        ExpressionSyntax target
+    )
+    {
+        if (target is TupleExpressionSyntax tuple)
+        {
+            foreach (ArgumentSyntax argument in tuple.Arguments)
+            {
+                foreach (
+                    ExpressionSyntax nested in FlattenAlgorithmFastWriteTarget(
+                        argument.Expression
+                    )
+                )
+                {
+                    yield return nested;
+                }
+            }
+            yield break;
+        }
+        yield return target;
+    }
+
+    private static string? DeniedAlgorithmFastApiForSymbol(
+        ISymbol symbol,
+        SyntaxTree learnerSourceTree
+    )
+    {
+        ISymbol target = symbol is IAliasSymbol alias ? alias.Target : symbol;
+        if (target is INamespaceSymbol)
+        {
+            return null;
+        }
+        INamedTypeSymbol? containingType =
+            target as INamedTypeSymbol ?? target.ContainingType;
+        string? typeName = containingType?.ToDisplayString(
+            SymbolDisplayFormat.FullyQualifiedFormat
+        );
+        string namespaceName = (
+            target as INamespaceSymbol ?? target.ContainingNamespace
+        )?.ToDisplayString() ?? string.Empty;
+
+        if (IsDeclaredInLearnerSource(target, learnerSourceTree))
+        {
+            return null;
+        }
+        if (containingType is not null
+            && IsTrustedJudgeSupportType(containingType))
+        {
+            return null;
+        }
+
+        string[] deniedNamespacePrefixes =
+        {
+            "System.Buffers",
+            "System.Collections.Concurrent",
+            "System.Diagnostics",
+            "System.IO",
+            "System.Management",
+            "System.Net",
+            "System.Reflection",
+            "System.Runtime.InteropServices",
+            "System.Runtime.Loader",
+            "System.Security",
+            "System.Threading",
+            "System.Timers",
+        };
+        foreach (string prefix in deniedNamespacePrefixes)
+        {
+            if (string.Equals(namespaceName, prefix, StringComparison.Ordinal)
+                || namespaceName.StartsWith(prefix + ".", StringComparison.Ordinal))
+            {
+                return prefix;
+            }
+        }
+
+        if (typeName is
+            "global::System.AppContext"
+            or "global::System.AppDomain"
+            or "global::System.Console"
+            or "global::System.Environment"
+            or "global::System.GC"
+            or "global::System.Random"
+            or "global::System.Type"
+            or "global::System.Activator")
+        {
+            return typeName["global::".Length..];
+        }
+
+        if (typeName is
+            "global::System.Linq.ParallelEnumerable"
+            or "global::System.Linq.ParallelQuery"
+            or "global::System.Linq.AsyncEnumerable")
+        {
+            return typeName["global::".Length..];
+        }
+
+        if (target is IMethodSymbol method)
+        {
+            if (namespaceName == "System"
+                && containingType?.Name is "Memory" or "ReadOnlyMemory"
+                && method.Name == "Pin")
+            {
+                return "System." + containingType.Name + ".Pin";
+            }
+            if (containingType?.SpecialType == SpecialType.System_Object
+                && method.Name == "GetType")
+            {
+                return "System.Object.GetType";
+            }
+            if (containingType?.SpecialType == SpecialType.System_String
+                && method.Name is "Intern" or "IsInterned")
+            {
+                return "System.String." + method.Name;
+            }
+            if (typeName == "global::System.Delegate"
+                && method.Name is
+                    "CreateDelegate" or "DynamicInvoke" or "GetInvocationList")
+            {
+                return "System.Delegate." + method.Name;
+            }
+        }
+        if (target is IPropertySymbol propertySymbol
+            && typeName == "global::System.Delegate"
+            && propertySymbol.Name is "Method" or "Target")
+        {
+            return "System.Delegate." + propertySymbol.Name;
+        }
+        if (target is IPropertySymbol exceptionProperty
+            && exceptionProperty.Name == "TargetSite"
+            && containingType is not null
+            && InheritsSystemException(containingType))
+        {
+            return (typeName?["global::".Length..] ?? containingType.Name)
+                + ".TargetSite";
+        }
+
+        if (namespaceName == "System"
+            && containingType is not null
+            && !IsAllowedAlgorithmSystemType(containingType))
+        {
+            return typeName?["global::".Length..] ?? namespaceName;
+        }
+        if (namespaceName.StartsWith("System.", StringComparison.Ordinal)
+            && !namespaceName.StartsWith("System.Collections", StringComparison.Ordinal)
+            && !string.Equals(namespaceName, "System.Linq", StringComparison.Ordinal)
+            && !namespaceName.StartsWith("System.Numerics", StringComparison.Ordinal)
+            && !namespaceName.StartsWith("System.Text.RegularExpressions", StringComparison.Ordinal)
+            && !(namespaceName == "System.Text"
+                && containingType?.Name is "StringBuilder" or "Rune"))
+        {
+            return typeName?["global::".Length..] ?? namespaceName;
+        }
+
+        if (!string.IsNullOrEmpty(namespaceName)
+            && !string.Equals(namespaceName, "System", StringComparison.Ordinal)
+            && !namespaceName.StartsWith("System.", StringComparison.Ordinal))
+        {
+            return typeName?["global::".Length..] ?? namespaceName;
+        }
+
+        return null;
+    }
+
+    private static bool IsDeclaredInLearnerSource(
+        ISymbol symbol,
+        SyntaxTree learnerSourceTree
+    ) => symbol.DeclaringSyntaxReferences.Any(reference =>
+        ReferenceEquals(reference.SyntaxTree, learnerSourceTree));
+
+    private static bool IsTrustedJudgeSupportType(INamedTypeSymbol type) =>
+        type.ContainingNamespace.IsGlobalNamespace
+        && type.Name is "ListNode" or "TreeNode"
+        && type.ContainingAssembly?.Name == "TraceCode.CSharpJudgeRuntime";
+
+    private static bool IsAllowedAlgorithmSystemType(INamedTypeSymbol type)
+    {
+        if (InheritsSystemException(type)) return true;
+
+        return type.Name is
+            "Action"
+            or "Array"
+            or "BitConverter"
+            or "Boolean"
+            or "Byte"
+            or "Char"
+            or "Comparison"
+            or "Converter"
+            or "Convert"
+            or "Decimal"
+            or "Delegate"
+            or "Double"
+            or "Enum"
+            or "Func"
+            or "Half"
+            or "HashCode"
+            or "IComparable"
+            or "IConvertible"
+            or "IEquatable"
+            or "IFormatProvider"
+            or "IFormattable"
+            or "Index"
+            or "Int16"
+            or "Int32"
+            or "Int64"
+            or "Int128"
+            or "Math"
+            or "MathF"
+            or "Memory"
+            or "MemoryExtensions"
+            or "Nullable"
+            or "Object"
+            or "Predicate"
+            or "Range"
+            or "ReadOnlyMemory"
+            or "ReadOnlySpan"
+            or "SByte"
+            or "Single"
+            or "Span"
+            or "String"
+            or "StringComparer"
+            or "StringComparison"
+            or "StringSplitOptions"
+            or "Tuple"
+            or "UInt16"
+            or "UInt32"
+            or "UInt64"
+            or "UInt128"
+            or "ValueTuple";
+    }
+
+    private static bool InheritsSystemException(INamedTypeSymbol type)
+    {
+        for (INamedTypeSymbol? current = type;
+            current is not null;
+            current = current.BaseType)
+        {
+            if (current.Name == "Exception"
+                && current.ContainingNamespace?.ToDisplayString() == "System")
             {
                 return true;
             }
@@ -1826,13 +2216,7 @@ public static partial class CompilerHost
         }
 
         if (target is IMethodSymbol method
-            && string.Equals(
-                method.ContainingType?.ToDisplayString(
-                    SymbolDisplayFormat.FullyQualifiedFormat
-                ),
-                "global::System.Object",
-                StringComparison.Ordinal
-            )
+            && method.ContainingType?.SpecialType == SpecialType.System_Object
             && string.Equals(method.Name, "GetType", StringComparison.Ordinal))
         {
             return "System.Object.GetType";

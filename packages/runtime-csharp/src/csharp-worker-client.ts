@@ -385,12 +385,13 @@ export class CSharpWorkerClient {
   /**
    * Run one prepared lifecycle operation in a clean outer worker generation.
    *
-   * A collectible AssemblyLoadContext only isolates learner assemblies. The
-   * C# runtime process also owns its filesystem, environment, current directory,
-   * cultures, thread/runtime switches, and other framework state. Retiring the
-   * whole worker before and after each case is the only honest
-   * fresh-case-state boundary; the opaque PE remains reusable through the
-   * host-owned artifact cache and the descriptor's base64 payload.
+   * Compatibility code may reach ambient runtime state beyond a collectible
+   * AssemblyLoadContext: filesystem, environment, current directory, cultures,
+   * threads, and runtime switches. Retiring the whole worker before and after
+   * each compatibility case is therefore its fresh-case-state boundary. The
+   * compiler-admitted algorithm-fast tier uses a retained runner only after its
+   * ambient capabilities have failed closed, with a restricted fresh load
+   * context for learner state on every case.
    */
   private runFreshPreparedGeneration<T>(
     signal: AbortSignal | undefined,

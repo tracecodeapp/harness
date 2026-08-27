@@ -1,4 +1,5 @@
 using System.Reflection;
+using System.Runtime.Loader;
 using System.Security.Cryptography;
 
 namespace TraceCode.CSharpHost;
@@ -14,13 +15,18 @@ public sealed record TraceClrAlgorithmExecutionResult(
 
 /// <summary>
 /// Shared compiler-free execution core for the broad and minimal TraceCLR
-/// runner shells. The outer worker remains the hard per-case boundary.
+/// runner shells. Eligible algorithm batches may retain the outer worker, so
+/// each invocation owns a fresh collectible load context for learner statics.
 /// </summary>
 public static class TraceClrAlgorithmExecutionCore
 {
     private const long MaxArtifactBytes = 8L * 1024 * 1024;
+    private const string PreparedArtifactMetadataSchema =
+        "tracecode-csharp-prepared-artifact-v1";
+    private const string AlgorithmFastRunnerTier = "algorithm-fast";
 
     public static byte[] ExecutePrepared(
+        string artifactKey,
         string artifactBase64,
         string artifactSha256,
         byte[] inputBytes
@@ -30,10 +36,16 @@ public static class TraceClrAlgorithmExecutionCore
             artifactBase64,
             artifactSha256
         );
-        return InvokeDriver(assemblyBytes, inputBytes, static () => { });
+        return InvokeDriver(
+            assemblyBytes,
+            artifactKey,
+            inputBytes,
+            static () => { }
+        );
     }
 
     public static TraceClrAlgorithmExecutionResult ExecutePreparedTrace(
+        string artifactKey,
         string artifactBase64,
         string artifactSha256,
         byte[] inputBytes,
@@ -65,6 +77,7 @@ public static class TraceClrAlgorithmExecutionCore
         {
             byte[] outputBytes = InvokeDriver(
                 assemblyBytes,
+                artifactKey,
                 inputBytes,
                 RuntimeTraceSink.CheckTimeout
             );
@@ -197,31 +210,120 @@ public static class TraceClrAlgorithmExecutionCore
 
     private static byte[] InvokeDriver(
         byte[] assemblyBytes,
+        string artifactKey,
         byte[] inputBytes,
         Action checkTimeout
     )
     {
-        Assembly assembly = Assembly.Load(assemblyBytes);
-        Type driverType = assembly.GetType(
-            "TraceCodeDriver",
-            throwOnError: true
-        )!;
-        MethodInfo run = driverType.GetMethod(
-            "Run",
-            BindingFlags.Public | BindingFlags.Static,
-            binder: null,
-            types: new[] { typeof(byte[]), typeof(Action) },
-            modifiers: null
-        ) ?? throw new MissingMethodException(
-            "TraceCodeDriver",
-            "Run(byte[], Action)"
+        var loadContext = new RestrictedUserExecutionLoadContext(
+            "TraceCode.AlgorithmCase"
         );
-        return (byte[])(run.Invoke(
-            null,
-            new object?[] { inputBytes, checkTimeout }
-        )
-            ?? throw new InvalidOperationException(
-                "TraceCodeDriver.Run returned null."
-            ));
+        try
+        {
+            using MemoryStream assemblyStream = new(
+                assemblyBytes,
+                writable: false
+            );
+            Assembly assembly = loadContext.LoadFromStream(assemblyStream);
+            ValidatePreparedArtifactIdentity(assembly, artifactKey);
+            Type driverType = assembly.GetType(
+                "TraceCodeDriver",
+                throwOnError: true
+            )!;
+            MethodInfo run = driverType.GetMethod(
+                "Run",
+                BindingFlags.Public | BindingFlags.Static,
+                binder: null,
+                types: new[] { typeof(byte[]), typeof(Action) },
+                modifiers: null
+            ) ?? throw new MissingMethodException(
+                "TraceCodeDriver",
+                "Run(byte[], Action)"
+            );
+            return (byte[])(run.Invoke(
+                null,
+                new object?[] { inputBytes, checkTimeout }
+            )
+                ?? throw new InvalidOperationException(
+                    "TraceCodeDriver.Run returned null."
+                ));
+        }
+        finally
+        {
+            loadContext.Unload();
+        }
     }
+
+    private static void ValidatePreparedArtifactIdentity(
+        Assembly assembly,
+        string artifactKey
+    )
+    {
+        bool validArtifactKey = artifactKey.Length == 64;
+        foreach (char character in artifactKey)
+        {
+            if (character is not (>= '0' and <= '9')
+                and not (>= 'a' and <= 'f'))
+            {
+                validArtifactKey = false;
+                break;
+            }
+        }
+        if (!validArtifactKey)
+        {
+            throw new ArgumentException(
+                "Prepared TraceCLR artifact identity is invalid."
+            );
+        }
+
+        string? schema = null;
+        string? embeddedArtifactKey = null;
+        string? runnerTier = null;
+        bool duplicateMetadata = false;
+        foreach (
+            AssemblyMetadataAttribute attribute in assembly
+                .GetCustomAttributes<AssemblyMetadataAttribute>()
+        )
+        {
+            switch (attribute.Key)
+            {
+                case "TraceCode.PreparedArtifactSchema":
+                    duplicateMetadata |= schema is not null;
+                    schema = attribute.Value ?? string.Empty;
+                    break;
+                case "TraceCode.PreparedArtifactKey":
+                    duplicateMetadata |= embeddedArtifactKey is not null;
+                    embeddedArtifactKey = attribute.Value ?? string.Empty;
+                    break;
+                case "TraceCode.PreparedRunnerTier":
+                    duplicateMetadata |= runnerTier is not null;
+                    runnerTier = attribute.Value ?? string.Empty;
+                    break;
+            }
+        }
+        if (
+            duplicateMetadata
+            || !string.Equals(
+                schema,
+                PreparedArtifactMetadataSchema,
+                StringComparison.Ordinal
+            )
+            || !string.Equals(
+                embeddedArtifactKey,
+                artifactKey,
+                StringComparison.Ordinal
+            )
+            || !string.Equals(
+                runnerTier,
+                AlgorithmFastRunnerTier,
+                StringComparison.Ordinal
+            )
+        )
+        {
+            throw new ArgumentException(
+                "Prepared TraceCLR artifact identity is invalid."
+            );
+        }
+    }
+
 }

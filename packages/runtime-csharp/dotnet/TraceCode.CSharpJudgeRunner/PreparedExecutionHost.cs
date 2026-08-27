@@ -27,7 +27,7 @@ public static partial class PreparedExecutionHost
     private const int MaxInputObjectProperties = 50_000;
     private const int MaxInputTraversalNodes = 750_000;
     private const long MaxArtifactBytes = 8L * 1024 * 1024;
-    private const string ArtifactCacheSchema = "tracecode-csharp-compile-v1";
+    private const string ArtifactCacheSchema = "tracecode-csharp-compile-v2";
     private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web)
     {
         PropertyNameCaseInsensitive = true,
@@ -149,7 +149,7 @@ public static partial class PreparedExecutionHost
             );
 
             double runStartedAt = stopwatch.Elapsed.TotalMilliseconds;
-            var loadContext = new UserExecutionLoadContext(
+            var loadContext = new RestrictedUserExecutionLoadContext(
                 "TraceCode.PreparedUserExecution." + Guid.NewGuid().ToString("N")
             );
             try
@@ -679,20 +679,6 @@ public static partial class PreparedExecutionHost
     {
         capturedOut.Flush();
         return RuntimeTraceSink.Snapshot();
-    }
-
-    private sealed class UserExecutionLoadContext : AssemblyLoadContext
-    {
-        public UserExecutionLoadContext(string name)
-            : base(name, isCollectible: true) { }
-
-        protected override Assembly? Load(AssemblyName assemblyName) =>
-            AssemblyLoadContext.Default.Assemblies.FirstOrDefault(candidate =>
-                AssemblyName.ReferenceMatchesDefinition(
-                    candidate.GetName(),
-                    assemblyName
-                )
-            );
     }
 
     private sealed class InputTraversalBudget

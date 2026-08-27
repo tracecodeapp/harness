@@ -30,6 +30,18 @@ import {
   executeRuntimeRequest,
   isRuntimeProjectExecuteRequest,
 } from '@tracecode/runtime-browser/internal';
+import {
+  CSHARP_ALGORITHM_FAST_MAX_CASES_PER_RUNNER,
+  CSHARP_ALGORITHM_FAST_MAX_MANAGED_HEAP_BYTES,
+} from './csharp-fast-runner-policy';
+
+function managedHeapBytes(result: unknown): number {
+  if (!result || typeof result !== 'object') return 0;
+  const timings = (result as { timings?: unknown }).timings;
+  if (!timings || typeof timings !== 'object') return 0;
+  const value = (timings as Record<string, unknown>).managedHeapBytes;
+  return typeof value === 'number' && Number.isFinite(value) ? value : 0;
+}
 
 export interface CSharpPreparedWorkerAuthority {
   readonly compiler: CSharpWorkerClient;
@@ -108,6 +120,63 @@ export class CSharpRuntimeClient implements RuntimeClient, RuntimePreparedExecut
       })
     );
     if (terminalFailure) throw terminalFailure.reason;
+    return results;
+  }
+
+  /**
+   * Algorithm-fast programs have already passed the compiler-owned ambient
+   * state policy. Their runner can therefore remain alive for an eager batch
+   * while the managed host creates a fresh assembly-load context for every
+   * case. Mono/Wasm does not reclaim collectible contexts promptly, so one
+   * retained lease is bounded by both case count and observed managed heap;
+   * longer batches transparently continue in a fresh runner. Compatibility
+   * programs retain one disposable outer worker per case.
+   */
+  private async withPreparedBatchRunners<TResult>(
+    tier: CSharpPreparedRunnerTier,
+    inputBatch: readonly Record<string, unknown>[],
+    execute: (
+      runner: CSharpWorkerClient,
+      inputs: Record<string, unknown>,
+      index: number
+    ) => Promise<TResult>,
+    signal?: AbortSignal
+  ): Promise<readonly TResult[]> {
+    if (tier !== 'algorithm-fast') {
+      return this.withFreshPreparedRunners(
+        tier,
+        inputBatch,
+        execute,
+        signal
+      );
+    }
+
+    const results: TResult[] = new Array(inputBatch.length);
+    let nextIndex = 0;
+    while (nextIndex < inputBatch.length) {
+      await this.withPreparedRunner(tier, async (runner) => {
+        const firstIndex = nextIndex;
+        while (
+          nextIndex < inputBatch.length &&
+          nextIndex - firstIndex <
+            CSHARP_ALGORITHM_FAST_MAX_CASES_PER_RUNNER
+        ) {
+          if (signal?.aborted) {
+            throw signal.reason ?? new Error('Prepared C# batch was aborted.');
+          }
+          const index = nextIndex;
+          const result = await execute(runner, inputBatch[index]!, index);
+          results[index] = result;
+          nextIndex += 1;
+          if (
+            managedHeapBytes(result) >=
+            CSHARP_ALGORITHM_FAST_MAX_MANAGED_HEAP_BYTES
+          ) {
+            break;
+          }
+        }
+      });
+    }
     return results;
   }
 
@@ -391,7 +460,7 @@ export class CSharpRuntimeClient implements RuntimeClient, RuntimePreparedExecut
               ));
             }
             return executeOwned(preparedCall, (preparedArtifact, forwardedCall) =>
-              this.withFreshPreparedRunners(
+              this.withPreparedBatchRunners(
                 preparedArtifact.preparedRunnerTier,
                 forwardedCall.inputBatch,
                 (runner, inputs, index) =>
@@ -428,7 +497,7 @@ export class CSharpRuntimeClient implements RuntimeClient, RuntimePreparedExecut
             preparedCall: RuntimePreparedCodeBatchCall
           ) =>
             executeOwned(preparedCall, (preparedArtifact, forwardedCall) =>
-              this.withFreshPreparedRunners(
+              this.withPreparedBatchRunners(
                 preparedArtifact.preparedRunnerTier,
                 forwardedCall.inputBatch,
                 (runner, inputs) =>

@@ -3,11 +3,11 @@
   "harness": {
     "name": "@tracecode/harness",
     "version": "0.17.0",
-    "releaseId": "@tracecode/harness@0.17.0+sha256.48eceee2ae0b4dacb63c5640b7827a161aebbec1119e4e3181b5f4dd7ea65766"
+    "releaseId": "@tracecode/harness@0.17.0+sha256.a9a184ddd5487a7d3cab16d78edda029c495da0edce6f95d4f352e57c6370c60"
   },
   "treeSha256Algorithm": "sha256-path-nul-bytes-nul-v1",
-  "packageTreeSha256": "48eceee2ae0b4dacb63c5640b7827a161aebbec1119e4e3181b5f4dd7ea65766",
-  "totalPackagedRuntimeBytes": 151843317,
+  "packageTreeSha256": "a9a184ddd5487a7d3cab16d78edda029c495da0edce6f95d4f352e57c6370c60",
+  "totalPackagedRuntimeBytes": 151874652,
   "components": {
     "cpp": {
       "releaseId": "cpp+sha256.ec3506681c998537894f2ccf11395fcafd1b6e7755a063b53b9bec338254f7ca",
@@ -31,15 +31,15 @@
       ]
     },
     "csharp": {
-      "releaseId": "csharp+sha256.25b83301cc80d13079573f9232daa26689f548d654d84ee974abb8c3e6781ee5",
-      "treeSha256": "25b83301cc80d13079573f9232daa26689f548d654d84ee974abb8c3e6781ee5",
-      "totalBytes": 63338790,
+      "releaseId": "csharp+sha256.896546fbf8f10169301e65835749527b1798a9734e42c1e3f96c44dcb39e4d93",
+      "treeSha256": "896546fbf8f10169301e65835749527b1798a9734e42c1e3f96c44dcb39e4d93",
+      "totalBytes": 63370125,
       "files": [
         {
           "path": "workers/csharp/csharp-worker.js",
-          "size": 155773,
-          "sha256": "706e07281beade272d5c5111f4930b46c387a1140b27428d5b843b822a396f1c",
-          "integrity": "sha256-cG4HKBvq3ictXFER9JMLRsOHoRQLJ0KNW4Q7gio5bxw=",
+          "size": 156392,
+          "sha256": "dfd86d6e43dbf13e7aa761c191264e7e420d1790bb73d385570d65f2fe4e81a5",
+          "integrity": "sha256-39htbkPb8T56p2HBkSZOfkINF5C7c9OFVw1l8v5OgaU=",
           "mediaType": "text/javascript"
         },
         {
@@ -58,23 +58,23 @@
         },
         {
           "path": "workers/vendor/csharp-runner/_framework/assemblies-02.pack",
-          "size": 2394266,
-          "sha256": "c3538c279f756dacdcfe7b91ab2a017778e45d37c4625519e7e9d5c716dd3a57",
-          "integrity": "sha256-w1OMJ591bazc/nuRqyoBd3jkXTfEYlUZ5+nVxxbdOlc=",
+          "size": 2395286,
+          "sha256": "28873b3e007b95c9b40b3042bddf3fd1eaedba1a509226f15817127a0b627cab",
+          "integrity": "sha256-KIc7PgB7lcm0CzBCvd8/0ertuhpQkibxWBcSegtifKs=",
           "mediaType": "application/octet-stream"
         },
         {
           "path": "workers/vendor/csharp-runner/_framework/assemblies-03.pack",
-          "size": 2397213,
-          "sha256": "857eebf21f91e987d5ec8f2f21a922eb688f256555d455777b6dfdf169d7fb48",
-          "integrity": "sha256-hX7r8h+R6YfV7I8vIaki62iPJWVV1FV3e2398WnX+0g=",
+          "size": 2398237,
+          "sha256": "08ee197bc5b67f39a2c2e24606751c4ab9d25c5cf07c47d714f66aeef7ab0981",
+          "integrity": "sha256-CO4Ze8W2fzmiwuJGBnUcSrnSXFzwfEfXFPZq7verCYE=",
           "mediaType": "application/octet-stream"
         },
         {
           "path": "workers/vendor/csharp-runner/_framework/dotnet.boot.js",
           "size": 23688,
-          "sha256": "1c6493928c05985df26c87bbe7a42d96922674968f165f7fdee18bfe4538138e",
-          "integrity": "sha256-HGSTkowFmF3ybIe756QtlpImdJaPFl9/3uGL/kU4E44=",
+          "sha256": "bd70fd16b583f891a3679c76788eec9b0edb09380a492b36c91609a44a8e5cdf",
+          "integrity": "sha256-vXD9FrWD+JGjZ5x2eI7smw7bCTgKSSs2yRYJpEqOXN8=",
           "mediaType": "text/javascript"
         },
         {
@@ -1185,23 +1185,23 @@
         },
         {
           "path": "workers/vendor/csharp/_framework/TraceCode.CSharpHost.wasm",
-          "size": 609045,
-          "sha256": "26f9d49b079d8eec55a2bf58d3eb79181b9ddcb0939b2e88900e69d95bfe1343",
-          "integrity": "sha256-JvnUmwedjuxVor9Y0+t5GBud3LCTmy6IkA5p2Vv+E0M=",
+          "size": 621333,
+          "sha256": "e0b16cb0244ac1d434388d4be26333ffec48f09f31f18a32aead2ba00e65ec39",
+          "integrity": "sha256-4LFssCRKwdQ0OI1L4mMz/+xI8J8x8Yoyrq0roA5l7Dk=",
           "mediaType": "application/wasm"
         },
         {
           "path": "workers/vendor/csharp/_framework/TraceCode.CSharpJudgeRuntime.wasm",
-          "size": 93973,
-          "sha256": "fa90eda3aad42debb9d4d73f4463cd47b7dd1477058c4e3f9d392e1e7b1bc227",
-          "integrity": "sha256-+pDto6rULeu51Nc/RGPNR7fdFHcFjE4/nTkuHnsbwic=",
+          "size": 96021,
+          "sha256": "ad635e9472c254042d121f4dae2e413aae1fd153cca1e24a88495652dd1581bf",
+          "integrity": "sha256-rWNelHLCVAQtEh9Nri5BOq4f0VPMoeJKiElWUt0Vgb8=",
           "mediaType": "application/wasm"
         },
         {
           "path": "workers/vendor/csharp/_framework/TraceCode.TraceClrWire.wasm",
           "size": 42261,
-          "sha256": "bc3cdf1f6939098b0733baf6c8cb02d4e39efaf8c0935ddd4657e251147867a1",
-          "integrity": "sha256-vDzfH2k5CYsHM7r2yMsC1OOe+vjAk13dRlfiURR4Z6E=",
+          "sha256": "50c21c964fce562976bab1e192b3cbee878a7624348ff08d6eb529f83ca75df1",
+          "integrity": "sha256-UMIclk/OVil2urHhkrPL7oeKdiQ0j/CNbrUp+DynXfE=",
           "mediaType": "application/wasm"
         },
         {
@@ -1242,8 +1242,8 @@
         {
           "path": "workers/vendor/csharp/_framework/dotnet.boot.js",
           "size": 48588,
-          "sha256": "c5fb7a2dbbbefb240e4c9404ae202aedbd2f73824c71fefb9a69dcca72f2a683",
-          "integrity": "sha256-xft6Lbu++yQOTJQEriAq7b0vc4JMcf77mmncynLypoM=",
+          "sha256": "27c5b5591f41ff826bf917da2f12cbf5ba22a5fe45e563e493a3ac576e3017bf",
+          "integrity": "sha256-J8W1WR9B/4Jr+RfaLxLL9boipf5F5WPkk6OsV24wF78=",
           "mediaType": "text/javascript"
         },
         {
@@ -1724,16 +1724,16 @@
         },
         {
           "path": "workers/vendor/csharp/_framework/supportFiles/TraceCode.CSharpHost.dll",
-          "size": 609280,
-          "sha256": "0d4e134c0888b852a01951badfa08f507e28b5b64f29d9f16168e188548033fa",
-          "integrity": "sha256-DU4TTAiIuFKgGVG636CPUH4otbZPKdnxYWjhiFSAM/o=",
+          "size": 621568,
+          "sha256": "5a6770e6a556cb7107064624767952ffffea91d1b8295fdebd4ffc35afb7cde5",
+          "integrity": "sha256-Wmdw5qVWy3EHBkYkdnlS///qkdG4KV/evU/8Na+3zeU=",
           "mediaType": "application/octet-stream"
         },
         {
           "path": "workers/vendor/csharp/_framework/supportFiles/TraceCode.CSharpJudgeRuntime.dll",
-          "size": 94208,
-          "sha256": "a659062910ef9f9b2e7a41d16223908aa5ec8f63981597cfa97c4e8f9eda54c4",
-          "integrity": "sha256-plkGKRDvn5suekHRYiOQiqXsj2OYFZfPqXxOj57aVMQ=",
+          "size": 96256,
+          "sha256": "86e2e5ca2d2d6a8db05cd5a928b5296f420f51690c566f7f68f41ec1a02551e6",
+          "integrity": "sha256-huLlyi0tao2wXNWpKLUpb0IPUWkMVm9/aPQewaAlUeY=",
           "mediaType": "application/octet-stream"
         },
         {
@@ -2091,28 +2091,28 @@
       },
       "roles": {
         "general": {
-          "artifact": "csharp-bundle.fec59d84ca62d184052542d144d3f2a2104f3508ce5ddff6f6eefa9ea2575b6e.zip",
-          "artifactBytes": 18115878,
-          "artifactSha256": "fec59d84ca62d184052542d144d3f2a2104f3508ce5ddff6f6eefa9ea2575b6e",
+          "artifact": "csharp-bundle.4385763ad1edc944aa6855d7f48257c0fc9a0eb5d8e8bc1841ff5d55408aea31.zip",
+          "artifactBytes": 18125436,
+          "artifactSha256": "4385763ad1edc944aa6855d7f48257c0fc9a0eb5d8e8bc1841ff5d55408aea31",
           "fileCount": 242,
-          "treeSha256": "99c0887631de223b8929ec032067004bb4536be746bc687952ef4c6c4f633a42",
-          "uncompressedBytes": 50348430
+          "treeSha256": "5f1729dae286c707c3c62fc2c7364f01a3a6f76153ade31404be91476a304c0d",
+          "uncompressedBytes": 50377102
         },
         "compiler": {
-          "artifact": "csharp-bundle.fec59d84ca62d184052542d144d3f2a2104f3508ce5ddff6f6eefa9ea2575b6e.zip",
-          "artifactBytes": 18115878,
-          "artifactSha256": "fec59d84ca62d184052542d144d3f2a2104f3508ce5ddff6f6eefa9ea2575b6e",
+          "artifact": "csharp-bundle.4385763ad1edc944aa6855d7f48257c0fc9a0eb5d8e8bc1841ff5d55408aea31.zip",
+          "artifactBytes": 18125436,
+          "artifactSha256": "4385763ad1edc944aa6855d7f48257c0fc9a0eb5d8e8bc1841ff5d55408aea31",
           "fileCount": 242,
-          "treeSha256": "99c0887631de223b8929ec032067004bb4536be746bc687952ef4c6c4f633a42",
-          "uncompressedBytes": 50348430
+          "treeSha256": "5f1729dae286c707c3c62fc2c7364f01a3a6f76153ade31404be91476a304c0d",
+          "uncompressedBytes": 50377102
         },
         "runner": {
-          "artifact": "csharp-bundle.ed7edfe55366ff19659e9e67849e4bbe331226f8425898359ada3be0c72dbda9.zip",
-          "artifactBytes": 4678859,
-          "artifactSha256": "ed7edfe55366ff19659e9e67849e4bbe331226f8425898359ada3be0c72dbda9",
+          "artifact": "csharp-bundle.d189b8c0ec2f31246c41c4c4839354f0583418bd5131a12c8bcb63c42ff76666.zip",
+          "artifactBytes": 4679374,
+          "artifactSha256": "d189b8c0ec2f31246c41c4c4839354f0583418bd5131a12c8bcb63c42ff76666",
           "fileCount": 12,
-          "treeSha256": "c1fd0d46132ba3a202e8eb71311a04521ca315a138f261add36fb6e11cfc61a2",
-          "uncompressedBytes": 12834587
+          "treeSha256": "4f6ce9a61579c1cbc56b004afbb2864965c89868d5ceb55a78dea6e460061160",
+          "uncompressedBytes": 12836631
         }
       }
     }

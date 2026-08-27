@@ -378,6 +378,7 @@ public class Solution {
             worker.postMessage({
               ...(trace ? {
                 mode: 'trace',
+                artifactKey: fastTrace.compiledArtifactKey,
                 artifactBase64: fastTrace.compiledArtifactBase64,
                 artifactSha256: fastTrace.compiledArtifactSha256,
                 source: fastSource,

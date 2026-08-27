@@ -5,8 +5,10 @@
 C# has two different product contracts and should not force them through one browser image:
 
 - Project and terminal execution keep the broad .NET/Mono runtime.
-- Practice and Judge execution use a generated algorithm profile and a fresh, compiler-free
-  worker for every isolated case.
+- Practice and Judge execution use a generated algorithm profile in a
+  compiler-free runner. Compatibility creates a fresh outer worker per case;
+  compiler-admitted algorithm-fast batches retain one outer worker and create
+  a fresh collectible assembly context per case.
 
 The compiler remains a long-lived trusted authority. It emits ordinary Roslyn PE/CIL plus a
 generated typed driver. The disposable runner loads that assembly and calls the driver's binary
@@ -184,15 +186,17 @@ code in the compatibility tier. Infrastructure recovery may recreate a worker an
 same selected tier. This prevents duplicate side effects, timing changes, and fast-path defects
 from being hidden by a broad fallback.
 
-The first production slice runs both driver formats inside the existing disposable Judge runner
-role. `algorithm-fast` bypasses JSON/reflection hydration and invokes the generated typed binary
-driver, while `compatibility` retains the existing broad boundary. Both still receive the same
-fresh outer-worker isolation and timeout retirement. Chromium, Firefox, and WebKit Judge batches
-pass with case concurrency fixed at one, including explicit proof that an algorithm-fast learner
-failure does not acquire or execute a compatibility runner. Fast trace execution uses the same
-instrumentation, trace sink, source backfill, limits, and outer-worker retirement as compatibility
-execution. Browser gates verify canonical event output, `recordTrace=false`, and trace-limit
-behavior.
+Both driver formats run inside the disposable Judge runner role.
+`algorithm-fast` bypasses JSON/reflection hydration and invokes the generated
+typed binary driver. Its eager correctness batch retains one outer runner and
+loads each case into a fresh collectible assembly context, so learner statics,
+instances, inputs, outputs, and trace state remain case-local. `compatibility`
+retains the broad boundary and fresh outer-worker isolation per case. Both
+tiers preserve timeout retirement, and the compiler-selected tier never
+changes after learner execution begins. Browser gates prove that an
+algorithm-fast learner failure does not acquire a compatibility runner and
+verify canonical trace output, `recordTrace=false`, trace limits, and recovery
+inside the retained outer lease.
 
 `pnpm bench:traceclr-tiers:matrix` measures the same compiled `Add` contract and input through a
 fresh compatibility worker, integrated binary-driver worker, minimal runner, and native `dotnet`
