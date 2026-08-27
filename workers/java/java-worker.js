@@ -4504,6 +4504,23 @@ function javaWorkerRandomHex(words = 2) {
   });
 }
 
+function javaWorkerSecureRandomHex(words = 4) {
+  if (
+    typeof crypto === 'undefined' ||
+    typeof crypto.getRandomValues !== 'function'
+  ) {
+    throw new Error(
+      'Secure randomness is required for Java prepared entry identities.'
+    );
+  }
+  const values = new Uint32Array(Math.max(1, words));
+  crypto.getRandomValues(values);
+  return Array.from(
+    values,
+    (value) => value.toString(16).padStart(8, '0')
+  ).join('');
+}
+
 function isolateJavaCompileId(stableCompileId, requestId = '') {
   javaCompileIsolationCounter += 1;
   return stableHash({
@@ -7803,26 +7820,29 @@ async function prepareJavaRuntimeProgram(payload, requestId) {
       scriptMode: normalizedPayload.scriptMode === true,
       options: mode === 'trace' ? normalizedPayload.options ?? {} : {},
     });
+    // Admission excludes the exact generated entry shell and its nested
+    // classes. Its identity must not be predictable from learner-controlled
+    // source, otherwise a crafted top-level `$` class could impersonate an
+    // excluded nested shell class.
+    const shellIdentity = javaWorkerSecureRandomHex(4);
     const traceDynamicInputs = preparedDynamicInputEntriesForPayload(
       normalizedPayload,
       stableCompileId
     );
     const sourceStart = performance.now();
     if (mode === 'trace') {
-      const cleanCompileId = stableHash({
-        compileMode: 'prepared-trace-clean-companion',
-        stableCompileId,
-      });
-      const traceExportsClassName = buildExportsClassName(stableCompileId);
-      const cleanExportsClassName = buildExportsClassName(cleanCompileId);
-      entryClass = `${buildPackageName(stableCompileId)}.${traceExportsClassName}`;
-      cleanEntryClass = `${buildPackageName(cleanCompileId)}.${cleanExportsClassName}`;
+      const traceShellIdentity = `${shellIdentity}Trace`;
+      const cleanShellIdentity = `${shellIdentity}Clean`;
+      const traceExportsClassName = buildExportsClassName(traceShellIdentity);
+      const cleanExportsClassName = buildExportsClassName(cleanShellIdentity);
+      entryClass = `${buildPackageName(traceShellIdentity)}.${traceExportsClassName}`;
+      cleanEntryClass = `${buildPackageName(cleanShellIdentity)}.${cleanExportsClassName}`;
       preparedSources = [
         {
           path: `/str/${traceExportsClassName}.java`,
           source: await buildJavaTraceRunnableSource(
             normalizedPayload,
-            stableCompileId,
+            traceShellIdentity,
             traceDynamicInputs
           ),
         },
@@ -7830,7 +7850,7 @@ async function prepareJavaRuntimeProgram(payload, requestId) {
           path: `/str/${cleanExportsClassName}.java`,
           source: buildPlainRunnableSource(
             normalizedPayload,
-            cleanCompileId,
+            cleanShellIdentity,
             // Both entry points read the same prepared input properties. The
             // clean package identity is independent of the property names, so
             // there is no reason to serialize every case input twice.
@@ -7840,13 +7860,13 @@ async function prepareJavaRuntimeProgram(payload, requestId) {
       ];
       dynamicInputs = traceDynamicInputs;
     } else {
-      const exportsClassName = buildExportsClassName(stableCompileId);
-      entryClass = `${buildPackageName(stableCompileId)}.${exportsClassName}`;
+      const exportsClassName = buildExportsClassName(shellIdentity);
+      entryClass = `${buildPackageName(shellIdentity)}.${exportsClassName}`;
       preparedSources = [{
         path: `/str/${exportsClassName}.java`,
         source: buildPlainRunnableSource(
           normalizedPayload,
-          stableCompileId,
+          shellIdentity,
           traceDynamicInputs
         ),
       }];
@@ -7916,7 +7936,9 @@ async function prepareJavaRuntimeProgram(payload, requestId) {
         : JSON.stringify(preparedSources.map((source) => source.path)),
       mode === 'trace'
         ? DEFAULT_COMPILER_DEBUG_PROFILE
-        : DEFAULT_EXECUTE_COMPILER_DEBUG_PROFILE
+        : DEFAULT_EXECUTE_COMPILER_DEBUG_PROFILE,
+      entryClass,
+      cleanEntryClass ?? ''
     );
     report = JSON.parse(reportText);
   } catch (error) {
@@ -7976,11 +7998,13 @@ async function prepareJavaRuntimeProgram(payload, requestId) {
       sourceLineMap: normalizedPayload.sourceLineMap,
     },
     traceOptions: payload.options ?? {},
+    algorithmIsolationProfile: report.algorithmIsolationProfile,
   };
   preparedJavaRuntimePrograms.set(programId, preparedState);
   return {
     success: true,
     programId,
+    algorithmIsolationProfile: report.algorithmIsolationProfile,
     snapshot: {
       schema: 'tracecode.java.prepared-program-snapshot.v1',
       programId,
@@ -8031,13 +8055,26 @@ async function restorePreparedJavaRuntimeProgram(payload) {
       'The selected Java runtime cannot restore a prepared program.'
     );
   }
-  await compileLibraryClass.restoreRuntimeProgram(
+  const restoreReportText = await compileLibraryClass.restoreRuntimeProgram(
     snapshot.programId,
     JSON.stringify(snapshot.runtimeArtifact),
     snapshot.mode === 'trace'
       ? DEFAULT_COMPILER_DEBUG_PROFILE
       : DEFAULT_EXECUTE_COMPILER_DEBUG_PROFILE
   );
+  const restoreReport =
+    typeof restoreReportText === 'string'
+      ? JSON.parse(restoreReportText)
+      : restoreReportText;
+  if (
+    restoreReport?.success !== true ||
+    !restoreReport.algorithmIsolationProfile ||
+    typeof restoreReport.algorithmIsolationProfile !== 'object'
+  ) {
+    throw new Error(
+      'The selected Java runtime did not reclassify the restored artifact.'
+    );
+  }
   preparedJavaRuntimePrograms.set(snapshot.programId, {
     mode: snapshot.mode,
     entryClass: snapshot.entryClass,
@@ -8051,10 +8088,14 @@ async function restorePreparedJavaRuntimeProgram(payload) {
     dynamicInputs: snapshot.dynamicInputs,
     normalizedPayload: snapshot.normalizedPayload,
     traceOptions: snapshot.traceOptions ?? {},
+    // Never trust a caller-restored tier. The runtime derives this profile
+    // again from the exact class bytes it accepted above.
+    algorithmIsolationProfile: restoreReport.algorithmIsolationProfile,
   });
   return {
     success: true,
     programId: snapshot.programId,
+    algorithmIsolationProfile: restoreReport.algorithmIsolationProfile,
     consoleOutput: [],
     timings: {
       compileMs: 0,
@@ -8112,6 +8153,9 @@ function preparedJavaResultFromReport(
     totalMs: executionTimeMs,
     compileCacheHit: true,
     artifactCacheHit: true,
+    ...(report.runnerProcessCount === undefined
+      ? {}
+      : { runnerProcessCount: report.runnerProcessCount }),
   };
 
   if (program.mode === 'trace') {
@@ -8133,12 +8177,12 @@ function preparedJavaResultFromReport(
         : {}),
       executionTimeMs,
       consoleOutput,
-      ...(report.traceLimitExceeded !== undefined
+      ...(report.traceLimitExceeded !== undefined || report.timeoutReason
         ? {
             traceLimitExceeded: Boolean(report.traceLimitExceeded),
-            timeoutReason: report.traceLimitExceeded
-              ? 'trace-limit'
-              : undefined,
+            timeoutReason:
+              report.timeoutReason ??
+              (report.traceLimitExceeded ? 'trace-limit' : undefined),
             droppedEventCount: report.droppedEventCount ?? 0,
           }
         : {}),
@@ -8150,6 +8194,7 @@ function preparedJavaResultFromReport(
         ? { diagnosticError: report.diagnosticError }
         : {}),
       runtimeIsolation: report.isolation,
+      algorithmIsolationProfile: report.algorithmIsolationProfile,
       retirementRecommended: report.retirementRecommended === true,
       timings,
     };
@@ -8165,7 +8210,11 @@ function preparedJavaResultFromReport(
       ),
       consoleOutput,
       executionTimeMs,
+      ...(report.timeoutReason
+        ? { timeoutReason: report.timeoutReason }
+        : {}),
       runtimeIsolation: report.isolation,
+      algorithmIsolationProfile: report.algorithmIsolationProfile,
       retirementRecommended: report.retirementRecommended === true,
       timings,
     };
@@ -8176,6 +8225,7 @@ function preparedJavaResultFromReport(
     consoleOutput,
     executionTimeMs,
     runtimeIsolation: report.isolation,
+    algorithmIsolationProfile: report.algorithmIsolationProfile,
     retirementRecommended: report.retirementRecommended === true,
     timings,
   };
@@ -8269,7 +8319,12 @@ async function executePreparedJavaRuntimeProgram(payload) {
   const totalEnd = performance.now();
   return preparedJavaResultFromReport(
     program,
-    report,
+    {
+      ...report,
+      algorithmIsolationProfile:
+        report.algorithmIsolationProfile ??
+        program.algorithmIsolationProfile,
+    },
     totalEnd - totalStart,
     libraryCallEnd - libraryCallStart
   );
@@ -8369,7 +8424,12 @@ async function executePreparedJavaRuntimeProgramBatch(payload) {
       (entry.classLoadTimeMs ?? 0) + (entry.runTimeMs ?? 0);
     const result = preparedJavaResultFromReport(
       program,
-      entry,
+      {
+        ...entry,
+        algorithmIsolationProfile:
+          report.algorithmIsolationProfile ??
+          program.algorithmIsolationProfile,
+      },
       executionTimeMs,
       0
     );

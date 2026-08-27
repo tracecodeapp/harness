@@ -283,9 +283,9 @@ function unwrapTraceKernelResult(operation, result) {
   return result.value;
 }
 
-function traceJVMProcessHost(programId) {
+function traceJVMKernelRequest(programId) {
   const activeRequestId = self.TraceCodeActiveKernelRequestId;
-  const kernelRequest = programId === false
+  return programId === false
     ? undefined
     : (
         (programId ? traceJVMKernelChannels.get(String(programId)) : undefined) ??
@@ -293,25 +293,40 @@ function traceJVMProcessHost(programId) {
           ? traceJVMKernelChannels.get(String(activeRequestId))
           : undefined)
       );
+}
+
+function traceJVMKernelRequestClient(kernelRequest) {
+  const Client = self.TraceCodeTraceKernelSharedSyscallClient;
+  if (typeof Client !== 'function') {
+    throw new Error('TraceKernel shared syscall client is unavailable.');
+  }
+  return kernelRequest.client ??= new Client(
+    kernelRequest.channel,
+    () => traceJVMPostMessage({
+      id: kernelRequest.id,
+      type: 'kernel-syscall',
+      protocolToken: kernelRequest.protocolToken,
+    })
+  );
+}
+
+function traceJVMProcessHost(programId) {
+  const kernelRequest = traceJVMKernelRequest(programId);
   const localAuthority = programId === false
     ? undefined
     : traceJVMLocalKernelAuthorities.get(String(programId));
   if (kernelRequest) {
-    const Client = self.TraceCodeTraceKernelSharedSyscallClient;
-    if (typeof Client !== 'function') {
-      throw new Error('TraceKernel shared syscall client is unavailable.');
-    }
-    const client = kernelRequest.client ??= new Client(
-      kernelRequest.channel,
-      () => traceJVMPostMessage({
-        id: kernelRequest.id,
-        type: 'kernel-syscall',
-        protocolToken: kernelRequest.protocolToken,
-      })
-    );
     return {
       kernelBound: true,
       dispatchSync(request) {
+        const activeKernelRequest = traceJVMKernelRequest(programId);
+        if (!activeKernelRequest) {
+          throw Object.assign(
+            new Error('TraceKernel request channel is no longer active.'),
+            { code: 'EPIPE' }
+          );
+        }
+        const client = traceJVMKernelRequestClient(activeKernelRequest);
         return unwrapTraceKernelResult(
           request.operation,
           client.dispatchSync({
@@ -323,8 +338,9 @@ function traceJVMProcessHost(programId) {
       async dispatch(request) {
         return this.dispatchSync(request);
       },
-      // The host owns the process-bound channel and closes it after the outer
-      // request. A batch may replace several inner JVMs on that one process.
+      // The outer request owns each channel client. A retained JVM keeps this
+      // host object, which resolves the current request on every dispatch so a
+      // later single-case call cannot use the released prior client.
       close() {},
     };
   }
@@ -368,14 +384,7 @@ function resetTraceKernelExecutionScope(programId) {
   if (localAuthority) {
     return localAuthority.resetExecutionScope();
   }
-  const activeRequestId = self.TraceCodeActiveKernelRequestId;
-  const kernelRequest =
-    (programId
-      ? traceJVMKernelChannels.get(String(programId))
-      : undefined) ??
-    (activeRequestId
-      ? traceJVMKernelChannels.get(String(activeRequestId))
-      : undefined);
+  const kernelRequest = traceJVMKernelRequest(programId);
   if (!kernelRequest) return Promise.resolve();
 
   const requestId =
@@ -407,49 +416,10 @@ async function runInFreshTraceJVMProcess(client, request, programId) {
     ...(host.kernelBound ? { host } : {}),
   });
   try {
-    for (const file of host.kernelBound ? processFiles ?? [] : []) {
-      const normalizedPath = `/${String(file.path).replace(/^\/+/, '')}`;
-      const parentPath = normalizedPath.slice(
-        0,
-        Math.max(1, normalizedPath.lastIndexOf('/'))
-      );
-      await host.dispatch({
-        service: 'posix',
-        operation: 'mkdir',
-        payload: {
-          path: parentPath,
-          options: { recursive: true },
-        },
-      });
-      const opened = await host.dispatch({
-        service: 'posix',
-        operation: 'open',
-        payload: {
-          path: normalizedPath,
-          options: {
-            access: 'write',
-            create: true,
-            truncate: true,
-          },
-        },
-      });
-      try {
-        await host.dispatch({
-          service: 'posix',
-          operation: 'write',
-          payload: {
-            fd: opened.fd,
-            bytes: file.content,
-          },
-        });
-      } finally {
-        await host.dispatch({
-          service: 'posix',
-          operation: 'close',
-          payload: { fd: opened.fd },
-        });
-      }
-    }
+    await stageTraceJVMKernelFiles(
+      host,
+      host.kernelBound ? processFiles : []
+    );
     return await process.run(request);
   } finally {
     process.dispose();
@@ -459,6 +429,492 @@ async function runInFreshTraceJVMProcess(client, request, programId) {
 
 const traceJVMPreparedProcessLeases = new Map();
 const TRACE_JVM_LEASE_MAX_EXECUTIONS = 64;
+const JAVA_ALGORITHM_ISOLATION_PROFILE_SCHEMA =
+  'tracecode.java.algorithm-isolation-profile.v1';
+
+// A trailing slash matches a package prefix. Bare entries match one class and
+// its nested classes only; related simple names must be listed explicitly.
+const JAVA_ALGORITHM_FORBIDDEN_OWNER_PREFIXES = Object.freeze([
+  'java/lang/ClassLoader',
+  // java.lang.Compiler controls VM-global JIT state; an application
+  // classloader cannot make enable/disable/compileClass/command per-case.
+  'java/lang/Compiler',
+  'java/lang/InheritableThreadLocal',
+  'java/lang/Process',
+  'java/lang/ProcessBuilder',
+  'java/lang/ProcessHandle',
+  'java/lang/Runtime',
+  'java/lang/ScopedValue',
+  'java/lang/StackWalker',
+  'java/lang/System$LoggerFinder',
+  'java/lang/Thread',
+  'java/lang/ThreadGroup',
+  'java/lang/ThreadLocal',
+  'java/lang/instrument/',
+  'java/lang/foreign/',
+  'java/lang/invoke/MethodHandle',
+  'java/lang/invoke/MethodHandles',
+  'java/lang/invoke/VarHandle',
+  'java/lang/management/',
+  'java/lang/module/',
+  'java/lang/Module',
+  'java/lang/ModuleLayer',
+  'java/lang/Package',
+  'java/lang/ref/',
+  'java/lang/reflect/',
+  'java/net/',
+  'java/nio/file/',
+  'java/nio/channels/',
+  'java/rmi/',
+  'java/util/ServiceLoader',
+  'java/util/Calendar$Builder',
+  'java/util/Timer',
+  'java/util/concurrent/',
+  'java/util/jar/',
+  'java/util/logging/',
+  'java/util/prefs/',
+  'java/util/random/',
+  'java/util/spi/',
+  'java/util/stream/StreamSupport',
+  'java/util/zip/',
+  'java/util/ResourceBundle',
+  'javax/management/',
+  'javax/script/',
+  'javax/tools/',
+  'jdk/internal/',
+  'sun/misc/Unsafe',
+]);
+
+function javaAlgorithmOwnerMatchesForbiddenReference(owner, reference) {
+  return reference.endsWith('/')
+    ? owner.startsWith(reference)
+    : owner === reference || owner.startsWith(`${reference}$`);
+}
+
+const JAVA_ALGORITHM_ALLOWED_PRINT_STREAM_METHODS = new Set([
+  'append',
+  'flush',
+  'format',
+  'print',
+  'printf',
+  'println',
+  'write',
+]);
+
+const JAVA_ALGORITHM_COMPILER_BOOTSTRAP_OWNERS = new Set([
+  'java/lang/invoke/LambdaMetafactory',
+  'java/lang/invoke/StringConcatFactory',
+  'java/lang/runtime/ObjectMethods',
+  'java/lang/runtime/SwitchBootstraps',
+]);
+
+function javaAlgorithmForbiddenOwner(owner) {
+  if (owner.startsWith('java/io/')) {
+    return owner !== 'java/io/PrintStream';
+  }
+  return JAVA_ALGORITHM_FORBIDDEN_OWNER_PREFIXES.some((reference) =>
+    javaAlgorithmOwnerMatchesForbiddenReference(owner, reference)
+  );
+}
+
+function javaAlgorithmOwnerInAllowedLibrary(owner) {
+  return (
+    owner.startsWith('harness/user/job') ||
+    owner === 'java/io/PrintStream' ||
+    owner.startsWith('java/lang/') ||
+    owner.startsWith('java/math/') ||
+    owner.startsWith('java/nio/') ||
+    owner.startsWith('java/text/') ||
+    owner.startsWith('java/time/') ||
+    owner.startsWith('java/util/') ||
+    owner === 'javafx/util/Pair' ||
+    owner.startsWith('tracecode/user/')
+  );
+}
+
+function javaAlgorithmReferenceOwner(owner) {
+  const text = String(owner ?? '');
+  if (!text.startsWith('[')) return text || undefined;
+  const element = text.replace(/^\[+/u, '');
+  if (/^[BCDFIJSZ]$/u.test(element)) return 'java/lang/Object';
+  if (/^L[^.;\[]+;$/u.test(element)) return element.slice(1, -1);
+  return undefined;
+}
+
+function javaAlgorithmDescriptorOwners(descriptor) {
+  const text = String(descriptor ?? '');
+  const owners = [];
+  let cursor = 0;
+  const readType = (allowVoid) => {
+    let arrayDepth = 0;
+    while (text[cursor] === '[') {
+      arrayDepth += 1;
+      cursor += 1;
+    }
+    const tag = text[cursor];
+    cursor += 1;
+    if ('BCDFIJSZ'.includes(tag)) return true;
+    if (tag === 'V') return allowVoid && arrayDepth === 0;
+    if (tag !== 'L') return false;
+    const end = text.indexOf(';', cursor);
+    if (end <= cursor) return false;
+    const owner = text.slice(cursor, end);
+    if (owner.includes('.') || owner.includes('[')) return false;
+    owners.push(owner);
+    cursor = end + 1;
+    return true;
+  };
+  if (text[cursor] === '(') {
+    cursor += 1;
+    while (cursor < text.length && text[cursor] !== ')') {
+      if (!readType(false)) return undefined;
+    }
+    if (text[cursor] !== ')') return undefined;
+    cursor += 1;
+    if (!readType(true)) return undefined;
+  } else if (!readType(false)) {
+    return undefined;
+  }
+  return cursor === text.length ? owners : undefined;
+}
+
+const JAVA_ALGORITHM_FORBIDDEN_SYSTEM_METHODS = new Set([
+  'clearProperty',
+  'console',
+  'exit',
+  'gc',
+  'getProperties',
+  'getProperty',
+  'getLogger',
+  'getSecurityManager',
+  'getenv',
+  'inheritedChannel',
+  'load',
+  'loadLibrary',
+  'mapLibraryName',
+  'runFinalization',
+  'setErr',
+  'setIn',
+  'setOut',
+  'setProperties',
+  'setProperty',
+  'setSecurityManager',
+]);
+
+const JAVA_ALGORITHM_CURRENT_TIME_GREGORIAN_CONSTRUCTORS = new Set([
+  '()V',
+  '(Ljava/util/Locale;)V',
+  '(Ljava/util/TimeZone;)V',
+  '(Ljava/util/TimeZone;Ljava/util/Locale;)V',
+]);
+
+function javaAlgorithmForbiddenReference(owner, name, descriptor) {
+  const referenceOwner = javaAlgorithmReferenceOwner(owner);
+  if (!referenceOwner) {
+    return `owner-unverifiable:${owner}.${name}${descriptor}`;
+  }
+  if (javaAlgorithmForbiddenOwner(referenceOwner)) {
+    return `ambient-owner:${owner}`;
+  }
+  if (
+    owner === 'java/io/PrintStream' &&
+    !JAVA_ALGORITHM_ALLOWED_PRINT_STREAM_METHODS.has(name)
+  ) {
+    return `ambient-owner:${owner}`;
+  }
+  const descriptorOwners = JAVA_ALGORITHM_COMPILER_BOOTSTRAP_OWNERS.has(owner)
+    ? []
+    : javaAlgorithmDescriptorOwners(descriptor);
+  if (!descriptorOwners) {
+    return `descriptor-unverifiable:${owner}.${name}${descriptor}`;
+  }
+  for (const descriptorOwner of descriptorOwners) {
+    if (javaAlgorithmForbiddenOwner(descriptorOwner)) {
+      return `ambient-descriptor:${descriptorOwner}`;
+    }
+    if (!javaAlgorithmOwnerInAllowedLibrary(descriptorOwner)) {
+      return `outside-algorithm-descriptor:${descriptorOwner}`;
+    }
+  }
+  if (
+    owner === 'java/lang/System' &&
+    JAVA_ALGORITHM_FORBIDDEN_SYSTEM_METHODS.has(name)
+  ) {
+    return `ambient-method:${owner}.${name}${descriptor}`;
+  }
+  if (
+    (owner === 'java/lang/Boolean' && name === 'getBoolean') ||
+    (owner === 'java/lang/Integer' && name === 'getInteger') ||
+    (owner === 'java/lang/Long' && name === 'getLong') ||
+    (owner === 'java/lang/String' && name === 'intern')
+  ) {
+    return `ambient-method:${owner}.${name}${descriptor}`;
+  }
+  if (
+    (owner.startsWith('java/') || owner.startsWith('javax/')) &&
+    name === 'close'
+  ) {
+    return `ambient-method:${owner}.${name}${descriptor}`;
+  }
+  if (owner === 'java/lang/Class' && name !== '<init>') {
+    return `reflective-method:${owner}.${name}${descriptor}`;
+  }
+  if (
+    (owner === 'java/lang/Math' && name === 'random') ||
+    owner === 'java/security/SecureRandom' ||
+    owner === 'java/util/Random' ||
+    owner === 'java/util/SplittableRandom' ||
+    owner === 'java/util/concurrent/ThreadLocalRandom' ||
+    (owner === 'java/util/UUID' && name === 'randomUUID')
+  ) {
+    return `nondeterministic-rng:${owner}.${name}${descriptor}`;
+  }
+  if (
+    (owner === 'java/lang/System' &&
+      (name === 'currentTimeMillis' || name === 'nanoTime')) ||
+    (owner === 'java/util/Date' && name === '<init>' && descriptor === '()V') ||
+    (owner === 'java/util/GregorianCalendar' &&
+      name === '<init>' &&
+      JAVA_ALGORITHM_CURRENT_TIME_GREGORIAN_CONSTRUCTORS.has(descriptor)) ||
+    (owner === 'java/util/Calendar' && name === 'getInstance') ||
+    (owner === 'java/time/Clock' &&
+      (name.startsWith('system') ||
+        name === 'tick' ||
+        name === 'tickMillis' ||
+        name === 'tickMinutes' ||
+        name === 'tickSeconds')) ||
+    (owner === 'java/time/InstantSource' &&
+      (name.startsWith('system') || name === 'tick')) ||
+    (owner.startsWith('java/time/') &&
+      (name === 'now' || name === 'dateNow'))
+  ) {
+    return `nondeterministic-time:${owner}.${name}${descriptor}`;
+  }
+  if (
+    owner === 'java/util/Formatter' &&
+    name === '<init>' &&
+    descriptor.startsWith('(Ljava/lang/String;')
+  ) {
+    return `ambient-file-constructor:${owner}.${name}${descriptor}`;
+  }
+  if (
+    (owner === 'java/util/Locale' || owner === 'java/util/TimeZone') &&
+    name === 'setDefault'
+  ) {
+    return `ambient-default:${owner}.${name}${descriptor}`;
+  }
+  if (
+    (owner === 'java/util/Arrays' && name.startsWith('parallel')) ||
+    (owner === 'java/util/Collections' && name === 'shuffle') ||
+    name === 'parallelStream' ||
+    (name === 'parallel' && descriptor.includes(')Ljava/util/stream/'))
+  ) {
+    return `parallel-execution:${owner}.${name}${descriptor}`;
+  }
+  if (
+    !javaAlgorithmOwnerInAllowedLibrary(referenceOwner)
+  ) {
+    return `outside-algorithm-library:${owner}.${name}${descriptor}`;
+  }
+  return undefined;
+}
+
+function parseTraceJVMClassFile(content) {
+  const bytes = content instanceof Uint8Array
+    ? content
+    : new Uint8Array(content);
+  const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+  let offset = 0;
+  const need = (count) => {
+    if (offset + count > view.byteLength) {
+      throw new TypeError('Truncated Java class file.');
+    }
+  };
+  const u1 = () => {
+    need(1);
+    const value = view.getUint8(offset);
+    offset += 1;
+    return value;
+  };
+  const u2 = () => {
+    need(2);
+    const value = view.getUint16(offset, false);
+    offset += 2;
+    return value;
+  };
+  const u4 = () => {
+    need(4);
+    const value = view.getUint32(offset, false);
+    offset += 4;
+    return value;
+  };
+  const skip = (count) => {
+    need(count);
+    offset += count;
+  };
+  if (u4() !== 0xcafebabe) {
+    throw new TypeError('Invalid Java class file magic.');
+  }
+  skip(4);
+  const constantPoolCount = u2();
+  const constantPool = new Array(constantPoolCount);
+  const decoder = new TextDecoder('utf-8', { fatal: true });
+  for (let index = 1; index < constantPoolCount; index += 1) {
+    const tag = u1();
+    if (tag === 1) {
+      const length = u2();
+      need(length);
+      constantPool[index] = {
+        tag,
+        value: decoder.decode(
+          new Uint8Array(
+            view.buffer,
+            view.byteOffset + offset,
+            length
+          )
+        ),
+      };
+      offset += length;
+    } else if (tag === 3 || tag === 4) {
+      skip(4);
+      constantPool[index] = { tag };
+    } else if (tag === 5 || tag === 6) {
+      skip(8);
+      constantPool[index] = { tag };
+      index += 1;
+    } else if (tag === 7 || tag === 8 || tag === 16 || tag === 19 || tag === 20) {
+      constantPool[index] = { tag, index: u2() };
+    } else if (tag === 9 || tag === 10 || tag === 11 || tag === 12 || tag === 17 || tag === 18) {
+      constantPool[index] = { tag, left: u2(), right: u2() };
+    } else if (tag === 15) {
+      constantPool[index] = { tag, kind: u1(), index: u2() };
+    } else {
+      throw new TypeError(`Unsupported Java constant-pool tag ${tag}.`);
+    }
+  }
+  const utf8 = (index) => {
+    const entry = constantPool[index];
+    if (!entry || entry.tag !== 1) {
+      throw new TypeError(`Invalid Java UTF-8 constant ${index}.`);
+    }
+    return entry.value;
+  };
+  const className = (index) => {
+    const entry = constantPool[index];
+    if (!entry || entry.tag !== 7) {
+      throw new TypeError(`Invalid Java class constant ${index}.`);
+    }
+    return utf8(entry.index);
+  };
+  const references = [];
+  for (const entry of constantPool) {
+    if (!entry || (entry.tag !== 9 && entry.tag !== 10 && entry.tag !== 11)) {
+      continue;
+    }
+    const nameAndType = constantPool[entry.right];
+    if (!nameAndType || nameAndType.tag !== 12) {
+      throw new TypeError('Invalid Java name-and-type constant.');
+    }
+    references.push({
+      owner: className(entry.left),
+      name: utf8(nameAndType.left),
+      descriptor: utf8(nameAndType.right),
+    });
+  }
+  u2();
+  const thisClass = u2();
+  skip(2);
+  const interfacesCount = u2();
+  skip(interfacesCount * 2);
+  let declaresNativeMethod = false;
+  const skipAttributes = () => {
+    const count = u2();
+    for (let index = 0; index < count; index += 1) {
+      skip(2);
+      skip(u4());
+    }
+  };
+  const fieldsCount = u2();
+  for (let index = 0; index < fieldsCount; index += 1) {
+    skip(6);
+    skipAttributes();
+  }
+  const methodsCount = u2();
+  for (let index = 0; index < methodsCount; index += 1) {
+    const methodAccess = u2();
+    skip(4);
+    if ((methodAccess & 0x0100) !== 0) declaresNativeMethod = true;
+    skipAttributes();
+  }
+  skipAttributes();
+  return {
+    className: className(thisClass),
+    declaresNativeMethod,
+    references,
+  };
+}
+
+function classifyTraceJVMAlgorithmProgram(
+  program,
+  generatedEntryClasses = []
+) {
+  const reasons = new Set();
+  const generatedEntryRoots = new Set(
+    generatedEntryClasses
+      .map((entryClass) => String(entryClass ?? '').replaceAll('.', '/'))
+      .filter(Boolean)
+  );
+  let scannedClasses = 0;
+  for (const file of program?.files ?? []) {
+    if (!String(file?.path ?? '').endsWith('.class')) continue;
+    try {
+      const entry = parseTraceJVMClassFile(file.content);
+      const generated = [...generatedEntryRoots].some(
+        (root) => entry.className === root || entry.className.startsWith(`${root}$`)
+      );
+      if (generated) continue;
+      scannedClasses += 1;
+      if (entry.declaresNativeMethod) {
+        reasons.add(`native-method:${entry.className}`);
+      }
+      for (const reference of entry.references) {
+        const reason = javaAlgorithmForbiddenReference(
+          reference.owner,
+          reference.name,
+          reference.descriptor
+        );
+        if (reason) reasons.add(reason);
+      }
+    } catch (error) {
+      reasons.add(
+        `classfile-unverifiable:${String(file?.path ?? '<unknown>')}:` +
+        `${error instanceof Error ? error.message : String(error)}`
+      );
+    }
+  }
+  if (scannedClasses === 0) reasons.add('no-learner-bytecode');
+  const sortedReasons = [...reasons].sort();
+  return Object.freeze({
+    schema: JAVA_ALGORITHM_ISOLATION_PROFILE_SCHEMA,
+    tier: sortedReasons.length === 0 ? 'algorithm-fast' : 'compatibility',
+    boundary:
+      sortedReasons.length === 0
+        ? 'fresh-application-class-loader'
+        : 'fresh-runtime-process',
+    reasons: Object.freeze(sortedReasons),
+    scannedClasses,
+  });
+}
+
+function javaAlgorithmCompatibilityProfile(profile, reason) {
+  const reasons = [...new Set([...(profile?.reasons ?? []), reason])].sort();
+  return Object.freeze({
+    ...profile,
+    tier: 'compatibility',
+    boundary: 'fresh-runtime-process',
+    reasons: Object.freeze(reasons),
+  });
+}
 
 function disposeTraceJVMPreparedProcessLease(programId) {
   const lease = traceJVMPreparedProcessLeases.get(String(programId));
@@ -534,6 +990,12 @@ async function runInLeasedTraceJVMPreparedProcess(client, request, programId) {
       throw error;
     }
     lease = { process, host, kernelBound };
+    const prepared = traceJVMPreparedPrograms.get(key);
+    if (prepared) {
+      prepared.leasedRunnerProcessCount =
+        (prepared.leasedRunnerProcessCount ?? 0) + 1;
+      lease.runnerProcessCount = prepared.leasedRunnerProcessCount;
+    }
     traceJVMPreparedProcessLeases.set(key, lease);
   }
   let result;
@@ -555,7 +1017,13 @@ async function runInLeasedTraceJVMPreparedProcess(client, request, programId) {
   ) {
     disposeTraceJVMPreparedProcessLease(key);
   }
-  return result;
+  return {
+    ...result,
+    timings: {
+      ...(result.timings ?? {}),
+      runnerProcessCount: lease.runnerProcessCount ?? 0,
+    },
+  };
 }
 
 async function runInLeasedTraceJVMBatchProcess(
@@ -564,7 +1032,8 @@ async function runInLeasedTraceJVMBatchProcess(
   systemPropertiesBatch,
   programId,
   perCaseWallClockMs,
-  argsBatch
+  argsBatch,
+  reuseProcess = false
 ) {
   const processFiles = request.processFiles;
   const results = [];
@@ -588,55 +1057,21 @@ async function runInLeasedTraceJVMBatchProcess(
       retirementAfterExecutions: remainingExecutions,
       ...(kernelBound ? { host } : {}),
     });
-    for (const file of kernelBound ? processFiles ?? [] : []) {
-      const normalizedPath = `/${String(file.path).replace(/^\/+/, '')}`;
-      const parentPath = normalizedPath.slice(
-        0,
-        Math.max(1, normalizedPath.lastIndexOf('/'))
-      );
-      await host.dispatch({
-        service: 'posix',
-        operation: 'mkdir',
-        payload: {
-          path: parentPath,
-          options: { recursive: true },
-        },
-      });
-      const opened = await host.dispatch({
-        service: 'posix',
-        operation: 'open',
-        payload: {
-          path: normalizedPath,
-          options: {
-            access: 'write',
-            create: true,
-            truncate: true,
-          },
-        },
-      });
-      try {
-        await host.dispatch({
-          service: 'posix',
-          operation: 'write',
-          payload: {
-            fd: opened.fd,
-            bytes: file.content,
-          },
-        });
-      } finally {
-        await host.dispatch({
-          service: 'posix',
-          operation: 'close',
-          payload: { fd: opened.fd },
-        });
-      }
-    }
+    await stageTraceJVMKernelFiles(
+      host,
+      kernelBound ? processFiles : []
+    );
   };
 
   try {
     for (let index = 0; index < systemPropertiesBatch.length; index += 1) {
       if (!process) {
-        await createProcess(systemPropertiesBatch.length - index);
+        await createProcess(
+          Math.min(
+            systemPropertiesBatch.length - index,
+            TRACE_JVM_LEASE_MAX_EXECUTIONS
+          )
+        );
       }
       const kernelBound = host.kernelBound;
       const timedOut = Symbol('tracejvm-case-timeout');
@@ -686,6 +1121,7 @@ async function runInLeasedTraceJVMBatchProcess(
               hardBoundaryRecommended: true,
             },
             retirementRecommended: true,
+            timeoutReason: 'client-timeout',
           };
         } else {
           result = outcome;
@@ -700,11 +1136,13 @@ async function runInLeasedTraceJVMBatchProcess(
       ) {
         await resetTraceKernelExecutionScope(programId);
       }
-      // The configured retirement threshold is the end of the batch. An
-      // earlier recommendation therefore means the execution tainted the JVM
-      // and the next case needs a hard process boundary.
+      // A recommendation can be a taint signal or the bounded 64-execution
+      // lease ceiling. Either way, the next case needs a fresh process.
       if (
-        result.retirementRecommended &&
+        (!reuseProcess ||
+          result.isolation?.status !== 'clean' ||
+          result.retirementRecommended === true ||
+          process?.retirementRecommended === true) &&
         index + 1 < systemPropertiesBatch.length
       ) {
         releaseProcess();
@@ -935,6 +1373,9 @@ function executionReport(
     compileTimeMs: compileCacheHit ? 0 : (compile.timings?.totalMs ?? 0),
     classLoadTimeMs: 0,
     runTimeMs: run.timings?.compileAndRunMs ?? run.timings?.totalMs ?? 0,
+    ...(run.timings?.runnerProcessCount === undefined
+      ? {}
+      : { runnerProcessCount: run.timings.runnerProcessCount }),
     compileCacheHit,
     compilerDebugProfile,
     traceLimitExceeded,
@@ -950,6 +1391,7 @@ function executionReport(
       : {}),
     isolation: run.isolation,
     retirementRecommended: false,
+    ...(run.timeoutReason ? { timeoutReason: run.timeoutReason } : {}),
     fallbackRequired,
   };
 }
@@ -1228,7 +1670,9 @@ async function traceJVMCompileAndRunBatch(
 async function traceJVMPrepareRuntimeProgram(
   programId,
   sourcePath,
-  compilerDebugProfile
+  compilerDebugProfile,
+  entryClass = '',
+  cleanEntryClass = ''
 ) {
   const normalizedProgramId = String(programId);
   if (!normalizedProgramId) {
@@ -1256,6 +1700,10 @@ async function traceJVMPrepareRuntimeProgram(
 
   traceJVMPreparedPrograms.set(normalizedProgramId, {
     program: context.compile.program,
+    algorithmIsolationProfile: classifyTraceJVMAlgorithmProgram(
+      context.compile.program,
+      [entryClass, cleanEntryClass]
+    ),
     compilerDebugProfile: String(compilerDebugProfile),
     compilerStdout: context.compile.stdout,
     compilerStderr: context.compile.stderr,
@@ -1264,6 +1712,7 @@ async function traceJVMPrepareRuntimeProgram(
       : (context.compile.timings?.totalMs ?? 0),
     compileCacheHit: context.compileCacheHit,
     executions: 0,
+    leasedRunnerProcessCount: 0,
     retired: false,
   });
 
@@ -1276,6 +1725,8 @@ async function traceJVMPrepareRuntimeProgram(
       : (context.compile.timings?.totalMs ?? 0),
     compileCacheHit: context.compileCacheHit,
     preparedCompileCount: traceJVMPreparedCompileCount,
+    algorithmIsolationProfile:
+      traceJVMPreparedPrograms.get(normalizedProgramId).algorithmIsolationProfile,
     preparedArtifact: serializeTraceJVMPreparedProgram(
       context.compile.program
     ),
@@ -1339,11 +1790,12 @@ async function traceJVMRunPreparedRuntimeProgram(
       fallbackEntryClass,
     }),
   };
-  const run = await runInLeasedTraceJVMPreparedProcess(
-    client,
-    traceRequest,
-    normalizedProgramId
-  );
+  const algorithmFast =
+    prepared.algorithmIsolationProfile?.tier === 'algorithm-fast';
+  const runPreparedCase = (request) => algorithmFast
+    ? runInLeasedTraceJVMPreparedProcess(client, request, normalizedProgramId)
+    : runInFreshTraceJVMProcess(client, request, normalizedProgramId);
+  const run = await runPreparedCase(traceRequest);
   prepared.executions += 1;
   let report = executionReport(
     run,
@@ -1360,15 +1812,18 @@ async function traceJVMRunPreparedRuntimeProgram(
     const cleanFallbackClass = fallbackEntryClass || String(entryClass);
     report = await completeTraceFallback(
       report,
-      () => runInLeasedTraceJVMPreparedProcess(client, {
-        ...traceRequest,
-        args: traceJVMRunnerArgs(cleanFallbackClass, maxStoredEvents, {
-          learnerFrame,
-          profile: String(traceProfile) === 'true',
-          tracing: false,
-          fallbackEntryClass: cleanFallbackClass,
-        }),
-      }, normalizedProgramId),
+      () => {
+        const fallbackRequest = {
+          ...traceRequest,
+          args: traceJVMRunnerArgs(cleanFallbackClass, maxStoredEvents, {
+            learnerFrame,
+            profile: String(traceProfile) === 'true',
+            tracing: false,
+            fallbackEntryClass: cleanFallbackClass,
+          }),
+        };
+        return runPreparedCase(fallbackRequest);
+      },
       {
         stdout: prepared.compilerStdout,
         stderr: prepared.compilerStderr,
@@ -1380,6 +1835,7 @@ async function traceJVMRunPreparedRuntimeProgram(
   }
   return JSON.stringify({
     ...report,
+    algorithmIsolationProfile: prepared.algorithmIsolationProfile,
     preparedExecutionCount: prepared.executions,
     preparedCompileCount: traceJVMPreparedCompileCount,
   });
@@ -1481,7 +1937,8 @@ async function traceJVMRunPreparedRuntimeProgramBatch(
       systemPropertiesBatch,
       normalizedProgramId,
       Number.parseInt(String(perCaseWallClockMs), 10) || 0,
-      argsBatch
+      argsBatch,
+      prepared.algorithmIsolationProfile?.tier === 'algorithm-fast'
     );
     reports = batch.results.map((run) =>
       executionReport(
@@ -1526,6 +1983,7 @@ async function traceJVMRunPreparedRuntimeProgramBatch(
   return JSON.stringify({
     success: reports.every((report) => report.success),
     results: reports,
+    algorithmIsolationProfile: prepared.algorithmIsolationProfile,
     runnerProcessCount: batch.processCount,
     preparedExecutionCount: prepared.executions,
     preparedCompileCount: traceJVMPreparedCompileCount,
@@ -1588,17 +2046,30 @@ function traceJVMRestoreRuntimeProgram(
     typeof serializedProgram === 'string'
       ? JSON.parse(serializedProgram)
       : serializedProgram;
+  const program = deserializeTraceJVMPreparedProgram(artifact);
+  // Restored artifacts and their entry-class metadata are supplied by the
+  // caller. Until snapshots have an independently trusted provenance binding,
+  // scan every restored class and retain the fresh-process boundary.
+  const algorithmIsolationProfile = javaAlgorithmCompatibilityProfile(
+    classifyTraceJVMAlgorithmProgram(program),
+    'restored-artifact-untrusted'
+  );
   traceJVMPreparedPrograms.set(normalizedProgramId, {
-    program: deserializeTraceJVMPreparedProgram(artifact),
+    program,
+    algorithmIsolationProfile,
     compilerDebugProfile: String(compilerDebugProfile),
     compilerStdout: '',
     compilerStderr: '',
     compileTimeMs: 0,
     compileCacheHit: true,
     executions: 0,
+    leasedRunnerProcessCount: 0,
     retired: false,
   });
-  return true;
+  return JSON.stringify({
+    success: true,
+    algorithmIsolationProfile,
+  });
 }
 
 self.cheerpjInit = async () => {

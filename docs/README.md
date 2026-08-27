@@ -16,6 +16,9 @@ triage logs should not live in this public docs tree.
 - [Warm-and-Retire Worker Lifecycle Policy](./warm-and-retire-policy.md)
   Names the clean-standby, one-use retirement, replenishment, and ownership
   contract shared by browser runtime providers.
+- [Java Algorithm Isolation Profile](./java-algorithm-isolation-profile.md)
+  Defines artifact-derived admission to retained-JVM correctness batches and
+  the fresh-process compatibility boundary.
 - [Project Terminal Sessions](./project-terminal-session.md)
   Documents the terminal UI API for project workspaces.
 - [TraceKernel Workspaces](./tracekernel-workspaces.md)

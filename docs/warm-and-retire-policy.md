@@ -38,11 +38,18 @@ A worker role that adopts Warm-and-Retire obeys all of these invariants:
    to a longer-lived provider/host or select `retire-only`.
 
 An implementation may keep independent lifecycle roles. Java keeps one outer
-compiler Worker warm while creating a disposable inner JVM and TraceKernel
-process for every case. The immutable class snapshot crosses that boundary;
-the runner heap, process, descriptors, and TKFS do not. A hard outer-Worker
-failure retires the compiler role too, and the next operation restores the
-snapshot into the replacement generation.
+compiler Worker warm. During trusted preparation, its artifact-derived
+execution profile chooses between a
+fresh application class loader and execution scope inside one retained inner
+JVM for algorithm-scoped correctness cases, or a fresh inner JVM for every
+compatibility case. TraceKernel still creates a fresh process scope for every
+case in both tiers. The immutable class snapshot crosses either boundary;
+learner class state, descriptors, and TKFS do not. A hard outer-Worker failure
+retires the compiler role too, and the next operation restores the snapshot
+into the replacement generation. Caller-carried snapshots lack an independently
+trusted provenance binding, so restored Java artifacts use the fresh-inner-JVM
+compatibility tier. The admission and reset contract is defined
+in [Java Algorithm Isolation Profile](./java-algorithm-isolation-profile.md).
 
 ## State Model
 
@@ -89,17 +96,20 @@ network requests alone.
 | --- | --- |
 | Python prepared execution | `tests/test-python-prepared-provider.ts`: one-use retirement, cancellation retirement, replacement fencing, disposal |
 | JavaScript/TypeScript executor | `tests/test-javascript-worker-lifecycle.ts`: fresh executor, clean standby, generation reset, termination |
-| Java preparation and execution | `tests/test-java-prepared-provider.ts` and `tests/test-java-prepared-provider-browser.ts`: one warm compiler Worker, fresh inner JVM and TraceKernel process per case, generation restore after hard retirement, cancellation, non-isolated compatibility retirement, disposal |
+| Java preparation and execution | `tests/test-java-prepared-provider.ts`, `tests/test-java-algorithm-isolation-classifier.ts`, and `tests/test-java-prepared-provider-browser.ts`: one warm compiler Worker; artifact-derived retained-JVM/fresh-classloader algorithm tier or fresh-JVM compatibility tier; fresh TraceKernel scope per case; generation restore after hard retirement; cancellation; timeout retirement; disposal |
 | C# preparation and execution | `tests/test-csharp-runtime.ts` and `tests/test-csharp-worker-lifecycle-browser.ts`: compiler retirement and fresh outer worker generations |
 | C++ execution | `tests/test-cpp-compiler-lifecycle.ts`: one-command retirement, bounded clean standby, reset fencing |
 | Browser-host policy selection | `tests/test-browser-worker-lifecycle-policy.ts`: named defaults, compatibility mapping, and conflict rejection |
 
 The matrix records existing lifecycle evidence; it does not claim every role
-already hides all startup cost. Java now removes compiler and outer-Worker
-startup from ordinary kernel-bound case execution, but still creates inner JVM
-capacity on demand. The browser matrix is the authority for any warm-Run
-latency claim; non-isolated compatibility documents intentionally hard-retire
-the outer Worker because they cannot host the synchronous TraceKernel channel.
+already hides all startup cost. Java removes compiler and outer-Worker startup
+from ordinary kernel-bound case execution. Algorithm-scoped batches also reuse
+clean inner-JVM capacity after the engine resets its case scope; compatibility
+artifacts create that capacity on demand for every case, and a clean retained
+inner JVM is retired after at most 64 executions. The browser matrix is
+the authority for any warm-Run latency claim; non-isolated compatibility
+documents intentionally hard-retire the outer Worker because they cannot host
+the synchronous TraceKernel channel.
 
 ## Changing The Policy
 

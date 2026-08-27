@@ -32,6 +32,7 @@ const ORIGINAL_ALL_SCRIPTS = [
   'test:python-worker-client-http',
   'test:java-sync',
   'test:java-runtime',
+  'test:java-prepared-provider:browser',
   'test:csharp-runtime',
   'test:csharp-worker-browser',
   'test:cpp-rewriter',
@@ -83,6 +84,7 @@ test('CI profile excludes only browser examples and full-package examples', () =
   const fullOnly = [
     'test:sql-browser-example',
     'test:browser-runtime-host',
+    'test:java-prepared-provider:browser',
     'test:example-app',
     'test:java-example-app',
     'test:project-ide-example',

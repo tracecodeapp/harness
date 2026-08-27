@@ -77,6 +77,7 @@ export const TEST_PHASES: TestPhase[] = [
       task('test:runtime-trace', 2),
       task('test:tracecc', 2),
       task('test:java-runtime', 2),
+      task('test:java-prepared-provider:browser', 2, ['all']),
       task('test:csharp-runtime', 2),
       task('test:csharp-worker-browser', 2),
       // Project owns timing-sensitive worker/listener integration tests. Under
