@@ -475,6 +475,9 @@ const JAVA_ALGORITHM_ISOLATION_PROFILE_SCHEMA =
 // its nested classes only; related simple names must be listed explicitly.
 const JAVA_ALGORITHM_FORBIDDEN_OWNER_PREFIXES = Object.freeze([
   'java/lang/ClassLoader',
+  // java.lang.Compiler controls VM-global JIT state; an application
+  // classloader cannot make enable/disable/compileClass/command per-case.
+  'java/lang/Compiler',
   'java/lang/InheritableThreadLocal',
   'java/lang/Process',
   'java/lang/ProcessBuilder',

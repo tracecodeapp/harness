@@ -36,6 +36,12 @@ test('Java algorithm admission fails closed on ambient sibling APIs', () => {
   const classify = loadClassifier();
   const denied = [
     [
+      'java/lang/Compiler',
+      'disable',
+      '()V',
+      'ambient-owner:java/lang/Compiler',
+    ],
+    [
       'java/lang/foreign/Arena',
       'ofAuto',
       '()Ljava/lang/foreign/Arena;',
