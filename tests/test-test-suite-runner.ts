@@ -3,6 +3,7 @@ import { test } from 'node:test';
 
 import {
   buildTestPlan,
+  parseArguments,
   resolveTestCapacity,
   runTaskPhase,
   selectRunnableTaskIndex,
@@ -96,6 +97,62 @@ test('CI profile excludes only browser examples and full-package examples', () =
   for (const script of ORIGINAL_ALL_SCRIPTS) {
     if (!fullOnly.includes(script)) assert.ok(actual.includes(script), `CI is missing ${script}`);
   }
+});
+
+test('phase selection resumes from a stable phase ID', () => {
+  const phases = buildTestPlan('all', { from: 'heavy-runtime' });
+  assert.deepEqual(phases.map((phase) => phase.id), ['heavy-runtime', 'build', 'packaged']);
+  assert.ok(phases[0].tasks.some((entry) => entry.script === 'test:csharp-worker-browser'));
+  assert.ok(!phases.some((phase) => phase.tasks.some((entry) => entry.script === 'typecheck')));
+});
+
+test('only selection accepts phase IDs and package scripts', () => {
+  const phase = buildTestPlan('all', { only: ['fast-runtime-contracts'] });
+  assert.deepEqual(phase.map((entry) => entry.id), ['fast-runtime-contracts']);
+  assert.ok(phase[0].tasks.length > 1);
+
+  const task = buildTestPlan('all', { only: ['test:native-harness'] });
+  assert.deepEqual(task.map((entry) => entry.id), ['fast-runtime-contracts']);
+  assert.deepEqual(task[0].tasks.map((entry) => entry.script), ['test:native-harness']);
+
+  const redundant = buildTestPlan('all', {
+    only: ['fast-runtime-contracts', 'test:native-harness'],
+  });
+  assert.deepEqual(redundant.map((entry) => entry.id), ['fast-runtime-contracts']);
+
+  assert.throws(
+    () => buildTestPlan('all', { only: ['does-not-exist'] }),
+    /Unknown --only selector/
+  );
+  assert.throws(
+    () => buildTestPlan('all', { from: 'preflight', only: ['build'] }),
+    /cannot be combined/
+  );
+});
+
+test('CLI arguments expose selection and keep-going explicitly', () => {
+  assert.deepEqual(
+    parseArguments(['--ci', '--from=heavy-runtime', '--keep-going', '--jobs=2']),
+    {
+      profile: 'ci',
+      list: false,
+      keepGoing: true,
+      jobs: '2',
+      selection: { from: 'heavy-runtime' },
+    }
+  );
+  assert.deepEqual(
+    parseArguments(['--only=test:native-harness,build', '--list']),
+    {
+      profile: 'all',
+      list: true,
+      keepGoing: false,
+      jobs: undefined,
+      selection: { only: ['test:native-harness', 'build'] },
+    }
+  );
+  assert.throws(() => parseArguments(['--only=']), /requires/);
+  assert.throws(() => parseArguments(['--from=preflight', '--only=build']), /cannot be combined/);
 });
 
 test('capacity defaults are conservative and can be overridden', () => {
