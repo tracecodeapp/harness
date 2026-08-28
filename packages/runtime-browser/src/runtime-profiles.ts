@@ -364,6 +364,7 @@ const JAVA_RUNTIME_PROFILE: LanguageRuntimeProfile = {
         maxTraceBytes: false,
         maxPathDepth: true,
         minimalTrace: false,
+        traceProfile: true,
       },
       fidelity: {
         preciseLineMapping: true,

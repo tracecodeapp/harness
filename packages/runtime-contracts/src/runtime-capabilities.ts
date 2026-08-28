@@ -122,6 +122,8 @@ export interface RuntimeCapabilities {
       /** Whether maxPathDepth is applied to emitted trace access targets. */
       maxPathDepth?: boolean;
       minimalTrace: boolean;
+      /** Whether the runtime can emit its internal trace hot-path profile. */
+      traceProfile?: boolean;
     };
     fidelity: {
       preciseLineMapping: boolean;
@@ -189,6 +191,8 @@ export interface TraceBudget {
 
 export interface TraceExecutionOptions extends TraceBudget {
   minimalTrace?: boolean;
+  /** Opt-in runtime trace hot-path profiling, when advertised by the runtime. */
+  traceProfile?: boolean;
 }
 
 export interface LanguageRuntimeProfile {

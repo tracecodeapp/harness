@@ -43,6 +43,7 @@ import type { PythonWorkerClient } from '../packages/runtime-python/src/python-w
 import { createCSharpRuntimeClient } from '../packages/runtime-csharp/src/csharp-runtime-client';
 import type { CSharpWorkerClient } from '../packages/runtime-csharp/src/csharp-worker-client';
 import { createCppRuntimeClient } from '../packages/runtime-cpp/src/cpp-runtime-client';
+import { createCppPreparedExecutionProvider } from '../packages/runtime-cpp/src/cpp-prepared-provider';
 import type { CppWorkerClient } from '../packages/runtime-cpp/src/cpp-worker-client';
 import { executeJavaScriptCode, executeTypeScriptCode } from '../packages/runtime-javascript/src/javascript-executor';
 import { generateSolutionScript } from '../packages/runtime-python/src/python-harness';
@@ -228,6 +229,9 @@ async function assertRuntimeClientCapabilityGuards(): Promise<void> {
       createWorkerClient: () => ({} as JavaWorkerClient),
     }),
     createCSharpRuntimeClient({} as CSharpWorkerClient),
+    createCppPreparedExecutionProvider({
+      createWorkerClient: () => ({} as CppWorkerClient),
+    }),
   ];
   for (const provider of preparedProviders) {
     await expectRejects(
@@ -1319,6 +1323,7 @@ const LANGUAGE_CONFORMANCE_COVERAGE: Record<Language, readonly string[]> = {
     'tracing.controls.maxTraceSteps',
     'tracing.controls.maxStoredEvents',
     'tracing.controls.maxPathDepth',
+    'tracing.controls.traceProfile',
     'tracing.fidelity.preciseLineMapping',
     'tracing.fidelity.stableFunctionNames',
     'tracing.fidelity.callStack',
@@ -2252,6 +2257,7 @@ async function main(): Promise<void> {
     ['maxTraceBytes', 'maxTraceBytes', 1],
     ['maxPathDepth', 'maxPathDepth', 1],
     ['minimalTrace', 'minimalTrace', true],
+    ['traceProfile', 'traceProfile', true],
   ] as const;
   for (const profile of getSupportedLanguageProfiles()) {
     for (const [limit, support] of executionLimitSupport) {

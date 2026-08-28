@@ -37,6 +37,7 @@ const TRACE_OPTION_SUPPORT_FIELDS: ReadonlyArray<{
   { option: 'maxTraceBytes', support: 'maxTraceBytes' },
   { option: 'maxPathDepth', support: 'maxPathDepth' },
   { option: 'minimalTrace', support: 'minimalTrace' },
+  { option: 'traceProfile', support: 'traceProfile' },
 ];
 
 function isScriptRequest(functionName: string | null | undefined): boolean {
