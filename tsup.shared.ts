@@ -22,6 +22,7 @@ export const commonConfig = {
   noExternal: [
     'just-bash',
     '@mixmark-io/domino',
+    'acorn',
     'balanced-match',
     'brace-expansion',
     'diff',

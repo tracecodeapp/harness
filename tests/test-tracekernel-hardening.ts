@@ -2788,7 +2788,7 @@ async function testCppWorkerProjectEventBudgets(): Promise<void> {
 }
 
 
-async function testCppPinnedToolchainFetchesFailClosed(): Promise<void> {
+async function testCppPinnedTraceccAssetsFailClosed(): Promise<void> {
   const source = (await readFile(join(dirname(testDirectory), 'workers', 'cpp', 'cpp-worker.js'), 'utf8')).replace(
     /^import\s*\{[\s\S]*?\}\s*from\s*['"]\.\/shared\/runtime-kernel-policy\.js['"];\s*/m,
     ''
@@ -2827,149 +2827,48 @@ async function testCppPinnedToolchainFetchesFailClosed(): Promise<void> {
     `(async () => {
       configuredAssets = {
         toolchainIntegrity: {
-          assets: [{ url: 'https://toolchain.example/yowasp/bundle.js', sha256: '${'0'.repeat(64)}' }],
+          assets: [{ url: 'https://toolchain.example/tracecc/compiler.wasm', sha256: '${'0'.repeat(64)}' }],
         },
       };
-      const bundleHref = 'https://toolchain.example/yowasp/bundle.js';
-      const topLevelResult = await withPinnedCppFetch(bundleHref, () => fetch('https://toolchain.example/yowasp/unmanifested-at-import.wasm'))
+      const remoteResult = await fetchPinnedTraceccAssetResponse(
+        'TraceCC resources',
+        'https://toolchain.example/tracecc/unmanifested.tar'
+      )
         .then(() => 'allowed', (error) => String(error?.message || error));
-      const compilerBundle = wrapPinnedCppExports({
-        async runClang() {
-          await fetch(new URL('llvm.core.wasm', bundleHref).href);
-          return {};
-        },
-      }, bundleHref);
-      const lazyResult = await compilerBundle.runClang()
+      const sameOriginResult = await fetchPinnedTraceccAssetResponse(
+        'TraceCC PCH',
+        'http://localhost/workers/cpp/unmanifested.pch'
+      )
         .then(() => 'allowed', (error) => String(error?.message || error));
-      return { topLevelResult, lazyResult };
+      return { remoteResult, sameOriginResult };
     })()`,
     context
-  ) as { topLevelResult: string; lazyResult: string };
+  ) as { remoteResult: string; sameOriginResult: string };
 
   assertCondition(
-    result.topLevelResult.includes('exact pinned toolchain manifest URL'),
-    `Pinned C++ imports should reject unmanifested secondary assets during import: ${JSON.stringify(result)}`
+    result.remoteResult.includes('exact pinned toolchain manifest URL'),
+    `TraceCC should reject unmanifested remote compiler assets: ${JSON.stringify(result)}`
   );
   assertCondition(
-    result.lazyResult.includes('exact pinned toolchain manifest URL'),
-    `Pinned C++ runClang should reject unmanifested lazy secondary assets: ${JSON.stringify(result)}`
+    result.sameOriginResult.includes('requires an exact SHA-256 entry'),
+    `TraceCC should require integrity pins even for same-origin compiler assets: ${JSON.stringify(result)}`
   );
 }
 
 async function testCppCompilerLifecycleSeparatesCompilationFromExecution(): Promise<void> {
-  const source = (await readFile(join(dirname(testDirectory), 'workers', 'cpp', 'cpp-worker.js'), 'utf8')).replace(
-    /^import\s*\{[\s\S]*?\}\s*from\s*['"]\.\/shared\/runtime-kernel-policy\.js['"];\s*/m,
-    ''
-  );
-  const workers: Array<{
-    url: string;
-    terminated: boolean;
-    onmessage: ((event: { data: unknown }) => void) | null;
-    onerror: ((event: { message?: string }) => void) | null;
-    onmessageerror: (() => void) | null;
-    postMessage(message: unknown): void;
-    terminate(): void;
-  }> = [];
-  class DisposableCompilerWorker {
-    url: string;
-    terminated = false;
-    onmessage: ((event: { data: unknown }) => void) | null = null;
-    onerror: ((event: { message?: string }) => void) | null = null;
-    onmessageerror: (() => void) | null = null;
-
-    constructor(url: string) {
-      this.url = url;
-      workers.push(this);
-    }
-
-    postMessage(message: { id?: string; protocolToken?: string }): void {
-      Promise.resolve().then(() => {
-        this.onmessage?.({
-          data: {
-            id: message.id,
-            protocolToken: message.protocolToken,
-            type: 'compile-result',
-            payload: { success: true, stdout: '', stderr: '', programBuffer: new ArrayBuffer(0) },
-          },
-        });
-      });
-    }
-
-    terminate(): void {
-      this.terminated = true;
-    }
-  }
-  const context = vm.createContext({
-    console,
-    self: {
-      location: { href: 'http://localhost/workers/cpp/cpp-worker.js', origin: 'http://localhost', search: '' },
-      postMessage: () => {},
-    },
-    location: { href: 'http://localhost/workers/cpp/cpp-worker.js', origin: 'http://localhost', search: '' },
-    postMessage: () => {},
-    Worker: DisposableCompilerWorker,
-    URL,
-    TextEncoder,
-    TextDecoder,
-    Uint8Array,
-    ArrayBuffer,
-    WebAssembly,
-    BigInt,
-    Map,
-    Set,
-    Promise,
-    JSON,
-    Math,
-    Date,
-    performance: { now: () => 0 },
-    setTimeout,
-    clearTimeout,
-    btoa: (binary: string) => Buffer.from(binary, 'binary').toString('base64'),
-    atob: (encoded: string) => Buffer.from(encoded, 'base64').toString('binary'),
-  });
-  vm.runInContext(source, context, { filename: 'cpp-worker.js' });
-  const result = await vm.runInContext(
-    `(() => {
-      configuredAssets = { compilerWorkerUrl: 'http://localhost/workers/cpp/cpp-compiler-worker.js' };
-      return Promise.all([
-        runCompilerWorkerPayload({ project: { files: [] }, args: [] }),
-        runCompilerWorkerPayload({ project: { files: [] }, args: [] }),
-      ]).then(() => ({
-        activeCompilerWorkers: activeCompilerWorkers.size,
-        pendingCompilerWorkerRequests: pendingCompilerWorkerRequests.size,
-      }));
-    })()`,
-    context
-  ) as { activeCompilerWorkers: number; pendingCompilerWorkerRequests: number };
-
-  assertCondition(workers.length === 2, `C++ worker should create one compiler worker per compile: ${workers.length}`);
-  assertCondition(workers.every((worker) => worker.terminated), 'C++ compiler workers should terminate after their compile result');
-  assertCondition(
-    result.activeCompilerWorkers === 0 && result.pendingCompilerWorkerRequests === 0,
-    `C++ compiler worker bookkeeping should be drained after each compile: ${JSON.stringify(result)}`
-  );
-
-  const frameSource = await readFile(join(dirname(testDirectory), 'workers', 'cpp', 'cpp-compiler-frame.html'), 'utf8');
-  assertCondition(
-    frameSource.includes('let compilerWorker = null') &&
-      frameSource.includes('function getCompilerWorker()') &&
-      frameSource.includes("resetCompilerWorker(new Error('C++ compiler worker request timed out'))"),
-    'C++ compiler frame should retain only the trusted compiler worker and reset it on timeout'
-  );
-  const compilerWorkerSource = await readFile(join(dirname(testDirectory), 'workers', 'cpp', 'cpp-compiler-worker.js'), 'utf8');
-  assertCondition(
-    !compilerWorkerSource.includes('WebAssembly.instantiate') &&
-      !compilerWorkerSource.includes('new WebAssembly.Instance') &&
-      !compilerWorkerSource.includes('runWasi('),
-    'the persistent C++ compiler worker must never instantiate or execute compiled user programs'
-  );
-
+  const workerSource = await readFile(join(dirname(testDirectory), 'workers', 'cpp', 'cpp-worker.js'), 'utf8');
   const clientSource = await readFile(join(dirname(testDirectory), 'packages', 'runtime-cpp', 'src', 'cpp-worker-client.ts'), 'utf8');
+  assertCondition(
+    workerSource.includes('const traceccCompilerWorker') &&
+      workerSource.includes("'traceccRole'") &&
+      workerSource.includes('fetchPinnedTraceccAssetResponse'),
+    'C++ compilation must remain confined to the pinned TraceCC compiler role'
+  );
   assertCondition(
     clientSource.includes('private runInDisposableExecutionWorker<T>') &&
       clientSource.includes('this.retireExecutionWorker();') &&
-      clientSource.includes("this.clearCompilerFrames(new Error('C++ compiler frame request timed out.'));"),
-    'C++ browser client should retire user execution workers after every command while preserving only healthy compiler frames'
+      clientSource.includes('this.options.trustedCompilerService.compileTrusted('),
+    'C++ browser clients must compile through trusted TraceCC and retire user execution workers after every command'
   );
 }
 
@@ -4394,7 +4293,7 @@ async function main(): Promise<void> {
   testJavaTraceHeaderExpansionIsBounded();
   await testJavaWorkerTraceHeaderExpansionIsBounded();
   await testCppWorkerProjectEventBudgets();
-  await testCppPinnedToolchainFetchesFailClosed();
+  await testCppPinnedTraceccAssetsFailClosed();
   await testCppCompilerLifecycleSeparatesCompilationFromExecution();
   await testCppInheritedStdioRespectsKernelDevices();
   await testCppTraceIdsDoNotExposePointers();

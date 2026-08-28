@@ -132,6 +132,13 @@ export function createWorkspaceRuntimeRunnerBridge(
       }
 
       try {
+        // Legacy shared-buffer runners may read stdin synchronously before
+        // returning their execution promise. Replay input queued during
+        // terminal startup before invoking them; descriptor-backed runners
+        // still start first so their runtime-side fd transport is ready.
+        if (!descriptorStdio) {
+          await processBinding.replayStartupInput?.();
+        }
         const execution = runner({
           ...(
             descriptorStdio || !consumesLiveStdin
@@ -163,7 +170,9 @@ export function createWorkspaceRuntimeRunnerBridge(
             bridge.handleRuntimeCommandEvent(event, commandContext);
           },
         } as Request);
-        await processBinding.replayStartupInput?.();
+        if (descriptorStdio) {
+          await processBinding.replayStartupInput?.();
+        }
         result = await execution;
       } finally {
         acceptingRunnerEvents = false;

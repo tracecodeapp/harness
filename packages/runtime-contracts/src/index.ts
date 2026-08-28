@@ -5,7 +5,6 @@ export * from './runtime-execution';
 export * from './judge-contracts';
 export * from './harness-version';
 export * from './runtime-language-info';
-export * from './runtime-open-source-info';
 export * from './runtime-command-info';
 export * from './runtime-project';
 export * from './runtime-external-http';

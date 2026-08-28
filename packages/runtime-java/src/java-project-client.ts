@@ -27,7 +27,7 @@ export interface JavaProjectClientFactoryOptions {
    */
   readonly runtimeAssetBaseUrl?: string;
   /**
-   * Same-origin TraceJVM Worker entrypoint. Runtime payloads may use a separate
+   * Same-origin Java runtime Worker entrypoint. Runtime payloads may use a separate
    * immutable CDN base, but browsers do not permit constructing a Worker from
    * that cross-origin URL.
    */

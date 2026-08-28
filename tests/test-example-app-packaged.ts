@@ -43,7 +43,7 @@ async function createPackagedExampleApp(tempRoot: string): Promise<string> {
     },
     devDependencies: {
       typescript: '^5.0.0',
-      vite: '^7.2.0',
+      vite: '^8.2.2',
     },
   };
 

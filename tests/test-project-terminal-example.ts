@@ -94,8 +94,10 @@ async function runProjectTerminalSmoke(previewUrl: string): Promise<void> {
     });
     assertCondition(compileVisibility.samples.length > 0, 'project terminal smoke should sample the active compile window');
     assertCondition(
-      compileVisibility.samples.every((sample) => sample.hidden && sample.display === 'none'),
-      `terminal input row should stay hidden while compile is running: ${JSON.stringify(compileVisibility.samples)}`
+      compileVisibility.samples.every(
+        (sample) => !sample.hidden && sample.display !== 'none' && sample.text.trim() === ''
+      ),
+      `terminal should expose an unlabeled foreground input line while compile is running: ${JSON.stringify(compileVisibility.samples)}`
     );
     assertCondition(
       compileVisibility.finalDisplay !== 'none' && !compileVisibility.finalHidden,

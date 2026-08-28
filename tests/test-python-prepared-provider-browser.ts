@@ -287,7 +287,8 @@ async function main(): Promise<void> {
         'history = deque()',
         'def solve(value):',
         '    history.append(value)',
-        '    return len(history)',
+        '    seen = {value: True}',
+        '    return len(history) if value in seen else -1',
       ].join('\\n');
       const trace = await preparationWorker.request('prepare-program', {
         mode: 'trace',
