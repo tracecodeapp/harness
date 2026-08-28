@@ -12,8 +12,11 @@ import type {
 import {
   createRuntimeCommandStdinPipe,
   createRuntimeCommandStdinPipeFromText,
+  readRuntimeCommandStdinPipeBytes,
+  runtimeCommandStdinPipeClosed,
   runtimeCommandStdinPipeRemainingBytes,
 } from '../packages/runtime-contracts/src/runtime-project';
+import { Effect } from 'effect';
 import type {
   TraceKernelSession,
   TraceKernelSyscallRequest,
@@ -44,6 +47,68 @@ function dispatch(
   request: TraceKernelSyscallRequest
 ): Promise<TraceKernelSyscallResult> {
   return kernel.dispatch(request) as Promise<TraceKernelSyscallResult>;
+}
+
+async function testLegacyCppStartupInputReplaysBeforeInvocation(): Promise<void> {
+  const cppRunner: CppProjectCommandRunner = (request) => {
+    if (request.source === 'compile') {
+      return Promise.resolve({
+        stdout: '',
+        stderr: '',
+        exitCode: 0,
+        files: [{
+          path: 'legacy-input',
+          contents: Buffer.from('legacy-cpp-fixture').toString('base64'),
+          encoding: 'base64',
+        }],
+      });
+    }
+    const bytes = request.stdinPipe
+      ? readRuntimeCommandStdinPipeBytes(request.stdinPipe)
+      : new Uint8Array();
+    const input = new TextDecoder().decode(bytes);
+    const eof = request.stdinPipe
+      ? runtimeCommandStdinPipeClosed(request.stdinPipe)
+      : false;
+    return Promise.resolve({
+      stdout: `${input}|eof:${String(eof)}\n`,
+      stderr: '',
+      exitCode: 0,
+    });
+  };
+  const workspace = await createRuntimeWorkspace({
+    files: [{ path: 'main.cpp', contents: 'int main() { return 0; }\n' }],
+    cppRunner,
+  });
+  let submitStartupInput = false;
+  let terminal: ReturnType<typeof workspace.createTerminalSession>;
+  terminal = workspace.createTerminalSession({
+    onTerminalEvent: (event) => {
+      if (
+        submitStartupInput &&
+        (event as { reason?: string }).reason === 'command-start'
+      ) {
+        terminal.writeStdin('legacy-startup\n');
+        terminal.endStdin();
+      }
+    },
+  });
+  try {
+    const compile = await terminal.run('clang++ main.cpp -o legacy-input');
+    assertCondition(
+      compile.exitCode === 0,
+      `legacy C++ startup fixture did not compile: ${JSON.stringify(compile)}`
+    );
+    submitStartupInput = true;
+    const result = await terminal.run('./legacy-input');
+    assertCondition(
+      result.exitCode === 0 && result.stdout === 'legacy-startup\n|eof:true\n',
+      `legacy C++ runner did not receive startup input before invocation: ${JSON.stringify(result)}`
+    );
+  } finally {
+    terminal.close();
+    workspace.dispose();
+  }
 }
 
 async function main(): Promise<void> {
@@ -667,13 +732,23 @@ async function main(): Promise<void> {
       };
     }
     const kernel = syscalls(request);
-    const input = await dispatch(kernel, { op: 'read', fd: 0, maxBytes: 64 });
-    const eof = await dispatch(kernel, { op: 'read', fd: 0, maxBytes: 64 });
+    let input = '';
+    let eof: TraceKernelSyscallResult | undefined;
+    while (true) {
+      const read = await dispatch(kernel, { op: 'read', fd: 0, maxBytes: 64 });
+      if (!read.ok || read.value.op !== 'read') {
+        eof = read;
+        break;
+      }
+      if (read.value.bytes.byteLength === 0) {
+        eof = read;
+        break;
+      }
+      input += new TextDecoder().decode(read.value.bytes);
+    }
     assertCondition(
-      input.ok &&
-        input.value.op === 'read' &&
-        new TextDecoder().decode(input.value.bytes) === 'cpp-startup\n' &&
-        eof.ok &&
+      input === 'cpp-startup-one-cpp-startup-two\n' &&
+        eof?.ok &&
         eof.value.op === 'read' &&
         eof.value.bytes.byteLength === 0,
       `direct C++ startup input did not reach kernel fd 0 before EOF: ${JSON.stringify({ input, eof })}`
@@ -968,16 +1043,55 @@ async function main(): Promise<void> {
       cppCompile.exitCode === 0,
       `direct C++ startup-input fixture did not compile: ${JSON.stringify(cppCompile)}`
     );
+    const originalWriteTerminalInput =
+      authoritativeSession.writeTerminalInput.bind(authoritativeSession);
+    let releaseFirstStartupWrite!: () => void;
+    let markFirstStartupWriteStarted!: () => void;
+    const firstStartupWriteGate = new Promise<void>((resolve) => {
+      releaseFirstStartupWrite = resolve;
+    });
+    const firstStartupWriteStarted = new Promise<void>((resolve) => {
+      markFirstStartupWriteStarted = resolve;
+    });
+    const startupWriteChunks: string[] = [];
+    authoritativeSession.writeTerminalInput = (terminalId, bytes) =>
+      Effect.gen(function* () {
+        startupWriteChunks.push(new TextDecoder().decode(bytes));
+        if (startupWriteChunks.length === 1) {
+          markFirstStartupWriteStarted();
+          yield* Effect.promise(() => firstStartupWriteGate);
+        }
+        return yield* originalWriteTerminalInput(terminalId, bytes);
+      });
     const cppStartupRun = terminal.run('./startup-input');
-    assertCondition(
-      terminal.writeStdin('cpp-startup\n') && terminal.endStdin(),
-      'direct C++ executables should accept input and EOF during descriptor startup'
-    );
-    const cppStartupResult = await cppStartupRun;
+    let cppStartupResult: Awaited<typeof cppStartupRun>;
+    try {
+      assertCondition(
+        terminal.writeStdin('cpp-startup-one-'),
+        'direct C++ executables should accept initial input during descriptor startup'
+      );
+      await firstStartupWriteStarted;
+      assertCondition(
+        terminal.writeStdin('cpp-startup-two\n') && terminal.endStdin(),
+        'direct C++ executables should queue later input and EOF during startup replay'
+      );
+      await Promise.resolve();
+      assertCondition(
+        startupWriteChunks.join('|') === 'cpp-startup-one-',
+        `later terminal input overtook startup replay: ${JSON.stringify(startupWriteChunks)}`
+      );
+      releaseFirstStartupWrite();
+      cppStartupResult = await cppStartupRun;
+    } finally {
+      releaseFirstStartupWrite();
+      authoritativeSession.writeTerminalInput = originalWriteTerminalInput;
+    }
     assertCondition(
       cppStartupResult.exitCode === 0 &&
-        cppStartupResult.stdout === 'cpp-startup-eof\n',
-      `direct C++ startup input should drain before EOF: ${JSON.stringify(cppStartupResult)}`
+        cppStartupResult.stdout === 'cpp-startup-eof\n' &&
+        startupWriteChunks.join('|') ===
+          'cpp-startup-one-|cpp-startup-two\n',
+      `direct C++ startup input should remain ordered through EOF: ${JSON.stringify({ cppStartupResult, startupWriteChunks })}`
     );
     assertCondition(
       terminalRuntimeCount === 10 && detachedRuntimeCount === 6,
@@ -1066,6 +1180,8 @@ async function main(): Promise<void> {
     stopWatchingAuthoritativeFileMutations();
     workspace.dispose();
   }
+
+  await testLegacyCppStartupInputReplaysBeforeInvocation();
 
   console.log(JSON.stringify({
     schema: 'tracekernel-workspace-processes-v1',

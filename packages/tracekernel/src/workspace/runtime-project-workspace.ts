@@ -568,6 +568,10 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
     string,
     { chunks: string[]; byteLength: number; eof: boolean }
   >();
+  private readonly terminalStartupInputReplays = new Map<
+    string,
+    Promise<void>
+  >();
   private readonly processProjection: WorkspaceProcessProjection;
   // Temporary 0.13 introspection aliases. The process state module remains
   // authoritative; these preserve existing hardening probes while 0.14 moves
@@ -3922,6 +3926,12 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
     terminalSessionId: string,
     terminal: TraceKernelTerminalSnapshot
   ): 'kernel' | 'legacy' | 'pending' {
+    if (
+      this.pendingTerminalStartupInput.has(terminalSessionId) ||
+      this.terminalStartupInputReplays.has(terminalSessionId)
+    ) {
+      return 'pending';
+    }
     const hasDescriptorConsumer = this.traceKernelAuthority?.session
       .processSnapshots()
       .some((process) =>
@@ -3998,40 +4008,65 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
         );
       })?.[0];
     if (!terminalSessionId) return;
-    const pending = this.pendingTerminalStartupInput.get(terminalSessionId);
-    if (!pending) return;
     if (!consumesLiveStdin) return;
-    this.pendingTerminalStartupInput.delete(terminalSessionId);
-    if (!descriptorStdio) {
-      if (!stdinPipe) return;
-      try {
-        for (const chunk of pending.chunks) stdinPipe.write(chunk);
-        if (pending.eof) stdinPipe.close();
-      } catch {
-        stdinPipe.close();
-      }
+    const activeReplay = this.terminalStartupInputReplays.get(
+      terminalSessionId
+    );
+    if (activeReplay) {
+      await activeReplay;
       return;
     }
 
-    const authority = this.traceKernelAuthority;
-    const terminalId = this.terminalResourceIds.get(terminalSessionId);
-    const terminal = terminalId === undefined
-      ? undefined
-      : authority?.session.terminalSnapshots().find(
-          (candidate) => candidate.id === terminalId
+    if (!this.pendingTerminalStartupInput.has(terminalSessionId)) return;
+    const replay = Promise.resolve().then(async () => {
+      while (true) {
+        const pending = this.pendingTerminalStartupInput.get(
+          terminalSessionId
         );
-    if (!authority || !terminal || terminal.closed) return;
-    const bytes = new TextEncoder().encode(pending.chunks.join(''));
-    await Effect.runPromise(
-      Effect.gen(function* () {
-        if (bytes.byteLength > 0) {
-          yield* authority.session.writeTerminalInput(terminal.id, bytes);
+        if (!pending) return;
+        this.pendingTerminalStartupInput.delete(terminalSessionId);
+
+        if (!descriptorStdio) {
+          if (!stdinPipe) return;
+          try {
+            for (const chunk of pending.chunks) stdinPipe.write(chunk);
+            if (pending.eof) stdinPipe.close();
+          } catch {
+            stdinPipe.close();
+            return;
+          }
+          continue;
         }
-        if (pending.eof) {
-          yield* authority.session.sendTerminalInputEof(terminal.id);
-        }
-      }).pipe(Effect.catchAll(() => Effect.void))
-    );
+
+        const authority = this.traceKernelAuthority;
+        const terminalId = this.terminalResourceIds.get(terminalSessionId);
+        const terminal = terminalId === undefined
+          ? undefined
+          : authority?.session.terminalSnapshots().find(
+              (candidate) => candidate.id === terminalId
+            );
+        if (!authority || !terminal || terminal.closed) return;
+        const bytes = new TextEncoder().encode(pending.chunks.join(''));
+        await Effect.runPromise(
+          Effect.gen(function* () {
+            if (bytes.byteLength > 0) {
+              yield* authority.session.writeTerminalInput(terminal.id, bytes);
+            }
+            if (pending.eof) {
+              yield* authority.session.sendTerminalInputEof(terminal.id);
+            }
+          }).pipe(Effect.catchAll(() => Effect.void))
+        );
+      }
+    });
+    this.terminalStartupInputReplays.set(terminalSessionId, replay);
+    try {
+      await replay;
+    } finally {
+      if (this.terminalStartupInputReplays.get(terminalSessionId) === replay) {
+        this.terminalStartupInputReplays.delete(terminalSessionId);
+      }
+    }
   }
 
   private discardPendingTerminalStartupInput(
@@ -6351,6 +6386,12 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
     }
     if (descriptorStdio) {
       this.startHostStandardInputPump(request.commandContext);
+    } else {
+      await this.resolvePendingTerminalStartupInput(
+        request.commandContext.process.pid,
+        false,
+        request.stdinPipe
+      );
     }
     let result: RuntimeCommandResult;
     try {
@@ -6387,11 +6428,13 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
           this.handleRuntimeCommandEvent(event, request.commandContext);
         },
       });
-      await this.resolvePendingTerminalStartupInput(
-        request.commandContext.process.pid,
-        descriptorStdio,
-        request.stdinPipe
-      );
+      if (descriptorStdio) {
+        await this.resolvePendingTerminalStartupInput(
+          request.commandContext.process.pid,
+          true,
+          request.stdinPipe
+        );
+      }
       result = await execution;
     } finally {
       kernelSyscalls?.close();
