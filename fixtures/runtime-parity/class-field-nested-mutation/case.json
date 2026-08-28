@@ -109,7 +109,9 @@
       },
       "fieldWrite": {
         "eventKinds": [
+          "call",
           "line",
+          "return",
           "snapshot",
           "write"
         ],
