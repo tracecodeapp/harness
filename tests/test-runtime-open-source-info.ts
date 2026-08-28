@@ -13,10 +13,14 @@ import {
 
 const packageJson = JSON.parse(readFileSync('package.json', 'utf8')) as { version: string };
 const pyodidePackage = JSON.parse(readFileSync('node_modules/pyodide/package.json', 'utf8')) as {
-  version: string;
   license: string;
 };
-const pyodideLock = JSON.parse(readFileSync('node_modules/pyodide/pyodide-lock.json', 'utf8')) as {
+const runtimeAssetsLock = JSON.parse(readFileSync('runtime-assets.lock.json', 'utf8')) as {
+  compatibility: { python: { runtimeDirectory: string } };
+};
+const pyodideRuntimeDirectory = runtimeAssetsLock.compatibility.python.runtimeDirectory;
+const pyodideVersion = pyodideRuntimeDirectory.replace(/^pyodide-/u, '');
+const pyodideLock = JSON.parse(readFileSync(`workers/python/${pyodideRuntimeDirectory}/pyodide-lock.json`, 'utf8')) as {
   info: { python: string };
 };
 
@@ -50,13 +54,13 @@ assert.deepEqual(
   python.components.map((component) => [component.name, component.version, component.license]),
   [
     ['CPython', pyodideLock.info.python, 'PSF-2.0'],
-    ['Pyodide', pyodidePackage.version, pyodidePackage.license],
+    ['Pyodide', pyodideVersion, pyodidePackage.license],
   ],
   'Python legal metadata must identify the actual runtime distribution'
 );
 assert.equal(
   python.components[1]?.resources.find((resource) => resource.kind === 'license')?.href,
-  `/workers/python/pyodide-${pyodidePackage.version}/LICENSE.pyodide.txt`
+  `/workers/python/${pyodideRuntimeDirectory}/LICENSE.pyodide.txt`
 );
 assert.ok(
   python.components[1]?.resources.some(
@@ -109,7 +113,7 @@ const customPython = getLanguageRuntimeOpenSourceInfo('python', {
 });
 assert.equal(
   customPython.components[0]?.resources.find((resource) => resource.kind === 'license')?.href,
-  `https://assets.example.test/runtime/python/pyodide-${pyodidePackage.version}/LICENSE.cpython.txt`,
+  `https://assets.example.test/runtime/python/${pyodideRuntimeDirectory}/LICENSE.cpython.txt`,
   'asset-backed links must honor the consumer runtime asset root'
 );
 
@@ -140,7 +144,7 @@ const rawLicense = rawPython.components[0]?.resources.find((resource) => resourc
 assert.ok(rawLicense && 'assetPath' in rawLicense, 'generated metadata must retain portable asset paths');
 assert.equal(
   resolveRuntimeOpenSourceResourceHref(rawLicense, { assetBaseUrl: '/custom-workers' }),
-  `/custom-workers/python/pyodide-${pyodidePackage.version}/LICENSE.cpython.txt`
+  `/custom-workers/python/${pyodideRuntimeDirectory}/LICENSE.cpython.txt`
 );
 
 assert.throws(

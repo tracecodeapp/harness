@@ -110,6 +110,47 @@ inline bool& tracing_enabled() {
   return value;
 }
 
+inline char* result_marker_token_storage() {
+  static char value[33] = {};
+  return value;
+}
+
+inline char* trace_marker_token_storage() {
+  static char value[33] = {};
+  return value;
+}
+
+inline const char* result_marker_token() {
+  return result_marker_token_storage();
+}
+
+inline const char* trace_marker_token() {
+  return trace_marker_token_storage();
+}
+
+inline void configure_marker_token(char* destination, const char* token) {
+  std::size_t index = 0;
+  while (token && token[index] != '\0' && index < 32) {
+    destination[index] = token[index];
+    ++index;
+  }
+  destination[index] = '\0';
+}
+
+inline void configure_result_marker_token(const char* token) {
+  configure_marker_token(result_marker_token_storage(), token);
+}
+
+inline void configure_trace_marker_token(const char* token) {
+  configure_marker_token(trace_marker_token_storage(), token);
+}
+
+inline std::string marker_prefix(const char* marker, const char* token) {
+  return !token || token[0] == '\0'
+    ? std::string(marker)
+    : std::string(marker) + token + ":";
+}
+
 inline void set_tracing_enabled(bool enabled) {
   tracing_enabled() = enabled;
 }
@@ -7138,7 +7179,7 @@ inline SetRangeReadable<UnorderedSet<T>> set_range_readable(UnorderedSet<T>& con
 
 inline void write_result_json_raw(const std::string& value_json) {
   flush_trace_event_buffer();
-  std::string status = std::string("__TRACECODE_TRACE_STATUS__{\"traceLimitExceeded\":") +
+  std::string status = marker_prefix("__TRACECODE_TRACE_STATUS__", result_marker_token()) + "{\"traceLimitExceeded\":" +
     (trace_budget_exceeded() ? "true" : "false") +
     ",\"droppedEventCount\":" + std::to_string(dropped_trace_event_count());
   if (!trace_budget_timeout_reason().empty()) {
@@ -7146,7 +7187,7 @@ inline void write_result_json_raw(const std::string& value_json) {
   }
   status += "}\n";
   std::fputs(status.c_str(), stdout);
-  std::string json = std::string("__TRACECODE_RESULT__") + value_json + "\n";
+  std::string json = marker_prefix("__TRACECODE_RESULT__", result_marker_token()) + value_json + "\n";
   std::fputs(json.c_str(), stdout);
 }
 
@@ -7179,7 +7220,7 @@ inline void flush_trace_event_buffer() {
 
 inline void write_trace_event_json_raw(const std::string& event_json) {
   std::string& buffer = trace_event_out_buffer();
-  buffer += "__TRACECODE_EVENT__";
+  buffer += marker_prefix("__TRACECODE_EVENT__", trace_marker_token());
   buffer += event_json;
   buffer += '\n';
   if (buffer.size() >= 256 * 1024) flush_trace_event_buffer();

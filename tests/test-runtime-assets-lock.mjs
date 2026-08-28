@@ -29,7 +29,10 @@ assert.equal('provenance' in lock.engineDependencies.tracecc, false);
 assert.equal('descriptor' in lock.engineDependencies.tracejvm, false);
 assert.equal('packageManifest' in lock.engineDependencies.tracejvm, false);
 assert.equal(lock.engineDependencies.tracecc.package.name, '@tracecode/tracecc');
-assert.equal(lock.engineDependencies.tracecc.package.version, '0.1.0');
+assert.equal(
+  lock.engineDependencies.tracecc.package.version,
+  packageManifest.dependencies['@tracecode/tracecc']
+);
 assert.equal(lock.engineDependencies.tracecc.package.license, 'AGPL-3.0-only');
 assert.match(
   typeof lock.engineDependencies.tracecc.package.repository === 'string'
@@ -135,13 +138,11 @@ try {
   writeFileSync(
     staleManifestPath,
     `${JSON.stringify({
-      runtime: 'cpp',
+      schema: 'tracecc-runtime-assets-v2',
+      runtime: 'tracecc',
       runtimeVersion: 'tracecc-stale',
-      protocolVersion: 'browser-runtime-assets-v1',
-      assetBaseUrl: `/workers/cpp/tracecc/${'0'.repeat(64)}/`,
-      workerFormat: 'module',
+      contentHash: '0'.repeat(64),
       assets: {
-        worker: { url: '/workers/cpp-worker.js' },
         runtimeHeader: {
           url: 'tracecode_runtime.hpp',
           integrity: `sha256-${Buffer.alloc(32).toString('base64')}`,
@@ -176,7 +177,7 @@ try {
   assert.notEqual(staleRun.status, 0, 'a stale TraceCC runtime must fail closed');
   assert.match(
     staleRun.stderr,
-    /TraceCC runtime header mismatch: prepared [0-9a-f]{64}, packaged [0-9a-f]{64}\. Rebuild the TraceCC PCH\/object shards and run prepare:tracecc-assets/u
+    /TraceCC runtime header mismatch: prepared [0-9a-f]{64}, packaged [0-9a-f]{64}\. Rebuild and package the matching TraceCC consumer release before generating the Harness release lock/u
   );
 } finally {
   rmSync(temporaryDirectory, { recursive: true, force: true });

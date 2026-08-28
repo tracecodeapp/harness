@@ -217,7 +217,7 @@ runtime asset surface, not to the Harness npm tarball described above.
   and runtime assets.
 - Published assets: `cpp/tracecc/<consumer-hash>/` supplied by the pinned
   `@tracecode/tracecc` dependency.
-- Version: `@tracecode/tracecc` `0.1.0`.
+- Version: `@tracecode/tracecc` `0.1.1`.
 - License: AGPL-3.0-only.
 - Source: https://github.com/tracecodeapp/tracecc
 - Upstream notices: preserve the `THIRD_PARTY_NOTICES.md` shipped by the

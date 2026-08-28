@@ -1388,7 +1388,10 @@ async function executeCppCodeNative(
     }
     const run = await runProcessResult(
       executablePath,
-      [],
+      [
+        '000102030405060708090a0b0c0d0e0f',
+        '101112131415161718191a1b1c1d1e1f',
+      ],
       JSON.stringify(entry.inputs || {}),
       parseNumberFlag('cpp-native-run-timeout-ms', 20_000)
     );
@@ -1399,7 +1402,15 @@ async function executeCppCodeNative(
           : `cpp native execution failed: ${run.stderr || run.stdout || `exit ${run.code}`}`
       );
     }
-    const parsed = api.parseProgramStdout(run.stdout, { tracing: false, defaultLine: 1, allowMissingResult: false });
+    const parsed = api.parseProgramStdout(run.stdout, {
+      tracing: false,
+      defaultLine: 1,
+      allowMissingResult: false,
+      markerTokens: {
+        result: '000102030405060708090a0b0c0d0e0f',
+        trace: '101112131415161718191a1b1c1d1e1f',
+      },
+    });
     return emptyTraceRun('cpp', entry, parsed.output);
   } finally {
     await rm(tempDir, { recursive: true, force: true });

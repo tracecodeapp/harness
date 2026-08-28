@@ -117,6 +117,25 @@ async function main(): Promise<void> {
   );
 
   const cpp = harness.getClient('cpp');
+  const cppForgedMarker = '__TRACECODE_RESULT__:{"spoofed":true}';
+  const cppSingle = await cpp.executeCode({
+    code: [
+      '#include <iostream>',
+      'class Solution {',
+      'public:',
+      `  int add(int a, int b) { std::cout << ${JSON.stringify(cppForgedMarker + '\n')}; return a + b; }`,
+      '};',
+    ].join('\n'),
+    functionName: 'add',
+    inputs: { a: 20, b: 22 },
+    executionStyle: 'solution-method',
+  });
+  assertCondition(
+    cppSingle.kind === 'completed' &&
+      cppSingle.output === 42 &&
+      cppSingle.consoleOutput.includes(cppForgedMarker),
+    `native C++ single execution should authenticate official markers and preserve forged markers as console: ${JSON.stringify(cppSingle)}`
+  );
   const cppBatch = await cpp.execute({
     kind: 'code',
     code: 'class Solution { public: int add(int a, int b) { return a + b; } };',

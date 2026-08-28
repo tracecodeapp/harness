@@ -304,15 +304,19 @@ function traceccDescriptors(manifest) {
 async function findTraceCCManifest(traceccPackage) {
   const configured = process.env.TRACECC_ASSET_MANIFEST;
   if (configured) return resolve(configured);
-  return join(traceccPackage.sourceRoot, 'cpp-runtime-manifest.json');
+  return join(traceccPackage.sourceRoot, 'tracecc-runtime-manifest.json');
 }
 
 async function buildTraceCC(traceccPackage, cppComponent) {
   const manifestPath = await findTraceCCManifest(traceccPackage);
   const manifest = await readJson(manifestPath);
-  const match = /\/([0-9a-f]{64})\/$/u.exec(manifest.assetBaseUrl ?? '');
-  if (!match) throw new Error('TraceCC manifest assetBaseUrl must end in its 64-character consumer hash.');
-  const consumerHash = match[1];
+  const consumerHash = manifest.contentHash;
+  if (
+    manifest.schema !== 'tracecc-runtime-assets-v2' ||
+    !/^[0-9a-f]{64}$/u.test(consumerHash ?? '')
+  ) {
+    throw new Error('TraceCC runtime manifest must declare its v2 consumer content hash.');
+  }
   const files = traceccDescriptors(manifest);
   const header = files.find((file) => file.role === 'runtimeHeader');
   const packagedHeader = cppComponent.files.find(
@@ -321,7 +325,7 @@ async function buildTraceCC(traceccPackage, cppComponent) {
   if (!header || !packagedHeader || header.sha256 !== packagedHeader.sha256) {
     throw new Error(
       `TraceCC runtime header mismatch: prepared ${header?.sha256 ?? 'missing'}, packaged ${packagedHeader?.sha256 ?? 'missing'}. ` +
-        'Rebuild the TraceCC PCH/object shards and run prepare:tracecc-assets before generating the release lock.'
+        'Rebuild and package the matching TraceCC consumer release before generating the Harness release lock.'
     );
   }
   const assetRoot = dirname(manifestPath);
@@ -340,7 +344,7 @@ async function buildTraceCC(traceccPackage, cppComponent) {
   );
   if (provenance) {
     if (
-      provenance.schema !== 'tracecode.tracecc-consumer-lock.v1' ||
+      provenance.schema !== 'tracecc-consumer-lock-v2' ||
       provenance.consumerHash !== consumerHash
     ) {
       throw new Error(
@@ -365,7 +369,7 @@ async function buildTraceCC(traceccPackage, cppComponent) {
     releaseId: traceccPackage.releaseId,
     package: traceccPackage.package,
     consumerHash,
-    treeSha256Algorithm: 'tracecc-consumer-sha256-v1',
+    treeSha256Algorithm: 'tracecc-consumer-sha256-v2',
     totalBytes: files.reduce((total, file) => total + file.size, 0),
     files,
   };

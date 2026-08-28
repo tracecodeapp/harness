@@ -13,6 +13,7 @@ const trustedCppWorkerPostMessage = self.postMessage.bind(self);
 const RESULT_MARKER = '__TRACECODE_RESULT__';
 const TRACE_EVENT_MARKER = '__TRACECODE_EVENT__';
 const TRACE_STATUS_MARKER = '__TRACECODE_TRACE_STATUS__';
+const CPP_MARKER_TOKEN_BYTES = 16;
 const RUNTIME_TRACE_SCHEMA_VERSION = 'runtime-trace-2026-04-28';
 const CPP_USER_SOURCE_FILE = 'solution.cpp';
 const CPP_STANDARD = 'c++23';
@@ -203,6 +204,36 @@ function now() {
 
 function elapsedMs(startedAt) {
   return Math.max(0, Math.round(now() - startedAt));
+}
+
+function createCppMarkerTokens(options = {}) {
+  const randomValues = new Uint8Array(CPP_MARKER_TOKEN_BYTES * 2);
+  const fillRandomValues = options.getRandomValues ?? globalThis.crypto?.getRandomValues?.bind(globalThis.crypto);
+  if (typeof fillRandomValues !== 'function') {
+    throw new Error('C++ execution requires crypto.getRandomValues() for authenticated output markers.');
+  }
+  fillRandomValues(randomValues);
+  return {
+    result: bytesToHex(randomValues.subarray(0, CPP_MARKER_TOKEN_BYTES)),
+    trace: bytesToHex(randomValues.subarray(CPP_MARKER_TOKEN_BYTES)),
+  };
+}
+
+function markerWithToken(marker, token) {
+  if (token === undefined || token === '') return marker;
+  if (typeof token !== 'string' || !/^[0-9a-f]{32}$/u.test(token)) {
+    throw new Error('C++ output marker authentication requires a 128-bit hexadecimal token.');
+  }
+  return `${marker}${token}:`;
+}
+
+function cppRuntimeArgs(markerTokens, extraArgs = []) {
+  return [
+    'program.wasm',
+    markerTokens.result,
+    markerTokens.trace,
+    ...extraArgs,
+  ];
 }
 
 function emitRequestProgress(stage, detail = undefined) {
@@ -7152,10 +7183,24 @@ function configureTraceBudgetCall(options = {}, tracingEnabledExpression = 'true
   return `tracecode::configure_trace_budget(${traceBudgetForOptions(options)}, ${traceBudgetHardStopForOptions(options) ? 'true' : 'false'}, ${traceLineBudgetForOptions(options)}, ${traceSingleLineHitBudgetForOptions(options)}, ${minimalTraceForOptions(options) ? 'true' : 'false'}, ${traceLineBudgetHardStopForOptions(options) ? 'true' : 'false'}, ${tracingEnabledExpression});`;
 }
 
+function cppMarkerTokenSetup(indent = '  ') {
+  return [
+    `${indent}tracecode::configure_result_marker_token(argc > 1 ? argv[1] : "");`,
+    `${indent}tracecode::configure_trace_marker_token(argc > 2 ? argv[2] : "");`,
+  ].join('\n');
+}
+
+function cppMarkerTokenReset(indent = '  ') {
+  return [
+    `${indent}tracecode::configure_result_marker_token("");`,
+    `${indent}tracecode::configure_trace_marker_token("");`,
+  ].join('\n');
+}
+
 function cppBatchTraceSelectionSetup(indent = '  ') {
   return [
     `${indent}tracecode::JsonValue __tc_trace_selection;`,
-    `${indent}if (argc > 1) __tc_trace_selection = tracecode::parse_json(argv[1]);`,
+    `${indent}if (argc > 3) __tc_trace_selection = tracecode::parse_json(argv[3]);`,
     `${indent}auto __tc_trace_enabled_for_case = [&__tc_trace_selection](std::size_t index) -> bool {`,
     `${indent}  if (__tc_trace_selection.kind != tracecode::JsonValue::Kind::Array) return true;`,
     `${indent}  if (index >= __tc_trace_selection.array_values.size()) return true;`,
@@ -10226,8 +10271,10 @@ ${buildTracecodeFallbackAliases(userCode)}
 ${sourceForDriver}
 
 #line 1 "TraceCodeDriver.cpp"
-int main() {
+int main(int argc, char** argv) {
+${cppMarkerTokenSetup()}
 ${lines.join('\n')}
+${cppMarkerTokenReset()}
   return 0;
 }
 `;
@@ -10967,7 +11014,8 @@ ${sourceForDriver}
 ${buildCppJsonObjectAdapters(typeContext, aliases)}
 
 #line 1 "TraceCodeDriver.cpp"
-int main() {
+int main(int argc, char** argv) {
+${cppMarkerTokenSetup()}
 ${usesSolutionClass ? '  Solution solution;' : ''}
 ${traceSetup}
 ${usesDynamicInputs ? '  tracecode::JsonValue __tc_inputs = tracecode::parse_json(tracecode::read_stdin_all());' : ''}
@@ -10976,6 +11024,7 @@ ${traceCall}
 ${invokeAndStore}
 ${traceReturn}
   tracecode::write_result_json_raw(${resultJsonExpression});
+${cppMarkerTokenReset()}
   return 0;
 }
 `;
@@ -11039,7 +11088,8 @@ ${sourceForDriver}
 ${buildCppJsonObjectAdapters(typeContext, aliases)}
 
 #line 1 "TraceCodeDriver.cpp"
-int main(${traced ? 'int argc, char** argv' : ''}) {
+int main(int argc, char** argv) {
+${cppMarkerTokenSetup()}
 ${traced ? cppBatchTraceSelectionSetup() : ''}
   tracecode::JsonValue __tc_cases = tracecode::parse_json(tracecode::read_stdin_all());
   if (__tc_cases.kind != tracecode::JsonValue::Kind::Array) {
@@ -11057,6 +11107,7 @@ ${invokeAndStore}
   }
   __tc_results += "]";
   tracecode::write_result_json_raw(__tc_results);
+${cppMarkerTokenReset()}
   return 0;
 }
 `;
@@ -11151,7 +11202,8 @@ ${userCode}
 ${buildCppJsonObjectAdapters(typeContext, aliases)}
 
 #line 1 "TraceCodeDriver.cpp"
-int main() {
+int main(int argc, char** argv) {
+${cppMarkerTokenSetup()}
   tracecode::JsonValue __tc_cases = tracecode::parse_json(tracecode::read_stdin_all());
   if (__tc_cases.kind != tracecode::JsonValue::Kind::Array) {
     std::fputs("C++ ops-class batch input must be a JSON array.\\n", stderr);
@@ -11194,6 +11246,7 @@ ${lines.join('\n')}
   }
   __tc_results += "]";
   tracecode::write_result_json_raw(__tc_results);
+${cppMarkerTokenReset()}
   return 0;
 }
 `;
@@ -11533,8 +11586,10 @@ ${/* Adapters specialize JsonObjectAdapter<T> for user-defined types, so they
 ${buildCppJsonObjectAdapters(typeContext, aliases)}
 
 #line 1 "TraceCodeDriver.cpp"
-int main(${options.tracing === true ? 'int argc, char** argv' : ''}) {
+int main(int argc, char** argv) {
+${cppMarkerTokenSetup()}
 ${lines.join('\n')}
+${cppMarkerTokenReset()}
   return 0;
 }
 `;
@@ -11569,7 +11624,7 @@ function buildScriptDriverSource(userCode, options = {}) {
       )
     : wrappedSource;
   const tracingEnabledExpression =
-    '(argc <= 1 || std::string(argv[1]) != "false")';
+    '(argc <= 3 || std::string(argv[3]) != "false")';
   const traceCall = options.tracing === true
     ? [
         `  ${configureTraceBudgetCall(options, tracingEnabledExpression)}`,
@@ -11588,11 +11643,13 @@ ${buildTracecodeFallbackAliases(userCode)}
 ${sourceForDriver}
 
 #line 1 "TraceCodeDriver.cpp"
-int main(${options.tracing === true ? 'int argc, char** argv' : ''}) {
+int main(int argc, char** argv) {
+${cppMarkerTokenSetup()}
 ${traceCall}
   auto __tc_result = ${CPP_SCRIPT_FUNCTION_NAME}();
 ${traceReturn}
   tracecode::write_result_json(__tc_result);
+${cppMarkerTokenReset()}
   return 0;
 }
 `;
@@ -11637,6 +11694,12 @@ function anchorPendingStdoutEvents(pendingStdoutEvents, event) {
 }
 
 function parseProgramStdout(stdout, options = {}) {
+  if (
+    !/^[0-9a-f]{32}$/u.test(options.markerTokens?.result ?? '') ||
+    (options.tracing && !/^[0-9a-f]{32}$/u.test(options.markerTokens?.trace ?? ''))
+  ) {
+    throw new Error('C++ output marker authentication requires a 128-bit hexadecimal token.');
+  }
   const consoleOutput = [];
   const traceEvents = options.tracing ? [] : null;
   const pendingStdoutEvents = options.tracing ? [] : null;
@@ -11651,19 +11714,22 @@ function parseProgramStdout(stdout, options = {}) {
   // of a multi-megabyte trace stdout (each of ~16k iterations rescanned the
   // remaining megabytes). Each position is refreshed only once the cursor
   // moves past it.
-  let resultIndex = stdout.indexOf(RESULT_MARKER);
-  let traceIndex = options.tracing ? stdout.indexOf(TRACE_EVENT_MARKER) : -1;
-  let statusIndex = stdout.indexOf(TRACE_STATUS_MARKER);
+  const resultMarker = markerWithToken(RESULT_MARKER, options.markerTokens?.result);
+  const statusMarker = markerWithToken(TRACE_STATUS_MARKER, options.markerTokens?.result);
+  const traceMarker = markerWithToken(TRACE_EVENT_MARKER, options.markerTokens?.trace);
+  let resultIndex = stdout.indexOf(resultMarker);
+  let traceIndex = options.tracing ? stdout.indexOf(traceMarker) : -1;
+  let statusIndex = stdout.indexOf(statusMarker);
 
   while (cursor < stdout.length) {
     if (resultIndex >= 0 && resultIndex < cursor) {
-      resultIndex = stdout.indexOf(RESULT_MARKER, cursor);
+      resultIndex = stdout.indexOf(resultMarker, cursor);
     }
     if (traceIndex >= 0 && traceIndex < cursor) {
-      traceIndex = stdout.indexOf(TRACE_EVENT_MARKER, cursor);
+      traceIndex = stdout.indexOf(traceMarker, cursor);
     }
     if (statusIndex >= 0 && statusIndex < cursor) {
-      statusIndex = stdout.indexOf(TRACE_STATUS_MARKER, cursor);
+      statusIndex = stdout.indexOf(statusMarker, cursor);
     }
     const markerIndex = [resultIndex, traceIndex, statusIndex]
       .filter((index) => index >= 0)
@@ -11677,16 +11743,16 @@ function parseProgramStdout(stdout, options = {}) {
     appendConsoleChunk(stdout.slice(cursor, markerIndex), consoleOutput, traceEvents, pendingStdoutEvents, options.defaultLine ?? 1);
 
     if (markerIndex === resultIndex) {
-      const marker = splitMarkerLine(stdout, markerIndex, RESULT_MARKER);
+      const marker = splitMarkerLine(stdout, markerIndex, resultMarker);
       output = marker.payload ? JSON.parse(marker.payload) : null;
       foundResult = true;
       cursor = marker.nextIndex;
     } else if (markerIndex === statusIndex) {
-      const marker = splitMarkerLine(stdout, markerIndex, TRACE_STATUS_MARKER);
+      const marker = splitMarkerLine(stdout, markerIndex, statusMarker);
       traceStatus = marker.payload ? JSON.parse(marker.payload) : null;
       cursor = marker.nextIndex;
     } else {
-      const marker = splitMarkerLine(stdout, markerIndex, TRACE_EVENT_MARKER);
+      const marker = splitMarkerLine(stdout, markerIndex, traceMarker);
       if (traceEvents && marker.payload) {
         try {
           const event = JSON.parse(marker.payload);
@@ -14986,7 +15052,8 @@ async function compileAndRunWithExternalCompiler(source, functionName, inputs, s
   try {
     const runStartedAt = now();
     emitRequestProgress('program-run:start', { tracing: Boolean(options.tracing), compiler: 'tracecc' });
-    const program = await runWasi(programModule, ['program.wasm'], new InMemoryFileSystem(), {
+    const markerTokens = createCppMarkerTokens();
+    const program = await runWasi(programModule, cppRuntimeArgs(markerTokens), new InMemoryFileSystem(), {
       stdinBytes: staticStdinBytesFromText(stdinText),
     });
     timings.runMs = elapsedMs(runStartedAt);
@@ -15002,6 +15069,7 @@ async function compileAndRunWithExternalCompiler(source, functionName, inputs, s
         tracing: options.tracing,
         defaultLine: signature.line,
         allowMissingResult: options.tracing,
+        markerTokens,
       });
     } catch (parseError) {
       return programOutputParseFailureResult(parseError, program, signature, start, timings, options);
@@ -15238,14 +15306,14 @@ async function runPreparedRuntimeProgram(
 
   try {
     const runStartedAt = now();
+    const markerTokens = createCppMarkerTokens();
     const runtimeArgs = preparedProgram.tracing
-      ? [
-          'program.wasm',
+      ? cppRuntimeArgs(markerTokens, [
           preparedProgram.inputMode === 'named-batch'
             ? JSON.stringify([tracingEnabled])
             : (tracingEnabled ? 'true' : 'false'),
-        ]
-      : ['program.wasm'];
+        ])
+      : cppRuntimeArgs(markerTokens);
     const program = await runWasi(
       preparedProgram.programModule,
       runtimeArgs,
@@ -15261,6 +15329,7 @@ async function runPreparedRuntimeProgram(
         tracing: preparedProgram.tracing,
         defaultLine: preparedProgram.signatureLine,
         allowMissingResult: preparedProgram.tracing,
+        markerTokens,
       });
     } catch (error) {
       return programOutputParseFailureResult(

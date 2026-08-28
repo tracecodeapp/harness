@@ -3,9 +3,10 @@
 [TraceCC](https://github.com/tracecodeapp/tracecc) is the C/C++ toolchain used
 internally by TraceKernel in the browser. Its repository
 owns the pinned LLVM-derived compiler reactor, sysroot, downstream patches,
-reproducible build, generic compile/link protocol, and corresponding-source
-release. The harness owns only the TraceKernel adapter, TraceCode runtime
-header, PCH profiles, and matching runtime objects.
+reproducible build, generic compile/link protocol, corresponding-source
+release, runtime header, PCH profiles, and matching runtime objects. The
+Harness owns the TraceKernel adapter and generated driver that consume that
+versioned runtime contract.
 
 ## Runtime architecture
 
@@ -42,20 +43,10 @@ the exact TraceCC package. Asset sync copies its owned release beneath
 `/workers/cpp/tracecc/<content-hash>/`; ordinary applications do not publish
 compiler assets or construct a C++ manifest.
 
-Harness maintainers create that content-addressed browser directory from a
-TraceCC release and the matching TraceCode PCH directory:
-
-```sh
-TRACECC_RELEASE_DIR=/path/to/tracecc-release \
-TRACECC_PCH_DIR=/path/to/tracecode-pch-shards \
-TRACECC_ASSET_OUTPUT_ROOT=/path/to/output \
-pnpm prepare:tracecc-assets
-```
-
-The command verifies every digest, writes the pinned runtime manifest, and
-refuses output whose consumer hash differs from
-`TRACECC_RUNTIME_CONTENT_HASH`. TraceCC's package release stores the generated
-hash directory at:
+TraceCC maintainers build and verify this content-addressed consumer release in
+the TraceCC repository. Harness then pins that package version and consumer
+hash in its runtime asset lock. TraceCC's package stores the generated hash
+directory at:
 
 ```text
 /workers/cpp/tracecc/<content-hash>/

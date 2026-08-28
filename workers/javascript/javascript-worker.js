@@ -4980,7 +4980,7 @@ function createTraceRecorderStatement(ts, methodName, args) {
 function createInstrumentedReturnBlock(ts, sourceFile, returnStatement, traceFunctionName) {
   const returnLine = sourceFile.getLineAndCharacterOfPosition(returnStatement.getStart(sourceFile)).line + 1;
   const capturedValueName = ts.factory.createUniqueName('__traceReturnValue');
-  const returnValueInitializer = returnStatement.expression ?? ts.factory.createIdentifier('undefined');
+  const returnValueInitializer = returnStatement.expression ?? ts.factory.createVoidZero();
 
   return ts.factory.createBlock(
     [
@@ -5155,7 +5155,7 @@ function wrapFunctionBodyForTracing(
             ...rewrittenBody.statements,
             createTraceRecorderStatement(ts, 'recordReturn', [
               ts.factory.createNumericLiteral(functionEndLine),
-              ts.factory.createIdentifier('undefined'),
+              ts.factory.createVoidZero(),
               ts.factory.createStringLiteral(traceFunctionName),
             ]),
           ],

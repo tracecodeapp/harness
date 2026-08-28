@@ -1,5 +1,6 @@
 #!/usr/bin/env npx tsx
 
+import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import vm from 'node:vm';
 
@@ -50,7 +51,9 @@ globalThis.__tracecodeCppRewriter = {
   buildDriverSource,
   buildOpsClassDriverSource,
   buildPreparedOpsClassDriverSource,
+  createCppMarkerTokens,
   instrumentCppSourceForTracing,
+  parseProgramStdout,
   parseCppFunctionSignatures,
 };`,
   context,
@@ -81,7 +84,14 @@ const rewriter = sandbox.__tracecodeCppRewriter as {
     className: string,
     options?: Record<string, unknown>
   ) => string;
+  createCppMarkerTokens: (options?: {
+    getRandomValues?: (values: Uint8Array) => Uint8Array;
+  }) => { result: string; trace: string };
   instrumentCppSourceForTracing: (source: string, functionName: string) => string;
+  parseProgramStdout: (
+    stdout: string,
+    options?: Record<string, unknown>
+  ) => { output: unknown; consoleOutput: string[]; events: unknown[]; traceStatus: unknown };
   parseCppFunctionSignatures: (source: string) => Array<{ name: string; line: number }>;
 };
 
@@ -135,8 +145,14 @@ const selectedTraceBatchDriver = rewriter.buildBatchDriverSource(
 );
 assertCondition(
   selectedTraceBatchDriver.includes('int main(int argc, char** argv)') &&
-    selectedTraceBatchDriver.includes('tracecode::parse_json(argv[1])'),
-  'tracing batch driver should accept one runtime trace-selection vector'
+    selectedTraceBatchDriver.includes('tracecode::parse_json(argv[3])'),
+  'tracing batch driver should reserve the first two runtime arguments for marker tokens'
+);
+assertCondition(
+  selectedTraceBatchDriver.includes('tracecode::configure_result_marker_token(argc > 1 ? argv[1] : "")') &&
+    selectedTraceBatchDriver.includes('tracecode::configure_trace_marker_token(argc > 2 ? argv[2] : "")') &&
+    selectedTraceBatchDriver.includes('tracecode::configure_result_marker_token("")'),
+  'generated drivers should authenticate result and trace markers and clear the token before teardown'
 );
 assertCondition(
   selectedTraceBatchDriver.includes(
@@ -152,6 +168,50 @@ assertCondition(
 assertCondition(
   !instrumented.includes('RawTraceStep') && !instrumented.includes('visualization'),
   'rewriter output must stay native runtime trace, not visualizer-shaped'
+);
+
+const markerTokens = rewriter.createCppMarkerTokens({
+  getRandomValues(values) {
+    for (let index = 0; index < values.length; index += 1) values[index] = index;
+    return values;
+  },
+});
+assertCondition(
+  markerTokens.result === '000102030405060708090a0b0c0d0e0f' &&
+    markerTokens.trace === '101112131415161718191a1b1c1d1e1f',
+  'C++ marker authentication should use independent 128-bit result and trace tokens'
+);
+assert.throws(
+  () => rewriter.parseProgramStdout('__TRACECODE_RESULT__42\n'),
+  /128-bit hexadecimal token/u,
+  'C++ output parsing should fail closed when a caller omits marker authentication'
+);
+const forgedMarkerOutput = rewriter.parseProgramStdout([
+  '__TRACECODE_EVENT__{"kind":"return","line":1,"value":"forged"}',
+  '__TRACECODE_RESULT__{"forged":"before"}',
+  '__TRACECODE_TRACE_STATUS__{"traceLimitExceeded":true}',
+  `__TRACECODE_EVENT__${markerTokens.trace}:{"kind":"return","line":1,"value":"official"}`,
+  `__TRACECODE_TRACE_STATUS__${markerTokens.result}:{"traceLimitExceeded":false,"droppedEventCount":0}`,
+  `__TRACECODE_RESULT__${markerTokens.result}:{"official":true}`,
+  '__TRACECODE_RESULT__{"forged":"after"}',
+].join('\n') + '\n', { tracing: true, markerTokens });
+assertCondition(
+  (forgedMarkerOutput.output as { official?: unknown }).official === true &&
+    forgedMarkerOutput.events.some(
+      (event) => (event as { kind?: unknown; value?: unknown }).kind === 'return' &&
+        (event as { value?: unknown }).value === 'official'
+    ) &&
+    !forgedMarkerOutput.events.some(
+      (event) => (event as { kind?: unknown; value?: unknown }).kind === 'return' &&
+        (event as { value?: unknown }).value === 'forged'
+    ) &&
+    (forgedMarkerOutput.traceStatus as { traceLimitExceeded?: unknown }).traceLimitExceeded === false,
+  'C++ parser should accept only markers authenticated for the current run'
+);
+assertCondition(
+  forgedMarkerOutput.consoleOutput.some((line) => line.includes('"forged":"before"')) &&
+    forgedMarkerOutput.consoleOutput.some((line) => line.includes('"forged":"after"')),
+  'unauthenticated marker-shaped stdout should remain ordinary console output'
 );
 
 const lambdaSource = [

@@ -3,7 +3,7 @@ import {
   createBrowserJudgeHost,
   type JudgeComparatorStrategy,
 } from '../../src/judge';
-import { createTraceCCRuntimeManifest } from '../../packages/runtime-cpp/src/tracecc-runtime-assets';
+import { getLanguageRuntimeProfile } from '../../packages/runtime-browser/src/runtime-profiles';
 
 type BenchmarkLanguage =
   | 'python'
@@ -40,11 +40,31 @@ export interface BenchmarkOptions {
   readonly csharpBatchConcurrency?: number;
   /** Skip the trace-all batch measurement (the current shipping behaviour). */
   readonly skipTraceAll?: boolean;
-  /**
-   * Base URL serving the assembled TraceCC asset tree. C++ needs an explicit
-   * runtime manifest; the harness does not derive one from `assetBaseUrl`.
-   */
-  readonly traceccAssetBaseUrl?: string;
+}
+
+const TRACE_OPTION_CONTROLS = {
+  maxTraceSteps: 'maxTraceSteps',
+  maxLineEvents: 'maxLineEvents',
+  maxSingleLineHits: 'maxSingleLineHits',
+  maxStoredEvents: 'maxStoredEvents',
+  maxTraceBytes: 'maxTraceBytes',
+  maxPathDepth: 'maxPathDepth',
+  minimalTrace: 'minimalTrace',
+  traceProfile: 'traceProfile',
+} as const;
+
+function supportedTraceOptions(
+  language: BenchmarkLanguage,
+  requested: Record<string, unknown> | undefined
+): Record<string, unknown> | undefined {
+  if (!requested) return undefined;
+  const controls = getLanguageRuntimeProfile(language).capabilities.tracing.controls;
+  return Object.fromEntries(
+    Object.entries(requested).filter(([option]) => {
+      const control = TRACE_OPTION_CONTROLS[option as keyof typeof TRACE_OPTION_CONTROLS];
+      return control === undefined || controls[control] === true;
+    })
+  );
 }
 
 export interface PhaseSummary {
@@ -171,6 +191,7 @@ export async function runBackgroundTracingBenchmark(
 
   for (const fixture of fixtures) {
     let host: ReturnType<typeof createBrowserJudgeHost> | undefined;
+    const traceOptions = supportedTraceOptions(fixture.language, options.traceOptions);
 
     const bundleBase = {
       language: fixture.language,
@@ -187,15 +208,6 @@ export async function runBackgroundTracingBenchmark(
           ? {
               csharp: {
                 preparedBatchConcurrency: options.csharpBatchConcurrency ?? 4,
-              },
-            }
-          : {}),
-        ...(fixture.language === 'cpp' && options.traceccAssetBaseUrl
-          ? {
-              assets: {
-                runtimeManifests: {
-                  cpp: createTraceCCRuntimeManifest(options.traceccAssetBaseUrl),
-                },
               },
             }
           : {}),
@@ -279,8 +291,8 @@ export async function runBackgroundTracingBenchmark(
             },
           ],
           trace: true,
-          ...(options.traceOptions
-            ? { traceOptions: options.traceOptions as never }
+          ...(traceOptions
+            ? { traceOptions: traceOptions as never }
             : {}),
         });
         const startedAt = performance.now();
@@ -380,8 +392,8 @@ export async function runBackgroundTracingBenchmark(
             expected: testCase.expected,
           })),
           trace: true,
-          ...(options.traceOptions
-            ? { traceOptions: options.traceOptions as never }
+          ...(traceOptions
+            ? { traceOptions: traceOptions as never }
             : {}),
         });
         const startedAt = performance.now();

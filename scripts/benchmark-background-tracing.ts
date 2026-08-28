@@ -440,28 +440,6 @@ async function main(): Promise<void> {
       ['exec', 'tsx', 'src/cli.ts', 'sync-assets', join(tempRoot, 'workers'), '--languages', languages.join(',')],
       process.cwd()
     );
-    if (languages.includes('cpp')) {
-      // C++ needs the assembled TraceCC tree (toolchain + PCH shards) served
-      // alongside the workers; `sync-assets` does not produce it.
-      const traceccSource = resolve(
-        process.env.TRACECC_ASSET_DIR ??
-          join(
-            '.cache',
-            'tracecc-runtime-assets',
-            '1f50b24524b84b65663aa2fde85c97661a095f438596ffc916c000a6bfe450ca'
-          )
-      );
-      if (!existsSync(traceccSource)) {
-        throw new Error(
-          `TraceCC asset tree not found at ${traceccSource}. Run prepare:tracecc-assets ` +
-            'or set TRACECC_ASSET_DIR.'
-        );
-      }
-      await cp(traceccSource, join(tempRoot, 'tracecc'), {
-        recursive: true,
-        force: true,
-      });
-    }
     if (languages.includes('java')) {
       const traceJVMRoot = resolve(process.env.TRACECODE_TRACEJVM_ROOT ?? '../tracejvm');
       const traceJVMTarget = join(tempRoot, 'tracejvm');
@@ -528,7 +506,6 @@ async function main(): Promise<void> {
             return module.runBackgroundTracingBenchmark('/workers', [pageFixture], {
               traceOptions,
               skipTraceAll: skip,
-              traceccAssetBaseUrl: '/tracecc',
             });
           },
           { fixture, traceOptions, skip: skipTraceAll }
