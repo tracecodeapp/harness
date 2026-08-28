@@ -303,6 +303,19 @@ The full gate schedules independent runtime families concurrently while
 keeping build-dependent and timing-sensitive work behind explicit boundaries.
 Set `TRACECODE_TEST_JOBS=<n>` to lower local concurrency.
 
+During a fix loop, list or select stable phases and package scripts instead of
+restarting the full gate:
+
+```bash
+pnpm test --list
+pnpm test --only=fast-runtime-contracts
+pnpm test --only=test:java-runtime,test:csharp-runtime --keep-going
+pnpm test --from=heavy-runtime
+```
+
+`--keep-going` collects independent failures inside the current phase, then
+stops before later phases that may depend on it.
+
 Useful focused commands:
 
 ```bash
