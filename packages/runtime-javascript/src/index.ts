@@ -12,7 +12,10 @@ export {
   type JavaScriptWorkerClientOptions,
   type JavaScriptWorkerLanguage,
 } from './javascript-worker-client';
-export { createJavaScriptBrowserRuntimeProvider } from './browser-runtime-provider';
+export {
+  createJavaScriptBrowserRuntimeProvider,
+  type JavaScriptBrowserRuntimeProviderOptions,
+} from './browser-runtime-provider';
 export {
   createBrowserJavaScriptProjectRunner,
   type BrowserJavaScriptProjectCommandRunner,

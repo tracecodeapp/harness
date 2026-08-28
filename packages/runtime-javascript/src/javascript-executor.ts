@@ -1,6 +1,8 @@
 import type { RuntimeExecutionStyle } from '@tracecode/runtime-contracts';
 import type { RawExecutionPayload, RuntimeTrace } from '@tracecode/runtime-contracts';
 import { createEmptyRuntimeTrace } from '@tracecode/runtime-contracts';
+import { assertJavaScriptRuntimeSourceAllowed } from './javascript-runtime-source-policy';
+import { isJavaScriptRuntimeSelectorAllowed } from './javascript-runtime-policy';
 import { withTypeScriptRuntimeDeclarations } from './typescript-runtime-declarations';
 
 type TypeScriptModule = typeof import('typescript');
@@ -13,82 +15,6 @@ type JavaScriptLibraryEnvironment = {
   modules: Record<string, unknown>;
   globals: Record<string, unknown>;
 };
-
-function maskJavaScriptRuntimeStringsAndComments(code: string): string {
-  let masked = '';
-  for (let index = 0; index < code.length; index += 1) {
-    const char = code[index];
-    const next = code[index + 1];
-    if (char === '"' || char === "'" || char === '`') {
-      const quote = char;
-      masked += quote;
-      index += 1;
-      for (; index < code.length; index += 1) {
-        const current = code[index];
-        masked += current === '\n' ? '\n' : ' ';
-        if (current === '\\') {
-          index += 1;
-          if (index < code.length) masked += code[index] === '\n' ? '\n' : ' ';
-          continue;
-        }
-        if (current === quote) break;
-      }
-      continue;
-    }
-    if (char === '/' && next === '/') {
-      masked += '  ';
-      index += 2;
-      for (; index < code.length; index += 1) {
-        const current = code[index];
-        if (current === '\n') {
-          masked += '\n';
-          break;
-        }
-        masked += ' ';
-      }
-      continue;
-    }
-    if (char === '/' && next === '*') {
-      masked += '  ';
-      index += 2;
-      for (; index < code.length; index += 1) {
-        const current = code[index];
-        const following = code[index + 1];
-        masked += current === '\n' ? '\n' : ' ';
-        if (current === '*' && following === '/') {
-          masked += ' ';
-          index += 1;
-          break;
-        }
-      }
-      continue;
-    }
-    masked += char;
-  }
-  return masked;
-}
-
-function assertJavaScriptRuntimeSourceAllowed(code: string): void {
-  const searchableCode = maskJavaScriptRuntimeStringsAndComments(code);
-  const blockedPatterns: Array<{ pattern: RegExp; reason: string }> = [
-    { pattern: /\bimport\s*\(/, reason: 'dynamic import expressions are not supported by the JavaScript runtime sandbox' },
-    { pattern: /\.\s*constructor\b/, reason: 'constructor property access is not supported by the JavaScript runtime sandbox' },
-    { pattern: /\b__proto__\b/, reason: '__proto__ access is not supported by the JavaScript runtime sandbox' },
-    { pattern: /\bObject\s*\.\s*(getPrototypeOf|getOwnPropertyDescriptor|getOwnPropertyDescriptors|setPrototypeOf|defineProperty|defineProperties)\b/, reason: 'prototype reflection is not supported by the JavaScript runtime sandbox' },
-    { pattern: /\bReflect\b/, reason: 'Reflect is not supported by the JavaScript runtime sandbox' },
-    { pattern: /\beval\b/, reason: 'eval is not supported by the JavaScript runtime sandbox' },
-  ];
-  const blocked = blockedPatterns.find(({ pattern }) => pattern.test(searchableCode));
-  const rawBlocked = /\[\s*(["'`])constructor\1\s*\]/.test(code)
-    ? { reason: 'constructor property access is not supported by the JavaScript runtime sandbox' }
-    : undefined;
-  const reason = blocked?.reason ?? rawBlocked?.reason;
-  if (reason) {
-    throw Object.assign(new Error(`Harness blocked unsupported JavaScript runtime code: ${reason}`), {
-      code: 'ERR_HARNESS_UNSAFE_JAVASCRIPT_RUNTIME',
-    });
-  }
-}
 
 function javascriptRuntimeSandboxedCode(code: string, sourceCode = code): string {
   assertJavaScriptRuntimeSourceAllowed(sourceCode);
@@ -110,49 +36,8 @@ function javascriptRuntimeSandboxedCode(code: string, sourceCode = code): string
   ].join('\n');
 }
 
-const JAVASCRIPT_RUNTIME_RESERVED_SELECTOR_WORDS = new Set([
-  'await',
-  'break',
-  'case',
-  'catch',
-  'class',
-  'const',
-  'continue',
-  'debugger',
-  'default',
-  'delete',
-  'do',
-  'else',
-  'enum',
-  'export',
-  'extends',
-  'false',
-  'finally',
-  'for',
-  'function',
-  'if',
-  'import',
-  'in',
-  'instanceof',
-  'new',
-  'null',
-  'return',
-  'super',
-  'switch',
-  'this',
-  'throw',
-  'true',
-  'try',
-  'typeof',
-  'var',
-  'void',
-  'while',
-  'with',
-  'yield',
-]);
-
 function assertJavaScriptRuntimeSelectorAllowed(selector: string, label: string): string {
-  if (!/^[A-Za-z_$][0-9A-Za-z_$]*$/.test(selector) || JAVASCRIPT_RUNTIME_RESERVED_SELECTOR_WORDS.has(selector)) {
+  if (!isJavaScriptRuntimeSelectorAllowed(selector)) {
     throw Object.assign(new Error(`${label} must be a JavaScript identifier`), {
       code: 'ERR_HARNESS_UNSAFE_JAVASCRIPT_SELECTOR',
     });

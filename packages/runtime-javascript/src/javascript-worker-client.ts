@@ -50,6 +50,14 @@ import {
 } from '@tracecode/runtime-browser/internal';
 import { WorkerSessionCore } from '@tracecode/runtime-browser/internal';
 import { createJavaScriptPreparedProgram } from './javascript-prepared-program';
+import type {
+  SesAlgorithmWorkerPool,
+  SesAlgorithmPreparedProgram,
+  SesAlgorithmPreparedSource,
+} from './ses-algorithm-worker-client';
+
+type SesAlgorithmWorkerModule =
+  typeof import('./ses-algorithm-worker-client');
 
 export type JavaScriptExecutionStyle = 'function' | 'solution-method' | 'ops-class';
 export type JavaScriptWorkerLanguage = 'javascript' | 'typescript';
@@ -64,6 +72,16 @@ export interface JavaScriptWorkerClientOptions {
   typescriptCompilerUrl?: string;
   typescriptCompilerPreflight?: () => Promise<void>;
   prewarmAfterUse?: boolean;
+  /** @internal Experimental correctness-only retained SES compartment pool. */
+  algorithmExecution?: 'disposable-worker' | 'ses-compartment-pool';
+  /** @internal Module Worker asset used only by `ses-compartment-pool`. */
+  algorithmWorkerUrl?: string;
+  /** @internal Absolute library asset URL used only by the SES module Worker. */
+  algorithmJavascriptLibrariesUrl?: string;
+  /** @internal Optional SRI pin enforced by the SES module Worker. */
+  algorithmJavascriptLibrariesIntegrity?: string;
+  /** @internal Readiness check for the SES algorithm Worker asset. */
+  algorithmWorkerPreflight?: () => Promise<void>;
 }
 
 export interface JavaScriptWorkerBatchCall extends RuntimeBatchCall {
@@ -93,6 +111,15 @@ interface PreparedExecutionReply {
   timings?: RuntimeExecutionTimings;
 }
 
+interface SesCompatiblePreparedExecution {
+  readonly executableCode: string;
+  readonly materializers: Readonly<Record<string, unknown>>;
+  readonly inputArguments: readonly {
+    readonly key: string;
+    readonly rest?: boolean;
+  }[];
+}
+
 const EXECUTION_TIMEOUT_MS = 20000;
 const TRACING_TIMEOUT_MS = 20000;
 const INIT_TIMEOUT_MS = 10000;
@@ -112,12 +139,96 @@ function performanceNow(): number {
     : Date.now();
 }
 
+interface SesAlgorithmInputScanState {
+  readonly visited: WeakSet<object>;
+  remaining: number;
+}
+
+function scanSesAlgorithmInput(
+  value: unknown,
+  state: SesAlgorithmInputScanState,
+  depth: number
+): boolean {
+  if (value === null || typeof value === 'string' || typeof value === 'boolean') {
+    return true;
+  }
+  if (typeof value === 'number') {
+    return Number.isFinite(value) && !Object.is(value, -0);
+  }
+  if (typeof value !== 'object' || depth > 64 || state.remaining-- <= 0) {
+    return false;
+  }
+  // JSON duplicates shared references and cannot represent cycles. Reject both
+  // rather than silently changing identity semantics inside the compartment.
+  if (state.visited.has(value)) return false;
+  state.visited.add(value);
+
+  const prototype = Object.getPrototypeOf(value);
+  if (Array.isArray(value)) {
+    if (prototype !== Array.prototype) return false;
+    const ownKeys = Reflect.ownKeys(value);
+    if (ownKeys.some((key) => typeof key !== 'string' ||
+        (key !== 'length' && !/^(?:0|[1-9]\d*)$/u.test(key)))) return false;
+    for (let index = 0; index < value.length; index += 1) {
+      const descriptor = Object.getOwnPropertyDescriptor(value, String(index));
+      if (!descriptor || !('value' in descriptor) || !descriptor.enumerable ||
+          !scanSesAlgorithmInput(descriptor.value, state, depth + 1)) return false;
+    }
+    return ownKeys.length === value.length + 1;
+  }
+  if (prototype !== Object.prototype && prototype !== null) return false;
+  for (const key of Reflect.ownKeys(value)) {
+    if (typeof key !== 'string') return false;
+    const descriptor = Object.getOwnPropertyDescriptor(value, key);
+    if (!descriptor || !('value' in descriptor) || !descriptor.enumerable ||
+        !scanSesAlgorithmInput(descriptor.value, state, depth + 1)) return false;
+  }
+  return true;
+}
+
+function isSesAlgorithmInputEligible(value: unknown): boolean {
+  return scanSesAlgorithmInput(value, {
+    visited: new WeakSet(),
+    remaining: 100_000,
+  }, 0);
+}
+
 function preparationErrorLine(error: unknown): number | undefined {
   const message = error instanceof Error ? error.message : String(error);
-  const match = /\bline\s+(\d+)\b/i.exec(message);
+  const match = /\bline\s+(\d+)\b/i.exec(message) ??
+    /\((\d+):\d+\)/.exec(message);
   if (!match) return undefined;
   const line = Number.parseInt(match[1], 10);
   return Number.isSafeInteger(line) && line > 0 ? line : undefined;
+}
+
+function sesCompatiblePreparedExecution(
+  value: unknown
+): SesCompatiblePreparedExecution | null {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
+  const prepared = value as Partial<SesCompatiblePreparedExecution>;
+  if (
+    typeof prepared.executableCode !== 'string' ||
+    !prepared.materializers ||
+    typeof prepared.materializers !== 'object' ||
+    Array.isArray(prepared.materializers) ||
+    !Array.isArray(prepared.inputArguments)
+  ) {
+    return null;
+  }
+  for (let index = 0; index < prepared.inputArguments.length; index += 1) {
+    const argument = prepared.inputArguments[index];
+    if (
+      !(index in prepared.inputArguments) ||
+      !argument ||
+      typeof argument !== 'object' ||
+      typeof argument.key !== 'string' ||
+      (argument.rest !== undefined && typeof argument.rest !== 'boolean')
+    ) {
+      return null;
+    }
+  }
+  return prepared as SesCompatiblePreparedExecution;
 }
 
 class JavaScriptWorkerConnection {
@@ -201,9 +312,46 @@ export class JavaScriptWorkerClient {
   private generation = 1;
   private terminated = false;
   private readonly debug: boolean;
+  private sesAlgorithmPool: SesAlgorithmWorkerPool | null;
+  private sesAlgorithmModule: SesAlgorithmWorkerModule | null = null;
+  private sesAlgorithmDisabled = false;
+
+  private disableSesAlgorithmPool(): void {
+    this.sesAlgorithmDisabled = true;
+    this.sesAlgorithmPool?.terminate();
+    this.sesAlgorithmPool = null;
+  }
+
+  private async ensureSesAlgorithmPool(): Promise<SesAlgorithmWorkerPool | null> {
+    if (this.sesAlgorithmDisabled ||
+        this.options.algorithmExecution !== 'ses-compartment-pool') return null;
+    if (this.sesAlgorithmPool) return this.sesAlgorithmPool;
+    const module = await import('./ses-algorithm-worker-client');
+    if (this.sesAlgorithmDisabled) return null;
+    this.sesAlgorithmModule = module;
+    this.sesAlgorithmPool = new module.SesAlgorithmWorkerPool({
+      workerUrl: this.options.algorithmWorkerUrl!,
+      ...(this.options.workerFactory ? { workerFactory: this.options.workerFactory } : {}),
+      ...(this.options.algorithmJavascriptLibrariesUrl
+        ? { javascriptLibrariesUrl: this.options.algorithmJavascriptLibrariesUrl }
+        : {}),
+      ...(this.options.algorithmJavascriptLibrariesIntegrity
+        ? { javascriptLibrariesIntegrity: this.options.algorithmJavascriptLibrariesIntegrity }
+        : {}),
+    });
+    return this.sesAlgorithmPool;
+  }
 
   constructor(private readonly options: JavaScriptWorkerClientOptions) {
     this.debug = options.debug ?? isDevEnvironment();
+    if (options.algorithmExecution === 'ses-compartment-pool') {
+      if (!options.algorithmWorkerUrl) {
+        throw new TypeError(
+          'SES JavaScript algorithm execution requires algorithmWorkerUrl.'
+        );
+      }
+    }
+    this.sesAlgorithmPool = null;
   }
 
   isSupported(): boolean {
@@ -601,9 +749,21 @@ export class JavaScriptWorkerClient {
     if (this.initPromise) return this.initPromise;
 
     const promise = (async () => {
-      const standbyPromise = this.ensureStandbyExecutionWorker(generation);
+      const useSesAlgorithm =
+        this.options.algorithmExecution === 'ses-compartment-pool' &&
+        !this.sesAlgorithmDisabled;
+      const executionReadyPromise = useSesAlgorithm
+        ? (async () => {
+            await this.options.algorithmWorkerPreflight?.();
+            const pool = await this.ensureSesAlgorithmPool();
+            if (!pool) throw new Error('SES algorithm pool was disabled during initialization.');
+            await pool.init();
+          })()
+        : this.ensureStandbyExecutionWorker(generation);
       try {
-        await this.options.runtimeAssetPreflight?.();
+        if (!useSesAlgorithm) {
+          await this.options.runtimeAssetPreflight?.();
+        }
         this.assertActive(generation);
         const result = await this.getCoordinator(generation).sendMessage<InitResult>(
           'init',
@@ -619,11 +779,18 @@ export class JavaScriptWorkerClient {
             : undefined,
           INIT_TIMEOUT_MS
         );
-        await standbyPromise;
+        try {
+          await executionReadyPromise;
+        } catch (error) {
+          if (!useSesAlgorithm) throw error;
+          this.disableSesAlgorithmPool();
+          await this.options.runtimeAssetPreflight?.();
+          await this.ensureStandbyExecutionWorker(generation);
+        }
         this.assertActive(generation);
         return result;
       } catch (error) {
-        await standbyPromise.catch(() => undefined);
+        await executionReadyPromise.catch(() => undefined);
         throw error;
       }
     })();
@@ -745,31 +912,145 @@ export class JavaScriptWorkerClient {
         }
         return preparedExecution;
       };
+      let sesProgram: SesAlgorithmPreparedProgram | undefined;
+      const sesModule = this.sesAlgorithmModule;
+      if (
+        this.sesAlgorithmPool &&
+        sesModule &&
+        preparation.mode === 'code' &&
+        preparation.functionName
+      ) {
+        const prepared = sesCompatiblePreparedExecution(preparedExecution);
+        if (
+          prepared &&
+          sesModule.isSesAlgorithmSourceEligible(preparation.code) &&
+          sesModule.isSesAlgorithmSourceEligible(prepared.executableCode)
+        ) {
+          const requiredModules = sesModule.detectSesAlgorithmRequiredModules(
+            prepared.executableCode
+          );
+          if (requiredModules) {
+            const source: SesAlgorithmPreparedSource = {
+              code: prepared.executableCode,
+              functionName: preparation.functionName,
+              executionStyle: preparation.executionStyle,
+              requiredModules,
+              inputArguments: prepared.inputArguments,
+              materializers: prepared.materializers,
+            };
+            try {
+              if (source.requiredModules.length > 0) {
+                await this.options.runtimeAssetPreflight?.();
+              }
+              sesProgram = await this.sesAlgorithmPool.prepare(source, call.signal);
+            } catch (error) {
+              if (error instanceof Error &&
+                  (error.name === 'AbortError' || call.signal?.aborted)) {
+                throw error;
+              }
+              if (error instanceof sesModule.SesAlgorithmWorkerReportedError &&
+                  error.stage === 'compile') {
+                throw error;
+              }
+              this.disableSesAlgorithmPool();
+            }
+          }
+        }
+      }
+      if (preparation.mode === 'code' && !sesProgram) {
+        await this.options.runtimeAssetPreflight?.();
+      }
+      const programSesPool = sesProgram ? this.sesAlgorithmPool : null;
+      let programSesEligible = Boolean(sesProgram && programSesPool);
+
+      const executeSesBatchOrFallback = async (
+        batchCall: RuntimePreparedCodeBatchCall
+      ): Promise<readonly CodeExecutionResult[]> => {
+        if (!sesProgram || !programSesPool || !programSesEligible ||
+            this.sesAlgorithmPool !== programSesPool ||
+            !batchCall.inputBatch.every(isSesAlgorithmInputEligible)) {
+          programSesEligible = false;
+          return this.executePreparedCodeBatch(
+            language,
+            preparation,
+            requirePreparedExecution(),
+            batchCall,
+            generation
+          );
+        }
+        try {
+          return await programSesPool.executeBatch(
+            sesProgram,
+            batchCall.inputBatch,
+            batchCall.limits,
+            batchCall.signal
+          );
+        } catch (error) {
+          if (error instanceof Error &&
+              (error.name === 'AbortError' || batchCall.signal?.aborted)) {
+            throw error;
+          }
+          if ((sesModule &&
+                error instanceof sesModule.SesAlgorithmCompatibilityRequiredError) ||
+              (error instanceof Error &&
+                error.name === 'SesAlgorithmCompatibilityRequiredError')) {
+            programSesEligible = false;
+            await this.options.runtimeAssetPreflight?.();
+            await this.ensureStandbyExecutionWorker(generation);
+            return this.executePreparedCodeBatch(
+              language,
+              preparation,
+              requirePreparedExecution(),
+              batchCall,
+              generation
+            );
+          }
+          // Infrastructure failure invalidates the retained pool. Replay the
+          // entire batch on the prepared disposable path so one evaluation
+          // still has one correctness result per case and no partial SES work
+          // is ever surfaced.
+          programSesEligible = false;
+          this.disableSesAlgorithmPool();
+          await this.options.runtimeAssetPreflight?.();
+          await this.ensureStandbyExecutionWorker(generation);
+          return this.executePreparedCodeBatch(
+            language,
+            preparation,
+            requirePreparedExecution(),
+            batchCall,
+            generation
+          );
+        }
+      };
 
       let program: RuntimePreparedProgram;
       program = createJavaScriptPreparedProgram({
         mode: preparation.mode,
         executeCode:
           preparation.mode === 'code'
-            ? (caseCall) =>
-                this.executePreparedCode(
-                  language,
-                  preparation,
-                  requirePreparedExecution(),
-                  caseCall,
-                  generation
-                )
+            // SES is a batch-only correctness optimization. A caller that
+            // invokes cases individually retains the disposable-worker
+            // contract instead of selecting engines independently per case.
+            ? (caseCall) => this.executePreparedCode(
+                language,
+                preparation,
+                requirePreparedExecution(),
+                caseCall,
+                generation
+              )
             : undefined,
         executeCodeBatch:
           preparation.mode === 'code'
-            ? (batchCall) =>
-                this.executePreparedCodeBatch(
-                  language,
-                  preparation,
-                  requirePreparedExecution(),
-                  batchCall,
-                  generation
-                )
+            ? sesProgram && programSesPool
+              ? executeSesBatchOrFallback
+              : (batchCall) =>
+                  this.executePreparedCodeBatch(
+                    language,
+                    preparation,
+                    requirePreparedExecution(),
+                    batchCall,
+                    generation
+                  )
             : undefined,
         executeTrace:
           preparation.mode === 'trace'
@@ -794,9 +1075,18 @@ export class JavaScriptWorkerClient {
                   generation
                 )
             : undefined,
-        dispose: () => {
+        dispose: async () => {
           preparedExecution = undefined;
           this.preparedPrograms.delete(program);
+          if (sesProgram && programSesPool && this.sesAlgorithmPool === programSesPool) {
+            try {
+              await programSesPool.disposeProgram(sesProgram);
+            } catch {
+              // A lane disposal failure already retires that lane. Cleanup is
+              // best-effort and must not replace a completed correctness batch.
+            }
+            sesProgram = undefined;
+          }
         },
       });
       this.assertActive(generation);
@@ -817,6 +1107,19 @@ export class JavaScriptWorkerClient {
         (error.name === 'AbortError' || call.signal?.aborted)
       ) {
         throw error;
+      }
+      const sesReportedError = this.sesAlgorithmModule?.SesAlgorithmWorkerReportedError;
+      if (sesReportedError && error instanceof sesReportedError &&
+          error.stage === 'compile') {
+        const errorLine = preparationErrorLine(error);
+        return {
+          kind: 'failed',
+          error: error.message,
+          ...(errorLine !== undefined ? { errorLine } : {}),
+          diagnosticStage: 'compile',
+          consoleOutput: [],
+          timings: { totalMs: performanceNow() - startedAt },
+        };
       }
       if (!(error instanceof WorkerReportedError)) {
         throw error;
@@ -1241,6 +1544,7 @@ export class JavaScriptWorkerClient {
     this.terminateGeneration(
       new WorkerTerminatedError('JavaScript worker generation was reset.')
     );
+    this.sesAlgorithmPool?.reset();
     this.executionTail = Promise.resolve();
   }
 
@@ -1250,6 +1554,7 @@ export class JavaScriptWorkerClient {
     this.generation += 1;
     this.disposePreparedPrograms();
     this.terminateGeneration();
+    this.sesAlgorithmPool?.terminate();
     this.executionTail = Promise.resolve();
   }
 }

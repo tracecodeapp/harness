@@ -76,6 +76,29 @@ notices, source references, and package metadata alongside the assets.
 - License: MIT.
 - Source: https://github.com/datastructures-js
 
+### SES / Endo
+
+- Use: hardened algorithm execution for the SES compartment pool used by
+  `workers/javascript/javascript-ses-algorithm-worker.js`.
+- Vendored assets: `workers/javascript/javascript-ses-algorithm-worker.js`.
+- License: Apache-2.0.
+- Source: https://github.com/endojs/endo
+- Bundled components:
+  - `ses` `2.3.0`
+  - `@endo/cache-map` `1.1.0`
+  - `@endo/env-options` `1.1.11`
+  - `@endo/immutable-arraybuffer` `2.0.0`
+- Acorn is bundled as the SES worker's parser dependency.
+
+### Acorn
+
+- Use: JavaScript parsing and exact-source validation in the SES algorithm
+  worker.
+- Vendored asset: `workers/javascript/javascript-ses-algorithm-worker.js`.
+- Version: `8.16.0`.
+- License: MIT.
+- Source: https://github.com/acornjs/acorn
+
 ## Runtime Infrastructure
 
 ### Effect
@@ -227,6 +250,7 @@ third-party dependencies:
 - `workers/python/runtime-core.js`
 - `workers/python/generated-python-harness-snippets.js`
 - `workers/javascript/javascript-worker.js`
+- `workers/javascript/javascript-ses-algorithm-worker.js`
 - `workers/javascript/javascript-project-worker.js`
 - `workers/java/java-worker.js`
 - `workers/java/java-runtime-worker.js`

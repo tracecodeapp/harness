@@ -57,6 +57,13 @@ jobs:
         run: TRACECODE_JAVA_PREPARED_ENGINES=chromium pnpm test:java-prepared-provider
       - name: Build
         run: pnpm build
+      - name: Verify generated JavaScript workers
+        run: |
+          pnpm generate:javascript-project-worker
+          pnpm generate:javascript-ses-worker
+          git diff --exit-code -- workers/javascript/javascript-project-worker.js workers/javascript/javascript-ses-algorithm-worker.js
+      - name: Test JavaScript SES browser provider integration
+        run: pnpm test:javascript-ses-provider-browser
       - name: Test Python public browser Judge boundary
         run: TRACECODE_ALGORITHM_BATCH_LANGUAGES=python TRACECODE_PYTHON_COMPATIBILITY_CASES=3 pnpm exec tsx --tsconfig tsconfig.base.json tests/test-browser-algorithm-batch.ts
       - name: Test process and engine-lease regressions

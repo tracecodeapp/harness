@@ -12,7 +12,19 @@ import {
 } from './javascript-runtime-client';
 import { JavaScriptWorkerClient } from './javascript-worker-client';
 
-export function createJavaScriptBrowserRuntimeProvider(): BrowserRuntimeProvider {
+export interface JavaScriptBrowserRuntimeProviderOptions {
+  /**
+   * @internal Migration flag for the correctness-only retained SES execution
+   * boundary. Tracing and script-mode execution remain on disposable Workers.
+   */
+  readonly algorithmExecution?:
+    | 'disposable-worker'
+    | 'ses-compartment-pool';
+}
+
+export function createJavaScriptBrowserRuntimeProvider(
+  options: JavaScriptBrowserRuntimeProviderOptions = {}
+): BrowserRuntimeProvider {
   return {
     id: '@tracecode/runtime-javascript',
     languages: ['javascript', 'typescript'],
@@ -20,18 +32,41 @@ export function createJavaScriptBrowserRuntimeProvider(): BrowserRuntimeProvider
       const workerFactory =
         context.workerFactoryFor('javascript') ??
         context.workerFactoryFor('typescript');
-      const javascriptLibrariesUrl =
-        context.manifestAsset('javascript', 'libraries')?.url;
+      const manifestLibrariesAsset =
+        context.manifestAsset('javascript', 'libraries');
+      const manifestLibrariesUrl = manifestLibrariesAsset?.url;
       const worker = new JavaScriptWorkerClient({
         workerUrl: context.assets.javascriptWorker,
         ...(workerFactory ? { workerFactory } : {}),
         debug: context.debug,
         assetPreflight: context.preflight('javascript', ['worker']),
         runtimeAssetPreflight: context.preflight('javascript', ['libraries']),
-        ...(javascriptLibrariesUrl ? { javascriptLibrariesUrl } : {}),
+        ...(manifestLibrariesUrl
+          ? { javascriptLibrariesUrl: manifestLibrariesUrl }
+          : {}),
         typescriptCompilerUrl: context.assets.typescriptCompiler,
         typescriptCompilerPreflight: context.preflight('typescript', ['compiler']),
         prewarmAfterUse: context.prewarmAfterUse,
+        algorithmExecution:
+          options.algorithmExecution ?? 'disposable-worker',
+        ...(options.algorithmExecution === 'ses-compartment-pool'
+          ? {
+              algorithmWorkerUrl: context.assets.javascriptAlgorithmWorker,
+              algorithmWorkerPreflight: context.preflight(
+                'javascript',
+                ['algorithmWorker']
+              ),
+              ...(manifestLibrariesUrl
+                ? { algorithmJavascriptLibrariesUrl: manifestLibrariesUrl }
+                : {}),
+              ...(manifestLibrariesAsset?.integrity
+                ? {
+                    algorithmJavascriptLibrariesIntegrity:
+                      manifestLibrariesAsset.integrity,
+                  }
+                : {}),
+            }
+          : {}),
       });
       const javascript =
         createJavaScriptPreparedExecutionProvider('javascript', worker);

@@ -69,6 +69,7 @@ const consumerManifests = {
     originPolicy: consumerOriginPolicy,
     assets: {
       worker: { url: 'classic-worker.js' },
+      algorithmWorker: { url: 'ses-algorithm-worker.js' },
       projectWorker: { url: 'project-worker.js' },
       libraries: { url: 'javascript-libraries.js' },
     },
@@ -180,6 +181,7 @@ function testConsumerCdnManifests(): void {
     pythonRuntimeCore: 'https://assets.consumer.example/python/314.0.2/runtime-core.mjs',
     pythonSnippets: 'https://assets.consumer.example/python/314.0.2/harness-snippets.mjs',
     javascriptWorker: 'https://assets.consumer.example/javascript/es2022/classic-worker.js',
+    javascriptAlgorithmWorker: 'https://assets.consumer.example/javascript/es2022/ses-algorithm-worker.js',
     javascriptProjectWorker: 'https://assets.consumer.example/javascript/es2022/project-worker.js',
     typescriptCompiler: 'https://assets.consumer.example/typescript/5.9.3/typescript.js',
     javaWorker: 'https://assets.consumer.example/java/17-browser-1/java-worker.js',

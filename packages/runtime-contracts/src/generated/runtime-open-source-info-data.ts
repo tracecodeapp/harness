@@ -59,6 +59,116 @@ export const LANGUAGE_RUNTIME_OPEN_SOURCE_INFOS = Object.freeze(
     "language": "javascript",
     "components": [
       {
+        "name": "ses",
+        "version": "2.3.0",
+        "license": "Apache-2.0",
+        "resources": [
+          {
+            "kind": "license",
+            "label": "License",
+            "url": "https://unpkg.com/ses@2.3.0/LICENSE"
+          },
+          {
+            "kind": "source",
+            "label": "Source",
+            "url": "https://github.com/endojs/endo"
+          },
+          {
+            "kind": "package",
+            "label": "Package",
+            "url": "https://www.npmjs.com/package/ses/v/2.3.0"
+          }
+        ]
+      },
+      {
+        "name": "acorn",
+        "version": "8.16.0",
+        "license": "MIT",
+        "resources": [
+          {
+            "kind": "license",
+            "label": "License",
+            "url": "https://unpkg.com/acorn@8.16.0/LICENSE"
+          },
+          {
+            "kind": "source",
+            "label": "Source",
+            "url": "https://github.com/acornjs/acorn"
+          },
+          {
+            "kind": "package",
+            "label": "Package",
+            "url": "https://www.npmjs.com/package/acorn/v/8.16.0"
+          }
+        ]
+      },
+      {
+        "name": "@endo/cache-map",
+        "version": "1.1.0",
+        "license": "Apache-2.0",
+        "resources": [
+          {
+            "kind": "license",
+            "label": "License",
+            "url": "https://unpkg.com/@endo/cache-map@1.1.0/LICENSE"
+          },
+          {
+            "kind": "source",
+            "label": "Source",
+            "url": "https://github.com/endojs/endo"
+          },
+          {
+            "kind": "package",
+            "label": "Package",
+            "url": "https://www.npmjs.com/package/@endo/cache-map/v/1.1.0"
+          }
+        ]
+      },
+      {
+        "name": "@endo/env-options",
+        "version": "1.1.11",
+        "license": "Apache-2.0",
+        "resources": [
+          {
+            "kind": "license",
+            "label": "License",
+            "url": "https://unpkg.com/@endo/env-options@1.1.11/LICENSE"
+          },
+          {
+            "kind": "source",
+            "label": "Source",
+            "url": "https://github.com/endojs/endo"
+          },
+          {
+            "kind": "package",
+            "label": "Package",
+            "url": "https://www.npmjs.com/package/@endo/env-options/v/1.1.11"
+          }
+        ]
+      },
+      {
+        "name": "@endo/immutable-arraybuffer",
+        "version": "2.0.0",
+        "license": "Apache-2.0",
+        "resources": [
+          {
+            "kind": "license",
+            "label": "License",
+            "url": "https://unpkg.com/@endo/immutable-arraybuffer@2.0.0/LICENSE"
+          },
+          {
+            "kind": "source",
+            "label": "Source",
+            "url": "https://github.com/endojs/endo"
+          },
+          {
+            "kind": "package",
+            "label": "Package",
+            "url": "https://www.npmjs.com/package/@endo/immutable-arraybuffer/v/2.0.0"
+          }
+        ]
+      },
+      {
         "name": "lodash",
         "version": "4.17.21",
         "license": "MIT",
@@ -324,6 +434,116 @@ export const LANGUAGE_RUNTIME_OPEN_SOURCE_INFOS = Object.freeze(
             "kind": "package",
             "label": "Package",
             "url": "https://www.npmjs.com/package/typescript/v/5.9.3"
+          }
+        ]
+      },
+      {
+        "name": "ses",
+        "version": "2.3.0",
+        "license": "Apache-2.0",
+        "resources": [
+          {
+            "kind": "license",
+            "label": "License",
+            "url": "https://unpkg.com/ses@2.3.0/LICENSE"
+          },
+          {
+            "kind": "source",
+            "label": "Source",
+            "url": "https://github.com/endojs/endo"
+          },
+          {
+            "kind": "package",
+            "label": "Package",
+            "url": "https://www.npmjs.com/package/ses/v/2.3.0"
+          }
+        ]
+      },
+      {
+        "name": "acorn",
+        "version": "8.16.0",
+        "license": "MIT",
+        "resources": [
+          {
+            "kind": "license",
+            "label": "License",
+            "url": "https://unpkg.com/acorn@8.16.0/LICENSE"
+          },
+          {
+            "kind": "source",
+            "label": "Source",
+            "url": "https://github.com/acornjs/acorn"
+          },
+          {
+            "kind": "package",
+            "label": "Package",
+            "url": "https://www.npmjs.com/package/acorn/v/8.16.0"
+          }
+        ]
+      },
+      {
+        "name": "@endo/cache-map",
+        "version": "1.1.0",
+        "license": "Apache-2.0",
+        "resources": [
+          {
+            "kind": "license",
+            "label": "License",
+            "url": "https://unpkg.com/@endo/cache-map@1.1.0/LICENSE"
+          },
+          {
+            "kind": "source",
+            "label": "Source",
+            "url": "https://github.com/endojs/endo"
+          },
+          {
+            "kind": "package",
+            "label": "Package",
+            "url": "https://www.npmjs.com/package/@endo/cache-map/v/1.1.0"
+          }
+        ]
+      },
+      {
+        "name": "@endo/env-options",
+        "version": "1.1.11",
+        "license": "Apache-2.0",
+        "resources": [
+          {
+            "kind": "license",
+            "label": "License",
+            "url": "https://unpkg.com/@endo/env-options@1.1.11/LICENSE"
+          },
+          {
+            "kind": "source",
+            "label": "Source",
+            "url": "https://github.com/endojs/endo"
+          },
+          {
+            "kind": "package",
+            "label": "Package",
+            "url": "https://www.npmjs.com/package/@endo/env-options/v/1.1.11"
+          }
+        ]
+      },
+      {
+        "name": "@endo/immutable-arraybuffer",
+        "version": "2.0.0",
+        "license": "Apache-2.0",
+        "resources": [
+          {
+            "kind": "license",
+            "label": "License",
+            "url": "https://unpkg.com/@endo/immutable-arraybuffer@2.0.0/LICENSE"
+          },
+          {
+            "kind": "source",
+            "label": "Source",
+            "url": "https://github.com/endojs/endo"
+          },
+          {
+            "kind": "package",
+            "label": "Package",
+            "url": "https://www.npmjs.com/package/@endo/immutable-arraybuffer/v/2.0.0"
           }
         ]
       },

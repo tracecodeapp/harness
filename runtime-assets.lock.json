@@ -3,11 +3,11 @@
   "harness": {
     "name": "@tracecode/harness",
     "version": "0.17.0",
-    "releaseId": "@tracecode/harness@0.17.0+sha256.6ecfec17b7b1df34404cf9a44122b566a5a20bd6f765c08dd8186ebd7aa4bb86"
+    "releaseId": "@tracecode/harness@0.17.0+sha256.46384d219a17031cba898238f0591c22311bd75732130c4a954ae72ea4ba9488"
   },
   "treeSha256Algorithm": "sha256-path-nul-bytes-nul-v1",
-  "packageTreeSha256": "6ecfec17b7b1df34404cf9a44122b566a5a20bd6f765c08dd8186ebd7aa4bb86",
-  "totalPackagedRuntimeBytes": 151873010,
+  "packageTreeSha256": "46384d219a17031cba898238f0591c22311bd75732130c4a954ae72ea4ba9488",
+  "totalPackagedRuntimeBytes": 152397066,
   "components": {
     "cpp": {
       "releaseId": "cpp+sha256.ec3506681c998537894f2ccf11395fcafd1b6e7755a063b53b9bec338254f7ca",
@@ -1844,15 +1844,22 @@
       ]
     },
     "javascript": {
-      "releaseId": "javascript+sha256.cbd395e45f0f65f276d642f04469daebe799e7ed90f071e99187a32ba33d5bc3",
-      "treeSha256": "cbd395e45f0f65f276d642f04469daebe799e7ed90f071e99187a32ba33d5bc3",
-      "totalBytes": 1204990,
+      "releaseId": "javascript+sha256.c7f2f32f530ab323a5b194a5df42c1556492fa2c82511213fff4cab7b797f7a5",
+      "treeSha256": "c7f2f32f530ab323a5b194a5df42c1556492fa2c82511213fff4cab7b797f7a5",
+      "totalBytes": 1729046,
       "files": [
         {
           "path": "workers/javascript/javascript-project-worker.js",
-          "size": 563192,
-          "sha256": "347f4c4af6e476673faf29df7fc89e7c07e32b9c0318883423420ec22ec97bb2",
-          "integrity": "sha256-NH9MSvbkdmc/rynff8iefAfjK5wDGIg0I0IOwi7Je7I=",
+          "size": 563717,
+          "sha256": "eaa2760d0df396de28f71050122691ceeaf387b3912a1545529749bdf5b2b3d8",
+          "integrity": "sha256-6qJ2DQ3zlt4o9xBQEiaRzurzh7ORKhVFUpdJvfWys9g=",
+          "mediaType": "text/javascript"
+        },
+        {
+          "path": "workers/javascript/javascript-ses-algorithm-worker.js",
+          "size": 523531,
+          "sha256": "2ef9d4c5571296d3b5e3d4ca1ee4165027c491dedc100ca6dec7f88811887584",
+          "integrity": "sha256-LvnUxVcSltO149TKHuQWUCfEkd7cEAym3sf4iBGIdYQ=",
           "mediaType": "text/javascript"
         },
         {

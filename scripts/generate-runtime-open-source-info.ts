@@ -1,11 +1,17 @@
 #!/usr/bin/env npx tsx
 
 import { mkdir, readFile, readdir, writeFile } from 'node:fs/promises';
-import { dirname, join } from 'node:path';
+import { createRequire } from 'node:module';
+import { dirname, join, resolve } from 'node:path';
 import { loadEngineRuntimePackages } from './runtime-package-assets.mjs';
 
 const CHECK_MODE = process.argv.includes('--check');
 const ROOT = process.cwd();
+const JAVASCRIPT_RUNTIME_PACKAGE_ROOT = join(ROOT, 'packages', 'runtime-javascript');
+const javascriptRuntimeRequire = createRequire(
+  join(JAVASCRIPT_RUNTIME_PACKAGE_ROOT, 'package.json')
+);
+const SES_PACKAGE_JSON_PATH = javascriptRuntimeRequire.resolve('ses/package.json');
 const GENERATED_PATH = join(
   ROOT,
   'packages',
@@ -85,6 +91,18 @@ async function readJson<T>(...parts: string[]): Promise<T> {
   return JSON.parse(await readFile(join(ROOT, ...parts), 'utf8')) as T;
 }
 
+function unique<T>(items: Iterable<T>): T[] {
+  return [...new Set(items)];
+}
+
+function isPackageImport(specifier: string): boolean {
+  return (
+    !specifier.startsWith('.') &&
+    !specifier.startsWith('/') &&
+    !specifier.startsWith('node:')
+  );
+}
+
 type TraceJVMRelease = {
   schema: string;
   package: { name?: string; version?: string };
@@ -102,15 +120,20 @@ function parseImportedPackages(source: string): string[] {
   return [...new Set(
     [...source.matchAll(/^\s*import\s+(?:[^'"]+\s+from\s+)?['"]([^'"]+)['"];?/gmu)]
       .map((match) => match[1])
-      .filter((name): name is string => Boolean(name))
+      .filter((name): name is string => Boolean(name) && isPackageImport(name))
   )];
 }
 
-async function packageComponent(packageName: string): Promise<Component> {
-  const packageRoot = join(ROOT, 'node_modules', ...packageName.split('/'));
-  const [manifest, packageEntries] = await Promise.all([
-    readJson<PackageJson>('node_modules', ...packageName.split('/'), 'package.json'),
+async function packageComponent(
+  packageName: string,
+  fromPackageRoot: string = ROOT
+): Promise<Component> {
+  const require = createRequire(join(fromPackageRoot, 'package.json'));
+  const packageJsonPath = require.resolve(`${packageName}/package.json`);
+  const packageRoot = resolve(dirname(packageJsonPath));
+  const [packageEntries, manifest] = await Promise.all([
     readdir(packageRoot),
+    JSON.parse(await readFile(packageJsonPath, 'utf8')) as PackageJson,
   ]);
   if (!manifest.version || !manifest.license) {
     throw new Error(
@@ -154,7 +177,16 @@ function requireAssetPath(paths: Set<string>, pattern: RegExp, label: string): s
 }
 
 async function buildOpenSourceInfo(): Promise<Record<string, { language: string; components: Component[] }>> {
-  const [rootPackage, lock, engines, pyodidePackage, pyodideLock, javascriptEntry, csharpProject] =
+  const [
+    rootPackage,
+    lock,
+    engines,
+    pyodidePackage,
+    pyodideLock,
+    javascriptEntry,
+    sesPackageJson,
+    csharpProject,
+  ] =
     await Promise.all([
       readJson<PackageJson>('package.json'),
       readJson<RuntimeAssetLock>('runtime-assets.lock.json'),
@@ -162,6 +194,9 @@ async function buildOpenSourceInfo(): Promise<Record<string, { language: string;
       readJson<PackageJson>('node_modules', 'pyodide', 'package.json'),
       readJson<{ info?: { python?: string } }>('node_modules', 'pyodide', 'pyodide-lock.json'),
       readFile(join(ROOT, 'workers', 'javascript', 'javascript-libraries-entry.js'), 'utf8'),
+      readFile(SES_PACKAGE_JSON_PATH, 'utf8').then(
+        (source) => JSON.parse(source) as PackageJson
+      ),
       readFile(
         join(ROOT, 'packages', 'runtime-csharp', 'dotnet', 'TraceCode.CSharpHost', 'TraceCode.CSharpHost.csproj'),
         'utf8'
@@ -194,7 +229,17 @@ async function buildOpenSourceInfo(): Promise<Record<string, { language: string;
   }
 
   const javascriptPackages = parseImportedPackages(javascriptEntry);
-  const javascriptComponents = await Promise.all(javascriptPackages.map(packageComponent));
+  const sesPackageRoot = dirname(SES_PACKAGE_JSON_PATH);
+  const sesPackages = unique(Object.keys(sesPackageJson.dependencies ?? {}));
+  const sesComponents = await Promise.all([
+    packageComponent('ses', JAVASCRIPT_RUNTIME_PACKAGE_ROOT),
+    packageComponent('acorn', JAVASCRIPT_RUNTIME_PACKAGE_ROOT),
+    ...sesPackages.map((packageName) => packageComponent(packageName, sesPackageRoot)),
+  ]);
+  const javascriptComponents = [
+    ...sesComponents,
+    ...(await Promise.all(javascriptPackages.map((packageName) => packageComponent(packageName)))),
+  ];
   const typescriptComponent = await packageComponent('typescript');
 
   const tracejvm = lock.engineDependencies.tracejvm;
