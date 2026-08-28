@@ -1,4 +1,5 @@
 import { spawn } from 'node:child_process';
+import { randomBytes } from 'node:crypto';
 import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
 import { createRequire } from 'node:module';
@@ -1032,6 +1033,23 @@ interface NativeCppWorkerApi {
   };
 }
 
+interface NativeCppMarkerTokens {
+  result: string;
+  trace: string;
+}
+
+function createNativeCppMarkerTokens(): NativeCppMarkerTokens {
+  const bytes = randomBytes(32);
+  return {
+    result: bytes.subarray(0, 16).toString('hex'),
+    trace: bytes.subarray(16).toString('hex'),
+  };
+}
+
+function nativeCppRuntimeArgs(markerTokens: NativeCppMarkerTokens): string[] {
+  return [markerTokens.result, markerTokens.trace];
+}
+
 let nativeJavaApiPromise: Promise<NativeJavaWorkerApi> | null = null;
 let nativeCppApiPromise: Promise<NativeCppWorkerApi> | null = null;
 
@@ -1169,7 +1187,8 @@ using namespace std;
 \${buildCppJsonObjectAdapters(typeContext, aliases)}
 
 #line 1 "TraceCodeDriver.cpp"
-int main() {
+int main(int argc, char** argv) {
+\${cppMarkerTokenSetup()}
   \${tracecodeNamespace}JsonValue __tc_cases = \${tracecodeNamespace}parse_json(\${tracecodeNamespace}read_stdin_all());
   std::string __tc_results = "[";
   if (__tc_cases.kind != \${tracecodeNamespace}JsonValue::Kind::Array) {
@@ -1185,6 +1204,7 @@ int main() {
   }
   __tc_results += "]";
   \${tracecodeNamespace}write_result_json_raw(__tc_results);
+\${cppMarkerTokenReset()}
   return 0;
 }
 \`;
@@ -1273,7 +1293,8 @@ using namespace std;
 \${userCode}
 
 #line 1 "TraceCodeDriver.cpp"
-int main() {
+int main(int argc, char** argv) {
+\${cppMarkerTokenSetup()}
   \${tracecodeNamespace}JsonValue __tc_cases = \${tracecodeNamespace}parse_json(\${tracecodeNamespace}read_stdin_all());
   if (__tc_cases.kind != \${tracecodeNamespace}JsonValue::Kind::Array) {
     std::fputs("C++ ops-class batch input must be a JSON array.\\\\n", stderr);
@@ -1316,6 +1337,7 @@ int main() {
   }
   __tc_results += "]";
   \${tracecodeNamespace}write_result_json_raw(__tc_results);
+\${cppMarkerTokenReset()}
   return 0;
 }
 \`;
@@ -1724,8 +1746,9 @@ class NativeCppRuntimeClient implements RuntimeClient {
         }, 'C++ batch compilation failed.'));
       }
 
+      const markerTokens = createNativeCppMarkerTokens();
       const runStartedAt = Date.now();
-      const run = await runProcess(programPath, [], {
+      const run = await runProcess(programPath, nativeCppRuntimeArgs(markerTokens), {
         input: JSON.stringify(inputBatch),
         timeoutMs: this.options.timeoutMs,
         cwd: tempDir,
@@ -1742,6 +1765,7 @@ class NativeCppRuntimeClient implements RuntimeClient {
         parsed = api.parseProgramStdout(run.stdout, {
           tracing: false,
           defaultLine: signature.line ?? 1,
+          markerTokens,
         });
       } catch (error) {
         return batchCodeResultToExecuteResult(request, liftCodeBatchOutcome({
@@ -1860,8 +1884,9 @@ class NativeCppRuntimeClient implements RuntimeClient {
           diagnosticStage: options.tracing ? 'trace-driver-compile' : 'driver-compile',
         };
       }
+      const markerTokens = createNativeCppMarkerTokens();
       const runStartedAt = Date.now();
-      const run = await runProcess(programPath, [], {
+      const run = await runProcess(programPath, nativeCppRuntimeArgs(markerTokens), {
         input: JSON.stringify(inputs ?? {}),
         timeoutMs: this.options.timeoutMs,
         cwd: tempDir,
@@ -1879,6 +1904,7 @@ class NativeCppRuntimeClient implements RuntimeClient {
           tracing: options.tracing,
           defaultLine: signature.line ?? 1,
           allowMissingResult: options.tracing,
+          markerTokens,
         });
       } catch (error) {
         return {

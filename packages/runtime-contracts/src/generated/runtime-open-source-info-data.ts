@@ -32,7 +32,7 @@ export const LANGUAGE_RUNTIME_OPEN_SOURCE_INFOS = Object.freeze(
       },
       {
         "name": "Pyodide",
-        "version": "0.29.4",
+        "version": "0.29.3",
         "license": "MPL-2.0",
         "detail": "Browser distribution and WebAssembly runtime image.",
         "resources": [
@@ -44,12 +44,12 @@ export const LANGUAGE_RUNTIME_OPEN_SOURCE_INFOS = Object.freeze(
           {
             "kind": "source",
             "label": "Source",
-            "url": "https://github.com/pyodide/pyodide/tree/0.29.4"
+            "url": "https://github.com/pyodide/pyodide/tree/0.29.3"
           },
           {
             "kind": "modifications",
             "label": "Runtime modifications",
-            "url": "https://github.com/tracecodeapp/harness/tree/v0.17.0/workers/python/pyodide-0.29.4"
+            "url": "https://github.com/tracecodeapp/harness/tree/v0.17.0/workers/python/pyodide-0.29.3"
           }
         ]
       }

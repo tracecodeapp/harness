@@ -5155,7 +5155,7 @@ function wrapFunctionBodyForTracing(
             ...rewrittenBody.statements,
             createTraceRecorderStatement(ts, 'recordReturn', [
               ts.factory.createNumericLiteral(functionEndLine),
-              ts.factory.createIdentifier('undefined'),
+              ts.factory.createVoidZero(),
               ts.factory.createStringLiteral(traceFunctionName),
             ]),
           ],

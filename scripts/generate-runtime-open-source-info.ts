@@ -47,6 +47,9 @@ type RuntimeAssetLock = {
   harness: { version: string };
   components: Record<string, { files: Array<{ path: string }> }>;
   compatibility: {
+    python: {
+      runtimeDirectory: string;
+    };
     csharp: {
       recipe: { dotnetSdk: string };
       runtime: { version: string };
@@ -182,7 +185,6 @@ async function buildOpenSourceInfo(): Promise<Record<string, { language: string;
     lock,
     engines,
     pyodidePackage,
-    pyodideLock,
     javascriptEntry,
     sesPackageJson,
     csharpProject,
@@ -192,7 +194,6 @@ async function buildOpenSourceInfo(): Promise<Record<string, { language: string;
       readJson<RuntimeAssetLock>('runtime-assets.lock.json'),
       loadEngineRuntimePackages(ROOT),
       readJson<PackageJson>('node_modules', 'pyodide', 'package.json'),
-      readJson<{ info?: { python?: string } }>('node_modules', 'pyodide', 'pyodide-lock.json'),
       readFile(join(ROOT, 'workers', 'javascript', 'javascript-libraries-entry.js'), 'utf8'),
       readFile(SES_PACKAGE_JSON_PATH, 'utf8').then(
         (source) => JSON.parse(source) as PackageJson
@@ -208,8 +209,23 @@ async function buildOpenSourceInfo(): Promise<Record<string, { language: string;
       `Unable to generate open-source runtime info: Harness ${String(rootPackage.version)} does not match runtime asset lock ${lock.harness.version}.`
     );
   }
-  if (!pyodidePackage.version || !pyodidePackage.license || !pyodideLock.info?.python) {
+  if (!pyodidePackage.license) {
     throw new Error('Unable to generate open-source runtime info: Pyodide metadata is incomplete.');
+  }
+
+  const pyodideRuntimeDirectory = lock.compatibility.python.runtimeDirectory;
+  const pyodideVersion = pyodideRuntimeDirectory.match(/^pyodide-(.+)$/u)?.[1];
+  if (!pyodideVersion) {
+    throw new Error('Unable to generate open-source runtime info: invalid vendored Pyodide runtime directory.');
+  }
+  const pyodideLock = await readJson<{ info?: { python?: string } }>(
+    'workers',
+    'python',
+    pyodideRuntimeDirectory,
+    'pyodide-lock.json'
+  );
+  if (!pyodideLock.info?.python) {
+    throw new Error('Unable to generate open-source runtime info: vendored Pyodide lock is incomplete.');
   }
 
   const pythonPaths = new Set(lock.components.python.files.map((file) => file.path));
@@ -321,16 +337,16 @@ async function buildOpenSourceInfo(): Promise<Record<string, { language: string;
     },
     {
       name: 'Pyodide',
-      version: pyodidePackage.version,
+      version: pyodideVersion,
       license: pyodidePackage.license,
       detail: 'Browser distribution and WebAssembly runtime image.',
       resources: [
         asset('license', 'License', pyodideLicense),
-        url('source', 'Source', `${pyodideRepository}/tree/${pyodidePackage.version}`),
+        url('source', 'Source', `${pyodideRepository}/tree/${pyodideVersion}`),
         url(
           'modifications',
           'Runtime modifications',
-          `https://github.com/tracecodeapp/harness/tree/v${rootPackage.version}/workers/python/pyodide-${pyodidePackage.version}`
+          `https://github.com/tracecodeapp/harness/tree/v${rootPackage.version}/workers/python/${pyodideRuntimeDirectory}`
         ),
       ],
     },

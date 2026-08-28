@@ -17,8 +17,9 @@ import {
   writeFile,
 } from 'node:fs/promises';
 import { createServer } from 'node:http';
+import { createRequire } from 'node:module';
 import { tmpdir } from 'node:os';
-import { extname, join, normalize, resolve, sep } from 'node:path';
+import { dirname, extname, join, normalize, resolve, sep } from 'node:path';
 import { build } from 'esbuild';
 import { chromium } from 'playwright';
 import { runCommand } from '../tests/example-app-smoke';
@@ -28,8 +29,10 @@ import type {
   CppOnDemandSample,
 } from '../tests/fixtures/cpp-on-demand-tracing-benchmark-entry';
 
-const TRACECC_HASH =
-  'fb4b6f41f9e9b7db89b6c8425bb2c6218979219a4150f96619b6461b4b78d294';
+const TRACECC_PACKAGE_ROOT = dirname(
+  createRequire(import.meta.url).resolve('@tracecode/tracecc/package.json')
+);
+const TRACECC_PACKAGE_RELEASE_ROOT = join(TRACECC_PACKAGE_ROOT, 'runtime-release');
 const TRACECC_ASSET_NAMES = [
   'tracecc-reactor.wasm',
   'llvm-resources.tar',
@@ -429,7 +432,15 @@ function corpusSummary(summaries: readonly PairSummary[], attempted: number, cas
 
 async function main(): Promise<void> {
   const productRoot = resolve(option('product-root') ?? '/Users/obinnanwachukwu/Code/algoflow');
-  const assetRoot = resolve(option('tracecc-assets') ?? join('.cache/tracecc-runtime-assets', TRACECC_HASH));
+  const explicitAssetRoot = option('tracecc-assets');
+  const packageRelease = explicitAssetRoot
+    ? null
+    : JSON.parse(
+        await readFile(join(TRACECC_PACKAGE_RELEASE_ROOT, 'manifest.json'), 'utf8')
+      ) as { consumerHash?: string };
+  const assetRoot = resolve(
+    explicitAssetRoot ?? join(TRACECC_PACKAGE_RELEASE_ROOT, packageRelease?.consumerHash ?? '')
+  );
   const outPath = resolve(option('out') ?? 'reports/cpp-on-demand-tracing-corpus-paired-2026-08-08.json');
   const iterations = Number(option('iterations') ?? '2');
   if (!Number.isInteger(iterations) || iterations < 1) {
@@ -437,6 +448,16 @@ async function main(): Promise<void> {
   }
   if (!existsSync(join(assetRoot, 'tracecc-reactor.wasm'))) {
     throw new Error(`TraceCC asset tree not found at ${assetRoot}.`);
+  }
+  const traceccRuntime = JSON.parse(
+    await readFile(join(assetRoot, 'tracecc-runtime-manifest.json'), 'utf8')
+  ) as { contentHash?: string };
+  const traceccHash = traceccRuntime.contentHash;
+  if (!traceccHash || !/^[0-9a-f]{64}$/u.test(traceccHash)) {
+    throw new Error(`TraceCC runtime manifest is invalid at ${assetRoot}.`);
+  }
+  if (packageRelease && packageRelease.consumerHash !== traceccHash) {
+    throw new Error('TraceCC package and runtime manifests disagree.');
   }
   const corpus = await discoverCorpus(productRoot);
   const requested = option('problems')?.split(',').map((value) => value.trim()).filter(Boolean);
@@ -457,7 +478,7 @@ async function main(): Promise<void> {
       schema: 'tracecode.cpp-on-demand-tracing-benchmark.v1',
       generatedAt: new Date().toISOString(),
       productRoot,
-      tracecc: { contentHash: TRACECC_HASH, assetRoot },
+      tracecc: { contentHash: traceccHash, assetRoot },
       compilerPolicy: {
         artifactCacheEntries: 0,
         artifactCacheBytes: 0,
@@ -514,7 +535,7 @@ async function main(): Promise<void> {
         }
         return (await globalThis.initializeCppOnDemandTracing(browserIntegrity)).warmMs;
       }, { integrity });
-      console.log(`TraceCC ${TRACECC_HASH.slice(0, 12)} warmed across all PCH lanes in ${formatMs(warmMs)}.`);
+      console.log(`TraceCC ${traceccHash.slice(0, 12)} warmed across all PCH lanes in ${formatMs(warmMs)}.`);
 
       for (let fixtureIndex = 0; fixtureIndex < fixtures.length; fixtureIndex += 1) {
         const fixture = fixtures[fixtureIndex]!;

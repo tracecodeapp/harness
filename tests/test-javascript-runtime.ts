@@ -5120,27 +5120,33 @@ result = identity(42);`,
   );
   console.log('PASS: execute-with-tracing top-level start line contract');
 
-  const bareReturnTracing = await harness.sendMessage<{
-    success: boolean;
-    output?: unknown;
-    trace?: { events?: RuntimeTraceEvent[] };
-  }>('execute-with-tracing', {
-    code: `function solve() {
+  for (const language of ['javascript', 'typescript'] as const) {
+    for (const returnStatement of ['', '  return;']) {
+      const undefinedReturnTracing = await harness.sendMessage<{
+        success: boolean;
+        output?: unknown;
+        trace?: { events?: RuntimeTraceEvent[] };
+      }>('execute-with-tracing', {
+        code: `function solve()${language === 'typescript' ? ': void' : ''} {
   const undefined = 7;
-  return;
+${returnStatement}
 }`,
-    functionName: 'solve',
-    inputs: {},
-    executionStyle: 'function',
-  });
-  const bareReturnEvent = traceEvents(bareReturnTracing).find(
-    (event) => event.kind === 'return' && event.function === 'solve'
-  );
-  assertCondition(bareReturnTracing.success === true, 'Bare-return tracing should succeed');
-  assertCondition(bareReturnTracing.output === undefined, 'Bare returns should ignore a shadowed undefined binding');
-  assertCondition(bareReturnEvent !== undefined, 'Bare returns should emit a return trace event');
-  assertCondition(!('value' in bareReturnEvent), 'Bare return trace events should omit undefined values');
-  console.log('PASS: execute-with-tracing bare return ignores shadowed undefined bindings');
+        functionName: 'solve',
+        inputs: {},
+        executionStyle: 'function',
+        language,
+      });
+      const returnEvent = traceEvents(undefinedReturnTracing).find(
+        (event) => event.kind === 'return' && event.function === 'solve'
+      );
+      const returnKind = returnStatement ? 'bare return' : 'fall-through';
+      assertCondition(undefinedReturnTracing.success === true, `${language} ${returnKind} tracing should succeed`);
+      assertCondition(undefinedReturnTracing.output === undefined, `${language} ${returnKind} should ignore a shadowed undefined binding`);
+      assertCondition(returnEvent !== undefined, `${language} ${returnKind} should emit a return trace event`);
+      assertCondition(!('value' in returnEvent), `${language} ${returnKind} trace events should omit undefined values`);
+    }
+  }
+  console.log('PASS: execute-with-tracing JS/TS undefined returns ignore shadowed bindings');
 
   const traceDetailKinds = new Set(['snapshot', 'read', 'write', 'mutate']);
   for (const language of ['javascript', 'typescript'] as const) {
