@@ -443,7 +443,15 @@ class PythonRuntimeClient implements RuntimeClient {
       });
     }
 
-    return executeRuntimeRequest(request as RuntimeExecuteCodeRequest, {
+    const codeRequest = request as RuntimeExecuteCodeRequest;
+    assertRuntimeRequestSupported(getLanguageRuntimeProfile('python'), {
+      request: codeRequest.trace ? 'trace' : 'execute',
+      executionStyle: codeRequest.executionStyle ?? 'function',
+      functionName: codeRequest.functionName ?? '',
+      limits: codeRequest.limits,
+      traceOptions: codeRequest.traceOptions,
+    });
+    return executeRuntimeRequest(codeRequest, {
       defaultExecutionStyle: 'function',
       executeCode: this.executeCode.bind(this),
       executeWithTracing: this.executeWithTracing.bind(this),
@@ -455,6 +463,8 @@ class PythonRuntimeClient implements RuntimeClient {
       request: 'trace',
       executionStyle: call.executionStyle ?? 'function',
       functionName: call.functionName,
+      limits: call.limits,
+      traceOptions: call.traceOptions,
     });
     const result = await this.workerClient.executeWithTracing(call);
     return normalizePythonExecutionResult(result);
@@ -939,6 +949,7 @@ class PythonPreparedExecutionProvider
       request: call.mode === 'trace' ? 'trace' : 'execute',
       executionStyle: call.executionStyle ?? 'function',
       functionName: call.functionName,
+      traceOptions: call.traceOptions,
     });
     const generation = this.generation;
     const controller = new AbortController();

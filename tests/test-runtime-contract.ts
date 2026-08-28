@@ -29,6 +29,21 @@ import {
 } from '../packages/runtime-browser/src/worker-protocol-messages';
 import { createJavaRuntimeClient } from '../packages/runtime-java/src/java-runtime-client';
 import type { JavaWorkerClient } from '../packages/runtime-java/src/java-worker-client';
+import { createJavaPreparedExecutionProvider } from '../packages/runtime-java/src/java-prepared-provider';
+import {
+  createJavaScriptPreparedExecutionProvider,
+  createJavaScriptRuntimeClient,
+} from '../packages/runtime-javascript/src/javascript-runtime-client';
+import type { JavaScriptWorkerClient } from '../packages/runtime-javascript/src/javascript-worker-client';
+import {
+  createPythonPreparedExecutionProvider,
+  createPythonRuntimeClient,
+} from '../packages/runtime-python/src/python-runtime-client';
+import type { PythonWorkerClient } from '../packages/runtime-python/src/python-worker-client';
+import { createCSharpRuntimeClient } from '../packages/runtime-csharp/src/csharp-runtime-client';
+import type { CSharpWorkerClient } from '../packages/runtime-csharp/src/csharp-worker-client';
+import { createCppRuntimeClient } from '../packages/runtime-cpp/src/cpp-runtime-client';
+import type { CppWorkerClient } from '../packages/runtime-cpp/src/cpp-worker-client';
 import { executeJavaScriptCode, executeTypeScriptCode } from '../packages/runtime-javascript/src/javascript-executor';
 import { generateSolutionScript } from '../packages/runtime-python/src/python-harness';
 import type { RuntimeKernelInfo } from '../packages/runtime-contracts/src/runtime-project';
@@ -118,6 +133,122 @@ function expectThrows(fn: () => void, expectedMessage: string): void {
     String((thrown as Error).message).includes(expectedMessage),
     `Expected error containing "${expectedMessage}", received "${String((thrown as Error).message)}"`
   );
+}
+
+async function expectRejects(
+  fn: () => Promise<unknown>,
+  expectedMessage: string
+): Promise<void> {
+  let thrown: unknown;
+  try {
+    await fn();
+  } catch (error) {
+    thrown = error;
+  }
+  assertCondition(thrown instanceof Error, `Expected rejection containing "${expectedMessage}"`);
+  assertCondition(
+    thrown.message.includes(expectedMessage),
+    `Expected rejection containing "${expectedMessage}", received "${thrown.message}"`
+  );
+}
+
+async function assertRuntimeClientCapabilityGuards(): Promise<void> {
+  const unknownTraceOptions = {
+    softTraceBudget: true,
+  } as unknown as TraceExecutionOptions;
+  const clients = [
+    {
+      executionStyle: 'function' as const,
+      client: createJavaScriptRuntimeClient(
+        'javascript',
+        {} as JavaScriptWorkerClient
+      ),
+    },
+    {
+      executionStyle: 'function' as const,
+      client: createPythonRuntimeClient({} as PythonWorkerClient),
+    },
+    {
+      executionStyle: 'function' as const,
+      client: createJavaRuntimeClient({} as JavaWorkerClient),
+    },
+    {
+      executionStyle: 'solution-method' as const,
+      client: createCSharpRuntimeClient({} as CSharpWorkerClient),
+    },
+    {
+      executionStyle: 'solution-method' as const,
+      client: createCppRuntimeClient({} as CppWorkerClient),
+    },
+  ];
+
+  for (const { executionStyle, client } of clients) {
+    await expectRejects(
+      () => client.executeWithTracing({
+        code: 'solution',
+        functionName: 'solve',
+        inputs: {},
+        executionStyle,
+        traceOptions: unknownTraceOptions,
+      }),
+      'does not recognize the "softTraceBudget" tracing option'
+    );
+    await expectRejects(
+      () => client.execute({
+        code: 'solution',
+        functionName: 'solve',
+        executionStyle,
+        cases: [{ inputs: {} }],
+        traceOptions: { maxTraceSteps: 1 },
+      }),
+      'does not accept tracing options for non-tracing execution'
+    );
+    await expectRejects(
+      () => client.execute({
+        code: 'solution',
+        functionName: 'solve',
+        executionStyle,
+        cases: [{ inputs: {} }, { inputs: {} }],
+        trace: true,
+        traceOptions: unknownTraceOptions,
+      }),
+      'does not recognize the "softTraceBudget" tracing option'
+    );
+  }
+
+  const preparedProviders = [
+    createJavaScriptPreparedExecutionProvider(
+      'javascript',
+      {} as JavaScriptWorkerClient
+    ),
+    createPythonPreparedExecutionProvider({
+      createWorkerClient: () => ({} as PythonWorkerClient),
+    }),
+    createJavaPreparedExecutionProvider({
+      createWorkerClient: () => ({} as JavaWorkerClient),
+    }),
+    createCSharpRuntimeClient({} as CSharpWorkerClient),
+  ];
+  for (const provider of preparedProviders) {
+    await expectRejects(
+      () => provider.prepareProgram({
+        mode: 'trace',
+        code: 'solution',
+        functionName: 'solve',
+        traceOptions: unknownTraceOptions,
+      }),
+      'does not recognize the "softTraceBudget" tracing option'
+    );
+    await expectRejects(
+      () => provider.prepareProgram({
+        mode: 'code',
+        code: 'solution',
+        functionName: 'solve',
+        traceOptions: { maxTraceSteps: 1 },
+      }),
+      'does not accept tracing options for non-tracing execution'
+    );
+  }
 }
 
 function stableStringify(value: unknown): string {
@@ -1682,6 +1813,8 @@ async function main(): Promise<void> {
   console.log('PASS: package script output context contract');
 
   await testJavaSerializedResultNormalization();
+  await assertRuntimeClientCapabilityGuards();
+  console.log('PASS: runtime clients reject unsupported controls before worker dispatch');
 
   await assertExecutionLimitsDispatchContract();
   console.log('PASS: execution limits dispatch contract');

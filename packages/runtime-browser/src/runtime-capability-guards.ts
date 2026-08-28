@@ -69,6 +69,16 @@ export function assertRuntimeRequestSupported(
   profile: LanguageRuntimeProfile,
   options: RuntimeRequestSupportOptions
 ): void {
+  if (
+    options.request !== 'trace' &&
+    options.traceOptions &&
+    Object.keys(options.traceOptions).length > 0
+  ) {
+    throw new Error(
+      `Runtime "${profile.language}" does not accept tracing options for non-tracing execution.`
+    );
+  }
+
   if (options.request === 'trace' && !profile.capabilities.tracing.supported) {
     throw new Error(`Runtime "${profile.language}" does not support tracing.`);
   }

@@ -44,12 +44,14 @@ class JavaRuntimeClient implements RuntimeClient {
 
     const codeRequest = request as RuntimeExecuteCodeRequest;
     const executionStyle = codeRequest.executionStyle ?? 'function';
+    assertRuntimeRequestSupported(getLanguageRuntimeProfile('java'), {
+      request: codeRequest.trace ? 'trace' : 'execute',
+      executionStyle,
+      functionName: codeRequest.functionName ?? '',
+      limits: codeRequest.limits,
+      traceOptions: codeRequest.traceOptions,
+    });
     if (!codeRequest.trace && !codeRequest.limits && codeRequest.cases.length > 1) {
-      assertRuntimeRequestSupported(getLanguageRuntimeProfile('java'), {
-        request: 'execute',
-        executionStyle,
-        functionName: codeRequest.functionName ?? '',
-      });
       const batchResult = await this.workerClient.executeCodeBatch({
         code: codeRequest.code,
         functionName: codeRequest.functionName ?? '',
@@ -72,6 +74,8 @@ class JavaRuntimeClient implements RuntimeClient {
       request: 'trace',
       executionStyle: call.executionStyle ?? 'function',
       functionName: call.functionName,
+      limits: call.limits,
+      traceOptions: call.traceOptions,
     });
 
     const rawResult = await this.workerClient.executeWithTracing(call);
