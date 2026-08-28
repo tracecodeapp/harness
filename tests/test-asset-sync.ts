@@ -87,7 +87,7 @@ async function main(t: TestContext): Promise<void> {
     'project-cpp-worker.js',
     'shared/runtime-kernel-policy.js',
     'cpp/tracecode_runtime.hpp',
-    `cpp/tracecc/${TRACECC_RUNTIME_CONTENT_HASH}/cpp-runtime-manifest.json`,
+    `cpp/tracecc/${TRACECC_RUNTIME_CONTENT_HASH}/tracecc-runtime-manifest.json`,
     `cpp/tracecc/${TRACECC_RUNTIME_CONTENT_HASH}/tracecc-reactor.wasm`,
     `${TRACEJVM_RUNTIME_ASSET_RELATIVE_PATH}/release.json`,
     `${TRACEJVM_RUNTIME_ASSET_RELATIVE_PATH}/browser-worker.js`,

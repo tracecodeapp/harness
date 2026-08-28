@@ -40,12 +40,15 @@ const COMPONENTS = Object.freeze({
   tracecc: {
     packageName: '@tracecode/tracecc',
     rootEnvironment: 'TRACECODE_TRACECC_PACKAGE_ROOT',
-    schema: 'tracecc-package-runtime-v1',
+    schema: 'tracecc-package-runtime-v2',
     sourceRoot(manifest, packageRoot) {
       return join(packageRoot, 'runtime-release', manifest.consumerHash);
     },
     expectedTargetPath(manifest) {
-      return `cpp/tracecc/${manifest.consumerHash}`;
+      return `tracecc/${manifest.consumerHash}`;
+    },
+    installTargetPath(manifest) {
+      return `cpp/${manifest.targetPath}`;
     },
     expectedReleaseId(manifest) {
       return `tracecc@${manifest.package.version}+sha256.${manifest.consumerHash}`;
@@ -250,7 +253,7 @@ async function loadComponent(harnessRoot, componentName, expectedVersion) {
     manifest: Object.freeze(manifest),
     releaseId: manifest.releaseId,
     sourceRoot,
-    targetPath: manifest.targetPath,
+    targetPath: definition.installTargetPath?.(manifest) ?? manifest.targetPath,
     files: Object.freeze(files),
   });
 }

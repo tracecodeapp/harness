@@ -49,8 +49,8 @@ importers:
         specifier: 4.2.3
         version: 4.2.3
       '@tracecode/tracecc':
-        specifier: 0.1.0
-        version: 0.1.0
+        specifier: 0.1.1
+        version: 0.1.1
       '@tracecode/tracejvm':
         specifier: 0.4.1
         version: 0.4.1
@@ -854,8 +854,8 @@ packages:
   '@tokenizer/token@0.3.0':
     resolution: {integrity: sha512-OvjF+z51L3ov0OyAU0duzsYuvO01PH7x4t6DJx+guahgTnBHkhJdG7soQeTSFLWN3efnHyibZ4Z8l2EuWwJN3A==}
 
-  '@tracecode/tracecc@0.1.0':
-    resolution: {integrity: sha512-WqC05dU7q7NKPsmGWEyVp5bbj/RRXRJNJ7umj15ZwmszeCgR6GFfzCio6FcIfEHrkyAtvDMHKU6gGwFjVYcCrA==}
+  '@tracecode/tracecc@0.1.1':
+    resolution: {integrity: sha512-A05iwaa/xYumjZLCWy510yGkpikrz8AMmHvu3+KEvEUcvNm1Qe6nMR6uhyoOGaUmE2GNldW8o/BNBo1gvymBFA==}
     engines: {node: '>=22'}
 
   '@tracecode/tracejvm@0.4.1':
@@ -1875,7 +1875,7 @@ snapshots:
 
   '@tokenizer/token@0.3.0': {}
 
-  '@tracecode/tracecc@0.1.0': {}
+  '@tracecode/tracecc@0.1.1': {}
 
   '@tracecode/tracejvm@0.4.1':
     dependencies:

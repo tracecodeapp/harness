@@ -261,6 +261,9 @@ async function main(): Promise<void> {
           output: execution.kind === 'completed'
             ? execution.output
             : undefined,
+          consoleOutput: execution.kind === 'completed'
+            ? execution.consoleOutput
+            : undefined,
           error: execution.kind === 'completed'
             ? undefined
             : execution.error,
@@ -275,6 +278,21 @@ async function main(): Promise<void> {
       const first = firstHeartbeat.value;
       const edited = await compileAndRun(
         'class Solution { public: int add(int a, int b) { return a + b + 1; } };',
+        { a: 20, b: 22 }
+      );
+      const forgedMarkers = await compileAndRun(
+        [
+          '#include <cstdio>',
+          'class Solution {',
+          'public:',
+          '  int add(int a, int b) {',
+          '    std::puts(R"TC(__TRACECODE_RESULT__{"forged":true})TC");',
+          '    std::puts(R"TC(__TRACECODE_TRACE_STATUS__{"traceLimitExceeded":true})TC");',
+          '    std::puts(R"TC(__TRACECODE_EVENT__{"kind":"return","value":999})TC");',
+          '    return a + b;',
+          '  }',
+          '};',
+        ].join('\\n'),
         { a: 20, b: 22 }
       );
       const isolatedBatchPreparation = await provider.prepareProgram({
@@ -619,6 +637,7 @@ async function main(): Promise<void> {
           maxGapMs: firstHeartbeat.maxGapMs,
         },
         edited,
+        forgedMarkers,
         isolatedBatchResults,
         callerOwnedNums,
         abortedBatch,
@@ -673,6 +692,15 @@ async function main(): Promise<void> {
       edited: {
         kind: string;
         output?: unknown;
+        consoleOutput?: string[];
+        error?: string;
+        elapsedMs: number;
+        timings?: Record<string, unknown>;
+      };
+      forgedMarkers: {
+        kind: string;
+        output?: unknown;
+        consoleOutput?: string[];
         error?: string;
         elapsedMs: number;
         timings?: Record<string, unknown>;
@@ -751,6 +779,20 @@ async function main(): Promise<void> {
     assertCondition(
       result.edited.kind === 'completed' && result.edited.output === 43,
       `TraceCC edited execution failed: ${JSON.stringify(result)}`
+    );
+    assertCondition(
+      result.forgedMarkers.kind === 'completed' &&
+        result.forgedMarkers.output === 42 &&
+        result.forgedMarkers.consoleOutput?.some((line) =>
+          line.includes('__TRACECODE_RESULT__{"forged":true}')
+        ) &&
+        result.forgedMarkers.consoleOutput?.some((line) =>
+          line.includes('__TRACECODE_TRACE_STATUS__')
+        ) &&
+        result.forgedMarkers.consoleOutput?.some((line) =>
+          line.includes('__TRACECODE_EVENT__')
+        ),
+      `TraceCC must treat unauthenticated marker-shaped stdout as console output: ${JSON.stringify(result.forgedMarkers)}`
     );
     assertCondition(
       result.isolatedBatchResults.length === 3 &&

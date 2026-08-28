@@ -5120,6 +5120,28 @@ result = identity(42);`,
   );
   console.log('PASS: execute-with-tracing top-level start line contract');
 
+  const bareReturnTracing = await harness.sendMessage<{
+    success: boolean;
+    output?: unknown;
+    trace?: { events?: RuntimeTraceEvent[] };
+  }>('execute-with-tracing', {
+    code: `function solve() {
+  const undefined = 7;
+  return;
+}`,
+    functionName: 'solve',
+    inputs: {},
+    executionStyle: 'function',
+  });
+  const bareReturnEvent = traceEvents(bareReturnTracing).find(
+    (event) => event.kind === 'return' && event.function === 'solve'
+  );
+  assertCondition(bareReturnTracing.success === true, 'Bare-return tracing should succeed');
+  assertCondition(bareReturnTracing.output === undefined, 'Bare returns should ignore a shadowed undefined binding');
+  assertCondition(bareReturnEvent !== undefined, 'Bare returns should emit a return trace event');
+  assertCondition(!('value' in bareReturnEvent), 'Bare return trace events should omit undefined values');
+  console.log('PASS: execute-with-tracing bare return ignores shadowed undefined bindings');
+
   const traceDetailKinds = new Set(['snapshot', 'read', 'write', 'mutate']);
   for (const language of ['javascript', 'typescript'] as const) {
     const typedSuffix = language === 'typescript' ? ': number[]' : '';
