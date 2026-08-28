@@ -43,12 +43,14 @@ class CppRuntimeClient implements RuntimeClient {
 
     const codeRequest = request as RuntimeExecuteCodeRequest;
     const executionStyle = codeRequest.executionStyle ?? 'solution-method';
-    if (codeRequest.trace && codeRequest.cases.length > 1) {
-      assertRuntimeRequestSupported(getLanguageRuntimeProfile('cpp'), {
-        request: 'trace',
-        executionStyle,
-        functionName: codeRequest.functionName ?? '',
-      });
+    assertRuntimeRequestSupported(getLanguageRuntimeProfile('cpp'), {
+      request: codeRequest.trace ? 'trace' : 'execute',
+      executionStyle,
+      functionName: codeRequest.functionName ?? '',
+      limits: codeRequest.limits,
+      traceOptions: codeRequest.traceOptions,
+    });
+    if (codeRequest.trace && !codeRequest.limits && codeRequest.cases.length > 1) {
       const result = await this.workerClient.executeTraceBatch({
         code: codeRequest.code,
         functionName: codeRequest.functionName ?? '',
@@ -67,11 +69,6 @@ class CppRuntimeClient implements RuntimeClient {
     }
 
     if (!codeRequest.trace && !codeRequest.limits && codeRequest.cases.length > 1) {
-      assertRuntimeRequestSupported(getLanguageRuntimeProfile('cpp'), {
-        request: 'execute',
-        executionStyle,
-        functionName: codeRequest.functionName ?? '',
-      });
       const result = await this.workerClient.executeCodeBatch({
         code: codeRequest.code,
         functionName: codeRequest.functionName ?? '',
@@ -94,6 +91,8 @@ class CppRuntimeClient implements RuntimeClient {
       request: 'trace',
       executionStyle: call.executionStyle ?? 'solution-method',
       functionName: call.functionName,
+      limits: call.limits,
+      traceOptions: call.traceOptions,
     });
     return this.workerClient.executeWithTracing(call);
   }

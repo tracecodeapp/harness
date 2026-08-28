@@ -17,6 +17,8 @@ import type {
 import type {
   BrowserRuntimeHost,
 } from '../../packages/runtime-browser/src/browser-runtime-host';
+import { assertRuntimeRequestSupported } from '../../packages/runtime-browser/src/runtime-capability-guards';
+import { getLanguageRuntimeProfile } from '../../packages/runtime-browser/src/runtime-profiles';
 import type {
   BrowserRuntimeEnvironment,
   BrowserRuntimeEnvironmentReport,
@@ -372,6 +374,26 @@ function isTraceBinding(
   binding: RuntimeJudgeBinding
 ): binding is RuntimeJudgeTraceBinding {
   return binding.trace === true;
+}
+
+function assertRuntimeJudgeBindingSupported(
+  language: Language,
+  binding: RuntimeJudgeBinding
+): void {
+  const tracing = isTraceBinding(binding);
+  assertRuntimeRequestSupported(getLanguageRuntimeProfile(language), {
+    request: tracing ? 'trace' : 'execute',
+    executionStyle: binding.executionStyle ?? (
+      language === 'csharp' || language === 'cpp'
+        ? 'solution-method'
+        : 'function'
+    ),
+    functionName: binding.functionName,
+    limits: binding.limits,
+    ...(tracing && binding.traceOptions
+      ? { traceOptions: binding.traceOptions }
+      : {}),
+  });
 }
 
 function algorithmRuntimeBinding(
@@ -1595,6 +1617,10 @@ export function createBrowserRuntimeJudge(
   never,
   Scope.Scope
 > {
+  // This is the last shared boundary that sees both the selected runtime
+  // profile and every requested execution/tracing control. Validate before
+  // acquiring or preparing a provider so unsupported controls cannot vanish.
+  assertRuntimeJudgeBindingSupported(options.language, options.binding);
   return createRuntimeJudge({
     runtime: options.language,
     provider: getBrowserRuntimeHostPreparedProvider(
@@ -1802,30 +1828,30 @@ export function createBrowserJudgeHostFromRuntimeHost(
       }
     ) => {
       const { bundle, signal } = judgeOptions;
-      const language = bundle.plan.runtime as Language;
-      if (!host.isLanguageSupported(language)) {
-        return Promise.reject(
-          new Error(
+      return Effect.runPromise(validateAlgorithmJudgeBundle(bundle)).then(() => {
+        const language = bundle.plan.runtime as Language;
+        if (!host.isLanguageSupported(language)) {
+          throw new Error(
             `Judge runtime ${JSON.stringify(bundle.plan.runtime)} is not supported by this browser authority.`
-          )
+          );
+        }
+        const execution = bundle.execution;
+        const createOptions: CreateBrowserJudgeOptions = {
+          language,
+          binding: algorithmRuntimeBinding(execution, execution.trace === true),
+        };
+        return Effect.runPromise(
+          Effect.scoped(
+            createBrowserRuntimeJudge({
+              host,
+              ...createOptions,
+            }).pipe(
+              Effect.flatMap((judge) => judge.evaluateAlgorithm(bundle))
+            )
+          ),
+          signal ? { signal } : undefined
         );
-      }
-      const execution = bundle.execution;
-      const createOptions: CreateBrowserJudgeOptions = {
-        language,
-        binding: algorithmRuntimeBinding(execution, execution.trace === true),
-      };
-      return Effect.runPromise(
-        Effect.scoped(
-          createBrowserRuntimeJudge({
-            host,
-            ...createOptions,
-          }).pipe(
-            Effect.flatMap((judge) => judge.evaluateAlgorithm(bundle))
-          )
-        ),
-        signal ? { signal } : undefined
-      );
+      });
     },
     createProjectJudge: (projectOptions = {}) =>
       createBrowserProjectJudge({

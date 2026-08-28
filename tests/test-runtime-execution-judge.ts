@@ -948,6 +948,43 @@ test('execute treats tracing and interactivity as independent explicit opt-ins',
   ));
 });
 
+test('bundle trace options remain available for explicit on-demand tracing', async () => {
+  const state = makePreparedState();
+  const runtimeHost = browserHostFor(preparedProvider(state));
+  const judgeHost = createBrowserJudgeHostFromRuntimeHost(runtimeHost);
+  try {
+    const bundle = await createAlgorithmJudgeBundle({
+      id: 'on-demand-trace-options',
+      language: 'javascript',
+      code: SOURCE,
+      functionName: 'solve',
+      traceOptions: { maxTraceSteps: 20 },
+      cases: [
+        { id: 'selected', input: { label: 'selected' }, expected: 'selected' },
+        { id: 'plain', input: { label: 'plain' }, expected: 'plain' },
+      ],
+    });
+
+    const result = await judgeHost.execute({
+      bundle,
+      tracing: { caseIds: ['selected'] },
+    });
+
+    assert.equal(result.evaluation.status, 'completed');
+    assert.equal(state.prepareCalls.length, 1);
+    assert.equal(state.prepareCalls[0]?.mode, 'trace');
+    assert.deepEqual(state.prepareCalls[0]?.traceOptions, {
+      maxTraceSteps: 20,
+    });
+    assert.deepEqual(
+      state.traceCalls.map((call) => call.recordTrace),
+      [true, false]
+    );
+  } finally {
+    judgeHost.dispose();
+  }
+});
+
 test('rejects provider injection through a structurally compatible fake host', () => {
   const state = makePreparedState();
   const injectedProvider = preparedProvider(state);
@@ -968,6 +1005,37 @@ test('rejects provider injection through a structurally compatible fake host', (
   );
   assert.equal(state.initCalls, 0);
   assert.equal(state.prepareCalls.length, 0);
+});
+
+test('rejects unsupported prepared controls before provider initialization or preparation', async () => {
+  const executionState = makePreparedState();
+  await assert.rejects(
+    Effect.runPromise(Effect.scoped(
+      createTestRuntimeJudge(
+        preparedProvider(executionState),
+        codeBinding({ limits: { maxMemoryBytes: 1024 } })
+      )
+    )),
+    /does not support the "maxMemoryBytes" execution limit/
+  );
+  assert.equal(executionState.initCalls, 0);
+  assert.equal(executionState.prepareCalls.length, 0);
+
+  const traceState = makePreparedState();
+  await assert.rejects(
+    Effect.runPromise(Effect.scoped(
+      createTestRuntimeJudge(
+        preparedProvider(traceState),
+        codeBinding({
+          trace: true,
+          traceOptions: { maxTraceBytes: 1024 },
+        })
+      )
+    )),
+    /does not support the "maxTraceBytes" tracing option/
+  );
+  assert.equal(traceState.initCalls, 0);
+  assert.equal(traceState.prepareCalls.length, 0);
 });
 
 test('preserves 0.13 JSON comparison and distinguishes omitted from explicit undefined expected values', async () => {
@@ -1089,7 +1157,6 @@ test('maps raw values, diagnostics, limits, stdout, stderr, and provider failure
     codeBinding({
       limits: {
         wallClockMs: 900,
-        maxLineEvents: 10,
       },
     })
   );
@@ -1131,8 +1198,7 @@ test('maps raw values, diagnostics, limits, stdout, stderr, and provider failure
     'runtime-provider-error'
   );
   assert.ok(state.codeCalls.every((call) =>
-    call.limits?.wallClockMs === 900 &&
-    call.limits.maxLineEvents === 10
+    call.limits?.wallClockMs === 900
   ));
 });
 
@@ -1506,7 +1572,6 @@ test('prepares once, preserves timings, throttles provider concurrency, and disp
     codeBinding({
       limits: {
         wallClockMs: 900,
-        maxLineEvents: 10,
       },
     })
   );
@@ -1540,8 +1605,7 @@ test('prepares once, preserves timings, throttles provider concurrency, and disp
   );
   assert.equal(state.codeCalls.length, 3);
   assert.ok(state.codeCalls.every((call) =>
-    call.limits?.wallClockMs === 900 &&
-    call.limits.maxLineEvents === 10
+    call.limits?.wallClockMs === 900
   ));
   assert.equal(state.maxActive, 2);
   assert.equal(state.disposals, 1);
@@ -1615,7 +1679,6 @@ test('prepares tracing once and keeps tracing policy out of individual cases', a
       },
       limits: {
         wallClockMs: 700,
-        maxLineEvents: 12,
       },
     })
   );
@@ -1637,7 +1700,6 @@ test('prepares tracing once and keeps tracing policy out of individual cases', a
   );
   assert.deepEqual(state.traceCalls[0]?.limits, {
     wallClockMs: 700,
-    maxLineEvents: 12,
   });
   assert.equal(state.disposals, 1);
 });

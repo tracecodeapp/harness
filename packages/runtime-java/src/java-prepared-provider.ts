@@ -336,6 +336,7 @@ class JavaPreparedExecutionProviderImpl
       request: call.mode === 'trace' ? 'trace' : 'execute',
       executionStyle: call.executionStyle ?? 'function',
       functionName: call.functionName,
+      traceOptions: call.traceOptions,
     });
 
     const standby = this.takeStandby();

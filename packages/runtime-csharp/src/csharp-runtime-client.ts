@@ -199,12 +199,14 @@ export class CSharpRuntimeClient implements RuntimeClient, RuntimePreparedExecut
 
     const codeRequest = request as RuntimeExecuteCodeRequest;
     const executionStyle = codeRequest.executionStyle ?? 'solution-method';
+    assertRuntimeRequestSupported(getLanguageRuntimeProfile('csharp'), {
+      request: codeRequest.trace ? 'trace' : 'execute',
+      executionStyle,
+      functionName: codeRequest.functionName ?? '',
+      limits: codeRequest.limits,
+      traceOptions: codeRequest.traceOptions,
+    });
     if (!codeRequest.trace && !codeRequest.limits && codeRequest.cases.length > 1) {
-      assertRuntimeRequestSupported(getLanguageRuntimeProfile('csharp'), {
-        request: 'execute',
-        executionStyle,
-        functionName: codeRequest.functionName ?? '',
-      });
       const result = await this.workerClient.executeCodeBatch({
         code: codeRequest.code,
         functionName: codeRequest.functionName ?? '',
@@ -227,6 +229,8 @@ export class CSharpRuntimeClient implements RuntimeClient, RuntimePreparedExecut
       request: 'trace',
       executionStyle: call.executionStyle ?? 'solution-method',
       functionName: call.functionName,
+      limits: call.limits,
+      traceOptions: call.traceOptions,
     });
 
     return this.workerClient.executeWithTracing(call);
@@ -251,6 +255,7 @@ export class CSharpRuntimeClient implements RuntimeClient, RuntimePreparedExecut
       request: call.mode === 'trace' ? 'trace' : 'execute',
       executionStyle,
       functionName,
+      traceOptions: call.traceOptions,
     });
 
     const result = await this.preparedCompiler.prepareProgram(call);

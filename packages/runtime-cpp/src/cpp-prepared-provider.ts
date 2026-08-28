@@ -10,6 +10,10 @@ import type {
 import type {
   PromotableBrowserBackgroundTask,
 } from '@tracecode/runtime-browser/internal';
+import {
+  assertRuntimeRequestSupported,
+  getLanguageRuntimeProfile,
+} from '@tracecode/runtime-browser/internal';
 import { CppWorkerClient } from './cpp-worker-client';
 
 export interface CppPreparedExecutionProviderOptions {
@@ -144,6 +148,12 @@ export function createCppPreparedExecutionProvider(
     async prepareProgram(
       call: RuntimeProgramPreparationCall
     ): Promise<RuntimeProgramPreparationResult> {
+      assertRuntimeRequestSupported(getLanguageRuntimeProfile('cpp'), {
+        request: call.mode === 'trace' ? 'trace' : 'execute',
+        executionStyle: call.executionStyle ?? 'function',
+        functionName: call.functionName,
+        traceOptions: call.traceOptions,
+      });
       const expectedGeneration = generation;
       const compilerPrewarm = scheduledCompilerPrewarm;
       scheduledCompilerPrewarm = null;

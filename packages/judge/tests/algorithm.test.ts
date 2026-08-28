@@ -303,6 +303,25 @@ test('algorithm bundles remain JSON-portable and reject authority drift', async 
     })),
     /numeric values must be finite/
   );
+
+  for (const legacyLimit of [
+    'maxTraceSteps',
+    'maxStoredEvents',
+    'maxOutputBytes',
+  ] as const) {
+    await assert.rejects(
+      Effect.runPromise(validateAlgorithmJudgeBundle({
+        ...roundTrip,
+        execution: {
+          ...roundTrip.execution,
+          limits: { [legacyLimit]: 1 },
+        },
+      })),
+      legacyLimit === 'maxOutputBytes'
+        ? /does not support an output-byte runtime limit/
+        : new RegExp(`Use execution\\.traceOptions\\.${legacyLimit} instead\\.`)
+    );
+  }
 });
 
 test('the shared bundle builder binds source, comparison, and facts to one workspace', async () => {
@@ -312,6 +331,13 @@ test('the shared bundle builder binds source, comparison, and facts to one works
     code: 'def search(nums, target):\n    return -1\n',
     functionName: 'search',
     executionStyle: 'solution-method',
+    limits: {
+      wallClockMs: 1_000,
+      maxLineEvents: 10_000,
+      maxSingleLineHits: 1_000,
+      maxCallDepth: 200,
+      maxMemoryBytes: 32 * 1024 * 1024,
+    },
     cases: [{
       id: 'found',
       input: { nums: [1, 3, 5], target: 3 },
@@ -350,6 +376,13 @@ test('the shared bundle builder binds source, comparison, and facts to one works
   );
   assert.equal(built.facts?.[0]?.subject.entrypoint, 'search');
   assert.equal(built.comparison?.default.mode, 'exact');
+  assert.deepEqual(built.execution.limits, {
+    wallClockMs: 1_000,
+    maxLineEvents: 10_000,
+    maxSingleLineHits: 1_000,
+    maxCallDepth: 200,
+    maxMemoryBytes: 32 * 1024 * 1024,
+  });
   assert.equal(
     built.comparison?.cases?.found?.mode,
     'unordered-array'

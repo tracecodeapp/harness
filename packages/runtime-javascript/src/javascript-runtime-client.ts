@@ -59,6 +59,7 @@ class JavaScriptPreparedExecutionProviderImplementation
         request: call.mode === 'trace' ? 'trace' : 'execute',
         executionStyle: call.executionStyle ?? 'function',
         functionName: call.functionName ?? '',
+        traceOptions: call.traceOptions,
       }
     );
     return this.workerClient.prepareProgram(call, this.runtimeLanguage);
@@ -86,6 +87,7 @@ class JavaScriptRuntimeClientImplementation
         request: call.mode === 'trace' ? 'trace' : 'execute',
         executionStyle: call.executionStyle ?? 'function',
         functionName: call.functionName ?? '',
+        traceOptions: call.traceOptions,
       }
     );
     return this.workerClient.prepareProgram(call, this.runtimeLanguage);
@@ -110,12 +112,14 @@ class JavaScriptRuntimeClientImplementation
 
     const codeRequest = request as RuntimeExecuteCodeRequest;
     const executionStyle = codeRequest.executionStyle ?? 'function';
+    assertRuntimeRequestSupported(getLanguageRuntimeProfile(this.runtimeLanguage), {
+      request: codeRequest.trace ? 'trace' : 'execute',
+      executionStyle,
+      functionName: codeRequest.functionName ?? '',
+      limits: codeRequest.limits,
+      traceOptions: codeRequest.traceOptions,
+    });
     if (!codeRequest.trace && !codeRequest.limits && codeRequest.cases.length > 1) {
-      assertRuntimeRequestSupported(getLanguageRuntimeProfile(this.runtimeLanguage), {
-        request: 'execute',
-        executionStyle,
-        functionName: codeRequest.functionName ?? '',
-      });
       const result = await this.workerClient.executeCodeBatch({
         code: codeRequest.code,
         functionName: codeRequest.functionName ?? '',
@@ -139,6 +143,8 @@ class JavaScriptRuntimeClientImplementation
       request: 'trace',
       executionStyle: call.executionStyle ?? 'function',
       functionName: call.functionName,
+      limits: call.limits,
+      traceOptions: call.traceOptions,
     });
     return this.workerClient.executeWithTracing({ ...call, language: this.runtimeLanguage });
   }

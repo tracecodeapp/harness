@@ -29,6 +29,22 @@ import {
 } from '../packages/runtime-browser/src/worker-protocol-messages';
 import { createJavaRuntimeClient } from '../packages/runtime-java/src/java-runtime-client';
 import type { JavaWorkerClient } from '../packages/runtime-java/src/java-worker-client';
+import { createJavaPreparedExecutionProvider } from '../packages/runtime-java/src/java-prepared-provider';
+import {
+  createJavaScriptPreparedExecutionProvider,
+  createJavaScriptRuntimeClient,
+} from '../packages/runtime-javascript/src/javascript-runtime-client';
+import type { JavaScriptWorkerClient } from '../packages/runtime-javascript/src/javascript-worker-client';
+import {
+  createPythonPreparedExecutionProvider,
+  createPythonRuntimeClient,
+} from '../packages/runtime-python/src/python-runtime-client';
+import type { PythonWorkerClient } from '../packages/runtime-python/src/python-worker-client';
+import { createCSharpRuntimeClient } from '../packages/runtime-csharp/src/csharp-runtime-client';
+import type { CSharpWorkerClient } from '../packages/runtime-csharp/src/csharp-worker-client';
+import { createCppRuntimeClient } from '../packages/runtime-cpp/src/cpp-runtime-client';
+import { createCppPreparedExecutionProvider } from '../packages/runtime-cpp/src/cpp-prepared-provider';
+import type { CppWorkerClient } from '../packages/runtime-cpp/src/cpp-worker-client';
 import { executeJavaScriptCode, executeTypeScriptCode } from '../packages/runtime-javascript/src/javascript-executor';
 import { generateSolutionScript } from '../packages/runtime-python/src/python-harness';
 import type { RuntimeKernelInfo } from '../packages/runtime-contracts/src/runtime-project';
@@ -37,6 +53,7 @@ import type {
   LanguageRuntimeProfile,
   RuntimeCapabilities,
   RuntimeExecutionLimits,
+  TraceExecutionOptions,
 } from '../packages/runtime-contracts/src/runtime-types';
 import {
   javaTraceHooksEventsToRuntimeTrace,
@@ -117,6 +134,125 @@ function expectThrows(fn: () => void, expectedMessage: string): void {
     String((thrown as Error).message).includes(expectedMessage),
     `Expected error containing "${expectedMessage}", received "${String((thrown as Error).message)}"`
   );
+}
+
+async function expectRejects(
+  fn: () => Promise<unknown>,
+  expectedMessage: string
+): Promise<void> {
+  let thrown: unknown;
+  try {
+    await fn();
+  } catch (error) {
+    thrown = error;
+  }
+  assertCondition(thrown instanceof Error, `Expected rejection containing "${expectedMessage}"`);
+  assertCondition(
+    thrown.message.includes(expectedMessage),
+    `Expected rejection containing "${expectedMessage}", received "${thrown.message}"`
+  );
+}
+
+async function assertRuntimeClientCapabilityGuards(): Promise<void> {
+  const unknownTraceOptions = {
+    softTraceBudget: true,
+  } as unknown as TraceExecutionOptions;
+  const clients = [
+    {
+      executionStyle: 'function' as const,
+      client: createJavaScriptRuntimeClient(
+        'javascript',
+        {} as JavaScriptWorkerClient
+      ),
+    },
+    {
+      executionStyle: 'function' as const,
+      client: createPythonRuntimeClient({} as PythonWorkerClient),
+    },
+    {
+      executionStyle: 'function' as const,
+      client: createJavaRuntimeClient({} as JavaWorkerClient),
+    },
+    {
+      executionStyle: 'solution-method' as const,
+      client: createCSharpRuntimeClient({} as CSharpWorkerClient),
+    },
+    {
+      executionStyle: 'solution-method' as const,
+      client: createCppRuntimeClient({} as CppWorkerClient),
+    },
+  ];
+
+  for (const { executionStyle, client } of clients) {
+    await expectRejects(
+      () => client.executeWithTracing({
+        code: 'solution',
+        functionName: 'solve',
+        inputs: {},
+        executionStyle,
+        traceOptions: unknownTraceOptions,
+      }),
+      'does not recognize the "softTraceBudget" tracing option'
+    );
+    await expectRejects(
+      () => client.execute({
+        code: 'solution',
+        functionName: 'solve',
+        executionStyle,
+        cases: [{ inputs: {} }],
+        traceOptions: { maxTraceSteps: 1 },
+      }),
+      'does not accept tracing options for non-tracing execution'
+    );
+    await expectRejects(
+      () => client.execute({
+        code: 'solution',
+        functionName: 'solve',
+        executionStyle,
+        cases: [{ inputs: {} }, { inputs: {} }],
+        trace: true,
+        traceOptions: unknownTraceOptions,
+      }),
+      'does not recognize the "softTraceBudget" tracing option'
+    );
+  }
+
+  const preparedProviders = [
+    createJavaScriptPreparedExecutionProvider(
+      'javascript',
+      {} as JavaScriptWorkerClient
+    ),
+    createPythonPreparedExecutionProvider({
+      createWorkerClient: () => ({} as PythonWorkerClient),
+    }),
+    createJavaPreparedExecutionProvider({
+      createWorkerClient: () => ({} as JavaWorkerClient),
+    }),
+    createCSharpRuntimeClient({} as CSharpWorkerClient),
+    createCppPreparedExecutionProvider({
+      createWorkerClient: () => ({} as CppWorkerClient),
+    }),
+  ];
+  for (const provider of preparedProviders) {
+    await expectRejects(
+      () => provider.prepareProgram({
+        mode: 'trace',
+        code: 'solution',
+        functionName: 'solve',
+        traceOptions: unknownTraceOptions,
+      }),
+      'does not recognize the "softTraceBudget" tracing option'
+    );
+    await expectRejects(
+      () => provider.prepareProgram({
+        mode: 'code',
+        code: 'solution',
+        functionName: 'solve',
+        traceOptions: { maxTraceSteps: 1 },
+      }),
+      'does not accept tracing options for non-tracing execution'
+    );
+  }
 }
 
 function stableStringify(value: unknown): string {
@@ -1086,6 +1222,7 @@ const COMMON_STABLE_COVERAGE = [
   'tracing.controls.maxLineEvents',
   'tracing.controls.maxSingleLineHits',
   'tracing.controls.maxStoredEvents',
+  'tracing.controls.maxPathDepth',
   'tracing.controls.minimalTrace',
   'tracing.fidelity.preciseLineMapping',
   'tracing.fidelity.stableFunctionNames',
@@ -1185,6 +1322,8 @@ const LANGUAGE_CONFORMANCE_COVERAGE: Record<Language, readonly string[]> = {
     'tracing.events.timeout',
     'tracing.controls.maxTraceSteps',
     'tracing.controls.maxStoredEvents',
+    'tracing.controls.maxPathDepth',
+    'tracing.controls.traceProfile',
     'tracing.fidelity.preciseLineMapping',
     'tracing.fidelity.stableFunctionNames',
     'tracing.fidelity.callStack',
@@ -1230,6 +1369,7 @@ const LANGUAGE_CONFORMANCE_COVERAGE: Record<Language, readonly string[]> = {
     'tracing.controls.maxLineEvents',
     'tracing.controls.maxSingleLineHits',
     'tracing.controls.maxStoredEvents',
+    'tracing.controls.maxPathDepth',
     'tracing.controls.minimalTrace',
     'tracing.fidelity.preciseLineMapping',
     'tracing.fidelity.stableFunctionNames',
@@ -1277,6 +1417,7 @@ const LANGUAGE_CONFORMANCE_COVERAGE: Record<Language, readonly string[]> = {
     'tracing.controls.maxLineEvents',
     'tracing.controls.maxSingleLineHits',
     'tracing.controls.maxStoredEvents',
+    'tracing.controls.maxPathDepth',
     'tracing.controls.minimalTrace',
     'tracing.fidelity.preciseLineMapping',
     'tracing.fidelity.stableFunctionNames',
@@ -1508,6 +1649,7 @@ function createUnsupportedProfile(
           maxSingleLineHits: false,
           maxStoredEvents: false,
           maxTraceBytes: false,
+          maxPathDepth: false,
           minimalTrace: false,
         },
         fidelity: {
@@ -1676,6 +1818,8 @@ async function main(): Promise<void> {
   console.log('PASS: package script output context contract');
 
   await testJavaSerializedResultNormalization();
+  await assertRuntimeClientCapabilityGuards();
+  console.log('PASS: runtime clients reject unsupported controls before worker dispatch');
 
   await assertExecutionLimitsDispatchContract();
   console.log('PASS: execution limits dispatch contract');
@@ -2063,6 +2207,28 @@ async function main(): Promise<void> {
       }),
     'does not support the "maxLineEvents" execution limit'
   );
+  expectThrows(
+    () =>
+      assertRuntimeRequestSupported(unsupportedProfile, {
+        request: 'execute',
+        executionStyle: 'function',
+        functionName: 'solve',
+        limits: { maxTraceSteps: 1 } as unknown as RuntimeExecutionLimits,
+      }),
+    'does not recognize the "maxTraceSteps" execution limit'
+  );
+  expectThrows(
+    () =>
+      assertRuntimeRequestSupported(getLanguageRuntimeProfile('python'), {
+        request: 'trace',
+        executionStyle: 'function',
+        functionName: 'solve',
+        traceOptions: {
+          softTraceBudget: true,
+        } as unknown as TraceExecutionOptions,
+      }),
+    'does not recognize the "softTraceBudget" tracing option'
+  );
   assertRuntimeRequestSupported(getLanguageRuntimeProfile('python'), {
     request: 'execute',
     executionStyle: 'function',
@@ -2075,6 +2241,58 @@ async function main(): Promise<void> {
       maxMemoryBytes: 32 * 1024 * 1024,
     },
   });
+
+  const executionLimitSupport = [
+    ['wallClockMs', 'wallClock'],
+    ['maxLineEvents', 'lineEvents'],
+    ['maxSingleLineHits', 'singleLineHits'],
+    ['maxCallDepth', 'callDepth'],
+    ['maxMemoryBytes', 'memory'],
+  ] as const;
+  const traceOptionSupport = [
+    ['maxTraceSteps', 'maxTraceSteps', 1],
+    ['maxLineEvents', 'maxLineEvents', 1],
+    ['maxSingleLineHits', 'maxSingleLineHits', 1],
+    ['maxStoredEvents', 'maxStoredEvents', 1],
+    ['maxTraceBytes', 'maxTraceBytes', 1],
+    ['maxPathDepth', 'maxPathDepth', 1],
+    ['minimalTrace', 'minimalTrace', true],
+    ['traceProfile', 'traceProfile', true],
+  ] as const;
+  for (const profile of getSupportedLanguageProfiles()) {
+    for (const [limit, support] of executionLimitSupport) {
+      const request = {
+        request: 'execute' as const,
+        executionStyle: 'function' as const,
+        functionName: 'solve',
+        limits: { [limit]: 1 } as RuntimeExecutionLimits,
+      };
+      if (profile.capabilities.execution.limits[support]) {
+        assertRuntimeRequestSupported(profile, request);
+      } else {
+        expectThrows(
+          () => assertRuntimeRequestSupported(profile, request),
+          `does not support the "${limit}" execution limit`
+        );
+      }
+    }
+    for (const [option, support, value] of traceOptionSupport) {
+      const request = {
+        request: 'trace' as const,
+        executionStyle: 'function' as const,
+        functionName: 'solve',
+        traceOptions: { [option]: value } as TraceExecutionOptions,
+      };
+      if (profile.capabilities.tracing.controls[support]) {
+        assertRuntimeRequestSupported(profile, request);
+      } else {
+        expectThrows(
+          () => assertRuntimeRequestSupported(profile, request),
+          `does not support the "${option}" tracing option`
+        );
+      }
+    }
+  }
   console.log('PASS: unsupported capability guards');
 
   const functionCase = {
