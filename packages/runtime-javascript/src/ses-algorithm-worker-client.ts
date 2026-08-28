@@ -267,6 +267,40 @@ function hasAsyncContextIncompatibleAwaitIdentifier(code: string): boolean {
   }
 }
 
+function hasProgramBodyReturnOrAwait(code: string): boolean {
+  try {
+    const syntax = parse(code, {
+      ecmaVersion: 'latest',
+      sourceType: 'script',
+      allowAwaitOutsideFunction: true,
+      allowReturnOutsideFunction: true,
+    });
+    const visit = (candidate: Node, insideFunction: boolean): boolean => {
+      if (!insideFunction && (
+        candidate.type === 'ReturnStatement' ||
+        candidate.type === 'AwaitExpression'
+      )) return true;
+      const childInsideFunction = insideFunction ||
+        candidate.type === 'FunctionDeclaration' ||
+        candidate.type === 'FunctionExpression' ||
+        candidate.type === 'ArrowFunctionExpression';
+      return Object.values(candidate).some((value) =>
+        Array.isArray(value)
+          ? value.some((child) =>
+              isRecord(child) && typeof child.type === 'string' &&
+              visit(child as unknown as Node, childInsideFunction)
+            )
+          : isRecord(value) && typeof value.type === 'string' &&
+            visit(value as unknown as Node, childInsideFunction)
+      );
+    };
+    return visit(syntax, false);
+  } catch {
+    // TypeScript is checked again after trusted transpilation.
+    return false;
+  }
+}
+
 type AmbientObjectKind = 'math' | 'lodash' | 'global';
 
 function unwrapChainExpression(value: unknown): Record<string, unknown> | undefined {
@@ -494,6 +528,7 @@ export function isSesAlgorithmSourceEligible(code: string): boolean {
   return isJavaScriptRuntimeSourceAllowed(code) &&
     !LEGACY_ONLY_AMBIENT_IDENTIFIERS.test(code) &&
     !hasAsyncContextIncompatibleAwaitIdentifier(code) &&
+    !hasProgramBodyReturnOrAwait(code) &&
     !hasLegacyOnlySyntaxReference(code);
 }
 

@@ -29,6 +29,8 @@ function assertSesAdmissionPolicy(): void {
     'MinPriorityQueue.prototype.empty = function () { return this.size() === 0; };',
     'const p = "prototype"; Array[p].last = function () { return this.at(-1); };',
     'const { prototype } = Array; prototype.last = function () { return this.at(-1); };',
+    'function solve(value) { return value + 1; } return 0;',
+    'await Promise.resolve(); function solve() { return 1; }',
   ];
   for (const source of legacyOnlySources) {
     assertCondition(
@@ -191,6 +193,14 @@ async function main(): Promise<void> {
         undefinedTargetFallback.evaluationStatus === 'completed' &&
         undefinedTargetFallback.passedCount === 0,
         `undefinedTargetFallback failed: ${JSON.stringify(undefinedTargetFallback)}`
+      );
+      assertCondition(
+        result.topLevelReturnFallback?.timings.every(
+          (timing) => timing.algorithmFastBatch !== true
+        ),
+        `top-level return must preserve legacy embedding: ${JSON.stringify(
+          result.topLevelReturnFallback
+        )}`
       );
       assertCondition(
         result.consoleBlankSes?.stdout[0] === 'a\n\nb\n' &&

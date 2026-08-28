@@ -854,6 +854,17 @@ function solve() { return new MinPriorityQueue().tracecodeIsEmpty(); }`,
         expected: 1,
       })),
     });
+    const topLevelReturnFallback = await evaluate(host, {
+      id: 'ses-provider-top-level-return-fallback',
+      language: 'javascript',
+      code: 'function solve(value) { return value + 1; } return 0;',
+      functionName: 'solve',
+      cases: [1, 2].map((value) => ({
+        id: `top-level-return-fallback-${value}`,
+        input: { value },
+        expected: 0,
+      })),
+    });
     const constructorEscape = await evaluate(host, {
       id: 'ses-provider-constructor-escape',
       language: 'javascript',
@@ -988,6 +999,7 @@ function solve(values) { return values.last(); }`,
       dynamicEvaluatorParity,
       undefinedTargetFallback,
       asyncContextFallback,
+      topLevelReturnFallback,
       constructorEscape,
       deterministic,
       prototypeExtensionFallback,
