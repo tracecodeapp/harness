@@ -299,6 +299,7 @@ test('default browser host exposes every runtime family without provider capabil
     'cpp',
   ];
   const host = createDefaultBrowserRuntimeHost({
+    engine: 'chromium',
     featureOverrides: BROWSER_FEATURES,
   });
   try {
@@ -348,10 +349,14 @@ test('browser host enforces prepared-program isolation capabilities', async () =
       assert.ok(result.program.capabilities.maxConcurrency > 0);
       await result.program.dispose();
     }
-    assert.equal(validDisposals, 1);
   } finally {
     validHost.dispose();
   }
+  assert.equal(
+    validDisposals,
+    1,
+    'The host must dispose its cached prepared artifact when the host closes.'
+  );
 
   for (const capabilities of [
     {

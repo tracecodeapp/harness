@@ -6798,10 +6798,13 @@ async function testTraceKernelHttpNodeServer(): Promise<void> {
   assertCondition(serverPid !== undefined, `listener row should include owning pid: ${listeners}`);
   const killed = await workspace.runCommand(`kill ${serverPid}`);
   assertCondition(killed.exitCode === 0, `kill should stop server process: ${JSON.stringify(killed)}`);
-  await workspace.runCommand(`wait ${serverPid}`);
+  const waited = await terminal.run(`wait ${serverPid}`);
 
   const afterKillListeners = await workspace.readFile('/proc/tracekernel/net/listeners');
-  assertCondition(!afterKillListeners.includes('\thttp\t127.0.0.1\t3000\t'), `listener should close on process exit: ${afterKillListeners}`);
+  assertCondition(
+    !afterKillListeners.includes('\thttp\t127.0.0.1\t3000\t'),
+    `listener should close on process exit after wait ${JSON.stringify(waited)}: ${afterKillListeners}`
+  );
   const refused = await workspace.runCommand('curl -s http://localhost:3000/dequeue');
   assertCondition(refused.exitCode === 7, `curl should fail after listener closes: ${JSON.stringify(refused)}`);
 }
@@ -6900,7 +6903,7 @@ async function testTraceKernelHttpNodeServerWorkerBridge(): Promise<void> {
     assertCondition(serverPid !== undefined, `worker-backed listener row should include pid: ${listeners}`);
     const killed = await workspace.runCommand(`kill ${serverPid}`);
     assertCondition(killed.exitCode === 0, `worker-backed server should be killable: ${JSON.stringify(killed)}`);
-    const waited = await workspace.runCommand(`wait ${serverPid}`);
+    const waited = await terminal.run(`wait ${serverPid}`);
     assertCondition(
       waited.exitCode === 0,
       `worker-backed signal handlers should close resources and exit naturally: ${JSON.stringify(waited)}`
@@ -7032,7 +7035,7 @@ async function testTraceKernelHttpBindSemantics(): Promise<void> {
   assertCondition(serverPid !== undefined, `ephemeral listener row should include pid: ${listeners}`);
   const killed = await workspace.runCommand(`kill ${serverPid}`);
   assertCondition(killed.exitCode === 0, `ephemeral server should be killable: ${JSON.stringify(killed)}`);
-  await workspace.runCommand(`wait ${serverPid}`);
+  await terminal.run(`wait ${serverPid}`);
 }
 
 async function testTraceKernelHttpPythonRunnerBridge(): Promise<void> {
@@ -7101,7 +7104,7 @@ async function testTraceKernelHttpPythonRunnerBridge(): Promise<void> {
   assertCondition(serverPid !== undefined, `Python listener row should include owning pid: ${listeners}`);
   const killed = await workspace.runCommand(`kill ${serverPid}`);
   assertCondition(killed.exitCode === 0, `Python bridge process should be killable: ${JSON.stringify(killed)}`);
-  await workspace.runCommand(`wait ${serverPid}`);
+  await terminal.run(`wait ${serverPid}`);
 }
 
 async function testTraceKernelHttpPythonRunnerClientBridge(): Promise<void> {
@@ -7229,7 +7232,7 @@ async function testTraceKernelHttpJavaRunnerBridge(): Promise<void> {
   assertCondition(serverPid !== undefined, `Java listener row should include owning pid: ${listeners}`);
   const killed = await workspace.runCommand(`kill ${serverPid}`);
   assertCondition(killed.exitCode === 0, `Java bridge process should be killable: ${JSON.stringify(killed)}`);
-  await workspace.runCommand(`wait ${serverPid}`);
+  await terminal.run(`wait ${serverPid}`);
   workspace.dispose();
 }
 
@@ -12453,32 +12456,42 @@ async function testWorkspaceTerminalSessionCwd(): Promise<void> {
 
   const terminalEvents: RuntimeProjectTerminalEvent[] = [];
   const stdinCommandEvents: RuntimeCommandEvent[] = [];
+  let stdinAccepted: boolean | undefined;
   const stdinSession = workspace.createTerminalSession({
     onTerminalEvent: (event) => {
       terminalEvents.push(event);
-      if ((event as { reason?: string }).reason === 'stdin-prompt') {
-        stdinSession.writeStdin('Ada\n');
+      if ((event as { reason?: string }).reason === 'command-start') {
+        stdinAccepted = stdinSession.writeStdin('Ada\n');
       }
     },
   });
   const stdinNode = await stdinSession.run('node ask.js', {
     onEvent: (event) => stdinCommandEvents.push(event),
   });
-  assertCondition(stdinNode.exitCode === 0 && stdinNode.stdout === 'Name: answer=Ada\n', `terminal stdin run should complete: ${JSON.stringify(stdinNode)}`);
   assertCondition(
-    terminalEvents.map((event) => (event as { reason?: string }).reason).join(',') === 'command-start,stdin-prompt,stdin-submit,command-finish',
+    stdinNode.exitCode === 0 && stdinNode.stdout === 'Name: answer=Ada\n',
+    `terminal stdin run should complete: ${JSON.stringify({ stdinNode, stdinAccepted, terminalEvents })}`
+  );
+  assertCondition(stdinAccepted === true, 'terminal stdin should be accepted while the command is active');
+  assertCondition(
+    terminalEvents.map((event) => (event as { reason?: string }).reason).join(',') === 'command-start,stdin-submit,command-finish',
     `terminal sessions should publish formal input-state transitions: ${JSON.stringify(terminalEvents)}`
   );
   assertCondition(
     terminalEvents
       .filter((event): event is Extract<RuntimeProjectTerminalEvent, { type: 'input-state' }> => event.type === 'input-state')
-      .slice(0, 3)
+      .slice(0, 2)
       .every((event) => event.state.mode === 'stdin' && !event.state.hidden && !event.state.disabled),
     `foreground terminal input should stay visible from command start through stdin submission: ${JSON.stringify(terminalEvents)}`
   );
   assertCondition(
-    stdinCommandEvents.some((event) => event.type === 'output' && event.terminal?.role === 'stdin-prompt'),
-    `terminal stdin prompt output should carry terminal metadata: ${JSON.stringify(stdinCommandEvents)}`
+    stdinCommandEvents.some(
+      (event) =>
+        event.type === 'output' &&
+        event.data === 'Name: answer=Ada\n' &&
+        event.terminal === undefined
+    ),
+    `legacy runners must not fabricate stdin-prompt metadata without a kernel read: ${JSON.stringify(stdinCommandEvents)}`
   );
   assertCondition(
     stdinSession.inputState.mode === 'command' && stdinSession.inputState.label === 'obi@tracevm weather-api $',

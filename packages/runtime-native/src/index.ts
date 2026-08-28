@@ -760,19 +760,20 @@ _tracecode_print_results(_tracecode_encode_results({
       const stdout = await runPythonScript(
         this.options.pythonCommand,
         `${tracingPayload.code}
+_trace_event_objects = [json.loads(event) for event in _trace_events]
 print(json.dumps({
     'runtimeTrace': {
         'schemaVersion': 'runtime-trace-2026-04-28',
         'language': 'python',
         'runId': 'python:run',
-        'events': _trace_events,
-        'lineEventCount': len([event for event in _trace_events if event.get('kind') == 'line']),
-        'traceStepCount': len(_trace_events)
+        'events': _trace_event_objects,
+        'lineEventCount': len([event for event in _trace_event_objects if event.get('kind') == 'line']),
+        'traceStepCount': len(_trace_event_objects)
     },
     'result': _serialize_output(_result),
     'consoleOutput': _console_output,
     'lineEventCount': _total_line_events,
-    'traceStepCount': len(_trace_events),
+    'traceStepCount': len(_trace_event_objects),
     'traceLimitExceeded': bool(globals().get('_trace_limit_exceeded', False)),
     'timeoutReason': globals().get('_timeout_reason', None)
 }))
@@ -956,16 +957,6 @@ class NativeJavaScriptRuntimeClient implements RuntimeClient {
       defaultExecutionStyle: 'function',
       executeCode: this.executeCode.bind(this),
       executeWithTracing: this.executeWithTracing.bind(this),
-      executeBatch: async (codeRequest) => {
-        const result = await this.worker.sendMessage<RawExecutionBatchPayload>('execute-code-batch', {
-          code: codeRequest.code,
-          functionName: codeRequest.functionName ?? '',
-          inputBatch: codeRequest.cases.map((testCase) => testCase.inputs),
-          executionStyle: codeRequest.executionStyle ?? 'function',
-          language: this.language,
-        });
-        return batchCodeResultToExecuteResult(codeRequest, liftCodeBatchOutcome(result, 'JavaScript execution failed'));
-      },
     });
   }
 
@@ -1117,6 +1108,7 @@ async function loadNativeCppWorkerApi(workerSourcePath?: string): Promise<Native
       performance: { now: () => Date.now() },
       TextEncoder,
       TextDecoder,
+      URL,
       isRuntimeDeviceDirectory: () => false,
       isRuntimeDeviceNamespacePath: () => false,
       isRuntimeProcPath: () => false,

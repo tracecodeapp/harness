@@ -269,7 +269,6 @@ function runtimeTraceOptions(fixture: FixtureCase): Record<string, unknown> {
   const envMaxPathDepth = parsePositiveIntegerEnv('TRACECODE_V4_MAX_PATH_DEPTH');
   return {
     maxTraceSteps: 1000,
-    maxLineEvents: 2000,
     ...(envMaxPathDepth !== undefined ? { maxPathDepth: envMaxPathDepth } : {}),
     ...(fixture.traceOptions ?? {}),
   };
@@ -489,19 +488,20 @@ async function executePythonTrace(code: string, fixture: FixtureCase): Promise<F
     runtimeTraceOptions(fixture)
   );
   const stdout = await runPythonScript(`${tracingPayload.code}
+_trace_event_objects = [json.loads(event) for event in _trace_events]
 print(json.dumps({
     'runtimeTrace': {
         'schemaVersion': 'runtime-trace-2026-04-28',
         'language': 'python',
         'runId': 'python:run',
-        'events': _trace_events,
-        'lineEventCount': len([event for event in _trace_events if event.get('kind') == 'line']),
-        'traceStepCount': len(_trace_events)
+        'events': _trace_event_objects,
+        'lineEventCount': len([event for event in _trace_event_objects if event.get('kind') == 'line']),
+        'traceStepCount': len(_trace_event_objects)
     },
     'result': _serialize_output(_result),
     'console': _console_output,
     'lineEventCount': _total_line_events,
-    'traceStepCount': len(_trace_events)
+    'traceStepCount': len(_trace_event_objects)
 }))
 `);
   const parsed = JSON.parse(stdout) as { runtimeTrace: RuntimeTrace; lineEventCount?: number; traceStepCount?: number };
@@ -661,6 +661,30 @@ async function loadCSharpExecuteExport(): Promise<CSharpExecute> {
   return csharpExecutePromise;
 }
 
+function resolveCSharpFixtureCallStacks(events: RuntimeTrace['events']): RuntimeTrace['events'] {
+  const definitions = new Map<number, RuntimeTrace['events'][number]['callStack']>();
+  return events.map((event) => {
+    const wireEvent = event as RuntimeTrace['events'][number] & {
+      callStackId?: number;
+      callStackRef?: number;
+    };
+    if (typeof wireEvent.callStackId === 'number') {
+      if (Array.isArray(wireEvent.callStack)) {
+        definitions.set(wireEvent.callStackId, structuredClone(wireEvent.callStack));
+      }
+      const { callStackId: _callStackId, ...resolved } = wireEvent;
+      return resolved;
+    }
+    if (typeof wireEvent.callStackRef === 'number') {
+      const callStack = definitions.get(wireEvent.callStackRef);
+      assertCondition(callStack !== undefined, `C# fixture references undefined call stack ${wireEvent.callStackRef}`);
+      const { callStackRef: _callStackRef, ...resolved } = wireEvent;
+      return { ...resolved, callStack: structuredClone(callStack) };
+    }
+    return wireEvent;
+  });
+}
+
 async function executeCSharpTrace(code: string, fixture: FixtureCase): Promise<FixtureTraceRun> {
   const execute = await loadCSharpExecuteExport();
   const options = runtimeTraceOptions(fixture);
@@ -683,7 +707,7 @@ async function executeCSharpTrace(code: string, fixture: FixtureCase): Promise<F
     throw new Error(`C# tracing failed for ${fixture.id}: ${parsed.error ?? 'unknown error'}`);
   }
 
-  const baseEvents = (Array.isArray(parsed.events) ? parsed.events : [])
+  const baseEvents = resolveCSharpFixtureCallStacks(Array.isArray(parsed.events) ? parsed.events : [])
     .map((event) => normalizeFixtureTraceEventPathDepth(event, fixture));
   const consoleOutput = parsed.consoleOutput ?? [];
   const hostEmittedStdout = baseEvents.some((event) => event.kind === 'stdout');
