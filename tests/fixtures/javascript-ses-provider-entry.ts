@@ -865,6 +865,27 @@ function solve() { return new MinPriorityQueue().tracecodeIsEmpty(); }`,
         expected: 0,
       })),
     });
+    const forAwaitFallback = await evaluate(host, {
+      id: 'ses-provider-for-await-fallback',
+      language: 'javascript',
+      code: 'function solve() { return 1; } for await (const value of []) {}',
+      functionName: 'solve',
+      cases: [{ id: 'for-await-fallback', input: {}, expected: 1 }],
+    });
+    const awaitUsingFallback = await evaluate(host, {
+      id: 'ses-provider-await-using-fallback',
+      language: 'javascript',
+      code: 'function solve() { return 1; } { await using value = null; }',
+      functionName: 'solve',
+      cases: [{ id: 'await-using-fallback', input: {}, expected: 1 }],
+    });
+    const typescriptForAwaitFallback = await evaluate(host, {
+      id: 'ses-provider-typescript-for-await-fallback',
+      language: 'typescript',
+      code: 'function solve(): number { return 1; } for await (const value of []) {}',
+      functionName: 'solve',
+      cases: [{ id: 'typescript-for-await-fallback', input: {}, expected: 1 }],
+    });
     const constructorEscape = await evaluate(host, {
       id: 'ses-provider-constructor-escape',
       language: 'javascript',
@@ -1000,6 +1021,9 @@ function solve(values) { return values.last(); }`,
       undefinedTargetFallback,
       asyncContextFallback,
       topLevelReturnFallback,
+      forAwaitFallback,
+      awaitUsingFallback,
+      typescriptForAwaitFallback,
       constructorEscape,
       deterministic,
       prototypeExtensionFallback,

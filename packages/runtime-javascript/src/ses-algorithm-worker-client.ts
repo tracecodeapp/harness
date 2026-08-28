@@ -267,7 +267,7 @@ function hasAsyncContextIncompatibleAwaitIdentifier(code: string): boolean {
   }
 }
 
-function hasProgramBodyReturnOrAwait(code: string): boolean {
+function hasProgramBodyLegacyIncompatibleControlFlow(code: string): boolean {
   try {
     const syntax = parse(code, {
       ecmaVersion: 'latest',
@@ -276,9 +276,15 @@ function hasProgramBodyReturnOrAwait(code: string): boolean {
       allowReturnOutsideFunction: true,
     });
     const visit = (candidate: Node, insideFunction: boolean): boolean => {
+      const controlFlow = candidate as Node & {
+        readonly await?: boolean;
+        readonly kind?: string;
+      };
       if (!insideFunction && (
         candidate.type === 'ReturnStatement' ||
-        candidate.type === 'AwaitExpression'
+        candidate.type === 'AwaitExpression' ||
+        (candidate.type === 'ForOfStatement' && controlFlow.await === true) ||
+        (candidate.type === 'VariableDeclaration' && controlFlow.kind === 'await using')
       )) return true;
       const childInsideFunction = insideFunction ||
         candidate.type === 'FunctionDeclaration' ||
@@ -528,7 +534,7 @@ export function isSesAlgorithmSourceEligible(code: string): boolean {
   return isJavaScriptRuntimeSourceAllowed(code) &&
     !LEGACY_ONLY_AMBIENT_IDENTIFIERS.test(code) &&
     !hasAsyncContextIncompatibleAwaitIdentifier(code) &&
-    !hasProgramBodyReturnOrAwait(code) &&
+    !hasProgramBodyLegacyIncompatibleControlFlow(code) &&
     !hasLegacyOnlySyntaxReference(code);
 }
 

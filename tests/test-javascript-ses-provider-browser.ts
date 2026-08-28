@@ -31,6 +31,8 @@ function assertSesAdmissionPolicy(): void {
     'const { prototype } = Array; prototype.last = function () { return this.at(-1); };',
     'function solve(value) { return value + 1; } return 0;',
     'await Promise.resolve(); function solve() { return 1; }',
+    'function solve() { return 1; } for await (const value of []) {}',
+    'function solve() { return 1; } { await using value = null; }',
   ];
   for (const source of legacyOnlySources) {
     assertCondition(
@@ -152,7 +154,9 @@ async function main(): Promise<void> {
       }>;
       for (const [name, receipt] of Object.entries(result)) {
         if (name === 'timeoutRecovery' || name === 'runtimeErrorLine' ||
-            name === 'constructorEscape' || name === 'undefinedTargetFallback') continue;
+            name === 'constructorEscape' || name === 'undefinedTargetFallback' ||
+            name === 'forAwaitFallback' || name === 'awaitUsingFallback' ||
+            name === 'typescriptForAwaitFallback') continue;
         assertCondition(
           receipt.verdict === 'passed' &&
           receipt.evaluationStatus === 'completed' &&
@@ -202,6 +206,20 @@ async function main(): Promise<void> {
           result.topLevelReturnFallback
         )}`
       );
+      for (const name of [
+        'forAwaitFallback',
+        'awaitUsingFallback',
+        'typescriptForAwaitFallback',
+      ] as const) {
+        const receipt = result[name];
+        assertCondition(
+          receipt?.verdict === 'failed' &&
+          receipt.evaluationStatus === 'completed' &&
+          receipt.passedCount === 0 &&
+          receipt.timings.every((timing) => timing.algorithmFastBatch !== true),
+          `${name} must preserve legacy syntax behavior: ${JSON.stringify(receipt)}`
+        );
+      }
       assertCondition(
         result.consoleBlankSes?.stdout[0] === 'a\n\nb\n' &&
         result.consoleBlankLegacy?.stdout[0] === 'a\n\nb\n',
