@@ -190,13 +190,11 @@ async function runProjectTerminalSmoke(previewUrl: string): Promise<void> {
 async function main(): Promise<void> {
   const repoRoot = join(dirname(fileURLToPath(import.meta.url)), '..');
   const exampleDir = join(repoRoot, 'examples', 'project-terminal');
-  const previewPort = 4900 + Math.floor(Math.random() * 200);
-
   await runCommand('pnpm', ['--dir', exampleDir, 'build'], repoRoot);
 
   const preview = startPreviewServer(
     'pnpm',
-    ['exec', 'vite', 'preview', '--host', '127.0.0.1', '--port', String(previewPort), '--strictPort'],
+    ['exec', 'vite', 'preview', '--host', '127.0.0.1', '--port', '0', '--strictPort'],
     exampleDir
   );
 
