@@ -506,7 +506,6 @@ async function main(): Promise<void> {
             return module.runBackgroundTracingBenchmark('/workers', [pageFixture], {
               traceOptions,
               skipTraceAll: skip,
-              traceccAssetBaseUrl: '/tracecc',
             });
           },
           { fixture, traceOptions, skip: skipTraceAll }
