@@ -1632,6 +1632,9 @@ var package_default = {
     access: "public"
   },
   packageManager: "pnpm@10.4.1",
+  engines: {
+    node: ">=22 <23"
+  },
   type: "module",
   files: [
     "dist",
