@@ -43,6 +43,14 @@ function managedHeapBytes(result: unknown): number {
   return typeof value === 'number' && Number.isFinite(value) ? value : 0;
 }
 
+function completedPreparedCase(result: unknown): boolean {
+  return Boolean(
+    result &&
+      typeof result === 'object' &&
+      (result as { kind?: unknown }).kind === 'completed'
+  );
+}
+
 export interface CSharpPreparedWorkerAuthority {
   readonly compiler: CSharpWorkerClient;
   readonly batchConcurrency: number;
@@ -120,63 +128,6 @@ export class CSharpRuntimeClient implements RuntimeClient, RuntimePreparedExecut
       })
     );
     if (terminalFailure) throw terminalFailure.reason;
-    return results;
-  }
-
-  /**
-   * Algorithm-fast programs have already passed the compiler-owned ambient
-   * state policy. Their runner can therefore remain alive for an eager batch
-   * while the managed host creates a fresh assembly-load context for every
-   * case. Mono/Wasm does not reclaim collectible contexts promptly, so one
-   * retained lease is bounded by both case count and observed managed heap;
-   * longer batches transparently continue in a fresh runner. Compatibility
-   * programs retain one disposable outer worker per case.
-   */
-  private async withPreparedBatchRunners<TResult>(
-    tier: CSharpPreparedRunnerTier,
-    inputBatch: readonly Record<string, unknown>[],
-    execute: (
-      runner: CSharpWorkerClient,
-      inputs: Record<string, unknown>,
-      index: number
-    ) => Promise<TResult>,
-    signal?: AbortSignal
-  ): Promise<readonly TResult[]> {
-    if (tier !== 'algorithm-fast') {
-      return this.withFreshPreparedRunners(
-        tier,
-        inputBatch,
-        execute,
-        signal
-      );
-    }
-
-    const results: TResult[] = new Array(inputBatch.length);
-    let nextIndex = 0;
-    while (nextIndex < inputBatch.length) {
-      await this.withPreparedRunner(tier, async (runner) => {
-        const firstIndex = nextIndex;
-        while (
-          nextIndex < inputBatch.length &&
-          nextIndex - firstIndex <
-            CSHARP_ALGORITHM_FAST_MAX_CASES_PER_RUNNER
-        ) {
-          if (signal?.aborted) {
-            throw signal.reason ?? new Error('Prepared C# batch was aborted.');
-          }
-          const index = nextIndex;
-          const result = await execute(runner, inputBatch[index]!, index);
-          results[index] = result;
-          nextIndex += 1;
-          if (
-            managedHeapBytes(result) >=
-            CSHARP_ALGORITHM_FAST_MAX_MANAGED_HEAP_BYTES
-          ) {
-            break;
-          }
-        }
-      });
-    }
     return results;
   }
 
@@ -356,7 +307,88 @@ export class CSharpRuntimeClient implements RuntimeClient, RuntimePreparedExecut
       readonly controller: AbortController;
       readonly settled: Promise<unknown>;
     }>();
+    let retainedFastRunner: CSharpWorkerClient | undefined;
+    let retainedFastRunnerCases = 0;
+    let retainedFastRunnerTail = Promise.resolve();
+    const releaseRetainedFastRunner = (): void => {
+      const runner = retainedFastRunner;
+      retainedFastRunner = undefined;
+      retainedFastRunnerCases = 0;
+      if (!runner) return;
+      runner.terminate();
+      this.preparedAuthority?.releaseRunner(runner);
+    };
+    const withOwnedPreparedRunner = <TResult>(
+      tier: CSharpPreparedRunnerTier,
+      execute: (runner: CSharpWorkerClient) => Promise<TResult>
+    ): Promise<TResult> => {
+      if (tier !== 'algorithm-fast' || !this.preparedAuthority) {
+        return this.withPreparedRunner(tier, execute);
+      }
+      const run = retainedFastRunnerTail.then(async () => {
+        if (disposed) {
+          throw new Error('Prepared C# program has been disposed.');
+        }
+        const runner = retainedFastRunner ??=
+          this.preparedAuthority!.createRunner('algorithm-fast');
+        try {
+          const result = await execute(runner);
+          retainedFastRunnerCases += 1;
+          if (
+            !completedPreparedCase(result) ||
+            retainedFastRunnerCases >=
+              CSHARP_ALGORITHM_FAST_MAX_CASES_PER_RUNNER ||
+            managedHeapBytes(result) >=
+              CSHARP_ALGORITHM_FAST_MAX_MANAGED_HEAP_BYTES
+          ) {
+            releaseRetainedFastRunner();
+          }
+          return result;
+        } catch (error) {
+          releaseRetainedFastRunner();
+          throw error;
+        }
+      });
+      retainedFastRunnerTail = run.then(
+        () => undefined,
+        () => undefined
+      );
+      return run;
+    };
+    const withOwnedPreparedBatchRunners = async <TResult>(
+      tier: CSharpPreparedRunnerTier,
+      inputBatch: readonly Record<string, unknown>[],
+      execute: (
+        runner: CSharpWorkerClient,
+        inputs: Record<string, unknown>,
+        index: number
+      ) => Promise<TResult>,
+      signal?: AbortSignal
+    ): Promise<readonly TResult[]> => {
+      if (tier !== 'algorithm-fast') {
+        return this.withFreshPreparedRunners(
+          tier,
+          inputBatch,
+          execute,
+          signal
+        );
+      }
+      const results: TResult[] = [];
+      for (const [index, inputs] of inputBatch.entries()) {
+        if (signal?.aborted) {
+          throw signal.reason ?? new Error('Prepared C# batch was aborted.');
+        }
+        results.push(await withOwnedPreparedRunner(tier, (runner) =>
+          execute(runner, inputs, index)
+        ));
+      }
+      return results;
+    };
     const capabilities = Object.freeze({
+      profile:
+        preparedRunnerTier === 'algorithm-fast'
+          ? 'fast' as const
+          : 'compatibility' as const,
       caseIsolation: 'fresh-case-state' as const,
       maxConcurrency: 1,
     });
@@ -429,6 +461,8 @@ export class CSharpRuntimeClient implements RuntimeClient, RuntimePreparedExecut
         if (ownedArtifact) {
           await this.preparedCompiler.disposePreparedProgram(ownedArtifact);
         }
+        await retainedFastRunnerTail;
+        releaseRetainedFastRunner();
       })();
       return disposePromise;
     };
@@ -440,7 +474,7 @@ export class CSharpRuntimeClient implements RuntimeClient, RuntimePreparedExecut
           capabilities,
           executeIsolated: (preparedCall) =>
             executeOwned(preparedCall, (preparedArtifact, forwardedCall) =>
-              this.withPreparedRunner(preparedArtifact.preparedRunnerTier, (runner) =>
+              withOwnedPreparedRunner(preparedArtifact.preparedRunnerTier, (runner) =>
                 runner.executePreparedTrace(
                   preparedArtifact,
                   forwardedCall
@@ -465,7 +499,7 @@ export class CSharpRuntimeClient implements RuntimeClient, RuntimePreparedExecut
               ));
             }
             return executeOwned(preparedCall, (preparedArtifact, forwardedCall) =>
-              this.withPreparedBatchRunners(
+              withOwnedPreparedBatchRunners(
                 preparedArtifact.preparedRunnerTier,
                 forwardedCall.inputBatch,
                 (runner, inputs, index) =>
@@ -494,7 +528,7 @@ export class CSharpRuntimeClient implements RuntimeClient, RuntimePreparedExecut
           capabilities,
           executeIsolated: (preparedCall) =>
             executeOwned(preparedCall, (preparedArtifact, forwardedCall) =>
-              this.withPreparedRunner(preparedArtifact.preparedRunnerTier, (runner) =>
+              withOwnedPreparedRunner(preparedArtifact.preparedRunnerTier, (runner) =>
                 runner.executePreparedCode(preparedArtifact, forwardedCall)
               )
             ),
@@ -502,7 +536,7 @@ export class CSharpRuntimeClient implements RuntimeClient, RuntimePreparedExecut
             preparedCall: RuntimePreparedCodeBatchCall
           ) =>
             executeOwned(preparedCall, (preparedArtifact, forwardedCall) =>
-              this.withPreparedBatchRunners(
+              withOwnedPreparedBatchRunners(
                 preparedArtifact.preparedRunnerTier,
                 forwardedCall.inputBatch,
                 (runner, inputs) =>

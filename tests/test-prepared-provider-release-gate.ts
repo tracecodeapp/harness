@@ -106,6 +106,7 @@ function controlledPreparedProvider(
         };
       }
       const capabilities: RuntimePreparedProgramCapabilities = {
+        profile: 'compatibility',
         caseIsolation: 'fresh-case-state',
         maxConcurrency,
       };
@@ -320,6 +321,7 @@ test('browser host enforces prepared-program isolation capabilities', async () =
     providerRegistry: createBrowserRuntimeProviderRegistry([
       capabilityProvider(
         {
+          profile: 'compatibility',
           caseIsolation: 'fresh-case-state',
           maxConcurrency: 2,
         },
@@ -364,6 +366,7 @@ test('browser host enforces prepared-program isolation capabilities', async () =
       maxConcurrency: 1,
     },
     {
+      profile: 'compatibility',
       caseIsolation: 'fresh-case-state',
       maxConcurrency: 0,
     },
@@ -391,7 +394,7 @@ test('browser host enforces prepared-program isolation capabilities', async () =
           code: SOURCE,
           functionName: 'solve',
         }),
-        /fresh-case-state isolation and a positive integer maxConcurrency/
+        /fast or compatibility profile, fresh-case-state isolation, and a positive integer maxConcurrency/
       );
       assert.equal(
         rejectedDisposals,

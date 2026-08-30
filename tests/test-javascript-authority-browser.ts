@@ -279,7 +279,9 @@ function isolated(value) {
       judged.computed.status === 'runtime-error' &&
         judged.computed.diagnostics.some(
           (diagnostic: { message?: string }) =>
-            diagnostic.message === 'fetch is not defined'
+            /fetch is not defined|not a valid constructor/u.test(
+              diagnostic.message ?? ''
+            )
         ),
       `Browser Judge computed Function escape was not denied: ${JSON.stringify(judged.computed)}`
     );
@@ -287,7 +289,9 @@ function isolated(value) {
       judged.deferred.status === 'runtime-error' &&
         judged.deferred.diagnostics.some(
           (diagnostic: { message?: string }) =>
-            diagnostic.message === 'fetch is not defined'
+            /fetch is not defined|not a valid constructor/u.test(
+              diagnostic.message ?? ''
+            )
         ),
       `Browser Judge deferred Function escape was not denied: ${JSON.stringify(judged.deferred)}`
     );

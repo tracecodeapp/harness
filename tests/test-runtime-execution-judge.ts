@@ -186,6 +186,7 @@ function fakeProvider(
     async prepareProgram(preparation) {
       state.prepareCalls.push(preparation);
       const capabilities = {
+        profile: 'compatibility' as const,
         caseIsolation: 'fresh-case-state' as const,
         maxConcurrency: 3,
       };
@@ -426,6 +427,7 @@ function preparedProvider(
         };
       }
       const capabilities = {
+        profile: 'compatibility' as const,
         caseIsolation: 'fresh-case-state' as const,
         maxConcurrency: state.maxConcurrency,
       };
@@ -735,6 +737,142 @@ test('interactive execute retains one trace-capable artifact and traces explicit
   ));
 
   assert.equal(state.disposals, 1);
+});
+
+test('browser interactive execute separates all-case correctness from selected tracing', async () => {
+  const state = makePreparedState();
+  const runtimeHost = browserHostFor(preparedProvider(state));
+  const judgeHost = createBrowserJudgeHostFromRuntimeHost(runtimeHost);
+  try {
+    const bundle = await createAlgorithmJudgeBundle({
+      id: 'dual-program-interactive',
+      language: 'javascript',
+      code: SOURCE,
+      functionName: 'solve',
+      trace: true,
+      cases: [
+        { id: 'selected', input: { label: 'selected' }, expected: 'selected' },
+        { id: 'drain-a', input: { label: 'drain-a' }, expected: 'drain-a' },
+        { id: 'drain-b', input: { label: 'drain-b' }, expected: 'drain-b' },
+      ],
+    });
+
+    const initial = await judgeHost.execute({
+      bundle,
+      interactive: true,
+      tracing: { caseIds: ['selected'] },
+    });
+
+    assert.ok(initial.executionId);
+    assert.equal(initial.evaluation.status, 'completed');
+    assert.deepEqual(
+      initial.evaluation.cases.map((result) => result.caseId),
+      ['selected', 'drain-a', 'drain-b']
+    );
+    assert.ok(initial.evaluation.cases.every((result) => !('trace' in result)));
+    assert.equal(initial.traceEvaluation?.status, 'completed');
+    assert.deepEqual(
+      initial.traceEvaluation?.cases.map((result) => result.caseId),
+      ['selected']
+    );
+    assert.equal(
+      (initial.traceEvaluation?.cases[0]?.trace as RuntimeTrace).events.length,
+      1
+    );
+    assert.deepEqual(
+      state.prepareCalls.map((call) => call.mode),
+      ['code', 'trace']
+    );
+    assert.deepEqual(
+      state.codeCalls.map((call) => (call.inputs as FakeInput).label),
+      ['selected', 'drain-a', 'drain-b']
+    );
+    assert.deepEqual(
+      state.traceCalls.map((call) => (call.inputs as FakeInput).label),
+      ['selected']
+    );
+
+    const continuation = await judgeHost.execute({
+      executionId: initial.executionId!,
+      tracing: { caseIds: ['drain-b'] },
+    });
+    assert.deepEqual(
+      continuation.evaluation.cases.map((result) => result.caseId),
+      ['drain-b']
+    );
+    assert.deepEqual(
+      state.traceCalls.map((call) => (call.inputs as FakeInput).label),
+      ['selected', 'drain-b']
+    );
+    await judgeHost.disposeExecution(initial.executionId!);
+  } finally {
+    judgeHost.dispose();
+  }
+});
+
+test('browser interactive execute validates trace selection before either program is prepared', async () => {
+  const state = makePreparedState();
+  const runtimeHost = browserHostFor(preparedProvider(state));
+  const judgeHost = createBrowserJudgeHostFromRuntimeHost(runtimeHost);
+  try {
+    const bundle = await createAlgorithmJudgeBundle({
+      id: 'dual-program-invalid-selection',
+      language: 'javascript',
+      code: SOURCE,
+      functionName: 'solve',
+      trace: true,
+      cases: [
+        { id: 'known', input: { label: 'known' }, expected: 'known' },
+      ],
+    });
+
+    await assert.rejects(
+      judgeHost.execute({
+        bundle,
+        interactive: true,
+        tracing: { caseIds: ['unknown'] },
+      }),
+      /unknown case id/u
+    );
+    assert.equal(state.prepareCalls.length, 0);
+  } finally {
+    judgeHost.dispose();
+  }
+});
+
+test('browser interactive execute skips trace preparation when correctness compilation fails', async () => {
+  const state = makePreparedState({ failPreparation: true });
+  const runtimeHost = browserHostFor(preparedProvider(state));
+  const judgeHost = createBrowserJudgeHostFromRuntimeHost(runtimeHost);
+  try {
+    const bundle = await createAlgorithmJudgeBundle({
+      id: 'dual-program-compile-failure',
+      language: 'javascript',
+      code: SOURCE,
+      functionName: 'solve',
+      trace: true,
+      cases: [
+        { id: 'selected', input: { label: 'selected' }, expected: 'selected' },
+      ],
+    });
+
+    const result = await judgeHost.execute({
+      bundle,
+      interactive: true,
+      tracing: { caseIds: ['selected'] },
+    });
+    assert.equal(result.evaluation.status, 'compile-failed');
+    assert.equal(result.traceEvaluation, undefined);
+    assert.equal(result.executionId, undefined);
+    assert.deepEqual(
+      state.prepareCalls.map((call) => call.mode),
+      ['code']
+    );
+    assert.equal(state.codeCalls.length, 0);
+    assert.equal(state.traceCalls.length, 0);
+  } finally {
+    judgeHost.dispose();
+  }
 });
 
 test('interactive execute rejects invalid trace selections before preparing', async () => {

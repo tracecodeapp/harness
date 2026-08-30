@@ -545,6 +545,7 @@ async function exercisePreparedDisposalOwner(): Promise<void> {
   let disposeCalls = 0;
   let observedLifecycleAbort = false;
   const program = createJavaScriptPreparedProgram({
+    profile: 'compatibility',
     mode: 'code',
     executeCode: (
       call: RuntimePreparedCodeCall
@@ -620,7 +621,9 @@ async function exerciseSharedProviderLanguageDisposal(): Promise<void> {
   resetVmWorkers();
   const host = createBrowserRuntimeHost({
     providerRegistry: createBrowserRuntimeProviderRegistry([
-      createJavaScriptBrowserRuntimeProvider(),
+      createJavaScriptBrowserRuntimeProvider({
+        algorithmExecution: 'disposable-worker',
+      }),
     ]),
     providers: ['javascript', 'typescript'],
     featureOverrides: {

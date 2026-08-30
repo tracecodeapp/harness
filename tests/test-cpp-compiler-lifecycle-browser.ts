@@ -455,7 +455,7 @@ async function main(): Promise<void> {
       };
       prepared: {
         preparationTimings?: Record<string, unknown>;
-        capabilities: { caseIsolation: string; maxConcurrency: number };
+        capabilities: { profile: string; caseIsolation: string; maxConcurrency: number };
         firstPreparedCase: { kind: string; output?: unknown; timings?: Record<string, unknown> };
         secondPreparedCase: { kind: string; output?: unknown; timings?: Record<string, unknown> };
         preparedBatchCases: Array<{ kind: string; output?: unknown; timings?: Record<string, unknown> }>;
@@ -517,7 +517,8 @@ async function main(): Promise<void> {
       `runner retirement must leave the shared compiler frame alive until explicit compiler retirement: ${JSON.stringify(result.sharedCompiler)}`
     );
     assertCondition(
-      result.prepared.capabilities.caseIsolation === 'fresh-case-state' &&
+      result.prepared.capabilities.profile === 'fast' &&
+        result.prepared.capabilities.caseIsolation === 'fresh-case-state' &&
         result.prepared.capabilities.maxConcurrency === 1,
       `prepared C++ capabilities must report truthful isolation and serialization: ${JSON.stringify(result.prepared)}`
     );

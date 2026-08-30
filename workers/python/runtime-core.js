@@ -1364,11 +1364,6 @@ async function runCompiledPythonInFreshExecutionScope(
     throw new Error('Prepared Python programs require the full browser Python runtime.');
   }
   const guard = getIsolatedPythonExecutionGuard(pyodide);
-  const namespaceStartedAt = deps.performanceNow();
-  const namespace = pyodide.toPy({ __name__: '__main__' });
-  if (scopeTimings) {
-    scopeTimings.namespaceCreateMs += deps.performanceNow() - namespaceStartedAt;
-  }
   const guardBeginStartedAt = deps.performanceNow();
   if (isolationTier === 'algorithm-fast') {
     guard.begin_algorithm();
@@ -1377,6 +1372,38 @@ async function runCompiledPythonInFreshExecutionScope(
   }
   if (scopeTimings) {
     scopeTimings.guardBeginMs += deps.performanceNow() - guardBeginStartedAt;
+  }
+  try {
+    return runCompiledPythonInFreshNamespace(
+      deps,
+      guard,
+      code,
+      resultName,
+      bindings,
+      scopeTimings
+    );
+  } finally {
+    const guardRestoreStartedAt = deps.performanceNow();
+    guard.restore();
+    if (scopeTimings) {
+      scopeTimings.guardRestoreMs += deps.performanceNow() - guardRestoreStartedAt;
+    }
+  }
+}
+
+function runCompiledPythonInFreshNamespace(
+  deps,
+  guard,
+  code,
+  resultName,
+  bindings,
+  scopeTimings = undefined
+) {
+  const pyodide = deps.getPyodide();
+  const namespaceStartedAt = deps.performanceNow();
+  const namespace = pyodide.toPy({ __name__: '__main__' });
+  if (scopeTimings) {
+    scopeTimings.namespaceCreateMs += deps.performanceNow() - namespaceStartedAt;
   }
   try {
     const bindingStartedAt = deps.performanceNow();
@@ -1392,19 +1419,11 @@ async function runCompiledPythonInFreshExecutionScope(
     }
     return result;
   } finally {
-    try {
-      const guardRestoreStartedAt = deps.performanceNow();
-      guard.restore();
-      if (scopeTimings) {
-        scopeTimings.guardRestoreMs += deps.performanceNow() - guardRestoreStartedAt;
-      }
-    } finally {
-      const namespaceDestroyStartedAt = deps.performanceNow();
-      namespace?.destroy?.();
-      if (scopeTimings) {
-        scopeTimings.namespaceDestroyMs +=
-          deps.performanceNow() - namespaceDestroyStartedAt;
-      }
+    const namespaceDestroyStartedAt = deps.performanceNow();
+    namespace?.destroy?.();
+    if (scopeTimings) {
+      scopeTimings.namespaceDestroyMs +=
+        deps.performanceNow() - namespaceDestroyStartedAt;
     }
   }
 }
@@ -6994,30 +7013,42 @@ async function executeWithTracing(
     }
 
     const pyRunStartedAt = deps.performanceNow();
+    const preparedBindings = prepared
+      ? {
+          __tracecode_prepared_user_code: prepared.userCodeObject,
+          __tracecode_inputs_literal: preparedPythonLiteral(
+            deps,
+            inputs,
+            prepared.scopeTimings
+          ),
+          __tracecode_limits_literal: preparedPythonLiteral(
+            deps,
+            prepared.limits?.guest ?? {},
+            prepared.scopeTimings
+          ),
+          __tracecode_tracing_enabled: prepared.tracingEnabled !== false,
+          __tracecode_inputs_need_materialization:
+            pythonInputsRequireCustomMaterialization(inputs),
+        }
+      : undefined;
     const resultJson = prepared
-      ? await runCompiledPythonInFreshExecutionScope(
-          deps,
-          prepared.executorCode,
-          '__tracecode_execution_result_json',
-          {
-            __tracecode_prepared_user_code: prepared.userCodeObject,
-            __tracecode_inputs_literal: preparedPythonLiteral(
-              deps,
-              inputs,
-              prepared.scopeTimings
-            ),
-            __tracecode_limits_literal: preparedPythonLiteral(
-              deps,
-              prepared.limits?.guest ?? {},
-              prepared.scopeTimings
-            ),
-            __tracecode_tracing_enabled: prepared.tracingEnabled !== false,
-            __tracecode_inputs_need_materialization:
-              pythonInputsRequireCustomMaterialization(inputs),
-          },
-          prepared.scopeTimings,
-          prepared.isolationTier
-        )
+      ? prepared.guardAlreadyActive === true
+        ? runCompiledPythonInFreshNamespace(
+            deps,
+            getIsolatedPythonExecutionGuard(deps.getPyodide()),
+            prepared.executorCode,
+            '__tracecode_execution_result_json',
+            preparedBindings,
+            prepared.scopeTimings
+          )
+        : await runCompiledPythonInFreshExecutionScope(
+            deps,
+            prepared.executorCode,
+            '__tracecode_execution_result_json',
+            preparedBindings,
+            prepared.scopeTimings,
+            prepared.isolationTier
+          )
       : await runPythonInFreshExecutionScope(
           deps,
           tracingCode,
@@ -8112,6 +8143,11 @@ async function executePreparedProgram(
   try {
     userCodeObject = deserializePythonCodeArtifact(deps, artifact.userCode);
     executorCode = deserializePythonCodeArtifact(deps, artifact.executorCode);
+    const isolationTier =
+      artifact.isolationProfile.tier === 'algorithm-fast' &&
+      !pythonInputsRequireCustomMaterialization(inputs)
+        ? 'algorithm-fast'
+        : 'compatibility';
     if (
       artifact.mode === 'trace' &&
       tracingEnabled === false &&
@@ -8134,7 +8170,7 @@ async function executePreparedProgram(
             userCodeObject,
             limits,
             tracingEnabled: true,
-            isolationTier: 'compatibility',
+            isolationTier,
           }
         )
       : await executeCode(
@@ -8148,7 +8184,7 @@ async function executePreparedProgram(
             executorCode,
             userCodeObject,
             tracingEnabled: false,
-            isolationTier: 'compatibility',
+            isolationTier,
           }
         );
     const runMs = deps.performanceNow() - startedAt;
@@ -8360,83 +8396,102 @@ async function executePreparedProgramBatch(
     userCodeObject = deserializePythonCodeArtifact(deps, artifact.userCode);
     executorCode = deserializePythonCodeArtifact(deps, artifact.executorCode);
     const results = [];
-    // Trace execution and node/custom-input fallbacks still use the generic
-    // executor, so they retain the full compatibility guard and filesystem
-    // journal even when the source also qualified for code-batch admission.
-    const filesystem = isolatedPythonFilesystemManager(deps.getPyodide());
-    for (let caseIndex = 0; caseIndex < cases.length; caseIndex += 1) {
-      const inputs = cases[caseIndex];
-      const scopeTimings = {
-        inputLiteralMs: 0,
-        namespaceCreateMs: 0,
-        guardBeginMs: 0,
-        bindingMs: 0,
-        compiledExecutionMs: 0,
-        guardRestoreMs: 0,
-        namespaceDestroyMs: 0,
-        resultParseMs: 0,
-        filesystemBeginMs: 0,
-        filesystemRestoreMs: 0,
-      };
-      const tracingEnabled = artifact.mode === 'trace'
-        ? (traceEnabledBatch?.[caseIndex] ?? true)
-        : false;
-      const filesystemBeginStartedAt = deps.performanceNow();
-      filesystem?.begin();
-      scopeTimings.filesystemBeginMs +=
-        deps.performanceNow() - filesystemBeginStartedAt;
-      let result;
-      try {
-        result = artifact.mode === 'trace' && tracingEnabled
-          ? await executeWithTracing(
-              deps,
-              artifact.code,
-              artifact.functionName,
-              inputs,
-              artifact.executionStyle ?? 'function',
-              artifact.traceOptions ?? {},
-              {
-                executorCode,
-                userCodeObject,
-                limits,
-                tracingEnabled: true,
-                scopeTimings,
-                isolationTier: 'compatibility',
-              }
-            )
-          : await executeCode(
-              deps,
-              artifact.code,
-              artifact.functionName ?? '',
-              inputs,
-              artifact.executionStyle ?? 'function',
-              limits?.guest ?? {},
-              {
-                executorCode,
-                userCodeObject,
-                tracingEnabled: false,
-                scopeTimings,
-                isolationTier: 'compatibility',
-              }
-            );
-      } finally {
-        const filesystemRestoreStartedAt = deps.performanceNow();
-        filesystem?.restore();
-        scopeTimings.filesystemRestoreMs +=
-          deps.performanceNow() - filesystemRestoreStartedAt;
+    const useAlgorithmFastScopes =
+      currentIsolationProfile.tier === 'algorithm-fast' &&
+      cases.every((inputs) => !pythonInputsRequireCustomMaterialization(inputs));
+    const useRetainedTraceGuard =
+      artifact.mode === 'trace' &&
+      useAlgorithmFastScopes &&
+      (traceEnabledBatch?.every((enabled) => enabled) ?? true);
+    const filesystem = useAlgorithmFastScopes
+      ? undefined
+      : isolatedPythonFilesystemManager(deps.getPyodide());
+    const retainedTraceGuard = useRetainedTraceGuard
+      ? getIsolatedPythonExecutionGuard(deps.getPyodide())
+      : undefined;
+    retainedTraceGuard?.begin_algorithm();
+    try {
+      for (let caseIndex = 0; caseIndex < cases.length; caseIndex += 1) {
+        const inputs = cases[caseIndex];
+        const scopeTimings = {
+          inputLiteralMs: 0,
+          namespaceCreateMs: 0,
+          guardBeginMs: 0,
+          bindingMs: 0,
+          compiledExecutionMs: 0,
+          guardRestoreMs: 0,
+          namespaceDestroyMs: 0,
+          resultParseMs: 0,
+          filesystemBeginMs: 0,
+          filesystemRestoreMs: 0,
+        };
+        const tracingEnabled = artifact.mode === 'trace'
+          ? (traceEnabledBatch?.[caseIndex] ?? true)
+          : false;
+        const filesystemBeginStartedAt = deps.performanceNow();
+        filesystem?.begin();
+        scopeTimings.filesystemBeginMs +=
+          deps.performanceNow() - filesystemBeginStartedAt;
+        let result;
+        try {
+          result = artifact.mode === 'trace' && tracingEnabled
+            ? await executeWithTracing(
+                deps,
+                artifact.code,
+                artifact.functionName,
+                inputs,
+                artifact.executionStyle ?? 'function',
+                artifact.traceOptions ?? {},
+                {
+                  executorCode,
+                  userCodeObject,
+                  limits,
+                  tracingEnabled: true,
+                  scopeTimings,
+                  isolationTier: useAlgorithmFastScopes
+                    ? 'algorithm-fast'
+                    : 'compatibility',
+                  guardAlreadyActive: useRetainedTraceGuard,
+                }
+              )
+            : await executeCode(
+                deps,
+                artifact.code,
+                artifact.functionName ?? '',
+                inputs,
+                artifact.executionStyle ?? 'function',
+                limits?.guest ?? {},
+                {
+                  executorCode,
+                  userCodeObject,
+                  tracingEnabled: false,
+                  scopeTimings,
+                  isolationTier: useAlgorithmFastScopes
+                    ? 'algorithm-fast'
+                    : 'compatibility',
+                }
+              );
+        } finally {
+          const filesystemRestoreStartedAt = deps.performanceNow();
+          filesystem?.restore();
+          scopeTimings.filesystemRestoreMs +=
+            deps.performanceNow() - filesystemRestoreStartedAt;
+        }
+        const timedResult = {
+          ...result,
+          timings: {
+            ...(result?.timings ?? {}),
+            ...scopeTimings,
+          },
+        };
+        results.push(
+          artifact.mode === 'trace' && !tracingEnabled
+            ? pythonCodeResultAsEmptyTraceResult(timedResult)
+            : timedResult
+        );
       }
-      const timedResult = {
-        ...result,
-        timings: {
-          ...(result?.timings ?? {}),
-          ...scopeTimings,
-        },
-      };
-      results.push(
-        artifact.mode === 'trace' && !tracingEnabled
-          ? pythonCodeResultAsEmptyTraceResult(timedResult)
-          : timedResult
-      );
+    } finally {
+      retainedTraceGuard?.restore();
     }
     const runMs = deps.performanceNow() - startedAt;
     return {

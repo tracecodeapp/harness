@@ -211,6 +211,7 @@ export function createCppPreparedExecutionProvider(
         };
         activePrograms.add(forceDispose);
         const capabilities = {
+          profile: 'fast' as const,
           caseIsolation: 'fresh-case-state' as const,
           maxConcurrency: 1,
         };

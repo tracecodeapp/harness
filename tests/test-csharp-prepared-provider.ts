@@ -170,6 +170,7 @@ test('C# runtime client owns one opaque prepared artifact through exact disposal
   assert.equal(prepared.kind, 'prepared');
   if (prepared.kind !== 'prepared') return;
   assert.deepEqual(prepared.consoleOutput, ['compiled once']);
+  assert.equal(prepared.program.capabilities.profile, 'compatibility');
   assert.equal(prepared.program.capabilities.caseIsolation, 'fresh-case-state');
   assert.equal(prepared.program.capabilities.maxConcurrency, 1);
   assert.equal(worker.prepareCalls.length, 1);
@@ -405,14 +406,26 @@ test('C# algorithm-fast batches retain one outer runner with managed per-case is
     results.map((result) => result.kind === 'completed' ? result.output : null),
     [3, 5, 7]
   );
+  const fourth = await prepared.program.executeIsolated({
+    inputs: { value: 11 },
+    limits: { wallClockMs: 2_000 },
+  });
+  const fifth = await prepared.program.executeIsolated({
+    inputs: { value: 13 },
+    limits: { wallClockMs: 2_000 },
+  });
+  assert.equal(fourth.kind === 'completed' ? fourth.output : null, 11);
+  assert.equal(fifth.kind === 'completed' ? fifth.output : null, 13);
   assert.equal(runners.length, 1);
-  assert.equal(released.length, 1);
-  assert.equal(runners[0]?.executeCalls.length, 3);
-  assert.equal(runners[0]?.terminated, true);
+  assert.equal(released.length, 0);
+  assert.equal(runners[0]?.executeCalls.length, 5);
+  assert.equal(runners[0]?.terminated, false);
   assert.ok(runners[0]?.executeCalls.every(
     (call) => call.call.limits?.wallClockMs === 2_000
   ));
   await prepared.program.dispose();
+  assert.equal(released.length, 1);
+  assert.equal(runners[0]?.terminated, true);
 });
 
 test('C# algorithm-fast batches rotate retained runners at the context bound', async () => {
@@ -458,13 +471,16 @@ test('C# algorithm-fast batches rotate retained runners at the context bound', a
     inputBatch.map(({ value }) => value)
   );
   assert.equal(runners.length, 2);
-  assert.equal(released.length, 2);
+  assert.equal(released.length, 1);
   assert.deepEqual(
     runners.map((runner) => runner.executeCalls.length),
     [64, 1]
   );
-  assert.ok(runners.every((runner) => runner.terminated));
+  assert.equal(runners[0]?.terminated, true);
+  assert.equal(runners[1]?.terminated, false);
   await prepared.program.dispose();
+  assert.equal(released.length, 2);
+  assert.ok(runners.every((runner) => runner.terminated));
 });
 
 test('C# algorithm-fast batches rotate retained runners at the managed-heap bound', async () => {
@@ -548,6 +564,7 @@ test('C# prepared runner tier is selected before execution and never degrades af
   });
   assert.equal(prepared.kind, 'prepared');
   if (prepared.kind !== 'prepared' || prepared.program.mode !== 'code') return;
+  assert.equal(prepared.program.capabilities.profile, 'fast');
 
   const result = await prepared.program.executeIsolated({ inputs: { value: 3 } });
   assert.equal(result.kind, 'failed');

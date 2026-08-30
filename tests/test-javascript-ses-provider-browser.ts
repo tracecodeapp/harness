@@ -150,10 +150,16 @@ async function main(): Promise<void> {
         values: unknown[];
         valueShapes: unknown[];
         timings: Array<{ algorithmFastBatch?: boolean }>;
+        traces: Array<{
+          events?: Array<{ kind?: string }>;
+          lineEventCount?: number;
+          traceStepCount?: number;
+        }>;
         elapsedMs: number;
       }>;
       for (const [name, receipt] of Object.entries(result)) {
-        if (name === 'timeoutRecovery' || name === 'runtimeErrorLine' ||
+        if (name === 'timeoutRecovery' || name === 'traceTimeoutRecovery' ||
+            name === 'runtimeErrorLine' ||
             name === 'constructorEscape' || name === 'undefinedTargetFallback' ||
             name === 'forAwaitFallback' || name === 'awaitUsingFallback' ||
             name === 'typescriptForAwaitFallback') continue;
@@ -171,6 +177,17 @@ async function main(): Promise<void> {
         timeoutRecovery.passedCount === timeoutRecovery.totalCount - 1 &&
         timeoutRecovery.elapsedMs < 5_000,
         `timeoutRecovery failed: ${JSON.stringify(timeoutRecovery)}`
+      );
+      const traceTimeoutRecovery = result.traceTimeoutRecovery;
+      assertCondition(
+        traceTimeoutRecovery?.verdict === 'failed' &&
+        traceTimeoutRecovery.evaluationStatus === 'completed' &&
+        traceTimeoutRecovery.passedCount === traceTimeoutRecovery.totalCount - 1 &&
+        traceTimeoutRecovery.elapsedMs < 5_000 &&
+        traceTimeoutRecovery.timings.slice(1).every(
+          (timing) => timing.algorithmFastBatch === true
+        ),
+        `traceTimeoutRecovery failed: ${JSON.stringify(traceTimeoutRecovery)}`
       );
       const runtimeErrorLine = result.runtimeErrorLine;
       assertCondition(
@@ -278,6 +295,9 @@ async function main(): Promise<void> {
         result.deepMapOutput,
         result.asyncOpsClassParity,
         result.plainObjectMaterializerParity,
+        result.traceFast,
+        result.traceDetachedTaskIsolation,
+        result.typescriptTraceFast,
       ];
       assertCondition(
         fastParityReceipts.every((receipt) =>
@@ -286,6 +306,30 @@ async function main(): Promise<void> {
         ),
         `SES parity regression unexpectedly used compatibility execution: ${JSON.stringify(
           fastParityReceipts.map((receipt) => receipt?.timings)
+        )}`
+      );
+      const fastTrace = result.traceFast;
+      assertCondition(
+        fastTrace?.traces.length === fastTrace.totalCount &&
+        fastTrace.traces.every((trace) =>
+          Array.isArray(trace.events) &&
+          (trace.lineEventCount ?? 0) > 0 &&
+          (trace.traceStepCount ?? 0) >= (trace.lineEventCount ?? 0) &&
+          trace.events.some((event) => event.kind === 'call') &&
+          trace.events.some((event) => event.kind === 'return')
+        ),
+        `SES fast trace did not preserve call/line/return events: ${JSON.stringify(
+          fastTrace?.traces
+        )}`
+      );
+      assertCondition(
+        result.typescriptTraceFast?.traces.every((trace) =>
+          Array.isArray(trace.events) &&
+          trace.events.some((event) => event.kind === 'line') &&
+          trace.events.some((event) => event.kind === 'return')
+        ),
+        `SES TypeScript fast trace was empty: ${JSON.stringify(
+          result.typescriptTraceFast?.traces
         )}`
       );
       const nodeReference = result.nodeReferenceParity?.values[0] as {
@@ -338,6 +382,28 @@ async function main(): Promise<void> {
         serializerParity.ses.timings.every((timing) => timing.algorithmFastBatch === true) &&
         serializerParity.legacy.timings.every((timing) => timing.algorithmFastBatch !== true),
         `browser serializer parity mismatch: ${JSON.stringify(serializerParity)}`
+      );
+      const traceParity = await page.evaluate(async ({ origin }) => {
+        const entry = await import(`${origin}/entry.mjs`);
+        return entry.runJavaScriptTraceParity(`${origin}/workers`);
+      }, { origin: server.origin }) as {
+        fast: { verdict: string; timings: Array<{ algorithmFastBatch?: boolean }> };
+        general: { verdict: string; timings: Array<{ algorithmFastBatch?: boolean }> };
+        fastSignatures: unknown[];
+        generalSignatures: unknown[];
+      };
+      assertCondition(
+        traceParity.fast.verdict === 'passed' &&
+        traceParity.general.verdict === 'passed' &&
+        traceParity.fast.timings.every(
+          (timing) => timing.algorithmFastBatch === true
+        ) &&
+        traceParity.general.timings.every(
+          (timing) => timing.algorithmFastBatch !== true
+        ) &&
+        JSON.stringify(traceParity.fastSignatures) ===
+          JSON.stringify(traceParity.generalSignatures),
+        `browser fast/compatibility trace parity mismatch: ${JSON.stringify(traceParity)}`
       );
       const sesUnavailable = await page.evaluate(async ({ origin }) => {
         const entry = await import(`${origin}/entry.mjs`);

@@ -34,6 +34,7 @@ function assertCondition(
 function fakePreparedProvider(
   events: string[],
   capabilities: RuntimePreparedProgramCapabilities = {
+    profile: 'compatibility',
     caseIsolation: 'fresh-case-state',
     maxConcurrency: 1,
   }
@@ -506,6 +507,7 @@ test('prepared program reuse shares concurrency across caller facades', async ()
         program: {
           mode: 'code',
           capabilities: {
+            profile: 'compatibility',
             caseIsolation: 'fresh-case-state',
             maxConcurrency: 1,
           },
@@ -591,6 +593,7 @@ test('prepared program reuse isolates caller cancellation and flushes pending wo
     program: {
       mode: 'code',
       capabilities: {
+        profile: 'compatibility',
         caseIsolation: 'fresh-case-state',
         maxConcurrency: 1,
       },
@@ -682,6 +685,7 @@ test('prepared program reuse lets concurrent preparations claim entries before c
       program: {
         mode: 'code',
         capabilities: {
+          profile: 'compatibility',
           caseIsolation: 'fresh-case-state',
           maxConcurrency: 1,
         },
@@ -721,6 +725,7 @@ test('prepared program reuse disposes an evicted entry after its final facade re
         program: {
           mode: 'code' as const,
           capabilities: {
+            profile: 'compatibility' as const,
             caseIsolation: 'fresh-case-state' as const,
             maxConcurrency: 1,
           },

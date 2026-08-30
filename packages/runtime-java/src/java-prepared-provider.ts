@@ -90,13 +90,7 @@ function abortReason(signal: AbortSignal): unknown {
 }
 
 abstract class JavaPreparedProgramBase {
-  readonly capabilities = Object.freeze({
-    caseIsolation: 'fresh-case-state' as const,
-    // A case owns a fresh JavaWorkerClient, but the program intentionally
-    // serializes admission so disposal and backpressure have one lifecycle
-    // authority and no caller can accidentally overlap heavyweight VMs.
-    maxConcurrency: 1,
-  });
+  readonly capabilities;
 
   private disposed = false;
   private disposePromise: Promise<void> | undefined;
@@ -111,6 +105,17 @@ abstract class JavaPreparedProgramBase {
     private readonly client: JavaWorkerClient,
     private readonly releaseClient: (client: JavaWorkerClient) => void
   ) {
+    this.capabilities = Object.freeze({
+      profile:
+        snapshot.algorithmIsolationProfile?.tier === 'algorithm-fast'
+          ? 'fast' as const
+          : 'compatibility' as const,
+      caseIsolation: 'fresh-case-state' as const,
+      // A case owns a fresh JavaWorkerClient, but the program intentionally
+      // serializes admission so disposal and backpressure have one lifecycle
+      // authority and no caller can accidentally overlap heavyweight VMs.
+      maxConcurrency: 1,
+    });
     this.restoredGeneration = client.sessionGeneration;
   }
 

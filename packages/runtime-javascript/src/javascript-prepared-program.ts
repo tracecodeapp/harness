@@ -4,6 +4,7 @@ import type {
   RuntimePreparedCodeBatchCall,
   RuntimePreparedCodeCall,
   RuntimePreparedProgram,
+  RuntimePreparedExecutionProfile,
   RuntimePreparedProgramMode,
   RuntimePreparedTraceBatchCall,
   RuntimePreparedTraceCall,
@@ -58,6 +59,7 @@ function linkAbortSignals(
 
 export interface JavaScriptPreparedProgramOperations {
   readonly mode: RuntimePreparedProgramMode;
+  readonly profile: RuntimePreparedExecutionProfile;
   executeCode?(
     call: RuntimePreparedCodeCall
   ): Promise<CodeExecutionResult>;
@@ -138,6 +140,7 @@ export function createJavaScriptPreparedProgram(
     return Object.freeze({
       mode: 'code' as const,
       capabilities: Object.freeze({
+        profile: operations.profile,
         caseIsolation: 'fresh-case-state' as const,
         maxConcurrency: 1,
       }),
@@ -165,6 +168,7 @@ export function createJavaScriptPreparedProgram(
   return Object.freeze({
     mode: 'trace' as const,
     capabilities: Object.freeze({
+      profile: operations.profile,
       caseIsolation: 'fresh-case-state' as const,
       maxConcurrency: 1,
     }),

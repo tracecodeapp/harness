@@ -136,27 +136,29 @@ to the learner verbatim.
 
 ## Isolation
 
-The foundation intentionally exposes one safe mode:
+Judge exposes one observable case contract: `fresh-case-state`. A prepared
+provider resolves that contract through one of two safe implementation
+profiles:
 
-```text
-fresh-session-per-case
-```
+- `fast` retains trusted immutable compiler/runtime state and creates the
+  language's smallest proven fresh case realm; or
+- `compatibility` uses the provider's general isolated runner, including a
+  disposable outer language runtime when necessary.
 
-Judge mounts and compiles once, takes a quiescent TKFS image, then opens every
-case in a new TraceKernel session from that image. This isolates:
+Correctness and trace are execution modes, not isolation profiles. A provider
+must independently prove its fast path for each mode. TraceKernel applies the
+same `algorithm` syscall profile to both runtime profiles, so selecting `fast`
+does not grant filesystem, process, thread, network, descriptor, terminal, or
+watchdog authority.
 
-- language process state;
-- runtime leases;
-- environment mutations;
-- descriptors and pipes;
-- filesystem writes;
-- signals and process topology.
+The original compile-once path may still materialize a fresh TraceKernel
+session from a quiescent image for every case. Prepared browser providers may
+instead run a batch through one Judge process because the language provider
+owns the fresh mutable case realm. In both paths, concurrency changes
+scheduling only and results preserve input order.
 
-Concurrency changes scheduling only. `Effect.forEach` preserves input order in
-the returned case results even when cases finish out of order.
-
-An unsafe shared-session mode is deliberately absent. It should be added only
-for an explicit trusted workload with measured need.
+See `docs/runtime-execution-profiles.md` for selection, poisoning, fallback,
+and the language mapping.
 
 ## Cancellation and timeout
 

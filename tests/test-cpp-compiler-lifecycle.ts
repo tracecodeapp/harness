@@ -552,7 +552,8 @@ async function testPreparedProviderProtocolLifecycle(): Promise<void> {
       `C++ prepared provider should return a code program: ${JSON.stringify(preparation)}`
     );
     assertCondition(
-      preparation.program.capabilities.caseIsolation === 'fresh-case-state' &&
+      preparation.program.capabilities.profile === 'fast' &&
+        preparation.program.capabilities.caseIsolation === 'fresh-case-state' &&
         preparation.program.capabilities.maxConcurrency === 1,
       'C++ prepared provider should report fresh state and its serialized worker capacity'
     );

@@ -46,6 +46,9 @@ import type {
 import type {
   BrowserSafeExecutionOptions,
 } from '../../packages/runtime-browser/src/worker-lifecycle-policy';
+import type {
+  JavaScriptBrowserRuntimeProviderOptions,
+} from '../../packages/runtime-javascript/src/browser-runtime-provider';
 export {
   BROWSER_WORKER_LIFECYCLE_POLICIES,
 } from '../../packages/runtime-browser/src/worker-lifecycle-policy';
@@ -259,6 +262,7 @@ export interface CreateBrowserJudgeHostOptions {
   readonly debug?: boolean;
   readonly safeExecution?: BrowserSafeExecutionOptions;
   readonly python?: BrowserJudgePythonOptions;
+  readonly javascript?: JavaScriptBrowserRuntimeProviderOptions;
   readonly java?: BrowserJudgeJavaOptions;
   readonly csharp?: BrowserJudgeCSharpOptions;
   readonly cpp?: BrowserJudgeCppOptions;
@@ -1132,6 +1136,32 @@ function preparedRunTimeoutMs(
     : perCaseTimeoutMs;
 }
 
+function traceTranchePlan<Input, Expected>(
+  plan: JudgeEvaluationPlan<Input, Expected>,
+  caseIds: readonly string[],
+  perCaseTimeoutMs: number | undefined
+): JudgeEvaluationPlan<Input, Expected> {
+  const casesById = new Map(
+    plan.cases.map((testCase) => [testCase.id, testCase])
+  );
+  return Object.freeze({
+    ...plan,
+    run: Object.freeze({
+      ...plan.run,
+      ...(perCaseTimeoutMs === undefined
+        ? {}
+        : {
+            timeoutMs: preparedRunTimeoutMs(
+              perCaseTimeoutMs,
+              caseIds.length,
+              caseIds.length > 1
+            ),
+          }),
+    }),
+    cases: Object.freeze(caseIds.map((caseId) => casesById.get(caseId)!)),
+  });
+}
+
 /**
  * Public runtime-judge facade for 0.14.
  *
@@ -1217,6 +1247,8 @@ export type RuntimeJudgeExecuteRequest<
 
 export interface RuntimeJudgeExecuteResult<Result = unknown, Expected = unknown> {
   readonly executionId?: string;
+  /** Initial interactive trace tranche, separate from authoritative correctness. */
+  readonly traceEvaluation?: JudgeEvaluationResult<Result, Expected>;
   readonly evaluation: JudgeEvaluationResult<Result, Expected>;
 }
 
@@ -1263,6 +1295,20 @@ class RuntimeJudgeComposition
       : this.startExecution(request);
   }
 
+  /** @internal Starts the retained trace side of a dual-program evaluation. */
+  startInteractiveTraceExecution<
+    Input = Record<string, unknown>,
+    Result = unknown,
+    Expected = unknown,
+  >(
+    request: RuntimeJudgeInitialExecuteRequest<Input, Expected, Result>
+  ): Effect.Effect<
+    RuntimeJudgeExecuteResult<Result, Expected>,
+    JudgePlanError | JudgeInfrastructureError
+  > {
+    return this.startExecution(request, true);
+  }
+
   disposeExecution(
     executionId: string
   ): Effect.Effect<void, JudgeInfrastructureError> {
@@ -1289,7 +1335,8 @@ class RuntimeJudgeComposition
     Result,
     Expected,
   >(
-    request: RuntimeJudgeInitialExecuteRequest<Input, Expected, Result>
+    request: RuntimeJudgeInitialExecuteRequest<Input, Expected, Result>,
+    selectedTraceOnly = false
   ): Effect.Effect<
     RuntimeJudgeExecuteResult<Result, Expected>,
     JudgePlanError | JudgeInfrastructureError
@@ -1320,19 +1367,49 @@ class RuntimeJudgeComposition
       const operation = Effect.gen(this, function* () {
         yield* validateTraceSelection(plan, request.tracing);
         const build = yield* prepareJudgePlan(port, plan);
-        const evaluation = yield* evaluatePreparedJudgePlan<
-          TraceKernelFileSystemImage,
-          Input,
-          Result,
-          Expected
-        >(port, plan, build, {
-          comparator: request.comparator,
-          ...(this.traceCapable
-            ? {
-                tracing: request.tracing ?? { caseIds: Object.freeze([]) },
+        const selectedCaseIds = request.tracing?.caseIds ?? Object.freeze([]);
+        const evaluation = selectedTraceOnly && selectedCaseIds.length === 0
+          ? (
+              build.compile && build.compile.status !== 'compiled'
+                ? Object.freeze({
+                    planId: plan.id,
+                    status: 'compile-failed' as const,
+                    compile: build.compile,
+                    cases: Object.freeze([]) as readonly [],
+                  })
+                : Object.freeze({
+                    planId: plan.id,
+                    status: 'completed' as const,
+                    ...(build.compile ? { compile: build.compile } : {}),
+                    cases: Object.freeze([]),
+                  })
+            )
+          : yield* evaluatePreparedJudgePlan<
+              TraceKernelFileSystemImage,
+              Input,
+              Result,
+              Expected
+            >(
+              port,
+              selectedTraceOnly
+                ? traceTranchePlan(
+                    plan,
+                    selectedCaseIds,
+                    request.plan.run.timeoutMs
+                  )
+                : plan,
+              build,
+              {
+                comparator: request.comparator,
+                ...(this.traceCapable
+                  ? {
+                      tracing: request.tracing ?? {
+                        caseIds: Object.freeze([]),
+                      },
+                    }
+                  : {}),
               }
-            : {}),
-        });
+            );
         if (
           request.interactive === true &&
           evaluation.status === 'completed'
@@ -1413,24 +1490,11 @@ class RuntimeJudgeComposition
           message: 'Interactive tracing requires at least one retained case id.',
         }));
       }
-      const plan = Object.freeze({
-        ...retained.plan,
-        run: Object.freeze({
-          ...retained.plan.run,
-          ...(retained.perCaseTimeoutMs === undefined
-            ? {}
-            : {
-                timeoutMs: preparedRunTimeoutMs(
-                  retained.perCaseTimeoutMs,
-                  selected.size,
-                  selected.size > 1
-                ),
-              }),
-        }),
-        cases: Object.freeze(
-          request.tracing.caseIds.map((caseId) => casesById.get(caseId)!)
-        ),
-      }) as JudgeEvaluationPlan<Input, Expected>;
+      const plan = traceTranchePlan(
+        retained.plan as JudgeEvaluationPlan<Input, Expected>,
+        request.tracing.caseIds,
+        retained.perCaseTimeoutMs
+      );
       return evaluatePreparedJudgePlan<
         TraceKernelFileSystemImage,
         Input,
@@ -1579,7 +1643,7 @@ class RuntimeJudgeComposition
 function createRuntimeJudge(
   options: CreateRuntimeJudgeOptions
 ): Effect.Effect<
-  RuntimeJudge,
+  RuntimeJudgeComposition,
   never,
   Scope.Scope
 > {
@@ -1610,10 +1674,10 @@ function createRuntimeJudge(
   );
 }
 
-export function createBrowserRuntimeJudge(
+function createBrowserRuntimeJudgeComposition(
   options: CreateBrowserRuntimeJudgeOptions
 ): Effect.Effect<
-  RuntimeJudge,
+  RuntimeJudgeComposition,
   never,
   Scope.Scope
 > {
@@ -1630,6 +1694,12 @@ export function createBrowserRuntimeJudge(
     binding: options.binding,
     runtimeControl: options.runtimeControl,
   });
+}
+
+export function createBrowserRuntimeJudge(
+  options: CreateBrowserRuntimeJudgeOptions
+): Effect.Effect<RuntimeJudge, never, Scope.Scope> {
+  return createBrowserRuntimeJudgeComposition(options);
 }
 
 /**
@@ -1756,9 +1826,93 @@ export function createBrowserJudgeHostFromRuntimeHost(
         `Judge runtime ${JSON.stringify(bundle.plan.runtime)} is not supported by this browser authority.`
       );
     }
-    const traceCapable =
-      request.interactive === true || request.tracing !== undefined;
     const execution = bundle.execution;
+    const comparator = bundle.comparison
+      ? createJudgeComparator<Input>(bundle.comparison)
+      : undefined;
+
+    if (request.interactive === true) {
+      await Effect.runPromise(
+        validateTraceSelection(bundle.plan, request.tracing)
+      );
+      const codeScope = Effect.runSync(Scope.make());
+      let correctness: RuntimeJudgeExecuteResult<Result, Expected>;
+      try {
+        const codeJudge = await Effect.runPromise(
+          Scope.extend(
+            createBrowserRuntimeJudgeComposition({
+              host,
+              language,
+              binding: algorithmRuntimeBinding(execution, false),
+            }),
+            codeScope
+          )
+        );
+        correctness = await Effect.runPromise(
+          codeJudge.execute<Input, Result, Expected>({
+            plan: bundle.plan,
+            comparator,
+          }),
+          request.signal ? { signal: request.signal } : undefined
+        );
+        await Effect.runPromise(Scope.close(codeScope, Exit.void));
+      } catch (error) {
+        await Effect.runPromise(
+          Scope.close(codeScope, Exit.fail(error))
+        ).catch(() => undefined);
+        throw error;
+      }
+
+      if (correctness.evaluation.status === 'compile-failed') {
+        return correctness;
+      }
+
+      const traceScope = Effect.runSync(Scope.make());
+      try {
+        const traceJudge = await Effect.runPromise(
+          Scope.extend(
+            createBrowserRuntimeJudgeComposition({
+              host,
+              language,
+              binding: algorithmRuntimeBinding(execution, true),
+            }),
+            traceScope
+          )
+        );
+        const traced = await Effect.runPromise(
+          traceJudge.startInteractiveTraceExecution<Input, Result, Expected>({
+            plan: bundle.plan,
+            interactive: true,
+            tracing: request.tracing,
+            comparator,
+          }),
+          request.signal ? { signal: request.signal } : undefined
+        );
+        if (traced.executionId) {
+          const retained: RetainedBrowserJudgeExecution = {
+            judge: traceJudge,
+            scope: traceScope,
+            activeContinuations: 0,
+          };
+          retainedExecutions.set(traced.executionId, retained);
+          armIdleTimer(traced.executionId, retained);
+        } else {
+          await Effect.runPromise(Scope.close(traceScope, Exit.void));
+        }
+        return Object.freeze({
+          ...(traced.executionId ? { executionId: traced.executionId } : {}),
+          evaluation: correctness.evaluation,
+          traceEvaluation: traced.evaluation,
+        });
+      } catch (error) {
+        await Effect.runPromise(
+          Scope.close(traceScope, Exit.fail(error))
+        ).catch(() => undefined);
+        throw error;
+      }
+    }
+
+    const traceCapable = request.tracing !== undefined;
     const binding = algorithmRuntimeBinding(execution, traceCapable);
     const scope = Effect.runSync(Scope.make());
     let judge: RuntimeJudge | undefined;
@@ -1774,9 +1928,7 @@ export function createBrowserJudgeHostFromRuntimeHost(
           plan: bundle.plan,
           interactive: request.interactive,
           tracing: request.tracing,
-          comparator: bundle.comparison
-            ? createJudgeComparator<Input>(bundle.comparison)
-            : undefined,
+          comparator,
         }),
         request.signal ? { signal: request.signal } : undefined
       );

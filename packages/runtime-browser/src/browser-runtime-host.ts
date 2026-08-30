@@ -182,6 +182,8 @@ async function rejectUnsafePreparedProgram(
     (program.mode === 'code' || program.mode === 'trace') &&
     typeof program.dispose === 'function' &&
     typeof program.executeIsolated === 'function' &&
+    (capabilities?.profile === 'fast' ||
+      capabilities?.profile === 'compatibility') &&
     capabilities?.caseIsolation === 'fresh-case-state' &&
     Number.isInteger(capabilities.maxConcurrency) &&
     capabilities.maxConcurrency > 0;
@@ -197,7 +199,8 @@ async function rejectUnsafePreparedProgram(
   }
   const contractError = new Error(
     `Prepared browser runtime for ${JSON.stringify(language)} must provide ` +
-      'fresh-case-state isolation and a positive integer maxConcurrency.'
+      'a fast or compatibility profile, fresh-case-state isolation, and a ' +
+      'positive integer maxConcurrency.'
   );
   if (disposalError !== undefined) {
     throw new AggregateError(

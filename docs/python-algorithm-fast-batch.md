@@ -4,18 +4,18 @@ Date: 2026-08-26
 
 ## Product contract
 
-Practice correctness evaluation prepares one immutable program, runs every case
-through the browser Judge and TraceKernel process boundary, and reports a result
-only after all cases settle. Python uses three explicit execution tiers:
+Practice evaluation prepares one immutable program, runs every case through
+the browser Judge and TraceKernel process boundary, and reports a result only
+after all cases settle. Python exposes the shared two-profile contract. Its
+classifier retains detailed internal reasons so compatibility can choose the
+necessary concrete boundary:
 
 | Tier | Batch boundary | Intended use |
 | --- | --- | --- |
 | `algorithm-fast` | One retained Pyodide worker with the reduced capability driver | Ordinary admitted interview algorithms |
-| `judge-compatible` | One retained Pyodide worker with the full generic executor and rollback guard | Algorithm-scoped code that the reduced driver cannot represent |
-| `hard-isolated` | One fresh outer Pyodide worker per case | Known reflection, shared-runtime mutation, unreviewed imports, or ambient capabilities |
+| `compatibility` | Full generic executor, with a fresh outer Pyodide worker whenever retained state is not proven safe | Code outside the reduced contract |
 
-The first two tiers reuse one initialized interpreter for the correctness
-batch. Every case still receives:
+The fast profile reuses one initialized interpreter. Every case still receives:
 
 - a fresh learner namespace and a fresh `Solution` instance;
 - a fresh input object graph;
@@ -27,13 +27,13 @@ batch. Every case still receives:
 The outer prepared execution owns only disposable workers. Cancellation,
 client timeout, program disposal, or provider reset terminates the active
 worker. Project and terminal execution are unchanged. Known ambient or
-interpreter-wide capabilities select `hard-isolated`; unsupported reduced
-driver constructs that remain algorithm-scoped select `judge-compatible`.
+interpreter-wide capabilities and unsupported reduced-driver constructs select
+the public compatibility profile.
 
 ## Admission and fallback
 
 Preparation parses the learner source with Python's `ast` module and records an
-explicit three-tier decision in the marshaled artifact.
+internal admission decision in the marshaled artifact.
 The fast batch driver is compiled only for an admitted code artifact and is
 required by artifact validation before execution. Execution re-derives the
 profile from the bound source before selecting the reduced guard, so a stored
@@ -73,9 +73,11 @@ builtins, environment, RNG, recursion state, cwd, and filesystem changes.
 state that cannot be reliably journaled.
 
 If exact inputs require the generic tree, list, or reference-graph materializer,
-an otherwise fast artifact moves sideways to the retained generic executor
-before learner code starts. Every selected trace uses a fresh outer worker;
-only untraced correctness batches use retained execution.
+an otherwise fast trace moves to compatibility before learner code starts.
+Plain-input traces retain the admitted Pyodide worker, create a fresh namespace
+for every case, reset trace/console/limit state, and use the reduced interpreter
+guard. An all-traced batch enters that guard once and discards each namespace
+before starting the next case.
 
 An unexpected internal fast-driver failure is handled at the same outer
 boundary: no partial batch result is exposed, the retained worker is retired,
@@ -132,10 +134,9 @@ coerced to strings, so learner `__getattribute__` implementations cannot place
 arbitrary objects in the result graph. Any later driver-level encoding failure
 uses the outer retire-and-retry boundary rather than rewriting completed cases.
 
-Trace execution and code batches requiring custom node materialization do not
-use the reduced driver. They retain the generic executor, full module rollback,
-and filesystem journal in one batch worker unless static admission requires
-the hard tier.
+Compatibility trace execution and code batches requiring custom node
+materialization use the generic executor and full module/filesystem rollback;
+the provider retires the outer worker when the fast input contract was not met.
 
 ## Why this is materially faster
 
