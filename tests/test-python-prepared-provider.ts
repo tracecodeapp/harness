@@ -424,6 +424,86 @@ test('Python algorithm-fast driver failure retries each case in a hard-isolated 
   provider.terminate();
 });
 
+test('Python algorithm-fast trace batch failure retries each case in a fresh worker', async () => {
+  const calls: Array<{ worker: number; method: string }> = [];
+  let nextWorker = 0;
+  const createWorkerClient = (): PythonWorkerClient => {
+    const worker = nextWorker++;
+    return {
+      async warmup() {
+        calls.push({ worker, method: 'warmup' });
+        return { success: true, loadTimeMs: 1 };
+      },
+      async prepareProgram(call: RuntimeProgramPreparationCall) {
+        calls.push({ worker, method: 'prepare' });
+        return {
+          success: true as const,
+          artifact: artifact(call.mode, 'algorithm-fast'),
+          mode: call.mode,
+          consoleOutput: [],
+        };
+      },
+      async executePreparedTraceBatch() {
+        calls.push({ worker, method: 'execute-trace-batch' });
+        throw new PythonAlgorithmFastBatchUnavailableError();
+      },
+      async executePreparedTrace(
+        _handle: unknown,
+        call: { inputs: Record<string, unknown> }
+      ) {
+        calls.push({ worker, method: 'execute-trace' });
+        return {
+          success: true,
+          output: call.inputs.value,
+          trace: { events: [] },
+          executionTimeMs: 1,
+          consoleOutput: [],
+        };
+      },
+      terminate() {
+        calls.push({ worker, method: 'terminate' });
+      },
+    } as unknown as PythonWorkerClient;
+  };
+  const provider = createPythonPreparedExecutionProvider({ createWorkerClient });
+  const preparation = await provider.prepareProgram(preparationCall('trace'));
+  assert.equal(preparation.kind, 'prepared');
+  if (
+    preparation.kind !== 'prepared' ||
+    preparation.program.mode !== 'trace' ||
+    !preparation.program.executeBatchIsolated
+  ) {
+    return;
+  }
+
+  const results = await preparation.program.executeBatchIsolated({
+    inputBatch: [{ value: 1 }, { value: 2 }, { value: 3 }],
+  });
+  assert.deepEqual(
+    results.map((result) =>
+      result.kind === 'completed' ? result.output : undefined
+    ),
+    [1, 2, 3]
+  );
+  const batchExecutions = calls.filter(
+    (call) => call.method === 'execute-trace-batch'
+  );
+  const compatibilityExecutions = calls.filter(
+    (call) => call.method === 'execute-trace'
+  );
+  assert.equal(batchExecutions.length, 1);
+  assert.equal(compatibilityExecutions.length, 3);
+  assert.equal(
+    new Set([
+      ...batchExecutions.map((call) => call.worker),
+      ...compatibilityExecutions.map((call) => call.worker),
+    ]).size,
+    4
+  );
+  await preparation.program.dispose();
+  provider.terminate();
+});
+
 test('Python fast trace batches retain one worker and cross its boundary once', async () => {
   const calls: Array<{ worker: number; method: string }> = [];
   let nextWorker = 0;

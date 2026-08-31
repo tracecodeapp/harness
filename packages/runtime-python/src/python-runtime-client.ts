@@ -755,7 +755,12 @@ class PreparedPythonProgramLifetime {
           return results;
         },
         (results) => results.every(pythonTraceResultKeepsFastWorker)
-      );
+      ).catch((error: unknown) => {
+        if (!(error instanceof PythonAlgorithmFastBatchUnavailableError)) {
+          throw error;
+        }
+        return this.executeCompatibilityTraceBatch(call);
+      });
     }
     return this.executeCompatibilityTraceBatch(call);
   }
@@ -820,12 +825,18 @@ class PreparedPythonProgramLifetime {
   ): Promise<readonly ExecutionResult[]> {
     const results: ExecutionResult[] = [];
     for (let index = 0; index < call.inputBatch.length; index += 1) {
-      results.push(await this.executeTrace({
-        inputs: call.inputBatch[index]!,
-        signal: call.signal,
-        limits: call.limits,
-        recordTrace: call.traceEnabledBatch?.[index] ?? true,
-      }));
+      results.push(
+        await this.executeSerial(call.signal, async (client, signal) =>
+          normalizePythonExecutionResult(
+            await client.executePreparedTrace(this.handle, {
+              inputs: call.inputBatch[index]!,
+              signal,
+              limits: call.limits,
+              recordTrace: call.traceEnabledBatch?.[index] ?? true,
+            })
+          )
+        )
+      );
     }
     return results;
   }

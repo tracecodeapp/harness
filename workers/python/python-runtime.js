@@ -6882,23 +6882,14 @@ async function executeWithTracing(
         }
       : undefined;
     const resultJson = prepared
-      ? prepared.guardAlreadyActive === true
-        ? runCompiledPythonInFreshNamespace(
-            deps,
-            getIsolatedPythonExecutionGuard(deps.getPyodide()),
-            prepared.executorCode,
-            '__tracecode_execution_result_json',
-            preparedBindings,
-            prepared.scopeTimings
-          )
-        : await runCompiledPythonInFreshExecutionScope(
-            deps,
-            prepared.executorCode,
-            '__tracecode_execution_result_json',
-            preparedBindings,
-            prepared.scopeTimings,
-            prepared.isolationTier
-          )
+      ? await runCompiledPythonInFreshExecutionScope(
+          deps,
+          prepared.executorCode,
+          '__tracecode_execution_result_json',
+          preparedBindings,
+          prepared.scopeTimings,
+          prepared.isolationTier
+        )
       : await runPythonInFreshExecutionScope(
           deps,
           tracingCode,
@@ -8309,21 +8300,12 @@ async function executePreparedProgramBatch(
     const useAlgorithmFastScopes =
       currentIsolationProfile.tier === 'algorithm-fast' &&
       cases.every((inputs) => !pythonInputsRequireCustomMaterialization(inputs));
-    const useRetainedTraceGuard =
-      artifact.mode === 'trace' &&
-      useAlgorithmFastScopes &&
-      (traceEnabledBatch?.every((enabled) => enabled) ?? true);
     const filesystem = useAlgorithmFastScopes
       ? undefined
       : isolatedPythonFilesystemManager(deps.getPyodide());
-    const retainedTraceGuard = useRetainedTraceGuard
-      ? getIsolatedPythonExecutionGuard(deps.getPyodide())
-      : undefined;
-    retainedTraceGuard?.begin_algorithm();
-    try {
-      for (let caseIndex = 0; caseIndex < cases.length; caseIndex += 1) {
-        const inputs = cases[caseIndex];
-        const scopeTimings = {
+    for (let caseIndex = 0; caseIndex < cases.length; caseIndex += 1) {
+      const inputs = cases[caseIndex];
+      const scopeTimings = {
           inputLiteralMs: 0,
           namespaceCreateMs: 0,
           guardBeginMs: 0,
@@ -8334,18 +8316,18 @@ async function executePreparedProgramBatch(
           resultParseMs: 0,
           filesystemBeginMs: 0,
           filesystemRestoreMs: 0,
-        };
-        const tracingEnabled = artifact.mode === 'trace'
-          ? (traceEnabledBatch?.[caseIndex] ?? true)
-          : false;
-        const filesystemBeginStartedAt = deps.performanceNow();
-        filesystem?.begin();
-        scopeTimings.filesystemBeginMs +=
-          deps.performanceNow() - filesystemBeginStartedAt;
-        let result;
-        try {
-          result = artifact.mode === 'trace'
-            ? await executeWithTracing(
+      };
+      const tracingEnabled = artifact.mode === 'trace'
+        ? (traceEnabledBatch?.[caseIndex] ?? true)
+        : false;
+      const filesystemBeginStartedAt = deps.performanceNow();
+      filesystem?.begin();
+      scopeTimings.filesystemBeginMs +=
+        deps.performanceNow() - filesystemBeginStartedAt;
+      let result;
+      try {
+        result = artifact.mode === 'trace'
+          ? await executeWithTracing(
                 deps,
                 artifact.code,
                 artifact.functionName,
@@ -8361,10 +8343,9 @@ async function executePreparedProgramBatch(
                   isolationTier: useAlgorithmFastScopes
                     ? 'algorithm-fast'
                     : 'compatibility',
-                  guardAlreadyActive: useRetainedTraceGuard,
                 }
-              )
-            : await executeCode(
+            )
+          : await executeCode(
                 deps,
                 artifact.code,
                 artifact.functionName ?? '',
@@ -8380,28 +8361,25 @@ async function executePreparedProgramBatch(
                     ? 'algorithm-fast'
                     : 'compatibility',
                 }
-              );
-        } finally {
-          const filesystemRestoreStartedAt = deps.performanceNow();
-          filesystem?.restore();
-          scopeTimings.filesystemRestoreMs +=
-            deps.performanceNow() - filesystemRestoreStartedAt;
-        }
-        const timedResult = {
-          ...result,
-          timings: {
-            ...(result?.timings ?? {}),
-            ...scopeTimings,
-          },
-        };
-        results.push(
-          artifact.mode === 'trace' && !tracingEnabled
-            ? pythonCodeResultAsEmptyTraceResult(timedResult)
-            : timedResult
-        );
+            );
+      } finally {
+        const filesystemRestoreStartedAt = deps.performanceNow();
+        filesystem?.restore();
+        scopeTimings.filesystemRestoreMs +=
+          deps.performanceNow() - filesystemRestoreStartedAt;
       }
-    } finally {
-      retainedTraceGuard?.restore();
+      const timedResult = {
+        ...result,
+        timings: {
+          ...(result?.timings ?? {}),
+          ...scopeTimings,
+        },
+      };
+      results.push(
+        artifact.mode === 'trace' && !tracingEnabled
+          ? pythonCodeResultAsEmptyTraceResult(timedResult)
+          : timedResult
+      );
     }
     const runMs = deps.performanceNow() - startedAt;
     return {
