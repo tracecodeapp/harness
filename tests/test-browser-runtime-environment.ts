@@ -158,17 +158,6 @@ async function main(): Promise<void> {
       (await classicCSharp.preflight('csharp')).status === 'unavailable',
       'C# Judge readiness must preflight its compiler and runner role bundles'
     );
-    const disabledPreparedCSharp = createBrowserRuntimeEnvironment({
-      providers: ['csharp'],
-      surface: 'classic',
-      csharpPreparedAuthority: false,
-      featureOverrides: readyFeatures,
-      assets: { runtimeManifests: { csharp: csharpRoleManifest } },
-    });
-    assertCondition(
-      (await disabledPreparedCSharp.preflight('csharp')).status === 'ready',
-      'disabled C# prepared authority must not preflight unused compiler and runner bundles'
-    );
   } finally {
     globalThis.fetch = originalFetch;
   }
@@ -184,49 +173,10 @@ async function main(): Promise<void> {
     ),
     'default packed C# Judge runners must declare their Web Crypto requirement'
   );
-  const disabledPreparedNoCryptoCSharp = createBrowserRuntimeEnvironment({
+  const legacyCSharp = createBrowserRuntimeEnvironment({
     providers: ['csharp'],
     surface: 'classic',
-    csharpPreparedAuthority: false,
-    featureOverrides: { ...readyFeatures, webCrypto: false },
-  });
-  assertCondition(
-    (await disabledPreparedNoCryptoCSharp.preflight('csharp')).status ===
-      'ready',
-    'C# readiness must not require Web Crypto when prepared authority is disabled'
-  );
-  const disabledPreparedHost = createBrowserRuntimeHost({
-    providers: ['csharp'],
-    csharp: { preparedAuthority: false },
-    featureOverrides: { ...readyFeatures, webCrypto: false },
-  });
-  assertCondition(
-    disabledPreparedHost.environment.csharpPreparedAuthority === false &&
-      (await disabledPreparedHost.preflightLanguage('csharp')).status ===
-        'ready',
-    'the public browser host must propagate disabled C# prepared authority into readiness'
-  );
-  disabledPreparedHost.dispose();
-  const inheritedPreparedEnvironment = createBrowserRuntimeEnvironment({
-    providers: ['csharp'],
-    surface: 'classic',
-    csharpPreparedAuthority: false,
-    featureOverrides: { ...readyFeatures, webCrypto: false },
-  });
-  const inheritedPreparedHost = createBrowserRuntimeHost({
-    environment: inheritedPreparedEnvironment,
-  });
-  assertCondition(
-    inheritedPreparedHost.environment.csharpPreparedAuthority === false &&
-      (await inheritedPreparedHost.preflightLanguage('csharp')).status ===
-        'ready',
-    'the public browser host must inherit prepared-authority mode from a shared environment'
-  );
-  inheritedPreparedHost.dispose();
-  const legacyNoCryptoCSharp = createBrowserRuntimeEnvironment({
-    providers: ['csharp'],
-    surface: 'classic',
-    featureOverrides: { ...readyFeatures, webCrypto: false },
+    featureOverrides: readyFeatures,
     assets: {
       runtimeManifests: {
         csharp: {
@@ -244,8 +194,8 @@ async function main(): Promise<void> {
     },
   });
   assertCondition(
-    (await legacyNoCryptoCSharp.preflight('csharp')).status === 'ready',
-    'legacy unpacked C# manifests must not inherit the packed-runner Web Crypto requirement'
+    (await legacyCSharp.preflight('csharp')).status === 'unavailable',
+    'C# Judge readiness must reject manifests without compiler and runner roles'
   );
 
   let rejectedEmpty = false;

@@ -23,6 +23,27 @@ This repo uses Git tags as release boundaries. Version notes below summarize wha
 
 ### Changed
 
+- Renamed the Python helper asset from `runtime-core.js` to
+  `python-runtime.js`. Browser manifests now use `assets.runtime`, browser
+  overrides use `pythonRuntime`, worker configuration uses `runtimeUrl`, and
+  native configuration uses `pythonRuntimePath`; the old 0.x names are not
+  retained as aliases.
+- The browser C# Judge now requires the compiler and runner role bundles and
+  constructs only that authority topology. The legacy general-worker fallback
+  and its `preparedAuthority` configuration switch are no longer part of the
+  0.17 boundary; C# Projects continue to use their separate general worker.
+- The root browser API always uses the retained SES JavaScript/TypeScript
+  execution path. The disposable-worker selector remains an internal parity
+  diagnostic instead of a public engine choice.
+- Browser runtime providers now receive only the named worker-lifecycle policy;
+  the retired `prewarmAfterUse` boolean is no longer part of the 0.17 public
+  configuration boundary. The host no longer retains whole disposed prepared
+  programs across evaluations, leaving immutable artifact caching and clean
+  standby ownership with the language provider that can enforce each runtime's
+  isolation contract.
+- Removed investigation-only Python, C#, and C++ profiling counters, rebuilt
+  the Python native wheel without its callback-floor probe API, and retired
+  historical spike scripts and reports from the shipped source tree.
 - C++ prepared correctness now sends the case vector through one Worker
   request while still creating a fresh filesystem, WASI process,
   `WebAssembly.Instance`, linear memory, globals, and C++ runtime for every

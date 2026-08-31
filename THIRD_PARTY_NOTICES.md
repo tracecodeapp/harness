@@ -247,7 +247,7 @@ the project AGPL-3.0-only license unless otherwise noted by their embedded
 third-party dependencies:
 
 - `workers/python/python-worker.js`
-- `workers/python/runtime-core.js`
+- `workers/python/python-runtime.js`
 - `workers/python/generated-python-harness-snippets.js`
 - `workers/javascript/javascript-worker.js`
 - `workers/javascript/javascript-ses-algorithm-worker.js`

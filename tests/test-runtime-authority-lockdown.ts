@@ -458,9 +458,9 @@ function testLanguageWorkerIntegrationAndCppBoundary(): void {
       pythonSource.includes('trustedPythonUserAuthorityLockdown = lockdown;') &&
       pythonSource.includes('return trustedPythonUserAuthorityLockdown(callback, { scope: self, mode });') &&
       pythonSource.includes("throw new Error('Python user execution requires the shared runtime authority lockdown policy.')") &&
-      pythonSource.includes('const runtimeCore = loadPyodideRuntimeCore();\n  return withPythonUserAuthorityLockdown(() =>\n    runtimeCore.executeWithTracing') &&
-      pythonSource.includes('const runtimeCore = loadPyodideRuntimeCore();\n  return withPythonUserAuthorityLockdown(() =>\n    runtimeCore.executeCode(') &&
-      pythonSource.includes('const runtimeCore = loadPyodideRuntimeCore();\n  return withPythonUserAuthorityLockdown(() =>\n    runtimeCore.executePreparedProgramBatch') &&
+      pythonSource.includes('const runtime = loadPythonRuntime();\n  return withPythonUserAuthorityLockdown(() =>\n    runtime.executeWithTracing') &&
+      pythonSource.includes('const runtime = loadPythonRuntime();\n  return withPythonUserAuthorityLockdown(() =>\n    runtime.executeCode(') &&
+      pythonSource.includes('const runtime = loadPythonRuntime();\n  return withPythonUserAuthorityLockdown(() =>\n    runtime.executePreparedProgramBatch') &&
       /return withPythonUserAuthorityLockdown\(\s*\(\) => executeProjectPythonUserCall/.test(pythonSource),
     'Python worker must warm trusted assets before fail-closed standalone, prepared-batch, and project user execution'
   );

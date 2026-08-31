@@ -71,7 +71,8 @@ export interface JavaScriptWorkerClientOptions {
   javascriptLibrariesUrl?: string;
   typescriptCompilerUrl?: string;
   typescriptCompilerPreflight?: () => Promise<void>;
-  prewarmAfterUse?: boolean;
+  /** Replenish one clean executor after leasing the current standby. */
+  replenishStandbyAfterUse?: boolean;
   /** @internal Retained hardened workers with one fresh SES compartment per case. */
   algorithmExecution?: 'disposable-worker' | 'ses-compartment-pool';
   /** @internal Module Worker asset used only by `ses-compartment-pool`. */
@@ -596,7 +597,7 @@ export class JavaScriptWorkerClient {
       // Keep one clean executor ready while the current command runs. The
       // standby never receives user code, so every command still gets a fresh
       // authority boundary without paying worker bootstrap on its critical path.
-      if (this.options.prewarmAfterUse ?? true) {
+      if (this.options.replenishStandbyAfterUse ?? true) {
         void this.ensureStandbyExecutionWorker(expectedGeneration).catch(
           () => undefined
         );
@@ -641,7 +642,7 @@ export class JavaScriptWorkerClient {
       if (initialStandby) {
         this.leasedExecutionWorkers.add(initialStandby);
       }
-      if (this.options.prewarmAfterUse ?? true) {
+      if (this.options.replenishStandbyAfterUse ?? true) {
         void this.ensureStandbyExecutionWorker(expectedGeneration).catch(
           () => undefined
         );

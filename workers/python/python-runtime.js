@@ -1,11 +1,11 @@
 /**
- * Python runtime core helpers loaded by python-worker.js.
+ * Python execution runtime loaded by python-worker.js.
  *
  * Exposes runtime helpers behind a dependency-injected surface so
  * the top-level worker can stay focused on loading + message dispatch.
  */
 
-(function initPyodideRuntimeCore(globalScope) {
+(function initPythonRuntime(globalScope) {
 const PYTHON_DEFAULT_IMPORT_PRELUDE = `
 import array
 from array import array
@@ -1442,50 +1442,6 @@ function getTraceMaxBytes(value) {
   return Math.min(MAX_TRACE_MAX_BYTES, Math.max(1024, Math.floor(value)));
 }
 
-function buildOnDemandPythonExecutorCompilerSource(
-  deps,
-  traceSource,
-  codeSource
-) {
-  const traceSourceLiteral = deps.toPythonLiteral(String(traceSource ?? ''));
-  const codeSourceLiteral = deps.toPythonLiteral(String(codeSource ?? ''));
-  return `
-import ast as _tracecode_executor_ast
-
-_tracecode_trace_executor_tree = _tracecode_executor_ast.parse(
-    ${traceSourceLiteral},
-    filename='<tracecode-prepared-trace-enabled>',
-    mode='exec',
-)
-_tracecode_code_executor_tree = _tracecode_executor_ast.parse(
-    ${codeSourceLiteral},
-    filename='<tracecode-prepared-trace-disabled>',
-    mode='exec',
-)
-_tracecode_executor_selector = _tracecode_executor_ast.If(
-    test=_tracecode_executor_ast.Name(
-        id='__tracecode_tracing_enabled',
-        ctx=_tracecode_executor_ast.Load(),
-    ),
-    body=_tracecode_trace_executor_tree.body or [_tracecode_executor_ast.Pass()],
-    orelse=_tracecode_code_executor_tree.body or [_tracecode_executor_ast.Pass()],
-)
-_tracecode_on_demand_executor_tree = _tracecode_executor_ast.Module(
-    body=[_tracecode_executor_selector],
-    type_ignores=[],
-)
-_tracecode_executor_ast.fix_missing_locations(
-    _tracecode_on_demand_executor_tree
-)
-__tracecode_prepared_executor_result = compile(
-    _tracecode_on_demand_executor_tree,
-    '<tracecode-prepared-trace>',
-    'exec',
-)
-__tracecode_prepared_executor_result
-`;
-}
-
 function buildPythonAlgorithmFastBatchSource(
   deps,
   functionName,
@@ -2720,7 +2676,6 @@ for _tracecode_input_name, _tracecode_input_value in _tracecode_raw_inputs.items
   const maxLineEvents = options.maxLineEvents || 10000;
   const maxSingleLineHits = options.maxSingleLineHits || 500;
   const minimalTrace = options.minimalTrace === true;
-  const traceProfile = options.traceProfile === true;
   const maxPathDepth = getTraceMaxPathDepth(options.maxPathDepth);
   const maxTraceBytes = getTraceMaxBytes(options.maxTraceBytes);
   // Keep stdout capture deterministic for the app UI; worker-console mirroring
@@ -2747,14 +2702,7 @@ _trace_events = []
 # Native tracer module (loaded late, see the arm site); None = python paths.
 _TC_NATIVE = None
 _trace_line_event_count = 0
-_TRACE_PROFILE = ${traceProfile ? 'True' : 'False'}
-from time import perf_counter as _tc_perf
-_tp_import_at = _tc_perf()
-_tp_tracer = 0.0
-_tp_snapshot = 0.0
-_tp_stack = 0.0
-_tp_step = 0.0
-_tp_convert = 0.0
+from time import perf_counter as _tracecode_perf_counter
 
 # PEP 669 tracing: sys.monitoring keeps the specializing interpreter, which
 # sys.settrace disables for every traced frame (~8x on tight loops). The
@@ -5006,7 +4954,7 @@ def _tracecode_is_annotation_node(node):
 
 def _tracecode_check_deadline():
     global _timeout_reason
-    if _case_deadline > 0.0 and _tc_perf() >= _case_deadline:
+    if _case_deadline > 0.0 and _tracecode_perf_counter() >= _case_deadline:
         _timeout_reason = 'client-timeout'
         raise _InfiniteLoopDetected('Execution exceeded the per-case wall-clock limit')
 
@@ -6088,8 +6036,8 @@ def _tracer(frame, event, arg,
         _total_line_events += 1
         if (_total_line_events & 1023) == 0:
             if _hard_line_deadline == 0.0:
-                _hard_line_deadline = _tc_perf() + _hard_line_grace_seconds
-            if _total_line_events >= _hard_line_ceiling or _tc_perf() > _hard_line_deadline:
+                _hard_line_deadline = _tracecode_perf_counter() + _hard_line_grace_seconds
+            if _total_line_events >= _hard_line_ceiling or _tracecode_perf_counter() > _hard_line_deadline:
                 _tracecode_stop_tracing()
                 raise _InfiniteLoopDetected(
                     f"Execution guard tripped after {_total_line_events} line events"
@@ -6105,6 +6053,7 @@ def _tracer(frame, event, arg,
         return _tracer
 
     func_name = frame.f_code.co_name
+    is_implicit_comprehension_frame = func_name in ('<listcomp>', '<dictcomp>', '<setcomp>', '<genexpr>')
 
     if frame.f_code.co_filename != 'solution.py':
         return _tracer
@@ -6188,6 +6137,12 @@ def _tracer(frame, event, arg,
                 # Degrade: stop recording, keep executing (see _hard_line_ceiling).
                 return _tracer
 
+        # Comprehension bytecode runs in a synthetic Python frame. It still
+        # passes through the execution guards above, but the containing source
+        # line is the learner-visible frame and is published by its parent.
+        if is_implicit_comprehension_frame:
+            return _tracer
+
         # Function-mode setup executes the learner module to load definitions.
         # Keep counting those lines for runaway protection, but do not publish
         # definition-time events or injected input globals as learner steps.
@@ -6234,6 +6189,12 @@ def _tracer(frame, event, arg,
         return None
 
     if event == 'call':
+        # Comprehensions are expression implementation details, not learner
+        # function activations. PEP 669 reports their synthetic frames while
+        # the legacy tracing path did not publish them. Keep their line events
+        # (and therefore the execution guards) but do not add call-stack noise.
+        if is_implicit_comprehension_frame:
+            return _tracer
         if _max_call_depth > 0 and func_name != '<module>' and len(_call_stack) + 1 > _max_call_depth:
             if not _trace_limit_exceeded:
                 _trace_limit_exceeded = True
@@ -6292,7 +6253,7 @@ def _tracer(frame, event, arg,
             and frame.f_code.co_filename == 'solution.py'
             and func_name not in _tracecode_explicit_return_function_names
         )
-        if not _MINIMAL_TRACE and not is_class_body_return and not is_implicit_none_return:
+        if not _MINIMAL_TRACE and not is_implicit_comprehension_frame and not is_class_body_return and not is_implicit_none_return:
             local_vars, local_sources = _snapshot_locals(frame, with_sources=True)
             __tracecode_append_trace_step(frame, {
                 'line': frame.f_lineno,
@@ -6480,98 +6441,7 @@ if _max_memory_bytes > 0 and _tracecode_tracemalloc is not None:
 # They are not learner events and must not leak into the first traced line.
 _pending_accesses.clear()
 
-_tp_hooks = 0.0
-_tp_serialize_all = 0.0
-_tp_hook_calls = 0
-_tp_depth = 0
-
-if _TRACE_PROFILE:
-    _internal_funcs.add('_tc_hook_wrapper')
-    def _tc_wrap_hook(_tc_fn):
-        def _tc_hook_wrapper(*_tc_a, **_tc_k):
-            global _tp_hooks, _tp_depth, _tp_hook_calls
-            if _tp_depth > 0:
-                return _tc_fn(*_tc_a, **_tc_k)
-            _tp_depth = 1
-            _tp_hook_calls += 1
-            _tc_t0 = _tc_perf()
-            try:
-                return _tc_fn(*_tc_a, **_tc_k)
-            finally:
-                _tp_hooks += _tc_perf() - _tc_t0
-                _tp_depth = 0
-        return _tc_hook_wrapper
-    for _tc_hook_name in (
-        '_tracecode_read_index', '_tracecode_write_index', '_tracecode_augassign_index',
-        '_tracecode_augassign_scalar', '_tracecode_write_scalar', '_tracecode_len',
-        '_tracecode_enumerate', '_tracecode_iter_bind', '_tracecode_iter_bind_indexed',
-        '_tracecode_range_bind', '_tracecode_user_call', '_tracecode_dict_get',
-        '_tracecode_mutating_call', '_tracecode_mutating_index_call', '_tracecode_sum',
-        '_tracecode_contains_key_indexed', '_tracecode_record_index_write',
-        '_tracecode_delete_index', '_tracecode_record_attr_write',
-    ):
-        if _tc_hook_name in globals():
-            globals()[_tc_hook_name] = _tc_wrap_hook(globals()[_tc_hook_name])
-    _internal_funcs.add('_tc_serialize_wrapper')
-    _tc_orig_serialize_fn = _serialize
-    def _tc_serialize_wrapper(obj, depth=0, node_refs=None):
-        global _tp_serialize_all
-        _tc_t0 = _tc_perf()
-        try:
-            return _tc_orig_serialize_fn(obj, depth, node_refs)
-        finally:
-            if depth == 0:
-                _tp_serialize_all += _tc_perf() - _tc_t0
-    _serialize = _tc_serialize_wrapper
-
-if _TRACE_PROFILE:
-    # Measurement-only accumulators. Buckets nest (snapshots run inside the
-    # tracer and inside step appends), so interpret them as raw inclusive
-    # totals rather than a partition.
-    _tc_orig_snapshot_locals = _snapshot_locals
-    def _snapshot_locals(frame, with_sources=False):
-        global _tp_snapshot
-        _t0 = _tc_perf()
-        try:
-            return _tc_orig_snapshot_locals(frame, with_sources)
-        finally:
-            _tp_snapshot += _tc_perf() - _t0
-    _tc_orig_snapshot_call_stack = _snapshot_call_stack
-    def _snapshot_call_stack():
-        global _tp_stack
-        _t0 = _tc_perf()
-        try:
-            return _tc_orig_snapshot_call_stack()
-        finally:
-            _tp_stack += _tc_perf() - _t0
-    _tc_orig_append_trace_step = __tracecode_append_trace_step
-    def __tracecode_append_trace_step(frame, step):
-        global _tp_step
-        _t0 = _tc_perf()
-        try:
-            return _tc_orig_append_trace_step(frame, step)
-        finally:
-            _tp_step += _tc_perf() - _t0
-    _tc_orig_append_events_for_step = __tracecode_append_trace_events_for_step
-    def __tracecode_append_trace_events_for_step(step):
-        global _tp_convert
-        _t0 = _tc_perf()
-        try:
-            return _tc_orig_append_events_for_step(step)
-        finally:
-            _tp_convert += _tc_perf() - _t0
-    _tc_orig_tracer = _tracer
-    def _tracer(frame, event, arg):
-        global _tp_tracer
-        _t0 = _tc_perf()
-        try:
-            _tc_result = _tc_orig_tracer(frame, event, arg)
-        finally:
-            _tp_tracer += _tc_perf() - _t0
-        return _tracer if _tc_result is _tc_orig_tracer else _tc_result
-
-# Native tracer hot path: configured late so every rebind (profiling wrappers
-# included) has settled. Missing module → python paths, zero-risk fallback.
+# Native tracer hot path. Missing module uses the Python implementation.
 try:
     import _tracecode_native as _tc_native_module
     _tc_native_module.configure(
@@ -6604,13 +6474,16 @@ _tracecode_user_namespace['__tracecode_tracing_enabled'] = __tracecode_tracing_e
 _globals_dict = _tracecode_user_namespace`
   : ''}
 
-_tp_arm_at = _tc_perf()
+_case_started_at = _tracecode_perf_counter()
 _case_deadline = (
-    _tp_arm_at + (_wall_clock_ms / 1000.0)
+    _case_started_at + (_wall_clock_ms / 1000.0)
     if _wall_clock_ms > 0.0
     else 0.0
 )
-_tracecode_arm_tracing()
+${usesPreparedBindings
+  ? `if __tracecode_tracing_enabled:
+    _tracecode_arm_tracing()`
+  : '_tracecode_arm_tracing()'}
 _trace_failed = False
 # True only when a guard aborted the program mid-flight (runaway loop, memory
 # ceiling). A trace-budget trip alone degrades to "stop recording, keep running"
@@ -6659,7 +6532,6 @@ if (not _trace_failed) and _result is None:
         _result = _inplace
 
 _tracecode_stop_tracing()
-_tp_stop_at = _tc_perf()
 if _tracecode_tracemalloc is not None and _tracecode_tracemalloc_started:
     try:
         _tracecode_tracemalloc.stop()
@@ -6689,28 +6561,6 @@ def __tracecode_compact_last_step(kind=None):
                 compact['variables'] = selected
         return compact
     return None
-
-if _TRACE_PROFILE:
-    _console_output.append('__TRACECODE_TRACE_PROFILE_JSON__:' + json.dumps({
-        'language': 'python',
-        'monitoring': _TC_MONITORING_ACTIVE,
-        'monitoringError': _TC_MONITORING_ERROR,
-        'monitoringArmed': _TC_MONITORING_WAS_ARMED,
-        'setupMs': round((_tp_arm_at - _tp_import_at) * 1000, 1),
-        'hookMs': round(_tp_hooks * 1000, 1),
-        'hookCalls': _tp_hook_calls,
-        'serializeAllMs': round(_tp_serialize_all * 1000, 1),
-        'runPhaseMs': round((_tp_stop_at - _tp_arm_at) * 1000, 1),
-        'exportPhaseMs': round((_tc_perf() - _tp_stop_at) * 1000, 1),
-        'tracerMs': round(_tp_tracer * 1000, 1),
-        'snapshotMs': round(_tp_snapshot * 1000, 1),
-        'callStackMs': round(_tp_stack * 1000, 1),
-        'stepAppendMs': round(_tp_step * 1000, 1),
-        'eventConvertMs': round(_tp_convert * 1000, 1),
-        'events': _TC_NATIVE.stored_event_count() if _TC_NATIVE is not None else len(_trace_events),
-        'steps': len(_trace_data),
-        'lineEvents': _total_line_events,
-    }))
 
 __tracecode_execution_result_json = (
     '{"traceSummary":' + json.dumps({
@@ -7061,17 +6911,6 @@ async function executeWithTracing(
     if (prepared?.scopeTimings) {
       prepared.scopeTimings.resultParseMs += jsonParseMs;
     }
-    if (options.traceProfile === true) {
-      // Worker-side phase split for the tracing-latency investigation.
-      console.log('__TRACECODE_PYPROF__:' + JSON.stringify({
-        generateMs: Math.round((pyRunStartedAt - startTime) * 10) / 10,
-        pyRunMs: Math.round(pyRunMs * 10) / 10,
-        jsonParseMs: Math.round(jsonParseMs * 10) / 10,
-        resultChars: resultJson?.length ?? -1,
-        prepared: Boolean(prepared),
-      }));
-    }
-
     const executionTimeMs = deps.performanceNow() - startTime;
 
     const adjustLegacyStep = (step) =>
@@ -7904,20 +7743,28 @@ async function prepareProgram(
   }
 ) {
   const startedAt = deps.performanceNow();
+  const preparationPhases = {};
   let userCodeObject;
   let executorCode;
   let algorithmFastBatchCode;
 
   try {
+    const runtimeLoadStartedAt = deps.performanceNow();
     await deps.loadPyodideInstance();
+    preparationPhases.runtimeLoadMs =
+      deps.performanceNow() - runtimeLoadStartedAt;
+    const isolationClassificationStartedAt = deps.performanceNow();
     const isolationProfile = pythonAlgorithmIsolationProfile(
       deps,
       code,
       functionName,
       executionStyle
     );
+    preparationPhases.isolationClassificationMs =
+      deps.performanceNow() - isolationClassificationStartedAt;
 
     if (mode === 'trace') {
+      const userCodeCompileStartedAt = deps.performanceNow();
       const compilePayload = generateTracingCode(
         deps,
         code,
@@ -7941,7 +7788,10 @@ async function prepareProgram(
       } finally {
         compileDriver?.destroy?.();
       }
+      preparationPhases.userCodeCompileMs =
+        deps.performanceNow() - userCodeCompileStartedAt;
 
+      const executorCompileStartedAt = deps.performanceNow();
       const executionPayload = await executeWithTracing(
         deps,
         code,
@@ -7951,35 +7801,19 @@ async function prepareProgram(
         traceOptions,
         { compileOnly: true }
       );
-      const codeExecutionPayload = await executeCode(
+      executorCode = await compilePythonProgram(
         deps,
-        code,
-        functionName ?? '',
-        {},
-        executionStyle,
-        {},
-        { compileOnly: true }
+        executionPayload.__preparedSource,
+        '<tracecode-prepared-trace>'
       );
-      const executorCompiler = await compilePythonProgram(
-        deps,
-        buildOnDemandPythonExecutorCompilerSource(
-          deps,
-          executionPayload.__preparedSource,
-          codeExecutionPayload.__preparedSource
-        ),
-        '<tracecode-prepared-trace-compiler>'
-      );
-      try {
-        executorCode = await runCompiledPythonInFreshExecutionScope(
-          deps,
-          executorCompiler,
-          '__tracecode_prepared_executor_result'
-        );
-      } finally {
-        executorCompiler?.destroy?.();
-      }
+      preparationPhases.executorCompileMs =
+        deps.performanceNow() - executorCompileStartedAt;
     } else if (mode === 'code') {
+      const userCodeCompileStartedAt = deps.performanceNow();
       userCodeObject = await compilePythonProgram(deps, code, 'solution.py');
+      preparationPhases.userCodeCompileMs =
+        deps.performanceNow() - userCodeCompileStartedAt;
+      const executorCompileStartedAt = deps.performanceNow();
       const executionPayload = await executeCode(
         deps,
         code,
@@ -7994,11 +7828,14 @@ async function prepareProgram(
         executionPayload.__preparedSource,
         '<tracecode-prepared-code>'
       );
+      preparationPhases.executorCompileMs =
+        deps.performanceNow() - executorCompileStartedAt;
     } else {
       throw new Error(`Unsupported prepared Python mode: ${String(mode)}`);
     }
 
-    if (mode === 'code' && isolationProfile.tier === 'algorithm-fast') {
+    if (isolationProfile.tier === 'algorithm-fast') {
+      const batchDriverCompileStartedAt = deps.performanceNow();
       algorithmFastBatchCode = await compilePythonProgram(
         deps,
         buildPythonAlgorithmFastBatchSource(
@@ -8008,8 +7845,11 @@ async function prepareProgram(
         ),
         '<tracecode-algorithm-fast-batch>'
       );
+      preparationPhases.batchDriverCompileMs =
+        deps.performanceNow() - batchDriverCompileStartedAt;
     }
 
+    const artifactSerializeStartedAt = deps.performanceNow();
     const fingerprint = pythonPreparedArtifactFingerprint(deps);
     const artifact = {
       schemaVersion: 'tracecode.python.prepared-program.v4',
@@ -8032,6 +7872,8 @@ async function prepareProgram(
       userCode: serializePythonCodeArtifact(deps, userCodeObject),
       executorCode: serializePythonCodeArtifact(deps, executorCode),
     };
+    preparationPhases.artifactSerializeMs =
+      deps.performanceNow() - artifactSerializeStartedAt;
     const preparationMs = deps.performanceNow() - startedAt;
     return {
       success: true,
@@ -8043,6 +7885,7 @@ async function prepareProgram(
         compileMs: preparationMs,
         compileCacheHit: false,
         artifactCacheHit: false,
+        preparationPhases,
       },
     };
   } catch (error) {
@@ -8059,6 +7902,7 @@ async function prepareProgram(
         compileMs: preparationMs,
         compileCacheHit: false,
         artifactCacheHit: false,
+        preparationPhases,
       },
     };
   } finally {
@@ -8082,8 +7926,7 @@ function assertPythonPreparedArtifact(deps, artifact) {
       artifact.isolationProfile.tier !== 'judge-compatible' &&
       artifact.isolationProfile.tier !== 'hard-isolated') ||
     !Array.isArray(artifact.isolationProfile.reasons) ||
-    (artifact.mode === 'code' &&
-      artifact.isolationProfile.tier === 'algorithm-fast' &&
+    (artifact.isolationProfile.tier === 'algorithm-fast' &&
       typeof artifact.algorithmFastBatchCode !== 'string')
   ) {
     throw new Error(
@@ -8157,7 +8000,7 @@ async function executePreparedProgram(
         'Prepared Python artifact does not support on-demand trace selection.'
       );
     }
-    const result = artifact.mode === 'trace' && tracingEnabled !== false
+    const result = artifact.mode === 'trace'
       ? await executeWithTracing(
           deps,
           artifact.code,
@@ -8169,7 +8012,7 @@ async function executePreparedProgram(
             executorCode,
             userCodeObject,
             limits,
-            tracingEnabled: true,
+            tracingEnabled: tracingEnabled !== false,
             isolationTier,
           }
         )
@@ -8257,7 +8100,6 @@ async function executePreparedProgramBatch(
     // The fast batch has its own driver and does not pay to hydrate the
     // compatibility executor or the separately marshaled learner code.
     const isAlgorithmFastArtifact =
-      artifact.mode === 'code' &&
       artifact.isolationProfile.tier === 'algorithm-fast' &&
       typeof artifact.algorithmFastBatchCode === 'string';
     const currentIsolationProfile = pythonAlgorithmIsolationProfile(
@@ -8300,8 +8142,73 @@ async function executePreparedProgramBatch(
         },
       };
     }
+    const canSplitMixedTraceBatch =
+      artifact.mode === 'trace' &&
+      isAlgorithmFastArtifact &&
+      forceJudgeCompatible !== true &&
+      currentIsolationProfile.tier === 'algorithm-fast' &&
+      cases.every((inputs) => !pythonInputsRequireCustomMaterialization(inputs)) &&
+      traceEnabledBatch?.some((enabled) => enabled) === true &&
+      traceEnabledBatch.some((enabled) => !enabled);
+    if (canSplitMixedTraceBatch) {
+      const untracedIndexes = [];
+      const tracedIndexes = [];
+      for (let index = 0; index < traceEnabledBatch.length; index += 1) {
+        (traceEnabledBatch[index] ? tracedIndexes : untracedIndexes).push(index);
+      }
+      const untraced = await executePreparedProgramBatch(
+        deps,
+        artifact,
+        untracedIndexes.map((index) => cases[index]),
+        limits,
+        untracedIndexes.map(() => false),
+        false
+      );
+      if (!Array.isArray(untraced.results) ||
+          untraced.results.length !== untracedIndexes.length) {
+        return untraced;
+      }
+      const traced = await executePreparedProgramBatch(
+        deps,
+        artifact,
+        tracedIndexes.map((index) => cases[index]),
+        limits,
+        tracedIndexes.map(() => true),
+        false
+      );
+      if (!Array.isArray(traced.results) ||
+          traced.results.length !== tracedIndexes.length) {
+        return traced;
+      }
+      const results = new Array(cases.length);
+      untracedIndexes.forEach((caseIndex, resultIndex) => {
+        results[caseIndex] = untraced.results[resultIndex];
+      });
+      tracedIndexes.forEach((caseIndex, resultIndex) => {
+        results[caseIndex] = traced.results[resultIndex];
+      });
+      const runMs = deps.performanceNow() - startedAt;
+      return {
+        success: results.every((result) => result?.success === true),
+        results,
+        consoleOutput: results.flatMap(
+          (result) => result?.consoleOutput ?? []
+        ),
+        timings: {
+          totalMs: runMs,
+          runMs,
+          compileCacheHit: true,
+          artifactCacheHit: true,
+          algorithmFastBatch: true,
+        },
+      };
+    }
+    const traceSelectionUsesFastBatch =
+      artifact.mode === 'code' ||
+      traceEnabledBatch?.every((enabled) => enabled === false) === true;
     const useAlgorithmFastBatch =
       isAlgorithmFastArtifact &&
+      traceSelectionUsesFastBatch &&
       forceJudgeCompatible !== true &&
       currentIsolationProfile.tier === 'algorithm-fast' &&
       cases.every((inputs) => !pythonInputsRequireCustomMaterialization(inputs));
@@ -8326,7 +8233,10 @@ async function executePreparedProgramBatch(
           undefined,
           'algorithm-fast'
         );
-        const results = JSON.parse(resultJson);
+        const rawResults = JSON.parse(resultJson);
+        const results = artifact.mode === 'trace'
+          ? rawResults.map(pythonCodeResultAsEmptyTraceResult)
+          : rawResults;
         const resultsHaveTrustedShape =
           Array.isArray(results) &&
           results.length === cases.length &&
@@ -8434,7 +8344,7 @@ async function executePreparedProgramBatch(
           deps.performanceNow() - filesystemBeginStartedAt;
         let result;
         try {
-          result = artifact.mode === 'trace' && tracingEnabled
+          result = artifact.mode === 'trace'
             ? await executeWithTracing(
                 deps,
                 artifact.code,
@@ -8446,7 +8356,7 @@ async function executePreparedProgramBatch(
                   executorCode,
                   userCodeObject,
                   limits,
-                  tracingEnabled: true,
+                tracingEnabled,
                   scopeTimings,
                   isolationTier: useAlgorithmFastScopes
                     ? 'algorithm-fast'
@@ -8513,7 +8423,6 @@ async function executePreparedProgramBatch(
 }
 
   globalScope.__TRACECODE_PYODIDE_RUNTIME__ = {
-    buildOnDemandPythonExecutorCompilerSource,
     generateTracingCode,
     parsePythonError,
     executeWithTracing,

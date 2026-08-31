@@ -65,7 +65,7 @@ empty -> warming -> clean standby -> leased -> retired
 `retire-only` preserves `leased -> retired` and every isolation/fencing rule,
 but omits automatic post-use replenishment. A consumer may still explicitly
 warm initial capacity with `warmLanguage(...)`; after that capacity is used,
-the next operation creates its worker lazily unless the consumer warms again.
+the next operation creates its worker lazily.
 
 ## Ownership Rule
 
@@ -83,9 +83,10 @@ The ownership rule explains two otherwise similar-looking cases:
 
 - A provider-owned Java execution standby can benefit the next submission and
   belongs under Warm-and-Retire.
-- A Python standby created in a short-lived prepared program immediately before
-  that program is disposed cannot benefit the next submission and must be
-  disabled or moved to the provider.
+- Python transfers its provider-owned preparation standby into the active
+  program, then starts the replacement only after that program is disposed.
+  The replacement therefore survives for the next submission instead of being
+  stranded inside the completed program.
 
 ## Role And Test Matrix
 
@@ -124,7 +125,3 @@ A lifecycle change is deliberate only when the same change updates:
 
 Do not silently change the meaning of `warm-and-retire`. Add a new name when
 the lease, retirement, replenishment, ownership, or capacity semantics change.
-
-`safeExecution.prewarmAfterUse` remains a deprecated compatibility alias:
-`true` maps to `warm-and-retire`, and `false` maps to `retire-only`. Supplying
-conflicting old and new values fails closed.

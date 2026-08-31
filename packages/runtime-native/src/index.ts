@@ -73,7 +73,7 @@ type NativeWorkerMessage = {
   protocolToken?: string;
 };
 
-interface NativePythonRuntimeCore {
+interface NativePythonRuntime {
   generateTracingCode: (
     deps: {
       PYTHON_CLASS_DEFINITIONS_SNIPPET: string;
@@ -125,7 +125,7 @@ export interface NativeHarnessOptions {
   javascriptWorkerSourcePath?: string;
   javaWorkerSourcePath?: string;
   cppWorkerSourcePath?: string;
-  pythonRuntimeCorePath?: string;
+  pythonRuntimePath?: string;
   keepNativeTempDirs?: boolean;
 }
 
@@ -452,13 +452,13 @@ async function loadTypeScriptCompiler(): Promise<unknown | undefined> {
 }
 
 class NativePythonRuntimeClient implements RuntimeClient {
-  private runtimePromise: Promise<NativePythonRuntimeCore> | null = null;
+  private runtimePromise: Promise<NativePythonRuntime> | null = null;
 
   constructor(
     private readonly options: {
       pythonCommand: string;
       timeoutMs?: number;
-      runtimeCorePath?: string;
+      runtimePath?: string;
     }
   ) {}
 
@@ -813,22 +813,22 @@ print(json.dumps({
     }
   }
 
-  private async loadRuntime(): Promise<NativePythonRuntimeCore> {
+  private async loadRuntime(): Promise<NativePythonRuntime> {
     if (this.runtimePromise) return this.runtimePromise;
     this.runtimePromise = (async () => {
-      const runtimeCorePath = resolveNativeAsset(this.options.runtimeCorePath, (root) => [
-        join(root, 'workers', 'python', 'runtime-core.js'),
-        join(root, '..', 'workers', 'python', 'runtime-core.js'),
+      const runtimePath = resolveNativeAsset(this.options.runtimePath, (root) => [
+        join(root, 'workers', 'python', 'python-runtime.js'),
+        join(root, '..', 'workers', 'python', 'python-runtime.js'),
       ]);
-      const source = await readFile(runtimeCorePath, 'utf8');
+      const source = await readFile(runtimePath, 'utf8');
       const selfObject: Record<string, unknown> = {};
       const context = vm.createContext({ console, self: selfObject, globalThis: {} });
-      vm.runInContext(source, context, { filename: 'runtime-core.js' });
+      vm.runInContext(source, context, { filename: 'python-runtime.js' });
       const runtime = selfObject.__TRACECODE_PYODIDE_RUNTIME__;
       if (!runtime || typeof runtime !== 'object') {
-        throw new Error('Unable to load native Python runtime core.');
+        throw new Error('Unable to load native Python Python runtime.');
       }
-      return runtime as NativePythonRuntimeCore;
+      return runtime as NativePythonRuntime;
     })();
     return this.runtimePromise;
   }
@@ -2446,7 +2446,7 @@ function createNativeRuntimeClient(language: Language, options: NativeHarnessOpt
     return new NativePythonRuntimeClient({
       pythonCommand: options.pythonCommand ?? 'python3',
       timeoutMs: options.pythonTimeoutMs ?? 30_000,
-      runtimeCorePath: options.pythonRuntimeCorePath,
+      runtimePath: options.pythonRuntimePath,
     });
   }
   if (language === 'javascript' || language === 'typescript') {

@@ -47,7 +47,8 @@ export function createJavaScriptBrowserRuntimeProvider(
           : {}),
         typescriptCompilerUrl: context.assets.typescriptCompiler,
         typescriptCompilerPreflight: context.preflight('typescript', ['compiler']),
-        prewarmAfterUse: context.prewarmAfterUse,
+        replenishStandbyAfterUse:
+          context.workerLifecyclePolicy === 'warm-and-retire',
         algorithmExecution:
           options.algorithmExecution ?? 'ses-compartment-pool',
         ...(options.algorithmExecution !== 'disposable-worker'

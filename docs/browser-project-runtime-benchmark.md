@@ -175,12 +175,11 @@ promise that CI hardware reproduces a developer laptop to the millisecond.
 as separate nightly/manual jobs, measures each provider in its own browser
 process, and retains the per-provider raw reports as artifacts.
 
-The 2026-07-12 baseline also establishes an important engine distinction:
-Firefox passed the full contract but was substantially slower for Python, C#,
-and C++ than Chromium or WebKit. Capability remains green; performance is
-reported and budgeted per engine instead of being flattened into a single
-provider number. The measured table is in
-`docs/browser-project-cross-engine-baseline-2026-07-12.md`.
+Browser engines are separate performance populations. A provider can pass the
+same capability contract in every engine while having materially different
+startup or execution costs, so reports and budgets remain per engine instead
+of being flattened into one provider number. The committed fixture is the
+source of truth for the current regression thresholds.
 
 ## Excluding runtime downloads
 

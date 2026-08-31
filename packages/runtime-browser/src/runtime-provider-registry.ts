@@ -18,8 +18,6 @@ export interface BrowserRuntimeProviderContext {
   readonly engine: BrowserRuntimeEngine;
   readonly debug: boolean;
   readonly workerLifecyclePolicy: BrowserWorkerLifecyclePolicy;
-  /** @deprecated Read `workerLifecyclePolicy` for new provider code. */
-  readonly prewarmAfterUse: boolean;
   readonly workerFactoryFor: (language: Language) => BrowserWorkerFactory | undefined;
   readonly preflight: (
     runtime: BrowserRuntimeId,

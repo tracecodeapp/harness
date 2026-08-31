@@ -76,8 +76,11 @@ If exact inputs require the generic tree, list, or reference-graph materializer,
 an otherwise fast trace moves to compatibility before learner code starts.
 Plain-input traces retain the admitted Pyodide worker, create a fresh namespace
 for every case, reset trace/console/limit state, and use the reduced interpreter
-guard. An all-traced batch enters that guard once and discards each namespace
-before starting the next case.
+guard. A mixed trace batch records only the selected cases and routes the
+tracing-off subset through the reduced correctness driver. The artifact contains
+one conditional trace executor rather than separately compiled trace and code
+executors. An all-traced batch enters the reduced guard once and discards each
+namespace before starting the next case.
 
 An unexpected internal fast-driver failure is handled at the same outer
 boundary: no partial batch result is exposed, the retained worker is retired,
@@ -223,9 +226,9 @@ The browser prepared-provider gate covers:
   class receive distinct outer workers and cannot observe prior-case state;
 - public browser Judge proof that a fast artifact with tree-shaped input uses
   one retained generic batch worker;
-- every traced case uses a fresh outer worker. Trace instrumentation has a
-  wider capability surface than correctness execution, so only untraced code
-  batches use the retained algorithm and judge-compatible tiers;
+- a single admitted trace artifact records selected cases, runs tracing-off
+  cases through the reduced correctness driver, preserves result order, and
+  resets trace state between recorded cases without replacing the outer worker;
 - hard-isolated code batches preserve a `client-timeout` result for the timed
   out case and continue evaluating later cases in fresh workers;
 - judge-compatible code batches enforce `wallClockMs` from module execution

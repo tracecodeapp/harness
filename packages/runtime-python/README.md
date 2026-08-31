@@ -34,6 +34,6 @@ host and Judge contracts. Browser project consumers use
 clients directly.
 
 Runtime assets are shipped at `workers/python-worker.js` and
-`workers/python/runtime-core.js`. Review `THIRD_PARTY_NOTICES.md` before
+`workers/python/python-runtime.js`. Review `THIRD_PARTY_NOTICES.md` before
 redistributing the root package, especially the Python runtime and CPython
 sections.

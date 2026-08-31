@@ -27,8 +27,8 @@ const ASSET_COPY_PLAN = [
     languages: ['python'],
   },
   {
-    source: ['workers', 'python', 'runtime-core.js'],
-    target: ['python', 'runtime-core.js'],
+    source: ['workers', 'python', 'python-runtime.js'],
+    target: ['python', 'python-runtime.js'],
     languages: ['python'],
   },
   {

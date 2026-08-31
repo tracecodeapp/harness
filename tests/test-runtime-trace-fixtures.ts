@@ -47,7 +47,7 @@ import {
 } from './helpers/tracejvm-semantic-trace-runtime';
 
 const FIXTURES_DIR = join(process.cwd(), 'fixtures', 'runtime-parity');
-const PYTHON_RUNTIME_CORE_PATH = join(process.cwd(), 'workers', 'python', 'runtime-core.js');
+const PYTHON_RUNTIME_PATH = join(process.cwd(), 'workers', 'python', 'python-runtime.js');
 const JAVASCRIPT_WORKER_PATH = join(process.cwd(), 'workers', 'javascript', 'javascript-worker.js');
 const RUNTIME_KERNEL_POLICY_CLASSIC_PATH = join(process.cwd(), 'workers', 'shared', 'runtime-kernel-policy-classic.js');
 const JAVA_SOURCE_AUGMENTATIONS_PATH = join(process.cwd(), 'workers', 'java', 'java-source-augmentations.js');
@@ -180,7 +180,7 @@ interface RuntimeTraceEventOrderAssertion {
   after: RuntimeTraceEventAssertion;
 }
 
-type RuntimeCore = {
+type PythonRuntime = {
   generateTracingCode: (
     deps: {
       PYTHON_CLASS_DEFINITIONS_SNIPPET: string;
@@ -418,8 +418,8 @@ async function runProcess(command: string, args: string[]): Promise<string> {
   });
 }
 
-async function loadPythonRuntimeCore(): Promise<RuntimeCore> {
-  const source = await readFile(PYTHON_RUNTIME_CORE_PATH, 'utf8');
+async function loadPythonRuntime(): Promise<PythonRuntime> {
+  const source = await readFile(PYTHON_RUNTIME_PATH, 'utf8');
   const selfObject: Record<string, unknown> = {};
   const context = vm.createContext({
     console,
@@ -427,10 +427,10 @@ async function loadPythonRuntimeCore(): Promise<RuntimeCore> {
     globalThis: {},
   });
 
-  vm.runInContext(source, context, { filename: 'runtime-core.js' });
+  vm.runInContext(source, context, { filename: 'python-runtime.js' });
   const runtime = selfObject.__TRACECODE_PYODIDE_RUNTIME__;
-  assertCondition(Boolean(runtime) && typeof runtime === 'object', 'Unable to load Python runtime core');
-  return runtime as RuntimeCore;
+  assertCondition(Boolean(runtime) && typeof runtime === 'object', 'Unable to load Python Python runtime');
+  return runtime as PythonRuntime;
 }
 
 async function runPythonScript(script: string): Promise<string> {
@@ -472,7 +472,7 @@ type CSharpExecute = (requestJson: string) => string;
 let csharpExecutePromise: Promise<CSharpExecute> | null = null;
 
 async function executePythonTrace(code: string, fixture: FixtureCase): Promise<FixtureTraceRun> {
-  const runtime = await loadPythonRuntimeCore();
+  const runtime = await loadPythonRuntime();
   const tracingPayload = runtime.generateTracingCode(
     {
       PYTHON_CLASS_DEFINITIONS_SNIPPET: PYTHON_CLASS_DEFINITIONS,

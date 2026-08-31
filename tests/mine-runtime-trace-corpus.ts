@@ -34,7 +34,7 @@ import { javaTraceHooksEventsToRuntimeTrace } from '../packages/runtime-contract
 import { liftCodeOutcome } from '../packages/runtime-contracts/src/execution-outcome';
 
 const DEFAULT_CORPUS_PATH = '/Users/obinnanwachukwu/Code/algoflow/tests/v3-corpus/tracecode-final300-slice.json';
-const PYTHON_RUNTIME_CORE_PATH = join(process.cwd(), 'workers', 'python', 'runtime-core.js');
+const PYTHON_RUNTIME_PATH = join(process.cwd(), 'workers', 'python', 'python-runtime.js');
 const JAVASCRIPT_WORKER_PATH = join(process.cwd(), 'workers', 'javascript', 'javascript-worker.js');
 const CSHARP_ASSET_DIR = join(process.cwd(), 'workers', 'vendor', 'csharp');
 const CSHARP_HOST_SOURCE_DIR = join(process.cwd(), 'packages', 'runtime-csharp', 'dotnet', 'TraceCode.CSharpHost');
@@ -73,7 +73,7 @@ interface CorpusEntry {
   expectedOutput?: unknown;
 }
 
-interface RuntimeCore {
+interface PythonRuntime {
   generateTracingCode: (
     deps: {
       PYTHON_CLASS_DEFINITIONS_SNIPPET: string;
@@ -396,7 +396,7 @@ async function appendExecutionCache(cache: ExecutionCache, row: ExecutionCacheRe
 
 async function executeEntryWithCache(
   cache: ExecutionCache,
-  pythonRuntime: RuntimeCore,
+  pythonRuntime: PythonRuntime,
   workerSource: string,
   entry: CorpusEntry,
   code: string,
@@ -777,14 +777,14 @@ async function resolveNativeCppCompiler(): Promise<string | null> {
   return null;
 }
 
-async function loadPythonRuntimeCore(): Promise<RuntimeCore> {
-  const source = await readFile(PYTHON_RUNTIME_CORE_PATH, 'utf8');
+async function loadPythonRuntime(): Promise<PythonRuntime> {
+  const source = await readFile(PYTHON_RUNTIME_PATH, 'utf8');
   const selfObject: Record<string, unknown> = {};
   const context = vm.createContext({ console, self: selfObject, globalThis: {} });
-  vm.runInContext(source, context, { filename: 'runtime-core.js' });
+  vm.runInContext(source, context, { filename: 'python-runtime.js' });
   const runtime = selfObject.__TRACECODE_PYODIDE_RUNTIME__;
-  if (!runtime || typeof runtime !== 'object') throw new Error('Unable to load Python runtime core');
-  return runtime as RuntimeCore;
+  if (!runtime || typeof runtime !== 'object') throw new Error('Unable to load Python Python runtime');
+  return runtime as PythonRuntime;
 }
 
 async function runPythonScript(script: string): Promise<string> {
@@ -804,7 +804,7 @@ function emptyTraceRun(language: MineLanguage, entry: CorpusEntry, output: unkno
 }
 
 async function executePythonCode(
-  runtime: RuntimeCore,
+  runtime: PythonRuntime,
   entry: CorpusEntry,
   code: string
 ): Promise<TraceRun> {
@@ -843,7 +843,7 @@ async function executePythonCode(
 }
 
 async function executePythonTrace(
-  runtime: RuntimeCore,
+  runtime: PythonRuntime,
   entry: CorpusEntry,
   code: string,
   maxTraceSteps: number,
@@ -1897,7 +1897,7 @@ async function executeJavaCode(
 }
 
 async function executeEntry(
-  pythonRuntime: RuntimeCore,
+  pythonRuntime: PythonRuntime,
   workerSource: string,
   entry: CorpusEntry,
   code: string,
@@ -2781,7 +2781,7 @@ async function main(): Promise<void> {
   const synthesizedJavaEntries = groups.filter(([, group]) =>
     group.some((entry) => entry.language === 'java' && entry.source.path.includes('generated-validated-java'))
   ).length;
-  const pythonRuntime = await loadPythonRuntimeCore();
+  const pythonRuntime = await loadPythonRuntime();
   const workerSource = await readFile(JAVASCRIPT_WORKER_PATH, 'utf8');
   const executionCache = await loadExecutionCache();
   const sourceTextCache = new Map<string, string>();

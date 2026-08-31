@@ -110,7 +110,7 @@ const PACKAGE_CHECKS: PackageCheck[] = [
       'workers/python-worker.js',
       'workers/tracecode_native-0.1.0-cp313-cp313-pyemscripten_2025_0_wasm32.whl',
       'workers/generated-python-harness-snippets.js',
-      'workers/python/runtime-core.js',
+      'workers/python/python-runtime.js',
       'workers/shared/runtime-kernel-policy-classic.js',
       'LICENSE',
       'THIRD_PARTY_NOTICES.md',
@@ -236,7 +236,7 @@ const PACKAGE_CHECKS: PackageCheck[] = [
       'dist/index.js',
       'dist/index.cjs',
       'dist/index.d.ts',
-      'workers/python/runtime-core.js',
+      'workers/python/python-runtime.js',
       'workers/javascript/javascript-worker.js',
       'workers/vendor/typescript.js',
       'workers/vendor/javascript-libraries.js',
@@ -543,7 +543,7 @@ async function runWithTempRoot(tempRoot: string): Promise<void> {
     if (packageCheck.name === '@tracecode/runtime-python') {
       assertCondition(
         !packedFiles.has('package/workers/pyodide-worker.js') &&
-          !packedFiles.has('package/workers/pyodide/runtime-core.js'),
+          !packedFiles.has('package/workers/pyodide/python-runtime.js'),
         '@tracecode/runtime-python must not publish engine-branded worker paths'
       );
       const declarations = (

@@ -91,7 +91,7 @@ export async function runJavaScriptSesProvider(assetBaseUrl: string) {
     providerRegistry: createBrowserRuntimeProviderRegistry([
       createJavaScriptBrowserRuntimeProvider(),
     ]),
-    safeExecution: { prewarmAfterUse: false },
+    safeExecution: { workerLifecycle: 'retire-only' },
   });
   const host = createBrowserJudgeHostFromRuntimeHost(runtimeHost);
   try {
@@ -1111,7 +1111,7 @@ export async function runJavaScriptLegacyPageRelativeProvider() {
         algorithmExecution: 'disposable-worker',
       }),
     ]),
-    safeExecution: { prewarmAfterUse: false },
+    safeExecution: { workerLifecycle: 'retire-only' },
   });
   const host = createBrowserJudgeHostFromRuntimeHost(runtimeHost);
   try {
@@ -1140,7 +1140,7 @@ export async function runJavaScriptSerializerParity(assetBaseUrl: string) {
       providerRegistry: createBrowserRuntimeProviderRegistry([
         createJavaScriptBrowserRuntimeProvider({ algorithmExecution }),
       ]),
-      safeExecution: { prewarmAfterUse: false },
+      safeExecution: { workerLifecycle: 'retire-only' },
     });
   const sesRuntimeHost = providers('ses-compartment-pool');
   const legacyRuntimeHost = providers('disposable-worker');
@@ -1224,7 +1224,7 @@ export async function runJavaScriptTraceParity(assetBaseUrl: string) {
       providerRegistry: createBrowserRuntimeProviderRegistry([
         createJavaScriptBrowserRuntimeProvider({ algorithmExecution }),
       ]),
-      safeExecution: { prewarmAfterUse: false },
+      safeExecution: { workerLifecycle: 'retire-only' },
     });
     return {
       runtimeHost,
@@ -1283,7 +1283,7 @@ export async function runJavaScriptSesUnavailableFallback(assetBaseUrl: string) 
         algorithmExecution: 'ses-compartment-pool',
       }),
     ]),
-    safeExecution: { prewarmAfterUse: false },
+    safeExecution: { workerLifecycle: 'retire-only' },
   });
   const host = createBrowserJudgeHostFromRuntimeHost(runtimeHost);
   try {

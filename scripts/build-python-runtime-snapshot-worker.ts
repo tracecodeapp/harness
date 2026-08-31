@@ -85,20 +85,20 @@ const MIN_SNAPSHOT_BYTES = 16 * 1024 * 1024;
 const execFileAsync = promisify(execFile);
 const SNAPSHOT_PREIMPORT_SOURCE =
   'import sys, json, math, os, ast, collections, typing';
-const runtimeCoreSource = await readFile(
-  join(ROOT, 'workers', 'python', 'runtime-core.js'),
+const pythonRuntimeSource = await readFile(
+  join(ROOT, 'workers', 'python', 'python-runtime.js'),
   'utf8'
 );
 const preludeMarker = 'const PYTHON_DEFAULT_IMPORT_PRELUDE = `';
-const preludeStart = runtimeCoreSource.indexOf(preludeMarker);
-const preludeEnd = runtimeCoreSource.indexOf(
+const preludeStart = pythonRuntimeSource.indexOf(preludeMarker);
+const preludeEnd = pythonRuntimeSource.indexOf(
   '`;',
   preludeStart + preludeMarker.length
 );
 if (preludeStart < 0 || preludeEnd < 0) {
-  throw new Error('Unable to read PYTHON_DEFAULT_IMPORT_PRELUDE from runtime-core.js.');
+  throw new Error('Unable to read PYTHON_DEFAULT_IMPORT_PRELUDE from python-runtime.js.');
 }
-const PYTHON_DEFAULT_IMPORT_PRELUDE = runtimeCoreSource.slice(
+const PYTHON_DEFAULT_IMPORT_PRELUDE = pythonRuntimeSource.slice(
   preludeStart + preludeMarker.length,
   preludeEnd
 );

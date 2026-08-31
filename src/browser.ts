@@ -123,7 +123,6 @@ import {
 } from '../packages/runtime-python/src/browser-runtime-provider';
 import {
   createJavaScriptBrowserRuntimeProvider,
-  type JavaScriptBrowserRuntimeProviderOptions,
 } from '../packages/runtime-javascript/src/browser-runtime-provider';
 import {
   createJavaBrowserRuntimeProvider,
@@ -259,7 +258,6 @@ export {
  */
 export interface DefaultBrowserRuntimeProviderOptions {
   python?: PythonBrowserRuntimeProviderOptions;
-  javascript?: JavaScriptBrowserRuntimeProviderOptions;
   java?: JavaBrowserRuntimeProviderOptions;
   csharp?: CSharpBrowserRuntimeProviderOptions;
   cpp?: CppBrowserRuntimeProviderOptions;
@@ -292,7 +290,7 @@ function createDefaultBrowserRuntimeProviderRegistry(
 ) {
   return createBrowserRuntimeProviderRegistry([
     createPythonBrowserRuntimeProvider(options.python),
-    createJavaScriptBrowserRuntimeProvider(options.javascript),
+    createJavaScriptBrowserRuntimeProvider(),
     createJavaBrowserRuntimeProvider(options.java),
     createCSharpBrowserRuntimeProvider(options.csharp),
     createCppBrowserRuntimeProvider(options.cpp),
@@ -357,19 +355,11 @@ export function createBrowserRuntimeHost(
 ): BrowserRuntimeHost {
   const {
     python,
-    javascript,
     java,
     csharp,
     cpp,
     ...hostOptions
   } = options;
-  const csharpPreparedAuthority =
-    csharp?.preparedAuthority ??
-    hostOptions.environment?.csharpPreparedAuthority;
-  const effectiveCSharp =
-    csharpPreparedAuthority === undefined
-      ? csharp
-      : { ...csharp, preparedAuthority: csharpPreparedAuthority };
   const effectiveJava =
     java?.runtimeAssetBaseUrl !== undefined || hostOptions.environment
       ? java
@@ -389,12 +379,10 @@ export function createBrowserRuntimeHost(
           ),
         }
       : {}),
-    csharpPreparedAuthority,
     providerRegistry: createDefaultBrowserRuntimeProviderRegistry({
       python,
-      javascript,
       java: effectiveJava,
-      csharp: effectiveCSharp,
+      csharp,
       cpp,
     }),
   });

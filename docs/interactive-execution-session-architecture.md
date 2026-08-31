@@ -61,9 +61,11 @@ version, instrumentation mode, and relevant options, but cache identity must
 not be confused with ownership of a live execution.
 
 Disposal invalidates the capability immediately and releases its prepared
-program lease exactly once. A host-level content cache may keep an immutable,
-unreferenced artifact warm under its ordinary bounded TTL; it does not retain
-the execution id, case authority, mutable runtime state, or a usable session.
+program lease exactly once. `BrowserRuntimeHost` does not cache the disposed
+program: that object may own an exclusive worker, interpreter, filesystem, or
+runner generation. Language providers may still cache detached immutable
+compiler artifacts or clean standby capacity behind their own bounded
+lifecycle contracts; neither retains the execution id or case authority.
 
 The product should still dispose immediately when code is replaced, the editor
 route unmounts, or its generation loses authority. A full page refresh normally
@@ -148,10 +150,10 @@ timeouts, preserves clean output and isolation, and does no avoidable tracing
 work. Opportunity-cost benchmarks must measure both the remaining managed
 overhead and any preparation cost introduced by a higher switch.
 
-## Language proof points
+## Language implementations
 
-The first language experiments support the stable contract while showing why
-the mechanism must stay private to each runner:
+The mechanism stays private to each runner while preserving the same public
+trace-selection contract:
 
 - **C++:** one TraceCC-compiled Wasm module now accepts a per-case recording
   vector. A direct worker batch using `[true, false, true]` returned all three
@@ -162,23 +164,13 @@ the mechanism must stay private to each runner:
   bodies behind a case-load selector, and one marshaled executor code object
   contains the complete trace and clean harnesses behind another top-level
   selector. Both selectors run once per isolated case; the clean path contains
-  no injected per-access hooks. Across two direct Pyodide worker runs, three
-  disabled cases differed from a separately prepared clean artifact by only
-  0.12–2.61 ms (0.04–0.90%). A selected-plus-two-drain batch was 3.82–4.98 ms
-  faster as one artifact than when split across trace and clean artifacts,
-  while the second clean preparation itself cost another 5.83–6.45 ms.
-- **Java:** the original full 200-problem experiment in
-  `docs/java-on-demand-tracing-experiment.md` exposed five severe per-hook
-  disabled-branch outliers. The follow-up now compiles traced and clean source
-  units together into one restorable TraceJVM program. One runner selects the
-  entry class per case, and trace-budget verdict fallbacks use the same clean
-  companion. N-Queens `n = 9` fell from 15.4–17.0 seconds disabled to
-  136–141 ms clean, while its selected trace fell from about 2.02 seconds to
-  593–598 ms. The original five outliers plus the former compile failure all
-  favor the one-artifact implementation after the change. A final compatibility
-  pass completed all 200 problems and 2,352 cases with zero failures and a
-  28 ms/case execution average; no problem averaged more than one second per
-  case.
+  no injected per-access hooks.
+- **Java:** trusted preparation compiles traced and clean source units into one
+  restorable TraceJVM program. The runner selects the entry class per case, and
+  trace-budget verdict fallbacks use the clean companion from the same
+  artifact. Retained algorithm execution still receives a fresh application
+  class loader and execution scope; unverifiable or ambient bytecode uses the
+  compatibility process boundary.
 - **C#:** one trace-capable assembly selects the untouched learner body at each
   invoked learner method before statement, delegate, snapshot, local collection,
   and sink instrumentation. C# must retain trace-aware subclasses for selected

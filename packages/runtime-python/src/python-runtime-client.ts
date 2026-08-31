@@ -446,7 +446,8 @@ function normalizePythonExecutionResult(value: unknown): ExecutionResult {
 
 export interface PythonPreparedExecutionProviderOptions {
   readonly createWorkerClient: () => PythonWorkerClient;
-  readonly prewarmAfterUse?: boolean;
+  /** Replenish one clean preparation worker after the current lease retires. */
+  readonly replenishStandbyAfterUse?: boolean;
 }
 
 export interface PythonPreparedExecutionProviderController
@@ -1249,7 +1250,7 @@ class PythonPreparedExecutionProvider
 
   private replenishPreparationStandby(): void {
     if (
-      (this.options.prewarmAfterUse ?? true) &&
+      (this.options.replenishStandbyAfterUse ?? true) &&
       !this.terminated &&
       !this.preparationStandby
     ) {

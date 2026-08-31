@@ -724,8 +724,8 @@ test('interactive execute retains one trace-capable artifact and traces explicit
       yield* judge.disposeExecution(initial.executionId!);
       assert.equal(
         state.disposals,
-        0,
-        'explicit disposal releases the execution facade; the host may retain the immutable artifact cache'
+        1,
+        'explicit disposal releases the live prepared program exactly once'
       );
 
       const exit = yield* Effect.exit(judge.execute<FakeInput>({
@@ -739,13 +739,13 @@ test('interactive execute retains one trace-capable artifact and traces explicit
   assert.equal(state.disposals, 1);
 });
 
-test('browser interactive execute separates all-case correctness from selected tracing', async () => {
+test('browser interactive execute prepares one trace-capable program and records only the selected case', async () => {
   const state = makePreparedState();
   const runtimeHost = browserHostFor(preparedProvider(state));
   const judgeHost = createBrowserJudgeHostFromRuntimeHost(runtimeHost);
   try {
     const bundle = await createAlgorithmJudgeBundle({
-      id: 'dual-program-interactive',
+      id: 'single-program-interactive',
       language: 'javascript',
       code: SOURCE,
       functionName: 'solve',
@@ -769,28 +769,43 @@ test('browser interactive execute separates all-case correctness from selected t
       initial.evaluation.cases.map((result) => result.caseId),
       ['selected', 'drain-a', 'drain-b']
     );
-    assert.ok(initial.evaluation.cases.every((result) => !('trace' in result)));
-    assert.equal(initial.traceEvaluation?.status, 'completed');
     assert.deepEqual(
-      initial.traceEvaluation?.cases.map((result) => result.caseId),
-      ['selected']
-    );
-    assert.equal(
-      (initial.traceEvaluation?.cases[0]?.trace as RuntimeTrace).events.length,
-      1
+      initial.evaluation.cases.map((result) => ({
+        caseId: result.caseId,
+        traceEvents: (result.trace as RuntimeTrace).events.length,
+      })),
+      [
+        { caseId: 'selected', traceEvents: 1 },
+        { caseId: 'drain-a', traceEvents: 0 },
+        { caseId: 'drain-b', traceEvents: 0 },
+      ]
     );
     assert.deepEqual(
       state.prepareCalls.map((call) => call.mode),
-      ['code', 'trace']
+      ['trace']
+    );
+    assert.equal(state.codeCalls.length, 0);
+    assert.deepEqual(
+      state.traceCalls.map((call) => ({
+        label: (call.inputs as FakeInput).label,
+        recordTrace: call.recordTrace,
+      })),
+      [
+        { label: 'selected', recordTrace: true },
+        { label: 'drain-a', recordTrace: false },
+        { label: 'drain-b', recordTrace: false },
+      ]
     );
     assert.deepEqual(
-      state.codeCalls.map((call) => (call.inputs as FakeInput).label),
-      ['selected', 'drain-a', 'drain-b']
+      initial.timings?.phases.map((timing) => timing.phase),
+      [
+        'bundle-validation',
+        'judge-create',
+        'initial-execute',
+      ]
     );
-    assert.deepEqual(
-      state.traceCalls.map((call) => (call.inputs as FakeInput).label),
-      ['selected']
-    );
+    assert.ok((initial.timings?.totalMs ?? -1) >= 0);
+    assert.ok(initial.timings?.phases.every((timing) => timing.success));
 
     const continuation = await judgeHost.execute({
       executionId: initial.executionId!,
@@ -802,7 +817,11 @@ test('browser interactive execute separates all-case correctness from selected t
     );
     assert.deepEqual(
       state.traceCalls.map((call) => (call.inputs as FakeInput).label),
-      ['selected', 'drain-b']
+      ['selected', 'drain-a', 'drain-b', 'drain-b']
+    );
+    assert.deepEqual(
+      continuation.timings?.phases.map((timing) => timing.phase),
+      ['trace-continuation-execute']
     );
     await judgeHost.disposeExecution(initial.executionId!);
   } finally {
@@ -816,7 +835,7 @@ test('browser interactive execute validates trace selection before either progra
   const judgeHost = createBrowserJudgeHostFromRuntimeHost(runtimeHost);
   try {
     const bundle = await createAlgorithmJudgeBundle({
-      id: 'dual-program-invalid-selection',
+      id: 'single-program-invalid-selection',
       language: 'javascript',
       code: SOURCE,
       functionName: 'solve',
@@ -840,13 +859,13 @@ test('browser interactive execute validates trace selection before either progra
   }
 });
 
-test('browser interactive execute skips trace preparation when correctness compilation fails', async () => {
+test('browser interactive execute reports failure from its only prepared program', async () => {
   const state = makePreparedState({ failPreparation: true });
   const runtimeHost = browserHostFor(preparedProvider(state));
   const judgeHost = createBrowserJudgeHostFromRuntimeHost(runtimeHost);
   try {
     const bundle = await createAlgorithmJudgeBundle({
-      id: 'dual-program-compile-failure',
+      id: 'single-program-compile-failure',
       language: 'javascript',
       code: SOURCE,
       functionName: 'solve',
@@ -862,11 +881,10 @@ test('browser interactive execute skips trace preparation when correctness compi
       tracing: { caseIds: ['selected'] },
     });
     assert.equal(result.evaluation.status, 'compile-failed');
-    assert.equal(result.traceEvaluation, undefined);
     assert.equal(result.executionId, undefined);
     assert.deepEqual(
       state.prepareCalls.map((call) => call.mode),
-      ['code']
+      ['trace']
     );
     assert.equal(state.codeCalls.length, 0);
     assert.equal(state.traceCalls.length, 0);
@@ -1932,8 +1950,8 @@ test('disposes a prepared artifact that arrives after its evaluation was interru
       );
       assert.equal(
         state.disposals,
-        0,
-        'the browser host keeps an unreferenced immutable artifact warm until cache eviction or host disposal'
+        1,
+        'an interrupted late preparation must be disposed as soon as it arrives'
       );
       assert.deepEqual(judge.activeSessionIds(), []);
     })
@@ -1941,7 +1959,7 @@ test('disposes a prepared artifact that arrives after its evaluation was interru
   assert.equal(state.disposals, 1);
 });
 
-test('uses unique evaluation scopes while reusing the same immutable preparation', async () => {
+test('uses unique evaluation scopes without retaining live prepared programs', async () => {
   const state = makePreparedState();
 
   await Effect.runPromise(Effect.scoped(
@@ -1968,13 +1986,13 @@ test('uses unique evaluation scopes while reusing the same immutable preparation
 
       assert.equal(first.status, 'completed');
       assert.equal(second.status, 'completed');
-      assert.equal(state.prepareCalls.length, 1);
+      assert.equal(state.prepareCalls.length, 2);
       assert.equal(state.codeCalls.length, 2);
-      assert.equal(state.disposals, 0);
+      assert.equal(state.disposals, 2);
       assert.deepEqual(judge.activeSessionIds(), []);
     })
   ));
-  assert.equal(state.disposals, 1);
+  assert.equal(state.disposals, 2);
 });
 
 test('surfaces prepared program teardown failure as Judge infrastructure failure', async () => {

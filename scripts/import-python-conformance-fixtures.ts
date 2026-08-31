@@ -4,7 +4,7 @@ import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 
 import type { PythonConformanceFixture, PythonConformanceRunResult, PythonExecutionResult } from '../tests/conformance/python-runner';
-import { loadPythonRuntimeCore, runPythonConformanceFixture } from '../tests/conformance/python-runner';
+import { loadPythonRuntime, runPythonConformanceFixture } from '../tests/conformance/python-runner';
 
 const DEFAULT_FAILURE_ROOT = 'reports/conformance-failures';
 const DEFAULT_OUTPUT_ROOT = 'tests/conformance/generated';
@@ -239,7 +239,7 @@ const rawCandidates = await readJsonInput(args.inputPath);
 if (!Array.isArray(rawCandidates)) throw new Error('Input must be a JSON array of fixture candidates.');
 
 const candidates = args.limit ? rawCandidates.slice(0, args.limit) : rawCandidates;
-const runtime = await loadPythonRuntimeCore();
+const runtime = await loadPythonRuntime();
 const accepted: PythonConformanceFixture[] = [];
 const rejected: RejectedFixture[] = [];
 

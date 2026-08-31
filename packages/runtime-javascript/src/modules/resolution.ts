@@ -481,7 +481,6 @@ export function isBrowserJavaScriptInternalStackFrame(line: string): boolean {
   return (
     line.includes('/@fs/') ||
     line.includes('/packages/harness-') ||
-    line.includes('/dist/browser/project.js') ||
     line.includes('/workers/javascript-project-worker.js') ||
     line.includes('javascript-project-worker.js:') ||
     line.includes('blob:') ||

@@ -4170,29 +4170,10 @@ async function executePreparedCSharpProgram(message) {
     } else {
       exportedJson = executePreparedExport(requestJson);
     }
-    const jsParseStartedAt = now();
     const parsedResult = JSON.parse(exportedJson);
-    const jsParseMs = elapsedMs(jsParseStartedAt);
-    const normalizeStartedAt = now();
-    const normalized = normalizeCSharpResult(parsedResult, request);
-    globalThis.__tracecodeCsLastParse = {
-      jsParseMs: Math.round(jsParseMs * 10) / 10,
-      jsNormalizeMs: Math.round(elapsedMs(normalizeStartedAt) * 10) / 10,
-      responseChars: exportedJson.length,
-    };
-    return normalized;
+    return normalizeCSharpResult(parsedResult, request);
   });
   const hostCallMs = elapsedMs(hostCallStartedAt);
-  if ((result?.trace?.events?.length ?? 0) >= 5000) {
-    // Heavy-trace phase split for the tracing-latency investigation.
-    console.log('__TRACECODE_CSPROF__:' + JSON.stringify({
-      initMs: Math.round(initMs * 10) / 10,
-      hostCallMs: Math.round(hostCallMs * 10) / 10,
-      events: result.trace.events.length,
-      ...(globalThis.__tracecodeCsLastParse ?? {}),
-      dotnetTimings: result?.timings ?? null,
-    }));
-  }
   return {
     ...result,
     timings: {
@@ -4291,16 +4272,6 @@ async function executeCSharpCodePayload(payload, messageType = 'execute-code', c
     delete result.compiledArtifactSha256;
   }
   const hostCallMs = elapsedMs(hostCallStartedAt);
-  if ((result?.trace?.events?.length ?? 0) >= 5000) {
-    // Heavy-trace phase split for the tracing-latency investigation.
-    console.log('__TRACECODE_CSPROF__:' + JSON.stringify({
-      initMs: Math.round(initMs * 10) / 10,
-      hostCallMs: Math.round(hostCallMs * 10) / 10,
-      events: result.trace.events.length,
-      ...(globalThis.__tracecodeCsLastParse ?? {}),
-      dotnetTimings: result?.timings ?? null,
-    }));
-  }
   return {
     ...result,
     timings: {

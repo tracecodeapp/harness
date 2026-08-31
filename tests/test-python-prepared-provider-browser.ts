@@ -133,7 +133,7 @@ async function main(): Promise<void> {
         loaderFormat: 'module',
         loaderUrl: 'https://cdn.jsdelivr.net/pyodide/v314.0.2/full/pyodide.mjs',
         indexUrl: 'https://cdn.jsdelivr.net/pyodide/v314.0.2/full/',
-        runtimeCoreUrl: location.origin + '/workers/python/runtime-core.js',
+        runtimeUrl: location.origin + '/workers/python/python-runtime.js',
         snippetsUrl: location.origin + '/workers/generated-python-harness-snippets.js',
       };
 
@@ -2986,13 +2986,20 @@ async function main(): Promise<void> {
     const mixedTraceResults = result.mixedTraceBatch.results as Array<Record<string, unknown>>;
     for (const [index, run] of mixedTraceResults.entries()) {
       const timings = run.timings as Record<string, unknown> | undefined;
-      assertCondition(
-        typeof timings?.guardBeginMs === 'number' &&
-          timings.guardBeginMs >= 0 &&
-          typeof timings.guardRestoreMs === 'number' &&
-          timings.guardRestoreMs >= 0,
-        `Prepared Python batch case ${index + 1} did not report execution-guard timings: ${JSON.stringify(run)}`
-      );
+      if (index === 1) {
+        assertCondition(
+          timings?.algorithmFastBatch === true,
+          `Tracing-off Python batch case did not use the algorithm-fast driver: ${JSON.stringify(run)}`
+        );
+      } else {
+        assertCondition(
+          typeof timings?.guardBeginMs === 'number' &&
+            timings.guardBeginMs >= 0 &&
+            typeof timings.guardRestoreMs === 'number' &&
+            timings.guardRestoreMs >= 0,
+          `Traced Python batch case ${index + 1} did not report execution-guard timings: ${JSON.stringify(run)}`
+        );
+      }
     }
     assertCondition(
       result.mixedTraceBatch.success === true &&

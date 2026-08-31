@@ -348,7 +348,7 @@ async function testBrowserProviderPreparedLeaseExposure(): Promise<void> {
       },
     } as never,
     debug: false,
-    prewarmAfterUse: true,
+    workerLifecyclePolicy: 'warm-and-retire',
     workerFactoryFor: () => undefined,
     preflight: () => async () => undefined,
     manifestAsset: () => undefined,
@@ -398,7 +398,7 @@ async function testBrowserProviderDefersCompilerWarmupUntilPreparation(): Promis
       },
     } as never,
     debug: false,
-    prewarmAfterUse: false,
+    workerLifecyclePolicy: 'retire-only',
     workerFactoryFor: () => undefined,
     preflight: (_language: string, assetNames: readonly string[]) => async () => {
       executedPreflights.push([...assetNames]);

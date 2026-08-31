@@ -14,7 +14,7 @@ import {
 } from '../packages/runtime-python/src/python-harness';
 
 const WORKER_PATH = join(process.cwd(), 'workers', 'python', 'python-worker.js');
-const RUNTIME_CORE_PATH = join(process.cwd(), 'workers', 'python', 'runtime-core.js');
+const PYTHON_RUNTIME_PATH = join(process.cwd(), 'workers', 'python', 'python-runtime.js');
 const SHARED_POLICY_PATH = join(process.cwd(), 'workers', 'shared', 'runtime-kernel-policy-classic.js');
 const LEGACY_RUNTIME_PATH = join(process.cwd(), 'packages', 'runtime-python', 'src', 'pyodide.ts');
 
@@ -118,7 +118,7 @@ function createWorkerContext(source: string): vm.Context {
 
 async function assertWorkerInitWarmupContract(
   workerSource: string,
-  runtimeCoreSource: string,
+  pythonRuntimeSource: string,
   sharedPolicySource: string
 ): Promise<void> {
   const pending = new Map<string, (message: Record<string, unknown>) => void>();
@@ -151,8 +151,8 @@ async function assertWorkerInitWarmupContract(
           vm.runInContext(sharedPolicySource, context, { filename: 'runtime-kernel-policy-classic.js' });
           continue;
         }
-        if (url.includes('runtime-core.js')) {
-          vm.runInContext(runtimeCoreSource, context, { filename: 'runtime-core.js' });
+        if (url.includes('python-runtime.js')) {
+          vm.runInContext(pythonRuntimeSource, context, { filename: 'python-runtime.js' });
           continue;
         }
         throw new Error(`Unexpected Python worker warmup asset: ${url}`);
@@ -416,7 +416,7 @@ async function assertDeprecatedRuntimeNotImported(): Promise<void> {
 
 async function main(): Promise<void> {
   const workerSource = await readFile(WORKER_PATH, 'utf8');
-  const runtimeCoreSource = await readFile(RUNTIME_CORE_PATH, 'utf8');
+  const pythonRuntimeSource = await readFile(PYTHON_RUNTIME_PATH, 'utf8');
   const sharedPolicySource = await readFile(SHARED_POLICY_PATH, 'utf8');
 
   assertCondition(
@@ -430,27 +430,27 @@ async function main(): Promise<void> {
   console.log('PASS: generated snippet integration markers present');
 
   assertCondition(
-    workerSource.includes('runtime-core.js'),
-    'Worker should attempt to load runtime-core module'
+    workerSource.includes('python-runtime.js'),
+    'Worker should attempt to load python-runtime module'
   );
   assertCondition(
     workerSource.includes('__TRACECODE_PYODIDE_RUNTIME__'),
-    'Worker should reference runtime-core export namespace'
+    'Worker should reference python-runtime export namespace'
   );
   assertCondition(
-    countOccurrences(runtimeCoreSource, 'deps.PYTHON_CLASS_DEFINITIONS_SNIPPET') >= 2,
+    countOccurrences(pythonRuntimeSource, 'deps.PYTHON_CLASS_DEFINITIONS_SNIPPET') >= 2,
     'Runtime core should wire shared class definitions into tracing/execute templates'
   );
   assertCondition(
-    countOccurrences(runtimeCoreSource, 'deps.PYTHON_CONVERSION_HELPERS_SNIPPET') >= 3,
+    countOccurrences(pythonRuntimeSource, 'deps.PYTHON_CONVERSION_HELPERS_SNIPPET') >= 3,
     'Runtime core should wire shared conversion helpers into tracing/execute templates'
   );
   assertCondition(
-    countOccurrences(runtimeCoreSource, 'deps.PYTHON_TRACE_SERIALIZE_FUNCTION_SNIPPET') >= 1,
+    countOccurrences(pythonRuntimeSource, 'deps.PYTHON_TRACE_SERIALIZE_FUNCTION_SNIPPET') >= 1,
     'Runtime core should wire trace serialize snippet into tracing template'
   );
   assertCondition(
-    countOccurrences(runtimeCoreSource, 'deps.PYTHON_EXECUTE_SERIALIZE_FUNCTION_SNIPPET') >= 1,
+    countOccurrences(pythonRuntimeSource, 'deps.PYTHON_EXECUTE_SERIALIZE_FUNCTION_SNIPPET') >= 1,
     'Runtime core should wire execute serialize snippet into execute template'
   );
   assertCondition(
@@ -522,7 +522,7 @@ async function main(): Promise<void> {
   );
   console.log('PASS: inline serialize fallbacks synced');
 
-  await assertWorkerInitWarmupContract(workerSource, runtimeCoreSource, sharedPolicySource);
+  await assertWorkerInitWarmupContract(workerSource, pythonRuntimeSource, sharedPolicySource);
   await assertToPythonLiteralParity(workerSource);
   await assertProjectPythonEnvContract(workerSource, sharedPolicySource);
   await assertDeprecatedRuntimeNotImported();

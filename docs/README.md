@@ -19,9 +19,18 @@ triage logs should not live in this public docs tree.
 - [Java Algorithm Isolation Profile](./java-algorithm-isolation-profile.md)
   Defines artifact-derived admission to retained-JVM correctness batches and
   the fresh-process compatibility boundary.
+- [C# Algorithm Fast Batch](./csharp-algorithm-fast-batch.md)
+  Defines admission, runner rotation, and managed isolation for retained C#
+  algorithm batches.
+- [Python Algorithm Fast Batch](./python-algorithm-fast-batch.md)
+  Defines Python fast, retained-generic, and compatibility execution tiers.
 - [Python Prepared-Execution Isolation Boundary](./python-prepared-isolation-boundary.md)
   Defines the fresh-case and state-restoration contract for prepared Python
   batches.
+- [Python Native Tracer](./python-native-tracer.md)
+  Defines the optional native trace accelerator and its parity boundary.
+- [Interactive Execution Sessions](./interactive-execution-session-architecture.md)
+  Defines correctness, selected trace, continuation, and disposal ownership.
 - [Project Terminal Sessions](./project-terminal-session.md)
   Documents the terminal UI API for project workspaces.
 - [TraceKernel Workspaces](./tracekernel-workspaces.md)

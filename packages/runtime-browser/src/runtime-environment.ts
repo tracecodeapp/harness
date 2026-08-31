@@ -1,7 +1,6 @@
 import type { Language } from '@tracecode/runtime-contracts';
 import {
   resolveBrowserRuntimeAssets,
-  type AnyBrowserRuntimeAssetManifest,
   type BrowserRuntimeAssets,
   type BrowserRuntimeAssetOverrides,
   type BrowserRuntimeId,
@@ -53,8 +52,6 @@ export interface BrowserRuntimeEnvironmentOptions {
   surface?: BrowserRuntimeSurface;
   engine?: BrowserRuntimeEngine;
   featureOverrides?: Partial<BrowserRuntimeFeatureSupport>;
-  /** Whether the classic C# surface uses packed compiler/runner role workers. */
-  csharpPreparedAuthority?: boolean;
 }
 
 export interface BrowserRuntimeEnvironment {
@@ -63,19 +60,17 @@ export interface BrowserRuntimeEnvironment {
   readonly engine: BrowserRuntimeEngine;
   readonly surface: BrowserRuntimeSurface;
   readonly features: Readonly<BrowserRuntimeFeatureSupport>;
-  readonly csharpPreparedAuthority?: boolean;
   preflight(language: Language): Promise<BrowserRuntimeReadiness>;
   preflightAll(): Promise<BrowserRuntimeEnvironmentReport>;
 }
 
 function preflightAssets(
   language: Language,
-  surface: BrowserRuntimeSurface,
-  csharpPreparedAuthority: boolean
+  surface: BrowserRuntimeSurface
 ): readonly string[] {
   switch (language) {
     case 'python':
-      return ['worker', 'runtimeCore', 'snippets', 'runtimeLoader', 'runtimeIndex', 'distribution', 'packages'];
+      return ['worker', 'runtime', 'snippets', 'runtimeLoader', 'runtimeIndex', 'distribution', 'packages'];
     case 'javascript':
       return surface === 'project' ? ['projectWorker', 'libraries'] : ['worker', 'libraries'];
     case 'typescript':
@@ -83,7 +78,7 @@ function preflightAssets(
     case 'java':
       return ['worker'];
     case 'csharp':
-      if (surface === 'project' || !csharpPreparedAuthority) {
+      if (surface === 'project') {
         return ['worker', 'assetBaseUrl', 'dependencies'];
       }
       return [
@@ -130,9 +125,7 @@ function detectFeatures(overrides: Partial<BrowserRuntimeFeatureSupport> = {}): 
 
 function requiredFeatures(
   language: Language,
-  surface: BrowserRuntimeSurface,
-  manifest: AnyBrowserRuntimeAssetManifest | undefined,
-  csharpPreparedAuthority: boolean
+  surface: BrowserRuntimeSurface
 ): readonly (keyof BrowserRuntimeFeatureSupport)[] {
   const required: Array<keyof BrowserRuntimeFeatureSupport> = ['worker'];
   if (language === 'python' || language === 'java' || language === 'csharp' || language === 'cpp') {
@@ -142,19 +135,9 @@ function requiredFeatures(
   if (language === 'java' && surface === 'project') {
     required.push('sharedArrayBuffer', 'crossOriginIsolated');
   }
-  const csharpPreparedRolesEnabled =
-    csharpPreparedAuthority &&
-    language === 'csharp' &&
-    surface === 'classic' &&
-    (
-      !manifest ||
-      (
-        manifest.runtime === 'csharp' &&
-        Boolean(manifest.assets.compilerAssetBaseUrl) &&
-        Boolean(manifest.assets.runnerAssetBaseUrl)
-      )
-    );
-  if (csharpPreparedRolesEnabled) required.push('webCrypto');
+  if (language === 'csharp' && surface === 'classic') {
+    required.push('webCrypto');
+  }
   return required;
 }
 
@@ -189,26 +172,36 @@ export function createBrowserRuntimeEnvironment(
   const engine = options.engine ?? detectEngine();
   const surface = options.surface ?? 'classic';
   const features = detectFeatures(options.featureOverrides);
-  const csharpPreparedAuthority = options.csharpPreparedAuthority !== false;
   const assetPreflight = createBrowserRuntimeAssetPreflight(assets.runtimeManifests);
 
   const preflight = async (language: Language): Promise<BrowserRuntimeReadiness> => {
     const selected = providers.includes(language);
     const manifest = assets.runtimeManifests?.[language];
     const configured = true;
-    const missingFeatures = requiredFeatures(
-      language,
-      surface,
-      manifest,
-      csharpPreparedAuthority
-    ).filter((feature) => !features[feature]);
+    const missingFeatures = requiredFeatures(language, surface).filter(
+      (feature) => !features[feature]
+    );
     const issues = knownIssues(engine, language);
     let error: string | undefined;
+    if (
+      selected &&
+      language === 'csharp' &&
+      surface === 'classic' &&
+      manifest?.runtime === 'csharp' &&
+      (
+        !manifest.assets.compilerAssetBaseUrl ||
+        !manifest.assets.runnerAssetBaseUrl
+      )
+    ) {
+      error =
+        'C# Judge requires compilerAssetBaseUrl and runnerAssetBaseUrl in the runtime manifest.';
+    }
     if (selected && configured && missingFeatures.length === 0) {
       try {
+        if (error) throw new Error(error);
         await assetPreflight.preflight(
           language,
-          preflightAssets(language, surface, csharpPreparedAuthority)
+          preflightAssets(language, surface)
         );
       } catch (cause) {
         error = cause instanceof Error ? cause.message : String(cause);
@@ -235,7 +228,6 @@ export function createBrowserRuntimeEnvironment(
     engine,
     surface,
     features,
-    csharpPreparedAuthority,
     preflight,
     async preflightAll(): Promise<BrowserRuntimeEnvironmentReport> {
       const runtimes = await Promise.all(SUPPORTED_LANGUAGES.map(preflight));

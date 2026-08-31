@@ -303,7 +303,7 @@ for (const engine of engines) {
   const builtIn = resolveBuiltInPythonRuntimeAssets(
     {
       pythonWorker: '/workers/python-worker.js',
-      pythonRuntimeCore: '/workers/python/runtime-core.js',
+      pythonRuntime: '/workers/python/python-runtime.js',
     } as never,
     engine
   );
@@ -331,8 +331,8 @@ for (const engine of engines) {
 const splitOrigin = resolveBuiltInPythonRuntimeAssets(
   {
     pythonWorker: '/workers/python-worker.js',
-    pythonRuntimeCore:
-      'https://runtime-assets.example/harness/release/python/runtime-core.js',
+    pythonRuntime:
+      'https://runtime-assets.example/harness/release/python/python-runtime.js',
   } as never,
   'chromium'
 );
@@ -344,23 +344,23 @@ assertCondition(
   'Built-in Python payloads must follow the configured runtime asset root, not the same-origin Worker URL.'
 );
 
-const nonHierarchicalRuntimeCore = resolveBuiltInPythonRuntimeAssets(
+const nonHierarchicalRuntime = resolveBuiltInPythonRuntimeAssets(
   {
     pythonWorker: '/workers/python-worker.js',
-    pythonRuntimeCore: 'data:text/javascript,export default {}',
+    pythonRuntime: 'data:text/javascript,export default {}',
   } as never,
   'chromium'
 );
 assertCondition(
-  nonHierarchicalRuntimeCore.loaderUrl ===
+  nonHierarchicalRuntime.loaderUrl ===
     '/workers/python/pyodide-0.29.3/pyodide.js',
-  'A non-hierarchical runtime-core override must retain the worker-relative built-in image root.'
+  'A non-hierarchical python-runtime override must retain the worker-relative built-in image root.'
 );
 
 const builtIn = resolveBuiltInPythonRuntimeAssets(
   {
     pythonWorker: '/workers/python-worker.js',
-    pythonRuntimeCore: '/workers/python/runtime-core.js',
+    pythonRuntime: '/workers/python/python-runtime.js',
   } as never,
   'chromium'
 );
@@ -379,7 +379,7 @@ try {
   resolveBuiltInPythonRuntimeAssets(
     {
       pythonWorker: '/workers/python-worker.js',
-      pythonRuntimeCore: '/workers/python/runtime-core.js',
+      pythonRuntime: '/workers/python/python-runtime.js',
     } as never,
     'unknown'
   );

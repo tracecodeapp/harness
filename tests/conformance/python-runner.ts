@@ -65,7 +65,7 @@ interface RuntimeDeps {
   getPyodide: () => { runPythonAsync: (code: string) => Promise<string> };
 }
 
-interface RuntimeCore {
+interface PythonRuntime {
   executeCode: (
     deps: RuntimeDeps,
     code: string,
@@ -136,8 +136,8 @@ function buildRuntimeDeps(): RuntimeDeps {
   };
 }
 
-export async function loadPythonRuntimeCore(): Promise<RuntimeCore> {
-  const source = await readFile(join(process.cwd(), 'workers', 'python', 'runtime-core.js'), 'utf8');
+export async function loadPythonRuntime(): Promise<PythonRuntime> {
+  const source = await readFile(join(process.cwd(), 'workers', 'python', 'python-runtime.js'), 'utf8');
   const selfObject: Record<string, unknown> = {};
   const context = vm.createContext({
     console,
@@ -145,10 +145,10 @@ export async function loadPythonRuntimeCore(): Promise<RuntimeCore> {
     globalThis: {},
   });
 
-  vm.runInContext(source, context, { filename: 'runtime-core.js' });
+  vm.runInContext(source, context, { filename: 'python-runtime.js' });
   const runtime = selfObject.__TRACECODE_PYODIDE_RUNTIME__;
-  if (!runtime || typeof runtime !== 'object') throw new Error('Unable to load Python runtime core exports.');
-  return runtime as RuntimeCore;
+  if (!runtime || typeof runtime !== 'object') throw new Error('Unable to load Python Python runtime exports.');
+  return runtime as PythonRuntime;
 }
 
 export function pythonExecutionStyleFor(entryStyle: string): 'function' | 'solution-method' {
@@ -168,7 +168,7 @@ function expectedOutputForFixture(fixture: PythonConformanceFixture): unknown {
 }
 
 export async function runPythonConformanceFixture(
-  runtime: RuntimeCore,
+  runtime: PythonRuntime,
   fixture: PythonConformanceFixture
 ): Promise<PythonConformanceRunResult> {
   const deps = buildRuntimeDeps();

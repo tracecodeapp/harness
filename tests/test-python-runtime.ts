@@ -14,7 +14,7 @@ import {
   toPythonLiteral,
 } from '../packages/runtime-python/src/python-harness';
 
-const RUNTIME_CORE_PATH = join(process.cwd(), 'workers', 'python', 'runtime-core.js');
+const PYTHON_RUNTIME_PATH = join(process.cwd(), 'workers', 'python', 'python-runtime.js');
 const PYTHON_WORKER_PATH = join(process.cwd(), 'workers', 'python', 'python-worker.js');
 
 type TraceAccess = {
@@ -55,7 +55,7 @@ type RuntimeTraceEvent = {
   callStack?: Array<{ function?: string; args?: Record<string, unknown> }>;
 };
 
-type RuntimeCore = {
+type PythonRuntime = {
   generateTracingCode: (
     deps: RuntimeDeps,
     code: string,
@@ -99,8 +99,8 @@ function assertCondition(condition: unknown, message: string): asserts condition
   }
 }
 
-async function loadRuntimeCore(): Promise<RuntimeCore> {
-  const source = await readFile(RUNTIME_CORE_PATH, 'utf8');
+async function loadPythonRuntime(): Promise<PythonRuntime> {
+  const source = await readFile(PYTHON_RUNTIME_PATH, 'utf8');
   const selfObject: Record<string, unknown> = {};
   const context = vm.createContext({
     console,
@@ -108,15 +108,15 @@ async function loadRuntimeCore(): Promise<RuntimeCore> {
     globalThis: {},
   });
 
-  vm.runInContext(source, context, { filename: 'runtime-core.js' });
+  vm.runInContext(source, context, { filename: 'python-runtime.js' });
 
   const runtime = selfObject.__TRACECODE_PYODIDE_RUNTIME__;
   assertCondition(
     typeof runtime === 'object' && runtime !== null,
-    'Unable to load runtime core exports'
+    'Unable to load Python runtime exports'
   );
 
-  return runtime as RuntimeCore;
+  return runtime as PythonRuntime;
 }
 
 type FakePyodideFs = {
@@ -592,7 +592,7 @@ function assertNoSemanticRefIds(value: unknown, label: string): void {
 }
 
 async function assertAccessAttributionUsesExecutedLine(): Promise<void> {
-  const runtime = await loadRuntimeCore();
+  const runtime = await loadPythonRuntime();
   const source = `class Solution:
     def minDistance(self, word1: str, word2: str) -> int:
         m = len(word1)
@@ -676,7 +676,7 @@ print(json.dumps({
 }
 
 async function assertIndexedReceiverMutationsAreRecordedAsMutations(): Promise<void> {
-  const runtime = await loadRuntimeCore();
+  const runtime = await loadPythonRuntime();
   const source = `def build_graph(edges, n):
     def append(value):
         return value
@@ -741,7 +741,7 @@ print(json.dumps({
 }
 
 async function assertSubscriptedUserMethodsPreserveEvaluationOrder(): Promise<void> {
-  const runtime = await loadRuntimeCore();
+  const runtime = await loadPythonRuntime();
   const source = `class Box:
     def __init__(self, name):
         self.name = name
@@ -807,7 +807,7 @@ print(json.dumps({
 }
 
 async function assertIndexSourceProvenanceIsRecorded(): Promise<void> {
-  const runtime = await loadRuntimeCore();
+  const runtime = await loadPythonRuntime();
   const source = `def inspect(nums, grid):
     i = 1
     row = 0
@@ -865,7 +865,7 @@ print(json.dumps({
 }
 
 async function assertEnumerateLoopBindingIsRecorded(): Promise<void> {
-  const runtime = await loadRuntimeCore();
+  const runtime = await loadPythonRuntime();
   const source = `def inspect(words):
     for idx, word in enumerate(words):
         n = len(word)
@@ -945,7 +945,7 @@ print(json.dumps({
 }
 
 async function assertEnumerateExpressionLoopBindingIsRecorded(): Promise<void> {
-  const runtime = await loadRuntimeCore();
+  const runtime = await loadPythonRuntime();
   const source = `def largest_rectangle_area(heights):
     total = 0
     for i, h in enumerate(heights + [0]):
@@ -1018,7 +1018,7 @@ print(json.dumps({
 }
 
 async function assertTupleForLoopBindingIsRecorded(): Promise<void> {
-  const runtime = await loadRuntimeCore();
+  const runtime = await loadPythonRuntime();
   const source = `def relax(edges):
     total = 0
     for u, v, w in edges:
@@ -1108,7 +1108,7 @@ print(json.dumps({
 }
 
 async function assertListForLoopBindingSourcesAreRecorded(): Promise<void> {
-  const runtime = await loadRuntimeCore();
+  const runtime = await loadPythonRuntime();
   const source = `def longest_common_prefix(strs):
     prefix = strs[0]
     for word in strs:
@@ -1183,7 +1183,7 @@ print(json.dumps({
 }
 
 async function assertLiteralTupleUnpackingForLoopBindingIsRecorded(): Promise<void> {
-  const runtime = await loadRuntimeCore();
+  const runtime = await loadPythonRuntime();
   const source = `def offsets():
     total = 0
     for di, dj in [(0, 1), (1, 0), (0, -1), (-1, 0)]:
@@ -1254,7 +1254,7 @@ print(json.dumps({
 }
 
 async function assertTupleAssignmentScalarWritesAreRecorded(): Promise<void> {
-  const runtime = await loadRuntimeCore();
+  const runtime = await loadPythonRuntime();
   const source = `def dimensions(grid):
     rows, cols = len(grid), len(grid[0])
     return rows * cols
@@ -1321,7 +1321,7 @@ print(json.dumps({
 }
 
 async function assertTupleAssignmentIndexedWritesAreRecorded(): Promise<void> {
-  const runtime = await loadRuntimeCore();
+  const runtime = await loadPythonRuntime();
   const source = `class Solution:
     def nextPermutation(self, nums: list[int]) -> list[int]:
         i = len(nums) - 2
@@ -1402,7 +1402,7 @@ print(json.dumps({
 }
 
 async function assertClassMethodAssignmentTempsAreHidden(): Promise<void> {
-  const runtime = await loadRuntimeCore();
+  const runtime = await loadPythonRuntime();
   const source = `class Solution:
     def solve(self, xs: list[str]) -> list[str]:
         xs[0], *_ = ["visible", "secret"]
@@ -1470,7 +1470,7 @@ print(json.dumps({
 }
 
 async function assertChainedAssignmentScalarWritesAreRecorded(): Promise<void> {
-  const runtime = await loadRuntimeCore();
+  const runtime = await loadPythonRuntime();
   const source = `def solve(nums):
     mid = len(nums) // 2
     i = j = mid + 1
@@ -1536,7 +1536,7 @@ print(json.dumps({
 }
 
 async function assertListComprehensionAssignmentEmitsSingleWriteFrame(): Promise<void> {
-  const runtime = await loadRuntimeCore();
+  const runtime = await loadPythonRuntime();
   const source = `def clone(adjList):
     n = len(adjList)
     cloned = [[] for _ in range(n)]
@@ -1590,7 +1590,7 @@ print(json.dumps({
 }
 
 async function assertInPlaceSortMutationIsRecorded(): Promise<void> {
-  const runtime = await loadRuntimeCore();
+  const runtime = await loadPythonRuntime();
   const source = `def earliest(intervals):
     intervals.sort(key=lambda x: x[0])
     return intervals[0][0]
@@ -1659,7 +1659,7 @@ print(json.dumps({
 }
 
 async function assertHeapqMutationsAreRecorded(): Promise<void> {
-  const runtime = await loadRuntimeCore();
+  const runtime = await loadPythonRuntime();
   const source = `import heapq
 
 class Box:
@@ -1878,7 +1878,7 @@ print(json.dumps({
 }
 
 async function assertTupleKeyDictProvenanceIsRecorded(): Promise<void> {
-  const runtime = await loadRuntimeCore();
+  const runtime = await loadPythonRuntime();
   const source = `def inspect():
     right_id = {}
     nr = 1
@@ -1971,7 +1971,7 @@ print(json.dumps({
 }
 
 async function assertObjectMemberDictMembershipProvenanceIsRecorded(): Promise<void> {
-  const runtime = await loadRuntimeCore();
+  const runtime = await loadPythonRuntime();
   const source = `class TrieNode:
     def __init__(self):
         self.children = {}
@@ -2040,7 +2040,7 @@ print(json.dumps({
 }
 
 async function assertComputedDeleteMutationArgsAreRecorded(): Promise<void> {
-  const runtime = await loadRuntimeCore();
+  const runtime = await loadPythonRuntime();
   const source = `class Node:
     def __init__(self, key):
         self.key = key
@@ -2121,7 +2121,7 @@ print(json.dumps({
 }
 
 async function assertTraceReferenceIdsAreNeutral(): Promise<void> {
-  const runtime = await loadRuntimeCore();
+  const runtime = await loadPythonRuntime();
   const source = `class Box:
     def __init__(self, value):
         self.value = value
@@ -2179,7 +2179,7 @@ print(json.dumps({
 }
 
 async function assertCustomObjectLocalAliasesMaterializePayloads(): Promise<void> {
-  const runtime = await loadRuntimeCore();
+  const runtime = await loadPythonRuntime();
   const source = `class TrieNode:
     def __init__(self):
         self.children = {}
@@ -2254,7 +2254,7 @@ print(json.dumps({
 }
 
 async function assertCustomObjectIdsAreStableAcrossFrames(): Promise<void> {
-  const runtime = await loadRuntimeCore();
+  const runtime = await loadPythonRuntime();
   const source = `class TrieNode:
     def __init__(self):
         self.children = {}
@@ -2325,7 +2325,7 @@ print(json.dumps({
 }
 
 async function assertObjectFieldSubscriptReadCarriesValue(): Promise<void> {
-  const runtime = await loadRuntimeCore();
+  const runtime = await loadPythonRuntime();
   const source = `class TrieNode:
     def __init__(self):
         self.children = {}
@@ -2397,7 +2397,7 @@ print(json.dumps({
 }
 
 async function assertAttributeReadCarriesPreMutationValue(): Promise<void> {
-  const runtime = await loadRuntimeCore();
+  const runtime = await loadPythonRuntime();
   const source = `def inspect():
     head = ListNode(1, ListNode(2))
     curr = head
@@ -2464,7 +2464,7 @@ print(json.dumps({
 }
 
 async function assertNestedAttributeReadsAndWritesAreRecorded(): Promise<void> {
-  const runtime = await loadRuntimeCore();
+  const runtime = await loadPythonRuntime();
   const source = `class Node:
     def __init__(self, key):
         self.key = key
@@ -2572,7 +2572,7 @@ print(json.dumps({
 }
 
 async function assertUntraceableNestedMutationIndexDoesNotEmitRootRead(): Promise<void> {
-  const runtime = await loadRuntimeCore();
+  const runtime = await loadPythonRuntime();
   const source = `class Key:
     pass
 
@@ -2639,7 +2639,7 @@ print(json.dumps({
 }
 
 async function assertTraceCaptureLimitPreservesOutput(): Promise<void> {
-  const runtime = await loadRuntimeCore();
+  const runtime = await loadPythonRuntime();
   const source = `def sum_to(n):
     total = 0
     for i in range(n):
@@ -2698,7 +2698,7 @@ print(json.dumps({
 }
 
 async function assertTraceByteLimitPreservesOutput(): Promise<void> {
-  const runtime = await loadRuntimeCore();
+  const runtime = await loadPythonRuntime();
   const source = `def build_values(n):
     values = []
     payload = "x" * 2048
@@ -2760,7 +2760,7 @@ print(json.dumps({
 }
 
 async function assertDefaultStoredRuntimeEventBudgetAllowsScriptReturns(): Promise<void> {
-  const runtime = await loadRuntimeCore();
+  const runtime = await loadPythonRuntime();
   const source = `def find_order(num_courses, prerequisites):
     graph = []
     for _ in range(num_courses):
@@ -2916,7 +2916,7 @@ print(json.dumps({
 }
 
 async function assertDefaultPreludeImportsAreAvailable(): Promise<void> {
-  const runtime = await loadRuntimeCore();
+  const runtime = await loadPythonRuntime();
   const source = `def solve(nums):
     q = deque(nums)
     index = bisect_left(sorted(nums), 2)
@@ -2965,7 +2965,7 @@ print(json.dumps({
 }
 
 async function assertScriptModePreservesResultSerializer(): Promise<void> {
-  const runtime = await loadRuntimeCore();
+  const runtime = await loadPythonRuntime();
   const source = `nums = [2, 7, 11, 15]
 target = 9
 seen = {}
@@ -3017,7 +3017,7 @@ print(json.dumps({
 }
 
 async function assertIndexedAugAssignAndLoopBindingUseConcreteValues(): Promise<void> {
-  const runtime = await loadRuntimeCore();
+  const runtime = await loadPythonRuntime();
   const source = `def solve():
     graph = [[1], []]
     in_degree = [0, 0]
@@ -3088,7 +3088,7 @@ print(json.dumps({
 }
 
 async function assertSliceForLoopBindingIsRecorded(): Promise<void> {
-  const runtime = await loadRuntimeCore();
+  const runtime = await loadPythonRuntime();
   const source = `
 def solve(account):
     seen = []
@@ -3144,7 +3144,7 @@ print(json.dumps({
 }
 
 async function assertBooleanIndexedAssignmentReadsAndWrites(): Promise<void> {
-  const runtime = await loadRuntimeCore();
+  const runtime = await loadPythonRuntime();
   const source = `
 def solve(nums, target):
     dp = [False] * (target + 1)
@@ -3216,7 +3216,7 @@ print(json.dumps({
 }
 
 async function assertRecursiveCallActivationRuntimeEventsAreRecorded(): Promise<void> {
-  const runtime = await loadRuntimeCore();
+  const runtime = await loadPythonRuntime();
   const source = `class Solution:
     def combinationSum(self, candidates, target):
         result = []
@@ -3363,7 +3363,7 @@ print(json.dumps({
 }
 
 async function assertBuiltinSumRecordsConsumedCollectionReads(): Promise<void> {
-  const runtime = await loadRuntimeCore();
+  const runtime = await loadPythonRuntime();
   const source = `def solve(nums, stones):
     total = sum(nums)
     weight = sum(stones)
@@ -3460,7 +3460,7 @@ print(json.dumps({
 }
 
 async function assertPythonTraceHelpersIgnoreUserShadowing(): Promise<void> {
-  const runtime = await loadRuntimeCore();
+  const runtime = await loadPythonRuntime();
   const source = `def tampered_hook(*args, **kwargs):
     raise RuntimeError("tampered trace hook")
 
@@ -3525,7 +3525,7 @@ print(json.dumps({
 }
 
 async function assertPythonMutatingCallIgnoresShadowedSetBuiltin(): Promise<void> {
-  const runtime = await loadRuntimeCore();
+  const runtime = await loadPythonRuntime();
   const source = `def solve():
     global set
     set = "shadowed"
@@ -3579,7 +3579,7 @@ print(json.dumps({
 }
 
 async function assertPythonRuntimeSurvivesShadowedSetAcrossRuns(): Promise<void> {
-  const runtime = await loadRuntimeCore();
+  const runtime = await loadPythonRuntime();
   const deps = {
     PYTHON_CLASS_DEFINITIONS_SNIPPET: PYTHON_CLASS_DEFINITIONS,
     PYTHON_CONVERSION_HELPERS_SNIPPET: PYTHON_CONVERSION_HELPERS,
@@ -3641,7 +3641,7 @@ print(json.dumps({
 }
 
 async function assertBuiltinSumTraceRecordingIsBounded(): Promise<void> {
-  const runtime = await loadRuntimeCore();
+  const runtime = await loadPythonRuntime();
   const source = `def solve():
     values = range(5000)
     total = sum(values)
@@ -3698,7 +3698,7 @@ print(json.dumps({
 }
 
 async function assertFunctionStyleFallsBackToSolutionMethod(): Promise<void> {
-  const runtime = await loadRuntimeCore();
+  const runtime = await loadPythonRuntime();
   const source = `class Solution:
     def findTargetSumWays(self, nums: list[int], target: int) -> int:
         total = sum(nums)
@@ -3764,7 +3764,7 @@ function runPythonAsyncLikePyodide(code: string): string {
 }
 
 async function assertExecuteCodeHydratesAnnotatedCustomObjects(): Promise<void> {
-  const runtime = await loadRuntimeCore();
+  const runtime = await loadPythonRuntime();
   let now = 0;
   const source = `class Campaign:
     def __init__(self, cap: int, bid: int):
@@ -3812,7 +3812,7 @@ class Solution:
 }
 
 async function assertExecuteCodeGuestLimitsReportStructuredTrips(): Promise<void> {
-  const runtime = await loadRuntimeCore();
+  const runtime = await loadPythonRuntime();
   let now = 0;
   const deps = {
     PYTHON_CLASS_DEFINITIONS_SNIPPET: PYTHON_CLASS_DEFINITIONS,

@@ -11698,12 +11698,10 @@ function parseProgramStdout(stdout, options = {}) {
           if (event.kind === 'snapshot') {
             const variable = event.target?.variable;
             if (event.valueRef === 'probe') {
-              globalThis.__tracecodeCppProbeCount = (globalThis.__tracecodeCppProbeCount ?? 0) + 1;
               cursor = marker.nextIndex;
               continue;
             }
             if (event.valueRef === 'prev') {
-              globalThis.__tracecodeCppRefCount = (globalThis.__tracecodeCppRefCount ?? 0) + 1;
               const storedValueJson = lastSnapshotValueJsonByVariable.get(variable);
               if (storedValueJson === undefined) {
                 throw new Error(`C++ snapshot valueRef with no prior snapshot for ${String(variable)}`);
@@ -11726,13 +11724,6 @@ function parseProgramStdout(stdout, options = {}) {
 
   if (!foundResult && !options.allowMissingResult) {
     throw new Error('C++ program did not emit a TraceCode result.');
-  }
-  if ((traceEvents?.length ?? 0) >= 100_000) {
-    console.log('__TRACECODE_CPPREF__:' + JSON.stringify({
-      events: traceEvents.length,
-      refsResolved: globalThis.__tracecodeCppRefCount ?? 0,
-      probes: globalThis.__tracecodeCppProbeCount ?? 0,
-    }));
   }
   return { output, consoleOutput, events: traceEvents ?? [], traceStatus };
 }

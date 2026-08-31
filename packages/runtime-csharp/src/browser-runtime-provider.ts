@@ -14,16 +14,12 @@ import {
 } from './csharp-worker-client';
 
 export interface CSharpBrowserRuntimeProviderOptions {
-  /** Idle timeout for the general Project/terminal/server-capable worker. */
-  workerIdleTimeoutMs?: number;
   /** Idle timeout for the trusted compiler authority. */
   compilerIdleTimeoutMs?: number;
   /** Idle timeout for a prewarmed, unused disposable Judge runner. */
   runnerIdleTimeoutMs?: number;
   /** Maximum disposable runner leases executing one eager Judge batch concurrently. */
   preparedBatchConcurrency?: number;
-  /** Disable only for deployments that have not published the role bundles yet. */
-  preparedAuthority?: boolean;
 }
 
 const FIREFOX_PREPARED_WORKER_IDLE_TIMEOUT_MS = 20_000;
@@ -56,10 +52,6 @@ export function createCSharpBrowserRuntimeProvider(
         );
       }
       const workerFactory = context.workerFactoryFor('csharp');
-      const dependencyDescriptors = context.manifestAssetCollection(
-        'csharp',
-        'dependencies'
-      );
       const generalManifestAsset = context.manifestAsset(
         'csharp',
         'assetBaseUrl'
@@ -79,21 +71,11 @@ export function createCSharpBrowserRuntimeProvider(
       }
       const manifestPublishesPreparedRoles =
         Boolean(compilerManifestAsset) && Boolean(runnerManifestAsset);
-      if (
-        options.preparedAuthority === true &&
-        generalManifestAsset &&
-        !manifestPublishesPreparedRoles
-      ) {
+      if (generalManifestAsset && !manifestPublishesPreparedRoles) {
         throw new TypeError(
-          'C# preparedAuthority requires compiler and runner assets in the runtime manifest.'
+          'C# Judge requires compiler and runner assets in the runtime manifest.'
         );
       }
-      // A pre-role-split manifest is a valid deployment contract. Keep it on
-      // the general worker rather than silently resolving role URLs from the
-      // package defaults, which may point at an unrelated origin.
-      const preparedAuthorityEnabled =
-        options.preparedAuthority !== false &&
-        (!generalManifestAsset || manifestPublishesPreparedRoles);
       // Firefox retained materially more process RSS after .NET worker warmup
       // in the C# spike. Preserve the prewarm needed for sub-second Judge runs,
       // but let unused prepared capacity retire sooner there. Explicit caller
@@ -101,18 +83,13 @@ export function createCSharpBrowserRuntimeProvider(
       const firefoxPreparedIdleTimeoutMs = isFirefoxBrowser()
         ? FIREFOX_PREPARED_WORKER_IDLE_TIMEOUT_MS
         : undefined;
-      // The general worker's idle budget should not silently retire the much
-      // more expensive persistent compiler authority. Firefox retains its
-      // measured memory-specific policy unless the caller configures the
-      // compiler explicitly.
       const compilerIdleTimeoutMs =
         options.compilerIdleTimeoutMs ?? firefoxPreparedIdleTimeoutMs;
       const runnerIdleTimeoutMs =
         options.runnerIdleTimeoutMs ??
-        options.workerIdleTimeoutMs ??
         firefoxPreparedIdleTimeoutMs;
       const dependencyUrls = (
-        collection: 'dependencies' | 'compilerDependencies' | 'runnerDependencies'
+        collection: 'compilerDependencies' | 'runnerDependencies'
       ): Readonly<Record<string, string>> | undefined => {
         const descriptors = context.manifestAssetCollection('csharp', collection);
         return descriptors
@@ -124,43 +101,24 @@ export function createCSharpBrowserRuntimeProvider(
             )
           : undefined;
       };
-      const worker = new CSharpWorkerClient({
+      const compiler = new CSharpWorkerClient({
         workerUrl: context.assets.csharpWorker,
         ...(workerFactory ? { workerFactory } : {}),
-        assetBaseUrl: context.assets.csharpAssetBaseUrl,
+        assetBaseUrl: context.assets.csharpCompilerAssetBaseUrl,
         debug: context.debug,
-        workerIdleTimeoutMs: options.workerIdleTimeoutMs,
+        workerIdleTimeoutMs: compilerIdleTimeoutMs,
+        runtimeRole: 'compiler',
         assetPreflight: context.preflight('csharp', ['worker']),
         runtimeAssetPreflight: context.preflight('csharp', [
-          'assetBaseUrl',
-          'dependencies',
+          'compilerAssetBaseUrl',
+          'compilerDependencies',
         ]),
-        ...(dependencyDescriptors
+        ...(dependencyUrls('compilerDependencies')
           ? {
-              runtimeDependencies: dependencyUrls('dependencies'),
+              runtimeDependencies: dependencyUrls('compilerDependencies'),
             }
           : {}),
       });
-      const compiler = !preparedAuthorityEnabled
-        ? worker
-        : new CSharpWorkerClient({
-            workerUrl: context.assets.csharpWorker,
-            ...(workerFactory ? { workerFactory } : {}),
-            assetBaseUrl: context.assets.csharpCompilerAssetBaseUrl,
-            debug: context.debug,
-            workerIdleTimeoutMs: compilerIdleTimeoutMs,
-            runtimeRole: 'compiler',
-            assetPreflight: context.preflight('csharp', ['worker']),
-            runtimeAssetPreflight: context.preflight('csharp', [
-              'compilerAssetBaseUrl',
-              'compilerDependencies',
-            ]),
-            ...(dependencyUrls('compilerDependencies')
-              ? {
-                  runtimeDependencies: dependencyUrls('compilerDependencies'),
-                }
-              : {}),
-          });
       const activeRunners = new Set<CSharpWorkerClient>();
       const runnerEpochs = new WeakMap<CSharpWorkerClient, number>();
       let disposed = false;
@@ -244,10 +202,6 @@ export function createCSharpBrowserRuntimeProvider(
         epoch: number
       ): Promise<void> => {
         await runner.warmup();
-        if (compiler === worker) {
-          publishWarmedRunner(runner);
-          return;
-        }
         // Ask the compiler client for its current warmup promise for every
         // replacement. CSharpWorkerClient clears a failed memo, so a transient
         // compiler failure must not remain sticky for the whole provider.
@@ -289,7 +243,7 @@ export function createCSharpBrowserRuntimeProvider(
             new Error('C# browser runtime provider has been disposed.')
           );
         }
-        if (!preparedAuthorityEnabled || standbyRunner) {
+        if (standbyRunner) {
           return Promise.resolve();
         }
         if (standbyWarmup) return standbyWarmup;
@@ -310,47 +264,45 @@ export function createCSharpBrowserRuntimeProvider(
         standbyWarmup = warmup;
         return warmup;
       };
-      const preparedAuthority = preparedAuthorityEnabled
-        ? {
-            compiler,
-            batchConcurrency: preparedBatchConcurrency,
-            async warmup(): Promise<{
-              success: boolean;
-              loadTimeMs: number;
-            }> {
-              const startedAt = performance.now();
-              const [compilerReady] = await Promise.all([
-                compiler.warmup(),
-                ensureStandbyRunner(),
-              ]);
-              return {
-                success: compilerReady.success,
-                loadTimeMs: performance.now() - startedAt,
-              };
-            },
-            createRunner(_tier: CSharpPreparedRunnerTier): CSharpWorkerClient {
-              if (disposed) {
-                throw new Error('C# browser runtime provider has been disposed.');
-              }
-              const runner = standbyRunner ?? createRunnerClient();
-              if (runner === standbyRunner) standbyRunner = undefined;
-              return runner;
-            },
-            releaseRunner(runner: CSharpWorkerClient): void {
-              activeRunners.delete(runner);
-              if (
-                context.workerLifecyclePolicy === 'warm-and-retire' &&
-                runnerEpochs.get(runner) === capacityEpoch
-              ) {
-                void ensureStandbyRunner().catch(() => undefined);
-              }
-            },
+      const preparedAuthority = {
+        compiler,
+        batchConcurrency: preparedBatchConcurrency,
+        async warmup(): Promise<{
+          success: boolean;
+          loadTimeMs: number;
+        }> {
+          const startedAt = performance.now();
+          const [compilerReady] = await Promise.all([
+            compiler.warmup(),
+            ensureStandbyRunner(),
+          ]);
+          return {
+            success: compilerReady.success,
+            loadTimeMs: performance.now() - startedAt,
+          };
+        },
+        createRunner(_tier: CSharpPreparedRunnerTier): CSharpWorkerClient {
+          if (disposed) {
+            throw new Error('C# browser runtime provider has been disposed.');
           }
-        : undefined;
+          const runner = standbyRunner ?? createRunnerClient();
+          if (runner === standbyRunner) standbyRunner = undefined;
+          return runner;
+        },
+        releaseRunner(runner: CSharpWorkerClient): void {
+          activeRunners.delete(runner);
+          if (
+            context.workerLifecyclePolicy === 'warm-and-retire' &&
+            runnerEpochs.get(runner) === capacityEpoch
+          ) {
+            void ensureStandbyRunner().catch(() => undefined);
+          }
+        },
+      };
       // The C# adapter is also its prepared provider. It remains private to
       // this lease; no direct-client capability crosses the host boundary.
       const preparedProvider = createCSharpRuntimeClient(
-        worker,
+        compiler,
         preparedAuthority
       );
       const preparedProviders = new Map<
@@ -364,8 +316,7 @@ export function createCSharpBrowserRuntimeProvider(
         standbyRunner = undefined;
         warmingRunner = undefined;
         standbyWarmup = undefined;
-        worker.terminate();
-        if (compiler !== worker) compiler.terminate();
+        compiler.terminate();
         for (const runner of activeRunners) runner.terminate();
         activeRunners.clear();
       };

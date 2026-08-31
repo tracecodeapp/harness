@@ -12,9 +12,9 @@
  * - workers/python/generated-python-harness-snippets.js
  *
  * Runtime trace/execute builders now live in:
- * - workers/python/runtime-core.js
+ * - workers/python/python-runtime.js
  *
- * Keep worker/runtime-core split aligned with generated shared snippets and
+ * Keep worker/python-runtime split aligned with generated shared snippets and
  * validate with:
  *   pnpm test:python-regression-gate
  * 
@@ -251,8 +251,8 @@ function configurePythonRuntimeAssets(value) {
     loaderFormat,
     ...(typeof value.loaderUrl === 'string' && value.loaderUrl.trim() ? { loaderUrl: value.loaderUrl } : {}),
     ...(typeof value.indexUrl === 'string' && value.indexUrl.trim() ? { indexUrl: value.indexUrl } : {}),
-    ...(typeof value.runtimeCoreUrl === 'string' && value.runtimeCoreUrl.trim()
-      ? { runtimeCoreUrl: value.runtimeCoreUrl }
+    ...(typeof value.runtimeUrl === 'string' && value.runtimeUrl.trim()
+      ? { runtimeUrl: value.runtimeUrl }
       : {}),
     ...(typeof value.snippetsUrl === 'string' && value.snippetsUrl.trim() ? { snippetsUrl: value.snippetsUrl } : {}),
     ...(value.packageUrls && typeof value.packageUrls === 'object' && !Array.isArray(value.packageUrls)
@@ -273,10 +273,10 @@ function configurePythonRuntimeAssets(value) {
   }
   if (
     loaderFormat === 'module' &&
-    (!normalized.loaderUrl || !normalized.indexUrl || !normalized.runtimeCoreUrl || !normalized.snippetsUrl)
+    (!normalized.loaderUrl || !normalized.indexUrl || !normalized.runtimeUrl || !normalized.snippetsUrl)
   ) {
     throw new Error(
-      'Module Python workers require consumer-supplied loaderUrl, indexUrl, runtimeCoreUrl, and snippetsUrl assets.'
+      'Module Python workers require consumer-supplied loaderUrl, indexUrl, runtimeUrl, and snippetsUrl assets.'
     );
   }
   const signature = JSON.stringify(normalized);
@@ -1391,11 +1391,11 @@ async function ensurePythonModuleBootstrap() {
     }
 
     const loaderUrl = resolvePythonWorkerAssetUrl(assets.loaderUrl);
-    const runtimeCoreUrl = resolvePythonWorkerAssetUrl(assets.runtimeCoreUrl);
+    const runtimeUrl = resolvePythonWorkerAssetUrl(assets.runtimeUrl);
     const snippetsUrl = resolvePythonWorkerAssetUrl(assets.snippetsUrl);
     const [loaderModule, , , sharedPolicyModule] = await Promise.all([
       importPythonWorkerModule(loaderUrl, 'runtime loader'),
-      importPythonWorkerModule(runtimeCoreUrl, 'runtime core'),
+      importPythonWorkerModule(runtimeUrl, 'Python runtime'),
       importPythonWorkerModule(snippetsUrl, 'harness snippets'),
       importPythonWorkerModuleCandidates(SHARED_KERNEL_POLICY_MODULE_PATHS, 'shared kernel policy'),
     ]);
@@ -1412,7 +1412,7 @@ async function ensurePythonModuleBootstrap() {
       throw new Error(`Python runtime loader module ${loaderUrl} does not export loadPyodide().`);
     }
     if (!self.__TRACECODE_PYODIDE_RUNTIME__ || typeof self.__TRACECODE_PYODIDE_RUNTIME__ !== 'object') {
-      throw new Error(`Python runtime core module ${runtimeCoreUrl} did not register its runtime API.`);
+      throw new Error(`Python runtime module ${runtimeUrl} did not register its runtime API.`);
     }
     if (!self.__TRACECODE_PYTHON_HARNESS__ || typeof self.__TRACECODE_PYTHON_HARNESS__ !== 'object') {
       throw new Error(`Python harness snippets module ${snippetsUrl} did not register its snippet API.`);
@@ -1429,7 +1429,7 @@ async function ensurePythonModuleBootstrap() {
     configuredPythonSnippetsLoaded = true;
     emitRuntimeDiagnostic('info', 'module-bootstrap-loaded', 'Loaded Python module-worker bootstrap graph.', {
       loaderUrl,
-      runtimeCoreUrl,
+      runtimeUrl,
       snippetsUrl,
       sharedPolicyUrl,
     });
@@ -1540,31 +1540,31 @@ async function loadPyodideInstance() {
 }
 
 
-const PYODIDE_RUNTIME_CORE_PATHS = [
-  './python/runtime-core.js',
+const PYTHON_RUNTIME_PATHS = [
+  './python/python-runtime.js',
 ];
 
-let pyodideRuntimeCore = null;
-let pyodideRuntimeCoreLoadAttempted = false;
+let pythonRuntime = null;
+let pythonRuntimeLoadAttempted = false;
 
-function loadPyodideRuntimeCore() {
-  if (pyodideRuntimeCore) return pyodideRuntimeCore;
+function loadPythonRuntime() {
+  if (pythonRuntime) return pythonRuntime;
 
-  if (!pyodideRuntimeCoreLoadAttempted) {
-    pyodideRuntimeCoreLoadAttempted = true;
+  if (!pythonRuntimeLoadAttempted) {
+    pythonRuntimeLoadAttempted = true;
 
     if (DECLARED_PYTHON_WORKER_FORMAT === 'classic' && typeof importScripts === 'function') {
-      const runtimeCorePaths = configuredPythonRuntimeAssets?.runtimeCoreUrl
-        ? [configuredPythonRuntimeAssets.runtimeCoreUrl]
-        : PYODIDE_RUNTIME_CORE_PATHS;
-      for (const scriptPath of runtimeCorePaths) {
+      const runtimePaths = configuredPythonRuntimeAssets?.runtimeUrl
+        ? [configuredPythonRuntimeAssets.runtimeUrl]
+        : PYTHON_RUNTIME_PATHS;
+      for (const scriptPath of runtimePaths) {
         try {
           importScripts(scriptPath);
-          emitRuntimeDiagnostic('info', 'runtime-core-loaded', 'Loaded Python runtime core.', { scriptPath });
+          emitRuntimeDiagnostic('info', 'python-runtime-loaded', 'Loaded Python runtime.', { scriptPath });
           break;
         } catch (error) {
           const message = error instanceof Error ? error.message : String(error);
-          emitRuntimeDiagnostic('warn', 'runtime-core-load-failed', 'Failed to load Python runtime core.', {
+          emitRuntimeDiagnostic('warn', 'python-runtime-load-failed', 'Failed to load Python runtime.', {
             scriptPath,
             message,
           });
@@ -1581,11 +1581,11 @@ function loadPyodideRuntimeCore() {
       : null;
 
   if (!runtime) {
-    throw new Error('Python runtime core failed to load');
+    throw new Error('Python runtime failed to load');
   }
 
-  pyodideRuntimeCore = runtime;
-  return pyodideRuntimeCore;
+  pythonRuntime = runtime;
+  return pythonRuntime;
 }
 
 function capturePythonUserAuthorityLockdown() {
@@ -1637,10 +1637,10 @@ function buildRuntimeDeps() {
 
 /**
  * Generate the tracing wrapper code for step-by-step execution.
- * Delegates to the runtime core module.
+ * Delegates to the Python runtime module.
  */
 function generateTracingCode(userCode, functionName, inputs, executionStyle = 'function', options = {}) {
-  return loadPyodideRuntimeCore().generateTracingCode(
+  return loadPythonRuntime().generateTracingCode(
     buildRuntimeDeps(),
     userCode,
     functionName,
@@ -1652,21 +1652,21 @@ function generateTracingCode(userCode, functionName, inputs, executionStyle = 'f
 
 /**
  * Parse Python error message.
- * Delegates to the runtime core module.
+ * Delegates to the Python runtime module.
  */
 function parsePythonError(rawError, userCodeStartLine, userCodeLineCount) {
-  return loadPyodideRuntimeCore().parsePythonError(rawError, userCodeStartLine, userCodeLineCount);
+  return loadPythonRuntime().parsePythonError(rawError, userCodeStartLine, userCodeLineCount);
 }
 
 /**
  * Execute Python code with tracing.
- * Delegates to the runtime core module.
+ * Delegates to the Python runtime module.
  */
 async function executeWithTracing(code, functionName, inputs, executionStyle = 'function', options = {}) {
   await loadPyodideInstance();
-  const runtimeCore = loadPyodideRuntimeCore();
+  const runtime = loadPythonRuntime();
   return withPythonUserAuthorityLockdown(() =>
-    runtimeCore.executeWithTracing(
+    runtime.executeWithTracing(
       buildRuntimeDeps(),
       code,
       functionName,
@@ -1678,7 +1678,7 @@ async function executeWithTracing(code, functionName, inputs, executionStyle = '
 }
 
 /**
- * Translate caller-supplied guest execution limits into runtime-core guard
+ * Translate caller-supplied guest execution limits into python-runtime guard
  * options. Returns undefined when no guest limit is set, so unlimited
  * execution stays on the guard-free path. Runtime core clamps each value
  * to its safety floor.
@@ -1714,13 +1714,13 @@ function guestGuardOptionsFromLimits(limits) {
 
 /**
  * Execute Python code without tracing (for running tests).
- * Delegates to the runtime core module.
+ * Delegates to the Python runtime module.
  */
 async function executeCode(code, functionName, inputs, executionStyle = 'function', options = {}) {
   await loadPyodideInstance();
-  const runtimeCore = loadPyodideRuntimeCore();
+  const runtime = loadPythonRuntime();
   return withPythonUserAuthorityLockdown(() =>
-    runtimeCore.executeCode(
+    runtime.executeCode(
       buildRuntimeDeps(),
       code,
       functionName,
@@ -9436,9 +9436,9 @@ async function executeProjectPython(
 
 async function preparePythonProgram(request) {
   await loadPyodideInstance();
-  const runtimeCore = loadPyodideRuntimeCore();
+  const runtime = loadPythonRuntime();
   return withPythonUserAuthorityLockdown(() =>
-    runtimeCore.prepareProgram(buildRuntimeDeps(), request)
+    runtime.prepareProgram(buildRuntimeDeps(), request)
   );
 }
 
@@ -9449,9 +9449,9 @@ async function executePreparedPythonProgram(
   tracingEnabled
 ) {
   await loadPyodideInstance();
-  const runtimeCore = loadPyodideRuntimeCore();
+  const runtime = loadPythonRuntime();
   return withPythonUserAuthorityLockdown(() =>
-    runtimeCore.executePreparedProgram(
+    runtime.executePreparedProgram(
       buildRuntimeDeps(),
       artifact,
       inputs,
@@ -9469,9 +9469,9 @@ async function executePreparedPythonProgramBatch(
   forceJudgeCompatible
 ) {
   await loadPyodideInstance();
-  const runtimeCore = loadPyodideRuntimeCore();
+  const runtime = loadPythonRuntime();
   return withPythonUserAuthorityLockdown(() =>
-    runtimeCore.executePreparedProgramBatch(
+    runtime.executePreparedProgramBatch(
       buildRuntimeDeps(),
       artifact,
       inputBatch,
@@ -9546,7 +9546,7 @@ async function processMessage(data) {
       case 'warmup': {
         const startTime = performance.now();
         await loadPyodideInstance();
-        loadPyodideRuntimeCore();
+        loadPythonRuntime();
         const loadTimeMs = performance.now() - startTime;
         trustedPythonWorkerPostMessage({ id, type: 'warmup-result', payload: { success: true, loadTimeMs }, protocolToken });
         break;

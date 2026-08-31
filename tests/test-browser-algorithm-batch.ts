@@ -29,6 +29,9 @@ interface ReceiptSummary {
 }
 
 interface BatchLanguageResult {
+  readonly warmMode: 'cold' | 'runtime' | 'trace-prime';
+  readonly warmMs?: number;
+  readonly tracePrimeMs?: number;
   readonly plain: ReceiptSummary;
   readonly plainMs: number;
   readonly plainMaximumActiveWorkers: number;
@@ -39,6 +42,9 @@ interface BatchLanguageResult {
   readonly traceWorkerUrls: readonly string[];
   readonly interactive: {
     readonly initialMs: number;
+    readonly compileTimings?: unknown;
+    readonly caseTimings: readonly unknown[];
+    readonly judgeTimings?: unknown;
     readonly correctnessStatus: string;
     readonly correctnessCaseIds: readonly string[];
     readonly correctnessOutputs: readonly unknown[];
@@ -48,6 +54,7 @@ interface BatchLanguageResult {
     readonly backgroundMs: number;
     readonly backgroundTraceCaseIds: readonly string[];
     readonly backgroundTraceEventCounts: readonly number[];
+    readonly maximumActiveWorkers: number;
     readonly workerUrls: readonly string[];
   };
   readonly compatibilityIsolation?: ReceiptSummary;
@@ -110,6 +117,19 @@ assertCondition(
 );
 const browserEngine =
   process.env.TRACECODE_BROWSER_ENGINE ?? 'chromium';
+const warmMode =
+  process.env.TRACECODE_ALGORITHM_BATCH_WARM_MODE ?? 'cold';
+assertCondition(
+  warmMode === 'cold' || warmMode === 'runtime' || warmMode === 'trace-prime',
+  'TRACECODE_ALGORITHM_BATCH_WARM_MODE must be cold, runtime, or trace-prime.'
+);
+const workerLifecycle =
+  process.env.TRACECODE_ALGORITHM_BATCH_WORKER_LIFECYCLE ??
+  'warm-and-retire';
+assertCondition(
+  workerLifecycle === 'warm-and-retire' || workerLifecycle === 'retire-only',
+  'TRACECODE_ALGORITHM_BATCH_WORKER_LIFECYCLE must be warm-and-retire or retire-only.'
+);
 const selectedBrowserType =
   browserEngine === 'chromium'
     ? chromium
@@ -233,7 +253,7 @@ function assertBoundedWorkers(
   if (language === 'csharp') {
     const concurrency = configuredCSharpConcurrency ?? 4;
     assertCondition(
-      languageWorkers.length > 0 &&
+      (!requireWorker || languageWorkers.length > 0) &&
         languageWorkers.length <= concurrency + 4 &&
         maximumActiveWorkers <= concurrency + 3,
       `${language} ${scope} must retain bounded algorithm-fast capacity: ${JSON.stringify({
@@ -362,13 +382,17 @@ async function main(): Promise<void> {
           languages.selected,
           languages.csharpBatchConcurrency,
           languages.pythonCompatibilityCaseCount,
-          languages.algorithmCaseCount
+          languages.algorithmCaseCount,
+          languages.warmMode,
+          languages.workerLifecycle
         );
       }, {
         selected: LANGUAGES,
         csharpBatchConcurrency,
         pythonCompatibilityCaseCount,
         algorithmCaseCount,
+        warmMode,
+        workerLifecycle,
       }) as Record<BatchLanguage, BatchLanguageResult>;
 
       for (const language of LANGUAGES) {
@@ -424,27 +448,33 @@ async function main(): Promise<void> {
         );
         assertBoundedWorkers(
           language,
-          'code or trace batch',
-          languageResult.plainWorkerUrls.length > 0
-            ? languageResult.plainWorkerUrls
-            : languageResult.traceWorkerUrls,
-          true,
-          Math.max(
-            languageResult.plainMaximumActiveWorkers,
-            languageResult.traceMaximumActiveWorkers
-          ),
+          'interactive execution',
+          languageResult.interactive.workerUrls,
+          languageResult.warmMode === 'cold',
+          languageResult.interactive.maximumActiveWorkers,
           languageResult.csharpBatchConcurrency
         );
         console.log(
           JSON.stringify({
             language,
             browserEngine,
+            warmMode: languageResult.warmMode,
+            warmMs: languageResult.warmMs,
+            tracePrimeMs: languageResult.tracePrimeMs,
             plainMs: languageResult.plainMs,
             traceMs: languageResult.traceMs,
             interactiveInitialMs:
               languageResult.interactive.initialMs,
+            interactiveCompileTimings:
+              languageResult.interactive.compileTimings,
+            interactiveCaseTimings:
+              languageResult.interactive.caseTimings,
+            interactiveJudgeTimings:
+              languageResult.interactive.judgeTimings,
             interactiveBackgroundMs:
               languageResult.interactive.backgroundMs,
+            interactiveMaximumActiveWorkers:
+              languageResult.interactive.maximumActiveWorkers,
             interactiveWorkerCount:
               languageResult.interactive.workerUrls.length,
             plainWorkerCount: languageResult.plainWorkerUrls.length,

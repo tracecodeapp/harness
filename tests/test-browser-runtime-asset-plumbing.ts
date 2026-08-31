@@ -64,9 +64,28 @@ class CapturingWorker {
       return;
     }
     const responseType = message.type === 'warmup' ? 'warmup-result' : `${message.type}-result`;
+    const runtimeRole = this.messages.find((entry) => entry.type === 'init')?.payload?.runtimeRole;
     const payload = message.type.startsWith('execute-project-')
       ? { stdout: '', stderr: '', exitCode: 0, files: [] }
-      : { success: true, loadTimeMs: 0 };
+      : message.type === 'warmup' && runtimeRole === 'compiler'
+        ? {
+            success: true,
+            loadTimeMs: 0,
+            trustedPreparedArtifact: {
+              mode: 'trace',
+              code: 'public static class Solution { public static int Add(int a, int b) => a + b; }',
+              functionName: 'Add',
+              executionStyle: 'solution-method',
+              compiledArtifactKey: 'trusted-prime',
+              compiledArtifactBase64: 'AA==',
+              compiledArtifactSha256: '0'.repeat(64),
+              preparedRunnerTier: 'compatibility',
+              preparedRunnerReason: 'test-fixture',
+            },
+          }
+        : message.type === 'execute-prepared-code'
+          ? { success: true, output: 3, consoleOutput: [] }
+          : { success: true, loadTimeMs: 0 };
     queueMicrotask(() => this.onmessage?.({
       data: {
         id: message.id,
@@ -102,7 +121,7 @@ function consumerManifests(): BrowserRuntimeAssetManifests {
       originPolicy,
       assets: {
         worker: descriptor('worker.js'),
-        runtimeCore: descriptor('runtime-core.js'),
+        runtime: descriptor('python-runtime.js'),
         snippets: descriptor('snippets.js'),
         runtimeLoader: descriptor('pyodide.js'),
         runtimeIndex: descriptor('./'),
@@ -177,9 +196,19 @@ function consumerManifests(): BrowserRuntimeAssetManifests {
       assets: {
         worker: descriptor('worker.js'),
         assetBaseUrl: descriptor('runtime'),
+        compilerAssetBaseUrl: descriptor('compiler'),
+        runnerAssetBaseUrl: descriptor('runner'),
         dependencies: {
           '_framework/dotnet.js': descriptor('runtime/_framework/dotnet.js'),
           '_framework/dotnet.native.wasm': descriptor('runtime/_framework/dotnet.native.wasm'),
+        },
+        compilerDependencies: {
+          '_framework/dotnet.js': descriptor('compiler/_framework/dotnet.js'),
+          '_framework/dotnet.native.wasm': descriptor('compiler/_framework/dotnet.native.wasm'),
+        },
+        runnerDependencies: {
+          '_framework/dotnet.js': descriptor('runner/_framework/dotnet.js'),
+          '_framework/dotnet.native.wasm': descriptor('runner/_framework/dotnet.native.wasm'),
         },
       },
     },
@@ -322,20 +351,32 @@ async function testManifestAssetsReachWorkerInitialization(): Promise<void> {
     'The Java provider must pass the public external compiler option to the bridge worker'
   );
 
-  const csharpWorker = CapturingWorker.instances.find((entry) => {
+  const findCSharpRoleWorker = (role: 'compiler' | 'runner') => CapturingWorker.instances.find((entry) => {
     if (!String(entry.url).includes('/csharp/worker.js')) return false;
     const payload = entry.messages.find(
       (message) => message.type === 'init'
     )?.payload;
-    return payload?.runtimeRole === 'general';
+    return payload?.runtimeRole === role;
   });
-  assertCondition(csharpWorker, 'Expected initialized general C# worker');
-  const csharpPayload = initMessage(csharpWorker).payload;
-  assertCondition(csharpWorker.options?.type === 'module', 'C# manifest must retain the module-worker boundary');
+  const csharpCompiler = findCSharpRoleWorker('compiler');
+  const csharpRunner = findCSharpRoleWorker('runner');
+  assertCondition(csharpCompiler, 'Expected initialized C# compiler authority');
+  assertCondition(csharpRunner, 'Expected initialized C# Judge runner');
+  const csharpCompilerPayload = initMessage(csharpCompiler).payload;
+  const csharpRunnerPayload = initMessage(csharpRunner).payload;
   assertCondition(
-    (csharpPayload?.runtimeDependencies as Record<string, string> | undefined)?.['_framework/dotnet.js'] ===
-      'https://cdn.consumer.example/csharp/runtime/_framework/dotnet.js',
-    'C# runtime dependencies must reach the worker init payload'
+    csharpCompiler.options?.type === 'module' && csharpRunner.options?.type === 'module',
+    'C# role manifests must retain the module-worker boundary'
+  );
+  assertCondition(
+    (csharpCompilerPayload?.runtimeDependencies as Record<string, string> | undefined)?.['_framework/dotnet.js'] ===
+      'https://cdn.consumer.example/csharp/compiler/_framework/dotnet.js',
+    'C# compiler dependencies must reach the compiler init payload'
+  );
+  assertCondition(
+    (csharpRunnerPayload?.runtimeDependencies as Record<string, string> | undefined)?.['_framework/dotnet.js'] ===
+      'https://cdn.consumer.example/csharp/runner/_framework/dotnet.js',
+    'C# runner dependencies must reach the Judge runner init payload'
   );
   host.dispose();
 
