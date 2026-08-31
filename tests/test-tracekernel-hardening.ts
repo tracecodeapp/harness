@@ -3056,7 +3056,7 @@ async function testBulkTraceWritesAreBudgetedBeforeLoops(): Promise<void> {
   const root = dirname(testDirectory);
   const [javascriptSource, pythonSource, javaSource, csharpSinkSource, csharpHostSource, cppSource] = await Promise.all([
     readFile(join(root, 'workers', 'javascript', 'javascript-worker.js'), 'utf8'),
-    readFile(join(root, 'workers', 'python', 'runtime-core.js'), 'utf8'),
+    readFile(join(root, 'workers', 'python', 'python-runtime.js'), 'utf8'),
     readFile(join(root, 'workers', 'java', 'src', 'tracecode', 'user', 'TraceHooks.java'), 'utf8'),
     readFile(join(root, 'packages', 'runtime-csharp', 'dotnet', 'TraceCode.CSharpHost', 'RuntimeTraceSink.cs'), 'utf8'),
     readFile(join(root, 'packages', 'runtime-csharp', 'dotnet', 'TraceCode.CSharpHost', 'CompilerHost.cs'), 'utf8'),

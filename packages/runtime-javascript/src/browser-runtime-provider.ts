@@ -14,8 +14,9 @@ import { JavaScriptWorkerClient } from './javascript-worker-client';
 
 export interface JavaScriptBrowserRuntimeProviderOptions {
   /**
-   * @internal Migration flag for the correctness-only retained SES execution
-   * boundary. Tracing and script-mode execution remain on disposable Workers.
+   * Function-style correctness and trace execution use the retained SES
+   * compartment pool by default. Set `disposable-worker` only for
+   * compatibility diagnostics. Script-mode execution remains disposable.
    */
   readonly algorithmExecution?:
     | 'disposable-worker'
@@ -46,10 +47,11 @@ export function createJavaScriptBrowserRuntimeProvider(
           : {}),
         typescriptCompilerUrl: context.assets.typescriptCompiler,
         typescriptCompilerPreflight: context.preflight('typescript', ['compiler']),
-        prewarmAfterUse: context.prewarmAfterUse,
+        replenishStandbyAfterUse:
+          context.workerLifecyclePolicy === 'warm-and-retire',
         algorithmExecution:
-          options.algorithmExecution ?? 'disposable-worker',
-        ...(options.algorithmExecution === 'ses-compartment-pool'
+          options.algorithmExecution ?? 'ses-compartment-pool',
+        ...(options.algorithmExecution !== 'disposable-worker'
           ? {
               algorithmWorkerUrl: context.assets.javascriptAlgorithmWorker,
               algorithmWorkerPreflight: context.preflight(

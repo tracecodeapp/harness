@@ -545,6 +545,7 @@ async function exercisePreparedDisposalOwner(): Promise<void> {
   let disposeCalls = 0;
   let observedLifecycleAbort = false;
   const program = createJavaScriptPreparedProgram({
+    profile: 'compatibility',
     mode: 'code',
     executeCode: (
       call: RuntimePreparedCodeCall
@@ -620,7 +621,9 @@ async function exerciseSharedProviderLanguageDisposal(): Promise<void> {
   resetVmWorkers();
   const host = createBrowserRuntimeHost({
     providerRegistry: createBrowserRuntimeProviderRegistry([
-      createJavaScriptBrowserRuntimeProvider(),
+      createJavaScriptBrowserRuntimeProvider({
+        algorithmExecution: 'disposable-worker',
+      }),
     ]),
     providers: ['javascript', 'typescript'],
     featureOverrides: {
@@ -710,7 +713,7 @@ async function exerciseRetireOnlyPolicy(): Promise<void> {
   const client = new JavaScriptWorkerClient({
     workerUrl: '/workers/javascript/javascript-worker.js',
     debug: false,
-    prewarmAfterUse: false,
+    replenishStandbyAfterUse: false,
   });
   try {
     await client.init();
@@ -765,7 +768,7 @@ async function exerciseResetDuringQueuedExecution(): Promise<void> {
   const client = new JavaScriptWorkerClient({
     workerUrl: '/workers/javascript/javascript-worker.js',
     debug: false,
-    prewarmAfterUse: false,
+    replenishStandbyAfterUse: false,
     typescriptCompilerPreflight: async () => {
       markCompilerPreflightStarted();
       await compilerPreflightGate;

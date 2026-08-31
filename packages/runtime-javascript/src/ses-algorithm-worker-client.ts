@@ -1,8 +1,11 @@
 import { parse, type Node } from 'acorn';
 import type {
   CodeExecutionResult,
+  ExecutionResult,
   RuntimeExecutionLimits,
   RuntimeExecutionTimings,
+  RuntimeTrace,
+  RuntimeTraceOptions,
 } from '@tracecode/runtime-contracts';
 import type {
   BrowserWorkerFactory,
@@ -27,12 +30,20 @@ export interface SesAlgorithmInputArgument {
 
 /** Immutable source material installed independently in every retained lane. */
 export interface SesAlgorithmPreparedSource {
+  readonly mode: 'code' | 'trace';
+  readonly language: 'javascript' | 'typescript';
   readonly code: string;
+  readonly instrumentedCode?: string;
   readonly functionName: string;
   readonly executionStyle: SesAlgorithmExecutionStyle;
   readonly requiredModules: readonly string[];
   readonly inputArguments: readonly SesAlgorithmInputArgument[];
   readonly materializers: Readonly<Record<string, unknown>>;
+  readonly traceLineBounds?: {
+    readonly startLine: number;
+    readonly endLine: number;
+  };
+  readonly traceOptions?: RuntimeTraceOptions;
 }
 
 export interface SesAlgorithmWorkerPoolOptions {
@@ -66,6 +77,8 @@ interface PendingRequest {
 
 interface ProgramRecord {
   readonly laneProgramIds: readonly string[];
+  readonly mode: SesAlgorithmPreparedSource['mode'];
+  readonly language: SesAlgorithmPreparedSource['language'];
 }
 
 const POOL_SIZE = 4;
@@ -662,12 +675,80 @@ function isCodeExecutionResult(value: unknown): value is CodeExecutionResult {
   }
 }
 
+function isRuntimeTrace(value: unknown): value is RuntimeTrace {
+  if (
+    !isRecord(value) ||
+    value.schemaVersion !== 'runtime-trace-2026-04-28' ||
+    (value.language !== 'javascript' && value.language !== 'typescript') ||
+    typeof value.runId !== 'string' ||
+    !Array.isArray(value.events) ||
+    !hasEveryArrayIndex(value.events) ||
+    !Number.isSafeInteger(value.lineEventCount) ||
+    (value.lineEventCount as number) < 0 ||
+    !Number.isSafeInteger(value.traceStepCount) ||
+    (value.traceStepCount as number) < 0
+  ) return false;
+  const kinds = new Set([
+    'line', 'call', 'return', 'read', 'write', 'mutate', 'snapshot',
+    'stdout', 'exception', 'timeout',
+  ]);
+  return value.events.every((event) =>
+    isRecord(event) && kinds.has(event.kind as string) &&
+    typeof event.runId === 'string'
+  );
+}
+
+function isTraceExecutionResult(value: unknown): value is ExecutionResult {
+  if (
+    !isRecord(value) ||
+    !hasValidCommonResultFields(value) ||
+    !isRuntimeTrace(value.trace) ||
+    typeof value.executionTimeMs !== 'number' ||
+    !Number.isFinite(value.executionTimeMs) ||
+    value.executionTimeMs < 0
+  ) return false;
+  switch (value.kind) {
+    case 'completed':
+      return hasOnlyKeys(
+        value,
+        ['kind', 'output', 'trace', 'executionTimeMs', 'consoleOutput'],
+        ['traceTruncated', 'timings']
+      ) && (value.traceTruncated === undefined ||
+        LIMIT_REASONS.has(value.traceTruncated as string));
+    case 'failed':
+      return hasOnlyKeys(
+        value,
+        ['kind', 'error', 'trace', 'executionTimeMs', 'consoleOutput'],
+        ['errorLine', 'diagnosticStage', 'diagnostic', 'timings']
+      ) && typeof value.error === 'string' &&
+        (value.errorLine === undefined || Number.isSafeInteger(value.errorLine)) &&
+        (value.diagnosticStage === undefined ||
+          DIAGNOSTIC_STAGES.has(value.diagnosticStage as string));
+    case 'limit':
+      return hasOnlyKeys(
+        value,
+        ['kind', 'reason', 'error', 'trace', 'executionTimeMs', 'consoleOutput'],
+        ['diagnostic', 'timings']
+      ) && typeof value.error === 'string' && LIMIT_REASONS.has(value.reason as string);
+    default:
+      return false;
+  }
+}
+
 function isCodeExecutionBatch(
   value: unknown,
   expectedLength: number
 ): value is readonly CodeExecutionResult[] {
   return Array.isArray(value) && value.length === expectedLength &&
     hasEveryArrayIndex(value) && value.every(isCodeExecutionResult);
+}
+
+function isTraceExecutionBatch(
+  value: unknown,
+  expectedLength: number
+): value is readonly ExecutionResult[] {
+  return Array.isArray(value) && value.length === expectedLength &&
+    hasEveryArrayIndex(value) && value.every(isTraceExecutionResult);
 }
 
 function normalizeDeadline(value: number | undefined): number | undefined {
@@ -730,6 +811,8 @@ function snapshotMaterializer(value: unknown, depth = 0): unknown {
 
 function snapshotSource(source: SesAlgorithmPreparedSource): SesAlgorithmPreparedSource {
   if (
+    (source.mode !== 'code' && source.mode !== 'trace') ||
+    (source.language !== 'javascript' && source.language !== 'typescript') ||
     typeof source.code !== 'string' ||
     !['function', 'solution-method', 'ops-class'].includes(source.executionStyle) ||
     !Array.isArray(source.requiredModules) ||
@@ -740,6 +823,34 @@ function snapshotSource(source: SesAlgorithmPreparedSource): SesAlgorithmPrepare
     !isRecord(source.materializers)
   ) {
     throw new TypeError('SES algorithm preparation source has an invalid shape.');
+  }
+  if (
+    source.mode === 'trace' &&
+    (
+      typeof source.instrumentedCode !== 'string' ||
+      !source.traceLineBounds ||
+      !Number.isSafeInteger(source.traceLineBounds.startLine) ||
+      !Number.isSafeInteger(source.traceLineBounds.endLine) ||
+      source.traceLineBounds.startLine <= 0 ||
+      source.traceLineBounds.endLine < source.traceLineBounds.startLine
+    )
+  ) {
+    throw new TypeError('SES trace preparation has an invalid instrumented artifact.');
+  }
+  if (
+    source.traceOptions !== undefined &&
+    (
+      !isRecord(source.traceOptions) ||
+      !hasOnlyKeys(source.traceOptions, [], ['runId', 'file', 'maxPathDepth']) ||
+      (source.traceOptions.runId !== undefined && typeof source.traceOptions.runId !== 'string') ||
+      (source.traceOptions.file !== undefined && typeof source.traceOptions.file !== 'string') ||
+      (source.traceOptions.maxPathDepth !== undefined &&
+        (typeof source.traceOptions.maxPathDepth !== 'number' ||
+          !Number.isFinite(source.traceOptions.maxPathDepth) ||
+          source.traceOptions.maxPathDepth <= 0))
+    )
+  ) {
+    throw new TypeError('SES trace preparation has invalid trace options.');
   }
   assertCoordinatorCompatibleSelector(source.functionName, source.executionStyle);
   const modules = new Set<string>();
@@ -771,12 +882,23 @@ function snapshotSource(source: SesAlgorithmPreparedSource): SesAlgorithmPrepare
     throw new TypeError('SES algorithm input materializers must be an object.');
   }
   return Object.freeze({
+    mode: source.mode,
+    language: source.language,
     code: source.code,
+    ...(source.instrumentedCode === undefined
+      ? {}
+      : { instrumentedCode: source.instrumentedCode }),
     functionName: source.functionName,
     executionStyle: source.executionStyle,
     requiredModules: Object.freeze([...modules]),
     inputArguments: Object.freeze(inputArguments),
     materializers,
+    ...(source.traceLineBounds
+      ? { traceLineBounds: Object.freeze({ ...source.traceLineBounds }) }
+      : {}),
+    ...(source.traceOptions
+      ? { traceOptions: Object.freeze({ ...source.traceOptions }) }
+      : {}),
   });
 }
 
@@ -1024,28 +1146,39 @@ class SesAlgorithmWorkerLane {
     programId: string,
     inputs: Record<string, unknown>,
     limits?: RuntimeExecutionLimits,
-    signal?: AbortSignal
-  ): Promise<CodeExecutionResult> {
+    signal?: AbortSignal,
+    tracingEnabled?: boolean
+  ): Promise<CodeExecutionResult | ExecutionResult> {
     return this.runExclusive(async () => {
       const executionDeadlineMs = normalizeDeadline(limits?.wallClockMs);
+      const source = this.preparedSources.get(programId);
+      if (!source) throw new Error('Unknown SES algorithm prepared program.');
       if (!this.preparedWorkerIds.has(programId)) {
-        const source = this.preparedSources.get(programId);
-        if (!source) throw new Error('Unknown SES algorithm prepared program.');
         await this.initUnlocked(signal);
         await this.prepareOnWorker(programId, source, signal, false);
         this.preparedWorkerIds.add(programId);
       }
-      let result: CodeExecutionResult;
+      let result: CodeExecutionResult | ExecutionResult;
       try {
         const response = await this.call(
-          { type: 'execute-batch', programId, inputBatch: [inputs] },
+          {
+            type: 'execute-batch',
+            programId,
+            inputBatch: [inputs],
+            ...(source.mode === 'trace'
+              ? { traceEnabledBatch: [tracingEnabled ?? true] }
+              : {}),
+          },
           signal,
           executionDeadlineMs
         );
-        if (!isCodeExecutionBatch(response, 1)) {
+        const valid = source.mode === 'trace'
+          ? isTraceExecutionBatch(response, 1)
+          : isCodeExecutionBatch(response, 1);
+        if (!valid) {
           throw new Error('SES algorithm Worker returned an invalid execution result.');
         }
-        result = response[0]!;
+        result = (response as readonly (CodeExecutionResult | ExecutionResult)[])[0]!;
       } catch (error) {
         if (!(error instanceof SesAlgorithmUnpostedRequestError)) {
           this.retire(error instanceof Error ? error : new Error(String(error)));
@@ -1171,16 +1304,21 @@ export class SesAlgorithmWorkerPool {
       (attempt) => (attempt as PromiseFulfilledResult<string>).value
     ));
     const program = Object.freeze({ [SES_ALGORITHM_PREPARED_PROGRAM]: true as const });
-    this.programs.set(program, { laneProgramIds });
+    this.programs.set(program, {
+      laneProgramIds,
+      mode: immutableSource.mode,
+      language: immutableSource.language,
+    });
     return program;
   }
 
-  async executeBatch(
+  private async executeBatchInternal(
     program: SesAlgorithmPreparedProgram,
     inputBatch: readonly Record<string, unknown>[],
     limits?: RuntimeExecutionLimits,
-    signal?: AbortSignal
-  ): Promise<readonly CodeExecutionResult[]> {
+    signal?: AbortSignal,
+    traceEnabledBatch?: readonly boolean[]
+  ): Promise<readonly (CodeExecutionResult | ExecutionResult)[]> {
     const record = this.recordFor(program);
     if (!Array.isArray(inputBatch) || !hasEveryArrayIndex(inputBatch)) {
       throw new TypeError('SES algorithm Worker pool received a sparse input batch.');
@@ -1191,7 +1329,15 @@ export class SesAlgorithmWorkerPool {
     ) {
       throw new Error('SES algorithm Worker pool preparation is incomplete.');
     }
-    const results = new Array<CodeExecutionResult>(inputBatch.length);
+    if (
+      traceEnabledBatch !== undefined &&
+      (traceEnabledBatch.length !== inputBatch.length ||
+        !hasEveryArrayIndex(traceEnabledBatch) ||
+        traceEnabledBatch.some((enabled) => typeof enabled !== 'boolean'))
+    ) {
+      throw new TypeError('SES trace selection must contain one boolean per batch case.');
+    }
+    const results = new Array<CodeExecutionResult | ExecutionResult>(inputBatch.length);
     let nextIndex = 0;
     const laneRuns = this.lanes.map(async (lane, laneIndex) => {
       while (nextIndex < inputBatch.length) {
@@ -1201,7 +1347,8 @@ export class SesAlgorithmWorkerPool {
             record.laneProgramIds[laneIndex]!,
             inputBatch[index]!,
             limits,
-            signal
+            signal,
+            traceEnabledBatch?.[index]
           );
         } catch (error) {
           if (
@@ -1209,13 +1356,30 @@ export class SesAlgorithmWorkerPool {
             limits?.wallClockMs !== undefined &&
             limits.wallClockMs !== Infinity
           ) {
-            results[index] = {
-              kind: 'limit',
-              reason: 'client-timeout',
-              error: error.message,
-              consoleOutput: [],
-              timings: { totalMs: error.deadlineMs },
-            };
+            results[index] = record.mode === 'trace'
+              ? {
+                  kind: 'limit',
+                  reason: 'client-timeout',
+                  error: error.message,
+                  trace: {
+                    schemaVersion: 'runtime-trace-2026-04-28',
+                    language: record.language,
+                    runId: `${record.language}:run`,
+                    events: [],
+                    lineEventCount: 0,
+                    traceStepCount: 0,
+                  },
+                  executionTimeMs: error.deadlineMs,
+                  consoleOutput: [],
+                  timings: { totalMs: error.deadlineMs },
+                }
+              : {
+                  kind: 'limit',
+                  reason: 'client-timeout',
+                  error: error.message,
+                  consoleOutput: [],
+                  timings: { totalMs: error.deadlineMs },
+                };
             continue;
           }
           throw error;
@@ -1236,6 +1400,44 @@ export class SesAlgorithmWorkerPool {
       throw new SesAlgorithmCompatibilityRequiredError('console-budget');
     }
     return results;
+  }
+
+  async executeBatch(
+    program: SesAlgorithmPreparedProgram,
+    inputBatch: readonly Record<string, unknown>[],
+    limits?: RuntimeExecutionLimits,
+    signal?: AbortSignal
+  ): Promise<readonly CodeExecutionResult[]> {
+    const record = this.recordFor(program);
+    if (record.mode !== 'code') {
+      throw new Error('SES trace preparation cannot execute as a correctness batch.');
+    }
+    return await this.executeBatchInternal(
+      program,
+      inputBatch,
+      limits,
+      signal
+    ) as readonly CodeExecutionResult[];
+  }
+
+  async executeTraceBatch(
+    program: SesAlgorithmPreparedProgram,
+    inputBatch: readonly Record<string, unknown>[],
+    traceEnabledBatch: readonly boolean[] | undefined,
+    limits?: RuntimeExecutionLimits,
+    signal?: AbortSignal
+  ): Promise<readonly ExecutionResult[]> {
+    const record = this.recordFor(program);
+    if (record.mode !== 'trace') {
+      throw new Error('SES correctness preparation cannot execute as a trace batch.');
+    }
+    return await this.executeBatchInternal(
+      program,
+      inputBatch,
+      limits,
+      signal,
+      traceEnabledBatch
+    ) as readonly ExecutionResult[];
   }
 
   async disposeProgram(program: SesAlgorithmPreparedProgram): Promise<void> {

@@ -30,10 +30,6 @@ import {
 import {
   registerBrowserRuntimeHostPreparedProviderResolver,
 } from './browser-runtime-host-internal';
-import {
-  withPreparedProgramReuse,
-  type ReusablePreparedProvider,
-} from './prepared-program-reuse';
 import type {
   BrowserSafeExecutionOptions,
 } from './worker-lifecycle-policy';
@@ -69,8 +65,6 @@ export interface CreateBrowserRuntimeHostOptions {
   providers?: readonly Language[];
   engine?: BrowserRuntimeEngine;
   featureOverrides?: Partial<BrowserRuntimeFeatureSupport>;
-  /** Must match the C# provider's prepared-authority mode. */
-  csharpPreparedAuthority?: boolean;
   /** Runs selected provider workers on a dedicated, credential-free origin. */
   executionHost?: BrowserRuntimeHostExecutionHostOptions;
   debug?: boolean;
@@ -182,6 +176,8 @@ async function rejectUnsafePreparedProgram(
     (program.mode === 'code' || program.mode === 'trace') &&
     typeof program.dispose === 'function' &&
     typeof program.executeIsolated === 'function' &&
+    (capabilities?.profile === 'fast' ||
+      capabilities?.profile === 'compatibility') &&
     capabilities?.caseIsolation === 'fresh-case-state' &&
     Number.isInteger(capabilities.maxConcurrency) &&
     capabilities.maxConcurrency > 0;
@@ -197,7 +193,8 @@ async function rejectUnsafePreparedProgram(
   }
   const contractError = new Error(
     `Prepared browser runtime for ${JSON.stringify(language)} must provide ` +
-      'fresh-case-state isolation and a positive integer maxConcurrency.'
+      'a fast or compatibility profile, fresh-case-state isolation, and a ' +
+      'positive integer maxConcurrency.'
   );
   if (disposalError !== undefined) {
     throw new AggregateError(
@@ -252,7 +249,7 @@ class BrowserRuntimeHostImplementation implements BrowserRuntimeHost {
 
   readonly #preparedProviders = new Map<
     Language,
-    ReusablePreparedProvider
+    RuntimePreparedExecutionProvider
   >();
   readonly #providerInitializers = new Map<
     Language,
@@ -325,13 +322,13 @@ class BrowserRuntimeHostImplementation implements BrowserRuntimeHost {
           );
           this.#preparedProviders.set(
             language,
-            withPreparedProgramReuse({
+            {
               init: () => this.#promoteLanguageWarm(language),
               prepareProgram: async (call) => {
                 await this.#promoteLanguageWarm(language);
                 return safeProvider.prepareProgram(call);
               },
-            })
+            }
           );
           this.#leaseByLanguage.set(language, lease);
         }
@@ -543,7 +540,6 @@ class BrowserRuntimeHostImplementation implements BrowserRuntimeHost {
     if (this.#disposed || !this.supportedLanguages.includes(language)) return;
     this.#warmEntries.get(language)?.task.cancel();
     this.#warmEntries.delete(language);
-    this.#preparedProviders.get(language)?.flushPreparedProgramCache();
     this.#leaseByLanguage.get(language)?.disposeLanguage(language);
   }
 
@@ -553,9 +549,6 @@ class BrowserRuntimeHostImplementation implements BrowserRuntimeHost {
     for (const entry of this.#warmEntries.values()) entry.task.cancel();
     this.#warmEntries.clear();
     this.#readinessByLanguage.clear();
-    for (const provider of this.#preparedProviders.values()) {
-      provider.flushPreparedProgramCache();
-    }
     disposeBrowserRuntimeProviderLeases(
       this.#leases,
       this.#executionHostSlot.host,

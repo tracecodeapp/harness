@@ -85,7 +85,7 @@ function modulePythonManifest(): BrowserRuntimeAssetManifest<'python'> {
     originPolicy: { mode: 'allow-list', origins: ['https://cdn.consumer.example'] },
     assets: {
       worker: { url: 'python-worker.js' },
-      runtimeCore: { url: 'runtime-core.js' },
+      runtime: { url: 'python-runtime.js' },
       snippets: { url: 'generated-python-harness-snippets.js' },
       runtimeLoader: { url: 'pyodide.mjs' },
       runtimeIndex: { url: './' },
@@ -149,7 +149,7 @@ async function assertClientConstructionAndPreflight(): Promise<void> {
       loaderFormat: 'module',
       loaderUrl: 'https://cdn.consumer.example/python/314.0.2/pyodide.mjs',
       indexUrl: 'https://cdn.consumer.example/python/314.0.2/',
-      runtimeCoreUrl: 'https://cdn.consumer.example/python/314.0.2/runtime-core.js',
+      runtimeUrl: 'https://cdn.consumer.example/python/314.0.2/python-runtime.js',
       snippetsUrl: 'https://cdn.consumer.example/python/314.0.2/snippets.js',
     },
     assetPreflight: async () => { CapturingWorker.lifecycle.push('worker-preflight'); },
@@ -217,7 +217,7 @@ async function assertClientHostAndProjectPaths(): Promise<void> {
   const init = projectWorker.messages.find((message) => message.type === 'init');
   const runtimeAssets = init?.payload?.runtimeAssets as Record<string, unknown> | undefined;
   assertCondition(
-    runtimeAssets?.runtimeCoreUrl === 'https://cdn.consumer.example/python/314.0.2/runtime-core.js',
+    runtimeAssets?.runtimeUrl === 'https://cdn.consumer.example/python/314.0.2/python-runtime.js',
     'Project browser dropped Python runtime assets before worker initialization'
   );
   await workspace.destroy();

@@ -59,7 +59,7 @@ const SCANNED_FILES = [
   'workers/java/java-source-augmentations.js',
   'workers/csharp/csharp-worker.js',
   'workers/python/python-worker.js',
-  'workers/python/runtime-core.js',
+  'workers/python/python-runtime.js',
 ];
 
 const FORBIDDEN_PATTERNS = [

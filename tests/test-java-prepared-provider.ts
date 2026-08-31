@@ -273,6 +273,7 @@ test('Java prepared provider keeps one compiler worker and executes fresh proces
   }
 
   assert.deepEqual(preparation.program.capabilities, {
+    profile: 'compatibility',
     caseIsolation: 'fresh-case-state',
     maxConcurrency: 1,
   });

@@ -83,7 +83,7 @@ export function createPythonBrowserRuntimeProvider(
         debug: context.debug,
         assetPreflight: context.preflight('python', ['worker', 'snippets']),
         runtimeAssetPreflight: context.preflight('python', [
-          'runtimeCore',
+          'runtime',
           'runtimeLoader',
           'runtimeIndex',
           'distribution',
@@ -91,7 +91,7 @@ export function createPythonBrowserRuntimeProvider(
         ]),
         runtimeImageFactory,
         runtimeAssets: {
-          runtimeCoreUrl: context.assets.pythonRuntimeCore,
+          runtimeUrl: context.assets.pythonRuntime,
           snippetsUrl: context.assets.pythonSnippets,
           loaderUrl,
           indexUrl,
@@ -115,7 +115,8 @@ export function createPythonBrowserRuntimeProvider(
       const createWorkerClient = () => new PythonWorkerClient(workerOptions());
       const preparedProvider = createPythonPreparedExecutionProvider({
         createWorkerClient,
-        prewarmAfterUse: context.prewarmAfterUse,
+        replenishStandbyAfterUse:
+          context.workerLifecyclePolicy === 'warm-and-retire',
       });
       const preparedProviders = new Map<
         Language,

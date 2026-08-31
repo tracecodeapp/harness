@@ -3,6 +3,10 @@ import { createBrowserRuntimeHost } from '../../packages/runtime-browser/src/bro
 import { createBrowserRuntimeProviderRegistry } from '../../packages/runtime-browser/src/runtime-provider-registry';
 import { createJavaScriptBrowserRuntimeProvider } from '../../packages/runtime-javascript/src/browser-runtime-provider';
 import { createBrowserJudgeHostFromRuntimeHost } from '../../src/internal/browser-judge';
+import {
+  buildRuntimeTraceParitySignature,
+  type RuntimeTrace,
+} from '../../packages/runtime-contracts/src/runtime-trace';
 
 type AlgorithmCase = {
   readonly id: string;
@@ -68,6 +72,9 @@ async function evaluate(
     timings: receipt.evaluation.status === 'completed'
       ? receipt.evaluation.cases.map((testCase) => testCase.timings)
       : [],
+    traces: receipt.evaluation.status === 'completed'
+      ? receipt.evaluation.cases.map((testCase) => testCase.trace)
+      : [],
     caseVerdicts: receipt.evaluation.status === 'completed'
       ? receipt.evaluation.cases.map((testCase) => testCase.verdict.kind)
       : [],
@@ -82,11 +89,9 @@ export async function runJavaScriptSesProvider(assetBaseUrl: string) {
     assetBaseUrl,
     providers: ['javascript', 'typescript'],
     providerRegistry: createBrowserRuntimeProviderRegistry([
-      createJavaScriptBrowserRuntimeProvider({
-        algorithmExecution: 'ses-compartment-pool',
-      }),
+      createJavaScriptBrowserRuntimeProvider(),
     ]),
-    safeExecution: { prewarmAfterUse: false },
+    safeExecution: { workerLifecycle: 'retire-only' },
   });
   const host = createBrowserJudgeHostFromRuntimeHost(runtimeHost);
   try {
@@ -546,6 +551,18 @@ function solve() {
       functionName: 'solve',
       cases: [{ id: 'console-cap-legacy', input: { value: -0 }, expected: 'negative-zero' }],
     });
+    const traceConsoleCap = await evaluate(host, {
+      id: 'ses-provider-trace-console-cap',
+      language: 'javascript',
+      code: consoleCapSource,
+      functionName: 'solve',
+      trace: true,
+      cases: [1, 2].map((value) => ({
+        id: `trace-console-cap-${value}`,
+        input: { value },
+        expected: 'regular',
+      })),
+    });
     const accessorOutput = await evaluate(host, {
       id: 'ses-provider-accessor-output',
       language: 'javascript',
@@ -934,18 +951,6 @@ function solve(values) { return values.last(); }`,
         expected: value,
       })),
     });
-    const timeoutRecovery = await evaluate(host, {
-      id: 'ses-provider-timeout-recovery',
-      language: 'javascript',
-      code: 'function solve(value) { if (value === 0) while (true) {} return value; }',
-      functionName: 'solve',
-      limits: { wallClockMs: 40 },
-      cases: Array.from({ length: 8 }, (_, index) => ({
-        id: `timeout-${index}`,
-        input: { value: index },
-        expected: index,
-      })),
-    });
     const runtimeErrorLine = await evaluate(host, {
       id: 'ses-provider-runtime-error-line',
       language: 'javascript',
@@ -960,13 +965,83 @@ function solve(values) { return values.last(); }`,
         expected: null,
       })),
     });
-    const traceFallback = await evaluate(host, {
-      id: 'ses-provider-trace-fallback',
+    const traceFast = await evaluate(host, {
+      id: 'ses-provider-trace-fast',
       language: 'javascript',
-      code: 'function solve(value) { return value * 2; }',
+      code: `function solve(value) {
+  const previous = globalThis.__tracecodeTraceLeak ?? null;
+  globalThis.__tracecodeTraceLeak = value;
+  return [previous, value * 2];
+}`,
       functionName: 'solve',
       trace: true,
-      cases: [{ id: 'trace', input: { value: 3 }, expected: 6 }],
+      cases: Array.from({ length: 8 }, (_, index) => ({
+        id: `trace-${index}`,
+        input: { value: index + 1 },
+        expected: [null, (index + 1) * 2],
+      })),
+    });
+    const traceDetachedTaskIsolation = await evaluate(host, {
+      id: 'ses-provider-trace-detached-task-isolation',
+      language: 'javascript',
+      code: `async function solve(value) {
+  const previous = globalThis.__tracecodeDetachedTraceLeak ?? null;
+  Promise.resolve().then(() => {
+    globalThis.__tracecodeDetachedTraceLeak = value;
+  });
+  return previous;
+}`,
+      functionName: 'solve',
+      trace: true,
+      cases: Array.from({ length: 8 }, (_, index) => ({
+        id: `trace-detached-${index}`,
+        input: { value: index + 1 },
+        expected: null,
+      })),
+    });
+    const typescriptTraceFast = await evaluate(host, {
+      id: 'ses-provider-typescript-trace-fast',
+      language: 'typescript',
+      code: `function solve(values: number[]): number {
+  let total: number = 0;
+  for (const value of values) total += value;
+  return total;
+}`,
+      functionName: 'solve',
+      trace: true,
+      cases: Array.from({ length: 8 }, (_, index) => ({
+        id: `typescript-trace-${index}`,
+        input: { values: [index, index + 1] },
+        expected: index * 2 + 1,
+      })),
+    });
+    const traceTimeoutRecovery = await evaluate(host, {
+      id: 'ses-provider-trace-timeout-recovery',
+      language: 'javascript',
+      code: `function solve(value) {
+  if (value === 0) return /^(a+)+$/.test('a'.repeat(30) + '!');
+  return value;
+}`,
+      functionName: 'solve',
+      trace: true,
+      limits: { wallClockMs: 40 },
+      cases: Array.from({ length: 8 }, (_, index) => ({
+        id: `trace-timeout-${index}`,
+        input: { value: index },
+        expected: index,
+      })),
+    });
+    const timeoutRecovery = await evaluate(host, {
+      id: 'ses-provider-timeout-recovery',
+      language: 'javascript',
+      code: 'function solve(value) { if (value === 0) while (true) {} return value; }',
+      functionName: 'solve',
+      limits: { wallClockMs: 40 },
+      cases: Array.from({ length: 8 }, (_, index) => ({
+        id: `timeout-${index}`,
+        input: { value: index },
+        expected: index,
+      })),
     });
     return {
       isolation,
@@ -1003,6 +1078,7 @@ function solve(values) { return values.last(); }`,
       consoleBlankLegacy,
       consoleCapSes,
       consoleCapLegacy,
+      traceConsoleCap,
       accessorOutput,
       specialOutput,
       outputTransportParity,
@@ -1029,7 +1105,10 @@ function solve(values) { return values.last(); }`,
       prototypeExtensionFallback,
       timeoutRecovery,
       runtimeErrorLine,
-      traceFallback,
+      traceFast,
+      traceDetachedTaskIsolation,
+      typescriptTraceFast,
+      traceTimeoutRecovery,
     };
   } finally {
     host.dispose();
@@ -1041,9 +1120,11 @@ export async function runJavaScriptLegacyPageRelativeProvider() {
     assetBaseUrl: 'workers',
     providers: ['javascript'],
     providerRegistry: createBrowserRuntimeProviderRegistry([
-      createJavaScriptBrowserRuntimeProvider(),
+      createJavaScriptBrowserRuntimeProvider({
+        algorithmExecution: 'disposable-worker',
+      }),
     ]),
-    safeExecution: { prewarmAfterUse: false },
+    safeExecution: { workerLifecycle: 'retire-only' },
   });
   const host = createBrowserJudgeHostFromRuntimeHost(runtimeHost);
   try {
@@ -1072,7 +1153,7 @@ export async function runJavaScriptSerializerParity(assetBaseUrl: string) {
       providerRegistry: createBrowserRuntimeProviderRegistry([
         createJavaScriptBrowserRuntimeProvider({ algorithmExecution }),
       ]),
-      safeExecution: { prewarmAfterUse: false },
+      safeExecution: { workerLifecycle: 'retire-only' },
     });
   const sesRuntimeHost = providers('ses-compartment-pool');
   const legacyRuntimeHost = providers('disposable-worker');
@@ -1146,6 +1227,63 @@ export async function runJavaScriptSerializerParity(assetBaseUrl: string) {
   }
 }
 
+export async function runJavaScriptTraceParity(assetBaseUrl: string) {
+  const createHost = (
+    algorithmExecution: 'ses-compartment-pool' | 'disposable-worker'
+  ) => {
+    const runtimeHost = createBrowserRuntimeHost({
+      assetBaseUrl,
+      providers: ['javascript'],
+      providerRegistry: createBrowserRuntimeProviderRegistry([
+        createJavaScriptBrowserRuntimeProvider({ algorithmExecution }),
+      ]),
+      safeExecution: { workerLifecycle: 'retire-only' },
+    });
+    return {
+      runtimeHost,
+      host: createBrowserJudgeHostFromRuntimeHost(runtimeHost),
+    };
+  };
+  const ses = createHost('ses-compartment-pool');
+  const compatibility = createHost('disposable-worker');
+  const input = {
+    id: 'javascript-browser-trace-parity',
+    language: 'javascript' as const,
+    code: `function solve(values) {
+  let total = 0;
+  for (let index = 0; index < values.length; index += 1) {
+    values[index] += 1;
+    total += values[index];
+  }
+  return total;
+}`,
+    functionName: 'solve',
+    trace: true,
+    cases: [
+      { id: 'first', input: { values: [1, 2, 3] }, expected: 9 },
+      { id: 'second', input: { values: [4, 5] }, expected: 11 },
+    ],
+  };
+  try {
+    const [fast, general] = await Promise.all([
+      evaluate(ses.host, input),
+      evaluate(compatibility.host, input),
+    ]);
+    const signatures = (traces: unknown[]) => traces.map((trace) =>
+      buildRuntimeTraceParitySignature(trace as RuntimeTrace)
+    );
+    return {
+      fast,
+      general,
+      fastSignatures: signatures(fast.traces),
+      generalSignatures: signatures(general.traces),
+    };
+  } finally {
+    ses.runtimeHost.dispose();
+    compatibility.runtimeHost.dispose();
+  }
+}
+
 export async function runJavaScriptSesUnavailableFallback(assetBaseUrl: string) {
   const runtimeHost = createBrowserRuntimeHost({
     assetBaseUrl,
@@ -1158,7 +1296,7 @@ export async function runJavaScriptSesUnavailableFallback(assetBaseUrl: string) 
         algorithmExecution: 'ses-compartment-pool',
       }),
     ]),
-    safeExecution: { prewarmAfterUse: false },
+    safeExecution: { workerLifecycle: 'retire-only' },
   });
   const host = createBrowserJudgeHostFromRuntimeHost(runtimeHost);
   try {

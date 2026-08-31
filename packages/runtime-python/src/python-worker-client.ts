@@ -29,6 +29,8 @@ export type PythonRawTraceBatchResult = {
   error?: string;
   consoleOutput?: string[];
   timings?: RuntimeExecutionTimings;
+  algorithmFastBatchUnavailable?: boolean;
+  algorithmFastBatchFailureClass?: 'capability-fallback' | 'driver-failure';
 };
 
 type PythonRawCodeBatchResult = RawExecutionBatchPayload & {
@@ -97,7 +99,7 @@ export interface PythonWorkerClientOptions {
     loaderUrl?: string;
     indexUrl?: string;
     loaderFormat?: 'classic-script' | 'module';
-    runtimeCoreUrl?: string;
+    runtimeUrl?: string;
     snippetsUrl?: string;
     packageUrls?: Readonly<Record<string, string>>;
   };
@@ -276,11 +278,11 @@ export class PythonWorkerClient {
       this.workerFormat === 'module' &&
       (!options.runtimeAssets?.loaderUrl ||
         !options.runtimeAssets.indexUrl ||
-        !options.runtimeAssets.runtimeCoreUrl ||
+        !options.runtimeAssets.runtimeUrl ||
         !options.runtimeAssets.snippetsUrl)
     ) {
       throw new TypeError(
-        'Module Python workers require consumer-supplied runtimeAssets.loaderUrl, indexUrl, runtimeCoreUrl, and snippetsUrl.'
+        'Module Python workers require consumer-supplied runtimeAssets.loaderUrl, indexUrl, runtimeUrl, and snippetsUrl.'
       );
     }
 
@@ -754,7 +756,26 @@ export class PythonWorkerClient {
       wallClockMs
     );
     try {
-      return await this.core.runClientEffect(program, call.signal);
+      const result = await this.core.runClientEffect(program, call.signal);
+      if (result.algorithmFastBatchUnavailable === true) {
+        const unexpected =
+          result.algorithmFastBatchFailureClass !== 'capability-fallback';
+        logRuntimeDiagnostic(unexpected ? 'error' : 'debug', {
+          component: 'PythonWorkerClient',
+          runtime: 'python',
+          phase: 'algorithm-fast-batch-fallback',
+          message: unexpected
+            ? 'Python algorithm-fast trace batch driver failed; requesting hard isolation.'
+            : 'Python algorithm-fast trace batch requires hard isolation.',
+          detail: {
+            caseCount: call.inputBatch.length,
+            failureClass:
+              result.algorithmFastBatchFailureClass ?? 'driver-failure',
+          },
+        }, { enabled: unexpected || this.debug });
+        throw new PythonAlgorithmFastBatchUnavailableError();
+      }
+      return result;
     } catch (error) {
       if (isExecutionTimeoutError(error)) {
         return {

@@ -84,16 +84,16 @@ function parseImportedPackages(source: string): string[] {
   );
 }
 
-function parsePythonDefaultImports(runtimeCoreSource: string): string[] {
+function parsePythonDefaultImports(pythonRuntimeSource: string): string[] {
   const prelude = requireMatch(
-    runtimeCoreSource,
+    pythonRuntimeSource,
     /const PYTHON_DEFAULT_IMPORT_PRELUDE = `([\s\S]*?)`;/,
     'Python default import prelude'
   )[1] ?? '';
   const imports = [
     ...[...prelude.matchAll(/^import\s+([A-Za-z_][A-Za-z0-9_.]*)/gm)].map((match) => match[1]),
     ...[...prelude.matchAll(/^from\s+([A-Za-z_][A-Za-z0-9_.]*)\s+import/gm)].map((match) => match[1]),
-    ...[...runtimeCoreSource.matchAll(/^from\s+(typing)\s+import/gm)].map((match) => match[1]),
+    ...[...pythonRuntimeSource.matchAll(/^from\s+(typing)\s+import/gm)].map((match) => match[1]),
   ];
   return unique(imports.filter((name): name is string => Boolean(name) && name !== 'sortedcontainers'));
 }
@@ -282,7 +282,7 @@ async function buildRuntimeInfo(): Promise<Record<string, RuntimeInfo>> {
     name: 'TraceKernel',
     version: rootPackage.version,
   };
-  const pythonRuntimeCoreSource = await readText('workers', 'python', 'runtime-core.js');
+  const pythonRuntimeSource = await readText('workers', 'python', 'python-runtime.js');
   const pythonDistributionLock = await readJson<{
     info?: { python?: string };
     packages?: Record<string, { version?: string }>;
@@ -338,7 +338,7 @@ async function buildRuntimeInfo(): Promise<Record<string, RuntimeInfo>> {
   const cppStandard = requireMatch(cppWorkerSource, /const CPP_STANDARD = '([^']+)';/, 'C++ standard')[1]!;
   const cppDefaultHeaders = parseCppDefaultHeaders(cppWorkerSource);
   const cppStandardLabel = cppStandard.toUpperCase();
-  const pythonDefaultImports = parsePythonDefaultImports(pythonRuntimeCoreSource);
+  const pythonDefaultImports = parsePythonDefaultImports(pythonRuntimeSource);
 
   const javascriptShared = {
     runtime: {

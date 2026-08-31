@@ -360,13 +360,6 @@ export function createBrowserRuntimeHost(
     cpp,
     ...hostOptions
   } = options;
-  const csharpPreparedAuthority =
-    csharp?.preparedAuthority ??
-    hostOptions.environment?.csharpPreparedAuthority;
-  const effectiveCSharp =
-    csharpPreparedAuthority === undefined
-      ? csharp
-      : { ...csharp, preparedAuthority: csharpPreparedAuthority };
   const effectiveJava =
     java?.runtimeAssetBaseUrl !== undefined || hostOptions.environment
       ? java
@@ -386,11 +379,10 @@ export function createBrowserRuntimeHost(
           ),
         }
       : {}),
-    csharpPreparedAuthority,
     providerRegistry: createDefaultBrowserRuntimeProviderRegistry({
       python,
       java: effectiveJava,
-      csharp: effectiveCSharp,
+      csharp,
       cpp,
     }),
   });

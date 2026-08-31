@@ -71,8 +71,9 @@ export interface JavaScriptWorkerClientOptions {
   javascriptLibrariesUrl?: string;
   typescriptCompilerUrl?: string;
   typescriptCompilerPreflight?: () => Promise<void>;
-  prewarmAfterUse?: boolean;
-  /** @internal Experimental correctness-only retained SES compartment pool. */
+  /** Replenish one clean executor after leasing the current standby. */
+  replenishStandbyAfterUse?: boolean;
+  /** @internal Retained hardened workers with one fresh SES compartment per case. */
   algorithmExecution?: 'disposable-worker' | 'ses-compartment-pool';
   /** @internal Module Worker asset used only by `ses-compartment-pool`. */
   algorithmWorkerUrl?: string;
@@ -113,6 +114,11 @@ interface PreparedExecutionReply {
 
 interface SesCompatiblePreparedExecution {
   readonly executableCode: string;
+  readonly instrumentedCode?: string | null;
+  readonly traceLineBounds?: {
+    readonly startLine: number;
+    readonly endLine: number;
+  };
   readonly materializers: Readonly<Record<string, unknown>>;
   readonly inputArguments: readonly {
     readonly key: string;
@@ -216,6 +222,19 @@ function sesCompatiblePreparedExecution(
   ) {
     return null;
   }
+  if (
+    prepared.instrumentedCode !== undefined &&
+    prepared.instrumentedCode !== null &&
+    typeof prepared.instrumentedCode !== 'string'
+  ) return null;
+  if (
+    prepared.traceLineBounds !== undefined &&
+    (
+      !prepared.traceLineBounds ||
+      !Number.isSafeInteger(prepared.traceLineBounds.startLine) ||
+      !Number.isSafeInteger(prepared.traceLineBounds.endLine)
+    )
+  ) return null;
   for (let index = 0; index < prepared.inputArguments.length; index += 1) {
     const argument = prepared.inputArguments[index];
     if (
@@ -578,7 +597,7 @@ export class JavaScriptWorkerClient {
       // Keep one clean executor ready while the current command runs. The
       // standby never receives user code, so every command still gets a fresh
       // authority boundary without paying worker bootstrap on its critical path.
-      if (this.options.prewarmAfterUse ?? true) {
+      if (this.options.replenishStandbyAfterUse ?? true) {
         void this.ensureStandbyExecutionWorker(expectedGeneration).catch(
           () => undefined
         );
@@ -623,7 +642,7 @@ export class JavaScriptWorkerClient {
       if (initialStandby) {
         this.leasedExecutionWorkers.add(initialStandby);
       }
-      if (this.options.prewarmAfterUse ?? true) {
+      if (this.options.replenishStandbyAfterUse ?? true) {
         void this.ensureStandbyExecutionWorker(expectedGeneration).catch(
           () => undefined
         );
@@ -917,12 +936,14 @@ export class JavaScriptWorkerClient {
       if (
         this.sesAlgorithmPool &&
         sesModule &&
-        preparation.mode === 'code' &&
         preparation.functionName
       ) {
         const prepared = sesCompatiblePreparedExecution(preparedExecution);
         if (
           prepared &&
+          (preparation.mode === 'code' ||
+            (typeof prepared.instrumentedCode === 'string' &&
+              prepared.traceLineBounds !== undefined)) &&
           sesModule.isSesAlgorithmSourceEligible(preparation.code) &&
           sesModule.isSesAlgorithmSourceEligible(prepared.executableCode)
         ) {
@@ -931,7 +952,18 @@ export class JavaScriptWorkerClient {
           );
           if (requiredModules) {
             const source: SesAlgorithmPreparedSource = {
+              mode: preparation.mode,
+              language,
               code: prepared.executableCode,
+              ...(preparation.mode === 'trace'
+                ? {
+                    instrumentedCode: prepared.instrumentedCode!,
+                    traceLineBounds: prepared.traceLineBounds!,
+                    ...(preparation.traceOptions
+                      ? { traceOptions: preparation.traceOptions }
+                      : {}),
+                  }
+                : {}),
               functionName: preparation.functionName,
               executionStyle: preparation.executionStyle,
               requiredModules,
@@ -957,7 +989,7 @@ export class JavaScriptWorkerClient {
           }
         }
       }
-      if (preparation.mode === 'code' && !sesProgram) {
+      if (!sesProgram) {
         await this.options.runtimeAssetPreflight?.();
       }
       const programSesPool = sesProgram ? this.sesAlgorithmPool : null;
@@ -967,9 +999,17 @@ export class JavaScriptWorkerClient {
         batchCall: RuntimePreparedCodeBatchCall
       ): Promise<readonly CodeExecutionResult[]> => {
         if (!sesProgram || !programSesPool || !programSesEligible ||
-            this.sesAlgorithmPool !== programSesPool ||
-            !batchCall.inputBatch.every(isSesAlgorithmInputEligible)) {
+            this.sesAlgorithmPool !== programSesPool) {
           programSesEligible = false;
+          return this.executePreparedCodeBatch(
+            language,
+            preparation,
+            requirePreparedExecution(),
+            batchCall,
+            generation
+          );
+        }
+        if (!batchCall.inputBatch.every(isSesAlgorithmInputEligible)) {
           return this.executePreparedCodeBatch(
             language,
             preparation,
@@ -1023,21 +1063,92 @@ export class JavaScriptWorkerClient {
         }
       };
 
+      const executeSesTraceBatchOrFallback = async (
+        batchCall: RuntimePreparedTraceBatchCall
+      ): Promise<readonly ExecutionResult[]> => {
+        if (!sesProgram || !programSesPool || !programSesEligible ||
+            this.sesAlgorithmPool !== programSesPool) {
+          programSesEligible = false;
+          return this.executePreparedTraceBatchInternal(
+            language,
+            preparation,
+            requirePreparedExecution(),
+            batchCall,
+            generation
+          );
+        }
+        if (!batchCall.inputBatch.every(isSesAlgorithmInputEligible)) {
+          return this.executePreparedTraceBatchInternal(
+            language,
+            preparation,
+            requirePreparedExecution(),
+            batchCall,
+            generation
+          );
+        }
+        try {
+          return await programSesPool.executeTraceBatch(
+            sesProgram,
+            batchCall.inputBatch,
+            batchCall.traceEnabledBatch,
+            batchCall.limits,
+            batchCall.signal
+          );
+        } catch (error) {
+          if (error instanceof Error &&
+              (error.name === 'AbortError' || batchCall.signal?.aborted)) {
+            throw error;
+          }
+          programSesEligible = false;
+          if (!(
+            (sesModule &&
+              error instanceof sesModule.SesAlgorithmCompatibilityRequiredError) ||
+            (error instanceof Error &&
+              error.name === 'SesAlgorithmCompatibilityRequiredError')
+          )) {
+            this.disableSesAlgorithmPool();
+          }
+          await this.options.runtimeAssetPreflight?.();
+          await this.ensureStandbyExecutionWorker(generation);
+          return this.executePreparedTraceBatchInternal(
+            language,
+            preparation,
+            requirePreparedExecution(),
+            batchCall,
+            generation
+          );
+        }
+      };
+
       let program: RuntimePreparedProgram;
       program = createJavaScriptPreparedProgram({
         mode: preparation.mode,
+        profile:
+          sesProgram && programSesPool
+            ? 'fast'
+            : 'compatibility',
         executeCode:
           preparation.mode === 'code'
-            // SES is a batch-only correctness optimization. A caller that
-            // invokes cases individually retains the disposable-worker
-            // contract instead of selecting engines independently per case.
-            ? (caseCall) => this.executePreparedCode(
-                language,
-                preparation,
-                requirePreparedExecution(),
-                caseCall,
-                generation
-              )
+            ? sesProgram && programSesPool
+              ? async (caseCall) => {
+                  const results = await executeSesBatchOrFallback({
+                    inputBatch: [caseCall.inputs],
+                    signal: caseCall.signal,
+                    limits: caseCall.limits,
+                  });
+                  const result = results[0];
+                  if (!result) {
+                    throw new Error('SES code execution returned no result.');
+                  }
+                  return result;
+                }
+              : (caseCall) => this.executePreparedCode(
+                  language,
+                  preparation,
+                  requirePreparedExecution(),
+                  caseCall,
+                  generation
+                )
             : undefined,
         executeCodeBatch:
           preparation.mode === 'code'
@@ -1054,26 +1165,42 @@ export class JavaScriptWorkerClient {
             : undefined,
         executeTrace:
           preparation.mode === 'trace'
-            ? (caseCall) =>
-                this.executePreparedTrace(
-                  language,
-                  preparation,
-                  requirePreparedExecution(),
-                  caseCall,
-                  generation,
-                  caseCall.recordTrace ?? true
-                )
+            ? sesProgram && programSesPool
+              ? async (caseCall) => {
+                  const results = await executeSesTraceBatchOrFallback({
+                    inputBatch: [caseCall.inputs],
+                    traceEnabledBatch: [caseCall.recordTrace ?? true],
+                    signal: caseCall.signal,
+                    limits: caseCall.limits,
+                  });
+                  const result = results[0];
+                  if (!result) {
+                    throw new Error('SES trace execution returned no result.');
+                  }
+                  return result;
+                }
+              : (caseCall) =>
+                  this.executePreparedTrace(
+                    language,
+                    preparation,
+                    requirePreparedExecution(),
+                    caseCall,
+                    generation,
+                    caseCall.recordTrace ?? true
+                  )
             : undefined,
         executeTraceBatch:
           preparation.mode === 'trace'
-            ? (batchCall) =>
-                this.executePreparedTraceBatchInternal(
-                  language,
-                  preparation,
-                  requirePreparedExecution(),
-                  batchCall,
-                  generation
-                )
+            ? sesProgram && programSesPool
+              ? executeSesTraceBatchOrFallback
+              : (batchCall) =>
+                  this.executePreparedTraceBatchInternal(
+                    language,
+                    preparation,
+                    requirePreparedExecution(),
+                    batchCall,
+                    generation
+                  )
             : undefined,
         dispose: async () => {
           preparedExecution = undefined;

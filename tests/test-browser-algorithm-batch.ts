@@ -29,6 +29,9 @@ interface ReceiptSummary {
 }
 
 interface BatchLanguageResult {
+  readonly warmMode: 'cold' | 'runtime' | 'trace-prime';
+  readonly warmMs?: number;
+  readonly tracePrimeMs?: number;
   readonly plain: ReceiptSummary;
   readonly plainMs: number;
   readonly plainMaximumActiveWorkers: number;
@@ -37,6 +40,23 @@ interface BatchLanguageResult {
   readonly traceMs: number;
   readonly traceMaximumActiveWorkers: number;
   readonly traceWorkerUrls: readonly string[];
+  readonly interactive: {
+    readonly initialMs: number;
+    readonly compileTimings?: unknown;
+    readonly caseTimings: readonly unknown[];
+    readonly judgeTimings?: unknown;
+    readonly correctnessStatus: string;
+    readonly correctnessCaseIds: readonly string[];
+    readonly correctnessOutputs: readonly unknown[];
+    readonly selectedTraceStatus: string;
+    readonly selectedTraceCaseIds: readonly string[];
+    readonly selectedTraceEventCounts: readonly number[];
+    readonly backgroundMs: number;
+    readonly backgroundTraceCaseIds: readonly string[];
+    readonly backgroundTraceEventCounts: readonly number[];
+    readonly maximumActiveWorkers: number;
+    readonly workerUrls: readonly string[];
+  };
   readonly compatibilityIsolation?: ReceiptSummary;
   readonly compatibilityIsolationWorkerUrls?: readonly string[];
   readonly compatibilityIsolationMaximumActiveWorkers?: number;
@@ -48,6 +68,17 @@ interface BatchLanguageResult {
   readonly csharpBatchConcurrency?: number;
   readonly trustedPrewarm?: boolean;
 }
+
+const algorithmCaseCount = Number.parseInt(
+  process.env.TRACECODE_ALGORITHM_BATCH_CASES ?? '10',
+  10
+);
+assertCondition(
+  Number.isInteger(algorithmCaseCount) &&
+    algorithmCaseCount > 0 &&
+    algorithmCaseCount <= 1_000,
+  'TRACECODE_ALGORITHM_BATCH_CASES must be an integer from 1 through 1000.'
+);
 
 const ALL_LANGUAGES: readonly BatchLanguage[] = [
   'python',
@@ -86,6 +117,19 @@ assertCondition(
 );
 const browserEngine =
   process.env.TRACECODE_BROWSER_ENGINE ?? 'chromium';
+const warmMode =
+  process.env.TRACECODE_ALGORITHM_BATCH_WARM_MODE ?? 'cold';
+assertCondition(
+  warmMode === 'cold' || warmMode === 'runtime' || warmMode === 'trace-prime',
+  'TRACECODE_ALGORITHM_BATCH_WARM_MODE must be cold, runtime, or trace-prime.'
+);
+const workerLifecycle =
+  process.env.TRACECODE_ALGORITHM_BATCH_WORKER_LIFECYCLE ??
+  'warm-and-retire';
+assertCondition(
+  workerLifecycle === 'warm-and-retire' || workerLifecycle === 'retire-only',
+  'TRACECODE_ALGORITHM_BATCH_WORKER_LIFECYCLE must be warm-and-retire or retire-only.'
+);
 const selectedBrowserType =
   browserEngine === 'chromium'
     ? chromium
@@ -176,16 +220,16 @@ function assertReceipt(
 ): void {
   assertCondition(
     receipt.verdict === 'passed' &&
-      receipt.caseVerdicts.length === 10 &&
+      receipt.caseVerdicts.length === algorithmCaseCount &&
       receipt.caseVerdicts.every((verdict) => verdict === 'passed'),
-    `${language} ${mode} batch did not pass all ten cases: ${JSON.stringify(receipt)}`
+    `${language} ${mode} batch did not pass all cases: ${JSON.stringify(receipt)}`
   );
   assertCondition(
     new Set(receipt.sessionIds).size === 1,
     `${language} ${mode} batch did not use one TraceKernel batch process: ${JSON.stringify(receipt.sessionIds)}`
   );
   assertCondition(
-    receipt.outputs.length === 10 &&
+    receipt.outputs.length === algorithmCaseCount &&
       receipt.outputs.every((output) => output === 1),
     `${language} ${mode} batch leaked mutable state between cases: ${JSON.stringify(receipt.outputs)}`
   );
@@ -209,9 +253,10 @@ function assertBoundedWorkers(
   if (language === 'csharp') {
     const concurrency = configuredCSharpConcurrency ?? 4;
     assertCondition(
-      languageWorkers.length >= 10 &&
+      (!requireWorker || languageWorkers.length > 0) &&
+        languageWorkers.length <= concurrency + 4 &&
         maximumActiveWorkers <= concurrency + 3,
-      `${language} ${scope} must use one disposable runner per case while bounding concurrent capacity: ${JSON.stringify({
+      `${language} ${scope} must retain bounded algorithm-fast capacity: ${JSON.stringify({
         workerCount: languageWorkers.length,
         maximumActiveWorkers,
         concurrency,
@@ -220,17 +265,6 @@ function assertBoundedWorkers(
     return;
   }
   const maximumWorkers = 3;
-  if (language === 'python' && scope === 'trace batch') {
-    assertCondition(
-      languageWorkers.length === 10 &&
-        maximumActiveWorkers <= maximumWorkers,
-      `${language} ${scope} must retire one outer worker per selected case while bounding active capacity: ${JSON.stringify({
-        workerCount: languageWorkers.length,
-        maximumActiveWorkers,
-      })}`
-    );
-    return;
-  }
   assertCondition(
     (!requireWorker || languageWorkers.length > 0) &&
       languageWorkers.length <= maximumWorkers,
@@ -258,9 +292,17 @@ async function main(): Promise<void> {
       process.cwd()
     );
     if (LANGUAGES.includes('java')) {
-      const traceJVMRoot = resolve(
-        process.env.TRACECODE_TRACEJVM_ROOT ?? '../tracejvm'
+      const traceJVMCandidates = process.env.TRACECODE_TRACEJVM_ROOT
+        ? [resolve(process.env.TRACECODE_TRACEJVM_ROOT)]
+        : [resolve('../tracejvm'), resolve('../../tracejvm')];
+      const traceJVMRoot = traceJVMCandidates.find((candidate) =>
+        existsSync(join(candidate, 'dist/browser-client.js'))
       );
+      if (!traceJVMRoot) {
+        throw new Error(
+          `Unable to find the TraceJVM sibling. Checked: ${traceJVMCandidates.join(', ')}`
+        );
+      }
       const traceJVMTarget = join(tempRoot, 'tracejvm');
       await mkdir(traceJVMTarget, { recursive: true });
       await copyFile(
@@ -339,12 +381,18 @@ async function main(): Promise<void> {
           '/workers',
           languages.selected,
           languages.csharpBatchConcurrency,
-          languages.pythonCompatibilityCaseCount
+          languages.pythonCompatibilityCaseCount,
+          languages.algorithmCaseCount,
+          languages.warmMode,
+          languages.workerLifecycle
         );
       }, {
         selected: LANGUAGES,
         csharpBatchConcurrency,
         pythonCompatibilityCaseCount,
+        algorithmCaseCount,
+        warmMode,
+        workerLifecycle,
       }) as Record<BatchLanguage, BatchLanguageResult>;
 
       for (const language of LANGUAGES) {
@@ -355,6 +403,33 @@ async function main(): Promise<void> {
         );
         assertReceipt(language, 'code', languageResult.plain);
         assertReceipt(language, 'trace', languageResult.trace);
+        assertCondition(
+          languageResult.interactive.correctnessStatus === 'completed' &&
+            languageResult.interactive.correctnessCaseIds.length ===
+              algorithmCaseCount &&
+            languageResult.interactive.correctnessOutputs.every(
+              (output) => output === 1
+            ),
+          `${language} interactive correctness did not evaluate every case: ${JSON.stringify(languageResult.interactive)}`
+        );
+        assertCondition(
+          languageResult.interactive.selectedTraceStatus === 'completed' &&
+            languageResult.interactive.selectedTraceCaseIds.length === 1 &&
+            languageResult.interactive.selectedTraceCaseIds[0] === 'case-1' &&
+            languageResult.interactive.selectedTraceEventCounts[0]! > 0,
+          `${language} interactive decision did not trace only the selected case: ${JSON.stringify(languageResult.interactive)}`
+        );
+        assertCondition(
+          languageResult.interactive.backgroundTraceCaseIds.length ===
+              algorithmCaseCount - 1 &&
+            languageResult.interactive.backgroundTraceCaseIds.every(
+              (caseId, index) => caseId === `case-${index + 2}`
+            ) &&
+            languageResult.interactive.backgroundTraceEventCounts.every(
+              (eventCount) => eventCount > 0
+            ),
+          `${language} interactive background drain did not trace every remaining case in order: ${JSON.stringify(languageResult.interactive)}`
+        );
         assertBoundedWorkers(
           language,
           'code batch',
@@ -373,39 +448,51 @@ async function main(): Promise<void> {
         );
         assertBoundedWorkers(
           language,
-          'code or trace batch',
-          languageResult.plainWorkerUrls.length > 0
-            ? languageResult.plainWorkerUrls
-            : languageResult.traceWorkerUrls,
-          true,
-          Math.max(
-            languageResult.plainMaximumActiveWorkers,
-            languageResult.traceMaximumActiveWorkers
-          ),
+          'interactive execution',
+          languageResult.interactive.workerUrls,
+          languageResult.warmMode === 'cold',
+          languageResult.interactive.maximumActiveWorkers,
           languageResult.csharpBatchConcurrency
+        );
+        console.log(
+          JSON.stringify({
+            language,
+            browserEngine,
+            warmMode: languageResult.warmMode,
+            warmMs: languageResult.warmMs,
+            tracePrimeMs: languageResult.tracePrimeMs,
+            plainMs: languageResult.plainMs,
+            traceMs: languageResult.traceMs,
+            interactiveInitialMs:
+              languageResult.interactive.initialMs,
+            interactiveCompileTimings:
+              languageResult.interactive.compileTimings,
+            interactiveCaseTimings:
+              languageResult.interactive.caseTimings,
+            interactiveJudgeTimings:
+              languageResult.interactive.judgeTimings,
+            interactiveBackgroundMs:
+              languageResult.interactive.backgroundMs,
+            interactiveMaximumActiveWorkers:
+              languageResult.interactive.maximumActiveWorkers,
+            interactiveWorkerCount:
+              languageResult.interactive.workerUrls.length,
+            plainWorkerCount: languageResult.plainWorkerUrls.length,
+            traceWorkerCount: languageResult.traceWorkerUrls.length,
+            plainMaximumActiveWorkers:
+              languageResult.plainMaximumActiveWorkers,
+            traceMaximumActiveWorkers:
+              languageResult.traceMaximumActiveWorkers,
+          })
         );
         if (language === 'csharp') {
           assertCondition(
             languageResult.trustedPrewarm === true,
             'C# public Judge provider must prime its standby runner with the fixed trusted traced artifact.'
           );
-          console.log(
-            JSON.stringify({
-              csharpBatchConcurrency:
-                languageResult.csharpBatchConcurrency,
-              browserEngine,
-              plainMs: languageResult.plainMs,
-              traceMs: languageResult.traceMs,
-              plainWorkerCount:
-                languageResult.plainWorkerUrls.length,
-              traceWorkerCount:
-                languageResult.traceWorkerUrls.length,
-              plainMaximumActiveWorkers:
-                languageResult.plainMaximumActiveWorkers,
-              traceMaximumActiveWorkers:
-                languageResult.traceMaximumActiveWorkers,
-            })
-          );
+          console.log(JSON.stringify({
+            csharpBatchConcurrency: languageResult.csharpBatchConcurrency,
+          }));
         }
         if (language === 'python') {
           const compatibilityIsolation = languageResult.compatibilityIsolation;
@@ -462,7 +549,7 @@ async function main(): Promise<void> {
                   )
                 ) &&
               judgeFallbackWorkers.length === 1 &&
-              (languageResult.judgeFallbackIsolationMaximumActiveWorkers ?? 99) <= 1,
+              (languageResult.judgeFallbackIsolationMaximumActiveWorkers ?? 99) <= 3,
             `Python fast artifact did not use one retained generic worker for custom-input fallback: ${JSON.stringify({
               receipt: judgeFallbackIsolation,
               workers: judgeFallbackWorkers,

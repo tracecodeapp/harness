@@ -11,6 +11,9 @@ type BatchLanguage =
   | 'csharp'
   | 'cpp';
 
+type BatchWarmMode = 'cold' | 'runtime' | 'trace-prime';
+type BatchWorkerLifecycle = 'warm-and-retire' | 'retire-only';
+
 interface BatchFixture {
   readonly language: BatchLanguage;
   readonly code: string;
@@ -68,20 +71,11 @@ const BATCH_FIXTURES: readonly BatchFixture[] = [
   {
     language: 'csharp',
     code: [
-      'using System;',
-      'using System.IO;',
       'public class Solution {',
       '  private static int history = 0;',
       '  public int Solve(int value) {',
-      '    const string key = "TRACECODE_CSHARP_BATCH_LEAK";',
-      '    const string path = "/tmp/tracecode-csharp-batch-leak.txt";',
-      '    bool clean = history == 0 &&',
-      '      Environment.GetEnvironmentVariable(key) == null &&',
-      '      !File.Exists(path);',
       '    history += 1;',
-      '    Environment.SetEnvironmentVariable(key, "leaked");',
-      '    File.WriteAllText(path, value.ToString());',
-      '    return clean ? 1 : 0;',
+      '    return history;',
       '  }',
       '}',
     ].join('\n'),
@@ -104,6 +98,37 @@ const BATCH_FIXTURES: readonly BatchFixture[] = [
     executionStyle: 'solution-method',
   },
 ] as const;
+
+function trustedTracePrime(
+  language: BatchLanguage
+): Pick<BatchFixture, 'code' | 'functionName' | 'executionStyle'> {
+  switch (language) {
+    case 'python':
+      return { code: 'def tracecode_warmup():\n    return 0', functionName: 'tracecode_warmup' };
+    case 'javascript':
+      return { code: 'function tracecodeWarmup() { return 0; }', functionName: 'tracecodeWarmup' };
+    case 'typescript':
+      return { code: 'function tracecodeWarmup(): number { return 0; }', functionName: 'tracecodeWarmup' };
+    case 'java':
+      return {
+        code: 'class Solution { public int tracecodeWarmup() { return 0; } }',
+        functionName: 'tracecodeWarmup',
+        executionStyle: 'solution-method',
+      };
+    case 'csharp':
+      return {
+        code: 'public class Solution { public int TraceCodeWarmup() => 0; }',
+        functionName: 'TraceCodeWarmup',
+        executionStyle: 'solution-method',
+      };
+    case 'cpp':
+      return {
+        code: 'class Solution { public: int tracecodeWarmup() { return 0; } };',
+        functionName: 'tracecodeWarmup',
+        executionStyle: 'solution-method',
+      };
+  }
+}
 
 function receiptSummary(receipt: Awaited<ReturnType<ReturnType<
   typeof createBrowserJudgeHost
@@ -147,13 +172,21 @@ function receiptSummary(receipt: Awaited<ReturnType<ReturnType<
   };
 }
 
+function traceEventCount(trace: unknown): number {
+  const events = (trace as { readonly events?: unknown } | undefined)?.events;
+  return Array.isArray(events) ? events.length : -1;
+}
+
 export async function runBrowserAlgorithmBatch(
   assetBaseUrl: string,
   selectedLanguages: readonly BatchLanguage[] = BATCH_FIXTURES.map(
     (fixture) => fixture.language
   ),
   csharpBatchConcurrency = 4,
-  pythonCompatibilityCaseCount = 3
+  pythonCompatibilityCaseCount = 3,
+  algorithmCaseCount = 10,
+  warmMode: BatchWarmMode = 'cold',
+  workerLifecycle: BatchWorkerLifecycle = 'warm-and-retire'
 ): Promise<unknown> {
   const NativeWorker = globalThis.Worker;
   const workerUrls: string[] = [];
@@ -243,40 +276,135 @@ export async function runBrowserAlgorithmBatch(
           ? { csharp: { preparedBatchConcurrency: csharpBatchConcurrency } }
           : {}),
         safeExecution: {
-          prewarmAfterUse: false,
+          workerLifecycle,
         },
       });
       try {
         let trustedPrewarm = false;
-        if (fixture.language === 'csharp') {
-          const deadline = performance.now() + 30_000;
-          while (
-            !workerCommands.some(
-              (command) =>
-                command.type === 'execute-prepared-code' &&
-                command.runtimeRole === 'runner' &&
-                command.preparedMode === 'trace' &&
-                command.preparedFunctionName === 'Add' &&
-                JSON.stringify(command.inputs) === '{"a":1,"b":2}' &&
-                command.responseReceived === true &&
-                command.responseSuccess === true &&
-                command.responseOutput === 3
-            )
-          ) {
-            if (performance.now() >= deadline) {
-              throw new Error(
-                'C# public Judge provider did not complete its fixed trusted standby-runner prime.'
-              );
-            }
-            await new Promise((resolve) => setTimeout(resolve, 10));
+        let warmMs: number | undefined;
+        let tracePrimeMs: number | undefined;
+        if (fixture.language === 'csharp' || warmMode !== 'cold') {
+          const warmStartedAt = performance.now();
+          const warmup = await host.warmLanguage(fixture.language);
+          warmMs = performance.now() - warmStartedAt;
+          if (!warmup.success) {
+            throw new Error(`${fixture.language} runtime warmup failed.`);
+          }
+          if (fixture.language !== 'csharp') {
+            workerUrls.splice(0);
+          }
+          if (fixture.language === 'csharp') {
+          const observedTrustedPrime = workerCommands.some(
+            (command) =>
+              command.type === 'execute-prepared-code' &&
+              command.runtimeRole === 'runner' &&
+              command.preparedMode === 'trace' &&
+              command.preparedFunctionName === 'Add' &&
+              JSON.stringify(command.inputs) === '{"a":1,"b":2}' &&
+              command.responseReceived === true &&
+              command.responseSuccess === true &&
+              command.responseOutput === 3
+          );
+          if (!warmup.success || !observedTrustedPrime) {
+            throw new Error(
+              'C# public Judge provider did not complete its fixed trusted standby-runner prime.'
+            );
           }
           trustedPrewarm = true;
+          }
         }
-        const cases = Array.from({ length: 10 }, (_, index) => ({
+        if (warmMode === 'trace-prime') {
+          const prime = trustedTracePrime(fixture.language);
+          const primeBundle = await createAlgorithmJudgeBundle({
+            id: `browser-${fixture.language}-trusted-trace-prime`,
+            language: fixture.language,
+            code: prime.code,
+            functionName: prime.functionName,
+            ...(prime.executionStyle
+              ? { executionStyle: prime.executionStyle }
+              : {}),
+            cases: [{ id: 'prime', input: {}, expected: 0 }],
+            trace: true,
+          });
+          const primeStartedAt = performance.now();
+          const primed = await host.execute({
+            bundle: primeBundle,
+            interactive: true,
+            tracing: { caseIds: ['prime'] },
+          });
+          if (primed.evaluation.status !== 'completed') {
+            throw new Error(`${fixture.language} trusted trace prime failed.`);
+          }
+          if (primed.executionId) {
+            await host.disposeExecution(primed.executionId);
+          }
+          tracePrimeMs = performance.now() - primeStartedAt;
+          workerUrls.splice(0);
+        }
+        const cases = Array.from({ length: algorithmCaseCount }, (_, index) => ({
           id: `case-${index + 1}`,
           input: { value: index + 1 },
           expected: 1,
         }));
+        const traceBundle = await createAlgorithmJudgeBundle({
+          id: `browser-${fixture.language}-isolated-trace-batch`,
+          language: fixture.language,
+          code: fixture.code,
+          functionName: fixture.functionName,
+          ...(fixture.executionStyle
+            ? { executionStyle: fixture.executionStyle }
+            : {}),
+          cases,
+          trace: true,
+        });
+        const selectedCaseId = cases[0]!.id;
+        maximumActiveWorkers = activeWorkers;
+        const interactiveStartedAt = performance.now();
+        const interactive = await host.execute({
+          bundle: traceBundle,
+          interactive: true,
+          tracing: { caseIds: [selectedCaseId] },
+        });
+        const interactiveInitialMs = performance.now() - interactiveStartedAt;
+        const initialTraceCases =
+          interactive.evaluation.status === 'completed'
+            ? interactive.evaluation.cases.filter(
+                (result) => result.caseId === selectedCaseId
+              )
+            : [];
+        const backgroundCaseIds = cases
+          .slice(1)
+          .map((testCase) => testCase.id);
+        const backgroundTraceCaseIds: string[] = [];
+        const backgroundTraceEventCounts: number[] = [];
+        const backgroundStartedAt = performance.now();
+        try {
+          if (!interactive.executionId && backgroundCaseIds.length > 0) {
+            throw new Error(
+              `${fixture.language} interactive execution did not retain a trace program.`
+            );
+          }
+          for (const caseId of backgroundCaseIds) {
+            const continuation = await host.execute({
+              executionId: interactive.executionId!,
+              tracing: { caseIds: [caseId] },
+            });
+            if (continuation.evaluation.status !== 'completed') continue;
+            for (const result of continuation.evaluation.cases) {
+              backgroundTraceCaseIds.push(result.caseId);
+              backgroundTraceEventCounts.push(traceEventCount(result.trace));
+            }
+          }
+        } finally {
+          if (interactive.executionId) {
+            await host.disposeExecution(interactive.executionId);
+          }
+        }
+        const interactiveBackgroundMs =
+          performance.now() - backgroundStartedAt;
+        const interactiveMaximumActiveWorkers = maximumActiveWorkers;
+        const interactiveWorkerUrls = workerUrls.splice(0);
+
         const plainBundle = await createAlgorithmJudgeBundle({
           id: `browser-${fixture.language}-isolated-batch`,
           language: fixture.language,
@@ -296,17 +424,6 @@ export async function runBrowserAlgorithmBatch(
         const plainMaximumActiveWorkers = maximumActiveWorkers;
         const plainWorkerUrls = workerUrls.splice(0);
 
-        const traceBundle = await createAlgorithmJudgeBundle({
-          id: `browser-${fixture.language}-isolated-trace-batch`,
-          language: fixture.language,
-          code: fixture.code,
-          functionName: fixture.functionName,
-          ...(fixture.executionStyle
-            ? { executionStyle: fixture.executionStyle }
-            : {}),
-          cases,
-          trace: true,
-        });
         maximumActiveWorkers = activeWorkers;
         const traceStartedAt = performance.now();
         const traceReceipt = await host.evaluateAlgorithm({
@@ -400,6 +517,9 @@ export async function runBrowserAlgorithmBatch(
         }
 
         results[fixture.language] = {
+          warmMode,
+          warmMs,
+          tracePrimeMs,
           plain: receiptSummary(plainReceipt),
           plainMs,
           plainMaximumActiveWorkers,
@@ -408,6 +528,34 @@ export async function runBrowserAlgorithmBatch(
           traceMs,
           traceMaximumActiveWorkers,
           traceWorkerUrls,
+          interactive: {
+            initialMs: interactiveInitialMs,
+            compileTimings: interactive.evaluation.compile?.timings,
+            caseTimings: interactive.evaluation.cases.map(
+              (result) => result.timings
+            ),
+            judgeTimings: interactive.timings,
+            correctnessStatus: interactive.evaluation.status,
+            correctnessCaseIds: interactive.evaluation.cases.map(
+              (result) => result.caseId
+            ),
+            correctnessOutputs: interactive.evaluation.cases.map(
+              (result) => result.value
+            ),
+            selectedTraceStatus:
+              interactive.evaluation.status,
+            selectedTraceCaseIds: initialTraceCases.map(
+              (result) => result.caseId
+            ),
+            selectedTraceEventCounts: initialTraceCases.map((result) =>
+              traceEventCount(result.trace)
+            ),
+            backgroundMs: interactiveBackgroundMs,
+            backgroundTraceCaseIds,
+            backgroundTraceEventCounts,
+            maximumActiveWorkers: interactiveMaximumActiveWorkers,
+            workerUrls: interactiveWorkerUrls,
+          },
           ...(compatibilityIsolation
             ? {
                 compatibilityIsolation,

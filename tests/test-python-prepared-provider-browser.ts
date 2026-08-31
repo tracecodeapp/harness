@@ -17,6 +17,8 @@ interface BrowserResult {
     code: { tier?: string; reasons: string[] };
     batch: { tier?: string; reasons: string[] };
     trace: { tier?: string; reasons: string[] };
+    traceRng: { tier?: string; reasons: string[] };
+    sysModuleTraversal: { tier?: string; reasons: string[] };
     limited: { tier?: string; reasons: string[] };
     algorithmBatch: { tier?: string; reasons: string[] };
     defaultModuleMutation: { tier?: string; reasons: string[] };
@@ -75,6 +77,7 @@ interface BrowserResult {
   };
   traceRuns: Array<Record<string, unknown>>;
   mixedTraceBatch: Record<string, unknown>;
+  traceRngBatch: Record<string, unknown>;
   legacyTrace: Record<string, unknown>;
   limitedRun: Record<string, unknown>;
   traceLimitedRun: Record<string, unknown>;
@@ -133,7 +136,7 @@ async function main(): Promise<void> {
         loaderFormat: 'module',
         loaderUrl: 'https://cdn.jsdelivr.net/pyodide/v314.0.2/full/pyodide.mjs',
         indexUrl: 'https://cdn.jsdelivr.net/pyodide/v314.0.2/full/',
-        runtimeCoreUrl: location.origin + '/workers/python/runtime-core.js',
+        runtimeUrl: location.origin + '/workers/python/python-runtime.js',
         snippetsUrl: location.origin + '/workers/generated-python-harness-snippets.js',
       };
 
@@ -297,6 +300,32 @@ async function main(): Promise<void> {
         executionStyle: 'function',
         traceOptions: { maxTraceSteps: 1000 },
       });
+      const traceRng = await preparationWorker.request('prepare-program', {
+        mode: 'trace',
+        code: [
+          'import random',
+          'seeded_state = random.Random(12345).getstate()',
+          'def solve(mutate):',
+          '    leaked = random.getstate() == seeded_state',
+          '    if mutate:',
+          '        random.seed(12345)',
+          '    return leaked',
+        ].join('\\n'),
+        functionName: 'solve',
+        executionStyle: 'function',
+      });
+      const sysModuleTraversal = await preparationWorker.request(
+        'prepare-program',
+        {
+          mode: 'trace',
+          code: [
+            'def solve(value):',
+            '    return sys.modules.get("os") is not None',
+          ].join('\\n'),
+          functionName: 'solve',
+          executionStyle: 'function',
+        }
+      );
       const judgeBatchCode = [
         'history = []',
         'class CaseState:',
@@ -1794,6 +1823,7 @@ async function main(): Promise<void> {
       let legacyTrace;
       let traceLimitedRun;
       let mixedTraceBatch;
+      let traceRngBatch;
       for (const value of [1, 2]) {
         const client = await createClient('trace-' + value);
         const startedAt = performance.now();
@@ -1810,6 +1840,15 @@ async function main(): Promise<void> {
               inputBatch: [{ value: 1 }, { value: 2 }, { value: 3 }],
               traceEnabledBatch: [true, false, true],
             });
+            traceRngBatch = await client.request(
+              'execute-prepared-program-batch',
+              {
+                artifact: traceRng.artifact,
+                mode: 'trace',
+                inputBatch: [{ mutate: true }, { mutate: false }],
+                traceEnabledBatch: [true, true],
+              }
+            );
             legacyTrace = await client.request('execute-with-tracing', {
               code: traceCode,
               functionName: 'solve',
@@ -2050,11 +2089,16 @@ async function main(): Promise<void> {
           internalNameWallClock,
           contextManager,
           traceExceptionWallClock,
+          traceRng,
+          sysModuleTraversal,
         },
         isolationProfiles: {
           code: code.artifact?.isolationProfile,
           batch: batch.artifact?.isolationProfile,
           trace: trace.artifact?.isolationProfile,
+          traceRng: traceRng.artifact?.isolationProfile,
+          sysModuleTraversal:
+            sysModuleTraversal.artifact?.isolationProfile,
           limited: limited.artifact?.isolationProfile,
           algorithmBatch: algorithmBatch.artifact?.isolationProfile,
           defaultModuleMutation:
@@ -2143,6 +2187,7 @@ async function main(): Promise<void> {
         fastParityRuns,
         traceRuns,
         mixedTraceBatch,
+        traceRngBatch,
         legacyTrace,
         limitedRun,
         traceLimitedRun,
@@ -2155,6 +2200,8 @@ async function main(): Promise<void> {
     for (const mode of [
       'code',
       'trace',
+      'traceRng',
+      'sysModuleTraversal',
       'batch',
       'limited',
       'algorithmBatch',
@@ -2201,7 +2248,12 @@ async function main(): Promise<void> {
           typeof artifact.executorCode === 'string',
         `${mode} preparation did not return a portable code artifact`
       );
-      if (mode === 'trace' || mode === 'traceLimited') {
+      if (
+        mode === 'trace' ||
+        mode === 'traceLimited' ||
+        mode === 'traceRng' ||
+        mode === 'sysModuleTraversal'
+      ) {
         assertCondition(
           artifact.onDemandTracing === true,
           `${mode} preparation did not produce an on-demand trace artifact`
@@ -2226,6 +2278,17 @@ async function main(): Promise<void> {
           'suspending-control-flow'
         ),
       `Python generic algorithm code must select retained Judge compatibility: ${JSON.stringify(result.isolationProfiles.batch)}`
+    );
+    assertCondition(
+      result.isolationProfiles.traceRng?.tier === 'algorithm-fast',
+      `Python RNG trace regression must remain algorithm-fast: ${JSON.stringify(result.isolationProfiles.traceRng)}`
+    );
+    assertCondition(
+      result.isolationProfiles.sysModuleTraversal?.tier === 'hard-isolated' &&
+        result.isolationProfiles.sysModuleTraversal.reasons.includes(
+          'unsupported-sys-attribute:modules'
+        ),
+      `Python sys.modules traversal must fail closed before fast tracing: ${JSON.stringify(result.isolationProfiles.sysModuleTraversal)}`
     );
     assertCondition(
       result.isolationProfiles.trace?.tier === 'algorithm-fast' &&
@@ -2424,8 +2487,8 @@ async function main(): Promise<void> {
       })}`
     );
     assertCondition(
-      result.preparationWorker.prepareRequests === 60,
-      `Preparation worker received ${String(result.preparationWorker.prepareRequests)} preparations instead of sixty`
+      result.preparationWorker.prepareRequests === 62,
+      `Preparation worker received ${String(result.preparationWorker.prepareRequests)} preparations instead of sixty-two`
     );
     const algorithmBatchResults = result.algorithmBatchRun.results as Array<{
       success?: boolean;
@@ -2983,16 +3046,34 @@ async function main(): Promise<void> {
         `Prepared trace run ${index + 1} was not isolated or traced: ${JSON.stringify(run)}`
       );
     }
+    const traceRngResults = result.traceRngBatch.results as Array<
+      Record<string, unknown>
+    >;
+    assertCondition(
+      result.traceRngBatch.success === true &&
+        traceRngResults.length === 2 &&
+        traceRngResults.every(
+          (entry) => entry.success === true && entry.output === false
+        ),
+      `Prepared Python trace cases shared RNG state: ${JSON.stringify(result.traceRngBatch)}`
+    );
     const mixedTraceResults = result.mixedTraceBatch.results as Array<Record<string, unknown>>;
     for (const [index, run] of mixedTraceResults.entries()) {
       const timings = run.timings as Record<string, unknown> | undefined;
-      assertCondition(
-        typeof timings?.guardBeginMs === 'number' &&
-          timings.guardBeginMs >= 0 &&
-          typeof timings.guardRestoreMs === 'number' &&
-          timings.guardRestoreMs >= 0,
-        `Prepared Python batch case ${index + 1} did not report execution-guard timings: ${JSON.stringify(run)}`
-      );
+      if (index === 1) {
+        assertCondition(
+          timings?.algorithmFastBatch === true,
+          `Tracing-off Python batch case did not use the algorithm-fast driver: ${JSON.stringify(run)}`
+        );
+      } else {
+        assertCondition(
+          typeof timings?.guardBeginMs === 'number' &&
+            timings.guardBeginMs >= 0 &&
+            typeof timings.guardRestoreMs === 'number' &&
+            timings.guardRestoreMs >= 0,
+          `Traced Python batch case ${index + 1} did not report execution-guard timings: ${JSON.stringify(run)}`
+        );
+      }
     }
     assertCondition(
       result.mixedTraceBatch.success === true &&

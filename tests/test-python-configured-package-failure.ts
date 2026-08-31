@@ -51,7 +51,7 @@ try {
       };
     }
   `);
-  const runtimeCoreUrl = dataModule(`
+  const runtimeUrl = dataModule(`
     self.__TRACECODE_PYODIDE_RUNTIME__ = Object.freeze({});
     export {};
   `);
@@ -70,7 +70,7 @@ try {
           loaderFormat: 'module',
           loaderUrl,
           indexUrl: 'https://cdn.consumer.example/python/314.0.2/',
-          runtimeCoreUrl,
+          runtimeUrl,
           snippetsUrl,
           packageUrls: { missing: missingPackageUrl },
         },

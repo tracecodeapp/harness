@@ -1,10 +1,10 @@
 // TraceCode native tracer for Pyodide.
-// See docs/python-native-tracer-plan.md. M2 scope: the single-writer event
+// See docs/python-native-tracer.md. This module owns the single-writer event
 // buffer with exact budget accounting, a byte-parity value serializer for the
 // hot types (python `_serialize` fallback for everything else), and native
 // per-line snapshot emission that also returns the reps dict the python step
 // machinery still consumes. Parity with the python implementations in
-// workers/python/runtime-core.js is the hard requirement; every constant and
+// workers/python/python-runtime.js is the hard requirement; every constant and
 // formatting choice below mirrors that file.
 #define PY_SSIZE_T_CLEAN
 #include <Python.h>
@@ -77,9 +77,6 @@ static PyObject* serialize_fallback = NULL;     // python _serialize
 static PyObject* encode_fallback = NULL;        // python _TC_JSON_ENCODER.encode
 static PyObject* skip_sentinel = NULL;          // "__TRACECODE_SKIP__"
 
-// M1 probe kept for the floor benchmark.
-static long long line_probe_hits = 0;
-
 // ---------------------------------------------------------------------------
 // json string escaping — mirrors CPython json C encoder with ensure_ascii=False
 // ---------------------------------------------------------------------------
@@ -148,7 +145,7 @@ static int tc_serialize_str(TcBuf* buf, PyObject* value, PyObject** rep_out) {
   PyObject* head = PyUnicode_Substring(value, 0, TC_MAX_STRING_CHARS);
   if (!head) return -1;
   PyObject* suffix = PyUnicode_FromFormat(
-    "\xe2\x80\xa6<truncated %zd chars>" + 3, chars - TC_MAX_STRING_CHARS);
+    "<truncated %zd chars>", chars - TC_MAX_STRING_CHARS);
   if (!suffix) {
     Py_DECREF(head);
     return -1;
@@ -599,27 +596,6 @@ static PyObject* ping(PyObject* self, PyObject* args) {
   return PyLong_FromLong(1);
 }
 
-static PyObject* line_probe(PyObject* self, PyObject* const* args, Py_ssize_t nargs) {
-  (void)self;
-  (void)args;
-  (void)nargs;
-  line_probe_hits += 1;
-  Py_RETURN_NONE;
-}
-
-static PyObject* line_probe_count(PyObject* self, PyObject* args) {
-  (void)self;
-  (void)args;
-  return PyLong_FromLongLong(line_probe_hits);
-}
-
-static PyObject* line_probe_reset(PyObject* self, PyObject* args) {
-  (void)self;
-  (void)args;
-  line_probe_hits = 0;
-  Py_RETURN_NONE;
-}
-
 static PyMethodDef TracecodeNativeMethods[] = {
   {"ping", ping, METH_NOARGS, "Toolchain liveness probe."},
   {"configure", configure, METH_VARARGS,
@@ -634,10 +610,6 @@ static PyMethodDef TracecodeNativeMethods[] = {
   {"stored_event_count", stored_event_count, METH_NOARGS, "Stored event count."},
   {"counters", counters, METH_NOARGS, "Run counters."},
   {"mark_limit_exceeded", mark_limit_exceeded, METH_VARARGS, "Set the budget flag."},
-  {"line_probe", (PyCFunction)(void (*)(void))line_probe, METH_FASTCALL,
-   "sys.monitoring LINE callback that only counts."},
-  {"line_probe_count", line_probe_count, METH_NOARGS, "Probe hit count."},
-  {"line_probe_reset", line_probe_reset, METH_NOARGS, "Reset probe count."},
   {NULL, NULL, 0, NULL},
 };
 

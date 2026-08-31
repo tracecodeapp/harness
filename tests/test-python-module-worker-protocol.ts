@@ -57,7 +57,7 @@ try {
       return { loadPackage: async () => undefined };
     }
   `);
-  const runtimeCoreUrl = dataModule(`
+  const runtimeUrl = dataModule(`
     self.__TRACECODE_PYODIDE_RUNTIME__ = Object.freeze({
       async executeCode(_deps, code) {
         let fetchResult;
@@ -108,7 +108,7 @@ try {
           loaderFormat: 'module',
           loaderUrl,
           indexUrl,
-          runtimeCoreUrl,
+          runtimeUrl,
           snippetsUrl,
         },
       },
@@ -152,7 +152,10 @@ try {
     };
   } | undefined)?.output;
   assertCondition(executeResult?.type === 'execute-result', 'Python authority probe did not return an execution result');
-  assertCondition(output?.fetchResult === 'EACCES', `Ambient fetch was not denied: ${JSON.stringify(output)}`);
+  assertCondition(
+    output?.fetchResult === 'ReferenceError',
+    `Ambient fetch was not masked as unavailable: ${JSON.stringify(output)}`
+  );
   assertCondition(
     output?.policyDeleteResult === false &&
       output.policyReplaceResult === 'TypeError' &&
@@ -191,7 +194,7 @@ try {
   const postPoisonResult = posted.find((message) => message.id === 'execute-3');
   const postPoisonOutput = (postPoisonResult?.payload as { output?: { fetchResult?: string } } | undefined)?.output;
   assertCondition(
-    postPoisonResult?.type === 'execute-result' && postPoisonOutput?.fetchResult === 'EACCES',
+    postPoisonResult?.type === 'execute-result' && postPoisonOutput?.fetchResult === 'ReferenceError',
     `A prior command poisoned the next Python authority boundary: ${JSON.stringify(postPoisonResult)}`
   );
   assertCondition(nativeAuthorityCalls.length === 0, 'Post-poison Python execution reached native ambient fetch');

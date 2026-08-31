@@ -47,7 +47,7 @@ const consumerManifests = {
         mediaType: 'text/javascript',
         size: 1024,
       },
-      runtimeCore: { url: 'runtime-core.mjs' },
+      runtime: { url: 'python-runtime.mjs' },
       snippets: { url: 'harness-snippets.mjs' },
       runtimeLoader: { url: 'pyodide.mjs' },
       runtimeIndex: { url: './' },
@@ -178,7 +178,7 @@ function testConsumerCdnManifests(): void {
 
   const expected = {
     pythonWorker: 'https://assets.consumer.example/python/314.0.2/worker.js',
-    pythonRuntimeCore: 'https://assets.consumer.example/python/314.0.2/runtime-core.mjs',
+    pythonRuntime: 'https://assets.consumer.example/python/314.0.2/python-runtime.mjs',
     pythonSnippets: 'https://assets.consumer.example/python/314.0.2/harness-snippets.mjs',
     javascriptWorker: 'https://assets.consumer.example/javascript/es2022/classic-worker.js',
     javascriptAlgorithmWorker: 'https://assets.consumer.example/javascript/es2022/ses-algorithm-worker.js',
@@ -362,7 +362,7 @@ function testInvalidManifestsFailClearly(): void {
             ...consumerManifests.python,
             assets: {
               worker: { url: 'worker.mjs' },
-              runtimeCore: { url: 'runtime-core.mjs' },
+              runtime: { url: 'python-runtime.mjs' },
             },
           } as unknown as BrowserRuntimeAssetManifests['python'],
         },
@@ -532,7 +532,7 @@ function testInvalidManifestsFailClearly(): void {
             ...consumerManifests.python,
             assets: {
               worker: { url: 'worker.mjs' },
-              runtimeCore: { url: 'runtime-core.mjs' },
+              runtime: { url: 'python-runtime.mjs' },
               snippets: { url: 'snippets.mjs' },
             },
           } as unknown as BrowserRuntimeAssetManifests['python'],

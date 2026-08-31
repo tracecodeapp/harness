@@ -7,10 +7,16 @@ import {
 
 const WORKER_MODE = 'ses' as const;
 
+declare const __TRACECODE_TRACE_RUNTIME_SUPPORT_SOURCE__: string;
+declare const __TRACECODE_TRACE_RUNTIME_HELPERS_SOURCE__: string;
+
 type ExecutionStyle = 'function' | 'solution-method' | 'ops-class';
 
 interface PreparedSource {
+  readonly mode: 'code' | 'trace';
+  readonly language: 'javascript' | 'typescript';
   readonly code: string;
+  readonly instrumentedCode?: string;
   readonly functionName: string;
   readonly executionStyle: ExecutionStyle;
   readonly requiredModules: readonly string[];
@@ -19,10 +25,18 @@ interface PreparedSource {
     readonly rest?: boolean;
   }[];
   readonly materializers: Readonly<Record<string, unknown>>;
+  readonly traceLineBounds?: {
+    readonly startLine: number;
+    readonly endLine: number;
+  };
+  readonly traceOptions?: Readonly<Record<string, unknown>>;
 }
 
 interface PreparedProgram {
-  readonly learnerFactorySource: string;
+  readonly mode: PreparedSource['mode'];
+  readonly language: PreparedSource['language'];
+  readonly codeLearnerFactorySource: string;
+  readonly traceLearnerFactorySource?: string;
   readonly capabilityBootstrapSource: string;
   readonly moduleBootstrapSource: string;
   readonly functionName: string;
@@ -30,6 +44,8 @@ interface PreparedProgram {
   readonly inputArguments: PreparedSource['inputArguments'];
   readonly materializers: PreparedSource['materializers'];
   readonly requiredModules: PreparedSource['requiredModules'];
+  readonly traceLineBounds?: PreparedSource['traceLineBounds'];
+  readonly traceOptions?: PreparedSource['traceOptions'];
 }
 
 interface WorkerRequest {
@@ -38,6 +54,7 @@ interface WorkerRequest {
   readonly programId?: string;
   readonly source?: PreparedSource;
   readonly inputBatch?: readonly Record<string, unknown>[];
+  readonly traceEnabledBatch?: readonly boolean[];
   readonly javascriptLibrariesUrl?: string;
   readonly javascriptLibrariesIntegrity?: string;
 }
@@ -164,6 +181,9 @@ let javascriptLibrariesUrl: string | undefined;
 let javascriptLibrariesIntegrity: string | undefined;
 let javascriptLibrariesLoad: Promise<void> | undefined;
 let initialized = false;
+let createFastTraceRecorder:
+  | ((options?: Readonly<Record<string, unknown>>) => Record<string, (...args: unknown[]) => unknown>)
+  | undefined;
 
 const safeHostEndowmentCandidates: Record<string, unknown> = {
   ...('Float16Array' in globalThis
@@ -193,8 +213,29 @@ function assertPreparedShape(value: unknown): asserts value is PreparedSource {
     throw new Error('SES prepared source must be an object.');
   }
   const source = value as Partial<PreparedSource>;
-  if (typeof source.code !== 'string' || !isSafeSelector(source.functionName)) {
+  if (
+    (source.mode !== 'code' && source.mode !== 'trace') ||
+    (source.language !== 'javascript' && source.language !== 'typescript') ||
+    typeof source.code !== 'string' ||
+    !isSafeSelector(source.functionName)
+  ) {
     throw new Error('SES prepared source has invalid code or target name.');
+  }
+  if (
+    source.mode === 'trace' &&
+    (
+      typeof source.instrumentedCode !== 'string' ||
+      !source.traceLineBounds ||
+      !Number.isSafeInteger(source.traceLineBounds.startLine) ||
+      !Number.isSafeInteger(source.traceLineBounds.endLine) ||
+      source.traceLineBounds.startLine <= 0 ||
+      source.traceLineBounds.endLine < source.traceLineBounds.startLine ||
+      (source.traceOptions !== undefined &&
+        (!source.traceOptions || typeof source.traceOptions !== 'object' ||
+          Array.isArray(source.traceOptions)))
+    )
+  ) {
+    throw new Error('SES trace preparation has an invalid instrumented artifact.');
   }
   if (!['function', 'solution-method', 'ops-class'].includes(source.executionStyle ?? '')) {
     throw new Error('SES prepared source has an invalid execution style.');
@@ -1251,8 +1292,24 @@ function learnerBody(source: PreparedSource, code: string): string {
     `typeof ${targetIdentifier} === 'undefined' ? undefined : ${targetIdentifier};`;
 }
 
-function learnerFactorySource(source: PreparedSource, code: string): string {
-  return `(async () => {\n"use strict";\n${learnerBody(source, code)}\n})` +
+function traceMaxPathDepth(source: PreparedSource): number {
+  const value = source.traceOptions?.maxPathDepth;
+  return typeof value === 'number' && Number.isFinite(value) && value > 0
+    ? Math.min(8, Math.max(1, Math.floor(value)))
+    : 3;
+}
+
+function learnerFactorySource(
+  source: PreparedSource,
+  code: string,
+  tracing = false
+): string {
+  const tracePrelude = tracing
+    ? `const __TRACE_V4_MAX_PATH_DEPTH = ${traceMaxPathDepth(source)};\n` +
+      `${__TRACECODE_TRACE_RUNTIME_HELPERS_SOURCE__}\n`
+    : '';
+  const parameters = tracing ? '__traceRecorder, __traceCtx' : '';
+  return `(async (${parameters}) => {\n"use strict";\n${tracePrelude}${learnerBody(source, code)}\n})` +
     '\n//# sourceURL=tracecode-ses-learner.js';
 }
 
@@ -1300,6 +1357,8 @@ function buildLibraryEndowments(): Readonly<Record<string, unknown>> | undefined
   assertSesSourceAdmissible(javascriptLibrariesSource);
   const compartment = new Compartment();
   const librarySource: PreparedSource = {
+    mode: 'code',
+    language: 'javascript',
     code: 'Math Date',
     functionName: '__tracecodeLibraryProbe',
     executionStyle: 'function',
@@ -1429,9 +1488,10 @@ function installCaseLibraries(
 function compileLearnerFactory(
   compartment: Compartment,
   source: PreparedSource,
-  sanitizedCode: string
+  sanitizedCode: string,
+  tracing = false
 ): string {
-  const factorySource = learnerFactorySource(source, sanitizedCode);
+  const factorySource = learnerFactorySource(source, sanitizedCode, tracing);
   assertSesSourceAdmissible(factorySource);
   const execute = compartment.evaluate(factorySource, {
     __rejectSomeDirectEvalExpressions__: false,
@@ -1449,6 +1509,8 @@ function validateInfrastructure(): void {
     throw new Error('SES console bootstrap did not compile to a snapshot function.');
   }
   const infrastructureSource: PreparedSource = {
+    mode: 'code',
+    language: 'javascript',
     code: 'function __tracecodeInfrastructureProbe() { return null; }',
     functionName: '__tracecodeInfrastructureProbe',
     executionStyle: 'function',
@@ -1471,13 +1533,24 @@ function validateInfrastructure(): void {
     infrastructureSource,
     sanitizeLearnerSource(infrastructureSource.code)
   );
+
+  const traceRuntimeCompartment = new Compartment();
+  const recorderFactory = traceRuntimeCompartment.evaluate(
+    `(() => {\n${__TRACECODE_TRACE_RUNTIME_SUPPORT_SOURCE__}\nreturn createTraceRecorder;\n})()`
+  );
+  if (typeof recorderFactory !== 'function') {
+    throw new Error('SES trace recorder runtime did not compile to a function.');
+  }
+  createFastTraceRecorder = recorderFactory as typeof createFastTraceRecorder;
 }
 
 async function executeCase(
   program: PreparedProgram,
-  inputs: Record<string, unknown>
+  inputs: Record<string, unknown>,
+  tracingEnabled = program.mode === 'trace'
 ): Promise<unknown> {
   const startedAt = performance.now();
+  const tracing = program.mode === 'trace' && tracingEnabled;
   const compartment = new Compartment(
     compartmentBaseEndowmentsFor(program.requiredModules)
   );
@@ -1513,6 +1586,9 @@ async function executeCase(
         error: SES_CONSOLE_COMPATIBILITY_REQUIRED,
         diagnosticStage: 'runtime',
         consoleOutput: snapshot.lines,
+        ...(program.mode === 'trace'
+          ? { trace: emptyTrace(), executionTimeMs: elapsedMs }
+          : {}),
         timings: {
           totalMs: elapsedMs,
           runMs: elapsedMs,
@@ -1522,11 +1598,63 @@ async function executeCase(
       },
     };
   };
+  const emptyTrace = () => ({
+    schemaVersion: 'runtime-trace-2026-04-28',
+    language: program.language,
+    runId: typeof program.traceOptions?.runId === 'string'
+      ? program.traceOptions.runId
+      : `${program.language}:run`,
+    events: [],
+    lineEventCount: 0,
+    traceStepCount: 0,
+  });
+  const recorder = tracing
+    ? createFastTraceRecorder?.(program.traceOptions)
+    : undefined;
+  if (tracing && !recorder) {
+    throw new Error('SES trace recorder runtime is unavailable.');
+  }
+  if (recorder) harden(recorder);
+  const snapshotTrace = (): Record<string, unknown> => {
+    if (!recorder) return emptyTrace();
+    const getRuntimeTrace = recorder.getRuntimeTrace;
+    if (typeof getRuntimeTrace !== 'function') {
+      throw new Error('SES trace recorder returned an invalid runtime surface.');
+    }
+    const runId = typeof program.traceOptions?.runId === 'string'
+      ? program.traceOptions.runId
+      : `${program.language}:run`;
+    const file = typeof program.traceOptions?.file === 'string'
+      ? program.traceOptions.file
+      : program.language === 'typescript' ? 'solution.ts' : 'solution.js';
+    return getRuntimeTrace(program.language, runId, file) as Record<string, unknown>;
+  };
   const runtimeFailure = (error: unknown, elapsedMs: number): unknown => {
-    const errorLine = learnerErrorLine(error);
+    const tracedErrorLine = error && typeof error === 'object' &&
+      Number.isFinite((error as { readonly __traceLine?: unknown }).__traceLine)
+        ? Number((error as { readonly __traceLine: number }).__traceLine)
+        : undefined;
+    const errorLine = tracedErrorLine ?? learnerErrorLine(error);
     const console = consoleResult(elapsedMs);
     if (console.compatibilityRequired) return console.result;
-    return {
+    const traceLimitExceeded = Boolean(
+      error && typeof error === 'object' &&
+      (error as { readonly __traceLimitExceeded?: unknown }).__traceLimitExceeded === true
+    );
+    const timeoutReason = error && typeof error === 'object' &&
+      typeof (error as { readonly __timeoutReason?: unknown }).__timeoutReason === 'string'
+        ? (error as { readonly __timeoutReason: string }).__timeoutReason
+        : typeof recorder?.getTimeoutReason === 'function'
+          ? recorder.getTimeoutReason()
+          : undefined;
+    if (recorder && !traceLimitExceeded && typeof recorder.recordException === 'function') {
+      const traceErrorLine = error && typeof error === 'object' &&
+        Number.isFinite((error as { readonly __traceLine?: unknown }).__traceLine)
+          ? Number((error as { readonly __traceLine: number }).__traceLine)
+          : errorLine ?? program.traceLineBounds?.endLine ?? 1;
+      recorder.recordException(traceErrorLine, safeErrorText(error), program.functionName);
+    }
+    const base = {
       kind: 'failed',
       error: safeErrorText(error),
       ...(errorLine !== undefined ? { errorLine } : {}),
@@ -1539,6 +1667,17 @@ async function executeCase(
         algorithmFastBatch: true,
       },
     };
+    if (program.mode !== 'trace') return base;
+    const trace = snapshotTrace();
+    return timeoutReason
+      ? {
+          ...base,
+          kind: 'limit',
+          reason: timeoutReason,
+          trace,
+          executionTimeMs: elapsedMs,
+        }
+      : { ...base, trace, executionTimeMs: elapsedMs };
   };
   compartment.evaluate(program.capabilityBootstrapSource);
   installCaseLibraries(compartment, program.requiredModules);
@@ -1549,14 +1688,22 @@ async function executeCase(
   if (typeof driver !== 'function') {
     throw new Error('SES compartment returned a non-callable driver.');
   }
-  const executeLearner = compartment.evaluate(program.learnerFactorySource, {
+  const learnerFactorySource = tracing
+    ? program.traceLearnerFactorySource
+    : program.codeLearnerFactorySource;
+  if (typeof learnerFactorySource !== 'string') {
+    throw new Error('SES prepared program has no requested learner artifact.');
+  }
+  const executeLearner = compartment.evaluate(learnerFactorySource, {
     __rejectSomeDirectEvalExpressions__: false,
   });
   if (typeof executeLearner !== 'function') {
     throw new Error('SES compartment returned a non-callable learner program.');
   }
   try {
-    await executeLearner();
+    await executeLearner(
+      ...(tracing ? [recorder, { functionName: program.functionName }] : [])
+    );
   } catch (error) {
     return runtimeFailure(error, performance.now() - startedAt);
   }
@@ -1589,7 +1736,7 @@ async function executeCase(
     const errorLine = Number.isSafeInteger(result.errorLine) && result.errorLine! > 0
       ? result.errorLine
       : undefined;
-    return {
+    const base = {
       kind: 'failed',
       error: result.error ?? 'SES compartment execution failed.',
       ...(errorLine !== undefined ? { errorLine } : {}),
@@ -1602,12 +1749,15 @@ async function executeCase(
         algorithmFastBatch: true,
       },
     };
+    return program.mode === 'trace'
+      ? { ...base, trace: snapshotTrace(), executionTimeMs: elapsedMs }
+      : base;
   }
   const output = decodeOutputTransport(result.output);
   if (output === OUTPUT_TRANSPORT_HOLE) {
     throw new Error('SES compartment returned a top-level output transport hole.');
   }
-  return {
+  const completed = {
     kind: 'completed',
     output: output ?? null,
     consoleOutput,
@@ -1617,6 +1767,21 @@ async function executeCase(
       artifactCacheHit: true,
       algorithmFastBatch: true,
     },
+  };
+  if (program.mode !== 'trace') return completed;
+  const trace = snapshotTrace();
+  const traceLimitExceeded = typeof recorder?.isTraceLimitExceeded === 'function' &&
+    recorder.isTraceLimitExceeded() === true;
+  const timeoutReason = typeof recorder?.getTimeoutReason === 'function'
+    ? recorder.getTimeoutReason()
+    : undefined;
+  return {
+    ...completed,
+    trace,
+    executionTimeMs: elapsedMs,
+    ...(traceLimitExceeded
+      ? { traceTruncated: typeof timeoutReason === 'string' ? timeoutReason : 'trace-limit' }
+      : {}),
   };
 }
 
@@ -1739,9 +1904,13 @@ self.onmessage = (event: MessageEvent<unknown>) => {
         assertPreparedShape(request.source);
         const validationCompartment = new Compartment();
         let sanitizedLearnerSource: string;
+        let sanitizedTraceSource: string | undefined;
         try {
           assertAdmittedModules(request.source);
           sanitizedLearnerSource = sanitizeLearnerSource(request.source.code);
+          sanitizedTraceSource = request.source.mode === 'trace'
+            ? sanitizeLearnerSource(request.source.instrumentedCode!)
+            : undefined;
         } catch (error) {
           if (error instanceof SourceNormalizationInvariantError) throw error;
           fail(request.id, error, 'compile');
@@ -1755,20 +1924,34 @@ self.onmessage = (event: MessageEvent<unknown>) => {
             return;
           }
         }
-        let validatedLearnerFactorySource: string;
+        let validatedCodeLearnerFactorySource: string;
+        let validatedTraceLearnerFactorySource: string | undefined;
         try {
-          validatedLearnerFactorySource = compileLearnerFactory(
+          validatedCodeLearnerFactorySource = compileLearnerFactory(
             validationCompartment,
             request.source,
             sanitizedLearnerSource
           );
+          validatedTraceLearnerFactorySource = sanitizedTraceSource === undefined
+            ? undefined
+            : compileLearnerFactory(
+                validationCompartment,
+                request.source,
+                sanitizedTraceSource,
+                true
+              );
         } catch (error) {
           if (!isLearnerEngineSyntaxError(error)) throw error;
           fail(request.id, error, 'compile');
           return;
         }
         programs.set(request.programId, {
-          learnerFactorySource: validatedLearnerFactorySource,
+          mode: request.source.mode,
+          language: request.source.language,
+          codeLearnerFactorySource: validatedCodeLearnerFactorySource,
+          ...(validatedTraceLearnerFactorySource === undefined
+            ? {}
+            : { traceLearnerFactorySource: validatedTraceLearnerFactorySource }),
           capabilityBootstrapSource: deterministicCapabilityPrelude(request.source),
           moduleBootstrapSource: moduleBootstrapSource(request.source),
           functionName: request.source.functionName,
@@ -1776,6 +1959,12 @@ self.onmessage = (event: MessageEvent<unknown>) => {
           inputArguments: request.source.inputArguments,
           materializers: request.source.materializers,
           requiredModules: Object.freeze([...request.source.requiredModules]),
+          ...(request.source.traceLineBounds
+            ? { traceLineBounds: Object.freeze({ ...request.source.traceLineBounds }) }
+            : {}),
+          ...(request.source.traceOptions
+            ? { traceOptions: Object.freeze({ ...request.source.traceOptions }) }
+            : {}),
         });
         reply(request.id, null);
         return;
@@ -1787,9 +1976,21 @@ self.onmessage = (event: MessageEvent<unknown>) => {
         }
         const program = programs.get(request.programId);
         if (!program) throw new Error('Unknown SES prepared program.');
+        const traceSelection = request.traceEnabledBatch ??
+          request.inputBatch.map(() => program.mode === 'trace');
+        if (
+          traceSelection.length !== request.inputBatch.length ||
+          traceSelection.some((enabled) => typeof enabled !== 'boolean')
+        ) {
+          throw new Error('SES trace selection must contain one boolean per batch case.');
+        }
         const results = [];
-        for (const inputs of request.inputBatch) {
-          results.push(await executeCase(program, inputs));
+        for (let index = 0; index < request.inputBatch.length; index += 1) {
+          results.push(await executeCase(
+            program,
+            request.inputBatch[index]!,
+            traceSelection[index]
+          ));
         }
         reply(request.id, results);
         return;

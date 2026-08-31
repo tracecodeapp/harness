@@ -220,16 +220,12 @@ export interface BrowserJudgeJavaOptions {
 }
 
 export interface BrowserJudgeCSharpOptions {
-  /** Idle timeout for the general Project/terminal/server-capable worker. */
-  readonly workerIdleTimeoutMs?: number;
   /** Idle timeout for the trusted Roslyn compiler authority. */
   readonly compilerIdleTimeoutMs?: number;
   /** Idle timeout for an unused prewarmed disposable Judge runner. */
   readonly runnerIdleTimeoutMs?: number;
   /** Maximum disposable runner leases executing one eager Judge batch concurrently. */
   readonly preparedBatchConcurrency?: number;
-  /** Disable only for deployments that have not published the compiler/runner role bundles. */
-  readonly preparedAuthority?: boolean;
 }
 
 export interface BrowserJudgeCppOptions {
@@ -354,6 +350,23 @@ export type BrowserJudgeExecuteRequest<
 > =
   | BrowserJudgeInitialExecuteRequest<Input, Expected, Result>
   | BrowserJudgeContinueExecuteRequest;
+
+export type RuntimeJudgeExecutionPhase =
+  | 'bundle-validation'
+  | 'judge-create'
+  | 'initial-execute'
+  | 'trace-continuation-execute';
+
+export interface RuntimeJudgeExecutionPhaseTiming {
+  readonly phase: RuntimeJudgeExecutionPhase;
+  readonly durationMs: number;
+  readonly success: boolean;
+}
+
+export interface RuntimeJudgeExecutionTimings {
+  readonly totalMs: number;
+  readonly phases: readonly RuntimeJudgeExecutionPhaseTiming[];
+}
 
 function errorFromUnknown(error: unknown): Error {
   return error instanceof Error ? error : new Error(String(error));
@@ -1132,6 +1145,32 @@ function preparedRunTimeoutMs(
     : perCaseTimeoutMs;
 }
 
+function traceTranchePlan<Input, Expected>(
+  plan: JudgeEvaluationPlan<Input, Expected>,
+  caseIds: readonly string[],
+  perCaseTimeoutMs: number | undefined
+): JudgeEvaluationPlan<Input, Expected> {
+  const casesById = new Map(
+    plan.cases.map((testCase) => [testCase.id, testCase])
+  );
+  return Object.freeze({
+    ...plan,
+    run: Object.freeze({
+      ...plan.run,
+      ...(perCaseTimeoutMs === undefined
+        ? {}
+        : {
+            timeoutMs: preparedRunTimeoutMs(
+              perCaseTimeoutMs,
+              caseIds.length,
+              caseIds.length > 1
+            ),
+          }),
+    }),
+    cases: Object.freeze(caseIds.map((caseId) => casesById.get(caseId)!)),
+  });
+}
+
 /**
  * Public runtime-judge facade for 0.14.
  *
@@ -1218,6 +1257,8 @@ export type RuntimeJudgeExecuteRequest<
 export interface RuntimeJudgeExecuteResult<Result = unknown, Expected = unknown> {
   readonly executionId?: string;
   readonly evaluation: JudgeEvaluationResult<Result, Expected>;
+  /** Wall-clock lifecycle phases measured by the browser Judge authority. */
+  readonly timings?: RuntimeJudgeExecutionTimings;
 }
 
 interface RetainedJudgeExecution {
@@ -1413,24 +1454,11 @@ class RuntimeJudgeComposition
           message: 'Interactive tracing requires at least one retained case id.',
         }));
       }
-      const plan = Object.freeze({
-        ...retained.plan,
-        run: Object.freeze({
-          ...retained.plan.run,
-          ...(retained.perCaseTimeoutMs === undefined
-            ? {}
-            : {
-                timeoutMs: preparedRunTimeoutMs(
-                  retained.perCaseTimeoutMs,
-                  selected.size,
-                  selected.size > 1
-                ),
-              }),
-        }),
-        cases: Object.freeze(
-          request.tracing.caseIds.map((caseId) => casesById.get(caseId)!)
-        ),
-      }) as JudgeEvaluationPlan<Input, Expected>;
+      const plan = traceTranchePlan(
+        retained.plan as JudgeEvaluationPlan<Input, Expected>,
+        request.tracing.caseIds,
+        retained.perCaseTimeoutMs
+      );
       return evaluatePreparedJudgePlan<
         TraceKernelFileSystemImage,
         Input,
@@ -1660,6 +1688,46 @@ interface RetainedBrowserJudgeExecution {
   idleTimer?: ReturnType<typeof globalThis.setTimeout>;
 }
 
+function judgeTimingNow(): number {
+  return typeof globalThis.performance?.now === 'function'
+    ? globalThis.performance.now()
+    : Date.now();
+}
+
+async function measureJudgeExecutionPhase<Result>(
+  phases: RuntimeJudgeExecutionPhaseTiming[],
+  phase: RuntimeJudgeExecutionPhase,
+  operation: () => Promise<Result>
+): Promise<Result> {
+  const startedAt = judgeTimingNow();
+  let success = false;
+  try {
+    const result = await operation();
+    success = true;
+    return result;
+  } finally {
+    phases.push(Object.freeze({
+      phase,
+      durationMs: Math.max(0, judgeTimingNow() - startedAt),
+      success,
+    }));
+  }
+}
+
+function withJudgeExecutionTimings<Result, Expected>(
+  result: RuntimeJudgeExecuteResult<Result, Expected>,
+  startedAt: number,
+  phases: readonly RuntimeJudgeExecutionPhaseTiming[]
+): RuntimeJudgeExecuteResult<Result, Expected> {
+  return Object.freeze({
+    ...result,
+    timings: Object.freeze({
+      totalMs: Math.max(0, judgeTimingNow() - startedAt),
+      phases: Object.freeze([...phases]),
+    }),
+  });
+}
+
 /** @internal Browser-host seam used by lifecycle conformance tests. */
 export function createBrowserJudgeHostFromRuntimeHost(
   host: BrowserRuntimeHost,
@@ -1724,6 +1792,8 @@ export function createBrowserJudgeHostFromRuntimeHost(
   >(
     request: BrowserJudgeExecuteRequest<Input, Expected, Result>
   ): Promise<RuntimeJudgeExecuteResult<Result, Expected>> => {
+    const requestStartedAt = judgeTimingNow();
+    const phases: RuntimeJudgeExecutionPhaseTiming[] = [];
     if ('executionId' in request) {
       const retained = retainedExecutions.get(request.executionId);
       if (!retained) {
@@ -1734,51 +1804,71 @@ export function createBrowserJudgeHostFromRuntimeHost(
       }
       clearIdleTimer(retained);
       retained.activeContinuations += 1;
+      let result: RuntimeJudgeExecuteResult<Result, Expected>;
       try {
-        return await Effect.runPromise(
-          retained.judge.execute<Input, Result, Expected>({
-            executionId: request.executionId,
-            tracing: request.tracing,
-          }),
-          request.signal ? { signal: request.signal } : undefined
+        result = await measureJudgeExecutionPhase(
+          phases,
+          'trace-continuation-execute',
+          () => Effect.runPromise(
+            retained.judge.execute<Input, Result, Expected>({
+              executionId: request.executionId,
+              tracing: request.tracing,
+            }),
+            request.signal ? { signal: request.signal } : undefined
+          )
         );
       } finally {
         retained.activeContinuations -= 1;
         armIdleTimer(request.executionId, retained);
       }
+      return withJudgeExecutionTimings(result, requestStartedAt, phases);
     }
 
     const { bundle } = request;
-    await Effect.runPromise(validateAlgorithmJudgeBundle(bundle));
+    await measureJudgeExecutionPhase(
+      phases,
+      'bundle-validation',
+      () => Effect.runPromise(validateAlgorithmJudgeBundle(bundle))
+    );
     const language = bundle.plan.runtime as Language;
     if (!host.isLanguageSupported(language)) {
       throw new Error(
         `Judge runtime ${JSON.stringify(bundle.plan.runtime)} is not supported by this browser authority.`
       );
     }
+    const execution = bundle.execution;
+    const comparator = bundle.comparison
+      ? createJudgeComparator<Input>(bundle.comparison)
+      : undefined;
+
     const traceCapable =
       request.interactive === true || request.tracing !== undefined;
-    const execution = bundle.execution;
     const binding = algorithmRuntimeBinding(execution, traceCapable);
     const scope = Effect.runSync(Scope.make());
     let judge: RuntimeJudge | undefined;
     try {
-      judge = await Effect.runPromise(
-        Scope.extend(
-          createBrowserRuntimeJudge({ host, language, binding }),
-          scope
+      judge = await measureJudgeExecutionPhase(
+        phases,
+        'judge-create',
+        () => Effect.runPromise(
+          Scope.extend(
+            createBrowserRuntimeJudge({ host, language, binding }),
+            scope
+          )
         )
       );
-      const result = await Effect.runPromise(
-        judge.execute<Input, Result, Expected>({
-          plan: bundle.plan,
-          interactive: request.interactive,
-          tracing: request.tracing,
-          comparator: bundle.comparison
-            ? createJudgeComparator<Input>(bundle.comparison)
-            : undefined,
-        }),
-        request.signal ? { signal: request.signal } : undefined
+      const result = await measureJudgeExecutionPhase(
+        phases,
+        'initial-execute',
+        () => Effect.runPromise(
+          judge!.execute<Input, Result, Expected>({
+            plan: bundle.plan,
+            interactive: request.interactive,
+            tracing: request.tracing,
+            comparator,
+          }),
+          request.signal ? { signal: request.signal } : undefined
+        )
       );
       if (result.executionId) {
         const retained: RetainedBrowserJudgeExecution = {
@@ -1791,7 +1881,7 @@ export function createBrowserJudgeHostFromRuntimeHost(
       } else {
         await Effect.runPromise(Scope.close(scope, Exit.void));
       }
-      return result;
+      return withJudgeExecutionTimings(result, requestStartedAt, phases);
     } catch (error) {
       await Effect.runPromise(Scope.close(scope, Exit.fail(error))).catch(
         () => undefined
@@ -1828,30 +1918,20 @@ export function createBrowserJudgeHostFromRuntimeHost(
       }
     ) => {
       const { bundle, signal } = judgeOptions;
-      return Effect.runPromise(validateAlgorithmJudgeBundle(bundle)).then(() => {
-        const language = bundle.plan.runtime as Language;
-        if (!host.isLanguageSupported(language)) {
-          throw new Error(
-            `Judge runtime ${JSON.stringify(bundle.plan.runtime)} is not supported by this browser authority.`
-          );
-        }
-        const execution = bundle.execution;
-        const createOptions: CreateBrowserJudgeOptions = {
-          language,
-          binding: algorithmRuntimeBinding(execution, execution.trace === true),
-        };
-        return Effect.runPromise(
-          Effect.scoped(
-            createBrowserRuntimeJudge({
-              host,
-              ...createOptions,
-            }).pipe(
-              Effect.flatMap((judge) => judge.evaluateAlgorithm(bundle))
-            )
-          ),
-          signal ? { signal } : undefined
-        );
-      });
+      const tracing = bundle.execution.trace === true
+        ? {
+            caseIds: Object.freeze(
+              bundle.plan.cases.map((testCase) => testCase.id)
+            ),
+          }
+        : undefined;
+      return execute({
+        bundle,
+        ...(tracing ? { tracing } : {}),
+        ...(signal ? { signal } : {}),
+      }).then(({ evaluation }) =>
+        createAlgorithmJudgeReceipt(bundle, evaluation)
+      );
     },
     createProjectJudge: (projectOptions = {}) =>
       createBrowserProjectJudge({

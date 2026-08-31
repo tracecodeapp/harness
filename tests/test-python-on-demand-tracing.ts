@@ -41,20 +41,15 @@ async function runPythonScript(script: string): Promise<string> {
   }
 }
 
-const source = await readFile('workers/python/runtime-core.js', 'utf8');
+const source = await readFile('workers/python/python-runtime.js', 'utf8');
 const selfObject: Record<string, unknown> = {};
 vm.runInContext(source, vm.createContext({
   console,
   self: selfObject,
   globalThis: {},
-}), { filename: 'runtime-core.js' });
+}), { filename: 'python-runtime.js' });
 
 const runtime = selfObject.__TRACECODE_PYODIDE_RUNTIME__ as {
-  buildOnDemandPythonExecutorCompilerSource(
-    deps: Record<string, unknown>,
-    traceSource: string,
-    codeSource: string
-  ): string;
   generateTracingCode(
     deps: Record<string, unknown>,
     code: string,
@@ -73,17 +68,8 @@ const runtime = selfObject.__TRACECODE_PYODIDE_RUNTIME__ as {
     options: Record<string, unknown>,
     prepared: Record<string, unknown>
   ): Promise<{ __preparedSource: string }>;
-  executeCode(
-    deps: Record<string, unknown>,
-    code: string,
-    functionName: string,
-    inputs: Record<string, unknown>,
-    executionStyle: string,
-    options: Record<string, unknown>,
-    prepared: Record<string, unknown>
-  ): Promise<{ __preparedSource: string }>;
 };
-assertCondition(runtime?.generateTracingCode, 'Python runtime core did not load');
+assertCondition(runtime?.generateTracingCode, 'Python Python runtime did not load');
 
 const userCode = [
   '"""on-demand module"""',
@@ -161,67 +147,29 @@ const executorDeps = {
   loadPyodideInstance: async () => {},
   performanceNow: () => performance.now(),
 };
-const [traceExecutor, codeExecutor] = await Promise.all([
-  runtime.executeWithTracing(
-    executorDeps,
-    userCode,
-    'solve',
-    {},
-    'function',
-    {},
-    { compileOnly: true }
-  ),
-  runtime.executeCode(
-    executorDeps,
-    userCode,
-    'solve',
-    {},
-    'function',
-    {},
-    { compileOnly: true }
-  ),
-]);
-const mixedExecutorCompiler = runtime.buildOnDemandPythonExecutorCompilerSource(
+const traceExecutor = await runtime.executeWithTracing(
   executorDeps,
-  traceExecutor.__preparedSource,
-  codeExecutor.__preparedSource
+  userCode,
+  'solve',
+  {},
+  'function',
+  {},
+  { compileOnly: true }
 );
-const mixedExecutorBase64 = Buffer.from(
-  mixedExecutorCompiler,
+assertCondition(
+  traceExecutor.__preparedSource.includes(
+    'if __tracecode_tracing_enabled:\n    _tracecode_arm_tracing()'
+  ),
+  'Prepared trace executor must conditionally arm tracing'
+);
+const traceExecutorBase64 = Buffer.from(
+  traceExecutor.__preparedSource,
   'utf8'
 ).toString('base64');
 await runPythonScript(`
 import base64
-_source = base64.b64decode(${JSON.stringify(mixedExecutorBase64)}).decode('utf-8')
-_compiler_globals = {}
-exec(compile(_source, '<tracecode-prepared-trace-compiler>', 'exec'), _compiler_globals)
-assert isinstance(_compiler_globals['__tracecode_prepared_executor_result'], type(compile('', '', 'exec')))
+_source = base64.b64decode(${JSON.stringify(traceExecutorBase64)}).decode('utf-8')
+assert isinstance(compile(_source, '<tracecode-prepared-trace>', 'exec'), type(compile('', '', 'exec')))
 `);
 
-const selectorCompiler = runtime.buildOnDemandPythonExecutorCompilerSource(
-  executorDeps,
-  "selected = 'trace'",
-  "selected = 'code'"
-);
-const selectorCompilerBase64 = Buffer.from(
-  selectorCompiler,
-  'utf8'
-).toString('base64');
-const selectorStdout = await runPythonScript(`
-import base64
-import json
-_source = base64.b64decode(${JSON.stringify(selectorCompilerBase64)}).decode('utf-8')
-exec(compile(_source, '<selector-compiler>', 'exec'))
-_selected = []
-for _enabled in (True, False):
-    _globals = {'__tracecode_tracing_enabled': _enabled}
-    exec(__tracecode_prepared_executor_result, _globals)
-    _selected.append(_globals['selected'])
-print(json.dumps(_selected))
-`);
-assertCondition(
-  selectorStdout.trim() === '["trace", "code"]',
-  `Python executor code object did not select its top-level branch: ${selectorStdout}`
-);
-
-console.log('PASS: Python one-artifact top-level trace branch');
+console.log('PASS: Python one-artifact conditional trace executor');

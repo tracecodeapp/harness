@@ -1277,14 +1277,14 @@ export async function createBrowserProjectWorkspace(
       debug,
       assetPreflight: () => runtimeAssetPreflight.preflight('python', ['worker', 'snippets']),
       runtimeAssetPreflight: () => runtimeAssetPreflight.preflight('python', [
-        'runtimeCore',
+        'runtime',
         'runtimeLoader',
         'runtimeIndex',
         'distribution',
         'packages',
       ]),
       runtimeAssets: {
-        runtimeCoreUrl: assets.pythonRuntimeCore,
+        runtimeUrl: assets.pythonRuntime,
         snippetsUrl: assets.pythonSnippets,
         ...(pythonAsset('runtimeLoader')?.url ? { loaderUrl: pythonAsset('runtimeLoader')?.url } : {}),
         ...(pythonAsset('runtimeIndex')?.url ? { indexUrl: pythonAsset('runtimeIndex')?.url } : {}),

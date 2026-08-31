@@ -55,8 +55,8 @@ const PACKAGE_ASSET_PLANS: PackageAssetPlan[] = [
     packageDir: 'packages/runtime-native',
     assets: [
       {
-        source: ['workers', 'python', 'runtime-core.js'],
-        target: ['workers', 'python', 'runtime-core.js'],
+        source: ['workers', 'python', 'python-runtime.js'],
+        target: ['workers', 'python', 'python-runtime.js'],
       },
       {
         source: ['workers', 'javascript', 'javascript-worker.js'],
@@ -100,8 +100,8 @@ const PACKAGE_ASSET_PLANS: PackageAssetPlan[] = [
         target: ['workers', 'generated-python-harness-snippets.js'],
       },
       {
-        source: ['workers', 'python', 'runtime-core.js'],
-        target: ['workers', 'python', 'runtime-core.js'],
+        source: ['workers', 'python', 'python-runtime.js'],
+        target: ['workers', 'python', 'python-runtime.js'],
       },
       {
         source: ['workers', 'python', 'pyodide-0.29.3'],

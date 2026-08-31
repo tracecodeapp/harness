@@ -149,6 +149,7 @@ test('Python prepared provider compiles once and executes in owned fresh workers
   assert.deepEqual(preparation.consoleOutput, ['prepared once']);
   assert.equal(preparation.timings?.compileMs, 11);
   assert.deepEqual(preparation.program.capabilities, {
+    profile: 'compatibility',
     caseIsolation: 'fresh-case-state',
     maxConcurrency: 1,
   });
@@ -423,7 +424,7 @@ test('Python algorithm-fast driver failure retries each case in a hard-isolated 
   provider.terminate();
 });
 
-test('Python trace batches retire one outer worker per selected case', async () => {
+test('Python algorithm-fast trace batch failure retries each case in a fresh worker', async () => {
   const calls: Array<{ worker: number; method: string }> = [];
   let nextWorker = 0;
   const createWorkerClient = (): PythonWorkerClient => {
@@ -442,6 +443,10 @@ test('Python trace batches retire one outer worker per selected case', async () 
           consoleOutput: [],
         };
       },
+      async executePreparedTraceBatch() {
+        calls.push({ worker, method: 'execute-trace-batch' });
+        throw new PythonAlgorithmFastBatchUnavailableError();
+      },
       async executePreparedTrace(
         _handle: unknown,
         call: { inputs: Record<string, unknown> }
@@ -450,6 +455,7 @@ test('Python trace batches retire one outer worker per selected case', async () 
         return {
           success: true,
           output: call.inputs.value,
+          trace: { events: [] },
           executionTimeMs: 1,
           consoleOutput: [],
         };
@@ -479,15 +485,104 @@ test('Python trace batches retire one outer worker per selected case', async () 
     ),
     [1, 2, 3]
   );
-  const traceExecutions = calls.filter(
+  const batchExecutions = calls.filter(
+    (call) => call.method === 'execute-trace-batch'
+  );
+  const compatibilityExecutions = calls.filter(
     (call) => call.method === 'execute-trace'
   );
-  assert.equal(traceExecutions.length, 3);
+  assert.equal(batchExecutions.length, 1);
+  assert.equal(compatibilityExecutions.length, 3);
+  assert.equal(
+    new Set([
+      ...batchExecutions.map((call) => call.worker),
+      ...compatibilityExecutions.map((call) => call.worker),
+    ]).size,
+    4
+  );
+  await preparation.program.dispose();
+  provider.terminate();
+});
+
+test('Python fast trace batches retain one worker and cross its boundary once', async () => {
+  const calls: Array<{ worker: number; method: string }> = [];
+  let nextWorker = 0;
+  const createWorkerClient = (): PythonWorkerClient => {
+    const worker = nextWorker++;
+    return {
+      async warmup() {
+        calls.push({ worker, method: 'warmup' });
+        return { success: true, loadTimeMs: 1 };
+      },
+      async prepareProgram(call: RuntimeProgramPreparationCall) {
+        calls.push({ worker, method: 'prepare' });
+        return {
+          success: true as const,
+          artifact: artifact(call.mode, 'algorithm-fast'),
+          mode: call.mode,
+          consoleOutput: [],
+        };
+      },
+      async executePreparedTraceBatch(
+        _handle: unknown,
+        call: { inputBatch: readonly Record<string, unknown>[] }
+      ) {
+        calls.push({ worker, method: 'execute-trace-batch' });
+        return {
+          results: call.inputBatch.map((inputs) => ({
+            success: true,
+            output: inputs.value,
+            executionTimeMs: 1,
+            consoleOutput: [],
+          })),
+        };
+      },
+      terminate() {
+        calls.push({ worker, method: 'terminate' });
+      },
+    } as unknown as PythonWorkerClient;
+  };
+  const provider = createPythonPreparedExecutionProvider({ createWorkerClient });
+  const preparation = await provider.prepareProgram(preparationCall('trace'));
+  assert.equal(preparation.kind, 'prepared');
+  if (
+    preparation.kind !== 'prepared' ||
+    preparation.program.mode !== 'trace' ||
+    !preparation.program.executeBatchIsolated
+  ) {
+    return;
+  }
+
+  const results = await preparation.program.executeBatchIsolated({
+    inputBatch: [{ value: 1 }, { value: 2 }, { value: 3 }],
+  });
+  assert.deepEqual(
+    results.map((result) =>
+      result.kind === 'completed' ? result.output : undefined
+    ),
+    [1, 2, 3]
+  );
   assert.equal(
     calls.filter((call) => call.method === 'execute-trace-batch').length,
-    0
+    1
   );
-  assert.equal(new Set(traceExecutions.map((call) => call.worker)).size, 3);
+  const secondResults = await preparation.program.executeBatchIsolated({
+    inputBatch: [{ value: 4 }],
+  });
+  assert.equal(
+    secondResults[0]?.kind === 'completed'
+      ? secondResults[0].output
+      : undefined,
+    4
+  );
+  assert.equal(
+    new Set(
+      calls
+        .filter((call) => call.method === 'execute-trace-batch')
+        .map((call) => call.worker)
+    ).size,
+    1
+  );
   await assert.rejects(
     preparation.program.executeBatchIsolated({
       inputBatch: [{ value: 1 }, { value: 2 }, { value: 3 }],
@@ -503,6 +598,83 @@ test('Python trace batches retire one outer worker per selected case', async () 
     /one boolean per batch case/
   );
   await preparation.program.dispose();
+  provider.terminate();
+});
+
+test('Python fast trace retention falls back for custom inputs and poisons on client timeout', async () => {
+  const calls: Array<{ worker: number; method: string }> = [];
+  let nextWorker = 0;
+  const createWorkerClient = (): PythonWorkerClient => {
+    const worker = nextWorker++;
+    return {
+      async warmup() {
+        calls.push({ worker, method: 'warmup' });
+        return { success: true, loadTimeMs: 1 };
+      },
+      async prepareProgram(call: RuntimeProgramPreparationCall) {
+        calls.push({ worker, method: 'prepare' });
+        return {
+          success: true as const,
+          artifact: artifact(call.mode, 'algorithm-fast'),
+          mode: call.mode,
+          consoleOutput: [],
+        };
+      },
+      async executePreparedTrace(
+        _handle: unknown,
+        call: { inputs: Record<string, unknown> }
+      ) {
+        calls.push({ worker, method: 'execute-trace' });
+        if (call.inputs.timeout === true) {
+          return {
+            success: false,
+            error: 'timed out',
+            timeoutReason: 'client-timeout',
+            executionTimeMs: 10,
+            consoleOutput: [],
+          };
+        }
+        return {
+          success: true,
+          output: call.inputs.value,
+          executionTimeMs: 1,
+          consoleOutput: [],
+        };
+      },
+      terminate() {
+        calls.push({ worker, method: 'terminate' });
+      },
+    } as unknown as PythonWorkerClient;
+  };
+  const provider = createPythonPreparedExecutionProvider({ createWorkerClient });
+  const preparation = await provider.prepareProgram(preparationCall('trace'));
+  assert.equal(preparation.kind, 'prepared');
+  if (preparation.kind !== 'prepared' || preparation.program.mode !== 'trace') {
+    return;
+  }
+  assert.equal(preparation.program.capabilities.profile, 'fast');
+
+  await preparation.program.executeIsolated({ inputs: { value: 1 } });
+  await preparation.program.executeIsolated({ inputs: { value: 2 } });
+  await preparation.program.executeIsolated({
+    inputs: { root: { __type__: 'TreeNode', val: 3 } },
+  });
+  await preparation.program.executeIsolated({ inputs: { timeout: true } });
+  await preparation.program.executeIsolated({ inputs: { value: 4 } });
+
+  const workers = calls
+    .filter((call) => call.method === 'execute-trace')
+    .map((call) => call.worker);
+  assert.deepEqual(workers, [0, 0, 0, 1, 2]);
+  assert.deepEqual(
+    calls.filter((call) => call.method === 'terminate').map((call) => call.worker),
+    [0, 1]
+  );
+  await preparation.program.dispose();
+  assert.deepEqual(
+    calls.filter((call) => call.method === 'terminate').map((call) => call.worker),
+    [0, 1, 2]
+  );
   provider.terminate();
 });
 

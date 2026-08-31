@@ -100,7 +100,7 @@ async function main(): Promise<void> {
           loaderFormat: 'module',
           loaderUrl: 'https://cdn.jsdelivr.net/pyodide/v314.0.2/full/pyodide.mjs',
           indexUrl: 'https://cdn.jsdelivr.net/pyodide/v314.0.2/full/',
-          runtimeCoreUrl: location.origin + '/workers/python/runtime-core.js',
+          runtimeUrl: location.origin + '/workers/python/python-runtime.js',
           snippetsUrl: location.origin + '/workers/generated-python-harness-snippets.js',
         },
       });
@@ -174,7 +174,7 @@ async function main(): Promise<void> {
           loaderFormat: 'module',
           loaderUrl: 'https://cdn.jsdelivr.net/pyodide/v314.0.2/full/pyodide.mjs',
           indexUrl: 'https://cdn.jsdelivr.net/pyodide/v314.0.2/full/',
-          runtimeCoreUrl: location.origin + '/workers/python/runtime-core.js',
+          runtimeUrl: location.origin + '/workers/python/python-runtime.js',
           snippetsUrl: location.origin + '/workers/generated-python-harness-snippets.js',
           packageUrls: {
             missing: location.origin + '/missing_package-1.0.0-py3-none-any.whl',

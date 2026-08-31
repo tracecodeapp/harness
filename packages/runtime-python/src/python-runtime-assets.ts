@@ -56,12 +56,12 @@ export function resolveBuiltInPythonRuntimeAssets(
   let runtimeBase: string;
   try {
     runtimeBase = siblingAssetUrl(
-      assets.pythonRuntimeCore,
+      assets.pythonRuntime,
       `${runtimeDirectoryName}/`
     );
   } catch (error) {
     if (!(error instanceof TypeError)) throw error;
-    // data: and blob: runtime-core overrides are valid self-contained assets,
+    // data: and blob: python-runtime overrides are valid self-contained assets,
     // but they cannot be used as hierarchical URL bases. Preserve the legacy
     // worker-relative image layout for those explicit override forms.
     runtimeBase = siblingAssetUrl(

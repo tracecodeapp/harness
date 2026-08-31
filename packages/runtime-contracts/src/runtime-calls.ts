@@ -44,6 +44,19 @@ export interface RuntimeTraceCall {
 export type RuntimePreparedProgramMode = 'code' | 'trace';
 
 /**
+ * How a prepared algorithm program provides fresh mutable state.
+ *
+ * - `fast` retains the initialized language runtime and discards a small,
+ *   capability-restricted learner realm between cases.
+ * - `compatibility` uses a disposable outer runtime generation for cases that
+ *   cannot be admitted to retained execution.
+ *
+ * Both profiles are safe. Trace recording is orthogonal and is selected by
+ * `RuntimePreparedProgramMode`.
+ */
+export type RuntimePreparedExecutionProfile = 'fast' | 'compatibility';
+
+/**
  * Immutable source-level inputs used to prepare one reusable program.
  *
  * Expected values, case inputs, comparators, and Judge policy intentionally do
@@ -109,6 +122,8 @@ export interface RuntimePreparedTraceBatchCall {
 }
 
 export interface RuntimePreparedProgramCapabilities {
+  /** The isolation implementation selected during immutable preparation. */
+  readonly profile: RuntimePreparedExecutionProfile;
   /**
    * Every call receives fresh mutable language state. Immutable compiler
    * artifacts may be reused, but globals, statics, heaps, and mutated inputs

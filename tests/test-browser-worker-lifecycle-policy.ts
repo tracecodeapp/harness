@@ -16,18 +16,16 @@ test('Warm-and-Retire is the named default browser worker policy', () => {
   ]);
   assert.deepEqual(resolveBrowserWorkerLifecyclePolicy(undefined), {
     workerLifecycle: 'warm-and-retire',
-    prewarmAfterUse: true,
   });
 });
 
-test('named lifecycle policies resolve to their provider projection', () => {
+test('named lifecycle policies resolve without preserving a boolean projection', () => {
   assert.deepEqual(
     resolveBrowserWorkerLifecyclePolicy({
       workerLifecycle: 'warm-and-retire',
     }),
     {
       workerLifecycle: 'warm-and-retire',
-      prewarmAfterUse: true,
     }
   );
   assert.deepEqual(
@@ -36,46 +34,17 @@ test('named lifecycle policies resolve to their provider projection', () => {
     }),
     {
       workerLifecycle: 'retire-only',
-      prewarmAfterUse: false,
     }
   );
 });
 
-test('the legacy prewarm boolean maps to one named policy', () => {
-  assert.equal(
-    resolveBrowserWorkerLifecyclePolicy({ prewarmAfterUse: true })
-      .workerLifecycle,
-    'warm-and-retire'
-  );
-  assert.equal(
-    resolveBrowserWorkerLifecyclePolicy({ prewarmAfterUse: false })
-      .workerLifecycle,
-    'retire-only'
-  );
-});
-
-test('conflicting or unknown lifecycle configuration fails closed', () => {
-  assert.throws(
-    () =>
-      resolveBrowserWorkerLifecyclePolicy({
-        workerLifecycle: 'warm-and-retire',
-        prewarmAfterUse: false,
-      }),
-    /conflicts/
-  );
+test('unknown lifecycle configuration fails closed', () => {
   assert.throws(
     () =>
       resolveBrowserWorkerLifecyclePolicy({
         workerLifecycle: 'replace-in-place',
       } as never),
     /must be one of/
-  );
-  assert.throws(
-    () =>
-      resolveBrowserWorkerLifecyclePolicy({
-        prewarmAfterUse: 'yes',
-      } as never),
-    /must be a boolean/
   );
 });
 

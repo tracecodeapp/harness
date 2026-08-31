@@ -88,7 +88,7 @@ export interface PythonRuntimeImageAssetDescriptor {
 export interface BrowserRuntimeAssetsByRuntime {
   python: {
     worker: BrowserRuntimeAssetDescriptor;
-    runtimeCore: BrowserRuntimeAssetDescriptor;
+    runtime: BrowserRuntimeAssetDescriptor;
     snippets: BrowserRuntimeAssetDescriptor;
     /** Python runtime bootstrap module or script. */
     runtimeLoader: BrowserRuntimeAssetDescriptor;
@@ -180,7 +180,7 @@ export type BrowserRuntimeAssetManifestProvider = (
 
 export interface BrowserRuntimeAssets {
   pythonWorker: string;
-  pythonRuntimeCore: string;
+  pythonRuntime: string;
   pythonSnippets: string;
   javascriptWorker: string;
   javascriptAlgorithmWorker: string;
@@ -210,7 +210,7 @@ export type BrowserRuntimeAssetOverrides = LegacyBrowserRuntimeAssetOverrides & 
 
 export const DEFAULT_BROWSER_RUNTIME_ASSET_RELATIVE_PATHS: Readonly<BrowserRuntimeAssets> = Object.freeze({
   pythonWorker: 'python-worker.js',
-  pythonRuntimeCore: 'python/runtime-core.js',
+  pythonRuntime: 'python/python-runtime.js',
   pythonSnippets: 'generated-python-harness-snippets.js',
   javascriptWorker: 'javascript-worker.js',
   javascriptAlgorithmWorker: 'javascript-ses-algorithm-worker.js',
@@ -233,7 +233,7 @@ export const DEFAULT_BROWSER_RUNTIME_ASSET_RELATIVE_PATHS: Readonly<BrowserRunti
 const RUNTIME_ASSET_NAMES = Object.freeze({
   python: [
     'worker',
-    'runtimeCore',
+    'runtime',
     'snippets',
     'runtimeLoader',
     'runtimeIndex',
@@ -286,7 +286,7 @@ const EXPECTED_LOADER_FORMAT = Object.freeze({
 } satisfies Partial<Record<BrowserRuntimeId, BrowserRuntimeLoaderFormat>>);
 
 const REQUIRED_RUNTIME_ASSET_NAMES = Object.freeze({
-  python: ['worker', 'runtimeCore', 'snippets', 'runtimeLoader', 'runtimeIndex'],
+  python: ['worker', 'runtime', 'snippets', 'runtimeLoader', 'runtimeIndex'],
   javascript: ['worker', 'projectWorker'],
   typescript: ['compiler'],
   java: ['worker'],
@@ -301,7 +301,7 @@ const REQUIRED_RUNTIME_ASSET_NAMES = Object.freeze({
 } satisfies Record<BrowserRuntimeId, readonly string[]>);
 
 const RUNTIME_LEGACY_ASSET_KEYS = Object.freeze({
-  python: ['pythonWorker', 'pythonRuntimeCore', 'pythonSnippets'],
+  python: ['pythonWorker', 'pythonRuntime', 'pythonSnippets'],
   javascript: ['javascriptWorker', 'javascriptAlgorithmWorker', 'javascriptProjectWorker'],
   typescript: ['typescriptCompiler'],
   java: ['javaWorker'],
@@ -1140,10 +1140,10 @@ export function resolveBrowserRuntimeAssets(options: {
       DEFAULT_BROWSER_RUNTIME_ASSET_RELATIVE_PATHS.pythonWorker,
       manifestAssetUrl(runtimeManifests, 'python', 'worker')
     ),
-    pythonRuntimeCore: resolve(
-      assets.pythonRuntimeCore,
-      DEFAULT_BROWSER_RUNTIME_ASSET_RELATIVE_PATHS.pythonRuntimeCore,
-      manifestAssetUrl(runtimeManifests, 'python', 'runtimeCore')
+    pythonRuntime: resolve(
+      assets.pythonRuntime,
+      DEFAULT_BROWSER_RUNTIME_ASSET_RELATIVE_PATHS.pythonRuntime,
+      manifestAssetUrl(runtimeManifests, 'python', 'runtime')
     ),
     pythonSnippets: resolve(
       assets.pythonSnippets,

@@ -164,6 +164,43 @@ function isPythonWorkerCaseFailure(error: unknown): error is Error {
   );
 }
 
+function pythonInputsRequireCompatibility(
+  value: unknown,
+  seen = new Set<object>()
+): boolean {
+  if (value === null || typeof value !== 'object') return false;
+  if (seen.has(value)) return true;
+  seen.add(value);
+  try {
+    if (Array.isArray(value)) {
+      return value.some((entry) =>
+        pythonInputsRequireCompatibility(entry, seen)
+      );
+    }
+    const record = value as Record<string, unknown>;
+    if (
+      Object.hasOwn(record, '__type__') ||
+      Object.hasOwn(record, '__class__') ||
+      Object.hasOwn(record, '__id__') ||
+      Object.hasOwn(record, '__ref__') ||
+      Object.hasOwn(record, 'left') ||
+      Object.hasOwn(record, 'right') ||
+      Object.hasOwn(record, 'next')
+    ) {
+      return true;
+    }
+    return Object.values(record).some((entry) =>
+      pythonInputsRequireCompatibility(entry, seen)
+    );
+  } finally {
+    seen.delete(value);
+  }
+}
+
+function pythonTraceResultKeepsFastWorker(result: ExecutionResult): boolean {
+  return !(result.kind === 'limit' && result.reason === 'client-timeout');
+}
+
 function normalizeExecutionTimings(value: unknown): RuntimeExecutionTimings | undefined {
   if (!value || typeof value !== 'object') return undefined;
   const record = value as Record<string, unknown>;
@@ -409,7 +446,8 @@ function normalizePythonExecutionResult(value: unknown): ExecutionResult {
 
 export interface PythonPreparedExecutionProviderOptions {
   readonly createWorkerClient: () => PythonWorkerClient;
-  readonly prewarmAfterUse?: boolean;
+  /** Replenish one clean preparation worker after the current lease retires. */
+  readonly replenishStandbyAfterUse?: boolean;
 }
 
 export interface PythonPreparedExecutionProviderController
@@ -622,10 +660,16 @@ class PreparedPythonProgramLifetime {
   executeTrace(
     call: RuntimePreparedTraceCall
   ): Promise<ExecutionResult> {
-    return this.executeSerial(call.signal, async (client, signal) =>
-      normalizePythonExecutionResult(
-        await client.executePreparedTrace(this.handle, { ...call, signal })
-      )
+    const useFastProfile =
+      this.handle.artifact.isolationProfile.tier === 'algorithm-fast' &&
+      !pythonInputsRequireCompatibility(call.inputs);
+    return this.executeSerial(
+      call.signal,
+      async (client, signal) =>
+        normalizePythonExecutionResult(
+          await client.executePreparedTrace(this.handle, { ...call, signal })
+        ),
+      useFastProfile ? pythonTraceResultKeepsFastWorker : undefined
     );
   }
 
@@ -689,10 +733,35 @@ class PreparedPythonProgramLifetime {
         )
       );
     }
-    // Trace instrumentation is a wider capability surface than correctness
-    // execution. Keep every selected trace in a fresh outer interpreter until
-    // the trace driver has a resettable realm with the same proof as the code
-    // fast path. Unselected correctness cases should use executeCodeBatch.
+    if (
+      this.handle.artifact.isolationProfile.tier === 'algorithm-fast' &&
+      call.inputBatch.every(
+        (inputs) => !pythonInputsRequireCompatibility(inputs)
+      )
+    ) {
+      return this.executeSerial(
+        call.signal,
+        async (client, signal) => {
+          const result = await client.executePreparedTraceBatch(this.handle, {
+            ...call,
+            signal,
+          });
+          const results = result.results?.map(normalizePythonExecutionResult);
+          if (!results || results.length !== call.inputBatch.length) {
+            throw new Error(
+              'Prepared Python trace batch returned an invalid result envelope.'
+            );
+          }
+          return results;
+        },
+        (results) => results.every(pythonTraceResultKeepsFastWorker)
+      ).catch((error: unknown) => {
+        if (!(error instanceof PythonAlgorithmFastBatchUnavailableError)) {
+          throw error;
+        }
+        return this.executeCompatibilityTraceBatch(call);
+      });
+    }
     return this.executeCompatibilityTraceBatch(call);
   }
 
@@ -756,12 +825,18 @@ class PreparedPythonProgramLifetime {
   ): Promise<readonly ExecutionResult[]> {
     const results: ExecutionResult[] = [];
     for (let index = 0; index < call.inputBatch.length; index += 1) {
-      results.push(await this.executeTrace({
-        inputs: call.inputBatch[index]!,
-        signal: call.signal,
-        limits: call.limits,
-        recordTrace: call.traceEnabledBatch?.[index] ?? true,
-      }));
+      results.push(
+        await this.executeSerial(call.signal, async (client, signal) =>
+          normalizePythonExecutionResult(
+            await client.executePreparedTrace(this.handle, {
+              inputs: call.inputBatch[index]!,
+              signal,
+              limits: call.limits,
+              recordTrace: call.traceEnabledBatch?.[index] ?? true,
+            })
+          )
+        )
+      );
     }
     return results;
   }
@@ -797,7 +872,8 @@ class PreparedPythonProgramLifetime {
 
   private executeSerial<T>(
     signal: AbortSignal | undefined,
-    operation: (client: PythonWorkerClient, signal: AbortSignal) => Promise<T>
+    operation: (client: PythonWorkerClient, signal: AbortSignal) => Promise<T>,
+    retainOnSuccess?: (result: T) => boolean
   ): Promise<T> {
     if (this.phase !== 'active') {
       return Promise.reject(new Error('Prepared Python program has been disposed.'));
@@ -807,7 +883,9 @@ class PreparedPythonProgramLifetime {
     this.operationControllers.add(controller);
     const previous = this.operationTail;
     const underlying = previous.then(async () => {
-      let client: PythonWorkerClient | undefined;
+      let worker: WarmedPythonWorker | undefined;
+      let result: T | undefined;
+      let completed = false;
       try {
         if (this.phase !== 'active') {
           throw new Error('Prepared Python program has been disposed.');
@@ -818,17 +896,26 @@ class PreparedPythonProgramLifetime {
             'Prepared Python execution was aborted.'
           );
         }
-        ({ client } = await this.takeWorker(controller.signal));
+        worker = await this.takeWorker(controller.signal);
         if (this.phase !== 'active') {
           throw new Error('Prepared Python program has been disposed.');
         }
-        return await operation(client, controller.signal);
+        result = await operation(worker.client, controller.signal);
+        completed = true;
+        return result;
       } finally {
-        // Every prepared execution call gets a hard interpreter boundary.
-        // Batch calls retain the runtime's existing per-case reset semantics
-        // inside one disposable worker. The marshaled code artifact survives;
-        // the Pyodide worker, heap, modules, cwd, RNG, and filesystem do not.
-        if (client) this.retireWorker(client);
+        if (worker) {
+          const retain =
+            completed &&
+            !controller.signal.aborted &&
+            this.phase === 'active' &&
+            retainOnSuccess?.(result as T) === true;
+          if (retain) {
+            this.initialWorker = worker;
+          } else {
+            this.retireWorker(worker.client);
+          }
+        }
       }
     });
     this.operationTail = underlying.then(
@@ -1085,6 +1172,10 @@ class PythonPreparedExecutionProvider
         program: {
           mode: 'trace',
           capabilities: {
+            profile:
+              result.artifact.isolationProfile.tier === 'algorithm-fast'
+                ? 'fast'
+                : 'compatibility',
             caseIsolation: 'fresh-case-state',
             maxConcurrency: 1,
           },
@@ -1104,6 +1195,10 @@ class PythonPreparedExecutionProvider
       program: {
         mode: 'code',
         capabilities: {
+          profile:
+            result.artifact.isolationProfile.tier === 'algorithm-fast'
+              ? 'fast'
+              : 'compatibility',
           caseIsolation: 'fresh-case-state',
           maxConcurrency: 1,
         },
@@ -1166,7 +1261,7 @@ class PythonPreparedExecutionProvider
 
   private replenishPreparationStandby(): void {
     if (
-      (this.options.prewarmAfterUse ?? true) &&
+      (this.options.replenishStandbyAfterUse ?? true) &&
       !this.terminated &&
       !this.preparationStandby
     ) {

@@ -16,7 +16,7 @@ import { RUNTIME_TRACE_SCHEMA_VERSION } from '../packages/runtime-contracts/src/
 import { createPythonRuntimeClient } from '../packages/runtime-python/src/python-runtime-client';
 import type { PythonWorkerClient } from '../packages/runtime-python/src/python-worker-client';
 
-const RUNTIME_CORE_PATH = join(process.cwd(), 'workers', 'python', 'runtime-core.js');
+const PYTHON_RUNTIME_PATH = join(process.cwd(), 'workers', 'python', 'python-runtime.js');
 const PYTHON_WORKER_PATH = join(process.cwd(), 'workers', 'python', 'python-worker.js');
 
 type RuntimeDeps = {
@@ -27,7 +27,7 @@ type RuntimeDeps = {
   toPythonLiteral: (value: unknown) => string;
 };
 
-type RuntimeCore = {
+type PythonRuntime = {
   generateTracingCode: (
     deps: RuntimeDeps,
     code: string,
@@ -49,14 +49,14 @@ function assertCondition(condition: unknown, message: string): asserts condition
   if (!condition) throw new Error(message);
 }
 
-async function loadRuntimeCore(): Promise<RuntimeCore> {
-  const source = await readFile(RUNTIME_CORE_PATH, 'utf8');
+async function loadPythonRuntime(): Promise<PythonRuntime> {
+  const source = await readFile(PYTHON_RUNTIME_PATH, 'utf8');
   const selfObject: Record<string, unknown> = {};
   const context = vm.createContext({ console, self: selfObject, globalThis: {} });
-  vm.runInContext(source, context, { filename: 'runtime-core.js' });
+  vm.runInContext(source, context, { filename: 'python-runtime.js' });
   const runtime = selfObject.__TRACECODE_PYODIDE_RUNTIME__;
-  assertCondition(typeof runtime === 'object' && runtime !== null, 'Unable to load Python runtime core');
-  return runtime as RuntimeCore;
+  assertCondition(typeof runtime === 'object' && runtime !== null, 'Unable to load Python Python runtime');
+  return runtime as PythonRuntime;
 }
 
 async function runPythonScript(source: string): Promise<string> {
@@ -129,7 +129,7 @@ async function runTracingCase(
   functionName: string,
   executionStyle = 'function'
 ): Promise<TraceRunSummary> {
-  const runtime = await loadRuntimeCore();
+  const runtime = await loadPythonRuntime();
   const payload = runtime.generateTracingCode(
     runtimeDeps(),
     source,
@@ -182,7 +182,7 @@ async function testSolutionConstructorRunsUnderTraceGuard(): Promise<void> {
 }
 
 async function testTypingGlobalsSurvivePersistentCleanup(): Promise<void> {
-  const runtime = await loadRuntimeCore();
+  const runtime = await loadPythonRuntime();
   const firstPayload = runtime.generateTracingCode(
     runtimeDeps(),
     `def first(value):

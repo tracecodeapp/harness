@@ -15,9 +15,11 @@ narrow cross-origin broker:
 - worker messages and SharedArrayBuffers are relayed over one `MessagePort`;
 - runtime storage, if any, remains on the credential-free execution origin.
 
-The host owns asset resolution, readiness, warmup, and provider teardown. It
-does not expose runtime clients, prepared providers, or direct execution
-methods. `host.createJudge(...)` is the public composition boundary.
+The underlying `BrowserRuntimeHost` owns asset resolution, readiness, warmup,
+and provider teardown without exposing runtime clients, prepared providers, or
+direct execution methods. `BrowserJudgeHost` adds the public Judge boundaries:
+`createJudge(...)` for scoped plans and `execute(...)` / `disposeExecution(...)`
+for retained interactive sessions.
 
 ## Execution-origin endpoint
 
