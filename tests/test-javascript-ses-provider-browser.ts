@@ -256,6 +256,19 @@ async function main(): Promise<void> {
           legacy: result.consoleCapLegacy?.stdout,
         })}`
       );
+      assertCondition(
+        result.traceConsoleCap?.verdict === 'passed' &&
+        result.traceConsoleCap.evaluationStatus === 'completed' &&
+        result.traceConsoleCap.stdout.every((stdout) =>
+          stdout === result.consoleCapLegacy?.stdout[0]
+        ) &&
+        result.traceConsoleCap.timings.every(
+          (timing) => timing.algorithmFastBatch !== true
+        ),
+        `trace console budget must fall back without failing: ${JSON.stringify(
+          result.traceConsoleCap
+        )}`
+      );
       const outputTransport = result.outputTransportParity?.values;
       const symbolArray = outputTransport?.[3] as unknown[] | undefined;
       const outputTransportShapes = result.outputTransportParity?.valueShapes as Array<{

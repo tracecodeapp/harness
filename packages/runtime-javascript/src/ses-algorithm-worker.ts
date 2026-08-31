@@ -1586,6 +1586,9 @@ async function executeCase(
         error: SES_CONSOLE_COMPATIBILITY_REQUIRED,
         diagnosticStage: 'runtime',
         consoleOutput: snapshot.lines,
+        ...(program.mode === 'trace'
+          ? { trace: emptyTrace(), executionTimeMs: elapsedMs }
+          : {}),
         timings: {
           totalMs: elapsedMs,
           runMs: elapsedMs,

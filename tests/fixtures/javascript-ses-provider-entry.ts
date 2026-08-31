@@ -551,6 +551,18 @@ function solve() {
       functionName: 'solve',
       cases: [{ id: 'console-cap-legacy', input: { value: -0 }, expected: 'negative-zero' }],
     });
+    const traceConsoleCap = await evaluate(host, {
+      id: 'ses-provider-trace-console-cap',
+      language: 'javascript',
+      code: consoleCapSource,
+      functionName: 'solve',
+      trace: true,
+      cases: [1, 2].map((value) => ({
+        id: `trace-console-cap-${value}`,
+        input: { value },
+        expected: 'regular',
+      })),
+    });
     const accessorOutput = await evaluate(host, {
       id: 'ses-provider-accessor-output',
       language: 'javascript',
@@ -1066,6 +1078,7 @@ function solve(values) { return values.last(); }`,
       consoleBlankLegacy,
       consoleCapSes,
       consoleCapLegacy,
+      traceConsoleCap,
       accessorOutput,
       specialOutput,
       outputTransportParity,

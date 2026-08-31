@@ -6431,6 +6431,7 @@ async function executeCase(program, inputs, tracingEnabled = program.mode === "t
         error: SES_CONSOLE_COMPATIBILITY_REQUIRED,
         diagnosticStage: "runtime",
         consoleOutput: snapshot.lines,
+        ...program.mode === "trace" ? { trace: emptyTrace(), executionTimeMs: elapsedMs2 } : {},
         timings: {
           totalMs: elapsedMs2,
           runMs: elapsedMs2,
