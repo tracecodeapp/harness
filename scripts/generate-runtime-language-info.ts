@@ -14,6 +14,14 @@ const GENERATED_PATH = join(
   'generated',
   'runtime-language-info-data.ts'
 );
+const GENERATED_HARNESS_VERSION_PATH = join(
+  ROOT,
+  'packages',
+  'runtime-contracts',
+  'src',
+  'generated',
+  'harness-version-data.ts'
+);
 
 type RuntimeCommandName = 'dotnet' | 'clang++';
 
@@ -273,11 +281,7 @@ function buildCppDescription(input: {
   ].join('\n');
 }
 
-async function buildRuntimeInfo(): Promise<Record<string, RuntimeInfo>> {
-  const rootPackage = await readJson<PackageJson>('package.json');
-  if (!rootPackage.version) {
-    throw new Error('Unable to derive runtime info: missing root harness version');
-  }
+async function buildRuntimeInfo(rootPackage: PackageJson): Promise<Record<string, RuntimeInfo>> {
   const executionPlatform = {
     name: 'TraceKernel',
     version: rootPackage.version,
@@ -473,7 +477,6 @@ async function buildRuntimeInfo(): Promise<Record<string, RuntimeInfo>> {
 }
 
 async function buildRuntimeCommandVersions(): Promise<Record<RuntimeCommandName, string>> {
-  const rootPackage = await readJson<PackageJson>('package.json');
   let materializedDotnetVersion: string | undefined;
   try {
     const csharpRuntimeConfig = await readJson<{
@@ -552,6 +555,18 @@ export const RUNTIME_COMMAND_VERSIONS = Object.freeze(
 `;
 }
 
+function buildGeneratedHarnessVersion(version: string): string {
+  return `/**
+ * AUTO-GENERATED FILE. DO NOT EDIT MANUALLY.
+ *
+ * Source: package.json
+ * Generator: scripts/generate-runtime-language-info.ts
+ */
+
+export const TRACECODE_HARNESS_VERSION = ${JSON.stringify(version)};
+`;
+}
+
 async function ensureParentDir(pathname: string): Promise<void> {
   await mkdir(dirname(pathname), { recursive: true });
 }
@@ -578,12 +593,22 @@ async function writeOrCheck(pathname: string, nextContent: string): Promise<void
 }
 
 async function main(): Promise<void> {
+  const rootPackage = await readJson<PackageJson>('package.json');
+  if (!rootPackage.version) {
+    throw new Error('Unable to derive runtime info: missing root harness version');
+  }
   const [runtimeInfo, runtimeCommandVersions] = await Promise.all([
-    buildRuntimeInfo(),
+    buildRuntimeInfo(rootPackage),
     buildRuntimeCommandVersions(),
   ]);
   const output = buildGeneratedTypeScript(runtimeInfo, runtimeCommandVersions);
-  await writeOrCheck(GENERATED_PATH, output);
+  await Promise.all([
+    writeOrCheck(GENERATED_PATH, output),
+    writeOrCheck(
+      GENERATED_HARNESS_VERSION_PATH,
+      buildGeneratedHarnessVersion(rootPackage.version)
+    ),
+  ]);
   console.log(CHECK_MODE ? 'Runtime language info is up to date.' : 'Generated runtime language info.');
 }
 

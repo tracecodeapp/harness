@@ -319,11 +319,29 @@ async function main(): Promise<void> {
   const releaseFixture = await mkdtemp(join(tmpdir(), 'tracecode-release-tag-'));
   const checkout = join(releaseFixture, 'checkout');
   const origin = join(releaseFixture, 'origin.git');
+  const isolatedGitConfig = join(releaseFixture, 'isolated.gitconfig');
+  const gitEnvironment = {
+    ...process.env,
+    GIT_CONFIG_GLOBAL: isolatedGitConfig,
+    GIT_CONFIG_NOSYSTEM: '1',
+    GIT_TERMINAL_PROMPT: '0',
+  };
   const runGit = (...args: string[]): SpawnSyncReturns<string> =>
-    spawnSync('git', args, { cwd: checkout, encoding: 'utf8' });
+    spawnSync('git', args, {
+      cwd: checkout,
+      encoding: 'utf8',
+      env: gitEnvironment,
+    });
   try {
     await mkdir(checkout, { recursive: true });
-    assert.equal(spawnSync('git', ['init', '--bare', origin]).status, 0);
+    await writeFile(isolatedGitConfig, '', 'utf8');
+    assert.equal(
+      spawnSync('git', ['init', '--bare', origin], {
+        encoding: 'utf8',
+        env: gitEnvironment,
+      }).status,
+      0
+    );
     assert.equal(runGit('init').status, 0);
     assert.equal(runGit('config', 'user.name', 'TraceCode release test').status, 0);
     assert.equal(runGit('config', 'user.email', 'release-test@tracecode.invalid').status, 0);
@@ -340,6 +358,7 @@ async function main(): Promise<void> {
       spawnSync(process.execPath, [RELEASE_TAG_SCRIPT, '--root', checkout], {
         cwd: ROOT,
         encoding: 'utf8',
+        env: gitEnvironment,
       });
     assert.notEqual(runTagAudit().status, 0, 'an absent local release tag must fail');
     assert.equal(runGit('tag', '-a', 'v1.2.3', '-m', 'v1.2.3').status, 0);

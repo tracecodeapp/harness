@@ -93,6 +93,9 @@ This repo uses Git tags as release boundaries. Version notes below summarize wha
 - Runtime materialization stamp files are excluded generically from the npm
   package so the installed `workers/` tree reconciles exactly with the runtime
   asset lock.
+- The generated JavaScript project worker now embeds only the Harness version,
+  so release scripts and other administrative manifest changes cannot alter
+  runtime bytes or force an unrelated browser asset download.
 - Published the finalized 0.17 runtime tree under a new immutable release
   identity so consumers can verify an exact asset inventory without inheriting
   stale objects from the previously occupied 0.17.0 CDN prefix.

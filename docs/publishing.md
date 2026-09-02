@@ -24,9 +24,23 @@ Run the non-mutating audit directly:
 pnpm release:check
 ```
 
+For 0.x releases, backwards-incompatible public contract changes require a
+minor version increment; patch releases must remain backwards compatible.
+
 When a release version and changelog are already prepared, merge the reviewed
-release tree, create an annotated `v<version>` tag on that exact commit, and
-push the tag to `origin`. Then publish only from the clean tagged checkout:
+release tree and prove that its generated release artifacts reproduce before
+creating the immutable release tag:
+
+```bash
+pnpm release:check
+pnpm version:check
+pnpm test:runtime-assets-lock
+pnpm build
+git diff --exit-code
+```
+
+Then create an annotated `v<version>` tag on that exact commit, push the tag to
+`origin`, and publish only from the clean tagged checkout:
 
 ```bash
 git tag -a v<version> -m "v<version>"
@@ -37,7 +51,8 @@ pnpm release:tag-check
 The tag is part of the release contract because generated open-source metadata
 links modified runtime sources to that immutable GitHub ref. The tag check
 fails unless the local and remote tag both resolve to the current commit and
-the checkout is clean.
+the checkout is clean. Never move a pushed release tag; correct a failed
+pre-tag build before creating the tag.
 
 Publish only through:
 

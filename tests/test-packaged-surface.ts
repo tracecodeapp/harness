@@ -89,6 +89,56 @@ test('published package has only TraceKernel and Judge code entrypoints', async 
   assert.doesNotMatch(judgeTypes, /createBrowserJudgeHostFromRuntimeHost/u);
 });
 
+test('published worker inventory exactly matches the runtime asset lock', async () => {
+  const npmCommand = process.platform === 'win32' ? 'npm.cmd' : 'npm';
+  const packlist = spawnSync(
+    npmCommand,
+    ['pack', '--dry-run', '--json', '--ignore-scripts'],
+    { cwd: ROOT, encoding: 'utf8', maxBuffer: 20 * 1024 * 1024 }
+  );
+  assert.equal(packlist.status, 0, `${packlist.stdout}\n${packlist.stderr}`);
+  const packs = JSON.parse(packlist.stdout) as Array<{
+    files?: Array<{ path?: unknown }>;
+  }>;
+  assert.equal(packs.length, 1, 'npm pack should describe exactly one root package');
+  const packedWorkerPaths = (packs[0]?.files ?? [])
+    .map((entry) => entry.path)
+    .filter((entry): entry is string =>
+      typeof entry === 'string' && entry.startsWith('workers/')
+    )
+    .sort();
+
+  const lock = JSON.parse(
+    await readFile(join(ROOT, 'runtime-assets.lock.json'), 'utf8')
+  ) as {
+    components?: Record<string, { files?: Array<{ path?: unknown }> }>;
+  };
+  const lockedWorkerPaths = Object.values(lock.components ?? {})
+    .flatMap((component) => component.files ?? [])
+    .map((entry) => entry.path)
+    .filter((entry): entry is string => typeof entry === 'string')
+    .sort();
+  assert.deepEqual(
+    packedWorkerPaths,
+    lockedWorkerPaths,
+    'the physical npm workers/ inventory must equal the runtime lock exactly'
+  );
+  assert.ok(
+    packedWorkerPaths.every((entry) => !entry.endsWith('/.stamp')),
+    'runtime materialization stamps must not be published'
+  );
+});
+
+test('JavaScript project worker embeds only the generated Harness version', async () => {
+  const worker = await readFile(
+    join(ROOT, 'workers', 'javascript', 'javascript-project-worker.js'),
+    'utf8'
+  );
+  assert.doesNotMatch(worker, /release:tag-check|prepublishOnly/u);
+  assert.doesNotMatch(worker, /var package_default = \{/u);
+  assert.match(worker, /var TRACECODE_HARNESS_VERSION = "0\.17\.1";/u);
+});
+
 test('built ESM surfaces execute through their owning authority', async () => {
   const traceKernel = await import(
     pathToFileURL(join(ROOT, 'dist/tracekernel.js')).href
