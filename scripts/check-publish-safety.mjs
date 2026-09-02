@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 
+import { realpathSync } from 'node:fs';
 import { readdir, readFile } from 'node:fs/promises';
 import { isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { pathToFileURL } from 'node:url';
@@ -314,7 +315,9 @@ function parseRootArgument(argv) {
   fail(`usage: node scripts/check-publish-safety.mjs [--root <workspace>]`);
 }
 
-const invokedPath = process.argv[1] ? pathToFileURL(resolve(process.argv[1])).href : '';
+const invokedPath = process.argv[1]
+  ? pathToFileURL(realpathSync(resolve(process.argv[1]))).href
+  : '';
 if (invokedPath === import.meta.url) {
   try {
     const result = await auditPublishSafety(parseRootArgument(process.argv.slice(2)));

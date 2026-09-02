@@ -130,13 +130,22 @@ test('published worker inventory exactly matches the runtime asset lock', async 
 });
 
 test('JavaScript project worker embeds only the generated Harness version', async () => {
+  const manifest = JSON.parse(
+    await readFile(join(ROOT, 'package.json'), 'utf8')
+  ) as { version?: unknown };
+  assert.equal(typeof manifest.version, 'string');
   const worker = await readFile(
     join(ROOT, 'workers', 'javascript', 'javascript-project-worker.js'),
     'utf8'
   );
   assert.doesNotMatch(worker, /release:tag-check|prepublishOnly/u);
   assert.doesNotMatch(worker, /var package_default = \{/u);
-  assert.match(worker, /var TRACECODE_HARNESS_VERSION = "0\.17\.1";/u);
+  assert.ok(
+    worker.includes(
+      `var TRACECODE_HARNESS_VERSION = ${JSON.stringify(manifest.version)};`
+    ),
+    'the worker should embed the generated root Harness version'
+  );
 });
 
 test('built ESM surfaces execute through their owning authority', async () => {

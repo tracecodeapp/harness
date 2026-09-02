@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { spawnSync, type SpawnSyncReturns } from 'node:child_process';
-import { access, mkdir, mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises';
+import { access, mkdir, mkdtemp, readFile, readdir, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { test } from 'node:test';
@@ -215,6 +215,18 @@ async function main(): Promise<void> {
       0,
       `valid root-only fixture failed:\n${passingFixture.stdout}\n${passingFixture.stderr}`
     );
+    const publishSafetyLink = join(fixtureRoot, 'check-publish-safety-link.mjs');
+    await symlink(CHECK_SCRIPT, publishSafetyLink);
+    const linkedFixture = spawnSync(
+      process.execPath,
+      [publishSafetyLink, '--root', fixtureRoot],
+      { cwd: ROOT, encoding: 'utf8' }
+    );
+    assert.equal(
+      linkedFixture.status,
+      0,
+      `symlinked publish audit failed:\n${linkedFixture.stdout}\n${linkedFixture.stderr}`
+    );
 
     const synchronizedFixture = runVersionSync(fixtureRoot, '0.0.1-test.1');
     assert.equal(
@@ -319,6 +331,7 @@ async function main(): Promise<void> {
   const releaseFixture = await mkdtemp(join(tmpdir(), 'tracecode-release-tag-'));
   const checkout = join(releaseFixture, 'checkout');
   const origin = join(releaseFixture, 'origin.git');
+  const releaseTagLink = join(releaseFixture, 'check-release-tag-link.mjs');
   const isolatedGitConfig = join(releaseFixture, 'isolated.gitconfig');
   const gitEnvironment = {
     ...process.env,
@@ -353,9 +366,10 @@ async function main(): Promise<void> {
     assert.equal(runGit('add', 'package.json').status, 0);
     assert.equal(runGit('commit', '-m', 'release candidate').status, 0);
     assert.equal(runGit('remote', 'add', 'origin', origin).status, 0);
+    await symlink(RELEASE_TAG_SCRIPT, releaseTagLink);
 
     const runTagAudit = (): SpawnSyncReturns<string> =>
-      spawnSync(process.execPath, [RELEASE_TAG_SCRIPT, '--root', checkout], {
+      spawnSync(process.execPath, [releaseTagLink, '--root', checkout], {
         cwd: ROOT,
         encoding: 'utf8',
         env: gitEnvironment,
@@ -366,6 +380,37 @@ async function main(): Promise<void> {
     assert.equal(runGit('push', 'origin', 'refs/tags/v1.2.3').status, 0);
     const tagged = runTagAudit();
     assert.equal(tagged.status, 0, `${tagged.stdout}\n${tagged.stderr}`);
+
+    const releaseHead = runGit('rev-parse', 'HEAD').stdout.trim();
+    const releaseTree = runGit('write-tree').stdout.trim();
+    const mismatchedRemoteCommit = runGit(
+      'commit-tree',
+      releaseTree,
+      '-p',
+      releaseHead,
+      '-m',
+      'mismatched remote tag target'
+    ).stdout.trim();
+    assert.equal(
+      runGit(
+        'push',
+        '--force',
+        'origin',
+        `${mismatchedRemoteCommit}:refs/tags/v1.2.3`
+      ).status,
+      0
+    );
+    assert.notEqual(
+      runTagAudit().status,
+      0,
+      'a remote release tag on a different commit must fail'
+    );
+    assert.equal(
+      runGit('push', '--force', 'origin', 'refs/tags/v1.2.3').status,
+      0
+    );
+    const restoredTag = runTagAudit();
+    assert.equal(restoredTag.status, 0, `${restoredTag.stdout}\n${restoredTag.stderr}`);
 
     await writeFile(join(checkout, 'uncommitted.txt'), 'dirty\n', 'utf8');
     assert.notEqual(runTagAudit().status, 0, 'a dirty release checkout must fail');
