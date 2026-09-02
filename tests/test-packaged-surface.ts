@@ -60,6 +60,10 @@ test('published package has only TraceKernel and Judge code entrypoints', async 
     Array.isArray(manifest.files) && manifest.files.includes('!dist/**/*.map'),
     'the release tarball must not republish generated dist source maps'
   );
+  assert.ok(
+    Array.isArray(manifest.files) && manifest.files.includes('!workers/**/.stamp'),
+    'runtime materialization stamps must stay outside the published asset inventory'
+  );
   for (const retired of RETIRED_EXPORTS) {
     assert.equal(
       manifest.exports?.[retired],
@@ -83,6 +87,65 @@ test('published package has only TraceKernel and Judge code entrypoints', async 
   assert.match(judgeTypes, /DEFAULT_INTERACTIVE_EXECUTION_IDLE_TIMEOUT_MS/u);
   assert.doesNotMatch(judgeTypes, /createBrowserRuntimeJudge/u);
   assert.doesNotMatch(judgeTypes, /createBrowserJudgeHostFromRuntimeHost/u);
+});
+
+test('published worker inventory exactly matches the runtime asset lock', async () => {
+  const npmCommand = process.platform === 'win32' ? 'npm.cmd' : 'npm';
+  const packlist = spawnSync(
+    npmCommand,
+    ['pack', '--dry-run', '--json', '--ignore-scripts'],
+    { cwd: ROOT, encoding: 'utf8', maxBuffer: 20 * 1024 * 1024 }
+  );
+  assert.equal(packlist.status, 0, `${packlist.stdout}\n${packlist.stderr}`);
+  const packs = JSON.parse(packlist.stdout) as Array<{
+    files?: Array<{ path?: unknown }>;
+  }>;
+  assert.equal(packs.length, 1, 'npm pack should describe exactly one root package');
+  const packedWorkerPaths = (packs[0]?.files ?? [])
+    .map((entry) => entry.path)
+    .filter((entry): entry is string =>
+      typeof entry === 'string' && entry.startsWith('workers/')
+    )
+    .sort();
+
+  const lock = JSON.parse(
+    await readFile(join(ROOT, 'runtime-assets.lock.json'), 'utf8')
+  ) as {
+    components?: Record<string, { files?: Array<{ path?: unknown }> }>;
+  };
+  const lockedWorkerPaths = Object.values(lock.components ?? {})
+    .flatMap((component) => component.files ?? [])
+    .map((entry) => entry.path)
+    .filter((entry): entry is string => typeof entry === 'string')
+    .sort();
+  assert.deepEqual(
+    packedWorkerPaths,
+    lockedWorkerPaths,
+    'the physical npm workers/ inventory must equal the runtime lock exactly'
+  );
+  assert.ok(
+    packedWorkerPaths.every((entry) => !entry.endsWith('/.stamp')),
+    'runtime materialization stamps must not be published'
+  );
+});
+
+test('JavaScript project worker embeds only the generated Harness version', async () => {
+  const manifest = JSON.parse(
+    await readFile(join(ROOT, 'package.json'), 'utf8')
+  ) as { version?: unknown };
+  assert.equal(typeof manifest.version, 'string');
+  const worker = await readFile(
+    join(ROOT, 'workers', 'javascript', 'javascript-project-worker.js'),
+    'utf8'
+  );
+  assert.doesNotMatch(worker, /release:tag-check|prepublishOnly/u);
+  assert.doesNotMatch(worker, /var package_default = \{/u);
+  assert.ok(
+    worker.includes(
+      `var TRACECODE_HARNESS_VERSION = ${JSON.stringify(manifest.version)};`
+    ),
+    'the worker should embed the generated root Harness version'
+  );
 });
 
 test('built ESM surfaces execute through their owning authority', async () => {

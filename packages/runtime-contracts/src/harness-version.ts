@@ -1,5 +1,3 @@
-import packageJson from '../../../package.json' with { type: 'json' };
-
 /**
  * The version of the published @tracecode/harness release.
  *
@@ -7,4 +5,4 @@ import packageJson from '../../../package.json' with { type: 'json' };
  * a release is assembled. User-visible TraceKernel identity must use this
  * single release version instead.
  */
-export const TRACECODE_HARNESS_VERSION = packageJson.version;
+export { TRACECODE_HARNESS_VERSION } from './generated/harness-version-data';

@@ -6,6 +6,28 @@ This repo uses Git tags as release boundaries. Version notes below summarize wha
 
 ## [Unreleased]
 
+## [0.17.1] - 2026-09-02
+
+### Fixed
+
+- Release publication now fails unless the clean checkout, local version tag,
+  and remote version tag all resolve to the same exact commit, keeping the
+  generated modified-runtime source link available at publication time.
+- Runtime materialization stamp files are excluded generically from the npm
+  package so the installed `workers/` tree reconciles exactly with the runtime
+  asset lock.
+- The generated JavaScript project worker now embeds only the Harness version,
+  so release scripts and other administrative manifest changes cannot alter
+  runtime bytes or force an unrelated browser asset download.
+- Published the finalized 0.17 runtime tree under a new immutable release
+  identity so consumers can verify an exact asset inventory without inheriting
+  stale objects from the previously occupied 0.17.0 CDN prefix.
+
+## [0.17.0] - 2026-08-31
+
+This release establishes the capability boundary for algorithm Judge
+execution before language-specific runner optimization.
+
 ### Added
 
 - Added the `algorithmBatchBoundary` runtime capability and
@@ -20,6 +42,13 @@ This repo uses Git tags as release boundaries. Version notes below summarize wha
   batches retain one TraceJVM process with a fresh application class loader and
   execution scope per case, while ambient or unverifiable bytecode keeps the
   fresh-process compatibility boundary.
+- Added immutable per-process runtime syscall policies to TraceKernel. Runtime
+  providers receive the policy in their process context so they can select a
+  smaller implementation without becoming the enforcement authority.
+- Added the `algorithm` syscall profile, which permits only atomic reads of
+  explicitly named TKFS submission files. Other filesystem, process,
+  descriptor, terminal, watch, watchdog, and network syscalls fail with
+  `EOPNOTSUPP` before touching those subsystems.
 
 ### Changed
 
@@ -82,24 +111,6 @@ This repo uses Git tags as release boundaries. Version notes below summarize wha
   identities, VM-global interning and implicit-time builders select
   compatibility, and retained single-case JVMs rebind to the current
   TraceKernel request instead of holding a released prior channel.
-
-## [0.17.0] - 2026-08-25
-
-This release establishes the capability boundary for algorithm Judge
-execution before language-specific runner optimization.
-
-### Added
-
-- Added immutable per-process runtime syscall policies to TraceKernel. Runtime
-  providers receive the policy in their process context so they can select a
-  smaller implementation without becoming the enforcement authority.
-- Added the `algorithm` syscall profile, which permits only atomic reads of
-  explicitly named TKFS submission files. Other filesystem, process,
-  descriptor, terminal, watch, watchdog, and network syscalls fail with
-  `EOPNOTSUPP` before touching those subsystems.
-
-### Changed
-
 - Judge-created grader processes now always use the algorithm profile, while
   session creation, process startup, timeouts, signals, waits, and teardown
   remain kernel-owned host operations. General Project and terminal processes

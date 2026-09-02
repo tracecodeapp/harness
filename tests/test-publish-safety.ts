@@ -1,18 +1,20 @@
 import assert from 'node:assert/strict';
 import { spawnSync, type SpawnSyncReturns } from 'node:child_process';
-import { access, mkdir, mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises';
+import { access, mkdir, mkdtemp, readFile, readdir, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { test } from 'node:test';
 
 const ROOT = process.cwd();
 const CHECK_SCRIPT = resolve(ROOT, 'scripts/check-publish-safety.mjs');
+const RELEASE_TAG_SCRIPT = resolve(ROOT, 'scripts/check-release-tag.mjs');
 const VERSION_SYNC_SCRIPT = resolve(ROOT, 'scripts/sync-workspace-versions.mjs');
 const RELEASE_CHECK_SCRIPT = 'node scripts/check-publish-safety.mjs';
-const ROOT_RELEASE_SCRIPT =
-  'pnpm release:check && pnpm publish . --access public';
+const RELEASE_TAG_CHECK_SCRIPT = 'node scripts/check-release-tag.mjs';
+const ROOT_RELEASE_SCRIPT = 'pnpm publish . --access public';
 const PREPUBLISH_SCRIPT =
-  'pnpm release:check && pnpm test:runtime-assets-lock && pnpm build && pnpm release:check && pnpm test:runtime-assets-lock';
+  'pnpm release:check && pnpm release:tag-check && pnpm test:runtime-assets-lock && pnpm build && pnpm release:tag-check && pnpm test:runtime-assets-lock';
+const RUNTIME_STAMP_EXCLUSION = '!workers/**/.stamp';
 
 interface FixtureOptions {
   internalName?: string;
@@ -20,6 +22,7 @@ interface FixtureOptions {
   rootName?: string;
   internalPrivate?: boolean;
   npmrc?: string;
+  packageFiles?: string[];
   releaseRootScript?: string;
   workspacePattern?: string;
 }
@@ -64,9 +67,11 @@ async function writeFixture(root: string, options: FixtureOptions = {}): Promise
       name: options.rootName ?? '@tracecode/harness',
       version: '0.0.0-test',
       publishConfig: { access: 'public' },
+      files: options.packageFiles ?? [RUNTIME_STAMP_EXCLUSION],
       scripts: {
         prepublishOnly: PREPUBLISH_SCRIPT,
         'release:check': RELEASE_CHECK_SCRIPT,
+        'release:tag-check': RELEASE_TAG_CHECK_SCRIPT,
         'release:root': options.releaseRootScript ?? ROOT_RELEASE_SCRIPT,
       },
     }),
@@ -161,11 +166,14 @@ async function main(): Promise<void> {
   const rootManifest = JSON.parse(await readFile(join(ROOT, 'package.json'), 'utf8')) as {
     publishConfig?: { access?: unknown };
     scripts?: Record<string, string>;
+    files?: string[];
   };
   assert.equal(rootManifest.publishConfig?.access, 'public');
   assert.equal(rootManifest.scripts?.['release:check'], RELEASE_CHECK_SCRIPT);
+  assert.equal(rootManifest.scripts?.['release:tag-check'], RELEASE_TAG_CHECK_SCRIPT);
   assert.equal(rootManifest.scripts?.['release:root'], ROOT_RELEASE_SCRIPT);
   assert.equal(rootManifest.scripts?.prepublishOnly, PREPUBLISH_SCRIPT);
+  assert.ok(rootManifest.files?.includes(RUNTIME_STAMP_EXCLUSION));
   assert.doesNotMatch(
     rootManifest.scripts?.['release:root'] ?? '',
     /(?:^|\s)(?:-r|--recursive)(?:\s|$)/u,
@@ -205,6 +213,18 @@ async function main(): Promise<void> {
       passingFixture.status,
       0,
       `valid root-only fixture failed:\n${passingFixture.stdout}\n${passingFixture.stderr}`
+    );
+    const publishSafetyLink = join(fixtureRoot, 'check-publish-safety-link.mjs');
+    await symlink(CHECK_SCRIPT, publishSafetyLink);
+    const linkedFixture = spawnSync(
+      process.execPath,
+      [publishSafetyLink, '--root', fixtureRoot],
+      { cwd: ROOT, encoding: 'utf8' }
+    );
+    assert.equal(
+      linkedFixture.status,
+      0,
+      `symlinked publish audit failed:\n${linkedFixture.stdout}\n${linkedFixture.stderr}`
     );
 
     const synchronizedFixture = runVersionSync(fixtureRoot, '0.0.1-test.1');
@@ -250,6 +270,9 @@ async function main(): Promise<void> {
       releaseRootScript: 'pnpm --recursive publish',
     });
     assertAuditFailure(fixtureRoot, /release:root must publish only the workspace root/u);
+
+    await writeFixture(fixtureRoot, { packageFiles: [] });
+    assertAuditFailure(fixtureRoot, /must exclude runtime lock metadata/u);
 
     await writeFixture(fixtureRoot, {
       workspacePattern: 'packages/**',
@@ -302,6 +325,101 @@ async function main(): Promise<void> {
     );
   } finally {
     await rm(fixtureRoot, { recursive: true, force: true });
+  }
+
+  const releaseFixture = await mkdtemp(join(tmpdir(), 'tracecode-release-tag-'));
+  const checkout = join(releaseFixture, 'checkout');
+  const origin = join(releaseFixture, 'origin.git');
+  const releaseTagLink = join(releaseFixture, 'check-release-tag-link.mjs');
+  const isolatedGitConfig = join(releaseFixture, 'isolated.gitconfig');
+  const gitEnvironment = {
+    ...process.env,
+    GIT_CONFIG_GLOBAL: isolatedGitConfig,
+    GIT_CONFIG_NOSYSTEM: '1',
+    GIT_TERMINAL_PROMPT: '0',
+  };
+  const runGit = (...args: string[]): SpawnSyncReturns<string> =>
+    spawnSync('git', args, {
+      cwd: checkout,
+      encoding: 'utf8',
+      env: gitEnvironment,
+    });
+  try {
+    await mkdir(checkout, { recursive: true });
+    await writeFile(isolatedGitConfig, '', 'utf8');
+    assert.equal(
+      spawnSync('git', ['init', '--bare', origin], {
+        encoding: 'utf8',
+        env: gitEnvironment,
+      }).status,
+      0
+    );
+    assert.equal(runGit('init').status, 0);
+    assert.equal(runGit('config', 'user.name', 'TraceCode release test').status, 0);
+    assert.equal(runGit('config', 'user.email', 'release-test@tracecode.invalid').status, 0);
+    await writeFile(
+      join(checkout, 'package.json'),
+      JSON.stringify({ name: '@tracecode/harness', version: '1.2.3' }),
+      'utf8'
+    );
+    assert.equal(runGit('add', 'package.json').status, 0);
+    assert.equal(runGit('commit', '-m', 'release candidate').status, 0);
+    assert.equal(runGit('remote', 'add', 'origin', origin).status, 0);
+    await symlink(RELEASE_TAG_SCRIPT, releaseTagLink);
+
+    const runTagAudit = (): SpawnSyncReturns<string> =>
+      spawnSync(process.execPath, [releaseTagLink, '--root', checkout], {
+        cwd: ROOT,
+        encoding: 'utf8',
+        env: gitEnvironment,
+      });
+    assert.notEqual(runTagAudit().status, 0, 'an absent local release tag must fail');
+    assert.equal(runGit('tag', '-a', 'v1.2.3', '-m', 'v1.2.3').status, 0);
+    assert.notEqual(runTagAudit().status, 0, 'an unpushed release tag must fail');
+    assert.equal(runGit('push', 'origin', 'refs/tags/v1.2.3').status, 0);
+    const tagged = runTagAudit();
+    assert.equal(tagged.status, 0, `${tagged.stdout}\n${tagged.stderr}`);
+
+    const releaseHead = runGit('rev-parse', 'HEAD').stdout.trim();
+    const releaseTree = runGit('write-tree').stdout.trim();
+    const mismatchedRemoteCommit = runGit(
+      'commit-tree',
+      releaseTree,
+      '-p',
+      releaseHead,
+      '-m',
+      'mismatched remote tag target'
+    ).stdout.trim();
+    assert.equal(
+      runGit(
+        'push',
+        '--force',
+        'origin',
+        `${mismatchedRemoteCommit}:refs/tags/v1.2.3`
+      ).status,
+      0
+    );
+    assert.notEqual(
+      runTagAudit().status,
+      0,
+      'a remote release tag on a different commit must fail'
+    );
+    assert.equal(
+      runGit('push', '--force', 'origin', 'refs/tags/v1.2.3').status,
+      0
+    );
+    const restoredTag = runTagAudit();
+    assert.equal(restoredTag.status, 0, `${restoredTag.stdout}\n${restoredTag.stderr}`);
+
+    await writeFile(join(checkout, 'uncommitted.txt'), 'dirty\n', 'utf8');
+    assert.notEqual(runTagAudit().status, 0, 'a dirty release checkout must fail');
+    await rm(join(checkout, 'uncommitted.txt'));
+    await writeFile(join(checkout, 'next.txt'), 'next\n', 'utf8');
+    assert.equal(runGit('add', 'next.txt').status, 0);
+    assert.equal(runGit('commit', '-m', 'post release').status, 0);
+    assert.notEqual(runTagAudit().status, 0, 'a release tag on a different commit must fail');
+  } finally {
+    await rm(releaseFixture, { recursive: true, force: true });
   }
 
   console.log('PASS: root release is audited and every non-root workspace manifest is private');
