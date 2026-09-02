@@ -6,6 +6,8 @@ This repo uses Git tags as release boundaries. Version notes below summarize wha
 
 ## [Unreleased]
 
+## [0.17.1] - 2026-09-02
+
 ### Added
 
 - Added the `algorithmBatchBoundary` runtime capability and
@@ -82,6 +84,12 @@ This repo uses Git tags as release boundaries. Version notes below summarize wha
   identities, VM-global interning and implicit-time builders select
   compatibility, and retained single-case JVMs rebind to the current
   TraceKernel request instead of holding a released prior channel.
+
+### Fixed
+
+- Published the finalized 0.17 runtime tree under a new immutable release
+  identity so consumers can verify an exact asset inventory without inheriting
+  stale objects from the previously occupied 0.17.0 CDN prefix.
 
 ## [0.17.0] - 2026-08-25
 

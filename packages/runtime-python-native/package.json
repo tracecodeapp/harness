@@ -1,7 +1,7 @@
 {
   "name": "@tracecode/runtime-python-native",
   "private": true,
-  "version": "0.17.0",
+  "version": "0.17.1",
   "type": "module",
   "description": "Build recipe and compatibility manifest for the optional Pyodide native tracing wheel.",
   "homepage": "https://tracecode.app",
