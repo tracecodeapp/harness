@@ -11,12 +11,13 @@ This boundary is enforced in three places:
    clients refuse to publish it.
 2. `.npmrc` sets `include-workspace-root=false`, keeping the root release out
    of ordinary recursive workspace commands.
-3. The root `prepublishOnly` lifecycle runs `pnpm release:check` before and
-   after the build. The check inventories `pnpm-workspace.yaml`, verifies that
-   every non-root manifest is private, verifies the root release wiring, and
-   rejects recursive, filtered, or workspace-scoped publish environments.
-   This final check matters because pnpm's recursive publish mode may select
-   the workspace root specially even when ordinary recursive commands do not.
+3. The root `prepublishOnly` lifecycle inventories the workspace and checks the
+   release tag and runtime lock before the build, then rechecks the tag and
+   generated runtime lock afterward. The workspace check verifies that every
+   non-root manifest is private, verifies the root release wiring, and rejects
+   recursive, filtered, or workspace-scoped publish environments. This matters
+   because pnpm's recursive publish mode may select the workspace root specially
+   even when ordinary recursive commands do not.
 
 Run the non-mutating audit directly:
 
@@ -61,10 +62,10 @@ pnpm release:root
 ```
 
 That command targets the root directory explicitly and retains pnpm's normal
-git and registry checks. It verifies but does not create or push the release
-tag. It does not bump versions or mutate Git state. Recursive, filtered, and
-workspace-scoped publish commands are rejected; they are not alternative
-release entrypoints.
+git and registry checks. Its `prepublishOnly` lifecycle verifies but does not
+create or push the release tag. It does not bump versions or mutate Git state.
+Recursive, filtered, and workspace-scoped publish commands are rejected; they
+are not alternative release entrypoints.
 
 The structural audit intentionally fails closed when a workspace glob becomes
 too complex to inventory. Extend the audit and its fixture tests before

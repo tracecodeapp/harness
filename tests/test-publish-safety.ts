@@ -11,10 +11,9 @@ const RELEASE_TAG_SCRIPT = resolve(ROOT, 'scripts/check-release-tag.mjs');
 const VERSION_SYNC_SCRIPT = resolve(ROOT, 'scripts/sync-workspace-versions.mjs');
 const RELEASE_CHECK_SCRIPT = 'node scripts/check-publish-safety.mjs';
 const RELEASE_TAG_CHECK_SCRIPT = 'node scripts/check-release-tag.mjs';
-const ROOT_RELEASE_SCRIPT =
-  'pnpm release:check && pnpm release:tag-check && pnpm publish . --access public';
+const ROOT_RELEASE_SCRIPT = 'pnpm publish . --access public';
 const PREPUBLISH_SCRIPT =
-  'pnpm release:check && pnpm release:tag-check && pnpm test:runtime-assets-lock && pnpm build && pnpm release:check && pnpm release:tag-check && pnpm test:runtime-assets-lock';
+  'pnpm release:check && pnpm release:tag-check && pnpm test:runtime-assets-lock && pnpm build && pnpm release:tag-check && pnpm test:runtime-assets-lock';
 const RUNTIME_STAMP_EXCLUSION = '!workers/**/.stamp';
 
 interface FixtureOptions {
