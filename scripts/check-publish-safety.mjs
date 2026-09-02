@@ -17,10 +17,12 @@ const RETIRED_INTERNAL_PACKAGE_NAMES = new Set([
   '@tracecode/harness-python',
 ]);
 const RELEASE_CHECK_SCRIPT = 'node scripts/check-publish-safety.mjs';
+const RELEASE_TAG_CHECK_SCRIPT = 'node scripts/check-release-tag.mjs';
 const ROOT_RELEASE_SCRIPT =
-  'pnpm release:check && pnpm publish . --access public';
+  'pnpm release:check && pnpm release:tag-check && pnpm publish . --access public';
 const PREPUBLISH_SCRIPT =
-  'pnpm release:check && pnpm test:runtime-assets-lock && pnpm build && pnpm release:check && pnpm test:runtime-assets-lock';
+  'pnpm release:check && pnpm release:tag-check && pnpm test:runtime-assets-lock && pnpm build && pnpm release:check && pnpm release:tag-check && pnpm test:runtime-assets-lock';
+const RUNTIME_STAMP_EXCLUSION = '!workers/**/.stamp';
 const WORKSPACE_SCOPE_ENVIRONMENT_KEYS = [
   'npm_config_filter',
   'npm_config_recursive',
@@ -223,11 +225,17 @@ function assertRootReleaseConfiguration(rootManifest, npmrcSource) {
   if (rootManifest.scripts?.['release:check'] !== RELEASE_CHECK_SCRIPT) {
     fail(`release:check must be ${JSON.stringify(RELEASE_CHECK_SCRIPT)}`);
   }
+  if (rootManifest.scripts?.['release:tag-check'] !== RELEASE_TAG_CHECK_SCRIPT) {
+    fail(`release:tag-check must be ${JSON.stringify(RELEASE_TAG_CHECK_SCRIPT)}`);
+  }
   if (rootManifest.scripts?.['release:root'] !== ROOT_RELEASE_SCRIPT) {
     fail(`release:root must publish only the workspace root via ${JSON.stringify(ROOT_RELEASE_SCRIPT)}`);
   }
   if (rootManifest.scripts?.prepublishOnly !== PREPUBLISH_SCRIPT) {
     fail(`prepublishOnly must audit before and after the build via ${JSON.stringify(PREPUBLISH_SCRIPT)}`);
+  }
+  if (!Array.isArray(rootManifest.files) || !rootManifest.files.includes(RUNTIME_STAMP_EXCLUSION)) {
+    fail(`root package files must exclude runtime lock metadata via ${JSON.stringify(RUNTIME_STAMP_EXCLUSION)}`);
   }
   if (npmrcValue(npmrcSource, 'include-workspace-root') !== 'false') {
     fail('.npmrc must set include-workspace-root=false so ordinary recursive commands exclude the root release');

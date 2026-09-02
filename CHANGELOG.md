@@ -87,6 +87,12 @@ This repo uses Git tags as release boundaries. Version notes below summarize wha
 
 ### Fixed
 
+- Release publication now fails unless the clean checkout, local version tag,
+  and remote version tag all resolve to the same exact commit, keeping the
+  generated modified-runtime source link available at publication time.
+- Runtime materialization stamp files are excluded generically from the npm
+  package so the installed `workers/` tree reconciles exactly with the runtime
+  asset lock.
 - Published the finalized 0.17 runtime tree under a new immutable release
   identity so consumers can verify an exact asset inventory without inheriting
   stale objects from the previously occupied 0.17.0 CDN prefix.

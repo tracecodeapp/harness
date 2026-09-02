@@ -60,6 +60,10 @@ test('published package has only TraceKernel and Judge code entrypoints', async 
     Array.isArray(manifest.files) && manifest.files.includes('!dist/**/*.map'),
     'the release tarball must not republish generated dist source maps'
   );
+  assert.ok(
+    Array.isArray(manifest.files) && manifest.files.includes('!workers/**/.stamp'),
+    'runtime materialization stamps must stay outside the published asset inventory'
+  );
   for (const retired of RETIRED_EXPORTS) {
     assert.equal(
       manifest.exports?.[retired],

@@ -1646,7 +1646,7 @@ var package_default = {
     "!workers/java/src",
     "!workers/java/src/**",
     "!workers/javascript/javascript-libraries-entry.js",
-    "!workers/vendor/csharp/.stamp",
+    "!workers/**/.stamp",
     "!workers/vendor/csharp-compiler",
     "!workers/vendor/csharp-compiler/**",
     "!workers/vendor/csharp-role-artifacts",
@@ -1682,9 +1682,10 @@ var package_default = {
     "./package.json": "./package.json"
   },
   scripts: {
-    prepublishOnly: "pnpm release:check && pnpm test:runtime-assets-lock && pnpm build && pnpm release:check && pnpm test:runtime-assets-lock",
+    prepublishOnly: "pnpm release:check && pnpm release:tag-check && pnpm test:runtime-assets-lock && pnpm build && pnpm release:check && pnpm release:tag-check && pnpm test:runtime-assets-lock",
     "release:check": "node scripts/check-publish-safety.mjs",
-    "release:root": "pnpm release:check && pnpm publish . --access public",
+    "release:tag-check": "node scripts/check-release-tag.mjs",
+    "release:root": "pnpm release:check && pnpm release:tag-check && pnpm publish . --access public",
     "version:sync": "node scripts/sync-workspace-versions.mjs",
     "version:check": "node scripts/sync-workspace-versions.mjs --check",
     build: "pnpm generate:runtime-info && pnpm generate:python-harness && pnpm generate:kernel-policy && pnpm generate:typescript-project-libs && pnpm generate:javascript-project-worker && pnpm generate:javascript-ses-worker && pnpm generate:tracekernel-syscall-client && pnpm generate:tracekernel-local-java-host && pnpm generate:java-helper && pnpm sync:package-assets && pnpm generate:runtime-assets-lock && pnpm generate:runtime-open-source-info && pnpm build:tracekernel && pnpm exec tsup --config tsup.runtime-contracts.config.ts && pnpm build:browser-host && pnpm exec tsup && pnpm rewrite:root-declarations && pnpm --dir packages/judge build",

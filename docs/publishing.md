@@ -24,16 +24,32 @@ Run the non-mutating audit directly:
 pnpm release:check
 ```
 
-When a release version and changelog are already prepared, publish only through:
+When a release version and changelog are already prepared, merge the reviewed
+release tree, create an annotated `v<version>` tag on that exact commit, and
+push the tag to `origin`. Then publish only from the clean tagged checkout:
+
+```bash
+git tag -a v<version> -m "v<version>"
+git push origin refs/tags/v<version>
+pnpm release:tag-check
+```
+
+The tag is part of the release contract because generated open-source metadata
+links modified runtime sources to that immutable GitHub ref. The tag check
+fails unless the local and remote tag both resolve to the current commit and
+the checkout is clean.
+
+Publish only through:
 
 ```bash
 pnpm release:root
 ```
 
 That command targets the root directory explicitly and retains pnpm's normal
-git and registry checks. It does not bump versions, create tags, or push Git
-state. Recursive, filtered, and workspace-scoped publish commands are rejected;
-they are not alternative release entrypoints.
+git and registry checks. It verifies but does not create or push the release
+tag. It does not bump versions or mutate Git state. Recursive, filtered, and
+workspace-scoped publish commands are rejected; they are not alternative
+release entrypoints.
 
 The structural audit intentionally fails closed when a workspace glob becomes
 too complex to inventory. Extend the audit and its fixture tests before
