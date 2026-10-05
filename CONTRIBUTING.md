@@ -55,3 +55,7 @@ If you touch the browser SDK surface, verify all of these still work:
 - the standalone boundary guard
 
 For larger API or package-surface changes, open an issue or discussion first.
+
+## Resuming a paused checkout
+
+Run `node scripts/setup-local.mjs`. See [local development](docs/local-development.md).
