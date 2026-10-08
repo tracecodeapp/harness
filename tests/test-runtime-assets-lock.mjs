@@ -29,7 +29,7 @@ assert.equal('provenance' in lock.engineDependencies.tracecc, false);
 assert.equal('descriptor' in lock.engineDependencies.tracejvm, false);
 assert.equal('packageManifest' in lock.engineDependencies.tracejvm, false);
 assert.equal(lock.engineDependencies.tracecc.package.name, '@tracecode/tracecc');
-assert.equal(lock.engineDependencies.tracecc.package.version, '0.1.0');
+assert.equal(lock.engineDependencies.tracecc.package.version, '0.1.2');
 assert.equal(lock.engineDependencies.tracecc.package.license, 'AGPL-3.0-only');
 assert.match(
   typeof lock.engineDependencies.tracecc.package.repository === 'string'
