@@ -143,6 +143,7 @@ async function main(): Promise<void> {
               receipts.push({ command, elapsedMs: Math.round(performance.now()-started), ...result });
             }
             receipts.push({ command: `printf 'café\\n' | command ${executable}`, input: 'café\n', ...await workspace.runCommand(`printf 'café\\n' | command ${executable}`, { presentation: 'terminal' }) });
+            receipts.push({ command: `printf 'first\\n' | ${executable}; printf 'second\\n' | ${executable}`, laterInput: true, ...await workspace.runCommand(`printf 'first\\n' | ${executable}; printf 'second\\n' | ${executable}`, { presentation: 'terminal' }) });
             const liveCommand = executable.replace('input.', 'live.');
             const livePipe = createRuntimeCommandStdinPipe();
             let ready = false;
@@ -176,6 +177,10 @@ async function main(): Promise<void> {
         await writeFile(receiptPath, JSON.stringify(results, null, 2));
       }
       for (const result of results) {
+        if (result.laterInput) {
+          assertCondition(result.exitCode === 0 && result.stdout === 'OUT:66697273740a\nOUT:7365636f6e640a\n' && result.stderr === 'ERR:66697273740a\nERR:7365636f6e640a\n', `later input failure ${JSON.stringify(result)}`);
+          continue;
+        }
         if (result.cancelled) { assertCondition(result.exitCode !== 0, 'blocked stdin cancellation must terminate'); continue; }
         const expectedInput = result.recovery ? 'again\n' : result.input !== undefined ? result.input : result.command.includes('data.txt') ? 'file\n' : result.command.includes("'hello") ? 'hello\n' : '';
         assertCondition(result.exitCode === 0 && !result.error && result.stdout === `${result.live ? "READY\n" : ""}OUT:${Buffer.from(expectedInput).toString("hex")}\n` && result.stderr === `ERR:${Buffer.from(expectedInput).toString("hex")}\n`, `stdin failure ${JSON.stringify(result)}`);

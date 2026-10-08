@@ -52,6 +52,10 @@ try {
       assert.equal(result.stderr, `err:${input}`);
     }
   }
+  const laterInput = await workspace.runCommand("printf 'first\\n' | node input.js; printf 'second\\n' | node input.js", { presentation: 'terminal' });
+  assert.equal(laterInput.exitCode, 0);
+  assert.equal(laterInput.stdout, 'out:first\nout:second\n');
+  assert.equal(laterInput.stderr, 'err:first\nerr:second\n');
   const live = createRuntimeCommandStdinPipe();
   let ready = new Promise<void>(resolve => { runtimeStarted = resolve; });
   const liveRun = workspace.runCommand('node input.js', { presentation: 'terminal', stdinPipe: live });
