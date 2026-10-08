@@ -1,0 +1,125 @@
+name: Release validation
+
+on:
+  workflow_dispatch:
+    inputs:
+      candidate_sha:
+        description: Full immutable Harness commit SHA to validate
+        required: true
+        type: string
+  push:
+    branches:
+      - codex/release-validation-20261008
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-validation
+  cancel-in-progress: false
+
+jobs:
+  full-suite:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    env:
+      CANDIDATE_SHA: ${{ inputs.candidate_sha || '4d2c3202a4ab788d9b7d47d897a6d9bbf725714b' }}
+      TRACECODE_TEST_JOBS: '1'
+    steps:
+      - name: Validate immutable input
+        shell: bash
+        run: |
+          [[ "$CANDIDATE_SHA" =~ ^[0-9a-f]{40}$ ]] || { echo 'A full lowercase commit SHA is required'; exit 1; }
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ env.CANDIDATE_SHA }}
+          persist-credentials: false
+      - name: Record candidate identity
+        shell: bash
+        run: |
+          mkdir -p "$RUNNER_TEMP/harness-validation"
+          test "$(git rev-parse HEAD)" = "$CANDIDATE_SHA"
+          git rev-parse HEAD > "$RUNNER_TEMP/harness-validation/head.txt"
+          git status --porcelain > "$RUNNER_TEMP/harness-validation/initial-status.txt"
+      - uses: pnpm/action-setup@f40ffcd9367d9f12939873eb1018b921a783ffaa # v4
+        with:
+          version: 10.4.1
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 22.18.0
+      - uses: actions/setup-java@cf277c60eb25467037889841efdb72551f06f6c3 # v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - uses: actions/setup-dotnet@67a3573c9a986a3f9c594539f4ab511d57bb3ce9 # v4
+        env:
+          DOTNET_INSTALL_DIR: ${{ runner.temp }}/harness-dotnet
+        with:
+          dotnet-version: '10.0.107'
+      - name: Admit toolchain and physical resources
+        shell: bash
+        run: |
+          set -euo pipefail
+          {
+            node --version
+            pnpm --version
+            test "$(node --version)" = v22.18.0
+            test "$(pnpm --version)" = 10.4.1
+            python3 --version
+            java -version
+            javac -version
+            dotnet --version
+            clang++ --version
+            printf '#include <iostream>\nint main() { std::cout << "native-clang-admission"; }\n' | clang++ -std=c++23 -O0 -x c++ - -o "$RUNNER_TEMP/harness-validation/native-admission"
+            test "$("$RUNNER_TEMP/harness-validation/native-admission")" = native-clang-admission
+            test "$(dotnet --version)" = 10.0.107
+            python3 -c 'from pathlib import Path; import shutil; values=dict(line.split(":", 1) for line in Path("/proc/meminfo").read_text().splitlines()); available=int(values["MemAvailable"].split()[0])*1024; free=shutil.disk_usage(".").free; print(f"Available RAM={available} bytes; free disk={free} bytes"); assert available >= 12*1024**3, "Insufficient available memory"; assert free >= 8*1024**3, "Insufficient free disk"'
+            uname -a
+            cat /proc/meminfo
+            df -h .
+          } 2>&1 | tee "$RUNNER_TEMP/harness-validation/toolchain.log"
+      - name: Install frozen dependencies and exact browsers
+        shell: bash
+        run: |
+          set -euo pipefail
+          pnpm install --frozen-lockfile 2>&1 | tee "$RUNNER_TEMP/harness-validation/install.log"
+          # Provision supported browser OS dependencies only on the disposable hosted runner.
+          pnpm exec playwright install --with-deps chromium firefox webkit 2>&1 | tee "$RUNNER_TEMP/harness-validation/browser-install.log"
+      - name: Admit every browser engine
+        shell: bash
+        run: |
+          set -euo pipefail
+          node --input-type=module - <<'JS' 2>&1 | tee "$RUNNER_TEMP/harness-validation/browser-admission.log"
+          import { chromium, firefox, webkit } from 'playwright';
+          import { createRequire } from 'node:module';
+          const require = createRequire(import.meta.url);
+          if (require('playwright/package.json').version !== '1.58.2') throw new Error('Unexpected Playwright version');
+          for (const engine of [chromium, firefox, webkit]) {
+            const browser = await engine.launch({ headless: true, timeout: 30000 });
+            try {
+              const page = await browser.newPage();
+              const result = await page.evaluate(() => ({ userAgent: navigator.userAgent, binary: new Uint8Array([0, 255])[1] }));
+              if (result.binary !== 255) throw new Error('Browser evaluation failed');
+              console.log(engine.name(), engine.executablePath(), JSON.stringify(result));
+            } finally { await browser.close(); }
+          }
+          JS
+      - name: Run canonical full suite
+        shell: bash
+        run: |
+          set -euo pipefail
+          node --import tsx scripts/run-test-suite.ts --all --jobs=1 --keep-going 2>&1 | tee "$RUNNER_TEMP/harness-validation/full-suite.log"
+      - name: Record final checkout state
+        if: always()
+        shell: bash
+        run: |
+          mkdir -p "$RUNNER_TEMP/harness-validation"
+          git rev-parse HEAD > "$RUNNER_TEMP/harness-validation/final-head.txt"
+          git status --porcelain > "$RUNNER_TEMP/harness-validation/final-status.txt"
+          df -h . > "$RUNNER_TEMP/harness-validation/final-disk.txt"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        if: always()
+        with:
+          name: release-validation-${{ env.CANDIDATE_SHA }}-${{ github.run_id }}
+          path: ${{ runner.temp }}/harness-validation/
+          if-no-files-found: error
