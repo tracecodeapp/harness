@@ -110,7 +110,7 @@ import type {
   TypeScriptProjectCommandRunner,
 } from './index';
 import { DEFAULT_CWD, TRACEKERNEL_BIN_PATH, TRACEKERNEL_EXEC_COMMAND } from './constants';
-import { applyCommandResultFiles, filterReadonlySnapshotDeletions, filterReadonlySnapshotFiles, snapshotCommandContext, type RuntimeFileChangeObserver } from './fs-observed';
+import { base64FromBytes, commandContextForFs, applyCommandResultFiles, filterReadonlySnapshotDeletions, filterReadonlySnapshotFiles, snapshotCommandContext, type RuntimeFileChangeObserver } from './fs-observed';
 import { decodeCommandStdin, parsePythonInvocation, isCommandResult, parseNodeInvocation, isNodeCommandResult, parseTscInvocation, isTscCommandResult, expandJavaCommandArgfiles, parseJavacInvocation, isJavacCommandResult, primaryJavacSourceArg, parseJavaInvocation, isJavaCommandResult, extractJarMainClass, parseCppCompileInvocation, isCppCompileCommandResult, cppOutputPathFromArgs, parseDotnetInvocation, isDotnetCommandResult } from './arg-parsers';
 import { expandParsedScriptInvocation, expandWorkspaceGlobArgs, resolveWorkspaceCommandPath, resolveWorkspaceContextPath, toProjectPath } from './paths';
 import type { NormalizedRuntimePackageManagerConfig } from './package-manager';
@@ -1082,12 +1082,36 @@ export function createCppProjectCommands(
     }, ctx);
     const commandResult = await applyCommandResultFiles(ctx, workspaceRoot, result, options.onFileChange);
     if (commandResult.exitCode === 0) {
-      options.recordExecutablePath?.(toProjectPath(workspaceRoot, resolveWorkspaceCommandPath(workspaceRoot, ctx.cwd, cppOutputPathFromArgs(parsed.args), options.workspaceAlias)));
+      const outputPath = resolveWorkspaceCommandPath(workspaceRoot, ctx.cwd, cppOutputPathFromArgs(parsed.args), options.workspaceAlias);
+      // Linked command artifacts need durable execute bits. The loader registry
+      // must not be the only reason a freshly compiled program can run.
+      const outputStat = await ctx.fs.stat(outputPath).catch(() => null);
+      const linked = !parsed.args.includes('-c') && !parsed.args.includes('-S') && !parsed.args.includes('-E');
+      if (outputStat?.isFile && linked) {
+        await ctx.fs.chmod(outputPath, 0o755);
+        // chmod mutates TKFS metadata but does not emit a runtime file-change.
+        // Consumers mirroring compiler events need the same executable mode as
+        // the authoritative snapshot, including artifacts written live.
+        const updatedStat = await ctx.fs.stat(outputPath);
+        options.onFileChange?.({
+          path: toProjectPath(workspaceRoot, outputPath),
+          contents: base64FromBytes(await ctx.fs.readFileBuffer(outputPath)),
+          encoding: 'base64',
+          mode: updatedStat.mode & 0o7777,
+          ...(updatedStat.mtime instanceof Date ? { mtimeMs: updatedStat.mtime.getTime() } : {}),
+        }, 'final-diff', commandContextForFs(ctx.fs));
+        options.recordExecutablePath?.(toProjectPath(workspaceRoot, outputPath));
+      }
     }
     return commandResult;
   };
 
   const runExecutable = (defaultPath: string) => async (args: string[], ctx: CommandContext): Promise<RuntimeCommandResult> => {
+    const executablePath = resolveWorkspaceCommandPath(workspaceRoot, ctx.cwd, defaultPath, options.workspaceAlias);
+    const stat = await ctx.fs.stat(executablePath).catch(() => null);
+    if (stat?.isFile && (stat.mode & 0o111) === 0) {
+      return { stdout: '', stderr: `bash: ${defaultPath}: Permission denied\n`, exitCode: 126 };
+    }
     let expandedArgs: string[];
     try {
       expandedArgs = await expandWorkspaceGlobArgs(args, ctx, workspaceRoot, options.workspaceAlias);

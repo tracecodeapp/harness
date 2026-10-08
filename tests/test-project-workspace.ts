@@ -3494,6 +3494,8 @@ async function testCppCommandAdapter(): Promise<void> {
     ],
     cppRunner: async (request) => {
       requests.push(request);
+      const outputIndex = request.args.lastIndexOf('-o');
+      const outputPath = outputIndex >= 0 ? request.args[outputIndex + 1] : 'a.out';
       return {
         stdout: [
           `source=${request.source}`,
@@ -3504,7 +3506,7 @@ async function testCppCommandAdapter(): Promise<void> {
         stderr: '',
         exitCode: 0,
         files: request.source === 'compile'
-          ? [{ path: 'a.out', contents: Buffer.from('fake-binary').toString('base64'), encoding: 'base64' }]
+          ? [{ path: outputPath, contents: Buffer.from('fake-binary').toString('base64'), encoding: 'base64' }]
           : [{ path: 'generated.txt', contents: 'created\n' }],
       };
     },
@@ -3541,14 +3543,14 @@ async function testCppCommandAdapter(): Promise<void> {
   const namedCompile = await workspace.runCommand('clang++ -std=c++17 main.cpp helper.cpp -o app');
   assertCondition(namedCompile.exitCode === 0, 'clang++ adapter should compile named executable outputs');
   assertCondition(
-    namedCompile.stdout === 'source=compile\nscript=main.cpp\nargs=-std=c++17,main.cpp,helper.cpp,-o,app\nfiles=a.out,bin/app.out,data/a.txt,data/b.txt,helper.hpp,main.cpp\n',
+    namedCompile.stdout === 'source=compile\nscript=main.cpp\nargs=-std=c++17,main.cpp,helper.cpp,-o,app\nfiles=a.out,bin/app.out,c-app,cc-app,data/a.txt,data/b.txt,helper.hpp,main.cpp\n',
     `clang++ adapter should preserve named output args, received ${JSON.stringify(namedCompile.stdout)}`
   );
 
   const run = await workspace.runCommand('./a.out data/*.txt');
   assertCondition(run.exitCode === 0, './a.out adapter should succeed');
   assertCondition(
-    run.stdout === 'source=run\nscript=a.out\nargs=data/a.txt,data/b.txt\nfiles=a.out,bin/app.out,data/a.txt,data/b.txt,helper.hpp,main.cpp\n',
+    run.stdout === 'source=run\nscript=a.out\nargs=data/a.txt,data/b.txt\nfiles=a.out,app,bin/app.out,c-app,cc-app,data/a.txt,data/b.txt,helper.hpp,main.cpp\n',
     `./a.out adapter should receive executable request, received ${JSON.stringify(run.stdout)}`
   );
   assertCondition(await workspace.readFile('generated.txt') === 'created\n', './a.out adapter should apply generated files');
@@ -3556,14 +3558,14 @@ async function testCppCommandAdapter(): Promise<void> {
   const namedRun = await workspace.runCommand('./app gamma delta');
   assertCondition(namedRun.exitCode === 0, './app adapter should run named executable outputs');
   assertCondition(
-    namedRun.stdout === 'source=run\nscript=app\nargs=gamma,delta\nfiles=a.out,bin/app.out,data/a.txt,data/b.txt,generated.txt,helper.hpp,main.cpp\n',
+    namedRun.stdout === 'source=run\nscript=app\nargs=gamma,delta\nfiles=a.out,app,bin/app.out,c-app,cc-app,data/a.txt,data/b.txt,generated.txt,helper.hpp,main.cpp\n',
     `./app adapter should route named executable paths through the C++ runner, received ${JSON.stringify(namedRun.stdout)}`
   );
 
   const repeatedNamedRun = await workspace.runCommand('./app data/*.txt');
   assertCondition(repeatedNamedRun.exitCode === 0, './app adapter should keep named executable outputs runnable with glob args');
   assertCondition(
-    repeatedNamedRun.stdout === 'source=run\nscript=app\nargs=data/a.txt,data/b.txt\nfiles=a.out,bin/app.out,data/a.txt,data/b.txt,generated.txt,helper.hpp,main.cpp\n',
+    repeatedNamedRun.stdout === 'source=run\nscript=app\nargs=data/a.txt,data/b.txt\nfiles=a.out,app,bin/app.out,c-app,cc-app,data/a.txt,data/b.txt,generated.txt,helper.hpp,main.cpp\n',
     `./app adapter should expand argv globs on repeated named executable runs, received ${JSON.stringify(repeatedNamedRun.stdout)}`
   );
 
@@ -3575,7 +3577,7 @@ async function testCppCommandAdapter(): Promise<void> {
     `virtual executable loader should expand executable and argv globs, received ${JSON.stringify(explicitRun)}`
   );
   assertCondition(
-    explicitRun.stdout === 'source=run\nscript=bin/app.out\nargs=data/a.txt,data/b.txt\nfiles=a.out,bin/app.out,data/a.txt,data/b.txt,generated.txt,helper.hpp,main.cpp\n',
+    explicitRun.stdout === 'source=run\nscript=bin/app.out\nargs=data/a.txt,data/b.txt\nfiles=a.out,app,bin/app.out,c-app,cc-app,data/a.txt,data/b.txt,generated.txt,helper.hpp,main.cpp\n',
     `virtual executable loader should expand script and argv globs, received ${JSON.stringify(explicitRun.stdout)}`
   );
   assertCondition(requests.length === 10, 'cpp runner should be invoked for compile variants and direct executable runs');
@@ -10249,7 +10251,10 @@ async function testBrowserProjectWorkspaceFactory(): Promise<void> {
             stdout: `${request.source}:${request.scriptPath}:${request.args.join(',')}:${request.project.files.length}:${request.project.directories?.length ?? 0}\n`,
             stderr: '',
             exitCode: 0,
-            files: [{ path: 'cpp.txt', contents: 'cpp\n' }],
+            files: [
+              { path: 'cpp.txt', contents: 'cpp\n' },
+              ...(request.source === 'compile' ? [{ path: 'a.out', contents: Buffer.from('fake-binary').toString('base64'), encoding: 'base64' as const }] : []),
+            ],
           };
         },
         terminate() {},
@@ -10414,7 +10419,7 @@ async function testBrowserProjectWorkspaceFactory(): Promise<void> {
     });
     assertCondition(cppRun.exitCode === 0, `browser project workspace C++ executable should run: ${cppRun.stderr}`);
     assertCondition(
-      cppRun.stdout === 'run:a.out:alpha,beta:14:2\n',
+      cppRun.stdout === 'run:a.out:alpha,beta:15:2\n',
       `browser project workspace should route direct C++ executable runs with directories: ${cppRun.stdout}`
     );
     assertCondition(
@@ -10422,7 +10427,7 @@ async function testBrowserProjectWorkspaceFactory(): Promise<void> {
         event.type === 'output' &&
         event.stream === 'stdout' &&
         event.device === '/dev/stdout' &&
-        event.data === 'run:a.out:alpha,beta:14:2\n'
+        event.data === 'run:a.out:alpha,beta:15:2\n'
       ),
       `browser project workspace should emit final stdout events for direct C++ executable runs: ${JSON.stringify(cppRunEvents)}`
     );

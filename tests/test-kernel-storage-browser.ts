@@ -37,6 +37,10 @@ await build({
   target: 'es2022',
   outfile: bundlePath,
   logLevel: 'silent',
+  alias: {
+    zlib: resolve('packages/tracekernel/src/zlib-browser-shim.ts'),
+    'node:zlib': resolve('packages/tracekernel/src/zlib-browser-shim.ts'),
+  },
 });
 const bundle = readFileSync(bundlePath);
 
@@ -92,6 +96,19 @@ try {
       }
       if (result.afterClear !== null || JSON.stringify(result.revisions) !== JSON.stringify([1, 2, 3])) {
         throw new Error(`${engine} failed the IndexedDB clear/revision contract: ${JSON.stringify(result)}`);
+      }
+      const executableInput = { databaseName: `tracecode-executable-${engine}-${Date.now()}`, keyBytes: Array.from({ length: 32 }, (_, index) => index), seed: true };
+      const before = await page.evaluate(input => {
+        if (!globalThis.runExecutableStorageBrowserTest) throw new Error('Missing executable storage fixture');
+        return globalThis.runExecutableStorageBrowserTest(input);
+      }, executableInput);
+      await page.reload();
+      const after = await page.evaluate(input => {
+        if (!globalThis.runExecutableStorageBrowserTest) throw new Error('Missing executable storage fixture after reload');
+        return globalThis.runExecutableStorageBrowserTest(input);
+      }, { ...executableInput, seed: false });
+      if (before.mode !== 0o755 || after.mode !== 0o755 || after.script !== 0 || after.binary !== 0) {
+        throw new Error(`${engine} failed executable encrypted reload: ${JSON.stringify({ before, after })}`);
       }
       console.log(`PASS: encrypted Project persistence in ${engine}`);
     } finally {

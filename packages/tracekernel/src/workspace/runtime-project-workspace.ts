@@ -1,4 +1,5 @@
 import { markShellStdinInAst } from './shell-stdin';
+import { isWasiCommandExecutable } from './executable-format';
 import * as Effect from 'effect/Effect';
 import * as Exit from 'effect/Exit';
 import * as Scope from 'effect/Scope';
@@ -1054,10 +1055,13 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
     // runtime engine itself; isolate the language invocation that it starts.
     // Compiled virtual executables attach an engine directly and need a child.
     if (name === TRACEKERNEL_EXEC_COMMAND) {
-      const executablePath = toProjectPath(this.cwd, resolveWorkspaceCommandPath(
-        this.cwd, ctx.cwd, args[0] ?? '', this.kernelInfo.workspaceAlias
-      ));
-      if (!this.virtualExecutableRecords.has(executablePath)) return execute(ctx);
+      try {
+        const invocation = await this.resolveShellExecutableInvocation(args[0] ?? '', args.slice(1), ctx);
+        if (!invocation.virtualExecutable) return execute(ctx);
+      } catch {
+        // The executor owns shell expansion diagnostics and exit status.
+        return execute(ctx);
+      }
     }
     const words = parseSimpleCommandWords(parentContext.process.command);
     // A direct runtime submission already has its own process. A runtime
@@ -4483,6 +4487,23 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
     this.virtualExecutableRecords.set(record.path, record);
   }
 
+  /** Expansion and loader classification must agree at ownership and dispatch. */
+  private async resolveShellExecutableInvocation(
+    executable: string,
+    args: string[],
+    ctx: CommandContext
+  ) {
+    const invocation = await expandParsedScriptInvocation(
+      ctx, this.cwd, executable, args, this.kernelInfo.workspaceAlias
+    );
+    return {
+      ...invocation,
+      virtualExecutable: invocation.scriptFile
+        ? await this.resolveVirtualExecutableRecord(invocation.scriptFile, ctx.cwd)
+        : null,
+    };
+  }
+
   private async runTraceKernelExec(args: string[], ctx: CommandContext): Promise<RuntimeCommandResult> {
     const executable = args[0];
     if (!executable) {
@@ -4490,7 +4511,7 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
     }
     let expandedInvocation: { scriptFile: string | null; scriptArgs: string[] };
     try {
-      expandedInvocation = await expandParsedScriptInvocation(ctx, this.cwd, executable, args.slice(1), this.kernelInfo.workspaceAlias);
+      expandedInvocation = await this.resolveShellExecutableInvocation(executable, args.slice(1), ctx);
     } catch (error) {
       return { stdout: '', stderr: `${error instanceof Error ? error.message : String(error)}\n`, exitCode: 1 };
     }
@@ -6473,6 +6494,29 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
     });
   }
 
+  /** Shared classification for shell ownership and executable dispatch. */
+  private async resolveVirtualExecutableRecord(
+    executable: string,
+    cwd: string
+  ): Promise<{ record: VirtualExecutableRecord; mode: number } | null> {
+    const executablePath = toProjectPath(this.cwd, resolveWorkspaceCommandPath(
+      this.cwd, cwd, executable, this.kernelInfo.workspaceAlias
+    ));
+    let record = this.virtualExecutableRecords.get(executablePath);
+    // Loader registrations are process-local. Restored WASI command modules
+    // select the same sandboxed runner by their versioned binary format, never
+    // by serialized functions, paths, or privileged host capabilities.
+    const absolutePath = this.toWorkspacePath(executablePath);
+    const stat = await this.bash.fs.stat(absolutePath).catch(() => null);
+    if (!stat?.isFile) return null;
+    if (!record) {
+      const bytes = await this.bash.fs.readFileBuffer(absolutePath);
+      if (!isWasiCommandExecutable(bytes)) return null;
+      record = { path: executablePath, kind: 'cpp' };
+    }
+    return { record, mode: stat.mode };
+  }
+
   private async executeVirtualExecutable(request: {
     executable: string;
     args: string[];
@@ -6481,9 +6525,12 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
     stdinPipe?: RuntimeCommandOptions['stdinPipe'];
     commandContext: RuntimeCommandExecutionContext;
   }): Promise<RuntimeCommandResult | null> {
-    const executablePath = toProjectPath(this.cwd, resolveWorkspaceCommandPath(this.cwd, request.cwd, request.executable, this.kernelInfo.workspaceAlias));
-    const record = this.virtualExecutableRecords.get(executablePath);
-    if (!record) return null;
+    const executable = await this.resolveVirtualExecutableRecord(request.executable, request.cwd);
+    if (!executable) return null;
+    const { record, mode } = executable;
+    if ((mode & 0o111) === 0) {
+      return { stdout: '', stderr: `bash: ${request.executable}: Permission denied\n`, exitCode: 126 };
+    }
 
     if (record.kind !== 'cpp' || !this.cppRunner) {
       return { stdout: '', stderr: `bash: ${request.executable}: Exec format error\n`, exitCode: 126 };
@@ -7379,7 +7426,9 @@ export async function createRuntimeWorkspace(
     await workspace.mkdir(directory);
   }
   if (sessionFiles.length > 0) {
-    await workspace.withSuspendedReadonlyPolicy(() => workspace.writeFiles(sessionFiles));
+    await workspace.withSuspendedReadonlyPolicy(async () => {
+      for (const file of sessionFiles) await workspace.applyKernelFileChange(file);
+    });
   }
   if (sessionSymlinks.length > 0) {
     await workspace.withSuspendedReadonlyPolicy(async () => {
@@ -7402,7 +7451,7 @@ export async function createRuntimeWorkspace(
         }
         throw createRuntimeKernelReadonlyFileError(path, 'hydrate');
       }
-      await workspace.writeFile(path, file.contents, file.encoding);
+      await workspace.applyKernelFileChange({ ...file, path });
     }
   }
   for (const symlink of suppliedSymlinks) await workspace.applyKernelFileChange(symlink);

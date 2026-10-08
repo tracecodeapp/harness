@@ -265,8 +265,8 @@ test('executable script dispatch publishes nested runtime output once', async ()
   const terminal = workspace.createTerminalSession();
   try {
     const result = await terminal.run('chmod +x node-tool; ./node-tool');
-    assert.equal(result.exitCode, 0);
-    assert.equal(result.stdout, 'hello\n');
+    assert.equal(result.exitCode, 0, JSON.stringify(result));
+    assert.equal(result.stdout, 'hello\n', JSON.stringify(result));
   } finally { terminal.close(); workspace.dispose(); }
 });
 
@@ -284,5 +284,70 @@ test('kernel syscall child writes also advance only their owning shell generatio
     assert.equal(result.exitCode, 0);
     assert.equal(result.error, undefined);
     assert.equal(await workspace.exists('result.txt'), false);
+  } finally { await workspace.destroy(); }
+});
+
+
+test('restored WASI composition uses independent leases and preserves executable checks', async () => {
+  const binary = Buffer.from([
+    0,97,115,109,1,0,0,0,
+    1,4,1,96,0,0, 3,2,1,0, 5,3,1,0,1,
+    7,19,2,6,109,101,109,111,114,121,2,0,6,95,115,116,97,114,116,0,0,
+    10,4,1,2,0,11,
+  ]).toString('base64');
+  const original = await createRuntimeWorkspace({ files: [
+    { path: 'app', contents: binary, encoding: 'base64', mode: 0o755 },
+    { path: 'bad', contents: Buffer.from([0,97,115,109,1,0,0,0]).toString('base64'), encoding: 'base64', mode: 0o755 },
+  ] });
+  const pids: number[] = [];
+  const released: number[] = [];
+  const restored = await createRuntimeWorkspace({
+    ...JSON.parse(JSON.stringify(await original.snapshot())),
+    kernel: { scheduler: { maxConcurrentCommands: 1 } },
+    cppRunner: async request => {
+      const pid = request.process!.pid;
+      pids.push(pid);
+      request.engineLease!.attach({ release: () => { released.push(pid); } });
+      return { stdout: 'ran\n', stderr: '', exitCode: 0 };
+    },
+  });
+  try {
+    const result = await restored.runCommand('./app && ./app', { presentation: 'terminal' });
+    assert.equal(result.exitCode, 0);
+    assert.equal(result.stdout, 'ran\nran\n');
+    assert.equal(new Set(pids).size, 2);
+    assert.equal(released.length, 2);
+    const wildcard = await restored.runCommand("true; tracekernel-exec './a*'; tracekernel-exec './a*'");
+    assert.equal(wildcard.exitCode, 0);
+    assert.equal(wildcard.stdout, 'ran\nran\n');
+    assert.equal(new Set(pids).size, 4);
+    assert.equal(released.length, 4);
+    await restored.runCommand('chmod -x app');
+    assert.equal((await restored.runCommand('./app && ./app')).exitCode, 126);
+    assert.equal(pids.length, 4, 'non-executable WASI bytes dispatched to the runner');
+    assert.notEqual((await restored.runCommand('./bad && ./bad')).exitCode, 0);
+    assert.equal(pids.length, 4, 'malformed bytes dispatched to the runner');
+  } finally { await restored.destroy(); await original.destroy(); }
+});
+
+
+test('registered virtual executable wildcard invocations also own independent leases', async () => {
+  const pids: number[] = [];
+  const workspace = await createRuntimeWorkspace({
+    files: [{ path: 'main.c', contents: '' }],
+    cppRunner: async request => {
+      if (request.source === 'compile') return { stdout: '', stderr: '', exitCode: 0,
+        files: [{ path: 'app-1', contents: 'fixture registered executable' }] };
+      pids.push(request.process!.pid);
+      request.engineLease!.attach({ release: () => undefined });
+      return { stdout: 'registered\n', stderr: '', exitCode: 0 };
+    },
+  });
+  try {
+    assert.equal((await workspace.runCommand('clang main.c -o app-1')).exitCode, 0);
+    const result = await workspace.runCommand("true; tracekernel-exec './app-*'; tracekernel-exec './app-*'");
+    assert.equal(result.exitCode, 0);
+    assert.equal(result.stdout, 'registered\nregistered\n');
+    assert.equal(new Set(pids).size, 2);
   } finally { await workspace.destroy(); }
 });
