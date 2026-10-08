@@ -52,9 +52,10 @@ produces durable0755. Automatically granting permission to old bytes would
 undo an intentional chmod-x. Fixed0755 for new linked artifacts is documented;
 compiler umask parity is not added here.
 
-Existing mock runners that report compilation success but never create an
-artifact no longer get an executable registry entry. Such fixtures should model
-actual output creation rather than retain dispatch of nonexistent files.
+Mock runners that report compilation success must create their actual output.
+Two existing project-workspace fixtures were corrected: the command adapter now
+writes each requested -o path, and the browser workspace mock creates a.out.
+Their snapshot expectations now include those real artifacts.
 
 Atime remains an existing unsupported boundary: the TKFS backing adapter ignores
 utimes atime and the regular-file snapshot walker omits it. This change restores
@@ -76,3 +77,9 @@ unbuilt dist CLI symlink and ignored optional build-script warnings were expecte
 - git diff --check passed.
 
 No broad compiler/corpus suite, publication, deployment, push or PR creation.
+
+Follow-up: ten selected existing project-workspace fixture functions passed in a
+disposable copy of the original monolithic test. Selection covered C++ adapters,
+first compound execution, browser factory/config/translation, language takehome,
+metadata consistency and readonly persistence hydration. This was a focused run,
+not the full native compiler project suite.
