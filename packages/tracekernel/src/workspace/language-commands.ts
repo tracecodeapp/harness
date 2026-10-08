@@ -110,7 +110,7 @@ import type {
   TypeScriptProjectCommandRunner,
 } from './index';
 import { DEFAULT_CWD, TRACEKERNEL_BIN_PATH, TRACEKERNEL_EXEC_COMMAND } from './constants';
-import { applyCommandResultFiles, filterReadonlySnapshotDeletions, filterReadonlySnapshotFiles, snapshotCommandContext, type RuntimeFileChangeObserver } from './fs-observed';
+import { base64FromBytes, commandContextForFs, applyCommandResultFiles, filterReadonlySnapshotDeletions, filterReadonlySnapshotFiles, snapshotCommandContext, type RuntimeFileChangeObserver } from './fs-observed';
 import { decodeCommandStdin, parsePythonInvocation, isCommandResult, parseNodeInvocation, isNodeCommandResult, parseTscInvocation, isTscCommandResult, expandJavaCommandArgfiles, parseJavacInvocation, isJavacCommandResult, primaryJavacSourceArg, parseJavaInvocation, isJavaCommandResult, extractJarMainClass, parseCppCompileInvocation, isCppCompileCommandResult, cppOutputPathFromArgs, parseDotnetInvocation, isDotnetCommandResult } from './arg-parsers';
 import { expandParsedScriptInvocation, expandWorkspaceGlobArgs, resolveWorkspaceCommandPath, resolveWorkspaceContextPath, toProjectPath } from './paths';
 import type { NormalizedRuntimePackageManagerConfig } from './package-manager';
@@ -1089,6 +1089,17 @@ export function createCppProjectCommands(
       const linked = !parsed.args.includes('-c') && !parsed.args.includes('-S') && !parsed.args.includes('-E');
       if (outputStat?.isFile && linked) {
         await ctx.fs.chmod(outputPath, 0o755);
+        // chmod mutates TKFS metadata but does not emit a runtime file-change.
+        // Consumers mirroring compiler events need the same executable mode as
+        // the authoritative snapshot, including artifacts written live.
+        const updatedStat = await ctx.fs.stat(outputPath);
+        options.onFileChange?.({
+          path: toProjectPath(workspaceRoot, outputPath),
+          contents: base64FromBytes(await ctx.fs.readFileBuffer(outputPath)),
+          encoding: 'base64',
+          mode: updatedStat.mode & 0o7777,
+          ...(updatedStat.mtime instanceof Date ? { mtimeMs: updatedStat.mtime.getTime() } : {}),
+        }, 'final-diff', commandContextForFs(ctx.fs));
         options.recordExecutablePath?.(toProjectPath(workspaceRoot, outputPath));
       }
     }

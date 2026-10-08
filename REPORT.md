@@ -90,3 +90,11 @@ stub. Its hidden-file assertions are unchanged. Four selected original hidden
 filesystem/actor/hydration hardening cases pass, along with tests typecheck. The
 focused copy required TSX_TSCONFIG_PATH=tsconfig.base.json (an initial attempt
 without that source alias setting could not resolve unbuilt package dist).
+
+Review follow-up: Greptile correctly identified that chmod changed authoritative
+TKFS permissions after compiler events had already emitted older metadata.
+Linked outputs now emit their final complete file-change after chmod, with bytes,
+mode and mtime. This also covers artifacts emitted only through live events.
+Six focused regressions pass; final-diff and live-only compiler event consumers
+both receive0755. Package and tests typechecks pass. This changes event output,
+not the snapshot/encryption schema or exported event union.

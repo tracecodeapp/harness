@@ -47,7 +47,13 @@ test('fresh compile survives a new workspace; chmod -x blocks before and after r
   let restored;
   let denied;
   try {
-    assert.equal((await workspace.runCommand('clang main.c -o app')).exitCode, 0);
+    const outputChanges: { mode?: number }[] = [];
+    assert.equal((await workspace.runCommand('clang main.c -o app', {
+      onEvent: event => {
+        if (event.type === 'file-change' && event.change.path === 'app' && 'contents' in event.change) outputChanges.push(event.change);
+      },
+    })).exitCode, 0);
+    assert.equal(outputChanges.at(-1)?.mode, 0o755, 'event consumers must receive the final executable permissions');
     assert.equal((await workspace.runCommand('./app')).stdout, 'ran:app\n');
     const snapshot = JSON.parse(JSON.stringify(await workspace.snapshot()));
     assert.equal(snapshot.files.find((entry: { path: string }) => entry.path === 'app').mode, 0o755);
@@ -92,5 +98,28 @@ test('compile-only outputs remain ordinary files and unrecognized binaries never
     assert.equal((await workspace.runCommand('./object')).stdout, 'ordinary\n');
     assert.notEqual((await workspace.runCommand('./bad')).exitCode, 0);
     assert.equal(runs, 0);
+  } finally { workspace.dispose(); }
+});
+
+test('live-only compiler output emits its durable executable metadata', async () => {
+  const modes: (number | undefined)[] = [];
+  const workspace = await createRuntimeWorkspace({
+    cppRunner: async request => {
+      if (request.source === 'compile') request.onEvent?.({
+        type: 'file-change', phase: 'live',
+        change: { path: 'live-app', contents: binary, encoding: 'base64' },
+      });
+      return { stdout: '', stderr: '', exitCode: 0 };
+    },
+  });
+  try {
+    const result = await workspace.runCommand('clang main.c -o live-app', {
+      onEvent: event => {
+        if (event.type === 'file-change' && event.change.path === 'live-app' && 'contents' in event.change) modes.push(event.change.mode);
+      },
+    });
+    assert.equal(result.exitCode, 0);
+    assert.equal(modes.at(-1), 0o755);
+    assert.equal((await workspace.snapshot()).files.find(file => file.path === 'live-app')?.mode, 0o755);
   } finally { workspace.dispose(); }
 });
