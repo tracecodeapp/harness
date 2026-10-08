@@ -257,6 +257,13 @@ the internal detail. A signal uses shell-compatible exit status (`128 + signal`)
 for Ctrl+C, render the terminal's `^C` behavior rather than an internal syscall
 exception.
 
+Rejected ordinary filesystem syscalls
+are diagnostics, not command-result provenance: shells may probe missing paths
+or recover from a failure. They remain available to the command and syscall
+journal; they must not populate `result.error`. Workspace generation conflicts,
+storage-budget failures, interrupted kernel operations, explicit runner errors,
+and final-diff synchronization failures retain structured metadata.
+
 ## Live Stdin
 
 `terminal.run(command)` creates the live stdin pipe for terminal commands. Most
