@@ -46,17 +46,22 @@ declare global {
 }
 
 async function runSqlBrowserSmoke(previewUrl: string): Promise<void> {
+  console.log('[sql-browser-example] launch Chromium');
   const browser = await chromium.launch({ headless: true });
-  const page = await browser.newPage();
 
   try {
+    console.log('[sql-browser-example] create page');
+    const page = await browser.newPage();
+    console.log('[sql-browser-example] navigate');
     await page.goto(previewUrl, { waitUntil: 'networkidle' });
+    console.log('[sql-browser-example] wait for SQL result');
     await page.waitForFunction(
       () => window.__tracecodeSqlSmoke?.status === 'ready' || window.__tracecodeSqlSmoke?.status === 'error',
       undefined,
       { timeout: 180_000 }
     );
 
+    console.log('[sql-browser-example] read SQL result');
     const result = await page.evaluate(() => window.__tracecodeSqlSmoke);
     assertCondition(result?.status === 'ready', `SQL browser smoke failed: ${JSON.stringify(result)}`);
     assertCondition(result.rowCount === 2, `PGlite smoke should return two completed rows: ${JSON.stringify(result)}`);
@@ -129,7 +134,9 @@ async function runSqlBrowserSmoke(previewUrl: string): Promise<void> {
       `Assertion traces should be hidden from product output: ${JSON.stringify(result)}`
     );
   } finally {
+    console.log('[sql-browser-example] close Chromium');
     await browser.close();
+    console.log('[sql-browser-example] Chromium closed');
   }
 }
 
@@ -138,6 +145,7 @@ async function main(): Promise<void> {
   const exampleDir = join(repoRoot, 'examples', 'sql-browser');
   const previewPort = 5300 + Math.floor(Math.random() * 200);
 
+  console.log('[sql-browser-example] build example');
   await runCommand('pnpm', ['--dir', exampleDir, 'build'], repoRoot);
 
   const preview = startPreviewServer(
@@ -146,15 +154,20 @@ async function main(): Promise<void> {
     exampleDir
   );
 
+  let failure: unknown;
   try {
+    console.log('[sql-browser-example] wait for preview URL');
     const previewUrl = await preview.waitForUrl;
+    console.log('[sql-browser-example] wait for HTTP readiness');
     await waitForHttp(previewUrl, 30_000);
     await runSqlBrowserSmoke(previewUrl);
+  } catch (error) {
+    failure = error;
+    throw error;
   } finally {
-    if (!preview.process.killed) {
-      preview.process.kill('SIGTERM');
-    }
-    await preview.waitForExit;
+    console.log('[sql-browser-example] stop preview process group');
+    await preview.stop(failure);
+    console.log('[sql-browser-example] preview process group stopped');
   }
 
   console.log('PASS: SQL browser example runs PGlite and exports a valid SQL trace');

@@ -24,6 +24,7 @@ async function main(): Promise<void> {
     exampleDir
   );
 
+  let failure: unknown;
   try {
     const previewUrl = await preview.waitForUrl;
     await waitForHttp(previewUrl, 30_000);
@@ -33,11 +34,11 @@ async function main(): Promise<void> {
         'SKIP: example Java runtime requires VITE_JAVA_RUNTIME_ASSET_BASE_URL'
       );
     }
+  } catch (error) {
+    failure = error;
+    throw error;
   } finally {
-    if (!preview.process.killed) {
-      preview.process.kill('SIGTERM');
-    }
-    await preview.waitForExit;
+    await preview.stop(failure);
   }
 
   console.log('PASS: example web IDE honors optional Java runtime configuration');

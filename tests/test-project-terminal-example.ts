@@ -198,15 +198,16 @@ async function main(): Promise<void> {
     exampleDir
   );
 
+  let failure: unknown;
   try {
     const previewUrl = await preview.waitForUrl;
     await waitForHttp(previewUrl, 30_000);
     await runProjectTerminalSmoke(previewUrl);
+  } catch (error) {
+    failure = error;
+    throw error;
   } finally {
-    if (!preview.process.killed) {
-      preview.process.kill('SIGTERM');
-    }
-    await preview.waitForExit;
+    await preview.stop(failure);
   }
 
   console.log('PASS: project terminal example renders as a fullscreen terminal and hides input while compiling');
