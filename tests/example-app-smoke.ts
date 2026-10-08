@@ -1,9 +1,6 @@
-import { spawn } from 'node:child_process';
 import { mkdtemp, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
-import { request } from 'node:http';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
-import type { ChildProcess } from 'node:child_process';
 import { chromium } from 'playwright';
 
 export function assertCondition(condition: unknown, message: string): asserts condition {
@@ -110,37 +107,8 @@ interface BrowserProjectSmokeResults {
   };
 }
 
-function sleep(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms));
-}
-
-export async function runCommand(
-  command: string,
-  args: string[],
-  cwd: string
-): Promise<void> {
-  await new Promise<void>((resolve, reject) => {
-    const child = spawn(command, args, {
-      cwd,
-      stdio: 'inherit',
-    });
-
-    child.on('exit', (code, signal) => {
-      if (code === 0) {
-        resolve();
-        return;
-      }
-
-      reject(
-        new Error(
-          `${command} ${args.join(' ')} failed with ${signal ? `signal ${signal}` : `exit code ${code ?? 'unknown'}`}`
-        )
-      );
-    });
-
-    child.on('error', reject);
-  });
-}
+export { runCommand, startPreviewServer, waitForHttp } from './example-preview-process';
+import { runCommand } from './example-preview-process';
 
 async function createExternalJavaJarBase64(): Promise<string> {
   const root = await mkdtemp(join(tmpdir(), 'tracecode-example-java-jar-'));
@@ -161,98 +129,6 @@ async function createExternalJavaJarBase64(): Promise<string> {
   } finally {
     await rm(root, { recursive: true, force: true });
   }
-}
-
-export async function waitForHttp(url: string, timeoutMs: number): Promise<void> {
-  const startedAt = Date.now();
-
-  while (Date.now() - startedAt < timeoutMs) {
-    const isReady = await new Promise<boolean>((resolve) => {
-      const req = request(url, (response) => {
-        response.resume();
-        resolve(Boolean(response.statusCode && response.statusCode < 500));
-      });
-
-      req.on('error', () => resolve(false));
-      req.end();
-    });
-
-    if (isReady) {
-      return;
-    }
-
-    await sleep(500);
-  }
-
-  throw new Error(`Timed out waiting for ${url}`);
-}
-
-export function startPreviewServer(
-  command: string,
-  args: string[],
-  cwd: string
-): { process: ChildProcess; waitForExit: Promise<void>; waitForUrl: Promise<string> } {
-  const child = spawn(command, args, {
-    cwd,
-    stdio: ['ignore', 'pipe', 'pipe'],
-  });
-
-  let resolvedUrl = false;
-  let resolveUrl!: (url: string) => void;
-  let rejectUrl!: (error: Error) => void;
-  const waitForUrl = new Promise<string>((resolve, reject) => {
-    resolveUrl = resolve;
-    rejectUrl = reject;
-  });
-
-  const handleChunk = (chunk: Buffer | string): void => {
-    const text = String(chunk);
-    process.stdout.write(text);
-
-    const match = text.match(/Local:\s+(http:\/\/[^\s/]+:\d+\/?)/);
-    if (match && !resolvedUrl) {
-      resolvedUrl = true;
-      resolveUrl(match[1].replace(/\/$/, ''));
-    }
-  };
-
-  child.stdout?.on('data', handleChunk);
-  child.stderr?.on('data', (chunk) => {
-    process.stderr.write(String(chunk));
-  });
-
-  const waitForExit = new Promise<void>((resolve, reject) => {
-    child.on('exit', (code, signal) => {
-      if (!resolvedUrl) {
-        rejectUrl(
-          new Error(
-            `${command} ${args.join(' ')} exited before reporting a preview URL`
-          )
-        );
-      }
-
-      if (code === 0 || signal === 'SIGTERM') {
-        resolve();
-        return;
-      }
-
-      reject(
-        new Error(
-          `${command} ${args.join(' ')} exited unexpectedly with ${signal ? `signal ${signal}` : `exit code ${code ?? 'unknown'}`}`
-        )
-      );
-    });
-
-    child.on('error', reject);
-  });
-
-  child.on('error', (error) => {
-    if (!resolvedUrl) {
-      rejectUrl(error instanceof Error ? error : new Error(String(error)));
-    }
-  });
-
-  return { process: child, waitForExit, waitForUrl };
 }
 
 async function runLanguageExampleSmoke(
