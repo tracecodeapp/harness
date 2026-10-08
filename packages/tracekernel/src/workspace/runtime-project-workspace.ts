@@ -1108,6 +1108,7 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
         env: commandEnv(ctx),
         signal: parentContext.signal,
         stdinPipe: parentContext.stdinPipe,
+        umask: parentContext.umask,
         terminal: parentContext.terminal,
         ...(kernelProcess ? { presentation: 'terminal' as const, foreground: false } : {}),
         onTerminalStdinRead: parentContext.onTerminalStdinRead,
