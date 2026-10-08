@@ -223,6 +223,17 @@ struct ListNode {
 struct JsonValue {
   enum class Kind { Null, Bool, Number, String, Array, Object };
 
+  // Defer container operations until JsonValue and its recursive object-entry
+  // pair are complete. libstdc++ can inspect pair construction while generating
+  // these members, so defining them inside the class creates a recursive trait
+  // instantiation on Clang.
+  JsonValue() noexcept;
+  JsonValue(const JsonValue&);
+  JsonValue(JsonValue&&) noexcept;
+  JsonValue& operator=(const JsonValue&);
+  JsonValue& operator=(JsonValue&&) noexcept;
+  ~JsonValue();
+
   Kind kind = Kind::Null;
   bool bool_value = false;
   double number_value = 0;
@@ -232,6 +243,13 @@ struct JsonValue {
 
   bool is_null() const { return kind == Kind::Null; }
 };
+
+inline JsonValue::JsonValue() noexcept = default;
+inline JsonValue::JsonValue(const JsonValue&) = default;
+inline JsonValue::JsonValue(JsonValue&&) noexcept = default;
+inline JsonValue& JsonValue::operator=(const JsonValue&) = default;
+inline JsonValue& JsonValue::operator=(JsonValue&&) noexcept = default;
+inline JsonValue::~JsonValue() = default;
 
 [[noreturn]] inline void json_error(const std::string& message) {
   std::fputs(message.c_str(), stderr);
