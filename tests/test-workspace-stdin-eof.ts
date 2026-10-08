@@ -1,11 +1,25 @@
 import assert from 'node:assert/strict';
+import { markShellStdinInAst } from '../packages/tracekernel/src/workspace/shell-stdin';
 import { createRuntimeWorkspace } from '../packages/tracekernel/src/workspace/index';
 import { createRuntimeCommandStdinPipe, createRuntimeCommandStdinPipeFromText } from '../packages/runtime-contracts/src/index';
 import type { JavaScriptProjectCommandRunner } from '../packages/tracekernel/src/workspace/index';
 import type { TraceKernelSyscallRequest, TraceKernelSyscallResult } from '../packages/tracekernel/src/index';
 
+// Expansion bodies use caller provenance; each nested redirect/pipeline remains local.
+for (const type of ['CommandSubstitution', 'ProcessSubstitution', 'HereDoc']) {
+  const caller = { type: 'SimpleCommand', redirections: [] } as Record<string, unknown>;
+  const redirected = { type: 'SimpleCommand', redirections: [{ operator: '<', fd: 0 }] } as Record<string, unknown>;
+  const downstream = { type: 'SimpleCommand', redirections: [] } as Record<string, unknown>;
+  const expansion = { type, body: [caller, redirected, { type: 'Pipeline', commands: [{ type: 'SimpleCommand' }, downstream] }] };
+  markShellStdinInAst({ type: 'SimpleCommand', args: [expansion], redirections: [{ operator: '<', fd: 0, target: expansion }] });
+  assert.equal(caller.tracecodeStdinClosed, false, type);
+  assert.equal(redirected.tracecodeStdinClosed, true, type);
+  assert.equal(downstream.tracecodeStdinClosed, true, type);
+}
+
 let runtimeStarted: (() => void) | undefined;
 let observedInput = '';
+const observedInputs: string[] = [];
 const runner: JavaScriptProjectCommandRunner = Object.assign(async (request: Parameters<JavaScriptProjectCommandRunner>[0]) => {
   assert.ok(request.kernelSyscalls);
   runtimeStarted?.();
@@ -20,6 +34,7 @@ const runner: JavaScriptProjectCommandRunner = Object.assign(async (request: Par
   }
   const input = Buffer.concat(chunks).toString();
   observedInput = input;
+  observedInputs.push(input);
   for (const [fd, data] of [[1, `out:${input}`], [2, `err:${input}`]] as const) {
     const result = await dispatch({ op: 'write', fd, bytes: new TextEncoder().encode(data) });
     assert.ok(result.ok);
@@ -51,6 +66,15 @@ try {
       assert.equal(result.stdout, `out:${input}`);
       assert.equal(result.stderr, `err:${input}`);
     }
+  }
+  for (const [command, expected] of [
+    ['node input.js "$(node input.js)" < empty.txt', ['caller\n', '']],
+    ['node input.js "$(node input.js < empty.txt)" < empty.txt', ['', '']],
+    [`printf 'pipeline\\n' | node input.js "$(node input.js)" < empty.txt`, ['pipeline\n', '']],
+  ] as const) {
+    observedInputs.length = 0;
+    assert.equal((await workspace.runCommand(command, { presentation: 'terminal', stdinPipe: createRuntimeCommandStdinPipeFromText('caller\n') })).exitCode, 0);
+    assert.deepEqual(observedInputs, expected, command);
   }
   const laterInput = await workspace.runCommand("printf 'first\\n' | node input.js; printf 'second\\n' | node input.js", { presentation: 'terminal' });
   assert.equal(laterInput.exitCode, 0);

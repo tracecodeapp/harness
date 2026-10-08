@@ -144,6 +144,13 @@ async function main(): Promise<void> {
             }
             receipts.push({ command: `printf 'café\\n' | command ${executable}`, input: 'café\n', ...await workspace.runCommand(`printf 'café\\n' | command ${executable}`, { presentation: 'terminal' }) });
             receipts.push({ command: `printf 'first\\n' | ${executable}; printf 'second\\n' | ${executable}`, laterInput: true, ...await workspace.runCommand(`printf 'first\\n' | ${executable}; printf 'second\\n' | ${executable}`, { presentation: 'terminal' }) });
+            for (const [suffix, expectedInner] of [['', 'caller\n'], [' < empty.txt', ''], ["; printf 'own\\n' | " + executable, 'own\n']] as const) {
+              const inner = suffix.startsWith(';') ? suffix.slice(2) : executable + suffix;
+              const command = `${executable} "$( ${inner} )" < empty.txt`;
+              receipts.push({ command, substitution: true, expectedInner, ...await workspace.runCommand(command, { presentation: 'terminal', stdinPipe: createRuntimeCommandStdinPipeFromText('caller\n') }) });
+            }
+            const pipelineCommand = `printf 'pipeline\\n' | ${executable} "$( ${executable} )" < empty.txt`;
+            receipts.push({ command: pipelineCommand, substitution: true, expectedInner: 'pipeline\n', ...await workspace.runCommand(pipelineCommand, { presentation: 'terminal' }) });
             const liveCommand = executable.replace('input.', 'live.');
             const livePipe = createRuntimeCommandStdinPipe();
             let ready = false;
@@ -177,6 +184,10 @@ async function main(): Promise<void> {
         await writeFile(receiptPath, JSON.stringify(results, null, 2));
       }
       for (const result of results) {
+        if (result.substitution) {
+          assertCondition(result.exitCode === 0 && result.stdout === 'OUT:\n' && result.stderr === `ERR:${Buffer.from(result.expectedInner).toString('hex')}\nERR:\n`, `substitution failure ${JSON.stringify(result)}`);
+          continue;
+        }
         if (result.laterInput) {
           assertCondition(result.exitCode === 0 && result.stdout === 'OUT:66697273740a\nOUT:7365636f6e640a\n' && result.stderr === 'ERR:66697273740a\nERR:7365636f6e640a\n', `later input failure ${JSON.stringify(result)}`);
           continue;

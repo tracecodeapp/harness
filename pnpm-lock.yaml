@@ -11,7 +11,7 @@ overrides:
 
 patchedDependencies:
   just-bash@3.1.0:
-    hash: 22f29a8c9f94288db349085a18fbda0e5f0a5b0c2013954a8a320ce9da1ff987
+    hash: 20315a33a0430e2f98e031757beb486afe9e02bb99cdee654e83e62c518fa48a
     path: patches/just-bash@3.1.0.patch
 
 importers:
@@ -81,7 +81,7 @@ importers:
         version: 0.27.3
       just-bash:
         specifier: 3.1.0
-        version: 3.1.0(patch_hash=22f29a8c9f94288db349085a18fbda0e5f0a5b0c2013954a8a320ce9da1ff987)
+        version: 3.1.0(patch_hash=20315a33a0430e2f98e031757beb486afe9e02bb99cdee654e83e62c518fa48a)
       playwright:
         specifier: ^1.53.2
         version: 1.58.2
@@ -377,7 +377,7 @@ importers:
         version: 0.8.3
       just-bash:
         specifier: 3.1.0
-        version: 3.1.0(patch_hash=22f29a8c9f94288db349085a18fbda0e5f0a5b0c2013954a8a320ce9da1ff987)
+        version: 3.1.0(patch_hash=20315a33a0430e2f98e031757beb486afe9e02bb99cdee654e83e62c518fa48a)
 
 packages:
 
@@ -2112,7 +2112,7 @@ snapshots:
 
   joycon@3.1.1: {}
 
-  just-bash@3.1.0(patch_hash=22f29a8c9f94288db349085a18fbda0e5f0a5b0c2013954a8a320ce9da1ff987):
+  just-bash@3.1.0(patch_hash=20315a33a0430e2f98e031757beb486afe9e02bb99cdee654e83e62c518fa48a):
     dependencies:
       diff: 8.0.4
       fast-xml-parser: 5.8.0
