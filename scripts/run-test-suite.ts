@@ -329,51 +329,118 @@ function createPrefixedWriter(label: string, target: NodeJS.WriteStream): {
   };
 }
 
-function terminateProcessTree(child: ReturnType<typeof spawn>): void {
-  if (!child.pid || child.exitCode !== null) return;
-  try {
-    if (process.platform !== 'win32') process.kill(-child.pid, 'SIGTERM');
-    else child.kill('SIGTERM');
-  } catch {
-    child.kill('SIGTERM');
+// 20 minutes allows >4x the measured 271-second compiler gate. This is a
+// wall-clock bound, not an idle-output timeout. Overrides must remain finite.
+export const DEFAULT_TASK_TIMEOUT_MS = 20 * 60_000;
+const TERMINATION_GRACE_MS = 5_000;
+
+export function resolveTaskTimeout(value = process.env.TRACECODE_TEST_TASK_TIMEOUT_MS): number {
+  if (value === undefined) return DEFAULT_TASK_TIMEOUT_MS;
+  if (!/^[1-9]\d*$/.test(value) || Number(value) > 2_147_483_647) {
+    throw new Error('TRACECODE_TEST_TASK_TIMEOUT_MS must be a positive integer <= 2147483647.');
   }
+  return Number(value);
 }
 
-async function executePackageScript(
+interface ExecutionClock {
+  now(): number;
+  schedule(callback: () => void, delayMs: number): () => void;
+}
+const realClock: ExecutionClock = {
+  now: () => performance.now(),
+  schedule(callback, delayMs) {
+    const timer = setTimeout(callback, delayMs);
+    return () => clearTimeout(timer);
+  },
+};
+const activeExecutions = new Map<TestTask, { startedAt: number; lastOutputAt: number }>();
+export function describeRunningTask(entry: TestTask, now = performance.now()): string {
+  const state = activeExecutions.get(entry);
+  return state ? `${entry.script} (elapsed ${formatDuration(now - state.startedAt)}, last output ${formatDuration(now - state.lastOutputAt)} ago)` : entry.script;
+}
+
+export async function executePackageScript(
   cwd: string,
   entry: TestTask,
-  signal: AbortSignal
+  signal: AbortSignal,
+  options: {
+    command?: string;
+    args?: string[];
+    timeoutMs?: number;
+    clock?: ExecutionClock;
+    onOutput?: (chunk: string) => void;
+    spawnProcess?: typeof spawn;
+  } = {}
 ): Promise<TaskResult> {
-  const startedAt = performance.now();
-  console.log(`START ${entry.script}`);
-  const command = process.platform === 'win32' ? 'pnpm.cmd' : 'pnpm';
-  const child = spawn(command, ['run', entry.script], {
+  const clock = options.clock ?? realClock;
+  const timeoutMs = resolveTaskTimeout(String(options.timeoutMs ?? resolveTaskTimeout()));
+  const startedAt = clock.now();
+  if (signal.aborted) throw new Error(`${entry.script} aborted before launch.`);
+  console.log(`START ${entry.script} (deadline ${formatDuration(timeoutMs)})`);
+  const child = (options.spawnProcess ?? spawn)(options.command ?? (process.platform === 'win32' ? 'pnpm.cmd' : 'pnpm'), options.args ?? ['run', entry.script], {
     cwd,
     env: process.env,
     detached: process.platform !== 'win32',
     stdio: ['ignore', 'pipe', 'pipe'],
   });
+  const state = { startedAt, lastOutputAt: startedAt };
+  activeExecutions.set(entry, state);
   const stdout = createPrefixedWriter(entry.script, process.stdout);
   const stderr = createPrefixedWriter(entry.script, process.stderr);
-  child.stdout?.on('data', stdout.write);
-  child.stderr?.on('data', stderr.write);
-  const abort = () => terminateProcessTree(child);
-  signal.addEventListener('abort', abort, { once: true });
-
+  const output = (writer: typeof stdout) => (chunk: Buffer) => {
+    state.lastOutputAt = clock.now();
+    writer.write(chunk);
+    options.onOutput?.(chunk.toString());
+  };
+  child.stdout?.on('data', output(stdout));
+  child.stderr?.on('data', output(stderr));
+  let failure: string | undefined;
+  const timers: Array<() => void> = [];
+  const sendSignal = (name: NodeJS.Signals) => {
+    if (!child.pid) return;
+    try {
+      // Signal descendants even if the leader has exited but left pipes open.
+      if (process.platform !== 'win32') process.kill(-child.pid, name);
+      else child.kill(name);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'ESRCH') {
+        failure += `; ${name} failed: ${String(error)}`;
+      }
+    }
+  };
   const exit = await new Promise<{ code: number | null; signal: NodeJS.Signals | null }>((resolveExit, reject) => {
+    const stop = (reason: string) => {
+      if (failure) return;
+      failure = `${entry.script} ${reason} after ${formatDuration(clock.now() - startedAt)}`;
+      console.error(failure);
+      sendSignal('SIGTERM');
+      timers.push(clock.schedule(() => {
+        sendSignal('SIGKILL');
+        timers.push(clock.schedule(() => {
+          // A missing close/reap event must not trap the scheduler indefinitely.
+          child.stdout?.destroy();
+          child.stderr?.destroy();
+          child.unref();
+          reject(new Error(`${failure}; process did not close within ${formatDuration(2 * TERMINATION_GRACE_MS)} termination grace.`));
+        }, TERMINATION_GRACE_MS));
+      }, TERMINATION_GRACE_MS));
+    };
+    const abort = () => stop('aborted');
     child.once('error', reject);
-    child.once('exit', (code, exitSignal) => resolveExit({ code, signal: exitSignal }));
+    child.once('close', (code, exitSignal) => resolveExit({ code, signal: exitSignal }));
+    signal.addEventListener('abort', abort, { once: true });
+    timers.push(() => signal.removeEventListener('abort', abort));
+    timers.push(clock.schedule(() => stop(`exceeded its ${formatDuration(timeoutMs)} deadline`), timeoutMs));
+    if (signal.aborted) abort();
   }).finally(() => {
-    signal.removeEventListener('abort', abort);
+    for (const cancel of timers) cancel();
+    activeExecutions.delete(entry);
     stdout.flush();
     stderr.flush();
   });
-
-  const durationMs = performance.now() - startedAt;
-  if (exit.code !== 0) {
-    throw new Error(
-      `${entry.script} failed after ${formatDuration(durationMs)} (${exit.signal ? `signal ${exit.signal}` : `exit ${exit.code}`}).`
-    );
+  const durationMs = clock.now() - startedAt;
+  if (failure || exit.code !== 0) {
+    throw new Error(failure ?? `${entry.script} failed after ${formatDuration(durationMs)} (${exit.signal ? `signal ${exit.signal}` : `exit ${exit.code}`}).`);
   }
   console.log(`PASS  ${entry.script} (${formatDuration(durationMs)})`);
   return { task: entry, durationMs };
@@ -457,6 +524,7 @@ async function main(): Promise<void> {
   process.once('SIGINT', interrupt);
   process.once('SIGTERM', interrupt);
   try {
+    resolveTaskTimeout();
     console.log(`Running ${profile} test profile with capacity ${capacity}${keepGoing ? ' (keep-going)' : ''}.`);
     for (const phase of phases) {
       const phaseCapacity = phase.capacity ?? capacity;
@@ -478,7 +546,7 @@ async function main(): Promise<void> {
         },
         heartbeatMs: 30_000,
         onHeartbeat: (running) => {
-          console.log(`RUNNING ${running.map((entry) => entry.script).join(', ')}`);
+          console.log(`RUNNING ${running.map((entry) => describeRunningTask(entry)).join(', ')}`);
         },
       });
       results.push(...phaseResults);
