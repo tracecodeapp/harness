@@ -334,6 +334,15 @@ caught, matching Node's process API.
 
 `kill -l` reports only the signals implemented by the kernel. `kill -0 PID`
 checks whether a process is visible and signalable without changing its state.
+Linked C/C++ outputs receive mode `0755`; compile-only (`-c`), assembly (`-S`),
+and preprocessing (`-E`) outputs are not registered as commands. Execute bits
+remain authoritative across snapshot restoration: removing them with `chmod -x`
+prevents dispatch. Restored WebAssembly artifacts select the sandboxed C/C++
+runner only after validating the WASI preview1 command ABI (function imports in
+`wasi_snapshot_preview1`, exported `memory` and `_start`). Loader functions and
+host capabilities are never serialized. Old snapshots with mode `0666` retain
+that mode and need an explicit `chmod +x` or recompilation before execution.
+
 Executable workspace files use their shebang interpreter when it is available;
 text executables without a shebang use the normal shell fallback, while a
 missing shebang interpreter fails instead of silently treating the file as a

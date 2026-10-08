@@ -1,3 +1,4 @@
+import { isWasiCommandExecutable } from './executable-format';
 import * as Effect from 'effect/Effect';
 import * as Exit from 'effect/Exit';
 import * as Scope from 'effect/Scope';
@@ -6358,8 +6359,21 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
     commandContext: RuntimeCommandExecutionContext;
   }): Promise<RuntimeCommandResult | null> {
     const executablePath = toProjectPath(this.cwd, resolveWorkspaceCommandPath(this.cwd, request.cwd, request.executable, this.kernelInfo.workspaceAlias));
-    const record = this.virtualExecutableRecords.get(executablePath);
-    if (!record) return null;
+    let record = this.virtualExecutableRecords.get(executablePath);
+    // Loader registrations are process-local. Restored WASI command modules
+    // select the same sandboxed runner by their versioned binary format, never
+    // by serialized functions, paths, or privileged host capabilities.
+    const absolutePath = this.toWorkspacePath(executablePath);
+    const stat = await this.bash.fs.stat(absolutePath).catch(() => null);
+    if (!stat?.isFile) return null;
+    if (!record) {
+      const bytes = await this.bash.fs.readFileBuffer(absolutePath);
+      if (!isWasiCommandExecutable(bytes)) return null;
+      record = { path: executablePath, kind: 'cpp' };
+    }
+    if ((stat.mode & 0o111) === 0) {
+      return { stdout: '', stderr: `bash: ${request.executable}: Permission denied\n`, exitCode: 126 };
+    }
 
     if (record.kind !== 'cpp' || !this.cppRunner) {
       return { stdout: '', stderr: `bash: ${request.executable}: Exec format error\n`, exitCode: 126 };
@@ -7255,7 +7269,9 @@ export async function createRuntimeWorkspace(
     await workspace.mkdir(directory);
   }
   if (sessionFiles.length > 0) {
-    await workspace.withSuspendedReadonlyPolicy(() => workspace.writeFiles(sessionFiles));
+    await workspace.withSuspendedReadonlyPolicy(async () => {
+      for (const file of sessionFiles) await workspace.applyKernelFileChange(file);
+    });
   }
   if (sessionSymlinks.length > 0) {
     await workspace.withSuspendedReadonlyPolicy(async () => {
@@ -7278,7 +7294,7 @@ export async function createRuntimeWorkspace(
         }
         throw createRuntimeKernelReadonlyFileError(path, 'hydrate');
       }
-      await workspace.writeFile(path, file.contents, file.encoding);
+      await workspace.applyKernelFileChange({ ...file, path });
     }
   }
   for (const symlink of suppliedSymlinks) await workspace.applyKernelFileChange(symlink);

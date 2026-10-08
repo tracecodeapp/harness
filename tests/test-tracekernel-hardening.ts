@@ -940,7 +940,12 @@ async function testDirectCppExecutableRespectsHiddenProjectFiles(): Promise<void
     },
     cppRunner: async (request) => {
       mountedSnapshots.push(request.project.files.map((file) => file.path));
-      return { stdout: '', stderr: '', exitCode: 0 };
+      return {
+        stdout: '', stderr: '', exitCode: 0,
+        ...(request.source === 'compile' ? {
+          files: [{ path: 'a.out', contents: Buffer.from('compiled-fixture').toString('base64'), encoding: 'base64' as const }],
+        } : {}),
+      };
     },
   });
 
