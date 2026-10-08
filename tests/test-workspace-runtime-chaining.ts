@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { defineCommand } from 'just-bash/browser';
+import { createBrowserProjectWorkspace } from '../packages/runtime-browser/src/project';
 import { createRuntimeWorkspace } from '../packages/tracekernel/src/workspace/index';
 import type { JavaScriptProjectCommandRequest, PythonProjectCommandRequest } from '../packages/tracekernel/src/workspace/index';
 
@@ -195,5 +196,93 @@ test('successful runtime children preserve an earlier authoritative shell storag
     const result = await workspace.runCommand("quota-write; node one.js");
     assert.equal(calls, 1);
     assert.equal(result.error?.code, 'EFBIG');
+  } finally { await workspace.destroy(); }
+});
+
+test('the shell can delete its child output while unrelated later writes remain conflicting', async () => {
+  let release!: () => void;
+  let started!: () => void;
+  const startedPromise = new Promise<void>(resolve => { started = resolve; });
+  const released = new Promise<void>(resolve => { release = resolve; });
+  let block = false;
+  let notifyCommitted: (() => void) | undefined;
+  const workspace = await createRuntimeWorkspace({
+    files: [{ path: 'write.js', contents: '' }],
+    nodeRunner: async request => {
+      await new Promise<void>(resolve => {
+        notifyCommitted = resolve;
+        request.onEvent!({ type: 'file-change', change: { path: 'result.txt', contents: 'child' } });
+      });
+      if (block) { started(); await released; }
+      return { stdout: '', stderr: '', exitCode: 0 };
+    },
+  });
+  const unsubscribe = workspace.watch(event => {
+    if (event.type === 'file-change' && event.change.path === 'result.txt') notifyCommitted?.();
+  });
+  try {
+    const own = await workspace.runCommand('node write.js && rm result.txt');
+    assert.equal(own.exitCode, 0);
+    assert.equal(own.error, undefined);
+    assert.equal(await workspace.exists('result.txt'), false);
+    block = true;
+    const pending = workspace.runCommand('node write.js && rm result.txt');
+    await startedPromise;
+    await workspace.writeFile('result.txt', 'unrelated writer');
+    release();
+    const conflicting = await pending;
+    assert.equal(conflicting.error?.code, 'ESTALE');
+    assert.equal(await workspace.readFile('result.txt'), 'unrelated writer');
+  } finally { release(); unsubscribe(); await workspace.destroy(); }
+});
+
+test('terminal shell child capacity failures preserve structured fork errors', async () => {
+  let calls = 0;
+  const workspace = await createRuntimeWorkspace({
+    kernel: { maxProcesses: 2 },
+    files: [{ path: 'one.js', contents: '' }],
+    nodeRunner: async () => { calls++; return { stdout: '', stderr: '', exitCode: 0 }; },
+  });
+  try {
+    const result = await workspace.runCommand('node one.js && node one.js', { presentation: 'terminal' });
+    assert.equal(calls, 0);
+    assert.equal(result.exitCode, 11);
+    assert.equal(result.error?.code, 'EAGAIN');
+    assert.equal(result.error?.errno, 11);
+    assert.equal(result.error?.syscall, 'fork');
+    assert.equal(result.error?.path, 'node one.js');
+    assert.equal((await workspace.runCommand('node one.js')).exitCode, 0, 'rejected child admission leaked capacity');
+  } finally { await workspace.destroy(); }
+});
+
+
+test('executable script dispatch publishes nested runtime output once', async () => {
+  const workspace = await createBrowserProjectWorkspace({
+    providers: ['javascript'],
+    nodeProject: { allowMainThreadExecution: true, trustedMainThreadExecution: true },
+    files: [{ path: 'node-tool', contents: '#!/usr/bin/env node\nconsole.log("hello")' }],
+  });
+  const terminal = workspace.createTerminalSession();
+  try {
+    const result = await terminal.run('chmod +x node-tool; ./node-tool');
+    assert.equal(result.exitCode, 0);
+    assert.equal(result.stdout, 'hello\n');
+  } finally { terminal.close(); workspace.dispose(); }
+});
+
+test('kernel syscall child writes also advance only their owning shell generations', async () => {
+  const workspace = await createRuntimeWorkspace({
+    files: [{ path: 'write.js', contents: '' }],
+    nodeRunner: async request => {
+      const result = await request.kernelSyscalls!.dispatch({ op: 'writeFile', path: 'result.txt', bytes: new TextEncoder().encode('child') }) as { ok: boolean };
+      assert.equal(result.ok, true);
+      return { stdout: '', stderr: '', exitCode: 0 };
+    },
+  });
+  try {
+    const result = await workspace.runCommand('node write.js && rm result.txt');
+    assert.equal(result.exitCode, 0);
+    assert.equal(result.error, undefined);
+    assert.equal(await workspace.exists('result.txt'), false);
   } finally { await workspace.destroy(); }
 });
