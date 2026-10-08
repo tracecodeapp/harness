@@ -30,6 +30,12 @@ export interface WorkspaceShellCommandRegistryOptions {
     args: readonly string[]
   ): RuntimeCommandResult | null;
   withSignalContext(context: CommandContext): CommandContext;
+  executeRuntimeCommand?: (
+    name: string,
+    args: string[],
+    context: CommandContext,
+    execute: (context: CommandContext) => Promise<RuntimeCommandResult>
+  ) => Promise<RuntimeCommandResult>;
 }
 
 export interface WorkspaceShellCommandRegistry {
@@ -145,6 +151,26 @@ function wrapCommand(
   return command;
 }
 
+function wrapRuntimeCommand(
+  command: CustomCommand,
+  options: WorkspaceShellCommandRegistryOptions
+): CustomCommand {
+  if (!options.executeRuntimeCommand) return command;
+  if (isLazyCommand(command)) {
+    return {
+      ...command,
+      load: async () => wrapRuntimeCommand(await command.load(), options) as Command,
+    };
+  }
+  if (!isCommand(command)) return command;
+  return {
+    ...command,
+    execute: (args, context) => options.executeRuntimeCommand!(
+      command.name, args, context, (child) => command.execute(args, child)
+    ),
+  };
+}
+
 /**
  * Compose language runtimes, workspace userland, custom commands, and the
  * private shell adapters used by AST rewriting into one just-bash registry.
@@ -162,11 +188,16 @@ export function createWorkspaceShellCommandRegistry(
     return resolved;
   };
   const exposedCommands: CustomCommand[] = [
-    ...options.runtimeCommands,
+    ...options.runtimeCommands.map((command) => wrapRuntimeCommand(command, options)),
     defineCommand(
       TRACEKERNEL_EXEC_COMMAND,
       (args, context) =>
-        Promise.resolve(handler('exec')(args, context))
+        options.executeRuntimeCommand
+          ? options.executeRuntimeCommand(
+              TRACEKERNEL_EXEC_COMMAND, args, context,
+              (child) => Promise.resolve(handler('exec')(args, child))
+            )
+          : Promise.resolve(handler('exec')(args, context))
     ),
     ...PUBLIC_COMMAND_NAMES.map((name) =>
       defineCommand(
