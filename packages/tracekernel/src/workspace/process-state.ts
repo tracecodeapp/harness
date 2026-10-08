@@ -1,5 +1,6 @@
 import type * as Scope from 'effect/Scope';
 import type {
+  RuntimeCommandResult,
   RuntimeKernelDevicePath,
   RuntimeKernelSignalBridge,
   RuntimeKernelSignalNotification,
@@ -192,6 +193,12 @@ export interface RuntimeKernelTerminalShell {
 }
 
 export interface RuntimeKernelProcessLaunchHooks {
+  /** A shell child shares its already-admitted shell submission scheduling slot. */
+  readonly admittedShellChild?: boolean;
+  readonly execute?: (
+    context: RuntimeCommandExecutionContext,
+    fs: import('just-bash/browser').IFileSystem
+  ) => Promise<RuntimeCommandResult>;
   readonly kernelProcess?: TraceKernelProcess;
   /** Explicit kernel parent when the product-facing authority record is not the OS parent. */
   readonly kernelParentProcess?: TraceKernelProcess;

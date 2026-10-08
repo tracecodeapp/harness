@@ -155,6 +155,16 @@ termination, interruption, or failed validation produces `destroy`. Provider
 initialization stays lazily memoized across those failures so downloaded assets
 and immutable compiled modules remain available.
 
+Shell composition keeps the submission process separate from each language
+invocation. Each runtime in a command list, pipeline, or shell script receives
+its own child process and engine lease; the single-attachment guard still
+applies to that process. Terminal children inherit the controlling terminal
+and foreground group. Child execution shares the already admitted shell
+submission's scheduler slot, avoiding a parent waiting for a queued child when
+concurrency is one; kernel process capacity still governs child admission.
+Applied child events publish through the shell once, without replaying file
+mutations or duplicating journal and output events.
+
 Safe isolation is therefore the default. Pool reuse requires an explicit,
 successful validation contract rather than an optimistic provider finalizer.
 
