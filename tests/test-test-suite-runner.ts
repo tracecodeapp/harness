@@ -1,8 +1,15 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
+import { EventEmitter } from 'node:events';
+import { PassThrough } from 'node:stream';
+import type { spawn } from 'node:child_process';
 
 import {
   buildTestPlan,
+  executePackageScript,
+  describeRunningTask,
+  resolveTaskTimeout,
+  DEFAULT_TASK_TIMEOUT_MS,
   parseArguments,
   resolveTestCapacity,
   runTaskPhase,
@@ -44,6 +51,7 @@ const ORIGINAL_ALL_SCRIPTS = [
   'test:tracekernel-capabilities',
   'test:runtime-execution-judge',
   'test:prepared-provider-release-gate',
+  'test:terminal-executable-restoration',
   'test:native-harness',
   'test:runtime-trace',
   'test:tracecc',
@@ -220,4 +228,135 @@ test('scheduler never exceeds weighted capacity', async () => {
   });
   assert.equal(completed.length, tasks.length);
   assert.ok(peakWeight <= 3, `weighted concurrency peaked at ${peakWeight}`);
+});
+
+
+function controlledClock() {
+  let now = 0;
+  const timers = new Set<{ callback: () => void; due: number }>();
+  return {
+    now: () => now,
+    schedule(callback: () => void, delayMs: number) {
+      const timer = { callback, due: now + delayMs };
+      timers.add(timer);
+      return () => { timers.delete(timer); };
+    },
+    advance(ms: number) {
+      const end = now + ms;
+      for (;;) {
+        const next = [...timers].filter((timer) => timer.due <= end).sort((a, b) => a.due - b.due)[0];
+        if (!next) break;
+        timers.delete(next);
+        now = next.due;
+        next.callback();
+      }
+      now = end;
+    },
+    pending: () => timers.size,
+  };
+}
+
+test('task deadlines default conservatively and reject non-finite overrides', () => {
+  assert.equal(DEFAULT_TASK_TIMEOUT_MS, 20 * 60_000);
+  assert.equal(resolveTaskTimeout('1800000'), 30 * 60_000);
+  for (const invalid of ['', '0', '-1', 'Infinity', '1.5', '10ms', '2147483648']) {
+    assert.throws(() => resolveTaskTimeout(invalid), /positive integer/);
+  }
+});
+
+test('real subprocess success and nonzero exit keep their results', { timeout: 10_000 }, async () => {
+  const clock = controlledClock();
+  await executePackageScript(process.cwd(), { script: 'controlled-success' }, new AbortController().signal, {
+    command: process.execPath, args: ['-e', 'console.log("success")'], clock,
+  });
+  await assert.rejects(executePackageScript(process.cwd(), { script: 'controlled-failure' }, new AbortController().signal, {
+    command: process.execPath, args: ['-e', 'process.exit(7)'], clock,
+  }), /controlled-failure failed.*exit 7/);
+  assert.equal(clock.pending(), 0);
+});
+
+for (const reason of ['deadline', 'abort'] as const) {
+  test(`${reason} escalates a TERM-resistant real subprocess to KILL without sleeping`, { timeout: 10_000, skip: process.platform === 'win32' }, async () => {
+    const clock = controlledClock();
+    const controller = new AbortController();
+    const entry = { script: `controlled-${reason}` };
+    let ready!: () => void;
+    const started = new Promise<void>((resolve) => { ready = resolve; });
+    let pid = 0;
+    const execution = executePackageScript(process.cwd(), entry, controller.signal, {
+      command: process.execPath,
+      args: ['-e', 'process.on("SIGTERM", () => {}); console.log(process.pid); setInterval(() => {}, 1000000);'],
+      timeoutMs: 1000,
+      clock,
+      onOutput(chunk) { pid = Number(chunk.trim()); ready(); },
+    });
+    // Attach rejection handling before triggering fake-clock cancellation.
+    const rejected = assert.rejects(execution, reason === 'deadline' ? /controlled-deadline exceeded.*1.0s.*after 1.0s/ : /controlled-abort aborted after/);
+    await started;
+    clock.advance(400);
+    assert.match(describeRunningTask(entry, clock.now()), /elapsed 0.4s, last output 0.4s ago/);
+    if (reason === 'deadline') clock.advance(600);
+    else controller.abort();
+    clock.advance(5000);
+    await rejected;
+    assert.equal(clock.pending(), 0);
+    assert.equal(describeRunningTask(entry), entry.script);
+    assert.throws(() => process.kill(pid, 0), /ESRCH/);
+  });
+}
+
+test('already-aborted execution never launches a subprocess', async () => {
+  const controller = new AbortController();
+  controller.abort();
+  await assert.rejects(executePackageScript(process.cwd(), { script: 'never-launch' }, controller.signal, {
+    command: '/does/not/exist',
+  }), /aborted before launch/);
+});
+
+
+test('termination is bounded even when a child never emits close', { timeout: 10_000 }, async () => {
+  const clock = controlledClock();
+  const child = new EventEmitter() as EventEmitter & {
+    stdout: PassThrough; stderr: PassThrough; unref(): void;
+  };
+  child.stdout = new PassThrough();
+  child.stderr = new PassThrough();
+  let unreferenced = false;
+  child.unref = () => { unreferenced = true; };
+  const execution = executePackageScript(process.cwd(), { script: 'unreaped' }, new AbortController().signal, {
+    timeoutMs: 1000, clock,
+    spawnProcess: (() => child) as unknown as typeof spawn,
+  });
+  const rejected = assert.rejects(execution, /unreaped exceeded.*process did not close within 10.0s termination grace/);
+  clock.advance(11_000);
+  await rejected;
+  assert.equal(unreferenced, true);
+  assert.equal(child.stdout.destroyed, true);
+  assert.equal(child.stderr.destroyed, true);
+  assert.equal(clock.pending(), 0);
+});
+
+test('a cooperative zero-exit abort remains a failure', { timeout: 10_000, skip: process.platform === 'win32' }, async () => {
+  const clock = controlledClock();
+  const controller = new AbortController();
+  let ready!: () => void;
+  const started = new Promise<void>((resolve) => { ready = resolve; });
+  const execution = executePackageScript(process.cwd(), { script: 'cooperative-abort' }, controller.signal, {
+    command: process.execPath,
+    args: ['-e', 'process.on("SIGTERM", () => process.exit(0)); console.log("ready"); setInterval(() => {}, 1000000);'],
+    clock, onOutput: () => ready(),
+  });
+  const rejected = assert.rejects(execution, /cooperative-abort aborted/);
+  await started;
+  controller.abort();
+  await rejected;
+  assert.equal(clock.pending(), 0);
+});
+
+test('spawn errors cancel task timers', { timeout: 10_000 }, async () => {
+  const clock = controlledClock();
+  await assert.rejects(executePackageScript(process.cwd(), { script: 'spawn-error' }, new AbortController().signal, {
+    command: '/does/not/exist', clock,
+  }), /ENOENT/);
+  assert.equal(clock.pending(), 0);
 });
