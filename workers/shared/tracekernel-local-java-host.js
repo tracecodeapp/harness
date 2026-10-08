@@ -18270,6 +18270,26 @@ var TraceKernelSession = class {
       });
     });
   }
+  /** Replace only fd 0 with a host-fed pipe, preserving terminal output. */
+  attachHostStandardInput(process2, options = {}) {
+    return gen2(this, function* () {
+      yield* this.processTable.assertOwned(process2);
+      const stdin = yield* TraceKernelPipe.make(
+        this.resources.allocateId(`host-stdin-${process2.pid}`),
+        options,
+        (closedId) => this.resources.delete(closedId)
+      );
+      this.resources.set(stdin.id, stdin);
+      const writer = stdin.writer();
+      yield* process2.descriptors.replaceMany([
+        { fd: 0, descriptor: stdin.reader() }
+      ]).pipe(tapError2(() => stdin.dispose()));
+      return Object.freeze({
+        writeStdin: (bytes) => writer.write(bytes),
+        closeStdin: () => writer.close()
+      });
+    });
+  }
   attachHostStandardIo(process2, options = {}) {
     return gen2(this, function* () {
       yield* this.processTable.assertOwned(process2);

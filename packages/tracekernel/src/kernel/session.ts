@@ -758,6 +758,30 @@ export class TraceKernelSession {
     });
   }
 
+  /** Replace only fd 0 with a host-fed pipe, preserving terminal output. */
+  attachHostStandardInput(
+    process: TraceKernelProcess,
+    options: TraceKernelPipeOptions = {}
+  ): Effect.Effect<Pick<TraceKernelHostStandardIo, 'writeStdin' | 'closeStdin'>, Error> {
+    return Effect.gen(this, function* () {
+      yield* this.processTable.assertOwned(process);
+      const stdin = yield* TraceKernelPipe.make(
+        this.resources.allocateId(`host-stdin-${process.pid}`),
+        options,
+        (closedId) => this.resources.delete(closedId)
+      );
+      this.resources.set(stdin.id, stdin);
+      const writer = stdin.writer();
+      yield* process.descriptors.replaceMany([
+        { fd: 0, descriptor: stdin.reader() },
+      ]).pipe(Effect.tapError(() => stdin.dispose()));
+      return Object.freeze({
+        writeStdin: (bytes: Uint8Array) => writer.write(bytes),
+        closeStdin: () => writer.close(),
+      });
+    });
+  }
+
   attachHostStandardIo(
     process: TraceKernelProcess,
     options: TraceKernelPipeOptions = {}

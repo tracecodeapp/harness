@@ -142,7 +142,12 @@ export interface VirtualExecutableRecord {
 
 
 export function decodeCommandStdin(value: unknown): string {
-  if (typeof value === 'string') return value;
+  // just-bash CommandContext.stdin is a latin1 byte string, not Unicode text.
+  if (typeof value === 'string') {
+    return new TextDecoder().decode(
+      Uint8Array.from(value, (character) => character.charCodeAt(0))
+    );
+  }
   if (value instanceof Uint8Array) {
     return new TextDecoder().decode(value);
   }

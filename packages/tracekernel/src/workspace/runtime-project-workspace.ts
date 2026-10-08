@@ -1,3 +1,4 @@
+import { markShellStdinInAst } from './shell-stdin';
 import { isWasiCommandExecutable } from './executable-format';
 import * as Effect from 'effect/Effect';
 import * as Exit from 'effect/Exit';
@@ -115,6 +116,7 @@ import type {
 } from 'just-bash/browser';
 import type {
   RuntimeCommandOptions,
+  RuntimeCommandStdinSharedBuffer,
   RuntimeCommandCompletion,
   RuntimeCommandCompletionOptions,
   RuntimeCommandError,
@@ -326,6 +328,7 @@ import {
 } from './package-manager';
 import {
   commandEnv,
+  commandStdinPipe,
   createTraceKernelCommandRegistry,
   traceKernelCommandPath,
   type TraceKernelCommandInfo,
@@ -831,8 +834,8 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
             : {}),
         };
       },
-      startHostStandardInputPump: (context) =>
-        this.startHostStandardInputPump(context),
+      startHostStandardInputPump: (context, stdinPipe) =>
+        this.startHostStandardInputPump(context, stdinPipe),
       createKernelHttpBridge: (context) =>
         this.createKernelHttpBridge(context),
       createKernelSyscallBridge: (context) =>
@@ -1033,6 +1036,7 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
         }
         rewriteKernelShellCommandInvocationsInAst(ast);
         rewriteTraceKernelBinInvocationsInAst(ast, this.traceKernelCommandDispatchNames);
+        markShellStdinInAst(ast);
         return { ast };
       },
     } as never);
@@ -3631,16 +3635,27 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
     handle.hostStderrDrain = drain(stdio.readStderr);
   }
 
-  private startHostStandardInputPump(
-    context: RuntimeCommandExecutionContext
-  ): void {
+  private async startHostStandardInputPump(
+    context: RuntimeCommandExecutionContext,
+    stdinPipe: RuntimeCommandStdinSharedBuffer | undefined = context.stdinPipe
+  ): Promise<void> {
     const handle = this.processProjection.executionHandle(context.process);
-    const stdio = handle?.hostStandardIo;
-    if (!handle || !stdio || handle.hostStdinPumpStarted) return;
+    if (!handle || handle.hostStdinPumpStarted) return;
+    // Explicit shell/host input owns fd 0 even when output remains on a PTY.
+    // An interactive terminal with no supplied pipe keeps its terminal fd 0.
+    if (!handle.hostStandardIo && !stdinPipe) return;
+    if (
+      !handle.hostStandardIo && context.onTerminalStdinRead &&
+      stdinPipe === context.stdinPipe && stdinPipe &&
+      !runtimeCommandStdinPipeClosed(stdinPipe)
+    ) return;
+    const stdio = handle.hostStandardIo ?? await Effect.runPromise(
+      this.traceKernelAuthority!.session.attachHostStandardInput(handle.kernelProcess)
+    );
+    handle.hostStandardInput = stdio;
     handle.hostStdinPumpStarted = true;
     handle.hostStdinPump = (async () => {
       try {
-        const stdinPipe = context.stdinPipe;
         if (!stdinPipe) return;
         while (!handle.stopHostStdinPump) {
           const bytes = readRuntimeCommandStdinPipeBytes(stdinPipe);
@@ -3664,10 +3679,13 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
     handle: RuntimeKernelExecutionHandle | undefined
   ): Promise<void> {
     const stdio = handle?.hostStandardIo;
-    if (!handle || !stdio) return;
+    if (!handle) return;
     handle.stopHostStdinPump = true;
-    await Effect.runPromise(stdio.closeStdin());
+    if (handle.hostStandardInput) {
+      await Effect.runPromise(handle.hostStandardInput.closeStdin());
+    }
     await handle.hostStdinPump;
+    if (!stdio) return;
     await Promise.all([
       handle.hostStdoutDrain,
       handle.hostStderrDrain,
@@ -4510,7 +4528,7 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
       args: expandedInvocation.scriptArgs,
       cwd: ctx.cwd,
       env: commandEnv(ctx),
-      stdinPipe: commandContext.stdinPipe,
+      stdinPipe: commandStdinPipe(ctx) ?? commandContext.stdinPipe,
       commandContext,
     });
     if (result) return result;
@@ -4665,7 +4683,7 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
       cwd: ctx.cwd,
       env: commandEnv(ctx),
       replaceEnv: true,
-      stdin: decodeCommandStdin(ctx.stdin),
+      stdin: String(ctx.stdin),
       stdinKind: 'bytes',
       signal: ctx.signal,
       args: args.slice(commandIndex + 1),
@@ -6539,7 +6557,7 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
       executionHandle.consumesLiveStdin = true;
     }
     if (descriptorStdio) {
-      this.startHostStandardInputPump(request.commandContext);
+      await this.startHostStandardInputPump(request.commandContext, request.stdinPipe);
     } else {
       await this.resolvePendingTerminalStartupInput(
         request.commandContext.process.pid,

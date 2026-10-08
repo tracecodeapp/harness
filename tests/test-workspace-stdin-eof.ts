@@ -1,0 +1,110 @@
+import assert from 'node:assert/strict';
+import { markShellStdinInAst } from '../packages/tracekernel/src/workspace/shell-stdin';
+import { createRuntimeWorkspace } from '../packages/tracekernel/src/workspace/index';
+import { createRuntimeCommandStdinPipe, createRuntimeCommandStdinPipeFromText } from '../packages/runtime-contracts/src/index';
+import type { JavaScriptProjectCommandRunner } from '../packages/tracekernel/src/workspace/index';
+import type { TraceKernelSyscallRequest, TraceKernelSyscallResult } from '../packages/tracekernel/src/index';
+
+// Expansion bodies use caller provenance; each nested redirect/pipeline remains local.
+for (const type of ['CommandSubstitution', 'ProcessSubstitution', 'HereDoc']) {
+  const caller = { type: 'SimpleCommand', redirections: [] } as Record<string, unknown>;
+  const redirected = { type: 'SimpleCommand', redirections: [{ operator: '<', fd: 0 }] } as Record<string, unknown>;
+  const downstream = { type: 'SimpleCommand', redirections: [] } as Record<string, unknown>;
+  const expansion = { type, body: [caller, redirected, { type: 'Pipeline', commands: [{ type: 'SimpleCommand' }, downstream] }] };
+  markShellStdinInAst({ type: 'SimpleCommand', args: [expansion], redirections: [{ operator: '<', fd: 0, target: expansion }] });
+  assert.equal(caller.tracecodeStdinClosed, false, type);
+  assert.equal(redirected.tracecodeStdinClosed, true, type);
+  assert.equal(downstream.tracecodeStdinClosed, true, type);
+}
+
+let runtimeStarted: (() => void) | undefined;
+let observedInput = '';
+const observedInputs: string[] = [];
+const runner: JavaScriptProjectCommandRunner = Object.assign(async (request: Parameters<JavaScriptProjectCommandRunner>[0]) => {
+  assert.ok(request.kernelSyscalls);
+  runtimeStarted?.();
+  const dispatch = (requestBody: TraceKernelSyscallRequest) => request.kernelSyscalls!.dispatch(requestBody) as Promise<TraceKernelSyscallResult>;
+  const chunks: Uint8Array[] = [];
+  while (true) {
+    const result = await dispatch({ op: 'read', fd: 0, maxBytes: 2 });
+    assert.ok(result.ok && result.value.op === 'read');
+    if (!result.ok || result.value.op !== 'read') throw new Error('read failed');
+    if (!result.value.bytes.length) break;
+    chunks.push(result.value.bytes);
+  }
+  const input = Buffer.concat(chunks).toString();
+  observedInput = input;
+  observedInputs.push(input);
+  for (const [fd, data] of [[1, `out:${input}`], [2, `err:${input}`]] as const) {
+    const result = await dispatch({ op: 'write', fd, bytes: new TextEncoder().encode(data) });
+    assert.ok(result.ok);
+  }
+  // EOF stays observable across repeated reads.
+  const eof = await dispatch({ op: 'read', fd: 0, maxBytes: 1 });
+  assert.ok(eof.ok && eof.value.op === 'read' && eof.value.bytes.length === 0);
+  return { stdout: '', stderr: '', exitCode: 0 };
+}, { capabilities: { descriptorStdio: true } });
+
+const workspace = await createRuntimeWorkspace({ nodeRunner: runner, files: [
+  { path: 'input.js', contents: '' }, { path: 'input.txt', contents: 'file\n' }, { path: 'empty.txt', contents: '' }, { path: 'wrapper.sh', contents: '#!/bin/sh\nnode input.js\n', mode: 0o755 },
+] });
+try {
+  assert.equal((await workspace.runCommand('chmod +x wrapper.sh')).exitCode, 0);
+  for (const input of ['hello\n', '']) {
+    const result = await workspace.runCommand('node input.js', {
+      presentation: 'terminal', stdinPipe: createRuntimeCommandStdinPipeFromText(input),
+    });
+    assert.equal(result.exitCode, 0);
+    assert.equal(result.stdout, `out:${input}`);
+    assert.equal(result.stderr, `err:${input}`);
+  }
+  for (const [command, input] of [["printf 'pipe\\n' | node input.js", 'pipe\n'], ['node input.js < input.txt', 'file\n'], ['node input.js < empty.txt', ''], ["printf '' | node input.js", ''], ["cmd=node; printf '' | $cmd input.js", ''], ["printf '' | (node input.js)", ''], ["printf '' | command node input.js", ''], ["printf '' | command command node input.js", ''], ["printf '' | ./wrapper.sh", ''], ["printf 'café\\n' | command node input.js", 'café\n']] as const) {
+    const result = await workspace.runCommand(command, { presentation: 'terminal' });
+    assert.equal(result.exitCode, 0);
+    assert.equal(observedInput, input);
+    if (/^[\x00-\x7f]*$/.test(input)) {
+      assert.equal(result.stdout, `out:${input}`);
+      assert.equal(result.stderr, `err:${input}`);
+    }
+  }
+  for (const [command, expected] of [
+    ['node input.js "$(node input.js)" < empty.txt', ['caller\n', '']],
+    ['node input.js "$(node input.js < empty.txt)" < empty.txt', ['', '']],
+    [`printf 'pipeline\\n' | node input.js "$(node input.js)" < empty.txt`, ['pipeline\n', '']],
+  ] as const) {
+    observedInputs.length = 0;
+    assert.equal((await workspace.runCommand(command, { presentation: 'terminal', stdinPipe: createRuntimeCommandStdinPipeFromText('caller\n') })).exitCode, 0);
+    assert.deepEqual(observedInputs, expected, command);
+  }
+  const laterInput = await workspace.runCommand("printf 'first\\n' | node input.js; printf 'second\\n' | node input.js", { presentation: 'terminal' });
+  assert.equal(laterInput.exitCode, 0);
+  assert.equal(laterInput.stdout, 'out:first\nout:second\n');
+  assert.equal(laterInput.stderr, 'err:first\nerr:second\n');
+  const live = createRuntimeCommandStdinPipe();
+  let ready = new Promise<void>(resolve => { runtimeStarted = resolve; });
+  const liveRun = workspace.runCommand('node input.js', { presentation: 'terminal', stdinPipe: live });
+  await ready;
+  live.write('live\n');
+  live.close();
+  assert.equal((await liveRun).stdout, 'out:live\n');
+
+  const controller = new AbortController();
+  ready = new Promise<void>(resolve => { runtimeStarted = resolve; });
+  const interrupted = workspace.runCommand('node input.js', {
+    presentation: 'terminal', stdinPipe: createRuntimeCommandStdinPipe(), signal: controller.signal,
+  });
+  await ready;
+  controller.abort();
+  assert.notEqual((await interrupted).exitCode, 0);
+  runtimeStarted = undefined;
+  const recovered = await workspace.runCommand('node input.js', {
+    presentation: 'terminal', stdinPipe: createRuntimeCommandStdinPipeFromText('recovered\n'),
+  });
+  assert.equal(recovered.stdout, 'out:recovered\n');
+  const unicode = 'café 東京 😀\n';
+  await workspace.runCommand('node input.js', {
+    presentation: 'terminal', stdinPipe: createRuntimeCommandStdinPipeFromText(unicode),
+  });
+  assert.equal(observedInput, unicode, 'UTF-8 bytes must survive partial reads');
+  console.log('workspace stdin, empty/partial EOF, live input, cancellation, recovery and output separation passed');
+} finally { workspace.dispose(); }
