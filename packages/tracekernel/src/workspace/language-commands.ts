@@ -1082,12 +1082,25 @@ export function createCppProjectCommands(
     }, ctx);
     const commandResult = await applyCommandResultFiles(ctx, workspaceRoot, result, options.onFileChange);
     if (commandResult.exitCode === 0) {
-      options.recordExecutablePath?.(toProjectPath(workspaceRoot, resolveWorkspaceCommandPath(workspaceRoot, ctx.cwd, cppOutputPathFromArgs(parsed.args), options.workspaceAlias)));
+      const outputPath = resolveWorkspaceCommandPath(workspaceRoot, ctx.cwd, cppOutputPathFromArgs(parsed.args), options.workspaceAlias);
+      // Linked command artifacts need durable execute bits. The loader registry
+      // must not be the only reason a freshly compiled program can run.
+      const outputStat = await ctx.fs.stat(outputPath).catch(() => null);
+      const linked = !parsed.args.includes('-c') && !parsed.args.includes('-S') && !parsed.args.includes('-E');
+      if (outputStat?.isFile && linked) {
+        await ctx.fs.chmod(outputPath, 0o755);
+        options.recordExecutablePath?.(toProjectPath(workspaceRoot, outputPath));
+      }
     }
     return commandResult;
   };
 
   const runExecutable = (defaultPath: string) => async (args: string[], ctx: CommandContext): Promise<RuntimeCommandResult> => {
+    const executablePath = resolveWorkspaceCommandPath(workspaceRoot, ctx.cwd, defaultPath, options.workspaceAlias);
+    const stat = await ctx.fs.stat(executablePath).catch(() => null);
+    if (stat?.isFile && (stat.mode & 0o111) === 0) {
+      return { stdout: '', stderr: `bash: ${defaultPath}: Permission denied\n`, exitCode: 126 };
+    }
     let expandedArgs: string[];
     try {
       expandedArgs = await expandWorkspaceGlobArgs(args, ctx, workspaceRoot, options.workspaceAlias);

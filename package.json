@@ -170,6 +170,7 @@
     "test:python-module-worker-browser": "pnpm exec tsx --tsconfig tsconfig.base.json tests/test-python-module-worker-browser.ts",
     "test:browser-terminal-fidelity": "pnpm exec tsx --tsconfig tsconfig.base.json tests/test-browser-terminal-fidelity.ts",
     "test:project-browser": "pnpm run test:tracekernel-hardening && pnpm run test:external-http && pnpm run test:browser-terminal-fidelity && pnpm exec tsx --tsconfig tsconfig.base.json tests/test-runtime-authority-lockdown.ts && pnpm exec tsx --tsconfig tsconfig.base.json tests/test-javascript-authority-browser.ts",
+    "test:terminal-executable-restoration": "TSX_TSCONFIG_PATH=tsconfig.base.json node --import tsx --test tests/test-terminal-executable-restoration.ts",
     "test:kernel-storage-browser": "pnpm exec tsx --tsconfig tsconfig.base.json tests/test-kernel-storage-browser.ts",
     "test:kernel-storage-browser-matrix": "TRACECODE_KERNEL_STORAGE_ENGINES=chromium,firefox,webkit pnpm run test:kernel-storage-browser",
     "test:project-browser-matrix": "node scripts/test-browser-project-provider-matrix.mjs",
