@@ -83,3 +83,10 @@ disposable copy of the original monolithic test. Selection covered C++ adapters,
 first compound execution, browser factory/config/translation, language takehome,
 metadata consistency and readonly persistence hydration. This was a focused run,
 not the full native compiler project suite.
+
+Second fixture follow-up: testDirectCppExecutableRespectsHiddenProjectFiles in
+existing hardening tests now emits a compiled a.out artifact from its compiler
+stub. Its hidden-file assertions are unchanged. Four selected original hidden
+filesystem/actor/hydration hardening cases pass, along with tests typecheck. The
+focused copy required TSX_TSCONFIG_PATH=tsconfig.base.json (an initial attempt
+without that source alias setting could not resolve unbuilt package dist).
