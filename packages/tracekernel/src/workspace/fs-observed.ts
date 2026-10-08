@@ -203,6 +203,8 @@ export interface RuntimeFileSystemSyscallEvent {
 
 
 export interface RuntimeCommandExecutionContext {
+  /** Child events are already applied/journaled; publish through the owning shell once. */
+  parentEventContext?: RuntimeCommandExecutionContext;
   readonly eventHandler?: RuntimeCommandEventHandler;
   readonly actor: RuntimeWorkspaceActor;
   readonly process: {
@@ -230,6 +232,8 @@ export interface RuntimeCommandExecutionContext {
    */
   liveKernelSyscallDepth?: number;
   kernelError?: RuntimeCommandError;
+  /** Last error forwarded from a shell runtime child, distinct from shell integrity failures. */
+  runtimeInvocationError?: RuntimeCommandError;
   executableTransformCwd?: string;
   deviceStdout: string;
   deviceStderr: string;

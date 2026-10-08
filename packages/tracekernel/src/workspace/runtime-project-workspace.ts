@@ -940,6 +940,8 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
     });
     const shellCommands = createRuntimeWorkspaceShellCommands({
       runtimeCommands,
+      executeRuntimeCommand: (name, args, context, execute) =>
+        this.executeShellRuntimeInvocation(name, args, context, execute),
       customCommands: options.customCommands,
       filesystem: this.filesystemCommands,
       identity: this.identityCommands,
@@ -1029,6 +1031,66 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
       },
     } as never);
     return bash;
+  }
+
+  private async executeShellRuntimeInvocation(
+    name: string,
+    args: string[],
+    ctx: CommandContext,
+    execute: (context: CommandContext) => Promise<RuntimeCommandResult>
+  ): Promise<RuntimeCommandResult> {
+    const parentContext = this.resolveCommandContext(ctx);
+    if (!parentContext) return execute(ctx);
+    const words = parseSimpleCommandWords(parentContext.process.command);
+    // A direct runtime submission already has its own process. A runtime
+    // invoked by shell composition or a script needs a distinct process and
+    // engine bracket; sharing the shell lease permits only the first engine.
+    if (words?.[0] === name) return execute(ctx);
+    const parent = parentContext.process as RuntimeKernelProcessRecord;
+    const parentKernelProcess = this.processProjection.kernelProcess(parent);
+    const terminal = parent.tty !== '?';
+    const command = [name, ...args].map(shellQuote).join(' ');
+    // Terminal children inherit the same controlling tty and foreground group.
+    // Supplied shell input may replace fd 0 later at the runtime-I/O boundary.
+    const kernelProcess = terminal && parentKernelProcess && this.traceKernelAuthority
+      ? await Effect.runPromise(this.traceKernelAuthority.session.spawnChild(parentKernelProcess, {
+          runtime: this.traceKernelControlledRuntime.runtime,
+          command,
+          cwd: ctx.cwd,
+          env: commandEnv(ctx),
+          inheritDescriptors: [0, 1, 2],
+        }))
+      : undefined;
+    const result = await this.runCommandAs(
+      command,
+      {
+        cwd: ctx.cwd,
+        env: commandEnv(ctx),
+        signal: parentContext.signal,
+        stdinPipe: parentContext.stdinPipe,
+        terminal: parentContext.terminal,
+        ...(kernelProcess ? { presentation: 'terminal' as const, foreground: false } : {}),
+        onTerminalStdinRead: parentContext.onTerminalStdinRead,
+        includeHiddenFiles: parentContext.includeHiddenFiles,
+      },
+      parent,
+      {
+        ...(kernelProcess ? { kernelProcess, preserveKernelStandardIo: true } : {}),
+        admittedShellChild: true,
+        initialize: async (_process, context) => { context.parentEventContext = parentContext; },
+        kernelProcessGroupId: parentContext.process.pgid,
+        kernelSessionId: parentContext.process.sid,
+        execute: (_context, fs) => execute({ ...ctx, fs }),
+      }
+    );
+    // just-bash retains only shell result fields. Preserve the final runtime
+    // invocation's structured outcome on the owning shell, including clearing
+    // a recovered predecessor's failure after a successful invocation.
+    if (!parentContext.kernelError || parentContext.kernelError === parentContext.runtimeInvocationError) {
+      parentContext.kernelError = result.error;
+      parentContext.runtimeInvocationError = result.error;
+    }
+    return result;
   }
 
   private resolveCommandContext(ctx?: CommandContext): RuntimeCommandExecutionContext | undefined {
@@ -3629,6 +3691,10 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
   }
 
   private dispatchRuntimeEvent(event: RuntimeCommandEvent, commandContext?: RuntimeCommandExecutionContext): void {
+    if (commandContext?.parentEventContext) {
+      commandContext.parentEventContext.runtimeIo.emit(event);
+      return;
+    }
     commandContext?.eventHandler?.(event);
     this.eventState.dispatch(event);
   }
@@ -5279,7 +5345,9 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
     if (inProcessWait) return inProcessWait;
     await this.awaitControlPlaneProcessDisposals();
     const actor = parent?.actor ?? this.createRuntimeActor();
-    const admissionError = this.processProjection.admissionError(command);
+    const admissionError = launchHooks?.kernelProcess
+      ? undefined
+      : this.processProjection.admissionError(command);
     if (admissionError) {
       this.recordProcessAdmissionRejection(command, admissionError, actor);
       return {
@@ -5526,7 +5594,10 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
     });
     const cleanupExternalSignal = this.attachExternalSignal(process, options.signal);
     let processExitCode = 1;
-    return this.commandScheduler.runCommand({ pid: process.pid, command, signal: abortController.signal }, async () => {
+    const schedule = launchHooks?.admittedShellChild
+      ? (_job: { pid: number; command: string; signal: AbortSignal }, execute: () => Promise<RuntimeCommandResult>) => execute()
+      : this.commandScheduler.runCommand.bind(this.commandScheduler);
+    return schedule({ pid: process.pid, command, signal: abortController.signal }, async () => {
       try {
         await Effect.runPromise(
           authority.session.setProcessSchedulingState(kernelProcess, 'running')
@@ -5561,7 +5632,9 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
           cwd: commandCwd,
           actor: this.journalActorId(process.actor),
         }, commandContext, process.actor);
-        const directExecutableResult = await this.tryRunVirtualExecutable(command, { ...options, stdinPipe, signal: abortController.signal }, commandContext, commandFs);
+        const directExecutableResult = launchHooks?.execute
+          ? await launchHooks.execute(commandContext, commandFs)
+          : await this.tryRunVirtualExecutable(command, { ...options, stdinPipe, signal: abortController.signal }, commandContext, commandFs);
         if (directExecutableResult) {
           await this.flushRuntimeEventQueue(commandContext);
           const output = this.captureReturnedOutput(commandContext, directExecutableResult);
