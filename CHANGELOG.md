@@ -6,6 +6,21 @@ This repo uses Git tags as release boundaries. Version notes below summarize wha
 
 ## [Unreleased]
 
+## [0.17.2] - 2026-10-08
+
+### Fixed
+
+- Shell command lists and pipelines give each runtime invocation its own
+  process lifetime, preserving later commands and inherited permissions.
+- Terminal stdin, EOF, and signals reach the process-owned input pipe,
+  including Python input and read-only stdin device aliases.
+- Filesystem existence probes no longer leave stale structured error metadata
+  on successful commands; infrastructure failures keep their provenance.
+- Workspace reload restores executable modes so generated scripts and binaries
+  remain runnable after persistence.
+- Native C++ JSON drivers compile with Linux clang/libstdc++; matching TraceCC
+  0.1.2 header-specific PCH profiles retain the existing engine binaries.
+
 ## [0.17.1] - 2026-09-02
 
 ### Fixed
