@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { defineCommand } from 'just-bash/browser';
 import { createRuntimeWorkspace } from '../packages/tracekernel/src/workspace/index';
-import type { JavaScriptProjectCommandRequest, PythonProjectCommandRequest } from '../packages/runtime-contracts/src/runtime-project';
+import type { JavaScriptProjectCommandRequest, PythonProjectCommandRequest } from '../packages/tracekernel/src/workspace/index';
 
 test('shell runtimes own separate process leases and settle before the next invocation', async () => {
   const invocations: number[] = [];
@@ -89,7 +89,7 @@ test('terminal shell children retain foreground group and terminal descriptors',
     },
   });
   try {
-    const result = await workspace.runCommand('node one.js && node one.js', { presentation: 'terminal', terminal: { isTTY: true } });
+    const result = await workspace.runCommand('node one.js && node one.js', { presentation: 'terminal', terminal: { isTTY: true, columns: 80, rows: 24, term: 'xterm-256color', colorLevel: 0 } });
     assert.equal(result.exitCode, 0);
     assert.equal(identities.length, 2);
     assert.notEqual(identities[0].pid, identities[1].pid);
@@ -150,7 +150,7 @@ test('child file changes apply and publish once across the shell submission', as
     },
   });
   const unsubscribe = workspace.watch(event => {
-    if (event.type === 'file-change' && event.change.path === 'result.txt') published.push(event.change.contents!);
+    if (event.type === 'file-change' && event.change.path === 'result.txt' && 'contents' in event.change) published.push(event.change.contents);
   });
   try {
     const result = await workspace.runCommand('node one.js && node one.js');
