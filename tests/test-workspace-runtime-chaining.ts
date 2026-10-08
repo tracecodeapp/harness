@@ -351,3 +351,26 @@ test('registered virtual executable wildcard invocations also own independent le
     assert.equal(new Set(pids).size, 2);
   } finally { await workspace.destroy(); }
 });
+
+
+test('composed package-manager children inherit the terminal file creation mask', async () => {
+  const workspace = await createBrowserProjectWorkspace({
+    providers: ['javascript'],
+    nodeProject: { allowMainThreadExecution: true, trustedMainThreadExecution: true },
+    files: [
+      { path: 'package.json', contents: JSON.stringify({ scripts: { build: 'mkdir build-output; touch build-output/result' } }) },
+      { path: 'node_modules/package/package.json', contents: '{}' },
+    ],
+  });
+  const terminal = workspace.createTerminalSession();
+  try {
+    assert.equal((await terminal.run('umask 077')).exitCode, 0);
+    const result = await terminal.run('true; npm run build');
+    assert.equal(result.exitCode, 0, JSON.stringify(result));
+    assert.equal((await workspace.stat('node_modules/.bin')).mode! & 0o777, 0o700);
+    assert.equal((await workspace.stat('build-output')).mode! & 0o777, 0o700);
+    assert.equal((await workspace.stat('build-output/result')).mode! & 0o777, 0o600);
+    assert.equal((await terminal.run('umask')).stdout, '0077\n');
+    assert.equal((await workspace.runCommand('umask')).stdout, '0022\n');
+  } finally { terminal.close(); workspace.dispose(); }
+});
