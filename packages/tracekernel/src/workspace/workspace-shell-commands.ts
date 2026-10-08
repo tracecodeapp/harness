@@ -26,6 +26,7 @@ type WorkspaceShellHandler = (
 
 export interface WorkspaceShellCommandOptions {
   readonly runtimeCommands: readonly ProjectWorkspaceCommand[];
+  readonly executeRuntimeCommand?: import('./shell-command-registry').WorkspaceShellCommandRegistryOptions['executeRuntimeCommand'];
   readonly customCommands?: readonly ProjectWorkspaceCommand[];
   readonly filesystem: WorkspaceFilesystemCommands;
   readonly identity: WorkspaceIdentityCommands;
@@ -93,6 +94,7 @@ export function createRuntimeWorkspaceShellCommands(
 
   return createWorkspaceShellCommandRegistry({
     runtimeCommands: options.runtimeCommands,
+    executeRuntimeCommand: options.executeRuntimeCommand,
     customCommands: options.customCommands,
     handlers: {
       exec: options.exec,

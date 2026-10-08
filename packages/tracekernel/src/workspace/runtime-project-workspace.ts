@@ -82,6 +82,7 @@ import {
   makeTraceKernelHost,
   TraceKernelControlledRuntime,
   TraceKernelChildProcessError,
+  TraceKernelProcessLimitError,
   TraceKernelFileSystem,
   TraceKernelFileSystemError,
   TraceKernelHttp1Decoder,
@@ -780,7 +781,12 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
     });
     this.stopObservingExternalTraceKernelMutations =
       this.traceKernelBackingFileSystem.watchExternalMutations((mutation) => {
-        this.fs.observeExternalTraceKernelMutation(mutation);
+        const context = mutation.origin
+          ? [...this.processState.executionHandles.values()].find(
+              (handle) => handle.kernelProcess?.fileSystemMutationOrigin === mutation.origin
+            )?.hostOutputContext
+          : undefined;
+        this.fs.observeExternalTraceKernelMutation(mutation, context);
         this.recordTraceKernelFileSystemMutation(mutation);
       });
     const withEvents = createWorkspaceRuntimeRunnerBridge({
@@ -940,6 +946,8 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
     });
     const shellCommands = createRuntimeWorkspaceShellCommands({
       runtimeCommands,
+      executeRuntimeCommand: (name, args, context, execute) =>
+        this.executeShellRuntimeInvocation(name, args, context, execute),
       customCommands: options.customCommands,
       filesystem: this.filesystemCommands,
       identity: this.identityCommands,
@@ -1029,6 +1037,97 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
       },
     } as never);
     return bash;
+  }
+
+  private async executeShellRuntimeInvocation(
+    name: string,
+    args: string[],
+    ctx: CommandContext,
+    execute: (context: CommandContext) => Promise<RuntimeCommandResult>
+  ): Promise<RuntimeCommandResult> {
+    const parentContext = this.resolveCommandContext(ctx);
+    if (!parentContext) return execute(ctx);
+    // Script dispatch delegates to the shell's ctx.exec closure. It owns no
+    // runtime engine itself; isolate the language invocation that it starts.
+    // Compiled virtual executables attach an engine directly and need a child.
+    if (name === TRACEKERNEL_EXEC_COMMAND) {
+      try {
+        const invocation = await this.resolveShellExecutableInvocation(args[0] ?? '', args.slice(1), ctx);
+        if (!invocation.virtualExecutable) return execute(ctx);
+      } catch {
+        // The executor owns shell expansion diagnostics and exit status.
+        return execute(ctx);
+      }
+    }
+    const words = parseSimpleCommandWords(parentContext.process.command);
+    // A direct runtime submission already has its own process. A runtime
+    // invoked by shell composition or a script needs a distinct process and
+    // engine bracket; sharing the shell lease permits only the first engine.
+    if (words?.[0] === name) return execute(ctx);
+    const parent = parentContext.process as RuntimeKernelProcessRecord;
+    const parentKernelProcess = this.processProjection.kernelProcess(parent);
+    const terminal = parent.tty !== '?';
+    const command = [name, ...args].map(shellQuote).join(' ');
+    // Terminal children inherit the same controlling tty and foreground group.
+    // Supplied shell input may replace fd 0 later at the runtime-I/O boundary.
+    let kernelProcess: TraceKernelProcess | undefined;
+    if (terminal && parentKernelProcess && this.traceKernelAuthority) {
+      const spawned = await Effect.runPromise(Effect.either(
+        this.traceKernelAuthority.session.spawnChild(parentKernelProcess, {
+          runtime: this.traceKernelControlledRuntime.runtime,
+          command,
+          cwd: ctx.cwd,
+          env: commandEnv(ctx),
+          inheritDescriptors: [0, 1, 2],
+        })
+      ));
+      if (spawned._tag === 'Left') {
+        if (!(spawned.left instanceof TraceKernelProcessLimitError)) throw spawned.left;
+        const admissionError = new RuntimeKernelAdmissionRejectedError(command, spawned.left.message, 'fork');
+        this.recordProcessAdmissionRejection(command, admissionError, parent.actor);
+        const error = admissionError.toCommandError();
+        if (!parentContext.kernelError || parentContext.kernelError === parentContext.runtimeInvocationError) {
+          parentContext.kernelError = error;
+          parentContext.runtimeInvocationError = error;
+        }
+        return {
+          stdout: '', stderr: 'bash: fork: Resource temporarily unavailable\n',
+          exitCode: admissionError.errno, error,
+        };
+      }
+      kernelProcess = spawned.right;
+    }
+    const result = await this.runCommandAs(
+      command,
+      {
+        cwd: ctx.cwd,
+        env: commandEnv(ctx),
+        signal: parentContext.signal,
+        stdinPipe: parentContext.stdinPipe,
+        umask: parentContext.umask,
+        terminal: parentContext.terminal,
+        ...(kernelProcess ? { presentation: 'terminal' as const, foreground: false } : {}),
+        onTerminalStdinRead: parentContext.onTerminalStdinRead,
+        includeHiddenFiles: parentContext.includeHiddenFiles,
+      },
+      parent,
+      {
+        ...(kernelProcess ? { kernelProcess, preserveKernelStandardIo: true } : {}),
+        admittedShellChild: true,
+        initialize: async (_process, context) => { context.parentEventContext = parentContext; },
+        kernelProcessGroupId: parentContext.process.pgid,
+        kernelSessionId: parentContext.process.sid,
+        execute: (_context, fs) => execute({ ...ctx, fs }),
+      }
+    );
+    // just-bash retains only shell result fields. Preserve the final runtime
+    // invocation's structured outcome on the owning shell, including clearing
+    // a recovered predecessor's failure after a successful invocation.
+    if (!parentContext.kernelError || parentContext.kernelError === parentContext.runtimeInvocationError) {
+      parentContext.kernelError = result.error;
+      parentContext.runtimeInvocationError = result.error;
+    }
+    return result;
   }
 
   private resolveCommandContext(ctx?: CommandContext): RuntimeCommandExecutionContext | undefined {
@@ -3629,6 +3728,10 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
   }
 
   private dispatchRuntimeEvent(event: RuntimeCommandEvent, commandContext?: RuntimeCommandExecutionContext): void {
+    if (commandContext?.parentEventContext) {
+      commandContext.parentEventContext.runtimeIo.emit(event);
+      return;
+    }
     commandContext?.eventHandler?.(event);
     this.eventState.dispatch(event);
   }
@@ -4367,6 +4470,23 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
     this.virtualExecutableRecords.set(record.path, record);
   }
 
+  /** Expansion and loader classification must agree at ownership and dispatch. */
+  private async resolveShellExecutableInvocation(
+    executable: string,
+    args: string[],
+    ctx: CommandContext
+  ) {
+    const invocation = await expandParsedScriptInvocation(
+      ctx, this.cwd, executable, args, this.kernelInfo.workspaceAlias
+    );
+    return {
+      ...invocation,
+      virtualExecutable: invocation.scriptFile
+        ? await this.resolveVirtualExecutableRecord(invocation.scriptFile, ctx.cwd)
+        : null,
+    };
+  }
+
   private async runTraceKernelExec(args: string[], ctx: CommandContext): Promise<RuntimeCommandResult> {
     const executable = args[0];
     if (!executable) {
@@ -4374,7 +4494,7 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
     }
     let expandedInvocation: { scriptFile: string | null; scriptArgs: string[] };
     try {
-      expandedInvocation = await expandParsedScriptInvocation(ctx, this.cwd, executable, args.slice(1), this.kernelInfo.workspaceAlias);
+      expandedInvocation = await this.resolveShellExecutableInvocation(executable, args.slice(1), ctx);
     } catch (error) {
       return { stdout: '', stderr: `${error instanceof Error ? error.message : String(error)}\n`, exitCode: 1 };
     }
@@ -5279,7 +5399,9 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
     if (inProcessWait) return inProcessWait;
     await this.awaitControlPlaneProcessDisposals();
     const actor = parent?.actor ?? this.createRuntimeActor();
-    const admissionError = this.processProjection.admissionError(command);
+    const admissionError = launchHooks?.kernelProcess
+      ? undefined
+      : this.processProjection.admissionError(command);
     if (admissionError) {
       this.recordProcessAdmissionRejection(command, admissionError, actor);
       return {
@@ -5526,7 +5648,10 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
     });
     const cleanupExternalSignal = this.attachExternalSignal(process, options.signal);
     let processExitCode = 1;
-    return this.commandScheduler.runCommand({ pid: process.pid, command, signal: abortController.signal }, async () => {
+    const schedule = launchHooks?.admittedShellChild
+      ? (_job: { pid: number; command: string; signal: AbortSignal }, execute: () => Promise<RuntimeCommandResult>) => execute()
+      : this.commandScheduler.runCommand.bind(this.commandScheduler);
+    return schedule({ pid: process.pid, command, signal: abortController.signal }, async () => {
       try {
         await Effect.runPromise(
           authority.session.setProcessSchedulingState(kernelProcess, 'running')
@@ -5561,7 +5686,9 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
           cwd: commandCwd,
           actor: this.journalActorId(process.actor),
         }, commandContext, process.actor);
-        const directExecutableResult = await this.tryRunVirtualExecutable(command, { ...options, stdinPipe, signal: abortController.signal }, commandContext, commandFs);
+        const directExecutableResult = launchHooks?.execute
+          ? await launchHooks.execute(commandContext, commandFs)
+          : await this.tryRunVirtualExecutable(command, { ...options, stdinPipe, signal: abortController.signal }, commandContext, commandFs);
         if (directExecutableResult) {
           await this.flushRuntimeEventQueue(commandContext);
           const output = this.captureReturnedOutput(commandContext, directExecutableResult);
@@ -6350,15 +6477,14 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
     });
   }
 
-  private async executeVirtualExecutable(request: {
-    executable: string;
-    args: string[];
-    cwd: string;
-    env: Record<string, string>;
-    stdinPipe?: RuntimeCommandOptions['stdinPipe'];
-    commandContext: RuntimeCommandExecutionContext;
-  }): Promise<RuntimeCommandResult | null> {
-    const executablePath = toProjectPath(this.cwd, resolveWorkspaceCommandPath(this.cwd, request.cwd, request.executable, this.kernelInfo.workspaceAlias));
+  /** Shared classification for shell ownership and executable dispatch. */
+  private async resolveVirtualExecutableRecord(
+    executable: string,
+    cwd: string
+  ): Promise<{ record: VirtualExecutableRecord; mode: number } | null> {
+    const executablePath = toProjectPath(this.cwd, resolveWorkspaceCommandPath(
+      this.cwd, cwd, executable, this.kernelInfo.workspaceAlias
+    ));
     let record = this.virtualExecutableRecords.get(executablePath);
     // Loader registrations are process-local. Restored WASI command modules
     // select the same sandboxed runner by their versioned binary format, never
@@ -6371,7 +6497,21 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
       if (!isWasiCommandExecutable(bytes)) return null;
       record = { path: executablePath, kind: 'cpp' };
     }
-    if ((stat.mode & 0o111) === 0) {
+    return { record, mode: stat.mode };
+  }
+
+  private async executeVirtualExecutable(request: {
+    executable: string;
+    args: string[];
+    cwd: string;
+    env: Record<string, string>;
+    stdinPipe?: RuntimeCommandOptions['stdinPipe'];
+    commandContext: RuntimeCommandExecutionContext;
+  }): Promise<RuntimeCommandResult | null> {
+    const executable = await this.resolveVirtualExecutableRecord(request.executable, request.cwd);
+    if (!executable) return null;
+    const { record, mode } = executable;
+    if ((mode & 0o111) === 0) {
       return { stdout: '', stderr: `bash: ${request.executable}: Permission denied\n`, exitCode: 126 };
     }
 
