@@ -173,7 +173,7 @@ export function commandEnv(ctx: CommandContext): Record<string, string> {
 
 export function commandStdinPipe(ctx: CommandContext) {
   const stdin = decodeCommandStdin(ctx.stdin);
-  return stdin ? createRuntimeCommandStdinPipeFromText(stdin) : undefined;
+  return stdin || ctx.stdinClosed ? createRuntimeCommandStdinPipeFromText(stdin) : undefined;
 }
 
 

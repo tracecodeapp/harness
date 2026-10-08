@@ -87,6 +87,7 @@ export interface RuntimeKernelExecutionHandle {
   readonly abortController?: AbortController;
   readonly signalChannel?: RuntimeKernelProcessSignalChannel;
   readonly hostStandardIo?: TraceKernelHostStandardIo;
+  hostStandardInput?: Pick<TraceKernelHostStandardIo, 'writeStdin' | 'closeStdin'>;
   descriptorStdio?: boolean;
   consumesLiveStdin?: boolean;
   hostOutputContext?: RuntimeCommandExecutionContext;

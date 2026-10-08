@@ -371,3 +371,23 @@ automation where the caller owns stdout/stderr and stdin.
 Use `workspace.createTerminalSession(...)` for user-facing terminal UI. It gives
 consumers one supported contract for shell prompt rendering, busy state, stdin
 prompts, and command lifecycle.
+
+## Finite stdin and terminal output
+
+`runCommand(command, { presentation: 'terminal', stdinPipe })` feeds an explicit
+host pipe into a process-owned fd 0 pipe. Closing an empty pipe is EOF; closing a
+nonempty pipe makes EOF observable after the last byte. Terminal fd 1 and fd 2
+remain attached to the terminal, so redirecting stdin does not remove terminal
+output or combine stdout and stderr.
+
+Shell pipelines and input redirections also supply finite stdin, including when
+their output/file is empty. The shell AST marks that provenance, and the patched
+just-bash interpreter carries `stdinClosed` through command expansion and shell
+trampolines. Runtime adapters decode just-bash's latin1 byte string into UTF-8 at
+the command boundary. This metadata is internal to the shell adapter; the public
+stdin pipe API and syscall wire are unchanged.
+
+An interactive terminal session's open input pipe keeps its terminal fd 0 and
+its prompt/read handshake. Cancelling a process stops its host input pump and
+closes that pump's writer before teardown; a subsequent command receives its own
+input and syscall channel.

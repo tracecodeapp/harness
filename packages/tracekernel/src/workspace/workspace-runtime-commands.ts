@@ -1,6 +1,7 @@
 import type {
   RuntimeCommandEvent,
   RuntimeCommandResult,
+  RuntimeCommandStdinSharedBuffer,
   RuntimeKernelHttpBridge,
   RuntimeKernelInfo,
   RuntimeKernelSignalBridge,
@@ -57,8 +58,9 @@ export interface WorkspaceRuntimeRunnerBridgeOptions {
     consumesLiveStdin: boolean
   ) => WorkspaceRuntimeProcessBinding;
   readonly startHostStandardInputPump: (
-    context: RuntimeCommandExecutionContext
-  ) => void;
+    context: RuntimeCommandExecutionContext,
+    stdinPipe?: RuntimeCommandStdinSharedBuffer
+  ) => Promise<void>;
   readonly createKernelHttpBridge: (
     context?: RuntimeCommandExecutionContext
   ) => RuntimeKernelHttpBridge;
@@ -127,11 +129,10 @@ export function createWorkspaceRuntimeRunnerBridge(
         ? bridge.createKernelSyscallBridge(commandContext)
         : undefined;
 
-      if (descriptorStdio && commandContext && consumesLiveStdin) {
-        bridge.startHostStandardInputPump(commandContext);
-      }
-
       try {
+        if (descriptorStdio && commandContext && consumesLiveStdin) {
+          await bridge.startHostStandardInputPump(commandContext, stdinPipe);
+        }
         // Legacy shared-buffer runners may read stdin synchronously before
         // returning their execution promise. Replay input queued during
         // terminal startup before invoking them; descriptor-backed runners
