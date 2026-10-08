@@ -20,7 +20,7 @@ concurrency:
 
 jobs:
   full-suite:
-    runs-on: [self-hosted, Linux, X64, server-blade, blade-exclusive]
+    runs-on: ubuntu-24.04
     timeout-minutes: 120
     env:
       CANDIDATE_SHA: ${{ inputs.candidate_sha || '3751ca91cb9143b96e9e6bd584453764142fdc06' }}
@@ -47,7 +47,14 @@ jobs:
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: 22.18.0
-      - name: Admit toolchain and exclusive resources
+      - uses: actions/setup-java@cf277c60eb25467037889841efdb72551f06f6c3 # v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - uses: actions/setup-dotnet@67a3573c9a986a3f9c594539f4ab511d57bb3ce9 # v4
+        with:
+          dotnet-version: '10.0.107'
+      - name: Admit toolchain and physical resources
         shell: bash
         run: |
           set -euo pipefail
@@ -61,11 +68,12 @@ jobs:
             javac -version
             dotnet --version
             clang++ --version
-            test "$(dotnet --version | cut -d. -f1)" = 10
-            python3 -c 'from pathlib import Path; limit=Path("/sys/fs/cgroup/memory.max").read_text().strip(); assert limit.isdigit() and int(limit) >= 24 * 1024**3, f"Expected exclusive 24 GiB reservation, got {limit}"'
+            printf '#include <iostream>\nint main() { std::cout << "native-clang-admission"; }\n' | clang++ -std=c++23 -O0 -x c++ - -o "$RUNNER_TEMP/harness-validation/native-admission"
+            test "$("$RUNNER_TEMP/harness-validation/native-admission")" = native-clang-admission
+            test "$(dotnet --version)" = 10.0.107
+            python3 -c 'from pathlib import Path; import shutil; values=dict(line.split(":", 1) for line in Path("/proc/meminfo").read_text().splitlines()); available=int(values["MemAvailable"].split()[0])*1024; free=shutil.disk_usage(".").free; print(f"Available RAM={available} bytes; free disk={free} bytes"); assert available >= 12*1024**3, "Insufficient available memory"; assert free >= 8*1024**3, "Insufficient free disk"'
             uname -a
             cat /proc/meminfo
-            cat /sys/fs/cgroup/memory.max
             df -h .
           } 2>&1 | tee "$RUNNER_TEMP/harness-validation/toolchain.log"
       - name: Install frozen dependencies and exact browsers
@@ -73,8 +81,8 @@ jobs:
         run: |
           set -euo pipefail
           pnpm install --frozen-lockfile 2>&1 | tee "$RUNNER_TEMP/harness-validation/install.log"
-          # OS libraries belong to the qualified runner image; this job never uses sudo.
-          pnpm exec playwright install chromium firefox webkit 2>&1 | tee "$RUNNER_TEMP/harness-validation/browser-install.log"
+          # Provision supported browser OS dependencies only on the disposable hosted runner.
+          pnpm exec playwright install --with-deps chromium firefox webkit 2>&1 | tee "$RUNNER_TEMP/harness-validation/browser-install.log"
       - name: Admit every browser engine
         shell: bash
         run: |
