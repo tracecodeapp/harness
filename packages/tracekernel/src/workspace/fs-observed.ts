@@ -224,6 +224,8 @@ export interface RuntimeCommandExecutionContext {
   readonly runtimeIo: RuntimeProjectLiveIoController;
   readonly generationBaseline: RuntimeFileSystemGenerationSnapshot;
   readonly mutatedGenerationPaths: Set<string>;
+  /** Exact generations accepted from owned children, retaining conflict checks for later writers. */
+  childMutationGenerations?: Map<string, number>;
   /**
    * Positive while a runtime syscall is operating directly on the live
    * kernel namespace. These operations are serialized by filesystem locks and
@@ -862,7 +864,8 @@ export class KernelObservedFileSystem implements IFileSystem {
    * fabricating a host command actor.
    */
   observeExternalTraceKernelMutation(
-    mutation: TraceKernelFileSystemMutation
+    mutation: TraceKernelFileSystemMutation,
+    context?: RuntimeCommandExecutionContext
   ): void {
     this.quotaFileSystem.invalidateLedger();
     const paths = mutation.paths.map((path) =>
@@ -896,7 +899,7 @@ export class KernelObservedFileSystem implements IFileSystem {
       }
     }
 
-    this.recordMutation(undefined, paths, kind);
+    this.recordMutation(context, paths, kind);
   }
 
   private externalMutationKind(
@@ -1532,8 +1535,9 @@ export class KernelObservedFileSystem implements IFileSystem {
     if (!generationContext) return;
     const generationPaths = [...new Set(this.mutationGenerationPaths(paths, kind))];
     for (const path of generationPaths.map(normalizeFsLockPath)) {
-      if (generationContext.mutatedPaths.has(path)) continue;
-      const expectedGeneration = generationContext.baseline.get(path) ?? 0;
+      const childGeneration = context?.childMutationGenerations?.get(path);
+      if (childGeneration === undefined && generationContext.mutatedPaths.has(path)) continue;
+      const expectedGeneration = childGeneration ?? generationContext.baseline.get(path) ?? 0;
       const actualGeneration = this.currentGeneration(path);
       if (actualGeneration !== expectedGeneration) {
         const displayPath = path === normalizeFsLockPath(this.workspaceRoot()) && paths[0]
@@ -1552,7 +1556,15 @@ export class KernelObservedFileSystem implements IFileSystem {
     const generationContext = this.commandGenerationContextFor(context);
     if (!generationContext) return;
     for (const path of paths) {
-      generationContext.mutatedPaths.add(normalizeFsLockPath(path));
+      const normalizedPath = normalizeFsLockPath(path);
+      generationContext.mutatedPaths.add(normalizedPath);
+      context?.childMutationGenerations?.delete(normalizedPath);
+      let parent = context?.parentEventContext;
+      while (parent) {
+        parent.childMutationGenerations ??= new Map();
+        parent.childMutationGenerations.set(normalizedPath, this.currentGeneration(normalizedPath));
+        parent = parent.parentEventContext;
+      }
     }
   }
 

@@ -82,6 +82,7 @@ import {
   makeTraceKernelHost,
   TraceKernelControlledRuntime,
   TraceKernelChildProcessError,
+  TraceKernelProcessLimitError,
   TraceKernelFileSystem,
   TraceKernelFileSystemError,
   TraceKernelHttp1Decoder,
@@ -780,7 +781,12 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
     });
     this.stopObservingExternalTraceKernelMutations =
       this.traceKernelBackingFileSystem.watchExternalMutations((mutation) => {
-        this.fs.observeExternalTraceKernelMutation(mutation);
+        const context = mutation.origin
+          ? [...this.processState.executionHandles.values()].find(
+              (handle) => handle.kernelProcess?.fileSystemMutationOrigin === mutation.origin
+            )?.hostOutputContext
+          : undefined;
+        this.fs.observeExternalTraceKernelMutation(mutation, context);
         this.recordTraceKernelFileSystemMutation(mutation);
       });
     const withEvents = createWorkspaceRuntimeRunnerBridge({
@@ -1041,6 +1047,15 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
   ): Promise<RuntimeCommandResult> {
     const parentContext = this.resolveCommandContext(ctx);
     if (!parentContext) return execute(ctx);
+    // Script dispatch delegates to the shell's ctx.exec closure. It owns no
+    // runtime engine itself; isolate the language invocation that it starts.
+    // Compiled virtual executables attach an engine directly and need a child.
+    if (name === TRACEKERNEL_EXEC_COMMAND) {
+      const executablePath = toProjectPath(this.cwd, resolveWorkspaceCommandPath(
+        this.cwd, ctx.cwd, args[0] ?? '', this.kernelInfo.workspaceAlias
+      ));
+      if (!this.virtualExecutableRecords.has(executablePath)) return execute(ctx);
+    }
     const words = parseSimpleCommandWords(parentContext.process.command);
     // A direct runtime submission already has its own process. A runtime
     // invoked by shell composition or a script needs a distinct process and
@@ -1052,15 +1067,33 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
     const command = [name, ...args].map(shellQuote).join(' ');
     // Terminal children inherit the same controlling tty and foreground group.
     // Supplied shell input may replace fd 0 later at the runtime-I/O boundary.
-    const kernelProcess = terminal && parentKernelProcess && this.traceKernelAuthority
-      ? await Effect.runPromise(this.traceKernelAuthority.session.spawnChild(parentKernelProcess, {
+    let kernelProcess: TraceKernelProcess | undefined;
+    if (terminal && parentKernelProcess && this.traceKernelAuthority) {
+      const spawned = await Effect.runPromise(Effect.either(
+        this.traceKernelAuthority.session.spawnChild(parentKernelProcess, {
           runtime: this.traceKernelControlledRuntime.runtime,
           command,
           cwd: ctx.cwd,
           env: commandEnv(ctx),
           inheritDescriptors: [0, 1, 2],
-        }))
-      : undefined;
+        })
+      ));
+      if (spawned._tag === 'Left') {
+        if (!(spawned.left instanceof TraceKernelProcessLimitError)) throw spawned.left;
+        const admissionError = new RuntimeKernelAdmissionRejectedError(command, spawned.left.message, 'fork');
+        this.recordProcessAdmissionRejection(command, admissionError, parent.actor);
+        const error = admissionError.toCommandError();
+        if (!parentContext.kernelError || parentContext.kernelError === parentContext.runtimeInvocationError) {
+          parentContext.kernelError = error;
+          parentContext.runtimeInvocationError = error;
+        }
+        return {
+          stdout: '', stderr: 'bash: fork: Resource temporarily unavailable\n',
+          exitCode: admissionError.errno, error,
+        };
+      }
+      kernelProcess = spawned.right;
+    }
     const result = await this.runCommandAs(
       command,
       {
