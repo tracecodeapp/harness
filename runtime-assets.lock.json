@@ -3,16 +3,16 @@
   "harness": {
     "name": "@tracecode/harness",
     "version": "0.17.1",
-    "releaseId": "@tracecode/harness@0.17.1+sha256.d7acac9b8a0a1f3adf06c00fa9603964b42959e2903af6ed6f1475ecb8c1203e"
+    "releaseId": "@tracecode/harness@0.17.1+sha256.e3e0ddcce4fe2329411cd0c618af9ff2abc60a4d79b62e6c9759babec5bf4e03"
   },
   "treeSha256Algorithm": "sha256-path-nul-bytes-nul-v1",
-  "packageTreeSha256": "d7acac9b8a0a1f3adf06c00fa9603964b42959e2903af6ed6f1475ecb8c1203e",
-  "totalPackagedRuntimeBytes": 152454295,
+  "packageTreeSha256": "e3e0ddcce4fe2329411cd0c618af9ff2abc60a4d79b62e6c9759babec5bf4e03",
+  "totalPackagedRuntimeBytes": 152455110,
   "components": {
     "cpp": {
-      "releaseId": "cpp+sha256.6117fcbe5f267ffc9be52db8df1961f1f827c60467f3e636d14bc746d0772dcb",
-      "treeSha256": "6117fcbe5f267ffc9be52db8df1961f1f827c60467f3e636d14bc746d0772dcb",
-      "totalBytes": 876041,
+      "releaseId": "cpp+sha256.5440563173bca75957575cebc84a60818c8c40c70a0a2e7c2f87c403210daa78",
+      "treeSha256": "5440563173bca75957575cebc84a60818c8c40c70a0a2e7c2f87c403210daa78",
+      "totalBytes": 876856,
       "files": [
         {
           "path": "workers/cpp/cpp-worker.js",
@@ -23,9 +23,9 @@
         },
         {
           "path": "workers/cpp/tracecode_runtime.hpp",
-          "size": 263083,
-          "sha256": "5846c1f262cdf1cc0a2163dfdb950bef2a1348cf670aa5acf0c904d01d7812d1",
-          "integrity": "sha256-WEbB8mLN8cwKIWPf25UL7yoTSM9nCqWs8MkE0B14EtE=",
+          "size": 263898,
+          "sha256": "6ba21c2b9959ab6d46c5162dd7b31a73b1b7b729e9247c277817b4638c0791d1",
+          "integrity": "sha256-a6IcK5lZq21GxRYt17Mac7G3tynpJHwneBe0Y4wHkdE=",
           "mediaType": "text/plain"
         }
       ]
@@ -2126,26 +2126,26 @@
   },
   "engineDependencies": {
     "tracecc": {
-      "releaseId": "tracecc@0.1.0+sha256.fb4b6f41f9e9b7db89b6c8425bb2c6218979219a4150f96619b6461b4b78d294",
+      "releaseId": "tracecc@0.1.2+sha256.f71a3114757a12c1b81a9fb60ba3990e525ec36d4f73fdc390df536b3f180172",
       "package": {
         "name": "@tracecode/tracecc",
-        "version": "0.1.0",
+        "version": "0.1.2",
         "license": "AGPL-3.0-only",
         "repository": {
           "type": "git",
           "url": "git+https://github.com/tracecodeapp/tracecc.git"
         }
       },
-      "consumerHash": "fb4b6f41f9e9b7db89b6c8425bb2c6218979219a4150f96619b6461b4b78d294",
+      "consumerHash": "f71a3114757a12c1b81a9fb60ba3990e525ec36d4f73fdc390df536b3f180172",
       "treeSha256Algorithm": "tracecc-consumer-sha256-v1",
-      "totalBytes": 144997264,
+      "totalBytes": 145632679,
       "files": [
         {
           "role": "runtimeHeader",
           "path": "tracecode_runtime.hpp",
-          "size": 263083,
-          "sha256": "5846c1f262cdf1cc0a2163dfdb950bef2a1348cf670aa5acf0c904d01d7812d1",
-          "integrity": "sha256-WEbB8mLN8cwKIWPf25UL7yoTSM9nCqWs8MkE0B14EtE=",
+          "size": 263898,
+          "sha256": "6ba21c2b9959ab6d46c5162dd7b31a73b1b7b729e9247c277817b4638c0791d1",
+          "integrity": "sha256-a6IcK5lZq21GxRYt17Mac7G3tynpJHwneBe0Y4wHkdE=",
           "mediaType": "text/plain"
         },
         {
@@ -2167,9 +2167,9 @@
         {
           "role": "tracecc-narrow-pch",
           "path": "narrow.pch",
-          "size": 21322216,
-          "sha256": "adbb959bb61e3be1f00e94893c0a8618daeb3ca789bde6b34bf8ee5165ece7f0",
-          "integrity": "sha256-rbuVm7YeO+HwDpSJPAqGGNrrPKeJveazS/juUWXs5/A=",
+          "size": 21486600,
+          "sha256": "3a2debf17e8d61a8ca1fb854a6836a3c94983df5780ce45045845d7952aa3bf2",
+          "integrity": "sha256-Oi3r8X6NYajKH7hUpoNqPJSYPfV4DORQRYRdeVKqO/I=",
           "mediaType": "application/octet-stream"
         },
         {
@@ -2183,17 +2183,17 @@
         {
           "role": "tracecc-narrow-runtime-object",
           "path": "narrow.o",
-          "size": 1042570,
-          "sha256": "8a5ff05fae85bc053d4894a20dea4cb84674d028a9103e041047ea71dc4483c7",
-          "integrity": "sha256-il/wX66FvAU9SJSiDepMuEZ00CipED4EEEfqcdxEg8c=",
+          "size": 1087130,
+          "sha256": "4371844b32b496570bf229eb7c347c7c6e52b274f69145bdc7da83a946469ae9",
+          "integrity": "sha256-Q3GESzK0llcL8inrfDR8fG5SsnT2kUW9x9qDqUZGmuk=",
           "mediaType": "application/wasm"
         },
         {
           "role": "tracecc-broad-pch",
           "path": "broad.pch",
-          "size": 24543552,
-          "sha256": "92d2b1052825a39d063ccf46249c01a6ac980dc14790a1a3a3212db1498b32b2",
-          "integrity": "sha256-ktKxBSglo50GPM9GJJwBpqyYDcFHkKGjoyEtsUmLMrI=",
+          "size": 24710504,
+          "sha256": "56a0d3ef497bb6d8f9266176f3287b0d4b4409ca8273266b97ca1f36bfe42deb",
+          "integrity": "sha256-VqDT70l7ttj5JmF28yh7DUtECcqCcyZrl8ofNr/kLes=",
           "mediaType": "application/octet-stream"
         },
         {
@@ -2207,17 +2207,17 @@
         {
           "role": "tracecc-broad-runtime-object",
           "path": "broad.o",
-          "size": 1892879,
-          "sha256": "7faf4e7bb9119fd24421410f80cd5cb986dfe74a2987823112754fed52191a9e",
-          "integrity": "sha256-f69Oe7kRn9JEIUEPgM1cuYbf50oph4IxEnVP7VIZGp4=",
+          "size": 1937439,
+          "sha256": "a3113e09d76d2e068b16eedcc70cd4a9135f6dab09f4da20f029a63001732dd9",
+          "integrity": "sha256-oxE+CddtLgaLFu7cxwzUqRNfbasJ9Nog8CmmMAFzLdk=",
           "mediaType": "application/wasm"
         },
         {
           "role": "tracecc-map-pch",
           "path": "map.pch",
-          "size": 29951380,
-          "sha256": "7d7ef34e62579d127669c6c3889e16bbbff17f51b9d74481d9f2f391382bd947",
-          "integrity": "sha256-fX7zTmJXnRJ2acbDiJ4Wu7/xf1G510SB2fLzkTgr2Uc=",
+          "size": 30120964,
+          "sha256": "a5a02a4a7f22b937de9ed46014f7fc3173eb96cfcf60b261847380045d5238a8",
+          "integrity": "sha256-paAqSn8iuTfentRgFPf8MXPrls/PYLJhhHOABF1SOKg=",
           "mediaType": "application/octet-stream"
         },
         {
@@ -2231,9 +2231,9 @@
         {
           "role": "tracecc-map-runtime-object",
           "path": "map.o",
-          "size": 3372458,
-          "sha256": "d3692dbd7eaea95d398ade64741126fe770eb3305e3b8df05fddd8934efd1385",
-          "integrity": "sha256-02ktvX6uqV05it5kdBEm/ncOszBeO43wX93Yk079E4U=",
+          "size": 3417018,
+          "sha256": "8441c90a0fbe08056e7b66ff80931f9067daa4cba86869fbaeacf0f60e87db06",
+          "integrity": "sha256-hEHJCg++CAVue2b/gJMfkGfapMuoaGn7rqzw9g6H2wY=",
           "mediaType": "application/wasm"
         }
       ]

@@ -1,0 +1,46 @@
+name: Native C++ JSON portability
+
+on:
+  pull_request:
+    paths:
+      - workers/cpp/tracecode_runtime.hpp
+      - tests/fixtures/cpp-json-portability.cpp
+      - tests/test-cpp-json-portability.mjs
+      - .github/workflows/native-cpp-json.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: native-cpp-json-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  clang-libstdcxx:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.3.1
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: 22
+      - name: Check the affected compiler and standard library
+        run: |
+          clang++-18 --version
+          dpkg-query -W libstdc++-14-dev
+          printf '#include <vector>\n' | clang++-18 -std=c++23 -dM -E -x c++ - | grep -E '^#define _GLIBCXX_RELEASE 14$'
+      - name: Reproduce the baseline incomplete-pair failure
+        run: |
+          baseline="$(mktemp -d)"
+          trap 'rm -rf "$baseline"' EXIT
+          git show bbff7af7c710d9fa74016009053fc5ac34daf100:workers/cpp/tracecode_runtime.hpp > "$baseline/tracecode_runtime.hpp"
+          if clang++-18 -std=c++23 -O0 -I "$baseline" tests/fixtures/cpp-json-portability.cpp -o "$baseline/json-test" 2> "$baseline/compile.log"; then
+            echo 'Expected the unfixed baseline header to fail on this toolchain.'
+            exit 1
+          fi
+          grep -F "arithmetic on a pointer to an incomplete type" "$baseline/compile.log"
+      - name: Compile and run nested JSON copy and move regressions
+        run: CXX=clang++-18 node --test tests/test-cpp-json-portability.mjs
