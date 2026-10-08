@@ -391,3 +391,10 @@ An interactive terminal session's open input pipe keeps its terminal fd 0 and
 its prompt/read handshake. Cancelling a process stops its host input pump and
 closes that pump's writer before teardown; a subsequent command receives its own
 input and syscall channel.
+
+Nested `ctx.exec` calls copy the active finite-input flag into their execution
+options before creating a new interpreter. Forwarding adapters keep the original
+byte string with `stdinKind: 'bytes'`; decoded Unicode text must never be labelled
+as a byte string. When updating the just-bash patch, preserve its existing added
+declaration files and their entries in the dependency's `files` list. pnpm's
+canonical patch generator excludes added files omitted from that list.

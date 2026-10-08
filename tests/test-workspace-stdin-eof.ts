@@ -31,9 +31,10 @@ const runner: JavaScriptProjectCommandRunner = Object.assign(async (request: Par
 }, { capabilities: { descriptorStdio: true } });
 
 const workspace = await createRuntimeWorkspace({ nodeRunner: runner, files: [
-  { path: 'input.js', contents: '' }, { path: 'input.txt', contents: 'file\n' }, { path: 'empty.txt', contents: '' },
+  { path: 'input.js', contents: '' }, { path: 'input.txt', contents: 'file\n' }, { path: 'empty.txt', contents: '' }, { path: 'wrapper.sh', contents: '#!/bin/sh\nnode input.js\n', mode: 0o755 },
 ] });
 try {
+  assert.equal((await workspace.runCommand('chmod +x wrapper.sh')).exitCode, 0);
   for (const input of ['hello\n', '']) {
     const result = await workspace.runCommand('node input.js', {
       presentation: 'terminal', stdinPipe: createRuntimeCommandStdinPipeFromText(input),
@@ -42,11 +43,14 @@ try {
     assert.equal(result.stdout, `out:${input}`);
     assert.equal(result.stderr, `err:${input}`);
   }
-  for (const [command, input] of [["printf 'pipe\\n' | node input.js", 'pipe\n'], ['node input.js < input.txt', 'file\n'], ['node input.js < empty.txt', ''], ["printf '' | node input.js", ''], ["cmd=node; printf '' | $cmd input.js", ''], ["printf '' | (node input.js)", '']] as const) {
+  for (const [command, input] of [["printf 'pipe\\n' | node input.js", 'pipe\n'], ['node input.js < input.txt', 'file\n'], ['node input.js < empty.txt', ''], ["printf '' | node input.js", ''], ["cmd=node; printf '' | $cmd input.js", ''], ["printf '' | (node input.js)", ''], ["printf '' | command node input.js", ''], ["printf '' | command command node input.js", ''], ["printf '' | ./wrapper.sh", ''], ["printf 'café\\n' | command node input.js", 'café\n']] as const) {
     const result = await workspace.runCommand(command, { presentation: 'terminal' });
     assert.equal(result.exitCode, 0);
-    assert.equal(result.stdout, `out:${input}`);
-    assert.equal(result.stderr, `err:${input}`);
+    assert.equal(observedInput, input);
+    if (/^[\x00-\x7f]*$/.test(input)) {
+      assert.equal(result.stdout, `out:${input}`);
+      assert.equal(result.stderr, `err:${input}`);
+    }
   }
   const live = createRuntimeCommandStdinPipe();
   let ready = new Promise<void>(resolve => { runtimeStarted = resolve; });

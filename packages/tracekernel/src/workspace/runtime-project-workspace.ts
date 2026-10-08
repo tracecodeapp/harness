@@ -326,6 +326,7 @@ import {
 } from './package-manager';
 import {
   commandEnv,
+  commandStdinPipe,
   createTraceKernelCommandRegistry,
   traceKernelCommandPath,
   type TraceKernelCommandInfo,
@@ -4406,7 +4407,7 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
       args: expandedInvocation.scriptArgs,
       cwd: ctx.cwd,
       env: commandEnv(ctx),
-      stdinPipe: commandContext.stdinPipe,
+      stdinPipe: commandStdinPipe(ctx) ?? commandContext.stdinPipe,
       commandContext,
     });
     if (result) return result;
@@ -4561,7 +4562,7 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
       cwd: ctx.cwd,
       env: commandEnv(ctx),
       replaceEnv: true,
-      stdin: decodeCommandStdin(ctx.stdin),
+      stdin: String(ctx.stdin),
       stdinKind: 'bytes',
       signal: ctx.signal,
       args: args.slice(commandIndex + 1),

@@ -137,11 +137,12 @@ async function main(): Promise<void> {
               const result = await workspace.runCommand(executable, { presentation: 'terminal', stdinPipe: createRuntimeCommandStdinPipeFromText(input) });
               receipts.push({ command: executable, input, elapsedMs: Math.round(performance.now()-started), ...result });
             }
-            for (const command of [`printf 'hello\\n' | ${executable}`, `printf '' | ${executable}`, `${executable} < data.txt`, `${executable} < empty.txt`, `cmd=${executable.split(' ')[0]}; printf '' | $cmd ${executable.split(' ')[1]}`, `printf '' | (${executable})`]) {
+            for (const command of [`printf 'hello\\n' | ${executable}`, `printf '' | ${executable}`, `${executable} < data.txt`, `${executable} < empty.txt`, `cmd=${executable.split(' ')[0]}; printf '' | $cmd ${executable.split(' ')[1]}`, `printf '' | (${executable})`, `printf '' | command ${executable}`, `printf '' | command command ${executable}`]) {
               const started = performance.now();
               const result = await workspace.runCommand(command, { presentation: 'terminal' });
               receipts.push({ command, elapsedMs: Math.round(performance.now()-started), ...result });
             }
+            receipts.push({ command: `printf 'café\\n' | command ${executable}`, input: 'café\n', ...await workspace.runCommand(`printf 'café\\n' | command ${executable}`, { presentation: 'terminal' }) });
             const liveCommand = executable.replace('input.', 'live.');
             const livePipe = createRuntimeCommandStdinPipe();
             let ready = false;
