@@ -1115,6 +1115,23 @@ export class KernelObservedFileSystem implements IFileSystem {
     if (commandError) this.commandGenerationContextFor(context)?.setError(commandError);
   }
 
+  private recordSyscallInfrastructureError(
+    context: RuntimeCommandExecutionContext | undefined,
+    error: unknown
+  ): void {
+    // A rejected syscall is not necessarily a failed command: shells probe
+    // missing paths and programs may handle ordinary filesystem diagnostics.
+    // Only workspace integrity / execution failures cross this boundary.
+    // Explicit runner and final-diff errors use recordCommandError directly.
+    if (
+      isRuntimeFileGenerationConflict(error) ||
+      isRuntimeWorkspaceStorageLimitError(error) ||
+      error instanceof RuntimeKernelInterruptedError
+    ) {
+      this.recordCommandErrorWithContext(context, error);
+    }
+  }
+
   private mutationGenerationPaths(
     paths: readonly string[],
     kind: RuntimeFileSystemMutationKind
@@ -1380,7 +1397,7 @@ export class KernelObservedFileSystem implements IFileSystem {
       fn,
       generationContext?.signal
     ).catch((error) => {
-      this.recordCommandErrorWithContext(context, error);
+      this.recordSyscallInfrastructureError(context, error);
       throw error;
     });
   }
@@ -1418,7 +1435,7 @@ export class KernelObservedFileSystem implements IFileSystem {
       return result;
     }).catch((error) => {
       const commandError = runtimeCommandError(error);
-      this.recordCommandErrorWithContext(context, error);
+      this.recordSyscallInfrastructureError(context, error);
       this.onSyscallEvent({
         type: 'fs-syscall-abort',
         pid: generationContext?.pid,
