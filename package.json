@@ -230,7 +230,7 @@
     "@tracecode/runtime-contracts": "workspace:^",
     "@tracecode/tracekernel": "workspace:^",
     "@types/node": "^20.0.0",
-    "esbuild": "0.27.3",
+    "esbuild": "0.28.1",
     "just-bash": "3.1.0",
     "playwright": "^1.53.2",
     "pyodide": "^0.29.0",
@@ -240,9 +240,17 @@
   },
   "pnpm": {
     "overrides": {
-      "dompurify": "3.4.1",
+      "dompurify": "3.4.16",
       "picomatch": "4.0.4",
-      "postcss": "8.5.10"
+      "postcss": "8.5.23",
+      "brace-expansion@>=5 <5.0.12": "5.0.12",
+      "nanoid@>=3 <3.3.18": "3.3.18",
+      "smol-toml@>=1 <1.9.0": "1.9.0",
+      "source-map-js@>=1 <1.2.2": "1.2.2",
+      "ws@>=8 <8.21.0": "8.21.0",
+      "vite@>=8.2 <8.2.4": "8.2.4",
+      "vite@>=8.2 <9": "8.2.4",
+      "rolldown@>=1 <2": "1.2.11"
     },
     "patchedDependencies": {
       "just-bash@3.1.0": "patches/just-bash@3.1.0.patch"
@@ -263,7 +271,7 @@
     "@tracecode/tracejvm": "0.4.1",
     "effect": "3.22.0",
     "fflate": "0.8.3",
-    "lodash": "4.17.21",
+    "lodash": "4.18.1",
     "typescript": "^5.0.0"
   }
 }
