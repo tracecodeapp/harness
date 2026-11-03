@@ -8,10 +8,6 @@ on:
         required: true
         type: string
 
-  push:
-    branches:
-      - codex/release-validation-20261008
-
 permissions:
   contents: read
 
@@ -24,7 +20,7 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 120
     env:
-      CANDIDATE_SHA: ${{ inputs.candidate_sha || '401ddb2b00379d25a9d442c9f285f77654c664a5' }}
+      CANDIDATE_SHA: ${{ inputs.candidate_sha }}
       TRACECODE_TEST_JOBS: '1'
     steps:
       - name: Validate immutable input
