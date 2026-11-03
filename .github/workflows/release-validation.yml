@@ -23,7 +23,7 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 120
     env:
-      CANDIDATE_SHA: ${{ inputs.candidate_sha || 'fed46f5736a2736e3c3d0ef7c3a65dd65ee1fd49' }}
+      CANDIDATE_SHA: ${{ inputs.candidate_sha || 'd4a796c5f1cadc2d4fc534fbcc2a4b7e8cda8442' }}
       TRACECODE_TEST_JOBS: '1'
     steps:
       - name: Validate immutable input
