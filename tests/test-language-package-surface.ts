@@ -1259,7 +1259,14 @@ async function runWithTempRoot(tempRoot: string): Promise<void> {
               },
               cpp: {
                 async execute(request) {
-                  return { stdout: request.source + ':' + request.args.join(',') + ':browser-only-cpp\\n', stderr: '', exitCode: 0 };
+                  const outputIndex = request.args.lastIndexOf('-o');
+                  const outputPath = outputIndex >= 0 ? request.args[outputIndex + 1] : 'a.out';
+                  return {
+                    stdout: request.source + ':' + request.args.join(',') + ':browser-only-cpp\\n', stderr: '', exitCode: 0,
+                    files: request.source === 'compile'
+                      ? [{ path: outputPath, contents: Buffer.from('fake-binary').toString('base64'), encoding: 'base64' }]
+                      : [],
+                  };
                 },
               },
             },
@@ -1730,7 +1737,14 @@ async function runWithTempRoot(tempRoot: string): Promise<void> {
           },
           cpp: {
             async execute(request) {
-              return { stdout: request.source + ':' + request.args.join(',') + ':standalone-browser-cpp\\n', stderr: '', exitCode: 0 };
+              const outputIndex = request.args.lastIndexOf('-o');
+              const outputPath = outputIndex >= 0 ? request.args[outputIndex + 1] : 'a.out';
+              return {
+                stdout: request.source + ':' + request.args.join(',') + ':standalone-browser-cpp\\n', stderr: '', exitCode: 0,
+                files: request.source === 'compile'
+                  ? [{ path: outputPath, contents: Buffer.from('fake-binary').toString('base64'), encoding: 'base64' }]
+                  : [],
+              };
             },
           },
         },

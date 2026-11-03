@@ -99,6 +99,13 @@ and the next case starts in a new process. Learner exceptions, incorrect
 outputs, trace limits, and timeouts do not skip later correctness cases.
 Compatibility artifacts start with that hard process boundary on every case.
 
+The outer batch transport watchdog includes one additional Java initialization
+budget for process creation, retirement and kernel staging across the batch.
+Those operations run outside the per-case guest timer. This bounded lifecycle
+allowance does not change any guest's wall-clock limit; without it, a guest
+timeout followed by JVM replacement can expire the transport before the next
+case starts. The aggregate deadline is capped at the platform timer limit.
+
 ## Regression coverage
 
 The browser regression suite exercises adversarial state probes. Learner

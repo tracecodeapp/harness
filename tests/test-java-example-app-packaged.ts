@@ -88,6 +88,7 @@ async function runWithTempRoot(tempRoot: string): Promise<void> {
     appDir
   );
 
+  let failure: unknown;
   try {
     const previewUrl = await preview.waitForUrl;
     await waitForHttp(previewUrl, 30_000);
@@ -97,11 +98,11 @@ async function runWithTempRoot(tempRoot: string): Promise<void> {
         'SKIP: packaged example Java runtime requires VITE_JAVA_RUNTIME_ASSET_BASE_URL'
       );
     }
+  } catch (error) {
+    failure = error;
+    throw error;
   } finally {
-    if (!preview.process.killed) {
-      preview.process.kill('SIGTERM');
-    }
-    await preview.waitForExit;
+    await preview.stop(failure);
   }
 
   console.log('PASS: packaged example honors optional Java runtime configuration');

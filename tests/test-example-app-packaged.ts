@@ -89,15 +89,16 @@ async function runWithTempRoot(tempRoot: string): Promise<void> {
     appDir
   );
 
+  let failure: unknown;
   try {
     const previewUrl = await preview.waitForUrl;
     await waitForHttp(previewUrl, 30_000);
     await runExampleBrowserSmoke(previewUrl);
+  } catch (error) {
+    failure = error;
+    throw error;
   } finally {
-    if (!preview.process.killed) {
-      preview.process.kill('SIGTERM');
-    }
-    await preview.waitForExit;
+    await preview.stop(failure);
   }
 
   console.log('PASS: packaged example web IDE works against the packed harness release');

@@ -50,6 +50,7 @@ import { WorkerSessionCore, type WorkerSessionMessage } from '@tracecode/runtime
 import type { BrowserWorkerFactory, BrowserWorkerLike } from '@tracecode/runtime-browser/internal';
 import { handleHostArtifactCacheRequest, HostArtifactCache } from '@tracecode/runtime-browser/internal';
 import { createJavaKernelProcess } from './java-process-kernel';
+import { javaBatchTransportDeadlineMs } from './java-batch-deadline';
 
 export type JavaExecutionStyle = 'function' | 'solution-method' | 'ops-class';
 
@@ -823,7 +824,9 @@ export class JavaWorkerClient {
             undefined,
             kernelProcess.bridge
           ),
-          perCaseWallClockMs * call.inputBatch.length
+          javaBatchTransportDeadlineMs(
+            perCaseWallClockMs, call.inputBatch.length, INIT_TIMEOUT_MS
+          )
         )
       )
     );
@@ -965,7 +968,9 @@ export class JavaWorkerClient {
             undefined,
             kernelProcess.bridge
           ),
-          perCaseWallClockMs * call.inputBatch.length
+          javaBatchTransportDeadlineMs(
+            perCaseWallClockMs, call.inputBatch.length, INIT_TIMEOUT_MS
+          )
         )
       )
     );
