@@ -8,6 +8,7 @@ import {
 } from '../packages/runtime-contracts/src/index';
 import {
   ExecutionTimeoutError,
+  type WorkerSessionCore,
 } from '../packages/runtime-browser/src/internal';
 import {
   createJavaBrowserPreparedExecutionProvider,
@@ -899,3 +900,62 @@ function completedOutput(
   }
   return result.output;
 }
+
+
+test('Java code and trace batches preserve guest limits and reserve transport time for JVM recovery', async () => {
+  const guestLimits: number[] = [];
+  const deadlines: number[] = [];
+  const client = new JavaWorkerClient({
+    workerUrl: '/workers/java-worker.js',
+    debug: false,
+    workerFactory: () => {
+      const worker: BrowserWorkerLike = {
+        onmessage: null,
+        onerror: null,
+        terminate() {},
+        postMessage(message) {
+          const request = message as { id: string; type: string; protocolToken: string; payload: { perCaseWallClockMs: number } };
+          const batch = request.type === 'execute-prepared-runtime-program-batch';
+          if (batch) guestLimits.push(request.payload.perCaseWallClockMs);
+          queueMicrotask(() => worker.onmessage?.({ data: {
+            id: request.id, protocolToken: request.protocolToken, type: 'result',
+            payload: batch ? {
+              success: true,
+              results: [
+                { success: false, error: 'guest timed out', timeoutReason: 'client-timeout', trace: { events: [] }, sourceText: '' },
+                { success: true, output: 1, trace: { events: [] }, sourceText: '' },
+              ],
+            } : { success: true, loadTimeMs: 0 },
+          } } as MessageEvent));
+        },
+      };
+      queueMicrotask(() => worker.onmessage?.({ data: { type: 'worker-ready' } } as MessageEvent));
+      return worker;
+    },
+  });
+  // Observe the transport boundary while retaining its real Effect watchdog.
+  const core = (client as unknown as { core: WorkerSessionCore }).core;
+  const withDeadline = core.withExecutionDeadline.bind(core);
+  core.withExecutionDeadline = (effect, timeoutMs) => {
+    deadlines.push(timeoutMs);
+    return withDeadline(effect, timeoutMs);
+  };
+  try {
+    const call = { inputBatch: [{ value: 0 }, { value: 1 }], limits: { wallClockMs: 1_200 } };
+    const code = await client.executePreparedCodeBatch('prepared', call);
+    assert.deepEqual(code.map(result => result.kind), ['limit', 'completed']);
+    const trace = await client.executePreparedTraceBatch('prepared', call);
+    assert.equal(trace[0]?.timeoutReason, 'client-timeout');
+    assert.equal(trace[1]?.output, 1);
+    assert.deepEqual(guestLimits, [1_200, 1_200]);
+    assert.equal(deadlines.length, 2);
+    for (const deadline of deadlines) {
+      // A 1.2s guest timeout plus 1.5s process replacement must leave the
+      // following case its full guest budget, without an unbounded watchdog.
+      assert.ok(deadline >= 1_200 + 1_500 + 1_200);
+      assert.ok(deadline <= 120_000 + 2 * 1_200);
+    }
+  } finally {
+    client.terminate();
+  }
+});

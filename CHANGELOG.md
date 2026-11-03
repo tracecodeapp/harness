@@ -10,6 +10,9 @@ This repo uses Git tags as release boundaries. Version notes below summarize wha
 
 ### Fixed
 
+- Java prepared batches preserve each case's execution limit while allowing
+  bounded JVM replacement and kernel staging after a timed-out case.
+
 - Shell command lists and pipelines give each runtime invocation its own
   process lifetime, preserving later commands and inherited permissions.
 - Terminal stdin, EOF, and signals reach the process-owned input pipe,
