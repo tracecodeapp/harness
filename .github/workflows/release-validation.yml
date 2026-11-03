@@ -1,4 +1,4 @@
-name: Release validation (focused Java diagnosis)
+name: Release validation
 
 on:
   workflow_dispatch:
@@ -105,11 +105,11 @@ jobs:
             } finally { await browser.close(); }
           }
           JS
-      - name: Run focused Java browser gate
+      - name: Run canonical full suite
         shell: bash
         run: |
           set -euo pipefail
-          node --import tsx scripts/run-test-suite.ts --all --jobs=1 --only=test:java-prepared-provider:browser 2>&1 | tee "$RUNNER_TEMP/harness-validation/full-suite.log"
+          node --import tsx scripts/run-test-suite.ts --all --jobs=1 --keep-going 2>&1 | tee "$RUNNER_TEMP/harness-validation/full-suite.log"
       - name: Record final checkout state
         if: always()
         shell: bash
