@@ -170,13 +170,13 @@ export const LANGUAGE_RUNTIME_OPEN_SOURCE_INFOS = Object.freeze(
       },
       {
         "name": "lodash",
-        "version": "4.17.21",
+        "version": "4.18.1",
         "license": "MIT",
         "resources": [
           {
             "kind": "license",
             "label": "License",
-            "url": "https://unpkg.com/lodash@4.17.21/LICENSE"
+            "url": "https://unpkg.com/lodash@4.18.1/LICENSE"
           },
           {
             "kind": "source",
@@ -186,7 +186,7 @@ export const LANGUAGE_RUNTIME_OPEN_SOURCE_INFOS = Object.freeze(
           {
             "kind": "package",
             "label": "Package",
-            "url": "https://www.npmjs.com/package/lodash/v/4.17.21"
+            "url": "https://www.npmjs.com/package/lodash/v/4.18.1"
           }
         ]
       },
@@ -549,13 +549,13 @@ export const LANGUAGE_RUNTIME_OPEN_SOURCE_INFOS = Object.freeze(
       },
       {
         "name": "lodash",
-        "version": "4.17.21",
+        "version": "4.18.1",
         "license": "MIT",
         "resources": [
           {
             "kind": "license",
             "label": "License",
-            "url": "https://unpkg.com/lodash@4.17.21/LICENSE"
+            "url": "https://unpkg.com/lodash@4.18.1/LICENSE"
           },
           {
             "kind": "source",
@@ -565,7 +565,7 @@ export const LANGUAGE_RUNTIME_OPEN_SOURCE_INFOS = Object.freeze(
           {
             "kind": "package",
             "label": "Package",
-            "url": "https://www.npmjs.com/package/lodash/v/4.17.21"
+            "url": "https://www.npmjs.com/package/lodash/v/4.18.1"
           }
         ]
       },
