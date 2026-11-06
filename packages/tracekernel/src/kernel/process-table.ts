@@ -125,6 +125,7 @@ export class TraceKernelProcessTable {
         message: `ESRCH: parent process ${ppid} does not exist in session ${this.options.sessionId}`,
       });
     }
+    parent?.assertAuthority();
     const pid = this.nextPid;
     const parentSnapshot = parent?.snapshot();
     if (
@@ -215,6 +216,7 @@ export class TraceKernelProcessTable {
       this.options.maxDescriptorsPerProcess,
       this.options.signalGracePeriodMs
     );
+    if (parent) process.setMutationAuthority(parent.assertAuthority);
     this.processes.set(pid, process);
     if (ppid === 1 && spec.retainOnExit === true) {
       this.initRetainedProcesses.add(pid);

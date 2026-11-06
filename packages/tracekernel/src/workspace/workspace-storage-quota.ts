@@ -1,3 +1,5 @@
+import { withDependencies } from './process-authority';
+import { TraceKernelBackingFileSystem } from './tkfs-backing-filesystem';
 import type {
   RuntimeDirectoryChange,
   RuntimeFile,
@@ -73,6 +75,13 @@ export class RuntimeWorkspaceQuotaFileSystem implements IFileSystem {
     private readonly workspaceRoot: () => string,
     private readonly limits: NormalizedRuntimeWorkspaceStorageLimits
   ) {}
+
+  withAuthority(assertActive: () => void): RuntimeWorkspaceQuotaFileSystem {
+    if (!(this.inner instanceof TraceKernelBackingFileSystem)) {
+      throw new Error('Process authority requires the TraceKernel backing filesystem');
+    }
+    return withDependencies(this, { inner: this.inner.withAuthority(assertActive) } as Partial<RuntimeWorkspaceQuotaFileSystem>);
+  }
 
   private async withMutationLock<T>(fn: () => Promise<T>): Promise<T> {
     const previous = this.mutationTail;

@@ -53,6 +53,8 @@ export type TraceKernelFileSystemMutationOperation =
  * authority-bearing data to runtimes.
  */
 export interface TraceKernelFileSystemMutationContext {
+  /** Host-only authority check, executed inside the filesystem commit lock. */
+  readonly assertActive?: () => void;
   readonly origin?: object;
 }
 

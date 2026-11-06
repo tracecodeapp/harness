@@ -378,3 +378,28 @@ evaluation, for example to update idle UI before the next user action.
 
 Use lifecycle events and `projectSession.lifecycle` for UI state instead of
 guessing from command failures.
+
+
+### Revoking a process before taking a snapshot
+
+`process.revokeAndDrain()` closes admission synchronously for the process and its
+owned descendants. It returns an idempotent completion promise. Pending mutations
+check authority inside the filesystem commit lock. Work committed before
+revocation finishes publication before the process exit journal record.
+
+```ts
+const learnerDrain = learner.revokeAndDrain();
+const agentDrain = agent.revokeAndDrain();
+await Promise.all([learnerDrain, agentDrain]);
+const sealedFiles = await workspace.kernel.snapshot();
+```
+
+Keep grader execution in a separate process. Revocation belongs to process
+ownership, not actor identity, so a separate process retains its authority even
+when it uses the same actor object. Descendant ownership survives OS reparenting.
+
+Existing `dispose(): void` callers remain valid. It initiates the same revocation,
+but callers that need a snapshot fence must await `revokeAndDrain()`. Exit journal
+publication is asynchronous now. A failed drain must not be treated as permission
+to capture a sealed snapshot. Snapshot immutability still requires the caller to
+exclude writes by other authorized processes.

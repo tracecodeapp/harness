@@ -115,6 +115,10 @@ export class WorkspaceFileApi {
     phase: RuntimeFileMutationPhase = 'live',
     process?: RuntimeKernelProcessRecord
   ): Promise<void> {
+    process?.authority?.assertActive();
+    const fileSystem = process?.authority
+      ? this.options.fileSystem.withAuthority(process.authority.assertActive)
+      : this.options.fileSystem;
     this.options.assertActorFileCapability(actor, 'write', path);
     this.options.ensureUsableForMutation('write');
     this.options.accessPolicy.assertDynamicVirtualWritable(path, 'write');
@@ -134,10 +138,10 @@ export class WorkspaceFileApi {
       return;
     }
     const absolutePath = this.toWorkspacePath(path);
-    const mutationKind = (await this.options.fileSystem.exists(absolutePath))
+    const mutationKind = (await fileSystem.exists(absolutePath))
       ? 'file-write'
       : 'file-create';
-    await this.options.fileSystem.withBaseMutation(
+    await fileSystem.withBaseMutation(
       [absolutePath],
       async (fileSystem) => {
         this.options.accessPolicy.assertWorkspacePathWritable(

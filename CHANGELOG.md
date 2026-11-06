@@ -1,5 +1,17 @@
 # Changelog
 
+## Unreleased (draft)
+
+- Add `RuntimeWorkspaceProcess.revokeAndDrain()` to close process-tree authority
+  synchronously and await admitted work and journal delivery. Existing `dispose()`
+  starts the same revocation without returning a promise. Process exit publication
+  is deferred until drain completes.
+- Revalidate process authority inside TKFS mutation locks, including descriptor
+  writes, namespace changes, metadata changes, and runtime final-diff publication.
+  Preserve independent authority for other processes, including those sharing an
+  actor object.
+
+
 All notable changes to this project are documented here.
 
 This repo uses Git tags as release boundaries. Version notes below summarize what shipped in each tagged release.

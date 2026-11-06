@@ -1,3 +1,4 @@
+import { withDependencies } from './process-authority';
 import {
   defineCommand,
 } from 'just-bash/browser';
@@ -634,7 +635,10 @@ export class CommandBoundFileSystem implements IFileSystem {
   constructor(
     private readonly inner: KernelObservedFileSystem,
     private readonly context: RuntimeCommandExecutionContext
-  ) {}
+  ) {
+    const authority = context.process.authority;
+    if (authority) this.inner = inner.withAuthority(authority.assertActive);
+  }
 
   suspendNotifications<T>(fn: () => Promise<T>): Promise<T> {
     return this.inner.suspendNotifications(fn);
@@ -820,6 +824,10 @@ export class KernelObservedFileSystem implements IFileSystem {
       () => this.suspendDepth > 0,
       onFileChange
     );
+  }
+
+  withAuthority(assertActive: () => void): KernelObservedFileSystem {
+    return withDependencies(this, { base: this.quotaFileSystem.withAuthority(assertActive) } as Partial<KernelObservedFileSystem>);
   }
 
   suspendNotifications<T>(fn: () => Promise<T>): Promise<T> {

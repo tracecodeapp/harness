@@ -156,6 +156,7 @@ async function testProtectedProcessAttributionAndLineage(): Promise<void> {
     await hostProcess.writeFile('still-alive.txt', 'alive\n');
 
     hostProcess.dispose();
+    await hostProcess.revokeAndDrain();
     const processExit = workspace.journal().find((record): record is Extract<KernelJournalRecord, { kind: 'process' }> =>
       record.kind === 'process' && record.op === 'exit' && record.pid === hostProcess.pid
     );

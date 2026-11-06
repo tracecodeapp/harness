@@ -420,6 +420,8 @@ export class TraceKernelFileSystem {
     return this.resolve(path, cwd).pipe(
       Effect.flatMap((resolved) => this.mutex.withPermits(1)(
         Effect.suspend(() => {
+          mutationContext?.assertActive?.();
+          (mutationContext?.origin as { assertActive?: () => void } | undefined)?.assertActive?.();
           const realPath = this.resolveNodePath(resolved, true);
           if (realPath instanceof TraceKernelFileSystemError) return Effect.fail(realPath);
           const node = this.nodes.get(realPath);
@@ -448,6 +450,8 @@ export class TraceKernelFileSystem {
     return this.resolve(path, cwd).pipe(
       Effect.flatMap((resolved) => this.mutex.withPermits(1)(
         Effect.suspend(() => {
+          mutationContext?.assertActive?.();
+          (mutationContext?.origin as { assertActive?: () => void } | undefined)?.assertActive?.();
           const realPath = this.resolveNodePath(resolved, true);
           if (realPath instanceof TraceKernelFileSystemError) return Effect.fail(realPath);
           const node = this.nodes.get(realPath);
@@ -472,6 +476,8 @@ export class TraceKernelFileSystem {
     return this.resolve(path, cwd).pipe(
       Effect.flatMap((resolved) => this.mutex.withPermits(1)(
         Effect.suspend(() => {
+          mutationContext?.assertActive?.();
+          (mutationContext?.origin as { assertActive?: () => void } | undefined)?.assertActive?.();
           const directoryPath = this.resolveNodePath(resolved, false, options.recursive ? 'suffix' : 'final');
           if (directoryPath instanceof TraceKernelFileSystemError) return Effect.fail(directoryPath);
           const existing = this.nodes.get(directoryPath);
@@ -522,6 +528,8 @@ export class TraceKernelFileSystem {
     return this.resolve(path, cwd).pipe(
       Effect.flatMap((resolved) => this.mutex.withPermits(1)(
         Effect.suspend(() => {
+          mutationContext?.assertActive?.();
+          (mutationContext?.origin as { assertActive?: () => void } | undefined)?.assertActive?.();
           const directoryPath = this.resolveNodePath(resolved, false);
           if (directoryPath instanceof TraceKernelFileSystemError) return Effect.fail(directoryPath);
           if (directoryPath === '/') return this.fail('EBUSY', directoryPath, 'cannot remove root directory');
@@ -578,6 +586,8 @@ export class TraceKernelFileSystem {
     return this.resolve(path, cwd).pipe(
       Effect.flatMap((resolved) => this.mutex.withPermits(1)(
         Effect.suspend(() => {
+          mutationContext?.assertActive?.();
+          (mutationContext?.origin as { assertActive?: () => void } | undefined)?.assertActive?.();
           const filePath = this.resolveNodePath(resolved, true, 'final');
           if (filePath instanceof TraceKernelFileSystemError) return Effect.fail(filePath);
           const existing = this.nodes.get(filePath);
@@ -632,6 +642,8 @@ export class TraceKernelFileSystem {
     ]).pipe(
       Effect.flatMap(([unresolvedExisting, unresolvedNew]) => this.mutex.withPermits(1)(
         Effect.suspend(() => {
+          mutationContext?.assertActive?.();
+          (mutationContext?.origin as { assertActive?: () => void } | undefined)?.assertActive?.();
           const existingResult = this.resolveNodePath(unresolvedExisting, false);
           if (existingResult instanceof TraceKernelFileSystemError) {
             return Effect.fail(existingResult);
@@ -689,6 +701,8 @@ export class TraceKernelFileSystem {
       Effect.zipRight(this.resolve(linkPath, cwd)),
       Effect.flatMap((unresolvedLink) => this.mutex.withPermits(1)(
         Effect.suspend(() => {
+          mutationContext?.assertActive?.();
+          (mutationContext?.origin as { assertActive?: () => void } | undefined)?.assertActive?.();
           const linkResult = this.resolveNodePath(unresolvedLink, false, 'final');
           if (linkResult instanceof TraceKernelFileSystemError) return Effect.fail(linkResult);
           if (this.nodes.has(linkResult)) {
@@ -737,6 +751,8 @@ export class TraceKernelFileSystem {
     return this.resolve(path, cwd).pipe(
       Effect.flatMap((resolved) => this.mutex.withPermits(1)(
         Effect.suspend(() => {
+          mutationContext?.assertActive?.();
+          (mutationContext?.origin as { assertActive?: () => void } | undefined)?.assertActive?.();
           const entryPath = this.resolveNodePath(resolved, false);
           if (entryPath instanceof TraceKernelFileSystemError) return Effect.fail(entryPath);
           const node = this.nodes.get(entryPath);
@@ -764,6 +780,8 @@ export class TraceKernelFileSystem {
     ]).pipe(
       Effect.flatMap(([unresolvedSource, unresolvedDestination]) => this.mutex.withPermits(1)(
         Effect.suspend(() => {
+          mutationContext?.assertActive?.();
+          (mutationContext?.origin as { assertActive?: () => void } | undefined)?.assertActive?.();
           const sourceResult = this.resolveNodePath(unresolvedSource, false);
           if (sourceResult instanceof TraceKernelFileSystemError) return Effect.fail(sourceResult);
           const destinationResult = this.resolveNodePath(unresolvedDestination, false, 'final');
@@ -849,6 +867,8 @@ export class TraceKernelFileSystem {
     return this.resolve(path, cwd).pipe(
       Effect.flatMap((resolved) => this.mutex.withPermits(1)(
         Effect.suspend(() => {
+          mutationContext?.assertActive?.();
+          (mutationContext?.origin as { assertActive?: () => void } | undefined)?.assertActive?.();
           if (options.create && options.exclusive) {
             const entryPath = this.resolveNodePath(resolved, false, 'final');
             if (entryPath instanceof TraceKernelFileSystemError) return Effect.fail(entryPath);
@@ -931,6 +951,8 @@ export class TraceKernelFileSystem {
   ): Effect.Effect<void, TraceKernelFileSystemError> {
     return this.mutex.withPermits(1)(
       Effect.suspend(() => {
+          mutationContext?.assertActive?.();
+          (mutationContext?.origin as { assertActive?: () => void } | undefined)?.assertActive?.();
         const nextLength = Math.max(0, Math.floor(length));
         if (file.node.size === nextLength) return Effect.void;
         const quotaError = this.quotaResizeError(file.node, nextLength);
@@ -958,6 +980,8 @@ export class TraceKernelFileSystem {
   ): Effect.Effect<number, TraceKernelFileSystemError> {
     return this.mutex.withPermits(1)(
       Effect.suspend(() => {
+          mutationContext?.assertActive?.();
+          (mutationContext?.origin as { assertActive?: () => void } | undefined)?.assertActive?.();
         const node = file.node;
         const writeOffset = append ? node.size : offset;
         if (bytes.byteLength === 0) {
@@ -1058,6 +1082,8 @@ export class TraceKernelFileSystem {
     return this.mutex.withPermits(1)(
       Effect.try({
         try: () => {
+          mutationContext?.assertActive?.();
+          (mutationContext?.origin as { assertActive?: () => void } | undefined)?.assertActive?.();
           const previousPaths = [...this.nodes.keys()];
           const previousGeneration = this.mutationGeneration;
           this.restoreImage(image);
@@ -1089,6 +1115,8 @@ export class TraceKernelFileSystem {
   }
 
   clear(mutationContext?: TraceKernelFileSystemMutationContext): void {
+    mutationContext?.assertActive?.();
+    (mutationContext?.origin as { assertActive?: () => void } | undefined)?.assertActive?.();
     if (this.nodes.size > 0) {
       const paths = [...this.nodes.keys()];
       const generation = this.beginMutation();

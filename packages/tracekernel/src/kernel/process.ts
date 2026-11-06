@@ -152,6 +152,14 @@ export class TraceKernelProcess {
   private runtimeLease?: TraceKernelRuntimeLease;
   private requestedSignal?: TraceKernelTerminatingSignal;
   private pendingSignal?: TraceKernelTerminatingSignal;
+  private mutationAuthority?: () => void;
+
+  assertAuthority = (): void => { this.mutationAuthority?.(); };
+
+  setMutationAuthority(assertActive: () => void): void {
+    this.mutationAuthority = assertActive;
+  }
+
   readonly fileSystemMutationOrigin: TraceKernelDescriptorOperationContext;
   readonly descriptors: TraceKernelDescriptorTable;
 
@@ -162,6 +170,7 @@ export class TraceKernelProcess {
     private readonly signalGracePeriodMs: number
   ) {
     this.fileSystemMutationOrigin = Object.freeze({
+      assertActive: () => this.mutationAuthority?.(),
       get pid() {
         return record.pid;
       },

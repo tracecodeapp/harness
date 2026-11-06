@@ -78,6 +78,8 @@ export interface RuntimeWorkspaceProcess {
   runProjectCommand(name: string, options?: RuntimeProjectCommandOptions): Promise<RuntimeCommandResult>;
   createTerminalSession(options?: RuntimeProjectTerminalSessionOptions): RuntimeProjectTerminalSession;
   /** System/control-plane teardown. This is not reachable through workspace signals. */
+  /** Synchronously revoke the process tree, then await effects and journal delivery. */
+  revokeAndDrain(): Promise<void>;
   dispose(): void;
 }
 
