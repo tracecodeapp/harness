@@ -186,6 +186,8 @@ const STDIN_PIPE_HEADER_BYTES = STDIN_PIPE_HEADER_INTS * Int32Array.BYTES_PER_EL
 const STDIN_PIPE_READ_INDEX = 0;
 const STDIN_PIPE_WRITE_INDEX = 1;
 const STDIN_PIPE_CLOSED_INDEX = 2;
+// Shared stdin state 2 revokes queued bytes; state 1 is ordinary EOF.
+const STDIN_PIPE_REVOKED = 2;
 const JAVA_HTTP_SYNC_HEADER_BYTES = 8;
 const JAVA_HTTP_SYNC_BUFFER_BYTES = 4 * 1024 * 1024;
 const JAVA_HTTP_SYNC_TIMEOUT_MS = 30_000;
@@ -395,6 +397,7 @@ function stdinPipeState(pipe) {
 }
 
 function stdinPipeAvailable(state, readIndex, writeIndex) {
+  if (Atomics.load(state.header, STDIN_PIPE_CLOSED_INDEX) === STDIN_PIPE_REVOKED) return 0;
   const capacity = state.bytes.byteLength;
   return readIndex <= writeIndex
     ? writeIndex - readIndex
@@ -414,7 +417,8 @@ function readJavaProjectInputByte(device, block = true) {
     if (stdinPipeAvailable(state, readIndex, writeIndex) > 0) {
       const byte = state.bytes[readIndex];
       Atomics.store(state.header, STDIN_PIPE_READ_INDEX, (readIndex + 1) % capacity);
-      return byte;
+      Atomics.notify(state.header, STDIN_PIPE_READ_INDEX);
+      return Atomics.load(state.header, STDIN_PIPE_CLOSED_INDEX) === STDIN_PIPE_REVOKED ? -1 : byte;
     }
     const closed = Atomics.load(state.header, STDIN_PIPE_CLOSED_INDEX) !== 0;
     if (closed || !block) return -1;

@@ -165,6 +165,23 @@ export class TraceKernelBackingFileSystem implements IFileSystem {
     return withDependencies(this, { assertActive } as Partial<TraceKernelBackingFileSystem>);
   }
 
+  async transaction<T>(mutate: (fileSystem: IFileSystem) => Promise<T>): Promise<T> {
+    this.assertActive?.();
+    const { fileSystem, generation } = await runKernelEffect(this.traceKernelFileSystem.forkForTransaction());
+    const staged = new TraceKernelBackingFileSystem(fileSystem);
+    const mutations: TraceKernelFileSystemMutation[] = [];
+    const stop = fileSystem.watchMutations((mutation) => mutations.push(mutation));
+    try {
+      const result = await mutate(this.assertActive ? staged.withAuthority(this.assertActive) : staged);
+      const image = await runKernelEffect(fileSystem.exportImage());
+      await runKernelEffect(this.traceKernelFileSystem.publishTransaction(
+        image, generation, fileSystem, mutations,
+        { assertActive: this.assertActive, origin: this.mutationOrigin }
+      ));
+      return result;
+    } finally { stop(); staged.dispose(); }
+  }
+
   async readFile(path: string, options?: ReadOptions): Promise<string> {
     const bytes = await this.readFileBuffer(path);
     return textFromBytes(bytes, selectedEncoding(options));

@@ -827,7 +827,8 @@ export class KernelObservedFileSystem implements IFileSystem {
   }
 
   withAuthority(assertActive: () => void): KernelObservedFileSystem {
-    return withDependencies(this, { base: this.quotaFileSystem.withAuthority(assertActive) } as Partial<KernelObservedFileSystem>);
+    const quotaFileSystem = this.quotaFileSystem.withAuthority(assertActive);
+    return withDependencies(this, { base: quotaFileSystem, quotaFileSystem } as Partial<KernelObservedFileSystem>);
   }
 
   suspendNotifications<T>(fn: () => Promise<T>): Promise<T> {

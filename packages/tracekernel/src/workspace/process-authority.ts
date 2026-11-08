@@ -1,5 +1,7 @@
 /** Host-owned lifetime shared by a process and the work it admits. */
 export class ProcessAuthority {
+  private readonly controller = new AbortController();
+  readonly signal = this.controller.signal;
   private revoked = false;
   private finished = false;
   private readonly childRuns = new Set<Promise<unknown>>();
@@ -9,7 +11,7 @@ export class ProcessAuthority {
 
   constructor(private readonly parent?: ProcessAuthority) {
     parent?.children.add(this);
-    if (parent?.isRevoked()) this.revoked = true;
+    if (parent?.isRevoked()) this.revoke();
   }
 
   assertActive = (): void => {
@@ -25,6 +27,7 @@ export class ProcessAuthority {
 
   revoke(): void {
     this.revoked = true;
+    this.controller.abort();
     for (const listener of this.revocationListeners) listener();
     this.revocationListeners.clear();
     for (const child of this.children) child.revoke();
@@ -32,7 +35,11 @@ export class ProcessAuthority {
 
   run<T>(operation: () => Promise<T>): Promise<T> {
     this.assertActive();
-    const result = operation();
+    return this.track(operation());
+  }
+
+  /** Include host teardown admitted by revocation itself. */
+  track<T>(result: Promise<T>): Promise<T> {
     this.pending.add(result);
     void result.then(() => this.pending.delete(result), () => this.pending.delete(result));
     return result;

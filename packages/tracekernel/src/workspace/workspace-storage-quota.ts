@@ -409,7 +409,9 @@ export class RuntimeWorkspaceQuotaFileSystem implements IFileSystem {
       const diagnosticPath = normalizeFsLockPath(changes[0]?.absolutePath ?? this.workspaceRoot());
       this.assertSnapshotWithinLimits(projected, diagnosticPath, 'write');
       try {
-        const result = await mutate(this.inner);
+        const result = await (this.inner instanceof TraceKernelBackingFileSystem
+          ? this.inner.transaction(mutate)
+          : mutate(this.inner));
         this.commitSnapshot(projected);
         return result;
       } catch (error) {

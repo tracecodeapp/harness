@@ -115,6 +115,7 @@ const RUNTIME_STDIN_PIPE_HEADER_BYTES = RUNTIME_STDIN_PIPE_HEADER_INTS * Int32Ar
 const RUNTIME_STDIN_PIPE_READ_INDEX = 0;
 const RUNTIME_STDIN_PIPE_WRITE_INDEX = 1;
 const RUNTIME_STDIN_PIPE_CLOSED_INDEX = 2;
+const RUNTIME_STDIN_PIPE_REVOKED = 2;
 const RUNTIME_STDIN_PIPE_DEFAULT_CAPACITY = 64 * 1024;
 
 function assertRuntimeCommandStdinPipeAvailable(): void {
@@ -163,8 +164,9 @@ export function createRuntimeCommandStdinPipe(capacity = RUNTIME_STDIN_PIPE_DEFA
       Atomics.notify(header, RUNTIME_STDIN_PIPE_WRITE_INDEX);
     },
     close(): void {
-      Atomics.store(header, RUNTIME_STDIN_PIPE_CLOSED_INDEX, 1);
+      Atomics.compareExchange(header, RUNTIME_STDIN_PIPE_CLOSED_INDEX, 0, 1);
       Atomics.notify(header, RUNTIME_STDIN_PIPE_WRITE_INDEX);
+      Atomics.notify(header, RUNTIME_STDIN_PIPE_READ_INDEX);
     },
   };
 }
@@ -190,12 +192,27 @@ function runtimeCommandStdinPipeState(pipe: RuntimeCommandStdinSharedBuffer): {
 }
 
 function runtimeCommandStdinPipeAvailable(state: { header: Int32Array; bytes: Uint8Array }): number {
+  if (Atomics.load(state.header, RUNTIME_STDIN_PIPE_CLOSED_INDEX) === RUNTIME_STDIN_PIPE_REVOKED) return 0;
   const readIndex = Atomics.load(state.header, RUNTIME_STDIN_PIPE_READ_INDEX);
   const writeIndex = Atomics.load(state.header, RUNTIME_STDIN_PIPE_WRITE_INDEX);
   const capacity = state.bytes.byteLength;
   return readIndex <= writeIndex
     ? writeIndex - readIndex
     : capacity - readIndex + writeIndex;
+}
+
+/** Refuse unread input across host/worker threads; ordinary close retains it. */
+export function revokeRuntimeCommandStdinPipe(pipe: RuntimeCommandStdinSharedBuffer): void {
+  const { header, bytes } = runtimeCommandStdinPipeState(pipe);
+  Atomics.store(header, RUNTIME_STDIN_PIPE_CLOSED_INDEX, RUNTIME_STDIN_PIPE_REVOKED);
+  // Change both futex words as well as notifying: a reader/writer can be
+  // between its closed check and Atomics.wait when revocation occurs. The
+  // revoked flag makes these positions inaccessible to all future reads.
+  for (const index of [RUNTIME_STDIN_PIPE_READ_INDEX, RUNTIME_STDIN_PIPE_WRITE_INDEX]) {
+    Atomics.store(header, index, (Atomics.load(header, index) + 1) % bytes.byteLength);
+  }
+  Atomics.notify(header, RUNTIME_STDIN_PIPE_WRITE_INDEX);
+  Atomics.notify(header, RUNTIME_STDIN_PIPE_READ_INDEX);
 }
 
 export function runtimeCommandStdinPipeClosed(pipe: RuntimeCommandStdinSharedBuffer): boolean {
@@ -221,7 +238,7 @@ export function peekRuntimeCommandStdinPipeBytes(
   const firstLength = Math.min(length, capacity - readIndex);
   out.set(state.bytes.subarray(readIndex, readIndex + firstLength), 0);
   if (firstLength < length) out.set(state.bytes.subarray(0, length - firstLength), firstLength);
-  return out;
+  return Atomics.load(state.header, RUNTIME_STDIN_PIPE_CLOSED_INDEX) === RUNTIME_STDIN_PIPE_REVOKED ? new Uint8Array() : out;
 }
 
 export function readRuntimeCommandStdinPipeBytes(
@@ -242,7 +259,7 @@ export function readRuntimeCommandStdinPipeBytes(
   }
   Atomics.store(state.header, RUNTIME_STDIN_PIPE_READ_INDEX, (readIndex + length) % capacity);
   Atomics.notify(state.header, RUNTIME_STDIN_PIPE_READ_INDEX);
-  return out;
+  return Atomics.load(state.header, RUNTIME_STDIN_PIPE_CLOSED_INDEX) === RUNTIME_STDIN_PIPE_REVOKED ? new Uint8Array() : out;
 }
 
 /**

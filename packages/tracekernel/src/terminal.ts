@@ -1,3 +1,4 @@
+import type { TraceKernelOperationAuthority } from './operation-authority';
 import * as Deferred from 'effect/Deferred';
 import * as Effect from 'effect/Effect';
 import {
@@ -162,11 +163,11 @@ export class TraceKernelTerminal {
     };
   }
 
-  writeInput(bytes: Uint8Array): Effect.Effect<number, TraceKernelTerminalError> {
-    return this.writeStream(this.input, bytes);
+  writeInput(bytes: Uint8Array, authority?: TraceKernelOperationAuthority): Effect.Effect<number, TraceKernelTerminalError> {
+    return this.writeStream(this.input, bytes, authority);
   }
 
-  signalInputEof(): Effect.Effect<void, TraceKernelTerminalError> {
+  signalInputEof(authority?: TraceKernelOperationAuthority): Effect.Effect<void, TraceKernelTerminalError> {
     return Effect.suspend(() => {
       if (this.closed) {
         return Effect.fail(new TraceKernelTerminalError({
@@ -174,6 +175,7 @@ export class TraceKernelTerminal {
           message: `EIO: terminal ${this.name} is closed`,
         }));
       }
+      authority?.assertActive?.();
       this.input.eofPending += 1;
       this.wake(this.input);
       return Effect.void;
@@ -187,8 +189,9 @@ export class TraceKernelTerminal {
     return this.readStream(this.output, maxBytes, nonblocking);
   }
 
-  discardInput(): Effect.Effect<void> {
+  discardInput(authority?: TraceKernelOperationAuthority): Effect.Effect<void> {
     return Effect.sync(() => {
+      authority?.assertActive?.();
       this.input.chunks.length = 0;
       this.input.remainder = new Uint8Array(0);
       this.input.eofPending = 0;
@@ -212,7 +215,7 @@ export class TraceKernelTerminal {
   ): Effect.Effect<Uint8Array, TraceKernelTerminalError | TraceKernelWouldBlockError> {
     const accessError = this.processAccessError(context, 'read');
     if (accessError) return Effect.fail(accessError);
-    return this.readStream(this.input, maxBytes, nonblocking, true);
+    return this.readStream(this.input, maxBytes, nonblocking, true, context);
   }
 
   private writeOutput(
@@ -221,12 +224,13 @@ export class TraceKernelTerminal {
   ): Effect.Effect<number, TraceKernelTerminalError> {
     const accessError = this.processAccessError(context, 'write');
     if (accessError) return Effect.fail(accessError);
-    return this.writeStream(this.output, bytes);
+    return this.writeStream(this.output, bytes, context);
   }
 
   private writeStream(
     stream: TerminalByteStream,
-    bytes: Uint8Array
+    bytes: Uint8Array,
+    authority?: TraceKernelOperationAuthority
   ): Effect.Effect<number, TraceKernelTerminalError> {
     return Effect.suspend(() => {
       if (this.closed) {
@@ -235,6 +239,7 @@ export class TraceKernelTerminal {
           message: `EIO: terminal ${this.name} is closed`,
         }));
       }
+      authority?.assertActive?.();
       const copy = Uint8Array.from(bytes);
       if (copy.byteLength === 0) return Effect.succeed(0);
       stream.chunks.push(copy);
@@ -247,11 +252,13 @@ export class TraceKernelTerminal {
     stream: TerminalByteStream,
     maxBytes: number,
     nonblocking: boolean,
-    consumeEof = false
+    consumeEof = false,
+    authority?: TraceKernelOperationAuthority
   ): Effect.Effect<Uint8Array, TraceKernelTerminalError | TraceKernelWouldBlockError> {
     const requested = Math.max(0, Math.floor(maxBytes));
     if (requested === 0) return Effect.succeed(new Uint8Array(0));
     return Effect.suspend(() => {
+      authority?.assertActive?.();
       const available = this.takeBytes(stream, requested);
       if (available) return Effect.succeed(available);
       if (consumeEof && stream.eofPending > 0) {
@@ -269,7 +276,7 @@ export class TraceKernelTerminal {
       const changed = stream.changed;
       return Deferred.await(changed).pipe(
         Effect.andThen(
-          this.readStream(stream, requested, false, consumeEof)
+          this.readStream(stream, requested, false, consumeEof, authority)
         )
       );
     });

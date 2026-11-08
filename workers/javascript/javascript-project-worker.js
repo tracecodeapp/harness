@@ -2059,6 +2059,7 @@ var RUNTIME_STDIN_PIPE_HEADER_BYTES = RUNTIME_STDIN_PIPE_HEADER_INTS * Int32Arra
 var RUNTIME_STDIN_PIPE_READ_INDEX = 0;
 var RUNTIME_STDIN_PIPE_WRITE_INDEX = 1;
 var RUNTIME_STDIN_PIPE_CLOSED_INDEX = 2;
+var RUNTIME_STDIN_PIPE_REVOKED = 2;
 var RUNTIME_STDIN_PIPE_DEFAULT_CAPACITY = 64 * 1024;
 function runtimeCommandStdinPipeState(pipe) {
   return {
@@ -2067,6 +2068,7 @@ function runtimeCommandStdinPipeState(pipe) {
   };
 }
 function runtimeCommandStdinPipeAvailable(state) {
+  if (Atomics.load(state.header, RUNTIME_STDIN_PIPE_CLOSED_INDEX) === RUNTIME_STDIN_PIPE_REVOKED) return 0;
   const readIndex = Atomics.load(state.header, RUNTIME_STDIN_PIPE_READ_INDEX);
   const writeIndex = Atomics.load(state.header, RUNTIME_STDIN_PIPE_WRITE_INDEX);
   const capacity = state.bytes.byteLength;
@@ -2094,7 +2096,7 @@ function readRuntimeCommandStdinPipeBytes(pipe, maxLength = RUNTIME_STDIN_PIPE_D
   }
   Atomics.store(state.header, RUNTIME_STDIN_PIPE_READ_INDEX, (readIndex + length) % capacity);
   Atomics.notify(state.header, RUNTIME_STDIN_PIPE_READ_INDEX);
-  return out;
+  return Atomics.load(state.header, RUNTIME_STDIN_PIPE_CLOSED_INDEX) === RUNTIME_STDIN_PIPE_REVOKED ? new Uint8Array() : out;
 }
 function runtimeAbortSignalName(signal, fallback = "SIGTERM") {
   const reason = signal?.reason;

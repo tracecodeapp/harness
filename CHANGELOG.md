@@ -2,6 +2,14 @@
 
 ## Unreleased (draft)
 
+- Bind queued terminal input, EOF, resize, signals, and host stdin delivery to
+  process authority. Revocation cancels pending descriptor operations, discards
+  startup and legacy stdin queues, and drains delivery finalizers. Shared stdin
+  readers in every language honor an irreversible revoked state, including
+  reads already copying bytes and readers/writers about to wait.
+- Stage runtime final diffs away from live inodes and publish under a generation
+  check and authority fence, preserving open inode identities. A concurrent live
+  mutation refuses publication instead of overwriting another actor's work.
 - Add `RuntimeWorkspaceProcess.revokeAndDrain()` to close process-tree authority
   synchronously and await admitted work and journal delivery. Existing `dispose()`
   starts the same revocation without returning a promise. Process exit publication

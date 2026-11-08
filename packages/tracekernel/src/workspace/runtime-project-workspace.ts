@@ -1,3 +1,4 @@
+import { withOperationAuthority } from '../operation-authority';
 import { ProcessAuthority } from './process-authority';
 import { markShellStdinInAst } from './shell-stdin';
 import { isWasiCommandExecutable } from './executable-format';
@@ -15,6 +16,7 @@ import {
   createRuntimeProjectIoBridge,
   peekRuntimeCommandStdinPipeBytes,
   readRuntimeCommandStdinPipeBytes,
+  revokeRuntimeCommandStdinPipe,
   RUNTIME_PROJECT_MAX_LIVE_FILE_CHANGES,
   RUNTIME_PROJECT_MAX_LIVE_FILE_CHANGE_BYTES,
   RUNTIME_PROJECT_MAX_OUTPUT_STREAM_BYTES,
@@ -565,6 +567,7 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
   private readonly identityCommands: WorkspaceIdentityCommands;
   private readonly virtualExecutableRecords = new Map<string, VirtualExecutableRecord>();
   private readonly processState = new WorkspaceProcessState();
+  private readonly terminalAuthorities = new Map<string, ProcessAuthority>();
   private readonly terminalShells = new Map<
     string,
     Promise<RuntimeKernelTerminalShell>
@@ -1267,11 +1270,12 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
         },
       });
     }
-    return Effect.runPromise(
+    return Effect.runPromise(withOperationAuthority(
+      context?.process.authority,
       new TraceKernelSyscallDispatcher(authority.session, process).dispatch(
         this.mapTraceKernelSyscallWorkspacePaths(request)
       )
-    );
+    ));
   }
 
   /**
@@ -1799,7 +1803,7 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
           );
         } catch (error) {
           const code = (error as { code?: unknown } | null)?.code;
-          if (code !== 'EPIPE' && code !== 'EBADF') throw error;
+          if (code !== 'EPIPE' && code !== 'EBADF' && code !== 'ESRCH') throw error;
         }
       });
     };
@@ -3686,7 +3690,7 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
     handle.hostStdinPump = (async () => {
       try {
         if (!stdinPipe) return;
-        while (!handle.stopHostStdinPump) {
+        while (!handle.stopHostStdinPump && !context.process.authority?.isRevoked()) {
           const bytes = readRuntimeCommandStdinPipeBytes(stdinPipe);
           if (bytes.byteLength > 0) {
             await Effect.runPromise(stdio.writeStdin(bytes));
@@ -3697,7 +3701,7 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
         }
       } catch (error) {
         const code = (error as { code?: unknown } | null)?.code;
-        if (code !== 'EPIPE' && code !== 'EBADF') throw error;
+        if (code !== 'EPIPE' && code !== 'EBADF' && code !== 'ESRCH') throw error;
       } finally {
         await Effect.runPromise(stdio.closeStdin());
       }
@@ -4002,10 +4006,19 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
     return { signaled, denied };
   }
 
+  private queueTerminalDelivery<A>(terminalSessionId: string, effect: Effect.Effect<A, Error>): void {
+    const owner = this.terminalAuthorities.get(terminalSessionId);
+    const run = () => Effect.runPromise(withOperationAuthority(owner, effect));
+    // Cancellation is an expected delivery refusal. Keep the original promise
+    // in the owner's pending set until its effect and finalizers have settled.
+    void (owner ? owner.run(run) : run()).catch(() => undefined);
+  }
+
   private signalTerminalForeground(
     terminalSessionId: string,
     signal: 'SIGINT' | 'SIGQUIT'
   ): boolean {
+    this.terminalAuthorities.get(terminalSessionId)?.assertActive();
     const foregroundPid = this.processState.terminalForeground.get(terminalSessionId);
     const foregroundProcess = foregroundPid === undefined
       ? undefined
@@ -4024,6 +4037,7 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
       });
       return result.signaled > 0;
     }
+    this.terminalAuthorities.get(terminalSessionId)?.assertActive();
     const authority = this.traceKernelAuthority;
     const terminalId = this.terminalResourceIds.get(terminalSessionId);
     const terminal = terminalId === undefined
@@ -4043,8 +4057,8 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
         count,
         authority: 'tracekernel-terminal',
       });
-      Effect.runFork(
-        authority.session.signalTerminalForeground(terminal.id, signal).pipe(
+      this.queueTerminalDelivery(terminalSessionId,
+        authority.session.signalTerminalForeground(terminal.id, signal, this.terminalAuthorities.get(terminalSessionId)).pipe(
           Effect.catchAll(() => Effect.void)
         )
       );
@@ -4058,6 +4072,7 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
     columns: number,
     rows: number
   ): void {
+    this.terminalAuthorities.get(terminalSessionId)?.assertActive();
     const authority = this.traceKernelAuthority;
     const terminalId = this.terminalResourceIds.get(terminalSessionId);
     const terminal = terminalId === undefined
@@ -4066,8 +4081,8 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
           (candidate) => candidate.id === terminalId
         );
     if (!authority || !terminal || terminal.closed) return;
-    Effect.runFork(
-      authority.session.resizeTerminal(terminal.id, columns, rows).pipe(
+    this.queueTerminalDelivery(terminalSessionId,
+      authority.session.resizeTerminal(terminal.id, columns, rows, this.terminalAuthorities.get(terminalSessionId)).pipe(
         Effect.catchAll(() => Effect.void)
       )
     );
@@ -4114,6 +4129,7 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
     terminalSessionId: string,
     input: { data?: string; eof?: boolean } = {}
   ): boolean {
+    this.terminalAuthorities.get(terminalSessionId)?.assertActive();
     const pending = this.pendingTerminalStartupInput.get(terminalSessionId) ?? {
       chunks: [],
       byteLength: 0,
@@ -4169,7 +4185,9 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
     }
 
     if (!this.pendingTerminalStartupInput.has(terminalSessionId)) return;
+    const owner = boundProcess?.authority ?? this.terminalAuthorities.get(terminalSessionId);
     const replay = Promise.resolve().then(async () => {
+      owner?.assertActive();
       while (true) {
         const pending = this.pendingTerminalStartupInput.get(
           terminalSessionId
@@ -4180,7 +4198,7 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
         if (!descriptorStdio) {
           if (!stdinPipe) return;
           try {
-            for (const chunk of pending.chunks) stdinPipe.write(chunk);
+            for (const chunk of pending.chunks) { owner?.assertActive(); stdinPipe.write(chunk); }
             if (pending.eof) stdinPipe.close();
           } catch {
             stdinPipe.close();
@@ -4201,15 +4219,16 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
         await Effect.runPromise(
           Effect.gen(function* () {
             if (bytes.byteLength > 0) {
-              yield* authority.session.writeTerminalInput(terminal.id, bytes);
+              yield* authority.session.writeTerminalInput(terminal.id, bytes, owner);
             }
             if (pending.eof) {
-              yield* authority.session.sendTerminalInputEof(terminal.id);
+              yield* authority.session.sendTerminalInputEof(terminal.id, owner);
             }
           }).pipe(Effect.catchAll(() => Effect.void))
         );
       }
     });
+    owner?.track(replay);
     this.terminalStartupInputReplays.set(terminalSessionId, replay);
     try {
       await replay;
@@ -4242,6 +4261,7 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
     const signalByte = new TextEncoder().encode(data).find(
       (byte) => byte === 0x03 || byte === 0x1c
     );
+    this.terminalAuthorities.get(terminalSessionId)?.assertActive();
     const authority = this.traceKernelAuthority;
     const terminalId = this.terminalResourceIds.get(terminalSessionId);
     const terminal = terminalId === undefined
@@ -4278,10 +4298,11 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
         authority: 'tracekernel-terminal-line-discipline',
       });
     }
-    Effect.runFork(
+    this.queueTerminalDelivery(terminalSessionId,
       authority.session.writeTerminalInput(
         terminal.id,
-        new TextEncoder().encode(data)
+        new TextEncoder().encode(data),
+        this.terminalAuthorities.get(terminalSessionId)
       ).pipe(
         Effect.catchAll(() => Effect.void)
       )
@@ -4292,6 +4313,7 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
   private endKernelTerminalInput(
     terminalSessionId: string
   ): 'kernel' | 'legacy' | 'pending' | 'rejected' {
+    this.terminalAuthorities.get(terminalSessionId)?.assertActive();
     const authority = this.traceKernelAuthority;
     const terminalId = this.terminalResourceIds.get(terminalSessionId);
     const terminal = terminalId === undefined
@@ -4309,8 +4331,8 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
       return 'pending';
     }
     if (route === 'legacy') return 'legacy';
-    Effect.runFork(
-      authority.session.sendTerminalInputEof(terminal.id).pipe(
+    this.queueTerminalDelivery(terminalSessionId,
+      authority.session.sendTerminalInputEof(terminal.id, this.terminalAuthorities.get(terminalSessionId)).pipe(
         Effect.catchAll(() => Effect.void)
       )
     );
@@ -5561,7 +5583,7 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
       state: 'queued',
       foreground,
     };
-    kernelProcess.setMutationAuthority(process.authority!.assertActive);
+    kernelProcess.setMutationAuthority(process.authority!.assertActive, process.authority!.signal);
     this.processProjection.bindAuthoritativeRecord(process, kernelSnapshot);
     let engineAttachment: RuntimeProjectEngineLeaseAttachment | undefined;
     let engineLeaseReleased = false;
@@ -5617,6 +5639,9 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
     executionHandle.hostOutputContext = commandContext;
     this.processState.executionHandles.set(process.pid, executionHandle);
     process.authority?.onRevoke(() => {
+      // Legacy runners share a host-owned stdin ring. Close admission and
+      // discard unread bytes synchronously before notifying the runner.
+      if (stdinPipe) revokeRuntimeCommandStdinPipe(stdinPipe);
       abortController.abort();
       this.queueKernelProcessSignal(process, 'SIGKILL', 'system');
     });
@@ -6370,12 +6395,12 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
     };
   }
 
-  private closeTerminalShell(terminalSessionId: string): void {
+  private closeTerminalShell(terminalSessionId: string): Promise<void> {
     const shellPromise = this.terminalShells.get(terminalSessionId);
     this.terminalShells.delete(terminalSessionId);
     this.terminalResourceIds.delete(terminalSessionId);
     this.pendingTerminalStartupInput.delete(terminalSessionId);
-    if (!shellPromise) return;
+    if (!shellPromise) return Promise.resolve();
     const disposal = shellPromise.then(async (shell) => {
       const authority = this.traceKernelAuthority;
       if (!authority) return;
@@ -6398,6 +6423,7 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
     void disposal.finally(() => {
       this.processState.controlPlaneDisposals.delete(disposal);
     });
+    return disposal;
   }
 
   private createTerminalSessionAs(
@@ -6407,6 +6433,15 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
     this.assertNotDestroyed();
     const terminalSessionId =
       this.lifecycleState.allocateTerminalSessionId();
+    if (parent?.authority) {
+      const owner = parent.authority;
+      owner.assertActive();
+      this.terminalAuthorities.set(terminalSessionId, owner);
+      owner.onRevoke(() => {
+        this.discardPendingTerminalStartupInput(terminalSessionId);
+        owner.track(this.closeTerminalShell(terminalSessionId));
+      });
+    }
     return new RuntimeProjectWorkspaceTerminalSession(
       {
         workspaceRoot: this.cwd,
@@ -6894,7 +6929,7 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
       state: 'running',
       foreground: false,
     };
-    kernelProcess.setMutationAuthority(process.authority!.assertActive);
+    kernelProcess.setMutationAuthority(process.authority!.assertActive, process.authority!.signal);
     this.processProjection.bindAuthoritativeRecord(process, kernelSnapshot);
     this.processState.executionHandles.set(process.pid, { kernelProcess });
     this.processState.table.set(process.pid, process);

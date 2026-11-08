@@ -213,6 +213,7 @@ function parentPath(path: string): string {
 export class TraceKernelFileSystem {
   private readonly nodes = new Map<string, TraceKernelNode>();
   private nextInode = 1;
+  private transactionInodes?: ReadonlyMap<number, TraceKernelNode>;
   private nextGeneration = 1;
   private generationBuffer?: SharedArrayBuffer;
   private readonly mutationWatchers =
@@ -1066,6 +1067,65 @@ export class TraceKernelFileSystem {
         });
       })
     );
+  }
+
+  /** Host final-diff staging; no live inode is modified before publication. */
+  forkForTransaction(): Effect.Effect<{ fileSystem: TraceKernelFileSystem; generation: number }, TraceKernelFileSystemError> {
+    return this.exportImage().pipe(Effect.flatMap((image) =>
+      TraceKernelFileSystem.fromImage(image, this.quota ? { quota: this.quota } : {}).pipe(
+        Effect.map((fileSystem) => {
+          // Deleted-but-open inodes may exceed the maximum inode in the image.
+          fileSystem.nextInode = this.nextInode;
+          fileSystem.transactionInodes = new Map([...fileSystem.nodes.values()].map((node) => [node.inode, node]));
+          return { fileSystem, generation: image.mutationGeneration };
+        })
+      )
+    ));
+  }
+
+  /** Publish a staged namespace atomically, preserving open inode identities. */
+  publishTransaction(
+    image: TraceKernelFileSystemImage,
+    expectedGeneration: number,
+    stagedFileSystem: TraceKernelFileSystem,
+    mutations: readonly TraceKernelFileSystemMutation[],
+    context?: TraceKernelFileSystemMutationContext
+  ): Effect.Effect<void, TraceKernelFileSystemError> {
+    return this.mutex.withPermits(1)(Effect.suspend(() => {
+      context?.assertActive?.();
+      (context?.origin as { assertActive?: () => void } | undefined)?.assertActive?.();
+      if (this.mutationGeneration !== expectedGeneration) {
+        return this.fail('EBUSY', '/', 'filesystem changed during final-diff staging');
+      }
+      if (mutations.length === 0) return Effect.void;
+      const existing = new Map([...this.nodes.values()].map((node) => [node.inode, node]));
+      // restoreImage validates the entire image before replacing the namespace.
+      this.restoreImage(image);
+      // Writes followed by unlink still affect an already-open description.
+      // Such inodes are absent from the final namespace image but remain in
+      // the staging transaction's original-inode table.
+      for (const [inode, staged] of stagedFileSystem.transactionInodes ?? []) {
+        const live = existing.get(inode);
+        if (live) Object.assign(live, staged);
+      }
+      for (const [path, staged] of this.nodes) {
+        const live = existing.get(staged.inode);
+        if (live) {
+          Object.assign(live, staged);
+          this.nodes.set(path, live);
+        }
+      }
+      this.nextInode = Math.max(this.nextInode, stagedFileSystem.nextInode);
+      if (this.generationBuffer) {
+        const shared = new Int32Array(this.generationBuffer);
+        Atomics.store(shared, 0, this.mutationGeneration | 0);
+        Atomics.notify(shared, 0);
+      }
+      for (const mutation of mutations) {
+        this.notifyMutation(mutation.generation, mutation.eventType, mutation.operation, mutation.paths, context);
+      }
+      return Effect.void;
+    }));
   }
 
   /**
