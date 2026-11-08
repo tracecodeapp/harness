@@ -160,9 +160,10 @@ export class TraceKernelBackingFileSystem implements IFileSystem {
   }
 
   private assertActive?: () => void;
+  private readOnlyWorkspaceRoot?: string;
 
-  withAuthority(assertActive: () => void): TraceKernelBackingFileSystem {
-    return withDependencies(this, { assertActive } as Partial<TraceKernelBackingFileSystem>);
+  withAuthority(assertActive: () => void, readOnlyWorkspaceRoot?: string): TraceKernelBackingFileSystem {
+    return withDependencies(this, { assertActive, readOnlyWorkspaceRoot } as Partial<TraceKernelBackingFileSystem>);
   }
 
   async transaction<T>(mutate: (fileSystem: IFileSystem) => Promise<T>): Promise<T> {
@@ -172,11 +173,11 @@ export class TraceKernelBackingFileSystem implements IFileSystem {
     const mutations: TraceKernelFileSystemMutation[] = [];
     const stop = fileSystem.watchMutations((mutation) => mutations.push(mutation));
     try {
-      const result = await mutate(this.assertActive ? staged.withAuthority(this.assertActive) : staged);
+      const result = await mutate(this.assertActive ? staged.withAuthority(this.assertActive, this.readOnlyWorkspaceRoot) : staged);
       const image = await runKernelEffect(fileSystem.exportImage());
       await runKernelEffect(this.traceKernelFileSystem.publishTransaction(
         image, generation, fileSystem, mutations,
-        { assertActive: this.assertActive, origin: this.mutationOrigin }
+        { assertActive: this.assertActive, readOnlyWorkspaceRoot: this.readOnlyWorkspaceRoot, origin: this.mutationOrigin }
       ));
       return result;
     } finally { stop(); staged.dispose(); }
@@ -208,7 +209,7 @@ export class TraceKernelBackingFileSystem implements IFileSystem {
         path,
         contentBytes(content, options),
         '/',
-        { assertActive: this.assertActive, origin: this.mutationOrigin }
+        { assertActive: this.assertActive, readOnlyWorkspaceRoot: this.readOnlyWorkspaceRoot, origin: this.mutationOrigin }
       )
     );
   }
@@ -228,7 +229,7 @@ export class TraceKernelBackingFileSystem implements IFileSystem {
         create: true,
         append: true,
       },
-      { assertActive: this.assertActive, origin: this.mutationOrigin }
+      { assertActive: this.assertActive, readOnlyWorkspaceRoot: this.readOnlyWorkspaceRoot, origin: this.mutationOrigin }
     ));
     await runKernelEffect(
       this.traceKernelFileSystem.writeAt(
@@ -236,7 +237,7 @@ export class TraceKernelBackingFileSystem implements IFileSystem {
         0,
         contentBytes(content, options),
         true,
-        { assertActive: this.assertActive, origin: this.mutationOrigin }
+        { assertActive: this.assertActive, readOnlyWorkspaceRoot: this.readOnlyWorkspaceRoot, origin: this.mutationOrigin }
       )
     );
   }
@@ -262,7 +263,7 @@ export class TraceKernelBackingFileSystem implements IFileSystem {
   async mkdir(path: string, options?: MkdirOptions): Promise<void> {
     await runKernelEffect(
       this.traceKernelFileSystem.mkdir(path, options, '/', {
-        assertActive: this.assertActive, origin: this.mutationOrigin,
+        assertActive: this.assertActive, readOnlyWorkspaceRoot: this.readOnlyWorkspaceRoot, origin: this.mutationOrigin,
       })
     );
   }
@@ -293,7 +294,7 @@ export class TraceKernelBackingFileSystem implements IFileSystem {
     if (!stat.isDirectory) {
       await runKernelEffect(
         this.traceKernelFileSystem.unlink(path, '/', {
-          assertActive: this.assertActive, origin: this.mutationOrigin,
+          assertActive: this.assertActive, readOnlyWorkspaceRoot: this.readOnlyWorkspaceRoot, origin: this.mutationOrigin,
         })
       );
       return;
@@ -305,7 +306,7 @@ export class TraceKernelBackingFileSystem implements IFileSystem {
     }
     await runKernelEffect(
       this.traceKernelFileSystem.rmdir(path, '/', {
-        assertActive: this.assertActive, origin: this.mutationOrigin,
+        assertActive: this.assertActive, readOnlyWorkspaceRoot: this.readOnlyWorkspaceRoot, origin: this.mutationOrigin,
       })
     );
   }
@@ -342,7 +343,7 @@ export class TraceKernelBackingFileSystem implements IFileSystem {
     await this.ensureParentDirectory(dest);
     await runKernelEffect(
       this.traceKernelFileSystem.rename(src, dest, '/', {
-        assertActive: this.assertActive, origin: this.mutationOrigin,
+        assertActive: this.assertActive, readOnlyWorkspaceRoot: this.readOnlyWorkspaceRoot, origin: this.mutationOrigin,
       })
     );
   }
@@ -358,7 +359,7 @@ export class TraceKernelBackingFileSystem implements IFileSystem {
   async chmod(path: string, mode: number): Promise<void> {
     await runKernelEffect(
       this.traceKernelFileSystem.chmod(path, mode, '/', {
-        assertActive: this.assertActive, origin: this.mutationOrigin,
+        assertActive: this.assertActive, readOnlyWorkspaceRoot: this.readOnlyWorkspaceRoot, origin: this.mutationOrigin,
       })
     );
   }
@@ -366,7 +367,7 @@ export class TraceKernelBackingFileSystem implements IFileSystem {
   async symlink(target: string, linkPath: string): Promise<void> {
     await runKernelEffect(
       this.traceKernelFileSystem.symlink(target, linkPath, '/', {
-        assertActive: this.assertActive, origin: this.mutationOrigin,
+        assertActive: this.assertActive, readOnlyWorkspaceRoot: this.readOnlyWorkspaceRoot, origin: this.mutationOrigin,
       })
     );
   }
@@ -374,7 +375,7 @@ export class TraceKernelBackingFileSystem implements IFileSystem {
   async link(existingPath: string, newPath: string): Promise<void> {
     await runKernelEffect(
       this.traceKernelFileSystem.link(existingPath, newPath, '/', {
-        assertActive: this.assertActive, origin: this.mutationOrigin,
+        assertActive: this.assertActive, readOnlyWorkspaceRoot: this.readOnlyWorkspaceRoot, origin: this.mutationOrigin,
       })
     );
   }
@@ -390,7 +391,7 @@ export class TraceKernelBackingFileSystem implements IFileSystem {
   async utimes(path: string, _atime: Date, mtime: Date): Promise<void> {
     await runKernelEffect(
       this.traceKernelFileSystem.utimes(path, mtime.getTime(), '/', {
-        assertActive: this.assertActive, origin: this.mutationOrigin,
+        assertActive: this.assertActive, readOnlyWorkspaceRoot: this.readOnlyWorkspaceRoot, origin: this.mutationOrigin,
       })
     );
   }
@@ -412,7 +413,7 @@ export class TraceKernelBackingFileSystem implements IFileSystem {
       if ((await this.lstat(path)).isSymbolicLink) {
         await runKernelEffect(
           this.traceKernelFileSystem.unlink(path, '/', {
-            assertActive: this.assertActive, origin: this.mutationOrigin,
+            assertActive: this.assertActive, readOnlyWorkspaceRoot: this.readOnlyWorkspaceRoot, origin: this.mutationOrigin,
           })
         );
       }

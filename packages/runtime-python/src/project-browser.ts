@@ -73,6 +73,6 @@ export function createBrowserPythonProjectRunner(
           engineLease
         ),
     }),
-    { descriptorStdio: true }
+    { descriptorStdio: true, kernelFileSystem: true }
   );
 }

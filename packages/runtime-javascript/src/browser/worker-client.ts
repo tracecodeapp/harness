@@ -107,6 +107,7 @@ export function withDescriptorStdioCapability<
     capabilities: Object.freeze({
       ...runner.capabilities,
       descriptorStdio,
+      kernelFileSystem: descriptorStdio,
     }),
   });
 }

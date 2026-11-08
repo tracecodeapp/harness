@@ -53,12 +53,16 @@ export type TraceKernelFileSystemMutationOperation =
  * authority-bearing data to runtimes.
  */
 export interface TraceKernelFileSystemMutationContext {
+  /** Host-only protected root, enforced inside the filesystem commit lock. */
+  readonly readOnlyWorkspaceRoot?: string;
   /** Host-only authority check, executed inside the filesystem commit lock. */
   readonly assertActive?: () => void;
   readonly origin?: object;
 }
 
 export interface TraceKernelFileSystemMutation {
+  /** Source for journal attribution; not an additional namespace watch event. */
+  readonly sourcePath?: string;
   readonly generation: number;
   readonly eventType: Exclude<TraceKernelWatchEventType, 'overflow'>;
   readonly operation: TraceKernelFileSystemMutationOperation;

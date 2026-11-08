@@ -59,6 +59,7 @@ const ORIGINAL_ALL_SCRIPTS = [
   'build',
   'test:cpp-prepared-lifecycle',
   'test:tracecc-browser',
+  'test:workspace-authority-browser',
   'test:packaged-surface',
   'test:language-packages',
   'test:sql-package-surface',

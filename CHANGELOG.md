@@ -6,6 +6,59 @@ This repo uses Git tags as release boundaries. Version notes below summarize wha
 
 ## [Unreleased]
 
+## [0.19.0] - 2026-11-08
+
+### Added
+
+- Add `workspaceAccess: 'read-only'` to `kernel.createProcess()`. The restriction
+  follows the whole process tree and is checked inside filesystem commit locks,
+  including pending descriptor operations, inode aliases and worker final diffs.
+  Workspace mutations receive ordinary filesystem errors; scratch paths remain
+  writable and independent actors retain their authority.
+- Add `workspace.journalWindow(sinceSeq)` with retained sequence bounds and an
+  explicit `gap` flag. Evidence consumers must fail closed on a gap; retention
+  remains bounded at 256 records and `journal()` remains compatible.
+
+### Fixed
+
+- Journal both workspace endpoints of rename/link, including native inbound
+  renames, and both workspace endpoints of shell copies. An outside source no
+  longer hides a destination mutation.
+- Route JavaScript copy, append, flagged writes, truncation and metadata changes
+  through the kernel, with scratch paths resolved by the kernel. Add path and
+  descriptor metadata syscalls and forward Python/C#/C++ metadata operations.
+  Descriptor failures preserve filesystem errno values such as `EROFS`.
+- Preserve C++ directory/symlink errno values and initialize newly compiled
+  project programs with the kernel cwd and absolute namespace, keeping relative
+  project paths distinct from `/tmp` scratch. Preserve the read-only capability
+  declaration through the prepared Java runner.
+- Refuse snapshot-only/native runners before executing learner code in a
+  read-only tree. Trusted kernel-backed runners declare `kernelFileSystem`;
+  snapshot compilers that do not execute learner code declare `snapshotCompiler`.
+  TypeScript `--noEmit` works without granting compiler output write authority.
+- Fence virtual-executable result files with the originating command authority
+  and journal attribution. Read-only runner admission requires an actually
+  available syscall bridge, and unresolved runner/syscall contexts fail closed.
+- Allow `O_RDONLY | O_CREAT` on an existing protected file without changing it;
+  creation of a missing file and write-capable opens remain denied.
+
+### Compatibility
+
+- Consumer-visible TypeScript changes: `RuntimeWorkspace` now requires
+  `journalWindow()`, so implementations and test doubles must add it.
+  `TraceKernelSyscallRequest` adds `chmod`, `utimes`, `fchmod`, and `futimes`;
+  consumers with exhaustive switches must handle these operations.
+- Ordinary processes default to read-write. Read-only execution is opt-in and
+  does not revoke network or other separately granted capabilities. Commands
+  that must create build artifacts in the workspace fail normally, including
+  the current C# provider's `dotnet run` assembly materialization.
+- Upgrade the package and worker assets together. New metadata operations append
+  syscall numbers 54–57 without changing existing wire assignments. Commit the
+  generated workers and matching `runtime-assets.lock.json` as one release.
+- Recompile C/C++ project binaries to use the new cwd bootstrap. Older binaries
+  retain their existing virtual-root path mapping; the read-only fence still
+  applies, but absolute scratch paths require a freshly compiled binary.
+
 ## [0.18.0] - 2026-11-08
 
 ### Changed

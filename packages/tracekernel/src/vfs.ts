@@ -427,6 +427,9 @@ export class TraceKernelFileSystem {
           if (realPath instanceof TraceKernelFileSystemError) return Effect.fail(realPath);
           const node = this.nodes.get(realPath);
           if (!node) return this.fail('ENOENT', realPath, 'no such file or directory');
+
+          const authorityError = this.readOnlyMutationError(mutationContext, [realPath]);
+          if (authorityError) return Effect.fail(authorityError);
           const normalizedMode = mode & 0o7777;
           if (node.mode === normalizedMode) return Effect.void;
           node.mode = normalizedMode;
@@ -457,6 +460,9 @@ export class TraceKernelFileSystem {
           if (realPath instanceof TraceKernelFileSystemError) return Effect.fail(realPath);
           const node = this.nodes.get(realPath);
           if (!node) return this.fail('ENOENT', realPath, 'no such file or directory');
+
+          const authorityError = this.readOnlyMutationError(mutationContext, [realPath]);
+          if (authorityError) return Effect.fail(authorityError);
           const generation = this.beginMutation();
           node.generation = generation;
           node.modifiedAt = modifiedAt;
@@ -481,6 +487,9 @@ export class TraceKernelFileSystem {
           (mutationContext?.origin as { assertActive?: () => void } | undefined)?.assertActive?.();
           const directoryPath = this.resolveNodePath(resolved, false, options.recursive ? 'suffix' : 'final');
           if (directoryPath instanceof TraceKernelFileSystemError) return Effect.fail(directoryPath);
+
+          const authorityError = this.readOnlyMutationError(mutationContext, [directoryPath]);
+          if (authorityError) return Effect.fail(authorityError);
           const existing = this.nodes.get(directoryPath);
           if (existing) {
             if (options.recursive && existing.kind === 'directory') return Effect.void;
@@ -533,6 +542,9 @@ export class TraceKernelFileSystem {
           (mutationContext?.origin as { assertActive?: () => void } | undefined)?.assertActive?.();
           const directoryPath = this.resolveNodePath(resolved, false);
           if (directoryPath instanceof TraceKernelFileSystemError) return Effect.fail(directoryPath);
+
+          const authorityError = this.readOnlyMutationError(mutationContext, [directoryPath]);
+          if (authorityError) return Effect.fail(authorityError);
           if (directoryPath === '/') return this.fail('EBUSY', directoryPath, 'cannot remove root directory');
           const node = this.nodes.get(directoryPath);
           if (!node) return this.fail('ENOENT', directoryPath, 'no such directory');
@@ -591,6 +603,9 @@ export class TraceKernelFileSystem {
           (mutationContext?.origin as { assertActive?: () => void } | undefined)?.assertActive?.();
           const filePath = this.resolveNodePath(resolved, true, 'final');
           if (filePath instanceof TraceKernelFileSystemError) return Effect.fail(filePath);
+
+          const authorityError = this.readOnlyMutationError(mutationContext, [filePath]);
+          if (authorityError) return Effect.fail(authorityError);
           const existing = this.nodes.get(filePath);
           if (existing?.kind === 'directory') {
             return this.fail('EISDIR', filePath, 'is a directory');
@@ -651,6 +666,9 @@ export class TraceKernelFileSystem {
           }
           const newResult = this.resolveNodePath(unresolvedNew, false, 'final');
           if (newResult instanceof TraceKernelFileSystemError) return Effect.fail(newResult);
+
+          const authorityError = this.readOnlyMutationError(mutationContext, [existingResult, newResult]);
+          if (authorityError) return Effect.fail(authorityError);
           const existing = this.nodes.get(existingResult);
           if (!existing) return this.fail('ENOENT', existingResult, 'no such file');
           if (existing.kind === 'directory') {
@@ -675,7 +693,7 @@ export class TraceKernelFileSystem {
           const timestamp = Date.now();
           this.touchNode(existing, generation, timestamp, false);
           this.touchNode(parent, generation, timestamp, true);
-          this.notifyMutation(generation, 'rename', 'link', [newResult], mutationContext);
+          this.notifyMutation(generation, 'rename', 'link', [newResult], mutationContext, existingResult);
           return Effect.void;
         })
       ))
@@ -706,6 +724,9 @@ export class TraceKernelFileSystem {
           (mutationContext?.origin as { assertActive?: () => void } | undefined)?.assertActive?.();
           const linkResult = this.resolveNodePath(unresolvedLink, false, 'final');
           if (linkResult instanceof TraceKernelFileSystemError) return Effect.fail(linkResult);
+
+          const authorityError = this.readOnlyMutationError(mutationContext, [linkResult]);
+          if (authorityError) return Effect.fail(authorityError);
           if (this.nodes.has(linkResult)) {
             return this.fail('EEXIST', linkResult, 'file already exists');
           }
@@ -756,6 +777,9 @@ export class TraceKernelFileSystem {
           (mutationContext?.origin as { assertActive?: () => void } | undefined)?.assertActive?.();
           const entryPath = this.resolveNodePath(resolved, false);
           if (entryPath instanceof TraceKernelFileSystemError) return Effect.fail(entryPath);
+
+          const authorityError = this.readOnlyMutationError(mutationContext, [entryPath]);
+          if (authorityError) return Effect.fail(authorityError);
           const node = this.nodes.get(entryPath);
           if (!node) return this.fail('ENOENT', entryPath, 'no such file');
           if (node.kind === 'directory') return this.fail('EISDIR', entryPath, 'is a directory');
@@ -791,6 +815,9 @@ export class TraceKernelFileSystem {
           }
           const source = sourceResult;
           const destination = destinationResult;
+
+          const authorityError = this.readOnlyMutationError(mutationContext, [source, destination]);
+          if (authorityError) return Effect.fail(authorityError);
           if (source === destination) {
             return this.nodes.has(source)
               ? Effect.void
@@ -879,7 +906,13 @@ export class TraceKernelFileSystem {
           }
           const filePath = this.resolveNodePath(resolved, true, options.create ? 'final' : 'none');
           if (filePath instanceof TraceKernelFileSystemError) return Effect.fail(filePath);
+
           const existing = this.nodes.get(filePath);
+          const authorityError = this.readOnlyMutationError(
+            mutationContext,
+            access === 'read' && !(options.create && !existing) && !options.truncate ? [] : [filePath]
+          );
+          if (authorityError) return Effect.fail(authorityError);
           if (!existing) {
             if (!options.create) return this.fail('ENOENT', filePath, 'no such file');
             if (access === 'read') {
@@ -945,6 +978,36 @@ export class TraceKernelFileSystem {
     );
   }
 
+  setMetadataOpen(
+    file: TraceKernelOpenFileNode,
+    metadata: { mode?: number; modifiedAt?: number },
+    context?: TraceKernelFileSystemMutationContext
+  ): Effect.Effect<void, TraceKernelFileSystemError> {
+    return this.mutex.withPermits(1)(Effect.suspend(() => {
+      context?.assertActive?.();
+      (context?.origin as { assertActive?: () => void } | undefined)?.assertActive?.();
+      const error = this.readOnlyMutationError(context, [file.openedPath], [file.node]);
+      if (error) return Effect.fail(error);
+      if (metadata.mode !== undefined && (!Number.isSafeInteger(metadata.mode) || metadata.mode < 0)) {
+        return this.fail('EINVAL', file.openedPath, 'invalid file mode');
+      }
+      if (metadata.modifiedAt !== undefined && (!Number.isFinite(metadata.modifiedAt) || metadata.modifiedAt < 0)) {
+        return this.fail('EINVAL', file.openedPath, 'invalid modification timestamp');
+      }
+      const generation = this.beginMutation();
+      const node = file.node;
+      if (metadata.mode !== undefined) node.mode = metadata.mode & 0o7777;
+      if (metadata.modifiedAt !== undefined) node.modifiedAt = metadata.modifiedAt;
+      node.generation = generation;
+      node.changedAt = Date.now();
+      this.notifyMutation(
+        generation, 'change', metadata.mode !== undefined ? 'chmod' : 'utimes',
+        this.pathsForNode(node), context
+      );
+      return Effect.void;
+    }));
+  }
+
   truncateOpen(
     file: TraceKernelOpenFileNode,
     length: number,
@@ -952,8 +1015,10 @@ export class TraceKernelFileSystem {
   ): Effect.Effect<void, TraceKernelFileSystemError> {
     return this.mutex.withPermits(1)(
       Effect.suspend(() => {
-          mutationContext?.assertActive?.();
-          (mutationContext?.origin as { assertActive?: () => void } | undefined)?.assertActive?.();
+        mutationContext?.assertActive?.();
+        (mutationContext?.origin as { assertActive?: () => void } | undefined)?.assertActive?.();
+        const authorityError = this.readOnlyMutationError(mutationContext, [file.openedPath], [file.node]);
+        if (authorityError) return Effect.fail(authorityError);
         const nextLength = Math.max(0, Math.floor(length));
         if (file.node.size === nextLength) return Effect.void;
         const quotaError = this.quotaResizeError(file.node, nextLength);
@@ -981,8 +1046,10 @@ export class TraceKernelFileSystem {
   ): Effect.Effect<number, TraceKernelFileSystemError> {
     return this.mutex.withPermits(1)(
       Effect.suspend(() => {
-          mutationContext?.assertActive?.();
-          (mutationContext?.origin as { assertActive?: () => void } | undefined)?.assertActive?.();
+        mutationContext?.assertActive?.();
+        (mutationContext?.origin as { assertActive?: () => void } | undefined)?.assertActive?.();
+        const authorityError = this.readOnlyMutationError(mutationContext, [file.openedPath], [file.node]);
+        if (authorityError) return Effect.fail(authorityError);
         const node = file.node;
         const writeOffset = append ? node.size : offset;
         if (bytes.byteLength === 0) {
@@ -1098,6 +1165,11 @@ export class TraceKernelFileSystem {
         return this.fail('EBUSY', '/', 'filesystem changed during final-diff staging');
       }
       if (mutations.length === 0) return Effect.void;
+      const authorityError = this.readOnlyMutationError(context, mutations.flatMap((mutation) => [
+        ...mutation.paths,
+        ...(mutation.sourcePath ? [mutation.sourcePath] : []),
+      ]));
+      if (authorityError) return Effect.fail(authorityError);
       const existing = new Map([...this.nodes.values()].map((node) => [node.inode, node]));
       // restoreImage validates the entire image before replacing the namespace.
       this.restoreImage(image);
@@ -1122,7 +1194,7 @@ export class TraceKernelFileSystem {
         Atomics.notify(shared, 0);
       }
       for (const mutation of mutations) {
-        this.notifyMutation(mutation.generation, mutation.eventType, mutation.operation, mutation.paths, context);
+        this.notifyMutation(mutation.generation, mutation.eventType, mutation.operation, mutation.paths, context, mutation.sourcePath);
       }
       return Effect.void;
     }));
@@ -1146,6 +1218,8 @@ export class TraceKernelFileSystem {
           (mutationContext?.origin as { assertActive?: () => void } | undefined)?.assertActive?.();
           const previousPaths = [...this.nodes.keys()];
           const previousGeneration = this.mutationGeneration;
+          const authorityError = this.readOnlyMutationError(mutationContext, ['/']);
+          if (authorityError) throw authorityError;
           this.restoreImage(image);
           this.nextGeneration = Math.max(
             this.nextGeneration,
@@ -1177,6 +1251,8 @@ export class TraceKernelFileSystem {
   clear(mutationContext?: TraceKernelFileSystemMutationContext): void {
     mutationContext?.assertActive?.();
     (mutationContext?.origin as { assertActive?: () => void } | undefined)?.assertActive?.();
+    const authorityError = this.readOnlyMutationError(mutationContext, ['/']);
+    if (authorityError) throw authorityError;
     if (this.nodes.size > 0) {
       const paths = [...this.nodes.keys()];
       const generation = this.beginMutation();
@@ -1603,18 +1679,39 @@ export class TraceKernelFileSystem {
     return generation;
   }
 
+  /** Checked at commit (or synchronous quiescent clear), after resolving aliases. */
+  private readOnlyMutationError(
+    context: TraceKernelFileSystemMutationContext | undefined,
+    paths: readonly string[],
+    nodes: readonly TraceKernelNode[] = []
+  ): TraceKernelFileSystemError | undefined {
+    const root = context?.readOnlyWorkspaceRoot ??
+      (context?.origin as { readOnlyWorkspaceRoot?: string } | undefined)?.readOnlyWorkspaceRoot;
+    if (!root) return;
+    const affected = [...paths];
+    for (const node of [...nodes, ...paths.flatMap((path) => this.nodes.get(path) ?? [])]) {
+      affected.push(...this.pathsForNode(node));
+    }
+    const contains = (parent: string, path: string): boolean =>
+      parent === '/' || path === parent || path.startsWith(`${parent}/`);
+    const denied = affected.find((path) => contains(root, path) || contains(path, root));
+    if (denied) return this.error('EROFS', denied, 'read-only workspace authority');
+  }
+
   private notifyMutation(
     generation: number,
     eventType: TraceKernelFileSystemMutation['eventType'],
     operation: TraceKernelFileSystemMutationOperation,
     paths: readonly string[],
-    context?: TraceKernelFileSystemMutationContext
+    context?: TraceKernelFileSystemMutationContext,
+    sourcePath?: string
   ): void {
     if (paths.length === 0) return;
     const mutation = Object.freeze({
       generation,
       eventType,
       operation,
+      ...(sourcePath ? { sourcePath } : {}),
       paths: Object.freeze([...new Set(paths)]),
       ...(context?.origin ? { origin: context.origin } : {}),
     });
@@ -1734,6 +1831,11 @@ export class TraceKernelOpenFileDescription {
       seek: (offset: number, whence: TraceKernelSeekWhence) =>
         this.seek(offset, whence),
       stat: () => this.fileSystem.statOpen(this.file),
+      setMetadata: (metadata, context) => this.mutex.withPermits(1)(Effect.suspend(() =>
+        this.closed
+          ? this.closedError()
+          : this.fileSystem.setMetadataOpen(this.file, metadata, context ? { origin: context } : undefined)
+      )),
       duplicate: () => this.duplicate(),
       close: () => this.close(),
     };

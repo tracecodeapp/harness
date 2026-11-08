@@ -73,8 +73,10 @@ export class TraceKernelInvalidArgumentError extends Data.TaggedError(
 export class TraceKernelBadFileDescriptorError extends Data.TaggedError(
   'TraceKernelBadFileDescriptorError'
 )<{
+  readonly cause?: unknown;
   readonly fd: number;
   readonly operation:
+    | 'metadata'
     | 'read'
     | 'write'
     | 'close'

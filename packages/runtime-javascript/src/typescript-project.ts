@@ -1,4 +1,4 @@
-import { emitRuntimeCommandFileChanges } from '@tracecode/runtime-contracts';
+import { emitRuntimeCommandFileChanges, withRuntimeProjectCommandRunnerCapabilities } from '@tracecode/runtime-contracts';
 import type {
   RuntimeCommandResult,
   RuntimeFile,
@@ -504,7 +504,7 @@ function formatDiagnostic(
 export function createTypeScriptProjectRunner(
   options: TypeScriptProjectRunnerOptions = {}
 ): TypeScriptProjectCommandRunner {
-  return async (request) => {
+  return withRuntimeProjectCommandRunnerCapabilities(async (request) => {
     const ioStatus = (phase: string, message: string, detail?: Record<string, unknown>): void => {
       request.onEvent?.({ type: 'status', phase, message, ...(detail ? { detail } : {}) });
     };
@@ -559,5 +559,5 @@ export function createTypeScriptProjectRunner(
       exitCode,
       ...(resultFiles.length > 0 ? { files: resultFiles } : {}),
     };
-  };
+  }, { snapshotCompiler: true });
 }

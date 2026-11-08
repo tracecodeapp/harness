@@ -84,6 +84,10 @@ export const TRACEKERNEL_SYSCALL_OPERATION_CODES = Object.freeze({
   environment: 51,
   tcgetwinsize: 52,
   tcsetwinsize: 53,
+  chmod: 54,
+  utimes: 55,
+  fchmod: 56,
+  futimes: 57,
 } as const satisfies Readonly<Record<TraceKernelSyscallRequest['op'], number>>);
 
 export const OP_CODES = TRACEKERNEL_SYSCALL_OPERATION_CODES;

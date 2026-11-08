@@ -386,6 +386,10 @@ const TK_SYSCALL_OP_CODES = Object.freeze({
   tcsetpgrp: 47,
   tcgetwinsize: 52,
   tcsetwinsize: 53,
+  chmod: 54,
+  utimes: 55,
+  fchmod: 56,
+  futimes: 57,
 });
 const TK_SYSCALL_OPS_BY_CODE = new Map(
   Object.entries(TK_SYSCALL_OP_CODES).map(([operation, code]) => [code, operation])
@@ -818,6 +822,16 @@ class CppTraceKernelSyncClient {
         writer.i32(request.fd);
         writer.u32(request.rows);
         writer.u32(request.columns);
+        break;
+      case 'chmod':
+      case 'utimes':
+        writer.string(request.path);
+        writer.f64(request.op === 'chmod' ? request.mode : request.modifiedAt);
+        break;
+      case 'fchmod':
+      case 'futimes':
+        writer.i32(request.fd);
+        writer.f64(request.op === 'fchmod' ? request.mode : request.modifiedAt);
         break;
       case 'ftruncate':
         writer.i32(request.fd);
@@ -2334,6 +2348,7 @@ class CppTraceKernelFileSystem {
     this.client = client;
     this.readOnlyFiles = new Set(options.readOnlyFiles || []);
     this.workspaceRoot = normalizePath(options.workspaceRoot || '/workspace');
+    this.kernelNamespace = options.kernelNamespace === true;
   }
 
   call(request) {
@@ -2342,6 +2357,7 @@ class CppTraceKernelFileSystem {
 
   kernelPath(pathname) {
     const normalized = normalizePath(pathname);
+    if (this.kernelNamespace) return normalized;
     if (
       normalized === this.workspaceRoot ||
       normalized.startsWith(`${this.workspaceRoot}/`) ||
@@ -2480,9 +2496,10 @@ class CppTraceKernelFileSystem {
     };
   }
 
-  setMetadata() {
-    // TraceKernel does not yet expose chmod/utimens syscalls. WASI validates
-    // the request, while the authoritative stat timestamps remain kernel-owned.
+  setMetadata(pathname, values) {
+    const path = this.kernelPath(pathname);
+    if (values.mode !== undefined) this.call({ op: 'chmod', path, mode: Number(values.mode) & 0o7777 });
+    if (values.mtimeMs !== undefined) this.call({ op: 'utimes', path, modifiedAt: Number(values.mtimeMs) });
   }
 
   emitPathSnapshot() {
@@ -2672,7 +2689,8 @@ class WasiProcess {
     this.fs = options.fs;
     this.cwd = normalizePath(options.cwd || '/');
     this.kernelCwd = normalizePath(options.kernelCwd || this.cwd);
-    this.fs.addDirectory(this.cwd);
+    if (options.kernelNamespace) this.cwd = this.kernelCwd;
+    if (!options.kernelClient) this.fs.addDirectory(this.cwd);
     this.stdinPipe = stdinPipeState(options.stdinPipe);
     this.stdinBytes = options.stdinBytes instanceof Uint8Array
       ? options.stdinBytes
@@ -2715,7 +2733,7 @@ class WasiProcess {
       [0, this.stdioEntryForDevice('/dev/stdin')],
       [1, this.stdioEntryForDevice('/dev/stdout')],
       [2, this.stdioEntryForDevice('/dev/stderr')],
-      [3, { kind: 'dir', path: this.cwd, offset: 0, readable: true, writable: false, preopen: '/' }],
+      [3, { kind: 'dir', path: options.kernelNamespace ? '/' : this.cwd, offset: 0, readable: true, writable: false, preopen: '/' }],
     ]);
     if (this.kernelClient) {
       for (const fd of [0, 1, 2]) {
@@ -2825,6 +2843,12 @@ class WasiProcess {
       return actions;
     };
     return {
+      proc_cwd: (buffer, capacity) => {
+        const bytes = encodeUtf8(`${this.kernelClient ? this.kernelCwd : '/'}\0`);
+        if (bytes.length > (capacity >>> 0)) return -EINVAL;
+        this.mem.writeBytes(buffer >>> 0, bytes);
+        return 0;
+      },
       proc_system: (commandPtr, commandLen) => {
         if (!this.kernelClient) return -ENOTSUP;
         try {
@@ -4061,7 +4085,8 @@ class WasiProcess {
     if (flags & FSTFLAGS_MTIM) next.mtimeMs = Number(mtime) / 1_000_000;
     else if (flags & FSTFLAGS_MTIM_NOW) next.mtimeMs = nowMs;
     else if (current.mtimeMs !== undefined) next.mtimeMs = current.mtimeMs;
-    this.fs.setMetadata(normalized, next);
+    try { this.fs.setMetadata(normalized, next); }
+    catch (error) { return cppTraceKernelErrno(error); }
     this.fs.emitPathSnapshot(normalized);
     return ESUCCESS;
   }
@@ -4747,8 +4772,12 @@ class WasiProcess {
     if (this.fs.lexists(pathname)) return EEXIST;
     const parentErrno = this.parentDirectoryErrno(pathname);
     if (parentErrno !== null) return parentErrno;
-    this.fs.addDirectory(pathname);
-    return ESUCCESS;
+    try {
+      this.fs.addDirectory(pathname);
+      return ESUCCESS;
+    } catch (error) {
+      return cppTraceKernelErrno(error);
+    }
   }
 
   path_unlink_file(dirfd, pathPtr, pathLen) {
@@ -4833,13 +4862,7 @@ class WasiProcess {
       this.fs.addSymlink(newPath, target);
       return ESUCCESS;
     } catch (error) {
-      return error?.code === 'ELOOP'
-        ? ELOOP
-        : error?.code === 'EACCES'
-          ? EACCES
-          : error?.code === 'ENOENT'
-            ? ENOENT
-            : EIO;
+      return cppTraceKernelErrno(error);
     }
   }
 
@@ -5491,6 +5514,7 @@ async function runWasi(module, args, fs, options = {}) {
     fs,
     cwd: options.cwd || '/',
     kernelCwd: options.kernelCwd,
+    kernelNamespace: options.kernelNamespace,
     stdinPipe: options.stdinPipe,
     stdinBytes: options.stdinBytes,
     stdinText: options.stdinText,
@@ -12886,6 +12910,16 @@ const CPP_KERNEL_PROCESS_SHIM_SOURCE = String.raw`#include <errno.h>
 #include <unistd.h>
 #include <stdarg.h>
 
+__attribute__((import_module("tracecode_kernel"), import_name("proc_cwd")))
+int __tracecode_proc_cwd(char* buffer, unsigned int capacity);
+
+// Pull in wasi-libc's cwd support before learner constructors or main execute.
+__attribute__((constructor(101)))
+static void tracecode_initialize_cwd(void) {
+  char cwd[4096];
+  if (__tracecode_proc_cwd(cwd, sizeof(cwd)) != 0 || chdir(cwd) != 0) _Exit(126);
+}
+
 __attribute__((import_module("tracecode_kernel"), import_name("proc_system")))
 int __tracecode_proc_system(const char* command, unsigned int length);
 __attribute__((import_module("tracecode_kernel"), import_name("proc_spawn")))
@@ -14380,9 +14414,12 @@ async function handleProjectCpp(
         })
       )
     : null;
+  const kernelNamespace = Boolean(kernelClient) && WebAssembly.Module.imports(module)
+    .some((entry) => entry.module === 'tracecode_kernel' && entry.name === 'proc_cwd');
   const runtimeFs = kernelClient
     ? new CppTraceKernelFileSystem(kernelClient, {
         workspaceRoot: projectWorkspaceRoots(request)[0] || '/workspace',
+        kernelNamespace,
         readOnlyFiles: snapshotFs.readOnlyFiles,
       })
     : snapshotFs;
@@ -14391,6 +14428,7 @@ async function handleProjectCpp(
     program = await runWasi(module, [basename(executablePath), ...(request?.args || []).map(String)], runtimeFs, {
       cwd: `/${requestCwdRelative(request)}`,
       kernelCwd: request?.cwd || projectWorkspaceRoots(request)[0] || '/workspace',
+      kernelNamespace,
       stdinPipe: kernelClient ? undefined : request?.stdinPipe,
       env: request?.env || { USER: 'tracecode' },
       kernelDevices: projectKernelDevices(request?.project),

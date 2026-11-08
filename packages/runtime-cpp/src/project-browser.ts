@@ -68,5 +68,5 @@ export function createBrowserCppProjectRunner(
           engineLease
         ),
     });
-  }, { descriptorStdio: true });
+  }, { descriptorStdio: true, kernelFileSystem: true });
 }

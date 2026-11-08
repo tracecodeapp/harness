@@ -216,7 +216,7 @@ export class TraceKernelProcessTable {
       this.options.maxDescriptorsPerProcess,
       this.options.signalGracePeriodMs
     );
-    if (parent) process.setMutationAuthority(parent.assertAuthority, parent.authoritySignal);
+    if (parent) process.setMutationAuthority(parent.assertAuthority, parent.authoritySignal, parent.readOnlyWorkspaceRoot);
     this.processes.set(pid, process);
     if (ppid === 1 && spec.retainOnExit === true) {
       this.initRetainedProcesses.add(pid);

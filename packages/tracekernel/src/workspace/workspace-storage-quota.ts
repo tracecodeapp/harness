@@ -76,11 +76,11 @@ export class RuntimeWorkspaceQuotaFileSystem implements IFileSystem {
     private readonly limits: NormalizedRuntimeWorkspaceStorageLimits
   ) {}
 
-  withAuthority(assertActive: () => void): RuntimeWorkspaceQuotaFileSystem {
+  withAuthority(assertActive: () => void, readOnlyWorkspaceRoot?: string): RuntimeWorkspaceQuotaFileSystem {
     if (!(this.inner instanceof TraceKernelBackingFileSystem)) {
       throw new Error('Process authority requires the TraceKernel backing filesystem');
     }
-    return withDependencies(this, { inner: this.inner.withAuthority(assertActive) } as Partial<RuntimeWorkspaceQuotaFileSystem>);
+    return withDependencies(this, { inner: this.inner.withAuthority(assertActive, readOnlyWorkspaceRoot) } as Partial<RuntimeWorkspaceQuotaFileSystem>);
   }
 
   private async withMutationLock<T>(fn: () => Promise<T>): Promise<T> {

@@ -120,5 +120,5 @@ export function createBrowserCSharpProjectRunner(
           engineLease
         ),
     });
-  }, { descriptorStdio: true });
+  }, { descriptorStdio: true, kernelFileSystem: true });
 }

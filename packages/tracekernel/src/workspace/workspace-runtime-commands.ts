@@ -103,6 +103,9 @@ export function createWorkspaceRuntimeRunnerBridge(
 
     return (async (request, ctx?: CommandContext) => {
       const commandContext = bridge.resolveCommandContext(ctx);
+      if (!commandContext) {
+        return { stdout: '', stderr: 'EACCES: runtime command has no process authority context\n', exitCode: 1 };
+      }
       const {
         stdinPipe: _legacyRequestStdinPipe,
         ...requestWithoutLegacyStdin
@@ -130,6 +133,11 @@ export function createWorkspaceRuntimeRunnerBridge(
         : undefined;
 
       try {
+        if (commandContext.process.authority?.readOnlyWorkspaceRoot &&
+            (!kernelSyscalls || runner.capabilities?.kernelFileSystem !== true) &&
+            !(request.source === 'compile' && runner.capabilities?.snapshotCompiler === true)) {
+          return { stdout: '', stderr: 'ENOTSUP: this runner cannot enforce read-only workspace authority\n', exitCode: 1 };
+        }
         if (descriptorStdio && commandContext && consumesLiveStdin) {
           await bridge.startHostStandardInputPump(commandContext, stdinPipe);
         }

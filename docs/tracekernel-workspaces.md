@@ -380,6 +380,109 @@ Use lifecycle events and `projectSession.lifecycle` for UI state instead of
 guessing from command failures.
 
 
+### Running a process tree against a locked workspace
+
+Create a separate process with `workspaceAccess: 'read-only'` to grade a locked
+snapshot. The default is `'read-write'`. This restriction is independent of actor
+identity and cannot be widened by a child, shell, runtime worker, or changed cwd.
+
+```ts
+const grader = workspace.kernel.createProcess({
+  name: 'grader',
+  actor: runtimeWorkspaceActorPreset('runtime'),
+  workspaceAccess: 'read-only',
+});
+try {
+  const result = await grader.runCommand('node test.js');
+  // A program can catch EROFS and continue; a denied write is not evidence loss.
+} finally {
+  await grader.revokeAndDrain();
+}
+```
+
+TraceKernel checks the canonical destination and affected inode aliases while
+holding the mutation commit lock. The restriction covers file data, open
+descriptors, namespace changes, mode/timestamp changes, and final-diff publication.
+It protects the workspace root, its descendants, and mutations of ancestors that
+could replace it. Renaming into or out of the workspace and creating a hard link
+to a workspace inode are refused. Existing hard links outside the root cannot
+be used to modify a protected inode. Copying workspace contents out is a read
+and is allowed. Other paths, including `/tmp`, retain their existing permissions.
+Runtime restrictions that already reject an operation, such as Python's
+cross-mount rename/link limitation, still apply.
+
+Supported mutation attempts fail with `EROFS` at the kernel boundary; runtimes
+translate that into their normal filesystem error/exception. The tree can still
+read files, run programs, use scratch storage, and use separately granted network
+capabilities. This is not a general side-effect sandbox. Other authorized actors
+remain writable, so use a fresh workspace from the locked snapshot and exclude
+other writers when the entire workspace must remain unchanged.
+
+The host runner contract is explicit. A runner executing learner code must declare
+`capabilities.kernelFileSystem: true` and send its filesystem operations through
+the supplied syscall bridge. The bridge must actually be available; a capability
+declaration alone does not admit execution when shared-memory transport is absent.
+Snapshot-only native/custom runners are refused with `ENOTSUP` before execution
+in a read-only tree. Virtual executables use the same authority for returned file
+diffs as language commands. Runner commands without a resolvable process context
+fail with `EACCES` instead of inheriting host authority. Trusted snapshot compilers can
+declare `snapshotCompiler: true`; only compile requests are allowed, they must not
+execute learner code, and the kernel still fences publication of their output.
+The built-in TypeScript compiler uses this path, allowing `tsc --noEmit`.
+Compilers receive no workspace-write exemption. Prepare artifacts before sealing
+or direct them to scratch where the provider supports that. The current C#
+provider always materializes `dotnet run` assemblies under workspace `bin`, so
+read-only `dotnet run` fails during that build with a filesystem exception; this
+release does not add a separate precompiled C# execution path.
+Existing engine API limitations also remain: the current TraceJVM implementation
+of `Files.setLastModifiedTime` fails at its unsupported `fstat0` native method.
+Newly compiled C/C++ project binaries initialize WASI libc's cwd from the kernel,
+so relative `tmp/file` and absolute `/tmp/file` name different directories.
+Recompile older binaries to gain this absolute scratch namespace; their legacy
+virtual-root mapping remains compatible and is still protected by the fence.
+These declarations are assertions by trusted host code, never values accepted
+from an in-VM spawn request. Ordinary writable processes keep their existing
+runner behavior. SQL tracing itself is not a workspace process or filesystem;
+SQL hosted inside a process has that process's workspace authority.
+
+### Reading complete journal evidence
+
+The journal retains at most 256 records for one workspace lifetime. It is not a
+durable or lossless per-process log. `journal()` keeps its existing bounded-array
+behavior. Evidence consumers must use `journalWindow(sinceSeq)` and fail closed
+when `gap` is true. An evicted filesystem record cannot be hidden by later process
+or HTTP traffic without setting this signal.
+
+```ts
+const cursor = workspace.journalWindow().nextSeq - 1;
+// Perform the activity whose evidence is needed, then await its process drain.
+await learner.revokeAndDrain();
+const evidence = workspace.journalWindow(cursor);
+if (evidence.gap) throw new Error('Kernel evidence was evicted');
+const nextCursor = evidence.nextSeq - 1;
+```
+
+`records` contains retained records with `seq > sinceSeq`; `firstAvailableSeq` is
+the oldest retained sequence and `nextSeq` is the next sequence to be allocated.
+The synchronous read returns a consistent window. A cursor must be a nonnegative
+safe integer from the same workspace lifetime, no greater than `nextSeq - 1`.
+Invalid/future cursors throw `RangeError`; the kernel cannot detect a numeric
+cursor mistakenly reused from a different workspace. The default cursor is zero.
+Read before filtering by pid, since retention is shared across all actors.
+
+Native rename and link records include each workspace endpoint. Shell copy/link
+records likewise include the source when inside and the destination when inside.
+A low-level copy implemented as separate reads and writes records the destination
+write; reads do not imply a mutation of the source. Read-only grading does not
+depend on journal retention, while pre-lock evidence completeness still does.
+Consumers needing longer histories can collect windows with sequence cursors and
+check every gap; no new streaming API is required for this contract.
+
+Upgrade the package and worker assets together. The additive metadata syscalls
+use operation numbers 54–57 of `tracekernel.syscall.v1`; older workers and hosts
+do not implement the complete contract. The runtime asset lock identifies the
+matching set.
+
 ### Revoking a process before taking a snapshot
 
 `process.revokeAndDrain()` closes admission synchronously for the process and its

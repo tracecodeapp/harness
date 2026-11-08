@@ -2,6 +2,7 @@ import * as Effect from 'effect/Effect';
 
 /** Host-only authority carried with deferred kernel operations. */
 export interface TraceKernelOperationAuthority {
+  readonly readOnlyWorkspaceRoot?: string;
   readonly assertActive?: () => void;
   readonly signal?: AbortSignal;
 }

@@ -1,5 +1,6 @@
 import type {
   KernelJournalRecord,
+  RuntimeWorkspaceJournalWindow,
   RuntimeCommandEvent,
   RuntimeWorkspaceEventHandler,
   RuntimeWorkspaceUnsubscribe,
@@ -72,6 +73,19 @@ export class WorkspaceEventState {
   journal(sinceSeq?: number): readonly KernelJournalRecord[] {
     if (sinceSeq === undefined) return [...this.kernelJournalLog];
     return this.kernelJournalLog.filter((record) => record.seq > sinceSeq);
+  }
+
+  journalWindow(sinceSeq = 0): RuntimeWorkspaceJournalWindow {
+    if (!Number.isSafeInteger(sinceSeq) || sinceSeq < 0 || sinceSeq >= this.nextJournalSeq) {
+      throw new RangeError('Journal cursor must belong to this workspace and not be ahead of its journal');
+    }
+    const firstAvailableSeq = this.kernelJournalLog[0]?.seq ?? this.nextJournalSeq;
+    return {
+      records: this.journal(sinceSeq),
+      firstAvailableSeq,
+      nextSeq: this.nextJournalSeq,
+      gap: sinceSeq + 1 < firstAvailableSeq,
+    };
   }
 
   dispatch(event: RuntimeCommandEvent): void {

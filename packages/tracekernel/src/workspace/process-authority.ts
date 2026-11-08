@@ -9,9 +9,16 @@ export class ProcessAuthority {
   private readonly pending = new Set<Promise<unknown>>();
   private readonly children = new Set<ProcessAuthority>();
 
-  constructor(private readonly parent?: ProcessAuthority) {
+  constructor(
+    private readonly parent?: ProcessAuthority,
+    private readonly protectedWorkspaceRoot?: string
+  ) {
     parent?.children.add(this);
     if (parent?.isRevoked()) this.revoke();
+  }
+
+  get readOnlyWorkspaceRoot(): string | undefined {
+    return this.parent?.readOnlyWorkspaceRoot ?? this.protectedWorkspaceRoot;
   }
 
   assertActive = (): void => {

@@ -464,6 +464,22 @@ export class TraceKernelRuntimeFileClient {
     ).target;
   }
 
+  chmod(path: string, mode: number): void {
+    this.expectSuccess(this.transport.dispatchSync({ op: 'chmod', path, mode }), 'chmod');
+  }
+
+  utimes(path: string, modifiedAt: number): void {
+    this.expectSuccess(this.transport.dispatchSync({ op: 'utimes', path, modifiedAt }), 'utimes');
+  }
+
+  fchmod(fd: number, mode: number): void {
+    this.expectSuccess(this.transport.dispatchSync({ op: 'fchmod', fd, mode }), 'fchmod');
+  }
+
+  futimes(fd: number, modifiedAt: number): void {
+    this.expectSuccess(this.transport.dispatchSync({ op: 'futimes', fd, modifiedAt }), 'futimes');
+  }
+
   rename(sourcePath: string, destinationPath: string): void {
     this.expectSuccess(
       this.transport.dispatchSync({

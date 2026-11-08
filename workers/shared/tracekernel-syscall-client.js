@@ -58,7 +58,11 @@
     processList: 50,
     environment: 51,
     tcgetwinsize: 52,
-    tcsetwinsize: 53
+    tcsetwinsize: 53,
+    chmod: 54,
+    utimes: 55,
+    fchmod: 56,
+    futimes: 57
   });
   var OP_CODES = TRACEKERNEL_SYSCALL_OPERATION_CODES;
   var OPERATIONS_BY_CODE = new Map(
@@ -258,6 +262,16 @@
   }
   function encodeFilesystemRequest(writer, request) {
     switch (request.op) {
+      case "chmod":
+      case "utimes":
+        writer.string(request.path);
+        writer.f64(request.op === "chmod" ? request.mode : request.modifiedAt);
+        break;
+      case "fchmod":
+      case "futimes":
+        writer.i32(request.fd);
+        writer.f64(request.op === "fchmod" ? request.mode : request.modifiedAt);
+        break;
       case "open": {
         writer.string(request.path);
         const access = request.options?.access === "write" ? 2 : request.options?.access === "read-write" ? 3 : request.options?.access === "read" ? 1 : 0;
@@ -440,6 +454,10 @@
           bytes: reader.byteArray()
         };
         break;
+      case "chmod":
+      case "utimes":
+      case "fchmod":
+      case "futimes":
       case "close":
       case "mkdir":
       case "rmdir":

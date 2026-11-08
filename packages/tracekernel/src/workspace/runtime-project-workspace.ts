@@ -275,7 +275,7 @@ import { TraceKernelBackingFileSystem } from './tkfs-backing-filesystem';
 import {
   KernelObservedFileSystem,
   CommandBoundFileSystem,
-  applyWorkspaceCommandResultFiles,
+  applyCommandResultFiles,
   assertSupportedEncoding,
   base64FromBytes,
   bytesEqual,
@@ -303,7 +303,6 @@ import {
   textToByteString,
   withSuspendedFsNotifications,
   commandContextForFs,
-  registerCommandContext,
   throwKernelMutationTargetError,
   type RuntimeDynamicProcProvider,
   type RuntimeCommandExecutionContext,
@@ -1217,7 +1216,7 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
   private createKernelSyscallBridge(
     context?: RuntimeCommandExecutionContext
   ): RuntimeKernelSyscallBridge | undefined {
-    if (typeof SharedArrayBuffer === 'undefined' || typeof Atomics === 'undefined') {
+    if (!context || typeof SharedArrayBuffer === 'undefined' || typeof Atomics === 'undefined') {
       return undefined;
     }
     const channel = makeTraceKernelSharedSyscallChannel();
@@ -1303,6 +1302,8 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
       case 'readlink':
       case 'readFile':
       case 'writeFile':
+      case 'chmod':
+      case 'utimes':
         return { ...request, path: mapPath(request.path) };
       case 'link':
         return {
@@ -1465,6 +1466,8 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
       case 'poll':
       case 'fstat':
       case 'ftruncate':
+      case 'fchmod':
+      case 'futimes':
         return this.dispatchExtractedTraceKernelSyscall(request, context);
       case 'read': {
         const descriptor = kernelProcess
@@ -1519,6 +1522,9 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
     request: TraceKernelSyscallRequest,
     context?: RuntimeCommandExecutionContext
   ): Promise<TraceKernelSyscallResult> {
+    if (!context) {
+      return { ok: false, error: { code: 'EACCES', message: 'Runtime syscall has no process authority context' } };
+    }
     const authority = context?.process.authority;
     try {
       authority?.assertActive();
@@ -1531,9 +1537,9 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
 
   private async dispatchRuntimeKernelSyscallUnchecked(
     request: TraceKernelSyscallRequest,
-    context?: RuntimeCommandExecutionContext
+    context: RuntimeCommandExecutionContext
   ): Promise<TraceKernelSyscallResult> {
-    const actor = context?.actor ?? SYSTEM_ACTOR;
+    const actor = context.actor;
     if (context) {
       context.liveKernelSyscallDepth = (context.liveKernelSyscallDepth ?? 0) + 1;
     }
@@ -1596,6 +1602,8 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
           this.assertActorFileCapability(actor, 'read', request.path);
           return this.dispatchExtractedTraceKernelSyscall(request, context);
         }
+        case 'chmod':
+        case 'utimes':
         case 'writeFile': {
           this.assertActorFileCapability(actor, 'write', request.path);
           return this.dispatchExtractedTraceKernelSyscall(request, context);
@@ -3848,6 +3856,8 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
     );
   }
 
+  journalWindow(sinceSeq = 0) { return this.eventState.journalWindow(sinceSeq); }
+
   journal(sinceSeq?: number): readonly KernelJournalRecord[] {
     return this.journalState.journal(sinceSeq);
   }
@@ -5583,7 +5593,7 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
       state: 'queued',
       foreground,
     };
-    kernelProcess.setMutationAuthority(process.authority!.assertActive, process.authority!.signal);
+    kernelProcess.setMutationAuthority(process.authority!.assertActive, process.authority!.signal, process.authority!.readOnlyWorkspaceRoot);
     this.processProjection.bindAuthoritativeRecord(process, kernelSnapshot);
     let engineAttachment: RuntimeProjectEngineLeaseAttachment | undefined;
     let engineLeaseReleased = false;
@@ -5629,7 +5639,6 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
       externalHttpRequestCount: 0,
     };
     const commandFs = new CommandBoundFileSystem(this.fs, commandContext);
-    registerCommandContext(commandFs, commandContext);
     const executionHandle: RuntimeKernelExecutionHandle = {
       kernelProcess,
       abortController,
@@ -6632,6 +6641,11 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
       ? request.executable.slice(2)
       : request.executable;
     const kernelSyscalls = this.createKernelSyscallBridge(request.commandContext);
+    if (request.commandContext.process.authority?.readOnlyWorkspaceRoot &&
+        (!kernelSyscalls || this.cppRunner.capabilities?.kernelFileSystem !== true)) {
+      kernelSyscalls?.close();
+      return { stdout: '', stderr: 'ENOTSUP: this runner cannot enforce read-only workspace authority\n', exitCode: 1 };
+    }
     const signal = this.processProjection.executionHandle(
       request.commandContext.process
     )?.abortController?.signal;
@@ -6709,9 +6723,11 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
       request.commandContext.kernelError = result.error;
     }
     await this.flushRuntimeEventQueue(request.commandContext);
-    return applyWorkspaceCommandResultFiles(
-      this,
-      request.commandContext.runtimeIo.filterAppliedResultFiles(result) ?? result
+    return applyCommandResultFiles(
+      { fs: new CommandBoundFileSystem(this.fs, request.commandContext) },
+      this.cwd,
+      request.commandContext.runtimeIo.filterAppliedResultFiles(result) ?? result,
+      (change, phase, context) => this.emitLocalRuntimeEvent({ type: 'file-change', change, phase }, context)
     );
   }
 
@@ -6880,6 +6896,7 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
 
   private createWorkspaceProcess(options: RuntimeWorkspaceProcessOptions): RuntimeWorkspaceProcess {
     this.assertNotDestroyed();
+    if (options.workspaceAccess !== undefined && options.workspaceAccess !== 'read-only' && options.workspaceAccess !== 'read-write') throw new Error('Invalid workspaceAccess');
     const name = options.name.trim();
     if (!name) throw new Error('Runtime workspace process name must not be empty.');
     const admissionError = this.processProjection.admissionError(name);
@@ -6913,7 +6930,7 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
     const pid = kernelProcess.pid;
     this.processState.nextPid = Math.max(this.processState.nextPid, pid + 1);
     const process: RuntimeKernelProcessRecord = {
-      authority: new ProcessAuthority(),
+      authority: new ProcessAuthority(undefined, options.workspaceAccess === 'read-only' ? this.cwd : undefined),
       pid,
       ppid: kernelSnapshot.ppid,
       pgid: kernelSnapshot.pgid,
@@ -6929,7 +6946,7 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
       state: 'running',
       foreground: false,
     };
-    kernelProcess.setMutationAuthority(process.authority!.assertActive, process.authority!.signal);
+    kernelProcess.setMutationAuthority(process.authority!.assertActive, process.authority!.signal, process.authority!.readOnlyWorkspaceRoot);
     this.processProjection.bindAuthoritativeRecord(process, kernelSnapshot);
     this.processState.executionHandles.set(process.pid, { kernelProcess });
     this.processState.table.set(process.pid, process);
@@ -7112,7 +7129,7 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
   ): Promise<void> {
     const authority = process?.authority;
     authority?.assertActive();
-    const fileSystem = authority ? this.fs.withAuthority(authority.assertActive) : this.fs;
+    const fileSystem = authority ? this.fs.withAuthority(authority.assertActive, authority.readOnlyWorkspaceRoot) : this.fs;
     this.assertActorFileCapability(actor, 'delete', path);
     const removeTarget = kernelRemoveTarget(path);
     if (removeTarget.kind === 'error') throwKernelMutationTargetError(path, removeTarget);
@@ -7237,7 +7254,7 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
   ): Promise<void> {
     const authority = process?.authority ?? context?.process.authority;
     authority?.assertActive();
-    const fileSystem = authority ? this.fs.withAuthority(authority.assertActive) : this.fs;
+    const fileSystem = authority ? this.fs.withAuthority(authority.assertActive, authority.readOnlyWorkspaceRoot) : this.fs;
     const mutationTarget = kernelMutationTarget(change.path);
     if (mutationTarget.kind === 'error') {
       throwKernelMutationTargetError(change.path, mutationTarget, `Kernel device namespace is not a file-change target: ${change.path}`);

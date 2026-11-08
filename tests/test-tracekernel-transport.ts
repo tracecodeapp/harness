@@ -175,7 +175,7 @@ async function main(): Promise<void> {
   assertCondition(
     TRACEKERNEL_SYSCALL_WIRE_SCHEMA === 'tracekernel.syscall.v1' &&
       TRACEKERNEL_SYSCALL_WIRE_VERSION === 1 &&
-      operationCodes.length === 53 &&
+      operationCodes.length === 57 &&
       new Set(operationCodes).size === operationCodes.length &&
       operationCodes.every((code, index) => code === index + 1),
     'The public syscall wire identity or append-only operation assignments changed.'
@@ -306,6 +306,10 @@ async function main(): Promise<void> {
     },
     { op: 'fstat', fd: 13 },
     { op: 'ftruncate', fd: 14, length: 4096 },
+    { op: 'chmod', path: '/workspace/file', mode: 0o600 },
+    { op: 'utimes', path: '/workspace/file', modifiedAt: 1234.5 },
+    { op: 'fchmod', fd: 14, mode: 0o600 },
+    { op: 'futimes', fd: 14, modifiedAt: 1234.5 },
     { op: 'stat', path: '/workspace/a' },
     { op: 'lstat', path: '/workspace/a-link' },
     { op: 'realpath', path: '/workspace/a-link' },
@@ -597,6 +601,10 @@ async function main(): Promise<void> {
       },
     },
     { ok: true, value: { op: 'ftruncate' } },
+    { ok: true, value: { op: 'chmod' } },
+    { ok: true, value: { op: 'utimes' } },
+    { ok: true, value: { op: 'fchmod' } },
+    { ok: true, value: { op: 'futimes' } },
     {
       ok: true,
       value: {
