@@ -117,7 +117,7 @@ export class WorkspaceFileApi {
   ): Promise<void> {
     process?.authority?.assertActive();
     const fileSystem = process?.authority
-      ? this.options.fileSystem.withAuthority(process.authority.assertActive)
+      ? this.options.fileSystem.withAuthority(process.authority.assertActive, process.authority.readOnlyWorkspaceRoot)
       : this.options.fileSystem;
     this.options.assertActorFileCapability(actor, 'write', path);
     this.options.ensureUsableForMutation('write');

@@ -878,6 +878,14 @@ export interface RuntimeProjectCommandRequest<
 
 export interface RuntimeProjectCommandRunnerCapabilities {
   /**
+   * Trusted host assertion: learner filesystem operations use the supplied
+   * kernel syscall bridge. Required to execute in a read-only workspace tree;
+   * snapshot-only/native runners cannot enforce errors inside the program.
+   */
+  readonly kernelFileSystem?: boolean;
+  /** Trusted compiler reads a snapshot without executing learner code; all output is published by the kernel. */
+  readonly snapshotCompiler?: boolean;
+  /**
    * The concrete runner can consume fd 0/1/2 through the supplied kernel
    * syscall bridge. Runners without this capability retain the compatibility
    * stdin transport and returned-output path.

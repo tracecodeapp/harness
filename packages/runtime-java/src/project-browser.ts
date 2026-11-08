@@ -115,5 +115,5 @@ export function createBrowserJavaProjectRunner(
       applyFileChange: options.applyFileChange,
       run: (workerRequest, onEvent) => workerClient.executeProjectJava(workerRequest, timeoutMs, onEvent, workerRequest.signal),
     });
-  }, { descriptorStdio: true });
+  }, { descriptorStdio: true, kernelFileSystem: true });
 }

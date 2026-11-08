@@ -268,6 +268,10 @@ export type TraceKernelSyscallRequest =
       readonly op: 'readdir';
       readonly path: string;
     }
+  | { readonly op: 'chmod'; readonly path: string; readonly mode: number }
+  | { readonly op: 'utimes'; readonly path: string; readonly modifiedAt: number }
+  | { readonly op: 'fchmod'; readonly fd: number; readonly mode: number }
+  | { readonly op: 'futimes'; readonly fd: number; readonly modifiedAt: number }
   | {
       readonly op: 'mkdir';
       readonly path: string;
@@ -414,6 +418,10 @@ export type TraceKernelSyscallValue =
   | { readonly op: 'lstat'; readonly stat: TraceKernelStat }
   | { readonly op: 'realpath'; readonly path: string }
   | { readonly op: 'readdir'; readonly entries: readonly TraceKernelDirectoryEntry[] }
+  | { readonly op: 'chmod' }
+  | { readonly op: 'utimes' }
+  | { readonly op: 'fchmod' }
+  | { readonly op: 'futimes' }
   | { readonly op: 'mkdir' }
   | { readonly op: 'rmdir' }
   | { readonly op: 'unlink' }
@@ -479,6 +487,9 @@ function syscallWireError(error: unknown): TraceKernelSyscallWireError {
   }
   if (error instanceof TraceKernelNetworkError) {
     return Object.freeze({ code: error.code, message: error.message });
+  }
+  if (error instanceof TraceKernelBadFileDescriptorError && error.cause instanceof TraceKernelFileSystemError) {
+    return syscallWireError(error.cause);
   }
   if (
     error instanceof TraceKernelBadFileDescriptorError ||
@@ -949,6 +960,19 @@ export class TraceKernelSyscallDispatcher {
             this.process.snapshot().cwd
           )),
           Effect.map((entries) => ({ op: 'readdir' as const, entries }))
+        );
+      case 'chmod':
+      case 'utimes':
+        return this.authorizeFileSystem([{ path: request.path, permission: 'write', followFinal: true }]).pipe(
+          Effect.zipRight(request.op === 'chmod'
+            ? this.session.fileSystem.chmod(request.path, request.mode, this.process.snapshot().cwd, { origin: this.process.fileSystemMutationOrigin })
+            : this.session.fileSystem.utimes(request.path, request.modifiedAt, this.process.snapshot().cwd, { origin: this.process.fileSystemMutationOrigin })),
+          Effect.as({ op: request.op })
+        );
+      case 'fchmod':
+      case 'futimes':
+        return this.process.descriptors.setMetadata(request.fd, request.op === 'fchmod' ? { mode: request.mode } : { modifiedAt: request.modifiedAt }).pipe(
+          Effect.as({ op: request.op })
         );
       case 'mkdir':
         return this.authorizeFileSystem([{

@@ -62,6 +62,8 @@ jobs:
           pnpm generate:javascript-project-worker
           pnpm generate:javascript-ses-worker
           git diff --exit-code -- workers/javascript/javascript-project-worker.js workers/javascript/javascript-ses-algorithm-worker.js
+      - name: Test read-only workspace authority across runtimes
+        run: pnpm test:workspace-authority-browser
       - name: Test JavaScript SES browser provider integration
         run: pnpm test:javascript-ses-provider-browser
       - name: Test Python public browser Judge boundary

@@ -46,6 +46,7 @@ import {
   createWorkspacePathContext,
   fallbackKernelInfo,
   normalizeWorkspaceEntryPath,
+  workspacePathInputToString,
 } from "../kernel/workspace-paths";
 import {
   ModuleRecord,
@@ -444,11 +445,18 @@ export function createBrowserJavaScriptRequestState(
         throw Object.assign(new Error(`ELOOP: too many symbolic links encountered, stat '${path}'`), { code: 'ELOOP' });
       };
 
-  const resolveWorkspaceEntryPath = (path: unknown, followFinal = true): string =>
-        resolveStoredSymlinkPath(
-          normalizeWorkspaceEntryPath(path, cwdPath, true, workspacePathContext),
-          followFinal
-        );
+  const resolveWorkspaceEntryPath = (path: unknown, followFinal = true): string => {
+    if (executionState.kernelFileSystem) {
+      const raw = workspacePathInputToString(path).replace(/\\/g, '/');
+      // Send the original absolute namespace to the kernel. In particular,
+      // scratch paths and symlinks must not be resolved from a stale snapshot.
+      let absolute = raw.startsWith('/') ? raw : `${request.cwd}/${raw}`;
+      const alias = workspacePathContext.alias;
+      if (alias && (absolute === alias || absolute.startsWith(`${alias}/`))) absolute = workspaceRoot + absolute.slice(alias.length);
+      return absolute;
+    }
+    return resolveStoredSymlinkPath(normalizeWorkspaceEntryPath(path, cwdPath, true, workspacePathContext), followFinal);
+  };
 
   const originalFiles = new Map(fileStore);
 

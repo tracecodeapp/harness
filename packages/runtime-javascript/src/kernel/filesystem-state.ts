@@ -1233,9 +1233,9 @@ export function createBrowserFileSystemState(
             : `ENOENT: no such file or directory, metadata '${path}'`;
           throwRuntimeMetadataTargetError(metadataTarget, message);
         }
-        const normalized = normalizeWorkspaceEntryPath(path, cwdPath, true, workspacePathContext);
+        const normalized = executionState.kernelFileSystem ? resolveWorkspaceEntryPath(path) : normalizeWorkspaceEntryPath(path, cwdPath, true, workspacePathContext);
         if (executionState.kernelFileSystem) {
-          return executionState.kernelFileSystem.realpath(normalized);
+          return executionState.kernelFileSystem.realpath(resolveWorkspaceEntryPath(path));
         }
         if (workspaceFileAncestor(normalized) !== null) {
           throw Object.assign(new Error(`ENOTDIR: not a directory, metadata '${path}'`), { code: 'ENOTDIR' });
@@ -1494,7 +1494,7 @@ export function createBrowserFileSystemState(
             true,
             workspacePathContext
           );
-          return executionState.kernelFileSystem.realpath(normalized);
+          return executionState.kernelFileSystem.realpath(resolveWorkspaceEntryPath(path));
         }
         const accessTarget = runtimeAccessTarget(path, 0, kernelDevices, procSnapshot);
         if (

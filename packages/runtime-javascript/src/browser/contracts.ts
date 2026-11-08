@@ -110,6 +110,10 @@ export interface BrowserTraceKernelNetwork {
 }
 
 export interface BrowserTraceKernelFileSystem {
+  chmod(path: string, mode: number): void;
+  utimes(path: string, modifiedAt: number): void;
+  fchmod(fd: number, mode: number): void;
+  futimes(fd: number, modifiedAt: number): void;
   open(path: string, options?: TraceKernelOpenFileOptions): number;
   read(fd: number, maxBytes: number, position?: number): Uint8Array;
   write(fd: number, bytes: Uint8Array, position?: number): number;

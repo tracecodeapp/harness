@@ -154,11 +154,13 @@ export class TraceKernelProcess {
   private pendingSignal?: TraceKernelTerminatingSignal;
   private mutationAuthority?: () => void;
   authoritySignal?: AbortSignal;
+  readOnlyWorkspaceRoot?: string;
 
   assertAuthority = (): void => { this.mutationAuthority?.(); };
 
-  setMutationAuthority(assertActive: () => void, signal?: AbortSignal): void {
+  setMutationAuthority(assertActive: () => void, signal?: AbortSignal, readOnlyWorkspaceRoot?: string): void {
     this.authoritySignal = signal;
+    this.readOnlyWorkspaceRoot = readOnlyWorkspaceRoot;
     this.mutationAuthority = assertActive;
   }
 
@@ -173,6 +175,7 @@ export class TraceKernelProcess {
   ) {
     const process = this;
     this.fileSystemMutationOrigin = Object.freeze({
+      get readOnlyWorkspaceRoot() { return process.readOnlyWorkspaceRoot; },
       get signal() { return process.authoritySignal; },
       assertActive: () => this.mutationAuthority?.(),
       get pid() {

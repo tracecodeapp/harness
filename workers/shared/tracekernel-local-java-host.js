@@ -12522,7 +12522,8 @@ var TraceKernelDescriptorTable = class {
         mapError2((error) => new TraceKernelBadFileDescriptorError({
           fd,
           operation: "poll",
-          message: error.message
+          message: error.message,
+          cause: error
         }))
       );
     }
@@ -12547,7 +12548,8 @@ var TraceKernelDescriptorTable = class {
         mapError2((error) => new TraceKernelBadFileDescriptorError({
           fd,
           operation: "poll",
-          message: error.message
+          message: error.message,
+          cause: error
         }))
       );
     }
@@ -12579,7 +12581,8 @@ var TraceKernelDescriptorTable = class {
       mapError2((error) => error instanceof TraceKernelBadFileDescriptorError || error instanceof TraceKernelTerminalError || error instanceof TraceKernelWouldBlockError ? error : new TraceKernelBadFileDescriptorError({
         fd,
         operation: "read",
-        message: error.message
+        message: error.message,
+        cause: error
       }))
     );
   }
@@ -12608,7 +12611,8 @@ var TraceKernelDescriptorTable = class {
       mapError2((error) => error instanceof TraceKernelBrokenPipeError || error instanceof TraceKernelTerminalError || error instanceof TraceKernelWouldBlockError ? error : new TraceKernelBadFileDescriptorError({
         fd,
         operation: "write",
-        message: error.message
+        message: error.message,
+        cause: error
       }))
     );
   }
@@ -12632,7 +12636,8 @@ var TraceKernelDescriptorTable = class {
       mapError2((error) => error instanceof TraceKernelInvalidArgumentError ? error : new TraceKernelBadFileDescriptorError({
         fd,
         operation: "seek",
-        message: error.message
+        message: error.message,
+        cause: error
       }))
     );
   }
@@ -12649,8 +12654,16 @@ var TraceKernelDescriptorTable = class {
       mapError2((error) => new TraceKernelBadFileDescriptorError({
         fd,
         operation: "stat",
-        message: error.message
+        message: error.message,
+        cause: error
       }))
+    );
+  }
+  setMetadata(fd, metadata) {
+    const descriptor2 = this.descriptors.get(fd);
+    if (!descriptor2?.setMetadata) return fail6(new TraceKernelBadFileDescriptorError({ fd, operation: "metadata", message: `EBADF: descriptor ${fd} does not support metadata changes` }));
+    return withOperationAuthority(this.operationContext?.(), descriptor2.setMetadata(metadata, this.operationContext?.())).pipe(
+      mapError2((error) => new TraceKernelBadFileDescriptorError({ fd, operation: "metadata", message: error.message, cause: error }))
     );
   }
   truncate(fd, length3) {
@@ -12669,7 +12682,8 @@ var TraceKernelDescriptorTable = class {
       mapError2((error) => new TraceKernelBadFileDescriptorError({
         fd,
         operation: "truncate",
-        message: error.message
+        message: error.message,
+        cause: error
       }))
     );
   }
@@ -12687,7 +12701,8 @@ var TraceKernelDescriptorTable = class {
       mapError2((error) => new TraceKernelBadFileDescriptorError({
         fd,
         operation: "dup",
-        message: error.message
+        message: error.message,
+        cause: error
       })),
       flatMap9((duplicate) => this.installEffect(duplicate))
     );
@@ -12735,7 +12750,8 @@ var TraceKernelDescriptorTable = class {
       mapError2((error) => new TraceKernelBadFileDescriptorError({
         fd,
         operation: allowSameDescriptor ? "dup2" : "dup3",
-        message: error.message
+        message: error.message,
+        cause: error
       })),
       flatMap9(
         (duplicate) => sync3(() => {
@@ -12846,7 +12862,8 @@ var TraceKernelDescriptorTable = class {
           mapError2((error) => new TraceKernelBadFileDescriptorError({
             fd,
             operation: "inherit",
-            message: error.message
+            message: error.message,
+            cause: error
           }))
         ),
         { concurrency: 1, discard: true }
@@ -13433,6 +13450,9 @@ var TraceKernelProcess = class {
     this.signalGracePeriodMs = signalGracePeriodMs;
     const process2 = this;
     this.fileSystemMutationOrigin = Object.freeze({
+      get readOnlyWorkspaceRoot() {
+        return process2.readOnlyWorkspaceRoot;
+      },
       get signal() {
         return process2.authoritySignal;
       },
@@ -13458,11 +13478,13 @@ var TraceKernelProcess = class {
   pendingSignal;
   mutationAuthority;
   authoritySignal;
+  readOnlyWorkspaceRoot;
   assertAuthority = () => {
     this.mutationAuthority?.();
   };
-  setMutationAuthority(assertActive, signal) {
+  setMutationAuthority(assertActive, signal, readOnlyWorkspaceRoot) {
     this.authoritySignal = signal;
+    this.readOnlyWorkspaceRoot = readOnlyWorkspaceRoot;
     this.mutationAuthority = assertActive;
   }
   fileSystemMutationOrigin;
@@ -14605,6 +14627,8 @@ var TraceKernelFileSystem = class _TraceKernelFileSystem {
           if (realPath instanceof TraceKernelFileSystemError) return fail6(realPath);
           const node = this.nodes.get(realPath);
           if (!node) return this.fail("ENOENT", realPath, "no such file or directory");
+          const authorityError = this.readOnlyMutationError(mutationContext, [realPath]);
+          if (authorityError) return fail6(authorityError);
           const normalizedMode = mode & 4095;
           if (node.mode === normalizedMode) return _void;
           node.mode = normalizedMode;
@@ -14629,6 +14653,8 @@ var TraceKernelFileSystem = class _TraceKernelFileSystem {
           if (realPath instanceof TraceKernelFileSystemError) return fail6(realPath);
           const node = this.nodes.get(realPath);
           if (!node) return this.fail("ENOENT", realPath, "no such file or directory");
+          const authorityError = this.readOnlyMutationError(mutationContext, [realPath]);
+          if (authorityError) return fail6(authorityError);
           const generation = this.beginMutation();
           node.generation = generation;
           node.modifiedAt = modifiedAt;
@@ -14647,6 +14673,8 @@ var TraceKernelFileSystem = class _TraceKernelFileSystem {
           mutationContext?.origin?.assertActive?.();
           const directoryPath = this.resolveNodePath(resolved, false, options.recursive ? "suffix" : "final");
           if (directoryPath instanceof TraceKernelFileSystemError) return fail6(directoryPath);
+          const authorityError = this.readOnlyMutationError(mutationContext, [directoryPath]);
+          if (authorityError) return fail6(authorityError);
           const existing = this.nodes.get(directoryPath);
           if (existing) {
             if (options.recursive && existing.kind === "directory") return _void;
@@ -14692,6 +14720,8 @@ var TraceKernelFileSystem = class _TraceKernelFileSystem {
           mutationContext?.origin?.assertActive?.();
           const directoryPath = this.resolveNodePath(resolved, false);
           if (directoryPath instanceof TraceKernelFileSystemError) return fail6(directoryPath);
+          const authorityError = this.readOnlyMutationError(mutationContext, [directoryPath]);
+          if (authorityError) return fail6(authorityError);
           if (directoryPath === "/") return this.fail("EBUSY", directoryPath, "cannot remove root directory");
           const node = this.nodes.get(directoryPath);
           if (!node) return this.fail("ENOENT", directoryPath, "no such directory");
@@ -14737,6 +14767,8 @@ var TraceKernelFileSystem = class _TraceKernelFileSystem {
           mutationContext?.origin?.assertActive?.();
           const filePath = this.resolveNodePath(resolved, true, "final");
           if (filePath instanceof TraceKernelFileSystemError) return fail6(filePath);
+          const authorityError = this.readOnlyMutationError(mutationContext, [filePath]);
+          if (authorityError) return fail6(authorityError);
           const existing = this.nodes.get(filePath);
           if (existing?.kind === "directory") {
             return this.fail("EISDIR", filePath, "is a directory");
@@ -14788,6 +14820,8 @@ var TraceKernelFileSystem = class _TraceKernelFileSystem {
           }
           const newResult = this.resolveNodePath(unresolvedNew, false, "final");
           if (newResult instanceof TraceKernelFileSystemError) return fail6(newResult);
+          const authorityError = this.readOnlyMutationError(mutationContext, [existingResult, newResult]);
+          if (authorityError) return fail6(authorityError);
           const existing = this.nodes.get(existingResult);
           if (!existing) return this.fail("ENOENT", existingResult, "no such file");
           if (existing.kind === "directory") {
@@ -14809,7 +14843,7 @@ var TraceKernelFileSystem = class _TraceKernelFileSystem {
           const timestamp = Date.now();
           this.touchNode(existing, generation, timestamp, false);
           this.touchNode(parent, generation, timestamp, true);
-          this.notifyMutation(generation, "rename", "link", [newResult], mutationContext);
+          this.notifyMutation(generation, "rename", "link", [newResult], mutationContext, existingResult);
           return _void;
         })
       ))
@@ -14832,6 +14866,8 @@ var TraceKernelFileSystem = class _TraceKernelFileSystem {
           mutationContext?.origin?.assertActive?.();
           const linkResult = this.resolveNodePath(unresolvedLink, false, "final");
           if (linkResult instanceof TraceKernelFileSystemError) return fail6(linkResult);
+          const authorityError = this.readOnlyMutationError(mutationContext, [linkResult]);
+          if (authorityError) return fail6(authorityError);
           if (this.nodes.has(linkResult)) {
             return this.fail("EEXIST", linkResult, "file already exists");
           }
@@ -14873,6 +14909,8 @@ var TraceKernelFileSystem = class _TraceKernelFileSystem {
           mutationContext?.origin?.assertActive?.();
           const entryPath = this.resolveNodePath(resolved, false);
           if (entryPath instanceof TraceKernelFileSystemError) return fail6(entryPath);
+          const authorityError = this.readOnlyMutationError(mutationContext, [entryPath]);
+          if (authorityError) return fail6(authorityError);
           const node = this.nodes.get(entryPath);
           if (!node) return this.fail("ENOENT", entryPath, "no such file");
           if (node.kind === "directory") return this.fail("EISDIR", entryPath, "is a directory");
@@ -14902,6 +14940,8 @@ var TraceKernelFileSystem = class _TraceKernelFileSystem {
           }
           const source = sourceResult;
           const destination = destinationResult;
+          const authorityError = this.readOnlyMutationError(mutationContext, [source, destination]);
+          if (authorityError) return fail6(authorityError);
           if (source === destination) {
             return this.nodes.has(source) ? _void : this.fail("ENOENT", source, "no such file or directory");
           }
@@ -14974,6 +15014,11 @@ var TraceKernelFileSystem = class _TraceKernelFileSystem {
           }
           const filePath = this.resolveNodePath(resolved, true, options.create ? "final" : "none");
           if (filePath instanceof TraceKernelFileSystemError) return fail6(filePath);
+          const authorityError = this.readOnlyMutationError(
+            mutationContext,
+            access === "read" && !options.create && !options.truncate ? [] : [filePath]
+          );
+          if (authorityError) return fail6(authorityError);
           const existing = this.nodes.get(filePath);
           if (!existing) {
             if (!options.create) return this.fail("ENOENT", filePath, "no such file");
@@ -15033,11 +15078,41 @@ var TraceKernelFileSystem = class _TraceKernelFileSystem {
       sync3(() => this.snapshotStat(file.openedPath, file.node))
     );
   }
+  setMetadataOpen(file, metadata, context2) {
+    return this.mutex.withPermits(1)(suspend3(() => {
+      context2?.assertActive?.();
+      context2?.origin?.assertActive?.();
+      const error = this.readOnlyMutationError(context2, [file.openedPath], [file.node]);
+      if (error) return fail6(error);
+      if (metadata.mode !== void 0 && (!Number.isSafeInteger(metadata.mode) || metadata.mode < 0)) {
+        return this.fail("EINVAL", file.openedPath, "invalid file mode");
+      }
+      if (metadata.modifiedAt !== void 0 && (!Number.isFinite(metadata.modifiedAt) || metadata.modifiedAt < 0)) {
+        return this.fail("EINVAL", file.openedPath, "invalid modification timestamp");
+      }
+      const generation = this.beginMutation();
+      const node = file.node;
+      if (metadata.mode !== void 0) node.mode = metadata.mode & 4095;
+      if (metadata.modifiedAt !== void 0) node.modifiedAt = metadata.modifiedAt;
+      node.generation = generation;
+      node.changedAt = Date.now();
+      this.notifyMutation(
+        generation,
+        "change",
+        metadata.mode !== void 0 ? "chmod" : "utimes",
+        this.pathsForNode(node),
+        context2
+      );
+      return _void;
+    }));
+  }
   truncateOpen(file, length3, mutationContext) {
     return this.mutex.withPermits(1)(
       suspend3(() => {
         mutationContext?.assertActive?.();
         mutationContext?.origin?.assertActive?.();
+        const authorityError = this.readOnlyMutationError(mutationContext, [file.openedPath], [file.node]);
+        if (authorityError) return fail6(authorityError);
         const nextLength = Math.max(0, Math.floor(length3));
         if (file.node.size === nextLength) return _void;
         const quotaError = this.quotaResizeError(file.node, nextLength);
@@ -15060,6 +15135,8 @@ var TraceKernelFileSystem = class _TraceKernelFileSystem {
       suspend3(() => {
         mutationContext?.assertActive?.();
         mutationContext?.origin?.assertActive?.();
+        const authorityError = this.readOnlyMutationError(mutationContext, [file.openedPath], [file.node]);
+        if (authorityError) return fail6(authorityError);
         const node = file.node;
         const writeOffset = append4 ? node.size : offset;
         if (bytes.byteLength === 0) {
@@ -15157,6 +15234,11 @@ var TraceKernelFileSystem = class _TraceKernelFileSystem {
         return this.fail("EBUSY", "/", "filesystem changed during final-diff staging");
       }
       if (mutations.length === 0) return _void;
+      const authorityError = this.readOnlyMutationError(context2, mutations.flatMap((mutation) => [
+        ...mutation.paths,
+        ...mutation.sourcePath ? [mutation.sourcePath] : []
+      ]));
+      if (authorityError) return fail6(authorityError);
       const existing = new Map([...this.nodes.values()].map((node) => [node.inode, node]));
       this.restoreImage(image);
       for (const [inode, staged] of stagedFileSystem.transactionInodes ?? []) {
@@ -15177,7 +15259,7 @@ var TraceKernelFileSystem = class _TraceKernelFileSystem {
         Atomics.notify(shared, 0);
       }
       for (const mutation of mutations) {
-        this.notifyMutation(mutation.generation, mutation.eventType, mutation.operation, mutation.paths, context2);
+        this.notifyMutation(mutation.generation, mutation.eventType, mutation.operation, mutation.paths, context2, mutation.sourcePath);
       }
       return _void;
     }));
@@ -15197,6 +15279,8 @@ var TraceKernelFileSystem = class _TraceKernelFileSystem {
           mutationContext?.origin?.assertActive?.();
           const previousPaths = [...this.nodes.keys()];
           const previousGeneration = this.mutationGeneration;
+          const authorityError = this.readOnlyMutationError(mutationContext, ["/"]);
+          if (authorityError) throw authorityError;
           this.restoreImage(image);
           this.nextGeneration = Math.max(
             this.nextGeneration,
@@ -15222,6 +15306,8 @@ var TraceKernelFileSystem = class _TraceKernelFileSystem {
   clear(mutationContext) {
     mutationContext?.assertActive?.();
     mutationContext?.origin?.assertActive?.();
+    const authorityError = this.readOnlyMutationError(mutationContext, ["/"]);
+    if (authorityError) throw authorityError;
     if (this.nodes.size > 0) {
       const paths = [...this.nodes.keys()];
       const generation = this.beginMutation();
@@ -15539,12 +15625,25 @@ var TraceKernelFileSystem = class _TraceKernelFileSystem {
     }
     return generation;
   }
-  notifyMutation(generation, eventType, operation, paths, context2) {
+  /** Checked at commit (or synchronous quiescent clear), after resolving aliases. */
+  readOnlyMutationError(context2, paths, nodes = []) {
+    const root = context2?.readOnlyWorkspaceRoot ?? context2?.origin?.readOnlyWorkspaceRoot;
+    if (!root) return;
+    const affected = [...paths];
+    for (const node of [...nodes, ...paths.flatMap((path) => this.nodes.get(path) ?? [])]) {
+      affected.push(...this.pathsForNode(node));
+    }
+    const contains4 = (parent, path) => parent === "/" || path === parent || path.startsWith(`${parent}/`);
+    const denied = affected.find((path) => contains4(root, path) || contains4(path, root));
+    if (denied) return this.error("EROFS", denied, "read-only workspace authority");
+  }
+  notifyMutation(generation, eventType, operation, paths, context2, sourcePath) {
     if (paths.length === 0) return;
     const mutation = Object.freeze({
       generation,
       eventType,
       operation,
+      ...sourcePath ? { sourcePath } : {},
       paths: Object.freeze([...new Set(paths)]),
       ...context2?.origin ? { origin: context2.origin } : {}
     });
@@ -15621,6 +15720,9 @@ var TraceKernelOpenFileDescription = class _TraceKernelOpenFileDescription {
       } : {},
       seek: (offset, whence) => this.seek(offset, whence),
       stat: () => this.fileSystem.statOpen(this.file),
+      setMetadata: (metadata, context2) => this.mutex.withPermits(1)(suspend3(
+        () => this.closed ? this.closedError() : this.fileSystem.setMetadataOpen(this.file, metadata, context2 ? { origin: context2 } : void 0)
+      )),
       duplicate: () => this.duplicate(),
       close: () => this.close()
     };
@@ -15733,6 +15835,9 @@ function syscallWireError(error) {
   }
   if (error instanceof TraceKernelNetworkError) {
     return Object.freeze({ code: error.code, message: error.message });
+  }
+  if (error instanceof TraceKernelBadFileDescriptorError && error.cause instanceof TraceKernelFileSystemError) {
+    return syscallWireError(error.cause);
   }
   if (error instanceof TraceKernelBadFileDescriptorError || error instanceof TraceKernelInvalidDescriptorOperationError) {
     return Object.freeze({ code: "EBADF", message: error.message });
@@ -16167,6 +16272,17 @@ var TraceKernelSyscallDispatcher = class {
             this.process.snapshot().cwd
           )),
           map11((entries2) => ({ op: "readdir", entries: entries2 }))
+        );
+      case "chmod":
+      case "utimes":
+        return this.authorizeFileSystem([{ path: request.path, permission: "write", followFinal: true }]).pipe(
+          zipRight2(request.op === "chmod" ? this.session.fileSystem.chmod(request.path, request.mode, this.process.snapshot().cwd, { origin: this.process.fileSystemMutationOrigin }) : this.session.fileSystem.utimes(request.path, request.modifiedAt, this.process.snapshot().cwd, { origin: this.process.fileSystemMutationOrigin })),
+          as4({ op: request.op })
+        );
+      case "fchmod":
+      case "futimes":
+        return this.process.descriptors.setMetadata(request.fd, request.op === "fchmod" ? { mode: request.mode } : { modifiedAt: request.modifiedAt }).pipe(
+          as4({ op: request.op })
         );
       case "mkdir":
         return this.authorizeFileSystem([{
@@ -16813,7 +16929,7 @@ var TraceKernelProcessTable = class {
       this.options.maxDescriptorsPerProcess,
       this.options.signalGracePeriodMs
     );
-    if (parent) process2.setMutationAuthority(parent.assertAuthority, parent.authoritySignal);
+    if (parent) process2.setMutationAuthority(parent.assertAuthority, parent.authoritySignal, parent.readOnlyWorkspaceRoot);
     this.processes.set(pid, process2);
     if (ppid === 1 && spec.retainOnExit === true) {
       this.initRetainedProcesses.add(pid);

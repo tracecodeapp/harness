@@ -161,6 +161,7 @@ export const JAVA_PROJECT_CAPABILITIES = Object.freeze({
   javaVersion: '23',
   filesystem: 'live-kernel-syscalls',
   descriptorStdio: true,
+  kernelFileSystem: true,
   terminalStdin: true,
   sockets: 'tracekernel-local-tcp',
   workerIsolation: 'per-invocation',
@@ -803,6 +804,9 @@ export function createJavaProjectRunner(
       applyFileChange: options.applyFileChange,
       run: invoke,
     }),
-    { descriptorStdio: JAVA_PROJECT_CAPABILITIES.descriptorStdio }
+    {
+      descriptorStdio: JAVA_PROJECT_CAPABILITIES.descriptorStdio,
+      kernelFileSystem: JAVA_PROJECT_CAPABILITIES.kernelFileSystem,
+    }
   );
 }

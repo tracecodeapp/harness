@@ -181,10 +181,7 @@ export class WorkspaceJournal {
             : mutation.operation === 'rename'
               ? 'rename'
               : 'write';
-    const paths =
-      mutation.operation === 'rename'
-        ? mutation.paths.slice(0, 1)
-        : mutation.paths;
+    const paths = [...new Set([...mutation.paths, ...(mutation.sourcePath ? [mutation.sourcePath] : [])])];
     for (const path of paths) {
       if (!isWithinWorkspace(this.options.cwd, path)) continue;
       this.record(

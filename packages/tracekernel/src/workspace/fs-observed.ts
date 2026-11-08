@@ -637,7 +637,7 @@ export class CommandBoundFileSystem implements IFileSystem {
     private readonly context: RuntimeCommandExecutionContext
   ) {
     const authority = context.process.authority;
-    if (authority) this.inner = inner.withAuthority(authority.assertActive);
+    if (authority) this.inner = inner.withAuthority(authority.assertActive, authority.readOnlyWorkspaceRoot);
   }
 
   suspendNotifications<T>(fn: () => Promise<T>): Promise<T> {
@@ -826,8 +826,8 @@ export class KernelObservedFileSystem implements IFileSystem {
     );
   }
 
-  withAuthority(assertActive: () => void): KernelObservedFileSystem {
-    const quotaFileSystem = this.quotaFileSystem.withAuthority(assertActive);
+  withAuthority(assertActive: () => void, readOnlyWorkspaceRoot?: string): KernelObservedFileSystem {
+    const quotaFileSystem = this.quotaFileSystem.withAuthority(assertActive, readOnlyWorkspaceRoot);
     return withDependencies(this, { base: quotaFileSystem, quotaFileSystem } as Partial<KernelObservedFileSystem>);
   }
 
@@ -2059,6 +2059,7 @@ export class KernelObservedFileSystem implements IFileSystem {
       await this.base.cp(mappedSource, mappedDestination, options);
       this.inodeForPath(mappedDestination);
       this.recordMutation(context, [mappedSource, mappedDestination], 'copy');
+      if (mappedSource !== mappedDestination) await this.liveFileChanges.emitExistingFiles(context, mappedSource);
       await this.liveFileChanges.emitExistingDirectories(context, mappedDestination);
       await this.liveFileChanges.emitExistingFiles(context, mappedDestination);
     });
@@ -2266,6 +2267,8 @@ export class KernelObservedFileSystem implements IFileSystem {
       await this.base.link(mappedExistingPath, mappedNewPath);
       this.bindInode(mappedExistingPath, mappedNewPath);
       this.recordMutation(context, [mappedExistingPath, mappedNewPath], 'copy');
+      await this.liveFileChanges.emitExistingFiles(context, mappedExistingPath);
+      if (mappedNewPath !== mappedExistingPath) await this.liveFileChanges.emitExistingFiles(context, mappedNewPath);
     });
   }
 

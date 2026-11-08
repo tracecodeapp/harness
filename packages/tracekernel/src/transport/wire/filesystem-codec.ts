@@ -60,6 +60,16 @@ export function encodeFilesystemRequest(
   request: TraceKernelSyscallRequest
 ): boolean {
   switch (request.op) {
+    case 'chmod':
+    case 'utimes':
+      writer.string(request.path);
+      writer.f64(request.op === 'chmod' ? request.mode : request.modifiedAt);
+      break;
+    case 'fchmod':
+    case 'futimes':
+      writer.i32(request.fd);
+      writer.f64(request.op === 'fchmod' ? request.mode : request.modifiedAt);
+      break;
     case 'open':
       {
       writer.string(request.path);
@@ -185,6 +195,10 @@ export function decodeFilesystemRequest(
 ): TraceKernelSyscallRequest | undefined {
   let request: TraceKernelSyscallRequest;
   switch (operation) {
+    case 'chmod': request = { op: operation, path: reader.string(), mode: reader.f64() }; break;
+    case 'utimes': request = { op: operation, path: reader.string(), modifiedAt: reader.f64() }; break;
+    case 'fchmod': request = { op: operation, fd: reader.i32(), mode: reader.f64() }; break;
+    case 'futimes': request = { op: operation, fd: reader.i32(), modifiedAt: reader.f64() }; break;
     case 'open':
       {
       const path = reader.string();
@@ -446,6 +460,10 @@ export function encodeFilesystemResult(
       writer.i32(value.cacheGeneration);
       writer.byteArray(value.bytes);
       break;
+    case 'chmod':
+    case 'utimes':
+    case 'fchmod':
+    case 'futimes':
     case 'close':
     case 'mkdir':
     case 'rmdir':
@@ -557,6 +575,10 @@ export function decodeFilesystemResult(
         bytes: reader.byteArray(),
       };
       break;
+    case 'chmod':
+    case 'utimes':
+    case 'fchmod':
+    case 'futimes':
     case 'close':
     case 'mkdir':
     case 'rmdir':

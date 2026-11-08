@@ -87,6 +87,7 @@ export interface TraceKernelDescriptor {
     events: TraceKernelPollEvents,
     context?: TraceKernelDescriptorOperationContext
   ): Effect.Effect<TraceKernelDescriptorReadiness, Error>;
+  setMetadata?(metadata: { mode?: number; modifiedAt?: number }, context?: TraceKernelDescriptorOperationContext): Effect.Effect<void, Error>;
   stat?(): Effect.Effect<TraceKernelStat, Error>;
   truncate?(
     length: number,
@@ -440,7 +441,7 @@ export class TraceKernelDescriptorTable {
         Effect.mapError((error) => new TraceKernelBadFileDescriptorError({
           fd,
           operation: 'poll',
-          message: error.message,
+          message: error.message, cause: error,
         }))
       );
     }
@@ -472,7 +473,7 @@ export class TraceKernelDescriptorTable {
         Effect.mapError((error) => new TraceKernelBadFileDescriptorError({
           fd,
           operation: 'poll',
-          message: error.message,
+          message: error.message, cause: error,
         }))
       );
     }
@@ -516,7 +517,7 @@ export class TraceKernelDescriptorTable {
         : new TraceKernelBadFileDescriptorError({
             fd,
             operation: 'read',
-            message: error.message,
+            message: error.message, cause: error,
           }))
     );
   }
@@ -557,7 +558,7 @@ export class TraceKernelDescriptorTable {
         : new TraceKernelBadFileDescriptorError({
             fd,
             operation: 'write',
-            message: error.message,
+            message: error.message, cause: error,
           }))
     );
   }
@@ -589,7 +590,7 @@ export class TraceKernelDescriptorTable {
           : new TraceKernelBadFileDescriptorError({
               fd,
               operation: 'seek',
-              message: error.message,
+              message: error.message, cause: error,
             }))
     );
   }
@@ -607,8 +608,16 @@ export class TraceKernelDescriptorTable {
       Effect.mapError((error) => new TraceKernelBadFileDescriptorError({
         fd,
         operation: 'stat',
-        message: error.message,
+        message: error.message, cause: error,
       }))
+    );
+  }
+
+  setMetadata(fd: number, metadata: { mode?: number; modifiedAt?: number }): Effect.Effect<void, TraceKernelBadFileDescriptorError> {
+    const descriptor = this.descriptors.get(fd);
+    if (!descriptor?.setMetadata) return Effect.fail(new TraceKernelBadFileDescriptorError({ fd, operation: 'metadata', message: `EBADF: descriptor ${fd} does not support metadata changes` }));
+    return withOperationAuthority(this.operationContext?.(), descriptor.setMetadata(metadata, this.operationContext?.())).pipe(
+      Effect.mapError((error) => new TraceKernelBadFileDescriptorError({ fd, operation: 'metadata', message: error.message, cause: error }))
     );
   }
 
@@ -631,7 +640,7 @@ export class TraceKernelDescriptorTable {
       Effect.mapError((error) => new TraceKernelBadFileDescriptorError({
         fd,
         operation: 'truncate',
-        message: error.message,
+        message: error.message, cause: error,
       }))
     );
   }
@@ -650,7 +659,7 @@ export class TraceKernelDescriptorTable {
       Effect.mapError((error) => new TraceKernelBadFileDescriptorError({
         fd,
         operation: 'dup',
-        message: error.message,
+        message: error.message, cause: error,
       })),
       Effect.flatMap((duplicate) => this.installEffect(duplicate))
     );
@@ -729,7 +738,7 @@ export class TraceKernelDescriptorTable {
       Effect.mapError((error) => new TraceKernelBadFileDescriptorError({
         fd,
         operation: allowSameDescriptor ? 'dup2' : 'dup3',
-        message: error.message,
+        message: error.message, cause: error,
       })),
       Effect.flatMap((duplicate) =>
         Effect.sync(() => {
@@ -864,7 +873,7 @@ export class TraceKernelDescriptorTable {
           Effect.mapError((error) => new TraceKernelBadFileDescriptorError({
             fd,
             operation: 'inherit',
-            message: error.message,
+            message: error.message, cause: error,
           }))
         ),
         { concurrency: 1, discard: true }

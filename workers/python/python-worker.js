@@ -2577,6 +2577,10 @@ const PYTHON_TK_OP_CODES = Object.freeze({
   tcsetpgrp: 47,
   tcgetwinsize: 52,
   tcsetwinsize: 53,
+  chmod: 54,
+  utimes: 55,
+  fchmod: 56,
+  futimes: 57,
 });
 const PYTHON_TK_OPS_BY_CODE = new Map(
   Object.entries(PYTHON_TK_OP_CODES).map(([operation, code]) => [
@@ -3021,6 +3025,16 @@ class PythonTraceKernelSyncClient {
       case 'setpgid':
         writer.i32(request.pid);
         writer.i32(request.pgid);
+        break;
+      case 'chmod':
+      case 'utimes':
+        writer.string(request.path);
+        writer.f64(request.op === 'chmod' ? request.mode : request.modifiedAt);
+        break;
+      case 'fchmod':
+      case 'futimes':
+        writer.i32(request.fd);
+        writer.f64(request.op === 'fchmod' ? request.mode : request.modifiedAt);
         break;
       case 'ftruncate':
         writer.i32(request.fd);
@@ -3634,6 +3648,9 @@ function installPyodideTraceKernelMount(
 
       setattr(node, attributes) {
         attempt(() => {
+          if (attributes.mode !== undefined) kernelClient.request({ op: 'chmod', path: kernelPath(node), mode: Number(attributes.mode) & 0o7777 });
+          const modifiedAt = attributes.timestamp ?? attributes.mtime;
+          if (modifiedAt !== undefined) kernelClient.request({ op: 'utimes', path: kernelPath(node), modifiedAt: Number(modifiedAt) });
           if (attributes.size !== undefined) {
             const opened = kernelClient.request({
               op: 'open',
@@ -3787,6 +3804,9 @@ function installPyodideTraceKernelMount(
 
       setattr(stream, attributes) {
         attempt(() => {
+          if (attributes.mode !== undefined) kernelClient.request({ op: 'fchmod', fd: stream.shared.tracekernelFd, mode: Number(attributes.mode) & 0o7777 });
+          const modifiedAt = attributes.timestamp ?? attributes.mtime;
+          if (modifiedAt !== undefined) kernelClient.request({ op: 'futimes', fd: stream.shared.tracekernelFd, modifiedAt: Number(modifiedAt) });
           if (attributes.size !== undefined) {
             kernelClient.request({
               op: 'ftruncate',

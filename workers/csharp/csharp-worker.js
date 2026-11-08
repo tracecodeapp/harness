@@ -229,6 +229,10 @@ const CSHARP_TK_OP_CODES = Object.freeze({
   tcsetpgrp: 47,
   tcgetwinsize: 52,
   tcsetwinsize: 53,
+  chmod: 54,
+  utimes: 55,
+  fchmod: 56,
+  futimes: 57,
 });
 const CSHARP_TK_OPS_BY_CODE = new Map(
   Object.entries(CSHARP_TK_OP_CODES).map(([operation, code]) => [
@@ -592,6 +596,16 @@ class CSharpTraceKernelSyncClient {
       case 'setpgid':
         writer.i32(request.pid);
         writer.i32(request.pgid);
+        break;
+      case 'chmod':
+      case 'utimes':
+        writer.string(request.path);
+        writer.f64(request.op === 'chmod' ? request.mode : request.modifiedAt);
+        break;
+      case 'fchmod':
+      case 'futimes':
+        writer.i32(request.fd);
+        writer.f64(request.op === 'fchmod' ? request.mode : request.modifiedAt);
         break;
       case 'ftruncate':
         writer.i32(request.fd);
@@ -1213,6 +1227,9 @@ function installCSharpTraceKernelMount(
 
       setattr(node, value) {
         attempt(() => {
+          if (value.mode !== undefined) kernelClient.request({ op: 'chmod', path: kernelPath(node), mode: Number(value.mode) & 0o7777 });
+          const modifiedAt = value.timestamp ?? value.mtime;
+          if (modifiedAt !== undefined) kernelClient.request({ op: 'utimes', path: kernelPath(node), modifiedAt: Number(modifiedAt) });
           if (value.size !== undefined) {
             const opened = kernelClient.request({
               op: 'open',
@@ -1383,6 +1400,9 @@ function installCSharpTraceKernelMount(
 
       setattr(stream, value) {
         attempt(() => {
+          if (value.mode !== undefined) kernelClient.request({ op: 'fchmod', fd: stream.shared.tracekernelFd, mode: Number(value.mode) & 0o7777 });
+          const modifiedAt = value.timestamp ?? value.mtime;
+          if (modifiedAt !== undefined) kernelClient.request({ op: 'futimes', fd: stream.shared.tracekernelFd, modifiedAt: Number(modifiedAt) });
           if (value.size !== undefined) {
             kernelClient.request({
               op: 'ftruncate',

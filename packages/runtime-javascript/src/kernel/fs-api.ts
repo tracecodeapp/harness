@@ -230,6 +230,7 @@ export function createBrowserFsApi(
           }
         },
         chmodSync: (path: unknown, mode: unknown) => {
+          if (executionState.kernelFileSystem) { executionState.kernelFileSystem.chmod(resolveWorkspaceEntryPath(path), Number(mode)); return; }
           const normalized = metadataPathForEntry(path);
           if (normalized !== null) {
             const stats = statForNormalizedPath(normalized);
@@ -265,6 +266,7 @@ export function createBrowserFsApi(
           }
         },
         utimesSync: (path: unknown, atime: unknown, mtime: unknown) => {
+          if (executionState.kernelFileSystem) { executionState.kernelFileSystem.utimes(resolveWorkspaceEntryPath(path), timeToMs(mtime)); return; }
           const normalized = metadataPathForEntry(path);
           if (normalized !== null) {
             updateEntryMetadata(normalized, { atimeMs: timeToMs(atime), mtimeMs: timeToMs(mtime) });
@@ -286,7 +288,7 @@ export function createBrowserFsApi(
           listener?: (eventType: string, filename: string) => void
         ) => {
           assertFileSystemAccess(path);
-          const normalized = normalizeWorkspaceEntryPath(path, cwdPath, true, workspacePathContext);
+          const normalized = (executionState.kernelFileSystem ? resolveWorkspaceEntryPath(path) : normalizeWorkspaceEntryPath(path, cwdPath, true, workspacePathContext));
           const listeners = new Map<string, Array<(...args: unknown[]) => void>>();
           const on = (event: string, callback: (...args: unknown[]) => void): void => {
             const next = listeners.get(event) ?? [];
@@ -294,7 +296,7 @@ export function createBrowserFsApi(
             listeners.set(event, next);
           };
           const watcher: BrowserFsWatcher = {
-            path: normalized,
+            path: executionState.kernelFileSystem?.realpath(normalized) ?? normalized,
             recursive: typeof optionsOrListener === 'object' && optionsOrListener?.recursive === true,
             closed: false,
             listeners,
@@ -339,10 +341,9 @@ export function createBrowserFsApi(
                     }
                     continue;
                   }
-                  const changedPath = workspaceRelativeFromAbsolutePath(
-                    event.path,
-                    workspacePathContext
-                  ) ?? event.path;
+                  const changedPath = executionState.kernelFileSystem
+                    ? event.path
+                    : workspaceRelativeFromAbsolutePath(event.path, workspacePathContext) ?? event.path;
                   const filename = watchedFilename(watcher, changedPath);
                   if (filename !== null) {
                     emitFsWatch(watcher, event.eventType, filename);
@@ -395,7 +396,7 @@ export function createBrowserFsApi(
           optionsOrListener?: { interval?: number; persistent?: boolean } | ((curr: BrowserFileStat, prev: BrowserFileStat) => void),
           listener?: (curr: BrowserFileStat, prev: BrowserFileStat) => void
         ) => {
-          const normalized = normalizeWorkspaceEntryPath(path, cwdPath, true, workspacePathContext);
+          const normalized = (executionState.kernelFileSystem ? resolveWorkspaceEntryPath(path) : normalizeWorkspaceEntryPath(path, cwdPath, true, workspacePathContext));
           const changeListener = typeof optionsOrListener === 'function' ? optionsOrListener : listener;
           if (!changeListener) {
             throw new TypeError('The "listener" argument must be of type function');
@@ -428,7 +429,7 @@ export function createBrowserFsApi(
           path: unknown,
           listener?: (curr: BrowserFileStat, prev: BrowserFileStat) => void
         ) => {
-          const normalized = normalizeWorkspaceEntryPath(path, cwdPath, true, workspacePathContext);
+          const normalized = (executionState.kernelFileSystem ? resolveWorkspaceEntryPath(path) : normalizeWorkspaceEntryPath(path, cwdPath, true, workspacePathContext));
           for (const watcher of Array.from(fsFileWatchers)) {
             if (watcher.path === normalized && (!listener || watcher.listener === listener)) {
               fsFileWatchers.delete(watcher);
@@ -466,8 +467,8 @@ export function createBrowserFsApi(
             });
             return fd;
           }
-          const rawNormalized = assertSafeWorkspaceFilePath(path, cwdPath, workspacePathContext);
-          const normalized = resolveStoredSymlinkPath(rawNormalized);
+          const rawNormalized = (executionState.kernelFileSystem ? resolveWorkspaceEntryPath(path) : assertSafeWorkspaceFilePath(path, cwdPath, workspacePathContext));
+          const normalized = executionState.kernelFileSystem ? rawNormalized : resolveStoredSymlinkPath(rawNormalized);
           if (executionState.kernelFileSystem) {
             const kernelFd = executionState.kernelFileSystem.open(normalized, {
               access: parsed.readable && parsed.writable
@@ -771,6 +772,8 @@ export function createBrowserFsApi(
           }
         },
         fchmodSync: (fd: number, mode: unknown) => {
+          const entry = fileDescriptor(fd);
+          if (entry.kind === 'kernel') { executionState.kernelFileSystem!.fchmod(entry.kernelFd!, Number(mode)); return; }
           const path = descriptorMetadataPath(fd, 'fchmod');
           if (path !== null) {
             const stats = statForNormalizedPath(path);
@@ -806,6 +809,8 @@ export function createBrowserFsApi(
           }
         },
         futimesSync: (fd: number, atime: unknown, mtime: unknown) => {
+          const entry = fileDescriptor(fd);
+          if (entry.kind === 'kernel') { executionState.kernelFileSystem!.futimes(entry.kernelFd!, timeToMs(mtime)); return; }
           const path = descriptorMetadataPath(fd, 'futimes');
           if (path !== null) {
             updateEntryMetadata(path, { atimeMs: timeToMs(atime), mtimeMs: timeToMs(mtime) });
@@ -1007,6 +1012,12 @@ export function createBrowserFsApi(
             );
             return;
           }
+          if (executionState.kernelFileSystem) {
+            const fd = fsApi.openSync(path, structuredOptions?.flag ?? 'w');
+            try { writeDescriptorFileBytes(fd, bytesFromFsWriteValue(value, options)); }
+            finally { fsApi.closeSync(fd); }
+            return;
+          }
           assertWorkspaceFileWritePath(normalized, path, 'write', 'open');
           setFileBytes(normalized, bytesFromFsWriteValue(value, options));
         },
@@ -1033,6 +1044,12 @@ export function createBrowserFsApi(
             return;
           }
           const normalized = resolveWorkspaceEntryPath(path);
+          if (executionState.kernelFileSystem) {
+            const fd = fsApi.openSync(path, 'a');
+            try { writeDescriptorFileBytes(fd, bytesFromFsWriteValue(value, options)); }
+            finally { fsApi.closeSync(fd); }
+            return;
+          }
           assertWorkspaceFileWritePath(normalized, path, 'append', 'open');
           const previous = fileStore.get(normalized) ?? new Uint8Array();
           const next = bytesFromFsWriteValue(value, options);
@@ -1051,6 +1068,13 @@ export function createBrowserFsApi(
           }
         },
         copyFileSync: (source: unknown, destination: unknown, mode = 0) => {
+          if (executionState.kernelFileSystem) {
+            const bytes = fsApi.readFileSync(source);
+            const fd = fsApi.openSync(destination, (Number(mode) & fsConstants.COPYFILE_EXCL) ? 'wx' : 'w');
+            try { writeDescriptorFileBytes(fd, bytesFromNodeValue(bytes)); }
+            finally { fsApi.closeSync(fd); }
+            return;
+          }
           const copyTarget = runtimeFileCopyTarget(source, destination, kernelDevices, procSnapshot);
           if (copyTarget?.kind === 'error' && copyTarget.side === 'destination') {
             throw Object.assign(new Error(runtimeKernelFileCopyErrorMessage(String(source), String(destination), copyTarget)), {
@@ -1105,8 +1129,8 @@ export function createBrowserFsApi(
               runtimeKernelMutationFsErrorMessage(String(existingPath), linkTarget, 'link', String(newPath))
             );
           }
-          const normalizedSource = assertSafeWorkspaceFilePath(existingPath, cwdPath, workspacePathContext);
-          const normalizedDestination = assertSafeWorkspaceFilePath(newPath, cwdPath, workspacePathContext);
+          const normalizedSource = (executionState.kernelFileSystem ? resolveWorkspaceEntryPath(existingPath) : assertSafeWorkspaceFilePath(existingPath, cwdPath, workspacePathContext));
+          const normalizedDestination = (executionState.kernelFileSystem ? resolveWorkspaceEntryPath(newPath) : assertSafeWorkspaceFilePath(newPath, cwdPath, workspacePathContext));
           if (executionState.kernelFileSystem) {
             executionState.kernelFileSystem.link(normalizedSource, normalizedDestination);
             return;
@@ -1215,6 +1239,42 @@ export function createBrowserFsApi(
           }
         },
         cpSync: (source: unknown, destination: unknown, options?: { recursive?: boolean; force?: boolean; errorOnExist?: boolean; filter?: (source: string, destination: string) => boolean }) => {
+          if (executionState.kernelFileSystem) {
+            const from = resolveWorkspaceEntryPath(source);
+            const to = resolveWorkspaceEntryPath(destination);
+            const sourceStat = executionState.kernelFileSystem.lstat(from);
+            const canonicalSource = sourceStat.kind === 'symlink' ? pathApi.resolve(from) : executionState.kernelFileSystem.realpath(from);
+            let destinationParent = pathApi.resolve(to);
+            const missing: string[] = [];
+            for (;;) {
+              try { destinationParent = executionState.kernelFileSystem.realpath(destinationParent); break; }
+              catch (error) {
+                if ((error as { code?: string }).code !== 'ENOENT' || destinationParent === '/') throw error;
+                missing.unshift(pathApi.basename(destinationParent));
+                destinationParent = pathApi.dirname(destinationParent);
+              }
+            }
+            const resolvedDestination = pathApi.join(destinationParent, ...missing);
+            if (resolvedDestination === canonicalSource || resolvedDestination.startsWith(`${canonicalSource}/`)) throw Object.assign(new Error('Cannot copy an entry into itself'), { code: 'EINVAL' });
+            const copy = (src: string, dest: string): void => {
+              if (options?.filter && !options.filter(src, dest)) return;
+              const stat = executionState.kernelFileSystem!.lstat(src);
+              if (fsApi.existsSync(dest) && options?.force === false) {
+                if (options.errorOnExist) throw Object.assign(new Error(`EEXIST: ${dest}`), { code: 'EEXIST' });
+                return;
+              }
+              if (stat.kind === 'directory') {
+                if (!options?.recursive) throw Object.assign(new Error(`EISDIR: ${src}`), { code: 'EISDIR' });
+                if (!fsApi.existsSync(dest)) fsApi.mkdirSync(dest);
+                for (const entry of executionState.kernelFileSystem!.readdir(src)) copy(`${src}/${entry.name}`, `${dest}/${entry.name}`);
+              } else if (stat.kind === 'symlink') {
+                if (fsApi.existsSync(dest)) fsApi.unlinkSync(dest);
+                fsApi.symlinkSync(executionState.kernelFileSystem!.readlink(src), dest);
+              } else fsApi.copyFileSync(src, dest);
+            };
+            copy(from, to);
+            return;
+          }
           copyEntrySync(source, destination, options);
           return undefined;
         },
@@ -1753,7 +1813,7 @@ export function createBrowserFsApi(
           if (kernelStats === undefined) return undefined;
           let stats = kernelStats;
           if (stats === null) {
-            const normalized = normalizeWorkspaceEntryPath(path, cwdPath, true, workspacePathContext);
+            const normalized = (executionState.kernelFileSystem ? resolveWorkspaceEntryPath(path) : normalizeWorkspaceEntryPath(path, cwdPath, true, workspacePathContext));
             if (executionState.kernelFileSystem) {
               try {
                 stats = statForTraceKernelPath(
@@ -1884,7 +1944,12 @@ export function createBrowserFsApi(
           if (truncateTarget?.kind === 'error') {
             throwRuntimeTruncateTargetError(truncateTarget, runtimeKernelMutationFsErrorMessage(String(path), truncateTarget, 'truncate'));
           }
-          const normalized = assertSafeWorkspaceFilePath(path, cwdPath, workspacePathContext);
+          const normalized = (executionState.kernelFileSystem ? resolveWorkspaceEntryPath(path) : assertSafeWorkspaceFilePath(path, cwdPath, workspacePathContext));
+          if (executionState.kernelFileSystem) {
+            const fd = fsApi.openSync(path, 'r+');
+            try { fsApi.ftruncateSync(fd, length); } finally { fsApi.closeSync(fd); }
+            return;
+          }
           assertWorkspaceFileWritePath(normalized, path, 'truncate');
           truncateFileBytes(normalized, length);
           return undefined;
@@ -1907,7 +1972,7 @@ export function createBrowserFsApi(
             throwRuntimeMkdirTargetError(mkdirTarget, runtimeKernelMutationFsErrorMessage(String(path), mkdirTarget, 'mkdir'));
           }
           const rawPath = workspacePathInputToString(path).replace(/\\/g, '/');
-          const normalized = normalizeWorkspaceEntryPath(path, cwdPath, true, workspacePathContext);
+          const normalized = (executionState.kernelFileSystem ? resolveWorkspaceEntryPath(path) : normalizeWorkspaceEntryPath(path, cwdPath, true, workspacePathContext));
           if (!normalized) return undefined;
           const recursive = typeof options === 'object' && options?.recursive === true;
           const mode = typeof options === 'number'
@@ -1936,9 +2001,9 @@ export function createBrowserFsApi(
             });
             if (!recursive || firstCreated === undefined) return undefined;
             if (rawPath.startsWith('/')) {
-              return workspaceFilename(firstCreated, workspaceRoot);
+              return firstCreated;
             }
-            const relativeFirstCreated = relativeWorkspacePath(cwdPath, firstCreated);
+            const relativeFirstCreated = pathApi.relative(request.cwd, firstCreated);
             return rawPath.startsWith('./') && !relativeFirstCreated.startsWith('.')
               ? `./${relativeFirstCreated}`
               : relativeFirstCreated;
@@ -2004,11 +2069,11 @@ export function createBrowserFsApi(
             filesystemState.mkdtempCounter += 1;
             const suffix = filesystemState.mkdtempCounter.toString(36).padStart(6, '0').slice(-6);
             const candidate = `${rawPrefix}${suffix}`;
-            const normalized = normalizeWorkspaceEntryPath(candidate, cwdPath, false, workspacePathContext);
-            if (fileStore.has(normalized) || directoryStore.has(normalized)) continue;
+            const normalized = executionState.kernelFileSystem ? resolveWorkspaceEntryPath(candidate) : normalizeWorkspaceEntryPath(candidate, cwdPath, false, workspacePathContext);
+            if (executionState.kernelFileSystem ? fsApi.existsSync(candidate) : fileStore.has(normalized) || directoryStore.has(normalized)) continue;
             fsApi.mkdirSync(candidate);
             const encoding = typeof options === 'string' ? options : options?.encoding;
-            const result = rawPrefix.startsWith('/') ? workspaceFilename(normalized, workspaceRoot) : candidate;
+            const result = rawPrefix.startsWith('/') ? (executionState.kernelFileSystem ? normalized : workspaceFilename(normalized, workspaceRoot)) : candidate;
             return encoding === 'buffer' ? BrowserBuffer.from(result) : result;
           }
           throw Object.assign(new Error(`EEXIST: file already exists, mkdtemp '${prefix}'`), { code: 'EEXIST' });
@@ -2031,7 +2096,7 @@ export function createBrowserFsApi(
           if (removeTarget?.kind === 'error') {
             throwRuntimeRemoveTargetError(removeTarget, runtimeKernelMutationFsErrorMessage(String(path), removeTarget, 'rmdir'));
           }
-          const normalized = normalizeWorkspaceEntryPath(path, cwdPath, true, workspacePathContext);
+          const normalized = (executionState.kernelFileSystem ? resolveWorkspaceEntryPath(path) : normalizeWorkspaceEntryPath(path, cwdPath, true, workspacePathContext));
           if (executionState.kernelFileSystem) {
             executionState.kernelFileSystem.rmdir(normalized);
             return;

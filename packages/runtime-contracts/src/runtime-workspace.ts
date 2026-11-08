@@ -51,6 +51,8 @@ export interface RuntimeWorkspaceKernel {
 export type RuntimeWorkspaceProcessSignalPolicy = 'standard' | 'system-only';
 
 export interface RuntimeWorkspaceProcessOptions {
+  /** Inherited by every descendant. Read-only denies workspace mutations at commit; /tmp remains writable. */
+  workspaceAccess?: 'read-write' | 'read-only';
   /** Process name shown by ps and /proc. The kernel does not interpret this value. */
   name: string;
   actor: RuntimeWorkspaceActor;
@@ -102,6 +104,15 @@ export interface RuntimeWorkspaceRemoveOptions {
   recursive?: boolean;
 }
 
+/** Sequence cursors are scoped to one workspace lifetime. */
+export interface RuntimeWorkspaceJournalWindow {
+  readonly records: readonly KernelJournalRecord[];
+  readonly firstAvailableSeq: number;
+  readonly nextSeq: number;
+  /** At least one record after the requested cursor was evicted. Fail closed. */
+  readonly gap: boolean;
+}
+
 export interface RuntimeWorkspace {
   readonly kernel: RuntimeWorkspaceKernel;
   readonly cwd: string;
@@ -129,6 +140,7 @@ export interface RuntimeWorkspace {
   destroy(options?: { reason?: string; clearStorage?: boolean }): Promise<void>;
   snapshot(options?: { entrypoint?: string; includeHidden?: boolean }): Promise<RuntimeProjectSnapshot>;
   journal(sinceSeq?: number): readonly KernelJournalRecord[];
+  journalWindow(sinceSeq?: number): RuntimeWorkspaceJournalWindow;
   exportPatch(base: RuntimeProjectSnapshot, options?: RuntimeProjectPatchOptions): Promise<RuntimeProjectPatch>;
   importPatch(base: RuntimeProjectSnapshot, patch: RuntimeProjectPatch, options?: RuntimeProjectPatchOptions): Promise<void>;
   watch(listener: RuntimeWorkspaceEventHandler): RuntimeWorkspaceUnsubscribe;
