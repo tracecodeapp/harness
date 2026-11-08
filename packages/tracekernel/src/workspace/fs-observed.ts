@@ -526,7 +526,7 @@ export function runtimeCommandError(error: unknown): RuntimeCommandError | undef
 
 
 export async function applyCommandResultFiles(
-  ctx: CommandContext,
+  ctx: Pick<CommandContext, 'fs'>,
   workspaceRoot: string,
   result: RuntimeCommandResult,
   onFileChange?: RuntimeFileChangeObserver
@@ -638,6 +638,7 @@ export class CommandBoundFileSystem implements IFileSystem {
   ) {
     const authority = context.process.authority;
     if (authority) this.inner = inner.withAuthority(authority.assertActive, authority.readOnlyWorkspaceRoot);
+    registerCommandContext(this, context);
   }
 
   suspendNotifications<T>(fn: () => Promise<T>): Promise<T> {

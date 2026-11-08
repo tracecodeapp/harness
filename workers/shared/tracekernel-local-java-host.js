@@ -15014,12 +15014,12 @@ var TraceKernelFileSystem = class _TraceKernelFileSystem {
           }
           const filePath = this.resolveNodePath(resolved, true, options.create ? "final" : "none");
           if (filePath instanceof TraceKernelFileSystemError) return fail6(filePath);
+          const existing = this.nodes.get(filePath);
           const authorityError = this.readOnlyMutationError(
             mutationContext,
-            access === "read" && !options.create && !options.truncate ? [] : [filePath]
+            access === "read" && !(options.create && !existing) && !options.truncate ? [] : [filePath]
           );
           if (authorityError) return fail6(authorityError);
-          const existing = this.nodes.get(filePath);
           if (!existing) {
             if (!options.create) return this.fail("ENOENT", filePath, "no such file");
             if (access === "read") {

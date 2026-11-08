@@ -420,8 +420,12 @@ other writers when the entire workspace must remain unchanged.
 
 The host runner contract is explicit. A runner executing learner code must declare
 `capabilities.kernelFileSystem: true` and send its filesystem operations through
-the supplied syscall bridge. Snapshot-only native/custom runners are refused with
-`ENOTSUP` before execution in a read-only tree. Trusted snapshot compilers can
+the supplied syscall bridge. The bridge must actually be available; a capability
+declaration alone does not admit execution when shared-memory transport is absent.
+Snapshot-only native/custom runners are refused with `ENOTSUP` before execution
+in a read-only tree. Virtual executables use the same authority for returned file
+diffs as language commands. Runner commands without a resolvable process context
+fail with `EACCES` instead of inheriting host authority. Trusted snapshot compilers can
 declare `snapshotCompiler: true`; only compile requests are allowed, they must not
 execute learner code, and the kernel still fences publication of their output.
 The built-in TypeScript compiler uses this path, allowing `tsc --noEmit`.

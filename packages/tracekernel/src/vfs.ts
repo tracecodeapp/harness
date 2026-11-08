@@ -907,12 +907,12 @@ export class TraceKernelFileSystem {
           const filePath = this.resolveNodePath(resolved, true, options.create ? 'final' : 'none');
           if (filePath instanceof TraceKernelFileSystemError) return Effect.fail(filePath);
 
+          const existing = this.nodes.get(filePath);
           const authorityError = this.readOnlyMutationError(
             mutationContext,
-            access === 'read' && !options.create && !options.truncate ? [] : [filePath]
+            access === 'read' && !(options.create && !existing) && !options.truncate ? [] : [filePath]
           );
           if (authorityError) return Effect.fail(authorityError);
-          const existing = this.nodes.get(filePath);
           if (!existing) {
             if (!options.create) return this.fail('ENOENT', filePath, 'no such file');
             if (access === 'read') {

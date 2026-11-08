@@ -32,14 +32,23 @@ function syscallValue(
 }
 
 async function main(): Promise<void> {
-  const workspace = await createRuntimeWorkspace();
-  const dispatch = (
-    workspace as unknown as {
-      dispatchRuntimeKernelSyscall(
-        request: TraceKernelSyscallRequest
-      ): Promise<TraceKernelSyscallResult>;
-    }
-  ).dispatchRuntimeKernelSyscall.bind(workspace);
+  let dispatch!: (request: TraceKernelSyscallRequest) => Promise<TraceKernelSyscallResult>;
+  let ready!: () => void;
+  let finish!: () => void;
+  const started = new Promise<void>((resolve) => { ready = resolve; });
+  const running = new Promise<void>((resolve) => { finish = resolve; });
+  const workspace = await createRuntimeWorkspace({
+    files: [{ path: 'client.js', contents: '// host-controlled TCP client' }],
+    nodeRunner: async (request) => {
+      assertCondition(request.kernelSyscalls, 'TCP client requires a process-bound syscall bridge');
+      dispatch = async (syscall) => await request.kernelSyscalls!.dispatch(syscall) as TraceKernelSyscallResult;
+      ready();
+      await running;
+      return { stdout: '', stderr: '', exitCode: 0 };
+    },
+  });
+  const client = workspace.runCommand('node client.js');
+  await Promise.race([started, client.then(() => { throw new Error('TCP client exited before binding'); })]);
   const observedPaths: string[] = [];
   let timeoutSignalAborted = false;
   const listener = workspace.http.listen(
@@ -383,6 +392,8 @@ async function main(): Promise<void> {
     }
   } finally {
     listener.close();
+    finish();
+    await client;
     await workspace.destroy();
   }
 

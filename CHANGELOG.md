@@ -36,9 +36,18 @@ This repo uses Git tags as release boundaries. Version notes below summarize wha
   read-only tree. Trusted kernel-backed runners declare `kernelFileSystem`;
   snapshot compilers that do not execute learner code declare `snapshotCompiler`.
   TypeScript `--noEmit` works without granting compiler output write authority.
+- Fence virtual-executable result files with the originating command authority
+  and journal attribution. Read-only runner admission requires an actually
+  available syscall bridge, and unresolved runner/syscall contexts fail closed.
+- Allow `O_RDONLY | O_CREAT` on an existing protected file without changing it;
+  creation of a missing file and write-capable opens remain denied.
 
 ### Compatibility
 
+- Consumer-visible TypeScript changes: `RuntimeWorkspace` now requires
+  `journalWindow()`, so implementations and test doubles must add it.
+  `TraceKernelSyscallRequest` adds `chmod`, `utimes`, `fchmod`, and `futimes`;
+  consumers with exhaustive switches must handle these operations.
 - Ordinary processes default to read-write. Read-only execution is opt-in and
   does not revoke network or other separately granted capabilities. Commands
   that must create build artifacts in the workspace fail normally, including

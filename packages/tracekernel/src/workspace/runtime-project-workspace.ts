@@ -275,7 +275,7 @@ import { TraceKernelBackingFileSystem } from './tkfs-backing-filesystem';
 import {
   KernelObservedFileSystem,
   CommandBoundFileSystem,
-  applyWorkspaceCommandResultFiles,
+  applyCommandResultFiles,
   assertSupportedEncoding,
   base64FromBytes,
   bytesEqual,
@@ -303,7 +303,6 @@ import {
   textToByteString,
   withSuspendedFsNotifications,
   commandContextForFs,
-  registerCommandContext,
   throwKernelMutationTargetError,
   type RuntimeDynamicProcProvider,
   type RuntimeCommandExecutionContext,
@@ -1217,7 +1216,7 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
   private createKernelSyscallBridge(
     context?: RuntimeCommandExecutionContext
   ): RuntimeKernelSyscallBridge | undefined {
-    if (typeof SharedArrayBuffer === 'undefined' || typeof Atomics === 'undefined') {
+    if (!context || typeof SharedArrayBuffer === 'undefined' || typeof Atomics === 'undefined') {
       return undefined;
     }
     const channel = makeTraceKernelSharedSyscallChannel();
@@ -1523,6 +1522,9 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
     request: TraceKernelSyscallRequest,
     context?: RuntimeCommandExecutionContext
   ): Promise<TraceKernelSyscallResult> {
+    if (!context) {
+      return { ok: false, error: { code: 'EACCES', message: 'Runtime syscall has no process authority context' } };
+    }
     const authority = context?.process.authority;
     try {
       authority?.assertActive();
@@ -1535,9 +1537,9 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
 
   private async dispatchRuntimeKernelSyscallUnchecked(
     request: TraceKernelSyscallRequest,
-    context?: RuntimeCommandExecutionContext
+    context: RuntimeCommandExecutionContext
   ): Promise<TraceKernelSyscallResult> {
-    const actor = context?.actor ?? SYSTEM_ACTOR;
+    const actor = context.actor;
     if (context) {
       context.liveKernelSyscallDepth = (context.liveKernelSyscallDepth ?? 0) + 1;
     }
@@ -5637,7 +5639,6 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
       externalHttpRequestCount: 0,
     };
     const commandFs = new CommandBoundFileSystem(this.fs, commandContext);
-    registerCommandContext(commandFs, commandContext);
     const executionHandle: RuntimeKernelExecutionHandle = {
       kernelProcess,
       abortController,
@@ -6636,15 +6637,15 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
       return { stdout: '', stderr: `bash: ${request.executable}: Exec format error\n`, exitCode: 126 };
     }
 
-    if (request.commandContext.process.authority?.readOnlyWorkspaceRoot &&
-        this.cppRunner.capabilities?.kernelFileSystem !== true) {
-      return { stdout: '', stderr: 'ENOTSUP: this runner cannot enforce read-only workspace authority\n', exitCode: 1 };
-    }
-
     const scriptPath = request.executable.startsWith('./')
       ? request.executable.slice(2)
       : request.executable;
     const kernelSyscalls = this.createKernelSyscallBridge(request.commandContext);
+    if (request.commandContext.process.authority?.readOnlyWorkspaceRoot &&
+        (!kernelSyscalls || this.cppRunner.capabilities?.kernelFileSystem !== true)) {
+      kernelSyscalls?.close();
+      return { stdout: '', stderr: 'ENOTSUP: this runner cannot enforce read-only workspace authority\n', exitCode: 1 };
+    }
     const signal = this.processProjection.executionHandle(
       request.commandContext.process
     )?.abortController?.signal;
@@ -6722,9 +6723,11 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
       request.commandContext.kernelError = result.error;
     }
     await this.flushRuntimeEventQueue(request.commandContext);
-    return applyWorkspaceCommandResultFiles(
-      this,
-      request.commandContext.runtimeIo.filterAppliedResultFiles(result) ?? result
+    return applyCommandResultFiles(
+      { fs: new CommandBoundFileSystem(this.fs, request.commandContext) },
+      this.cwd,
+      request.commandContext.runtimeIo.filterAppliedResultFiles(result) ?? result,
+      (change, phase, context) => this.emitLocalRuntimeEvent({ type: 'file-change', change, phase }, context)
     );
   }
 
