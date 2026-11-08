@@ -2390,6 +2390,8 @@ const STDIN_PIPE_HEADER_BYTES = STDIN_PIPE_HEADER_INTS * Int32Array.BYTES_PER_EL
 const STDIN_PIPE_READ_INDEX = 0;
 const STDIN_PIPE_WRITE_INDEX = 1;
 const STDIN_PIPE_CLOSED_INDEX = 2;
+// Shared stdin state 2 revokes queued bytes; state 1 is ordinary EOF.
+const STDIN_PIPE_REVOKED = 2;
 
 function stdinPipeState(pipe) {
   const buffer = pipe?.buffer;
@@ -2407,6 +2409,7 @@ function stdinPipeState(pipe) {
 }
 
 function stdinPipeAvailable(state, readIndex, writeIndex) {
+  if (Atomics.load(state.header, STDIN_PIPE_CLOSED_INDEX) === STDIN_PIPE_REVOKED) return 0;
   const capacity = state.bytes.byteLength;
   return readIndex <= writeIndex
     ? writeIndex - readIndex
@@ -2422,7 +2425,8 @@ function readStdinPipeByte(state) {
     if (stdinPipeAvailable(state, readIndex, writeIndex) > 0) {
       const byte = state.bytes[readIndex];
       Atomics.store(state.header, STDIN_PIPE_READ_INDEX, (readIndex + 1) % capacity);
-      return byte;
+      Atomics.notify(state.header, STDIN_PIPE_READ_INDEX);
+      return Atomics.load(state.header, STDIN_PIPE_CLOSED_INDEX) === STDIN_PIPE_REVOKED ? -1 : byte;
     }
     if (Atomics.load(state.header, STDIN_PIPE_CLOSED_INDEX) !== 0) return -1;
     Atomics.wait(state.header, STDIN_PIPE_WRITE_INDEX, writeIndex);

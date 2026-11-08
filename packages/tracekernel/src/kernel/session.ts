@@ -1,3 +1,4 @@
+import { withOperationAuthority, type TraceKernelOperationAuthority } from '../operation-authority';
 import * as Deferred from 'effect/Deferred';
 import * as Effect from 'effect/Effect';
 import * as Exit from 'effect/Exit';
@@ -533,20 +534,22 @@ export class TraceKernelSession {
 
   signalTerminalForeground(
     terminalId: string,
-    signal: TraceKernelSignal
+    signal: TraceKernelSignal,
+    authority?: TraceKernelOperationAuthority
   ): Effect.Effect<void, Error> {
-    return this.terminals.signalTerminalForeground(terminalId, signal);
+    return withOperationAuthority(authority, this.terminals.signalTerminalForeground(terminalId, signal, authority));
   }
 
   writeTerminalInput(
     terminalId: string,
-    bytes: Uint8Array
+    bytes: Uint8Array,
+    authority?: TraceKernelOperationAuthority
   ): Effect.Effect<number, Error> {
-    return this.terminals.writeTerminalInput(terminalId, bytes);
+    return withOperationAuthority(authority, this.terminals.writeTerminalInput(terminalId, bytes, authority));
   }
 
-  sendTerminalInputEof(terminalId: string): Effect.Effect<void, Error> {
-    return this.terminals.sendTerminalInputEof(terminalId);
+  sendTerminalInputEof(terminalId: string, authority?: TraceKernelOperationAuthority): Effect.Effect<void, Error> {
+    return withOperationAuthority(authority, this.terminals.sendTerminalInputEof(terminalId, authority));
   }
 
   readTerminalOutput(
@@ -560,9 +563,10 @@ export class TraceKernelSession {
   resizeTerminal(
     terminalId: string,
     columns: number,
-    rows: number
+    rows: number,
+    authority?: TraceKernelOperationAuthority
   ): Effect.Effect<TraceKernelTerminalSnapshot, Error> {
-    return this.terminals.resizeTerminal(terminalId, columns, rows);
+    return withOperationAuthority(authority, this.terminals.resizeTerminal(terminalId, columns, rows, authority));
   }
 
   releaseTerminalForegroundToHost(
@@ -776,7 +780,7 @@ export class TraceKernelSession {
         { fd: 0, descriptor: stdin.reader() },
       ]).pipe(Effect.tapError(() => stdin.dispose()));
       return Object.freeze({
-        writeStdin: (bytes: Uint8Array) => writer.write(bytes),
+        writeStdin: (bytes: Uint8Array) => writer.write(bytes, undefined, process.fileSystemMutationOrigin),
         closeStdin: () => writer.close(),
       });
     });
@@ -829,7 +833,7 @@ export class TraceKernelSession {
         stdinResourceId: stdin.id,
         stdoutResourceId: stdout.id,
         stderrResourceId: stderr.id,
-        writeStdin: (bytes: Uint8Array) => hostStdin.write(bytes),
+        writeStdin: (bytes: Uint8Array) => hostStdin.write(bytes, undefined, process.fileSystemMutationOrigin),
         closeStdin: () => hostStdin.close(),
         readStdout: (maxBytes: number) =>
           hostStdout.read(Math.max(0, Math.floor(maxBytes))),

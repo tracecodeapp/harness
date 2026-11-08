@@ -2635,6 +2635,8 @@ const STDIN_PIPE_HEADER_BYTES = STDIN_PIPE_HEADER_INTS * Int32Array.BYTES_PER_EL
 const STDIN_PIPE_READ_INDEX = 0;
 const STDIN_PIPE_WRITE_INDEX = 1;
 const STDIN_PIPE_CLOSED_INDEX = 2;
+// Shared stdin state 2 revokes queued bytes; state 1 is ordinary EOF.
+const STDIN_PIPE_REVOKED = 2;
 
 function stdinPipeState(pipe) {
   const buffer = pipe?.buffer;
@@ -2652,6 +2654,7 @@ function stdinPipeState(pipe) {
 }
 
 function stdinPipeAvailable(state, readIndex, writeIndex) {
+  if (Atomics.load(state.header, STDIN_PIPE_CLOSED_INDEX) === STDIN_PIPE_REVOKED) return 0;
   const capacity = state.bytes.byteLength;
   return readIndex <= writeIndex
     ? writeIndex - readIndex
@@ -4362,7 +4365,8 @@ class WasiProcess {
           out.set(state.bytes.subarray(0, length - firstLength), firstLength);
         }
         Atomics.store(state.header, STDIN_PIPE_READ_INDEX, (readIndex + length) % capacity);
-        return out;
+        Atomics.notify(state.header, STDIN_PIPE_READ_INDEX);
+        return Atomics.load(state.header, STDIN_PIPE_CLOSED_INDEX) === STDIN_PIPE_REVOKED ? new Uint8Array() : out;
       }
       if (Atomics.load(state.header, STDIN_PIPE_CLOSED_INDEX) !== 0 || !block) {
         return new Uint8Array();

@@ -1,3 +1,5 @@
+import { withOperationAuthority } from '../operation-authority';
+import { ProcessAuthority } from './process-authority';
 import { markShellStdinInAst } from './shell-stdin';
 import { isWasiCommandExecutable } from './executable-format';
 import * as Effect from 'effect/Effect';
@@ -14,6 +16,7 @@ import {
   createRuntimeProjectIoBridge,
   peekRuntimeCommandStdinPipeBytes,
   readRuntimeCommandStdinPipeBytes,
+  revokeRuntimeCommandStdinPipe,
   RUNTIME_PROJECT_MAX_LIVE_FILE_CHANGES,
   RUNTIME_PROJECT_MAX_LIVE_FILE_CHANGE_BYTES,
   RUNTIME_PROJECT_MAX_OUTPUT_STREAM_BYTES,
@@ -564,6 +567,7 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
   private readonly identityCommands: WorkspaceIdentityCommands;
   private readonly virtualExecutableRecords = new Map<string, VirtualExecutableRecord>();
   private readonly processState = new WorkspaceProcessState();
+  private readonly terminalAuthorities = new Map<string, ProcessAuthority>();
   private readonly terminalShells = new Map<
     string,
     Promise<RuntimeKernelTerminalShell>
@@ -1266,11 +1270,12 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
         },
       });
     }
-    return Effect.runPromise(
+    return Effect.runPromise(withOperationAuthority(
+      context?.process.authority,
       new TraceKernelSyscallDispatcher(authority.session, process).dispatch(
         this.mapTraceKernelSyscallWorkspacePaths(request)
       )
-    );
+    ));
   }
 
   /**
@@ -1514,6 +1519,20 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
     request: TraceKernelSyscallRequest,
     context?: RuntimeCommandExecutionContext
   ): Promise<TraceKernelSyscallResult> {
+    const authority = context?.process.authority;
+    try {
+      authority?.assertActive();
+    } catch (error) {
+      return { ok: false, error: { code: 'ESRCH', message: String(error) } };
+    }
+    const run = () => this.dispatchRuntimeKernelSyscallUnchecked(request, context);
+    return authority ? authority.run(run) : run();
+  }
+
+  private async dispatchRuntimeKernelSyscallUnchecked(
+    request: TraceKernelSyscallRequest,
+    context?: RuntimeCommandExecutionContext
+  ): Promise<TraceKernelSyscallResult> {
     const actor = context?.actor ?? SYSTEM_ACTOR;
     if (context) {
       context.liveKernelSyscallDepth = (context.liveKernelSyscallDepth ?? 0) + 1;
@@ -1685,7 +1704,7 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
     request: Extract<TraceKernelSyscallRequest, { op: 'spawn' }>,
     parentContext?: RuntimeCommandExecutionContext
   ): Promise<RuntimeKernelSpawnedChild> {
-    await this.awaitControlPlaneProcessDisposals();
+    parent.authority?.assertActive();
     const command = [request.command, ...(request.args ?? [])]
       .map(shellQuote)
       .join(' ');
@@ -1784,7 +1803,7 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
           );
         } catch (error) {
           const code = (error as { code?: unknown } | null)?.code;
-          if (code !== 'EPIPE' && code !== 'EBADF') throw error;
+          if (code !== 'EPIPE' && code !== 'EBADF' && code !== 'ESRCH') throw error;
         }
       });
     };
@@ -3222,6 +3241,7 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
           ...(normalizedRequest.bodyEncoding ? { bodyEncoding: normalizedRequest.bodyEncoding } : {}),
           signal,
         };
+        options.commandContext?.process.authority?.assertActive();
         const normalizedResponse = workspaceHttpPolicy.normalizeResponse(await config.fetch(externalRequest));
         if (!settled) {
           this.recordHttpRequest({
@@ -3393,6 +3413,19 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
   }
 
   private async dispatchHttpRequest(
+    request: RuntimeKernelHttpRequest,
+    options: RuntimeKernelHttpDispatchOptions & {
+      timeoutBody?: string;
+      actor?: RuntimeWorkspaceActor;
+      commandContext?: RuntimeCommandExecutionContext;
+    } = {}
+  ): Promise<RuntimeKernelHttpResponse> {
+    const run = () => this.dispatchHttpRequestUnchecked(request, options);
+    const authority = options.commandContext?.process.authority;
+    return authority ? authority.run(run) : run();
+  }
+
+  private async dispatchHttpRequestUnchecked(
     request: RuntimeKernelHttpRequest,
     options: RuntimeKernelHttpDispatchOptions & {
       timeoutBody?: string;
@@ -3657,7 +3690,7 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
     handle.hostStdinPump = (async () => {
       try {
         if (!stdinPipe) return;
-        while (!handle.stopHostStdinPump) {
+        while (!handle.stopHostStdinPump && !context.process.authority?.isRevoked()) {
           const bytes = readRuntimeCommandStdinPipeBytes(stdinPipe);
           if (bytes.byteLength > 0) {
             await Effect.runPromise(stdio.writeStdin(bytes));
@@ -3668,7 +3701,7 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
         }
       } catch (error) {
         const code = (error as { code?: unknown } | null)?.code;
-        if (code !== 'EPIPE' && code !== 'EBADF') throw error;
+        if (code !== 'EPIPE' && code !== 'EBADF' && code !== 'ESRCH') throw error;
       } finally {
         await Effect.runPromise(stdio.closeStdin());
       }
@@ -3973,10 +4006,19 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
     return { signaled, denied };
   }
 
+  private queueTerminalDelivery<A>(terminalSessionId: string, effect: Effect.Effect<A, Error>): void {
+    const owner = this.terminalAuthorities.get(terminalSessionId);
+    const run = () => Effect.runPromise(withOperationAuthority(owner, effect));
+    // Cancellation is an expected delivery refusal. Keep the original promise
+    // in the owner's pending set until its effect and finalizers have settled.
+    void (owner ? owner.run(run) : run()).catch(() => undefined);
+  }
+
   private signalTerminalForeground(
     terminalSessionId: string,
     signal: 'SIGINT' | 'SIGQUIT'
   ): boolean {
+    this.terminalAuthorities.get(terminalSessionId)?.assertActive();
     const foregroundPid = this.processState.terminalForeground.get(terminalSessionId);
     const foregroundProcess = foregroundPid === undefined
       ? undefined
@@ -3995,6 +4037,7 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
       });
       return result.signaled > 0;
     }
+    this.terminalAuthorities.get(terminalSessionId)?.assertActive();
     const authority = this.traceKernelAuthority;
     const terminalId = this.terminalResourceIds.get(terminalSessionId);
     const terminal = terminalId === undefined
@@ -4014,8 +4057,8 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
         count,
         authority: 'tracekernel-terminal',
       });
-      Effect.runFork(
-        authority.session.signalTerminalForeground(terminal.id, signal).pipe(
+      this.queueTerminalDelivery(terminalSessionId,
+        authority.session.signalTerminalForeground(terminal.id, signal, this.terminalAuthorities.get(terminalSessionId)).pipe(
           Effect.catchAll(() => Effect.void)
         )
       );
@@ -4029,6 +4072,7 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
     columns: number,
     rows: number
   ): void {
+    this.terminalAuthorities.get(terminalSessionId)?.assertActive();
     const authority = this.traceKernelAuthority;
     const terminalId = this.terminalResourceIds.get(terminalSessionId);
     const terminal = terminalId === undefined
@@ -4037,8 +4081,8 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
           (candidate) => candidate.id === terminalId
         );
     if (!authority || !terminal || terminal.closed) return;
-    Effect.runFork(
-      authority.session.resizeTerminal(terminal.id, columns, rows).pipe(
+    this.queueTerminalDelivery(terminalSessionId,
+      authority.session.resizeTerminal(terminal.id, columns, rows, this.terminalAuthorities.get(terminalSessionId)).pipe(
         Effect.catchAll(() => Effect.void)
       )
     );
@@ -4085,6 +4129,7 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
     terminalSessionId: string,
     input: { data?: string; eof?: boolean } = {}
   ): boolean {
+    this.terminalAuthorities.get(terminalSessionId)?.assertActive();
     const pending = this.pendingTerminalStartupInput.get(terminalSessionId) ?? {
       chunks: [],
       byteLength: 0,
@@ -4140,7 +4185,9 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
     }
 
     if (!this.pendingTerminalStartupInput.has(terminalSessionId)) return;
+    const owner = boundProcess?.authority ?? this.terminalAuthorities.get(terminalSessionId);
     const replay = Promise.resolve().then(async () => {
+      owner?.assertActive();
       while (true) {
         const pending = this.pendingTerminalStartupInput.get(
           terminalSessionId
@@ -4151,7 +4198,7 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
         if (!descriptorStdio) {
           if (!stdinPipe) return;
           try {
-            for (const chunk of pending.chunks) stdinPipe.write(chunk);
+            for (const chunk of pending.chunks) { owner?.assertActive(); stdinPipe.write(chunk); }
             if (pending.eof) stdinPipe.close();
           } catch {
             stdinPipe.close();
@@ -4172,15 +4219,16 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
         await Effect.runPromise(
           Effect.gen(function* () {
             if (bytes.byteLength > 0) {
-              yield* authority.session.writeTerminalInput(terminal.id, bytes);
+              yield* authority.session.writeTerminalInput(terminal.id, bytes, owner);
             }
             if (pending.eof) {
-              yield* authority.session.sendTerminalInputEof(terminal.id);
+              yield* authority.session.sendTerminalInputEof(terminal.id, owner);
             }
           }).pipe(Effect.catchAll(() => Effect.void))
         );
       }
     });
+    owner?.track(replay);
     this.terminalStartupInputReplays.set(terminalSessionId, replay);
     try {
       await replay;
@@ -4213,6 +4261,7 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
     const signalByte = new TextEncoder().encode(data).find(
       (byte) => byte === 0x03 || byte === 0x1c
     );
+    this.terminalAuthorities.get(terminalSessionId)?.assertActive();
     const authority = this.traceKernelAuthority;
     const terminalId = this.terminalResourceIds.get(terminalSessionId);
     const terminal = terminalId === undefined
@@ -4249,10 +4298,11 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
         authority: 'tracekernel-terminal-line-discipline',
       });
     }
-    Effect.runFork(
+    this.queueTerminalDelivery(terminalSessionId,
       authority.session.writeTerminalInput(
         terminal.id,
-        new TextEncoder().encode(data)
+        new TextEncoder().encode(data),
+        this.terminalAuthorities.get(terminalSessionId)
       ).pipe(
         Effect.catchAll(() => Effect.void)
       )
@@ -4263,6 +4313,7 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
   private endKernelTerminalInput(
     terminalSessionId: string
   ): 'kernel' | 'legacy' | 'pending' | 'rejected' {
+    this.terminalAuthorities.get(terminalSessionId)?.assertActive();
     const authority = this.traceKernelAuthority;
     const terminalId = this.terminalResourceIds.get(terminalSessionId);
     const terminal = terminalId === undefined
@@ -4280,8 +4331,8 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
       return 'pending';
     }
     if (route === 'legacy') return 'legacy';
-    Effect.runFork(
-      authority.session.sendTerminalInputEof(terminal.id).pipe(
+    this.queueTerminalDelivery(terminalSessionId,
+      authority.session.sendTerminalInputEof(terminal.id, this.terminalAuthorities.get(terminalSessionId)).pipe(
         Effect.catchAll(() => Effect.void)
       )
     );
@@ -5149,6 +5200,7 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
     readonly sessionId?: number;
   }): Promise<TraceKernelProcess> {
     await this.ensureTraceKernelAuthority();
+    options.parent?.authority?.assertActive();
     const authority = this.traceKernelAuthority;
     if (!authority) {
       throw new Error('TraceKernel session authority is unavailable.');
@@ -5401,7 +5453,17 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
     return this.runCommandAs(command, options);
   }
 
-  private async runCommandAs(
+  private runCommandAs(
+    command: string,
+    options: RuntimeCommandOptions = {},
+    parent?: RuntimeKernelProcessRecord,
+    launchHooks?: RuntimeKernelProcessLaunchHooks
+  ): Promise<RuntimeCommandResult> {
+    const run = () => this.runCommandAsUnchecked(command, options, parent, launchHooks);
+    return parent?.authority ? parent.authority.runChild(run) : run();
+  }
+
+  private async runCommandAsUnchecked(
     command: string,
     options: RuntimeCommandOptions = {},
     parent?: RuntimeKernelProcessRecord,
@@ -5415,7 +5477,9 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
       launchHooks?.kernelParentProcess
     );
     if (inProcessWait) return inProcessWait;
-    await this.awaitControlPlaneProcessDisposals();
+    parent?.authority?.assertActive();
+    if (!parent) await this.awaitControlPlaneProcessDisposals();
+    parent?.authority?.assertActive();
     const actor = parent?.actor ?? this.createRuntimeActor();
     const admissionError = launchHooks?.kernelProcess
       ? undefined
@@ -5503,6 +5567,7 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
     const pid = kernelProcess.pid;
     this.processState.nextPid = Math.max(this.processState.nextPid, pid + 1);
     const process: RuntimeKernelProcessRecord = {
+      authority: new ProcessAuthority(parent?.authority),
       pid,
       ppid: kernelSnapshot.ppid,
       pgid: kernelSnapshot.pgid,
@@ -5518,6 +5583,7 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
       state: 'queued',
       foreground,
     };
+    kernelProcess.setMutationAuthority(process.authority!.assertActive, process.authority!.signal);
     this.processProjection.bindAuthoritativeRecord(process, kernelSnapshot);
     let engineAttachment: RuntimeProjectEngineLeaseAttachment | undefined;
     let engineLeaseReleased = false;
@@ -5572,6 +5638,13 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
     };
     executionHandle.hostOutputContext = commandContext;
     this.processState.executionHandles.set(process.pid, executionHandle);
+    process.authority?.onRevoke(() => {
+      // Legacy runners share a host-owned stdin ring. Close admission and
+      // discard unread bytes synchronously before notifying the runner.
+      if (stdinPipe) revokeRuntimeCommandStdinPipe(stdinPipe);
+      abortController.abort();
+      this.queueKernelProcessSignal(process, 'SIGKILL', 'system');
+    });
     if (foreground && options.terminalSessionId) {
       this.processState.terminalForeground.set(options.terminalSessionId, process.pid);
     }
@@ -5688,6 +5761,7 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
           maxConcurrentCommands: schedulerSnapshot.maxConcurrentCommands,
           maxQueuedCommands: schedulerSnapshot.maxQueuedCommands ?? 'unlimited',
         });
+        process.authority?.assertActive();
         this.recordKernelEvent('process-start', process.pid, {
           ppid: process.ppid,
           pgid: process.pgid,
@@ -5870,6 +5944,8 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
         stderr: result.stderr,
       };
     }).finally(async () => {
+      await process.authority?.drainOperations();
+      await this.flushRuntimeEventQueue(commandContext);
       const retainProcessOnExit =
         Boolean(this.runtimeTerminationSignal(process)) ||
         options.retainOnExit === true ||
@@ -5979,6 +6055,7 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
           actor: this.journalActorId(process.actor),
         }, commandContext, process.actor, finalKernelSnapshot);
       }
+      process.authority?.finish();
     });
   }
 
@@ -6279,6 +6356,7 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
         `TraceKernel terminal parent is unavailable: ${parent.pid}`
       );
     }
+    parent?.authority?.assertActive();
     const shell = await Effect.runPromise(authority.session.spawn({
       runtime: this.traceKernelControlledRuntime.runtime,
       command: '[terminal-shell]',
@@ -6317,12 +6395,12 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
     };
   }
 
-  private closeTerminalShell(terminalSessionId: string): void {
+  private closeTerminalShell(terminalSessionId: string): Promise<void> {
     const shellPromise = this.terminalShells.get(terminalSessionId);
     this.terminalShells.delete(terminalSessionId);
     this.terminalResourceIds.delete(terminalSessionId);
     this.pendingTerminalStartupInput.delete(terminalSessionId);
-    if (!shellPromise) return;
+    if (!shellPromise) return Promise.resolve();
     const disposal = shellPromise.then(async (shell) => {
       const authority = this.traceKernelAuthority;
       if (!authority) return;
@@ -6345,6 +6423,7 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
     void disposal.finally(() => {
       this.processState.controlPlaneDisposals.delete(disposal);
     });
+    return disposal;
   }
 
   private createTerminalSessionAs(
@@ -6354,6 +6433,15 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
     this.assertNotDestroyed();
     const terminalSessionId =
       this.lifecycleState.allocateTerminalSessionId();
+    if (parent?.authority) {
+      const owner = parent.authority;
+      owner.assertActive();
+      this.terminalAuthorities.set(terminalSessionId, owner);
+      owner.onRevoke(() => {
+        this.discardPendingTerminalStartupInput(terminalSessionId);
+        owner.track(this.closeTerminalShell(terminalSessionId));
+      });
+    }
     return new RuntimeProjectWorkspaceTerminalSession(
       {
         workspaceRoot: this.cwd,
@@ -6383,7 +6471,10 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
         },
         signalForeground: (signal) => this.signalTerminalForeground(terminalSessionId, signal),
         terminalInputRouter: {
-          write: (data) => this.writeKernelTerminalInput(terminalSessionId, data),
+          write: (data) => {
+            parent?.authority?.assertActive();
+            return this.writeKernelTerminalInput(terminalSessionId, data);
+          },
           end: () => this.endKernelTerminalInput(terminalSessionId),
           reset: () => this.discardPendingTerminalStartupInput(terminalSessionId),
         },
@@ -6822,6 +6913,7 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
     const pid = kernelProcess.pid;
     this.processState.nextPid = Math.max(this.processState.nextPid, pid + 1);
     const process: RuntimeKernelProcessRecord = {
+      authority: new ProcessAuthority(),
       pid,
       ppid: kernelSnapshot.ppid,
       pgid: kernelSnapshot.pgid,
@@ -6837,6 +6929,7 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
       state: 'running',
       foreground: false,
     };
+    kernelProcess.setMutationAuthority(process.authority!.assertActive, process.authority!.signal);
     this.processProjection.bindAuthoritativeRecord(process, kernelSnapshot);
     this.processState.executionHandles.set(process.pid, { kernelProcess });
     this.processState.table.set(process.pid, process);
@@ -6874,9 +6967,39 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
     }, undefined, process.actor);
     let disposed = false;
     const assertActive = (): void => {
+      process.authority!.assertActive();
       if (disposed || !this.processState.table.has(process.pid)) {
         throw new Error(`Runtime workspace process is no longer active: ${name} (${process.pid})`);
       }
+    };
+    let drain: Promise<void> | undefined;
+    const revokeAndDrain = (): Promise<void> => {
+      if (drain) return drain;
+      disposed = true;
+      process.authority!.revoke();
+      clearKernelSignalHandler?.();
+      drain = (async () => {
+        await process.authority!.drain();
+        await Effect.runPromise(kernelProcess.awaitStarted().pipe(
+          Effect.zipRight(this.traceKernelControlledRuntime.complete(process.pid, { exitCode: 0 })),
+          Effect.zipRight(kernelProcess.wait()),
+          Effect.asVoid
+        ));
+        this.processState.table.delete(process.pid);
+        this.processState.executionHandles.delete(process.pid);
+        this.observeKernelReparentedChildren(process.pid);
+        this.recordKernelEvent('process-exit', process.pid, { exitCode: 0, authority: 'system' });
+        this.recordJournal({
+          kind: 'process', op: 'exit', pid: process.pid, exitCode: 0,
+          actor: this.journalActorId(process.actor),
+        }, undefined, process.actor);
+      })();
+      this.processState.controlPlaneDisposals.add(drain);
+      void drain.then(
+        () => this.processState.controlPlaneDisposals.delete(drain!),
+        () => this.processState.controlPlaneDisposals.delete(drain!)
+      );
+      return drain;
     };
     return {
       pid: process.pid,
@@ -6886,21 +7009,21 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
       readFile: (path, encoding) => {
         assertActive();
         this.assertActorFileCapability(process.actor, 'read', path);
-        return this.readFile(path, encoding, { publicProc: false });
+        return process.authority!.run(() => this.readFile(path, encoding, { publicProc: false }));
       },
       writeFile: (path, contents, encoding) => {
         assertActive();
-        return this.writeFileAs(path, contents, process.actor, encoding, 'live', process);
+        return process.authority!.run(() => this.writeFileAs(path, contents, process.actor, encoding, 'live', process));
       },
       deleteFile: (path) => {
         assertActive();
-        return this.deleteFileAs(path, process.actor, 'live', process);
+        return process.authority!.run(() => this.deleteFileAs(path, process.actor, 'live', process));
       },
       applyFileChange: (change, phase = 'live') => {
         assertActive();
-        return withSuspendedFsNotifications(this.bash.fs, async () => {
+        return process.authority!.run(() => withSuspendedFsNotifications(this.bash.fs, async () => {
           await this.applyFileChangeAs(change, process.actor, phase, process);
-        });
+        }));
       },
       runCommand: (command, commandOptions = {}) => {
         assertActive();
@@ -6912,11 +7035,11 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
       },
       runProjectCommand: (commandName, commandOptions = {}) => {
         assertActive();
-        return this.runProjectCommandAs(commandName, {
+        return process.authority!.run(() => this.runProjectCommandAs(commandName, {
           ...commandOptions,
           cwd: commandOptions.cwd ?? cwd,
           env: { ...(options.env ?? {}), ...(commandOptions.env ?? {}) },
-        }, process);
+        }, process));
       },
       createTerminalSession: (sessionOptions = {}) => {
         assertActive();
@@ -6926,42 +7049,8 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
           env: { ...(options.env ?? {}), ...(sessionOptions.env ?? {}) },
         }, process);
       },
-      dispose: () => {
-        if (disposed) return;
-        disposed = true;
-        clearKernelSignalHandler?.();
-        for (const child of this.processProjection.activeRecords()) {
-          if (this.processProjection.authoritativeSnapshot(child)?.ppid === process.pid) {
-            this.queueKernelProcessSignal(child, 'SIGTERM', 'system');
-          }
-        }
-        const kernelDisposal = Effect.runPromise(
-          kernelProcess.awaitStarted().pipe(
-            Effect.zipRight(
-              this.traceKernelControlledRuntime.complete(process.pid, {
-                exitCode: 0,
-              })
-            ),
-            Effect.zipRight(kernelProcess.wait()),
-            Effect.asVoid
-          )
-        ).catch(() => undefined);
-        this.processState.controlPlaneDisposals.add(kernelDisposal);
-        void kernelDisposal.finally(() => {
-          this.processState.controlPlaneDisposals.delete(kernelDisposal);
-        });
-        this.processState.table.delete(process.pid);
-        this.processState.executionHandles.delete(process.pid);
-        this.observeKernelReparentedChildren(process.pid);
-        this.recordKernelEvent('process-exit', process.pid, { exitCode: 0, authority: 'system' });
-        this.recordJournal({
-          kind: 'process',
-          op: 'exit',
-          pid: process.pid,
-          exitCode: 0,
-          actor: this.journalActorId(process.actor),
-        }, undefined, process.actor);
-      },
+      dispose: () => { void revokeAndDrain().catch(() => undefined); },
+      revokeAndDrain,
     };
   }
 
@@ -7021,12 +7110,15 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
     phase: RuntimeFileMutationPhase,
     process?: RuntimeKernelProcessRecord
   ): Promise<void> {
+    const authority = process?.authority;
+    authority?.assertActive();
+    const fileSystem = authority ? this.fs.withAuthority(authority.assertActive) : this.fs;
     this.assertActorFileCapability(actor, 'delete', path);
     const removeTarget = kernelRemoveTarget(path);
     if (removeTarget.kind === 'error') throwKernelMutationTargetError(path, removeTarget);
     const relativePath = this.toWorkspaceRelativePath(path);
     const absolutePath = this.toWorkspacePath(path);
-    await this.fs.withBaseMutation([absolutePath], async (fs) => {
+    await fileSystem.withBaseMutation([absolutePath], async (fs) => {
       this.accessPolicy.assertWorkspacePathWritable(
         absolutePath,
         'delete'
@@ -7143,6 +7235,9 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
     process?: RuntimeKernelProcessRecord,
     context?: RuntimeCommandExecutionContext
   ): Promise<void> {
+    const authority = process?.authority ?? context?.process.authority;
+    authority?.assertActive();
+    const fileSystem = authority ? this.fs.withAuthority(authority.assertActive) : this.fs;
     const mutationTarget = kernelMutationTarget(change.path);
     if (mutationTarget.kind === 'error') {
       throwKernelMutationTargetError(change.path, mutationTarget, `Kernel device namespace is not a file-change target: ${change.path}`);
@@ -7151,7 +7246,7 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
     const relativePath = this.toWorkspaceRelativePath(change.path);
     if (isRuntimeDirectoryChange(change)) {
       const absolutePath = this.toWorkspaceEntryPath(change.path);
-      await this.fs.withBaseMutationWithContext(context, [absolutePath], async (fs) => {
+      await fileSystem.withBaseMutationWithContext(context, [absolutePath], async (fs) => {
         if (change.deleted === true) {
           this.accessPolicy.assertWorkspaceSubtreeWritable(
             absolutePath,
@@ -7192,7 +7287,7 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
 
     if ((change as RuntimeFileDeletion).deleted === true) {
       const absolutePath = this.toWorkspacePath(change.path);
-      await this.fs.withBaseMutationWithContext(context, [absolutePath], async (fs) => {
+      await fileSystem.withBaseMutationWithContext(context, [absolutePath], async (fs) => {
         this.accessPolicy.assertWorkspacePathWritable(
           absolutePath,
           'delete'
@@ -7213,7 +7308,7 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
     if (isRuntimeSymlinkChange(change)) {
       const absolutePath = this.toWorkspaceEntryPath(change.path);
       const mutationKind: RuntimeFileSystemMutationKind = await this.bash.fs.exists(absolutePath) ? 'file-write' : 'file-create';
-      await this.fs.withBaseMutationWithContext(context, [absolutePath], async (fs) => {
+      await fileSystem.withBaseMutationWithContext(context, [absolutePath], async (fs) => {
         this.accessPolicy.assertWorkspacePathWritable(
           absolutePath,
           'symlink'
@@ -7248,7 +7343,7 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
     // membership. Freshness is path-scoped, though: a sibling created by a
     // different live runtime must not make this independent target stale.
     const freshnessKind: RuntimeFileSystemMutationKind = mutationKind === 'file-create' ? 'file-write' : mutationKind;
-    await this.fs.withBaseMutationWithContext(context, [absolutePath], async (fs) => {
+    await fileSystem.withBaseMutationWithContext(context, [absolutePath], async (fs) => {
       this.accessPolicy.assertWorkspacePathWritable(
         absolutePath,
         'write'

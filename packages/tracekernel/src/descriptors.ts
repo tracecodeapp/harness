@@ -1,3 +1,4 @@
+import { withOperationAuthority, type TraceKernelOperationAuthority } from './operation-authority';
 import * as Deferred from 'effect/Deferred';
 import * as Effect from 'effect/Effect';
 import * as Option from 'effect/Option';
@@ -42,7 +43,7 @@ export interface TraceKernelDescriptorReadiness {
   readonly error: boolean;
 }
 
-export interface TraceKernelDescriptorOperationContext {
+export interface TraceKernelDescriptorOperationContext extends TraceKernelOperationAuthority {
   readonly pid: number;
   readonly pgid: number;
   readonly sid: number;
@@ -101,12 +102,12 @@ export interface TraceKernelDescriptor {
 
 export interface TraceKernelReadableDescriptor extends TraceKernelDescriptor {
   readonly kind: 'pipe-reader';
-  read(maxBytes: number): Effect.Effect<Uint8Array, Error>;
+  read(maxBytes: number, position?: number, context?: TraceKernelDescriptorOperationContext): Effect.Effect<Uint8Array, Error>;
 }
 
 export interface TraceKernelWritableDescriptor extends TraceKernelDescriptor {
   readonly kind: 'pipe-writer';
-  write(bytes: Uint8Array): Effect.Effect<number, Error>;
+  write(bytes: Uint8Array, position?: number, context?: TraceKernelDescriptorOperationContext): Effect.Effect<number, Error>;
 }
 
 export type TraceKernelDescriptorReadError =
@@ -502,11 +503,11 @@ export class TraceKernelDescriptorTable {
     const read = statusFor(descriptor).nonblocking && descriptor.readNonblocking
       ? descriptor.readNonblocking
       : descriptor.read;
-    return read(
+    return withOperationAuthority(this.operationContext?.(), read(
       Math.max(0, Math.floor(maxBytes)),
       position === undefined ? undefined : Math.max(0, Math.floor(position)),
       this.operationContext?.()
-    ).pipe(
+    )).pipe(
       Effect.mapError((error) =>
         error instanceof TraceKernelBadFileDescriptorError ||
         error instanceof TraceKernelTerminalError ||
@@ -543,11 +544,11 @@ export class TraceKernelDescriptorTable {
     const write = statusFor(descriptor).nonblocking && descriptor.writeNonblocking
       ? descriptor.writeNonblocking
       : descriptor.write;
-    return write(
+    return withOperationAuthority(this.operationContext?.(), write(
       Uint8Array.from(bytes),
       position === undefined ? undefined : Math.max(0, Math.floor(position)),
       this.operationContext?.()
-    ).pipe(
+    )).pipe(
       Effect.mapError((error) =>
         error instanceof TraceKernelBrokenPipeError ||
         error instanceof TraceKernelTerminalError ||
@@ -1007,10 +1008,10 @@ export class TraceKernelPipe {
     return {
       kind: 'pipe-reader',
       resourceId: this.id,
-      read: (maxBytes) => this.read(maxBytes).pipe(
+      read: (maxBytes, _position, context) => withOperationAuthority(context, this.read(maxBytes)).pipe(
         Effect.tap(() => this.notifyReadiness())
       ),
-      readNonblocking: (maxBytes) => this.readNonblocking(maxBytes).pipe(
+      readNonblocking: (maxBytes, _position, context) => withOperationAuthority(context, this.readNonblocking(maxBytes)).pipe(
         Effect.tap(() => this.notifyReadiness())
       ),
       readiness: (events) => this.pipeReadiness('reader', events),
@@ -1024,10 +1025,10 @@ export class TraceKernelPipe {
     return {
       kind: 'pipe-writer',
       resourceId: this.id,
-      write: (bytes) => this.write(bytes).pipe(
+      write: (bytes, _position, context) => withOperationAuthority(context, this.write(bytes)).pipe(
         Effect.tap(() => this.notifyReadiness())
       ),
-      writeNonblocking: (bytes) => this.writeNonblocking(bytes).pipe(
+      writeNonblocking: (bytes, _position, context) => withOperationAuthority(context, this.writeNonblocking(bytes)).pipe(
         Effect.tap(() => this.notifyReadiness())
       ),
       readiness: (events) => this.pipeReadiness('writer', events),

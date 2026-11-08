@@ -6,6 +6,39 @@ This repo uses Git tags as release boundaries. Version notes below summarize wha
 
 ## [Unreleased]
 
+## [0.18.0] - 2026-11-08
+
+### Changed
+
+- The kernel journal now publishes a pid's exit only after its admitted work
+  settles and its journal records are delivered. This observable exit-timing
+  contract change requires a minor release. Consumers must await
+  `revokeAndDrain()` before taking a submission snapshot.
+- Upgrade the Harness package and its matching worker assets together. Shared
+  stdin readers now recognize an irreversible revoked state distinct from EOF.
+
+### Added
+
+- Add `RuntimeWorkspaceProcess.revokeAndDrain()` to close process-tree authority
+  synchronously and await admitted work and journal delivery. Existing
+  `dispose(): void` callers remain supported and initiate the same revocation
+  without awaiting completion.
+
+### Fixed
+
+- Bind queued terminal input, EOF, resize, signals, and host stdin delivery to
+  process authority. Revocation cancels pending descriptor operations, discards
+  startup and legacy stdin queues, and drains delivery finalizers. Shared stdin
+  readers in every language honor an irreversible revoked state, including
+  reads already copying bytes and readers/writers about to wait.
+- Stage runtime final diffs away from live inodes and publish under a generation
+  check and authority fence, preserving open inode identities. A concurrent live
+  mutation refuses publication instead of overwriting another actor's work.
+- Revalidate process authority inside TKFS mutation locks, including descriptor
+  writes, namespace changes, metadata changes, and runtime final-diff publication.
+  Preserve independent authority for other processes, including those sharing an
+  actor object.
+
 ## [0.17.2] - 2026-10-08
 
 ### Fixed

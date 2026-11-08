@@ -11774,6 +11774,7 @@ var pollUpTo = /* @__PURE__ */ dual(2, (self, n) => {
 var cached3 = memoize;
 var all3 = all2;
 var forEach7 = forEach6;
+var async2 = async_;
 var fail6 = fail2;
 var failCause4 = failCause;
 var gen2 = gen;
@@ -11813,6 +11814,28 @@ var makeSemaphore2 = makeSemaphore;
 var runPromise = unsafeRunPromiseEffect;
 var runSync = unsafeRunSyncEffect;
 var zipRight2 = zipRightOptions;
+
+// packages/tracekernel/src/operation-authority.ts
+function withOperationAuthority(authority, operation) {
+  if (!authority) return operation;
+  const check = try_2({
+    try: () => authority.assertActive?.(),
+    catch: (error) => error instanceof Error ? error : new Error(String(error))
+  });
+  const guarded = check.pipe(zipRight2(operation), tap2(() => check));
+  const signal = authority.signal;
+  if (!signal) return guarded;
+  const revoked = async2((resume2) => {
+    const abort = () => resume2(fail6(Object.assign(new Error("Process authority has been revoked"), { code: "ESRCH" })));
+    if (signal.aborted) {
+      abort();
+      return;
+    }
+    signal.addEventListener("abort", abort, { once: true });
+    return sync3(() => signal.removeEventListener("abort", abort));
+  });
+  return raceFirst2(guarded, revoked);
+}
 
 // node_modules/effect/dist/esm/internal/queue.js
 var EnqueueSymbolKey = "effect/QueueEnqueue";
@@ -12548,11 +12571,11 @@ var TraceKernelDescriptorTable = class {
       }));
     }
     const read = statusFor(descriptor2).nonblocking && descriptor2.readNonblocking ? descriptor2.readNonblocking : descriptor2.read;
-    return read(
+    return withOperationAuthority(this.operationContext?.(), read(
       Math.max(0, Math.floor(maxBytes)),
       position === void 0 ? void 0 : Math.max(0, Math.floor(position)),
       this.operationContext?.()
-    ).pipe(
+    )).pipe(
       mapError2((error) => error instanceof TraceKernelBadFileDescriptorError || error instanceof TraceKernelTerminalError || error instanceof TraceKernelWouldBlockError ? error : new TraceKernelBadFileDescriptorError({
         fd,
         operation: "read",
@@ -12577,11 +12600,11 @@ var TraceKernelDescriptorTable = class {
       }));
     }
     const write = statusFor(descriptor2).nonblocking && descriptor2.writeNonblocking ? descriptor2.writeNonblocking : descriptor2.write;
-    return write(
+    return withOperationAuthority(this.operationContext?.(), write(
       Uint8Array.from(bytes),
       position === void 0 ? void 0 : Math.max(0, Math.floor(position)),
       this.operationContext?.()
-    ).pipe(
+    )).pipe(
       mapError2((error) => error instanceof TraceKernelBrokenPipeError || error instanceof TraceKernelTerminalError || error instanceof TraceKernelWouldBlockError ? error : new TraceKernelBadFileDescriptorError({
         fd,
         operation: "write",
@@ -12932,10 +12955,10 @@ var TraceKernelPipe = class _TraceKernelPipe {
     return {
       kind: "pipe-reader",
       resourceId: this.id,
-      read: (maxBytes) => this.read(maxBytes).pipe(
+      read: (maxBytes, _position, context2) => withOperationAuthority(context2, this.read(maxBytes)).pipe(
         tap2(() => this.notifyReadiness())
       ),
-      readNonblocking: (maxBytes) => this.readNonblocking(maxBytes).pipe(
+      readNonblocking: (maxBytes, _position, context2) => withOperationAuthority(context2, this.readNonblocking(maxBytes)).pipe(
         tap2(() => this.notifyReadiness())
       ),
       readiness: (events) => this.pipeReadiness("reader", events),
@@ -12948,10 +12971,10 @@ var TraceKernelPipe = class _TraceKernelPipe {
     return {
       kind: "pipe-writer",
       resourceId: this.id,
-      write: (bytes) => this.write(bytes).pipe(
+      write: (bytes, _position, context2) => withOperationAuthority(context2, this.write(bytes)).pipe(
         tap2(() => this.notifyReadiness())
       ),
-      writeNonblocking: (bytes) => this.writeNonblocking(bytes).pipe(
+      writeNonblocking: (bytes, _position, context2) => withOperationAuthority(context2, this.writeNonblocking(bytes)).pipe(
         tap2(() => this.notifyReadiness())
       ),
       readiness: (events) => this.pipeReadiness("writer", events),
@@ -13408,7 +13431,12 @@ var TraceKernelProcess = class {
     this.record = record;
     this.started = started;
     this.signalGracePeriodMs = signalGracePeriodMs;
+    const process2 = this;
     this.fileSystemMutationOrigin = Object.freeze({
+      get signal() {
+        return process2.authoritySignal;
+      },
+      assertActive: () => this.mutationAuthority?.(),
       get pid() {
         return record.pid;
       },
@@ -13428,6 +13456,15 @@ var TraceKernelProcess = class {
   runtimeLease;
   requestedSignal;
   pendingSignal;
+  mutationAuthority;
+  authoritySignal;
+  assertAuthority = () => {
+    this.mutationAuthority?.();
+  };
+  setMutationAuthority(assertActive, signal) {
+    this.authoritySignal = signal;
+    this.mutationAuthority = assertActive;
+  }
   fileSystemMutationOrigin;
   descriptors;
   get pid() {
@@ -14407,6 +14444,7 @@ var TraceKernelFileSystem = class _TraceKernelFileSystem {
   }
   nodes = /* @__PURE__ */ new Map();
   nextInode = 1;
+  transactionInodes;
   nextGeneration = 1;
   generationBuffer;
   mutationWatchers = /* @__PURE__ */ new Set();
@@ -14561,6 +14599,8 @@ var TraceKernelFileSystem = class _TraceKernelFileSystem {
     return this.resolve(path, cwd).pipe(
       flatMap9((resolved) => this.mutex.withPermits(1)(
         suspend3(() => {
+          mutationContext?.assertActive?.();
+          mutationContext?.origin?.assertActive?.();
           const realPath = this.resolveNodePath(resolved, true);
           if (realPath instanceof TraceKernelFileSystemError) return fail6(realPath);
           const node = this.nodes.get(realPath);
@@ -14583,6 +14623,8 @@ var TraceKernelFileSystem = class _TraceKernelFileSystem {
     return this.resolve(path, cwd).pipe(
       flatMap9((resolved) => this.mutex.withPermits(1)(
         suspend3(() => {
+          mutationContext?.assertActive?.();
+          mutationContext?.origin?.assertActive?.();
           const realPath = this.resolveNodePath(resolved, true);
           if (realPath instanceof TraceKernelFileSystemError) return fail6(realPath);
           const node = this.nodes.get(realPath);
@@ -14601,6 +14643,8 @@ var TraceKernelFileSystem = class _TraceKernelFileSystem {
     return this.resolve(path, cwd).pipe(
       flatMap9((resolved) => this.mutex.withPermits(1)(
         suspend3(() => {
+          mutationContext?.assertActive?.();
+          mutationContext?.origin?.assertActive?.();
           const directoryPath = this.resolveNodePath(resolved, false, options.recursive ? "suffix" : "final");
           if (directoryPath instanceof TraceKernelFileSystemError) return fail6(directoryPath);
           const existing = this.nodes.get(directoryPath);
@@ -14644,6 +14688,8 @@ var TraceKernelFileSystem = class _TraceKernelFileSystem {
     return this.resolve(path, cwd).pipe(
       flatMap9((resolved) => this.mutex.withPermits(1)(
         suspend3(() => {
+          mutationContext?.assertActive?.();
+          mutationContext?.origin?.assertActive?.();
           const directoryPath = this.resolveNodePath(resolved, false);
           if (directoryPath instanceof TraceKernelFileSystemError) return fail6(directoryPath);
           if (directoryPath === "/") return this.fail("EBUSY", directoryPath, "cannot remove root directory");
@@ -14687,6 +14733,8 @@ var TraceKernelFileSystem = class _TraceKernelFileSystem {
     return this.resolve(path, cwd).pipe(
       flatMap9((resolved) => this.mutex.withPermits(1)(
         suspend3(() => {
+          mutationContext?.assertActive?.();
+          mutationContext?.origin?.assertActive?.();
           const filePath = this.resolveNodePath(resolved, true, "final");
           if (filePath instanceof TraceKernelFileSystemError) return fail6(filePath);
           const existing = this.nodes.get(filePath);
@@ -14732,6 +14780,8 @@ var TraceKernelFileSystem = class _TraceKernelFileSystem {
     ]).pipe(
       flatMap9(([unresolvedExisting, unresolvedNew]) => this.mutex.withPermits(1)(
         suspend3(() => {
+          mutationContext?.assertActive?.();
+          mutationContext?.origin?.assertActive?.();
           const existingResult = this.resolveNodePath(unresolvedExisting, false);
           if (existingResult instanceof TraceKernelFileSystemError) {
             return fail6(existingResult);
@@ -14778,6 +14828,8 @@ var TraceKernelFileSystem = class _TraceKernelFileSystem {
       zipRight2(this.resolve(linkPath, cwd)),
       flatMap9((unresolvedLink) => this.mutex.withPermits(1)(
         suspend3(() => {
+          mutationContext?.assertActive?.();
+          mutationContext?.origin?.assertActive?.();
           const linkResult = this.resolveNodePath(unresolvedLink, false, "final");
           if (linkResult instanceof TraceKernelFileSystemError) return fail6(linkResult);
           if (this.nodes.has(linkResult)) {
@@ -14817,6 +14869,8 @@ var TraceKernelFileSystem = class _TraceKernelFileSystem {
     return this.resolve(path, cwd).pipe(
       flatMap9((resolved) => this.mutex.withPermits(1)(
         suspend3(() => {
+          mutationContext?.assertActive?.();
+          mutationContext?.origin?.assertActive?.();
           const entryPath = this.resolveNodePath(resolved, false);
           if (entryPath instanceof TraceKernelFileSystemError) return fail6(entryPath);
           const node = this.nodes.get(entryPath);
@@ -14838,6 +14892,8 @@ var TraceKernelFileSystem = class _TraceKernelFileSystem {
     ]).pipe(
       flatMap9(([unresolvedSource, unresolvedDestination]) => this.mutex.withPermits(1)(
         suspend3(() => {
+          mutationContext?.assertActive?.();
+          mutationContext?.origin?.assertActive?.();
           const sourceResult = this.resolveNodePath(unresolvedSource, false);
           if (sourceResult instanceof TraceKernelFileSystemError) return fail6(sourceResult);
           const destinationResult = this.resolveNodePath(unresolvedDestination, false, "final");
@@ -14907,6 +14963,8 @@ var TraceKernelFileSystem = class _TraceKernelFileSystem {
     return this.resolve(path, cwd).pipe(
       flatMap9((resolved) => this.mutex.withPermits(1)(
         suspend3(() => {
+          mutationContext?.assertActive?.();
+          mutationContext?.origin?.assertActive?.();
           if (options.create && options.exclusive) {
             const entryPath = this.resolveNodePath(resolved, false, "final");
             if (entryPath instanceof TraceKernelFileSystemError) return fail6(entryPath);
@@ -14978,6 +15036,8 @@ var TraceKernelFileSystem = class _TraceKernelFileSystem {
   truncateOpen(file, length3, mutationContext) {
     return this.mutex.withPermits(1)(
       suspend3(() => {
+        mutationContext?.assertActive?.();
+        mutationContext?.origin?.assertActive?.();
         const nextLength = Math.max(0, Math.floor(length3));
         if (file.node.size === nextLength) return _void;
         const quotaError = this.quotaResizeError(file.node, nextLength);
@@ -14998,6 +15058,8 @@ var TraceKernelFileSystem = class _TraceKernelFileSystem {
   writeAt(file, offset, bytes, append4, mutationContext) {
     return this.mutex.withPermits(1)(
       suspend3(() => {
+        mutationContext?.assertActive?.();
+        mutationContext?.origin?.assertActive?.();
         const node = file.node;
         const writeOffset = append4 ? node.size : offset;
         if (bytes.byteLength === 0) {
@@ -15074,6 +15136,52 @@ var TraceKernelFileSystem = class _TraceKernelFileSystem {
       })
     );
   }
+  /** Host final-diff staging; no live inode is modified before publication. */
+  forkForTransaction() {
+    return this.exportImage().pipe(flatMap9(
+      (image) => _TraceKernelFileSystem.fromImage(image, this.quota ? { quota: this.quota } : {}).pipe(
+        map11((fileSystem) => {
+          fileSystem.nextInode = this.nextInode;
+          fileSystem.transactionInodes = new Map([...fileSystem.nodes.values()].map((node) => [node.inode, node]));
+          return { fileSystem, generation: image.mutationGeneration };
+        })
+      )
+    ));
+  }
+  /** Publish a staged namespace atomically, preserving open inode identities. */
+  publishTransaction(image, expectedGeneration, stagedFileSystem, mutations, context2) {
+    return this.mutex.withPermits(1)(suspend3(() => {
+      context2?.assertActive?.();
+      context2?.origin?.assertActive?.();
+      if (this.mutationGeneration !== expectedGeneration) {
+        return this.fail("EBUSY", "/", "filesystem changed during final-diff staging");
+      }
+      if (mutations.length === 0) return _void;
+      const existing = new Map([...this.nodes.values()].map((node) => [node.inode, node]));
+      this.restoreImage(image);
+      for (const [inode, staged] of stagedFileSystem.transactionInodes ?? []) {
+        const live = existing.get(inode);
+        if (live) Object.assign(live, staged);
+      }
+      for (const [path, staged] of this.nodes) {
+        const live = existing.get(staged.inode);
+        if (live) {
+          Object.assign(live, staged);
+          this.nodes.set(path, live);
+        }
+      }
+      this.nextInode = Math.max(this.nextInode, stagedFileSystem.nextInode);
+      if (this.generationBuffer) {
+        const shared = new Int32Array(this.generationBuffer);
+        Atomics.store(shared, 0, this.mutationGeneration | 0);
+        Atomics.notify(shared, 0);
+      }
+      for (const mutation of mutations) {
+        this.notifyMutation(mutation.generation, mutation.eventType, mutation.operation, mutation.paths, context2);
+      }
+      return _void;
+    }));
+  }
   /**
    * Replace a quiescent live namespace with a previously exported image.
    *
@@ -15085,6 +15193,8 @@ var TraceKernelFileSystem = class _TraceKernelFileSystem {
     return this.mutex.withPermits(1)(
       try_2({
         try: () => {
+          mutationContext?.assertActive?.();
+          mutationContext?.origin?.assertActive?.();
           const previousPaths = [...this.nodes.keys()];
           const previousGeneration = this.mutationGeneration;
           this.restoreImage(image);
@@ -15110,6 +15220,8 @@ var TraceKernelFileSystem = class _TraceKernelFileSystem {
     );
   }
   clear(mutationContext) {
+    mutationContext?.assertActive?.();
+    mutationContext?.origin?.assertActive?.();
     if (this.nodes.size > 0) {
       const paths = [...this.nodes.keys()];
       const generation = this.beginMutation();
@@ -16635,6 +16747,7 @@ var TraceKernelProcessTable = class {
         message: `ESRCH: parent process ${ppid} does not exist in session ${this.options.sessionId}`
       });
     }
+    parent?.assertAuthority();
     const pid = this.nextPid;
     const parentSnapshot = parent?.snapshot();
     if (spec.sessionId !== void 0 && (!Number.isSafeInteger(spec.sessionId) || spec.sessionId < 0)) {
@@ -16700,6 +16813,7 @@ var TraceKernelProcessTable = class {
       this.options.maxDescriptorsPerProcess,
       this.options.signalGracePeriodMs
     );
+    if (parent) process2.setMutationAuthority(parent.assertAuthority, parent.authoritySignal);
     this.processes.set(pid, process2);
     if (ppid === 1 && spec.retainOnExit === true) {
       this.initRetainedProcesses.add(pid);
@@ -17366,10 +17480,10 @@ var TraceKernelTerminal = class _TraceKernelTerminal {
       close: () => _void
     };
   }
-  writeInput(bytes) {
-    return this.writeStream(this.input, bytes);
+  writeInput(bytes, authority) {
+    return this.writeStream(this.input, bytes, authority);
   }
-  signalInputEof() {
+  signalInputEof(authority) {
     return suspend3(() => {
       if (this.closed) {
         return fail6(new TraceKernelTerminalError({
@@ -17377,6 +17491,7 @@ var TraceKernelTerminal = class _TraceKernelTerminal {
           message: `EIO: terminal ${this.name} is closed`
         }));
       }
+      authority?.assertActive?.();
       this.input.eofPending += 1;
       this.wake(this.input);
       return _void;
@@ -17385,8 +17500,9 @@ var TraceKernelTerminal = class _TraceKernelTerminal {
   readOutput(maxBytes, nonblocking = false) {
     return this.readStream(this.output, maxBytes, nonblocking);
   }
-  discardInput() {
+  discardInput(authority) {
     return sync3(() => {
+      authority?.assertActive?.();
       this.input.chunks.length = 0;
       this.input.remainder = new Uint8Array(0);
       this.input.eofPending = 0;
@@ -17404,14 +17520,14 @@ var TraceKernelTerminal = class _TraceKernelTerminal {
   readInput(maxBytes, nonblocking = false, context2) {
     const accessError = this.processAccessError(context2, "read");
     if (accessError) return fail6(accessError);
-    return this.readStream(this.input, maxBytes, nonblocking, true);
+    return this.readStream(this.input, maxBytes, nonblocking, true, context2);
   }
   writeOutput(bytes, context2) {
     const accessError = this.processAccessError(context2, "write");
     if (accessError) return fail6(accessError);
-    return this.writeStream(this.output, bytes);
+    return this.writeStream(this.output, bytes, context2);
   }
-  writeStream(stream, bytes) {
+  writeStream(stream, bytes, authority) {
     return suspend3(() => {
       if (this.closed) {
         return fail6(new TraceKernelTerminalError({
@@ -17419,6 +17535,7 @@ var TraceKernelTerminal = class _TraceKernelTerminal {
           message: `EIO: terminal ${this.name} is closed`
         }));
       }
+      authority?.assertActive?.();
       const copy3 = Uint8Array.from(bytes);
       if (copy3.byteLength === 0) return succeed5(0);
       stream.chunks.push(copy3);
@@ -17426,10 +17543,11 @@ var TraceKernelTerminal = class _TraceKernelTerminal {
       return succeed5(copy3.byteLength);
     });
   }
-  readStream(stream, maxBytes, nonblocking, consumeEof = false) {
+  readStream(stream, maxBytes, nonblocking, consumeEof = false, authority) {
     const requested = Math.max(0, Math.floor(maxBytes));
     if (requested === 0) return succeed5(new Uint8Array(0));
     return suspend3(() => {
+      authority?.assertActive?.();
       const available = this.takeBytes(stream, requested);
       if (available) return succeed5(available);
       if (consumeEof && stream.eofPending > 0) {
@@ -17447,7 +17565,7 @@ var TraceKernelTerminal = class _TraceKernelTerminal {
       const changed = stream.changed;
       return _await3(changed).pipe(
         andThen4(
-          this.readStream(stream, requested, false, consumeEof)
+          this.readStream(stream, requested, false, consumeEof, authority)
         )
       );
     });
@@ -17739,9 +17857,10 @@ var TraceKernelTerminals = class {
       });
     });
   }
-  signalTerminalForeground(terminalId, signal) {
+  signalTerminalForeground(terminalId, signal, authority) {
     return gen2(this, function* () {
       const terminal = yield* this.terminalById(terminalId);
+      authority?.assertActive?.();
       const pgid = terminal.snapshot().foregroundProcessGroupId;
       const members = [...this.processTable.activeProcesses()].filter((candidate) => {
         const snapshot = candidate.snapshot();
@@ -17755,29 +17874,34 @@ var TraceKernelTerminals = class {
       }
       yield* forEach7(
         members,
-        (member) => member.signal(signal),
+        (member) => suspend3(() => {
+          authority?.assertActive?.();
+          return member.signal(signal);
+        }),
         { concurrency: "unbounded", discard: true }
       );
     });
   }
-  writeTerminalInput(terminalId, bytes) {
+  writeTerminalInput(terminalId, bytes, authority) {
     return gen2(this, function* () {
       const terminal = yield* this.terminalById(terminalId);
+      authority?.assertActive?.();
       const signalByte = bytes.find((byte) => byte === 3 || byte === 28);
       if (signalByte === void 0) {
-        return yield* terminal.writeInput(bytes);
+        return yield* terminal.writeInput(bytes, authority);
       }
-      yield* terminal.discardInput();
+      yield* terminal.discardInput(authority);
       yield* this.signalTerminalForeground(
         terminalId,
-        signalByte === 3 ? "SIGINT" : "SIGQUIT"
+        signalByte === 3 ? "SIGINT" : "SIGQUIT",
+        authority
       );
       return bytes.byteLength;
     });
   }
-  sendTerminalInputEof(terminalId) {
+  sendTerminalInputEof(terminalId, authority) {
     return this.terminalById(terminalId).pipe(
-      flatMap9((terminal) => terminal.signalInputEof())
+      flatMap9((terminal) => terminal.signalInputEof(authority))
     );
   }
   readTerminalOutput(terminalId, maxBytes, nonblocking = false) {
@@ -17785,11 +17909,12 @@ var TraceKernelTerminals = class {
       flatMap9((terminal) => terminal.readOutput(maxBytes, nonblocking))
     );
   }
-  resizeTerminal(terminalId, columns, rows) {
+  resizeTerminal(terminalId, columns, rows, authority) {
     return gen2(this, function* () {
       const terminal = yield* this.terminalById(terminalId);
+      authority?.assertActive?.();
       terminal.resize(columns, rows);
-      yield* this.signalTerminalForeground(terminalId, "SIGWINCH").pipe(
+      yield* this.signalTerminalForeground(terminalId, "SIGWINCH", authority).pipe(
         catchAll2(() => _void)
       );
       return terminal.snapshot();
@@ -18123,20 +18248,20 @@ var TraceKernelSession = class {
   setTerminalWindowSize(process2, fd, rows, columns) {
     return this.terminals.setTerminalWindowSize(process2, fd, rows, columns);
   }
-  signalTerminalForeground(terminalId, signal) {
-    return this.terminals.signalTerminalForeground(terminalId, signal);
+  signalTerminalForeground(terminalId, signal, authority) {
+    return withOperationAuthority(authority, this.terminals.signalTerminalForeground(terminalId, signal, authority));
   }
-  writeTerminalInput(terminalId, bytes) {
-    return this.terminals.writeTerminalInput(terminalId, bytes);
+  writeTerminalInput(terminalId, bytes, authority) {
+    return withOperationAuthority(authority, this.terminals.writeTerminalInput(terminalId, bytes, authority));
   }
-  sendTerminalInputEof(terminalId) {
-    return this.terminals.sendTerminalInputEof(terminalId);
+  sendTerminalInputEof(terminalId, authority) {
+    return withOperationAuthority(authority, this.terminals.sendTerminalInputEof(terminalId, authority));
   }
   readTerminalOutput(terminalId, maxBytes, nonblocking = false) {
     return this.terminals.readTerminalOutput(terminalId, maxBytes, nonblocking);
   }
-  resizeTerminal(terminalId, columns, rows) {
-    return this.terminals.resizeTerminal(terminalId, columns, rows);
+  resizeTerminal(terminalId, columns, rows, authority) {
+    return withOperationAuthority(authority, this.terminals.resizeTerminal(terminalId, columns, rows, authority));
   }
   releaseTerminalForegroundToHost(terminalId, expectedProcessGroupId) {
     return this.terminals.releaseTerminalForegroundToHost(terminalId, expectedProcessGroupId);
@@ -18285,7 +18410,7 @@ var TraceKernelSession = class {
         { fd: 0, descriptor: stdin.reader() }
       ]).pipe(tapError2(() => stdin.dispose()));
       return Object.freeze({
-        writeStdin: (bytes) => writer.write(bytes),
+        writeStdin: (bytes) => writer.write(bytes, void 0, process2.fileSystemMutationOrigin),
         closeStdin: () => writer.close()
       });
     });
@@ -18333,7 +18458,7 @@ var TraceKernelSession = class {
         stdinResourceId: stdin.id,
         stdoutResourceId: stdout.id,
         stderrResourceId: stderr.id,
-        writeStdin: (bytes) => hostStdin.write(bytes),
+        writeStdin: (bytes) => hostStdin.write(bytes, void 0, process2.fileSystemMutationOrigin),
         closeStdin: () => hostStdin.close(),
         readStdout: (maxBytes) => hostStdout.read(Math.max(0, Math.floor(maxBytes))),
         readStderr: (maxBytes) => hostStderr.read(Math.max(0, Math.floor(maxBytes))),

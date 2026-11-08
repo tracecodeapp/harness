@@ -1,3 +1,4 @@
+import type { TraceKernelOperationAuthority } from '../operation-authority';
 import * as Effect from 'effect/Effect';
 import type { TraceKernelDescriptor } from '../descriptors';
 import {
@@ -335,10 +336,12 @@ export class TraceKernelTerminals {
 
   signalTerminalForeground(
     terminalId: string,
-    signal: TraceKernelSignal
+    signal: TraceKernelSignal,
+    authority?: TraceKernelOperationAuthority
   ): Effect.Effect<void, Error> {
     return Effect.gen(this, function* () {
       const terminal = yield* this.terminalById(terminalId);
+      authority?.assertActive?.();
       const pgid = terminal.snapshot().foregroundProcessGroupId;
       const members = [...this.processTable.activeProcesses()].filter((candidate) => {
         const snapshot = candidate.snapshot();
@@ -352,7 +355,7 @@ export class TraceKernelTerminals {
       }
       yield* Effect.forEach(
         members,
-        (member) => member.signal(signal),
+        (member) => Effect.suspend(() => { authority?.assertActive?.(); return member.signal(signal); }),
         { concurrency: 'unbounded', discard: true }
       );
     });
@@ -360,30 +363,33 @@ export class TraceKernelTerminals {
 
   writeTerminalInput(
     terminalId: string,
-    bytes: Uint8Array
+    bytes: Uint8Array,
+    authority?: TraceKernelOperationAuthority
   ): Effect.Effect<number, Error> {
     return Effect.gen(this, function* () {
       const terminal = yield* this.terminalById(terminalId);
+      authority?.assertActive?.();
       const signalByte = bytes.find((byte) => byte === 0x03 || byte === 0x1c);
       if (signalByte === undefined) {
-        return yield* terminal.writeInput(bytes);
+        return yield* terminal.writeInput(bytes, authority);
       }
 
       // Default termios ISIG behavior: signal-generating characters are
       // consumed by the terminal and flush unread input instead of becoming
       // process-visible bytes.
-      yield* terminal.discardInput();
+      yield* terminal.discardInput(authority);
       yield* this.signalTerminalForeground(
         terminalId,
-        signalByte === 0x03 ? 'SIGINT' : 'SIGQUIT'
+        signalByte === 0x03 ? 'SIGINT' : 'SIGQUIT',
+        authority
       );
       return bytes.byteLength;
     });
   }
 
-  sendTerminalInputEof(terminalId: string): Effect.Effect<void, Error> {
+  sendTerminalInputEof(terminalId: string, authority?: TraceKernelOperationAuthority): Effect.Effect<void, Error> {
     return this.terminalById(terminalId).pipe(
-      Effect.flatMap((terminal) => terminal.signalInputEof())
+      Effect.flatMap((terminal) => terminal.signalInputEof(authority))
     );
   }
 
@@ -400,12 +406,14 @@ export class TraceKernelTerminals {
   resizeTerminal(
     terminalId: string,
     columns: number,
-    rows: number
+    rows: number,
+    authority?: TraceKernelOperationAuthority
   ): Effect.Effect<TraceKernelTerminalSnapshot, Error> {
     return Effect.gen(this, function* () {
       const terminal = yield* this.terminalById(terminalId);
+      authority?.assertActive?.();
       terminal.resize(columns, rows);
-      yield* this.signalTerminalForeground(terminalId, 'SIGWINCH').pipe(
+      yield* this.signalTerminalForeground(terminalId, 'SIGWINCH', authority).pipe(
         Effect.catchAll(() => Effect.void)
       );
       return terminal.snapshot();

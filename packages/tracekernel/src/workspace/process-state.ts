@@ -1,3 +1,4 @@
+import type { ProcessAuthority } from './process-authority';
 import type * as Scope from 'effect/Scope';
 import type {
   RuntimeCommandResult,
@@ -63,6 +64,7 @@ export interface RuntimeKernelFileDescriptorRecord {
 }
 
 export interface RuntimeKernelProcessRecord {
+  readonly authority?: ProcessAuthority;
   readonly pid: number;
   readonly ppid: number;
   readonly pgid: number;

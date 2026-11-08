@@ -378,3 +378,44 @@ evaluation, for example to update idle UI before the next user action.
 
 Use lifecycle events and `projectSession.lifecycle` for UI state instead of
 guessing from command failures.
+
+
+### Revoking a process before taking a snapshot
+
+`process.revokeAndDrain()` closes admission synchronously for the process and its
+owned descendants. It returns an idempotent completion promise. Pending mutations
+check authority inside the filesystem commit lock. Work committed before
+revocation finishes publication before the process exit journal record.
+
+```ts
+const learnerDrain = learner.revokeAndDrain();
+const agentDrain = agent.revokeAndDrain();
+await Promise.all([learnerDrain, agentDrain]);
+const sealedFiles = await workspace.kernel.snapshot();
+```
+
+Keep grader execution in a separate process. Revocation belongs to process
+ownership, not actor identity, so a separate process retains its authority even
+when it uses the same actor object. Descendant ownership survives OS reparenting.
+
+Existing `dispose(): void` callers remain valid. It initiates the same revocation,
+but callers that need a snapshot fence must await `revokeAndDrain()`. Exit journal
+publication is asynchronous now. A failed drain must not be treated as permission
+to capture a sealed snapshot. Snapshot immutability still requires the caller to
+exclude writes by other authorized processes.
+
+
+Queued terminal input, EOF, window changes, and terminal signals retain the
+owning process authority through kernel delivery. Revocation cancels waiting
+operations and waits for their finalizers. Unread startup and legacy stdin
+buffers are discarded; input already consumed before revocation cannot be
+recalled. Descriptor operations recheck authority before returning to a process.
+The shared stdin header keeps its existing layout and adds state `2` for
+revocation; state `1` remains EOF with readable buffered bytes. Upgrade the
+Harness package and its matching generated worker assets together.
+
+Worker final diffs are prepared in an isolated filesystem image. Publication
+checks both process authority and the live filesystem generation under the TKFS
+commit lock. A concurrent live mutation produces `EBUSY` instead of allowing the
+staged image to overwrite another actor's changes. Existing open file
+references retain their inode identity across successful publication.

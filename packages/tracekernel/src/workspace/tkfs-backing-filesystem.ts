@@ -1,3 +1,4 @@
+import { withDependencies } from './process-authority';
 import * as Effect from 'effect/Effect';
 import * as Either from 'effect/Either';
 import {
@@ -158,6 +159,29 @@ export class TraceKernelBackingFileSystem implements IFileSystem {
     this.externalMutationWatchers.clear();
   }
 
+  private assertActive?: () => void;
+
+  withAuthority(assertActive: () => void): TraceKernelBackingFileSystem {
+    return withDependencies(this, { assertActive } as Partial<TraceKernelBackingFileSystem>);
+  }
+
+  async transaction<T>(mutate: (fileSystem: IFileSystem) => Promise<T>): Promise<T> {
+    this.assertActive?.();
+    const { fileSystem, generation } = await runKernelEffect(this.traceKernelFileSystem.forkForTransaction());
+    const staged = new TraceKernelBackingFileSystem(fileSystem);
+    const mutations: TraceKernelFileSystemMutation[] = [];
+    const stop = fileSystem.watchMutations((mutation) => mutations.push(mutation));
+    try {
+      const result = await mutate(this.assertActive ? staged.withAuthority(this.assertActive) : staged);
+      const image = await runKernelEffect(fileSystem.exportImage());
+      await runKernelEffect(this.traceKernelFileSystem.publishTransaction(
+        image, generation, fileSystem, mutations,
+        { assertActive: this.assertActive, origin: this.mutationOrigin }
+      ));
+      return result;
+    } finally { stop(); staged.dispose(); }
+  }
+
   async readFile(path: string, options?: ReadOptions): Promise<string> {
     const bytes = await this.readFileBuffer(path);
     return textFromBytes(bytes, selectedEncoding(options));
@@ -184,7 +208,7 @@ export class TraceKernelBackingFileSystem implements IFileSystem {
         path,
         contentBytes(content, options),
         '/',
-        { origin: this.mutationOrigin }
+        { assertActive: this.assertActive, origin: this.mutationOrigin }
       )
     );
   }
@@ -204,7 +228,7 @@ export class TraceKernelBackingFileSystem implements IFileSystem {
         create: true,
         append: true,
       },
-      { origin: this.mutationOrigin }
+      { assertActive: this.assertActive, origin: this.mutationOrigin }
     ));
     await runKernelEffect(
       this.traceKernelFileSystem.writeAt(
@@ -212,7 +236,7 @@ export class TraceKernelBackingFileSystem implements IFileSystem {
         0,
         contentBytes(content, options),
         true,
-        { origin: this.mutationOrigin }
+        { assertActive: this.assertActive, origin: this.mutationOrigin }
       )
     );
   }
@@ -238,7 +262,7 @@ export class TraceKernelBackingFileSystem implements IFileSystem {
   async mkdir(path: string, options?: MkdirOptions): Promise<void> {
     await runKernelEffect(
       this.traceKernelFileSystem.mkdir(path, options, '/', {
-        origin: this.mutationOrigin,
+        assertActive: this.assertActive, origin: this.mutationOrigin,
       })
     );
   }
@@ -269,7 +293,7 @@ export class TraceKernelBackingFileSystem implements IFileSystem {
     if (!stat.isDirectory) {
       await runKernelEffect(
         this.traceKernelFileSystem.unlink(path, '/', {
-          origin: this.mutationOrigin,
+          assertActive: this.assertActive, origin: this.mutationOrigin,
         })
       );
       return;
@@ -281,7 +305,7 @@ export class TraceKernelBackingFileSystem implements IFileSystem {
     }
     await runKernelEffect(
       this.traceKernelFileSystem.rmdir(path, '/', {
-        origin: this.mutationOrigin,
+        assertActive: this.assertActive, origin: this.mutationOrigin,
       })
     );
   }
@@ -318,7 +342,7 @@ export class TraceKernelBackingFileSystem implements IFileSystem {
     await this.ensureParentDirectory(dest);
     await runKernelEffect(
       this.traceKernelFileSystem.rename(src, dest, '/', {
-        origin: this.mutationOrigin,
+        assertActive: this.assertActive, origin: this.mutationOrigin,
       })
     );
   }
@@ -334,7 +358,7 @@ export class TraceKernelBackingFileSystem implements IFileSystem {
   async chmod(path: string, mode: number): Promise<void> {
     await runKernelEffect(
       this.traceKernelFileSystem.chmod(path, mode, '/', {
-        origin: this.mutationOrigin,
+        assertActive: this.assertActive, origin: this.mutationOrigin,
       })
     );
   }
@@ -342,7 +366,7 @@ export class TraceKernelBackingFileSystem implements IFileSystem {
   async symlink(target: string, linkPath: string): Promise<void> {
     await runKernelEffect(
       this.traceKernelFileSystem.symlink(target, linkPath, '/', {
-        origin: this.mutationOrigin,
+        assertActive: this.assertActive, origin: this.mutationOrigin,
       })
     );
   }
@@ -350,7 +374,7 @@ export class TraceKernelBackingFileSystem implements IFileSystem {
   async link(existingPath: string, newPath: string): Promise<void> {
     await runKernelEffect(
       this.traceKernelFileSystem.link(existingPath, newPath, '/', {
-        origin: this.mutationOrigin,
+        assertActive: this.assertActive, origin: this.mutationOrigin,
       })
     );
   }
@@ -366,7 +390,7 @@ export class TraceKernelBackingFileSystem implements IFileSystem {
   async utimes(path: string, _atime: Date, mtime: Date): Promise<void> {
     await runKernelEffect(
       this.traceKernelFileSystem.utimes(path, mtime.getTime(), '/', {
-        origin: this.mutationOrigin,
+        assertActive: this.assertActive, origin: this.mutationOrigin,
       })
     );
   }
@@ -388,7 +412,7 @@ export class TraceKernelBackingFileSystem implements IFileSystem {
       if ((await this.lstat(path)).isSymbolicLink) {
         await runKernelEffect(
           this.traceKernelFileSystem.unlink(path, '/', {
-            origin: this.mutationOrigin,
+            assertActive: this.assertActive, origin: this.mutationOrigin,
           })
         );
       }
