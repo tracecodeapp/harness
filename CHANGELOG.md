@@ -6,6 +6,8 @@ This repo uses Git tags as release boundaries. Version notes below summarize wha
 
 ## [Unreleased]
 
+## [0.20.2] - 2026-11-17
+
 ### Added
 
 - Provider batches can stop themselves at the first runaway case. A
