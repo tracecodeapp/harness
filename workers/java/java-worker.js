@@ -5685,25 +5685,121 @@ const JAVA_COMPILER_DIAGNOSTIC_HEADER =
 // Where the learner's source sits in a generated compilation unit, so compiler
 // lines can be reported in the learner's own numbering. Instrumented (traced)
 // units do not contain the learner's source verbatim and have no region.
+// javac reports columns with tabs expanded to multiples of 8.
+const JAVAC_TAB_WIDTH = 8;
+
+function javacColumnToIndex(text, column) {
+  let visual = 1;
+  for (let index = 0; index < text.length; index += 1) {
+    if (visual >= column) return index;
+    visual = text[index] === '\t'
+      ? Math.floor((visual - 1) / JAVAC_TAB_WIDTH + 1) * JAVAC_TAB_WIDTH + 1
+      : visual + 1;
+  }
+  return text.length;
+}
+
+function javacIndexToColumn(text, index) {
+  let visual = 1;
+  for (let cursor = 0; cursor < index && cursor < text.length; cursor += 1) {
+    visual = text[cursor] === '\t'
+      ? Math.floor((visual - 1) / JAVAC_TAB_WIDTH + 1) * JAVAC_TAB_WIDTH + 1
+      : visual + 1;
+  }
+  return visual;
+}
+
+/**
+ * `normalizePublicClassDeclarations` with a map from every position in the
+ * normalized text back to the learner's original text, so the compiler's
+ * lines and columns can be reported where the learner wrote them.
+ */
+function javaNormalizationMap(learnerCode) {
+  const original = String(learnerCode);
+  const pattern = /^([ \t]*)public\s+class\s+/gm;
+  const toOriginal = [];
+  let normalized = '';
+  let cursor = 0;
+  for (const match of original.matchAll(pattern)) {
+    for (let index = cursor; index < match.index; index += 1) {
+      toOriginal.push(index);
+      normalized += original[index];
+    }
+    const indentation = match[1];
+    for (let index = 0; index < indentation.length; index += 1) {
+      toOriginal.push(match.index + index);
+      normalized += original[match.index + index];
+    }
+    const matchEnd = match.index + match[0].length;
+    const keyword = original.indexOf('class', match.index + indentation.length + 'public'.length);
+    for (let index = 0; index < 'class '.length; index += 1) {
+      toOriginal.push(Math.min(keyword + index, matchEnd - 1));
+    }
+    normalized += 'class ';
+    cursor = matchEnd;
+  }
+  for (let index = cursor; index < original.length; index += 1) {
+    toOriginal.push(index);
+    normalized += original[index];
+  }
+  toOriginal.push(original.length);
+  // The map is only trusted if it reproduces the normalization exactly.
+  if (normalized !== normalizePublicClassDeclarations(original)) return undefined;
+  return { original, normalized, toOriginal };
+}
+
+// Where the learner's source sits in a generated compilation unit, so compiler
+// positions can be reported in the learner's own text. Instrumented (traced)
+// units do not contain the learner's source verbatim and have no region.
 function javaLearnerSourceRegion(generatedSource, learnerCode) {
-  const normalized = normalizePublicClassDeclarations(learnerCode);
-  const trimmed = normalized.trim();
-  if (!trimmed || typeof generatedSource !== 'string') return undefined;
-  const index = generatedSource.indexOf(trimmed);
-  if (index < 0) return undefined;
-  const leadingLines = (normalized.match(/^\s*/)?.[0].match(/\n/g) ?? []).length;
+  const map = javaNormalizationMap(learnerCode);
+  if (!map || typeof generatedSource !== 'string') return undefined;
+  const trimmed = map.normalized.trim();
+  if (!trimmed) return undefined;
+  const start = generatedSource.indexOf(trimmed);
+  if (start < 0) return undefined;
   return {
-    firstGeneratedLine: generatedSource.slice(0, index).split('\n').length,
-    leadingLines,
-    lineCount: trimmed.split('\n').length,
+    generatedSource,
+    generatedLines: generatedSource.split('\n'),
+    start,
+    leading: map.normalized.length - map.normalized.trimStart().length,
+    length: trimmed.length,
+    map,
+    originalLines: map.original.split('\n'),
   };
 }
 
-function javaLearnerLine(region, generatedLine) {
+/**
+ * A compiler position (generated line, javac column) in the learner's original
+ * text: `{ line, column?, verbatim }`. `verbatim` says the compiled line is the
+ * learner's line unchanged, so an excerpt and caret from the compiler show the
+ * learner's own text. Positions outside the learner's source are undefined.
+ */
+function javaLearnerPosition(region, generatedLine, javacColumn) {
   if (!region) return undefined;
-  const offset = generatedLine - region.firstGeneratedLine;
-  if (offset < 0 || offset >= region.lineCount) return undefined;
-  return offset + 1 + region.leadingLines;
+  const lineText = region.generatedLines[generatedLine - 1];
+  if (lineText === undefined) return undefined;
+  const lineStart = region.generatedLines
+    .slice(0, generatedLine - 1)
+    .reduce((sum, text) => sum + text.length + 1, 0);
+  const indexInLine = javacColumn === undefined ? 0 : javacColumnToIndex(lineText, javacColumn);
+  const normalizedOffset = lineStart + indexInLine - region.start + region.leading;
+  if (normalizedOffset < region.leading || normalizedOffset > region.leading + region.length) {
+    return undefined;
+  }
+  const originalOffset = region.map.toOriginal[normalizedOffset];
+  if (originalOffset === undefined) return undefined;
+  const before = region.map.original.slice(0, originalOffset);
+  const line = before.split('\n').length;
+  const originalLineText = region.originalLines[line - 1] ?? '';
+  const originalLineStart = before.lastIndexOf('\n') + 1;
+  return {
+    line,
+    ...(javacColumn === undefined
+      ? {}
+      : { column: javacIndexToColumn(originalLineText, originalOffset - originalLineStart) }),
+    verbatim: originalLineText === lineText,
+  };
 }
 
 /**
@@ -5733,14 +5829,18 @@ function javaCompileFailure(report, sources = [], learnerCode = '', fallback = '
     const header = JAVA_COMPILER_DIAGNOSTIC_HEADER.exec(rawLine.trim());
     if (header) {
       const [, file, lineText, columnText, severity, text] = header;
-      const generatedLine = Number(lineText);
-      const line = javaLearnerLine(regions.get(file), generatedLine);
+      const position = javaLearnerPosition(
+        regions.get(file),
+        Number(lineText),
+        columnText ? Number(columnText) : undefined
+      );
       entries.push({
         file,
         severity,
         message: text.trim(),
-        ...(line === undefined ? {} : { line }),
-        ...(columnText ? { column: Number(columnText) } : {}),
+        // Only positions in the learner's original text are reported.
+        ...(position ? { line: position.line, verbatim: position.verbatim } : {}),
+        ...(position?.column === undefined ? {} : { column: position.column }),
         detail: [],
       });
     } else if (entries.length > 0 && rawLine.trim()) {
@@ -5767,8 +5867,9 @@ function javaCompileFailure(report, sources = [], learnerCode = '', fallback = '
         entry.line === undefined
           ? `${entry.severity}: ${entry.message}`
           : `Solution.java:${entry.line}${entry.column ? `:${entry.column}` : ''}: ${entry.severity}: ${entry.message}`,
-        // Source excerpts belong to the learner's file only when its lines do.
-        ...(entry.line === undefined ? [] : entry.detail),
+        // An excerpt and caret only when the compiled line is the learner's
+        // own text.
+        ...(entry.line !== undefined && entry.verbatim ? entry.detail : []),
       ].join('\n')).join('\n')
     : compilerStderr || compilerStdout ||
       (runtimeError && runtimeError !== JAVA_GENERIC_COMPILE_FAILURE ? runtimeError : fallback);

@@ -20,23 +20,41 @@ This repo uses Git tags as release boundaries. Version notes below summarize wha
 ### Fixed
 
 - A worker reply that names a limit outside the closed `ExecutionLimitReason`
-  set (or a stage outside `ExecutionDiagnosticStage`) is a provider protocol
-  failure. Before, any truthy `timeoutReason` became a learner limit with that
-  reason, outside the exported type. `isExecutionLimitReason` and
-  `isExecutionDiagnosticStage` are exported from runtime-contracts.
-- A compile deadline is never the learner's limit. C# and C++ compile under
-  their own 120 s deadline instead of the 20 s execution deadline, and a
-  compile that misses it is a provider failure. Before, C++ reported it as the
-  learner's `client-timeout` and C# rejected after 20 s.
+  set, or a stage outside `ExecutionDiagnosticStage`, is a provider protocol
+  failure (`origin: 'provider'`, `reason: 'protocol'`), whatever else the reply
+  says (a completed reply, or a limit with an unknown stage). Before, any
+  truthy `timeoutReason` became a learner limit with that reason, outside the
+  exported type. `isExecutionLimitReason` and `isExecutionDiagnosticStage` are
+  exported from runtime-contracts, and `RuntimeProviderError` carries a
+  `reason` (`runtime-failure` or `protocol`).
+- A compile deadline is never the learner's limit in prepared execution (every
+  Judge evaluation: Run, Submit, traced runs). C# and C++ compile under their
+  own 120 s deadline instead of the 20 s execution deadline, and a compile that
+  misses it is a provider failure. Before, C++ reported it as the learner's
+  `client-timeout` and C# rejected after 20 s. Not yet covered: the direct
+  `CppWorkerClient.executeCode` / `executeWithTracing` / batch APIs, which
+  compile and run under one execution clock, still report a compile that
+  outlasts it as `client-timeout`. `CppPreparedProgramPreparationResult` keeps
+  `limitReason` as a deprecated member that is no longer produced.
 - Java compile failures report the compiler's diagnostics in the learner's
   file and line (`Solution.java:3:20: error: ...`). Before, the message was the
   worker's labelled report sections (`compilerStderr:` ... `runtimeError:`)
   naming generated files, with no line. The raw output is in the outcome's
   structured `diagnostic`.
-- C++ compile failures report only the compiler's diagnostics about the
-  learner's source: no wrapper prefix or trailer, notes in the generated driver
-  mapped back to the learner's lines or left out, and no instrumented excerpts
-  from traced builds.
+- C++ compile failures report the compiler's diagnostics with the primary
+  error and its whole instantiation or macro-expansion chain, including errors
+  located in library headers (an STL misuse reports the header error, the
+  chain, and the learner's line that requested it). Only generated-source
+  locations change: the internal include chain is dropped, generated-driver
+  locations are mapped to the learner's line or left out, and instrumented
+  excerpts from traced builds are dropped. A learner error whose chain reaches
+  the learner's source is the `compile` stage, not `driver-compile`. Beyond
+  the primary error, the learner's own errors and at most three errors are
+  shown, with the rest counted; the full output stays in the structured
+  diagnostic.
+- Java compile positions are in the learner's original text: lines and
+  columns are mapped back through the worker's source normalization, and an
+  excerpt is kept only when the compiled line is the learner's line unchanged.
 
 ## [0.20.0] - 2026-11-17
 

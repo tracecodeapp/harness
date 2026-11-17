@@ -3,6 +3,7 @@
 import { test } from 'node:test';
 import { createCppBrowserRuntimeProvider } from '../packages/runtime-cpp/src/browser-runtime-provider';
 import { CppWorkerClient } from '../packages/runtime-cpp/src/cpp-worker-client';
+import type { CppPreparedProgramPreparationResult } from '../packages/runtime-cpp/src/index';
 import { createCppPreparedExecutionProvider } from '../packages/runtime-cpp/src/cpp-prepared-provider';
 import { createTraceCCRuntimeManifest } from '../packages/runtime-cpp/src/tracecc-runtime-assets';
 import { isRuntimeProviderError } from '../packages/runtime-contracts/src/execution-outcome';
@@ -1314,44 +1315,55 @@ test('cpp compile promotes queued compiler asset prewarm', testCompilePromotesQu
 test('cpp prepared provider protocol lifecycle', testPreparedProviderProtocolLifecycle);
 test('cpp compiler lifecycle', main);
 
-test('cpp compile that misses its deadline is the provider failure, never a learner limit', async () => {
-  let terminated = 0;
-  const fakeClient = {
-    init: async () => ({ success: true, loadTimeMs: 0 }),
-    prepareRuntimeProgram: async () => ({
-      success: false as const,
-      error: 'Execution timed out.',
-      consoleOutput: [],
-      compileDeadlineExceeded: true as const,
-    }),
-    terminate: () => { terminated += 1; },
-    dispose: () => { terminated += 1; },
-  };
-  const provider = createCppPreparedExecutionProvider({
-    createWorkerClient: () => fakeClient as unknown as CppWorkerClient,
-  });
-  let rejection: unknown;
-  try {
-    await provider.prepareProgram({
-      mode: 'code',
-      code: 'class Solution { public: int solve(int n) { return n; } };',
-      functionName: 'solve',
-      executionStyle: 'solution-method',
-    });
-  } catch (error) {
-    rejection = error;
+class HangingCompileWorker extends PreparedProtocolWorker {
+  override postMessage(message: WorkerMessage): void {
+    // The compiler never answers: preparation can only end by its deadline.
+    if (message.type === 'prepare-runtime-program') return;
+    super.postMessage(message);
   }
-  assertCondition(
-    isRuntimeProviderError(rejection) && /compilation did not finish/.test((rejection as Error).message),
-    `a compile deadline must reject as a provider failure: ${String(rejection)}`
-  );
-  assertCondition(terminated > 0, 'the client that missed its compile deadline must be retired');
+}
+
+test('cpp compile that misses its deadline is the provider failure, never a learner limit', async () => {
+  const originalWorker = globalThis.Worker;
+  // @ts-expect-error focused Worker test double
+  globalThis.Worker = HangingCompileWorker;
+  try {
+    // A 5 ms execution deadline must not bound compilation; the compile
+    // deadline does, and missing it is the provider's failure.
+    const provider = createCppPreparedExecutionProvider({
+      createWorkerClient: () => createClient({ executionTimeoutMs: 5, compileTimeoutMs: 60 }),
+    });
+    const startedAt = performance.now();
+    let outcome: unknown;
+    let rejection: unknown;
+    try {
+      outcome = await provider.prepareProgram({
+        mode: 'code',
+        code: 'class Solution { public: int solve(int n) { return n; } };',
+        functionName: 'solve',
+        executionStyle: 'solution-method',
+      });
+    } catch (error) {
+      rejection = error;
+    }
+    const elapsedMs = performance.now() - startedAt;
+    assertCondition(
+      outcome === undefined && isRuntimeProviderError(rejection) &&
+        /compilation did not finish/.test((rejection as Error).message),
+      `a compile deadline must reject as a provider failure, not ${JSON.stringify(outcome) ?? String(rejection)}`
+    );
+    assertCondition(elapsedMs >= 50, `compilation was cut by the execution deadline after ${elapsedMs} ms`);
+  } finally {
+    globalThis.Worker = originalWorker;
+  }
 });
 
-test('cpp worker client compiles under its own deadline, not the execution deadline', () => {
-  const client = createClient({ executionTimeoutMs: 5 });
-  assertCondition(
-    (client as unknown as { compileTimeoutMs: number }).compileTimeoutMs === 120_000,
-    'a 5 ms execution deadline must not bound compilation'
-  );
-});
+// The exported preparation result keeps its 0.20.0 members: a patch may stop
+// producing a value but not remove it from the type.
+const legacyPreparationResult: CppPreparedProgramPreparationResult = {
+  success: false,
+  error: 'C++ compilation timed out.',
+  consoleOutput: [],
+  limitReason: 'client-timeout',
+};
+void legacyPreparationResult;

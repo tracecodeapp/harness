@@ -25,9 +25,11 @@ import {
   type BrowserRuntimeProvider,
 } from '../packages/runtime-browser/src';
 import {
-  createEmptyRuntimeTrace,
   liftCodeOutcome,
   liftTraceOutcome,
+} from '../packages/runtime-contracts/src/execution-outcome';
+import { createEmptyRuntimeTrace } from '../packages/runtime-contracts/src/runtime-trace';
+import {
   RUNTIME_TRACE_SCHEMA_VERSION,
   type CodeExecutionResult,
   type ExecutionResult,
@@ -67,7 +69,9 @@ interface FakeInput extends Record<string, unknown> {
     | 'throw'
     | 'trace-truncated'
     | 'unstaged'
-    | 'bogus-limit';
+    | 'bogus-limit'
+    | 'unknown-stage'
+    | 'malformed-reply';
   readonly delayMs?: number;
   readonly consoleOutput?: readonly string[];
 }
@@ -233,6 +237,19 @@ function fakeProvider(
               state.completions.push(input.label);
               if (input.mode === 'throw') {
                 throw new Error('provider transport exploded');
+              }
+              if (input.mode === 'unknown-stage') {
+                return {
+                  kind: 'failed',
+                  error: 'bogus',
+                  diagnosticStage: 'banana',
+                  consoleOutput: [],
+                } as unknown as CodeExecutionResult;
+              }
+              if (input.mode === 'malformed-reply') {
+                // A worker reply that names no classification, lifted the way
+                // every runtime client lifts its replies.
+                return liftCodeOutcome({ success: false, error: 'no stage', consoleOutput: [] });
               }
               if (input.mode === 'bogus-limit') {
                 // A malformed provider message naming a limit outside the set.
@@ -2169,6 +2186,8 @@ test('every Judge case states its origin and converts totally to the outcome a l
       { id: 'provider-failure', input: { label: 'provider-failure', mode: 'throw' }, expected: 'unused' },
       { id: 'unstaged', input: { label: 'unstaged', mode: 'unstaged' }, expected: 'unused' },
       { id: 'bogus-limit', input: { label: 'bogus-limit', mode: 'bogus-limit' }, expected: 'unused' },
+      { id: 'unknown-stage', input: { label: 'unknown-stage', mode: 'unknown-stage' }, expected: 'unused' },
+      { id: 'malformed-reply', input: { label: 'malformed-reply', mode: 'malformed-reply' }, expected: 'unused' },
     ])
   );
   assert.deepEqual(result.cases.map(describeJudgeCase), [
@@ -2178,9 +2197,11 @@ test('every Judge case states its origin and converts totally to the outcome a l
     'provider:runtime-failure',
     'provider:contract-violation',
     'provider:protocol',
+    'provider:protocol',
+    'provider:protocol',
   ]);
 
-  const [completed, failed, limited, provider, unstaged, bogusLimit] = result.cases;
+  const [completed, failed, limited, provider, unstaged, bogusLimit, unknownStage, malformedReply] = result.cases;
   assert.deepEqual(
     judgeCaseExecutionOutcome(completed!, { language: 'javascript' }),
     { kind: 'completed', output: 4, consoleOutput: ['stdout:completed'] }
@@ -2196,7 +2217,7 @@ test('every Judge case states its origin and converts totally to the outcome a l
   assert.equal(limitedTrace.kind, 'limit');
   assert.equal(limitedTrace.kind === 'limit' ? limitedTrace.reason : undefined, 'line-limit');
   assert.equal(limitedTrace.trace.language, 'javascript');
-  for (const providerCase of [provider!, unstaged!, bogusLimit!]) {
+  for (const providerCase of [provider!, unstaged!, bogusLimit!, unknownStage!, malformedReply!]) {
     assert.throws(
       () => judgeCaseExecutionOutcome(providerCase, { language: 'javascript' }),
       (error: unknown) => isRuntimeProviderError(error)
@@ -2342,6 +2363,9 @@ test('lifting rejects a worker reply that names a limit or stage outside the clo
   for (const raw of [
     { success: false, timeoutReason: 'banana', consoleOutput: [] },
     { success: false, diagnosticStage: 'banana', error: 'x', consoleOutput: [] },
+    // Every classification a reply carries is checked, whatever else it says.
+    { success: true, output: 1, timeoutReason: 'banana', consoleOutput: [] },
+    { success: false, timeoutReason: 'line-limit', diagnosticStage: 'banana', consoleOutput: [] },
   ]) {
     assert.throws(
       () => liftCodeOutcome(raw as unknown as Parameters<typeof liftCodeOutcome>[0]),

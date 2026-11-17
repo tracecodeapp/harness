@@ -570,9 +570,12 @@ function failureDiagnostic(
   if (typeof stage !== 'string' || !PROGRAM_FAILURE_STAGES.has(stage)) {
     return Object.freeze({
       severity: 'error',
-      message:
-        `The ${runtime} runtime returned a failed outcome without a program ` +
-        `stage (Harness contract violation): ${String(outcome.error ?? '')}`,
+      message: stage === undefined || stage === null || stage === ''
+        ? `The ${runtime} runtime returned a failed outcome without a program ` +
+          `stage (Harness contract violation): ${String(outcome.error ?? '')}`
+        : `The ${runtime} runtime returned a failed outcome with an unknown program ` +
+          `stage ${JSON.stringify(String(stage)).slice(0, 80)} (Harness protocol violation): ` +
+          String(outcome.error ?? ''),
       code: PROVIDER_ERROR_CODE,
       source: runtime,
     });
@@ -665,9 +668,14 @@ function outcomeFailure(
     });
   }
   if (diagnostic.code === PROVIDER_ERROR_CODE) {
+    const stage: unknown = outcome.diagnosticStage;
     return Object.freeze({
       origin: 'provider',
-      reason: 'contract-violation',
+      // A stage outside the closed set is a malformed message; no stage at
+      // all is an untyped provider breaking the outcome contract.
+      reason: stage === undefined || stage === null || stage === ''
+        ? 'contract-violation'
+        : 'protocol',
       message: diagnostic.message,
     });
   }
@@ -1100,10 +1108,20 @@ function executeProviderBatchUntilRunaway(
   });
 }
 
+/** A broken result protocol is reported as such; anything else as the provider failing. */
+function providerFailureReason(error: unknown): 'runtime-failure' | 'protocol' {
+  return error instanceof Error &&
+    error.name === 'RuntimeProviderError' &&
+    (error as { reason?: unknown }).reason === 'protocol'
+    ? 'protocol'
+    : 'runtime-failure';
+}
+
 function providerFailure(
   runtime: string,
   message: string,
-  code = PROVIDER_ERROR_CODE
+  code = PROVIDER_ERROR_CODE,
+  reason: 'runtime-failure' | 'protocol' = 'runtime-failure'
 ): MappedRuntimeOutcome {
   return Object.freeze({
     output: Object.freeze({
@@ -1115,7 +1133,7 @@ function providerFailure(
       })]),
       failure: Object.freeze({
         origin: 'provider' as const,
-        reason: 'runtime-failure' as const,
+        reason,
         message,
       }),
     }),
@@ -1153,7 +1171,12 @@ function executeProviderProcess(
   return initialize.pipe(
     Effect.matchEffect({
       onFailure: (error) => {
-        const mapped = providerFailure(options.runtime, error.message);
+        const mapped = providerFailure(
+          options.runtime,
+          error.message,
+          PROVIDER_ERROR_CODE,
+          providerFailureReason(error)
+        );
         return options.runtimeControl.publish(
           invocationId,
           mapped.output
@@ -1189,7 +1212,9 @@ function executeInitializedProviderProcess(
             onFailure: (error) => {
               const mapped = providerFailure(
                 options.runtime,
-                error.message
+                error.message,
+                PROVIDER_ERROR_CODE,
+                providerFailureReason(error)
               );
               return options.runtimeControl.publish(
                 invocationId,
@@ -1212,7 +1237,12 @@ function executeInitializedProviderProcess(
         ).pipe(
           Effect.matchEffect({
             onFailure: (error) => {
-              const mapped = providerFailure(options.runtime, error.message);
+              const mapped = providerFailure(
+          options.runtime,
+          error.message,
+          PROVIDER_ERROR_CODE,
+          providerFailureReason(error)
+        );
               return options.runtimeControl.publish(
                 invocationId,
                 mapped.output
@@ -1233,7 +1263,12 @@ function executeInitializedProviderProcess(
       ).pipe(
         Effect.matchEffect({
           onFailure: (error) => {
-            const mapped = providerFailure(options.runtime, error.message);
+            const mapped = providerFailure(
+          options.runtime,
+          error.message,
+          PROVIDER_ERROR_CODE,
+          providerFailureReason(error)
+        );
             return options.runtimeControl.publish(
               invocationId,
               mapped.output

@@ -38,9 +38,18 @@ import type { RuntimeTrace } from './runtime-trace';
  */
 export class RuntimeProviderError extends Error {
   override readonly name = 'RuntimeProviderError';
+  /**
+   * `protocol` when a worker's reply broke the result protocol (a missing or
+   * unknown classification); otherwise the provider itself failed.
+   */
+  readonly reason: 'runtime-failure' | 'protocol';
 
-  constructor(message: string, options?: { readonly cause?: unknown }) {
+  constructor(
+    message: string,
+    options?: { readonly cause?: unknown; readonly reason?: 'runtime-failure' | 'protocol' }
+  ) {
     super(message, options?.cause === undefined ? undefined : { cause: options.cause });
+    this.reason = options?.reason ?? 'runtime-failure';
   }
 }
 
@@ -89,7 +98,8 @@ function malformedClassification(
 ): RuntimeProviderError {
   return new RuntimeProviderError(
     `${fallbackError}: the runtime reported an unknown ${field} ` +
-      `${JSON.stringify(String(value)).slice(0, 80)} (Harness protocol violation).`
+      `${JSON.stringify(String(value)).slice(0, 80)} (Harness protocol violation).`,
+    { reason: 'protocol' }
   );
 }
 
@@ -103,6 +113,19 @@ function checkedLimitReason(
     throw malformedClassification('timeoutReason', value, fallbackError);
   }
   return value;
+}
+
+/**
+ * Every classification a reply carries must be in its closed set, whatever
+ * else the reply says: a completed reply with an unknown limit, or a limit
+ * with an unknown stage, is as malformed as a failure with one.
+ */
+function assertClassificationFields(raw: RawExecutionPayload, fallbackError: string): void {
+  checkedLimitReason(raw, fallbackError);
+  const stage: unknown = raw.diagnosticStage;
+  if (stage !== undefined && stage !== null && stage !== '' && !isExecutionDiagnosticStage(stage)) {
+    throw malformedClassification('diagnosticStage', stage, fallbackError);
+  }
 }
 
 function checkedStage(
@@ -126,7 +149,8 @@ function unclassifiedFailure(
   return new RuntimeProviderError(
     `${fallbackError}: the runtime reported a failure without classifying it ` +
       `as the program's or the provider's (Harness protocol violation)` +
-      (raw.error ? `: ${raw.error}` : '.')
+      (raw.error ? `: ${raw.error}` : '.'),
+    { reason: 'protocol' }
   );
 }
 
@@ -149,6 +173,7 @@ export function liftCodeOutcome(
   raw: RawExecutionPayload,
   fallbackError = 'Execution failed'
 ): CodeExecutionResult {
+  assertClassificationFields(raw, fallbackError);
   const consoleOutput = raw.consoleOutput ?? [];
   if (raw.success) {
     return {
@@ -209,6 +234,7 @@ export function liftTraceOutcome(
   trace: RuntimeTrace,
   fallbackError = 'Tracing failed'
 ): ExecutionResult {
+  assertClassificationFields(raw, fallbackError);
   const consoleOutput = raw.consoleOutput ?? [];
   const executionTimeMs = raw.executionTimeMs ?? 0;
   if (raw.success) {

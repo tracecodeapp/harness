@@ -106,9 +106,12 @@ are typed so that the wrong answer cannot be produced by omission:
   Judge reports `origin: 'provider'`, `reason: 'protocol'`. It never becomes a
   learner limit.
 - Compilation runs no learner code, so a compile deadline is never the
-  learner's limit. C# and C++ bound compilation at 120 s (well above a cold
-  first compile on a slow device); Java, Python and JavaScript have no compile
-  deadline. A compile that misses its deadline is the provider's failure.
+  learner's limit. In prepared execution (every Judge evaluation) C# and C++
+  bound compilation at 120 s (well above a cold first compile on a slow
+  device); Java, Python and JavaScript have no compile deadline. A compile that
+  misses its deadline is the provider's failure. The direct
+  `CppWorkerClient.executeCode` APIs, which compile and run under one clock, do
+  not follow this rule yet.
 - An untyped provider that still returns a stageless `failed` outcome is
   reported as `runtime-provider-error` with a message naming the contract
   violation; it is never silently attributed to the learner or to the

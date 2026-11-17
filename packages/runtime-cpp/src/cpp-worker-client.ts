@@ -208,6 +208,12 @@ export type CppPreparedProgramPreparationResult =
        * learner code, so this is the provider's failure, never a limit.
        */
       readonly compileDeadlineExceeded?: true;
+      /**
+       * @deprecated Since 0.20.1 a compile deadline is never reported as the
+       * learner's limit, and this is no longer produced; see
+       * `compileDeadlineExceeded`.
+       */
+      readonly limitReason?: 'client-timeout';
     };
 
 interface CppPreparedProgramWorkerResult {
