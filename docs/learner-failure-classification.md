@@ -21,6 +21,12 @@ Learner failures carry a readable `message` and, when the language can know
 it, the source `line`. `runtime-provider-error` is never used for a learner
 failure, and a provider failure is never reported with a learner code.
 
+A compile failure's message is the compiler's own diagnostics in the learner's
+file and line numbering, with the primary error and the chain that explains it
+intact (library-header locations included); only generated-source locations
+are rewritten or left out. Raw compiler output travels as a structured
+`diagnostic` (`tracecode.compiler-diagnostic.v1`).
+
 A case whose time limit is enforced by the Judge's own watchdog is reported as
 `timed-out` with `timedOut: true` and a `client-timeout` diagnostic, including
 when a whole batch is stopped before the runtime could publish per-case
