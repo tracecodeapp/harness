@@ -80,6 +80,7 @@ function preparationFailure(
       ? {}
       : { errorLine: result.errorLine }),
     diagnosticStage: 'compile',
+    ...(result.diagnostic === undefined ? {} : { diagnostic: result.diagnostic }),
     consoleOutput: result.consoleOutput ?? [],
     ...(result.timings ? { timings: result.timings } : {}),
   };

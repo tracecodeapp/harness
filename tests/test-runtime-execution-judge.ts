@@ -2251,3 +2251,74 @@ test('Run stops at the first runaway case and reports the rest as not run; Submi
     'completed',
   ]);
 });
+
+test('a batch evaluation that opts in stops at the first runaway case like Run; it is off by default', async () => {
+  const cases: { id: string; input: FakeInput; expected: unknown }[] = [
+    { id: 'first', input: { label: 'first', output: 1 }, expected: 1 },
+    { id: 'runaway', input: { label: 'runaway', mode: 'runaway' }, expected: 'unused' },
+    { id: 'after', input: { label: 'after', output: 3 }, expected: 3 },
+  ];
+  const stopped = [
+    'completed',
+    'limit:single-line-limit',
+    'not-run:runaway:single-line-limit',
+  ];
+
+  // Non-interactive execute.
+  const executeState = makeState();
+  const executed = await Effect.runPromise(Effect.scoped(
+    Effect.gen(function* () {
+      const judge = yield* createTestRuntimeJudge(
+        fakeProvider(executeState),
+        // The fake runs its runaway mode on the trace program.
+        codeBinding({ trace: true })
+      );
+      return yield* judge.execute<FakeInput>({
+        plan: makePlan<unknown>(cases),
+        stopAtFirstRunaway: true,
+      });
+    })
+  ));
+  assert.equal(executed.executionId, undefined);
+  assert.deepEqual(executed.evaluation.cases.map(describeJudgeCase), stopped);
+  assert.deepEqual(executeState.completions, ['first', 'runaway']);
+
+  // evaluateAlgorithm, with and without the option.
+  const bundle = await createAlgorithmJudgeBundle({
+    id: 'submit-stops',
+    language: 'javascript',
+    code: SOURCE,
+    functionName: 'solve',
+    cases,
+  });
+  const receiptFor = (options?: { readonly stopAtFirstRunaway?: boolean }) => {
+    const state = makeState();
+    return Effect.runPromise(Effect.scoped(
+      Effect.gen(function* () {
+        const judge = yield* createTestRuntimeJudge(
+          fakeProvider(state),
+          codeBinding({ sourcePath: bundle.execution.sourcePath, trace: true })
+        );
+        return yield* judge.evaluateAlgorithm(bundle, options);
+      })
+    )).then((receipt) => ({ receipt, state }));
+  };
+  const optedIn = await receiptFor({ stopAtFirstRunaway: true });
+  assert.equal(optedIn.receipt.evaluation.status, 'completed');
+  if (optedIn.receipt.evaluation.status === 'completed') {
+    assert.deepEqual(optedIn.receipt.evaluation.cases.map(describeJudgeCase), stopped);
+  }
+  assert.equal(optedIn.receipt.verdict, 'failed');
+  assert.equal(optedIn.receipt.totalCount, 3);
+  assert.deepEqual(optedIn.state.completions, ['first', 'runaway']);
+
+  const byDefault = await receiptFor();
+  if (byDefault.receipt.evaluation.status === 'completed') {
+    assert.deepEqual(byDefault.receipt.evaluation.cases.map(describeJudgeCase), [
+      'completed',
+      'limit:single-line-limit',
+      'completed',
+    ]);
+  }
+  assert.deepEqual(byDefault.state.completions, ['first', 'runaway', 'after']);
+});

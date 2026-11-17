@@ -5685,6 +5685,122 @@ function javaReportFailureMessage(report, fallback = 'Java execution failed') {
   return parts.length > 0 ? parts.join('\n') : fallback;
 }
 
+const JAVA_GENERIC_COMPILE_FAILURE = 'Java compilation failed';
+const JAVA_COMPILER_DIAGNOSTIC_HEADER =
+  /^(?:[^\n:]*\/)?([A-Za-z_$][\w$]*)\.java:(\d+)(?::(\d+))?:\s*(error|warning):\s*(.*)$/;
+
+// Where the learner's source sits in a generated compilation unit, so compiler
+// lines can be reported in the learner's own numbering. Instrumented (traced)
+// units do not contain the learner's source verbatim and have no region.
+function javaLearnerSourceRegion(generatedSource, learnerCode) {
+  const normalized = normalizePublicClassDeclarations(learnerCode);
+  const trimmed = normalized.trim();
+  if (!trimmed || typeof generatedSource !== 'string') return undefined;
+  const index = generatedSource.indexOf(trimmed);
+  if (index < 0) return undefined;
+  const leadingLines = (normalized.match(/^\s*/)?.[0].match(/\n/g) ?? []).length;
+  return {
+    firstGeneratedLine: generatedSource.slice(0, index).split('\n').length,
+    leadingLines,
+    lineCount: trimmed.split('\n').length,
+  };
+}
+
+function javaLearnerLine(region, generatedLine) {
+  if (!region) return undefined;
+  const offset = generatedLine - region.firstGeneratedLine;
+  if (offset < 0 || offset >= region.lineCount) return undefined;
+  return offset + 1 + region.leadingLines;
+}
+
+/**
+ * A compile failure, as the compiler reported it about the learner's source:
+ * the message is the compiler's diagnostics in the learner's file and line
+ * numbering; the raw compiler output and the runtime's report travel as
+ * structured fields, never as labelled sections inside the message.
+ */
+function javaCompileFailure(report, sources = [], learnerCode = '', fallback = 'Java compilation failed without compiler diagnostics') {
+  const compilerStdout = typeof report?.compilerStdout === 'string'
+    ? sanitizeJavaCompilerDiagnostic(report.compilerStdout).trim()
+    : '';
+  const compilerStderr = typeof report?.compilerStderr === 'string'
+    ? sanitizeJavaCompilerDiagnostic(report.compilerStderr).trim()
+    : '';
+  const runtimeError = typeof report?.runtimeError === 'string'
+    ? sanitizeJavaRuntimeStderr(report.runtimeError).trim()
+    : '';
+  const regions = new Map();
+  for (const source of sources) {
+    const name = String(source?.path ?? '').split('/').pop()?.replace(/\.java$/, '');
+    if (name) regions.set(name, javaLearnerSourceRegion(source.source, learnerCode));
+  }
+
+  const entries = [];
+  for (const rawLine of [compilerStderr, compilerStdout].filter(Boolean).join('\n').split('\n')) {
+    const header = JAVA_COMPILER_DIAGNOSTIC_HEADER.exec(rawLine.trim());
+    if (header) {
+      const [, file, lineText, columnText, severity, text] = header;
+      const generatedLine = Number(lineText);
+      const line = javaLearnerLine(regions.get(file), generatedLine);
+      entries.push({
+        file,
+        severity,
+        message: text.trim(),
+        ...(line === undefined ? {} : { line }),
+        ...(columnText ? { column: Number(columnText) } : {}),
+        detail: [],
+      });
+    } else if (entries.length > 0 && rawLine.trim()) {
+      entries[entries.length - 1].detail.push(rawLine);
+    }
+  }
+
+  // Prefer what the compiler said about the learner's own lines. A unit that
+  // repeats the learner's source (the traced copy) repeats its errors.
+  const learnerEntries = entries.filter((entry) => entry.line !== undefined);
+  const firstFile = entries[0]?.file;
+  const kept = learnerEntries.length > 0
+    ? learnerEntries
+    : entries.filter((entry) => entry.file === firstFile);
+  const seen = new Set();
+  const reported = kept.filter((entry) => {
+    const key = `${entry.line ?? ''}:${entry.column ?? ''}:${entry.severity}:${entry.message}`;
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+  const message = reported.length > 0
+    ? reported.map((entry) => [
+        entry.line === undefined
+          ? `${entry.severity}: ${entry.message}`
+          : `Solution.java:${entry.line}${entry.column ? `:${entry.column}` : ''}: ${entry.severity}: ${entry.message}`,
+        // Source excerpts belong to the learner's file only when its lines do.
+        ...(entry.line === undefined ? [] : entry.detail),
+      ].join('\n')).join('\n')
+    : compilerStderr || compilerStdout ||
+      (runtimeError && runtimeError !== JAVA_GENERIC_COMPILE_FAILURE ? runtimeError : fallback);
+  const firstError = reported.find((entry) => entry.severity === 'error' && entry.line !== undefined);
+  return {
+    error: truncateJavaWorkerDiagnostic(message),
+    ...(firstError ? { errorLine: firstError.line } : {}),
+    diagnostic: {
+      schema: 'tracecode.compiler-diagnostic.v1',
+      language: 'java',
+      diagnostics: reported.map((entry) => ({
+        severity: entry.severity,
+        message: entry.message,
+        ...(entry.line === undefined ? {} : { line: entry.line }),
+        ...(entry.column === undefined ? {} : { column: entry.column }),
+      })),
+      ...(compilerStdout ? { compilerStdout: truncateJavaWorkerDiagnostic(compilerStdout) } : {}),
+      ...(compilerStderr ? { compilerStderr: truncateJavaWorkerDiagnostic(compilerStderr) } : {}),
+      ...(runtimeError && runtimeError !== JAVA_GENERIC_COMPILE_FAILURE
+        ? { runtimeError: truncateJavaWorkerDiagnostic(runtimeError) }
+        : {}),
+    },
+  };
+}
+
 function javaRuntimeExceptionDiagnostic(report) {
   const rawRuntimeError = typeof report?.runtimeError === 'string'
     ? report.runtimeError
@@ -7977,8 +8093,10 @@ async function prepareJavaRuntimeProgram(payload, requestId) {
   if (report.success !== true) {
     return {
       success: false,
-      error: javaReportFailureMessage(
+      ...javaCompileFailure(
         report,
+        preparedSources,
+        normalizedPayload.code,
         'Java prepared compilation failed without compiler diagnostics'
       ),
       consoleOutput,

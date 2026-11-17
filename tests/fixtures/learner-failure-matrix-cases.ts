@@ -34,6 +34,9 @@ export const MATRIX_LANGUAGES: readonly MatrixLanguage[] = [
  * - `trace-batch`: several traced cases in one evaluation.
  * - `interactive`: a retained interactive execution (correctness for every
  *   case, a trace of the selected case) and one trace continuation.
+ * - `code-batch-stop`, `trace-batch-stop`: the batch modes with
+ *   `stopAtFirstRunaway` (Submit opting into Run's stopping), for the kinds in
+ *   `STOPPING_MODE_KINDS`.
  *
  * Program preparation (compilation) runs in every mode; the `syntax` row and
  * the injected provider failure exercise it.
@@ -43,7 +46,9 @@ export type MatrixMode =
   | 'code-batch'
   | 'trace'
   | 'trace-batch'
-  | 'interactive';
+  | 'interactive'
+  | 'code-batch-stop'
+  | 'trace-batch-stop';
 
 export const MATRIX_MODES: readonly MatrixMode[] = [
   'code',
@@ -51,7 +56,40 @@ export const MATRIX_MODES: readonly MatrixMode[] = [
   'trace',
   'trace-batch',
   'interactive',
+  'code-batch-stop',
+  'trace-batch-stop',
 ];
+
+/** Batch modes that opt into stopping at the first runaway case. */
+export const STOPPING_BATCH_MODES: readonly MatrixMode[] = ['code-batch-stop', 'trace-batch-stop'];
+
+/**
+ * Kinds the stopping batch modes run: a runaway, which stops the batch, and
+ * failures that must not stop it (an exception, recursion, a trace budget).
+ */
+export const STOPPING_MODE_KINDS: readonly string[] = [
+  'infinite-loop',
+  'top-level-exception',
+  'unbounded-recursion',
+  'trace-step-limit',
+];
+
+/** The plain mode a stopping mode extends; expectations and gaps are shared. */
+export function baseMode(mode: MatrixMode): MatrixMode {
+  switch (mode) {
+    case 'code-batch-stop':
+      return 'code-batch';
+    case 'trace-batch-stop':
+      return 'trace-batch';
+    default:
+      return mode;
+  }
+}
+
+/** Modes that stop at the first case a time or line limit stopped. */
+export function stopsAtFirstRunaway(mode: MatrixMode): boolean {
+  return mode === 'interactive' || STOPPING_BATCH_MODES.includes(mode);
+}
 
 export type MatrixFailureKind =
   | 'syntax'
@@ -891,7 +929,7 @@ export function healthyProgram(language: MatrixLanguage): MatrixProgram {
 }
 
 export function isTracedMode(mode: MatrixMode): boolean {
-  return TRACED_MODES.includes(mode);
+  return TRACED_MODES.includes(baseMode(mode));
 }
 
 /** One observed Judge case (or compile) outcome, as a consumer reads it. */

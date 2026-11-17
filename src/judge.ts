@@ -70,6 +70,7 @@ export type {
   RuntimeJudge,
   RuntimeJudgeExecuteRequest,
   RuntimeJudgeExecuteResult,
+  RuntimeJudgeAlgorithmOptions,
   RuntimeJudgeInitialExecuteRequest,
   RuntimeJudgeContinueExecuteRequest,
   RuntimeJudgeTraceSelection,

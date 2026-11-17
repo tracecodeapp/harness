@@ -39,7 +39,10 @@ import { loadEngineRuntimePackages } from '../scripts/runtime-package-assets.mjs
 import {
   MATRIX_LANGUAGES,
   MATRIX_MODES,
+  STOPPING_BATCH_MODES,
+  baseMode,
   matrixCells,
+  stopsAtFirstRunaway,
   type MatrixCellResult,
   type MatrixCellSpec,
   type MatrixFailureKind,
@@ -216,6 +219,13 @@ const UNREADABLE_MESSAGE = [
   /^[A-Z][A-Za-z]+_[A-Z][A-Za-z]+(?:,.*)?$/u,
   // A placeholder that says the runtime could not name what was thrown.
   /did not report which/u,
+  // Worker report sections, generated compilation units, instrumentation and
+  // toolchain wrapper text belong in structured fields, not the message.
+  /(?:^|\n)(?:compilerStdout|compilerStderr|runtimeError|failedResultIndices):/u,
+  /\bExports[0-9a-f]{8,}\w*\.java\b/u,
+  /\bTraceCodeDriver\.cpp\b/u,
+  /\b__tc_\w+/u,
+  /TraceCC compilation failed/u,
 ];
 
 interface CellVerdict {
@@ -225,7 +235,7 @@ interface CellVerdict {
 }
 
 function expectedClasses(spec: MatrixCellSpec, mode: MatrixMode) {
-  return spec.completesIn?.includes(mode) ? ['completed'] : spec.expected;
+  return spec.completesIn?.includes(baseMode(mode)) ? ['completed'] : spec.expected;
 }
 
 function judgeCell(spec: MatrixCellSpec, result: MatrixCellResult): CellVerdict {
@@ -247,13 +257,17 @@ function judgeCell(spec: MatrixCellSpec, result: MatrixCellResult): CellVerdict 
     failures.set('classification', 'no observations');
   }
   let sawRunaway = false;
+  const stoppingBatch = STOPPING_BATCH_MODES.includes(result.mode);
   for (const observation of result.observations) {
     if (observation.class === 'not-run') {
-      // Only Run stops at a runaway, and only after one was reported.
-      if (result.mode !== 'interactive' || !sawRunaway || observation.conversion !== 'not-run') {
+      // Only a stopping mode stops at a runaway, and only after one was reported.
+      if (!stopsAtFirstRunaway(result.mode) || !sawRunaway || observation.conversion !== 'not-run') {
         failures.set('classification', `not-run outside Run semantics: ${JSON.stringify(observation)}`);
       }
       continue;
+    }
+    if (stoppingBatch && sawRunaway) {
+      failures.set('classification', `a case ran after the batch stopped at a runaway: ${JSON.stringify(observation)}`);
     }
     if (observation.class === 'limit' && ['client-timeout', 'line-limit', 'single-line-limit'].includes(observation.reason ?? '')) {
       sawRunaway = true;
@@ -325,7 +339,7 @@ function judgeCell(spec: MatrixCellSpec, result: MatrixCellResult): CellVerdict 
 }
 
 function knownGap(result: MatrixCellResult, aspect: Aspect): string | undefined {
-  for (const mode of [result.mode, '*']) {
+  for (const mode of new Set([result.mode, baseMode(result.mode), '*'])) {
     for (const kind of [result.kind, '*']) {
       const reason = KNOWN_GAPS[`${result.language}:${mode}:${kind}:${aspect}`];
       if (reason) return reason;
@@ -411,7 +425,7 @@ function reportVerdicts(
     const matching = verdicts.filter((verdict) =>
       verdict.result.language === language &&
       (kind === '*' || verdict.result.kind === kind) &&
-      (mode === '*' || verdict.result.mode === mode)
+      (mode === '*' || baseMode(verdict.result.mode) === mode)
     );
     // Only a complete run can prove a gap closed; one passing run does not
     // prove an intermittent gap closed.

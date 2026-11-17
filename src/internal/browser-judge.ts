@@ -348,6 +348,12 @@ export interface BrowserJudgeHost {
     options: {
       readonly bundle: JudgeAlgorithmBundle<Input, Expected, Result>;
       readonly signal?: AbortSignal;
+      /**
+       * Stop at the first case a time or line limit stopped and report the
+       * remaining cases as `not-run`, as Run does. Default off: every case
+       * runs under its own bound.
+       */
+      readonly stopAtFirstRunaway?: boolean;
     }
   ): Promise<JudgeAlgorithmReceipt<Result, Expected>>;
   createProjectJudge(
@@ -365,6 +371,12 @@ export interface BrowserJudgeInitialExecuteRequest<
   readonly interactive?: boolean;
   readonly tracing?: RuntimeJudgeTraceSelection;
   readonly signal?: AbortSignal;
+  /**
+   * Stop at the first case a time or line limit stopped and report the
+   * remaining cases as `not-run`, as Run does. Default off: every case runs
+   * under its own bound. Interactive executions always stop.
+   */
+  readonly stopAtFirstRunaway?: boolean;
 }
 
 export interface BrowserJudgeContinueExecuteRequest {
@@ -1021,24 +1033,31 @@ function executeProviderBatchUntilRunaway(
         }));
         continue;
       }
-      // Each case runs through the provider's per-case path, which owns the
-      // per-case deadline and replaces a worker that hit it.
-      const outcome: CodeExecutionResult | ExecutionResult = yield* Effect.tryPromise({
+      // Each case runs as a one-case provider batch, so it gets exactly the
+      // bounds it gets in a whole batch (Python's guest guard, per-case
+      // deadlines), and the provider replaces a worker that hit one.
+      const outcomes: readonly (CodeExecutionResult | ExecutionResult)[] = yield* Effect.tryPromise({
         try: (signal) =>
           isTraceBinding(options.binding)
-            ? programs.executeTrace(evaluationId(invocation), {
-                inputs: testCase.inputs,
-                recordTrace: testCase.recordTrace ?? true,
+            ? programs.executeTraceBatch(evaluationId(invocation), {
+                inputBatch: [testCase.inputs],
+                traceEnabledBatch: [testCase.recordTrace ?? true],
                 signal,
                 limits: options.binding.limits,
               })
-            : programs.executeCode(evaluationId(invocation), {
-                inputs: testCase.inputs,
+            : programs.executeCodeBatch(evaluationId(invocation), {
+                inputBatch: [testCase.inputs],
                 signal,
                 limits: options.binding.limits,
               }),
         catch: errorFromUnknown,
       });
+      const outcome = outcomes[0];
+      if (outcomes.length !== 1 || !outcome) {
+        return yield* Effect.fail(
+          new Error(`Prepared runtime returned ${outcomes.length} batch outcomes for 1 case.`)
+        );
+      }
       batch.push(batchCaseOutput(
         testCase.caseId,
         isTraceBinding(options.binding)
@@ -1438,6 +1457,15 @@ function traceTranchePlan<Input, Expected>(
  * Judge -> TraceKernel -> prepared runtime provider boundary public while the
  * lower-level engine packages remain internal implementation details.
  */
+export interface RuntimeJudgeAlgorithmOptions {
+  /**
+   * Stop at the first case a time or line limit stopped and report the
+   * remaining cases as `not-run`, as Run does. Default off: every case runs
+   * under its own bound.
+   */
+  readonly stopAtFirstRunaway?: boolean;
+}
+
 export interface RuntimeJudge {
   readonly runtime: string;
   readonly runtimeControl: JudgeRuntimeControlPort;
@@ -1476,7 +1504,8 @@ export interface RuntimeJudge {
     Result = unknown,
     Expected = unknown,
   >(
-    bundle: JudgeAlgorithmBundle<Input, Expected, Result>
+    bundle: JudgeAlgorithmBundle<Input, Expected, Result>,
+    options?: RuntimeJudgeAlgorithmOptions
   ): Effect.Effect<
     JudgeAlgorithmReceipt<Result, Expected>,
     JudgePlanError | JudgeInfrastructureError
@@ -1498,6 +1527,12 @@ export interface RuntimeJudgeInitialExecuteRequest<
   /** Omit for no recorded cases. */
   readonly tracing?: RuntimeJudgeTraceSelection;
   readonly comparator?: JudgeComparator<Input, Expected, Result>;
+  /**
+   * Stop at the first case a time or line limit stopped and report the
+   * remaining cases as `not-run`, as Run does. Default off: every case runs
+   * under its own bound. Interactive executions always stop.
+   */
+  readonly stopAtFirstRunaway?: boolean;
 }
 
 export interface RuntimeJudgeContinueExecuteRequest {
@@ -1629,8 +1664,11 @@ class RuntimeJudgeComposition
         >(port, plan, build, {
           comparator: request.comparator,
           // Run semantics: an interactive execution stops at the first case a
-          // time or line limit stopped; the rest are reported as not run.
-          ...(request.interactive === true ? { stopAtFirstRunaway: true } : {}),
+          // time or line limit stopped; the rest are reported as not run. A
+          // batch evaluation opts in.
+          ...(request.interactive === true || request.stopAtFirstRunaway === true
+            ? { stopAtFirstRunaway: true }
+            : {}),
           ...(this.traceCapable
             ? {
                 tracing: request.tracing ?? { caseIds: Object.freeze([]) },
@@ -1843,7 +1881,8 @@ class RuntimeJudgeComposition
     Result = unknown,
     Expected = unknown,
   >(
-    bundle: JudgeAlgorithmBundle<Input, Expected, Result>
+    bundle: JudgeAlgorithmBundle<Input, Expected, Result>,
+    options: RuntimeJudgeAlgorithmOptions = {}
   ): Effect.Effect<
     JudgeAlgorithmReceipt<Result, Expected>,
     JudgePlanError | JudgeInfrastructureError
@@ -1856,6 +1895,9 @@ class RuntimeJudgeComposition
             comparator: bundle.comparison
               ? createJudgeComparator<Input>(bundle.comparison)
               : undefined,
+            ...(options.stopAtFirstRunaway === true
+              ? { stopAtFirstRunaway: true }
+              : {}),
           },
           true
         )
@@ -2129,6 +2171,9 @@ export function createBrowserJudgeHostFromRuntimeHost(
             interactive: request.interactive,
             tracing: request.tracing,
             comparator,
+            ...(request.stopAtFirstRunaway === true
+              ? { stopAtFirstRunaway: true }
+              : {}),
           }),
           request.signal
         )
@@ -2178,9 +2223,10 @@ export function createBrowserJudgeHostFromRuntimeHost(
       judgeOptions: {
         readonly bundle: JudgeAlgorithmBundle<Input, Expected, Result>;
         readonly signal?: AbortSignal;
+        readonly stopAtFirstRunaway?: boolean;
       }
     ) => {
-      const { bundle, signal } = judgeOptions;
+      const { bundle, signal, stopAtFirstRunaway } = judgeOptions;
       const tracing = bundle.execution.trace === true
         ? {
             caseIds: Object.freeze(
@@ -2192,6 +2238,7 @@ export function createBrowserJudgeHostFromRuntimeHost(
         bundle,
         ...(tracing ? { tracing } : {}),
         ...(signal ? { signal } : {}),
+        ...(stopAtFirstRunaway === true ? { stopAtFirstRunaway: true } : {}),
       }).then(({ evaluation }) =>
         createAlgorithmJudgeReceipt(bundle, evaluation)
       );

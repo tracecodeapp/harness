@@ -12319,6 +12319,69 @@ function learnerLineFromCompilerExcerpt(diagnostics, userSource) {
   return expression.length >= 3 && excerptText.includes(expression) ? line : undefined;
 }
 
+const CPP_COMPILER_DIAGNOSTIC_HEADER =
+  /^(?:.*\/)?([^/\s:]+):(\d+):(\d+):\s*(fatal error|error|warning|note):\s*(.*)$/;
+const CPP_COMPILER_SUMMARY = /^\d+ (?:errors?|warnings?)(?: and \d+ (?:errors?|warnings?))? generated\.$/;
+// Wrapper lines the compiler service appends; they are not the compiler's.
+const CPP_COMPILER_WRAPPER_LINE = /^(?:TraceCC|C\+\+) compilation failed\.?$/;
+
+/**
+ * The compiler's diagnostics about the learner's source, in the learner's
+ * file and line numbering. Locations in the generated driver are mapped back
+ * through their source excerpt when it is the learner's line; anything that
+ * cannot be placed in the learner's source is left out. An excerpt of an
+ * instrumented (traced) statement is dropped with its column, since neither
+ * matches what the learner wrote.
+ */
+function cppLearnerCompilerDiagnostics(diagnostics, userSource) {
+  const userLines = typeof userSource === 'string' ? userSource.split(/\r?\n/) : [];
+  const blocks = [];
+  const summary = [];
+  for (const line of String(diagnostics || '').split(/\r?\n/)) {
+    const header = CPP_COMPILER_DIAGNOSTIC_HEADER.exec(line.trim());
+    if (header) {
+      const [, file, lineText, columnText, severity, message] = header;
+      blocks.push({ file, line: Number(lineText), column: Number(columnText), severity, message: message.trim(), detail: [] });
+    } else if (CPP_COMPILER_SUMMARY.test(line.trim())) {
+      summary.push(line.trim());
+    } else if (CPP_COMPILER_WRAPPER_LINE.test(line.trim())) {
+      // Dropped: a wrapper's sentence, not a diagnostic.
+    } else if (blocks.length > 0 && line.trim()) {
+      blocks[blocks.length - 1].detail.push(line);
+    }
+  }
+  const placed = [];
+  for (const block of blocks) {
+    const excerpt = block.detail.map((line) => /^\s*(\d+)\s*\|\s?(.*)$/.exec(line)).find(Boolean);
+    const excerptText = excerpt?.[2]?.trim() ?? '';
+    let learnerLine;
+    if (block.file === CPP_USER_SOURCE_FILE) {
+      learnerLine = block.line;
+    } else if (block.file === 'TraceCodeDriver.cpp') {
+      learnerLine = learnerLineFromCompilerExcerpt(block.detail.join('\n'), userSource);
+    }
+    if (learnerLine === undefined || learnerLine < 1 || learnerLine > Math.max(userLines.length, 1)) continue;
+    const verbatim = excerpt !== undefined && excerptText === (userLines[learnerLine - 1] ?? '').trim();
+    placed.push({
+      severity: block.severity,
+      message: block.message,
+      line: learnerLine,
+      ...(verbatim ? { column: block.column } : {}),
+      // Keep the excerpt and caret only when they show the learner's line.
+      detail: verbatim ? block.detail : [],
+    });
+  }
+  if (placed.length === 0) return undefined;
+  const text = placed.map((entry) => [
+    `${CPP_USER_SOURCE_FILE}:${entry.line}${entry.column ? `:${entry.column}` : ''}: ${entry.severity}: ${entry.message}`,
+    ...entry.detail,
+  ].join('\n'));
+  return {
+    message: [...text, ...summary].join('\n'),
+    diagnostics: placed.map(({ detail, ...entry }) => entry),
+  };
+}
+
 function compileFailureResult(diagnostics, fallbackMessage, start, details = {}) {
   const cleanDiagnostics = (diagnostics || '').trim();
   const location = extractDiagnosticLocation(cleanDiagnostics);
@@ -12340,13 +12403,35 @@ function compileFailureResult(diagnostics, fallbackMessage, start, details = {})
         `$1${CPP_USER_SOURCE_FILE}:${userLine}:$2:`
       )
     : cleanDiagnostics;
+  const learner = details.diagnosticStage === 'compile'
+    ? cppLearnerCompilerDiagnostics(cleanDiagnostics, details.userSource)
+    : undefined;
+  const unplacedDiagnostics = learnerDiagnostics
+    .split(/\r?\n/)
+    .filter((line) => !CPP_COMPILER_WRAPPER_LINE.test(line.trim()))
+    .join('\n')
+    .trim();
   return {
     success: false,
     output: null,
-    error: cleanDiagnostics
-      ? `${String(prefix).replace(/\.$/, '')}: ${learnerDiagnostics}`
-      : fallbackMessage,
-    ...(userLine !== undefined ? { errorLine: userLine } : {}),
+    // A learner compile failure is the compiler's own text about the learner's
+    // source; the raw output travels as a structured field.
+    error: learner
+      ? learner.message
+      : cleanDiagnostics
+        ? `${String(prefix).replace(/\.$/, '')}: ${unplacedDiagnostics}`
+        : fallbackMessage,
+    ...(learner?.diagnostics[0] ? { errorLine: learner.diagnostics.find((entry) => entry.severity !== 'note')?.line ?? learner.diagnostics[0].line } : userLine !== undefined ? { errorLine: userLine } : {}),
+    ...(learner
+      ? {
+          diagnostic: {
+            schema: 'tracecode.compiler-diagnostic.v1',
+            language: 'cpp',
+            diagnostics: learner.diagnostics,
+            compilerOutput: cleanDiagnostics,
+          },
+        }
+      : {}),
     ...(details.generatedSource ? { generatedSource: details.generatedSource } : {}),
     ...(details.diagnosticStage ? { diagnosticStage: details.diagnosticStage } : {}),
     consoleOutput: [],

@@ -6,6 +6,27 @@ This repo uses Git tags as release boundaries. Version notes below summarize wha
 
 ## [Unreleased]
 
+### Added
+
+- `stopAtFirstRunaway` on batch evaluations (`BrowserJudgeHost.evaluateAlgorithm`,
+  a non-interactive `execute`, `RuntimeJudge.evaluateAlgorithm`). Off by
+  default. When on, a Submit stops at the first case a time or line limit
+  stopped and reports the rest as `not-run`, exactly as Run does. Each case
+  runs as a one-case provider batch, so it keeps the bounds it has in a whole
+  batch.
+
+### Fixed
+
+- Java compile failures report the compiler's diagnostics in the learner's
+  file and line (`Solution.java:3:20: error: ...`). Before, the message was the
+  worker's labelled report sections (`compilerStderr:` ... `runtimeError:`)
+  naming generated files, with no line. The raw output is in the outcome's
+  structured `diagnostic`.
+- C++ compile failures report only the compiler's diagnostics about the
+  learner's source: no wrapper prefix or trailer, notes in the generated driver
+  mapped back to the learner's lines or left out, and no instrumented excerpts
+  from traced builds.
+
 ## [0.20.0] - 2026-11-17
 
 ### Fixed

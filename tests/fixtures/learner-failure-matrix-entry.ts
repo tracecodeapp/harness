@@ -8,7 +8,10 @@ import {
 import { createTraceCCRuntimeManifest } from '../../packages/runtime-cpp/src/tracecc-runtime-assets';
 import {
   healthyProgram,
+  baseMode,
   isTracedMode,
+  STOPPING_BATCH_MODES,
+  STOPPING_MODE_KINDS,
   matrixCells,
   type MatrixCellResult,
   type MatrixCellSpec,
@@ -221,7 +224,11 @@ async function runMode(
   });
   try {
     if (mode !== 'interactive') {
-      const receipt = await host.evaluateAlgorithm({ bundle, ...(signal ? { signal } : {}) });
+      const receipt = await host.evaluateAlgorithm({
+        bundle,
+        ...(signal ? { signal } : {}),
+        ...(STOPPING_BATCH_MODES.includes(mode) ? { stopAtFirstRunaway: true } : {}),
+      });
       return observeEvaluation(receipt.evaluation, language, trace);
     }
     const initial = await host.execute({
@@ -344,7 +351,8 @@ export async function runLanguageMatrix(
     );
     for (const cell of cells) {
       for (const mode of options.modes) {
-        if (cell.modes && !cell.modes.includes(mode)) continue;
+        if (cell.modes && !cell.modes.includes(baseMode(mode))) continue;
+        if (STOPPING_BATCH_MODES.includes(mode) && !STOPPING_MODE_KINDS.includes(cell.kind)) continue;
         if (cell.kind === 'provider-asset-failure') {
           const brokenHost = createHost(
             options.assetBaseUrl,
