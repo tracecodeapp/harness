@@ -6,6 +6,40 @@ This repo uses Git tags as release boundaries. Version notes below summarize wha
 
 ## [Unreleased]
 
+## [0.20.1] - 2026-11-17
+
+### Added
+
+- `stopAtFirstRunaway` on batch evaluations (`BrowserJudgeHost.evaluateAlgorithm`,
+  a non-interactive `execute`, `RuntimeJudge.evaluateAlgorithm`). Off by
+  default; when off, a batch evaluation runs exactly as in 0.20.0. When on, a
+  Submit stops at the first case a time or line limit stopped and reports the
+  rest as `not-run`, exactly as Run does. Each case then runs as a one-case
+  provider batch, so it keeps the bounds it has in a whole batch; on a correct
+  Submit this costs Python and Java plain batches about 0.1–0.2 s per case.
+
+### Fixed
+
+- A worker reply that names a limit outside the closed `ExecutionLimitReason`
+  set, or a stage outside `ExecutionDiagnosticStage`, is a provider protocol
+  failure (`origin: 'provider'`, `reason: 'protocol'`), whatever else the reply
+  says (a completed reply, or a limit with an unknown stage). Before, any
+  truthy `timeoutReason` became a learner limit with that reason, outside the
+  exported type. `RuntimeProviderError` (exported from
+  `@tracecode/harness/judge`) now carries a `reason`: `runtime-failure` or
+  `protocol`.
+- A compile deadline is never the learner's limit in prepared execution (every
+  Judge evaluation: Run, Submit, traced runs). C# and C++ compile under their
+  own 120 s deadline instead of the 20 s execution deadline, and a compile that
+  misses it is a provider failure. Before, C++ reported it as the learner's
+  `client-timeout` and C# rejected after 20 s. Not yet covered: the direct
+  `CppWorkerClient.executeCode` / `executeWithTracing` / batch APIs, which
+  compile and run under one execution clock, still report a compile that
+  outlasts it as `client-timeout`. `CppPreparedProgramPreparationResult` keeps
+  `limitReason` as a deprecated member that is no longer produced.
+
+Compile and limit messages are unchanged from 0.20.0.
+
 ## [0.20.0] - 2026-11-17
 
 ### Fixed

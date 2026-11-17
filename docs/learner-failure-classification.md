@@ -18,12 +18,7 @@ diagnostic's `code` is the classification:
 | `runtime-provider-error` | The runtime provider failed for a reason the program did not cause: an asset or toolchain failed to load, a transport broke, a worker died outside the program, or a runtime broke the result protocol. | The Harness or its deployment |
 
 Learner failures carry a readable `message` and, when the language can know
-it, the source `line`. A compile failure's message is the compiler's own
-diagnostics in the learner's file and line numbering (`Solution.java:3:20:
-error: ...`, `solution.cpp:4:20: error: ...`). Raw compiler output and runtime
-report fields travel as a structured `diagnostic`
-(`tracecode.compiler-diagnostic.v1`) on the outcome, never as labelled
-sections, generated file names or instrumented code inside the message. `runtime-provider-error` is never used for a learner
+it, the source `line`. `runtime-provider-error` is never used for a learner
 failure, and a provider failure is never reported with a learner code.
 
 A case whose time limit is enforced by the Judge's own watchdog is reported as
