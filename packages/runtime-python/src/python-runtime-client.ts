@@ -432,6 +432,7 @@ function normalizePythonExecutionResult(value: unknown): ExecutionResult {
       output: sanitizeJsonValue(record.output),
       ...(normalizedString(record.error) ? { error: normalizedString(record.error) } : {}),
       ...(normalizedLine(record.errorLine) !== undefined ? { errorLine: normalizedLine(record.errorLine) } : {}),
+      ...(record.diagnosticStage === 'runtime' ? { diagnosticStage: 'runtime' as const } : {}),
       executionTimeMs: finiteNumber(record.executionTimeMs) ?? 0,
       consoleOutput: normalizeStringArray(record.consoleOutput),
       ...(record.traceLimitExceeded === true ? { traceLimitExceeded: true } : {}),

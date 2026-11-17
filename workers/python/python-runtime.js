@@ -2388,6 +2388,9 @@ for _tracecode_batch_inputs in _tracecode_batch_cases:
         if formatting_limit_reason is not None:
             _tracecode_case_result['timeoutReason'] = formatting_limit_reason
             _tracecode_case_result['consoleOutput'] = _tracecode_case_console
+        elif error_line is not None:
+            # Located in solution.py: the learner's program raised.
+            _tracecode_case_result['diagnosticStage'] = 'runtime'
     finally:
         _tracecode_batch_sys.settrace(None)
         if _tracecode_tracemalloc is not None and _tracecode_memory_started:
@@ -6507,11 +6510,18 @@ except Exception as e:
     _exc_type = type(e).__name__
     _exc_msg = str(e)
     _error_line = -1
+    _user_error_line = -1
     _exc_tb = getattr(e, '__traceback__', None)
     while _exc_tb is not None:
         if _exc_tb.tb_lineno is not None:
             _error_line = _exc_tb.tb_lineno
+            # Tracing helpers run in their own frames below the learner's call
+            # site; the learner's line is the deepest frame in solution.py.
+            if _exc_tb.tb_frame.f_code.co_filename == 'solution.py':
+                _user_error_line = _exc_tb.tb_lineno
         _exc_tb = _exc_tb.tb_next
+    if _user_error_line > 0:
+        _error_line = _user_error_line
     __tracecode_append_trace_step(None, {
         'line': _error_line,
         'event': 'exception',
@@ -6923,6 +6933,11 @@ async function executeWithTracing(
 
     let errorMessage;
     let errorLine;
+    // The tracer caught an exception it located in the learner's source: the
+    // program failed, not the provider, so the result carries a runtime stage.
+    // An exception with no learner frame stays unstaged and reads as a
+    // provider failure, which lets the host fall back.
+    let learnerProgramRaised = false;
     
     const isTraceBudgetExceeded =
       timeoutReason === 'trace-limit' ||
@@ -6963,6 +6978,7 @@ async function executeWithTracing(
         const mappedLine = rawErrorLine - userCodeStartLine + 1;
         if (mappedLine > 0 && mappedLine <= userCodeLineCount) {
           errorLine = mappedLine;
+          learnerProgramRaised = true;
         }
       }
       
@@ -6986,6 +7002,7 @@ async function executeWithTracing(
       output: result.result,
       error: errorMessage,
       errorLine,
+      ...(learnerProgramRaised ? { diagnosticStage: 'runtime' } : {}),
       trace: remapPythonRuntimeTrace(
         result.runtimeTrace,
         userCodeStartLine,
@@ -7684,7 +7701,11 @@ _json_out
         output: null,
         error: String(result.executionError.message ?? 'Python execution failed.'),
         ...(Number.isInteger(result.executionError.line)
-          ? { errorLine: result.executionError.line }
+          ? {
+              errorLine: result.executionError.line,
+              // Located in solution.py: the learner's program raised.
+              diagnosticStage: 'runtime',
+            }
           : {}),
         consoleOutput: [],
         timings: { totalMs: deps.performanceNow() - startedAt },

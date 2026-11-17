@@ -1353,6 +1353,14 @@ test('maps raw values, diagnostics, limits, stdout, stderr, and provider failure
     result.cases[3]?.diagnostics[0]?.code,
     'runtime-provider-error'
   );
+  // Hosts tell a provider that failed from a program that failed by the
+  // process termination: only a provider throw ends in a `failure`.
+  assert.deepEqual(result.cases[3]?.termination, {
+    kind: 'failure',
+    exitCode: 1,
+    message: 'provider transport exploded',
+  });
+  assert.deepEqual(result.cases[1]?.termination, { kind: 'exit', exitCode: 1 });
   assert.ok(state.codeCalls.every((call) =>
     call.limits?.wallClockMs === 900
   ));
