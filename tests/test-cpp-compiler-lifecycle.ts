@@ -5,6 +5,7 @@ import { createCppBrowserRuntimeProvider } from '../packages/runtime-cpp/src/bro
 import { CppWorkerClient } from '../packages/runtime-cpp/src/cpp-worker-client';
 import { createCppPreparedExecutionProvider } from '../packages/runtime-cpp/src/cpp-prepared-provider';
 import { createTraceCCRuntimeManifest } from '../packages/runtime-cpp/src/tracecc-runtime-assets';
+import { isRuntimeProviderError } from '../packages/runtime-contracts/src/execution-outcome';
 
 function assertCondition(condition: unknown, message: string): asserts condition {
   if (!condition) throw new Error(message);
@@ -1312,3 +1313,45 @@ test('cpp browser provider prewarms assets inside TraceCC without page fetches',
 test('cpp compile promotes queued compiler asset prewarm', testCompilePromotesQueuedCompilerPrewarm);
 test('cpp prepared provider protocol lifecycle', testPreparedProviderProtocolLifecycle);
 test('cpp compiler lifecycle', main);
+
+test('cpp compile that misses its deadline is the provider failure, never a learner limit', async () => {
+  let terminated = 0;
+  const fakeClient = {
+    init: async () => ({ success: true, loadTimeMs: 0 }),
+    prepareRuntimeProgram: async () => ({
+      success: false as const,
+      error: 'Execution timed out.',
+      consoleOutput: [],
+      compileDeadlineExceeded: true as const,
+    }),
+    terminate: () => { terminated += 1; },
+    dispose: () => { terminated += 1; },
+  };
+  const provider = createCppPreparedExecutionProvider({
+    createWorkerClient: () => fakeClient as unknown as CppWorkerClient,
+  });
+  let rejection: unknown;
+  try {
+    await provider.prepareProgram({
+      mode: 'code',
+      code: 'class Solution { public: int solve(int n) { return n; } };',
+      functionName: 'solve',
+      executionStyle: 'solution-method',
+    });
+  } catch (error) {
+    rejection = error;
+  }
+  assertCondition(
+    isRuntimeProviderError(rejection) && /compilation did not finish/.test((rejection as Error).message),
+    `a compile deadline must reject as a provider failure: ${String(rejection)}`
+  );
+  assertCondition(terminated > 0, 'the client that missed its compile deadline must be retired');
+});
+
+test('cpp worker client compiles under its own deadline, not the execution deadline', () => {
+  const client = createClient({ executionTimeoutMs: 5 });
+  assertCondition(
+    (client as unknown as { compileTimeoutMs: number }).compileTimeoutMs === 120_000,
+    'a 5 ms execution deadline must not bound compilation'
+  );
+});

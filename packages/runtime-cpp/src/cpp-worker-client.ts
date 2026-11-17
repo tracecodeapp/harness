@@ -117,6 +117,8 @@ export interface CppWorkerClientOptions extends CppWorkerAssets {
   initTimeoutMs?: number;
   executionTimeoutMs?: number;
   tracingTimeoutMs?: number;
+  /** Deadline for compiling a program (default 120 s); expiry is a provider failure. */
+  compileTimeoutMs?: number;
   workerIdleTimeoutMs?: number;
   programCacheLimit?: number;
   usePrecompiledHeader?: boolean;
@@ -201,7 +203,11 @@ export type CppPreparedProgramPreparationResult =
       readonly diagnostic?: unknown;
       readonly consoleOutput: string[];
       readonly timings?: RuntimeExecutionTimings;
-      readonly limitReason?: 'client-timeout';
+      /**
+       * Compilation did not finish within its deadline. Compilation runs no
+       * learner code, so this is the provider's failure, never a limit.
+       */
+      readonly compileDeadlineExceeded?: true;
     };
 
 interface CppPreparedProgramWorkerResult {
@@ -222,6 +228,9 @@ const INIT_TIMEOUT_MS = 120_000;
 // phases report progress separately so timeout diagnostics show where we died.
 const EXECUTION_TIMEOUT_MS = 20_000;
 const TRACING_TIMEOUT_MS = 20_000;
+// Compilation runs no learner code: its deadline only bounds a stuck compiler,
+// well above a cold first compile on a slow or loaded device.
+const COMPILE_TIMEOUT_MS = 120_000;
 const MESSAGE_TIMEOUT_MS = 30_000;
 const WORKER_READY_TIMEOUT_MS = 10_000;
 const CPP_DEFAULT_FILE = 'solution.cpp';
@@ -290,6 +299,7 @@ export class CppWorkerClient {
   private readonly initTimeoutMs: number;
   private readonly executionTimeoutMs: number;
   private readonly tracingTimeoutMs: number;
+  private readonly compileTimeoutMs: number;
   private readonly compilerFrameUrl?: string;
   private readonly externalCompilerUrl?: string;
   private lastRuntimeProgress: CppRuntimeProgress | null = null;
@@ -327,6 +337,7 @@ export class CppWorkerClient {
     this.initTimeoutMs = options.initTimeoutMs ?? INIT_TIMEOUT_MS;
     this.executionTimeoutMs = options.executionTimeoutMs ?? EXECUTION_TIMEOUT_MS;
     this.tracingTimeoutMs = options.tracingTimeoutMs ?? TRACING_TIMEOUT_MS;
+    this.compileTimeoutMs = options.compileTimeoutMs ?? COMPILE_TIMEOUT_MS;
     this.compilerFrameUrl = options.compilerFrameUrl;
     this.externalCompilerUrl = options.externalCompilerUrl;
 
@@ -1409,9 +1420,7 @@ export class CppWorkerClient {
   async prepareRuntimeProgram(
     call: RuntimeProgramPreparationCall
   ): Promise<CppPreparedProgramPreparationResult> {
-    const timeoutMs = call.mode === 'trace'
-      ? this.tracingTimeoutMs
-      : this.executionTimeoutMs;
+    const timeoutMs = this.compileTimeoutMs;
     const stage: CppClientTimeoutStage = call.mode === 'trace'
       ? 'trace'
       : 'compile-run';
@@ -1466,7 +1475,7 @@ export class CppWorkerClient {
             : {}),
           ...(result.timings ? { timings: result.timings } : {}),
           ...(result.timeoutReason === 'client-timeout'
-            ? { limitReason: 'client-timeout' as const }
+            ? { compileDeadlineExceeded: true as const }
             : {}),
         };
       } catch (error) {
@@ -1477,7 +1486,7 @@ export class CppWorkerClient {
           error: timeout.error,
           consoleOutput: timeout.consoleOutput,
           timings: timeout.timings,
-          limitReason: 'client-timeout',
+          compileDeadlineExceeded: true,
         };
       }
     });

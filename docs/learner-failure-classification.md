@@ -100,6 +100,15 @@ are typed so that the wrong answer cannot be produced by omission:
   worker `success: false` payload must carry a `timeoutReason` or a
   `diagnosticStage`. One that carries neither has broken the protocol, and
   lifting rejects with a `RuntimeProviderError` that names the omission.
+- Limit reasons and program stages are closed sets. A worker reply (or an
+  untyped provider's outcome) that names a limit or stage outside them is a
+  malformed provider message: lifting rejects with `RuntimeProviderError`, and
+  Judge reports `origin: 'provider'`, `reason: 'protocol'`. It never becomes a
+  learner limit.
+- Compilation runs no learner code, so a compile deadline is never the
+  learner's limit. C# and C++ bound compilation at 120 s (well above a cold
+  first compile on a slow device); Java, Python and JavaScript have no compile
+  deadline. A compile that misses its deadline is the provider's failure.
 - An untyped provider that still returns a stageless `failed` outcome is
   reported as `runtime-provider-error` with a message naming the contract
   violation; it is never silently attributed to the learner or to the
