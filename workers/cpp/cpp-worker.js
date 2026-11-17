@@ -12333,9 +12333,8 @@ const CPP_GENERATED_SOURCE_FILES = new Set([
   'tracecode_pch.hpp',
   'tracecode_runtime.hpp',
 ]);
-// The primary error and its chain always survive; beyond that, keep the
-// learner's own errors and at most this many errors in all.
-const CPP_MAX_REPORTED_ERROR_GROUPS = 3;
+// One explicit budget for the errors shown (the primary error included).
+const CPP_MAX_REPORTED_ERROR_GROUPS = 5;
 
 function parseCppCompilerOutput(diagnostics) {
   const entries = [];
@@ -12420,20 +12419,50 @@ function cppCompilerDiagnosticGroups(diagnostics, userSource) {
     // that is the learner's source (the error itself, or where the learner's
     // code requested the failing instantiation or expanded the macro).
     group.learnerLine = group.entries.find((entry) => entry.learnerLine !== undefined)?.learnerLine;
-    group.generatedPrimary =
-      head.file !== null &&
-      CPP_GENERATED_SOURCE_FILES.has(head.file) &&
-      head.learnerLine === undefined;
   }
   const primary = groups.find((group) => group.isError);
   return {
     groups,
     summary,
     primary,
-    // The learner's compile stage: the primary error is in the learner's
-    // source or its chain reaches it. A primary error in generated code that
-    // the learner's code is not part of is the driver's stage.
-    inLearnerSource: Boolean(primary && !primary.generatedPrimary && primary.learnerLine !== undefined),
+    // The learner's compile stage when the primary error's whole chain (the
+    // error and the notes that explain it) reaches the learner's source, even
+    // if the error itself is reported in the generated driver (a call to a
+    // private or mis-declared method).
+    inLearnerSource: Boolean(primary && primary.learnerLine !== undefined),
+  };
+}
+
+/**
+ * The error groups to show, within one budget: the primary error first, then
+ * one group for each distinct learner line its chain reaches, then the other
+ * groups whose chain reaches the learner's source, then the rest. Shown in the
+ * compiler's order.
+ */
+function selectCppErrorGroups(parsed) {
+  const errorGroups = parsed.groups.filter((group) => group.isError && group.primary.path !== null);
+  const ranked = [];
+  const take = (group) => {
+    if (!ranked.includes(group)) ranked.push(group);
+  };
+  if (parsed.primary && parsed.primary.primary.path !== null) take(parsed.primary);
+  const seenLines = new Set(parsed.primary?.learnerLine === undefined ? [] : [parsed.primary.learnerLine]);
+  for (const group of errorGroups) {
+    if (group.learnerLine !== undefined && !seenLines.has(group.learnerLine)) {
+      seenLines.add(group.learnerLine);
+      take(group);
+    }
+  }
+  for (const group of errorGroups) if (group.learnerLine !== undefined) take(group);
+  for (const group of errorGroups) take(group);
+  const chosen = new Set(ranked.slice(0, CPP_MAX_REPORTED_ERROR_GROUPS));
+  return {
+    // Warnings and location-less lines ride with the selection; only errors
+    // count against the budget.
+    shown: parsed.groups.filter((group) =>
+      chosen.has(group) || !group.isError || group.primary.path === null
+    ),
+    omitted: errorGroups.length - chosen.size,
   };
 }
 
@@ -12462,26 +12491,10 @@ function renderCppEntry(entry, { keepLocationless }) {
  */
 function cppLearnerCompilerDiagnostics(diagnostics, userSource) {
   const parsed = cppCompilerDiagnosticGroups(diagnostics, userSource);
-  if (!parsed.inLearnerSource) return undefined;
-  const errorGroups = parsed.groups.filter((group) => group.isError);
-  const kept = [];
-  let keptErrors = 0;
-  for (const group of parsed.groups) {
-    const isPrimary = group === parsed.primary;
-    const learnersOwn = group.primary.learnerLine !== undefined;
-    const locationless = group.primary.path === null;
-    if (
-      isPrimary ||
-      locationless ||
-      (group.isError && (learnersOwn || keptErrors < CPP_MAX_REPORTED_ERROR_GROUPS))
-    ) {
-      kept.push(group);
-      if (group.isError && !locationless) keptErrors += 1;
-    }
-  }
-  const omitted = errorGroups.filter((group) => !kept.includes(group)).length;
+  if (!parsed.primary) return undefined;
+  const { shown, omitted } = selectCppErrorGroups(parsed);
   const lines = [];
-  for (const group of kept) {
+  for (const group of shown) {
     group.entries.forEach((entry, index) => {
       lines.push(...renderCppEntry(entry, { keepLocationless: index === 0 }));
     });
@@ -12501,8 +12514,9 @@ function cppLearnerCompilerDiagnostics(diagnostics, userSource) {
   });
   return {
     message: lines.join('\n'),
+    inLearnerSource: parsed.inLearnerSource,
     errorLine: parsed.primary.learnerLine,
-    diagnostics: kept.map((group) => ({
+    diagnostics: shown.map((group) => ({
       ...describe(group.primary),
       notes: group.entries.slice(1).map(describe),
     })),
@@ -12523,17 +12537,13 @@ function compileFailureResult(diagnostics, fallbackMessage, start, details = {})
         ? 'C++ compilation failed'
         : fallbackMessage;
 
-  // Point the learner at their own file and line, not the generated driver.
-  const learnerDiagnostics = userLine !== undefined && location?.file !== CPP_USER_SOURCE_FILE
-    ? cleanDiagnostics.replace(
-        /(^|\n)(?:\/workspace\/)?TraceCodeDriver\.cpp:\d+:(\d+):/,
-        `$1${CPP_USER_SOURCE_FILE}:${userLine}:$2:`
-      )
-    : cleanDiagnostics;
-  const learner = details.diagnosticStage === 'compile'
-    ? cppLearnerCompilerDiagnostics(cleanDiagnostics, details.userSource)
-    : undefined;
-  const unplacedDiagnostics = learnerDiagnostics
+  // Every compile failure is rendered from the compiler's own diagnostic
+  // groups: generated locations become the learner's line or are left out,
+  // and a learner line is never paired with a generated column.
+  const rendered = details.diagnosticStage === undefined
+    ? undefined
+    : cppLearnerCompilerDiagnostics(cleanDiagnostics, details.userSource);
+  const fallbackText = cleanDiagnostics
     .split(/\r?\n/)
     .filter((line) => !CPP_COMPILER_WRAPPER_LINE.test(line.trim()))
     .join('\n')
@@ -12541,22 +12551,20 @@ function compileFailureResult(diagnostics, fallbackMessage, start, details = {})
   return {
     success: false,
     output: null,
-    // A learner compile failure is the compiler's own text about the learner's
-    // source; the raw output travels as a structured field.
-    error: learner
-      ? learner.message
+    error: rendered
+      ? rendered.message
       : cleanDiagnostics
-        ? `${String(prefix).replace(/\.$/, '')}: ${unplacedDiagnostics}`
+        ? `${String(prefix).replace(/\.$/, '')}: ${fallbackText}`
         : fallbackMessage,
-    ...(learner
-      ? { errorLine: learner.errorLine }
-      : userLine !== undefined ? { errorLine: userLine } : {}),
-    ...(learner
+    ...(rendered?.errorLine !== undefined
+      ? { errorLine: rendered.errorLine }
+      : !rendered && userLine !== undefined ? { errorLine: userLine } : {}),
+    ...(rendered
       ? {
           diagnostic: {
             schema: 'tracecode.compiler-diagnostic.v1',
             language: 'cpp',
-            diagnostics: learner.diagnostics,
+            diagnostics: rendered.diagnostics,
             compilerOutput: cleanDiagnostics,
           },
         }

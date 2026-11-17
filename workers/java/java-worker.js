@@ -5679,6 +5679,13 @@ function javaReportFailureMessage(report, fallback = 'Java execution failed') {
 }
 
 const JAVA_GENERIC_COMPILE_FAILURE = 'Java compilation failed';
+// The generated package the learner's classes are compiled into
+// (`buildPackageName`); javac names it in types and locations.
+const JAVA_GENERATED_PACKAGE_PREFIX = /\bharness\.user\.job[A-Za-z0-9]+\./g;
+
+function withoutGeneratedJavaPackage(text) {
+  return String(text).replace(JAVA_GENERATED_PACKAGE_PREFIX, '');
+}
 const JAVA_COMPILER_DIAGNOSTIC_HEADER =
   /^(?:[^\n:]*\/)?([A-Za-z_$][\w$]*)\.java:(\d+)(?::(\d+))?:\s*(error|warning):\s*(.*)$/;
 
@@ -5803,6 +5810,24 @@ function javaLearnerPosition(region, generatedLine, javacColumn) {
 }
 
 /**
+ * javac's continuation lines for one diagnostic. A source excerpt is the line
+ * before a caret line; it and the caret are kept only when `keepExcerpt`.
+ * Everything else (symbol:, location:, required:, found:, reason:, ...) is the
+ * compiler's explanation and is always kept.
+ */
+function javaDetailLines(detail, keepExcerpt) {
+  const lines = Array.isArray(detail) ? detail : [];
+  const excerpt = new Set();
+  lines.forEach((line, index) => {
+    if (/^\s*\^\s*$/.test(line)) {
+      excerpt.add(index);
+      if (index > 0) excerpt.add(index - 1);
+    }
+  });
+  return lines.filter((_line, index) => keepExcerpt || !excerpt.has(index));
+}
+
+/**
  * A compile failure, as the compiler reported it about the learner's source:
  * the message is the compiler's diagnostics in the learner's file and line
  * numbering; the raw compiler output and the runtime's report travel as
@@ -5837,14 +5862,14 @@ function javaCompileFailure(report, sources = [], learnerCode = '', fallback = '
       entries.push({
         file,
         severity,
-        message: text.trim(),
+        message: withoutGeneratedJavaPackage(text.trim()),
         // Only positions in the learner's original text are reported.
         ...(position ? { line: position.line, verbatim: position.verbatim } : {}),
         ...(position?.column === undefined ? {} : { column: position.column }),
         detail: [],
       });
     } else if (entries.length > 0 && rawLine.trim()) {
-      entries[entries.length - 1].detail.push(rawLine);
+      entries[entries.length - 1].detail.push(withoutGeneratedJavaPackage(rawLine));
     }
   }
 
@@ -5867,9 +5892,10 @@ function javaCompileFailure(report, sources = [], learnerCode = '', fallback = '
         entry.line === undefined
           ? `${entry.severity}: ${entry.message}`
           : `Solution.java:${entry.line}${entry.column ? `:${entry.column}` : ''}: ${entry.severity}: ${entry.message}`,
-        // An excerpt and caret only when the compiled line is the learner's
-        // own text.
-        ...(entry.line !== undefined && entry.verbatim ? entry.detail : []),
+        // javac's explanation (symbol:, location:, required:, found:, ...)
+        // always; the source excerpt and caret only when the compiled line is
+        // the learner's own text.
+        ...javaDetailLines(entry.detail, entry.line !== undefined && entry.verbatim),
       ].join('\n')).join('\n')
     : compilerStderr || compilerStdout ||
       (runtimeError && runtimeError !== JAVA_GENERIC_COMPILE_FAILURE ? runtimeError : fallback);
@@ -5880,12 +5906,16 @@ function javaCompileFailure(report, sources = [], learnerCode = '', fallback = '
     diagnostic: {
       schema: 'tracecode.compiler-diagnostic.v1',
       language: 'java',
-      diagnostics: reported.map((entry) => ({
-        severity: entry.severity,
-        message: entry.message,
-        ...(entry.line === undefined ? {} : { line: entry.line }),
-        ...(entry.column === undefined ? {} : { column: entry.column }),
-      })),
+      diagnostics: reported.map((entry) => {
+        const details = javaDetailLines(entry.detail, false).map((text) => text.trim());
+        return {
+          severity: entry.severity,
+          message: entry.message,
+          ...(entry.line === undefined ? {} : { line: entry.line }),
+          ...(entry.column === undefined ? {} : { column: entry.column }),
+          ...(details.length > 0 ? { details } : {}),
+        };
+      }),
       ...(compilerStdout ? { compilerStdout: truncateJavaWorkerDiagnostic(compilerStdout) } : {}),
       ...(compilerStderr ? { compilerStderr: truncateJavaWorkerDiagnostic(compilerStderr) } : {}),
       ...(runtimeError && runtimeError !== JAVA_GENERIC_COMPILE_FAILURE

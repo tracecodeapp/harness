@@ -223,6 +223,7 @@ const UNREADABLE_MESSAGE = [
   // toolchain wrapper text belong in structured fields, not the message.
   /(?:^|\n)(?:compilerStdout|compilerStderr|runtimeError|failedResultIndices):/u,
   /\bExports[0-9a-f]{8,}\w*\.java\b/u,
+  /\bharness\.user\.job[0-9a-f]+/u,
   /\bTraceCodeDriver\.cpp\b/u,
   /\b__tc_\w+/u,
   /TraceCC compilation failed/u,
@@ -307,22 +308,29 @@ function judgeCell(spec: MatrixCellSpec, result: MatrixCellResult): CellVerdict 
     }
     if (observation.class === 'compile') {
       const message = observation.message ?? '';
-      // Rewriting a compiler's output must never drop its explanation: the
-      // primary error (not just a note pointing at the learner's line) and the
-      // compiler's own words survive.
-      if (spec.primaryError && !/(?:^|\n)[^\n]*\b(?:fatal )?error:/u.test(message)) {
-        failures.set('message', `the compiler's primary error is missing: ${JSON.stringify(message.slice(0, 240))}`);
+      const errorLines = message.split('\n').filter((text) => /\b(?:fatal )?error:/u.test(text));
+      // The compiler's primary error is shown, first: rewriting must never
+      // drop or demote the explanation (a note alone is not enough).
+      if (spec.primaryError !== undefined && !errorLines[0]?.includes(spec.primaryError)) {
+        failures.set('message', `the first error line is not the compiler's primary error ${JSON.stringify(spec.primaryError)}: ${JSON.stringify(message.slice(0, 240))}`);
       }
       for (const text of spec.messageIncludes ?? []) {
         if (!message.includes(text)) {
           failures.set('message', `the compiler's explanation ${JSON.stringify(text)} is missing: ${JSON.stringify(message.slice(0, 240))}`);
         }
       }
-      // A column, when reported, is in the learner's original source.
+      if (spec.maxErrors !== undefined) {
+        const shown = errorLines.filter((text) => !/too many errors emitted/u.test(text)).length;
+        if (shown > spec.maxErrors) {
+          failures.set('message', `${shown} errors shown, over the budget of ${spec.maxErrors}`);
+        }
+      }
+      // Where the column is knowable it is reported, in the learner's
+      // original source.
       if (spec.column !== undefined && spec.line !== undefined) {
         const located = new RegExp(`:${spec.line}:(\\d+):\\s*(?:fatal )?error:`, 'u').exec(message);
-        if (located && Number(located[1]) !== spec.column) {
-          failures.set('column', `expected column ${spec.column} on line ${spec.line}, got ${located[1]}: ${JSON.stringify(message.slice(0, 160))}`);
+        if (!located || Number(located[1]) !== spec.column) {
+          failures.set('column', `expected column ${spec.column} on line ${spec.line}, got ${located?.[1] ?? 'none'}: ${JSON.stringify(message.slice(0, 160))}`);
         }
       }
     }

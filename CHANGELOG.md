@@ -6,6 +6,27 @@ This repo uses Git tags as release boundaries. Version notes below summarize wha
 
 ## [Unreleased]
 
+### Fixed
+
+- Compile failures report the compiler's own diagnostics in the learner's file
+  and line numbering, with the explanation intact:
+  - C++: each error with its whole instantiation or macro-expansion chain,
+    including errors located in library headers. The stage and the learner's
+    line come from the whole chain (a call the generated driver cannot make,
+    such as a private `solve`, points at the learner's declaration). Generated
+    locations are mapped to the learner's line or shown without a location;
+    a learner line is never paired with a generated column, and generated or
+    instrumented excerpts are dropped. One budget of five errors is shown,
+    covering each distinct learner line first; the rest are counted.
+  - Java: `Solution.java:line:column` in the learner's original text (mapped
+    through the worker's source normalization), javac's explanation lines
+    (`symbol:`, `location:`, ...) always kept, the generated package name
+    removed, and the source excerpt kept only when the compiled line is the
+    learner's line unchanged. Report fields are never rendered as labelled
+    sections.
+  - The raw output is in the outcome's structured `diagnostic`
+    (`tracecode.compiler-diagnostic.v1`).
+
 ## [0.20.1] - 2026-11-17
 
 ### Added

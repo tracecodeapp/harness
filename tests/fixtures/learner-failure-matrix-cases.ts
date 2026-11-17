@@ -113,7 +113,11 @@ export type MatrixFailureKind =
   | 'compile-macro-expansion'
   | 'compile-split-declaration'
   | 'compile-declaration-line'
-  | 'compile-after-second-class';
+  | 'compile-after-second-class'
+  | 'compile-missing-symbol'
+  | 'compile-private-member'
+  | 'compile-header-errors-several-lines'
+  | 'compile-many-errors';
 
 /** What a consumer concludes from the Judge result. */
 export type MatrixClass =
@@ -152,8 +156,13 @@ export interface MatrixCellSpec {
   readonly traceOptions?: { readonly maxTraceSteps?: number };
   /** Modes where the cell is expected to complete instead (e.g. trace limit in code mode). */
   readonly completesIn?: readonly MatrixMode[];
-  /** The message must contain the compiler's primary `error:` diagnostic. */
-  readonly primaryError?: boolean;
+  /**
+   * The compiler's primary error: the first `error:` line of the message
+   * must contain this text (the explanation survives, first).
+   */
+  readonly primaryError?: string;
+  /** At most this many `error:` diagnostics are shown (one explicit budget). */
+  readonly maxErrors?: number;
   /** Text the primary error must keep (the compiler's own explanation). */
   readonly messageIncludes?: readonly string[];
   /** 1-based column of the error in the learner's original source line. */
@@ -197,7 +206,8 @@ interface Draft {
   readonly completesIn?: readonly MatrixMode[];
   /** Line is not knowable for this language/kind (e.g. a Wasm trap). */
   readonly noLine?: boolean;
-  readonly primaryError?: boolean;
+  readonly primaryError?: string;
+  readonly maxErrors?: number;
   readonly messageIncludes?: readonly string[];
   /** Where the error's column is in the faulting line: `text`'s index + `offset` + 1. */
   readonly errorColumn?: { readonly text: string; readonly offset: number };
@@ -591,7 +601,7 @@ const JAVA: readonly Draft[] = [
     faultText: 'int total = n +;',
     expected: ['compile'],
     modes: COMPILE_CELL_MODES,
-    primaryError: true,
+    primaryError: 'illegal start of expression',
     errorColumn: { text: '+;', offset: 1 },
   },
   {
@@ -600,7 +610,7 @@ const JAVA: readonly Draft[] = [
     faultText: 'return n +;',
     expected: ['compile'],
     modes: COMPILE_CELL_MODES,
-    primaryError: true,
+    primaryError: 'illegal start of expression',
     errorColumn: { text: '+;', offset: 1 },
   },
   {
@@ -619,8 +629,19 @@ const JAVA: readonly Draft[] = [
     faultText: 'int total = Helper.twice(n) +;',
     expected: ['compile'],
     modes: COMPILE_CELL_MODES,
-    primaryError: true,
+    primaryError: 'illegal start of expression',
     errorColumn: { text: '+;', offset: 1 },
+  },
+  {
+    kind: 'compile-missing-symbol',
+    code: 'public class Solution { public int solve(int n) { return missing; } }',
+    faultText: 'return missing;',
+    expected: ['compile'],
+    modes: COMPILE_CELL_MODES,
+    primaryError: 'cannot find symbol',
+    // javac's explanation survives whether or not an excerpt can be shown.
+    messageIncludes: ['variable missing', 'location: class Solution'],
+    errorColumn: { text: 'missing;', offset: 0 },
   },
 ];
 
@@ -960,7 +981,7 @@ const CPP: readonly Draft[] = [
     faultText: 'std::sort(a.begin()',
     expected: ['compile'],
     modes: COMPILE_CELL_MODES,
-    primaryError: true,
+    primaryError: 'invalid operands to binary expression',
   },
   {
     kind: 'compile-template-instantiation',
@@ -977,7 +998,7 @@ const CPP: readonly Draft[] = [
     faultText: 'return value * 2;',
     expected: ['compile'],
     modes: COMPILE_CELL_MODES,
-    primaryError: true,
+    primaryError: 'invalid operands to binary expression',
     messageIncludes: ['invalid operands'],
   },
   {
@@ -992,7 +1013,7 @@ const CPP: readonly Draft[] = [
     faultText: '#include <tracecode_no_such_header>',
     expected: ['compile'],
     modes: COMPILE_CELL_MODES,
-    primaryError: true,
+    primaryError: 'file not found',
     messageIncludes: ['not found'],
   },
   {
@@ -1009,7 +1030,67 @@ const CPP: readonly Draft[] = [
     faultText: 'return SQUARE(n);',
     expected: ['compile'],
     modes: COMPILE_CELL_MODES,
-    primaryError: true,
+    primaryError: "expected ')'",
+  },
+  {
+    // The driver's call fails, but the chain reaches the learner's source.
+    kind: 'compile-private-member',
+    code: lines('class Solution {', '  int solve(int n) { return n; }', '};'),
+    faultText: 'int solve(int n)',
+    expected: ['compile'],
+    modes: COMPILE_CELL_MODES,
+    primaryError: 'is a private member',
+  },
+  {
+    // Several library-header errors, each requested from a different learner
+    // line: every one of those lines is reported.
+    kind: 'compile-header-errors-several-lines',
+    code: lines(
+      '#include <algorithm>',
+      '#include <vector>',
+      'class Solution {',
+      'public:',
+      '  int solve(int n) {',
+      '    std::vector<int> v = {1, 2, 3};',
+      '    long a = std::count_if(v.begin(), v.end(), [](int) {});',
+      '    long b = std::count_if(v.begin(), v.end(), [](int) {});',
+      '    long c = std::count_if(v.begin(), v.end(), [](int) {});',
+      '    long d = std::count_if(v.begin(), v.end(), [](int) {});',
+      '    return static_cast<int>(a + b + c + d) + n;',
+      '  }',
+      '};'
+    ),
+    faultText: 'long a = std::count_if',
+    expected: ['compile'],
+    modes: COMPILE_CELL_MODES,
+    primaryError: 'not contextually convertible',
+    messageIncludes: ['solution.cpp:7:', 'solution.cpp:8:', 'solution.cpp:9:', 'solution.cpp:10:'],
+  },
+  {
+    // Errors located in the learner's own file obey the same budget.
+    kind: 'compile-many-errors',
+    code: lines(
+      'class Solution {',
+      'public:',
+      '  int solve(int n) {',
+      '    int a = undefined1;',
+      '    int b = undefined2;',
+      '    int c = undefined3;',
+      '    int d = undefined4;',
+      '    int e = undefined5;',
+      '    int f = undefined6;',
+      '    int g = undefined7;',
+      '    int h = undefined8;',
+      '    return a + b + c + d + e + f + g + h + n;',
+      '  }',
+      '};'
+    ),
+    faultText: 'int a = undefined1;',
+    expected: ['compile'],
+    modes: COMPILE_CELL_MODES,
+    primaryError: "use of undeclared identifier 'undefined1'",
+    maxErrors: 5,
+    messageIncludes: ['more errors not shown'],
   },
 ];
 
@@ -1056,7 +1137,8 @@ export function matrixCells(language: MatrixLanguage): readonly MatrixCellSpec[]
     ...(draft.limits ? { limits: draft.limits } : {}),
     ...(draft.traceOptions ? { traceOptions: draft.traceOptions } : {}),
     ...(draft.completesIn ? { completesIn: draft.completesIn } : {}),
-    ...(draft.primaryError ? { primaryError: true } : {}),
+    ...(draft.primaryError ? { primaryError: draft.primaryError } : {}),
+    ...(draft.maxErrors ? { maxErrors: draft.maxErrors } : {}),
     ...(draft.messageIncludes ? { messageIncludes: draft.messageIncludes } : {}),
     ...(draft.errorColumn && draft.faultText
       ? { column: columnOf(draft.code, draft.faultText, draft.errorColumn) }
