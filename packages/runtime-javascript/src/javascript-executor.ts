@@ -1519,11 +1519,8 @@ async function transpileTypeScript(code: string): Promise<string> {
       const position = first.file.getLineAndCharacterOfPosition(first.start);
       lineNumber = position.line + 1;
     }
-    const error = new Error(
-      lineNumber
-        ? `TypeScript transpilation failed (line ${lineNumber}): ${messageText}`
-        : `TypeScript transpilation failed: ${messageText}`
-    );
+    // The compiler's own message; the line travels as a field, not as text.
+    const error = new Error(messageText);
     if (lineNumber) {
       (error as Error & { __tracecodeLine?: number }).__tracecodeLine = lineNumber;
     }

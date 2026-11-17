@@ -109,11 +109,16 @@ export class ExecutionAbortedError extends Data.TaggedError('ExecutionAbortedErr
   }
 }
 
-/** The worker script answered a request with an `error`-type reply. */
+/**
+ * The worker script answered a request with an `error`-type reply. A worker
+ * that knows the learner's source line for the failure (a compile diagnostic)
+ * reports it as `errorLine`, never only inside the message text.
+ */
 export class WorkerReportedError extends Data.TaggedError('WorkerReportedError')<{
   readonly workerMessage: string;
+  readonly errorLine?: number;
 }> {
-  constructor(args: { readonly workerMessage: string }) {
+  constructor(args: { readonly workerMessage: string; readonly errorLine?: number }) {
     super(args);
     this.message = args.workerMessage;
   }

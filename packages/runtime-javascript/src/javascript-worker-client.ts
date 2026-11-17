@@ -199,13 +199,9 @@ function isSesAlgorithmInputEligible(value: unknown): boolean {
   }, 0);
 }
 
+/** The learner's line for a preparation failure, as the worker reported it. */
 function preparationErrorLine(error: unknown): number | undefined {
-  const message = error instanceof Error ? error.message : String(error);
-  const match = /\bline\s+(\d+)\b/i.exec(message) ??
-    /\((\d+):\d+\)/.exec(message);
-  if (!match) return undefined;
-  const line = Number.parseInt(match[1], 10);
-  return Number.isSafeInteger(line) && line > 0 ? line : undefined;
+  return error instanceof WorkerReportedError ? error.errorLine : undefined;
 }
 
 function sesCompatiblePreparedExecution(

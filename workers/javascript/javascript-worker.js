@@ -3006,9 +3006,8 @@ function transpileTypeScript(sourceCode) {
       const position = first.file.getLineAndCharacterOfPosition(first.start);
       lineNumber = position.line + 1;
     }
-    const error = new Error(
-      lineNumber ? `TypeScript transpilation failed (line ${lineNumber}): ${messageText}` : `TypeScript transpilation failed: ${messageText}`
-    );
+    // The compiler's own message; the line travels as a field, not as text.
+    const error = new Error(messageText);
     if (lineNumber) {
       error.__tracecodeLine = lineNumber;
     }
@@ -7492,7 +7491,14 @@ async function processMessage(data) {
       }
     }
   } catch (error) {
-    postProtocolMessage(id, protocolToken, 'error', { error: error instanceof Error ? error.message : String(error) });
+    const errorLine =
+      error && typeof error === 'object' && Number.isSafeInteger(error.__tracecodeLine) && error.__tracecodeLine > 0
+        ? error.__tracecodeLine
+        : undefined;
+    postProtocolMessage(id, protocolToken, 'error', {
+      error: error instanceof Error ? error.message : String(error),
+      ...(errorLine !== undefined ? { errorLine } : {}),
+    });
   }
 }
 

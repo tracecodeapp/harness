@@ -89,6 +89,11 @@ This repo uses Git tags as release boundaries. Version notes below summarize wha
     removed, and the source excerpt kept only when the compiled line is the
     learner's line unchanged. Report fields are never rendered as labelled
     sections.
+  - TypeScript: the compiler's own message (`Expression expected.`), without
+    the `TypeScript transpilation failed (line N):` prefix. The line travels
+    as a field: the worker's error reply carries `errorLine`, and
+    `WorkerReportedError` exposes it, so the client no longer reads the line
+    out of the message.
   - The raw output is in the outcome's structured `diagnostic`
     (`tracecode.compiler-diagnostic.v1`).
 

@@ -3400,8 +3400,9 @@ function smallest(nums: number[]): number {
   assertCondition(executeTypeScriptSyntaxError.success === false, 'TypeScript syntax errors should fail');
   assertCondition(
     typeof executeTypeScriptSyntaxError.error === 'string' &&
-      executeTypeScriptSyntaxError.error.includes('TypeScript transpilation failed'),
-    'TypeScript syntax errors should include transpilation failure context'
+      executeTypeScriptSyntaxError.error.length > 0 &&
+      !/TypeScript transpilation failed|\(line \d+\)/.test(executeTypeScriptSyntaxError.error),
+    `TypeScript syntax errors should carry the compiler's message, with the line only as a field: ${JSON.stringify(executeTypeScriptSyntaxError.error)}`
   );
   assertCondition(
     executeTypeScriptSyntaxError.errorLine === 1,

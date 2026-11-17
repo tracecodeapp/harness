@@ -309,7 +309,14 @@ export class WorkerSessionCore {
       this.pendingMessages.delete(id);
 
       if (type === 'error') {
-        pending.reject(new WorkerReportedError({ workerMessage: (payload as { error: string }).error }));
+        const reported = payload as { error: string; errorLine?: unknown };
+        const errorLine = Number.isSafeInteger(reported.errorLine) && (reported.errorLine as number) > 0
+          ? reported.errorLine as number
+          : undefined;
+        pending.reject(new WorkerReportedError({
+          workerMessage: reported.error,
+          ...(errorLine !== undefined ? { errorLine } : {}),
+        }));
         return;
       }
       logRuntimeDiagnostic('debug', {
