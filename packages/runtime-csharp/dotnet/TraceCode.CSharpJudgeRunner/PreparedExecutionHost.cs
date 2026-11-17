@@ -62,7 +62,8 @@ public static partial class PreparedExecutionHost
                     "Invalid prepared C# execution request.",
                     stopwatch,
                     capturedOut,
-                    timings: timings
+                    timings: timings,
+                    hostFailure: true
                 );
             }
 
@@ -85,7 +86,8 @@ public static partial class PreparedExecutionHost
                     "Prepared C# artifact is unavailable or invalid.",
                     stopwatch,
                     capturedOut,
-                    timings: timings
+                    timings: timings,
+                    hostFailure: true
                 );
             }
 
@@ -100,7 +102,8 @@ public static partial class PreparedExecutionHost
                     "Prepared C# artifact is unavailable or invalid.",
                     stopwatch,
                     capturedOut,
-                    timings: timings
+                    timings: timings,
+                    hostFailure: true
                 );
             }
 
@@ -122,7 +125,8 @@ public static partial class PreparedExecutionHost
                     "Prepared C# artifact is unavailable or invalid.",
                     stopwatch,
                     capturedOut,
-                    timings: timings
+                    timings: timings,
+                    hostFailure: true
                 );
             }
 
@@ -157,7 +161,18 @@ public static partial class PreparedExecutionHost
                 using MemoryStream assemblyStream = new(peBytes, writable: false);
                 Assembly userAssembly = loadContext.LoadFromStream(assemblyStream);
                 object? output = InvokeDriver(userAssembly, inputsJson);
-                object? normalizedOutput = NormalizeOutput(output);
+                object? normalizedOutput;
+                try
+                {
+                    // Converting the program's returned value runs its
+                    // accessors and applies output limits to it: the program's.
+                    normalizedOutput = NormalizeOutput(output);
+                }
+                catch (Exception error)
+                    when (error is not TraceClrProgramFailedException)
+                {
+                    throw new TraceClrProgramFailedException(error);
+                }
                 timings["runMs"] =
                     stopwatch.Elapsed.TotalMilliseconds - runStartedAt;
                 timings["executionRealm"] =
@@ -214,13 +229,25 @@ public static partial class PreparedExecutionHost
                 timings: timings
             );
         }
+        catch (TraceClrProgramFailedException failure)
+        {
+            return SerializeError(
+                failure.ProgramException.GetBaseException().Message,
+                stopwatch,
+                capturedOut,
+                timings: timings
+            );
+        }
         catch (Exception error)
         {
+            // Not raised by the learner's program: the host's own failure
+            // (request validation, artifact loading, driver binding).
             return SerializeError(
                 error.GetBaseException().Message,
                 stopwatch,
                 capturedOut,
-                timings: timings
+                timings: timings,
+                hostFailure: true
             );
         }
         finally
@@ -317,13 +344,27 @@ public static partial class PreparedExecutionHost
         ) ?? throw new InvalidOperationException(
             "TraceCode generated driver did not expose Run()."
         );
-        object? result = method.Invoke(null, new object?[] { inputsJson });
-        if (result is not Task task)
+        object? result;
+        try
         {
-            return result;
+            result = method.Invoke(null, new object?[] { inputsJson });
+            if (result is not Task task)
+            {
+                return result;
+            }
+            task.GetAwaiter().GetResult();
         }
-
-        task.GetAwaiter().GetResult();
+        catch (TargetInvocationException invocation)
+            when (invocation.InnerException is not null)
+        {
+            throw new TraceClrProgramFailedException(invocation.InnerException);
+        }
+        catch (Exception error)
+            when (error is not TraceClrProgramFailedException)
+        {
+            // An awaited program task rethrows the program's own exception.
+            throw new TraceClrProgramFailedException(error);
+        }
         Type taskType = result.GetType();
         return taskType.IsGenericType
             ? taskType
@@ -594,11 +635,13 @@ public static partial class PreparedExecutionHost
         StringWriter capturedOut,
         bool traceLimitExceeded = false,
         string? timeoutReason = null,
-        IDictionary<string, object>? timings = null
+        IDictionary<string, object>? timings = null,
+        bool hostFailure = false
     ) =>
         Serialize(new PreparedResponse
         {
             Success = false,
+            HostFailure = hostFailure,
             Error = error,
             ConsoleOutput = SplitConsoleOutput(capturedOut),
             Events = SnapshotTraceEvents(capturedOut),
@@ -660,6 +703,11 @@ public static partial class PreparedExecutionHost
             if (response.CompiledArtifactKey is not null)
             {
                 writer.WriteString("compiledArtifactKey", response.CompiledArtifactKey);
+            }
+            if (response.HostFailure)
+            {
+                // Structural provenance: the host failed, not the program.
+                writer.WriteBoolean("hostFailure", true);
             }
             writer.WriteEndObject();
         }
@@ -905,6 +953,9 @@ public static partial class PreparedExecutionHost
     {
         [JsonPropertyName("success")]
         public bool Success { get; set; }
+
+        [JsonPropertyName("hostFailure")]
+        public bool HostFailure { get; set; }
 
         [JsonPropertyName("output")]
         public object? Output { get; set; }

@@ -49,6 +49,15 @@ public static partial class Program
         inputBytes
     );
 
+    /// <summary>
+    /// After <c>ExecutePrepared</c> returned empty output: the program's
+    /// failure as JSON <c>{"error","timeoutReason"}</c>.
+    /// </summary>
+    [JSExport]
+    [SupportedOSPlatform("browser")]
+    public static string TakeProgramFailure() =>
+        TraceClrAlgorithmExecutionCore.TakeProgramFailure();
+
     [JSExport]
     [SupportedOSPlatform("browser")]
     public static string ExecutePreparedTrace(

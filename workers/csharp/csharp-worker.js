@@ -8,6 +8,7 @@ let executePreparedUtf8Export = null;
 let executeAlgorithmPreparedExport = null;
 let executeAlgorithmPreparedTraceExport = null;
 let getAlgorithmManagedHeapBytesExport = null;
+let takeAlgorithmProgramFailureExport = null;
 let disposePreparedArtifactExport = null;
 let executeProjectExport = null;
 let getCompiledArtifactKeyExport = null;
@@ -1755,9 +1756,14 @@ function emitRuntimeDiagnostic(level, phase, message, detail) {
   });
 }
 
-// Failures the managed host reports for its own preconditions. Everything else
-// a managed execution export reports as `success: false` came from running the
-// learner's program.
+// Provenance of a managed execution's `success: false`:
+// - the runner role's hosts report it structurally. The compatibility host
+//   sets `hostFailure: true` on its own failures; the algorithm-fast host
+//   throws for its own failures and reports the program's on a separate
+//   channel (empty output, then TakeProgramFailure).
+// - the compiler and general roles ship prebuilt hosts without that field, so
+//   their precondition messages are listed here. Everything else they report
+//   came from compiling or running the learner's program.
 const CSHARP_HOST_PROVIDER_ERRORS = new Set([
   'Invalid prepared C# execution request.',
   'Prepared C# artifact is unavailable or invalid.',
@@ -1859,7 +1865,11 @@ async function classifyCSharpProgramExecution(execute) {
   if (result.timeoutReason || result.traceLimitExceeded) return result;
   const exit = dotnetExitStatusFromText(result.error);
   if (exit) return { ...programExitResult(exit), timings: result.timings ?? {} };
-  if (CSHARP_HOST_PROVIDER_ERRORS.has(String(result.error ?? '').trim())) {
+  if (
+    result.hostFailure === true ||
+    (configuredRuntimeRole !== 'runner' &&
+      CSHARP_HOST_PROVIDER_ERRORS.has(String(result.error ?? '').trim()))
+  ) {
     throw new Error(String(result.error));
   }
   // Single-call paths compile and run together: compiler errors in the
@@ -3361,6 +3371,7 @@ function requiredExportsForRole() {
       ['ExecuteAlgorithmPrepared', executeAlgorithmPreparedExport],
       ['ExecuteAlgorithmPreparedTrace', executeAlgorithmPreparedTraceExport],
       ['GetAlgorithmManagedHeapBytes', getAlgorithmManagedHeapBytesExport],
+      ['TakeProgramFailure', takeAlgorithmProgramFailureExport],
       ['DisposePreparedArtifact', disposePreparedArtifactExport],
     ];
   }
@@ -3769,6 +3780,10 @@ async function loadRuntime(assetBaseUrl) {
         configuredRuntimeRole === 'runner'
           ? algorithmExecutionHost?.GetManagedHeapBytes
           : null;
+      takeAlgorithmProgramFailureExport =
+        configuredRuntimeRole === 'runner'
+          ? algorithmExecutionHost?.TakeProgramFailure
+          : null;
       disposePreparedArtifactExport =
         configuredRuntimeRole === 'runner'
           ? preparedExecutionHost?.DisposePreparedArtifact
@@ -3794,6 +3809,7 @@ async function loadRuntime(assetBaseUrl) {
       executeAlgorithmPreparedExport = null;
       executeAlgorithmPreparedTraceExport = null;
       getAlgorithmManagedHeapBytesExport = null;
+      takeAlgorithmProgramFailureExport = null;
       disposePreparedArtifactExport = null;
       executeProjectExport = null;
       getCompiledArtifactKeyExport = null;
@@ -4239,6 +4255,30 @@ async function executePreparedCSharpProgram(message) {
           payload.inputBytes
         )
       );
+      if (outputBytes.length === 0) {
+        // Driver output always starts with the wire magic: empty output is
+        // the host's signal that the learner's program failed.
+        const failure = JSON.parse(takeAlgorithmProgramFailureExport());
+        return {
+          success: false,
+          error: String(failure.error ?? ''),
+          ...(failure.timeoutReason
+            ? { timeoutReason: failure.timeoutReason, traceLimitExceeded: true }
+            : {}),
+          consoleOutput: [],
+          timings: {
+            initMs,
+            hostCallMs: elapsedMs(hostCallStartedAt),
+            runMs: elapsedMs(hostCallStartedAt),
+            executionRealm: 'retained-worker-collectible-context',
+            compileCacheHit: true,
+            artifactCacheHit: true,
+            preparedRunnerTier: 'algorithm-fast',
+            ...runtimeMemoryTimings(),
+            totalMs: elapsedMs(startedAt),
+          },
+        };
+      }
       return {
         success: true,
         outputBytes,
@@ -4256,30 +4296,16 @@ async function executePreparedCSharpProgram(message) {
         },
       };
     } catch (error) {
+      // The algorithm-fast host throws only for its own failures (the
+      // program's are returned), so every throw here is the provider's.
       if (isDotnetExitStatus(error)) throw error;
       const message = formatCSharpWorkerError(error);
-      const invalidArtifact = message.includes('Prepared TraceCLR artifact');
-      if (invalidArtifact) {
-        throw new Error('Prepared C# artifact is unavailable or invalid.');
-      }
-      return {
-        success: false,
-        error: invalidArtifact
+      // Presentation only: provenance is already decided by the throw.
+      throw new Error(
+        message.includes('Prepared TraceCLR artifact')
           ? 'Prepared C# artifact is unavailable or invalid.'
-          : message,
-        consoleOutput: [],
-        timings: {
-          initMs,
-          hostCallMs: elapsedMs(hostCallStartedAt),
-          runMs: elapsedMs(hostCallStartedAt),
-          executionRealm: 'retained-worker-collectible-context',
-          compileCacheHit: !invalidArtifact,
-          artifactCacheHit: !invalidArtifact,
-          preparedRunnerTier: 'algorithm-fast',
-          ...runtimeMemoryTimings(),
-          totalMs: elapsedMs(startedAt),
-        },
-      };
+          : message
+      );
     }
   }
   const hostCallStartedAt = now();

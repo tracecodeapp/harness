@@ -155,7 +155,15 @@ not need to rebuild a host after a learner failure; they may rebuild after a
 - C#: the browser .NET runtime lacks exception message resources; the Harness
   maps common resource keys (`Arg_DivideByZero`) to the framework's English
   messages. `Environment.Exit` and fatal stack overflow end the .NET runtime;
-  the case is `runtime` and the runner is retired.
+  the case is `runtime` and the runner is retired. The runner's managed hosts
+  decide provenance structurally: an exception thrown by the generated
+  driver's `Run` is the program's, every other exception is the host's
+  (`hostFailure: true` from the compatibility host; a thrown error from the
+  algorithm-fast host, which returns program failures on a separate channel).
+  An exception the generated driver itself raises while decoding inputs or
+  encoding the result also arrives through `Run`, so it is reported as the
+  program's; the driver is produced by the compiler role, which this
+  classification cannot change without rebuilding it.
 - C++: the toolchain builds without exceptions. A `throw` that no lowered
   `catch` handles ends the program as an uncaught exception (`runtime`, with
   the throw's line). WebAssembly traps (integer divide by zero, out-of-bounds

@@ -7172,7 +7172,11 @@ async function executeWithTracing(
     const rawError = pythonErrorText(error);
     
     const { message, line } = parsePythonError(rawError, userCodeStartLine, code.split('\n').length);
-    const isClientTimeout = rawError.includes('timed out');
+    // The guard reports a runaway inside the result; only an escaped guard
+    // exception (raised outside the program's try) is a client timeout here.
+    // Decided by the exception's type, never by message text.
+    const isClientTimeout =
+      Boolean(error && typeof error === 'object' && error.type === '_InfiniteLoopDetected');
     const stage = isClientTimeout ? undefined : escapedPythonErrorStage(error, line);
     if (!isClientTimeout && !stage) throw error;
     const exitStatus = pythonRuntimeExitStatus(error);

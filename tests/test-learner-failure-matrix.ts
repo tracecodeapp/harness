@@ -79,18 +79,14 @@ const JAVA_LINES =
 const JAVA_EXIT =
   `TraceJVM treats System.exit as a no-op inside the algorithm sandbox, so the program continues and returns a value. Reporting the exit needs a TraceJVM change or a Java source rewrite, neither safe in this release. It is not reported as a provider failure.`;
 const CS_FAST =
-  `The C# algorithm-fast runner surfaces every managed failure as TargetInvocationException without the inner exception, so plain-mode cases cannot name the exception or give its line. Its own loop guard surfaces the same way, so a guard stop reads as a runtime failure rather than a limit. Fixing this means rebuilding the managed TraceClr runner; the classification is still the learner's.`;
+  `The C# algorithm-fast runner reports the program's exception as traced runs do, but it runs without a trace and the prepared assembly carries no debug information, so plain-mode cases omit the line.`;
 const CS_TRACE_LINES =
   `Traced C# reports a line only when the trace records the exception event; exceptions raised inside framework operations (casts, division, indexing) and Environment.Exit arrive without one.`;
 const CPP_LINES =
   `WebAssembly traps and exit() carry no source position (learner programs are built without debug information).`;
 
 /** Gaps whose cells pass on some runs (timing-dependent); never reported stale. */
-const INTERMITTENT_GAPS: ReadonlySet<string> = new Set([
-  // The algorithm-fast runner's own loop guard races the client deadline.
-  'csharp:code:infinite-loop:classification',
-  'csharp:code-batch:infinite-loop:classification',
-]);
+const INTERMITTENT_GAPS: ReadonlySet<string> = new Set<string>([]);
 
 export const KNOWN_GAPS: Readonly<Record<string, string>> = {
   'javascript:trace:*:line': JS_TRACE,
@@ -111,12 +107,8 @@ export const KNOWN_GAPS: Readonly<Record<string, string>> = {
   'java:*:*:line': JAVA_LINES,
   'java:*:process-exit:classification': JAVA_EXIT,
   'java:*:early-exit-zero:classification': JAVA_EXIT,
-  'csharp:code:*:message': CS_FAST,
   'csharp:code:*:line': CS_FAST,
-  'csharp:code-batch:*:message': CS_FAST,
   'csharp:code-batch:*:line': CS_FAST,
-  'csharp:code-batch:infinite-loop:classification': CS_FAST,
-  'csharp:code:infinite-loop:classification': CS_FAST,
   'csharp:trace:*:line': CS_TRACE_LINES,
   'csharp:trace-batch:*:line': CS_TRACE_LINES,
   'csharp:interactive:*:line': CS_TRACE_LINES,

@@ -32,6 +32,25 @@ This repo uses Git tags as release boundaries. Version notes below summarize wha
 
 ### Fixed
 
+- C# failure provenance is structural. The runner role's managed hosts
+  separate the learner's program from the host by where the exception came
+  from: an exception thrown by the generated driver's `Run` (reflection's
+  `TargetInvocationException`, or the awaited program task) is the program's;
+  anything else (request validation, artifact identity, driver binding, test
+  inputs over the host's limits) is the host's. The compatibility host marks
+  its own failures `hostFailure: true`; the algorithm-fast host throws for its
+  own failures and returns the program's on a separate channel. The worker no
+  longer classifies runner-role failures by message text. The compiler and
+  general roles, which are not rebuilt, keep their listed precondition
+  messages.
+- Plain (untraced) C# runs on the algorithm-fast runner report the program's
+  exception (`DivideByZeroException: Attempted to divide by zero.`) and stop a
+  runaway loop as `client-timeout`, the same as traced runs. Previously they
+  reported a bare `TargetInvocationException`, and a guard stop could read as
+  a runtime failure.
+- A Python error that escapes the program region is a client timeout only when
+  it is the runaway guard's own exception type, never because its text
+  contains "timed out".
 - The direct `CppWorkerClient.executeCode`, `executeWithTracing` and batch
   APIs, which compile and run under one clock, report a deadline that expires
   before the program started running as the provider's failure
