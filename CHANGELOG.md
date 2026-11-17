@@ -6,6 +6,8 @@ This repo uses Git tags as release boundaries. Version notes below summarize wha
 
 ## [Unreleased]
 
+## [0.20.1] - 2026-11-17
+
 ### Added
 
 - `stopAtFirstRunaway` on batch evaluations (`BrowserJudgeHost.evaluateAlgorithm`,
@@ -17,6 +19,15 @@ This repo uses Git tags as release boundaries. Version notes below summarize wha
 
 ### Fixed
 
+- A worker reply that names a limit outside the closed `ExecutionLimitReason`
+  set (or a stage outside `ExecutionDiagnosticStage`) is a provider protocol
+  failure. Before, any truthy `timeoutReason` became a learner limit with that
+  reason, outside the exported type. `isExecutionLimitReason` and
+  `isExecutionDiagnosticStage` are exported from runtime-contracts.
+- A compile deadline is never the learner's limit. C# and C++ compile under
+  their own 120 s deadline instead of the 20 s execution deadline, and a
+  compile that misses it is a provider failure. Before, C++ reported it as the
+  learner's `client-timeout` and C# rejected after 20 s.
 - Java compile failures report the compiler's diagnostics in the learner's
   file and line (`Solution.java:3:20: error: ...`). Before, the message was the
   worker's labelled report sections (`compilerStderr:` ... `runtimeError:`)
