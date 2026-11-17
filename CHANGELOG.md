@@ -24,9 +24,9 @@ This repo uses Git tags as release boundaries. Version notes below summarize wha
   failure (`origin: 'provider'`, `reason: 'protocol'`), whatever else the reply
   says (a completed reply, or a limit with an unknown stage). Before, any
   truthy `timeoutReason` became a learner limit with that reason, outside the
-  exported type. `isExecutionLimitReason` and `isExecutionDiagnosticStage` are
-  exported from runtime-contracts, and `RuntimeProviderError` carries a
-  `reason` (`runtime-failure` or `protocol`).
+  exported type. `RuntimeProviderError` (exported from
+  `@tracecode/harness/judge`) now carries a `reason`: `runtime-failure` or
+  `protocol`.
 - A compile deadline is never the learner's limit in prepared execution (every
   Judge evaluation: Run, Submit, traced runs). C# and C++ compile under their
   own 120 s deadline instead of the 20 s execution deadline, and a compile that
