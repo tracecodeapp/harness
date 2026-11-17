@@ -13,6 +13,42 @@ const trustedCppWorkerPostMessage = self.postMessage.bind(self);
 const RESULT_MARKER = '__TRACECODE_RESULT__';
 const TRACE_EVENT_MARKER = '__TRACECODE_EVENT__';
 const TRACE_STATUS_MARKER = '__TRACECODE_TRACE_STATUS__';
+// The driver prints this line, with the execution's nonce, immediately before
+// its status and result lines. A status or result marker the learner's program
+// prints itself has no valid nonce line before it and is console output.
+const RESULT_NONCE_MARKER = '__TRACECODE_RESULT_NONCE__';
+const RESULT_NONCE_ENV = 'TRACECODE_RESULT_NONCE';
+
+function createCppResultNonce() {
+  const bytes = new Uint8Array(16);
+  globalThis.crypto.getRandomValues(bytes);
+  return Array.from(bytes, (byte) => byte.toString(16).padStart(2, '0')).join('');
+}
+
+/**
+ * Per-execution result authentication. The driver reads the nonce from its
+ * environment in a static initializer placed before the learner's source
+ * (which therefore runs before any learner code, including learner static
+ * initializers) and removes it from the environment, then prints it before
+ * every result it writes.
+ */
+function bindCppResultNonce(driverSource) {
+  if (!driverSource.includes('#include "tracecode_runtime.hpp"')) return driverSource;
+  const capture =
+    'static const std::string __tracecode_result_nonce = [] { ' +
+    `const char* __tc_value = std::getenv("${RESULT_NONCE_ENV}"); ` +
+    'std::string __tc_nonce = __tc_value ? __tc_value : ""; ' +
+    `::unsetenv("${RESULT_NONCE_ENV}"); return __tc_nonce; }(); ` +
+    'static void __tracecode_emit_result_nonce() { ' +
+    `std::fputs("${RESULT_NONCE_MARKER}", stdout); std::fputs(__tracecode_result_nonce.c_str(), stdout); ` +
+    'std::fputs("\\n", stdout); }';
+  return driverSource
+    .replace('#include "tracecode_runtime.hpp"', `#include "tracecode_runtime.hpp"\n${capture}`)
+    .replace(
+      /(^|\n)([ \t]*)((?:__tracecode_fail_if_uncaught\(\); )?)tracecode::write_result_json/g,
+      '$1$2$3__tracecode_emit_result_nonce(); tracecode::write_result_json'
+    );
+}
 const RUNTIME_TRACE_SCHEMA_VERSION = 'runtime-trace-2026-04-28';
 const CPP_USER_SOURCE_FILE = 'solution.cpp';
 const CPP_STANDARD = 'c++23';
@@ -11784,8 +11820,15 @@ function parseProgramStdout(stdout, options = {}) {
   let resultIndex = stdout.indexOf(RESULT_MARKER);
   let traceIndex = options.tracing ? stdout.indexOf(TRACE_EVENT_MARKER) : -1;
   let statusIndex = stdout.indexOf(TRACE_STATUS_MARKER);
+  const nonceRequired = typeof options.resultNonce === 'string' && options.resultNonce.length > 0;
+  let nonceIndex = nonceRequired ? stdout.indexOf(RESULT_NONCE_MARKER) : -1;
+  // A status or result marker counts only after the driver's nonce line.
+  let resultAuthenticated = !nonceRequired;
 
   while (cursor < stdout.length) {
+    if (nonceIndex >= 0 && nonceIndex < cursor) {
+      nonceIndex = stdout.indexOf(RESULT_NONCE_MARKER, cursor);
+    }
     if (resultIndex >= 0 && resultIndex < cursor) {
       resultIndex = stdout.indexOf(RESULT_MARKER, cursor);
     }
@@ -11795,7 +11838,7 @@ function parseProgramStdout(stdout, options = {}) {
     if (statusIndex >= 0 && statusIndex < cursor) {
       statusIndex = stdout.indexOf(TRACE_STATUS_MARKER, cursor);
     }
-    const markerIndex = [resultIndex, traceIndex, statusIndex]
+    const markerIndex = [resultIndex, traceIndex, statusIndex, nonceIndex]
       .filter((index) => index >= 0)
       .sort((left, right) => left - right)[0] ?? -1;
 
@@ -11806,14 +11849,33 @@ function parseProgramStdout(stdout, options = {}) {
 
     appendConsoleChunk(stdout.slice(cursor, markerIndex), consoleOutput, traceEvents, pendingStdoutEvents, options.defaultLine ?? 1);
 
-    if (markerIndex === resultIndex) {
+    if (markerIndex === nonceIndex) {
+      const marker = splitMarkerLine(stdout, markerIndex, RESULT_NONCE_MARKER);
+      if (marker.payload === options.resultNonce) {
+        resultAuthenticated = true;
+      } else {
+        // Not this execution's nonce: the learner's own output.
+        appendConsoleChunk(stdout.slice(markerIndex, marker.nextIndex), consoleOutput, traceEvents, pendingStdoutEvents, options.defaultLine ?? 1);
+      }
+      cursor = marker.nextIndex;
+    } else if (markerIndex === resultIndex && resultAuthenticated) {
       const marker = splitMarkerLine(stdout, markerIndex, RESULT_MARKER);
       output = marker.payload ? JSON.parse(marker.payload) : null;
       foundResult = true;
+      if (nonceRequired) resultAuthenticated = false;
       cursor = marker.nextIndex;
-    } else if (markerIndex === statusIndex) {
+    } else if (markerIndex === statusIndex && resultAuthenticated) {
       const marker = splitMarkerLine(stdout, markerIndex, TRACE_STATUS_MARKER);
       traceStatus = marker.payload ? JSON.parse(marker.payload) : null;
+      cursor = marker.nextIndex;
+    } else if (markerIndex === resultIndex || markerIndex === statusIndex) {
+      // A result or status marker the program printed itself: console output.
+      const marker = splitMarkerLine(
+        stdout,
+        markerIndex,
+        markerIndex === resultIndex ? RESULT_MARKER : TRACE_STATUS_MARKER
+      );
+      appendConsoleChunk(stdout.slice(markerIndex, marker.nextIndex), consoleOutput, traceEvents, pendingStdoutEvents, options.defaultLine ?? 1);
       cursor = marker.nextIndex;
     } else {
       const marker = splitMarkerLine(stdout, markerIndex, TRACE_EVENT_MARKER);
@@ -12600,11 +12662,6 @@ function programOutputParseFailureResult(error, program, signature, start, timin
   // before printing its result is the learner's failure. A program that
   // exited cleanly but broke the result protocol is the runtime's.
   if (!program) throw error;
-  if (program.exitCode === 0 && !program.calledExit) {
-    // main returned normally without a result: the generated driver broke
-    // the result protocol, which is the runtime's failure.
-    throw error;
-  }
   if (program.exitCode === 124) {
     // The instrumented program's own budget stopped it before it reported a
     // result: the trace budget when tracing, the time limit otherwise.
@@ -12627,7 +12684,13 @@ function programOutputParseFailureResult(error, program, signature, start, timin
       timings: { ...timings, totalMs: elapsedMs(start) },
     };
   }
-  const diagnostics = programExitOrOutputDiagnostics(program, error);
+  // The program ran: whatever kept it from reporting its result (an early
+  // exit, closing or flooding standard output, an output it corrupted) is the
+  // program's failure. The driver's own result line is authenticated by the
+  // execution's nonce, so learner output cannot impersonate it.
+  const diagnostics = program.exitCode === 0 && !program.calledExit
+    ? 'The program finished without reporting a result (it may have closed or redirected its standard output).'
+    : programExitOrOutputDiagnostics(program, error);
   const consoleOutput = [
     ...splitNonEmptyOutputLines(program?.stdout),
     ...splitNonEmptyOutputLines(program?.stderr),
@@ -15344,10 +15407,10 @@ async function compileAndRunWithExternalCompiler(source, functionName, inputs, s
     timings.driverBuildMs = elapsedMs(driverStartedAt);
     emitRequestProgress('driver-build:complete', { tracing: Boolean(options.tracing), compiler: 'tracecc' });
   }
-  driverSource = failUncaughtLoweredExceptionsBeforeResult(driverSource.replace(
+  driverSource = bindCppResultNonce(failUncaughtLoweredExceptionsBeforeResult(driverSource.replace(
     '#include "/tracecode_runtime.hpp"',
     '#include "tracecode_runtime.hpp"'
-  ));
+  )));
 
   const cacheKey = getProgramCacheKey('tracecc', driverSource);
   let programModule = getCachedProgramModule(cacheKey);
@@ -15427,9 +15490,11 @@ async function compileAndRunWithExternalCompiler(source, functionName, inputs, s
   try {
     const runStartedAt = now();
     emitRequestProgress('program-run:start', { tracing: Boolean(options.tracing), compiler: 'tracecc' });
+    const resultNonce = createCppResultNonce();
     const program = await runWasi(programModule, ['program.wasm'], new InMemoryFileSystem(), {
       stdinBytes: staticStdinBytesFromText(stdinText),
       userProgram: true,
+      env: { USER: 'tracecode', [RESULT_NONCE_ENV]: resultNonce },
     });
     timings.runMs = elapsedMs(runStartedAt);
     emitRequestProgress('program-run:complete', {
@@ -15444,6 +15509,7 @@ async function compileAndRunWithExternalCompiler(source, functionName, inputs, s
         tracing: options.tracing,
         defaultLine: signature.line,
         allowMissingResult: options.tracing,
+        resultNonce,
       });
     } catch (parseError) {
       return programOutputParseFailureResult(parseError, program, signature, start, timings, options);
@@ -15685,11 +15751,16 @@ async function runPreparedRuntimeProgram(
             : (tracingEnabled ? 'true' : 'false'),
         ]
       : ['program.wasm'];
+    const resultNonce = createCppResultNonce();
     const program = await runWasi(
       preparedProgram.programModule,
       runtimeArgs,
       new InMemoryFileSystem(),
-      { stdinBytes: staticStdinBytesFromText(stdinText), userProgram: true }
+      {
+        stdinBytes: staticStdinBytesFromText(stdinText),
+        userProgram: true,
+        env: { USER: 'tracecode', [RESULT_NONCE_ENV]: resultNonce },
+      }
     );
     const runMs = elapsedMs(runStartedAt);
     const totalMs = elapsedMs(startedAt);
@@ -15700,6 +15771,7 @@ async function runPreparedRuntimeProgram(
         tracing: preparedProgram.tracing,
         defaultLine: preparedProgram.signatureLine,
         allowMissingResult: preparedProgram.tracing,
+        resultNonce,
       });
     } catch (error) {
       return programOutputParseFailureResult(

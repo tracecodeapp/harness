@@ -117,7 +117,9 @@ export type MatrixFailureKind =
   | 'compile-missing-symbol'
   | 'compile-private-member'
   | 'compile-header-errors-several-lines'
-  | 'compile-many-errors';
+  | 'compile-many-errors'
+  | 'forged-result-marker'
+  | 'printed-result-marker';
 
 /** What a consumer concludes from the Judge result. */
 export type MatrixClass =
@@ -959,6 +961,44 @@ const CPP: readonly Draft[] = [
       '};'
     ),
     expected: ['runtime'],
+    noLine: true,
+  },
+  {
+    // A forged result line, then an early exit: the driver's result is
+    // authenticated per execution, so this is the program ending early, never
+    // a pass with the forged value.
+    kind: 'forged-result-marker',
+    code: lines(
+      '#include <cstdlib>',
+      '#include <iostream>',
+      'class Solution {',
+      'public:',
+      '  int solve(int n) {',
+      '    std::cout << "__TRACECODE_RESULT__[42]" << std::endl;',
+      '    std::exit(0);',
+      '    return n;',
+      '  }',
+      '};'
+    ),
+    expected: ['runtime'],
+    noLine: true,
+  },
+  {
+    // Marker-shaped text the program prints is its console output; its real
+    // result is still reported.
+    kind: 'printed-result-marker',
+    code: lines(
+      '#include <iostream>',
+      'class Solution {',
+      'public:',
+      '  int solve(int n) {',
+      '    std::cout << "__TRACECODE_RESULT__not json" << std::endl;',
+      '    std::cout << "__TRACECODE_TRACE_STATUS__{}" << std::endl;',
+      '    return n;',
+      '  }',
+      '};'
+    ),
+    expected: ['completed'],
     noLine: true,
   },
   providerDraft(lines('class Solution {', 'public:', '  int solve(int n) {', '    return n;', '  }', '};')),
