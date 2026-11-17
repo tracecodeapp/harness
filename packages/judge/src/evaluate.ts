@@ -15,6 +15,8 @@ import type {
   JudgeCompileResult,
   JudgeDiagnostic,
   JudgeFailure,
+  JudgeLimitReason,
+  JudgeNotRun,
   JudgeEvaluationOptions,
   JudgeEvaluationPlan,
   JudgeEvaluationResult,
@@ -372,12 +374,88 @@ function runCase<Snapshot, Input, Expected, Result>(
   );
 }
 
-function runBatch<Snapshot, Input, Expected, Result>(
+const RUNAWAY_LIMITS: ReadonlySet<string> = new Set([
+  'client-timeout',
+  'line-limit',
+  'single-line-limit',
+]);
+
+/** The limit that stopped a case, when it was a time or line limit. */
+export function runawayLimitOf(
+  result: JudgeCaseResult<unknown, unknown>
+): JudgeLimitReason | undefined {
+  return result.failure?.origin === 'limit' && RUNAWAY_LIMITS.has(result.failure.reason)
+    ? result.failure.reason
+    : undefined;
+}
+
+function notRunResult<Result, Expected>(
+  testCase: JudgeCasePlan<unknown, Expected>,
+  notRun: JudgeNotRun,
+  process: JudgeProcessResult
+): JudgeCaseResult<Result, Expected> {
+  return Object.freeze({
+    ...process,
+    ...expectedFields(testCase),
+    caseId: testCase.id,
+    status: 'not-run' as const,
+    verdict: notEvaluated('case-did-not-complete'),
+    notRun: Object.freeze({ ...notRun }),
+  });
+}
+
+/** Run semantics without a provider batch: one case at a time, stopping at the first runaway. */
+function runCasesUntilRunaway<Snapshot, Input, Expected, Result>(
   port: JudgeKernelPort<Snapshot>,
   plan: JudgeEvaluationPlan<Input, Expected>,
   snapshot: Snapshot,
   comparator: JudgeComparator<Input, Expected, Result>,
   traceCaseIds?: ReadonlySet<string>
+): Effect.Effect<readonly JudgeCaseResult<Result, Expected>[], JudgeInfrastructureError> {
+  return Effect.gen(function* () {
+    const results: JudgeCaseResult<Result, Expected>[] = [];
+    let stoppedBy: { readonly caseId: string; readonly limit: JudgeLimitReason } | undefined;
+    for (const testCase of plan.cases) {
+      if (stoppedBy) {
+        const last = results[results.length - 1]!;
+        results.push(notRunResult<Result, Expected>(
+          testCase as JudgeCasePlan<unknown, Expected>,
+          { reason: 'run-stopped-after-limit', stoppedByCaseId: stoppedBy.caseId, limit: stoppedBy.limit },
+          {
+            sessionId: last.sessionId,
+            pid: last.pid,
+            termination: Object.freeze({ kind: 'exit' as const, exitCode: 0 }),
+            stdout: '',
+            stderr: '',
+            diagnostics: Object.freeze([]),
+            timedOut: false,
+          }
+        ));
+        continue;
+      }
+      const result = yield* runCase<Snapshot, Input, Expected, Result>(
+        port,
+        plan,
+        snapshot,
+        testCase,
+        comparator,
+        traceCaseIds?.has(testCase.id)
+      );
+      results.push(result);
+      const limit = runawayLimitOf(result as JudgeCaseResult<unknown, unknown>);
+      if (limit) stoppedBy = { caseId: testCase.id, limit };
+    }
+    return results;
+  });
+}
+
+function runBatch<Snapshot, Input, Expected, Result>(
+  port: JudgeKernelPort<Snapshot>,
+  plan: JudgeEvaluationPlan<Input, Expected>,
+  snapshot: Snapshot,
+  comparator: JudgeComparator<Input, Expected, Result>,
+  traceCaseIds?: ReadonlySet<string>,
+  stopAtFirstRunaway = false
 ): Effect.Effect<
   readonly JudgeCaseResult<Result, Expected>[],
   JudgeInfrastructureError
@@ -399,6 +477,7 @@ function runBatch<Snapshot, Input, Expected, Result>(
         {
           phase: 'batch',
           planId: plan.id,
+          ...(stopAtFirstRunaway ? { stopAtFirstRunaway: true } : {}),
           cases: Object.freeze(
             plan.cases.map((testCase) => Object.freeze({
               caseId: testCase.id,
@@ -453,6 +532,19 @@ function runBatch<Snapshot, Input, Expected, Result>(
       }
       return Object.freeze(plan.cases.map((testCase) => {
         const item = byId.get(testCase.id)!;
+        if (item.notRun) {
+          return notRunResult<Result, Expected>(testCase, item.notRun, {
+            sessionId: outcome.sessionId,
+            pid: outcome.pid,
+            termination: item.termination,
+            stdout: item.stdout,
+            stderr: item.stderr,
+            diagnostics: Object.freeze([...(item.diagnostics ?? [])]),
+            timedOut: false,
+            ...(outcome.startedAt === undefined ? {} : { startedAt: outcome.startedAt }),
+            ...(outcome.endedAt === undefined ? {} : { endedAt: outcome.endedAt }),
+          });
+        }
         return caseResult<Input, Expected, Result>(
           plan.id,
           testCase,
@@ -558,23 +650,32 @@ export function evaluatePreparedJudgePlan<
           plan,
           build.snapshot,
           comparator,
-          traceCaseIds
+          traceCaseIds,
+          options.stopAtFirstRunaway === true
         )
-      : yield* Effect.forEach(
-          plan.cases,
-          (testCase) =>
-            runCase<Snapshot, Input, Expected, Result>(
-              port,
-              plan,
-              build.snapshot!,
-              testCase,
-              comparator,
-              traceCaseIds?.has(testCase.id)
-            ),
-          {
-            concurrency: plan.isolation?.maxConcurrency ?? 1,
-          }
-        );
+      : options.stopAtFirstRunaway === true
+        ? yield* runCasesUntilRunaway<Snapshot, Input, Expected, Result>(
+            port,
+            plan,
+            build.snapshot,
+            comparator,
+            traceCaseIds
+          )
+        : yield* Effect.forEach(
+            plan.cases,
+            (testCase) =>
+              runCase<Snapshot, Input, Expected, Result>(
+                port,
+                plan,
+                build.snapshot!,
+                testCase,
+                comparator,
+                traceCaseIds?.has(testCase.id)
+              ),
+            {
+              concurrency: plan.isolation?.maxConcurrency ?? 1,
+            }
+          );
     return Object.freeze({
       planId: plan.id,
       status: 'completed' as const,

@@ -70,6 +70,9 @@ function observe(
   const diagnostic =
     diagnostics.find((candidate) => candidate.severity === 'error') ??
     diagnostics[0];
+  if (extra.status === 'not-run') {
+    return { class: 'not-run', status: extra.status };
+  }
   if (extra.status === 'completed') {
     return {
       class: 'completed',
@@ -195,18 +198,20 @@ async function bundleFor(
 }
 
 let bundleSequence = 0;
+let batchCaseCount = 2;
 
 async function runMode(
   host: Host,
   language: MatrixLanguage,
   program: MatrixProgram,
   mode: MatrixMode,
-  spec: Pick<MatrixCellSpec, 'limits' | 'traceOptions'>
+  spec: Pick<MatrixCellSpec, 'limits' | 'traceOptions'>,
+  signal?: AbortSignal
 ): Promise<MatrixObservation[]> {
   bundleSequence += 1;
   const id = `matrix-${language}-${mode}-${bundleSequence}`;
   const trace = isTracedMode(mode);
-  const caseCount = mode === 'code' || mode === 'trace' ? 1 : 2;
+  const caseCount = mode === 'code' || mode === 'trace' ? 1 : batchCaseCount;
   const bundle = await bundleFor(language, program, {
     id,
     trace,
@@ -216,13 +221,14 @@ async function runMode(
   });
   try {
     if (mode !== 'interactive') {
-      const receipt = await host.evaluateAlgorithm({ bundle });
+      const receipt = await host.evaluateAlgorithm({ bundle, ...(signal ? { signal } : {}) });
       return observeEvaluation(receipt.evaluation, language, trace);
     }
     const initial = await host.execute({
       bundle,
       interactive: true,
       tracing: { caseIds: ['case-1'] },
+      ...(signal ? { signal } : {}),
     });
     const observations = observeEvaluation(initial.evaluation, language, true);
     if (initial.executionId) {
@@ -310,12 +316,15 @@ export interface LanguageMatrixOptions {
   readonly kinds?: readonly MatrixFailureKind[];
   /** Run only the infinite loop, without limits: measure what the defaults do. */
   readonly defaultLimitsProbe?: boolean;
+  /** Cases per batch and interactive run (default 2). */
+  readonly batchCaseCount?: number;
 }
 
 export async function runLanguageMatrix(
   options: LanguageMatrixOptions
 ): Promise<MatrixCellResult[]> {
   const { language } = options;
+  batchCaseCount = options.batchCaseCount ?? 2;
   const results: MatrixCellResult[] = [];
   let host = createHost(options.assetBaseUrl, language);
   const healthy = healthyProgram(language);
@@ -393,8 +402,54 @@ export async function runLanguageMatrix(
         }
       }
     }
+    if (!options.defaultLimitsProbe && (!options.kinds || options.kinds.includes('abort-runaway'))) {
+      // An abort must end a runaway run promptly and leave the host usable
+      // without the consumer disposing it.
+      const loop = matrixCells(language).find((cell) => cell.kind === 'infinite-loop')!;
+      for (const mode of options.modes.filter((candidate) =>
+        candidate === 'code' || candidate === 'interactive'
+      )) {
+        const controller = new AbortController();
+        const startedAt = performance.now();
+        let abortedAt = 0;
+        setTimeout(() => {
+          abortedAt = performance.now();
+          controller.abort(new DOMException('Stopped by the learner', 'AbortError'));
+        }, ABORT_AFTER_MS);
+        let observation: MatrixObservation;
+        try {
+          const observations = await guard(
+            runMode(host, language, loop.program, mode, {}, controller.signal),
+            () => [{ class: 'hung' as const }]
+          );
+          observation = observations.every((candidate) => candidate.class === 'provider' && /abort/i.test(candidate.message ?? ''))
+            ? { class: 'aborted', status: 'host-rejected', message: observations[0]?.message }
+            : observations[0]!;
+        } catch (error) {
+          observation = { class: 'aborted', status: 'host-rejected', message: String(error) };
+        }
+        const settledMs = Math.round(performance.now() - (abortedAt || startedAt));
+        const healthStartedAt = performance.now();
+        const health = await checkHealthy();
+        results.push({
+          language,
+          mode,
+          kind: 'abort-runaway',
+          observations: [{ ...observation, settledAfterAbortMs: settledMs, nextRunMs: Math.round(performance.now() - healthStartedAt) }],
+          elapsedMs: Math.round(performance.now() - startedAt),
+          healthyAfter: health.ok,
+          ...(health.ok ? {} : { healthyAfterDetail: health.detail }),
+        });
+        if (!health.ok) {
+          host.dispose();
+          host = createHost(options.assetBaseUrl, language);
+        }
+      }
+    }
   } finally {
     host.dispose();
   }
   return results;
 }
+
+const ABORT_AFTER_MS = 1500;

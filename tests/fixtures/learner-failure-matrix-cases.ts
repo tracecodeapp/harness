@@ -65,6 +65,7 @@ export type MatrixFailureKind =
   | 'trace-step-limit'
   | 'process-exit'
   | 'early-exit-zero'
+  | 'abort-runaway'
   | 'unhandled-rejection'
   | 'memory-fault'
   | 'provider-asset-failure';
@@ -76,6 +77,8 @@ export type MatrixClass =
   | 'limit'
   | 'completed'
   | 'provider'
+  | 'not-run'
+  | 'aborted'
   | 'unclassified'
   | 'hung';
 
@@ -905,6 +908,9 @@ export interface MatrixObservation {
   readonly origin?: string;
   /** What `judgeCaseExecutionOutcome` produced: completed, failed:<stage>, limit:<reason>, provider-rejected. */
   readonly conversion?: string;
+  /** abort-runaway: ms from the abort to the call settling, and the next run's duration. */
+  readonly settledAfterAbortMs?: number;
+  readonly nextRunMs?: number;
 }
 
 export interface MatrixCellResult {

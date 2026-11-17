@@ -43,8 +43,26 @@ This repo uses Git tags as release boundaries. Version notes below summarize wha
   replace .NET resource keys (`Arg_DivideByZero`) with the framework's
   messages. C# traced failures carry the exception's line.
 
+- Run (an interactive execution) stops at the first case a time or line limit
+  stopped; the rest are reported as `not-run`, never as limits they did not
+  hit. Untraced cases in a Python trace batch get the guest guard Submit uses,
+  so a runaway no longer runs for up to 30 s per case unbounded by any guard.
+- Aborting a run ends it: providers terminate the busy worker (Python used to
+  keep looping and queue the next run) and the host rejects with the caller's
+  `AbortError`. A learner `os._exit(0)` in Python and `exit(0)` in C++ are the
+  program's runtime failure.
+
 ### Changed
 
+- Judge results are total. Every compile or case that did not succeed carries
+  a typed `failure` (`program` with its stage, `limit` with its reason, or
+  `provider` with `runtime-failure`, `protocol` or `contract-violation`);
+  `protocol-error` is the provider's. `JudgeCaseResult` and
+  `JudgeCompileResult` are now discriminated by `status`, and cases Run did not
+  execute are `status: 'not-run'` with `notRun`.
+- New exports from `@tracecode/harness/judge`: `judgeCaseExecutionOutcome`,
+  `judgeCompileExecutionOutcome` (total conversion to the outcome a learner
+  sees, including `not-run`), `RuntimeProviderError`, `isRuntimeProviderError`.
 - `diagnosticStage` is required on every `failed` outcome:
   `CodeExecutionResult`, `ExecutionResult`, and
   `RuntimeProgramPreparationResult`.

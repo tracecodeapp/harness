@@ -3,6 +3,7 @@ import type * as Scope from 'effect/Scope';
 import type {
   JudgeDiagnostic,
   JudgeFailure,
+  JudgeNotRun,
   JudgeProcessPlan,
   JudgeRuntimeTimings,
   JudgeTermination,
@@ -23,6 +24,8 @@ export interface JudgeRuntimeInvocationInput<Input = unknown> {
   readonly caseId?: string;
   readonly value?: Input;
   readonly recordTrace?: boolean;
+  /** Batch only: stop at the first case stopped by a time or line limit. */
+  readonly stopAtFirstRunaway?: boolean;
   readonly cases?: readonly {
     readonly caseId: string;
     readonly value: Input;
@@ -42,6 +45,8 @@ export interface JudgeRuntimeBatchCaseOutput<Result = unknown> {
   readonly timedOut: boolean;
   /** Required by the runtime adapter on every case that did not complete. */
   readonly failure?: JudgeFailure;
+  /** Set instead of a result when the case was not run (Run stopped early). */
+  readonly notRun?: JudgeNotRun;
 }
 
 export interface JudgeRuntimeInvocationOutput<Result = unknown> {

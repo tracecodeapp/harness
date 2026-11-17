@@ -23,6 +23,7 @@ export {
   judgeCaseExecutionOutcome,
   judgeCompileExecutionOutcome,
   type JudgeExecutionOutcomeOptions,
+  type JudgeNotRunOutcome,
 } from './internal/judge-execution-outcome';
 export {
   isRuntimeProviderError,
@@ -51,6 +52,7 @@ export type {
   JudgeCompileResult,
   JudgeFailure,
   JudgeLimitReason,
+  JudgeNotRun,
   JudgeProgramStage,
   JudgeCaseVerdict,
   JudgeComparator,

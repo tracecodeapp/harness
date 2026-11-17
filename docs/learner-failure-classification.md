@@ -26,6 +26,53 @@ A case whose time limit is enforced by the Judge's own watchdog is reported as
 when a whole batch is stopped before the runtime could publish per-case
 results. A watchdog timeout is never an infrastructure error.
 
+## The Judge contract
+
+Every Judge compile and case result that did not succeed carries a typed
+`failure`, and consumers read it instead of inferring an origin from codes or
+optional fields:
+
+```ts
+type JudgeFailure =
+  | { origin: 'program'; stage: JudgeProgramStage; message: string; line?: number }
+  | { origin: 'limit'; reason: JudgeLimitReason; message: string }
+  | { origin: 'provider'; reason: 'runtime-failure' | 'protocol' | 'contract-violation'; message: string };
+```
+
+- `status: 'completed'` never has a `failure`; `runtime-error`, `timed-out`,
+  `protocol-error` (and a failed or timed-out compile) always do.
+- `protocol-error` is the provider's (`reason: 'protocol'`): the runtime
+  finished without the structured result Judge requires. A learner program
+  that ends early (`sys.exit(0)`, `os._exit(0)`, `exit(0)`,
+  `Environment.Exit(0)`) is classified by its runtime as the program's
+  `runtime` failure and never reaches Judge as a protocol error.
+- `status: 'not-run'` (Run only, see below) carries `notRun` instead: the
+  case was not executed, with the case and the limit that stopped the run. It
+  has no failure and no limit of its own.
+
+`judgeCaseExecutionOutcome` and `judgeCompileExecutionOutcome` (exported from
+`@tracecode/harness/judge`) convert those results, totally, into the
+execution outcomes a learner sees: `completed`, `failed` with its stage,
+`limit` with its reason, or `not-run`. A provider failure is not an outcome:
+the conversion rejects with `RuntimeProviderError`. Consumers forward; they
+never choose an origin.
+
+## Runaway programs and stopping
+
+- Every case runs under a per-case bound owned by its runtime, reported as the
+  learner's `limit` with its reason and, where the runtime knows it, the line.
+  Untraced cases in a Python trace batch get the guest guard Submit uses (the
+  same line budgets), so Run never stops a program Submit accepts.
+- Run (an interactive execution) stops at the first case a time or line limit
+  stopped; the remaining cases are `not-run`. Submit (`evaluateAlgorithm`)
+  judges every case under its own bound.
+- The Judge watchdog is a backstop behind the providers' own limits; it grants
+  half the per-case bound (single cases) or a fixed recovery allowance per case
+  (batches), so the provider's limit, with its reason and line, wins.
+- Aborting a run (the caller's `AbortSignal`) interrupts it and rejects with
+  the caller's `AbortError`. Providers terminate the busy worker or VM and a
+  fresh one serves the next run; consumers do not dispose the runtime.
+
 ## The runtime contract
 
 Runtime providers implement `RuntimePreparedExecutionProvider`. Their outcomes

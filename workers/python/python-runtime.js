@@ -2906,6 +2906,44 @@ _hard_line_deadline = 0.0
 _hard_line_grace_seconds = 10.0
 _infinite_loop_line = -1
 
+# Cases run without trace recording (Run's correctness cases, the untraced
+# cases of a trace batch) get the guest guard Submit uses, with the same line
+# budgets, so a runaway is stopped as a limit and Run never stops a program
+# that Submit would accept.
+_untraced_max_line_events = max(10000, int(${
+    usesPreparedBindings
+      ? `_tracecode_case_limits.get('maxLineEvents', ${Number(deps.INTERVIEW_GUARD_DEFAULTS?.maxLineEvents ?? 400000)})`
+      : Number(deps.INTERVIEW_GUARD_DEFAULTS?.maxLineEvents ?? 400000)
+  }))
+_untraced_max_single_line_hits = max(1000, int(${
+    usesPreparedBindings
+      ? `_tracecode_case_limits.get('maxSingleLineHits', ${Number(deps.INTERVIEW_GUARD_DEFAULTS?.maxSingleLineHits ?? 150000)})`
+      : Number(deps.INTERVIEW_GUARD_DEFAULTS?.maxSingleLineHits ?? 150000)
+  }))
+_untraced_line_hits = {}
+
+def _tracecode_guard_tracer(frame, event, arg):
+    global _total_line_events, _timeout_reason, _infinite_loop_line
+    if event != 'line' or frame.f_code.co_filename != 'solution.py':
+        return _tracecode_guard_tracer
+    _total_line_events += 1
+    if (_total_line_events & 255) == 0:
+        _tracecode_check_deadline()
+    _guard_key = (frame.f_code, frame.f_lineno)
+    _guard_hits = _untraced_line_hits.get(_guard_key, 0) + 1
+    _untraced_line_hits[_guard_key] = _guard_hits
+    _guard_reason = (
+        'single-line-limit' if _guard_hits >= _untraced_max_single_line_hits
+        else 'line-limit' if _total_line_events >= _untraced_max_line_events
+        else None
+    )
+    if _guard_reason is not None:
+        _timeout_reason = _guard_reason
+        _infinite_loop_line = frame.f_lineno
+        sys.settrace(None)
+        raise _InfiniteLoopDetected(f'Execution guard tripped ({_guard_reason})')
+    return _tracecode_guard_tracer
+
 try:
     import tracemalloc as _tracecode_tracemalloc
 except Exception:
@@ -6486,7 +6524,9 @@ _case_deadline = (
 )
 ${usesPreparedBindings
   ? `if __tracecode_tracing_enabled:
-    _tracecode_arm_tracing()`
+    _tracecode_arm_tracing()
+else:
+    sys.settrace(_tracecode_guard_tracer)`
   : '_tracecode_arm_tracing()'}
 _trace_failed = False
 _tracecode_program_error_step = None
@@ -6609,6 +6649,7 @@ __tracecode_execution_result_json = (
     + ',"traceLimitExceeded":' + json.dumps(_trace_limit_exceeded)
     + ',"executionAborted":' + json.dumps(_execution_aborted)
     + ',"timeoutReason":' + json.dumps(_timeout_reason)
+    + ',"stoppedLine":' + json.dumps(_infinite_loop_line)
     + ',"lineEventCount":' + json.dumps(_total_line_events)
     + ',"traceStepCount":' + json.dumps(len(_trace_data)) + '}'
 )
@@ -7054,6 +7095,17 @@ async function executeWithTracing(
       } else {
         errorMessage = `Execution stopped${lineSuffix}.`;
       }
+    } else if (result.executionAborted && timeoutReason) {
+      // A guard stopped an untraced case: report the limit and the line the
+      // program was on.
+      const stoppedLine = Number.isInteger(result.stoppedLine) && result.stoppedLine > 0
+        ? result.stoppedLine - userCodeStartLine + 1
+        : undefined;
+      errorLine = stoppedLine && stoppedLine <= userCodeLineCount ? stoppedLine : undefined;
+      const lineSuffix = errorLine ? ` on line ${errorLine}` : '';
+      errorMessage = timeoutReason === 'client-timeout'
+        ? `Execution timed out${lineSuffix}. This may indicate an infinite loop or very expensive execution.`
+        : `Execution stopped${lineSuffix}: ${timeoutReason === 'single-line-limit' ? 'one line ran too many times' : 'the program executed too many lines'}. This may indicate an infinite loop.`;
     } else if (errorStep) {
       learnerProgramRaised = true;
       const errorType = errorStep.variables?.errorType;

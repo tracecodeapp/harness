@@ -74,6 +74,7 @@ import {
   type JudgeComparator,
   type JudgeDiagnostic,
   type JudgeFailure,
+  type JudgeLimitReason,
   type JudgeProgramStage,
   type JudgeEvaluationOptions,
   type JudgeEvaluationPlan,
@@ -113,6 +114,7 @@ export type {
   JudgeCompileResult,
   JudgeFailure,
   JudgeLimitReason,
+  JudgeNotRun,
   JudgeProgramStage,
   JudgeCaseVerdict,
   JudgeComparator,
@@ -130,6 +132,26 @@ export type {
 } from '../../packages/judge/src/index';
 
 const PROVIDER_ERROR_CODE = 'runtime-provider-error';
+
+/**
+ * Run a Judge effect under the caller's signal. An abort interrupts the
+ * evaluation (providers terminate their busy workers) and rejects with the
+ * caller's own abort reason, an `AbortError`, never an opaque fiber failure,
+ * so a consumer can tell "stopped" from "failed".
+ */
+function runAbortable<A, E>(
+  effect: Effect.Effect<A, E>,
+  signal: AbortSignal | undefined
+): Promise<A> {
+  if (!signal) return Effect.runPromise(effect);
+  return Effect.runPromise(effect, { signal }).catch((error: unknown) => {
+    if (!signal.aborted) throw error;
+    const reason: unknown = signal.reason;
+    throw reason instanceof Error && reason.name === 'AbortError'
+      ? reason
+      : new DOMException('The run was aborted.', 'AbortError');
+  });
+}
 const INTERNAL_PREPARE_COMMAND = 'runtime-provider-prepare';
 export const DEFAULT_INTERACTIVE_EXECUTION_IDLE_TIMEOUT_MS = 5 * 60_000;
 const MAX_TIMER_DELAY_MS = 2_147_483_647;
@@ -910,6 +932,9 @@ function executePreparedProviderBatch(
       try: () => runtimeBatchCases(invocation),
       catch: errorFromUnknown,
     });
+    if (invocation.stopAtFirstRunaway === true) {
+      return yield* executeProviderBatchUntilRunaway(options, programs, invocation, cases);
+    }
     const outcomes = yield* Effect.tryPromise({
       try: (signal) =>
         isTraceBinding(options.binding)
@@ -950,6 +975,82 @@ function executePreparedProviderBatch(
     ));
     return Object.freeze({
       output: Object.freeze({ batch }),
+      process: Object.freeze({
+        exitCode: 0,
+        stdout: '',
+        stderr: '',
+      }),
+    });
+  });
+}
+
+const RUNAWAY_LIMIT_REASONS: ReadonlySet<string> = new Set([
+  'client-timeout',
+  'line-limit',
+  'single-line-limit',
+]);
+
+/**
+ * Run semantics: cases run one at a time, and the first case stopped by a time
+ * or line limit stops the run. Every later case is reported as not run, with
+ * the case and limit that stopped it, never as a limit of its own.
+ */
+function executeProviderBatchUntilRunaway(
+  options: RuntimeJudgeProviderOptions,
+  programs: RuntimePreparedProgramRegistry,
+  invocation: JudgeRuntimeInvocationInput,
+  cases: ReturnType<typeof runtimeBatchCases>
+): Effect.Effect<MappedRuntimeOutcome, Error> {
+  return Effect.gen(function* () {
+    const batch: JudgeRuntimeBatchCaseOutput[] = [];
+    let stoppedBy: { readonly caseId: string; readonly limit: ExecutionLimitReason } | undefined;
+    for (const testCase of cases) {
+      if (stoppedBy) {
+        batch.push(Object.freeze({
+          caseId: testCase.caseId,
+          termination: Object.freeze({ kind: 'exit' as const, exitCode: 0 }),
+          stdout: '',
+          stderr: '',
+          diagnostics: Object.freeze([]),
+          timedOut: false,
+          notRun: Object.freeze({
+            reason: 'run-stopped-after-limit' as const,
+            stoppedByCaseId: stoppedBy.caseId,
+            limit: stoppedBy.limit as JudgeLimitReason,
+          }),
+        }));
+        continue;
+      }
+      // Each case runs through the provider's per-case path, which owns the
+      // per-case deadline and replaces a worker that hit it.
+      const outcome: CodeExecutionResult | ExecutionResult = yield* Effect.tryPromise({
+        try: (signal) =>
+          isTraceBinding(options.binding)
+            ? programs.executeTrace(evaluationId(invocation), {
+                inputs: testCase.inputs,
+                recordTrace: testCase.recordTrace ?? true,
+                signal,
+                limits: options.binding.limits,
+              })
+            : programs.executeCode(evaluationId(invocation), {
+                inputs: testCase.inputs,
+                signal,
+                limits: options.binding.limits,
+              }),
+        catch: errorFromUnknown,
+      });
+      batch.push(batchCaseOutput(
+        testCase.caseId,
+        isTraceBinding(options.binding)
+          ? mappedTraceOutcome(options.runtime, outcome as ExecutionResult)
+          : mappedCodeOutcome(options.runtime, outcome as CodeExecutionResult)
+      ));
+      if (outcome.kind === 'limit' && RUNAWAY_LIMIT_REASONS.has(outcome.reason)) {
+        stoppedBy = { caseId: testCase.caseId, limit: outcome.reason };
+      }
+    }
+    return Object.freeze({
+      output: Object.freeze({ batch: Object.freeze(batch) }),
       process: Object.freeze({
         exitCode: 0,
         stdout: '',
@@ -1276,14 +1377,32 @@ function preparedEvaluationPlan<Input, Expected>(
   });
 }
 
+/**
+ * The Judge watchdog is a backstop behind the provider's own per-case limit,
+ * which reports the reason and the line. Without grace the two race at the
+ * same instant and the watchdog can win, losing that information (and, in a
+ * Run, which cases never started).
+ */
+const BATCH_RECOVERY_ALLOWANCE_MS = 10_000;
+
+function watchdogGraceMs(perCaseTimeoutMs: number): number {
+  return Math.min(5_000, Math.floor(perCaseTimeoutMs / 2));
+}
+
 function preparedRunTimeoutMs(
   perCaseTimeoutMs: number | undefined,
   caseCount: number,
   batched: boolean
 ): number | undefined {
-  return batched && perCaseTimeoutMs !== undefined
-    ? Math.min(2_147_483_647, perCaseTimeoutMs * caseCount)
-    : perCaseTimeoutMs;
+  if (perCaseTimeoutMs === undefined) return undefined;
+  if (!batched) return perCaseTimeoutMs + watchdogGraceMs(perCaseTimeoutMs);
+  // A batch process also pays per-case runtime recovery (a replacement worker
+  // or VM after a case that hit its limit) outside the provider's per-case
+  // clock, so its backstop grants a fixed recovery allowance per case.
+  return Math.min(
+    2_147_483_647,
+    (perCaseTimeoutMs + BATCH_RECOVERY_ALLOWANCE_MS) * caseCount
+  );
 }
 
 function traceTranchePlan<Input, Expected>(
@@ -1509,6 +1628,9 @@ class RuntimeJudgeComposition
           Expected
         >(port, plan, build, {
           comparator: request.comparator,
+          // Run semantics: an interactive execution stops at the first case a
+          // time or line limit stopped; the rest are reported as not run.
+          ...(request.interactive === true ? { stopAtFirstRunaway: true } : {}),
           ...(this.traceCapable
             ? {
                 tracing: request.tracing ?? { caseIds: Object.freeze([]) },
@@ -1950,12 +2072,12 @@ export function createBrowserJudgeHostFromRuntimeHost(
         result = await measureJudgeExecutionPhase(
           phases,
           'trace-continuation-execute',
-          () => Effect.runPromise(
+          () => runAbortable(
             retained.judge.execute<Input, Result, Expected>({
               executionId: request.executionId,
               tracing: request.tracing,
             }),
-            request.signal ? { signal: request.signal } : undefined
+            request.signal
           )
         );
       } finally {
@@ -2001,14 +2123,14 @@ export function createBrowserJudgeHostFromRuntimeHost(
       const result = await measureJudgeExecutionPhase(
         phases,
         'initial-execute',
-        () => Effect.runPromise(
+        () => runAbortable(
           judge!.execute<Input, Result, Expected>({
             plan: bundle.plan,
             interactive: request.interactive,
             tracing: request.tracing,
             comparator,
           }),
-          request.signal ? { signal: request.signal } : undefined
+          request.signal
         )
       );
       if (result.executionId) {

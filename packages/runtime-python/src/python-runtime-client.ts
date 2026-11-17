@@ -983,6 +983,14 @@ class PreparedPythonProgramLifetime {
     const unlink = linkAbortSignal(signal, controller);
     this.operationControllers.add(controller);
     const previous = this.operationTail;
+    // An abort must actually end the run: a learner loop never yields to the
+    // worker's message loop, so the busy worker is terminated now and a fresh
+    // one serves the next case. Waiting for it would queue every later run.
+    let activeWorker: WarmedPythonWorker | undefined;
+    const retireOnAbort = (): void => {
+      if (activeWorker) this.retireWorker(activeWorker.client);
+    };
+    controller.signal.addEventListener('abort', retireOnAbort, { once: true });
     const underlying = previous.then(async () => {
       let worker: WarmedPythonWorker | undefined;
       let result: T | undefined;
@@ -1001,6 +1009,8 @@ class PreparedPythonProgramLifetime {
         if (this.phase !== 'active') {
           throw new Error('Prepared Python program has been disposed.');
         }
+        activeWorker = worker;
+        if (controller.signal.aborted) retireOnAbort();
         result = await operation(worker.client, controller.signal);
         completed = true;
         return result;
@@ -1026,10 +1036,12 @@ class PreparedPythonProgramLifetime {
     void underlying.then(
       () => {
         unlink();
+        controller.signal.removeEventListener('abort', retireOnAbort);
         this.operationControllers.delete(controller);
       },
       () => {
         unlink();
+        controller.signal.removeEventListener('abort', retireOnAbort);
         this.operationControllers.delete(controller);
       }
     );

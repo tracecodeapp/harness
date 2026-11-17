@@ -101,6 +101,12 @@ export interface JudgeEvaluationOptions<
   readonly tracing?: {
     readonly caseIds: readonly string[];
   };
+  /**
+   * Run semantics: once one case is stopped by a time or line limit, the
+   * remaining cases are not run and are reported as `not-run`. Without it
+   * (Submit semantics) every case runs under its own bound.
+   */
+  readonly stopAtFirstRunaway?: boolean;
 }
 
 export type JudgeTermination =
@@ -198,6 +204,18 @@ export type JudgeFailure =
     };
 
 /**
+ * Why a case was not run. `run-stopped-after-limit`: an earlier case of the
+ * same Run (`stoppedByCaseId`) was stopped by `limit`, and Run stops at the
+ * first runaway case. A case that was not run never reports a failure or a
+ * limit of its own.
+ */
+export interface JudgeNotRun {
+  readonly reason: 'run-stopped-after-limit';
+  readonly stoppedByCaseId: string;
+  readonly limit: JudgeLimitReason;
+}
+
+/**
  * A compile result. Every compile that did not succeed carries `failure`;
  * a successful one never does.
  */
@@ -231,10 +249,17 @@ export type JudgeCaseResult<Result = unknown, Expected = unknown> =
     | {
         readonly status: 'completed';
         readonly failure?: undefined;
+        readonly notRun?: undefined;
       }
     | {
         readonly status: 'runtime-error' | 'timed-out' | 'protocol-error';
         readonly failure: JudgeFailure;
+        readonly notRun?: undefined;
+      }
+    | {
+        readonly status: 'not-run';
+        readonly failure?: undefined;
+        readonly notRun: JudgeNotRun;
       }
   );
 

@@ -15,9 +15,23 @@ import type {
   JudgeCompileResult,
   JudgeDiagnostic,
   JudgeFailure,
+  JudgeNotRun,
   JudgeProcessResult,
   JudgeRuntimeTimings,
 } from '../../packages/judge/src/index';
+
+/**
+ * A case Run did not execute because an earlier case was stopped by a limit.
+ * It has no result, failure or limit of its own; render it as not run, naming
+ * the case that stopped the run.
+ */
+export interface JudgeNotRunOutcome {
+  readonly kind: 'not-run';
+  readonly reason: JudgeNotRun['reason'];
+  readonly stoppedByCaseId: string;
+  readonly limit: JudgeNotRun['limit'];
+  readonly consoleOutput: string[];
+}
 
 export interface JudgeExecutionOutcomeOptions {
   /** Language of the evaluated submission (labels empty traces). */
@@ -131,16 +145,25 @@ function traceTruncated(
 export function judgeCaseExecutionOutcome(
   result: JudgeCaseResult,
   options: JudgeExecutionOutcomeOptions & { readonly trace: true }
-): ExecutionResult;
+): ExecutionResult | JudgeNotRunOutcome;
 export function judgeCaseExecutionOutcome(
   result: JudgeCaseResult,
   options: JudgeExecutionOutcomeOptions & { readonly trace?: false }
-): CodeExecutionResult;
+): CodeExecutionResult | JudgeNotRunOutcome;
 export function judgeCaseExecutionOutcome(
   result: JudgeCaseResult,
   options: JudgeExecutionOutcomeOptions & { readonly trace?: boolean }
-): CodeExecutionResult | ExecutionResult {
+): CodeExecutionResult | ExecutionResult | JudgeNotRunOutcome {
   const consoleOutput = consoleLines(result.stdout);
+  if (result.status === 'not-run') {
+    return {
+      kind: 'not-run',
+      reason: result.notRun.reason,
+      stoppedByCaseId: result.notRun.stoppedByCaseId,
+      limit: result.notRun.limit,
+      consoleOutput,
+    };
+  }
   const timings = executionTimings(result.timings);
   if (result.status === 'completed') {
     return options.trace

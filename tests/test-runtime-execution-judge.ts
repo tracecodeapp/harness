@@ -60,6 +60,7 @@ interface FakeInput extends Record<string, unknown> {
     | 'hang'
     | 'limit'
     | 'silent-limit'
+    | 'runaway'
     | 'throw'
     | 'trace-truncated'
     | 'unstaged';
@@ -320,6 +321,16 @@ function fakeProvider(
                 executionTimeMs: 3,
                 consoleOutput: consoleOutput(input),
                 diagnosticStage: 'runtime',
+              };
+            }
+            if (input.mode === 'runaway') {
+              return {
+                kind: 'limit',
+                reason: 'single-line-limit',
+                error: 'one line ran too many times',
+                trace,
+                executionTimeMs: 3,
+                consoleOutput: consoleOutput(input),
               };
             }
             if (input.mode === 'limit') {
@@ -2120,6 +2131,9 @@ test('a provider that recovers after a failed initialization is initialized agai
  */
 function describeJudgeCase(result: JudgeCaseResult): string {
   if (result.status === 'completed') return 'completed';
+  if (result.status === 'not-run') {
+    return `not-run:${result.notRun.stoppedByCaseId}:${result.notRun.limit}`;
+  }
   const failure = result.failure;
   switch (failure.origin) {
     case 'program':
@@ -2189,4 +2203,51 @@ test('a provider compile failure rejects instead of becoming a learner outcome',
     () => judgeCompileExecutionOutcome(result.compile, { language: 'javascript', trace: true }),
     (error: unknown) => isRuntimeProviderError(error)
   );
+});
+
+test('Run stops at the first runaway case and reports the rest as not run; Submit judges every case', async () => {
+  const runState = makeState();
+  const plan = makePlan<unknown>([
+    { id: 'first', input: { label: 'first', output: 1 }, expected: 1 },
+    { id: 'runaway', input: { label: 'runaway', mode: 'runaway' }, expected: 'unused' },
+    { id: 'after-a', input: { label: 'after-a', output: 3 }, expected: 3 },
+    { id: 'after-b', input: { label: 'after-b', output: 4 }, expected: 4 },
+  ]);
+  const run = await Effect.runPromise(Effect.scoped(
+    Effect.gen(function* () {
+      const judge = yield* createTestRuntimeJudge(
+        fakeProvider(runState),
+        codeBinding({ trace: true })
+      );
+      const executed = yield* judge.execute<FakeInput>({ plan, interactive: true });
+      if (executed.executionId) yield* judge.disposeExecution(executed.executionId);
+      return executed.evaluation;
+    })
+  ));
+  assert.equal(run.status, 'completed');
+  assert.deepEqual(run.cases.map(describeJudgeCase), [
+    'completed',
+    'limit:single-line-limit',
+    'not-run:runaway:single-line-limit',
+    'not-run:runaway:single-line-limit',
+  ]);
+  // Cases that were not run were never sent to the runtime.
+  assert.deepEqual(runState.completions, ['first', 'runaway']);
+  const notRun = judgeCaseExecutionOutcome(run.cases[2]!, { language: 'javascript', trace: true });
+  assert.deepEqual(notRun, {
+    kind: 'not-run',
+    reason: 'run-stopped-after-limit',
+    stoppedByCaseId: 'runaway',
+    limit: 'single-line-limit',
+    consoleOutput: [],
+  });
+
+  const submitState = makeState();
+  const submit = await evaluate(submitState, plan, codeBinding({ trace: true }));
+  assert.deepEqual(submit.cases.map(describeJudgeCase), [
+    'completed',
+    'limit:single-line-limit',
+    'completed',
+    'completed',
+  ]);
 });

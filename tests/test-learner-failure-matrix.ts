@@ -48,7 +48,17 @@ import {
   type MatrixObservation,
 } from './fixtures/learner-failure-matrix-cases';
 
-type Aspect = 'classification' | 'message' | 'line' | 'recovery' | 'judge';
+type Aspect = 'classification' | 'message' | 'line' | 'recovery' | 'judge' | 'abort';
+
+/** An aborted runaway must settle within this long after the abort. */
+const ABORT_SETTLE_BUDGET_MS = 5_000;
+
+const ABORT_SPEC = (language: MatrixLanguage): MatrixCellSpec => ({
+  language,
+  kind: 'abort-runaway',
+  program: { code: '', functionName: '', executionStyle: 'function' },
+  expected: ['aborted'],
+});
 
 /**
  * Known gaps: `${language}:${mode | '*'}:${kind}:${aspect}` → reason.
@@ -96,6 +106,7 @@ export const KNOWN_GAPS: Readonly<Record<string, string>> = {
   'csharp:code-batch:*:message': CS_FAST,
   'csharp:code-batch:*:line': CS_FAST,
   'csharp:code-batch:infinite-loop:classification': CS_FAST,
+  'csharp:code:infinite-loop:classification': CS_FAST,
   'csharp:trace:*:line': CS_TRACE_LINES,
   'csharp:trace-batch:*:line': CS_TRACE_LINES,
   'csharp:interactive:*:line': CS_TRACE_LINES,
@@ -213,10 +224,33 @@ function expectedClasses(spec: MatrixCellSpec, mode: MatrixMode) {
 function judgeCell(spec: MatrixCellSpec, result: MatrixCellResult): CellVerdict {
   const failures = new Map<Aspect, string>();
   const expected = expectedClasses(spec, result.mode);
+  if (spec.kind === 'abort-runaway') {
+    const observation = result.observations[0];
+    if (observation?.class !== 'aborted') {
+      failures.set('abort', `the aborted run did not end as aborted: ${JSON.stringify(observation)}`);
+    } else if ((observation.settledAfterAbortMs ?? Infinity) > ABORT_SETTLE_BUDGET_MS) {
+      failures.set('abort', `settled ${observation.settledAfterAbortMs} ms after the abort (budget ${ABORT_SETTLE_BUDGET_MS} ms)`);
+    }
+    if (result.healthyAfter === false) {
+      failures.set('recovery', `healthy program failed after the abort: ${result.healthyAfterDetail ?? ''}`);
+    }
+    return { result, spec, failures };
+  }
   if (result.observations.length === 0) {
     failures.set('classification', 'no observations');
   }
+  let sawRunaway = false;
   for (const observation of result.observations) {
+    if (observation.class === 'not-run') {
+      // Only Run stops at a runaway, and only after one was reported.
+      if (result.mode !== 'interactive' || !sawRunaway || observation.conversion !== 'not-run') {
+        failures.set('classification', `not-run outside Run semantics: ${JSON.stringify(observation)}`);
+      }
+      continue;
+    }
+    if (observation.class === 'limit' && ['client-timeout', 'line-limit', 'single-line-limit'].includes(observation.reason ?? '')) {
+      sawRunaway = true;
+    }
     if (!expected.includes(observation.class)) {
       failures.set(
         'classification',
@@ -304,7 +338,10 @@ function summarize(observation: MatrixObservation): string {
 }
 
 function cellText(verdict: CellVerdict): string {
-  const distinct = [...new Set(verdict.result.observations.map(summarize))].join('/');
+  const abort = verdict.result.kind === 'abort-runaway' ? verdict.result.observations[0] : undefined;
+  const distinct = abort
+    ? `${abort.class} ${abort.settledAfterAbortMs}ms, next ${abort.nextRunMs}ms`
+    : [...new Set(verdict.result.observations.map(summarize))].join('/');
   const failing = [...verdict.failures.keys()];
   const unexpected = failing.filter((aspect) => !knownGap(verdict.result, aspect));
   const marker = unexpected.length > 0 ? ' ✗' : failing.length > 0 ? ' (gap)' : '';
@@ -342,7 +379,12 @@ function reportVerdicts(
     for (const spec of matrixCells(language)) specs.set(`${language}:${spec.kind}`, spec);
   }
   const verdicts = results.map((result) =>
-    judgeCell(specs.get(`${result.language}:${result.kind}`)!, result)
+    judgeCell(
+      result.kind === 'abort-runaway'
+        ? ABORT_SPEC(result.language)
+        : specs.get(`${result.language}:${result.kind}`)!,
+      result
+    )
   );
   printTable(verdicts);
 
@@ -452,6 +494,7 @@ async function main(): Promise<void> {
             modes: MODES,
             ...(KINDS ? { kinds: KINDS } : {}),
             defaultLimitsProbe: DEFAULT_LIMITS_PROBE,
+            batchCaseCount: Number(process.env.TRACECODE_MATRIX_BATCH_CASES ?? 2),
           })) as MatrixCellResult[];
           console.log(`${language}: ${languageResults.length} cells in ${Math.round((Date.now() - startedAt) / 1000)}s`);
           results.push(...languageResults);
