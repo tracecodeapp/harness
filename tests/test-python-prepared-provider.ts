@@ -885,6 +885,7 @@ test('Python judge-compatible batch contains worker crashes in the failing case'
       kind: 'failed',
       error:
         'Python worker failed while executing this case: synthetic worker crash',
+      diagnosticStage: 'runtime',
       consoleOutput: [],
     },
     { kind: 'completed', output: 2, consoleOutput: [] },
@@ -964,7 +965,13 @@ test('Python aggregate timeout never falls back to a second hard-isolation budge
     'Fast batch execution did not start'
   );
   context.mock.timers.tick(calculatePythonCodeBatchDeadlineMs(2, 1));
-  await assert.rejects(execution, /Python batch execution timed out/);
+  // The batch running out of time is the learner's time limit on every case,
+  // never a rejection the consumer would read as a provider failure.
+  const timedOut = await execution;
+  assert.deepEqual(
+    timedOut.map((result) => result.kind === 'limit' ? result.reason : result.kind),
+    ['client-timeout', 'client-timeout']
+  );
   assert.equal(
     calls.filter((call) => call.method === 'execute-batch').length,
     1
