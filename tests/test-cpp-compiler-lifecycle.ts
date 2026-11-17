@@ -1144,8 +1144,19 @@ async function testTimeoutAbortsCompilerAndRetiresExecution(): Promise<void> {
   };
   const client = createClient({ executionTimeoutMs: 10 });
   try {
-    const result = await client.executeCode({ code: 'hang-compiler', functionName: 'run', inputs: {}, executionStyle: 'function' });
-    assertCondition(result.kind === 'limit' && result.reason === 'client-timeout', `timeout should be explicit: ${JSON.stringify(result)}`);
+    // The deadline expired while compiling: compilation runs no learner code,
+    // so it is the provider's failure, never the learner's time limit.
+    let rejection: unknown;
+    try {
+      const result = await client.executeCode({ code: 'hang-compiler', functionName: 'run', inputs: {}, executionStyle: 'function' });
+      rejection = new Error(`expected a provider failure, got ${JSON.stringify(result)}`);
+    } catch (error) {
+      rejection = error;
+    }
+    assertCondition(
+      isRuntimeProviderError(rejection) && /compilation did not finish/.test((rejection as Error).message),
+      `a compile that outlasts the deadline must be the provider's failure: ${String(rejection)}`
+    );
     assertCondition(compilerAbortObserved, 'execution timeout should abort the in-flight compiler request');
     assertCondition(
       CompilerBridgeWorker.instances.length === 1 && CompilerBridgeWorker.instances[0].terminated,

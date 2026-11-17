@@ -38,6 +38,7 @@ import {
   liftCodeBatchOutcome,
   liftCodeOutcome,
   liftTraceOutcome,
+  RuntimeProviderError,
   type RawExecutionBatchPayload,
   type RawExecutionPayload,
 } from '@tracecode/runtime-contracts';
@@ -537,6 +538,22 @@ export class CppWorkerClient {
     // request cannot stop a timed-out instance, so every execution timeout must
     // retire that Worker before another command can be accepted safely.
     return true;
+  }
+
+  /**
+   * The direct APIs compile and run in one request under one clock. A timeout
+   * before the program started running happened while compiling: compilation
+   * runs no learner code, so that is the provider's failure, never the
+   * learner's time limit.
+   */
+  private throwIfTimedOutCompiling(error: unknown): void {
+    if (!(error instanceof CppClientTimeoutError)) return;
+    const stage = error.progress?.stage ?? '';
+    if (stage.startsWith('program-run')) return;
+    throw new RuntimeProviderError(
+      `C++ compilation did not finish within the ${error.timeoutMs} ms execution deadline.`,
+      { cause: error }
+    );
   }
 
   private timeoutCodeResult(error: unknown): Extract<CodeExecutionResult, { kind: 'limit' }> {
@@ -1757,7 +1774,10 @@ export class CppWorkerClient {
         );
         return liftCodeOutcome(result, 'C++ execution failed');
       } catch (error) {
-        if (this.isClientTimeout(error)) return this.timeoutCodeResult(error);
+        if (this.isClientTimeout(error)) {
+          this.throwIfTimedOutCompiling(error);
+          return this.timeoutCodeResult(error);
+        }
         throw error;
       }
     });
@@ -1784,6 +1804,7 @@ export class CppWorkerClient {
         return liftCodeBatchOutcome(result, 'C++ execution failed');
       } catch (error) {
         if (!this.isClientTimeout(error)) throw error;
+        this.throwIfTimedOutCompiling(error);
         const timeout = this.timeoutCodeResult(error);
         return {
           results: inputBatch.map(() => timeout),
@@ -1834,6 +1855,7 @@ export class CppWorkerClient {
         };
       } catch (error) {
         if (!this.isClientTimeout(error)) throw error;
+        this.throwIfTimedOutCompiling(error);
         const timeout = this.timeoutTraceResult(error);
         return {
           results: inputBatch.map(() => timeout),
@@ -1877,7 +1899,10 @@ export class CppWorkerClient {
           'C++ tracing failed'
         );
       } catch (error) {
-        if (this.isClientTimeout(error)) return this.timeoutTraceResult(error);
+        if (this.isClientTimeout(error)) {
+          this.throwIfTimedOutCompiling(error);
+          return this.timeoutTraceResult(error);
+        }
         throw error;
       }
     });

@@ -32,6 +32,18 @@ This repo uses Git tags as release boundaries. Version notes below summarize wha
 
 ### Fixed
 
+- The direct `CppWorkerClient.executeCode`, `executeWithTracing` and batch
+  APIs, which compile and run under one clock, report a deadline that expires
+  before the program started running as the provider's failure
+  (`RuntimeProviderError`): compilation runs no learner code. A deadline that
+  expires while the program runs is still the learner's `client-timeout`.
+- A C++ program can no longer forge its result. The driver authenticates its
+  result per execution: it reads a nonce from its environment before any
+  learner code runs (and removes it), and prints it before its status and
+  result lines. Result- or status-shaped text the program prints itself is its
+  console output, so printing a result line and then exiting early is the
+  program's failure, not a pass. A program that ran but left no readable result
+  is the program's runtime failure, not a provider failure.
 - The Judge watchdog in prepared execution is a backstop that never undercuts
   the provider and never fabricates time limits. It waits for every case's own
   deadline plus the provider's declared `lifecycleAllowanceMs` (Java, C++,
