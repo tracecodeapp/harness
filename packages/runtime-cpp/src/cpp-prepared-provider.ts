@@ -198,9 +198,6 @@ export function createCppPreparedExecutionProvider(
               ? { errorLine: preparation.errorLine }
               : {}),
             diagnosticStage: preparation.diagnosticStage,
-            ...(preparation.diagnostic === undefined
-              ? {}
-              : { diagnostic: preparation.diagnostic }),
             ...(preparation.timings
               ? { timings: preparation.timings }
               : {}),

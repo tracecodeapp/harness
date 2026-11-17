@@ -199,8 +199,6 @@ export type CppPreparedProgramPreparationResult =
       readonly error: string;
       readonly errorLine?: number;
       readonly diagnosticStage?: 'compile' | 'runtime' | 'trace' | 'driver-compile' | 'trace-driver-compile' | 'driver-link';
-      /** Structured compiler output (`tracecode.compiler-diagnostic.v1`). */
-      readonly diagnostic?: unknown;
       readonly consoleOutput: string[];
       readonly timings?: RuntimeExecutionTimings;
       /**
@@ -223,7 +221,6 @@ interface CppPreparedProgramWorkerResult {
   error?: string;
   errorLine?: number;
   diagnosticStage?: 'compile' | 'runtime' | 'trace' | 'driver-compile' | 'trace-driver-compile' | 'driver-link';
-  diagnostic?: unknown;
   consoleOutput?: string[];
   timings?: RuntimeExecutionTimings;
   timeoutReason?: 'client-timeout';
@@ -1475,7 +1472,6 @@ export class CppWorkerClient {
           error: result.error ?? 'C++ program preparation failed.',
           consoleOutput: result.consoleOutput ?? [],
           ...(result.errorLine !== undefined ? { errorLine: result.errorLine } : {}),
-          ...(result.diagnostic !== undefined ? { diagnostic: result.diagnostic } : {}),
           ...(result.diagnosticStage !== undefined
             ? { diagnosticStage: result.diagnosticStage }
             : {}),
