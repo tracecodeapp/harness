@@ -84,6 +84,8 @@ export interface CSharpWorkerClientOptions {
   initTimeoutMs?: number;
   executionTimeoutMs?: number;
   tracingTimeoutMs?: number;
+  /** Deadline for compiling a program (default 120 s); expiry is a provider failure. */
+  compileTimeoutMs?: number;
   workerIdleTimeoutMs?: number;
   assetPreflight?: () => Promise<void>;
   runtimeAssetPreflight?: () => Promise<void>;
@@ -111,6 +113,12 @@ interface WarmupResult {
 
 const EXECUTION_TIMEOUT_MS = 20_000;
 const TRACING_TIMEOUT_MS = 20_000;
+/**
+ * Compilation runs no learner code, so its deadline is never the learner's
+ * limit: it only bounds a stuck compiler, well above a cold first compile on a
+ * slow or loaded device. Expiry is the provider's failure.
+ */
+const COMPILE_TIMEOUT_MS = 120_000;
 const INIT_TIMEOUT_MS = 45_000;
 const MESSAGE_TIMEOUT_MS = 30_000;
 const WORKER_READY_TIMEOUT_MS = 10_000;
@@ -231,6 +239,7 @@ export class CSharpWorkerClient {
   private readonly initTimeoutMs: number;
   private readonly executionTimeoutMs: number;
   private readonly tracingTimeoutMs: number;
+  private readonly compileTimeoutMs: number;
   private readonly core: WorkerSessionCore;
   private readonly artifactCache = new HostArtifactCache(
     CSHARP_HOST_ARTIFACT_CACHE_MAX_ENTRIES,
@@ -242,6 +251,7 @@ export class CSharpWorkerClient {
     this.initTimeoutMs = options.initTimeoutMs ?? INIT_TIMEOUT_MS;
     this.executionTimeoutMs = options.executionTimeoutMs ?? EXECUTION_TIMEOUT_MS;
     this.tracingTimeoutMs = options.tracingTimeoutMs ?? TRACING_TIMEOUT_MS;
+    this.compileTimeoutMs = options.compileTimeoutMs ?? COMPILE_TIMEOUT_MS;
 
     this.core = new WorkerSessionCore({
       runtimeLabel: 'C#',
@@ -612,9 +622,7 @@ export class CSharpWorkerClient {
     const prepare = async () => {
       const functionName = call.functionName ?? '';
       const executionStyle = call.executionStyle ?? 'solution-method';
-      const timeoutMs = call.mode === 'trace'
-        ? this.resolveTracingTimeoutMs(functionName, executionStyle)
-        : this.executionTimeoutMs;
+      const timeoutMs = this.compileTimeoutMs;
       const program = this.preparedReadyEffect().pipe(
         Effect.andThen(
           this.core.withExecutionDeadline(
@@ -633,7 +641,18 @@ export class CSharpWorkerClient {
         )
       );
 
-      return this.core.runClientEffect(program, call.signal);
+      try {
+        return await this.core.runClientEffect(program, call.signal);
+      } catch (error) {
+        if (call.signal?.aborted) throw error;
+        if (taggedError(error, 'ExecutionTimeoutError') || taggedError(error, 'WorkerRequestTimeoutError')) {
+          throw new RuntimeProviderError(
+            `C# compilation did not finish within ${timeoutMs} ms.`,
+            { cause: error }
+          );
+        }
+        throw error;
+      }
     };
     return this.options.runtimeRole === 'compiler'
       ? this.runPreparedExclusive(call.signal, prepare)

@@ -117,6 +117,8 @@ export interface CppWorkerClientOptions extends CppWorkerAssets {
   initTimeoutMs?: number;
   executionTimeoutMs?: number;
   tracingTimeoutMs?: number;
+  /** Deadline for compiling a program (default 120 s); expiry is a provider failure. */
+  compileTimeoutMs?: number;
   workerIdleTimeoutMs?: number;
   programCacheLimit?: number;
   usePrecompiledHeader?: boolean;
@@ -197,8 +199,20 @@ export type CppPreparedProgramPreparationResult =
       readonly error: string;
       readonly errorLine?: number;
       readonly diagnosticStage?: 'compile' | 'runtime' | 'trace' | 'driver-compile' | 'trace-driver-compile' | 'driver-link';
+      /** Structured compiler output (`tracecode.compiler-diagnostic.v1`). */
+      readonly diagnostic?: unknown;
       readonly consoleOutput: string[];
       readonly timings?: RuntimeExecutionTimings;
+      /**
+       * Compilation did not finish within its deadline. Compilation runs no
+       * learner code, so this is the provider's failure, never a limit.
+       */
+      readonly compileDeadlineExceeded?: true;
+      /**
+       * @deprecated Since 0.20.1 a compile deadline is never reported as the
+       * learner's limit, and this is no longer produced; see
+       * `compileDeadlineExceeded`.
+       */
       readonly limitReason?: 'client-timeout';
     };
 
@@ -209,6 +223,7 @@ interface CppPreparedProgramWorkerResult {
   error?: string;
   errorLine?: number;
   diagnosticStage?: 'compile' | 'runtime' | 'trace' | 'driver-compile' | 'trace-driver-compile' | 'driver-link';
+  diagnostic?: unknown;
   consoleOutput?: string[];
   timings?: RuntimeExecutionTimings;
   timeoutReason?: 'client-timeout';
@@ -219,6 +234,9 @@ const INIT_TIMEOUT_MS = 120_000;
 // phases report progress separately so timeout diagnostics show where we died.
 const EXECUTION_TIMEOUT_MS = 20_000;
 const TRACING_TIMEOUT_MS = 20_000;
+// Compilation runs no learner code: its deadline only bounds a stuck compiler,
+// well above a cold first compile on a slow or loaded device.
+const COMPILE_TIMEOUT_MS = 120_000;
 const MESSAGE_TIMEOUT_MS = 30_000;
 const WORKER_READY_TIMEOUT_MS = 10_000;
 const CPP_DEFAULT_FILE = 'solution.cpp';
@@ -287,6 +305,7 @@ export class CppWorkerClient {
   private readonly initTimeoutMs: number;
   private readonly executionTimeoutMs: number;
   private readonly tracingTimeoutMs: number;
+  private readonly compileTimeoutMs: number;
   private readonly compilerFrameUrl?: string;
   private readonly externalCompilerUrl?: string;
   private lastRuntimeProgress: CppRuntimeProgress | null = null;
@@ -324,6 +343,7 @@ export class CppWorkerClient {
     this.initTimeoutMs = options.initTimeoutMs ?? INIT_TIMEOUT_MS;
     this.executionTimeoutMs = options.executionTimeoutMs ?? EXECUTION_TIMEOUT_MS;
     this.tracingTimeoutMs = options.tracingTimeoutMs ?? TRACING_TIMEOUT_MS;
+    this.compileTimeoutMs = options.compileTimeoutMs ?? COMPILE_TIMEOUT_MS;
     this.compilerFrameUrl = options.compilerFrameUrl;
     this.externalCompilerUrl = options.externalCompilerUrl;
 
@@ -1406,9 +1426,7 @@ export class CppWorkerClient {
   async prepareRuntimeProgram(
     call: RuntimeProgramPreparationCall
   ): Promise<CppPreparedProgramPreparationResult> {
-    const timeoutMs = call.mode === 'trace'
-      ? this.tracingTimeoutMs
-      : this.executionTimeoutMs;
+    const timeoutMs = this.compileTimeoutMs;
     const stage: CppClientTimeoutStage = call.mode === 'trace'
       ? 'trace'
       : 'compile-run';
@@ -1457,12 +1475,13 @@ export class CppWorkerClient {
           error: result.error ?? 'C++ program preparation failed.',
           consoleOutput: result.consoleOutput ?? [],
           ...(result.errorLine !== undefined ? { errorLine: result.errorLine } : {}),
+          ...(result.diagnostic !== undefined ? { diagnostic: result.diagnostic } : {}),
           ...(result.diagnosticStage !== undefined
             ? { diagnosticStage: result.diagnosticStage }
             : {}),
           ...(result.timings ? { timings: result.timings } : {}),
           ...(result.timeoutReason === 'client-timeout'
-            ? { limitReason: 'client-timeout' as const }
+            ? { compileDeadlineExceeded: true as const }
             : {}),
         };
       } catch (error) {
@@ -1473,7 +1492,7 @@ export class CppWorkerClient {
           error: timeout.error,
           consoleOutput: timeout.consoleOutput,
           timings: timeout.timings,
-          limitReason: 'client-timeout',
+          compileDeadlineExceeded: true,
         };
       }
     });

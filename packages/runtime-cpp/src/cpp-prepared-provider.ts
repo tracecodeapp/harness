@@ -176,16 +176,12 @@ export function createCppPreparedExecutionProvider(
         // discriminated-union branch there.
         if (preparation.success === false) {
           retireClient(client);
-          if (preparation.limitReason === 'client-timeout') {
-            return {
-              kind: 'limit',
-              reason: 'client-timeout',
-              error: preparation.error,
-              consoleOutput: preparation.consoleOutput,
-              ...(preparation.timings
-                ? { timings: preparation.timings }
-                : {}),
-            };
+          if (preparation.compileDeadlineExceeded === true) {
+            // Compilation runs no learner code: a compile that hit its
+            // deadline is the provider's failure, never the learner's limit.
+            throw new RuntimeProviderError(
+              `C++ compilation did not finish within its deadline: ${preparation.error}`
+            );
           }
           if (preparation.diagnosticStage === undefined) {
             // The worker reported a preparation failure without saying it was
@@ -202,6 +198,9 @@ export function createCppPreparedExecutionProvider(
               ? { errorLine: preparation.errorLine }
               : {}),
             diagnosticStage: preparation.diagnosticStage,
+            ...(preparation.diagnostic === undefined
+              ? {}
+              : { diagnostic: preparation.diagnostic }),
             ...(preparation.timings
               ? { timings: preparation.timings }
               : {}),

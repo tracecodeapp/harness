@@ -19,6 +19,7 @@ import type {
 import type {
   BrowserRuntimeHost,
 } from '../../packages/runtime-browser/src/browser-runtime-host';
+import { isExecutionLimitReason } from '../../packages/runtime-contracts/src/execution-outcome';
 import { assertRuntimeRequestSupported } from '../../packages/runtime-browser/src/runtime-capability-guards';
 import { getLanguageRuntimeProfile } from '../../packages/runtime-browser/src/runtime-profiles';
 import type {
@@ -348,6 +349,12 @@ export interface BrowserJudgeHost {
     options: {
       readonly bundle: JudgeAlgorithmBundle<Input, Expected, Result>;
       readonly signal?: AbortSignal;
+      /**
+       * Stop at the first case a time or line limit stopped and report the
+       * remaining cases as `not-run`, as Run does. Default off: every case
+       * runs under its own bound.
+       */
+      readonly stopAtFirstRunaway?: boolean;
     }
   ): Promise<JudgeAlgorithmReceipt<Result, Expected>>;
   createProjectJudge(
@@ -365,6 +372,12 @@ export interface BrowserJudgeInitialExecuteRequest<
   readonly interactive?: boolean;
   readonly tracing?: RuntimeJudgeTraceSelection;
   readonly signal?: AbortSignal;
+  /**
+   * Stop at the first case a time or line limit stopped and report the
+   * remaining cases as `not-run`, as Run does. Default off: every case runs
+   * under its own bound. Interactive executions always stop.
+   */
+  readonly stopAtFirstRunaway?: boolean;
 }
 
 export interface BrowserJudgeContinueExecuteRequest {
@@ -557,9 +570,12 @@ function failureDiagnostic(
   if (typeof stage !== 'string' || !PROGRAM_FAILURE_STAGES.has(stage)) {
     return Object.freeze({
       severity: 'error',
-      message:
-        `The ${runtime} runtime returned a failed outcome without a program ` +
-        `stage (Harness contract violation): ${String(outcome.error ?? '')}`,
+      message: stage === undefined || stage === null || stage === ''
+        ? `The ${runtime} runtime returned a failed outcome without a program ` +
+          `stage (Harness contract violation): ${String(outcome.error ?? '')}`
+        : `The ${runtime} runtime returned a failed outcome with an unknown program ` +
+          `stage ${JSON.stringify(String(stage)).slice(0, 80)} (Harness protocol violation): ` +
+          String(outcome.error ?? ''),
       code: PROVIDER_ERROR_CODE,
       source: runtime,
     });
@@ -582,12 +598,25 @@ function limitDiagnostic(
     }
   >
 ): JudgeDiagnostic {
+  const reason: unknown = outcome.reason;
+  if (!isExecutionLimitReason(reason)) {
+    // A limit outside the closed set is a malformed provider message, never
+    // a learner limit.
+    return Object.freeze({
+      severity: 'error',
+      message:
+        `The ${runtime} runtime reported an unknown limit ` +
+        `${JSON.stringify(String(reason)).slice(0, 80)} (Harness protocol violation).`,
+      code: PROVIDER_ERROR_CODE,
+      source: runtime,
+    });
+  }
   return Object.freeze({
     severity: 'error',
     message: String(outcome.error ?? '').trim() ||
-      LIMIT_MESSAGES[outcome.reason] ||
-      `Execution stopped by a limit (${String(outcome.reason)}).`,
-    code: outcome.reason,
+      LIMIT_MESSAGES[reason] ||
+      `Execution stopped by a limit (${reason}).`,
+    code: reason,
     source: runtime,
   });
 }
@@ -625,6 +654,13 @@ function outcomeFailure(
   diagnostic: JudgeDiagnostic
 ): JudgeFailure {
   if (outcome.kind === 'limit') {
+    if (diagnostic.code === PROVIDER_ERROR_CODE) {
+      return Object.freeze({
+        origin: 'provider',
+        reason: 'protocol',
+        message: diagnostic.message,
+      });
+    }
     return Object.freeze({
       origin: 'limit',
       reason: outcome.reason,
@@ -632,9 +668,14 @@ function outcomeFailure(
     });
   }
   if (diagnostic.code === PROVIDER_ERROR_CODE) {
+    const stage: unknown = outcome.diagnosticStage;
     return Object.freeze({
       origin: 'provider',
-      reason: 'contract-violation',
+      // A stage outside the closed set is a malformed message; no stage at
+      // all is an untyped provider breaking the outcome contract.
+      reason: stage === undefined || stage === null || stage === ''
+        ? 'contract-violation'
+        : 'protocol',
       message: diagnostic.message,
     });
   }
@@ -1021,24 +1062,31 @@ function executeProviderBatchUntilRunaway(
         }));
         continue;
       }
-      // Each case runs through the provider's per-case path, which owns the
-      // per-case deadline and replaces a worker that hit it.
-      const outcome: CodeExecutionResult | ExecutionResult = yield* Effect.tryPromise({
+      // Each case runs as a one-case provider batch, so it gets exactly the
+      // bounds it gets in a whole batch (Python's guest guard, per-case
+      // deadlines), and the provider replaces a worker that hit one.
+      const outcomes: readonly (CodeExecutionResult | ExecutionResult)[] = yield* Effect.tryPromise({
         try: (signal) =>
           isTraceBinding(options.binding)
-            ? programs.executeTrace(evaluationId(invocation), {
-                inputs: testCase.inputs,
-                recordTrace: testCase.recordTrace ?? true,
+            ? programs.executeTraceBatch(evaluationId(invocation), {
+                inputBatch: [testCase.inputs],
+                traceEnabledBatch: [testCase.recordTrace ?? true],
                 signal,
                 limits: options.binding.limits,
               })
-            : programs.executeCode(evaluationId(invocation), {
-                inputs: testCase.inputs,
+            : programs.executeCodeBatch(evaluationId(invocation), {
+                inputBatch: [testCase.inputs],
                 signal,
                 limits: options.binding.limits,
               }),
         catch: errorFromUnknown,
       });
+      const outcome = outcomes[0];
+      if (outcomes.length !== 1 || !outcome) {
+        return yield* Effect.fail(
+          new Error(`Prepared runtime returned ${outcomes.length} batch outcomes for 1 case.`)
+        );
+      }
       batch.push(batchCaseOutput(
         testCase.caseId,
         isTraceBinding(options.binding)
@@ -1060,10 +1108,20 @@ function executeProviderBatchUntilRunaway(
   });
 }
 
+/** A broken result protocol is reported as such; anything else as the provider failing. */
+function providerFailureReason(error: unknown): 'runtime-failure' | 'protocol' {
+  return error instanceof Error &&
+    error.name === 'RuntimeProviderError' &&
+    (error as { reason?: unknown }).reason === 'protocol'
+    ? 'protocol'
+    : 'runtime-failure';
+}
+
 function providerFailure(
   runtime: string,
   message: string,
-  code = PROVIDER_ERROR_CODE
+  code = PROVIDER_ERROR_CODE,
+  reason: 'runtime-failure' | 'protocol' = 'runtime-failure'
 ): MappedRuntimeOutcome {
   return Object.freeze({
     output: Object.freeze({
@@ -1075,7 +1133,7 @@ function providerFailure(
       })]),
       failure: Object.freeze({
         origin: 'provider' as const,
-        reason: 'runtime-failure' as const,
+        reason,
         message,
       }),
     }),
@@ -1113,7 +1171,12 @@ function executeProviderProcess(
   return initialize.pipe(
     Effect.matchEffect({
       onFailure: (error) => {
-        const mapped = providerFailure(options.runtime, error.message);
+        const mapped = providerFailure(
+          options.runtime,
+          error.message,
+          PROVIDER_ERROR_CODE,
+          providerFailureReason(error)
+        );
         return options.runtimeControl.publish(
           invocationId,
           mapped.output
@@ -1149,7 +1212,9 @@ function executeInitializedProviderProcess(
             onFailure: (error) => {
               const mapped = providerFailure(
                 options.runtime,
-                error.message
+                error.message,
+                PROVIDER_ERROR_CODE,
+                providerFailureReason(error)
               );
               return options.runtimeControl.publish(
                 invocationId,
@@ -1172,7 +1237,12 @@ function executeInitializedProviderProcess(
         ).pipe(
           Effect.matchEffect({
             onFailure: (error) => {
-              const mapped = providerFailure(options.runtime, error.message);
+              const mapped = providerFailure(
+          options.runtime,
+          error.message,
+          PROVIDER_ERROR_CODE,
+          providerFailureReason(error)
+        );
               return options.runtimeControl.publish(
                 invocationId,
                 mapped.output
@@ -1193,7 +1263,12 @@ function executeInitializedProviderProcess(
       ).pipe(
         Effect.matchEffect({
           onFailure: (error) => {
-            const mapped = providerFailure(options.runtime, error.message);
+            const mapped = providerFailure(
+          options.runtime,
+          error.message,
+          PROVIDER_ERROR_CODE,
+          providerFailureReason(error)
+        );
             return options.runtimeControl.publish(
               invocationId,
               mapped.output
@@ -1438,6 +1513,15 @@ function traceTranchePlan<Input, Expected>(
  * Judge -> TraceKernel -> prepared runtime provider boundary public while the
  * lower-level engine packages remain internal implementation details.
  */
+export interface RuntimeJudgeAlgorithmOptions {
+  /**
+   * Stop at the first case a time or line limit stopped and report the
+   * remaining cases as `not-run`, as Run does. Default off: every case runs
+   * under its own bound.
+   */
+  readonly stopAtFirstRunaway?: boolean;
+}
+
 export interface RuntimeJudge {
   readonly runtime: string;
   readonly runtimeControl: JudgeRuntimeControlPort;
@@ -1476,7 +1560,8 @@ export interface RuntimeJudge {
     Result = unknown,
     Expected = unknown,
   >(
-    bundle: JudgeAlgorithmBundle<Input, Expected, Result>
+    bundle: JudgeAlgorithmBundle<Input, Expected, Result>,
+    options?: RuntimeJudgeAlgorithmOptions
   ): Effect.Effect<
     JudgeAlgorithmReceipt<Result, Expected>,
     JudgePlanError | JudgeInfrastructureError
@@ -1498,6 +1583,12 @@ export interface RuntimeJudgeInitialExecuteRequest<
   /** Omit for no recorded cases. */
   readonly tracing?: RuntimeJudgeTraceSelection;
   readonly comparator?: JudgeComparator<Input, Expected, Result>;
+  /**
+   * Stop at the first case a time or line limit stopped and report the
+   * remaining cases as `not-run`, as Run does. Default off: every case runs
+   * under its own bound. Interactive executions always stop.
+   */
+  readonly stopAtFirstRunaway?: boolean;
 }
 
 export interface RuntimeJudgeContinueExecuteRequest {
@@ -1629,8 +1720,11 @@ class RuntimeJudgeComposition
         >(port, plan, build, {
           comparator: request.comparator,
           // Run semantics: an interactive execution stops at the first case a
-          // time or line limit stopped; the rest are reported as not run.
-          ...(request.interactive === true ? { stopAtFirstRunaway: true } : {}),
+          // time or line limit stopped; the rest are reported as not run. A
+          // batch evaluation opts in.
+          ...(request.interactive === true || request.stopAtFirstRunaway === true
+            ? { stopAtFirstRunaway: true }
+            : {}),
           ...(this.traceCapable
             ? {
                 tracing: request.tracing ?? { caseIds: Object.freeze([]) },
@@ -1843,7 +1937,8 @@ class RuntimeJudgeComposition
     Result = unknown,
     Expected = unknown,
   >(
-    bundle: JudgeAlgorithmBundle<Input, Expected, Result>
+    bundle: JudgeAlgorithmBundle<Input, Expected, Result>,
+    options: RuntimeJudgeAlgorithmOptions = {}
   ): Effect.Effect<
     JudgeAlgorithmReceipt<Result, Expected>,
     JudgePlanError | JudgeInfrastructureError
@@ -1856,6 +1951,9 @@ class RuntimeJudgeComposition
             comparator: bundle.comparison
               ? createJudgeComparator<Input>(bundle.comparison)
               : undefined,
+            ...(options.stopAtFirstRunaway === true
+              ? { stopAtFirstRunaway: true }
+              : {}),
           },
           true
         )
@@ -2129,6 +2227,9 @@ export function createBrowserJudgeHostFromRuntimeHost(
             interactive: request.interactive,
             tracing: request.tracing,
             comparator,
+            ...(request.stopAtFirstRunaway === true
+              ? { stopAtFirstRunaway: true }
+              : {}),
           }),
           request.signal
         )
@@ -2178,9 +2279,10 @@ export function createBrowserJudgeHostFromRuntimeHost(
       judgeOptions: {
         readonly bundle: JudgeAlgorithmBundle<Input, Expected, Result>;
         readonly signal?: AbortSignal;
+        readonly stopAtFirstRunaway?: boolean;
       }
     ) => {
-      const { bundle, signal } = judgeOptions;
+      const { bundle, signal, stopAtFirstRunaway } = judgeOptions;
       const tracing = bundle.execution.trace === true
         ? {
             caseIds: Object.freeze(
@@ -2192,6 +2294,7 @@ export function createBrowserJudgeHostFromRuntimeHost(
         bundle,
         ...(tracing ? { tracing } : {}),
         ...(signal ? { signal } : {}),
+        ...(stopAtFirstRunaway === true ? { stopAtFirstRunaway: true } : {}),
       }).then(({ evaluation }) =>
         createAlgorithmJudgeReceipt(bundle, evaluation)
       );

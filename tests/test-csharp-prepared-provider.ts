@@ -11,7 +11,7 @@ import type {
   RuntimeProgramPreparationCall,
   RuntimeExecutionTimings,
 } from '../packages/runtime-contracts/src/index';
-import { createEmptyRuntimeTrace } from '../packages/runtime-contracts/src/index';
+import { createEmptyRuntimeTrace, isRuntimeProviderError } from '../packages/runtime-contracts/src/index';
 import {
   createCSharpRuntimeClient,
   type CSharpPreparedWorkerAuthority,
@@ -35,6 +35,7 @@ class FakePreparedCSharpWorker {
   }> = [];
   disposeCalls: string[] = [];
   failPreparation = false;
+  preparationTimeoutReason: 'client-timeout' | undefined;
   preparedRunnerTier: 'algorithm-fast' | 'compatibility' = 'compatibility';
   executionResult: CodeExecutionResult | undefined;
   managedHeapBytes = 0;
@@ -48,6 +49,14 @@ class FakePreparedCSharpWorker {
     call: RuntimeProgramPreparationCall
   ): Promise<CSharpWorkerPrepareResult> {
     this.prepareCalls.push(call);
+    if (this.preparationTimeoutReason) {
+      return {
+        success: false,
+        error: 'C# compilation timed out.',
+        timeoutReason: this.preparationTimeoutReason,
+        consoleOutput: [],
+      };
+    }
     if (this.failPreparation) {
       return {
         success: false,
@@ -214,6 +223,20 @@ test('C# prepared provider reports compile diagnostics before it creates a progr
   assert.equal(result.errorLine, 4);
   assert.equal(worker.executeCalls.length, 0);
   assert.equal(worker.disposeCalls.length, 0);
+});
+
+test('C# compile that hits a deadline is the provider failure, never a learner limit', async () => {
+  const worker = new FakePreparedCSharpWorker();
+  worker.preparationTimeoutReason = 'client-timeout';
+  const provider = createCSharpRuntimeClient(worker as unknown as CSharpWorkerClient);
+  await assert.rejects(
+    provider.prepareProgram({
+      mode: 'code',
+      code: 'public class Solution { public int Solve(int n) => n; }',
+      functionName: 'Solve',
+    }),
+    (error: unknown) => isRuntimeProviderError(error) && /deadline/.test((error as Error).message)
+  );
 });
 
 test('C# prepared execution forwards cancellation into the active worker request', async () => {

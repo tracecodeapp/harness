@@ -25,6 +25,11 @@ import {
   type BrowserRuntimeProvider,
 } from '../packages/runtime-browser/src';
 import {
+  liftCodeOutcome,
+  liftTraceOutcome,
+} from '../packages/runtime-contracts/src/execution-outcome';
+import { createEmptyRuntimeTrace } from '../packages/runtime-contracts/src/runtime-trace';
+import {
   RUNTIME_TRACE_SCHEMA_VERSION,
   type CodeExecutionResult,
   type ExecutionResult,
@@ -63,7 +68,10 @@ interface FakeInput extends Record<string, unknown> {
     | 'runaway'
     | 'throw'
     | 'trace-truncated'
-    | 'unstaged';
+    | 'unstaged'
+    | 'bogus-limit'
+    | 'unknown-stage'
+    | 'malformed-reply';
   readonly delayMs?: number;
   readonly consoleOutput?: readonly string[];
 }
@@ -229,6 +237,28 @@ function fakeProvider(
               state.completions.push(input.label);
               if (input.mode === 'throw') {
                 throw new Error('provider transport exploded');
+              }
+              if (input.mode === 'unknown-stage') {
+                return {
+                  kind: 'failed',
+                  error: 'bogus',
+                  diagnosticStage: 'banana',
+                  consoleOutput: [],
+                } as unknown as CodeExecutionResult;
+              }
+              if (input.mode === 'malformed-reply') {
+                // A worker reply that names no classification, lifted the way
+                // every runtime client lifts its replies.
+                return liftCodeOutcome({ success: false, error: 'no stage', consoleOutput: [] });
+              }
+              if (input.mode === 'bogus-limit') {
+                // A malformed provider message naming a limit outside the set.
+                return {
+                  kind: 'limit',
+                  reason: 'banana',
+                  error: 'bogus',
+                  consoleOutput: [],
+                } as unknown as CodeExecutionResult;
               }
               if (input.mode === 'unstaged') {
                 // An untyped provider breaking the contract.
@@ -2155,6 +2185,9 @@ test('every Judge case states its origin and converts totally to the outcome a l
       { id: 'limited', input: { label: 'limited', mode: 'limit' }, expected: 'unused' },
       { id: 'provider-failure', input: { label: 'provider-failure', mode: 'throw' }, expected: 'unused' },
       { id: 'unstaged', input: { label: 'unstaged', mode: 'unstaged' }, expected: 'unused' },
+      { id: 'bogus-limit', input: { label: 'bogus-limit', mode: 'bogus-limit' }, expected: 'unused' },
+      { id: 'unknown-stage', input: { label: 'unknown-stage', mode: 'unknown-stage' }, expected: 'unused' },
+      { id: 'malformed-reply', input: { label: 'malformed-reply', mode: 'malformed-reply' }, expected: 'unused' },
     ])
   );
   assert.deepEqual(result.cases.map(describeJudgeCase), [
@@ -2163,9 +2196,12 @@ test('every Judge case states its origin and converts totally to the outcome a l
     'limit:line-limit',
     'provider:runtime-failure',
     'provider:contract-violation',
+    'provider:protocol',
+    'provider:protocol',
+    'provider:protocol',
   ]);
 
-  const [completed, failed, limited, provider, unstaged] = result.cases;
+  const [completed, failed, limited, provider, unstaged, bogusLimit, unknownStage, malformedReply] = result.cases;
   assert.deepEqual(
     judgeCaseExecutionOutcome(completed!, { language: 'javascript' }),
     { kind: 'completed', output: 4, consoleOutput: ['stdout:completed'] }
@@ -2181,7 +2217,7 @@ test('every Judge case states its origin and converts totally to the outcome a l
   assert.equal(limitedTrace.kind, 'limit');
   assert.equal(limitedTrace.kind === 'limit' ? limitedTrace.reason : undefined, 'line-limit');
   assert.equal(limitedTrace.trace.language, 'javascript');
-  for (const providerCase of [provider!, unstaged!]) {
+  for (const providerCase of [provider!, unstaged!, bogusLimit!, unknownStage!, malformedReply!]) {
     assert.throws(
       () => judgeCaseExecutionOutcome(providerCase, { language: 'javascript' }),
       (error: unknown) => isRuntimeProviderError(error)
@@ -2250,4 +2286,99 @@ test('Run stops at the first runaway case and reports the rest as not run; Submi
     'completed',
     'completed',
   ]);
+});
+
+test('a batch evaluation that opts in stops at the first runaway case like Run; it is off by default', async () => {
+  const cases: { id: string; input: FakeInput; expected: unknown }[] = [
+    { id: 'first', input: { label: 'first', output: 1 }, expected: 1 },
+    { id: 'runaway', input: { label: 'runaway', mode: 'runaway' }, expected: 'unused' },
+    { id: 'after', input: { label: 'after', output: 3 }, expected: 3 },
+  ];
+  const stopped = [
+    'completed',
+    'limit:single-line-limit',
+    'not-run:runaway:single-line-limit',
+  ];
+
+  // Non-interactive execute.
+  const executeState = makeState();
+  const executed = await Effect.runPromise(Effect.scoped(
+    Effect.gen(function* () {
+      const judge = yield* createTestRuntimeJudge(
+        fakeProvider(executeState),
+        // The fake runs its runaway mode on the trace program.
+        codeBinding({ trace: true })
+      );
+      return yield* judge.execute<FakeInput>({
+        plan: makePlan<unknown>(cases),
+        stopAtFirstRunaway: true,
+      });
+    })
+  ));
+  assert.equal(executed.executionId, undefined);
+  assert.deepEqual(executed.evaluation.cases.map(describeJudgeCase), stopped);
+  assert.deepEqual(executeState.completions, ['first', 'runaway']);
+
+  // evaluateAlgorithm, with and without the option.
+  const bundle = await createAlgorithmJudgeBundle({
+    id: 'submit-stops',
+    language: 'javascript',
+    code: SOURCE,
+    functionName: 'solve',
+    cases,
+  });
+  const receiptFor = (options?: { readonly stopAtFirstRunaway?: boolean }) => {
+    const state = makeState();
+    return Effect.runPromise(Effect.scoped(
+      Effect.gen(function* () {
+        const judge = yield* createTestRuntimeJudge(
+          fakeProvider(state),
+          codeBinding({ sourcePath: bundle.execution.sourcePath, trace: true })
+        );
+        return yield* judge.evaluateAlgorithm(bundle, options);
+      })
+    )).then((receipt) => ({ receipt, state }));
+  };
+  const optedIn = await receiptFor({ stopAtFirstRunaway: true });
+  assert.equal(optedIn.receipt.evaluation.status, 'completed');
+  if (optedIn.receipt.evaluation.status === 'completed') {
+    assert.deepEqual(optedIn.receipt.evaluation.cases.map(describeJudgeCase), stopped);
+  }
+  assert.equal(optedIn.receipt.verdict, 'failed');
+  assert.equal(optedIn.receipt.totalCount, 3);
+  assert.deepEqual(optedIn.state.completions, ['first', 'runaway']);
+
+  const byDefault = await receiptFor();
+  if (byDefault.receipt.evaluation.status === 'completed') {
+    assert.deepEqual(byDefault.receipt.evaluation.cases.map(describeJudgeCase), [
+      'completed',
+      'limit:single-line-limit',
+      'completed',
+    ]);
+  }
+  assert.deepEqual(byDefault.state.completions, ['first', 'runaway', 'after']);
+});
+
+test('lifting rejects a worker reply that names a limit or stage outside the closed sets', () => {
+  for (const raw of [
+    { success: false, timeoutReason: 'banana', consoleOutput: [] },
+    { success: false, diagnosticStage: 'banana', error: 'x', consoleOutput: [] },
+    // Every classification a reply carries is checked, whatever else it says.
+    { success: true, output: 1, timeoutReason: 'banana', consoleOutput: [] },
+    { success: false, timeoutReason: 'line-limit', diagnosticStage: 'banana', consoleOutput: [] },
+  ]) {
+    assert.throws(
+      () => liftCodeOutcome(raw as unknown as Parameters<typeof liftCodeOutcome>[0]),
+      (error: unknown) => isRuntimeProviderError(error) && /unknown (timeoutReason|diagnosticStage)/.test((error as Error).message)
+    );
+    assert.throws(
+      () => liftTraceOutcome(
+        raw as unknown as Parameters<typeof liftTraceOutcome>[0],
+        createEmptyRuntimeTrace('javascript', { runId: 'javascript:run' })
+      ),
+      (error: unknown) => isRuntimeProviderError(error)
+    );
+  }
+  const limit = liftCodeOutcome({ success: false, timeoutReason: 'line-limit', consoleOutput: [] });
+  assert.equal(limit.kind === 'limit' ? limit.reason : undefined, 'line-limit');
 });

@@ -218,13 +218,11 @@ export class CSharpRuntimeClient implements RuntimeClient, RuntimePreparedExecut
     const result = await this.preparedCompiler.prepareProgram(call);
     if (!result.success) {
       if (result.timeoutReason) {
-        return {
-          kind: 'limit',
-          reason: result.timeoutReason,
-          error: result.error ?? 'C# preparation failed',
-          consoleOutput: result.consoleOutput ?? [],
-          timings: result.timings,
-        };
+        // Compilation runs no learner code; a compile that hit a deadline is
+        // the provider's failure, never the learner's limit.
+        throw new RuntimeProviderError(
+          `C# compilation stopped by its deadline (${result.timeoutReason}): ${result.error ?? 'no detail'}`
+        );
       }
 
       const diagnostic = result.diagnostics?.find((candidate) =>
