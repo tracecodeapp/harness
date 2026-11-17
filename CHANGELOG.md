@@ -6,6 +6,80 @@ This repo uses Git tags as release boundaries. Version notes below summarize wha
 
 ## [Unreleased]
 
+## [0.20.0] - 2026-11-17
+
+### Fixed
+
+- A learner's failure is reported as the learner's in every language and run
+  mode. Before, many uncaught program errors reached Judge as
+  `runtime-provider-error`, and consumers treated them as outages:
+  - Python: every uncaught exception, `RecursionError`, and `sys.exit`.
+  - JavaScript: syntax errors and errors from the compatibility worker.
+  - C#: every runtime exception, and `Environment.Exit` or a fatal stack
+    overflow.
+  - C++: WebAssembly traps (integer divide by zero, out-of-bounds memory,
+    `abort`, stack exhaustion), `exit()`, and the trace budget.
+
+  These now carry `compile`, `runtime`, or a limit code, with a readable
+  message and, where the language can know it, the line.
+- A learner program no longer reports *completed* when it did not finish:
+  - Python traced runs that raised after a trace budget stopped recording.
+  - C++ `throw` that no `catch` handles. The program now ends as an uncaught
+    exception on the throw's line.
+- Runtime failures that are not the learner's are reported as
+  `runtime-provider-error` instead of a learner code:
+  - An unavailable runtime asset or failed initialization. Before, this was a
+    compile failure with no diagnostic code.
+  - Prepared-program contract breaks.
+  - Missing compiled artifacts.
+  - Non-timeout C# trace transport errors. Before, these were reported as a
+    timeout.
+- A Judge watchdog timeout, including one that stops a whole batch before it
+  publishes per-case results, is a `timed-out` case with a `client-timeout`
+  diagnostic, not a thrown `JudgeInfrastructureError`. Python batch time
+  budgets and C++ cleanup after a timed-out case no longer fail the
+  evaluation.
+- Limits reported without text get a readable message per reason. C# messages
+  replace .NET resource keys (`Arg_DivideByZero`) with the framework's
+  messages. C# traced failures carry the exception's line.
+
+### Changed
+
+- `diagnosticStage` is required on every `failed` outcome:
+  `CodeExecutionResult`, `ExecutionResult`, and
+  `RuntimeProgramPreparationResult`.
+- A provider failure is never a `failed` outcome. The provider rejects, and
+  Judge reports the rejection as `runtime-provider-error`. The new
+  `RuntimeProviderError` class (exported from runtime-contracts) names that
+  rejection.
+- `liftCodeOutcome` and `liftTraceOutcome` reject with `RuntimeProviderError`
+  when a worker reports `success: false` with neither a `timeoutReason` nor a
+  `diagnosticStage`.
+- Judge reports a stageless `failed` outcome from an untyped provider as a
+  contract violation; it no longer defaults it to a provider failure.
+
+### Added
+
+- `docs/learner-failure-classification.md` documents the classification
+  contract.
+- `pnpm test:learner-failure-matrix` is the conformance gate. It covers six
+  languages × five run modes × twelve failure kinds through the public browser
+  Judge, plus one injected provider failure per runtime. Cells that cannot be
+  made right yet are listed as known gaps with the reason.
+
+### Compatibility
+
+- Consumer-visible shapes are unchanged: diagnostic `code`, `message`, and
+  `line`, and case `status` and `timedOut`. After upgrading, a consumer that
+  treats `runtime-provider-error` as infrastructure stops seeing it for learner
+  failures, with no code change.
+- Breaking for runtime implementers and test doubles: a `failed` outcome must
+  now include `diagnosticStage`, and provider failures must reject. This is
+  why the version is a minor bump.
+- Upgrade the package and worker assets together. The Python, JavaScript,
+  Java, C#, and C++ workers changed with matching `runtime-assets.lock.json`
+  entries.
+
 ## [0.19.0] - 2026-11-08
 
 ### Added
