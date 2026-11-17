@@ -5658,8 +5658,9 @@ function boundedJavaDiagnosticPath(value, fallback = '.') {
     : normalized;
 }
 
+// A failed run's message: what the program or the compiler said, as plain
+// text. Report fields are never rendered as labelled sections.
 function javaReportFailureMessage(report, fallback = 'Java execution failed') {
-  const parts = [];
   const compilerStdout = typeof report?.compilerStdout === 'string'
     ? sanitizeJavaCompilerDiagnostic(report.compilerStdout).trim()
     : '';
@@ -5669,20 +5670,12 @@ function javaReportFailureMessage(report, fallback = 'Java execution failed') {
   const runtimeError = typeof report?.runtimeError === 'string'
     ? truncateJavaProjectDiagnostic(sanitizeJavaRuntimeStderr(report.runtimeError)).trim()
     : '';
-  if (compilerStdout) parts.push(`compilerStdout:\n${truncateJavaWorkerDiagnostic(compilerStdout)}`);
-  if (compilerStderr) parts.push(`compilerStderr:\n${truncateJavaWorkerDiagnostic(compilerStderr)}`);
-  if (runtimeError && !compilerStdout.includes(runtimeError) && !compilerStderr.includes(runtimeError)) {
-    parts.push(`runtimeError:\n${truncateJavaWorkerDiagnostic(runtimeError)}`);
+  if (runtimeError && runtimeError !== JAVA_GENERIC_COMPILE_FAILURE) {
+    return truncateJavaWorkerDiagnostic(runtimeError);
   }
-  if (Array.isArray(report?.results)) {
-    const failedResults = report.results
-      .map((entry, index) => ({ entry, index }))
-      .filter(({ entry }) => entry?.success !== true);
-    if (failedResults.length > 0) {
-      parts.push(`failedResultIndices: ${failedResults.map(({ index }) => index).join(', ')}`);
-    }
-  }
-  return parts.length > 0 ? parts.join('\n') : fallback;
+  const compilerOutput = compilerStderr || compilerStdout;
+  if (compilerOutput) return truncateJavaWorkerDiagnostic(compilerOutput);
+  return runtimeError || fallback;
 }
 
 const JAVA_GENERIC_COMPILE_FAILURE = 'Java compilation failed';
