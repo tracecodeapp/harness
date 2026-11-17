@@ -2400,6 +2400,14 @@ for _tracecode_batch_inputs in _tracecode_batch_cases:
             except Exception:
                 pass
     _tracecode_batch_append_result(_tracecode_case_result)
+    # Run semantics: stop after the first case a time or line limit stopped.
+    if (
+        _tracecode_batch_limits.get('stopAtFirstRunaway', False)
+        and _tracecode_case_result.get('timeoutReason') in (
+            'client-timeout', 'line-limit', 'single-line-limit'
+        )
+    ):
+        break
 
 _tracecode_batch_re.purge()
 _json_out = '[' + ','.join(_tracecode_batch_encoded_results) + ']'
@@ -8213,13 +8221,37 @@ async function executePreparedProgram(
   }
 }
 
+const PYTHON_RUNAWAY_LIMIT_REASONS = new Set(['client-timeout', 'line-limit', 'single-line-limit']);
+
+function isPythonRunawayResult(result) {
+  return Boolean(
+    result &&
+    result.success === false &&
+    PYTHON_RUNAWAY_LIMIT_REASONS.has(result.timeoutReason)
+  );
+}
+
+/**
+ * With `stopAtFirstRunaway`, a batch may end early: its results are a prefix
+ * of the cases that ends with the case a time or line limit stopped.
+ */
+function isPythonBatchResultPrefix(results, caseCount, stopAtFirstRunaway) {
+  if (!Array.isArray(results)) return false;
+  if (results.length === caseCount) return true;
+  return stopAtFirstRunaway === true &&
+    results.length > 0 &&
+    results.length < caseCount &&
+    isPythonRunawayResult(results[results.length - 1]);
+}
+
 async function executePreparedProgramBatch(
   deps,
   artifact,
   inputBatch,
   limits,
   traceEnabledBatch = undefined,
-  forceJudgeCompatible = false
+  forceJudgeCompatible = false,
+  stopAtFirstRunaway = false
 ) {
   const startedAt = deps.performanceNow();
   await deps.loadPyodideInstance();
@@ -8313,6 +8345,48 @@ async function executePreparedProgramBatch(
       cases.every((inputs) => !pythonInputsRequireCustomMaterialization(inputs)) &&
       traceEnabledBatch?.some((enabled) => enabled) === true &&
       traceEnabledBatch.some((enabled) => !enabled);
+    if (canSplitMixedTraceBatch && stopAtFirstRunaway === true) {
+      // Stopping must follow case order, so run consecutive cases with the
+      // same trace selection as one batch each, in order, and stop at the
+      // first runaway.
+      const results = [];
+      let index = 0;
+      while (index < cases.length) {
+        const traced = traceEnabledBatch[index];
+        let end = index;
+        while (end < cases.length && traceEnabledBatch[end] === traced) end += 1;
+        const chunk = await executePreparedProgramBatch(
+          deps,
+          artifact,
+          cases.slice(index, end),
+          limits,
+          traceEnabledBatch.slice(index, end),
+          false,
+          true
+        );
+        if (!isPythonBatchResultPrefix(chunk.results, end - index, true)) {
+          return chunk;
+        }
+        results.push(...chunk.results);
+        if (chunk.results.length < end - index || isPythonRunawayResult(results[results.length - 1])) {
+          break;
+        }
+        index = end;
+      }
+      const runMs = deps.performanceNow() - startedAt;
+      return {
+        success: results.every((result) => result?.success === true),
+        results,
+        consoleOutput: results.flatMap((result) => result?.consoleOutput ?? []),
+        timings: {
+          totalMs: runMs,
+          runMs,
+          compileCacheHit: true,
+          artifactCacheHit: true,
+          algorithmFastBatch: true,
+        },
+      };
+    }
     if (canSplitMixedTraceBatch) {
       const untracedIndexes = [];
       const tracedIndexes = [];
@@ -8390,7 +8464,10 @@ async function executePreparedProgramBatch(
             __tracecode_input_batch_literal: preparedPythonLiteral(deps, cases),
             __tracecode_limits_literal: preparedPythonLiteral(
               deps,
-              limits?.guest ?? {}
+              {
+                ...(limits?.guest ?? {}),
+                ...(stopAtFirstRunaway === true ? { stopAtFirstRunaway: true } : {}),
+              }
             ),
           },
           undefined,
@@ -8401,8 +8478,7 @@ async function executePreparedProgramBatch(
           ? rawResults.map(pythonCodeResultAsEmptyTraceResult)
           : rawResults;
         const resultsHaveTrustedShape =
-          Array.isArray(results) &&
-          results.length === cases.length &&
+          isPythonBatchResultPrefix(results, cases.length, stopAtFirstRunaway) &&
           results.every((result) =>
             result !== null &&
             typeof result === 'object' &&
@@ -8552,6 +8628,7 @@ async function executePreparedProgramBatch(
           ? pythonCodeResultAsEmptyTraceResult(timedResult)
           : timedResult
       );
+      if (stopAtFirstRunaway === true && isPythonRunawayResult(timedResult)) break;
     }
     const runMs = deps.performanceNow() - startedAt;
     return {

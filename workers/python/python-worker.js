@@ -9490,7 +9490,8 @@ async function executePreparedPythonProgramBatch(
   inputBatch,
   limits,
   traceEnabledBatch,
-  forceJudgeCompatible
+  forceJudgeCompatible,
+  stopAtFirstRunaway
 ) {
   await loadPyodideInstance();
   const runtime = loadPythonRuntime();
@@ -9503,7 +9504,8 @@ async function executePreparedPythonProgramBatch(
         guest: guestGuardOptionsFromLimits(limits),
       },
       traceEnabledBatch,
-      forceJudgeCompatible
+      forceJudgeCompatible,
+      stopAtFirstRunaway === true
     )
   );
 }
@@ -9649,7 +9651,8 @@ async function processMessage(data) {
           payload?.inputBatch ?? [],
           payload?.limits,
           payload?.traceEnabledBatch,
-          payload?.forceJudgeCompatible
+          payload?.forceJudgeCompatible,
+          payload?.stopAtFirstRunaway
         );
         analyzerInitialized = false;
         if (payload?.mode === 'trace') {

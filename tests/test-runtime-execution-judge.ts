@@ -2382,3 +2382,98 @@ test('lifting rejects a worker reply that names a limit or stage outside the clo
   const limit = liftCodeOutcome({ success: false, timeoutReason: 'line-limit', consoleOutput: [] });
   assert.equal(limit.kind === 'limit' ? limit.reason : undefined, 'line-limit');
 });
+
+test('a provider whose batch stops itself gets one stopping batch request, not one request per case', async () => {
+  type Reply = (inputBatch: readonly Record<string, unknown>[]) => readonly CodeExecutionResult[];
+  const runWith = async (reply: Reply) => {
+    const state = makePreparedState();
+    const provider = preparedProvider(state);
+    const originalPrepare = provider.prepareProgram.bind(provider);
+    const batchCalls: RuntimePreparedCodeBatchCall[] = [];
+    const stoppingProvider: RuntimePreparedExecutionProvider = {
+      ...provider,
+      async prepareProgram(call) {
+        const result = await originalPrepare(call);
+        if (result.kind !== 'prepared' || result.program.mode !== 'code') return result;
+        return {
+          ...result,
+          program: {
+            ...result.program,
+            capabilities: { ...result.program.capabilities, stopsAtFirstRunaway: true },
+            async executeBatchIsolated(batchCall: RuntimePreparedCodeBatchCall) {
+              batchCalls.push(batchCall);
+              return reply(batchCall.inputBatch);
+            },
+          },
+        };
+      },
+    };
+    const bundle = await createAlgorithmJudgeBundle({
+      id: 'stopping-batch',
+      language: 'javascript',
+      code: SOURCE,
+      functionName: 'solve',
+      cases: ['a', 'b', 'c', 'd'].map((id) => ({ id, input: { label: id }, expected: id })),
+    });
+    const receipt = await Effect.runPromise(Effect.scoped(
+      Effect.gen(function* () {
+        const judge = yield* createTestRuntimeJudge(
+          stoppingProvider,
+          codeBinding({ sourcePath: bundle.execution.sourcePath })
+        );
+        return yield* judge.evaluateAlgorithm(bundle, { stopAtFirstRunaway: true });
+      })
+    ));
+    return { receipt, batchCalls, state };
+  };
+  const completed = (inputs: Record<string, unknown>): CodeExecutionResult => ({
+    kind: 'completed',
+    output: (inputs as FakeInput).label,
+    consoleOutput: [],
+  });
+  const runaway: CodeExecutionResult = {
+    kind: 'limit',
+    reason: 'single-line-limit',
+    error: 'Line 2 exceeded its hit budget',
+    consoleOutput: [],
+  };
+
+  // A prefix ending at the runaway: one request, the rest not run.
+  const stopped = await runWith((inputBatch) => [completed(inputBatch[0]!), runaway]);
+  assert.equal(stopped.batchCalls.length, 1);
+  assert.equal(stopped.batchCalls[0]?.stopAtFirstRunaway, true);
+  assert.equal(stopped.batchCalls[0]?.inputBatch.length, 4);
+  assert.equal(stopped.state.codeCalls.length, 0, 'no per-case requests');
+  const evaluation = stopped.receipt.evaluation;
+  assert.equal(evaluation.status, 'completed');
+  if (evaluation.status === 'completed') {
+    assert.deepEqual(evaluation.cases.map(describeJudgeCase), [
+      'completed',
+      'limit:single-line-limit',
+      'not-run:b:single-line-limit',
+      'not-run:b:single-line-limit',
+    ]);
+  }
+
+  // A correct program: every case completes in the one request.
+  const correct = await runWith((inputBatch) => inputBatch.map(completed));
+  assert.equal(correct.batchCalls.length, 1);
+  if (correct.receipt.evaluation.status === 'completed') {
+    assert.deepEqual(correct.receipt.evaluation.cases.map(describeJudgeCase), ['completed', 'completed', 'completed', 'completed']);
+  }
+
+  // Not a prefix ending at the first runaway: the provider broke the protocol.
+  for (const malformed of [
+    (inputBatch: readonly Record<string, unknown>[]) => [completed(inputBatch[0]!)],
+    (inputBatch: readonly Record<string, unknown>[]) => [runaway, completed(inputBatch[1]!)],
+  ]) {
+    // As with any provider failure on a batch, no case outcome is published
+    // and the evaluation rejects as the infrastructure's, never the learner's.
+    await assert.rejects(
+      runWith(malformed),
+      (error: unknown) =>
+        String(error).includes('JudgeInfrastructureError') &&
+        String(error).includes('not a prefix ending at its first runaway')
+    );
+  }
+});

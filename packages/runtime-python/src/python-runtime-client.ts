@@ -640,6 +640,34 @@ function raceWithAbort<T>(
   });
 }
 
+const PYTHON_RUNAWAY_LIMIT_REASONS: ReadonlySet<string> = new Set([
+  'client-timeout',
+  'line-limit',
+  'single-line-limit',
+]);
+
+/** A case a time or line limit stopped: a stopping batch ends after it. */
+function isPythonRunawayOutcome(outcome: CodeExecutionResult | ExecutionResult | undefined): boolean {
+  return outcome?.kind === 'limit' && PYTHON_RUNAWAY_LIMIT_REASONS.has(outcome.reason);
+}
+
+/**
+ * A stopping batch may return a prefix ending with the runaway case; any
+ * other batch returns one result per case.
+ */
+function isPythonBatchPrefix(
+  results: readonly (CodeExecutionResult | ExecutionResult)[] | undefined,
+  caseCount: number,
+  stopAtFirstRunaway: boolean | undefined
+): boolean {
+  if (!results) return false;
+  if (results.length === caseCount) return true;
+  return stopAtFirstRunaway === true &&
+    results.length > 0 &&
+    results.length < caseCount &&
+    isPythonRunawayOutcome(results[results.length - 1]);
+}
+
 class PythonBatchExecutionBudget {
   private remainingMs: number;
   private readonly timeoutError: ExecutionTimeoutError;
@@ -771,10 +799,24 @@ class PreparedPythonProgramLifetime {
             ...call,
             signal: budgetSignal,
           });
+          if (!isPythonBatchPrefix(result.results, call.inputBatch.length, call.stopAtFirstRunaway)) {
+            throw new Error('Prepared Python batch returned an invalid result envelope.');
+          }
           return result.results;
         }, signal)
       );
     } catch (error) {
+      if (budget.isTimeout(error) && call.stopAtFirstRunaway === true) {
+        // No per-case results survived the shared worker's deadline. A
+        // stopping batch must name the case that stopped it, so re-run the
+        // cases one per worker, stopping at the first runaway.
+        return this.executeCompatibilityCodeBatch(
+          call,
+          new PythonBatchExecutionBudget(
+            calculatePythonCodeBatchDeadlineMs(call.inputBatch.length, call.limits?.wallClockMs)
+          )
+        );
+      }
       if (budget.isTimeout(error)) {
         // The shared batch worker ran out of time: the batch hit the limit.
         return call.inputBatch.map((): CodeExecutionResult => ({
@@ -829,7 +871,7 @@ class PreparedPythonProgramLifetime {
             signal,
           });
           const results = result.results?.map(normalizePythonExecutionResult);
-          if (!results || results.length !== call.inputBatch.length) {
+          if (!results || !isPythonBatchPrefix(results, call.inputBatch.length, call.stopAtFirstRunaway)) {
             throw new Error(
               'Prepared Python trace batch returned an invalid result envelope.'
             );
@@ -857,6 +899,7 @@ class PreparedPythonProgramLifetime {
   ): Promise<readonly CodeExecutionResult[]> {
     const results: CodeExecutionResult[] = [];
     for (const inputs of call.inputBatch) {
+      if (call.stopAtFirstRunaway === true && isPythonRunawayOutcome(results[results.length - 1])) break;
       try {
         results.push(
           await this.executeSerial(call.signal, (client, signal) =>
@@ -882,6 +925,11 @@ class PreparedPythonProgramLifetime {
             consoleOutput: [],
             timings: { artifactCacheHit: true },
           };
+          if (call.stopAtFirstRunaway === true) {
+            // A stopping batch ends at the case the time limit stopped.
+            results.push(timedOut);
+            return results;
+          }
           while (results.length < call.inputBatch.length) results.push(timedOut);
           return results;
         }
@@ -921,6 +969,7 @@ class PreparedPythonProgramLifetime {
   ): Promise<readonly ExecutionResult[]> {
     const results: ExecutionResult[] = [];
     for (let index = 0; index < call.inputBatch.length; index += 1) {
+      if (call.stopAtFirstRunaway === true && isPythonRunawayOutcome(results[results.length - 1])) break;
       results.push(
         await this.executeSerial(call.signal, async (client, signal) => {
           try {
@@ -1291,6 +1340,7 @@ class PythonPreparedExecutionProvider
                 : 'compatibility',
             caseIsolation: 'fresh-case-state',
             maxConcurrency: 1,
+            stopsAtFirstRunaway: true,
           },
           executeIsolated: (executionCall) =>
             lifetime.executeTrace(executionCall),
@@ -1314,6 +1364,7 @@ class PythonPreparedExecutionProvider
               : 'compatibility',
           caseIsolation: 'fresh-case-state',
           maxConcurrency: 1,
+          stopsAtFirstRunaway: true,
         },
         executeIsolated: (executionCall) =>
           lifetime.executeCode(executionCall),

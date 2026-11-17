@@ -92,6 +92,13 @@ export interface RuntimePreparedCodeBatchCall {
   readonly signal?: AbortSignal;
   /** Applied independently to each case in the batch. */
   readonly limits?: RuntimeExecutionLimits;
+  /**
+   * Stop after the first case a time or line limit stopped (`client-timeout`,
+   * `line-limit`, `single-line-limit`). The result is then a prefix of the
+   * batch ending with that case. Honoured only by programs whose
+   * capabilities declare `stopsAtFirstRunaway`.
+   */
+  readonly stopAtFirstRunaway?: boolean;
 }
 
 /** One isolated tracing execution against a prepared program. */
@@ -119,6 +126,8 @@ export interface RuntimePreparedTraceBatchCall {
   readonly signal?: AbortSignal;
   /** Applied independently to each case in the batch. */
   readonly limits?: RuntimeExecutionLimits;
+  /** As on `RuntimePreparedCodeBatchCall`. */
+  readonly stopAtFirstRunaway?: boolean;
 }
 
 export interface RuntimePreparedProgramCapabilities {
@@ -136,6 +145,12 @@ export interface RuntimePreparedProgramCapabilities {
    * this limit.
    */
   readonly maxConcurrency: number;
+  /**
+   * `executeBatchIsolated` honours `stopAtFirstRunaway`: it stops after the
+   * first case a time or line limit stopped and returns the prefix, so a
+   * stopping evaluation needs no request per case.
+   */
+  readonly stopsAtFirstRunaway?: true;
 }
 
 interface RuntimePreparedProgramBase {

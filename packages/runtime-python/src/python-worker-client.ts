@@ -612,6 +612,7 @@ export class PythonWorkerClient {
       readonly inputBatch: readonly Record<string, unknown>[];
       readonly signal?: AbortSignal;
       readonly limits?: RuntimeExecutionLimits;
+      readonly stopAtFirstRunaway?: boolean;
     }
   ): Promise<CodeExecutionBatchResult> {
     const perCaseWallClockMs =
@@ -632,6 +633,7 @@ export class PythonWorkerClient {
           mode: 'code',
           inputBatch: call.inputBatch,
           ...(guestLimits ? { limits: guestLimits } : {}),
+          ...(call.stopAtFirstRunaway === true ? { stopAtFirstRunaway: true } : {}),
         },
         null
       ),
@@ -749,6 +751,7 @@ export class PythonWorkerClient {
             ? { traceEnabledBatch }
             : {}),
           ...(guestLimits ? { limits: guestLimits } : {}),
+          ...(call.stopAtFirstRunaway === true ? { stopAtFirstRunaway: true } : {}),
           traceEventTransport: traceEventTransferRequest(),
         },
         null

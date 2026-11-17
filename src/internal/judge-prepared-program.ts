@@ -136,6 +136,17 @@ export class RuntimePreparedProgramRegistry {
     return gate.run(call.signal, () => program.executeIsolated(call));
   }
 
+  /**
+   * The prepared program's batch path stops itself at the first runaway case
+   * (`capabilities.stopsAtFirstRunaway`), so a stopping evaluation can send
+   * one batch instead of one request per case.
+   */
+  stopsAtFirstRunaway(evaluationId: string): boolean {
+    const { program } = this.preparedState(evaluationId);
+    return program.capabilities.stopsAtFirstRunaway === true &&
+      typeof program.executeBatchIsolated === 'function';
+  }
+
   executeCodeBatch(
     evaluationId: string,
     call: RuntimePreparedCodeBatchCall

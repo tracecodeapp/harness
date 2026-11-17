@@ -19,7 +19,7 @@ import type {
 import type {
   BrowserRuntimeHost,
 } from '../../packages/runtime-browser/src/browser-runtime-host';
-import { isExecutionLimitReason } from '../../packages/runtime-contracts/src/execution-outcome';
+import { isExecutionLimitReason, RuntimeProviderError } from '../../packages/runtime-contracts/src/execution-outcome';
 import { assertRuntimeRequestSupported } from '../../packages/runtime-browser/src/runtime-capability-guards';
 import { getLanguageRuntimeProfile } from '../../packages/runtime-browser/src/runtime-profiles';
 import type {
@@ -974,7 +974,9 @@ function executePreparedProviderBatch(
       catch: errorFromUnknown,
     });
     if (invocation.stopAtFirstRunaway === true) {
-      return yield* executeProviderBatchUntilRunaway(options, programs, invocation, cases);
+      return programs.stopsAtFirstRunaway(evaluationId(invocation))
+        ? yield* executeProviderStoppingBatch(options, programs, invocation, cases)
+        : yield* executeProviderBatchUntilRunaway(options, programs, invocation, cases);
     }
     const outcomes = yield* Effect.tryPromise({
       try: (signal) =>
@@ -1030,6 +1032,98 @@ const RUNAWAY_LIMIT_REASONS: ReadonlySet<string> = new Set([
   'line-limit',
   'single-line-limit',
 ]);
+
+function notRunCaseOutput(
+  caseId: string,
+  stoppedBy: { readonly caseId: string; readonly limit: ExecutionLimitReason }
+): JudgeRuntimeBatchCaseOutput {
+  return Object.freeze({
+    caseId,
+    termination: Object.freeze({ kind: 'exit' as const, exitCode: 0 }),
+    stdout: '',
+    stderr: '',
+    diagnostics: Object.freeze([]),
+    timedOut: false,
+    notRun: Object.freeze({
+      reason: 'run-stopped-after-limit' as const,
+      stoppedByCaseId: stoppedBy.caseId,
+      limit: stoppedBy.limit as JudgeLimitReason,
+    }),
+  });
+}
+
+/**
+ * Run semantics for a provider whose batch stops itself: one batch request
+ * with `stopAtFirstRunaway`, returning a prefix that ends with the first case
+ * a time or line limit stopped; every later case is not run. A result that is
+ * not such a prefix breaks the protocol.
+ */
+function executeProviderStoppingBatch(
+  options: RuntimeJudgeProviderOptions,
+  programs: RuntimePreparedProgramRegistry,
+  invocation: JudgeRuntimeInvocationInput,
+  cases: ReturnType<typeof runtimeBatchCases>
+): Effect.Effect<MappedRuntimeOutcome, Error> {
+  return Effect.gen(function* () {
+    const outcomes: readonly (CodeExecutionResult | ExecutionResult)[] = yield* Effect.tryPromise({
+      try: (signal) =>
+        isTraceBinding(options.binding)
+          ? programs.executeTraceBatch(evaluationId(invocation), {
+              inputBatch: cases.map((testCase) => testCase.inputs),
+              traceEnabledBatch: cases.map((testCase) => testCase.recordTrace ?? true),
+              signal,
+              limits: options.binding.limits,
+              stopAtFirstRunaway: true,
+            })
+          : programs.executeCodeBatch(evaluationId(invocation), {
+              inputBatch: cases.map((testCase) => testCase.inputs),
+              signal,
+              limits: options.binding.limits,
+              stopAtFirstRunaway: true,
+            }),
+      catch: errorFromUnknown,
+    });
+    const runawayIndex = outcomes.findIndex((outcome) =>
+      outcome.kind === 'limit' && RUNAWAY_LIMIT_REASONS.has(outcome.reason)
+    );
+    const wellFormed =
+      outcomes.length > 0 &&
+      outcomes.length <= cases.length &&
+      (runawayIndex === -1
+        ? outcomes.length === cases.length
+        : runawayIndex === outcomes.length - 1);
+    if (!wellFormed) {
+      return yield* Effect.fail(new RuntimeProviderError(
+        `Prepared runtime returned ${outcomes.length} outcomes for a stopping batch of ` +
+          `${cases.length} cases that is not a prefix ending at its first runaway.`,
+        { reason: 'protocol' }
+      ));
+    }
+    const batch: JudgeRuntimeBatchCaseOutput[] = outcomes.map((outcome, index) =>
+      batchCaseOutput(
+        cases[index]!.caseId,
+        isTraceBinding(options.binding)
+          ? mappedTraceOutcome(options.runtime, outcome as ExecutionResult)
+          : mappedCodeOutcome(options.runtime, outcome as CodeExecutionResult)
+      )
+    );
+    if (runawayIndex !== -1) {
+      const stopper = outcomes[runawayIndex] as Extract<CodeExecutionResult, { kind: 'limit' }>;
+      const stoppedBy = { caseId: cases[runawayIndex]!.caseId, limit: stopper.reason };
+      for (const testCase of cases.slice(outcomes.length)) {
+        batch.push(notRunCaseOutput(testCase.caseId, stoppedBy));
+      }
+    }
+    return Object.freeze({
+      output: Object.freeze({ batch: Object.freeze(batch) }),
+      process: Object.freeze({
+        exitCode: 0,
+        stdout: '',
+        stderr: '',
+      }),
+    });
+  });
+}
 
 /**
  * Run semantics: cases run one at a time, and the first case stopped by a time
