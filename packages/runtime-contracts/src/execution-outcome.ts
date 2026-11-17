@@ -29,7 +29,7 @@ import type { RuntimeTrace } from './runtime-trace';
 
 /**
  * The runtime provider itself failed, for a reason the learner's program did
- * not cause: an asset or toolchain failed to load, a transport broke, a worker
+ * not cause: an asset or compiler failed to load, a transport broke, a worker
  * died outside the program, or a worker broke the result protocol.
  *
  * Providers reject with this error (any rejection is treated the same way);

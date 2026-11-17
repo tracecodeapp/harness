@@ -99,7 +99,7 @@ export interface RuntimeExceptionDiagnostic {
  * - `limit` — execution was stopped by a configured or built-in limit before
  *   it could complete; `reason` says which one.
  *
- * A failure of the provider itself (assets, toolchain, transport, a worker
+ * A failure of the provider itself (assets, compiler loading, transport, a worker
  * that died independently of the program) is never an outcome: the provider
  * rejects with a `RuntimeProviderError`, and Judge reports it as
  * `runtime-provider-error`.
