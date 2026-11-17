@@ -5658,8 +5658,9 @@ function boundedJavaDiagnosticPath(value, fallback = '.') {
     : normalized;
 }
 
+// A failed run's message: what the program or the compiler said, as plain
+// text. Report fields are never rendered as labelled sections.
 function javaReportFailureMessage(report, fallback = 'Java execution failed') {
-  const parts = [];
   const compilerStdout = typeof report?.compilerStdout === 'string'
     ? sanitizeJavaCompilerDiagnostic(report.compilerStdout).trim()
     : '';
@@ -5669,20 +5670,229 @@ function javaReportFailureMessage(report, fallback = 'Java execution failed') {
   const runtimeError = typeof report?.runtimeError === 'string'
     ? truncateJavaProjectDiagnostic(sanitizeJavaRuntimeStderr(report.runtimeError)).trim()
     : '';
-  if (compilerStdout) parts.push(`compilerStdout:\n${truncateJavaWorkerDiagnostic(compilerStdout)}`);
-  if (compilerStderr) parts.push(`compilerStderr:\n${truncateJavaWorkerDiagnostic(compilerStderr)}`);
-  if (runtimeError && !compilerStdout.includes(runtimeError) && !compilerStderr.includes(runtimeError)) {
-    parts.push(`runtimeError:\n${truncateJavaWorkerDiagnostic(runtimeError)}`);
+  if (runtimeError && runtimeError !== JAVA_GENERIC_COMPILE_FAILURE) {
+    return truncateJavaWorkerDiagnostic(runtimeError);
   }
-  if (Array.isArray(report?.results)) {
-    const failedResults = report.results
-      .map((entry, index) => ({ entry, index }))
-      .filter(({ entry }) => entry?.success !== true);
-    if (failedResults.length > 0) {
-      parts.push(`failedResultIndices: ${failedResults.map(({ index }) => index).join(', ')}`);
+  const compilerOutput = compilerStderr || compilerStdout;
+  if (compilerOutput) return truncateJavaWorkerDiagnostic(compilerOutput);
+  return runtimeError || fallback;
+}
+
+const JAVA_GENERIC_COMPILE_FAILURE = 'Java compilation failed';
+const JAVA_COMPILER_DIAGNOSTIC_HEADER =
+  /^(?:[^\n:]*\/)?([A-Za-z_$][\w$]*)\.java:(\d+)(?::(\d+))?:\s*(error|warning):\s*(.*)$/;
+
+// Where the learner's source sits in a generated compilation unit, so compiler
+// lines can be reported in the learner's own numbering. Instrumented (traced)
+// units do not contain the learner's source verbatim and have no region.
+// javac reports columns with tabs expanded to multiples of 8.
+const JAVAC_TAB_WIDTH = 8;
+
+function javacColumnToIndex(text, column) {
+  let visual = 1;
+  for (let index = 0; index < text.length; index += 1) {
+    if (visual >= column) return index;
+    visual = text[index] === '\t'
+      ? Math.floor((visual - 1) / JAVAC_TAB_WIDTH + 1) * JAVAC_TAB_WIDTH + 1
+      : visual + 1;
+  }
+  return text.length;
+}
+
+function javacIndexToColumn(text, index) {
+  let visual = 1;
+  for (let cursor = 0; cursor < index && cursor < text.length; cursor += 1) {
+    visual = text[cursor] === '\t'
+      ? Math.floor((visual - 1) / JAVAC_TAB_WIDTH + 1) * JAVAC_TAB_WIDTH + 1
+      : visual + 1;
+  }
+  return visual;
+}
+
+/**
+ * `normalizePublicClassDeclarations` with a map from every position in the
+ * normalized text back to the learner's original text, so the compiler's
+ * lines and columns can be reported where the learner wrote them.
+ */
+function javaNormalizationMap(learnerCode) {
+  const original = String(learnerCode);
+  const pattern = /^([ \t]*)public\s+class\s+/gm;
+  const toOriginal = [];
+  let normalized = '';
+  let cursor = 0;
+  for (const match of original.matchAll(pattern)) {
+    for (let index = cursor; index < match.index; index += 1) {
+      toOriginal.push(index);
+      normalized += original[index];
+    }
+    const indentation = match[1];
+    for (let index = 0; index < indentation.length; index += 1) {
+      toOriginal.push(match.index + index);
+      normalized += original[match.index + index];
+    }
+    const matchEnd = match.index + match[0].length;
+    const keyword = original.indexOf('class', match.index + indentation.length + 'public'.length);
+    for (let index = 0; index < 'class '.length; index += 1) {
+      toOriginal.push(Math.min(keyword + index, matchEnd - 1));
+    }
+    normalized += 'class ';
+    cursor = matchEnd;
+  }
+  for (let index = cursor; index < original.length; index += 1) {
+    toOriginal.push(index);
+    normalized += original[index];
+  }
+  toOriginal.push(original.length);
+  // The map is only trusted if it reproduces the normalization exactly.
+  if (normalized !== normalizePublicClassDeclarations(original)) return undefined;
+  return { original, normalized, toOriginal };
+}
+
+// Where the learner's source sits in a generated compilation unit, so compiler
+// positions can be reported in the learner's own text. Instrumented (traced)
+// units do not contain the learner's source verbatim and have no region.
+function javaLearnerSourceRegion(generatedSource, learnerCode) {
+  const map = javaNormalizationMap(learnerCode);
+  if (!map || typeof generatedSource !== 'string') return undefined;
+  const trimmed = map.normalized.trim();
+  if (!trimmed) return undefined;
+  const start = generatedSource.indexOf(trimmed);
+  if (start < 0) return undefined;
+  return {
+    generatedSource,
+    generatedLines: generatedSource.split('\n'),
+    start,
+    leading: map.normalized.length - map.normalized.trimStart().length,
+    length: trimmed.length,
+    map,
+    originalLines: map.original.split('\n'),
+  };
+}
+
+/**
+ * A compiler position (generated line, javac column) in the learner's original
+ * text: `{ line, column?, verbatim }`. `verbatim` says the compiled line is the
+ * learner's line unchanged, so an excerpt and caret from the compiler show the
+ * learner's own text. Positions outside the learner's source are undefined.
+ */
+function javaLearnerPosition(region, generatedLine, javacColumn) {
+  if (!region) return undefined;
+  const lineText = region.generatedLines[generatedLine - 1];
+  if (lineText === undefined) return undefined;
+  const lineStart = region.generatedLines
+    .slice(0, generatedLine - 1)
+    .reduce((sum, text) => sum + text.length + 1, 0);
+  const indexInLine = javacColumn === undefined ? 0 : javacColumnToIndex(lineText, javacColumn);
+  const normalizedOffset = lineStart + indexInLine - region.start + region.leading;
+  if (normalizedOffset < region.leading || normalizedOffset > region.leading + region.length) {
+    return undefined;
+  }
+  const originalOffset = region.map.toOriginal[normalizedOffset];
+  if (originalOffset === undefined) return undefined;
+  const before = region.map.original.slice(0, originalOffset);
+  const line = before.split('\n').length;
+  const originalLineText = region.originalLines[line - 1] ?? '';
+  const originalLineStart = before.lastIndexOf('\n') + 1;
+  return {
+    line,
+    ...(javacColumn === undefined
+      ? {}
+      : { column: javacIndexToColumn(originalLineText, originalOffset - originalLineStart) }),
+    verbatim: originalLineText === lineText,
+  };
+}
+
+/**
+ * A compile failure, as the compiler reported it about the learner's source:
+ * the message is the compiler's diagnostics in the learner's file and line
+ * numbering; the raw compiler output and the runtime's report travel as
+ * structured fields, never as labelled sections inside the message.
+ */
+function javaCompileFailure(report, sources = [], learnerCode = '', fallback = 'Java compilation failed without compiler diagnostics') {
+  const compilerStdout = typeof report?.compilerStdout === 'string'
+    ? sanitizeJavaCompilerDiagnostic(report.compilerStdout).trim()
+    : '';
+  const compilerStderr = typeof report?.compilerStderr === 'string'
+    ? sanitizeJavaCompilerDiagnostic(report.compilerStderr).trim()
+    : '';
+  const runtimeError = typeof report?.runtimeError === 'string'
+    ? sanitizeJavaRuntimeStderr(report.runtimeError).trim()
+    : '';
+  const regions = new Map();
+  for (const source of sources) {
+    const name = String(source?.path ?? '').split('/').pop()?.replace(/\.java$/, '');
+    if (name) regions.set(name, javaLearnerSourceRegion(source.source, learnerCode));
+  }
+
+  const entries = [];
+  for (const rawLine of [compilerStderr, compilerStdout].filter(Boolean).join('\n').split('\n')) {
+    const header = JAVA_COMPILER_DIAGNOSTIC_HEADER.exec(rawLine.trim());
+    if (header) {
+      const [, file, lineText, columnText, severity, text] = header;
+      const position = javaLearnerPosition(
+        regions.get(file),
+        Number(lineText),
+        columnText ? Number(columnText) : undefined
+      );
+      entries.push({
+        file,
+        severity,
+        message: text.trim(),
+        // Only positions in the learner's original text are reported.
+        ...(position ? { line: position.line, verbatim: position.verbatim } : {}),
+        ...(position?.column === undefined ? {} : { column: position.column }),
+        detail: [],
+      });
+    } else if (entries.length > 0 && rawLine.trim()) {
+      entries[entries.length - 1].detail.push(rawLine);
     }
   }
-  return parts.length > 0 ? parts.join('\n') : fallback;
+
+  // Prefer what the compiler said about the learner's own lines. A unit that
+  // repeats the learner's source (the traced copy) repeats its errors.
+  const learnerEntries = entries.filter((entry) => entry.line !== undefined);
+  const firstFile = entries[0]?.file;
+  const kept = learnerEntries.length > 0
+    ? learnerEntries
+    : entries.filter((entry) => entry.file === firstFile);
+  const seen = new Set();
+  const reported = kept.filter((entry) => {
+    const key = `${entry.line ?? ''}:${entry.column ?? ''}:${entry.severity}:${entry.message}`;
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+  const message = reported.length > 0
+    ? reported.map((entry) => [
+        entry.line === undefined
+          ? `${entry.severity}: ${entry.message}`
+          : `Solution.java:${entry.line}${entry.column ? `:${entry.column}` : ''}: ${entry.severity}: ${entry.message}`,
+        // An excerpt and caret only when the compiled line is the learner's
+        // own text.
+        ...(entry.line !== undefined && entry.verbatim ? entry.detail : []),
+      ].join('\n')).join('\n')
+    : compilerStderr || compilerStdout ||
+      (runtimeError && runtimeError !== JAVA_GENERIC_COMPILE_FAILURE ? runtimeError : fallback);
+  const firstError = reported.find((entry) => entry.severity === 'error' && entry.line !== undefined);
+  return {
+    error: truncateJavaWorkerDiagnostic(message),
+    ...(firstError ? { errorLine: firstError.line } : {}),
+    diagnostic: {
+      schema: 'tracecode.compiler-diagnostic.v1',
+      language: 'java',
+      diagnostics: reported.map((entry) => ({
+        severity: entry.severity,
+        message: entry.message,
+        ...(entry.line === undefined ? {} : { line: entry.line }),
+        ...(entry.column === undefined ? {} : { column: entry.column }),
+      })),
+      ...(compilerStdout ? { compilerStdout: truncateJavaWorkerDiagnostic(compilerStdout) } : {}),
+      ...(compilerStderr ? { compilerStderr: truncateJavaWorkerDiagnostic(compilerStderr) } : {}),
+      ...(runtimeError && runtimeError !== JAVA_GENERIC_COMPILE_FAILURE
+        ? { runtimeError: truncateJavaWorkerDiagnostic(runtimeError) }
+        : {}),
+    },
+  };
 }
 
 function javaRuntimeExceptionDiagnostic(report) {
@@ -7977,8 +8187,10 @@ async function prepareJavaRuntimeProgram(payload, requestId) {
   if (report.success !== true) {
     return {
       success: false,
-      error: javaReportFailureMessage(
+      ...javaCompileFailure(
         report,
+        preparedSources,
+        normalizedPayload.code,
         'Java prepared compilation failed without compiler diagnostics'
       ),
       consoleOutput,

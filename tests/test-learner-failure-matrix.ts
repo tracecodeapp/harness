@@ -51,7 +51,7 @@ import {
   type MatrixObservation,
 } from './fixtures/learner-failure-matrix-cases';
 
-type Aspect = 'classification' | 'message' | 'line' | 'recovery' | 'judge' | 'abort';
+type Aspect = 'classification' | 'message' | 'line' | 'column' | 'recovery' | 'judge' | 'abort';
 
 /** An aborted runaway must settle within this long after the abort. */
 const ABORT_SETTLE_BUDGET_MS = 5_000;
@@ -219,6 +219,13 @@ const UNREADABLE_MESSAGE = [
   /^[A-Z][A-Za-z]+_[A-Z][A-Za-z]+(?:,.*)?$/u,
   // A placeholder that says the runtime could not name what was thrown.
   /did not report which/u,
+  // Worker report sections, generated compilation units, instrumentation and
+  // toolchain wrapper text belong in structured fields, not the message.
+  /(?:^|\n)(?:compilerStdout|compilerStderr|runtimeError|failedResultIndices):/u,
+  /\bExports[0-9a-f]{8,}\w*\.java\b/u,
+  /\bTraceCodeDriver\.cpp\b/u,
+  /\b__tc_\w+/u,
+  /TraceCC compilation failed/u,
 ];
 
 interface CellVerdict {
@@ -298,6 +305,27 @@ function judgeCell(spec: MatrixCellSpec, result: MatrixCellResult): CellVerdict 
     ) {
       failures.set('line', `expected line ${spec.line}, got ${String(observation.line)}`);
     }
+    if (observation.class === 'compile') {
+      const message = observation.message ?? '';
+      // Rewriting a compiler's output must never drop its explanation: the
+      // primary error (not just a note pointing at the learner's line) and the
+      // compiler's own words survive.
+      if (spec.primaryError && !/(?:^|\n)[^\n]*\b(?:fatal )?error:/u.test(message)) {
+        failures.set('message', `the compiler's primary error is missing: ${JSON.stringify(message.slice(0, 240))}`);
+      }
+      for (const text of spec.messageIncludes ?? []) {
+        if (!message.includes(text)) {
+          failures.set('message', `the compiler's explanation ${JSON.stringify(text)} is missing: ${JSON.stringify(message.slice(0, 240))}`);
+        }
+      }
+      // A column, when reported, is in the learner's original source.
+      if (spec.column !== undefined && spec.line !== undefined) {
+        const located = new RegExp(`:${spec.line}:(\\d+):\\s*(?:fatal )?error:`, 'u').exec(message);
+        if (located && Number(located[1]) !== spec.column) {
+          failures.set('column', `expected column ${spec.column} on line ${spec.line}, got ${located[1]}: ${JSON.stringify(message.slice(0, 160))}`);
+        }
+      }
+    }
     // The Judge layer must state the same origin, and the exported conversion
     // must produce the matching outcome, so a consumer only forwards.
     if (observation.status !== 'host-rejected') {
@@ -332,8 +360,11 @@ function judgeCell(spec: MatrixCellSpec, result: MatrixCellResult): CellVerdict 
 }
 
 function knownGap(result: MatrixCellResult, aspect: Aspect): string | undefined {
+  // Compile-message cells exist to hold the rewriting to account; a language's
+  // blanket gap (e.g. Java runtime lines) does not excuse them.
+  const kinds = result.kind.startsWith('compile-') ? [result.kind] : [result.kind, '*'];
   for (const mode of new Set([result.mode, baseMode(result.mode), '*'])) {
-    for (const kind of [result.kind, '*']) {
+    for (const kind of kinds) {
       const reason = KNOWN_GAPS[`${result.language}:${mode}:${kind}:${aspect}`];
       if (reason) return reason;
     }

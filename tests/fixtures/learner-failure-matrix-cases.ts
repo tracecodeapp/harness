@@ -106,7 +106,14 @@ export type MatrixFailureKind =
   | 'abort-runaway'
   | 'unhandled-rejection'
   | 'memory-fault'
-  | 'provider-asset-failure';
+  | 'provider-asset-failure'
+  | 'compile-header-error'
+  | 'compile-template-instantiation'
+  | 'compile-missing-include'
+  | 'compile-macro-expansion'
+  | 'compile-split-declaration'
+  | 'compile-declaration-line'
+  | 'compile-after-second-class';
 
 /** What a consumer concludes from the Judge result. */
 export type MatrixClass =
@@ -145,6 +152,12 @@ export interface MatrixCellSpec {
   readonly traceOptions?: { readonly maxTraceSteps?: number };
   /** Modes where the cell is expected to complete instead (e.g. trace limit in code mode). */
   readonly completesIn?: readonly MatrixMode[];
+  /** The message must contain the compiler's primary `error:` diagnostic. */
+  readonly primaryError?: boolean;
+  /** Text the primary error must keep (the compiler's own explanation). */
+  readonly messageIncludes?: readonly string[];
+  /** 1-based column of the error in the learner's original source line. */
+  readonly column?: number;
 }
 
 export const MATRIX_WALL_CLOCK_MS = 4_000;
@@ -184,7 +197,14 @@ interface Draft {
   readonly completesIn?: readonly MatrixMode[];
   /** Line is not knowable for this language/kind (e.g. a Wasm trap). */
   readonly noLine?: boolean;
+  readonly primaryError?: boolean;
+  readonly messageIncludes?: readonly string[];
+  /** Where the error's column is in the faulting line: `text`'s index + `offset` + 1. */
+  readonly errorColumn?: { readonly text: string; readonly offset: number };
 }
+
+/** Compile-only cells: preparation runs the same way in every mode. */
+const COMPILE_CELL_MODES: readonly MatrixMode[] = ['code', 'trace'];
 
 const TRACED_MODES: readonly MatrixMode[] = ['trace', 'trace-batch', 'interactive'];
 
@@ -555,6 +575,53 @@ const JAVA: readonly Draft[] = [
     noLine: true,
   },
   providerDraft(lines('class Solution {', '  public int solve(int n) {', '    return n;', '  }', '}')),
+  // Learner source the worker normalizes before compiling: lines and columns
+  // must be reported in the learner's original text.
+  {
+    kind: 'compile-split-declaration',
+    code: lines(
+      'public',
+      'class Solution {',
+      '  public int solve(int n) {',
+      '    int total = n +;',
+      '    return total;',
+      '  }',
+      '}'
+    ),
+    faultText: 'int total = n +;',
+    expected: ['compile'],
+    modes: COMPILE_CELL_MODES,
+    primaryError: true,
+    errorColumn: { text: '+;', offset: 1 },
+  },
+  {
+    kind: 'compile-declaration-line',
+    code: 'public class Solution { public int solve(int n) { return n +; } }',
+    faultText: 'return n +;',
+    expected: ['compile'],
+    modes: COMPILE_CELL_MODES,
+    primaryError: true,
+    errorColumn: { text: '+;', offset: 1 },
+  },
+  {
+    kind: 'compile-after-second-class',
+    code: lines(
+      'class Helper {',
+      '  static int twice(int v) { return v * 2; }',
+      '}',
+      'public class Solution {',
+      '  public int solve(int n) {',
+      '    int total = Helper.twice(n) +;',
+      '    return total;',
+      '  }',
+      '}'
+    ),
+    faultText: 'int total = Helper.twice(n) +;',
+    expected: ['compile'],
+    modes: COMPILE_CELL_MODES,
+    primaryError: true,
+    errorColumn: { text: '+;', offset: 1 },
+  },
 ];
 
 const CSHARP: readonly Draft[] = [
@@ -874,6 +941,76 @@ const CPP: readonly Draft[] = [
     noLine: true,
   },
   providerDraft(lines('class Solution {', 'public:', '  int solve(int n) {', '    return n;', '  }', '};')),
+  // Compile errors whose explanation is not (only) in the learner's file: the
+  // primary error and its instantiation or expansion chain must survive.
+  {
+    kind: 'compile-header-error',
+    code: lines(
+      '#include <algorithm>',
+      '#include <vector>',
+      'class Solution {',
+      'public:',
+      '  int solve(int n) {',
+      '    std::vector<int> a = {3, 1, 2};',
+      '    std::sort(a.begin(), a.end(), [](int, int) {});',
+      '    return n;',
+      '  }',
+      '};'
+    ),
+    faultText: 'std::sort(a.begin()',
+    expected: ['compile'],
+    modes: COMPILE_CELL_MODES,
+    primaryError: true,
+  },
+  {
+    kind: 'compile-template-instantiation',
+    code: lines(
+      'template <typename T> int twice(T value) { return value * 2; }',
+      'struct Point { int x; };',
+      'class Solution {',
+      'public:',
+      '  int solve(int n) {',
+      '    return twice(Point{n});',
+      '  }',
+      '};'
+    ),
+    faultText: 'return value * 2;',
+    expected: ['compile'],
+    modes: COMPILE_CELL_MODES,
+    primaryError: true,
+    messageIncludes: ['invalid operands'],
+  },
+  {
+    kind: 'compile-missing-include',
+    code: lines(
+      '#include <tracecode_no_such_header>',
+      'class Solution {',
+      'public:',
+      '  int solve(int n) { return n; }',
+      '};'
+    ),
+    faultText: '#include <tracecode_no_such_header>',
+    expected: ['compile'],
+    modes: COMPILE_CELL_MODES,
+    primaryError: true,
+    messageIncludes: ['not found'],
+  },
+  {
+    kind: 'compile-macro-expansion',
+    code: lines(
+      '#define SQUARE(x) ((x) * (x)',
+      'class Solution {',
+      'public:',
+      '  int solve(int n) {',
+      '    return SQUARE(n);',
+      '  }',
+      '};'
+    ),
+    faultText: 'return SQUARE(n);',
+    expected: ['compile'],
+    modes: COMPILE_CELL_MODES,
+    primaryError: true,
+  },
 ];
 
 function programFor(language: MatrixLanguage, code: string): MatrixProgram {
@@ -919,7 +1056,21 @@ export function matrixCells(language: MatrixLanguage): readonly MatrixCellSpec[]
     ...(draft.limits ? { limits: draft.limits } : {}),
     ...(draft.traceOptions ? { traceOptions: draft.traceOptions } : {}),
     ...(draft.completesIn ? { completesIn: draft.completesIn } : {}),
+    ...(draft.primaryError ? { primaryError: true } : {}),
+    ...(draft.messageIncludes ? { messageIncludes: draft.messageIncludes } : {}),
+    ...(draft.errorColumn && draft.faultText
+      ? { column: columnOf(draft.code, draft.faultText, draft.errorColumn) }
+      : {}),
   }));
+}
+
+function columnOf(
+  code: string,
+  faultText: string,
+  at: { readonly text: string; readonly offset: number }
+): number {
+  const line = code.split('\n').find((candidate) => candidate.includes(faultText))!;
+  return line.indexOf(at.text) + at.offset + 1;
 }
 
 export function healthyProgram(language: MatrixLanguage): MatrixProgram {

@@ -12319,6 +12319,196 @@ function learnerLineFromCompilerExcerpt(diagnostics, userSource) {
   return expression.length >= 3 && excerptText.includes(expression) ? line : undefined;
 }
 
+const CPP_COMPILER_DIAGNOSTIC_LINE =
+  /^(.*?):(\d+):(\d+):\s*(fatal error|error|warning|note):\s*(.*)$/;
+const CPP_LOCATIONLESS_DIAGNOSTIC = /^(fatal error|error|warning):\s*(.*)$/;
+const CPP_INCLUDE_PREAMBLE = /^In file included from .+:\d+:$/;
+const CPP_COMPILER_SUMMARY = /^\d+ (?:errors?|warnings?)(?: and \d+ (?:errors?|warnings?))? generated\.$/;
+// Wrapper lines the compiler service appends; they are not the compiler's.
+const CPP_COMPILER_WRAPPER_LINE = /^(?:TraceCC|C\+\+) compilation failed\.?$/;
+// Sources the Harness generates around the learner's file. Locations in them
+// are mapped back to the learner's line or left out; nothing else is.
+const CPP_GENERATED_SOURCE_FILES = new Set([
+  'TraceCodeDriver.cpp',
+  'tracecode_pch.hpp',
+  'tracecode_runtime.hpp',
+]);
+// The primary error and its chain always survive; beyond that, keep the
+// learner's own errors and at most this many errors in all.
+const CPP_MAX_REPORTED_ERROR_GROUPS = 3;
+
+function parseCppCompilerOutput(diagnostics) {
+  const entries = [];
+  const summary = [];
+  for (const rawLine of String(diagnostics || '').split(/\r?\n/)) {
+    const line = rawLine.replace(/\s+$/, '');
+    const trimmed = line.trim();
+    if (!trimmed) continue;
+    const located = CPP_COMPILER_DIAGNOSTIC_LINE.exec(trimmed);
+    if (located) {
+      const [, path, lineText, columnText, severity, message] = located;
+      entries.push({
+        path,
+        file: path.split('/').pop(),
+        line: Number(lineText),
+        column: Number(columnText),
+        severity,
+        message: message.trim(),
+        detail: [],
+      });
+    } else if (CPP_INCLUDE_PREAMBLE.test(trimmed)) {
+      // The include chain through the generated driver and precompiled
+      // header says nothing about the learner's program.
+    } else if (CPP_COMPILER_SUMMARY.test(trimmed)) {
+      summary.push(trimmed);
+    } else if (CPP_COMPILER_WRAPPER_LINE.test(trimmed)) {
+      // A wrapper's sentence, not the compiler's.
+    } else if (CPP_LOCATIONLESS_DIAGNOSTIC.test(trimmed)) {
+      const [, severity, message] = CPP_LOCATIONLESS_DIAGNOSTIC.exec(trimmed);
+      entries.push({ path: null, file: null, severity, message: message.trim(), detail: [] });
+    } else if (entries.length > 0) {
+      entries[entries.length - 1].detail.push(line);
+    }
+  }
+  return { entries, summary };
+}
+
+/**
+ * Where an entry sits in the learner's source: its own line for the learner's
+ * file; for the generated driver, the learner line its excerpt shows. `verbatim`
+ * says the excerpt (and so the column and caret) is the learner's own text.
+ */
+function placeCppEntry(entry, userLines) {
+  if (!entry.file) return undefined;
+  const excerpt = entry.detail.map((line) => /^\s*(\d+)\s*\|\s?(.*)$/.exec(line)).find(Boolean);
+  const excerptText = excerpt?.[2]?.trim() ?? '';
+  let line;
+  if (entry.file === CPP_USER_SOURCE_FILE) {
+    line = entry.line;
+  } else if (CPP_GENERATED_SOURCE_FILES.has(entry.file)) {
+    line = learnerLineFromCompilerExcerpt(entry.detail.join('\n'), userLines.join('\n'));
+  }
+  if (line === undefined || line < 1 || line > Math.max(userLines.length, 1)) return undefined;
+  const verbatim = excerpt !== undefined && excerptText === (userLines[line - 1] ?? '').trim();
+  return { line, verbatim };
+}
+
+/**
+ * The compiler's diagnostics, grouped as the compiler emits them: each error
+ * or warning with the notes that explain it (an instantiation or macro
+ * expansion chain). Library-header locations are real and kept; only
+ * generated-source locations are rewritten to the learner's line or dropped.
+ */
+function cppCompilerDiagnosticGroups(diagnostics, userSource) {
+  const userLines = typeof userSource === 'string' ? userSource.split(/\r?\n/) : [];
+  const { entries, summary } = parseCppCompilerOutput(diagnostics);
+  const groups = [];
+  for (const entry of entries) {
+    const placement = placeCppEntry(entry, userLines);
+    const placed = { ...entry, ...(placement ? { learnerLine: placement.line, verbatim: placement.verbatim } : {}) };
+    if (entry.severity === 'note' && groups.length > 0) {
+      groups[groups.length - 1].entries.push(placed);
+    } else {
+      groups.push({ entries: [placed] });
+    }
+  }
+  for (const group of groups) {
+    const head = group.entries[0];
+    group.primary = head;
+    group.isError = head.severity === 'error' || head.severity === 'fatal error';
+    // The learner's line for this diagnostic: the first place in its chain
+    // that is the learner's source (the error itself, or where the learner's
+    // code requested the failing instantiation or expanded the macro).
+    group.learnerLine = group.entries.find((entry) => entry.learnerLine !== undefined)?.learnerLine;
+    group.generatedPrimary =
+      head.file !== null &&
+      CPP_GENERATED_SOURCE_FILES.has(head.file) &&
+      head.learnerLine === undefined;
+  }
+  const primary = groups.find((group) => group.isError);
+  return {
+    groups,
+    summary,
+    primary,
+    // The learner's compile stage: the primary error is in the learner's
+    // source or its chain reaches it. A primary error in generated code that
+    // the learner's code is not part of is the driver's stage.
+    inLearnerSource: Boolean(primary && !primary.generatedPrimary && primary.learnerLine !== undefined),
+  };
+}
+
+function renderCppEntry(entry, { keepLocationless }) {
+  if (entry.learnerLine !== undefined) {
+    return [
+      `${CPP_USER_SOURCE_FILE}:${entry.learnerLine}${entry.verbatim ? `:${entry.column}` : ''}: ${entry.severity}: ${entry.message}`,
+      // The excerpt and caret only when they show the learner's own text.
+      ...(entry.verbatim ? entry.detail : []),
+    ];
+  }
+  if (entry.file !== null && CPP_GENERATED_SOURCE_FILES.has(entry.file)) {
+    // A generated location that is not the learner's line: keep the
+    // explanation, drop the location and the generated excerpt.
+    return keepLocationless ? [`${entry.severity}: ${entry.message}`] : [];
+  }
+  if (entry.path === null) return [`${entry.severity}: ${entry.message}`];
+  // A real library header: its location and excerpt are the explanation.
+  return [`${entry.path}:${entry.line}:${entry.column}: ${entry.severity}: ${entry.message}`, ...entry.detail];
+}
+
+/**
+ * The learner-facing compile failure: the primary error with its whole chain,
+ * the learner's own further errors, and the compiler's summary. Errors left
+ * out are counted, and the full output stays in the structured diagnostic.
+ */
+function cppLearnerCompilerDiagnostics(diagnostics, userSource) {
+  const parsed = cppCompilerDiagnosticGroups(diagnostics, userSource);
+  if (!parsed.inLearnerSource) return undefined;
+  const errorGroups = parsed.groups.filter((group) => group.isError);
+  const kept = [];
+  let keptErrors = 0;
+  for (const group of parsed.groups) {
+    const isPrimary = group === parsed.primary;
+    const learnersOwn = group.primary.learnerLine !== undefined;
+    const locationless = group.primary.path === null;
+    if (
+      isPrimary ||
+      locationless ||
+      (group.isError && (learnersOwn || keptErrors < CPP_MAX_REPORTED_ERROR_GROUPS))
+    ) {
+      kept.push(group);
+      if (group.isError && !locationless) keptErrors += 1;
+    }
+  }
+  const omitted = errorGroups.filter((group) => !kept.includes(group)).length;
+  const lines = [];
+  for (const group of kept) {
+    group.entries.forEach((entry, index) => {
+      lines.push(...renderCppEntry(entry, { keepLocationless: index === 0 }));
+    });
+  }
+  if (omitted > 0) {
+    lines.push(`(${omitted} more ${omitted === 1 ? 'error' : 'errors'} not shown)`);
+  }
+  lines.push(...parsed.summary);
+  const describe = (entry) => ({
+    severity: entry.severity,
+    message: entry.message,
+    ...(entry.learnerLine !== undefined
+      ? { file: CPP_USER_SOURCE_FILE, line: entry.learnerLine, ...(entry.verbatim ? { column: entry.column } : {}) }
+      : entry.path !== null && !CPP_GENERATED_SOURCE_FILES.has(entry.file)
+        ? { file: entry.path, line: entry.line, column: entry.column }
+        : {}),
+  });
+  return {
+    message: lines.join('\n'),
+    errorLine: parsed.primary.learnerLine,
+    diagnostics: kept.map((group) => ({
+      ...describe(group.primary),
+      notes: group.entries.slice(1).map(describe),
+    })),
+  };
+}
+
 function compileFailureResult(diagnostics, fallbackMessage, start, details = {}) {
   const cleanDiagnostics = (diagnostics || '').trim();
   const location = extractDiagnosticLocation(cleanDiagnostics);
@@ -12340,13 +12530,37 @@ function compileFailureResult(diagnostics, fallbackMessage, start, details = {})
         `$1${CPP_USER_SOURCE_FILE}:${userLine}:$2:`
       )
     : cleanDiagnostics;
+  const learner = details.diagnosticStage === 'compile'
+    ? cppLearnerCompilerDiagnostics(cleanDiagnostics, details.userSource)
+    : undefined;
+  const unplacedDiagnostics = learnerDiagnostics
+    .split(/\r?\n/)
+    .filter((line) => !CPP_COMPILER_WRAPPER_LINE.test(line.trim()))
+    .join('\n')
+    .trim();
   return {
     success: false,
     output: null,
-    error: cleanDiagnostics
-      ? `${String(prefix).replace(/\.$/, '')}: ${learnerDiagnostics}`
-      : fallbackMessage,
-    ...(userLine !== undefined ? { errorLine: userLine } : {}),
+    // A learner compile failure is the compiler's own text about the learner's
+    // source; the raw output travels as a structured field.
+    error: learner
+      ? learner.message
+      : cleanDiagnostics
+        ? `${String(prefix).replace(/\.$/, '')}: ${unplacedDiagnostics}`
+        : fallbackMessage,
+    ...(learner
+      ? { errorLine: learner.errorLine }
+      : userLine !== undefined ? { errorLine: userLine } : {}),
+    ...(learner
+      ? {
+          diagnostic: {
+            schema: 'tracecode.compiler-diagnostic.v1',
+            language: 'cpp',
+            diagnostics: learner.diagnostics,
+            compilerOutput: cleanDiagnostics,
+          },
+        }
+      : {}),
     ...(details.generatedSource ? { generatedSource: details.generatedSource } : {}),
     ...(details.diagnosticStage ? { diagnosticStage: details.diagnosticStage } : {}),
     consoleOutput: [],
@@ -15169,10 +15383,9 @@ async function compileAndRunWithExternalCompiler(source, functionName, inputs, s
         .filter(Boolean)
         .join('\n')
         .trim();
-      const location = extractDiagnosticLocation(diagnostics);
-      const inLearnerSource =
-        location?.file === CPP_USER_SOURCE_FILE ||
-        learnerLineFromCompilerExcerpt(diagnostics, source) !== undefined;
+      // The learner's compile stage when the primary error, or the chain that
+      // explains it, is in the learner's source.
+      const inLearnerSource = cppCompilerDiagnosticGroups(diagnostics, source).inLearnerSource;
       return compileFailureResult(diagnostics, 'C++ compilation failed.', start, {
         generatedSource: options?.traceOptions?.includeGeneratedSource ? driverSource : undefined,
         userSource: source,

@@ -173,6 +173,8 @@ export interface JavaWorkerPreparedProgramResult {
   snapshot?: JavaWorkerPreparedProgramSnapshot;
   error?: string;
   errorLine?: number;
+  /** Structured compiler output (`tracecode.compiler-diagnostic.v1`). */
+  diagnostic?: unknown;
   consoleOutput?: string[];
   timings?: RuntimeExecutionTimings;
   algorithmIsolationProfile?: JavaAlgorithmIsolationProfile;
