@@ -358,12 +358,11 @@ export function createCppPreparedExecutionProvider(
                       `C++ prepared program "${handle.programId}" was already disposed.`
                     );
                   }
-                  // One deadline for the whole batch keeps the fast batched
-                  // path; per-case limits run case by case so a timed-out
-                  // case's worker is replaced before the next one.
-                  return execution.limits?.wallClockMs === undefined
-                    ? client.executePreparedCodeBatch(await currentHandle(), execution)
-                    : executeCodeCases(execution);
+                  // Every case runs under its own deadline (the configured
+                  // per-case limit or the runtime default), so a runaway case
+                  // is the only one reported as a limit and later cases still
+                  // run; a timed-out case's worker is replaced before the next.
+                  return executeCodeCases(execution);
                 },
                 dispose,
               },

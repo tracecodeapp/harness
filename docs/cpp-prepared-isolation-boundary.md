@@ -7,7 +7,7 @@ C++ should not add an `algorithm-fast` shared-instance tier.
 The existing prepared provider already applies the safe optimization that the
 other compiled-language lanes are adding: it keeps the trusted compiler
 service, learner Worker, and immutable compiled `WebAssembly.Module` alive for
-the evaluation and sends the correctness vector through one Worker request,
+the evaluation and sends each correctness case through its own Worker request,
 while constructing a fresh WASI process, `WebAssembly.Instance`, linear memory,
 Wasm globals, constructors, and in-memory filesystem for every case.
 
@@ -22,19 +22,13 @@ The browser Judge path keeps these guarantees:
 
 - one compilation and one immutable module per evaluation;
 - one TraceKernel Judge process and one retained C++ learner Worker;
-- one Worker protocol request for an ordinary correctness case vector;
 - fresh learner Wasm state and input hydration for every correctness case;
-- each completed ordinary-batch case reports progress to the host, which
-  rearms the configured default per-case watchdog without adding another
-  request; a hung case therefore cannot borrow the rest of the vector's time
-  allowance, already-completed results survive its timeout, and the losing
-  protocol request is interrupted independently of worker-termination policy;
-- every full case result crosses the Worker boundary once in that correlated
-  progress stream; the final batch reply contains only count and timing
-  metadata, avoiding duplicate structured-clone and console-output retention;
-- an explicit per-case wall-clock limit retains the one-request-per-case path,
-  because synchronous Wasm cannot be interrupted between cases from inside
-  one Worker message;
+- one Worker protocol request per correctness case, each under its own
+  deadline (the configured per-case limit or the runtime default), because
+  synchronous Wasm cannot be interrupted from inside one Worker message. A
+  runaway case is the only case reported as a limit: its Worker is replaced,
+  the program is re-prepared from the same source, and later cases still run
+  (Submit) or are reported as not run (Run);
 - the selected trace case executes first, with all other correctness cases
   drained without recording;
 - a timeout, abort, or Worker failure retires the complete prepared session;

@@ -300,39 +300,26 @@ class JavaPreparedTraceProgramImpl
     );
   }
 
-  executeBatchIsolated(
+  /**
+   * Traced cases run one at a time through the per-case path, which owns the
+   * per-case deadline. The traced batch transport only has a whole-batch
+   * deadline, so a runaway case could hold it for minutes.
+   */
+  async executeBatchIsolated(
     call: RuntimePreparedTraceBatchCall
   ): Promise<readonly ExecutionResult[]> {
-    return this.executeWithClient(
-      async (client) => {
-        const results = await client.executePreparedTraceBatch(
-          this.programId,
-          call,
-          this.traceCall.traceOptions
-        );
-        return results.map((result) =>
-          liftTraceOutcome(
-            result,
-            result.trace,
-            'Java prepared tracing failed'
-          )
-        );
-      },
-      call.signal
-    ).catch((error: unknown) => {
-      if (!isExecutionTimeoutError(error)) throw error;
-      return call.inputBatch.map((): ExecutionResult => ({
-        kind: 'limit',
-        reason: 'client-timeout',
-        error: error.message,
-        trace: createEmptyRuntimeTrace('java', {
-          runId: 'java:run',
-          file: 'solution.java',
-        }),
-        executionTimeMs: error.timeoutMs,
-        consoleOutput: [],
+    const results: ExecutionResult[] = [];
+    for (const [index, inputs] of call.inputBatch.entries()) {
+      results.push(await this.executeIsolated({
+        inputs,
+        ...(call.traceEnabledBatch === undefined
+          ? {}
+          : { recordTrace: call.traceEnabledBatch[index] }),
+        ...(call.signal ? { signal: call.signal } : {}),
+        ...(call.limits ? { limits: call.limits } : {}),
       }));
-    });
+    }
+    return results;
   }
 }
 

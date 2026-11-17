@@ -485,6 +485,7 @@ async function main(): Promise<void> {
         const startedAt = Date.now();
         try {
           const languageResults = (await page.evaluate(async (options) => {
+            (globalThis as { __MATRIX_CELL_GUARD_MS__?: number }).__MATRIX_CELL_GUARD_MS__ = options.cellGuardMs;
             const moduleUrl: string = '/matrix.mjs';
             const module = await import(moduleUrl);
             return module.runLanguageMatrix(options);
@@ -495,6 +496,7 @@ async function main(): Promise<void> {
             ...(KINDS ? { kinds: KINDS } : {}),
             defaultLimitsProbe: DEFAULT_LIMITS_PROBE,
             batchCaseCount: Number(process.env.TRACECODE_MATRIX_BATCH_CASES ?? 2),
+            cellGuardMs: Number(process.env.TRACECODE_MATRIX_CELL_GUARD_MS ?? 150_000),
           })) as MatrixCellResult[];
           console.log(`${language}: ${languageResults.length} cells in ${Math.round((Date.now() - startedAt) / 1000)}s`);
           results.push(...languageResults);

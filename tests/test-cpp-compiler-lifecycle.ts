@@ -467,6 +467,7 @@ async function testCompilePromotesQueuedCompilerPrewarm(): Promise<void> {
           return {
             success: false,
             error: 'focused promotion stop',
+            diagnosticStage: 'compile',
             consoleOutput: [],
           };
         },
@@ -571,12 +572,16 @@ async function testPreparedProviderProtocolLifecycle(): Promise<void> {
         second.kind === 'completed' && second.output === 2,
       `prepared executions should reuse one program: ${JSON.stringify({ first, second })}`
     );
+    // Every case of a batch runs under its own deadline, so each crosses its
+    // own Worker request (one compile, a fresh instance per case).
     assertCondition(
       batch?.map((result) => result.kind === 'completed' ? result.output : null).join(',') ===
         '3,4,5' &&
-        PreparedProtocolWorker.batchExecutions === 1,
-      `prepared code batches should cross one Worker request: ${JSON.stringify({
+        PreparedProtocolWorker.batchExecutions === 0 &&
+        PreparedProtocolWorker.executions === 5,
+      `prepared code batches should run one Worker request per case: ${JSON.stringify({
         batch,
+        executions: PreparedProtocolWorker.executions,
         batchExecutions: PreparedProtocolWorker.batchExecutions,
       })}`
     );
@@ -589,8 +594,8 @@ async function testPreparedProviderProtocolLifecycle(): Promise<void> {
       explicitlyLimitedBatch?.map((result) =>
         result.kind === 'completed' ? result.output : null
       ).join(',') === '6,7' &&
-        PreparedProtocolWorker.executions === 4 &&
-        PreparedProtocolWorker.batchExecutions === 1,
+        PreparedProtocolWorker.executions === 7 &&
+        PreparedProtocolWorker.batchExecutions === 0,
       `explicit per-case deadlines must retain one Worker request per case: ${JSON.stringify({
         explicitlyLimitedBatch,
         executions: PreparedProtocolWorker.executions,
@@ -600,8 +605,8 @@ async function testPreparedProviderProtocolLifecycle(): Promise<void> {
     assertCondition(
       PreparedProtocolWorker.compileRequests === 1 &&
         compilerFetches === 1 &&
-        PreparedProtocolWorker.executions === 4 &&
-        PreparedProtocolWorker.batchExecutions === 1,
+        PreparedProtocolWorker.executions === 7 &&
+        PreparedProtocolWorker.batchExecutions === 0,
       `one preparation must compile exactly once regardless of case count: ${JSON.stringify({
         compileRequests: PreparedProtocolWorker.compileRequests,
         compilerFetches,
@@ -714,12 +719,16 @@ async function testPreparedProviderProtocolLifecycle(): Promise<void> {
           { value: 1, hang: false },
         ],
       });
+    // Only the stuck case is a limit. The next case still runs (in a fresh
+    // worker, with the program re-prepared) instead of being reported as a
+    // limit it never hit.
     assertCondition(
       timedOutBatch?.length === 2 &&
-        timedOutBatch.every((result) =>
-          result.kind === 'limit' && result.reason === 'client-timeout'
-        ),
-      `a stuck aggregate batch should return structured limits for every unresolved case: ${JSON.stringify(timedOutBatch)}`
+        timedOutBatch[0]?.kind === 'limit' &&
+        timedOutBatch[0].reason === 'client-timeout' &&
+        timedOutBatch[1]?.kind === 'completed' &&
+        timedOutBatch[1].output === 1,
+      `a stuck case must be the only limit in its batch: ${JSON.stringify(timedOutBatch)}`
     );
     const workerCountBeforeBatchTimeoutDispose =
       PreparedProtocolWorker.instances.length;
@@ -1021,13 +1030,17 @@ async function testInvalidArtifactsFailClosedAndAreNotCached(): Promise<void> {
   };
   const client = createClient();
   try {
-    const first = await client.executeCode({ code: 'invalid-artifact', functionName: 'run', inputs: {}, executionStyle: 'function' });
-    const second = await client.executeCode({ code: 'invalid-artifact', functionName: 'run', inputs: {}, executionStyle: 'function' });
+    // A compiler that returns an invalid artifact is the provider failing:
+    // the call rejects, never a learner outcome.
+    const attempt = () => client.executeCode({ code: 'invalid-artifact', functionName: 'run', inputs: {}, executionStyle: 'function' })
+      .then((outcome) => ({ outcome }), (error: unknown) => ({ error }));
+    const first = await attempt();
+    const second = await attempt();
     assertCondition(
-      first.kind === 'failed' && first.error.includes('invalid WebAssembly'),
-      `invalid compiler artifacts should fail closed: ${JSON.stringify(first)}`
+      'error' in first && String((first.error as Error)?.message).includes('invalid WebAssembly'),
+      `invalid compiler artifacts should fail closed as a provider failure: ${JSON.stringify(first)}`
     );
-    assertCondition(second.kind === 'failed', 'invalid compiler artifacts should remain rejected');
+    assertCondition('error' in second, 'invalid compiler artifacts should remain rejected');
     assertCondition(fetchCount === 2, 'invalid compiler artifacts must never enter the content-addressed cache');
   } finally {
     client.terminate();

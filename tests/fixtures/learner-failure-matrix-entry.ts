@@ -48,7 +48,7 @@ const LIMIT_REASONS = new Set([
   'serialization-limit',
   'client-timeout',
 ]);
-const CELL_GUARD_MS = 150_000;
+const CELL_GUARD_MS = Number((globalThis as { __MATRIX_CELL_GUARD_MS__?: number }).__MATRIX_CELL_GUARD_MS__ ?? 150_000);
 
 function classOfCode(code: string | undefined): MatrixClass {
   if (code === 'runtime-provider-error') return 'provider';
