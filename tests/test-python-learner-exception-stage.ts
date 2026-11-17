@@ -3,10 +3,9 @@
 /**
  * A learner's own exception must reach the Judge as a runtime-stage failure.
  *
- * Browser Judge reports any failed outcome without a `diagnosticStage` as
- * `runtime-provider-error`, which hosts treat as "the runtime broke" and use to
- * fall back to another executor. Python reported no stage for learner
- * exceptions, so a NameError in the learner's code read as a provider failure.
+ * A `failed` outcome must name the program stage that failed; Python used to
+ * report learner exceptions without one, and they surfaced as
+ * `runtime-provider-error` (see docs/learner-failure-classification.md).
  *
  * The traced path is exercised end to end through host CPython: the runtime's
  * generated tracing program runs exactly as Pyodide would run it.
@@ -180,5 +179,49 @@ async function assertCompletedTracedRunsCarryNoStage(): Promise<void> {
   console.log('PASS: a completed traced run carries no diagnostic stage');
 }
 
+async function assertTracedProgramFailuresOutliveTheRecordingBudget(): Promise<void> {
+  const runtime = await loadPythonRuntime();
+  const scenarios: ReadonlyArray<{
+    readonly name: string;
+    readonly code: string;
+    readonly line: number;
+    readonly error: RegExp;
+  }> = [
+    {
+      // The trace byte budget stops recording long before the recursion limit;
+      // the RecursionError must still be the outcome, not a completed run.
+      name: 'unbounded recursion after the trace budget stopped recording',
+      code: 'def solve(n):\n    return solve(n + 1) + 1',
+      line: 2,
+      error: /^RecursionError on line 2: maximum recursion depth exceeded/,
+    },
+    {
+      name: 'sys.exit',
+      code: 'import sys\ndef solve(n):\n    sys.exit(3)',
+      line: 3,
+      error: /^SystemExit on line 3: the program exited with status 3$/,
+    },
+  ];
+  for (const scenario of scenarios) {
+    const result = await runtime.executeWithTracing(
+      tracingDeps(),
+      scenario.code,
+      'solve',
+      { n: 3 },
+      'function'
+    );
+    assertCondition(result.success === false, `${scenario.name}: the run should fail`);
+    assertCondition(
+      scenario.error.test(result.error ?? ''),
+      `${scenario.name}: unexpected error ${JSON.stringify(result.error)}`
+    );
+    assertCondition(result.errorLine === scenario.line, `${scenario.name}: expected line ${scenario.line}, received ${String(result.errorLine)}`);
+    assertCondition(result.diagnosticStage === 'runtime', `${scenario.name}: expected the runtime stage`);
+    assertCondition(result.timeoutReason === undefined, `${scenario.name}: a program failure is not a limit`);
+    console.log(`PASS: traced ${scenario.name} is a runtime-stage failure on line ${scenario.line}`);
+  }
+}
+
 await assertTracedLearnerExceptionsCarryRuntimeStage();
 await assertCompletedTracedRunsCarryNoStage();
+await assertTracedProgramFailuresOutliveTheRecordingBudget();

@@ -10,6 +10,7 @@ import type {
   RuntimeProgramPreparationCall,
   RuntimeProgramPreparationResult,
 } from '../../packages/runtime-contracts/src/index';
+import { RuntimeProviderError } from '../../packages/runtime-contracts/src/index';
 import { RuntimeProgramConcurrencyGate } from '../../packages/runtime-browser/src/program-concurrency-gate';
 
 export function isPreparedExecutionProvider(
@@ -28,15 +29,12 @@ interface PreparedEvaluationState {
   gate?: RuntimeProgramConcurrencyGate;
 }
 
-function invalidPreparation(
-  message: string
-): RuntimeProgramPreparationResult {
-  return {
-    kind: 'failed',
-    error: message,
-    diagnosticStage: 'compile',
-    consoleOutput: [],
-  };
+/**
+ * A preparation that breaks the registry's ownership contract is a provider
+ * or orchestration defect, never the learner's compile failure.
+ */
+function invalidPreparation(message: string): never {
+  throw new RuntimeProviderError(message);
 }
 
 /**
@@ -73,10 +71,10 @@ export class RuntimePreparedProgramRegistry {
   ): Promise<RuntimeProgramPreparationResult> {
     const state = this.requireState(evaluationId);
     if (state.closed) {
-      return invalidPreparation('Prepared runtime evaluation is already closed.');
+      invalidPreparation('Prepared runtime evaluation is already closed.');
     }
     if (state.preparing || state.program) {
-      return invalidPreparation(
+      invalidPreparation(
         'Prepared runtime evaluation may prepare exactly one program.'
       );
     }
@@ -89,7 +87,7 @@ export class RuntimePreparedProgramRegistry {
       const maximum = program.capabilities.maxConcurrency;
       if (program.mode !== call.mode) {
         await this.disposeOnce(program);
-        return invalidPreparation(
+        invalidPreparation(
           `Prepared runtime returned ${JSON.stringify(program.mode)} mode ` +
           `for a ${JSON.stringify(call.mode)} preparation.`
         );
@@ -100,7 +98,7 @@ export class RuntimePreparedProgramRegistry {
         maximum < 1
       ) {
         await this.disposeOnce(program);
-        return invalidPreparation(
+        invalidPreparation(
           'Prepared runtime must guarantee fresh-case-state isolation and a ' +
           'positive integer maxConcurrency.'
         );
@@ -113,7 +111,7 @@ export class RuntimePreparedProgramRegistry {
           // attempted exactly once; the active evaluation owns no result path
           // on which a late disposal error could be reported.
         }
-        return invalidPreparation(
+        invalidPreparation(
           'Prepared runtime evaluation closed before preparation completed.'
         );
       }

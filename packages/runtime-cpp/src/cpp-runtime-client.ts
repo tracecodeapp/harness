@@ -10,7 +10,7 @@ import type {
 } from '@tracecode/runtime-contracts';
 import type { RuntimeCommandResult } from '@tracecode/runtime-contracts';
 import type { CodeExecutionResult, ExecutionResult } from '@tracecode/runtime-contracts';
-import { createEmptyRuntimeTrace } from '@tracecode/runtime-contracts';
+import { RuntimeProviderError } from '@tracecode/runtime-contracts';
 import { assertRuntimeRequestSupported } from '@tracecode/runtime-browser/internal';
 import { getLanguageRuntimeProfile } from '@tracecode/runtime-browser/internal';
 import type { CppProjectCommandRequest, CppWorkerClient } from './cpp-worker-client';
@@ -59,13 +59,11 @@ class CppRuntimeClient implements RuntimeClient {
         executionStyle,
         signal: codeRequest.signal,
       });
-      return batchTraceResultToExecuteResult(codeRequest, result, (error) => ({
-        kind: 'failed',
-        error,
-        trace: createEmptyRuntimeTrace('cpp', { runId: 'cpp:run', file: 'solution.cpp' }),
-        executionTimeMs: 0,
-        consoleOutput: [],
-      }));
+      return batchTraceResultToExecuteResult(codeRequest, result, (error) => {
+        // A batch that returned no per-case result for a case broke the
+        // runtime protocol: the provider failed, not the learner's program.
+        throw new RuntimeProviderError(error);
+      });
     }
 
     if (!codeRequest.trace && !codeRequest.limits && codeRequest.cases.length > 1) {

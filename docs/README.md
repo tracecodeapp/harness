@@ -8,6 +8,9 @@ triage logs should not live in this public docs tree.
 
 - [Harness Execution Contract](./harness-execution-contract.md)
   Defines the language-neutral runtime trace model emitted by every harness.
+- [Learner Failure Classification](./learner-failure-classification.md)
+  Defines how every failure is attributed to the learner's program or to the
+  runtime provider, and the conformance matrix that enforces it.
 - [Isolation Boundaries](./isolation-boundaries.md)
   Explains what browser and native execution isolate, and what they do not.
 - [C++ Prepared Isolation Boundary](./cpp-prepared-isolation-boundary.md)

@@ -1,0 +1,859 @@
+/**
+ * Learner-failure classification matrix: the programs, run modes, and the
+ * classification each cell must receive.
+ *
+ * Shared by the browser entry (which runs the cells through the public
+ * BrowserJudgeHost) and the Node runner (which asserts and reports them).
+ *
+ * Classification is read exactly the way a consumer reads it: from the Judge
+ * diagnostics on the compile result or on each case. `provider` means the
+ * Harness said `runtime-provider-error` (or the host call itself rejected).
+ */
+
+export type MatrixLanguage =
+  | 'python'
+  | 'javascript'
+  | 'typescript'
+  | 'java'
+  | 'csharp'
+  | 'cpp';
+
+export const MATRIX_LANGUAGES: readonly MatrixLanguage[] = [
+  'python',
+  'javascript',
+  'typescript',
+  'java',
+  'csharp',
+  'cpp',
+];
+
+/**
+ * - `code`: one plain case.
+ * - `code-batch`: several plain cases in one evaluation.
+ * - `trace`: one traced case.
+ * - `trace-batch`: several traced cases in one evaluation.
+ * - `interactive`: a retained interactive execution (correctness for every
+ *   case, a trace of the selected case) and one trace continuation.
+ *
+ * Program preparation (compilation) runs in every mode; the `syntax` row and
+ * the injected provider failure exercise it.
+ */
+export type MatrixMode =
+  | 'code'
+  | 'code-batch'
+  | 'trace'
+  | 'trace-batch'
+  | 'interactive';
+
+export const MATRIX_MODES: readonly MatrixMode[] = [
+  'code',
+  'code-batch',
+  'trace',
+  'trace-batch',
+  'interactive',
+];
+
+export type MatrixFailureKind =
+  | 'syntax'
+  | 'top-level-exception'
+  | 'helper-exception'
+  | 'argument-error'
+  | 'division-by-zero'
+  | 'index-out-of-range'
+  | 'unbounded-recursion'
+  | 'infinite-loop'
+  | 'trace-step-limit'
+  | 'process-exit'
+  | 'unhandled-rejection'
+  | 'memory-fault'
+  | 'provider-asset-failure';
+
+/** What a consumer concludes from the Judge result. */
+export type MatrixClass =
+  | 'compile'
+  | 'runtime'
+  | 'limit'
+  | 'completed'
+  | 'provider'
+  | 'unclassified'
+  | 'hung';
+
+export interface MatrixProgram {
+  readonly code: string;
+  readonly functionName: string;
+  readonly executionStyle: 'function' | 'solution-method';
+}
+
+export interface MatrixCellSpec {
+  readonly language: MatrixLanguage;
+  readonly kind: MatrixFailureKind;
+  readonly program: MatrixProgram;
+  /** Acceptable classes. Learner cells never list `provider`. */
+  readonly expected: readonly MatrixClass[];
+  /** When `limit` is expected, the acceptable limit reasons. */
+  readonly limitReasons?: readonly string[];
+  /**
+   * Source line a learner needs, when the language can know it. Derived
+   * from the line containing `faultText`.
+   */
+  readonly line?: number;
+  /** Modes that are not meaningful for this kind (not a gap: no such cell). */
+  readonly modes?: readonly MatrixMode[];
+  readonly limits?: { readonly wallClockMs?: number };
+  readonly traceOptions?: { readonly maxTraceSteps?: number };
+  /** Modes where the cell is expected to complete instead (e.g. trace limit in code mode). */
+  readonly completesIn?: readonly MatrixMode[];
+}
+
+export const MATRIX_WALL_CLOCK_MS = 4_000;
+export const MATRIX_TRACE_STEPS = 400;
+
+const LEARNER_LIMIT_REASONS = ['client-timeout', 'line-limit', 'single-line-limit'];
+// Unbounded recursion is the learner's failure whichever guard stops it first:
+// a recursion or memory guard, a tracer's per-line guard, or the time limit.
+const RECURSION_LIMIT_REASONS = [
+  'recursion-limit',
+  'memory-limit',
+  'single-line-limit',
+  'line-limit',
+  'client-timeout',
+];
+const TRACE_LIMIT_REASONS = ['trace-limit', 'trace-byte-limit', 'line-limit', 'single-line-limit'];
+
+function lines(...source: string[]): string {
+  return source.join('\n');
+}
+
+function lineOf(code: string, faultText: string): number {
+  const index = code.split('\n').findIndex((line) => line.includes(faultText));
+  if (index < 0) throw new Error(`Fault marker ${JSON.stringify(faultText)} not found.`);
+  return index + 1;
+}
+
+interface Draft {
+  readonly kind: MatrixFailureKind;
+  readonly code: string;
+  readonly faultText?: string;
+  readonly expected: readonly MatrixClass[];
+  readonly limitReasons?: readonly string[];
+  readonly modes?: readonly MatrixMode[];
+  readonly limits?: { readonly wallClockMs?: number };
+  readonly traceOptions?: { readonly maxTraceSteps?: number };
+  readonly completesIn?: readonly MatrixMode[];
+  /** Line is not knowable for this language/kind (e.g. a Wasm trap). */
+  readonly noLine?: boolean;
+}
+
+const TRACED_MODES: readonly MatrixMode[] = ['trace', 'trace-batch', 'interactive'];
+
+function infiniteLoopDraft(code: string, faultText: string): Draft {
+  return {
+    kind: 'infinite-loop',
+    code,
+    faultText,
+    expected: ['limit'],
+    limitReasons: LEARNER_LIMIT_REASONS,
+    limits: { wallClockMs: MATRIX_WALL_CLOCK_MS },
+    noLine: true,
+  };
+}
+
+function traceLimitDraft(code: string): Draft {
+  return {
+    kind: 'trace-step-limit',
+    code,
+    // A finite program: plain modes complete; traced modes stop recording.
+    expected: ['limit', 'completed'],
+    limitReasons: TRACE_LIMIT_REASONS,
+    traceOptions: { maxTraceSteps: MATRIX_TRACE_STEPS },
+    completesIn: ['code', 'code-batch'],
+    noLine: true,
+  };
+}
+
+function providerDraft(code: string): Draft {
+  return { kind: 'provider-asset-failure', code, expected: ['provider'], noLine: true };
+}
+
+const PYTHON: readonly Draft[] = [
+  {
+    kind: 'syntax',
+    code: lines('def solve(n):', '    total = n +', '    return total'),
+    faultText: 'total = n +',
+    expected: ['compile'],
+  },
+  {
+    kind: 'top-level-exception',
+    code: lines('def solve(n):', '    return n', 'raise ValueError("top level failure")'),
+    faultText: 'raise ValueError',
+    expected: ['runtime'],
+  },
+  {
+    kind: 'helper-exception',
+    code: lines(
+      'def helper(n):',
+      '    return undefined_name + n',
+      'def solve(n):',
+      '    return helper(n)'
+    ),
+    faultText: 'undefined_name',
+    expected: ['runtime'],
+  },
+  {
+    kind: 'argument-error',
+    code: lines(
+      'def helper(a, b):',
+      '    return a + b',
+      'def solve(n):',
+      '    return helper(n)'
+    ),
+    faultText: 'return helper(n)',
+    expected: ['runtime'],
+  },
+  {
+    kind: 'division-by-zero',
+    code: lines('def solve(n):', '    zero = 0', '    return n // zero'),
+    faultText: 'n // zero',
+    expected: ['runtime'],
+  },
+  {
+    kind: 'index-out-of-range',
+    code: lines('def solve(n):', '    values = [1, 2]', '    return values[n + 5]'),
+    faultText: 'values[n + 5]',
+    expected: ['runtime'],
+  },
+  {
+    kind: 'unbounded-recursion',
+    code: lines('def solve(n):', '    return solve(n + 1) + 1'),
+    faultText: 'solve(n + 1)',
+    expected: ['runtime', 'limit'],
+    limitReasons: RECURSION_LIMIT_REASONS,
+    // Stack exhaustion is detected at a frame boundary (the call or the
+    // callee's entry), not at one source line; the line is not asserted.
+    noLine: true,
+  },
+  infiniteLoopDraft(
+    lines(
+      'def solve(n):',
+      '    left, right = 0, n',
+      '    while left <= right:',
+      '        mid = (left + right) // 2',
+      '    return left'
+    ),
+    'while left <= right'
+  ),
+  traceLimitDraft(
+    lines('def solve(n):', '    total = 0', '    for i in range(20000):', '        total += i', '    return n')
+  ),
+  {
+    kind: 'process-exit',
+    code: lines('import sys', 'def solve(n):', '    sys.exit(3)'),
+    faultText: 'sys.exit(3)',
+    expected: ['runtime'],
+  },
+  providerDraft(lines('def solve(n):', '    return n')),
+];
+
+function javascriptDrafts(typed: boolean): readonly Draft[] {
+  const param = typed ? 'n: number' : 'n';
+  const ret = typed ? ': number' : '';
+  const any = typed ? ' as any' : '';
+  return [
+    {
+      kind: 'syntax',
+      code: lines(`function solve(${param})${ret} {`, '  const total = n +;', '  return total;', '}'),
+      faultText: 'const total = n +;',
+      expected: ['compile'],
+    },
+    {
+      kind: 'top-level-exception',
+      code: lines(
+        `function solve(${param})${ret} {`,
+        '  return n;',
+        '}',
+        'throw new Error("top level failure");'
+      ),
+      faultText: 'throw new Error',
+      expected: ['runtime'],
+    },
+    {
+      kind: 'helper-exception',
+      code: lines(
+        `function helper(${param})${ret} {`,
+        `  return (globalThis${any}).undefinedHelper(n);`,
+        '}',
+        `function solve(${param})${ret} {`,
+        '  return helper(n);',
+        '}'
+      ),
+      faultText: 'undefinedHelper',
+      expected: ['runtime'],
+    },
+    {
+      kind: 'argument-error',
+      code: lines(`function solve(${param})${ret} {`, `  return (n${any}).toUpperCase();`, '}'),
+      faultText: 'toUpperCase',
+      expected: ['runtime'],
+    },
+    {
+      kind: 'division-by-zero',
+      code: lines(
+        `function solve(${param})${ret} {`,
+        '  const zero = BigInt(0);',
+        '  return Number(BigInt(n) / zero);',
+        '}'
+      ),
+      faultText: 'BigInt(n) / zero',
+      expected: ['runtime'],
+    },
+    {
+      kind: 'index-out-of-range',
+      code: lines(
+        `function solve(${param})${ret} {`,
+        `  const values${typed ? ': any[]' : ''} = [1, 2];`,
+        '  return values[n + 5].length;',
+        '}'
+      ),
+      faultText: 'values[n + 5].length',
+      expected: ['runtime'],
+    },
+    {
+      kind: 'unbounded-recursion',
+      code: lines(`function solve(${param})${ret} {`, '  return solve(n + 1) + 1;', '}'),
+      faultText: 'solve(n + 1)',
+      expected: ['runtime', 'limit'],
+      limitReasons: RECURSION_LIMIT_REASONS,
+      noLine: true,
+    },
+    infiniteLoopDraft(
+      lines(
+        `function solve(${param})${ret} {`,
+        '  let left = 0;',
+        '  const right = n;',
+        '  while (left <= right) {',
+        '    left = Math.min(left, right);',
+        '  }',
+        '  return left;',
+        '}'
+      ),
+      'while (left <= right)'
+    ),
+    traceLimitDraft(
+      lines(
+        `function solve(${param})${ret} {`,
+        '  let total = 0;',
+        '  for (let i = 0; i < 20000; i += 1) {',
+        '    total += i;',
+        '  }',
+        '  return n;',
+        '}'
+      )
+    ),
+    {
+      kind: 'process-exit',
+      code: lines(
+        `function solve(${param})${ret} {`,
+        `  (globalThis${any}).process.exit(3);`,
+        '  return n;',
+        '}'
+      ),
+      faultText: 'process.exit(3)',
+      expected: ['runtime'],
+    },
+    {
+      kind: 'unhandled-rejection',
+      code: lines(
+        `function solve(${param})${ret} {`,
+        '  Promise.reject(new Error("unhandled rejection"));',
+        '  return n;',
+        '}'
+      ),
+      // The function returned a value; a stray rejection is not the provider's.
+      expected: ['completed', 'runtime'],
+      noLine: true,
+    },
+    providerDraft(lines(`function solve(${param})${ret} {`, '  return n;', '}')),
+  ];
+}
+
+const JAVA: readonly Draft[] = [
+  {
+    kind: 'syntax',
+    code: lines('class Solution {', '  public int solve(int n) {', '    int total = n +;', '    return total;', '  }', '}'),
+    faultText: 'int total = n +;',
+    expected: ['compile'],
+  },
+  {
+    kind: 'top-level-exception',
+    code: lines(
+      'class Solution {',
+      '  public int solve(int n) {',
+      '    throw new IllegalStateException("top level failure");',
+      '  }',
+      '}'
+    ),
+    faultText: 'throw new IllegalStateException',
+    expected: ['runtime'],
+  },
+  {
+    kind: 'helper-exception',
+    code: lines(
+      'class Solution {',
+      '  private int helper(int n) {',
+      '    throw new IllegalArgumentException("helper failure " + n);',
+      '  }',
+      '  public int solve(int n) {',
+      '    return helper(n);',
+      '  }',
+      '}'
+    ),
+    faultText: 'throw new IllegalArgumentException',
+    expected: ['runtime'],
+  },
+  {
+    kind: 'argument-error',
+    code: lines(
+      'class Solution {',
+      '  public int solve(int n) {',
+      '    Object value = "text";',
+      '    return (Integer) value;',
+      '  }',
+      '}'
+    ),
+    faultText: '(Integer) value',
+    expected: ['runtime'],
+  },
+  {
+    kind: 'division-by-zero',
+    code: lines('class Solution {', '  public int solve(int n) {', '    int zero = 0;', '    return n / zero;', '  }', '}'),
+    faultText: 'n / zero',
+    expected: ['runtime'],
+  },
+  {
+    kind: 'index-out-of-range',
+    code: lines(
+      'class Solution {',
+      '  public int solve(int n) {',
+      '    int[] values = new int[2];',
+      '    return values[n + 5];',
+      '  }',
+      '}'
+    ),
+    faultText: 'values[n + 5]',
+    expected: ['runtime'],
+  },
+  {
+    kind: 'unbounded-recursion',
+    code: lines('class Solution {', '  public int solve(int n) {', '    return solve(n + 1) + 1;', '  }', '}'),
+    faultText: 'solve(n + 1)',
+    expected: ['runtime', 'limit'],
+    limitReasons: RECURSION_LIMIT_REASONS,
+    // Stack exhaustion is detected at a frame boundary (the call or the
+    // callee's entry), not at one source line; the line is not asserted.
+    noLine: true,
+  },
+  infiniteLoopDraft(
+    lines(
+      'class Solution {',
+      '  public int solve(int n) {',
+      '    int left = 0;',
+      '    int right = n;',
+      '    while (left <= right) {',
+      '      left = Math.min(left, right);',
+      '    }',
+      '    return left;',
+      '  }',
+      '}'
+    ),
+    'while (left <= right)'
+  ),
+  traceLimitDraft(
+    lines(
+      'class Solution {',
+      '  public int solve(int n) {',
+      '    int total = 0;',
+      '    for (int i = 0; i < 20000; i++) {',
+      '      total += i;',
+      '    }',
+      '    return n;',
+      '  }',
+      '}'
+    )
+  ),
+  {
+    kind: 'process-exit',
+    code: lines('class Solution {', '  public int solve(int n) {', '    System.exit(3);', '    return n;', '  }', '}'),
+    faultText: 'System.exit(3)',
+    expected: ['runtime'],
+  },
+  providerDraft(lines('class Solution {', '  public int solve(int n) {', '    return n;', '  }', '}')),
+];
+
+const CSHARP: readonly Draft[] = [
+  {
+    kind: 'syntax',
+    code: lines('public class Solution {', '  public int Solve(int n) {', '    int total = n +;', '    return total;', '  }', '}'),
+    faultText: 'int total = n +;',
+    expected: ['compile'],
+  },
+  {
+    kind: 'top-level-exception',
+    code: lines(
+      'using System;',
+      'public class Solution {',
+      '  public int Solve(int n) {',
+      '    throw new InvalidOperationException("top level failure");',
+      '  }',
+      '}'
+    ),
+    faultText: 'throw new InvalidOperationException',
+    expected: ['runtime'],
+  },
+  {
+    kind: 'helper-exception',
+    code: lines(
+      'using System;',
+      'public class Solution {',
+      '  private int Helper(int n) {',
+      '    throw new ArgumentException("helper failure " + n);',
+      '  }',
+      '  public int Solve(int n) {',
+      '    return Helper(n);',
+      '  }',
+      '}'
+    ),
+    faultText: 'throw new ArgumentException',
+    expected: ['runtime'],
+  },
+  {
+    kind: 'argument-error',
+    code: lines(
+      'public class Solution {',
+      '  public int Solve(int n) {',
+      '    object value = "text";',
+      '    return (int)value;',
+      '  }',
+      '}'
+    ),
+    faultText: '(int)value',
+    expected: ['runtime'],
+  },
+  {
+    kind: 'division-by-zero',
+    code: lines('public class Solution {', '  public int Solve(int n) {', '    int zero = 0;', '    return n / zero;', '  }', '}'),
+    faultText: 'n / zero',
+    expected: ['runtime'],
+  },
+  {
+    kind: 'index-out-of-range',
+    code: lines(
+      'public class Solution {',
+      '  public int Solve(int n) {',
+      '    int[] values = new int[2];',
+      '    return values[n + 5];',
+      '  }',
+      '}'
+    ),
+    faultText: 'values[n + 5]',
+    expected: ['runtime'],
+  },
+  {
+    kind: 'unbounded-recursion',
+    code: lines('public class Solution {', '  public int Solve(int n) {', '    return Solve(n + 1) + 1;', '  }', '}'),
+    faultText: 'Solve(n + 1)',
+    expected: ['runtime', 'limit'],
+    limitReasons: RECURSION_LIMIT_REASONS,
+    // Stack exhaustion is detected at a frame boundary (the call or the
+    // callee's entry), not at one source line; the line is not asserted.
+    noLine: true,
+  },
+  infiniteLoopDraft(
+    lines(
+      'using System;',
+      'public class Solution {',
+      '  public int Solve(int n) {',
+      '    int left = 0;',
+      '    int right = n;',
+      '    while (left <= right) {',
+      '      left = Math.Min(left, right);',
+      '    }',
+      '    return left;',
+      '  }',
+      '}'
+    ),
+    'while (left <= right)'
+  ),
+  traceLimitDraft(
+    lines(
+      'public class Solution {',
+      '  public int Solve(int n) {',
+      '    int total = 0;',
+      '    for (int i = 0; i < 20000; i++) {',
+      '      total += i;',
+      '    }',
+      '    return n;',
+      '  }',
+      '}'
+    )
+  ),
+  {
+    kind: 'process-exit',
+    code: lines(
+      'using System;',
+      'public class Solution {',
+      '  public int Solve(int n) {',
+      '    Environment.Exit(3);',
+      '    return n;',
+      '  }',
+      '}'
+    ),
+    faultText: 'Environment.Exit(3)',
+    expected: ['runtime'],
+  },
+  providerDraft(lines('public class Solution {', '  public int Solve(int n) {', '    return n;', '  }', '}')),
+];
+
+const CPP: readonly Draft[] = [
+  {
+    kind: 'syntax',
+    code: lines('class Solution {', 'public:', '  int solve(int n) {', '    int total = n +;', '    return total;', '  }', '};'),
+    faultText: 'int total = n +;',
+    expected: ['compile'],
+  },
+  {
+    kind: 'top-level-exception',
+    code: lines(
+      '#include <stdexcept>',
+      'class Solution {',
+      'public:',
+      '  int solve(int n) {',
+      '    throw std::runtime_error("top level failure");',
+      '  }',
+      '};'
+    ),
+    faultText: 'throw std::runtime_error',
+    expected: ['runtime'],
+  },
+  {
+    kind: 'helper-exception',
+    code: lines(
+      '#include <stdexcept>',
+      '#include <string>',
+      'class Solution {',
+      '  int helper(int n) {',
+      '    throw std::invalid_argument("helper failure " + std::to_string(n));',
+      '  }',
+      'public:',
+      '  int solve(int n) {',
+      '    return helper(n);',
+      '  }',
+      '};'
+    ),
+    faultText: 'throw std::invalid_argument',
+    expected: ['runtime'],
+  },
+  {
+    // C++ checks argument counts at compile time.
+    kind: 'argument-error',
+    code: lines(
+      'class Solution {',
+      '  int helper(int a, int b) { return a + b; }',
+      'public:',
+      '  int solve(int n) {',
+      '    return helper(n);',
+      '  }',
+      '};'
+    ),
+    faultText: 'return helper(n);',
+    expected: ['compile'],
+  },
+  {
+    kind: 'division-by-zero',
+    code: lines(
+      'class Solution {',
+      'public:',
+      '  int solve(int n) {',
+      '    volatile int zero = 0;',
+      '    return n / zero;',
+      '  }',
+      '};'
+    ),
+    faultText: 'n / zero',
+    expected: ['runtime'],
+  },
+  {
+    kind: 'index-out-of-range',
+    code: lines(
+      '#include <vector>',
+      'class Solution {',
+      'public:',
+      '  int solve(int n) {',
+      '    std::vector<int> values(2);',
+      '    return values.at(n + 5);',
+      '  }',
+      '};'
+    ),
+    faultText: 'values.at(n + 5)',
+    expected: ['runtime'],
+  },
+  {
+    kind: 'unbounded-recursion',
+    code: lines(
+      'class Solution {',
+      'public:',
+      '  int solve(int n) {',
+      '    volatile int pad[16];',
+      '    pad[0] = n;',
+      '    return solve(n + 1) + pad[0];',
+      '  }',
+      '};'
+    ),
+    faultText: 'solve(n + 1)',
+    expected: ['runtime', 'limit'],
+    limitReasons: RECURSION_LIMIT_REASONS,
+    // Stack exhaustion is detected at a frame boundary (the call or the
+    // callee's entry), not at one source line; the line is not asserted.
+    noLine: true,
+  },
+  infiniteLoopDraft(
+    lines(
+      'class Solution {',
+      'public:',
+      '  int solve(int n) {',
+      '    volatile int left = 0;',
+      '    int right = n;',
+      '    while (left <= right) {',
+      '      left = left < right ? left : right;',
+      '    }',
+      '    return left;',
+      '  }',
+      '};'
+    ),
+    'while (left <= right)'
+  ),
+  traceLimitDraft(
+    lines(
+      'class Solution {',
+      'public:',
+      '  int solve(int n) {',
+      '    int total = 0;',
+      '    for (int i = 0; i < 20000; i++) {',
+      '      total += i;',
+      '    }',
+      '    return n;',
+      '  }',
+      '};'
+    )
+  ),
+  {
+    kind: 'process-exit',
+    code: lines(
+      '#include <cstdlib>',
+      'class Solution {',
+      'public:',
+      '  int solve(int n) {',
+      '    std::exit(3);',
+      '    return n;',
+      '  }',
+      '};'
+    ),
+    faultText: 'std::exit(3)',
+    expected: ['runtime'],
+  },
+  {
+    kind: 'memory-fault',
+    code: lines(
+      '#include <vector>',
+      'class Solution {',
+      'public:',
+      '  int solve(int n) {',
+      '    std::vector<int> values(2);',
+      '    values[n + 900000000] = 1;',
+      '    return values[0];',
+      '  }',
+      '};'
+    ),
+    faultText: 'values[n + 900000000]',
+    expected: ['runtime'],
+  },
+  providerDraft(lines('class Solution {', 'public:', '  int solve(int n) {', '    return n;', '  }', '};')),
+];
+
+function programFor(language: MatrixLanguage, code: string): MatrixProgram {
+  switch (language) {
+    case 'python':
+    case 'javascript':
+    case 'typescript':
+      return { code, functionName: 'solve', executionStyle: 'function' };
+    case 'java':
+    case 'cpp':
+      return { code, functionName: 'solve', executionStyle: 'solution-method' };
+    case 'csharp':
+      return { code, functionName: 'Solve', executionStyle: 'solution-method' };
+  }
+}
+
+function draftsFor(language: MatrixLanguage): readonly Draft[] {
+  switch (language) {
+    case 'python':
+      return PYTHON;
+    case 'javascript':
+      return javascriptDrafts(false);
+    case 'typescript':
+      return javascriptDrafts(true);
+    case 'java':
+      return JAVA;
+    case 'csharp':
+      return CSHARP;
+    case 'cpp':
+      return CPP;
+  }
+}
+
+export function matrixCells(language: MatrixLanguage): readonly MatrixCellSpec[] {
+  return draftsFor(language).map((draft) => ({
+    language,
+    kind: draft.kind,
+    program: programFor(language, draft.code),
+    expected: draft.expected,
+    ...(draft.limitReasons ? { limitReasons: draft.limitReasons } : {}),
+    ...(draft.faultText && !draft.noLine ? { line: lineOf(draft.code, draft.faultText) } : {}),
+    ...(draft.modes ? { modes: draft.modes } : {}),
+    ...(draft.limits ? { limits: draft.limits } : {}),
+    ...(draft.traceOptions ? { traceOptions: draft.traceOptions } : {}),
+    ...(draft.completesIn ? { completesIn: draft.completesIn } : {}),
+  }));
+}
+
+export function healthyProgram(language: MatrixLanguage): MatrixProgram {
+  return programFor(language, draftsFor(language).find(
+    (draft) => draft.kind === 'provider-asset-failure'
+  )!.code);
+}
+
+export function isTracedMode(mode: MatrixMode): boolean {
+  return TRACED_MODES.includes(mode);
+}
+
+/** One observed Judge case (or compile) outcome, as a consumer reads it. */
+export interface MatrixObservation {
+  readonly class: MatrixClass;
+  readonly code?: string;
+  readonly message?: string;
+  readonly line?: number;
+  readonly status?: string;
+  readonly reason?: string;
+  /** Completed cases: the returned value, JSON, truncated. */
+  readonly value?: string;
+}
+
+export interface MatrixCellResult {
+  readonly language: MatrixLanguage;
+  readonly mode: MatrixMode;
+  readonly kind: MatrixFailureKind;
+  readonly observations: readonly MatrixObservation[];
+  readonly elapsedMs: number;
+  /** A healthy program evaluated on the same host afterwards. */
+  readonly healthyAfter?: boolean;
+  readonly healthyAfterDetail?: string;
+}

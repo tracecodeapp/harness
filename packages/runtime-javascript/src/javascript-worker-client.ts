@@ -1319,18 +1319,17 @@ export class JavaScriptWorkerClient {
       );
       return liftCodeOutcome(result, 'JavaScript execution failed');
     } catch (error) {
-      if (
-        call.limits?.wallClockMs !== undefined &&
-        isExecutionTimeoutError(error)
-      ) {
+      // The program ran past its time limit, configured or default: the
+      // learner's limit, never a provider failure.
+      if (isExecutionTimeoutError(error)) {
         return {
           kind: 'limit',
           reason: 'client-timeout',
           error: error.message,
           consoleOutput: [],
           timings: {
-            totalMs: call.limits.wallClockMs,
-            runMs: call.limits.wallClockMs,
+            totalMs: wallClockMs,
+            runMs: wallClockMs,
             artifactCacheHit: true,
           },
         };
@@ -1408,20 +1407,17 @@ export class JavaScriptWorkerClient {
         'JavaScript tracing failed'
       );
     } catch (error) {
-      if (
-        call.limits?.wallClockMs !== undefined &&
-        isExecutionTimeoutError(error)
-      ) {
+      if (isExecutionTimeoutError(error)) {
         return {
           kind: 'limit',
           reason: 'client-timeout',
           error: error.message,
           trace: createEmptyRuntimeTrace(language),
-          executionTimeMs: call.limits.wallClockMs,
+          executionTimeMs: wallClockMs,
           consoleOutput: [],
           timings: {
-            totalMs: call.limits.wallClockMs,
-            runMs: call.limits.wallClockMs,
+            totalMs: wallClockMs,
+            runMs: wallClockMs,
             artifactCacheHit: true,
           },
         };

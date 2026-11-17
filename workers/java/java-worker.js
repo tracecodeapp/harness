@@ -5766,13 +5766,15 @@ function javaRuntimeExceptionDiagnostic(report) {
   };
 }
 
+// Used for reports from running an already-compiled program: whatever made
+// that run fail (an exception, a VM error, the program ending the JVM) is the
+// learner's runtime stage. Harness failures throw instead of reporting.
 function javaReportFailure(report, fallback = 'Java execution failed') {
   const diagnostic = javaRuntimeExceptionDiagnostic(report);
   return {
     error: diagnostic?.stack || javaReportFailureMessage(report, fallback),
-    ...(diagnostic
-      ? { diagnosticStage: 'runtime', diagnostic }
-      : {}),
+    diagnosticStage: 'runtime',
+    ...(diagnostic ? { diagnostic } : {}),
   };
 }
 

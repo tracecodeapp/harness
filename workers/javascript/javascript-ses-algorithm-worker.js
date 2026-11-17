@@ -6466,7 +6466,7 @@ async function executeCase(program, inputs, tracingEnabled = program.mode === "t
   };
   const runtimeFailure = (error, elapsedMs2) => {
     const tracedErrorLine = error && typeof error === "object" && Number.isFinite(error.__traceLine) ? Number(error.__traceLine) : void 0;
-    const errorLine = tracedErrorLine ?? learnerErrorLine(error);
+    const errorLine = tracedErrorLine ?? (tracing ? void 0 : learnerErrorLine(error));
     const console3 = consoleResult(elapsedMs2);
     if (console3.compatibilityRequired) return console3.result;
     const traceLimitExceeded2 = Boolean(

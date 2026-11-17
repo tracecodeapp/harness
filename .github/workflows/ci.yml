@@ -92,3 +92,5 @@ jobs:
         run: pnpm exec playwright install --with-deps chromium
       - name: Test the public browser Judge boundary
         run: pnpm test:judge:browser
+      - name: Test learner-failure classification across languages and run modes
+        run: pnpm test:learner-failure-matrix

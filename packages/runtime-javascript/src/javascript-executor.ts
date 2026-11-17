@@ -1591,11 +1591,15 @@ export async function executeJavaScriptCode(
       consoleOutput,
     };
   } catch (error) {
+    // Everything in this block binds or runs the learner's program: a syntax
+    // error is its compile stage, anything else it raised is its runtime
+    // stage. Runtime setup failures happen before the block and reject.
     return {
       success: false,
       output: null,
       error: error instanceof Error ? error.message : String(error),
       errorLine: extractUserErrorLine(error),
+      diagnosticStage: error instanceof SyntaxError ? 'compile' : 'runtime',
       consoleOutput,
     };
   } finally {
@@ -1619,6 +1623,8 @@ export async function executeJavaScriptWithTracing(
       success: false,
       error: codeResult.error,
       errorLine: codeResult.errorLine,
+      ...(codeResult.diagnosticStage ? { diagnosticStage: codeResult.diagnosticStage } : {}),
+      ...(codeResult.timeoutReason ? { timeoutReason: codeResult.timeoutReason } : {}),
       trace: createEmptyRuntimeTrace(language),
       executionTimeMs,
       consoleOutput: codeResult.consoleOutput ?? [],

@@ -742,6 +742,17 @@ test('Java prepared provider maps caller wall-clock limits without masking cance
       consoleOutput: [],
     }
   );
+  // The runtime's default deadline is the learner's time limit too; it is
+  // never reported as a provider failure.
+  assert.deepEqual(
+    await codePreparation.program.executeIsolated({ inputs: {} }),
+    {
+      kind: 'limit',
+      reason: 'client-timeout',
+      error: 'Java execution timed out after 0 seconds.',
+      consoleOutput: [],
+    }
+  );
   await codePreparation.program.dispose();
   codeProvider.dispose();
 

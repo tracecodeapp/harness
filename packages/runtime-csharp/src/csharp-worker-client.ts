@@ -25,7 +25,13 @@ import type {
   RuntimeTraceCall,
   TraceExecutionOptions,
 } from '@tracecode/runtime-contracts';
-import { liftCodeBatchOutcome, liftTraceOutcome, type RawExecutionBatchPayload } from '@tracecode/runtime-contracts';
+import {
+  liftCodeBatchOutcome,
+  liftTraceOutcome,
+  RuntimeProviderError,
+  type ExecutionDiagnosticStage,
+  type RawExecutionBatchPayload,
+} from '@tracecode/runtime-contracts';
 import type {
   CodeExecutionResult,
   CodeExecutionBatchResult,
@@ -144,8 +150,28 @@ interface CSharpWorkerExecuteResult {
   executionTimeMs?: number;
   traceLimitExceeded?: boolean;
   timeoutReason?: ExecutionLimitReason;
+  /** Set by the worker on every failure the learner's program caused. */
+  diagnosticStage?: ExecutionDiagnosticStage;
   timings?: RuntimeExecutionTimings;
   outputBytes?: Uint8Array;
+}
+
+function csharpProgramStage(
+  result: CSharpWorkerExecuteResult
+): ExecutionDiagnosticStage {
+  if (result.diagnosticStage) return result.diagnosticStage;
+  throw new RuntimeProviderError(
+    `C# runtime reported a failure without classifying it: ${result.error ?? 'unknown error'}`
+  );
+}
+
+function taggedError(error: unknown, tag: string): error is Error {
+  return (
+    typeof error === 'object' &&
+    error !== null &&
+    '_tag' in error &&
+    (error as { _tag?: unknown })._tag === tag
+  );
 }
 
 export interface CSharpWorkerPrepareResult extends CSharpWorkerExecuteResult {
@@ -542,6 +568,7 @@ export class CSharpWorkerClient {
         kind: 'failed',
         error: result.error ?? 'C# execution failed',
         ...(firstUserDiagnostic ? { errorLine: firstUserDiagnostic.line } : {}),
+        diagnosticStage: csharpProgramStage(result),
         consoleOutput: result.consoleOutput ?? [],
         timings: result.timings,
       };
@@ -640,7 +667,30 @@ export class CSharpWorkerClient {
           )
         )
       );
-      const result = await this.core.runClientEffect(program, call.signal);
+      let result: CSharpWorkerExecuteResult;
+      try {
+        result = await this.core.runClientEffect(program, call.signal);
+      } catch (error) {
+        if (call.signal?.aborted) throw error;
+        if (taggedError(error, 'WorkerCrashedError')) {
+          return {
+            kind: 'failed',
+            error: `The program crashed the C# runtime: ${error instanceof Error ? error.message : String(error)}`,
+            diagnosticStage: 'runtime',
+            consoleOutput: [],
+          };
+        }
+        if (taggedError(error, 'ExecutionTimeoutError') || taggedError(error, 'WorkerRequestTimeoutError')) {
+          return {
+            kind: 'limit',
+            reason: 'client-timeout',
+            error: 'Execution timed out. This may indicate an infinite loop or very expensive execution.',
+            consoleOutput: [],
+            timings: { totalMs: wallClockMs, runMs: wallClockMs },
+          };
+        }
+        throw error;
+      }
       if (prepared.preparedRunnerTier === 'algorithm-fast' && result.success) {
         if (!(result.outputBytes instanceof Uint8Array)) {
           throw new TypeError(
@@ -794,6 +844,7 @@ export class CSharpWorkerClient {
         kind: 'failed',
         error: result.error ?? 'C# execution failed',
         ...(firstUserDiagnostic ? { errorLine: firstUserDiagnostic.line } : {}),
+        diagnosticStage: csharpProgramStage(result),
         consoleOutput: result.consoleOutput ?? [],
         timings: result.timings,
       };
@@ -828,12 +879,24 @@ export class CSharpWorkerClient {
     const trace = this.createTrace(events, { maxPathDepth: traceOptions?.maxPathDepth });
 
     const firstUserDiagnostic = result.diagnostics?.find(isCSharpUserDiagnostic);
+    // A traced failure knows where the learner's program raised: the trace's
+    // exception event carries the source line.
+    const exceptionLine = result.success || firstUserDiagnostic
+      ? undefined
+      : [...trace.events].reverse().find(
+          (event): event is RuntimeTraceEvent & { line: number } =>
+            event.kind === 'exception' && typeof event.line === 'number' && event.line > 0
+        )?.line;
     return liftTraceOutcome(
       {
         ...result,
         executionTimeMs: result.executionTimeMs ?? fallbackExecutionTimeMs,
         consoleOutput,
-        ...(firstUserDiagnostic ? { errorLine: firstUserDiagnostic.line } : {}),
+        ...(firstUserDiagnostic
+          ? { errorLine: firstUserDiagnostic.line }
+          : exceptionLine !== undefined
+            ? { errorLine: exceptionLine }
+            : {}),
       },
       trace,
       'C# execution failed'
@@ -845,6 +908,26 @@ export class CSharpWorkerClient {
     executionTimeMs: number
   ): ExecutionResult {
     const message = error instanceof Error ? error.message : String(error);
+    if (taggedError(error, 'WorkerCrashedError')) {
+      // The learner's program took the runner down; the runner is retired
+      // after any case that did not complete.
+      return {
+        kind: 'failed',
+        error: `The program crashed the C# runtime: ${message}`,
+        diagnosticStage: 'runtime',
+        trace: this.createTrace([]),
+        executionTimeMs,
+        consoleOutput: [],
+        timings: { totalMs: executionTimeMs },
+      };
+    }
+    if (
+      !taggedError(error, 'ExecutionTimeoutError') &&
+      !taggedError(error, 'WorkerRequestTimeoutError')
+    ) {
+      // Anything else is the runtime's own failure, never a time limit.
+      throw error;
+    }
     const trace = this.createTrace([
       {
         kind: 'timeout',

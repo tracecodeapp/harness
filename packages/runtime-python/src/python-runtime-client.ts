@@ -164,6 +164,53 @@ function isPythonWorkerCaseFailure(error: unknown): error is Error {
   );
 }
 
+function taggedError(error: unknown, tag: string): error is Error {
+  return (
+    typeof error === 'object' &&
+    error !== null &&
+    '_tag' in error &&
+    error._tag === tag &&
+    'message' in error &&
+    typeof error.message === 'string'
+  );
+}
+
+/**
+ * Classify a transport error raised while a learner's case was executing in
+ * an already-warm worker. The worker crashing mid-case was the program taking
+ * it down (unbounded recursion, memory exhaustion, a Wasm trap): the learner's
+ * runtime failure. The worker is retired after every failed case, so the next
+ * case runs in a fresh one. A request that never answered is the time limit.
+ * Anything else is the provider's and is rethrown.
+ */
+function pythonCaseTransportOutcome(error: unknown): CodeExecutionResult {
+  if (taggedError(error, 'WorkerCrashedError')) {
+    return {
+      kind: 'failed',
+      error: `The program crashed the Python runtime: ${error.message}`,
+      diagnosticStage: 'runtime',
+      consoleOutput: [],
+    };
+  }
+  if (taggedError(error, 'WorkerRequestTimeoutError') || isExecutionTimeoutError(error)) {
+    return {
+      kind: 'limit',
+      reason: 'client-timeout',
+      error: 'Execution timed out. This may indicate an infinite loop or very expensive execution.',
+      consoleOutput: [],
+    };
+  }
+  throw error;
+}
+
+function pythonTraceTransportOutcome(error: unknown): ExecutionResult {
+  const outcome = pythonCaseTransportOutcome(error);
+  const trace = createEmptyRuntimeTrace('python', { runId: 'python:run', file: 'solution.py' });
+  return outcome.kind === 'failed'
+    ? { ...outcome, trace, executionTimeMs: 0 }
+    : { ...(outcome as Extract<CodeExecutionResult, { kind: 'limit' }>), trace, executionTimeMs: 0 };
+}
+
 function pythonInputsRequireCompatibility(
   value: unknown,
   seen = new Set<object>()
@@ -432,7 +479,9 @@ function normalizePythonExecutionResult(value: unknown): ExecutionResult {
       output: sanitizeJsonValue(record.output),
       ...(normalizedString(record.error) ? { error: normalizedString(record.error) } : {}),
       ...(normalizedLine(record.errorLine) !== undefined ? { errorLine: normalizedLine(record.errorLine) } : {}),
-      ...(record.diagnosticStage === 'runtime' ? { diagnosticStage: 'runtime' as const } : {}),
+      ...(record.diagnosticStage === 'runtime' || record.diagnosticStage === 'compile'
+        ? { diagnosticStage: record.diagnosticStage }
+        : {}),
       executionTimeMs: finiteNumber(record.executionTimeMs) ?? 0,
       consoleOutput: normalizeStringArray(record.consoleOutput),
       ...(record.traceLimitExceeded === true ? { traceLimitExceeded: true } : {}),
@@ -655,6 +704,10 @@ class PreparedPythonProgramLifetime {
   ): Promise<CodeExecutionResult> {
     return this.executeSerial(call.signal, (client, signal) =>
       client.executePreparedCode(this.handle, { ...call, signal })
+        .catch((error: unknown) => {
+          if (signal.aborted) throw error;
+          return pythonCaseTransportOutcome(error);
+        })
     );
   }
 
@@ -666,10 +719,16 @@ class PreparedPythonProgramLifetime {
       !pythonInputsRequireCompatibility(call.inputs);
     return this.executeSerial(
       call.signal,
-      async (client, signal) =>
-        normalizePythonExecutionResult(
-          await client.executePreparedTrace(this.handle, { ...call, signal })
-        ),
+      async (client, signal) => {
+        try {
+          return normalizePythonExecutionResult(
+            await client.executePreparedTrace(this.handle, { ...call, signal })
+          );
+        } catch (error) {
+          if (signal.aborted) throw error;
+          return pythonTraceTransportOutcome(error);
+        }
+      },
       useFastProfile ? pythonTraceResultKeepsFastWorker : undefined
     );
   }
@@ -709,6 +768,21 @@ class PreparedPythonProgramLifetime {
         }, signal)
       );
     } catch (error) {
+      if (budget.isTimeout(error)) {
+        // The shared batch worker ran out of time: the batch hit the limit.
+        return call.inputBatch.map((): CodeExecutionResult => ({
+          kind: 'limit',
+          reason: 'client-timeout',
+          error: 'Execution timed out. This may indicate an infinite loop or very expensive execution.',
+          consoleOutput: [],
+          timings: { artifactCacheHit: true },
+        }));
+      }
+      if (taggedError(error, 'WorkerCrashedError') && !call.signal?.aborted) {
+        // One case took the shared batch worker down. Re-run the cases each in
+        // a fresh worker so every case gets its own truthful outcome.
+        return this.executeCompatibilityCodeBatch(call, budget);
+      }
       if (!(error instanceof PythonAlgorithmFastBatchUnavailableError)) {
         throw error;
       }
@@ -757,6 +831,10 @@ class PreparedPythonProgramLifetime {
         },
         (results) => results.every(pythonTraceResultKeepsFastWorker)
       ).catch((error: unknown) => {
+        if (taggedError(error, 'WorkerCrashedError') && !call.signal?.aborted) {
+          // One case took the shared worker down: give each case a fresh one.
+          return this.executeCompatibilityTraceBatch(call);
+        }
         if (!(error instanceof PythonAlgorithmFastBatchUnavailableError)) {
           throw error;
         }
@@ -787,7 +865,19 @@ class PreparedPythonProgramLifetime {
           )
         );
       } catch (error) {
-        if (budget.isTimeout(error)) throw error;
+        if (budget.isTimeout(error)) {
+          // The batch's time budget ran out on this case: it and every case
+          // that never got to run hit the time limit.
+          const timedOut: CodeExecutionResult = {
+            kind: 'limit',
+            reason: 'client-timeout',
+            error: 'Execution timed out. This may indicate an infinite loop or very expensive execution.',
+            consoleOutput: [],
+            timings: { artifactCacheHit: true },
+          };
+          while (results.length < call.inputBatch.length) results.push(timedOut);
+          return results;
+        }
         if (call.signal?.aborted) {
           throw abortReason(
             call.signal,
@@ -811,9 +901,7 @@ class PreparedPythonProgramLifetime {
         }
         if (!isPythonWorkerCaseFailure(error)) throw error;
         results.push({
-          kind: 'failed',
-          error: `Python worker failed while executing this case: ${error.message}`,
-          consoleOutput: [],
+          ...pythonCaseTransportOutcome(error),
           timings: { artifactCacheHit: true },
         });
       }
@@ -827,16 +915,21 @@ class PreparedPythonProgramLifetime {
     const results: ExecutionResult[] = [];
     for (let index = 0; index < call.inputBatch.length; index += 1) {
       results.push(
-        await this.executeSerial(call.signal, async (client, signal) =>
-          normalizePythonExecutionResult(
-            await client.executePreparedTrace(this.handle, {
-              inputs: call.inputBatch[index]!,
-              signal,
-              limits: call.limits,
-              recordTrace: call.traceEnabledBatch?.[index] ?? true,
-            })
-          )
-        )
+        await this.executeSerial(call.signal, async (client, signal) => {
+          try {
+            return normalizePythonExecutionResult(
+              await client.executePreparedTrace(this.handle, {
+                inputs: call.inputBatch[index]!,
+                signal,
+                limits: call.limits,
+                recordTrace: call.traceEnabledBatch?.[index] ?? true,
+              })
+            );
+          } catch (error) {
+            if (signal.aborted) throw error;
+            return pythonTraceTransportOutcome(error);
+          }
+        })
       );
     }
     return results;

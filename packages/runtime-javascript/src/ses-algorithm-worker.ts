@@ -1634,7 +1634,10 @@ async function executeCase(
       Number.isFinite((error as { readonly __traceLine?: unknown }).__traceLine)
         ? Number((error as { readonly __traceLine: number }).__traceLine)
         : undefined;
-    const errorLine = tracedErrorLine ?? learnerErrorLine(error);
+    // A traced run executes instrumented source, so stack lines point into
+    // the instrumentation, not the learner's file. Report no line rather than
+    // a wrong one; plain runs execute the learner's source and keep theirs.
+    const errorLine = tracedErrorLine ?? (tracing ? undefined : learnerErrorLine(error));
     const console = consoleResult(elapsedMs);
     if (console.compatibilityRequired) return console.result;
     const traceLimitExceeded = Boolean(

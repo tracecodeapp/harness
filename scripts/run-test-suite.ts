@@ -133,6 +133,10 @@ export const TEST_PHASES: TestPhase[] = [
     tasks: [
       task('test:cpp-prepared-lifecycle', 2),
       task('test:tracecc-browser', 2),
+      // Every language x run mode x failure kind through the public browser
+      // Judge: learner failures are the learner's, provider failures the
+      // provider's.
+      { ...task('test:learner-failure-matrix', 2), exclusive: true },
       task('test:workspace-authority-browser', 2),
       task('test:browser-runtime-host', 2, ['all']),
       task('test:java-example-app-packaged', 2, ['all']),

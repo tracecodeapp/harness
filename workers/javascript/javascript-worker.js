@@ -6961,6 +6961,20 @@ async function prepareExecutionRequest(payload) {
   };
 }
 
+// Stack lines come from generated wrappers and instrumentation; a line outside
+// the learner's source is not one a learner can act on, so report none.
+function learnerSourceLine(line, code) {
+  if (!Number.isInteger(line) || line < 1 || typeof code !== 'string') return undefined;
+  return line <= code.split('\n').length ? line : undefined;
+}
+
+function learnerFailureStage(error) {
+  return error instanceof SyntaxError ||
+    (error && typeof error === 'object' && error.name === 'SyntaxError')
+    ? 'compile'
+    : 'runtime';
+}
+
 async function executeCode(payload) {
   const startedAt = performanceNow();
   const {
@@ -6975,14 +6989,16 @@ async function executeCode(payload) {
   ensureJavaScriptLibraries();
   const runtimeGlobal = createJavaScriptRuntimeGlobal(consoleProxy);
   const prepared = preparedExecutionFromPayload(payload);
+  // Protocol violations are the runtime's, not the program's: reject them
+  // before entering the learner-program region below.
+  if (typeof code !== 'string') {
+    throw new Error('`code` must be a string');
+  }
+  if (language !== 'javascript' && language !== 'typescript') {
+    throw new Error(`Unsupported language for JavaScript worker: ${String(language)}`);
+  }
 
   try {
-    if (typeof code !== 'string') {
-      throw new Error('`code` must be a string');
-    }
-    if (language !== 'javascript' && language !== 'typescript') {
-      throw new Error(`Unsupported language for JavaScript worker: ${String(language)}`);
-    }
 
     const executableCode = prepared?.executableCode ?? await prepareExecutableCode(code, language);
     const materializers = prepared?.materializers ?? await resolveInputMaterializers(code, functionName, executionStyle, language);
@@ -7064,7 +7080,10 @@ async function executeCode(payload) {
       success: false,
       output: null,
       error: message,
-      errorLine: extractUserErrorLine(error),
+      errorLine: learnerSourceLine(extractUserErrorLine(error), code),
+      // Binding or running the learner's program failed: a syntax error is its
+      // compile stage, anything else it raised is its runtime stage.
+      diagnosticStage: learnerFailureStage(error),
       consoleOutput,
       timings: {
         totalMs,
@@ -7177,6 +7196,7 @@ async function executeWithTracing(payload) {
           success: false,
           error: fallbackResult.error,
           errorLine: fallbackResult.errorLine,
+          ...(fallbackResult.diagnosticStage ? { diagnosticStage: fallbackResult.diagnosticStage } : {}),
           trace,
           executionTimeMs,
           consoleOutput: fallbackResult.consoleOutput ?? [],
@@ -7293,7 +7313,7 @@ async function executeWithTracing(payload) {
   } catch (error) {
     const executionTimeMs = performanceNow() - startedAt;
     const message = formatRuntimeErrorMessage(error);
-    const errorLine = extractUserErrorLine(error);
+    const errorLine = learnerSourceLine(extractUserErrorLine(error), code);
     const traceErrorLine =
       error && typeof error === 'object' && '__traceLine' in error
         ? Number(error.__traceLine)
@@ -7317,6 +7337,7 @@ async function executeWithTracing(payload) {
       output: null,
       error: message,
       errorLine,
+      diagnosticStage: learnerFailureStage(error),
       trace,
       executionTimeMs,
       consoleOutput,

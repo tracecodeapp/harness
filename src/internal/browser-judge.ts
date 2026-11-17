@@ -4,6 +4,8 @@ import * as Exit from 'effect/Exit';
 import * as Scope from 'effect/Scope';
 import type {
   CodeExecutionResult,
+  ExecutionDiagnosticStage,
+  ExecutionLimitReason,
   ExecutionResult,
   Language,
   RuntimeExecutionLimits,
@@ -496,6 +498,24 @@ function errorText(message: string): string {
     : `${message}\n`;
 }
 
+const PROGRAM_FAILURE_STAGES: ReadonlySet<string> = new Set<
+  ExecutionDiagnosticStage
+>([
+  'compile',
+  'runtime',
+  'trace',
+  'driver-compile',
+  'trace-driver-compile',
+  'driver-link',
+]);
+
+/**
+ * A `failed` outcome is the learner's program failing at a named stage; the
+ * stage is the diagnostic code. Provider failures never arrive here: they
+ * reject and are reported by `providerFailure`. An outcome that arrives
+ * without a valid stage (an untyped provider that broke the contract) is not
+ * silently attributed to anyone: the diagnostic names the contract violation.
+ */
 function failureDiagnostic(
   runtime: string,
   outcome: Extract<
@@ -505,10 +525,21 @@ function failureDiagnostic(
     }
   >
 ): JudgeDiagnostic {
+  const stage: unknown = outcome.diagnosticStage;
+  if (typeof stage !== 'string' || !PROGRAM_FAILURE_STAGES.has(stage)) {
+    return Object.freeze({
+      severity: 'error',
+      message:
+        `The ${runtime} runtime returned a failed outcome without a program ` +
+        `stage (Harness contract violation): ${String(outcome.error ?? '')}`,
+      code: PROVIDER_ERROR_CODE,
+      source: runtime,
+    });
+  }
   return Object.freeze({
     severity: 'error',
-    message: outcome.error,
-    code: outcome.diagnosticStage ?? PROVIDER_ERROR_CODE,
+    message: String(outcome.error ?? '').trim() || 'The program failed without an error message.',
+    code: stage,
     source: runtime,
     ...(outcome.errorLine === undefined ? {} : { line: outcome.errorLine }),
   });
@@ -525,11 +556,33 @@ function limitDiagnostic(
 ): JudgeDiagnostic {
   return Object.freeze({
     severity: 'error',
-    message: outcome.error,
+    message: String(outcome.error ?? '').trim() ||
+      LIMIT_MESSAGES[outcome.reason] ||
+      `Execution stopped by a limit (${String(outcome.reason)}).`,
     code: outcome.reason,
     source: runtime,
   });
 }
+
+/** What a learner reads when a runtime stopped the program without a message. */
+const LIMIT_MESSAGES: Readonly<Record<ExecutionLimitReason, string>> = {
+  'client-timeout':
+    'Execution timed out. This may indicate an infinite loop or very expensive execution.',
+  'trace-limit':
+    'Execution stopped: the trace step budget was exhausted before the program finished.',
+  'trace-byte-limit':
+    'Execution stopped: the trace size budget was exhausted before the program finished.',
+  'line-limit':
+    'Execution stopped: the program executed too many lines. This may indicate an infinite loop.',
+  'single-line-limit':
+    'Execution stopped: one line ran too many times. This may indicate an infinite loop.',
+  'recursion-limit':
+    'Execution stopped: maximum recursion depth exceeded.',
+  'memory-limit':
+    'Execution stopped: the program exceeded its memory limit.',
+  'serialization-limit':
+    'Execution stopped: the result was too large to return.',
+};
 
 function traceTruncationDiagnostic(
   runtime: string,
@@ -892,7 +945,8 @@ function providerFailure(
 function executeProviderProcess(
   options: RuntimeJudgeProviderOptions,
   programs: RuntimePreparedProgramRegistry,
-  context: TraceKernelRuntimeProcessContext
+  context: TraceKernelRuntimeProcessContext,
+  initialize: Effect.Effect<void, Error>
 ): Effect.Effect<TraceKernelRuntimeResult, Error> {
   const invocationId = context.env[JUDGE_INVOCATION_ID_ENV];
   if (!invocationId) {
@@ -902,6 +956,36 @@ function executeProviderProcess(
       )
     );
   }
+  // Runtime initialization (asset, toolchain, and worker load) belongs to the
+  // provider. Its failure is published as a provider diagnostic on the process
+  // that needed the runtime, never as a process that silently failed to start
+  // (which a consumer would read as the learner's compile failure).
+  return initialize.pipe(
+    Effect.matchEffect({
+      onFailure: (error) => {
+        const mapped = providerFailure(options.runtime, error.message);
+        return options.runtimeControl.publish(
+          invocationId,
+          mapped.output
+        ).pipe(Effect.as(mapped.process));
+      },
+      onSuccess: () =>
+        executeInitializedProviderProcess(
+          options,
+          programs,
+          context,
+          invocationId
+        ),
+    })
+  );
+}
+
+function executeInitializedProviderProcess(
+  options: RuntimeJudgeProviderOptions,
+  programs: RuntimePreparedProgramRegistry,
+  context: TraceKernelRuntimeProcessContext,
+  invocationId: string
+): Effect.Effect<TraceKernelRuntimeResult, Error> {
   return options.runtimeControl.read(invocationId).pipe(
     Effect.flatMap((invocation) => {
       if (invocation.phase === 'compile') {
@@ -1016,37 +1100,45 @@ function makeRuntimeJudgeProvider(
     providerOptions.provider
   );
   let nextLeaseId = 1;
+  // Successful initialization is memoized; a failed one is retried by the
+  // next process so a repaired deployment recovers without a new host.
+  let initialized: Promise<void> | undefined;
+  const ensureInitialized = Effect.tryPromise({
+    try: () => {
+      initialized ??= providerOptions.provider.init().then((result) => {
+        if (!result.success) {
+          throw new Error(
+            `Prepared runtime provider ${JSON.stringify(providerOptions.runtime)} ` +
+            'reported unsuccessful initialization.'
+          );
+        }
+      });
+      const attempt = initialized;
+      attempt.catch(() => {
+        if (initialized === attempt) initialized = undefined;
+      });
+      return attempt;
+    },
+    catch: errorFromUnknown,
+  });
   const runtimeProvider: TraceKernelRuntimeProvider = Object.freeze({
     runtime: providerOptions.runtime,
-    initialize: Effect.tryPromise({
-      try: () => providerOptions.provider.init(),
-      catch: errorFromUnknown,
-    }).pipe(
-      Effect.flatMap((result) =>
-        result.success
-          ? Effect.succeed({
-              acquire: (
-                context: TraceKernelRuntimeProcessContext
-              ) => Effect.succeed({
-                id: `${providerOptions.runtime}-judge-${nextLeaseId++}`,
-                runtime: providerOptions.runtime,
-                execute: () =>
-                  executeProviderProcess(
-                    providerOptions,
-                    programs,
-                    context
-                  ),
-                release: () => Effect.void,
-              }),
-            })
-          : Effect.fail(
-              new Error(
-                `Prepared runtime provider ${JSON.stringify(providerOptions.runtime)} ` +
-                'reported unsuccessful initialization.'
-              )
-            )
-      )
-    ),
+    initialize: Effect.succeed({
+      acquire: (
+        context: TraceKernelRuntimeProcessContext
+      ) => Effect.succeed({
+        id: `${providerOptions.runtime}-judge-${nextLeaseId++}`,
+        runtime: providerOptions.runtime,
+        execute: () =>
+          executeProviderProcess(
+            providerOptions,
+            programs,
+            context,
+            ensureInitialized
+          ),
+        release: () => Effect.void,
+      }),
+    }),
   });
   return Object.freeze({
     runtimeProvider,

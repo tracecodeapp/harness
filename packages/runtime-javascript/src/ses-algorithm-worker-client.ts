@@ -658,12 +658,12 @@ function isCodeExecutionResult(value: unknown): value is CodeExecutionResult {
     case 'failed':
       return hasOnlyKeys(
         value,
-        ['kind', 'error', 'consoleOutput'],
-        ['errorLine', 'diagnosticStage', 'diagnostic', 'timings']
+        ['kind', 'error', 'diagnosticStage', 'consoleOutput'],
+        ['errorLine', 'diagnostic', 'timings']
       ) && typeof value.error === 'string' &&
         (value.errorLine === undefined || Number.isSafeInteger(value.errorLine)) &&
-        (value.diagnosticStage === undefined ||
-          DIAGNOSTIC_STAGES.has(value.diagnosticStage as string));
+        // A failed case always names the program stage that failed.
+        DIAGNOSTIC_STAGES.has(value.diagnosticStage as string);
     case 'limit':
       return hasOnlyKeys(
         value,
@@ -718,12 +718,12 @@ function isTraceExecutionResult(value: unknown): value is ExecutionResult {
     case 'failed':
       return hasOnlyKeys(
         value,
-        ['kind', 'error', 'trace', 'executionTimeMs', 'consoleOutput'],
-        ['errorLine', 'diagnosticStage', 'diagnostic', 'timings']
+        ['kind', 'error', 'diagnosticStage', 'trace', 'executionTimeMs', 'consoleOutput'],
+        ['errorLine', 'diagnostic', 'timings']
       ) && typeof value.error === 'string' &&
         (value.errorLine === undefined || Number.isSafeInteger(value.errorLine)) &&
-        (value.diagnosticStage === undefined ||
-          DIAGNOSTIC_STAGES.has(value.diagnosticStage as string));
+        // A failed case always names the program stage that failed.
+        DIAGNOSTIC_STAGES.has(value.diagnosticStage as string);
     case 'limit':
       return hasOnlyKeys(
         value,
@@ -1351,11 +1351,9 @@ export class SesAlgorithmWorkerPool {
             traceEnabledBatch?.[index]
           );
         } catch (error) {
-          if (
-            error instanceof SesAlgorithmDeadlineError &&
-            limits?.wallClockMs !== undefined &&
-            limits.wallClockMs !== Infinity
-          ) {
+          // The case ran past its deadline, configured or default: the
+          // learner's time limit, never a provider failure.
+          if (error instanceof SesAlgorithmDeadlineError) {
             results[index] = record.mode === 'trace'
               ? {
                   kind: 'limit',

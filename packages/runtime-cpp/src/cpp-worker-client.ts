@@ -679,6 +679,18 @@ export class CppWorkerClient {
     return run;
   }
 
+  /**
+   * Whether a prepared program still lives in the current worker. A case that
+   * hit its time limit (or crashed) retires the worker and the program table
+   * with it; the provider then re-prepares before running the next case.
+   */
+  isPreparedProgramHandleCurrent(handle: CppPreparedProgramHandle): boolean {
+    return (
+      handle.lifecycleGeneration === this.executionLifecycleGeneration &&
+      !this.disposedPreparedPrograms.has(this.preparedProgramHandleKey(handle))
+    );
+  }
+
   private assertPreparedProgramHandle(
     handle: CppPreparedProgramHandle,
     expectedMode?: 'code' | 'trace'

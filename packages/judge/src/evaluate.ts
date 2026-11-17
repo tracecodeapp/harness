@@ -117,6 +117,18 @@ function expectedFields<Input, Expected>(
     : {};
 }
 
+/**
+ * The Judge's own watchdog stopped the process: the program did not finish
+ * within its time limit. Reported as the limit, never as an infrastructure
+ * failure, whether or not the runtime got to publish anything first.
+ */
+const WATCHDOG_TIMEOUT_DIAGNOSTIC = Object.freeze({
+  severity: 'error' as const,
+  code: 'client-timeout',
+  message:
+    'Execution timed out. This may indicate an infinite loop or very expensive execution.',
+});
+
 function caseResult<Input, Expected, Result>(
   planId: string,
   testCase: JudgeCasePlan<Input, Expected>,
@@ -130,6 +142,9 @@ function caseResult<Input, Expected, Result>(
   if (outcome.timedOut) {
     return Object.freeze({
       ...base,
+      ...(base.diagnostics.some((diagnostic) => diagnostic.severity === 'error')
+        ? {}
+        : { diagnostics: Object.freeze([...base.diagnostics, WATCHDOG_TIMEOUT_DIAGNOSTIC]) }),
       ...expected,
       ...trace,
       caseId: testCase.id,
@@ -329,6 +344,22 @@ function runBatch<Snapshot, Input, Expected, Result>(
           ),
         }
       );
+      if (!outcome.batch && outcome.timedOut) {
+        // The batch watchdog fired before the runtime published per-case
+        // outcomes: every case in the batch ran out of time.
+        return Object.freeze(plan.cases.map((testCase) =>
+          caseResult<Input, Expected, Result>(
+            plan.id,
+            testCase,
+            {
+              ...outcome,
+              diagnostics: Object.freeze([WATCHDOG_TIMEOUT_DIAGNOSTIC]),
+            },
+            plan.structuredResult ?? 'required',
+            comparator
+          )
+        ));
+      }
       if (!outcome.batch) {
         return yield* Effect.fail(new JudgeInfrastructureError({
           operation: 'execute isolated batch',

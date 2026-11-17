@@ -1545,18 +1545,17 @@ async function assertExecutionLimitsDispatchContract(): Promise<void> {
     `caller-configured wall-clock trips should surface as structured client-timeout cases, received ${JSON.stringify(tripped)}`
   );
 
-  let rejectedWithoutWallClock = false;
-  try {
-    await executeRuntimeRequest(
-      { code: 'x', functionName: 'solve', cases: [{ inputs: {} }], limits: { maxLineEvents: 20000 } },
-      trippingHandlers
-    );
-  } catch {
-    rejectedWithoutWallClock = true;
-  }
+  // A runtime's default deadline expiring is the learner's time limit too:
+  // a structured case, never a transport error.
+  const defaultDeadline = (await executeRuntimeRequest(
+    { code: 'x', functionName: 'solve', cases: [{ inputs: {} }], limits: { maxLineEvents: 20000 } },
+    trippingHandlers
+  )) as { success: boolean; cases: Array<{ outcome: { kind: string; reason?: string } }> };
   assertCondition(
-    rejectedWithoutWallClock,
-    'execution timeouts without a caller-configured wall clock should stay rejected as transport errors'
+    defaultDeadline.success === false &&
+      defaultDeadline.cases[0]?.outcome.kind === 'limit' &&
+      defaultDeadline.cases[0]?.outcome.reason === 'client-timeout',
+    `default-deadline timeouts should surface as structured client-timeout cases, received ${JSON.stringify(defaultDeadline)}`
   );
 
   for (const invalid of [

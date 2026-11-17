@@ -151,11 +151,10 @@ export async function executeRuntimeRequest(
           limits: codeRequest.limits,
         });
       } catch (error) {
-        // A caller-configured wall-clock limit tripping is an expected outcome of
-        // the caller's own policy, not an infrastructure failure — report it as a
-        // structured case result. Timeouts under the harness's default deadline
-        // (no wallClockMs set) still reject like any other transport error.
-        if (codeRequest.limits?.wallClockMs !== undefined && isExecutionTimeoutError(error)) {
+        // A deadline expiring while the learner's program runs is its time
+        // limit, whether the caller configured it or the runtime's default
+        // applied; it is reported as a case result, never as a transport error.
+        if (isExecutionTimeoutError(error)) {
           result = {
             kind: 'limit',
             reason: 'client-timeout',

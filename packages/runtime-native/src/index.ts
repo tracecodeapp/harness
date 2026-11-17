@@ -25,6 +25,7 @@ import {
   liftCodeBatchOutcome,
   liftCodeOutcome,
   liftTraceOutcome,
+  RuntimeProviderError,
   type RawExecutionBatchPayload,
   type RawExecutionPayload,
 } from '@tracecode/runtime-contracts';
@@ -54,6 +55,19 @@ import {
   isLanguageSupported,
   SUPPORTED_LANGUAGES,
 } from '../../runtime-browser/src/runtime-profiles';
+
+
+function nativeProviderError(error: unknown): RuntimeProviderError {
+  if (error instanceof RuntimeProviderError) return error;
+  return new RuntimeProviderError(
+    error instanceof Error ? error.message : String(error),
+    { cause: error }
+  );
+}
+
+function throwNativeProviderError(message: string): never {
+  throw new RuntimeProviderError(message);
+}
 
 export { createNativeProjectWorkspace, type CreateNativeProjectWorkspaceOptions };
 export {
@@ -518,11 +532,9 @@ class NativePythonRuntimeClient implements RuntimeClient {
         executionStyle
       ).then((result) => liftCodeOutcome(result, 'Python execution failed'));
     } catch (error) {
-      return {
-        kind: 'failed',
-        error: error instanceof Error ? error.message : String(error),
-        consoleOutput: [],
-      };
+      // The native interpreter could not run (spawn, transport, protocol):
+      // a provider failure, never the learner's program.
+      throw nativeProviderError(error);
     }
   }
 
@@ -548,17 +560,7 @@ class NativePythonRuntimeClient implements RuntimeClient {
         },
       }, 'Python execution failed'));
     } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      return batchCodeResultToExecuteResult(request, {
-        results: request.cases.map(() => ({
-          kind: 'failed' as const,
-          error: message,
-          consoleOutput: [],
-        })),
-        error: message,
-        consoleOutput: [],
-        timings: { totalMs: Date.now() - startedAt },
-      });
+      throw nativeProviderError(error);
     }
   }
 
@@ -803,13 +805,7 @@ print(json.dumps({
         'Python tracing failed'
       );
     } catch (error) {
-      return {
-        kind: 'failed',
-        error: error instanceof Error ? error.message : String(error),
-        trace: createEmptyRuntimeTrace('python'),
-        executionTimeMs: Date.now() - startedAt,
-        consoleOutput: [],
-      };
+      throw nativeProviderError(error);
     }
   }
 
@@ -1442,7 +1438,7 @@ class NativeJavaRuntimeClient implements RuntimeClient {
     const first = result.cases[0];
     return first
       ? first.outcome
-      : { kind: 'failed', error: 'Java execution did not return a result.', consoleOutput: [] };
+      : throwNativeProviderError('Java execution did not return a result.');
   }
 
   async executeBatch(request: RuntimeExecuteCodeRequest): Promise<RuntimeExecuteResult> {
@@ -1519,14 +1515,7 @@ class NativeJavaRuntimeClient implements RuntimeClient {
         },
       };
     } catch (error) {
-      return {
-        success: false,
-        cases: request.cases.map((testCase) => codeResultToExecuteCase(testCase, {
-          kind: 'failed',
-          error: error instanceof Error ? error.message : String(error),
-          consoleOutput: [],
-        })),
-      };
+      throw nativeProviderError(error);
     } finally {
       await removeTempDir(tempDir, this.options.keepTempDirs);
     }
@@ -1607,13 +1596,7 @@ class NativeJavaRuntimeClient implements RuntimeClient {
         'Java tracing failed'
       );
     } catch (error) {
-      return {
-        kind: 'failed',
-        error: error instanceof Error ? error.message : String(error),
-        trace: createEmptyRuntimeTrace('java', { runId: 'java:run', file: 'solution.java' }),
-        executionTimeMs: Date.now() - startedAt,
-        consoleOutput: [],
-      };
+      throw nativeProviderError(error);
     } finally {
       await removeTempDir(tempDir, this.options.keepTempDirs);
     }
@@ -1709,7 +1692,14 @@ class NativeCppRuntimeClient implements RuntimeClient {
         { timeoutMs: this.options.timeoutMs, cwd: tempDir }
       );
       const compileMs = Date.now() - compileStartedAt;
-      if (compile.exitCode !== 0 || compile.timedOut) {
+      if (compile.timedOut) {
+        // The host compiler did not finish: the toolchain failed to run in
+        // time, which is not the learner's compile error.
+        throw new RuntimeProviderError(
+          `C++ compiler timed out after ${this.options.timeoutMs}ms.`
+        );
+      }
+      if (compile.exitCode !== 0) {
         return batchCodeResultToExecuteResult(request, liftCodeBatchOutcome({
           results: request.cases.map(() => ({
             success: false,
@@ -1848,7 +1838,12 @@ class NativeCppRuntimeClient implements RuntimeClient {
         { timeoutMs: this.options.timeoutMs, cwd: tempDir }
       );
       const compileMs = Date.now() - compileStartedAt;
-      if (compile.exitCode !== 0 || compile.timedOut) {
+      if (compile.timedOut) {
+        throw new RuntimeProviderError(
+          `C++ compiler timed out after ${this.options.timeoutMs}ms.`
+        );
+      }
+      if (compile.exitCode !== 0) {
         return {
           success: false,
           output: null,
@@ -2309,7 +2304,7 @@ class NativeCSharpRuntimeClient implements RuntimeClient {
     const first = result.cases[0];
     return first
       ? first.outcome
-      : { kind: 'failed', error: 'C# execution did not return a result.', consoleOutput: [] };
+      : throwNativeProviderError('C# execution did not return a result.');
   }
 
   async executeBatch(request: RuntimeExecuteCodeRequest): Promise<RuntimeExecuteResult> {

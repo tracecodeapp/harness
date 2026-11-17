@@ -15,6 +15,7 @@ import {
   getLanguageRuntimeProfile,
 } from '@tracecode/runtime-browser/internal';
 import { CppWorkerClient } from './cpp-worker-client';
+import { RuntimeProviderError } from '@tracecode/runtime-contracts';
 
 export interface CppPreparedExecutionProviderOptions {
   createWorkerClient(): CppWorkerClient;
@@ -186,6 +187,13 @@ export function createCppPreparedExecutionProvider(
                 : {}),
             };
           }
+          if (preparation.diagnosticStage === undefined) {
+            // The worker reported a preparation failure without saying it was
+            // the learner's source: a provider defect, not a compile error.
+            throw new RuntimeProviderError(
+              `C++ preparation failed without a program stage: ${preparation.error}`
+            );
+          }
           return {
             kind: 'failed',
             error: preparation.error,
@@ -193,14 +201,61 @@ export function createCppPreparedExecutionProvider(
             ...(preparation.errorLine !== undefined
               ? { errorLine: preparation.errorLine }
               : {}),
-            ...(preparation.diagnosticStage !== undefined
-              ? { diagnosticStage: preparation.diagnosticStage }
-              : {}),
+            diagnosticStage: preparation.diagnosticStage,
             ...(preparation.timings
               ? { timings: preparation.timings }
               : {}),
           };
         }
+
+        // The worker-owned program dies with its worker when a learner's case
+        // hits its time limit or crashes. Recovering is the provider's job:
+        // re-prepare the same source in the replacement worker before the
+        // next case instead of failing every remaining case.
+        let handle = preparation.handle;
+        const currentHandle = async () => {
+          if (client.isPreparedProgramHandleCurrent(handle)) return handle;
+          // The original preparation's signal belongs to its finished compile
+          // process; the re-preparation is part of the case now running.
+          const { signal: _preparationSignal, ...source } = call;
+          const reprepared = await client.prepareRuntimeProgram(source);
+          if (reprepared.success === false) {
+            throw new RuntimeProviderError(
+              `C++ could not re-prepare a program it had already compiled: ${reprepared.error}`
+            );
+          }
+          handle = reprepared.handle;
+          return handle;
+        };
+        const executeCodeCases = async (
+          execution: RuntimePreparedCodeBatchCall
+        ): Promise<readonly CodeExecutionResult[]> => {
+          const results: CodeExecutionResult[] = [];
+          for (const inputs of execution.inputBatch) {
+            results.push(await client.executePreparedCode(await currentHandle(), {
+              inputs,
+              signal: execution.signal,
+              limits: execution.limits,
+            }));
+          }
+          return results;
+        };
+        const executeTraceCases = async (
+          execution: RuntimePreparedTraceBatchCall
+        ): Promise<readonly ExecutionResult[]> => {
+          const results: ExecutionResult[] = [];
+          for (const [index, inputs] of execution.inputBatch.entries()) {
+            results.push(await client.executePreparedTrace(await currentHandle(), {
+              inputs,
+              ...(execution.traceEnabledBatch === undefined
+                ? {}
+                : { recordTrace: execution.traceEnabledBatch[index] }),
+              signal: execution.signal,
+              limits: execution.limits,
+            }));
+          }
+          return results;
+        };
 
         let disposed = false;
         const forceDispose = (): void => {
@@ -220,7 +275,13 @@ export function createCppPreparedExecutionProvider(
           disposed = true;
           activePrograms.delete(forceDispose);
           try {
-            await client.disposePreparedProgram(preparation.handle);
+            await client.disposePreparedProgram(handle);
+          } catch {
+            // The client is retired below, and terminating its worker destroys
+            // the worker-owned program table. A failed in-worker release (for
+            // example after a case hit its time limit and the worker was
+            // recycled) leaks nothing and must not turn the evaluation's
+            // results into an infrastructure failure.
           } finally {
             retireClient(client);
           }
@@ -236,13 +297,12 @@ export function createCppPreparedExecutionProvider(
                   if (disposed) {
                     return Promise.reject(
                       new Error(
-                        `C++ prepared program "${preparation.handle.programId}" was already disposed.`
+                        `C++ prepared program "${handle.programId}" was already disposed.`
                       )
                     );
                   }
-                  return client.executePreparedTrace(
-                    preparation.handle,
-                    execution
+                  return currentHandle().then((current) =>
+                    client.executePreparedTrace(current, execution)
                   );
                 },
                 executeBatchIsolated: async (
@@ -250,13 +310,21 @@ export function createCppPreparedExecutionProvider(
                 ): Promise<readonly ExecutionResult[]> => {
                   if (disposed) {
                     throw new Error(
-                      `C++ prepared program "${preparation.handle.programId}" was already disposed.`
+                      `C++ prepared program "${handle.programId}" was already disposed.`
                     );
                   }
-                  return client.executePreparedTraceBatch(
-                    preparation.handle,
-                    execution
-                  );
+                  if (
+                    execution.traceEnabledBatch !== undefined &&
+                    (
+                      execution.traceEnabledBatch.length !== execution.inputBatch.length ||
+                      execution.traceEnabledBatch.some((enabled) => typeof enabled !== 'boolean')
+                    )
+                  ) {
+                    throw new TypeError(
+                      'C++ trace selection must contain one boolean per batch case.'
+                    );
+                  }
+                  return executeTraceCases(execution);
                 },
                 dispose,
               },
@@ -274,13 +342,12 @@ export function createCppPreparedExecutionProvider(
                   if (disposed) {
                     return Promise.reject(
                       new Error(
-                        `C++ prepared program "${preparation.handle.programId}" was already disposed.`
+                        `C++ prepared program "${handle.programId}" was already disposed.`
                       )
                     );
                   }
-                  return client.executePreparedCode(
-                    preparation.handle,
-                    execution
+                  return currentHandle().then((current) =>
+                    client.executePreparedCode(current, execution)
                   );
                 },
                 executeBatchIsolated: async (
@@ -288,13 +355,15 @@ export function createCppPreparedExecutionProvider(
                 ): Promise<readonly CodeExecutionResult[]> => {
                   if (disposed) {
                     throw new Error(
-                      `C++ prepared program "${preparation.handle.programId}" was already disposed.`
+                      `C++ prepared program "${handle.programId}" was already disposed.`
                     );
                   }
-                  return client.executePreparedCodeBatch(
-                    preparation.handle,
-                    execution
-                  );
+                  // One deadline for the whole batch keeps the fast batched
+                  // path; per-case limits run case by case so a timed-out
+                  // case's worker is replaced before the next one.
+                  return execution.limits?.wallClockMs === undefined
+                    ? client.executePreparedCodeBatch(await currentHandle(), execution)
+                    : executeCodeCases(execution);
                 },
                 dispose,
               },

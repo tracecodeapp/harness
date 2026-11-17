@@ -1755,6 +1755,124 @@ function emitRuntimeDiagnostic(level, phase, message, detail) {
   });
 }
 
+// Failures the managed host reports for its own preconditions. Everything else
+// a managed execution export reports as `success: false` came from running the
+// learner's program.
+const CSHARP_HOST_PROVIDER_ERRORS = new Set([
+  'Invalid prepared C# execution request.',
+  'Prepared C# artifact is unavailable or invalid.',
+  'Invalid C# execution request.',
+  'Invalid C# preparation request.',
+]);
+
+// The browser .NET runtime is trimmed of exception message resources, so it
+// reports resource keys. These are the framework's own English messages.
+const CSHARP_RESOURCE_MESSAGES = new Map([
+  ['Arg_IndexOutOfRangeException', 'IndexOutOfRangeException: Index was outside the bounds of the array.'],
+  ['Arg_DivideByZero', 'DivideByZeroException: Attempted to divide by zero.'],
+  ['Arg_InvalidCastException', 'InvalidCastException: Specified cast is not valid.'],
+  ['Arg_NullReferenceException', 'NullReferenceException: Object reference not set to an instance of an object.'],
+  ['Arg_OverflowException', 'OverflowException: Arithmetic operation resulted in an overflow.'],
+  ['Arg_ArgumentOutOfRangeException', 'ArgumentOutOfRangeException: Specified argument was out of the range of valid values.'],
+  ['ArgumentOutOfRange_Index', 'ArgumentOutOfRangeException: Index was out of range. Must be non-negative and less than the size of the collection.'],
+  ['ArgumentOutOfRange_IndexMustBeLess', 'ArgumentOutOfRangeException: Index was out of range. Must be non-negative and less than the size of the collection.'],
+  ['Arg_KeyNotFound', 'KeyNotFoundException: The given key was not present in the dictionary.'],
+  ['Arg_KeyNotFoundWithKey', 'KeyNotFoundException: The given key was not present in the dictionary.'],
+  ['InvalidOperation_EmptyStack', 'InvalidOperationException: Stack empty.'],
+  ['InvalidOperation_EmptyQueue', 'InvalidOperationException: Queue empty.'],
+  ['InvalidOperation_NoValue', 'InvalidOperationException: Nullable object must have a value.'],
+  ['InvalidOperation_EnumFailedVersion', 'InvalidOperationException: Collection was modified; enumeration operation may not execute.'],
+  ['Arg_InvalidOperationException', 'InvalidOperationException: Operation is not valid due to the current state of the object.'],
+  ['Arg_ArgumentException', 'ArgumentException: Value does not fall within the expected range.'],
+  ['Arg_NotImplementedException', 'NotImplementedException: The method or operation is not implemented.'],
+  ['Arg_NotSupportedException', 'NotSupportedException: Specified method is not supported.'],
+  ['Format_InvalidString', 'FormatException: The input string was not in a correct format.'],
+  ['Arg_FormatException', 'FormatException: One of the identified items was in an invalid format.'],
+  ['Arg_OutOfMemoryException', 'OutOfMemoryException: Insufficient memory to continue the execution of the program.'],
+  ['Arg_InsufficientExecutionStackException', 'InsufficientExecutionStackException: Insufficient stack to continue executing the program safely.'],
+  ['Arg_TargetInvocationException', 'The program threw an exception (the .NET runtime did not report which).'],
+]);
+
+function readableCSharpError(message) {
+  const text = String(message ?? '').trim();
+  const match = /^([A-Za-z]+_[A-Za-z]+)(?:,\s*(.*))?$/s.exec(text);
+  if (!match) return text || 'The program threw an exception.';
+  const known = CSHARP_RESOURCE_MESSAGES.get(match[1]);
+  if (!known) return text;
+  return match[2] ? `${known} (${match[2]})` : known;
+}
+
+function isDotnetExitStatus(error) {
+  return Boolean(
+    error &&
+    typeof error === 'object' &&
+    error.name === 'ExitStatus' &&
+    Number.isInteger(error.status)
+  );
+}
+
+function dotnetExitStatusFromText(text) {
+  if (typeof text !== 'string' || !text.includes('ExitStatus')) return undefined;
+  try {
+    const parsed = JSON.parse(text);
+    return isDotnetExitStatus(parsed) ? parsed : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+let csharpRuntimeExited = false;
+
+function programExitResult(exit) {
+  // The learner's program ended the .NET runtime (Environment.Exit, or a
+  // fatal stack overflow). This worker cannot run again; the client retires
+  // it after any case that did not complete.
+  csharpRuntimeExited = true;
+  return {
+    success: false,
+    error: exit.status === 1
+      ? 'The program terminated the .NET runtime with exit status 1 (unbounded recursion that overflows the stack also ends this way).'
+      : `The program exited with status ${exit.status}.`,
+    diagnosticStage: 'runtime',
+    consoleOutput: [],
+    timings: {},
+  };
+}
+
+/**
+ * Attribute a managed execution's failure. Running the learner's program and
+ * failing is the program's runtime stage; a time or trace limit stays a limit;
+ * a host precondition failure rejects as a runtime (provider) failure.
+ */
+async function classifyCSharpProgramExecution(execute) {
+  if (csharpRuntimeExited) {
+    throw new Error('The C# runtime in this worker has exited and cannot run another program.');
+  }
+  let result;
+  try {
+    result = await execute();
+  } catch (error) {
+    if (isDotnetExitStatus(error)) return programExitResult(error);
+    throw error;
+  }
+  if (!result || typeof result !== 'object' || result.success !== false) return result;
+  if (result.timeoutReason || result.traceLimitExceeded) return result;
+  const exit = dotnetExitStatusFromText(result.error);
+  if (exit) return { ...programExitResult(exit), timings: result.timings ?? {} };
+  if (CSHARP_HOST_PROVIDER_ERRORS.has(String(result.error ?? '').trim())) {
+    throw new Error(String(result.error));
+  }
+  // Single-call paths compile and run together: compiler errors in the
+  // learner's source are its compile stage.
+  const compileError = Array.isArray(result.diagnostics) &&
+    result.diagnostics.some((diagnostic) => diagnostic?.severity === 'error' || diagnostic?.severity === 'Error');
+  return {
+    ...result,
+    error: compileError ? result.error : readableCSharpError(result.error),
+    diagnosticStage: compileError ? 'compile' : 'runtime',
+  };
+}
+
 function formatCSharpWorkerError(error) {
   if (error instanceof Error) return error.message;
   if (typeof error === 'string') return error;
@@ -4029,16 +4147,9 @@ async function executePreparedCSharpProgram(message) {
     ? payload.prepared
     : {};
   const inputs = payload.inputs && typeof payload.inputs === 'object' ? payload.inputs : {};
-  try {
-    validateCSharpInputsForJson(inputs);
-  } catch (error) {
-    return {
-      success: false,
-      error: error instanceof Error ? error.message : String(error),
-      consoleOutput: [],
-      timings: { totalMs: elapsedMs(startedAt) },
-    };
-  }
+  // Case inputs come from the problem, not the learner: invalid ones are a
+  // runtime failure and reject the request.
+  validateCSharpInputsForJson(inputs);
 
   const request = {
     source: prepared.code ?? '',
@@ -4069,28 +4180,10 @@ async function executePreparedCSharpProgram(message) {
       configuredRuntimeRole !== 'runner' ||
       typeof executeAlgorithmPreparedExport !== 'function'
     ) {
-      return {
-        success: false,
-        error: 'The prepared C# program requires an algorithm-fast runner.',
-        consoleOutput: [],
-        timings: {
-          initMs,
-          totalMs: elapsedMs(startedAt),
-          preparedRunnerTier: 'algorithm-fast',
-        },
-      };
+      throw new Error('The prepared C# program requires an algorithm-fast runner.');
     }
     if (!(payload.inputBytes instanceof Uint8Array)) {
-      return {
-        success: false,
-        error: 'The algorithm-fast C# runner requires a binary input payload.',
-        consoleOutput: [],
-        timings: {
-          initMs,
-          totalMs: elapsedMs(startedAt),
-          preparedRunnerTier: 'algorithm-fast',
-        },
-      };
+      throw new Error('The algorithm-fast C# runner requires a binary input payload.');
     }
     const hostCallStartedAt = now();
     try {
@@ -4163,8 +4256,12 @@ async function executePreparedCSharpProgram(message) {
         },
       };
     } catch (error) {
+      if (isDotnetExitStatus(error)) throw error;
       const message = formatCSharpWorkerError(error);
       const invalidArtifact = message.includes('Prepared TraceCLR artifact');
+      if (invalidArtifact) {
+        throw new Error('Prepared C# artifact is unavailable or invalid.');
+      }
       return {
         success: false,
         error: invalidArtifact
@@ -4407,7 +4504,7 @@ async function handleMessage(message) {
     message.type === 'execute-prepared-code' ||
     message.type === 'execute-prepared-trace'
   ) {
-    return executePreparedCSharpProgram(message);
+    return classifyCSharpProgramExecution(() => executePreparedCSharpProgram(message));
   }
 
   if (message.type === 'dispose-prepared-program') {
@@ -4418,7 +4515,9 @@ async function handleMessage(message) {
     message.type === 'execute-code' ||
     message.type === 'execute-with-tracing'
   ) {
-    return executeCSharpCodePayload(message.payload, message.type, message.id);
+    return classifyCSharpProgramExecution(() =>
+      executeCSharpCodePayload(message.payload, message.type, message.id)
+    );
   }
 
   if (message.type === 'execute-project-csharp') {

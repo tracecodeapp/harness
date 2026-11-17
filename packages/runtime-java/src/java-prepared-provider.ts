@@ -12,6 +12,7 @@ import type {
   RuntimeProgramPreparationResult,
   RuntimeTraceCall,
 } from '@tracecode/runtime-contracts';
+import { RuntimeProviderError } from '@tracecode/runtime-contracts';
 import {
   createEmptyRuntimeTrace,
   liftTraceOutcome,
@@ -210,10 +211,9 @@ class JavaPreparedCodeProgramImpl
       call.signal
     )
       .catch((error: unknown) => {
-        if (
-          call.limits?.wallClockMs !== undefined &&
-          isExecutionTimeoutError(error)
-        ) {
+        // A configured or default deadline expiring is the learner's time
+        // limit, never a provider failure.
+        if (isExecutionTimeoutError(error)) {
           return {
             kind: 'limit' as const,
             reason: 'client-timeout' as const,
@@ -232,7 +232,17 @@ class JavaPreparedCodeProgramImpl
       (client) =>
         client.executePreparedCodeBatch(this.programId, call),
       call.signal
-    );
+    ).catch((error: unknown) => {
+      // The whole batch outran its transport deadline: every case is out of
+      // time, which is the learner's limit, not a provider failure.
+      if (!isExecutionTimeoutError(error)) throw error;
+      return call.inputBatch.map((): CodeExecutionResult => ({
+        kind: 'limit',
+        reason: 'client-timeout',
+        error: error.message,
+        consoleOutput: [],
+      }));
+    });
   }
 }
 
@@ -268,10 +278,7 @@ class JavaPreparedTraceProgramImpl
         call.signal
       );
     } catch (error) {
-      if (
-        call.limits?.wallClockMs !== undefined &&
-        isExecutionTimeoutError(error)
-      ) {
+      if (isExecutionTimeoutError(error)) {
         return {
           kind: 'limit',
           reason: 'client-timeout',
@@ -280,7 +287,7 @@ class JavaPreparedTraceProgramImpl
             runId: 'java:run',
             file: 'solution.java',
           }),
-          executionTimeMs: call.limits.wallClockMs,
+          executionTimeMs: call.limits?.wallClockMs ?? error.timeoutMs,
           consoleOutput: [],
         };
       }
@@ -312,7 +319,20 @@ class JavaPreparedTraceProgramImpl
         );
       },
       call.signal
-    );
+    ).catch((error: unknown) => {
+      if (!isExecutionTimeoutError(error)) throw error;
+      return call.inputBatch.map((): ExecutionResult => ({
+        kind: 'limit',
+        reason: 'client-timeout',
+        error: error.message,
+        trace: createEmptyRuntimeTrace('java', {
+          runId: 'java:run',
+          file: 'solution.java',
+        }),
+        executionTimeMs: error.timeoutMs,
+        consoleOutput: [],
+      }));
+    });
   }
 }
 
@@ -356,12 +376,7 @@ class JavaPreparedExecutionProviderImpl
     }
     if (!initialized.success) {
       this.terminatePreparationClientOnce(standby.client);
-      return {
-        kind: 'failed',
-        error: 'Java runtime initialization was unsuccessful.',
-        diagnosticStage: 'compile',
-        consoleOutput: [],
-      };
+      throw new RuntimeProviderError('Java runtime initialization was unsuccessful.');
     }
 
     let result: JavaWorkerPreparedProgramResult;
@@ -381,14 +396,9 @@ class JavaPreparedExecutionProviderImpl
       result.snapshot.programId !== result.programId
     ) {
       this.terminatePreparationClientOnce(standby.client);
-      return {
-        kind: 'failed',
-        error:
-          'Java prepared execution requires a resumable class artifact, but the selected runtime did not provide one.',
-        diagnosticStage: 'compile',
-        consoleOutput: result.consoleOutput ?? [],
-        ...(result.timings ? { timings: result.timings } : {}),
-      };
+      throw new RuntimeProviderError(
+        'Java prepared execution requires a resumable class artifact, but the selected runtime did not provide one.'
+      );
     }
     // Transfer the warm compiler Worker to the prepared program. TraceJVM
     // derives whether a correctness case can reuse a reset runner JVM or needs

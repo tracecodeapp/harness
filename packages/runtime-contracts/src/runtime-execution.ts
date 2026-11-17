@@ -47,7 +47,16 @@ export type ExecutionLimitReason =
   | 'serialization-limit'
   | 'client-timeout';
 
-/** Which pipeline stage produced a failure diagnostic. */
+/**
+ * Which stage of the learner's program failed.
+ *
+ * Every stage names a failure the learner's program caused: it did not
+ * compile (`compile`, and the generated-driver stages that only fail when the
+ * learner's signature or types do not fit the call), or it raised, crashed, or
+ * exited while running (`runtime`, `trace`). A failure of the runtime provider
+ * itself has no stage: the provider rejects with a `RuntimeProviderError`
+ * instead of returning a `failed` outcome.
+ */
 export type ExecutionDiagnosticStage =
   | 'compile'
   | 'runtime'
@@ -83,9 +92,17 @@ export interface RuntimeExceptionDiagnostic {
  * Non-tracing code execution outcome.
  *
  * - `completed` — the user program ran to completion and produced output.
- * - `failed` — the user program (or its compilation) failed.
+ * - `failed` — the learner's program failed: it did not compile, or it raised,
+ *   crashed the runtime, or exited while running. `diagnosticStage` is
+ *   required and says which. A program that takes its worker down with it is
+ *   still `failed`; recovering the session is the provider's job.
  * - `limit` — execution was stopped by a configured or built-in limit before
  *   it could complete; `reason` says which one.
+ *
+ * A failure of the provider itself (assets, toolchain, transport, a worker
+ * that died independently of the program) is never an outcome: the provider
+ * rejects with a `RuntimeProviderError`, and Judge reports it as
+ * `runtime-provider-error`.
  */
 export type CodeExecutionResult =
   | {
@@ -98,7 +115,8 @@ export type CodeExecutionResult =
       kind: 'failed';
       error: string;
       errorLine?: number;
-      diagnosticStage?: ExecutionDiagnosticStage;
+      /** Required: a `failed` outcome always says which program stage failed. */
+      diagnosticStage: ExecutionDiagnosticStage;
       diagnostic?: unknown;
       consoleOutput: string[];
       timings?: RuntimeExecutionTimings;
@@ -145,7 +163,8 @@ export type ExecutionResult =
       trace: import('./runtime-trace').RuntimeTrace;
       executionTimeMs: number;
       consoleOutput: string[];
-      diagnosticStage?: ExecutionDiagnosticStage;
+      /** Required: a `failed` outcome always says which program stage failed. */
+      diagnosticStage: ExecutionDiagnosticStage;
       diagnostic?: unknown;
       timings?: RuntimeExecutionTimings;
     }

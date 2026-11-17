@@ -196,7 +196,8 @@ export type RuntimeProgramPreparationResult =
       readonly kind: 'failed';
       readonly error: string;
       readonly errorLine?: number;
-      readonly diagnosticStage?: ExecutionDiagnosticStage;
+      /** Required: the learner's program failed to prepare (compile). */
+      readonly diagnosticStage: ExecutionDiagnosticStage;
       readonly diagnostic?: unknown;
       readonly consoleOutput: string[];
       readonly timings?: RuntimeExecutionTimings;

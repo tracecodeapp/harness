@@ -2388,8 +2388,9 @@ for _tracecode_batch_inputs in _tracecode_batch_cases:
         if formatting_limit_reason is not None:
             _tracecode_case_result['timeoutReason'] = formatting_limit_reason
             _tracecode_case_result['consoleOutput'] = _tracecode_case_console
-        elif error_line is not None:
-            # Located in solution.py: the learner's program raised.
+        else:
+            # Raised inside the case region (input setup, the learner's call,
+            # result serialization): the learner's program failed.
             _tracecode_case_result['diagnosticStage'] = 'runtime'
     finally:
         _tracecode_batch_sys.settrace(None)
@@ -6488,6 +6489,7 @@ ${usesPreparedBindings
     _tracecode_arm_tracing()`
   : '_tracecode_arm_tracing()'}
 _trace_failed = False
+_tracecode_program_error_step = None
 # True only when a guard aborted the program mid-flight (runaway loop, memory
 # ceiling). A trace-budget trip alone degrades to "stop recording, keep running"
 # and leaves this False, so the host can still trust _result.
@@ -6502,13 +6504,17 @@ except _InfiniteLoopDetected as e:
     _execution_aborted = True
     _result = None
     # Infinite loop was detected - trace data already has the timeout event
-except Exception as e:
+except (Exception, SystemExit) as e:
     _trace_failed = True
     # Stop tracing immediately so error-handling internals are never traced.
     _tracecode_stop_tracing()
     _result = None
     _exc_type = type(e).__name__
-    _exc_msg = str(e)
+    _exc_msg = (
+        'the program exited with status ' + str(e.code)
+        if isinstance(e, SystemExit)
+        else str(e)
+    )
     _error_line = -1
     _user_error_line = -1
     _exc_tb = getattr(e, '__traceback__', None)
@@ -6522,6 +6528,17 @@ except Exception as e:
         _exc_tb = _exc_tb.tb_next
     if _user_error_line > 0:
         _error_line = _user_error_line
+    # The program's failure is a result, not a trace event: keep it even when
+    # a trace budget has already stopped recording.
+    _tracecode_program_error_step = {
+        'line': _error_line,
+        'event': 'exception',
+        'variables': {
+            'error': _exc_msg,
+            'errorType': _exc_type,
+            'errorLine': _error_line
+        },
+    }
     __tracecode_append_trace_step(None, {
         'line': _error_line,
         'event': 'exception',
@@ -6574,7 +6591,7 @@ def __tracecode_compact_last_step(kind=None):
 
 __tracecode_execution_result_json = (
     '{"traceSummary":' + json.dumps({
-        'errorStep': __tracecode_compact_last_step('exception'),
+        'errorStep': __tracecode_compact_last_step('exception') or _tracecode_program_error_step,
         'timeoutStep': __tracecode_compact_last_step('timeout'),
         'lastStep': __tracecode_compact_last_step(),
     })
@@ -6675,7 +6692,17 @@ function parsePythonError(rawError, userCodeStartLine, userCodeLineCount) {
     }
   }
 
-  const errorTypeMatch = rawError.match(/\b((?:\w+Error)|(?:\w+Exception)|KeyError|StopIteration|AssertionError):\s*([\s\S]+)/);
+  // The exception line of a traceback is its last line naming an exception
+  // type; Pyodide prefixes the whole text with "PythonError: Traceback".
+  const tracebackExceptionLines = [
+    ...rawError.matchAll(
+      /^([A-Za-z_][\w.]*(?:Error|Exception|Exit|Interrupt)|KeyError|StopIteration|AssertionError)(?::[ \t]*(.*))?$/gm
+    ),
+  ].filter((match) => match[1] !== 'PythonError');
+  const lastExceptionLine = tracebackExceptionLines.at(-1);
+  const errorTypeMatch = lastExceptionLine
+    ? [lastExceptionLine[0], lastExceptionLine[1], lastExceptionLine[2] || lastExceptionLine[1]]
+    : rawError.match(/\b((?:\w+Error)|(?:\w+Exception)|KeyError|StopIteration|AssertionError):\s*([\s\S]+)/);
   
   let formattedMessage;
   
@@ -6703,6 +6730,41 @@ function parsePythonError(rawError, userCodeStartLine, userCodeLineCount) {
     message: formattedMessage,
     line: hasTrustedUserLine ? userCodeLine : undefined,
   };
+}
+
+const PYTHON_COMPILE_ERROR_TYPES = new Set(['SyntaxError', 'IndentationError', 'TabError']);
+// Exceptions only a running program raises, wherever the traceback ends.
+const PYTHON_PROGRAM_ERROR_TYPES = new Set([
+  'SystemExit',
+  'RecursionError',
+  'MemoryError',
+  ...PYTHON_COMPILE_ERROR_TYPES,
+]);
+
+/**
+ * Classify an error that escaped a Python program run.
+ *
+ * A Pyodide PythonError raised by the program the Harness built around the
+ * learner's code is the learner's when the traceback points into the
+ * learner's source, or when it is an exception only a program raises
+ * (syntax errors are the compile stage). Anything else (a JavaScript error, a
+ * runtime load failure, an exception wholly inside Harness code) returns
+ * undefined: the caller rethrows it and the worker reports a provider failure.
+ */
+function escapedPythonErrorStage(error, learnerLine) {
+  const type =
+    error && typeof error === 'object' && typeof error.type === 'string'
+      ? error.type
+      : undefined;
+  const isPythonError =
+    type !== undefined ||
+    (error && typeof error === 'object' && error.constructor?.name === 'PythonError');
+  if (!isPythonError) return undefined;
+  if (type && PYTHON_COMPILE_ERROR_TYPES.has(type)) return 'compile';
+  if ((type && PYTHON_PROGRAM_ERROR_TYPES.has(type)) || learnerLine !== undefined) {
+    return 'runtime';
+  }
+  return undefined;
 }
 
 function pythonErrorText(error) {
@@ -6933,10 +6995,8 @@ async function executeWithTracing(
 
     let errorMessage;
     let errorLine;
-    // The tracer caught an exception it located in the learner's source: the
-    // program failed, not the provider, so the result carries a runtime stage.
-    // An exception with no learner frame stays unstaged and reads as a
-    // provider failure, which lets the host fall back.
+    // The tracer's program region (case setup and the learner's call) caught
+    // an exception: the learner's program failed, wherever it was raised.
     let learnerProgramRaised = false;
     
     const isTraceBudgetExceeded =
@@ -6957,8 +7017,12 @@ async function executeWithTracing(
         timeoutReason === 'line-limit' ||
         timeoutReason === 'single-line-limit');
 
+    // A recording-only budget keeps the program running; if the program then
+    // raised, its exception is the outcome, not the budget.
+    const programRaisedAfterRecordingStopped = Boolean(errorStep) && traceOnlyBudgetExceeded;
+
     // Handle tracing guard stops and execution timeouts
-    if (result.traceLimitExceeded || timeoutStep) {
+    if ((result.traceLimitExceeded || timeoutStep) && !programRaisedAfterRecordingStopped) {
       errorLine = lastStep?.line;
       const lineSuffix = errorLine && errorLine > 0 ? ` on line ${errorLine}` : '';
 
@@ -6970,6 +7034,7 @@ async function executeWithTracing(
         errorMessage = `Execution stopped${lineSuffix}.`;
       }
     } else if (errorStep) {
+      learnerProgramRaised = true;
       const errorType = errorStep.variables?.errorType;
       const errorMsg = errorStep.variables?.error;
       const rawErrorLine = errorStep.variables?.errorLine;
@@ -6978,7 +7043,6 @@ async function executeWithTracing(
         const mappedLine = rawErrorLine - userCodeStartLine + 1;
         if (mappedLine > 0 && mappedLine <= userCodeLineCount) {
           errorLine = mappedLine;
-          learnerProgramRaised = true;
         }
       }
       
@@ -7014,7 +7078,7 @@ async function executeWithTracing(
       executionTimeMs,
       consoleOutput: result.console,
       traceLimitExceeded: result.traceLimitExceeded,
-      timeoutReason,
+      ...(programRaisedAfterRecordingStopped ? {} : { timeoutReason }),
       lineEventCount: result.lineEventCount,
       traceStepCount: result.traceStepCount,
       timings: {
@@ -7028,6 +7092,8 @@ async function executeWithTracing(
     
     const { message, line } = parsePythonError(rawError, userCodeStartLine, code.split('\n').length);
     const isClientTimeout = rawError.includes('timed out');
+    const stage = isClientTimeout ? undefined : escapedPythonErrorStage(error, line);
+    if (!isClientTimeout && !stage) throw error;
 
     return {
       success: false,
@@ -7035,6 +7101,7 @@ async function executeWithTracing(
         ? 'Execution timed out. This may indicate an infinite loop or very expensive execution.'
         : message,
       errorLine: line,
+      ...(stage ? { diagnosticStage: stage } : {}),
       trace: remapPythonRuntimeTrace({ events: [] }, userCodeStartLine, userCodeLineCount, 'python:run', 'solution.py'),
       executionTimeMs,
       consoleOutput: [],
@@ -7442,9 +7509,11 @@ ${executionCallInNestedTry}
             if _tracecode_execution_user_frames
             else None
         )
-        _tracecode_execution_message = str(
-            _tracecode_execution_error
-        ).strip().split('\\n')[0]
+        _tracecode_execution_message = (
+            'the program exited with status ' + str(_tracecode_execution_error.code)
+            if isinstance(_tracecode_execution_error, SystemExit)
+            else str(_tracecode_execution_error).strip().split('\\n')[0]
+        )
         _tracecode_execution_prefix = type(
             _tracecode_execution_error
         ).__name__
@@ -7700,12 +7769,11 @@ _json_out
         success: false,
         output: null,
         error: String(result.executionError.message ?? 'Python execution failed.'),
+        // Raised inside the case region (input setup, the learner's call,
+        // result serialization): the learner's program failed.
+        diagnosticStage: 'runtime',
         ...(Number.isInteger(result.executionError.line)
-          ? {
-              errorLine: result.executionError.line,
-              // Located in solution.py: the learner's program raised.
-              diagnosticStage: 'runtime',
-            }
+          ? { errorLine: result.executionError.line }
           : {}),
         consoleOutput: [],
         timings: { totalMs: deps.performanceNow() - startedAt },
@@ -7732,12 +7800,15 @@ _json_out
   } catch (error) {
     const rawError = pythonErrorText(error);
     const { message, line } = parsePythonError(rawError, userCodeStartLine, userCodeLineCount);
+    const stage = escapedPythonErrorStage(error, line);
+    if (!stage) throw error;
 
     return {
       success: false,
       output: null,
       error: message,
       errorLine: line,
+      diagnosticStage: stage,
       consoleOutput: [],
       timings: { totalMs: deps.performanceNow() - startedAt },
     };
@@ -7903,6 +7974,9 @@ async function prepareProgram(
   } catch (error) {
     const rawError = pythonErrorText(error);
     const parsed = parsePythonError(rawError, 1, code.split('\n').length);
+    // Only the interpreter rejecting the learner's source is a compile
+    // failure. A load, transport, or Harness failure is the provider's.
+    if (escapedPythonErrorStage(error, parsed.line ?? 0) === undefined) throw error;
     const preparationMs = deps.performanceNow() - startedAt;
     return {
       success: false,

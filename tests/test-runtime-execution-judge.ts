@@ -55,14 +55,17 @@ interface FakeInput extends Record<string, unknown> {
     | 'failed'
     | 'hang'
     | 'limit'
+    | 'silent-limit'
     | 'throw'
-    | 'trace-truncated';
+    | 'trace-truncated'
+    | 'unstaged';
   readonly delayMs?: number;
   readonly consoleOutput?: readonly string[];
 }
 
 interface FakeProviderState {
   initCalls: number;
+  initFailure?: 'unsuccessful' | 'throws';
   readonly prepareCalls: RuntimeProgramPreparationCall[];
   readonly codeCalls: RuntimeCodeCall[];
   readonly traceCalls: RuntimeTraceCall[];
@@ -178,8 +181,11 @@ function fakeProvider(
   return {
     async init() {
       state.initCalls += 1;
+      if (state.initFailure === 'throws') {
+        throw new Error('runtime asset fetch failed');
+      }
       return {
-        success: true,
+        success: state.initFailure !== 'unsuccessful',
         loadTimeMs: 2,
       };
     },
@@ -218,6 +224,22 @@ function fakeProvider(
               state.completions.push(input.label);
               if (input.mode === 'throw') {
                 throw new Error('provider transport exploded');
+              }
+              if (input.mode === 'unstaged') {
+                // An untyped provider breaking the contract.
+                return {
+                  kind: 'failed',
+                  error: 'something failed',
+                  consoleOutput: [],
+                } as unknown as CodeExecutionResult;
+              }
+              if (input.mode === 'silent-limit') {
+                return {
+                  kind: 'limit',
+                  reason: 'client-timeout',
+                  error: '',
+                  consoleOutput: [],
+                };
               }
               if (input.mode === 'failed') {
                 return {
@@ -943,11 +965,17 @@ test('interactive continuation timeout scales to only the selected tranche', asy
       assert.ok(initial.executionId);
 
       slowInput.delayMs = 40;
-      const continuationExit = yield* Effect.exit(judge.execute<FakeInput>({
+      // The watchdog stopping the program is the time limit, reported on
+      // the case; it is never an infrastructure failure of the call.
+      const continuation = yield* judge.execute<FakeInput>({
         executionId: initial.executionId!,
         tracing: { caseIds: ['slow'] },
-      }));
-      assert.equal(Exit.isFailure(continuationExit), true);
+      });
+      assert.equal(continuation.evaluation.status, 'completed');
+      const slow = continuation.evaluation.cases[0];
+      assert.equal(slow?.status, 'timed-out');
+      assert.equal(slow?.timedOut, true);
+      assert.equal(slow?.diagnostics[0]?.code, 'client-timeout');
       assert.equal(state.aborts, 1);
       yield* judge.disposeExecution(initial.executionId!);
     })
@@ -1353,8 +1381,8 @@ test('maps raw values, diagnostics, limits, stdout, stderr, and provider failure
     result.cases[3]?.diagnostics[0]?.code,
     'runtime-provider-error'
   );
-  // Hosts tell a provider that failed from a program that failed by the
-  // process termination: only a provider throw ends in a `failure`.
+  // The diagnostic code is the contract consumers read; the termination is
+  // its consequence (only a provider rejection ends in a `failure`).
   assert.deepEqual(result.cases[3]?.termination, {
     kind: 'failure',
     exitCode: 1,
@@ -2021,4 +2049,62 @@ test('surfaces prepared program teardown failure as Judge infrastructure failure
     /teardown exploded/
   );
   assert.equal(state.disposals, 1);
+});
+
+test('a failed outcome without a program stage is reported as a contract violation, never attributed silently', async () => {
+  const state = makeState();
+  const result = await evaluate(
+    state,
+    makePlan<unknown>([
+      { id: 'unstaged', input: { label: 'unstaged', mode: 'unstaged' }, expected: 'unused' },
+      { id: 'silent-limit', input: { label: 'silent-limit', mode: 'silent-limit' }, expected: 'unused' },
+    ])
+  );
+  const unstaged = result.cases[0]?.diagnostics[0];
+  assert.equal(unstaged?.code, 'runtime-provider-error');
+  assert.match(unstaged?.message ?? '', /Harness contract violation/);
+  assert.match(unstaged?.message ?? '', /something failed/);
+  assert.equal(unstaged?.line, undefined);
+  // A limit the runtime reported without text still reads as its reason.
+  const silent = result.cases[1]?.diagnostics[0];
+  assert.equal(silent?.code, 'client-timeout');
+  assert.match(silent?.message ?? '', /timed out/i);
+});
+
+for (const initFailure of ['unsuccessful', 'throws'] as const) {
+  test(`a provider whose runtime cannot initialize (${initFailure}) reports runtime-provider-error, not a learner compile failure`, async () => {
+    const state = makeState();
+    state.initFailure = initFailure;
+    const result = await evaluate(
+      state,
+      makePlan<unknown>([
+        { id: 'never-runs', input: { label: 'never-runs' }, expected: 'unused' },
+      ])
+    );
+    assert.equal(result.status, 'compile-failed');
+    if (result.status !== 'compile-failed') return;
+    assert.equal(result.compile.diagnostics.length, 1);
+    assert.equal(result.compile.diagnostics[0]?.code, 'runtime-provider-error');
+    assert.equal(state.prepareCalls.length, 0);
+  });
+}
+
+test('a provider that recovers after a failed initialization is initialized again', async () => {
+  const state = makeState();
+  state.initFailure = 'throws';
+  const plan = makePlan<unknown>([
+    { id: 'case', input: { label: 'case', output: 1 }, expected: 1 },
+  ]);
+  const judgeResults = await Effect.runPromise(Effect.scoped(
+    Effect.gen(function* () {
+      const judge = yield* createTestRuntimeJudge(fakeProvider(state), codeBinding());
+      const first = yield* judge.evaluate<FakeInput>(plan);
+      state.initFailure = undefined;
+      const second = yield* judge.evaluate<FakeInput>(plan);
+      return [first, second] as const;
+    })
+  ));
+  assert.equal(judgeResults[0].status, 'compile-failed');
+  assert.equal(judgeResults[1].status, 'completed');
+  assert.equal(judgeResults[1].cases[0]?.verdict.kind, 'passed');
 });

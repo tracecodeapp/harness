@@ -16,6 +16,7 @@ import type {
 } from '@tracecode/runtime-contracts';
 import type { RuntimeCommandResult } from '@tracecode/runtime-contracts';
 import type { CodeExecutionResult, ExecutionResult } from '@tracecode/runtime-contracts';
+import { RuntimeProviderError } from '@tracecode/runtime-contracts';
 import { assertRuntimeRequestSupported } from '@tracecode/runtime-browser/internal';
 import { getLanguageRuntimeProfile } from '@tracecode/runtime-browser/internal';
 import type {
@@ -50,6 +51,11 @@ function completedPreparedCase(result: unknown): boolean {
       (result as { kind?: unknown }).kind === 'completed'
   );
 }
+
+const CSHARP_PREPARATION_PROVIDER_ERRORS = new Set([
+  'Invalid C# preparation request.',
+  'C# preparation did not produce a reusable compiled artifact.',
+]);
 
 export interface CSharpPreparedWorkerAuthority {
   readonly compiler: CSharpWorkerClient;
@@ -224,6 +230,13 @@ export class CSharpRuntimeClient implements RuntimeClient, RuntimePreparedExecut
       const diagnostic = result.diagnostics?.find((candidate) =>
         candidate.file.endsWith('solution.cs') || candidate.file.endsWith('UserCode.cs')
       );
+      // The compiler host analyzes and compiles the learner's source; its
+      // failures (Roslyn errors, a denied API, a missing Solution method) are
+      // the learner's compile stage. Only its own precondition failures are
+      // the provider's.
+      if (CSHARP_PREPARATION_PROVIDER_ERRORS.has(String(result.error ?? '').trim())) {
+        throw new RuntimeProviderError(String(result.error));
+      }
       return {
         kind: 'failed',
         error: result.error ?? 'C# preparation failed',
@@ -242,13 +255,9 @@ export class CSharpRuntimeClient implements RuntimeClient, RuntimePreparedExecut
       typeof result.compiledArtifactSha256 !== 'string' ||
       !/^[0-9a-f]{64}$/.test(result.compiledArtifactSha256)
     ) {
-      return {
-        kind: 'failed',
-        error: 'C# preparation completed without a reusable compiled artifact.',
-        diagnosticStage: 'compile',
-        consoleOutput: result.consoleOutput ?? [],
-        timings: result.timings,
-      };
+      throw new RuntimeProviderError(
+        'C# preparation completed without a reusable compiled artifact.'
+      );
     }
 
     const preparedRunnerTier = result.preparedRunnerTier;
@@ -261,13 +270,9 @@ export class CSharpRuntimeClient implements RuntimeClient, RuntimePreparedExecut
       (preparedRunnerTier === 'algorithm-fast' &&
         !result.traceClrWireContract)
     ) {
-      return {
-        kind: 'failed',
-        error: 'C# preparation completed without a valid runner-tier descriptor.',
-        diagnosticStage: 'compile',
-        consoleOutput: result.consoleOutput ?? [],
-        timings: result.timings,
-      };
+      throw new RuntimeProviderError(
+        'C# preparation completed without a valid runner-tier descriptor.'
+      );
     }
 
     let artifact: CSharpPreparedProgramArtifact | undefined = Object.freeze({

@@ -854,6 +854,7 @@ test('Python judge-compatible batch contains worker crashes in the failing case'
               ? {
                   kind: 'failed' as const,
                   error: 'Python worker failed while executing this case: synthetic worker crash',
+                  diagnosticStage: 'runtime' as const,
                   consoleOutput: [],
                 }
               : {

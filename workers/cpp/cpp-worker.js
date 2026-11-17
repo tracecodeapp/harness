@@ -5508,6 +5508,52 @@ async function instantiateWasi(module, process, options = {}) {
   return instance;
 }
 
+const CPP_PROGRAM_TRAP_EXIT_CODE = 134;
+
+function isCppProgramTrap(error) {
+  return (
+    error instanceof WebAssembly.RuntimeError ||
+    (error instanceof RangeError && /call stack/i.test(error.message))
+  );
+}
+
+function cppProgramTrapMessage(error) {
+  const detail = error instanceof Error ? error.message : String(error);
+  if (error instanceof RangeError) {
+    return `Stack overflow: the program recursed too deeply (${detail}).`;
+  }
+  if (/divide by zero/i.test(detail)) {
+    return `The program divided an integer by zero (WebAssembly trap: ${detail}).`;
+  }
+  if (/out of bounds|memory access/i.test(detail)) {
+    return `The program accessed memory outside its bounds (WebAssembly trap: ${detail}).`;
+  }
+  if (/unreachable/i.test(detail)) {
+    return `The program aborted (WebAssembly trap: ${detail}).`;
+  }
+  return `The program trapped (WebAssembly trap: ${detail}).`;
+}
+
+/**
+ * Learner-facing message for a program that ended with a non-zero status.
+ * stderr carries the C++ runtime's own explanation (an uncaught exception's
+ * what(), an abort, a trap) when there is one.
+ */
+function cppProgramExitMessage(program) {
+  const stderr = String(program?.stderr || '').trim();
+  if (stderr) return stderr;
+  return `The program exited with status ${program?.exitCode}.`;
+}
+
+/** The learner's abnormal exit: its runtime stage, and its line when known. */
+function cppProgramExitFields(program) {
+  const match = /\(line (\d+)\)\s*$/m.exec(String(program?.stderr || ''));
+  return {
+    diagnosticStage: 'runtime',
+    ...(match ? { errorLine: Number(match[1]) } : {}),
+  };
+}
+
 async function runWasi(module, args, fs, options = {}) {
   const process = new WasiProcess({
     args,
@@ -5538,11 +5584,19 @@ async function runWasi(module, args, fs, options = {}) {
   }
 
   let exitCode = 0;
+  let trap;
   try {
     start();
   } catch (error) {
     if (error instanceof ProcExit) {
       exitCode = error.code;
+    } else if (options.userProgram === true && isCppProgramTrap(error)) {
+      // The learner's program trapped (divide by zero, out-of-bounds memory,
+      // abort, stack exhaustion). Every run instantiates fresh linear memory,
+      // so the trap ends this program only; it is reported as the program's
+      // abnormal exit, never as a runtime failure.
+      trap = cppProgramTrapMessage(error);
+      exitCode = CPP_PROGRAM_TRAP_EXIT_CODE;
     } else {
       throw error;
     }
@@ -5550,8 +5604,11 @@ async function runWasi(module, args, fs, options = {}) {
 
   return {
     exitCode,
+    ...(trap ? { trap } : {}),
     stdout: process.stdout,
-    stderr: process.stderr,
+    stderr: trap
+      ? `${process.stderr}${process.stderr && !process.stderr.endsWith('\n') ? '\n' : ''}${trap}`
+      : process.stderr,
     linearMemoryBytes:
       instance.exports.memory instanceof WebAssembly.Memory
         ? instance.exports.memory.buffer.byteLength
@@ -5758,9 +5815,24 @@ function cppThrowReplacementForReturnType(returnType, options = {}) {
   const traceInstrumentation = options.traceLine
     ? `${cppExceptionTraceInstrumentation(options.traceLine, options.message || 'C++ exception thrown.')} `
     : '';
+  // Remember what was thrown and where: if no lowered catch clears it before
+  // the entry point returns, the driver ends the program as an uncaught
+  // exception (see __tracecode_fail_if_uncaught).
+  const record = options.uncaughtMessage
+    ? `__tracecode_exception_message = ${cppStringLiteral(options.uncaughtMessage)}; `
+    : '';
   return defaultValue
-    ? `{ ${traceInstrumentation}__tracecode_exception_pending = true; return ${defaultValue}; }`
-    : `{ ${traceInstrumentation}__tracecode_exception_pending = true; return; }`;
+    ? `{ ${traceInstrumentation}${record}__tracecode_exception_pending = true; return ${defaultValue}; }`
+    : `{ ${traceInstrumentation}${record}__tracecode_exception_pending = true; return; }`;
+}
+
+function cppUncaughtExceptionMessage(expression, lineNumber) {
+  const rawExpression = String(expression || '').trim();
+  const typeMatch = /^(?:new\s+)?([A-Za-z_][\w:]*(?:<[^()]*>)?)\s*[({]/.exec(rawExpression);
+  const type = typeMatch ? typeMatch[1] : rawExpression ? 'exception' : 'rethrown exception';
+  const message = cppExceptionMessageForThrowExpression(rawExpression);
+  const detail = message === 'C++ exception thrown.' ? '' : `: ${message}`;
+  return `terminate called after throwing ${type}${detail} (line ${lineNumber})`;
 }
 
 function rewriteCppThrowsWithoutExceptions(source, options = {}) {
@@ -5788,6 +5860,7 @@ function rewriteCppThrowsWithoutExceptions(source, options = {}) {
     if (/\bthrow\b/.test(rewritten) && activeFrame) {
       rewritten = rewritten.replace(/throw(?:\s+([^;]+))?\s*;/g, (_match, expression) => (
         cppThrowReplacementForReturnType(activeFrame.returnType, {
+          uncaughtMessage: cppUncaughtExceptionMessage(expression, lineNumber),
           ...(options.emitTraceEvents ? {
             traceLine: lineNumber,
             message: cppExceptionMessageForThrowExpression(expression),
@@ -5875,7 +5948,29 @@ function rewriteCppTryCatchWithoutExceptions(source) {
 function lowerCppExceptionSyntaxForNoExceptions(source, options = {}) {
   if (!/\b(?:try|throw|catch)\b/.test(source)) return source;
   const lowered = rewriteCppThrowsWithoutExceptions(rewriteCppTryCatchWithoutExceptions(source), options);
-  return `static bool __tracecode_exception_pending = false;\n${lowered}`;
+  return `${CPP_NO_EXCEPTIONS_PRELUDE}${lowered}`;
+}
+
+// One line, like the flag it replaces, so line offsets are unchanged. The
+// runtime header the driver includes first provides <cstdio> and <cstdlib>.
+const CPP_NO_EXCEPTIONS_PRELUDE =
+  'static bool __tracecode_exception_pending = false; ' +
+  'static const char* __tracecode_exception_message = "terminate called after throwing an exception"; ' +
+  'static void __tracecode_fail_if_uncaught() { if (!__tracecode_exception_pending) return; ' +
+  'std::fflush(stdout); std::fputs(__tracecode_exception_message, stderr); std::fputs("\\n", stderr); ' +
+  'std::fflush(stderr); std::_Exit(134); }\n';
+
+/**
+ * Exceptions are lowered to a pending flag (the toolchain builds without
+ * exception support). A flag still pending when the entry point returns is an
+ * uncaught exception: end the program before it reports a result.
+ */
+function failUncaughtLoweredExceptionsBeforeResult(driverSource) {
+  if (!driverSource.includes('__tracecode_fail_if_uncaught')) return driverSource;
+  return driverSource.replace(
+    /(^|\n)([ \t]*)tracecode::write_result_json/g,
+    '$1$2__tracecode_fail_if_uncaught(); tracecode::write_result_json'
+  );
 }
 
 function normalizeCppUserSource(source, options = {}) {
@@ -12194,10 +12289,36 @@ function extractDiagnosticLocation(diagnostics) {
   };
 }
 
+/**
+ * The learner's source is embedded in the generated driver, so the compiler
+ * reports driver lines. Its excerpt ("   4 |     int total = n +;") carries
+ * the learner's own line number; trust it only when the excerpt text is that
+ * line of the learner's source.
+ */
+function learnerLineFromCompilerExcerpt(diagnostics, userSource) {
+  if (typeof userSource !== 'string' || !userSource) return undefined;
+  const userLines = userSource.split(/\r?\n/);
+  const excerpt = /(?:^|\n)\s*(\d+)\s*\|\s?(.*)/.exec(diagnostics);
+  if (!excerpt) return undefined;
+  const line = Number(excerpt[1]);
+  if (!Number.isInteger(line) || line < 1 || line > userLines.length) return undefined;
+  const learnerText = userLines[line - 1].trim();
+  const excerptText = excerpt[2].trim();
+  if (!learnerText || !excerptText) return undefined;
+  if (learnerText === excerptText) return line;
+  // Traced builds instrument the statement ("return helper(n);" becomes
+  // "int __tc_return_5 = (helper(n));"); its expression still appears.
+  const expression = learnerText.replace(/^return\s+/, '').replace(/;\s*$/, '').trim();
+  return expression.length >= 3 && excerptText.includes(expression) ? line : undefined;
+}
+
 function compileFailureResult(diagnostics, fallbackMessage, start, details = {}) {
   const cleanDiagnostics = (diagnostics || '').trim();
   const location = extractDiagnosticLocation(cleanDiagnostics);
-  const userLine = location?.file === CPP_USER_SOURCE_FILE ? location.line : extractUserErrorLine(cleanDiagnostics);
+  const userLine = location?.file === CPP_USER_SOURCE_FILE
+    ? location.line
+    : extractUserErrorLine(cleanDiagnostics) ??
+      learnerLineFromCompilerExcerpt(cleanDiagnostics, details.userSource);
   const prefix =
     location?.file === 'TraceCodeDriver.cpp'
       ? 'C++ generated driver failed'
@@ -12205,10 +12326,19 @@ function compileFailureResult(diagnostics, fallbackMessage, start, details = {})
         ? 'C++ compilation failed'
         : fallbackMessage;
 
+  // Point the learner at their own file and line, not the generated driver.
+  const learnerDiagnostics = userLine !== undefined && location?.file !== CPP_USER_SOURCE_FILE
+    ? cleanDiagnostics.replace(
+        /(^|\n)(?:\/workspace\/)?TraceCodeDriver\.cpp:\d+:(\d+):/,
+        `$1${CPP_USER_SOURCE_FILE}:${userLine}:$2:`
+      )
+    : cleanDiagnostics;
   return {
     success: false,
     output: null,
-    error: cleanDiagnostics ? `${prefix}: ${cleanDiagnostics}` : fallbackMessage,
+    error: cleanDiagnostics
+      ? `${String(prefix).replace(/\.$/, '')}: ${learnerDiagnostics}`
+      : fallbackMessage,
     ...(userLine !== undefined ? { errorLine: userLine } : {}),
     ...(details.generatedSource ? { generatedSource: details.generatedSource } : {}),
     ...(details.diagnosticStage ? { diagnosticStage: details.diagnosticStage } : {}),
@@ -12237,7 +12367,33 @@ function programOutputDiagnostics(program, error) {
 }
 
 function programOutputParseFailureResult(error, program, signature, start, timings, options = {}) {
-  const diagnostics = programOutputDiagnostics(program, error) || 'C++ program output could not be parsed.';
+  // A program that ended abnormally (exit(), abort, uncaught exception, trap)
+  // before printing its result is the learner's failure. A program that
+  // exited cleanly but broke the result protocol is the runtime's.
+  if (!program || program.exitCode === 0) throw error;
+  if (program.exitCode === 124) {
+    // The instrumented program's own budget stopped it before it reported a
+    // result: the trace budget when tracing, the time limit otherwise.
+    const limit = options.tracing
+      ? { error: 'C++ trace budget exceeded.', traceLimitExceeded: true, timeoutReason: 'trace-limit' }
+      : { error: 'Execution timed out. This may indicate an infinite loop or very expensive execution.', timeoutReason: 'client-timeout' };
+    const trace = options.tracing
+      ? finalizeRuntimeTrace([], options.traceOptions || {}).trace
+      : undefined;
+    return {
+      success: false,
+      output: null,
+      ...limit,
+      ...(trace ? { trace, lineEventCount: trace.lineEventCount, traceStepCount: trace.traceStepCount } : {}),
+      consoleOutput: [
+        ...splitNonEmptyOutputLines(program?.stdout),
+        ...splitNonEmptyOutputLines(program?.stderr),
+      ],
+      executionTimeMs: elapsedMs(start),
+      timings: { ...timings, totalMs: elapsedMs(start) },
+    };
+  }
+  const diagnostics = programExitOrOutputDiagnostics(program, error);
   const consoleOutput = [
     ...splitNonEmptyOutputLines(program?.stdout),
     ...splitNonEmptyOutputLines(program?.stderr),
@@ -12251,6 +12407,7 @@ function programOutputParseFailureResult(error, program, signature, start, timin
       success: false,
       output: null,
       error: diagnostics,
+      ...cppProgramExitFields(program),
       trace,
       consoleOutput,
       executionTimeMs: elapsedMs(start),
@@ -12263,10 +12420,17 @@ function programOutputParseFailureResult(error, program, signature, start, timin
     success: false,
     output: null,
     error: diagnostics,
+    ...cppProgramExitFields(program),
     consoleOutput,
     executionTimeMs: elapsedMs(start),
     timings: { ...timings, totalMs: elapsedMs(start) },
   };
+}
+
+function programExitOrOutputDiagnostics(program, error) {
+  return cppProgramExitMessage(program) ||
+    programOutputDiagnostics(program, error) ||
+    'C++ program output could not be parsed.';
 }
 
 async function runTool(module, fs, args) {
@@ -14946,10 +15110,10 @@ async function compileAndRunWithExternalCompiler(source, functionName, inputs, s
     timings.driverBuildMs = elapsedMs(driverStartedAt);
     emitRequestProgress('driver-build:complete', { tracing: Boolean(options.tracing), compiler: 'tracecc' });
   }
-  driverSource = driverSource.replace(
+  driverSource = failUncaughtLoweredExceptionsBeforeResult(driverSource.replace(
     '#include "/tracecode_runtime.hpp"',
     '#include "tracecode_runtime.hpp"'
-  );
+  ));
 
   const cacheKey = getProgramCacheKey('tracecc', driverSource);
   let programModule = getCachedProgramModule(cacheKey);
@@ -14978,26 +15142,37 @@ async function compileAndRunWithExternalCompiler(source, functionName, inputs, s
     }
 
     if (!compileResult.success) {
-      const diagnostics = [compileResult.stderr, compileResult.stdout, compileResult.error]
+      const compilerOutput = [compileResult.stderr, compileResult.stdout]
         .filter(Boolean)
         .join('\n')
         .trim();
+      if (!compilerOutput) {
+        // The compiler produced no diagnostics: it did not reject the
+        // learner's source, it failed to run.
+        throw new Error(
+          `C++ compiler failed without diagnostics${compileResult.error ? `: ${compileResult.error}` : '.'}`
+        );
+      }
+      const diagnostics = [compilerOutput, compileResult.error]
+        .filter(Boolean)
+        .join('\n')
+        .trim();
+      const location = extractDiagnosticLocation(diagnostics);
+      const inLearnerSource =
+        location?.file === CPP_USER_SOURCE_FILE ||
+        learnerLineFromCompilerExcerpt(diagnostics, source) !== undefined;
       return compileFailureResult(diagnostics, 'C++ compilation failed.', start, {
         generatedSource: options?.traceOptions?.includeGeneratedSource ? driverSource : undefined,
-        diagnosticStage: options.tracing ? 'trace-driver-compile' : 'driver-compile',
+        userSource: source,
+        diagnosticStage: inLearnerSource
+          ? 'compile'
+          : options.tracing ? 'trace-driver-compile' : 'driver-compile',
         timings,
       });
     }
 
     if (!(compileResult.programBuffer instanceof ArrayBuffer)) {
-      return {
-        success: false,
-        output: null,
-        error: 'C++ compiler worker did not return program.wasm.',
-        consoleOutput: [],
-        executionTimeMs: elapsedMs(start),
-        timings: { ...timings, totalMs: elapsedMs(start) },
-      };
+      throw new Error('C++ compiler worker did not return program.wasm.');
     }
 
     const wasmCompileStartedAt = now();
@@ -15021,6 +15196,7 @@ async function compileAndRunWithExternalCompiler(source, functionName, inputs, s
     emitRequestProgress('program-run:start', { tracing: Boolean(options.tracing), compiler: 'tracecc' });
     const program = await runWasi(programModule, ['program.wasm'], new InMemoryFileSystem(), {
       stdinBytes: staticStdinBytesFromText(stdinText),
+      userProgram: true,
     });
     timings.runMs = elapsedMs(runStartedAt);
     emitRequestProgress('program-run:complete', {
@@ -15047,10 +15223,13 @@ async function compileAndRunWithExternalCompiler(source, functionName, inputs, s
     const baseResult = {
       success: program.exitCode === 0 && !programTimedOut,
       output: parsed.output,
-      error: program.exitCode === 0 ? undefined : program.stderr || `C++ program exited with code ${program.exitCode}`,
+      error: program.exitCode === 0 ? undefined : cppProgramExitMessage(program),
       consoleOutput: [...parsed.consoleOutput, ...program.stderr.split(/\r?\n/).filter(Boolean)],
       executionTimeMs: elapsedMs(start),
       timings: { ...timings, totalMs: elapsedMs(start) },
+      // A non-zero status is the learner's program ending abnormally
+      // (uncaught exception, abort, exit(), trap).
+      ...(program.exitCode !== 0 ? cppProgramExitFields(program) : {}),
       ...(runtimeTimedOut ? { timeoutReason: 'client-timeout', diagnosticStage: 'runtime' } : {}),
     };
     if (!options.tracing) return baseResult;
@@ -15061,7 +15240,8 @@ async function compileAndRunWithExternalCompiler(source, functionName, inputs, s
         return {
           ...batchTraceResult,
           success: false,
-          error: programTimedOut ? 'C++ trace budget exceeded.' : (program.stderr || `C++ program exited with code ${program.exitCode}`),
+          error: programTimedOut ? 'C++ trace budget exceeded.' : cppProgramExitMessage(program),
+          ...(programTimedOut ? {} : cppProgramExitFields(program)),
         };
       }
       return batchTraceResult;
@@ -15070,7 +15250,9 @@ async function compileAndRunWithExternalCompiler(source, functionName, inputs, s
     const { trace } = finalizedTrace;
     const runtimeTraceLimitExceeded = finalizedTrace.traceLimitExceeded || Boolean(parsed.traceStatus?.traceLimitExceeded) || programTimedOut;
     const droppedEventCount = (finalizedTrace.droppedEventCount || 0) + (Number(parsed.traceStatus?.droppedEventCount) || 0);
-    const timeoutReason = timeoutReasonForParsedTrace(parsed);
+    // A program the trace budget stopped (exit 124) is a trace limit even when
+    // it died before reporting which budget tripped.
+    const timeoutReason = timeoutReasonForParsedTrace(parsed) ?? 'trace-limit';
     return {
       ...baseResult,
       ...(programTimedOut ? { error: 'C++ trace budget exceeded.' } : {}),
@@ -15082,31 +15264,10 @@ async function compileAndRunWithExternalCompiler(source, functionName, inputs, s
       ...(runtimeTraceLimitExceeded ? { droppedEventCount } : {}),
     };
   } catch (error) {
-    if (options.tracing) {
-      const trace = finalizeRuntimeTrace(
-        [{ kind: 'exception', line: signature.line, message: error instanceof Error ? error.message : String(error) }],
-        { ...(options.traceOptions || {}), sourceCode: source }
-      ).trace;
-      return {
-        success: false,
-        output: null,
-        error: error instanceof Error ? error.message : String(error),
-        trace,
-        consoleOutput: [],
-        executionTimeMs: elapsedMs(start),
-        lineEventCount: trace.lineEventCount,
-        traceStepCount: trace.traceStepCount,
-        timings: { ...timings, totalMs: elapsedMs(start) },
-      };
-    }
-    return {
-      success: false,
-      output: null,
-      error: error instanceof Error ? error.message : String(error),
-      consoleOutput: [],
-      executionTimeMs: elapsedMs(start),
-      timings: { ...timings, totalMs: elapsedMs(start) },
-    };
+    // The learner's traps and exits are already results above. An error here
+    // came from the runtime itself (WASI shim, result decoding): rethrow it so
+    // the client reports a provider failure instead of blaming the program.
+    throw error;
   }
 }
 
@@ -15164,6 +15325,7 @@ async function handlePrepareRuntimeProgram(payload) {
     return {
       success: false,
       error: 'C++ source is empty.',
+      diagnosticStage: 'compile',
       consoleOutput: [],
       timings: { totalMs: elapsedMs(startedAt) },
     };
@@ -15174,6 +15336,7 @@ async function handlePrepareRuntimeProgram(payload) {
       error: tracing
         ? 'C++ named tracing requires a function name.'
         : 'C++ named execution requires a function name.',
+      diagnosticStage: 'compile',
       consoleOutput: [],
       timings: { totalMs: elapsedMs(startedAt) },
     };
@@ -15200,9 +15363,12 @@ async function handlePrepareRuntimeProgram(payload) {
           traceOptions: payload?.traceOptions || {},
         });
   } catch (error) {
+    // The driver generator could not bind the learner's source (no matching
+    // class or method, an unsupported signature): the learner's compile stage.
     return {
       success: false,
       error: error instanceof Error ? error.message : String(error),
+      diagnosticStage: 'compile',
       consoleOutput: [],
       timings: {
         driverBuildMs: elapsedMs(driverStartedAt),
@@ -15283,7 +15449,7 @@ async function runPreparedRuntimeProgram(
       preparedProgram.programModule,
       runtimeArgs,
       new InMemoryFileSystem(),
-      { stdinBytes: staticStdinBytesFromText(stdinText) }
+      { stdinBytes: staticStdinBytesFromText(stdinText), userProgram: true }
     );
     const runMs = elapsedMs(runStartedAt);
     const totalMs = elapsedMs(startedAt);
@@ -15343,7 +15509,13 @@ async function runPreparedRuntimeProgram(
             success: false,
             error: programTimedOut
               ? 'C++ trace budget exceeded.'
-              : (program.stderr || `C++ program exited with code ${program.exitCode}`),
+              : cppProgramExitMessage(program),
+            ...(programTimedOut
+              ? {
+                  traceLimitExceeded: true,
+                  timeoutReason: firstResult.timeoutReason ?? timeoutReasonForParsedTrace(parsed) ?? 'trace-limit',
+                }
+              : cppProgramExitFields(program)),
             consoleOutput,
             timings,
           };
@@ -15370,10 +15542,11 @@ async function runPreparedRuntimeProgram(
         output: parsed.output[0],
         error: program.exitCode === 0
           ? undefined
-          : (program.stderr || `C++ program exited with code ${program.exitCode}`),
+          : cppProgramExitMessage(program),
         consoleOutput,
         executionTimeMs: totalMs,
         timings,
+        ...(program.exitCode !== 0 ? cppProgramExitFields(program) : {}),
         ...(runtimeTimedOut ? { timeoutReason: 'client-timeout', diagnosticStage: 'runtime' } : {}),
       };
     }
@@ -15383,10 +15556,11 @@ async function runPreparedRuntimeProgram(
       output: parsed.output,
       error: program.exitCode === 0
         ? undefined
-        : (program.stderr || `C++ program exited with code ${program.exitCode}`),
+        : cppProgramExitMessage(program),
       consoleOutput,
       executionTimeMs: totalMs,
       timings,
+      ...(program.exitCode !== 0 ? cppProgramExitFields(program) : {}),
       ...(runtimeTimedOut ? { timeoutReason: 'client-timeout', diagnosticStage: 'runtime' } : {}),
     };
     if (!preparedProgram.tracing) return baseResult;
@@ -15407,7 +15581,7 @@ async function runPreparedRuntimeProgram(
       traceStepCount: finalizedTrace.trace.traceStepCount,
       traceLimitExceeded: runtimeTraceLimitExceeded,
       ...(runtimeTraceLimitExceeded
-        ? { timeoutReason: timeoutReasonForParsedTrace(parsed) }
+        ? { timeoutReason: timeoutReasonForParsedTrace(parsed) ?? 'trace-limit' }
         : {}),
       ...(runtimeTraceLimitExceeded
         ? {
@@ -15418,38 +15592,10 @@ async function runPreparedRuntimeProgram(
         : {}),
     };
   } catch (error) {
-    if (preparedProgram.tracing) {
-      const trace = finalizeRuntimeTrace(
-        [{
-          kind: 'exception',
-          line: preparedProgram.signatureLine,
-          message: error instanceof Error ? error.message : String(error),
-        }],
-        {
-          ...(preparedProgram.traceOptions || {}),
-          sourceCode: preparedProgram.source,
-        }
-      ).trace;
-      return {
-        success: false,
-        output: null,
-        error: error instanceof Error ? error.message : String(error),
-        trace,
-        consoleOutput: [],
-        executionTimeMs: elapsedMs(startedAt),
-        lineEventCount: trace.lineEventCount,
-        traceStepCount: trace.traceStepCount,
-        timings: preparedExecutionTimings(0, elapsedMs(startedAt)),
-      };
-    }
-    return {
-      success: false,
-      output: null,
-      error: error instanceof Error ? error.message : String(error),
-      consoleOutput: [],
-      executionTimeMs: elapsedMs(startedAt),
-      timings: preparedExecutionTimings(0, elapsedMs(startedAt)),
-    };
+    // The learner's traps and exits are already results above. An error here
+    // came from the runtime itself (WASI shim, result decoding, protocol):
+    // rethrow it so the client reports a provider failure.
+    throw error;
   }
 }
 
