@@ -326,6 +326,8 @@ class JavaPreparedTraceProgramImpl
 
 class JavaPreparedExecutionProviderImpl
   implements JavaPreparedExecutionProvider {
+  /** JVM start, restore and replacement run outside each case's own clock. */
+  readonly lifecycleAllowanceMs = 120_000;
   private standby: StandbyWorker | undefined;
   private disposed = false;
   private readonly activePreparationClients = new Set<JavaWorkerClient>();

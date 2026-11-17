@@ -702,6 +702,46 @@ test('accepts an explicitly published undefined result under the required policy
   ));
 });
 
+test('a backstop watchdog is the provider failure, never a time limit', async () => {
+  await Effect.runPromise(Effect.scoped(
+    Effect.gen(function* () {
+      const control = new InMemoryJudgeRuntimeControl();
+      const state = yield* makeState();
+      const host = yield* makeTraceKernelHost({
+        providers: [fakeProvider(control, state)],
+      });
+      const port = new TraceKernelJudgePort({
+        host,
+        runtimeControl: control,
+      });
+      const result = yield* evaluateJudgePlan(
+        port,
+        makePlan([{ value: 1, block: true }], {
+          compile: undefined,
+          run: {
+            command: 'run',
+            timeoutMs: 20,
+            timeoutRole: 'backstop',
+          },
+        })
+      );
+
+      assert.equal(result.status, 'completed');
+      const stopped = result.cases[0]!;
+      assert.equal(stopped.status, 'runtime-error');
+      assert.equal(stopped.timedOut, false);
+      assert.equal(stopped.termination.kind, 'signal');
+      assert.equal(stopped.failure?.origin, 'provider');
+      assert.equal(
+        stopped.diagnostics.find((diagnostic) => diagnostic.severity === 'error')?.code,
+        'runtime-provider-error'
+      );
+      assert.equal(control.activeInvocationCount(), 0);
+      assert.deepEqual(host.sessionIds(), []);
+    })
+  ));
+});
+
 test('reports TraceKernel watchdog termination as a timed-out case', async () => {
   await Effect.runPromise(Effect.scoped(
     Effect.gen(function* () {

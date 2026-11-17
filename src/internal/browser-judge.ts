@@ -1514,13 +1514,15 @@ class EvaluationJudgeRuntimeControl
 
 function preparedEvaluationPlan<Input, Expected>(
   plan: JudgeEvaluationPlan<Input, Expected>,
-  useProviderBatch: boolean
+  useProviderBatch: boolean,
+  lifecycleAllowanceMs: number = DEFAULT_LIFECYCLE_ALLOWANCE_MS
 ): JudgeEvaluationPlan<Input, Expected> {
   const batched = useProviderBatch && plan.cases.length > 1;
   const timeoutMs = preparedRunTimeoutMs(
     plan.run.timeoutMs,
     plan.cases.length,
-    batched
+    batched,
+    lifecycleAllowanceMs
   );
   return Object.freeze({
     ...plan,
@@ -1533,7 +1535,7 @@ function preparedEvaluationPlan<Input, Expected>(
         }),
     run: Object.freeze({
       ...plan.run,
-      ...(timeoutMs === undefined ? {} : { timeoutMs }),
+      ...(timeoutMs === undefined ? {} : { timeoutMs, timeoutRole: 'backstop' as const }),
     }),
     ...(batched
       ? {
@@ -1547,37 +1549,38 @@ function preparedEvaluationPlan<Input, Expected>(
 }
 
 /**
- * The Judge watchdog is a backstop behind the provider's own per-case limit,
- * which reports the reason and the line. Without grace the two race at the
- * same instant and the watchdog can win, losing that information (and, in a
- * Run, which cases never started).
+ * The Judge watchdog is only a backstop behind the provider's own per-case
+ * limits, which report the reason and the line. It never undercuts the
+ * provider: it waits for every case's own deadline plus the provider's
+ * declared lifecycle allowance (starting, restoring or replacing a worker or
+ * VM) and a recovery allowance per batched case. If it still fires, the
+ * provider failed to honour its own limits: the plan marks it a backstop, and
+ * Judge reports the provider's failure instead of fabricating time limits.
  */
+const DEFAULT_LIFECYCLE_ALLOWANCE_MS = 30_000;
 const BATCH_RECOVERY_ALLOWANCE_MS = 10_000;
-
-function watchdogGraceMs(perCaseTimeoutMs: number): number {
-  return Math.min(5_000, Math.floor(perCaseTimeoutMs / 2));
-}
 
 function preparedRunTimeoutMs(
   perCaseTimeoutMs: number | undefined,
   caseCount: number,
-  batched: boolean
+  batched: boolean,
+  lifecycleAllowanceMs: number = DEFAULT_LIFECYCLE_ALLOWANCE_MS
 ): number | undefined {
   if (perCaseTimeoutMs === undefined) return undefined;
-  if (!batched) return perCaseTimeoutMs + watchdogGraceMs(perCaseTimeoutMs);
-  // A batch process also pays per-case runtime recovery (a replacement worker
-  // or VM after a case that hit its limit) outside the provider's per-case
-  // clock, so its backstop grants a fixed recovery allowance per case.
+  const cases = batched ? caseCount : 1;
   return Math.min(
     2_147_483_647,
-    (perCaseTimeoutMs + BATCH_RECOVERY_ALLOWANCE_MS) * caseCount
+    perCaseTimeoutMs * cases +
+      lifecycleAllowanceMs +
+      (batched ? BATCH_RECOVERY_ALLOWANCE_MS * caseCount : 0)
   );
 }
 
 function traceTranchePlan<Input, Expected>(
   plan: JudgeEvaluationPlan<Input, Expected>,
   caseIds: readonly string[],
-  perCaseTimeoutMs: number | undefined
+  perCaseTimeoutMs: number | undefined,
+  lifecycleAllowanceMs: number = DEFAULT_LIFECYCLE_ALLOWANCE_MS
 ): JudgeEvaluationPlan<Input, Expected> {
   const casesById = new Map(
     plan.cases.map((testCase) => [testCase.id, testCase])
@@ -1592,8 +1595,10 @@ function traceTranchePlan<Input, Expected>(
             timeoutMs: preparedRunTimeoutMs(
               perCaseTimeoutMs,
               caseIds.length,
-              caseIds.length > 1
+              caseIds.length > 1,
+              lifecycleAllowanceMs
             ),
+            timeoutRole: 'backstop' as const,
           }),
     }),
     cases: Object.freeze(caseIds.map((caseId) => casesById.get(caseId)!)),
@@ -1727,7 +1732,8 @@ class RuntimeJudgeComposition
     private readonly host: TraceKernelHost,
     private readonly bridge: RuntimeJudgeProviderBridge,
     private readonly traceCapable: boolean,
-    private readonly sourcePath: string
+    private readonly sourcePath: string,
+    private readonly lifecycleAllowanceMs: number = DEFAULT_LIFECYCLE_ALLOWANCE_MS
   ) {}
 
   activeSessionIds(): readonly string[] {
@@ -1801,7 +1807,7 @@ class RuntimeJudgeComposition
         ),
         readableFiles: [this.sourcePath],
       });
-      const plan = preparedEvaluationPlan(request.plan, true);
+      const plan = preparedEvaluationPlan(request.plan, true, this.lifecycleAllowanceMs);
       let retained = false;
       const operation = Effect.gen(this, function* () {
         yield* validateTraceSelection(plan, request.tracing);
@@ -1908,7 +1914,8 @@ class RuntimeJudgeComposition
       const plan = traceTranchePlan(
         retained.plan as JudgeEvaluationPlan<Input, Expected>,
         request.tracing.caseIds,
-        retained.perCaseTimeoutMs
+        retained.perCaseTimeoutMs,
+        this.lifecycleAllowanceMs
       );
       return evaluatePreparedJudgePlan<
         TraceKernelFileSystemImage,
@@ -1994,7 +2001,8 @@ class RuntimeJudgeComposition
       });
       const effectivePlan = preparedEvaluationPlan(
         plan,
-        useProviderBatch
+        useProviderBatch,
+        this.lifecycleAllowanceMs
       );
       const evaluation = evaluateJudgePlan<
         TraceKernelFileSystemImage,
@@ -2084,7 +2092,8 @@ function createRuntimeJudge(
         host,
         bridge,
         isTraceBinding(options.binding),
-        options.binding.sourcePath
+        options.binding.sourcePath,
+        options.provider.lifecycleAllowanceMs ?? DEFAULT_LIFECYCLE_ALLOWANCE_MS
       );
       return Effect.addFinalizer(() =>
         judge.disposeRetainedExecutions()

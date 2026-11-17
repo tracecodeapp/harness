@@ -22,6 +22,14 @@ export interface JudgeProcessPlan {
   readonly cwd?: string;
   readonly env?: Readonly<Record<string, string>>;
   readonly timeoutMs?: number;
+  /**
+   * What `timeoutMs` is. `limit` (the default): the program's time limit; a
+   * process the watchdog stops ran out of time. `backstop`: a guard behind a
+   * runtime that enforces its own per-case limits; the watchdog firing means
+   * the runtime failed to honour them, which is the provider's failure, and no
+   * per-case limit is fabricated for cases the runtime did not report.
+   */
+  readonly timeoutRole?: 'limit' | 'backstop';
 }
 
 export interface JudgeCasePlan<Input = unknown, Expected = unknown> {

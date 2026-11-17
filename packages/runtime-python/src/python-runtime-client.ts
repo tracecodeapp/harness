@@ -1172,6 +1172,8 @@ class PreparedPythonProgramLifetime {
 
 class PythonPreparedExecutionProvider
   implements PythonPreparedExecutionProviderController {
+  /** Fresh workers restore the Python runtime image outside each case's clock. */
+  readonly lifecycleAllowanceMs = 120_000;
   private preparationTail: Promise<void> = Promise.resolve();
   // The shared runtime-image factory lives outside these disposable workers.
   // This standby restores that image ahead of preparation, then becomes the

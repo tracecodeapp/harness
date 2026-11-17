@@ -233,6 +233,13 @@ export type RuntimeProgramPreparationResult =
  * the legacy single-call bridge and cannot promise compile-once semantics.
  */
 export interface RuntimePreparedExecutionProvider {
+  /**
+   * Time this provider may spend outside a case's own deadline on runtime
+   * lifecycle (starting, restoring or replacing a worker or VM) in one run.
+   * Judge's backstop watchdog waits this long beyond the per-case deadlines
+   * before it treats the provider as hung. Default: 30 seconds.
+   */
+  readonly lifecycleAllowanceMs?: number;
   init(): Promise<{ success: boolean; loadTimeMs: number }>;
   prepareProgram(
     call: RuntimeProgramPreparationCall

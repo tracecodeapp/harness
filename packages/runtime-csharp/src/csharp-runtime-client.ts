@@ -66,6 +66,9 @@ export interface CSharpPreparedWorkerAuthority {
 }
 
 export class CSharpRuntimeClient implements RuntimeClient, RuntimePreparedExecutionProvider {
+  /** Runner leases boot the .NET runtime outside each case's own clock. */
+  readonly lifecycleAllowanceMs = 45_000;
+
   constructor(
     private readonly workerClient: CSharpWorkerClient,
     private readonly preparedAuthority?: CSharpPreparedWorkerAuthority

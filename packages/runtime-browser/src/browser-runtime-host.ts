@@ -212,6 +212,9 @@ function safePreparedProvider(
   ensureReady: () => Promise<void>
 ): RuntimePreparedExecutionProvider {
   return Object.freeze({
+    ...(delegate.lifecycleAllowanceMs === undefined
+      ? {}
+      : { lifecycleAllowanceMs: delegate.lifecycleAllowanceMs }),
     async init(): Promise<{ success: boolean; loadTimeMs: number }> {
       assertActive();
       await ensureReady();
@@ -323,6 +326,9 @@ class BrowserRuntimeHostImplementation implements BrowserRuntimeHost {
           this.#preparedProviders.set(
             language,
             {
+              ...(safeProvider.lifecycleAllowanceMs === undefined
+                ? {}
+                : { lifecycleAllowanceMs: safeProvider.lifecycleAllowanceMs }),
               init: () => this.#promoteLanguageWarm(language),
               prepareProgram: async (call) => {
                 await this.#promoteLanguageWarm(language);

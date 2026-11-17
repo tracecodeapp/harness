@@ -97,6 +97,11 @@ export interface JudgeKernelProcessOutcome {
   readonly batch?: readonly JudgeRuntimeBatchCaseOutput[];
   readonly failure?: JudgeFailure;
   readonly timedOut: boolean;
+  /**
+   * A backstop watchdog (`timeoutRole: 'backstop'`) stopped the process: the
+   * runtime did not honour its own limits. Set instead of `timedOut`.
+   */
+  readonly backstopTimedOut?: boolean;
   readonly startedAt?: number;
   readonly endedAt?: number;
 }

@@ -987,11 +987,15 @@ test('interactive execute rejects invalid trace selections before preparing', as
 test('interactive continuation timeout scales to only the selected tranche', async () => {
   const state = makePreparedState();
   const slowInput = { label: 'slow', delayMs: 0 };
+  // A small declared lifecycle allowance keeps the backstop short: one case's
+  // 25 ms plus 10 ms. Scaled to all three batched cases it would be over 30 s
+  // and would not fire while the slow case runs for 200 ms.
+  const provider = { ...preparedProvider(state), lifecycleAllowanceMs: 10 };
 
   await Effect.runPromise(Effect.scoped(
     Effect.gen(function* () {
       const judge = yield* createTestRuntimeJudge(
-        preparedProvider(state),
+        provider,
         codeBinding({ trace: true })
       );
       const initial = yield* judge.execute<FakeInput>({
@@ -1009,18 +1013,20 @@ test('interactive continuation timeout scales to only the selected tranche', asy
       });
       assert.ok(initial.executionId);
 
-      slowInput.delayMs = 40;
-      // The watchdog stopping the program is the time limit, reported on
-      // the case; it is never an infrastructure failure of the call.
+      slowInput.delayMs = 200;
+      // The backstop fired: the runtime did not honour its own limit. That is
+      // the provider's failure on the case, never a fabricated time limit and
+      // never an infrastructure failure of the whole call.
       const continuation = yield* judge.execute<FakeInput>({
         executionId: initial.executionId!,
         tracing: { caseIds: ['slow'] },
       });
       assert.equal(continuation.evaluation.status, 'completed');
       const slow = continuation.evaluation.cases[0];
-      assert.equal(slow?.status, 'timed-out');
-      assert.equal(slow?.timedOut, true);
-      assert.equal(slow?.diagnostics[0]?.code, 'client-timeout');
+      assert.equal(slow?.status, 'runtime-error');
+      assert.equal(slow?.timedOut, false);
+      assert.equal(slow?.diagnostics[0]?.code, 'runtime-provider-error');
+      assert.equal(slow?.failure?.origin, 'provider');
       assert.equal(state.aborts, 1);
       yield* judge.disposeExecution(initial.executionId!);
     })
@@ -1492,33 +1498,49 @@ test('publishes tracing as an observation without changing comparison', async ()
   assert.equal(tracedState.traceCalls.length, 1);
 });
 
-test('uses TraceKernel watchdog termination and aborts the provider on timeout', async () => {
+test('a provider that hangs past its own deadline is stopped by the backstop and reported as the provider failure', async () => {
   const state = makeState();
-  const result = await evaluate(
-    state,
-    makePlan([{
-      id: 'timeout',
-      input: {
-        label: 'timeout',
-        mode: 'hang',
-      },
-      expected: 'never',
-    }], {
-      run: {
-        command: 'runtime-provider-case',
-        timeoutMs: 25,
-      },
+  // The backstop waits for the case's own 25 ms plus the provider's declared
+  // lifecycle allowance (10 ms here; 30 s by default).
+  const provider = { ...fakeProvider(state), lifecycleAllowanceMs: 10 };
+  const startedAt = performance.now();
+  const result = await Effect.runPromise(Effect.scoped(
+    Effect.gen(function* () {
+      const judge = yield* createTestRuntimeJudge(provider, codeBinding());
+      return yield* judge.evaluate<FakeInput>(makePlan([{
+        id: 'timeout',
+        input: {
+          label: 'timeout',
+          mode: 'hang',
+        },
+        expected: 'never',
+      }], {
+        run: {
+          command: 'runtime-provider-case',
+          timeoutMs: 25,
+        },
+      }));
     })
-  );
+  ));
+  const elapsedMs = performance.now() - startedAt;
+  assert.ok(elapsedMs >= 30, 'the backstop does not undercut the provider allowance');
+  assert.ok(elapsedMs < 5_000, `the declared allowance, not the 30 s default, sizes the backstop (${Math.round(elapsedMs)} ms)`);
 
   assert.equal(result.status, 'completed');
-  assert.equal(result.cases[0]?.status, 'timed-out');
-  assert.equal(result.cases[0]?.timedOut, true);
-  assert.deepEqual(result.cases[0]?.termination, {
+  const hung = result.cases[0]!;
+  assert.equal(hung.status, 'runtime-error');
+  assert.equal(hung.timedOut, false, 'no time limit is fabricated');
+  assert.deepEqual(hung.termination, {
     kind: 'signal',
     signal: 'SIGKILL',
     exitCode: 137,
   });
+  assert.equal(hung.failure?.origin, 'provider');
+  assert.equal(hung.diagnostics.find((diagnostic) => diagnostic.severity === 'error')?.code, 'runtime-provider-error');
+  assert.throws(
+    () => judgeCaseExecutionOutcome(hung, { language: 'javascript' }),
+    (error: unknown) => isRuntimeProviderError(error)
+  );
   assert.equal(state.aborts, 1);
 });
 

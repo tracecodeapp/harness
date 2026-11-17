@@ -43,6 +43,36 @@ function infrastructureError(
   });
 }
 
+const BACKSTOP_TIMEOUT_MESSAGE =
+  'The runtime did not finish within its own deadline, so the Judge stopped it.';
+
+/**
+ * A backstop watchdog fired: the runtime did not honour its own limits. That
+ * is the provider's failure; the outcome carries no time limit of its own.
+ */
+function backstopTimeoutOutcome(
+  outcome: JudgeKernelProcessOutcome
+): JudgeKernelProcessOutcome {
+  return Object.freeze({
+    ...outcome,
+    timedOut: false,
+    backstopTimedOut: true,
+    diagnostics: Object.freeze([
+      ...(outcome.diagnostics ?? []).filter((diagnostic) => diagnostic.severity !== 'error'),
+      Object.freeze({
+        severity: 'error' as const,
+        code: 'runtime-provider-error',
+        message: BACKSTOP_TIMEOUT_MESSAGE,
+      }),
+    ]),
+    failure: Object.freeze({
+      origin: 'provider' as const,
+      reason: 'runtime-failure' as const,
+      message: BACKSTOP_TIMEOUT_MESSAGE,
+    }),
+  });
+}
+
 function runProcess<Snapshot>(
   session: JudgeKernelSession<Snapshot>,
   runtime: string,
@@ -57,6 +87,11 @@ function runProcess<Snapshot>(
     Effect.mapError((error) => infrastructureError('spawn process', error)),
     Effect.flatMap((process: JudgeKernelProcess) =>
       process.wait().pipe(
+        Effect.map((outcome) =>
+          outcome.timedOut && processPlan.timeoutRole === 'backstop'
+            ? backstopTimeoutOutcome(outcome)
+            : outcome
+        ),
         Effect.mapError((error) => infrastructureError('wait for process', error)),
         Effect.onInterrupt(() =>
           process.signal('SIGKILL').pipe(
@@ -500,6 +535,21 @@ function runBatch<Snapshot, Input, Expected, Result>(
               ...outcome,
               diagnostics: Object.freeze([WATCHDOG_TIMEOUT_DIAGNOSTIC]),
             },
+            plan.structuredResult ?? 'required',
+            comparator
+          )
+        ));
+      }
+      if (!outcome.batch && outcome.backstopTimedOut) {
+        // The backstop stopped a runtime that did not honour its own limits
+        // before it published any case: each case is the provider's failure.
+        // No time limit is fabricated, and nothing is claimed about which
+        // case was running.
+        return Object.freeze(plan.cases.map((testCase) =>
+          caseResult<Input, Expected, Result>(
+            plan.id,
+            testCase,
+            outcome,
             plan.structuredResult ?? 'required',
             comparator
           )

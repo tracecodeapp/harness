@@ -115,6 +115,8 @@ export function createCppPreparedExecutionProvider(
   };
 
   return {
+    // Worker start and program re-preparation run outside each case's clock.
+    lifecycleAllowanceMs: 120_000,
     async init() {
       assertActive();
       const expectedGeneration = generation;
