@@ -146,18 +146,75 @@ export interface JudgeProcessResult {
   readonly endedAt?: number;
 }
 
-export interface JudgeCompileResult extends JudgeProcessResult {
-  readonly status: 'compiled' | 'compile-failed' | 'timed-out';
-}
+/** Which stage of the learner's program failed. */
+export type JudgeProgramStage =
+  | 'compile'
+  | 'runtime'
+  | 'trace'
+  | 'driver-compile'
+  | 'trace-driver-compile'
+  | 'driver-link';
 
-export interface JudgeCaseResult<Result = unknown, Expected = unknown>
+/** Which limit stopped the learner's program. */
+export type JudgeLimitReason =
+  | 'client-timeout'
+  | 'trace-limit'
+  | 'trace-byte-limit'
+  | 'line-limit'
+  | 'single-line-limit'
+  | 'recursion-limit'
+  | 'memory-limit'
+  | 'serialization-limit';
+
+/**
+ * Where a failure came from, stated by the Harness so a consumer never has to
+ * infer it.
+ *
+ * - `program`: the learner's program failed at `stage`.
+ * - `limit`: a limit stopped the learner's program; `reason` names it.
+ * - `provider`: the runtime provider failed for a reason the program did not
+ *   cause. `runtime-failure`: the runtime could not run the program (assets,
+ *   transport, a worker that died outside the program). `protocol`: the
+ *   runtime finished without the structured result Judge requires.
+ *   `contract-violation`: the runtime reported a failure without saying whose
+ *   it was.
+ */
+export type JudgeFailure =
+  | {
+      readonly origin: 'program';
+      readonly stage: JudgeProgramStage;
+      readonly message: string;
+      readonly line?: number;
+    }
+  | {
+      readonly origin: 'limit';
+      readonly reason: JudgeLimitReason;
+      readonly message: string;
+    }
+  | {
+      readonly origin: 'provider';
+      readonly reason: 'runtime-failure' | 'protocol' | 'contract-violation';
+      readonly message: string;
+    };
+
+/**
+ * A compile result. Every compile that did not succeed carries `failure`;
+ * a successful one never does.
+ */
+export type JudgeCompileResult = JudgeProcessResult & (
+  | {
+      readonly status: 'compiled';
+      readonly failure?: undefined;
+    }
+  | {
+      readonly status: 'compile-failed' | 'timed-out';
+      readonly failure: JudgeFailure;
+    }
+);
+
+interface JudgeCaseResultFields<Result, Expected>
   extends JudgeProcessResult {
   readonly caseId: string;
-  readonly status:
-    | 'completed'
-    | 'runtime-error'
-    | 'timed-out'
-    | 'protocol-error';
   readonly value?: Result;
   readonly trace?: unknown;
   readonly expected?: Expected;
@@ -165,11 +222,27 @@ export interface JudgeCaseResult<Result = unknown, Expected = unknown>
   readonly protocolError?: string;
 }
 
+/**
+ * A case result. Every case that did not complete carries `failure`, which
+ * says whose failure it was; a completed case never does.
+ */
+export type JudgeCaseResult<Result = unknown, Expected = unknown> =
+  JudgeCaseResultFields<Result, Expected> & (
+    | {
+        readonly status: 'completed';
+        readonly failure?: undefined;
+      }
+    | {
+        readonly status: 'runtime-error' | 'timed-out' | 'protocol-error';
+        readonly failure: JudgeFailure;
+      }
+  );
+
 export type JudgeEvaluationResult<Result = unknown, Expected = unknown> =
   | {
       readonly planId: string;
       readonly status: 'compile-failed';
-      readonly compile: JudgeCompileResult;
+      readonly compile: Exclude<JudgeCompileResult, { readonly status: 'compiled' }>;
       readonly cases: readonly [];
     }
   | {

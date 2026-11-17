@@ -5,6 +5,10 @@ import * as Exit from 'effect/Exit';
 import * as Fiber from 'effect/Fiber';
 import {
   createAlgorithmJudgeBundle,
+  isRuntimeProviderError,
+  judgeCaseExecutionOutcome,
+  judgeCompileExecutionOutcome,
+  type JudgeCaseResult,
   type JudgeEvaluationPlan,
   type RuntimeJudgeBinding,
 } from '../src/judge';
@@ -2107,4 +2111,82 @@ test('a provider that recovers after a failed initialization is initialized agai
   assert.equal(judgeResults[0].status, 'compile-failed');
   assert.equal(judgeResults[1].status, 'completed');
   assert.equal(judgeResults[1].cases[0]?.verdict.kind, 'passed');
+});
+
+/**
+ * Type-level conformance: a consumer handles every Judge case kind by reading
+ * the Harness's stated origin, with no cast, no default branch and no probe of
+ * optional fields. If a case kind or origin is added, this stops compiling.
+ */
+function describeJudgeCase(result: JudgeCaseResult): string {
+  if (result.status === 'completed') return 'completed';
+  const failure = result.failure;
+  switch (failure.origin) {
+    case 'program':
+      return `program:${failure.stage}:${failure.message}`;
+    case 'limit':
+      return `limit:${failure.reason}`;
+    case 'provider':
+      return `provider:${failure.reason}`;
+  }
+}
+
+test('every Judge case states its origin and converts totally to the outcome a learner sees', async () => {
+  const state = makeState();
+  const result = await evaluate(
+    state,
+    makePlan<unknown>([
+      { id: 'completed', input: { label: 'completed', output: 4 }, expected: 4 },
+      { id: 'failed', input: { label: 'failed', mode: 'failed' }, expected: 'unused' },
+      { id: 'limited', input: { label: 'limited', mode: 'limit' }, expected: 'unused' },
+      { id: 'provider-failure', input: { label: 'provider-failure', mode: 'throw' }, expected: 'unused' },
+      { id: 'unstaged', input: { label: 'unstaged', mode: 'unstaged' }, expected: 'unused' },
+    ])
+  );
+  assert.deepEqual(result.cases.map(describeJudgeCase), [
+    'completed',
+    'program:runtime:runtime exploded',
+    'limit:line-limit',
+    'provider:runtime-failure',
+    'provider:contract-violation',
+  ]);
+
+  const [completed, failed, limited, provider, unstaged] = result.cases;
+  assert.deepEqual(
+    judgeCaseExecutionOutcome(completed!, { language: 'javascript' }),
+    { kind: 'completed', output: 4, consoleOutput: ['stdout:completed'] }
+  );
+  const failedOutcome = judgeCaseExecutionOutcome(failed!, { language: 'javascript' });
+  assert.equal(failedOutcome.kind, 'failed');
+  if (failedOutcome.kind === 'failed') {
+    assert.equal(failedOutcome.diagnosticStage, 'runtime');
+    assert.equal(failedOutcome.error, 'runtime exploded');
+    assert.equal(failedOutcome.errorLine, 7);
+  }
+  const limitedTrace = judgeCaseExecutionOutcome(limited!, { language: 'javascript', trace: true });
+  assert.equal(limitedTrace.kind, 'limit');
+  assert.equal(limitedTrace.kind === 'limit' ? limitedTrace.reason : undefined, 'line-limit');
+  assert.equal(limitedTrace.trace.language, 'javascript');
+  for (const providerCase of [provider!, unstaged!]) {
+    assert.throws(
+      () => judgeCaseExecutionOutcome(providerCase, { language: 'javascript' }),
+      (error: unknown) => isRuntimeProviderError(error)
+    );
+  }
+});
+
+test('a provider compile failure rejects instead of becoming a learner outcome', async () => {
+  const state = makeState();
+  state.initFailure = 'throws';
+  const result = await evaluate(
+    state,
+    makePlan<unknown>([{ id: 'never-runs', input: { label: 'never-runs' }, expected: 'unused' }])
+  );
+  assert.equal(result.status, 'compile-failed');
+  if (result.status !== 'compile-failed') return;
+  assert.equal(result.compile.failure.origin, 'provider');
+  assert.throws(
+    () => judgeCompileExecutionOutcome(result.compile, { language: 'javascript', trace: true }),
+    (error: unknown) => isRuntimeProviderError(error)
+  );
 });

@@ -604,6 +604,13 @@ test('stops before cases and preserves structured diagnostics when compilation f
       assert.equal(result.compile.status, 'compile-failed');
       assert.equal(result.compile.termination.kind, 'exit');
       assert.equal(result.compile.diagnostics[0]?.message, 'expected fake compile error');
+      // A compile process that ran and failed without publishing an origin is
+      // the submitted program's compile stage.
+      assert.equal(result.compile.failure.origin, 'program');
+      assert.equal(
+        result.compile.failure.origin === 'program' ? result.compile.failure.stage : undefined,
+        'compile'
+      );
       assert.deepEqual(result.cases, []);
       assert.equal(state.acquired.length, 1);
       assert.equal(control.activeInvocationCount(), 0);
@@ -637,6 +644,14 @@ test('reports a protocol error when a successful runtime omits its structured re
         result.cases[0]?.protocolError ?? '',
         /without publishing a structured Judge result/
       );
+      // The runtime finished without its result: the provider's protocol
+      // failure, stated explicitly rather than left to optional fields.
+      assert.deepEqual(result.cases[0]?.failure, {
+        origin: 'provider',
+        reason: 'protocol',
+        message:
+          'The runtime completed successfully without publishing a structured Judge result.',
+      });
       assert.equal(control.activeInvocationCount(), 0);
     })
   ));
@@ -714,6 +729,11 @@ test('reports TraceKernel watchdog termination as a timed-out case', async () =>
       assert.equal(result.cases[0]?.status, 'timed-out');
       assert.equal(result.cases[0]?.timedOut, true);
       assert.equal(result.cases[0]?.termination.kind, 'signal');
+      assert.equal(result.cases[0]?.failure?.origin, 'limit');
+      assert.equal(
+        result.cases[0]?.failure?.origin === 'limit' ? result.cases[0].failure.reason : undefined,
+        'client-timeout'
+      );
       assert.equal(state.releases.length, 1);
       assert.deepEqual(state.releases[0], {
         kind: 'destroy',

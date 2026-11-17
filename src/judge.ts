@@ -14,6 +14,21 @@ export {
   structuralJsonComparator,
 } from './internal/browser-judge';
 
+/**
+ * Total conversions from Judge results to the execution outcomes a learner
+ * sees. Consumers forward the Harness's classification instead of choosing an
+ * origin; a provider failure rejects with `RuntimeProviderError`.
+ */
+export {
+  judgeCaseExecutionOutcome,
+  judgeCompileExecutionOutcome,
+  type JudgeExecutionOutcomeOptions,
+} from './internal/judge-execution-outcome';
+export {
+  isRuntimeProviderError,
+  RuntimeProviderError,
+} from '../packages/runtime-contracts/src/index';
+
 export type {
   BrowserSafeExecutionOptions,
   BrowserJudgeCppOptions,
@@ -33,6 +48,10 @@ export type {
   CreateBrowserProjectJudgeOptions,
   JudgeCasePlan,
   JudgeCaseResult,
+  JudgeCompileResult,
+  JudgeFailure,
+  JudgeLimitReason,
+  JudgeProgramStage,
   JudgeCaseVerdict,
   JudgeComparator,
   JudgeComparisonInput,

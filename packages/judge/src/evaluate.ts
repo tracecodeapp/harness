@@ -13,6 +13,8 @@ import type {
   JudgeCaseResult,
   JudgeCasePlan,
   JudgeCompileResult,
+  JudgeDiagnostic,
+  JudgeFailure,
   JudgeEvaluationOptions,
   JudgeEvaluationPlan,
   JudgeEvaluationResult,
@@ -83,20 +85,73 @@ function processResult(
   });
 }
 
+function firstErrorDiagnostic(
+  outcome: JudgeKernelProcessOutcome
+): JudgeDiagnostic | undefined {
+  const diagnostics = outcome.diagnostics ?? [];
+  return diagnostics.find((diagnostic) => diagnostic.severity === 'error') ??
+    diagnostics[0];
+}
+
+/**
+ * Whose failure a process that did not succeed reports.
+ *
+ * The runtime adapter states it on the published output, and that is
+ * authoritative. A process that publishes nothing is judged by its own
+ * termination: the Judge watchdog stopping it is the time limit; a process the
+ * kernel could not run is the provider's; a process that ran and exited
+ * unsuccessfully is the submitted program (in a Judge plan the process is the
+ * learner's program).
+ */
+function processFailure(
+  outcome: JudgeKernelProcessOutcome,
+  programStage: 'compile' | 'runtime'
+): JudgeFailure {
+  const diagnostic = firstErrorDiagnostic(outcome);
+  if (outcome.timedOut) {
+    return Object.freeze({
+      origin: 'limit',
+      reason: 'client-timeout',
+      message: WATCHDOG_TIMEOUT_DIAGNOSTIC.message,
+    });
+  }
+  if (outcome.failure) return outcome.failure;
+  if (outcome.termination.kind === 'failure') {
+    return Object.freeze({
+      origin: 'provider',
+      reason: 'runtime-failure',
+      message: outcome.termination.message,
+    });
+  }
+  const exitDescription = outcome.termination.kind === 'signal'
+    ? `The program was stopped by ${outcome.termination.signal}.`
+    : `The program exited with status ${outcome.termination.exitCode}.`;
+  return Object.freeze({
+    origin: 'program',
+    stage: programStage,
+    message: diagnostic?.message || outcome.stderr.trim() || exitDescription,
+    ...(diagnostic?.line === undefined ? {} : { line: diagnostic.line }),
+  });
+}
+
 function compileResult(
   outcome: JudgeKernelProcessOutcome
 ): JudgeCompileResult {
   const base = processResult(outcome);
+  if (outcome.timedOut) {
+    return Object.freeze({
+      ...base,
+      status: 'timed-out' as const,
+      failure: processFailure(outcome, 'compile'),
+    });
+  }
+  if (outcome.termination.kind === 'exit' && outcome.termination.exitCode === 0) {
+    return Object.freeze({ ...base, status: 'compiled' as const });
+  }
   return Object.freeze({
     ...base,
-    status: outcome.timedOut
-      ? 'timed-out'
-      : (
-          outcome.termination.kind === 'exit' &&
-          outcome.termination.exitCode === 0
-        )
-        ? 'compiled'
-        : 'compile-failed',
+    status: 'compile-failed' as const,
+    failure: processFailure(outcome, 'compile'),
   });
 }
 
@@ -149,6 +204,7 @@ function caseResult<Input, Expected, Result>(
       ...trace,
       caseId: testCase.id,
       status: 'timed-out',
+      failure: processFailure(outcome, 'runtime'),
       verdict: notEvaluated('case-did-not-complete'),
     });
   }
@@ -162,6 +218,7 @@ function caseResult<Input, Expected, Result>(
       ...trace,
       caseId: testCase.id,
       status: 'runtime-error',
+      failure: processFailure(outcome, 'runtime'),
       verdict: notEvaluated('case-did-not-complete'),
     });
   }
@@ -179,6 +236,15 @@ function caseResult<Input, Expected, Result>(
       verdict: notEvaluated('case-did-not-complete'),
       protocolError:
         'The runtime completed successfully without publishing a structured Judge result.',
+      // A runtime adapter reports a learner program that ended early (exit(0)
+      // and the like) as the program's failure. Reaching here means the
+      // runtime itself finished without its result: the provider's.
+      failure: Object.freeze({
+        origin: 'provider' as const,
+        reason: 'protocol' as const,
+        message:
+          'The runtime completed successfully without publishing a structured Judge result.',
+      }),
     });
   }
   const expectedProvided = Object.prototype.hasOwnProperty.call(
@@ -405,6 +471,7 @@ function runBatch<Snapshot, Input, Expected, Result>(
               ? { trace: item.trace }
               : {}),
             timedOut: item.timedOut,
+            ...(item.failure ? { failure: item.failure } : {}),
             startedAt: outcome.startedAt,
             endedAt: outcome.endedAt,
           },

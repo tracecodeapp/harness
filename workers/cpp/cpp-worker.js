@@ -5542,7 +5542,9 @@ function cppProgramTrapMessage(error) {
 function cppProgramExitMessage(program) {
   const stderr = String(program?.stderr || '').trim();
   if (stderr) return stderr;
-  return `The program exited with status ${program?.exitCode}.`;
+  return program?.exitCode === 0
+    ? 'The program exited with status 0 before returning a result.'
+    : `The program exited with status ${program?.exitCode}.`;
 }
 
 /** The learner's abnormal exit: its runtime stage, and its line when known. */
@@ -5585,11 +5587,15 @@ async function runWasi(module, args, fs, options = {}) {
 
   let exitCode = 0;
   let trap;
+  // Whether the program ended by calling exit() rather than returning from
+  // main: a program that exits early with status 0 never reports its result.
+  let calledExit = false;
   try {
     start();
   } catch (error) {
     if (error instanceof ProcExit) {
       exitCode = error.code;
+      calledExit = true;
     } else if (options.userProgram === true && isCppProgramTrap(error)) {
       // The learner's program trapped (divide by zero, out-of-bounds memory,
       // abort, stack exhaustion). Every run instantiates fresh linear memory,
@@ -5604,6 +5610,7 @@ async function runWasi(module, args, fs, options = {}) {
 
   return {
     exitCode,
+    calledExit,
     ...(trap ? { trap } : {}),
     stdout: process.stdout,
     stderr: trap
@@ -11848,7 +11855,7 @@ function parseProgramStdout(stdout, options = {}) {
   if (!foundResult && !options.allowMissingResult) {
     throw new Error('C++ program did not emit a TraceCode result.');
   }
-  return { output, consoleOutput, events: traceEvents ?? [], traceStatus };
+  return { output, consoleOutput, events: traceEvents ?? [], traceStatus, foundResult };
 }
 
 function normalizeScriptTraceEvents(events, userLineCount) {
@@ -12370,7 +12377,12 @@ function programOutputParseFailureResult(error, program, signature, start, timin
   // A program that ended abnormally (exit(), abort, uncaught exception, trap)
   // before printing its result is the learner's failure. A program that
   // exited cleanly but broke the result protocol is the runtime's.
-  if (!program || program.exitCode === 0) throw error;
+  if (!program) throw error;
+  if (program.exitCode === 0 && !program.calledExit) {
+    // main returned normally without a result: the generated driver broke
+    // the result protocol, which is the runtime's failure.
+    throw error;
+  }
   if (program.exitCode === 124) {
     // The instrumented program's own budget stopped it before it reported a
     // result: the trace budget when tracing, the time limit otherwise.
@@ -15215,6 +15227,13 @@ async function compileAndRunWithExternalCompiler(source, functionName, inputs, s
     } catch (parseError) {
       return programOutputParseFailureResult(parseError, program, signature, start, timings, options);
     }
+    if (parsed.foundResult === false && program.exitCode === 0 && program.calledExit) {
+      // exit(0) before the entry point returned: the program ended early.
+      return programOutputParseFailureResult(
+        new Error('C++ program did not emit a TraceCode result.'),
+        program, signature, start, timings, options
+      );
+    }
     if (scriptRequest && options.tracing) {
       parsed.events = normalizeScriptTraceEvents(parsed.events, scriptLineCount(source));
     }
@@ -15464,6 +15483,20 @@ async function runPreparedRuntimeProgram(
     } catch (error) {
       return programOutputParseFailureResult(
         error,
+        program,
+        { line: preparedProgram.signatureLine },
+        startedAt,
+        timings,
+        {
+          tracing: preparedProgram.tracing,
+          traceOptions: preparedProgram.traceOptions,
+        }
+      );
+    }
+    if (parsed.foundResult === false && program.exitCode === 0 && program.calledExit) {
+      // exit(0) before the entry point returned: the program ended early.
+      return programOutputParseFailureResult(
+        new Error('C++ program did not emit a TraceCode result.'),
         program,
         { line: preparedProgram.signatureLine },
         startedAt,

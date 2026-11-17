@@ -2,6 +2,7 @@ import type * as Effect from 'effect/Effect';
 import type * as Scope from 'effect/Scope';
 import type {
   JudgeDiagnostic,
+  JudgeFailure,
   JudgeProcessPlan,
   JudgeRuntimeTimings,
   JudgeTermination,
@@ -39,6 +40,8 @@ export interface JudgeRuntimeBatchCaseOutput<Result = unknown> {
   readonly value?: Result;
   readonly trace?: unknown;
   readonly timedOut: boolean;
+  /** Required by the runtime adapter on every case that did not complete. */
+  readonly failure?: JudgeFailure;
 }
 
 export interface JudgeRuntimeInvocationOutput<Result = unknown> {
@@ -51,6 +54,12 @@ export interface JudgeRuntimeInvocationOutput<Result = unknown> {
   readonly diagnostics?: readonly JudgeDiagnostic[];
   readonly timings?: JudgeRuntimeTimings;
   readonly batch?: readonly JudgeRuntimeBatchCaseOutput<Result>[];
+  /**
+   * Whose failure it was, when the invocation did not succeed. A runtime
+   * adapter that knows sets it; Judge falls back to the process termination
+   * only for processes that publish nothing (see `processFailure`).
+   */
+  readonly failure?: JudgeFailure;
 }
 
 export interface JudgeRuntimeControlPort {
@@ -81,6 +90,7 @@ export interface JudgeKernelProcessOutcome {
   readonly structuredResult?: unknown;
   readonly trace?: unknown;
   readonly batch?: readonly JudgeRuntimeBatchCaseOutput[];
+  readonly failure?: JudgeFailure;
   readonly timedOut: boolean;
   readonly startedAt?: number;
   readonly endedAt?: number;

@@ -6751,7 +6751,28 @@ const PYTHON_PROGRAM_ERROR_TYPES = new Set([
  * runtime load failure, an exception wholly inside Harness code) returns
  * undefined: the caller rethrows it and the worker reports a provider failure.
  */
+// Prefix shared with python-runtime-client.ts: a result carrying it means the
+// program ended the interpreter, so its worker must not be reused.
+const PYTHON_RUNTIME_ENDED_PREFIX = 'The program ended the Python runtime';
+
+/**
+ * os._exit() (and C-level exit) ends the Pyodide interpreter through an
+ * Emscripten exit instead of a Python exception. The learner's program ended
+ * early; its worker cannot run again and is retired by the client.
+ */
+function pythonRuntimeExitStatus(error) {
+  if (!error || typeof error !== 'object') return undefined;
+  if (error.name === 'ExitStatus' && Number.isInteger(error.status)) return error.status;
+  const match = /Program terminated with exit\((-?\d+)\)/.exec(String(error.message ?? ''));
+  return match ? Number(match[1]) : undefined;
+}
+
+function pythonRuntimeEndedMessage(status) {
+  return `${PYTHON_RUNTIME_ENDED_PREFIX} with exit status ${status} before returning a result.`;
+}
+
 function escapedPythonErrorStage(error, learnerLine) {
+  if (pythonRuntimeExitStatus(error) !== undefined) return 'runtime';
   const type =
     error && typeof error === 'object' && typeof error.type === 'string'
       ? error.type
@@ -7094,12 +7115,15 @@ async function executeWithTracing(
     const isClientTimeout = rawError.includes('timed out');
     const stage = isClientTimeout ? undefined : escapedPythonErrorStage(error, line);
     if (!isClientTimeout && !stage) throw error;
+    const exitStatus = pythonRuntimeExitStatus(error);
 
     return {
       success: false,
       error: isClientTimeout
         ? 'Execution timed out. This may indicate an infinite loop or very expensive execution.'
-        : message,
+        : exitStatus !== undefined
+          ? pythonRuntimeEndedMessage(exitStatus)
+          : message,
       errorLine: line,
       ...(stage ? { diagnosticStage: stage } : {}),
       trace: remapPythonRuntimeTrace({ events: [] }, userCodeStartLine, userCodeLineCount, 'python:run', 'solution.py'),
@@ -7802,11 +7826,12 @@ _json_out
     const { message, line } = parsePythonError(rawError, userCodeStartLine, userCodeLineCount);
     const stage = escapedPythonErrorStage(error, line);
     if (!stage) throw error;
+    const exitStatus = pythonRuntimeExitStatus(error);
 
     return {
       success: false,
       output: null,
-      error: message,
+      error: exitStatus !== undefined ? pythonRuntimeEndedMessage(exitStatus) : message,
       errorLine: line,
       diagnosticStage: stage,
       consoleOutput: [],

@@ -48,7 +48,7 @@ import {
   type MatrixObservation,
 } from './fixtures/learner-failure-matrix-cases';
 
-type Aspect = 'classification' | 'message' | 'line' | 'recovery';
+type Aspect = 'classification' | 'message' | 'line' | 'recovery' | 'judge';
 
 /**
  * Known gaps: `${language}:${mode | '*'}:${kind}:${aspect}` → reason.
@@ -90,6 +90,7 @@ export const KNOWN_GAPS: Readonly<Record<string, string>> = {
   'javascript:interactive:syntax:line': JS_SYNTAX,
   'java:*:*:line': JAVA_LINES,
   'java:*:process-exit:classification': JAVA_EXIT,
+  'java:*:early-exit-zero:classification': JAVA_EXIT,
   'csharp:code:*:message': CS_FAST,
   'csharp:code:*:line': CS_FAST,
   'csharp:code-batch:*:message': CS_FAST,
@@ -248,6 +249,32 @@ function judgeCell(spec: MatrixCellSpec, result: MatrixCellResult): CellVerdict 
       observation.line !== spec.line
     ) {
       failures.set('line', `expected line ${spec.line}, got ${String(observation.line)}`);
+    }
+    // The Judge layer must state the same origin, and the exported conversion
+    // must produce the matching outcome, so a consumer only forwards.
+    if (observation.status !== 'host-rejected') {
+      const expectedJudge =
+        observation.class === 'completed'
+          ? { origin: 'none', conversion: 'completed' }
+          : observation.class === 'compile' || observation.class === 'runtime'
+            ? { origin: `program:${observation.code}`, conversion: `failed:${observation.code}` }
+            : observation.class === 'limit'
+              ? { origin: `limit:${observation.reason}`, conversion: `limit:${observation.reason}` }
+              : observation.class === 'provider'
+                ? { originPrefix: 'provider:', conversion: 'provider-rejected' }
+                : undefined;
+      if (expectedJudge) {
+        const originOk = 'origin' in expectedJudge
+          ? observation.origin === expectedJudge.origin
+          : (observation.origin ?? '').startsWith(expectedJudge.originPrefix);
+        if (!originOk || observation.conversion !== expectedJudge.conversion) {
+          failures.set(
+            'judge',
+            `Judge origin ${String(observation.origin)} / conversion ${String(observation.conversion)} ` +
+              `disagree with ${observation.class}${observation.code ? ` (${observation.code})` : ''}`
+          );
+        }
+      }
     }
   }
   if (result.healthyAfter === false) {

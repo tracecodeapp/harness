@@ -64,6 +64,7 @@ export type MatrixFailureKind =
   | 'infinite-loop'
   | 'trace-step-limit'
   | 'process-exit'
+  | 'early-exit-zero'
   | 'unhandled-rejection'
   | 'memory-fault'
   | 'provider-asset-failure';
@@ -251,6 +252,14 @@ const PYTHON: readonly Draft[] = [
     faultText: 'sys.exit(3)',
     expected: ['runtime'],
   },
+  {
+    // Ends the interpreter without unwinding: "successful exit, no result".
+    kind: 'early-exit-zero',
+    code: lines('import os', 'def solve(n):', '    os._exit(0)'),
+    expected: ['runtime'],
+    // The interpreter ends without a traceback, so no line is knowable.
+    noLine: true,
+  },
   providerDraft(lines('def solve(n):', '    return n')),
 ];
 
@@ -359,6 +368,18 @@ function javascriptDrafts(typed: boolean): readonly Draft[] {
       ),
       faultText: 'process.exit(3)',
       expected: ['runtime'],
+    },
+    {
+      kind: 'early-exit-zero',
+      code: lines(
+        `function solve(${param})${ret} {`,
+        `  (globalThis${any}).process.exit(0);`,
+        '  return n;',
+        '}'
+      ),
+      // Browsers have no process to exit; the attempt is the program's error.
+      expected: ['runtime'],
+      noLine: true,
     },
     {
       kind: 'unhandled-rejection',
@@ -486,6 +507,12 @@ const JAVA: readonly Draft[] = [
     faultText: 'System.exit(3)',
     expected: ['runtime'],
   },
+  {
+    kind: 'early-exit-zero',
+    code: lines('class Solution {', '  public int solve(int n) {', '    System.exit(0);', '    return n;', '  }', '}'),
+    expected: ['runtime'],
+    noLine: true,
+  },
   providerDraft(lines('class Solution {', '  public int solve(int n) {', '    return n;', '  }', '}')),
 ];
 
@@ -609,6 +636,20 @@ const CSHARP: readonly Draft[] = [
     ),
     faultText: 'Environment.Exit(3)',
     expected: ['runtime'],
+  },
+  {
+    kind: 'early-exit-zero',
+    code: lines(
+      'using System;',
+      'public class Solution {',
+      '  public int Solve(int n) {',
+      '    Environment.Exit(0);',
+      '    return n;',
+      '  }',
+      '}'
+    ),
+    expected: ['runtime'],
+    noLine: true,
   },
   providerDraft(lines('public class Solution {', '  public int Solve(int n) {', '    return n;', '  }', '}')),
 ];
@@ -776,6 +817,21 @@ const CPP: readonly Draft[] = [
     faultText: 'values[n + 900000000]',
     expected: ['runtime'],
   },
+  {
+    kind: 'early-exit-zero',
+    code: lines(
+      '#include <cstdlib>',
+      'class Solution {',
+      'public:',
+      '  int solve(int n) {',
+      '    std::exit(0);',
+      '    return n;',
+      '  }',
+      '};'
+    ),
+    expected: ['runtime'],
+    noLine: true,
+  },
   providerDraft(lines('class Solution {', 'public:', '  int solve(int n) {', '    return n;', '  }', '};')),
 ];
 
@@ -845,6 +901,10 @@ export interface MatrixObservation {
   readonly reason?: string;
   /** Completed cases: the returned value, JSON, truncated. */
   readonly value?: string;
+  /** The Judge's typed origin: program:<stage>, limit:<reason>, provider:<reason>, none. */
+  readonly origin?: string;
+  /** What `judgeCaseExecutionOutcome` produced: completed, failed:<stage>, limit:<reason>, provider-rejected. */
+  readonly conversion?: string;
 }
 
 export interface MatrixCellResult {

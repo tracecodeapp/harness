@@ -73,6 +73,8 @@ import {
   structuralJsonComparator,
   type JudgeComparator,
   type JudgeDiagnostic,
+  type JudgeFailure,
+  type JudgeProgramStage,
   type JudgeEvaluationOptions,
   type JudgeEvaluationPlan,
   type JudgeEvaluationResult,
@@ -108,6 +110,10 @@ export {
 export type {
   JudgeCasePlan,
   JudgeCaseResult,
+  JudgeCompileResult,
+  JudgeFailure,
+  JudgeLimitReason,
+  JudgeProgramStage,
   JudgeCaseVerdict,
   JudgeComparator,
   JudgeComparisonInput,
@@ -584,6 +590,40 @@ const LIMIT_MESSAGES: Readonly<Record<ExecutionLimitReason, string>> = {
     'Execution stopped: the result was too large to return.',
 };
 
+/**
+ * The typed origin published with every unsuccessful outcome. It restates the
+ * diagnostic the adapter just built from a typed outcome, so consumers read
+ * the origin instead of inferring it from codes or optional fields.
+ */
+function outcomeFailure(
+  outcome: Extract<
+    CodeExecutionResult | ExecutionResult | RuntimeProgramPreparationResult,
+    { readonly kind: 'failed' | 'limit' }
+  >,
+  diagnostic: JudgeDiagnostic
+): JudgeFailure {
+  if (outcome.kind === 'limit') {
+    return Object.freeze({
+      origin: 'limit',
+      reason: outcome.reason,
+      message: diagnostic.message,
+    });
+  }
+  if (diagnostic.code === PROVIDER_ERROR_CODE) {
+    return Object.freeze({
+      origin: 'provider',
+      reason: 'contract-violation',
+      message: diagnostic.message,
+    });
+  }
+  return Object.freeze({
+    origin: 'program',
+    stage: diagnostic.code as JudgeProgramStage,
+    message: diagnostic.message,
+    ...(diagnostic.line === undefined ? {} : { line: diagnostic.line }),
+  });
+}
+
 function traceTruncationDiagnostic(
   runtime: string,
   outcome: Extract<ExecutionResult, { readonly kind: 'completed' }>
@@ -641,6 +681,7 @@ function mappedCodeOutcome(
     : limitDiagnostic(runtime, outcome);
   return Object.freeze({
     output: Object.freeze({
+      failure: outcomeFailure(outcome, diagnostic),
       diagnostics: Object.freeze([diagnostic]),
       ...mappedTimings(outcome.timings),
     }),
@@ -677,6 +718,7 @@ function mappedTraceOutcome(
     : limitDiagnostic(runtime, outcome);
   return Object.freeze({
     output: Object.freeze({
+      failure: outcomeFailure(outcome, diagnostic),
       trace: outcome.trace,
       diagnostics: Object.freeze([diagnostic]),
       ...mappedTimings(outcome.timings),
@@ -712,6 +754,7 @@ function mappedPreparationOutcome(
     : limitDiagnostic(runtime, outcome);
   return Object.freeze({
     output: Object.freeze({
+      failure: outcomeFailure(outcome, diagnostic),
       diagnostics: Object.freeze([diagnostic]),
       ...mappedTimings(outcome.timings),
     }),
@@ -848,6 +891,7 @@ function batchCaseOutput(
     ...(Object.prototype.hasOwnProperty.call(mapped.output, 'trace')
       ? { trace: mapped.output.trace }
       : {}),
+    ...(mapped.output.failure ? { failure: mapped.output.failure } : {}),
     timedOut:
       termination.kind === 'signal' ||
       mapped.output.diagnostics?.some(
@@ -928,6 +972,11 @@ function providerFailure(
         code,
         source: runtime,
       })]),
+      failure: Object.freeze({
+        origin: 'provider' as const,
+        reason: 'runtime-failure' as const,
+        message,
+      }),
     }),
     process: Object.freeze({
       exitCode: 1,

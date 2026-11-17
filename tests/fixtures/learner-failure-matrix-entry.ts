@@ -1,6 +1,9 @@
 import {
   createAlgorithmJudgeBundle,
   createBrowserJudgeHost,
+  isRuntimeProviderError,
+  judgeCaseExecutionOutcome,
+  judgeCompileExecutionOutcome,
 } from '../../src/judge';
 import { createTraceCCRuntimeManifest } from '../../packages/runtime-cpp/src/tracecc-runtime-assets';
 import {
@@ -89,21 +92,67 @@ function observe(
   };
 }
 
-function observeEvaluation(evaluation: Evaluation): MatrixObservation[] {
-  if (evaluation.status === 'compile-failed') {
-    return [observe(evaluation.compile.diagnostics, {
-      status: 'compile-failed',
-      stderr: evaluation.compile.stderr,
-    })];
+type JudgeFailureLike = {
+  readonly origin: string;
+  readonly stage?: string;
+  readonly reason?: string;
+};
+
+function originText(failure: JudgeFailureLike | undefined): string | undefined {
+  if (!failure) return undefined;
+  return failure.origin === 'program'
+    ? `program:${failure.stage}`
+    : `${failure.origin}:${failure.reason}`;
+}
+
+/** What the exported Judge-to-outcome conversion produces for this result. */
+function conversionText(convert: () => { readonly kind: string; readonly diagnosticStage?: string; readonly reason?: string }): string {
+  try {
+    const outcome = convert();
+    return outcome.kind === 'failed'
+      ? `failed:${outcome.diagnosticStage}`
+      : outcome.kind === 'limit'
+        ? `limit:${outcome.reason}`
+        : outcome.kind;
+  } catch (error) {
+    return isRuntimeProviderError(error) ? 'provider-rejected' : `threw:${String(error)}`;
   }
-  return evaluation.cases.map((testCase) =>
-    observe(testCase.diagnostics, {
+}
+
+function observeEvaluation(
+  evaluation: Evaluation,
+  language: MatrixLanguage,
+  trace: boolean
+): MatrixObservation[] {
+  if (evaluation.status === 'compile-failed') {
+    const compile = evaluation.compile;
+    return [{
+      ...observe(compile.diagnostics, {
+        status: 'compile-failed',
+        stderr: compile.stderr,
+      }),
+      origin: originText(compile.failure),
+      conversion: conversionText(() =>
+        trace
+          ? judgeCompileExecutionOutcome(compile, { language, trace: true })
+          : judgeCompileExecutionOutcome(compile, { language })
+      ),
+    }];
+  }
+  return evaluation.cases.map((testCase) => ({
+    ...observe(testCase.diagnostics, {
       status: testCase.status,
       timedOut: testCase.timedOut,
       stderr: testCase.stderr,
       value: testCase.value,
-    })
-  );
+    }),
+    origin: originText(testCase.failure) ?? 'none',
+    conversion: conversionText(() =>
+      trace
+        ? judgeCaseExecutionOutcome(testCase, { language, trace: true })
+        : judgeCaseExecutionOutcome(testCase, { language })
+    ),
+  }));
 }
 
 function thrown(error: unknown): MatrixObservation {
@@ -168,21 +217,21 @@ async function runMode(
   try {
     if (mode !== 'interactive') {
       const receipt = await host.evaluateAlgorithm({ bundle });
-      return observeEvaluation(receipt.evaluation);
+      return observeEvaluation(receipt.evaluation, language, trace);
     }
     const initial = await host.execute({
       bundle,
       interactive: true,
       tracing: { caseIds: ['case-1'] },
     });
-    const observations = observeEvaluation(initial.evaluation);
+    const observations = observeEvaluation(initial.evaluation, language, true);
     if (initial.executionId) {
       try {
         const continuation = await host.execute({
           executionId: initial.executionId,
           tracing: { caseIds: ['case-2'] },
         });
-        observations.push(...observeEvaluation(continuation.evaluation));
+        observations.push(...observeEvaluation(continuation.evaluation, language, true));
       } catch (error) {
         observations.push(thrown(error));
       } finally {

@@ -244,7 +244,14 @@ function pythonInputsRequireCompatibility(
   }
 }
 
+// Shared with workers/python/python-runtime.js: the program ended the
+// interpreter (os._exit), so that worker can never run another case.
+const PYTHON_RUNTIME_ENDED_PREFIX = 'The program ended the Python runtime';
+
 function pythonTraceResultKeepsFastWorker(result: ExecutionResult): boolean {
+  if (result.kind === 'failed' && result.error.startsWith(PYTHON_RUNTIME_ENDED_PREFIX)) {
+    return false;
+  }
   return !(result.kind === 'limit' && result.reason === 'client-timeout');
 }
 
