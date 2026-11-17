@@ -594,7 +594,7 @@ async function testPreparedProviderProtocolLifecycle(): Promise<void> {
       explicitlyLimitedBatch?.map((result) =>
         result.kind === 'completed' ? result.output : null
       ).join(',') === '6,7' &&
-        PreparedProtocolWorker.executions === 7 &&
+        Number(PreparedProtocolWorker.executions) === 7 &&
         PreparedProtocolWorker.batchExecutions === 0,
       `explicit per-case deadlines must retain one Worker request per case: ${JSON.stringify({
         explicitlyLimitedBatch,
@@ -605,7 +605,7 @@ async function testPreparedProviderProtocolLifecycle(): Promise<void> {
     assertCondition(
       PreparedProtocolWorker.compileRequests === 1 &&
         compilerFetches === 1 &&
-        PreparedProtocolWorker.executions === 7 &&
+        Number(PreparedProtocolWorker.executions) === 7 &&
         PreparedProtocolWorker.batchExecutions === 0,
       `one preparation must compile exactly once regardless of case count: ${JSON.stringify({
         compileRequests: PreparedProtocolWorker.compileRequests,

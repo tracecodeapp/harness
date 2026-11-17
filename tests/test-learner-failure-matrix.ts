@@ -82,6 +82,13 @@ const CS_TRACE_LINES =
 const CPP_LINES =
   `WebAssembly traps and exit() carry no source position (learner programs are built without debug information).`;
 
+/** Gaps whose cells pass on some runs (timing-dependent); never reported stale. */
+const INTERMITTENT_GAPS: ReadonlySet<string> = new Set([
+  // The algorithm-fast runner's own loop guard races the client deadline.
+  'csharp:code:infinite-loop:classification',
+  'csharp:code-batch:infinite-loop:classification',
+]);
+
 export const KNOWN_GAPS: Readonly<Record<string, string>> = {
   'javascript:trace:*:line': JS_TRACE,
   'javascript:trace-batch:*:line': JS_TRACE,
@@ -406,8 +413,9 @@ function reportVerdicts(
       (kind === '*' || verdict.result.kind === kind) &&
       (mode === '*' || verdict.result.mode === mode)
     );
-    // Only a complete run can prove a gap closed.
-    if (FULL_RUN && matching.length > 0 && matching.every((verdict) => !verdict.failures.has(aspect))) {
+    // Only a complete run can prove a gap closed; one passing run does not
+    // prove an intermittent gap closed.
+    if (FULL_RUN && !INTERMITTENT_GAPS.has(key) && matching.length > 0 && matching.every((verdict) => !verdict.failures.has(aspect))) {
       stale.push(`${key} now passes; remove the known gap (${reason})`);
     }
   }

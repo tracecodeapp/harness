@@ -452,4 +452,6 @@ export async function runLanguageMatrix(
   return results;
 }
 
-const ABORT_AFTER_MS = 1500;
+// Early enough that no runtime's own runaway guard (Python's trips in about a
+// second) ends the run first; an abort during preparation must end it too.
+const ABORT_AFTER_MS = 300;
