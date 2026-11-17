@@ -137,9 +137,39 @@ npm view @tracecode/harness@<version> dist.integrity dist.shasum
 ```
 
 They must equal the printed `sha512-…` integrity and sha1 shasum of the
-candidate. That proves the registry serves the tested bytes. Then the consumer
-uploads the runtime assets from a checkout that pins exactly `<version>`
-(TraceCode's `pnpm deploy:harness-runtime-assets`).
+candidate. That proves the registry serves the tested bytes. npm can take a
+while to list a new version: for 0.20.1 (52 MB), `npm view` returned E404 for
+about fourteen minutes after npm printed `+ @tracecode/harness@0.20.1`. Wait
+and retry; never republish.
+
+### 8. Runtime assets
+
+The consumer uploads the runtime assets from a checkout that pins exactly
+`<version>` (TraceCode's `pnpm deploy:harness-runtime-assets`). Before
+uploading, it checks the installed identity against the candidate:
+
+```bash
+node -p "require('./node_modules/@tracecode/harness/runtime-assets.lock.json').harness.releaseId"
+```
+
+Read the lock by path. The package `exports` does not expose
+`runtime-assets.lock.json`, so `require('@tracecode/harness/runtime-assets.lock.json')`
+fails with `ERR_PACKAGE_PATH_NOT_EXPORTED`.
+
+The upload is the whole staged runtime tree (`tracecode-harness sync-assets`),
+not only the Harness components:
+
+- the Harness components (`totalPackagedRuntimeBytes` in the lock);
+- each engine dependency's installed tree, `tracecc` and `tracejvm`. An
+  installed tree includes descriptor and release metadata beyond the lock's
+  `engineDependencies.*.totalBytes`;
+- the consumer's own commit-marker manifest.
+
+Summing the lock's totals therefore undercounts. For 0.20.1 the components
+are 283 files and 152,504,822 bytes, but the staged upload is
+**607 files, 428,324,717 bytes**. Record the full staged inventory with each
+release, and compare it with the consumer's publication `--check` output
+before uploading.
 
 ### What `pnpm release:root` is now
 
