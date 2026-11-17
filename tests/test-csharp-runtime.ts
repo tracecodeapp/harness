@@ -60,6 +60,7 @@ interface MockCSharpWorkerRawResult {
   executionTimeMs?: number;
   traceLimitExceeded?: boolean;
   timeoutReason?: ExecutionLimitReason;
+  diagnosticStage?: 'compile' | 'runtime';
   compiledArtifactKey?: string;
   compiledArtifactBase64?: string;
   compiledArtifactSha256?: string;
@@ -335,6 +336,7 @@ async function testWorkerResultMapping(): Promise<void> {
 
     MockCSharpWorker.responses.push({
       success: false,
+      diagnosticStage: 'compile',
       error: "Cannot implicitly convert type 'string' to 'int'",
       diagnostics: [
         {
@@ -362,12 +364,17 @@ async function testWorkerResultMapping(): Promise<void> {
     assertCondition(compileFailure.kind === 'failed', 'C# executeCode compile failure should return a failed result');
     assertCondition(compileFailure.kind === 'failed' && compileFailure.errorLine === 4, 'C# executeCode should map solution.cs diagnostics to errorLine');
     assertCondition(
+      compileFailure.kind === 'failed' && compileFailure.diagnosticStage === 'compile',
+      'C# executeCode should forward the worker classification'
+    );
+    assertCondition(
       compileFailure.consoleOutput?.[0] === 'before compile failure',
       'C# executeCode should preserve stdout on compile failure'
     );
 
     MockCSharpWorker.responses.push({
       success: false,
+      diagnosticStage: 'runtime',
       error: 'Object reference not set to an instance of an object.',
       diagnostics: [
         {

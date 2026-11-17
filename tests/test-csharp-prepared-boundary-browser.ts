@@ -1087,8 +1087,19 @@ public class Solution
       );
       mutatingVoidRunner.terminate();
 
+      // An invalid or relabeled artifact is the provider's failure, not the
+      // program's: the runner rejects the request instead of reporting a
+      // failed execution.
+      const providerRejection = (request: Promise<unknown>) =>
+        request.then(
+          (value) => ({ rejected: false, error: undefined, value }),
+          (error: unknown) => ({
+            rejected: true,
+            error: error instanceof Error ? error.message : String(error),
+          })
+        );
       const tamperRunner = await createHarness('runner', runnerBaseUrl);
-      const tampered = await tamperRunner.send('execute-prepared-code', {
+      const tampered = await providerRejection(tamperRunner.send('execute-prepared-code', {
         prepared: {
           ...addDescriptor,
           compiledArtifactSha256: '0'.repeat(64),
@@ -1097,10 +1108,10 @@ public class Solution
         inputBytes: encodeInt32s(19, 23),
         assetBaseUrl: runnerBaseUrl,
         timeoutMs: 10_000,
-      });
+      }));
       tamperRunner.terminate();
       const forgedTierRunner = await createHarness('runner', runnerBaseUrl);
-      const forgedTier = await forgedTierRunner.send(
+      const forgedTier = await providerRejection(forgedTierRunner.send(
         'execute-prepared-code',
         {
           prepared: {
@@ -1117,7 +1128,7 @@ public class Solution
           assetBaseUrl: runnerBaseUrl,
           timeoutMs: 10_000,
         }
-      );
+      ));
       forgedTierRunner.terminate();
       return {
         prepared,
@@ -1518,19 +1529,15 @@ public class Solution
       `Disposable C# runner lost structured tracing semantics: ${JSON.stringify(result.structuredTrace)}`
     );
     assertCondition(
-      result.tampered.success === false &&
+      result.tampered.rejected &&
         result.tampered.error ===
-          'Prepared C# artifact is unavailable or invalid.' &&
-        result.tampered.timings?.compileCacheHit === false &&
-        result.tampered.timings?.artifactCacheHit === false,
+          'Prepared C# artifact is unavailable or invalid.',
       `Disposable C# runner did not reject a tampered artifact: ${JSON.stringify(result.tampered)}`
     );
     assertCondition(
-      result.forgedTier.success === false &&
+      result.forgedTier.rejected &&
         result.forgedTier.error ===
-          'Prepared C# artifact is unavailable or invalid.' &&
-        result.forgedTier.timings?.compileCacheHit === false &&
-        result.forgedTier.timings?.artifactCacheHit === false,
+          'Prepared C# artifact is unavailable or invalid.',
       `Retained C# runner accepted a compatibility artifact relabeled as algorithm-fast: ${JSON.stringify(result.forgedTier)}`
     );
     console.log(

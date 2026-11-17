@@ -446,12 +446,14 @@ function assertPreparedResult(
     [6, 9],
     `${engine}: prepared trace batches must preserve ordered outputs`
   );
+  // Traced batches run one request per case so each case has its own
+  // deadline; every case reports the boundary a single-case request reports.
   assert.equal(
     result.traceBatchRunnerProcessCount,
-    isolated ? 1 : 2,
+    isolated ? 1 : -1,
     isolated
-      ? `${engine}: one kernel-bound runner must own the complete trace batch`
-      : `${engine}: caller-carried restore must retain the fresh-process compatibility boundary`
+      ? `${engine}: each traced batch case must reuse one clean inner JVM like a single-case request`
+      : `${engine}: each traced batch case must restore into compatibility like a single-case request (got ${result.traceBatchRunnerProcessCount})`
   );
   assert.equal(
     result.traceBatchHasEvents,

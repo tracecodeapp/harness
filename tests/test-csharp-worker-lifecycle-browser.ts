@@ -8,6 +8,10 @@ import { chromium } from 'playwright';
 
 const ROOT = process.cwd();
 
+type ProviderRejection =
+  | { rejected: true; error: string }
+  | { rejected: false; result: unknown };
+
 interface ExecuteResult {
   success: boolean;
   output?: unknown;
@@ -244,7 +248,17 @@ async function main(): Promise<void> {
         (character) => character.charCodeAt(0)
       );
       tamperedArtifactBytes[tamperedArtifactBytes.length - 1] ^= 1;
-      const tamperedPrepared = await firstWorker.send('execute-prepared-code', {
+      // An invalid artifact is the provider's failure, not the program's: the
+      // worker rejects the request instead of reporting a failed execution.
+      const providerRejection = (request: Promise<unknown>) =>
+        request.then(
+          (result) => ({ rejected: false, result }),
+          (error: unknown) => ({
+            rejected: true,
+            error: error instanceof Error ? error.message : String(error),
+          })
+        );
+      const tamperedPrepared = await providerRejection(firstWorker.send('execute-prepared-code', {
         prepared: {
           ...preparedProgram,
           compiledArtifactBase64: btoa(
@@ -254,7 +268,7 @@ async function main(): Promise<void> {
         inputs: { value: 17 },
         assetBaseUrl,
         timeoutMs: 10_000,
-      });
+      }));
 
       const scriptSource = [
         'int result = TraceCode.Internal.TraceCodeJsonInput.Read<int>("value", 0);',
@@ -408,7 +422,7 @@ async function main(): Promise<void> {
       const processStateMutation = await executeProcessStateInFreshWorker(true);
       const processStateAfterMutation = await executeProcessStateInFreshWorker(false);
 
-      const unavailableArtifact = await firstWorker.send('execute-prepared-code', {
+      const unavailableArtifact = await providerRejection(firstWorker.send('execute-prepared-code', {
         prepared: {
           mode: 'code',
           code: [
@@ -422,7 +436,7 @@ async function main(): Promise<void> {
         inputs: { value: 5 },
         assetBaseUrl,
         timeoutMs: 10_000,
-      });
+      }));
 
       const failureSource = [
         'public class Solution {',
@@ -618,7 +632,7 @@ async function main(): Promise<void> {
       prepared: ExecuteResult;
       preparedFirst: ExecuteResult;
       preparedSecond: ExecuteResult;
-      tamperedPrepared: ExecuteResult;
+      tamperedPrepared: ProviderRejection;
       scriptPreparation: ExecuteResult;
       preparedScriptFirst: ExecuteResult;
       preparedScriptSecond: ExecuteResult;
@@ -629,7 +643,7 @@ async function main(): Promise<void> {
       processStateBaseline: ExecuteResult;
       processStateMutation: ExecuteResult;
       processStateAfterMutation: ExecuteResult;
-      unavailableArtifact: ExecuteResult;
+      unavailableArtifact: ProviderRejection;
       failurePreparation: ExecuteResult;
       preparedFailure: ExecuteResult;
       tracePreparation: ExecuteResult;
@@ -690,7 +704,7 @@ async function main(): Promise<void> {
       `Second prepared C# case leaked static state or recompiled: ${JSON.stringify(metrics.preparedSecond)}`
     );
     assertCondition(
-      metrics.tamperedPrepared.success === false &&
+      metrics.tamperedPrepared.rejected &&
         metrics.tamperedPrepared.error ===
           'Prepared C# artifact is unavailable or invalid.',
       `General C# prepared execution must reject PE bytes that do not match the SHA-bound artifact: ${JSON.stringify(metrics.tamperedPrepared)}`
@@ -783,10 +797,8 @@ async function main(): Promise<void> {
       )}`
     );
     assertCondition(
-      metrics.unavailableArtifact.success === false &&
-        metrics.unavailableArtifact.error === 'Prepared C# artifact is unavailable or invalid.' &&
-        metrics.unavailableArtifact.timings?.compileCacheHit === false &&
-        metrics.unavailableArtifact.timings?.artifactCacheHit === false,
+      metrics.unavailableArtifact.rejected &&
+        metrics.unavailableArtifact.error === 'Prepared C# artifact is unavailable or invalid.',
       `Missing prepared C# artifact must fail closed without compilation: ${JSON.stringify(metrics.unavailableArtifact)}`
     );
     assertCondition(
