@@ -107,27 +107,39 @@ pnpm release:tag-check
 
 ### 6. Publish the tested tarball
 
-Run the publish guards explicitly, then publish the candidate file. Run this
-in an interactive terminal: npm's web second factor fails with `EOTP` when
-output is redirected.
-
 ```bash
-pnpm release:check && pnpm release:tag-check && pnpm test:runtime-assets-lock
-tar -xzOf <candidate.tgz> package/package.json | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{const v=JSON.parse(s).version;if(v!==require("./package.json").version){console.error(`tarball is ${v}`);process.exit(1)}})'
-npm publish <candidate.tgz> --access public --auth-type=web
+pnpm release:tarball <candidate.tgz> <candidate-sha256> --dry-run
+pnpm release:tarball <candidate.tgz> <candidate-sha256>
 ```
 
+`release:tarball` (`scripts/publish-release-tarball.mjs`) refuses to publish
+unless:
+
+- the file's sha256 is the candidate's;
+- its package name and version are this checkout's;
+- its `runtime-assets.lock.json`, and so its runtime release ID, is
+  byte-identical to the checkout's;
+- `release:check`, `release:tag-check` and `test:runtime-assets-lock` pass.
+  A tarball publish runs no lifecycle scripts, so these are the guards
+  `prepublishOnly` would run.
+
+It then runs `npm publish <candidate.tgz> --access public --auth-type=web`.
+Run it in an interactive terminal: npm's web second factor fails with `EOTP`
+when output is redirected, and the script refuses a non-interactive publish.
+`--dry-run` runs every check and prints the command without publishing.
+
 ### 7. Verify
+
+The script prints the registry values to expect:
 
 ```bash
 npm view @tracecode/harness@<version> dist.integrity dist.shasum
 ```
 
-They must equal the candidate's
-`sha512-$(openssl dgst -sha512 -binary <candidate.tgz> | base64)` and
-`shasum -a 1 <candidate.tgz>`. That proves the registry serves the tested
-bytes. Then the consumer uploads the runtime assets from a checkout that pins
-exactly `<version>` (TraceCode's `pnpm deploy:harness-runtime-assets`).
+They must equal the printed `sha512-…` integrity and sha1 shasum of the
+candidate. That proves the registry serves the tested bytes. Then the consumer
+uploads the runtime assets from a checkout that pins exactly `<version>`
+(TraceCode's `pnpm deploy:harness-runtime-assets`).
 
 ### What `pnpm release:root` is now
 
@@ -135,8 +147,9 @@ exactly `<version>` (TraceCode's `pnpm deploy:harness-runtime-assets`).
 publish-safety audit's guarded entrypoint for publishing the workspace root,
 and its `prepublishOnly` lifecycle still runs every guard. It is not the
 release path, because it repacks the directory and cannot publish the tested
-bytes. Recursive, filtered, and workspace-scoped publish commands are rejected
-and are not release entrypoints either.
+bytes. The release entrypoint is `pnpm release:tarball`; the publish-safety
+audit checks both scripts. Recursive, filtered, and workspace-scoped publish
+commands are rejected and are not release entrypoints either.
 
 The structural audit intentionally fails closed when a workspace glob becomes
 too complex to inventory. Extend the audit and its fixture tests before

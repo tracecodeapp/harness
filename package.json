@@ -65,6 +65,7 @@
     "release:check": "node scripts/check-publish-safety.mjs",
     "release:tag-check": "node scripts/check-release-tag.mjs",
     "release:root": "pnpm publish . --access public",
+    "release:tarball": "node scripts/publish-release-tarball.mjs",
     "version:sync": "node scripts/sync-workspace-versions.mjs",
     "version:check": "node scripts/sync-workspace-versions.mjs --check",
     "build": "pnpm generate:runtime-info && pnpm generate:python-harness && pnpm generate:kernel-policy && pnpm generate:typescript-project-libs && pnpm generate:javascript-project-worker && pnpm generate:javascript-ses-worker && pnpm generate:tracekernel-syscall-client && pnpm generate:tracekernel-local-java-host && pnpm generate:java-helper && pnpm sync:package-assets && pnpm generate:runtime-assets-lock && pnpm generate:runtime-open-source-info && pnpm build:tracekernel && pnpm exec tsup --config tsup.runtime-contracts.config.ts && pnpm build:browser-host && pnpm exec tsup && pnpm rewrite:root-declarations && pnpm --dir packages/judge build",

@@ -12,6 +12,7 @@ const VERSION_SYNC_SCRIPT = resolve(ROOT, 'scripts/sync-workspace-versions.mjs')
 const RELEASE_CHECK_SCRIPT = 'node scripts/check-publish-safety.mjs';
 const RELEASE_TAG_CHECK_SCRIPT = 'node scripts/check-release-tag.mjs';
 const ROOT_RELEASE_SCRIPT = 'pnpm publish . --access public';
+const RELEASE_TARBALL_SCRIPT = 'node scripts/publish-release-tarball.mjs';
 const PREPUBLISH_SCRIPT =
   'pnpm release:check && pnpm release:tag-check && pnpm test:runtime-assets-lock && pnpm build && pnpm release:tag-check && pnpm test:runtime-assets-lock';
 const RUNTIME_STAMP_EXCLUSION = '!workers/**/.stamp';
@@ -24,6 +25,7 @@ interface FixtureOptions {
   npmrc?: string;
   packageFiles?: string[];
   releaseRootScript?: string;
+  releaseTarballScript?: string;
   workspacePattern?: string;
 }
 
@@ -73,6 +75,7 @@ async function writeFixture(root: string, options: FixtureOptions = {}): Promise
         'release:check': RELEASE_CHECK_SCRIPT,
         'release:tag-check': RELEASE_TAG_CHECK_SCRIPT,
         'release:root': options.releaseRootScript ?? ROOT_RELEASE_SCRIPT,
+        'release:tarball': options.releaseTarballScript ?? RELEASE_TARBALL_SCRIPT,
       },
     }),
     'utf8'
@@ -271,6 +274,11 @@ async function main(): Promise<void> {
     });
     assertAuditFailure(fixtureRoot, /release:root must publish only the workspace root/u);
 
+    await writeFixture(fixtureRoot, {
+      releaseTarballScript: 'pnpm publish . --access public',
+    });
+    assertAuditFailure(fixtureRoot, /release:tarball must publish the tested tarball/u);
+
     await writeFixture(fixtureRoot, { packageFiles: [] });
     assertAuditFailure(fixtureRoot, /must exclude runtime lock metadata/u);
 
@@ -426,3 +434,101 @@ async function main(): Promise<void> {
 }
 
 test('root publish safety', main);
+
+test('release tarball publish verifies the tested bytes, runs the guards, and needs a terminal', async () => {
+  const { publishReleaseTarball } = await import('../scripts/publish-release-tarball.mjs');
+  const fixture = await mkdtemp(join(tmpdir(), 'tracecode-release-tarball-'));
+  try {
+    const checkout = join(fixture, 'checkout');
+    const guardLog = join(fixture, 'guards.log');
+    await mkdir(checkout, { recursive: true });
+    const guard = (name: string) =>
+      `node -e "require('fs').appendFileSync(process.env.GUARD_LOG, '${name}\\n')"`;
+    const manifest = {
+      name: '@tracecode/harness',
+      version: '1.2.3',
+      scripts: {
+        'release:check': guard('release:check'),
+        'release:tag-check': guard('release:tag-check'),
+        'test:runtime-assets-lock': guard('test:runtime-assets-lock'),
+      },
+    };
+    const lock = JSON.stringify({ harness: { releaseId: 'fixture' } });
+    await writeFile(join(checkout, 'package.json'), JSON.stringify(manifest), 'utf8');
+    await writeFile(join(checkout, 'runtime-assets.lock.json'), lock, 'utf8');
+
+    const pack = async (name: string, tarballManifest: object, tarballLock: string) => {
+      const staging = join(fixture, `${name}-staging`);
+      await mkdir(join(staging, 'package'), { recursive: true });
+      await writeFile(join(staging, 'package', 'package.json'), JSON.stringify(tarballManifest), 'utf8');
+      await writeFile(join(staging, 'package', 'runtime-assets.lock.json'), tarballLock, 'utf8');
+      const tarball = join(fixture, `${name}.tgz`);
+      assert.equal(spawnSync('tar', ['-czf', tarball, '-C', staging, 'package']).status, 0);
+      const { createHash } = await import('node:crypto');
+      return { tarball, sha256: createHash('sha256').update(await readFile(tarball)).digest('hex') };
+    };
+    const good = await pack('good', manifest, lock);
+    const environment = { ...process.env, GUARD_LOG: guardLog };
+    const lines: string[] = [];
+    const attempt = (
+      packed: { readonly tarball: string; readonly sha256: string },
+      options: { readonly dryRun?: boolean; readonly expectedSha256?: string } = {}
+    ) =>
+      publishReleaseTarball({
+        root: checkout,
+        tarball: packed.tarball,
+        expectedSha256: options.expectedSha256 ?? packed.sha256,
+        dryRun: options.dryRun ?? false,
+        environment,
+        log: (line: string) => { lines.push(line); },
+        interactive: false,
+      });
+
+    await assert.rejects(
+      attempt(good, { expectedSha256: '0'.repeat(64), dryRun: true }),
+      /not the tested/u
+    );
+    const otherVersion = await pack('other-version', { ...manifest, version: '1.2.4' }, lock);
+    await assert.rejects(
+      attempt(otherVersion, { dryRun: true }),
+      /version 1\.2\.4, this checkout is 1\.2\.3/u
+    );
+    const otherLock = await pack('other-lock', manifest, JSON.stringify({ harness: { releaseId: 'other' } }));
+    await assert.rejects(
+      attempt(otherLock, { dryRun: true }),
+      /runtime-assets\.lock\.json differs/u
+    );
+    // A non-interactive publish is refused after the guards, before npm runs.
+    await assert.rejects(
+      attempt(good),
+      /interactive terminal/u
+    );
+
+    await rm(guardLog, { force: true });
+    const dry = await attempt(good, { dryRun: true });
+    assert.equal(dry.published, false);
+    assert.deepEqual(
+      (await readFile(guardLog, 'utf8')).trim().split('\n'),
+      ['release:check', 'release:tag-check', 'test:runtime-assets-lock'],
+      'every release guard runs before publishing'
+    );
+    assert.ok(
+      lines.some((line) => line.includes(`npm publish ${good.tarball} --access public --auth-type=web`)),
+      lines.join('\n')
+    );
+    assert.ok(lines.some((line) => line.includes(dry.integrity)), 'the expected registry integrity is printed');
+
+    // A failing guard stops the publish.
+    await writeFile(
+      join(checkout, 'package.json'),
+      JSON.stringify({ ...manifest, scripts: { ...manifest.scripts, 'release:tag-check': 'node -e "process.exit(3)"' } }),
+      'utf8'
+    );
+    await assert.rejects(
+      attempt(good, { dryRun: true }),
+      /release guard "release:tag-check" failed/u
+    );
+  } finally {
+    await rm(fixture, { recursive: true, force: true });
+  }
+});

@@ -6,6 +6,15 @@ This repo uses Git tags as release boundaries. Version notes below summarize wha
 
 ## [Unreleased]
 
+### Added
+
+- `pnpm release:tarball <tarball> <sha256>`: the release entrypoint. It
+  publishes the packed, tested tarball itself after verifying its sha256,
+  package, version and runtime lock against the checkout and running the
+  release guards, and it refuses a non-interactive publish (npm's web second
+  factor needs a terminal). `pnpm publish .` repacks the directory and cannot
+  publish the tested bytes. The publish-safety audit checks the script.
+
 ### Fixed
 
 - Compile failures report the compiler's own diagnostics in the learner's file

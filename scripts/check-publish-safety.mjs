@@ -20,6 +20,8 @@ const RETIRED_INTERNAL_PACKAGE_NAMES = new Set([
 const RELEASE_CHECK_SCRIPT = 'node scripts/check-publish-safety.mjs';
 const RELEASE_TAG_CHECK_SCRIPT = 'node scripts/check-release-tag.mjs';
 const ROOT_RELEASE_SCRIPT = 'pnpm publish . --access public';
+// The release path: publish the packed, tested tarball (docs/publishing.md).
+const RELEASE_TARBALL_SCRIPT = 'node scripts/publish-release-tarball.mjs';
 const PREPUBLISH_SCRIPT =
   'pnpm release:check && pnpm release:tag-check && pnpm test:runtime-assets-lock && pnpm build && pnpm release:tag-check && pnpm test:runtime-assets-lock';
 const RUNTIME_STAMP_EXCLUSION = '!workers/**/.stamp';
@@ -230,6 +232,9 @@ function assertRootReleaseConfiguration(rootManifest, npmrcSource) {
   }
   if (rootManifest.scripts?.['release:root'] !== ROOT_RELEASE_SCRIPT) {
     fail(`release:root must publish only the workspace root via ${JSON.stringify(ROOT_RELEASE_SCRIPT)}`);
+  }
+  if (rootManifest.scripts?.['release:tarball'] !== RELEASE_TARBALL_SCRIPT) {
+    fail(`release:tarball must publish the tested tarball via ${JSON.stringify(RELEASE_TARBALL_SCRIPT)}`);
   }
   if (rootManifest.scripts?.prepublishOnly !== PREPUBLISH_SCRIPT) {
     fail(`prepublishOnly must audit before the build and recheck release artifacts afterward via ${JSON.stringify(PREPUBLISH_SCRIPT)}`);
