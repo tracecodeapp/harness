@@ -8,6 +8,21 @@ This repo uses Git tags as release boundaries. Version notes below summarize wha
 
 ### Added
 
+- Provider batches can stop themselves at the first runaway case. A
+  prepared program that declares `capabilities.stopsAtFirstRunaway` receives
+  one batch with `stopAtFirstRunaway` and returns a prefix ending at the
+  runaway case; Judge reports the rest as `not-run`. Python declares it (fast,
+  split traced/untraced and compatibility paths), so an interactive Run and an
+  opted-in Submit no longer send one request per case: a correct 10-case Python
+  Run is back to 0.19.0's time. Providers without the capability keep the
+  one-request-per-case path; Java's batch runs inside TraceJVM and needs
+  TraceJVM support to stop itself. A batch reply that is not such a prefix is a
+  provider protocol failure.
+- `pnpm test:correct-program-timing`: correct-program time per language for
+  Run, Submit, traced Submit and Submit with `stopAtFirstRunaway`, compared with
+  a checkout of 0.19.0 measured in the same run (`TRACECODE_TIMING_BASELINE_ROOT`),
+  so stopping semantics cannot slow a correct program unnoticed.
+
 - `pnpm release:tarball <tarball> <sha256>`: the release entrypoint. It
   publishes the packed, tested tarball itself after verifying its sha256,
   package, version and runtime lock against the checkout and running the
@@ -16,6 +31,16 @@ This repo uses Git tags as release boundaries. Version notes below summarize wha
   publish the tested bytes. The publish-safety audit checks the script.
 
 ### Fixed
+
+- The Judge watchdog in prepared execution is a backstop that never undercuts
+  the provider and never fabricates time limits. It waits for every case's own
+  deadline plus the provider's declared `lifecycleAllowanceMs` (Java, C++,
+  Python 120 s; C# 45 s; default 30 s) and a recovery allowance per batched
+  case. If it still fires, the runtime failed to honour its own limits: the
+  cases it did not report are the provider's failure
+  (`runtime-provider-error`), never `client-timeout`. Plans mark this with
+  `run.timeoutRole: 'backstop'`; a `limit` watchdog (the default, and every
+  non-browser Judge plan) is still the program's time limit.
 
 - Compile failures report the compiler's own diagnostics in the learner's file
   and line numbering, with the explanation intact:

@@ -76,9 +76,18 @@ never choose an origin.
   `execute`, or `RuntimeJudge.evaluateAlgorithm`), which gives a batch Run's
   stopping, reported the same way. It is off by default; the consumer chooses
   per action.
-- The Judge watchdog is a backstop behind the providers' own limits; it grants
-  half the per-case bound (single cases) or a fixed recovery allowance per case
-  (batches), so the provider's limit, with its reason and line, wins.
+- The Judge watchdog is a backstop behind the providers' own limits
+  (`run.timeoutRole: 'backstop'`). It waits for every case's own deadline plus
+  the provider's declared `lifecycleAllowanceMs` and a recovery allowance per
+  batched case, so the provider's limit, with its reason and line, always wins.
+  If the backstop still fires, the runtime did not honour its own limits: the
+  unreported cases are the provider's failure, never a fabricated time limit.
+- A stopping evaluation (Run, or a batch with `stopAtFirstRunaway`) sends one
+  batch to a provider whose prepared program declares
+  `capabilities.stopsAtFirstRunaway` (Python); the provider stops at the first
+  runaway and returns the prefix. Other providers get one request per case.
+  `pnpm test:correct-program-timing` compares correct-program time with 0.19.0
+  so this cannot regress unnoticed.
 - Aborting a run (the caller's `AbortSignal`) interrupts it and rejects with
   the caller's `AbortError`. Providers terminate the busy worker or VM and a
   fresh one serves the next run; consumers do not dispose the runtime.
