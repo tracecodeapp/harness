@@ -25,6 +25,9 @@ import {
   type BrowserRuntimeProvider,
 } from '../packages/runtime-browser/src';
 import {
+  createEmptyRuntimeTrace,
+  liftCodeOutcome,
+  liftTraceOutcome,
   RUNTIME_TRACE_SCHEMA_VERSION,
   type CodeExecutionResult,
   type ExecutionResult,
@@ -63,7 +66,8 @@ interface FakeInput extends Record<string, unknown> {
     | 'runaway'
     | 'throw'
     | 'trace-truncated'
-    | 'unstaged';
+    | 'unstaged'
+    | 'bogus-limit';
   readonly delayMs?: number;
   readonly consoleOutput?: readonly string[];
 }
@@ -229,6 +233,15 @@ function fakeProvider(
               state.completions.push(input.label);
               if (input.mode === 'throw') {
                 throw new Error('provider transport exploded');
+              }
+              if (input.mode === 'bogus-limit') {
+                // A malformed provider message naming a limit outside the set.
+                return {
+                  kind: 'limit',
+                  reason: 'banana',
+                  error: 'bogus',
+                  consoleOutput: [],
+                } as unknown as CodeExecutionResult;
               }
               if (input.mode === 'unstaged') {
                 // An untyped provider breaking the contract.
@@ -2155,6 +2168,7 @@ test('every Judge case states its origin and converts totally to the outcome a l
       { id: 'limited', input: { label: 'limited', mode: 'limit' }, expected: 'unused' },
       { id: 'provider-failure', input: { label: 'provider-failure', mode: 'throw' }, expected: 'unused' },
       { id: 'unstaged', input: { label: 'unstaged', mode: 'unstaged' }, expected: 'unused' },
+      { id: 'bogus-limit', input: { label: 'bogus-limit', mode: 'bogus-limit' }, expected: 'unused' },
     ])
   );
   assert.deepEqual(result.cases.map(describeJudgeCase), [
@@ -2163,9 +2177,10 @@ test('every Judge case states its origin and converts totally to the outcome a l
     'limit:line-limit',
     'provider:runtime-failure',
     'provider:contract-violation',
+    'provider:protocol',
   ]);
 
-  const [completed, failed, limited, provider, unstaged] = result.cases;
+  const [completed, failed, limited, provider, unstaged, bogusLimit] = result.cases;
   assert.deepEqual(
     judgeCaseExecutionOutcome(completed!, { language: 'javascript' }),
     { kind: 'completed', output: 4, consoleOutput: ['stdout:completed'] }
@@ -2181,7 +2196,7 @@ test('every Judge case states its origin and converts totally to the outcome a l
   assert.equal(limitedTrace.kind, 'limit');
   assert.equal(limitedTrace.kind === 'limit' ? limitedTrace.reason : undefined, 'line-limit');
   assert.equal(limitedTrace.trace.language, 'javascript');
-  for (const providerCase of [provider!, unstaged!]) {
+  for (const providerCase of [provider!, unstaged!, bogusLimit!]) {
     assert.throws(
       () => judgeCaseExecutionOutcome(providerCase, { language: 'javascript' }),
       (error: unknown) => isRuntimeProviderError(error)
@@ -2321,4 +2336,25 @@ test('a batch evaluation that opts in stops at the first runaway case like Run; 
     ]);
   }
   assert.deepEqual(byDefault.state.completions, ['first', 'runaway', 'after']);
+});
+
+test('lifting rejects a worker reply that names a limit or stage outside the closed sets', () => {
+  for (const raw of [
+    { success: false, timeoutReason: 'banana', consoleOutput: [] },
+    { success: false, diagnosticStage: 'banana', error: 'x', consoleOutput: [] },
+  ]) {
+    assert.throws(
+      () => liftCodeOutcome(raw as unknown as Parameters<typeof liftCodeOutcome>[0]),
+      (error: unknown) => isRuntimeProviderError(error) && /unknown (timeoutReason|diagnosticStage)/.test((error as Error).message)
+    );
+    assert.throws(
+      () => liftTraceOutcome(
+        raw as unknown as Parameters<typeof liftTraceOutcome>[0],
+        createEmptyRuntimeTrace('javascript', { runId: 'javascript:run' })
+      ),
+      (error: unknown) => isRuntimeProviderError(error)
+    );
+  }
+  const limit = liftCodeOutcome({ success: false, timeoutReason: 'line-limit', consoleOutput: [] });
+  assert.equal(limit.kind === 'limit' ? limit.reason : undefined, 'line-limit');
 });

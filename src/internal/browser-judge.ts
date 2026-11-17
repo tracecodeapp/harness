@@ -19,6 +19,7 @@ import type {
 import type {
   BrowserRuntimeHost,
 } from '../../packages/runtime-browser/src/browser-runtime-host';
+import { isExecutionLimitReason } from '../../packages/runtime-contracts/src/execution-outcome';
 import { assertRuntimeRequestSupported } from '../../packages/runtime-browser/src/runtime-capability-guards';
 import { getLanguageRuntimeProfile } from '../../packages/runtime-browser/src/runtime-profiles';
 import type {
@@ -594,12 +595,25 @@ function limitDiagnostic(
     }
   >
 ): JudgeDiagnostic {
+  const reason: unknown = outcome.reason;
+  if (!isExecutionLimitReason(reason)) {
+    // A limit outside the closed set is a malformed provider message, never
+    // a learner limit.
+    return Object.freeze({
+      severity: 'error',
+      message:
+        `The ${runtime} runtime reported an unknown limit ` +
+        `${JSON.stringify(String(reason)).slice(0, 80)} (Harness protocol violation).`,
+      code: PROVIDER_ERROR_CODE,
+      source: runtime,
+    });
+  }
   return Object.freeze({
     severity: 'error',
     message: String(outcome.error ?? '').trim() ||
-      LIMIT_MESSAGES[outcome.reason] ||
-      `Execution stopped by a limit (${String(outcome.reason)}).`,
-    code: outcome.reason,
+      LIMIT_MESSAGES[reason] ||
+      `Execution stopped by a limit (${reason}).`,
+    code: reason,
     source: runtime,
   });
 }
@@ -637,6 +651,13 @@ function outcomeFailure(
   diagnostic: JudgeDiagnostic
 ): JudgeFailure {
   if (outcome.kind === 'limit') {
+    if (diagnostic.code === PROVIDER_ERROR_CODE) {
+      return Object.freeze({
+        origin: 'provider',
+        reason: 'protocol',
+        message: diagnostic.message,
+      });
+    }
     return Object.freeze({
       origin: 'limit',
       reason: outcome.reason,

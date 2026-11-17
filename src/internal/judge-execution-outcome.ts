@@ -7,6 +7,8 @@ import type {
 } from '../../packages/runtime-contracts/src/index';
 import {
   createEmptyRuntimeTrace,
+  isExecutionDiagnosticStage,
+  isExecutionLimitReason,
   RuntimeProviderError,
 } from '../../packages/runtime-contracts/src/index';
 import type { RuntimeTrace } from '../../packages/runtime-contracts/src/runtime-trace';
@@ -37,17 +39,6 @@ export interface JudgeExecutionOutcomeOptions {
   /** Language of the evaluated submission (labels empty traces). */
   readonly language: Language;
 }
-
-const LIMIT_REASONS: ReadonlySet<string> = new Set<ExecutionLimitReason>([
-  'trace-limit',
-  'trace-byte-limit',
-  'line-limit',
-  'single-line-limit',
-  'recursion-limit',
-  'memory-limit',
-  'serialization-limit',
-  'client-timeout',
-]);
 
 function consoleLines(stdout: string): string[] {
   if (!stdout) return [];
@@ -111,6 +102,14 @@ function failureOutcome(
 ): FailureOutcome {
   switch (failure.origin) {
     case 'program':
+      // A result outside the closed sets cannot be the learner's: it is a
+      // malformed provider message, so it is not an outcome either.
+      if (!isExecutionDiagnosticStage(failure.stage)) {
+        throw new RuntimeProviderError(
+          `Judge result names an unknown program stage ${JSON.stringify(String(failure.stage)).slice(0, 80)}.`,
+          { cause: failure }
+        );
+      }
       return {
         kind: 'failed',
         error: failure.message,
@@ -119,6 +118,12 @@ function failureOutcome(
         ...(errorDiagnostic(result) ? { diagnostic: errorDiagnostic(result) } : {}),
       };
     case 'limit':
+      if (!isExecutionLimitReason(failure.reason)) {
+        throw new RuntimeProviderError(
+          `Judge result names an unknown limit ${JSON.stringify(String(failure.reason)).slice(0, 80)}.`,
+          { cause: failure }
+        );
+      }
       return { kind: 'limit', reason: failure.reason, error: failure.message };
     case 'provider':
       throw new RuntimeProviderError(failure.message, { cause: failure });
@@ -131,7 +136,7 @@ function traceTruncated(
   const warning = result.diagnostics.find((diagnostic) =>
     diagnostic.severity === 'warning' &&
     diagnostic.code !== undefined &&
-    LIMIT_REASONS.has(diagnostic.code)
+    isExecutionLimitReason(diagnostic.code)
   );
   return warning ? { traceTruncated: warning.code as ExecutionLimitReason } : {};
 }
