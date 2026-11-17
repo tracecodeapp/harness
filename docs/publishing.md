@@ -149,37 +149,54 @@ The consumer uploads the runtime assets from a checkout that pins exactly
 uploading, it checks the installed identity against the candidate:
 
 ```bash
-node -p "require('./node_modules/@tracecode/harness/runtime-assets.lock.json').harness.releaseId"
+node -p "require('@tracecode/harness/runtime-assets.lock.json').harness.releaseId"
 ```
 
-Read the lock by path. The package `exports` does not expose
-`runtime-assets.lock.json`, so `require('@tracecode/harness/runtime-assets.lock.json')`
-fails with `ERR_PACKAGE_PATH_NOT_EXPORTED`.
+From 0.20.2 the package exports `runtime-assets.lock.json`. For 0.20.1 and
+earlier, read it by path
+(`./node_modules/@tracecode/harness/runtime-assets.lock.json`); the specifier
+above fails with `ERR_PACKAGE_PATH_NOT_EXPORTED`.
 
 The upload is the whole staged runtime tree (`tracecode-harness sync-assets`),
-not only the Harness components:
+not only the Harness components. The lock's `stagedInventory` records it: the
+file and byte totals for every language, the totals per class and per staged
+path group, and every alias by name. The classes are:
 
-- the Harness components (`totalPackagedRuntimeBytes` in the lock);
-- each engine dependency's installed tree, `tracecc` and `tracejvm`.
-  An installed tree also carries legal files and descriptors beyond the lock's
-  `engineDependencies.*.totalBytes`;
-- files the CLI adds beside the locked components: `THIRD_PARTY_NOTICES.md`,
-  and `project-cpp-worker.js`. The latter is an alias: the CLI copies the
-  locked `workers/cpp/cpp-worker.js` to both `cpp-worker.js` and
-  `project-cpp-worker.js`;
-- at upload, the consumer's own commit-marker manifest.
+- `locked`: files the lock lists, the Harness components
+  (`totalPackagedRuntimeBytes`) and the engine runtime entries
+  (`engineDependencies.*.totalBytes`);
+- `alias`: a second staged copy of a locked file. Today there is one:
+  `project-cpp-worker.js`, a copy of the locked `workers/cpp/cpp-worker.js`
+  (also staged as `cpp-worker.js`);
+- `metadata`: staged files outside the locked totals: `THIRD_PARTY_NOTICES.md`,
+  TraceCC's `cpp-runtime-manifest.json` and `tracecc-consumer-lock.json`, and
+  TraceJVM's `legal/`, `source/` and `release.json`.
 
-Summing the lock's totals therefore undercounts. Reconciled for 0.20.1, the
-staged inventory is **607 files, 428,324,717 bytes**:
+Summing the lock's component and engine totals therefore undercounts; use
+`stagedInventory`. To get the per-file listing of what was staged, verified
+against the target directory, sync with `--inventory`:
+
+```bash
+tracecode-harness sync-assets public/workers --inventory > staged-inventory.json
+```
+
+It prints every staged file with its size, sha256 and class, the totals, and
+`matchesLock` (whether the staged totals equal the lock's `stagedInventory`).
+It fails if a staged file is missing or differs, and it lists files in the
+target that the Harness did not stage (`notStagedByHarness`), such as the
+consumer's commit marker, without removing them.
+
+For reference, 0.20.1 staged **607 files, 428,324,717 bytes** (reconciled by
+hand before `stagedInventory` existed):
 
 | Part | Files | Bytes |
 | --- | ---: | ---: |
-| The nine lock totals: seven components, `tracecc` and `tracejvm` runtime entries | 348 | 425,626,587 |
-| TraceJVM `legal/` files | 254 | 1,864,961 |
-| TraceJVM `release.json` | 1 | 189,839 |
-| TraceCC `cpp-runtime-manifest.json` and `tracecc-consumer-lock.json` | 2 | 8,541 |
-| `THIRD_PARTY_NOTICES.md` | 1 | 10,886 |
-| `project-cpp-worker.js` (alias of the locked `workers/cpp/cpp-worker.js`) | 1 | 623,903 |
+| `locked`: seven components, `tracecc` and `tracejvm` runtime entries | 348 | 425,626,587 |
+| `metadata`: TraceJVM `legal/` files | 254 | 1,864,961 |
+| `metadata`: TraceJVM `release.json` | 1 | 189,839 |
+| `metadata`: TraceCC `cpp-runtime-manifest.json` and `tracecc-consumer-lock.json` | 2 | 8,541 |
+| `metadata`: `THIRD_PARTY_NOTICES.md` | 1 | 10,886 |
+| `alias`: `project-cpp-worker.js` (of `workers/cpp/cpp-worker.js`) | 1 | 623,903 |
 
 Record the staged inventory with each release, and compare it with the
 consumer's publication `--check` output before uploading. The consumer adds one

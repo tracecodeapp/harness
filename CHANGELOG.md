@@ -23,6 +23,22 @@ This repo uses Git tags as release boundaries. Version notes below summarize wha
   a checkout of 0.19.0 measured in the same run (`TRACECODE_TIMING_BASELINE_ROOT`),
   so stopping semantics cannot slow a correct program unnoticed.
 
+- The runtime asset lock records `stagedInventory`: what
+  `tracecode-harness sync-assets` stages for every language (files, bytes,
+  totals per class and per path group, and every alias by name). Classes are
+  `locked` (listed in the lock), `alias` (a second copy of a locked file:
+  `project-cpp-worker.js` is `workers/cpp/cpp-worker.js`) and `metadata`
+  (notices, engine manifests and provenance, TraceJVM legal files and
+  descriptor). Summing the component and engine totals undercounts the upload;
+  this is the number to upload and check.
+- `tracecode-harness sync-assets <dir> --inventory` prints the per-file staged
+  inventory as JSON after syncing, verifies each staged file's size and sha256
+  in the target, reports `matchesLock`, and lists files in the target the
+  Harness did not stage (such as a consumer's commit marker).
+- `@tracecode/harness/runtime-assets.lock.json` is exported, so the lock can be
+  read through the package instead of by a path into `node_modules`.
+- `sync-assets` from a source checkout no longer copies materialization stamps
+  (`.stamp`), so it stages the same tree as the published package.
 - `pnpm release:tarball <tarball> <sha256>`: the release entrypoint. It
   publishes the packed, tested tarball itself after verifying its sha256,
   package, version and runtime lock against the checkout and running the

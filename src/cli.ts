@@ -1,178 +1,39 @@
 #!/usr/bin/env node
 
-import { copyFile, cp, mkdir, rm, stat } from 'node:fs/promises';
+import { createHash } from 'node:crypto';
+import { copyFile, cp, mkdir, readFile, readdir, rm, stat } from 'node:fs/promises';
 import { realpathSync } from 'node:fs';
-import { dirname, join, resolve } from 'node:path';
+import { dirname, join, relative, resolve, sep } from 'node:path';
 import { materializeCSharpRoleAssets } from '../scripts/csharp-role-artifacts.js';
 import {
   installEngineRuntimePackage,
   loadEngineRuntimePackages,
 } from '../scripts/runtime-package-assets.mjs';
-
-type AssetLanguage = 'python' | 'javascript' | 'java' | 'csharp' | 'cpp';
-
-const ASSET_COPY_PLAN = [
-  {
-    source: ['THIRD_PARTY_NOTICES.md'],
-    target: ['THIRD_PARTY_NOTICES.md'],
-  },
-  {
-    source: ['workers', 'python', 'python-worker.js'],
-    target: ['python-worker.js'],
-    languages: ['python'],
-  },
-  {
-    source: ['workers', 'python', 'generated-python-harness-snippets.js'],
-    target: ['generated-python-harness-snippets.js'],
-    languages: ['python'],
-  },
-  {
-    source: ['workers', 'python', 'python-runtime.js'],
-    target: ['python', 'python-runtime.js'],
-    languages: ['python'],
-  },
-  {
-    source: ['workers', 'python', 'pyodide-0.29.3'],
-    target: ['python', 'pyodide-0.29.3'],
-    languages: ['python'],
-  },
-  {
-    // Native tracing hot path; the worker resolves it next to its own script
-    // and falls back to the python tracer when absent.
-    source: ['workers', 'python', 'tracecode_native-0.1.0-cp313-cp313-pyemscripten_2025_0_wasm32.whl'],
-    target: ['tracecode_native-0.1.0-cp313-cp313-pyemscripten_2025_0_wasm32.whl'],
-    languages: ['python'],
-  },
-  {
-    source: ['workers', 'shared', 'runtime-kernel-policy-classic.js'],
-    target: ['shared', 'runtime-kernel-policy-classic.js'],
-    languages: ['python'],
-  },
-  {
-    source: ['workers', 'shared', 'runtime-kernel-policy.js'],
-    target: ['shared', 'runtime-kernel-policy.js'],
-    languages: ['python'],
-  },
-  {
-    source: ['workers', 'javascript', 'javascript-worker.js'],
-    target: ['javascript-worker.js'],
-    languages: ['javascript'],
-  },
-  {
-    source: ['workers', 'javascript', 'javascript-ses-algorithm-worker.js'],
-    target: ['javascript-ses-algorithm-worker.js'],
-    languages: ['javascript'],
-  },
-  {
-    source: ['workers', 'javascript', 'javascript-project-worker.js'],
-    target: ['javascript-project-worker.js'],
-    languages: ['javascript'],
-  },
-  {
-    source: ['workers', 'shared', 'runtime-kernel-policy-classic.js'],
-    target: ['shared', 'runtime-kernel-policy-classic.js'],
-    languages: ['javascript'],
-  },
-  {
-    source: ['workers', 'java', 'java-worker.js'],
-    target: ['java-worker.js'],
-    languages: ['java'],
-  },
-  {
-    source: ['workers', 'java', 'java-runtime-worker.js'],
-    target: ['java-runtime-worker.js'],
-    languages: ['java'],
-  },
-  {
-    source: ['workers', 'java', 'java-source-augmentations.js'],
-    target: ['java-source-augmentations.js'],
-    languages: ['java'],
-  },
-  {
-    source: ['workers', 'shared', 'runtime-kernel-policy-classic.js'],
-    target: ['shared', 'runtime-kernel-policy-classic.js'],
-    languages: ['java'],
-  },
-  {
-    source: ['workers', 'shared', 'tracekernel-syscall-client.js'],
-    target: ['shared', 'tracekernel-syscall-client.js'],
-    languages: ['java'],
-  },
-  {
-    source: ['workers', 'shared', 'tracekernel-local-java-host.js'],
-    target: ['shared', 'tracekernel-local-java-host.js'],
-    languages: ['java'],
-  },
-  {
-    source: ['workers', 'csharp', 'csharp-worker.js'],
-    target: ['csharp-worker.js'],
-    languages: ['csharp'],
-  },
-  {
-    source: ['workers', 'shared', 'runtime-kernel-policy-classic.js'],
-    target: ['shared', 'runtime-kernel-policy-classic.js'],
-    languages: ['csharp'],
-  },
-  {
-    source: ['workers', 'shared', 'runtime-kernel-policy.js'],
-    target: ['shared', 'runtime-kernel-policy.js'],
-    languages: ['csharp'],
-  },
-  {
-    source: ['workers', 'cpp', 'cpp-worker.js'],
-    target: ['cpp-worker.js'],
-    languages: ['cpp'],
-  },
-  {
-    source: ['workers', 'cpp', 'cpp-worker.js'],
-    target: ['project-cpp-worker.js'],
-    languages: ['cpp'],
-  },
-  {
-    source: ['workers', 'shared', 'runtime-kernel-policy.js'],
-    target: ['shared', 'runtime-kernel-policy.js'],
-    languages: ['cpp'],
-  },
-  {
-    source: ['workers', 'cpp', 'tracecode_runtime.hpp'],
-    target: ['cpp', 'tracecode_runtime.hpp'],
-    languages: ['cpp'],
-  },
-  {
-    source: ['workers', 'vendor', 'typescript.js'],
-    target: ['vendor', 'typescript.js'],
-    languages: ['javascript'],
-  },
-  {
-    source: ['workers', 'vendor', 'javascript-libraries.js'],
-    target: ['vendor', 'javascript-libraries.js'],
-    languages: ['javascript'],
-  },
-  {
-    source: ['workers', 'vendor', 'java-browser-helper.jar'],
-    target: ['vendor', 'java-browser-helper.jar'],
-    languages: ['java'],
-  },
-  {
-    source: ['workers', 'vendor', 'csharp'],
-    target: ['vendor', 'csharp'],
-    languages: ['csharp'],
-  },
-  {
-    source: ['workers', 'vendor', 'csharp-runner'],
-    target: ['vendor', 'csharp-runner'],
-    languages: ['csharp'],
-  },
-] as const;
+import {
+  ASSET_COPY_PLAN,
+  PACKAGE_PATH_EXCLUDES,
+  computeStagedInventory,
+  selectsAsset,
+  stagedPathGroups,
+  type AssetCopyPlanEntry,
+  type AssetLanguage,
+  type StagedInventory,
+} from '../scripts/runtime-asset-staging.js';
 
 function usage(): string {
   return [
     'Usage:',
-    '  tracecode-harness sync-assets <target-dir> [--languages python,javascript,java,csharp,cpp]',
+    '  tracecode-harness sync-assets <target-dir> [--languages python,javascript,java,csharp,cpp] [--inventory]',
+    '',
+    '  --inventory  after syncing, print the staged inventory as JSON on stdout:',
+    '               every staged file with its size, sha256 and class (locked,',
+    '               alias of a locked file, or metadata), the totals, and files',
+    '               in the target directory that the Harness did not stage.',
     '',
     'Example:',
     '  tracecode-harness sync-assets public/workers',
     '  tracecode-harness sync-assets public/workers --languages python,javascript',
+    '  tracecode-harness sync-assets public/workers --inventory > inventory.json',
   ].join('\n');
 }
 
@@ -188,7 +49,7 @@ function getPackageRoot(): string {
   return resolve(dirname(realpathSync(cliEntrypoint)), '..');
 }
 
-function resolveAssetSourcePath(packageRoot: string, asset: typeof ASSET_COPY_PLAN[number]): string {
+function resolveAssetSourcePath(packageRoot: string, asset: AssetCopyPlanEntry): string {
   return join(packageRoot, ...asset.source);
 }
 
@@ -203,14 +64,23 @@ function normalizeLanguage(rawLanguage: string): AssetLanguage {
   throw new Error(`Unsupported language "${rawLanguage}". Expected python, javascript, java, csharp, or cpp.`);
 }
 
-function parseSelectedLanguages(args: string[]): Set<AssetLanguage> | null {
+interface SyncOptions {
+  readonly languages: Set<AssetLanguage> | null;
+  readonly inventory: boolean;
+}
+
+function parseSyncOptions(args: string[]): SyncOptions {
   const selectedLanguages = new Set<AssetLanguage>();
+  let inventory = false;
 
   for (let index = 0; index < args.length; index += 1) {
     const arg = args[index];
     let rawValue: string | undefined;
 
-    if (arg === '--language' || arg === '--languages') {
+    if (arg === '--inventory') {
+      inventory = true;
+      continue;
+    } else if (arg === '--language' || arg === '--languages') {
       rawValue = args[index + 1];
       index += 1;
     } else if (arg?.startsWith('--language=')) {
@@ -230,24 +100,22 @@ function parseSelectedLanguages(args: string[]): Set<AssetLanguage> | null {
     }
   }
 
-  return selectedLanguages.size > 0 ? selectedLanguages : null;
+  return {
+    languages: selectedLanguages.size > 0 ? selectedLanguages : null,
+    inventory,
+  };
 }
 
-function shouldCopyAsset(
-  asset: typeof ASSET_COPY_PLAN[number],
-  selectedLanguages: ReadonlySet<AssetLanguage> | null
-): boolean {
-  if (!selectedLanguages || !('languages' in asset)) return true;
-  return asset.languages.some((language) => selectedLanguages.has(language));
-}
-
-async function syncAssets(targetDir: string, selectedLanguages: ReadonlySet<AssetLanguage> | null): Promise<void> {
+async function syncAssets(targetDir: string, options: SyncOptions): Promise<void> {
+  const selectedLanguages = options.languages;
   const packageRoot = getPackageRoot();
   const resolvedTargetDir = resolve(process.cwd(), targetDir);
   const wantsJava = !selectedLanguages || selectedLanguages.has('java');
   const wantsCpp = !selectedLanguages || selectedLanguages.has('cpp');
-  if (wantsJava || wantsCpp) {
-    const engines = await loadEngineRuntimePackages(packageRoot);
+  const engines = wantsJava || wantsCpp || options.inventory
+    ? await loadEngineRuntimePackages(packageRoot)
+    : undefined;
+  if (engines && (wantsJava || wantsCpp)) {
     if (wantsJava) {
       await rm(join(resolvedTargetDir, 'java/tracejvm'), {
         recursive: true,
@@ -287,19 +155,103 @@ async function syncAssets(targetDir: string, selectedLanguages: ReadonlySet<Asse
   }
 
   for (const asset of ASSET_COPY_PLAN) {
-    if (!shouldCopyAsset(asset, selectedLanguages)) continue;
+    if (!selectsAsset(asset, selectedLanguages)) continue;
     const sourcePath = resolveAssetSourcePath(packageRoot, asset);
     const targetPath = join(resolvedTargetDir, ...asset.target);
     const sourceStat = await stat(sourcePath);
     await ensureParentDir(targetPath);
     if (sourceStat.isDirectory()) {
-      await cp(sourcePath, targetPath, { recursive: true, force: true });
+      // Stage what the published package contains: a source checkout's
+      // materialization stamps and build-only files stay behind.
+      await cp(sourcePath, targetPath, {
+        recursive: true,
+        force: true,
+        filter: (candidate) => {
+          const packagePath = relative(packageRoot, candidate).split(sep).join('/');
+          return !PACKAGE_PATH_EXCLUDES.some((pattern) => pattern.test(packagePath));
+        },
+      });
     } else {
       await copyFile(sourcePath, targetPath);
     }
   }
 
-  console.log(`Synced harness assets to ${resolvedTargetDir}`);
+  if (!options.inventory || !engines) {
+    console.log(`Synced harness assets to ${resolvedTargetDir}`);
+    return;
+  }
+  console.error(`Synced harness assets to ${resolvedTargetDir}`);
+  const inventory = await computeStagedInventory({
+    packageRoot,
+    engines,
+    traceccLockedPaths: await traceccLockedPaths(packageRoot),
+    languages: selectedLanguages,
+  });
+  process.stdout.write(
+    `${JSON.stringify(await inventoryReport(packageRoot, resolvedTargetDir, inventory), null, 2)}\n`
+  );
+}
+
+async function traceccLockedPaths(packageRoot: string): Promise<Set<string>> {
+  const lock = JSON.parse(
+    await readFile(join(packageRoot, 'runtime-assets.lock.json'), 'utf8')
+  ) as { engineDependencies?: { tracecc?: { files?: { path: string }[] } } };
+  return new Set((lock.engineDependencies?.tracecc?.files ?? []).map((file) => file.path));
+}
+
+async function listTargetFiles(root: string, prefix = ''): Promise<string[]> {
+  const files: string[] = [];
+  for (const entry of await readdir(join(root, prefix), { withFileTypes: true })) {
+    const path = prefix ? `${prefix}/${entry.name}` : entry.name;
+    if (entry.isDirectory()) files.push(...(await listTargetFiles(root, path)));
+    else files.push(path);
+  }
+  return files;
+}
+
+/**
+ * The staged inventory, verified against the target directory: every staged
+ * file must be there with its recorded size and sha256. Files the Harness did
+ * not stage (the consumer's own, or stale ones) are listed, not removed.
+ */
+async function inventoryReport(packageRoot: string, targetDir: string, inventory: StagedInventory) {
+  const mismatched: string[] = [];
+  for (const file of inventory.files) {
+    try {
+      const bytes = await readFile(join(targetDir, ...file.path.split('/')));
+      const digest = createHash('sha256').update(bytes).digest('hex');
+      if (bytes.byteLength !== file.size || digest !== file.sha256) mismatched.push(file.path);
+    } catch {
+      mismatched.push(file.path);
+    }
+  }
+  if (mismatched.length > 0) {
+    throw new Error(`Staged files do not match the inventory: ${mismatched.slice(0, 10).join(', ')}`);
+  }
+  const staged = new Set(inventory.files.map((file) => file.path));
+  const notStaged = (await listTargetFiles(targetDir)).filter((path) => !staged.has(path)).sort();
+  const lock = JSON.parse(await readFile(join(packageRoot, 'runtime-assets.lock.json'), 'utf8')) as {
+    harness?: { releaseId?: string };
+    stagedInventory?: { files?: number; bytes?: number };
+  };
+  const allLanguages = inventory.languages.length === 5;
+  return {
+    schema: 'tracecode.staged-inventory.v1',
+    harness: lock.harness?.releaseId,
+    target: targetDir,
+    languages: inventory.languages,
+    totals: inventory.totals,
+    ...(allLanguages
+      ? {
+          matchesLock:
+            lock.stagedInventory?.files === inventory.totals.files &&
+            lock.stagedInventory?.bytes === inventory.totals.bytes,
+        }
+      : {}),
+    groups: stagedPathGroups(inventory.files),
+    files: inventory.files,
+    notStagedByHarness: notStaged,
+  };
 }
 
 async function main(): Promise<void> {
@@ -310,7 +262,7 @@ async function main(): Promise<void> {
     process.exit(1);
   }
 
-  await syncAssets(targetDir, parseSelectedLanguages(args));
+  await syncAssets(targetDir, parseSyncOptions(args));
 }
 
 main().catch((error) => {

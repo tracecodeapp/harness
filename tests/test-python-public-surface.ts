@@ -173,8 +173,8 @@ function main(): void {
   const rootEntrypoints = Object.keys(rootPackage.exports ?? {});
   assertCondition(
     JSON.stringify(rootEntrypoints.sort()) ===
-      JSON.stringify(['./judge', './package.json', './tracekernel']),
-    `The root package may expose only TraceKernel, Judge, and its manifest: ${rootEntrypoints.join(', ')}`
+      JSON.stringify(['./judge', './package.json', './runtime-assets.lock.json', './tracekernel']),
+    `The root package may expose only TraceKernel, Judge, its manifest and its runtime asset lock: ${rootEntrypoints.join(', ')}`
   );
   assertCondition(
     rootEntrypoints.every(

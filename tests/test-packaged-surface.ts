@@ -50,8 +50,8 @@ test('published package has only TraceKernel and Judge code entrypoints', async 
 
   assert.deepEqual(
     Object.keys(manifest.exports ?? {}).sort(),
-    ['./judge', './package.json', './tracekernel'],
-    'the package export map should name only the two product authorities'
+    ['./judge', './package.json', './runtime-assets.lock.json', './tracekernel'],
+    'the package export map should name only the two product authorities and their metadata (package and runtime asset lock)'
   );
   assert.equal(manifest.main, undefined);
   assert.equal(manifest.module, undefined);
@@ -207,6 +207,20 @@ test('installed package resolves both module systems and rejects retired paths',
       `
     );
     assert.equal(cjs.status, 0, `${cjs.stdout}\n${cjs.stderr}`);
+
+    // Release operators and consumers read the runtime asset lock through the
+    // package, not by a path into node_modules.
+    const lock = runNode(
+      fixture,
+      `
+        const lock = require('@tracecode/harness/runtime-assets.lock.json');
+        if (lock.schema !== 'tracecode.runtime-assets-lock.v1') throw new Error('unexpected lock schema');
+        if (!Number.isSafeInteger(lock.stagedInventory?.files) || !Number.isSafeInteger(lock.stagedInventory?.bytes)) {
+          throw new Error('the lock must carry the staged inventory totals');
+        }
+      `
+    );
+    assert.equal(lock.status, 0, `${lock.stdout}\n${lock.stderr}`);
 
     for (const retired of RETIRED_EXPORTS) {
       const specifier =

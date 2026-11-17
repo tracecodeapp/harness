@@ -58,7 +58,8 @@
       "require": "./dist/judge.cjs",
       "default": "./dist/judge.js"
     },
-    "./package.json": "./package.json"
+    "./package.json": "./package.json",
+    "./runtime-assets.lock.json": "./runtime-assets.lock.json"
   },
   "scripts": {
     "prepublishOnly": "pnpm release:check && pnpm release:tag-check && pnpm test:runtime-assets-lock && pnpm build && pnpm release:tag-check && pnpm test:runtime-assets-lock",

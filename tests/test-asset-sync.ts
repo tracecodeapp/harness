@@ -492,3 +492,72 @@ async function main(t: TestContext): Promise<void> {
 }
 
 test('asset sync', main);
+
+test('sync-assets --inventory reports what it staged, verified, with aliases named', async (t) => {
+  const tempRoot = await mkdtemp(join(tmpdir(), 'tracecode-harness-inventory-'));
+  t.after(() => rm(tempRoot, { recursive: true, force: true }));
+  const targetDir = join(tempRoot, 'workers');
+  await mkdir(targetDir, { recursive: true });
+  // A consumer's own file: reported, never removed or counted as staged.
+  await writeFile(join(targetDir, 'consumer-commit.txt'), 'abc123\n');
+  const run = spawnSync('node', ['dist/cli.js', 'sync-assets', targetDir, '--inventory'], {
+    cwd: resolve(process.cwd()),
+    encoding: 'utf8',
+    maxBuffer: 64 * 1024 * 1024,
+  });
+  if (run.status !== 0) throw new Error(run.stderr || run.stdout || 'sync-assets --inventory failed');
+  const report = JSON.parse(run.stdout) as {
+    schema: string;
+    harness: string;
+    matchesLock: boolean;
+    totals: { files: number; bytes: number; byClass: Record<string, { files: number; bytes: number }> };
+    files: { path: string; size: number; class: string; source?: string; aliasOf?: string; engine?: string }[];
+    notStagedByHarness: string[];
+  };
+  const lock = JSON.parse(await readFile('runtime-assets.lock.json', 'utf8')) as {
+    harness: { releaseId: string };
+    stagedInventory: {
+      files: number;
+      bytes: number;
+      aliases: { path: string; aliasOf: string; source: string }[];
+    };
+  };
+  assertCondition(report.schema === 'tracecode.staged-inventory.v1', `unexpected schema ${report.schema}`);
+  assertCondition(report.harness === lock.harness.releaseId, 'the inventory must name the locked Harness release');
+  assertCondition(
+    report.matchesLock &&
+      report.totals.files === lock.stagedInventory.files &&
+      report.totals.bytes === lock.stagedInventory.bytes,
+    `the staged inventory must equal the lock's stagedInventory: ${JSON.stringify(report.totals)} vs ${lock.stagedInventory.files}/${lock.stagedInventory.bytes}`
+  );
+  const byPath = new Map(report.files.map((file) => [file.path, file]));
+  const alias = byPath.get('project-cpp-worker.js');
+  assertCondition(
+    alias?.class === 'alias' && alias.aliasOf === 'cpp-worker.js' && alias.source === 'workers/cpp/cpp-worker.js',
+    `project-cpp-worker.js must be named as an alias of the locked cpp-worker.js: ${JSON.stringify(alias)}`
+  );
+  assertCondition(
+    JSON.stringify(lock.stagedInventory.aliases.map(({ path, aliasOf, source }) => ({ path, aliasOf, source }))) ===
+      JSON.stringify([{ path: 'project-cpp-worker.js', aliasOf: 'cpp-worker.js', source: 'workers/cpp/cpp-worker.js' }]),
+    `the lock must name every staged alias: ${JSON.stringify(lock.stagedInventory.aliases)}`
+  );
+  assertCondition(byPath.get('cpp-worker.js')?.class === 'locked', 'cpp-worker.js is the locked copy');
+  assertCondition(byPath.get('THIRD_PARTY_NOTICES.md')?.class === 'metadata', 'notices are staged metadata');
+  assertCondition(
+    report.files.some((file) => file.engine === 'tracejvm' && file.class === 'metadata' && file.path.endsWith('/release.json')) &&
+      report.files.some((file) => file.engine === 'tracejvm' && file.class === 'metadata' && file.path.includes('/legal/')) &&
+      report.files.some((file) => file.engine === 'tracecc' && file.class === 'metadata' && file.path.endsWith('/cpp-runtime-manifest.json')),
+    'engine manifests, provenance and legal files are staged metadata'
+  );
+  assertCondition(
+    !report.files.some((file) => file.path.endsWith('.stamp')),
+    'materialization stamps are not part of the staged inventory'
+  );
+  assertCondition(
+    JSON.stringify(report.notStagedByHarness) === JSON.stringify(['consumer-commit.txt']),
+    `only the consumer's file is outside the inventory (no stamps or stray copies): ${JSON.stringify(report.notStagedByHarness)}`
+  );
+  const classTotal = Object.values(report.totals.byClass).reduce((total, entry) => total + entry.bytes, 0);
+  assertCondition(classTotal === report.totals.bytes, 'class totals must add up to the staged total');
+  console.log(`PASS: sync-assets --inventory staged ${report.totals.files} files, ${report.totals.bytes} bytes, matching the lock`);
+});

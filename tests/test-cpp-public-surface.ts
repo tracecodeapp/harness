@@ -15,6 +15,7 @@ const ROOT_NEUTRAL_EXPORTS = new Set([
   './tracekernel',
   './judge',
   './package.json',
+  './runtime-assets.lock.json',
 ]);
 
 function assertCondition(condition: unknown, message: string): asserts condition {
@@ -244,7 +245,8 @@ function main(): void {
     resolve(ROOT, 'scripts/sync-language-package-assets.ts'),
     'utf8'
   );
-  const cliSource = readFileSync(resolve(ROOT, 'src/cli.ts'), 'utf8');
+  // The CLI's copy plan lives in the shared staging module.
+  const cliSource = readFileSync(resolve(ROOT, 'scripts/runtime-asset-staging.ts'), 'utf8');
   for (const source of [syncSource, cliSource]) {
     assertCondition(
       source.includes("'cpp', 'tracecode_runtime.hpp'") &&

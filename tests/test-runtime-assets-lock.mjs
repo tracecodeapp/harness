@@ -18,6 +18,32 @@ const pythonSnapshotProvenance = JSON.parse(
 );
 
 assert.equal(lock.schema, 'tracecode.runtime-assets-lock.v1');
+
+// The staged inventory is what `sync-assets` uploads: totals that add up, the
+// locked class covering exactly the lock's component and engine runtime totals,
+// and every alias named.
+{
+  const staged = lock.stagedInventory;
+  assert.ok(staged, 'the lock must record the staged inventory');
+  const classes = Object.values(staged.byClass);
+  assert.equal(classes.reduce((total, entry) => total + entry.files, 0), staged.files);
+  assert.equal(classes.reduce((total, entry) => total + entry.bytes, 0), staged.bytes);
+  assert.equal(staged.groups.reduce((total, entry) => total + entry.bytes, 0), staged.bytes);
+  assert.equal(
+    staged.byClass.locked.bytes,
+    lock.totalPackagedRuntimeBytes +
+      lock.engineDependencies.tracecc.totalBytes +
+      lock.engineDependencies.tracejvm.totalBytes,
+    'locked staged bytes must equal the packaged components plus the engine runtime totals'
+  );
+  assert.equal(staged.byClass.alias.files, staged.aliases.length);
+  for (const alias of staged.aliases) {
+    const locked = Object.values(lock.components)
+      .flatMap((component) => component.files)
+      .find((file) => file.path === alias.source);
+    assert.ok(locked && locked.sha256 === alias.sha256 && locked.size === alias.size, `alias ${alias.path} must copy a locked file`);
+  }
+}
 assert.equal(
   lock.harness.releaseId,
   `@tracecode/harness@${packageManifest.version}+sha256.${lock.packageTreeSha256}`

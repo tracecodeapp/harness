@@ -11,6 +11,11 @@ import { basename, dirname, join, relative, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { materializeCSharpRoleAssets } from './csharp-role-artifacts.ts';
 import { loadEngineRuntimePackages } from './runtime-package-assets.mjs';
+import {
+  PACKAGE_PATH_EXCLUDES,
+  computeStagedInventory,
+  lockStagedInventory,
+} from './runtime-asset-staging.ts';
 import { PYTHON_RUNTIME_IMAGE_HASH_SEED } from '../packages/runtime-python/src/python-runtime-image-contract.ts';
 
 const SCRIPT_ROOT = dirname(fileURLToPath(import.meta.url));
@@ -31,14 +36,7 @@ const TRACEJVM_GENERATED_PATH = join(
 const LOCK_SCHEMA = 'tracecode.runtime-assets-lock.v1';
 const TREE_ALGORITHM = 'sha256-path-nul-bytes-nul-v1';
 
-const ROOT_PACKAGE_EXCLUDES = [
-  /^workers\/java\/(?:\.build|src)(?:\/|$)/u,
-  /^workers\/javascript\/javascript-libraries-entry\.js$/u,
-  /^workers\/vendor\/csharp-compiler(?:\/|$)/u,
-  /^workers\/vendor\/csharp-role-artifacts(?:\/|$)/u,
-  /^workers\/vendor\/(?:java-rewriter|javaparser-core-3\.25\.10|jdk\.compiler-17)\.jar$/u,
-  /(?:^|\/)\.stamp$/u,
-];
+const ROOT_PACKAGE_EXCLUDES = PACKAGE_PATH_EXCLUDES;
 
 function compareText(left, right) {
   return left < right ? -1 : left > right ? 1 : 0;
@@ -541,6 +539,13 @@ async function buildLock() {
       csharp,
     },
     engineDependencies: { tracecc, tracejvm },
+    stagedInventory: lockStagedInventory(
+      await computeStagedInventory({
+        packageRoot: ROOT,
+        engines,
+        traceccLockedPaths: new Set(tracecc.files.map((file) => file.path)),
+      })
+    ),
   };
   return {
     lock,
