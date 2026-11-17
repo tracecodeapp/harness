@@ -160,16 +160,30 @@ The upload is the whole staged runtime tree (`tracecode-harness sync-assets`),
 not only the Harness components:
 
 - the Harness components (`totalPackagedRuntimeBytes` in the lock);
-- each engine dependency's installed tree, `tracecc` and `tracejvm`. An
-  installed tree includes descriptor and release metadata beyond the lock's
+- each engine dependency's installed tree, `tracecc` and `tracejvm`.
+  An installed tree also carries legal files and descriptors beyond the lock's
   `engineDependencies.*.totalBytes`;
-- the consumer's own commit-marker manifest.
+- files the CLI adds beside the locked components: `THIRD_PARTY_NOTICES.md`,
+  and `project-cpp-worker.js`. The latter is an alias: the CLI copies the
+  locked `workers/cpp/cpp-worker.js` to both `cpp-worker.js` and
+  `project-cpp-worker.js`;
+- at upload, the consumer's own commit-marker manifest.
 
-Summing the lock's totals therefore undercounts. For 0.20.1 the components
-are 283 files and 152,504,822 bytes, but the staged upload is
-**607 files, 428,324,717 bytes**. Record the full staged inventory with each
-release, and compare it with the consumer's publication `--check` output
-before uploading.
+Summing the lock's totals therefore undercounts. Reconciled for 0.20.1, the
+staged inventory is **607 files, 428,324,717 bytes**:
+
+| Part | Files | Bytes |
+| --- | ---: | ---: |
+| The nine lock totals: seven components, `tracecc` and `tracejvm` runtime entries | 348 | 425,626,587 |
+| TraceJVM `legal/` files | 254 | 1,864,961 |
+| TraceJVM `release.json` | 1 | 189,839 |
+| TraceCC `cpp-runtime-manifest.json` and `tracecc-consumer-lock.json` | 2 | 8,541 |
+| `THIRD_PARTY_NOTICES.md` | 1 | 10,886 |
+| `project-cpp-worker.js` (alias of the locked `workers/cpp/cpp-worker.js`) | 1 | 623,903 |
+
+Record the staged inventory with each release, and compare it with the
+consumer's publication `--check` output before uploading. The consumer adds one
+object, its commit marker, when it uploads.
 
 ### What `pnpm release:root` is now
 
