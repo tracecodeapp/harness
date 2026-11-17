@@ -331,7 +331,7 @@ function reportVerdicts(
     }
   }
   for (const [key, reason] of Object.entries(KNOWN_GAPS)) {
-    const [language, mode, kind, aspect] = key.split(':') as [MatrixLanguage, string, MatrixFailureKind, Aspect];
+    const [language, mode, kind, aspect] = key.split(':') as [MatrixLanguage, string, MatrixFailureKind | '*', Aspect];
     const matching = verdicts.filter((verdict) =>
       verdict.result.language === language &&
       (kind === '*' || verdict.result.kind === kind) &&
