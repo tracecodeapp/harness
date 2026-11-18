@@ -67,6 +67,14 @@ This repo uses Git tags as release boundaries. Version notes below summarize wha
 
 ### Fixed
 
+- Traced Python subscripts any object as Python does. The tracer read, wrote
+  and deleted subscripts as attribute access for anything but a dict, list,
+  tuple, str or deque, so `sorted_list[0]` (sortedcontainers), `range(n)[i]`,
+  `bytes`/`array` indexing, a learner class with `__getitem__`, and typing
+  subscripts such as `Tuple[int, int]` or `cast(List[int], x)` failed under
+  tracing (Run) with `TypeError: attribute name must be string` while passing
+  untraced (Submit). Only a string step on a non-container is an attribute.
+
 - Python code that uses the typing names without importing them (the usual
   LeetCode signature, `def twoSum(self, nums: List[int], target: int) ->
   List[int]:`) runs on every path. Only traced runs had `from typing import *`,

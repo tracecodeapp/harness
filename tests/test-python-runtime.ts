@@ -4111,6 +4111,59 @@ async function assertKeylessTreeAndListNodesHaveNoneLinks(): Promise<void> {
   console.log('PASS: key-less Python tree and list nodes have None children and next (direct and prepared)');
 }
 
+async function assertTracedSubscriptsOfAnyObjectSubscript(): Promise<void> {
+  // Traced code subscripts every object the way Python does: typing aliases,
+  // learner classes with __getitem__/__setitem__/__delitem__, range, bytes and
+  // array. Only a string step on a non-container can be an attribute path.
+  const runtime = await loadPythonRuntime();
+  const deps: RuntimeDeps = {
+    PYTHON_CLASS_DEFINITIONS_SNIPPET: PYTHON_CLASS_DEFINITIONS,
+    PYTHON_CONVERSION_HELPERS_SNIPPET: PYTHON_CONVERSION_HELPERS,
+    PYTHON_TRACE_SERIALIZE_FUNCTION_SNIPPET: PYTHON_TRACE_SERIALIZE_FUNCTION,
+    PYTHON_EXECUTE_SERIALIZE_FUNCTION_SNIPPET: PYTHON_EXECUTE_SERIALIZE_FUNCTION,
+    toPythonLiteral,
+  };
+  const source = [
+    'from array import array',
+    'Pair = Tuple[int, int]',
+    'class Grid:',
+    '    def __init__(self):',
+    '        self.cells = {}',
+    '        self.memo = {}',
+    '    def __getitem__(self, key):',
+    '        return self.cells.get(key, 0)',
+    '    def __setitem__(self, key, value):',
+    '        self.cells[key] = value',
+    '    def __delitem__(self, key):',
+    '        del self.cells[key]',
+    'def solve(nums):',
+    '    values = cast(List[int], nums)',
+    '    grid = Grid()',
+    '    grid[2] = 5',
+    '    grid[3] = 7',
+    '    del grid[3]',
+    '    grid.memo[1] = 9',
+    '    return [values[0], grid[2], grid[3], grid.memo[1], range(10)[3], array("i", [1, 2, 3])[1], b"ab"[0], Optional[int] == Union[int, None]]',
+    '',
+  ].join('\n');
+  const payload = runtime.generateTracingCode(deps, source, 'solve', { nums: [4, 5] }, 'function', {
+    maxTraceSteps: 5000,
+    maxLineEvents: 20000,
+  });
+  const stdout = await runPythonScript(`${payload.code}
+print(json.dumps({
+    'result': _serialize_output(_result),
+    'error': [step.get('variables') for step in _trace_data if step.get('event') == 'exception'][:1],
+}))
+`);
+  const parsed = JSON.parse(stdout.trim().split('\n').pop()!) as { result: unknown; error: unknown[] };
+  assertCondition(
+    parsed.error.length === 0 && JSON.stringify(parsed.result) === JSON.stringify([4, 5, 0, 9, 3, 2, 97, true]),
+    `Traced code must subscript any object as Python does, received ${JSON.stringify(parsed)}`
+  );
+  console.log('PASS: traced Python subscripts typing aliases, learner __getitem__ classes, range, bytes and array');
+}
+
 async function main(): Promise<void> {
   await assertPyodideProjectFsEventsRejectTraversal();
   await assertPyodideProjectEventsApplyResourceBudgets();
@@ -4161,6 +4214,7 @@ async function main(): Promise<void> {
   await assertExecuteCodeGuestLimitsReportStructuredTrips();
   await assertBlankFunctionSelectorRunsAsScriptUntraced();
   await assertKeylessTreeAndListNodesHaveNoneLinks();
+  await assertTracedSubscriptsOfAnyObjectSubscript();
   await assertVirtualScandirMatchesIteratorContract();
   console.log('\nPython runtime checks passed.');
 }
