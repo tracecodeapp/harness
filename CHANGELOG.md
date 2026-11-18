@@ -50,6 +50,12 @@ This repo uses Git tags as release boundaries. Version notes below summarize wha
 
 ### Fixed
 
+- Traced C++ compiles a one-line loop whose header declares the pointer it
+  dereferences (`for (ListNode* node = head; node; node = node->next) total +=
+  node->val;`). The tracer emitted that line's field reads before the loop,
+  where the variable is not in scope, and the traced driver failed to compile
+  with an error reported as the learner's compile failure.
+
 - A tree or linked-list node that does not list a child or `next` has `null`
   there in JavaScript and TypeScript, as it has `None` in Python and `null` in
   Java, C# and C++. Previously JavaScript and TypeScript passed JSON object

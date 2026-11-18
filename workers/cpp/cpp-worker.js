@@ -8311,11 +8311,15 @@ function rewritePointerFieldReadInstrumentation(line, lineNumber, variables = ne
   const stripped = stripCppStringsAndComments(line);
   const reads = [];
   const seen = new Set();
+  const headerDeclared = cppForHeaderDeclaredNames(stripped);
   const fieldAccessPattern = /\b([A-Za-z_]\w*)\s*->\s*([A-Za-z_]\w*)\b/g;
   for (const match of stripped.matchAll(fieldAccessPattern)) {
     const objectName = match[1];
     const fieldName = match[2];
     if (!objectName || !fieldName) continue;
+    // Reads are emitted before the line; a variable the line's own for header
+    // declares is not in scope there.
+    if (headerDeclared.has(objectName)) continue;
     const accessStart = match.index ?? 0;
     const beforeAccess = stripped.slice(Math.max(0, accessStart - 2), accessStart);
     if (beforeAccess === '->' || beforeAccess.endsWith('.')) continue;
@@ -10496,6 +10500,41 @@ function extractMultilineStatementStartDeclaredSnapshotVariables(line, aliases =
   const collapsed = stripCppLineCommentPreservingStrings(line).replace(/\s*\n\s*/g, ' ').trim();
   if (!collapsed || /;\s*$/.test(collapsed)) return [];
   return extractDeclaredSnapshotVariables(`${collapsed};`, aliases, knownVariables);
+}
+
+/**
+ * Names declared by a for header on this line: `for (T* a = x, *b = y; ...)`
+ * and `for (auto& a : xs)`. They exist only inside the loop.
+ */
+function cppForHeaderDeclaredNames(strippedLine) {
+  const names = new Set();
+  const header = /\bfor\s*\(/.exec(strippedLine);
+  if (!header) return names;
+  const open = header.index + header[0].length - 1;
+  let depth = 0;
+  let end = strippedLine.length;
+  for (let index = open; index < strippedLine.length; index += 1) {
+    const ch = strippedLine[index];
+    if (ch === '(') depth += 1;
+    else if (ch === ')') {
+      depth -= 1;
+      if (depth === 0) {
+        end = index;
+        break;
+      }
+    }
+  }
+  const inside = strippedLine.slice(open + 1, end);
+  const init = inside.split(';')[0].split(/(?<!:):(?!:)/)[0];
+  // A declaration starts with a type: the first declarator follows it, and
+  // later declarators follow commas.
+  const declaration = /^\s*(?:const\s+|volatile\s+|static\s+)*[A-Za-z_][\w:]*(?:\s*<[^;]*?>)?((?:\s|[*&])+)([A-Za-z_]\w*)/.exec(init);
+  if (!declaration) return names;
+  names.add(declaration[2]);
+  for (const extra of init.slice(declaration[0].length).matchAll(/,\s*[*&\s]*([A-Za-z_]\w*)\s*(?==|,|$)/g)) {
+    names.add(extra[1]);
+  }
+  return names;
 }
 
 function instrumentCppSourceForTracing(source, functionName, options = {}) {

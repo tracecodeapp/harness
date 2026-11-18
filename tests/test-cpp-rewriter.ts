@@ -498,4 +498,33 @@ assertCondition(
   'C++ set range-for should emit member reads through set_range_readable'
 );
 
+// A one-line loop whose header declares the variable it dereferences: field
+// reads must not be emitted before the loop, where the variable is not in
+// scope (the traced driver failed to compile, blamed on the learner).
+for (const loop of [
+  'for (ListNode* node = head; node != nullptr; node = node->next) total += node->val;',
+  'for (auto* node = head; node; node = node->next) total += node->val;',
+  'for (const ListNode* node = head; node != nullptr; node = node->next) { total += node->val; }',
+]) {
+  const loopSource = [
+    'class Solution {',
+    'public:',
+    '  int solve(ListNode* head) {',
+    '    int total = 0;',
+    `    ${loop}`,
+    '    return total;',
+    '  }',
+    '};',
+  ].join('\n');
+  const loopInstrumented = rewriter.instrumentCppSourceForTracing(loopSource, 'solve');
+  const loopLines = loopInstrumented.split('\n');
+  const forIndex = loopLines.findIndex((line) => /^\s*for \(/.test(line));
+  assertCondition(forIndex >= 0, `rewriter should keep the loop: ${loopInstrumented}`);
+  const leaked = loopLines.slice(0, forIndex).filter((line) => /\bnode\s*->/.test(line) || /to_json\(node\)/.test(line));
+  assertCondition(
+    leaked.length === 0,
+    `rewriter must not read a for-header variable before its loop (${loop}): ${leaked.join(' | ')}`
+  );
+}
+
 console.log('PASS: C++ rewriter source snapshots');
