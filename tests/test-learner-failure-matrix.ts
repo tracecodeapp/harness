@@ -83,7 +83,7 @@ const CS_FAST =
 const CS_TRACE_LINES =
   `Traced C# reports a line only when the trace records the exception event; exceptions raised inside framework operations (casts, division, indexing) and Environment.Exit arrive without one.`;
 const JS_KEYLESS_ROOT =
-  `Untyped JavaScript cannot tell a lone key-less object ({ val: 5 }) from a plain record: it has no declared type, node marker or child key, so it stays the object it is. A key-less node under a keyed or marked parent, or in a TypeScript TreeNode parameter, gets null children. Whether to infer a tree from the parameter name is an open contract decision.`;
+  `By decision, not a defect to fix: a lone key-less object ({ val: 5 }) passed to an untyped JavaScript parameter stays the plain object it is, because nothing in the data or code says it is a tree, and the Harness does not guess from parameter names. Test data must mark such a root (__id__ "tree-0") or key it (left/right: null). A key-less node under a keyed or marked parent, or in a TypeScript TreeNode parameter, gets null children. A declared signature for untyped languages in the bundle could replace this rule later.`;
 const CPP_LINES =
   `WebAssembly traps and exit() carry no source position (learner programs are built without debug information).`;
 

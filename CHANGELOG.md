@@ -62,9 +62,12 @@ This repo uses Git tags as release boundaries. Version notes below summarize wha
   such a node is a node too. Python now also builds a node from a key-less
   root that is marked or annotated (previously a plain dict). Solutions that
   test `node.left === undefined`, `'left' in node` or
-  `hasOwnProperty('left')` on such inputs see `null` and a present key. A lone
-  key-less object (`{ "val": 5 }`) passed untyped in JavaScript or Python is
-  still the plain object it is.
+  `hasOwnProperty('left')` on such inputs see `null` and a present key.
+  For untyped languages (JavaScript, unannotated Python), test data must mark a
+  key-less root (`__id__` starting `tree-`/`list-`) or key it (`left`/`right`
+  or `next`, possibly `null`): a lone key-less object (`{ "val": 5 }`) passed
+  to an untyped parameter stays the plain object it is. The Harness does not
+  infer a tree from a parameter name.
 
 - A debugging project's "Failure reproduced" claim with an
   invariant-contradiction signal cites the observations that contradict the
