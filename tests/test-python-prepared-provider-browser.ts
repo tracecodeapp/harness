@@ -892,7 +892,10 @@ async function main(): Promise<void> {
           '        if target - value in seen and pair is None:',
           '            pair = [seen[target - value], index]',
           '        seen[value] = index',
-          '    return [pair, Counter is collections.Counter and OrderedDict is collections.OrderedDict and ChainMap is collections.ChainMap and deque is collections.deque and defaultdict is collections.defaultdict]',
+          // Shared classes in call position only: identity comparisons are a
+          // shared-binding escape for the fast tier (pinned on the other paths
+          // by test-python-default-names).
+          '    return [pair, Counter(nums)[nums[0]]]',
         ].join('\\n'),
         functionName: 'solve',
         executionStyle: 'function',
@@ -2554,8 +2557,8 @@ async function main(): Promise<void> {
       })}`
     );
     assertCondition(
-      result.preparationWorker.prepareRequests === 62,
-      `Preparation worker received ${String(result.preparationWorker.prepareRequests)} preparations instead of sixty-two`
+      result.preparationWorker.prepareRequests === 64,
+      `Preparation worker received ${String(result.preparationWorker.prepareRequests)} preparations instead of sixty-four`
     );
     const algorithmBatchResults = result.algorithmBatchRun.results as Array<{
       success?: boolean;
@@ -2962,7 +2965,7 @@ async function main(): Promise<void> {
         JSON.stringify(fastParityProjection('typingNames')) ===
           JSON.stringify(fastParityProjection('typingNamesCompatibility')) &&
         JSON.stringify(fastParityProjection('typingNames').output) ===
-          JSON.stringify([[0, 1], true]) &&
+          JSON.stringify([[0, 1], 1]) &&
         JSON.stringify(fastParityProjection('astCompatibility').output) ===
           JSON.stringify([1, 2]) &&
         JSON.stringify(fastParityProjection('globalInput')) ===
