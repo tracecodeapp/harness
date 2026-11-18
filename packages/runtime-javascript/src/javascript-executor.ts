@@ -1014,8 +1014,23 @@ function inferFallbackInputMaterializers(inputs: Record<string, unknown>): Recor
   for (const [name, value] of Object.entries(inputs)) {
     if (isTreeShapedInput(value)) inferred[name] = 'tree';
     else if (isListShapedInput(value)) inferred[name] = 'list';
+    else {
+      const element = nodeArrayElementKind(value);
+      if (element) inferred[name] = { kind: 'array', element };
+    }
   }
   return inferred;
+}
+
+// An array whose non-null elements are all tree (list) nodes holds trees
+// (lists), e.g. merge k sorted lists.
+function nodeArrayElementKind(value: unknown): 'tree' | 'list' | null {
+  if (!Array.isArray(value)) return null;
+  const present = value.filter((item) => item !== null && item !== undefined);
+  if (present.length === 0) return null;
+  if (present.every(isTreeShapedInput)) return 'tree';
+  if (present.every(isListShapedInput)) return 'list';
+  return null;
 }
 
 function materializeTreeInput(

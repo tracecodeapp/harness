@@ -7052,6 +7052,19 @@ var init_ses_algorithm_worker = __esm({
         out[name] = 'list';
         continue;
       }
+      // An array whose non-null elements are all tree (list) nodes holds
+      // trees (lists), e.g. merge k sorted lists.
+      if (arrayIsArray(value)) {
+        const present = value.filter((item) => item !== null && item !== undefined);
+        if (present.length > 0 && present.every(isTreeShaped)) {
+          out[name] = { kind: 'array', element: 'tree' };
+          continue;
+        }
+        if (present.length > 0 && present.every(isListShaped)) {
+          out[name] = { kind: 'array', element: 'list' };
+          continue;
+        }
+      }
       if (!arrayIsArray(value)) continue;
       const lowerName = toText(name).toLowerCase();
       if (lowerName === 'root' || lowerName.endsWith('root') || lowerName.includes('tree')) {

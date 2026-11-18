@@ -1160,6 +1160,17 @@ function isListShapedInput(value) {
     Object.prototype.hasOwnProperty.call(value, 'next');
 }
 
+// An array whose non-null elements are all tree (list) nodes holds trees
+// (lists), e.g. merge k sorted lists.
+function nodeArrayElementKind(value) {
+  if (!Array.isArray(value)) return null;
+  const present = value.filter((item) => item !== null && item !== undefined);
+  if (present.length === 0) return null;
+  if (present.every(isTreeShapedInput)) return 'tree';
+  if (present.every(isListShapedInput)) return 'list';
+  return null;
+}
+
 function materializeTreeInput(value, materialized = new WeakMap(), depth = 0, linked = true) {
   if (value === null || value === undefined) return value;
   if (Array.isArray(value)) {
@@ -1372,6 +1383,11 @@ function inferFallbackInputMaterializers(inputs) {
     }
     if (isListShapedInput(value)) {
       inferred[name] = 'list';
+      continue;
+    }
+    const elementKind = nodeArrayElementKind(value);
+    if (elementKind) {
+      inferred[name] = { kind: 'array', element: elementKind };
       continue;
     }
     if (!Array.isArray(value)) continue;

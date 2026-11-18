@@ -1874,6 +1874,44 @@ result = [head.val, head.value, head.next.val, head.next.value, root.left.val, r
       `Executor ${testCase.language}, ${testCase.label}: expected ${JSON.stringify(testCase.expected)}, received ${JSON.stringify(viaExecutor)}`
     );
   }
+  // Marked or keyed nodes inside an array parameter (merge k lists) are nodes
+  // too, in untyped JavaScript as in Python.
+  const arrayOfLists = await harness.sendMessage<{ success: boolean; output: unknown; error?: string }>('execute-code', {
+    code: `function solve(lists) {
+  let total = 0;
+  for (const head of lists) {
+    for (let node = head; node !== null; node = node.next) {
+      if (node === undefined) throw new Error('missing next is undefined');
+      total += node.val;
+    }
+  }
+  return total;
+}`,
+    functionName: 'solve',
+    executionStyle: 'function',
+    language: 'javascript',
+    inputs: { lists: [{ val: 1, next: { val: 4 } }, null, { val: 2, __type__: 'ListNode' }] },
+  });
+  assertCondition(
+    arrayOfLists.success === true && arrayOfLists.output === 7,
+    `Untyped JavaScript array of list nodes should have null tails, received ${JSON.stringify(arrayOfLists)}`
+  );
+  const arrayOfListsViaExecutor = await executeJavaScriptCode(
+    `function solve(lists) {
+  let total = 0;
+  for (const head of lists) {
+    for (let node = head; node !== null; node = node.next) total += node.val;
+  }
+  return total;
+}`,
+    'solve',
+    { lists: [{ val: 1, next: { val: 4 } }, null, { val: 2, __type__: 'ListNode' }] },
+    'function'
+  );
+  assertCondition(
+    arrayOfListsViaExecutor.success === true && arrayOfListsViaExecutor.output === 7,
+    `Executor array of list nodes should have null tails, received ${JSON.stringify(arrayOfListsViaExecutor)}`
+  );
   // An object that is not a tree or list node keeps its own keys.
   const plainRecord = await harness.sendMessage<{ success: boolean; output: unknown }>('execute-code', {
     code: 'function solve(point) { return Object.keys(point).join(","); }',

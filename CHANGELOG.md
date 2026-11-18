@@ -59,7 +59,8 @@ This repo uses Git tags as release boundaries. Version notes below summarize wha
   marked (`__type__`, or an `__id__` starting `tree-`/`list-`), has a child or
   `next` key, or is passed to a parameter declared `TreeNode`/`ListNode`
   (TypeScript, or a Python annotation); every linked object with a value under
-  such a node is a node too. Python now also builds a node from a key-less
+  such a node is a node too, and so is each element of an array whose non-null
+  elements are all nodes (merge k sorted lists). Python now also builds a node from a key-less
   root that is marked or annotated (previously a plain dict). Solutions that
   test `node.left === undefined`, `'left' in node` or
   `hasOwnProperty('left')` on such inputs see `null` and a present key.
