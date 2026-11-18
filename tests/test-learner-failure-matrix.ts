@@ -82,6 +82,8 @@ const CS_FAST =
   `The C# algorithm-fast runner reports the program's exception as traced runs do, but it runs without a trace and the prepared assembly carries no debug information, so plain-mode cases omit the line.`;
 const CS_TRACE_LINES =
   `Traced C# reports a line only when the trace records the exception event; exceptions raised inside framework operations (casts, division, indexing) and Environment.Exit arrive without one.`;
+const JS_KEYLESS_ROOT =
+  `Untyped JavaScript cannot tell a lone key-less object ({ val: 5 }) from a plain record: it has no declared type, node marker or child key, so it stays the object it is. A key-less node under a keyed or marked parent, or in a TypeScript TreeNode parameter, gets null children. Whether to infer a tree from the parameter name is an open contract decision.`;
 const CPP_LINES =
   `WebAssembly traps and exit() carry no source position (learner programs are built without debug information).`;
 
@@ -107,6 +109,7 @@ export const KNOWN_GAPS: Readonly<Record<string, string>> = {
   'java:*:*:line': JAVA_LINES,
   'java:*:process-exit:classification': JAVA_EXIT,
   'java:*:early-exit-zero:classification': JAVA_EXIT,
+  'javascript:*:keyless-tree-root:classification': JS_KEYLESS_ROOT,
   'csharp:code:*:line': CS_FAST,
   'csharp:code-batch:*:line': CS_FAST,
   'csharp:trace:*:line': CS_TRACE_LINES,

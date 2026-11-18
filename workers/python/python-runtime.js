@@ -1753,6 +1753,37 @@ def _tracecode_execute_serialize_checkpoint():
 
 ${PYTHON_LITERAL_SHAPE_ANNOTATION_HELPER}
 
+def _tracecode_batch_linked_node(value, node_type, links):
+    # A parameter declared as a tree or list node gets one, even from a
+    # key-less dict: a link it does not list is None. Iterative, so long lists
+    # do not hit the recursion limit.
+    def make(item):
+        if not isinstance(item, dict) or ('val' not in item and 'value' not in item):
+            return item, False
+        node_value = item.get('val', item.get('value', 0))
+        try:
+            node = node_type(node_value)
+        except Exception:
+            node = node_type.__new__(node_type)
+            node.val = node_value
+        try:
+            node.value = node_value
+        except Exception:
+            pass
+        return node, True
+    root, built = make(value)
+    if not built:
+        return value
+    pending = [(root, value)]
+    while pending:
+        node, source = pending.pop()
+        for link in links:
+            child, child_built = make(source.get(link))
+            setattr(node, link, child)
+            if child_built:
+                pending.append((child, source.get(link)))
+    return root
+
 def _tracecode_batch_hydrate_for_annotation(value, annotation):
     if annotation is None:
         return value
@@ -1760,6 +1791,12 @@ def _tracecode_batch_hydrate_for_annotation(value, annotation):
         isinstance(annotation, type)
         and annotation.__name__ in ('TreeNode', 'ListNode')
     ):
+        if isinstance(value, dict):
+            return _tracecode_batch_linked_node(
+                value,
+                annotation,
+                ('left', 'right') if annotation.__name__ == 'TreeNode' else ('next',),
+            )
         return value
     origin = _tracecode_batch_typing.get_origin(annotation)
     args = _tracecode_batch_typing.get_args(annotation)
@@ -2439,9 +2476,12 @@ def _tracecode_materialize_custom_input(obj):
     if isinstance(obj, _builtins.tuple):
         return tuple(_tracecode_materialize_custom_input(item) for item in obj)
     if isinstance(obj, _builtins.dict):
-        if obj.get('__type__') == 'TreeNode' or 'left' in obj or 'right' in obj:
+        # A tree (list) node is marked (__type__, a tree-/list- __id__) or has
+        # a child (next) key; a link it does not list becomes None.
+        _node_id = obj.get('__id__') if isinstance(obj.get('__id__'), _builtins.str) else ''
+        if obj.get('__type__') == 'TreeNode' or 'left' in obj or 'right' in obj or _node_id.startswith(('tree-', 'TreeNode:')):
             return _dict_to_tree(obj)
-        if obj.get('__type__') == 'ListNode' or 'next' in obj:
+        if obj.get('__type__') == 'ListNode' or 'next' in obj or _node_id.startswith(('list-', 'ListNode:')):
             return _dict_to_list(obj)
         _type_name = obj.get('__type__') if isinstance(obj.get('__type__'), _builtins.str) else obj.get('__class__')
         _fields = {key: _tracecode_materialize_custom_input(value) for key, value in obj.items() if key not in ('__type__', '__class__', '__id__')}
@@ -2525,8 +2565,12 @@ def _tracecode_hydrate_for_annotation(_obj, _annotation):
             for _key, _value in _obj.items()
         }
     if isinstance(_annotation, _builtins.type) and isinstance(_obj, _builtins.dict):
-        if _annotation.__name__ in ('TreeNode', 'ListNode'):
-            return _obj
+        # A parameter declared as a tree or list node gets one, even from a
+        # key-less dict: a link it does not list is None.
+        if _annotation.__name__ == 'TreeNode':
+            return _dict_to_tree(_obj)
+        if _annotation.__name__ == 'ListNode':
+            return _dict_to_list(_obj)
         _fields = {key: value for key, value in _obj.items() if key not in ('__type__', '__class__', '__id__')}
         try:
             _ctor_hints = _tracecode_typing.get_type_hints(getattr(_annotation, '__init__'), ${namespaceExpression}, ${annotationLocalsExpression})

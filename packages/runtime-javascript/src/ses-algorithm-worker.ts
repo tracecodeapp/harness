@@ -488,7 +488,29 @@ const DRIVER_SOURCE = `(() => {
     return resolveReferenceGraph(input, byId, new WeakMap());
   };
   const nodeValue = (value) => value.val ?? value.value ?? null;
-  const materializeTree = (value, materialized = new WeakMap(), depth = 0) => {
+  // Node shapes shared with Python and the typed languages: a value is a tree
+  // (list) node when it is marked as one (__type__, or a tree-/list- __id__),
+  // or when it has a value and a child (next) key. Inside a tree or list input
+  // every linked object with a value is a node, and a link it does not list is
+  // null.
+  const hasNodeValue = (value) => hasOwn(value, 'val') || hasOwn(value, 'value');
+  const isLinkedNode = (value, typeName) =>
+    isPlainRecord(value) &&
+    (value.__type__ === undefined || value.__type__ === typeName) &&
+    hasNodeValue(value);
+  const hasNodeIdPrefix = (value, prefixes) => {
+    const id = typeof value.__id__ === 'string' ? value.__id__ : '';
+    return prefixes.some((prefix) => id.startsWith(prefix));
+  };
+  const isTreeShaped = (value) =>
+    isLinkedNode(value, 'TreeNode') &&
+    (value.__type__ === 'TreeNode' || hasNodeIdPrefix(value, ['tree-', 'TreeNode:']) ||
+      hasOwn(value, 'left') || hasOwn(value, 'right'));
+  const isListShaped = (value) =>
+    isLinkedNode(value, 'ListNode') &&
+    (value.__type__ === 'ListNode' || hasNodeIdPrefix(value, ['list-', 'ListNode:']) ||
+      hasOwn(value, 'next'));
+  const materializeTree = (value, materialized = new WeakMap(), depth = 0, linked = true) => {
     if (value === null || value === undefined) return value;
     if (depth > 512) throw new Error('Input materializer exceeded maximum depth (512)');
     if (arrayIsArray(value)) {
@@ -516,7 +538,8 @@ const DRIVER_SOURCE = `(() => {
     }
     if (!isPlainRecord(value)) return value;
     const looksLikeTree = value.__type__ === 'TreeNode' ||
-      (value.constructor && value.constructor.name === 'TreeNode');
+      (value.constructor && value.constructor.name === 'TreeNode') ||
+      (linked && isLinkedNode(value, 'TreeNode'));
     if (!looksLikeTree) return value;
     const cached = materialized.get(value);
     if (cached) return cached;
@@ -527,12 +550,13 @@ const DRIVER_SOURCE = `(() => {
     node.right = materializeTree(value.right ?? null, materialized, depth + 1);
     for (const [key, child] of objectEntries(value)) {
       if (!['__id__', '__type__', '__class__', 'val', 'value', 'left', 'right'].includes(key)) {
-        node[key] = materializeTree(child, materialized, depth + 1);
+        // Other fields are not links: only a marked node becomes one there.
+        node[key] = materializeTree(child, materialized, depth + 1, false);
       }
     }
     return node;
   };
-  const materializeList = (value, materialized = new WeakMap(), depth = 0) => {
+  const materializeList = (value, materialized = new WeakMap(), depth = 0, linked = true) => {
     if (value === null || value === undefined) return value;
     if (depth > 512) throw new Error('Input materializer exceeded maximum depth (512)');
     if (arrayIsArray(value)) {
@@ -547,7 +571,8 @@ const DRIVER_SOURCE = `(() => {
     }
     if (!isPlainRecord(value)) return value;
     const looksLikeList = value.__type__ === 'ListNode' ||
-      (value.constructor && value.constructor.name === 'ListNode');
+      (value.constructor && value.constructor.name === 'ListNode') ||
+      (linked && isLinkedNode(value, 'ListNode'));
     if (!looksLikeList) return value;
     const cached = materialized.get(value);
     if (cached) return cached;
@@ -558,7 +583,7 @@ const DRIVER_SOURCE = `(() => {
     if (hasOwn(value, 'prev')) node.prev = materializeList(value.prev ?? null, materialized, depth + 1);
     for (const [key, child] of objectEntries(value)) {
       if (!['__id__', '__type__', '__class__', 'val', 'value', 'next', 'prev'].includes(key)) {
-        node[key] = materializeList(child, materialized, depth + 1);
+        node[key] = materializeList(child, materialized, depth + 1, false);
       }
     }
     return node;
@@ -644,6 +669,14 @@ const DRIVER_SOURCE = `(() => {
     const out = {};
     const listNames = new Set(['head', 'l1', 'l2', 'list1', 'list2', 'node']);
     for (const [name, value] of objectEntries(input)) {
+      if (isTreeShaped(value)) {
+        out[name] = 'tree';
+        continue;
+      }
+      if (isListShaped(value)) {
+        out[name] = 'list';
+        continue;
+      }
       if (!arrayIsArray(value)) continue;
       const lowerName = toText(name).toLowerCase();
       if (lowerName === 'root' || lowerName.endsWith('root') || lowerName.includes('tree')) {

@@ -119,7 +119,10 @@ export type MatrixFailureKind =
   | 'compile-header-errors-several-lines'
   | 'compile-many-errors'
   | 'forged-result-marker'
-  | 'printed-result-marker';
+  | 'printed-result-marker'
+  | 'keyless-tree-input'
+  | 'keyless-tree-root'
+  | 'keyless-list-input';
 
 /** What a consumer concludes from the Judge result. */
 export type MatrixClass =
@@ -169,6 +172,8 @@ export interface MatrixCellSpec {
   readonly messageIncludes?: readonly string[];
   /** 1-based column of the error in the learner's original source line. */
   readonly column?: number;
+  /** Each case's input, in place of the default `{ n }`. */
+  readonly inputs?: Readonly<Record<string, unknown>>;
 }
 
 export const MATRIX_WALL_CLOCK_MS = 4_000;
@@ -213,6 +218,27 @@ interface Draft {
   readonly messageIncludes?: readonly string[];
   /** Where the error's column is in the faulting line: `text`'s index + `offset` + 1. */
   readonly errorColumn?: { readonly text: string; readonly offset: number };
+  readonly inputs?: Readonly<Record<string, unknown>>;
+}
+
+// Key-less nodes: a child or next a node does not list is null (None,
+// nullptr) in every language. The programs guard with the language's own null
+// test, so a missing link that arrives as anything else is a runtime failure.
+/** Key-less leaves under keyed parents, as the catalog writes trees. */
+const KEYLESS_TREE_INPUT = {
+  root: { val: 1, left: { val: 2 }, right: { val: 3, left: { val: 4 } }, __id__: 'tree-0' },
+};
+/** A lone key-less root: only a declared node type says it is a tree. */
+const KEYLESS_TREE_ROOT = { root: { val: 5 } };
+/** A key-less tail under keyed nodes. */
+const KEYLESS_LIST_INPUT = { head: { val: 1, next: { val: 2, next: { val: 3 } } } };
+
+function keylessDrafts(programs: { readonly tree: string; readonly list: string }): readonly Draft[] {
+  return [
+    { kind: 'keyless-tree-input', code: programs.tree, expected: ['completed'], inputs: KEYLESS_TREE_INPUT, noLine: true },
+    { kind: 'keyless-tree-root', code: programs.tree, expected: ['completed'], inputs: KEYLESS_TREE_ROOT, noLine: true },
+    { kind: 'keyless-list-input', code: programs.list, expected: ['completed'], inputs: KEYLESS_LIST_INPUT, noLine: true },
+  ];
 }
 
 /** Compile-only cells: preparation runs the same way in every mode. */
@@ -1148,7 +1174,117 @@ function programFor(language: MatrixLanguage, code: string): MatrixProgram {
   }
 }
 
-function draftsFor(language: MatrixLanguage): readonly Draft[] {
+const KEYLESS_PROGRAMS: Readonly<Record<MatrixLanguage, { readonly tree: string; readonly list: string }>> = {
+  python: {
+    tree: lines(
+      'from typing import Optional',
+      'def solve(root: Optional[TreeNode]) -> int:',
+      '    if root is None:',
+      '        return 0',
+      '    return root.val + solve(root.left) + solve(root.right)'
+    ),
+    list: lines(
+      'from typing import Optional',
+      'def solve(head: Optional[ListNode]) -> int:',
+      '    total = 0',
+      '    while head is not None:',
+      '        total += head.val',
+      '        head = head.next',
+      '    return total'
+    ),
+  },
+  javascript: {
+    tree: lines(
+      'function solve(root) {',
+      '  if (root === null) return 0;',
+      '  return root.val + solve(root.left) + solve(root.right);',
+      '}'
+    ),
+    list: lines(
+      'function solve(head) {',
+      '  let total = 0;',
+      '  for (let node = head; node !== null; node = node.next) total += node.val;',
+      '  return total;',
+      '}'
+    ),
+  },
+  typescript: {
+    tree: lines(
+      'function solve(root: TreeNode | null): number {',
+      '  if (root === null) return 0;',
+      '  return root.val + solve(root.left) + solve(root.right);',
+      '}'
+    ),
+    list: lines(
+      'function solve(head: ListNode | null): number {',
+      '  let total = 0;',
+      '  for (let node = head; node !== null; node = node.next) total += node.val;',
+      '  return total;',
+      '}'
+    ),
+  },
+  java: {
+    tree: lines(
+      'class Solution {',
+      '  public int solve(TreeNode root) {',
+      '    if (root == null) return 0;',
+      '    return root.val + solve(root.left) + solve(root.right);',
+      '  }',
+      '}'
+    ),
+    list: lines(
+      'class Solution {',
+      '  public int solve(ListNode head) {',
+      '    int total = 0;',
+      '    for (ListNode node = head; node != null; node = node.next) total += node.val;',
+      '    return total;',
+      '  }',
+      '}'
+    ),
+  },
+  csharp: {
+    tree: lines(
+      'public class Solution {',
+      '  public int Solve(TreeNode root) {',
+      '    if (root == null) return 0;',
+      '    return root.val + Solve(root.left) + Solve(root.right);',
+      '  }',
+      '}'
+    ),
+    list: lines(
+      'public class Solution {',
+      '  public int Solve(ListNode head) {',
+      '    int total = 0;',
+      '    for (ListNode node = head; node != null; node = node.next) total += node.val;',
+      '    return total;',
+      '  }',
+      '}'
+    ),
+  },
+  cpp: {
+    tree: lines(
+      'class Solution {',
+      'public:',
+      '  int solve(TreeNode* root) {',
+      '    if (root == nullptr) return 0;',
+      '    return root->val + solve(root->left) + solve(root->right);',
+      '  }',
+      '};'
+    ),
+    list: lines(
+      'class Solution {',
+      'public:',
+      '  int solve(ListNode* head) {',
+      '    int total = 0;',
+      '    for (ListNode* node = head; node != nullptr; node = node->next) total += node->val;',
+      '    return total;',
+      '  }',
+      '};'
+    ),
+  },
+};
+
+function languageDrafts(language: MatrixLanguage): readonly Draft[] {
   switch (language) {
     case 'python':
       return PYTHON;
@@ -1163,6 +1299,10 @@ function draftsFor(language: MatrixLanguage): readonly Draft[] {
     case 'cpp':
       return CPP;
   }
+}
+
+function draftsFor(language: MatrixLanguage): readonly Draft[] {
+  return [...languageDrafts(language), ...keylessDrafts(KEYLESS_PROGRAMS[language])];
 }
 
 export function matrixCells(language: MatrixLanguage): readonly MatrixCellSpec[] {
@@ -1183,6 +1323,7 @@ export function matrixCells(language: MatrixLanguage): readonly MatrixCellSpec[]
     ...(draft.errorColumn && draft.faultText
       ? { column: columnOf(draft.code, draft.faultText, draft.errorColumn) }
       : {}),
+    ...(draft.inputs ? { inputs: draft.inputs } : {}),
   }));
 }
 

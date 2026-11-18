@@ -4025,6 +4025,92 @@ async function assertBlankFunctionSelectorRunsAsScriptUntraced(): Promise<void> 
   console.log('PASS: a blank function selector runs untraced Python as a script (direct and prepared)');
 }
 
+async function assertKeylessTreeAndListNodesHaveNoneLinks(): Promise<void> {
+  // A tree or list node that does not list a child or next has None there,
+  // whether the node is marked (__type__, a tree-/list- __id__), keyed, or the
+  // parameter is annotated as TreeNode/ListNode.
+  const runtime = await loadPythonRuntime();
+  let now = 0;
+  const deps = {
+    PYTHON_CLASS_DEFINITIONS_SNIPPET: PYTHON_CLASS_DEFINITIONS,
+    PYTHON_CONVERSION_HELPERS_SNIPPET: PYTHON_CONVERSION_HELPERS,
+    PYTHON_TRACE_SERIALIZE_FUNCTION_SNIPPET: PYTHON_TRACE_SERIALIZE_FUNCTION,
+    PYTHON_EXECUTE_SERIALIZE_FUNCTION_SNIPPET: PYTHON_EXECUTE_SERIALIZE_FUNCTION,
+    INTERVIEW_GUARD_DEFAULTS: {
+      maxLineEvents: 10000,
+      maxSingleLineHits: 1000,
+      maxCallDepth: 100,
+      maxMemoryBytes: 8 * 1024 * 1024,
+      memoryCheckEvery: 10,
+    },
+    toPythonLiteral,
+    loadPyodideInstance: async () => {},
+    getPyodide: () => ({
+      runPythonAsync: async (code: string) => runPythonAsyncLikePyodide(code),
+    }),
+    performanceNow: () => ++now,
+  };
+  const treeSum = (annotated: boolean) => [
+    'from typing import Optional',
+    `def solve(root${annotated ? ': Optional[TreeNode]' : ''})${annotated ? ' -> int' : ''}:`,
+    '    if root is None:',
+    '        return 0',
+    '    return root.val + solve(root.left) + solve(root.right)',
+    '',
+  ].join('\n');
+  const listSum = [
+    'from typing import Optional',
+    'def solve(head: Optional[ListNode]) -> int:',
+    '    total = 0',
+    '    while head is not None:',
+    '        total += head.val',
+    '        head = head.next',
+    '    return total',
+    '',
+  ].join('\n');
+  const cases: { label: string; code: string; inputs: Record<string, unknown>; expected: unknown }[] = [
+    { label: 'key-less leaves under a keyed root', code: treeSum(false), inputs: { root: { val: 1, left: { val: 2 }, right: { val: 3, left: { val: 4 } } } }, expected: 10 },
+    { label: 'a key-less root marked by its tree id', code: treeSum(false), inputs: { root: { val: 5, __id__: 'tree-0' } }, expected: 5 },
+    { label: 'a key-less root of a TreeNode parameter', code: treeSum(true), inputs: { root: { val: 5 } }, expected: 5 },
+    { label: 'a key-less head of a ListNode parameter', code: listSum, inputs: { head: { val: 7 } }, expected: 7 },
+    { label: 'a key-less tail under a keyed head', code: listSum, inputs: { head: { val: 1, next: { val: 2, next: { val: 3 } } } }, expected: 6 },
+  ];
+  const runPrepared = async (source: string, inputs: Record<string, unknown>) => {
+    const prepared = await (runtime.executeCode as unknown as (
+      ...args: unknown[]
+    ) => Promise<{ __preparedSource: string }>)(deps, source, 'solve', inputs, 'function', {}, { compileOnly: true });
+    const driver = [
+      `__tracecode_prepared_user_code = compile(${JSON.stringify(source)}, 'solution.py', 'exec')`,
+      `__tracecode_inputs_literal = ${JSON.stringify(toPythonLiteral(inputs))}`,
+      `__tracecode_limits_literal = '{}'`,
+      `__tracecode_tracing_enabled = False`,
+      `__tracecode_inputs_need_materialization = True`,
+      prepared.__preparedSource,
+      `import json as _tracecode_test_json`,
+      `print(_tracecode_test_json.dumps({k: _tracecode_raw_result.get(k) for k in ('kind', 'output', 'executionError')}, default=str))`,
+    ].join('\n');
+    return JSON.parse(execFileSync('python3', ['-c', driver], { encoding: 'utf8' }).trim().split('\n').pop()!);
+  };
+  for (const testCase of cases) {
+    const direct = await runtime.executeCode(deps, testCase.code, 'solve', testCase.inputs, 'function', {});
+    assertCondition(
+      direct.success === true && direct.output === testCase.expected,
+      `Python direct, ${testCase.label}: expected ${JSON.stringify(testCase.expected)}, received ${JSON.stringify(direct)}`
+    );
+    const prepared = await runPrepared(testCase.code, testCase.inputs);
+    assertCondition(
+      prepared.kind === 'success-serialized' && prepared.output === testCase.expected,
+      `Python prepared, ${testCase.label}: expected ${JSON.stringify(testCase.expected)}, received ${JSON.stringify(prepared)}`
+    );
+  }
+  const plain = await runtime.executeCode(deps, 'def solve(point):\n    return sorted(point.keys())\n', 'solve', { point: { val: 3, label: 'a' } }, 'function', {});
+  assertCondition(
+    plain.success === true && JSON.stringify(plain.output) === JSON.stringify(['label', 'val']),
+    `A plain dict with a val key must stay a dict, received ${JSON.stringify(plain)}`
+  );
+  console.log('PASS: key-less Python tree and list nodes have None children and next (direct and prepared)');
+}
+
 async function main(): Promise<void> {
   await assertPyodideProjectFsEventsRejectTraversal();
   await assertPyodideProjectEventsApplyResourceBudgets();
@@ -4074,6 +4160,7 @@ async function main(): Promise<void> {
   await assertExecuteCodeHydratesAnnotatedCustomObjects();
   await assertExecuteCodeGuestLimitsReportStructuredTrips();
   await assertBlankFunctionSelectorRunsAsScriptUntraced();
+  await assertKeylessTreeAndListNodesHaveNoneLinks();
   await assertVirtualScandirMatchesIteratorContract();
   console.log('\nPython runtime checks passed.');
 }

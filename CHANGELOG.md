@@ -50,6 +50,22 @@ This repo uses Git tags as release boundaries. Version notes below summarize wha
 
 ### Fixed
 
+- A tree or linked-list node that does not list a child or `next` has `null`
+  there in JavaScript and TypeScript, as it has `None` in Python and `null` in
+  Java, C# and C++. Previously JavaScript and TypeScript passed JSON object
+  trees through as plain objects (a missing child read `undefined`) unless
+  every node carried `__type__`, so `if (node === null)` failed on catalog
+  trees whose leaves have no `left`/`right` keys. A value is a node when it is
+  marked (`__type__`, or an `__id__` starting `tree-`/`list-`), has a child or
+  `next` key, or is passed to a parameter declared `TreeNode`/`ListNode`
+  (TypeScript, or a Python annotation); every linked object with a value under
+  such a node is a node too. Python now also builds a node from a key-less
+  root that is marked or annotated (previously a plain dict). Solutions that
+  test `node.left === undefined`, `'left' in node` or
+  `hasOwnProperty('left')` on such inputs see `null` and a present key. A lone
+  key-less object (`{ "val": 5 }`) passed untyped in JavaScript or Python is
+  still the plain object it is.
+
 - A debugging project's "Failure reproduced" claim with an
   invariant-contradiction signal cites the observations that contradict the
   invariant, and names a reproduction command only when timestamps tie it to

@@ -1776,6 +1776,118 @@ result = [head.val, head.value, head.next.val, head.next.value, root.left.val, r
   );
   console.log('PASS: execute-code javascript tree array hydration fallback');
 
+  // Key-less tree and list nodes: a child or next a node does not list is
+  // null, as in Python and the typed languages, never undefined.
+  const treeSum = `function solve(root) {
+  if (root === null) return 0;
+  if (root === undefined) throw new Error('missing child is undefined');
+  return root.val + solve(root.left) + solve(root.right);
+}`;
+  const typedTreeSum = `function solve(root: TreeNode | null): number {
+  if (root === null) return 0;
+  if (root === undefined) throw new Error('missing child is undefined');
+  return root.val + solve(root.left) + solve(root.right);
+}`;
+  const listSum = `function solve(head) {
+  let total = 0;
+  for (let node = head; node !== null; node = node.next) {
+    if (node === undefined) throw new Error('missing next is undefined');
+    total += node.val;
+  }
+  return total;
+}`;
+  const typedListSum = `function solve(head: ListNode | null): number {
+  let total = 0;
+  for (let node = head; node !== null; node = node.next) {
+    if (node === undefined) throw new Error('missing next is undefined');
+    total += node.val;
+  }
+  return total;
+}`;
+  const keylessCases: {
+    label: string;
+    language: 'javascript' | 'typescript';
+    code: string;
+    inputs: Record<string, unknown>;
+    expected: unknown;
+  }[] = [
+    {
+      label: 'key-less leaves under a keyed root',
+      language: 'javascript',
+      code: treeSum,
+      inputs: { root: { val: 1, left: { val: 2 }, right: { val: 3, left: { val: 4 } }, __id__: 'tree-0' } },
+      expected: 10,
+    },
+    {
+      label: 'a key-less root marked by its tree id',
+      language: 'javascript',
+      code: treeSum,
+      inputs: { root: { val: 5, __id__: 'tree-0' } },
+      expected: 5,
+    },
+    {
+      label: 'a key-less root of a TreeNode parameter',
+      language: 'typescript',
+      code: typedTreeSum,
+      inputs: { root: { val: 5 } },
+      expected: 5,
+    },
+    {
+      label: 'key-less leaves of a TreeNode parameter',
+      language: 'typescript',
+      code: typedTreeSum,
+      inputs: { root: { val: 1, left: { val: 2 }, right: { val: 3, right: { val: 4 } } } },
+      expected: 10,
+    },
+    {
+      label: 'a key-less tail under a keyed head',
+      language: 'javascript',
+      code: listSum,
+      inputs: { head: { val: 1, next: { val: 2, next: { val: 3 } } } },
+      expected: 6,
+    },
+    {
+      label: 'a key-less head of a ListNode parameter',
+      language: 'typescript',
+      code: typedListSum,
+      inputs: { head: { val: 7 } },
+      expected: 7,
+    },
+  ];
+  for (const testCase of keylessCases) {
+    const viaWorker = await harness.sendMessage<{ success: boolean; output: unknown; error?: string }>('execute-code', {
+      code: testCase.code,
+      functionName: 'solve',
+      executionStyle: 'function',
+      language: testCase.language,
+      inputs: testCase.inputs,
+    });
+    assertCondition(
+      viaWorker.success === true && viaWorker.output === testCase.expected,
+      `Worker ${testCase.language}, ${testCase.label}: expected ${JSON.stringify(testCase.expected)}, received ${JSON.stringify(viaWorker)}`
+    );
+    const viaExecutor = testCase.language === 'typescript'
+      ? await executeTypeScriptCode(testCase.code, 'solve', testCase.inputs, 'function')
+      : await executeJavaScriptCode(testCase.code, 'solve', testCase.inputs, 'function');
+    assertCondition(
+      viaExecutor.success === true && viaExecutor.output === testCase.expected,
+      `Executor ${testCase.language}, ${testCase.label}: expected ${JSON.stringify(testCase.expected)}, received ${JSON.stringify(viaExecutor)}`
+    );
+  }
+  // An object that is not a tree or list node keeps its own keys.
+  const plainRecord = await harness.sendMessage<{ success: boolean; output: unknown }>('execute-code', {
+    code: 'function solve(point) { return Object.keys(point).join(","); }',
+    functionName: 'solve',
+    executionStyle: 'function',
+    language: 'javascript',
+    inputs: { point: { val: 3, label: 'a' } },
+  });
+  assertCondition(
+    plainRecord.success === true && plainRecord.output === 'val,label',
+    `A plain object with a val field must not become a node: ${JSON.stringify(plainRecord)}`
+  );
+  console.log('PASS: execute-code key-less tree and list nodes have null children and next');
+
   const executeJavaScriptSparseTreeArrayInput = await harness.sendMessage<{
     success: boolean;
     output: unknown;
@@ -3126,9 +3238,11 @@ function smallest(nums: number[]): number {
         language === 'typescript'
           ? `class Solution {
   maxPathSum(root: TreeNode | null): number {
-    const dfs = (node: TreeNode | null): number => {
+    // Missing children are null; pass undefined explicitly to check how a
+    // call event renders an undefined argument.
+    const dfs = (node: TreeNode | null | undefined): number => {
       if (!node) return 0;
-      return dfs(node.left) + dfs(node.right) + node.val;
+      return dfs(node.left ?? undefined) + dfs(node.right ?? undefined) + node.val;
     };
     return dfs(root);
   }
@@ -3137,7 +3251,7 @@ function smallest(nums: number[]): number {
   maxPathSum(root) {
     const dfs = (node) => {
       if (!node) return 0;
-      return dfs(node.left) + dfs(node.right) + node.val;
+      return dfs(node.left ?? undefined) + dfs(node.right ?? undefined) + node.val;
     };
     return dfs(root);
   }

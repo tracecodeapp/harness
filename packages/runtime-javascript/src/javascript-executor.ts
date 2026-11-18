@@ -978,10 +978,51 @@ function assertInputMaterializerDepth(depth: number): void {
   }
 }
 
+// Node shapes shared with Python and the typed languages: a value is a tree
+// (list) node when it is marked as one (__type__, or a tree-/list- __id__), or
+// when it has a value and a child (next) key. Inside a tree or list input every
+// linked object with a value is a node, and a link it does not list is null.
+function hasNodeMarker(record: Record<string, unknown>, typeName: string, idPrefixes: readonly string[]): boolean {
+  if (record.__type__ === typeName) return true;
+  if ((record as { constructor?: { name?: unknown } }).constructor?.name === typeName) return true;
+  const id = typeof record.__id__ === 'string' ? record.__id__ : '';
+  return idPrefixes.some((prefix) => id.startsWith(prefix));
+}
+
+function isLinkedNodeRecord(value: unknown, typeName: string): value is Record<string, unknown> {
+  return isPlainObjectRecord(value) &&
+    ((value as Record<string, unknown>).__type__ === undefined ||
+      (value as Record<string, unknown>).__type__ === typeName) &&
+    hasNodeValueField(value as object);
+}
+
+function isTreeShapedInput(value: unknown): boolean {
+  if (!isLinkedNodeRecord(value, 'TreeNode')) return false;
+  return hasNodeMarker(value, 'TreeNode', ['tree-', 'TreeNode:']) ||
+    Object.prototype.hasOwnProperty.call(value, 'left') ||
+    Object.prototype.hasOwnProperty.call(value, 'right');
+}
+
+function isListShapedInput(value: unknown): boolean {
+  if (!isLinkedNodeRecord(value, 'ListNode')) return false;
+  return hasNodeMarker(value, 'ListNode', ['list-', 'ListNode:']) ||
+    Object.prototype.hasOwnProperty.call(value, 'next');
+}
+
+function inferFallbackInputMaterializers(inputs: Record<string, unknown>): Record<string, InputMaterializerKind> {
+  const inferred: Record<string, InputMaterializerKind> = {};
+  for (const [name, value] of Object.entries(inputs)) {
+    if (isTreeShapedInput(value)) inferred[name] = 'tree';
+    else if (isListShapedInput(value)) inferred[name] = 'list';
+  }
+  return inferred;
+}
+
 function materializeTreeInput(
   value: unknown,
   materialized: WeakMap<object, Record<string, unknown>> = new WeakMap(),
-  depth = 0
+  depth = 0,
+  linked = true
 ): unknown {
   if (value === null || value === undefined) return value;
   if (Array.isArray(value)) {
@@ -991,7 +1032,7 @@ function materializeTreeInput(
     return value;
   }
   const record = value as Record<string, unknown>;
-  if (isLikelyTreeNodeValue(record)) {
+  if (isLikelyTreeNodeValue(record) || (linked && isLinkedNodeRecord(record, 'TreeNode'))) {
     const existingMaterialized = materialized.get(record);
     if (existingMaterialized) return existingMaterialized;
     assertInputMaterializerDepth(depth);
@@ -1006,7 +1047,8 @@ function materializeTreeInput(
     node.right = materializeTreeInput(record.right ?? null, materialized, depth + 1);
     for (const [key, nested] of Object.entries(record)) {
       if (key === '__id__' || key === '__type__' || key === 'val' || key === 'value' || key === 'left' || key === 'right') continue;
-      node[key] = materializeTreeInput(nested, materialized, depth + 1);
+      // Other fields are not links: only a marked node becomes one there.
+      node[key] = materializeTreeInput(nested, materialized, depth + 1, false);
     }
     return node;
   }
@@ -1026,7 +1068,7 @@ function materializeTreeInput(
     node.right = materializeTreeInput(taggedRecord.right ?? null, materialized, depth + 1);
     for (const [key, nested] of Object.entries(taggedRecord)) {
       if (key === '__id__' || key === '__type__' || key === 'val' || key === 'value' || key === 'left' || key === 'right') continue;
-      node[key] = materializeTreeInput(nested, materialized, depth + 1);
+      node[key] = materializeTreeInput(nested, materialized, depth + 1, false);
     }
     return node;
   }
@@ -1037,7 +1079,8 @@ function materializeListInput(
   value: unknown,
   refs: Map<string, Record<string, unknown>> = new Map(),
   materialized: WeakMap<object, Record<string, unknown>> = new WeakMap(),
-  depth = 0
+  depth = 0,
+  linked = true
 ): unknown {
   if (value === null || value === undefined) return value;
   if (Array.isArray(value)) {
@@ -1063,7 +1106,11 @@ function materializeListInput(
     return refs.get(record.__ref__) ?? null;
   }
   const taggedRecord = value as Record<string, unknown> & { __type__?: unknown };
-  if (isLikelyListNodeValue(record) || taggedRecord.__type__ === 'ListNode') {
+  if (
+    isLikelyListNodeValue(record) ||
+    taggedRecord.__type__ === 'ListNode' ||
+    (linked && isLinkedNodeRecord(record, 'ListNode'))
+  ) {
     const existingMaterialized = materialized.get(record as object);
     if (existingMaterialized) {
       return existingMaterialized;
@@ -1081,7 +1128,7 @@ function materializeListInput(
     node.next = materializeListInput(taggedRecord.next ?? null, refs, materialized, depth + 1);
     for (const [key, nested] of Object.entries(taggedRecord)) {
       if (key === '__id__' || key === '__type__' || key === '__class__' || key === 'val' || key === 'value' || key === 'next') continue;
-      node[key] = materializeListInput(nested, refs, materialized, depth + 1);
+      node[key] = materializeListInput(nested, refs, materialized, depth + 1, false);
     }
     return node;
   }
@@ -1175,9 +1222,11 @@ function applyInputMaterializers(
   inputs: Record<string, unknown>,
   materializers: Record<string, InputMaterializerKind>
 ): Record<string, unknown> {
-  if (Object.keys(materializers).length === 0) return inputs;
+  // A declared type wins; otherwise a marked or keyed node is a tree or list.
+  const combined = { ...inferFallbackInputMaterializers(inputs), ...materializers };
+  if (Object.keys(combined).length === 0) return inputs;
   const next: Record<string, unknown> = { ...inputs };
-  for (const [name, kind] of Object.entries(materializers)) {
+  for (const [name, kind] of Object.entries(combined)) {
     if (!Object.prototype.hasOwnProperty.call(next, name)) continue;
     next[name] = applyPreRuntimeInputMaterializer(next[name], kind);
   }

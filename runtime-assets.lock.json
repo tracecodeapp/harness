@@ -3,11 +3,11 @@
   "harness": {
     "name": "@tracecode/harness",
     "version": "0.20.2",
-    "releaseId": "@tracecode/harness@0.20.2+sha256.e3e17bedb27931abb2dc93f7b9657fdffed9a42750687f767e296abd50157b53"
+    "releaseId": "@tracecode/harness@0.20.2+sha256.3171dbb3a87e691e447f5c6bbe7a9a2af77f244df4f799ebe8b035614d77436d"
   },
   "treeSha256Algorithm": "sha256-path-nul-bytes-nul-v1",
-  "packageTreeSha256": "e3e17bedb27931abb2dc93f7b9657fdffed9a42750687f767e296abd50157b53",
-  "totalPackagedRuntimeBytes": 152538273,
+  "packageTreeSha256": "3171dbb3a87e691e447f5c6bbe7a9a2af77f244df4f799ebe8b035614d77436d",
+  "totalPackagedRuntimeBytes": 152543462,
   "components": {
     "cpp": {
       "releaseId": "cpp+sha256.cfb545d89d8bfa7685599aa9287102f31110f36c5591405f0ca92a4b96cbb4f6",
@@ -1844,9 +1844,9 @@
       ]
     },
     "javascript": {
-      "releaseId": "javascript+sha256.4b3824e6bee0ef43d6c756e32833ce839e90740a4ea109ed5eab2e84057eae6e",
-      "treeSha256": "4b3824e6bee0ef43d6c756e32833ce839e90740a4ea109ed5eab2e84057eae6e",
-      "totalBytes": 1796905,
+      "releaseId": "javascript+sha256.df936ebd9eb633bb7824ddd0025cc5d64b9610c4ac138b417e85c96b13990c7a",
+      "treeSha256": "df936ebd9eb633bb7824ddd0025cc5d64b9610c4ac138b417e85c96b13990c7a",
+      "totalBytes": 1800198,
       "files": [
         {
           "path": "workers/javascript/javascript-project-worker.js",
@@ -1857,16 +1857,16 @@
         },
         {
           "path": "workers/javascript/javascript-ses-algorithm-worker.js",
-          "size": 614295,
-          "sha256": "8ee903aae24574608ebb841d749c440f0e2a7c8fbec620c0db1da81ac4ffb79e",
-          "integrity": "sha256-jukDquJFdGCOu4QddJxEDw4qfI++xiDA2x2oGsT/t54=",
+          "size": 615865,
+          "sha256": "3747ae9b66fc50634eeeb6d34e17261b636186429971e00f909776377f4532b9",
+          "integrity": "sha256-N0eum2b8UGNO7rbTThcmG2NhhkKZceAPkJd2N39FMrk=",
           "mediaType": "text/javascript"
         },
         {
           "path": "workers/javascript/javascript-worker.js",
-          "size": 259441,
-          "sha256": "81364284726644cbeff6404a797655d8d34837757bad7b5d99319602b974d55c",
-          "integrity": "sha256-gTZChHJmRMvv9kBKeXZV2NNIN3V7rXtdmTGWArl01Vw=",
+          "size": 261164,
+          "sha256": "2be25c38591eec04c3f7899ffac1635389e2b65feecacd0f548e21345d7db436",
+          "integrity": "sha256-K+JcOFke7ATD94mf+sFjU4nitl/uys0PVI4hNF19tDY=",
           "mediaType": "text/javascript"
         },
         {
@@ -1879,9 +1879,9 @@
       ]
     },
     "python": {
-      "releaseId": "python+sha256.f98acebd5a47f5b8f052186a2330ff1ec8b0ba8f6e6da71c1602c9fd53cc1661",
-      "treeSha256": "f98acebd5a47f5b8f052186a2330ff1ec8b0ba8f6e6da71c1602c9fd53cc1661",
-      "totalBytes": 76017615,
+      "releaseId": "python+sha256.5ff31e5ac7b6abf67cf5c3aec3aa3ab668b745c27d2532d475ac48cbf0527fc2",
+      "treeSha256": "5ff31e5ac7b6abf67cf5c3aec3aa3ab668b745c27d2532d475ac48cbf0527fc2",
+      "totalBytes": 76019511,
       "files": [
         {
           "path": "workers/python/generated-python-harness-snippets.js",
@@ -1969,9 +1969,9 @@
         },
         {
           "path": "workers/python/python-runtime.js",
-          "size": 352922,
-          "sha256": "6d5f044aa11a030372fd56230bdcfb08609c635ccea943cf9f9708f9be12bbe6",
-          "integrity": "sha256-bV8ESqEaAwNy/VYjC9z7CGCcY1zOqUPPn5cI+b4Su+Y=",
+          "size": 354818,
+          "sha256": "325a0ec023bfb1175f47f782071a30584c9fb6bc7284d347475f0b9a6d4e07ea",
+          "integrity": "sha256-MloOwCO/sRdfR/eCBxowWEyftrxyhNNHR18Lmm1OB+o=",
           "mediaType": "text/javascript"
         },
         {
@@ -2255,11 +2255,11 @@
   "stagedInventory": {
     "description": "Files `tracecode-harness sync-assets <dir>` stages for every language. A consumer adds only its own files (such as a commit marker).",
     "files": 607,
-    "bytes": 428371546,
+    "bytes": 428376735,
     "byClass": {
       "locked": {
         "files": 348,
-        "bytes": 425660038
+        "bytes": 425665227
       },
       "alias": {
         "files": 1,
@@ -2338,12 +2338,12 @@
       {
         "path": "javascript-ses-algorithm-worker.js",
         "files": 1,
-        "bytes": 614295
+        "bytes": 615865
       },
       {
         "path": "javascript-worker.js",
         "files": 1,
-        "bytes": 259441
+        "bytes": 261164
       },
       {
         "path": "project-cpp-worker.js",
@@ -2353,7 +2353,7 @@
       {
         "path": "python",
         "files": 12,
-        "bytes": 75585317
+        "bytes": 75587213
       },
       {
         "path": "python-worker.js",

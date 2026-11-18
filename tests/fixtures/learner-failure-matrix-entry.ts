@@ -169,10 +169,10 @@ function thrown(error: unknown): MatrixObservation {
   };
 }
 
-function caseInputs(count: number) {
+function caseInputs(count: number, inputs?: Readonly<Record<string, unknown>>) {
   return Array.from({ length: count }, (_, index) => ({
     id: `case-${index + 1}`,
-    input: { n: 3 + index },
+    input: inputs ? structuredClone(inputs) : { n: 3 + index },
   }));
 }
 
@@ -185,6 +185,7 @@ async function bundleFor(
     readonly caseCount: number;
     readonly limits?: { readonly wallClockMs?: number };
     readonly traceOptions?: { readonly maxTraceSteps?: number };
+    readonly inputs?: Readonly<Record<string, unknown>>;
   }
 ) {
   return createAlgorithmJudgeBundle({
@@ -193,7 +194,7 @@ async function bundleFor(
     code: program.code,
     functionName: program.functionName,
     executionStyle: program.executionStyle,
-    cases: caseInputs(options.caseCount),
+    cases: caseInputs(options.caseCount, options.inputs),
     trace: options.trace,
     ...(options.limits ? { limits: options.limits } : {}),
     ...(options.trace && options.traceOptions ? { traceOptions: options.traceOptions } : {}),
@@ -208,7 +209,7 @@ async function runMode(
   language: MatrixLanguage,
   program: MatrixProgram,
   mode: MatrixMode,
-  spec: Pick<MatrixCellSpec, 'limits' | 'traceOptions'>,
+  spec: Pick<MatrixCellSpec, 'limits' | 'traceOptions' | 'inputs'>,
   signal?: AbortSignal
 ): Promise<MatrixObservation[]> {
   bundleSequence += 1;
@@ -221,6 +222,7 @@ async function runMode(
     caseCount,
     limits: spec.limits,
     traceOptions: spec.traceOptions,
+    inputs: spec.inputs,
   });
   try {
     if (mode !== 'interactive') {
