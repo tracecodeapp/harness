@@ -1662,13 +1662,15 @@ var LANGUAGE_RUNTIME_INFOS = Object.freeze(
         "name": "TraceKernel",
         "version": "0.20.2"
       },
-      "description": "Python 3.13.2 runs in TraceKernel's isolated Python runtime.\n\nCommon algorithm helpers are imported automatically, including array, bisect, collections, functools, heapq, itertools. Other standard-library modules can be imported normally.\n\nOptional third-party packages are consumer-owned runtime assets and are available only when declared by the TraceKernel runtime manifest.",
+      "description": "Python 3.13.2 runs in TraceKernel's isolated Python runtime.\n\nCommon algorithm helpers are imported automatically, including the typing names (List, Optional, Dict, ...), collections, heapq, bisect, itertools, functools. Other standard-library modules can be imported normally.\n\nOptional third-party packages are consumer-owned runtime assets and are available only when declared by the TraceKernel runtime manifest.",
       "runtime": {
         "name": "Python",
         "version": "3.13.2",
         "detail": "Runs in TraceKernel's isolated Python runtime."
       },
       "defaultImports": [
+        "typing",
+        "ast",
         "array",
         "bisect",
         "collections",
@@ -1677,8 +1679,7 @@ var LANGUAGE_RUNTIME_INFOS = Object.freeze(
         "itertools",
         "operator",
         "re",
-        "string",
-        "typing"
+        "string"
       ]
     },
     "javascript": {

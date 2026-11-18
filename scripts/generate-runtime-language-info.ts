@@ -98,11 +98,9 @@ function parsePythonDefaultImports(pythonRuntimeSource: string): string[] {
     /const PYTHON_DEFAULT_IMPORT_PRELUDE = `([\s\S]*?)`;/,
     'Python default import prelude'
   )[1] ?? '';
-  const imports = [
-    ...[...prelude.matchAll(/^import\s+([A-Za-z_][A-Za-z0-9_.]*)/gm)].map((match) => match[1]),
-    ...[...prelude.matchAll(/^from\s+([A-Za-z_][A-Za-z0-9_.]*)\s+import/gm)].map((match) => match[1]),
-    ...[...pythonRuntimeSource.matchAll(/^from\s+(typing)\s+import/gm)].map((match) => match[1]),
-  ];
+  // In prelude order: `from typing import *` comes first.
+  const imports = [...prelude.matchAll(/^(?:import\s+([A-Za-z_][A-Za-z0-9_.]*)|from\s+([A-Za-z_][A-Za-z0-9_.]*)\s+import)/gm)]
+    .map((match) => match[1] ?? match[2]);
   return unique(imports.filter((name): name is string => Boolean(name) && name !== 'sortedcontainers'));
 }
 
@@ -205,6 +203,15 @@ function buildJavaScriptLibraryDescription(libraries: readonly LibraryInfo[]): s
   ].join('\n');
 }
 
+// The helpers a learner pasting typical solutions relies on, in that order.
+function pythonDescriptionImports(defaultImports: readonly string[]): string {
+  const preferred = ['typing', 'collections', 'heapq', 'bisect', 'itertools', 'functools'];
+  return preferred
+    .filter((name) => defaultImports.includes(name))
+    .map((name) => (name === 'typing' ? 'the typing names (List, Optional, Dict, ...)' : name))
+    .join(', ');
+}
+
 function buildPythonDescription(input: {
   pythonVersion: string;
   defaultImports: readonly string[];
@@ -212,7 +219,7 @@ function buildPythonDescription(input: {
   return [
     `Python ${input.pythonVersion} runs in TraceKernel's isolated Python runtime.`,
     '',
-    `Common algorithm helpers are imported automatically, including ${input.defaultImports.slice(0, 6).join(', ')}. Other standard-library modules can be imported normally.`,
+    `Common algorithm helpers are imported automatically, including ${pythonDescriptionImports(input.defaultImports)}. Other standard-library modules can be imported normally.`,
     '',
     'Optional third-party packages are consumer-owned runtime assets and are available only when declared by the TraceKernel runtime manifest.',
   ].join('\n');
