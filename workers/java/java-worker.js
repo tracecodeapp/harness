@@ -3966,6 +3966,50 @@ function augmentJavaThrowEvents(source) {
   }).join('\n');
 }
 
+const JAVA_STDOUT_PRINTLN = 'System.out.println';
+
+/**
+ * Replace each statement-level System.out.println(expression); on a line with
+ * the block that render() returns for its argument. A print counts as a
+ * statement when it starts the line or follows a block brace, a semicolon, the
+ * closing parenthesis of a control header, else, or do: the single-statement
+ * body of a one-line for, while, if/else or do keeps its source line. A print
+ * inside an expression (an expression-bodied lambda) is left alone, as are
+ * strings and comments.
+ */
+function instrumentJavaStdoutStatements(line, render) {
+  const replacements = [];
+  scanJavaCode(line, 0, line.length, (index) => {
+    if (!line.startsWith(JAVA_STDOUT_PRINTLN, index)) return undefined;
+    const before = index > 0 ? line[index - 1] : '';
+    if (before && (isJavaIdentifierPart(before) || before === '.')) return undefined;
+    let open = index + JAVA_STDOUT_PRINTLN.length;
+    while (/\s/.test(line[open] ?? '')) open += 1;
+    if (line[open] !== '(') return undefined;
+    const close = findMatchingParen(line, open);
+    if (close < 0) return undefined;
+    let end = close + 1;
+    while (/\s/.test(line[end] ?? '')) end += 1;
+    if (line[end] !== ';') return close;
+    const expression = line.slice(open + 1, close).trim();
+    const prefix = line.slice(0, index).trimEnd();
+    const statementPosition =
+      prefix === '' || /[{};)]$/.test(prefix) || /(?:^|[^A-Za-z0-9_$])(?:else|do)$/.test(prefix);
+    if (expression && statementPosition) {
+      replacements.push({ start: index, end: end + 1, expression });
+    }
+    return end;
+  });
+  let output = line;
+  for (const replacement of replacements.reverse()) {
+    output =
+      output.slice(0, replacement.start) +
+      render(replacement.expression) +
+      output.slice(replacement.end);
+  }
+  return output;
+}
+
 function augmentJavaStdoutEvents(source) {
   const lines = source.split('\n');
   const methodStack = [];
@@ -3987,12 +4031,12 @@ function augmentJavaStdoutEvents(source) {
     const traceLine = parseNativeTraceLine(line);
     if (traceLine !== null) currentMethod.currentTraceLine = traceLine;
 
-    const stdoutMatch = nextLine.match(/^(\s*)System\.out\.println\((.+)\);\s*$/);
-    if (stdoutMatch && currentMethod.currentTraceLine !== null) {
-      const indent = stdoutMatch[1] ?? '';
-      const tempName = `__tracecodeStdout${stdoutIndex++}`;
-      const expression = stdoutMatch[2];
-      nextLine = `${indent}{ var ${tempName} = ${expression}; System.out.println(${tempName}); TraceHooks.emitStdoutAtLine(${currentMethod.currentTraceLine}, String.valueOf(${tempName})); }`;
+    if (currentMethod.currentTraceLine !== null) {
+      const traceLine = currentMethod.currentTraceLine;
+      nextLine = instrumentJavaStdoutStatements(nextLine, (expression) => {
+        const tempName = `__tracecodeStdout${stdoutIndex++}`;
+        return `{ var ${tempName} = ${expression}; System.out.println(${tempName}); TraceHooks.emitStdoutAtLine(${traceLine}, String.valueOf(${tempName})); }`;
+      });
     }
 
     currentMethod.depth += braceDelta(nextLine);

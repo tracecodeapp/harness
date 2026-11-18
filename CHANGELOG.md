@@ -50,6 +50,12 @@ This repo uses Git tags as release boundaries. Version notes below summarize wha
 
 ### Fixed
 
+- Traced Java emits a stdout event for a `System.out.println(...)` that is the
+  single-statement body of a one-line `for`, `while`, `if`/`else` or `do`
+  (braced or not), on that line, evaluating its argument once. Previously only
+  a print on its own line was instrumented, so
+  `for (int i = 0; i < n; i++) System.out.println(i);` showed no output.
+
 - Untraced Python with a blank function selector and `executionStyle:
   'function'` runs the program as a script, as traced runs already did: the
   module runs (inside the guard), its optional `result` is the output, and the

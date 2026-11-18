@@ -4488,6 +4488,86 @@ ${exportsSource.replace('public class Exports', `public class ${exportsClassName
   };
 }
 
+function loadJavaWorkerFunctionsForTest(): {
+  wrapSingleStatementLoopBodies: (source: string) => string;
+  augmentJavaStdoutEvents: (source: string) => string;
+} {
+  const workerSource = readFileSync(join(process.cwd(), 'workers', 'java', 'java-worker.js'), 'utf8');
+  const context = vm.createContext({
+    self: { postMessage() {}, addEventListener() {}, importScripts() {} },
+    console,
+    btoa: (value: string) => Buffer.from(value, 'binary').toString('base64'),
+    performance: { now: () => Date.now() },
+    setTimeout,
+    clearTimeout,
+    TextEncoder,
+    queueMicrotask,
+  });
+  vm.runInContext(workerSource, context, { filename: 'java-worker.js' });
+  return context as unknown as {
+    wrapSingleStatementLoopBodies: (source: string) => string;
+    augmentJavaStdoutEvents: (source: string) => string;
+  };
+}
+
+function testJavaInlineControlBodyPrintsEmitStdoutEvents(): void {
+  // A print that is the single-statement body of a control header on the same
+  // line must produce the same source-mapped stdout event as a print on its
+  // own line, evaluating its argument once.
+  const worker = loadJavaWorkerFunctionsForTest();
+  const stdoutOf = (body: string, n = 3): { events: string[]; printed: string[] } => {
+    const source = `class Solution {\n  public int solve(int n) {\n${body}\n    return n;\n  }\n}\n`;
+    const rewritten = worker.augmentJavaStdoutEvents(
+      rewriteWithNativeJavaRewriter(worker.wrapSingleStatementLoopBodies(source))
+    );
+    const output = executeJavaSourceExpression(
+      rewritten,
+      `((java.util.function.Supplier<String>) () -> { int token = TraceHooks.beginRun(100000); new Solution().solve(${n}); String events = String.join("|", TraceHooks.drainEvents().stream().filter(e -> e.contains("\\"kind\\":\\"stdout\\"")).toList()); TraceHooks.endRun(token); return "EVENTS:" + events; }).get()`
+    ).split('\n');
+    const marker = output.findIndex((line) => line.startsWith('EVENTS:'));
+    const eventsText = output[marker]!.slice('EVENTS:'.length);
+    return {
+      events: eventsText ? eventsText.split('|') : [],
+      printed: output.slice(0, marker).filter((line) => line.length > 0),
+    };
+  };
+  const values = (events: string[]) =>
+    events.map((event) => JSON.parse(event.replace(/^trace:/u, '')) as { line: number; value: unknown });
+
+  // Stdout events carry the printed text (String.valueOf of the argument).
+  const cases: { name: string; body: string; expected: string[]; line: number }[] = [
+    { name: 'one-line for', body: '    for (int i = 0; i < n; i++) System.out.println(i);', expected: ['0', '1', '2'], line: 3 },
+    { name: 'one-line braced for', body: '    for (int i = 0; i < n; i++) { System.out.println(i); }', expected: ['0', '1', '2'], line: 3 },
+    { name: 'one-line while (argument evaluated once)', body: '    int i = 0;\n    while (i < n) System.out.println(i++);', expected: ['0', '1', '2'], line: 4 },
+    { name: 'one-line if/else', body: '    if (n > 0) System.out.println("pos"); else System.out.println("neg");', expected: ['pos'], line: 3 },
+    { name: 'one-line else branch', body: '    if (n < 0) System.out.println("neg"); else System.out.println("pos");', expected: ['pos'], line: 3 },
+    { name: 'one-line do/while', body: '    int i = 0;\n    do System.out.println(i++); while (i < n);', expected: ['0', '1', '2'], line: 4 },
+    { name: 'standalone print', body: '    for (int i = 0; i < n; i++) {\n      System.out.println(i);\n    }', expected: ['0', '1', '2'], line: 4 },
+    { name: 'print of a string that looks like a print', body: '    System.out.println("System.out.println(1);");', expected: ['System.out.println(1);'], line: 3 },
+  ];
+  for (const testCase of cases) {
+    const { events, printed } = stdoutOf(testCase.body);
+    const parsed = values(events);
+    assertCondition(
+      JSON.stringify(parsed.map((event) => event.value)) === JSON.stringify(testCase.expected) &&
+        parsed.every((event) => event.line === testCase.line),
+      `Java ${testCase.name}: expected stdout events ${JSON.stringify(testCase.expected)} on line ${testCase.line}, received ${JSON.stringify(parsed)}`
+    );
+    assertCondition(
+      JSON.stringify(printed) === JSON.stringify(testCase.expected),
+      `Java ${testCase.name}: the program must print each value once, printed ${JSON.stringify(printed)}`
+    );
+  }
+  // An expression-bodied lambda is not a statement position; it still compiles
+  // and prints, without a stdout event.
+  const lambda = stdoutOf('    java.util.List.of(7).forEach(x -> System.out.println(x));');
+  assertCondition(
+    lambda.events.length === 0 && JSON.stringify(lambda.printed) === JSON.stringify(['7']),
+    `Java expression lambda print must stay untouched, received ${JSON.stringify(lambda)}`
+  );
+  console.log('PASS: Java prints in one-line control bodies emit source-mapped stdout events once');
+}
+
 async function main(): Promise<void> {
   testJavaHelperJarDoesNotExposeDeprecatedSpikePackages();
   testTraceExecutionRunnerDefersBudgetFallbackToHost();
@@ -4504,6 +4584,7 @@ async function main(): Promise<void> {
   testJavaRuntimeMutationHooksEmitPostSnapshots();
   testJavaArraySortHooksEmitIndexedWrites();
   testJavaListSortHooksEmitIndexedWrites();
+  testJavaInlineControlBodyPrintsEmitStdoutEvents();
 
   const workerSource = await loadWorkerSource();
   const augmentationSource = await loadJavaSourceAugmentationSource();
