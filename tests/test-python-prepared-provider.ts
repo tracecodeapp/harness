@@ -152,6 +152,8 @@ test('Python prepared provider compiles once and executes in owned fresh workers
     profile: 'compatibility',
     caseIsolation: 'fresh-case-state',
     maxConcurrency: 1,
+    // Python batches stop themselves at the first runaway case.
+    stopsAtFirstRunaway: true,
   });
   assert.equal(preparation.program.mode, 'code');
   if (preparation.program.mode !== 'code') return;
