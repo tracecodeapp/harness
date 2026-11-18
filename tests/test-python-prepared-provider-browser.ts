@@ -2877,7 +2877,8 @@ async function main(): Promise<void> {
           JSON.stringify([1, 4]) &&
         JSON.stringify(fastParityProjection('matrixInplace').output) ===
           JSON.stringify([[3, 2, 1], [4, 5, 6]]) &&
-        fastParityProjection('nodeAnnotationParity').output === true &&
+        // A TreeNode-annotated key-less dict is a TreeNode (0.20.2), on both tiers.
+        fastParityProjection('nodeAnnotationParity').output === false &&
         typeof fastParityProjection('moduleLookup').output === 'number' &&
         fastParityProjection('localCount').output === 6 &&
         JSON.stringify(fastParityProjection('parity')) ===
