@@ -50,6 +50,14 @@ This repo uses Git tags as release boundaries. Version notes below summarize wha
 
 ### Fixed
 
+- A debugging project's "Failure reproduced" claim with an
+  invariant-contradiction signal cites the observations that contradict the
+  invariant, and names a reproduction command only when timestamps tie it to
+  them (it completed after them, each was observed during its run, and no
+  other process ran at the same time). Previously it cited the first permitted
+  command before the edit, so a passing `npm test` run before `npm run probe`
+  was shown as the proof of a failure the probe produced.
+
 - Traced Java emits a stdout event for a `System.out.println(...)` that is the
   single-statement body of a one-line `for`, `while`, `if`/`else` or `do`
   (braced or not), on that line, evaluating its argument once. Previously only

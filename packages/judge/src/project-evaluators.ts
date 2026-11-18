@@ -312,6 +312,72 @@ function claim(
   });
 }
 
+type ProcessObservation = Extract<JudgeObservation, { kind: 'process' }>;
+
+function observationTime(event: JudgeObservation): number | undefined {
+  const value = event.kind === 'process' ? undefined : event.observedAt;
+  const time = value === undefined ? Number.NaN : Date.parse(value);
+  return Number.isFinite(time) ? time : undefined;
+}
+
+function processInterval(
+  event: ProcessObservation
+): { readonly start: number; readonly end: number } | undefined {
+  const start = event.startedAt === undefined ? Number.NaN : Date.parse(event.startedAt);
+  const end = event.completedAt === undefined ? Number.NaN : Date.parse(event.completedAt);
+  return Number.isFinite(start) && Number.isFinite(end) && start <= end
+    ? { start, end }
+    : undefined;
+}
+
+/**
+ * The configured reproduction process that produced `seqs`, when the evidence
+ * ties it to them: it completed after them and before the first relevant
+ * edit, each of them was observed within its run, and no other completed
+ * process ran when any of them was observed. Otherwise no process is named.
+ */
+function attributedProcess(
+  interactive: readonly JudgeObservation[],
+  seqs: readonly number[],
+  reproductionCommands: readonly string[],
+  firstEditSeq: number
+): ProcessObservation | undefined {
+  if (seqs.length === 0) return undefined;
+  const times: number[] = [];
+  for (const seq of seqs) {
+    const event = interactive.find((candidate) => candidate.seq === seq);
+    const time = event ? observationTime(event) : undefined;
+    if (time === undefined) return undefined;
+    times.push(time);
+  }
+  const lastSeq = Math.max(...seqs);
+  const processes = interactive.filter(
+    (event): event is ProcessObservation => event.kind === 'process'
+  );
+  const running = (event: ProcessObservation) => {
+    const interval = processInterval(event);
+    return interval !== undefined &&
+      times.some((time) => time >= interval.start && time <= interval.end);
+  };
+  const candidates = processes.filter((event) => {
+    const interval = processInterval(event);
+    return (
+      interval !== undefined &&
+      event.seq > lastSeq &&
+      event.seq < firstEditSeq &&
+      reproductionCommands.some((command) =>
+        event.command === command || event.argv === command
+      ) &&
+      times.every((time) => time >= interval.start && time <= interval.end)
+    );
+  });
+  if (candidates.length !== 1) return undefined;
+  const [candidate] = candidates;
+  return processes.some((event) => event !== candidate && running(event))
+    ? undefined
+    : candidate;
+}
+
 function evaluateDebugging(
   configValue: unknown,
   receipt: JudgeProjectReceiptV1
@@ -356,9 +422,9 @@ function evaluateDebugging(
       ...event,
       stepId: '__debugging_pre_edit__',
     }));
-  const invariantContradicted =
-    failureSignal?.kind === 'invariant-contradiction' &&
-    evaluateBehavior(
+  const invariantClaim =
+    failureSignal?.kind === 'invariant-contradiction'
+      ? evaluateBehavior(
       failureSignal.invariant,
       Object.freeze({
         ...receipt,
@@ -370,7 +436,22 @@ function evaluateDebugging(
         }]),
         observations: Object.freeze(preEditObservations),
       })
-    )[0]?.status === 'contradicted';
+    )[0]
+      : undefined;
+  const invariantContradicted = invariantClaim?.status === 'contradicted';
+  // The observations that contradict the invariant are the reproduction's
+  // evidence. A command is named only when the evidence ties it to them.
+  const contradictionSeqs = invariantContradicted
+    ? invariantClaim.evidence
+        .map((entry) => entry.observationSeq)
+        .filter((seq): seq is number => seq !== undefined)
+    : [];
+  const contradictingProcess = attributedProcess(
+    interactive,
+    contradictionSeqs,
+    config.reproductionCommands,
+    firstEditSeq
+  );
   const failureObserved = failureSignal === undefined
     ? reproduction !== undefined
     : failureSignal.kind === 'process-failure'
@@ -411,10 +492,24 @@ function evaluateDebugging(
             'debugging.reproduced',
             'Failure reproduced',
             'proven',
-            [{
-              observationSeq: reproduction.seq,
-              note: 'The configured failure was exercised before the repair.',
-            }]
+            failureSignal?.kind === 'invariant-contradiction'
+              ? [
+                  ...(contradictingProcess
+                    ? [{
+                        observationSeq: contradictingProcess.seq,
+                        note:
+                          'This configured reproduction produced the observations that contradict the invariant.',
+                      }]
+                    : []),
+                  ...contradictionSeqs.map((seq) => ({
+                    observationSeq: seq,
+                    note: 'This observation contradicts the configured invariant before the repair.',
+                  })),
+                ]
+              : [{
+                  observationSeq: reproduction.seq,
+                  note: 'The configured failure was exercised before the repair.',
+                }]
           )
         : claim(
             'debugging.reproduced',
