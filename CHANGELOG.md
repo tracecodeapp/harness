@@ -50,6 +50,15 @@ This repo uses Git tags as release boundaries. Version notes below summarize wha
 
 ### Fixed
 
+- Untraced Python with a blank function selector and `executionStyle:
+  'function'` runs the program as a script, as traced runs already did: the
+  module runs (inside the guard), its optional `result` is the output, and the
+  console is kept. Previously the direct and prepared untraced paths looked up
+  an entry named `""` and failed with `NameError: Implement (...) or
+  Solution.(...)`, which is what a Code Playground untraced retry after a
+  clipped trace showed. Named entrypoints and a blank `solution-method`
+  selector are unchanged.
+
 - C# failure provenance is structural. The runner role's managed hosts
   separate the learner's program from the host by where the exception came
   from: an exception thrown by the generated driver's `Run` (reflection's

@@ -7218,6 +7218,12 @@ async function executeCode(
   const userCodeLineCount = code.split('\n').length;
   let userCodeStartLine = 1;
   const usesPreparedBindings = prepared !== undefined;
+  // A blank selector with function style is a script, as in the trace
+  // generator: run the module and read its optional `result`.
+  const scriptMode = !functionName && executionStyle === 'function';
+  // The learner's code runs as its own `solution.py` code object (prepared
+  // programs and scripts) rather than inlined into the executor.
+  const userCodeInSolutionFile = usesPreparedBindings || scriptMode;
   // Prepared executors are compiled once, so their guard code must be present
   // even when the first case has no limits. Each execution decides whether to
   // enable it from its own immutable limits binding.
@@ -7291,7 +7297,14 @@ _tracecode_case_limits = _tracecode_input_ast.literal_eval(__tracecode_limits_li
     const caseNamespaceExpression = usesPreparedBindings
       ? '_tracecode_user_namespace'
       : 'globals()';
-    const executionCall = executionStyle === 'solution-method'
+    const scriptExecutionCall = usesPreparedBindings
+      // The prepared module already ran in the case setup.
+      ? `_result = ${caseNamespaceExpression}.get('result', None)`
+      : `exec(compile(${JSON.stringify(code)}, 'solution.py', 'exec'), ${caseNamespaceExpression})
+_result = ${caseNamespaceExpression}.get('result', None)`;
+    const executionCall = scriptMode
+      ? scriptExecutionCall
+      : executionStyle === 'solution-method'
       ? `_result = _tracecode_invoke_entry(${JSON.stringify(functionName)}, ${JSON.stringify(executionStyle)}, ${traceInputNamesLiteral})`
       : executionStyle === 'ops-class'
         ? `_tracecode_case_namespace = ${caseNamespaceExpression}
@@ -7460,7 +7473,7 @@ def _interview_guard_tracer(frame, event, arg):
     _func_name = frame.f_code.co_name
     _is_user_frame = (
         frame.f_code.co_filename == 'solution.py'
-        if ${usesPreparedBindings ? 'True' : 'False'}
+        if ${userCodeInSolutionFile ? 'True' : 'False'}
         else (
             __TRACECODE_USER_CODE_START_LINE__ <= frame.f_code.co_firstlineno <= __TRACECODE_USER_CODE_END_LINE__
             or (
@@ -7536,7 +7549,9 @@ def _interview_guard_stop():
       treeConversions,
       listConversions,
       `if ${usesPreparedBindings ? '__tracecode_inputs_need_materialization' : 'True'}:\n    _tracecode_materialize_named_inputs(${traceInputNamesLiteral})`,
-      `_tracecode_hydrate_annotated_inputs(${traceInputNamesLiteral}, ${functionNameLiteral}, ${executionStyleLiteral})`,
+      scriptMode
+        ? ''
+        : `_tracecode_hydrate_annotated_inputs(${traceInputNamesLiteral}, ${functionNameLiteral}, ${executionStyleLiteral})`,
     ]
       .filter((source) => source.length > 0)
       .join('\n');
@@ -7669,7 +7684,7 @@ ${listConversions}
 
 if ${usesPreparedBindings ? '__tracecode_inputs_need_materialization' : 'True'}:
     _tracecode_materialize_named_inputs(${traceInputNamesLiteral})
-_tracecode_hydrate_annotated_inputs(${traceInputNamesLiteral}, ${functionNameLiteral}, ${executionStyleLiteral})
+${scriptMode ? '' : `_tracecode_hydrate_annotated_inputs(${traceInputNamesLiteral}, ${functionNameLiteral}, ${executionStyleLiteral})`}
 
 try:
 ${executionCallInTry}
@@ -7693,7 +7708,7 @@ _tracecode_raw_result
 `;
     let execCode =
       execPrefix +
-      (usesPreparedBindings
+      (userCodeInSolutionFile
         ? ''
         : code) +
       execSuffix;
@@ -7781,7 +7796,7 @@ _json_out
       };
     }
 
-    if (usesPreparedBindings) userCodeStartLine = 1;
+    if (userCodeInSolutionFile) userCodeStartLine = 1;
     let resultJson;
     if (!supportsTrustedExecuteFinalization) {
       resultJson = await runPythonInFreshExecutionScope(

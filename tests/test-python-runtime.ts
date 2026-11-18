@@ -3936,6 +3936,95 @@ finally:
   console.log('PASS: Python virtual scandir matches iterator contract');
 }
 
+async function assertBlankFunctionSelectorRunsAsScriptUntraced(): Promise<void> {
+  // The Code Playground retries a clipped script trace untraced with an empty
+  // function name. With executionStyle 'function' that is a script: run the
+  // module, read its optional `result`, keep the console. A named entry and a
+  // blank solution-method selector keep their entry semantics.
+  const runtime = await loadPythonRuntime();
+  let now = 0;
+  const deps = {
+    PYTHON_CLASS_DEFINITIONS_SNIPPET: PYTHON_CLASS_DEFINITIONS,
+    PYTHON_CONVERSION_HELPERS_SNIPPET: PYTHON_CONVERSION_HELPERS,
+    PYTHON_TRACE_SERIALIZE_FUNCTION_SNIPPET: PYTHON_TRACE_SERIALIZE_FUNCTION,
+    PYTHON_EXECUTE_SERIALIZE_FUNCTION_SNIPPET: PYTHON_EXECUTE_SERIALIZE_FUNCTION,
+    INTERVIEW_GUARD_DEFAULTS: {
+      maxLineEvents: 10000,
+      maxSingleLineHits: 1000,
+      maxCallDepth: 100,
+      maxMemoryBytes: 8 * 1024 * 1024,
+      memoryCheckEvery: 10,
+    },
+    toPythonLiteral,
+    loadPyodideInstance: async () => {},
+    getPyodide: () => ({
+      runPythonAsync: async (code: string) => runPythonAsyncLikePyodide(code),
+    }),
+    performanceNow: () => ++now,
+  };
+  const script = ['for i in range(3):', '    print(i)', 'result = 42', ''].join('\n');
+
+  for (const options of [{}, { interviewGuard: true, maxLineEvents: 200000, maxSingleLineHits: 100000 }]) {
+    const direct = await runtime.executeCode(deps, script, '', {}, 'function', options);
+    assertCondition(
+      direct.success === true &&
+        direct.output === 42 &&
+        JSON.stringify(direct.consoleOutput) === JSON.stringify(['0', '1', '2']),
+      `A blank function selector should run the program as a script untraced (${JSON.stringify(options)}), received ${JSON.stringify(direct)}`
+    );
+  }
+  const noResult = await runtime.executeCode(deps, 'print("hi")\n', '', {}, 'function', {});
+  assertCondition(
+    noResult.success === true && noResult.output === null &&
+      JSON.stringify(noResult.consoleOutput) === JSON.stringify(['hi']),
+    `A script without a result should complete with null output, received ${JSON.stringify(noResult)}`
+  );
+
+  // The prepared executor (Judge's untraced path) gets the same semantics.
+  // (The fake Pyodide here cannot carry PythonError, so failures are asserted
+  // through the prepared executor's structured result.)
+  const runPrepared = async (source: string, functionName: string, executionStyle: string) => {
+    const prepared = await (runtime.executeCode as unknown as (
+      ...args: unknown[]
+    ) => Promise<{ __preparedSource: string }>)(deps, source, functionName, {}, executionStyle, {}, { compileOnly: true });
+    const driver = [
+      `__tracecode_prepared_user_code = compile(${JSON.stringify(source)}, 'solution.py', 'exec')`,
+      `__tracecode_inputs_literal = '{}'`,
+      `__tracecode_limits_literal = ${JSON.stringify(JSON.stringify({ maxLineEvents: 200000, maxSingleLineHits: 100000 }))}`,
+      `__tracecode_tracing_enabled = False`,
+      `__tracecode_inputs_need_materialization = False`,
+      prepared.__preparedSource,
+      `import json as _tracecode_test_json`,
+      `print(_tracecode_test_json.dumps({k: _tracecode_raw_result.get(k) for k in ('kind', 'output', 'console', 'executionError')}, default=str))`,
+    ].join('\n');
+    return JSON.parse(execFileSync('python3', ['-c', driver], { encoding: 'utf8' }).trim().split('\n').pop()!);
+  };
+  const raw = await runPrepared(script, '', 'function');
+  assertCondition(
+    raw.kind === 'success-serialized' && raw.output === 42 &&
+      JSON.stringify(raw.console) === JSON.stringify(['0', '1', '2']),
+    `The prepared untraced executor should run a blank selector as a script, received ${JSON.stringify(raw)}`
+  );
+  const failed = await runPrepared('print("a")\nx = 1 / 0\n', '', 'function');
+  assertCondition(
+    failed.kind === 'execution-error' &&
+      failed.executionError?.message === 'ZeroDivisionError on line 2: division by zero' &&
+      failed.executionError?.line === 2,
+    `A script's own exception is the program's, on its line, received ${JSON.stringify(failed)}`
+  );
+  const blankMethod = await runPrepared('class Solution:\n    pass\n', '', 'solution-method');
+  assertCondition(
+    blankMethod.kind === 'execution-error' && /^NameError: Implement/u.test(blankMethod.executionError?.message ?? ''),
+    `A blank solution-method selector keeps its entry check, received ${JSON.stringify(blankMethod)}`
+  );
+  const named = await runPrepared('def solve():\n    print("named")\n    return 7\n', 'solve', 'function');
+  assertCondition(
+    named.kind === 'success-serialized' && named.output === 7 && JSON.stringify(named.console) === JSON.stringify(['named']),
+    `A named entry keeps its entry semantics, received ${JSON.stringify(named)}`
+  );
+  console.log('PASS: a blank function selector runs untraced Python as a script (direct and prepared)');
+}
+
 async function main(): Promise<void> {
   await assertPyodideProjectFsEventsRejectTraversal();
   await assertPyodideProjectEventsApplyResourceBudgets();
@@ -3984,6 +4073,7 @@ async function main(): Promise<void> {
   await assertFunctionStyleFallsBackToSolutionMethod();
   await assertExecuteCodeHydratesAnnotatedCustomObjects();
   await assertExecuteCodeGuestLimitsReportStructuredTrips();
+  await assertBlankFunctionSelectorRunsAsScriptUntraced();
   await assertVirtualScandirMatchesIteratorContract();
   console.log('\nPython runtime checks passed.');
 }
