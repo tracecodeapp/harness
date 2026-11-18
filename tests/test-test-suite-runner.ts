@@ -35,6 +35,7 @@ const ORIGINAL_ALL_SCRIPTS = [
   'test:sql-browser-example',
   'test:python-sync',
   'test:python-runtime',
+  'test:python-default-names',
   'test:python-learner-exception-stage',
   'test:python-prepared-provider',
   'test:python-browser-worker',

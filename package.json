@@ -146,6 +146,7 @@
     "test:typescript-project-libs-sync": "pnpm exec tsx --tsconfig tsconfig.base.json scripts/generate-typescript-project-libs.ts --check",
     "test:java-sync": "pnpm generate:java-helper --check && pnpm exec tsx --tsconfig tsconfig.base.json tests/test-java-harness-sync.ts",
     "test:python-runtime": "pnpm exec tsx --tsconfig tsconfig.base.json tests/test-python-runtime.ts",
+    "test:python-default-names": "pnpm exec tsx --tsconfig tsconfig.base.json tests/test-python-default-names.ts",
     "test:python-learner-exception-stage": "pnpm exec tsx --tsconfig tsconfig.base.json tests/test-python-learner-exception-stage.ts",
     "test:correct-program-timing": "pnpm exec tsx --tsconfig tsconfig.base.json tests/test-correct-program-timing.ts",
     "test:learner-failure-matrix": "pnpm materialize:csharp-role-assets && pnpm exec tsx --tsconfig tsconfig.base.json tests/test-learner-failure-matrix.ts",

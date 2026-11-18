@@ -48,6 +48,8 @@ interface BrowserResult {
     treeNodeFreshness: { tier?: string; reasons: string[] };
     dequeExecution: { tier?: string; reasons: string[] };
     customClassHydration: { tier?: string; reasons: string[] };
+    typingNames: { tier?: string; reasons: string[] };
+    astCompatibility: { tier?: string; reasons: string[] };
     globalInput: { tier?: string; reasons: string[] };
     globalRebinding: { tier?: string; reasons: string[] };
     heterogeneousTuple: { tier?: string; reasons: string[] };
@@ -879,6 +881,32 @@ async function main(): Promise<void> {
         functionName: 'solve',
         executionStyle: 'function',
       });
+      // A pasted LeetCode-style solution: typing names without an import.
+      const typingNames = await preparationWorker.request('prepare-program', {
+        mode: 'code',
+        code: [
+          'def solve(nums: List[int], target: int) -> List[int]:',
+          '    seen: Dict[int, int] = {}',
+          '    pair: Optional[List[int]] = None',
+          '    for index, value in enumerate(nums):',
+          '        if target - value in seen and pair is None:',
+          '            pair = [seen[target - value], index]',
+          '        seen[value] = index',
+          '    return [pair, Counter is collections.Counter and OrderedDict is collections.OrderedDict and ChainMap is collections.ChainMap and deque is collections.deque and defaultdict is collections.defaultdict]',
+        ].join('\\n'),
+        functionName: 'solve',
+        executionStyle: 'function',
+      });
+      // A prelude name the fast tier does not expose routes to compatibility.
+      const astCompatibility = await preparationWorker.request('prepare-program', {
+        mode: 'code',
+        code: [
+          'def solve(text):',
+          '    return ast.literal_eval(text)',
+        ].join('\\n'),
+        functionName: 'solve',
+        executionStyle: 'function',
+      });
       const customClassHydration = await preparationWorker.request('prepare-program', {
         mode: 'code',
         code: [
@@ -1216,6 +1244,8 @@ async function main(): Promise<void> {
         treeNodeFreshness,
         dequeExecution,
         customClassHydration,
+        typingNames,
+        astCompatibility,
         globalInput,
         globalRebinding,
         heterogeneousTuple,
@@ -1429,6 +1459,35 @@ async function main(): Promise<void> {
               values: [1, 2],
               ignoredBySignature: { __type__: 'CompatibilitySentinel' },
             }],
+          }
+        );
+        fastParityRuns.typingNames = await batchClient.request(
+          'execute-prepared-program-batch',
+          {
+            artifact: typingNames.artifact,
+            mode: 'code',
+            inputBatch: [{ nums: [2, 7, 11, 15], target: 9 }],
+          }
+        );
+        fastParityRuns.typingNamesCompatibility = await batchClient.request(
+          'execute-prepared-program-batch',
+          {
+            artifact: typingNames.artifact,
+            forceJudgeCompatible: true,
+            mode: 'code',
+            inputBatch: [{
+              nums: [2, 7, 11, 15],
+              target: 9,
+              ignoredBySignature: { __type__: 'CompatibilitySentinel' },
+            }],
+          }
+        );
+        fastParityRuns.astCompatibility = await batchClient.request(
+          'execute-prepared-program-batch',
+          {
+            artifact: astCompatibility.artifact,
+            mode: 'code',
+            inputBatch: [{ text: '[1, 2]' }],
           }
         );
         fastParityRuns.customClassHydration = await batchClient.request(
@@ -2070,6 +2129,8 @@ async function main(): Promise<void> {
           learnerHydrationBudget,
           dequeExecution,
           customClassHydration,
+          typingNames,
+          astCompatibility,
           globalInput,
           globalRebinding,
           heterogeneousTuple,
@@ -2150,6 +2211,8 @@ async function main(): Promise<void> {
             learnerHydrationBudget.artifact?.isolationProfile,
           dequeExecution: dequeExecution.artifact?.isolationProfile,
           customClassHydration: customClassHydration.artifact?.isolationProfile,
+          typingNames: typingNames.artifact?.isolationProfile,
+          astCompatibility: astCompatibility.artifact?.isolationProfile,
           globalInput: globalInput.artifact?.isolationProfile,
           globalRebinding: globalRebinding.artifact?.isolationProfile,
           heterogeneousTuple: heterogeneousTuple.artifact?.isolationProfile,
@@ -2296,6 +2359,10 @@ async function main(): Promise<void> {
         result.isolationProfiles.algorithmBatch?.tier === 'algorithm-fast' &&
         result.isolationProfiles.benchmarkCode?.tier === 'algorithm-fast' &&
         result.isolationProfiles.parity?.tier === 'algorithm-fast' &&
+        // Typing names come from the shared prelude, so they are fast-tier names.
+        result.isolationProfiles.typingNames?.tier === 'algorithm-fast' &&
+        result.isolationProfiles.astCompatibility?.tier !== 'algorithm-fast' &&
+        result.isolationProfiles.astCompatibility?.reasons.includes('compatibility-default:ast') &&
         result.isolationProfiles.inplace?.tier === 'algorithm-fast' &&
         result.isolationProfiles.serialized?.tier === 'algorithm-fast' &&
         result.isolationProfiles.dequeExecution?.tier === 'algorithm-fast' &&
@@ -2828,6 +2895,7 @@ async function main(): Promise<void> {
       ['serialized', 'serializedCompatibility'],
       ['dequeExecution', 'dequeExecutionCompatibility'],
       ['customClassHydration', 'customClassHydrationCompatibility'],
+      ['typingNames', 'typingNamesCompatibility'],
       ['globalInput', 'globalInputCompatibility'],
       ['globalRebinding', 'globalRebindingCompatibility'],
       ['heterogeneousTuple', 'heterogeneousTupleCompatibility'],
@@ -2891,6 +2959,12 @@ async function main(): Promise<void> {
           JSON.stringify(fastParityProjection('dequeExecutionCompatibility')) &&
         JSON.stringify(fastParityProjection('customClassHydration')) ===
           JSON.stringify(fastParityProjection('customClassHydrationCompatibility')) &&
+        JSON.stringify(fastParityProjection('typingNames')) ===
+          JSON.stringify(fastParityProjection('typingNamesCompatibility')) &&
+        JSON.stringify(fastParityProjection('typingNames').output) ===
+          JSON.stringify([[0, 1], true]) &&
+        JSON.stringify(fastParityProjection('astCompatibility').output) ===
+          JSON.stringify([1, 2]) &&
         JSON.stringify(fastParityProjection('globalInput')) ===
           JSON.stringify(fastParityProjection('globalInputCompatibility')) &&
         JSON.stringify(fastParityProjection('globalRebinding')) ===

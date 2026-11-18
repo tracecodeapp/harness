@@ -6,7 +6,13 @@
  */
 
 (function initPythonRuntime(globalScope) {
+// The names learner code gets without an import, on every path (untraced,
+// traced, prepared, the algorithm-fast batch's admission and namespace, and
+// the native runtime). typing comes first so the collections classes win over
+// typing's same-named generic aliases (Counter, OrderedDict, ChainMap).
 const PYTHON_DEFAULT_IMPORT_PRELUDE = `
+from typing import *
+import ast
 import array
 from array import array
 import bisect
@@ -28,6 +34,11 @@ try:
 except Exception:
     pass
 `;
+
+// Prelude names the algorithm-fast batch does not expose (it proxies only the
+// module surfaces it allowlists). A program that uses one runs on the
+// compatibility tier, where it is the ordinary module, so the name still works.
+const PYTHON_FAST_TIER_COMPATIBILITY_NAMES = ['ast'];
 
 // This list is the single source of truth for both preparation-time admission
 // and the algorithm-batch runtime. A real builtin that is not listed here must
@@ -367,6 +378,7 @@ class __TracecodeExecutionGuard:
         algorithm_reflective_attribute_names,
         algorithm_reflective_attribute_prefixes,
         algorithm_shared_state_call_names,
+        algorithm_compatibility_names,
     ):
         self._ast = ast_module
         self._base64 = base64_module
@@ -403,13 +415,16 @@ class __TracecodeExecutionGuard:
             'import json\\nimport math\\nimport sys\\n' + str(default_import_prelude),
             algorithm_defaults,
         )
+        self._algorithm_compatibility_names = set(algorithm_compatibility_names)
         self._algorithm_default_shared_names = {
             name for name in algorithm_defaults.keys()
             if not name.startswith('__')
+            and name not in self._algorithm_compatibility_names
         }
         self._algorithm_default_module_names = {
             name for name, value in algorithm_defaults.items()
             if isinstance(value, type(sys_module))
+            and name not in self._algorithm_compatibility_names
         }
         self._guard_globals = globals()
         self._deepcopy = _tracecode_guard_copy.deepcopy
@@ -639,6 +654,12 @@ class __TracecodeExecutionGuard:
                 and node.id not in self._algorithm_safe_builtin_names
             ):
                 reasons.append('unsupported-builtin:' + node.id)
+            elif (
+                isinstance(node, ast.Name)
+                and isinstance(node.ctx, ast.Load)
+                and node.id in self._algorithm_compatibility_names
+            ):
+                reasons.append('compatibility-default:' + node.id)
             elif isinstance(node, ast.Attribute) and (
                 node.attr.startswith('__')
                 or node.attr in self._algorithm_reflective_attribute_names
@@ -1167,6 +1188,7 @@ __tracecode_execution_guard = __TracecodeExecutionGuard(
     ${JSON.stringify(PYTHON_ALGORITHM_REFLECTIVE_ATTRIBUTE_NAMES)},
     ${JSON.stringify(PYTHON_ALGORITHM_REFLECTIVE_ATTRIBUTE_PREFIXES)},
     ${JSON.stringify(PYTHON_ALGORITHM_SHARED_STATE_CALL_NAMES)},
+    ${JSON.stringify(PYTHON_FAST_TIER_COMPATIBILITY_NAMES)},
 )
 __tracecode_execution_guard
 `);
@@ -1690,6 +1712,9 @@ _tracecode_batch_base = {
 }
 for _tracecode_name, _tracecode_value in _tracecode_batch_prelude.items():
     if _tracecode_name.startswith('__'):
+        continue
+    # Programs that use these run on the compatibility tier.
+    if _tracecode_name in ${JSON.stringify(PYTHON_FAST_TIER_COMPATIBILITY_NAMES)}:
         continue
     if _tracecode_name in _tracecode_batch_reflective_operator_names:
         continue
@@ -8713,6 +8738,9 @@ async function executePreparedProgramBatch(
 }
 
   globalScope.__TRACECODE_PYODIDE_RUNTIME__ = {
+    // The names learner code gets without an import; the native runtime
+    // builds its namespaces from this too.
+    PYTHON_DEFAULT_IMPORT_PRELUDE,
     generateTracingCode,
     parsePythonError,
     executeWithTracing,

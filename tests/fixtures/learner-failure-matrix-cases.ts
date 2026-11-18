@@ -122,7 +122,8 @@ export type MatrixFailureKind =
   | 'printed-result-marker'
   | 'keyless-tree-input'
   | 'keyless-tree-root'
-  | 'keyless-list-input';
+  | 'keyless-list-input'
+  | 'typing-names';
 
 /** What a consumer concludes from the Judge result. */
 export type MatrixClass =
@@ -1301,8 +1302,31 @@ function languageDrafts(language: MatrixLanguage): readonly Draft[] {
   }
 }
 
+// A pasted LeetCode solution: typing names used without an import must work
+// in every mode (Run is traced, Submit is not), on the fast and compatibility
+// tiers alike.
+const PYTHON_TYPING_NAMES: Draft = {
+  kind: 'typing-names',
+  code: lines(
+    'def solve(nums: List[int], target: int) -> List[int]:',
+    '    seen: Dict[int, int] = {}',
+    '    for index, value in enumerate(nums):',
+    '        if target - value in seen:',
+    '            return [seen[target - value], index]',
+    '        seen[value] = index',
+    '    return []'
+  ),
+  expected: ['completed'],
+  inputs: { nums: [2, 7, 11, 15], target: 9 },
+  noLine: true,
+};
+
 function draftsFor(language: MatrixLanguage): readonly Draft[] {
-  return [...languageDrafts(language), ...keylessDrafts(KEYLESS_PROGRAMS[language])];
+  return [
+    ...languageDrafts(language),
+    ...keylessDrafts(KEYLESS_PROGRAMS[language]),
+    ...(language === 'python' ? [PYTHON_TYPING_NAMES] : []),
+  ];
 }
 
 export function matrixCells(language: MatrixLanguage): readonly MatrixCellSpec[] {

@@ -88,6 +88,8 @@ type NativeWorkerMessage = {
 };
 
 interface NativePythonRuntime {
+  /** The names learner code gets without an import, shared with the browser runtime. */
+  PYTHON_DEFAULT_IMPORT_PRELUDE: string;
   generateTracingCode: (
     deps: {
       PYTHON_CLASS_DEFINITIONS_SNIPPET: string;
@@ -513,8 +515,9 @@ class NativePythonRuntimeClient implements RuntimeClient {
           loadPyodideInstance: async () => {},
           getPyodide: () => ({
             runPythonAsync: async (script: string) => {
+              // The runtime's prelude already gives the names learner code gets
+              // without an import; the native path adds none of its own.
               const runnable = script
-                .replace('import string\n', 'import string\nfrom typing import *\nfrom math import *\nfrom copy import *\nfrom re import *\n')
                 .replace(
                   /\njson\.dumps\(\{\n    "output": _serialize\(_result\),\n    "console": _console_output,\n\}\)\n?$/,
                   '\n_tracecode_result_json = json.dumps({\n    "output": _serialize(_result),\n    "console": _console_output,\n})\nprint(_tracecode_result_json)\n'
@@ -541,9 +544,11 @@ class NativePythonRuntimeClient implements RuntimeClient {
   async executeBatch(request: RuntimeExecuteCodeRequest): Promise<RuntimeExecuteResult> {
     const startedAt = Date.now();
     try {
+      const runtime = await this.loadRuntime();
       const stdout = await runPythonScript(
         this.options.pythonCommand,
         this.batchScript(
+          runtime.PYTHON_DEFAULT_IMPORT_PRELUDE,
           request.code,
           request.functionName ?? '',
           request.cases.map((testCase) => testCase.inputs && typeof testCase.inputs === 'object' ? testCase.inputs : {}),
@@ -565,6 +570,7 @@ class NativePythonRuntimeClient implements RuntimeClient {
   }
 
   private batchScript(
+    defaultImportPrelude: string,
     code: string,
     functionName: string,
     inputBatch: Record<string, unknown>[],
@@ -589,6 +595,7 @@ ${PYTHON_CONVERSION_HELPERS}
 ${PYTHON_EXECUTE_SERIALIZE_FUNCTION}
 
 _USER_CODE = ${JSON.stringify(code)}
+_DEFAULT_IMPORT_PRELUDE = ${JSON.stringify(defaultImportPrelude)}
 _FUNCTION_NAME = ${JSON.stringify(functionName)}
 _EXECUTION_STYLE = ${JSON.stringify(executionStyle)}
 _INPUT_BATCH = json.loads(${JSON.stringify(JSON.stringify(inputBatch))})
@@ -674,25 +681,20 @@ def _tracecode_run_case(raw_inputs):
     console_output = []
     def _custom_print(*args, **kwargs):
         console_output.append(' '.join(str(arg) for arg in args))
-    env = {
+    # The names learner code gets without an import: the runtime's prelude,
+    # exactly as in the browser runtime.
+    env = {'__builtins__': _builtins.__dict__}
+    exec(chr(10).join(['import json', 'import math', 'import sys', _DEFAULT_IMPORT_PRELUDE]), env)
+    env = {name: value for name, value in env.items() if not name.startswith('_')}
+    env.update({
         '__builtins__': _builtins.__dict__,
-        'json': json,
-        'math': math,
-        'sys': sys,
-        'List': List,
-        'Dict': Dict,
-        'Set': Set,
-        'Tuple': Tuple,
-        'Optional': Optional,
-        'defaultdict': defaultdict,
-        'deque': deque,
-        'Counter': Counter,
+        'pow': _builtins.pow,
         'print': _custom_print,
         'TreeNode': TreeNode,
         'ListNode': ListNode,
         '_dict_to_tree': _dict_to_tree,
         '_dict_to_list': _dict_to_list,
-    }
+    })
     try:
         exec(_USER_CODE, env)
         inputs = {key: _tracecode_materialize_custom_input(_copy.deepcopy(value)) for key, value in raw_inputs.items()}

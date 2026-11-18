@@ -114,6 +114,7 @@ export const TEST_PHASES: TestPhase[] = [
       // the host scheduler instead of TraceKernel, so keep this gate exclusive.
       { ...task('test:project', 2), exclusive: true },
       task('test:python-runtime'),
+      task('test:python-default-names'),
       task('test:python-learner-exception-stage'),
       task('test:python-prepared-provider', 2),
       task('test:python-browser-worker'),

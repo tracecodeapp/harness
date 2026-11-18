@@ -48,7 +48,36 @@ This repo uses Git tags as release boundaries. Version notes below summarize wha
   factor needs a terminal). `pnpm publish .` repacks the directory and cannot
   publish the tested bytes. The publish-safety audit checks the script.
 
+### Changed
+
+- The native (Node) Python runtime gives learner code the same names without
+  an import as the browser runtime, from the same prelude. Its plain runs no
+  longer inject `from math import *`, `from copy import *` and
+  `from re import *`, so unqualified `sqrt`, `floor`, `ceil`, `inf`, `pi`, `e`,
+  `gcd`, `log`, `factorial` (and every other `math` name), `copy`, `deepcopy`,
+  and `compile`, `match`, `search`, `findall`, `sub`, `split`, `escape` (and the
+  other `re` names; `compile` had shadowed the builtin) now raise `NameError`
+  there as they already did in the browser; use `math.sqrt`, `copy.deepcopy`,
+  `re.match` or import them. Its batch runs, which had offered only `json`,
+  `math`, `sys`, `List`, `Dict`, `Set`, `Tuple`, `Optional`, `defaultdict`,
+  `deque` and `Counter`, now offer the full shared set (typing, collections,
+  heapq, bisect, itertools, functools, operator, array, re and string modules,
+  sortedcontainers when installed). A service that judges submissions with the
+  native runtime should expect these differences when it upgrades.
+
 ### Fixed
+
+- Python code that uses the typing names without importing them (the usual
+  LeetCode signature, `def twoSum(self, nums: List[int], target: int) ->
+  List[int]:`) runs on every path. Only traced runs had `from typing import *`,
+  so such a solution passed Run (traced) and failed every case of Submit
+  (untraced) with `NameError: name 'List' is not defined`. Every path now gets
+  the same names without an import from one prelude: `typing` (star, before
+  `collections` so `Counter`, `OrderedDict` and `ChainMap` stay the collections
+  classes), `ast`, `json`, `math`, `sys`, and the existing collections, heapq,
+  bisect, itertools, functools, operator, array, re and string set. The
+  algorithm-fast tier admits the typing names from the same prelude; a program
+  that uses `ast` runs on the compatibility tier.
 
 - Traced C++ compiles a one-line loop whose header declares the pointer it
   dereferences (`for (ListNode* node = head; node; node = node->next) total +=
