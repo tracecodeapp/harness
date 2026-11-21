@@ -51,7 +51,8 @@ This repo uses Git tags as release boundaries. Version notes below summarize wha
   the fallback of a loop that never ended as a successful output. This
   applies to the traced executor (recording, after recording stopped, and
   untraced cases), the algorithm-fast batch and `executeCode`'s interview
-  guard.
+  guard. If the learner's code holds the PEP 669 tool id the guards use, the
+  stop takes another free one.
 
 ### Known limits
 
@@ -63,6 +64,12 @@ This repo uses Git tags as release boundaries. Version notes below summarize wha
   or lines that turn slower than 1/20 s each well before the deadline, can
   still let the deadline pass by up to one sampling interval; only an
   interrupt buffer (a cross-origin isolated page) can stop C code mid-call.
+- On a Python without `sys.monitoring` (before 3.12; every shipped runtime
+  has it), or when the learner's code holds all six PEP 669 tool ids, a
+  guard's stop cannot be re-raised: a hook that raises is removed by
+  CPython. The trip is still recorded, so a fallback the learner returns is
+  not the result, but a loop that catches the stop runs until the client's
+  clock.
 
 ## [0.20.2] - 2026-11-17
 

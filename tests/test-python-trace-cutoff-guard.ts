@@ -157,7 +157,7 @@ const APP_BUDGETS = {
 async function run(
   runner: Runner,
   source: string,
-  { untraced = false, graceSeconds, ...options }: Record<string, unknown>
+  { untraced = false, graceSeconds, prelude = '', epilogue = '', ...options }: Record<string, unknown>
 ): Promise<Outcome> {
   const runtime = await loadRuntime();
   let { code } = runtime.generateTracingCode(deps, source, 'solve', { n: 1 }, 'function', {
@@ -180,7 +180,8 @@ async function run(
     code = code.replace(grace, `\n_hard_line_grace_seconds = ${Number(graceSeconds).toFixed(1)}\n`);
   }
   const startedAt = performance.now();
-  const reply = await runner(`${code}
+  const reply = await runner(`${prelude}
+${code}
 __tracecode_test_reply = json.dumps({
     'result': _serialize_output(_result),
     'aborted': _execution_aborted,
@@ -193,6 +194,7 @@ __tracecode_test_reply = json.dumps({
     'afterGraceMs': (_tracecode_perf_counter() - _hard_line_deadline) * 1000 if _hard_line_deadline > 0 else None,
     'graceStartedMs': (_hard_line_deadline - _hard_line_grace_seconds - _case_started_at) * 1000 if _hard_line_deadline > 0 else None,
 })
+${epilogue}
 __tracecode_test_reply
 `);
   return { ...JSON.parse(reply), ms: performance.now() - startedAt };
@@ -626,5 +628,74 @@ for (const [runnerName, runner] of Object.entries(RUNNERS)) {
     assert.equal(outcome.traceLimitExceeded, true);
     assert.ok(outcome.graceStartedMs! < 500, `grace started ${Math.round(outcome.graceStartedMs!)} ms into the case, after the sleep`);
     assert.equal(outcome.timeoutReason, 'client-timeout', JSON.stringify(outcome));
+  });
+}
+
+// The sticky stop needs a PEP 669 tool. Learner code that reaches
+// sys.monitoring can hold the tool id the guards use (4): the stop then takes
+// another free id. With no sys.monitoring at all (Python < 3.12) the stop
+// cannot be re-raised, but it is still recorded as the outcome.
+const HOLD_TOOL_4 = "import sys as _test_sys\n_test_sys.monitoring.use_tool_id(4, 'learner')";
+const FREE_TOOL_4 = "_test_sys.monitoring.free_tool_id(4)";
+const NO_MONITORING = "import sys as _test_sys\n_test_monitoring = _test_sys.monitoring\ndel _test_sys.monitoring";
+const RESTORE_MONITORING = "_test_sys.monitoring = _test_monitoring";
+
+function withProgramEnds(runner: Runner, prelude: string, epilogue: string): Runner {
+  return (program) => {
+    const lines = program.trimEnd().split('\n');
+    const last = lines.pop();
+    return runner([prelude, ...lines, epilogue, last].join('\n'));
+  };
+}
+
+for (const [runnerName, runner] of Object.entries(RUNNERS)) {
+  const swallowLoop = SWALLOWS['a bare except: inside a loop'];
+
+  test(`${runnerName}, sys.settrace: a caught stop is re-raised when the learner holds tool id 4`, async () => {
+    const outcome = await run(runner, swallowLoop, {
+      wallClockMs: 15_000, ...APP_BUDGETS, prelude: HOLD_TOOL_4, epilogue: FREE_TOOL_4,
+    });
+    assertGuardStopKept(outcome, ['line-limit']);
+  });
+
+  test(`${runnerName}: the fast batch re-raises a caught stop when the learner holds tool id 4`, async () => {
+    const reply = await withProgramEnds(runner, HOLD_TOOL_4, FREE_TOOL_4)([
+      `__tracecode_prepared_user_source = ${toPythonLiteral(swallowLoop)}`,
+      `__tracecode_input_batch_literal = ${toPythonLiteral(toPythonLiteral([{ n: 1 }]))}`,
+      `__tracecode_limits_literal = ${toPythonLiteral(toPythonLiteral({ ...SUBMIT_LIMITS, stopAtFirstRunaway: true }))}`,
+      await fastBatchSource(),
+    ].join('\n'));
+    const results = JSON.parse(reply) as { success: boolean; timeoutReason?: string }[];
+    assert.equal(results[0].success, false, reply);
+    assert.ok(RUNAWAY_REASONS.includes(results[0].timeoutReason ?? ''), reply);
+  });
+
+  test(`${runnerName}: the interview guard re-raises a caught stop when the learner holds tool id 4`, async () => {
+    const runtime = (await loadRuntime()) as Runtime & { executeCode: (...args: unknown[]) => Promise<any> };
+    let now = 0;
+    const result = await runtime.executeCode(
+      {
+        ...deps,
+        INTERVIEW_GUARD_DEFAULTS: GUARD_DEFAULTS,
+        loadPyodideInstance: async () => {},
+        getPyodide: () => ({ runPythonAsync: withProgramEnds(runner, HOLD_TOOL_4, FREE_TOOL_4) }),
+        performanceNow: () => ++now,
+      },
+      swallowLoop,
+      'solve',
+      { n: 1 },
+      'function',
+      SUBMIT_LIMITS
+    );
+    assert.equal(result.success, false, JSON.stringify(result));
+    assert.ok(RUNAWAY_REASONS.includes(result.timeoutReason), JSON.stringify(result));
+  });
+
+  test(`${runnerName}, sys.settrace: with no sys.monitoring a caught stop is still the outcome`, async () => {
+    const outcome = await run(runner, SWALLOWS['finally: return'], {
+      wallClockMs: 15_000, ...APP_BUDGETS, prelude: NO_MONITORING, epilogue: RESTORE_MONITORING,
+    });
+    assert.equal(outcome.monitoring, false);
+    assertGuardStopKept(outcome, ['line-limit']);
   });
 }
