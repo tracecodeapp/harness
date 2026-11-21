@@ -3,6 +3,7 @@ name: CI
 on:
   schedule:
     - cron: "17 7 * * *"
+  workflow_dispatch:
   push:
     branches:
       - main
@@ -80,7 +81,7 @@ jobs:
         run: pnpm test:publish-safety && pnpm test:packaged-surface && pnpm test:smoke && pnpm test:asset-sync
 
   judge-browser-boundary:
-    if: github.event_name == 'schedule'
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-24.04
     timeout-minutes: 45
     steps:
