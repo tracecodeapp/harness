@@ -1127,6 +1127,16 @@ export class PythonWorkerClient {
   }
 
   /**
+   * False once this client's worker is gone, for instance after a stopping
+   * batch's clock terminated it. The next request would start a fresh worker
+   * without the init and warmup this client already counts as done, so such
+   * a client must not be kept as a warm worker.
+   */
+  get hasLiveWorker(): boolean {
+    return !this.terminated && this.core.isWorkerRunning;
+  }
+
+  /**
    * Terminate the worker and clean up resources
    */
   terminate(): void {
