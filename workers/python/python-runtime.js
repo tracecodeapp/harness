@@ -3021,7 +3021,7 @@ _internal_locals = {
     '_trace_limit_exceeded', '_timeout_reason', '_total_line_events', '_max_line_events', '_max_stored_events', '_max_trace_bytes', '_max_trace_event_bytes', '_trace_stored_bytes',
     '_line_hit_count', '_max_single_line_hits', '_max_call_depth', '_max_memory_bytes', '_memory_check_every', '_infinite_loop_line',
     '_hard_line_ceiling', '_hard_line_deadline', '_hard_line_grace_seconds', '_tracecode_recording_stopped_guard',
-    '_tracecode_guard_trip', '_tracecode_arm_sticky_stop', '_tc_sticky_on_line',
+    '_tracecode_guard_trip', '_tracecode_arm_sticky_stop', '_tc_sticky_on_line', '_trace_limit_reason', '_TRACE_BUDGET_REASONS',
     '_tracecode_recording_stopped_clock', '_tracecode_learner_line', '_degraded_next_check',
     '_degraded_check_every', '_degraded_last_check_at', '_TRACECODE_NON_LEARNER_FILENAME_PREFIXES',
     '_TRACECODE_HARNESS_FILENAME',
@@ -3156,11 +3156,24 @@ def _tracecode_arm_sticky_stop():
     except Exception:
         pass
 
+# The trace budget that stopped recording, kept when a guard later stops the
+# program and its reason becomes the case's limit (exported as
+# traceLimitReason).
+_trace_limit_reason = None
+_TRACE_BUDGET_REASONS = ('trace-limit', 'trace-byte-limit', 'line-limit', 'single-line-limit')
+
 def _tracecode_guard_trip(reason, line, message):
     # A guard stopped the learner's program. The abort is recorded here, not
     # where the exception lands: a learner that catches the stop and returns a
     # fallback must not have that fallback accepted as the case's result.
-    global _timeout_reason, _infinite_loop_line, _execution_aborted
+    global _timeout_reason, _infinite_loop_line, _execution_aborted, _trace_limit_reason
+    if (
+        _trace_limit_exceeded
+        and _trace_limit_reason is None
+        and not _execution_aborted
+        and _timeout_reason in _TRACE_BUDGET_REASONS
+    ):
+        _trace_limit_reason = _timeout_reason
     _timeout_reason = reason
     if line is not None and line > 0:
         _infinite_loop_line = line
@@ -6990,6 +7003,10 @@ __tracecode_execution_result_json = (
     + ',"traceLimitExceeded":' + json.dumps(_trace_limit_exceeded)
     + ',"executionAborted":' + json.dumps(_execution_aborted)
     + ',"timeoutReason":' + json.dumps(_timeout_reason)
+    + ',"traceLimitReason":' + json.dumps(
+        _trace_limit_reason if _execution_aborted
+        else (_timeout_reason if _trace_limit_exceeded else None)
+    )
     + ',"stoppedLine":' + json.dumps(_infinite_loop_line)
     + ',"lineEventCount":' + json.dumps(_total_line_events)
     + ',"traceStepCount":' + json.dumps(len(_trace_data)) + '}'
@@ -7502,6 +7519,13 @@ async function executeWithTracing(
       executionTimeMs,
       consoleOutput: result.console,
       traceLimitExceeded: result.traceLimitExceeded,
+      // The trace budget that stopped recording, also when a guard then
+      // stopped the program and timeoutReason names that guard. Not yet in
+      // the outcome contract (ExecutionResult's limit variant has no
+      // traceTruncated), so the client does not read it.
+      ...(PYTHON_TRACE_BUDGET_REASONS.has(result.traceLimitReason)
+        ? { traceLimitReason: result.traceLimitReason }
+        : {}),
       ...(programRaisedAfterRecordingStopped ? {} : { timeoutReason }),
       lineEventCount: result.lineEventCount,
       traceStepCount: result.traceStepCount,
@@ -8641,6 +8665,7 @@ async function executePreparedProgram(
 }
 
 const PYTHON_RUNAWAY_LIMIT_REASONS = new Set(['client-timeout', 'line-limit', 'single-line-limit']);
+const PYTHON_TRACE_BUDGET_REASONS = new Set(['trace-limit', 'trace-byte-limit', 'line-limit', 'single-line-limit']);
 
 /**
  * Called from the algorithm-fast driver at each case boundary: `encodedResult`
