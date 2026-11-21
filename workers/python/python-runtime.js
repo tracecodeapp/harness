@@ -2895,9 +2895,18 @@ _TC_MONITORING_TOOL = 4
 _TC_MONITORING_ACTIVE = False
 _TC_MONITORING_ERROR = None if _TC_MONITORING is not None else 'sys.monitoring unavailable'
 _TC_MONITORING_WAS_ARMED = False
+# Code that is neither the learner's solution.py nor the learner's own dynamic
+# code (exec, eval): the harness ('<exec>', '<tracecode-...>'), the standard
+# library and installed packages (absolute paths, frozen modules).
+_TRACECODE_NON_LEARNER_FILENAME_PREFIXES = ('/', '<frozen', '<tracecode', '<exec>')
+# This executor's own file, which its trace helpers share: the most frequent
+# non-learner frames, checked first with one string compare.
+_TRACECODE_HARNESS_FILENAME = sys._getframe().f_code.co_filename
 
 def _tc_monitoring_on_line(code, line_number):
-    if code.co_filename != 'solution.py':
+    if code.co_filename != 'solution.py' and code.co_filename.startswith(
+        _TRACECODE_NON_LEARNER_FILENAME_PREFIXES
+    ):
         return _TC_MONITORING.DISABLE
     _tracer(sys._getframe(1), 'line', None)
 
@@ -3013,6 +3022,9 @@ _internal_locals = {
     '_line_hit_count', '_max_single_line_hits', '_max_call_depth', '_max_memory_bytes', '_memory_check_every', '_infinite_loop_line',
     '_hard_line_ceiling', '_hard_line_deadline', '_hard_line_grace_seconds', '_tracecode_recording_stopped_guard',
     '_tracecode_guard_trip', '_tracecode_arm_sticky_stop', '_tc_sticky_on_line',
+    '_tracecode_recording_stopped_clock', '_tracecode_learner_line', '_degraded_next_check',
+    '_degraded_check_every', '_degraded_last_check_at', '_TRACECODE_NON_LEARNER_FILENAME_PREFIXES',
+    '_TRACECODE_HARNESS_FILENAME',
     '_MAX_SERIALIZE_DEPTH', '_MAX_SERIALIZED_ITEMS', '_MAX_OBJECT_FIELDS', '_MAX_SERIALIZED_STRING_CHARS', '_serialize_string', '_trace_failed', '_execution_aborted', '_inplace',
     '_custom_print', '_tracer', '_serialize', '_serialize_output', '_tracecode_ref_id', '_dict_to_tree', '_dict_to_list', '_tracecode_materialize_input',
     '_tracecode_materialize_custom_input', '_tracecode_materialize_named_inputs', '_tracecode_annotation_preserves_literal_shape', '_tracecode_hydrate_for_annotation',
@@ -3106,9 +3118,19 @@ _hard_line_ceiling = max(_untraced_max_line_events, _max_line_events)
 # deadline set now could already be expired by the time user code trips.
 _hard_line_deadline = 0.0
 _hard_line_grace_seconds = 10.0
+# The degraded path samples its guards at the learner line count
+# _degraded_next_check. The interval adapts to the time lines take (aiming
+# for a sample every ~20 ms, 1 to 256 lines apart), so slow lines still meet
+# the deadline well within the client's headroom; the first sample is the
+# first learner line after recording stopped.
+_degraded_next_check = 0
+_degraded_check_every = 1
+_degraded_last_check_at = 0.0
 
 def _tc_sticky_on_line(code, line_number):
-    if code.co_filename != 'solution.py':
+    if code.co_filename != 'solution.py' and code.co_filename.startswith(
+        _TRACECODE_NON_LEARNER_FILENAME_PREFIXES
+    ):
         return _TC_MONITORING.DISABLE
     raise _InfiniteLoopDetected('Execution was already stopped by a guard')
 
@@ -6293,21 +6315,55 @@ def _looks_like_indexed_adjacency_list(value):
 
     return True
 
-def _tracecode_recording_stopped_guard(frame):
-    # The runaway guards of a case whose trace stopped recording, run every
-    # 256 line events by _tracer's degraded fast path. A trip aborts the
-    # program and names the guard as the case's limit, replacing the trace
-    # budget's reason (which stays a warning on the trace: traceLimitExceeded).
+def _tracecode_learner_line(frame):
+    # The innermost solution.py line on the stack (the learner's dynamic code
+    # has its own line numbers).
+    while frame is not None and frame.f_code.co_filename != 'solution.py':
+        frame = frame.f_back
+    return frame.f_lineno if frame is not None else None
+
+def _tracecode_recording_stopped_clock(frame, now):
+    # The time guards of a case whose trace stopped recording: the per-case
+    # deadline, or with none the grace that starts when recording stops.
     global _hard_line_deadline
-    _guard_reason = None
     if _case_deadline > 0.0:
-        if _tracecode_perf_counter() >= _case_deadline:
-            _guard_reason = 'client-timeout'
+        if now >= _case_deadline:
+            _tracecode_guard_trip(
+                'client-timeout',
+                _tracecode_learner_line(frame),
+                'Execution exceeded the per-case wall-clock limit',
+            )
     elif _hard_line_deadline == 0.0:
-        _hard_line_deadline = _tracecode_perf_counter() + _hard_line_grace_seconds
-    elif _tracecode_perf_counter() > _hard_line_deadline:
-        _guard_reason = 'client-timeout'
-    if _guard_reason is None and _total_line_events >= _hard_line_ceiling:
+        _hard_line_deadline = now + _hard_line_grace_seconds
+    elif now > _hard_line_deadline:
+        _tracecode_guard_trip(
+            'client-timeout',
+            _tracecode_learner_line(frame),
+            'Execution exceeded the time allowed after trace recording stopped',
+        )
+
+def _tracecode_recording_stopped_guard(frame):
+    # The runaway guards of a case whose trace stopped recording, sampled by
+    # _tracer's degraded fast path (see _degraded_next_check). A trip aborts
+    # the program and names the guard as the case's limit, replacing the
+    # trace budget's reason (which stays a warning on the trace:
+    # traceLimitExceeded).
+    global _degraded_next_check, _degraded_check_every, _degraded_last_check_at
+    _now = _tracecode_perf_counter()
+    if _degraded_last_check_at > 0.0:
+        _elapsed = _now - _degraded_last_check_at
+        # Shrink at once when lines are slow; grow at most 2x per sample, since
+        # one short interval (a cheap line just before a costly one) says
+        # little about the next.
+        _every = int(_degraded_check_every * 0.02 / _elapsed) if _elapsed > 0.0 else 256
+        if _every > 2 * _degraded_check_every:
+            _every = 2 * _degraded_check_every
+        _degraded_check_every = 1 if _every < 1 else (256 if _every > 256 else _every)
+    _degraded_last_check_at = _now
+    _degraded_next_check = _total_line_events + _degraded_check_every
+    _tracecode_recording_stopped_clock(frame, _now)
+    _guard_reason = None
+    if _total_line_events >= _hard_line_ceiling:
         _guard_reason = 'line-limit'
     if _guard_reason is None and _max_memory_bytes > 0 and _tracecode_tracemalloc is not None:
         try:
@@ -6333,22 +6389,33 @@ def _tracer(frame, event, arg,
     # Degraded fast path. Once a trace budget trips we record nothing more, but
     # the tracer stays installed (sys.settrace or PEP 669) so the learner's code
     # keeps its runaway guards. Per event this only counts lines; the guards
-    # (deadline, line ceiling, memory) run every 256 line events, as in the
+    # (deadline, line ceiling, memory) run on a sampled cadence, as in the
     # untraced guard tracer, and only the learner's lines count (the lines the
     # untraced guard counts).
     if _trace_limit_exceeded:
-        if frame.f_code.co_filename != 'solution.py':
-            # Harness helpers and library code: no counting and no further
-            # local events. Clearing f_trace matters for a helper generator
-            # (the rewrite's range/iter/enumerate binders) resumed after
-            # recording stopped: it kept the tracer it got while recording,
-            # and returning None from its 'call' event does not clear that.
-            frame.f_trace = None
-            return None
+        _filename = frame.f_code.co_filename
+        if _filename != 'solution.py':
+            if (
+                _filename == _TRACECODE_HARNESS_FILENAME
+                or _filename.startswith(_TRACECODE_NON_LEARNER_FILENAME_PREFIXES)
+            ):
+                # Harness helpers and library code: no counting and no further
+                # local events. Clearing f_trace matters for a helper generator
+                # (the rewrite's range/iter/enumerate binders) resumed after
+                # recording stopped: it kept the tracer it got while recording,
+                # and returning None from its 'call' event does not clear that.
+                frame.f_trace = None
+                return None
+            # The learner's own dynamic code (exec, eval): not counted, as in
+            # the untraced guard, but still held to the time guards. Rare, so
+            # each of its lines reads the clock.
+            if event == 'line':
+                _tracecode_recording_stopped_clock(frame, _tracecode_perf_counter())
+            return _tracer
         if event != 'line':
             return _tracer
         _total_line_events += 1
-        if (_total_line_events & 255) == 0:
+        if _total_line_events >= _degraded_next_check:
             _tracecode_recording_stopped_guard(frame)
         return _tracer
 

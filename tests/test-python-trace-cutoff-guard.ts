@@ -140,6 +140,8 @@ type Outcome = {
   traceEvents: number;
   stoppedLine: number;
   monitoring: boolean;
+  afterDeadlineMs: number | null;
+  afterGraceMs: number | null;
   ms: number;
 };
 
@@ -154,7 +156,7 @@ const APP_BUDGETS = {
 async function run(
   runner: Runner,
   source: string,
-  { untraced = false, ...options }: Record<string, unknown>
+  { untraced = false, graceSeconds, ...options }: Record<string, unknown>
 ): Promise<Outcome> {
   const runtime = await loadRuntime();
   let { code } = runtime.generateTracingCode(deps, source, 'solve', { n: 1 }, 'function', {
@@ -170,6 +172,12 @@ async function run(
     assert.equal(code.split(arm).length, 2, 'one place arms tracing');
     code = code.replace(arm, '\nsys.settrace(_tracecode_guard_tracer)\n');
   }
+  if (graceSeconds !== undefined) {
+    // The no-deadline grace is 10 s; a shorter one keeps the test fast.
+    const grace = '\n_hard_line_grace_seconds = 10.0\n';
+    assert.equal(code.split(grace).length, 2, 'one grace setting');
+    code = code.replace(grace, `\n_hard_line_grace_seconds = ${Number(graceSeconds).toFixed(1)}\n`);
+  }
   const startedAt = performance.now();
   const reply = await runner(`${code}
 __tracecode_test_reply = json.dumps({
@@ -180,6 +188,8 @@ __tracecode_test_reply = json.dumps({
     'traceEvents': len(_trace_events),
     'stoppedLine': _infinite_loop_line,
     'monitoring': bool(globals().get('_TC_MONITORING_WAS_ARMED')),
+    'afterDeadlineMs': (_tracecode_perf_counter() - _case_deadline) * 1000 if _case_deadline > 0 else None,
+    'afterGraceMs': (_tracecode_perf_counter() - _hard_line_deadline) * 1000 if _hard_line_deadline > 0 else None,
 })
 __tracecode_test_reply
 `);
@@ -475,4 +485,59 @@ for (const [runnerName, runner] of Object.entries(RUNNERS)) {
       assert.equal(result.output ?? null, null);
     });
   }
+}
+
+// After recording stops, the guards must stop the program soon after its
+// deadline, before the client's clock (1 s of headroom, which also has to
+// carry the trace back) closes the worker and loses the trace. Each line here
+// takes milliseconds, so a fixed 256-line sampling interval overshoots by
+// seconds.
+const SLOW_LINES = `def solve(n):
+    total = 0
+    while total >= 0:
+        total = sum(range(400000)) % 7
+    return total
+`;
+
+// The learner's own dynamic code (exec) runs the loop after recording stopped.
+const DYNAMIC_LOOP = `def solve(n):
+    total = 0
+    for step in range(10):
+        total += step
+    exec("k = 0\\nwhile k >= 0:\\n    k = (k + 1) % 10")
+    return total
+`;
+
+const SOON_MS = 250;
+
+for (const [runnerName, runner] of Object.entries(RUNNERS)) {
+  test(`${runnerName}, sys.settrace: slow lines after recording stopped are stopped soon after the deadline`, async () => {
+    const outcome = await run(runner, SLOW_LINES, { wallClockMs: 1_500, maxTraceSteps: 5 });
+    assert.equal(outcome.timeoutReason, 'client-timeout', JSON.stringify(outcome));
+    assert.equal(outcome.traceLimitExceeded, true);
+    assert.ok(outcome.afterDeadlineMs! < SOON_MS, `stopped ${Math.round(outcome.afterDeadlineMs!)} ms after the deadline`);
+  });
+
+  test(`${runnerName}, PEP 669: with no deadline, slow lines are stopped soon after the grace from when recording stopped`, async () => {
+    const outcome = await run(runner, SLOW_LINES, { maxTraceSteps: 5, graceSeconds: 1 });
+    assert.equal(outcome.monitoring, true);
+    assert.equal(outcome.timeoutReason, 'client-timeout', JSON.stringify(outcome));
+    assert.ok(outcome.afterGraceMs! < SOON_MS, `stopped ${Math.round(outcome.afterGraceMs!)} ms after the grace`);
+    assert.ok(outcome.ms < 1_000 + 2_000, `stopped after ${Math.round(outcome.ms)} ms`);
+  });
+
+  test(`${runnerName}, sys.settrace: a loop in the learner's dynamic code after recording stopped meets the deadline`, async () => {
+    const outcome = await run(runner, DYNAMIC_LOOP, { wallClockMs: 1_500, maxTraceSteps: 5 });
+    assert.equal(outcome.aborted, true, JSON.stringify(outcome));
+    assert.equal(outcome.timeoutReason, 'client-timeout');
+    assert.ok(outcome.afterDeadlineMs! < SOON_MS, `stopped ${Math.round(outcome.afterDeadlineMs!)} ms after the deadline`);
+    assert.equal(outcome.stoppedLine, 5, 'stopped at the learner\'s exec line');
+  });
+
+  test(`${runnerName}, PEP 669: a loop in the learner's dynamic code after recording stopped meets the grace`, async () => {
+    const outcome = await run(runner, DYNAMIC_LOOP, { maxTraceSteps: 5, graceSeconds: 1 });
+    assert.equal(outcome.aborted, true, JSON.stringify(outcome));
+    assert.equal(outcome.timeoutReason, 'client-timeout');
+    assert.ok(outcome.afterGraceMs! < SOON_MS, `stopped ${Math.round(outcome.afterGraceMs!)} ms after the grace`);
+  });
 }
