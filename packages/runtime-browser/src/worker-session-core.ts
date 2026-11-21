@@ -47,6 +47,7 @@ import {
   WorkerReadyTimeoutError,
   WorkerReportedError,
   WorkerRequestTimeoutError,
+  WorkerStartupError,
   WorkerTerminatedError,
 } from './worker-errors';
 import { createWorkerProtocolToken } from './worker-protocol';
@@ -424,7 +425,11 @@ export class WorkerSessionCore {
   private awaitSessionReady(session: WorkerSession): Effect.Effect<void, Error> {
     return Effect.tryPromise({
       try: () => session.ready.promise,
-      catch: (error) => (error instanceof Error ? error : new Error(String(error))),
+      catch: (error) => {
+        // A rejected ready promise means this generation never accepted work.
+        if (error instanceof WorkerCrashedError) return new WorkerStartupError(this.config.runtimeLabel, error);
+        return error instanceof Error ? error : new Error(String(error));
+      },
     }).pipe(
       Effect.timeoutFail({
         duration: Duration.millis(this.config.readyTimeoutMs),
@@ -512,7 +517,10 @@ export class WorkerSessionCore {
 
       const session = yield* Effect.try({
         try: () => this.getOrCreateSession(),
-        catch: (error) => (error instanceof Error ? error : new Error(String(error))),
+        catch: (error) => new WorkerStartupError(
+          this.config.runtimeLabel,
+          error instanceof Error ? error : new Error(String(error))
+        ),
       });
 
       yield* this.awaitSessionReady(session);
@@ -569,10 +577,23 @@ export class WorkerSessionCore {
       const id = String(++this.messageId);
       const protocolToken = createWorkerProtocolToken();
 
+      // These commands only load trusted runtime assets, even after script readiness.
+      const bootstrap = type === 'init' || type === 'warmup' || type === 'prewarm-executor';
       this.pendingMessages.set(id, {
         protocolToken,
-        resolve: (value) => resume(Effect.succeed(value as T)),
-        reject: (error) => resume(Effect.fail(error)),
+        resolve: (value) => {
+          if (bootstrap && value && typeof value === 'object' &&
+              'success' in value && value.success === false) {
+            const message = 'error' in value && typeof value.error === 'string' ? value.error : `${type} failed`;
+            resume(Effect.fail(new WorkerStartupError(this.config.runtimeLabel, new Error(message))));
+            return;
+          }
+          resume(Effect.succeed(value as T));
+        },
+        reject: (error) => {
+          const startupFailure = bootstrap && (error instanceof WorkerReportedError || error instanceof WorkerCrashedError);
+          resume(Effect.fail(startupFailure ? new WorkerStartupError(this.config.runtimeLabel, error) : error));
+        },
         ...(onEvent ? { onEvent } : {}),
         ...(kernelHttp ? { kernelHttp } : {}),
         ...(kernelSyscalls ? { kernelSyscalls } : {}),

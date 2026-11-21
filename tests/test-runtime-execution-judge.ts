@@ -44,6 +44,10 @@ import {
   type RuntimeTraceCall,
 } from '@tracecode/runtime-contracts';
 
+import { JavaScriptWorkerClient } from '../packages/runtime-javascript/src/javascript-worker-client';
+import { createJavaScriptPreparedExecutionProvider } from '../packages/runtime-javascript/src/javascript-runtime-client';
+import type { BrowserWorkerLike } from '../packages/runtime-browser/src/execution-host';
+
 const RUNTIME = 'javascript';
 const BROWSER_FEATURES = {
   worker: true,
@@ -2585,5 +2589,34 @@ test('a batch the provider rejects makes every case the provider failure, never 
         (error: unknown) => isRuntimeProviderError(error) && /did not start case 2/.test((error as Error).message)
       );
     }
+  }
+});
+
+test('a JavaScript worker script load error reaches the consumer as a provider failure', async () => {
+  const client = new JavaScriptWorkerClient({
+    workerUrl: '/blocked.js',
+    workerFactory: () => {
+      const worker: BrowserWorkerLike = {
+        onmessage: null, onerror: null, terminate() {},
+        postMessage() { assert.fail('a blocked worker cannot receive learner code'); },
+      };
+      queueMicrotask(() => worker.onerror?.({} as ErrorEvent));
+      return worker;
+    },
+  });
+  try {
+    const provider = createJavaScriptPreparedExecutionProvider('javascript', client);
+    const result = await Effect.runPromise(Effect.scoped(Effect.gen(function* () {
+      const judge = yield* createTestRuntimeJudge(provider, codeBinding());
+      return yield* judge.evaluate(makePlan([
+        { id: 'one', input: { label: 'one' }, expected: 1 },
+        { id: 'two', input: { label: 'two' }, expected: 2 },
+      ]));
+    })));
+    assert.equal(result.status, 'compile-failed');
+    assert.equal(result.compile.failure.origin, 'provider');
+    assert.throws(() => judgeCompileExecutionOutcome(result.compile, { language: 'javascript' }), isRuntimeProviderError);
+  } finally {
+    client.terminate();
   }
 });

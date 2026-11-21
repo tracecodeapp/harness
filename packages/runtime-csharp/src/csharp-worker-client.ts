@@ -59,6 +59,7 @@ import { restoreTransferredTraceEvents, traceEventTransferRequest } from '@trace
 import {
   ExecutionTimeoutError,
   WorkerCrashedError,
+  WorkerStartupError,
   WorkerReadyTimeoutError,
   WorkerReportedError,
   WorkerRequestTimeoutError,
@@ -369,7 +370,8 @@ export class CSharpWorkerClient {
   }
 
   /** Runtime-load failures that warrant a worker reset + one retry. */
-  private shouldResetRuntimeLoadError(error: unknown): boolean {
+  private shouldResetRuntimeLoadError(failure: unknown): boolean {
+    const error = failure instanceof WorkerStartupError ? failure.cause : failure;
     if (
       error instanceof WorkerRequestTimeoutError ||
       error instanceof WorkerTerminatedError ||

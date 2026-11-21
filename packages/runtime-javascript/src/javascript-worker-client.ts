@@ -775,6 +775,9 @@ export class JavaScriptWorkerClient {
             await pool.init();
           })()
         : this.ensureStandbyExecutionWorker(generation);
+      // Either worker can fail first. Observe the executor immediately while
+      // the coordinator loads; awaiting the original promise below propagates it.
+      void executionReadyPromise.catch(() => undefined);
       try {
         if (!useSesAlgorithm) {
           await this.options.runtimeAssetPreflight?.();

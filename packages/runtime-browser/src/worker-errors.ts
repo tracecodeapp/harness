@@ -11,6 +11,7 @@
  * so each class reproduces the historical message verbatim.
  */
 
+import { RuntimeProviderError } from '@tracecode/runtime-contracts';
 import * as Data from 'effect/Data';
 
 /** A request/response round-trip to the worker exceeded its deadline. */
@@ -58,6 +59,13 @@ export class WorkerCrashedError extends Data.TaggedError('WorkerCrashedError')<{
   }) {
     super(args);
     this.message = args.workerMessage || 'Worker error';
+  }
+}
+
+/** A bootstrap failure before this worker could accept learner code. */
+export class WorkerStartupError extends RuntimeProviderError {
+  constructor(runtimeLabel: string, cause: Error) {
+    super(`${runtimeLabel} worker failed to initialize: ${cause.message}`, { cause });
   }
 }
 
