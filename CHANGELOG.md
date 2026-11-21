@@ -6,6 +6,21 @@ This repo uses Git tags as release boundaries. Version notes below summarize wha
 
 ## [Unreleased]
 
+### Fixed
+
+- A traced Python Run whose trace stopped recording at a budget (trace bytes,
+  stored events, steps) no longer leaves the learner's code unguarded. The
+  tracer used to be removed, so a loop that never ended ran until the client's
+  clock (~30 s) and lost its recorded trace; the tracer now stays installed
+  and records nothing more. The per-case clock, the untraced line ceiling
+  (`line-limit`) and the memory limit still stop the program, and the case
+  reports that limit with its trace kept: the app's never-ending loop is
+  stopped in ~1.5 s. Once recording stops, only the learner's own lines
+  count toward the ceiling. Before, the `sys.settrace` path also counted the
+  harness's helper lines (about 14 per learner line), so a correct program
+  could be stopped after ~43k lines. A guard stop in a traced case now
+  says which guard stopped it, not "Trace budget exceeded".
+
 ## [0.20.2] - 2026-11-17
 
 ### Added

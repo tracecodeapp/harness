@@ -147,7 +147,10 @@ not need to rebuild a host after a learner failure; they may rebuild after a
 - Python: an exception raised in the program region (case setup, the learner's
   call, result serialization) is `runtime`, including `SystemExit`. A program
   that raises after a trace budget stopped recording reports its exception,
-  not the budget. A worker crash during a case is `runtime`; the fast batch
+  not the budget. Recording stops but the tracer stays installed, so the
+  per-case clock and the untraced line ceiling still apply: a program they
+  stop reports their limit (`client-timeout`, `line-limit`), with the
+  recorded trace kept. A worker crash during a case is `runtime`; the fast batch
   re-runs the affected cases one per fresh worker.
 - JavaScript and TypeScript: syntax errors are `compile`; anything the
   program throws is `runtime`.

@@ -2921,7 +2921,7 @@ _tracecode_tracemalloc_started = False
 _TRACE_MUTATING_METHODS = {'append', 'appendleft', 'pop', 'popleft', 'extend', 'insert', 'add', 'remove', 'discard', 'clear', 'sort', 'reverse'}
 _tracecode_user_class_names = _builtins.set()
 _tracecode_explicit_return_function_names = _builtins.set()
-_internal_funcs = {'_serialize', '_serialize_output', '_tracecode_ref_id', '_tracer', '_custom_print', '_dict_to_tree', '_dict_to_list', '_tracecode_materialize_input', '_tracecode_materialize_custom_input', '_tracecode_materialize_named_inputs', '_tracecode_annotation_preserves_literal_shape', '_tracecode_hydrate_for_annotation', '_tracecode_resolve_target_callable', '_tracecode_hydrate_annotated_inputs', '_tracecode_resolve_entry_callable', '_tracecode_invoke_entry', '_is_structural_constructor_frame', '_snapshot_call_stack', '_snapshot_locals', '_stable_token', '_looks_like_adjacency_list', '_looks_like_indexed_adjacency_list', '_resolve_inplace_result', 'TraceHooks', '_TracecodeTraceHooks', 'flush_completed_line', 'flush_callsite_line', '_resolve_previous_step', '_append_step_runtime_events', '__tracecode_pending_access_budget', '__tracecode_record_access', '__tracecode_flush_accesses', '__tracecode_append_trace_step', '__tracecode_append_trace_events_for_step', '__tracecode_append_runtime_event', '__tracecode_frame_id_for_step', '__tracecode_access_target', '__tracecode_access_binding', '__tracecode_access_kind', '__tracecode_value_at_path', '__tracecode_access_value', '__tracecode_attach_accesses_to_previous_step', '__tracecode_normalize_index_component', '__tracecode_normalize_index_sources', '__tracecode_normalize_indices', '__tracecode_serialize_call_arg', '__tracecode_serialize_call_args', '__tracecode_make_callsite_frame_id', '__tracecode_make_access_event', '__tracecode_make_iteration_access_event', '__tracecode_record_destructured_iteration_accesses', '__tracecode_is_indexable_sequence', '__tracecode_subscripts', '__tracecode_is_mutable_container', '__tracecode_read_value', '__tracecode_write_value', '__tracecode_delete_value', '__tracecode_apply_augmented_value', '__tracecode_apply_inplace_augmented_value', '_tracecode_user_call', '_tracecode_sum', '_tracecode_read_index', '_tracecode_write_index', '_tracecode_record_index_write', '_tracecode_write_scalar', '_tracecode_delete_index', '_tracecode_augassign_scalar', '_tracecode_augassign_index', '_tracecode_mutating_call', '_tracecode_mutating_index_call', '_tracecode_heapq_mutation', '_tracecode_read_attr', '_tracecode_write_attr', '_tracecode_record_attr_write', '_tracecode_contains_key', '_tracecode_contains_key_indexed', '_tracecode_dict_get', '_tracecode_dict_get_indexed', '_tracecode_len', '_tracecode_enumerate', '_tracecode_iter_bind', '_tracecode_iter_bind_literal', '_tracecode_iter_bind_expr', '_tracecode_iter_bind_indexed', '_tracecode_iter_bind_slice', '_tracecode_range_bind', '_tracecode_for_target_binding_name', '_tracecode_scalar_target_names', '_tracecode_assignment_write_targets', '_tracecode_source_string_node', '_tracecode_exception_value', '_tracecode_collect_user_function_names', '_tracecode_collect_user_method_names', '_tracecode_collect_user_class_names', '_tracecode_collect_explicit_return_function_names', '_tracecode_is_pure_literal_scaffold', '_tracecode_collect_collapsed_literal_lines', '__tracecode_attach_parents', '_tracecode_extract_named_subscript', '_tracecode_extract_mutable_container_target', '_tracecode_is_internal_name', '__TracecodeAccessTransformer', '__tracecode_compile_user_code', '<listcomp>', '<dictcomp>', '<setcomp>', '<genexpr>'}
+_internal_funcs = {'_serialize', '_serialize_output', '_tracecode_ref_id', '_tracer', '_tracecode_recording_stopped_guard', '_custom_print', '_dict_to_tree', '_dict_to_list', '_tracecode_materialize_input', '_tracecode_materialize_custom_input', '_tracecode_materialize_named_inputs', '_tracecode_annotation_preserves_literal_shape', '_tracecode_hydrate_for_annotation', '_tracecode_resolve_target_callable', '_tracecode_hydrate_annotated_inputs', '_tracecode_resolve_entry_callable', '_tracecode_invoke_entry', '_is_structural_constructor_frame', '_snapshot_call_stack', '_snapshot_locals', '_stable_token', '_looks_like_adjacency_list', '_looks_like_indexed_adjacency_list', '_resolve_inplace_result', 'TraceHooks', '_TracecodeTraceHooks', 'flush_completed_line', 'flush_callsite_line', '_resolve_previous_step', '_append_step_runtime_events', '__tracecode_pending_access_budget', '__tracecode_record_access', '__tracecode_flush_accesses', '__tracecode_append_trace_step', '__tracecode_append_trace_events_for_step', '__tracecode_append_runtime_event', '__tracecode_frame_id_for_step', '__tracecode_access_target', '__tracecode_access_binding', '__tracecode_access_kind', '__tracecode_value_at_path', '__tracecode_access_value', '__tracecode_attach_accesses_to_previous_step', '__tracecode_normalize_index_component', '__tracecode_normalize_index_sources', '__tracecode_normalize_indices', '__tracecode_serialize_call_arg', '__tracecode_serialize_call_args', '__tracecode_make_callsite_frame_id', '__tracecode_make_access_event', '__tracecode_make_iteration_access_event', '__tracecode_record_destructured_iteration_accesses', '__tracecode_is_indexable_sequence', '__tracecode_subscripts', '__tracecode_is_mutable_container', '__tracecode_read_value', '__tracecode_write_value', '__tracecode_delete_value', '__tracecode_apply_augmented_value', '__tracecode_apply_inplace_augmented_value', '_tracecode_user_call', '_tracecode_sum', '_tracecode_read_index', '_tracecode_write_index', '_tracecode_record_index_write', '_tracecode_write_scalar', '_tracecode_delete_index', '_tracecode_augassign_scalar', '_tracecode_augassign_index', '_tracecode_mutating_call', '_tracecode_mutating_index_call', '_tracecode_heapq_mutation', '_tracecode_read_attr', '_tracecode_write_attr', '_tracecode_record_attr_write', '_tracecode_contains_key', '_tracecode_contains_key_indexed', '_tracecode_dict_get', '_tracecode_dict_get_indexed', '_tracecode_len', '_tracecode_enumerate', '_tracecode_iter_bind', '_tracecode_iter_bind_literal', '_tracecode_iter_bind_expr', '_tracecode_iter_bind_indexed', '_tracecode_iter_bind_slice', '_tracecode_range_bind', '_tracecode_for_target_binding_name', '_tracecode_scalar_target_names', '_tracecode_assignment_write_targets', '_tracecode_source_string_node', '_tracecode_exception_value', '_tracecode_collect_user_function_names', '_tracecode_collect_user_method_names', '_tracecode_collect_user_class_names', '_tracecode_collect_explicit_return_function_names', '_tracecode_is_pure_literal_scaffold', '_tracecode_collect_collapsed_literal_lines', '__tracecode_attach_parents', '_tracecode_extract_named_subscript', '_tracecode_extract_mutable_container_target', '_tracecode_is_internal_name', '__TracecodeAccessTransformer', '__tracecode_compile_user_code', '<listcomp>', '<dictcomp>', '<setcomp>', '<genexpr>'}
 _internal_locals = {
     '_trace_data', '_trace_events', '_trace_line_event_count', '_console_output', '_original_print', '_target_function',
     '_MIRROR_PRINT_TO_WORKER_CONSOLE', '_MINIMAL_TRACE', '_SKIP_SENTINEL',
@@ -2932,7 +2932,7 @@ _internal_locals = {
     '_call_stack', '_pending_accesses', '_last_trace_index_by_frame', '_tracecode_tracemalloc', '_tracecode_tracemalloc_started', '_TRACE_MUTATING_METHODS', '_tracecode_user_class_names', '_tracecode_explicit_return_function_names', '_internal_funcs', '_internal_locals', '_max_trace_steps',
     '_trace_limit_exceeded', '_timeout_reason', '_total_line_events', '_max_line_events', '_max_stored_events', '_max_trace_bytes', '_max_trace_event_bytes', '_trace_stored_bytes',
     '_line_hit_count', '_max_single_line_hits', '_max_call_depth', '_max_memory_bytes', '_memory_check_every', '_infinite_loop_line',
-    '_hard_line_ceiling', '_hard_line_deadline', '_hard_line_grace_seconds',
+    '_hard_line_ceiling', '_hard_line_deadline', '_hard_line_grace_seconds', '_tracecode_recording_stopped_guard',
     '_MAX_SERIALIZE_DEPTH', '_MAX_SERIALIZED_ITEMS', '_MAX_OBJECT_FIELDS', '_MAX_SERIALIZED_STRING_CHARS', '_serialize_string', '_trace_failed', '_execution_aborted', '_inplace',
     '_custom_print', '_tracer', '_serialize', '_serialize_output', '_tracecode_ref_id', '_dict_to_tree', '_dict_to_list', '_tracecode_materialize_input',
     '_tracecode_materialize_custom_input', '_tracecode_materialize_named_inputs', '_tracecode_annotation_preserves_literal_shape', '_tracecode_hydrate_for_annotation',
@@ -2994,16 +2994,6 @@ _max_memory_bytes = ${
       : 0
   }
 _memory_check_every = 10
-# Trace-budget exhaustion is NOT an execution error: once the budget trips the
-# tracer stops recording but the program keeps running so the verdict is still
-# produced (C++/Java/C# already behave this way). These separate, much larger
-# ceilings remain fatal so a genuine infinite loop is still caught.
-_hard_line_ceiling = max(_max_line_events, _max_single_line_hits) * 50
-# Armed lazily on the first budget trip, not here: this preamble can run well
-# before (and once for many cases of) the traced execution, so an absolute
-# deadline set now could already be expired by the time user code trips.
-_hard_line_deadline = 0.0
-_hard_line_grace_seconds = 10.0
 _infinite_loop_line = -1
 
 # Cases run without trace recording (Run's correctness cases, the untraced
@@ -3021,6 +3011,21 @@ _untraced_max_single_line_hits = max(1000, int(${
       : Number(deps.INTERVIEW_GUARD_DEFAULTS?.maxSingleLineHits ?? 1500000)
   }))
 _untraced_line_hits = {}
+
+# Trace-budget exhaustion is NOT an execution error: once a budget trips the
+# tracer stops recording but stays installed, and the program keeps running
+# so the verdict is still produced (C++/Java/C# already behave this way). It
+# stays under an untraced case's runaway protection: the per-case deadline,
+# the untraced total line budget (or the recording budget, if larger), and the
+# memory ceiling. Per-line hits are not counted there: that dict update per
+# line would make every correct program that outgrows its trace slower.
+_hard_line_ceiling = max(_untraced_max_line_events, _max_line_events)
+# Only with no per-case deadline: a time backstop once recording stopped.
+# Armed lazily on the first budget trip, not here: this preamble can run well
+# before (and once for many cases of) the traced execution, so an absolute
+# deadline set now could already be expired by the time user code trips.
+_hard_line_deadline = 0.0
+_hard_line_grace_seconds = 10.0
 
 def _tracecode_guard_tracer(frame, event, arg):
     global _total_line_events, _timeout_reason, _infinite_loop_line
@@ -6170,40 +6175,60 @@ def _looks_like_indexed_adjacency_list(value):
 
     return True
 
+def _tracecode_recording_stopped_guard(frame):
+    # The runaway guards of a case whose trace stopped recording, run every
+    # 256 line events by _tracer's degraded fast path. A trip aborts the
+    # program and names the guard as the case's limit, replacing the trace
+    # budget's reason (which stays a warning on the trace: traceLimitExceeded).
+    global _timeout_reason, _infinite_loop_line, _hard_line_deadline
+    _guard_reason = None
+    if _case_deadline > 0.0:
+        if _tracecode_perf_counter() >= _case_deadline:
+            _guard_reason = 'client-timeout'
+    elif _hard_line_deadline == 0.0:
+        _hard_line_deadline = _tracecode_perf_counter() + _hard_line_grace_seconds
+    elif _tracecode_perf_counter() > _hard_line_deadline:
+        _guard_reason = 'client-timeout'
+    if _guard_reason is None and _total_line_events >= _hard_line_ceiling:
+        _guard_reason = 'line-limit'
+    if _guard_reason is None and _max_memory_bytes > 0 and _tracecode_tracemalloc is not None:
+        try:
+            _guard_memory, _guard_peak = _tracecode_tracemalloc.get_traced_memory()
+        except Exception:
+            _guard_memory, _guard_peak = (0, 0)
+        if _guard_memory >= _max_memory_bytes or _guard_peak >= _max_memory_bytes:
+            _guard_reason = 'memory-limit'
+    if _guard_reason is not None:
+        _timeout_reason = _guard_reason
+        _infinite_loop_line = frame.f_lineno
+        _tracecode_stop_tracing()
+        raise _InfiniteLoopDetected(
+            f"Execution guard tripped ({_guard_reason}) after {_total_line_events} line events"
+        )
+
 def _tracer(frame, event, arg,
     _tracecode_resolve_previous_step=__tracecode_resolve_previous_step,
     _tracecode_flush_completed_line=__tracecode_flush_completed_line,
 ):
     global _trace_limit_exceeded, _timeout_reason, _total_line_events, _line_hit_count, _infinite_loop_line
-    global _call_stack_generation, _hard_line_deadline
-    _tracecode_check_deadline()
+    global _call_stack_generation
 
-    # Degraded fast path. Once a trace budget trips we record nothing more, so
-    # skip the whole classification preamble (filename, internal-func set, the
-    # structural-constructor call) and keep only the runaway guards. Sampling
-    # them every 1024 events keeps perf_counter() off the per-event path; the
-    # ceiling is 50x the normal budget, so the coarse granularity is harmless.
+    # Degraded fast path. Once a trace budget trips we record nothing more, but
+    # the tracer stays installed (sys.settrace or PEP 669) so the learner's code
+    # keeps its runaway guards. Per event this only counts lines; the guards
+    # (deadline, line ceiling, memory) run every 256 line events, as in the
+    # untraced guard tracer. Library frames get no local tracing from here on.
     if _trace_limit_exceeded:
         if event != 'line':
+            if event == 'call' and frame.f_code.co_filename != 'solution.py':
+                return None
             return _tracer
         _total_line_events += 1
-        if (_total_line_events & 1023) == 0:
-            if _hard_line_deadline == 0.0:
-                _hard_line_deadline = _tracecode_perf_counter() + _hard_line_grace_seconds
-            if _total_line_events >= _hard_line_ceiling or _tracecode_perf_counter() > _hard_line_deadline:
-                _tracecode_stop_tracing()
-                raise _InfiniteLoopDetected(
-                    f"Execution guard tripped after {_total_line_events} line events"
-                )
-            if _max_memory_bytes > 0 and _tracecode_tracemalloc is not None:
-                try:
-                    _degraded_memory, _degraded_peak = _tracecode_tracemalloc.get_traced_memory()
-                except Exception:
-                    _degraded_memory, _degraded_peak = (0, 0)
-                if _degraded_memory >= _max_memory_bytes or _degraded_peak >= _max_memory_bytes:
-                    _tracecode_stop_tracing()
-                    raise _InfiniteLoopDetected(f"Exceeded {_max_memory_bytes} bytes")
+        if (_total_line_events & 255) == 0:
+            _tracecode_recording_stopped_guard(frame)
         return _tracer
+
+    _tracecode_check_deadline()
 
     func_name = frame.f_code.co_name
     is_implicit_comprehension_frame = func_name in ('<listcomp>', '<dictcomp>', '<setcomp>', '<genexpr>')
@@ -6333,13 +6358,17 @@ def _tracer(frame, event, arg,
                 'accesses': [],
             })
             _pending_accesses.clear()
-            _tracecode_stop_tracing()
-        return None
+        # Degrade: stop recording, keep the runaway guards. Every later event
+        # takes the degraded fast path at the top of _tracer.
+        return _tracer
 
-    if _trace_limit_exceeded and _timeout_reason in ('trace-limit', 'trace-byte-limit'):
+    # A budget (stored events, trace bytes, per-event bytes, steps) tripped
+    # while this event flushed the previous line. Record nothing more, but keep
+    # the tracer installed: removing it here would also remove the deadline and
+    # line guards, leaving a loop that never ends to the client's clock.
+    if _trace_limit_exceeded:
         _pending_accesses.clear()
-        _tracecode_stop_tracing()
-        return None
+        return _tracer
 
     if event == 'call':
         # Comprehensions are expression implementation details, not learner
@@ -7197,8 +7226,26 @@ async function executeWithTracing(
     // raised, its exception is the outcome, not the budget.
     const programRaisedAfterRecordingStopped = Boolean(errorStep) && traceOnlyBudgetExceeded;
 
-    // Handle tracing guard stops and execution timeouts
-    if ((result.traceLimitExceeded || timeoutStep) && !programRaisedAfterRecordingStopped) {
+    // Handle guard stops and execution timeouts
+    if (result.executionAborted && timeoutReason && timeoutReason !== 'trace-limit' && timeoutReason !== 'trace-byte-limit') {
+      // A guard stopped the program, traced or not, and also after a trace
+      // budget had stopped recording: the guard's limit is the case's outcome
+      // and the line is where the program was stopped.
+      const stoppedLine = Number.isInteger(result.stoppedLine) && result.stoppedLine > 0
+        ? result.stoppedLine - userCodeStartLine + 1
+        : undefined;
+      errorLine = stoppedLine && stoppedLine <= userCodeLineCount
+        ? stoppedLine
+        : (lastStep?.line > 0 ? lastStep.line : undefined);
+      const lineSuffix = errorLine ? ` on line ${errorLine}` : '';
+      errorMessage = timeoutReason === 'client-timeout'
+        ? `Execution timed out${lineSuffix}. This may indicate an infinite loop or very expensive execution.`
+        : timeoutReason === 'memory-limit'
+          ? `Execution stopped${lineSuffix}: the program exceeded its memory limit.`
+          : timeoutReason === 'recursion-limit'
+            ? `Execution stopped${lineSuffix}: maximum recursion depth exceeded.`
+            : `Execution stopped${lineSuffix}: ${timeoutReason === 'single-line-limit' ? 'one line ran too many times' : 'the program executed too many lines'}. This may indicate an infinite loop.`;
+    } else if ((result.traceLimitExceeded || timeoutStep) && !programRaisedAfterRecordingStopped) {
       errorLine = lastStep?.line;
       const lineSuffix = errorLine && errorLine > 0 ? ` on line ${errorLine}` : '';
 
@@ -7209,17 +7256,6 @@ async function executeWithTracing(
       } else {
         errorMessage = `Execution stopped${lineSuffix}.`;
       }
-    } else if (result.executionAborted && timeoutReason) {
-      // A guard stopped an untraced case: report the limit and the line the
-      // program was on.
-      const stoppedLine = Number.isInteger(result.stoppedLine) && result.stoppedLine > 0
-        ? result.stoppedLine - userCodeStartLine + 1
-        : undefined;
-      errorLine = stoppedLine && stoppedLine <= userCodeLineCount ? stoppedLine : undefined;
-      const lineSuffix = errorLine ? ` on line ${errorLine}` : '';
-      errorMessage = timeoutReason === 'client-timeout'
-        ? `Execution timed out${lineSuffix}. This may indicate an infinite loop or very expensive execution.`
-        : `Execution stopped${lineSuffix}: ${timeoutReason === 'single-line-limit' ? 'one line ran too many times' : 'the program executed too many lines'}. This may indicate an infinite loop.`;
     } else if (errorStep) {
       learnerProgramRaised = true;
       const errorType = errorStep.variables?.errorType;
