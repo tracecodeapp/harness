@@ -3024,6 +3024,7 @@ _internal_locals = {
     '_tracecode_guard_trip', '_tracecode_arm_sticky_stop', '_tc_sticky_on_line', '_trace_limit_reason', '_TRACE_BUDGET_REASONS',
     '_tracecode_recording_stopped_clock', '_tracecode_learner_line', '_degraded_next_check',
     '_degraded_check_every', '_degraded_last_check_at', '_TRACECODE_NON_LEARNER_FILENAME_PREFIXES',
+    '_DEGRADED_LINES_PER_SECOND_LEFT', '_tracecode_start_grace',
     '_TRACECODE_HARNESS_FILENAME',
     '_MAX_SERIALIZE_DEPTH', '_MAX_SERIALIZED_ITEMS', '_MAX_OBJECT_FIELDS', '_MAX_SERIALIZED_STRING_CHARS', '_serialize_string', '_trace_failed', '_execution_aborted', '_inplace',
     '_custom_print', '_tracer', '_serialize', '_serialize_output', '_tracecode_ref_id', '_dict_to_tree', '_dict_to_list', '_tracecode_materialize_input',
@@ -3122,10 +3123,23 @@ _hard_line_grace_seconds = 10.0
 # _degraded_next_check. The interval adapts to the time lines take (aiming
 # for a sample every ~20 ms, 1 to 256 lines apart), so slow lines still meet
 # the deadline well within the client's headroom; the first sample is the
-# first learner line after recording stopped.
+# first learner line after recording stopped. It is also capped by the time
+# left before the deadline (or the grace's end): at most
+# _DEGRADED_LINES_PER_SECOND_LEFT lines per second left. If lines suddenly
+# turn slow after cheap ones grew the interval, the next sample still comes
+# before the deadline for lines up to 1/20 s each (the client allows 1 s past
+# it), while a program far from its deadline keeps the full interval.
 _degraded_next_check = 0
 _degraded_check_every = 1
 _degraded_last_check_at = 0.0
+_DEGRADED_LINES_PER_SECOND_LEFT = 20.0
+
+def _tracecode_start_grace():
+    # Recording just stopped. With no per-case deadline, the grace runs from
+    # now, not from the next learner line (which can be a long call away).
+    global _hard_line_deadline
+    if _case_deadline <= 0.0 and _hard_line_deadline == 0.0:
+        _hard_line_deadline = _tracecode_perf_counter() + _hard_line_grace_seconds
 
 def _tc_sticky_on_line(code, line_number):
     if code.co_filename != 'solution.py' and code.co_filename.startswith(
@@ -3774,6 +3788,7 @@ def _tc_native_sync_limit():
     global _trace_limit_exceeded, _timeout_reason
     if not _trace_limit_exceeded:
         _trace_limit_exceeded = True
+        _tracecode_start_grace()
         reason = _TC_NATIVE.counters().get('timeoutReason') if _TC_NATIVE is not None else ''
         _timeout_reason = reason or 'trace-limit'
     _pending_accesses.clear()
@@ -3798,6 +3813,7 @@ def __tracecode_append_runtime_event(event):
     if len(_trace_events) >= _max_stored_events:
         if not _trace_limit_exceeded:
             _trace_limit_exceeded = True
+            _tracecode_start_grace()
             _timeout_reason = 'trace-limit'
         _pending_accesses.clear()
         return False
@@ -3818,6 +3834,7 @@ def __tracecode_append_runtime_event(event):
     ):
         if not _trace_limit_exceeded:
             _trace_limit_exceeded = True
+            _tracecode_start_grace()
             _timeout_reason = 'trace-byte-limit'
         _pending_accesses.clear()
         return False
@@ -3839,6 +3856,7 @@ def __tracecode_append_runtime_event_json(event_json):
     if len(_trace_events) >= _max_stored_events:
         if not _trace_limit_exceeded:
             _trace_limit_exceeded = True
+            _tracecode_start_grace()
             _timeout_reason = 'trace-limit'
         _pending_accesses.clear()
         return False
@@ -3848,6 +3866,7 @@ def __tracecode_append_runtime_event_json(event_json):
     if event_bytes > _max_trace_event_bytes or event_bytes > (_max_trace_bytes - _trace_stored_bytes):
         if not _trace_limit_exceeded:
             _trace_limit_exceeded = True
+            _tracecode_start_grace()
             _timeout_reason = 'trace-byte-limit'
         _pending_accesses.clear()
         return False
@@ -4158,6 +4177,7 @@ def __tracecode_append_trace_step(frame, step):
     if len(_trace_data) >= _max_trace_steps and (not isinstance(step, _builtins.dict) or step.get('event') != 'timeout'):
         if not _trace_limit_exceeded:
             _trace_limit_exceeded = True
+            _tracecode_start_grace()
             _timeout_reason = 'trace-limit'
         _pending_accesses.clear()
         return
@@ -6371,6 +6391,11 @@ def _tracecode_recording_stopped_guard(frame):
         _every = int(_degraded_check_every * 0.02 / _elapsed) if _elapsed > 0.0 else 256
         if _every > 2 * _degraded_check_every:
             _every = 2 * _degraded_check_every
+        _time_bound = _case_deadline if _case_deadline > 0.0 else _hard_line_deadline
+        if _time_bound > 0.0:
+            _left_cap = int((_time_bound - _now) * _DEGRADED_LINES_PER_SECOND_LEFT)
+            if _every > _left_cap:
+                _every = _left_cap
         _degraded_check_every = 1 if _every < 1 else (256 if _every > 256 else _every)
     _degraded_last_check_at = _now
     _degraded_next_check = _total_line_events + _degraded_check_every
@@ -6482,6 +6507,7 @@ def _tracer(frame, event, arg,
         if _total_line_events >= _max_line_events:
             if not _trace_limit_exceeded:
                 _trace_limit_exceeded = True
+                _tracecode_start_grace()
                 _timeout_reason = 'line-limit'
                 _infinite_loop_line = frame.f_lineno
                 __tracecode_append_trace_step(frame, {
@@ -6503,6 +6529,7 @@ def _tracer(frame, event, arg,
         if _line_hit_count[line_key] >= _max_single_line_hits:
             if not _trace_limit_exceeded:
                 _trace_limit_exceeded = True
+                _tracecode_start_grace()
                 _timeout_reason = 'single-line-limit'
                 _infinite_loop_line = frame.f_lineno
                 local_vars, local_sources = _snapshot_locals(frame, with_sources=True)
@@ -6550,6 +6577,7 @@ def _tracer(frame, event, arg,
     if (not _MINIMAL_TRACE) and len(_trace_data) >= _max_trace_steps:
         if not _trace_limit_exceeded:
             _trace_limit_exceeded = True
+            _tracecode_start_grace()
             _timeout_reason = 'trace-limit'
             _infinite_loop_line = frame.f_lineno
             __tracecode_attach_accesses_to_previous_step(frame)
