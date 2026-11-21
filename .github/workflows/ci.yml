@@ -49,6 +49,12 @@ jobs:
         run: pnpm test:tracekernel-capabilities
       - name: Check runtime asset identities and snapshot provenance
         run: pnpm test:runtime-assets-lock
+      # Browser tests bundle src/internal/browser-judge.ts with esbuild, which
+      # resolves @tracecode/tracekernel through its package exports to
+      # packages/tracekernel/dist. Build only that package here: the full Build
+      # below regenerates files the metadata checks above compare.
+      - name: Build TraceKernel for browser test bundles
+        run: pnpm build:tracekernel
       - name: Test Python admission and prepared-runtime isolation
         run: pnpm test:python-sync && pnpm test:runtime-contract && pnpm test:python-prepared-provider && pnpm test:native-python-serialization-limit
       - name: Test Python runtime snapshot release recovery
@@ -90,6 +96,9 @@ jobs:
         run: pnpm install --frozen-lockfile
       - name: Install Chromium
         run: pnpm exec playwright install --with-deps chromium
+      # The Judge browser bundles resolve @tracecode/tracekernel to its dist.
+      - name: Build TraceKernel for browser test bundles
+        run: pnpm build:tracekernel
       - name: Test the public browser Judge boundary
         run: pnpm test:judge:browser
       - name: Test learner-failure classification across languages and run modes
