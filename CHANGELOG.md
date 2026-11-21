@@ -6,6 +6,85 @@ This repo uses Git tags as release boundaries. Version notes below summarize wha
 
 ## [Unreleased]
 
+## [0.20.3] - 2026-11-21
+
+### Fixed
+
+- A Python Run whose learner code never ends reports "didn't finish" on that
+  case after one per-case clock again (the case's limit plus 1 s; about 31 s at
+  the 30 s default, as in 0.20.1). 0.20.2 ran an interactive Run (a stopping
+  batch) as one request under one clock for the whole batch: traced, 30 s times
+  the number of cases, after which every case was reported timed out, a prefix
+  the Judge rejects, so the Run ended with no verdict; untraced, 30 s and then a
+  re-run of every case under a fresh 30 s clock to name the runaway case. The
+  worker now reports each case as it starts and finishes, the client restarts a
+  per-case clock on each report, and when a case outlives its clock the worker
+  is terminated and the finished cases keep their results; the runaway case is
+  `limit`/`client-timeout` and the rest are `not-run`. The re-run is gone.
+  Submit (a non-stopping batch) is unchanged. Correct programs run in the same
+  time as in 0.20.2.
+- A time limit is the learner's only for a case whose code was running. When a
+  Python stopping batch's clock expires while no case is running (the worker's
+  setup before the first case, or between cases), no learner code was running:
+  the evaluation fails as the provider's (`RuntimeProviderError`), not as a time
+  limit on the next case.
+- A provider failure on a batch (any language) makes every case in it the
+  provider's failure (`failure.origin: 'provider'`, a `runtime-provider-error`
+  diagnostic), and the evaluation completes. It used to reject with
+  `JudgeInfrastructureError` ("completed without publishing per-case
+  outcomes"), which lost the provider classification. A batch with neither
+  per-case outcomes nor a provider failure is still a `JudgeInfrastructureError`.
+  `judgeCaseExecutionOutcome` keeps a provider failure's `protocol` reason on
+  the `RuntimeProviderError` it throws.
+- The Python algorithm-fast batch stops at the first runaway by the result it
+  recorded. When encoding replaced a case's result with a limit (a deadline or
+  serialization ceiling reached while encoding), the batch used to continue past
+  it and the Judge rejected the prefix.
+- A browser runtime worker that never became ready (its script failed to load,
+  it failed before signalling ready, or its `init`, `warmup` or
+  `prewarm-executor` command failed) rejects with `RuntimeProviderError`
+  (`WorkerStartupError`) instead of producing a failed verdict on every case.
+  This covers a JavaScript `init` error reply (copied to every batch case as a
+  compile failure before), a Python compatibility batch whose replacement worker
+  crashed while starting, and C# prepared code and trace crashing before ready.
+  A crash after the worker was ready is reported as before. Each language's
+  reset-and-retry-once rule for a failed runtime load is unchanged.
+- Java returns the learner's printed lines in `consoleOutput` (after any
+  compiler output, in print order) for every outcome where the program ran, as
+  the other languages do. The TraceJVM worker dropped them, on success and on
+  failure; a program that printed and then threw showed the error without its
+  output.
+- The Judge's `debugging.regression-test` claim cites evidence when it is not
+  proven: the regression edit when the replay on the starter produced no exit;
+  the edit and the replay step when the submitted tests passed on the starter;
+  and the edit, the replay step and the repository-tests step when the replay
+  failed but the repository tests failed or did not finish. Statuses and
+  summaries are unchanged.
+
+### Known limits
+
+- A Java, C++, C# or JavaScript Run sends one provider request per case. If a
+  later case's request fails as the provider's, the cases that finished before
+  it are reported as the provider's failure too. Before 0.20.3 the same
+  situation rejected the whole evaluation, so no finished case reached the
+  caller either.
+- Python parses each case's input after the case has started. An input so large
+  that parsing it takes longer than the case's clock is reported as that case's
+  time limit.
+- In a traced Python Run, when the trace reaches its size budget the worker
+  stops tracing altogether, so a loop that never ends is stopped by the per-case
+  clock (about 31 s) rather than by the in-worker loop guard (about 1.5 s).
+  0.20.1 behaves the same.
+
+### Development
+
+- CI runs again: the smoke job's JavaScript SES parity case expected a keyed
+  `plain-id` object to stay a plain object, which 0.20.2's tree-node rule
+  changed on purpose; browser test bundles now build TraceKernel first; the
+  nightly Judge browser job (public browser Judge boundary and the
+  learner-failure matrix) no longer needs a TraceJVM sibling checkout, can run
+  on demand (`workflow_dispatch`), and has 120 minutes.
+
 ## [0.20.2] - 2026-11-17
 
 ### Added
