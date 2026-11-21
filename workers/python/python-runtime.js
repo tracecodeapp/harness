@@ -6217,11 +6217,18 @@ def _tracer(frame, event, arg,
     # the tracer stays installed (sys.settrace or PEP 669) so the learner's code
     # keeps its runaway guards. Per event this only counts lines; the guards
     # (deadline, line ceiling, memory) run every 256 line events, as in the
-    # untraced guard tracer. Library frames get no local tracing from here on.
+    # untraced guard tracer, and only the learner's lines count (the lines the
+    # untraced guard counts).
     if _trace_limit_exceeded:
+        if frame.f_code.co_filename != 'solution.py':
+            # Harness helpers and library code: no counting and no further
+            # local events. Clearing f_trace matters for a helper generator
+            # (the rewrite's range/iter/enumerate binders) resumed after
+            # recording stopped: it kept the tracer it got while recording,
+            # and returning None from its 'call' event does not clear that.
+            frame.f_trace = None
+            return None
         if event != 'line':
-            if event == 'call' and frame.f_code.co_filename != 'solution.py':
-                return None
             return _tracer
         _total_line_events += 1
         if (_total_line_events & 255) == 0:
