@@ -5559,12 +5559,12 @@ function normalizeJavaExecutionPayload(payload) {
 }
 
 function javaReportConsoleOutput(report, options = {}) {
-  if (report?.success === true && options.includeSuccessfulDiagnostics === false) {
-    return [];
-  }
-  return [report.compilerStdout, report.compilerStderr].filter(
-    (entry) => typeof entry === 'string' && entry.trim().length > 0
-  );
+  const compilerOutput = report.success === true && options.includeSuccessfulDiagnostics === false
+    ? []
+    : [report.compilerStdout, report.compilerStderr].filter(
+      (entry) => typeof entry === 'string' && entry.trim().length > 0
+    );
+  return [...compilerOutput, ...(report.runtimeStdoutLines ?? [])];
 }
 
 function externalJavaCompilerEnabled() {
@@ -8036,7 +8036,7 @@ async function runJavaCodeBatchRequest(payload, requestId) {
     return {
       success,
       output: success ? parseJavaReportOutput(entry.output) : null,
-      consoleOutput,
+      consoleOutput: [...consoleOutput, ...(entry?.runtimeStdoutLines ?? [])],
       ...(success ? {} : { error: javaReportFailureMessage({ ...report, ...entry }, 'Java batch item failed without compiler/runtime diagnostics') }),
       timings: {
         compileMs: 0,
@@ -8063,7 +8063,7 @@ async function runJavaCodeBatchRequest(payload, requestId) {
     success: report.success === true,
     results,
     executionTimeMs: totalEnd - totalStart,
-    consoleOutput,
+    consoleOutput: [...consoleOutput, ...rawResults.flatMap((entry) => entry?.runtimeStdoutLines ?? [])],
     ...(report.success === true ? {} : { error: javaReportFailureMessage(report, 'Java batch execution failed without compiler/runtime diagnostics') }),
     timings: {
       hostCallMs: libraryCallEnd - libraryCallStart,

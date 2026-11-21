@@ -21,6 +21,12 @@ interface JavaAlgorithmProfileShape {
   scannedClasses?: number;
 }
 
+interface JavaConsoleResult {
+  kind: string;
+  consoleOutput?: string[];
+  output?: unknown;
+}
+
 interface PreparedBrowserResult {
   createdWorkers: number;
   terminatedWorkers: number;
@@ -78,6 +84,7 @@ interface PreparedBrowserResult {
 }
 
 declare global {
+  var runJavaConsoleCases: (() => Promise<Record<string, JavaConsoleResult>>) | undefined;
   var runJavaPreparedProviderBrowserTest:
     (() => Promise<PreparedBrowserResult>) | undefined;
 }
@@ -190,6 +197,76 @@ async function preparedCode(
   }
   return result;
 }
+
+async function runJavaConsoleCases(
+  provider: ReturnType<typeof createJavaPreparedExecutionProvider>
+): Promise<Record<string, JavaConsoleResult>> {
+  const prints = 'System.out.print("first"); System.out.println(" line"); System.out.println("second line");';
+  const successCode = prints + '\nresult = 7;';
+  const throwCode = prints + '\nif ("console".length() > 0) throw new IllegalStateException("console test");';
+  const exitCode = prints + '\nSystem.out.print("before exit"); System.exit(1);';
+  const scriptCall = { functionName: '', executionStyle: 'function' as const };
+  const preparation = await preparedCode(provider, throwCode, '', 'function');
+  const untraced = await preparation.program.executeIsolated({ inputs: {} });
+  await preparation.program.dispose();
+
+  const tracedPreparation = await provider.prepareProgram({
+    mode: 'trace',
+    code: throwCode,
+    ...scriptCall,
+  });
+  if (tracedPreparation.kind !== 'prepared' || tracedPreparation.program.mode !== 'trace') {
+    throw new Error(tracedPreparation.kind === 'failed' ? tracedPreparation.error : 'Expected a Java trace program.');
+  }
+  const traced = await tracedPreparation.program.executeIsolated({ inputs: {} });
+  await tracedPreparation.program.dispose();
+
+  const exitPreparation = await preparedCode(provider, exitCode, '', 'function');
+  const exit = await exitPreparation.program.executeIsolated({ inputs: {} });
+  await exitPreparation.program.dispose();
+
+  const client = createClient();
+  try {
+    const batch = await client.executeCodeBatch({
+      ...scriptCall,
+      code: successCode,
+      inputBatch: [{}, {}],
+    });
+    const directTrace = await client.executeWithTracing({
+      ...scriptCall,
+      code: throwCode,
+      inputs: {},
+    });
+    const success = await client.executeCode({
+      ...scriptCall,
+      code: successCode,
+      inputs: {},
+    });
+    return {
+      untraced,
+      traced,
+      exit,
+      directBatchFirst: batch.results[0],
+      directBatchSecond: batch.results[1],
+      directTrace: {
+        kind: directTrace.success ? 'completed' : 'failed',
+        consoleOutput: directTrace.consoleOutput,
+      },
+      success,
+    };
+  } finally {
+    client.terminate();
+  }
+}
+
+globalThis.runJavaConsoleCases = async () => {
+  const provider = createJavaPreparedExecutionProvider({ createWorkerClient: createClient });
+  try {
+    return await runJavaConsoleCases(provider);
+  } finally {
+    provider.dispose();
+  }
+};
 
 globalThis.runJavaPreparedProviderBrowserTest =
   async (): Promise<PreparedBrowserResult> => {
