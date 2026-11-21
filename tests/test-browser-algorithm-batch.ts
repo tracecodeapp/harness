@@ -1,7 +1,7 @@
 #!/usr/bin/env npx tsx
 
 import { createReadStream, existsSync, statSync } from 'node:fs';
-import { copyFile, cp, mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { createServer } from 'node:http';
 import { tmpdir } from 'node:os';
 import { extname, join, normalize, resolve, sep } from 'node:path';
@@ -291,39 +291,6 @@ async function main(): Promise<void> {
       ],
       process.cwd()
     );
-    if (LANGUAGES.includes('java')) {
-      const traceJVMCandidates = process.env.TRACECODE_TRACEJVM_ROOT
-        ? [resolve(process.env.TRACECODE_TRACEJVM_ROOT)]
-        : [resolve('../tracejvm'), resolve('../../tracejvm')];
-      const traceJVMRoot = traceJVMCandidates.find((candidate) =>
-        existsSync(join(candidate, 'dist/browser-client.js'))
-      );
-      if (!traceJVMRoot) {
-        throw new Error(
-          `Unable to find the TraceJVM sibling. Checked: ${traceJVMCandidates.join(', ')}`
-        );
-      }
-      const traceJVMTarget = join(tempRoot, 'tracejvm');
-      await mkdir(traceJVMTarget, { recursive: true });
-      await copyFile(
-        join(traceJVMRoot, 'dist/browser-client.js'),
-        join(traceJVMTarget, 'browser-client.js')
-      );
-      await copyFile(
-        join(traceJVMRoot, 'runtime/assets/bjvm_main.wasm'),
-        join(traceJVMTarget, 'bjvm_main.wasm')
-      );
-      await cp(
-        join(traceJVMRoot, 'runtime/assets/profiles/core'),
-        join(traceJVMTarget, 'profiles/core'),
-        { recursive: true, force: true }
-      );
-      await cp(
-        join(traceJVMRoot, '.cache/teavm-javac/artifacts'),
-        join(traceJVMTarget, 'compiler'),
-        { recursive: true, force: true }
-      );
-    }
     await build({
       entryPoints: [
         resolve('tests/fixtures/browser-algorithm-batch-entry.ts'),
