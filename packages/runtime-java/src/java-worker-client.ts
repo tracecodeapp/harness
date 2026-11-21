@@ -42,6 +42,7 @@ import { restoreTransferredTraceEvents, traceEventTransferRequest } from '@trace
 import { isDevEnvironment } from '@tracecode/runtime-browser/internal';
 import {
   WorkerCrashedError,
+  WorkerStartupError,
   WorkerReadyTimeoutError,
   WorkerRequestTimeoutError,
   WorkerTerminatedError,
@@ -510,7 +511,8 @@ export class JavaWorkerClient {
   }
 
   /** Runtime-load failures that warrant a worker reset + one retry. Every error this can see is tagged. */
-  private shouldResetRuntimeLoadError(error: unknown): boolean {
+  private shouldResetRuntimeLoadError(failure: unknown): boolean {
+    const error = failure instanceof WorkerStartupError ? failure.cause : failure;
     if (error instanceof WorkerRequestTimeoutError) {
       return error.messageType === 'init';
     }
