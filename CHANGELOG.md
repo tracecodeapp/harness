@@ -18,8 +18,27 @@ This repo uses Git tags as release boundaries. Version notes below summarize wha
   stopped in ~1.5 s. Once recording stops, only the learner's own lines
   count toward the ceiling. Before, the `sys.settrace` path also counted the
   harness's helper lines (about 14 per learner line), so a correct program
-  could be stopped after ~43k lines. A guard stop in a traced case now
-  says which guard stopped it, not "Trace budget exceeded".
+  could be stopped after ~43k lines. Helper generators (`for` over range, a
+  list or enumerate) that resumed after recording stopped were also counted.
+  A guard stop in a traced case now says which guard stopped it, not "Trace
+  budget exceeded".
+- After recording stops, the guards sample on a cadence that adapts to how
+  long lines take (a sample every ~20 ms), so slow lines are stopped about
+  15 ms after the deadline rather than seconds late. Before, the client's
+  clock could close the worker first and lose the trace. The learner's own
+  `exec`/`eval` code stays under the deadline too. The worker returns the
+  trace budget that stopped recording as `traceLimitReason`, also when a
+  guard then stopped the program; the outcome contract does not carry it
+  yet.
+- A Python guard's stop can no longer be swallowed by the learner's code
+  (bare `except:`, `except BaseException:`, `finally: return`). The trip is
+  recorded as the case's limit whatever the learner then returns, and the
+  stop is raised again on every later learner line, so the program cannot
+  keep running unguarded. Before, Submit's algorithm-fast batch accepted
+  the fallback of a loop that never ended as a successful output. This
+  applies to the traced executor (recording, after recording stopped, and
+  untraced cases), the algorithm-fast batch and `executeCode`'s interview
+  guard.
 
 ## [0.20.2] - 2026-11-17
 
