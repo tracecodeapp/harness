@@ -377,7 +377,7 @@ class BrowserProjectWorkspace
   observations(): Effect.Effect<readonly JudgeObservation[], Error> {
     return Effect.sync(() =>
       processObservations(
-        this.workspace.journal(this.observationStartSeq + 1)
+        this.workspace.journal(this.observationStartSeq)
       )
     );
   }

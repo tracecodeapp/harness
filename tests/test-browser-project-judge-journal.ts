@@ -107,3 +107,32 @@ test('journal timestamps let the debugging grader cite the reproduction command'
     `stamped journal should make the grader cite "${command}"`
   );
 });
+
+test('observations after mount include the first command\'s exec record', async () => {
+  const port = new BrowserProjectJudgePort({
+    providers: ['python'],
+    runtimeProviders: {
+      python: {
+        async execute() {
+          return { exitCode: 0, stdout: '', stderr: '' };
+        },
+      },
+    },
+  });
+  const observations = await Effect.runPromise(
+    Effect.scoped(Effect.gen(function* () {
+      const workspace = yield* port.openWorkspace();
+      yield* workspace.mount([
+        { path: '/workspace/main.py', contents: 'pass\n', visibility: 'submission' },
+      ]);
+      const process = yield* workspace.run({ command: 'python', args: ['-c', 'pass'] });
+      const outcome = yield* process.wait();
+      assert.equal(outcome.termination.exitCode, 0, outcome.stderr);
+      return yield* workspace.observations();
+    }))
+  );
+  const processes = observations.filter((observation) => observation.kind === 'process');
+  assert.equal(processes.length, 1);
+  assert.equal(processes[0]?.kind === 'process' && processes[0].argv, 'python -c pass');
+  assert.ok(processes[0]?.kind === 'process' && processes[0].startedAt, 'exec timestamp should survive the mount cursor');
+});
