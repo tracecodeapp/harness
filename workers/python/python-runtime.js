@@ -7126,6 +7126,9 @@ async function executeWithTracing(
             pythonInputsRequireCustomMaterialization(inputs),
         }
       : undefined;
+    // Trusted preparation (code generation, input conversion) is done; the
+    // learner's code runs next.
+    prepared?.beforeLearnerCode?.();
     const resultJson = prepared
       ? await runCompiledPythonInFreshExecutionScope(
           deps,
@@ -7902,18 +7905,15 @@ _json_out
     if (userCodeInSolutionFile) userCodeStartLine = 1;
     let resultJson;
     if (!supportsTrustedExecuteFinalization) {
+      prepared?.beforeLearnerCode?.();
       resultJson = await runPythonInFreshExecutionScope(
         deps,
         `${execCode}\n__tracecode_raw_result = _tracecode_raw_result\n${executeFinalizerSource}`,
         '_json_out'
       );
     } else {
-      const rawResult = usesPreparedBindings
-        ? await runCompiledPythonInFreshExecutionScope(
-          deps,
-          prepared.executorCode,
-          '_tracecode_raw_result',
-          {
+      const preparedBindings = usesPreparedBindings
+        ? {
             __tracecode_prepared_user_code: prepared.userCodeObject,
             __tracecode_inputs_literal: preparedPythonLiteral(
               deps,
@@ -7928,7 +7928,17 @@ _json_out
             __tracecode_tracing_enabled: prepared.tracingEnabled === true,
             __tracecode_inputs_need_materialization:
               pythonInputsRequireCustomMaterialization(inputs),
-          },
+          }
+        : undefined;
+      // Trusted preparation (code generation, input conversion) is done; the
+      // learner's code runs next.
+      prepared?.beforeLearnerCode?.();
+      const rawResult = usesPreparedBindings
+        ? await runCompiledPythonInFreshExecutionScope(
+          deps,
+          prepared.executorCode,
+          '_tracecode_raw_result',
+          preparedBindings,
           prepared.scopeTimings,
           prepared.isolationTier
         )
@@ -8721,7 +8731,17 @@ async function executePreparedProgramBatch(
       : isolatedPythonFilesystemManager(deps.getPyodide());
     for (let caseIndex = 0; caseIndex < cases.length; caseIndex += 1) {
       const inputs = cases[caseIndex];
-      caseProgress?.started(caseIndex);
+      // `started` restarts the client's per-case clock, so it is posted just
+      // before the learner's code runs (after trusted input conversion), as
+      // the fast driver does. If a case's result ever comes back without its
+      // learner code having run, `started` is posted with it, so the client
+      // never sees `finished` first.
+      let caseStarted = false;
+      const startCase = () => {
+        if (caseStarted) return;
+        caseStarted = true;
+        caseProgress?.started(caseIndex);
+      };
       const scopeTimings = {
           inputLiteralMs: 0,
           namespaceCreateMs: 0,
@@ -8757,6 +8777,7 @@ async function executePreparedProgramBatch(
                   limits,
                 tracingEnabled,
                   scopeTimings,
+                  beforeLearnerCode: startCase,
                   isolationTier: useAlgorithmFastScopes
                     ? 'algorithm-fast'
                     : 'compatibility',
@@ -8774,6 +8795,7 @@ async function executePreparedProgramBatch(
                   userCodeObject,
                   tracingEnabled: false,
                   scopeTimings,
+                  beforeLearnerCode: startCase,
                   isolationTier: useAlgorithmFastScopes
                     ? 'algorithm-fast'
                     : 'compatibility',
@@ -8797,6 +8819,7 @@ async function executePreparedProgramBatch(
           ? pythonCodeResultAsEmptyTraceResult(timedResult)
           : timedResult
       );
+      startCase();
       caseProgress?.finished(caseIndex, results[results.length - 1]);
       if (stopAtFirstRunaway === true && isPythonRunawayResult(timedResult)) break;
     }
