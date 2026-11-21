@@ -1742,6 +1742,14 @@ _tracecode_batch_function_name = ${functionNameLiteral}
 _tracecode_batch_execution_style = ${executionStyleLiteral}
 _tracecode_batch_random_state = _tracecode_batch_random.getstate()
 _tracecode_batch_encoded_results = []
+# Present only for a stopping batch whose client keeps a per-case clock: it
+# reports each case's start and encoded result to the host as the batch runs.
+# Held by the trusted driver only; learner code runs in its own globals.
+try:
+    _tracecode_batch_case_progress = __tracecode_case_progress
+    del __tracecode_case_progress
+except NameError:
+    _tracecode_batch_case_progress = None
 _tracecode_batch_encoded_bytes = 2
 _tracecode_batch_max_encoded_bytes = 32 * 1024 * 1024
 _tracecode_batch_result_reserve_bytes = 512
@@ -2182,7 +2190,11 @@ def _tracecode_batch_format_error(error):
         error_detail = 'Execution failed'
     return error_line, error_prefix, error_detail, None
 
-for _tracecode_batch_inputs in _tracecode_batch_cases:
+for _tracecode_batch_case_index, _tracecode_batch_inputs in enumerate(
+    _tracecode_batch_cases
+):
+    if _tracecode_batch_case_progress is not None:
+        _tracecode_batch_case_progress(_tracecode_batch_case_index, None)
     # re's compiled-pattern cache is interpreter-global. It is not exposed by
     # the capability facade, but clearing it at every case boundary also
     # removes the timing/residency channel between retained-batch cases.
@@ -2462,6 +2474,11 @@ for _tracecode_batch_inputs in _tracecode_batch_cases:
             except Exception:
                 pass
     _tracecode_batch_append_result(_tracecode_case_result)
+    if _tracecode_batch_case_progress is not None:
+        _tracecode_batch_case_progress(
+            _tracecode_batch_case_index,
+            _tracecode_batch_encoded_results[-1],
+        )
     # Run semantics: stop after the first case a time or line limit stopped.
     if (
         _tracecode_batch_limits.get('stopAtFirstRunaway', False)
@@ -8322,6 +8339,28 @@ async function executePreparedProgram(
 
 const PYTHON_RUNAWAY_LIMIT_REASONS = new Set(['client-timeout', 'line-limit', 'single-line-limit']);
 
+/**
+ * Called from the algorithm-fast driver at each case boundary: `encodedResult`
+ * is undefined when the case starts and its JSON result when it finishes.
+ * Reporting must never fail the batch, so a result that cannot be decoded is
+ * simply not reported (the client then has no prefix past it, as before).
+ */
+function reportAlgorithmFastCaseProgress(caseProgress, mode, caseIndex, encodedResult) {
+  try {
+    if (encodedResult === undefined || encodedResult === null) {
+      caseProgress.started(caseIndex);
+      return;
+    }
+    const result = JSON.parse(String(encodedResult));
+    caseProgress.finished(
+      caseIndex,
+      mode === 'trace' ? pythonCodeResultAsEmptyTraceResult(result) : result
+    );
+  } catch {
+    // Progress is advisory; the batch's own result stays authoritative.
+  }
+}
+
 function isPythonRunawayResult(result) {
   return Boolean(
     result &&
@@ -8350,8 +8389,15 @@ async function executePreparedProgramBatch(
   limits,
   traceEnabledBatch = undefined,
   forceJudgeCompatible = false,
-  stopAtFirstRunaway = false
+  stopAtFirstRunaway = false,
+  caseProgress = undefined
 ) {
+  // `caseProgress` ({ started(index), finished(index, result) }) reports each
+  // case as it starts and finishes, so the client can hold a stopping batch to
+  // a per-case clock and keep the finished prefix if a case never returns.
+  // Only stopping batches report: they are the only ones that run in case
+  // order (a non-stopping trace batch regroups its cases by trace selection).
+  if (stopAtFirstRunaway !== true) caseProgress = undefined;
   const startedAt = deps.performanceNow();
   await deps.loadPyodideInstance();
   assertPythonPreparedArtifact(deps, artifact);
@@ -8454,6 +8500,7 @@ async function executePreparedProgramBatch(
         const traced = traceEnabledBatch[index];
         let end = index;
         while (end < cases.length && traceEnabledBatch[end] === traced) end += 1;
+        const chunkOffset = index;
         const chunk = await executePreparedProgramBatch(
           deps,
           artifact,
@@ -8461,7 +8508,12 @@ async function executePreparedProgramBatch(
           limits,
           traceEnabledBatch.slice(index, end),
           false,
-          true
+          true,
+          caseProgress && {
+            started: (chunkIndex) => caseProgress.started(chunkOffset + chunkIndex),
+            finished: (chunkIndex, result) =>
+              caseProgress.finished(chunkOffset + chunkIndex, result),
+          }
         );
         if (!isPythonBatchResultPrefix(chunk.results, end - index, true)) {
           return chunk;
@@ -8568,6 +8620,17 @@ async function executePreparedProgramBatch(
                 ...(stopAtFirstRunaway === true ? { stopAtFirstRunaway: true } : {}),
               }
             ),
+            ...(caseProgress
+              ? {
+                  __tracecode_case_progress: (caseIndex, encodedResult) =>
+                    reportAlgorithmFastCaseProgress(
+                      caseProgress,
+                      artifact.mode,
+                      caseIndex,
+                      encodedResult
+                    ),
+                }
+              : {}),
           },
           undefined,
           'algorithm-fast'
@@ -8652,6 +8715,7 @@ async function executePreparedProgramBatch(
       : isolatedPythonFilesystemManager(deps.getPyodide());
     for (let caseIndex = 0; caseIndex < cases.length; caseIndex += 1) {
       const inputs = cases[caseIndex];
+      caseProgress?.started(caseIndex);
       const scopeTimings = {
           inputLiteralMs: 0,
           namespaceCreateMs: 0,
@@ -8727,6 +8791,7 @@ async function executePreparedProgramBatch(
           ? pythonCodeResultAsEmptyTraceResult(timedResult)
           : timedResult
       );
+      caseProgress?.finished(caseIndex, results[results.length - 1]);
       if (stopAtFirstRunaway === true && isPythonRunawayResult(timedResult)) break;
     }
     const runMs = deps.performanceNow() - startedAt;

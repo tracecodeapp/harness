@@ -792,30 +792,40 @@ class PreparedPythonProgramLifetime {
         return result.results ?? [];
       });
     }
+    const runBatch = async (client: PythonWorkerClient, signal: AbortSignal) => {
+      const result = await client.executePreparedCodeBatch(this.handle, {
+        ...call,
+        signal,
+      });
+      if (!isPythonBatchPrefix(result.results, call.inputBatch.length, call.stopAtFirstRunaway)) {
+        throw new Error('Prepared Python batch returned an invalid result envelope.');
+      }
+      return result.results;
+    };
     try {
+      // A stopping batch is held to a per-case clock by the worker client,
+      // which returns the finished prefix and the case that outlived its
+      // clock; a whole-batch budget here would cut a later case short.
       return await this.executeSerial(call.signal, (client, signal) =>
-        budget.run(async (budgetSignal) => {
-          const result = await client.executePreparedCodeBatch(this.handle, {
-            ...call,
-            signal: budgetSignal,
-          });
-          if (!isPythonBatchPrefix(result.results, call.inputBatch.length, call.stopAtFirstRunaway)) {
-            throw new Error('Prepared Python batch returned an invalid result envelope.');
-          }
-          return result.results;
-        }, signal)
+        call.stopAtFirstRunaway === true
+          ? runBatch(client, signal)
+          : budget.run((budgetSignal) => runBatch(client, budgetSignal), signal)
       );
     } catch (error) {
-      if (budget.isTimeout(error) && call.stopAtFirstRunaway === true) {
-        // No per-case results survived the shared worker's deadline. A
-        // stopping batch must name the case that stopped it, so re-run the
-        // cases one per worker, stopping at the first runaway.
-        return this.executeCompatibilityCodeBatch(
-          call,
-          new PythonBatchExecutionBudget(
-            calculatePythonCodeBatchDeadlineMs(call.inputBatch.length, call.limits?.wallClockMs)
-          )
-        );
+      if (
+        call.stopAtFirstRunaway === true &&
+        isExecutionTimeoutError(error) &&
+        !call.signal?.aborted
+      ) {
+        // The batch's deadline passed before its first case started: the
+        // stopping batch ends at that case.
+        return [{
+          kind: 'limit',
+          reason: 'client-timeout',
+          error: error.message,
+          consoleOutput: [],
+          timings: { artifactCacheHit: true },
+        }];
       }
       if (budget.isTimeout(error)) {
         // The shared batch worker ran out of time: the batch hit the limit.

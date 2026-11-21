@@ -411,6 +411,67 @@ function prepareTraceEventTransfer(result, request, path) {
   return { payload, transfer: chunks };
 }
 
+/**
+ * A stopping batch's per-case progress (see executePreparedProgramBatch): the
+ * client restarts its per-case clock on each message and keeps each finished
+ * result, so a case that never returns costs one per-case clock and the
+ * finished prefix survives the worker's termination.
+ */
+function createBatchCaseProgressReporter(id, protocolToken, traceEventTransport) {
+  let finishedCount = 0;
+  return {
+    get finishedCount() {
+      return finishedCount;
+    },
+    started(index) {
+      trustedPythonWorkerPostMessage({
+        id,
+        type: 'batch-case-progress',
+        payload: { index, phase: 'started' },
+        protocolToken,
+      });
+    },
+    finished(index, result) {
+      finishedCount += 1;
+      const transported = traceEventTransport
+        ? prepareTraceEventTransfer(result, traceEventTransport, 'trace.events')
+        : null;
+      const message = {
+        id,
+        type: 'batch-case-progress',
+        payload: {
+          index,
+          phase: 'finished',
+          result: transported ? transported.payload : result,
+        },
+        protocolToken,
+      };
+      if (transported) {
+        trustedPythonWorkerPostMessage(message, transported.transfer);
+      } else {
+        trustedPythonWorkerPostMessage(message);
+      }
+    },
+  };
+}
+
+/**
+ * Every result already reached the client as progress: reply without them so
+ * a traced result is not encoded and sent twice.
+ */
+function batchReplyWithoutStreamedResults(result, caseProgress) {
+  if (
+    !caseProgress ||
+    result?.algorithmFastBatchUnavailable === true ||
+    !Array.isArray(result?.results) ||
+    result.results.length !== caseProgress.finishedCount
+  ) {
+    return result;
+  }
+  const { results: _streamed, ...reply } = result;
+  return { ...reply, resultsStreamed: caseProgress.finishedCount };
+}
+
 function postTraceResultMessage(id, protocolToken, result, request, path) {
   const transported = prepareTraceEventTransfer(result, request, path);
   if (!transported) {
@@ -9491,7 +9552,8 @@ async function executePreparedPythonProgramBatch(
   limits,
   traceEnabledBatch,
   forceJudgeCompatible,
-  stopAtFirstRunaway
+  stopAtFirstRunaway,
+  caseProgress
 ) {
   await loadPyodideInstance();
   const runtime = loadPythonRuntime();
@@ -9505,7 +9567,8 @@ async function executePreparedPythonProgramBatch(
       },
       traceEnabledBatch,
       forceJudgeCompatible,
-      stopAtFirstRunaway === true
+      stopAtFirstRunaway === true,
+      caseProgress
     )
   );
 }
@@ -9646,13 +9709,25 @@ async function processMessage(data) {
       }
 
       case 'execute-prepared-program-batch': {
-        const result = await executePreparedPythonProgramBatch(
-          payload?.artifact,
-          payload?.inputBatch ?? [],
-          payload?.limits,
-          payload?.traceEnabledBatch,
-          payload?.forceJudgeCompatible,
-          payload?.stopAtFirstRunaway
+        const caseProgress =
+          payload?.reportCaseProgress === true && payload?.stopAtFirstRunaway === true
+            ? createBatchCaseProgressReporter(
+                id,
+                protocolToken,
+                payload?.mode === 'trace' ? payload?.traceEventTransport : undefined
+              )
+            : undefined;
+        const result = batchReplyWithoutStreamedResults(
+          await executePreparedPythonProgramBatch(
+            payload?.artifact,
+            payload?.inputBatch ?? [],
+            payload?.limits,
+            payload?.traceEnabledBatch,
+            payload?.forceJudgeCompatible,
+            payload?.stopAtFirstRunaway,
+            caseProgress
+          ),
+          caseProgress
         );
         analyzerInitialized = false;
         if (payload?.mode === 'trace') {
