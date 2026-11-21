@@ -53,6 +53,22 @@ interface WorkerLog {
   batchRequests: Array<Record<string, unknown>>;
   /** Whether the worker that received each batch request has been terminated. */
   batchWorkerTerminated: Array<() => boolean>;
+  /** Batch requests that reached a worker which never received `init`. */
+  unwarmedBatchRequests?: number;
+}
+
+/**
+ * Where a worker stalls without running learner code: trusted setup before
+ * the first case, the setup between two cases (a mixed-trace chunk), or the
+ * final reply after every case streamed.
+ */
+type Stall =
+  | { readonly kind: 'before-first-case' }
+  | { readonly kind: 'after-case'; readonly index: number }
+  | { readonly kind: 'withhold-reply' };
+
+function newLog(): WorkerLog {
+  return { created: 0, terminated: 0, batchRequests: [], batchWorkerTerminated: [], unwarmedBatchRequests: 0 };
 }
 
 /** A Python worker whose learner code never returns on `runawayCase`. */
@@ -60,12 +76,14 @@ class StuckCaseWorker {
   onmessage: ((event: MessageEvent) => void) | null = null;
   onerror: ((event: ErrorEvent) => void) | null = null;
   private terminated = false;
+  private initialized = false;
 
   constructor(
     private readonly runawayCase: number,
     private readonly log: WorkerLog,
     /** A case whose learner code takes the worker down (a crash, not a limit). */
-    private readonly crashCase = -1
+    private readonly crashCase = -1,
+    private readonly stall?: Stall
   ) {
     log.created += 1;
     queueMicrotask(() => this.emit({ type: 'worker-ready' }));
@@ -81,7 +99,10 @@ class StuckCaseWorker {
     if (!id || !protocolToken) return;
     const reply = (replyType: string, replyPayload: unknown) =>
       this.emit({ id, type: replyType, payload: replyPayload, protocolToken });
-    if (type === 'init') return queueMicrotask(() => reply('init-result', { success: true, loadTimeMs: 0 }));
+    if (type === 'init') {
+      this.initialized = true;
+      return queueMicrotask(() => reply('init-result', { success: true, loadTimeMs: 0 }));
+    }
     if (type === 'warmup') return queueMicrotask(() => reply('warmup-result', { success: true, loadTimeMs: 0 }));
     if (type === 'prepare-program') {
       const mode = payload?.mode as 'code' | 'trace';
@@ -99,6 +120,9 @@ class StuckCaseWorker {
     if (type === 'execute-prepared-program-batch') {
       this.log.batchRequests.push(payload ?? {});
       this.log.batchWorkerTerminated.push(() => this.terminated);
+      // In module format a worker that never received `init` has no runtime
+      // asset configuration and cannot bootstrap.
+      if (!this.initialized) this.log.unwarmedBatchRequests = (this.log.unwarmedBatchRequests ?? 0) + 1;
       void this.runBatch(payload ?? {}, reply, (progress) =>
         this.emit({ id, type: 'batch-case-progress', payload: progress, protocolToken })
       );
@@ -115,7 +139,9 @@ class StuckCaseWorker {
     const trace = payload.mode === 'trace';
     const report = payload.reportCaseProgress === true;
     const results: Record<string, unknown>[] = [];
+    if (this.stall?.kind === 'before-first-case') return; // trusted setup never ends
     for (let index = 0; index < inputBatch.length; index += 1) {
+      if (this.stall?.kind === 'after-case' && index === this.stall.index + 1) return;
       if (report) progress({ index, phase: 'started' });
       if (index === this.runawayCase) return; // learner code never returns
       if (index === this.crashCase) return this.crash();
@@ -141,6 +167,7 @@ class StuckCaseWorker {
       results.push(result);
       if (report) progress({ index, phase: 'finished', result });
     }
+    if (this.stall?.kind === 'withhold-reply') return;
     reply('execute-result', report
       ? { success: true, resultsStreamed: results.length, consoleOutput: [] }
       : { success: true, results, consoleOutput: [] });
@@ -167,14 +194,15 @@ async function preparedProgram(
   mode: 'code' | 'trace',
   runawayCase: number,
   log: WorkerLog,
-  crashCase = -1
+  crashCase = -1,
+  stall?: Stall
 ) {
   const provider = createPythonPreparedExecutionProvider({
     createWorkerClient: () =>
       new PythonWorkerClient({
         workerUrl: 'python-worker.js',
         debug: false,
-        workerFactory: () => new StuckCaseWorker(runawayCase, log, crashCase) as never,
+        workerFactory: () => new StuckCaseWorker(runawayCase, log, crashCase, stall) as never,
       }),
   });
   const preparation = await provider.prepareProgram({
@@ -322,3 +350,55 @@ test('Python stopping batch aborted while a case runs ends at once and terminate
   await program.dispose();
   provider.terminate();
 });
+
+// A learner time limit belongs only to a case that started and never
+// finished. A clock that runs out while no case is running is the provider's
+// failure: no learner code was running, so no case may take the blame.
+for (const mode of ['code', 'trace'] as const) {
+  const label = mode === 'trace' ? 'traced' : 'untraced';
+
+  test(`Python ${label} stopping batch whose worker stalls before its first case is a provider error, not a time limit on case 1`, async () => {
+    const log = newLog();
+    const { provider, program } = await preparedProgram(mode, -1, log, -1, { kind: 'before-first-case' });
+    const inputBatch = [{ value: 1 }, { value: 2 }];
+    await assert.rejects(
+      program.executeBatchIsolated!({
+        inputBatch,
+        limits: { wallClockMs: 200 },
+        stopAtFirstRunaway: true,
+        ...(mode === 'trace' ? { traceEnabledBatch: inputBatch.map(() => true) } : {}),
+      } as never),
+      (error: Error) => {
+        assert.equal(error.name, 'RuntimeProviderError', `${error.name}: ${error.message}`);
+        assert.match(error.message, /first case/);
+        return true;
+      }
+    );
+    assert.equal(log.batchRequests.length, 1, 'No re-run of the cases');
+    assert.equal(log.batchWorkerTerminated[0]!(), true, 'The stalled worker is terminated');
+    await program.dispose();
+    provider.terminate();
+  });
+
+  test(`Python ${label} stopping batch whose worker stalls between two cases is a provider error, not a time limit on a case that never started`, async () => {
+    const log = newLog();
+    const { provider, program } = await preparedProgram(mode, -1, log, -1, { kind: 'after-case', index: 0 });
+    const inputBatch = [{ value: 1 }, { value: 2 }, { value: 3 }];
+    await assert.rejects(
+      program.executeBatchIsolated!({
+        inputBatch,
+        limits: { wallClockMs: 200 },
+        stopAtFirstRunaway: true,
+        ...(mode === 'trace' ? { traceEnabledBatch: inputBatch.map(() => true) } : {}),
+      } as never),
+      (error: Error) => {
+        assert.equal(error.name, 'RuntimeProviderError', `${error.name}: ${error.message}`);
+        assert.match(error.message, /case 2/);
+        return true;
+      }
+    );
+    assert.equal(log.batchWorkerTerminated[0]!(), true, 'The stalled worker is terminated');
+    await program.dispose();
+    provider.terminate();
+  });
+}

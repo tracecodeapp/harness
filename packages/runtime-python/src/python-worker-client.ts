@@ -14,6 +14,7 @@ import {
   createEmptyRuntimeTrace,
   liftCodeBatchOutcome,
   liftCodeOutcome,
+  RuntimeProviderError,
   type RawExecutionBatchPayload,
   type RawExecutionPayload,
 } from '@tracecode/runtime-contracts';
@@ -923,14 +924,10 @@ export class PythonWorkerClient {
       }
       return result;
     } catch (error) {
-      if (isExecutionTimeoutError(error)) {
-        // A stopping batch that timed out before its first case started ends
-        // at that first case; any other batch hit the limit on every case.
-        return {
-          results: call.stopAtFirstRunaway === true
-            ? [timedOutCase(error)]
-            : call.inputBatch.map(() => timedOutCase(error)),
-        };
+      // A stopping batch never times out here: executeStoppingBatch names the
+      // running case or rejects as a provider failure.
+      if (isExecutionTimeoutError(error) && call.stopAtFirstRunaway !== true) {
+        return { results: call.inputBatch.map(() => timedOutCase(error)) };
       }
       throw error;
     }
@@ -946,8 +943,16 @@ export class PythonWorkerClient {
    *
    * When a case outlives its clock the worker is terminated (nothing inside it
    * can interrupt learner code) and the outcome is the finished prefix plus
-   * the case that was running: no second clock and no re-run. A clock that
-   * expires before any case started is an ordinary execution timeout.
+   * the case that was running: no second clock and no re-run.
+   *
+   * A time limit is the learner's only for a case that started and never
+   * finished. When the clock expires with no case running (trusted setup
+   * before the first case, or between cases, such as the next trace chunk's
+   * setup), no learner code was running: unless the batch was already over,
+   * the worker is terminated and the call rejects with RuntimeProviderError.
+   * That includes a worker that never reports progress at all; the client and
+   * worker ship together, so such a worker is a provider failure, and
+   * blaming case 1 would hand the learner a time limit no code of theirs hit.
    *
    * Every result already reached the client as progress, so the worker's
    * final reply carries `resultsStreamed` instead of `results`; a reply that
@@ -1031,21 +1036,30 @@ export class PythonWorkerClient {
       const { resultsStreamed: _streamed, ...reply } = result;
       return { kind: 'reply', reply: { ...reply, results: progress.finished } as unknown as R };
     } catch (error) {
-      if (
-        isExecutionTimeoutError(error) &&
-        !progress.invalid &&
-        (progress.running !== undefined || progress.finished.length > 0)
-      ) {
-        // The batch was over (every case finished, or the last one finished
-        // at a limit and stopped it) and only the reply was late: the results
-        // are all here. Otherwise the case that was running, or was about to
-        // start, outlived its clock.
-        if (progress.finished.length === caseCount || progress.stoppedAtLimit()) {
-          return { kind: 'reply', reply: { results: progress.finished } as unknown as R };
-        }
+      if (!isExecutionTimeoutError(error)) throw error;
+      if (progress.invalid) {
+        throw new RuntimeProviderError(
+          'The Python worker streamed a batch case result that could not be decoded.',
+          { cause: progress.invalid, reason: 'protocol' }
+        );
+      }
+      // The case that started and never finished outlived its clock.
+      if (progress.running !== undefined) {
         return { kind: 'case-timeout', finished: progress.finished, error };
       }
-      throw error;
+      // The batch was over (every case finished, or the last one finished at
+      // a limit and stopped it) and only the reply was late.
+      if (progress.finished.length === caseCount || progress.stoppedAtLimit()) {
+        return { kind: 'reply', reply: { results: progress.finished } as unknown as R };
+      }
+      // No case was running, so no learner code was: the worker stalled.
+      const finished = progress.finished.length;
+      throw new RuntimeProviderError(
+        finished === 0
+          ? 'The Python worker did not start the batch\'s first case in time; no learner code ran.'
+          : `The Python worker did not start case ${finished + 1} in time after case ${finished} finished; no learner code was running.`,
+        { cause: error }
+      );
     }
   }
 
