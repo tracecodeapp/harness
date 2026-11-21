@@ -812,21 +812,6 @@ class PreparedPythonProgramLifetime {
           : budget.run((budgetSignal) => runBatch(client, budgetSignal), signal)
       );
     } catch (error) {
-      if (
-        call.stopAtFirstRunaway === true &&
-        isExecutionTimeoutError(error) &&
-        !call.signal?.aborted
-      ) {
-        // The batch's deadline passed before its first case started: the
-        // stopping batch ends at that case.
-        return [{
-          kind: 'limit',
-          reason: 'client-timeout',
-          error: error.message,
-          consoleOutput: [],
-          timings: { artifactCacheHit: true },
-        }];
-      }
       if (budget.isTimeout(error)) {
         // The shared batch worker ran out of time: the batch hit the limit.
         return call.inputBatch.map((): CodeExecutionResult => ({
