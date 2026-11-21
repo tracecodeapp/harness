@@ -2111,6 +2111,9 @@ def _tracecode_batch_append_result(entry):
         )
     _tracecode_batch_encoded_results.append(encoded)
     _tracecode_batch_encoded_bytes += separator_bytes + encoded_bytes
+    # Encoding may have replaced the result with a limit: callers decide from
+    # the result recorded, not the one the case produced.
+    return entry
 
 def _tracecode_batch_format_error(error):
     error_line = None
@@ -2473,13 +2476,16 @@ for _tracecode_batch_case_index, _tracecode_batch_inputs in enumerate(
                 _tracecode_tracemalloc.stop()
             except Exception:
                 pass
-    _tracecode_batch_append_result(_tracecode_case_result)
+    _tracecode_case_result = _tracecode_batch_append_result(
+        _tracecode_case_result
+    )
     if _tracecode_batch_case_progress is not None:
         _tracecode_batch_case_progress(
             _tracecode_batch_case_index,
             _tracecode_batch_encoded_results[-1],
         )
-    # Run semantics: stop after the first case a time or line limit stopped.
+    # Run semantics: stop after the first case whose recorded result is a
+    # time or line limit.
     if (
         _tracecode_batch_limits.get('stopAtFirstRunaway', False)
         and _tracecode_case_result.get('timeoutReason') in (
