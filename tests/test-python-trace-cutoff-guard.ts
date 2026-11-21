@@ -541,3 +541,48 @@ for (const [runnerName, runner] of Object.entries(RUNNERS)) {
     assert.ok(outcome.afterGraceMs! < SOON_MS, `stopped ${Math.round(outcome.afterGraceMs!)} ms after the grace`);
   });
 }
+
+// What the worker returns for a traced case whose trace stopped at a budget,
+// through executeWithTracing's classification: a program that finishes
+// completes with its truncated trace; a runaway reports the guard's limit,
+// keeps its trace prefix, and keeps the trace budget that stopped recording
+// (traceLimitReason) beside the case's limit.
+for (const [runnerName, runner] of Object.entries(RUNNERS)) {
+  const execute = async (source: string, options: Record<string, unknown>) => {
+    const runtime = (await loadRuntime()) as Runtime & { executeWithTracing: (...args: unknown[]) => Promise<any> };
+    let now = 0;
+    return runtime.executeWithTracing(
+      {
+        ...deps,
+        loadPyodideInstance: async () => {},
+        getPyodide: () => ({ runPythonAsync: (code: string) => runner(code) }),
+        performanceNow: () => ++now,
+      },
+      source,
+      'solve',
+      { n: 1 },
+      'function',
+      { maxTraceSteps: 50_000, maxStoredEvents: 200_000, maxLineEvents: 100_000, maxSingleLineHits: 100_000, ...options }
+    );
+  };
+
+  test(`${runnerName}: a runaway after the trace byte budget reports the guard and keeps the budget`, async () => {
+    const result = await execute(RUNAWAY, { wallClockMs: 15_000, maxTraceBytes: 16 * 1024 });
+    assert.equal(result.success, false, JSON.stringify({ ...result, trace: undefined }));
+    assert.equal(result.timeoutReason, 'line-limit');
+    assert.equal(result.traceLimitExceeded, true);
+    assert.equal(result.traceLimitReason, 'trace-byte-limit', 'the budget that stopped recording is kept');
+    assert.match(result.error, /^Execution stopped on line [34]: the program executed too many lines/);
+    assert.ok(result.trace.events.length > 0);
+  });
+
+  test(`${runnerName}: a program that finishes after the trace byte budget completes with the budget`, async () => {
+    const result = await execute(FINISHES, { wallClockMs: 15_000, maxTraceBytes: 16 * 1024 });
+    assert.equal(result.success, true, JSON.stringify({ ...result, trace: undefined }));
+    assert.equal(result.output, 60000);
+    assert.equal(result.timeoutReason, 'trace-byte-limit');
+    assert.equal(result.traceLimitExceeded, true);
+    assert.equal(result.traceLimitReason, 'trace-byte-limit');
+    assert.ok(result.trace.events.length > 0);
+  });
+}
