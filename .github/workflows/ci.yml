@@ -83,7 +83,9 @@ jobs:
   judge-browser-boundary:
     if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-24.04
-    timeout-minutes: 45
+    # The full learner-failure matrix compiles every C++ cell with TraceCC in
+    # the browser; on a hosted runner it does not fit in 45 minutes.
+    timeout-minutes: 120
     steps:
       - uses: actions/checkout@v4
       - uses: pnpm/action-setup@v4
