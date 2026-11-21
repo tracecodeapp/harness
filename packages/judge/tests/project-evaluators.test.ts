@@ -6,6 +6,7 @@ import {
   debuggingProjectEvaluatorV1,
   type JudgeObservation,
   type JudgeProjectClaim,
+  type JudgeProjectCommandStepReceipt,
   type JudgeProjectReceiptV1,
 } from '../src/index';
 
@@ -157,4 +158,149 @@ test('a run where only the passing test ran does not demonstrate the reproductio
   assert.equal(claim.status, 'not-demonstrated');
   assert.deepEqual(cited(claim), [5], 'the test ran, but the configured failure was not observed');
   assert.match(claim.evidence[0]!.note, /not observed/u);
+});
+
+function testStep(id: string, exitCode: number | null): JudgeProjectCommandStepReceipt {
+  return {
+    id,
+    kind: 'command',
+    process: {
+      sessionId: 'judge-tests',
+      pid: 1,
+      termination: exitCode === null
+        ? { kind: 'signal', signal: 'SIGTERM', exitCode: 143 }
+        : { kind: 'exit', exitCode },
+      stdout: '',
+      stderr: '',
+      diagnostics: [],
+      timedOut: exitCode === null,
+    },
+    observations: [],
+  };
+}
+
+async function regressionCoverage({
+  replayExitCode,
+  repositoryExitCode = 0,
+  change = 'journal',
+}: {
+  replayExitCode: number | null;
+  repositoryExitCode?: number | null;
+  change?: 'journal' | 'artifact' | 'none';
+}): Promise<JudgeProjectClaim> {
+  const base = receipt(testRun(1));
+  const path = 'test/rate-limit.test.js';
+  const claims = await Effect.runPromise(
+    debuggingProjectEvaluatorV1.evaluate({
+      config: CONFIG,
+      receipt: {
+        ...base,
+        changes: change === 'none' ? base.changes : [...base.changes, { path, kind: 'modified' }],
+        changedPaths: change === 'none' ? base.changedPaths : [...base.changedPaths, path],
+        observations: change === 'journal'
+          ? [...base.observations, { seq: 7, kind: 'edit', actor: 'learner', path }]
+          : base.observations,
+        steps: [
+          testStep(CONFIG.repositoryTestsStepId, repositoryExitCode),
+          testStep(CONFIG.regressionReplayStepId, replayExitCode),
+        ],
+      },
+    })
+  );
+  const claim = claims.find((entry) => entry.id === 'debugging.regression-test');
+  assert.ok(claim, 'the debugging evaluator reports the regression coverage claim');
+  return claim;
+}
+
+test('a passing starter replay cites the journal edit and replay', async () => {
+  const claim = await regressionCoverage({ replayExitCode: 0 });
+  assert.equal(claim.status, 'contradicted');
+  assert.deepEqual(claim.evidence, [
+    { observationSeq: 7, note: 'Changed test/rate-limit.test.js.' },
+    {
+      stepId: 'regression-replay',
+      note: 'The submitted tests passed against the starter implementation.',
+    },
+  ]);
+});
+
+test('a passing starter replay without a journal edit cites the submission artifact and replay', async () => {
+  const claim = await regressionCoverage({ replayExitCode: 0, change: 'artifact' });
+  assert.equal(claim.status, 'contradicted');
+  assert.deepEqual(claim.evidence, [
+    {
+      artifactPath: 'test/rate-limit.test.js',
+      actor: 'submission',
+      note: 'Changed test/rate-limit.test.js.',
+    },
+    {
+      stepId: 'regression-replay',
+      note: 'The submitted tests passed against the starter implementation.',
+    },
+  ]);
+});
+
+test('a starter replay without an exit cites only the regression edit', async () => {
+  const claim = await regressionCoverage({ replayExitCode: null });
+  assert.equal(claim.status, 'insufficient');
+  assert.deepEqual(claim.evidence, [
+    { observationSeq: 7, note: 'Changed test/rate-limit.test.js.' },
+  ]);
+});
+
+for (const { description, repositoryExitCode, note } of [
+  {
+    description: 'fail',
+    repositoryExitCode: 1,
+    note: 'Repository tests failed in the locked submission.',
+  },
+  {
+    description: 'do not finish',
+    repositoryExitCode: null,
+    note: 'Repository tests did not finish in the locked submission.',
+  },
+]) {
+  test(`a failing starter replay cites both steps when repository tests ${description}`, async () => {
+    const claim = await regressionCoverage({ replayExitCode: 1, repositoryExitCode });
+    assert.equal(claim.status, 'contradicted');
+    assert.deepEqual(claim.evidence, [
+      { observationSeq: 7, note: 'Changed test/rate-limit.test.js.' },
+      {
+        stepId: 'regression-replay',
+        note: 'The submitted tests failed against the starter implementation.',
+      },
+      { stepId: 'repository-tests', note },
+    ]);
+  });
+}
+
+test('regression coverage is proven when the tests pass on the repair and fail on the starter', async () => {
+  const claim = await regressionCoverage({ replayExitCode: 1 });
+  assert.deepEqual(claim, {
+    id: 'debugging.regression-test',
+    label: 'Regression coverage',
+    status: 'proven',
+    summary:
+      'The submitted tests passed on the repair and failed when the assessed implementation was restored.',
+    scored: true,
+    evidence: [
+      { observationSeq: 7, note: 'Changed test/rate-limit.test.js.' },
+      {
+        stepId: 'regression-replay',
+        note: 'The submitted tests failed against the starter implementation.',
+      },
+    ],
+  });
+});
+
+test('regression coverage is not demonstrated without a submitted test change', async () => {
+  const claim = await regressionCoverage({ replayExitCode: 1, change: 'none' });
+  assert.deepEqual(claim, {
+    id: 'debugging.regression-test',
+    label: 'Regression coverage',
+    status: 'not-demonstrated',
+    summary: 'No regression test change was submitted for the repaired behavior.',
+    scored: true,
+    evidence: [],
+  });
 });

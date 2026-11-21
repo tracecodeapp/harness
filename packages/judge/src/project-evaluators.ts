@@ -480,6 +480,42 @@ function evaluateDebugging(
       )
     : undefined;
 
+  let regressionStatus: JudgeProjectClaimStatus = 'not-demonstrated';
+  const regressionEvidence: JudgeProjectClaim['evidence'][number][] = [];
+  if (regressionChangedPath) {
+    const editRef: JudgeProjectClaim['evidence'][number] = regressionEdit
+      ? { observationSeq: regressionEdit.seq, note: `Changed ${regressionChangedPath}.` }
+      : {
+          artifactPath: regressionChangedPath,
+          actor: 'submission',
+          note: `Changed ${regressionChangedPath}.`,
+        };
+    regressionEvidence.push(editRef);
+
+    const replayExitCode = processExitCode(replayStep);
+    if (replayExitCode === null) {
+      regressionStatus = 'insufficient';
+    } else {
+      const replayFailed = replayExitCode !== 0;
+      const repositorySucceeded = processSucceeded(repositoryStep);
+      regressionStatus = replayFailed && repositorySucceeded ? 'proven' : 'contradicted';
+      regressionEvidence.push({
+        stepId: config.regressionReplayStepId,
+        note: replayFailed
+          ? 'The submitted tests failed against the starter implementation.'
+          : 'The submitted tests passed against the starter implementation.',
+      });
+      if (replayFailed && !repositorySucceeded) {
+        regressionEvidence.push({
+          stepId: config.repositoryTestsStepId,
+          note: processExitCode(repositoryStep) === null
+            ? 'Repository tests did not finish in the locked submission.'
+            : 'Repository tests failed in the locked submission.',
+        });
+      }
+    }
+  }
+
   const claims: JudgeProjectClaim[] = [
     relevantChangedPath && !relevantEdit
       ? claim(
@@ -543,39 +579,12 @@ function evaluateDebugging(
           'Relevant change',
           'not-demonstrated'
         ),
-    regressionChangedPath &&
-      processExitCode(replayStep) !== null &&
-      processExitCode(replayStep) !== 0 &&
-      processSucceeded(repositoryStep)
-      ? claim(
-          'debugging.regression-test',
-          'Regression coverage',
-          'proven',
-          [
-            {
-              ...(regressionEdit
-                ? { observationSeq: regressionEdit.seq }
-                : {
-                    artifactPath: regressionChangedPath,
-                    actor: 'submission',
-                  }),
-              note: `Changed ${regressionChangedPath}.`,
-            },
-            {
-              stepId: config.regressionReplayStepId,
-              note: 'The submitted tests failed against the starter implementation.',
-            },
-          ]
-        )
-      : claim(
-          'debugging.regression-test',
-          'Regression coverage',
-          !regressionChangedPath
-            ? 'not-demonstrated'
-            : processExitCode(replayStep) === null
-              ? 'insufficient'
-              : 'contradicted'
-        ),
+    claim(
+      'debugging.regression-test',
+      'Regression coverage',
+      regressionStatus,
+      regressionEvidence
+    ),
     validation
       ? claim(
           'debugging.validated',
