@@ -389,6 +389,7 @@ class __TracecodeExecutionGuard:
         self._sys = sys_module
         self._gettrace = sys_module.gettrace
         self._settrace = sys_module.settrace
+        self._monitoring = getattr(sys_module, 'monitoring', None)
         self._getrecursionlimit = sys_module.getrecursionlimit
         self._setrecursionlimit = sys_module.setrecursionlimit
         self._getcwd = os_module.getcwd
@@ -1078,6 +1079,17 @@ class __TracecodeExecutionGuard:
         if builtins_snapshot is None or modules_snapshot is None:
             raise RuntimeError('TraceCode Python execution scope was not active')
         self._settrace(None)
+        # The tracer's PEP 669 tool (tool id 4, named 'tracecode'; see
+        # _TC_MONITORING_TOOL) must never outlive its case: a guard's sticky
+        # stop left armed would raise in the next case's learner code.
+        monitoring = self._monitoring
+        if monitoring is not None:
+            try:
+                if monitoring.get_tool(4) == 'tracecode':
+                    monitoring.set_events(4, 0)
+                    monitoring.free_tool_id(4)
+            except Exception:
+                pass
         for module, namespace_snapshot in module_dict_snapshots or ():
             try:
                 namespace = module.__dict__
@@ -1777,6 +1789,49 @@ class _TracecodeAlgorithmLimit(BaseException):
         self.reason = reason
         super().__init__(reason)
 
+# A guard's stop is a BaseException the learner's code can catch (a bare
+# except, except BaseException, finally: return). The first trip is recorded
+# as the case's limit whatever the learner then returns, and a PEP 669 LINE
+# callback (it stays armed when it raises, unlike sys.settrace) raises the
+# stop again on every later learner line, so a caught stop cannot keep the
+# program running unguarded. Costs nothing until a guard trips.
+_tracecode_batch_monitoring = getattr(_tracecode_batch_sys, 'monitoring', None)
+_tracecode_case_tripped = None
+_tracecode_case_sticky_armed = False
+
+def _tracecode_case_sticky_line(code, line_number):
+    if code.co_filename != 'solution.py':
+        return _tracecode_batch_monitoring.DISABLE
+    raise _TracecodeAlgorithmLimit(_tracecode_case_tripped)
+
+def _tracecode_case_trip(reason):
+    global _tracecode_case_tripped, _tracecode_case_sticky_armed
+    if _tracecode_case_tripped is None:
+        _tracecode_case_tripped = reason
+    _tracecode_batch_sys.settrace(None)
+    if _tracecode_batch_monitoring is not None and not _tracecode_case_sticky_armed:
+        try:
+            # Tool id 4, named 'tracecode', as the trace executor's tool.
+            _tracecode_batch_monitoring.use_tool_id(4, 'tracecode')
+            _tracecode_case_sticky_armed = True
+            _tracecode_batch_monitoring.register_callback(
+                4, _tracecode_batch_monitoring.events.LINE, _tracecode_case_sticky_line
+            )
+            _tracecode_batch_monitoring.set_events(4, _tracecode_batch_monitoring.events.LINE)
+        except Exception:
+            pass
+    raise _TracecodeAlgorithmLimit(_tracecode_case_tripped)
+
+def _tracecode_case_disarm():
+    global _tracecode_case_sticky_armed
+    if _tracecode_case_sticky_armed:
+        _tracecode_case_sticky_armed = False
+        try:
+            _tracecode_batch_monitoring.set_events(4, 0)
+            _tracecode_batch_monitoring.free_tool_id(4)
+        except Exception:
+            pass
+
 def _tracecode_execute_serialize_checkpoint():
     if (
         _tracecode_case_deadline is not None
@@ -2250,6 +2305,7 @@ for _tracecode_batch_case_index, _tracecode_batch_inputs in enumerate(
     _tracecode_line_events = 0
     _tracecode_line_hits = {}
     _tracecode_call_depth = 0
+    _tracecode_case_tripped = None
     _tracecode_trusted_prep_active = False
     _tracecode_memory_started = False
     _tracecode_tracemalloc = None
@@ -2292,7 +2348,7 @@ for _tracecode_batch_case_index, _tracecode_batch_inputs in enumerate(
             _tracecode_case_deadline is not None
             and _tracecode_batch_time.perf_counter() >= _tracecode_case_deadline
         ):
-            raise _TracecodeAlgorithmLimit('client-timeout')
+            _tracecode_case_trip('client-timeout')
         if (
             _tracecode_trusted_prep_active
             and frame.f_code.co_filename != 'solution.py'
@@ -2301,19 +2357,19 @@ for _tracecode_batch_case_index, _tracecode_batch_inputs in enumerate(
         if event == 'call' and _tracecode_interview_limits_enabled:
             _tracecode_call_depth += 1
             if _tracecode_call_depth > _tracecode_max_call_depth:
-                raise _TracecodeAlgorithmLimit('recursion-limit')
+                _tracecode_case_trip('recursion-limit')
         elif event == 'return' and _tracecode_interview_limits_enabled:
             if _tracecode_call_depth > 0:
                 _tracecode_call_depth -= 1
         elif event == 'line' and _tracecode_interview_limits_enabled:
             _tracecode_line_events += 1
             if _tracecode_line_events >= _tracecode_max_line_events:
-                raise _TracecodeAlgorithmLimit('line-limit')
+                _tracecode_case_trip('line-limit')
             key = (frame.f_code.co_name, frame.f_lineno)
             count = _tracecode_line_hits.get(key, 0) + 1
             _tracecode_line_hits[key] = count
             if count >= _tracecode_max_single_line_hits:
-                raise _TracecodeAlgorithmLimit('single-line-limit')
+                _tracecode_case_trip('single-line-limit')
             if (
                 _tracecode_tracemalloc is not None
                 and _tracecode_memory_check_every > 0
@@ -2321,7 +2377,7 @@ for _tracecode_batch_case_index, _tracecode_batch_inputs in enumerate(
             ):
                 current, peak = _tracecode_tracemalloc.get_traced_memory()
                 if max(current, peak) >= _tracecode_max_memory_bytes:
-                    raise _TracecodeAlgorithmLimit('memory-limit')
+                    _tracecode_case_trip('memory-limit')
         return _tracecode_case_tracer
 
     if _tracecode_limits_enabled:
@@ -2408,6 +2464,7 @@ for _tracecode_batch_case_index, _tracecode_batch_inputs in enumerate(
             },
         }
     except _TracecodeAlgorithmLimit as error:
+        _tracecode_case_disarm()
         _tracecode_case_result = {
             'success': False,
             'output': None,
@@ -2422,6 +2479,7 @@ for _tracecode_batch_case_index, _tracecode_batch_inputs in enumerate(
             },
         }
     except _TracecodeSerializationLimit:
+        _tracecode_case_disarm()
         _tracecode_case_result = {
             'success': False,
             'output': None,
@@ -2436,6 +2494,7 @@ for _tracecode_batch_case_index, _tracecode_batch_inputs in enumerate(
             },
         }
     except BaseException as error:
+        _tracecode_case_disarm()
         (
             error_line,
             error_prefix,
@@ -2470,12 +2529,32 @@ for _tracecode_batch_case_index, _tracecode_batch_inputs in enumerate(
             # result serialization): the learner's program failed.
             _tracecode_case_result['diagnosticStage'] = 'runtime'
     finally:
+        _tracecode_case_disarm()
         _tracecode_batch_sys.settrace(None)
         if _tracecode_tracemalloc is not None and _tracecode_memory_started:
             try:
                 _tracecode_tracemalloc.stop()
             except Exception:
                 pass
+    if (
+        _tracecode_case_tripped is not None
+        and _tracecode_case_result.get('timeoutReason') != _tracecode_case_tripped
+    ):
+        # A guard tripped and the learner's code caught the stop (with no
+        # PEP 669 to re-raise it): the guard's stop is still the outcome.
+        _tracecode_case_result = {
+            'success': False,
+            'output': None,
+            'error': 'Execution stopped: resource limit exceeded (' + _tracecode_case_tripped + ').',
+            'timeoutReason': _tracecode_case_tripped,
+            'consoleOutput': _tracecode_case_console,
+            'timings': {
+                'runMs': (
+                    _tracecode_batch_time.perf_counter() - _tracecode_case_started
+                ) * 1000,
+                'algorithmFastBatch': True,
+            },
+        }
     _tracecode_case_result = _tracecode_batch_append_result(
         _tracecode_case_result
     )
@@ -2933,6 +3012,7 @@ _internal_locals = {
     '_trace_limit_exceeded', '_timeout_reason', '_total_line_events', '_max_line_events', '_max_stored_events', '_max_trace_bytes', '_max_trace_event_bytes', '_trace_stored_bytes',
     '_line_hit_count', '_max_single_line_hits', '_max_call_depth', '_max_memory_bytes', '_memory_check_every', '_infinite_loop_line',
     '_hard_line_ceiling', '_hard_line_deadline', '_hard_line_grace_seconds', '_tracecode_recording_stopped_guard',
+    '_tracecode_guard_trip', '_tracecode_arm_sticky_stop', '_tc_sticky_on_line',
     '_MAX_SERIALIZE_DEPTH', '_MAX_SERIALIZED_ITEMS', '_MAX_OBJECT_FIELDS', '_MAX_SERIALIZED_STRING_CHARS', '_serialize_string', '_trace_failed', '_execution_aborted', '_inplace',
     '_custom_print', '_tracer', '_serialize', '_serialize_output', '_tracecode_ref_id', '_dict_to_tree', '_dict_to_list', '_tracecode_materialize_input',
     '_tracecode_materialize_custom_input', '_tracecode_materialize_named_inputs', '_tracecode_annotation_preserves_literal_shape', '_tracecode_hydrate_for_annotation',
@@ -3027,8 +3107,47 @@ _hard_line_ceiling = max(_untraced_max_line_events, _max_line_events)
 _hard_line_deadline = 0.0
 _hard_line_grace_seconds = 10.0
 
+def _tc_sticky_on_line(code, line_number):
+    if code.co_filename != 'solution.py':
+        return _TC_MONITORING.DISABLE
+    raise _InfiniteLoopDetected('Execution was already stopped by a guard')
+
+def _tracecode_arm_sticky_stop():
+    # The guard's stop is a BaseException the learner's code can catch (a
+    # bare except, except BaseException, finally: return). sys.settrace also
+    # drops a trace function that raises, so a caught stop would leave the
+    # program running unguarded. A PEP 669 LINE callback stays armed after it
+    # raises: it raises the stop again on every later learner line, so no
+    # except or finally body can keep running and the stop leaves the
+    # learner's frames. Costs nothing until a guard trips.
+    global _TC_MONITORING_ACTIVE
+    sys.settrace(None)
+    if _TC_MONITORING is None:
+        return
+    try:
+        if not _TC_MONITORING_ACTIVE:
+            _TC_MONITORING.use_tool_id(_TC_MONITORING_TOOL, 'tracecode')
+            _TC_MONITORING_ACTIVE = True
+        _events = _TC_MONITORING.events
+        _TC_MONITORING.register_callback(_TC_MONITORING_TOOL, _events.LINE, _tc_sticky_on_line)
+        _TC_MONITORING.set_events(_TC_MONITORING_TOOL, _events.LINE)
+    except Exception:
+        pass
+
+def _tracecode_guard_trip(reason, line, message):
+    # A guard stopped the learner's program. The abort is recorded here, not
+    # where the exception lands: a learner that catches the stop and returns a
+    # fallback must not have that fallback accepted as the case's result.
+    global _timeout_reason, _infinite_loop_line, _execution_aborted
+    _timeout_reason = reason
+    if line is not None and line > 0:
+        _infinite_loop_line = line
+    _execution_aborted = True
+    _tracecode_arm_sticky_stop()
+    raise _InfiniteLoopDetected(message)
+
 def _tracecode_guard_tracer(frame, event, arg):
-    global _total_line_events, _timeout_reason, _infinite_loop_line
+    global _total_line_events
     if event != 'line' or frame.f_code.co_filename != 'solution.py':
         return _tracecode_guard_tracer
     _total_line_events += 1
@@ -3043,10 +3162,9 @@ def _tracecode_guard_tracer(frame, event, arg):
         else None
     )
     if _guard_reason is not None:
-        _timeout_reason = _guard_reason
-        _infinite_loop_line = frame.f_lineno
-        sys.settrace(None)
-        raise _InfiniteLoopDetected(f'Execution guard tripped ({_guard_reason})')
+        _tracecode_guard_trip(
+            _guard_reason, frame.f_lineno, f'Execution guard tripped ({_guard_reason})'
+        )
     return _tracecode_guard_tracer
 
 try:
@@ -5111,10 +5229,10 @@ def _tracecode_is_annotation_node(node):
     return False
 
 def _tracecode_check_deadline():
-    global _timeout_reason
     if _case_deadline > 0.0 and _tracecode_perf_counter() >= _case_deadline:
-        _timeout_reason = 'client-timeout'
-        raise _InfiniteLoopDetected('Execution exceeded the per-case wall-clock limit')
+        _tracecode_guard_trip(
+            'client-timeout', None, 'Execution exceeded the per-case wall-clock limit'
+        )
 
 def _tracecode_collect_user_function_names(tree):
     names = _builtins.set()
@@ -6180,7 +6298,7 @@ def _tracecode_recording_stopped_guard(frame):
     # 256 line events by _tracer's degraded fast path. A trip aborts the
     # program and names the guard as the case's limit, replacing the trace
     # budget's reason (which stays a warning on the trace: traceLimitExceeded).
-    global _timeout_reason, _infinite_loop_line, _hard_line_deadline
+    global _hard_line_deadline
     _guard_reason = None
     if _case_deadline > 0.0:
         if _tracecode_perf_counter() >= _case_deadline:
@@ -6199,11 +6317,10 @@ def _tracecode_recording_stopped_guard(frame):
         if _guard_memory >= _max_memory_bytes or _guard_peak >= _max_memory_bytes:
             _guard_reason = 'memory-limit'
     if _guard_reason is not None:
-        _timeout_reason = _guard_reason
-        _infinite_loop_line = frame.f_lineno
-        _tracecode_stop_tracing()
-        raise _InfiniteLoopDetected(
-            f"Execution guard tripped ({_guard_reason}) after {_total_line_events} line events"
+        _tracecode_guard_trip(
+            _guard_reason,
+            frame.f_lineno,
+            f"Execution guard tripped ({_guard_reason}) after {_total_line_events} line events",
         )
 
 def _tracer(frame, event, arg,
@@ -6276,8 +6393,9 @@ def _tracer(frame, event, arg,
                         'stdoutLineCount': len(_console_output),
                         'accesses': [],
                     })
-                    _tracecode_stop_tracing()
-                    raise _InfiniteLoopDetected(f"Exceeded {_max_memory_bytes} bytes")
+                    _tracecode_guard_trip(
+                        'memory-limit', frame.f_lineno, f"Exceeded {_max_memory_bytes} bytes"
+                    )
 
         # Check total line events before duplicate-line suppression so
         # tight no-op loops cannot bypass the in-runtime guard.
@@ -6398,8 +6516,9 @@ def _tracer(frame, event, arg,
                     'stdoutLineCount': len(_console_output),
                     'accesses': [],
                 })
-                _tracecode_stop_tracing()
-                raise _InfiniteLoopDetected(f"Exceeded {_max_call_depth} calls")
+                _tracecode_guard_trip(
+                    'recursion-limit', frame.f_lineno, f"Exceeded {_max_call_depth} calls"
+                )
         local_vars, local_sources = _snapshot_locals(frame, with_sources=True)
         if func_name != '<module>':
             _call_stack_generation += 1
@@ -6687,6 +6806,8 @@ ${traceCaseSetupInTry}
 ${executionCode}
     _tracecode_check_deadline()
 except _InfiniteLoopDetected as e:
+    # First: no learner code may run under the sticky stop from here on.
+    _tracecode_stop_tracing()
     _trace_failed = True
     _execution_aborted = True
     _result = None
@@ -6740,6 +6861,12 @@ except (Exception, SystemExit) as e:
         'accesses': __tracecode_flush_accesses(None)
     })
 
+if _execution_aborted:
+    # A guard tripped and the learner's code caught the stop (with no PEP 669
+    # to re-raise it): the guard's stop is still the outcome.
+    _tracecode_stop_tracing()
+    _trace_failed = True
+    _result = None
 if (not _trace_failed) and _result is None:
     _inplace = _resolve_inplace_result()
     if _inplace is not None:
@@ -7588,14 +7715,56 @@ try:
 except Exception:
     _interview_tracemalloc = None
 
+_interview_monitoring = getattr(sys, 'monitoring', None)
+_interview_sticky_armed = False
+
+def _interview_is_user_code(code, line_number):
+    return (
+        code.co_filename == 'solution.py'
+        if ${userCodeInSolutionFile ? 'True' : 'False'}
+        else (
+            __TRACECODE_USER_CODE_START_LINE__ <= code.co_firstlineno <= __TRACECODE_USER_CODE_END_LINE__
+            or (
+                code.co_name == '<module>'
+                and __TRACECODE_USER_CODE_START_LINE__ <= line_number <= __TRACECODE_USER_CODE_END_LINE__
+            )
+        )
+    )
+
+def _interview_sticky_line(code, line_number):
+    if not _interview_is_user_code(code, line_number):
+        return None if code.co_name == '<module>' else _interview_monitoring.DISABLE
+    raise _InterviewGuardTriggered('INTERVIEW_GUARD_TRIGGERED:' + _interview_timeout_reason)
+
+def _interview_trip(reason):
+    # The stop is a BaseException the learner's code can catch. The first
+    # reason is kept (and re-checked after the learner's call), and a PEP 669
+    # LINE callback, which stays armed when it raises (sys.settrace does
+    # not), raises the stop again on every later learner line so a caught
+    # stop cannot keep the program running unguarded.
+    global _interview_timeout_reason, _interview_sticky_armed
+    if _interview_timeout_reason is None:
+        _interview_timeout_reason = reason
+    sys.settrace(None)
+    if _interview_monitoring is not None and not _interview_sticky_armed:
+        try:
+            # Tool id 4, named 'tracecode', as the trace executor's tool.
+            _interview_monitoring.use_tool_id(4, 'tracecode')
+            _interview_sticky_armed = True
+            _interview_monitoring.register_callback(
+                4, _interview_monitoring.events.LINE, _interview_sticky_line
+            )
+            _interview_monitoring.set_events(4, _interview_monitoring.events.LINE)
+        except Exception:
+            pass
+    raise _InterviewGuardTriggered('INTERVIEW_GUARD_TRIGGERED:' + _interview_timeout_reason)
+
 def _interview_check_deadline():
-    global _interview_timeout_reason
     if (
         _interview_case_deadline is not None
         and _interview_time.monotonic() >= _interview_case_deadline
     ):
-        _interview_timeout_reason = 'client-timeout'
-        raise _InterviewGuardTriggered('INTERVIEW_GUARD_TRIGGERED:client-timeout')
+        _interview_trip('client-timeout')
 
 def _interview_check_memory():
     global _interview_timeout_reason
@@ -7606,8 +7775,7 @@ def _interview_check_memory():
     except Exception:
         return
     if _current >= _INTERVIEW_GUARD_MAX_MEMORY_BYTES or _peak >= _INTERVIEW_GUARD_MAX_MEMORY_BYTES:
-        _interview_timeout_reason = 'memory-limit'
-        raise _InterviewGuardTriggered('INTERVIEW_GUARD_TRIGGERED:memory-limit')
+        _interview_trip('memory-limit')
 
 def _interview_assert_guard_clear():
     _interview_check_deadline()
@@ -7637,23 +7805,20 @@ def _interview_guard_tracer(frame, event, arg):
     if event == 'call':
         _interview_call_depth += 1
         if _interview_call_depth > _INTERVIEW_GUARD_MAX_CALL_DEPTH:
-            _interview_timeout_reason = 'recursion-limit'
-            raise _InterviewGuardTriggered('INTERVIEW_GUARD_TRIGGERED:recursion-limit')
+            _interview_trip('recursion-limit')
     elif event == 'return':
         if _interview_call_depth > 0:
             _interview_call_depth -= 1
     elif event == 'line':
         _interview_line_events += 1
         if _interview_line_events >= _INTERVIEW_GUARD_MAX_LINE_EVENTS:
-            _interview_timeout_reason = 'line-limit'
-            raise _InterviewGuardTriggered('INTERVIEW_GUARD_TRIGGERED:line-limit')
+            _interview_trip('line-limit')
 
         _line_key = (_func_name, frame.f_lineno)
         _line_hits = _interview_line_hits.get(_line_key, 0) + 1
         _interview_line_hits[_line_key] = _line_hits
         if _line_hits >= _INTERVIEW_GUARD_MAX_SINGLE_LINE_HITS:
-            _interview_timeout_reason = 'single-line-limit'
-            raise _InterviewGuardTriggered('INTERVIEW_GUARD_TRIGGERED:single-line-limit')
+            _interview_trip('single-line-limit')
 
         if _INTERVIEW_GUARD_MEMORY_CHECK_EVERY > 0 and (_interview_line_events % _INTERVIEW_GUARD_MEMORY_CHECK_EVERY) == 0:
             _interview_check_memory()
@@ -7678,8 +7843,15 @@ def _interview_guard_start():
     sys.settrace(_interview_guard_tracer)
 
 def _interview_guard_stop():
-    global _interview_case_deadline
+    global _interview_case_deadline, _interview_sticky_armed
     sys.settrace(None)
+    if _interview_sticky_armed:
+        _interview_sticky_armed = False
+        try:
+            _interview_monitoring.set_events(4, 0)
+            _interview_monitoring.free_tool_id(4)
+        except Exception:
+            pass
     _interview_case_deadline = None
     if _interview_tracemalloc is not None and _interview_tracemalloc_started:
         try:
@@ -7746,6 +7918,11 @@ ${executionCallInNestedTry}
     except _TracecodeSerializationLimit:
         _tracecode_serialization_limit = True
     except BaseException as _tracecode_execution_error:
+        if _INTERVIEW_GUARD_ENABLED and _interview_timeout_reason is not None:
+            # The learner's code caught the guard's stop and then failed.
+            raise _InterviewGuardTriggered(
+                'INTERVIEW_GUARD_TRIGGERED:' + _interview_timeout_reason
+            )
         if not ${usesPreparedBindings ? 'True' : 'False'}:
             raise
         _tracecode_execution_frames = _tracecode_execution_traceback.extract_tb(

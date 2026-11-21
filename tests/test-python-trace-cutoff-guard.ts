@@ -151,15 +151,25 @@ const APP_BUDGETS = {
   maxStoredEvents: 16000,
 };
 
-async function run(runner: Runner, source: string, options: Record<string, unknown>): Promise<Outcome> {
+async function run(
+  runner: Runner,
+  source: string,
+  { untraced = false, ...options }: Record<string, unknown>
+): Promise<Outcome> {
   const runtime = await loadRuntime();
-  const { code } = runtime.generateTracingCode(deps, source, 'solve', { n: 1 }, 'function', {
+  let { code } = runtime.generateTracingCode(deps, source, 'solve', { n: 1 }, 'function', {
     maxTraceSteps: 50_000,
     maxStoredEvents: 200_000,
     maxLineEvents: 100_000,
     maxSingleLineHits: 100_000,
     ...options,
   });
+  if (untraced) {
+    // What a prepared trace executor does for a case it does not trace.
+    const arm = '\n_tracecode_arm_tracing()\n';
+    assert.equal(code.split(arm).length, 2, 'one place arms tracing');
+    code = code.replace(arm, '\nsys.settrace(_tracecode_guard_tracer)\n');
+  }
   const startedAt = performance.now();
   const reply = await runner(`${code}
 __tracecode_test_reply = json.dumps({
@@ -317,5 +327,152 @@ for (const [runnerName, runner] of Object.entries(RUNNERS)) {
         assert.equal(outcome.traceLimitExceeded, true);
       });
     }
+  }
+}
+
+// A guard's stop is a BaseException the learner's code can catch: `finally:
+// return`, `except BaseException:` or a bare `except:`. The stop must still be
+// the case's outcome (not the fallback the learner returned), and a learner
+// that catches it inside a loop must not keep running unguarded.
+const SWALLOWS: Record<string, string> = {
+  'finally: return': `def solve(n):
+    try:
+        k = 0
+        while k >= 0:
+            k = (k + 1) % 10
+    finally:
+        return -7
+`,
+  'except BaseException: return': `def solve(n):
+    try:
+        k = 0
+        while k >= 0:
+            k = (k + 1) % 10
+    except BaseException:
+        return -7
+`,
+  'a bare except: inside a loop': `def solve(n):
+    caught = 0
+    while True:
+        try:
+            k = 0
+            while k >= 0:
+                k = (k + 1) % 10
+        except:
+            caught += 1
+`,
+};
+
+// The same swallows around lines too slow to reach any line budget in time:
+// only the per-case clock stops them, while the trace is still recording.
+const SLOW_SWALLOWS: Record<string, string> = Object.fromEntries(
+  Object.entries(SWALLOWS).map(([name, source]) => [
+    name,
+    source.replace('k = (k + 1) % 10', 'k = sum(range(300000)) % 7'),
+  ])
+);
+
+const RUNAWAY_REASONS = ['line-limit', 'single-line-limit', 'client-timeout'];
+
+function assertGuardStopKept(outcome: Outcome, reasons: readonly string[]): void {
+  assert.equal(outcome.aborted, true, `the guard's stop is the outcome: ${JSON.stringify(outcome)}`);
+  assert.ok(reasons.includes(outcome.timeoutReason ?? ''), String(outcome.timeoutReason));
+  assert.equal(outcome.result, null, 'the learner\'s fallback is not the result');
+}
+
+for (const [runnerName, runner] of Object.entries(RUNNERS)) {
+  for (const [swallowName, source] of Object.entries(SWALLOWS)) {
+    for (const [pathName, pathOptions] of Object.entries(PATHS)) {
+      test(`${runnerName}, ${pathName}: ${swallowName} cannot swallow the guard after recording stopped`, async () => {
+        assertGuardStopKept(await run(runner, source, { ...pathOptions, ...APP_BUDGETS }), ['line-limit']);
+      });
+    }
+
+    test(`${runnerName}, sys.settrace: ${swallowName} cannot swallow the deadline while recording`, async () => {
+      const outcome = await run(runner, SLOW_SWALLOWS[swallowName], { wallClockMs: 1_500 });
+      assertGuardStopKept(outcome, ['client-timeout']);
+      assert.equal(outcome.traceLimitExceeded, false, 'stopped while still recording');
+      assert.ok(outcome.ms < 10_000, `stopped after ${Math.round(outcome.ms)} ms`);
+    });
+
+    // A case of a trace batch that is not traced runs under the untraced guard
+    // tracer instead of the recording tracer.
+    test(`${runnerName}: ${swallowName} cannot swallow the untraced case guard`, async () => {
+      const outcome = await run(runner, source, { wallClockMs: 15_000, untraced: true });
+      assertGuardStopKept(outcome, ['line-limit', 'single-line-limit']);
+    });
+  }
+}
+
+// The untraced Submit paths have their own guards with the same hole: the
+// algorithm-fast batch driver and executeCode's interview guard.
+let fastBatchSourcePromise: Promise<string> | undefined;
+function fastBatchSource(): Promise<string> {
+  fastBatchSourcePromise ??= readFile(join(process.cwd(), 'workers/python/python-runtime.js'), 'utf8').then((source) => {
+    const self: Record<string, any> = {};
+    vm.runInContext(
+      source.replace(
+        'globalScope.__TRACECODE_PYODIDE_RUNTIME__ = {',
+        'globalScope.__TRACECODE_PYODIDE_RUNTIME__ = { buildPythonAlgorithmFastBatchSource,'
+      ),
+      vm.createContext({ console, self, globalThis: {} }),
+      { filename: 'python-runtime.js' }
+    );
+    return self.__TRACECODE_PYODIDE_RUNTIME__.buildPythonAlgorithmFastBatchSource(
+      { ...deps, INTERVIEW_GUARD_DEFAULTS: GUARD_DEFAULTS },
+      'solve',
+      'function'
+    );
+  });
+  return fastBatchSourcePromise;
+}
+
+const GUARD_DEFAULTS = {
+  maxLineEvents: 400000,
+  maxSingleLineHits: 150000,
+  maxCallDepth: 2000,
+  maxMemoryBytes: 96 * 1024 * 1024,
+  memoryCheckEvery: 200,
+};
+
+const SUBMIT_LIMITS = { interviewGuard: true, maxLineEvents: 20_000, maxSingleLineHits: 5_000, wallClockMs: 15_000 };
+
+for (const [runnerName, runner] of Object.entries(RUNNERS)) {
+  for (const [swallowName, source] of Object.entries(SWALLOWS)) {
+    test(`${runnerName}: ${swallowName} cannot swallow the fast batch guard`, async () => {
+      const reply = await runner([
+        `__tracecode_prepared_user_source = ${toPythonLiteral(source)}`,
+        `__tracecode_input_batch_literal = ${toPythonLiteral(toPythonLiteral([{ n: 1 }, { n: 2 }]))}`,
+        `__tracecode_limits_literal = ${toPythonLiteral(toPythonLiteral({ ...SUBMIT_LIMITS, stopAtFirstRunaway: true }))}`,
+        await fastBatchSource(),
+      ].join('\n'));
+      const results = JSON.parse(reply) as { success: boolean; output?: unknown; timeoutReason?: string }[];
+      assert.equal(results.length, 1, `the batch stops at the runaway case: ${reply}`);
+      assert.equal(results[0].success, false, reply);
+      assert.ok(RUNAWAY_REASONS.includes(results[0].timeoutReason ?? ''), reply);
+      assert.equal(results[0].output ?? null, null);
+    });
+
+    test(`${runnerName}: ${swallowName} cannot swallow the interview guard`, async () => {
+      const runtime = (await loadRuntime()) as Runtime & { executeCode: (...args: unknown[]) => Promise<any> };
+      let now = 0;
+      const result = await runtime.executeCode(
+        {
+          ...deps,
+          INTERVIEW_GUARD_DEFAULTS: GUARD_DEFAULTS,
+          loadPyodideInstance: async () => {},
+          getPyodide: () => ({ runPythonAsync: (code: string) => runner(code) }),
+          performanceNow: () => ++now,
+        },
+        source,
+        'solve',
+        { n: 1 },
+        'function',
+        SUBMIT_LIMITS
+      );
+      assert.equal(result.success, false, JSON.stringify(result));
+      assert.ok(RUNAWAY_REASONS.includes(result.timeoutReason), JSON.stringify(result));
+      assert.equal(result.output ?? null, null);
+    });
   }
 }
