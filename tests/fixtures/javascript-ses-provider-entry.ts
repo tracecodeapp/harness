@@ -770,11 +770,23 @@ function solve() {
       language: 'javascript',
       code: `function solve(root) { return [Object.keys(root), 'value' in root]; }`,
       functionName: 'solve',
-      cases: [1, 2].map((index) => ({
-        id: `plain-object-materializer-parity-${index}`,
-        input: { root: { __id__: 'plain-1', val: 1, left: { val: 2 }, right: null } },
-        expected: [['__id__', 'val', 'left', 'right'], false],
-      })),
+      // A value is a tree node only when it is marked (__type__, a tree- __id__)
+      // or has a child key (CHANGELOG 0.20.2, "A tree or linked-list node that
+      // does not list a child..."). A record with neither stays the plain object
+      // it is, its non-node __id__ included; one with left/right is a TreeNode,
+      // as in Python.
+      cases: [
+        {
+          id: 'plain-object-materializer-parity-record',
+          input: { root: { __id__: 'plain-1', val: 1, label: { val: 2 }, note: null } },
+          expected: [['__id__', 'val', 'label', 'note'], false],
+        },
+        {
+          id: 'plain-object-materializer-parity-keyed-node',
+          input: { root: { __id__: 'plain-1', val: 1, left: { val: 2 }, right: null } },
+          expected: [['val', 'value', 'left', 'right'], true],
+        },
+      ],
     });
     const libraryPrototypeFallback = await evaluate(host, {
       id: 'ses-provider-library-prototype-fallback',
@@ -1209,9 +1221,17 @@ export async function runJavaScriptSerializerParity(assetBaseUrl: string) {
         id: 'plain-id',
         input: {
           mode: 'plain-id',
+          root: { __id__: 'plain-1', val: 1, label: { val: 2 }, note: null },
+        },
+        expected: [['__id__', 'val', 'label', 'note'], false],
+      },
+      {
+        id: 'keyed-node',
+        input: {
+          mode: 'plain-id',
           root: { __id__: 'plain-1', val: 1, left: { val: 2 }, right: null },
         },
-        expected: [['__id__', 'val', 'left', 'right'], false],
+        expected: [['val', 'value', 'left', 'right'], true],
       },
     ],
   };
