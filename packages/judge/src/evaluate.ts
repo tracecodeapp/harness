@@ -540,11 +540,15 @@ function runBatch<Snapshot, Input, Expected, Result>(
           )
         ));
       }
-      if (!outcome.batch && outcome.backstopTimedOut) {
-        // The backstop stopped a runtime that did not honour its own limits
-        // before it published any case: each case is the provider's failure.
-        // No time limit is fabricated, and nothing is claimed about which
-        // case was running.
+      if (
+        !outcome.batch &&
+        (outcome.backstopTimedOut || outcome.failure?.origin === 'provider')
+      ) {
+        // The provider failed before it published any case: the backstop
+        // stopped a runtime that did not honour its own limits, or the
+        // provider rejected the batch (a stalled worker, a broken result
+        // protocol). Each case is the provider's failure. No time limit is
+        // fabricated, and nothing is claimed about which case was running.
         return Object.freeze(plan.cases.map((testCase) =>
           caseResult<Input, Expected, Result>(
             plan.id,
@@ -556,6 +560,7 @@ function runBatch<Snapshot, Input, Expected, Result>(
         ));
       }
       if (!outcome.batch) {
+        // Neither per-case outcomes nor a provider failure: a malformed runtime.
         return yield* Effect.fail(new JudgeInfrastructureError({
           operation: 'execute isolated batch',
           message:

@@ -27,6 +27,7 @@ import {
 import {
   liftCodeOutcome,
   liftTraceOutcome,
+  RuntimeProviderError,
 } from '../packages/runtime-contracts/src/execution-outcome';
 import { createEmptyRuntimeTrace } from '../packages/runtime-contracts/src/runtime-trace';
 import {
@@ -2407,7 +2408,7 @@ test('lifting rejects a worker reply that names a limit or stage outside the clo
 
 test('a provider whose batch stops itself gets one stopping batch request, not one request per case', async () => {
   type Reply = (inputBatch: readonly Record<string, unknown>[]) => readonly CodeExecutionResult[];
-  const runWith = async (reply: Reply) => {
+  const runWith = async (reply: Reply, stopAtFirstRunaway = true) => {
     const state = makePreparedState();
     const provider = preparedProvider(state);
     const originalPrepare = provider.prepareProgram.bind(provider);
@@ -2443,7 +2444,7 @@ test('a provider whose batch stops itself gets one stopping batch request, not o
           stoppingProvider,
           codeBinding({ sourcePath: bundle.execution.sourcePath })
         );
-        return yield* judge.evaluateAlgorithm(bundle, { stopAtFirstRunaway: true });
+        return yield* judge.evaluateAlgorithm(bundle, stopAtFirstRunaway ? { stopAtFirstRunaway: true } : {});
       })
     ));
     return { receipt, batchCalls, state };
@@ -2489,13 +2490,92 @@ test('a provider whose batch stops itself gets one stopping batch request, not o
     (inputBatch: readonly Record<string, unknown>[]) => [completed(inputBatch[0]!)],
     (inputBatch: readonly Record<string, unknown>[]) => [runaway, completed(inputBatch[1]!)],
   ]) {
-    // As with any provider failure on a batch, no case outcome is published
-    // and the evaluation rejects as the infrastructure's, never the learner's.
-    await assert.rejects(
-      runWith(malformed),
-      (error: unknown) =>
-        String(error).includes('JudgeInfrastructureError') &&
-        String(error).includes('not a prefix ending at its first runaway')
+    // As with any provider failure on a batch, every case is the provider's
+    // failure (here a broken protocol), never the learner's.
+    const broken = await runWith(malformed);
+    assert.equal(broken.receipt.evaluation.status, 'completed');
+    if (broken.receipt.evaluation.status === 'completed') {
+      assert.deepEqual(
+        broken.receipt.evaluation.cases.map(describeJudgeCase),
+        ['provider:protocol', 'provider:protocol', 'provider:protocol', 'provider:protocol']
+      );
+      assert.match(
+        broken.receipt.evaluation.cases[0]!.status === 'runtime-error'
+          ? broken.receipt.evaluation.cases[0]!.failure.message
+          : '',
+        /not a prefix ending at its first runaway/
+      );
+    }
+  }
+});
+
+test('a batch the provider rejects makes every case the provider failure, never a learner limit or a rejected evaluation', async () => {
+  // A provider rejects a batch when it fails for a reason the program did not
+  // cause, for instance a worker that stalled with no case running. The Judge
+  // reports that on every case instead of failing the whole evaluation.
+  type Reply = (inputBatch: readonly Record<string, unknown>[]) => readonly CodeExecutionResult[];
+  const evaluateWith = async (reply: Reply, stopAtFirstRunaway: boolean) => {
+    const state = makePreparedState();
+    const provider = preparedProvider(state);
+    const originalPrepare = provider.prepareProgram.bind(provider);
+    const rejectingProvider: RuntimePreparedExecutionProvider = {
+      ...provider,
+      async prepareProgram(call) {
+        const result = await originalPrepare(call);
+        if (result.kind !== 'prepared' || result.program.mode !== 'code') return result;
+        return {
+          ...result,
+          program: {
+            ...result.program,
+            capabilities: { ...result.program.capabilities, stopsAtFirstRunaway: true },
+            async executeBatchIsolated(batchCall: RuntimePreparedCodeBatchCall) {
+              return reply(batchCall.inputBatch);
+            },
+          },
+        };
+      },
+    };
+    const bundle = await createAlgorithmJudgeBundle({
+      id: 'rejected-batch',
+      language: 'javascript',
+      code: SOURCE,
+      functionName: 'solve',
+      cases: ['a', 'b', 'c'].map((id) => ({ id, input: { label: id }, expected: id })),
+    });
+    return Effect.runPromise(Effect.scoped(
+      Effect.gen(function* () {
+        const judge = yield* createTestRuntimeJudge(
+          rejectingProvider,
+          codeBinding({ sourcePath: bundle.execution.sourcePath })
+        );
+        return yield* judge.evaluateAlgorithm(bundle, stopAtFirstRunaway ? { stopAtFirstRunaway: true } : {});
+      })
+    ));
+  };
+  const stalled = (): readonly CodeExecutionResult[] => {
+    throw new RuntimeProviderError(
+      'The Python worker did not start case 2 in time after case 1 finished; no learner code was running.'
     );
+  };
+  for (const stopAtFirstRunaway of [true, false]) {
+    const receipt = await evaluateWith(stalled, stopAtFirstRunaway);
+    const evaluation = receipt.evaluation;
+    assert.equal(evaluation.status, 'completed', `stopAtFirstRunaway=${stopAtFirstRunaway}`);
+    if (evaluation.status !== 'completed') continue;
+    assert.deepEqual(
+      evaluation.cases.map(describeJudgeCase),
+      ['provider:runtime-failure', 'provider:runtime-failure', 'provider:runtime-failure']
+    );
+    for (const judged of evaluation.cases) {
+      assert.equal(judged.status, 'runtime-error');
+      assert.ok(
+        judged.diagnostics.some((diagnostic) => diagnostic.code === 'runtime-provider-error'),
+        JSON.stringify(judged.diagnostics)
+      );
+      assert.throws(
+        () => judgeCaseExecutionOutcome(judged, { language: 'javascript' }),
+        (error: unknown) => isRuntimeProviderError(error) && /did not start case 2/.test((error as Error).message)
+      );
+    }
   }
 });

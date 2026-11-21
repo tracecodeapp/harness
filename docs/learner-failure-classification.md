@@ -104,7 +104,8 @@ are typed so that the wrong answer cannot be produced by omission:
 - `limit` means a limit stopped execution; `reason` names it.
 - A provider failure is not an outcome. The provider rejects, preferably with
   `RuntimeProviderError` from `@tracecode/runtime-contracts`, and Judge reports
-  the rejection as `runtime-provider-error`. Runtime initialization failures
+  the rejection as `runtime-provider-error`. A rejected batch makes every case
+  in it the provider's failure; the evaluation itself still completes. Runtime initialization failures
   are reported the same way, on the process that needed the runtime.
 - Worker payloads are lifted by `liftCodeOutcome` and `liftTraceOutcome`. A
   worker `success: false` payload must carry a `timeoutReason` or a
