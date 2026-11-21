@@ -77,6 +77,12 @@ const PYTHON_TRACE_TIMEOUT_REASONS = new Set([
   'memory-limit',
   'client-timeout',
 ]);
+const PYTHON_TRACE_BUDGET_REASONS = new Set<ExecutionLimitReason>([
+  'trace-limit',
+  'trace-byte-limit',
+  'line-limit',
+  'single-line-limit',
+]);
 const PYTHON_WORKER_CASE_FAILURE_TAGS = new Set([
   'WorkerCrashedError',
   'WorkerReadyTimeoutError',
@@ -479,6 +485,12 @@ function normalizePythonExecutionResult(value: unknown): ExecutionResult {
   const timeoutReason = typeof record.timeoutReason === 'string' && PYTHON_TIMEOUT_REASONS.has(record.timeoutReason as ExecutionLimitReason)
     ? record.timeoutReason as ExecutionLimitReason
     : undefined;
+  // The trace budget that stopped recording; on a failed or stopped case
+  // timeoutReason names the limit that stopped the program instead.
+  const traceLimitReason = typeof record.traceLimitReason === 'string' &&
+    PYTHON_TRACE_BUDGET_REASONS.has(record.traceLimitReason as ExecutionLimitReason)
+    ? record.traceLimitReason as ExecutionLimitReason
+    : undefined;
   const timings = normalizeExecutionTimings(record.timings);
   return liftTraceOutcome(
     {
@@ -493,6 +505,7 @@ function normalizePythonExecutionResult(value: unknown): ExecutionResult {
       consoleOutput: normalizeStringArray(record.consoleOutput),
       ...(record.traceLimitExceeded === true ? { traceLimitExceeded: true } : {}),
       ...(timeoutReason ? { timeoutReason } : {}),
+      ...(traceLimitReason ? { traceLimitReason } : {}),
       ...(record.diagnostic !== undefined ? { diagnostic: sanitizeJsonValue(record.diagnostic) } : {}),
       ...(timings ? { timings } : {}),
     },

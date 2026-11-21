@@ -8,6 +8,9 @@
  *
  * - `success: true`  -> `completed` (for traces, `traceLimitExceeded` becomes
  *   `traceTruncated`: the run finished but the recording hit a budget).
+ *   A trace reply that also names `traceLimitReason` (the budget that
+ *   stopped recording) carries it as `traceTruncated` on every outcome kind,
+ *   so a run that failed or was stopped after recording stopped keeps it.
  * - `success: false` with a `timeoutReason` -> `limit` (execution was stopped).
  * - `success: false` with a `diagnosticStage` -> `failed` (the learner's
  *   program failed at that stage).
@@ -145,7 +148,7 @@ export function isExecutionDiagnosticStage(value: unknown): value is ExecutionDi
  * protocol: it is the provider's failure, never a learner limit or failure.
  */
 function malformedClassification(
-  field: 'timeoutReason' | 'diagnosticStage',
+  field: 'timeoutReason' | 'diagnosticStage' | 'traceLimitReason',
   value: unknown,
   fallbackError: string
 ): RuntimeProviderError {
@@ -168,6 +171,18 @@ function checkedLimitReason(
   return value;
 }
 
+function checkedTraceLimitReason(
+  raw: RawExecutionPayload,
+  fallbackError: string
+): ExecutionLimitReason | undefined {
+  const value: unknown = raw.traceLimitReason;
+  if (value === undefined || value === null || value === '') return undefined;
+  if (!isExecutionLimitReason(value)) {
+    throw malformedClassification('traceLimitReason', value, fallbackError);
+  }
+  return value;
+}
+
 /**
  * Every classification a reply carries must be in its closed set, whatever
  * else the reply says: a completed reply with an unknown limit, or a limit
@@ -175,6 +190,7 @@ function checkedLimitReason(
  */
 function assertClassificationFields(raw: RawExecutionPayload, fallbackError: string): void {
   checkedLimitReason(raw, fallbackError);
+  checkedTraceLimitReason(raw, fallbackError);
   const stage: unknown = raw.diagnosticStage;
   if (stage !== undefined && stage !== null && stage !== '' && !isExecutionDiagnosticStage(stage)) {
     throw malformedClassification('diagnosticStage', stage, fallbackError);
@@ -218,6 +234,12 @@ export interface RawExecutionPayload {
   diagnosticStage?: ExecutionDiagnosticStage;
   diagnostic?: unknown;
   traceLimitExceeded?: boolean;
+  /**
+   * The trace budget that stopped recording, when the reply's own
+   * `timeoutReason` may name something else (the limit that then stopped the
+   * program). Optional; trace replies only.
+   */
+  traceLimitReason?: ExecutionLimitReason;
   executionTimeMs?: number;
   timings?: RuntimeExecutionTimings;
 }
@@ -290,6 +312,7 @@ export function liftTraceOutcome(
   assertClassificationFields(raw, fallbackError);
   const consoleOutput = raw.consoleOutput ?? [];
   const executionTimeMs = raw.executionTimeMs ?? 0;
+  const traceLimitReason = checkedTraceLimitReason(raw, fallbackError);
   if (raw.success) {
     return {
       kind: 'completed',
@@ -298,11 +321,17 @@ export function liftTraceOutcome(
       executionTimeMs,
       consoleOutput,
       ...(raw.traceLimitExceeded
-        ? { traceTruncated: checkedLimitReason(raw, fallbackError) ?? 'trace-limit' }
+        ? {
+            traceTruncated:
+              traceLimitReason ?? checkedLimitReason(raw, fallbackError) ?? 'trace-limit',
+          }
         : {}),
       ...(raw.timings ? { timings: raw.timings } : {}),
     };
   }
+  // A failed or stopped run names the budget only when the reply does: its
+  // timeoutReason is the limit that stopped the program, not the budget.
+  const truncated = traceLimitReason ? { traceTruncated: traceLimitReason } : {};
   const reason = checkedLimitReason(raw, fallbackError);
   if (reason) {
     return {
@@ -313,6 +342,7 @@ export function liftTraceOutcome(
       executionTimeMs,
       ...(raw.diagnostic !== undefined ? { diagnostic: raw.diagnostic } : {}),
       consoleOutput,
+      ...truncated,
       ...(raw.timings ? { timings: raw.timings } : {}),
     };
   }
@@ -326,6 +356,7 @@ export function liftTraceOutcome(
     diagnosticStage,
     ...(raw.diagnostic !== undefined ? { diagnostic: raw.diagnostic } : {}),
     consoleOutput,
+    ...truncated,
     ...(raw.timings ? { timings: raw.timings } : {}),
   };
 }

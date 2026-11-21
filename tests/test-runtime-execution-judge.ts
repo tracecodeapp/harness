@@ -77,6 +77,8 @@ interface FakeInput extends Record<string, unknown> {
     | 'runaway'
     | 'throw'
     | 'trace-truncated'
+    | 'runaway-trace-truncated'
+    | 'failed-trace-truncated'
     | 'unstaged'
     | 'bogus-limit'
     | 'unknown-stage'
@@ -374,6 +376,29 @@ function fakeProvider(
                 trace,
                 executionTimeMs: 3,
                 consoleOutput: consoleOutput(input),
+              };
+            }
+            if (input.mode === 'runaway-trace-truncated') {
+              return {
+                kind: 'limit',
+                reason: 'line-limit',
+                error: 'the program executed too many lines',
+                trace,
+                executionTimeMs: 3,
+                consoleOutput: consoleOutput(input),
+                traceTruncated: 'trace-byte-limit',
+              };
+            }
+            if (input.mode === 'failed-trace-truncated') {
+              return {
+                kind: 'failed',
+                error: 'traced runtime exploded after recording stopped',
+                errorLine: 2,
+                trace,
+                executionTimeMs: 3,
+                consoleOutput: consoleOutput(input),
+                diagnosticStage: 'runtime',
+                traceTruncated: 'trace-limit',
               };
             }
             if (input.mode === 'limit') {
@@ -2756,4 +2781,82 @@ test('a JavaScript worker script load error reaches the consumer as a provider f
   } finally {
     client.terminate();
   }
+});
+
+test('a traced case stopped or failed after its trace stopped recording keeps the trace budget', async () => {
+  // The worker's wire result: the guard's limit, and the trace budget beside it.
+  const trace = createEmptyRuntimeTrace('python', { runId: 'python:run' });
+  const limited = liftTraceOutcome({
+    success: false,
+    error: 'Execution stopped on line 4: the program executed too many lines.',
+    timeoutReason: 'line-limit',
+    traceLimitExceeded: true,
+    traceLimitReason: 'trace-byte-limit',
+    consoleOutput: [],
+  }, trace);
+  assert.equal(limited.kind, 'limit');
+  assert.equal(limited.kind === 'limit' ? limited.reason : undefined, 'line-limit');
+  assert.equal(limited.traceTruncated, 'trace-byte-limit');
+  const failed = liftTraceOutcome({
+    success: false,
+    error: 'ValueError on line 3: boom',
+    diagnosticStage: 'runtime',
+    traceLimitExceeded: true,
+    traceLimitReason: 'trace-limit',
+    consoleOutput: [],
+  }, trace);
+  assert.equal(failed.kind, 'failed');
+  assert.equal(failed.traceTruncated, 'trace-limit');
+  const completed = liftTraceOutcome({
+    success: true,
+    output: 4,
+    timeoutReason: 'trace-byte-limit',
+    traceLimitExceeded: true,
+    traceLimitReason: 'trace-byte-limit',
+    consoleOutput: [],
+  }, trace);
+  assert.equal(completed.kind === 'completed' ? completed.traceTruncated : undefined, 'trace-byte-limit');
+  // Additive: a reply without the field lifts exactly as before.
+  assert.deepEqual(
+    liftTraceOutcome({ success: false, error: 'x', timeoutReason: 'line-limit', consoleOutput: [] }, trace),
+    { kind: 'limit', reason: 'line-limit', error: 'x', trace, executionTimeMs: 0, consoleOutput: [] }
+  );
+  assert.throws(
+    () => liftTraceOutcome({
+      success: false, error: 'x', timeoutReason: 'line-limit', traceLimitReason: 'banana', consoleOutput: [],
+    } as unknown as Parameters<typeof liftTraceOutcome>[0], trace),
+    (error: unknown) => isRuntimeProviderError(error) && /unknown traceLimitReason/.test((error as Error).message)
+  );
+
+  // Judge keeps the budget as a warning beside the case's failure, and the
+  // learner-facing outcome restores it.
+  const state = makeState();
+  const result = await evaluate(
+    state,
+    makePlan<unknown>([
+      { id: 'runaway', input: { label: 'runaway', mode: 'runaway-trace-truncated' }, expected: 'unused' },
+      { id: 'raised', input: { label: 'raised', mode: 'failed-trace-truncated' }, expected: 'unused' },
+    ]),
+    codeBinding({ trace: true, traceOptions: { maxTraceSteps: 10 } })
+  );
+  const [runaway, raised] = result.cases;
+  assert.equal(describeJudgeCase(runaway!), 'limit:line-limit');
+  assert.deepEqual(
+    runaway!.diagnostics.map(({ severity, code }) => ({ severity, code })),
+    [{ severity: 'error', code: 'line-limit' }, { severity: 'warning', code: 'trace-byte-limit' }]
+  );
+  assert.equal(describeJudgeCase(raised!), 'program:runtime:traced runtime exploded after recording stopped');
+  assert.deepEqual(
+    raised!.diagnostics.map(({ severity, code }) => ({ severity, code })),
+    [{ severity: 'error', code: 'runtime' }, { severity: 'warning', code: 'trace-limit' }]
+  );
+  const runawayOutcome = judgeCaseExecutionOutcome(runaway!, { language: 'javascript', trace: true });
+  assert.equal(runawayOutcome.kind, 'limit');
+  assert.equal(runawayOutcome.kind === 'limit' ? runawayOutcome.reason : undefined, 'line-limit');
+  assert.equal(runawayOutcome.kind === 'limit' ? runawayOutcome.traceTruncated : undefined, 'trace-byte-limit');
+  const raisedOutcome = judgeCaseExecutionOutcome(raised!, { language: 'javascript', trace: true });
+  assert.equal(raisedOutcome.kind, 'failed');
+  assert.equal(raisedOutcome.kind === 'failed' ? raisedOutcome.traceTruncated : undefined, 'trace-limit');
+  // Untraced conversion is unchanged.
+  assert.equal('traceTruncated' in judgeCaseExecutionOutcome(runaway!, { language: 'javascript' }), false);
 });
