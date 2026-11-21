@@ -6,6 +6,17 @@ This repo uses Git tags as release boundaries. Version notes below summarize wha
 
 ## [Unreleased]
 
+### Added
+
+- A traced run that failed, or was stopped by a limit, after its trace stopped
+  recording at a budget keeps that budget: `traceTruncated?:
+  ExecutionLimitReason` (optional, additive) is now also on the `failed` and
+  `limit` variants of the trace `ExecutionResult`. `liftTraceOutcome` maps it
+  from a reply's `traceLimitReason` on every outcome kind (Python sends it).
+  Judge keeps it as a warning diagnostic beside the case's failure, and
+  `judgeCaseExecutionOutcome` restores it. Outcomes from providers that do
+  not report it are unchanged.
+
 ### Fixed
 
 - A traced Python Run whose trace stopped recording at a budget (trace bytes,
@@ -31,8 +42,7 @@ This repo uses Git tags as release boundaries. Version notes below summarize wha
   slow just before the deadline are still stopped in time. With no per-case
   deadline, the grace runs from the moment recording stops. The worker returns the
   trace budget that stopped recording as `traceLimitReason`, also when a
-  guard then stopped the program; the outcome contract does not carry it
-  yet.
+  guard then stopped the program.
 - A Python guard's stop can no longer be swallowed by the learner's code
   (bare `except:`, `except BaseException:`, `finally: return`). The trip is
   recorded as the case's limit whatever the learner then returns, and the

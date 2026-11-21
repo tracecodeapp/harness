@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import {
   createPythonPreparedExecutionProvider,
+  createPythonRuntimeClient,
   PythonAlgorithmFastBatchUnavailableError,
   type PythonPreparedProgramArtifact,
   type PythonWorkerClient,
@@ -1670,4 +1671,39 @@ test('Python prepared provider maps compilation failures and normalizes trace ti
   assert.equal(preparationCount, 2);
   await tracePreparation.program.dispose();
   provider.terminate();
+});
+
+test('a traced Python case a guard stopped after its trace stopped recording keeps the trace budget', async () => {
+  const wire = (fields: Record<string, unknown>) => ({
+    output: null,
+    trace: { events: [] },
+    executionTimeMs: 1,
+    consoleOutput: [],
+    traceLimitExceeded: true,
+    ...fields,
+  });
+  const replies = [
+    wire({
+      success: false,
+      error: 'Execution stopped on line 4: the program executed too many lines.',
+      timeoutReason: 'line-limit',
+      traceLimitReason: 'trace-byte-limit',
+    }),
+    wire({ success: true, output: 4, timeoutReason: 'trace-byte-limit', traceLimitReason: 'trace-byte-limit' }),
+    // A worker that does not report the budget: lifted as before.
+    wire({ success: false, error: 'stopped', timeoutReason: 'line-limit' }),
+  ];
+  const client = createPythonRuntimeClient({
+    executeWithTracing: async () => replies.shift(),
+  } as unknown as Parameters<typeof createPythonRuntimeClient>[0]);
+  const call = { code: 'def solve():\n    return 4', functionName: 'solve', inputs: {}, executionStyle: 'function' as const };
+  const stopped = await client.executeWithTracing(call);
+  assert.equal(stopped.kind, 'limit');
+  assert.equal(stopped.kind === 'limit' ? stopped.reason : undefined, 'line-limit');
+  assert.equal(stopped.kind === 'limit' ? stopped.traceTruncated : undefined, 'trace-byte-limit');
+  const completed = await client.executeWithTracing(call);
+  assert.equal(completed.kind === 'completed' ? completed.traceTruncated : undefined, 'trace-byte-limit');
+  const legacy = await client.executeWithTracing(call);
+  assert.equal(legacy.kind, 'limit');
+  assert.equal('traceTruncated' in legacy, false);
 });

@@ -203,6 +203,7 @@ export function judgeCaseExecutionOutcome(
         trace: traceOf(result, options.language),
         executionTimeMs: durationMs(result),
         consoleOutput,
+        ...traceTruncated(result),
         ...timings,
       }
     : { ...outcome, consoleOutput, ...timings };

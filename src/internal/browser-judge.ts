@@ -694,14 +694,16 @@ function outcomeFailure(
 
 function traceTruncationDiagnostic(
   runtime: string,
-  outcome: Extract<ExecutionResult, { readonly kind: 'completed' }>
+  outcome: ExecutionResult
 ): readonly JudgeDiagnostic[] {
   return outcome.traceTruncated
     ? Object.freeze([Object.freeze({
         severity: 'warning' as const,
-        message:
-          `Trace recording stopped at the ${outcome.traceTruncated} budget ` +
-          'after execution completed.',
+        message: outcome.kind === 'completed'
+          ? `Trace recording stopped at the ${outcome.traceTruncated} budget ` +
+            'after execution completed.'
+          : `Trace recording stopped at the ${outcome.traceTruncated} budget ` +
+            'before the program stopped; the trace ends there.',
         code: outcome.traceTruncated,
         source: runtime,
       })])
@@ -793,7 +795,9 @@ function mappedTraceOutcome(
     output: Object.freeze({
       failure: outcomeFailure(outcome, diagnostic),
       trace: outcome.trace,
-      diagnostics: Object.freeze([diagnostic]),
+      // The failure first; the trace budget that stopped recording before it
+      // is a warning beside it.
+      diagnostics: Object.freeze([diagnostic, ...traceTruncationDiagnostic(runtime, outcome)]),
       ...mappedTimings(outcome.timings),
     }),
     process: Object.freeze({

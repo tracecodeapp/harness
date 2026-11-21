@@ -145,6 +145,10 @@ export interface CodeExecutionBatchResult {
  *
  * `limit` means execution itself was stopped. A run that completed while its
  * trace *recording* hit a budget is `completed` with `traceTruncated` set.
+ * A run whose recording hit a budget and that then failed, or was stopped by
+ * a limit, also carries `traceTruncated` (optional; a provider that does not
+ * report it leaves it unset): the trace ends where recording stopped, not
+ * where the program failed or was stopped.
  */
 export type ExecutionResult =
   | {
@@ -166,6 +170,8 @@ export type ExecutionResult =
       /** Required: a `failed` outcome always says which program stage failed. */
       diagnosticStage: ExecutionDiagnosticStage;
       diagnostic?: unknown;
+      /** The trace budget that stopped recording before the program failed. */
+      traceTruncated?: ExecutionLimitReason;
       timings?: RuntimeExecutionTimings;
       /**
        * Set only on a case of a traced batch that the runtime could not trace
@@ -186,6 +192,8 @@ export type ExecutionResult =
       executionTimeMs: number;
       consoleOutput: string[];
       diagnostic?: unknown;
+      /** The trace budget that stopped recording before `reason` stopped the program. */
+      traceTruncated?: ExecutionLimitReason;
       timings?: RuntimeExecutionTimings;
     };
 
