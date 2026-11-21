@@ -142,6 +142,7 @@ type Outcome = {
   monitoring: boolean;
   afterDeadlineMs: number | null;
   afterGraceMs: number | null;
+  graceStartedMs: number | null;
   ms: number;
 };
 
@@ -190,6 +191,7 @@ __tracecode_test_reply = json.dumps({
     'monitoring': bool(globals().get('_TC_MONITORING_WAS_ARMED')),
     'afterDeadlineMs': (_tracecode_perf_counter() - _case_deadline) * 1000 if _case_deadline > 0 else None,
     'afterGraceMs': (_tracecode_perf_counter() - _hard_line_deadline) * 1000 if _hard_line_deadline > 0 else None,
+    'graceStartedMs': (_hard_line_deadline - _hard_line_grace_seconds - _case_started_at) * 1000 if _hard_line_deadline > 0 else None,
 })
 __tracecode_test_reply
 `);
@@ -584,5 +586,45 @@ for (const [runnerName, runner] of Object.entries(RUNNERS)) {
     assert.equal(result.traceLimitExceeded, true);
     assert.equal(result.traceLimitReason, 'trace-byte-limit');
     assert.ok(result.trace.events.length > 0);
+  });
+}
+
+// Lines turn slow just before the deadline, after cheap lines have grown the
+// sampling interval to its maximum: the next sample must still come soon
+// after the deadline, not 256 slow lines later.
+const SUDDENLY_SLOW = `def solve(n):
+    import time
+    begin = time.perf_counter()
+    total = 0
+    while time.perf_counter() - begin < 1.3:
+        time.sleep(0.0001)
+    while total >= 0:
+        time.sleep(0.1)
+    return total
+`;
+
+// Recording stops on the line that sleeps; the grace runs from then, not
+// from the next learner line after the sleep.
+const SLOW_AFTER_CUTOFF = `def solve(n):
+    total = 0
+    total = len(str(n))
+    __import__('time').sleep(0.8)
+    while total >= 0:
+        total = sum(range(200000)) % 7
+    return total
+`;
+
+for (const [runnerName, runner] of Object.entries(RUNNERS)) {
+  test(`${runnerName}, sys.settrace: lines that turn slow just before the deadline are stopped soon after it`, async () => {
+    const outcome = await run(runner, SUDDENLY_SLOW, { wallClockMs: 1_500, maxTraceSteps: 5 });
+    assert.equal(outcome.timeoutReason, 'client-timeout', JSON.stringify(outcome));
+    assert.ok(outcome.afterDeadlineMs! < SOON_MS, `stopped ${Math.round(outcome.afterDeadlineMs!)} ms after the deadline`);
+  });
+
+  test(`${runnerName}, PEP 669: with no deadline, the grace starts when recording stops`, async () => {
+    const outcome = await run(runner, SLOW_AFTER_CUTOFF, { maxTraceSteps: 3, graceSeconds: 1 });
+    assert.equal(outcome.traceLimitExceeded, true);
+    assert.ok(outcome.graceStartedMs! < 500, `grace started ${Math.round(outcome.graceStartedMs!)} ms into the case, after the sleep`);
+    assert.equal(outcome.timeoutReason, 'client-timeout', JSON.stringify(outcome));
   });
 }

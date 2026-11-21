@@ -26,7 +26,10 @@ This repo uses Git tags as release boundaries. Version notes below summarize wha
   long lines take (a sample every ~20 ms), so slow lines are stopped about
   15 ms after the deadline rather than seconds late. Before, the client's
   clock could close the worker first and lose the trace. The learner's own
-  `exec`/`eval` code stays under the deadline too. The worker returns the
+  `exec`/`eval` code stays under the deadline too. The interval is also
+  capped by the time left (20 lines per second left), so lines that turn
+  slow just before the deadline are still stopped in time. With no per-case
+  deadline, the grace runs from the moment recording stops. The worker returns the
   trace budget that stopped recording as `traceLimitReason`, also when a
   guard then stopped the program; the outcome contract does not carry it
   yet.
@@ -39,6 +42,17 @@ This repo uses Git tags as release boundaries. Version notes below summarize wha
   applies to the traced executor (recording, after recording stopped, and
   untraced cases), the algorithm-fast batch and `executeCode`'s interview
   guard.
+
+### Known limits
+
+- In an untraced case of a mixed trace batch (and in an untraced Run), a loop
+  that runs only inside the learner's own `exec`/`eval` code is not seen by
+  the untraced guard (it only examines `solution.py` frames), so the client's
+  per-case clock stops it rather than the worker's own deadline.
+- After recording stops, a single learner line that spends long in C code,
+  or lines that turn slower than 1/20 s each well before the deadline, can
+  still let the deadline pass by up to one sampling interval; only an
+  interrupt buffer (a cross-origin isolated page) can stop C code mid-call.
 
 ## [0.20.2] - 2026-11-17
 
