@@ -19,6 +19,17 @@ import {
   type PythonPreparedProgramArtifact,
 } from '../packages/runtime-python/src/index';
 import { PythonWorkerClient } from '../packages/runtime-python/src/python-worker-client';
+import * as Effect from 'effect/Effect';
+import {
+  createAlgorithmJudgeBundle,
+  isRuntimeProviderError,
+  judgeCaseExecutionOutcome,
+} from '../src/judge';
+import { createBrowserRuntimeJudge } from '../src/internal/browser-judge';
+import {
+  createBrowserRuntimeHost,
+  createBrowserRuntimeProviderRegistry,
+} from '../packages/runtime-browser/src';
 import type {
   CodeExecutionResult,
   ExecutionResult,
@@ -427,4 +438,85 @@ test('Python traced stopping batch whose final reply is late keeps every streame
   await program.dispose();
   provider.terminate();
   assert.equal(log.terminated, log.created, 'Every worker is terminated');
+});
+
+test('Python stopping batch whose worker stalls between cases reaches the Judge as a provider failure on every case', async () => {
+  // End to end: the real Python provider and worker client, a worker that
+  // stalls after case 1 with no case running, and the Judge. The evaluation
+  // completes with each case the provider's failure; it neither rejects nor
+  // gives any case a time limit, and a consumer converting a case gets
+  // RuntimeProviderError.
+  const log = newLog();
+  const provider = createPythonPreparedExecutionProvider({
+    createWorkerClient: () =>
+      new PythonWorkerClient({
+        workerUrl: 'python-worker.js',
+        debug: false,
+        workerFactory: () => new StuckCaseWorker(-1, log, -1, { kind: 'after-case', index: 0 }) as never,
+      }),
+  });
+  const host = createBrowserRuntimeHost({
+    providerRegistry: createBrowserRuntimeProviderRegistry([{
+      id: 'python-stalling-double',
+      languages: ['python'],
+      create() {
+        return {
+          preparedProviders: new Map([['python', provider]]),
+          disposeLanguage() {},
+          dispose() {},
+        };
+      },
+    }]),
+    providers: ['python'],
+    featureOverrides: {
+      worker: true,
+      webAssembly: true,
+      webCrypto: true,
+      sharedArrayBuffer: true,
+      crossOriginIsolated: true,
+    },
+  });
+  try {
+    const bundle = await createAlgorithmJudgeBundle({
+      id: 'python-stalled-stopping-batch',
+      language: 'python',
+      code: 'def solve(value):\n    return value',
+      functionName: 'solve',
+      executionStyle: 'function',
+      limits: { wallClockMs: 200 },
+      cases: [1, 2, 3].map((value) => ({ id: `case-${value}`, input: { value }, expected: value })),
+    });
+    const receipt = await Effect.runPromise(Effect.scoped(
+      Effect.gen(function* () {
+        const judge = yield* createBrowserRuntimeJudge({
+          host,
+          language: 'python',
+          binding: {
+            sourcePath: bundle.execution.sourcePath,
+            functionName: 'solve',
+            executionStyle: 'function',
+          } as never,
+        });
+        return yield* judge.evaluateAlgorithm(bundle, { stopAtFirstRunaway: true });
+      })
+    ));
+    const evaluation = receipt.evaluation;
+    assert.equal(evaluation.status, 'completed');
+    if (evaluation.status !== 'completed') return;
+    assert.equal(log.batchRequests.length, 1, 'One stopping batch request');
+    assert.equal(evaluation.cases.length, 3);
+    for (const judged of evaluation.cases) {
+      assert.equal(judged.status, 'runtime-error', JSON.stringify(judged));
+      if (judged.status !== 'runtime-error') continue;
+      assert.equal(judged.failure.origin, 'provider');
+      assert.match(judged.failure.message, /did not start case 2/);
+      assert.throws(
+        () => judgeCaseExecutionOutcome(judged, { language: 'python' }),
+        (error: unknown) => isRuntimeProviderError(error)
+      );
+    }
+  } finally {
+    host.dispose();
+    provider.terminate();
+  }
 });

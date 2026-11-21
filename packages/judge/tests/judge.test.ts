@@ -113,9 +113,42 @@ function executeFakeProcess(
           })
         );
       }
+      if (invocation.phase === 'batch') {
+        return executeFakeBatch(control, invocationId, context.command);
+      }
       return executeFakeCase(control, state, invocationId, invocation);
     })
   );
+}
+
+const FAKE_PROVIDER_FAILURE = 'The fake runtime failed before it ran any case.';
+
+/**
+ * A batch process that ends without per-case outcomes: either it states
+ * that the provider failed, or it publishes nothing at all.
+ */
+function executeFakeBatch(
+  control: InMemoryJudgeRuntimeControl,
+  invocationId: string,
+  command: string
+): Effect.Effect<TraceKernelRuntimeResult, Error> {
+  const failed = { exitCode: 1, stdout: '', stderr: `${FAKE_PROVIDER_FAILURE}\n` };
+  if (command === 'batch-provider-failure') {
+    return control.publish(invocationId, {
+      diagnostics: [{
+        severity: 'error',
+        code: 'runtime-provider-error',
+        message: FAKE_PROVIDER_FAILURE,
+        source: 'fake',
+      }],
+      failure: {
+        origin: 'provider',
+        reason: 'runtime-failure',
+        message: FAKE_PROVIDER_FAILURE,
+      },
+    }).pipe(Effect.as(failed));
+  }
+  return Effect.succeed(failed);
 }
 
 function executeFakeCase(
@@ -956,5 +989,64 @@ test('rejects per-case environment overrides in provider-isolated batches', asyn
       /must not define per-case environment variables/
     );
     assert.match(exit.cause.toString(), new RegExp(JudgePlanError.name));
+  }
+});
+
+test('a batch the provider failed before publishing any case makes every case the provider failure', async () => {
+  await Effect.runPromise(Effect.scoped(
+    Effect.gen(function* () {
+      const control = new InMemoryJudgeRuntimeControl();
+      const state = yield* makeState();
+      const host = yield* makeTraceKernelHost({
+        providers: [fakeProvider(control, state)],
+      });
+      const port = new TraceKernelJudgePort({ host, runtimeControl: control });
+      const result = yield* evaluateJudgePlan(
+        port,
+        makePlan([{ value: 1 }, { value: 2 }], {
+          compile: undefined,
+          run: { command: 'batch-provider-failure', timeoutMs: 1_000 },
+          isolation: { mode: 'provider-isolated-batch' },
+        })
+      );
+      assert.equal(result.status, 'completed');
+      if (result.status !== 'completed') return;
+      assert.equal(result.cases.length, 2);
+      for (const judged of result.cases) {
+        assert.equal(judged.status, 'runtime-error');
+        assert.equal(judged.timedOut, false);
+        assert.deepEqual(judged.failure, {
+          origin: 'provider',
+          reason: 'runtime-failure',
+          message: FAKE_PROVIDER_FAILURE,
+        });
+      }
+    })
+  ));
+});
+
+test('a batch that publishes neither cases nor a provider failure is still a malformed runtime', async () => {
+  const exit = await Effect.runPromiseExit(Effect.scoped(
+    Effect.gen(function* () {
+      const control = new InMemoryJudgeRuntimeControl();
+      const state = yield* makeState();
+      const host = yield* makeTraceKernelHost({
+        providers: [fakeProvider(control, state)],
+      });
+      const port = new TraceKernelJudgePort({ host, runtimeControl: control });
+      return yield* evaluateJudgePlan(
+        port,
+        makePlan([{ value: 1 }, { value: 2 }], {
+          compile: undefined,
+          run: { command: 'batch-silent', timeoutMs: 1_000 },
+          isolation: { mode: 'provider-isolated-batch' },
+        })
+      );
+    })
+  ));
+  assert.equal(exit._tag, 'Failure');
+  if (exit._tag === 'Failure') {
+    assert.match(exit.cause.toString(), /JudgeInfrastructureError/);
+    assert.match(exit.cause.toString(), /without publishing per-case outcomes/);
   }
 });
