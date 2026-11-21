@@ -126,7 +126,10 @@ function failureOutcome(
       }
       return { kind: 'limit', reason: failure.reason, error: failure.message };
     case 'provider':
-      throw new RuntimeProviderError(failure.message, { cause: failure });
+      throw new RuntimeProviderError(failure.message, {
+        cause: failure,
+        ...(failure.reason === 'protocol' ? { reason: 'protocol' as const } : {}),
+      });
   }
 }
 

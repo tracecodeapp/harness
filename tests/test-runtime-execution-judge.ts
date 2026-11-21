@@ -2505,6 +2505,14 @@ test('a provider whose batch stops itself gets one stopping batch request, not o
           : '',
         /not a prefix ending at its first runaway/
       );
+      // The consumer conversion keeps the provider's reason.
+      assert.throws(
+        () => judgeCaseExecutionOutcome(broken.receipt.evaluation.cases[0]!, { language: 'javascript' }),
+        (error: unknown) =>
+          error instanceof Error &&
+          error.name === 'RuntimeProviderError' &&
+          (error as { reason?: unknown }).reason === 'protocol'
+      );
     }
   }
 });
