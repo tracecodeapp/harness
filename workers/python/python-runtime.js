@@ -1079,17 +1079,18 @@ class __TracecodeExecutionGuard:
         if builtins_snapshot is None or modules_snapshot is None:
             raise RuntimeError('TraceCode Python execution scope was not active')
         self._settrace(None)
-        # The tracer's PEP 669 tool (tool id 4, named 'tracecode'; see
-        # _TC_MONITORING_TOOL) must never outlive its case: a guard's sticky
-        # stop left armed would raise in the next case's learner code.
+        # The tracer's PEP 669 tool (named 'tracecode'; id 4 unless the
+        # learner's code held it) must never outlive its case: a guard's
+        # sticky stop left armed would raise in the next case's learner code.
         monitoring = self._monitoring
         if monitoring is not None:
-            try:
-                if monitoring.get_tool(4) == 'tracecode':
-                    monitoring.set_events(4, 0)
-                    monitoring.free_tool_id(4)
-            except Exception:
-                pass
+            for tool_id in range(6):
+                try:
+                    if monitoring.get_tool(tool_id) == 'tracecode':
+                        monitoring.set_events(tool_id, 0)
+                        monitoring.free_tool_id(tool_id)
+                except Exception:
+                    pass
         for module, namespace_snapshot in module_dict_snapshots or ():
             try:
                 namespace = module.__dict__
@@ -1798,6 +1799,7 @@ class _TracecodeAlgorithmLimit(BaseException):
 _tracecode_batch_monitoring = getattr(_tracecode_batch_sys, 'monitoring', None)
 _tracecode_case_tripped = None
 _tracecode_case_sticky_armed = False
+_tracecode_case_sticky_tool = 4
 
 def _tracecode_case_sticky_line(code, line_number):
     if code.co_filename != 'solution.py':
@@ -1805,19 +1807,30 @@ def _tracecode_case_sticky_line(code, line_number):
     raise _TracecodeAlgorithmLimit(_tracecode_case_tripped)
 
 def _tracecode_case_trip(reason):
-    global _tracecode_case_tripped, _tracecode_case_sticky_armed
+    global _tracecode_case_tripped, _tracecode_case_sticky_armed, _tracecode_case_sticky_tool
     if _tracecode_case_tripped is None:
         _tracecode_case_tripped = reason
     _tracecode_batch_sys.settrace(None)
     if _tracecode_batch_monitoring is not None and not _tracecode_case_sticky_armed:
         try:
-            # Tool id 4, named 'tracecode', as the trace executor's tool.
-            _tracecode_batch_monitoring.use_tool_id(4, 'tracecode')
-            _tracecode_case_sticky_armed = True
-            _tracecode_batch_monitoring.register_callback(
-                4, _tracecode_batch_monitoring.events.LINE, _tracecode_case_sticky_line
-            )
-            _tracecode_batch_monitoring.set_events(4, _tracecode_batch_monitoring.events.LINE)
+            # Named 'tracecode' like the trace executor's tool; id 4 unless the
+            # learner's code holds it, then any free user id.
+            for _tracecode_tool in (4, 3, 5, 2, 1, 0):
+                try:
+                    _tracecode_batch_monitoring.use_tool_id(_tracecode_tool, 'tracecode')
+                except ValueError:
+                    continue
+                _tracecode_case_sticky_tool = _tracecode_tool
+                _tracecode_case_sticky_armed = True
+                _tracecode_batch_monitoring.register_callback(
+                    _tracecode_tool,
+                    _tracecode_batch_monitoring.events.LINE,
+                    _tracecode_case_sticky_line,
+                )
+                _tracecode_batch_monitoring.set_events(
+                    _tracecode_tool, _tracecode_batch_monitoring.events.LINE
+                )
+                break
         except Exception:
             pass
     raise _TracecodeAlgorithmLimit(_tracecode_case_tripped)
@@ -1827,8 +1840,8 @@ def _tracecode_case_disarm():
     if _tracecode_case_sticky_armed:
         _tracecode_case_sticky_armed = False
         try:
-            _tracecode_batch_monitoring.set_events(4, 0)
-            _tracecode_batch_monitoring.free_tool_id(4)
+            _tracecode_batch_monitoring.set_events(_tracecode_case_sticky_tool, 0)
+            _tracecode_batch_monitoring.free_tool_id(_tracecode_case_sticky_tool)
         except Exception:
             pass
 
@@ -3156,14 +3169,26 @@ def _tracecode_arm_sticky_stop():
     # raises: it raises the stop again on every later learner line, so no
     # except or finally body can keep running and the stop leaves the
     # learner's frames. Costs nothing until a guard trips.
-    global _TC_MONITORING_ACTIVE
+    global _TC_MONITORING_ACTIVE, _TC_MONITORING_TOOL
     sys.settrace(None)
     if _TC_MONITORING is None:
+        # Python < 3.12: the stop cannot be re-raised (a trace or profile hook
+        # that raises is removed), but _tracecode_guard_trip has recorded it,
+        # so a fallback the learner returns is still not the result.
         return
     try:
         if not _TC_MONITORING_ACTIVE:
-            _TC_MONITORING.use_tool_id(_TC_MONITORING_TOOL, 'tracecode')
-            _TC_MONITORING_ACTIVE = True
+            # The learner's code may hold tool id 4: take any free user id.
+            for _tc_tool in (4, 3, 5, 2, 1, 0):
+                try:
+                    _TC_MONITORING.use_tool_id(_tc_tool, 'tracecode')
+                except ValueError:
+                    continue
+                _TC_MONITORING_TOOL = _tc_tool
+                _TC_MONITORING_ACTIVE = True
+                break
+            else:
+                return
         _events = _TC_MONITORING.events
         _TC_MONITORING.register_callback(_TC_MONITORING_TOOL, _events.LINE, _tc_sticky_on_line)
         _TC_MONITORING.set_events(_TC_MONITORING_TOOL, _events.LINE)
@@ -7548,9 +7573,8 @@ async function executeWithTracing(
       consoleOutput: result.console,
       traceLimitExceeded: result.traceLimitExceeded,
       // The trace budget that stopped recording, also when a guard then
-      // stopped the program and timeoutReason names that guard. Not yet in
-      // the outcome contract (ExecutionResult's limit variant has no
-      // traceTruncated), so the client does not read it.
+      // stopped the program and timeoutReason names that guard. The client
+      // lifts it into the outcome's traceTruncated on every kind.
       ...(PYTHON_TRACE_BUDGET_REASONS.has(result.traceLimitReason)
         ? { traceLimitReason: result.traceLimitReason }
         : {}),
@@ -7836,6 +7860,7 @@ except Exception:
 
 _interview_monitoring = getattr(sys, 'monitoring', None)
 _interview_sticky_armed = False
+_interview_sticky_tool = 4
 
 def _interview_is_user_code(code, line_number):
     return (
@@ -7861,19 +7886,26 @@ def _interview_trip(reason):
     # LINE callback, which stays armed when it raises (sys.settrace does
     # not), raises the stop again on every later learner line so a caught
     # stop cannot keep the program running unguarded.
-    global _interview_timeout_reason, _interview_sticky_armed
+    global _interview_timeout_reason, _interview_sticky_armed, _interview_sticky_tool
     if _interview_timeout_reason is None:
         _interview_timeout_reason = reason
     sys.settrace(None)
     if _interview_monitoring is not None and not _interview_sticky_armed:
         try:
-            # Tool id 4, named 'tracecode', as the trace executor's tool.
-            _interview_monitoring.use_tool_id(4, 'tracecode')
-            _interview_sticky_armed = True
-            _interview_monitoring.register_callback(
-                4, _interview_monitoring.events.LINE, _interview_sticky_line
-            )
-            _interview_monitoring.set_events(4, _interview_monitoring.events.LINE)
+            # Named 'tracecode' like the trace executor's tool; id 4 unless the
+            # learner's code holds it, then any free user id.
+            for _interview_tool in (4, 3, 5, 2, 1, 0):
+                try:
+                    _interview_monitoring.use_tool_id(_interview_tool, 'tracecode')
+                except ValueError:
+                    continue
+                _interview_sticky_tool = _interview_tool
+                _interview_sticky_armed = True
+                _interview_monitoring.register_callback(
+                    _interview_tool, _interview_monitoring.events.LINE, _interview_sticky_line
+                )
+                _interview_monitoring.set_events(_interview_tool, _interview_monitoring.events.LINE)
+                break
         except Exception:
             pass
     raise _InterviewGuardTriggered('INTERVIEW_GUARD_TRIGGERED:' + _interview_timeout_reason)
@@ -7967,8 +7999,8 @@ def _interview_guard_stop():
     if _interview_sticky_armed:
         _interview_sticky_armed = False
         try:
-            _interview_monitoring.set_events(4, 0)
-            _interview_monitoring.free_tool_id(4)
+            _interview_monitoring.set_events(_interview_sticky_tool, 0)
+            _interview_monitoring.free_tool_id(_interview_sticky_tool)
         except Exception:
             pass
     _interview_case_deadline = None
