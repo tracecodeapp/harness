@@ -1064,6 +1064,9 @@ class PreparedPythonProgramLifetime {
             completed &&
             !controller.signal.aborted &&
             this.phase === 'active' &&
+            // A client whose worker was terminated mid-run (a stopping batch's
+            // clock) is not warm, even if every result it returned was.
+            worker.client.hasLiveWorker !== false &&
             retainOnSuccess?.(result as T) === true;
           if (retain) {
             this.initialWorker = worker;

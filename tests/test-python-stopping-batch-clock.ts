@@ -402,3 +402,29 @@ for (const mode of ['code', 'trace'] as const) {
     provider.terminate();
   });
 }
+
+test('Python traced stopping batch whose final reply is late keeps every streamed result and does not reuse the closed worker', async () => {
+  const log = newLog();
+  const { provider, program } = await preparedProgram('trace', -1, log, -1, { kind: 'withhold-reply' });
+  const inputBatch = [{ value: 1 }, { value: 2 }];
+  const call = {
+    inputBatch,
+    traceEnabledBatch: inputBatch.map(() => true),
+    limits: { wallClockMs: 200 },
+    stopAtFirstRunaway: true,
+  };
+  for (let run = 1; run <= 2; run += 1) {
+    const results = await program.executeBatchIsolated!(call as never) as readonly ExecutionResult[];
+    assert.equal(results.length, 2, `run ${run}`);
+    assert.ok(results.every((result, index) => result.kind === 'completed' && result.output === index + 1), `run ${run}`);
+  }
+  assert.equal(log.batchRequests.length, 2);
+  assert.equal(
+    log.unwarmedBatchRequests,
+    0,
+    'A worker whose session the stopping clock closed was kept warm; the next batch ran on a worker that never received init'
+  );
+  await program.dispose();
+  provider.terminate();
+  assert.equal(log.terminated, log.created, 'Every worker is terminated');
+});
