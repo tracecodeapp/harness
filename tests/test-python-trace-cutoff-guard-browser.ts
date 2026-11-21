@@ -8,7 +8,9 @@
  * - a loop that never ends, after its trace filled the byte budget, is stopped
  *   by the worker's line guard in seconds, not by the 30 s clock;
  * - a program that ends, after its trace filled the same budget, completes
- *   with its truncated trace.
+ *   with its truncated trace;
+ * - a program that runs 120k lines after its trace stopped recording
+ *   completes: only the learner's lines count toward the runaway ceiling.
  */
 import assert from 'node:assert/strict';
 import test from 'node:test';
@@ -112,10 +114,10 @@ async function main(): Promise<void> {
         return module.runTraceCutoff(options);
       }, {
         assetBaseUrl: '/workers',
-        programs: ['runaway', 'finishes'],
+        programs: ['runaway', 'finishes', 'runsLong'],
       })) as TraceCutoffSample[];
-      assert.equal(samples.length, 2);
-      const [runaway, finishes] = samples;
+      assert.equal(samples.length, 3);
+      const [runaway, finishes, runsLong] = samples;
       for (const sample of samples) {
         console.log(`${sample.program}: verdict in ${Math.round(sample.ms)} ms`);
         console.log(JSON.stringify(sample.cases[0]));
@@ -152,6 +154,18 @@ async function main(): Promise<void> {
       );
       assert.ok(traced.traceEvents > 0, 'the recorded trace prefix is kept');
       for (const testCase of others) assert.equal(testCase.status, 'completed');
+
+      // The long program: it completes, its trace truncated.
+      const [long, ...afterLong] = runsLong.cases;
+      assert.equal(long.status, 'completed', JSON.stringify(long.failure));
+      assert.equal(long.verdict?.kind, 'passed');
+      assert.ok(
+        long.diagnostics?.some((diagnostic: any) =>
+          diagnostic.severity === 'warning' &&
+          ['trace-byte-limit', 'trace-limit', 'single-line-limit', 'line-limit'].includes(diagnostic.code)),
+        `the trace reports its budget: ${JSON.stringify(long.diagnostics)}`
+      );
+      for (const testCase of afterLong) assert.equal(testCase.status, 'completed');
     } finally {
       await browser.close();
     }

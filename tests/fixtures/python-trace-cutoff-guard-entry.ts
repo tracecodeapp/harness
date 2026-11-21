@@ -37,6 +37,11 @@ export const PROGRAMS = {
     '    k = (k + 1) % 10',
     '    steps += 1',
   ]),
+  // Ends after 120k lines, well past its trace budget. The tracer stays
+  // installed for all of them, so only the learner's lines may count toward
+  // the runaway ceiling (counting the harness's helper lines too, ~14 per
+  // learner line, would stop it as a runaway).
+  runsLong: search(['steps = 0', 'while steps < 60000:', '    steps += 1']),
 } as const;
 
 // The app's Run settings for Python.
