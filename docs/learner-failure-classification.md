@@ -150,7 +150,9 @@ not need to rebuild a host after a learner failure; they may rebuild after a
   not the budget. Recording stops but the tracer stays installed, so the
   per-case clock and the untraced line ceiling still apply: a program they
   stop reports their limit (`client-timeout`, `line-limit`), with the
-  recorded trace kept. A worker crash during a case is `runtime`; the fast batch
+  recorded trace kept. A guard's stop is the case's limit even if the
+  learner's code catches it (`except BaseException:`, `finally: return`).
+  A worker crash during a case is `runtime`; the fast batch
   re-runs the affected cases one per fresh worker.
 - JavaScript and TypeScript: syntax errors are `compile`; anything the
   program throws is `runtime`.
