@@ -133,6 +133,27 @@ function safeFile(root: string, relative: string): string | undefined {
   }
 }
 
+function assertConsoleResults(
+  consoleResults: Awaited<ReturnType<NonNullable<typeof globalThis.runJavaConsoleCases>>>,
+  engine: BrowserEngine
+): void {
+  const lines = ['first line', 'second line'];
+  assert.deepEqual(
+    Object.fromEntries(Object.entries(consoleResults).map(([name, run]) => [name, [run.kind, run.consoleOutput]])),
+    {
+      untraced: ['failed', lines],
+      traced: ['failed', lines],
+      exit: ['failed', [...lines, 'before exit']],
+      directBatchFirst: ['completed', lines],
+      directBatchSecond: ['completed', lines],
+      directTrace: ['failed', lines],
+      success: ['completed', lines],
+    },
+    `${engine}: Java consoleOutput must retain stdout in print order`
+  );
+  assert.equal(consoleResults.success.output, 7);
+}
+
 function assertPreparedResult(
   result: PreparedBrowserResult,
   engine: BrowserEngine,
@@ -672,6 +693,14 @@ try {
             isolated,
             `${engine}: test document must exercise the requested isolation mode`
           );
+          const consoleResults = await page.evaluate(() => {
+            if (!globalThis.runJavaConsoleCases) {
+              throw new Error('Java console fixture did not initialize.');
+            }
+            return globalThis.runJavaConsoleCases();
+          });
+          assertConsoleResults(consoleResults, engine);
+          console.log(`PASS: Java consoleOutput retains stdout on success and failure in ${engine} (${isolated ? 'cross-origin isolated' : 'ordinary document'})`);
           const result = await page.evaluate(async () => {
             if (!globalThis.runJavaPreparedProviderBrowserTest) {
               throw new Error(

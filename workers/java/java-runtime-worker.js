@@ -73,6 +73,16 @@ const TRACE_DROPPED_MARKER = '__TRACECODE_TRACE_DROPPED__:';
 const TRACE_PROFILE_MARKER = '__TRACECODE_TRACE_PROFILE__:';
 const TRACE_ERROR_MARKER = '__TRACECODE_TRACE_ERROR__:';
 const TRACE_FALLBACK_MARKER = '__TRACECODE_TRACE_FALLBACK_REQUIRED__:';
+const TRACE_STDOUT_RECORD_MARKERS = [
+  TRACE_OUTPUT_MARKER,
+  TRACE_EVENT_MARKER,
+  TRACE_EXPORT_MARKER,
+  TRACE_LIMIT_MARKER,
+  TRACE_DROPPED_MARKER,
+  TRACE_PROFILE_MARKER,
+  TRACE_ERROR_MARKER,
+  TRACE_FALLBACK_MARKER,
+];
 
 const REWRITE_BRIDGE_SOURCE = `
 package tracecode.harness.bridge;
@@ -1308,6 +1318,40 @@ function parseTraceEventsFromStdout(lines) {
     .map((line) => decodeText(line.slice(TRACE_EVENT_MARKER.length)));
 }
 
+/**
+ * TraceJVM puts learner stdout and runner records on the same stream.
+ * Removing a runner record must also remove its newline: a learner's print()
+ * can leave a partial line before a record or an intermediate trace block.
+ */
+function learnerStdoutLines(lines) {
+  const output = [];
+  let partial = '';
+  const lineCount = lines.at(-1) === '' ? lines.length - 1 : lines.length;
+  for (let index = 0; index < lineCount; index += 1) {
+    const line = lines[index];
+    const markerOffset = line.lastIndexOf('__TRACECODE_TRACE_');
+    if (markerOffset >= 0) {
+      if (line.startsWith(TRACE_EVENTS_BEGIN_MARKER, markerOffset)) {
+        const count = Number(line.slice(markerOffset + TRACE_EVENTS_BEGIN_MARKER.length));
+        const endIndex = index + count + 1;
+        if (Number.isSafeInteger(count) && count >= 0 && lines[endIndex] === TRACE_EVENTS_END_MARKER) {
+          partial += line.slice(0, markerOffset);
+          index = endIndex;
+          continue;
+        }
+      }
+      if (TRACE_STDOUT_RECORD_MARKERS.some((marker) => line.startsWith(marker, markerOffset))) {
+        partial += line.slice(0, markerOffset);
+        continue;
+      }
+    }
+    output.push(partial + line);
+    partial = '';
+  }
+  if (partial) output.push(partial);
+  return output;
+}
+
 function executionReport(
   run,
   compile,
@@ -1367,6 +1411,7 @@ function executionReport(
     success: runtimeError === undefined,
     ...(encodedOutput ? { output: decodeText(encodedOutput) } : {}),
     events,
+    runtimeStdoutLines: learnerStdoutLines(lines),
     compilerStdout: compile.stdout,
     compilerStderr: compile.stderr,
     ...(runtimeError ? { runtimeError } : {}),
@@ -1649,6 +1694,7 @@ async function traceJVMCompileAndRunBatch(
       success: report.success,
       output: report.output,
       runtimeError: report.runtimeError,
+      runtimeStdoutLines: report.runtimeStdoutLines,
       classLoadTimeMs: report.classLoadTimeMs,
       runTimeMs: report.runTimeMs,
     });
