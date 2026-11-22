@@ -905,7 +905,7 @@ for (const accepted of ACCEPTED_MACROS) {
     }
     return problems;
   };
-  const prelude = '#include <array>\n#include <set>\n#include <vector>\nstruct QQ { int val; string name; vector<int> adj; set<int> seen; };\nint tick();';
+  const prelude = '#include <array>\n#include <set>\n#include <vector>\nstruct QQ { int val; string name; vector<int> adj; set<int> seen; };\nstruct Counter { int n = 0; int size() { return ++n; } };\nint tick();';
   const cases: Array<{ name: string; body: string; once?: string; absent?: string; present?: string }> = [
     { name: 'std::array fill with a side-effecting argument', body: '    array<int, 3> ar{};\n    ar.fill(k++);', once: 'k++' },
     { name: 'indexed field read with a side-effecting index', body: '    vector<QQ> qs(3);\n    int i = 0;\n    k = qs[i++].val;', once: 'i++' },
@@ -1010,6 +1010,40 @@ for (const accepted of ACCEPTED_MACROS) {
       name: 'range-for over a vector-of-vectors row stays traced',
       body: '    vector<vector<int>> graph(3);\n    int u = 1;\n    for (int nb : graph[u]) k += nb;',
       present: 'tracecode::indexed_nested_range_readable(graph, "graph", u',
+    },
+    // Round 5: brace- and paren-initialized references, the const-method
+    // allowlist, grouping parentheses at reference parameters, braced
+    // push_back arguments.
+    {
+      name: 'a reference initialized with braces or parentheses binds the element',
+      body: '    array<int, 3> ar{};\n    const int& first{ar[0]};\n    const auto& second(ar[1]);\n    vector<pair<int, int>> ps(2);\n    auto& [p, q]{ps[0]};',
+      absent: 'trace_index_read(',
+    },
+    {
+      name: 'capacity of an element is not read from a copy',
+      body: '    vector<string> names(2);\n    names[0].reserve(100);\n    k = (int)names[0].capacity();',
+      absent: 'trace_index_read(names',
+    },
+    {
+      name: "a learner type's size() is not called on a copy",
+      body: '    vector<Counter> cs(2);\n    k = cs[0].size();',
+      absent: 'trace_index_read(cs',
+    },
+    {
+      name: 'a standard element size() stays traced',
+      body: '    vector<string> names(2);\n    k = (int)names[1].size();',
+      present: 'tracecode::trace_index_read(names, "names", 1',
+    },
+    {
+      name: 'a parenthesized argument at a reference parameter is the element',
+      body: '    array<int, 3> ar{};\n    auto same = [](const int& p, const int& q) { return &p == &q; };\n    k = same((ar[0]), ar[0]);',
+      absent: 'trace_index_read(ar',
+    },
+    {
+      name: 'a braced push_back argument is passed through unchanged',
+      body: "    vector<string> parts;\n    char c = 'a';\n    parts.push_back({c, c++});",
+      present: 'parts.push_back({c, c++});',
+      absent: '__tc_mutation_arg',
     },
     // Round 4, item 4: fill binds its argument by const reference.
     {

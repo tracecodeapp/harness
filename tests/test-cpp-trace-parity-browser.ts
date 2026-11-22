@@ -277,6 +277,29 @@ const COPY_FORMS: ParityForm[] = [
     ].join('\n'),
   },
   {
+    // Round 5: brace/paren-initialized references, capacity on an element,
+    // a parenthesized reference argument, a braced push_back argument.
+    name: 'references, capacity, grouping parentheses and braced push_back',
+    body: [
+      '    array<int, 3> ar{};',
+      '    ar[0] = 7;',
+      '    const int& first{ar[0]};',
+      '    const auto& second(ar[1]);',
+      '    ar[0] = 0;',
+      '    ar[1] = 5;',
+      '    k = first * 10 + second;',
+      '    vector<string> names(2);',
+      '    names[0].reserve(100);',
+      '    k += names[0].capacity() >= 100 ? 1000 : 0;',
+      '    auto same = [](const int& p, const int& q) { return &p == &q; };',
+      '    k += same((ar[2]), ar[2]) ? 10000 : 0;',
+      '    vector<string> parts;',
+      "    char c = 'a';",
+      '    parts.push_back({c, c++});',
+      '    s = parts[0];',
+    ].join('\n'),
+  },
+  {
     name: 'struct members of an element',
     body: [
       '    vector<QQ> qs(3);',
