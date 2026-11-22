@@ -1672,10 +1672,19 @@ inline auto trace_container_raw_size(const Container& container) {
   }
 }
 
+// The read helpers below stand in for the learner's `name[i]` (and
+// `name[i].field`, `name[i][j]`) and yield the element itself, as a const
+// reference: a reference that binds to the read binds the real element (its
+// identity and later changes are seen), and a write through a read the
+// rewriter misjudged does not compile (the compile safety net then refuses to
+// trace) rather than changing a copy. Only where the container yields a value
+// (a proxy such as vector<bool>'s, or a temporary) is the read a value, as in
+// the learner's const access. The event is serialized before returning; no
+// reference is kept.
 template <typename Container, typename Index>
-inline auto trace_index_read(const Container& container, const std::string& name, Index index, int line, const char* index_source = nullptr) {
+inline decltype(auto) trace_index_read(const Container& container, const std::string& name, Index index, int line, const char* index_source = nullptr) {
   auto concrete_index = materialize_trace_index(index);
-  auto value = trace_index_read_value(container, concrete_index);
+  decltype(auto) value = trace_index_read_value(container, concrete_index);
   if (!minimal_trace_enabled() && check_trace_budget(line)) {
     trace_event_count() += 1;
     write_trace_event_json_raw(
@@ -1687,15 +1696,18 @@ inline auto trace_index_read(const Container& container, const std::string& name
   return value;
 }
 
-template <typename Container, typename Index, typename Value>
-inline auto trace_index_field_read_value(const Container&, Index, const Value& value) {
-  return value;
-}
+// `name[i].field` itself: a const reference to the member, or a value when
+// the expression is not an lvalue (a bit-field, a member of a temporary).
+template <typename Value>
+using trace_field_read_result_t = std::conditional_t<
+  std::is_lvalue_reference_v<Value>,
+  const std::remove_reference_t<Value>&,
+  std::remove_cvref_t<Value>>;
 
 template <typename Container, typename Index, typename Value>
-inline auto trace_index_field_read(const Container& container, const std::string& name, Index index, const std::string& field, const Value& value, int line, const char* index_source = nullptr) {
+inline trace_field_read_result_t<Value&&> trace_index_field_read(const Container& container, const std::string& name, Index index, const std::string& field, Value&& field_value, int line, const char* index_source = nullptr) {
   auto concrete_index = materialize_trace_index(index);
-  auto field_value = trace_index_field_read_value(container, concrete_index, value);
+  (void)container;
   if (!minimal_trace_enabled() && check_trace_budget(line)) {
     trace_event_count() += 1;
     write_trace_event_json_raw(
@@ -1706,7 +1718,7 @@ inline auto trace_index_field_read(const Container& container, const std::string
       "},\"value\":" + to_json(field_value) + "}"
     );
   }
-  return field_value;
+  return std::forward<Value>(field_value);
 }
 
 template <typename Container, typename Index>
@@ -1974,9 +1986,10 @@ class StdIndexElementRef {
 };
 
 template <typename Container, typename OuterIndex, typename InnerIndex>
-inline auto trace_nested_index_read(const Container& container, const std::string& name, OuterIndex outer, InnerIndex inner, int line, const char* outer_source = nullptr, const char* inner_source = nullptr) {
+inline decltype(auto) trace_nested_index_read(const Container& container, const std::string& name, OuterIndex outer, InnerIndex inner, int line, const char* outer_source = nullptr, const char* inner_source = nullptr) {
+  static_assert(std::is_reference_v<decltype(trace_index_read_value(container, outer))>, "a nested read needs its row by reference");
   const auto& row = trace_index_read_value(container, outer);
-  const auto& value = row[inner];
+  decltype(auto) value = row[inner];
   if (!minimal_trace_enabled() && check_trace_budget(line)) {
     trace_event_count() += 1;
     write_trace_event_json_raw(

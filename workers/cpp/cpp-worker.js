@@ -9176,15 +9176,32 @@ const CPP_STANDARD_VALUE_TYPE = /^(?:std::)?(?:string|vector|deque|list|set|mult
 // `T& name =`, `const auto& name{`, `auto& [a, b](`: a declaration binding a
 // reference to what follows (as opposed to `x && f(` in an expression).
 const CPP_REFERENCE_BINDING_ASSIGNMENT = /&\s*(?:[A-Za-z_]\w*|\[[^\]]*\])\s*=$/;
-const CPP_REFERENCE_DECLARATION_OPEN = /(?:^|[;{}(,])\s*(?:(?:const|volatile|static|constexpr)\s+)*[A-Za-z_][\w:]*(?:\s*<[^;{}()]*>)?\s*(?:const\s*)?&{1,2}\s*(?:[A-Za-z_]\w*|\[[^\]]*\])\s*[{(]$/;
+const CPP_REFERENCE_DECLARATION_OPEN = {
+  test: (text) => cppIsReferenceDeclarationOpen(text),
+};
+const CPP_EXPRESSION_KEYWORD_START = /^\s*(?:return|case|throw|delete|new|co_return|co_yield|co_await|else|do|goto|sizeof|alignof|decltype|typeid)\b/;
 
-/**
- * Whether the indexed access text[start, end) is only read. The read helpers
- * (trace_index_read, trace_index_field_read) return a copy, so anything that
- * could write through the access (assignment, ++/--, a reference binding, a
- * range-for, a subscript, a call, a non-const method such as push_back or
- * begin) must keep the learner's own expression.
- */
+// Whether text ends with the `{` or `(` that initializes a reference being
+// declared, after a type of one or more words (`const long long& first{`,
+// `std::pair<int, int> const& p(`, `auto& [a, b]{`): the declaration
+// detector of control conditions, applied from each place a declaration can
+// start.
+function cppIsReferenceDeclarationOpen(text) {
+  const trimmed = String(text).replace(/\s+$/, '');
+  const open = trimmed.at(-1);
+  if (open !== '{' && open !== '(') return false;
+  const head = trimmed.slice(0, -1);
+  if (!/&\s*(?:[A-Za-z_]\w*|\[[^\]]*\])\s*$/.test(head)) return false;
+  const tail = head.slice(-240);
+  for (let boundary = tail.length - 1; boundary >= -1; boundary -= 1) {
+    if (boundary >= 0 && !';{}(,'.includes(tail[boundary])) continue;
+    const declaration = tail.slice(boundary + 1);
+    if (CPP_EXPRESSION_KEYWORD_START.test(declaration)) continue;
+    if (isCppDeclarationCondition(`${declaration}{`)) return true;
+  }
+  return false;
+}
+
 // Calls whose result aliases, moves or swaps their argument: an indexed
 // argument must be the element itself.
 const CPP_ALIASING_CALLEES = new Set([
@@ -9216,9 +9233,11 @@ function cppExpressionContextMayWrite(text, start, end, { constMethodsSafe = fal
 }
 
 /**
- * Whether the indexed access text[start, end) is only read. The read helpers
- * (trace_index_read, trace_index_field_read) return a copy, so anything that
- * could write through the access must keep the learner's own expression: an
+ * Whether the indexed access text[start, end) is only read, and so recorded
+ * through a read helper (trace_index_read, trace_index_field_read). Those
+ * yield the element as a const reference, so a misjudged write does not
+ * compile (and is refused) rather than change a copy; still, anything that
+ * could write through the access keeps the learner's own expression: an
  * assignment, ++/--, a reference binding, a range-for, a subscript, a call, a
  * non-const method such as push_back or begin, an argument at a reference
  * parameter of a learner function, or any of those applied to an enclosing
@@ -9289,6 +9308,18 @@ function cppMatchingOpenParen(text, closeIndex) {
   return -1;
 }
 
+// The `(` or `{` opening the bracket that closes at closeIndex.
+function cppMatchingOpenBracket(text, closeIndex) {
+  const close = text[closeIndex];
+  const openCh = close === '}' ? '{' : '(';
+  let depth = 0;
+  for (let cursor = closeIndex; cursor >= 0; cursor -= 1) {
+    if (text[cursor] === close) depth += 1;
+    else if (text[cursor] === openCh && --depth === 0) return cursor;
+  }
+  return -1;
+}
+
 // Argument positions, by callee name, of the learner's functions and lambdas
 // that take a reference (`T&`, `const T&`, `T&&`, `auto&&`). Set for the
 // duration of one instrumentCppSourceForTracing call.
@@ -9327,13 +9358,16 @@ function collectCppReferenceParameterCallees(signatures) {
 function cppIsReferenceCallArgument(text, start, end) {
   if (activeCppReferenceParameterCallees.size === 0) return false;
   // Grouping parentheses around the whole argument are transparent:
-  // `same((a[0]), a[0])`.
+  // `same((a[0]), a[0])`; so are braces around it alone, which initialize
+  // the parameter from it: `same({a[0]}, a[0])`.
   for (;;) {
     const after = nextNonWhitespace(text, end);
-    if (after.ch !== ')') break;
-    const open = cppMatchingOpenParen(text, after.index);
+    if (after.ch !== ')' && after.ch !== '}') break;
+    const open = cppMatchingOpenBracket(text, after.index);
     if (open < 0 || !/^\s*$/.test(text.slice(open + 1, start))) break;
-    if (/[\w>\]]$/.test(text.slice(0, open).replace(/\s+$/, ''))) break;
+    const beforeOpen = text.slice(0, open).replace(/\s+$/, '');
+    if (after.ch === ')' && /[\w>\]]$/.test(beforeOpen)) break;
+    if (after.ch === '}' && !/[(,]$/.test(beforeOpen)) break;
     start = open;
     end = after.index + 1;
   }
@@ -9360,6 +9394,24 @@ function cppIsReferenceCallArgument(text, start, end) {
     }
   }
   return false;
+}
+
+// Whether text[start, end) initializes a reference or is a range-for range:
+// it must be the element itself.
+function cppIndexedAccessBindsReference(text, start) {
+  const before = text.slice(0, start).replace(/\s+$/, '');
+  if (CPP_REFERENCE_BINDING_ASSIGNMENT.test(before) || CPP_REFERENCE_DECLARATION_OPEN.test(before)) return true;
+  return /(?<!:):$/.test(before) && !/\?[^?:;]*:$/.test(before);
+}
+
+// Whether name at text[nameIndex] is the declarator of an array being
+// declared (`vector<int> adj[3];`, `int memo[100];`), not an access.
+function cppIsArrayDeclarator(text, nameIndex) {
+  const prefix = text.slice(0, nameIndex);
+  const statementStart = Math.max(prefix.lastIndexOf(';'), prefix.lastIndexOf('{'), prefix.lastIndexOf('}')) + 1;
+  const segment = prefix.slice(statementStart);
+  if (!/[\w>*&]\s*$/.test(segment) || CPP_EXPRESSION_KEYWORD_START.test(segment)) return false;
+  return isCppDeclarationCondition(`${segment} __tc_name{`);
 }
 
 // Methods a traced vector's element proxy (tracecode::VectorElementRef)
@@ -9403,7 +9455,7 @@ const CPP_ELEMENT_HELPER_SOURCE = [
 /**
  * An indexed argument at a reference parameter: the element itself (through
  * the element helper for a traced vector's proxy), its index evaluated once,
- * with the read event the copying read helper would have recorded.
+ * with the read event the read helper would have recorded.
  */
 function cppReferenceArgumentRead(name, indexExpression, indexSource, lineNumber) {
   return '([&]() -> decltype(auto) { ' +
@@ -9481,8 +9533,8 @@ function rewriteIndexReadInstrumentation(line, variables, aliases = new Map(), l
         continue;
       }
       const closeIndex = findMatchingSquareBracket(rewritten, bracketIndex);
-      if (closeIndex < 0) {
-        cursor = nameIndex + name.length;
+      if (closeIndex < 0 || cppIsArrayDeclarator(rewritten, nameIndex)) {
+        cursor = closeIndex < 0 ? nameIndex + name.length : closeIndex + 1;
         continue;
       }
       const previous = previousNonWhitespace(rewritten, nameIndex);
@@ -9554,9 +9606,15 @@ function rewriteIndexReadInstrumentation(line, variables, aliases = new Map(), l
         }
         const afterNested = nextNonWhitespace(rewritten, secondCloseIndex + 1);
         const twoCharAfterNested = rewritten.slice(afterNested.index, afterNested.index + 2);
-        if (!previousIsAddressOf && cppIsReferenceCallArgument(rewritten, nameIndex, secondCloseIndex + 1)) {
-          // `same(g[0][0], g[0][0])`, `inc(grid[r][c])`: a traced row's
-          // proxy would hand the callee a temporary; pass the element.
+        if (
+          !previousIsAddressOf &&
+          (cppIsReferenceCallArgument(rewritten, nameIndex, secondCloseIndex + 1) ||
+            (afterNested.ch !== '[' && afterNested.ch !== '.' && twoCharAfterNested !== '->' &&
+              cppIndexedAccessBindsReference(rewritten, nameIndex)))
+        ) {
+          // `same(g[0][0], g[0][0])`, `inc(grid[r][c])`, `int& c =
+          // grid[r][c]`: a traced row's proxy would hand the callee or the
+          // reference a temporary; pass the element.
           const outer = rewritten.slice(bracketIndex + 1, closeIndex).trim();
           const replacement = `__tracecode_element(${name}[${outer}])${rewritten.slice(secondBracketIndex, secondCloseIndex + 1)}`;
           rewritten = `${rewritten.slice(0, nameIndex)}${replacement}${rewritten.slice(secondCloseIndex + 1)}`;
@@ -9663,7 +9721,8 @@ function rewriteStringPointerIndexedReadInstrumentation(line, lineNumber, pointe
         twoCharNext === '++' ||
         twoCharNext === '--' ||
         (/^[+\-*/%]?=$/.test(twoCharNext) && twoCharNext !== '==') ||
-        (next.ch === '=' && rewritten[next.index + 1] !== '=')
+        (next.ch === '=' && rewritten[next.index + 1] !== '=') ||
+        !cppIndexedAccessIsPureRead(rewritten, start, closeBracket + 1, 'char')
       ) {
         cursor = closeBracket + 1;
         continue;
@@ -9811,7 +9870,8 @@ function rewriteIndexedElementAliasReadInstrumentation(line, lineNumber, indexed
         twoCharNext === '++' ||
         twoCharNext === '--' ||
         (/^[+\-*/%]?=$/.test(twoCharNext) && twoCharNext !== '==') ||
-        (next.ch === '=' && rewritten[next.index + 1] !== '=')
+        (next.ch === '=' && rewritten[next.index + 1] !== '=') ||
+        !cppIndexedAccessIsPureRead(rewritten, nameIndex, closeIndex + 1)
       ) {
         cursor = closeIndex + 1;
         continue;
@@ -10427,22 +10487,20 @@ function rewriteMapIteratorSecondMutationInstrumentation(line, lineNumber, itera
   ].join('\n');
 }
 
+/**
+ * `auto& x = v.front();` / `v.back()` on a traced container: its element proxy
+ * cannot bind to `auto&`, so the reference binds the element itself through
+ * the element helper. (It used to become `auto x = ...`: a copy of the
+ * element once the access was read-instrumented, so writes through `x` were
+ * lost.) `auto& x = v[i]` keeps its reference; the index read rewrite hands
+ * it the element.
+ */
 function rewriteTraceContainerProxyReferences(line, variables, aliases = new Map()) {
-  if (!/\bauto\s*&\s+[A-Za-z_]\w*\s*=/.test(line)) {
-    return line;
-  }
-  const candidateNames = [...(variables || []).entries()]
-    .filter(([, variable]) => isIndexReadInstrumentableCppType(variable.type, aliases))
-    .map(([name]) => name)
-    .sort((left, right) => right.length - left.length);
-  if (candidateNames.length === 0) {
-    return line;
-  }
-  const accessPattern = new RegExp(`\\b(?:${candidateNames.map(escapeRegExp).join('|')})\\s*(?:\\[[^\\]]+\\]|\\.\\s*(?:front|back)\\s*\\()`);
-  if (!accessPattern.test(line)) {
-    return line;
-  }
-  return line.replace(/\bauto\s*&(\s+[A-Za-z_]\w*\s*=)/, 'auto$1');
+  const match = line.match(/^(\s*(?:const\s+)?auto\s*&\s*[A-Za-z_]\w*\s*=\s*)([A-Za-z_]\w*)(\s*\.\s*(?:front|back)\s*\(\s*\))(\s*;\s*)$/);
+  if (!match) return line;
+  const [, declaration, name, access, suffix] = match;
+  if (!isIndexReadInstrumentableCppType(variables?.get(name)?.type || '', aliases)) return line;
+  return `${declaration}__tracecode_element(${name}${access})${suffix}`;
 }
 
 function rewriteTraceContainerAliasNames(line, lineNumber, variables, aliases = new Map()) {
