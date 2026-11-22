@@ -355,7 +355,11 @@ class Solution {
   }
 }`;
   const [output] = runPrepared(code, 'first', [[{ __id__: 'n0', val: 1, next: { __ref__: 'n0' } }]]);
-  assert.match(output ?? '', /^error:TraceCode could not construct prepared input ListNode/, String(output));
+  assert.match(
+    output ?? '',
+    /^error:__TRACECODE_PREPARED_INPUT_FAILURE__:.*TraceCode could not construct prepared input ListNode/,
+    String(output)
+  );
   console.log('PASS: a node no constructor can build fails with a clear message');
 }
 
@@ -432,6 +436,146 @@ class Keeper {
   console.log('PASS: a later operation can refer to an object an earlier one received');
 }
 
+const INPUT_FAILURE = /^error:__TRACECODE_PREPARED_INPUT_FAILURE__:/;
+
+function testInputFailuresAreMarkedForTheProvider(): void {
+  const code = `class ListNode {
+  int val;
+  ListNode next;
+  ListNode(int val) {
+    if (val < 0) throw new IllegalArgumentException("negative values are not allowed");
+    this.val = val;
+  }
+}
+class Solution {
+  public int first(ListNode head) {
+    if (head.val == 9) throw new IllegalStateException("the learner's own failure");
+    return head.val;
+  }
+}`;
+  const outputs = runPrepared(code, 'first', [
+    [{ val: -1, next: null }],
+    [{ val: 1, next: { __ref__: 'missing' } }],
+    [{ val: 9, next: null }],
+  ]);
+  assert.match(outputs[0] ?? '', INPUT_FAILURE, `a constructor that rejects the input: ${outputs[0]}`);
+  assert.match(outputs[1] ?? '', INPUT_FAILURE, `an unknown reference: ${outputs[1]}`);
+  assert.equal(outputs[2], "error:the learner's own failure", 'a failure in the learner method stays the learner\'s');
+  console.log('PASS: input construction failures carry the provider marker; learner failures do not');
+}
+
+function testOpsArgumentFailuresAreMarkedForTheProvider(): void {
+  const code = `${learnerListNode}
+class Keeper {
+  private ListNode kept;
+  public Keeper(int limit) {
+    if (limit < 0) throw new IllegalArgumentException("the learner's constructor failed");
+  }
+  public void keep(ListNode node) { this.kept = node; }
+}`;
+  const outputs = runPrepared(code, 'Keeper', [
+    [{ operations: ['Keeper', 'keep'], arguments: [[1], [{ val: 1, next: { __ref__: 'missing' } }]] }],
+    [{ operations: ['Keeper', 'keep'], arguments: [[-1], [null]] }],
+  ], 'ops-class');
+  assert.match(outputs[0] ?? '', INPUT_FAILURE, `an operation argument that cannot be built: ${outputs[0]}`);
+  assert.doesNotMatch(outputs[1] ?? '', INPUT_FAILURE, `the learner's own constructor failure: ${outputs[1]}`);
+  console.log('PASS: ops-class argument failures carry the provider marker; receiver failures do not');
+}
+
+function testRawSelfCycleUnderObject(): void {
+  const code = `class Box {
+  Object raw;
+  Box(Object raw) { this.raw = raw; }
+}
+class Solution {
+  public boolean selfLoop(Box box) {
+    return ((Map<?, ?>) box.raw).get("self") == box.raw;
+  }
+}`;
+  const outputs = runPrepared(code, 'selfLoop', [
+    [{ raw: { __id__: 'r', self: { __ref__: 'r' } } }],
+    [{ raw: { self: { __ref__: 'missing' } } }],
+  ]);
+  assert.equal(outputs[0], 'true', `a raw object that refers to itself: ${outputs[0]}`);
+  assert.match(outputs[1] ?? '', INPUT_FAILURE, `an unknown reference under Object: ${outputs[1]}`);
+  console.log('PASS: a raw Object input that refers to itself resolves once; an unknown one is a provider failure');
+}
+
+function testEarlyNodeUsesItsFullConstructor(): void {
+  const code = `class ListNode {
+  final int initialValue;
+  int val;
+  ListNode next;
+  ListNode(int val, ListNode next) {
+    this.initialValue = val;
+    this.val = val;
+    this.next = next;
+  }
+}
+class Solution {
+  public String shape(ListNode head) {
+    return head.initialValue + ":" + (head.next == head);
+  }
+}`;
+  assert.deepEqual(
+    runPrepared(code, 'shape', [[{ __id__: 'self-loop', val: 7, next: { __ref__: 'self-loop' } }]]),
+    ['"7:true"']
+  );
+  console.log('PASS: a node built before its links still gets its value from its full constructor');
+}
+
+function testConstructorChoiceIsStable(): void {
+  const numbers = `class Value {
+  String chosen;
+  Value(long value) { chosen = "long"; }
+  Value(double value) { chosen = "double"; }
+  Value(int value) { chosen = "int"; }
+}
+class Solution {
+  public String chosen(Value value) { return value.chosen; }
+}`;
+  assert.deepEqual(
+    runPrepared(numbers, 'chosen', [[{ value: 3 }], [{ value: 3.5 }], [{ value: 3000000000 }]]),
+    ['"int"', '"double"', '"long"']
+  );
+  const text = `class Letter {
+  String chosen;
+  Letter(char value) { chosen = "char"; }
+  Letter(String value) { chosen = "String"; }
+}
+class Solution {
+  public String chosen(Letter letter) { return letter.chosen; }
+}`;
+  assert.deepEqual(runPrepared(text, 'chosen', [[{ value: 'x' }]]), ['"String"']);
+  const noArg = `class ListNode {
+  String chosen;
+  int val;
+  ListNode next;
+  ListNode() { chosen = "no-arg"; }
+  ListNode(int val) { chosen = "int"; this.val = val; }
+}
+class Solution {
+  public String chosen(ListNode head) { return head.chosen + ":" + head.val; }
+}`;
+  assert.deepEqual(runPrepared(noArg, 'chosen', [[{ val: 4, next: null }]]), ['"no-arg:4"']);
+  console.log('PASS: constructor choice prefers exact types, never a lossy one, and keeps the no-arg constructor');
+}
+
+function testConstructorKeepsItsOwnCopy(): void {
+  const code = `class Box {
+  List<Integer> items;
+  Box(List<Integer> items) {
+    this.items = new ArrayList<>(items);
+    this.items.add(99);
+  }
+}
+class Solution {
+  public String items(Box box) { return String.valueOf(box.items); }
+}`;
+  assert.deepEqual(runPrepared(code, 'items', [[{ items: [1, 2, 3] }]]), ['"[1, 2, 3, 99]"']);
+  console.log('PASS: a field the constructor set is not overwritten afterwards');
+}
+
 const tests = [
   testListCycleKeepsTheBackReference,
   testListBackReferenceIsTheSameNode,
@@ -447,6 +591,12 @@ const tests = [
   testObjectTypedReferencesResolve,
   testContainersAreBuiltOnce,
   testOpsClassReferencesAcrossOperations,
+  testInputFailuresAreMarkedForTheProvider,
+  testOpsArgumentFailuresAreMarkedForTheProvider,
+  testRawSelfCycleUnderObject,
+  testEarlyNodeUsesItsFullConstructor,
+  testConstructorChoiceIsStable,
+  testConstructorKeepsItsOwnCopy,
 ];
 let failures = 0;
 for (const test of tests) {
