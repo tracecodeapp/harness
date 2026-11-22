@@ -1983,7 +1983,8 @@ self.onmessage = (event: MessageEvent<unknown>) => {
           return;
         }
         // Only the learner's own source, above, says whether the program
-        // compiles. Whatever stops the instrumented source is the tracer's.
+        // compiles. Instrumented source that does not parse, normalize or
+        // compile is the tracer's; any other error is the worker's own fault.
         if (request.source.mode === 'trace') {
           try {
             validatedTraceLearnerFactorySource = compileLearnerFactory(
@@ -1993,6 +1994,9 @@ self.onmessage = (event: MessageEvent<unknown>) => {
               true
             );
           } catch (error) {
+            if (!isLearnerEngineSyntaxError(error) && !(error instanceof SourceNormalizationInvariantError)) {
+              throw error;
+            }
             fail(request.id, error, 'trace-compile');
             return;
           }

@@ -5643,6 +5643,26 @@ async function instrumentCodeForTracing(sourceCode, language, traceFunctionName,
   }
 }
 
+// The same code as Judge's provider diagnostic: a failure of the runtime
+// itself. It never refuses a program and never blames the learner's.
+const RUNTIME_FAULT_CODE = 'runtime-provider-error';
+
+function runtimeFault(cause) {
+  const fault = new Error(cause instanceof Error ? cause.message : String(cause));
+  fault.code = RUNTIME_FAULT_CODE;
+  return fault;
+}
+
+// Loading the compiler is not part of building one program, so it happens
+// outside every catch that turns a failed build into a refusal.
+async function loadTracerCompiler() {
+  try {
+    await ensureTypeScriptCompiler();
+  } catch (error) {
+    throw runtimeFault(error);
+  }
+}
+
 async function buildInstrumentedExecutableCode(code, executableCode, language, traceFunctionName, maxPathDepth) {
   if (language === 'typescript') {
     const instrumentedTypeScript = await instrumentCodeForTracing(code, language, traceFunctionName, maxPathDepth);
@@ -6891,6 +6911,7 @@ async function prepareExecutionRequest(payload) {
     throw new Error(`Unsupported language for JavaScript worker: ${String(language)}`);
   }
 
+  if (operation === 'execute-with-tracing') await loadTracerCompiler();
   const executableCode = await prepareExecutableCode(code, language);
   const materializers = await resolveInputMaterializers(code, functionName, executionStyle, language);
   const hasNamedFunction = typeof functionName === 'string' && functionName.length > 0;
@@ -6919,8 +6940,8 @@ async function prepareExecutionRequest(payload) {
   let traceLineBounds;
   if (operation === 'execute-with-tracing') {
     // Preparation never decides whether the program compiles; the untraced
-    // build does that where it runs. A failed tracing step only means there
-    // is no traced build, so nothing here may reject.
+    // build does that where it runs. With the compiler loaded, a step that
+    // fails here is a failure to build this program, so it must not reject.
     instrumentedCode = null;
     try {
       const traceFunctionName = hasNamedFunction ? targetName : '<module>';
@@ -7136,6 +7157,10 @@ async function executeWithTracing(payload) {
   ensureJavaScriptLibraries();
   const runtimeGlobal = createJavaScriptRuntimeGlobal(consoleProxy);
   const prepared = preparedExecutionFromPayload(payload);
+  const hasPreparedTracedBuild = Boolean(
+    prepared && Object.prototype.hasOwnProperty.call(prepared, 'instrumentedCode')
+  );
+  if (!hasPreparedTracedBuild) await loadTracerCompiler();
   const normalizedInputs = normalizeInputs(inputs);
   const materializers = prepared?.materializers ?? await resolveInputMaterializers(
     code,
@@ -7152,6 +7177,7 @@ async function executeWithTracing(payload) {
   const traceRecorder = createTraceRecorder({ ...(options ?? {}), maxPathDepth, statementSourceMap });
 
   let traceLineBounds = { startLine: 1, endLine: 1 };
+  let untracedBuildFault;
 
   try {
     if (typeof code !== 'string') {
@@ -7206,9 +7232,12 @@ async function executeWithTracing(payload) {
         }
         buildScriptExecutionRunner(executableCode, code);
       }
-    } catch {
+    } catch (untracedBuildError) {
       const untraced = await executeWithTracing({ ...payload, tracingEnabled: false });
-      return untraced.success ? TRACE_UNAVAILABLE_RESULT : untraced;
+      if (!untraced.success) return untraced;
+      // The same build works the second time: the first failure was not the program's.
+      untracedBuildFault = runtimeFault(untracedBuildError);
+      throw untracedBuildFault;
     }
 
     // It compiles untraced, so a tracing step that fails from here until the
@@ -7216,7 +7245,7 @@ async function executeWithTracing(payload) {
     let runner;
     try {
       traceLineBounds = prepared?.traceLineBounds ?? determineTraceLineBounds(code, targetName, executionStyle);
-      const instrumentedCode = prepared && Object.prototype.hasOwnProperty.call(prepared, 'instrumentedCode')
+      const instrumentedCode = hasPreparedTracedBuild
         ? prepared.instrumentedCode
         : await buildInstrumentedExecutableCode(code, executableCode, language, traceFunctionName, maxPathDepth);
       if (!instrumentedCode) return TRACE_UNAVAILABLE_RESULT;
@@ -7293,6 +7322,7 @@ async function executeWithTracing(payload) {
       },
     };
   } catch (error) {
+    if (untracedBuildFault) throw untracedBuildFault;
     const executionTimeMs = performanceNow() - startedAt;
     const message = formatRuntimeErrorMessage(error);
     const errorLine = learnerSourceLine(extractUserErrorLine(error), code);
@@ -7489,6 +7519,7 @@ async function processMessage(data) {
     postProtocolMessage(id, protocolToken, 'error', {
       error: error instanceof Error ? error.message : String(error),
       ...(errorLine !== undefined ? { errorLine } : {}),
+      ...(error?.code === RUNTIME_FAULT_CODE ? { code: RUNTIME_FAULT_CODE } : {}),
     });
   }
 }

@@ -211,6 +211,13 @@ function preparationErrorLine(error: unknown): number | undefined {
 /** The refusal of a case, worded as the worker words it. */
 const TRACE_UNAVAILABLE_MESSAGE = 'TraceCode could not trace this case.';
 
+/** A failure the worker reports as the runtime's own stays the provider's. */
+function reportedRuntimeFault(error: unknown): RuntimeProviderError | undefined {
+  return error instanceof WorkerReportedError && error.code === 'runtime-provider-error'
+    ? new RuntimeProviderError(error.message, { cause: error })
+    : undefined;
+}
+
 function sesCompatiblePreparedExecution(
   value: unknown
 ): SesCompatiblePreparedExecution | null {
@@ -1316,6 +1323,8 @@ export class JavaScriptWorkerClient {
       if (!(error instanceof WorkerReportedError)) {
         throw error;
       }
+      const fault = reportedRuntimeFault(error);
+      if (fault) throw fault;
       const errorLine = preparationErrorLine(error);
       return {
         kind: 'failed',
@@ -1595,7 +1604,7 @@ export class JavaScriptWorkerClient {
       ),
       expectedGeneration
     ).catch((error: unknown): never => {
-      if (!isTraceUnavailableError(error)) throw error;
+      if (!isTraceUnavailableError(error)) throw reportedRuntimeFault(error) ?? error;
       throw new RuntimeProviderError((error as Error).message, { cause: error, code: TRACE_UNAVAILABLE_CODE });
     });
     return liftTraceOutcome(

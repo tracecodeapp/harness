@@ -882,7 +882,9 @@ class NativeJavaScriptWorkerHarness {
           const text = String(payload?.error ?? 'Worker error');
           entry.reject(payload?.code === TRACE_UNAVAILABLE_CODE
             ? new RuntimeProviderError(text, { code: TRACE_UNAVAILABLE_CODE })
-            : new Error(text));
+            : payload?.code === 'runtime-provider-error'
+              ? new RuntimeProviderError(text)
+              : new Error(text));
           return;
         }
         entry.resolve(message.payload);
