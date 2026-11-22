@@ -7431,11 +7431,9 @@ var init_ses_algorithm_worker = __esm({
             assertPreparedShape(request.source);
             const validationCompartment = new Compartment();
             let sanitizedLearnerSource;
-            let sanitizedTraceSource;
             try {
               assertAdmittedModules(request.source);
               sanitizedLearnerSource = sanitizeLearnerSource(request.source.code);
-              sanitizedTraceSource = request.source.mode === "trace" ? sanitizeLearnerSource(request.source.instrumentedCode) : void 0;
             } catch (error) {
               if (error instanceof SourceNormalizationInvariantError) throw error;
               fail(request.id, error, "compile");
@@ -7457,16 +7455,23 @@ var init_ses_algorithm_worker = __esm({
                 request.source,
                 sanitizedLearnerSource
               );
-              validatedTraceLearnerFactorySource = sanitizedTraceSource === void 0 ? void 0 : compileLearnerFactory(
-                validationCompartment,
-                request.source,
-                sanitizedTraceSource,
-                true
-              );
             } catch (error) {
               if (!isLearnerEngineSyntaxError(error)) throw error;
               fail(request.id, error, "compile");
               return;
+            }
+            if (request.source.mode === "trace") {
+              try {
+                validatedTraceLearnerFactorySource = compileLearnerFactory(
+                  validationCompartment,
+                  request.source,
+                  sanitizeLearnerSource(request.source.instrumentedCode),
+                  true
+                );
+              } catch (error) {
+                fail(request.id, error, "trace-compile");
+                return;
+              }
             }
             programs.set(request.programId, {
               mode: request.source.mode,
