@@ -6020,6 +6020,17 @@ function javascriptRunnerCompiles(buildRunner) {
   }
 }
 
+// Whether the untraced runner for this program compiles (see
+// javascriptRunnerCompiles). It is the reference for the learner's compile
+// errors: the TypeScript printer used by the tracer prints a repaired tree for
+// source with syntax errors, so the instrumented program may compile when the
+// learner's does not.
+function untracedRunnerCompiles(executableCode, code, executionStyle, targetName) {
+  return javascriptRunnerCompiles(() => targetName
+    ? buildFunctionExecutionRunner(executableCode, executionStyle, [], [], code, targetName)
+    : buildScriptExecutionRunner(executableCode, code));
+}
+
 async function instrumentExecutableCodeForTracing(
   code,
   executableCode,
@@ -6029,6 +6040,12 @@ async function instrumentExecutableCodeForTracing(
   executionStyle = 'function',
   targetName = ''
 ) {
+  // A program that does not compile untraced is not instrumented: the traced
+  // Run then reports exactly the untraced Run's compile error.
+  const untraced = untracedRunnerCompiles(executableCode, code, executionStyle, targetName);
+  if (untraced === false) {
+    return null;
+  }
   let instrumentedCode;
   if (language === 'typescript') {
     const instrumentedTypeScript = await instrumentCodeForTracing(code, language, traceFunctionName, maxPathDepth);
@@ -6044,13 +6061,8 @@ async function instrumentExecutableCodeForTracing(
     const traced = javascriptRunnerCompiles(() => targetName
       ? buildFunctionTracingRunner(instrumentedCode, executionStyle, [], maxPathDepth, [], code, targetName)
       : buildScriptTracingRunner(instrumentedCode, maxPathDepth, code));
-    if (traced === false) {
-      const untraced = javascriptRunnerCompiles(() => targetName
-        ? buildFunctionExecutionRunner(executableCode, executionStyle, [], [], code, targetName)
-        : buildScriptExecutionRunner(executableCode, code));
-      if (untraced === true) {
-        throw new JavaScriptTraceUnavailableError('the instrumented program does not compile.');
-      }
+    if (traced === false && untraced === true) {
+      throw new JavaScriptTraceUnavailableError('the instrumented program does not compile.');
     }
   }
   return instrumentedCode;
@@ -7723,18 +7735,24 @@ async function executeWithTracing(payload) {
       const fallbackResult = await executeCode(payload);
       const executionTimeMs = performanceNow() - startedAt;
       const trace = createEmptyRuntimeTrace(language);
+      // A program that does not compile is the learner's compile error, reported
+      // exactly as the untraced Run reports it: there is nothing to trace.
+      const learnerCompileError =
+        !fallbackResult.success &&
+        untracedRunnerCompiles(executableCode, code, executionStyle, targetName) === false;
       return {
         ...(fallbackResult.success
           ? { success: true, output: fallbackResult.output }
           : {
               success: false,
+              output: null,
               error: fallbackResult.error,
               errorLine: fallbackResult.errorLine,
               ...(fallbackResult.diagnosticStage ? { diagnosticStage: fallbackResult.diagnosticStage } : {}),
             }),
         ...(fallbackResult.timeoutReason ? { timeoutReason: fallbackResult.timeoutReason } : {}),
         trace,
-        traceUnavailable: { ...JAVASCRIPT_TRACE_UNAVAILABLE },
+        ...(learnerCompileError ? {} : { traceUnavailable: { ...JAVASCRIPT_TRACE_UNAVAILABLE } }),
         executionTimeMs,
         consoleOutput: fallbackResult.consoleOutput ?? [],
         lineEventCount: trace.lineEventCount,
