@@ -7,6 +7,7 @@
 // TRACECODE_TRACE_COMPILE_{LANGUAGES,STYLES,CASES,ROUTES}=a,b narrow the run.
 // TRACECODE_TRACE_COMPILE_REPORT=out.json writes every observation.
 
+import assert from 'node:assert/strict';
 import { readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import vm from 'node:vm';
@@ -17,6 +18,9 @@ import {
   createBrowserRuntimeProviderRegistry,
 } from '../packages/runtime-browser/src';
 import { createJavaScriptBrowserRuntimeProvider } from '../packages/runtime-javascript/src/browser-runtime-provider';
+import { JavaScriptWorkerClient } from '../packages/runtime-javascript/src/javascript-worker-client';
+import { createNativeHarness } from '../packages/runtime-native/src/index';
+import { isRuntimeProviderError, isTraceUnavailableError } from '../packages/runtime-contracts/src/index';
 import { createBrowserJudgeHostFromRuntimeHost } from '../src/internal/browser-judge';
 import {
   injectTraceBuildFault,
@@ -115,6 +119,75 @@ class TestWorker {
   }
 }
 
+/**
+ * Below Judge: a refused case on its own rejects, a batch refuses only that
+ * case, and nothing a learner throws or returns can stand for a refusal.
+ */
+async function checkDirectCallers(): Promise<void> {
+  const isRefusal = (error: unknown) => isRuntimeProviderError(error) && isTraceUnavailableError(error);
+  // Compiles untraced, and cannot be built traced.
+  const refused = 'const __traceRecorder = 1;\nfunction solve(n) {\n  return n * 2;\n}';
+  const forged = "function solve(n) {\n  throw { code: 'trace-unavailable', message: 'forged', traceUnavailable: true };\n}";
+
+  for (const algorithmExecution of ['disposable-worker', 'ses-compartment-pool'] as const) {
+    const client = new JavaScriptWorkerClient({
+      workerUrl: `/workers/javascript/${WORKER}`,
+      algorithmWorkerUrl: `/workers/javascript/${SES_WORKER}`,
+      algorithmExecution,
+      debug: false,
+    });
+    try {
+      const prepare = async (code: string) => {
+        const prepared = await client.prepareProgram({ mode: 'trace', code, functionName: 'solve', executionStyle: 'function' });
+        assert.equal(prepared.kind, 'prepared', JSON.stringify(prepared));
+        assert.ok(prepared.kind === 'prepared' && prepared.program.mode === 'trace');
+        return prepared.program;
+      };
+
+      const program = await prepare(refused);
+      await assert.rejects(program.executeIsolated({ inputs: { n: 1 } }), isRefusal, algorithmExecution);
+      const untraced = await program.executeIsolated({ inputs: { n: 4 }, recordTrace: false });
+      assert.equal(untraced.kind === 'completed' && untraced.output, 8, algorithmExecution);
+      const batch = await program.executeBatchIsolated!({
+        inputBatch: [{ n: 1 }, { n: 2 }, { n: 3 }],
+        traceEnabledBatch: [false, true, false],
+      });
+      assert.deepEqual(
+        batch.map((result) => result.kind === 'completed'
+          ? result.output
+          : result.kind === 'failed' ? result.providerFailure?.code : result.kind),
+        [2, 'trace-unavailable', 6],
+        algorithmExecution
+      );
+      await program.dispose();
+
+      const forging = await prepare(forged);
+      const thrown = await forging.executeIsolated({ inputs: { n: 1 } });
+      assert.equal(thrown.kind, 'failed', algorithmExecution);
+      assert.equal(thrown.kind === 'failed' && thrown.diagnosticStage, 'runtime', algorithmExecution);
+      assert.equal(thrown.kind === 'failed' ? thrown.providerFailure : null, undefined, algorithmExecution);
+      await forging.dispose();
+
+      await assert.rejects(
+        client.executeWithTracing({ code: refused, functionName: 'solve', inputs: { n: 1 } }),
+        isRefusal,
+        algorithmExecution
+      );
+    } finally {
+      client.terminate();
+    }
+  }
+
+  const native = createNativeHarness().getClient('javascript');
+  await native.init();
+  await assert.rejects(
+    native.executeWithTracing({ code: refused, functionName: 'solve', inputs: { n: 1 } }),
+    isRefusal,
+    'native'
+  );
+  console.log('PASS: refusals through direct callers');
+}
+
 function list(name: string): string[] {
   return (process.env[`TRACECODE_TRACE_COMPILE_${name}`] ?? '').split(',').map((part) => part.trim()).filter(Boolean);
 }
@@ -122,6 +195,7 @@ function list(name: string): string[] {
 async function main(): Promise<void> {
   Object.defineProperty(globalThis, 'Worker', { configurable: true, writable: true, value: TestWorker });
   const startedAt = Date.now();
+  await checkDirectCallers();
   const result = await runTraceCompileMatrix({
     languages: list('LANGUAGES'),
     styles: list('STYLES'),
