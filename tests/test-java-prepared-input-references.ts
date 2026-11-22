@@ -63,7 +63,8 @@ function runPrepared(
   code: string,
   functionName: string,
   cases: unknown[][],
-  executionStyle = 'solution-method'
+  executionStyle = 'solution-method',
+  options: { readonly showErrorType?: boolean; readonly timeoutMs?: number } = {}
 ): string[] {
   const entries = worker.preparedDynamicInputEntriesForPayload(
     { code, functionName, executionStyle },
@@ -86,8 +87,11 @@ final class PreparedMain {
       System.out.println("case" + index + ":" + Exports.run());
     } catch (Throwable error) {
       Throwable root = error;
-      while (root.getCause() != null && root.getCause() != root) root = root.getCause();
-      System.out.println("case" + index + ":error:" + root.getMessage());
+      // Bounded: a learner exception may have a cause cycle.
+      for (int depth = 0; depth < 16 && root.getCause() != null && root.getCause() != root; depth += 1) {
+        root = root.getCause();
+      }
+      System.out.println("case" + index + ":error:" + ${options.showErrorType ? '(error.getClass().getSimpleName() + ":") + ' : ''}root.getMessage());
     }
   }
 
@@ -106,7 +110,7 @@ ${setters}
     const stdout = execFileSync('java', ['-cp', [classes, helperJar].join(':'), 'PreparedMain'], {
       encoding: 'utf8',
       stdio: 'pipe',
-      timeout: 60_000,
+      timeout: options.timeoutMs ?? 60_000,
     });
     return stdout.split('\n').filter((line) => line.startsWith('case')).map((line) => line.replace(/^case\d+:/, ''));
   } finally {
@@ -492,6 +496,73 @@ class Keeper {
   console.log('PASS: a typed operation argument can refer to a node an earlier operation took as Object');
 }
 
+const cyclicCause = `static RuntimeException cyclicFailure() {
+    RuntimeException first = new RuntimeException("learner constructor failed");
+    RuntimeException second = new RuntimeException("second", first);
+    first.initCause(second);
+    return first;
+  }`;
+
+function testCyclicCauseInInputConstructorDoesNotHang(): void {
+  // A learner exception whose causes form a cycle must not loop the
+  // Harness's search for a trace budget error (untraced runs included).
+  const code = `class ListNode {
+  int val;
+  ListNode next;
+  ${cyclicCause}
+  ListNode(int val) {
+    if (val <= 0) throw cyclicFailure();
+    this.val = val;
+  }
+}
+class Solution {
+  public int first(ListNode head) { return head.val; }
+}`;
+  const [output] = runPrepared(code, 'first', [[{ val: -1, next: null }]], 'solution-method', { timeoutMs: 20_000 });
+  assert.match(output ?? '', /^error:/, String(output));
+  console.log('PASS: an input constructor throwing a cyclic cause chain fails promptly');
+}
+
+function testCyclicCauseInReceiverConstructorDoesNotHang(): void {
+  const code = `class Keeper {
+  ${cyclicCause}
+  public Keeper(int limit) { throw cyclicFailure(); }
+  public int get() { return 1; }
+}`;
+  const [output] = runPrepared(code, 'Keeper', [[{ operations: ['Keeper', 'get'], arguments: [[1], []] }]], 'ops-class', { timeoutMs: 20_000 });
+  assert.match(output ?? '', /^error:/, String(output));
+  console.log('PASS: a receiver constructor throwing a cyclic cause chain fails promptly');
+}
+
+function testBudgetTripInConstructorsReachesTheRunner(): void {
+  // The runner turns a trace budget error from run() into its trace-limit
+  // result (steps kept, case completed). A constructor the Harness calls
+  // while building a receiver or an operation's argument must let that
+  // error through unchanged, not treat it as a constructor that did not fit.
+  const receiver = `class Keeper {
+  public Keeper(int limit) { throw new tracecode.user.TraceBudgetExceededError(); }
+  public int get() { return 1; }
+}`;
+  assert.deepEqual(
+    runPrepared(receiver, 'Keeper', [[{ operations: ['Keeper', 'get'], arguments: [[1], []] }]], 'ops-class', { showErrorType: true }),
+    ['error:TraceBudgetExceededError:Trace event storage budget exceeded']
+  );
+  const argument = `class ListNode {
+  int val;
+  ListNode next;
+  ListNode(int val) { throw new tracecode.user.TraceBudgetExceededError(); }
+}
+class Keeper {
+  public Keeper() {}
+  public int keep(ListNode node) { return 1; }
+}`;
+  assert.deepEqual(
+    runPrepared(argument, 'Keeper', [[{ operations: ['Keeper', 'keep'], arguments: [[], [{ val: 1, next: null }]] }]], 'ops-class', { showErrorType: true }),
+    ['error:TraceBudgetExceededError:Trace event storage budget exceeded']
+  );
+  console.log('PASS: a trace budget error in a receiver or argument constructor reaches the runner unchanged');
+}
+
 const tests = [
   testListCycleKeepsTheBackReference,
   testListBackReferenceIsTheSameNode,
@@ -510,6 +581,9 @@ const tests = [
   testReversedChildrenConstructorKeepsChildrenByName,
   testEarlyNodeConstructorGetsBuiltReferences,
   testOpsTypedReferenceToObjectArgument,
+  testCyclicCauseInInputConstructorDoesNotHang,
+  testCyclicCauseInReceiverConstructorDoesNotHang,
+  testBudgetTripInConstructorsReachesTheRunner,
 ];
 let failures = 0;
 for (const test of tests) {

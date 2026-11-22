@@ -26,9 +26,11 @@ import {
 } from '../packages/runtime-browser/src';
 import {
   liftCodeOutcome,
+  isTraceUnavailableError,
   liftTraceOutcome,
   RuntimeProviderError,
   TRACE_UNAVAILABLE_CODE,
+  traceUnavailableOutcome,
 } from '../packages/runtime-contracts/src/execution-outcome';
 import { createEmptyRuntimeTrace } from '../packages/runtime-contracts/src/runtime-trace';
 import {
@@ -38,6 +40,7 @@ import {
   type RuntimeCodeCall,
   type RuntimePreparedCodeCall,
   type RuntimePreparedCodeBatchCall,
+  type RuntimePreparedTraceBatchCall,
   type RuntimePreparedExecutionProvider,
   type RuntimePreparedTraceCall,
   type RuntimeProgramPreparationCall,
@@ -113,6 +116,8 @@ interface PreparedProviderState {
   onStart?: (input: FakeInput) => void;
   /** Labels whose traced run the runtime refuses as trace-unavailable. */
   traceRefusedLabels?: ReadonlySet<string>;
+  /** Refuse without converting refused cases in a batch of its own. */
+  refuseWithoutOwnBatch?: boolean;
 }
 
 function makeState(): FakeProviderState {
@@ -438,10 +443,7 @@ function preparedProvider(
     state.traceCalls.push(call);
     const input = call.inputs as FakeInput;
     if (call.recordTrace !== false && state.traceRefusedLabels?.has(input.label)) {
-      throw new RuntimeProviderError(
-        'TraceCode could not trace this case. The case runs normally without tracing.',
-        { code: TRACE_UNAVAILABLE_CODE }
-      );
+      throw new RuntimeProviderError('TraceCode could not trace this case.', { code: TRACE_UNAVAILABLE_CODE });
     }
     state.onStart?.(input);
     state.active += 1;
@@ -519,6 +521,29 @@ function preparedProvider(
               mode: 'trace' as const,
               capabilities,
               executeIsolated: executeTrace,
+              // Like the Java provider: a traced batch runs case by case and
+              // refuses only the case the runtime could not trace.
+              ...(state.traceRefusedLabels && !state.refuseWithoutOwnBatch
+                ? {
+                    executeBatchIsolated: async (batch: RuntimePreparedTraceBatchCall) => {
+                      const results: ExecutionResult[] = [];
+                      for (const [index, inputs] of batch.inputBatch.entries()) {
+                        try {
+                          results.push(await executeTrace({
+                            inputs,
+                            ...(batch.traceEnabledBatch ? { recordTrace: batch.traceEnabledBatch[index] } : {}),
+                            ...(batch.signal ? { signal: batch.signal } : {}),
+                            ...(batch.limits ? { limits: batch.limits } : {}),
+                          }));
+                        } catch (error) {
+                          if (!isTraceUnavailableError(error)) throw error;
+                          results.push(traceUnavailableOutcome(error as Error, 'javascript'));
+                        }
+                      }
+                      return results;
+                    },
+                  }
+                : {}),
               dispose,
             },
             consoleOutput: ['prepared once'],
@@ -914,7 +939,7 @@ test('a traced case the runtime cannot trace is refused on its own; the other ca
   const state = makePreparedState({ traceRefusedLabels: new Set(['refused']) });
   const runtimeHost = browserHostFor(preparedProvider(state));
   const judgeHost = createBrowserJudgeHostFromRuntimeHost(runtimeHost);
-  const refusalMessage = 'TraceCode could not trace this case. The case runs normally without tracing.';
+  const refusalMessage = 'TraceCode could not trace this case.';
   const assertRefused = (result: JudgeCaseResult | undefined) => {
     assert.ok(result);
     assert.equal(result.caseId, 'refused');
@@ -980,6 +1005,34 @@ test('a traced case the runtime cannot trace is refused on its own; the other ca
     });
     assertRefused(again.evaluation.cases[0]);
     await judgeHost.disposeExecution(initial.executionId!);
+  } finally {
+    judgeHost.dispose();
+  }
+});
+
+test('the shared prepared registry leaves a provider\'s coded rejection a batch rejection', async () => {
+  // Only a provider converts its own cases; the registry never turns another
+  // provider's coded error into a per-case outcome.
+  const state = makePreparedState({ traceRefusedLabels: new Set(['refused']), refuseWithoutOwnBatch: true });
+  const judgeHost = createBrowserJudgeHostFromRuntimeHost(browserHostFor(preparedProvider(state)));
+  try {
+    const bundle = await createAlgorithmJudgeBundle({
+      id: 'registry-leaves-coded-rejections',
+      language: 'javascript',
+      code: SOURCE,
+      functionName: 'solve',
+      trace: true,
+      cases: [
+        { id: 'first', input: { label: 'first' }, expected: 'first' },
+        { id: 'refused', input: { label: 'refused' }, expected: 'refused' },
+      ],
+    });
+    const initial = await judgeHost.execute({ bundle, interactive: true, tracing: { caseIds: ['refused'] } });
+    assert.deepEqual(
+      initial.evaluation.cases.map((result) => [result.caseId, result.failure?.origin]),
+      [['first', 'provider'], ['refused', 'provider']]
+    );
+    if (initial.executionId) await judgeHost.disposeExecution(initial.executionId);
   } finally {
     judgeHost.dispose();
   }
