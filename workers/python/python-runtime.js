@@ -2921,7 +2921,7 @@ _tracecode_tracemalloc_started = False
 _TRACE_MUTATING_METHODS = {'append', 'appendleft', 'pop', 'popleft', 'extend', 'insert', 'add', 'remove', 'discard', 'clear', 'sort', 'reverse'}
 _tracecode_user_class_names = _builtins.set()
 _tracecode_explicit_return_function_names = _builtins.set()
-_internal_funcs = {'_serialize', '_serialize_output', '_tracecode_ref_id', '_tracer', '_custom_print', '_dict_to_tree', '_dict_to_list', '_tracecode_materialize_input', '_tracecode_materialize_custom_input', '_tracecode_materialize_named_inputs', '_tracecode_annotation_preserves_literal_shape', '_tracecode_hydrate_for_annotation', '_tracecode_resolve_target_callable', '_tracecode_hydrate_annotated_inputs', '_tracecode_resolve_entry_callable', '_tracecode_invoke_entry', '_is_structural_constructor_frame', '_snapshot_call_stack', '_snapshot_locals', '_stable_token', '_looks_like_adjacency_list', '_looks_like_indexed_adjacency_list', '_resolve_inplace_result', 'TraceHooks', '_TracecodeTraceHooks', 'flush_completed_line', 'flush_callsite_line', '_resolve_previous_step', '_append_step_runtime_events', '__tracecode_pending_access_budget', '__tracecode_record_access', '__tracecode_flush_accesses', '__tracecode_append_trace_step', '__tracecode_append_trace_events_for_step', '__tracecode_append_runtime_event', '__tracecode_frame_id_for_step', '__tracecode_access_target', '__tracecode_access_binding', '__tracecode_access_kind', '__tracecode_value_at_path', '__tracecode_access_value', '__tracecode_attach_accesses_to_previous_step', '__tracecode_normalize_index_component', '__tracecode_normalize_index_sources', '__tracecode_normalize_indices', '__tracecode_serialize_call_arg', '__tracecode_serialize_call_args', '__tracecode_make_callsite_frame_id', '__tracecode_make_access_event', '__tracecode_make_iteration_access_event', '__tracecode_record_destructured_iteration_accesses', '__tracecode_is_indexable_sequence', '__tracecode_subscripts', '__tracecode_is_mutable_container', '__tracecode_read_value', '__tracecode_write_value', '__tracecode_delete_value', '__tracecode_apply_augmented_value', '__tracecode_apply_inplace_augmented_value', '_tracecode_user_call', '_tracecode_sum', '_tracecode_read_index', '_tracecode_write_index', '_tracecode_record_index_write', '_tracecode_write_scalar', '_tracecode_delete_index', '_tracecode_augassign_scalar', '_tracecode_augassign_index', '_tracecode_mutating_call', '_tracecode_mutating_index_call', '_tracecode_heapq_mutation', '_tracecode_read_attr', '_tracecode_write_attr', '_tracecode_record_attr_write', '_tracecode_contains_key', '_tracecode_contains_key_indexed', '_tracecode_dict_get', '_tracecode_dict_get_indexed', '_tracecode_len', '_tracecode_enumerate', '_tracecode_iter_bind', '_tracecode_iter_bind_literal', '_tracecode_iter_bind_expr', '_tracecode_iter_bind_indexed', '_tracecode_iter_bind_slice', '_tracecode_range_bind', '_tracecode_for_target_binding_name', '_tracecode_scalar_target_names', '_tracecode_assignment_write_targets', '_tracecode_source_string_node', '_tracecode_exception_value', '_tracecode_collect_user_function_names', '_tracecode_collect_user_method_names', '_tracecode_collect_user_class_names', '_tracecode_collect_explicit_return_function_names', '_tracecode_is_pure_literal_scaffold', '_tracecode_collect_collapsed_literal_lines', '__tracecode_attach_parents', '_tracecode_extract_named_subscript', '_tracecode_extract_mutable_container_target', '_tracecode_is_internal_name', '__TracecodeAccessTransformer', '__tracecode_compile_user_code', '<listcomp>', '<dictcomp>', '<setcomp>', '<genexpr>'}
+_internal_funcs = {'_serialize', '_serialize_output', '_tracecode_ref_id', '_tracer', '_custom_print', '_dict_to_tree', '_dict_to_list', '_tracecode_materialize_input', '_tracecode_materialize_custom_input', '_tracecode_materialize_named_inputs', '_tracecode_annotation_preserves_literal_shape', '_tracecode_hydrate_for_annotation', '_tracecode_resolve_target_callable', '_tracecode_hydrate_annotated_inputs', '_tracecode_resolve_entry_callable', '_tracecode_invoke_entry', '_is_structural_constructor_frame', '_snapshot_call_stack', '_snapshot_locals', '_stable_token', '_looks_like_adjacency_list', '_looks_like_indexed_adjacency_list', '_resolve_inplace_result', 'TraceHooks', '_TracecodeTraceHooks', 'flush_completed_line', 'flush_callsite_line', '_resolve_previous_step', '_append_step_runtime_events', '__tracecode_pending_access_budget', '__tracecode_record_access', '__tracecode_flush_accesses', '__tracecode_append_trace_step', '__tracecode_append_trace_events_for_step', '__tracecode_append_runtime_event', '__tracecode_frame_id_for_step', '__tracecode_access_target', '__tracecode_access_binding', '__tracecode_access_kind', '__tracecode_value_at_path', '__tracecode_access_value', '__tracecode_attach_accesses_to_previous_step', '__tracecode_normalize_index_component', '__tracecode_normalize_index_sources', '__tracecode_normalize_indices', '__tracecode_serialize_call_arg', '__tracecode_serialize_call_args', '__tracecode_make_callsite_frame_id', '__tracecode_make_access_event', '__tracecode_make_iteration_access_event', '__tracecode_record_destructured_iteration_accesses', '__tracecode_is_indexable_sequence', '__tracecode_is_mutable_container', '__tracecode_read_value', '__tracecode_apply_augmented_value', '__tracecode_apply_inplace_augmented_value', '_tracecode_user_call', '_tracecode_sum', '_tracecode_read_index', '_tracecode_record_index_write', '_tracecode_write_scalar', '_TracecodeAttrStep', '_TracecodeAttrSteps', '_tracecode_attrs', '__tracecode_store_step', '__tracecode_load_step', '__tracecode_note_store', '_TracecodePeekRefused', '__tracecode_invalidate_path', '__tracecode_is_runtime_value', '__tracecode_peek_key', '__tracecode_peek_value', '_tracecode_read_path', '__tracecode_record_path_access', '_tracecode_note_parent', '_tracecode_record_store', '_tracecode_record_delete', '__tracecode_augassign_open', '__tracecode_augassign_close', '_tracecode_augassign_index_open', '_tracecode_augassign_index_close', '_tracecode_bind_target_method', '_tracecode_bind_index_method', '_tracecode_contains_key_in', '__tracecode_record_contains', '_tracecode_is_deferrable_index', '_tracecode_augassign_scalar', '_tracecode_augassign_index', '_tracecode_mutating_call', '_tracecode_mutating_index_call', '_tracecode_heapq_mutation', '_tracecode_read_attr', '_tracecode_contains_key', '_tracecode_contains_key_indexed', '_tracecode_dict_get', '_tracecode_dict_get_indexed', '_tracecode_len', '_tracecode_enumerate', '_tracecode_iter_bind', '_tracecode_iter_bind_literal', '_tracecode_iter_bind_expr', '_tracecode_iter_bind_indexed', '_tracecode_iter_bind_slice', '_tracecode_range_bind', '_tracecode_for_target_binding_name', '_tracecode_scalar_target_names', '_tracecode_assignment_write_targets', '_tracecode_source_string_node', '_tracecode_exception_value', '_tracecode_collect_user_function_names', '_tracecode_collect_user_method_names', '_tracecode_collect_user_class_names', '_tracecode_collect_explicit_return_function_names', '_tracecode_is_pure_literal_scaffold', '_tracecode_collect_collapsed_literal_lines', '__tracecode_attach_parents', '_tracecode_extract_named_subscript', '_tracecode_extract_mutable_container_target', '_tracecode_is_internal_name', '__TracecodeAccessTransformer', '__tracecode_compile_user_code', '<listcomp>', '<dictcomp>', '<setcomp>', '<genexpr>'}
 _internal_locals = {
     '_trace_data', '_trace_events', '_trace_line_event_count', '_console_output', '_original_print', '_target_function',
     '_MIRROR_PRINT_TO_WORKER_CONSOLE', '_MINIMAL_TRACE', '_SKIP_SENTINEL',
@@ -2947,9 +2947,9 @@ _internal_locals = {
     '__tracecode_attach_accesses_to_previous_step', '__tracecode_normalize_index_component', '__tracecode_normalize_index_sources', '__tracecode_normalize_indices',
     '__tracecode_serialize_call_arg', '__tracecode_serialize_call_args', '__tracecode_make_callsite_frame_id',
     '__tracecode_make_access_event', '__tracecode_make_iteration_access_event', '__tracecode_record_destructured_iteration_accesses',
-    '__tracecode_is_indexable_sequence', '__tracecode_subscripts', '__tracecode_is_mutable_container', '__tracecode_read_value', '__tracecode_write_value',
-    '__tracecode_delete_value', '__tracecode_apply_augmented_value', '__tracecode_apply_inplace_augmented_value', '_tracecode_read_index', '_tracecode_write_index', '_tracecode_record_index_write', '_tracecode_write_scalar',
-    '_tracecode_delete_index', '_tracecode_augassign_scalar', '_tracecode_augassign_index', '_tracecode_user_call', '_tracecode_sum', '_tracecode_mutating_call', '_tracecode_mutating_index_call', '_tracecode_heapq_mutation', '_tracecode_read_attr', '_tracecode_write_attr', '_tracecode_record_attr_write', '_tracecode_contains_key', '_tracecode_contains_key_indexed', '_tracecode_dict_get', '_tracecode_dict_get_indexed', '_tracecode_enumerate', '_tracecode_iter_bind', '_tracecode_iter_bind_literal', '_tracecode_iter_bind_expr', '_tracecode_iter_bind_indexed', '_tracecode_iter_bind_slice', '_tracecode_range_bind', '_tracecode_for_target_binding_name', '_tracecode_scalar_target_names', '_tracecode_assignment_write_targets', '_tracecode_source_string_node', '_tracecode_exception_value', '_tracecode_collapsed_literal_lines',
+    '__tracecode_is_indexable_sequence', '__tracecode_is_mutable_container', '__tracecode_read_value',
+    '__tracecode_apply_augmented_value', '__tracecode_apply_inplace_augmented_value', '_tracecode_read_index', '_tracecode_record_index_write', '_tracecode_write_scalar',
+    '_TracecodeAttrStep', '_TracecodeAttrSteps', '_tracecode_attrs', '__tracecode_store_step', '__tracecode_load_step', '__tracecode_note_store', '_TracecodePeekRefused', '__tracecode_invalidate_path', '__tracecode_is_runtime_value', '__tracecode_peek_key', '__tracecode_peek_value', '_tracecode_read_path', '__tracecode_record_path_access', '_tracecode_note_parent', '_tracecode_record_store', '_tracecode_record_delete', '__tracecode_augassign_open', '__tracecode_augassign_close', '_tracecode_augassign_index_open', '_tracecode_augassign_index_close', '_tracecode_bind_target_method', '_tracecode_bind_index_method', '_tracecode_contains_key_in', '__tracecode_record_contains', '_tracecode_is_deferrable_index', '_tracecode_augassign_scalar', '_tracecode_augassign_index', '_tracecode_user_call', '_tracecode_sum', '_tracecode_mutating_call', '_tracecode_mutating_index_call', '_tracecode_heapq_mutation', '_tracecode_read_attr', '_tracecode_contains_key', '_tracecode_contains_key_indexed', '_tracecode_dict_get', '_tracecode_dict_get_indexed', '_tracecode_enumerate', '_tracecode_iter_bind', '_tracecode_iter_bind_literal', '_tracecode_iter_bind_expr', '_tracecode_iter_bind_indexed', '_tracecode_iter_bind_slice', '_tracecode_range_bind', '_tracecode_for_target_binding_name', '_tracecode_scalar_target_names', '_tracecode_assignment_write_targets', '_tracecode_source_string_node', '_tracecode_exception_value', '_tracecode_collapsed_literal_lines',
     '_tracecode_collect_user_function_names', '_tracecode_collect_user_class_names', '_tracecode_collect_explicit_return_function_names', '_tracecode_is_pure_literal_scaffold', '_tracecode_collect_collapsed_literal_lines', '__tracecode_attach_parents',
     '_tracecode_extract_named_subscript', '_tracecode_extract_mutable_container_target', '_tracecode_is_internal_name', '__TracecodeAccessTransformer', '__tracecode_compile_user_code',
     '_InfiniteLoopDetected', '_tb', '_result', '_exc_type', '_exc_msg', '_exc_tb',
@@ -4037,6 +4037,8 @@ def __tracecode_attach_accesses_to_previous_step(frame):
     return accesses
 
 def __tracecode_normalize_index_component(index):
+    if _builtins.type(index) is _TracecodeAttrStep:
+        return index.label
     if isinstance(index, slice):
         start = '' if index.start is None else str(index.start)
         stop = '' if index.stop is None else str(index.stop)
@@ -4092,7 +4094,9 @@ def __tracecode_make_callsite_frame_id(frame, line_number):
         function_name = '<unknown>'
     return str(function_name) + ':' + str(line_number)
 
-def _tracecode_user_call(line_number, function_name, func, *args, _tracecode_flush_callsite_line=__tracecode_flush_callsite_line, **kwargs):
+def _tracecode_user_call(line_number, function_name, func, /, *args, _tracecode_flush_callsite_line=__tracecode_flush_callsite_line, **kwargs):
+    # Positional-only so learner keywords (func=..., line_number=...) pass
+    # through to the learner's function untouched.
     _tracecode_flush_callsite_line(sys._getframe(1), line_number)
     # The callee may mutate argument containers through paths the rewriter
     # does not instrument (builtins like random.shuffle); drop their reps.
@@ -4149,7 +4153,7 @@ def __tracecode_make_iteration_access_event(var_name, kind, indices, binding_nam
 def __tracecode_record_destructured_iteration_accesses(frame, var_name, base_indices, value, binding_names, index_sources=None):
     if not isinstance(binding_names, _builtins.list) or len(binding_names) <= 1:
         return
-    if not isinstance(value, (_builtins.list, _builtins.tuple)):
+    if not isinstance(value, (_builtins.list, _builtins.tuple)) or not __tracecode_is_runtime_value(value):
         return
     normalized_base = list(base_indices)
     normalized_sources = list(index_sources) if isinstance(index_sources, _builtins.list) else [None for _ in normalized_base]
@@ -4172,6 +4176,12 @@ def __tracecode_record_destructured_iteration_accesses(frame, var_name, base_ind
             ),
         )
 
+def __tracecode_is_runtime_value(value):
+    # Recording may take len() of, index or iterate a value only when its
+    # type comes from the runtime (builtins, collections, array): a learner
+    # class, including a list or dict subclass, could run code there.
+    return _builtins.type(value).__module__ in ('builtins', 'collections', '_collections', 'array')
+
 def __tracecode_is_indexable_sequence(value):
     return isinstance(value, (list, tuple, _builtins.str)) or (
         getattr(getattr(value, '__class__', None), '__name__', '') == 'deque'
@@ -4188,67 +4198,124 @@ def __tracecode_is_mutable_container(value):
         (class_module == 'array' and class_name == 'array')
     )
 
-def __tracecode_subscripts(container, index):
-    # Paths mix subscripts and attribute steps; an attribute step is always a
-    # string constant, so any other step (or any step on a dict or sequence)
-    # is a subscript, as Python evaluates it: typing aliases, learner
-    # __getitem__ classes, range, bytes, array, SortedList.
-    return (
-        not isinstance(index, _builtins.str)
-        or isinstance(container, _builtins.dict)
-        or __tracecode_is_indexable_sequence(container)
-    )
+class _TracecodeAttrStep:
+    # One attribute step of an access path such as self.memo[i]. A subscript
+    # key is a learner value of any type (b["x"] is still a subscript), so a
+    # path step is an attribute access only when it is this marker, which
+    # learner code cannot produce. name is what Python looks up (already
+    # private-name mangled); label is the source spelling shown in the trace.
+    __slots__ = ('name', 'label')
+
+    def __init__(self, name, label):
+        self.name = name
+        self.label = label
+
+class _TracecodeAttrSteps(_builtins.dict):
+    # The rewriter emits _tracecode_attrs['name'] (or [('mangled', 'label')]):
+    # one shared marker per attribute name, created on first use.
+    def __missing__(self, key):
+        if _builtins.type(key) is _builtins.tuple:
+            step = _TracecodeAttrStep(key[0], key[1])
+        else:
+            step = _TracecodeAttrStep(key, key)
+        self[key] = step
+        return step
+
+_tracecode_attrs = _TracecodeAttrSteps()
 
 def __tracecode_read_value(container, indices):
+    # Each step runs once, in path order, exactly as the native expression.
     current = container
     for index in indices:
-        if __tracecode_subscripts(current, index):
-            current = current[index]
+        if _builtins.type(index) is _TracecodeAttrStep:
+            current = _builtins.getattr(current, index.name)
         else:
-            current = getattr(current, index)
+            current = current[index]
     return current
 
-def __tracecode_write_value(container, indices, value):
-    if len(indices) == 1:
-        if __tracecode_subscripts(container, indices[0]):
-            container[indices[0]] = value
-        else:
-            setattr(container, indices[0], value)
-        _tc_rep_patch_write(container, indices, value)
-        return value
-    parent = container
-    for index in indices[:-1]:
-        if __tracecode_subscripts(parent, index):
-            parent = parent[index]
-        else:
-            parent = getattr(parent, index)
-    if __tracecode_subscripts(parent, indices[-1]):
-        parent[indices[-1]] = value
+def __tracecode_store_step(parent, index, value):
+    if _builtins.type(index) is _TracecodeAttrStep:
+        _builtins.setattr(parent, index.name, value)
     else:
-        setattr(parent, indices[-1], value)
-    _tc_rep_invalidate(container)
-    _tc_rep_invalidate(parent)
-    return value
+        parent[index] = value
 
-def __tracecode_delete_value(container, indices):
-    _tc_rep_invalidate(container)
-    if len(indices) == 1:
-        if __tracecode_subscripts(container, indices[0]):
-            del container[indices[0]]
-        else:
-            delattr(container, indices[0])
-        return None
-    parent = container
-    for index in indices[:-1]:
-        if __tracecode_subscripts(parent, index):
-            parent = parent[index]
-        else:
-            parent = getattr(parent, index)
-    if __tracecode_subscripts(parent, indices[-1]):
-        del parent[indices[-1]]
+def __tracecode_load_step(parent, index):
+    if _builtins.type(index) is _TracecodeAttrStep:
+        return _builtins.getattr(parent, index.name)
+    return parent[index]
+
+def __tracecode_note_store(container, parent, indices, value):
+    if _builtins.len(indices) == 1:
+        _tc_rep_patch_write(container, indices, value)
     else:
-        delattr(parent, indices[-1])
-    return None
+        _tc_rep_invalidate(container)
+        _tc_rep_invalidate(parent)
+
+class _TracecodePeekRefused(Exception):
+    pass
+
+_TC_PEEK_SEQUENCE_TYPES = (_builtins.list, _builtins.tuple, _builtins.str, _builtins.bytes, _builtins.bytearray, _builtins.range)
+_TC_PEEK_KEY_TYPES = (_builtins.int, _builtins.str, _builtins.bool, _builtins.float, _builtins.type(None))
+
+def __tracecode_invalidate_path(container, indices):
+    # After a native store or delete into a nested path, drop the cached
+    # representations of the root and of the container that changed.
+    _tc_rep_invalidate(container)
+    if _builtins.len(indices) > 1:
+        try:
+            _tc_rep_invalidate(__tracecode_peek_value(container, indices[:-1]))
+        except Exception:
+            pass
+
+def __tracecode_peek_key(key):
+    key_type = _builtins.type(key)
+    if key_type in _TC_PEEK_KEY_TYPES:
+        return True
+    if key_type is _builtins.tuple:
+        for part in key:
+            if not __tracecode_peek_key(part):
+                return False
+        return True
+    return False
+
+def __tracecode_peek_value(container, indices):
+    # Re-reads a path after Python performed the store, for the trace only.
+    # It must not run learner code (a stateful __getitem__, a property, a
+    # key's __eq__) or change the program (a defaultdict inserting a missing
+    # key), so it follows only builtin containers with plain keys and
+    # instance attributes held in __dict__, and refuses anything else.
+    current = container
+    for index in indices:
+        current_type = _builtins.type(current)
+        if _builtins.type(index) is _TracecodeAttrStep:
+            for klass in current_type.__mro__:
+                if index.name in klass.__dict__:
+                    for descriptor_class in _builtins.type(klass.__dict__[index.name]).__mro__:
+                        if '__set__' in descriptor_class.__dict__ or '__delete__' in descriptor_class.__dict__:
+                            raise _TracecodePeekRefused()
+                    break
+            try:
+                namespace = _builtins.object.__getattribute__(current, '__dict__')
+            except Exception:
+                raise _TracecodePeekRefused()
+            if _builtins.type(namespace) is not _builtins.dict or index.name not in namespace:
+                raise _TracecodePeekRefused()
+            current = namespace[index.name]
+            continue
+        if current_type in _TC_PEEK_SEQUENCE_TYPES:
+            if _builtins.type(index) not in (_builtins.int, _builtins.bool, _builtins.slice):
+                raise _TracecodePeekRefused()
+            current = current[index]
+            continue
+        if _builtins.isinstance(current, _builtins.dict) and (
+            current_type is _builtins.dict or current_type.__module__ in ('collections', '_collections')
+        ):
+            if not __tracecode_peek_key(index) or not _builtins.dict.__contains__(current, index):
+                raise _TracecodePeekRefused()
+            current = _builtins.dict.__getitem__(current, index)
+            continue
+        raise _TracecodePeekRefused()
+    return current
 
 def __tracecode_apply_augmented_value(current, op_name, rhs):
     if op_name == 'add':
@@ -4308,9 +4375,31 @@ def __tracecode_apply_inplace_augmented_value(current, op_name, rhs):
         return _tracecode_operator.ixor(current, rhs)
     return rhs
 
-def _tracecode_read_index(var_name, container, indices, index_sources=None):
-    # Post-budget fast path: recording would be discarded, so only the
-    # semantic read remains (mirrors the C++ admissibility pre-checks).
+def _tracecode_read_index(var_name, result, indices, index_sources=None):
+    # The rewriter evaluates the access natively, a[(t0 := i)][(t1 := j)],
+    # so Python itself performs every step in its own order; the captured
+    # index values and the result arrive here only to be recorded.
+    if _trace_limit_exceeded:
+        return result
+    normalized = __tracecode_normalize_indices(indices)
+    if normalized is not None:
+        __tracecode_record_access(
+            sys._getframe(1),
+            __tracecode_make_access_event(
+                var_name,
+                'cell-read' if len(normalized) == 2 else 'indexed-read',
+                normalized,
+                index_sources=index_sources,
+                value=_serialize(result),
+            ),
+        )
+    return result
+
+def _tracecode_read_path(var_name, container, indices, index_sources=None):
+    # Walking form, for positions where a walrus capture is not allowed
+    # (comprehension iterables, comprehensions in a class body). The
+    # rewriter only uses it when every index after the first is a constant,
+    # so performing the steps here, after all indices, is unobservable.
     if _trace_limit_exceeded:
         return __tracecode_read_value(container, list(indices))
     result = __tracecode_read_value(container, list(indices))
@@ -4328,73 +4417,69 @@ def _tracecode_read_index(var_name, container, indices, index_sources=None):
         )
     return result
 
-def _tracecode_write_index(var_name, container, indices, index_sources, value):
+def __tracecode_record_path_access(frame, var_name, container, normalized, index_sources, value, write):
+    # Dict roots keep the flat indexed kinds; other two-step paths are cells.
+    if _builtins.isinstance(container, _builtins.dict):
+        kind = 'indexed-write' if write else 'indexed-read'
+    elif _builtins.len(normalized) == 2:
+        kind = 'cell-write' if write else 'cell-read'
+    else:
+        kind = 'indexed-write' if write else 'indexed-read'
+    __tracecode_record_access(
+        frame,
+        __tracecode_make_access_event(var_name, kind, normalized, index_sources=index_sources, value=_serialize(value)),
+    )
+
+def _tracecode_note_parent(var_name, container, parent, indices, index_sources):
+    # a[i][j] = v is rewritten to
+    #     _tracecode_note_parent('a', a, a[(t0 := i)], [t0], ...)[(t1 := j)] = (tv := v)
+    #     _tracecode_record_store('a', a, [t0, t1], ..., tv)
+    # Python evaluates v, then this call (a, i, a[i]), then j, then stores:
+    # the native order. This records the row read before the store.
+    _tc_rep_invalidate(container)
+    _tc_rep_invalidate(parent)
     if _trace_limit_exceeded:
-        return __tracecode_write_value(container, list(indices), value)
-    effective_indices = list(indices)
-    parent_value = None
-    parent_indices = effective_indices[:-1]
-    parent_normalized = __tracecode_normalize_indices(parent_indices) if len(parent_indices) > 0 else None
+        return parent
+    parent_normalized = __tracecode_normalize_indices(indices)
     if parent_normalized is not None:
         try:
-            parent_value = __tracecode_read_value(container, parent_indices)
             __tracecode_record_access(
                 sys._getframe(1),
                 __tracecode_make_access_event(
                     var_name,
-                    'cell-read' if len(parent_normalized) == 2 else 'indexed-read',
+                    'cell-read' if _builtins.len(parent_normalized) == 2 else 'indexed-read',
                     parent_normalized,
-                    index_sources=list(index_sources or [])[:len(parent_normalized)] if isinstance(index_sources, _builtins.list) else None,
-                    value=_serialize(parent_value),
+                    index_sources=index_sources,
+                    value=_serialize(parent),
                 ),
             )
         except Exception:
-            parent_value = None
-    result = __tracecode_write_value(container, effective_indices, value)
-    normalized = __tracecode_normalize_indices(effective_indices)
+            pass
+    return parent
+
+def _tracecode_record_store(var_name, container, indices, index_sources, value):
+    # Records a subscript or attribute store Python just performed natively.
+    if _builtins.len(indices) == 1:
+        _tc_rep_patch_write(container, indices, value)
+    if _trace_limit_exceeded:
+        return None
+    normalized = __tracecode_normalize_indices(indices)
     if normalized is not None:
-        if isinstance(container, _builtins.dict):
-            __tracecode_record_access(
-                sys._getframe(1),
-                __tracecode_make_access_event(var_name, 'indexed-write', normalized, index_sources=index_sources, value=_serialize(result)),
-            )
-            return result
-        __tracecode_record_access(
-            sys._getframe(1),
-            __tracecode_make_access_event(
-                var_name,
-                'cell-write' if len(normalized) == 2 else 'indexed-write',
-                normalized,
-                index_sources=index_sources,
-                value=_serialize(result),
-            ),
-        )
-    return result
+        __tracecode_record_path_access(sys._getframe(1), var_name, container, normalized, index_sources, value, True)
+    return None
 
 def _tracecode_record_index_write(var_name, container, indices, index_sources):
-    effective_indices = list(indices)
+    # Records a store Python already performed (tuple and chained targets).
+    # The value is re-read only where that cannot run learner code.
+    effective_indices = _builtins.list(indices)
     try:
-        result = __tracecode_read_value(container, effective_indices)
+        result = __tracecode_peek_value(container, effective_indices)
     except Exception:
         result = None
+    __tracecode_invalidate_path(container, effective_indices)
     normalized = __tracecode_normalize_indices(effective_indices)
     if normalized is not None:
-        if isinstance(container, _builtins.dict):
-            __tracecode_record_access(
-                sys._getframe(1),
-                __tracecode_make_access_event(var_name, 'indexed-write', normalized, index_sources=index_sources, value=_serialize(result)),
-            )
-            return result
-        __tracecode_record_access(
-            sys._getframe(1),
-            __tracecode_make_access_event(
-                var_name,
-                'cell-write' if len(normalized) == 2 else 'indexed-write',
-                normalized,
-                index_sources=index_sources,
-                value=_serialize(result),
-            ),
-        )
+        __tracecode_record_path_access(sys._getframe(1), var_name, container, normalized, index_sources, result, True)
     return result
 
 def _tracecode_write_scalar(var_name, value):
@@ -4413,9 +4498,12 @@ def _tracecode_augassign_scalar(var_name, current, op_name, rhs):
     )
     return next_value
 
-def _tracecode_delete_index(var_name, container, indices, index_sources=None):
-    effective_indices = list(indices)
-    __tracecode_delete_value(container, effective_indices)
+def _tracecode_record_delete(var_name, container, indices, index_sources=None):
+    # Records a del Python just performed natively (indices captured).
+    effective_indices = _builtins.list(indices)
+    __tracecode_invalidate_path(container, effective_indices)
+    if _trace_limit_exceeded:
+        return None
     normalized = __tracecode_normalize_indices(effective_indices)
     if normalized is not None:
         args = [_serialize(effective_indices[-1])] if len(effective_indices) > 0 else []
@@ -4431,69 +4519,63 @@ def _tracecode_delete_index(var_name, container, indices, index_sources=None):
             )
     return None
 
-def _tracecode_augassign_index(var_name, container, indices, index_sources, op_name, rhs):
-    if _trace_limit_exceeded:
-        _fast_indices = list(indices)
-        _fast_next = __tracecode_apply_augmented_value(
-            __tracecode_read_value(container, _fast_indices), op_name, rhs)
-        __tracecode_write_value(container, _fast_indices, _fast_next)
-        return _fast_next
-    effective_indices = list(indices)
-    current = __tracecode_read_value(container, effective_indices)
-    normalized = __tracecode_normalize_indices(effective_indices)
-    if normalized is not None:
-        if isinstance(container, _builtins.dict):
-            __tracecode_record_access(
-                sys._getframe(1),
-                __tracecode_make_access_event(var_name, 'indexed-read', normalized, index_sources=index_sources, value=_serialize(current)),
-            )
-        else:
-            __tracecode_record_access(
-                sys._getframe(1),
-                __tracecode_make_access_event(
-                    var_name,
-                    'cell-read' if len(normalized) == 2 else 'indexed-read',
-                    normalized,
-                    index_sources=index_sources,
-                    value=_serialize(current),
-                ),
-            )
-    next_value = __tracecode_apply_augmented_value(current, op_name, rhs)
-    __tracecode_write_value(container, effective_indices, next_value)
-    if normalized is not None:
-        if isinstance(container, _builtins.dict):
-            __tracecode_record_access(
-                sys._getframe(1),
-                __tracecode_make_access_event(var_name, 'indexed-write', normalized, index_sources=index_sources, value=_serialize(next_value)),
-            )
-        else:
-            __tracecode_record_access(
-                sys._getframe(1),
-                __tracecode_make_access_event(
-                    var_name,
-                    'cell-write' if len(normalized) == 2 else 'indexed-write',
-                    normalized,
-                    index_sources=index_sources,
-                    value=_serialize(next_value),
-                ),
-            )
+def __tracecode_augassign_open(frame, var_name, container, parent, last, indices, index_sources):
+    # a[i][j] += r: the rewriter passes a, the parent a[(t0 := i)] and the
+    # last index (t1 := j) evaluated natively in that order, then the old
+    # value is read here, before r is evaluated, as Python does.
+    current = __tracecode_load_step(parent, last)
+    normalized = None
+    if not _trace_limit_exceeded:
+        normalized = __tracecode_normalize_indices(indices)
+        if normalized is not None:
+            __tracecode_record_path_access(frame, var_name, container, normalized, index_sources, current, False)
+    return (var_name, container, parent, last, indices, index_sources, current, normalized)
+
+def __tracecode_augassign_close(frame, state, op_name, rhs):
+    # The in-place operator, as Python uses for augmented assignment
+    # (list += extends the same list), then one store into the parent.
+    var_name, container, parent, last, indices, index_sources, current, normalized = state
+    _tc_rep_invalidate(current)
+    next_value = __tracecode_apply_inplace_augmented_value(current, op_name, rhs)
+    __tracecode_store_step(parent, last, next_value)
+    __tracecode_note_store(container, parent, indices, next_value)
+    if normalized is not None and not _trace_limit_exceeded:
+        __tracecode_record_path_access(frame, var_name, container, normalized, index_sources, next_value, True)
     return next_value
 
-def _tracecode_mutating_call(var_name, container, method_name, *args, **kwargs):
+def _tracecode_augassign_index(var_name, container, parent, last, indices, index_sources, op_name, rhs):
+    # Single call, used only when the right side is a constant: evaluating it
+    # cannot be observed, so reading the old value after it is the same.
+    frame = sys._getframe(1)
+    return __tracecode_augassign_close(
+        frame,
+        __tracecode_augassign_open(frame, var_name, container, parent, last, indices, index_sources),
+        op_name,
+        rhs,
+    )
+
+def _tracecode_augassign_index_open(var_name, container, parent, last, indices, index_sources):
+    return __tracecode_augassign_open(sys._getframe(1), var_name, container, parent, last, indices, index_sources)
+
+def _tracecode_augassign_index_close(state, op_name, rhs):
+    return __tracecode_augassign_close(sys._getframe(1), state, op_name, rhs)
+
+def _tracecode_mutating_call(var_name, container, method, method_name, index_sources, /, *args, **kwargs):
+    # x.append(v): the rewriter passes x.append already looked up, so the
+    # method is resolved before the arguments run, as in the native call.
     frame = sys._getframe(1)
     _tc_rep_invalidate(container)
-    index_sources = kwargs.pop('__tracecode_index_sources', None)
     before_len = None
     try:
         container_class_name = getattr(getattr(container, '__class__', None), '__name__', '')
         if method_name in {'append', 'appendleft', 'extend', 'extendleft', 'insert'} and (
             isinstance(container, _builtins.list) or container_class_name == 'deque'
-        ):
+        ) and __tracecode_is_runtime_value(container):
             before_len = len(container)
     except Exception:
         before_len = None
-    result = getattr(container, method_name)(*args, **kwargs)
-    if method_name in _TRACE_MUTATING_METHODS and __tracecode_is_mutable_container(container):
+    result = method(*args, **kwargs)
+    if method_name in _TRACE_MUTATING_METHODS and __tracecode_is_mutable_container(container) and __tracecode_is_runtime_value(container):
         if (
             len(args) >= 1 and
             method_name in {'pop', 'remove', 'discard'} and
@@ -4531,6 +4613,8 @@ def _tracecode_mutating_call(var_name, container, method_name, *args, **kwargs):
             elif method_name == 'extend' and len(args) >= 1:
                 try:
                     budget = __tracecode_pending_access_budget(frame)
+                    if not __tracecode_is_runtime_value(args[0]):
+                        raise _TracecodePeekRefused()
                     for offset, value in enumerate(args[0]):
                         if offset >= budget:
                             break
@@ -4554,21 +4638,33 @@ def _tracecode_mutating_call(var_name, container, method_name, *args, **kwargs):
                 pass
     return result
 
-def _tracecode_mutating_index_call(var_name, container, indices, index_sources, method_name, *args, **kwargs):
+def _tracecode_bind_target_method(var_name, container, target, indices, index_sources, method_name):
+    # Capture form: target is a[(t0 := i)] evaluated natively; the method is
+    # looked up before the call's arguments are evaluated.
+    return (var_name, container, _builtins.list(indices), index_sources, method_name, target, _builtins.getattr(target, method_name))
+
+def _tracecode_bind_index_method(var_name, container, indices, index_sources, method_name):
+    # a[i].append(v): Python gets a[i] and looks up append before evaluating
+    # v. This runs as the first argument of the call helper, so the receiver
+    # path and the method are resolved before the call's own arguments.
+    effective_indices = _builtins.list(indices)
+    target = __tracecode_read_value(container, effective_indices)
+    return (var_name, container, effective_indices, index_sources, method_name, target, _builtins.getattr(target, method_name))
+
+def _tracecode_mutating_index_call(bound, /, *args, **kwargs):
+    var_name, container, effective_indices, index_sources, method_name, target, method = bound
     frame = sys._getframe(1)
     _tc_rep_invalidate(container)
-    effective_indices = list(indices)
-    target = __tracecode_read_value(container, effective_indices)
     _tc_rep_invalidate(target)
     before_len = None
     try:
-        if method_name in {'append', 'appendleft', 'extend', 'extendleft', 'insert'}:
-            before_len = len(target)
+        if method_name in {'append', 'appendleft', 'extend', 'extendleft', 'insert'} and __tracecode_is_mutable_container(target) and __tracecode_is_runtime_value(target):
+            before_len = _builtins.len(target)
     except Exception:
         before_len = None
-    result = getattr(target, method_name)(*args, **kwargs)
+    result = method(*args, **kwargs)
     normalized = __tracecode_normalize_indices(effective_indices)
-    if method_name in _TRACE_MUTATING_METHODS and __tracecode_is_mutable_container(target):
+    if method_name in _TRACE_MUTATING_METHODS and __tracecode_is_mutable_container(target) and __tracecode_is_runtime_value(target):
         if normalized is None:
             return result
         __tracecode_record_access(
@@ -4593,6 +4689,8 @@ def _tracecode_mutating_index_call(var_name, container, indices, index_sources, 
             elif method_name == 'extend' and len(args) >= 1:
                 try:
                     budget = __tracecode_pending_access_budget(frame)
+                    if not __tracecode_is_runtime_value(args[0]):
+                        raise _TracecodePeekRefused()
                     for offset, value in enumerate(args[0]):
                         if offset >= budget:
                             break
@@ -4616,7 +4714,7 @@ def _tracecode_mutating_index_call(var_name, container, indices, index_sources, 
                 pass
     return result
 
-def _tracecode_heapq_mutation(heapq_func, var_name, target, indices, method_name, *args, **kwargs):
+def _tracecode_heapq_mutation(heapq_func, var_name, target, indices, method_name, /, *args, **kwargs):
     frame = sys._getframe(1)
     _tc_rep_invalidate(target)
     effective_indices = list(indices or [])
@@ -4624,7 +4722,7 @@ def _tracecode_heapq_mutation(heapq_func, var_name, target, indices, method_name
     invalid_nested_path = len(effective_indices) > 0 and normalized is None
     try:
         snapshot_budget = __tracecode_pending_access_budget(frame, reserve=2)
-        before_values = list(target[:snapshot_budget]) if isinstance(target, _builtins.list) and snapshot_budget > 0 else None
+        before_values = list(target[:snapshot_budget]) if isinstance(target, _builtins.list) and __tracecode_is_runtime_value(target) and snapshot_budget > 0 else None
     except Exception:
         before_values = None
     if not invalid_nested_path:
@@ -4709,18 +4807,24 @@ def _tracecode_read_attr(var_name, obj, attr_name):
     )
     return value
 
-def _tracecode_len(var_name, obj):
-    value = len(obj)
+def _tracecode_len(len_func, var_name, obj):
+    # len(x) calls whatever len names at that point; a learner's own len
+    # (or any shadowing binding) is called and nothing is recorded.
+    value = len_func(obj)
+    if len_func is not _builtins.len:
+        return value
     __tracecode_record_access(
         sys._getframe(1),
         __tracecode_make_access_event(var_name, 'indexed-read', ['len'], value=value),
     )
     return value
 
-def _tracecode_sum(var_name, iterable, *args, **kwargs):
+def _tracecode_sum(sum_func, var_name, iterable, /, *args, **kwargs):
+    if sum_func is not _builtins.sum:
+        return sum_func(iterable, *args, **kwargs)
     frame = sys._getframe(1)
     try:
-        if __tracecode_is_indexable_sequence(iterable) or isinstance(iterable, range):
+        if (__tracecode_is_indexable_sequence(iterable) or isinstance(iterable, range)) and __tracecode_is_runtime_value(iterable):
             budget = __tracecode_pending_access_budget(frame, reserve=1)
             total_length = None
             try:
@@ -4754,26 +4858,8 @@ def _tracecode_sum(var_name, iterable, *args, **kwargs):
         pass
     return _builtins.sum(iterable, *args, **kwargs)
 
-def _tracecode_write_attr(var_name, obj, attr_name, value):
-    setattr(obj, attr_name, value)
-    __tracecode_record_access(
-        sys._getframe(1),
-        __tracecode_make_access_event(var_name, 'indexed-write', [attr_name], value=_serialize(value)),
-    )
-    return value
-
-def _tracecode_record_attr_write(var_name, obj, attr_name):
-    try:
-        value = getattr(obj, attr_name)
-    except Exception:
-        value = None
-    __tracecode_record_access(
-        sys._getframe(1),
-        __tracecode_make_access_event(var_name, 'indexed-write', [attr_name], value=_serialize(value)),
-    )
-    return value
-
-def _tracecode_contains_key(var_name, container, key, key_source=None):
+def _tracecode_contains_key(key, var_name, container, key_source=None):
+    # k in d evaluates k first; the rewriter passes it first.
     result = key in container
     __tracecode_record_access(
         sys._getframe(1),
@@ -4787,16 +4873,23 @@ def _tracecode_contains_key(var_name, container, key, key_source=None):
     )
     return result
 
-def _tracecode_contains_key_indexed(var_name, container, indices, index_sources, key, key_source=None):
-    effective_indices = list(indices)
+def _tracecode_contains_key_in(key, var_name, target, indices, index_sources, key_source=None):
+    # k in a[(t0 := i)]: k, then the natively evaluated container.
+    return __tracecode_record_contains(sys._getframe(1), key, var_name, target, _builtins.list(indices), index_sources, key_source)
+
+def _tracecode_contains_key_indexed(key, var_name, container, indices, index_sources, key_source=None):
+    effective_indices = _builtins.list(indices)
     target = __tracecode_read_value(container, effective_indices)
+    return __tracecode_record_contains(sys._getframe(1), key, var_name, target, effective_indices, index_sources, key_source)
+
+def __tracecode_record_contains(frame, key, var_name, target, effective_indices, index_sources, key_source):
     result = key in target
     access_indices = effective_indices + [key]
     access_sources = list(index_sources) if isinstance(index_sources, _builtins.list) else []
     access_sources.append(key_source if isinstance(key_source, _builtins.str) and key_source else None)
     normalized = __tracecode_normalize_indices(access_indices)
     __tracecode_record_access(
-        sys._getframe(1),
+        frame,
         __tracecode_make_access_event(
             var_name,
             'cell-read' if normalized is not None and len(normalized) == 2 else 'indexed-read',
@@ -4807,8 +4900,14 @@ def _tracecode_contains_key_indexed(var_name, container, indices, index_sources,
     )
     return result
 
-def _tracecode_dict_get(var_name, container, key, key_source=None, default=None):
-    result = container.get(key, default)
+def _tracecode_dict_get(var_name, method, key_source, /, *args, **kwargs):
+    # d.get(k[, default]): the rewriter passes d.get already looked up and
+    # forwards exactly the learner's arguments, so a learner class's own get
+    # receives the call unchanged.
+    result = method(*args, **kwargs)
+    if _builtins.len(args) == 0:
+        return result
+    key = args[0]
     __tracecode_record_access(
         sys._getframe(1),
         __tracecode_make_access_event(
@@ -4821,10 +4920,13 @@ def _tracecode_dict_get(var_name, container, key, key_source=None, default=None)
     )
     return result
 
-def _tracecode_dict_get_indexed(var_name, container, indices, index_sources, key, key_source=None, default=None):
-    target = __tracecode_read_value(container, list(indices))
-    result = target.get(key, default)
-    access_indices = list(indices) + [key]
+def _tracecode_dict_get_indexed(bound, key_source, /, *args, **kwargs):
+    var_name, container, indices, index_sources, _method_name, target, method = bound
+    result = method(*args, **kwargs)
+    if _builtins.len(args) == 0:
+        return result
+    key = args[0]
+    access_indices = _builtins.list(indices) + [key]
     access_sources = list(index_sources) if isinstance(index_sources, _builtins.list) else []
     access_sources.append(key_source if isinstance(key_source, _builtins.str) and key_source else None)
     normalized = __tracecode_normalize_indices(access_indices)
@@ -4840,8 +4942,12 @@ def _tracecode_dict_get_indexed(var_name, container, indices, index_sources, key
     )
     return result
 
-def _tracecode_enumerate(var_name, container, binding_name=None, index_binding_name=None, binding_names=None, *args, **kwargs):
-    for offset, (index, value) in enumerate(enumerate(container, *args, **kwargs)):
+def _tracecode_enumerate(enumerate_func, var_name, container, binding_name=None, index_binding_name=None, binding_names=None, /, *args, **kwargs):
+    # Iterates whatever enumerate names; only the builtin is instrumented.
+    if enumerate_func is not _builtins.enumerate:
+        yield from enumerate_func(container, *args, **kwargs)
+        return
+    for offset, (index, value) in _builtins.enumerate(_builtins.enumerate(container, *args, **kwargs)):
         frame = sys._getframe(1)
         if isinstance(index_binding_name, _builtins.str) and index_binding_name:
             __tracecode_record_access(
@@ -4870,7 +4976,7 @@ def _tracecode_enumerate(var_name, container, binding_name=None, index_binding_n
         yield index, value
 
 def _tracecode_iter_bind(var_name, container, binding_name, binding_names=None):
-    for index, value in enumerate(container):
+    for index, value in _builtins.enumerate(container):
         frame = sys._getframe(1)
         __tracecode_record_access(
             frame,
@@ -4887,7 +4993,7 @@ def _tracecode_iter_bind(var_name, container, binding_name, binding_names=None):
         yield value
 
 def _tracecode_iter_bind_literal(binding_name, container, binding_names=None):
-    for index, value in enumerate(container):
+    for index, value in _builtins.enumerate(container):
         frame = sys._getframe(1)
         __tracecode_record_access(
             frame,
@@ -4904,7 +5010,7 @@ def _tracecode_iter_bind_literal(binding_name, container, binding_names=None):
         yield value
 
 def _tracecode_iter_bind_expr(iter_source, container, binding_name, binding_names=None):
-    for index, value in enumerate(container):
+    for index, value in _builtins.enumerate(container):
         frame = sys._getframe(1)
         __tracecode_record_access(
             frame,
@@ -4921,10 +5027,23 @@ def _tracecode_iter_bind_expr(iter_source, container, binding_name, binding_name
         yield value
 
 def _tracecode_iter_bind_indexed(var_name, container, base_indices, index_sources, binding_name, binding_names=None):
-    effective_base_indices = list(base_indices)
+    # for x in rows[(t0 := k)]: the iterable was evaluated natively, once;
+    # its read is recorded when the loop starts, then each iteration.
+    effective_base_indices = _builtins.list(base_indices)
     normalized_base = __tracecode_normalize_indices(effective_base_indices)
-    normalized_sources = list(index_sources) if isinstance(index_sources, _builtins.list) else []
-    for index, value in enumerate(container):
+    normalized_sources = _builtins.list(index_sources) if _builtins.isinstance(index_sources, _builtins.list) else []
+    if normalized_base is not None and not _trace_limit_exceeded:
+        __tracecode_record_access(
+            sys._getframe(1),
+            __tracecode_make_access_event(
+                var_name,
+                'cell-read' if _builtins.len(normalized_base) == 2 else 'indexed-read',
+                normalized_base,
+                index_sources=index_sources,
+                value=_serialize(container),
+            ),
+        )
+    for index, value in _builtins.enumerate(container):
         if normalized_base is not None:
             frame = sys._getframe(1)
             indices = [*normalized_base, index]
@@ -4946,6 +5065,8 @@ def _tracecode_iter_bind_indexed(var_name, container, base_indices, index_source
 def _tracecode_iter_bind_slice(var_name, container, start, start_source, binding_name, binding_names=None):
     sliced = container[start:]
     try:
+        if not __tracecode_is_runtime_value(container) or not __tracecode_is_runtime_value(start):
+            raise _TracecodePeekRefused()
         normalized_start = start.__index__() if hasattr(start, '__index__') else start
         if normalized_start is None:
             offset = 0
@@ -4958,7 +5079,7 @@ def _tracecode_iter_bind_slice(var_name, container, start, start_source, binding
     except Exception:
         offset = 0
     sources = [start_source] if isinstance(start_source, _builtins.str) and start_source else [None]
-    for index, value in enumerate(sliced):
+    for index, value in _builtins.enumerate(sliced):
         frame = sys._getframe(1)
         __tracecode_record_access(
             frame,
@@ -5019,13 +5140,19 @@ def _tracecode_assignment_write_targets(target):
 def _tracecode_exception_value(line_number, error, _tracecode_flush_completed_line=__tracecode_flush_completed_line):
     frame = sys._getframe(1)
     _tracecode_flush_completed_line(frame)
+    # str() runs the learner's __str__; a failure there must not replace the
+    # exception the program raises.
+    try:
+        message = _builtins.str(error)
+    except _builtins.BaseException:
+        message = _builtins.type(error).__name__ if _builtins.isinstance(error, _builtins.BaseException) else '<exception>'
     __tracecode_append_trace_step(frame, {
         'line': line_number,
         'event': 'exception',
         'variables': {},
         'function': frame.f_code.co_name,
         'callStack': _snapshot_call_stack(),
-        'returnValue': str(error),
+        'returnValue': message,
     })
     return error
 
@@ -5135,34 +5262,329 @@ def _tracecode_collect_explicit_return_function_names(tree):
                     break
     return names
 
+def _tracecode_is_deferrable_index(node):
+    # The walking helpers (_tracecode_read_path and friends) receive a path's
+    # root and all index values, then do the steps themselves, so each step
+    # runs after the indices that follow it: a[i][f()] would call f() before
+    # a[i]. Only an index whose evaluation does nothing at all, a constant,
+    # can follow a step that way. Other paths are instrumented natively with
+    # walrus captures, or (where Python forbids a walrus) only up to their
+    # last such step, with the rest left native.
+    if isinstance(node, ast.Constant):
+        return True
+    if isinstance(node, ast.UnaryOp) and isinstance(node.op, (ast.USub, ast.UAdd)):
+        return isinstance(node.operand, ast.Constant)
+    if isinstance(node, ast.Tuple):
+        return all(_tracecode_is_deferrable_index(element) for element in node.elts)
+    if isinstance(node, ast.Slice):
+        return all(part is None or _tracecode_is_deferrable_index(part) for part in (node.lower, node.upper, node.step))
+    return False
+
 class __TracecodeAccessTransformer(ast.NodeTransformer):
     def __init__(self, user_function_names=None, user_class_names=None):
         super().__init__()
         self._tracecode_user_function_names = _builtins.set(user_function_names or [])
         self._tracecode_user_class_names = _builtins.set(user_class_names or [])
         self._tracecode_temp_counter = 0
+        self._tracecode_class_stack = []
+
+    def visit_ClassDef(self, node):
+        # Decorators, bases and keywords are evaluated outside the class
+        # body, so private names there are not mangled with this class.
+        node.decorator_list = [self.visit(item) for item in node.decorator_list]
+        node.bases = [self.visit(item) for item in node.bases]
+        node.keywords = [self.visit(item) for item in node.keywords]
+        self._tracecode_class_stack.append(node.name)
+        try:
+            body = []
+            for statement in node.body:
+                visited = self.visit(statement)
+                if isinstance(visited, _builtins.list):
+                    body.extend(visited)
+                elif visited is not None:
+                    body.append(visited)
+            node.body = body or [ast.Pass()]
+        finally:
+            self._tracecode_class_stack.pop()
+        return node
+
+    def _tracecode_mangle(self, attr):
+        # Python mangles obj.__name inside a class body to obj._Class__name
+        # at compile time; a helper doing getattr(obj, '__name') would not.
+        if not self._tracecode_class_stack:
+            return attr
+        if not attr.startswith('__') or attr.endswith('__'):
+            return attr
+        owner = self._tracecode_class_stack[-1].lstrip('_')
+        if not owner:
+            return attr
+        return '_' + owner + attr
+
+    def _tracecode_attr_step_node(self, attr):
+        name = self._tracecode_mangle(attr)
+        key = ast.Constant(value=name) if name == attr else ast.Constant(value=(name, attr))
+        node = ast.Subscript(
+            value=ast.Name(id='_tracecode_attrs', ctx=ast.Load()),
+            slice=key,
+            ctx=ast.Load(),
+        )
+        node._tracecode_marker = True
+        return node
+
+    def _tracecode_path(self, node):
+        # (root name, index nodes) for a Name-rooted chain of subscripts and
+        # attributes that the access helpers can evaluate faithfully, or None.
+        # Attribute steps become _tracecode_attrs markers; subscript slices
+        # are returned unvisited.
+        steps = []
+        current = node
+        while len(steps) < _TRACE_MAX_PATH_DEPTH:
+            if isinstance(current, ast.Subscript):
+                steps.insert(0, ('subscript', current.slice))
+                current = current.value
+                continue
+            if isinstance(current, ast.Attribute):
+                steps.insert(0, ('attribute', current.attr))
+                current = current.value
+                continue
+            break
+        if not isinstance(current, ast.Name) or len(steps) == 0:
+            return None
+        for position, (kind, value) in enumerate(steps):
+            if kind == 'subscript' and position > 0 and not _tracecode_is_deferrable_index(value):
+                return None
+        indices = []
+        for kind, value in steps:
+            indices.append(self._tracecode_attr_step_node(value) if kind == 'attribute' else value)
+        return current.id, indices
+
+    def _tracecode_capture_allowed(self, node):
+        # A walrus is a SyntaxError in a comprehension iterable (even inside
+        # a lambda there) and in a comprehension whose scope is a class body.
+        # Directly in a class body it is legal but would bind its temp as a
+        # class attribute (visible to vars(), an Enum member), so class
+        # scope never gets captures either.
+        current = node
+        parent = getattr(current, '__trace_parent__', None)
+        scope = None
+        while parent is not None:
+            if isinstance(parent, ast.comprehension) and getattr(parent, 'iter', None) is current:
+                return False
+            if scope is None:
+                # Only a body is evaluated in the function's or class's own
+                # scope; defaults, decorators and bases run in the enclosing
+                # one, so the walk continues past them.
+                if isinstance(parent, (ast.FunctionDef, ast.AsyncFunctionDef)) and current in parent.body:
+                    scope = 'function'
+                elif isinstance(parent, ast.Lambda) and current is parent.body:
+                    scope = 'function'
+                elif isinstance(parent, ast.ClassDef) and current in parent.body:
+                    scope = 'class'
+            current = parent
+            parent = getattr(current, '__trace_parent__', None)
+        return scope != 'class'
+
+    def _tracecode_chain_steps(self, node):
+        # Steps of a Name-rooted subscript/attribute chain, outermost last,
+        # or None. Each subscript step gets a temp, its source text (taken
+        # before the index is rewritten) and its visited index.
+        raw = []
+        current = node
+        while len(raw) < _TRACE_MAX_PATH_DEPTH:
+            if isinstance(current, (ast.Subscript, ast.Attribute)):
+                raw.insert(0, current)
+                current = current.value
+                continue
+            break
+        if not isinstance(current, ast.Name) or len(raw) == 0:
+            return None
+        for step in raw:
+            if isinstance(step, ast.Subscript) and isinstance(step.slice, ast.Tuple) and any(
+                isinstance(element, ast.Starred) for element in step.slice.elts
+            ):
+                return None
+        return current.id, raw
+
+    def _tracecode_capture_chain(self, node):
+        # Native rebuild of a chain with each index captured by a walrus:
+        # Python evaluates and performs every step itself, in its own order,
+        # and the temps carry the index values to the recording helper.
+        # Returns (root, prefixes, refs, sources, lasts) where prefixes[k] is
+        # the expression for the first k steps (prefixes[0] is the root) and
+        # lasts[k] is step k's capture (a NamedExpr) or attribute name.
+        chain = self._tracecode_chain_steps(node)
+        if chain is None:
+            return None
+        root, raw = chain
+        refs = []
+        sources = []
+        lasts = []
+        for step in raw:
+            if isinstance(step, ast.Attribute):
+                refs.append(ast.Constant(value=step.attr))
+                sources.append(ast.Constant(value=None))
+                lasts.append(('attribute', step.attr))
+                continue
+            temp_name = self._tracecode_next_temp_name('index')
+            sources.append(_tracecode_index_source_node(step.slice))
+            capture = ast.copy_location(
+                ast.NamedExpr(target=ast.Name(id=temp_name, ctx=ast.Store()), value=self.visit(step.slice)),
+                step.slice,
+            )
+            refs.append(ast.Name(id=temp_name, ctx=ast.Load()))
+            lasts.append(('subscript', capture))
+        return root, raw, refs, sources, lasts
+
+    def _tracecode_build_prefix(self, root, raw, lasts, count):
+        expression = ast.Name(id=root, ctx=ast.Load())
+        for position in range(count):
+            kind, value = lasts[position]
+            if kind == 'attribute':
+                expression = ast.copy_location(ast.Attribute(value=expression, attr=value, ctx=ast.Load()), raw[position])
+            else:
+                expression = ast.copy_location(ast.Subscript(value=expression, slice=value, ctx=ast.Load()), raw[position])
+        return expression
+
+    def _tracecode_list(self, elements):
+        return ast.List(elts=elements, ctx=ast.Load())
+
+    def _tracecode_captured_read(self, node):
+        captured = self._tracecode_capture_chain(node)
+        if captured is None:
+            return None
+        root, raw, refs, sources, lasts = captured
+        return ast.Call(
+            func=ast.Name(id='_tracecode_read_index', ctx=ast.Load()),
+            args=[
+                ast.Constant(value=root),
+                self._tracecode_build_prefix(root, raw, lasts, len(raw)),
+                self._tracecode_list(refs),
+                self._tracecode_list(sources),
+            ],
+            keywords=[],
+        )
+
+    def _tracecode_bound_receiver(self, call_node, receiver, method_name):
+        # The first argument of the call helpers: resolves a[i] (natively,
+        # with captures, when allowed) and looks up the method, all before
+        # the call's own arguments are evaluated.
+        if self._tracecode_capture_allowed(call_node):
+            captured = self._tracecode_capture_chain(receiver)
+            if captured is None:
+                return None
+            root, raw, refs, sources, lasts = captured
+            return ast.Call(
+                func=ast.Name(id='_tracecode_bind_target_method', ctx=ast.Load()),
+                args=[
+                    ast.Constant(value=root),
+                    ast.Name(id=root, ctx=ast.Load()),
+                    self._tracecode_build_prefix(root, raw, lasts, len(raw)),
+                    self._tracecode_list(refs),
+                    self._tracecode_list(sources),
+                    ast.Constant(value=method_name),
+                ],
+                keywords=[],
+            )
+        path = self._tracecode_path(receiver)
+        if path is None:
+            return None
+        var_name, indices = path
+        return self._tracecode_path_call(
+            '_tracecode_bind_index_method',
+            var_name,
+            indices,
+            trailing=[ast.Constant(value=method_name)],
+        )
+
+    def _tracecode_visit_index(self, index):
+        if getattr(index, '_tracecode_marker', False):
+            return index
+        return self.visit(index)
+
+    def _tracecode_index_sources(self, indices):
+        return [
+            ast.Constant(value=None) if getattr(index, '_tracecode_marker', False) else _tracecode_index_source_node(index)
+            for index in indices
+        ]
+
+    def _tracecode_path_call(self, helper, var_name, indices, leading=(), trailing=()):
+        return ast.Call(
+            func=ast.Name(id=helper, ctx=ast.Load()),
+            args=[
+                *leading,
+                ast.Constant(value=var_name),
+                ast.Name(id=var_name, ctx=ast.Load()),
+                ast.List(elts=[self._tracecode_visit_index(index) for index in indices], ctx=ast.Load()),
+                ast.List(elts=self._tracecode_index_sources(indices), ctx=ast.Load()),
+                *trailing,
+            ],
+            keywords=[],
+        )
+
+    def _tracecode_parent_absorbs(self, node):
+        # True when the enclosing subscript/attribute will be instrumented as
+        # a whole path (so this node is evaluated inside its helper) or is a
+        # store/delete target. False when the parent path is not traceable:
+        # this node is then the parent's traceable prefix.
+        parent = getattr(node, '__trace_parent__', None)
+        if not isinstance(parent, (ast.Subscript, ast.Attribute)) or getattr(parent, 'value', None) is not node:
+            return False
+        if not isinstance(parent.ctx, ast.Load):
+            return True
+        if isinstance(parent, ast.Attribute):
+            grand = getattr(parent, '__trace_parent__', None)
+            if isinstance(grand, ast.Call) and getattr(grand, 'func', None) is parent:
+                return False
+        if self._tracecode_capture_allowed(parent):
+            return self._tracecode_chain_steps(parent) is not None
+        return self._tracecode_path(parent) is not None
+
+    def _tracecode_capture_target(self, target):
+        # For a store Python performs natively (tuple and chained targets),
+        # replace each subscript index with a walrus capture so the indices
+        # are evaluated exactly when Python evaluates that target, and return
+        # (root, index refs, sources) to record the store afterwards.
+        steps = []
+        current = target
+        while len(steps) < _TRACE_MAX_PATH_DEPTH:
+            if isinstance(current, ast.Subscript):
+                steps.insert(0, current)
+                current = current.value
+                continue
+            if isinstance(current, ast.Attribute):
+                steps.insert(0, current)
+                current = current.value
+                continue
+            break
+        if not isinstance(current, ast.Name) or len(steps) == 0:
+            return None
+        for step in steps:
+            if isinstance(step, ast.Subscript):
+                slice_node = step.slice
+                if isinstance(slice_node, ast.Slice) or (
+                    isinstance(slice_node, ast.Tuple) and any(isinstance(element, (ast.Slice, ast.Starred)) for element in slice_node.elts)
+                ):
+                    return None
+        refs = []
+        sources = []
+        for step in steps:
+            if isinstance(step, ast.Attribute):
+                refs.append(self._tracecode_attr_step_node(step.attr))
+                sources.append(ast.Constant(value=None))
+                continue
+            temp_name = self._tracecode_next_temp_name('target_index')
+            sources.append(_tracecode_index_source_node(step.slice))
+            step.slice = ast.copy_location(
+                ast.NamedExpr(target=ast.Name(id=temp_name, ctx=ast.Store()), value=step.slice),
+                step.slice,
+            )
+            refs.append(ast.Name(id=temp_name, ctx=ast.Load()))
+        return current.id, refs, sources
 
     def _tracecode_next_temp_name(self, prefix):
         name = f'__tracecode_{prefix}_{self._tracecode_temp_counter}'
         self._tracecode_temp_counter += 1
         return name
-
-    def _tracecode_replace_target_indices(self, target, index_temp_names):
-        index_position = len(index_temp_names) - 1
-        current = target
-        while index_position >= 0:
-            if isinstance(current, ast.Subscript):
-                current.slice = ast.copy_location(
-                    ast.Name(id=index_temp_names[index_position], ctx=ast.Load()),
-                    current.slice,
-                )
-                current = current.value
-                index_position -= 1
-                continue
-            if isinstance(current, ast.Attribute):
-                current = current.value
-                continue
-            break
 
     def _tracecode_replace_target_indices_with_values(self, target, index_values):
         index_position = len(index_values) - 1
@@ -5177,16 +5599,6 @@ class __TracecodeAccessTransformer(ast.NodeTransformer):
                 current = current.value
                 continue
             break
-
-    def _tracecode_is_inside_comprehension_iter(self, node):
-        current = node
-        parent = getattr(current, '__trace_parent__', None)
-        while parent is not None:
-            if isinstance(parent, ast.comprehension) and getattr(parent, 'iter', None) is current:
-                return True
-            current = parent
-            parent = getattr(current, '__trace_parent__', None)
-        return False
 
     def _tracecode_target_path_components(self, target):
         components = []
@@ -5236,7 +5648,9 @@ class __TracecodeAccessTransformer(ast.NodeTransformer):
                 isinstance(generator.iter.func, ast.Name) and
                 generator.iter.func.id == 'enumerate' and
                 len(generator.iter.args) >= 1 and
-                isinstance(generator.iter.args[0], ast.Name)
+                isinstance(generator.iter.args[0], ast.Name) and
+                not any(isinstance(arg, ast.Starred) for arg in generator.iter.args) and
+                not any(keyword.arg is None for keyword in generator.iter.keywords)
             ):
                 var_name = generator.iter.args[0].id
                 index_binding_name = None
@@ -5260,6 +5674,7 @@ class __TracecodeAccessTransformer(ast.NodeTransformer):
                     ast.Call(
                         func=ast.Name(id='_tracecode_enumerate', ctx=ast.Load()),
                         args=[
+                            generator.iter.func,
                             ast.Constant(value=var_name),
                             ast.Name(id=var_name, ctx=ast.Load()),
                             ast.Constant(value=value_binding_name),
@@ -5289,6 +5704,29 @@ class __TracecodeAccessTransformer(ast.NodeTransformer):
 
     def visit_For(self, node):
         original_iter = node.iter
+        # Source labels come from the iterable as written, before visiting
+        # rewrites its children in place.
+        iter_source = _tracecode_source_string_node(original_iter)
+        enumerate_source = (
+            _tracecode_source_string_node(original_iter.args[0])
+            if isinstance(original_iter, ast.Call) and len(original_iter.args) >= 1
+            else None
+        )
+        indexed_path = None
+        slice_iter = False
+        if (
+            isinstance(original_iter, ast.Subscript) and
+            isinstance(original_iter.value, ast.Name) and
+            _tracecode_for_target_binding_name(node.target) is not None
+        ):
+            if not isinstance(original_iter.slice, ast.Slice) and self._tracecode_capture_allowed(original_iter):
+                indexed_path = self._tracecode_capture_chain(original_iter)
+            elif original_iter.slice.upper is None and original_iter.slice.step is None:
+                slice_iter = True
+        if indexed_path is not None or slice_iter:
+            # The iterable is rebuilt from its parts below; visit only those
+            # parts, so each index expression is evaluated exactly once.
+            node.iter = ast.Constant(value=None)
         node = self.generic_visit(node)
         binding_name = _tracecode_for_target_binding_name(node.target)
         binding_names = _tracecode_scalar_target_names(node.target)
@@ -5315,42 +5753,32 @@ class __TracecodeAccessTransformer(ast.NodeTransformer):
                 node.iter,
             )
             return node
-        if (
-            isinstance(original_iter, ast.Subscript) and
-            isinstance(original_iter.value, ast.Name) and
-            not isinstance(original_iter.slice, ast.Slice) and
-            binding_name is not None
-        ):
+        if indexed_path is not None:
+            # for x in rows[(t0 := k)]: evaluated natively once, with the
+            # index captured for the trace (the helper used to receive the
+            # subscript's value and re-evaluate the indices beside it).
+            root, raw, refs, sources, lasts = indexed_path
+            node.iter = ast.copy_location(
+                ast.Call(
+                    func=ast.Name(id='_tracecode_iter_bind_indexed', ctx=ast.Load()),
+                    args=[
+                        ast.Constant(value=root),
+                        self._tracecode_build_prefix(root, raw, lasts, len(raw)),
+                        self._tracecode_list(refs),
+                        self._tracecode_list(sources),
+                        ast.Constant(value=binding_name),
+                        binding_names_node,
+                    ],
+                    keywords=[],
+                ),
+                original_iter,
+            )
+            return node
+        if slice_iter:
             var_name = original_iter.value.id
-            extracted = _tracecode_extract_named_subscript(original_iter)
-            if extracted is not None:
-                _, indices = extracted
-                node.iter = ast.copy_location(
-                    ast.Call(
-                        func=ast.Name(id='_tracecode_iter_bind_indexed', ctx=ast.Load()),
-                        args=[
-                            ast.Constant(value=var_name),
-                            node.iter,
-                            ast.List(elts=[self.visit(index) for index in indices], ctx=ast.Load()),
-                            ast.List(elts=[_tracecode_index_source_node(index) for index in indices], ctx=ast.Load()),
-                            ast.Constant(value=binding_name),
-                            binding_names_node,
-                        ],
-                        keywords=[],
-                    ),
-                    node.iter,
-                )
-                return node
-        if (
-            isinstance(original_iter, ast.Subscript) and
-            isinstance(original_iter.value, ast.Name) and
-            isinstance(original_iter.slice, ast.Slice) and
-            original_iter.slice.upper is None and
-            original_iter.slice.step is None and
-            binding_name is not None
-        ):
-            var_name = original_iter.value.id
-            start_node = self.visit(original_iter.slice.lower) if original_iter.slice.lower is not None else ast.Constant(value=None)
+            lower = original_iter.slice.lower
+            start_source = _tracecode_index_source_node(lower) if lower is not None else ast.Constant(value=None)
+            start_node = self.visit(lower) if lower is not None else ast.Constant(value=None)
             node.iter = ast.copy_location(
                 ast.Call(
                     func=ast.Name(id='_tracecode_iter_bind_slice', ctx=ast.Load()),
@@ -5358,13 +5786,13 @@ class __TracecodeAccessTransformer(ast.NodeTransformer):
                         ast.Constant(value=var_name),
                         ast.Name(id=var_name, ctx=ast.Load()),
                         start_node,
-                        _tracecode_index_source_node(original_iter.slice.lower) if original_iter.slice.lower is not None else ast.Constant(value=None),
+                        start_source,
                         ast.Constant(value=binding_name),
                         binding_names_node,
                     ],
                     keywords=[],
                 ),
-                node.iter,
+                original_iter,
             )
             return node
         if (
@@ -5407,7 +5835,9 @@ class __TracecodeAccessTransformer(ast.NodeTransformer):
             isinstance(node.iter, ast.Call) and
             isinstance(node.iter.func, ast.Name) and
             node.iter.func.id == 'enumerate' and
-            len(node.iter.args) >= 1
+            len(node.iter.args) >= 1 and
+            not any(isinstance(arg, ast.Starred) for arg in node.iter.args) and
+            not any(keyword.arg is None for keyword in node.iter.keywords)
         ):
             var_name = node.iter.args[0].id if isinstance(node.iter.args[0], ast.Name) else None
             binding_name = None
@@ -5431,7 +5861,8 @@ class __TracecodeAccessTransformer(ast.NodeTransformer):
                 ast.Call(
                     func=ast.Name(id='_tracecode_enumerate', ctx=ast.Load()),
                     args=[
-                        ast.Constant(value=var_name) if var_name is not None else _tracecode_source_string_node(original_iter.args[0]),
+                        node.iter.func,
+                        ast.Constant(value=var_name) if var_name is not None else enumerate_source,
                         ast.Name(id=var_name, ctx=ast.Load()) if var_name is not None else node.iter.args[0],
                         ast.Constant(value=binding_name),
                         ast.Constant(value=index_binding_name),
@@ -5448,7 +5879,7 @@ class __TracecodeAccessTransformer(ast.NodeTransformer):
                 ast.Call(
                     func=ast.Name(id='_tracecode_iter_bind_expr', ctx=ast.Load()),
                     args=[
-                        _tracecode_source_string_node(original_iter),
+                        iter_source,
                         node.iter,
                         ast.Constant(value=binding_name),
                         binding_names_node,
@@ -5460,135 +5891,106 @@ class __TracecodeAccessTransformer(ast.NodeTransformer):
         return node
 
     def visit_Subscript(self, node):
+        if getattr(node, '_tracecode_marker', False):
+            return node
         if _tracecode_is_annotation_node(node):
             return self.generic_visit(node)
-        parent = getattr(node, '__trace_parent__', None)
-        if isinstance(parent, ast.Subscript) and getattr(parent, 'value', None) is node:
+        if self._tracecode_parent_absorbs(node):
             return self.generic_visit(node)
+        parent = getattr(node, '__trace_parent__', None)
         if isinstance(parent, ast.Assign) and node in getattr(parent, 'targets', []):
             return self.generic_visit(node)
         if isinstance(parent, ast.AugAssign) and getattr(parent, 'target', None) is node:
             return self.generic_visit(node)
-
-        extracted = _tracecode_extract_named_subscript(node)
-        if extracted is None or not isinstance(node.ctx, ast.Load):
+        if not isinstance(node.ctx, ast.Load):
             return self.generic_visit(node)
+        return self._tracecode_instrument_read(node)
 
-        var_name, indices = extracted
-        index_sources = [_tracecode_index_source_node(index) for index in indices]
-        call = ast.Call(
-            func=ast.Name(id='_tracecode_read_index', ctx=ast.Load()),
-            args=[
-                ast.Constant(value=var_name),
-                ast.Name(id=var_name, ctx=ast.Load()),
-                ast.List(elts=[self.visit(index) for index in indices], ctx=ast.Load()),
-                ast.List(elts=index_sources, ctx=ast.Load()),
-            ],
-            keywords=[],
-        )
-        return ast.copy_location(call, node)
+    def _tracecode_instrument_read(self, node):
+        if self._tracecode_capture_allowed(node):
+            call = self._tracecode_captured_read(node)
+            if call is not None:
+                return ast.copy_location(call, node)
+            return self.generic_visit(node)
+        path = self._tracecode_path(node)
+        if path is None:
+            return self.generic_visit(node)
+        var_name, indices = path
+        return ast.copy_location(self._tracecode_path_call('_tracecode_read_path', var_name, indices), node)
 
     def visit_Assign(self, node):
-        if len(node.targets) == 1:
-            extracted = _tracecode_extract_named_subscript(node.targets[0])
-            if extracted is not None:
-                var_name, indices = extracted
-                index_sources = [_tracecode_index_source_node(index) for index in indices]
-                value = self.visit(node.value)
-                call = ast.Call(
-                    func=ast.Name(id='_tracecode_write_index', ctx=ast.Load()),
+        if not self._tracecode_capture_allowed(node):
+            return self.generic_visit(node)
+        if len(node.targets) == 1 and isinstance(node.targets[0], (ast.Subscript, ast.Attribute)):
+            captured = self._tracecode_capture_chain(node.targets[0])
+            if captured is not None:
+                # The store stays native, so Python evaluates the value, then
+                # the target's container and indices (a[i] = (i := 1) writes
+                # a[1]), and performs each step once. A multi-step target's
+                # container goes through _tracecode_note_parent, which records
+                # the row read before the store.
+                root, raw, refs, sources, lasts = captured
+                value_temp = self._tracecode_next_temp_name('value')
+                parent = self._tracecode_build_prefix(root, raw, lasts, len(raw) - 1)
+                if len(raw) > 1:
+                    parent = ast.Call(
+                        func=ast.Name(id='_tracecode_note_parent', ctx=ast.Load()),
+                        args=[
+                            ast.Constant(value=root),
+                            ast.Name(id=root, ctx=ast.Load()),
+                            parent,
+                            self._tracecode_list(refs[:-1]),
+                            self._tracecode_list(sources[:-1]),
+                        ],
+                        keywords=[],
+                    )
+                kind, last = lasts[-1]
+                if kind == 'attribute':
+                    target = ast.Attribute(value=parent, attr=last, ctx=ast.Store())
+                else:
+                    target = ast.Subscript(value=parent, slice=last, ctx=ast.Store())
+                store = ast.Assign(
+                    targets=[ast.copy_location(target, node.targets[0])],
+                    value=ast.NamedExpr(target=ast.Name(id=value_temp, ctx=ast.Store()), value=self.visit(node.value)),
+                )
+                record = ast.Expr(value=ast.Call(
+                    func=ast.Name(id='_tracecode_record_store', ctx=ast.Load()),
                     args=[
-                        ast.Constant(value=var_name),
-                        ast.Name(id=var_name, ctx=ast.Load()),
-                        ast.List(elts=[self.visit(index) for index in indices], ctx=ast.Load()),
-                        ast.List(elts=index_sources, ctx=ast.Load()),
-                        value,
+                        ast.Constant(value=root),
+                        ast.Name(id=root, ctx=ast.Load()),
+                        self._tracecode_list(refs),
+                        self._tracecode_list(sources),
+                        ast.Name(id=value_temp, ctx=ast.Load()),
                     ],
                     keywords=[],
-                )
-                return ast.copy_location(ast.Expr(value=call), node)
-            attr_extracted = _tracecode_extract_named_attribute(node.targets[0])
-            if attr_extracted is not None:
-                var_name, attr_name = attr_extracted
-                value = self.visit(node.value)
-                call = ast.Call(
-                    func=ast.Name(id='_tracecode_write_attr', ctx=ast.Load()),
-                    args=[
-                        ast.Constant(value=var_name),
-                        ast.Name(id=var_name, ctx=ast.Load()),
-                        ast.Constant(value=attr_name),
-                        value,
-                    ],
-                    keywords=[],
-                )
-                return ast.copy_location(ast.Expr(value=call), node)
+                ))
+                return [ast.copy_location(store, node), ast.copy_location(record, node)]
         scalar_names = []
         assignment_write_targets = []
         for target in node.targets:
             scalar_names.extend(_tracecode_scalar_target_names(target))
             assignment_write_targets.extend(_tracecode_assignment_write_targets(target))
         if scalar_names or assignment_write_targets:
-            prelude = []
+            # Tuple and chained targets: Python assigns them left to right,
+            # evaluating each target's indices only after the earlier stores
+            # (i, a[i] = 1, 7 writes a[1]). The store stays native; each
+            # index is captured with a walrus as Python evaluates it, and the
+            # stores are recorded afterwards from the captured values.
             prepared_write_targets = []
-            if assignment_write_targets:
-                value_temp_name = self._tracecode_next_temp_name('assign_value')
-                value_temp_assign = ast.Assign(
-                    targets=[ast.Name(id=value_temp_name, ctx=ast.Store())],
-                    value=self.visit(node.value),
-                )
-                prelude.append(ast.copy_location(value_temp_assign, node))
-                node.value = ast.copy_location(ast.Name(id=value_temp_name, ctx=ast.Load()), node.value)
-                for target_type, target in assignment_write_targets:
-                    if target_type == 'index':
-                        extracted = _tracecode_extract_named_subscript(target)
-                        if extracted is None:
-                            continue
-                        var_name, indices = extracted
-                        index_temp_names = []
-                        index_temp_refs = []
-                        index_sources = []
-                        for index in indices:
-                            index_temp_name = self._tracecode_next_temp_name('target_index')
-                            index_temp_names.append(index_temp_name)
-                            index_temp_refs.append(ast.Name(id=index_temp_name, ctx=ast.Load()))
-                            index_sources.append(_tracecode_index_source_node(index))
-                            index_temp_assign = ast.Assign(
-                                targets=[ast.Name(id=index_temp_name, ctx=ast.Store())],
-                                value=self.visit(index),
-                            )
-                            prelude.append(ast.copy_location(index_temp_assign, node))
-                        self._tracecode_replace_target_indices(target, index_temp_names)
-                        prepared_write_targets.append(('index', var_name, index_temp_refs, index_sources))
-                        continue
-                    attr_extracted = _tracecode_extract_named_attribute(target)
-                    if attr_extracted is None:
-                        continue
-                    prepared_write_targets.append(('attr', *attr_extracted))
+            for _target_type, target in assignment_write_targets:
+                captured = self._tracecode_capture_target(target)
+                if captured is not None:
+                    prepared_write_targets.append(captured)
             visited = self.generic_visit(node)
             writes = []
-            for target_info in prepared_write_targets:
-                target_type = target_info[0]
-                if target_type == 'index':
-                    _, var_name, indices, index_sources = target_info
-                    write_call = ast.Expr(value=ast.Call(
-                        func=ast.Name(id='_tracecode_record_index_write', ctx=ast.Load()),
-                        args=[
-                            ast.Constant(value=var_name),
-                            ast.Name(id=var_name, ctx=ast.Load()),
-                            ast.List(elts=indices, ctx=ast.Load()),
-                            ast.List(elts=index_sources, ctx=ast.Load()),
-                        ],
-                        keywords=[],
-                    ))
-                    writes.append(ast.copy_location(write_call, node))
-                    continue
-                _, var_name, attr_name = target_info
+            for var_name, refs, sources in prepared_write_targets:
                 write_call = ast.Expr(value=ast.Call(
-                    func=ast.Name(id='_tracecode_record_attr_write', ctx=ast.Load()),
+                    func=ast.Name(id='_tracecode_record_index_write', ctx=ast.Load()),
                     args=[
                         ast.Constant(value=var_name),
                         ast.Name(id=var_name, ctx=ast.Load()),
-                        ast.Constant(value=attr_name),
+                        ast.List(elts=refs, ctx=ast.Load()),
+                        ast.List(elts=sources, ctx=ast.Load()),
                     ],
                     keywords=[],
                 ))
@@ -5603,7 +6005,7 @@ class __TracecodeAccessTransformer(ast.NodeTransformer):
                     keywords=[],
                 ))
                 writes.append(ast.copy_location(write_call, node))
-            return [*prelude, visited, *writes]
+            return [visited, *writes]
         return self.generic_visit(node)
 
     def visit_AnnAssign(self, node):
@@ -5641,63 +6043,85 @@ class __TracecodeAccessTransformer(ast.NodeTransformer):
         if op_name is None:
             return self.generic_visit(node)
 
-        extracted = _tracecode_extract_named_subscript(node.target)
-        if extracted is None:
-            if isinstance(node.target, ast.Name):
-                var_name = node.target.id
-                call = ast.Call(
-                    func=ast.Name(id='_tracecode_augassign_scalar', ctx=ast.Load()),
-                    args=[
-                        ast.Constant(value=var_name),
-                        ast.Name(id=var_name, ctx=ast.Load()),
-                        ast.Constant(value=op_name),
-                        self.visit(node.value),
-                    ],
-                    keywords=[],
-                )
-                assign = ast.Assign(
-                    targets=[ast.copy_location(ast.Name(id=var_name, ctx=ast.Store()), node.target)],
-                    value=call,
-                )
-                return ast.copy_location(assign, node)
-            return self.generic_visit(node)
+        if isinstance(node.target, ast.Name):
+            var_name = node.target.id
+            call = ast.Call(
+                func=ast.Name(id='_tracecode_augassign_scalar', ctx=ast.Load()),
+                args=[
+                    ast.Constant(value=var_name),
+                    ast.Name(id=var_name, ctx=ast.Load()),
+                    ast.Constant(value=op_name),
+                    self.visit(node.value),
+                ],
+                keywords=[],
+            )
+            assign = ast.Assign(
+                targets=[ast.copy_location(ast.Name(id=var_name, ctx=ast.Store()), node.target)],
+                value=call,
+            )
+            return ast.copy_location(assign, node)
 
-        var_name, indices = extracted
-        index_sources = [_tracecode_index_source_node(index) for index in indices]
-        rhs = self.visit(node.value)
-        call = ast.Call(
-            func=ast.Name(id='_tracecode_augassign_index', ctx=ast.Load()),
-            args=[
-                ast.Constant(value=var_name),
-                ast.Name(id=var_name, ctx=ast.Load()),
-                ast.List(elts=[self.visit(index) for index in indices], ctx=ast.Load()),
-                ast.List(elts=index_sources, ctx=ast.Load()),
-                ast.Constant(value=op_name),
-                rhs,
-            ],
-            keywords=[],
-        )
+        captured = self._tracecode_capture_chain(node.target) if self._tracecode_capture_allowed(node) else None
+        if captured is None:
+            return self.generic_visit(node)
+        # a[i][j] += r: the parent a[(t0 := i)] and the last index (t1 := j)
+        # are evaluated natively, in order; the helper reads the old value,
+        # then applies the in-place operator and stores into that parent.
+        root, raw, refs, sources, lasts = captured
+        kind, last = lasts[-1]
+        target_args = [
+            ast.Constant(value=root),
+            ast.Name(id=root, ctx=ast.Load()),
+            self._tracecode_build_prefix(root, raw, lasts, len(raw) - 1),
+            self._tracecode_attr_step_node(last) if kind == 'attribute' else last,
+            self._tracecode_list(refs),
+            self._tracecode_list(sources),
+        ]
+        if isinstance(node.value, ast.Constant):
+            call = ast.Call(
+                func=ast.Name(id='_tracecode_augassign_index', ctx=ast.Load()),
+                args=[*target_args, ast.Constant(value=op_name), node.value],
+                keywords=[],
+            )
+        else:
+            # Two calls so the old value is read (open) before the right
+            # side is evaluated (an argument of close).
+            call = ast.Call(
+                func=ast.Name(id='_tracecode_augassign_index_close', ctx=ast.Load()),
+                args=[
+                    ast.Call(func=ast.Name(id='_tracecode_augassign_index_open', ctx=ast.Load()), args=target_args, keywords=[]),
+                    ast.Constant(value=op_name),
+                    self.visit(node.value),
+                ],
+                keywords=[],
+            )
         return ast.copy_location(ast.Expr(value=call), node)
 
     def visit_Delete(self, node):
         if len(node.targets) != 1:
             return self.generic_visit(node)
-        extracted = _tracecode_extract_named_subscript(node.targets[0])
-        if extracted is None:
+        captured = self._tracecode_capture_chain(node.targets[0]) if self._tracecode_capture_allowed(node) else None
+        if captured is None:
             return self.generic_visit(node)
-        var_name, indices = extracted
-        index_sources = [_tracecode_index_source_node(index) for index in indices]
-        call = ast.Call(
-            func=ast.Name(id='_tracecode_delete_index', ctx=ast.Load()),
+        root, raw, refs, sources, lasts = captured
+        parent = self._tracecode_build_prefix(root, raw, lasts, len(raw) - 1)
+        kind, last = lasts[-1]
+        if kind == 'attribute':
+            target = ast.Attribute(value=parent, attr=last, ctx=ast.Del())
+        else:
+            target = ast.Subscript(value=parent, slice=last, ctx=ast.Del())
+        delete = ast.Delete(targets=[ast.copy_location(target, node.targets[0])])
+        record = ast.Expr(value=ast.Call(
+            func=ast.Name(id='_tracecode_record_delete', ctx=ast.Load()),
             args=[
-                ast.Constant(value=var_name),
-                ast.Name(id=var_name, ctx=ast.Load()),
-                ast.List(elts=[self.visit(index) for index in indices], ctx=ast.Load()),
-                ast.List(elts=index_sources, ctx=ast.Load()),
+                ast.Constant(value=root),
+                ast.Name(id=root, ctx=ast.Load()),
+                self._tracecode_list(refs),
+                self._tracecode_list(sources),
             ],
             keywords=[],
-        )
-        return ast.copy_location(ast.Expr(value=call), node)
+        ))
+        return [ast.copy_location(delete, node), ast.copy_location(record, node)]
 
     def visit_Call(self, node):
         if (
@@ -5711,6 +6135,7 @@ class __TracecodeAccessTransformer(ast.NodeTransformer):
             call = ast.Call(
                 func=ast.Name(id='_tracecode_sum', ctx=ast.Load()),
                 args=[
+                    ast.Name(id='sum', ctx=ast.Load()),
                     ast.Constant(value=var_name),
                     ast.Name(id=var_name, ctx=ast.Load()),
                     *[self.visit(arg) for arg in node.args[1:]],
@@ -5723,12 +6148,15 @@ class __TracecodeAccessTransformer(ast.NodeTransformer):
             isinstance(node.func, ast.Name) and
             node.func.id == 'len' and
             len(node.args) == 1 and
+            len(node.keywords) == 0 and
             isinstance(node.args[0], ast.Name)
         ):
+            # len is passed as evaluated, so a shadowing len is the one called.
             var_name = node.args[0].id
             call = ast.Call(
                 func=ast.Name(id='_tracecode_len', ctx=ast.Load()),
                 args=[
+                    ast.Name(id='len', ctx=ast.Load()),
                     ast.Constant(value=var_name),
                     ast.Name(id=var_name, ctx=ast.Load()),
                 ],
@@ -5741,21 +6169,19 @@ class __TracecodeAccessTransformer(ast.NodeTransformer):
             node.func.attr == 'get' and
             len(node.args) >= 1
         ):
-            extracted = _tracecode_extract_mutable_container_target(node.func.value)
-            if extracted is not None and len(extracted[2]) > 0:
-                var_name, container, indices = extracted
-                key_arg = node.args[0]
-                default_args = node.args[1:2]
+            key_arg = node.args[0]
+            key_source = _tracecode_index_source_node(key_arg)
+            bound = self._tracecode_bound_receiver(node, node.func.value, 'get')
+            if bound is not None:
+                # a[i].get(k, ...): the receiver path and its get are bound
+                # first (Python's order), then exactly the learner's
+                # arguments are forwarded.
                 call = ast.Call(
                     func=ast.Name(id='_tracecode_dict_get_indexed', ctx=ast.Load()),
                     args=[
-                        ast.Constant(value=var_name),
-                        container,
-                        ast.List(elts=[self.visit(index) for index in indices], ctx=ast.Load()),
-                        ast.List(elts=[_tracecode_index_source_node(index) for index in indices], ctx=ast.Load()),
-                        self.visit(key_arg),
-                        _tracecode_index_source_node(key_arg),
-                        *[self.visit(arg) for arg in default_args],
+                        bound,
+                        key_source,
+                        *[self.visit(arg) for arg in node.args],
                     ],
                     keywords=[self.visit(keyword) for keyword in node.keywords],
                 )
@@ -5774,7 +6200,7 @@ class __TracecodeAccessTransformer(ast.NodeTransformer):
                 target_arg = node.args[0]
                 subscript_index_values = []
                 index_refs = []
-                inside_comprehension_iter = self._tracecode_is_inside_comprehension_iter(node)
+                inside_comprehension_iter = not self._tracecode_capture_allowed(node)
                 if len(indices) > 0 and not inside_comprehension_iter:
                     components = self._tracecode_target_path_components(target_arg)
                     for position, index in enumerate(indices):
@@ -5855,20 +6281,16 @@ class __TracecodeAccessTransformer(ast.NodeTransformer):
         if isinstance(node.func, ast.Attribute):
             method_name = node.func.attr
             if method_name in _TRACE_MUTATING_METHODS:
-                extracted = _tracecode_extract_named_subscript(node.func.value)
-                if extracted is not None:
-                    var_name, indices = extracted
-                    index_sources = [_tracecode_index_source_node(index) for index in indices]
+                bound = self._tracecode_bound_receiver(node, node.func.value, method_name)
+                if bound is not None:
+                    # a[i].append(v): bind the receiver and method before
+                    # the arguments, as the native call does.
                     call = ast.Call(
                         func=ast.Name(id='_tracecode_mutating_index_call', ctx=ast.Load()),
-                    args=[
-                        ast.Constant(value=var_name),
-                        ast.Name(id=var_name, ctx=ast.Load()),
-                        ast.List(elts=[self.visit(index) for index in indices], ctx=ast.Load()),
-                        ast.List(elts=index_sources, ctx=ast.Load()),
-                        ast.Constant(value=method_name),
-                        *[self.visit(arg) for arg in node.args],
-                    ],
+                        args=[
+                            bound,
+                            *[self.visit(arg) for arg in node.args],
+                        ],
                         keywords=[self.visit(keyword) for keyword in node.keywords],
                     )
                     return ast.copy_location(call, node)
@@ -5877,39 +6299,36 @@ class __TracecodeAccessTransformer(ast.NodeTransformer):
         if isinstance(node.func, ast.Attribute) and isinstance(node.func.value, ast.Name):
             method_name = node.func.attr
             if method_name == 'get' and len(node.args) >= 1:
-                key_arg = node.args[0] if len(node.args) >= 1 else ast.Constant(value=None)
-                default_args = node.args[1:2]
+                # d.get(...) with d.get looked up natively first and the
+                # learner's arguments forwarded unchanged (a learner class's
+                # one-argument get keeps working).
+                key_arg = node.args[0]
                 call = ast.Call(
                     func=ast.Name(id='_tracecode_dict_get', ctx=ast.Load()),
                     args=[
                         ast.Constant(value=node.func.value.id),
-                        ast.Name(id=node.func.value.id, ctx=ast.Load()),
-                        key_arg,
+                        node.func,
                         _tracecode_index_source_node(key_arg),
-                        *default_args,
+                        *node.args,
                     ],
                     keywords=node.keywords,
                 )
                 return ast.copy_location(call, node)
             if method_name in _TRACE_MUTATING_METHODS:
-                keywords = node.keywords
+                index_sources = ast.Constant(value=None)
                 if method_name in {'pop', 'remove', 'discard'} and len(node.args) >= 1:
-                    keywords = [
-                        *node.keywords,
-                        ast.keyword(
-                            arg='__tracecode_index_sources',
-                            value=ast.List(elts=[_tracecode_source_string_node(node.args[0])], ctx=ast.Load()),
-                        ),
-                    ]
+                    index_sources = ast.List(elts=[_tracecode_source_string_node(node.args[0])], ctx=ast.Load())
                 call = ast.Call(
                     func=ast.Name(id='_tracecode_mutating_call', ctx=ast.Load()),
                     args=[
                         ast.Constant(value=node.func.value.id),
                         ast.Name(id=node.func.value.id, ctx=ast.Load()),
+                        node.func,
                         ast.Constant(value=method_name),
+                        index_sources,
                         *node.args,
                     ],
-                    keywords=keywords,
+                    keywords=node.keywords,
                 )
                 return ast.copy_location(call, node)
         if (
@@ -5950,35 +6369,51 @@ class __TracecodeAccessTransformer(ast.NodeTransformer):
             len(node.comparators) == 1 and
             isinstance(node.ops[0], (ast.In, ast.NotIn))
         ):
+            # k in c: k is evaluated before c, so it is passed first.
             if isinstance(node.comparators[0], ast.Name):
                 container_name = node.comparators[0].id
                 call = ast.Call(
                     func=ast.Name(id='_tracecode_contains_key', ctx=ast.Load()),
                     args=[
+                        self.visit(node.left),
                         ast.Constant(value=container_name),
                         ast.Name(id=container_name, ctx=ast.Load()),
-                        self.visit(node.left),
                         _tracecode_index_source_node(node.left),
                     ],
                     keywords=[],
                 )
                 value = ast.UnaryOp(op=ast.Not(), operand=call) if isinstance(node.ops[0], ast.NotIn) else call
                 return ast.copy_location(value, node)
-            extracted = _tracecode_extract_mutable_container_target(node.comparators[0])
-            if extracted is not None and len(extracted[2]) > 0:
-                var_name, container, indices = extracted
-                call = ast.Call(
-                    func=ast.Name(id='_tracecode_contains_key_indexed', ctx=ast.Load()),
-                    args=[
-                        ast.Constant(value=var_name),
-                        container,
-                        ast.List(elts=[self.visit(index) for index in indices], ctx=ast.Load()),
-                        ast.List(elts=[_tracecode_index_source_node(index) for index in indices], ctx=ast.Load()),
-                        self.visit(node.left),
-                        _tracecode_index_source_node(node.left),
-                    ],
-                    keywords=[],
-                )
+            key_source = _tracecode_index_source_node(node.left)
+            call = None
+            if self._tracecode_capture_allowed(node):
+                captured = self._tracecode_capture_chain(node.comparators[0])
+                if captured is not None:
+                    root, raw, refs, sources, lasts = captured
+                    call = ast.Call(
+                        func=ast.Name(id='_tracecode_contains_key_in', ctx=ast.Load()),
+                        args=[
+                            self.visit(node.left),
+                            ast.Constant(value=root),
+                            self._tracecode_build_prefix(root, raw, lasts, len(raw)),
+                            self._tracecode_list(refs),
+                            self._tracecode_list(sources),
+                            key_source,
+                        ],
+                        keywords=[],
+                    )
+            else:
+                path = self._tracecode_path(node.comparators[0])
+                if path is not None:
+                    var_name, indices = path
+                    call = self._tracecode_path_call(
+                        '_tracecode_contains_key_indexed',
+                        var_name,
+                        indices,
+                        leading=[self.visit(node.left)],
+                        trailing=[key_source],
+                    )
+            if call is not None:
                 value = ast.UnaryOp(op=ast.Not(), operand=call) if isinstance(node.ops[0], ast.NotIn) else call
                 return ast.copy_location(value, node)
         return self.generic_visit(node)
@@ -6003,23 +6438,10 @@ class __TracecodeAccessTransformer(ast.NodeTransformer):
             return self.generic_visit(node)
         if isinstance(parent, ast.Call) and getattr(parent, 'func', None) is node:
             return self.generic_visit(node)
-
-        extracted = _tracecode_extract_named_subscript(node)
-        if extracted is None or not isinstance(node.ctx, ast.Load):
+        if not isinstance(node.ctx, ast.Load) or self._tracecode_parent_absorbs(node):
             return self.generic_visit(node)
 
-        var_name, indices = extracted
-        call = ast.Call(
-            func=ast.Name(id='_tracecode_read_index', ctx=ast.Load()),
-            args=[
-                ast.Constant(value=var_name),
-                ast.Name(id=var_name, ctx=ast.Load()),
-                ast.List(elts=[self.visit(index) for index in indices], ctx=ast.Load()),
-                ast.List(elts=[_tracecode_index_source_node(index) for index in indices], ctx=ast.Load()),
-            ],
-            keywords=[],
-        )
-        return ast.copy_location(call, node)
+        return self._tracecode_instrument_read(node)
 
 def __tracecode_compile_user_code(source, on_demand=False):
     raw_tree = ast.parse(source, filename='solution.py', mode='exec')
@@ -6742,7 +7164,11 @@ def __tracecode_compact_last_step(kind=None):
 
 __tracecode_execution_result_json = (
     '{"traceSummary":' + json.dumps({
-        'errorStep': __tracecode_compact_last_step('exception') or _tracecode_program_error_step,
+        # Only an exception that ended the program is its failure. A raise
+        # site also records an 'exception' step (_tracecode_exception_value),
+        # including raises the program catches, so the last such step is not
+        # evidence that the program failed.
+        'errorStep': _tracecode_program_error_step,
         'timeoutStep': __tracecode_compact_last_step('timeout'),
         'lastStep': __tracecode_compact_last_step(),
     })
