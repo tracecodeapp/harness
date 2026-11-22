@@ -25,7 +25,9 @@ import { runCommand } from './example-app-smoke';
 import type { TraceCutoffSample } from './fixtures/python-trace-cutoff-guard-entry';
 
 // Well under the 30 s per-case clock; the guard itself takes ~1-2 s.
-const RUNAWAY_BOUND_MS = 10_000;
+// The untraced ceiling (4,000,000 lines) takes about 9 s on a busy host; this
+// stays well inside the client's ~30 s clock, which must not be what stops it.
+const RUNAWAY_BOUND_MS = 20_000;
 
 function contentType(pathname: string): string {
   switch (extname(pathname)) {
