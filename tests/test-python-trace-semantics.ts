@@ -96,10 +96,26 @@ _tc_outcome = (
 print(json.dumps({'outcome': _tc_outcome, 'traceUnavailable': _tc_summary.get('traceUnavailable')}))
 `;
 
+// Instrumentation must not add * or ** calls (CALL_FUNCTION_EX): one runs a
+// bound method through PyObject_Call, costing C stack per recursion level,
+// which overflows the browser's wasm stack (CPython's own stack hides it).
+// The on-demand module holds the raw and the instrumented program, so its
+// count is twice the learner program's own (or equal to it on fallback).
 const preparedEpilogue = `
+import dis as _tc_dis
+def _tc_count_call_ex(code):
+    count = sum(1 for instruction in _tc_dis.get_instructions(code) if instruction.opname == 'CALL_FUNCTION_EX')
+    for constant in code.co_consts:
+        if isinstance(constant, type(code)):
+            count += _tc_count_call_ex(constant)
+    return count
+_tc_call_ex = [
+    _tc_count_call_ex(compile(_user_code_str, 'solution.py', 'exec')),
+    _tc_count_call_ex(__tracecode_prepared_user_code_result),
+]
 _tc_unavailable = globals().get('_tracecode_trace_unavailable_message', lambda code: None)
 # Compile-only payloads leave print captured; write to the real stdout.
-sys.__stdout__.write(json.dumps({'traceUnavailable': _tc_unavailable(__tracecode_prepared_user_code_result)}) + '\\n')
+sys.__stdout__.write(json.dumps({'traceUnavailable': _tc_unavailable(__tracecode_prepared_user_code_result), 'callEx': _tc_call_ex}) + '\\n')
 `;
 
 // An instrumentation failure (transformer exception or a compile error in the
@@ -184,11 +200,14 @@ async function main() {
       const fallbackAsExpected =
         (typeof tracedRun.traceUnavailable === 'string') === expectsFallback &&
         (typeof prepared.traceUnavailable === 'string') === expectsFallback;
-      const ok = same && fallbackAsExpected;
+      const [rawCallEx, preparedCallEx] = prepared.callEx as [number, number];
+      const callFormKept = preparedCallEx === (expectsFallback ? rawCallEx : 2 * rawCallEx);
+      const ok = same && fallbackAsExpected && callFormKept;
       const fallbackNote = tracedRun.traceUnavailable || prepared.traceUnavailable
         ? ` (trace-unavailable: run ${JSON.stringify(tracedRun.traceUnavailable)}, prepared ${JSON.stringify(prepared.traceUnavailable)})`
         : '';
-      console.log(`${ok ? 'PASS' : 'FAIL'} ${testCase.id}: untraced ${JSON.stringify(oracle)} traced ${JSON.stringify(traced)}${fallbackNote}`);
+      const callNote = callFormKept ? '' : ` (instrumentation added * / ** calls: ${preparedCallEx} in the on-demand module for ${rawCallEx} in the program)`;
+      console.log(`${ok ? 'PASS' : 'FAIL'} ${testCase.id}: untraced ${JSON.stringify(oracle)} traced ${JSON.stringify(traced)}${fallbackNote}${callNote}`);
       if (!ok) failures.push(testCase.id);
     }
     if (!only.size) await checkInstrumentationFallback(runtime, dir, failures);
