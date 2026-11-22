@@ -701,4 +701,24 @@ export const pythonTraceSemanticsPositionCases: readonly PythonTraceSemanticsCas
     ),
     expected: { value: [[0, 1, 2], { 0: 0, 1: 2, 2: 4 }, 3, [[0, 0], [1, 1], [2, 4]]] },
   },
+  // A class body cannot capture an index with a walrus; its loops still run.
+  {
+    id: 'class-body-loop-over-indexed-iterable',
+    code: lines(
+      'class Table:',
+      '    rows = [[1, 2], [3]]',
+      '    k = 1',
+      '    flat = []',
+      '    for x in rows[0]:',
+      '        flat.append(x * 10)',
+      '    for x in rows[k]:',
+      '        flat.append(x)',
+      '    for x in rows[0][1:]:',
+      '        flat.append(-x)',
+      '    del x',
+      'def solve():',
+      '    return [Table.flat, hasattr(Table, "x")]',
+    ),
+    expected: { value: [[10, 20, 3, -2], false] },
+  },
 ];

@@ -5778,8 +5778,11 @@ class __TracecodeAccessTransformer(ast.NodeTransformer):
             isinstance(original_iter.value, ast.Name) and
             _tracecode_for_target_binding_name(node.target) is not None
         ):
-            if not isinstance(original_iter.slice, ast.Slice) and self._tracecode_capture_allowed(original_iter):
-                indexed_path = self._tracecode_capture_chain(original_iter)
+            if not isinstance(original_iter.slice, ast.Slice):
+                # Where a walrus cannot capture the index (class bodies), the
+                # iterable stays an ordinary instrumented expression.
+                if self._tracecode_capture_allowed(original_iter):
+                    indexed_path = self._tracecode_capture_chain(original_iter)
             elif original_iter.slice.upper is None and original_iter.slice.step is None:
                 slice_iter = True
         if indexed_path is not None or slice_iter:
