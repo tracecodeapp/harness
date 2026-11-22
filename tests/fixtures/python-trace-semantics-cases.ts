@@ -409,6 +409,24 @@ export const pythonTraceSemanticsCases: readonly PythonTraceSemanticsCase[] = [
     expected: { value: [7, 1] },
   },
   {
+    id: 'caught-raise-is-not-a-failure',
+    code: lines(
+      'def parse(text):',
+      '    if not text.isdigit():',
+      '        raise ValueError("not a number: " + text)',
+      '    return int(text)',
+      'def solve():',
+      '    out = []',
+      '    for text in ["4", "x", "7"]:',
+      '        try:',
+      '            out.append(parse(text))',
+      '        except ValueError as error:',
+      '            out.append(str(error))',
+      '    return out',
+    ),
+    expected: { value: [4, 'not a number: x', 7] },
+  },
+  {
     id: 'raise-with-failing-str',
     code: lines(
       'class Odd(Exception):',

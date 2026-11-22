@@ -7164,7 +7164,11 @@ def __tracecode_compact_last_step(kind=None):
 
 __tracecode_execution_result_json = (
     '{"traceSummary":' + json.dumps({
-        'errorStep': __tracecode_compact_last_step('exception') or _tracecode_program_error_step,
+        # Only an exception that ended the program is its failure. A raise
+        # site also records an 'exception' step (_tracecode_exception_value),
+        # including raises the program catches, so the last such step is not
+        # evidence that the program failed.
+        'errorStep': _tracecode_program_error_step,
         'timeoutStep': __tracecode_compact_last_step('timeout'),
         'lastStep': __tracecode_compact_last_step(),
     })

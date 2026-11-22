@@ -75,11 +75,15 @@ except Exception as error:
 `;
 }
 
+// Reads the outcome from the summary the worker reports to the host, so a
+// trace step that the host would read as a failure counts as one here.
 const tracedEpilogue = `
+_tc_summary = json.loads(__tracecode_execution_result_json)
+_tc_error_step = _tc_summary['traceSummary']['errorStep']
 _tc_outcome = (
-    {'error': [_tracecode_program_error_step['variables']['errorType'], _tracecode_program_error_step['variables']['error']]}
-    if _tracecode_program_error_step is not None
-    else {'value': json.loads(json.dumps(_serialize_output(_result)))}
+    {'error': [_tc_error_step.get('variables', {}).get('errorType'), _tc_error_step.get('variables', {}).get('error')]}
+    if _tc_error_step
+    else {'value': _tc_summary['result']}
 )
 print(json.dumps(_tc_outcome))
 `;
