@@ -25,6 +25,7 @@ import type {
   ExecutionResult,
   RuntimeExecutionTimings,
 } from './types';
+import type { TraceUnavailableNotice } from './runtime-execution';
 import type { RuntimeTrace } from './runtime-trace';
 
 /**
@@ -51,6 +52,29 @@ export class RuntimeProviderError extends Error {
     super(message, options?.cause === undefined ? undefined : { cause: options.cause });
     this.reason = options?.reason ?? 'runtime-failure';
   }
+}
+
+/** Diagnostic code of a program the runtime could not trace (it runs untraced). */
+export const TRACE_UNAVAILABLE_CODE = 'trace-unavailable' as const;
+
+/**
+ * The `traceUnavailable` notice a worker attached to a traced result, or
+ * undefined. A malformed notice is a protocol violation.
+ */
+function checkedTraceUnavailable(
+  raw: RawExecutionPayload,
+  fallbackError: string
+): { readonly traceUnavailable?: TraceUnavailableNotice } {
+  const value: unknown = raw.traceUnavailable;
+  if (value === undefined || value === null) return {};
+  const notice = value as { readonly code?: unknown; readonly message?: unknown };
+  if (typeof value !== 'object' || notice.code !== TRACE_UNAVAILABLE_CODE || typeof notice.message !== 'string') {
+    throw new RuntimeProviderError(
+      `${fallbackError}: the runtime reported a malformed traceUnavailable notice (Harness protocol violation).`,
+      { reason: 'protocol' }
+    );
+  }
+  return { traceUnavailable: Object.freeze({ code: TRACE_UNAVAILABLE_CODE, message: notice.message }) };
 }
 
 export function isRuntimeProviderError(error: unknown): error is RuntimeProviderError {
@@ -165,6 +189,8 @@ export interface RawExecutionPayload {
   diagnosticStage?: ExecutionDiagnosticStage;
   diagnostic?: unknown;
   traceLimitExceeded?: boolean;
+  /** A traced run that ran untraced (see `TraceUnavailableNotice`). */
+  traceUnavailable?: unknown;
   executionTimeMs?: number;
   timings?: RuntimeExecutionTimings;
 }
@@ -237,6 +263,7 @@ export function liftTraceOutcome(
   assertClassificationFields(raw, fallbackError);
   const consoleOutput = raw.consoleOutput ?? [];
   const executionTimeMs = raw.executionTimeMs ?? 0;
+  const traceUnavailable = checkedTraceUnavailable(raw, fallbackError);
   if (raw.success) {
     return {
       kind: 'completed',
@@ -247,6 +274,7 @@ export function liftTraceOutcome(
       ...(raw.traceLimitExceeded
         ? { traceTruncated: checkedLimitReason(raw, fallbackError) ?? 'trace-limit' }
         : {}),
+      ...traceUnavailable,
       ...(raw.timings ? { timings: raw.timings } : {}),
     };
   }
@@ -259,6 +287,7 @@ export function liftTraceOutcome(
       trace,
       executionTimeMs,
       ...(raw.diagnostic !== undefined ? { diagnostic: raw.diagnostic } : {}),
+      ...traceUnavailable,
       consoleOutput,
       ...(raw.timings ? { timings: raw.timings } : {}),
     };
@@ -272,6 +301,7 @@ export function liftTraceOutcome(
     executionTimeMs,
     diagnosticStage,
     ...(raw.diagnostic !== undefined ? { diagnostic: raw.diagnostic } : {}),
+    ...traceUnavailable,
     consoleOutput,
     ...(raw.timings ? { timings: raw.timings } : {}),
   };

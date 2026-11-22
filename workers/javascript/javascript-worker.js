@@ -498,23 +498,30 @@ function createConsoleProxy(output) {
   };
 }
 
+function constructorNameField(value) {
+  const constructorValue = serializationField(value, 'constructor');
+  return constructorValue ? serializationField(constructorValue, 'name') : undefined;
+}
+
 function isLikelyTreeNodeValue(value) {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
-  if (value.__type__ === 'TreeNode') return true;
-  return value?.constructor?.name === 'TreeNode';
+  if (serializationField(value, '__type__') === 'TreeNode') return true;
+  return constructorNameField(value) === 'TreeNode';
 }
 
 function isLikelyListNodeValue(value) {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
-  if (value.__type__ === 'ListNode') return true;
-  return value?.constructor?.name === 'ListNode';
+  if (serializationField(value, '__type__') === 'ListNode') return true;
+  return constructorNameField(value) === 'ListNode';
 }
 
 function inferPlainNodeType(value) {
-  if (value.__type__ === 'ListNode' || value.__type__ === 'TreeNode') {
+  const typeTag = serializationField(value, '__type__');
+  if (typeTag === 'ListNode' || typeTag === 'TreeNode') {
     return null;
   }
-  const id = typeof value.__id__ === 'string' ? value.__id__ : '';
+  const idField = serializationField(value, '__id__');
+  const id = typeof idField === 'string' ? idField : '';
   if (id.startsWith('list-') || id.startsWith('ListNode:')) return 'ListNode';
   if (id.startsWith('tree-') || id.startsWith('TreeNode:')) return 'TreeNode';
 
@@ -550,7 +557,8 @@ function getCustomClassName(value) {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
   if (value instanceof Map || value instanceof Set) return null;
   if (isLikelyTreeNodeValue(value) || isLikelyListNodeValue(value)) return null;
-  const name = typeof value?.constructor?.name === 'string' ? value.constructor.name : '';
+  const constructorName = constructorNameField(value);
+  const name = typeof constructorName === 'string' ? constructorName : '';
   if (!name || name === 'Object' || name === 'Array' || name === 'Map' || name === 'Set') {
     return null;
   }
@@ -574,6 +582,26 @@ const OUTPUT_SERIALIZATION_LIMITS = {
 };
 let activeSerializationLimits = TRACE_SERIALIZATION_LIMITS;
 let activeSerializationBudget = null;
+// Trace serialization (snapshots, access values) must never run learner code:
+// it reads fields through property descriptors, so a getter is never invoked.
+// Output serialization keeps ordinary reads, as untraced runs do.
+let activeSerializationSafeReads = false;
+
+function serializationField(value, key) {
+  if (value === null || value === undefined) return undefined;
+  if (!activeSerializationSafeReads) return value[key];
+  let current = value;
+  for (
+    let depth = 0;
+    depth < 64 && current !== null && (typeof current === 'object' || typeof current === 'function');
+    depth += 1
+  ) {
+    const descriptor = Object.getOwnPropertyDescriptor(current, key);
+    if (descriptor) return Object.prototype.hasOwnProperty.call(descriptor, 'value') ? descriptor.value : undefined;
+    current = Object.getPrototypeOf(current);
+  }
+  return undefined;
+}
 
 function truncationMarker(total, emitted) {
   return { __truncated__: true, remaining: Math.max(0, total - emitted) };
@@ -756,7 +784,8 @@ function serializeValue(
         return { __ref__: existingId };
       }
       const isTree = nodeType === 'TreeNode';
-      const explicitId = typeof value.__id__ === 'string' ? value.__id__ : '';
+      const explicitIdField = serializationField(value, '__id__');
+      const explicitId = typeof explicitIdField === 'string' ? explicitIdField : '';
       const nodeId = existingId ?? (explicitId.length > 0
         ? explicitId
         : (explicitNodeType ? `ref-${nodeRefState.nextId++}` : `${nodeType}:${nodeRefState.nextId++}`));
@@ -768,17 +797,17 @@ function serializeValue(
           ? {
               __type__: 'TreeNode',
               __id__: nodeId,
-              val: serializeValue(value.val ?? value.value ?? null, depth + 1, seen, nodeRefState),
-              left: serializeValue(value.left ?? null, depth + 1, seen, nodeRefState, 'TreeNode', materializeExistingNode),
-              right: serializeValue(value.right ?? null, depth + 1, seen, nodeRefState, 'TreeNode', materializeExistingNode),
+              val: serializeValue(serializationField(value, 'val') ?? serializationField(value, 'value') ?? null, depth + 1, seen, nodeRefState),
+              left: serializeValue(serializationField(value, 'left') ?? null, depth + 1, seen, nodeRefState, 'TreeNode', materializeExistingNode),
+              right: serializeValue(serializationField(value, 'right') ?? null, depth + 1, seen, nodeRefState, 'TreeNode', materializeExistingNode),
             }
           : {
               __type__: 'ListNode',
               __id__: nodeId,
-              val: serializeValue(value.val ?? value.value ?? null, depth + 1, seen, nodeRefState),
-              next: serializeValue(value.next ?? null, depth + 1, seen, nodeRefState, 'ListNode', materializeExistingNode),
+              val: serializeValue(serializationField(value, 'val') ?? serializationField(value, 'value') ?? null, depth + 1, seen, nodeRefState),
+              next: serializeValue(serializationField(value, 'next') ?? null, depth + 1, seen, nodeRefState, 'ListNode', materializeExistingNode),
               ...(Object.prototype.hasOwnProperty.call(value, 'prev')
-                ? { prev: serializeValue(value.prev ?? null, depth + 1, seen, nodeRefState, 'ListNode', materializeExistingNode) }
+                ? { prev: serializeValue(serializationField(value, 'prev') ?? null, depth + 1, seen, nodeRefState, 'ListNode', materializeExistingNode) }
                 : {}),
             };
       const skipped =
@@ -837,7 +866,8 @@ function serializeValue(
     const inferredNodeType = inferPlainNodeType(value);
     if (inferredNodeType) {
       out.__type__ = inferredNodeType;
-      const explicitId = typeof value.__id__ === 'string' ? value.__id__ : '';
+      const explicitIdField = serializationField(value, '__id__');
+      const explicitId = typeof explicitIdField === 'string' ? explicitIdField : '';
       let nodeId = nodeRefState.ids.get(value);
       if (!nodeId) {
         nodeId = explicitId.length > 0 ? explicitId : `${inferredNodeType}:${nodeRefState.nextId++}`;
@@ -862,13 +892,16 @@ function serializeValue(
 function withSerializationLimits(limits, serialize) {
   const previous = activeSerializationLimits;
   const previousBudget = activeSerializationBudget;
+  const previousSafeReads = activeSerializationSafeReads;
   activeSerializationLimits = limits;
+  activeSerializationSafeReads = limits === TRACE_SERIALIZATION_LIMITS;
   activeSerializationBudget = { nodes: 0, maxNodes: limits.maxNodes ?? Number.POSITIVE_INFINITY };
   try {
     return serialize();
   } finally {
     activeSerializationLimits = previous;
     activeSerializationBudget = previousBudget;
+    activeSerializationSafeReads = previousSafeReads;
   }
 }
 
@@ -905,7 +938,8 @@ function serializeTopLevelValueWithinBudget(value, nodeRefState) {
     const isTree = topLevelNodeType === 'TreeNode';
     let nodeId = knownNodeId;
     if (!nodeId) {
-      const explicitId = typeof nodeValue.__id__ === 'string' ? nodeValue.__id__ : '';
+      const explicitIdField = serializationField(nodeValue, '__id__');
+      const explicitId = typeof explicitIdField === 'string' ? explicitIdField : '';
       nodeId = explicitId.length > 0
         ? explicitId
         : (explicitNodeType ? `ref-${nodeRefState.nextId++}` : `${topLevelNodeType}:${nodeRefState.nextId++}`);
@@ -917,17 +951,17 @@ function serializeTopLevelValueWithinBudget(value, nodeRefState) {
         ? {
             __type__: 'TreeNode',
             __id__: nodeId,
-            val: serializeValue(nodeValue.val ?? nodeValue.value ?? null, 1, new WeakSet(), nodeRefState),
-            left: serializeValue(nodeValue.left ?? null, 1, new WeakSet([objectValue]), nodeRefState, 'TreeNode', true),
-            right: serializeValue(nodeValue.right ?? null, 1, new WeakSet([objectValue]), nodeRefState, 'TreeNode', true),
+            val: serializeValue(serializationField(nodeValue, 'val') ?? serializationField(nodeValue, 'value') ?? null, 1, new WeakSet(), nodeRefState),
+            left: serializeValue(serializationField(nodeValue, 'left') ?? null, 1, new WeakSet([objectValue]), nodeRefState, 'TreeNode', true),
+            right: serializeValue(serializationField(nodeValue, 'right') ?? null, 1, new WeakSet([objectValue]), nodeRefState, 'TreeNode', true),
           }
         : {
             __type__: 'ListNode',
             __id__: nodeId,
-            val: serializeValue(nodeValue.val ?? nodeValue.value ?? null, 1, new WeakSet(), nodeRefState),
-            next: serializeValue(nodeValue.next ?? null, 1, new WeakSet([objectValue]), nodeRefState, 'ListNode', true),
+            val: serializeValue(serializationField(nodeValue, 'val') ?? serializationField(nodeValue, 'value') ?? null, 1, new WeakSet(), nodeRefState),
+            next: serializeValue(serializationField(nodeValue, 'next') ?? null, 1, new WeakSet([objectValue]), nodeRefState, 'ListNode', true),
             ...('prev' in nodeValue
-              ? { prev: serializeValue(nodeValue.prev ?? null, 1, new WeakSet([objectValue]), nodeRefState, 'ListNode', true) }
+              ? { prev: serializeValue(serializationField(nodeValue, 'prev') ?? null, 1, new WeakSet([objectValue]), nodeRefState, 'ListNode', true) }
               : {}),
           };
     const skipped = isTree
@@ -2881,57 +2915,6 @@ function determineTraceLineBounds(code, functionName, executionStyle) {
   return { startLine, endLine };
 }
 
-function createSyntheticTrace(payload, codeResult) {
-  const { code, functionName, inputs, executionStyle = 'function' } = payload ?? {};
-  const { startLine, endLine } = determineTraceLineBounds(code, functionName, executionStyle);
-  const traceFunctionName =
-    typeof functionName === 'string' && functionName.length > 0 ? functionName : '<module>';
-
-  const normalizedInputs = normalizeInputs(inputs);
-  const traceNodeRefState = { ids: new WeakMap(), nextId: 1 };
-  const inputSnapshot = {};
-  for (const [key, value] of Object.entries(normalizedInputs)) {
-    inputSnapshot[key] = serializeTopLevelValue(value, traceNodeRefState);
-  }
-
-  const callFrame = {
-    function: traceFunctionName,
-    args: inputSnapshot,
-    line: startLine,
-  };
-
-  const returnVariables = { ...inputSnapshot };
-  if (traceFunctionName === '<module>') {
-    returnVariables.result = codeResult.output;
-  }
-
-  return [
-    {
-      line: startLine,
-      event: 'call',
-      variables: inputSnapshot,
-      function: traceFunctionName,
-      callStack: [callFrame],
-    },
-    {
-      line: startLine,
-      event: 'line',
-      variables: inputSnapshot,
-      function: traceFunctionName,
-      callStack: [callFrame],
-    },
-    {
-      line: endLine,
-      event: 'return',
-      variables: returnVariables,
-      function: traceFunctionName,
-      callStack: [callFrame],
-      returnValue: codeResult.output,
-      stdoutLineCount: Array.isArray(codeResult.consoleOutput) ? codeResult.consoleOutput.length : 0,
-    },
-  ];
-}
-
 function createEmptyRuntimeTrace(language, runId = `${language}:run`) {
   return {
     schemaVersion: RUNTIME_TRACE_SCHEMA_VERSION,
@@ -2947,61 +2930,7 @@ function defaultRuntimeTraceFile(language) {
   return language === 'typescript' ? 'solution.ts' : 'solution.js';
 }
 
-function createSyntheticRuntimeTrace(payload, codeResult, language) {
-  const syntheticTrace = createSyntheticTrace(payload, codeResult);
-  const runId = `${language}:run`;
-  const file = defaultRuntimeTraceFile(language);
-  const events = [];
-  for (const step of syntheticTrace) {
-    const stack = Array.isArray(step.callStack) ? step.callStack : [];
-    const base = {
-      runId,
-      file,
-      line: step.line,
-      frameId: runtimeTraceFrameIdForSyntheticStep(step),
-      ...(stack.length > 0 ? { callStack: stack.map((frame) => ({ ...frame })) } : {}),
-    };
-    if (step.event === 'call') {
-      events.push({
-        ...base,
-        kind: 'call',
-        function: step.function,
-        args: stack.at(-1)?.args,
-      });
-    } else if (step.event === 'line') {
-      events.push({ ...base, kind: 'line', function: step.function });
-    } else if (step.event === 'return') {
-      events.push({
-        ...base,
-        kind: 'return',
-        function: step.function,
-        value: step.returnValue,
-      });
-    }
-    for (const [variable, value] of Object.entries(step.variables ?? {})) {
-      events.push({ ...base, kind: 'snapshot', target: { variable }, value });
-    }
-  }
-  return {
-    schemaVersion: RUNTIME_TRACE_SCHEMA_VERSION,
-    language,
-    runId,
-    events,
-    lineEventCount: events.filter((event) => event.kind === 'line').length,
-    traceStepCount: events.length,
-  };
-}
-
 const RUNTIME_TRACE_SCHEMA_VERSION = 'runtime-trace-2026-04-28';
-
-function runtimeTraceFrameIdForSyntheticStep(step) {
-  const stack = Array.isArray(step?.callStack) ? step.callStack : [];
-  if (stack.length > 0) {
-    const frame = stack[stack.length - 1];
-    return `${frame.function}:${frame.line}`;
-  }
-  return `${step.function}:${step.line}`;
-}
 
 function valueAtPath(value, path) {
   if (!Array.isArray(path) || path.length === 0) return value;
@@ -3657,14 +3586,33 @@ function isScalarIdentifierUpdate(ts, node) {
   );
 }
 
-// Trace helpers evaluate a member path's index expressions before walking the
-// path; JavaScript reads `a[i]` before evaluating `j` in `a[i][j]`. The two
-// orders agree when every index after the first has no side effect beyond
-// updating a plain variable (which the walk never reads).
-function indicesEvaluateFaithfully(ts, indices) {
-  return indices.every((index, position) =>
-    position === 0 || !expressionMayHaveSideEffects(ts, index) || isScalarIdentifierUpdate(ts, index)
-  );
+// A member path with more than one segment, built in source order (see the
+// __tracePath helpers): each segment before the last is read before the next
+// index expression runs. The last segment is a key ('key', for reads and
+// writes) or also read ('step', for a method call's receiver).
+function createTracePathExpression(ts, tracedTarget, visitedIndices, lastSegment, kinds = '') {
+  let expression = ts.factory.createCallExpression(ts.factory.createIdentifier('__tracePath'), undefined, [
+    ts.factory.createStringLiteral(tracedTarget.variableName),
+    tracedTarget.receiverExpression,
+  ]);
+  visitedIndices.forEach((index, position) => {
+    const isLast = position === visitedIndices.length - 1;
+    const helper = kinds[position] === 'g'
+      ? '__traceStepGet'
+      : isLast && lastSegment === 'key'
+        ? '__traceKey'
+        : '__traceStep';
+    expression = ts.factory.createCallExpression(ts.factory.createIdentifier(helper), undefined, [expression, index]);
+  });
+  return expression;
+}
+
+function createTraceReadPathExpression(ts, sourceFile, node, tracedTarget, visitedIndices) {
+  return ts.factory.createCallExpression(ts.factory.createIdentifier('__traceReadPath'), undefined, [
+    createTracePathExpression(ts, tracedTarget, visitedIndices, 'key'),
+    createIndexSourcesArrayExpression(ts, sourceFile, tracedTarget.indices),
+    createSourceLocationObject(ts, sourceFile, node),
+  ]);
 }
 
 function indicesHaveNoSideEffects(ts, indices) {
@@ -3906,7 +3854,7 @@ function extractTraceableMutatingCall(ts, node, maxPathDepth = DEFAULT_TRACE_MAX
     return null;
   }
   const traced = extractTraceableMutatingCallReceiver(ts, receiver, maxPathDepth);
-  if (!traced || !indicesEvaluateFaithfully(ts, traced.indices)) {
+  if (!traced) {
     return null;
   }
   return { ...traced, methodName, callee };
@@ -4602,7 +4550,15 @@ function createTraceMutatingCallExpressionForReceiver(
   const effectiveIndexSourceExpressions = ['set', 'get', 'has', 'delete'].includes(methodName) && args.length > 0
     ? [...indexSourceExpressions, args[0]]
     : indexSourceExpressions;
-  const resolvedCall = ts.factory.createCallExpression(
+  const resolvedCall = indices.length > 1
+    ? ts.factory.createCallExpression(ts.factory.createIdentifier('__traceResolveMutatingCallPath'), undefined, [
+        createTracePathExpression(ts, tracedCall, indices, 'step', tracedCall.kinds),
+        createIndexSourcesArrayExpression(ts, sourceFile, effectiveIndexSourceExpressions),
+        ts.factory.createStringLiteral(methodName),
+        createSourceLocationObject(ts, sourceFile, node),
+        ts.factory.createStringLiteral(tracedCall.callee),
+      ])
+    : ts.factory.createCallExpression(
     ts.factory.createIdentifier('__traceResolveMutatingCall'),
     undefined,
     [
@@ -4900,6 +4856,25 @@ function wrapTraceCondition(ts, expression, deferAccessesToNextLine = false) {
     ),
     undefined,
     args
+  );
+}
+
+function isAmbientDeclaration(ts, node) {
+  if (!node) return false;
+  if (node.flags & ts.NodeFlags.Ambient) return true;
+  return Boolean(
+    typeof ts.canHaveModifiers === 'function' &&
+      ts.canHaveModifiers(node) &&
+      ts.getModifiers(node)?.some((modifier) => modifier.kind === ts.SyntaxKind.DeclareKeyword)
+  );
+}
+
+function isTypeOnlyStatement(ts, statement) {
+  return Boolean(
+    ts.isInterfaceDeclaration(statement) ||
+      ts.isTypeAliasDeclaration(statement) ||
+      (ts.isImportDeclaration(statement) && statement.importClause?.isTypeOnly) ||
+      (ts.isExportDeclaration(statement) && statement.isTypeOnly)
   );
 }
 
@@ -5213,6 +5188,10 @@ function instrumentStatementList(
       originalStatements[index] ??
       ts.getOriginalNode(visitedStatement) ??
       visitedStatement;
+    if (isAmbientDeclaration(ts, originalStatement) || isTypeOnlyStatement(ts, originalStatement)) {
+      nextStatements.push(visitedStatement);
+      continue;
+    }
     if (shouldTraceStatement(ts, visitedStatement)) {
       const excludedVariableNames = controlHeaderSnapshotExclusions(ts, originalStatement);
       const tracedLineStatement = createTraceLineStatement(
@@ -5469,6 +5448,28 @@ function wrapFunctionBodyForTracing(
   return updateFunctionLikeWithBody(ts, functionLikeNode, wrappedBody);
 }
 
+// Names the tracer declares or binds in the runner: its helpers, constants
+// and parameters all start with __trace / __TRACE (but not __tracecode, the
+// runtime's own prefix, which untraced runs share).
+function isTracerReservedName(name) {
+  return (name.startsWith('__trace') && !name.startsWith('__tracecode')) ||
+    (name.startsWith('__TRACE') && !name.startsWith('__TRACECODE'));
+}
+
+function findTracerReservedIdentifier(ts, sourceFile) {
+  let found = null;
+  const visit = (node) => {
+    if (found) return;
+    if (ts.isIdentifier(node) && isTracerReservedName(node.text)) {
+      found = node.text;
+      return;
+    }
+    ts.forEachChild(node, visit);
+  };
+  visit(sourceFile);
+  return found;
+}
+
 async function instrumentCodeForTracing(sourceCode, language, traceFunctionName, maxPathDepthOption) {
   await ensureTypeScriptCompiler();
   const ts = getTypeScriptCompiler();
@@ -5486,6 +5487,13 @@ async function instrumentCodeForTracing(sourceCode, language, traceFunctionName,
     scriptKind
   );
 
+  const reservedName = findTracerReservedIdentifier(ts, sourceFile);
+  if (reservedName) {
+    // The instrumented program and the tracer helpers share the runner's
+    // scope; a learner name in the tracer's namespace could shadow or collide
+    // with them. Such a program runs untraced.
+    throw new JavaScriptTraceUnavailableError(`the program uses ${reservedName}, a name reserved for the tracer.`);
+  }
   const variableNames = collectTraceVariableNames(ts, sourceFile);
   const userCallsiteNames = collectUserCallsiteNames(ts, sourceFile);
   const localVariableNames = new Set(variableNames);
@@ -5503,6 +5511,11 @@ async function instrumentCodeForTracing(sourceCode, language, traceFunctionName,
 
   const transformer = (context) => {
     const visit = (node) => {
+      // Ambient TypeScript (`declare …`) is erased by the compiler: it emits
+      // no code, so it must not gain any.
+      if (isAmbientDeclaration(ts, node)) {
+        return node;
+      }
       if (ts.isPrefixUnaryExpression(node) || ts.isPostfixUnaryExpression(node)) {
         const tracedOperand = extractTraceableElementAccess(ts, node.operand, maxPathDepth);
         const operatorName =
@@ -5511,8 +5524,17 @@ async function instrumentCodeForTracing(sourceCode, language, traceFunctionName,
             : node.operator === ts.SyntaxKind.MinusMinusToken
               ? 'dec'
               : null;
-        if (tracedOperand && operatorName && indicesEvaluateFaithfully(ts, tracedOperand.indices)) {
+        if (tracedOperand && operatorName) {
           const visitedIndices = createTraceIndexOperandExpressions(ts, sourceFile, tracedOperand.indices, visit);
+          if (tracedOperand.indices.length > 1) {
+            return ts.factory.createCallExpression(ts.factory.createIdentifier('__traceUpdatePath'), undefined, [
+              createTracePathExpression(ts, tracedOperand, visitedIndices, 'key'),
+              createIndexSourcesArrayExpression(ts, sourceFile, tracedOperand.indices),
+              ts.factory.createStringLiteral(operatorName),
+              ts.isPrefixUnaryExpression(node) ? ts.factory.createTrue() : ts.factory.createFalse(),
+              createSourceLocationObject(ts, sourceFile, node),
+            ]);
+          }
           return createTraceUpdateExpression(
             ts,
             sourceFile,
@@ -5565,6 +5587,7 @@ async function instrumentCodeForTracing(sourceCode, language, traceFunctionName,
             tracedMembershipTarget &&
             !ts.isPrivateIdentifier(node.left) &&
             !expressionMayHaveSideEffects(ts, node.left) &&
+            tracedMembershipTarget.indices.length <= 1 &&
             indicesHaveNoSideEffects(ts, tracedMembershipTarget.indices)
           ) {
             const visitedKey = ts.visitNode(node.left, visit);
@@ -5586,8 +5609,7 @@ async function instrumentCodeForTracing(sourceCode, language, traceFunctionName,
         const compoundOperatorName = getCompoundAssignmentOperatorName(ts, node.operatorToken.kind);
         if (
           tracedLeft &&
-          (node.operatorToken.kind === ts.SyntaxKind.EqualsToken || compoundOperatorName) &&
-          indicesEvaluateFaithfully(ts, tracedLeft.indices)
+          (node.operatorToken.kind === ts.SyntaxKind.EqualsToken || compoundOperatorName)
         ) {
           // The reference (parent object and key) is resolved, and for a
           // compound assignment the current value read, before the
@@ -5605,14 +5627,21 @@ async function instrumentCodeForTracing(sourceCode, language, traceFunctionName,
             );
           }
           const isCompound = node.operatorToken.kind !== ts.SyntaxKind.EqualsToken;
-          const reference = createTraceIndexRefExpression(
-            ts,
-            sourceFile,
-            node.left,
-            isCompound ? '__traceAugAssignRef' : '__traceWriteRef',
-            tracedLeft,
-            visitedIndices
-          );
+          const reference = tracedLeft.indices.length > 1
+            ? ts.factory.createCallExpression(ts.factory.createIdentifier('__tracePathRef'), undefined, [
+                createTracePathExpression(ts, tracedLeft, visitedIndices, 'key'),
+                createIndexSourcesArrayExpression(ts, sourceFile, tracedLeft.indices),
+                createSourceLocationObject(ts, sourceFile, node.left),
+                isCompound ? ts.factory.createTrue() : ts.factory.createFalse(),
+              ])
+            : createTraceIndexRefExpression(
+                ts,
+                sourceFile,
+                node.left,
+                isCompound ? '__traceAugAssignRef' : '__traceWriteRef',
+                tracedLeft,
+                visitedIndices
+              );
           const visitedRight = ts.visitNode(node.right, visit);
           return isCompound
             ? ts.factory.createCallExpression(ts.factory.createIdentifier('__traceAugAssignApply'), undefined, [
@@ -5678,6 +5707,11 @@ async function instrumentCodeForTracing(sourceCode, language, traceFunctionName,
           );
         }
         const visitedCall = ts.visitEachChild(node, visit, context);
+        if (node.flags & ts.NodeFlags.OptionalChain) {
+          // Wrapping a call inside an optional chain (`c?.m().x`) would end
+          // the chain: the rest would no longer short-circuit.
+          return visitedCall;
+        }
         if (
           isUserMethodCall &&
           ts.isPropertyAccessExpression(visitedCall.expression)
@@ -5751,8 +5785,11 @@ async function instrumentCodeForTracing(sourceCode, language, traceFunctionName,
         }
 
         const tracedAccess = extractTraceableElementAccess(ts, node, maxPathDepth);
-        if (tracedAccess && indicesEvaluateFaithfully(ts, tracedAccess.indices)) {
+        if (tracedAccess) {
           const visitedIndices = createTraceIndexOperandExpressions(ts, sourceFile, tracedAccess.indices, visit);
+          if (tracedAccess.indices.length > 1) {
+            return createTraceReadPathExpression(ts, sourceFile, node, tracedAccess, visitedIndices);
+          }
           return createTraceReadIndexExpression(
             ts,
             sourceFile,
@@ -5785,18 +5822,10 @@ async function instrumentCodeForTracing(sourceCode, language, traceFunctionName,
         const tracedIndexedPropertyAccess = extractTraceableElementAccess(ts, node, maxPathDepth);
         if (
           tracedIndexedPropertyAccess &&
-          tracedIndexedPropertyAccess.indices.length > 1 &&
-          indicesEvaluateFaithfully(ts, tracedIndexedPropertyAccess.indices)
+          tracedIndexedPropertyAccess.indices.length > 1
         ) {
           const visitedIndices = createTraceIndexOperandExpressions(ts, sourceFile, tracedIndexedPropertyAccess.indices, visit);
-          return createTraceReadIndexExpression(
-            ts,
-            sourceFile,
-            node,
-            tracedIndexedPropertyAccess.variableName,
-            visitedIndices,
-            tracedIndexedPropertyAccess.indices
-          );
+          return createTraceReadPathExpression(ts, sourceFile, node, tracedIndexedPropertyAccess, visitedIndices);
         }
 
         const tracedAccess = extractTraceablePropertyAccess(ts, node);
@@ -5961,9 +5990,15 @@ async function instrumentCodeForTracing(sourceCode, language, traceFunctionName,
   }
 }
 
+// The warning a traced run carries when it ran untraced (see executeWithTracing).
+const JAVASCRIPT_TRACE_UNAVAILABLE = Object.freeze({
+  code: 'trace-unavailable',
+  message: 'JavaScript tracing could not instrument this program without changing its behavior; this run has no trace.',
+});
+
 // The tracer could not instrument this program without changing it. Callers
-// fall back to an untraced run with a synthetic trace: never a different
-// result, and never the learner's error.
+// fall back to an untraced run with an empty trace and the trace-unavailable
+// warning: never a different result, and never the learner's error.
 class JavaScriptTraceUnavailableError extends Error {
   constructor(message) {
     super(`Tracing is unavailable for this program: ${message}`);
@@ -5972,11 +6007,11 @@ class JavaScriptTraceUnavailableError extends Error {
   }
 }
 
-// Whether source compiles as a function body: true, false for a SyntaxError,
-// or null when the check itself cannot run here.
-function javascriptSourceCompiles(source) {
+// Whether building a runner compiles: true, false for a SyntaxError, or null
+// when the check itself cannot decide (the build failed for another reason).
+function javascriptRunnerCompiles(buildRunner) {
   try {
-    new Function(source);
+    buildRunner();
     return true;
   } catch (error) {
     return error instanceof SyntaxError || (error && typeof error === 'object' && error.name === 'SyntaxError')
@@ -5985,7 +6020,15 @@ function javascriptSourceCompiles(source) {
   }
 }
 
-async function instrumentExecutableCodeForTracing(code, executableCode, language, traceFunctionName, maxPathDepth) {
+async function instrumentExecutableCodeForTracing(
+  code,
+  executableCode,
+  language,
+  traceFunctionName,
+  maxPathDepth,
+  executionStyle = 'function',
+  targetName = ''
+) {
   let instrumentedCode;
   if (language === 'typescript') {
     const instrumentedTypeScript = await instrumentCodeForTracing(code, language, traceFunctionName, maxPathDepth);
@@ -5993,14 +6036,22 @@ async function instrumentExecutableCodeForTracing(code, executableCode, language
   } else {
     instrumentedCode = await instrumentCodeForTracing(executableCode, language, traceFunctionName, maxPathDepth);
   }
-  // Safety net: an instrumented program that no longer compiles while the
-  // learner's does is a tracer defect, not the learner's compile error.
-  if (
-    typeof instrumentedCode === 'string' &&
-    javascriptSourceCompiles(instrumentedCode) === false &&
-    javascriptSourceCompiles(executableCode) === true
-  ) {
-    throw new JavaScriptTraceUnavailableError('the instrumented program does not compile.');
+  // Safety net: the runner that would execute the instrumented program (the
+  // tracer helpers, the recorder parameters and the learner's code, assembled
+  // as for the run) must compile whenever the untraced runner does.
+  // Otherwise it is a tracer defect, never the learner's compile error.
+  if (typeof instrumentedCode === 'string') {
+    const traced = javascriptRunnerCompiles(() => targetName
+      ? buildFunctionTracingRunner(instrumentedCode, executionStyle, [], maxPathDepth, [], code, targetName)
+      : buildScriptTracingRunner(instrumentedCode, maxPathDepth, code));
+    if (traced === false) {
+      const untraced = javascriptRunnerCompiles(() => targetName
+        ? buildFunctionExecutionRunner(executableCode, executionStyle, [], [], code, targetName)
+        : buildScriptExecutionRunner(executableCode, code));
+      if (untraced === true) {
+        throw new JavaScriptTraceUnavailableError('the instrumented program does not compile.');
+      }
+    }
   }
   return instrumentedCode;
 }
@@ -6070,8 +6121,10 @@ function __tracePathSegment(__index) {
   if (typeof __resolved === 'number' && Number.isInteger(__resolved)) return Math.trunc(__resolved);
   if (typeof __resolved === 'string' && __resolved.length > 0) return __resolved;
   if (__resolved && typeof __resolved === 'object') {
-    if (typeof __resolved.__id__ === 'string' && __resolved.__id__.length > 0) return __resolved.__id__;
-    if (typeof __resolved.__ref__ === 'string' && __resolved.__ref__.length > 0) return __resolved.__ref__;
+    const __id = __traceOwnDataString(__resolved, '__id__');
+    if (__id) return __id;
+    const __ref = __traceOwnDataString(__resolved, '__ref__');
+    if (__ref) return __ref;
   }
   return null;
 }
@@ -6122,14 +6175,35 @@ function __traceReadValueAtIndices(__container, __indices) {
   return __traceWalkPath(__container, __indices, __indices.length);
 }
 
+// Classifying a learner value must never run learner code: methods are found
+// through property descriptors, so a getter named \`get\` is never invoked.
+function __traceHasMethod(__value, __name) {
+  let __object = __value;
+  for (
+    let __depth = 0;
+    __depth < 64 && __object !== null && (typeof __object === 'object' || typeof __object === 'function');
+    __depth += 1
+  ) {
+    const __descriptor = Object.getOwnPropertyDescriptor(__object, __name);
+    if (__descriptor) return typeof __descriptor.value === 'function';
+    __object = Object.getPrototypeOf(__object);
+  }
+  return false;
+}
+
+function __traceOwnDataString(__value, __name) {
+  const __descriptor = Object.getOwnPropertyDescriptor(__value, __name);
+  return __descriptor && typeof __descriptor.value === 'string' ? __descriptor.value : undefined;
+}
+
 function __traceIsMapLike(__value) {
   return __value instanceof Map ||
     (!!__value &&
       typeof __value === 'object' &&
-      typeof __value.get === 'function' &&
-      typeof __value.set === 'function' &&
-      typeof __value.has === 'function' &&
-      typeof __value.delete === 'function');
+      __traceHasMethod(__value, 'get') &&
+      __traceHasMethod(__value, 'set') &&
+      __traceHasMethod(__value, 'has') &&
+      __traceHasMethod(__value, 'delete'));
 }
 
 function __traceWriteValueAtIndices(__container, __indices, __value) {
@@ -6144,11 +6218,15 @@ function __traceWriteValueAtIndices(__container, __indices, __value) {
 // assignment reads the current value here.
 function __traceIndexRef(__varName, __container, __indices, __indexSources, __location, __readCurrent) {
   const __effectiveIndices = Array.isArray(__indices) ? __indices : [];
-  const __normalized = __traceNormalizeIndices(__effectiveIndices);
-  const __normalizedSources = __traceNormalizeIndexSources(__indexSources, __normalized?.length ?? 0);
   const __last = __effectiveIndices.length - 1;
   const __parent = __traceWalkPath(__container, __effectiveIndices, __last);
-  const __key = __traceResolvedIndexValue(__effectiveIndices[__last]);
+  return __traceParentRef(__varName, __parent, __effectiveIndices, __indexSources, __location, __readCurrent);
+}
+
+function __traceParentRef(__varName, __parent, __effectiveIndices, __indexSources, __location, __readCurrent) {
+  const __normalized = __traceNormalizeIndices(__effectiveIndices);
+  const __normalizedSources = __traceNormalizeIndexSources(__indexSources, __normalized?.length ?? 0);
+  const __key = __traceResolvedIndexValue(__effectiveIndices[__effectiveIndices.length - 1]);
   const __ref = {
     varName: __varName,
     parent: __parent,
@@ -6173,6 +6251,59 @@ function __traceIndexRef(__varName, __container, __indices, __indexSources, __lo
     }
   }
   return __ref;
+}
+
+// Member paths with more than one segment are built in source order, as
+// JavaScript evaluates them: __tracePath(name, receiver), then __traceStep for
+// each segment before the last (it reads that segment before the next index
+// expression runs) and __traceKey for the last segment (not read). A
+// learner-written \`.get(key)\` segment is __traceStepGet.
+function __tracePath(__varName, __container) {
+  return { varName: __varName, parent: __container, indices: [] };
+}
+
+function __traceStep(__path, __index) {
+  __path.indices.push(__index);
+  __path.parent = __path.parent[__traceResolvedIndexValue(__index)];
+  return __path;
+}
+
+function __traceStepGet(__path, __key) {
+  __path.indices.push(__key);
+  __path.parent = __path.parent.get(__traceResolvedIndexValue(__key));
+  return __path;
+}
+
+function __traceKey(__path, __index) {
+  __path.indices.push(__index);
+  return __path;
+}
+
+function __tracePathRef(__path, __indexSources, __location, __readCurrent) {
+  return __traceParentRef(__path.varName, __path.parent, __path.indices, __indexSources, __location, __readCurrent);
+}
+
+function __traceReadPath(__path, __indexSources, __location) {
+  const __normalized = __traceNormalizeIndices(__path.indices);
+  const __normalizedSources = __traceNormalizeIndexSources(__indexSources, __normalized?.length ?? 0);
+  const __value = __path.parent[__traceResolvedIndexValue(__path.indices[__path.indices.length - 1])];
+  if (__normalized) {
+    __traceRecorder.recordAccess({
+      variable: __path.varName,
+      kind: __normalized.length === 2 ? 'cell-read' : 'indexed-read',
+      indices: __normalized,
+      ...(Array.isArray(__normalizedSources) ? { indexSources: __normalizedSources } : {}),
+      pathDepth: __normalized.length,
+      value: __value,
+      ...__traceNormalizeSourceLocation(__location),
+    });
+  }
+  __traceFlushDeferredScalarUpdates(__path.indices);
+  return __value;
+}
+
+function __traceUpdatePath(__path, __indexSources, __op, __isPrefix, __location) {
+  return __traceApplyUpdate(__tracePathRef(__path, __indexSources, __location, true), __op, __isPrefix);
 }
 
 function __traceStoreRef(__ref, __value) {
@@ -6502,7 +6633,10 @@ function __traceApplyAugmentedValue(__current, __op, __rhs) {
 }
 
 function __traceUpdateIndex(__varName, __container, __indices, __indexSources, __op, __isPrefix, __location) {
-  const __ref = __traceIndexRef(__varName, __container, __indices, __indexSources, __location, true);
+  return __traceApplyUpdate(__traceIndexRef(__varName, __container, __indices, __indexSources, __location, true), __op, __isPrefix);
+}
+
+function __traceApplyUpdate(__ref, __op, __isPrefix) {
   // The update operators themselves: ToNumeric once, BigInt-aware, and a
   // postfix result that is the numeric old value.
   let __next = __ref.current;
@@ -6556,6 +6690,20 @@ function __traceResolveMutatingCall(__varName, __container, __indices, __indexSo
     target: __target,
     fn: __target[__method],
     rawPath: __rawPath,
+    indexSources: __indexSources,
+    method: __method,
+    location: __location,
+    callee: __callee,
+  };
+}
+
+function __traceResolveMutatingCallPath(__path, __indexSources, __method, __location, __callee) {
+  const __target = __path.parent;
+  return {
+    varName: __path.varName,
+    target: __target,
+    fn: __target[__method],
+    rawPath: __path.indices,
     indexSources: __indexSources,
     method: __method,
     location: __location,
@@ -7307,7 +7455,9 @@ async function prepareExecutionRequest(payload) {
         executableCode,
         language,
         traceFunctionName,
-        maxPathDepth
+        maxPathDepth,
+        executionStyle,
+        targetName
       );
     } catch (instrumentationError) {
       const message = instrumentationError instanceof Error
@@ -7554,7 +7704,9 @@ async function executeWithTracing(payload) {
           executableCode,
           language,
           traceFunctionName,
-          maxPathDepth
+          maxPathDepth,
+          executionStyle,
+          targetName
         );
       } catch (instrumentationError) {
         const message =
@@ -7566,34 +7718,23 @@ async function executeWithTracing(payload) {
     }
 
     if (!instrumentedCode) {
+      // The tracer could not instrument this program without changing it:
+      // the untraced result, an empty trace, and a warning that says so.
       const fallbackResult = await executeCode(payload);
       const executionTimeMs = performanceNow() - startedAt;
-
-      if (!fallbackResult.success) {
-        const trace = createEmptyRuntimeTrace(language);
-        return {
-          success: false,
-          error: fallbackResult.error,
-          errorLine: fallbackResult.errorLine,
-          ...(fallbackResult.diagnosticStage ? { diagnosticStage: fallbackResult.diagnosticStage } : {}),
-          trace,
-          executionTimeMs,
-          consoleOutput: fallbackResult.consoleOutput ?? [],
-          lineEventCount: trace.lineEventCount,
-          traceStepCount: trace.traceStepCount,
-          timings: {
-            totalMs: executionTimeMs,
-            runMs: executionTimeMs,
-            artifactCacheHit: Boolean(prepared),
-          },
-        };
-      }
-
-      const trace = createSyntheticRuntimeTrace(payload, fallbackResult, language);
+      const trace = createEmptyRuntimeTrace(language);
       return {
-        success: true,
-        output: fallbackResult.output,
+        ...(fallbackResult.success
+          ? { success: true, output: fallbackResult.output }
+          : {
+              success: false,
+              error: fallbackResult.error,
+              errorLine: fallbackResult.errorLine,
+              ...(fallbackResult.diagnosticStage ? { diagnosticStage: fallbackResult.diagnosticStage } : {}),
+            }),
+        ...(fallbackResult.timeoutReason ? { timeoutReason: fallbackResult.timeoutReason } : {}),
         trace,
+        traceUnavailable: { ...JAVASCRIPT_TRACE_UNAVAILABLE },
         executionTimeMs,
         consoleOutput: fallbackResult.consoleOutput ?? [],
         lineEventCount: trace.lineEventCount,
