@@ -4120,7 +4120,7 @@ def __tracecode_serialize_call_arg(value):
         value_type = _builtins.type(value)
         name = None
         try:
-            if value_type in _TC_NAMED_CALLABLE_TYPES:
+            if _tc_type_in(value_type, _TC_NAMED_CALLABLE_TYPES):
                 name = _builtins.object.__getattribute__(value, '__name__')
             elif _builtins.issubclass(value_type, _builtins.type):
                 name = _builtins.type.__getattribute__(value, '__name__')
@@ -4270,11 +4270,42 @@ def __tracecode_record_destructured_iteration_accesses(frame, var_name, base_ind
             ),
         )
 
+def _tc_type_in(value_type, types):
+    # Membership by identity: a type-in-tuple test falls back to ==, which a
+    # learner metaclass can answer.
+    for candidate in types:
+        if value_type is candidate:
+            return True
+    return False
+
+_TC_HEAPTYPE_FLAG = 1 << 9
+import collections as _tc_collections
+import array as _tc_array
+# Runtime container types that are heap types (module-state C types such as
+# deque, defaultdict and array in 3.13, and collections' Python classes),
+# admitted by identity only.
+_TC_RUNTIME_PYTHON_TYPES = (
+    _tc_collections.deque, _tc_collections.defaultdict, _tc_collections.OrderedDict,
+    _tc_collections.Counter, _tc_collections.UserList, _tc_collections.UserDict, _tc_collections.UserString,
+    _tc_array.array,
+)
+
+def __tracecode_is_runtime_type(value_type):
+    # A static C type (builtins): no class statement can make one, and a
+    # subclass of one is a heap type; or one of the runtime heap types above,
+    # by identity. __module__ is not evidence: a class body can set it.
+    try:
+        if not (_builtins.type.__getattribute__(value_type, '__flags__') & _TC_HEAPTYPE_FLAG):
+            return True
+    except Exception:
+        return False
+    return _tc_type_in(value_type, _TC_RUNTIME_PYTHON_TYPES)
+
 def __tracecode_is_runtime_value(value):
     # Recording may take len() of, index or iterate a value only when its
     # type comes from the runtime (builtins, collections, array): a learner
     # class, including a list or dict subclass, could run code there.
-    return _builtins.type(value).__module__ in ('builtins', 'collections', '_collections', 'array')
+    return __tracecode_is_runtime_type(_builtins.type(value))
 
 def __tracecode_is_indexable_sequence(value):
     return _tc_isinstance(value, (list, tuple, _builtins.str)) or (
@@ -4363,7 +4394,7 @@ def __tracecode_invalidate_path(container, indices):
 
 def __tracecode_peek_key(key):
     key_type = _builtins.type(key)
-    if key_type in _TC_PEEK_KEY_TYPES:
+    if _tc_type_in(key_type, _TC_PEEK_KEY_TYPES):
         return True
     if key_type is _builtins.tuple:
         for part in key:
@@ -4396,19 +4427,19 @@ def __tracecode_peek_value(container, indices):
                 raise _TracecodePeekRefused()
             current = namespace[index.name]
             continue
-        if current_type in _TC_PEEK_SEQUENCE_TYPES:
+        if _tc_type_in(current_type, _TC_PEEK_SEQUENCE_TYPES):
             index_type = _builtins.type(index)
             if index_type is _builtins.slice:
                 # A bound with __index__ would run learner code.
                 for part in (index.start, index.stop, index.step):
-                    if part is not None and _builtins.type(part) not in (_builtins.int, _builtins.bool):
+                    if part is not None and not _tc_type_in(_builtins.type(part), (_builtins.int, _builtins.bool)):
                         raise _TracecodePeekRefused()
-            elif index_type not in (_builtins.int, _builtins.bool):
+            elif not _tc_type_in(index_type, (_builtins.int, _builtins.bool)):
                 raise _TracecodePeekRefused()
             current = current[index]
             continue
         if _tc_isinstance(current, _builtins.dict) and (
-            current_type is _builtins.dict or current_type.__module__ in ('collections', '_collections')
+            current_type is _builtins.dict or __tracecode_is_runtime_type(current_type)
         ):
             if not __tracecode_peek_key(index) or not _builtins.dict.__contains__(current, index):
                 raise _TracecodePeekRefused()
@@ -5301,7 +5332,7 @@ def _tracecode_safe_exception_message(error):
                     return type_name
                 args = _builtins.BaseException.args.__get__(error)
                 for arg in args:
-                    if _builtins.type(arg) not in _TC_PLAIN_EXCEPTION_ARG_TYPES:
+                    if not _tc_type_in(_builtins.type(arg), _TC_PLAIN_EXCEPTION_ARG_TYPES):
                         return type_name
                 return klass.__dict__['__str__'](error)
         return type_name

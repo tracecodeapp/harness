@@ -230,6 +230,22 @@ _TC_SER_REPR_SCALARS = (int, float, bool, type(None), bytes, bytearray, complex,
 _TC_SER_DICT_VIEWS = (type({}.keys()), type({}.values()), type({}.items()))
 _TC_SER_REPR_BUDGET = 256
 
+def _tc_ser_type_in(value_type, types):
+    # Membership by identity: a type-in-tuple test falls back to ==, which a
+    # learner metaclass can answer.
+    for candidate in types:
+        if value_type is candidate:
+            return True
+    return False
+
+def _tc_ser_is_static_type(obj_type):
+    # A C type no class statement can make (a learner class is a heap type;
+    # its __module__ can claim anything).
+    try:
+        return not (_TC_SER_TYPE_GETATTR(obj_type, '__flags__') & (1 << 9))
+    except Exception:
+        return False
+
 def _tc_ser_type_name(obj_type):
     try:
         name = _TC_SER_TYPE_GETATTR(obj_type, '__name__')
@@ -245,7 +261,7 @@ def _tc_ser_instance_dict(obj):
         for klass in _TC_SER_TYPE_GETATTR(obj_type, '__mro__'):
             namespace = _TC_SER_TYPE_GETATTR(klass, '__dict__')
             if '__dict__' in namespace:
-                if type(namespace['__dict__']) not in _TC_SER_DICT_DESCRIPTORS:
+                if not _tc_ser_type_in(type(namespace['__dict__']), _TC_SER_DICT_DESCRIPTORS):
                     return None
                 fields = _TC_SER_OBJECT_GETATTR(obj, '__dict__')
                 return fields if type(fields) is dict else None
@@ -262,7 +278,7 @@ def _tc_ser_safe_repr(value, budget):
     value_type = type(value)
     if value_type is str:
         return str.__repr__(value)
-    if value_type in _TC_SER_REPR_SCALARS:
+    if _tc_ser_type_in(value_type, _TC_SER_REPR_SCALARS):
         return repr(value)
     if issubclass(value_type, str):
         return str.__repr__(value)
@@ -297,12 +313,12 @@ def _tc_ser_safe_repr(value, budget):
     if value_type is slice:
         parts = [_tc_ser_safe_repr(part, budget) for part in (value.start, value.stop, value.step)]
         return None if None in parts else 'slice(' + ', '.join(parts) + ')'
-    if value_type in _TC_SER_DICT_VIEWS:
+    if _tc_ser_type_in(value_type, _TC_SER_DICT_VIEWS):
         parts = [_tc_ser_safe_repr(item, budget) for item in value]
         if None in parts:
             return None
         return _tc_ser_type_name(value_type) + '([' + ', '.join(parts) + '])'
-    if issubclass(value_type, BaseException) and _TC_SER_TYPE_GETATTR(value_type, '__module__') == 'builtins':
+    if issubclass(value_type, BaseException) and _tc_ser_is_static_type(value_type):
         args = BaseException.args.__get__(value)
         parts = [_tc_ser_safe_repr(arg, budget) for arg in args]
         if None in parts:
@@ -461,11 +477,9 @@ def _serialize(obj, depth=0, node_refs=None):
             result["__truncated__"] = True
             result["remaining"] = len(kept) - _MAX_OBJECT_FIELDS
         return result
-    try:
-        module = _TC_SER_TYPE_GETATTR(obj_type, '__module__')
-    except Exception:
-        module = None
-    if module == 'builtins':
+    # A static type's __module__ comes from its C definition, not from a class
+    # body, so it can be trusted here.
+    if _tc_ser_is_static_type(obj_type) and _TC_SER_TYPE_GETATTR(obj_type, '__module__') == 'builtins':
         # A builtin value shown by its repr when that repr is builtin-safe
         # (bytes, range, frozenset, slice, dict views, builtin exceptions).
         # One of those holding a learner value gets the placeholder below;
@@ -474,7 +488,7 @@ def _serialize(obj, depth=0, node_refs=None):
         if text is not None:
             return _serialize_string(text)
         if not (
-            obj_type is frozenset or obj_type is slice or obj_type in _TC_SER_DICT_VIEWS
+            obj_type is frozenset or obj_type is slice or _tc_ser_type_in(obj_type, _TC_SER_DICT_VIEWS)
             or issubclass(obj_type, BaseException)
         ):
             return _SKIP_SENTINEL
