@@ -9485,6 +9485,55 @@ function cppIndexedAccessNeedsElement(text, start, end) {
   );
 }
 
+// The read helpers the rewriter emits for pure reads (`v[i]`, `v[i].f`,
+// `g[i][j]`). They record the same read event as the runtime's
+// trace_index_read, trace_index_field_read and trace_nested_index_read, but
+// yield the element itself, as a const reference, where those return a copy:
+// a reference that binds to a read binds the real element (its identity and
+// later changes are seen), and a write through a read the rewriter misjudged
+// does not compile (the compile safety net then refuses to trace) rather than
+// change a copy. Only where the container yields a value (vector<bool>'s
+// proxy under const access, a member of a temporary) is the read a value.
+// The event is serialized before returning; no reference is kept. They are
+// emitted with the program (only when used) because the runtime header is
+// precompiled into the TraceCC assets.
+const CPP_READ_HELPER_SOURCE = [
+  'namespace tracecode {',
+  'template <typename __TcContainer, typename __TcIndex>',
+  'inline decltype(auto) trace_index_read_ref(const __TcContainer& container, const std::string& name, __TcIndex index, int line, const char* index_source = nullptr) {',
+  '  auto concrete_index = materialize_trace_index(index);',
+  '  decltype(auto) value = trace_index_read_value(container, concrete_index);',
+  '  if (!minimal_trace_enabled() && check_trace_budget(line)) {',
+  '    trace_event_count() += 1;',
+  '    write_trace_event_json_raw(std::string("{\\"kind\\":\\"read\\",\\"line\\":") + std::to_string(line) + ",\\"target\\":" + target_json_key_with_index_source(name, concrete_index, index_source) + ",\\"value\\":" + to_json(value) + "}");',
+  '  }',
+  '  return value;',
+  '}',
+  'template <typename __TcValue>',
+  'using trace_field_read_ref_t = std::conditional_t<std::is_lvalue_reference_v<__TcValue>, const std::remove_reference_t<__TcValue>&, std::remove_cvref_t<__TcValue>>;',
+  'template <typename __TcContainer, typename __TcIndex, typename __TcValue>',
+  'inline trace_field_read_ref_t<__TcValue&&> trace_index_field_read_ref(const __TcContainer&, const std::string& name, __TcIndex index, const std::string& field, __TcValue&& field_value, int line, const char* index_source = nullptr) {',
+  '  auto concrete_index = materialize_trace_index(index);',
+  '  if (!minimal_trace_enabled() && check_trace_budget(line)) {',
+  '    trace_event_count() += 1;',
+  '    write_trace_event_json_raw(std::string("{\\"kind\\":\\"read\\",\\"line\\":") + std::to_string(line) + ",\\"target\\":{\\"variable\\":" + to_json(name) + ",\\"path\\":[" + to_json(concrete_index) + "," + to_json(field) + "]" + (index_source ? std::string(",\\"indexSources\\":") + index_sources_json(index_source, nullptr) : std::string("")) + "},\\"value\\":" + to_json(field_value) + "}");',
+  '  }',
+  '  return std::forward<__TcValue>(field_value);',
+  '}',
+  'template <typename __TcContainer, typename __TcOuter, typename __TcInner>',
+  'inline decltype(auto) trace_nested_index_read_ref(const __TcContainer& container, const std::string& name, __TcOuter outer, __TcInner inner, int line, const char* outer_source = nullptr, const char* inner_source = nullptr) {',
+  '  static_assert(std::is_reference_v<decltype(trace_index_read_value(container, outer))>, "a nested read needs its row by reference");',
+  '  const auto& row = trace_index_read_value(container, outer);',
+  '  decltype(auto) value = row[inner];',
+  '  if (!minimal_trace_enabled() && check_trace_budget(line)) {',
+  '    trace_event_count() += 1;',
+  '    write_trace_event_json_raw(std::string("{\\"kind\\":\\"read\\",\\"line\\":") + std::to_string(line) + ",\\"target\\":" + target_json_with_index_sources(name, outer, inner, outer_source, inner_source) + ",\\"value\\":" + to_json(value) + "}");',
+  '  }',
+  '  return value;',
+  '}',
+  '}',
+].join('\n');
+
 const CPP_ELEMENT_HELPER_SOURCE = [
   '#line 1 "TraceCodeDriver.cpp"',
   'template <typename __TcRef> struct __tracecode_is_element_ref : std::false_type {};',
@@ -9613,8 +9662,8 @@ function rewriteIndexReadInstrumentation(line, variables, aliases = new Map(), l
           // The helper takes the index and the field value; an index with side
           // effects (`ps[i++].val`, `ps[find(x)].val`) is evaluated once.
           const replacement = cppExpressionMayHaveSideEffects(indexExpression)
-            ? `([&]() -> decltype(auto) { auto&& __tc_field_index = (${indexExpression}); return tracecode::trace_index_field_read(${name}, ${cppStringLiteral(name)}, __tc_field_index, ${cppStringLiteral(fieldName)}, ${name}[__tc_field_index].${fieldName}, ${lineNumber}, ${indexSource}); }())`
-            : `tracecode::trace_index_field_read(${name}, ${cppStringLiteral(name)}, ${indexExpression}, ${cppStringLiteral(fieldName)}, ${name}[${indexExpression}].${fieldName}, ${lineNumber}, ${indexSource})`;
+            ? `([&]() -> decltype(auto) { auto&& __tc_field_index = (${indexExpression}); return tracecode::trace_index_field_read_ref(${name}, ${cppStringLiteral(name)}, __tc_field_index, ${cppStringLiteral(fieldName)}, ${name}[__tc_field_index].${fieldName}, ${lineNumber}, ${indexSource}); }())`
+            : `tracecode::trace_index_field_read_ref(${name}, ${cppStringLiteral(name)}, ${indexExpression}, ${cppStringLiteral(fieldName)}, ${name}[${indexExpression}].${fieldName}, ${lineNumber}, ${indexSource})`;
           rewritten = `${rewritten.slice(0, nameIndex)}${replacement}${rewritten.slice(fieldEnd)}`;
           cursor = nameIndex + replacement.length;
           continue;
@@ -9635,7 +9684,7 @@ function rewriteIndexReadInstrumentation(line, variables, aliases = new Map(), l
           cursor = closeIndex + 1;
           continue;
         }
-        const replacement = `tracecode::trace_index_read(${name}, ${cppStringLiteral(name)}, ${indexExpression}, ${lineNumber}, ${indexSource})`;
+        const replacement = `tracecode::trace_index_read_ref(${name}, ${cppStringLiteral(name)}, ${indexExpression}, ${lineNumber}, ${indexSource})`;
         rewritten = `${rewritten.slice(0, nameIndex)}${replacement}${rewritten.slice(closeIndex + 1)}`;
         cursor = nameIndex + replacement.length;
         continue;
@@ -9666,6 +9715,8 @@ function rewriteIndexReadInstrumentation(line, variables, aliases = new Map(), l
         }
         if (
           previousIsAddressOf ||
+          // A row that is a map has no const subscript.
+          CPP_MAP_ELEMENT_TYPE.test(vectorElementCppType(variables.get(name)?.type || '', aliases) || '') ||
           !cppIndexedAccessIsPureRead(rewritten, nameIndex, secondCloseIndex + 1) ||
           afterNested.ch === '[' ||
           afterNested.ch === '.' ||
@@ -9682,7 +9733,7 @@ function rewriteIndexReadInstrumentation(line, variables, aliases = new Map(), l
         const innerExpression = rewritten.slice(secondBracketIndex + 1, secondCloseIndex).trim();
         const outerSource = cppIndexSourceForExpression(outerExpression);
         const innerSource = cppIndexSourceForExpression(innerExpression);
-        const replacement = `tracecode::trace_nested_index_read(${name}, ${cppStringLiteral(name)}, ${outerExpression}, ${innerExpression}, ${lineNumber}, ${outerSource}, ${innerSource})`;
+        const replacement = `tracecode::trace_nested_index_read_ref(${name}, ${cppStringLiteral(name)}, ${outerExpression}, ${innerExpression}, ${lineNumber}, ${outerSource}, ${innerSource})`;
         rewritten = `${rewritten.slice(0, nameIndex)}${replacement}${rewritten.slice(secondCloseIndex + 1)}`;
         cursor = nameIndex + replacement.length;
         continue;
@@ -9733,7 +9784,7 @@ function rewriteIndexReadInstrumentation(line, variables, aliases = new Map(), l
         cursor = closeIndex + 1;
         continue;
       }
-      const replacement = `tracecode::trace_index_read(${name}, ${cppStringLiteral(name)}, ${indexExpression}, ${lineNumber}, ${indexSource})`;
+      const replacement = `tracecode::trace_index_read_ref(${name}, ${cppStringLiteral(name)}, ${indexExpression}, ${lineNumber}, ${indexSource})`;
       rewritten = `${rewritten.slice(0, nameIndex)}${replacement}${rewritten.slice(closeIndex + 1)}`;
       cursor = nameIndex + replacement.length;
     }
@@ -9784,7 +9835,7 @@ function rewriteStringPointerIndexedReadInstrumentation(line, lineNumber, pointe
         cursor = closeBracket + 1;
         continue;
       }
-      const replacement = `tracecode::trace_index_read(*${pointerName}, ${cppStringLiteral(pointerName)}, ${indexExpression}, ${lineNumber}, ${cppIndexSourceForExpression(indexExpression)})`;
+      const replacement = `tracecode::trace_index_read_ref(*${pointerName}, ${cppStringLiteral(pointerName)}, ${indexExpression}, ${lineNumber}, ${cppIndexSourceForExpression(indexExpression)})`;
       rewritten = `${rewritten.slice(0, start)}${replacement}${rewritten.slice(closeBracket + 1)}`;
       cursor = start + replacement.length;
     }
@@ -9933,7 +9984,7 @@ function rewriteIndexedElementAliasReadInstrumentation(line, lineNumber, indexed
         cursor = closeIndex + 1;
         continue;
       }
-      const replacement = `tracecode::trace_nested_index_read(${alias.sourceName}, ${cppStringLiteral(alias.sourceName)}, ${alias.outerIndex}, ${innerIndex}, ${lineNumber}, ${alias.outerSource}, ${cppIndexSourceForExpression(innerIndex)})`;
+      const replacement = `tracecode::trace_nested_index_read_ref(${alias.sourceName}, ${cppStringLiteral(alias.sourceName)}, ${alias.outerIndex}, ${innerIndex}, ${lineNumber}, ${alias.outerSource}, ${cppIndexSourceForExpression(innerIndex)})`;
       rewritten = `${rewritten.slice(0, nameIndex)}${replacement}${rewritten.slice(closeIndex + 1)}`;
       cursor = nameIndex + replacement.length;
     }
@@ -10137,14 +10188,28 @@ function rewriteNestedIndexedWriteInstrumentation(line, lineNumber, variables, a
 
     let rewrittenStatement = null;
     const nestedRef = `tracecode::trace_nested_index_ref(${name}, ${cppStringLiteral(name)}, ${outerExpression}, ${innerExpression}, ${cppIndexSourceForExpression(outerExpression)}, ${cppIndexSourceForExpression(innerExpression)})`;
+    // A row that is a map: its element proxy takes only `=` and `+=`, so
+    // a statement `cnt[i][key]++;` becomes `+= 1` and other compound
+    // assignments keep the learner's expression. A row whose elements are
+    // strings or containers: compound assignments keep it too.
+    const rowType = vectorElementCppType(variables.get(name)?.type || '', aliases) || '';
+    const rowIsMap = CPP_MAP_ELEMENT_TYPE.test(rowType);
+    const cellType = rowIsMap ? (mapValueCppType(rowType, aliases) || '') : (vectorElementCppType(rowType, aliases) || '');
+    const cellProxyIncompatible = CPP_PROXY_INCOMPATIBLE_ELEMENT_TYPE.test(cellType);
+    const step = (operator) => (rowIsMap ? ` += ${operator === '++' ? 1 : -1};` : null);
     if ((beforeAccess === '++' || beforeAccess === '--') && afterAccess === ';') {
-      rewrittenStatement = `${beforeAccess}${nestedRef};`;
+      if (!cellProxyIncompatible) rewrittenStatement = rowIsMap ? `${nestedRef}${step(beforeAccess)}` : `${beforeAccess}${nestedRef};`;
     } else if (beforeAccess === '') {
-      if (/^(?:\+\+|--)\s*;\s*$/.test(afterAccess)) {
-        rewrittenStatement = `${nestedRef}${afterAccess}`;
+      const increment = afterAccess.match(/^(\+\+|--)\s*;\s*$/);
+      if (increment) {
+        if (!cellProxyIncompatible) rewrittenStatement = rowIsMap ? `${nestedRef}${step(increment[1])}` : `${nestedRef}${afterAccess}`;
       } else {
         const assignment = afterAccess.match(/^((?:[+\-*/%&|^]|<<|>>)?=)\s*(.+;\s*)$/);
-        if (assignment && assignment[1] !== '==') {
+        const allowed = assignment && assignment[1] !== '==' && (
+          assignment[1] === '=' ||
+          (!cellProxyIncompatible && (!rowIsMap || assignment[1] === '+='))
+        );
+        if (allowed) {
           rewrittenStatement = `${nestedRef} ${assignment[1]} ${assignment[2]}`;
         }
       }
@@ -10154,6 +10219,13 @@ function rewriteNestedIndexedWriteInstrumentation(line, lineNumber, variables, a
   }
   return line;
 }
+
+// Element types whose compound assignments take other operand types than the
+// element's own (`names[i] += c` with a char, `sets[i] += ...`): the tracer's
+// element proxies only take the element type, so these keep the learner's
+// expression (the line's snapshot still records the change).
+const CPP_PROXY_INCOMPATIBLE_ELEMENT_TYPE = /^(?:std::)?(?:string|vector|deque|list|set|multiset|map|multimap|unordered_set|unordered_multiset|unordered_map|unordered_multimap|array|pair|tuple)\s*(?:<|$)/;
+const CPP_MAP_ELEMENT_TYPE = /^(?:std::)?(?:map|unordered_map)\s*</;
 
 function rewriteVectorIndexedWriteInstrumentation(line, lineNumber, variables, aliases = new Map()) {
   const stripped = stripCppStringsAndComments(line).trim();
@@ -10176,6 +10248,8 @@ function rewriteVectorIndexedWriteInstrumentation(line, lineNumber, variables, a
     if (!indexExpression) continue;
 
     const indexedRef = `tracecode::trace_index_ref(${name}, ${cppStringLiteral(name)}, ${indexExpression}, ${cppIndexSourceForExpression(indexExpression)})`;
+    const elementType = vectorElementCppType(variables.get(name)?.type || '', aliases) || '';
+    const proxyIncompatible = CPP_PROXY_INCOMPATIBLE_ELEMENT_TYPE.test(elementType);
     let rewrittenStatement = null;
     if ((beforeAccess === '++' || beforeAccess === '--') && afterAccess === ';') {
       rewrittenStatement = `${beforeAccess}${indexedRef};`;
@@ -10184,7 +10258,7 @@ function rewriteVectorIndexedWriteInstrumentation(line, lineNumber, variables, a
         rewrittenStatement = `${indexedRef}${afterAccess}`;
       } else {
         const assignment = afterAccess.match(/^((?:[+\-*/%&|^]|<<|>>)?=)\s*(.+;\s*)$/);
-        if (assignment && assignment[1] !== '==') {
+        if (assignment && assignment[1] !== '==' && !(proxyIncompatible && assignment[1] !== '=')) {
           rewrittenStatement = `${indexedRef} ${assignment[1]} ${assignment[2]}`;
         }
       }
@@ -10978,6 +11052,8 @@ function extractDeclaredSnapshotVariables(line, aliases = new Map(), knownVariab
   for (const declarator of splitTopLevelCommaList(declaratorsSource)) {
     const trimmedDeclarator = declarator.trim();
     const nameMatch = trimmedDeclarator.match(/^([A-Za-z_]\w*)\b/);
+    // `long long const& x(...)`: the qualifier is not a name.
+    if (nameMatch && /^(?:const|volatile)$/.test(nameMatch[1])) continue;
     const rawArrayDeclarator = nameMatch
       ? new RegExp(`^${escapeRegExp(nameMatch[1])}\\s*\\[`).test(trimmedDeclarator)
       : false;
@@ -12026,9 +12102,15 @@ function instrumentCppSourceForTracing(source, functionName, options = {}) {
   activeCppReferenceParameterCallees = collectCppReferenceParameterCallees(signatures);
   try {
     const instrumented = instrumentCppLinesForTracing();
-    return instrumented.includes('__tracecode_element(')
-      ? `${CPP_ELEMENT_HELPER_SOURCE}\n${instrumented}`
-      : instrumented;
+    const usesElementHelper = instrumented.includes('__tracecode_element(');
+    const usesReadHelpers = /\btracecode::trace_(?:index|index_field|nested_index)_read_ref\(/.test(instrumented);
+    if (!usesElementHelper && !usesReadHelpers) return instrumented;
+    // CPP_ELEMENT_HELPER_SOURCE starts with the driver's #line.
+    return [
+      usesElementHelper ? CPP_ELEMENT_HELPER_SOURCE : '#line 1 "TraceCodeDriver.cpp"',
+      ...(usesReadHelpers ? [CPP_READ_HELPER_SOURCE] : []),
+      instrumented,
+    ].join('\n');
   } finally {
     activeCppReferenceParameterCallees = new Map();
   }

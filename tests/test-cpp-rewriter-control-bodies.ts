@@ -877,14 +877,14 @@ for (const accepted of ACCEPTED_MACROS) {
 }
 
 // Round 3, B: instrumentation evaluates each learner expression once, and a
-// copy-returning read helper (trace_index_read, trace_index_field_read) never
+// read helper (trace_index_read_ref, trace_index_field_read_ref) never
 // stands where the learner's expression is written through (a method call,
 // an assignment, ++/--, a subscript, a reference binding, a range-for).
 {
   const CONST_METHODS = new Set(['size', 'length', 'empty', 'count', 'contains', 'substr', 'compare', 'starts_with', 'ends_with', 'capacity']);
   const writesThroughReadHelper = (output: string): string[] => {
     const problems: string[] = [];
-    for (const helper of output.matchAll(/tracecode::trace_index(?:_field)?_read\(/g)) {
+    for (const helper of output.matchAll(/tracecode::trace_index(?:_field)?_read(?:_ref)?\(/g)) {
       let depth = 0;
       let cursor = helper.index! + helper[0].length - 1;
       for (; cursor < output.length; cursor += 1) {
@@ -957,7 +957,7 @@ for (const accepted of ACCEPTED_MACROS) {
     {
       name: 'a row passed to a const vector reference in a loop is not copied',
       body: '    vector<vector<int>> grid(3, vector<int>(3, 1));\n    auto rowSum = [](const vector<int>& row) { return row[0]; };\n    for (int r = 0; r < 3; r++) k += rowSum(grid[r]);',
-      absent: 'trace_index_read(grid',
+      absent: 'trace_index_read_ref(grid',
       present: '__tracecode_element(grid[__tc_ref_index])',
     },
     {
@@ -970,22 +970,22 @@ for (const accepted of ACCEPTED_MACROS) {
     {
       name: 'a parenthesized element written through',
       body: '    vector<string> names(3, "ab");\n    (names[0]).clear();',
-      absent: 'trace_index_read(names',
+      absent: 'trace_index_read_ref(names',
     },
     {
       name: 'std::get of an element written through',
       body: '    vector<tuple<vector<int>, int>> rows(2);\n    int i = 1;\n    std::get<0>(rows[i]).clear();',
-      absent: 'trace_index_read(rows',
+      absent: 'trace_index_read_ref(rows',
     },
     {
       name: 'std::move of an element',
       body: '    vector<string> names(3, "ab");\n    string taken = std::move(names[1]);',
-      absent: 'trace_index_read(names',
+      absent: 'trace_index_read_ref(names',
     },
     {
       name: 'an element read inside a call stays traced',
       body: '    array<int, 3> ar{};\n    k = max(ar[1], 5) + (ar[2]);',
-      present: 'max(tracecode::trace_index_read(ar',
+      present: 'max(tracecode::trace_index_read_ref(ar',
     },
     // Round 4: range-for over an element of a vector whose elements are not
     // vectors (blast-radius-analysis: `for (int nxt : graph[node])` with
@@ -1019,28 +1019,28 @@ for (const accepted of ACCEPTED_MACROS) {
       // A reference to const binds the read helper's const reference to the
       // element (round 6); a non-const one binds the element directly.
       body: '    array<int, 3> ar{};\n    const int& first{ar[0]};\n    const auto& second(ar[1]);\n    vector<pair<int, int>> ps(2);\n    auto& [p, q]{ps[0]};',
-      present: 'const int& first{tracecode::trace_index_read(ar, "ar", 0',
-      absent: 'trace_index_read(ps',
+      present: 'const int& first{tracecode::trace_index_read_ref(ar, "ar", 0',
+      absent: 'trace_index_read_ref(ps',
     },
     {
       name: 'capacity of an element is not read from a copy',
       body: '    vector<string> names(2);\n    names[0].reserve(100);\n    k = (int)names[0].capacity();',
-      absent: 'trace_index_read(names',
+      absent: 'trace_index_read_ref(names',
     },
     {
       name: "a learner type's size() is not called on a copy",
       body: '    vector<Counter> cs(2);\n    k = cs[0].size();',
-      absent: 'trace_index_read(cs',
+      absent: 'trace_index_read_ref(cs',
     },
     {
       name: 'a standard element size() stays traced',
       body: '    vector<string> names(2);\n    k = (int)names[1].size();',
-      present: 'tracecode::trace_index_read(names, "names", 1',
+      present: 'tracecode::trace_index_read_ref(names, "names", 1',
     },
     {
       name: 'a parenthesized argument at a reference parameter is the element',
       body: '    array<int, 3> ar{};\n    auto same = [](const int& p, const int& q) { return &p == &q; };\n    k = same((ar[0]), ar[0]);',
-      absent: 'trace_index_read(ar',
+      absent: 'trace_index_read_ref(ar',
     },
     {
       name: 'a braced push_back argument is passed through unchanged',
@@ -1053,18 +1053,18 @@ for (const accepted of ACCEPTED_MACROS) {
     {
       name: 'a reference declared with a multi-word type binds the element',
       body: '    vector<long long> big(2);\n    const long long& first{big[0]};\n    long long const& second(big[1]);\n    vector<unsigned long long> big2(1);\n    unsigned long long& third{big2[0]};',
-      present: 'const long long& first{tracecode::trace_index_read(big, "big", 0',
-      absent: 'trace_index_read(big2',
+      present: 'const long long& first{tracecode::trace_index_read_ref(big, "big", 0',
+      absent: 'trace_index_read_ref(big2',
     },
     {
       name: 'an element in braces at a reference parameter is the element',
       body: '    array<int, 3> ar{};\n    auto same = [](const int& p, const int& q) { return &p == &q; };\n    k = same({ar[0]}, ar[0]);',
-      absent: 'trace_index_read(ar',
+      absent: 'trace_index_read_ref(ar',
     },
     {
       name: 'an element in braces inside an expression is still read',
       body: '    vector<int> big(2);\n    k = max({big[0], 1}) + min({big[1]});',
-      present: 'trace_index_read(big',
+      present: 'trace_index_read_ref(big',
     },
     // Round 6: references to rows and elements of traced vectors keep the
     // reference (they used to become `auto x = <read>`, a copy), and array
@@ -1095,12 +1095,12 @@ for (const accepted of ACCEPTED_MACROS) {
       name: 'an array of vectors is declared, not read',
       body: '    vector<int> adjc[3];\n    int memo[4];\n    adjc[1].push_back(a);\n    memo[0] = 1;',
       present: 'vector<int> adjc[3];',
-      absent: 'trace_index_read(adjc, "adjc", 3',
+      absent: 'trace_index_read_ref(adjc, "adjc", 3',
     },
     {
       name: 'a reference to const binds a nested read; a non-const one the element',
       body: '    vector<vector<int>> grid(2, vector<int>(2, 1));\n    const int& c = grid[1][1];\n    int& d = grid[0][1];\n    d = 4;',
-      present: 'const int& c = tracecode::trace_nested_index_read(grid, "grid", 1, 1',
+      present: 'const int& c = tracecode::trace_nested_index_read_ref(grid, "grid", 1, 1',
     },
     {
       name: 'a vector<bool> element under auto stays the library proxy',
@@ -1111,6 +1111,22 @@ for (const accepted of ACCEPTED_MACROS) {
       name: 'a function returning a reference returns the element, not a local copy',
       body: '    vector<int> v(3);\n    auto pick = [&](int i) -> int& {\n      return v[i];\n    };\n    pick(1) = a;',
       present: 'int& __tc_return_',
+    },
+    {
+      name: 'an east-const reference is not snapshotted as a variable named const',
+      body: '    vector<long long> big(2);\n    long long const& second(big[1]);\n    k = (int)second;',
+      absent: 'target_json("const")',
+    },
+    {
+      name: 'a compound assignment to a string element keeps the learner expression',
+      body: "    vector<string> names(2);\n    char ch = 'a';\n    names[1] += ch;",
+      present: 'names[1] += ch;',
+    },
+    {
+      name: 'an increment of a map cell in a vector of maps adds one through the cell proxy',
+      body: "    vector<unordered_map<char, int>> freqs(2);\n    freqs[0]['z']++;\n    k = freqs[0]['z'];",
+      present: 'trace_nested_index_ref(freqs, "freqs", 0, \'z\', nullptr, "\'z\'") += 1;',
+      absent: 'trace_nested_index_read_ref(freqs',
     },
     // Round 4, item 4: fill binds its argument by const reference.
     {
@@ -1142,7 +1158,7 @@ for (const accepted of ACCEPTED_MACROS) {
   const reads = instrumentBody(prelude, '    vector<QQ> qs(3);\n    vector<string> names(3);\n    int i = 0;\n    k = qs[i].val + (int)names[i].size();');
   results.push({
     name: 'indexed reads stay traced',
-    failures: reads.includes('trace_index_field_read(qs') && reads.includes('trace_index_read(names')
+    failures: reads.includes('trace_index_field_read_ref(qs') && reads.includes('trace_index_read_ref(names')
       ? []
       : ['an indexed read lost its read event'],
   });
