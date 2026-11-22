@@ -317,6 +317,25 @@ const COPY_FORMS: ParityForm[] = [
     ].join('\n'),
   },
   {
+    // Round 6: references to const bound to reads follow later writes; a
+    // vector<bool> element under auto is the library's proxy.
+    name: 'references to const through reads, and vector<bool> proxies',
+    body: [
+      '    vector<vector<int>> grid(2, vector<int>(2, 1));',
+      '    vector<string> names(2, "ab");',
+      '    const int& cell = grid[1][1];',
+      '    const auto& row = grid[0];',
+      '    const string& name = names[1];',
+      '    grid[1][1] = a + 7;',
+      '    grid[0][0] = b + 3;',
+      "    names[1] += 'z';",
+      '    vector<bool> flags(3, false);',
+      '    auto proxy = flags[1];',
+      '    flags[1] = true;',
+      '    k = cell * 100 + row[0] * 10 + (proxy ? 1 : 0) + (int)name.size() * 1000;',
+    ].join('\n'),
+  },
+  {
     name: 'struct members of an element',
     body: [
       '    vector<QQ> qs(3);',

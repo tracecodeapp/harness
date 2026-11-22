@@ -9424,9 +9424,12 @@ function cppIsReferenceCallArgument(text, start, end) {
 
 // Whether text[start, end) initializes a reference or is a range-for range:
 // it must be the element itself.
+// A reference to const is bound through the read helper instead.
 function cppIndexedAccessBindsReference(text, start) {
   const before = text.slice(0, start).replace(/\s+$/, '');
-  if (CPP_REFERENCE_BINDING_ASSIGNMENT.test(before) || CPP_REFERENCE_DECLARATION_OPEN.test(before)) return true;
+  if (CPP_REFERENCE_BINDING_ASSIGNMENT.test(before) || CPP_REFERENCE_DECLARATION_OPEN.test(before)) {
+    return !cppIsConstReferenceDeclaration(before);
+  }
   return /(?<!:):$/.test(before) && !/\?[^?:;]*:$/.test(before);
 }
 
@@ -9705,6 +9708,15 @@ function rewriteIndexReadInstrumentation(line, variables, aliases = new Map(), l
           cursor = nameIndex + replacement.length;
           continue;
         }
+        cursor = closeIndex + 1;
+        continue;
+      }
+      // `auto b = flags[i]` on a vector<bool> is the library's proxy (it
+      // follows later writes); the read helper would yield a bool.
+      if (
+        /\bvector\s*<\s*bool\s*>/.test(normalizeCppType(variables.get(name)?.type || '', aliases)) &&
+        /\bauto\s+[A-Za-z_]\w*\s*(?:=|\{|\()$/.test(prefixBeforeName)
+      ) {
         cursor = closeIndex + 1;
         continue;
       }

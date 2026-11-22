@@ -1097,6 +1097,16 @@ for (const accepted of ACCEPTED_MACROS) {
       present: 'vector<int> adjc[3];',
       absent: 'trace_index_read(adjc, "adjc", 3',
     },
+    {
+      name: 'a reference to const binds a nested read; a non-const one the element',
+      body: '    vector<vector<int>> grid(2, vector<int>(2, 1));\n    const int& c = grid[1][1];\n    int& d = grid[0][1];\n    d = 4;',
+      present: 'const int& c = tracecode::trace_nested_index_read(grid, "grid", 1, 1',
+    },
+    {
+      name: 'a vector<bool> element under auto stays the library proxy',
+      body: '    vector<bool> flags(3, false);\n    auto p = flags[1];\n    bool q = flags[2];',
+      present: 'auto p = flags[1];',
+    },
     // Round 4, item 4: fill binds its argument by const reference.
     {
       name: 'fill with std::move binds by const reference, without a move',
