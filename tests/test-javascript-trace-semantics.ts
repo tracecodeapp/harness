@@ -167,6 +167,22 @@ async function main() {
         failures.push(`${label}: untraced run failed in the provider: ${untraced.message}`);
         continue;
       }
+      if (testCase.compileError) {
+        const shape = shapes[0];
+        // TypeScript syntax errors come from the TypeScript transpiler (the
+        // Judge reports them as compile errors at its prepare step); here only
+        // the traced and untraced replies are required to be identical.
+        if (untraced.success || (language === 'javascript' && untraced.stage !== 'compile')) {
+          failures.push(`${label}: untraced run should fail to compile: ${JSON.stringify(untraced)}`);
+        } else if (!isDeepStrictEqual(untraced, traced)) {
+          failures.push(`${label}: traced ${JSON.stringify(traced)} != untraced compile error ${JSON.stringify(untraced)}`);
+        } else if (shape?.fallback) {
+          failures.push(`${label}: a learner compile error must not carry trace-unavailable`);
+        } else {
+          console.log(`PASS: ${label} (compile error)`);
+        }
+        continue;
+      }
       if (Object.hasOwn(testCase, 'expected') &&
         !(untraced.success && isDeepStrictEqual(untraced.output, testCase.expected))) {
         failures.push(`${label}: untraced result is not the expected value: ${JSON.stringify(untraced)}`);

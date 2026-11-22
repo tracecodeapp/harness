@@ -18,6 +18,11 @@ export interface TraceSemanticsCase {
   fallbackAllowed?: boolean;
   /** The program must run untraced (empty trace, `trace-unavailable` warning). */
   fallbackRequired?: boolean;
+  /**
+   * The program does not compile: the traced Run must report exactly the
+   * untraced Run's compile error (no warning, no trace).
+   */
+  compileError?: boolean;
 }
 
 function solve(body: string, expected: unknown, extra: Partial<TraceSemanticsCase> = {}) {
@@ -306,6 +311,45 @@ function solve(): number {
   // the learner's compile error.
   { id: 'R1-helper-name-collision', code: 'const __traceReadIndex = 1;\nfunction solve() {\n  const a = [1];\n  return __traceReadIndex + a[0];\n}', expected: 2, fallbackRequired: true },
   { id: 'R1-recorder-name-collision', code: 'const __traceRecorder = 3;\nfunction solve() {\n  return __traceRecorder;\n}', expected: 3, fallbackRequired: true },
+
+  // Round 3 (PR #64 review 2).
+  // A learner compile error stays a compile error when traced, even though the
+  // TypeScript printer would print a repaired tree.
+  { id: 'R3-syntax-missing-brace', code: 'function solve() {\n  return 7', compileError: true },
+  { id: 'R3-syntax-extra-brace', code: 'function solve() {\n  return 7;\n}}', compileError: true },
+  { id: 'R3-syntax-stray-paren', code: 'function solve() {\n  const a = (1 + 2));\n  return a;\n}', compileError: true },
+  { id: 'R3-early-error-duplicate-let', code: 'function solve() {\n  let a = 1;\n  let a = 2;\n  return a;\n}', compileError: true },
+  { id: 'R3-syntax-script', code: 'let result = 1;\nif (result) {\n  result = 2;\n', functionName: '', compileError: true },
+  { id: 'R3-syntax-script-valid', code: 'let result = 1;\nif (result) {\n  result = 2;\n}\n', functionName: '', expected: 2 },
+  // A learner-written .get(key) reads `get` before evaluating the key.
+  { id: 'R3-get-accessor-order', ...solve(`let i = 0;
+  const m = { store: [[1], [2]], get get() { i = 1; return (k) => this.store[k]; } };
+  m.get(i).push(9);
+  return m.store.map((row) => row.length).join();`, '1,2') },
+  { id: 'R3-get-accessor-order-nested', ...solve(`let i = 0;
+  const m = { store: [[1], [2]], get get() { i = 1; return (k) => this.store[k]; } };
+  const box = [m];
+  box[0].get(i).push(9);
+  return m.store.map((row) => row.length).join();`, '1,2') },
+  { id: 'R3-get-not-function', ...solve('const m = { get: 5 }; try { m.get(0).push(1); } catch (e) { return e.message; } return "no";', 'm.get is not a function') },
+  // The snapshotter never calls methods a learner can replace or getters on elements.
+  { id: 'R3-replaced-slice', ...solve('const a = [1, 2, 3];\n  a.slice = a.splice;\n  let x = 0;\n  x += 1;\n  return a.length;', 3) },
+  { id: 'R3-array-element-getter', ...solve(`let reads = 0;
+  const a = [1, 2];
+  a.__defineGetter__("0", () => { reads++; return 1; });
+  let x = 0;
+  x += 1;
+  return reads;`, 0) },
+  // Recording a Map key never runs its getters, and a recorder failure is never the learner's.
+  { id: 'R3-map-key-throwing-id', ...solve(`const k = { get __id__() { throw new Error("id getter ran"); }, get __ref__() { throw new Error("ref getter ran"); } };
+  const m = new Map();
+  m.set(k, 1);
+  const s = new Set([k]);
+  return [m.get(k), m.has(k), s.has(k)].join();`, '1,true,true') },
+  // Optional console calls keep short-circuiting.
+  { id: 'R3-console-optional', ...solve('console.log = undefined;\n  console.log?.("x");\n  console?.log?.("y");\n  return 1;', 1) },
+  // An unquoted property name in the tracer's namespace runs untraced (documented).
+  { id: 'R3-reserved-property-name', ...solve('const o = {};\n  o.__traceX = 1;\n  return o.__traceX;', 1), fallbackRequired: true },
 
   // Destructuring assignment targets stay assignment targets.
   { id: 'D1-member-default', ...solve('const o = {}; const a = [0]; [o.x = 5, a[0] = 6] = []; return o.x + a[0];', 11) },

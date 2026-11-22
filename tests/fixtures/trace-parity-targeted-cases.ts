@@ -124,6 +124,8 @@ export const targetedCases: readonly ParityProblem[] = [
   ...(['javascript', 'typescript'] as const).flatMap((language) =>
     traceSemanticsCases
       .filter((testCase) => !testCase.languages || testCase.languages.includes(language))
+      // Judge bundles name a function; script-mode cases run only in the Node test.
+      .filter((testCase) => testCase.functionName !== '')
       .map((testCase): ParityProblem => ({
         id: 'S-' + testCase.id,
         language,
