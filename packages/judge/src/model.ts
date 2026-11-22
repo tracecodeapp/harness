@@ -136,6 +136,11 @@ export type JudgeTermination =
 export interface JudgeDiagnostic {
   readonly severity: 'error' | 'warning' | 'info';
   readonly message: string;
+  /**
+   * Set only on the warning the Judge adds when a traced case's recording
+   * stopped at a budget (`code` names the budget). The trace ends there.
+   */
+  readonly kind?: 'trace-truncated';
   readonly code?: string;
   readonly source?: string;
   readonly path?: string;

@@ -16,6 +16,12 @@ This repo uses Git tags as release boundaries. Version notes below summarize wha
   Judge keeps it as a warning diagnostic beside the case's failure, and
   `judgeCaseExecutionOutcome` restores it. Outcomes from providers that do
   not report it are unchanged.
+- `JudgeDiagnostic.kind?: 'trace-truncated'` (optional, additive) marks the
+  warning the Judge adds for a trace budget. `judgeCaseExecutionOutcome`
+  restores `traceTruncated` only from that warning (completed, failed and
+  limit cases), so another warning that happens to use a limit code, such as
+  a custom adapter's `memory-limit` notice, is no longer read as a trace
+  budget.
 
 ### Fixed
 
